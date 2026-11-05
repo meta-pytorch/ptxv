@@ -15,7 +15,7 @@ How mutants are built (the verifier never sees source):
   (`MEMBAR.SYS`→`.GPU`, `.release.sys`→`.gpu`). Rebuilding from library source is allowed
   *for making mutants only*.
 
-Columns: **P** = property (README §3.4/§5), **where** = rung that introduces it.
+Columns: **P** = property (docs/design.md §3.4/§5), **where** = rung that introduces it.
 
 ## Single CTA / cluster (async machinery)
 

@@ -1,6 +1,6 @@
 # ROADMAP: from one mbarrier to a 4-GPU MoE layer
 
-Decisions taken 2026-10-30 (they amend README §2, §4, §9, §11):
+Decisions taken 2026-10-30 (they amend docs/design.md §2, §4, §9, §11):
 
 1. **Binary first, one IR.** ptxv reads the compiled cubin (SASS) and lifts it into the same
    IR the PTX front-end produces. Verification runs on the SASS lift whenever a cubin exists,
@@ -59,7 +59,7 @@ variable-latency load complete before its use) are **verified, not trusted** (do
 2026-10-30, [docs/sass-ctrl.md](docs/sass-ctrl.md)). Each instruction's control word is
 decoded, and a CFG dataflow check proves that no register is read or overwritten while a
 variable-latency operation on it may be outstanding. The decoding is validated by a one-bit
-mutation sweep on GB300 with 0 misses. This replaces "trust ptxas" in README §9 with the
+mutation sweep on GB300 with 0 misses. This replaces "trust ptxas" in docs/design.md §9 with the
 narrower "trust nvdisasm + the scoreboard model + stall counts". `ptxas` reorderings and fma
 contraction become visible and verified rather than modeled as nondeterminism.
 
@@ -133,7 +133,7 @@ flag ping-pong over NVLink peer memory · 1g **4-GPU** one-shot all-reduce over 
 memory (+ multimem variant if the box exposes multicast; probe in rung 0).
 * Exit: every fixture has bitwise sim/GPU conformance in both front-ends, and all of its
   mutants (B04–B24) are caught; the MMA calibration for kind::f16 and kind::f8f6f4 has
-  passed (README §5.2).
+  passed (docs/design.md §5.2).
 
 ### Rung 2: real dense GEMM, single GPU (PTX + SASS available)
 CuTeDSL sm100 persistent dense GEMM (the CuTeDSL bundled with flashinfer / `nvidia-cutlass-dsl`
@@ -292,12 +292,12 @@ and async engines, and multi-node adds entries to each:
 * **New bug classes** to add then: missing `quiet` before signal across nodes, reusing a send
   buffer before local completion, assuming put ordering on different QPs, CQ overrun.
 * **Validation** needs a real multi-node setup (a Slurm cluster) for the litmus campaign
-  (README §7.2). That is the one part this box cannot do.
+  (docs/design.md §7.2). That is the one part this box cannot do.
 
 Numerics are unaffected: the DAG just spans more ranks.
 
 ## First concrete steps (rung 0)
-1. Toolchain: stable Rust and Cargo with crates.io dependencies. Workspace skeleton from README §8.
+1. Toolchain: stable Rust and Cargo with crates.io dependencies. Workspace skeleton from docs/design.md §8.
 2. `hw/`: minimal driver-API FFI. Load a cubin or PTX, encode a tensor map, launch with a
    cluster attribute, run a watchdog for hangs.
 3. Rung 0 fixture PTX + its three mutants; `ptxas` → cubin → `nvdisasm`.

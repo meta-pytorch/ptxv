@@ -10,7 +10,7 @@
 //! A *transition* runs one warp-split (threads of one warp at the same pc) from a visible
 //! instruction up to, but not including, its next visible instruction, or until it
 //! diverges or blocks. Visible instructions are the scheduling points; plain memory
-//! accesses are checked for races with vector clocks instead (DRF-SC, README §3.1).
+//! accesses are checked for races with vector clocks instead (DRF-SC, docs/design.md §3.1).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

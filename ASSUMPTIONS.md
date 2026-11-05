@@ -186,11 +186,11 @@ a `UTCATOMSWS` + `NANOSLEEP` retry loop. Who else holds columns: E-TMEM-COTENANT
 synchronization operations interleave; races among plain accesses are found with vector clocks.
 - Where: `ir` `Op::is_visible`, `explore.rs`.
 - Status: **argued.** This is the standard theorem for the core scoped PTX model. Its extension
-  to the async, tcgen05 and tensormap proxies is assumed (README §9).
+  to the async, tcgen05 and tensormap proxies is assumed (docs/design.md §9).
 - If wrong: *miss*, for a racy kernel whose bad outcome needs an interleaving of plain
   accesses. The race itself is still reported, so a clean verdict stays correct as long as the
   theorem holds for race-free programs.
-- Retire: a litmus campaign for the proxies (README §7.2).
+- Retire: a litmus campaign for the proxies (docs/design.md §7.2).
 
 ### E-ELECT · code
 **Which lane `elect.sync` / `ELECT` picks.** The PTX ISA says *"elects one predicated active
@@ -848,7 +848,7 @@ launches.
   any launch order) still covers the success paths that appear on hardware only at thousands
   of CTAs.
 - If wrong: *miss* of bugs that need a larger grid.
-- Retire: certified cutoff / symmetry arguments over grid sizes (README §3.5).
+- Retire: certified cutoff / symmetry arguments over grid sizes (docs/design.md §3.5).
 - "No other kernels" matters to the L1 model too: a co-resident kernel's loads fill lines on
   shared SMs (E-L1-CLOSED, E-L1-PLACE; opt-outs E-L1-CORES and E-L1-HAVOC, 2026-11-04).
 

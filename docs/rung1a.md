@@ -132,7 +132,7 @@ Numerics, good kernel, both front-ends:
   advances only at `tcgen05.fence::after_thread_sync`; `fence::before_thread_sync` releases it.
   MMAs and commits share an in-order pipe per issuing thread, and a commit releases every earlier
   op of that pipe. *Confidence: medium.* The rule follows the PTX ISA's tcgen05 memory-model
-  examples. A litmus campaign to probe it on hardware is still TODO (README §7.2).
+  examples. A litmus campaign to probe it on hardware is still TODO (design.md §7.2).
 * **`.sync.aligned` instructions are convergence points** (ptxas emits `WARPSYNC` before them).
   A guarded-off lane still counts as a partial-warp execution.
 * **SASS lockstep:** lanes executing together in a converged split are ordered by instruction

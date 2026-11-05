@@ -133,7 +133,7 @@ separate LDTM from the STG still gave 0/200 wrong. The most likely explanation i
 STG's operand read queues behind LDTM in the same memory pipe. An ALU consumer of R36 would
 have no such protection. This is a hypothesis; a fixture with an FADD consumer would test it.
 
-## What stays trusted (README §9)
+## What stays trusted (design.md §9)
 
 * **Fixed-latency hazards.** Stall counts are not checked; that needs a per-opcode latency
   table. A sweep over stall fields is the natural next validation.

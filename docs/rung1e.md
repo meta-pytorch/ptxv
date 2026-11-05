@@ -96,7 +96,7 @@ without the attribute. The model gives the dependent the primary's whole history
 both mutants are clean, and on GB300 B18 stays correct under the delay that breaks it with PDL.
 The same code is correct or racy depending only on a launch attribute. The verifier has to see
 the launch, not just the kernel, which is why the capture format records launch attributes
-(README §2).
+(design.md §2).
 
 ## Infrastructure changes
 
