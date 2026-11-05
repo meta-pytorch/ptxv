@@ -1,0 +1,84 @@
+{
+ "what": "run() of cand.py",
+ "argv": [
+  "--file",
+  "/tmp/agentG/cve_bf16/pairs/02_triton_poi_fused__scaled_dot_product_cudnn_attention__unsafe_out_ptr0/cand.py",
+  "--out",
+  "/tmp/agentG/cve_bf16/pairs/02_triton_poi_fused__scaled_dot_product_cudnn_attention__unsafe_out_ptr0/cmp/cand",
+  "--seed",
+  "0",
+  "--binary",
+  "--work",
+  "/tmp/ptxv_capture_620322"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "triton_poi_fused__scaled_dot_product_cudnn_attention__unsafe_view_add_mul_slice_split_stack_sub_transpose_view_1",
+   "grid": [
+    64,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "mm_10",
+   "dtype": "bf16",
+   "shape": [
+    24576
+   ],
+   "size": 49152
+  },
+  {
+   "name": "cos",
+   "dtype": "bf16",
+   "shape": [
+    2048
+   ],
+   "size": 4096
+  },
+  {
+   "name": "sin",
+   "dtype": "bf16",
+   "shape": [
+    2048
+   ],
+   "size": 4096
+  },
+  {
+   "name": "out",
+   "dtype": "bf16",
+   "shape": [
+    8192
+   ],
+   "size": 16384
+  },
+  {
+   "name": "W0",
+   "dtype": "u8",
+   "shape": [
+    16384
+   ],
+   "size": 16384
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

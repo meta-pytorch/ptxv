@@ -1,0 +1,15 @@
+// Does ptxas reuse a weak global load issued BEFORE an acquire for an identical load AFTER it?
+.version 9.0
+.target sm_103a
+.address_size 64
+.shared .align 4 .b32 flag;
+.visible .entry k(.param .u64 g, .param .u64 f, .param .u64 out) {
+  .reg .b32 %r<10>; .reg .b64 %rd<5>;
+  ld.param.u64 %rd1, [g]; ld.param.u64 %rd2, [out]; ld.param.u64 %rd3, [f];
+  mov.u32 %r9, flag;
+  ld.global.u32 %r1, [%rd1];
+  ld.relaxed.cta.shared.u32 %r2, [%r9]; fence.acq_rel.cta;
+  ld.global.u32 %r3, [%rd1];
+  st.global.v4.u32 [%rd2], {%r1, %r2, %r3, %r3};
+  ret;
+}

@@ -1,0 +1,22 @@
+[package]
+name = "ptxv"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "ptxv"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+clap.workspace = true
+ptxv-ir = { path = "../ir" }
+ptxv-ptx = { path = "../ptx" }
+ptxv-sass = { path = "../sass" }
+ptxv-case = { path = "../case" }
+ptxv-sim = { path = "../sim" }
+ptxv-hw = { path = "../hw" }
+mimalloc = { version = "0.1", default-features = false }

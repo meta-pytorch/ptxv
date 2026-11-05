@@ -1,0 +1,60 @@
+{
+ "what": "run() of triton_softmax_online.py (kernel ^softmax_online_kernel$)",
+ "argv": [
+  "--triton",
+  "tools/capture_examples/triton_softmax_online.py:softmax_online_kernel",
+  "--binary",
+  "--out",
+  "fixtures/c_triton_softmax_online",
+  "--work",
+  "/tmp/ptxv_capture_81576"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "softmax_online_kernel",
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    32,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "x",
+   "dtype": "f32",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 2048
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 2048
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

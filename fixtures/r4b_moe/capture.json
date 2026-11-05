@@ -1,0 +1,1166 @@
+{
+ "argv": [
+  "--nproc",
+  "2",
+  "--file",
+  "tools/capture_examples/moe_deepep.py",
+  "--out",
+  "/tmp/r4b/moe",
+  "--work",
+  "/tmp/r4b/wm"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "ranks": [
+  {
+   "rank": 0,
+   "device": 0,
+   "uuid": "1ced79bd-fbd0-93b7-c1dd-fc83511e7143",
+   "streams": [
+    "0x0",
+    "0xaaae7743d220"
+   ]
+  },
+  {
+   "rank": 1,
+   "device": 1,
+   "uuid": "7910a120-6368-4db1-a571-d4ce1b1e02a4",
+   "streams": [
+    "0x0",
+    "0xaaad81abc920"
+   ]
+  }
+ ],
+ "launches": [
+  {
+   "rank": 0,
+   "name": "_ZN7deep_ep6layout19get_dispatch_layoutILi256ELi4ELi8EEEvPKlPiS4_S4_Pbiiii",
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "stream": "0xaaae7743d220",
+   "t_ns": 1041703,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "rank": 1,
+   "name": "_ZN7deep_ep6layout19get_dispatch_layoutILi256ELi4ELi8EEEvPKlPiS4_S4_Pbiiii",
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "stream": "0xaaad81abc920",
+   "t_ns": 0,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "rank": 0,
+   "name": "_ZN7deep_ep9intranode15notify_dispatchILi2EEEvPKiPiS3_S4_iiiPKbS4_S4_iiPPvPS4_i",
+   "grid": [
+    3,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "stream": "0xaaae7743d220",
+   "t_ns": 1264745,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "rank": 1,
+   "name": "_ZN7deep_ep9intranode15notify_dispatchILi2EEEvPKiPiS3_S4_iiiPKbS4_S4_iiPPvPS4_i",
+   "grid": [
+    3,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "stream": "0xaaad81abc920",
+   "t_ns": 3428089,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "rank": 1,
+   "name": "_ZN7deep_ep9intranode8dispatchILi2ELi768ELi8192EEEvP4int4PfPiPlS4_S5_S5_PKS2_PKfPKlSA_PKbPKiiiiiiiiiPPviii",
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    768,
+    1,
+    1
+   ],
+   "stream": "0xaaad81abc920",
+   "t_ns": 3531514,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "rank": 0,
+   "name": "_ZN7deep_ep9intranode8dispatchILi2ELi768ELi8192EEEvP4int4PfPiPlS4_S5_S5_PKS2_PKfPKlSA_PKbPKiiiiiiiiiPPviii",
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    768,
+    1,
+    1
+   ],
+   "stream": "0xaaae7743d220",
+   "t_ns": 6248334,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "rank": 0,
+   "name": "_ZN2at6native24vectorized_gather_kernelILi16ElEEvPcS2_PT0_illllb",
+   "grid": [
+    17,
+    1,
+    1
+   ],
+   "block": [
+    32,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 7495736,
+   "pdl": 0,
+   "cubin": "k1.cubin"
+  },
+  {
+   "rank": 0,
+   "name": "_ZN2at4cuda6detail25prepare_grouped_gemm_dataIN7cutlass10bfloat16_tES4_S4_fN4cute5tupleIJiiiEEENS6_IJlNS5_1CILi1EEENS8_ILi0EEEEEESB_SB_EEvPT_PT0_PT1_PT2_SJ_PSD_PSF_PSH_PSJ_SN_PT3_PT4_PT5_PT6_PKiiiiSt5arrayIlLm3EESZ_SZ_SZ_SZ_llbb",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    2,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 7647737,
+   "pdl": 0,
+   "cubin": "k2.cubin"
+  },
+  {
+   "rank": 0,
+   "name": "_ZN7cutlass13device_kernelIN2at4cuda6detail25enable_3x_kernel_for_sm10INS_4gemm6kernel13GemmUniversalINS5_17GroupProblemShapeIN4cute5tupleIJiiiEEEEENS5_10collective13CollectiveMmaINS5_40MainloopSm100ArrayTmaUmmaWarpSpecializedILi4ELi8ELi2ENSA_IJNS9_1CILi2EEENSG_ILi1EEESI_EEEEENSA_IJNSG_ILi128EEENSG_ILi256EEENSG_ILi64EEEEEENS_10bfloat16_tEPNSA_IJlSI_NSG_ILi0EEEEEESP_SS_NS9_8TiledMMAINS9_8MMA_AtomIJNS9_20SM100_MMA_F16BF16_SSISP_SP_fLi128ELi256ELNS9_4UMMA5MajorE0ELSX_0ELNSW_7ScaleInE0ELSY_0EEEEEENS9_6LayoutINSA_IJSI_SI_SI_EEENSA_IJSQ_SQ_SQ_EEEEENSA_IJNS9_10UnderscoreES15_S15_EEEEENS9_13SM90_TMA_LOADENS9_14ComposedLayoutINS9_7SwizzleILi3ELi4ELi3EEENS9_18smem_ptr_flag_bitsILi16EEENS11_INSA_IJNSG_ILi8EEESN_EEENSA_IJSN_SI_EEEEEEEvNS9_8identityENS9_23SM90_TMA_LOAD_MULTICASTES1I_vS1J_EENS_8epilogue10collective18CollectiveEpilogueINS1M_31Sm100PtrArrayTmaWarpSpecializedILi4ELi2ELi32ELb0ELb0EEEJSO_NSA_IJNS11_ISL_SI_EENS11_INSG_ILi32EEESI_EEEEEvSS_SP_SS_NS1M_6fusion15FusionCallbacksIS1Q_NS1V_17LinearCombinationISP_fSP_fLNS_15FloatRoundStyleE2EEESO_S1U_JEEENS9_5SM1004TMEM4LOAD26SM100_TMEM_LOAD_32dp32b32xES18_NS19_INS1A_ILi2ELi4ELi3EEES1D_NS11_INSA_IJS1E_S1S_EEENSA_IJS1S_SI_EEEEEEENS9_39AutoVectorizingCopyWithAssumedAlignmentILi128EEENS9_14SM90_TMA_STOREES29_S2B_S2B_EEEvvEEEEEEvNT_6ParamsE",
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    384,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 7783322,
+   "pdl": 0,
+   "cubin": "k2.cubin"
+  },
+  {
+   "rank": 0,
+   "name": "_ZN2at6native24index_elementwise_kernelILi128ELi4EZNS0_16gpu_index_kernelIZNS0_17index_kernel_implINS0_10OpaqueTypeILi4EEEEEvRNS_18TensorIteratorBaseEN3c108ArrayRefIlEESA_EUlPcPKclE_EEvS7_SA_SA_RKT_bEUliE_EEvlT1_",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 8070972,
+   "pdl": 0,
+   "cubin": "k3.cubin"
+  },
+  {
+   "rank": 0,
+   "name": "_ZN2at6native27unrolled_elementwise_kernelIZZZNS0_23direct_copy_kernel_cudaERNS_18TensorIteratorBaseEENKUlvE1_clEvENKUlvE5_clEvEUlfE_St5arrayIPcLm2EELi4E23TrivialOffsetCalculatorILi1EjESB_NS0_6memory12LoadWithCastILi1EEENSC_13StoreWithCastILi1EEEEEviT_T0_T2_T3_T4_T5_",
+   "grid": [
+    5,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 8238813,
+   "pdl": 0,
+   "cubin": "k4.cubin"
+  },
+  {
+   "rank": 0,
+   "name": "_ZN2at6native18elementwise_kernelILi128ELi2EZNS0_22gpu_kernel_impl_nocastINS0_13BinaryFunctorIfffNS0_15binary_internal10MulFunctorIfEEEEEEvRNS_18TensorIteratorBaseERKT_EUliE_EEviT1_",
+   "grid": [
+    9,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 8364158,
+   "pdl": 0,
+   "cubin": "k5.cubin"
+  },
+  {
+   "rank": 0,
+   "name": "_ZN2at6native29vectorized_elementwise_kernelILi4ENS0_11FillFunctorIfEESt5arrayIPcLm1EEEEviT0_T1_",
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 8512351,
+   "pdl": 0,
+   "cubin": "k6.cubin"
+  },
+  {
+   "rank": 0,
+   "name": "_ZN2at6native19indexFuncLargeIndexIfljLi2ELi2ELin2ELb1ENS0_44_GLOBAL__N__e4def9c7_11_Indexing_cu_89862edb9ReduceAddEEEvNS_4cuda6detail10TensorInfoIT_T1_EENS6_IKS7_S8_EENS6_IKT0_S8_EEiiS8_S8_llRKT6_S7_",
+   "grid": [
+    17,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 8616096,
+   "pdl": 0,
+   "cubin": "k7.cubin"
+  },
+  {
+   "rank": 1,
+   "name": "_ZN2at6native44_GLOBAL__N__e4def9c7_11_Indexing_cu_89862edb21indexSelectSmallIndexIN3c108BFloat16EljLi2ELi2ELin2EEEvNS_4cuda6detail10TensorInfoIT_T1_EENS7_IKS8_S9_EENS7_IKT0_S9_EEiiS9_l",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 9696648,
+   "pdl": 0,
+   "cubin": "k7.cubin"
+  },
+  {
+   "rank": 1,
+   "name": "_ZN2at4cuda6detail25prepare_grouped_gemm_dataIN7cutlass10bfloat16_tES4_S4_fN4cute5tupleIJiiiEEENS6_IJlNS5_1CILi1EEENS8_ILi0EEEEEESB_SB_EEvPT_PT0_PT1_PT2_SJ_PSD_PSF_PSH_PSJ_SN_PT3_PT4_PT5_PT6_PKiiiiSt5arrayIlLm3EESZ_SZ_SZ_SZ_llbb",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    2,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 9853929,
+   "pdl": 0,
+   "cubin": "k2.cubin"
+  },
+  {
+   "rank": 1,
+   "name": "_ZN7cutlass13device_kernelIN2at4cuda6detail25enable_3x_kernel_for_sm10INS_4gemm6kernel13GemmUniversalINS5_17GroupProblemShapeIN4cute5tupleIJiiiEEEEENS5_10collective13CollectiveMmaINS5_40MainloopSm100ArrayTmaUmmaWarpSpecializedILi4ELi8ELi2ENSA_IJNS9_1CILi2EEENSG_ILi1EEESI_EEEEENSA_IJNSG_ILi128EEENSG_ILi256EEENSG_ILi64EEEEEENS_10bfloat16_tEPNSA_IJlSI_NSG_ILi0EEEEEESP_SS_NS9_8TiledMMAINS9_8MMA_AtomIJNS9_20SM100_MMA_F16BF16_SSISP_SP_fLi128ELi256ELNS9_4UMMA5MajorE0ELSX_0ELNSW_7ScaleInE0ELSY_0EEEEEENS9_6LayoutINSA_IJSI_SI_SI_EEENSA_IJSQ_SQ_SQ_EEEEENSA_IJNS9_10UnderscoreES15_S15_EEEEENS9_13SM90_TMA_LOADENS9_14ComposedLayoutINS9_7SwizzleILi3ELi4ELi3EEENS9_18smem_ptr_flag_bitsILi16EEENS11_INSA_IJNSG_ILi8EEESN_EEENSA_IJSN_SI_EEEEEEEvNS9_8identityENS9_23SM90_TMA_LOAD_MULTICASTES1I_vS1J_EENS_8epilogue10collective18CollectiveEpilogueINS1M_31Sm100PtrArrayTmaWarpSpecializedILi4ELi2ELi32ELb0ELb0EEEJSO_NSA_IJNS11_ISL_SI_EENS11_INSG_ILi32EEESI_EEEEEvSS_SP_SS_NS1M_6fusion15FusionCallbacksIS1Q_NS1V_17LinearCombinationISP_fSP_fLNS_15FloatRoundStyleE2EEESO_S1U_JEEENS9_5SM1004TMEM4LOAD26SM100_TMEM_LOAD_32dp32b32xES18_NS19_INS1A_ILi2ELi4ELi3EEES1D_NS11_INSA_IJS1E_S1S_EEENSA_IJS1S_SI_EEEEEEENS9_39AutoVectorizingCopyWithAssumedAlignmentILi128EEENS9_14SM90_TMA_STOREES29_S2B_S2B_EEEvvEEEEEEvNT_6ParamsE",
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    384,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 9986378,
+   "pdl": 0,
+   "cubin": "k2.cubin"
+  },
+  {
+   "rank": 1,
+   "name": "_ZN2at6native24index_elementwise_kernelILi128ELi4EZNS0_16gpu_index_kernelIZNS0_17index_kernel_implINS0_10OpaqueTypeILi4EEEEEvRNS_18TensorIteratorBaseEN3c108ArrayRefIlEESA_EUlPcPKclE_EEvS7_SA_SA_RKT_bEUliE_EEvlT1_",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 10268044,
+   "pdl": 0,
+   "cubin": "k3.cubin"
+  },
+  {
+   "rank": 0,
+   "name": "_ZN2at6native29vectorized_elementwise_kernelILi8EZNS0_25bfloat16_copy_kernel_cudaERNS_18TensorIteratorBaseEEUlfE_St5arrayIPcLm2EEEEviT0_T1_",
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 10690960,
+   "pdl": 0,
+   "cubin": "k4.cubin"
+  },
+  {
+   "rank": 0,
+   "name": "_ZN7deep_ep9intranode21cached_notify_combineILi2EEEvPPvPiiiiPS4_i",
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "stream": "0xaaae7743d220",
+   "t_ns": 10868049,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "rank": 0,
+   "name": "_ZN7deep_ep9intranode7combineI13__nv_bfloat16Li2ELi768ELi4096EEEvPT_PfPKS3_PKfS7_S7_PKiSB_SB_PiiiiiPPviii",
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    768,
+    1,
+    1
+   ],
+   "stream": "0xaaae7743d220",
+   "t_ns": 10947857,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "rank": 1,
+   "name": "_ZN2at6native27unrolled_elementwise_kernelIZZZNS0_23direct_copy_kernel_cudaERNS_18TensorIteratorBaseEENKUlvE1_clEvENKUlvE5_clEvEUlfE_St5arrayIPcLm2EELi4E23TrivialOffsetCalculatorILi1EjESB_NS0_6memory12LoadWithCastILi1EEENSC_13StoreWithCastILi1EEEEEviT_T0_T2_T3_T4_T5_",
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 11113491,
+   "pdl": 0,
+   "cubin": "k4.cubin"
+  },
+  {
+   "rank": 1,
+   "name": "_ZN2at6native18elementwise_kernelILi128ELi2EZNS0_22gpu_kernel_impl_nocastINS0_13BinaryFunctorIfffNS0_15binary_internal10MulFunctorIfEEEEEEvRNS_18TensorIteratorBaseERKT_EUliE_EEviT1_",
+   "grid": [
+    8,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 11265876,
+   "pdl": 0,
+   "cubin": "k5.cubin"
+  },
+  {
+   "rank": 1,
+   "name": "_ZN2at6native29vectorized_elementwise_kernelILi4ENS0_11FillFunctorIfEESt5arrayIPcLm1EEEEviT0_T1_",
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 11430997,
+   "pdl": 0,
+   "cubin": "k6.cubin"
+  },
+  {
+   "rank": 1,
+   "name": "_ZN2at6native19indexFuncSmallIndexIfljLi2ELi2ELin2ENS0_44_GLOBAL__N__e4def9c7_11_Indexing_cu_89862edb9ReduceAddEEEvNS_4cuda6detail10TensorInfoIT_T1_EENS6_IKS7_S8_EENS6_IKT0_S8_EEiiS8_llRKT5_S7_",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 11777176,
+   "pdl": 0,
+   "cubin": "k7.cubin"
+  },
+  {
+   "rank": 1,
+   "name": "_ZN2at6native29vectorized_elementwise_kernelILi8EZNS0_25bfloat16_copy_kernel_cudaERNS_18TensorIteratorBaseEEUlfE_St5arrayIPcLm2EEEEviT0_T1_",
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 11924441,
+   "pdl": 0,
+   "cubin": "k4.cubin"
+  },
+  {
+   "rank": 1,
+   "name": "_ZN7deep_ep9intranode21cached_notify_combineILi2EEEvPPvPiiiiPS4_i",
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "stream": "0xaaad81abc920",
+   "t_ns": 12971681,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "rank": 1,
+   "name": "_ZN7deep_ep9intranode7combineI13__nv_bfloat16Li2ELi768ELi4096EEEvPT_PfPKS3_PKfS7_S7_PKiSB_SB_PiiiiiPPviii",
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    768,
+    1,
+    1
+   ],
+   "stream": "0xaaad81abc920",
+   "t_ns": 13067553,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "memory_map": [
+  {
+   "rank": 0,
+   "va": "0xfffab4600000",
+   "size": 1184032,
+   "phys": "ipc:e0fc916baeaa0000a90e1c0000000000201112000000",
+   "kind": "mem",
+   "owner": 0
+  },
+  {
+   "rank": 0,
+   "va": "0xfffa2f400000",
+   "size": 1184032,
+   "phys": "ipc:f0284f75adaa0000aa0e1c0000000000201112000000",
+   "kind": "mem",
+   "owner": 1
+  },
+  {
+   "rank": 1,
+   "va": "0xfff8d4600000",
+   "size": 1184032,
+   "phys": "ipc:f0284f75adaa0000aa0e1c0000000000201112000000",
+   "kind": "mem",
+   "owner": 1
+  },
+  {
+   "rank": 1,
+   "va": "0xfff86f400000",
+   "size": 1184032,
+   "phys": "ipc:e0fc916baeaa0000a90e1c0000000000201112000000",
+   "kind": "mem",
+   "owner": 0
+  }
+ ],
+ "multicast": [],
+ "symmetric": [],
+ "buffers": [
+  {
+   "name": "x_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 2048,
+   "ptrs": 0
+  },
+  {
+   "name": "topk_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 0
+  },
+  {
+   "name": "w_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 0
+  },
+  {
+   "name": "Wl_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 65536,
+   "ptrs": 0
+  },
+  {
+   "name": "W0_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 0
+  },
+  {
+   "name": "W1_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 16,
+   "ptrs": 0
+  },
+  {
+   "name": "W2_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 16,
+   "ptrs": 0
+  },
+  {
+   "name": "W3_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 16,
+   "ptrs": 0
+  },
+  {
+   "name": "W4_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 8,
+   "ptrs": 0
+  },
+  {
+   "name": "W5_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 3584,
+   "ptrs": 0
+  },
+  {
+   "name": "W6_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 56,
+   "ptrs": 0
+  },
+  {
+   "name": "W7_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 8,
+   "ptrs": 0
+  },
+  {
+   "name": "W8_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 64,
+   "ptrs": 0
+  },
+  {
+   "name": "W9_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 224,
+   "ptrs": 0
+  },
+  {
+   "name": "W10_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 112,
+   "ptrs": 0
+  },
+  {
+   "name": "W11_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 136,
+   "ptrs": 0
+  },
+  {
+   "name": "W12_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 136,
+   "ptrs": 0
+  },
+  {
+   "name": "W13_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 8,
+   "ptrs": 0
+  },
+  {
+   "name": "W14_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 4352,
+   "ptrs": 0
+  },
+  {
+   "name": "W15_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 4352,
+   "ptrs": 0
+  },
+  {
+   "name": "W16_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 120,
+   "ptrs": 0
+  },
+  {
+   "name": "W17_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 17408,
+   "ptrs": 0
+  },
+  {
+   "name": "W18_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 3584,
+   "ptrs": 0
+  },
+  {
+   "name": "y_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 2048,
+   "ptrs": 0
+  },
+  {
+   "name": "dev4_r0",
+   "device": 0,
+   "kind": "plain",
+   "size": 1184032,
+   "ptrs": 4
+  },
+  {
+   "name": "host6_r0",
+   "device": 0,
+   "kind": "plain",
+   "size": 8,
+   "ptrs": 0
+  },
+  {
+   "name": "host7_r0",
+   "device": 0,
+   "kind": "plain",
+   "size": 4096,
+   "ptrs": 0
+  },
+  {
+   "name": "x_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 2048,
+   "ptrs": 0
+  },
+  {
+   "name": "topk_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 0
+  },
+  {
+   "name": "w_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 0
+  },
+  {
+   "name": "Wl_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 65536,
+   "ptrs": 0
+  },
+  {
+   "name": "W0_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 0
+  },
+  {
+   "name": "W1_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 16,
+   "ptrs": 0
+  },
+  {
+   "name": "W2_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 16,
+   "ptrs": 0
+  },
+  {
+   "name": "W3_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 16,
+   "ptrs": 0
+  },
+  {
+   "name": "W4_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 8,
+   "ptrs": 0
+  },
+  {
+   "name": "W5_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 3328,
+   "ptrs": 0
+  },
+  {
+   "name": "W6_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 52,
+   "ptrs": 0
+  },
+  {
+   "name": "W7_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 8,
+   "ptrs": 0
+  },
+  {
+   "name": "W8_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 64,
+   "ptrs": 0
+  },
+  {
+   "name": "W9_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 208,
+   "ptrs": 0
+  },
+  {
+   "name": "W10_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 104,
+   "ptrs": 0
+  },
+  {
+   "name": "W11_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 120,
+   "ptrs": 0
+  },
+  {
+   "name": "W12_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 120,
+   "ptrs": 0
+  },
+  {
+   "name": "W13_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 8,
+   "ptrs": 0
+  },
+  {
+   "name": "W14_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 3840,
+   "ptrs": 0
+  },
+  {
+   "name": "W15_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 3840,
+   "ptrs": 0
+  },
+  {
+   "name": "W16_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 120,
+   "ptrs": 0
+  },
+  {
+   "name": "W17_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 15360,
+   "ptrs": 0
+  },
+  {
+   "name": "W18_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 3328,
+   "ptrs": 0
+  },
+  {
+   "name": "y_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 2048,
+   "ptrs": 0
+  },
+  {
+   "name": "host0_r1",
+   "device": 1,
+   "kind": "plain",
+   "size": 4,
+   "ptrs": 0
+  },
+  {
+   "name": "dev4_r1",
+   "device": 1,
+   "kind": "plain",
+   "size": 1184032,
+   "ptrs": 4
+  },
+  {
+   "name": "host6_r1",
+   "device": 1,
+   "kind": "plain",
+   "size": 8,
+   "ptrs": 0
+  },
+  {
+   "name": "host7_r1",
+   "device": 1,
+   "kind": "plain",
+   "size": 4096,
+   "ptrs": 0
+  }
+ ],
+ "replicas": [],
+ "unresolved": [
+  {
+   "rank": 0,
+   "launch": "_ZN2at6native18elementwise_kernelILi128ELi2EZNS0_22gpu_kerne",
+   "param": 1,
+   "offset": 304,
+   "value": "0x400000004"
+  },
+  {
+   "rank": 0,
+   "launch": "_ZN2at6native18elementwise_kernelILi128ELi2EZNS0_22gpu_kerne",
+   "param": 1,
+   "offset": 320,
+   "value": "0x400000200"
+  },
+  {
+   "rank": 1,
+   "launch": "_ZN2at6native44_GLOBAL__N__e4def9c7_11_Indexing_cu_89862edb2",
+   "param": 1,
+   "offset": 128,
+   "value": "0xfff9782e23b0"
+  },
+  {
+   "rank": 1,
+   "launch": "_ZN2at6native24index_elementwise_kernelILi128ELi4EZNS0_16gpu",
+   "param": 1,
+   "offset": 8,
+   "value": "0x411111112"
+  },
+  {
+   "rank": 1,
+   "launch": "_ZN2at6native18elementwise_kernelILi128ELi2EZNS0_22gpu_kerne",
+   "param": 1,
+   "offset": 304,
+   "value": "0x400000004"
+  },
+  {
+   "rank": 1,
+   "launch": "_ZN2at6native18elementwise_kernelILi128ELi2EZNS0_22gpu_kerne",
+   "param": 1,
+   "offset": 320,
+   "value": "0x400000200"
+  }
+ ],
+ "warnings": [],
+ "notes": [
+  "rank 0: stream 0xaaae7743d220 -> 0x0 ordered by an event before _ZN2at6native24vectorized_gather_kernelILi16ElEEvP",
+  "rank 0: stream 0x0 -> 0xaaae7743d220 ordered by an event before _ZN7deep_ep9intranode21cached_notify_combineILi2EE",
+  "rank 1: stream 0xaaad81abc920 -> 0x0 ordered by an event before _ZN2at6native44_GLOBAL__N__e4def9c7_11_Indexing_cu",
+  "rank 1: stream 0x0 -> 0xaaad81abc920 ordered by an event before _ZN7deep_ep9intranode21cached_notify_combineILi2EE",
+  "rank 0: host upload of 136 bytes to 0xfffab6813000 between kernels folded into initial contents",
+  "rank 0: host upload of 136 bytes to 0xfffab6813200 between kernels folded into initial contents",
+  "rank 0: host upload of 8 bytes to 0xfffab6813400 between kernels folded into initial contents",
+  "rank 1: host upload of 120 bytes to 0xfff8d6813000 between kernels folded into initial contents",
+  "rank 1: host upload of 120 bytes to 0xfff8d6813200 between kernels folded into initial contents",
+  "rank 1: host upload of 8 bytes to 0xfff8d6813400 between kernels folded into initial contents"
+ ],
+ "events": [
+  {
+   "rank": 0,
+   "ev": "record",
+   "event": "0xaaae83e42f30",
+   "stream": "0x0"
+  },
+  {
+   "rank": 0,
+   "ev": "wait",
+   "event": "0xaaae83e42f30",
+   "stream": "0xaaae7743d220"
+  },
+  {
+   "rank": 0,
+   "ev": "record",
+   "event": "0xaaae83e43070",
+   "stream": "0xaaae7743d220"
+  },
+  {
+   "rank": 0,
+   "ev": "wait",
+   "event": "0xaaae83e43070",
+   "stream": "0x0"
+  },
+  {
+   "rank": 0,
+   "ev": "record",
+   "event": "0xaaae83e431b0",
+   "stream": "0x0"
+  },
+  {
+   "rank": 0,
+   "ev": "wait",
+   "event": "0xaaae83e431b0",
+   "stream": "0xaaae7743d220"
+  },
+  {
+   "rank": 0,
+   "ev": "record",
+   "event": "0xaaae83e45c20",
+   "stream": "0xaaae7743d220"
+  },
+  {
+   "rank": 0,
+   "ev": "wait",
+   "event": "0xaaae83e45c20",
+   "stream": "0x0"
+  },
+  {
+   "rank": 0,
+   "ev": "record",
+   "event": "0xaaae83e47620",
+   "stream": "0x0"
+  },
+  {
+   "rank": 0,
+   "ev": "wait",
+   "event": "0xaaae83e47620",
+   "stream": "0xaaae7743d220"
+  },
+  {
+   "rank": 0,
+   "ev": "record",
+   "event": "0xaaae83e48f10",
+   "stream": "0xaaae7743d220"
+  },
+  {
+   "rank": 0,
+   "ev": "wait",
+   "event": "0xaaae83e48f10",
+   "stream": "0x0"
+  },
+  {
+   "rank": 1,
+   "ev": "record",
+   "event": "0xaaad8d7d9aa0",
+   "stream": "0x0"
+  },
+  {
+   "rank": 1,
+   "ev": "wait",
+   "event": "0xaaad8d7d9aa0",
+   "stream": "0xaaad81abc920"
+  },
+  {
+   "rank": 1,
+   "ev": "record",
+   "event": "0xaaad8d7d9be0",
+   "stream": "0xaaad81abc920"
+  },
+  {
+   "rank": 1,
+   "ev": "wait",
+   "event": "0xaaad8d7d9be0",
+   "stream": "0x0"
+  },
+  {
+   "rank": 1,
+   "ev": "record",
+   "event": "0xaaad8d7d9d20",
+   "stream": "0x0"
+  },
+  {
+   "rank": 1,
+   "ev": "wait",
+   "event": "0xaaad8d7d9d20",
+   "stream": "0xaaad81abc920"
+  },
+  {
+   "rank": 1,
+   "ev": "record",
+   "event": "0xaaad8d7dcca0",
+   "stream": "0xaaad81abc920"
+  },
+  {
+   "rank": 1,
+   "ev": "wait",
+   "event": "0xaaad8d7dcca0",
+   "stream": "0x0"
+  },
+  {
+   "rank": 1,
+   "ev": "record",
+   "event": "0xaaad8d7df410",
+   "stream": "0x0"
+  },
+  {
+   "rank": 1,
+   "ev": "wait",
+   "event": "0xaaad8d7df410",
+   "stream": "0xaaad81abc920"
+  },
+  {
+   "rank": 1,
+   "ev": "record",
+   "event": "0xaaad8d7df410",
+   "stream": "0xaaad81abc920"
+  },
+  {
+   "rank": 1,
+   "ev": "wait",
+   "event": "0xaaad8d7df410",
+   "stream": "0x0"
+  }
+ ]
+}

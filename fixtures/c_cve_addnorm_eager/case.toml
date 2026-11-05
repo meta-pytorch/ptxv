@@ -1,0 +1,324 @@
+name = "c_cve_addnorm_eager"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): run() of ref.py. 7 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: _ZN2at6native29vectorized_elementwise_kernelILi4ENS0_15CUDAFunctor_addIfEESt5arrayIPcLm3EEEEviT0_T1_ grid [1, 1, 1] block [128, 1, 1]
+  1: _ZN2at6native29vectorized_elementwise_kernelILi4EZNS0_45_GLOBAL__N__8c7c0cff_12_PowKernel_cu_72c8608b29pow_ten grid [1, 1, 1] block [128, 1, 1]
+  2: _ZN2at6native13reduce_kernelILi512ELi1ENS0_8ReduceOpIfNS0_7MeanOpsIffffEEjfLi4ELi4EEEEEvT1_ grid [1, 1, 1] block [32, 8, 1]
+  3: _ZN2at6native29vectorized_elementwise_kernelILi4ENS0_21CUDAFunctorOnSelf_addIfEESt5arrayIPcLm2EEEEviT0_T1_ grid [1, 1, 1] block [128, 1, 1]
+  4: _ZN2at6native29vectorized_elementwise_kernelILi4EZZZNS0_17rsqrt_kernel_cudaERNS_18TensorIteratorBaseEENKUlvE0_ grid [1, 1, 1] block [128, 1, 1]
+  5: _ZN2at6native18elementwise_kernelILi128ELi2EZNS0_22gpu_kernel_impl_nocastINS0_13BinaryFunctorIfffNS0_15binary_ grid [4, 1, 1] block [128, 1, 1]
+  6: _ZN2at6native18elementwise_kernelILi128ELi2EZNS0_22gpu_kernel_impl_nocastINS0_13BinaryFunctorIfffNS0_15binary_ grid [4, 1, 1] block [128, 1, 1]
+Regenerate (docs/compile-vs-eager.md): CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/compile_vs_eager.py record
+--dtype f32 --seq 8 --out DIR, then tools/capture.py --file DIR/pairs/06_*/ref.py --binary, then
+tools/cubin_slim.py on each cubin."""
+cubin = "k0.cubin"
+entry = "_ZN2at6native29vectorized_elementwise_kernelILi4ENS0_15CUDAFunctor_addIfEESt5arrayIPcLm3EEEEviT0_T1_"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+outputs = ["out"]
+
+[[buffers]]
+name = "n2_weight"
+dtype = "f32"
+shape = [128]
+init = "file"
+file = "data/n2_weight.bin"
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "mm_42"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "data/mm_42.bin"
+
+[[buffers]]
+name = "W0"
+dtype = "u8"
+shape = [4096]
+init = "zeros"
+
+[[buffers]]
+name = "W1"
+dtype = "u8"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "W2"
+dtype = "u8"
+shape = [4096]
+init = "zeros"
+
+[[buffers]]
+name = "W3"
+dtype = "u8"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "W4"
+dtype = "u8"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "W5"
+dtype = "u8"
+shape = [4096]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "u32"
+value = 1024
+
+[[params]]
+kind = "u32"
+value = 1065353216
+
+[[params]]
+kind = "bytes"
+hex = "0022c09dfaff00000002c09dfaff00000012c09dfaff0000"
+
+[[params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W0"
+byte_offset = 0
+
+[[params.fields]]
+offset = 8
+kind = "ptr"
+buffer = "x"
+byte_offset = 0
+
+[[params.fields]]
+offset = 16
+kind = "ptr"
+buffer = "mm_42"
+byte_offset = 0
+
+[[launches]]
+entry = "_ZN2at6native29vectorized_elementwise_kernelILi4EZNS0_45_GLOBAL__N__8c7c0cff_12_PowKernel_cu_72c8608b29pow_tensor_scalar_kernel_implIffEEvRNS_18TensorIteratorBaseET0_EUlfE_St5arrayIPcLm2EEEEviS6_T1_"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+cubin = "k1.cubin"
+
+[[launches.params]]
+kind = "u32"
+value = 1024
+
+[[launches.params]]
+kind = "bytes"
+hex = "60464c7babaa0000"
+
+[[launches.params]]
+kind = "bytes"
+hex = "0044c09dfaff00000022c09dfaff0000"
+
+[[launches.params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W2"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 8
+kind = "ptr"
+buffer = "W0"
+byte_offset = 0
+
+[[launches]]
+entry = "_ZN2at6native13reduce_kernelILi512ELi1ENS0_8ReduceOpIfNS0_7MeanOpsIffffEEjfLi4ELi4EEEEEvT1_"
+grid = [1, 1, 1]
+block = [32, 8, 1]
+dynamic_smem = 0
+cubin = "k2.cubin"
+
+[[launches.params]]
+kind = "bytes"
+hex = "0000003c000000000400000080000000080000002000000008000000010000000100000000000000000000000000000001000000200000000800000000010000010000000100000001000000800000000100000007000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040000004c97aa7700000000000000000032383134363938343330383836303890c013caffff000048730acefeff00004000000000000000580809c8feff000090c113caffff000090c113caffff000060c113caffff0000d8ffffff80ffffff70c213ca0100000008000000010000000300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000200000000000000f0ffff00000000000000006465782033206f757473696465206f6634355f474c4f42414c5f5f4e5f5f38633763306366665f31325f506f774b6572b0c113caffff0000ac0809c8feff0000b0c113caffff00003c0909c8feff000040000000000000000000000000000000d80bebc8feff000045000000315d5b3270c313caffff00003038383630385d5b70c413caffff00009c4ccfc8feff00000100000000000000a8d013caffff0000030000000000000050485f7babaa0000ffff00000044c09dfaff00000032c09dfaff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000113ca01000000"
+
+[[launches.params.fields]]
+offset = 984
+kind = "ptr"
+buffer = "W2"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 992
+kind = "ptr"
+buffer = "W1"
+byte_offset = 0
+
+[[launches]]
+entry = "_ZN2at6native29vectorized_elementwise_kernelILi4ENS0_21CUDAFunctorOnSelf_addIfEESt5arrayIPcLm2EEEEviT0_T1_"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+
+[[launches.params]]
+kind = "u32"
+value = 8
+
+[[launches.params]]
+kind = "bytes"
+hex = "bd3786350000803f"
+
+[[launches.params]]
+kind = "bytes"
+hex = "0054c09dfaff00000032c09dfaff0000"
+
+[[launches.params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W3"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 8
+kind = "ptr"
+buffer = "W1"
+byte_offset = 0
+
+[[launches]]
+entry = "_ZN2at6native29vectorized_elementwise_kernelILi4EZZZNS0_17rsqrt_kernel_cudaERNS_18TensorIteratorBaseEENKUlvE0_clEvENKUlvE0_clEvEUlfE_St5arrayIPcLm2EEEEviT0_T1_"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+cubin = "k3.cubin"
+
+[[launches.params]]
+kind = "u32"
+value = 8
+
+[[launches.params]]
+kind = "bytes"
+hex = "00"
+
+[[launches.params]]
+kind = "bytes"
+hex = "0056c09dfaff00000054c09dfaff0000"
+
+[[launches.params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W4"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 8
+kind = "ptr"
+buffer = "W3"
+byte_offset = 0
+
+[[launches]]
+entry = "_ZN2at6native18elementwise_kernelILi128ELi2EZNS0_22gpu_kernel_impl_nocastINS0_13BinaryFunctorIfffNS0_15binary_internal10MulFunctorIfEEEEEEvRNS_18TensorIteratorBaseERKT_EUliE_EEviT1_"
+grid = [4, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+cubin = "k4.cubin"
+
+[[launches.params]]
+kind = "u32"
+value = 1024
+
+[[launches.params]]
+kind = "bytes"
+hex = "0200000080000000010000000700000008000000010000000300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000040000000000000000020000000200000400000008000000000000000056c09dfaff00000054c09dfaff0000b0d513caffff00005006cb7cabaa0000010000000100000000000000000000000000000000000000010000000100000001000000000000008000000001000000010000000000000000000000000000008000000001000000010000000000000001000000010000005cc913caffff000070ca13caffff000088d213caffff0000a0d413caffff0000e8780891feff000010ca13caffff000078600fc8feff00004ccb13caffff00000000000000000000000000000000000000454c7babaa000000000000000000003f030ec80000003f0000000000000000ffffffffffff000000100000000000000000000000000000000000000000000000000000feff00000058c09dfaff00000022c09dfaff00000056c09dfaff00000600000000000000c05b0e79abaa0000"
+
+[[launches.params.fields]]
+offset = 336
+kind = "ptr"
+buffer = "W4"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 344
+kind = "ptr"
+buffer = "W3"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 608
+kind = "ptr"
+buffer = "W5"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 616
+kind = "ptr"
+buffer = "W0"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 624
+kind = "ptr"
+buffer = "W4"
+byte_offset = 0
+
+[[launches]]
+entry = "_ZN2at6native18elementwise_kernelILi128ELi2EZNS0_22gpu_kernel_impl_nocastINS0_13BinaryFunctorIfffNS0_15binary_internal10MulFunctorIfEEEEEEvRNS_18TensorIteratorBaseERKT_EUliE_EEviT1_"
+grid = [4, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+cubin = "k4.cubin"
+
+[[launches.params]]
+kind = "u32"
+value = 1024
+
+[[launches.params]]
+kind = "bytes"
+hex = "0200000080000000010000000700000008000000010000000300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000040000000400000000020000000200000000000008000000000000000056c09dfaff00000054c09dfaff0000b0d513caffff00005006cb7cabaa0000010000000100000000000000000000000000000000000000010000000100000001000000000000008000000001000000010000000000000000000000000000008000000001000000010000000000000001000000010000005cc913caffff000070ca13caffff000088d213caffff0000a0d413caffff0000e8780891feff000010ca13caffff000078600fc8feff00004ccb13caffff00000000000000000000000000000000000000454c7babaa000000000000000000003f030ec80000003f0000000000000000ffffffffffff000000100000000000000000000000000000000000000000000000000000feff00000068c09dfaff00000058c09dfaff00000000c09dfaff00000600000000000000c05b0e79abaa0000"
+
+[[launches.params.fields]]
+offset = 336
+kind = "ptr"
+buffer = "W4"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 344
+kind = "ptr"
+buffer = "W3"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 608
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 616
+kind = "ptr"
+buffer = "W5"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 624
+kind = "ptr"
+buffer = "n2_weight"
+byte_offset = 0
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

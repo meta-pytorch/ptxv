@@ -1,0 +1,2 @@
+{"version": 1, "seed": 1, "name": "Student t (3 dof), rounded to the buffer dtype",
+ "default": {"dist": {"kind": "student_t", "df": 3, "mean": 0.0, "scale": 1.0}}}

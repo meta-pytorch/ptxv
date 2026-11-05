@@ -1,0 +1,113 @@
+// Probe (S-TMEM): thread/register <-> (TMEM lane, column) mapping of tcgen05.ld.16x128b.xN
+// (SASS LDTM.16dp128bit.xN, cuBLAS nvjet NVFP4 2-CTA epilogue). Warp w stores
+// lane * 256 + column to TMEM lanes 32w.., columns 0..31 (32x32b), then loads 16x128b .x1, .x2
+// and .x4 with the address lane field 32w (own quadrant) and .x4 with lane field 32w + 16.
+// out[32 t + j]: j 0..1 = x1, 2..5 = x2, 6..13 = x4, 14..21 = x4 at lane + 16; t = thread.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry probe_tmem_16x128b(.param .u64 out_p)
+{
+    .reg .b32 %r<96>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    .shared .align 16 .b32 taddr_s;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    shr.u32 %r2, %r1, 5;
+    setp.ne.u32 %p1, %r2, 0;
+    mov.u32 %r3, taddr_s;
+    @%p1 bra SKIPALLOC;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+SKIPALLOC:
+    tcgen05.fence::before_thread_sync;
+    bar.sync 0;
+    tcgen05.fence::after_thread_sync;
+    ld.shared.u32 %r4, [%r3];
+    shl.b32 %r5, %r1, 8;
+    shl.b32 %r7, %r2, 21;                // (32 * warp) << 16
+    add.u32 %r8, %r4, %r7;
+    add.u32 %r40, %r5, 0;
+    add.u32 %r41, %r5, 1;
+    add.u32 %r42, %r5, 2;
+    add.u32 %r43, %r5, 3;
+    add.u32 %r44, %r5, 4;
+    add.u32 %r45, %r5, 5;
+    add.u32 %r46, %r5, 6;
+    add.u32 %r47, %r5, 7;
+    add.u32 %r48, %r5, 8;
+    add.u32 %r49, %r5, 9;
+    add.u32 %r50, %r5, 10;
+    add.u32 %r51, %r5, 11;
+    add.u32 %r52, %r5, 12;
+    add.u32 %r53, %r5, 13;
+    add.u32 %r54, %r5, 14;
+    add.u32 %r55, %r5, 15;
+    tcgen05.st.sync.aligned.32x32b.x16.b32 [%r8], {%r40, %r41, %r42, %r43, %r44, %r45, %r46, %r47, %r48, %r49, %r50, %r51, %r52, %r53, %r54, %r55};
+    add.u32 %r40, %r5, 16;
+    add.u32 %r41, %r5, 17;
+    add.u32 %r42, %r5, 18;
+    add.u32 %r43, %r5, 19;
+    add.u32 %r44, %r5, 20;
+    add.u32 %r45, %r5, 21;
+    add.u32 %r46, %r5, 22;
+    add.u32 %r47, %r5, 23;
+    add.u32 %r48, %r5, 24;
+    add.u32 %r49, %r5, 25;
+    add.u32 %r50, %r5, 26;
+    add.u32 %r51, %r5, 27;
+    add.u32 %r52, %r5, 28;
+    add.u32 %r53, %r5, 29;
+    add.u32 %r54, %r5, 30;
+    add.u32 %r55, %r5, 31;
+    add.u32 %r9, %r8, 16;
+    tcgen05.st.sync.aligned.32x32b.x16.b32 [%r9], {%r40, %r41, %r42, %r43, %r44, %r45, %r46, %r47, %r48, %r49, %r50, %r51, %r52, %r53, %r54, %r55};
+    tcgen05.wait::st.sync.aligned;
+    // Other lanes read what this lane stored: order the lanes (PTX model).
+    tcgen05.fence::before_thread_sync;
+    bar.sync 0;
+    tcgen05.fence::after_thread_sync;
+    mul.wide.u32 %rd2, %r1, 128;
+    add.u64 %rd3, %rd1, %rd2;
+    add.u32 %r6, %r8, 0x100000;
+    tcgen05.ld.sync.aligned.16x128b.x1.b32 {%r60, %r61}, [%r8];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.u32 [%rd3+0], %r60;
+    st.global.u32 [%rd3+4], %r61;
+    tcgen05.ld.sync.aligned.16x128b.x2.b32 {%r60, %r61, %r62, %r63}, [%r8];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.u32 [%rd3+8], %r60;
+    st.global.u32 [%rd3+12], %r61;
+    st.global.u32 [%rd3+16], %r62;
+    st.global.u32 [%rd3+20], %r63;
+    tcgen05.ld.sync.aligned.16x128b.x4.b32 {%r60, %r61, %r62, %r63, %r64, %r65, %r66, %r67}, [%r8];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.u32 [%rd3+24], %r60;
+    st.global.u32 [%rd3+28], %r61;
+    st.global.u32 [%rd3+32], %r62;
+    st.global.u32 [%rd3+36], %r63;
+    st.global.u32 [%rd3+40], %r64;
+    st.global.u32 [%rd3+44], %r65;
+    st.global.u32 [%rd3+48], %r66;
+    st.global.u32 [%rd3+52], %r67;
+    tcgen05.ld.sync.aligned.16x128b.x4.b32 {%r60, %r61, %r62, %r63, %r64, %r65, %r66, %r67}, [%r6];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.u32 [%rd3+56], %r60;
+    st.global.u32 [%rd3+60], %r61;
+    st.global.u32 [%rd3+64], %r62;
+    st.global.u32 [%rd3+68], %r63;
+    st.global.u32 [%rd3+72], %r64;
+    st.global.u32 [%rd3+76], %r65;
+    st.global.u32 [%rd3+80], %r66;
+    st.global.u32 [%rd3+84], %r67;
+    tcgen05.fence::before_thread_sync;
+    bar.sync 0;
+    @%p1 bra DONE;
+    tcgen05.fence::after_thread_sync;
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r4, 32;
+DONE:
+    ret;
+}

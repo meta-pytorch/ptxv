@@ -1,0 +1,25 @@
+name = "cluster_sregs"
+description = """
+S-CBANK probe: cluster special registers, which ptxas reads from a driver constant table indexed
+by the cluster size. Grid 6x4, cluster 2x2. Binary only (`ptxas -arch=sm_103a kernel.ptx`): the PTX front-end does not model
+these registers."""
+cubin = "kernel.cubin"
+entry = "k"
+grid = [6, 4, 1]
+block = [32, 1, 1]
+cluster = [2, 2, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [288]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

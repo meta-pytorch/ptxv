@@ -1,0 +1,144 @@
+// Signal-pad channel shared by the cute ring RS flags and the triton RS CAS barrier.
+// Faithful form: the barrier's CAS spin loops are atom.cas, as torch and Triton compile them.
+//
+// Kernels (one launch each; WS <= 4 ranks, rank r = GPU r owns signal pad pad_r[3 * WS] u32):
+//   cas_barrier(rank, channel, ws, pad0..pad3), block = [ws]: torch CUDASymmetricMemory
+//       barrier_kernel (unicast path): thread t = target_rank, t < ws, t != rank:
+//         try_put_signal<release>(pad_t + ws * channel + rank)   // while (cas(addr, 0, 1) != 0)
+//         try_wait_signal<acquire>(pad_rank + ws * channel + t)  // while (cas(addr, 1, 0) != 1)
+//   ring_write(peer_pad, ws, slot): gemm_rs_ring.py _FlagWriteOp on
+//       peer_flags[slot], peer_flags = pad_peer + RING_CH * ws:
+//         atomic_add(ptr, 1, sem="release", scope="sys")
+//   ring_wait(my_pad, ctr, ws, slot): _FlagWaitOp on local_flags[slot], counter ctr[slot - 1]:
+//         target = load(cptr, acquire, gpu) + 1; store(cptr, target, release, gpu)
+//         val = load(fptr, acquire, sys); while val - target < 0: val = load(fptr, acquire, sys)
+// RING_CH = 2 after the fix (DistGemmPadChannel.RING_FLAGS), 1 before (_FLAG_CHANNEL = 1).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry cas_barrier(
+    .param .u32 rank,
+    .param .u32 channel,
+    .param .u32 ws,
+    .param .u64 pad0,
+    .param .u64 pad1,
+    .param .u64 pad2,
+    .param .u64 pad3
+)
+{
+    .reg .pred  %p<16>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<16>;
+
+    mov.u32         %r0, %tid.x;                    // target_rank
+    ld.param.u32    %r1, [rank];
+    ld.param.u32    %r2, [channel];
+    ld.param.u32    %r9, [ws];
+    setp.ge.u32     %p0, %r0, %r9;                  // threadIdx.x >= world_size
+    @%p0 bra        DONE;
+    setp.eq.u32     %p1, %r0, %r1;                  // target_rank == rank
+    @%p1 bra        DONE;
+    ld.param.u64    %rd10, [pad0];
+    cvta.to.global.u64 %rd10, %rd10;
+    ld.param.u64    %rd11, [pad1];
+    cvta.to.global.u64 %rd11, %rd11;
+    ld.param.u64    %rd12, [pad2];
+    cvta.to.global.u64 %rd12, %rd12;
+    ld.param.u64    %rd13, [pad3];
+    cvta.to.global.u64 %rd13, %rd13;
+    mul.lo.u32      %r3, %r9, %r2;                  // ws * channel
+    // put: signal_pads[target_rank] + ws * channel + rank
+    setp.eq.u32     %p6, %r0, 1;
+    setp.eq.u32     %p7, %r0, 2;
+    setp.eq.u32     %p8, %r0, 3;
+    mov.b64         %rd3, %rd10;
+    @%p6 mov.b64    %rd3, %rd11;
+    @%p7 mov.b64    %rd3, %rd12;
+    @%p8 mov.b64    %rd3, %rd13;
+    add.u32         %r4, %r3, %r1;
+    mul.wide.u32    %rd4, %r4, 4;
+    add.u64         %rd5, %rd3, %rd4;
+PUT:
+    atom.release.sys.global.cas.b32 %r5, [%rd5], 0, 1;
+    setp.ne.u32     %p3, %r5, 0;
+    @%p3 bra        PUT;
+    // wait: signal_pads[rank] + ws * channel + target_rank
+    setp.eq.u32     %p9, %r1, 1;
+    setp.eq.u32     %p10, %r1, 2;
+    setp.eq.u32     %p11, %r1, 3;
+    mov.b64         %rd6, %rd10;
+    @%p9 mov.b64    %rd6, %rd11;
+    @%p10 mov.b64   %rd6, %rd12;
+    @%p11 mov.b64   %rd6, %rd13;
+    add.u32         %r6, %r3, %r0;
+    mul.wide.u32    %rd7, %r6, 4;
+    add.u64         %rd8, %rd6, %rd7;
+WAIT:
+    atom.acquire.sys.global.cas.b32 %r7, [%rd8], 1, 0;
+    setp.ne.u32     %p5, %r7, 1;
+    @%p5 bra        WAIT;
+DONE:
+    ret;
+}
+
+.visible .entry ring_write(
+    .param .u64 peer_pad,
+    .param .u32 ws,
+    .param .u32 slot
+)
+{
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [peer_pad];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u32    %r4, [ws];
+    ld.param.u32    %r5, [slot];
+    mov.u32         %r1, 2;                         // ring flag channel  // @CHW
+    mad.lo.u32      %r2, %r1, %r4, %r5;             // RING_CH * ws + slot
+    mul.wide.u32    %rd2, %r2, 4;
+    add.u64         %rd3, %rd1, %rd2;
+    atom.release.sys.global.add.u32 %r3, [%rd3], 1;
+    ret;
+}
+
+.visible .entry ring_wait(
+    .param .u64 my_pad,
+    .param .u64 ctr,
+    .param .u32 ws,
+    .param .u32 slot
+)
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [my_pad];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64    %rd4, [ctr];
+    cvta.to.global.u64 %rd4, %rd4;
+    ld.param.u32    %r0, [ws];
+    ld.param.u32    %r7, [slot];
+    add.u32         %r3, %r7, -1;                   // wait_counters[slot - 1]
+    mul.wide.u32    %rd5, %r3, 4;
+    add.u64         %rd4, %rd4, %rd5;
+    ld.acquire.gpu.global.u32 %r4, [%rd4];
+    add.u32         %r4, %r4, 1;                    // target
+    st.release.gpu.global.u32 [%rd4], %r4;
+    mov.u32         %r1, 2;                         // ring flag channel  // @CHR
+    mad.lo.u32      %r2, %r1, %r0, %r7;             // RING_CH * ws + slot
+    mul.wide.u32    %rd2, %r2, 4;
+    add.u64         %rd3, %rd1, %rd2;
+    ld.acquire.sys.global.u32 %r5, [%rd3];         // val = load(fptr)
+    sub.s32         %r6, %r5, %r4;
+    setp.lt.s32     %p1, %r6, 0;                    // while val - target < 0
+    @!%p1 bra       DONE;
+POLL:
+    ld.acquire.sys.global.u32 %r5, [%rd3];
+    sub.s32         %r6, %r5, %r4;
+    setp.lt.s32     %p1, %r6, 0;
+    @%p1 bra        POLL;
+DONE:
+    ret;
+}

@@ -1,0 +1,93 @@
+name = "r1b_pipeline"
+description = """
+Rung 1b. A persistent, warp-specialized tcgen05 GEMM pipeline in one CTA of 6 warps:
+D[256x16] = A[256x128] * B[16x128]^T as 2 tiles of 128x16, K in 2 k-blocks of 64, 2 shared
+memory stages (128B-swizzled TMA loads, SWIZZLE_128B MMA descriptors), one TMEM accumulator
+reused across tiles, epilogue through shared memory and a TMA store."""
+ptx = "kernel.ptx"
+entry = "r1b_pipeline"
+grid = [1, 1, 1]
+block = [192, 1, 1]
+outputs = ["D"]
+spec = "gemm_tn"
+
+[[buffers]]
+name = "A"
+dtype = "bf16"
+shape = [256, 128]
+init = "normal"
+seed = 21
+
+[[buffers]]
+name = "B"
+dtype = "bf16"
+shape = [16, 128]
+init = "normal"
+seed = 22
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [256, 16]
+init = "nan"
+
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [64, 128]
+swizzle = "128B"
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [64, 16]
+swizzle = "128B"
+
+[[params]]
+kind = "tensormap"
+buffer = "D"
+box = [16, 128]
+
+[[variants]]
+id = "good"
+summary = "correct kernel"
+expect = ["clean"]
+
+[[variants]]
+id = "B09"
+summary = "MMA warp starts the next tile without waiting for the epilogue's tmem_empty arrive"
+marker = "@B09"
+replace = "<delete>"
+expect = ["race"]
+hw_note = "GB300 correct 1000/1000: the epilogue drains TMEM before the next tile's first MMA lands"
+
+[[variants]]
+id = "B10"
+summary = "producer's empty-slot wait ignores the round: wrong parity after the stages wrap"
+marker = "@B10"
+find = "shr.u32         %r14, %r10, 1"
+replace = "mov.u32         %r14, 0"
+expect = ["fault", "race"]
+hw_note = "GB300: unspecified launch failure (the double arrive overflows the mbarrier)"
+
+[[variants]]
+id = "B11"
+summary = "MMA warp skips the empty-slot commit on the last k-block of each tile"
+marker = "@B11"
+find = "tcgen05.commit"
+replace = "@%p10 tcgen05.commit"
+expect = ["deadlock"]
+
+[[variants]]
+id = "B04"
+summary = "no fence.proxy.async between the epilogue's st.shared and the TMA store"
+marker = "@B04"
+replace = "<delete>"
+expect = ["race"]
+
+[[variants]]
+id = "B50"
+summary = "TMA store issuer does not wait for the store to finish reading smem before reuse"
+marker = "@B50"
+replace = "<delete>"
+expect = ["nondeterministic", "race"]

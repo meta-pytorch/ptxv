@@ -1,0 +1,172 @@
+{
+ "what": "run() of trtllm_fp8_moe.py",
+ "argv": [
+  "--file",
+  "tools/capture_examples/trtllm_fp8_moe.py",
+  "--kernels",
+  "^bmm_E4m3",
+  "--out",
+  "fixtures/r3b_trtllm_bmm_partial",
+  "--work",
+  "/tmp/ptxv_capture_1997229"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "bmm_E4m3_E4m3E4m3_Fp32_t128x8x128u2_s8_et64x8_m64x8x32_cga1x1x1_16dp256b_rM_TN_transOut_noShflA_dsFp8_schedS_bN_tma_tmaOpt_clmp_lbW2_dynBatch_sm100f",
+   "grid": [
+    2,
+    5,
+    1
+   ],
+   "block": [
+    416,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 147952,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [
+  "_ZN3moe3dev7routing18routingRenormalize27routingIndicesClusterKernelINS2_12KernelParamsI13__nv_bfloat16S5_Li128ELb0ELb1ELb1EEEEEvT_",
+  "_ZN3moe3dev10activation24activationDeepSeekKernelINS1_12KernelParamsIN7cutlass12float_e4m3_tELi1ELb1EEEEEvT_",
+  "bmm_Bfloat16_E4m3E4m3_Fp32_t128x8x128_s8_et64x8_m64x8x32_cga1x1x1_16dp256b_rM_TN_transOut_noShflA_dsFp8_schedS_bN_tmaOpt_clmp_dynBatch_sm100f",
+  "_ZN3moe3dev8finalize14finalizeKernelINS1_12KernelParamsIN7cutlass10bfloat16_tES5_Li2ELb1EEEEEvT_"
+ ],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "logits",
+   "dtype": "bf16",
+   "shape": [
+    8,
+    4
+   ],
+   "size": 64
+  },
+  {
+   "name": "hs",
+   "dtype": "u8",
+   "shape": [
+    2048
+   ],
+   "size": 2048
+  },
+  {
+   "name": "hss",
+   "dtype": "f32",
+   "shape": [
+    2,
+    8
+   ],
+   "size": 64
+  },
+  {
+   "name": "w1",
+   "dtype": "u8",
+   "shape": [
+    262144
+   ],
+   "size": 262144
+  },
+  {
+   "name": "w1s",
+   "dtype": "f32",
+   "shape": [
+    4,
+    2,
+    2
+   ],
+   "size": 64
+  },
+  {
+   "name": "W0",
+   "dtype": "u8",
+   "shape": [
+    4
+   ],
+   "size": 4
+  },
+  {
+   "name": "W1",
+   "dtype": "u8",
+   "shape": [
+    160
+   ],
+   "size": 160
+  },
+  {
+   "name": "W2",
+   "dtype": "u8",
+   "shape": [
+    20
+   ],
+   "size": 20
+  },
+  {
+   "name": "W3",
+   "dtype": "u8",
+   "shape": [
+    20
+   ],
+   "size": 20
+  },
+  {
+   "name": "W4",
+   "dtype": "u8",
+   "shape": [
+    4
+   ],
+   "size": 4
+  },
+  {
+   "name": "W5",
+   "dtype": "u8",
+   "shape": [
+    32
+   ],
+   "size": 32
+  },
+  {
+   "name": "W6",
+   "dtype": "u8",
+   "shape": [
+    262144
+   ],
+   "size": 262144
+  },
+  {
+   "name": "W7",
+   "dtype": "u8",
+   "shape": [
+    320
+   ],
+   "size": 320
+  },
+  {
+   "name": "out",
+   "dtype": "bf16",
+   "shape": [
+    8,
+    256
+   ],
+   "size": 4096
+  }
+ ],
+ "unresolved": [
+  {
+   "launch": 0,
+   "param": 0,
+   "offset": 12216,
+   "value": "0xfff87de50000"
+  }
+ ],
+ "warnings": []
+}

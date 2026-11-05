@@ -1,0 +1,2 @@
+{"version": 1, "seed": 1, "name": "normal(100, 1) (large-magnitude shifted rows)",
+ "default": {"dist": {"kind": "normal", "mean": 100.0, "std": 1.0}}}

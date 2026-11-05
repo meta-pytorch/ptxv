@@ -1,0 +1,247 @@
+# Fixtures whose kernels are third-party (vendor) code: cuBLAS / cuBLASLt (nvjet, gemmSN,
+# cutlass3x sgemm), CUTLASS (CuTeDSL examples, libtorch's grouped GEMM and mem-efficient
+# attention), TRT-LLM-gen (flashinfer), DeepEP and FlashAttention. Their kernel binaries
+# (`files`) are not part of the open-source export; case.toml, inputs and expected outputs are.
+# Tests that need a missing file skip with a message (ptxv_case::skip_missing_vendor_files).
+#
+# Regenerate on a Blackwell (sm_100a / sm_103a) machine with the library installed:
+#   python3 tools/regen_fixture.py <name> [<name> ...]     # or --all
+# Each entry's `cmd` runs in a scratch directory and must leave `files` in it ("capture":
+# repo root as cwd, $OUT = scratch dir; "dir": cwd = a scratch copy of the fixture directory
+# next to links to probes/ and tools/). With `slim = true` each cubin is then shrunk to the
+# kernels case.toml launches (tools/cubin_slim.py). Kernel choice depends on the library
+# version: other versions may pick other kernels, and the case's expectations may then differ.
+#
+# Library versions the checked-in cases were captured with:
+#   torch   2.12.0a0+git808dd93, CUDA 13.0 (cuBLAS / cuBLASLt, libtorch_cuda's CUTLASS and
+#           FlashAttention kernels)
+#   CUTLASS 4.6.1 CuTeDSL (the copy bundled with flashinfer 0.5.3)
+#   flashinfer 0.5.3 with flashinfer-cubin (trtllm-gen kernels)
+#   DeepEP  1.2.1.2026.6.4.43822+567632d (upstream 567632d), torch as above
+
+[[fixture]]
+name = "r2_cublas_gemm"
+vendor = "cuBLAS (nvjet)"
+library = "torch 2.12.0a0+git808dd93, CUDA 13.0"
+files = ["kernel.cubin"]
+kind = "dir"
+cmd = "$PY capture.py 512 128 128"
+
+[[fixture]]
+name = "c_mm_bf16_mcast"
+vendor = "cuBLAS (nvjet)"
+library = "torch 2.12.0a0+git808dd93, CUDA 13.0"
+files = ["k0.cubin"]
+kind = "capture"
+cmd = "$PY tools/capture.py --op 'a @ b.t()' --seed 0 --inputs 'a=randn(64,128,bf16),b=randn(128,128,bf16)' --out $OUT"
+
+[[fixture]]
+name = "c_mm_bf16_nnt"
+vendor = "cuBLAS (nvjet)"
+library = "torch 2.12.0a0+git808dd93, CUDA 13.0"
+files = ["k0.cubin"]
+kind = "capture"
+cmd = "$PY tools/capture.py --op 'torch.mm(a,b)' --seed 0 --inputs 'a=randn(64,64,bf16),b=randn(64,64,bf16)' --out $OUT"
+
+[[fixture]]
+name = "c_mm_bf16_ttn"
+vendor = "cuBLAS (nvjet)"
+library = "torch 2.12.0a0+git808dd93, CUDA 13.0"
+files = ["k0.cubin"]
+kind = "capture"
+cmd = "$PY tools/capture.py --op '(b.t() @ a.t()).t()' --seed 0 --inputs 'a=randn(64,64,bf16),b=randn(64,64,bf16)' --out $OUT"
+
+[[fixture]]
+name = "c_smm_mxf8"
+vendor = "cuBLASLt (nvjet)"
+library = "torch 2.12.0a0+git808dd93, CUDA 13.0"
+files = ["k0.cubin"]
+kind = "capture"
+cmd = "$PY tools/capture.py --file tools/capture_examples/scaled_mm_mxf8.py --out $OUT"
+
+[[fixture]]
+name = "c_smm_nvf4"
+vendor = "cuBLASLt (nvjet)"
+library = "torch 2.12.0a0+git808dd93, CUDA 13.0"
+files = ["k0.cubin"]
+kind = "capture"
+cmd = "$PY tools/capture.py --file tools/capture_examples/scaled_mm_nvf4.py --out $OUT"
+
+[[fixture]]
+name = "c_mm_f32_gemmsn"
+vendor = "cuBLAS (gemmSN)"
+library = "torch 2.12.0a0+git808dd93, CUDA 13.0"
+files = ["k0.cubin"]
+kind = "capture"
+slim = true
+cmd = "$PY tools/capture.py --op 'torch.mm(a, b)' --inputs 'a=randn(8,128,f32),b=randn(128,384,f32)' --out $OUT"
+
+[[fixture]]
+name = "c_mm_f32_gemmsn_tn"
+vendor = "cuBLAS (gemmSN)"
+library = "torch 2.12.0a0+git808dd93, CUDA 13.0"
+files = ["k0.cubin"]
+kind = "capture"
+slim = true
+cmd = "$PY tools/compile_vs_eager.py record --dtype f32 --seq 8 --out $OUT/cve && $PY tools/capture.py --file $OUT/cve/pairs/05_mm/ref.py --seed 0 --binary --out $OUT"
+
+[[fixture]]
+name = "c_mm2_fused"
+vendor = "cuBLASLt (cutlass3x sgemm)"
+library = "torch 2.12.0a0+git808dd93, CUDA 13.0"
+files = ["k0.cubin", "k1.cubin"]
+kind = "capture"
+cmd = "$PY tools/capture.py --file tools/capture_examples/mm2.py --binary --out $OUT"
+
+[[fixture]]
+name = "c_mm2_sum"
+vendor = "cuBLASLt (cutlass3x sgemm)"
+library = "torch 2.12.0a0+git808dd93, CUDA 13.0"
+files = ["k0.cubin", "k1.cubin"]
+kind = "capture"
+cmd = "PTXV_MM2=sum $PY tools/capture.py --file tools/capture_examples/mm2.py --binary --out $OUT"
+
+[[fixture]]
+name = "r2_cute_gemm"
+vendor = "CUTLASS (CuTeDSL example dense_gemm_persistent.py)"
+library = "CUTLASS 4.6.1 CuTeDSL (flashinfer 0.5.3's copy)"
+files = ["kernel.ptx"]
+kind = "dir"
+cmd = "$PY capture.py 512 128 128 2 && python3 variants.py"
+
+[[fixture]]
+name = "r2_cute_small"
+vendor = "CUTLASS (CuTeDSL example dense_gemm_persistent.py)"
+library = "CUTLASS 4.6.1 CuTeDSL (flashinfer 0.5.3's copy)"
+files = ["kernel.ptx"]
+kind = "dir"
+cmd = "$PY capture.py 256 128 128 2 && python3 variants.py"
+
+[[fixture]]
+name = "r2_cute_wrap"
+vendor = "CUTLASS (CuTeDSL example dense_gemm_persistent.py)"
+library = "CUTLASS 4.6.1 CuTeDSL (flashinfer 0.5.3's copy)"
+files = ["kernel.ptx"]
+kind = "dir"
+cmd = "$PY capture.py 512 128 256 2 && python3 variants.py"
+
+[[fixture]]
+name = "r3_cute_mxf4"
+vendor = "CUTLASS (CuTeDSL example dense_blockscaled_gemm_persistent.py)"
+library = "CUTLASS 4.6.1 CuTeDSL (flashinfer 0.5.3's copy)"
+files = ["kernel.ptx"]
+kind = "dir"
+cmd = "$PY capture.py"
+
+[[fixture]]
+name = "r3_cute_mxf8"
+vendor = "CUTLASS (CuTeDSL example dense_blockscaled_gemm_persistent.py)"
+library = "CUTLASS 4.6.1 CuTeDSL (flashinfer 0.5.3's copy)"
+files = ["kernel.ptx"]
+kind = "dir"
+cmd = "$PY capture.py && python3 variants.py"
+
+[[fixture]]
+name = "r3_cute_nvf4"
+vendor = "CUTLASS (CuTeDSL example dense_blockscaled_gemm_persistent.py)"
+library = "CUTLASS 4.6.1 CuTeDSL (flashinfer 0.5.3's copy)"
+files = ["kernel.ptx"]
+kind = "dir"
+cmd = "$PY capture.py"
+
+[[fixture]]
+name = "r3_grouped_mm"
+vendor = "CUTLASS (sm100 grouped GEMM in libtorch_cuda)"
+library = "torch 2.12.0a0+git808dd93, CUDA 13.0"
+files = ["kernel.cubin"]
+kind = "dir"
+cmd = "$PY capture.py 4 128 128 128"
+
+[[fixture]]
+name = "c_cve_sdpa_f32"
+vendor = "CUTLASS (PyTorch mem-efficient attention, fmha_cutlassF)"
+library = "torch 2.12.0a0+git808dd93, CUDA 13.0"
+files = ["k0.cubin"]
+kind = "capture"
+slim = true
+cmd = "$PY tools/compile_vs_eager.py record --dtype f32 --out $OUT/cve && $PY tools/capture.py --file $OUT/cve/pairs/04_*/ref.py --seed 0 --binary --out $OUT"
+
+[[fixture]]
+name = "r3b_trtllm_bmm"
+vendor = "TRT-LLM-gen (flashinfer)"
+library = "flashinfer 0.5.3 + flashinfer-cubin, torch 2.12.0a0+git808dd93"
+files = ["k0.cubin"]
+kind = "capture"
+slim = true
+cmd = "$PY tools/capture.py --file tools/capture_examples/trtllm_fp8_moe.py --kernels '^bmm_E4m3' --out $OUT"
+
+[[fixture]]
+name = "r3b_trtllm_bmm_k2048"
+vendor = "TRT-LLM-gen (flashinfer)"
+library = "flashinfer 0.5.3 + flashinfer-cubin, torch 2.12.0a0+git808dd93"
+files = ["k0.cubin"]
+kind = "capture"
+slim = true
+cmd = "PTXV_MOE_H=2048 $PY tools/capture.py --file tools/capture_examples/trtllm_fp8_moe.py --kernels '^bmm_E4m3' --out $OUT"
+
+[[fixture]]
+name = "r3b_trtllm_bmm_partial"
+vendor = "TRT-LLM-gen (flashinfer)"
+library = "flashinfer 0.5.3 + flashinfer-cubin, torch 2.12.0a0+git808dd93"
+files = ["k0.cubin"]
+kind = "capture"
+slim = true
+cmd = "PTXV_MOE_PARTIAL=1 $PY tools/capture.py --file tools/capture_examples/trtllm_fp8_moe.py --kernels '^bmm_E4m3' --out $OUT"
+
+[[fixture]]
+name = "r3b_trtllm_moe"
+vendor = "TRT-LLM-gen (flashinfer)"
+library = "flashinfer 0.5.3 + flashinfer-cubin, torch 2.12.0a0+git808dd93"
+files = ["k0.cubin", "k1.cubin", "k2.cubin", "k3.cubin"]
+kind = "capture"
+slim = true
+cmd = "$PY tools/capture.py --file tools/capture_examples/trtllm_fp8_moe.py --out $OUT"
+
+[[fixture]]
+name = "r4b_moe"
+vendor = "DeepEP (+ libtorch's CUTLASS grouped GEMM)"
+library = "DeepEP 1.2.1.2026.6.4.43822+567632d, torch 2.12.0a0+git808dd93; 2 GPUs"
+files = ["k0.cubin", "k1.cubin", "k2.cubin", "k3.cubin", "k4.cubin", "k5.cubin", "k6.cubin", "k7.cubin"]
+kind = "capture"
+slim = true
+cmd = "$PY tools/capture_dist.py --nproc 2 --file tools/capture_examples/moe_deepep.py --out $OUT"
+
+[[fixture]]
+name = "r4c_chunk2"
+vendor = "DeepEP"
+library = "DeepEP 1.2.1.2026.6.4.43822+567632d, torch 2.12.0a0+git808dd93; 2 GPUs"
+files = ["k0.cubin"]
+kind = "capture"
+slim = true
+cmd = "$PY tools/capture_dist.py --nproc 2 --file tools/capture_examples/deepep_ring.py --out $OUT"
+
+[[fixture]]
+name = "r4c_dwrap"
+vendor = "DeepEP"
+library = "DeepEP 1.2.1.2026.6.4.43822+567632d, torch 2.12.0a0+git808dd93; 2 GPUs"
+files = ["k0.cubin"]
+kind = "capture"
+slim = true
+cmd = "$PY tools/capture_dist.py --nproc 2 --file tools/capture_examples/deepep_ring.py --out $OUT"
+
+[[fixture]]
+name = "r4c_nowrap"
+vendor = "DeepEP"
+library = "DeepEP 1.2.1.2026.6.4.43822+567632d, torch 2.12.0a0+git808dd93; 2 GPUs"
+files = ["k0.cubin"]
+kind = "capture"
+slim = true
+cmd = "$PY tools/capture_dist.py --nproc 2 --file tools/capture_examples/deepep_ring.py --out $OUT"
+
+[[fixture]]
+name = "r4_sdpa_flash_torch"
+vendor = "FlashAttention 2 (in libtorch_cuda)"
+library = "torch 2.12.0a0+git808dd93, CUDA 13.0"
+files = ["k0.cubin"]
+kind = "capture"
+cmd = "$PY tools/capture.py --file tools/capture_examples/sdpa_flash.py --out $OUT"

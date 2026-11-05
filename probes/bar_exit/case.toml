@@ -1,0 +1,51 @@
+name = "probe_bar_exit"
+description = """
+Probe (hardware only) for ASSUMPTIONS.md E-BAR-EXIT. out[0] = 1 if the surviving threads
+passed bar.sync; a hang means the barrier waits for exited threads."""
+ptx = "kernel.ptx"
+entry = "probe_bar_exit"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "whole_warp"
+summary = "warp 1 exits; warp 0 runs bar.sync 0 (all threads of the CTA)"
+expect = ["clean"]
+hw_note = "GB300 completes (probe 2026-10-30)"
+
+[[variants]]
+id = "half_warp"
+summary = "lanes 16-31 of warp 1 exit; warp 0 and lanes 0-15 of warp 1 run bar.sync 0"
+marker = "@EXIT"
+find = "%r1, 32"
+replace = "%r1, 48"
+expect = ["clean"]
+hw_note = "GB300 completes (probe 2026-10-30)"
+
+[[variants]]
+id = "counted"
+summary = "warp 1 exits; warp 0 runs bar.sync 0, 64 (explicit count includes the exited warp)"
+marker = "@BAR"
+find = "bar.sync 0;"
+replace = "bar.sync 0, 64;"
+expect = ["deadlock"]
+hw_note = "GB300 hangs (probe 2026-10-30)"
+
+[[variants]]
+id = "control"
+summary = "nobody exits (control)"
+marker = "@EXIT"
+find = "%r1, 32"
+replace = "%r1, 64"
+expect = ["clean"]

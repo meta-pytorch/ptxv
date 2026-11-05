@@ -1,0 +1,90 @@
+name = "r4_layernorm_triton"
+description = """
+Rung 4. Triton layernorm, y[4x128] bf16 = layer_norm(x bf16, w, b, eps=1e-5),
+one CTA per row, f32 statistics.
+Triton 3.5.0.2+fb, num_warps=2. Captured by tools/r4_triton_capture.py (inputs
+data/, GPU outputs expected/)."""
+ptx = "kernel.ptx"
+cubin = "kernel.cubin"
+entry = "layernorm_kernel"
+grid = [4, 1, 1]
+block = [64, 1, 1]
+dynamic_smem = 8
+outputs = ['y']
+
+[[buffers]]
+name = "x"
+dtype = "bf16"
+shape = [4, 128]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "w"
+dtype = "bf16"
+shape = [128]
+init = "file"
+file = "data/w.bin"
+
+[[buffers]]
+name = "b"
+dtype = "bf16"
+shape = [128]
+init = "file"
+file = "data/b.bin"
+
+[[buffers]]
+name = "y"
+dtype = "bf16"
+shape = [4, 128]
+init = "zeros"
+expect = "expected/y.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "b"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "u32"
+value = 128
+
+[[params]]
+kind = "u32"
+value = 128
+
+[[params]]
+kind = "u32"
+value = 925353388
+
+[[params]]
+kind = "u64"
+value = 0
+
+[[params]]
+kind = "u64"
+value = 0
+
+[[variants]]
+id = "good"
+summary = "as compiled by Triton"
+expect = ["clean"]
+hw_note = "the SASS run (MUFU per N-MUFU) equals expected/ (GB300) bitwise (tests/fixtures.rs captured_outputs_match_the_gpu)"
+
+[[variants]]
+id = "nosb"
+summary = "SASS: SHFL.BFLY R9 (the mean's first butterfly step) at 0x1d0 gets no write scoreboard (wr SBn -> none)"
+patch = [{ at = "@0x1d0", wbar = 7 }]
+expect = ["violation"]
+hw_note = "the consumer's wait no longer covers the variable-latency result: it reads the register before it is written"

@@ -1,0 +1,2 @@
+{"version": 1, "seed": 1, "name": "laplace(0, 1)",
+ "default": {"dist": {"kind": "laplace", "mean": 0.0, "scale": 1.0}}}

@@ -1,0 +1,10 @@
+ccfg 1,16
+    128 DeepEP timeout for combine receivers, rank 0, responsible_channel = 0, 
+     96 DeepEP timeout for combine receivers, rank 1, responsible_channel = 0, 
+     24 DeepEP timeout for combine senders, rank 0, responsible_channel = 0
+ccfg 1,22
+     96 DeepEP timeout for combine receivers, rank 1, responsible_channel = 0, 
+     12 DeepEP timeout for combine senders, rank 0, responsible_channel = 0
+     12 DeepEP timeout for combine senders, rank 1, responsible_channel = 0
+ccfg 1,23
+      1 RESULT args=--secs 15 --hidden 128 --tokens 1-512 --num-sms 2 --ccfg 1,23 --experts 8 --topk 2 iters=1259 tokens_sent=641162 rows_received=970381 mismatches=0 secs=15

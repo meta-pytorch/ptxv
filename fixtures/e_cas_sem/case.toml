@@ -1,0 +1,48 @@
+name = "e_cas_sem"
+description = """
+CAS semaphores for the certificate (E-WELLSYNC C-CAS), SASS only (cas_sem.cu; ptxv's PTX
+front-end has no atom.cas). The entry `cas_sem` is torch symmetric memory's signal shape over
+three rounds: lane i of warp 0 puts (`while (cas(&full[i], 0, 1) != 0);`) and waits for the
+ack (`while (cas(&empty[i], 1, 0) != 1);`), lane i of warp 1 does the opposite. Every word is
+put, consumed, put again; C-CAS certifies it. The cubin's other entry points (cas_lock,
+cas_two_kinds, cas_exit_fail, cas_store) are CAS patterns the certificate must refuse
+(crates/sim/tests/wellsync.rs `cas_patterns_that_must_be_refused`)."""
+cubin = "kernel.cubin"
+entry = "cas_sem"
+grid = [1, 1, 1]
+block = [96, 1, 1]
+outputs = ["w", "p", "out"]
+
+[[buffers]]
+name = "w"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "p"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [96]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "p"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

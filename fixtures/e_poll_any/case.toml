@@ -1,0 +1,54 @@
+name = "e_poll_any"
+description = """
+Fixture for E-POLL-ANY (value-insensitive polls, exec.rs `vip_ok`): thread 0 polls a global
+flag that thread 32 stores. When every value the flag can hold lets the poll pass, the poll
+commutes with the store (the explorer branches on neither order). Negative variants: a store
+that makes the poll block (the deadlock must still be found: the value 0 is learned only in
+a later round), and a race after a reduced poll."""
+ptx = "kernel.ptx"
+entry = "e_poll_any"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[variants]]
+id = "good"
+summary = "the flag goes from 1 to 2: every value passes, the poll is value-insensitive"
+expect = ["clean"]
+
+[[variants]]
+id = "dl"
+summary = "the flag goes from 1 to 0: a poll after the store blocks forever"
+marker = "@SET"
+find = "st.relaxed.gpu.global.u32 [%rd2], 2;"
+replace = "st.relaxed.gpu.global.u32 [%rd2], 0;"
+expect = ["deadlock"]
+
+[[variants]]
+id = "race"
+summary = "the poller writes out[1], which the writer reads before its store: a race after a reduced poll"
+marker = "@AFTER"
+find = "st.global.u32 [%rd1], 7;"
+replace = "st.global.u32 [%rd1+4], 7;"
+edits = [{ marker = "@READ", find = "//", replace = "ld.global.u32 %r6, [%rd1+4]; //" }]
+expect = ["nondeterministic", "race"]

@@ -1,0 +1,93 @@
+// E-L1-CORES / E-L1-HAVOC fixture (docs/deepep-coreader.md): a legal co-resident reader makes
+// a DeepEP-shaped racy read observably stale in the L1 model.
+//
+// victim (grid 2, block 64), DeepEP barrier_block's shapes (as fixtures/l1_litmus pr0):
+//   CTA 0, thread 0: weak store pay[0] = 1; fence.acq_rel.sys; relaxed sys atomic add on the
+//       flag (MEMBAR.ALL.SYS; CCTL.IVALL; ATOM).
+//   CTA 1: every thread runs the entry fence (barrier_block's MEMBAR.ALL.SYS; CCTL.IVALL),
+//       bar.sync, then warp 0 polls the flag with ld.volatile in lane 0 and vote.all over the
+//       warp (a warp-level poll loop, E-SPIN / E-POLL-ACQ), no fence; bar.sync; thread 0 reads
+//       pay[0] with a weak load into out[0]. Nothing in the victim loads pay's line between the
+//       entry fence and the read, so in a closed world the read is never stale (GB300 bb-f0).
+// coreader (grid 1, block 32), launched on another stream (`after = -1`): thread 0 reads
+//   pay[24] (bytes 96..99, the same 128-byte line as pay[0]) with a weak load into out2[0].
+//   pay[24] is written by nobody, so the reader races with nothing: it is legal under the PTX
+//   memory model and the CUDA programming model. Its only effect is the L1 fill.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry victim(
+    .param .u64 pay,
+    .param .u64 flag,
+    .param .u64 out
+)
+.maxntid 64, 1, 1
+{
+    .reg .pred  %p<8>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<8>;
+
+    mov.u32         %r0, %ctaid.x;
+    mov.u32         %r1, %tid.x;
+    ld.param.u64    %rd0, [pay];
+    cvta.to.global.u64 %rd1, %rd0;
+    ld.param.u64    %rd2, [flag];
+    cvta.to.global.u64 %rd3, %rd2;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        CONSUMER;
+    setp.ne.u32     %p1, %r1, 0;
+    @%p1 bra        DONE;
+    mov.u32         %r2, 1;
+    st.global.u32   [%rd1], %r2;
+    fence.acq_rel.sys;
+    atom.relaxed.sys.global.add.u32 %r3, [%rd3], %r2;
+    bra             DONE;
+CONSUMER:
+    fence.acq_rel.sys;
+    bar.sync        0;
+    setp.ne.u32     %p3, %r1, 0;
+    setp.ge.u32     %p2, %r1, 32;
+    @%p2 bra        JOIN;
+WAIT:
+    mov.u32         %r5, 1;
+    @%p3 bra        SKIP;
+    ld.volatile.global.u32 %r5, [%rd3];
+SKIP:
+    setp.ge.u32     %p4, %r5, 1;
+    vote.sync.all.pred %p5, %p4, -1;
+    @!%p5 bra       WAIT;
+    // (post slot)                                                  // @POST
+JOIN:
+    bar.sync        0;
+    @%p3 bra        DONE;
+    ld.global.u32   %r6, [%rd1];
+    ld.param.u64    %rd4, [out];
+    cvta.to.global.u64 %rd5, %rd4;
+    st.global.u32   [%rd5], %r6;
+DONE:
+    ret;
+}
+
+.visible .entry coreader(
+    .param .u64 pay,
+    .param .u64 out2
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+
+    mov.u32         %r1, %tid.x;
+    setp.ne.u32     %p1, %r1, 0;
+    @%p1 bra        CDONE;
+    ld.param.u64    %rd0, [pay];
+    cvta.to.global.u64 %rd1, %rd0;
+    ld.global.u32   %r2, [%rd1+96];                                 // @READ
+    ld.param.u64    %rd2, [out2];
+    cvta.to.global.u64 %rd3, %rd2;
+    st.global.u32   [%rd3], %r2;
+CDONE:
+    ret;
+}

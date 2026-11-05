@@ -1,0 +1,56 @@
+name = "c_cve_silumul_inductor"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): run() of cand.py. 1 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: triton_poi_fused__unsafe_view_mul_silu_3 grid [8, 1, 1] block [128, 1, 1]
+Regenerate (docs/compile-vs-eager.md): CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/compile_vs_eager.py record
+--dtype f32 --seq 8 --out DIR, then tools/capture.py --file DIR/pairs/09_*/cand.py --binary, then
+tools/cubin_slim.py on each cubin."""
+cubin = "k0.cubin"
+entry = "triton_poi_fused__unsafe_view_mul_silu_3"
+grid = [8, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+outputs = ["mm_53"]
+
+[[buffers]]
+name = "mm_58"
+dtype = "f32"
+shape = [2048]
+init = "file"
+file = "data/mm_58.bin"
+
+[[buffers]]
+name = "mm_53"
+dtype = "f32"
+shape = [2048]
+init = "file"
+file = "data/mm_53.bin"
+expect = "expected/mm_53.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "mm_53"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "mm_58"
+byte_offset = 0
+
+[[params]]
+kind = "u32"
+value = 2048
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

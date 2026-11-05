@@ -1,0 +1,16 @@
+# f16 outputs (docs/equiv-mma.md §2): two f32 sum orders of x + y + z, each rounded to f16
+# (cvt.rn.f16.f32, a rounding node). L1, not L0 or L2 (z sits under one more add in the
+# candidate). The per-input bound is the distance between the f16 roundings of the two
+# kernels' intervals around the exact sum: one f16 ulp at most where sum |terms| <= 512 |y|.
+# No random trial is above it.
+#   ptxv equiv fixtures/c_equiv_f16/equiv.toml
+max_states = 200000
+trials = 50
+reference = { case = "../c_f16_add3_ref", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "../c_f16_add3_cand"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L1"

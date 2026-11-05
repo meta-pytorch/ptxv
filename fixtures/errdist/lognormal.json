@@ -1,0 +1,2 @@
+{"version": 1, "seed": 1, "name": "log-normal (mu 0, sigma 1; positive: errors accumulate), rounded to the buffer dtype",
+ "default": {"dist": {"kind": "log_normal", "mu": 0.0, "sigma": 1.0}}}

@@ -1,0 +1,78 @@
+{
+ "what": "run() of triton_attn_f32_flash.py (kernel ^attn_f32_flash_kernel$)",
+ "argv": [
+  "--triton",
+  "tools/capture_examples/triton_attn_f32_flash.py:attn_f32_flash_kernel",
+  "--binary",
+  "--out",
+  "fixtures/c_attn_f32_flash",
+  "--work",
+  "/tmp/ptxv_capture_1401762"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "attn_f32_flash_kernel",
+   "grid": [
+    16,
+    1,
+    1
+   ],
+   "block": [
+    32,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 64,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "q",
+   "dtype": "f32",
+   "shape": [
+    16,
+    16
+   ],
+   "size": 1024
+  },
+  {
+   "name": "k",
+   "dtype": "f32",
+   "shape": [
+    64,
+    16
+   ],
+   "size": 4096
+  },
+  {
+   "name": "v",
+   "dtype": "f32",
+   "shape": [
+    64,
+    16
+   ],
+   "size": 4096
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    16,
+    16
+   ],
+   "size": 1024
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

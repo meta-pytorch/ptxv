@@ -1,0 +1,6 @@
+{"version": 1, "seed": 1, "name": "uniform random finite e4m3 codes, ue8m0 scales 2^-8..2^7 (the equiv / mx_gpu_check trial distribution)",
+ "tensors": {
+  "A": {"dist": {"kind": "codes", "format": "e4m3"}, "quant": {"kind": "codes"}},
+  "B": {"dist": {"kind": "codes", "format": "e4m3"}, "quant": {"kind": "codes"}},
+  "SFA": {"dist": {"kind": "codes", "format": "ue8m0", "range": [119, 134]}, "quant": {"kind": "codes"}},
+  "SFB": {"dist": {"kind": "codes", "format": "ue8m0", "range": [119, 134]}, "quant": {"kind": "codes"}}}}

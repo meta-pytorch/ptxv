@@ -1,0 +1,156 @@
+// Integer min / max and compare-and-swap atomics against GB300 bitwise, both front-ends:
+// red/atom .min/.max .u32/.s32/.u64/.s64 and atom.cas .b32/.b64 on shared, global and generic
+// (global) addresses, plus CuTeDSL's smem_fmax (setp.lt.s32; red.min.u32 / red.max.s32).
+// 64 threads. Reductions over all threads land in schedule-independent words; every
+// value-returning atomic acts on the thread's own word. CAS compares succeed on even
+// threads and fail on odd ones (old value returned, memory unchanged).
+// ptxas: ATOMS.MIN/MAX[.S32], ATOMS.CAS[.64], ATOMS.CAST.SPIN.64 (shared 64-bit max loop),
+// CREDUX + elected ATOMS/REDG (warp-aggregated red), ATOMG.E.MIN/MAX[.S32|.64|.S64],
+// REDG.E.MIN/MAX, ATOMG.E.CAS[.64], ATOM.E.CAS[.64] / ATOM.E.MIN.S32 (generic).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry s_atom_ext(
+    .param .u64 rnd_p,
+    .param .u64 gm_p,
+    .param .u64 out_p
+)
+.maxntid 64, 1, 1
+{
+    .reg .pred  %p<8>;
+    .reg .b32   %r<64>;
+    .reg .b64   %rd<64>;
+    // R[0..5): reductions; W1[64] u32; W2[64] u32; W3[64] u64; W4[64] u64
+    .shared .align 16 .b8 sm[2080];
+
+    ld.param.u64    %rd0, [rnd_p];
+    cvta.to.global.u64 %rd1, %rd0;
+    ld.param.u64    %rd2, [gm_p];
+    cvta.to.global.u64 %rd3, %rd2;              // gm, global window
+    ld.param.u64    %rd4, [out_p];
+    cvta.to.global.u64 %rd5, %rd4;
+    mov.u32         %r0, %tid.x;
+    and.b32         %r50, %r0, 1;
+    setp.eq.u32     %p0, %r50, 0;               // even thread: CAS compare succeeds
+    mul.wide.u32    %rd6, %r0, 4;
+    add.u64         %rd7, %rd1, %rd6;           // &rnd[t]
+    ld.global.u32   %r1, [%rd7];                // x = rnd[t]
+    ld.global.u32   %r2, [%rd7+256];            // rnd[t+64]
+    ld.global.u32   %r3, [%rd7+512];            // rnd[t+128]
+    ld.global.u32   %r4, [%rd7+768];            // rnd[t+192]
+    mov.u32         %r5, sm;
+    // shared per-thread words
+    shl.b32         %r6, %r0, 2;
+    add.u32         %r7, %r5, 32;
+    add.u32         %r7, %r7, %r6;              // &W1[t]
+    add.u32         %r8, %r7, 256;              // &W2[t]
+    shl.b32         %r9, %r0, 3;
+    add.u32         %r10, %r5, 544;
+    add.u32         %r10, %r10, %r9;            // &W3[t] (u64)
+    add.u32         %r11, %r10, 512;            // &W4[t] (u64)
+    st.shared.u32   [%r7], %r2;
+    st.shared.u32   [%r8], %r3;
+    mov.b64         %rd8, {%r3, %r4};
+    st.shared.u64   [%r10], %rd8;
+    mov.b64         %rd9, {%r4, %r2};
+    st.shared.u64   [%r11], %rd9;
+    setp.lt.u32     %p1, %r0, 5;
+    add.u32         %r12, %r5, %r6;             // &R[t]
+    @%p1 st.shared.u32 [%r12], %r4;
+    bar.sync        0;
+
+    // reductions over all threads
+    red.shared.min.u32 [%r5], %r1;
+    red.shared.max.u32 [%r5+4], %r1;
+    red.relaxed.cta.shared.min.s32 [%r5+8], %r1;
+    red.shared.max.s32 [%r5+12], %r1;
+    {
+    .reg .pred p;
+    setp.lt.s32 p, %r1, 0x0;
+    @p  red.relaxed.shared::cta.min.u32 [%r5+16], %r1;
+    @!p red.relaxed.shared::cta.max.s32 [%r5+16], %r1;
+    }
+    // per-thread shared
+    mul.wide.u32    %rd10, %r0, 80;
+    add.u64         %rd11, %rd5, %rd10;         // &out[t * 20]
+    atom.shared.min.u32 %r13, [%r7], %r1;
+    st.global.u32   [%rd11], %r13;
+    atom.shared.max.s32 %r14, [%r7], %r4;
+    st.global.u32   [%rd11+4], %r14;
+    xor.b32         %r15, %r3, 1;
+    selp.b32        %r15, %r3, %r15, %p0;       // compare: W2's value (even) or not (odd)
+    atom.shared.cas.b32 %r16, [%r8], %r15, %r1;
+    st.global.u32   [%rd11+16], %r16;
+    xor.b64         %rd12, %rd8, 4294967296;
+    @%p0 mov.b64    %rd12, %rd8;                // compare: differs in the high word when odd
+    cvt.u64.u32     %rd13, %r1;
+    mov.b64         %rd14, {%r2, %r1};          // new
+    atom.shared.cas.b64 %rd15, [%r10], %rd12, %rd14;
+    st.global.u64   [%rd11+8], %rd15;
+    mov.b64         %rd16, {%r1, %r3};
+    atom.shared.max.u64 %rd17, [%r11], %rd16;
+    st.global.u64   [%rd11+24], %rd17;
+
+    // global: reductions over all threads at gm[0..8), per-thread words at gm[16 + 12 t]
+    red.global.min.u32 [%rd3], %r1;
+    red.global.max.u32 [%rd3+4], %r1;
+    red.global.min.s32 [%rd3+8], %r1;
+    red.relaxed.gpu.global.max.s32 [%rd3+12], %r1;
+    red.global.max.u64 [%rd3+16], %rd16;
+    red.global.min.s64 [%rd3+24], %rd14;
+    mul.wide.u32    %rd18, %r0, 48;
+    add.u64         %rd19, %rd3, %rd18;
+    add.u64         %rd19, %rd19, 64;           // &gm[16 + 12 t]
+    atom.global.min.u32 %r17, [%rd19], %r1;
+    st.global.u32   [%rd11+20], %r17;
+    atom.relaxed.gpu.global.max.s32 %r18, [%rd19], %r2;
+    st.global.u32   [%rd11+32], %r18;
+    ld.global.u32   %r19, [%rd19+4];
+    xor.b32         %r20, %r19, 1;
+    selp.b32        %r20, %r19, %r20, %p0;
+    atom.global.cas.b32 %r21, [%rd19+4], %r20, %r3;
+    st.global.u32   [%rd11+36], %r21;
+    ld.global.u64   %rd20, [%rd19+8];
+    xor.b64         %rd21, %rd20, 4294967296;
+    @%p0 mov.b64    %rd21, %rd20;
+    atom.acq_rel.sys.global.cas.b64 %rd22, [%rd19+8], %rd21, %rd16;
+    st.global.u64   [%rd11+40], %rd22;
+    atom.global.min.s64 %rd23, [%rd19+16], %rd14;
+    st.global.u64   [%rd11+48], %rd23;
+
+    // generic (global) addresses
+    add.u64         %rd24, %rd2, %rd18;
+    add.u64         %rd24, %rd24, 64;           // generic &gm[16 + 12 t]
+    ld.global.u32   %r22, [%rd19+24];
+    xor.b32         %r23, %r22, 1;
+    selp.b32        %r23, %r22, %r23, %p0;
+    atom.cas.b32    %r24, [%rd24+24], %r23, %r4;
+    st.global.u32   [%rd11+56], %r24;
+    atom.min.s32    %r25, [%rd24+28], %r3;
+    st.global.u32   [%rd11+60], %r25;
+    ld.global.u64   %rd25, [%rd19+32];
+    xor.b64         %rd26, %rd25, 4294967296;
+    @%p0 mov.b64    %rd26, %rd25;
+    atom.cas.b64    %rd27, [%rd24+32], %rd26, %rd8;
+    st.global.u64   [%rd11+64], %rd27;
+    atom.max.u64    %rd28, [%rd24+40], %rd9;
+    st.global.u64   [%rd11+72], %rd28;
+
+    // final shared words -> out[1280 + 8 t], reductions -> out[1792..]
+    bar.sync        0;
+    mul.wide.u32    %rd30, %r0, 32;
+    add.u64         %rd31, %rd5, %rd30;
+    ld.shared.u32   %r30, [%r7];
+    st.global.u32   [%rd31+5120], %r30;
+    ld.shared.u32   %r31, [%r8];
+    st.global.u32   [%rd31+5124], %r31;
+    ld.shared.u64   %rd32, [%r10];
+    st.global.u64   [%rd31+5128], %rd32;
+    ld.shared.u64   %rd33, [%r11];
+    st.global.u64   [%rd31+5136], %rd33;
+    @%p1 ld.shared.u32 %r32, [%r12];
+    add.u64         %rd34, %rd5, %rd6;
+    @%p1 st.global.u32 [%rd34+7168], %r32;
+    ret;
+}

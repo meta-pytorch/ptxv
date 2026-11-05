@@ -1,0 +1,62 @@
+name = "c_mm64_k960_triton_fwd"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): run() of triton_mm_tiled.py (kernel ^mm_tiled_kernel$). 1 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: mm_tiled_kernel grid [1, 1, 1] block [128, 1, 1]
+Regenerate: PTXV_MM_M=64 PTXV_MM_N=64 PTXV_MM_K=960 PTXV_MM_BM=64 PTXV_MM_BN=64 PTXV_MM_REV=0 CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/capture.py --triton tools/capture_examples/triton_mm_tiled.py:mm_tiled_kernel --binary --out fixtures/c_mm64_k960_triton_fwd"""
+cubin = "k0.cubin"
+entry = "mm_tiled_kernel"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 16392
+outputs = ["out"]
+
+[[buffers]]
+name = "a"
+dtype = "bf16"
+shape = [64, 960]
+init = "file"
+file = "data/a.bin"
+
+[[buffers]]
+name = "b"
+dtype = "bf16"
+shape = [960, 64]
+init = "file"
+file = "data/b.bin"
+
+[[buffers]]
+name = "out"
+dtype = "bf16"
+shape = [64, 64]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "b"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["violation"]
+hw_note = "the one violation is a PTX contract one: Triton 3.5 leaves the fixed bits 46-48 of its shared-memory descriptors 0 (GB300 ignores them: E-DESC-VERSION); the run matches GB300 bitwise (expected/)"

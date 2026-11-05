@@ -1,0 +1,935 @@
+# Error distributions under an input distribution (`ptxv errdist`)
+
+**Status (2026-11-05, agent T, phase 2).** Tiers 0-3, simulator / GB300 validation, the
+JSON report, and a compile-once / query-many split (§1.1) are implemented. §2 (input spec,
+version 1) and §3 (report, version 1) are fixed interfaces.
+- **Tier 0** (exact) and **Tier 3** (Monte Carlo through the DAG, bit-exact per sample,
+  matching GB300 on every run in §7) are the ground truth.
+- **Tier 1** (residue-exact Markov chain, MMA chains of every kind) and **Tier 2** (the DAG
+  CLT: reductions, split-K, atomics, scans, FMA chains, 1x / 3xTF32) each report an
+  applicability check. The report's `best` is Tier 0 when it applies, else Tier 1 or Tier 2
+  where their checks pass, else Tier 3. §7.1 is the validation matrix that the checks
+  encode: where a tier passes its check it is within 5% of Tier 3 on P(differ) (8% on two
+  heavy-tailed bf16 rows), and where the matrix shows a bias the check fails.
+
+`ptxv equiv` proves a worst-case bound τ(x) on |C(x) − R(x)| for every input. `ptxv errdist`
+estimates the *distribution* of the error for inputs drawn from a user-given distribution:
+
+- one kernel: C − exact, the exact value being the kernel's own algorithm in real arithmetic
+  on the same (quantized) inputs;
+- a pair: C − R.
+
+These are distributional estimates with stated error bars and modeling assumptions
+(ASSUMPTIONS.md, N-ERRDIST-*), not worst-case proofs. The worst-case τ of `equiv` stays the
+guarantee.
+
+## 1. Usage
+
+```
+ptxv errdist <case-dir | equiv.toml> --inputs spec.json [--json out.json] [--html out.html]
+             [--candidate N] [--mc N] [--sim-trials N] [--gpu-trials N] [--per-output]
+             [--pre-round] [--uniform] [--explore] [--threads N] [--out DIR] [--no-tier1]
+ptxv errdist <case-dir | equiv.toml> [--candidate N] --compile [FILE]
+ptxv errdist --model FILE --inputs spec.json [--json out.json] [--mc N] [--no-tier1]
+```
+
+- A case directory: one kernel, C − exact.
+- An `equiv.toml`: the reference against candidate N (default 0), C − R.
+- `--inputs` takes JSON or TOML (by extension). The text report goes to stdout, the JSON
+  report to `--json`.
+- `--pre-round` drops the final 16-bit rounding: the f32 accumulators are compared
+  (diagnostics for the 16-bit flip model).
+- `--uniform` adds the Tier 1 estimate under the uniform-residue heuristic, for comparison.
+- `--explore` prints per-step local-error statistics from 50 sampled inputs.
+- `--gpu-trials N` runs N sampled inputs on a free GB300 (`PTXV_GPUS` restricts
+  the set). Keep N ≤ 1000 on shared GPUs.
+- `--no-tier1` skips Tier 1 (seconds to minutes; 15+ min on MXF8 random codes). With
+  `--json`, a preliminary report is written before the analytic tiers run.
+- `--compile [FILE]` / `--model FILE`: the model file (§1.1).
+- `--html FILE` writes one self-contained page (inline SVG, no scripts or external assets):
+  P(differ) per tier and observed with 95% intervals, the PMFs over output ulps overlaid
+  (predictions dashed, observations solid, log axis, |k| ≤ 24) with a table view, and the
+  text summary.
+
+Examples (the runs of §7):
+
+```
+PTXV_GPUS=3 ptxv errdist fixtures/c_equiv_mm_bf16/equiv.toml --candidate 1 \
+    --inputs fixtures/errdist/normal.json --mc 4000 --gpu-trials 1000 --json out.json
+ptxv errdist fixtures/c_equiv_mxf8_triton/equiv.toml --candidate 1 \
+    --inputs fixtures/errdist/mxf8_codes.json --mc 400 --no-tier1
+ptxv errdist fixtures/r3_cute_mxf8 --inputs fixtures/errdist/mxf8_gauss.json --mc 300 --uniform
+```
+
+The Python API (`python/ptxv`, agent U) runs `ptxv.errdist(target, inputs, ref=ref,
+gpu_trials=N)`. It serializes `ptxv.dist` distributions to the §2 spec and reads the §3
+report into an `ErrDist`.
+
+### 1.1 Compile once, query many
+
+The expensive part of a run is simulating the kernel(s) and extracting their numerics
+programs. One **model file** holds everything a query needs, as a JSON object with two
+sections:
+- `programs` (agent T): both kernels' `Prog`s, including non-chain ops (instruction slices
+  with their identified functions, MUFU ops, maxima), the input layouts, the kernel ids and
+  labels, and each program's slice identifications;
+- `nonlin` (agent AG, §9.6): the slice / MUFU / pair tables of non-chain programs, keyed by
+  the programs' canonical hash (`nonlin::model_key`).
+
+Each writer keeps the other's section. **One cache key**: the file is named and checked by
+`case_key`, which hashes every file of the case directories, the equiv.toml, the candidate
+index and the ptxv version; the nonlin section's canonical hash is a consistency check
+inside it.
+
+- `--compile [FILE]` simulates the kernel(s) and writes the programs section to FILE, or
+  without FILE to the cache, `$PTXV_CACHE/errdist/<case key>.model.json` (else
+  `~/.cache/ptxv/errdist`). Without `--inputs` it stops there. With `--inputs` it also runs
+  the full report (Tier 3, simulator validation, analytic tiers) and writes the non-chain
+  tables (AG's original `--compile FILE`).
+- `--model FILE --inputs spec.json` is **the** query path for every program: no simulator,
+  no validation runs, Tier 3 only with `--mc N`. Chain programs get Tiers 0-2 (§5).
+  Non-chain programs get AG's tiers (§9) from the nonlin section, which is compiled at the
+  first query (or extended when the spec reaches new binades) and written back, plus the
+  DAG CLT where the DAG is a sum of products. Given a case path too, the case key must
+  match the file's.
+- `best` picks across all of them in tier order (§3).
+
+Measured on a 144-core host. Compile takes 0.7-2.2 s for the small fixtures; it is the
+simulator run, so minutes for large kernels. Query times:
+- Tier 2: 0.03-2 s (sums, TF32, bf16);
+- AG's tiers: 6-13 s (softmax);
+- Tier 1: 8-13 s (bf16 normal), 25-200 s (MX single kernels; §7.1).
+
+Tier 1's cost per query is its chain, which depends on the input law, so the compile stage
+cannot precompute it. `tier1=False` / `--no-tier1` keeps queries at seconds.
+
+Python: `m = ptxv.errdist_model(target, ref=None)` compiles once (cached under
+`$PTXV_CACHE/errdist-models/<hash of the case trees and the binary>`) and returns `m` with
+`m(inputs, metric="abs", tier1=True, mc_inputs=None) -> ErrDist`. Queries are memoized per
+input distribution, in memory and on disk:
+
+```python
+m = ptxv.errdist_model("fixtures/r4_sum_torch")
+m(ptxv.dist.Normal(0, 1)).meta["p_differ"]     # 0.678 (Tier 3: 0.674), 0.9 s
+m(ptxv.dist.Uniform(1, 2)).meta["p_differ"]    # 0.282 (Tier 3: 0.285), 0.03 s
+```
+
+## 2. Input spec, version 1
+
+Schema: `crates/sim/src/errdist/spec.rs` (serde types; unknown fields are errors).
+
+```json
+{
+  "version": 1,
+  "seed": 1,
+  "name": "gaussian activations, MXF8",
+  "tensors": {
+    "A": {"dist": {"kind": "normal", "std": 1.0},
+          "quant": {"kind": "mx", "elem": "e4m3", "block": 32, "scales": "SFA"}},
+    "B": {"dist": {"kind": "laplace", "scale": 0.5},
+          "scales": [{"axis": 0, "dist": {"kind": "log_normal", "sigma": 0.5}}],
+          "outliers": {"axis": 1, "prob": 0.01, "factor": 20.0},
+          "quant": {"kind": "mx", "elem": "e4m3", "block": 32, "scales": "SFB"}}
+  },
+  "default": {"dist": {"kind": "normal"}},
+  "engine": {"mc_inputs": 2000, "sim_trials": 20, "gpu_trials": 0}
+}
+```
+
+**Top level.**
+
+| field | type | meaning |
+|---|---|---|
+| `version` | 1 | required; other values are rejected |
+| `seed` | u64 | base seed; sample t of buffer b uses the stream (seed, t, b), independent of order |
+| `tensors` | map | per input buffer of the case (the case's buffer name) |
+| `default` | tensor | for input buffers without an entry |
+| `engine` | object | optional `mc_inputs`, `sim_trials`, `gpu_trials`, `per_output` (CLI flags override) |
+| `name` | string | echoed in the report |
+
+A scale buffer named by a recipe (`quant.scales`) is filled by that recipe and gets no entry.
+
+**Tensor.**
+
+| field | meaning |
+|---|---|
+| `dist` | the element distribution, before scales and quantization |
+| `scales` | list of `{axis, dist}`: per input sample, one draw per index along `axis` multiplies every element with that index (per-row / per-channel scales) |
+| `outliers` | `{axis, prob, factor}`: each index along `axis` is an outlier channel with probability `prob`, its elements times `factor` |
+| `quant` | how real values become the buffer's codes (default `round`) |
+| `shape` | logical row-major shape the axes refer to (default: the buffer's; e2m1 codes: last dimension doubled) |
+
+Elements are independent given the axis draws (ASSUMPTION N-ERRDIST-IID): the spec defines the
+input distribution, and only what it states is modeled.
+
+**Distributions** (`dist`, tagged by `kind`):
+
+| kind | fields | |
+|---|---|---|
+| `normal` | `mean` = 0, `std` = 1 | |
+| `uniform` | `lo`, `hi` | |
+| `laplace` | `mean` = 0, `scale` = 1 | |
+| `student_t` | `df`, `mean` = 0, `scale` = 1 | |
+| `log_normal` | `mu` = 0, `sigma` = 1, `signed` = false | random sign when `signed` |
+| `mixture` | `components: [{weight, dist}]` | |
+| `discrete` | `values`, `probs` (optional, uniform) | explicit PMF |
+| `integers` | `lo`, `hi` | uniform on lo..=hi |
+| `const` | `value` | |
+| `empirical` | `file`, `dtype` = f32 | i.i.d. resampling of a captured tensor's finite values (f32, bf16, f16, or 1-byte codes of a narrow format) |
+| `histogram` | `edges`, `counts` or `file` | piecewise-uniform density; file is JSON `{"edges", "counts"}` |
+| `codes` | `format`, `range` = [lo, hi] or `values`, `probs` | codes drawn directly (with `quant: codes`); without range / values: every finite code |
+| `affine` | `a` = 1, `b` = 0, `dist` | a X + b |
+
+Formats: `f32`, `bf16`, `f16`, `e4m3`, `e5m2`, `e2m1`, `ue8m0`, `ue4m3`.
+
+**Quantization recipes** (`quant`, tagged by `kind`):
+
+| kind | fields | codes |
+|---|---|---|
+| `round` | | round to nearest even to the buffer's float dtype (f32 / bf16 / f16); overflow is out-of-domain |
+| `codes` | `format` (default: what the kernel reads) | the distribution's values are the codes |
+| `cast` | `format` | RNE to a narrow format, saturating (`cvt.rn.satfinite`), no scale |
+| `mx` | `elem`, `block` = 32, `scales`, `scale_rule` = `ceil` | per block of `block` elements along K: ue8m0 scale 2^E with E = ceil(log2(amax / max_elem)) (`ceil`) or floor(log2 amax) − emax_elem (`floor`, OCP MX v1.0); elements RNE(x / 2^E), saturating |
+| `nvfp4` | `block` = 16, `scales`, `global_scale` = false | e2m1 elements, ue4m3 scale RN(amax_b / (6 gs)), gs = amax_tensor / 2688 when `global_scale` (else 1); elements RNE(x / (s gs)). The kernel's output is in units of gs_A gs_B |
+
+The joint law of (codes, scales) is derived from the recipe, not assumed independent: the block
+maximum sets the scale, so it lands in the top binade of the element format. Which code
+elements share a scale byte is read from the kernel's numerics DAG (the scale leaf each code
+leaf is multiplied with), so the recipe does not need the scale layout (swizzled or not).
+
+Equivalent forms in TOML are accepted (same field names).
+
+## 3. Report, version 1
+
+Schema: `crates/sim/src/errdist/report.rs`. Top level:
+
+| field | meaning |
+|---|---|
+| `version` | 1 |
+| `kind` | `"ptxv-errdist"` |
+| `mode`, `quantity` | `"single"`, `"C - exact"` or `"pair"`, `"C - R"` |
+| `reference`, `candidate` | `{case, variant, front}` |
+| `spec` | the input spec, echoed |
+| `outputs`, `output_format`, `templates` | output elements per input, their format, chain templates |
+| `estimates` | one entry per tier that ran (below) |
+| `best` | index into `estimates` of the headline estimate, in tier order: Tier 0 when it applies, else a Tier 1, else a Tier 2 whose `applicable` is true, else Tier 3. AG's non-chain estimates (§9) are applicable when they agree with Tier 3 (none without Tier 3) |
+| `out_of_domain` | `{mass, by_cause, method}`: probability that an input leaves the modeled domain (overflow, NaN / Inf, zero or NaN scales, subnormal accumulators), never dropped silently |
+| `validation` | predicted vs observed on sampled inputs (simulator, GB300) |
+| `residue` | per rounding site: largest Fourier coefficient of the residue at the ulp frequency, TV bound of the uniform model, whether it was used |
+| `per_output` | with `--per-output` |
+| `assumptions`, `notes` | |
+| `worst_case` | the proven worst case beside the distribution (§3.1) |
+
+An **estimate**:
+
+| field | meaning |
+|---|---|
+| `tier`, `method` | 0 exact, 1 residue-exact, 2 CLT with bias, 3 Monte Carlo |
+| `n`, `outputs` | inputs or states behind it; outputs per input |
+| `abs` | moments of the absolute error |
+| `u_scale` | moments of error / (u S(x)), u = 2^-24, S = Σ over the output's terms of \|term\| (the scale of `equiv`'s τ = k u S) |
+| `ulp` | moments of error / ulp_out(y) |
+| `pmf_ulp` | PMF of k = (output − reference) / ulp_out(y), `[k, p]`, on one axis for every tier: the reference is R (pair) or RN(y) (single). Tier 0: exact (`{0: 1}` under a certificate); Tier 1: the residue-exact law through the tent kernel below (16-bit outputs, so tails beyond ±1 wherever \|D\| exceeds a 16-bit ulp) or round(e) (f32 single); Tier 2: the zero-inflated normal (chain CLT) or the DAG laws through the tent kernel, the mass off 0 rescaled to the tier's P(differ) when its finer position law differs (noted); Tier 3: counted. Entries below 1e-12 are dropped. A tier without one says so in `error_bar.notes` |
+| `hist_u` | histogram of the u-scale error, `[edges, probs]` |
+| `p_differ` | `[p, lo, hi]`: probability that an output differs (pair: from R; single: from the correctly rounded exact value), 95% interval |
+| `pair` | `{mean_r, var_r, mean_c, var_c, cov_rc, corr_rc}`: the two kernels' errors against the exact value |
+| `error_bar` | `{kind, cdf_sup, mean_hw, std_rel_hw, model_mass, notes}` |
+| `applicable`, `applicability` | the tier's own applicability verdict and the checks behind it (Tiers 1-2; absent for 0 and 3) |
+
+Moments: `{mean, var, std, mean_abs, p_zero, quantiles: [[p, x]], max_abs}`. The aggregate pools
+all outputs (each output element of each input equally weighted).
+
+A **validation** entry: `{source, against, inputs, outputs, mean_pred, mean_obs, std_pred,
+std_obs, p_differ_pred, p_differ_obs, ks_d, ks_p, ad, ad_p, qq: [[p, pred, obs]],
+pmf_ulp, pmf_ulp_pred, pmf_tv, dag_mismatch, agree, notes}`. `pmf_ulp` is the observed PMF on
+the estimates' axis, `pmf_ulp_pred` the compared estimate's, `pmf_tv` their total-variation
+distance (the observed side has only inputs × outputs samples).
+
+The tent kernel: with y's position t in its output ulp uniform, an error x (output ulps,
+before the output rounding) gives k = Q(t + x) − Q(t), so P(k | x) = max(0, 1 − |x − k|);
+P(k ≠ 0) = E[min(1, |x|)] is the flip formula of §5. A final round toward zero against
+RN(y) shifts x by −1/2 toward |y|. For x ~ N(m, s²), P(k) = G(k−1) − 2G(k) + G(k+1) with
+G(a) = E[(x − a)+], in closed form.
+
+### 3.1 The worst case
+
+Every report carries the proven worst case next to the distribution, however rare it is:
+
+- pairs: the equivalence proof of `ptxv equiv` (`equiv::compare`): every output's L1 bound;
+- single kernels: the kernel's own rigorous bound against the exact value (`equiv::own_bound`,
+  Cor 1a; a 16-bit output adds its rounding, u16 |y|, N-ROUND).
+
+`worst_case` holds the largest coefficients over the outputs of
+|e| <= rel |y| + k_u u S(x) + abs (u = 2^-24, y the exact output, S(x) = Σ|a_k b_k|, the
+scale of `equiv`'s bound; softmax pairs: rel y + k_u u + abs), in three forms:
+
+1. `formula`, e.g. `|C - R| <= 131072u*|y| + 59.73u*sum|terms| + 9.2e-41` (c_equiv_mm_bf16
+   candidate 1);
+2. `human`, e.g. "|C - R| <= 2 bf16 ulps of the exact result + 3.56e-6 x sum|a_k*b_k|";
+3. `dist`: the bound in output ulps of y over the Tier 3 inputs (mean, quantiles, max;
+   outputs with y = 0 or subnormal left out).
+
+`checks` compares every observed difference with the bound: the Tier 3 DAG evaluation, the
+simulator and GB300 runs, with the largest |difference| / bound; `exceed` must be 0, and a
+violation adds a "WORST CASE EXCEEDED" note. Without a bound (`available` false), `why` says
+why (a MUFU or slice term, not L1, an untracked output, or a proof too large: errdist skips
+it above 1e9 monomials over the DAG's polynomial forms, quadratic in the chain length, about
+K = 2000 for a 64 x 64 bf16 GEMM pair; `ptxv equiv` has no such limit). Preconditions of the
+proof (the kernels' own, N-TF32) are listed; `proven` is true without any. The bound is computed when
+the model is compiled and stored in its `programs` section, so `--model` queries report it
+too. Text output, `--html` and Python (`ErrDist.worst_case`) show it.
+
+## 4. The error of an accumulation chain
+
+`errdist/chain.rs` extracts the kernel's numerics DAG (num.rs) into a program `Prog`:
+leaves (input codes and scales), MMA steps, roundings, adds and FMAs. Every op stores its
+operand, so evaluating one input is a pass over the ops. `Prog::exact` sums an output's
+products with a Shewchuk expansion, which is exact.
+
+An output of an MMA kernel is a chain of steps S_k = step(S_{k-1}, terms_k). In all three
+calibrated models (N-MMA, N-MMA-F8, N-MMA-BS), a step:
+1. takes emax = the largest alignment exponent among its live terms and the accumulator;
+2. truncates every term and the accumulator toward zero on the grid Q = 2^(emax − F)
+   (F = 25 for f16 / f8 kinds, 35 for FP4);
+3. adds them exactly and rounds once toward zero to f32.
+
+The step's local error is
+
+    e_k = τ_acc + Σ_j τ_j + ρ,     ρ = −sign(S')·(|S'| mod ulp(S')),
+
+where τ is minus each value's part below Q and S' is the exact truncated sum. The kernel's
+error is Σ_k e_k plus the error of any final rounding.
+
+**Residues.** ρ depends on S' mod ulp(S'). Write r = ulp(S')/Q = 2^(b_S − emax + 2) (f32).
+The truncated terms are integers on the Q grid, so S'/Q mod r is a sum of independent
+residues on Z_r. Its law is the product of the terms' characteristic functions on Z_r,
+inverted by FFT (`fine.rs`), which is exact. The uniform-residue model replaces it with
+uniform on Z_r. Its total-variation error is at most ½·min(Σ_k |φ(k)|, √r·‖φ‖₂) over the
+nonzero frequencies (`fine::tv_uniform`). The report lists max_k |φ(k)| and that bound per
+step (`residue`). The bound is small for continuous inputs at large r. It is not small for
+integers, for coarse code sets, or for small K: there ρ is often exactly 0, and the uniform
+model is wrong (§7, target 4).
+
+**The emax order statistic and MX block maxima** are exact signed mixtures:
+P(max ≤ e) = Π_j P(a_j ≤ e), so the law of the terms given max = e is the product of the
+laws restricted to ≤ e, minus the same with ≤ e − 1. An MX block's scale is a function of
+the block maximum, so law(block | scale s) = F_hi^n μ_hi^⊗n − F_lo^n μ_lo^⊗n (`laws.rs`,
+`TensorLaw::Blocked`). All statistics are linear in the measure, so signed weights carry
+through FFTs, convolutions and moments.
+
+**RZ bias.** ρ has the sign opposite to S', with mean −sign(S')·E[residue]·Q. Each τ has
+the sign opposite to its value. Both enter the means and the error PMFs exactly.
+
+## 5. Tiers
+
+### 5.1 Tier 0: exact
+
+- **Certificate** (`tier0::certify`). Let 2^L be the coarsest power of two that every term
+  value (and so every partial sum) is a multiple of, on the support of the element laws. If
+  every step's possible emax satisfies emax − F ≤ L, and every partial sum bound is below
+  2^(L+24), then every truncation and rounding is exact and the error is identically 0 (up to
+  the pruned mass).
+- **Identical programs** (`tier0::identical_outputs`). Two kernels whose outputs have equal
+  canonical DAGs compute the same function: C = R, up to the sign of a zero result. The
+  canonical form uses the products of a step as a multiset where the model is order-free,
+  and folds x + 0 (the cuBLAS β·C epilogue).
+- **Enumeration** (`tier0::enumerate`). The exact signed law of (output, error), by dynamic
+  programming over the accumulator's f32 value. For each emax, the step's (truncated integer
+  sum, dropped part) law is the product of the groups' laws restricted to alignment ≤ emax,
+  by sparse convolution, minus the same law restricted to < emax. It runs only for small
+  supports (≤ 2^18 states). With a 16-bit output the misrounding probability is exact. FP4
+  units are exact per unit: the 16 products of a unit are summed exactly by lattice
+  convolution (`schema::unit_law`), then enter the step as one term.
+
+### 5.2 Tier 1: residue-exact Markov chain
+
+`tier1.rs` (the phase-1 engine, `markov.rs`, stays behind `PTXV_ERRDIST_T1_OLD`). The
+state, per partial-sum cell (sign, binade) and per value of the accumulator's 2 lowest
+bits at its ulp (K_BITS = 2), is the law of the error accumulated so far (`DHist`: dense
+±1024 bins of 1/64 ulp, log-spaced far bins, a tail). Per step:
+- **Coarse layer.** The exact law of the step's partial sums by FFT, weighting the cells
+  (emax, result binade).
+- **Fine layer** (`steptrans`). For each (emax, result binade, accumulator input), a 2D FFT
+  over (the terms' truncated sum mod m = r·4, τ in bins of Q / tsc(r)) gives the joint law
+  of the RZ residue and the dropped parts, exactly for the terms. The accumulator enters as
+  zero, as a lattice (its bits known from the previous step's grid) or as a fine residue
+  law whose upper bits are conditioned on the tracked low bits (`upper_given_low`). The
+  output is a transition table t[l][l'] of (post, pre) local laws.
+- **Propagation.** Each (cell, l) law is rescaled to the result cell and convolved with
+  its transition (direct or Fourier by support size); contributions below 1e-13 go to the
+  tail. The final cells' masses come from inverting y's characteristic function (`cf.rs`).
+
+Applicability: the law's mass outside the model (tail + pruned element mass) ≤ max(5% of
+P(differ), 1e-7), and the mode is one the matrix validates (not a pair of block-scaled
+kernels, §6). Runtime: 5-60 s (bf16, f16, MX recipes), 100-750 s (MX random codes,
+pairs); `PTXV_ERRDIST_THREADS` sets the worker count (default min(cores, 48)).
+
+### 5.3 Tier 2: the DAG CLT
+
+`tier2.rs` `dag` / `dag_estimate`. Any output that is a signed sum of products of inputs
+without block scales: adds (reductions, split-K, atomics, scans), FMAs, MMA steps and TF32
+splits (§4). Per output (up to 64 sampled outputs, averaged; scans differ by depth):
+- Every node value is normal (independent leaves, exact moments) and has a **lattice law**
+  P(value is a multiple of 2^L): leaves from their PMFs (f32 inputs: random low bits),
+  min over the operands of an add, sum of exponents for products, raised to the ulp after
+  the node's own rounding.
+- A node's **rounding error** in each binade of its value is a residue uniform on the
+  lattice grid below the ulp (grid moments with exact zero and ties to even; RZ for MMA
+  steps). The grid is the node's lattice (a residue on 2^k points for a lattice k bits below
+  the ulp), not the finest grid Q allows. MMA steps use the model's truncation at
+  Q = 2^(emax − F); emax's law comes from the terms' exponent fields and the accumulator's
+  binade given the result's binade (the accumulator is a sub-sum of the result).
+- **Correlated rounding means.** A round toward zero has mean −sign(x) ulp(x) (1 − 2^-k) / 2:
+  a function of the node value, E[e | x] ≈ β x (β by regression over x's binades). Partial
+  sums share their terms, so these means are correlated along the chain: with
+  B = Σ_j β_j x_j = Σ_g c_g t_g over the product terms (c_g sums β over the nodes containing
+  t_g), Var(B | y) = Σ v_g c_g² − (Σ v_g c_g y_g)² / Σ v_g y_g² replaces the per-node
+  Σ β_j² Var(x_j | y). Pairs use c_C − c_R (forward against reversed K: c ∝ K + 1 − 2k).
+  This term grows like K³ against K for the independent part, and dominates large-K MMA
+  pairs (`bias_extra`).
+- **TF32 splits**: e = h_a d_b + d_a h_b − l_a l_b for a big/small split (l = x − hi(x),
+  d = small's rounding: half away for CUTLASS's round_half_ulp_truncate, truncation when the
+  MMA drops the bits), from exact bilinear moments of (x, l, d) per leaf law, including the
+  part proportional to the product (its covariance with y: a mean β·y, 1.3 ulp for 3xTF32).
+- **Given y**, each node is a sub-sum of y (x | y normal by regression); the 16 largest node
+  errors are convolved as discrete laws, the rest summed as a zero-inflated normal.
+  P(differ) integrates over y's binade and the exact y's position within its ulp (its own
+  lattice), against the output's final rounding (RN, or RZ for an MMA root) or the 16-bit
+  flip. Pairs: identical sub-DAGs (equal canonical hashes) carry the same error in both
+  kernels and drop out of D.
+
+Applicability: add / FMA / TF32 DAGs (validated, §7.1). Plain MMA chains over narrow inputs
+are Tier 1's domain (the DAG CLT is 0.8-1.4x there) and report not applicable.
+Block-scaled chains use the chain CLT (`tier2::single` / `pair`: per-step residue-exact
+local moments from `tier1::local_moments`, zero-inflated normal error), applicable only when
+y's position in its ulp is near uniform (TV ≤ 0.05), which MX recipes never are.
+Runtime: 0.03-7 s.
+
+### 5.4 Tier 3: Monte Carlo through the DAG
+
+`mc.rs`. Inputs are sampled from the spec (`spec::sample`, stream (seed, t, buffer)), and
+the DAG is evaluated for both kernels. The outputs are compared with each other and with
+the exact value from the expansion. This is bit-exact per sample given the models. Simulator
+and GB300 runs check that: 0 DAG mismatches on every run in §7. Out-of-domain events
+(overflow, NaN / Inf, zero or NaN scales) are counted per input and reported, never
+dropped. Confidence intervals: Clopper-Pearson for P(differ), batch means per input for the
+mean. The ulp-scale mean, std and mean |.| leave out outputs whose exact value is 0 or
+subnormal in the output format, where e / ulp(y) is unbounded. A note gives the count; P(differ)
+and the PMF keep those outputs. The intervals count outputs as independent (N-ERRDIST-MC).
+
+## 6. Pairs
+
+Both kernels end in the same final rounding of y + δ_K to the f32 grid of y's binade, with
+δ_K the deviation before that rounding. With U = frac(y/ulp):
+
+    D/ulp = floor(U + c) − floor(U + r),   c = δ_C/ulp, r = δ_R/ulp.
+
+- Tier 1 conditions on U (`combine::pair_cell_cond`): per U bin, each kernel's post-rounding
+  error is (m − U)·ulp, and m_C, m_R are independent given U (N-ERRDIST-PAIR). Far bins use
+  the independent floor + Bernoulli rule.
+- Tier 2 integrates over the exact y's position with both kernels' error laws given y;
+  shared sub-DAGs drop out.
+- With 16-bit outputs, a flip has probability E[min(1, |D|/ulp16)] (N-ERRDIST-FLIP).
+- Tier 3 compares the kernels' bits directly.
+
+**Known bias.** Block-scaled kernels that use the same K partition in another order
+(CuTeDSL vs Triton-rev) truncate the same terms in every step, so δ_C and δ_R are
+positively correlated. Tier 1 overestimates P(D ≠ 0) by 1.2-1.3x there (§7.1) and reports
+itself not applicable; a joint chain over both kernels is the open item. The bf16 pairs
+(same structure, fine residues) are within 2-8%.
+
+## 7. Validation
+
+### 7.1 The matrix (phase 2, 2026-11-05)
+
+`tools/errdist_matrix.py` runs precision × input family × mode through the CLI (Tier 3 with
+2000 inputs as ground truth, all analytic tiers alongside) and writes `matrix.md` /
+`matrix.json`. A tier passes a row when |P_tier − P_3| ≤ max(Tier 3's 99.9% CI half-width,
+5% of P_3); ✗ marks a miss, (x.xx) is P_tier / P_3. "before" is tag base7 (phase 1), "after"
+this version; "best" is the report's headline tier after (0 exact, 1, 2, 3 Monte Carlo).
+Rows: bf16 = `c_mm_bf16_nnt` (single) and `c_equiv_mm_bf16` cand 1 (cuBLAS vs Triton-rev);
+f16 = `r2_cute_gemm`; mxf8 / mxf4 / nvf4 = `r3_cute_*` and the `c_equiv_*` pairs; tf32 =
+`c_tf32_mm_1x` / `_3x` and `c_equiv_tf32`; f32-sum = `r4_sum_torch` and `c_equiv_sum`
+(row-reduce, split-K, atomic candidates); f32-scan = `c_cumsum`; f32-fma = `c_mm_f32_gemmsn`
+(its inputs are untracked: constant outputs, Tier 3 skips them). Families: the
+`fixtures/errdist/*.json` specs (`-mx` / `-nv`: the MX / NVFP4 quantization recipe).
+
+| row | T3 | T1 before | T1 after | T2 before | T2 after | best after |
+|---|---|---|---|---|---|---|
+| bf16/single/normal | 2.55e-05 | 2.81e-05 (1.10) | 2.65e-05 (1.04) | 0.000114 (4.48 ✗) | 2.23e-05 (0.87) | 1 |
+| bf16/single/uniform12 | 0 | 0 | 0 | - | - | 0 |
+| bf16/single/student_t | 3.67e-05 | 5.19e-05 (1.41 ✗) | 3.3e-05 (0.90) | 0.000115 (3.13 ✗) | 3.62e-05 (0.98) | 1 |
+| bf16/single/laplace | 4.21e-05 | 3.72e-05 (0.88 ✗) | 3.84e-05 (0.91) | 0.000115 (2.73 ✗) | 3.63e-05 (0.86 ✗) | 1 |
+| bf16/single/lognormal | 1.27e-05 | 1.51e-05 (1.19) | 1.16e-05 (0.91) | 2.72e-05 (2.14 ✗) | 1.28e-05 (1.01) | 1 |
+| bf16/single/outliers | 2.99e-05 | 6.35e-05 (2.12 ✗) | 3.27e-05 (1.09) | 0.000127 (4.24 ✗) | 8.51e-05 (2.85 ✗) | 1 |
+| bf16/single/integers | 0 | 0 | 0 | - | - | 0 |
+| bf16/single/ints_scaled | 3.63e-05 | 3.25e-05 (0.90) | 3.35e-05 (0.92) | 0.000115 (3.17 ✗) | 4.89e-05 (1.35 ✗) | 1 |
+| bf16/pair-rev/normal | 3.65e-05 | 4.28e-05 (1.17 ✗) | 3.93e-05 (1.08) | 0.000125 (3.41 ✗) | 3.23e-05 (0.89) | 1 |
+| bf16/pair-rev/student_t | 5.11e-05 | 8.27e-05 (1.62 ✗) | 4.73e-05 (0.93) | 0.000126 (2.46 ✗) | 5.02e-05 (0.98) | 1 |
+| bf16/pair-rev/uniform12 | 0 | 0 | 0 | - | - | 0 |
+| bf16/pair-rev/ints_scaled | 4.77e-05 | 4.87e-05 (1.02) | 4.84e-05 (1.02) | 0.000126 (2.64 ✗) | 6.54e-05 (1.37 ✗) | 1 |
+| bf16/pair-fwd/normal | 0 | - | - | - | - | 0 |
+| f16/single/normal | 0.741 | 0.727 (0.98) | 0.75 (1.01) | 0.775 (1.05) | 0.858 (1.16 ✗) | 1 |
+| f16/single/student_t | 0.821 | 0.781 (0.95) | 0.825 (1.00) | 0.777 (0.95 ✗) | 0.906 (1.10 ✗) | 1 |
+| f16/single/uniform12 | 0 | 0 | 0 | - | - | 0 |
+| mxf8/single/normal-mx | 0.0449 | 0.0333 (0.74 ✗) | 0.0477 (1.06 ✗) | 0.774 (17.22 ✗) | 0.515 (11.47 ✗) | 1 |
+| mxf8/single/student_t-mx | 0.0883 | 0.261 (2.96 ✗) | 0.0932 (1.05 ✗) | 0.774 (8.76 ✗) | 0.533 (6.03 ✗) | 3 |
+| mxf8/single/laplace-mx | 0.109 | 0.0782 (0.71 ✗) | 0.116 (1.06 ✗) | 0.774 (7.07 ✗) | 0.537 (4.90 ✗) | 1 |
+| mxf8/single/lognormal-mx | 0.00507 | 0.00088 (0.17 ✗) | 0.00511 (1.01) | 0.999 (197.12 ✗) | 0.503 (99.33 ✗) | 1 |
+| mxf8/single/outliers-mx | 0.311 | 0.277 (0.89 ✗) | 0.316 (1.02) | 0.775 (2.49 ✗) | 0.704 (2.26 ✗) | 1 |
+| mxf8/single/codes | 0.846 | 0.824 (0.97) | - | 0.807 (0.95) | - | 3 |
+| mxf8/single/ints | 0 | 0 | 0 | - | - | 0 |
+| mxf8/single/ints_scaled | 0.292 | 0.258 (0.88 ✗) | 0.294 (1.01) | 0.787 (2.70 ✗) | 0.699 (2.39 ✗) | 1 |
+| mxf8/pair-rev/normal-mx | 0.0341 | 0.0843 (2.48 ✗) | 0.0447 (1.31 ✗) | 0.821 (24.11 ✗) | 0.095 (2.79 ✗) | 3 |
+| mxf8/pair-rev/codes | 0.84 | 0.817 (0.97) | - | 0.844 (1.00) | - | 3 |
+| mxf8/pair-rev/ints_scaled | 0.244 | 0.376 (1.54 ✗) | 0.287 (1.18 ✗) | 0.823 (3.38 ✗) | 0.724 (2.97 ✗) | 3 |
+| mxf8/pair-rev/student_t-mx | 0.0653 | 0.473 (7.24 ✗) | 0.086 (1.32 ✗) | 0.808 (12.37 ✗) | 0.198 (3.03 ✗) | 3 |
+| mxf8/pair-cublas/normal-mx | 0 | - | - | - | - | 0 |
+| mxf4/single/normal-mx | 0 | 0 | 0 | - | - | 0 |
+| mxf4/single/codes | 0.335 | 0.271 (0.81 ✗) | 0.342 (1.02) | 0.711 (2.13 ✗) | 0.647 (1.93 ✗) | 1 |
+| mxf4/single/student_t-mx | 0 | 0 | 0 | 0.522 | 0.5 | 3 |
+| mxf4/single/laplace-mx | 0 | 0 | 0 | 0.5 | - | 0 |
+| mxf4/pair-rev/codes | 0.159 | 0.286 (1.79 ✗) | 0.211 (1.33 ✗) | 0.727 (4.56 ✗) | 0.636 (3.98 ✗) | 3 |
+| mxf4/pair-rev/student_t-mx | 0 | 0 | 0 | 0.196 | 0 | 3 |
+| nvf4/single/normal-nv | 0 | - | - | - | - | 3 |
+| nvf4/single/student_t-nv | 1.53e-07 | - | - | - | - | 3 |
+| nvf4/single/codes | 0.788 | - | - | - | - | 3 |
+| nvf4/pair-dq/normal-nv | 0 | - | - | - | - | 3 |
+| nvf4/pair-dq/codes | 0.559 | - | - | - | - | 3 |
+| nvf4/pair-cublas/normal-nv | 0 | - | - | - | - | 0 |
+| tf32/single/normal | 1 | error | - | error | 1 (1.00) | 2 |
+| 3xtf32/single/normal | 0.97 | error | - | error | 0.977 (1.01) | 2 |
+| tf32/single/student_t | 1 | error | - | error | 1 (1.00) | 2 |
+| 3xtf32/single/student_t | 0.968 | error | - | error | 0.977 (1.01) | 2 |
+| tf32/single/uniform12 | 1 | error | - | error | 1 (1.00) | 2 |
+| 3xtf32/single/uniform12 | 1 | error | - | error | 1 (1.00) | 2 |
+| 3xtf32/pair-rev/normal | 0.969 | error | - | error | 0.97 (1.00) | 2 |
+| 3xtf32/pair-3x-vs-f32/normal | 0.967 | error | - | error | 0.97 (1.00) | 2 |
+| f32-sum/single/normal | 0.673 | - | - | - | 0.678 (1.01) | 2 |
+| f32-fma/single/normal | 0 | - | - | - | - | 3 |
+| f32-sum/single/uniform12 | 0.284 | - | - | - | 0.282 (0.99) | 2 |
+| f32-fma/single/uniform12 | 0 | - | - | - | - | 3 |
+| f32-sum/single/student_t | 0.668 | - | - | - | 0.68 (1.02) | 2 |
+| f32-fma/single/student_t | 0 | - | - | - | - | 3 |
+| f32-sum/pair-rowreduce/normal | 0.705 | - | - | - | 0.744 (1.05 ✗) | 2 |
+| f32-sum/pair-splitk/normal | 0.72 | - | - | - | 0.751 (1.04) | 2 |
+| f32-sum/pair-atomic/normal | 0.719 | error | - | error | 0.756 (1.05 ✗) | 2 |
+| f32-scan/single/normal | 0.618 | - | - | - | 0.594 (0.96) | 2 |
+
+Before, the TF32 rows errored ("Tf32 node not modelled") and the f32 sums had no exact
+value (Tier 3 skipped them); both are now Tier 3 rows (N-ERRDIST-DAG) with Tier 2 as the
+analytic tier.
+
+**Where `best` is analytic (1 or 2) it passes, except four borderline rows**: MXF8 normal
+and Laplace recipes (Tier 1 1.06x; the accumulator's bits above the two tracked ones
+cluster), and the f32 row-reduce / atomic pairs (Tier 2 1.05x, at the 5% line; per-kernel
+variances match Tier 3 within 4-12% and Tier 3's pair correlation is 0.003-0.09).
+**Where the matrix shows a bias, the tier's check fails and `best` falls back**: Tier 1 on
+block-scaled pairs (1.2-1.3x) and on MX Student-t (15% of its law beyond the modeled
+range); Tier 2's DAG CLT on plain MMA chains (bf16 outliers / scaled integers 1.35-2.85x,
+f16 1.1-1.16x); the block-scaled chain CLT (2-11x; y's residue is far from uniform).
+MXF8 random codes: Tier 1 did not finish within the 60-minute row timeout (Tier 3: 6 s).
+NVFP4: the analytic tiers skip steps above 5e6 term atoms.
+
+**GB300** (GPU 3, 300 inputs, `--gpu-trials 300`), the new Tier 3 rows: 0 DAG mismatches
+and P(differ) GPU / Tier 3 = 0.96996 / 0.97008 (3xTF32), 0.99998 / 0.99999 (1xTF32),
+0.6825 / 0.6735 (f32 sum, 1200 outputs), 0.6168 / 0.6181 (cumsum), 0.96837 / 0.96865
+(3xTF32 pair), 3.09e-5 / 3.65e-5 (bf16 pair, 1.2M outputs). The atomic pair has 362 of 1200
+outputs mismatching the DAG on the GPU (another atomic order, N-ERRDIST-DAG); P(differ)
+0.742 vs Tier 3's 0.719.
+
+**Timings** (144-core host, `PTXV_ERRDIST_THREADS=24`): Tier 3 0.1-6 s; Tier 2 0.02-7 s
+(DAG CLT), 4-160 s (block-scaled chain CLT); Tier 1 2.5-55 s (bf16, f16), 24-200 s (MX
+single), 60-680 s (MX pairs, MX Student-t), > 60 min (MXF8 random codes). Phase 1's Tier 1
+took 30-160 s on bf16 / MX normal recipes.
+
+**Fast subset**: `tools/errdist_matrix.py --bin … --out … --fast` (5 rows, one per analytic
+domain, about 8 minutes; exit 1 when an applicable best tier misses).
+
+### 7.2 Phase-1 runs (GB300, 2026-11-04)
+
+The Tier 1 / Tier 2 columns of this section are phase 1's; §7.1 supersedes them. The Tier 3
+and GB300 columns stand.
+
+
+Every run below:
+- uses the fixtures in `fixtures/errdist/`;
+- uses candidate 1 (the reversed-K Triton kernel) for the `c_equiv_*_triton` and
+  `c_equiv_mm_bf16` pairs;
+- has 0 DAG mismatches against the simulator and against GB300 (GPU 3, 300-1000 inputs), so
+  Tier 3 is the kernels' exact behavior on the sampled inputs.
+
+P(differ) is P(C ≠ R) bitwise for a pair. For one kernel it is P(C ≠ RN(exact)).
+
+| target | spec | T0 | T1 | T2 | T3 (DAG) | GB300 observed [95%] |
+|---|---|---|---|---|---|---|
+| bf16 cuBLAS vs Triton-rev | normal | — | 4.28e-5 | 1.25e-4 | 3.63e-5 | 4.00e-5 [3.41e-5, 4.67e-5] (1000 inputs, 4.1M outputs) |
+| bf16 cuBLAS vs Triton (same order) | normal | 0 (identical programs) | — | — | 0 | — |
+| bf16 pair | uniform[1,2), integers | 0 (certificate) | 0 | — | 0 | — |
+| MXF8 CuTeDSL vs Triton-rev | random codes | — | (slow, skipped) | 0.844 | 0.840 | 0.840 ± 0.0003 (300 inputs) |
+| MXF8 CuTeDSL vs Triton-rev | normal + MX recipe | — | 0.087 | 0.809 | 0.0340 | 0.0339 ± 0.0002 |
+| MXF8 CuTeDSL vs Triton (same order) | normal + MX recipe | 0 (identical programs) | — | — | 0 | — |
+| MXF4 CuTeDSL vs Triton-rev | random codes | — | 0.281 | 0.727 | 0.160 | 0.160 ± 0.0005 |
+| MXF4 CuTeDSL vs Triton-rev | normal + MX recipe | 0 (certificate) | 0 | — | 0 | — |
+| single r3_cute_mxf8 | normal + MX recipe | — | 0.0317 | 0.774 | 0.0449 | 0.0450 ± 0.0003 |
+| single r3_cute_mxf8 | random codes | — | 0.823 | 0.807 | 0.846 | — (sim 2 inputs agree) |
+| single r3_cute_mxf8 | integers, unit scales | 0 (certificate) | 0 | (0.774 before tier 0 supersedes it) | 0 | — |
+| single r3_cute_mxf8 | integers, scales 2^-8..2^7 | — | 0.258 | 0.787 | 0.292 | — |
+| NVFP4 CuTeDSL vs dequant-bf16 Triton | random codes (ue4m3 1..126) | — | (skipped) | 0.842 | 0.560 | 0.558 ± 0.0007 |
+| NVFP4 CuTeDSL vs dequant-bf16 Triton | normal + NVFP4 recipe | — | (skipped) | 6.6e-12 | 0 | 0 (300 inputs) |
+| single r3_cute_mxf4 | random codes | — | 0.271 | 0.711 | 0.335 | — (sim 0.331, 2 inputs) |
+| single r3_cute_nvf4 | random codes | — | (too large) | (too large) | 0.789 | — (sim 0.791, 2 inputs) |
+
+Tier 1 with the uniform-residue heuristic (`--uniform`): 0.899 on the MXF8 normal recipe
+(truth 0.045), 0.833 on scaled integers (truth 0.292).
+
+**Target 1, the bf16 flip rate.** Tier 1 predicts 4.28e-5, against GB300's 4.00e-5. That is
+within the GPU interval and 1.18x Tier 3's 3.63e-5 (whose own interval is
+[3.35e-5, 3.94e-5]). The flips come from the cancellation cells. There |y| ≪ the partial
+sums, and D in y's ulps is large: E|D| doubles per binade below |y| ≈ 1. Before the final
+characteristic-function cell masses and the log-spaced deviation bins, Tier 1 gave 1.99e-5
+(tails clipped at ±64 ulps) and then 5.86e-5 (cell masses near 0 too high by 1.5x). The
+remaining excess is the pair-independence bias. Tier 2 (3.1x) has the same bias, plus
+uniform residues and normal partial sums.
+
+**Target 2, why MXF8 pairs use about 5% of the bound.** On random codes, Tier 3 gives
+D / (u S) with std 1.82, q0.999 7.1, and a maximum of 16.6 over 6.5M outputs. The bound is
+306, so the maximum is 5.4% of it and the std is 0.6%. Tier 2 says why:
+- local errors have random signs across 8 steps and about 33 truncations per step;
+- each truncation loses on average half its worst case;
+- Q = 2^(emax−25) is set by the step's largest value, not by S = Σ|terms|, so each step's
+  error is a small fraction of u·S.
+
+Tier 3 measures σ = 1.82 u·S. Tier 2 gives 5.2: its independence assumption and its emax
+approximation both inflate it. The bound instead adds 8 steps × 33 worst cases with aligned
+signs. The observed tail is somewhat heavier than normal (q0.999 = 3.9σ), and the largest
+of 6.5M outputs sits at 9σ = 16.6 = 5.4% of 306. So roughly 5% is what a near-normal sum
+of random-signed truncations reaches at 10^6-10^7 samples. Tier 2's P(differ) 0.844
+matches GB300's 0.840.
+
+**Target 3, FP4.**
+- MXF4 with the normal recipe is certified exact by Tier 0. Every unit is an exact sum on
+  the 2^-2·scale lattice, and the partial sums fit 24 bits, so C = R = exact. Tier 3 and
+  Tier 1 confirm it.
+- MXF4 with random codes: Tier 3 0.160 = GB300 0.160. Tier 1 gives 0.281 (pair bias).
+- NVFP4 against the dequantizing bf16 Triton kernel, random codes: Tier 3 0.560, GB300 0.558.
+- NVFP4 with the normal recipe: Tier 3 and GB300 give 0. Tier 2, with lattice-aware residues,
+  gives 7e-12. The certificate fails only on its worst-case support bound.
+- Single r3_cute_nvf4 with random ue4m3 codes has 1.7e8 term atoms per step (16k scale
+  pairs × unit laws). The analytic tiers skip it above 5e6 atoms. Building the schema alone
+  takes 24 GB.
+
+**Target 4, single kernel against exact; where the uniform heuristic is wrong.**
+- Normal + MX recipe: P(C ≠ RN(exact)) = 0.045. The residues are far from uniform: max |φ_k|
+  ≈ 0.99 and the TV bound is 0.72-0.80 in every step (report `residue`). Block-scaled e4m3
+  products are 8-bit significands on a lattice that is coarse relative to ulp(S). The
+  uniform heuristic predicts 0.90 (Tier 1 `--uniform`) or 0.77 (Tier 2), 17-20x the truth.
+  Tier 1 with the exact residues gives 0.032 (0.7x).
+- Integers with unit scales: the certificate proves exactness. The uniform heuristic would
+  predict 0.77.
+- Integers with scales 2^-8..2^7: the truth is 0.292, Tier 1 gives 0.258, and the uniform
+  heuristic 0.83.
+- Small K: the first step of the MX chain (K = 32) has P(e ≠ 0) = 0.002 (Tier 3 `--explore`),
+  where the uniform model has ≈ 1. Per-step model P(e ≠ 0) on the normal recipe is
+  0.003, 0.006, 0.009, 0.012, 0.016, 0.018, 0.022, 0.023, against Tier 3's 0.002, 0.007,
+  0.008, 0.009, 0.016, 0.015, 0.015, 0.017. The model is 10-40% high per step.
+
+**Where the analytic tiers are off.**
+- Pairs whose kernels share the K partition (all the rev pairs here): N-ERRDIST-PAIR's
+  independence overestimates P(differ) by 1.1x (bf16 flips), 1.8x (MXF4 codes) and 2.6x
+  (MXF8 normal).
+- Single kernels: Tier 1 is 0.7x (MXF8 normal), 0.97x (MXF8 codes) and 0.88x (scaled
+  integers) of the truth.
+- Tier 2 is right only where residues are close to uniform (MXF8 codes, 1.005x). It reads
+  2-20x high elsewhere: MXF4 codes 2.1x, NVFP4 dq codes 1.5x, MXF8 normal 17-24x.
+- Tier 1's ulp-scale mean and std cover the central 1 − 2e-6 of its law. Cancellation cells
+  put |e| / ulp(y) at 2^30 or more with tiny probability. Tier 3's ulp std is also dominated
+  by its largest samples (400-5000), so compare quantiles and P(differ), not stds.
+- Runtimes:
+  - Tier 3: seconds;
+  - Tier 2: seconds (bf16, MX), up to 100 s (NVFP4 dq);
+  - Tier 1: 30-160 s (bf16, MX normal recipe), 80 s (MXF4 codes), 15-25 min (MXF8 random
+    codes; `--no-tier1` skips it).
+
+**Tests** (`cargo test --release`):
+- `tier0::enumeration_matches_brute_force`: the exact signed law against brute force over
+  every term tuple, including a signed mixture;
+- `tier0::certificate`;
+- `fine` (residue law vs enumeration, the TV bound on known laws);
+- `cf::cell_masses_of_a_uniform_sum` (f(0) to 2e-4 with the Edgeworth term);
+- `laws` (code PMFs and MX block laws vs sampling, cloud moments);
+- `chain` (fast steps = the calibrated models, exact expansion sums);
+- `stats` (KS / AD);
+- `spec`;
+- `tier1` (per-step P(δ ≠ 0), low-bit laws and P(differ) against simulation of e4m3 /
+  e5m2 / bf16 chains: normal, Laplace, Student-t, one step to six; one step from a known
+  accumulator);
+- `tier2` (`reductions_match_simulation`: sequential and pairwise f32 sums of normal and
+  same-sign uniform inputs; grid residue moments; the zero-inflated expectations).
+
+The prediction-vs-simulator check is part of every CLI run (`validation`).
+
+## 8. Assumptions and open items
+
+ASSUMPTIONS.md: N-ERRDIST-IID, -TEMPLATE, -RESIDUE, -MARKOV, -CF, -CLT, -PAIR, -FLIP,
+-MC. These are estimates, not proofs. Only Tier 0 is exact (and only on the support of the
+element laws), and Tier 3 is exact per sample.
+
+Open items:
+- a joint chain for block-scaled pairs that share the K partition (Tier 1 1.2-1.3x, the
+  main remaining bias);
+- Tier 1's residual 6% on MX normal / Laplace recipes (bits above the tracked two);
+- Tier 1 speed on MXF8 random codes (> 60 min) and NVFP4 (skipped above 5e6 atoms);
+- Tier 2's DAG CLT on plain MMA chains over narrow inputs (0.86-2.85x; Tier 1 covers them)
+  and a block-scaled DAG CLT;
+- per-index scale masks in the spec (true small-K runs on a K = 256 kernel; Tier 1's small-K
+  coverage is the synthetic one-step tests);
+- softmax, norms, attention and elementwise programs have their own analytic tiers (§9).
+
+## 9. Non-chain programs: softmax, norms, attention, elementwise (agent AG)
+
+**Status (2026-11-05, agent AG).** Programs whose outputs are not plain accumulation chains
+have their own analytic tiers. These are softmax (two-pass and online), RMSNorm, layer norm,
+attention (QK^T, softmax, PV), and elementwise functions of one to three input elements (exp
+/ rcp / rsqrt / tanh MUFU slices, gelu, silu, softcap, silu * mul, add, type conversions).
+The code is in `crates/sim/src/errdist/nonlin/`. These estimates are `applicable` only when
+they agree with Tier 3: |p - p3| <= max(5% of p3, half Tier 3's CI), or p inside Tier 3's
+CI. `best` then picks in tier order with the chain tiers' estimates (§3): the elementwise
+law and the linearized Tier 1 before Tier 2. Otherwise `best` stays at Tier 3, so the
+headline is never worse than Tier 3.
+
+### 9.1 Extraction
+
+- **Segment mode.** Single kernels and pairs retry in segment mode when the default
+  extraction leaves an output untracked (softmax, norms, multi-launch regions).
+- **The DAG's op kinds.** The DAG then carries:
+  - instruction slices (`NlOp::Seg`: the instructions between two numerics nodes, evaluated
+    bit-exactly by `seg.rs`);
+  - MUFU ops (`NlOp::Mufu`);
+  - maxima (`NlOp::Max`);
+  - the chain ops (Add, Fma, Round, Mma).
+- **Multi-launch regions.** These are extracted through global memory: x @ w1 + x @ w2 as two
+  sgemms plus an add launch, against x @ (w1 + w2) (`fixtures/errdist/mm2.toml`).
+- **Checks before estimating.**
+  - Byte workspaces that no leaf reads keep their captured bytes.
+  - A program whose DAG tracks no output is refused.
+  - So is a program whose DAG disagrees with the captured GPU output at the captured input.
+    For example, inductor's `addmm` copies its input with a device-to-device memcpy, which
+    the capture does not record (`fixtures/errdist/c_mm2_addmm`). Recording memcpys in
+    captures is open.
+- **Slice identification** (`ident.rs`, N-ERRDIST-IDENT). Each slice is fitted to a real
+  function on the captured input plus 24 perturbed inputs:
+  - f(c0 + Σ c_i a_i) with f in {exp2, 1/x, 1/sqrt, sqrt, tanh, identity};
+  - multiplier and divisor forms;
+  - a / b;
+  - polynomials up to degree 3;
+  - named functions (erf, gelu, tanh-gelu, silu, ...) with an outer affine map.
+
+  Constants snap to named values (log2 e, ln 2, 1/128, eps, √(2/π), 0.044715, powers of
+  two) when that keeps the fit.
+- **The exact value** (`real.rs`, N-ERRDIST-REAL) is the program in double-double real
+  arithmetic, with slices replaced by their real functions. Tier 3 uses it as "exact" for
+  single kernels.
+
+### 9.2 Local error laws ("compile")
+
+- **Slices and MUFU units** (`table.rs`, N-ERRDIST-NL-INDEP). Each slice function and MUFU
+  variant gets a table indexed by cells of its index variable: sign, binade, and 1/8 of the
+  binade. The index variable is the exp / rsqrt argument, the polynomial or named-function
+  argument, or the quotient. Per cell, the table holds:
+  - the law of the slice's own error (g - f) / ulp32(f), from 96 bit-exact evaluations:
+    mean, second moment, P(0), a 1/8-ulp histogram;
+  - the integer offset from RN(f);
+  - the error before the slice's last rounding, where the slice ends in FFMA / FMUL / FADD /
+    div.rn.
+- **Pairs of slices.** Two slices of one function in two kernels get a test for equal
+  evaluations (`same_function`) and, if they depend on the driver argument only, a joint
+  table of g_C - g_R at equal arguments.
+- **Round-to-nearest ops** use the exact residue law of their value's lattice, carrying the
+  parity of the low bit for ties.
+
+### 9.3 Linearized tiers (single kernels)
+
+`lin.rs` and `agg.rs`, N-ERRDIST-NL-LIN. The steps:
+
+1. Sample 48 nominal inputs from the spec, in real arithmetic only.
+2. At each input, give every op its local law and its adjoint to the output by reverse
+   mode.
+3. Express each site's contribution in output ulps.
+4. Add the output's own last rounding:
+   - continuous position;
+   - lattice residue for exact sums;
+   - a final slice's offsets, or its pre-rounding error.
+5. Tier 1 convolves the 6 largest discrete sites exactly on a 1/64-ulp grid, with the rest
+   normal. Tier 2 is all normal.
+6. For 16-bit outputs rounded from an f32 value, the probability that the computed value is
+   a tie of the output grid is measured on bit-exact evaluations (RNE then picks the even
+   neighbour). It is not taken as 2^-16, because the low bits of products with a 16-bit
+   factor are not uniform.
+
+Each report notes the variance budget by site class (e.g. softmax torch: f32 fma 64%, f32
+add 19%, the exp2 slice before its last rounding 16%).
+
+### 9.4 Pairs
+
+`agg.rs` `Ctx::joint`, N-ERRDIST-NL-JOINT.
+
+- **Shared sub-computations** are merged by canonical hash: slices compare by function, and
+  max trees flatten to sets.
+- **Matched roundings.** Ops of the two kernels holding the same real value (found at two
+  inputs, re-checked per input) share their grid position. Their difference is
+  round(w + Z) - round(w), where Z is the upstream deviation. Z is computed recursively from
+  the matched pairs below, down to depth 16.
+- **Two matched slices.** Their own errors cancel in any of these cases:
+  - they compute the same function of the index (equal tables, or equal evaluations);
+  - the candidate's slice equals, bit for bit, the reference's sub-DAG above the nodes
+    holding its arguments, tested at 256 points. Example: inductor's fused
+    rsqrt(1e-6 + s / 128) against eager's three ops.
+
+  Otherwise the pair table is used when it exists, else the two errors are independent.
+- **Identical programs** are Tier 0 (D ≡ 0).
+
+### 9.5 Elementwise law
+
+`enumerate.rs`, N-ERRDIST-NL-ELEM. It applies when every output is the same function of one
+to three input elements of different buffers and the elements have a plain law (no axis
+scales or outliers, round-to-nearest quantization). The output's law is then the pushforward
+of the elements' law through the bit-exact output function:
+
+- **16-bit inputs:** exhaustive over every code pair whose product of counts is <= 4e6 (Tier
+  0).
+- **f32:** 2^20 codes stratified over the law, allotted in proportion to the mass of each
+  1/256-binade cell and placed at random points in the cell (Tier 1). The CI comes from the
+  effective sample size. Codes at cell midpoints would have only ~10 significant bits, and
+  rounding-sensitive results come out biased (silu: 0.321 against 0.328).
+- **Larger products:** a Latin hypercube with every leaf stratified over its whole law
+  (Tier 1, binomial CI). A resampled product grid sees the hash-like indicator "the two exp
+  slices differ at a" at only a few thousand values (silu * mul: 4% off).
+- **Packed 16-bit words.** When the other element of a packed word sits in an output's cone,
+  the output must be checked independent of it.
+
+### 9.6 Compile once, query many
+
+- **The model.** The slice / MUFU / pair tables, keyed by the programs' canonical hash
+  (`nonlin::model_key`), are the `nonlin` section of the model file of §1.1, beside the
+  `programs` section.
+- **Querying.** `--model FILE` (§1.1) loads the section, or compiles it with a note when it
+  is absent or its key differs. If the queried distribution reaches binades the tables do
+  not cover, it extends them first (seconds). Compiled or extended tables are written back
+  to the file.
+- **Rust API:** `nonlin::Model::{compile, load, save}`, `nonlin::ensure`, `nonlin::analytic`.
+
+Costs on the fixtures:
+- Compiling: 0.0-0.2 s. Tables are 96 evaluations per cell over ±2 binades around the
+  probes, and the file is ~1.6 MB for a softmax pair.
+- A query: 0.1-27 s. Most of it is the 48 nominal inputs times the outputs' cones (attention
+  pair: 17 s) and the f32 quadrature (1-8 s).
+- Tier 3: 0.1-3 s at 20,000 inputs on these small programs.
+
+The analytic tiers are therefore not faster than Tier 3 here. What they add:
+- a per-site explanation;
+- exact laws where Tier 3 is noisy, e.g. bf16 misrounding at 5e-5, which Tier 3 resolves
+  only to ±10% with 10^6 outputs;
+- independence from the sampling seed.
+
+### 9.7 Validation
+
+This is the matrix of `tools/errdist_nonlin_matrix.py` (2026-11-05). It has 16 single kernels and 13 pairs, each
+under 7 input specs:
+- `normal`: N(0, 1);
+- `uniform`: U[-1, 1);
+- `laplace`: Laplace(0, 1);
+- `student3`: t with 3 degrees of freedom;
+- `shift100`: N(100, 1), large-magnitude shifted rows;
+- `normal8`: N(0, 8²);
+- `int8`: integers -8..8.
+
+Every run uses Tier 3 with 20,000 inputs.
+
+How to read a cell:
+- It shows Tier 3's P(bits differ), then the analytic estimate.
+- The suffix says where the analytic estimate comes from:
+  - `E`: the elementwise law;
+  - `L1` / `L2`: linearized Tier 1 / Tier 2;
+  - `I`: identical programs.
+- ✓: `best` took the analytic estimate, i.e. it is within max(5%, CI) of Tier 3.
+- ✗: `best` stayed at Tier 3. The value shown is then the elementwise or Tier 1 estimate.
+
+Output formats:
+- f32: softmax, attention, silu / gelu f32, the `c_equiv_*` norms.
+- bf16: `r4_rmsnorm_*`, `r4_layernorm_*`, `*gelu_bf16`, `*_bf16*`.
+
+| case | normal | uniform | laplace | student3 | shift100 | normal8 | int8 |
+|---|---|---|---|---|---|---|---|
+| r4_softmax_torch | 0.644 / 0.65L1 ✓ | 0.509 / 0.52L1 ✓ | 0.756 / 0.76L1 ✓ | 0.802 / 0.801L1 ✓ | 0.496 / 0.506L1 ✓ | 0.853 / 0.862L1 ✓ | 0.499 / 0.507L1 ✓ |
+| r4_softmax_triton | 0.704 / 0.706L1 ✓ | 0.573 / 0.578L1 ✓ | 0.806 / 0.811L1 ✓ | 0.844 / 0.844L1 ✓ | 0.655 / 0.658L1 ✓ | 0.942 / 0.942L1 ✓ | 0.759 / 0.814L1 ✗ |
+| c_triton_softmax_online | 0.712 / 0.716L1 ✓ | 0.599 / 0.593L1 ✓ | 0.809 / 0.814L1 ✓ | 0.845 / 0.846L1 ✓ | 0.667 / 0.673L1 ✓ | 0.943 / 0.941L1 ✓ | 0.764 / 0.795L2 ✓ |
+| r4_rmsnorm_torch | 9.47e-06 / 1.07e-05L1 ✓ | 1.18e-05 / 1.22e-05L1 ✓ | 1.25e-05 / 8.22e-06L1 ✗ | 1.08e-05 / 9.51e-06L1 ✓ | 9.77e-08 / 1.68e-06L1 ✗ | 9.37e-06 / 7.39e-06L1 ✗ | 0 / 4.13e-06L1 ✗ |
+| r4_rmsnorm_triton | 1.01e-05 / 9.24e-06L1 ✓ | 1.14e-05 / 1.24e-05L1 ✓ | 1.2e-05 / 8.69e-06L1 ✗ | 9.96e-06 / 9.04e-06L1 ✓ | 9.77e-08 / 1.72e-06L1 ✗ | 9.86e-06 / 8.1e-06L1 ✓ | 0 / 4.13e-06L1 ✗ |
+| r4_layernorm_torch | 3.12e-05 / 1.25e-05L1 ✗ | 3.53e-05 / 3.02e-05L1 ✗ | 2.4e-05 / 3.29e-05L1 ✗ | 2.93e-05 / 8.59e-06L1 ✗ | 0.000125 / 0.00299L1 ✗ | 2.95e-05 / 1.53e-05L1 ✗ | 6.6e-05 / 3.09e-05L1 ✗ |
+| r4_layernorm_triton | 3.13e-05 / 1.41e-05L1 ✗ | 3.56e-05 / 1.66e-05L1 ✗ | 2.32e-05 / 2.08e-05L1 ✓ | 2.63e-05 / 2.94e-05L2 ✓ | 8.59e-05 / 5.92e-05L1 ✗ | 3.3e-05 / 2.07e-05L1 ✗ | 4.4e-05 / 5.54e-05L1 ✗ |
+| c_attn_core_ref | 0.75 / 0.753L1 ✓ | 0.75 / 0.75L1 ✓ | 0.73 / 0.734L1 ✓ | 0.72 / 0.73L1 ✓ | 0.55 / 0.552L1 ✓ | 0.675 / 0.709L2 ✓ | 0.711 / 0.728L1 ✓ |
+| c_silu | 0.328 / 0.328E ✓ | 0.327 / 0.327E ✓ | 0.335 / 0.334E ✓ | 0.333 / 0.333E ✓ | 0 / 0E ✓ | 0.352 / 0.353E ✓ | 0.25 / 0.25E ✓ |
+| c_gelu_tanh | 0.429 / 0.429E ✓ | 0.392 / 0.392E ✓ | 0.436 / 0.436E ✓ | 0.444 / 0.444E ✓ | 0 / 0E ✓ | 0.414 / 0.414E ✓ | 0.6 / 0.6E ✓ |
+| c_gelu_erf | 0.388 / 0.388E ✓ | 0.337 / 0.337E ✓ | 0.403 / 0.404E ✓ | 0.409 / 0.409E ✓ | 0 / 0E ✓ | 0.483 / 0.483E ✓ | 0.563 / 0.562E ✓ |
+| c_gelu_bf16 | 5.5e-05 / 5.49e-05E ✓ | 0 / 0E ✓ | 0.00618 / 0.00621E ✓ | 0.0104 / 0.0104E ✓ | 0 / 0E ✓ | 0.242 / 0.242E ✓ | 0.25 / 0.25E ✓ |
+| c_triton_gelu_bf16 | 3.27e-06 / 3.34e-06L1 ✓ | 0 / 1.95e-06L1 ✗ | 0.00512 / 0.000221L1 ✗ | 0.00934 / 0.000279L1 ✗ | 0 / 1.2e-07L1 ✓ | 0.237 / 0.248L2 ✓ | 0.25 / - |
+| c_softcap | 0.346 / 0.346E ✓ | 0.345 / 0.345E ✓ | 0.361 / 0.362E ✓ | 0.363 / 0.363E ✓ | 0.235 / 0.235E ✓ | 0.53 / 0.529E ✓ | 0.625 / 0.625E ✓ |
+| c_cve_silumul_bf16_inductor | 1.3e-05 / 1.37e-05E ✗ | 1.95e-05 / 1.8e-05E ✗ | 1.12e-05 / 1.2e-05E ✗ | 1.44e-05 / 1.15e-05E ✗ | 0 / 0E ✓ | 0.000211 / 0.000214E ✓ | 0 / 0E ✓ |
+| c_cve_addnorm_inductor | 0.474 / 0.467L1 ✓ | 0.5 / 0.502L1 ✓ | 0.482 / 0.481L1 ✓ | 0.467 / 0.464L1 ✓ | 0.569 / 0.542L1 ✓ | 0.474 / 0.469L1 ✓ | 0.36 / 0.373L2 ✓ |
+| c_equiv_softmax/equiv.toml:0 | 0.671 / 0.702L2 ✓ | 0.598 / 0.649L1 ✗ | 0.766 / 0.784L1 ✓ | 0.81 / 0.817L1 ✓ | 0.67 / 0.712L1 ✗ | 0.933 / 0.934L1 ✓ | 0.8 / 0.83L1 ✓ |
+| c_equiv_softmax/equiv.toml:1 | 0.686 / 0.764L1 ✗ | 0.624 / 0.694L1 ✗ | 0.773 / 0.836L1 ✗ | 0.815 / 0.862L1 ✗ | 0.686 / 0.716L1 ✓ | 0.933 / 0.944L1 ✓ | 0.803 / 0.829L1 ✓ |
+| c_equiv_rmsnorm/equiv.toml:0 | 0.148 / 0.159L1 ✗ | 0.151 / 0.172L1 ✗ | 0.157 / 0.171L1 ✗ | 0.166 / 0.176L1 ✗ | 0.141 / 0.16L1 ✗ | 0.148 / 0.159L1 ✗ | 0 / 0.135L1 ✗ |
+| c_equiv_layernorm/equiv.toml:0 | 0.277 / 0.29L1 ✓ | 0.314 / 0.309L1 ✓ | 0.267 / 0.283L1 ✗ | 0.264 / 0.282L1 ✗ | 0.853 / 0.973L1 ✗ | 0.276 / 0.293L1 ✗ | 0.234 / 0.343L1 ✗ |
+| c_equiv_attn/equiv.toml:0 | 0.79 / 0.81L1 ✓ | 0.795 / 0.811L1 ✓ | 0.775 / 0.795L1 ✓ | 0.769 / 0.793L1 ✓ | 0.632 / 0.638L1 ✓ | 0.743 / 0.781L1 ✗ | 0.775 / 0.784L1 ✓ |
+| c_equiv_elementwise/gelu_tanh.toml:0 | 0.932 / 0.932E ✓ | 0.915 / 0.915E ✓ | 0.906 / 0.906E ✓ | 0.911 / 0.912E ✓ | 0 / 0E ✓ | 0.492 / 0.492E ✓ | 0.533 / 0.533E ✓ |
+| c_equiv_elementwise/silu.toml:0 | 0.347 / 0.346E ✓ | 0.349 / 0.348E ✓ | 0.356 / 0.355E ✓ | 0.358 / 0.358E ✓ | 0 / 0E ✓ | 0.456 / 0.456E ✓ | 0.5 / 0.5E ✓ |
+| c_equiv_elementwise/gelu_bf16.toml:0 | 5.37e-05 / 5.35e-05E ✓ | 0 / 0E ✓ | 0.00196 / 0.00198E ✓ | 0.00214 / 0.00213E ✓ | 0 / 0E ✓ | 0.0139 / 0.0139E ✓ | 0.0625 / 0.0625E ✓ |
+| c_equiv_elementwise/gelu_erf.toml:0 | 0.0137 / 0.0136E ✓ | 0 / 0E ✓ | 0.0301 / 0.03E ✓ | 0.0296 / 0.0297E ✓ | 0 / 0E ✓ | 0.0604 / 0.0604E ✓ | 0.313 / 0.312E ✓ |
+| errdist/cve/addnorm.toml:0 | 0.0693 / 0.195L1 ✗ | 0.0641 / 0.184L1 ✗ | 0.0646 / 0.189L1 ✗ | 0.0697 / 0.203L1 ✗ | 0.0734 / 0.148L1 ✗ | 0.0694 / 0.195L1 ✗ | 0 / 0.117L1 ✗ |
+| errdist/cve/silumul.toml:0 | 0.249 / 0.248E ✓ | 0.261 / 0.261E ✓ | 0.247 / 0.247E ✓ | 0.246 / 0.246E ✓ | 0 / 0E ✓ | 0.206 / 0.206E ✓ | 0.352 / 0.352E ✓ |
+| errdist/cve/add_bf16.toml:0 | 0.22 / 0.22E ✓ | 0.222 / 0.222E ✓ | 0.221 / 0.221E ✓ | 0.219 / 0.219E ✓ | 0.121 / 0.121E ✓ | 0.22 / 0.22E ✓ | 0 / 0E ✓ |
+| errdist/cve/silumul_bf16.toml:0 | 0.275 / 0.275E ✓ | 0.265 / 0.266E ✓ | 0.271 / 0.272E ✓ | 0.272 / 0.272E ✓ | 0 / 0E ✓ | 0.224 / 0.224E ✓ | 0.0625 / 0.0625E ✓ |
+
+analytic best: 149/203
+
+GB300 (`--gpu-trials 32`, GPU 0, normal spec):
+- The DAG reproduced the GPU bit for bit on every input, with 0 mismatches, on:
+  - `r4_softmax_torch`, `c_attn_core_ref`, `c_silu`, `r4_rmsnorm_torch`;
+  - the softmax and RMSNorm pairs;
+  - `cve/silumul_bf16`, `mm2`, `gelu_bf16`.
+- GPU P(differ) against the analytic estimate:
+
+| case | GPU | analytic |
+|---|---|---|
+| softmax torch | 0.647 | 0.650 (L1) |
+| attention | 0.752 | 0.753 |
+| silu | 0.323 | 0.328 (E) |
+| silu*mul bf16 pair | 0.2750 | 0.2748 (E) |
+| mm2 pair | 0.864 | 0.863 |
+| softmax pair | 0.660 | 0.712 (L1 rejected, best = Tier 3) |
+| rmsnorm pair | 0.136 | 0.156 (rejected) |
+
+
+### 9.8 What falls back to Tier 3, and why
+
+- **Pairs of reductions in different orders** (RMSNorm, layer norm, softmax vs online
+  softmax, eager vs inductor add + RMSNorm). Tier 1 is 5-15% high, and addnorm is 2.8x high
+  (0.195 against 0.069). The matched partial sums' joint laws overestimate P(K != 0): 0.38
+  predicted against 0.21 observed per matched add on addnorm (N-ERRDIST-NL-JOINT). Joint
+  laws of reductions are the main open item.
+- **bf16 layer norm (single).** Tier 1 is up to 2.5x low. The 16-bit misrounding is
+  dominated by rare near-zero outputs, where (x - mean) * rstd * w cancels the bias. The 48+
+  nominal inputs do not sample them, and Tier 3 does.
+- **bf16 RMSNorm under laplace, shift100 and int8.** Rare events again, and Tier 3 sees 0
+  on integers.
+- **`c_triton_gelu_bf16` under heavy tails.** A packed two-element bf16 slice: the
+  elementwise law does not apply (each output depends on both halves through the packing).
+  The linearized tier misses large-|x| behaviour (0.0002 against 0.005).
+- **`c_cve_silumul_bf16_inductor` single.** P(differ) is ~1e-5. The Latin hypercube's
+  binomial CI (4e6 draws) is wider than 5%, so it is not selected.
+- **Not modeled at all:**
+  - captures missing a device-to-device memcpy (refused, §9.1);
+  - bf16 cuBLAS epilogues with `UTMAREDG.3D.ADD` (TMA reduce-add: unsupported SASS
+    opcode);
+  - specs with axis scales or outliers (no elementwise law; the linearized tiers still run).

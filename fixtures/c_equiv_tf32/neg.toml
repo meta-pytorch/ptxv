@@ -1,0 +1,20 @@
+# N-FINITE negatives (docs/equiv-mma.md §6): comparisons that finite inputs do not decide stay
+# data-dependent guards. Without segment mode (no slice may absorb them), against the 3xTF32
+# kernel itself: a sign test of the small part (small > 0), and a finiteness test of the float
+# whose bits are x's shifted left (finite x can give an infinity or NaN pattern).
+#   ptxv equiv fixtures/c_equiv_tf32/neg.toml
+max_states = 200000
+trials = 0
+reference = { case = "../c_tf32_mm_3x", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "../c_tf32_mm_3x_sign"
+variant = "good"
+front = "sass"
+expect = "L1 (unproven)"
+
+[[candidates]]
+case = "../c_tf32_mm_3x_bits"
+variant = "good"
+front = "sass"
+expect = "L1 (unproven)"

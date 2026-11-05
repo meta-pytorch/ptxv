@@ -1,0 +1,25 @@
+name = "probe_tmem_16x64b"
+description = """
+Probe (hardware only) for the tcgen05.ld.16x64b layout (SASS LDTM.16dp64bit, cuBLAS nvjet
+epilogue). Warp w stores lane*256 + col to TMEM lanes 32w..32w+31, columns 0..7 (32x32b.x8, own
+quadrant in the address), then loads 16x64b.x4 with address lane field 0 (out[4t + j]) and 16
+(out[512 + 4t + j]), t = thread index 0..127."""
+ptx = "kernel.ptx"
+entry = "probe_tmem_16x64b"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

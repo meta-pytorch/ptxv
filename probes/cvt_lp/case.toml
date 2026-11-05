@@ -1,0 +1,81 @@
+name = "cvt_lp"
+description = """
+N-CVT-LP probe: 51 narrow-format cvt forms (gen.py): FP8 / FP6 / FP4 / ue8m0 encodes from f32
+pairs and f16x2 / bf16x2, the .rs x4 and f16x2 / bf16x2 packs, the f16x2 / bf16x2 decodes. 1024
+threads sampled from the cvt-sweep sets (in_*.bin). Both front-ends (the SASS one on ptxas's
+binary) must equal gb300_out.bin; sweep.json holds the hashes of the full GB300 sweep
+(`ptxv cvt-sweep probes/cvt_lp`), replayed against the model by crates/sim/tests/lowp.rs."""
+ptx = "kernel.ptx"
+entry = "cvt_lp"
+grid = [8, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "u32"
+shape = [1024]
+init = "file"
+file = "in_x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "u32"
+shape = [1024]
+init = "file"
+file = "in_y.bin"
+
+[[buffers]]
+name = "z"
+dtype = "u32"
+shape = [1024]
+init = "file"
+file = "in_z.bin"
+
+[[buffers]]
+name = "w"
+dtype = "u32"
+shape = [1024]
+init = "file"
+file = "in_w.bin"
+
+[[buffers]]
+name = "r"
+dtype = "u32"
+shape = [1024]
+init = "file"
+file = "in_r.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [52224]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "r"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

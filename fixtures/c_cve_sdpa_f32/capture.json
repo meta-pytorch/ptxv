@@ -1,0 +1,76 @@
+{
+ "what": "run() of ref.py",
+ "argv": [
+  "--file",
+  "/tmp/agentG/cve_f32/pairs/04__scaled_dot_product_efficient_attention/ref.py",
+  "--out",
+  "/tmp/agentG/cve_f32/pairs/04__scaled_dot_product_efficient_attention/cmp/ref",
+  "--seed",
+  "0",
+  "--binary",
+  "--work",
+  "/tmp/ptxv_capture_3698253"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "_Z39fmha_cutlassF_f32_aligned_64x64_rf_sm80N22PyTorchMemEffAttention15AttentionKernelIfN7cutlass4arch4Sm80ELb1ELi64ELi64ELi64ELb1ELb1EE6ParamsE",
+   "grid": [
+    1,
+    2,
+    1
+   ],
+   "block": [
+    32,
+    4,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 36352,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "stack_25",
+   "dtype": "f32",
+   "shape": [
+    8192
+   ],
+   "size": 32768
+  },
+  {
+   "name": "stack_35",
+   "dtype": "f32",
+   "shape": [
+    8192
+   ],
+   "size": 32768
+  },
+  {
+   "name": "mm_8",
+   "dtype": "f32",
+   "shape": [
+    24576
+   ],
+   "size": 98304
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    8192
+   ],
+   "size": 32768
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

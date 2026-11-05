@@ -1,0 +1,67 @@
+name = "c_mm_f32_gemmsn"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): `torch.mm(a, b)` with a = randn(8,128,f32), b = randn(128,384,f32). 1 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: _Z16gemmSN_NN_kernelIfLi256ELi4ELi2ELi8ELi4ELi4ELb0E30cublasGemvTensorStridedBatchedIKfES2_S0_IfEEv22cublasGem grid [6, 2, 1] block [256, 1, 1]
+Regenerate: CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/capture.py --op 'torch.mm(a, b)' --inputs 'a=randn(8,128,f32),b=randn(128,384,f32)' --out DIR,
+then tools/cubin_slim.py on the cubin."""
+cubin = "k0.cubin"
+entry = "_Z16gemmSN_NN_kernelIfLi256ELi4ELi2ELi8ELi4ELi4ELb0E30cublasGemvTensorStridedBatchedIKfES2_S0_IfEEv22cublasGemmSmallNParamsIT7_T8_T9_T_E"
+grid = [6, 2, 1]
+block = [256, 1, 1]
+dynamic_smem = 0
+outputs = ["out"]
+
+[[buffers]]
+name = "a"
+dtype = "f32"
+shape = [8, 128]
+init = "file"
+file = "data/a.bin"
+
+[[buffers]]
+name = "b"
+dtype = "f32"
+shape = [128, 384]
+init = "file"
+file = "data/b.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [8, 384]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "bytes"
+hex = "986b28c8ffff0000746b28c8ffff00000010c05df9ff000000000000000000000000c05df9ff000000000000000000000020c65df9ff000000000000000000000020c65df9ff000000000000000000000000803f000000000000000080010000080000008000000080010000800000008001000080010000001728c801000000000000000000000000000000000000000000000000000000"
+
+[[params.fields]]
+offset = 16
+kind = "ptr"
+buffer = "b"
+byte_offset = 0
+
+[[params.fields]]
+offset = 32
+kind = "ptr"
+buffer = "a"
+byte_offset = 0
+
+[[params.fields]]
+offset = 48
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[params.fields]]
+offset = 64
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

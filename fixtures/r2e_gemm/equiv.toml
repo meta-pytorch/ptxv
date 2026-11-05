@@ -1,0 +1,38 @@
+# Rung 2e: the Triton 3.5 and CuTeDSL 4.6.1 persistent GEMMs on the same problem
+# (C[512x128] f32 = A[512x128] bf16 * B[128x128]^T). Triton's fenced variant is the reference.
+#   ptxv equiv fixtures/r2e_gemm/equiv.toml
+max_states = 5000000
+# L3: |C - R| <= tau_k * u * sum_k |a_ik b_kj| (u = 2^-24). Each kernel's a-priori bound is
+# 79.5u per product term here with the derived MMA contract (docs/equiv-mma.md; 288u with the
+# old one), so 159u is the least tolerance the bounds prove. 576u is kept as the stated τ.
+tau_k = 576
+reference = { case = "../r2_triton_gemm", variant = "fenced", front = "sass" }
+
+[[candidates]]
+case = "../r2_triton_gemm"
+variant = "fenced"
+front = "ptx"
+expect = "L0"
+
+[[candidates]]
+case = "../r2_cute_gemm"
+variant = "fenced"
+front = "sass"
+expect = "L0"
+
+[[candidates]]
+case = "../r2_cute_gemm"
+variant = "good"
+front = "sass"
+expect = "L0"
+
+# The cuBLAS kernel torch picks for this problem (nvjet_sm103_tss_64x8_64x16_1x4_h_bz_TNT,
+# binary only, 32 clusters of 4 CTAs). Symmetry (E-CTA-INDEP) reduces the race/deadlock check
+# to cluster 0, whose exploration is not exhaustive within max_states (docs/rung2e.md): the
+# levels hold for the captured inputs, not proven.
+[[candidates]]
+case = "../r2_cublas_gemm"
+variant = "good"
+front = "sass"
+slices = true
+expect = "L2+L3"

@@ -1,0 +1,25 @@
+# MXF8 GEMM: the CuTeDSL block-scaled GEMM (fixtures/r3_cute_mxf8) against Triton tl.dot_scaled
+# (tools/capture_examples/triton_mxf8.py: LDG, STS; the scales through LDSM / STSM and into TMEM
+# by tcgen05.st (STTM); tcgen05.mma.kind::mxf8f6f4.block_scale, LDTM, STG). Same input bytes
+# and names.
+# K blocks of 128 in order: the same 8 steps in the same order (L0). K blocks of 32 reversed:
+# the 8 steps from K = 224 down to 0, another accumulation order (L1, bounded).
+#   ptxv equiv fixtures/c_equiv_mxf8_triton/equiv.toml
+#   GB300: tools/mx_gpu_check.py
+max_states = 200000
+trials = 20
+reference = { case = "../r3_cute_mxf8", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "../c_triton_mxf8"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L0"
+
+[[candidates]]
+case = "../c_triton_mxf8_rev"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L1"

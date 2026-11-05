@@ -1,0 +1,160 @@
+// Rung 1g fixture: one-shot all-reduce over symmetric memory, 3 GPUs, 2 back-to-back calls.
+//
+//   One thread per rank in the model (block = 1; the kernel strides over the 32 elements, so
+//   any block size works). Rank r (GPU r) owns buf_r[32] (f32, symmetric) and sig_r[3] (u32 signal pad) in its
+//   memory. Each call (one grid of 32 threads per rank):
+//     1. stage: buf_r[i] = in[i]                                   (all threads)
+//     2. barrier A (thread 0): sig_p[r] = s for every peer p (st.release.sys), then wait until
+//        sig_r[p] >= s for every peer (ld.acquire.sys); s = 2 * epoch, monotonic
+//     3. reduce: out[i] = ((0 + buf_0[i]) + buf_1[i]) + buf_2[i], same order on every rank
+//     4. barrier B (s = 2 * epoch + 1): nobody restages its buffer for the next call before
+//        every peer has finished reading it
+//   The barrier is one code block entered with %r20 = 0 (A) or 1 (B).
+//
+// Mutants (case.toml): B21 the barrier signals a constant 1 and resets its flags after waiting
+// (no epoch); B22 no barrier B; B24 each rank sums starting from its own buffer.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry allreduce(
+    .param .u32 rank,
+    .param .u32 epoch,
+    .param .u64 in_ptr,
+    .param .u64 out_ptr,
+    .param .u64 buf0,
+    .param .u64 buf1,
+    .param .u64 buf2,
+    .param .u64 sig0,
+    .param .u64 sig1,
+    .param .u64 sig2
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<16>;
+    .reg .b32   %r<40>;
+    .reg .f32   %f<8>;
+    .reg .b64   %rd<40>;
+
+    mov.u32         %r0, %tid.x;
+    ld.param.u32    %r1, [rank];
+    ld.param.u32    %r2, [epoch];
+    ld.param.u64    %rd1, [buf0];
+    cvta.to.global.u64 %rd11, %rd1;
+    ld.param.u64    %rd2, [buf1];
+    cvta.to.global.u64 %rd12, %rd2;
+    ld.param.u64    %rd3, [buf2];
+    cvta.to.global.u64 %rd13, %rd3;
+    ld.param.u64    %rd4, [sig0];
+    cvta.to.global.u64 %rd14, %rd4;
+    ld.param.u64    %rd5, [sig1];
+    cvta.to.global.u64 %rd15, %rd5;
+    ld.param.u64    %rd6, [sig2];
+    cvta.to.global.u64 %rd16, %rd6;
+    setp.eq.u32     %p1, %r1, 1;
+    setp.eq.u32     %p2, %r1, 2;
+    mov.b64         %rd20, %rd11;                   // my buffer
+    @%p1 mov.b64    %rd20, %rd12;
+    @%p2 mov.b64    %rd20, %rd13;
+    mov.b64         %rd21, %rd14;                   // my signal pad
+    @%p1 mov.b64    %rd21, %rd15;
+    @%p2 mov.b64    %rd21, %rd16;
+    setp.ne.u32     %p0, %r0, 0;                    // not thread 0
+
+    mov.u32         %r3, %ntid.x;
+    // 1. stage (elements i = tid, tid + ntid, ... < 32)
+    ld.param.u64    %rd7, [in_ptr];
+    cvta.to.global.u64 %rd8, %rd7;
+    mov.u32         %r4, %r0;
+STAGE:
+    mul.wide.u32    %rd0, %r4, 4;
+    add.u64         %rd9, %rd8, %rd0;
+    ld.global.f32   %f0, [%rd9];
+    add.u64         %rd22, %rd20, %rd0;
+    st.global.f32   [%rd22], %f0;
+    add.u32         %r4, %r4, %r3;
+    setp.lt.u32     %p15, %r4, 32;
+    @%p15 bra       STAGE;
+    bar.sync        0;
+    // 2. barrier A
+    mov.u32         %r20, 0;
+    @%p0 bra        AFTER_A;
+    bra             BARRIER;
+AFTER_A:
+    bar.sync        0;
+    // 3. reduce
+    ld.param.u64    %rd25, [out_ptr];
+    cvta.to.global.u64 %rd26, %rd25;
+    mov.u32         %r4, %r0;
+ELEM:
+    mul.wide.u32    %rd0, %r4, 4;
+    mov.f32         %f1, 0f00000000;
+    mov.u32         %r30, 0;                                        // @B24
+    mov.u32         %r31, 0;                        // j
+RED:
+    add.u32         %r32, %r30, %r31;               // p = (start + j) mod 3
+    setp.ge.u32     %p3, %r32, 3;
+    @%p3 sub.u32    %r32, %r32, 3;
+    setp.eq.u32     %p4, %r32, 1;
+    setp.eq.u32     %p5, %r32, 2;
+    mov.b64         %rd23, %rd11;
+    @%p4 mov.b64    %rd23, %rd12;
+    @%p5 mov.b64    %rd23, %rd13;
+    add.u64         %rd24, %rd23, %rd0;
+    ld.global.f32   %f2, [%rd24];
+    add.rn.f32      %f1, %f1, %f2;
+    add.u32         %r31, %r31, 1;
+    setp.lt.u32     %p6, %r31, 3;
+    @%p6 bra        RED;
+    add.u64         %rd27, %rd26, %rd0;
+    st.global.f32   [%rd27], %f1;
+    add.u32         %r4, %r4, %r3;
+    setp.lt.u32     %p15, %r4, 32;
+    @%p15 bra       ELEM;
+    bar.sync        0;
+    // 4. barrier B
+    mov.u32         %r20, 1;
+    @%p0 bra        AFTER_B;
+    bra             BARRIER;                                        // @B22
+AFTER_B:
+    ret;
+
+    // ---- barrier (thread 0): signal every peer, then wait for every peer ----------------
+BARRIER:
+    shl.b32         %r21, %r2, 1;
+    add.u32         %r21, %r21, %r20;               // s = 2 * epoch + which  // @B21
+    mul.wide.u32    %rd28, %r1, 4;                  // my slot in a peer's pad
+    mov.u32         %r22, 0;                        // peer q
+SIG:
+    setp.eq.u32     %p7, %r22, %r1;
+    @%p7 bra        SIG_NEXT;
+    setp.eq.u32     %p8, %r22, 1;
+    setp.eq.u32     %p9, %r22, 2;
+    mov.b64         %rd29, %rd14;
+    @%p8 mov.b64    %rd29, %rd15;
+    @%p9 mov.b64    %rd29, %rd16;
+    add.u64         %rd30, %rd29, %rd28;
+    st.release.sys.global.u32 [%rd30], %r21;
+SIG_NEXT:
+    add.u32         %r22, %r22, 1;
+    setp.lt.u32     %p10, %r22, 3;
+    @%p10 bra       SIG;
+    mov.u32         %r22, 0;
+WAIT:
+    setp.eq.u32     %p11, %r22, %r1;
+    @%p11 bra       WAIT_NEXT;
+    mul.wide.u32    %rd31, %r22, 4;
+    add.u64         %rd32, %rd21, %rd31;
+POLL:
+    ld.acquire.sys.global.u32 %r23, [%rd32];
+    setp.lt.u32     %p12, %r23, %r21;
+    @%p12 bra       POLL;
+    // (B21 reset slot)                                             // @RESET
+WAIT_NEXT:
+    add.u32         %r22, %r22, 1;
+    setp.lt.u32     %p13, %r22, 3;
+    @%p13 bra       WAIT;
+    setp.eq.u32     %p14, %r20, 0;
+    @%p14 bra       AFTER_A;
+    bra             AFTER_B;
+}

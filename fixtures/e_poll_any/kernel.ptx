@@ -1,0 +1,41 @@
+// Fixture for E-POLL-ANY (value-insensitive polls): one CTA of two warps. Thread 0 sets a
+// global flag to 1, all threads meet at bar.sync, then thread 0 polls the flag with a
+// relaxed load until it is nonzero and writes out[0], while thread 32 stores the flag with a
+// relaxed store and writes out[1]. With the flag set to 2 every value passes and the poll
+// commutes with the store; set to 0 (variant `dl`), the poll passes on 1 but blocks on 0.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_poll_any(.param .u64 out_p, .param .u64 flag_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [flag_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra INITED;
+    st.global.u32 [%rd2], 1;
+INITED:
+    bar.sync 0;
+    setp.eq.u32 %p2, %r1, 32;
+    @%p2 bra WRITER;
+    setp.ne.u32 %p3, %r1, 0;
+    @%p3 bra DONE;
+SPIN:
+    ld.relaxed.gpu.global.u32 %r5, [%rd2];
+    setp.eq.u32 %p1, %r5, 0;
+    @%p1 bra SPIN;
+    st.global.u32 [%rd1], 7;              // @AFTER
+    bra DONE;
+WRITER:
+    // @READ
+    st.relaxed.gpu.global.u32 [%rd2], 2;  // @SET
+    st.global.u32 [%rd1+4], 9;
+DONE:
+    ret;
+}

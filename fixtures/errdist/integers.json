@@ -1,0 +1,2 @@
+{"version": 1, "seed": 1, "name": "integers -8..8 (exact in every format here)",
+ "default": {"dist": {"kind": "integers", "lo": -8, "hi": 8}}}

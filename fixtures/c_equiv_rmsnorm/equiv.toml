@@ -1,0 +1,17 @@
+# RMS norm (docs/equiv-reassoc.md, "Layer norm and RMS norm"): F.rms_norm(x, (128,), w, 1e-6)
+# (torch vectorized_layer_norm_kernel<float, rms>: sum of squares, div.rn by n, + eps,
+# rsqrt.approx.f32) against Triton's rmsnorm (tl.rsqrt: bare MUFU.RSQ), x 4x128 f32, in the
+# norm form: rho = (sum x^2 / n + eps)^-1/2 (kappa <= 1 is proven), bound relative to |y|.
+#   ptxv equiv fixtures/c_equiv_rmsnorm/equiv.toml --trials 200
+max_states = 200000
+segments = true
+trials = 10
+sweep_cache = "sweeps.json"
+reference = { case = "../c_rmsnorm_torch_f32", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "../c_rmsnorm_triton_f32"
+variant = "good"
+front = "sass"
+expect = "L1"
+expect_bound_u = 17.7

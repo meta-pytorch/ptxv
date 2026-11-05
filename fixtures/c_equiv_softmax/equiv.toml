@@ -1,0 +1,26 @@
+# Softmax (docs/equiv-reassoc.md): torch.softmax(x, -1) for x of 4x128 f32 (softmax_warp_forward:
+# FSETP/FSEL max, expf as FFMA range reduction + MUFU.EX2, div.rn) against Triton's two-pass
+# softmax (r4_softmax_triton: FMNMX max, ex2 with the subnormal-range guard, div.full) and an
+# online softmax (c_triton_softmax_online: running max and sum rescaled by exp(m_old - m_new)).
+#   ptxv equiv fixtures/c_equiv_softmax/equiv.toml --trials 200
+max_states = 200000
+segments = true
+trials = 20
+# The exhaustive slice sweeps (every f32 argument of each exp / 1/x slice), as computed by
+# ptxv; `ptxv equiv --no-sweep-cache` recomputes them (~2 CPU-hours, ~1 minute on 144 threads).
+sweep_cache = "sweeps.json"
+reference = { case = "../r4_softmax_torch", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "../r4_softmax_triton"
+variant = "good"
+front = "sass"
+expect = "L1"
+expect_bound_u = 46.2
+
+[[candidates]]
+case = "../c_triton_softmax_online"
+variant = "good"
+front = "sass"
+expect = "L1"
+expect_bound_u = 55.1

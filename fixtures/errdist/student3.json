@@ -1,0 +1,2 @@
+{"version": 1, "seed": 1, "name": "student t, 3 df (heavy-tailed)",
+ "default": {"dist": {"kind": "student_t", "df": 3, "mean": 0.0, "scale": 1.0}}}

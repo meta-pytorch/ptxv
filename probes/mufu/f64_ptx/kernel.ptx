@@ -1,0 +1,55 @@
+// N-MUFU probe: `rcp.approx.ftz.f64` / `rsqrt.approx.ftz.f64`, which ptxas emits as the bare
+// MUFU.RCP64H / MUFU.RSQ64H on the input's high word (result low word 0). 128 threads, each
+// on 4 random words: d1, d3 = raw bits; d2 = d1's mantissa with the exponent forced into
+// [2^-64, 2^64), positive; d4 = d3 with the exponent field cleared or forced to 0x7fe..0x7ff
+// (zeros, denormals, results that flush to 0, inf / NaN).
+// Run: probes/mufu/README.md ("f64").
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry f64ops(.param .u64 in_p, .param .u64 out_p)
+{
+    .reg .b32 %r<4>;
+    .reg .b64 %d<16>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [in_p];
+    ld.param.u64 %rd2, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 16;
+    add.u64 %rd4, %rd1, %rd3;
+    ld.global.u64 %d1, [%rd4];
+    ld.global.u64 %d3, [%rd4+8];
+    and.b64 %d2, %d1, 0x000fffffffffffff;
+    and.b64 %d4, %d1, 0x07f0000000000000;
+    shr.u64 %d4, %d4, 3;
+    add.u64 %d4, %d4, 0x3bf0000000000000;
+    or.b64 %d2, %d2, %d4;
+    // d4: bit 62 of d3 picks exponent 0 or 0x7fe | (bit 52)
+    and.b64 %d5, %d3, 0x801fffffffffffff;
+    and.b64 %d6, %d3, 0x4000000000000000;
+    shr.u64 %d6, %d6, 9;
+    mul.lo.u64 %d6, %d6, 0x3ff;
+    or.b64 %d4, %d5, %d6;
+    mul.wide.u32 %rd5, %r1, 64;
+    add.u64 %rd6, %rd2, %rd5;
+    rcp.approx.ftz.f64 %d8, %d1;
+    st.global.u64 [%rd6+0], %d8;
+    rcp.approx.ftz.f64 %d9, %d2;
+    st.global.u64 [%rd6+8], %d9;
+    rcp.approx.ftz.f64 %d10, %d4;
+    st.global.u64 [%rd6+16], %d10;
+    rsqrt.approx.ftz.f64 %d11, %d1;
+    st.global.u64 [%rd6+24], %d11;
+    rsqrt.approx.ftz.f64 %d12, %d2;
+    st.global.u64 [%rd6+32], %d12;
+    rsqrt.approx.ftz.f64 %d13, %d4;
+    st.global.u64 [%rd6+40], %d13;
+    rcp.approx.ftz.f64 %d14, %d3;
+    st.global.u64 [%rd6+48], %d14;
+    rsqrt.approx.ftz.f64 %d15, %d3;
+    st.global.u64 [%rd6+56], %d15;
+    ret;
+}

@@ -1,0 +1,93 @@
+{
+ "what": "`F.layer_norm(x, (128,), w, b, 1e-5)` with x = randn(4,128,f32), w = randn(128,f32), b = randn(128,f32)",
+ "argv": [
+  "--op",
+  "F.layer_norm(x, (128,), w, b, 1e-5)",
+  "--inputs",
+  "x=randn(4,128,f32),w=randn(128,f32),b=randn(128,f32)",
+  "--out",
+  "fixtures/c_layernorm_torch_f32",
+  "--work",
+  "/tmp/ptxv_capture_1187187"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "_ZN2at6native53_GLOBAL__N__03ac1a2e_20_layer_norm_kernel_cu_9c5ada8a28vectorized_layer_norm_kernelIffLb0EEEviT0_PKT_S6_S6_PS3_S7_PS4_",
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    32,
+    4,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 24,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "x",
+   "dtype": "f32",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 2048
+  },
+  {
+   "name": "w",
+   "dtype": "f32",
+   "shape": [
+    128
+   ],
+   "size": 512
+  },
+  {
+   "name": "b",
+   "dtype": "f32",
+   "shape": [
+    128
+   ],
+   "size": 512
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 2048
+  },
+  {
+   "name": "W0",
+   "dtype": "u8",
+   "shape": [
+    16
+   ],
+   "size": 16
+  },
+  {
+   "name": "W1",
+   "dtype": "u8",
+   "shape": [
+    16
+   ],
+   "size": 16
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

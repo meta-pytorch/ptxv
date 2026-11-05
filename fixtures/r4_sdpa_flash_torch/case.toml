@@ -1,0 +1,93 @@
+name = "r4_sdpa_flash_torch"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): run() of sdpa_flash.py. 1 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: _ZN13pytorch_flash16flash_fwd_kernelI23Flash_fwd_kernel_traitsILi64ELi128ELi128ELi4ELb0ELb0EN7cutlass10bfloat1 grid [1, 1, 1] block [128, 1, 1]
+Regenerate: CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/capture.py --file tools/capture_examples/sdpa_flash.py --out fixtures/r4_sdpa_flash_torch"""
+cubin = "k0.cubin"
+entry = "_ZN13pytorch_flash16flash_fwd_kernelI23Flash_fwd_kernel_traitsILi64ELi128ELi128ELi4ELb0ELb0EN7cutlass10bfloat16_tE19Flash_kernel_traitsILi64ELi128ELi128ELi4ES3_EELb0ELb0ELb0ELb0ELb1ELb1ELb0ELb0EEEvNS_16Flash_fwd_paramsE"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 49152
+outputs = ["out"]
+
+[[buffers]]
+name = "q"
+dtype = "bf16"
+shape = [1, 1, 128, 64]
+init = "file"
+file = "data/q.bin"
+
+[[buffers]]
+name = "k"
+dtype = "bf16"
+shape = [1, 1, 128, 64]
+init = "file"
+file = "data/k.bin"
+
+[[buffers]]
+name = "v"
+dtype = "bf16"
+shape = [1, 1, 128, 64]
+init = "file"
+file = "data/v.bin"
+
+[[buffers]]
+name = "out"
+dtype = "bf16"
+shape = [1, 1, 128, 64]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "W0"
+dtype = "u8"
+shape = [512]
+init = "zeros"
+
+[[params]]
+kind = "bytes"
+hex = "0000c09dfaff00000040c09dfaff00000080c09dfaff00000020000000000000002000000000000000200000000000004000000000000000400000000000000040000000000000000020000000000000002000000000000000200000000000000100000001000000010000000000000000c0c09dfaff0000000000000000000000200000000000004000000000000000002000000000000000000000000000000000c19dfaff00000000000000000000010000008000000080000000000000004000000080000000800000004000000000000000000000000000003e3baa383e000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000803fff0000000000803f0000003effffffffffffffff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000100010000000000000000000000000000000000000000003b2129d60200"
+
+[[params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "q"
+byte_offset = 0
+
+[[params.fields]]
+offset = 8
+kind = "ptr"
+buffer = "k"
+byte_offset = 0
+
+[[params.fields]]
+offset = 16
+kind = "ptr"
+buffer = "v"
+byte_offset = 0
+
+[[params.fields]]
+offset = 112
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[params.fields]]
+offset = 160
+kind = "ptr"
+buffer = "W0"
+byte_offset = 0
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]
+hw_note = "lifts completely (HMMA, LDSM, cp.async, local memory, LEA -R); the run matches GB300 bitwise (expected/)"
+
+[[variants]]
+id = "nosb"
+summary = "SASS: LDSM.16.M88.4 R4 (Q's fragment for the first HMMA) at 0x12c0 gets no write scoreboard (wr SB3 -> none)"
+patch = [{ at = "@0x12c0", wbar = 7 }]
+expect = ["violation"]
+hw_note = "the first HMMA reads R4..R7 before ldmatrix has written them"

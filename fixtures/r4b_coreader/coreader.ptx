@@ -1,0 +1,54 @@
+// Co-resident reader for fixtures/r4b_coreader (docs/deepep-coreader.md). Thread 0 weak-loads
+// one word of line 0 of DeepEP's local NVLink buffer at byte offset OFF (the `coreader`
+// kernel: 0x60 = bytes 96..99; `coreader_racy`: 0x0 = the per-rank token count of rank 0)
+// and stores it to its own output. Built with `ptxas -arch=sm_103a coreader.ptx -o
+// coreader.cubin`.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry coreader(
+    .param .u64 buf,
+    .param .u64 out
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+
+    mov.u32         %r1, %tid.x;
+    setp.ne.u32     %p1, %r1, 0;
+    @%p1 bra        CDONE;
+    ld.param.u64    %rd0, [buf];
+    cvta.to.global.u64 %rd1, %rd0;
+    ld.global.u32   %r2, [%rd1+96];
+    ld.param.u64    %rd2, [out];
+    cvta.to.global.u64 %rd3, %rd2;
+    st.global.u32   [%rd3], %r2;
+CDONE:
+    ret;
+}
+
+.visible .entry coreader_racy(
+    .param .u64 buf,
+    .param .u64 out
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+
+    mov.u32         %r1, %tid.x;
+    setp.ne.u32     %p1, %r1, 0;
+    @%p1 bra        RDONE;
+    ld.param.u64    %rd0, [buf];
+    cvta.to.global.u64 %rd1, %rd0;
+    ld.global.u32   %r2, [%rd1];
+    ld.param.u64    %rd2, [out];
+    cvta.to.global.u64 %rd3, %rd2;
+    st.global.u32   [%rd3], %r2;
+RDONE:
+    ret;
+}

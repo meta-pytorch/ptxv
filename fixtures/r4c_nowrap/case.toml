@@ -1,0 +1,1119 @@
+name = "r4c_nowrap"
+description = """
+Captured by tools/capture_dist.py (torch 2.12.0a0+git808dd93, torchrun --nproc-per-node 2):
+run() of deepep_ring.py. 10 launch(es) on 2 GPUs, binary only:
+  rank 0: _ZN7deep_ep6layout19get_dispatch_layoutILi256ELi4ELi8EEEvPKlPiS4_S4_Pbiiii grid [2, 1, 1] block [256, 1, 1]
+  rank 1: _ZN7deep_ep6layout19get_dispatch_layoutILi256ELi4ELi8EEEvPKlPiS4_S4_Pbiiii grid [2, 1, 1] block [256, 1, 1]
+  rank 0: _ZN7deep_ep9intranode15notify_dispatchILi2EEEvPKiPiS3_S4_iiiPKbS4_S4_iiPPvPS4_i grid [3, 1, 1] block [128, 1, 1]
+  rank 1: _ZN7deep_ep9intranode15notify_dispatchILi2EEEvPKiPiS3_S4_iiiPKbS4_S4_iiPPvPS4_i grid [3, 1, 1] block [128, 1, 1]
+  rank 0: _ZN7deep_ep9intranode8dispatchILi2ELi768ELi8192EEEvP4int4PfPiPlS4_S5_S5_PKS2_PKfPKlSA_PKbPKiiiiiiiii grid [2, 1, 1] block [768, 1, 1]
+  rank 1: _ZN7deep_ep9intranode8dispatchILi2ELi768ELi8192EEEvP4int4PfPiPlS4_S5_S5_PKS2_PKfPKlSA_PKbPKiiiiiiiii grid [2, 1, 1] block [768, 1, 1]
+  rank 1: _ZN7deep_ep9intranode21cached_notify_combineILi2EEEvPPvPiiiiPS4_i grid [2, 1, 1] block [128, 1, 1]
+  rank 0: _ZN7deep_ep9intranode21cached_notify_combineILi2EEEvPPvPiiiiPS4_i grid [2, 1, 1] block [128, 1, 1]
+  rank 1: _ZN7deep_ep9intranode7combineI13__nv_bfloat16Li2ELi768ELi4096EEEvPT_PfPKS3_PKfS7_S7_PKiSB_SB_PiiiiiP grid [2, 1, 1] block [768, 1, 1]
+  rank 0: _ZN7deep_ep9intranode7combineI13__nv_bfloat16Li2ELi768ELi4096EEEvPT_PfPKS3_PKfS7_S7_PKiSB_SB_PiiiiiP grid [2, 1, 1] block [768, 1, 1]
+Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py --nproc 2 --file tools/capture_examples/deepep_ring.py --out fixtures/r4c_nowrap"""
+cubin = "k0.cubin"
+entry = "_ZN7deep_ep6layout19get_dispatch_layoutILi256ELi4ELi8EEEvPKlPiS4_S4_Pbiiii"
+grid = [2, 1, 1]
+block = [256, 1, 1]
+dynamic_smem = 0
+outputs = ["y_r0", "y_r1"]
+replicas = []
+
+# DeepEP synchronizes through relaxed polls and a shared-memory relay; under the strict PTX
+# model those are races (docs/rung4.md, T4b), and so is the reuse of a ring slot (T4c). These
+# opt-ins state the hardware guarantees the verdict relies on (ASSUMPTIONS.md E-POLL-ACQ,
+# E-SMEM-CUMUL, E-READ-DONE).
+# E-POLL-ACQ is REFUTED on GB300 (docs/poll-acq-litmus.md): this case relies on it, so its
+# verdicts hold only under E-POLL-ACQ and can miss stale reads; ptxv lists it in the verdict.
+poll_acquire = true
+# E-POLL-ACQ is refuted on GB300 (ASSUMPTIONS.md); this case opts in explicitly and its verdicts name it.
+assume_refuted = ["E-POLL-ACQ"]
+smem_cumulative = true
+read_done = true
+
+[[buffers]]
+name = "x_r0"
+dtype = "bf16"
+shape = [256]
+device = 0
+init = "file"
+file = "data/x_r0.bin"
+
+[[buffers]]
+name = "topk_r0"
+dtype = "i64"
+shape = [64]
+device = 0
+init = "file"
+file = "data/topk_r0.bin"
+
+[[buffers]]
+name = "w_r0"
+dtype = "f32"
+shape = [128]
+device = 0
+init = "file"
+file = "data/w_r0.bin"
+
+[[buffers]]
+name = "W0_r0"
+dtype = "u8"
+shape = [512]
+device = 0
+init = "file"
+file = "data/W0_r0.bin"
+
+[[buffers]]
+name = "W1_r0"
+dtype = "u8"
+shape = [8]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W2_r0"
+dtype = "u8"
+shape = [6]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W3_r0"
+dtype = "u8"
+shape = [16]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W4_r0"
+dtype = "u8"
+shape = [8]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W5_r0"
+dtype = "u8"
+shape = [192]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W6_r0"
+dtype = "u8"
+shape = [24]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W7_r0"
+dtype = "u8"
+shape = [8]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W8_r0"
+dtype = "u8"
+shape = [24]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "y_r0"
+dtype = "bf16"
+shape = [3, 16]
+device = 0
+init = "zeros"
+expect = "expected/y_r0.bin"
+
+[[buffers]]
+name = "W9_r0"
+dtype = "u8"
+shape = [48]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "dev4_r0"
+dtype = "u64"
+shape = [2116]
+device = 0
+init = "file"
+file = "data/dev4_r0.bin"
+[[buffers.ptrs]]
+offset = 16800
+buffer = "dev4_r0"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 16808
+buffer = "dev4_r1"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 16864
+buffer = "dev4_r0"
+byte_offset = 16768
+[[buffers.ptrs]]
+offset = 16872
+buffer = "dev4_r1"
+byte_offset = 16768
+
+[[buffers]]
+name = "host6_r0"
+dtype = "u8"
+shape = [8]
+device = 0
+init = "file"
+file = "data/host6_r0.bin"
+
+[[buffers]]
+name = "host7_r0"
+dtype = "u8"
+shape = [4096]
+device = 0
+init = "file"
+file = "data/host7_r0.bin"
+
+[[buffers]]
+name = "x_r1"
+dtype = "bf16"
+shape = [256]
+device = 1
+init = "file"
+file = "data/x_r1.bin"
+
+[[buffers]]
+name = "topk_r1"
+dtype = "i64"
+shape = [64]
+device = 1
+init = "file"
+file = "data/topk_r1.bin"
+
+[[buffers]]
+name = "w_r1"
+dtype = "f32"
+shape = [128]
+device = 1
+init = "file"
+file = "data/w_r1.bin"
+
+[[buffers]]
+name = "W0_r1"
+dtype = "u8"
+shape = [512]
+device = 1
+init = "file"
+file = "data/W0_r1.bin"
+
+[[buffers]]
+name = "W1_r1"
+dtype = "u8"
+shape = [8]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W2_r1"
+dtype = "u8"
+shape = [6]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W3_r1"
+dtype = "u8"
+shape = [16]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W4_r1"
+dtype = "u8"
+shape = [8]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W5_r1"
+dtype = "u8"
+shape = [192]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W6_r1"
+dtype = "u8"
+shape = [24]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W7_r1"
+dtype = "u8"
+shape = [8]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W8_r1"
+dtype = "u8"
+shape = [24]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "y_r1"
+dtype = "bf16"
+shape = [3, 16]
+device = 1
+init = "zeros"
+expect = "expected/y_r1.bin"
+
+[[buffers]]
+name = "W9_r1"
+dtype = "u8"
+shape = [48]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "dev4_r1"
+dtype = "u64"
+shape = [2116]
+device = 1
+init = "file"
+file = "data/dev4_r1.bin"
+[[buffers.ptrs]]
+offset = 16800
+buffer = "dev4_r0"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 16808
+buffer = "dev4_r1"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 16864
+buffer = "dev4_r0"
+byte_offset = 16768
+[[buffers.ptrs]]
+offset = 16872
+buffer = "dev4_r1"
+byte_offset = 16768
+
+[[buffers]]
+name = "host6_r1"
+dtype = "u8"
+shape = [8]
+device = 1
+init = "file"
+file = "data/host6_r1.bin"
+
+[[buffers]]
+name = "host7_r1"
+dtype = "u8"
+shape = [4096]
+device = 1
+init = "file"
+file = "data/host7_r1.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "topk_r0"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "W0_r0"
+byte_offset = 0
+
+[[params]]
+kind = "u64"
+value = 0
+
+[[params]]
+kind = "ptr"
+buffer = "W1_r0"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "W2_r0"
+byte_offset = 0
+
+[[params]]
+kind = "u32"
+value = 3
+
+[[params]]
+kind = "u32"
+value = 2
+
+[[params]]
+kind = "u32"
+value = 2
+
+[[params]]
+kind = "u32"
+value = 2
+
+[[launches]]
+entry = "_ZN7deep_ep6layout19get_dispatch_layoutILi256ELi4ELi8EEEvPKlPiS4_S4_Pbiiii"
+grid = [2, 1, 1]
+block = [256, 1, 1]
+cluster = [2, 1, 1]
+dynamic_smem = 0
+device = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "topk_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W0_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W1_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W2_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 3
+
+[[launches.params]]
+kind = "u32"
+value = 2
+
+[[launches.params]]
+kind = "u32"
+value = 2
+
+[[launches.params]]
+kind = "u32"
+value = 2
+
+[[launches]]
+entry = "_ZN7deep_ep9intranode15notify_dispatchILi2EEEvPKiPiS3_S4_iiiPKbS4_S4_iiPPvPS4_i"
+grid = [3, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W0_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "host6_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W1_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "host7_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 2
+
+[[launches.params]]
+kind = "u32"
+value = 3
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W2_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W4_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W3_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 8
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r0"
+byte_offset = 16800
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r0"
+byte_offset = 16864
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches]]
+entry = "_ZN7deep_ep9intranode15notify_dispatchILi2EEEvPKiPiS3_S4_iiiPKbS4_S4_iiPPvPS4_i"
+grid = [3, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W0_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "host6_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W1_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "host7_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 2
+
+[[launches.params]]
+kind = "u32"
+value = 3
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W2_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W4_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W3_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 8
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r1"
+byte_offset = 16800
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r1"
+byte_offset = 16864
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches]]
+entry = "_ZN7deep_ep9intranode8dispatchILi2ELi768ELi8192EEEvP4int4PfPiPlS4_S5_S5_PKS2_PKfPKlSA_PKbPKiiiiiiiiiPPviii"
+grid = [2, 1, 1]
+block = [768, 1, 1]
+cluster = [2, 1, 1]
+dynamic_smem = 196608
+device = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W5_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W6_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "y_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W9_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W7_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W8_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "x_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "topk_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "w_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W2_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W4_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 3
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 2
+
+[[launches.params]]
+kind = "u32"
+value = 2
+
+[[launches.params]]
+kind = "u32"
+value = 2
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r0"
+byte_offset = 16800
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "u32"
+value = 4
+
+[[launches]]
+entry = "_ZN7deep_ep9intranode8dispatchILi2ELi768ELi8192EEEvP4int4PfPiPlS4_S5_S5_PKS2_PKfPKlSA_PKbPKiiiiiiiiiPPviii"
+grid = [2, 1, 1]
+block = [768, 1, 1]
+cluster = [2, 1, 1]
+dynamic_smem = 196608
+device = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W5_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W6_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "y_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W9_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W7_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W8_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "x_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "topk_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "w_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W2_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W4_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 3
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 2
+
+[[launches.params]]
+kind = "u32"
+value = 2
+
+[[launches.params]]
+kind = "u32"
+value = 2
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r1"
+byte_offset = 16800
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "u32"
+value = 4
+
+[[launches]]
+entry = "_ZN7deep_ep9intranode21cached_notify_combineILi2EEEvPPvPiiiiPS4_i"
+grid = [2, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r1"
+byte_offset = 16800
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W8_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "u32"
+value = 3
+
+[[launches.params]]
+kind = "u32"
+value = 4
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r1"
+byte_offset = 16864
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches]]
+entry = "_ZN7deep_ep9intranode21cached_notify_combineILi2EEEvPPvPiiiiPS4_i"
+grid = [2, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r0"
+byte_offset = 16800
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W8_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "u32"
+value = 3
+
+[[launches.params]]
+kind = "u32"
+value = 4
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r0"
+byte_offset = 16864
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches]]
+entry = "_ZN7deep_ep9intranode7combineI13__nv_bfloat16Li2ELi768ELi4096EEEvPT_PfPKS3_PKfS7_S7_PKiSB_SB_PiiiiiPPviii"
+grid = [2, 1, 1]
+block = [768, 1, 1]
+cluster = [2, 1, 1]
+dynamic_smem = 98304
+device = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "y_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W5_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W6_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W3_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W7_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W8_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 6
+
+[[launches.params]]
+kind = "u32"
+value = 3
+
+[[launches.params]]
+kind = "u32"
+value = 16
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r1"
+byte_offset = 16800
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "u32"
+value = 4
+
+[[launches]]
+entry = "_ZN7deep_ep9intranode7combineI13__nv_bfloat16Li2ELi768ELi4096EEEvPT_PfPKS3_PKfS7_S7_PKiSB_SB_PiiiiiPPviii"
+grid = [2, 1, 1]
+block = [768, 1, 1]
+cluster = [2, 1, 1]
+dynamic_smem = 98304
+device = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "y_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W5_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W6_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W3_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W7_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W8_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 6
+
+[[launches.params]]
+kind = "u32"
+value = 3
+
+[[launches.params]]
+kind = "u32"
+value = 16
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r0"
+byte_offset = 16800
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "u32"
+value = 4
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["contract"]
+hw_note = "E-BULK-EXIT only: DeepEP dispatch's bulk store may still read shared memory at CTA exit (GB300 drains it)."
+
+# Rung 4b's DeepEP mutants on this instance (same SASS offsets: the same DeepEP build).
+
+[[variants]]
+id = "B33"
+summary = "dispatch sender: the release fence before the channel tail store is NOPed (st.relaxed tail), so the peer can see the new tail before the token data"
+patch = [{ at = "@0x3830", nop = true, expect = "NOP", kernel = "_ZN7deep_ep9intranode8dispatchILi2ELi768ELi8192EEEvP4int4PfPiPlS4_S5_S5_PKS2_PKfPKlSA_PKbPKiiiiiiiiiPPviii" }]
+expect = ["race"]
+
+[[variants]]
+id = "B34"
+summary = "buffer reuse without a barrier: cached_notify_combine skips both of its barrier_blocks (each vote's exit branch is made unconditional)"
+patch = [
+    { at = "@0x0470", bits = [[12, 4, 7]], expect = "BRA `(.L_x_122)", kernel = "_ZN7deep_ep9intranode21cached_notify_combineILi2EEEvPPvPiiiiPS4_i" },
+    { at = "@0x0e00", bits = [[12, 4, 7]], expect = "BRA `(.L_x_137)", kernel = "_ZN7deep_ep9intranode21cached_notify_combineILi2EEEvPPvPiiiiPS4_i" },
+]
+expect = ["deadlock", "race"]
+
+[[variants]]
+id = "B35"
+summary = "dispatch sender never publishes its channel tail (the tail store is NOPed): the receiver waits for tokens forever"
+patch = [{ at = "@0x3860", nop = true, expect = "NOP", kernel = "_ZN7deep_ep9intranode8dispatchILi2ELi768ELi8192EEEvP4int4PfPiPlS4_S5_S5_PKS2_PKfPKlSA_PKbPKiiiiiiiiiPPviii" }]
+expect = ["deadlock"]
+
+[[variants]]
+id = "B36"
+summary = "notify_dispatch's opening barrier loses a signal (the first ATOM.ADD to the peer's barrier slot is NOPed): the peer's barrier_block never completes"
+patch = [{ at = "@0x0180", nop = true, expect = "NOP", kernel = "_ZN7deep_ep9intranode15notify_dispatchILi2EEEvPKiPiS3_S4_iiiPKbS4_S4_iiPPvPS4_i" }]
+expect = ["deadlock"]
+
+[[variants]]
+id = "B37"
+summary = "stream order: combine (launch 8) is ordered only after its rank's dispatch (launch 5), not after cached_notify_combine, which still clears the buffer combine uses"
+after = [[8, 5]]
+expect = ["race"]
+
+# New protocol mutants (rung 4c): the ring.
+
+[[variants]]
+id = "B41"
+summary = "dispatch receiver publishes its head without waiting for its warps (the bar.sync before the head store is NOPed): the head can say a slot is free while another receiver warp still reads it"
+patch = [{ at = "@0x7f40", nop = true, expect = "NOP", kernel = "_ZN7deep_ep9intranode8dispatchILi2ELi768ELi8192EEEvP4int4PfPiPlS4_S5_S5_PKS2_PKfPKlSA_PKbPKiiiiiiiiiPPviii" }]
+expect = ["contract"]
+# Latent here: no ring slot is reused (fewer tokens than slots). Caught in r4c_dwrap.
+
+[[variants]]
+id = "B42"
+summary = "dispatch sender publishes its tail before every sender warp wrote its tokens (the bar.sync before the tail store is NOPed): publish before write"
+patch = [{ at = "@0x3780", nop = true, expect = "NOP", kernel = "_ZN7deep_ep9intranode8dispatchILi2ELi768ELi8192EEEvP4int4PfPiPlS4_S5_S5_PKS2_PKfPKlSA_PKbPKiiiiiiiiiPPviii" }]
+expect = ["race"]
+
+[[variants]]
+id = "B43"
+summary = "combine sender: the release fence before the channel tail store is NOPed (B33 in combine)"
+patch = [{ at = "@0x1f90", nop = true, expect = "NOP", kernel = "_ZN7deep_ep9intranode7combineI13__nv_bfloat16Li2ELi768ELi4096EEEvPT_PfPKS3_PKfS7_S7_PKiSB_SB_PiiiiiPPviii" }]
+expect = ["race"]
+
+[[variants]]
+id = "B44"
+summary = "combine sender publishes its tail before every sender warp wrote its tokens (the bar.sync before the tail store is NOPed): publish before write"
+patch = [{ at = "@0x1eb0", nop = true, expect = "NOP", kernel = "_ZN7deep_ep9intranode7combineI13__nv_bfloat16Li2ELi768ELi4096EEEvPT_PfPKS3_PKfS7_S7_PKiSB_SB_PiiiiiPPviii" }]
+expect = ["contract"]
+# Latent here: with 1-token chunks only sender warp 0 copies, so the barrier orders nothing. Caught in r4c_chunk2.

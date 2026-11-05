@@ -1,0 +1,44 @@
+name = "e_exitbound"
+description = """
+Fixture for the partial-warp exit reduction (local_ample `exit_bound`): half of warp 0 leaves
+through plain stores while the other half waits on an mbarrier. Each bug puts a race on the
+leaving lanes' path."""
+ptx = "kernel.ptx"
+entry = "e_exitbound"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "XB1"
+summary = "the leaving lanes also write the slot the producer fills: a shared-memory race"
+marker = "@LEAVE"
+find = "mov.u32 %r5, %r1;"
+replace = "mov.u32 %r5, %r1;\n    st.shared.u32 [%r9], %r1;"
+# Which value the waiting lanes read is an outcome of the race. Reductions are exact for
+# race-free kernels only (E-DRF): the race is reported, the second outcome need not be.
+expect = ["race"]
+expect_sass = ["nondeterministic"]
+
+[[variants]]
+id = "XB2"
+summary = "the leaving lanes store to out[tid - 16], the waiting lanes' outputs: a global race"
+marker = "@LEAVE"
+find = "mov.u32 %r5, %r1;"
+replace = "sub.u32 %r5, %r1, 16;"
+expect = ["race"]
+expect_sass = ["nondeterministic", "race"]

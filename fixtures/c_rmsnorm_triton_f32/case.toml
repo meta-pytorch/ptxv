@@ -1,0 +1,73 @@
+name = "c_rmsnorm_triton_f32"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): run() of triton_rmsnorm_f32.py (kernel ^rmsnorm_kernel$). 1 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: rmsnorm_kernel grid [4, 1, 1] block [64, 1, 1]
+Regenerate: CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/capture.py --triton tools/capture_examples/triton_rmsnorm_f32.py:rmsnorm_kernel --binary --out fixtures/c_rmsnorm_triton_f32"""
+cubin = "k0.cubin"
+entry = "rmsnorm_kernel"
+grid = [4, 1, 1]
+block = [64, 1, 1]
+dynamic_smem = 8
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [4, 128]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [128]
+init = "file"
+file = "data/w.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [4, 128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[params]]
+kind = "u32"
+value = 128
+
+[[params]]
+kind = "u32"
+value = 128
+
+[[params]]
+kind = "u32"
+value = 897988541
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

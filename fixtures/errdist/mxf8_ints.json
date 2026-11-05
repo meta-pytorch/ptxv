@@ -1,0 +1,6 @@
+{"version": 1, "seed": 1, "name": "integers -8..8 as e4m3 codes, unit ue8m0 scales (every partial sum exact)",
+ "tensors": {
+  "A": {"dist": {"kind": "integers", "lo": -8, "hi": 8}, "quant": {"kind": "cast", "format": "e4m3"}},
+  "B": {"dist": {"kind": "integers", "lo": -8, "hi": 8}, "quant": {"kind": "cast", "format": "e4m3"}},
+  "SFA": {"dist": {"kind": "codes", "format": "ue8m0", "range": [127, 127]}, "quant": {"kind": "codes"}},
+  "SFB": {"dist": {"kind": "codes", "format": "ue8m0", "range": [127, 127]}, "quant": {"kind": "codes"}}}}

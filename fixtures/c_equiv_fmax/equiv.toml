@@ -1,0 +1,20 @@
+# Row maxima: CUTLASS's atomicMaxFloat (signed max / unsigned min by the sign bit, N-FMAX)
+# against a sequential fmaxf, and the same with the choice made by value > 0.5 (a branch both
+# sides of which do not compute the same maximum: blocks).
+#   ptxv equiv fixtures/c_equiv_fmax/equiv.toml
+max_states = 200000
+trials = 20
+segments = true
+reference = { case = "../c_fmax_seq", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "../c_fmax_atomic"
+variant = "good"
+front = "sass"
+expect = "L0"
+
+[[candidates]]
+case = "../c_fmax_atomic_bad"
+variant = "good"
+front = "sass"
+expect = "none (unproven)"

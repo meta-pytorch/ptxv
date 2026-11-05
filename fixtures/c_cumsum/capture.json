@@ -1,0 +1,61 @@
+{
+ "what": "`torch.cumsum(x, -1)` with x = randn(4,128,f32)",
+ "argv": [
+  "--op",
+  "torch.cumsum(x, -1)",
+  "--inputs",
+  "x=randn(4,128,f32)",
+  "--out",
+  "fixtures/c_cumsum",
+  "--work",
+  "/tmp/ptxv_capture_2233011"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "_ZN2at6native32tensor_kernel_scan_innermost_dimIfSt4plusIfEEEvPT_PKS4_jjjS4_T0_",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    4,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 4096,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "x",
+   "dtype": "f32",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 2048
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 2048
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

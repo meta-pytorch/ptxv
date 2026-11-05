@@ -1,0 +1,25 @@
+name = "probe_tmem_16x128b"
+description = """
+Probe for the tcgen05.ld.16x128b layout (SASS LDTM.16dp128bit, cuBLAS nvjet NVFP4 2-CTA
+epilogue). Warp w stores lane * 256 + column to its TMEM lanes, columns 0..31 (32x32b), then
+loads 16x128b .x1 (out[32 t + 0..1]), .x2 (2..5), .x4 (6..13) from its own quadrant and .x4
+from lane field 16 (14..21), t = thread index 0..127. expected/out.bin is the GB300 output."""
+ptx = "kernel.ptx"
+entry = "probe_tmem_16x128b"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4096]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

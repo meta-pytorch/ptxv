@@ -1,0 +1,85 @@
+{
+ "what": "run() of triton_mxf8.py",
+ "argv": [
+  "--file",
+  "tools/capture_examples/triton_mxf8.py",
+  "--binary",
+  "--out",
+  "fixtures/c_triton_mxf8_rev",
+  "--work",
+  "WORK"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "mxf8_kernel",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 16384,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "A",
+   "dtype": "u8",
+   "shape": [
+    128,
+    256
+   ],
+   "size": 32768
+  },
+  {
+   "name": "B",
+   "dtype": "u8",
+   "shape": [
+    128,
+    256
+   ],
+   "size": 32768
+  },
+  {
+   "name": "SFA",
+   "dtype": "u8",
+   "shape": [
+    1024
+   ],
+   "size": 1024
+  },
+  {
+   "name": "SFB",
+   "dtype": "u8",
+   "shape": [
+    1024
+   ],
+   "size": 1024
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    128,
+    128
+   ],
+   "size": 65536
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

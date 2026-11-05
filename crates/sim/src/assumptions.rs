@@ -1,0 +1,1132 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+//! The assumption registry (long form: ASSUMPTIONS.md). Every verdict lists the IDs that
+//! apply to its kernel; `tests/assumptions.rs` keeps this table, the document and the
+//! `ASSUME(ID)` tags in the code in sync.
+
+use ptxv_ir::FenceKind;
+use ptxv_ir::Front;
+use ptxv_ir::Kernel;
+use ptxv_ir::Op;
+
+pub struct Assumption {
+    pub id: &'static str,
+    /// "code" (tagged in the source) or "process" (how we test; not tagged).
+    pub kind: &'static str,
+    pub status: &'static str,
+    pub title: &'static str,
+    /// Does a verdict on this kernel depend on it?
+    pub applies: fn(&Kernel) -> bool,
+}
+
+fn any(k: &Kernel, f: impl Fn(&Op) -> bool) -> bool {
+    k.code.iter().any(|i| f(&i.op))
+}
+fn sass(k: &Kernel) -> bool {
+    k.front == Front::Sass
+}
+fn always(_: &Kernel) -> bool {
+    true
+}
+fn never(_: &Kernel) -> bool {
+    false
+}
+fn tmem(k: &Kernel) -> bool {
+    any(k, |o| {
+        matches!(
+            o,
+            Op::TmemAlloc { .. }
+                | Op::TmemAllocRaw { .. }
+                | Op::TmemLd { .. }
+                | Op::TmemDealloc { .. }
+                | Op::Mma { .. }
+        )
+    })
+}
+/// Uses another CTA of its cluster (DSMEM, multicast, cluster barrier, cluster rank).
+fn cluster(k: &Kernel) -> bool {
+    any(k, |o| {
+        matches!(
+            o,
+            Op::Mapa { .. }
+                | Op::ClusterArrive { .. }
+                | Op::ClusterWait
+                | Op::MbarArrive { remote: true, .. }
+                | Op::TmaLoad { mask: Some(_), .. }
+        )
+    })
+}
+fn mbar(k: &Kernel) -> bool {
+    any(k, |o| {
+        matches!(
+            o,
+            Op::MbarInit { .. } | Op::MbarArrive { .. } | Op::MbarTryWait { .. }
+        )
+    })
+}
+
+pub const REGISTRY: &[Assumption] = &[
+    Assumption {
+        id: "E-SPIN",
+        kind: "code",
+        status: "enforced",
+        title: "a failed try_wait / flag poll blocks until it would succeed (loop shape checked)",
+        applies: |k| {
+            any(k, |o| matches!(o, Op::MbarTryWait { .. }))
+                || !crate::spin::poll_loops(&k.code, k.front).is_empty()
+                || !crate::spin::wpoll_loops(&k.code, k.front).is_empty()
+        },
+    },
+    Assumption {
+        id: "E-CLOCK",
+        kind: "code",
+        status: "argued",
+        title: "SASS clock reads (CS2R SR_CLOCKLO) return 0: timeouts never fire, vprintf is a no-op",
+        applies: |k| {
+            k.code
+                .iter()
+                .any(|i| i.text.contains("SR_CLOCKLO") || i.text.contains("vprintf"))
+        },
+    },
+    Assumption {
+        id: "E-ALLOC",
+        kind: "code",
+        status: "argued",
+        title: "a TMEM alloc that cannot succeed blocks until columns are freed",
+        applies: |k| {
+            any(k, |o| {
+                matches!(o, Op::TmemAlloc { .. } | Op::TmemAllocRaw { .. })
+            })
+        },
+    },
+    Assumption {
+        id: "E-DRF",
+        kind: "code",
+        status: "argued",
+        title: "DRF-SC: plain and TMEM accesses are not scheduling points",
+        applies: always,
+    },
+    Assumption {
+        id: "E-ELECT",
+        kind: "code",
+        status: "argued",
+        title: "elect: SASS lowest lane (GB300 probe); PTX fixed leader, lowest and highest explored",
+        applies: |k| any(k, |o| matches!(o, Op::Elect { .. })),
+    },
+    Assumption {
+        id: "E-LOCKSTEP",
+        kind: "code",
+        status: "argued",
+        title: "SASS: converged lanes are ordered instruction by instruction",
+        applies: sass,
+    },
+    Assumption {
+        id: "E-ALIGNED",
+        kind: "code",
+        status: "validated",
+        title: ".sync.aligned instructions are warp convergence points",
+        applies: |k| any(k, |o| o.is_warp_aligned()),
+    },
+    Assumption {
+        id: "E-WELLSYNC",
+        kind: "code",
+        status: "argued",
+        title: "a well-synchronized run (every phase, wait, generation, value determined) stands for every schedule",
+        // Added to a verdict only when `ptxv check --certify` decided it (wellsync.rs).
+        applies: never,
+    },
+    Assumption {
+        id: "E-LAUNCH-GROUPS",
+        kind: "code",
+        status: "argued",
+        title: "launch groups closed under stream order, checked one after another with a cross-group race check, stand for the whole case",
+        // Added to a verdict only when `ptxv check --groups` decided it (groups.rs).
+        applies: never,
+    },
+    Assumption {
+        id: "E-EXIT-FENCE",
+        kind: "code",
+        status: "argued",
+        title: "kernel completion is a fence.acq_rel at the case's exit_fence scope (opt-in)",
+        // Added to a verdict when the case sets `exit_fence` (explore.rs).
+        applies: never,
+    },
+    Assumption {
+        id: "E-POLL-ACQ",
+        kind: "code",
+        status: "refuted",
+        title: "leaving a warp-level poll loop acquires what its relaxed polls observed (opt-in)",
+        // Added to a verdict when the case sets `poll_acquire`.
+        applies: never,
+    },
+    Assumption {
+        id: "E-SMEM-CUMUL",
+        kind: "code",
+        status: "validated",
+        title: "a SASS shared store releases, at CTA scope, what its thread acquired (opt-in)",
+        // Added to a verdict when the case sets `smem_cumulative`.
+        applies: never,
+    },
+    Assumption {
+        id: "E-HW-L1",
+        kind: "code",
+        status: "probed",
+        title: "opt-in non-coherent per-SM L1: weak global loads may hit stale lines; CCTL.IVALL and kernel boundaries invalidate",
+        // Added to a verdict when the case sets `hw_l1`.
+        applies: never,
+    },
+    Assumption {
+        id: "E-L1-CLOSED",
+        kind: "code",
+        status: "argued",
+        title: "closed world for L1: no agent outside the case loads case buffers on an SM the case uses",
+        // Added to a verdict when `hw_l1` is on and `l1_havoc` is off.
+        applies: never,
+    },
+    Assumption {
+        id: "E-L1-PLACE",
+        kind: "code",
+        status: "unvalidated",
+        title: "L1 placement: each CTA on its own SM (or PTXV_L1_COLOCATE), no co-resident CTAs",
+        // Added to a verdict when `hw_l1` is on and neither `l1_coresident` nor `l1_havoc`.
+        applies: never,
+    },
+    Assumption {
+        id: "E-L1-CORES",
+        kind: "code",
+        status: "argued",
+        title: "co-resident launches share SM L1s; pair placements within SM limits decide reachability; a CTA launch drops other grids' lines",
+        // Added to a verdict when `l1_coresident` is on (and `l1_havoc` off).
+        applies: never,
+    },
+    Assumption {
+        id: "E-L1-HAVOC",
+        kind: "code",
+        status: "argued",
+        title: "any outside agent may fill any case line on any SM at any time (predictive check)",
+        // Added to a verdict when `l1_havoc` is on.
+        applies: never,
+    },
+    Assumption {
+        id: "E-SLICE",
+        kind: "code",
+        status: "argued",
+        title: "warps that share nothing are explored one slice at a time, across CTAs and GPUs",
+        // Added to a verdict explored by thread slices.
+        applies: never,
+    },
+    Assumption {
+        id: "E-POLL-ANY",
+        kind: "code",
+        status: "argued",
+        title: "a strong load whose step ends alike for every value it can read commutes with its location's writes",
+        applies: |k| any(k, |o| matches!(o, Op::Ld { sync: Some(_), .. })),
+    },
+    Assumption {
+        id: "E-READ-DONE",
+        kind: "code",
+        status: "argued",
+        title: "a used read is ordered before writes that depend on a later strong store of its thread (opt-in)",
+        // Added to a verdict when the case sets `read_done`.
+        applies: never,
+    },
+    Assumption {
+        id: "E-CTA-INDEP",
+        kind: "code",
+        status: "argued",
+        title: "CTAs with no shared synchronization object are explored one at a time",
+        applies: |k| !cluster(k),
+    },
+    Assumption {
+        id: "E-WARPCOLL",
+        kind: "code",
+        status: "argued",
+        title: "stmatrix / shfl exchange data among the lanes of a converged warp in one step",
+        applies: |k| any(k, |o| matches!(o, Op::StMatrix { .. } | Op::Shfl { .. })),
+    },
+    Assumption {
+        id: "E-COLLECTIVE",
+        kind: "code",
+        status: "validated",
+        title: "BRA.DIV moves the whole split; WARPSYNC.COLLECTIVE regions run one member-mask group at a time",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::Bra { div: Some(_), .. }
+                        | Op::WarpSync {
+                            collective: true,
+                            ..
+                        }
+                )
+            })
+        },
+    },
+    Assumption {
+        id: "E-BAR-EXIT",
+        kind: "code",
+        status: "validated",
+        title: "bar.sync without count waits for live threads only; counted bar.sync counts arrivals",
+        applies: |k| any(k, |o| matches!(o, Op::BarSync { .. })),
+    },
+    Assumption {
+        id: "E-BAR-ARRIVE",
+        kind: "code",
+        status: "validated",
+        title: "bar.arrive counts and releases without waiting; a re-arrival is a violation, counted",
+        applies: |k| any(k, |o| matches!(o, Op::BarSync { arrive: true, .. })),
+    },
+    Assumption {
+        id: "E-BAR-OVER",
+        kind: "code",
+        status: "validated",
+        title: "a counted named barrier completes a generation every count arrivals; surplus arrivals start the next",
+        applies: |k| any(k, |o| matches!(o, Op::BarSync { count: Some(_), .. })),
+    },
+    Assumption {
+        id: "E-GRID",
+        kind: "code",
+        status: "argued",
+        title: "exhaustive for the captured launch only (its grid, block and cluster shape)",
+        applies: always,
+    },
+    Assumption {
+        id: "E-RESIDENCY",
+        kind: "code",
+        status: "argued",
+        title: "every CTA co-resident (default) or at most R per GPU, resident in any order as slots free (--residency)",
+        // Kernels that wait on other CTAs (poll loops on global memory); added to every
+        // verdict under limited residency (`for_machine`).
+        applies: |k| !crate::residency::cross_cta_waits(k).is_empty(),
+    },
+    Assumption {
+        id: "E-TMEM-COTENANT",
+        kind: "code",
+        status: "argued",
+        title: "opt-in: a TMEM co-tenant holds any columns for a finite time; allocations land anywhere free; CTA pairs may share an SM",
+        // Added to a verdict in co-tenant mode (`for_machine`, tenant::check).
+        applies: never,
+    },
+    Assumption {
+        id: "E-TMEM-PERMIT",
+        kind: "code",
+        status: "unvalidated",
+        title: "co-tenant mode: a CTA's allocation permit (allocated, not relinquished, not exited) blocks its SM partner's allocations",
+        applies: never,
+    },
+    Assumption {
+        id: "E-CLUSTER-BAR",
+        kind: "code",
+        status: "argued",
+        title: "barrier.cluster over live threads; relaxed arrive releases only fenced history / inits",
+        applies: |k| {
+            any(k, |o| {
+                matches!(o, Op::ClusterArrive { .. } | Op::ClusterWait)
+            })
+        },
+    },
+    Assumption {
+        id: "E-CLC",
+        kind: "code",
+        status: "validated",
+        title: "CLC: CTAs launch in any order; try_cancel fails or cancels any unlaunched CTA",
+        applies: |k| any(k, |o| matches!(o, Op::ClcTryCancel { .. })),
+    },
+    Assumption {
+        id: "E-BULK-EXIT",
+        kind: "code",
+        status: "validated",
+        title: "a CTA's shared memory outlives its exit until its bulk (TMA) stores have read it",
+        applies: |k| any(k, |o| matches!(o, Op::TmaStore { .. })),
+    },
+    Assumption {
+        id: "E-TC-EXIT",
+        kind: "code",
+        status: "validated",
+        title: "a tcgen05.commit no thread waited for arrives before the CTA's shared memory is released",
+        applies: |k| any(k, |o| matches!(o, Op::TcCommit { .. })),
+    },
+    Assumption {
+        id: "E-CPASYNC-MBAR",
+        kind: "code",
+        status: "validated",
+        title: "cp.async.mbarrier.arrive completes the thread's earlier cp.async writes, then one transaction unit (or arrival)",
+        applies: |k| any(k, |o| matches!(o, Op::CpAsyncMbarArrive { .. })),
+    },
+    Assumption {
+        id: "S-TMA-GATHER4",
+        kind: "code",
+        status: "validated",
+        title: "tile::gather4: four rows at one column land as a 4-row box; the column must be 16-byte aligned",
+        applies: |k| {
+            any(
+                k,
+                |o| matches!(o, Op::TmaLoad { dims: 2, coords, .. } if coords.len() == 5),
+            )
+        },
+    },
+    Assumption {
+        id: "E-DESC-VERSION",
+        kind: "code",
+        status: "validated",
+        title: "tcgen05 shared-memory descriptor bits 46-48 (version) = 0 behave as the fixed value on GB300 (equiv only)",
+        applies: never,
+    },
+    Assumption {
+        id: "E-CPASYNC",
+        kind: "code",
+        status: "validated",
+        title: "cp.async reads global at issue and writes shared memory when wait_group retires its group (race-checked with the issue clock)",
+        applies: |k| any(k, |o| matches!(o, Op::CpAsync { .. })),
+    },
+    Assumption {
+        id: "E-PDL",
+        kind: "code",
+        status: "validated",
+        title: "multi-kernel launch: later grids wait for the previous grid's trigger (PDL) or completion",
+        applies: |k| {
+            !k.parts.is_empty() || any(k, |o| matches!(o, Op::GridDepWait | Op::GridDepLaunch))
+        },
+    },
+    Assumption {
+        id: "E-ASYNC-STEP",
+        kind: "code",
+        status: "argued",
+        title: "a TMA box / store / MMA tile / commit completes in one step; wait_group.read = wait_group",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::TmaLoad { .. } | Op::TmaStore { .. } | Op::Mma { .. } | Op::TcCommit { .. }
+                )
+            })
+        },
+    },
+    Assumption {
+        id: "E-NANOSLEEP",
+        kind: "code",
+        status: "validated",
+        title: "nanosleep is a no-op",
+        applies: |k| {
+            k.code
+                .iter()
+                .any(|i| i.text.to_lowercase().contains("nanosleep"))
+        },
+    },
+    Assumption {
+        id: "E-RET",
+        kind: "code",
+        status: "enforced",
+        title: "a SASS RET lands right after a CALL (control-flow graph of the reductions); checked on every return",
+        applies: |k| any(k, |o| matches!(o, Op::Ret { .. })),
+    },
+    Assumption {
+        id: "E-CONST-BRA",
+        kind: "code",
+        status: "enforced",
+        title: "branches decided by launch constants (constant propagation) go that way; checked on every execution",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::Bra {
+                        any: false,
+                        tid0_falls: false,
+                        cond: None,
+                        ..
+                    }
+                )
+            })
+        },
+    },
+    Assumption {
+        id: "S-MBAR",
+        kind: "code",
+        status: "validated",
+        title: "mbarrier phase / parity / tx-count semantics",
+        applies: mbar,
+    },
+    Assumption {
+        id: "S-MBAR-MEM",
+        kind: "code",
+        status: "validated",
+        title: "an mbarrier can be initialized by an STS.64 of its encoded state",
+        applies: |k| sass(k) && mbar(k),
+    },
+    Assumption {
+        id: "S-TCGEN05",
+        kind: "code",
+        status: "argued",
+        title: "tcgen05 ordering: ld view advances at fence::after; MMA/commit in-order pipe",
+        applies: |k| !sass(k) && tmem(k),
+    },
+    Assumption {
+        id: "S-TMA",
+        kind: "code",
+        status: "validated",
+        title: "TMA load/store: N-D box, none/32/64/128B swizzle, OOB zero fill (OOB unvalidated)",
+        applies: |k| any(k, |o| matches!(o, Op::TmaLoad { .. } | Op::TmaStore { .. })),
+    },
+    Assumption {
+        id: "S-PROXY",
+        kind: "code",
+        status: "validated",
+        title: "generic smem writes reach the async proxy only via a fence.proxy.async that the write HB and that HB the async op (any thread's: probes/proxy_fence)",
+        applies: |k| any(k, |o| matches!(o, Op::TmaStore { .. } | Op::Mma { .. })),
+    },
+    Assumption {
+        id: "S-INIT",
+        kind: "code",
+        status: "enforced",
+        title: "unwritten register/smem reads are reported (not yet: async-op address operands)",
+        applies: always,
+    },
+    Assumption {
+        id: "S-DSMEM",
+        kind: "code",
+        status: "validated",
+        title: "shared address = (cluster rank << 24) | offset; shared::cluster selects the CTA",
+        applies: cluster,
+    },
+    Assumption {
+        id: "S-SWIN",
+        kind: "code",
+        status: "validated",
+        title: "generic shared window: (SR_SWINHI << 32) | shared::cluster address",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::Mov {
+                        a: ptxv_ir::Val::SReg(ptxv_ir::SReg::SharedWindowHi),
+                        ..
+                    } | Op::Cvta {
+                        space: ptxv_ir::Space::Shared | ptxv_ir::Space::SharedCluster,
+                        ..
+                    }
+                )
+            })
+        },
+    },
+    Assumption {
+        id: "E-PAIR",
+        kind: "code",
+        status: "validated",
+        title: "cta_group::2: per-CTA alloc; pair MMA splits M by rows and N in halves, each CTA's own scale factors; pair tcgen05.cp: each CTA's smem to its own TMEM",
+        applies: |k| {
+            any(k, |o| {
+                matches!(o, Op::Mma { pair: true, .. } | Op::TcCp { pair: true, .. })
+            })
+        },
+    },
+    Assumption {
+        id: "S-RESERVED",
+        kind: "code",
+        status: "validated",
+        title: "reserved smem: 0, except the driver's cta_group::2 handshake state (0x48 mbarrier, 0x50 phase)",
+        applies: |k| {
+            k.front == Front::Sass
+                && any(k, |o| {
+                    matches!(
+                        o,
+                        Op::TmemAllocRaw { pair: true, .. } | Op::Mma { pair: true, .. }
+                    )
+                })
+        },
+    },
+    Assumption {
+        id: "S-SMEM-STRONG",
+        kind: "code",
+        status: "validated",
+        title: "SASS LDS/STS are relaxed .cta strong; an LDS waited on before the next memory instruction acquires",
+        applies: |k| {
+            k.front == ptxv_ir::Front::Sass
+                && any(k, |o| {
+                    matches!(
+                        o,
+                        Op::Ld {
+                            space: ptxv_ir::Space::Shared,
+                            ..
+                        } | Op::St {
+                            space: ptxv_ir::Space::Shared,
+                            ..
+                        }
+                    )
+                })
+        },
+    },
+    Assumption {
+        id: "S-SCOPE",
+        kind: "code",
+        status: "validated",
+        title: "strong accesses and fences synchronize by PTX scope rules; mbarrier scopes treated as sufficient",
+        applies: |k| {
+            cluster(k)
+                || any(k, |o| {
+                    matches!(
+                        o,
+                        Op::Ld { sync: Some(_), .. }
+                            | Op::St { sync: Some(_), .. }
+                            | Op::Atom { .. }
+                            | Op::Fence {
+                                kind: FenceKind::Membar(_)
+                                    | FenceKind::Release(_)
+                                    | FenceKind::Acquire
+                            }
+                    )
+                })
+        },
+    },
+    Assumption {
+        id: "S-CLUSTER-LIFE",
+        kind: "code",
+        status: "argued",
+        title: "remote smem accesses must happen-before some exit of the target CTA",
+        applies: cluster,
+    },
+    Assumption {
+        id: "S-GLOBAL",
+        kind: "code",
+        status: "argued",
+        title: "global memory is touched only by this kernel",
+        applies: always,
+    },
+    Assumption {
+        id: "S-CBANK",
+        kind: "code",
+        status: "validated",
+        title: "driver constant bank layout (dims, param base, stack)",
+        applies: sass,
+    },
+    Assumption {
+        id: "E-BSYNC",
+        kind: "exec",
+        status: "argued",
+        title: "BSYNC is a warp rendezvous of the lanes its BSSY recorded, ordering their memory",
+        applies: |k| any(k, |o| matches!(o, Op::Bsync { .. })),
+    },
+    Assumption {
+        id: "S-TMAP",
+        kind: "code",
+        status: "validated",
+        title: "device-built tensor maps: the reverse-engineered CUtensorMap layout; fence.proxy.tensormap per using thread",
+        applies: |k| any(k, |o| matches!(o, Op::TmapFence { .. })),
+    },
+    Assumption {
+        id: "S-BRA-COND",
+        kind: "code",
+        status: "argued",
+        title: "`@P0 BRA P1, target` is taken where the guard and P1 both hold",
+        applies: |k| any(k, |o| matches!(o, Op::Bra { cond: Some(_), .. })),
+    },
+    Assumption {
+        id: "S-TMEM",
+        kind: "code",
+        status: "validated",
+        title: "TMEM: per CTA, 128x512, 32-column units; one CTA per SM",
+        applies: tmem,
+    },
+    Assumption {
+        id: "S-TCCP",
+        kind: "code",
+        status: "validated",
+        title: "tcgen05.cp 32x128b.warpx4: 32 x 16 B smem rows -> 4 TMEM columns, row r at lane 32w + r of every sub-partition (r3_cute_mxf8; pair: probes/tc_pair_bs/cp)",
+        applies: |k| any(k, |o| matches!(o, Op::TcCp { .. })),
+    },
+    Assumption {
+        id: "L-NVDISASM",
+        kind: "code",
+        status: "trusted",
+        title: "nvdisasm prints what the bits encode",
+        applies: sass,
+    },
+    Assumption {
+        id: "L-ROSETTA",
+        kind: "code",
+        status: "validated",
+        title: "SASS lowering table (seen forms only; others are errors)",
+        applies: sass,
+    },
+    Assumption {
+        id: "L-PTX-HINT",
+        kind: "code",
+        status: "argued",
+        title: "PTX cp.async .L2::cache_hint (and its policy operand) / .L2::{64,128,256}B are performance hints only",
+        applies: |k| k.front == Front::Ptx && k.code.iter().any(|i| i.text.contains(".L2::")),
+    },
+    Assumption {
+        id: "L-LOP3-P",
+        kind: "code",
+        status: "validated",
+        title: "LOP3 predicate operand: Pd = (r != 0) || Pq, or && Pq with .PAND (probes/lop3_pmode)",
+        applies: |k| any(k, |o| matches!(o, Op::Lop3 { pq: Some(_), .. })),
+    },
+    Assumption {
+        id: "L-CTRL",
+        kind: "code",
+        status: "validated",
+        title: "control word layout hi>>41 (stall/yield/wbar/rbar/wait/reuse)",
+        applies: sass,
+    },
+    Assumption {
+        id: "L-OPREAD",
+        kind: "code",
+        status: "validated",
+        title: "operand-read timing rules (memory ops late + in order, UR at issue)",
+        applies: sass,
+    },
+    Assumption {
+        id: "L-STALL",
+        kind: "code",
+        status: "trusted",
+        title: "fixed-latency hazards are covered by stall counts (unchecked)",
+        applies: sass,
+    },
+    Assumption {
+        id: "L-MEMSB",
+        kind: "code",
+        status: "trusted",
+        title: "memory-ordering scoreboards (fence completion) are trusted",
+        applies: sass,
+    },
+    Assumption {
+        id: "L-OPCLASS",
+        kind: "code",
+        status: "validated",
+        title: "variable-latency / async-reader opcode sets are complete",
+        applies: sass,
+    },
+    Assumption {
+        id: "N-FADD",
+        kind: "code",
+        status: "validated",
+        title: "FADD is IEEE RN, no FTZ, canonical NaN",
+        applies: |k| any(k, |o| matches!(o, Op::Fadd { .. })),
+    },
+    Assumption {
+        id: "N-FALU",
+        kind: "code",
+        status: "validated",
+        title: "f32 ALU forms (FADD/FMUL/FFMA[2] all modes, FTZ, SAT, FMNMX, FSETP) = IEEE + measured FTZ/NaN rules",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::Fadd { .. }
+                        | Op::Ffma { .. }
+                        | Op::Ffma2 { .. }
+                        | Op::Fmnmx { .. }
+                        | Op::Fsetp { .. }
+                        | Op::Hsetp2Bf16 { .. }
+                        | Op::Fset { .. }
+                )
+            })
+        },
+    },
+    Assumption {
+        id: "N-FCHK",
+        kind: "code",
+        status: "validated",
+        title: "FCHK = exponent-range test measured on GB300 (probes/fchk)",
+        applies: |k| any(k, |o| matches!(o, Op::Fchk { .. })),
+    },
+    Assumption {
+        id: "N-MUFU",
+        kind: "code",
+        status: "validated",
+        title: "MUFU / PTX approx ops = the units reconstructed from exhaustive GB300 sweeps",
+        applies: |k| any(k, |o| matches!(o, Op::Mufu { .. })),
+    },
+    Assumption {
+        id: "N-EQUIV",
+        kind: "code",
+        status: "argued",
+        title: "equivalence: one tainted-clean run covers every input; canonical DAGs round alike",
+        // Applies to `ptxv equiv` results, not to check verdicts.
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-IID",
+        kind: "code",
+        status: "argued",
+        title: "errdist: the input law is the spec's (elements independent given their scales)",
+        // Applies to `ptxv errdist` estimates, not to check verdicts.
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-TEMPLATE",
+        kind: "code",
+        status: "argued",
+        title: "errdist tiers 0-2 analyze output 0's chain as the template for every output",
+        // Applies to `ptxv errdist` estimates, not to check verdicts.
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-RESIDUE",
+        kind: "code",
+        status: "argued",
+        title: "errdist tier 1: an accumulator's bits below its result's ulp follow the previous terms' residue law",
+        // Applies to `ptxv errdist` estimates, not to check verdicts.
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-MARKOV",
+        kind: "code",
+        status: "argued",
+        title: "errdist tier 1: the chain is Markov in the partial sums' (sign, binade) and 2 tracked low bits",
+        // Applies to `ptxv errdist` estimates, not to check verdicts.
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-CF",
+        kind: "code",
+        status: "argued",
+        title: "errdist tier 1: final cell masses from the exact characteristic function, conditional error laws from the chain",
+        // Applies to `ptxv errdist` estimates, not to check verdicts.
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-CLT",
+        kind: "code",
+        status: "argued",
+        title: "errdist tier 2: normal node values, lattice-aware node errors independent given y",
+        // Applies to `ptxv errdist` estimates, not to check verdicts.
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-DAG",
+        kind: "code",
+        status: "argued",
+        title: "errdist exact value of DAG outputs: TF32 hi(x) stands for x, atomics in the simulator's order",
+        // Applies to `ptxv errdist` estimates, not to check verdicts.
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-PAIR",
+        kind: "code",
+        status: "argued",
+        title: "errdist pairs: deviations independent given the exact y's position in its ulp (shared sub-DAGs shared)",
+        // Applies to `ptxv errdist` estimates, not to check verdicts.
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-FLIP",
+        kind: "code",
+        status: "argued",
+        title: "errdist: a 16-bit output flips with probability min(1, |D| / ulp16), y's position on the 16-bit grid uniform",
+        // Applies to `ptxv errdist` estimates, not to check verdicts.
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-MC",
+        kind: "code",
+        status: "argued",
+        title: "errdist tier 3: per-sample exact; output-level CIs treat outputs as independent",
+        // Applies to `ptxv errdist` estimates, not to check verdicts.
+        applies: |_| false,
+    },
+    // Agent AG: errdist for non-chain programs (softmax, norms, attention, elementwise).
+    Assumption {
+        id: "N-ERRDIST-IDENT",
+        kind: "code",
+        status: "argued",
+        title: "errdist: an instruction slice computes the real function it was fitted to",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-REAL",
+        kind: "code",
+        status: "argued",
+        title: "errdist: the exact value of a non-chain output is its algorithm in real arithmetic",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-NL-LIN",
+        kind: "code",
+        status: "argued",
+        title: "errdist non-chain tiers 1-2: first-order propagation of local errors at nominal inputs",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-NL-INDEP",
+        kind: "code",
+        status: "argued",
+        title: "errdist non-chain: local errors independent given their cells; tables from probes",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-NL-JOINT",
+        kind: "code",
+        status: "argued",
+        title: "errdist non-chain pairs: matched roundings share their grid position",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-NL-ELEM",
+        kind: "code",
+        status: "argued",
+        title: "errdist elementwise law: exact on 16-bit codes, stratified quadrature for f32",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-LEAF",
+        kind: "code",
+        status: "argued",
+        title: "input leaves keep their identity through loads, shuffles, moves and selects",
+        // Applies to `ptxv equiv` results, not to check verdicts.
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-REASSOC",
+        kind: "code",
+        status: "argued",
+        title: "equiv bound: rigorous Cor 1a per kernel, combined by Thm 4",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-EXACT",
+        kind: "code",
+        status: "argued",
+        title: "an FMUL of two narrow leaves, or a 16-bit rounding of one, is exact when the format holds every value the operands can take",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ATOMIC",
+        kind: "code",
+        status: "argued",
+        title: "fp32 atomic add = one RN FTZ add; atomic adds commute up to their order",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::Atom {
+                        op: ptxv_ir::AtomOp::FAddFtz,
+                        ..
+                    }
+                )
+            })
+        },
+    },
+    Assumption {
+        id: "N-SEG",
+        kind: "code",
+        status: "argued",
+        title: "equiv segment mode: instruction slices re-execute the trace; div.rn = IEEE quotient",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ELEMENTWISE",
+        kind: "code",
+        status: "validated",
+        title: "elementwise mode: a single-leaf output DAG is that element's function; swept over every input value",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-HALF-LEAF",
+        kind: "code",
+        status: "argued",
+        title: "a bf16 / f16 input element widened to f32 by byte moves is an exact Input leaf",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-SOFTMAX",
+        kind: "code",
+        status: "argued",
+        title: "equiv softmax bound from exhaustive slice contracts and the normal form",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-NORM",
+        kind: "code",
+        status: "argued",
+        title: "equiv norm bound: polynomial in the inputs and one swept power rho = A^p",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ATTN",
+        kind: "code",
+        status: "argued",
+        title: "equiv attention bound: weighted normal form sum exp(L) v / sum exp(L)",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-MMA",
+        kind: "code",
+        status: "enforced",
+        title: "MMA arithmetic = g16-f25-rz-accin-tzero-einputs (finite normal inputs)",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::Mma {
+                        kind: ptxv_ir::MmaKind::F16,
+                        ..
+                    }
+                )
+            })
+        },
+    },
+    Assumption {
+        id: "N-HMMA",
+        kind: "code",
+        status: "validated",
+        title: "HMMA.16816.F32.BF16 = the N-MMA model per instruction (probes/hmma, 98,304 GB300 outputs)",
+        applies: |k| any(k, |o| matches!(o, Op::Hmma { .. })),
+    },
+    Assumption {
+        id: "N-TF32",
+        kind: "code",
+        status: "argued",
+        title: "TF32 MMA operands: hi(x) within 2^-10 |x|; a 3xTF32 split's three products are a b (1 + theta), |theta| <= 2^-19 (equiv)",
+        applies: |k| any(k, |o| matches!(o, Op::Hmma { tf32: true, .. })),
+    },
+    Assumption {
+        id: "N-FINITE",
+        kind: "code",
+        status: "argued",
+        title: "comparisons with an infinity / NaN of values finite inputs keep finite (no overflow) are input-independent (equiv precondition)",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-FMAX",
+        kind: "code",
+        status: "argued",
+        title: "CUTLASS's atomicMaxFloat branch (signed max / unsigned min by the sign bit) is one float max on either side (equiv precondition)",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ROUND",
+        kind: "code",
+        status: "argued",
+        title: "F2FP.BF16 / bf16 output stores round to nearest even: relative 2^-8, 2^-134 absolute (equiv)",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-MMA-F8",
+        kind: "code",
+        status: "validated",
+        title: "kind::f8f6f4 = g32-f25-rz-accin-tzero-efields (f16 D: rn), K-major smem layout (probes/mma_f8)",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::Mma { kind, .. } if *kind != ptxv_ir::MmaKind::F16
+                )
+            })
+        },
+    },
+    Assumption {
+        id: "N-MMA-BS",
+        kind: "code",
+        status: "validated",
+        title: "block-scaled kinds: mxf8f6f4 = N-MMA-F8 with scaled terms; mxf4 / mxf4nvf4 = u16-f35-live-sfields; SF TMEM layout (probes/mma_bs)",
+        applies: |k| any(k, |o| matches!(o, Op::Mma { scale: Some(_), .. })),
+    },
+    Assumption {
+        id: "N-CVT-LP",
+        kind: "code",
+        status: "validated",
+        title: "narrow-format cvt / F2FP (FP8/FP6/FP4/ue8m0, .rs packs) = lowp (probes/cvt_lp GB300 sweep)",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::CvtPack { .. } | Op::CvtRsX4 { .. } | Op::CvtUnpack { .. }
+                )
+            })
+        },
+    },
+    Assumption {
+        id: "N-BOUND",
+        kind: "code",
+        status: "argued",
+        title: "Cor 1a bound: first-order, per-node epsilon",
+        applies: never,
+    },
+    Assumption {
+        id: "H-RUNS",
+        kind: "process",
+        status: "argued",
+        title: "N clean hardware runs are evidence, not proof",
+        applies: never,
+    },
+    Assumption {
+        id: "H-SCRUB",
+        kind: "process",
+        status: "argued",
+        title: "the scrubber reaches every SM's shared memory",
+        applies: never,
+    },
+    Assumption {
+        id: "H-DELAY",
+        kind: "process",
+        status: "argued",
+        title: "witness delays recompile the kernel",
+        applies: never,
+    },
+    Assumption {
+        id: "H-GPU",
+        kind: "process",
+        status: "argued",
+        title: "only GPUs without foreign processes; GB300 / CUDA 13.0",
+        applies: never,
+    },
+];
+
+/// IDs a verdict on `k` depends on, in registry order.
+pub fn for_kernel(k: &Kernel) -> Vec<String> {
+    REGISTRY
+        .iter()
+        .filter(|a| (a.applies)(k))
+        .map(|a| a.id.to_string())
+        .collect()
+}
+
+/// The kernel's assumptions plus those its launch opts into (E-EXIT-FENCE).
+pub fn for_machine(m: &crate::machine::Machine) -> Vec<String> {
+    let mut v = for_kernel(&m.k);
+    if m.launch.exit_fence.is_some() {
+        v.push("E-EXIT-FENCE".into());
+    }
+    if m.launch.poll_acquire {
+        v.push("E-POLL-ACQ".into());
+    }
+    if m.launch.smem_cumulative {
+        v.push("E-SMEM-CUMUL".into());
+    }
+    if m.launch.hw_l1 {
+        v.push("E-HW-L1".into());
+        if m.launch.l1_havoc {
+            v.push("E-L1-HAVOC".into());
+        } else {
+            v.push("E-L1-CLOSED".into());
+            if m.launch.l1_cores {
+                v.push("E-L1-CORES".into());
+            } else {
+                v.push("E-L1-PLACE".into());
+            }
+        }
+    }
+    if m.launch.env.residency.is_some() && !v.iter().any(|a| a == "E-RESIDENCY") {
+        v.push("E-RESIDENCY".into());
+    }
+    if m.launch.env.tmem_cotenant {
+        v.push("E-TMEM-COTENANT".into());
+        if m.launch.env.tmem_permit && !m.launch.env.tmem_share.is_empty() {
+            v.push("E-TMEM-PERMIT".into());
+        }
+    }
+    if m.launch.read_done {
+        v.push("E-READ-DONE".into());
+    }
+    v
+}
+
+pub fn get(id: &str) -> Option<&'static Assumption> {
+    REGISTRY.iter().find(|a| a.id == id)
+}

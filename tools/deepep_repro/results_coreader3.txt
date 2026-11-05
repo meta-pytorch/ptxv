@@ -1,0 +1,50 @@
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100
+RESULT coreader args=--secs 120 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100 reps=21424 deepep_calls=85696 rows_received=174078708 mismatches=0 secs=120
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100 --reader-target other
+RESULT coreader args=--secs 120 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100 --reader-target other reps=25200 deepep_calls=100800 rows_received=204524178 mismatches=0 secs=120
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 30
+RESULT coreader args=--secs 120 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 30 reps=24880 deepep_calls=99520 rows_received=201888952 mismatches=0 secs=120
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 30 --reader-target other
+RESULT coreader args=--secs 120 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 30 --reader-target other reps=29488 deepep_calls=117952 rows_received=239063175 mismatches=0 secs=120
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 300
+[rank 0] MISMATCH rep 24 case 12 (H=7168 sms=20): recv count 4329 != 5513
+[rank0]: Traceback (most recent call last):
+[rank0]: torch.AcceleratorError: CUDA error: an illegal memory access was encountered
+[rank0]: Search for `cudaErrorIllegalAddress' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+[rank0]: CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+[rank0]: Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+  what():  Failed: CUDA error /src/csrc/deep_ep.cpp:283 'an illegal memory access was encountered'
+Traceback (most recent call last):
+  File "/opt/conda/envs/torch/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 367, in wrapper
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+  error_file: <N/A>
+  error_file: <N/A>
+rc=1
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-cycles 0
+RESULT coreader args=--secs 120 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-cycles 0 reps=43376 deepep_calls=173504 rows_received=351898869 mismatches=0 secs=120
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100
+RESULT coreader args=--secs 120 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100 reps=25824 deepep_calls=103296 rows_received=209450791 mismatches=0 secs=120
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100 --reader-target other
+RESULT coreader args=--secs 120 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100 --reader-target other reps=23520 deepep_calls=94080 rows_received=190880587 mismatches=0 secs=120
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 30
+[rank 0] MISMATCH rep 15004 case 7 (H=2048 sms=20): recv count 3734 != 6847
+RESULT coreader args=--secs 120 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 30 reps=15004 deepep_calls=60016 rows_received=122137938 mismatches=1 secs=72
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 30 --reader-target other
+RESULT coreader args=--secs 120 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 30 --reader-target other reps=19424 deepep_calls=77696 rows_received=157921019 mismatches=0 secs=120
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 300
+[rank 0] MISMATCH rep 4403 case 15 (H=2048 sms=20): recv count 2141 != 2691
+RESULT coreader args=--secs 120 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 300 reps=4403 deepep_calls=17612 rows_received=35368106 mismatches=1 secs=18
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-cycles 0
+RESULT coreader args=--secs 120 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-cycles 0 reps=45728 deepep_calls=182912 rows_received=370943635 mismatches=0 secs=120
+rc=0

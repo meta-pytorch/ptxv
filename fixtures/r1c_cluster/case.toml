@@ -1,0 +1,71 @@
+name = "r1c_cluster"
+description = """
+Rung 1c(i). A cluster of 2 CTAs computes D[256x16] = A[256x128] * B[16x128]^T; each CTA owns 128
+rows and runs cta_group::1 MMAs. Rank 0 loads B once per k-block with a multicast TMA into both
+CTAs; rank 1 releases the shared B stage to rank 0 with a remote mbarrier arrive. CUTLASS-style
+cluster start (fence.mbarrier_init + relaxed cluster arrive) and a final cluster barrier."""
+ptx = "kernel.ptx"
+entry = "r1c_cluster"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+spec = "gemm_tn"
+
+[[buffers]]
+name = "A"
+dtype = "bf16"
+shape = [256, 128]
+init = "normal"
+seed = 31
+
+[[buffers]]
+name = "B"
+dtype = "bf16"
+shape = [16, 128]
+init = "normal"
+seed = 32
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [256, 16]
+init = "nan"
+
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [64, 128]
+swizzle = "128B"
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [64, 16]
+swizzle = "128B"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[variants]]
+id = "good"
+summary = "correct kernel"
+expect = ["clean"]
+
+[[variants]]
+id = "B13"
+summary = "no final barrier.cluster: rank 1's last remote arrive can reach rank 0 after it exited"
+marker = "@B13"
+replace = "<delete>"
+expect = ["violation"]
+hw_note = "cluster-lifetime UB: the late arrive lands in a CTA that has exited"
+
+[[variants]]
+id = "B14"
+summary = "no fence.mbarrier_init.release.cluster before the relaxed cluster arrive"
+marker = "@B14"
+replace = "<delete>"
+expect = ["race"]
+expect_sass = ["clean"]
+hw_note = "PTX-level UB only: ptxas emits the same FENCE.VIEW.ASYNC.S ahead of the inits with or without the PTX fence (the binaries differ by one NOP)"

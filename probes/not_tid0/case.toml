@@ -1,0 +1,29 @@
+name = "probe_not_tid0"
+description = """
+Probe (hardware only) for SASS `BRA.U.NOT_TID0`: which threads fall through it. Not a plain
+`ptxv probe`: patch.py turns the ptxas branch into NOT_TID0; run the patched cubin with
+`ptxv hw-worker probes/not_tid0 <patched.cubin> --runs 1 --dump out.bin`. out[tid] = 1: fell
+through; out[256 + tid] = 1: reached the end; lane l of warp w exited early if l < w."""
+ptx = "kernel.ptx"
+entry = "probe_not_tid0"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [768]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 1
+
+[[variants]]
+id = "good"
+expect = ["clean"]

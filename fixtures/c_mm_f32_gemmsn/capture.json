@@ -1,0 +1,70 @@
+{
+ "what": "`torch.mm(a, b)` with a = randn(8,128,f32), b = randn(128,384,f32)",
+ "argv": [
+  "--op",
+  "torch.mm(a, b)",
+  "--inputs",
+  "a=randn(8,128,f32),b=randn(128,384,f32)",
+  "--out",
+  "/tmp/agentG/mm8",
+  "--work",
+  "/tmp/ptxv_capture_577258"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "_Z16gemmSN_NN_kernelIfLi256ELi4ELi2ELi8ELi4ELi4ELb0E30cublasGemvTensorStridedBatchedIKfES2_S0_IfEEv22cublasGemmSmallNParamsIT7_T8_T9_T_E",
+   "grid": [
+    6,
+    2,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "a",
+   "dtype": "f32",
+   "shape": [
+    8,
+    128
+   ],
+   "size": 4096
+  },
+  {
+   "name": "b",
+   "dtype": "f32",
+   "shape": [
+    128,
+    384
+   ],
+   "size": 196608
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    8,
+    384
+   ],
+   "size": 12288
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

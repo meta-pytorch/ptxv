@@ -1,0 +1,112 @@
+{
+ "what": "ptxv.capture",
+ "launches": [
+  {
+   "index": 0,
+   "name": "cutlass3x_sm100_simt_sgemm_f32_f32_f32_f32_f32_32x32x16_1x1x1_3_nnn_align1_bias_f32_relu",
+   "grid": [
+    2,
+    2,
+    1
+   ],
+   "block": [
+    64,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 12672,
+   "pdl": 0,
+   "op": "",
+   "cubin": "k0.cubin"
+  },
+  {
+   "index": 1,
+   "name": "cutlass3x_sm100_simt_sgemm_f32_f32_f32_f32_f32_32x32x16_1x1x1_3_nnn_align1_bias_f32_relu",
+   "grid": [
+    2,
+    2,
+    1
+   ],
+   "block": [
+    64,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 12672,
+   "pdl": 0,
+   "op": "",
+   "cubin": "k0.cubin"
+  }
+ ],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "x",
+   "dtype": "f32",
+   "shape": [
+    64,
+    128
+   ],
+   "size": 32768,
+   "fresh": false,
+   "output": false
+  },
+  {
+   "name": "w1",
+   "dtype": "f32",
+   "shape": [
+    128,
+    64
+   ],
+   "size": 32768,
+   "fresh": false,
+   "output": false
+  },
+  {
+   "name": "w2",
+   "dtype": "f32",
+   "shape": [
+    128,
+    64
+   ],
+   "size": 32768,
+   "fresh": false,
+   "output": false
+  },
+  {
+   "name": "W0",
+   "dtype": "u8",
+   "shape": [
+    16384
+   ],
+   "size": 16384,
+   "fresh": true,
+   "output": true
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    64,
+    64
+   ],
+   "size": 16384,
+   "fresh": true,
+   "output": true
+  }
+ ],
+ "unresolved": [],
+ "warnings": [
+  "allocation 0xfff79dc00000 changed between launch 0 and launch 1 outside this group (memcpy, another stream, or a launch not in it)"
+ ]
+}

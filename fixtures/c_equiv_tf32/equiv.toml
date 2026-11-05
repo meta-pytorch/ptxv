@@ -1,0 +1,35 @@
+# TF32 GEMMs against an f32 SIMT GEMM (N-TF32, docs/equiv-mma.md §6): D = A[32x64] B[64x32] f32.
+# The 3xTF32 kernels (CUTLASS's big + small split) are bounded against the exact product with
+# their three products per (a, b) matched; 1xTF32 is bounded through the TF32 truncation of
+# each operand; 2xTF32 (a dropped correction) is not proven. The splits' finiteness guards rely
+# on N-FINITE.
+#   ptxv equiv fixtures/c_equiv_tf32/equiv.toml --trials 200
+max_states = 200000
+trials = 20
+segments = true
+reference = { case = "../c_tf32_mm_f32", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "../c_tf32_mm_3x"
+variant = "good"
+front = "sass"
+expect = "L1"
+
+[[candidates]]
+case = "../c_tf32_mm_3x_rev"
+variant = "good"
+front = "sass"
+expect = "L1"
+
+[[candidates]]
+case = "../c_tf32_mm_1x"
+variant = "good"
+front = "sass"
+expect = "L1"
+
+# Negative: a dropped correction leaves the other unmatched (untracked), not the 3xTF32 bound.
+[[candidates]]
+case = "../c_tf32_mm_2x"
+variant = "good"
+front = "sass"
+expect = "L1 (unproven)"

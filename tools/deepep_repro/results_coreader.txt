@@ -1,0 +1,18 @@
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20
+RESULT coreader args=--secs 90 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 reps=29760 deepep_calls=119040 rows_received=241349182 mismatches=0 secs=90
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --skew-rank 0 --skew 20000
+RESULT coreader args=--secs 90 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --skew-rank 0 --skew 20000 reps=36912 deepep_calls=147648 rows_received=299323117 mismatches=0 secs=90
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 0 --skew-rank 1 --skew 20000
+RESULT coreader args=--secs 90 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 0 --skew-rank 1 --skew 20000 reps=35488 deepep_calls=141952 rows_received=287505391 mismatches=0 secs=90
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 4 --experts 4 --topk 2 --push-from 1 --skew-rank 0 --skew 4000
+RESULT coreader args=--secs 90 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 4 --experts 4 --topk 2 --push-from 1 --skew-rank 0 --skew 4000 reps=19904 deepep_calls=79616 rows_received=129256432 mismatches=0 secs=90
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 4 --experts 8 --topk 2 --push-from 0 --skew-rank 1 --skew 4000 --hog-rank 0
+RESULT coreader args=--secs 90 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 4 --experts 8 --topk 2 --push-from 0 --skew-rank 1 --skew 4000 --hog-rank 0 reps=19552 deepep_calls=78208 rows_received=120261509 mismatches=0 secs=90
+rc=0
+=== --bank 16 --hidden 2048 --tokens 1-512 --num-sms 2,20 --push-from 1 --skew 8000 --overlap 2
+RESULT coreader args=--secs 90 --bank 16 --hidden 2048 --tokens 1-512 --num-sms 2,20 --push-from 1 --skew 8000 --overlap 2 reps=35792 deepep_calls=143168 rows_received=36290404 mismatches=0 secs=90
+rc=0

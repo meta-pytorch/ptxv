@@ -1,0 +1,98 @@
+name = "r2e_tile"
+description = """
+Rung 2e equivalence demo (kernel from rung 1a). One CTA of 128 threads computes D[128x64] = A[128x64] * B[64x64]^T with tcgen05:
+warp 0 allocates 64 TMEM columns; thread 0 loads A and B with two 3-D TMA loads into the
+no-swizzle K-major core-matrix layout, issues 4 tcgen05.mma (bf16 in, fp32 accumulate,
+K = 16 each) and commits to an mbarrier; every warp reads its 32 TMEM lanes (= rows) with
+tcgen05.ld and stores them; warp 0 deallocates."""
+ptx = "kernel.ptx"
+entry = "r1a_tcgen05_tile"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+spec = "gemm_tn"
+
+[[buffers]]
+name = "A"
+dtype = "bf16"
+shape = [128, 64]
+init = "normal"
+seed = 11
+
+[[buffers]]
+name = "B"
+dtype = "bf16"
+shape = [64, 64]
+init = "normal"
+seed = 12
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [128, 64]
+init = "nan"
+
+# A[m][k] row-major viewed as 3-D (k%8, m, k/8): box (8, 128, 8) lands in shared memory as
+# 8 K-chunks of 128 rows x 16 B (LBO = 2048 B, SBO = 128 B).
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [8, 128, 8]
+dims = [8, 128, 8]
+strides = [128, 16]
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [8, 64, 8]
+dims = [8, 64, 8]
+strides = [128, 16]
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[variants]]
+id = "good"
+summary = "the reference: four MMAs in K order into one accumulator"
+expect = ["clean"]
+
+[[variants]]
+id = "E1"
+summary = "reordered reduction: the K chunk 3 MMA first (overwrite), chunk 0 last"
+edits = [
+  { marker = "@MMA0", find = "%rd5, %rd7,", replace = "%rd20, %rd21," },
+  { marker = "@MMA0", find = "tcgen05.mma", replace = "add.u64 %rd20, %rd5, 768; add.u64 %rd21, %rd7, 384; tcgen05.mma" },
+  { marker = "@MMA3", find = "%rd12, %rd13,", replace = "%rd5, %rd7," },
+]
+expect = ["clean"]
+
+[[variants]]
+id = "E2"
+summary = "dropped K slice: no MMA for K chunk 3"
+edits = [
+  { marker = "@MMA3", replace = "<delete>" },
+]
+expect = ["clean"]
+
+[[variants]]
+id = "E3"
+summary = "split accumulators (chunks 0-1, 2-3) added in the epilogue with add.rz.f32"
+edits = [
+  { marker = "@ALLOC", find = "], 64;", replace = "], 128;" },
+  { marker = "@DEALLOC", find = "%r5, 64;", replace = "%r5, 128;" },
+  { marker = "@MMA2", find = "[%r5], %rd10, %rd11, %r11, %p4;", replace = "[%r12], %rd10, %rd11, %r11, %p3;" },
+  { marker = "@MMA2", find = "tcgen05.mma", replace = "add.u32 %r12, %r5, 64; tcgen05.mma" },
+  { marker = "@MMA3", find = "[%r5]", replace = "[%r12]" },
+  { marker = "@LD", find = "[%r14];", replace = "[%r14]; add.u32 %r13, %r14, 64; tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r32, %r33, %r34, %r35, %r36, %r37, %r38, %r39, %r40, %r41, %r42, %r43, %r44, %r45, %r46, %r47}, [%r13];" },
+  { marker = "@WAITLD", find = "tcgen05.wait::ld.sync.aligned;", replace = "tcgen05.wait::ld.sync.aligned;\n\tadd.rz.f32 %r16, %r16, %r32;\n\tadd.rz.f32 %r17, %r17, %r33;\n\tadd.rz.f32 %r18, %r18, %r34;\n\tadd.rz.f32 %r19, %r19, %r35;\n\tadd.rz.f32 %r20, %r20, %r36;\n\tadd.rz.f32 %r21, %r21, %r37;\n\tadd.rz.f32 %r22, %r22, %r38;\n\tadd.rz.f32 %r23, %r23, %r39;\n\tadd.rz.f32 %r24, %r24, %r40;\n\tadd.rz.f32 %r25, %r25, %r41;\n\tadd.rz.f32 %r26, %r26, %r42;\n\tadd.rz.f32 %r27, %r27, %r43;\n\tadd.rz.f32 %r28, %r28, %r44;\n\tadd.rz.f32 %r29, %r29, %r45;\n\tadd.rz.f32 %r30, %r30, %r46;\n\tadd.rz.f32 %r31, %r31, %r47;" },
+]
+expect = ["clean"]
+
+[[variants]]
+id = "E4"
+summary = "the reference, plus a nanosleep guarded by the sign bit of a loaded value: same output, data-dependent control"
+edits = [
+  { marker = "@WAITLD", find = "tcgen05.wait::ld.sync.aligned;", replace = "tcgen05.wait::ld.sync.aligned; setp.lt.s32 %p6, %r16, 0; @%p6 nanosleep.u32 1;" },
+]
+expect = ["clean"]

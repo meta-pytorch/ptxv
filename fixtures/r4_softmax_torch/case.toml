@@ -1,0 +1,73 @@
+name = "r4_softmax_torch"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): `torch.softmax(x, -1)` with x = randn(4,128,f32). 1 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: _ZN43_GLOBAL__N__a4dace70_10_SoftMax_cu_9f978f6320softmax_warp_forwardIfffLi7ELb0ELb0EEEvPT0_PKT_iiiPKbib grid [1, 1, 1] block [32, 4, 1]
+Regenerate: CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/capture.py --op 'torch.softmax(x, -1)' --inputs 'x=randn(4,128,f32)' --out fixtures/r4_softmax_torch"""
+cubin = "k0.cubin"
+entry = "_ZN43_GLOBAL__N__a4dace70_10_SoftMax_cu_9f978f6320softmax_warp_forwardIfffLi7ELb0ELb0EEEvPT0_PKT_iiiPKbib"
+grid = [1, 1, 1]
+block = [32, 4, 1]
+dynamic_smem = 0
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [4, 128]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [4, 128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+byte_offset = 0
+
+[[params]]
+kind = "u32"
+value = 4
+
+[[params]]
+kind = "u32"
+value = 128
+
+[[params]]
+kind = "u32"
+value = 128
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "u32"
+value = 4294967295
+
+[[params]]
+kind = "bytes"
+hex = "00"
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]
+hw_note = "the SASS run (MUFU per N-MUFU) equals expected/ (GB300) bitwise (tests/fixtures.rs captured_outputs_match_the_gpu)"
+
+[[variants]]
+id = "nosb"
+summary = "SASS: LDG.E R5 (the first input load) at 0x1b0 gets no write scoreboard (wr SBn -> none)"
+patch = [{ at = "@0x1b0", wbar = 7 }]
+expect = ["violation"]
+hw_note = "the consumer's wait no longer covers the variable-latency result: it reads the register before it is written"

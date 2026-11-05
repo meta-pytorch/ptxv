@@ -1,0 +1,60 @@
+{
+ "what": "run() of triton_cumsum.py (kernel ^cumsum_kernel$)",
+ "argv": [
+  "--triton",
+  "tools/capture_examples/triton_cumsum.py:cumsum_kernel",
+  "--binary",
+  "--out",
+  "fixtures/c_triton_cumsum",
+  "--work",
+  "/tmp/ptxv_capture_33650"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "cumsum_kernel",
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 16,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "x",
+   "dtype": "f32",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 2048
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 2048
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

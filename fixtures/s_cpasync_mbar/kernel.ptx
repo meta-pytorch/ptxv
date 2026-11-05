@@ -1,0 +1,84 @@
+// cp.async completion through an mbarrier (as trtllm-gen's scale loader warp,
+// fixtures/r3b_trtllm_bmm): warp 0's lanes each cp.async 4 bytes into buf1 and 8 bytes into
+// buf2. buf1 is tracked by `cp.async.mbarrier.arrive.shared.b64` on mbarrier A (count 32;
+// ptxas: SYNCS.ARRIVE.TRANS64.RED.A0T1 + ARRIVES.LDGSTSBAR.64.TRANSCNT) followed by a plain
+// arrive, buf2 by `cp.async.mbarrier.arrive.noinc` on mbarrier B (count 32;
+// ARRIVES.LDGSTSBAR.64.ARVCNT) alone. Warp 1 waits on both, then copies both buffers to out.
+// Compiled by ptxas (binary case: the PTX front does not parse cp.async).
+//   ptxas -arch=sm_103a kernel.ptx -o kernel.cubin
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry s_cpasync_mbar(
+    .param .u64 src,
+    .param .u64 out
+)
+.maxntid 64, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<16>;
+    .shared .align 16 .b8 buf1[128];
+    .shared .align 16 .b8 buf2[256];
+    .shared .align 8 .b64 mba;
+    .shared .align 8 .b64 mbb;
+
+    mov.u32         %r0, %tid.x;
+    mov.u32         %r1, mba;
+    mov.u32         %r2, mbb;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        SKIP_INIT;
+    mbarrier.init.shared::cta.b64 [%r1], 32;
+    mbarrier.init.shared::cta.b64 [%r2], 32;
+    fence.mbarrier_init.release.cluster;
+SKIP_INIT:
+    bar.sync        0;
+    ld.param.u64    %rd0, [src];
+    cvta.to.global.u64 %rd1, %rd0;
+    ld.param.u64    %rd2, [out];
+    cvta.to.global.u64 %rd3, %rd2;
+    setp.ge.u32     %p1, %r0, 32;
+    @%p1 bra        CONSUMER;
+    mov.u32         %r3, buf1;
+    mov.u32         %r4, buf2;
+    shl.b32         %r5, %r0, 2;
+    shl.b32         %r6, %r0, 3;
+    add.u32         %r7, %r3, %r5;
+    add.u32         %r8, %r4, %r6;
+    cvt.u64.u32     %rd4, %r5;
+    add.u64         %rd5, %rd1, %rd4;
+    cvt.u64.u32     %rd6, %r6;
+    add.u64         %rd7, %rd1, %rd6;
+    add.u64         %rd7, %rd7, 512;
+    cp.async.ca.shared.global [%r7], [%rd5], 4;
+    cp.async.mbarrier.arrive.shared.b64 [%r1];
+    mbarrier.arrive.shared::cta.b64 _, [%r1];
+    cp.async.ca.shared.global [%r8], [%rd7], 8;
+    cp.async.mbarrier.arrive.noinc.shared.b64 [%r2];
+    ret;
+CONSUMER:
+WA:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r1], 0;
+    @!%p2 bra       WA;
+WB:
+    mbarrier.try_wait.parity.shared::cta.b64 %p3, [%r2], 0;
+    @!%p3 bra       WB;
+    sub.u32         %r9, %r0, 32;
+    mov.u32         %r3, buf1;
+    mov.u32         %r4, buf2;
+    shl.b32         %r5, %r9, 2;
+    shl.b32         %r6, %r9, 3;
+    add.u32         %r7, %r3, %r5;
+    add.u32         %r8, %r4, %r6;
+    ld.shared.b32   %r10, [%r7];
+    ld.shared.v2.b32 {%r11, %r12}, [%r8];
+    cvt.u64.u32     %rd4, %r5;
+    add.u64         %rd5, %rd3, %rd4;
+    st.global.b32   [%rd5], %r10;
+    cvt.u64.u32     %rd6, %r6;
+    add.u64         %rd7, %rd3, %rd6;
+    add.u64         %rd7, %rd7, 128;
+    st.global.v2.b32 [%rd7], {%r11, %r12};
+    ret;
+}

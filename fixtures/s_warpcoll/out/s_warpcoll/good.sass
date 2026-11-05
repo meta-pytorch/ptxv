@@ -1,0 +1,544 @@
+	.target	sm_103a
+
+	.elftype	@"ET_EXEC"
+
+
+//--------------------- .text._Z8warpcollPKjS0_S0_Pj --------------------------
+	.section	.text._Z8warpcollPKjS0_S0_Pj,"ax",@progbits
+	.align	128
+        .global         _Z8warpcollPKjS0_S0_Pj
+        .type           _Z8warpcollPKjS0_S0_Pj,@function
+        .size           _Z8warpcollPKjS0_S0_Pj,(.L_x_67 - _Z8warpcollPKjS0_S0_Pj)
+        .other          _Z8warpcollPKjS0_S0_Pj,@"STO_CUDA_ENTRY STV_DEFAULT"
+_Z8warpcollPKjS0_S0_Pj:
+.text._Z8warpcollPKjS0_S0_Pj:
+        /*0000*/                   LDC R1, c[0x0][0x37c] ;
+        /*0010*/                   S2R R23, SR_TID.X ;
+        /*0020*/                   LDC.64 R2, c[0x0][0x380] ;
+        /*0030*/                   LDCU.64 UR4, c[0x0][0x358] ;
+        /*0040*/                   S2R R13, SR_GEMASK ;
+        /*0050*/                   LDC.64 R4, c[0x0][0x398] ;
+        /*0060*/                   IMAD.WIDE.U32 R2, R23, 0x4, R2 ;
+        /*0070*/                   LDG.E R0, desc[UR4][R2.64] ;
+        /*0080*/                   IMAD R7, R23.reuse, 0x28, RZ ;
+        /*0090*/                   BSSY B0, `(.L_x_0) ;
+        /*00a0*/                   LOP3.LUT R8, R23, 0x1f, RZ, 0xc0, !PT ;
+        /*00b0*/                   S2R R17, SR_GTMASK ;
+        /*00c0*/                   S2R R25, SR_EQMASK ;
+        /*00d0*/                   IMAD.WIDE.U32 R2, R7, 0x4, R4 ;
+        /*00e0*/                   S2R R27, SR_LTMASK ;
+        /*00f0*/                   S2R R9, SR_LEMASK ;
+        /*0100*/                   STG.E desc[UR4][R2.64+0x4], R13 ;
+        /*0110*/                   STG.E desc[UR4][R2.64+0x8], R17 ;
+        /*0120*/                   STG.E desc[UR4][R2.64+0xc], R25 ;
+        /*0130*/                   STG.E desc[UR4][R2.64+0x10], R27 ;
+        /*0140*/                   STG.E desc[UR4][R2.64], R9 ;
+        /*0150*/                   REDUX.OR UR6, R0 ;
+        /*0160*/                   CREDUX.MIN UR9, R0 ;
+        /*0170*/                   CREDUX.MAX UR10, R0.reuse ;
+        /*0180*/                   CREDUX.MIN.S32 UR11, R0.reuse ;
+        /*0190*/                   CREDUX.MAX.S32 UR12, R0 ;
+        /*01a0*/                   REDUX UR7, R0 ;
+        /*01b0*/                   SHF.R.U32.HI R4, RZ, 0x7, R0 ;
+        /*01c0*/                   LOP3.LUT R4, R4, 0x3, RZ, 0xc0, !PT ;
+        /*01d0*/                   IMAD.U32 R13, RZ, RZ, UR9 ;
+        /*01e0*/                   REDUX.SUM UR13, R0 ;
+        /*01f0*/                   IMAD.U32 R15, RZ, RZ, UR10 ;
+        /*0200*/                   ISETP.GT.AND P0, PT, R4, 0x1, PT ;
+        /*0210*/                   IMAD.U32 R17, RZ, RZ, UR11 ;
+        /*0220*/                   STG.E desc[UR4][R2.64+0x20], R13 ;
+        /*0230*/                   IMAD.U32 R19, RZ, RZ, UR12 ;
+        /*0240*/                   REDUX.XOR UR8, R0 ;
+        /*0250*/                   IMAD.U32 R5, RZ, RZ, UR6 ;
+        /*0260*/                   STG.E desc[UR4][R2.64+0x24], R15 ;
+        /*0270*/                   STG.E desc[UR4][R2.64+0x14], R5 ;
+        /*0280*/                   IMAD.U32 R7, RZ, RZ, UR7 ;
+        /*0290*/                   STG.E desc[UR4][R2.64+0x28], R17 ;
+        /*02a0*/                   STG.E desc[UR4][R2.64+0x18], R7 ;
+        /*02b0*/                   IMAD.U32 R21, RZ, RZ, UR13 ;
+        /*02c0*/                   STG.E desc[UR4][R2.64+0x2c], R19 ;
+        /*02d0*/                   STG.E desc[UR4][R2.64+0x30], R21 ;
+        /*02e0*/                   IMAD.U32 R11, RZ, RZ, UR8 ;
+        /*02f0*/                   STG.E desc[UR4][R2.64+0x1c], R11 ;
+        /*0300*/                   SHF.R.U32.HI R11, RZ, 0x5, R23 ;
+        /*0310*/               @P0 BRA `(.L_x_1) ;
+        /*0320*/                   ISETP.NE.AND P0, PT, R4, RZ, PT ;
+        /*0330*/              @!P0 BRA `(.L_x_2) ;
+        /*0340*/                   VOTE.ANY R10, PT, PT ;
+        /*0350*/                   LOP3.LUT R5, R0, 0x5a5a5a5a, RZ, 0x3c, !PT ;
+        /*0360*/                   R2UR UR6, R10 ;
+        /*0370*/                   BRA.DIV UR6, `(.L_x_3) ;
+        /*0380*/                   REDUX.OR UR6, R5 ;
+        /*0390*/                   CREDUX.MIN UR9, R5.reuse ;
+        /*03a0*/                   CREDUX.MAX UR10, R5.reuse ;
+        /*03b0*/                   CREDUX.MIN.S32 UR11, R5.reuse ;
+        /*03c0*/                   CREDUX.MAX.S32 UR12, R5 ;
+        /*03d0*/                   REDUX UR7, R5 ;
+        /*03e0*/                   IMAD.U32 R17, RZ, RZ, UR9 ;
+        /*03f0*/                   REDUX.XOR UR8, R5 ;
+        /*0400*/                   IMAD.U32 R19, RZ, RZ, UR10 ;
+        /*0410*/                   IMAD.U32 R21, RZ, RZ, UR11 ;
+        /*0420*/                   STG.E desc[UR4][R2.64+0x40], R17 ;
+        /*0430*/                   IMAD.U32 R23, RZ, RZ, UR12 ;
+        /*0440*/                   STG.E desc[UR4][R2.64+0x44], R19 ;
+        /*0450*/                   IMAD.U32 R7, RZ, RZ, UR6 ;
+        /*0460*/                   REDUX.SUM UR6, R5 ;
+        /*0470*/                   STG.E desc[UR4][R2.64+0x48], R21 ;
+        /*0480*/                   STG.E desc[UR4][R2.64+0x34], R7 ;
+        /*0490*/                   IMAD.U32 R13, RZ, RZ, UR7 ;
+        /*04a0*/                   STG.E desc[UR4][R2.64+0x4c], R23 ;
+        /*04b0*/                   STG.E desc[UR4][R2.64+0x38], R13 ;
+        /*04c0*/                   IMAD.U32 R15, RZ, RZ, UR8 ;
+        /*04d0*/                   STG.E desc[UR4][R2.64+0x3c], R15 ;
+        /*04e0*/                   IMAD.U32 R5, RZ, RZ, UR6 ;
+.L_x_27:
+        /*04f0*/                   STG.E desc[UR4][R2.64+0x50], R5 ;
+        /*0500*/                   BRA `(.L_x_4) ;
+.L_x_2:
+        /*0510*/                   VOTE.ANY R10, PT, PT ;
+        /*0520*/                   R2UR UR6, R10 ;
+        /*0530*/                   BRA.DIV UR6, `(.L_x_5) ;
+        /*0540*/                   REDUX.OR UR6, R0 ;
+        /*0550*/                   CREDUX.MIN UR9, R0.reuse ;
+        /*0560*/                   CREDUX.MAX UR10, R0.reuse ;
+        /*0570*/                   CREDUX.MIN.S32 UR11, R0.reuse ;
+        /*0580*/                   CREDUX.MAX.S32 UR12, R0 ;
+        /*0590*/                   REDUX UR7, R0 ;
+        /*05a0*/                   IMAD.U32 R15, RZ, RZ, UR9 ;
+        /*05b0*/                   REDUX.XOR UR8, R0 ;
+        /*05c0*/                   IMAD.U32 R17, RZ, RZ, UR10 ;
+        /*05d0*/                   IMAD.U32 R19, RZ, RZ, UR11 ;
+        /*05e0*/                   STG.E desc[UR4][R2.64+0x40], R15 ;
+        /*05f0*/                   IMAD.U32 R21, RZ, RZ, UR12 ;
+        /*0600*/                   STG.E desc[UR4][R2.64+0x44], R17 ;
+        /*0610*/                   IMAD.U32 R5, RZ, RZ, UR6 ;
+        /*0620*/                   REDUX.SUM UR6, R0 ;
+        /*0630*/                   STG.E desc[UR4][R2.64+0x48], R19 ;
+        /*0640*/                   STG.E desc[UR4][R2.64+0x4c], R21 ;
+        /*0650*/                   IMAD.U32 R7, RZ, RZ, UR7 ;
+        /*0660*/                   STG.E desc[UR4][R2.64+0x34], R5 ;
+        /*0670*/                   STG.E desc[UR4][R2.64+0x38], R7 ;
+        /*0680*/                   IMAD.U32 R13, RZ, RZ, UR8 ;
+        /*0690*/                   STG.E desc[UR4][R2.64+0x3c], R13 ;
+        /*06a0*/                   IMAD.U32 R5, RZ, RZ, UR6 ;
+.L_x_36:
+        /*06b0*/                   STG.E desc[UR4][R2.64+0x50], R5 ;
+        /*06c0*/                   BRA `(.L_x_4) ;
+.L_x_1:
+        /*06d0*/                   ISETP.NE.AND P0, PT, R4, 0x2, PT ;
+        /*06e0*/               @P0 VOTE.ANY R5, PT, PT ;
+        /*06f0*/               @P0 STG.E desc[UR4][R2.64+0x34], R5 ;
+        /*0700*/               @P0 BRA `(.L_x_4) ;
+        /*0710*/                   VOTE.ANY R10, PT, PT ;
+        /*0720*/                   R2UR UR6, R10 ;
+        /*0730*/                   BRA.DIV UR6, `(.L_x_6) ;
+        /*0740*/                   REDUX.OR UR6, R0 ;
+        /*0750*/                   LOP3.LUT R4, R0, 0x1, RZ, 0xc0, !PT ;
+        /*0760*/                   ISETP.NE.U32.AND P0, PT, R4, 0x1, PT ;
+        /*0770*/                   VOTE.ANY R7, PT, !P0 ;
+        /*0780*/                   IMAD.U32 R5, RZ, RZ, UR6 ;
+        /*0790*/                   STG.E desc[UR4][R2.64+0x34], R5 ;
+.L_x_39:
+        /*07a0*/                   STG.E desc[UR4][R2.64+0x38], R7 ;
+.L_x_4:
+        /*07b0*/                   BSYNC B0 ;
+.L_x_0:
+        /*07c0*/                   LDC.64 R6, c[0x0][0x388] ;
+        /*07d0*/                   IMAD.WIDE.U32 R4, R11, 0x4, R6 ;
+        /*07e0*/                   LDG.E R10, desc[UR4][R4.64] ;
+        /*07f0*/                   SHF.R.U32.HI R12, RZ, 0x1, R0 ;
+        /*0800*/                   LOP3.LUT R12, R12, 0x1, RZ, 0xc0, !PT ;
+        /*0810*/                   ISETP.NE.U32.AND P0, PT, R12, 0x1, PT ;
+        /*0820*/                   REDUX.OR UR6, R10 ;
+        /*0830*/                   R2UR P1, URZ, R10 ;
+        /*0840*/              @!P1 BRA.DIV UR6, `(.L_x_7) ;
+        /*0850*/                   REDUX.OR UR6, R0 ;
+        /*0860*/                   VOTE.ANY R13, PT, !P0 ;
+        /*0870*/                   STG.E desc[UR4][R2.64+0x54], R13 ;
+        /*0880*/                   IMAD.U32 R15, RZ, RZ, UR6 ;
+.L_x_44:
+        /*0890*/                   LDC.64 R12, c[0x0][0x390] ;
+        /*08a0*/                   STG.E desc[UR4][R2.64+0x58], R15 ;
+        /*08b0*/                   IMAD.WIDE.U32 R12, R11, 0x4, R12 ;
+        /*08c0*/                   LDG.E R17, desc[UR4][R12.64] ;
+        /*08d0*/                   UMOV UR6, 0xffffffff ;
+        /*08e0*/                   ISETP.GE.U32.AND P1, PT, R8.reuse, R17.reuse, PT ;
+        /*08f0*/                   ISETP.GE.U32.AND P0, PT, R8, R17, PT ;
+        /*0900*/                   BRA.DIV UR6, `(.L_x_8) ;
+        /*0910*/                   VOTE.ANY R12, PT, !P0 ;
+.L_x_47:
+        /*0920*/                   BSSY B0, `(.L_x_9) ;
+        /*0930*/                   IMAD.MOV.U32 R15, RZ, RZ, RZ ;
+        /*0940*/                   IMAD.MOV.U32 R13, RZ, RZ, RZ ;
+        /*0950*/               @P1 BRA `(.L_x_10) ;
+        /*0960*/                   IMAD.MOV.U32 R13, RZ, RZ, RZ ;
+        /*0970*/                   IMAD.MOV.U32 R14, RZ, RZ, R8 ;
+        /*0980*/                   IMAD.MOV.U32 R15, RZ, RZ, RZ ;
+.L_x_12:
+        /*0990*/                   LDCU.64 UR6, c[0x0][0x380] ;
+        /*09a0*/                   IMAD R10, R14, 0xd, R11 ;
+        /*09b0*/                   IMAD.SHL.U32 R10, R10, 0x4, RZ ;
+        /*09c0*/                   LOP3.LUT R10, R10, 0x1fc, RZ, 0xc0, !PT ;
+        /*09d0*/                   IADD3 R18, P0, PT, R10, UR6, RZ ;
+        /*09e0*/                   IMAD.X R19, RZ, RZ, UR7, P0 ;
+        /*09f0*/                   LDG.E R18, desc[UR4][R18.64] ;
+        /*0a00*/                   REDUX.OR UR6, R12 ;
+        /*0a10*/                   R2UR P1, URZ, R12 ;
+        /*0a20*/                   SHF.R.U32.HI R10, RZ, 0x2, R18 ;
+        /*0a30*/                   LOP3.LUT R10, R10, 0x1, RZ, 0xc0, !PT ;
+        /*0a40*/                   ISETP.NE.U32.AND P0, PT, R10, 0x1, PT ;
+        /*0a50*/              @!P1 BRA.DIV UR6, `(.L_x_11) ;
+        /*0a60*/                   VOTE.ANY R10, PT, !P0 ;
+        /*0a70*/                   VIADD R14, R14, 0x7 ;
+        /*0a80*/                   LOP3.LUT R16, R10, R9, RZ, 0xc0, !PT ;
+        /*0a90*/                   ISETP.GE.U32.AND P1, PT, R14, R17, PT ;
+        /*0aa0*/                   LOP3.LUT R15, R10, R15, RZ, 0x3c, !PT ;
+        /*0ab0*/                   POPC R16, R16 ;
+        /*0ac0*/                   VOTE.ANY R12, PT, !P1 ;
+        /*0ad0*/                   IMAD.IADD R13, R16, 0x1, R13 ;
+.L_x_52:
+        /*0ae0*/              @!P1 BRA `(.L_x_12) ;
+.L_x_10:
+        /*0af0*/                   BSYNC B0 ;
+.L_x_9:
+        /*0b00*/                   SHF.R.U32.HI R11, RZ, 0x4, R8 ;
+        /*0b10*/                   STG.E desc[UR4][R2.64+0x5c], R15 ;
+        /*0b20*/                   IMAD.WIDE.U32 R6, R11, 0x4, R6 ;
+        /*0b30*/                   STG.E desc[UR4][R2.64+0x60], R13 ;
+        /*0b40*/                   LDG.E R10, desc[UR4][R6.64+0x10] ;
+        /*0b50*/                   SHF.R.U32.HI R8, RZ, 0x3, R0 ;
+        /*0b60*/                   LOP3.LUT R8, R8, 0x1, RZ, 0xc0, !PT ;
+        /*0b70*/                   ISETP.NE.U32.AND P0, PT, R8, 0x1, PT ;
+        /*0b80*/                   REDUX.OR UR6, R10 ;
+        /*0b90*/                   R2UR P1, URZ, R10 ;
+        /*0ba0*/              @!P1 BRA.DIV UR6, `(.L_x_13) ;
+        /*0bb0*/                   REDUX.OR UR6, R0 ;
+        /*0bc0*/                   VOTE.ANY R7, PT, !P0 ;
+        /*0bd0*/                   STG.E desc[UR4][R2.64+0x64], R7 ;
+        /*0be0*/                   IMAD.U32 R11, RZ, RZ, UR6 ;
+.L_x_57:
+        /*0bf0*/                   STG.E desc[UR4][R2.64+0x68], R11 ;
+        /*0c00*/                   LOP3.LUT P0, RZ, R0, 0x80, RZ, 0xc0, !PT ;
+        /*0c10*/                   BSSY B0, `(.L_x_14) ;
+        /*0c20*/              @!P0 BRA `(.L_x_15) ;
+        /*0c30*/                   LDG.E R4, desc[UR4][R4.64] ;
+        /*0c40*/                   VOTEU.ANY UR6, UPT, PT ;
+        /*0c50*/                   SHF.R.U32.HI R6, RZ, 0x4, R0 ;
+        /*0c60*/                   LOP3.LUT R6, R6, 0x1, RZ, 0xc0, !PT ;
+        /*0c70*/                   ISETP.NE.U32.AND P0, PT, R6, 0x1, PT ;
+        /*0c80*/                   LOP3.LUT R10, R4, UR6, RZ, 0xc0, !PT ;
+        /*0c90*/                   REDUX.OR UR6, R10 ;
+        /*0ca0*/                   R2UR P1, URZ, R10 ;
+        /*0cb0*/              @!P1 BRA.DIV UR6, `(.L_x_16) ;
+        /*0cc0*/                   REDUX.OR UR6, R0 ;
+        /*0cd0*/                   VOTE.ANY R5, PT, !P0 ;
+        /*0ce0*/                   STG.E desc[UR4][R2.64+0x6c], R5 ;
+        /*0cf0*/                   IMAD.U32 R4, RZ, RZ, UR6 ;
+        /*0d00*/                   BRA `(.L_x_17) ;
+.L_x_15:
+        /*0d10*/                   LDG.E R4, desc[UR4][R4.64] ;
+        /*0d20*/                   VOTEU.ANY UR6, UPT, PT ;
+        /*0d30*/                   SHF.R.U32.HI R6, RZ, 0x5, R0 ;
+        /*0d40*/                   LOP3.LUT R6, R6, 0x1, RZ, 0xc0, !PT ;
+        /*0d50*/                   ISETP.NE.U32.AND P0, PT, R6, 0x1, PT ;
+        /*0d60*/                   LOP3.LUT R10, R4, UR6, RZ, 0xc0, !PT ;
+        /*0d70*/                   REDUX.OR UR6, R10 ;
+        /*0d80*/                   R2UR P1, URZ, R10 ;
+        /*0d90*/              @!P1 BRA.DIV UR6, `(.L_x_18) ;
+        /*0da0*/                   REDUX.SUM UR6, R0 ;
+        /*0db0*/                   VOTE.ANY R5, PT, !P0 ;
+        /*0dc0*/                   STG.E desc[UR4][R2.64+0x6c], R5 ;
+        /*0dd0*/                   IMAD.U32 R4, RZ, RZ, UR6 ;
+.L_x_17:
+        /*0de0*/                   BSYNC B0 ;
+.L_x_14:
+        /*0df0*/                   LOP3.LUT R9, R9, R12, RZ, 0xc0, !PT ;
+        /*0e00*/                   STG.E desc[UR4][R2.64+0x70], R4 ;
+        /*0e10*/                   STG.E desc[UR4][R2.64+0x74], R9 ;
+        /*0e20*/                   EXIT ;
+.L_x_3:
+        /*0e30*/                   IMAD.MOV.U32 R17, RZ, RZ, R5.reuse ;
+        /*0e40*/                   IMAD.MOV.U32 R19, RZ, RZ, R5 ;
+        /*0e50*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_19) ;
+        /*0e60*/                   REDUX.OR UR79, R17 ;
+        /*0e70*/                   MOV R15, UR79 ;
+        /*0e80*/                   ENDCOLLECTIVE ;
+.L_x_19:
+        /*0e90*/                   IMAD.MOV.U32 R21, RZ, RZ, R5 ;
+        /*0ea0*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_20) ;
+        /*0eb0*/                   REDUX UR79, R19 ;
+        /*0ec0*/                   MOV R13, UR79 ;
+        /*0ed0*/                   ENDCOLLECTIVE ;
+.L_x_20:
+        /*0ee0*/                   IMAD.MOV.U32 R7, RZ, RZ, R15 ;
+        /*0ef0*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_21) ;
+        /*0f00*/                   REDUX.XOR UR79, R21 ;
+        /*0f10*/                   MOV R15, UR79 ;
+        /*0f20*/                   ENDCOLLECTIVE ;
+.L_x_21:
+        /*0f30*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_22) ;
+        /*0f40*/                   CREDUX.MIN UR79, R17 ;
+        /*0f50*/                   MOV R17, UR79 ;
+        /*0f60*/                   ENDCOLLECTIVE ;
+.L_x_22:
+        /*0f70*/                   STG.E desc[UR4][R2.64+0x34], R7 ;
+        /*0f80*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_23) ;
+        /*0f90*/                   CREDUX.MAX UR79, R19 ;
+        /*0fa0*/                   MOV R19, UR79 ;
+        /*0fb0*/                   ENDCOLLECTIVE ;
+.L_x_23:
+        /*0fc0*/                   STG.E desc[UR4][R2.64+0x38], R13 ;
+        /*0fd0*/                   IMAD.MOV.U32 R21, RZ, RZ, R5 ;
+        /*0fe0*/                   STG.E desc[UR4][R2.64+0x40], R17 ;
+        /*0ff0*/                   IMAD.MOV.U32 R7, RZ, RZ, R5 ;
+        /*1000*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_24) ;
+        /*1010*/                   CREDUX.MIN.S32 UR79, R21 ;
+        /*1020*/                   MOV R21, UR79 ;
+        /*1030*/                   ENDCOLLECTIVE ;
+.L_x_24:
+        /*1040*/                   STG.E desc[UR4][R2.64+0x44], R19 ;
+        /*1050*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_25) ;
+        /*1060*/                   CREDUX.MAX.S32 UR79, R5 ;
+        /*1070*/                   MOV R23, UR79 ;
+        /*1080*/                   ENDCOLLECTIVE ;
+.L_x_25:
+        /*1090*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_26) ;
+        /*10a0*/                   REDUX.SUM UR79, R7 ;
+        /*10b0*/                   MOV R4, UR79 ;
+        /*10c0*/                   ENDCOLLECTIVE ;
+.L_x_26:
+        /*10d0*/                   STG.E desc[UR4][R2.64+0x48], R21 ;
+        /*10e0*/                   STG.E desc[UR4][R2.64+0x3c], R15 ;
+        /*10f0*/                   STG.E desc[UR4][R2.64+0x4c], R23 ;
+        /*1100*/                   IMAD.MOV.U32 R5, RZ, RZ, R4 ;
+        /*1110*/                   BRA `(.L_x_27) ;
+.L_x_5:
+        /*1120*/                   IMAD.MOV.U32 R17, RZ, RZ, R0.reuse ;
+        /*1130*/                   IMAD.MOV.U32 R19, RZ, RZ, R0 ;
+        /*1140*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_28) ;
+        /*1150*/                   REDUX.OR UR79, R17 ;
+        /*1160*/                   MOV R15, UR79 ;
+        /*1170*/                   ENDCOLLECTIVE ;
+.L_x_28:
+        /*1180*/                   IMAD.MOV.U32 R21, RZ, RZ, R0 ;
+        /*1190*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_29) ;
+        /*11a0*/                   REDUX UR79, R19 ;
+        /*11b0*/                   MOV R13, UR79 ;
+        /*11c0*/                   ENDCOLLECTIVE ;
+.L_x_29:
+        /*11d0*/                   IMAD.MOV.U32 R5, RZ, RZ, R15 ;
+        /*11e0*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_30) ;
+        /*11f0*/                   REDUX.XOR UR79, R21 ;
+        /*1200*/                   MOV R15, UR79 ;
+        /*1210*/                   ENDCOLLECTIVE ;
+.L_x_30:
+        /*1220*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_31) ;
+        /*1230*/                   CREDUX.MIN UR79, R17 ;
+        /*1240*/                   MOV R17, UR79 ;
+        /*1250*/                   ENDCOLLECTIVE ;
+.L_x_31:
+        /*1260*/                   STG.E desc[UR4][R2.64+0x34], R5 ;
+        /*1270*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_32) ;
+        /*1280*/                   CREDUX.MAX UR79, R19 ;
+        /*1290*/                   MOV R19, UR79 ;
+        /*12a0*/                   ENDCOLLECTIVE ;
+.L_x_32:
+        /*12b0*/                   IMAD.MOV.U32 R7, RZ, RZ, R13 ;
+        /*12c0*/                   IMAD.MOV.U32 R21, RZ, RZ, R0 ;
+        /*12d0*/                   STG.E desc[UR4][R2.64+0x38], R7 ;
+        /*12e0*/                   IMAD.MOV.U32 R5, RZ, RZ, R0 ;
+        /*12f0*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_33) ;
+        /*1300*/                   CREDUX.MIN.S32 UR79, R21 ;
+        /*1310*/                   MOV R21, UR79 ;
+        /*1320*/                   ENDCOLLECTIVE ;
+.L_x_33:
+        /*1330*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_34) ;
+        /*1340*/                   CREDUX.MAX.S32 UR79, R5 ;
+        /*1350*/                   MOV R23, UR79 ;
+        /*1360*/                   ENDCOLLECTIVE ;
+.L_x_34:
+        /*1370*/                   IMAD.MOV.U32 R7, RZ, RZ, R0 ;
+        /*1380*/                   IMAD.MOV.U32 R13, RZ, RZ, R15 ;
+        /*1390*/                   IMAD.MOV.U32 R15, RZ, RZ, R17 ;
+        /*13a0*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_35) ;
+        /*13b0*/                   REDUX.SUM UR79, R7 ;
+        /*13c0*/                   MOV R4, UR79 ;
+        /*13d0*/                   ENDCOLLECTIVE ;
+.L_x_35:
+        /*13e0*/                   IMAD.MOV.U32 R17, RZ, RZ, R19 ;
+        /*13f0*/                   STG.E desc[UR4][R2.64+0x3c], R13 ;
+        /*1400*/                   IMAD.MOV.U32 R19, RZ, RZ, R21 ;
+        /*1410*/                   IMAD.MOV.U32 R21, RZ, RZ, R23 ;
+        /*1420*/                   STG.E desc[UR4][R2.64+0x40], R15 ;
+        /*1430*/                   STG.E desc[UR4][R2.64+0x44], R17 ;
+        /*1440*/                   STG.E desc[UR4][R2.64+0x48], R19 ;
+        /*1450*/                   STG.E desc[UR4][R2.64+0x4c], R21 ;
+        /*1460*/                   IMAD.MOV.U32 R5, RZ, RZ, R4 ;
+        /*1470*/                   BRA `(.L_x_36) ;
+.L_x_6:
+        /*1480*/                   IMAD.MOV.U32 R17, RZ, RZ, R0 ;
+        /*1490*/                   LOP3.LUT R4, R0, 0x1, RZ, 0xc0, !PT ;
+        /*14a0*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_37) ;
+        /*14b0*/                   REDUX.OR UR79, R17 ;
+        /*14c0*/                   MOV R15, UR79 ;
+        /*14d0*/                   ENDCOLLECTIVE ;
+.L_x_37:
+        /*14e0*/                   ISETP.NE.U32.AND P0, PT, R4, 0x1, PT ;
+        /*14f0*/                   PLOP3.LUT P0, PT, P0, PT, PT, 0x8, 0x80 ;
+        /*1500*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_38) ;
+        /*1510*/                   VOTE.ANY R18, PT, P0 ;
+        /*1520*/                   ENDCOLLECTIVE ;
+.L_x_38:
+        /*1530*/                   IMAD.MOV.U32 R7, RZ, RZ, R18 ;
+        /*1540*/                   IMAD.MOV.U32 R5, RZ, RZ, R15 ;
+        /*1550*/                   STG.E desc[UR4][R2.64+0x34], R5 ;
+        /*1560*/                   BRA `(.L_x_39) ;
+.L_x_7:
+        /*1570*/                   BSSY B0, `(.L_x_40) ;
+        /*1580*/                   PLOP3.LUT P0, PT, P0, PT, PT, 0x8, 0x80 ;
+        /*1590*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_41) ;
+        /*15a0*/                   VOTE.ANY R18, PT, P0 ;
+        /*15b0*/                   ENDCOLLECTIVE ;
+.L_x_41:
+        /*15c0*/                   BSYNC B0 ;
+.L_x_40:
+        /*15d0*/                   BSSY B0, `(.L_x_42) ;
+        /*15e0*/                   IMAD.MOV.U32 R13, RZ, RZ, R18 ;
+        /*15f0*/                   IMAD.MOV.U32 R17, RZ, RZ, R0 ;
+        /*1600*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_43) ;
+        /*1610*/                   REDUX.OR UR79, R17 ;
+        /*1620*/                   MOV R15, UR79 ;
+        /*1630*/                   ENDCOLLECTIVE ;
+.L_x_43:
+        /*1640*/                   BSYNC B0 ;
+.L_x_42:
+        /*1650*/                   STG.E desc[UR4][R2.64+0x54], R13 ;
+        /*1660*/                   BRA `(.L_x_44) ;
+.L_x_8:
+        /*1670*/                   BSSY B0, `(.L_x_45) ;
+        /*1680*/                   PLOP3.LUT P0, PT, P0, PT, PT, 0x8, 0x80 ;
+        /*1690*/                   IMAD.MOV.U32 R10, RZ, RZ, -0x1 ;
+        /*16a0*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_46) ;
+        /*16b0*/                   VOTE.ANY R18, PT, P0 ;
+        /*16c0*/                   ENDCOLLECTIVE ;
+.L_x_46:
+        /*16d0*/                   BSYNC B0 ;
+.L_x_45:
+        /*16e0*/                   IMAD.MOV.U32 R12, RZ, RZ, R18 ;
+        /*16f0*/                   BRA `(.L_x_47) ;
+.L_x_11:
+        /*1700*/                   BSSY B1, `(.L_x_48) ;
+        /*1710*/                   PLOP3.LUT P0, PT, P0, PT, PT, 0x8, 0x80 ;
+        /*1720*/                   IMAD.MOV.U32 R10, RZ, RZ, R12 ;
+        /*1730*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_49) ;
+        /*1740*/                   VOTE.ANY R18, PT, P0 ;
+        /*1750*/                   ENDCOLLECTIVE ;
+.L_x_49:
+        /*1760*/                   BSYNC B1 ;
+.L_x_48:
+        /*1770*/                   IMAD.MOV.U32 R10, RZ, RZ, R18 ;
+        /*1780*/                   BSSY B1, `(.L_x_50) ;
+        /*1790*/                   VIADD R14, R14, 0x7 ;
+        /*17a0*/                   LOP3.LUT R16, R10, R9, RZ, 0xc0, !PT ;
+        /*17b0*/                   ISETP.GE.U32.AND P1, PT, R14, R17, PT ;
+        /*17c0*/                   LOP3.LUT R15, R10, R15, RZ, 0x3c, !PT ;
+        /*17d0*/                   IMAD.MOV.U32 R10, RZ, RZ, R12 ;
+        /*17e0*/                   POPC R16, R16 ;
+        /*17f0*/                   PLOP3.LUT P0, PT, P1, PT, PT, 0x8, 0x80 ;
+        /*1800*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_51) ;
+        /*1810*/                   VOTE.ANY R18, PT, P0 ;
+        /*1820*/                   ENDCOLLECTIVE ;
+.L_x_51:
+        /*1830*/                   BSYNC B1 ;
+.L_x_50:
+        /*1840*/                   IMAD.MOV.U32 R12, RZ, RZ, R18 ;
+        /*1850*/                   IMAD.IADD R13, R16, 0x1, R13 ;
+        /*1860*/                   BRA `(.L_x_52) ;
+.L_x_13:
+        /*1870*/                   BSSY B0, `(.L_x_53) ;
+        /*1880*/                   PLOP3.LUT P0, PT, P0, PT, PT, 0x8, 0x80 ;
+        /*1890*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_54) ;
+        /*18a0*/                   VOTE.ANY R18, PT, P0 ;
+        /*18b0*/                   ENDCOLLECTIVE ;
+.L_x_54:
+        /*18c0*/                   BSYNC B0 ;
+.L_x_53:
+        /*18d0*/                   BSSY B0, `(.L_x_55) ;
+        /*18e0*/                   IMAD.MOV.U32 R7, RZ, RZ, R18 ;
+        /*18f0*/                   IMAD.MOV.U32 R17, RZ, RZ, R0 ;
+        /*1900*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_56) ;
+        /*1910*/                   REDUX.OR UR79, R17 ;
+        /*1920*/                   MOV R15, UR79 ;
+        /*1930*/                   ENDCOLLECTIVE ;
+.L_x_56:
+        /*1940*/                   BSYNC B0 ;
+.L_x_55:
+        /*1950*/                   STG.E desc[UR4][R2.64+0x64], R7 ;
+        /*1960*/                   IMAD.MOV.U32 R11, RZ, RZ, R15 ;
+        /*1970*/                   BRA `(.L_x_57) ;
+.L_x_16:
+        /*1980*/                   BSSY B1, `(.L_x_58) ;
+        /*1990*/                   PLOP3.LUT P0, PT, P0, PT, PT, 0x8, 0x80 ;
+        /*19a0*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_59) ;
+        /*19b0*/                   VOTE.ANY R18, PT, P0 ;
+        /*19c0*/                   ENDCOLLECTIVE ;
+.L_x_59:
+        /*19d0*/                   BSYNC B1 ;
+.L_x_58:
+        /*19e0*/                   BSSY B1, `(.L_x_60) ;
+        /*19f0*/                   IMAD.MOV.U32 R5, RZ, RZ, R18 ;
+        /*1a00*/                   IMAD.MOV.U32 R17, RZ, RZ, R0 ;
+        /*1a10*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_61) ;
+        /*1a20*/                   REDUX.OR UR79, R17 ;
+        /*1a30*/                   MOV R15, UR79 ;
+        /*1a40*/                   ENDCOLLECTIVE ;
+.L_x_61:
+        /*1a50*/                   BSYNC B1 ;
+.L_x_60:
+        /*1a60*/                   STG.E desc[UR4][R2.64+0x6c], R5 ;
+        /*1a70*/                   IMAD.MOV.U32 R4, RZ, RZ, R15 ;
+        /*1a80*/                   BRA `(.L_x_17) ;
+.L_x_18:
+        /*1a90*/                   BSSY B1, `(.L_x_62) ;
+        /*1aa0*/                   PLOP3.LUT P0, PT, P0, PT, PT, 0x8, 0x80 ;
+        /*1ab0*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_63) ;
+        /*1ac0*/                   VOTE.ANY R18, PT, P0 ;
+        /*1ad0*/                   ENDCOLLECTIVE ;
+.L_x_63:
+        /*1ae0*/                   BSYNC B1 ;
+.L_x_62:
+        /*1af0*/                   BSSY B1, `(.L_x_64) ;
+        /*1b00*/                   IMAD.MOV.U32 R5, RZ, RZ, R18 ;
+        /*1b10*/                   IMAD.MOV.U32 R7, RZ, RZ, R0 ;
+        /*1b20*/                   WARPSYNC.COLLECTIVE R10, `(.L_x_65) ;
+        /*1b30*/                   REDUX.SUM UR79, R7 ;
+        /*1b40*/                   MOV R4, UR79 ;
+        /*1b50*/                   ENDCOLLECTIVE ;
+.L_x_65:
+        /*1b60*/                   BSYNC B1 ;
+.L_x_64:
+        /*1b70*/                   STG.E desc[UR4][R2.64+0x6c], R5 ;
+        /*1b80*/                   BRA `(.L_x_17) ;
+.L_x_66:
+        /*1b90*/                   BRA `(.L_x_66);
+        /*1ba0*/                   NOP;
+        /*1bb0*/                   NOP;
+        /*1bc0*/                   NOP;
+        /*1bd0*/                   NOP;
+        /*1be0*/                   NOP;
+        /*1bf0*/                   NOP;
+        /*1c00*/                   NOP;
+        /*1c10*/                   NOP;
+        /*1c20*/                   NOP;
+        /*1c30*/                   NOP;
+        /*1c40*/                   NOP;
+        /*1c50*/                   NOP;
+        /*1c60*/                   NOP;
+        /*1c70*/                   NOP;
+.L_x_67:
+
+
+//--------------------- SYMBOLS --------------------------
+
+	.type		.nv.reservedSmem.offset0,@object
+	.size		.nv.reservedSmem.offset0,0x4

@@ -1,0 +1,4 @@
+{"version": 1, "seed": 1, "name": "N(0,1), MXF4 e2m1 per 32 along K (ue8m0 = ceil(amax/6))",
+ "tensors": {
+  "A": {"dist": {"kind": "normal"}, "quant": {"kind": "mx", "elem": "e2m1", "block": 32, "scales": "SFA"}},
+  "B": {"dist": {"kind": "normal"}, "quant": {"kind": "mx", "elem": "e2m1", "block": 32, "scales": "SFB"}}}}

@@ -1,0 +1,2 @@
+{"version": 1, "seed": 1, "name": "uniform [-1, 1)",
+ "default": {"dist": {"kind": "uniform", "lo": -1.0, "hi": 1.0}}}

@@ -1,0 +1,46 @@
+name = "r1d_clc"
+description = """
+Rung 1d. A persistent kernel driven by cluster launch control: 4 one-warp CTAs over 4 tiles;
+after each tile, thread 0 tries to cancel a CTA that has not launched and takes over its tile."""
+ptx = "kernel.ptx"
+entry = "r1d_clc"
+grid = [4, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "correct kernel"
+expect = ["clean"]
+
+[[variants]]
+id = "B17"
+summary = "the try_cancel response is used without waiting for its mbarrier"
+marker = "@B17"
+replace = "<delete>"
+expect = ["nondeterministic", "race", "violation"]
+
+[[variants]]
+id = "B53"
+summary = "the wait parity is not flipped: the second request reads the first response"
+marker = "@B53"
+replace = "<delete>"
+expect = ["fault"]
+
+[[variants]]
+id = "B54"
+summary = "a CTA exits after a successful cancel without doing the stolen tile"
+marker = "@B54"
+find = "// (B54 drops the stolen tile here)"
+replace = "@%p2 mov.u32    %r8, 0xffffffff;"
+expect = ["nondeterministic"]

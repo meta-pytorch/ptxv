@@ -1,0 +1,10 @@
+# errdist pair: torch eager vs torch.compile (inductor) for clone_bf16 (docs/errdist.md §9).
+#   ptxv errdist fixtures/errdist/cve/clone_bf16.toml --inputs fixtures/errdist/normal.json
+max_states = 200000
+segments = true
+reference = { case = "../../c_cve_clone_bf16_eager", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "../../c_cve_clone_bf16_inductor"
+variant = "good"
+front = "sass"

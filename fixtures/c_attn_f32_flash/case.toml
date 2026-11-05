@@ -1,0 +1,73 @@
+name = "c_attn_f32_flash"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): run() of triton_attn_f32_flash.py (kernel ^attn_f32_flash_kernel$). 1 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: attn_f32_flash_kernel grid [16, 1, 1] block [32, 1, 1]
+Regenerate: CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/capture.py --triton tools/capture_examples/triton_attn_f32_flash.py:attn_f32_flash_kernel --binary --out fixtures/c_attn_f32_flash"""
+cubin = "k0.cubin"
+entry = "attn_f32_flash_kernel"
+grid = [16, 1, 1]
+block = [32, 1, 1]
+dynamic_smem = 64
+outputs = ["out"]
+
+[[buffers]]
+name = "q"
+dtype = "f32"
+shape = [16, 16]
+init = "file"
+file = "data/q.bin"
+
+[[buffers]]
+name = "k"
+dtype = "f32"
+shape = [64, 16]
+init = "file"
+file = "data/k.bin"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [64, 16]
+init = "file"
+file = "data/v.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [16, 16]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "q"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "k"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

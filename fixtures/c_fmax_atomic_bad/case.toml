@@ -1,0 +1,34 @@
+name = "c_fmax_atomic_bad"
+description = """
+Row maxima through an atomicMaxFloat that branches on value > 0.5 (must block). Y[r] = max_j X[r][j], X[32 x 128] f32 (fixtures/c_equiv_fmax/fmax.cu)."""
+cubin = "kernel.cubin"
+entry = "rowmax_atomic_bad"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["Y"]
+
+[[buffers]]
+name = "X"
+dtype = "f32"
+shape = [32, 128]
+init = "normal"
+seed = 41
+
+[[buffers]]
+name = "Y"
+dtype = "f32"
+shape = [32]
+init = "nan"
+expect = "expected/Y.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "X"
+
+[[params]]
+kind = "ptr"
+buffer = "Y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

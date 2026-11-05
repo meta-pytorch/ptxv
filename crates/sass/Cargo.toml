@@ -1,0 +1,8 @@
+[package]
+name = "ptxv-sass"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+ptxv-ir = { path = "../ir" }

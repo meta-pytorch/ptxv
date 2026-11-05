@@ -1,0 +1,243 @@
+// Probe (E-PAIR, S-TCCP, N-MMA-BS): what the cta_group::2 forms of tcgen05.cp and of the
+// block-scaled tcgen05.mma read and write across a CTA pair (cluster 2, 128 threads per CTA).
+// Every operand differs between the two CTAs, so each hypothesis about which CTA's shared
+// memory / TMEM is read gives a different output.
+//
+// cp_pair: each CTA writes 32 rows x 16 B to its smem (word j of the 512 bytes = rank << 16 | j);
+//   rank 0 thread 0 issues tcgen05.cp.cta_group::2.32x128b.warpx4 [tmem col 0], desc (no
+//   swizzle, SBO 128) and a multicast commit to both CTAs; each CTA stores TMEM lanes 0..127,
+//   columns 0..3: out[rank][lane][col].
+// mma_pair: D[256x64] f32 = one tcgen05.mma.cta_group::2.kind::mxf4nvf4.block_scale.block16
+//   (K = 64, M = 256, N = 64, ue4m3). CTA r copies A rows 128r.. (32 B each) and B rows 32r..
+//   into its smem (K-major, no swizzle: SBO 128, LBO 2048 / 512), and writes SFA[r][lane][0..4]
+//   to TMEM columns 64..67 and SFB[r][lane][0..4] to columns 96..99 of every lane
+//   (tcgen05.st). Rank 0 thread 0 issues the MMA with [sfa] = column 64, [sfb] = column 96.
+//   D rows 128r + lane are stored from CTA r.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry cp_pair(
+    .param .u64 out
+)
+.maxntid 128, 1, 1
+.reqnctapercluster 2, 1, 1
+{
+    .reg .pred  %p<8>;
+    .reg .b16   %rs<4>;
+    .reg .b32   %r<64>;
+    .reg .b64   %rd<16>;
+    .shared .align 16 .b32 tmem_slot;
+    .shared .align 8 .b64 done_bar;
+    .shared .align 1024 .b8 smS[512];
+
+    mov.u32         %r0, %tid.x;
+    shr.u32         %r1, %r0, 5;
+    mov.u32         %r2, %cluster_ctarank;
+    mov.u32         %r3, tmem_slot;
+    mov.u32         %r4, done_bar;
+    mov.u32         %r6, smS;
+    setp.ne.u32     %p0, %r1, 0;
+    @%p0 bra        SKIP_ALLOC;
+    tcgen05.alloc.cta_group::2.sync.aligned.shared::cta.b32 [%r3], 32;
+    tcgen05.relinquish_alloc_permit.cta_group::2.sync.aligned;
+SKIP_ALLOC:
+    setp.ne.u32     %p1, %r0, 0;
+    @%p1 bra        SKIP_INIT;
+    mbarrier.init.shared::cta.b64 [%r4], 1;
+    fence.mbarrier_init.release.cluster;
+SKIP_INIT:
+    // word t of the source = rank << 16 | t
+    shl.b32         %r7, %r2, 16;
+    or.b32          %r8, %r7, %r0;
+    shl.b32         %r9, %r0, 2;
+    add.u32         %r10, %r6, %r9;
+    st.shared.b32   [%r10], %r8;
+    fence.proxy.async.shared::cta;
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    tcgen05.fence::after_thread_sync;
+    ld.shared.b32   %r11, [%r3];
+    setp.ne.u32     %p2, %r2, 0;
+    or.pred         %p3, %p1, %p2;
+    @%p3 bra        WAIT;
+    shr.u32         %r12, %r6, 4;
+    cvt.u64.u32     %rd1, %r12;
+    or.b64          %rd2, %rd1, 0x0000400800000000;     // SBO 128, version 1
+    tcgen05.cp.cta_group::2.32x128b.warpx4 [%r11], %rd2;
+    mov.b16         %rs0, 3;
+    tcgen05.commit.cta_group::2.mbarrier::arrive::one.shared::cluster.multicast::cluster.b64 [%r4], %rs0;
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p4, [%r4], 0;
+    @!%p4 bra       WAIT;
+    tcgen05.fence::after_thread_sync;
+    shl.b32         %r13, %r1, 21;
+    add.u32         %r14, %r11, %r13;
+    tcgen05.ld.sync.aligned.32x32b.x4.b32 {%r20, %r21, %r22, %r23}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    ld.param.u64    %rd3, [out];
+    cvta.to.global.u64 %rd4, %rd3;
+    shl.b32         %r15, %r2, 7;
+    add.u32         %r16, %r15, %r0;
+    mul.wide.u32    %rd5, %r16, 16;
+    add.u64         %rd6, %rd4, %rd5;
+    st.global.v4.b32 [%rd6], {%r20, %r21, %r22, %r23};
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    @%p0 bra        DONE;
+    tcgen05.fence::after_thread_sync;
+    tcgen05.dealloc.cta_group::2.sync.aligned.b32 %r11, 32;
+DONE:
+    ret;
+}
+
+.visible .entry mma_pair(
+    .param .u64 a,
+    .param .u64 b,
+    .param .u64 sfa,
+    .param .u64 sfb,
+    .param .u64 out,
+    .param .u32 idesc
+)
+.maxntid 128, 1, 1
+.reqnctapercluster 2, 1, 1
+{
+    .reg .pred  %p<8>;
+    .reg .b16   %rs<4>;
+    .reg .b32   %r<80>;
+    .reg .b64   %rd<32>;
+    .shared .align 16 .b32 tmem_slot;
+    .shared .align 8 .b64 done_bar;
+    .shared .align 1024 .b8 smA[4096];
+    .shared .align 1024 .b8 smB[1024];
+
+    mov.u32         %r0, %tid.x;
+    shr.u32         %r1, %r0, 5;
+    mov.u32         %r2, %cluster_ctarank;
+    mov.u32         %r3, tmem_slot;
+    mov.u32         %r4, done_bar;
+    mov.u32         %r5, smA;
+    mov.u32         %r6, smB;
+    setp.ne.u32     %p0, %r1, 0;
+    @%p0 bra        SKIP_ALLOC;
+    tcgen05.alloc.cta_group::2.sync.aligned.shared::cta.b32 [%r3], 128;
+    tcgen05.relinquish_alloc_permit.cta_group::2.sync.aligned;
+SKIP_ALLOC:
+    setp.ne.u32     %p1, %r0, 0;
+    @%p1 bra        SKIP_INIT;
+    mbarrier.init.shared::cta.b64 [%r4], 1;
+    fence.mbarrier_init.release.cluster;
+SKIP_INIT:
+    // A row (128 rank + t): 32 bytes -> smA + (t/8)*128 + (t%8)*16 (+2048 for bytes 16..31).
+    ld.param.u64    %rd1, [a];
+    cvta.to.global.u64 %rd1, %rd1;
+    shl.b32         %r7, %r2, 7;
+    add.u32         %r8, %r7, %r0;
+    mul.wide.u32    %rd2, %r8, 32;
+    add.u64         %rd3, %rd1, %rd2;
+    ld.global.v4.b32 {%r20, %r21, %r22, %r23}, [%rd3];
+    ld.global.v4.b32 {%r24, %r25, %r26, %r27}, [%rd3+16];
+    shr.u32         %r9, %r0, 3;
+    shl.b32         %r9, %r9, 7;
+    and.b32         %r10, %r0, 7;
+    shl.b32         %r10, %r10, 4;
+    add.u32         %r11, %r9, %r10;                // (t/8)*128 + (t%8)*16
+    add.u32         %r12, %r5, %r11;
+    st.shared.v4.b32 [%r12], {%r20, %r21, %r22, %r23};
+    st.shared.v4.b32 [%r12+2048], {%r24, %r25, %r26, %r27};
+    // B row (32 rank + t), t < 32: smB + (t/8)*128 + (t%8)*16 (+512).
+    setp.ge.u32     %p2, %r0, 32;
+    @%p2 bra        SKIP_B;
+    ld.param.u64    %rd4, [b];
+    cvta.to.global.u64 %rd4, %rd4;
+    shl.b32         %r13, %r2, 5;
+    add.u32         %r14, %r13, %r0;
+    mul.wide.u32    %rd5, %r14, 32;
+    add.u64         %rd6, %rd4, %rd5;
+    ld.global.v4.b32 {%r20, %r21, %r22, %r23}, [%rd6];
+    ld.global.v4.b32 {%r24, %r25, %r26, %r27}, [%rd6+16];
+    add.u32         %r15, %r6, %r11;
+    st.shared.v4.b32 [%r15], {%r20, %r21, %r22, %r23};
+    st.shared.v4.b32 [%r15+512], {%r24, %r25, %r26, %r27};
+SKIP_B:
+    fence.proxy.async.shared::cta;
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    tcgen05.fence::after_thread_sync;
+    ld.shared.b32   %r16, [%r3];
+    // Scale factors: SFA[rank][t][0..4] -> lane t, columns 64..67; SFB -> columns 96..99.
+    shl.b32         %r17, %r1, 21;
+    add.u32         %r18, %r16, %r17;
+    shl.b32         %r19, %r2, 7;
+    add.u32         %r19, %r19, %r0;
+    mul.wide.u32    %rd7, %r19, 16;
+    ld.param.u64    %rd8, [sfa];
+    cvta.to.global.u64 %rd8, %rd8;
+    add.u64         %rd9, %rd8, %rd7;
+    ld.global.v4.b32 {%r20, %r21, %r22, %r23}, [%rd9];
+    add.u32         %r28, %r18, 64;
+    tcgen05.st.sync.aligned.32x32b.x4.b32 [%r28], {%r20, %r21, %r22, %r23};
+    ld.param.u64    %rd10, [sfb];
+    cvta.to.global.u64 %rd10, %rd10;
+    add.u64         %rd11, %rd10, %rd7;
+    ld.global.v4.b32 {%r24, %r25, %r26, %r27}, [%rd11];
+    add.u32         %r29, %r18, 96;
+    tcgen05.st.sync.aligned.32x32b.x4.b32 [%r29], {%r24, %r25, %r26, %r27};
+    tcgen05.wait::st.sync.aligned;
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    tcgen05.fence::after_thread_sync;
+    setp.ne.u32     %p3, %r2, 0;
+    or.pred         %p4, %p1, %p3;
+    @%p4 bra        WAIT;
+    shr.u32         %r30, %r5, 4;
+    cvt.u64.u32     %rd12, %r30;
+    or.b64          %rd13, %rd12, 0x0000400800800000;   // A: LBO 2048, SBO 128
+    shr.u32         %r31, %r6, 4;
+    cvt.u64.u32     %rd14, %r31;
+    or.b64          %rd15, %rd14, 0x0000400800200000;   // B: LBO 512, SBO 128
+    ld.param.u32    %r32, [idesc];
+    add.u32         %r33, %r16, 64;
+    add.u32         %r34, %r16, 96;
+    setp.ne.u32     %p5, %r0, %r0;                  // false: overwrite D
+    tcgen05.mma.cta_group::2.kind::mxf4nvf4.block_scale.block16 [%r16], %rd13, %rd15, %r32, [%r33], [%r34], %p5;
+    mov.b16         %rs0, 3;
+    tcgen05.commit.cta_group::2.mbarrier::arrive::one.shared::cluster.multicast::cluster.b64 [%r4], %rs0;
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p6, [%r4], 0;
+    @!%p6 bra       WAIT;
+    tcgen05.fence::after_thread_sync;
+    add.u32         %r35, %r16, %r17;               // this warp's lanes, column 0
+    ld.param.u64    %rd16, [out];
+    cvta.to.global.u64 %rd16, %rd16;
+    mul.wide.u32    %rd17, %r19, 256;               // row 128 rank + t: 64 floats
+    add.u64         %rd18, %rd16, %rd17;
+    mov.u32         %r36, 0;
+CHUNK:
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r40, %r41, %r42, %r43, %r44, %r45, %r46, %r47, %r48, %r49, %r50, %r51, %r52, %r53, %r54, %r55}, [%r35];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd18], {%r40, %r41, %r42, %r43};
+    st.global.v4.b32 [%rd18+16], {%r44, %r45, %r46, %r47};
+    st.global.v4.b32 [%rd18+32], {%r48, %r49, %r50, %r51};
+    st.global.v4.b32 [%rd18+48], {%r52, %r53, %r54, %r55};
+    add.u32         %r35, %r35, 16;
+    add.u64         %rd18, %rd18, 64;
+    add.u32         %r36, %r36, 1;
+    setp.lt.u32     %p7, %r36, 4;
+    @%p7 bra        CHUNK;
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    @%p0 bra        DONE;
+    tcgen05.fence::after_thread_sync;
+    tcgen05.dealloc.cta_group::2.sync.aligned.b32 %r16, 128;
+DONE:
+    ret;
+}

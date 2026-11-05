@@ -1,0 +1,47 @@
+[
+ {
+  "name": "e4m3xe4m3f32.codes",
+  "idesc": 135266320,
+  "idesc0": 135266320
+ },
+ {
+  "name": "e5m2xe5m2f32.probe_sub",
+  "idesc": 135267472,
+  "idesc0": 135267472
+ },
+ {
+  "name": "e4m3xe5m2f32.logu",
+  "idesc": 135267344,
+  "idesc0": 135267344
+ },
+ {
+  "name": "e2m3xe2m3f32.acc_big",
+  "idesc": 135269776,
+  "idesc0": 135267472
+ },
+ {
+  "name": "e3m2xe3m2f32.acc_span",
+  "idesc": 135270928,
+  "idesc0": 135266320
+ },
+ {
+  "name": "e2m1xe2m1f32.acc_big",
+  "idesc": 135272080,
+  "idesc0": 135267472
+ },
+ {
+  "name": "e4m3xe2m1f32.cancel",
+  "idesc": 135271440,
+  "idesc0": 135271440
+ },
+ {
+  "name": "e4m3xe4m3f16.probe_mid",
+  "idesc": 135266304,
+  "idesc0": 135266304
+ },
+ {
+  "name": "e2m1xe2m1f16.acc_big",
+  "idesc": 135272064,
+  "idesc0": 135266304
+ }
+]

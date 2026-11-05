@@ -1,0 +1,72 @@
+// Rung 1f fixture: two GPUs play ping-pong over NVLink peer memory.
+//
+//   The same kernel runs on GPU 0 (rank 0) and GPU 1 (rank 1), launched independently. Each
+//   rank owns a data word and a flag word in its own memory and writes the peer's through peer
+//   pointers. Round k = 0, 1, 2: rank k % 2 sends v + 1 (plain store into the peer's data word,
+//   then st.release.sys of k + 1 into the peer's flag); the other rank polls its own flag with
+//   ld.acquire.sys until it reaches k + 1, then takes v from its data word. Finally
+//   out[rank] = v: out = {2, 3}.
+//
+// Mutants (case.toml): B19 the flag is released at .gpu scope (it must be .sys to reach the
+// peer GPU); B20 the poll is relaxed and nothing acquires; B56 relaxed poll + fence.acq_rel
+// at .gpu scope (too narrow). "fenced" (correct): relaxed poll + fence.acq_rel.sys.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry pingpong(
+    .param .u32 rank,
+    .param .u64 data_mine,
+    .param .u64 flag_mine,
+    .param .u64 data_peer,
+    .param .u64 flag_peer,
+    .param .u64 out
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<8>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<16>;
+
+    mov.u32         %r0, %tid.x;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        DONE;
+    ld.param.u32    %r1, [rank];
+    ld.param.u64    %rd0, [data_mine];
+    cvta.to.global.u64 %rd1, %rd0;
+    ld.param.u64    %rd2, [flag_mine];
+    cvta.to.global.u64 %rd3, %rd2;
+    ld.param.u64    %rd4, [data_peer];
+    cvta.to.global.u64 %rd5, %rd4;
+    ld.param.u64    %rd6, [flag_peer];
+    cvta.to.global.u64 %rd7, %rd6;
+    mov.u32         %r2, 0;                         // v
+    mov.u32         %r3, 0;                         // k
+ROUND:
+    and.b32         %r4, %r3, 1;
+    add.u32         %r6, %r3, 1;                    // flag value of this round
+    setp.ne.u32     %p1, %r4, %r1;
+    @%p1 bra        RECV;
+    add.u32         %r7, %r2, 1;
+    st.global.u32   [%rd5], %r7;                    // payload into the peer's memory
+    st.release.sys.global.u32 [%rd7], %r6;                          // @B19
+    bra             NEXT;
+RECV:
+POLL:
+    ld.acquire.sys.global.u32 %r5, [%rd3];                          // @POLL
+    setp.lt.u32     %p2, %r5, %r6;
+    @%p2 bra        POLL;
+    // (acquire fence slot)                                         // @FENCE
+    ld.global.u32   %r2, [%rd1];
+NEXT:
+    add.u32         %r3, %r3, 1;
+    setp.lt.u32     %p3, %r3, 3;
+    @%p3 bra        ROUND;
+    ld.param.u64    %rd8, [out];
+    cvta.to.global.u64 %rd9, %rd8;
+    mul.wide.u32    %rd10, %r1, 4;
+    add.u64         %rd11, %rd9, %rd10;
+    st.global.u32   [%rd11], %r2;
+DONE:
+    ret;
+}

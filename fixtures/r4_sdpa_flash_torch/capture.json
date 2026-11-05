@@ -1,0 +1,93 @@
+{
+ "what": "run() of sdpa_flash.py",
+ "argv": [
+  "--file",
+  "tools/capture_examples/sdpa_flash.py",
+  "--out",
+  "fixtures/r4_sdpa_flash_torch",
+  "--work",
+  "/tmp/ptxv_capture_3575558"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "_ZN13pytorch_flash16flash_fwd_kernelI23Flash_fwd_kernel_traitsILi64ELi128ELi128ELi4ELb0ELb0EN7cutlass10bfloat16_tE19Flash_kernel_traitsILi64ELi128ELi128ELi4ES3_EELb0ELb0ELb0ELb0ELb1ELb1ELb0ELb0EEEvNS_16Flash_fwd_paramsE",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 49152,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "q",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    1,
+    128,
+    64
+   ],
+   "size": 16384
+  },
+  {
+   "name": "k",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    1,
+    128,
+    64
+   ],
+   "size": 16384
+  },
+  {
+   "name": "v",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    1,
+    128,
+    64
+   ],
+   "size": 16384
+  },
+  {
+   "name": "out",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    1,
+    128,
+    64
+   ],
+   "size": 16384
+  },
+  {
+   "name": "W0",
+   "dtype": "u8",
+   "shape": [
+    512
+   ],
+   "size": 512
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

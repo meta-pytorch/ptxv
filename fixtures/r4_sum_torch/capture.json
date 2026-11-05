@@ -1,0 +1,60 @@
+{
+ "what": "`torch.sum(x, -1)` with x = randn(4,128,f32)",
+ "argv": [
+  "--op",
+  "torch.sum(x, -1)",
+  "--inputs",
+  "x=randn(4,128,f32)",
+  "--out",
+  "fixtures/r4_sum_torch",
+  "--work",
+  "/tmp/ptxv_capture_3571611"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "_ZN2at6native13reduce_kernelILi512ELi1ENS0_8ReduceOpIfNS0_14func_wrapper_tIfZNS0_11sum_functorIfffEclERNS_14TensorIteratorEEUlffE_EEjfLi4ELi4EEEEEvT1_",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    32,
+    4,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "x",
+   "dtype": "f32",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 2048
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    4
+   ],
+   "size": 16
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

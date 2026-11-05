@@ -1,0 +1,110 @@
+{
+ "what": "ptxv.capture",
+ "launches": [
+  {
+   "index": 0,
+   "name": "_ZN2at6native29vectorized_elementwise_kernelILi4ENS0_15CUDAFunctor_addIfEESt5arrayIPcLm3EEEEviT0_T1_",
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "op": "",
+   "cubin": "k0.cubin"
+  },
+  {
+   "index": 1,
+   "name": "cutlass3x_sm100_simt_sgemm_f32_f32_f32_f32_f32_32x32x16_1x1x1_3_nnn_align1_bias_f32_relu",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    64,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 12672,
+   "pdl": 0,
+   "op": "",
+   "cubin": "k1.cubin"
+  }
+ ],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "x",
+   "dtype": "f32",
+   "shape": [
+    32,
+    64
+   ],
+   "size": 8192,
+   "fresh": false,
+   "output": false
+  },
+  {
+   "name": "w1",
+   "dtype": "f32",
+   "shape": [
+    64,
+    32
+   ],
+   "size": 8192,
+   "fresh": false,
+   "output": false
+  },
+  {
+   "name": "w2",
+   "dtype": "f32",
+   "shape": [
+    64,
+    32
+   ],
+   "size": 8192,
+   "fresh": false,
+   "output": false
+  },
+  {
+   "name": "W0",
+   "dtype": "u8",
+   "shape": [
+    8192
+   ],
+   "size": 8192,
+   "fresh": true,
+   "output": true
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    32,
+    32
+   ],
+   "size": 4096,
+   "fresh": true,
+   "output": true
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

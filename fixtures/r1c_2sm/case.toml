@@ -1,0 +1,61 @@
+name = "r1c_2sm"
+description = """
+Rung 1c(ii). One tcgen05 cta_group::2 MMA across a CTA pair: D[256x16] = A[256x64] * B[16x64]^T
+with M = 256 split by rows (A, D) and N split in halves (B) over the two CTAs. Paired TMEM
+allocation, 2-SM TMA signaling the leader's mbarrier, multicast commit to both CTAs."""
+ptx = "kernel.ptx"
+entry = "r1c_2sm"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+spec = "gemm_tn"
+
+[[buffers]]
+name = "A"
+dtype = "bf16"
+shape = [256, 64]
+init = "normal"
+seed = 41
+
+[[buffers]]
+name = "B"
+dtype = "bf16"
+shape = [16, 64]
+init = "normal"
+seed = 42
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [256, 16]
+init = "nan"
+
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [64, 128]
+swizzle = "128B"
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [64, 8]
+swizzle = "128B"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[variants]]
+id = "good"
+summary = "correct kernel"
+expect = ["clean"]
+
+[[variants]]
+id = "B12"
+summary = "the multicast commit omits the peer CTA (ctaMask 0b01): the peer never learns D is ready"
+marker = "@B12"
+find = "mov.b16         %rs0, 3"
+replace = "mov.b16         %rs0, 1"
+expect = ["deadlock"]

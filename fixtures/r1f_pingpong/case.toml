@@ -1,0 +1,124 @@
+name = "r1f_pingpong"
+description = """
+Rung 1f. Two GPUs, one kernel each, launched independently: three rounds of flag ping-pong over
+NVLink peer memory (payload by plain store, flag by st.release.sys, poll by ld.acquire.sys)."""
+ptx = "kernel.ptx"
+entry = "pingpong"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "data0"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "flag0"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "data1"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "flag1"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+device = 0
+
+[[params]]
+kind = "u32"
+value = 0
+
+[[params]]
+kind = "ptr"
+buffer = "data0"
+
+[[params]]
+kind = "ptr"
+buffer = "flag0"
+
+[[params]]
+kind = "ptr"
+buffer = "data1"
+
+[[params]]
+kind = "ptr"
+buffer = "flag1"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[launches]]
+entry = "pingpong"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+device = 1
+params = [
+    { kind = "u32", value = 1 },
+    { kind = "ptr", buffer = "data1" },
+    { kind = "ptr", buffer = "flag1" },
+    { kind = "ptr", buffer = "data0" },
+    { kind = "ptr", buffer = "flag0" },
+    { kind = "ptr", buffer = "out" },
+]
+
+[[variants]]
+id = "good"
+summary = "correct ping-pong"
+expect = ["clean"]
+
+[[variants]]
+id = "fenced"
+summary = "correct: relaxed poll, then fence.acq_rel.sys (the volatile + __threadfence_system pattern)"
+marker = "@POLL"
+find = "ld.acquire.sys"
+replace = "ld.relaxed.sys"
+edits = [{ marker = "@FENCE", find = "// (acquire fence slot)", replace = "fence.acq_rel.sys;" }]
+expect = ["clean"]
+
+[[variants]]
+id = "B19"
+summary = "the flag is released at .gpu scope: the peer GPU's acquire does not synchronize with it"
+marker = "@B19"
+find = "st.release.sys"
+replace = "st.release.gpu"
+expect = ["race"]
+
+[[variants]]
+id = "B20"
+summary = "relaxed poll and no acquire fence: the payload read is not ordered after the payload write"
+marker = "@POLL"
+find = "ld.acquire.sys"
+replace = "ld.relaxed.sys"
+expect = ["race"]
+
+[[variants]]
+id = "B56"
+summary = "relaxed poll, then fence.acq_rel.gpu: the fence's scope does not include the peer GPU"
+marker = "@POLL"
+find = "ld.acquire.sys"
+replace = "ld.relaxed.sys"
+edits = [{ marker = "@FENCE", find = "// (acquire fence slot)", replace = "fence.acq_rel.gpu;" }]
+expect = ["race"]
+# ptxas: fence.acq_rel.gpu = MEMBAR.ALL.GPU + CCTL.IVALL. Only the release half is scoped; the
+# acquire half (L1 invalidate) is the same as for .sys, and the poll itself is a .SYS load.
+expect_sass = ["clean"]

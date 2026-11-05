@@ -1,0 +1,31 @@
+// Probe for ASSUMPTIONS.md S-CBANK: c[0x0][0x36c] is %is_explicit_cluster (ptxas lowers the
+// special register to that constant, and guards barrier.cluster with it). Two CTAs write
+// out[c] = %is_explicit_cluster, out[2+c] = %cluster_nctarank, out[4+c] = %cluster_ctarank.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry probe_cluster_flag(.param .u64 out)
+.reqnctapercluster 2, 1, 1                                          // @NOCLUSTER
+{
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<2>;
+    mov.u32         %r0, %ctaid.x;
+    mov.pred        %p0, %is_explicit_cluster;
+    selp.u32        %r1, 1, 0, %p0;
+    mov.u32         %r2, %cluster_nctarank;
+    mov.u32         %r3, %cluster_ctarank;
+    mov.u32         %r4, %tid.x;
+    setp.ne.u32     %p1, %r4, 0;
+    @%p1 bra        DONE;
+    ld.param.u64    %rd0, [out];
+    cvta.to.global.u64 %rd1, %rd0;
+    mul.wide.u32    %rd2, %r0, 4;
+    add.u64         %rd3, %rd1, %rd2;
+    st.global.u32   [%rd3], %r1;
+    st.global.u32   [%rd3+8], %r2;
+    st.global.u32   [%rd3+16], %r3;
+DONE:
+    ret;
+}

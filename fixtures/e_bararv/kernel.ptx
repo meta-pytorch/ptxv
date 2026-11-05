@@ -1,0 +1,43 @@
+// E-BAR-ARRIVE fixture: producer / consumer over a named barrier, 64 threads.
+// Warp 0 (producer) fills buf[lane] = 3 * lane + 1 in shared memory, then `bar.arrive 1, 64`
+// (does not wait). Warp 1 (consumer) runs `bar.sync 1, 64`, then reads buf[lane] and writes
+// out[lane]. The 32 arrivals plus the 32 waiters complete the barrier, which orders the
+// producer's stores before the consumer's loads.
+//   good: as above
+//   AB1 : the producer stores AFTER arriving (race)
+//   AB2 : the consumer reads without bar.sync (race)
+//   AB3 : the consumer syncs with a different thread count (violation; it then hangs)
+//   AB4 : the producer arrives twice: its own 64 arrivals complete generation 0 without the
+//         consumer (violation; the consumer then waits forever in generation 1)
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_bararv(.param .u64 out_p)
+{
+    .reg .b32 %r<12>;
+    .reg .b64 %rd<4>;
+    .reg .pred %p<4>;
+    .shared .align 4 .b32 buf[32];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    and.b32 %r2, %r1, 31;                // lane
+    mov.u32 %r3, buf;
+    shl.b32 %r4, %r2, 2;
+    add.u32 %r5, %r3, %r4;               // &buf[lane]
+    setp.ge.u32 %p1, %r1, 32;
+    @%p1 bra CONSUMER;
+    mad.lo.u32 %r6, %r2, 3, 1;
+    st.shared.u32 [%r5], %r6;            // @PRODUCE
+    bar.arrive 1, 64;                    // @ARRIVE
+    bra DONE;
+CONSUMER:
+    bar.sync 1, 64;                      // @SYNC
+    ld.shared.u32 %r7, [%r5];
+    mul.wide.u32 %rd2, %r2, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r7;
+DONE:
+    ret;
+}

@@ -1,0 +1,250 @@
+{
+ "what": "run() of ref.py",
+ "argv": [
+  "--file",
+  "/tmp/agentG/cve_f32_s8/pairs/06_triton_per_fused__unsafe_view_add_mean_mul_pow_rsqrt_2/ref.py",
+  "--out",
+  "/tmp/agentG/cve_f32_s8/pairs/06_triton_per_fused__unsafe_view_add_mean_mul_pow_rsqrt_2/cmp/ref",
+  "--seed",
+  "0",
+  "--binary",
+  "--work",
+  "/tmp/ptxv_capture_3256431"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "_ZN2at6native29vectorized_elementwise_kernelILi4ENS0_15CUDAFunctor_addIfEESt5arrayIPcLm3EEEEviT0_T1_",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "name": "_ZN2at6native29vectorized_elementwise_kernelILi4EZNS0_45_GLOBAL__N__8c7c0cff_12_PowKernel_cu_72c8608b29pow_tensor_scalar_kernel_implIffEEvRNS_18TensorIteratorBaseET0_EUlfE_St5arrayIPcLm2EEEEviS6_T1_",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k1.cubin"
+  },
+  {
+   "name": "_ZN2at6native13reduce_kernelILi512ELi1ENS0_8ReduceOpIfNS0_7MeanOpsIffffEEjfLi4ELi4EEEEEvT1_",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    32,
+    8,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k2.cubin"
+  },
+  {
+   "name": "_ZN2at6native29vectorized_elementwise_kernelILi4ENS0_21CUDAFunctorOnSelf_addIfEESt5arrayIPcLm2EEEEviT0_T1_",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "name": "_ZN2at6native29vectorized_elementwise_kernelILi4EZZZNS0_17rsqrt_kernel_cudaERNS_18TensorIteratorBaseEENKUlvE0_clEvENKUlvE0_clEvEUlfE_St5arrayIPcLm2EEEEviT0_T1_",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k3.cubin"
+  },
+  {
+   "name": "_ZN2at6native18elementwise_kernelILi128ELi2EZNS0_22gpu_kernel_impl_nocastINS0_13BinaryFunctorIfffNS0_15binary_internal10MulFunctorIfEEEEEEvRNS_18TensorIteratorBaseERKT_EUliE_EEviT1_",
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k4.cubin"
+  },
+  {
+   "name": "_ZN2at6native18elementwise_kernelILi128ELi2EZNS0_22gpu_kernel_impl_nocastINS0_13BinaryFunctorIfffNS0_15binary_internal10MulFunctorIfEEEEEEvRNS_18TensorIteratorBaseERKT_EUliE_EEviT1_",
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k4.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "n2_weight",
+   "dtype": "f32",
+   "shape": [
+    128
+   ],
+   "size": 512
+  },
+  {
+   "name": "x",
+   "dtype": "f32",
+   "shape": [
+    1024
+   ],
+   "size": 4096
+  },
+  {
+   "name": "mm_42",
+   "dtype": "f32",
+   "shape": [
+    1024
+   ],
+   "size": 4096
+  },
+  {
+   "name": "W0",
+   "dtype": "u8",
+   "shape": [
+    4096
+   ],
+   "size": 4096
+  },
+  {
+   "name": "W1",
+   "dtype": "u8",
+   "shape": [
+    32
+   ],
+   "size": 32
+  },
+  {
+   "name": "W2",
+   "dtype": "u8",
+   "shape": [
+    4096
+   ],
+   "size": 4096
+  },
+  {
+   "name": "W3",
+   "dtype": "u8",
+   "shape": [
+    32
+   ],
+   "size": 32
+  },
+  {
+   "name": "W4",
+   "dtype": "u8",
+   "shape": [
+    32
+   ],
+   "size": 32
+  },
+  {
+   "name": "W5",
+   "dtype": "u8",
+   "shape": [
+    4096
+   ],
+   "size": 4096
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    1024
+   ],
+   "size": 4096
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

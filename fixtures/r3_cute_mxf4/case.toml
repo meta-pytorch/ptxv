@@ -1,0 +1,143 @@
+name = "r3_cute_mxf4"
+description = """
+CUTLASS 4.6.1 CuTeDSL Blackwell persistent block-scaled dense GEMM
+(examples/python/CuTeDSL/blackwell/dense_blockscaled_gemm_persistent.py: TMA loads of A, B
+(4-bit tensor maps) and the scale factors, tcgen05.cp of the scale factors into TMEM,
+block-scaled FP4 tcgen05.mma, TMEM epilogue, TMA store), MXF4:
+C[128x128] f32 = (A * SFA) @ (B * SFB)^T, A[128x256] / B[128x256] e2m1 (two per byte, low
+nibble first), ue8m0 scales per 32 K elements, one persistent CTA, 6 warps (TMA, MMA, 4
+epilogue). Captured by capture.py; the inputs are fixed files and gb300_C.bin is the GB300
+output."""
+ptx = "kernel.ptx"
+entry = "kernel_cutlass_kernel_dbgpSm100BlockScaledPersistentDenseGemmKernel_object_at__TiledMMA_ThrLayoutVMNK11110000_PermutationMNK____MMAAtom_ThrID10_ShapeMNK12812864_TVLayoutA1128641281128_TVL_0"
+grid = [1, 1, 1]
+block = [192, 1, 1]
+dynamic_smem = 224256
+outputs = ["C"]
+
+[[buffers]]
+name = "A"
+dtype = "u8"
+shape = [128, 128]
+init = "file"
+file = "A.bin"
+
+[[buffers]]
+name = "B"
+dtype = "u8"
+shape = [128, 128]
+init = "file"
+file = "B.bin"
+
+[[buffers]]
+name = "SFA"
+dtype = "u16"
+shape = [2, 256]
+init = "file"
+file = "SFA.bin"
+
+[[buffers]]
+name = "SFB"
+dtype = "u16"
+shape = [2, 256]
+init = "file"
+file = "SFB.bin"
+
+[[buffers]]
+name = "C"
+dtype = "f32"
+shape = [128, 128]
+init = "zeros"
+
+[[params]]
+kind = "bytes"
+hex = "000000000000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "000000000000000000000000"
+
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [128, 128]
+dims = [128, 128]
+strides = [128]
+swizzle = "128B"
+raw = "0000c01dfaff0000926504000800000000000000000000000000000000000000ff0000007f000000000000000000000000000000000000ff7f00000000000000"
+elem4 = true
+
+[[params]]
+kind = "bytes"
+hex = "00010000"
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [128, 128]
+dims = [128, 128]
+strides = [128]
+swizzle = "128B"
+raw = "0080c01dfaff0000926504000800000000000000000000000000000000000000ff0000007f000000000000000000000000000000000000ff7f00000000000000"
+elem4 = true
+
+[[params]]
+kind = "bytes"
+hex = "00010000"
+
+[[params]]
+kind = "tensormap"
+buffer = "SFA"
+box = [256, 2]
+dims = [256, 2]
+strides = [512]
+swizzle = "none"
+raw = "0000c21dfaff0000920004002000000000000000000000000000000000000000ff00000001000000000000000000000000000000000000ff0100000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "02000000"
+
+[[params]]
+kind = "tensormap"
+buffer = "SFB"
+box = [256, 2]
+dims = [256, 2]
+strides = [512]
+swizzle = "none"
+raw = "0004c21dfaff0000920004002000000000000000000000000000000000000000ff00000001000000000000000000000000000000000000ff0100000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "02000000"
+
+[[params]]
+kind = "tensormap"
+buffer = "C"
+box = [32, 128]
+dims = [128, 128]
+strides = [512]
+swizzle = "128B"
+raw = "0000c11dfaff00009263040020000000000000000000000000000000000000007f0000007f0000000000000000000000000000000000001f7f00000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "80000000"
+
+[[params]]
+kind = "bytes"
+hex = "01000000"
+
+[[params]]
+kind = "bytes"
+hex = "010000000100000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "010000000100000000002803"
+
+[[variants]]
+id = "good"
+summary = "as compiled by CuTeDSL"
+expect = ["race", "violation"]
+expect_sass = ["clean"]

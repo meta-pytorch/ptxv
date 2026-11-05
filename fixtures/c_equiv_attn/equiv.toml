@@ -1,0 +1,18 @@
+# Attention core (docs/equiv-reassoc.md, "Attention"): o = softmax(s) @ v with the scores given,
+# s 16x64 and v 64x16 f32: a Triton reference that normalizes P first and then sums P.V
+# (c_attn_core_ref) against a Triton flash-attention form (c_attn_core_flash: blocks of 16 keys,
+# running max and sum, the accumulator rescaled by exp(m_old - m_new)). The bf16 tensor-core
+# pair (r4_sdpa_flash_torch vs r4_attn_triton) is blocked: see the doc.
+#   ptxv equiv fixtures/c_equiv_attn/equiv.toml --trials 200
+max_states = 200000
+segments = true
+trials = 20
+sweep_cache = "sweeps.json"
+reference = { case = "../c_attn_core_ref", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "../c_attn_core_flash"
+variant = "good"
+front = "sass"
+expect = "L1"
+expect_bound_u = 101.9

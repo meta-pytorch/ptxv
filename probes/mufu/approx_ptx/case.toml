@@ -1,0 +1,35 @@
+name = "approx_ptx"
+description = """
+N-MUFU probe: every PTX .approx op the model covers (f32 with and without .ftz, sin/cos, f16x2
+/ bf16x2 ex2) on shaped random bits. The PTX front-end's outputs must equal gb300_out.bin, the
+output of the ptxas binary on GB300 (crates/sim/tests/mufu.rs)."""
+ptx = "kernel.ptx"
+entry = "approx"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [512]
+init = "bits"
+seed = 5
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [3584]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

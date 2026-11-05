@@ -1,0 +1,25 @@
+# MXF8 GEMM (docs/equiv-mma.md §5): the CuTeDSL block-scaled GEMM of fixtures/r3_cute_mxf8
+# (A, B e4m3, ue8m0 scales per 32 K, f32 C, K = 256 in 8 tcgen05.mma.kind::mxf8f6f4 steps).
+# Its operand and scale bytes are input leaves (halfin `byte_leaf`) and each step carries the
+# contract derived from the model (`mma_lp::lp_eps`), so the kernel's own bound against the
+# exact MXF8 GEMM holds for every input: the kernel against itself is L0, with that bound
+# as each side's. The B30 mutant (K block 0 uses K block 1's scales) is not the same function.
+# Trials draw random e4m3 codes (subnormals included) and ue8m0 scales 2^-8 .. 2^7.
+#   ptxv equiv fixtures/c_equiv_mxf8/equiv.toml
+max_states = 200000
+trials = 20
+reference = { case = "../r3_cute_mxf8", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "../r3_cute_mxf8"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L0"
+
+[[candidates]]
+case = "../r3_cute_mxf8"
+variant = "B30"
+front = "sass"
+certify = true
+expect = "none"

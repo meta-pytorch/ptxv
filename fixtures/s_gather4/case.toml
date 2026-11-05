@@ -1,0 +1,73 @@
+name = "s_gather4"
+description = """
+tile::gather4 TMA loads (cp.async.bulk.tensor.2d.shared::cta.global.tile::gather4; SASS
+UTMALDG.2D.GATHER4, as in flashinfer's trtllm-gen routed batched GEMM, fixtures/r3b_trtllm_bmm)
+against GB300: six gathers of 4 rows through 128B / 64B / 32B / no-swizzle maps with box
+height 1, out-of-bounds and repeated rows, columns past either edge, destinations at
+128-byte offsets. out is the whole 12 KiB shared-memory image (prefilled with 0xffff)."""
+ptx = "kernel.ptx"
+entry = "s_gather4"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "G"
+dtype = "u16"
+shape = [64, 256]
+init = "iota"
+
+[[buffers]]
+name = "out"
+dtype = "u16"
+shape = [6144]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "tensormap"
+buffer = "G"
+box = [64, 1]
+swizzle = "128B"
+
+[[params]]
+kind = "tensormap"
+buffer = "G"
+box = [32, 1]
+swizzle = "64B"
+
+[[params]]
+kind = "tensormap"
+buffer = "G"
+box = [16, 1]
+swizzle = "32B"
+
+[[params]]
+kind = "tensormap"
+buffer = "G"
+box = [24, 1]
+swizzle = "none"
+
+[[params]]
+kind = "tensormap"
+buffer = "G"
+box = [16, 1]
+swizzle = "128B"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "six gathers, one mbarrier"
+expect = ["clean"]
+
+[[variants]]
+id = "misaligned"
+summary = "the no-swizzle gather's column is -7 (-14 bytes: not a multiple of 16)"
+marker = "@ALIGN"
+find = "-8;"
+replace = "-7;"
+expect = ["deadlock", "fault"]
+hw_note = "GB300: illegal instruction (also columns 3 and 100 of 2-byte elements, and 4 of 2-byte with the 128B map)"

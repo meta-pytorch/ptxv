@@ -1,0 +1,87 @@
+name = "r0_tma_sum"
+description = """
+Rung 0. One CTA of 128 threads. Thread 0 initializes an mbarrier, arms it with
+expect_tx(8192) and issues one 2-D TMA load of a 64x64 bf16 tile into shared memory.
+All threads wait on phase 0, then thread t sums half-row t (32 bf16 values) in fp32
+and stores it to out[t]."""
+ptx = "kernel.ptx"
+entry = "r0_tma_sum"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+spec = "half_row_sum"
+
+[[buffers]]
+name = "A"
+dtype = "bf16"
+shape = [64, 64]
+init = "normal"
+seed = 1
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [128]
+init = "nan"
+
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [64, 64]
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "correct kernel"
+expect = ["clean"]
+
+[[variants]]
+id = "B01"
+summary = "expect_tx(16384) but the TMA delivers 8192 bytes: the tx-count never reaches 0"
+marker = "@B01"
+find = "8192"
+replace = "16384"
+expect = ["deadlock"]
+hw_note = "hangs every time"
+
+[[variants]]
+id = "B02"
+summary = "consumers wait on parity 1 instead of 0: before the TMA lands, parity 1 names the already-complete 'previous' phase (race); after it lands, it names the current phase, which never completes (hang)"
+marker = "@B02"
+find = "], 0;"
+replace = "], 1;"
+expect = ["deadlock", "race", "violation"]
+hw_note = "timing-dependent: early pollers read smem before the TMA lands, late pollers hang"
+
+[[variants]]
+id = "B03"
+summary = "no bar.sync between mbarrier.init (thread 0) and other threads' try_wait"
+marker = "@B03"
+replace = "<delete>"
+expect = ["race"]
+hw_note = "other warps may poll an uninitialized mbarrier"
+
+[[variants]]
+id = "B47"
+summary = "accumulator initialization deleted: the sum starts from an unwritten register"
+marker = "@B47"
+replace = "<delete>"
+expect = ["violation"]
+expect_sass = ["clean"]
+hw_note = "ptxas reuses R0 (= %tid.x) as the undefined start value: no unwritten register is read, outputs are bitwise those of the good kernel (the subnormal start is absorbed), but the numerics spec check fails"
+
+[[variants]]
+id = "B49"
+summary = "the wait loop counts its spins (the start of a watchdog): the failure path does work"
+marker = "@B49"
+find = "@!%p1 bra       WAIT;"
+replace = """@%p1 bra        WAITED;
+    add.u32         %r11, %r11, 1;
+    bra             WAIT;
+WAITED:"""
+expect = ["unmodeled"]
+expect_sass = ["clean"]
+hw_note = "PTX: inconclusive, the failure path does work (E-SPIN). SASS: ptxas deletes the dead counter, so the binary's retry loop is pure and the verdict stands"

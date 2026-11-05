@@ -1,0 +1,73 @@
+name = "e_bararv"
+description = """
+Fixture for E-BAR-ARRIVE: a producer warp publishes shared memory to a consumer warp through
+`bar.arrive 1, 64` / `bar.sync 1, 64` (SASS BAR.ARV / BAR.SYNC). The arrival releases the
+producer's earlier stores to the waiters without blocking the producer."""
+ptx = "kernel.ptx"
+entry = "e_bararv"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+hw_note = "GB300 matches the simulator bitwise, 200/200 (2026-11-02)"
+
+[[variants]]
+id = "AB1"
+summary = "the producer stores after bar.arrive: the arrival does not release the store"
+marker = "@PRODUCE"
+find = "st.shared.u32 [%r5], %r6;"
+replace = "bar.arrive 1, 64;\n    st.shared.u32 [%r5], %r6;"
+expect = ["race"]
+# SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG): the shared-memory race is no race
+# on the hardware; what it leaves is the schedule-dependent outcome.
+expect_sass = ["nondeterministic", "violation"]
+hw_note = "GB300 correct 1000/1000 (the consumer is slower than the producer's store)"
+
+[[variants.edits]]
+marker = "@ARRIVE"
+replace = "<delete>"
+
+[[variants]]
+id = "AB2"
+summary = "the consumer reads without bar.sync (the producer's arrival is never waited for)"
+marker = "@SYNC"
+find = "bar.sync 1, 64;"
+replace = "// no bar.sync"
+# The stateful explorer's verdict. DPOR also reverses the race and adds the S-INIT violation
+# (the consumer reads before the producer wrote); see crates/sim/tests/fixtures.rs.
+expect = ["race"]
+# SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG): no race on the hardware; the consumer
+# may read before the producer wrote (S-INIT violation, a second output).
+expect_sass = ["nondeterministic", "violation"]
+hw_note = "GB300 correct 1000/1000"
+
+[[variants]]
+id = "AB3"
+summary = "the consumer runs bar.sync 1, 96 against the producer's bar.arrive 1, 64"
+marker = "@SYNC"
+find = "bar.sync 1, 64;"
+replace = "bar.sync 1, 96;"
+expect = ["deadlock", "violation"]
+hw_note = "GB300 traps: illegal instruction (2026-11-02)"
+
+[[variants]]
+id = "AB4"
+summary = "the producer arrives twice: its 64 arrivals complete the barrier without the consumer"
+marker = "@ARRIVE"
+find = "bar.arrive 1, 64;"
+replace = "bar.arrive 1, 64;\n    bar.arrive 1, 64;"
+expect = ["deadlock", "violation"]
+hw_note = "GB300 completed in its one run (the consumer arrived first, a schedule the model also has); probes/bar_arrive `twice` forces the order and hangs"

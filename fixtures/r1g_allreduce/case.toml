@@ -1,0 +1,302 @@
+name = "r1g_allreduce"
+description = """
+Rung 1g. One-shot all-reduce over symmetric memory on 3 GPUs, two back-to-back calls per rank:
+stage into the symmetric buffer, signal/wait barrier, reduce in rank order, closing barrier."""
+ptx = "kernel.ptx"
+entry = "allreduce"
+grid = [1, 1, 1]
+block = [1, 1, 1]
+outputs = ["out_0_0", "out_1_0", "out_2_0", "out_0_1", "out_1_1", "out_2_1"]
+replicas = [["out_0_0", "out_1_0", "out_2_0"], ["out_0_1", "out_1_1", "out_2_1"]]
+
+[[buffers]]
+name = "buf0"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "sig0"
+dtype = "u32"
+shape = [3]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "buf1"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "sig1"
+dtype = "u32"
+shape = [3]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "buf2"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+device = 2
+
+[[buffers]]
+name = "sig2"
+dtype = "u32"
+shape = [3]
+init = "zeros"
+device = 2
+
+[[buffers]]
+name = "in_0_0"
+dtype = "f32"
+shape = [32]
+init = "normal"
+device = 0
+seed = 1
+
+[[buffers]]
+name = "out_0_0"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "in_1_0"
+dtype = "f32"
+shape = [32]
+init = "normal"
+device = 1
+seed = 2
+
+[[buffers]]
+name = "out_1_0"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "in_2_0"
+dtype = "f32"
+shape = [32]
+init = "normal"
+device = 2
+seed = 3
+
+[[buffers]]
+name = "out_2_0"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+device = 2
+
+[[buffers]]
+name = "in_0_1"
+dtype = "f32"
+shape = [32]
+init = "normal"
+device = 0
+seed = 101
+
+[[buffers]]
+name = "out_0_1"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "in_1_1"
+dtype = "f32"
+shape = [32]
+init = "normal"
+device = 1
+seed = 102
+
+[[buffers]]
+name = "out_1_1"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "in_2_1"
+dtype = "f32"
+shape = [32]
+init = "normal"
+device = 2
+seed = 103
+
+[[buffers]]
+name = "out_2_1"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+device = 2
+
+[[params]]
+kind = "u32"
+value = 0
+
+[[params]]
+kind = "u32"
+value = 1
+
+[[params]]
+kind = "ptr"
+buffer = "in_0_0"
+
+[[params]]
+kind = "ptr"
+buffer = "out_0_0"
+
+[[params]]
+kind = "ptr"
+buffer = "buf0"
+
+[[params]]
+kind = "ptr"
+buffer = "buf1"
+
+[[params]]
+kind = "ptr"
+buffer = "buf2"
+
+[[params]]
+kind = "ptr"
+buffer = "sig0"
+
+[[params]]
+kind = "ptr"
+buffer = "sig1"
+
+[[params]]
+kind = "ptr"
+buffer = "sig2"
+
+[[launches]]
+entry = "allreduce"
+grid = [1, 1, 1]
+block = [1, 1, 1]
+device = 1
+params = [
+    { kind = "u32", value = 1 },
+    { kind = "u32", value = 1 },
+    { kind = "ptr", buffer = "in_1_0" },
+    { kind = "ptr", buffer = "out_1_0" },
+    { kind = "ptr", buffer = "buf0" },
+    { kind = "ptr", buffer = "buf1" },
+    { kind = "ptr", buffer = "buf2" },
+    { kind = "ptr", buffer = "sig0" },
+    { kind = "ptr", buffer = "sig1" },
+    { kind = "ptr", buffer = "sig2" },
+]
+
+[[launches]]
+entry = "allreduce"
+grid = [1, 1, 1]
+block = [1, 1, 1]
+device = 2
+params = [
+    { kind = "u32", value = 2 },
+    { kind = "u32", value = 1 },
+    { kind = "ptr", buffer = "in_2_0" },
+    { kind = "ptr", buffer = "out_2_0" },
+    { kind = "ptr", buffer = "buf0" },
+    { kind = "ptr", buffer = "buf1" },
+    { kind = "ptr", buffer = "buf2" },
+    { kind = "ptr", buffer = "sig0" },
+    { kind = "ptr", buffer = "sig1" },
+    { kind = "ptr", buffer = "sig2" },
+]
+
+[[launches]]
+entry = "allreduce"
+grid = [1, 1, 1]
+block = [1, 1, 1]
+device = 0
+params = [
+    { kind = "u32", value = 0 },
+    { kind = "u32", value = 2 },
+    { kind = "ptr", buffer = "in_0_1" },
+    { kind = "ptr", buffer = "out_0_1" },
+    { kind = "ptr", buffer = "buf0" },
+    { kind = "ptr", buffer = "buf1" },
+    { kind = "ptr", buffer = "buf2" },
+    { kind = "ptr", buffer = "sig0" },
+    { kind = "ptr", buffer = "sig1" },
+    { kind = "ptr", buffer = "sig2" },
+]
+
+[[launches]]
+entry = "allreduce"
+grid = [1, 1, 1]
+block = [1, 1, 1]
+device = 1
+params = [
+    { kind = "u32", value = 1 },
+    { kind = "u32", value = 2 },
+    { kind = "ptr", buffer = "in_1_1" },
+    { kind = "ptr", buffer = "out_1_1" },
+    { kind = "ptr", buffer = "buf0" },
+    { kind = "ptr", buffer = "buf1" },
+    { kind = "ptr", buffer = "buf2" },
+    { kind = "ptr", buffer = "sig0" },
+    { kind = "ptr", buffer = "sig1" },
+    { kind = "ptr", buffer = "sig2" },
+]
+
+[[launches]]
+entry = "allreduce"
+grid = [1, 1, 1]
+block = [1, 1, 1]
+device = 2
+params = [
+    { kind = "u32", value = 2 },
+    { kind = "u32", value = 2 },
+    { kind = "ptr", buffer = "in_2_1" },
+    { kind = "ptr", buffer = "out_2_1" },
+    { kind = "ptr", buffer = "buf0" },
+    { kind = "ptr", buffer = "buf1" },
+    { kind = "ptr", buffer = "buf2" },
+    { kind = "ptr", buffer = "sig0" },
+    { kind = "ptr", buffer = "sig1" },
+    { kind = "ptr", buffer = "sig2" },
+]
+
+[[variants]]
+id = "good"
+summary = "correct all-reduce"
+expect = ["clean"]
+
+[[variants]]
+id = "B21"
+summary = "the barrier signals a constant 1 and resets each flag after seeing it (no epoch): a fast peer's next signal can be wiped by the reset"
+marker = "@B21"
+find = "add.u32         %r21, %r21, %r20;"
+replace = "mov.u32         %r21, 1;"
+edits = [{ marker = "@RESET", find = "// (B21 reset slot)", replace = "st.relaxed.sys.global.u32 [%rd32], 0;" }]
+expect = ["deadlock"]
+
+[[variants]]
+id = "B22"
+summary = "no closing barrier: a rank restages its buffer for the next call while peers still read it"
+marker = "@B22"
+replace = "<delete>"
+# The race's consequences are explored too: a rank can sum a peer's next-call input.
+expect = ["divergent", "nondeterministic", "race"]
+
+[[variants]]
+id = "B24"
+summary = "each rank sums starting from its own buffer: ranks hold different bits"
+marker = "@B24"
+find = "mov.u32         %r30, 0;"
+replace = "mov.u32         %r30, %r1;"
+expect = ["divergent"]

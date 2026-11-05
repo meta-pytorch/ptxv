@@ -1,0 +1,87 @@
+name = "c_triton_mxf4_rev"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): run() of triton_mxf4.py. 1 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: mxf4_kernel grid [1, 1, 1] block [128, 1, 1]
+Regenerate: PTXV_MX_REV=1 PTXV_MX_BK=64 CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/capture.py --file tools/capture_examples/triton_mxf4.py --binary --out fixtures/c_triton_mxf4_rev
+Then: the output renamed C, as in r3_cute_mxf4."""
+cubin = "k0.cubin"
+entry = "mxf4_kernel"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 16384
+outputs = ["C"]
+
+[[buffers]]
+name = "A"
+dtype = "u8"
+shape = [128, 128]
+init = "file"
+file = "data/A.bin"
+
+[[buffers]]
+name = "B"
+dtype = "u8"
+shape = [128, 128]
+init = "file"
+file = "data/B.bin"
+
+[[buffers]]
+name = "SFA"
+dtype = "u8"
+shape = [1024]
+init = "file"
+file = "data/SFA.bin"
+
+[[buffers]]
+name = "SFB"
+dtype = "u8"
+shape = [1024]
+init = "file"
+file = "data/SFB.bin"
+
+[[buffers]]
+name = "C"
+dtype = "f32"
+shape = [128, 128]
+init = "zeros"
+expect = "expected/C.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "A"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "B"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "SFA"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "SFB"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "C"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["violation"]
+hw_note = "the one violation is a PTX contract one: Triton 3.5 leaves the fixed bits 46-48 of its shared-memory descriptors 0 (GB300 ignores them: E-DESC-VERSION); the run matches GB300 bitwise (expected/)"

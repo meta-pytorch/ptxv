@@ -1,0 +1,84 @@
+// Rung 3b routing-kernel forms (docs/rung3b.md): F2FP.SATFINITE.BF16.F32.PACK_AB,
+// HSETP2.BF16_V2.<cmp>.AND (register and immediate operands), ATOMS.POPC.INC.32, and generic
+// addresses of the distributed shared memory window (S2R SR_SWINHI).
+// Cluster of 2 CTAs x 128 threads; thread g = ctaid * 128 + tid writes out[g * 8 + j].
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry routing_forms(.param .u64 px, .param .u64 py, .param .u64 ph, .param .u64 pout)
+.reqnctapercluster 2, 1, 1
+{
+  .reg .b32 %r<40>; .reg .b64 %rd<20>; .reg .pred %p<20>; .reg .b16 %h<8>;
+  .shared .align 16 .b32 arr[128];
+  .shared .align 4 .b32 cnt[16];
+  ld.param.u64 %rd1, [px]; ld.param.u64 %rd2, [py]; ld.param.u64 %rd3, [ph]; ld.param.u64 %rd4, [pout];
+  mov.u32 %r1, %tid.x; mov.u32 %r2, %ctaid.x;
+  mad.lo.u32 %r3, %r2, 128, %r1;
+  mul.wide.u32 %rd5, %r3, 4;
+  add.s64 %rd6, %rd1, %rd5; ld.global.u32 %r4, [%rd6];
+  add.s64 %rd6, %rd2, %rd5; ld.global.u32 %r5, [%rd6];
+  add.s64 %rd6, %rd3, %rd5; ld.global.u32 %r6, [%rd6];
+  mul.wide.u32 %rd7, %r3, 32; add.s64 %rd8, %rd4, %rd7;
+  // 0: f32 pair -> bf16x2, RN, satfinite
+  cvt.rn.satfinite.bf16x2.f32 %r7, %r4, %r5;
+  st.global.u32 [%rd8], %r7;
+  // 1: bf16 compares of the two halves of h (bit k per compare)
+  mov.b32 {%h1, %h2}, %r6;
+  setp.eq.bf16 %p1, %h1, %h2;   selp.u32 %r8, 1, 0, %p1;
+  setp.ne.bf16 %p1, %h1, %h2;   selp.u32 %r9, 2, 0, %p1;    or.b32 %r8, %r8, %r9;
+  setp.lt.bf16 %p1, %h1, %h2;   selp.u32 %r9, 4, 0, %p1;    or.b32 %r8, %r8, %r9;
+  setp.le.bf16 %p1, %h1, %h2;   selp.u32 %r9, 8, 0, %p1;    or.b32 %r8, %r8, %r9;
+  setp.gt.bf16 %p1, %h1, %h2;   selp.u32 %r9, 16, 0, %p1;   or.b32 %r8, %r8, %r9;
+  setp.ge.bf16 %p1, %h1, %h2;   selp.u32 %r9, 32, 0, %p1;   or.b32 %r8, %r8, %r9;
+  setp.equ.bf16 %p1, %h1, %h2;  selp.u32 %r9, 64, 0, %p1;   or.b32 %r8, %r8, %r9;
+  setp.neu.bf16 %p1, %h1, %h2;  selp.u32 %r9, 128, 0, %p1;  or.b32 %r8, %r8, %r9;
+  setp.ltu.bf16 %p1, %h1, %h2;  selp.u32 %r9, 256, 0, %p1;  or.b32 %r8, %r8, %r9;
+  setp.leu.bf16 %p1, %h1, %h2;  selp.u32 %r9, 512, 0, %p1;  or.b32 %r8, %r8, %r9;
+  setp.gtu.bf16 %p1, %h1, %h2;  selp.u32 %r9, 1024, 0, %p1; or.b32 %r8, %r8, %r9;
+  setp.geu.bf16 %p1, %h1, %h2;  selp.u32 %r9, 2048, 0, %p1; or.b32 %r8, %r8, %r9;
+  // against -inf (routing's `>= -inf`, an immediate operand in SASS)
+  mov.b16 %h3, 0xff80;
+  setp.ge.bf16 %p1, %h1, %h3;   selp.u32 %r9, 4096, 0, %p1; or.b32 %r8, %r8, %r9;
+  setp.geu.bf16 %p1, %h2, %h3;  selp.u32 %r9, 8192, 0, %p1; or.b32 %r8, %r8, %r9;
+  st.global.u32 [%rd8+4], %r8;
+  // 2: low word of the generic address of rank r^1's arr (mapa of cvta.shared); 3: its high
+  // word xor that of this CTA's (0: one window; the window's own address varies)
+  cvta.shared.u64 %rd9, arr;
+  mov.u32 %r10, %cluster_ctarank; xor.b32 %r11, %r10, 1;
+  mapa.u64 %rd10, %rd9, %r11;
+  mov.b64 {%r30, %r31}, %rd10; mov.b64 {%r32, %r33}, %rd9; xor.b32 %r31, %r31, %r33;
+  st.global.u32 [%rd8+8], %r30; st.global.u32 [%rd8+12], %r31;
+  // counters: zero, then every lane with (y & 3) != 0 increments cnt[x & 15]
+  setp.lt.u32 %p2, %r1, 16;
+  mov.u32 %r12, cnt; shl.b32 %r13, %r1, 2; add.u32 %r14, %r12, %r13;
+  @%p2 st.shared.u32 [%r14], 0;
+  // arr[tid] = g * 3 + 1 through the generic window
+  mul.wide.u32 %rd11, %r1, 4; add.s64 %rd12, %rd9, %rd11;
+  mad.lo.u32 %r15, %r3, 3, 1;
+  st.u32 [%rd12], %r15;
+  bar.sync 0;
+  and.b32 %r16, %r5, 3; setp.ne.u32 %p3, %r16, 0;
+  and.b32 %r17, %r4, 15; shl.b32 %r17, %r17, 2; add.u32 %r18, %r12, %r17;
+  @%p3 red.shared.add.u32 [%r18], 1;
+  barrier.cluster.arrive.release; barrier.cluster.wait.acquire;
+  // 4: the peer's arr[(5 * tid) & 127] through the generic window; 5: own arr[127 - tid]
+  mul.lo.u32 %r19, %r1, 5; and.b32 %r19, %r19, 127;
+  mul.wide.u32 %rd13, %r19, 4; add.s64 %rd14, %rd10, %rd13;
+  ld.u32 %r20, [%rd14];
+  st.global.u32 [%rd8+16], %r20;
+  sub.u32 %r21, 127, %r1; mul.wide.u32 %rd15, %r21, 4; add.s64 %rd16, %rd9, %rd15;
+  ld.u32 %r22, [%rd16];
+  st.global.u32 [%rd8+20], %r22;
+  // 6: cnt[tid & 15]
+  and.b32 %r23, %r1, 15; shl.b32 %r23, %r23, 2; add.u32 %r24, %r12, %r23;
+  ld.shared.u32 %r25, [%r24];
+  st.global.u32 [%rd8+24], %r25;
+  // 7: the peer's cnt[tid & 15] read as u16 halves through the generic window
+  cvta.shared.u64 %rd17, cnt; mapa.u64 %rd17, %rd17, %r11;
+  cvt.u64.u32 %rd18, %r23; add.s64 %rd17, %rd17, %rd18;
+  ld.u16 %h4, [%rd17]; cvt.u32.u16 %r26, %h4;
+  st.global.u32 [%rd8+28], %r26;
+  barrier.cluster.arrive.release; barrier.cluster.wait.acquire;
+  ret;
+}

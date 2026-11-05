@@ -1,0 +1,311 @@
+name = "r3_grouped_mm"
+description = """
+Rung 3a. torch._grouped_mm (torch 2.12.0a0+git808dd93): out[g] = A[offs[g-1]:offs[g]] @ B[g], G=4,
+M=128 rows per group, N=128, K=128, bf16 in and out. Binary only: the CUTLASS sm100 grouped GEMM
+in libtorch_cuda (GroupMM.cu cubin via probes/launchcap/cubincap), launched after
+prepare_grouped_gemm_data, which fills the workspace W* with per-group shapes, pointers and
+strides. Captured by capture.py."""
+cubin = "kernel.cubin"
+entry = "_ZN2at4cuda6detail25prepare_grouped_gemm_dataIN7cutlass10bfloat16_tES4_S4_fN4cute5tupleIJiiiEEENS6_IJlNS5_1CILi1EEENS8_ILi0EEEEEESB_SB_EEvPT_PT0_PT1_PT2_SJ_PSD_PSF_PSH_PSJ_SN_PT3_PT4_PT5_PT6_PKiiiiSt5arrayIlLm3EESZ_SZ_SZ_SZ_llbb"
+grid = [1, 1, 1]
+block = [4, 1, 1]
+dynamic_smem = 0
+outputs = ["out"]
+
+[[buffers]]
+name = "A"
+dtype = "bf16"
+shape = [512, 128]
+init = "normal"
+seed = 1
+
+[[buffers]]
+name = "B"
+dtype = "bf16"
+shape = [4, 128, 128]
+init = "normal"
+seed = 2
+
+[[buffers]]
+name = "offs"
+dtype = "i32"
+shape = [4]
+init = "zeros"
+seed = 0
+values = [[0, 128], [1, 256], [2, 384], [3, 512]]
+
+[[buffers]]
+name = "out"
+dtype = "bf16"
+shape = [512, 128]
+init = "zeros"
+seed = 0
+
+[[buffers]]
+name = "W0"
+dtype = "u8"
+shape = [240]
+init = "zeros"
+
+[[buffers]]
+name = "W1"
+dtype = "u8"
+shape = [817152]
+init = "zeros"
+
+[[params]]
+kind = "bytes"
+hex = "0000c0ddf9ff0000"
+
+[[params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "A"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "0000c2ddf9ff0000"
+
+[[params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "B"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "0002c4ddf9ff0000"
+
+[[params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0002c6ddf9ff0000"
+
+[[params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W0"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "2002c6ddf9ff0000"
+
+[[params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W0"
+byte_offset = 32
+
+[[params]]
+kind = "bytes"
+hex = "4002c6ddf9ff0000"
+
+[[params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W0"
+byte_offset = 64
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "c002c6ddf9ff0000"
+
+[[params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W0"
+byte_offset = 192
+
+[[params]]
+kind = "bytes"
+hex = "6002c6ddf9ff0000"
+
+[[params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W0"
+byte_offset = 96
+
+[[params]]
+kind = "bytes"
+hex = "8002c6ddf9ff0000"
+
+[[params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W0"
+byte_offset = 128
+
+[[params]]
+kind = "bytes"
+hex = "a002c6ddf9ff0000"
+
+[[params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W0"
+byte_offset = 160
+
+[[params]]
+kind = "bytes"
+hex = "0000c4ddf9ff0000"
+
+[[params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "offs"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "ffffffff"
+
+[[params]]
+kind = "bytes"
+hex = "80000000"
+
+[[params]]
+kind = "bytes"
+hex = "80000000"
+
+[[params]]
+kind = "bytes"
+hex = "800000000000000001000000000000007875d411adaa0000"
+
+[[params]]
+kind = "bytes"
+hex = "004000000000000001000000000000008000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "800000000000000001000000000000006800000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0002000000000000800000000000000040b5020000000000"
+
+[[params]]
+kind = "bytes"
+hex = "040000000000000080000000000000008000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "01"
+
+[[params]]
+kind = "bytes"
+hex = "00"
+
+[[launches]]
+entry = "_ZN7cutlass13device_kernelIN2at4cuda6detail25enable_3x_kernel_for_sm10INS_4gemm6kernel13GemmUniversalINS5_17GroupProblemShapeIN4cute5tupleIJiiiEEEEENS5_10collective13CollectiveMmaINS5_40MainloopSm100ArrayTmaUmmaWarpSpecializedILi4ELi8ELi2ENSA_IJNS9_1CILi2EEENSG_ILi1EEESI_EEEEENSA_IJNSG_ILi128EEENSG_ILi256EEENSG_ILi64EEEEEENS_10bfloat16_tEPNSA_IJlSI_NSG_ILi0EEEEEESP_SS_NS9_8TiledMMAINS9_8MMA_AtomIJNS9_20SM100_MMA_F16BF16_SSISP_SP_fLi128ELi256ELNS9_4UMMA5MajorE0ELSX_0ELNSW_7ScaleInE0ELSY_0EEEEEENS9_6LayoutINSA_IJSI_SI_SI_EEENSA_IJSQ_SQ_SQ_EEEEENSA_IJNS9_10UnderscoreES15_S15_EEEEENS9_13SM90_TMA_LOADENS9_14ComposedLayoutINS9_7SwizzleILi3ELi4ELi3EEENS9_18smem_ptr_flag_bitsILi16EEENS11_INSA_IJNSG_ILi8EEESN_EEENSA_IJSN_SI_EEEEEEEvNS9_8identityENS9_23SM90_TMA_LOAD_MULTICASTES1I_vS1J_EENS_8epilogue10collective18CollectiveEpilogueINS1M_31Sm100PtrArrayTmaWarpSpecializedILi4ELi2ELi32ELb0ELb0EEEJSO_NSA_IJNS11_ISL_SI_EENS11_INSG_ILi32EEESI_EEEEEvSS_SP_SS_NS1M_6fusion15FusionCallbacksIS1Q_NS1V_17LinearCombinationISP_fSP_fLNS_15FloatRoundStyleE2EEESO_S1U_JEEENS9_5SM1004TMEM4LOAD26SM100_TMEM_LOAD_32dp32b32xES18_NS19_INS1A_ILi2ELi4ELi3EEES1D_NS11_INSA_IJS1E_S1S_EEENSA_IJS1S_SI_EEEEEEENS9_39AutoVectorizingCopyWithAssumedAlignmentILi128EEENS9_14SM90_TMA_STOREES29_S2B_S2B_EEEvvEEEEEEvNT_6ParamsE"
+grid = [152, 1, 1]
+block = [384, 1, 1]
+cluster = [2, 1, 1]
+dynamic_smem = 217088
+
+[[launches.params]]
+kind = "bytes"
+hex = "04000000000000000400000000000000c002c6ddf9ff00000000000000000000c0eee5c6ffff0000207d8b11adaa000090f2e5c6ffff00000100000000000000e0efe5c6ffff00000c2bf817feff000090f2e5c6ffff0000b83a0413adaa00000000000000000000003b0413adaa0000800000000000000050bc6b11adaa0000000000000000000010650400000000000000000000000000000000000000000000000000000000000000000000000000000000000000003f7f00000000000000004000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006e6c6ffff00008414a015feff00007006e6c6ffff0000981180edfdff00000000000000000000b007e6c6ffff0000d007e6c6ffff0000e00ae6c6ffff0000002cdf1dfeff00000000000000000000d007e6c6ffff0000e00ae6c6ffff00000000000000000000f8c9d112adaa0000e006e6c6ffff0000d4a459e0fdff0000000000000000000010650400000000000000000000000000000000000000000000000000000000000000000000000000000000000000003f7f00000000000000004000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000e00ae6c6ffff00002005e6c6ffff000024cf5a16feff00004005e6c6ffff0000485b5916feff00000008b70aadaa000010000000000000009005e6c6ffff00000c0d5d16feff00000008b70aadaa00008406e6c6ffff00008406e6c6ffff000068435c16feff00008406e6c6ffff0000c007e6c600000000000000000000000010650400000000000000000000000000000000000000000000000000000000000000000000000000000000000000003f7f00000000000000004000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005e6c6ffff0000fffffffff070ae7f4004e6c6ffff00007860eb17feff00007c05e6c6ffff000000000000000000007c05e6c6ffff000000000000000000002005e6c6ffff000040b5ea17feff00000008b70aadaa00008406e6c6ffff000001000000000000001000000000000000c006e6c6ffff0000e7030000ffff0000000000000000000010650400000000000000000000000000000000000000000000000000000000000000000000000000000000000000003f7f00000000000000004000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000090cff5fdff0000f804e6c6ffff00005004e6c6ffff00005803e6c6ffff00000090cff5fdff000001000100000000008092a60aadaa000020ca5411adaa000000000000010000006000000000000000010001000000000001000100000000000100010badaa00004000000000000000c003e6c6ffff0000181401f6fdff0000000000000000000000000000adaa000000000000000000000000000000000000002ccaddf9ff00000002c6ddf9ff00006002c6ddf9ff00002002c6ddf9ff00008002c6ddf9ff000098387c1dfeff0000a0f3e5c6ffff0000c457d917feff00004076d411adaa0000f0f6e5c6ffff00000083be11adaa00000000000000000000000000000000000000000000000000000000000000000000000000000000000000f6e5c6ffff00000000803fffff0000000000000000000000000000000000000000000000000000f0f6e5c6ffff000020ca5411adaa00004076d411adaa000020ca5411adaa0000a0f7e5c6ffff0000010000000000000080868b11adaa0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000104504000000000000000000000000000000000000000000ff0000007f0000000000000000000000000000000000001f7f000000000000000020000000000000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000025000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004c6ddf9ff00000000000000000000a002c6ddf9ff00004002c6ddf9ff0000a002c6ddf9ff0000d0f7e5c6ffff00000000000000000000b8d9aa0eadaa0000f0f7e5c6ffff000028f7e5c6ffff000078f7e5c6ffff0000c0d9aa0eadaa000080f6e5c6ffff000000be6215feff0000c0ceaa0eadaa0000d0f7e5c6ffff000002000000000000000100000000000000010000000000000000000000adaa000080000000000000000000000000000000070000000000000000010000000000000000000000000000080000000000000098000000000000000093f2170000000000000000ffff00000400000000000000c002c6ddf9ff0000000000000000000080000000000100004000000002000000010000000100000000000000980000000000000000000000000000000000000000000000000000000000000000000000c006e6c6ffff00000f010000000000000001000000000000000000000000000052657475726e696e0000020000000000006a5c0badaa0000004e56414c49445f"
+
+[[launches.params.fields]]
+offset = 16
+kind = "ptr"
+buffer = "W0"
+byte_offset = 192
+
+[[launches.params.fields]]
+offset = 1184
+kind = "ptr"
+buffer = "W1"
+byte_offset = 272384
+
+[[launches.params.fields]]
+offset = 1192
+kind = "ptr"
+buffer = "W0"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 1200
+kind = "ptr"
+buffer = "W0"
+byte_offset = 96
+
+[[launches.params.fields]]
+offset = 1208
+kind = "ptr"
+buffer = "W0"
+byte_offset = 32
+
+[[launches.params.fields]]
+offset = 1216
+kind = "ptr"
+buffer = "W0"
+byte_offset = 128
+
+[[launches.params.fields]]
+offset = 1920
+kind = "ptr"
+buffer = "W1"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 1936
+kind = "ptr"
+buffer = "W0"
+byte_offset = 160
+
+[[launches.params.fields]]
+offset = 1944
+kind = "ptr"
+buffer = "W0"
+byte_offset = 64
+
+[[launches.params.fields]]
+offset = 1952
+kind = "ptr"
+buffer = "W0"
+byte_offset = 160
+
+[[launches.params.fields]]
+offset = 2160
+kind = "ptr"
+buffer = "W0"
+byte_offset = 192
+
+[[variants]]
+id = "good"
+summary = "as shipped in PyTorch"
+expect = ["clean"]
+hw_note = "Certified for all clusters (E-WELLSYNC). Its epilogue waits for the TMA stores' smem reads through a control-word wait on UTMACMDFLUSH's read scoreboard before exit (E-ASYNC-STEP); before that wait was modeled, this was an E-BULK-EXIT contract."

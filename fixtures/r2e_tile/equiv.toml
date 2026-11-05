@@ -1,0 +1,30 @@
+# Rung 2e demo: the tile GEMM as reference, and "generated" candidates.
+#   ptxv equiv fixtures/r2e_tile/equiv.toml
+max_states = 100000
+reference = { case = ".", variant = "good", front = "sass" }
+
+[[candidates]]   # the same kernel through the other front-end
+case = "."
+variant = "good"
+front = "ptx"
+expect = "L0"
+
+[[candidates]]   # reordered reduction
+case = "."
+variant = "E1"
+expect = "L1"
+
+[[candidates]]   # dropped K slice
+case = "."
+variant = "E2"
+expect = "none"
+
+[[candidates]]   # split accumulators, add.rz epilogue
+case = "."
+variant = "E3"
+expect = "L1"
+
+[[candidates]]   # same function, but an address depends on input data: not a proof
+case = "."
+variant = "E4"
+expect = "L0 (unproven)"

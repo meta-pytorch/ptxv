@@ -1,0 +1,88 @@
+{
+ "what": "run() of triton_rowsum_splitk.py",
+ "argv": [
+  "--file",
+  "tools/capture_examples/triton_rowsum_splitk.py",
+  "--binary",
+  "--out",
+  "fixtures/c_triton_rowsum_splitk",
+  "--work",
+  "/tmp/ptxv_capture_85961"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "partial_kernel",
+   "grid": [
+    4,
+    4,
+    1
+   ],
+   "block": [
+    32,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "name": "combine_kernel",
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    32,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k1.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "x",
+   "dtype": "f32",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 2048
+  },
+  {
+   "name": "W0",
+   "dtype": "u8",
+   "shape": [
+    64
+   ],
+   "size": 64
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    4
+   ],
+   "size": 16
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

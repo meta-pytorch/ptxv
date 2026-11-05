@@ -1,0 +1,45 @@
+name = "probe_reserved_smem"
+description = """
+Probe (hardware only) for S-RESERVED: the initial words of the reserved shared memory
+0x0..0x3ff in each of 2 CTAs, with and without a cluster."""
+ptx = "kernel.ptx"
+entry = "probe_reserved_smem"
+grid = [2, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "cluster"
+summary = ".reqnctapercluster 2, 1, 1"
+expect = ["clean"]
+
+[[variants]]
+id = "none"
+summary = "no cluster"
+expect = ["clean"]
+marker = "@NOCLUSTER"
+replace = "<delete>"
+
+[[variants]]
+id = "cluster_nopair"
+summary = "cluster, no tcgen05 allocation in the kernel"
+marker = "@NOPAIR"
+replace = "<delete>"
+expect = ["clean"]
+
+[[variants]]
+id = "cluster_untagged"
+summary = "cluster, plain offsets (rank byte 0) in shared::cta loads"
+marker = "@UNTAGGED"
+replace = "<delete>"
+expect = ["clean"]

@@ -1,0 +1,2 @@
+{"version": 1, "seed": 1, "name": "uniform [1, 2) (same sign: rounding errors accumulate)",
+ "default": {"dist": {"kind": "uniform", "lo": 1.0, "hi": 2.0}}}

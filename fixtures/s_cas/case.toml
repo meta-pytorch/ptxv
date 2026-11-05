@@ -1,0 +1,96 @@
+name = "s_cas"
+description = """
+SASS compare-and-swap against GB300 bitwise (cas.cu), for rung 4a (torch symmetric memory's
+signals): ATOM.E.CAS.STRONG.SYS on generic addresses reached through a device pointer table
+(buffer `ptrs`), ATOMG.E.CAS.STRONG.GPU, succeeding and failing compares (old value returned,
+memory left), and a CAS put/wait signal handoff between thread pairs (CAS poll loops with
+MEMBAR.SYS / CCTL.IVALL, E-SPIN). expected/ is GB300's output."""
+cubin = "kernel.cubin"
+entry = "cas"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out", "mem", "gmem"]
+
+[[buffers]]
+name = "rnd"
+dtype = "u32"
+shape = [384]
+init = "bits"
+seed = 41
+
+[[buffers]]
+name = "ptrs"
+dtype = "u64"
+shape = [3]
+init = "zeros"
+ptrs = [{ offset = 0, buffer = "mem" }, { offset = 8, buffer = "flags" }, { offset = 16, buffer = "payload" }]
+
+[[buffers]]
+name = "mem"
+dtype = "u32"
+shape = [128]
+init = "bits"
+seed = 42
+expect = "expected/mem.bin"
+
+[[buffers]]
+name = "flags"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "payload"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "gmem"
+dtype = "u32"
+shape = [128]
+init = "bits"
+seed = 43
+expect = "expected/gmem.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "rnd"
+
+[[params]]
+kind = "ptr"
+buffer = "ptrs"
+
+[[params]]
+kind = "ptr"
+buffer = "gmem"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+hw_note = "GB300: bitwise = simulator, 200/200 (2026-11-03, GPU 0)"
+
+[[variants]]
+id = "relaxed_put"
+summary = "the put's MEMBAR.SYS is gone: the payload store is not released by the signal"
+patch = [{ at = "@0x03b0", nop = true, expect = "NOP" }]
+expect = ["race"]
+hw_note = "GB300: matches the clean output 1000/1000 (latent on one SM)"
+
+[[variants]]
+id = "lost_signal"
+summary = "the put swaps in 0 instead of 1: the signal is never seen and the waiter spins forever"
+patch = [{ at = "@0x0360", bits = [[32, 32, 0]], expect = "MOV R3, 0x0" }]
+expect = ["deadlock"]
+hw_note = "GB300: hangs, killed by the watchdog"

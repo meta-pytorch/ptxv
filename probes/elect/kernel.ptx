@@ -1,0 +1,37 @@
+// Probe for E-ELECT: which lane does elect.sync pick on GB300?
+// Warp w (8 warps) runs elect.sync with membermask = active set masks[w]; lanes outside the
+// set branch around it. The leader writes its laneid to out[w]; out[8 + w] counts leaders
+// (must be 1).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.global .align 4 .u32 masks[8] = {0xffffffff, 0xffffffe0, 0xaaaaaaaa, 0x80100080, 0x80000000, 0x0000fffe, 0x55555554, 0x0f0f0f00};
+
+.visible .entry probe_elect(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    shr.u32 %r2, %r1, 5;                 // warp
+    and.b32 %r3, %r1, 31;                // lane
+    mov.u64 %rd2, masks;
+    mul.wide.u32 %rd3, %r2, 4;
+    add.u64 %rd2, %rd2, %rd3;
+    ld.global.u32 %r4, [%rd2];           // membermask of this warp
+    shr.u32 %r5, %r4, %r3;
+    and.b32 %r5, %r5, 1;
+    setp.eq.u32 %p1, %r5, 0;
+    @%p1 bra DONE;
+    elect.sync %r6|%p2, %r4;             // @ELECT
+    @!%p2 bra DONE;
+    add.u64 %rd4, %rd1, %rd3;
+    st.global.u32 [%rd4], %r3;
+    add.u64 %rd5, %rd4, 32;
+    atom.global.add.u32 %r7, [%rd5], 1;
+DONE:
+    ret;
+}

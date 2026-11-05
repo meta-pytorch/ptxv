@@ -1,0 +1,6 @@
+{"version": 1, "seed": 1, "name": "uniform random e2m1 codes, ue4m3 scales: any finite nonzero code (the mx_gpu_check --nvf4 distribution)",
+ "tensors": {
+  "A": {"dist": {"kind": "codes", "format": "e2m1"}, "quant": {"kind": "codes"}},
+  "B": {"dist": {"kind": "codes", "format": "e2m1"}, "quant": {"kind": "codes"}},
+  "SFA": {"dist": {"kind": "codes", "format": "ue4m3", "range": [1, 126]}, "quant": {"kind": "codes"}},
+  "SFB": {"dist": {"kind": "codes", "format": "ue4m3", "range": [1, 126]}, "quant": {"kind": "codes"}}}}

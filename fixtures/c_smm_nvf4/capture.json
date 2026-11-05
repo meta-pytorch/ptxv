@@ -1,0 +1,84 @@
+{
+ "what": "run() of scaled_mm_nvf4.py",
+ "argv": [
+  "--file",
+  "tools/capture_examples/scaled_mm_nvf4.py",
+  "--out",
+  "fixtures/c_smm_nvf4",
+  "--work",
+  "/tmp/ptxv_capture_2527538"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "nvjet_sm103_oosss_128x128_256x7_1x2_2cta_h_bz_Avec16UE4M3_Bvec16UE4M3_TNN",
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "cluster": [
+    2,
+    1,
+    1
+   ],
+   "smem": 209344,
+   "pdl": 1,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "A",
+   "dtype": "u8",
+   "shape": [
+    128,
+    128
+   ],
+   "size": 16384
+  },
+  {
+   "name": "B",
+   "dtype": "u8",
+   "shape": [
+    128,
+    128
+   ],
+   "size": 16384
+  },
+  {
+   "name": "SFA",
+   "dtype": "u16",
+   "shape": [
+    1024
+   ],
+   "size": 2048
+  },
+  {
+   "name": "SFB",
+   "dtype": "u16",
+   "shape": [
+    1024
+   ],
+   "size": 2048
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    128,
+    128
+   ],
+   "size": 65536
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

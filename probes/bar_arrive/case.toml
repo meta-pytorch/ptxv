@@ -1,0 +1,66 @@
+name = "probe_bar_arrive"
+description = """
+Probe for ASSUMPTIONS.md E-BAR-ARRIVE. out = [1, 2] if bar.arrive returned without waiting
+and counted toward the consumer's bar.sync; a hang means it blocked or did not count."""
+ptx = "kernel.ptx"
+entry = "probe_bar_arrive"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "arrive"
+summary = "warp 0: bar.arrive 1, 64 then bar.sync 2, 64; warp 1: bar.sync 2, 64 then bar.sync 1, 64"
+expect = ["clean"]
+hw_note = "GB300 completes, out = [1, 2] (probe 2026-11-02)"
+
+[[variants]]
+id = "sync"
+summary = "control: warp 0 runs bar.sync 1, 64 instead (crossed barriers: must hang)"
+marker = "@ARRIVE"
+find = "bar.arrive 1, 64;"
+replace = "bar.sync 1, 64;"
+expect = ["deadlock"]
+hw_note = "GB300 hangs (probe 2026-11-02)"
+
+[[variants]]
+id = "twice"
+summary = "warp 0 arrives twice before bar.sync 2, 64: do its 64 arrivals complete barrier 1 alone?"
+marker = "@ARRIVE"
+find = "bar.arrive 1, 64;"
+replace = "bar.arrive 1, 64;\n    bar.arrive 1, 64;"
+expect = ["deadlock", "violation"]
+hw_note = "GB300 hangs: the second arrival counted, barrier 1 completed without warp 1 (probe 2026-11-02)"
+
+[[variants]]
+id = "twice_alone"
+summary = "as `twice`, but warp 1 never uses barrier 1: does warp 0's second arrival block?"
+marker = "@ARRIVE"
+find = "bar.arrive 1, 64;"
+replace = "bar.arrive 1, 64;\n    bar.arrive 1, 64;"
+expect = ["violation"]
+hw_note = "GB300 completes, out = [1, 2]: the second arrival does not block (probe 2026-11-02)"
+
+[[variants.edits]]
+marker = "@SYNC1"
+replace = "<delete>"
+
+[[variants]]
+id = "mismatch"
+summary = "warp 1 runs bar.sync 1, 96 against warp 0's bar.arrive 1, 64"
+marker = "@SYNC1"
+find = "bar.sync 1, 64;"
+replace = "bar.sync 1, 96;"
+# After reporting, the model keeps the first count (64), so the barrier then completes.
+expect = ["violation"]
+hw_note = "GB300 traps: illegal instruction (probe 2026-11-02)"

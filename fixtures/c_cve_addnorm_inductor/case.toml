@@ -1,0 +1,83 @@
+name = "c_cve_addnorm_inductor"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): run() of cand.py. 1 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: triton_per_fused__unsafe_view_add_mean_mul_pow_rsqrt_2 grid [1, 1, 1] block [64, 1, 1]
+Regenerate (docs/compile-vs-eager.md): CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/compile_vs_eager.py record
+--dtype f32 --seq 8 --out DIR, then tools/capture.py --file DIR/pairs/06_*/cand.py --binary, then
+tools/cubin_slim.py on each cubin."""
+cubin = "k0.cubin"
+entry = "triton_per_fused__unsafe_view_add_mean_mul_pow_rsqrt_2"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+dynamic_smem = 512
+outputs = ["out"]
+
+[[buffers]]
+name = "n2_weight"
+dtype = "f32"
+shape = [128]
+init = "file"
+file = "data/n2_weight.bin"
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "mm_42"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "data/mm_42.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "mm_42"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "n2_weight"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[params]]
+kind = "u32"
+value = 8
+
+[[params]]
+kind = "u32"
+value = 128
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

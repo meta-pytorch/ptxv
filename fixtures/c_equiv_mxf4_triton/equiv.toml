@@ -1,0 +1,24 @@
+# MXF4 GEMM (docs/equiv-mma.md §5): the CuTeDSL block-scaled GEMM for e2m1 (fixtures/r3_cute_mxf4:
+# 4-bit tensor maps, tcgen05.mma.kind::mxf4nvf4.block_scale.block32) against Triton
+# tl.dot_scaled "e2m1" (tools/capture_examples/triton_mxf4.py: kind::mxf4.block_scale.scale_vec::2X).
+# Same input bytes and names; FP4 codes are nibble leaves. K = 256 in 4 steps of 64. In K order:
+# the same steps (L0). K blocks of 64 reversed: another accumulation order (L1, bounded).
+#   ptxv equiv fixtures/c_equiv_mxf4_triton/equiv.toml
+#   GB300: tools/mx_gpu_check.py --fp4
+max_states = 200000
+trials = 20
+reference = { case = "../r3_cute_mxf4", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "../c_triton_mxf4"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L0"
+
+[[candidates]]
+case = "../c_triton_mxf4_rev"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L1"

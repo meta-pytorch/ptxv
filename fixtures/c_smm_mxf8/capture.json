@@ -1,0 +1,84 @@
+{
+ "what": "run() of scaled_mm_mxf8.py",
+ "argv": [
+  "--file",
+  "tools/capture_examples/scaled_mm_mxf8.py",
+  "--out",
+  "fixtures/c_smm_mxf8",
+  "--work",
+  "WORK"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "nvjet_sm103_qqsss_128x128_128x6_1x1_h_bz_Avec32UE8M0_Bvec32UE8M0_TNT",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 211344,
+   "pdl": 1,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "A",
+   "dtype": "u8",
+   "shape": [
+    128,
+    256
+   ],
+   "size": 32768
+  },
+  {
+   "name": "B",
+   "dtype": "u8",
+   "shape": [
+    128,
+    256
+   ],
+   "size": 32768
+  },
+  {
+   "name": "SFA",
+   "dtype": "u16",
+   "shape": [
+    512
+   ],
+   "size": 1024
+  },
+  {
+   "name": "SFB",
+   "dtype": "u16",
+   "shape": [
+    512
+   ],
+   "size": 1024
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    128,
+    128
+   ],
+   "size": 65536
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

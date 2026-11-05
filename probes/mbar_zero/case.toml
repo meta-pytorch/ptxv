@@ -1,0 +1,60 @@
+name = "probe_mbar_zero"
+description = """
+Probe (hardware only) for S-MBAR-MEM: try_wait results and the raw word of an mbarrier whose
+word was set to 0 by a plain store, across arrive.expect_tx / complete_tx."""
+ptx = "kernel.ptx"
+entry = "probe_mbar_zero"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [20]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+
+[[variants]]
+id = "upto0"
+summary = "stop after step 0"
+marker = "@STEPS"
+find = "%r9, 9"
+replace = "%r9, 0"
+expect = ["clean"]
+
+[[variants]]
+id = "upto1"
+summary = "stop after step 1"
+marker = "@STEPS"
+find = "%r9, 9"
+replace = "%r9, 1"
+expect = ["clean"]
+
+[[variants]]
+id = "upto2"
+summary = "stop after step 2"
+marker = "@STEPS"
+find = "%r9, 9"
+replace = "%r9, 2"
+expect = ["clean"]
+
+[[variants]]
+id = "upto3"
+summary = "stop after step 3"
+marker = "@STEPS"
+find = "%r9, 9"
+replace = "%r9, 3"
+expect = ["clean"]
+
+[[variants]]
+id = "upto4"
+summary = "stop after step 4"
+marker = "@STEPS"
+find = "%r9, 9"
+replace = "%r9, 4"
+expect = ["clean"]

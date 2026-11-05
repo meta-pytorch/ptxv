@@ -1,0 +1,76 @@
+{
+ "what": "run() of triton_layernorm_f32.py (kernel ^layernorm_kernel$)",
+ "argv": [
+  "--triton",
+  "tools/capture_examples/triton_layernorm_f32.py:layernorm_kernel",
+  "--binary",
+  "--out",
+  "fixtures/c_layernorm_triton_f32",
+  "--work",
+  "/tmp/ptxv_capture_1191000"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "layernorm_kernel",
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    64,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 8,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "x",
+   "dtype": "f32",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 2048
+  },
+  {
+   "name": "w",
+   "dtype": "f32",
+   "shape": [
+    128
+   ],
+   "size": 512
+  },
+  {
+   "name": "b",
+   "dtype": "f32",
+   "shape": [
+    128
+   ],
+   "size": 512
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 2048
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

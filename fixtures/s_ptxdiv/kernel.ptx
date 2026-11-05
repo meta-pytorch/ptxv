@@ -1,0 +1,66 @@
+// PTX front: div.full.f32 and cvt.{rn,rz,rm,rp}.f32.{s32,u32} against GB300 bitwise, on every
+// pair of the s_alu2 operands (64 special bit patterns + 64 random). Thread i, operand x = v[i]:
+// out[i*136 + j] = div.full.f32(x, v[j]) for j < 128; out[i*136 + 128 + 4s + r] = cvt with
+// rounding r (rn, rz, rm, rp) of x as s32 (s = 0) / u32 (s = 1).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry s_ptxdiv(.param .u64 sp, .param .u64 rnd, .param .u64 out)
+{
+    .reg .pred %p<3>;
+    .reg .b32 %r<16>;
+    .reg .f32 %f<8>;
+    .reg .b64 %rd<12>;
+    .shared .align 4 .b32 v[128];
+    ld.param.u64 %rd1, [sp];
+    ld.param.u64 %rd2, [rnd];
+    ld.param.u64 %rd3, [out];
+    mov.u32 %r1, %tid.x;
+    setp.lt.u32 %p1, %r1, 64;
+    and.b32 %r2, %r1, 63;
+    mul.wide.u32 %rd4, %r2, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    add.s64 %rd6, %rd2, %rd4;
+    selp.b64 %rd7, %rd5, %rd6, %p1;
+    ld.global.b32 %r3, [%rd7];
+    mov.u32 %r4, v;
+    shl.b32 %r5, %r1, 2;
+    add.u32 %r6, %r4, %r5;
+    st.shared.b32 [%r6], %r3;
+    bar.sync 0;
+    mov.b32 %f1, %r3;
+    mul.lo.u32 %r7, %r1, 136;
+    mul.wide.u32 %rd8, %r7, 4;
+    add.s64 %rd9, %rd3, %rd8;
+    mov.u32 %r8, 0;
+LOOP:
+    shl.b32 %r9, %r8, 2;
+    add.u32 %r10, %r4, %r9;
+    ld.shared.b32 %r11, [%r10];
+    mov.b32 %f2, %r11;
+    div.full.f32 %f3, %f1, %f2;
+    mul.wide.u32 %rd10, %r8, 4;
+    add.s64 %rd11, %rd9, %rd10;
+    st.global.f32 [%rd11], %f3;
+    add.u32 %r8, %r8, 1;
+    setp.lt.u32 %p2, %r8, 128;
+    @%p2 bra LOOP;
+    cvt.rn.f32.s32 %f4, %r3;
+    st.global.f32 [%rd9+512], %f4;
+    cvt.rz.f32.s32 %f4, %r3;
+    st.global.f32 [%rd9+516], %f4;
+    cvt.rm.f32.s32 %f4, %r3;
+    st.global.f32 [%rd9+520], %f4;
+    cvt.rp.f32.s32 %f4, %r3;
+    st.global.f32 [%rd9+524], %f4;
+    cvt.rn.f32.u32 %f4, %r3;
+    st.global.f32 [%rd9+528], %f4;
+    cvt.rz.f32.u32 %f4, %r3;
+    st.global.f32 [%rd9+532], %f4;
+    cvt.rm.f32.u32 %f4, %r3;
+    st.global.f32 [%rd9+536], %f4;
+    cvt.rp.f32.u32 %f4, %r3;
+    st.global.f32 [%rd9+540], %f4;
+    ret;
+}

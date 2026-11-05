@@ -1,0 +1,89 @@
+name = "c_cve_rope_bf16_inductor"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): run() of cand.py. 1 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: triton_poi_fused__scaled_dot_product_cudnn_attention__unsafe_view_add_mul_slice_split_stack_sub_transpose_view grid [64, 1, 1] block [128, 1, 1]
+Regenerate (docs/compile-vs-eager.md): CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/compile_vs_eager.py record
+--dtype bf16 --out DIR (seq 64), then tools/capture.py --file DIR/pairs/02_*/cand.py --binary."""
+cubin = "k0.cubin"
+entry = "triton_poi_fused__scaled_dot_product_cudnn_attention__unsafe_view_add_mul_slice_split_stack_sub_transpose_view_1"
+grid = [64, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+outputs = ["out"]
+
+[[buffers]]
+name = "mm_10"
+dtype = "bf16"
+shape = [24576]
+init = "file"
+file = "data/mm_10.bin"
+
+[[buffers]]
+name = "cos"
+dtype = "bf16"
+shape = [2048]
+init = "file"
+file = "data/cos.bin"
+
+[[buffers]]
+name = "sin"
+dtype = "bf16"
+shape = [2048]
+init = "file"
+file = "data/sin.bin"
+
+[[buffers]]
+name = "out"
+dtype = "bf16"
+shape = [8192]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "W0"
+dtype = "u8"
+shape = [16384]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "mm_10"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "cos"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "sin"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "W0"
+byte_offset = 0
+
+[[params]]
+kind = "u32"
+value = 8192
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

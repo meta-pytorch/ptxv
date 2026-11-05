@@ -1,0 +1,62 @@
+// bmsk.{clamp,wrap}.b32 (SASS BMSK / BMSK.W) and shfl.sync.{up,down,idx}.b32 d|p (SASS SHFL
+// with a predicate result) against GB300 bitwise. Thread i: a = v[i] & 63 (the s_alu2
+// operands); for each j, b = v[j] & 63: out[i*136 + 2j] = bmsk.clamp(a, b), +1 = bmsk.wrap(a, b);
+// out[i*136 + 256 .. 264): shuffles of v[i] by (a & 31) with their predicates.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry s_bmsk(.param .u64 sp, .param .u64 rnd, .param .u64 out)
+{
+    .reg .pred %p<8>;
+    .reg .b32 %r<32>;
+    .reg .b64 %rd<12>;
+    .shared .align 4 .b32 v[128];
+    ld.param.u64 %rd1, [sp];
+    ld.param.u64 %rd2, [rnd];
+    ld.param.u64 %rd3, [out];
+    mov.u32 %r1, %tid.x;
+    setp.lt.u32 %p1, %r1, 64;
+    and.b32 %r2, %r1, 63;
+    mul.wide.u32 %rd4, %r2, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    add.s64 %rd6, %rd2, %rd4;
+    selp.b64 %rd7, %rd5, %rd6, %p1;
+    ld.global.b32 %r3, [%rd7];
+    mov.u32 %r4, v;
+    shl.b32 %r5, %r1, 2;
+    add.u32 %r6, %r4, %r5;
+    st.shared.b32 [%r6], %r3;
+    bar.sync 0;
+    and.b32 %r20, %r3, 63;
+    mul.lo.u32 %r7, %r1, 264;
+    mul.wide.u32 %rd8, %r7, 4;
+    add.s64 %rd9, %rd3, %rd8;
+    mov.u32 %r8, 0;
+LOOP:
+    shl.b32 %r9, %r8, 2;
+    add.u32 %r10, %r4, %r9;
+    ld.shared.b32 %r11, [%r10];
+    and.b32 %r11, %r11, 63;
+    bmsk.clamp.b32 %r12, %r20, %r11;
+    bmsk.wrap.b32 %r13, %r20, %r11;
+    shl.b32 %r14, %r8, 1;
+    mul.wide.u32 %rd10, %r14, 4;
+    add.s64 %rd11, %rd9, %rd10;
+    st.global.v2.b32 [%rd11], {%r12, %r13};
+    add.u32 %r8, %r8, 1;
+    setp.lt.u32 %p2, %r8, 128;
+    @%p2 bra LOOP;
+    and.b32 %r21, %r20, 31;
+    shfl.sync.up.b32 %r22|%p3, %r3, %r21, 0, -1;
+    shfl.sync.down.b32 %r23|%p4, %r3, %r21, 31, -1;
+    shfl.sync.idx.b32 %r24|%p5, %r3, %r21, 0x1c1f, -1;
+    shfl.sync.bfly.b32 %r25|%p6, %r3, %r21, 0x101f, -1;
+    selp.u32 %r26, 1, 0, %p3;
+    selp.u32 %r27, 1, 0, %p4;
+    selp.u32 %r28, 1, 0, %p5;
+    selp.u32 %r29, 1, 0, %p6;
+    st.global.v4.b32 [%rd9+1024], {%r22, %r23, %r24, %r25};
+    st.global.v4.b32 [%rd9+1040], {%r26, %r27, %r28, %r29};
+    ret;
+}

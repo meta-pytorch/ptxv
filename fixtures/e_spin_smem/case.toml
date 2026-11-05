@@ -1,0 +1,116 @@
+name = "e_spin_smem"
+description = """
+Fixture for E-SPIN on shared-memory flag polls: warp 0 spins on a flag that warp 1 sets.
+ptxas compiles the .cta acquire poll to a plain LDS loop, which the SASS front-end used to
+run inside one transition until the 10M-instruction local-step limit (memory grew with one
+race finding per iteration). Polls are now blocked until they exit (spin::poll_loops): the
+spin is explored with bounded state, races on the flag are reported, and a flag nobody sets
+gives a bounded deadlock verdict."""
+ptx = "kernel.ptx"
+entry = "e_spin_smem"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "acquire poll, release store"
+expect = ["clean"]
+
+[[variants]]
+id = "warp"
+summary = "all 32 lanes of warp 0 spin (one split polls; SASS lockstep)"
+marker = "@WHO"
+find = "setp.ne.u32 %p3, %r1, 0;"
+replace = "setp.ge.u32 %p3, %r1, 32;"
+expect = ["clean"]
+
+[[variants]]
+id = "relaxed_fence"
+summary = "relaxed poll, then fence.acq_rel.cta: clean"
+marker = "@POLL"
+find = "ld.acquire.cta.shared.u32 %r5, [%r3];"
+replace = "ld.relaxed.cta.shared.u32 %r5, [%r3];"
+edits = [{ marker = "@ACQ", find = "//", replace = "fence.acq_rel.cta; //" }]
+expect = ["clean"]
+
+[[variants]]
+id = "SP1"
+summary = "relaxed poll without an acquire fence: the data read races with the data store"
+marker = "@POLL"
+find = "ld.acquire.cta.shared.u32 %r5, [%r3];"
+replace = "ld.relaxed.cta.shared.u32 %r5, [%r3];"
+expect = ["race"]
+# SASS: ptxas keeps the poll and the data load in order, and LDS/STS are relaxed .cta strong
+# on the hardware (S-SMEM-STRONG; docs/smem-litmus.md): no race and one outcome.
+expect_sass = ["clean"]
+
+[[variants]]
+id = "SP2"
+summary = "volatile poll (relaxed.sys, no acquire): the data read races with the data store"
+marker = "@POLL"
+find = "ld.acquire.cta.shared.u32 %r5, [%r3];"
+replace = "ld.volatile.shared.u32 %r5, [%r3];"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "SP3"
+summary = "plain store of the flag, plain poll (then an acquire fence): a data race on the flag"
+marker = "@POLL"
+find = "ld.acquire.cta.shared.u32 %r5, [%r3];"
+replace = "ld.shared.u32 %r5, [%r3];"
+edits = [
+    { marker = "@SET", find = "st.release.cta.shared.u32", replace = "st.shared.u32" },
+    { marker = "@ACQ", find = "//", replace = "fence.acq_rel.cta; //" },
+]
+expect = ["race"]
+# ptxas deletes the plain spin (a loop-invariant plain load) and loads the data word before
+# the producer may write it: on the hardware model (S-SMEM-STRONG) two outcomes, one of
+# them a read of shared memory nothing wrote.
+expect_sass = ["nondeterministic", "violation"]
+
+[[variants]]
+id = "SP4"
+summary = "nobody sets the flag: the poll spins forever (deadlock, bounded state)"
+marker = "@SET"
+find = "st.release.cta.shared.u32 [%r3], 1;"
+replace = "st.release.cta.shared.u32 [%r3], 0;"
+expect = ["deadlock"]
+
+
+[[variants]]
+id = "SP5"
+summary = "the whole warp spins and the producer plain-stores 0: a race that never ends the spin"
+# The memory blow-up repro: before blocked polls, each of the 32 lanes reported a race per
+# iteration inside one transition (16 GB in 50 s). Now the blocked poll's single read is
+# raced by the store.
+marker = "@SET"
+find = "st.release.cta.shared.u32 [%r3], 1;"
+replace = "st.shared.u32 [%r3], 0;"
+edits = [{ marker = "@WHO", find = "setp.ne.u32 %p3, %r1, 0;", replace = "setp.ge.u32 %p3, %r1, 32;" }]
+expect = ["deadlock", "race"]
+# SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG): the store does not race the poll.
+expect_sass = ["deadlock"]
+
+[[variants]]
+id = "SP6"
+summary = "the producer sets the flag to 1, then 2, and the poller stores the flag value it saw: either"
+# C-POLL (E-WELLSYNC): the exiting poll may read either release store, and the value it read
+# is used, so one run does not decide it.
+marker = "@SET"
+find = "st.release.cta.shared.u32 [%r3], 1;"
+replace = "st.release.cta.shared.u32 [%r3], 1; st.release.cta.shared.u32 [%r3], 2;"
+edits = [{ marker = "@OUT", find = "%r6;", replace = "%r5;" }]
+expect = ["nondeterministic"]
+# SASS: likewise (the explorer finds both values; the certificate refuses by C-POLL).

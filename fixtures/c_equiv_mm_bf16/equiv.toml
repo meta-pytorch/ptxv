@@ -1,0 +1,24 @@
+# bf16 GEMM, f32 accumulation, bf16 output (docs/equiv-mma.md): torch.mm(a, b) for a, b of
+# 64x64 bf16 (cuBLAS nvjet_sm103_tst_64x8_64x16_1x4_h_bz_NNT: 8 CTAs in clusters of 4,
+# multicast TMA, tcgen05 M=64 steps, FFMA2 alpha/beta epilogue, STSM + TMA store) against a
+# Triton matmul (one program, two K blocks of 32, tcgen05 M=128, LDTM epilogue, STG).
+# Both compute bf16(sum_k a_ik b_kj): the MMA steps follow the calibrated model's contract
+# (N-MMA), the output rounding is a bf16 rounding node (N-ROUND).
+#   ptxv equiv fixtures/c_equiv_mm_bf16/equiv.toml --trials 200
+max_states = 200000
+trials = 20
+reference = { case = "../c_mm_bf16_nnt", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "../c_triton_mm_bf16"
+variant = "good"
+front = "sass"
+expect = "L2"
+
+# The same Triton matmul walking its two K blocks backwards: another accumulation order, so
+# the outputs differ from cuBLAS's in some bits (L1, not L2).
+[[candidates]]
+case = "../c_triton_mm_bf16_rev"
+variant = "good"
+front = "sass"
+expect = "L1"

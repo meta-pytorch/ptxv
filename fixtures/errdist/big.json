@@ -1,0 +1,2 @@
+{"version": 1, "seed": 1, "name": "normal(0, 8) (large magnitude)",
+ "default": {"dist": {"kind": "normal", "mean": 0.0, "std": 8.0}}}

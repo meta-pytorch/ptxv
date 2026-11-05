@@ -1,0 +1,19 @@
+# Attention with computed scores (docs/equiv-reassoc.md, "Attention"): o = softmax(q k^T) @ v
+# (scale 1), q 16x16, k and v 64x16 f32: a Triton reference (scores as FFMA sums, softmax
+# normalized first, then P.V: c_attn_f32_ref) against the flash form (c_attn_f32_flash: per
+# block of 16 keys the scores, running max and sum, rescaled accumulator). The scores enter the
+# normal form as atoms keyed by their exact polynomial; their Cor 1a error adds the
+# (e^(2 Delta) - 1) V1 term.
+#   ptxv equiv fixtures/c_equiv_attn/full.toml --trials 200
+max_states = 200000
+segments = true
+trials = 20
+sweep_cache = "sweeps.json"
+reference = { case = "../c_attn_f32_ref", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "../c_attn_f32_flash"
+variant = "good"
+front = "sass"
+expect = "L1"
+expect_bound_u = 129.9

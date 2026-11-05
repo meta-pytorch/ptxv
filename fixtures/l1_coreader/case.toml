@@ -1,0 +1,95 @@
+name = "l1_coreader"
+description = """
+E-L1-CORES / E-L1-HAVOC (docs/deepep-coreader.md): DeepEP barrier_block's handoff (fixtures/
+l1_litmus pr0: entry fence, fenceless warp-level poll, weak read) plus a co-resident reader
+kernel on another stream that legally reads a never-written word of the payload's 128-byte
+line. In a closed world (E-L1-CLOSED, one CTA per SM, E-L1-PLACE) the read is never stale;
+with co-residency (l1_coresident) the reader's fill between the entry fence and the
+producer's write is stale-able, and havoc (l1_havoc) flags the read without the reader.
+The poll is a warp-level loop (vote.sync.all), the shape E-POLL-ACQ applies to. Expectations
+below are for the default flags; crates/sim/tests/fixtures.rs `l1_coreader` checks the modes."""
+ptx = "kernel.ptx"
+entry = "victim"
+grid = [2, 1, 1]
+block = [64, 1, 1]
+outputs = ["out", "out2"]
+hw_l1 = true
+# DeepEP's barrier exit, as in fixtures/r4b_moe: refuted on GB300 as an acquire, but the
+# ordering it gives is what the hardware does after the poll (docs/deepep-repro.md).
+poll_acquire = true
+# E-POLL-ACQ is refuted on GB300 (docs/poll-acq-litmus.md): an explicit opt-in, named in every
+# verdict. `ptxv check` runs the GB300 hardware model (twolevel.rs) as its second level, whose
+# havoc probe (E-L1-HAVOC) reports the post-barrier reads as latent-closed-world.
+assume_refuted = ["E-POLL-ACQ"]
+
+[[buffers]]
+name = "pay"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out2"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "pay"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[launches]]
+entry = "coreader"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+device = 0
+after = -1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "pay"
+
+[[launches.params]]
+kind = "ptr"
+buffer = "out2"
+
+[[variants]]
+id = "good"
+summary = "legal co-reader (reads pay[24], never written): clean in a closed world; stale with l1_coresident or l1_havoc"
+expect = ["clean"]
+
+[[variants]]
+id = "racy-reader"
+summary = "co-reader reads pay[0] itself, which the producer writes without synchronizing with it: a data race (not a legal co-reader)"
+marker = "@READ"
+find = "[%rd1+96]"
+replace = "[%rd1]"
+expect = ["race"]
+
+[[variants]]
+id = "fixed"
+summary = "victim with fence.acq_rel.sys after the poll (the one-instruction DeepEP fix): clean in every mode"
+marker = "@POST"
+find = "// (post slot)"
+replace = "fence.acq_rel.sys;"
+expect = ["clean"]

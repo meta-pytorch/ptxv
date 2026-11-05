@@ -1,0 +1,105 @@
+{
+ "what": "run() of ref.py",
+ "argv": [
+  "--file",
+  "/tmp/agentG/cve_bf16/pairs/12_triton_poi_fused__unsafe_view_add_5/ref.py",
+  "--out",
+  "/tmp/agentG/cve_bf16/pairs/12_triton_poi_fused__unsafe_view_add_5/cmp/ref",
+  "--seed",
+  "0",
+  "--binary",
+  "--work",
+  "/tmp/ptxv_capture_2284226"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "_ZN2at6native29vectorized_elementwise_kernelILi8ENS0_15CUDAFunctor_addIN3c108BFloat16EEESt5arrayIPcLm3EEEEviT0_T1_",
+   "grid": [
+    8,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "name": "_ZN2at6native29vectorized_elementwise_kernelILi8ENS0_15CUDAFunctor_addIN3c108BFloat16EEESt5arrayIPcLm3EEEEviT0_T1_",
+   "grid": [
+    8,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "mm_68",
+   "dtype": "bf16",
+   "shape": [
+    8192
+   ],
+   "size": 16384
+  },
+  {
+   "name": "x",
+   "dtype": "bf16",
+   "shape": [
+    8192
+   ],
+   "size": 16384
+  },
+  {
+   "name": "mm_45",
+   "dtype": "bf16",
+   "shape": [
+    8192
+   ],
+   "size": 16384
+  },
+  {
+   "name": "W0",
+   "dtype": "u8",
+   "shape": [
+    16384
+   ],
+   "size": 16384
+  },
+  {
+   "name": "out",
+   "dtype": "bf16",
+   "shape": [
+    8192
+   ],
+   "size": 16384
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

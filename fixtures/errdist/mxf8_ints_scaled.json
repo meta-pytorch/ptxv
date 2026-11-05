@@ -1,0 +1,6 @@
+{"version": 1, "seed": 1, "name": "integers -8..8 as e4m3 codes, ue8m0 scales 2^-8..2^7 (a coarse lattice per block: residues far from uniform)",
+ "tensors": {
+  "A": {"dist": {"kind": "integers", "lo": -8, "hi": 8}, "quant": {"kind": "cast", "format": "e4m3"}},
+  "B": {"dist": {"kind": "integers", "lo": -8, "hi": 8}, "quant": {"kind": "cast", "format": "e4m3"}},
+  "SFA": {"dist": {"kind": "codes", "format": "ue8m0", "range": [119, 134]}, "quant": {"kind": "codes"}},
+  "SFB": {"dist": {"kind": "codes", "format": "ue8m0", "range": [119, 134]}, "quant": {"kind": "codes"}}}}

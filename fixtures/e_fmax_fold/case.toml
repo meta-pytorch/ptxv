@@ -1,0 +1,60 @@
+name = "e_fmax_fold"
+description = """
+An FA4 SM100 BF16 decode running-max fold bug, the reporters' faithful case
+with the exact smem_fmax inline asm:
+`setp.lt.s32 p, bits, 0; @p red.relaxed.shared::cta.min.u32; @!p
+red.relaxed.shared::cta.max.s32` (SASS CREDUX + elected ATOMS.MIN / ATOMS.MAX.S32). Four
+softmax warps fold per-column maxima into one shared 32-word vector, pass one bar.sync 2,128,
+then every thread reads the whole vector (ld.shared.v4 x 8) and writes it to out[s][tid].
+Two KV tiles, maxima growing from tile 0 to tile 1. good = post-fix (bar.sync 2,128 right
+before each fold), prefix = pre-fix (nothing orders a slow warp's read of tile s before a
+fast warp's tile s+1 fold). PTX: race (ld.shared vs red). SASS: LDS vs ATOMS; reported as a
+race while S-SMEM-STRONG's re-check (smem.rs needs_strong) only covers LDS/STS pairs; with
+ATOMS covered it is `nondeterministic`."""
+ptx = "kernel.ptx"
+entry = "fold_race"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [12288]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "post-fix: bar.sync 2,128 right before each fold (every warp read tile s-1's max first)"
+expect = ["clean"]
+
+[[variants]]
+id = "prefix"
+summary = "pre-fix: no barrier between a slow warp's read of tile s and a fast warp's fold of tile s+1"
+marker = "@LEAD"
+replace = "<delete>"
+expect = ["race"]
+
+[[variants]]
+id = "good_3tiles"
+summary = "post-fix, three tiles"
+marker = "@NT"
+find = "%r8, 2;"
+replace = "%r8, 3;"
+expect = ["clean"]
+
+[[variants]]
+id = "prefix_3tiles"
+summary = "pre-fix, three tiles"
+marker = "@LEAD"
+replace = "<delete>"
+expect = ["race"]
+
+[[variants.edits]]
+marker = "@NT"
+find = "%r8, 2;"
+replace = "%r8, 3;"

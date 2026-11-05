@@ -1,0 +1,74 @@
+name = "r4_rowreduce_triton"
+description = """
+Rung 4. Triton row reductions over x[4x128] f32: s = sum(x, -1), m = max(x, -1),
+one CTA per row (SHFL.BFLY trees, FMNMX).
+Triton 3.5.0.2+fb, num_warps=2. Captured by tools/r4_triton_capture.py (inputs
+data/, GPU outputs expected/)."""
+ptx = "kernel.ptx"
+cubin = "kernel.cubin"
+entry = "rowreduce_kernel"
+grid = [4, 1, 1]
+block = [64, 1, 1]
+dynamic_smem = 8
+outputs = ['s', 'm']
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [4, 128]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "s"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+expect = "expected/s.bin"
+
+[[buffers]]
+name = "m"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+expect = "expected/m.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "s"
+
+[[params]]
+kind = "ptr"
+buffer = "m"
+
+[[params]]
+kind = "u32"
+value = 128
+
+[[params]]
+kind = "u32"
+value = 128
+
+[[params]]
+kind = "u64"
+value = 0
+
+[[params]]
+kind = "u64"
+value = 0
+
+[[variants]]
+id = "good"
+summary = "as compiled by Triton"
+expect = ["clean"]
+
+[[variants]]
+id = "nosb"
+summary = "SASS: SHFL.BFLY R10 (the row sum's second butterfly step) at 0x220 gets no write scoreboard (wr SBn -> none)"
+patch = [{ at = "@0x220", wbar = 7 }]
+expect = ["violation"]
+hw_note = "the consumer's wait no longer covers the variable-latency result: it reads the register before it is written"

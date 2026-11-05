@@ -1,0 +1,71 @@
+// PTX f64 front-end ops against GB300 bitwise: div.{rn,rz,rm,rp}.f64, sqrt.{rn,rz,rm,rp}.f64
+// (ptxas: MUFU.RCP64H / RSQ64H + DFMA expansions), add / sub / mul / fma.f64 in several
+// rounding modes, on every pair of the s_f64 operands: thread i, x = v[i]; for each j, y = v[j],
+// z = v[(i+j)%128]; out[(i*128 + j)*12 + k] = op k.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry f64_ptx(.param .u64 vin, .param .u64 out)
+{
+    .reg .pred %p<3>;
+    .reg .b32 %r<24>;
+    .reg .f64 %fd<8>;
+    .reg .b64 %rd<14>;
+    .shared .align 8 .b64 v[128];
+    ld.param.u64 %rd1, [vin];
+    ld.param.u64 %rd3, [out];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd4, %r1, 8;
+    add.s64 %rd5, %rd1, %rd4;
+    ld.global.f64 %fd1, [%rd5];
+    mov.u32 %r4, v;
+    shl.b32 %r5, %r1, 3;
+    add.u32 %r6, %r4, %r5;
+    st.shared.f64 [%r6], %fd1;
+    bar.sync 0;
+    mul.lo.u32 %r7, %r1, 1536;
+    mul.wide.u32 %rd8, %r7, 8;
+    add.s64 %rd9, %rd3, %rd8;
+    mov.u32 %r8, 0;
+LOOP:
+    shl.b32 %r9, %r8, 3;
+    add.u32 %r10, %r4, %r9;
+    ld.shared.f64 %fd2, [%r10];
+    add.u32 %r13, %r8, %r1;
+    and.b32 %r13, %r13, 127;
+    shl.b32 %r14, %r13, 3;
+    add.u32 %r15, %r4, %r14;
+    ld.shared.f64 %fd3, [%r15];
+    mul.lo.u32 %r16, %r8, 12;
+    mul.wide.u32 %rd10, %r16, 8;
+    add.s64 %rd11, %rd9, %rd10;
+    div.rn.f64 %fd4, %fd1, %fd2;
+    st.global.f64 [%rd11+0], %fd4;
+    div.rz.f64 %fd4, %fd1, %fd2;
+    st.global.f64 [%rd11+8], %fd4;
+    div.rm.f64 %fd4, %fd1, %fd2;
+    st.global.f64 [%rd11+16], %fd4;
+    div.rp.f64 %fd4, %fd1, %fd2;
+    st.global.f64 [%rd11+24], %fd4;
+    sqrt.rn.f64 %fd4, %fd1;
+    st.global.f64 [%rd11+32], %fd4;
+    sqrt.rz.f64 %fd4, %fd1;
+    st.global.f64 [%rd11+40], %fd4;
+    sqrt.rm.f64 %fd4, %fd1;
+    st.global.f64 [%rd11+48], %fd4;
+    sqrt.rp.f64 %fd4, %fd1;
+    st.global.f64 [%rd11+56], %fd4;
+    add.rn.f64 %fd4, %fd1, %fd2;
+    st.global.f64 [%rd11+64], %fd4;
+    sub.rm.f64 %fd4, %fd1, %fd2;
+    st.global.f64 [%rd11+72], %fd4;
+    mul.rp.f64 %fd4, %fd1, %fd2;
+    st.global.f64 [%rd11+80], %fd4;
+    fma.rz.f64 %fd4, %fd1, %fd2, %fd3;
+    st.global.f64 [%rd11+88], %fd4;
+    add.u32 %r8, %r8, 1;
+    setp.lt.u32 %p2, %r8, 128;
+    @%p2 bra LOOP;
+    ret;
+}

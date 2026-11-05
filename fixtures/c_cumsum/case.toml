@@ -1,0 +1,61 @@
+name = "c_cumsum"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): `torch.cumsum(x, -1)` with x = randn(4,128,f32). 1 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: _ZN2at6native32tensor_kernel_scan_innermost_dimIfSt4plusIfEEEvPT_PKS4_jjjS4_T0_ grid [1, 1, 1] block [128, 4, 1]
+Regenerate: CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/capture.py --op 'torch.cumsum(x, -1)' --inputs 'x=randn(4,128,f32)' --out fixtures/c_cumsum"""
+cubin = "k0.cubin"
+entry = "_ZN2at6native32tensor_kernel_scan_innermost_dimIfSt4plusIfEEEvPT_PKS4_jjjS4_T0_"
+grid = [1, 1, 1]
+block = [128, 4, 1]
+dynamic_smem = 4096
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [4, 128]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [4, 128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+byte_offset = 0
+
+[[params]]
+kind = "u32"
+value = 4
+
+[[params]]
+kind = "u32"
+value = 128
+
+[[params]]
+kind = "u32"
+value = 7
+
+[[params]]
+kind = "u32"
+value = 0
+
+[[params]]
+kind = "bytes"
+hex = "00"
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

@@ -1,0 +1,66 @@
+name = "e_barover"
+description = """
+Fixture for E-BAR-OVER: a named barrier with a thread count below the number of threads that
+use it. Generations complete every `count` arrivals, so arrival order decides which warps
+synchronize with which (happens-before), and whether one is left alone in a generation."""
+ptx = "kernel.ptx"
+entry = "e_barover"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+hw_note = "GB300 matches the simulator bitwise, 1000/1000 (--scrub, 2026-11-02)"
+
+[[variants]]
+id = "BO1"
+summary = "warps 2 and 3 meet on barrier 1 too: 128 arrivals on bar.sync 1, 64"
+marker = "@OTHER"
+find = "bar.sync 2, 64;"
+replace = "bar.sync 1, 64;"
+expect = ["race"]
+# SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG): the shared-memory race is no race
+# on the hardware; what it leaves is the schedule-dependent outcome.
+expect_sass = ["nondeterministic", "violation"]
+hw_note = "GB300: no trap; correct 1000/1000 in its natural order; with --scrub --delay 38:400000 --delay 49:100000 (producer late, warps 2/3 less late) 200/200 wrong (2026-11-02)"
+
+[[variants]]
+id = "BO2"
+summary = "warp 3 skips the barrier, warp 2 runs bar.sync 1, 64 twice: deadlock or race by order"
+marker = "@OTHER"
+find = "bar.sync 2, 64;"
+replace = "setp.eq.u32 %p3, %r8, 3;\n    @%p3 bra DONE;\n    bar.sync 1, 64;\n    bar.sync 1, 64;"
+expect = ["deadlock", "race"]
+# SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG): the shared-memory race is no race
+# on the hardware; what it leaves is the schedule-dependent outcome.
+expect_sass = ["deadlock", "nondeterministic", "violation"]
+hw_note = "GB300: correct 1000/1000 in its natural order; with --scrub --delay 38:200000 (producer late) 200/200 wrong (2026-11-02)"
+
+[[variants]]
+id = "BO3"
+summary = "warp 3 skips the barrier, the consumer runs bar.sync 1, 64 again: clean, race or deadlock by order"
+marker = "@OTHER"
+find = "bar.sync 2, 64;"
+replace = "setp.eq.u32 %p3, %r8, 3;\n    @%p3 bra DONE;\n    bar.sync 1, 64;"
+expect = ["deadlock", "race"]
+# SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG): the shared-memory race is no race
+# on the hardware; what it leaves is the schedule-dependent outcome.
+expect_sass = ["deadlock", "nondeterministic", "violation"]
+hw_note = "GB300 hangs in its natural order (the consumer is alone in the second generation); with --scrub --delay 38:200000 it completes, 200/200 wrong (2026-11-02)"
+
+[[variants.edits]]
+marker = "@CDONE"
+find = "bra DONE;"
+replace = "bar.sync 1, 64;\n    bra DONE;"

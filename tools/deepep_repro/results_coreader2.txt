@@ -1,0 +1,20 @@
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100
+[rank 0] MISMATCH rep 4158 case 9 (H=2048 sms=20): recv count 2079 != 2225
+RESULT coreader args=--secs 120 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100 reps=4158 deepep_calls=16632 rows_received=33559604 mismatches=1 secs=14
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100 --reader-target other
+RESULT coreader args=--secs 120 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100 --reader-target other reps=32240 deepep_calls=128960 rows_received=261497402 mismatches=0 secs=120
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100
+RESULT coreader args=--secs 120 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100 reps=30912 deepep_calls=123648 rows_received=250609787 mismatches=0 secs=120
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-cycles 0
+RESULT coreader args=--secs 120 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-cycles 0 reps=51520 deepep_calls=206080 rows_received=418008005 mismatches=0 secs=120
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100
+[rank 1] MISMATCH rep 28731 case 0 (H=7168 sms=20): notify counts [479, 347, 342, 334, 441, 451, 479, 479, 489, 460, 464, 450, 444, 519, 468, 447, 458, 483, 491, 478, 466, 507, 485, 467, 465, 469, 500, 502, 476, 486, 499, 466] != [479, 486, 505, 495, 441, 451, 479, 479, 489, 460, 464, 450, 444, 519, 468, 447, 458, 483, 491, 478, 466, 507, 485, 467, 465, 469, 500, 502, 476, 486, 499, 466]
+RESULT coreader args=--secs 120 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100 reps=28731 deepep_calls=114924 rows_received=232997428 mismatches=1 secs=109
+rc=0
+=== --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100 --reader-target other
+RESULT coreader args=--secs 120 --bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100 --reader-target other reps=27968 deepep_calls=111872 rows_received=226731748 mismatches=0 secs=120
+rc=0

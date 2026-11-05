@@ -1,0 +1,69 @@
+{
+ "what": "run() of triton_mm_bf16.py (kernel ^mm_bf16_kernel$)",
+ "argv": [
+  "--triton",
+  "tools/capture_examples/triton_mm_bf16.py:mm_bf16_kernel",
+  "--binary",
+  "--out",
+  "fixtures/c_triton_mm_bf16_rev",
+  "--work",
+  "/tmp/ptxv_capture_2938879"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "mm_bf16_kernel",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 8200,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "a",
+   "dtype": "bf16",
+   "shape": [
+    64,
+    64
+   ],
+   "size": 8192
+  },
+  {
+   "name": "b",
+   "dtype": "bf16",
+   "shape": [
+    64,
+    64
+   ],
+   "size": 8192
+  },
+  {
+   "name": "out",
+   "dtype": "bf16",
+   "shape": [
+    64,
+    64
+   ],
+   "size": 8192
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}
