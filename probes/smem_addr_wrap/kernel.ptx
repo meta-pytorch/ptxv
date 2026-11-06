@@ -1,0 +1,36 @@
+// Shared-memory address arithmetic is 32-bit: ptxas folds a uniform base and a per-thread
+// offset into one LDS / STS address operand ([R+UR+imm]); with a negative offset the
+// register holds a large unsigned value (0xffffffd8 for -40) and the sum wraps mod 2^32.
+// Each thread stores tid + 1 at smem[tid], then reads smem[tid] back through an address
+// whose register part is 4 * tid - neg (+ 40 as the immediate; neg = 40) and writes it to
+// out[32 * ctaid + tid]. Launched as clusters of 2, where a shared::cta address whose rank
+// byte is not the CTA's own traps (probes/reserved_smem): a 64-bit sum would trap.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 out_p, .param .u32 neg)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<4>;
+    .shared .align 16 .b32 buf[64];
+    mov.u32 %r1, %tid.x;
+    shl.b32 %r2, %r1, 2;
+    mov.u32 %r3, buf;
+    add.u32 %r4, %r3, %r2;
+    add.u32 %r5, %r1, 1;
+    st.shared.u32 [%r4], %r5;
+    bar.sync 0;
+    ld.param.u32 %r6, [neg];
+    sub.u32 %r7, %r2, %r6;
+    add.u32 %r8, %r3, %r7;
+    ld.shared.u32 %r9, [%r8+40];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r10, %ctaid.x;
+    shl.b32 %r10, %r10, 5;
+    add.u32 %r10, %r10, %r1;
+    mul.wide.u32 %rd2, %r10, 4;
+    add.u64 %rd1, %rd1, %rd2;
+    st.global.u32 [%rd1], %r9;
+    ret;
+}

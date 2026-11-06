@@ -183,6 +183,8 @@ static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
                             const CUlaunchConfig *cfg, void **params, void **extra,
                             const char *sym, int cbid) {
     unsigned cx = 1, cy = 1, cz = 1;
+    // Preferred cluster dimension (0s without the attribute): S-CGA-SHAPE, probes/cga_size.
+    unsigned px = 0, py = 0, pz = 0;
     int pdl = 0;
     if (cfg) {
         for (unsigned i = 0; i < cfg->numAttrs; i++) {
@@ -190,6 +192,10 @@ static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
                 cx = cfg->attrs[i].value.clusterDim.x;
                 cy = cfg->attrs[i].value.clusterDim.y;
                 cz = cfg->attrs[i].value.clusterDim.z;
+            } else if (cfg->attrs[i].id == CU_LAUNCH_ATTRIBUTE_PREFERRED_CLUSTER_DIMENSION) {
+                px = cfg->attrs[i].value.preferredClusterDim.x;
+                py = cfg->attrs[i].value.preferredClusterDim.y;
+                pz = cfg->attrs[i].value.preferredClusterDim.z;
             } else if (cfg->attrs[i].id == CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION) {
                 pdl = cfg->attrs[i].value.programmaticStreamSerializationAllowed != 0;
             }
@@ -223,6 +229,7 @@ static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
             gx, gy, gz, bx, by, bz, smem, cx, cy, cz, pdl, (unsigned long long)s, (int)dev, cbid,
             cs != CU_STREAM_CAPTURE_STATUS_NONE);
     json_str(fp, tag);
+    if (px) fprintf(fp, ", \"preferred_cluster\": [%u, %u, %u]", px, py, pz);
     fprintf(fp, ", \"params\": [");
     plen = 0;
     if (!params && extra) {

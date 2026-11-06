@@ -1070,7 +1070,10 @@ launched (each removed a possible outcome).
   up front executes no try_cancel (cuBLAS gates its try_cancel on a launch parameter that is
   0), exploration starts with every CTA launched, and any try_cancel that does execute is
   reported "unmodeled". When none executes, launch times do not matter: a late launch is a
-  schedule in which the CTA's threads have not stepped yet.
+  schedule in which the CTA's threads have not stepped yet. The certificate (`wellsync.rs`
+  `certify_inner`, since 2026-11-06) runs on the eagerly launched machine directly instead of a
+  separate trial run: a run that executes a try_cancel stops, and the certificate starts over
+  with every CTA unlaunched. The decision is the trial's (same deterministic run).
 
 ### E-CPASYNC · code
 **`cp.async` (SASS `LDGSTS`) reads its global source at issue and writes shared memory when
@@ -1667,8 +1670,10 @@ E-BAR-OVER) drops the other edge.
 
 ### E-WELLSYNC · code
 **A well-synchronized run stands for every schedule.** `ptxv check --certify` (with or
-without `--slices`) runs the kernel once (`run_once`'s schedule) with an event log
-(`wellsync.rs`) and checks that every synchronization point is *determined*; then that run's
+without `--slices`) runs the kernel once (`run_once`'s schedule, `explore.rs` `DetSched`: the
+current warp runs until it blocks, then the first async operation that can complete, then the
+next warp in cyclic order; any valid schedule serves, and this one looks at one warp per step
+instead of every thread of the launch) with an event log (`wellsync.rs`) and checks that every synchronization point is *determined*; then that run's
 verdict (findings, outputs, termination) is the verdict of the launch, and no exploration
 happens. Otherwise it prints the condition that failed (instruction, mbarrier, phase) and
 explores. The idea is SentryWard's (static verification of warp-specialized Blackwell
@@ -2573,6 +2578,60 @@ the launch names a cluster shape; `probes/cluster_flag` on GB300; ptxas skips
 `constant0 size − param size`. Any other driver constant is an error.
 - Where: `exec.rs` `Machine::cbank`.
 - Status: **validated** by bitwise agreement. Only param offset 0 has been exercised.
+
+### S-CGA-SHAPE · code
+**`SR_CgaSize` is the index of the CTA's cluster shape: 0 for the launch's regular cluster shape,
+1 for its preferred one** (`cudaLaunchAttributePreferredClusterDimension`). ptxas reads the
+cluster special registers from the driver table at `c[0x0][x - 0xa0 * SR_CgaSize]`, one table
+per shape (S-CBANK). A launch with a preferred dimension runs each group of CTAs of the
+preferred shape either as one preferred cluster or as regular clusters; one launch mixes both,
+and every CTA's registers describe its own cluster.
+- Evidence: `probes/cga_size` (2026-11-06, GPU 1): `SR_CgaSize` read raw (patched cubin) for
+  clusters of 1, 2, 4, 8, 16 without a preferred dimension: 0 in every CTA. With a preferred
+  dimension (2 -> 4, 1 -> 2, 1 -> 4, 2 -> 8, 4 -> 8, 4 -> 16; 512 CTAs): 1 in preferred clusters,
+  0 in regular ones; with 200 KB of dynamic shared memory 0-22% of the CTAs ran in regular
+  clusters, without it none. Every group of the preferred size was wholly one shape.
+  `%cluster_nctarank`, `%cluster_ctarank`, `%cluster_nctaid`, `%clusterid`, `%nclusterid` and
+  `%cluster_ctaid` describe the CTA's own cluster in both. A preferred dimension without a
+  cluster dimension fails to launch. `crates/sim/tests/cga_size.rs` replays all 14 recorded
+  configurations on the SASS front-end (each CTA from the shape it ran in). Before, ptxv set
+  `SR_CgaSize` to the CTA count (consistent with the table only through the matching offset);
+  cuBLAS tests `SR_CgaSize != 0` to choose its preferred-cluster path (mm_4k_8k:
+  `128x256_64x6_2x2f_2cta`, captured with preferred [4, 1, 1] and cluster [2, 1, 1]), which then
+  multicast to rank 2 of a 2-CTA cluster. With the model, mm_4k_8k with its cluster launch
+  control parameter (`c[0x0][0xd10]`) set to 0 certifies in all 384 slices of both shapes, and
+  the assembled output equals the GPU's capture bitwise (2026-11-06). The captured launch
+  itself (parameter 2) executes `UGETNEXTWORKID.BROADCAST`, which is unmodeled (E-CLC).
+- Capture: `probes/launchcap` and the Python API's `ptxvcap.c` record the attribute
+  (`preferred_cluster`), and `tools/capture.py` / `_casewriter.py` write it to case.toml; `ptxv
+  hw` passes it to the launch.
+- Model: `Grid::preferred`, `Grid::cga_shape`, `Launch::preferred_shape` (every cluster
+  preferred). The preferred shape must be a multiple of the regular one and divide the grid.
+  `ptxv check --slices --certify` slices both shapes; the cross-cluster check pairs clusters of
+  the two shapes whose CTAs are disjoint (those can coexist), each preferred cluster must write
+  the same global bytes as the regular clusters of its CTAs, and the two shapes' assembled
+  outputs must be equal, so that every mix ends with the same memory. Other checks of such a
+  launch report `unmodeled` (only the regular shape was checked).
+- Where: `exec.rs` `sreg` (`SReg::CgaShape`), `cbank`; `wellsync.rs` `check_sliced_one`;
+  `cli` `cmd_check`.
+- Status: **validated** for 1-D clusters (above). Clusters with y or z > 1 were not probed.
+- If wrong: a *miss* or a *false alarm* in kernels that branch on `SR_CgaSize`, if the
+  hardware's choice of shape per group is not free of other constraints the kernel can observe.
+
+### S-SMEM-ADDR32 · code
+**Shared-memory addresses are 32-bit: the parts of an address operand (`[R+UR+imm]`) add
+modulo 2^32.** ptxas folds a uniform base and a per-thread offset into one operand; a negative
+offset is a large unsigned register value. cuBLAS's nvjet mainloops index their mbarrier ring
+as `[R8+UR30]` with R8 = -0x28 when the stage index wraps (mm_1k_4k, mm_4k_8k).
+- Evidence: `probes/smem_addr_wrap` (2026-11-06): `LDS R7, [R4+UR4+0x28]` with R4 = 0xffffffd8,
+  clusters of 2, 20 runs: every thread reads its own word. A 64-bit sum names CTA rank 256,
+  which the model reported as an illegal-instruction fault (and a deterministic run retried the
+  faulting step forever: the mm_1k_4k certificate run that did not finish).
+  `probe_smem_addr_wrap_matches_hardware` (tests/fixtures.rs) replays it.
+- Where: `exec.rs` `resolve`.
+- Status: **validated** (above).
+- If wrong: a *false alarm* (a fault) or a *miss* (an access resolved to the wrong offset) in
+  kernels whose shared address parts overflow 32 bits.
 
 ### E-BSYNC · exec
 **`BSSY Bb` records the lanes executing it; `BSYNC Bb` waits until all of them that have not

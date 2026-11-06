@@ -32,6 +32,10 @@ static void **cur_extra;
 // Whether the launch being recorded carries the programmatic stream serialization attribute
 // (PDL: it may start before the previous kernel on the stream completes).
 static int cur_pdl;
+// The preferred cluster dimension of the launch being recorded (0s without the attribute).
+// With it, the hardware launches each group of CTAs either as one cluster of this shape or as
+// clusters of the regular (fallback) shape (probes/cga_size).
+static unsigned cur_pref[3];
 // The stream of the launch being recorded (multi-process captures order launches per stream).
 static unsigned long long cur_stream;
 // Inside a runtime launch (__cudaLaunchKernel / cudaLaunchKernelExC), which records the launch
@@ -179,9 +183,12 @@ static void dump_k(CUkernel k, CUfunction f, unsigned gx, unsigned gy, unsigned 
     if (snap_on) fprintf(fp, "{\"snap\": %u, ", snap_seq);
     fprintf(fp, "%s\"name\": \"%s\", \"grid\": [%u, %u, %u], \"block\": [%u, %u, %u], "
                 "\"smem\": %u, \"cluster\": [%u, %u, %u], \"pdl\": %d, \"stream\": %llu, "
-                "\"dev\": %d, \"t\": %llu, \"params\": [",
+                "\"dev\": %d, \"t\": %llu, ",
             snap_on ? "" : "{", nm, gx, gy, gz, bx, by, bz, smem, cx, cy, cz, cur_pdl, cur_stream, cur_device(),
             now_ns());
+    if (cur_pref[0])
+        fprintf(fp, "\"preferred_cluster\": [%u, %u, %u], ", cur_pref[0], cur_pref[1], cur_pref[2]);
+    fprintf(fp, "\"params\": [");
     if (!params && cur_extra) {
         const unsigned char *buf = 0;
         size_t bsize = 0;
@@ -257,6 +264,10 @@ CUresult cuLaunchKernelEx(const CUlaunchConfig *c, CUfunction f, void **params, 
             cz = c->attrs[i].value.clusterDim.z;
         } else if (c->attrs[i].id == CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION) {
             cur_pdl = c->attrs[i].value.programmaticStreamSerializationAllowed != 0;
+        } else if (c->attrs[i].id == CU_LAUNCH_ATTRIBUTE_PREFERRED_CLUSTER_DIMENSION) {
+            cur_pref[0] = c->attrs[i].value.preferredClusterDim.x;
+            cur_pref[1] = c->attrs[i].value.preferredClusterDim.y;
+            cur_pref[2] = c->attrs[i].value.preferredClusterDim.z;
         }
     cur_extra = extra;
     cur_stream = (unsigned long long)c->hStream;
@@ -266,6 +277,7 @@ CUresult cuLaunchKernelEx(const CUlaunchConfig *c, CUfunction f, void **params, 
     snap_allowed = 0;
     cur_extra = 0;
     cur_pdl = 0;
+    memset(cur_pref, 0, sizeof cur_pref);
     snap_pre();
     CUresult r = real_launchex(c, f, params, extra);
     snap_post();
@@ -694,6 +706,10 @@ cudaError_t _cudaLaunchKernelEx(const cudaLaunchConfig_t *c, const void *k, void
             cz = c->attrs[i].val.clusterDim.z;
         } else if (c->attrs[i].id == cudaLaunchAttributeProgrammaticStreamSerialization) {
             cur_pdl = c->attrs[i].val.programmaticStreamSerializationAllowed != 0;
+        } else if (c->attrs[i].id == cudaLaunchAttributePreferredClusterDimension) {
+            cur_pref[0] = c->attrs[i].val.preferredClusterDim.x;
+            cur_pref[1] = c->attrs[i].val.preferredClusterDim.y;
+            cur_pref[2] = c->attrs[i].val.preferredClusterDim.z;
         }
     cur_stream = (unsigned long long)c->stream;
     snap_allowed = 1;
@@ -701,6 +717,7 @@ cudaError_t _cudaLaunchKernelEx(const cudaLaunchConfig_t *c, const void *k, void
            c->blockDim.y, c->blockDim.z, (unsigned)c->dynamicSmemBytes, cx, cy, cz, args);
     snap_allowed = 0;
     cur_pdl = 0;
+    memset(cur_pref, 0, sizeof cur_pref);
     snap_pre();
     in_rt++;
     cudaError_t r = real(c, k, args);
@@ -782,6 +799,10 @@ cudaError_t cudaLaunchKernelExC(const cudaLaunchConfig_t *c, const void *k, void
             cz = c->attrs[i].val.clusterDim.z;
         } else if (c->attrs[i].id == cudaLaunchAttributeProgrammaticStreamSerialization) {
             cur_pdl = c->attrs[i].val.programmaticStreamSerializationAllowed != 0;
+        } else if (c->attrs[i].id == cudaLaunchAttributePreferredClusterDimension) {
+            cur_pref[0] = c->attrs[i].val.preferredClusterDim.x;
+            cur_pref[1] = c->attrs[i].val.preferredClusterDim.y;
+            cur_pref[2] = c->attrs[i].val.preferredClusterDim.z;
         }
     in_rt++;
     cudaError_t r = real(c, k, args);
@@ -795,6 +816,7 @@ cudaError_t cudaLaunchKernelExC(const cudaLaunchConfig_t *c, const void *k, void
                    c->blockDim.z, (unsigned)c->dynamicSmemBytes, cx, cy, cz, args);
     }
     cur_pdl = 0;
+    memset(cur_pref, 0, sizeof cur_pref);
     return r;
 }
 

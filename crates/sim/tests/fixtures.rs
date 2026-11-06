@@ -1144,6 +1144,24 @@ fn s_warpcoll_matches_hardware() {
     );
 }
 
+/// Shared-memory address operands add in 32 bits (S-SMEM-ADDR32): probes/smem_addr_wrap,
+/// `LDS R7, [R4+UR4+0x28]` with R4 = 0xffffffd8 in clusters of 2, against GB300 (run
+/// 2026-11-06, 20 runs). A 64-bit sum names CTA rank 256 and faults.
+#[test]
+fn probe_smem_addr_wrap_matches_hardware() {
+    let case = Case::load(root().join("probes/smem_addr_wrap")).unwrap();
+    let k = binary_kernel(&case, "good").unwrap();
+    let launch = build_launch(&case, &k).unwrap();
+    let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 200_000);
+    assert!(v.complete && v.findings.is_empty(), "{:#?}", v.findings);
+    assert_eq!(v.outputs.len(), 1);
+    let report = case.expect_report(&v.outputs[0]).unwrap();
+    assert!(
+        !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+        "{report:?}"
+    );
+}
+
 /// FCHK's predicate (N-FCHK): probes/fchk, a cubin patched to run FCHK on every pair of the
 /// s_alu2 operands, against GB300 (run 2026-11-03).
 #[test]

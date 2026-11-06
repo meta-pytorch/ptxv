@@ -428,6 +428,12 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
         + ('ptx = "kernel.ptx"\n' if use_ptx else f'cubin = "{cubin_file[l0.name]}"\n')
         + f"entry = {q(l0.name)}\ngrid = {list(l0.grid)}\nblock = {list(l0.block)}\n"
         + (f"cluster = {list(l0.cluster)}\n" if l0.cluster != (1, 1, 1) else "")
+        # cudaLaunchAttributePreferredClusterDimension (S-CGA-SHAPE).
+        + (
+            f"preferred_cluster = {l0.record['preferred_cluster']}\n"
+            if l0.record.get("preferred_cluster")
+            else ""
+        )
         + f"dynamic_smem = {l0.smem}\noutputs = {json.dumps(out_names)}\n"
     ]
     (out / "data").mkdir()
@@ -448,6 +454,8 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
         s = f"[[launches]]\nentry = {q(la.name)}\ngrid = {list(la.grid)}\nblock = {list(la.block)}\n"
         if la.cluster != (1, 1, 1):
             s += f"cluster = {list(la.cluster)}\n"
+        if la.record.get("preferred_cluster"):
+            s += f"preferred_cluster = {la.record['preferred_cluster']}\n"
         s += f"dynamic_smem = {la.smem}\n"
         if la.pdl:
             s += "pdl = true\n"

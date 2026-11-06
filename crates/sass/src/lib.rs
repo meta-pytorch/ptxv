@@ -410,7 +410,7 @@ impl<'a> Lw<'a> {
                 "CTAID.Z" => SReg::CtaId(2),
                 "LANEID" => SReg::LaneId,
                 "CgaCtaId" => SReg::ClusterCtaRank,
-                "CgaSize" => SReg::ClusterNCtaRank,
+                "CgaSize" => SReg::CgaShape,
                 "LTMASK" => SReg::LaneMaskLt,
                 "LEMASK" => SReg::LaneMaskLe,
                 "GEMASK" => SReg::LaneMaskGe,

@@ -46,6 +46,11 @@ pub struct Manifest {
     /// None: no cluster (`%is_explicit_cluster` = 0).
     #[serde(default)]
     pub cluster: Option<[u32; 3]>,
+    /// Preferred cluster dimension (cudaLaunchAttributePreferredClusterDimension; `cluster` is
+    /// then the fallback shape): each group of CTAs runs as one cluster of this shape or as
+    /// clusters of `cluster` (probes/cga_size). ASSUME(S-CGA-SHAPE)
+    #[serde(default)]
+    pub preferred_cluster: Option<[u32; 3]>,
     pub outputs: Vec<String>,
     /// Groups of output buffers that must hold identical bytes at the end (replicas, e.g. the
     /// ranks of an all-reduce). A difference is a "divergent" finding (N4).
@@ -136,6 +141,9 @@ pub struct NextLaunch {
     pub block: [u32; 3],
     #[serde(default)]
     pub cluster: Option<[u32; 3]>,
+    /// As `Manifest::preferred_cluster`.
+    #[serde(default)]
+    pub preferred_cluster: Option<[u32; 3]>,
     pub params: Vec<ParamSpec>,
     /// Launched with programmatic stream serialization (cudaLaunchAttribute
     /// ProgrammaticStreamSerialization): it may start before the previous kernel completes.
@@ -165,6 +173,7 @@ pub struct LaunchSpec<'a> {
     pub grid: [u32; 3],
     pub block: [u32; 3],
     pub cluster: Option<[u32; 3]>,
+    pub preferred_cluster: Option<[u32; 3]>,
     pub params: &'a [ParamSpec],
     pub pdl: bool,
     pub device: u32,
@@ -188,6 +197,7 @@ impl Manifest {
             grid: self.grid,
             block: self.block,
             cluster: self.cluster,
+            preferred_cluster: self.preferred_cluster,
             params: &self.params,
             pdl: false,
             device: 0,
@@ -201,6 +211,7 @@ impl Manifest {
                 grid: l.grid,
                 block: l.block,
                 cluster: l.cluster,
+                preferred_cluster: l.preferred_cluster,
                 params: &l.params,
                 pdl: l.pdl,
                 device: l.device,
@@ -781,7 +792,10 @@ pub fn skip_missing_vendor_files(fixtures: &Path, needs: &[&str]) -> bool {
             continue;
         };
         for part in t.split("\"../").skip(1) {
-            let name: String = part.chars().take_while(|c| !matches!(c, '/' | '"')).collect();
+            let name: String = part
+                .chars()
+                .take_while(|c| !matches!(c, '/' | '"'))
+                .collect();
             if !name.is_empty() {
                 todo.push(fixtures.join(&name).join("case.toml"));
             }

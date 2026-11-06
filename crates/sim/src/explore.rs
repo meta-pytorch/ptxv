@@ -517,6 +517,30 @@ pub fn ctas_independent(m: &Machine) -> bool {
     })
 }
 
+/// `m0` with every CTA launched up front (`clc_eager` without its trial run), when eager
+/// launch applies (one grid, no limited residency, unlaunched CTAs, no PTXV_NO_CLC_EAGER).
+/// Executing a try_cancel on it is a fault naming "E-CLC eager launch".
+pub fn clc_eager_launch(m0: &Machine) -> Option<Machine> {
+    if m0.launch.grids.len() != 1
+        || m0.launch.env.residency.is_some()
+        || std::env::var("PTXV_NO_CLC_EAGER").is_ok()
+        || !m0.threads.iter().any(|t| t.st == St::Unlaunched)
+    {
+        return None;
+    }
+    let mut m = m0.clone();
+    m.clc_eager = true;
+    for c in 0..m.launch.ctas() {
+        if m.cta_threads(c as u16)
+            .any(|t| m.threads[t].st == St::Unlaunched)
+        {
+            m.launch_cta(c as u16);
+        }
+    }
+    m.findings.clear();
+    Some(m)
+}
+
 /// ASSUME(E-CLC): a kernel containing try_cancel starts with every CTA unlaunched, which
 /// multiplies the schedules by the launch orders. When no try_cancel executes, launch times
 /// do not matter (a late launch is a schedule in which the CTA's threads have not stepped
@@ -525,38 +549,24 @@ pub fn ctas_independent(m: &Machine) -> bool {
 /// exploration then reports any try_cancel that does execute ("unmodeled"), so a wrong guess
 /// cannot hide schedules.
 pub fn clc_eager(m0: Machine) -> Machine {
-    if m0.launch.grids.len() != 1
-        || m0.launch.env.residency.is_some()
-        || std::env::var("PTXV_NO_CLC_EAGER").is_ok()
-        || !m0.threads.iter().any(|t| t.st == St::Unlaunched)
-    {
+    let Some(m) = clc_eager_launch(&m0) else {
         return m0;
-    }
-    let mut m = m0.clone();
-    m.clc_eager = true;
-    for c in 0..m.launch.ctas() {
-        if m.threads
-            .iter()
-            .any(|t| t.cta == c as u16 && t.st == St::Unlaunched)
-        {
-            m.launch_cta(c as u16);
-        }
-    }
-    m.findings.clear();
+    };
     // The deterministic run of `run_once`, stopped at the first try_cancel (a faulting step
     // may repeat forever) or after a step budget (then: lazy, the safe default).
     let mut probe = m.clone();
     probe.fp = None;
+    let mut sched = DetSched::default();
+    let mut faults = FaultLoop::default();
     for _ in 0..50_000_000u64 {
-        let acts = probe.actions();
-        let pick = acts
-            .iter()
-            .find(|(a, _)| matches!(a, Action::Split { .. }))
-            .or(acts.first());
-        let Some((a, _)) = pick.cloned() else {
+        let Some(a) = sched.pick(&probe) else {
             return m;
         };
         probe.apply(&a);
+        // A step that faults forever: undecided, so lazy (the safe default).
+        if faults.repeats(&probe.findings).is_some() {
+            return m0;
+        }
         if probe
             .findings
             .drain(..)
@@ -4111,6 +4121,8 @@ pub fn clusters(m: &Machine) -> Vec<u32> {
     let mut v: Vec<u32> = (0..m.launch.ctas())
         .map(|c| m.launch.cluster_of(c).0)
         .collect();
+    // Ids repeat out of order when clusters span grid rows (cluster y > 1).
+    v.sort_unstable();
     v.dedup();
     v
 }
@@ -5780,9 +5792,198 @@ fn explore_round(
     v
 }
 
-/// One deterministic execution: always run the first enabled warp-split (lowest warp, then
-/// pc); complete async operations only when no thread can move. Returns the final machine
-/// and the findings seen along the way.
+/// The scheduler of the deterministic runs (`run_once`, the certificate's `run_logged`,
+/// `clc_eager`). Any schedule is a valid run; this one is chosen for cost: per step it looks
+/// at one warp, not at every thread of the launch (`Machine::actions`, which also formats a
+/// description of every action, costs O(threads) per step and dominated 128-CTA runs).
+///
+/// Policy (numerics runs: the original order, below): keep running the current warp's first
+/// enabled split (lowest pc) for up to
+/// `DET_STREAK` steps; when it has none, complete the first async operation that can
+/// complete (in issue order, respecting the in-order pipes), else move to the next warp, in
+/// cyclic order, that has an enabled split; when nothing of that kind can move (or CTAs are
+/// unlaunched, a TMEM co-tenant chooses placements, or a cluster launch control response is
+/// pending), the first action of `Machine::actions`.
+#[derive(Default)]
+pub struct DetSched {
+    warp: u32,
+    streak: u32,
+    /// The live warps `lo..hi` (from `Machine::live`), computed on first use.
+    warps: Option<(u32, u32)>,
+    /// The machine has unlaunched CTAs or a TMEM co-tenant: use `actions` throughout.
+    full: Option<bool>,
+}
+
+/// Steps one warp may take in a row before the deterministic scheduler moves on (so that a
+/// warp that never blocks cannot starve the others).
+const DET_STREAK: u32 = 4096;
+
+impl DetSched {
+    pub fn pick(&mut self, m: &Machine) -> Option<Action> {
+        let full = *self.full.get_or_insert_with(|| {
+            m.launch.env.tmem_cotenant || m.live_threads().any(|(_, t)| t.st == St::Unlaunched)
+        });
+        if full {
+            // Unlaunched CTAs may launch at any step: keep the original policy.
+            let acts = m.actions();
+            return acts
+                .iter()
+                .find(|(a, _)| matches!(a, Action::Split { .. }))
+                .or(acts.first())
+                .map(|(a, _)| a.clone());
+        }
+        let (lo, hi) = *self.warps.get_or_insert_with(|| {
+            if m.live.is_empty() {
+                (0, 0)
+            } else {
+                (
+                    m.threads[m.live.start].warp,
+                    m.threads[m.live.end - 1].warp + 1,
+                )
+            }
+        });
+        if hi == lo {
+            return None;
+        }
+        if self.warp < lo || self.warp >= hi {
+            self.warp = lo;
+        }
+        // Numerics runs (`m.num`) keep the original order (lowest enabled warp, async only
+        // when no split can move): the N-FMAX / N-FINITE bookkeeping depends on it
+        // (fixtures/c_equiv_online loses its float atomic max diamond under the cyclic order).
+        // PTXV_DET=lowest forces it everywhere.
+        if m.num.is_some() || std::env::var("PTXV_DET").as_deref() == Ok("lowest") {
+            for w in lo..hi {
+                if let Some(a) = det_split(m, w) {
+                    return Some(a);
+                }
+            }
+            if let Some(i) = det_async(m) {
+                if m.pending[..i]
+                    .iter()
+                    .all(|o| !matches!(o.kind, AsyncKind::Clc { .. }))
+                {
+                    return Some(Action::Async(i));
+                }
+            }
+            return m.actions().first().map(|(a, _)| a.clone());
+        }
+        if self.streak < DET_STREAK {
+            if let Some(a) = det_split(m, self.warp) {
+                self.streak += 1;
+                return Some(a);
+            }
+        }
+        if let Some(i) = det_async(m) {
+            return Some(Action::Async(i));
+        }
+        let n = hi - lo;
+        for d in 1..=n {
+            let w = lo + (self.warp - lo + d) % n;
+            if let Some(a) = det_split(m, w) {
+                self.warp = w;
+                self.streak = 1;
+                return Some(a);
+            }
+        }
+        let acts = m.actions();
+        acts.first().map(|(a, _)| a.clone())
+    }
+}
+
+/// The first enabled split of warp `w` (lowest pc), as `Machine::actions` would offer it
+/// first (PTX elect: the leader of the machine's policy).
+fn det_split(m: &Machine, w: u32) -> Option<Action> {
+    let wt = m.warp_threads(w);
+    let mut pcs: Vec<u32> = wt
+        .clone()
+        .filter(|&i| m.threads[i].st == St::Run)
+        .map(|i| m.threads[i].pc)
+        .collect();
+    pcs.sort_unstable();
+    pcs.dedup();
+    for pc in pcs {
+        let members: Vec<usize> = wt
+            .clone()
+            .filter(|&i| m.threads[i].st == St::Run && m.threads[i].pc == pc)
+            .collect();
+        if !m.split_enabled(&members, pc) {
+            continue;
+        }
+        let inst = &m.k.code[pc as usize];
+        let mut leader = None;
+        // ASSUME(E-ELECT): as in `actions`.
+        if matches!(inst.op, ptxv_ir::Op::Elect { .. }) && m.k.front == ptxv_ir::Front::Ptx {
+            let active: Vec<usize> = members
+                .iter()
+                .copied()
+                .filter(|&t| m.prd(t, inst.guard))
+                .collect();
+            if active.len() > 1 {
+                leader = Some(if m.elect_high && !elect_all() {
+                    *active.last().unwrap()
+                } else {
+                    active[0]
+                });
+            }
+        }
+        return Some(Action::Split {
+            warp: w,
+            pc,
+            leader,
+        });
+    }
+    None
+}
+
+/// The first pending async operation that can complete (not a cluster launch control
+/// response; in-order pipes: only the oldest of each), as `Machine::actions` lists them.
+fn det_async(m: &Machine) -> Option<usize> {
+    for (i, op) in m.pending.iter().enumerate() {
+        if let AsyncKind::Clc { .. } = op.kind {
+            continue;
+        }
+        if let Some(f) = op.fifo {
+            if m.pending[..i].iter().any(|o| o.fifo == Some(f)) {
+                continue;
+            }
+        }
+        return Some(i);
+    }
+    None
+}
+
+/// A deterministic run's guard against a step that faults again and again: a faulting step
+/// leaves its warp where it was, so a scheduler that keeps picking it never ends.
+#[derive(Default)]
+pub struct FaultLoop {
+    last: Option<(String, u32)>,
+}
+
+impl FaultLoop {
+    /// After a step with findings `fs`: Some(why) once the same fault came 64 steps in a row.
+    pub fn repeats(&mut self, fs: &[Finding]) -> Option<String> {
+        match fs.iter().find(|f| f.sig.starts_with("fault:")) {
+            None => self.last = None,
+            Some(f) => match &mut self.last {
+                Some((s, n)) if *s == f.sig => {
+                    *n += 1;
+                    if *n >= 64 {
+                        return Some(format!(
+                            "a step faults again and again ({}); the run stops there",
+                            f.msg.lines().next().unwrap_or("")
+                        ));
+                    }
+                }
+                _ => self.last = Some((f.sig.clone(), 1)),
+            },
+        }
+        None
+    }
+}
+
+/// One deterministic execution (`DetSched`). Returns the final machine and the findings
+/// seen along the way.
 pub fn run_once(mut m: Machine) -> (Machine, Vec<Finding>, bool) {
     let mut fs = Vec::new();
     // Debugging: PTXV_RUN_ONCE_PROGRESS=n prints every n-th action.
@@ -5791,25 +5992,37 @@ pub fn run_once(mut m: Machine) -> (Machine, Vec<Finding>, bool) {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
     let mut n = 0usize;
-    loop {
-        let acts = m.actions();
-        let pick = acts
-            .iter()
-            .find(|(a, _)| matches!(a, Action::Split { .. }))
-            .or(acts.first());
-        let Some((a, d)) = pick.cloned() else { break };
+    let mut sched = DetSched::default();
+    let mut faults = FaultLoop::default();
+    let mut stuck = false;
+    while let Some(a) = sched.pick(&m) {
         n += 1;
         if every > 0 && n.is_multiple_of(every) {
-            eprintln!("run_once step {n}: {d}");
+            let what = match &a {
+                Action::Split { warp, pc, .. } => {
+                    format!("warp {warp} runs from {}", m.k.describe(*pc as usize))
+                }
+                _ => format!("{a:?}"),
+            };
+            eprintln!("run_once step {n}: {what}");
         }
         m.apply(&a);
+        if every > 0 && n.is_multiple_of(every) {
+            for f in &m.findings {
+                eprintln!("  finding: {}", f.msg.lines().next().unwrap_or(""));
+            }
+        }
+        stuck = faults.repeats(&m.findings).is_some();
         fs.append(&mut m.findings);
+        if stuck {
+            break;
+        }
     }
     let ok = m.terminal();
     if ok {
         m.exit_checks();
         fs.append(&mut m.findings);
-    } else {
+    } else if !stuck {
         let (sig, msg) = m.deadlock_report();
         fs.push(Finding {
             kind: "deadlock".into(),

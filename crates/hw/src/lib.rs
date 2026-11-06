@@ -55,6 +55,8 @@ struct CUlaunchConfig {
 /// CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION
 const ATTR_PROGRAMMATIC_STREAM_SERIALIZATION: u32 = 6;
 const ATTR_CLUSTER_DIMENSION: u32 = 4;
+/// CU_LAUNCH_ATTRIBUTE_PREFERRED_CLUSTER_DIMENSION (cuda.h).
+const ATTR_PREFERRED_CLUSTER_DIMENSION: u32 = 11;
 /// CU_FUNC_ATTRIBUTE_REQUIRED_CLUSTER_WIDTH: nonzero when the cubin fixes the cluster shape.
 const FUNC_REQUIRED_CLUSTER_WIDTH: i32 = 11;
 
@@ -566,6 +568,14 @@ pub fn run_with(
                         pad: [0; 4],
                         value: [x as u64 | (y as u64) << 32, z as u64, 0, 0, 0, 0, 0, 0],
                     });
+                    // The captured launch's preferred cluster dimension (S-CGA-SHAPE).
+                    if let Some([x, y, z]) = l.preferred_cluster {
+                        attrs.push(CUlaunchAttribute {
+                            id: ATTR_PREFERRED_CLUSTER_DIMENSION,
+                            pad: [0; 4],
+                            value: [x as u64 | (y as u64) << 32, z as u64, 0, 0, 0, 0, 0, 0],
+                        });
+                    }
                 }
                 let cfg = CUlaunchConfig {
                     grid: l.grid,

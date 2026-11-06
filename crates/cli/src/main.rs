@@ -1011,6 +1011,17 @@ fn cmd_check(
             };
             let make1 = || machine(case, k.clone()).expect("machine");
             let mut verdict = check(&make1, "");
+            // ASSUME(S-CGA-SHAPE): only the sliced certificate check covers both cluster shapes
+            // of a launch with a preferred cluster dimension (and their mixes).
+            if m1.launch.preferred_shape().is_some() && !(slices && certify && groups.is_none()) {
+                verdict.findings.push(ptxv_sim::machine::Finding {
+                    kind: "unmodeled".into(),
+                    sig: "cga-shape".into(),
+                    msg: "the launch has a preferred cluster dimension: only `--slices --certify` checks both cluster shapes and their mixes (S-CGA-SHAPE); this check used the regular shape only".into(),
+                    trace: vec![],
+                    ..Default::default()
+                });
+            }
             for a in &refuted {
                 verdict.notes.push(format!(
                     "relies on {a}, REFUTED on GB300, by explicit opt-in (case assume_refuted / --assume-refuted / PTXV_ASSUME_REFUTED)"

@@ -1,0 +1,28 @@
+name = "cga_size"
+description = """
+S-CGA-SHAPE probe: SR_CgaSize read raw (patch.py NOPs the LDC of the %cluster_nctaid.z read, so
+word 0 of each CTA's record is SR_CgaSize * -0xa0). Grid 512, clusters of 2 with a preferred
+cluster dimension of 4: GB300 runs most groups of 4 CTAs as one cluster (SR_CgaSize 1) and some
+as two clusters of 2 (SR_CgaSize 0). run.c launches the other configurations
+(results.txt, expected/<config>.bin); crates/sim/tests/cga_size.rs replays them."""
+cubin = "patched.cubin"
+entry = "k"
+grid = [512, 1, 1]
+block = [32, 1, 1]
+cluster = [2, 1, 1]
+preferred_cluster = [4, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [8192]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

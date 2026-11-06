@@ -1,0 +1,38 @@
+config g64_c0_p0_s0: grid 64 cluster 0 preferred 0 smem 0
+     64 CTAs: raw*-0xa0 0000000000 SR_CgaSize 0 | nctarank 1 nctaid.x 1 nclusterid.x 64 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+config g64_c1_p0_s0: grid 64 cluster 1 preferred 0 smem 0
+     64 CTAs: raw*-0xa0 0000000000 SR_CgaSize 0 | nctarank 1 nctaid.x 1 nclusterid.x 64 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+config g64_c2_p0_s0: grid 64 cluster 2 preferred 0 smem 0
+     64 CTAs: raw*-0xa0 0000000000 SR_CgaSize 0 | nctarank 2 nctaid.x 2 nclusterid.x 32 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+config g64_c4_p0_s0: grid 64 cluster 4 preferred 0 smem 0
+     64 CTAs: raw*-0xa0 0000000000 SR_CgaSize 0 | nctarank 4 nctaid.x 4 nclusterid.x 16 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+config g64_c8_p0_s0: grid 64 cluster 8 preferred 0 smem 0
+     64 CTAs: raw*-0xa0 0000000000 SR_CgaSize 0 | nctarank 8 nctaid.x 8 nclusterid.x 8 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+config g64_c16_p0_s0: grid 64 cluster 16 preferred 0 smem 0
+     64 CTAs: raw*-0xa0 0000000000 SR_CgaSize 0 | nctarank 16 nctaid.x 16 nclusterid.x 4 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+config g512_c2_p0_s1: grid 512 cluster 2 preferred 0 smem 204800
+    512 CTAs: raw*-0xa0 0000000000 SR_CgaSize 0 | nctarank 2 nctaid.x 2 nclusterid.x 256 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+config g512_c2_p4_s0: grid 512 cluster 2 preferred 4 smem 0
+    512 CTAs: raw*-0xa0 0xffffff60 SR_CgaSize 1 | nctarank 4 nctaid.x 4 nclusterid.x 128 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+config g512_c2_p4_s1: grid 512 cluster 2 preferred 4 smem 204800
+    488 CTAs: raw*-0xa0 0xffffff60 SR_CgaSize 1 | nctarank 4 nctaid.x 4 nclusterid.x 128 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+     24 CTAs: raw*-0xa0 0000000000 SR_CgaSize 0 | nctarank 2 nctaid.x 2 nclusterid.x 256 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+config g512_c1_p2_s1: grid 512 cluster 1 preferred 2 smem 204800
+    512 CTAs: raw*-0xa0 0xffffff60 SR_CgaSize 1 | nctarank 2 nctaid.x 2 nclusterid.x 256 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+config g512_c1_p4_s1: grid 512 cluster 1 preferred 4 smem 204800
+    492 CTAs: raw*-0xa0 0xffffff60 SR_CgaSize 1 | nctarank 4 nctaid.x 4 nclusterid.x 128 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+     20 CTAs: raw*-0xa0 0000000000 SR_CgaSize 0 | nctarank 1 nctaid.x 1 nclusterid.x 512 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+config g512_c2_p8_s1: grid 512 cluster 2 preferred 8 smem 204800
+    424 CTAs: raw*-0xa0 0xffffff60 SR_CgaSize 1 | nctarank 8 nctaid.x 8 nclusterid.x 64 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+     88 CTAs: raw*-0xa0 0000000000 SR_CgaSize 0 | nctarank 2 nctaid.x 2 nclusterid.x 256 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+config g512_c4_p8_s1: grid 512 cluster 4 preferred 8 smem 204800
+    432 CTAs: raw*-0xa0 0xffffff60 SR_CgaSize 1 | nctarank 8 nctaid.x 8 nclusterid.x 64 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+     80 CTAs: raw*-0xa0 0000000000 SR_CgaSize 0 | nctarank 4 nctaid.x 4 nclusterid.x 128 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+config g512_c4_p16_s1: grid 512 cluster 4 preferred 16 smem 204800
+    400 CTAs: raw*-0xa0 0xffffff60 SR_CgaSize 1 | nctarank 16 nctaid.x 16 nclusterid.x 32 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+    112 CTAs: raw*-0xa0 0000000000 SR_CgaSize 0 | nctarank 4 nctaid.x 4 nclusterid.x 128 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+config g2048_c2_p4_s1: grid 2048 cluster 2 preferred 4 smem 204800
+   1960 CTAs: raw*-0xa0 0xffffff60 SR_CgaSize 1 | nctarank 4 nctaid.x 4 nclusterid.x 512 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+     88 CTAs: raw*-0xa0 0000000000 SR_CgaSize 0 | nctarank 2 nctaid.x 2 nclusterid.x 1024 cluster_ctaid.x==ctarank 1 clusterid==ctaid/nctaid.x 1 ctarank==ctaid%nctarank 1
+config g2048_c0_p4_s1: grid 2048 cluster 0 preferred 4 smem 204800
+  error 912 (a kernel launch error has occurred due to cluster misconfiguration) at cuLaunchKernelEx(&c, f, args, NULL)

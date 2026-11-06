@@ -1043,6 +1043,7 @@ name = A.name or os.path.basename(out.rstrip("/"))
 kern_lines = "\n".join(
     f"  {i}: {r['name'][:110]} grid {r['grid']} block {r['block']}"
     + (f" cluster {r['cluster']}" if r["cluster"] != [1, 1, 1] else "")
+    + (f" preferred {r['preferred_cluster']}" if r.get("preferred_cluster") else "")
     + (" pdl" if r.get("pdl") else "")
     for i, (r, _) in enumerate(launches)
 )
@@ -1074,6 +1075,13 @@ grid = {r0["grid"]}
 block = {r0["block"]}
 """
     + (f"cluster = {r0['cluster']}\n" if r0["cluster"] != [1, 1, 1] else "")
+    # cudaLaunchAttributePreferredClusterDimension (cuBLAS "2x2f" kernels): each group of
+    # CTAs runs as one cluster of this shape or as clusters of `cluster` (S-CGA-SHAPE).
+    + (
+        f"preferred_cluster = {r0['preferred_cluster']}\n"
+        if r0.get("preferred_cluster")
+        else ""
+    )
     + f"""dynamic_smem = {r0["smem"]}
 outputs = {json.dumps([b["name"] for b in buffers if b.get("is_out")])}
 """
@@ -1098,6 +1106,8 @@ for r, params in launches[1:]:
     s = f"[[launches]]\nentry = {q(r['name'])}\ngrid = {r['grid']}\nblock = {r['block']}\n"
     if r["cluster"] != [1, 1, 1]:
         s += f"cluster = {r['cluster']}\n"
+    if r.get("preferred_cluster"):
+        s += f"preferred_cluster = {r['preferred_cluster']}\n"
     s += f"dynamic_smem = {r['smem']}\n"
     if r.get("pdl"):
         s += "pdl = true\n"
@@ -1121,6 +1131,11 @@ meta = {
             "grid": r["grid"],
             "block": r["block"],
             "cluster": r["cluster"],
+            **(
+                {"preferred_cluster": r["preferred_cluster"]}
+                if r.get("preferred_cluster")
+                else {}
+            ),
             "smem": r["smem"],
             "pdl": r.get("pdl", 0),
             "cubin": cubin_file[r["name"]],

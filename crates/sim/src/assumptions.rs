@@ -672,6 +672,45 @@ pub const REGISTRY: &[Assumption] = &[
         applies: sass,
     },
     Assumption {
+        id: "S-SMEM-ADDR32",
+        kind: "code",
+        status: "validated",
+        title: "shared-memory addresses are 32-bit: address operand parts add modulo 2^32",
+        applies: |k| {
+            mbar(k)
+                || any(k, |o| {
+                    use ptxv_ir::Space::Shared;
+                    use ptxv_ir::Space::SharedCluster;
+                    matches!(
+                        o,
+                        Op::Ld {
+                            space: Shared | SharedCluster,
+                            ..
+                        } | Op::St {
+                            space: Shared | SharedCluster,
+                            ..
+                        } | Op::Atom {
+                            space: Shared | SharedCluster,
+                            ..
+                        }
+                    )
+                })
+        },
+    },
+    Assumption {
+        id: "S-CGA-SHAPE",
+        kind: "code",
+        status: "validated",
+        title: "SR_CgaSize is the cluster's shape index (0 regular, 1 preferred); preferred launches mix shapes per CTA group",
+        applies: |k| {
+            k.code.iter().any(|i| {
+                i.op.src_vals()
+                    .iter()
+                    .any(|v| matches!(v, ptxv_ir::Val::SReg(ptxv_ir::SReg::CgaShape)))
+            })
+        },
+    },
+    Assumption {
         id: "E-BSYNC",
         kind: "exec",
         status: "argued",

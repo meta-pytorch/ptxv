@@ -111,8 +111,13 @@ pub enum SReg {
     WarpId,
     /// Rank of this CTA in its cluster (`%cluster_ctarank`, SASS `SR_CgaCtaId`).
     ClusterCtaRank,
-    /// Number of CTAs in the cluster (`%cluster_nctarank`, SASS `SR_CgaSize`).
+    /// Number of CTAs in the cluster (`%cluster_nctarank`).
     ClusterNCtaRank,
+    /// SASS `SR_CgaSize`: which of the launch's cluster shapes this CTA's cluster has, 0 for
+    /// the regular shape and 1 for the preferred one (a launch with a preferred cluster
+    /// dimension mixes both). ptxas reads the cluster special registers from the driver's
+    /// table at `c[0x0][x - 0xa0 * SR_CgaSize]`. ASSUME(S-CGA-SHAPE): see ASSUMPTIONS.md
+    CgaShape,
     /// `%lanemask_lt` (SASS `SR_LTMASK`): the lanes below this one.
     LaneMaskLt,
     /// `%lanemask_le` / `_ge` / `_gt` / `_eq` (SASS `SR_LEMASK` / `GEMASK` / `GTMASK` /

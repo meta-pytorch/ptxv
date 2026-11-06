@@ -207,11 +207,27 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
                 cluster
             );
         }
+        // ASSUME(S-CGA-SHAPE): a preferred shape must tile the grid and be a multiple of the
+        // regular one, so that every group of CTAs is one preferred cluster or a whole number
+        // of regular ones.
+        if let Some(p) = l.preferred_cluster {
+            if l.cluster.is_none()
+                || (0..3).any(|d| p[d] == 0 || p[d] % cluster[d] != 0 || l.grid[d] % p[d] != 0)
+            {
+                bail!(
+                    "preferred cluster {p:?}: must be a multiple of the cluster shape {:?} and divide the grid {:?}",
+                    l.cluster,
+                    l.grid
+                );
+            }
+        }
         let g = Grid {
             grid: l.grid,
             block: l.block,
             cluster,
             explicit_cluster: l.cluster.is_some(),
+            preferred: l.preferred_cluster.filter(|&p| p != cluster),
+            cga_shape: 0,
             params,
             entry: entry as u32,
             cta0,

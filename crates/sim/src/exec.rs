@@ -132,13 +132,16 @@ impl Machine {
             }
             return Ok(v);
         }
-        // The per-cluster-size table: ptxas reads cluster special registers at
-        // `c[0x0][x - 0xa0 * %cluster_nctarank]` (SR_CgaSize). probes/cluster_sregs (GB300):
-        // x = 0x2a0 + 4d: %cluster_nctaid.d; 0x2b0 + 4d: f32 1 / %cluster_nctaid.d (%clusterid
-        // = trunc(%ctaid * it)); 0x2c0 + 4d: %nclusterid.d; 0x2cc: %cluster_nctarank.
+        // The per-cluster-shape table: ptxas reads cluster special registers at
+        // `c[0x0][x - 0xa0 * SR_CgaSize]`, SR_CgaSize being the cluster's shape index (0
+        // regular, 1 preferred; ASSUME(S-CGA-SHAPE), probes/cga_size). probes/cluster_sregs
+        // (GB300): x = 0x2a0 + 4d: %cluster_nctaid.d; 0x2b0 + 4d: f32 1 / %cluster_nctaid.d
+        // (%clusterid = trunc(%ctaid * it)); 0x2c0 + 4d: %nclusterid.d; 0x2cc:
+        // %cluster_nctarank. Each shape's table describes that shape (a launch mixing shapes
+        // gives each CTA the values of its own cluster, probes/cga_size).
         let cl = l.cluster;
         let size = cl.iter().product::<u32>();
-        let x = off.wrapping_add(0xa0 * size);
+        let x = off.wrapping_add(0xa0 * l.cga_shape);
         if bytes == 4 && (0x2a0..0x2d0).contains(&x) && x.is_multiple_of(4) {
             let d = ((x & 0xf) / 4) as usize;
             let v = match x & !0xf {
@@ -195,6 +198,8 @@ impl Machine {
             SReg::WarpId => (th.tid[0] + th.tid[1] * g.block[0]) / 32,
             SReg::ClusterCtaRank => self.launch.cluster_of(cta).1,
             SReg::ClusterNCtaRank => g.cluster_size(),
+            // ASSUME(S-CGA-SHAPE)
+            SReg::CgaShape => g.cga_shape,
             SReg::LaneMaskLt => (1u32 << th.lane) - 1,
             SReg::LaneMaskLe => ((2u64 << th.lane) - 1) as u32,
             SReg::LaneMaskGe => !((1u32 << th.lane) - 1),
@@ -440,6 +445,9 @@ impl Machine {
             Space::Generic if a >> 32 == SHARED_GENERIC_BASE >> 32 => {
                 (Space::SharedCluster, a & 0xffff_ffff)
             }
+            // ASSUME(S-SMEM-ADDR32): shared addresses are 32-bit; an address operand's
+            // parts (`[R+UR+imm]`) add modulo 2^32 (probes/smem_addr_wrap).
+            Space::Shared | Space::SharedCluster => (space, a & 0xffff_ffff),
             _ => (space, a),
         };
         let loc = match space {
@@ -2407,6 +2415,25 @@ impl Machine {
         })
     }
 
+    /// The threads of CTA `cta` (threads are stored CTA by CTA).
+    pub fn cta_threads(&self, cta: u16) -> std::ops::Range<usize> {
+        let n = self.threads.len();
+        let (mut lo, mut hi) = (0, n);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if self.threads[mid].cta < cta {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        let mut end = lo;
+        while end < n && self.threads[end].cta == cta {
+            end += 1;
+        }
+        lo..end
+    }
+
     /// Indices of `warp`'s threads (threads are laid out warp by warp).
     pub fn warp_threads(&self, warp: u32) -> std::ops::Range<usize> {
         let n = self.threads.len();
@@ -3427,8 +3454,9 @@ impl Machine {
                     }
                 )
         };
-        let lanes: Vec<usize> = (0..self.threads.len())
-            .filter(|&i| self.threads[i].warp == warp && self.threads[i].st != St::Exited)
+        let lanes: Vec<usize> = self
+            .warp_threads(warp)
+            .filter(|&i| self.threads[i].st != St::Exited)
             .collect();
         if lanes.is_empty() || !lanes.iter().all(|&i| at_gate(self, i)) {
             return;
@@ -3504,11 +3532,10 @@ impl Machine {
     }
 
     fn warpsync_release(&mut self, warp: u32, mask: u32, pc: u32) {
-        let lanes: Vec<usize> = (0..self.threads.len())
+        let lanes: Vec<usize> = self
+            .warp_threads(warp)
             .filter(|&i| {
-                self.threads[i].warp == warp
-                    && (mask >> self.threads[i].lane) & 1 == 1
-                    && self.threads[i].st != St::Exited
+                (mask >> self.threads[i].lane) & 1 == 1 && self.threads[i].st != St::Exited
             })
             .collect();
         // ASSUME(E-BSYNC): a lane parked at another convergence barrier (a nested BSSY/BSYNC
@@ -6848,10 +6875,8 @@ impl Machine {
                 // ASSUME(S-REMOTE-INFLIGHT): the CTA's last thread exits while a remote
                 // operation to it is in flight: it can land in released shared memory.
                 if self
-                    .threads
-                    .iter()
-                    .filter(|u| u.cta == cta)
-                    .all(|u| u.st == St::Exited)
+                    .cta_threads(cta)
+                    .all(|u| self.threads[u].st == St::Exited)
                 {
                     self.rec(4, cta as u32, 1, 2, true);
                     if let Some(o) = self
@@ -7601,10 +7626,8 @@ impl Machine {
     /// reported at terminal states (`exit_checks`).
     fn check_alive(&self, target: u16, actor: u32) -> Result<(), String> {
         if self
-            .threads
-            .iter()
-            .filter(|u| u.cta == target)
-            .all(|u| u.st == St::Exited)
+            .cta_threads(target)
+            .all(|u| self.threads[u].st == St::Exited)
         {
             return Err(format!(
                 "{} accesses the shared memory of CTA {target} after all its threads exited",

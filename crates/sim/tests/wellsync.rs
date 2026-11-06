@@ -449,10 +449,13 @@ fn poll_that_may_read_a_blocking_write_last_is_refused() {
     for f in ["ptx", "sass"] {
         let o = certify(machine(&case, "dl", f));
         assert!(o.verdict.is_none(), "dl/{f} certified");
+        // Which reason depends on the run's schedule (explore.rs `DetSched`): a run in which
+        // the poll reads 1 and exits is refused by C-POLL; a run in which the store comes
+        // first deadlocks, and the explorer decides it.
         assert!(
-            o.reasons
-                .iter()
-                .any(|r| r.starts_with("C-POLL:") && r.ends_with("never leaves the loop")),
+            o.reasons.iter().any(|r| (r.starts_with("C-POLL:")
+                && r.ends_with("never leaves the loop"))
+                || r.contains("first: deadlock")),
             "dl/{f}: {:#?}",
             o.reasons
         );

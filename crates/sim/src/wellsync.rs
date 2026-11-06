@@ -3298,13 +3298,9 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
     let mut fs = Vec::new();
     let mut steps = 0usize;
     let mut extra = Vec::new();
-    loop {
-        let acts = m.actions();
-        let pick = acts
-            .iter()
-            .find(|(a, _)| matches!(a, Action::Split { .. }))
-            .or(acts.first());
-        let Some((a, _)) = pick.cloned() else { break };
+    let mut sched = crate::explore::DetSched::default();
+    let mut faults = crate::explore::FaultLoop::default();
+    while let Some(a) = sched.pick(&m) {
         if matches!(a, Action::Clc(..)) {
             extra.push(
                 "C-ORDER: a cluster launch control response is pending (a scheduler choice)".into(),
@@ -3313,6 +3309,22 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
         }
         m.apply(&a);
         steps += 1;
+        // `certify_inner` launched every CTA up front (E-CLC): a try_cancel that executes
+        // ends the run (its fault would repeat), and the certificate starts over lazily.
+        if m.clc_eager
+            && m.findings
+                .iter()
+                .any(|f| f.msg.contains("E-CLC eager launch"))
+        {
+            EAGER_FAILED.with(|e| e.set(true));
+            fs.append(&mut m.findings);
+            break;
+        }
+        if let Some(why) = faults.repeats(&m.findings) {
+            extra.push(why);
+            fs.append(&mut m.findings);
+            break;
+        }
         fs.append(&mut m.findings);
     }
     let ok = m.terminal();
@@ -3357,6 +3369,8 @@ pub struct Carry {
 }
 
 thread_local! {
+    /// The last logged run executed a try_cancel with every CTA launched up front.
+    static EAGER_FAILED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The last logged run's `carry` (for `certify_keep`).
     static CARRY: std::cell::RefCell<Carry> = std::cell::RefCell::new(Carry::default());
     /// The last logged run was a C-RING run whose choices no execution makes (why).
@@ -3443,6 +3457,27 @@ pub fn certify(m0: Machine) -> Outcome {
 }
 
 fn certify_inner(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Outcome {
+    // ASSUME(E-CLC): every CTA launched up front when no try_cancel executes. Instead of a
+    // separate trial run (`explore::clc_eager`), the certificate's own runs decide it: a run
+    // that executes a try_cancel stops, and the certificate starts over on `m0` (lazy).
+    match crate::explore::clc_eager_launch(&m0) {
+        Some(e) => {
+            let lazy = m0;
+            let mut kept = None;
+            let o = certify_runs(e, keep.is_some().then_some(&mut kept));
+            if EAGER_FAILED.with(|f| f.replace(false)) {
+                return certify_runs(lazy, keep);
+            }
+            if let Some(k) = keep {
+                *k = kept;
+            }
+            o
+        }
+        None => certify_runs(m0, keep),
+    }
+}
+
+fn certify_runs(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Outcome {
     let t0 = Instant::now();
     // ASSUME(E-RESIDENCY): the certificate's progress argument has every CTA resident and
     // every allocation placed first-fit; limited residency and the TMEM co-tenant are decided
@@ -3458,7 +3493,6 @@ fn certify_inner(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Ou
             races: vec![],
         };
     }
-    let m0 = crate::explore::clc_eager(m0);
     let elects =
         m0.k.front == Front::Ptx && m0.k.code.iter().any(|i| matches!(i.op, Op::Elect { .. }));
     if elects && std::env::var("PTXV_ELECT").as_deref() == Ok("all") {
@@ -3515,6 +3549,17 @@ fn certify_inner(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Ou
         )));
         let (m, fs, ok, n, why) = run_logged(m);
         steps += n;
+        if EAGER_FAILED.with(|f| f.get()) {
+            return Outcome {
+                verdict: None,
+                reasons: vec![
+                    "E-CLC: a try_cancel executed with every CTA launched up front".into(),
+                ],
+                steps,
+                seconds: t0.elapsed().as_secs_f64(),
+                races: vec![],
+            };
+        }
         let pruned = RING_PRUNED.with(|p| p.borrow_mut().take());
         let (choices, counters) = RING_OUT.with(|r| std::mem::take(&mut *r.borrow_mut()));
         ring_counters.extend(counters);
@@ -3922,13 +3967,32 @@ fn check_sliced_one(
 ) -> Verdict {
     let t0 = Instant::now();
     let m = make();
-    let mut ids = crate::explore::clusters(&m);
     let launch = m.launch.clone();
+    // ASSUME(S-CGA-SHAPE): a launch with a preferred cluster dimension runs each group of
+    // CTAs as one preferred cluster or as regular clusters, a hardware choice per group. Both
+    // shapes' clusters are sliced; the cross-cluster check pairs every two clusters that can
+    // coexist (disjoint CTAs), and each group must write the same bytes either way, so every
+    // mix ends with the same memory.
+    let shapes: Vec<Arc<crate::machine::Launch>> = std::iter::once(launch.clone())
+        .chain(launch.preferred_shape().map(Arc::new))
+        .collect();
+    let out_init = m.outputs();
+    let out_allocs: Vec<(usize, usize)> = {
+        let mut at = 0;
+        launch
+            .outputs
+            .iter()
+            .map(|&a| {
+                let o = at;
+                at += m.gmem[a].bytes.len();
+                (a, o)
+            })
+            .collect()
+    };
     drop(m);
-    if let Ok(only) = std::env::var("PTXV_SLICE_ONLY") {
-        let keep: Vec<u32> = only.split(',').filter_map(|x| x.parse().ok()).collect();
-        ids.retain(|c| keep.contains(c));
-    }
+    let only: Option<Vec<u32>> = std::env::var("PTXV_SLICE_ONLY")
+        .ok()
+        .map(|only| only.split(',').filter_map(|x| x.parse().ok()).collect());
     let mut all = Verdict {
         states: 0,
         transitions: 0,
@@ -3941,66 +4005,242 @@ fn check_sliced_one(
         seconds: 0.0,
         outputs: vec![],
     };
-    let (mut certified, mut explored) = (0usize, 0usize);
-    type Bits = Vec<(Vec<u64>, Vec<u64>, Vec<u64>)>;
-    let mut foots: Vec<(u32, Bits)> = Vec::new();
-    for &c in &ids {
-        let mut m = make();
-        let sizes: Vec<usize> = m.gmem.iter().map(|g| g.bytes.len()).collect();
-        let mut g = GFoot::new(&sizes);
-        g.cluster = Some(c);
-        let g = Arc::new(g);
-        m.gfoot = Some(g.clone());
-        let o = certify(slice_machine(m.clone(), c));
-        let v = match o.verdict {
-            Some(v) => {
-                certified += 1;
-                v
+    let (mut certified, mut explored, mut nslices) = (0usize, 0usize, 0usize);
+    // A slice's global footprint, sparse: (allocation, 64-byte word, read bits, written bits;
+    // fp32 atomic adds count as writes here, no N-ATOMIC relaxation), sorted.
+    type Bits = Vec<(u32, u32, u64, u64)>;
+    let sparse = |snap: &[(Vec<u64>, Vec<u64>, Vec<u64>)]| -> Bits {
+        let mut v = Vec::new();
+        for (a, (r, w, x)) in snap.iter().enumerate() {
+            for (k, ((&r, &w), &x)) in r.iter().zip(w).zip(x).enumerate() {
+                if r | w | x != 0 {
+                    v.push((a as u32, k as u32, r, w | x));
+                }
             }
-            None => {
-                report_fallback(&format!("cluster {c}"), &o);
-                explored += 1;
-                let weak = (m.weak_stop > 0).then_some(m.weak_stop == 2);
-                let races = run_races(&o, weak, &format!("cluster {c}"));
-                let mut v = crate::explore::explore_slice(m, max_states, Some(c));
-                v.notes.push(format!(
-                    "cluster {c}: certificate failed ({}), explored",
-                    o.reasons.first().map(String::as_str).unwrap_or("?")
-                ));
-                merge_run_races(&mut v, races);
-                v
+        }
+        v
+    };
+    // (shape, cluster, its CTAs, footprint)
+    let mut foots: Vec<(usize, u32, Vec<u32>, Bits)> = Vec::new();
+    // Per shape: the outputs of the whole launch, assembled from the slices' writes (None
+    // when some slice did not end with one output, or only some clusters ran).
+    // Single-grid launches only (a slice of a later grid also runs the earlier grids, whose
+    // writes its footprint does not record).
+    let assemble = only.is_none() && launch.grids.len() == 1;
+    let mut assembled: Vec<Option<Vec<u8>>> =
+        vec![assemble.then(|| out_init.clone()); shapes.len()];
+    for (si, shape) in shapes.iter().enumerate() {
+        let mk = || {
+            let m = make();
+            if si == 0 {
+                m
+            } else {
+                m.with_cluster_shape(shape.clone())
             }
         };
-        per_slice(c, &v);
-        all.states += v.states;
-        all.transitions += v.transitions;
-        all.complete &= v.complete;
-        all.terminal_states += v.terminal_states;
-        all.distinct_outputs = all.distinct_outputs.max(v.distinct_outputs);
-        for f in v.findings {
-            if !all.findings.iter().any(|x| x.sig == f.sig) {
-                all.findings.push(f);
-            }
+        let mut ids = crate::explore::clusters(&mk());
+        if let Some(keep) = &only {
+            ids.retain(|c| keep.contains(c));
         }
-        for a in v.assumptions {
-            if !all.assumptions.contains(&a) {
-                all.assumptions.push(a);
-            }
+        if si > 0 {
+            eprintln!(
+                "slices with every cluster in the preferred shape (SR_CgaSize 1, S-CGA-SHAPE):"
+            );
+            all.notes.push(format!(
+                "preferred cluster shape: {} more slices with every cluster preferred (SR_CgaSize 1, S-CGA-SHAPE)",
+                ids.len()
+            ));
         }
-        for n in v.notes {
-            if !n.starts_with("well-synchronized") && !all.notes.contains(&n) {
-                all.notes.push(n);
+        // The slices' certificates run in parallel (PTXV_SLICE_THREADS, default 8; each run is
+        // independent and single-threaded, and holds its own machine: mm_4k_8k's slices take
+        // about 3 GB each); results are taken in cluster order.
+        let nthreads = std::env::var("PTXV_SLICE_THREADS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(8)
+            .clamp(1, ids.len().max(1));
+        type Done = (u32, Arc<GFoot>, Outcome, Option<Machine>);
+        let mut done: BTreeMap<usize, Done> = BTreeMap::new();
+        let (tx_res, rx_res) = std::sync::mpsc::channel::<(usize, Done)>();
+        let (tx_job, rx_job) =
+            std::sync::mpsc::sync_channel::<(usize, u32, Machine, Arc<GFoot>)>(1);
+        let rx_job = std::sync::Mutex::new(rx_job);
+        std::thread::scope(|scope| {
+            for _ in 0..nthreads {
+                let tx_res = tx_res.clone();
+                let rx_job = &rx_job;
+                scope.spawn(move || {
+                    loop {
+                        let job = rx_job.lock().unwrap().recv();
+                        let Ok((i, c, m, g)) = job else { break };
+                        let o = certify(slice_machine(m.clone(), c));
+                        // The machine is kept only for the exploration that replaces a
+                        // failed certificate.
+                        let keep = o.verdict.is_none().then_some(m);
+                        if tx_res.send((i, (c, g, o, keep))).is_err() {
+                            break;
+                        }
+                    }
+                });
             }
-        }
-        foots.push((c, g.snapshot()));
+            drop(tx_res);
+            let mut next = 0usize;
+            let mut fed = ids.iter().enumerate();
+            let mut feeding = true;
+            while next < ids.len() {
+                if feeding {
+                    match fed.next() {
+                        Some((i, &c)) => {
+                            let mut m = mk();
+                            let sizes: Vec<usize> = m.gmem.iter().map(|g| g.bytes.len()).collect();
+                            let mut g = GFoot::new(&sizes);
+                            g.cluster = Some(c);
+                            let g = Arc::new(g);
+                            m.gfoot = Some(g.clone());
+                            tx_job.send((i, c, m, g)).unwrap();
+                        }
+                        None => feeding = false,
+                    }
+                }
+                while let Ok((i, d)) = if feeding {
+                    rx_res.try_recv().map_err(|_| ())
+                } else {
+                    rx_res.recv().map_err(|_| ())
+                } {
+                    done.insert(i, d);
+                    if !feeding {
+                        break;
+                    }
+                }
+                while let Some((c, g, o, keep)) = done.remove(&next) {
+                    next += 1;
+                    nslices += 1;
+                    let v = match o.verdict {
+                        Some(v) => {
+                            certified += 1;
+                            v
+                        }
+                        None => {
+                            let m = keep.expect("kept for exploration");
+                            report_fallback(&format!("cluster {c}"), &o);
+                            explored += 1;
+                            let weak = (m.weak_stop > 0).then_some(m.weak_stop == 2);
+                            let races = run_races(&o, weak, &format!("cluster {c}"));
+                            let mut v = crate::explore::explore_slice(m, max_states, Some(c));
+                            v.notes.push(format!(
+                                "cluster {c}: certificate failed ({}), explored",
+                                o.reasons.first().map(String::as_str).unwrap_or("?")
+                            ));
+                            merge_run_races(&mut v, races);
+                            v
+                        }
+                    };
+                    per_slice(c, &v);
+                    all.states += v.states;
+                    all.transitions += v.transitions;
+                    all.complete &= v.complete;
+                    all.terminal_states += v.terminal_states;
+                    all.distinct_outputs = all.distinct_outputs.max(v.distinct_outputs);
+                    let snap = g.snapshot();
+                    match (&mut assembled[si], v.outputs.as_slice()) {
+                        (Some(out), [o]) if o.len() == out.len() => {
+                            for &(a, at) in &out_allocs {
+                                let (_, w, x) = &snap[a];
+                                for (k, (&wk, &xk)) in w.iter().zip(x).enumerate() {
+                                    let mut bits = wk | xk;
+                                    while bits != 0 {
+                                        let b = 64 * k + bits.trailing_zeros() as usize;
+                                        bits &= bits - 1;
+                                        if let Some(&byte) = o.get(at + b) {
+                                            out[at + b] = byte;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        (slot, _) => *slot = None,
+                    }
+                    for f in v.findings {
+                        if !all.findings.iter().any(|x| x.sig == f.sig) {
+                            all.findings.push(f);
+                        }
+                    }
+                    for a in v.assumptions {
+                        if !all.assumptions.contains(&a) {
+                            all.assumptions.push(a);
+                        }
+                    }
+                    for n in v.notes {
+                        if !n.starts_with("well-synchronized") && !all.notes.contains(&n) {
+                            all.notes.push(n);
+                        }
+                    }
+                    foots.push((si, c, shape.cluster_ctas(c), sparse(&snap)));
+                }
+            }
+            drop(tx_job);
+        });
     }
     all.notes.insert(
         0,
         format!(
-            "one cluster at a time ({} clusters): {certified} certified well-synchronized (E-WELLSYNC, one run each), {explored} explored",
-            ids.len()
+            "one cluster at a time ({nslices} clusters): {certified} certified well-synchronized (E-WELLSYNC, one run each), {explored} explored"
         ),
     );
+    if shapes.len() > 1 && !all.assumptions.iter().any(|a| a == "S-CGA-SHAPE") {
+        all.assumptions.push("S-CGA-SHAPE".into());
+    }
+    if shapes.len() > 1 && only.is_none() {
+        // Each preferred cluster and the regular clusters in its CTAs write the same bytes.
+        let writes = |f: &Bits| -> BTreeMap<(u32, u32), u64> {
+            let mut m = BTreeMap::new();
+            for &(a, k, _, w) in f {
+                if w != 0 {
+                    *m.entry((a, k)).or_insert(0) |= w;
+                }
+            }
+            m
+        };
+        for (_, cp, ctas_p, fp) in foots.iter().filter(|f| f.0 == 1) {
+            let mut u: BTreeMap<(u32, u32), u64> = BTreeMap::new();
+            for f in foots
+                .iter()
+                .filter(|f| f.0 == 0 && f.2.iter().all(|c| ctas_p.contains(c)))
+            {
+                for (key, w) in writes(&f.3) {
+                    *u.entry(key).or_insert(0) |= w;
+                }
+            }
+            if u != writes(fp) {
+                all.distinct_outputs = all.distinct_outputs.max(2);
+                all.notes.push(format!(
+                    "preferred cluster {cp} (CTAs {ctas_p:?}) writes other global bytes than the regular clusters of those CTAs: a launch mixing cluster shapes ends differently (S-CGA-SHAPE)"
+                ));
+            }
+        }
+    }
+    match assembled.as_slice() {
+        [Some(a)] => all.outputs = vec![a.clone()],
+        [Some(a), Some(b)] => {
+            if a == b {
+                all.outputs = vec![a.clone()];
+            } else {
+                all.outputs = vec![a.clone(), b.clone()];
+                all.distinct_outputs = all.distinct_outputs.max(2);
+                all.notes.push(
+                    "the regular and the preferred cluster shape end with different outputs (S-CGA-SHAPE)".into(),
+                );
+            }
+        }
+        [_, _] if assemble => all.findings.push(Finding {
+            kind: "unmodeled".into(),
+            sig: "cga-shape-outputs".into(),
+            msg: "preferred cluster shape: a slice did not end with one output, so the two shapes' outputs could not be compared (S-CGA-SHAPE)".into(),
+            trace: vec![],
+            ..Default::default()
+        }),
+        _ => {}
+    }
     // Cross-cluster conflicts, as in `explore_sliced`.
     let ordered = |gi: usize, gj: usize| {
         let mut g = gj;
@@ -4015,38 +4255,61 @@ fn check_sliced_one(
         }
         g == gi
     };
-    for (i, (ci, fi)) in foots.iter().enumerate() {
-        for (cj, fj) in &foots[i + 1..] {
-            let (gi, gj) = ((ci >> 20) as usize, (cj >> 20) as usize);
-            if gi != gj && (ordered(gi, gj) || ordered(gj, gi)) {
-                continue;
-            }
-            for (alloc, ((ri, wi, xi), (rj, wj, xj))) in fi.iter().zip(fj).enumerate() {
-                // fp32 atomic adds count as writes here (no N-ATOMIC relaxation).
-                let or = |a: &Vec<u64>, b: &Vec<u64>| -> Vec<u64> {
-                    a.iter().zip(b).map(|(x, y)| x | y).collect()
-                };
-                let (wi, wj) = (&or(wi, xi), &or(wj, xj));
-                let hit = |w: &Vec<u64>, o1: &Vec<u64>, o2: &Vec<u64>| {
-                    w.iter().enumerate().find_map(|(k, &x)| {
-                        let y =
-                            x & (o1.get(k).copied().unwrap_or(0) | o2.get(k).copied().unwrap_or(0));
-                        (y != 0).then(|| 64 * k as u64 + y.trailing_zeros() as u64)
-                    })
-                };
-                if let Some(b) = hit(wi, rj, wj).or_else(|| hit(wj, ri, wi)) {
-                    all.findings.push(Finding {
-                        kind: "race".into(),
-                        sig: format!("cross-cluster:{alloc}"),
-                        msg: format!(
-                            "clusters {ci} and {cj} both access global byte {b:#x} of allocation {alloc}, at least one writing, with no synchronization between clusters"
-                        ),
-                        trace: vec![],
-                        ..Default::default()
-                    });
-                }
+    // Indexed by word: only words some slice writes can conflict, and only slices that touch
+    // such a word are compared (the pairwise scan of dense bitsets was quadratic in launch
+    // size: hours at 384 slices of 160 MB).
+    // (allocation, word) -> (slice, read bits, written bits) of every slice touching it
+    type Touch = Vec<(usize, u64, u64)>;
+    let mut written: HashMap<(u32, u32), Touch> = HashMap::new();
+    for f in &foots {
+        for &(a, k, _, w) in &f.3 {
+            if w != 0 {
+                written.entry((a, k)).or_default();
             }
         }
+    }
+    for (i, f) in foots.iter().enumerate() {
+        for &(a, k, r, w) in &f.3 {
+            if let Some(v) = written.get_mut(&(a, k)) {
+                v.push((i, r, w));
+            }
+        }
+    }
+    // (slice i, slice j, allocation) -> first conflicting byte
+    let mut hits: BTreeMap<(usize, usize, u32), u64> = BTreeMap::new();
+    for (&(a, k), v) in &written {
+        for (x, &(i, ri, wi)) in v.iter().enumerate() {
+            for &(j, rj, wj) in &v[x + 1..] {
+                let y = (wi & (rj | wj)) | (wj & (ri | wi));
+                if y == 0 {
+                    continue;
+                }
+                let ((si, ci, ctas_i, _), (sj, cj, ctas_j, _)) = (&foots[i], &foots[j]);
+                // Clusters of the two shapes that share CTAs are alternatives, never both.
+                if si != sj && ctas_i.iter().any(|c| ctas_j.contains(c)) {
+                    continue;
+                }
+                let (gi, gj) = ((ci >> 20) as usize, (cj >> 20) as usize);
+                if gi != gj && (ordered(gi, gj) || ordered(gj, gi)) {
+                    continue;
+                }
+                let b = 64 * k as u64 + y.trailing_zeros() as u64;
+                let e = hits.entry((i.min(j), i.max(j), a)).or_insert(b);
+                *e = (*e).min(b);
+            }
+        }
+    }
+    for ((i, j, alloc), b) in hits {
+        let (ci, cj) = (foots[i].1, foots[j].1);
+        all.findings.push(Finding {
+            kind: "race".into(),
+            sig: format!("cross-cluster:{alloc}"),
+            msg: format!(
+                "clusters {ci} and {cj} both access global byte {b:#x} of allocation {alloc}, at least one writing, with no synchronization between clusters"
+            ),
+            trace: vec![],
+            ..Default::default()
+        });
     }
     all.findings
         .sort_by(|a, b| (&a.kind, &a.sig).cmp(&(&b.kind, &b.sig)));

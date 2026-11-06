@@ -1,0 +1,32 @@
+name = "smem_addr_wrap"
+description = """
+Probe for S-SMEM-ADDR32: shared-memory address operands add in 32 bits. ptxas folds a uniform
+base and a per-thread offset into `LDS R7, [R4+UR4+0x28]`; R4 = 4 * tid - 40 is 0xffffffd8 for
+tid 0. Clusters of 2 (a shared::cta address naming another rank traps on GB300), so a 64-bit
+sum would fault. out[32 * ctaid + tid] = tid + 1 when the sum wraps.
+Hardware: `ptxv hw-worker probes/smem_addr_wrap kernel.cubin --runs 20 --dump expected/out.bin`."""
+cubin = "kernel.cubin"
+entry = "k"
+grid = [4, 1, 1]
+block = [32, 1, 1]
+cluster = [2, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 40
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1207,6 +1207,13 @@ pub struct Grid {
     pub cluster: [u32; 3],
     /// The launch named a cluster shape (`%is_explicit_cluster`).
     pub explicit_cluster: bool,
+    /// The launch's preferred cluster dimension (cudaLaunchAttributePreferredClusterDimension),
+    /// if any: the hardware launches each group of CTAs either as one cluster of this shape or
+    /// as clusters of the regular one. ASSUME(S-CGA-SHAPE)
+    pub preferred: Option<[u32; 3]>,
+    /// SR_CgaSize of every CTA of this grid: 0 when `cluster` is the regular shape, 1 when it
+    /// is the preferred one (`Launch::preferred_shape`). ASSUME(S-CGA-SHAPE)
+    pub cga_shape: u32,
     pub params: Vec<u8>,
     /// First instruction of this grid's kernel.
     pub entry: u32,
@@ -1317,6 +1324,28 @@ impl Launch {
     pub fn cluster_size(&self, cta: u32) -> u32 {
         self.g(cta).cluster_size()
     }
+    /// ASSUME(S-CGA-SHAPE): the launch with every cluster of every grid that has a preferred
+    /// cluster dimension in that shape (SR_CgaSize 1), or None when no grid has one.
+    pub fn preferred_shape(&self) -> Option<Launch> {
+        if self.grids.iter().all(|g| g.preferred.is_none()) {
+            return None;
+        }
+        let mut l = self.clone();
+        for g in &mut l.grids {
+            if let Some(p) = g.preferred {
+                g.cluster = p;
+                g.cga_shape = 1;
+            }
+        }
+        Some(l)
+    }
+    /// The global CTAs of cluster `c` (an id of `cluster_of`).
+    pub fn cluster_ctas(&self, c: u32) -> Vec<u32> {
+        let g = &self.grids[(c >> 20) as usize];
+        (g.cta0..g.cta0 + g.ctas())
+            .filter(|&cta| self.cluster_of(cta).0 == c)
+            .collect()
+    }
     /// (cluster id, rank in the cluster) of global CTA `cta` (x fastest). Cluster ids are
     /// unique across grids.
     pub fn cluster_of(&self, cta: u32) -> (u32, u32) {
@@ -1387,6 +1416,33 @@ pub struct Finding {
     pub gb300: Option<crate::twolevel::Gb300>,
 }
 
+/// The mbarriers, shared between machine copies until one writes (`DerefMut` copies a shared
+/// map). Copies that only read them (the certificate's look-ahead copies, `skip_equiv`) cost
+/// one reference count instead of a copy of every mbarrier and its vector clocks.
+#[derive(Clone, Debug, Default)]
+pub struct MbarMap(Arc<BTreeMap<(u16, u32), Mbar>>);
+
+impl std::ops::Deref for MbarMap {
+    type Target = BTreeMap<(u16, u32), Mbar>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a> IntoIterator for &'a MbarMap {
+    type Item = (&'a (u16, u32), &'a Mbar);
+    type IntoIter = std::collections::btree_map::Iter<'a, (u16, u32), Mbar>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl std::ops::DerefMut for MbarMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
 #[derive(Clone)]
 pub struct Machine {
     pub k: Arc<Kernel>,
@@ -1396,7 +1452,7 @@ pub struct Machine {
     pub smem: CowVec<Mem>,
     pub gmem: Vec<Mem>,
     pub tmem: CowVec<Tmem>,
-    pub mbars: BTreeMap<(u16, u32), Mbar>,
+    pub mbars: MbarMap,
     pub bars: BTreeMap<(u16, u32), Bar>,
     pub pending: Vec<AsyncOp>,
     /// Completed async operations (cta, actor, clock, pc), sorted: checked at exit.
@@ -2082,7 +2138,7 @@ impl Machine {
             smem: CowVec::new(smem),
             gmem,
             tmem: CowVec::new(tmem),
-            mbars: BTreeMap::new(),
+            mbars: MbarMap::default(),
             bars: BTreeMap::new(),
             pending: Vec::new(),
             completed: Vec::new(),
@@ -2258,6 +2314,26 @@ impl Machine {
     /// The threads that may still run, with their indices (see `live`).
     pub fn live_threads(&self) -> impl Iterator<Item = (usize, &Cow<Thread>)> {
         self.live.clone().map(move |i| (i, &self.threads[i]))
+    }
+
+    /// This machine, before any step, with the cluster shapes of `launch` (which differs from
+    /// the machine's launch only there: `Launch::preferred_shape`). ASSUME(S-CGA-SHAPE)
+    pub fn with_cluster_shape(mut self, launch: Arc<Launch>) -> Machine {
+        assert_eq!(launch.ctas(), self.launch.ctas());
+        self.launch = launch;
+        // ASSUME(S-RESERVED): the leader's phase word at 0x50 depends on the rank (the
+        // hidden mbarrier at 0x48 marks the CTAs `new` initialized).
+        for cta in 0..self.launch.ctas() {
+            if self.mbars.contains_key(&(cta as u16, 0x48)) {
+                let (_, rank) = self.launch.cluster_of(cta);
+                let w = ((rank % 2 == 0) as u32).to_le_bytes();
+                let mem = &mut self.smem[cta as usize];
+                for (i, b) in w.iter().enumerate() {
+                    *mem.bytes.get_mut(0x50 + i) = *b;
+                }
+            }
+        }
+        self
     }
 
     /// `self` with the static parts (kernel, launch, spin tables, MMA cache) of `like`.

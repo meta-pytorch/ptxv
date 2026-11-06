@@ -123,6 +123,11 @@ How it works. This generalizes `fixtures/r3_grouped_mm/capture.py` and
   launched with no cluster attribute (launchcap records 1 x 1 x 1). The capture reads
   `EIATTR_CTA_PER_CLUSTER` (0x3d) from the cubin's `.nv.info.<kernel>` and writes `cluster`
   (flashinfer's routing kernel: 8 x 1 x 1).
+- **Preferred cluster dimension (2026-11-06).** cuBLAS launches its `*_2x2f_*` kernels with
+  `cudaLaunchAttributePreferredClusterDimension` (mm_4k_8k: preferred 4 x 1 x 1, cluster
+  2 x 1 x 1). launchcap and the Python API's `ptxvcap.c` record it as `preferred_cluster`, and
+  the case gets `preferred_cluster = [...]` beside `cluster` (S-CGA-SHAPE). Earlier captures
+  dropped it.
 - **Snapshots (`--kernels`, 2026-11-04).** Filtered-out launches may write the kept ones'
   inputs (a MoE's routing kernel writes the permutation the GEMM reads). Before this change,
   those buffers started as zeros.
