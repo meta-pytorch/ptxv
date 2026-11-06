@@ -307,5 +307,5 @@ byte_offset = 192
 [[variants]]
 id = "good"
 summary = "as shipped in PyTorch"
-expect = ["clean"]
-hw_note = "Certified for all clusters (E-WELLSYNC). Its epilogue waits for the TMA stores' smem reads through a control-word wait on UTMACMDFLUSH's read scoreboard before exit (E-ASYNC-STEP); before that wait was modeled, this was an E-BULK-EXIT contract."
+expect = ["contract"]
+hw_note = "Certified for all clusters (E-WELLSYNC). Contract only: the last TMA store of each CTA is still reading shared memory at exit (E-BULK-EXIT; GB300 drains it). The epilogue's last wait is `DEPBAR.LE SB0, 0x1` after the final UTMACMDFLUSH (SB0); until 2026-11-05 the model counted the following BSYNC's wait on SB2 (another flush's scoreboard) as draining every bulk group, and this was clean (soundness-harness miss 3, E-ASYNC-STEP)."

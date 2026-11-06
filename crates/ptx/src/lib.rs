@@ -966,6 +966,7 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
         },
         static_findings: vec![],
         bulk_read_waits: vec![],
+        bulk_commit_sb: vec![],
         parts: vec![],
     })
 }
@@ -2533,6 +2534,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             Op::BulkWait {
                 n: n as u32,
                 read: has("read"),
+                sb: None,
                 cp: false,
             }
         }

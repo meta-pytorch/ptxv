@@ -14,6 +14,7 @@
 pub mod cf;
 pub mod chain;
 pub mod combine;
+pub mod errstate;
 pub mod fine;
 pub mod laws;
 pub mod markov;

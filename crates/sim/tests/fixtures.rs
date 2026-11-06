@@ -282,6 +282,17 @@ fn e_elect_leader_choice() {
     both("e_elect", "good");
     both("e_elect", "B46");
 }
+/// A plain write followed by its own thread's atomic, then other threads' unordered atomics
+/// (soundness-harness miss 1): the race is found by exploration and by the certificate run
+/// (`wellsync.rs` `plain_write_hidden_by_own_atomic_is_a_race`).
+#[test]
+fn e_cert_fasttrack_plain_then_own_atomic() {
+    both("e_cert_fasttrack", "good");
+    // Stateful explorer only: DPOR also reports what the race leaves (an add before the init
+    // reads unwritten shared memory), and reductions agree only on race-free kernels (E-DRF).
+    check_stateful("e_cert_fasttrack", "nosync", "ptx", 100_000);
+    check_stateful("e_cert_fasttrack", "nosync", "sass", 100_000);
+}
 /// bar.arrive / BAR.ARV (E-BAR-ARRIVE): release without waiting, count mismatch, re-arrival.
 #[test]
 fn e_bararv_named_barrier_arrive() {
@@ -1618,9 +1629,19 @@ fn r4b_torch_group_certifies() {
         "{:?}",
         each[0].notes
     );
-    // The grouped GEMM waits for its TMA stores' reads (UTMACMDFLUSH read scoreboard,
-    // E-ASYNC-STEP), so no E-BULK-EXIT contract remains.
-    assert_eq!(each[0].classes(), ["clean"], "{:#?}", each[0].findings);
+    // The grouped GEMM exits with its last TMA store still reading shared memory: its last
+    // waits are `DEPBAR.LE SB0, 0x1` and a control-word wait on SB2, another flush's
+    // scoreboard, which waits for none of SB0's groups (E-ASYNC-STEP, soundness-harness miss
+    // 3). That is an E-BULK-EXIT contract finding only.
+    assert_eq!(each[0].classes(), ["contract"], "{:#?}", each[0].findings);
+    assert!(
+        each[0]
+            .findings
+            .iter()
+            .all(|f| f.sig.starts_with("bulk-store-at-exit:")),
+        "{:#?}",
+        each[0].findings
+    );
 }
 
 /// B32 (the expert gather is ordered after nothing on its stream) in group mode: the torch
@@ -2559,7 +2580,12 @@ fn e_fa4_warp_roles_fa4_aligned_barriers() {
     // SASS: the BRA.DIV / WARPSYNC.COLLECTIVE.ALL slow path in both halves leaves DPOR
     // incomplete at 2M states; the stateful explorer takes ~36k.
     check("e_fa4_warp_roles", "probe_intrawarp_unaligned", "ptx");
-    check_stateful("e_fa4_warp_roles", "probe_intrawarp_unaligned", "sass", 200_000);
+    check_stateful(
+        "e_fa4_warp_roles",
+        "probe_intrawarp_unaligned",
+        "sass",
+        200_000,
+    );
 }
 
 /// The FusedRMSNormBwd cluster exit-drain case (S-REMOTE-INFLIGHT): the

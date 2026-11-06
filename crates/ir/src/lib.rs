@@ -1221,6 +1221,9 @@ pub enum Op {
     BulkWait {
         n: u32,
         read: bool,
+        /// SASS `DEPBAR.LE SBk, n`: the scoreboard k. Only the bulk groups committed on SBk
+        /// (`Kernel::bulk_commit_sb`) count; None (PTX): every group.
+        sb: Option<u8>,
         /// SASS `DEPBAR.LE SBk, 0` on a scoreboard that also counts cp.async groups on some
         /// path: also complete every cp.async of the thread (the scoreboard is empty after).
         cp: bool,
@@ -2117,9 +2120,14 @@ pub struct Kernel {
     /// Findings that hold for the instruction stream itself, independent of any schedule
     /// (SASS: scoreboard hazards). Reported alongside the model checker's findings.
     pub static_findings: Vec<StaticFinding>,
-    /// SASS: instructions whose control word waits on the bulk-group read scoreboard
-    /// (`UTMACMDFLUSH`'s rbar), sorted. Each first waits as `cp.async.bulk.wait_group.read 0`.
-    pub bulk_read_waits: Vec<usize>,
+    /// SASS: instructions whose control word waits on a scoreboard some `UTMACMDFLUSH` uses as
+    /// its read scoreboard, with the mask of those scoreboards, sorted. Each first waits as
+    /// `cp.async.bulk.wait_group.read 0` for the groups committed on them.
+    pub bulk_read_waits: Vec<(usize, u8)>,
+    /// SASS: each `UTMACMDFLUSH` (bulk commit) and its read scoreboard, sorted. A group counts
+    /// on that scoreboard only: ptxas reuses scoreboards, and a wait on another one does not
+    /// wait for the group's source reads.
+    pub bulk_commit_sb: Vec<(usize, u8)>,
     /// Kernels of a multi-kernel launch (`Kernel::concat`), in launch order; empty for a
     /// single kernel. Their code is concatenated in `code`.
     pub parts: Vec<KernelPart>,
@@ -2232,6 +2240,7 @@ impl Kernel {
         out.labels.clear();
         out.static_findings.clear();
         out.bulk_read_waits.clear();
+        out.bulk_commit_sb.clear();
         out.name = ks
             .iter()
             .map(|k| k.name.as_str())
@@ -2264,7 +2273,9 @@ impl Kernel {
             out.labels
                 .extend(k.labels.iter().map(|(i, n)| (i + base, n.clone())));
             out.bulk_read_waits
-                .extend(k.bulk_read_waits.iter().map(|i| i + base));
+                .extend(k.bulk_read_waits.iter().map(|&(i, m)| (i + base, m)));
+            out.bulk_commit_sb
+                .extend(k.bulk_commit_sb.iter().map(|&(i, s)| (i + base, s)));
             for f in &k.static_findings {
                 let mut f = f.clone();
                 f.pcs.iter_mut().for_each(|p| *p += base);

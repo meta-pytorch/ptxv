@@ -384,11 +384,21 @@ impl Epoch {
     }
 }
 
-/// Per-byte shadow: last write and reads since it (FastTrack-style).
+/// Per-byte shadow: last write and reads since it (FastTrack-style), plus the earlier
+/// accesses that a strong write does not cover (`Machine::access_x`).
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct Sh {
     pub w: Option<Epoch>,
+    /// Reads not covered by a later write: since the last write, and before it when that
+    /// write is strong (a strong write hides neither a plain read nor an unordered strong one).
     pub r: Readers,
+    /// Earlier writes the last write `w` does not cover, sorted by (actor, strong): a plain
+    /// write before a strong one, or a strong write unordered with it. Empty unless strong
+    /// writes followed other writes. A later access must be checked against them as against
+    /// `w`: a plain write followed by its own thread's atomic still races with another
+    /// thread's unordered atomic (FastTrack's single last-write epoch is precise only when
+    /// every write covers the earlier ones).
+    pub hw: Option<Box<[Epoch]>>,
 }
 
 /// The reads since the last write, one per actor, sorted by actor (canonical state: commuting
@@ -408,6 +418,12 @@ impl Default for Readers {
 }
 
 impl Sh {
+    /// Every write of the shadow: the last one and the hidden earlier ones.
+    #[inline]
+    pub fn writes(&self) -> impl Iterator<Item = &Epoch> {
+        self.w.iter().chain(self.hw.iter().flat_map(|h| h.iter()))
+    }
+
     /// Every recorded access as plain (launch groups, `groups.rs`): a later access that is
     /// not ordered after it races, strong or not (TMEM marks are kept).
     pub fn demote(&mut self) {
@@ -418,6 +434,9 @@ impl Sh {
         };
         if let Some(w) = self.w.as_mut() {
             d(w);
+        }
+        if let Some(h) = self.hw.as_mut() {
+            h.iter_mut().for_each(d);
         }
         match &mut self.r {
             Readers::Inline(n, a) => a[..*n as usize].iter_mut().for_each(d),
@@ -449,6 +468,46 @@ impl Readers {
     #[inline]
     pub fn clear(&mut self) {
         *self = Readers::default();
+    }
+    /// Keep the reads for which `f` holds (order kept).
+    pub fn retain(&mut self, mut f: impl FnMut(&Epoch) -> bool) {
+        if self.iter().all(&mut f) {
+            return;
+        }
+        let v: Vec<Epoch> = self.iter().copied().filter(|e| f(e)).collect();
+        *self = Readers::from_sorted(v);
+    }
+    fn from_sorted(v: Vec<Epoch>) -> Self {
+        if v.len() <= 2 {
+            let mut a = [Epoch::default(); 2];
+            a[..v.len()].copy_from_slice(&v);
+            Readers::Inline(v.len() as u8, a)
+        } else {
+            Readers::Heap(v)
+        }
+    }
+    /// Add read `e` of `access_x`, sorted by (actor, strong): it replaces the same actor's
+    /// reads it covers (`strong` at least `e.strong`: a later read of the same thread with a
+    /// scope no wider is racy with whatever the earlier one was racy with) and keeps that
+    /// actor's plainer ones (a strong read does not cover an earlier plain read).
+    pub fn insert_read(&mut self, e: Epoch) {
+        let s = self.as_slice();
+        // Fast path: at most one read of `e.actor`, not plainer than `e` (the common case):
+        // exactly the per-actor `insert`.
+        let mut mine = s.iter().filter(|x| x.actor == e.actor);
+        let one = mine.next().is_none_or(|x| x.strong >= e.strong) && mine.next().is_none();
+        if one {
+            self.insert(e);
+            return;
+        }
+        let mut v: Vec<Epoch> = s
+            .iter()
+            .copied()
+            .filter(|x| x.actor != e.actor || x.strong < e.strong)
+            .collect();
+        let k = v.partition_point(|x| (x.actor, x.strong) < (e.actor, e.strong));
+        v.insert(k, e);
+        *self = Readers::from_sorted(v);
     }
     /// Insert or replace `e` (by actor).
     pub fn insert(&mut self, e: Epoch) {
@@ -509,6 +568,14 @@ impl Hash for Sh {
             let (a, b) = e.words();
             h.write_u64(a);
             h.write_u64(b);
+        }
+        if let Some(hw) = &self.hw {
+            h.write_u64(hw.len() as u64 | 1 << 62);
+            for e in hw.iter() {
+                let (a, b) = e.words();
+                h.write_u64(a);
+                h.write_u64(b);
+            }
         }
     }
 }
@@ -849,6 +916,9 @@ pub struct Thread {
     pub st: St,
     pub regs: Vec<u64>,
     pub preds: Vec<u64>,
+    /// Bitset over `preds`: predicate written since launch (S-INIT-PRED: a read of an
+    /// unwritten predicate is reported, as for registers; SASS `PT` is always defined).
+    pub pdef: Vec<u64>,
     pub vc: VC,
     /// View of this thread's tcgen05.ld/st actor (`Machine::tc_actor_id`): tcgen05 operations
     /// only see synchronization that a `tcgen05.fence::after_thread_sync` imported (PTX
@@ -868,6 +938,9 @@ pub struct Thread {
     pub fences: Vec<VC>,
     /// Bulk groups committed so far (the open group's id).
     pub bulk_group: u32,
+    /// The read scoreboard of each committed bulk group (SASS `UTMACMDFLUSH`'s rbar, by group
+    /// id; `u8::MAX`: none, or PTX). A SASS wait counts the groups of its scoreboard only.
+    pub bulk_sb: Vec<u8>,
     /// Completed bulk operations not yet waited for: (group, completion clock).
     pub bulk_done: Vec<(u32, VC)>,
     /// Barrier generation key this thread was released from and has not run since (DPOR:
@@ -925,6 +998,9 @@ pub struct Warp {
     pub cta: u16,
     pub ur: Vec<u64>,
     pub up: u8,
+    /// Bitset over `up`: uniform predicate written since launch (S-INIT-PRED; `UPT` is
+    /// always defined).
+    pub up_def: u8,
     /// Bitset over `ur`: uniform register written since launch.
     pub ur_written: [u64; 4],
     /// Lanes recorded by `BSSY Bb` for each convergence barrier b (E-BSYNC).
@@ -1942,6 +2018,7 @@ impl Machine {
                     cta: cta as u16,
                     ur: vec![0; 255],
                     up: 0,
+                    up_def: 0,
                     ur_written: [0; 4],
                     bmask: [0; 16],
                 }));
@@ -1958,6 +2035,7 @@ impl Machine {
                     st: St::Run,
                     regs: vec![0; nv],
                     preds: vec![0; np.div_ceil(64)],
+                    pdef: vec![0; np.div_ceil(64)],
                     vc: VC::new(),
                     tc_vc: VC::new(),
                     pipe_vc: VC::new(),
@@ -1967,6 +2045,7 @@ impl Machine {
                     written: vec![0; nv.div_ceil(64)],
                     fences: vec![],
                     bulk_group: 0,
+                    bulk_sb: Vec::new(),
                     bulk_done: vec![],
                     acq_bar: None,
                     vis: VC::new(),

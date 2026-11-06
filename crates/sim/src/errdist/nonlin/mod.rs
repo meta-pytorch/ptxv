@@ -239,8 +239,8 @@ pub fn analytic(
         );
         return (out, notes);
     }
-    let kr = lin::KModel::new(r, &ts, op_tables(r, tabs));
-    let kc = c.map(|c| lin::KModel::new(c, &ts, op_tables(c, tabs)));
+    let kr = lin::KModel::new(r, &ts, op_tables(r, tabs)).with_input_errors(spec);
+    let kc = c.map(|c| lin::KModel::new(c, &ts, op_tables(c, tabs)).with_input_errors(spec));
     if std::env::var("PTXV_NL_DIAG").is_ok() {
         eprintln!("reference:\n{}", diagnose(&kr, spec, layouts, 8));
         if let Some(k) = &kc {

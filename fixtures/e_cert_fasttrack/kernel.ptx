@@ -1,0 +1,39 @@
+// Reproducer: a plain shared store whose only conflicting accesses are another thread's
+// atomics, with the storing thread's own atomic to the same word after it.
+//   warp 0 initializes m[lane] = 0 (plain st.shared), then every warp adds 1 with red.shared.add.
+//   good: bar.sync 0 between the init and the adds. mut: no bar.sync (the init races with the
+//   other warps' adds; an add that lands before the init is lost).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry k(.param .u64 out)
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<8>;
+    .shared .align 4 .b32 m[32];
+
+    mov.u32         %r0, %tid.x;
+    and.b32         %r1, %r0, 31;                   // lane
+    shl.b32         %r2, %r1, 2;
+    mov.u32         %r3, m;
+    add.u32         %r4, %r3, %r2;                  // &m[lane]
+    setp.ge.u32     %p0, %r0, 32;
+    @%p0 bra        SKIP_INIT;
+    mov.u32         %r5, 0;
+    st.shared.u32   [%r4], %r5;                     // init (warp 0)
+SKIP_INIT:
+    bar.sync        0;                              // @SYNC
+    red.shared.add.u32 [%r4], 1;
+    bar.sync        0;
+    @%p0 bra        DONE;
+    ld.shared.u32   %r6, [%r4];
+    ld.param.u64    %rd0, [out];
+    cvta.to.global.u64 %rd1, %rd0;
+    mul.wide.u32    %rd2, %r1, 4;
+    add.u64         %rd3, %rd1, %rd2;
+    st.global.u32   [%rd3], %r6;
+DONE:
+    ret;
+}

@@ -1191,14 +1191,20 @@ independently: it may launch at any point, with no ordering against the other GP
   closure); without PDL those cannot wait on later groups.
   - Why x precedes y. The check runs on y in the continuation of group j and compares it
     against the shadow and the obligations.
-    - FastTrack's shadow of a byte holds its last write and the reads since. Every earlier
-      access of the byte is HB-before that last write, or is an obligation:
-      - plain accesses are ordered with every write, else the group reported a race;
+    - The race shadow of a byte (`Sh`) holds its last write, the reads since, and every
+      earlier access that write does not *cover* (`Sh::hw`, and reads kept in `Sh::r`; see
+      E-WELLSYNC "Detector precision"). Every earlier access of the byte is in the shadow,
+      HB-before a write in it that covers it, or is an obligation:
+      - plain accesses are ordered with every write, else the group reported a race. Until
+        2026-11-05 a strong write replaced the shadow outright, so a plain write followed by
+        its own thread's atomic was dropped while another thread's atomic was still
+        unordered with it (soundness-harness miss 1); now such an access stays in the
+        shadow, is demoted with it and checked against the later groups;
       - strong reads need not be ordered before a later write (a poll that read an earlier
         value), so they are obligations;
       - unordered strong writes are obligations.
-    - For an explored group, the shadow and obligations together cover the frontier (last
-      write and reads since) of *every* terminal state. Under E-DRF the reduced search
+    - For an explored group, the shadow and obligations together cover the frontier (the
+      shadow's writes and reads) of *every* terminal state. Under E-DRF the reduced search
       reaches every terminal state of the full one: equivalent executions end in the same
       state, the shadow included.
     - Any access x of group i in E either is in the frontier of E's projection on group i, or
@@ -1564,6 +1570,20 @@ as a violation (sig `desc-version:<pc>`). `ptxv equiv` accepts them as a precond
   (`Kernel::bulk_read_waits`; cuBLAS's MXF8 nvjet waits so on the `BAR.SYNC` before it reuses
   a TMA-store staging buffer, and has no `DEPBAR`). A scoreboard counts every operation on it,
   so the wait may be longer than modeled, never shorter.
+- **Per scoreboard** (2026-11-05). A group counts on the read scoreboard of the
+  `UTMACMDFLUSH` that committed it (`Kernel::bulk_commit_sb`, `Thread::bulk_sb`), and a wait
+  on SBk (control-word bit or `DEPBAR.LE SBk, n`, whose n counts SBk's groups) covers only
+  SBk's groups. Before, a wait on *any* scoreboard some flush of the kernel used drained every
+  group. ptxas reuses scoreboards: CUTLASS's grouped GEMM (r3) flushes its epilogue stores on
+  SB0, other flushes of the kernel use SB1–SB4, and the epilogue's `BSYNC` waits on SB3 for
+  its own `MEMBAR` / `LDTM` / `UTMASTG` operand reads. The model drained the first store there,
+  which made the later `DEPBAR.LE SB0, 0x1` and `BAR.SYNC 0x1, 0x80` redundant: NOPing either
+  (soundness-harness miss 3) certified clean while GB300 was wrong 200/200, since the staging
+  buffer was rewritten before the store had read it. `fixtures/e_gmm_epilogue_reuse`
+  (`tests/wellsync.rs` `tma_store_wait_counts_its_own_scoreboard`). Verdict change:
+  `r3_grouped_mm` good is now `contract` (was clean): its last store is still reading at exit,
+  since the epilogue's last waits are `DEPBAR.LE SB0, 0x1` and a `BSYNC` on SB2, which the old
+  rule counted as a full drain (E-BULK-EXIT).
 
 ### E-NANOSLEEP · code
 **`nanosleep` is a no-op.**
@@ -1993,7 +2013,7 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
     one run per leader policy (E-ELECT).
 - Argument: let R be the run, E any execution. Induction over E: each actor's next event
   in E is its next event in R, with the same outcome and a vector clock ⊇ R's. Values: plain
-  reads read the HB-latest write (R race-free; the detector is FastTrack-precise, and E has
+  reads read the HB-latest write (R race-free; the detector is precise, below, and E has
   at least R's HB edges), strong reads are ordered with every write (C-ORDER) or are CAS
   links that read from R's predecessor (C-CAS), allocator results and warp collectives are
   determined (C-ORDER, C-WARP). Synchronization: C-PHASE
@@ -2006,6 +2026,20 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
   R's outputs and no finding. With C-RING polls whose observed value steers the program,
   R is one run per sequence of choices, and E follows the run of its own choices (C-RING's
   argument).
+- Detector precision (the value step above needs it): the run's race detector reports every
+  pair of conflicting accesses that R's HB does not order, unless both are strong and morally
+  strong (S-SCOPE). Vector clocks give that only if the per-byte shadow keeps every earlier
+  access a later one could race with. `Machine::access_x` drops an earlier access e at a
+  write w only when w *covers* e: e is HB-before w, and every access that races with e races
+  with w. That holds when w is plain, or when both are strong, in one CTA, and w's scope is no
+  wider than e's (moral strength with w then implies it with e). A strong write covers no
+  plain access, and an unordered strong pair is kept (`Sh::hw` for writes, `Sh::r` for
+  reads); an unordered pair with a plain side is reported. A read replaces only the same
+  actor's reads of at least its strength. FastTrack's single last-write epoch broke this:
+  warp 0's plain `STS` init followed by its own `ATOMS` became the strong `ATOMS` alone, and
+  the other warps' unordered atomics were morally strong with it. The certificate called
+  that clean while GB300 was wrong 200/200 (soundness-harness miss 1, `fixtures/
+  e_cert_fasttrack`, `tests/wellsync.rs` `plain_write_hidden_by_own_atomic_is_a_race`).
 - Where: `crates/sim/src/wellsync.rs`, `wellsync/ring.rs` (C-RING); hooks marked `wellsync.rs` in `exec.rs` (`exec`,
   `mbar_atomic`, `mbar_maybe_complete`, `bar_try_release`, `cluster_try_complete`,
   `warpsync_release`, `access_x`) and the `Machine::wlog` slot (empty, unhashed, dropped by
@@ -2205,6 +2239,41 @@ that fence happens-before the async operation's issue. Otherwise the result is a
   uses (fixtures/c_mm_f32_gemmsn_tn: clean, `hw --scrub` 1000/1000 = simulator with smem
   NaN-poisoned; before, all four registers were undefined and the output store was reported).
 - If wrong: *miss* for unchecked operand kinds.
+
+### S-INIT-PRED · code
+**Predicates start undefined too, and reading one before any write is reported** like an
+unwritten register (`violation`, `uninit-reg:<pc>`). Until 2026-11-05 `Thread::preds` was
+zero-filled with no undefined state, so a never-written predicate read as false in every
+lane. The soundness harness (docs/soundness-harness.md, miss 2) NOPed the cuBLAS tile
+scheduler's fast-path `SYNCS.PHASECHK.TRANS64.TRYWAIT P4` in five nvjet kernels
+(`c_mm_bf16_{mcast,nnt,ttn}`, `c_smm_nvf4`, `r2_cublas_gemm`): the `BRA !P4` after it read the
+unwritten P4, every lane took the retry stub (the good kernel), and ptxv certified clean while
+GB300 was wrong or hung in 198/200 runs. On GB300 the unwritten P4 is not false in every lane
+(`tools/mutate/repro/uninit_pred` controls, 200/200 correct each).
+- Defined: SASS `PT` / `UPT` (constants), and every predicate (per thread; uniform ones per
+  warp) once an executed instruction writes it (`Machine::wp`: `ISETP`, `PLOP3`, `R2P`,
+  votes, `SYNCS` results, ...).
+- Reads checked: the guard of every instruction (the SASS lifter makes a branch condition
+  the guard), in every member lane (`exec_inner`); predicate operands through `Op::src_regs`
+  (`reg_umask` of `File::P` / `File::UP`), with S-INIT's rule that a register-only operation
+  computes on undefined inputs and reports only where the value is used:
+  - `SEL` / `FSEL` on an undefined predicate: an undefined result;
+  - `PLOP3`: reported only if an output depends on an undefined input (ptxas's
+    `PLOP3.LUT P0, PT, PT, PT, PT, 0x8, 0x0` constants do not);
+  - `P2R` keeps the undefined bits of the predicates it packs and `R2P` restores them (a
+    spilled `PR`);
+  - an `ISETP` whose combining predicate is undefined is reported (S-INIT's "decided" rule
+    needs a defined combining predicate).
+- Where: `machine.rs` `Thread::pdef`, `Warp::up_def`; `exec.rs` `reg_umask`, `pred_undef`,
+  `wp`, `exec_inner`, `undef_result`, `Op::R2p`; E-SPIN / C-PEEK state comparisons
+  (`exec.rs`, `spin.rs`, `wellsync.rs` `reg_diff`) include the defined bits.
+- Status: **enforced** (2026-11-05). Evidence: `fixtures/e_uninit_pred` (`tests/wellsync.rs`
+  `branch_on_unwritten_predicate_is_reported`): the NOPed try-wait is reported at the
+  `BRA !P4` (0x1b80); the good kernel and the three GB300-correct controls still certify.
+  Every fixture keeps its verdict on both front-ends (full suite).
+- If wrong: *false alarm* where hardware defines a predicate the model does not write (an
+  unmodelled instruction's predicate output); *miss* only for predicates the lifter writes
+  that hardware does not.
 
 ### S-DSMEM · code
 **A CTA's shared addresses are `(cluster rank << 24) | offset`**, its window inside the
@@ -3946,6 +4015,31 @@ Leaves of a packed 16-bit word that the output does not depend on are checked at
 - Status: **argued.** Agrees with Tier 3 within its CI on gelu / silu / softcap, silu*mul and
   add (f32 and bf16), single and pairs (docs/errdist.md §9).
 - If wrong: the law of another population of elements.
+
+### N-ERRDIST-INERR · code
+**An input's error is independent across elements, and the linearized tier pushes it
+through to first order.** A spec's per-tensor `error` (relative, absolute, a 16-bit
+rounding, a moment form, or joint (value, error) pairs from an upstream errstate) is drawn
+independently per element. The linearized tier takes it as the leaf's local law (moments
+given the value; for pairs, per value bin) and propagates J e_in + e_own. An errstate
+carries the per-element joint law only (`model: "iid"`): the error-error, value-value and
+value-error correlations across outputs (same row, other rows) are measured and written as
+diagnostics (`corr`), not carried. Richer states (a factor model, low rank) would go in a new
+`model`, read by the same `error` field.
+- Where: `errdist/spec.rs` `InputError`, `sample`; `errdist/nonlin/lin.rs` `KModel::state`;
+  `errdist/errstate.rs`; `errdist/nonlin/agg.rs` `curvature`.
+- Status: **argued.** Cross-output correlations measured on matmul, matmul -> RMSNorm,
+  matmul -> softmax, attention and MLP outputs (docs/errdist.md §10.3). Error-error and
+  value-error |rho| are at most 0.016 (softmax's same-row -0.016 is its sum-to-one
+  constraint, -1/(n-1)). The error magnitudes are correlated within a row: squared errors
+  0.18 on attention, 0.07 on the MLP, 0.008 on matmul. Composed stage by stage under
+  independence, against end-to-end Tier 3, the abs error std is within 5% on matmul ->
+  RMSNorm, matmul -> softmax, attention, MLP and a compile-vs-eager silu*mul pair. Hand-written
+  upstream errors are within 4%. GB300 agrees with the end-to-end Tier 3 on every region. The tier is refused when the curvature probe's
+  second-order effect exceeds 0.1 of the first-order one.
+- If wrong: correlated upstream errors (a shared scale, a row-wise statistic feeding every
+  element) are mis-weighted downstream. The composed Tier 3 shares the assumption, and only
+  an end-to-end run (Tier 3 or GPU) checks it.
 
 ---
 

@@ -215,3 +215,43 @@ def test_errdist_model_chain_and_nonchain():
     e = s(D.Normal(0, 1), mc_inputs=500)
     assert 0.5 < e.meta["p_differ"][0] < 0.8  # tier 3: 0.643
     assert "nonlin" in __import__("json").loads(s.path.read_text())
+
+
+def test_adapter_maps_input_errors(tmp_path):
+    """Input error models (docs/errdist.md §2.1) map to the spec's `error` field; an
+    upstream errstate becomes joint pairs read from a copy in the work directory."""
+    es = tmp_path / "up.json"
+    es.write_text(
+        '{"kind": "ptxv-errstate", "version": 1, "model": "iid", "tensors": {"out": '
+        '{"value_mean": 0.0, "value_var": 1.0, "pairs": [[0.5, 1e-7], [-1.0, 2e-7]]}}}'
+    )
+    args = {
+        "inputs": {
+            "a": D.Normal(0, 2).with_error(D.RelativeError(1e-3)).spec(),
+            "b": D.Normal().with_error(D.RoundError("bf16")).spec(),
+            "c": D.Upstream(str(es), "out").spec(),
+        }
+    }
+    s = A.t_spec(args, tmp_path)
+    assert s["tensors"]["a"] == {
+        "dist": {"kind": "normal", "mean": 0.0, "std": 2.0},
+        "error": {"kind": "relative", "std": 1e-3, "mean": 0.0},
+    }
+    assert s["tensors"]["b"]["error"] == {"kind": "round", "format": "bf16"}
+    c = s["tensors"]["c"]["error"]
+    assert c["kind"] == "pairs" and c["tensor"] == "out"
+    assert (tmp_path / c["file"]).read_text() == es.read_text()
+
+
+@needs_binary
+def test_errdist_chain_composes_through_errstate():
+    """rmsnorm -> softmax composed: the first stage's errstate is the second's input."""
+    import ptxv
+
+    r = ptxv.errdist_model(str(FIX / "c_rmsnorm_triton_f32"))
+    s = ptxv.errdist_model(str(FIX / "r4_softmax_triton"))
+    x = D.Normal().with_error(D.RelativeError(1e-6))
+    up = r({"x": x, "w": D.Normal()}, errstate=True)
+    assert up.as_input().spec()["kind"] == "upstream"
+    e = (r.then(s, "x"))({"x": x, "w": D.Normal()})
+    assert e.tier == 2, [x.get("applicability") for x in e.report["estimates"]]

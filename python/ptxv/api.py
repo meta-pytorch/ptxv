@@ -289,6 +289,7 @@ class ErrdistModel:
         tier1: bool = False,
         mc_inputs: int | None = None,
         seed: int = 1,
+        errstate: bool = False,
     ):
         import hashlib
         import json
@@ -300,7 +301,7 @@ class ErrdistModel:
             a = {"default": inputs.spec(), "inputs": {}}
         else:
             a = {"inputs": {n: d.spec() for n, d in (inputs or {}).items()}}
-        a.update(seed=seed, tier1=tier1, mc_inputs=mc_inputs)
+        a.update(seed=seed, tier1=tier1, mc_inputs=mc_inputs, errstate=errstate)
         key = hashlib.sha256(
             json.dumps(a, sort_keys=True, default=str).encode()
         ).hexdigest()[:20]
@@ -311,6 +312,41 @@ class ErrdistModel:
                 self._run(_errdist_adapter.query_argv(self.path, a, q))
             self._memo[key] = json.loads(doc_path.read_text())
         return _errdist_adapter.to_errdist(self._memo[key], metric=metric)
+
+    def then(self, nxt: "ErrdistModel", into: str, **fixed: Any) -> "ErrdistChain":
+        """Compose: this model's output feeds input `into` of `nxt` (its value and error as
+        joint pairs, independent across elements: N-ERRDIST-INERR); `fixed` gives `nxt`'s
+        other inputs. `(m1.then(m2, "h"))(inputs) -> ErrDist` of the second kernel's output
+        against the exact chain on error-free inputs."""
+        return ErrdistChain([(self, None, {})]).then(nxt, into, **fixed)
+
+
+class ErrdistChain:
+    """Compiled models in sequence (`ErrdistModel.then`): each stage's output errstate is
+    the next stage's input `into`."""
+
+    def __init__(self, stages: list) -> None:
+        self.stages = stages
+
+    def then(self, nxt: "ErrdistModel", into: str, **fixed: Any) -> "ErrdistChain":
+        return ErrdistChain(self.stages + [(nxt, into, fixed)])
+
+    def __call__(self, inputs: Any, *, metric: str = "abs", **kw: Any):
+        out = None
+        for i, (m, into, fixed) in enumerate(self.stages):
+            last = i == len(self.stages) - 1
+            if i == 0:
+                arg = inputs
+            else:
+                arg = dict(fixed)
+                arg[into] = out.as_input()
+            out = m(
+                arg,
+                metric=metric,
+                errstate=not last or kw.get("errstate", False),
+                **{k: v for k, v in kw.items() if k != "errstate"},
+            )
+        return out
 
 
 def errdist_model(

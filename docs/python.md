@@ -201,6 +201,24 @@ attention outputs it returns NaN: their evaluation data is not exported yet.
   check and the default 300-input Tier 3 cross-check pass, else Tier 3 (docs/errdist.md
   §3.2); Tier 1 only with `tier1=True`. `ErrDist.tier` is the headline's tier,
   `ErrDist.crosscheck` the cross-check entries.
+- Inputs that carry an error (docs/errdist.md §2.1, §10): `d.with_error(e)` with
+  `RelativeError(std)`, `AbsoluteError(std)`, `RoundError("bf16")` (an f32 value that went
+  through a 16-bit tensor) or `LinearError(alpha, beta, s0, s1)`. The kernel reads the value
+  plus the error; the reference is exact on the error-free value.
+- Composition: `m = ptxv.errdist_model(case)`; `d = m(inputs, errstate=True)` also writes the
+  output's errstate (joint value / error pairs), and `d.as_input()` is that output as the
+  next kernel's input (`dist.Upstream(errstate_file, tensor)`). `m1.then(m2, "h", w=Normal())`
+  chains models: `m1`'s output feeds input `h` of `m2`, and `(m1.then(m2, "h"))(inputs)` is
+  the `ErrDist` of `m2`'s output against the exact chain.
+
+```python
+mm = ptxv.errdist_model("chain/mm")      # h = x @ w
+rms = ptxv.errdist_model("chain/rms")    # F.rms_norm(h, (64,))
+N = dist.Normal()
+h = mm({"x": N, "w": N}, errstate=True).as_input()
+d = rms({"h": h})                        # tier 2: abs std 1.52e-7 (end to end, tier 3: 1.50e-7)
+d = rms({"h": N.with_error(dist.RoundError("bf16"))})   # h went through a bf16 tensor
+```
 
 ## Tests
 

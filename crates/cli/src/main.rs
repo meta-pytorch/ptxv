@@ -201,6 +201,11 @@ enum Cmd {
         /// Also run the uniform-residue heuristic (every residue law uniform) for comparison.
         #[arg(long)]
         uniform: bool,
+        /// Write the output's error state (docs/errdist.md §10): value and error moments,
+        /// their covariance and joint samples from Tier 3, the next kernel's input error
+        /// (`"error": {"kind": "pairs", "file": FILE}` in its spec).
+        #[arg(long)]
+        errstate: Option<PathBuf>,
         /// Also run Tier 1 (the residue-exact chain of MMA outputs; minutes on wide scale
         /// ranges, about 1 GiB per step). Default: tier 0, tier 2 where its applicability
         /// check passes, else tier 3.
@@ -1789,6 +1794,7 @@ fn run() -> Result<()> {
             explore,
             pre_round,
             uniform,
+            errstate,
             tier1,
             no_tier1,
         } => errdist::cmd(&errdist::Args {
@@ -1808,6 +1814,7 @@ fn run() -> Result<()> {
             explore,
             pre_round,
             uniform,
+            errstate,
             tier1: tier1 && !no_tier1,
         })?,
         Cmd::Compare {

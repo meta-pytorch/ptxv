@@ -27,10 +27,14 @@ fn machine(case: &Case, variant: &str, front: &str) -> Machine {
     let k = match front {
         "ptx" => ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap(),
         _ => {
+            // Tests run in parallel and may build the same (case, variant): a counter keeps
+            // each build's directory distinct.
+            static CALL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
             let dir = std::env::temp_dir().join(format!(
-                "ptxv-test-resid-{}-{variant}-{}",
+                "ptxv-test-resid-{}-{variant}-{}-{}",
                 case.m.name,
-                std::process::id()
+                std::process::id(),
+                CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ));
             std::fs::create_dir_all(&dir).unwrap();
             let p = dir.join("k.ptx");

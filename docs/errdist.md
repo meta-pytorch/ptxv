@@ -12,6 +12,12 @@ version 1) and §3 (report, version 1) are fixed interfaces.
   its interval is refused and the headline falls back to Tier 3.
 - **Tier 1** (residue-exact Markov chain; AG's exact-site convolution on non-chain
   programs) is opt-in: `--tier1`, `tier1=True`.
+- **Inputs that carry an error, and composition (§2.1, §10).** A tensor may carry an error
+  (relative, absolute, a 16-bit rounding, or an upstream kernel's errstate). The kernel
+  reads value + error, the reference is exact on the error-free value. The linearized tier
+  carries J e_in + e_own, and refuses where the kernel is not linear at the error's scale.
+  `--errstate FILE` writes a kernel's output error state for the next kernel, so
+  multi-launch regions compose stage by stage (Python: `m1.then(m2, "h")`).
 
 `ptxv equiv` proves a worst-case bound τ(x) on |C(x) − R(x)| for every input. `ptxv errdist`
 estimates the *distribution* of the error for inputs drawn from a user-given distribution:
@@ -30,6 +36,7 @@ guarantee.
 ptxv errdist <case-dir | equiv.toml> --inputs spec.json [--json out.json] [--html out.html]
              [--candidate N] [--mc N] [--sim-trials N] [--gpu-trials N] [--per-output]
              [--pre-round] [--uniform] [--explore] [--threads N] [--out DIR] [--tier1]
+             [--errstate FILE]
 ptxv errdist <case-dir | equiv.toml> [--candidate N] --compile [FILE]
 ptxv errdist --model FILE --inputs spec.json [--json out.json] [--mc N] [--tier1]
 ```
@@ -51,6 +58,8 @@ ptxv errdist --model FILE --inputs spec.json [--json out.json] [--mc N] [--tier1
   run. `--no-tier1` is accepted and ignored.
 - `--out DIR`: scratch directory; by default one per process under `$TMPDIR`, removed at the
   end (concurrent runs never share one).
+- `--errstate FILE` writes the output's error state (§10) from Tier 3's (value, error)
+  pairs: the next kernel's input `"error": {"kind": "pairs", "file": FILE}`.
 - `--compile [FILE]` / `--model FILE`: the model file (§1.1).
 - `--html FILE` writes one self-contained page (inline SVG, no scripts or external assets):
   P(differ) per tier and observed with 95% intervals, the PMFs over output ulps overlaid
@@ -219,6 +228,55 @@ elements share a scale byte is read from the kernel's numerics DAG (the scale le
 leaf is multiplied with), so the recipe does not need the scale layout (swizzled or not).
 
 Equivalent forms in TOML are accepted (same field names).
+
+### 2.1 Inputs that carry an error
+
+A tensor's `error` field says the kernel does not read the spec's value x but
+round_dtype(x + e). The reference stays the exact computation on x, so the report is the
+kernel's output error against the exact result on error-free inputs: the upstream error
+pushed through the kernel, plus the kernel's own. Elements' errors are independent
+(N-ERRDIST-INERR). The tensor needs `quant: round` (a float buffer).
+
+| kind | fields | e given x |
+|---|---|---|
+| `relative` | `std`, `mean` = 0 | x (mean + std Z) |
+| `absolute` | `std`, `mean` = 0 | mean + std Z |
+| `round` | `format` (bf16 / f16 / ...) | RNE(x) to `format` minus x: an f32 value that went through a 16-bit tensor |
+| `linear` | `alpha`, `beta`, `s0`, `s1` | N(alpha + beta x, s0^2 + s1^2 x^2) |
+| `pairs` | `pairs: [[x, e], ...]` or `file` (an errstate, §10) with `tensor` | (x, e) drawn jointly from the pairs: the value comes from the pair too, and `dist` is unused |
+
+```json
+"h": {"dist": {"kind": "normal", "std": 8}, "error": {"kind": "relative", "std": 1e-6}}
+"h": {"dist": {"kind": "normal"}, "error": {"kind": "pairs", "file": "mm.errstate.json"}}
+```
+
+- **Tier 3** samples e for every element and runs the kernel on round(x + e), with the exact
+  reference computed on x.
+- **The linearized tier** (§9.3) takes the error as the leaf's local law. That is its moments
+  given x, a normal with the format's rounding variance added, or the exact rounding law for
+  `round`. The law is pushed through the derivatives like every other site (J e_in + e_own).
+  For `pairs` the moments come per value bin: about 256 pairs per bin, a `linear` form fitted
+  in each. A single `linear` fit over all pairs was 2-3x off in the middle of a softmax
+  output's range. One constant per bin missed the growth across the top bin, where the
+  largest logits sit (attention 1.12x Tier 3, now 1.03x).
+- **Refused where the kernel is not linear at the error's scale.** At 16 nominal inputs,
+  the error at one standard deviation is applied as +e and -e (all errored leaves at once).
+  The tier is refused when the second-order effect |d+ + d-| exceeds 0.1 of the first-order
+  effect |d+ - d-| (summed over the outputs). Examples:
+  - a softmax of N(0, 4^2) logits with an absolute error of 0.5: 0.25, refused;
+  - an RMSNorm whose rows have tiny variance against the error: 0.39, refused;
+  - the same kernels with small errors: 0.000.
+- **The cross-check (§3.2) also compares the spread.** With input errors the outputs almost
+  never round alike, so P(differ) near 1 says little. The tier's mean |error| must also be
+  within 10% of Tier 3's. The std is not used: a softmax fed by an upstream error has max /
+  std ~ 40, and 300 inputs leave Tier 3's std 10% apart from seed to seed. The tier uses at
+  least 192 nominal inputs here; at 48 it moved +-15% between seeds.
+- **The chain tiers** (exact certificates, residue chains, the DAG CLT) do not model input
+  errors. With an `error` on any input, the linearized tier runs on chain programs too
+  (matmuls, reductions), and a note says so.
+- **Pairs** (C - R, both reading the same round(x + e)): the linearized pair tier is
+  usually refused, as it is without input errors (§9.8), and Tier 3 answers. The elementwise
+  law (§9.5) does not take input errors.
 
 ## 3. Report, version 1
 
@@ -1021,3 +1079,110 @@ GB300 (`--gpu-trials 32`, GPU 0, normal spec):
   - bf16 cuBLAS epilogues with `UTMAREDG.3D.ADD` (TMA reduce-add: unsupported SASS
     opcode);
   - specs with axis scales or outliers (no elementwise law; the linearized tiers still run).
+
+## 10. Composition: errstate files and chains of kernels
+
+A multi-launch region (matmul then RMSNorm, attention as QK^T / softmax / PV, an MLP)
+composes stage by stage. Each kernel maps (input values, input errors) to (output value,
+output error). The map is the kernel's own rounding plus the input errors pushed through it.
+Its output state is the next kernel's input error (§2.1).
+
+### 10.1 The errstate file
+
+`--errstate FILE` (Python: `errstate=True`) writes the output's state from Tier 3's (value,
+error) pairs. The error is against the exact result of the whole chain so far on error-free
+inputs.
+
+```json
+{"kind": "ptxv-errstate", "version": 1, "model": "iid",
+ "source": {"reference": {...}, "candidate": null, "tier3_inputs": 300},
+ "tensors": {"out": {"shape": [32, 64], "format": "f32",
+   "value_mean": ..., "value_var": ..., "error_mean": ..., "error_var": ..., "cov": ...,
+   "linear": [alpha, beta, s0, s1], "n": 72147,
+   "pairs": [[value, error], ...],
+   "corr": {"error_same_row": ..., "error_other_row": ..., "value_same_row": ...,
+            "value_other_row": ..., "value_error_same_row": ..., "value_sq_same_row": ...,
+            "error_sq_same_row": ..., "n_same_row": ..., "n_other_row": ...}}}}
+```
+
+- `pairs` holds at most 32768 pairs (an even subsample in (input, output) order, so the file
+  is reproducible). `linear` is the one-fit moment form, a summary only: the next kernel's
+  linearized tier reads the pairs per value bin (§2.1).
+- `model: "iid"` is the only state this ptxv writes or reads: elements independent, the
+  joint law of (value, error) per element (N-ERRDIST-INERR). `corr` measures what the iid
+  model drops (§10.3) and is not used. A richer state (a factor model, a low-rank
+  covariance) would be a new `model` value, read through the same `error` field, with no
+  change to the spec or the Python API.
+
+### 10.2 CLI and Python
+
+```
+ptxv errdist chain/mm --inputs normal.json --errstate mm.es.json
+ptxv errdist chain/rms --inputs rms.json     # "h": {"error": {"kind": "pairs", "file": "mm.es.json"}}
+```
+
+Python (docs/python.md): `m(inputs, errstate=True).as_input()` is the output as the next
+input. `m1.then(m2, "h", **other_inputs)` chains compiled models. The intermediate errstates
+are written automatically, and the result is the last kernel's `ErrDist`.
+
+### 10.3 Correlations across outputs (measured)
+
+These were measured on the end-to-end outputs (300 inputs, normal inputs, f32). Same row
+means two outputs in one row of the last dimension.
+
+| output | error, same row | error, other rows | value-error, same row | value^2, same row | error^2, same row |
+|---|---|---|---|---|---|
+| matmul (32x64) | -0.0012 | 0.0001 | -0.0007 | 0.013 | 0.008 |
+| matmul -> RMSNorm | 0.0008 | -0.0000 | -0.0020 | -0.017 | -0.0001 |
+| matmul -> softmax | -0.016 | -0.0004 | -0.0006 | -0.013 | 0.006 |
+| attention | 0.0016 | -0.0002 | -0.0019 | 0.077 | 0.18 |
+| MLP | 0.0025 | -0.0005 | 0.0002 | 0.097 | 0.070 |
+
+- **The errors themselves are uncorrelated across outputs.** Softmax's -0.016 is its
+  sum-to-one constraint (-1/(n-1) at n = 64). RMSNorm mixes a whole row, but the shared
+  1/rms term is a common relative factor. Its errors stay uncorrelated (0.0008), as do
+  value and error (-0.002), and even the squared errors (-0.0001): the outputs' own
+  rounding dominates the shared rstd error.
+- **The error magnitudes are correlated within a row**:
+  - attention 0.18 and the MLP 0.07: rows with larger values have larger errors throughout;
+  - the iid model draws each element's magnitude independently.
+
+  At these sizes it does not matter. Under independence, the composed estimates below are
+  within 5% of end to end, attention and the MLP included. A downstream row statistic of
+  squared errors (a second norm on an attention output) is where it would show first.
+
+### 10.4 Validation
+
+Each region was run end to end (one multi-launch capture, Tier 3 with 1000 inputs, and
+GB300 with 100 inputs on GPU 1). It was then run composed: each stage fed the previous
+stage's errstate, assuming independence. The table gives the abs error std, with ratios to
+the end-to-end Tier 3. Captures and scripts are in `chain/` of the run directory
+(`validate.py`, `validate_cve.py`, `gpu_e2e.sh`).
+
+| region | end-to-end Tier 3 | GB300 P(differ) vs Tier 3 | composed Tier 3 | composed Tier 2 | Tier 2 |
+|---|---|---|---|---|---|
+| matmul -> RMSNorm | 1.502e-7 | 0.8089 vs 0.8086 | 1.009 | 1.018 | applicable |
+| matmul -> softmax | 7.057e-8 | 0.9812 vs 0.9816 | 1.046 | 1.034 | applicable |
+| MLP (matmul -> silu * mul -> matmul) | 1.503e-4 | 0.9094 vs 0.9091 | 0.994 | 1.003 | applicable |
+| attention (QK^T -> softmax -> PV) | 5.545e-8 | 0.8928 vs 0.8926 | 0.977 | 0.979 | applicable |
+| silu(x w1) * (x w3), eager vs exact | 9.601e-6 | 0.9155 vs 0.9151 | 0.998 | 1.007 | applicable |
+| same, torch.compile vs exact | 9.616e-6 | 0.9157 vs 0.9153 | 0.998 | 1.007 | applicable |
+| same, compile - eager (pair) | 1.075e-6 | 0.2065 vs 0.2061 | 0.984 | 0.619 | refused (cross-check) |
+
+Hand-written upstream errors, with no upstream run:
+
+| region | input | reference | composed Tier 3 | Tier 2 |
+|---|---|---|---|---|
+| matmul -> RMSNorm | h ~ N(0, sd_mm) + absolute(sd of the matmul's error) | end to end 1.502e-7 | 1.033 | 1.036 |
+| MLP | g ~ N(0, sd_g) + absolute(sd of g's error) | end to end 1.503e-4 | 0.998 | 0.996 |
+| RMSNorm | h rounded to bf16 | its Tier 3 1.621e-3 | - | 0.999 |
+| last matmul of the MLP | g with relative error 1e-3 | its Tier 3 0.5047 | - | 1.003 |
+
+- With every stage composed under independence, Tier 3 matches the end-to-end run within 5%
+  (the compile-vs-eager pair included). This tests the iid errstate, not a tier.
+- Tier 2 is within 4% wherever it is applicable. Before the per-bin moments (§2.1), attention
+  was 1.12. The compile-vs-eager pair is refused by the cross-check, as the linearized pair
+  tier is without input errors (§9.8), and Tier 3 answers.
+- The pair's composed Tier 3 sees the input errors cancel: both kernels read the same noisy
+  value, and C - R keeps only the different roundings.
+

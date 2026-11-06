@@ -3856,6 +3856,7 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
                     code[i].op = Op::BulkWait {
                         n,
                         read: true,
+                        sb: Some(sb),
                         cp: false,
                     }
                 }
@@ -3863,6 +3864,7 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
                     code[i].op = Op::BulkWait {
                         n,
                         read: true,
+                        sb: Some(sb),
                         cp: false,
                     }
                 }
@@ -3872,6 +3874,7 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
                     code[i].op = Op::BulkWait {
                         n,
                         read: true,
+                        sb: Some(sb),
                         cp: true,
                     }
                 }
@@ -3886,16 +3889,25 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
         }
     }
     // A wait bit on that scoreboard in any instruction's control word is the same wait with
-    // n = 0 (cuBLAS's nvjet epilogue: the BAR.SYNC before reusing a TMA-store staging buffer).
+    // n = 0 (cuBLAS's nvjet epilogue: the BAR.SYNC before reusing a TMA-store staging buffer),
+    // for the groups committed on that scoreboard only (`bulk_commit_sb`): CUTLASS's grouped
+    // GEMM flushes its stores on SB0 and waits on SB3 for its own MEMBAR / LDTM / UTMASTG
+    // operand reads, while other flushes of the kernel use SB3 (soundness-harness miss 3).
     // ASSUME(E-ASYNC-STEP)
-    let bulk_read_waits: Vec<usize> = lines
+    let bulk_mask = bulk_sbs.iter().fold(0u8, |m, &s| m | 1 << s);
+    let bulk_read_waits: Vec<(usize, u8)> = lines
         .iter()
         .enumerate()
-        .filter(|(_, l)| {
-            l.hi.map(scoreboard::Ctrl::decode)
-                .is_some_and(|c| bulk_sbs.iter().any(|&s| c.wait >> s & 1 != 0))
+        .filter_map(|(i, l)| {
+            let w = l.hi.map(scoreboard::Ctrl::decode)?.wait & bulk_mask;
+            (w != 0).then_some((i, w))
         })
-        .map(|(i, _)| i)
+        .collect();
+    let bulk_commit_sb: Vec<(usize, u8)> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.opcode == "UTMACMDFLUSH")
+        .filter_map(|(i, l)| Some((i, l.hi.and_then(|h| scoreboard::Ctrl::decode(h).rbar)?)))
         .collect();
     aligned_bars(&mut code);
     smem_acquires(&lines, &mut code);
@@ -3922,6 +3934,7 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
         labels: klabels,
         static_findings,
         bulk_read_waits,
+        bulk_commit_sb,
         parts: vec![],
     })
 }

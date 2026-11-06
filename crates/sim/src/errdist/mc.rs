@@ -137,6 +137,13 @@ pub struct Obs {
     pub wc_ratio: f64,
     /// Subsample of (u-scale, ulp-scale, abs) errors for quantiles and tests.
     pub sample: Vec<(f64, f64, f64)>,
+    /// For the subsample: (exact value y, the computed output's error against it: R's in
+    /// single mode, C's in a pair), the errstate's joint pairs.
+    pub pairs: Vec<(f64, f64)>,
+    /// Per pair: (output index, input sample index) (cross-output correlations).
+    pub pair_at: Vec<(u32, u64)>,
+    /// The input sample being observed (set by the caller).
+    pub cur: u64,
     /// Per input: mean u-scale error and mean |u-scale error| (batch means for CIs).
     pub input_means: Vec<(f64, f64)>,
     /// Per input: the largest |u-scale error| (for "largest fraction of the bound" claims).
@@ -187,6 +194,8 @@ impl Obs {
         self.wc_exceed += o.wc_exceed;
         self.wc_ratio = self.wc_ratio.max(o.wc_ratio);
         self.sample.extend(o.sample);
+        self.pairs.extend(o.pairs);
+        self.pair_at.extend(o.pair_at);
         self.input_means.extend(o.input_means);
         self.input_max_u.extend(o.input_max_u);
         self.input_differ.extend(o.input_differ);
@@ -325,6 +334,12 @@ pub fn observe(
         let kept = ki < keep.len() && keep[ki] == o;
         if kept {
             obs.sample.push((eu, el, e));
+            let ey = match ev.c_out {
+                Some(c) => (c[o] as f64 - ex.y) - ex.y_lo,
+                None => er,
+            };
+            obs.pairs.push((ex.y + ex.y_lo, ey));
+            obs.pair_at.push((o as u32, obs.cur));
         }
         if let Some((rel, k, ab, one)) = st.wc {
             let b = (rel * ex.y.abs() + k * if one { 1.0 } else { ex.s } + ab) * (1.0 + 1e-9);
@@ -488,6 +503,14 @@ fn one(
     for e in ood_events(st.r, &wr) {
         causes.push(e.to_string());
     }
+    // Input errors: the exact reference is the program on the error-free values.
+    let wx = if smp.clean.is_empty() {
+        None
+    } else {
+        let mut w = st.r.leaves(&smp.clean_bytes())?;
+        st.r.eval_into(&mut w);
+        Some(w)
+    };
     let c_vals = match st.c {
         Some(c) => {
             let mut wc = c.leaves(&smp.bytes)?;
@@ -510,10 +533,11 @@ fn one(
     }
     let keep = keep_set(st.r.outputs.len(), cfg.keep, t);
     let nf0 = obs.nonfinite;
+    obs.cur = t;
     observe(
         st,
         &InputEval {
-            w: &wr,
+            w: wx.as_deref().unwrap_or(&wr),
             r_out: &r_out,
             c_out: c_vals.as_deref(),
         },

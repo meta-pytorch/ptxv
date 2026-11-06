@@ -1082,8 +1082,8 @@ pub fn estimate(
         let st = |t: u64| -> Result<(State, State), String> {
             let smp = super::super::spec::sample(spec, layouts, (1u64 << 42) + t)?;
             Ok((
-                r.state(&r.p.leaves(&smp.bytes)?),
-                ck.state(&ck.p.leaves(&smp.bytes)?),
+                r.state(&r.p.leaves(&smp.clean_bytes())?),
+                ck.state(&ck.p.leaves(&smp.clean_bytes())?),
             ))
         };
         let (r0, c0) = st(0)?;
@@ -1173,6 +1173,9 @@ pub fn estimate(
     let mut budget: HashMap<String, f64> = HashMap::new();
     let mut skipped: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut nonlinear = 0u64;
+    // Input errors: second-order effect of the input error against its first-order effect
+    // (N-ERRDIST-INERR), summed over the probed inputs: (|d+ + d-|^2, |d+ - d-|^2).
+    let mut curv = (0.0f64, 0.0f64);
     let mut pmacc = [0.0f64; 6];
     let mut count = 0u64;
     // A single kernel's 16-bit outputs: how often the computed f32 value is a tie of the
@@ -1207,18 +1210,32 @@ pub fn estimate(
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(3.0);
+    // Input errors: the estimate is cross-checked on the error's spread (mean |error|
+    // within 10%), and 48 inputs leave it +-15% from seed to seed (a softmax fed by an
+    // upstream error); 192 inputs at least.
+    let (min_inputs, budget_s) = if spec.has_input_errors() {
+        (cfg.inputs.max(192), 4.0 * budget_s)
+    } else {
+        (cfg.inputs, budget_s)
+    };
     for t in 0..MAX_INPUTS {
-        if t >= cfg.inputs as u64 {
+        if t >= min_inputs as u64 {
             let el = t_loop.elapsed().as_secs_f64();
             if el * (t + 1) as f64 / t as f64 > budget_s {
                 break;
             }
         }
         let smp = super::super::spec::sample(spec, layouts, (1u64 << 42) + t)?;
-        let wr = r.p.leaves(&smp.bytes)?;
+        // The nominal (error-free) values; input errors are the leaves' local laws.
+        let wr = r.p.leaves(&smp.clean_bytes())?;
         let sr = r.state(&wr);
+        if !r.in_err.is_empty() && t < 16 {
+            let (a, b) = curvature(r, &sr, &wr, &pick, t);
+            curv.0 += a;
+            curv.1 += b;
+        }
         let sc = match c {
-            Some(c) => Some(c.state(&c.p.leaves(&smp.bytes)?)),
+            Some(c) => Some(c.state(&c.p.leaves(&smp.clean_bytes())?)),
             None => None,
         };
         let (mut pd, mut nd) = (0.0, 0u64);
@@ -1445,6 +1462,21 @@ pub fn estimate(
             "linearized error propagation through the DAG; normal deviation with exact site moments; conditional on nominal inputs"
         }
     };
+    // Linearization of the input errors: the second-order term (d+ + d-) / 2 of a symmetric
+    // probe against the first-order term (d+ - d-) / 2, in rms over outputs and inputs.
+    let (applicable, applicability) = if curv.1 > 0.0 {
+        let ratio = (curv.0 / curv.1).sqrt();
+        let ok = ratio <= 0.1;
+        (
+            Some(ok),
+            vec![format!(
+                "input errors: second-order / first-order output effect {ratio:.3} (needs <= 0.1: the downstream curvature is small against the upstream error) {}",
+                if ok { "ok" } else { "FAILS" }
+            )],
+        )
+    } else {
+        (None, vec![])
+    };
     let est = Estimate {
         tier: cfg.tier,
         method: method.into(),
@@ -1473,10 +1505,57 @@ pub fn estimate(
         pair,
         p_differ: Some((pmean, (pmean - hw).max(0.0), (pmean + hw).min(1.0))),
         seconds: t0.elapsed().as_secs_f64(),
-        applicable: None,
-        applicability: vec![],
+        applicable,
+        applicability,
     };
     Ok((est, notes))
+}
+
+/// One symmetric probe of the input errors at a nominal input: each leaf with an error law
+/// moved by +e and by -e (e drawn from its law), the outputs in real arithmetic: the sums
+/// over the picked outputs of (d+ + d-)^2 and (d+ - d-)^2, d+- = y(x +- e) - y(x).
+fn curvature(
+    k: &KModel,
+    s: &State,
+    w: &[crate::mma_lp::Operand],
+    pick: &[usize],
+    t: u64,
+) -> (f64, f64) {
+    let mut rng = super::super::special::Rng::stream(0x1e57, t, "curvature");
+    let mut e = vec![0.0f64; w.len()];
+    for (i, op) in k.p.ops.iter().enumerate() {
+        if !matches!(op, super::super::chain::Op::Leaf { .. }) {
+            continue;
+        }
+        e[i] = match &s.law[i] {
+            Law::Normal { mean, var } => mean + var.max(0.0).sqrt() * rng.normal(),
+            Law::Rn { q, .. } => (rng.unit() - 0.5) * q,
+            _ => 0.0,
+        };
+    }
+    let at = |sg: f64| {
+        let mut w2 = w.to_vec();
+        for (i, d) in e.iter().enumerate() {
+            if *d != 0.0 {
+                w2[i].v += sg * d;
+            }
+        }
+        super::real::eval(k.p, &w2)
+    };
+    let (y0, yp, ym) = (super::real::eval(k.p, w), at(1.0), at(-1.0));
+    let (mut a, mut b) = (0.0, 0.0);
+    for &o in pick {
+        let Some(op) = k.p.outputs[o] else { continue };
+        let i = op as usize;
+        let (z, p, m) = (y0[i].0.v(), yp[i].0.v(), ym[i].0.v());
+        if !(z.is_finite() && p.is_finite() && m.is_finite()) {
+            continue;
+        }
+        let (dp, dm) = (p - z, m - z);
+        a += (dp + dm).powi(2);
+        b += (dp - dm).powi(2);
+    }
+    (a, b)
 }
 
 /// Most nominal inputs of the linearized tiers.

@@ -108,7 +108,8 @@
 //! R's next event of that actor, with the same outcome and a vector clock containing R's (a
 //! wait may observe a later phase, C-WAIT; every check is monotone in the clocks). Values: a
 //! plain read reads the HB-latest write (R race-free and HB at least R's ⇒ no race in E: the
-//! detector is precise for FastTrack shadows), a strong read is ordered with every write
+//! detector is precise, since the shadow keeps every access a later write does not cover,
+//! `Sh::hw`; ASSUMPTIONS.md E-WELLSYNC "Detector precision"), a strong read is ordered with every write
 //! (C-ORDER), atomics' results are unused or ordered, CAS-poll links read from the run's
 //! predecessor (C-CAS), warp collectives see the same lanes (C-WARP). Synchronization: C-PHASE makes every operation land in the phase it landed in R
 //! (it cannot run before phase k-1 completes, and phase k cannot complete without it), so
@@ -1149,7 +1150,9 @@ fn reg_diff(a: &Machine, b: &Machine, members: &[usize]) -> Result<Vec<RegLoc>, 
             }
         }
         for i in 0..(x.preds.len() * 64) {
-            if x.preds[i / 64] >> (i % 64) & 1 != y.preds[i / 64] >> (i % 64) & 1 {
+            if (x.preds[i / 64] ^ y.preds[i / 64] | x.pdef[i / 64] ^ y.pdef[i / 64]) >> (i % 64) & 1
+                != 0
+            {
                 out.push((2, t, i as u16));
             }
         }
@@ -1163,7 +1166,7 @@ fn reg_diff(a: &Machine, b: &Machine, members: &[usize]) -> Result<Vec<RegLoc>, 
             }
         }
         for i in 0..8 {
-            if (u.up ^ v.up) >> i & 1 != 0 {
+            if (u.up ^ v.up | u.up_def ^ v.up_def) >> i & 1 != 0 {
                 out.push((3, w, i));
             }
         }

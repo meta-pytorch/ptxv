@@ -514,6 +514,13 @@ pub const REGISTRY: &[Assumption] = &[
         applies: always,
     },
     Assumption {
+        id: "S-INIT-PRED",
+        kind: "code",
+        status: "enforced",
+        title: "predicates start undefined; a read before any write is reported (PT/UPT are constants)",
+        applies: always,
+    },
+    Assumption {
         id: "S-DSMEM",
         kind: "code",
         status: "validated",
@@ -920,6 +927,14 @@ pub const REGISTRY: &[Assumption] = &[
         kind: "code",
         status: "argued",
         title: "errdist elementwise law: exact on 16-bit codes, stratified quadrature for f32",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-INERR",
+        kind: "code",
+        status: "argued",
+        title: "errdist input errors and composition: per-element errors independent across elements, first order through the kernel",
+        // Applies to `ptxv errdist` estimates, not to check verdicts.
         applies: |_| false,
     },
     Assumption {

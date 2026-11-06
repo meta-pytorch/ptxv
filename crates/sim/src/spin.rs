@@ -1136,7 +1136,9 @@ pub fn wpoll_dry(m0: &Machine, members: &[usize], h: u32, b: u32) -> Option<Vec<
     });
     (same_mem
         && members.iter().all(|&t| {
-            m.threads[t].regs == m0.threads[t].regs && m.threads[t].preds == m0.threads[t].preds
+            m.threads[t].regs == m0.threads[t].regs
+                && m.threads[t].preds == m0.threads[t].preds
+                && m.threads[t].pdef == m0.threads[t].pdef
         }))
     .then_some(reads)
 }

@@ -121,7 +121,13 @@ fn machine(case: &Case, variant: &str, front: &str) -> Machine {
 
 /// Binary-only or very large launches (their certificate runs take minutes: see
 /// `ptxv check --certify --slices`).
-const SKIP: &[&str] = &["r2_cublas_gemm", "r3_grouped_mm", "r4b_moe"];
+const SKIP: &[&str] = &[
+    "r2_cublas_gemm",
+    "r3_grouped_mm",
+    "r4b_moe",
+    // r3_grouped_mm's mutants: tma_store_wait_counts_its_own_scoreboard.
+    "e_gmm_epilogue_reuse",
+];
 
 /// Variants the certificate must keep proving (a regression guard on its strength).
 const MUST_CERTIFY: &[(&str, &str, &str)] = &[
@@ -169,6 +175,94 @@ const MUST_CERTIFY: &[(&str, &str, &str)] = &[
     ("s_ptx_cute_ops", "good", "ptx"),
     ("s_ptx_cute_ops", "good", "sass"),
 ];
+
+/// Soundness-harness miss 1: warp 0's plain init, then its own `red.add` / `ATOMS` on the
+/// same word, then the other warps' atomics with no barrier. The certificate run must report
+/// the race (it used to certify clean: the shadow kept only the writer's strong write), on
+/// both front-ends and through `check_certified` (weak, then strong LDS/STS model, where the
+/// SASS race shows as nondeterministic outputs); the good kernel still certifies.
+#[test]
+fn plain_write_hidden_by_own_atomic_is_a_race() {
+    let case = Case::load(root().join("fixtures/e_cert_fasttrack")).unwrap();
+    for front in ["ptx", "sass"] {
+        let v = ptxv_sim::wellsync::check_certified(machine(&case, "nosync", front), 100_000);
+        let want = case.variant("nosync").unwrap().expect_for(front);
+        assert_eq!(v.classes(), want, "nosync/{front}: {:#?}", v.findings);
+        let o = certify(machine(&case, "good", front));
+        let v = o.verdict.expect("good certifies");
+        assert!(v.complete && v.classes() == ["clean"], "good/{front}");
+    }
+}
+
+/// Soundness-harness miss 2: a branch on a predicate nothing wrote (the cuBLAS tile
+/// scheduler's try-wait NOPed, `BRA !P4` after it) is an `uninit-reg` violation of the run,
+/// so the certificate refuses; the controls, where every lane runs the retry stub or skips the
+/// wait, still certify (S-INIT-PRED: no false alarm on ptxas's `PT` / `ISETP` idioms).
+#[test]
+fn branch_on_unwritten_predicate_is_reported() {
+    if vendor_missing(&["c_mm_bf16_mcast"]) {
+        return;
+    }
+    let case = Case::load(root().join("fixtures/e_uninit_pred")).unwrap();
+    let o = certify(machine(&case, "nowait", "sass"));
+    assert!(o.verdict.is_none(), "nowait certified");
+    assert!(
+        o.reasons
+            .iter()
+            .any(|r| r.contains("reads register P4") && r.contains("0x1b80")),
+        "{:?}",
+        o.reasons
+    );
+    for v in ["good", "nowait_stub", "nowait_nobra", "stub"] {
+        let o = certify(machine(&case, v, "sass"));
+        let r = o.verdict.unwrap_or_else(|| panic!("{v}: {:?}", o.reasons));
+        assert!(
+            r.complete && r.classes() == ["contract"],
+            "{v}: {:#?}",
+            r.findings
+        );
+    }
+}
+
+/// Soundness-harness miss 3: the CUTLASS grouped GEMM's epilogue with its staging-buffer
+/// wait removed (the `BAR.SYNC 0x1, 0x80` after the bulk-read wait, or the
+/// `DEPBAR.LE SB0, 0x1` itself) rewrites a buffer a TMA store may still be reading. A
+/// control-word wait on another scoreboard (the `BSYNC`'s SB3) used to drain every bulk
+/// group and hide it; the certificate run must now report the race. The good kernel still
+/// certifies (contract-only: E-BULK-EXIT).
+#[test]
+fn tma_store_wait_counts_its_own_scoreboard() {
+    if vendor_missing(&["r3_grouped_mm"]) {
+        return;
+    }
+    let case = Case::load(root().join("fixtures/e_gmm_epilogue_reuse")).unwrap();
+    std::thread::scope(|s| {
+        for v in ["nobar", "nodepbar", "good"] {
+            let case = &case;
+            s.spawn(move || {
+                let o = certify(machine(case, v, "sass"));
+                if v == "good" {
+                    let r = o.verdict.unwrap_or_else(|| panic!("good: {:?}", o.reasons));
+                    // E-BULK-EXIT: the last store is still reading at exit (contract only).
+                    assert!(
+                        r.complete && r.classes() == ["contract"],
+                        "good: {:#?}",
+                        r.findings
+                    );
+                } else {
+                    assert!(o.verdict.is_none(), "{v} certified");
+                    assert!(
+                        o.reasons
+                            .iter()
+                            .any(|r| r.contains("race") && r.contains("UTMASTG")),
+                        "{v}: {:?}",
+                        o.reasons
+                    );
+                }
+            });
+        }
+    });
+}
 
 #[test]
 fn certified_verdicts_match_the_fixture_suite() {

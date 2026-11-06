@@ -285,8 +285,34 @@ impl Machine {
                 }
             }
             File::V | File::R => !0,
-            _ => 0,
+            // ASSUME(S-INIT-PRED): predicates start undefined too (SASS `PT` / `UPT` are
+            // constants).
+            File::P if r.idx == 7 && self.k.front == Front::Sass => 0,
+            File::P => {
+                if th
+                    .pdef
+                    .get(r.idx as usize / 64)
+                    .is_some_and(|w| w >> (r.idx % 64) & 1 == 1)
+                {
+                    0
+                } else {
+                    !0
+                }
+            }
+            File::UP => {
+                if r.idx == 7 || self.warps[th.warp as usize].up_def >> r.idx & 1 == 1 {
+                    0
+                } else {
+                    !0
+                }
+            }
         }
+    }
+
+    /// Does `p` read a predicate nothing has written (S-INIT-PRED)?
+    pub fn pred_undef(&self, t: usize, p: Pred) -> Option<Reg> {
+        p.reg
+            .filter(|r| matches!(r.file, File::P | File::UP) && self.reg_umask(t, *r) != 0)
     }
 
     /// Write `v` to `r`; SASS files take `slots` 32-bit registers.
@@ -379,6 +405,7 @@ impl Machine {
                 let th = self.threads[t].make_mut();
                 let (w, bit) = ((r.idx / 64) as usize, r.idx % 64);
                 th.preds[w] = (th.preds[w] & !(1 << bit)) | ((b as u64) << bit);
+                th.pdef[w] |= 1 << bit;
             }
             File::UP => {
                 if r.idx == 7 {
@@ -387,6 +414,7 @@ impl Machine {
                 let w = self.threads[t].warp as usize;
                 let wp = self.warps[w].make_mut();
                 wp.up = (wp.up & !(1 << r.idx)) | ((b as u8) << r.idx);
+                wp.up_def |= 1 << r.idx;
             }
             _ => {}
         }
@@ -635,31 +663,74 @@ impl Machine {
                 }
                 _ => vec![],
             };
+        // What a write keeps of the shadow (vector-clock precision with strong accesses). An
+        // earlier access e may be dropped when this write covers it: every later access that
+        // races with e also races with this write. With e before the write, that holds when
+        // the write is plain, or when both are strong, in one CTA, and the write's scope is no
+        // wider than e's (then moral strength with the write implies it with e; S-SCOPE).
+        // A strong write covers no plain access: the writer's own `ATOMS` after its plain
+        // `STS` init must not hide the init from other threads' unordered atomics (soundness
+        // harness, `tools/mutate/repro/cert_fasttrack`). An e unordered with the write is a
+        // reported race unless both are strong (morally strong or not: kept).
+        let nth = self.threads.len() as u32;
+        let threads = &self.threads;
+        let cta_of = |a: u32| {
+            threads[(if a < 3 * nth {
+                a % nth
+            } else {
+                (a - 3 * nth) / 4096
+            }) as usize]
+                .cta
+        };
+        let my_cta = cta_of(actor);
+        let hw_order = self.launch.hw_order;
+        let keep = |e: &Epoch, ordered: bool| -> bool {
+            if strong == 0 {
+                false
+            } else if e.strong == 0 {
+                ordered
+            } else {
+                !ordered || !(hw_order || cta_of(e.actor) == my_cta && e.strong >= strong)
+            }
+        };
         // Page by page: one copy-on-write check per run of bytes.
         let mut i = 0;
         while i < n {
             let a0 = base as usize + i;
             let k = mem.sh.for_run(a0, n - i, |a, s| {
-                if let Some(w) = s.w {
+                for w in s.writes() {
                     if w.actor != actor && !w.hb(vc) {
                         let kind = if write.is_some() {
                             "write-write"
                         } else {
                             "write-read"
                         };
-                        races.push((w, kind, a as u64));
+                        races.push((*w, kind, a as u64));
                     }
                 }
                 if write.is_some() {
+                    let rd_ord = |r: &Epoch| {
+                        r.actor == actor
+                            || r.hb(vc)
+                            || rd_done && r.clock <= vc_get(vc, r.actor | RR_BIT)
+                    };
                     for r in &s.r {
-                        if r.actor != actor
-                            && !(r.hb(vc) || rd_done && r.clock <= vc_get(vc, r.actor | RR_BIT))
-                        {
+                        if !rd_ord(r) {
                             races.push((*r, "read-write", a as u64));
                         }
                     }
+                    if strong == 0 {
+                        s.r.clear();
+                        s.hw = None;
+                    } else {
+                        let w_ord = |w: &Epoch| w.actor == actor || w.hb(vc);
+                        let mut hw: Vec<Epoch> =
+                            s.writes().filter(|w| keep(w, w_ord(w))).copied().collect();
+                        hw.sort_unstable_by_key(|e| (e.actor, e.strong, e.clock));
+                        s.hw = (!hw.is_empty()).then(|| hw.into_boxed_slice());
+                        s.r.retain(|r| keep(r, rd_ord(r)));
+                    }
                     s.w = Some(me);
-                    s.r.clear();
                 } else if vip {
                 } else {
                     // ASSUME(S-INIT): shared memory outside the driver-initialized reserved
@@ -670,7 +741,7 @@ impl Machine {
                             st.get_or_insert(a as u32);
                         }
                     }
-                    s.r.insert(me);
+                    s.r.insert_read(me);
                 }
             });
             if let Some(wr) = write {
@@ -918,29 +989,48 @@ impl Machine {
         }
     }
 
+    /// The bulk groups of thread `t` a wait for all but the newest `n` covers. `sbs`: SASS, the
+    /// mask of scoreboards the wait reads; only groups committed on them count (newest `n` of
+    /// those excluded). None: every group (PTX `cp.async.bulk.wait_group`).
+    /// ASSUME(E-ASYNC-STEP): a SASS wait on SBk waits only for the groups flushed on SBk.
+    fn bulk_covered(&self, t: usize, n: u32, sbs: Option<u8>) -> Vec<u32> {
+        let th = &self.threads[t];
+        let mut gs: Vec<u32> = (0..th.bulk_group)
+            .filter(|&g| {
+                sbs.is_none_or(|m| {
+                    th.bulk_sb
+                        .get(g as usize)
+                        .is_some_and(|&s| s < 8 && m >> s & 1 == 1)
+                })
+            })
+            .collect();
+        gs.truncate(gs.len().saturating_sub(n as usize));
+        gs
+    }
+
     // ASSUME(E-ALIGNED, E-ALLOC): see ASSUMPTIONS.md
-    /// Every member's bulk groups older than its newest `n` have completed.
-    fn bulk_wait_ready(&self, members: &[usize], n: u32) -> bool {
+    /// Every member's bulk groups covered by the wait (`bulk_covered`) have completed.
+    fn bulk_wait_ready(&self, members: &[usize], n: u32, sbs: Option<u8>) -> bool {
         members.iter().all(|&t| {
-            let upto = self.threads[t].bulk_group.saturating_sub(n);
+            let gs = self.bulk_covered(t, n, sbs);
             !self.pending.iter().any(|o| {
                 o.issuer == t as u32
-                    && matches!(o.kind, AsyncKind::TmaStore { group, .. } if group < upto)
+                    && matches!(o.kind, AsyncKind::TmaStore { group, .. } if gs.binary_search(&group).is_ok())
             })
         })
     }
 
-    /// `cp.async.bulk.wait_group[.read] n` by thread `t`: acquires its completed groups older
-    /// than the newest n.
-    fn bulk_wait(&mut self, t: usize, n: u32) {
-        let upto = self.threads[t].bulk_group.saturating_sub(n);
-        for g in 0..upto {
+    /// `cp.async.bulk.wait_group[.read] n` by thread `t` (SASS: on scoreboards `sbs`): acquires
+    /// its completed groups the wait covers.
+    fn bulk_wait(&mut self, t: usize, n: u32, sbs: Option<u8>) {
+        let gs = self.bulk_covered(t, n, sbs);
+        for &g in &gs {
             self.rec_acq(sync_key(3, t as u64, g as u64, 0));
         }
         let th = self.threads[t].make_mut();
         let mut j = VC::new();
         th.bulk_done.retain(|(g, vc)| {
-            if *g < upto {
+            if gs.binary_search(g).is_ok() {
                 vc_join(&mut j, vc);
                 false
             } else {
@@ -1027,10 +1117,14 @@ impl Machine {
             }
             return crate::spin::wpoll_dry(self, members, pc, b).is_none();
         }
-        if self.k.bulk_read_waits.binary_search(&(pc as usize)).is_ok()
-            && !self.bulk_wait_ready(members, 0)
+        if let Ok(i) = self
+            .k
+            .bulk_read_waits
+            .binary_search_by_key(&(pc as usize), |w| w.0)
         {
-            return false;
+            if !self.bulk_wait_ready(members, 0, Some(self.k.bulk_read_waits[i].1)) {
+                return false;
+            }
         }
         match &inst.op {
             // A peek (no retry shape) never blocks: it returns false while the phase is pending.
@@ -1075,7 +1169,7 @@ impl Machine {
             }
             // ASSUME(E-ASYNC-STEP): `.read` waits for the whole store (read and write are one step).
             // Each thread waits for its own bulk groups: the split runs once all of them can.
-            Op::BulkWait { n, .. } => self.bulk_wait_ready(members, *n),
+            Op::BulkWait { n, sb, .. } => self.bulk_wait_ready(members, *n, sb.map(|s| 1 << s)),
             // TMEM allocation blocks while it cannot succeed (ptxas's SASS spins on failure).
             Op::TmemAlloc { ncols, .. } => {
                 let t = members[0];
@@ -2520,10 +2614,21 @@ impl Machine {
         let k = self.k.clone();
         let inst = &k.code[pc as usize];
         // A control-word wait on the bulk read scoreboard holds for every member, guard or not.
-        if k.bulk_read_waits.binary_search(&(pc as usize)).is_ok() {
+        if let Ok(i) = k
+            .bulk_read_waits
+            .binary_search_by_key(&(pc as usize), |w| w.0)
+        {
             for &t in members {
-                self.bulk_wait(t, 0);
+                self.bulk_wait(t, 0, Some(k.bulk_read_waits[i].1));
             }
+        }
+        // ASSUME(S-INIT-PRED): a guard (or a branch condition, which the SASS lifter makes
+        // the guard) that nothing has written is a read of an undefined value.
+        if let Some((t, r)) = members
+            .iter()
+            .find_map(|&t| self.pred_undef(t, inst.guard).map(|r| (t, r)))
+        {
+            self.report_uninit(t, r, pc);
         }
         let active: Vec<usize> = members
             .iter()
@@ -3566,6 +3671,7 @@ impl Machine {
         let all = |m: u64| if m != 0 { !0u64 } else { 0 };
         let m: u64 = match op {
             Op::Mov { a, .. } => u(a),
+            Op::Sel { p, .. } | Op::Fsel { p, .. } if self.pred_undef(t, *p).is_some() => !0,
             Op::Sel { a, b, p, .. } | Op::Fsel { a, b, p, .. } => {
                 if self.prd(t, *p) {
                     u(a)
@@ -3717,6 +3823,49 @@ impl Machine {
                 neg_a: false,
                 ..
             } => up((u32_(a).checked_shl(*shift as u32).unwrap_or(0)) | u32_(b)) as u64,
+            // S-INIT-PRED: P2R / R2P move predicates through a register bit by bit (a
+            // spill of PR keeps unwritten predicates undefined, R2P restores them so).
+            Op::P2r { a, mask, .. } => {
+                let pu = (0..7u16)
+                    .filter(|&i| {
+                        self.reg_umask(
+                            t,
+                            Reg {
+                                file: File::P,
+                                idx: i,
+                            },
+                        ) != 0
+                    })
+                    .fold(0u32, |m, i| m | 1 << i);
+                ((u32_(a) & !mask) | (pu & mask)) as u64
+            }
+            Op::R2p { .. } => 0,
+            // A predicate LUT whose output does not depend on its undefined inputs.
+            Op::Plop3 {
+                a, b, c, lut, d2, ..
+            } => {
+                let ins = [*a, *b, *c];
+                let und: Vec<usize> = (0..3)
+                    .filter(|&k| self.pred_undef(t, ins[k]).is_some())
+                    .collect();
+                let base = ins.map(|p| self.prd(t, p) as u8);
+                let luts = [Some(*lut), d2.map(|x| x.1)];
+                for l in luts.into_iter().flatten() {
+                    let mut outs = 0u8;
+                    for combo in 0..1u8 << und.len() {
+                        let mut v = base;
+                        for (j, &k) in und.iter().enumerate() {
+                            v[k] = combo >> j & 1;
+                        }
+                        let i = v[0] << 2 | v[1] << 1 | v[2];
+                        outs |= 1 << (l >> i & 1);
+                    }
+                    if outs == 0b11 {
+                        return None;
+                    }
+                }
+                0
+            }
             Op::F2fpBf16 { a, b, .. } => {
                 (if u(a) != 0 { 0xffff_0000u64 } else { 0 }) | if u(b) != 0 { 0xffff } else { 0 }
             }
@@ -3823,7 +3972,7 @@ impl Machine {
                 ex: None,
                 xor: false,
                 ..
-            } => self.prd(t, *and) == *or,
+            } => self.pred_undef(t, *and).is_none() && self.prd(t, *and) == *or,
             _ => false,
         };
         if let (Some(r), false) = (undef, decided) {
@@ -4702,10 +4851,19 @@ impl Machine {
 
                 self.tick(t);
             }
-            Op::BulkCommit => self.threads[t].make_mut().bulk_group += 1,
+            Op::BulkCommit => {
+                let sb = self
+                    .k
+                    .bulk_commit_sb
+                    .binary_search_by_key(&(pc as usize), |c| c.0)
+                    .map_or(u8::MAX, |i| self.k.bulk_commit_sb[i].1);
+                let th = self.threads[t].make_mut();
+                th.bulk_group += 1;
+                th.bulk_sb.push(sb);
+            }
             // Enabled (split_enabled) once every group older than the newest n completed.
-            Op::BulkWait { n, cp, .. } => {
-                self.bulk_wait(t, *n);
+            Op::BulkWait { n, cp, sb, .. } => {
+                self.bulk_wait(t, *n, sb.map(|s| 1 << s));
                 if *cp {
                     self.cp_async_wait(t, 0);
                 }
@@ -5589,6 +5747,7 @@ impl Machine {
             }
             Op::R2p { a, mask, shift } => {
                 let x = self.rd(t, a)? >> shift;
+                let u = self.val_umask(t, a) >> shift;
                 for i in 0..7u16 {
                     if mask >> i & 1 == 1 {
                         let p = Reg {
@@ -5596,6 +5755,10 @@ impl Machine {
                             idx: i,
                         };
                         self.wp(t, p, x >> i & 1 == 1);
+                        if u >> i & 1 == 1 {
+                            // S-INIT-PRED: restored from an undefined bit.
+                            self.threads[t].make_mut().pdef[0] &= !(1 << i);
+                        }
                     }
                 }
             }
@@ -7311,9 +7474,11 @@ impl Machine {
             && (w2 != pc
                 || a.regs == b.regs
                     && a.preds == b.preds
+                    && a.pdef == b.pdef
                     && a.written == b.written
                     && wa.ur == wb.ur
                     && wa.up == wb.up
+                    && wa.up_def == wb.up_def
                     && wa.ur_written == wb.ur_written);
         if !same {
             let msg = format!(

@@ -190,6 +190,9 @@ pub struct Report {
     /// Each analytic estimate checked against this run's Tier 3 (docs/errdist.md §3.2).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub crosscheck: Vec<CrossCheck>,
+    /// The output's errstate file (--errstate), the next kernel's input (docs/errdist.md §10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub errstate: Option<String>,
 }
 
 /// An analytic estimate against Tier 3: agreement means |p - p3| <= max(5% of p3, half Tier

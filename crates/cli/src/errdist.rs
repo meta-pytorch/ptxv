@@ -47,6 +47,8 @@ pub struct Args {
     pub explore: bool,
     pub pre_round: bool,
     pub uniform: bool,
+    /// Write the output's error state here (docs/errdist.md §10).
+    pub errstate: Option<PathBuf>,
     /// Run Tier 1 too (opt-in).
     pub tier1: bool,
 }
@@ -80,6 +82,9 @@ pub(crate) struct Model {
     /// The proven worst case (equivalence bound of the pair, or the kernel's own bound).
     #[serde(default)]
     pub worst: Option<ptxv_sim::errdist::report::WorstCase>,
+    /// The output buffer's name and shape (the errstate's tensor).
+    #[serde(default)]
+    pub out_name: Option<(String, Vec<u64>)>,
 }
 
 impl Model {
@@ -354,6 +359,22 @@ fn simulate(
     }
 }
 
+/// The kernel's output buffer: its name and shape.
+fn out_buffer(k: &Kernel) -> Option<(String, Vec<u64>)> {
+    let l = &k.run.m.launch;
+    let a = &l.allocs[*l.outputs.first()?];
+    let shape = k
+        .run
+        .case
+        .m
+        .buffers
+        .iter()
+        .find(|b| b.name == a.name)
+        .map(|b| b.shape.clone())
+        .unwrap_or_else(|| vec![k.prog.outputs.len() as u64]);
+    Some((a.name.clone(), shape))
+}
+
 /// A scratch directory removed when dropped.
 struct TmpDir(PathBuf);
 
@@ -469,6 +490,7 @@ pub fn cmd(a: &Args) -> Result<()> {
             labels,
             idents: ks.iter().map(|k| k.idents.clone()).collect(),
             worst: Some(worst_case(&r, c.as_ref())),
+            out_name: out_buffer(&r),
         };
         if let Some(cp) = &a.compile {
             let out = if cp.as_os_str().is_empty() || cp.as_os_str() == "-" {
@@ -591,6 +613,46 @@ pub fn cmd(a: &Args) -> Result<()> {
         ..Default::default()
     };
     rep.out_of_domain = ood(&obs);
+    if let Some(p) = &a.errstate {
+        use ptxv_sim::errdist::errstate::*;
+        if obs.pairs.is_empty() {
+            bail!("--errstate: tier 3 compared no outputs (--mc N)");
+        }
+        let (name, shape) = model
+            .out_name
+            .clone()
+            .unwrap_or_else(|| ("out".into(), vec![model.r.outputs.len() as u64]));
+        let es = ErrState {
+            kind: "ptxv-errstate".into(),
+            version: ERRSTATE_VERSION,
+            model: "iid".into(),
+            source: serde_json::json!({
+                "reference": model.reference,
+                "candidate": model.candidate,
+                "spec": spec.name,
+                "tier3_inputs": obs.inputs,
+            }),
+            tensors: [(
+                name,
+                tensor_state(
+                    &obs.pairs,
+                    &obs.pair_at,
+                    shape,
+                    &format!("{:?}", model.r.out_fmt).to_lowercase(),
+                ),
+            )]
+            .into_iter()
+            .collect(),
+        };
+        std::fs::write(p, serde_json::to_string(&es)?)?;
+        println!("wrote errstate {}", p.display());
+        rep.errstate = Some(
+            std::fs::canonicalize(p)
+                .unwrap_or(p.clone())
+                .display()
+                .to_string(),
+        );
+    }
     if obs.nonfinite > 0 {
         rep.notes.push(format!(
             "{} of {} outputs ({:.3e}) are NaN / Inf in Tier 3 ({} of {} inputs): out of domain, outside the error statistics",
@@ -706,8 +768,12 @@ pub fn cmd(a: &Args) -> Result<()> {
     // AG: non-chain programs (softmax, norms, attention, elementwise) also take the
     // linearized tiers of `nonlin`, from the model file's nonlin section.
     let nonchain = st.chain.iter().all(|c| c.is_none());
+    // Input errors (docs/errdist.md §2.1): the linearized tiers carry them (J e_in + e_own,
+    // the leaves' local laws); the chain tiers (exact certificates, residue chains, the DAG
+    // CLT) do not model them.
+    let in_err = spec.has_input_errors();
     let mut anas = vec![];
-    if nonchain {
+    if nonchain || in_err {
         let mut ids = vec![(st.r, &model.idents[0])];
         if let (Some(cp), Some(ci)) = (st.c, model.idents.get(1)) {
             ids.push((cp, ci));
@@ -716,7 +782,13 @@ pub fn cmd(a: &Args) -> Result<()> {
             nl_query(&ids, st.r, st.c, &spec, &ls, model_file.as_deref()).map_err(|e| anyhow!(e)),
         );
     }
-    anas.push(analytic(&st, &spec, &ls, false, !a.tier1));
+    if in_err {
+        rep.notes.push(
+            "chain tiers not run: they do not model input errors (the linearized tiers do)".into(),
+        );
+    } else {
+        anas.push(analytic(&st, &spec, &ls, false, !a.tier1));
+    }
     for ana in anas {
         match ana {
             Ok(mut e) => {
@@ -745,6 +817,16 @@ pub fn cmd(a: &Args) -> Result<()> {
         .iter()
         .find(|e| e.tier == 3)
         .and_then(|e| e.p_differ);
+    // With input errors the outputs rarely round alike (P(differ) near 1 for any model):
+    // the error's spread must agree too, mean |error| within 10%. (Not the std: a softmax
+    // fed by an upstream error has max / std ~ 40, and 300 inputs put Tier 3's std itself
+    // 10% apart from seed to seed.)
+    let s3 = rep
+        .estimates
+        .iter()
+        .find(|e| e.tier == 3)
+        .map(|e| (e.abs.mean_abs, e.abs.std))
+        .filter(|_| spec.has_input_errors());
     let mut disagree = vec![];
     for (k, e) in rep.estimates.iter_mut().enumerate() {
         if !(e.tier == 1 || e.tier == 2) {
@@ -757,11 +839,22 @@ pub fn cmd(a: &Args) -> Result<()> {
         match t3 {
             Some((p3, lo, hi)) => {
                 let tol = (0.05 * p3).max(0.5 * (hi - lo));
-                let ok = (p - p3).abs() <= tol || (p >= lo && p <= hi);
+                let mut ok = (p - p3).abs() <= tol || (p >= lo && p <= hi);
                 e.applicability.push(format!(
                     "Tier 3 cross-check ({n} inputs): {p:.3e} vs {p3:.3e} [{lo:.3e}, {hi:.3e}], tolerance {tol:.2e} {}",
                     if ok { "ok" } else { "FAILS" }
                 ));
+                if let Some((m3, s3)) = s3.filter(|s3| s3.0 > 0.0) {
+                    let r = e.abs.mean_abs / m3;
+                    let oks = (r - 1.0).abs() <= 0.1;
+                    e.applicability.push(format!(
+                        "Tier 3 cross-check of the error's spread (input errors): mean |error| {:.3e} vs {m3:.3e} (ratio {r:.3}, tolerance 10%; std {:.3e} vs {s3:.3e}) {}",
+                        e.abs.mean_abs,
+                        e.abs.std,
+                        if oks { "ok" } else { "FAILS" }
+                    ));
+                    ok &= oks;
+                }
                 if !ok {
                     disagree.push(format!(
                         "tier {} ({:.40}...) {p:.3e} vs tier 3 {p3:.3e} [{lo:.3e}, {hi:.3e}]",
@@ -848,6 +941,9 @@ pub fn cmd(a: &Args) -> Result<()> {
         "N-ERRDIST-MC".into(),
         "N-EQUIV".into(),
     ];
+    if spec.has_input_errors() {
+        rep.assumptions.push("N-ERRDIST-INERR".into());
+    }
     // Agent AG: a non-chain program's estimates rest on the nonlin assumptions.
     for e in rep.estimates.iter().filter(|_| nonchain) {
         let mut ids = vec!["N-ERRDIST-IDENT"];
@@ -1991,6 +2087,11 @@ fn validate_with(
         let mut wr = st.r.leaves(&smp.bytes).map_err(|e| anyhow!(e))?;
         st.r.eval_into(&mut wr);
         let rd = mc::outputs(st.r, &wr);
+        // Input errors: the exact reference on the error-free values.
+        if !smp.clean.is_empty() {
+            wr = st.r.leaves(&smp.clean_bytes()).map_err(|e| anyhow!(e))?;
+            st.r.eval_into(&mut wr);
+        }
         mismatch += dag_mismatch(st.r, &rd, &ro);
         if let (Some(c), Some(co)) = (st.c, co.as_ref()) {
             let mut wc = c.leaves(&smp.bytes).map_err(|e| anyhow!(e))?;

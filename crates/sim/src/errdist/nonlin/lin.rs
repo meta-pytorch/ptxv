@@ -326,6 +326,9 @@ pub struct KModel<'a> {
     pub tabs: &'a [Table],
     pub op_tab: Vec<Option<u32>>,
     pub canon: Vec<u64>,
+    /// Per leaf buffer (`Prog::bufs` index): the input's error model (docs/errdist.md §2.1),
+    /// a local error of the leaf.
+    pub in_err: Vec<Option<super::super::spec::InputError>>,
 }
 
 fn low_bit(v: f64) -> i32 {
@@ -368,7 +371,19 @@ impl<'a> KModel<'a> {
             tabs,
             op_tab,
             canon,
+            in_err: vec![],
         }
+    }
+
+    /// The inputs' error models from the spec (N-ERRDIST-INERR).
+    pub fn with_input_errors(mut self, spec: &super::super::spec::Spec) -> KModel<'a> {
+        self.in_err = self
+            .p
+            .bufs
+            .iter()
+            .map(|b| spec.tensor(b).and_then(|t| t.error.clone()))
+            .collect();
+        self
     }
 
     /// Real values, lattices and local laws at the given leaf values.
@@ -388,15 +403,41 @@ impl<'a> KModel<'a> {
             // The bit of operand x at lattice exponent l.
             let bit = |s: &State, x: usize, l: i32| if s.lat[x] == l { s.podd[x] } else { 0.0 };
             let (v, lat, rlat, law, podd) = match op {
-                Op::Leaf { .. } => {
+                Op::Leaf { buf, fmt, .. } => {
                     let v = w[i].v;
-                    (
-                        v,
-                        low_bit(v),
-                        Some(low_bit(v)),
-                        Law::Zero,
-                        (v != 0.0) as u8 as f64,
-                    )
+                    match self.in_err.get(*buf as usize).and_then(|e| e.as_ref()) {
+                        None => (
+                            v,
+                            low_bit(v),
+                            Some(low_bit(v)),
+                            Law::Zero,
+                            (v != 0.0) as u8 as f64,
+                        ),
+                        // ASSUME(N-ERRDIST-INERR): the error is a local law of the leaf,
+                        // independent across elements, pushed through first order.
+                        // An input error: the kernel reads round_fmt(v + e) (a value on the
+                        // format's grid, its low bit uniform); the reference v.
+                        Some(e) => {
+                            let qf = ulp_out(v, *fmt);
+                            let law = match e.round_format() {
+                                Some(rf) => {
+                                    let q = ulp_out(v, rf);
+                                    match residues(q, low_bit(v)) {
+                                        None => Law::Zero,
+                                        Some(r) => Law::Rn { q, r, p1: 0.5 },
+                                    }
+                                }
+                                None => {
+                                    let (mean, var) = e.moments(v).unwrap_or_default();
+                                    Law::Normal {
+                                        mean,
+                                        var: var + qf * qf / 12.0,
+                                    }
+                                }
+                            };
+                            (v, exp_floor(qf), None, law, 0.5)
+                        }
+                    }
                 }
                 Op::Const(c) => (
                     *c,

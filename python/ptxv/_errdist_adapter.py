@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -114,6 +115,23 @@ def tensor(s: dict, work: Path, name: str) -> dict:
     Wrappers apply outermost first: quantize(outliers(per_channel(base))) and any order of
     per_channel / outliers below quantize."""
     out: dict[str, Any] = {}
+    if s["kind"] == "upstream":
+        # An upstream kernel's errstate: value and error from its joint pairs (the dist is
+        # only a placeholder for tiers that do not sample).
+        src = Path(s["errstate"])
+        f = (
+            work
+            / f"errstate_{name}_{hashlib.sha1(src.read_bytes()).hexdigest()[:12]}.json"
+        )
+        if not f.exists():
+            shutil.copyfile(src, f)
+        return {
+            "dist": {"kind": "normal", "mean": s["value_mean"], "std": s["value_std"]},
+            "error": {"kind": "pairs", "file": f.name, "tensor": s["tensor"]},
+        }
+    if s["kind"] == "with_error":
+        out["error"] = s["error"]
+        s = s["base"]
     if s["kind"] == "quantize":
         out["quant"] = _quant(s, name)
         s = s["base"]
@@ -186,6 +204,8 @@ def argv(job: Any, work: Path) -> list[str]:
     # inputs by default (the cross-check of Tier 2); mc_inputs (the spec's engine) overrides.
     if job.args.get("tier1"):
         cmd.append("--tier1")
+    if job.args.get("errstate"):
+        cmd += ["--errstate", str(work / ERRSTATE_FILE)]
     return cmd
 
 
@@ -225,9 +245,12 @@ def query_argv(model: Path, args: dict, work: Path) -> list[str]:
         cmd.append("--per-output")
     if args.get("tier1"):
         cmd.append("--tier1")
+    if args.get("errstate"):
+        cmd += ["--errstate", str(work / ERRSTATE_FILE)]
     return cmd
 
 
+ERRSTATE_FILE = "errstate.json"
 DOC_FILE = "errdist.json"
 
 

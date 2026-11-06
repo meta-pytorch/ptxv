@@ -24,7 +24,15 @@ import os as _os
 
 from . import dist
 from ._jobs import Job, JobCancelled, LocalBackend, PtxvError
-from .api import capture_call, check, compare, errdist, errdist_model, ErrdistModel
+from .api import (
+    capture_call,
+    check,
+    compare,
+    errdist,
+    errdist_model,
+    ErrdistChain,
+    ErrdistModel,
+)
 from .bound import Bound
 from .capture import Capture, capture, Kernel, KernelList, Launch, Launches
 from .case import Case
@@ -57,6 +65,7 @@ __all__ = [
     "dist",
     "errdist",
     "errdist_model",
+    "ErrdistChain",
     "ErrdistModel",
     "session",
 ]

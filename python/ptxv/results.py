@@ -290,6 +290,16 @@ class ErrDist:
         b = r.get("best", 0)
         return e[b]["tier"] if b < len(e) else None
 
+    def as_input(self) -> Any:
+        """This kernel's output as the next kernel's input: a `ptxv.dist.Upstream` over the
+        run's errstate (joint value / error pairs; needs `errstate=True`)."""
+        from .dist import Upstream
+
+        es = (self.report or {}).get("errstate")
+        if not es:
+            raise ValueError("no errstate in this report (run with errstate=True)")
+        return Upstream(es)
+
     @property
     def crosscheck(self) -> list:
         """ptxv errdist reports: each analytic estimate against the run's Tier 3 (p, p3, its

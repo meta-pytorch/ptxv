@@ -710,6 +710,228 @@ pub struct TensorSpec {
     /// last dimension doubled, two codes per byte).
     #[serde(default)]
     pub shape: Option<Vec<u64>>,
+    /// An error the input carries (docs/errdist.md §2.1): the kernel sees value + error, the
+    /// reference is the exact computation on the error-free values.
+    #[serde(default)]
+    pub error: Option<InputError>,
+}
+
+/// An input tensor's error model, per element, independent across elements
+/// (N-ERRDIST-INERR). `value` is the error-free element (after `quant`); the kernel reads
+/// round_dtype(value + e).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InputError {
+    /// e = value (mean + std Z), Z ~ N(0, 1).
+    Relative {
+        std: f64,
+        #[serde(default)]
+        mean: f64,
+    },
+    /// e = mean + std Z.
+    Absolute {
+        std: f64,
+        #[serde(default)]
+        mean: f64,
+    },
+    /// The kernel reads the value rounded to nearest even to `format` (an f32 value that went
+    /// through a 16-bit tensor upstream).
+    Round { format: Format },
+    /// e | value ~ N(alpha + beta value, s0^2 + s1^2 value^2): the moment form an upstream
+    /// kernel's errstate carries (value-error covariance through beta).
+    Linear {
+        #[serde(default)]
+        alpha: f64,
+        #[serde(default)]
+        beta: f64,
+        #[serde(default)]
+        s0: f64,
+        #[serde(default)]
+        s1: f64,
+    },
+    /// Joint (value, error) samples, drawn i.i.d. per element: the value comes from the pair
+    /// too (the tensor's `dist` is not used for sampling). Inline `pairs`, or `file`: an
+    /// errstate (`tensor` names its entry; default the first). `linear` is fitted from the
+    /// pairs when the spec is loaded (the analytic tiers' moment form).
+    Pairs {
+        #[serde(default)]
+        pairs: Vec<[f64; 2]>,
+        #[serde(default)]
+        file: Option<String>,
+        #[serde(default)]
+        tensor: Option<String>,
+        #[serde(default)]
+        linear: Option<[f64; 4]>,
+        /// e's conditional mean and variance by value bin, built from the pairs when the spec
+        /// is loaded: a moment form per equal-count value bin (`moment_table`).
+        #[serde(skip)]
+        table: Vec<[f64; 6]>,
+    },
+}
+
+/// e | value by value bin: equal-count bins of the pairs sorted by value (about 256 pairs per
+/// bin, 1-64 bins), each `[lo, hi, alpha, beta, s0, s1]`, the moment form fitted on the bin's
+/// pairs (`fit_linear`). The analytic tiers read the pairs' moments from it
+/// (`InputError::moments`): one moment form for the whole range can be far off (2-3x in the
+/// middle of a softmax output's range), and one constant per bin misses the growth across
+/// the outer bins (a relative error's variance grows as value^2 over [2.2, 8] in the top bin
+/// of a normal's, where a softmax's largest inputs sit).
+pub fn moment_table(pairs: &[[f64; 2]]) -> Vec<[f64; 6]> {
+    let mut s: Vec<[f64; 2]> = pairs
+        .iter()
+        .filter(|p| p[0].is_finite() && p[1].is_finite())
+        .copied()
+        .collect();
+    s.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    if s.is_empty() {
+        return vec![];
+    }
+    let bins = (s.len() / 256).clamp(1, 64);
+    (0..bins)
+        .map(|b| {
+            let c = &s[b * s.len() / bins..(b + 1) * s.len() / bins];
+            let [a, be, s0, s1] = fit_linear(c);
+            [c[0][0], c[c.len() - 1][0], a, be, s0, s1]
+        })
+        .collect()
+}
+
+/// e | value as N(alpha + beta value, s0^2 + s1^2 value^2) (least squares on the pairs: the
+/// mean by regression of e on value, the variance by regression of the squared residual on
+/// value^2, both floored at 0).
+pub fn fit_linear(pairs: &[[f64; 2]]) -> [f64; 4] {
+    let n = pairs.len().max(1) as f64;
+    let (mx, me) = (
+        pairs.iter().map(|p| p[0]).sum::<f64>() / n,
+        pairs.iter().map(|p| p[1]).sum::<f64>() / n,
+    );
+    let sxx: f64 = pairs.iter().map(|p| (p[0] - mx).powi(2)).sum();
+    let sxe: f64 = pairs.iter().map(|p| (p[0] - mx) * (p[1] - me)).sum();
+    let beta = if sxx > 0.0 { sxe / sxx } else { 0.0 };
+    let alpha = me - beta * mx;
+    // r^2 = s0^2 + s1^2 x^2.
+    let rows: Vec<(f64, f64)> = pairs
+        .iter()
+        .map(|p| (p[0] * p[0], (p[1] - alpha - beta * p[0]).powi(2)))
+        .collect();
+    let (mu, mr) = (
+        rows.iter().map(|r| r.0).sum::<f64>() / n,
+        rows.iter().map(|r| r.1).sum::<f64>() / n,
+    );
+    let suu: f64 = rows.iter().map(|r| (r.0 - mu).powi(2)).sum();
+    let sur: f64 = rows.iter().map(|r| (r.0 - mu) * (r.1 - mr)).sum();
+    let mut b = if suu > 0.0 { (sur / suu).max(0.0) } else { 0.0 };
+    let mut a = mr - b * mu;
+    if a < 0.0 {
+        a = 0.0;
+        let s: f64 = rows.iter().map(|r| r.0 * r.0).sum();
+        b = if s > 0.0 {
+            (rows.iter().map(|r| r.0 * r.1).sum::<f64>() / s).max(0.0)
+        } else {
+            0.0
+        };
+    }
+    [alpha, beta, a.sqrt(), b.sqrt()]
+}
+
+impl InputError {
+    /// The moment form (alpha, beta, s0, s1) of e given the value; `Round` has none (its law
+    /// is the rounding's, `round_format`).
+    pub fn linear(&self) -> Option<[f64; 4]> {
+        match self {
+            InputError::Relative { std, mean } => Some([0.0, *mean, 0.0, *std]),
+            InputError::Absolute { std, mean } => Some([*mean, 0.0, *std, 0.0]),
+            InputError::Round { .. } => None,
+            InputError::Linear {
+                alpha,
+                beta,
+                s0,
+                s1,
+            } => Some([*alpha, *beta, *s0, *s1]),
+            InputError::Pairs { linear, pairs, .. } => {
+                Some(linear.unwrap_or_else(|| fit_linear(pairs)))
+            }
+        }
+    }
+
+    /// e's mean and variance given the value: the bin's (`moment_table`) for pairs, else the
+    /// moment form. `Round` has none.
+    pub fn moments(&self, v: f64) -> Option<(f64, f64)> {
+        if let InputError::Pairs { table, .. } = self {
+            if !table.is_empty() {
+                let i = table.partition_point(|b| b[1] < v).min(table.len() - 1);
+                let [_, _, a, b, s0, s1] = table[i];
+                return Some((a + b * v, s0 * s0 + s1 * s1 * v * v));
+            }
+        }
+        let [a, b, s0, s1] = self.linear()?;
+        Some((a + b * v, s0 * s0 + s1 * s1 * v * v))
+    }
+
+    pub fn round_format(&self) -> Option<Format> {
+        match self {
+            InputError::Round { format } => Some(*format),
+            _ => None,
+        }
+    }
+
+    /// Load `file` pairs, fit `linear`, check parameters.
+    pub fn resolve(&mut self, base: &std::path::Path) -> Result<(), String> {
+        match self {
+            InputError::Relative { std, .. } | InputError::Absolute { std, .. } if *std < 0.0 => {
+                Err("error std must be >= 0".into())
+            }
+            InputError::Pairs {
+                pairs,
+                file,
+                tensor,
+                linear,
+                table,
+            } => {
+                if let Some(f) = file.take() {
+                    let path = base.join(&f);
+                    let v: serde_json::Value = serde_json::from_slice(
+                        &std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?,
+                    )
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                    let ts = v["tensors"]
+                        .as_object()
+                        .ok_or_else(|| format!("{}: not an errstate", path.display()))?;
+                    let t = match tensor {
+                        Some(n) => ts
+                            .get(n.as_str())
+                            .ok_or_else(|| format!("{}: no tensor {n}", path.display()))?,
+                        None => ts
+                            .values()
+                            .next()
+                            .ok_or_else(|| format!("{}: no tensors", path.display()))?,
+                    };
+                    let ps: Vec<[f64; 2]> = serde_json::from_value(t["pairs"].clone())
+                        .map_err(|e| format!("{}: pairs: {e}", path.display()))?;
+                    pairs.extend(ps);
+                    if v["model"].as_str().is_some_and(|m| m != "iid") {
+                        return Err(format!(
+                            "{}: errstate model {} (this ptxv reads iid)",
+                            path.display(),
+                            v["model"]
+                        ));
+                    }
+                    if linear.is_none() {
+                        *linear = serde_json::from_value(t["linear"].clone()).ok();
+                    }
+                }
+                if pairs.is_empty() {
+                    return Err("error pairs: none given".into());
+                }
+                if linear.is_none() {
+                    *linear = Some(fit_linear(pairs));
+                }
+                *table = moment_table(pairs);
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -866,15 +1088,29 @@ impl Spec {
                     return Err(format!("tensor {n}: outliers.prob in [0, 1]"));
                 }
             }
+            if let Some(e) = t.error.as_mut() {
+                e.resolve(base).map_err(|e| format!("tensor {n}: {e}"))?;
+            }
         }
         if let Some(t) = s.default.as_mut() {
             t.dist.resolve(base)?;
+            if let Some(e) = t.error.as_mut() {
+                e.resolve(base)?;
+            }
         }
         Ok(s)
     }
 
     pub fn tensor(&self, name: &str) -> Option<&TensorSpec> {
         self.tensors.get(name).or(self.default.as_ref())
+    }
+
+    /// Whether some input carries an error model.
+    pub fn has_input_errors(&self) -> bool {
+        self.tensors
+            .values()
+            .chain(self.default.iter())
+            .any(|t| t.error.is_some())
     }
 
     /// Buffers some recipe fills with scales.
@@ -950,8 +1186,22 @@ pub struct Ood {
 
 /// One sampled input: buffer bytes by name, plus the real values before quantization.
 pub struct Sample {
+    /// What the kernel reads (with input errors: value + error, rounded to the dtype).
     pub bytes: BTreeMap<String, Vec<u8>>,
+    /// The error-free values of buffers with an input error (the exact reference's).
+    pub clean: BTreeMap<String, Vec<u8>>,
     pub ood: Ood,
+}
+
+impl Sample {
+    /// The error-free bytes: `clean` where a buffer carries an error, else `bytes`.
+    pub fn clean_bytes(&self) -> BTreeMap<String, Vec<u8>> {
+        let mut b = self.bytes.clone();
+        for (k, v) in &self.clean {
+            b.insert(k.clone(), v.clone());
+        }
+        b
+    }
 }
 
 fn put_code(buf: &mut [u8], fmt: Format, dtype: &str, i: usize, code: u32) {
@@ -1008,6 +1258,7 @@ fn real_values(t: &TensorSpec, n: usize, shape: &[u64], r: &mut Rng) -> Vec<f64>
 // ASSUME(N-ERRDIST-IID): the sampler draws exactly the spec's law.
 pub fn sample(spec: &Spec, layouts: &[Layout], idx: u64) -> Result<Sample, String> {
     let mut out = BTreeMap::new();
+    let mut clean = BTreeMap::new();
     let mut ood = Ood::default();
     let scale_bufs: BTreeMap<String, String> = spec.scale_buffers().into_iter().collect();
     let by_name: BTreeMap<&str, &Layout> = layouts.iter().map(|l| (l.name.as_str(), l)).collect();
@@ -1021,9 +1272,28 @@ pub fn sample(spec: &Spec, layouts: &[Layout], idx: u64) -> Result<Sample, Strin
         let mut r = Rng::stream(spec.seed, idx, &l.name);
         let n = l.elems();
         let shape = l.logical_shape(t);
-        let x = real_values(t, n, &shape, &mut r);
+        // Joint (value, error) pairs: the value comes from the pair.
+        let (x, pair_err) = match &t.error {
+            Some(InputError::Pairs { pairs, .. }) => {
+                let mut re = Rng::stream(spec.seed, idx, &format!("{}#pair", l.name));
+                let k: Vec<usize> = (0..n)
+                    .map(|_| re.below(pairs.len() as u64) as usize)
+                    .collect();
+                (
+                    k.iter().map(|&j| pairs[j][0]).collect::<Vec<f64>>(),
+                    Some(k.iter().map(|&j| pairs[j][1]).collect::<Vec<f64>>()),
+                )
+            }
+            _ => (real_values(t, n, &shape, &mut r), None),
+        };
         let mut buf = vec![0u8; l.bytes];
         ood.elements += n as u64;
+        if t.error.is_some() && !matches!(t.quant, Quant::Round) {
+            return Err(format!(
+                "{}: an input error needs quant round (a float buffer)",
+                l.name
+            ));
+        }
         match &t.quant {
             Quant::Round => {
                 let f = match l.dtype.as_str() {
@@ -1042,6 +1312,28 @@ pub fn sample(spec: &Spec, layouts: &[Layout], idx: u64) -> Result<Sample, Strin
                     ood.overflow += of as u64;
                     ood.nonfinite += !q.is_finite() as u64;
                     put_code(&mut buf, f, &l.dtype, i, f.code(q));
+                }
+                // The kernel's view: round_dtype(value + e); the reference keeps `buf`.
+                if let Some(err) = &t.error {
+                    let mut re = Rng::stream(spec.seed, idx, &format!("{}#err", l.name));
+                    let mut nbuf = vec![0u8; l.bytes];
+                    let lin = err.linear();
+                    for (i, v) in x.iter().enumerate() {
+                        let (q, _) = f.round(*v, false);
+                        let noisy = match (err, &pair_err, lin) {
+                            (InputError::Round { format }, _, _) => format.round(q, false).0,
+                            (_, Some(pe), _) => q + pe[i],
+                            (_, None, Some([a, b, s0, s1])) => {
+                                q + a + b * q + (s0 * s0 + s1 * s1 * q * q).sqrt() * re.normal()
+                            }
+                            _ => q,
+                        };
+                        let (qn, of) = f.round(noisy, false);
+                        ood.overflow += of as u64;
+                        ood.nonfinite += !qn.is_finite() as u64;
+                        put_code(&mut nbuf, f, &l.dtype, i, f.code(qn));
+                    }
+                    clean.insert(l.name.clone(), std::mem::replace(&mut buf, nbuf));
                 }
             }
             Quant::Codes { format } => {
@@ -1134,7 +1426,11 @@ pub fn sample(spec: &Spec, layouts: &[Layout], idx: u64) -> Result<Sample, Strin
         }
         out.insert(l.name.clone(), buf);
     }
-    Ok(Sample { bytes: out, ood })
+    Ok(Sample {
+        bytes: out,
+        clean,
+        ood,
+    })
 }
 
 /// A code buffer's scale blocks: from the layout (numerics leaves), else contiguous runs of
@@ -1168,6 +1464,33 @@ fn blocks_of(l: &Layout, block: usize) -> Result<Vec<(u64, Vec<u64>)>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pairs_moments_follow_the_value() {
+        // A relative error (std 1e-3) on normal values: the binned moment forms give
+        // var(e | v) = (1e-3 v)^2 across the range, the tails included.
+        let mut r = Rng::stream(1, 0, "t");
+        let pairs: Vec<[f64; 2]> = (0..16384)
+            .map(|_| {
+                let v = r.normal();
+                [v, 1e-3 * v * r.normal()]
+            })
+            .collect();
+        let mut e = InputError::Pairs {
+            pairs,
+            file: None,
+            tensor: None,
+            linear: None,
+            table: vec![],
+        };
+        e.resolve(std::path::Path::new(".")).unwrap();
+        for v in [-3.5, -2.0, -0.5, 0.3, 1.0, 2.5, 3.8] {
+            let (m, var) = e.moments(v).unwrap();
+            let want = (1e-3f64 * v).powi(2);
+            assert!(m.abs() < 0.3 * want.sqrt(), "{v}: mean {m}");
+            assert!((var / want - 1.0).abs() < 0.35, "{v}: var {var} vs {want}");
+        }
+    }
 
     #[test]
     fn rounding_matches_the_hardware_conversions() {

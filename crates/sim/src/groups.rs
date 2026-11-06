@@ -238,8 +238,8 @@ pub fn terminal_sink(m: &Machine) {
 }
 
 fn sh_obligs(alloc: u32, i: u64, s: &Sh, map: &mut XgMap) {
-    if let Some(w) = s.w {
-        add_oblig(map, (alloc, i, i + 1, Epoch { strong: 0, ..w }, true));
+    for w in s.writes() {
+        add_oblig(map, (alloc, i, i + 1, Epoch { strong: 0, ..*w }, true));
     }
     for r in &s.r {
         add_oblig(map, (alloc, i, i + 1, Epoch { strong: 0, ..*r }, false));

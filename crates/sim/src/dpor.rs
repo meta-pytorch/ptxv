@@ -190,7 +190,11 @@ fn blocked_footprints(m: &Machine, enabled: &BTreeSet<Pid>) -> Vec<(Pid, Footpri
             }
         }
         // A control-word bulk read wait blocks like Op::BulkWait.
-        if m.k.bulk_read_waits.binary_search(&(pc as usize)).is_ok() {
+        if m.k
+            .bulk_read_waits
+            .binary_search_by_key(&(pc as usize), |w| w.0)
+            .is_ok()
+        {
             for &u in &members {
                 f.add(5, u as u32, 0, 1, false)
             }

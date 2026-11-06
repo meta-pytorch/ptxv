@@ -189,6 +189,12 @@ class Dist:
     def clip(self, lo: float, hi: float) -> "Dist":
         return Clipped(self, lo, hi)
 
+    def with_error(self, error: "InputError") -> "Dist":
+        """The values carry an input error (ptxv errdist, docs/errdist.md §2.1): the kernel
+        reads value + error, the exact reference uses the error-free value. `error`:
+        RelativeError, AbsoluteError, RoundError, LinearError."""
+        return WithError(self, error)
+
     def __repr__(self) -> str:
         s = self.spec()
         k = s.pop("kind")
@@ -487,6 +493,136 @@ class Quantized(Dist):
             "scale_rule": self.scale_rule,
             "global_scale": self.global_scale,
             "base": self.base.spec(),
+        }
+
+
+class InputError:
+    """An input tensor's error model, per element, independent across elements
+    (`Dist.with_error`; N-ERRDIST-INERR)."""
+
+    def spec(self) -> dict:
+        raise NotImplementedError
+
+    def sample(self, x: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        raise NotImplementedError
+
+
+class RelativeError(InputError):
+    """e = x (mean + std Z)."""
+
+    def __init__(self, std: float, mean: float = 0.0) -> None:
+        self.std, self.mean = float(std), float(mean)
+
+    def spec(self):
+        return {"kind": "relative", "std": self.std, "mean": self.mean}
+
+    def sample(self, x, rng):
+        return x * (self.mean + self.std * rng.standard_normal(np.shape(x)))
+
+
+class AbsoluteError(InputError):
+    """e = mean + std Z."""
+
+    def __init__(self, std: float, mean: float = 0.0) -> None:
+        self.std, self.mean = float(std), float(mean)
+
+    def spec(self):
+        return {"kind": "absolute", "std": self.std, "mean": self.mean}
+
+    def sample(self, x, rng):
+        return self.mean + self.std * rng.standard_normal(np.shape(x))
+
+
+class RoundError(InputError):
+    """The kernel reads the value rounded to nearest even to `fmt` ("bf16", "f16"): an f32
+    value that went through a 16-bit tensor upstream."""
+
+    def __init__(self, fmt: str = "bf16") -> None:
+        if fmt not in ("bf16", "f16"):
+            raise ValueError("RoundError: 'bf16' or 'f16'")
+        self.fmt = fmt
+
+    def spec(self):
+        return {"kind": "round", "format": self.fmt}
+
+    def sample(self, x, rng):
+        return quantize(np.asarray(x, np.float64), self.fmt) - x
+
+
+class LinearError(InputError):
+    """e | x ~ N(alpha + beta x, s0^2 + s1^2 x^2): the moment form an upstream errstate
+    carries."""
+
+    def __init__(
+        self, alpha: float = 0.0, beta: float = 0.0, s0: float = 0.0, s1: float = 0.0
+    ) -> None:
+        self.alpha, self.beta, self.s0, self.s1 = map(float, (alpha, beta, s0, s1))
+
+    def spec(self):
+        return {
+            "kind": "linear",
+            "alpha": self.alpha,
+            "beta": self.beta,
+            "s0": self.s0,
+            "s1": self.s1,
+        }
+
+    def sample(self, x, rng):
+        x = np.asarray(x, np.float64)
+        sd = np.sqrt(self.s0**2 + self.s1**2 * x * x)
+        return self.alpha + self.beta * x + sd * rng.standard_normal(x.shape)
+
+
+class WithError(Dist):
+    """`base`'s values with an input error (`Dist.with_error`). `sample` gives the values
+    the kernel reads (value + error)."""
+
+    def __init__(self, base: Dist, error: InputError) -> None:
+        self.base, self.error = base, error
+
+    def sample(self, shape, rng=None):
+        g = _rng(rng)
+        x = self.base.sample(shape, g)
+        return x + self.error.sample(x, g)
+
+    def spec(self):
+        return {
+            "kind": "with_error",
+            "base": self.base.spec(),
+            "error": self.error.spec(),
+        }
+
+
+class Upstream(Dist):
+    """An upstream kernel's output as this input: joint (value, error) samples from its
+    errstate (`ErrDist.as_input()`, `ptxv errdist --errstate`), drawn i.i.d. per element
+    (N-ERRDIST-INERR). The value distribution and the error come from the same pairs, so a
+    hand-written `with_error` input and an upstream kernel's output are interchangeable."""
+
+    def __init__(self, errstate: str, tensor: str | None = None) -> None:
+        import json
+
+        self.errstate, self.tensor = str(errstate), tensor
+        doc = json.loads(open(self.errstate).read())
+        if doc.get("kind") != "ptxv-errstate":
+            raise ValueError(f"{errstate}: not a ptxv errstate")
+        ts = doc["tensors"]
+        self.state = ts[tensor] if tensor else next(iter(ts.values()))
+        self.tensor = tensor or next(iter(ts))
+
+    def sample(self, shape, rng=None):
+        g = _rng(rng)
+        p = np.asarray(self.state["pairs"], np.float64)
+        k = g.integers(0, len(p), size=int(np.prod(shape)))
+        return (p[k, 0] + p[k, 1]).reshape(shape)
+
+    def spec(self):
+        return {
+            "kind": "upstream",
+            "errstate": self.errstate,
+            "tensor": self.tensor,
+            "value_mean": self.state["value_mean"],
+            "value_std": math.sqrt(max(self.state["value_var"], 0.0)) or 1.0,
         }
 
 
