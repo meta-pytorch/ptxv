@@ -378,12 +378,25 @@ avoid, so both are conservative.
    - the chain CLT on block-scaled chains: always refused (the matrix has it 2-100x off);
    - AG's non-chain tiers: their own checks (§9), and the cross-check below is required
      (refused without Tier 3).
-2. **The Tier 3 cross-check**: every run samples a small Tier 3 (300 inputs by default).
-   An analytic estimate agrees when |p − p3| ≤ max(5% of p3, half Tier 3's interval), or p
-   lies inside that interval. One that disagrees is refused, the report notes `TIER 3
-   CROSS-CHECK FAILS`, and the headline falls back to Tier 3. `crosscheck` lists every
-   comparison. With `--mc 0` (a model query without Tier 3), chain estimates rest on the
-   structural checks alone.
+2. **The Tier 3 cross-check**: every run samples Tier 3 (300 inputs to start). An analytic
+   estimate agrees when |p − p3| ≤ max(5% of p3 − h, h), or p lies inside Tier 3's
+   interval. Here h is half Tier 3's interval: Tier 3's own uncertainty comes off the 5%,
+   so an agreeing estimate is within 5% of the true P(differ), not merely of this run's
+   Tier 3.
+   - **The check must have resolution.** With the default input count, Tier 3 grows until
+     h is within 10% of P(differ), stopping at 76,800 inputs or after 30 s
+     (`PTXV_XCHECK_SECONDS`). It then keeps growing toward 2% for as long as the run is
+     under 10 s.
+   - **A wide tolerance confirms nothing.** An estimate whose tolerance is still above 20%
+     of P(differ) is not confirmed, and so not applicable. `--mc N` fixes the input count.
+   - **Why:** in the full matrix (§7), the 300-input check let 7 of 162 headlines through
+     wrong. At 300 inputs a P(differ) of 3e-5 has a ±30% interval: a bf16 GEMM's Tier 2 at
+     0.82x passed, as did a layer norm's at 0.37-0.53x and a packed bf16 gelu's at 4x. A
+     row-reduce pair's Tier 2, 5% high, passed against a Tier 3 that landed 3% high. All
+     now fail, in 1-7 s of Tier 3.
+   - One that disagrees is refused, the report notes `TIER 3 CROSS-CHECK FAILS`, and the
+     headline falls back to Tier 3. `crosscheck` lists every comparison. With `--mc 0` (a
+     model query without Tier 3), chain estimates rest on the structural checks alone.
 
 The text report prints each analytic tier's verdict ("applicable" or "REFUSED") with its
 checks, and ends with a summary: which tier answered, P(differ) (with Tier 3's interval),
@@ -811,6 +824,226 @@ matches GB300's 0.840.
 
 The prediction-vs-simulator check is part of every CLI run (`validation`).
 
+### 7.3 The full matrix under the default policy (2026-11-06)
+
+Every kernel family is in this matrix: 162 rows.
+- the chain rows of §7.1 (bf16, f16, MX / NV block-scaled, TF32, f32 sums, FMA chains, scans,
+  single and pairs);
+- the non-chain rows of §9.7 (softmax, norms, attention, elementwise, log-sum-exp, Kahan)
+  under normal, laplace and Student t(3) inputs;
+- inputs that carry an error (§2.1).
+
+Each row was run three ways:
+- **default:** `ptxv errdist ... --sim-trials 0`, the policy of §3.2 including the growing
+  cross-check. This gives the headline tier, Tier 2's verdict, and why it refused.
+- **truth:** Tier 3 at 20,000 inputs on another seed (independent of the default run's
+  Tier 3 inputs).
+- **GB300:** 50 inputs on GPUs 0/1/3, compared with a 2,000-input Tier 3.
+
+| | rows |
+|---|---|
+| headline right: within max(5%, truth's 95% half-width) of the truth, or Tier 3 itself | 155 of 155 |
+| headline wrong | 0 |
+| Tier 2 applicable and right ("holds") | 50 |
+| Tier 2 refused, and it was off ("refused (correctly)") | 87 |
+| Tier 2 refused, though it would have been within tolerance | 10 |
+| no Tier 2 (Tier 0 answers, or none for the program) | 15 |
+| GB300 P(differ) within Tier 3's interval | 158 of 158 |
+
+The input-error rows (7) are judged on mean |error| within 10%, not on P(differ); all are
+right.
+
+Notes:
+- **Before the growing cross-check, 7 headlines were wrong** with a 300-input check:
+  - bf16 GEMM, normal and laplace (Tier 2 at 0.82x and 0.85x);
+  - layer norm, torch and triton (0.37-0.53x);
+  - packed bf16 gelu (4x);
+  - a row-reduce sum pair (1.05x, against a Tier 3 that landed 3% high).
+- **The cost is a Tier 3 of up to 76,800 inputs, 1-7 s here.** The "would have held"
+  refusals are near-misses (Tier 2 1-5% off against a tolerance shrunk by Tier 3's own
+  interval), or rare events whose tolerance stays above 20% of P(differ) within the
+  budget. Examples: RMSNorm at P(differ) ~1e-5, and RMSNorm under laplace at 0.81-0.83x.
+- **GB300.** P(differ) agrees on every row with a GPU run. Four rows flag only the 95% test
+  of the u-scale mean, at 1.4-2 standard errors (about 8 such flags are expected over 158
+  rows):
+  - the softmax with a relative input error;
+  - the eager / inductor silu*mul pair (normal and t(3));
+  - the atomic split-K pair. Its GPU outputs differ bitwise from the DAG's on 57 of 200
+    (another order of the atomic adds, N-ERRDIST-DAG), with KS p = 0.999 against Tier 3.
+- **Not run on a GPU (4 rows):**
+  - the cuBLAS MXF8 pair (the GPU worker could not take that case);
+  - the RMSNorm pair, the bf16 add pair under laplace, and RMSNorm with a relative input
+    error (no free GPU at the time).
+- Scripts and raw reports (the run directory, `fullmatrix/`):
+  - `full_matrix.py` (default and GB300 runs);
+  - `truth2.py` (the 20,000-input truth);
+  - `table.py` (this table).
+
+| row | headline tier | headline vs truth | truth: Tier 3 P(differ) [95% CI] | Tier 2 | T2/T3 | Tier 2 verdict | refusal reason | GB300 P(differ), 50 inputs | GB300 vs Tier 3 |
+|---|---|---|---|---|---|---|---|---|---|
+| bf16/single/normal | 3 | ok | 2.787e-05 [2.67e-05, 2.9e-05] | 2.082e-05 | 0.747 | refused (correctly) | Tier 3 cross-check (49769 inputs) | 3.906e-05 [1.69e-05, 7.7e-05] | agree |
+| bf16/single/uniform12 | 0 | ok | 0 [0, 4.5e-08] | - | - | no tier 2 |  | 0 [0, 1.8e-05] | agree |
+| bf16/single/student_t | 3 | ok | 3.456e-05 [3.33e-05, 3.59e-05] | 3.525e-05 | 1.02 | refused (would have held) | 64 of 64 sampled outputs outside the DAG tier's  | 4.395e-05 [2.01e-05, 8.34e-05] | agree |
+| bf16/single/laplace | 3 | ok | 3.932e-05 [3.8e-05, 4.07e-05] | 3.588e-05 | 0.912 | refused (correctly) | Tier 3 cross-check (39424 inputs) | 5.859e-05 [3.03e-05, 0.000102] | agree |
+| bf16/single/lognormal | 3 | ok | 1.21e-05 [1.14e-05, 1.29e-05] | 1.008e-05 | 0.834 | refused (correctly) | 64 of 64 sampled outputs outside the DAG tier's  | 9.766e-06 [1.18e-06, 3.53e-05] | agree |
+| bf16/single/outliers | 3 | ok | 3.221e-05 [3.1e-05, 3.35e-05] | 8.706e-05 | 2.7 | refused (correctly) | 64 of 64 sampled outputs outside the DAG tier's  | 4.883e-05 [2.34e-05, 8.98e-05] | agree |
+| bf16/single/integers | 0 | ok | 0 [0, 4.5e-08] | - | - | no tier 2 |  | 0 [0, 1.8e-05] | agree |
+| bf16/single/ints_scaled | 3 | ok | 3.568e-05 [3.44e-05, 3.7e-05] | 5.081e-05 | 1.42 | refused (correctly) | 64 of 64 sampled outputs outside the DAG tier's  | 5.371e-05 [2.68e-05, 9.61e-05] | agree |
+| bf16/pair-rev/normal | 2 | ok | 3.931e-05 [3.8e-05, 4.07e-05] | 3.829e-05 | 0.974 | holds |  | 4.395e-05 [2.01e-05, 8.34e-05] | agree |
+| bf16/pair-rev/student_t | 3 | ok | 4.724e-05 [4.58e-05, 4.88e-05] | 6.306e-05 | 1.33 | refused (correctly) | 64 of 64 sampled outputs outside the DAG tier's  | 5.371e-05 [2.68e-05, 9.61e-05] | agree |
+| bf16/pair-rev/uniform12 | 0 | ok | 0 [0, 4.5e-08] | - | - | no tier 2 |  | 0 [0, 1.8e-05] | agree |
+| bf16/pair-rev/ints_scaled | 3 | ok | 4.763e-05 [4.61e-05, 4.92e-05] | 8.583e-05 | 1.8 | refused (correctly) | 64 of 64 sampled outputs outside the DAG tier's  | 8.789e-05 [5.21e-05, 0.000139] | agree |
+| bf16/pair-fwd/normal | 0 | ok | 0 [0, 4.5e-08] | - | - | no tier 2 |  | 0 [0, 1.8e-05] | agree |
+| f16/single/normal | 3 | ok | 0.7411 [0.741, 0.741] | 0.8396 | 1.13 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.7407 [0.74, 0.741] | agree |
+| f16/single/student_t | 3 | ok | 0.8212 [0.821, 0.821] | 0.8901 | 1.08 | refused (correctly) | 64 of 64 sampled outputs outside the DAG tier's  | 0.8215 [0.821, 0.822] | agree |
+| f16/single/uniform12 | 0 | ok | 0 [0, 2.81e-09] | - | - | no tier 2 |  | 0 [0, 1.13e-06] | agree |
+| mxf8/single/normal-mx | 3 | ok | 0.04494 [0.0449, 0.045] | 0.5153 | 11.5 | refused (correctly) | y's position in its f32 ulp | 0.04641 [0.046, 0.0469] | agree |
+| mxf8/single/student_t-mx | 3 | ok | 0.08834 [0.0883, 0.0884] | 0.5331 | 6.03 | refused (correctly) | y's position in its f32 ulp | 0.08836 [0.0877, 0.089] | agree |
+| mxf8/single/laplace-mx | 3 | ok | 0.1093 [0.109, 0.109] | 0.5369 | 4.91 | refused (correctly) | y's position in its f32 ulp | 0.1081 [0.107, 0.109] | agree |
+| mxf8/single/lognormal-mx | 3 | ok | 0.005008 [0.005, 0.00502] | 0.5034 | 101 | refused (correctly) | y's position in its f32 ulp | 0.004955 [0.0048, 0.00511] | agree |
+| mxf8/single/outliers-mx | 3 | ok | 0.311 [0.311, 0.311] | 0.7036 | 2.26 | refused (correctly) | y's position in its f32 ulp | 0.3103 [0.309, 0.311] | agree |
+| mxf8/single/codes | 3 | ok | 0.8462 [0.846, 0.846] | 0.7975 | 0.942 | refused (correctly) | block-scaled chain CLT | 0.8447 [0.844, 0.845] | agree |
+| mxf8/single/ints | 0 | ok | 0 [0, 1.13e-08] | - | - | no tier 2 |  | 0 [0, 4.5e-06] | agree |
+| mxf8/single/ints_scaled | 3 | ok | 0.292 [0.292, 0.292] | 0.699 | 2.39 | refused (correctly) | y's position in its f32 ulp | 0.2903 [0.289, 0.291] | agree |
+| mxf8/pair-rev/normal-mx | 3 | ok | 0.03403 [0.034, 0.0341] | 0.09497 | 2.79 | refused (correctly) | y's position in its f32 ulp | 0.03491 [0.0345, 0.0353] | agree |
+| mxf8/pair-rev/codes | 3 | ok | 0.8403 [0.84, 0.84] | 0.8348 | 0.993 | refused (would have held) | block-scaled chain CLT | 0.8402 [0.839, 0.841] | agree |
+| mxf8/pair-rev/ints_scaled | 3 | ok | 0.2437 [0.244, 0.244] | 0.724 | 2.97 | refused (correctly) | y's position in its f32 ulp | 0.2431 [0.242, 0.244] | agree |
+| mxf8/pair-rev/student_t-mx | 3 | ok | 0.06527 [0.0652, 0.0653] | 0.1982 | 3.04 | refused (correctly) | y's position in its f32 ulp | 0.06497 [0.0644, 0.0655] | agree |
+| mxf8/pair-cublas/normal-mx | 0 | ok | 0 [0, 1.13e-08] | - | - | no tier 2 |  | GPU validation not run: GPU worker for c | - |
+| mxf4/single/normal-mx | 0 | ok | 0 [0, 1.13e-08] | - | - | no tier 2 |  | 0 [0, 4.5e-06] | agree |
+| mxf4/single/codes | 3 | ok | 0.3347 [0.335, 0.335] | 0.6467 | 1.93 | refused (correctly) | y's position in its f32 ulp | 0.3328 [0.332, 0.334] | agree |
+| mxf4/single/student_t-mx | 3 | ok | 0 [0, 1.13e-08] | 0.5 | - | refused (correctly) | y's position in its f32 ulp | 0 [0, 4.5e-06] | agree |
+| mxf4/single/laplace-mx | 0 | ok | 0 [0, 1.13e-08] | - | - | no tier 2 |  | 0 [0, 4.5e-06] | agree |
+| mxf4/pair-rev/codes | 3 | ok | 0.1596 [0.16, 0.16] | 0.6356 | 3.98 | refused (correctly) | y's position in its f32 ulp | 0.1598 [0.159, 0.161] | agree |
+| mxf4/pair-rev/student_t-mx | 3 | ok | 0 [0, 1.13e-08] | 0 | - | refused (would have held) | y's position in its f32 ulp | 0 [0, 4.5e-06] | agree |
+| nvf4/single/normal-nv | 3 | ok | 0 [0, 1.13e-08] | - | - | no tier 2 |  | 0 [0, 4.5e-06] | agree |
+| nvf4/single/student_t-nv | 3 | ok | 5.493e-08 [3.26e-08, 8.68e-08] | - | - | no tier 2 |  | 0 [0, 4.5e-06] | agree |
+| nvf4/single/codes | 3 | ok | 0.7877 [0.788, 0.788] | - | - | no tier 2 |  | 0.7875 [0.787, 0.788] | agree |
+| nvf4/pair-dq/normal-nv | 3 | ok | 0 [0, 1.13e-08] | - | - | no tier 2 |  | 0 [0, 4.5e-06] | agree |
+| nvf4/pair-dq/codes | 3 | ok | 0.5592 [0.559, 0.559] | - | - | no tier 2 |  | 0.5592 [0.558, 0.56] | agree |
+| nvf4/pair-cublas/normal-nv | 0 | ok | 0 [0, 1.13e-08] | - | - | no tier 2 |  | 0 [0, 4.5e-06] | agree |
+| tf32/single/normal | 2 | ok | 1 [1, 1] | 1 | 1 | holds |  | 1 [1, 1] | agree |
+| 3xtf32/single/normal | 2 | ok | 0.9701 [0.97, 0.97] | 0.9754 | 1.01 | holds |  | 0.9714 [0.97, 0.973] | agree |
+| tf32/single/student_t | 2 | ok | 1 [1, 1] | 1 | 1 | holds |  | 1 [1, 1] | agree |
+| 3xtf32/single/student_t | 2 | ok | 0.968 [0.968, 0.968] | 0.9754 | 1.01 | holds |  | 0.9687 [0.967, 0.97] | agree |
+| tf32/single/uniform12 | 2 | ok | 1 [1, 1] | 1 | 1 | holds |  | 1 [1, 1] | agree |
+| 3xtf32/single/uniform12 | 2 | ok | 1 [1, 1] | 0.9998 | 1 | holds |  | 1 [1, 1] | agree |
+| 3xtf32/pair-rev/normal | 2 | ok | 0.9686 [0.969, 0.969] | 0.9661 | 0.997 | holds |  | 0.9677 [0.966, 0.969] | agree |
+| 3xtf32/pair-3x-vs-f32/normal | 2 | ok | 0.9669 [0.967, 0.967] | 0.9661 | 0.999 | holds |  | 0.9672 [0.966, 0.969] | agree |
+| f32-sum/single/normal | 2 | ok | 0.6676 [0.664, 0.671] | 0.6708 | 1 | holds |  | 0.685 [0.616, 0.749] | agree |
+| f32-fma/single/normal | 2 | ok | 0.7609 [0.761, 0.761] | 0.7574 | 0.995 | holds |  | 0.7626 [0.76, 0.765] | agree |
+| f32-sum/single/uniform12 | 2 | ok | 0.2876 [0.284, 0.291] | 0.2568 | 0.893 | refused (correctly) | Tier 3 cross-check (7154 inputs) | 0.315 [0.251, 0.384] | agree |
+| f32-fma/single/uniform12 | 2 | ok | 0.3852 [0.385, 0.385] | 0.3765 | 0.978 | holds |  | 0.3857 [0.383, 0.388] | agree |
+| f32-sum/single/student_t | 2 | ok | 0.665 [0.662, 0.668] | 0.6636 | 0.998 | holds |  | 0.64 [0.569, 0.706] | agree |
+| f32-fma/single/student_t | 2 | ok | 0.7529 [0.753, 0.753] | 0.7474 | 0.993 | holds |  | 0.7529 [0.751, 0.755] | agree |
+| f32-sum/pair-rowreduce/normal | 3 | ok | 0.7001 [0.697, 0.703] | 0.7403 | 1.06 | refused (correctly) | Tier 3 cross-check (1128 inputs) | 0.725 [0.658, 0.786] | agree |
+| f32-sum/pair-splitk/normal | 3 | ok | 0.7114 [0.708, 0.715] | 0.7505 | 1.05 | refused (correctly) | Tier 3 cross-check (1253 inputs) | 0.725 [0.658, 0.786] | agree |
+| f32-sum/pair-atomic/normal | 3 | ok | 0.7159 [0.713, 0.719] | 0.7529 | 1.05 | refused (correctly) | Tier 3 cross-check (1199 inputs) | 0.75 [0.684, 0.808] | DISAGREE |
+| f32-scan/single/normal | 2 | ok | 0.6155 [0.615, 0.616] | 0.6026 | 0.979 | holds |  | 0.6173 [0.611, 0.623] | agree |
+| nonlin/single/r4_softmax_torch/normal | 3 | ok | 0.6439 [0.644, 0.644] | 0.6118 | 0.95 | refused (would have held) | Tier 3 cross-check (300 inputs) | 0.646 [0.64, 0.652] | agree |
+| nonlin/single/r4_softmax_triton/normal | 2 | ok | 0.7035 [0.703, 0.704] | 0.6887 | 0.979 | holds |  | 0.7054 [0.7, 0.711] | agree |
+| nonlin/single/c_triton_softmax_online/normal | 2 | ok | 0.712 [0.712, 0.712] | 0.6991 | 0.982 | holds |  | 0.708 [0.702, 0.714] | agree |
+| nonlin/single/r4_rmsnorm_torch/normal | 3 | ok | 1.094e-05 [9.01e-06, 1.32e-05] | 1.067e-05 | 0.975 | refused (would have held) | Tier 3 cross-check (76800 inputs) | 0 [0, 0.000144] | agree |
+| nonlin/single/r4_rmsnorm_triton/normal | 2 | ok | 1.006e-05 [8.21e-06, 1.22e-05] | 9.248e-06 | 0.919 | holds |  | 0 [0, 0.000144] | agree |
+| nonlin/single/r4_layernorm_torch/normal | 3 | ok | 2.988e-05 [2.66e-05, 3.34e-05] | 1.231e-05 | 0.412 | refused (correctly) | Tier 3 cross-check (66397 inputs) | 3.906e-05 [9.89e-07, 0.000218] | agree |
+| nonlin/single/r4_layernorm_triton/normal | 3 | ok | 2.9e-05 [2.58e-05, 3.25e-05] | 1.313e-05 | 0.453 | refused (correctly) | Tier 3 cross-check (24749 inputs) | 3.906e-05 [9.89e-07, 0.000218] | agree |
+| nonlin/single/c_attn_core_ref/normal | 2 | ok | 0.7501 [0.75, 0.75] | 0.7531 | 1 | holds |  | 0.7515 [0.744, 0.759] | agree |
+| nonlin/single/c_silu/normal | 2 | ok | 0.3283 [0.328, 0.329] | 0.3186 | 0.97 | holds |  | 0.3246 [0.321, 0.329] | agree |
+| nonlin/single/c_gelu_tanh/normal | 2 | ok | 0.4286 [0.428, 0.429] | 0.4262 | 0.994 | holds |  | 0.4294 [0.425, 0.434] | agree |
+| nonlin/single/c_gelu_erf/normal | 2 | ok | 0.3874 [0.387, 0.388] | 0.3747 | 0.967 | holds |  | 0.3897 [0.385, 0.394] | agree |
+| nonlin/single/c_gelu_bf16/normal | 0 | ok | 5.693e-05 [5.37e-05, 6.03e-05] | 2.976e-05 | 0.523 | refused (correctly) | Tier 3 cross-check (76800 inputs) | 9.766e-05 [3.17e-05, 0.000228] | agree |
+| nonlin/single/c_triton_gelu_bf16/normal | 3 | ok | 3.613e-06 [2.84e-06, 4.54e-06] | 1.637e-05 | 4.53 | refused (correctly) | Tier 3 cross-check (76800 inputs) | 0 [0, 7.2e-05] | agree |
+| nonlin/single/c_softcap/normal | 3 | ok | 0.3462 [0.346, 0.346] | 1 | 2.89 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.3416 [0.338, 0.346] | agree |
+| nonlin/single/c_cve_silumul_bf16_inductor/normal | 3 | ok | 1.28e-05 [1.24e-05, 1.32e-05] | 6.8e-06 | 0.531 | refused (correctly) | Tier 3 cross-check (2060 inputs) | 1.343e-05 [6.7e-06, 2.4e-05] | agree |
+| nonlin/single/c_cve_addnorm_inductor/normal | 2 | ok | 0.4739 [0.474, 0.474] | 0.4594 | 0.969 | holds |  | 0.4834 [0.479, 0.488] | agree |
+| nonlin/single/c_lse_naive/normal | 3 | ok | 0.07744 [0.0756, 0.0793] | 0.07343 | 0.948 | refused (correctly) | Tier 3 cross-check (37601 inputs) | 0.09 [0.0542, 0.139] | agree |
+| nonlin/single/c_lse_stable/normal | 3 | ok | 0.2127 [0.21, 0.216] | 0.1297 | 0.61 | refused (correctly) | Tier 3 cross-check (11950 inputs) | 0.165 [0.116, 0.224] | agree |
+| nonlin/single/c_sum_kahan/normal | 3 | ok | 0.4056 [0.402, 0.409] | 0.2076 | 0.512 | refused (correctly) | Tier 3 cross-check (4292 inputs) | 0.355 [0.289, 0.426] | agree |
+| nonlin/pair/c_equiv_softmax-c0/normal | 3 | ok | 0.67 [0.67, 0.67] | 0.7021 | 1.05 | refused (would have held) | Tier 3 cross-check (300 inputs) | 0.6606 [0.655, 0.666] | agree |
+| nonlin/pair/c_equiv_softmax-c1/normal | 3 | ok | 0.6867 [0.686, 0.687] | 0.7604 | 1.11 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.6766 [0.671, 0.682] | agree |
+| nonlin/pair/c_equiv_rmsnorm-c0/normal | 3 | ok | 0.1473 [0.147, 0.148] | 0.4901 | 3.33 | refused (correctly) | Tier 3 cross-check (300 inputs) | GPU validation not run: no free GPU (PTX | - |
+| nonlin/pair/c_equiv_layernorm-c0/normal | 3 | ok | 0.2789 [0.279, 0.279] | 0.4222 | 1.51 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.3046 [0.299, 0.31] | agree |
+| nonlin/pair/c_equiv_attn-c0/normal | 2 | ok | 0.7901 [0.79, 0.79] | 0.815 | 1.03 | holds |  | 0.7901 [0.783, 0.797] | agree |
+| nonlin/pair/c_equiv_elementwise_gelu_tanh-c0/normal | 3 | ok | 0.9318 [0.932, 0.932] | 0.7748 | 0.831 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.9323 [0.93, 0.934] | agree |
+| nonlin/pair/c_equiv_elementwise_silu-c0/normal | 3 | ok | 0.3471 [0.347, 0.347] | 0.4973 | 1.43 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.3451 [0.341, 0.349] | agree |
+| nonlin/pair/c_equiv_elementwise_gelu_bf16-c0/normal | 0 | ok | 5.557e-05 [5.24e-05, 5.89e-05] | 1.776e-05 | 0.32 | refused (correctly) | Tier 3 cross-check (13186 inputs) | 9.766e-05 [3.17e-05, 0.000228] | agree |
+| nonlin/pair/c_equiv_elementwise_gelu_erf-c0/normal | 3 | ok | 0.01376 [0.0137, 0.0138] | 0.4633 | 33.7 | refused (correctly) | Tier 3 cross-check (805 inputs) | 0.01359 [0.0126, 0.0146] | agree |
+| nonlin/pair/errdist_cve_addnorm-c0/normal | 3 | ok | 0.06926 [0.0692, 0.0694] | 0.5121 | 7.39 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.07574 [0.0735, 0.0781] | agree |
+| nonlin/pair/errdist_cve_silumul-c0/normal | 3 | ok | 0.2487 [0.249, 0.249] | 0.3033 | 1.22 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.247 [0.244, 0.25] | DISAGREE |
+| nonlin/pair/errdist_cve_add_bf16-c0/normal | 3 | ok | 0.2202 [0.22, 0.22] | 0.1776 | 0.807 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.2203 [0.219, 0.222] | agree |
+| nonlin/pair/errdist_cve_silumul_bf16-c0/normal | 3 | ok | 0.2747 [0.275, 0.275] | 0.3696 | 1.35 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.2752 [0.274, 0.276] | agree |
+| nonlin/single/r4_softmax_torch/laplace | 3 | ok | 0.7561 [0.756, 0.756] | 0.7074 | 0.936 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.7571 [0.752, 0.762] | agree |
+| nonlin/single/r4_softmax_triton/laplace | 2 | ok | 0.806 [0.806, 0.806] | 0.7936 | 0.985 | holds |  | 0.8073 [0.802, 0.812] | agree |
+| nonlin/single/c_triton_softmax_online/laplace | 2 | ok | 0.8088 [0.809, 0.809] | 0.7953 | 0.983 | holds |  | 0.811 [0.806, 0.816] | agree |
+| nonlin/single/r4_rmsnorm_torch/laplace | 3 | ok | 1.006e-05 [8.21e-06, 1.22e-05] | 8.374e-06 | 0.833 | refused (would have held) | Tier 3 cross-check (76800 inputs) | 3.906e-05 [9.89e-07, 0.000218] | agree |
+| nonlin/single/r4_rmsnorm_triton/laplace | 3 | ok | 1.084e-05 [8.92e-06, 1.31e-05] | 8.804e-06 | 0.812 | refused (would have held) | Tier 3 cross-check (76800 inputs) | 3.906e-05 [9.89e-07, 0.000218] | agree |
+| nonlin/single/r4_layernorm_torch/laplace | 3 | ok | 2.539e-05 [2.24e-05, 2.87e-05] | 3.148e-05 | 1.24 | refused (correctly) | Tier 3 cross-check (39802 inputs) | 0 [0, 0.000144] | agree |
+| nonlin/single/r4_layernorm_triton/laplace | 3 | ok | 2.578e-05 [2.28e-05, 2.91e-05] | 2.125e-05 | 0.824 | refused (correctly) | Tier 3 cross-check (76800 inputs) | 3.906e-05 [9.89e-07, 0.000218] | agree |
+| nonlin/single/c_attn_core_ref/laplace | 2 | ok | 0.7296 [0.729, 0.73] | 0.7336 | 1.01 | holds |  | 0.7273 [0.72, 0.735] | agree |
+| nonlin/single/c_silu/laplace | 2 | ok | 0.3346 [0.334, 0.335] | 0.3213 | 0.96 | holds |  | 0.3339 [0.33, 0.338] | agree |
+| nonlin/single/c_gelu_tanh/laplace | 2 | ok | 0.436 [0.436, 0.436] | 0.4236 | 0.972 | holds |  | 0.4381 [0.434, 0.442] | agree |
+| nonlin/single/c_gelu_erf/laplace | 2 | ok | 0.4033 [0.403, 0.404] | 0.3944 | 0.978 | holds |  | 0.4086 [0.404, 0.413] | agree |
+| nonlin/single/c_gelu_bf16/laplace | 0 | ok | 0.006203 [0.00617, 0.00624] | 0.006796 | 1.1 | refused (correctly) | Tier 3 cross-check (1804 inputs) | 0.006309 [0.00564, 0.00703] | agree |
+| nonlin/single/c_triton_gelu_bf16/laplace | 3 | ok | 0.005146 [0.00512, 0.00518] | 0.006091 | 1.18 | refused (correctly) | Tier 3 cross-check (2186 inputs) | 0.005352 [0.00474, 0.00602] | agree |
+| nonlin/single/c_softcap/laplace | 3 | ok | 0.3614 [0.361, 0.362] | 1 | 2.77 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.359 [0.355, 0.363] | agree |
+| nonlin/single/c_cve_silumul_bf16_inductor/laplace | 3 | ok | 1.111e-05 [1.08e-05, 1.15e-05] | 6.444e-06 | 0.58 | refused (correctly) | Tier 3 cross-check (3335 inputs) | 1.587e-05 [8.45e-06, 2.71e-05] | agree |
+| nonlin/single/c_cve_addnorm_inductor/laplace | 2 | ok | 0.4837 [0.484, 0.484] | 0.4734 | 0.979 | holds |  | 0.4989 [0.495, 0.503] | agree |
+| nonlin/single/c_lse_naive/laplace | 2 | ok | 0.1116 [0.109, 0.114] | 0.1125 | 1.01 | holds |  | 0.07 [0.0388, 0.115] | agree |
+| nonlin/single/c_lse_stable/laplace | 3 | ok | 0.1484 [0.146, 0.151] | 0.1019 | 0.687 | refused (correctly) | Tier 3 cross-check (17275 inputs) | 0.18 [0.129, 0.24] | agree |
+| nonlin/single/c_sum_kahan/laplace | 3 | ok | 0.4117 [0.408, 0.415] | 0.23 | 0.559 | refused (correctly) | Tier 3 cross-check (4049 inputs) | 0.355 [0.289, 0.426] | agree |
+| nonlin/pair/c_equiv_softmax-c0/laplace | 2 | ok | 0.7657 [0.765, 0.766] | 0.7722 | 1.01 | holds |  | 0.7701 [0.765, 0.775] | agree |
+| nonlin/pair/c_equiv_softmax-c1/laplace | 3 | ok | 0.7725 [0.772, 0.773] | 0.8324 | 1.08 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.7745 [0.769, 0.78] | agree |
+| nonlin/pair/c_equiv_rmsnorm-c0/laplace | 3 | ok | 0.1591 [0.159, 0.159] | 0.4872 | 3.06 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.1407 [0.136, 0.145] | agree |
+| nonlin/pair/c_equiv_layernorm-c0/laplace | 3 | ok | 0.2665 [0.266, 0.267] | 0.3821 | 1.43 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.2775 [0.272, 0.283] | agree |
+| nonlin/pair/c_equiv_attn-c0/laplace | 2 | ok | 0.7751 [0.775, 0.775] | 0.7999 | 1.03 | holds |  | 0.7765 [0.769, 0.784] | agree |
+| nonlin/pair/c_equiv_elementwise_gelu_tanh-c0/laplace | 3 | ok | 0.9063 [0.906, 0.906] | 0.7558 | 0.834 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.906 [0.903, 0.909] | agree |
+| nonlin/pair/c_equiv_elementwise_silu-c0/laplace | 3 | ok | 0.3557 [0.355, 0.356] | 0.5081 | 1.43 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.3564 [0.352, 0.361] | agree |
+| nonlin/pair/c_equiv_elementwise_gelu_bf16-c0/laplace | 0 | ok | 0.00197 [0.00195, 0.00199] | 0.003542 | 1.8 | refused (correctly) | Tier 3 cross-check (5556 inputs) | 0.001738 [0.0014, 0.00214] | agree |
+| nonlin/pair/c_equiv_elementwise_gelu_erf-c0/laplace | 3 | ok | 0.0301 [0.03, 0.0302] | 0.4738 | 15.7 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.03088 [0.0294, 0.0324] | agree |
+| nonlin/pair/errdist_cve_addnorm-c0/laplace | 3 | ok | 0.06479 [0.0647, 0.0649] | 0.5141 | 7.93 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.06148 [0.0594, 0.0636] | agree |
+| nonlin/pair/errdist_cve_silumul-c0/laplace | 3 | ok | 0.2474 [0.247, 0.248] | 0.2988 | 1.21 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.2494 [0.247, 0.252] | agree |
+| nonlin/pair/errdist_cve_add_bf16-c0/laplace | 3 | ok | 0.221 [0.221, 0.221] | 0.1827 | 0.827 | refused (correctly) | Tier 3 cross-check (300 inputs) | GPU validation not run: no free GPU (PTX | - |
+| nonlin/pair/errdist_cve_silumul_bf16-c0/laplace | 3 | ok | 0.2714 [0.271, 0.271] | 0.3876 | 1.43 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.2709 [0.27, 0.272] | agree |
+| nonlin/single/r4_softmax_torch/student3 | 3 | ok | 0.8023 [0.802, 0.803] | 0.7491 | 0.934 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.82 [0.815, 0.825] | agree |
+| nonlin/single/r4_softmax_triton/student3 | 2 | ok | 0.8437 [0.844, 0.844] | 0.829 | 0.982 | holds |  | 0.8516 [0.847, 0.856] | agree |
+| nonlin/single/c_triton_softmax_online/student3 | 2 | ok | 0.8456 [0.845, 0.846] | 0.829 | 0.98 | holds |  | 0.8567 [0.852, 0.861] | agree |
+| nonlin/single/r4_rmsnorm_torch/student3 | 2 | ok | 9.375e-06 [7.59e-06, 1.14e-05] | 9.43e-06 | 1.01 | holds |  | 0 [0, 0.000144] | agree |
+| nonlin/single/r4_rmsnorm_triton/student3 | 2 | ok | 1.064e-05 [8.74e-06, 1.28e-05] | 9.025e-06 | 0.848 | holds |  | 0 [0, 0.000144] | agree |
+| nonlin/single/r4_layernorm_torch/student3 | 3 | ok | 2.656e-05 [2.35e-05, 2.99e-05] | 8.537e-06 | 0.321 | refused (correctly) | Tier 3 cross-check (66397 inputs) | 0 [0, 0.000144] | agree |
+| nonlin/single/r4_layernorm_triton/student3 | 3 | ok | 2.773e-05 [2.46e-05, 3.12e-05] | 3.041e-05 | 1.1 | refused (would have held) | Tier 3 cross-check (76800 inputs) | 0 [0, 0.000144] | agree |
+| nonlin/single/c_attn_core_ref/student3 | 2 | ok | 0.7192 [0.719, 0.72] | 0.7295 | 1.01 | holds |  | 0.7106 [0.703, 0.718] | agree |
+| nonlin/single/c_silu/student3 | 2 | ok | 0.3325 [0.332, 0.333] | 0.3227 | 0.971 | holds |  | 0.3371 [0.333, 0.341] | agree |
+| nonlin/single/c_gelu_tanh/student3 | 2 | ok | 0.4435 [0.443, 0.444] | 0.4351 | 0.981 | holds |  | 0.4432 [0.439, 0.448] | agree |
+| nonlin/single/c_gelu_erf/student3 | 2 | ok | 0.4097 [0.41, 0.41] | 0.3986 | 0.973 | holds |  | 0.4059 [0.402, 0.41] | agree |
+| nonlin/single/c_gelu_bf16/student3 | 0 | ok | 0.01039 [0.0104, 0.0104] | 0.01103 | 1.06 | refused (correctly) | Tier 3 cross-check (1096 inputs) | 0.01002 [0.00918, 0.0109] | agree |
+| nonlin/single/c_triton_gelu_bf16/student3 | 3 | ok | 0.009322 [0.00928, 0.00936] | 0.01024 | 1.1 | refused (correctly) | Tier 3 cross-check (1217 inputs) | 0.009024 [0.00822, 0.00988] | agree |
+| nonlin/single/c_softcap/student3 | 3 | ok | 0.3631 [0.363, 0.363] | 0.9997 | 2.75 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.3644 [0.36, 0.369] | agree |
+| nonlin/single/c_cve_silumul_bf16_inductor/student3 | 3 | ok | 1.402e-05 [1.36e-05, 1.44e-05] | 9.569e-06 | 0.682 | refused (correctly) | Tier 3 cross-check (1910 inputs) | 1.221e-05 [5.85e-06, 2.24e-05] | agree |
+| nonlin/single/c_cve_addnorm_inductor/student3 | 2 | ok | 0.4676 [0.467, 0.468] | 0.4558 | 0.975 | holds |  | 0.4652 [0.461, 0.47] | agree |
+| nonlin/single/c_lse_naive/student3 | 2 | ok | 0.1455 [0.143, 0.148] | 0.1418 | 0.974 | holds |  | 0.15 [0.104, 0.207] | agree |
+| nonlin/single/c_lse_stable/student3 | 3 | ok | 0.1375 [0.135, 0.14] | 0.09804 | 0.713 | refused (correctly) | Tier 3 cross-check (18181 inputs) | 0.125 [0.0826, 0.179] | agree |
+| nonlin/single/c_sum_kahan/student3 | 3 | ok | 0.4145 [0.411, 0.418] | 0.2544 | 0.614 | refused (correctly) | Tier 3 cross-check (4522 inputs) | 0.39 [0.322, 0.461] | agree |
+| nonlin/pair/c_equiv_softmax-c0/student3 | 2 | ok | 0.8105 [0.81, 0.811] | 0.8085 | 0.998 | holds |  | 0.8212 [0.816, 0.826] | agree |
+| nonlin/pair/c_equiv_softmax-c1/student3 | 3 | ok | 0.815 [0.815, 0.815] | 0.8597 | 1.05 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.8274 [0.823, 0.832] | agree |
+| nonlin/pair/c_equiv_rmsnorm-c0/student3 | 3 | ok | 0.1678 [0.168, 0.168] | 0.5019 | 2.99 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.131 [0.127, 0.135] | agree |
+| nonlin/pair/c_equiv_layernorm-c0/student3 | 3 | ok | 0.2631 [0.263, 0.263] | 0.3819 | 1.45 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.248 [0.243, 0.253] | agree |
+| nonlin/pair/c_equiv_attn-c0/student3 | 2 | ok | 0.7682 [0.768, 0.769] | 0.7982 | 1.04 | holds |  | 0.7656 [0.758, 0.773] | agree |
+| nonlin/pair/c_equiv_elementwise_gelu_tanh-c0/student3 | 3 | ok | 0.9113 [0.911, 0.911] | 0.7656 | 0.84 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.9102 [0.908, 0.913] | agree |
+| nonlin/pair/c_equiv_elementwise_silu-c0/student3 | 3 | ok | 0.3578 [0.358, 0.358] | 0.5046 | 1.41 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.3564 [0.352, 0.361] | agree |
+| nonlin/pair/c_equiv_elementwise_gelu_bf16-c0/student3 | 0 | ok | 0.002144 [0.00212, 0.00216] | 0.005947 | 2.77 | refused (correctly) | Tier 3 cross-check (5194 inputs) | 0.00207 [0.0017, 0.0025] | agree |
+| nonlin/pair/c_equiv_elementwise_gelu_erf-c0/student3 | 3 | ok | 0.02961 [0.0295, 0.0297] | 0.4828 | 16.3 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.02947 [0.028, 0.031] | agree |
+| nonlin/pair/errdist_cve_addnorm-c0/student3 | 3 | ok | 0.06939 [0.0693, 0.0695] | 0.5103 | 7.35 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.07236 [0.0701, 0.0746] | agree |
+| nonlin/pair/errdist_cve_silumul-c0/student3 | 3 | ok | 0.2461 [0.246, 0.246] | 0.2983 | 1.21 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.2491 [0.246, 0.252] | DISAGREE |
+| nonlin/pair/errdist_cve_add_bf16-c0/student3 | 3 | ok | 0.2189 [0.219, 0.219] | 0.1772 | 0.81 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.2196 [0.218, 0.221] | agree |
+| nonlin/pair/errdist_cve_silumul_bf16-c0/student3 | 3 | ok | 0.2722 [0.272, 0.272] | 0.3663 | 1.35 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.2724 [0.271, 0.273] | agree |
+| inerr/rmsnorm/rel1e-6 | 2 | - | 0.966 [0.966, 0.966] | 0.9659 | 0.998 | holds |  | GPU validation not run: no free GPU (PTX | - |
+| inerr/rmsnorm/bf16-round | 2 | - | 1 [1, 1] | 1 | 0.926 | holds |  | 1 [1, 1] | agree |
+| inerr/softmax/abs0.5-on-N(0,16) | 3 | - | 1 [1, 1] | 1 | 0.99 | refused (would have held) | input errors | 1 [1, 1] | agree |
+| inerr/softmax/rel1e-6 | 2 | - | 0.944 [0.944, 0.944] | 0.9432 | 0.99 | holds |  | 0.9436 [0.941, 0.946] | DISAGREE |
+| inerr/silumul/rel1e-4 | 2 | - | 0.9998 [1, 1] | 0.9998 | 0.996 | holds |  | 0.9998 [1, 1] | agree |
+| inerr/silumul-pair/rel1e-4 | 3 | - | 0.2059 [0.206, 0.206] | 0.2236 | 0.715 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.2067 [0.204, 0.209] | agree |
+| inerr/addnorm-pair/rel1e-4 | 3 | - | 0.06585 [0.0657, 0.066] | 0.5018 | 6.79 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.06541 [0.0633, 0.0676] | agree |
+
 ## 8. Assumptions and open items
 
 ASSUMPTIONS.md: N-ERRDIST-IID, -TEMPLATE, -RESIDUE, -MARKOV, -CF, -CLT, -PAIR, -FLIP,
@@ -835,8 +1068,7 @@ have their own analytic tiers. These are softmax (two-pass and online), RMSNorm,
 attention (QK^T, softmax, PV), and elementwise functions of one to three input elements (exp
 / rcp / rsqrt / tanh MUFU slices, gelu, silu, softcap, silu * mul, add, type conversions).
 The code is in `crates/sim/src/errdist/nonlin/`. These estimates are `applicable` only when
-they agree with Tier 3: |p - p3| <= max(5% of p3, half Tier 3's CI), or p inside Tier 3's
-CI. `best` then picks in tier order with the chain tiers' estimates (§3): the elementwise
+they agree with Tier 3 (the cross-check, §3.2). `best` then picks in tier order with the chain tiers' estimates (§3): the elementwise
 law and the linearized Tier 1 before Tier 2. Otherwise `best` stays at Tier 3, so the
 headline is never worse than Tier 3.
 

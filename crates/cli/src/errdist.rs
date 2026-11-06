@@ -247,7 +247,19 @@ fn kernel(
     // Agent AG: the DAG's outputs at the captured input must be the captured GPU outputs; a
     // region whose capture misses work between launches (a device-to-device memcpy feeding
     // an addmm's C operand) simulates a different function.
-    if let Some(g) = super::equiv::gpu_output_f32(&run.case) {
+    // Atomics: the DAG follows the simulator's order of the atomic adds, the GPU ran its own
+    // (N-ERRDIST-DAG), so the outputs need not match bit for bit; the check is skipped.
+    let atomics = run.m.num.as_ref().is_some_and(|ns| {
+        ns.nodes
+            .iter()
+            .any(|n| matches!(n.kind, ptxv_sim::num::NodeKind::AtomAdd(..)))
+    });
+    if atomics {
+        run.notes.push(
+            "atomic adds: the captured GPU outputs are not compared with the DAG's (another order of the atomics)".into(),
+        );
+    }
+    if let Some(g) = super::equiv::gpu_output_f32(&run.case).filter(|_| !atomics) {
         if g.len() == prog.outputs.len() {
             let differ = prog
                 .outputs
@@ -564,21 +576,58 @@ pub fn cmd(a: &Args) -> Result<()> {
     }
     // Tier 3: the cross-check of the analytic tiers and the fallback headline (--mc 0 skips
     // it; a model query then rests on the structural checks).
-    let n = a.mc.or(spec.engine.mc_inputs).unwrap_or(MC_DEFAULT);
+    let mut n = a.mc.or(spec.engine.mc_inputs).unwrap_or(MC_DEFAULT);
     let t0 = std::time::Instant::now();
-    let obs = ptxv_sim::errdist::mc::run(
-        &st,
-        &spec,
-        &ls,
-        &ptxv_sim::errdist::mc::McCfg {
-            n,
-            first: 0,
-            threads,
-            keep: 256,
-            per_output: a.per_output || spec.engine.per_output,
-        },
-    )
-    .map_err(|e| anyhow!(e))?;
+    let mc_cfg = |n: usize, first: u64| ptxv_sim::errdist::mc::McCfg {
+        n,
+        first,
+        threads,
+        keep: 256,
+        per_output: a.per_output || spec.engine.per_output,
+    };
+    let mut obs =
+        ptxv_sim::errdist::mc::run(&st, &spec, &ls, &mc_cfg(n, 0)).map_err(|e| anyhow!(e))?;
+    // The cross-check needs resolution (docs/errdist.md §3.2): with the default input count,
+    // Tier 3 grows until its interval is within XCHECK_FINE of P(differ), spending up to
+    // XCHECK_FINE_SECONDS on it once the interval is within XCHECK_REL and up to
+    // PTXV_XCHECK_SECONDS (default 30 s) before. At 300 inputs a P(differ) of 3e-5 has a
+    // +-30% interval (a Tier 2 18% low passed), and one of 0.7 a +-4% interval (a Tier 2 5%
+    // high passed when Tier 3 landed 3% high).
+    if a.mc.is_none() && spec.engine.mc_inputs.is_none() {
+        let budget: f64 = std::env::var("PTXV_XCHECK_SECONDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30.0);
+        for _ in 0..6 {
+            let e = ptxv_sim::errdist::mc::estimate(&obs, 3, "", model.r.out_fmt);
+            let Some((p, lo, hi)) = e.p_differ else { break };
+            let rel = 0.5 * (hi - lo) / p;
+            if p <= 0.0 || !rel.is_finite() || rel <= XCHECK_FINE {
+                break;
+            }
+            // First to XCHECK_REL within the budget, then on to XCHECK_FINE while cheap.
+            let (goal, bud) = if rel > XCHECK_REL {
+                (XCHECK_REL, budget)
+            } else {
+                (XCHECK_FINE, budget.min(XCHECK_FINE_SECONDS))
+            };
+            let el = t0.elapsed().as_secs_f64();
+            let per = el / n as f64;
+            let want = (n as f64 * ((rel / goal).powi(2) * 1.2 - 1.0)).ceil();
+            let room = ((bud - el) / per.max(1e-9)).floor();
+            let extra = want
+                .min(room)
+                .min((256 * MC_DEFAULT).saturating_sub(n) as f64);
+            if extra < 0.25 * n as f64 {
+                break;
+            }
+            let more =
+                ptxv_sim::errdist::mc::run(&st, &spec, &ls, &mc_cfg(extra as usize, n as u64))
+                    .map_err(|e| anyhow!(e))?;
+            obs.merge(more);
+            n += extra as usize;
+        }
+    }
     if std::env::var("PTXV_ERRDIST_DEBUG").is_ok() {
         let g = ptxv_sim::errdist::mc::DBG.lock().unwrap();
         let tot: f64 = g.values().map(|r| r[0]).sum();
@@ -807,8 +856,8 @@ pub fn cmd(a: &Args) -> Result<()> {
         }
     }
     // The Tier 3 cross-check (docs/errdist.md §3.2): every analytic estimate (tiers 1-2,
-    // chain and non-chain) must agree with this run's Tier 3, |p - p3| <= max(5% of p3,
-    // half Tier 3's interval) or p inside it; one that does not is not applicable and the
+    // chain and non-chain) must agree with this run's Tier 3, |p - p3| <= max(5% of p3 - h,
+    // h) with h half Tier 3's interval, or p inside it; one that does not is not applicable and the
     // headline falls back. Without Tier 3 (a model query without --mc), the non-chain
     // estimates (validated only through this check) are not applicable and the chain ones
     // rest on their structural checks.
@@ -838,12 +887,26 @@ pub fn cmd(a: &Args) -> Result<()> {
         };
         match t3 {
             Some((p3, lo, hi)) => {
-                let tol = (0.05 * p3).max(0.5 * (hi - lo));
+                // Within 5% of the true P(differ), not of this Tier 3's: Tier 3's own
+                // half-width comes off the 5% (a Tier 2 4.3% high passed against a Tier 3
+                // 2% low), and the tolerance is never below the half-width.
+                let hw = 0.5 * (hi - lo);
+                let tol = (0.05 * p3 - hw).max(hw);
                 let mut ok = (p - p3).abs() <= tol || (p >= lo && p <= hi);
                 e.applicability.push(format!(
                     "Tier 3 cross-check ({n} inputs): {p:.3e} vs {p3:.3e} [{lo:.3e}, {hi:.3e}], tolerance {tol:.2e} {}",
                     if ok { "ok" } else { "FAILS" }
                 ));
+                // An agreement within a wide interval confirms nothing: rare events (P(differ)
+                // ~1e-5) leave Tier 3's interval at +-30-100% within the budget.
+                if ok && p3 > 0.0 && tol > XCHECK_MAX_REL * p3 {
+                    ok = false;
+                    e.applicability.push(format!(
+                        "Tier 3 cross-check resolution: tolerance {:.0}% of P(differ) after {n} inputs (needs <= {:.0}%; more inputs: --mc N) FAILS",
+                        100.0 * tol / p3,
+                        100.0 * XCHECK_MAX_REL
+                    ));
+                }
                 if let Some((m3, s3)) = s3.filter(|s3| s3.0 > 0.0) {
                     let r = e.abs.mean_abs / m3;
                     let oks = (r - 1.0).abs() <= 0.1;
@@ -1046,6 +1109,16 @@ fn wc_check(source: &str, o: &ptxv_sim::errdist::mc::Obs) -> ptxv_sim::errdist::
 /// Tier 3 inputs when compiling a case without --mc: the cross-check of the analytic tiers
 /// and the fallback headline when they refuse.
 const MC_DEFAULT: usize = 300;
+
+/// The cross-check's target resolution: Tier 3's interval half-width over P(differ) (it
+/// grows to reach it, §3.2), and the largest tolerance at which it still confirms an
+/// analytic estimate (beyond it the estimate is not confirmed, so not applicable).
+const XCHECK_REL: f64 = 0.1;
+const XCHECK_MAX_REL: f64 = 0.2;
+/// Beyond XCHECK_REL, Tier 3 keeps growing toward this resolution while it is cheap (within
+/// XCHECK_FINE_SECONDS): its own noise then no longer hides a few percent of bias.
+const XCHECK_FINE: f64 = 0.02;
+const XCHECK_FINE_SECONDS: f64 = 10.0;
 
 /// Above this many monomials summed over the DAG's polynomial forms (`proof_work`), errdist
 /// skips the worst-case proof: building them is quadratic in the chain length (about 5e6

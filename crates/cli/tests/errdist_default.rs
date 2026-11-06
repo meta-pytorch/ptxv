@@ -80,7 +80,8 @@ fn tier2_headline_when_it_agrees_with_the_cross_check() {
         .unwrap()["n"]
         .as_u64()
         .unwrap();
-    assert_eq!(n3, 300, "the default cross-check size");
+    // 300 inputs to start, grown toward a 2% interval while cheap (P(differ) ~0.67).
+    assert!(n3 > 300, "the cross-check grows: {n3}");
     let cc = j["crosscheck"].as_array().unwrap();
     assert!(
         !cc.is_empty() && cc.iter().all(|c| c["agrees"] == true),
@@ -125,4 +126,59 @@ fn tier1_is_opt_in() {
         &["--tier1", "--mc", "100"],
     );
     assert!(tiers(&j).contains(&1), "{:?}", tiers(&j));
+}
+
+fn tier_est(j: &serde_json::Value, t: u64) -> &serde_json::Value {
+    j["estimates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["tier"] == t)
+        .unwrap_or_else(|| panic!("no tier {t}"))
+}
+
+#[test]
+fn cross_check_grows_tier3_for_rare_events() {
+    if vendor_missing(&["c_mm_bf16_nnt"]) {
+        return;
+    }
+    // bf16 GEMM, normal inputs: P(differ) ~2.6e-5. At 300 inputs tier 3's interval is
+    // +-30% and tier 2 (0.82x) passed; tier 3 grows to ~5000 inputs (+-10%) and refuses it.
+    let j = run(
+        "rare",
+        "fixtures/c_mm_bf16_nnt",
+        "fixtures/errdist/normal.json",
+        &[],
+    );
+    assert!(tier_est(&j, 3)["n"].as_u64().unwrap() > 1000);
+    assert_eq!(tier_est(&j, 2)["applicable"], false);
+    assert_eq!(best_tier(&j), 3);
+    // An explicit --mc keeps its input count; a tolerance above 20% of P(differ) does not
+    // confirm the estimate.
+    let j = run(
+        "rare300",
+        "fixtures/c_mm_bf16_nnt",
+        "fixtures/errdist/normal.json",
+        &["--mc", "300"],
+    );
+    assert_eq!(tier_est(&j, 3)["n"].as_u64().unwrap(), 300);
+    let t2 = tier_est(&j, 2);
+    assert_eq!(t2["applicable"], false);
+    assert!(
+        t2["applicability"].to_string().contains("resolution"),
+        "{}",
+        t2["applicability"]
+    );
+}
+
+#[test]
+fn atomic_pair_runs() {
+    // The GPU ran its own order of the atomic adds: no bit-for-bit check against the capture.
+    let j = run(
+        "atomic",
+        "fixtures/c_equiv_sum/equiv.toml",
+        "fixtures/errdist/normal.json",
+        &["--candidate", "2"],
+    );
+    assert!(tiers(&j).contains(&3), "{:?}", tiers(&j));
 }
