@@ -3612,6 +3612,19 @@ input binade 2^-8..2^2 (51 segments on an input truncated to 17..21 mantissa bit
   `round_int_to_f32` / `sum_round_*`, `mma_lp.rs` `round_int` / `sum_round` / `round_exact` /
   `Fp4Model::step`, `errdist/chain.rs` `step`; `crates/sim/tests/mma_zero.rs` replays the
   probe bitwise (both front-ends for tcgen05, SASS for mma.sync).
+- **Overflow is signed infinity, including with RZ mantissa rounding** (validated,
+  `probes/mma_overflow`, GB300 SM103, driver 580.126.20, ptxas 13.1.115, 2026-11-06).
+  One BF16 product `0x7f00 * 0x4000` is exactly 2^128 and gives `0x7f800000`; the
+  negative case gives `0xff800000`. Products are not individually clamped to FP32:
+  2^128 - 2^127 gives 2^127, and 2^254 - 2^254 gives +0. Alignment can itself cross the
+  overflow boundary: 2^128 - 2^102 gives infinity, while 2^128 - 2^103 gives the largest
+  finite float. All inputs and input accumulators in this probe are normal or zero.
+  Six configurations cover BF16 tcgen05 M128 N16 K16, BF16 HMMA, and TF32 HMMA, with
+  accumulation enabled and disabled. Before this fix, `fp::round_int_to_f32` saturated
+  RZ overflow to the largest finite float; the full simulator differed on 95,744 of
+  243,712 replayed words. The corrected model matches all eight PTX/SASS replays.
+  This does not extend the numerical error bounds to overflowing computations or
+  establish the overflow behavior of the separate narrow-format models.
 
 ### N-HMMA · code
 **One `HMMA.16816.F32.BF16` (`mma.sync.m16n8k16` bf16 × bf16 + f32) is the N-MMA model:
