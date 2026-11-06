@@ -1102,6 +1102,7 @@ pub fn sum_round_f32(terms: &[f64], frac: Option<u8>, rz: bool) -> f32 {
 /// Round `v * 2^e` to f32 (24-bit significand, subnormals, overflow); `sticky` breaks ties.
 /// A result that is zero is +0, also when a negative `v` underflows: the tensor cores' rule
 /// (GB300, probes/mma_zero), and every caller is an MMA model. ASSUME(N-MMA)
+/// Overflow is signed infinity even with RZ mantissa rounding (probes/mma_overflow).
 pub fn round_int_to_f32(v: i128, e: i32, rz: bool, sticky: i32) -> f32 {
     if v == 0 {
         return 0.0;
@@ -1137,7 +1138,7 @@ pub fn round_int_to_f32(v: i128, e: i32, rz: bool, sticky: i32) -> f32 {
         qe += 1;
     }
     let val = if qe + 23 > 127 {
-        if rz { f32::MAX as f64 } else { f64::INFINITY }
+        f64::INFINITY
     } else {
         m as f64 * 2f64.powi(qe)
     };
