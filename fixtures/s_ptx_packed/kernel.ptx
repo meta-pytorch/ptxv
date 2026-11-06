@@ -1,0 +1,76 @@
+// PTX front-end forms of the mslk decode kernels against GB300 bitwise: fma / mul / add / sub
+// .rn.f32x2 (SASS FFMA2 / FMUL2 / FADD2), cvt.rn.{bf16x2,f16x2}.f32 (F2FP.*.F32.PACK_AB),
+// div.s32, cp.async.ca / .cg, ld / st .v2.b64, vector operands whose registers are not
+// consecutive, and setmaxnreg. 256 threads; thread t reads in[8t .. 8t+7] = a0, a1, b0, b1, c0,
+// c1, n, d (gen.py) and writes out[24t ..]:
+//   0-1 fma(a, b, c)   2-3 mul(a, b)   4-5 add(a, c)   6-7 sub(a, c)   (lane 0, lane 1)
+//   8 cvt.rn.f16x2.f32(a0, a1)   9 cvt.rn.bf16x2.f32(a0, a1)   10 n / d   11 d
+//   12 cp.async.ca 4 bytes of in[8t+4]   14-15 cp.async.ca 8 bytes of in[8t+2..]
+//   16-19 cp.async.cg 16 bytes of in[8t+4..]   20 0x5e7 (after setmaxnreg); 13, 21-23 zero
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry s_ptx_packed(.param .u64 in_p, .param .u64 out_p)
+.maxnreg 64
+{
+    .reg .pred %p<4>;
+    .reg .b32 %r<40>;
+    .reg .b64 %rd<40>;
+    .shared .align 16 .b8 buf[8192];
+    ld.param.u64 %rd1, [in_p];
+    ld.param.u64 %rd2, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    // Warpgroup 0 gives registers up, warpgroup 1 takes them.
+    setp.lt.u32 %p1, %r1, 128;
+    @%p1 bra WG0;
+    setmaxnreg.inc.sync.aligned.u32 80;
+    bra.uni WGDONE;
+WG0:
+    setmaxnreg.dec.sync.aligned.u32 40;
+WGDONE:
+    mul.wide.u32 %rd3, %r1, 32;
+    add.s64 %rd4, %rd1, %rd3;
+    mul.wide.u32 %rd5, %r1, 96;
+    add.s64 %rd6, %rd2, %rd5;
+    ld.global.v2.b64 {%rd10, %rd11}, [%rd4];
+    ld.global.b64 %rd12, [%rd4+16];
+    ld.global.v2.b32 {%r2, %r3}, [%rd4+24];
+    // a = {a0, a1} = rd10, b = rd11, c = rd12.
+    fma.rn.f32x2 %rd20, %rd10, %rd11, %rd12;
+    mul.rn.f32x2 %rd21, %rd10, %rd11;
+    sub.rn.f32x2 %rd22, %rd10, %rd12;
+    add.rn.f32x2 %rd23, %rd10, %rd12;
+    st.global.v2.b64 [%rd6], {%rd20, %rd21};
+    // Not consecutive: {rd23, rd22}.
+    st.global.v2.b64 [%rd6+16], {%rd23, %rd22};
+    mov.b64 {%r4, %r5}, %rd10;
+    cvt.rn.f16x2.f32 %r6, %r4, %r5;
+    cvt.rn.bf16x2.f32 %r7, %r4, %r5;
+    div.s32 %r8, %r2, %r3;
+    // Not consecutive: {r6, r7, r8, r3}.
+    st.global.v4.b32 [%rd6+32], {%r6, %r7, %r8, %r3};
+    // cp.async into this thread's 32 bytes of shared memory.
+    mov.u32 %r10, buf;
+    shl.b32 %r11, %r1, 5;
+    add.u32 %r12, %r10, %r11;
+    add.s64 %rd7, %rd4, 16;
+    add.s64 %rd8, %rd4, 8;
+    cp.async.ca.shared.global [%r12], [%rd7], 4, 4;
+    cp.async.ca.shared.global [%r12+8], [%rd8], 8, 8;
+    cp.async.cg.shared.global [%r12+16], [%rd7], 16, 16;
+    cp.async.commit_group;
+    cp.async.wait_group 0;
+    // Not consecutive loads: {r23, r21, r22} and {r27, r26, r25, r24}.
+    ld.shared.v2.b32 {%r23, %r21}, [%r12];
+    ld.shared.v2.b32 {%r22, %r20}, [%r12+8];
+    ld.shared.v4.b32 {%r27, %r26, %r25, %r24}, [%r12+16];
+    st.global.b32 [%rd6+48], %r23;
+    st.global.v2.b32 [%rd6+56], {%r22, %r20};
+    st.global.v4.b32 [%rd6+64], {%r27, %r26, %r25, %r24};
+    mov.u32 %r30, 0x5e7;
+    st.global.b32 [%rd6+80], %r30;
+    ret;
+}

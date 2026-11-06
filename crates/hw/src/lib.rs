@@ -608,7 +608,19 @@ pub fn run_with(
             }
             *seen.entry(out).or_default() += 1;
         }
+        // PTXV_HW_DUMP=<dir>: every distinct output to <dir>/hw_<FNV-1a of the bytes>.bin
+        // (witness replays: compare with a simulated schedule's output).
+        let dump = std::env::var_os("PTXV_HW_DUMP").map(std::path::PathBuf::from);
         for (o, c) in seen {
+            if let Some(d) = &dump {
+                let h = o.iter().fold(0xcbf29ce484222325u64, |h, x| {
+                    (h ^ *x as u64).wrapping_mul(0x100000001b3)
+                });
+                std::fs::create_dir_all(d)
+                    .and_then(|_| std::fs::write(d.join(format!("hw_{h:016x}.bin")), &o))
+                    .map_err(|e| anyhow::anyhow!("PTXV_HW_DUMP: {e}"))?;
+                eprintln!("hw output {h:016x}: {c} runs");
+            }
             let diff = match expected {
                 Some(e) => o.chunks(4).zip(e.chunks(4)).filter(|(a, b)| a != b).count(),
                 None => 0,

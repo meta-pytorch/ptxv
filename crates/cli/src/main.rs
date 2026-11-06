@@ -267,8 +267,9 @@ enum Cmd {
         /// Poison every SM's shared memory before each launch.
         #[arg(long)]
         scrub: bool,
-        /// Witness replay: insert `nanosleep.u32 NS` before PTX line LINE (repeatable).
-        #[arg(long, value_name = "LINE:NS")]
+        /// Witness replay: insert `nanosleep.u32 NS` before PTX line LINE, or with `@W` make
+        /// only warp W spin NS ns on %globaltimer there (repeatable).
+        #[arg(long, value_name = "LINE:NS[@WARP]")]
         delay: Vec<String>,
         #[arg(long)]
         out: Option<PathBuf>,
@@ -394,32 +395,85 @@ pub(crate) fn load(
     load_with(case, variant, front, dir, &[])
 }
 
-/// Insert `nanosleep` delays before given (1-based) PTX lines of the variant.
+/// Insert delays before given (1-based) PTX lines of the variant: `LINE:NS` puts a
+/// `nanosleep.u32 NS` there (every thread); `LINE:NS@W` makes only warp W of the CTA (tid.x / 32,
+/// 1-D blocks) spin until %globaltimer has advanced NS ns, which skews that warp against the
+/// others.
 fn add_delays(ptx: &str, delays: &[String]) -> Result<String> {
-    let mut d = std::collections::BTreeMap::new();
-    for x in delays {
-        let (l, ns) = x
+    let mut d = std::collections::BTreeMap::<usize, Vec<String>>::new();
+    for (k, x) in delays.iter().enumerate() {
+        let (l, rest) = x
             .split_once(':')
-            .ok_or_else(|| anyhow::anyhow!("--delay wants LINE:NS"))?;
-        d.insert(l.parse::<usize>()?, ns.parse::<u32>()?);
+            .ok_or_else(|| anyhow::anyhow!("--delay wants LINE:NS or LINE:NS@WARP"))?;
+        let code = match rest.split_once('@') {
+            None => format!(
+                "    nanosleep.u32 {};  // ptxv witness delay\n",
+                rest.parse::<u32>()?
+            ),
+            Some((ns, w)) => {
+                let (ns, w) = (ns.parse::<u64>()?, w.parse::<u32>()?);
+                format!(
+                    "    {{  // ptxv witness delay: warp {w} spins {ns} ns\n\
+                     \t.reg .b32 %ptxv_w;\n\t.reg .b64 %ptxv_t<2>;\n\t.reg .pred %ptxv_p;\n\
+                     \tmov.u32 %ptxv_w, %tid.x;\n\tshr.u32 %ptxv_w, %ptxv_w, 5;\n\
+                     \tsetp.ne.u32 %ptxv_p, %ptxv_w, {w};\n\t@%ptxv_p bra PTXV_SKIP{k};\n\
+                     \tmov.u64 %ptxv_t0, %globaltimer;\nPTXV_SPIN{k}:\n\
+                     \tmov.u64 %ptxv_t1, %globaltimer;\n\tsub.u64 %ptxv_t1, %ptxv_t1, %ptxv_t0;\n\
+                     \tsetp.lt.u64 %ptxv_p, %ptxv_t1, {ns};\n\t@%ptxv_p bra PTXV_SPIN{k};\n\
+                     PTXV_SKIP{k}:\n    }}\n"
+                )
+            }
+        };
+        d.entry(l.parse::<usize>()?).or_default().push(code);
     }
     let mut out = String::new();
     for (i, line) in ptx.lines().enumerate() {
-        if let Some(ns) = d.get(&(i + 1)) {
+        if let Some(code) = d.get(&(i + 1)) {
+            let code = code.concat();
             // Labels must stay on their own line, before the delay.
             if let Some((lbl, rest)) = line
                 .split_once(':')
                 .filter(|(l, _)| !l.contains(' ') && !l.trim().is_empty() && !l.contains('.'))
             {
-                out += &format!("{lbl}:\n    nanosleep.u32 {ns};  // ptxv witness delay\n{rest}\n");
+                out += &format!("{lbl}:\n{code}{rest}\n");
                 continue;
             }
-            out += &format!("    nanosleep.u32 {ns};  // ptxv witness delay\n");
+            out += &code;
         }
         out += line;
         out.push('\n');
     }
     Ok(out)
+}
+
+/// A PTX case's variant (with witness delays) compiled by ptxas, plus any control-bit patch:
+/// (the PTX text, the cubin).
+fn ptx_cubin(
+    case: &Case,
+    variant: &str,
+    dir: &Path,
+    delays: &[String],
+) -> Result<(String, PathBuf)> {
+    let ptx = add_delays(&case.variant_ptx(variant)?, delays)?;
+    let variant = &if delays.is_empty() {
+        variant.to_string()
+    } else {
+        format!("{variant}.delayed")
+    };
+    let ptx_path = dir.join(format!("{variant}.ptx"));
+    std::fs::write(&ptx_path, &ptx)?;
+    let cubin = dir.join(format!("{variant}.cubin"));
+    ptxv_sass::ptxas(&ptx_path, &cubin, &case.m.arch)
+        .with_context(|| format!("ptxas on variant {variant}"))?;
+    let patch = &case.variant(variant.trim_end_matches(".delayed"))?.patch;
+    if !patch.is_empty() {
+        let log = ptxv_sass::scoreboard::patch_file(&cubin, &case.m.entry, patch)?;
+        std::fs::write(
+            dir.join(format!("{variant}.patch.txt")),
+            log.join("\n") + "\n",
+        )?;
+    }
+    Ok((ptx, cubin))
 }
 
 fn load_with(
@@ -490,25 +544,12 @@ fn load_with(
         };
         return Ok((k, c));
     }
-    let ptx = add_delays(&case.variant_ptx(variant)?, delays)?;
+    let (ptx, cubin) = ptx_cubin(case, variant, dir, delays)?;
     let variant = &if delays.is_empty() {
         variant.to_string()
     } else {
         format!("{variant}.delayed")
     };
-    let ptx_path = dir.join(format!("{variant}.ptx"));
-    std::fs::write(&ptx_path, &ptx)?;
-    let cubin = dir.join(format!("{variant}.cubin"));
-    ptxv_sass::ptxas(&ptx_path, &cubin, &case.m.arch)
-        .with_context(|| format!("ptxas on variant {variant}"))?;
-    let patch = &case.variant(variant.trim_end_matches(".delayed"))?.patch;
-    if !patch.is_empty() {
-        let log = ptxv_sass::scoreboard::patch_file(&cubin, &case.m.entry, patch)?;
-        std::fs::write(
-            dir.join(format!("{variant}.patch.txt")),
-            log.join("\n") + "\n",
-        )?;
-    }
     let mut ks = Vec::new();
     for l in case.m.all_launches() {
         if l.cubin.is_some() {
@@ -1370,7 +1411,13 @@ fn cmd_hw(
         } else {
             "ptx"
         };
-        let (_, cubin) = load_with(case, &v, front, &dir, delays)?;
+        // The hardware needs only the cubin: a PTX case is not parsed (a delayed variant may
+        // use forms the front-end does not model).
+        let cubin = if front == "ptx" {
+            ptx_cubin(case, &v, &dir, delays)?.1
+        } else {
+            load_with(case, &v, front, &dir, delays)?.1
+        };
         let row = hw_run_cubin(case, &v, &cubin, runs, timeout, &exp_path, scrub, gpu)?;
         println!(
             "hw {:<6}{} {} ({} runs, {:.1}s) distinct outputs (count, words differing): {}{}",

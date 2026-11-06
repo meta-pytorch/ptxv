@@ -1608,6 +1608,24 @@ to exploration, at 35 GB per kernel on a 4096 x 4096 x 8192 tile
 - Status: **validated by semantics.** Sleeping is a timing hint, and the model explores all
   timings anyway.
 
+### E-SETMAXNREG · code
+**`setmaxnreg` is a no-op, and an increase always completes.** PTX
+`setmaxnreg.{inc,dec}.sync.aligned.u32 N` and SASS `USETMAXREG.{TRY_ALLOC,ALLOC,DEALLOC}`
+change only the warpgroup's register budget; `TRY_ALLOC` always succeeds.
+- Where: `ptx` lowering (`Op::Nop`; the form and an immediate N in 24..=256, a multiple of 8,
+  are checked), `sass` lowering (`USETMAXREG`).
+- Status: **argued**; GB300 agrees only while the requested counts fit the CTA's register
+  pool. Then the outputs are unaffected: fixtures/s_ptx_packed (.maxnreg 64,
+  256 threads, warpgroup 0 `dec 40`, warpgroup 1 `inc 80`; ptxas emits
+  `USETMAXREG.DEALLOC.CTAPOOL 0x28` and a `USETMAXREG.TRY_ALLOC.CTAPOOL` loop) = GB300 bitwise.
+  probes/setmaxnreg_pool (same shape): `inc 80` and `inc 88` (3,072 registers requested,
+  exactly the 3,072 released) complete; `inc 96` (4,096 requested) hangs until the watchdog
+  kills it (2026-11-06, `results.txt`). The model completes all three.
+- If wrong: miss (a deadlock): an increase that the CTA's pool cannot satisfy spins forever on
+  GB300. Without `.maxnreg` (or a known register count at entry) ptxas drops setmaxnreg with a
+  warning.
+- Retire: model the pool (registers at entry x threads; dec releases, inc waits for enough).
+
 ### E-RET · code
 **A SASS `RET.REL.NODEC` lands right after a `CALL.REL.NOINC`.** ptxas loads the return
 address with `MOV Rx, <pc after the CALL>` right before the call; the register is data, so
@@ -2701,6 +2719,28 @@ forms seen. Any other form is a hard error.
   `REDUX` / `CREDUX`; `neg.f32` as `FADD d, -a, -RZ` (a NaN becomes the canonical NaN, not a
   sign flip); `setp.<cmp>[.ftz].f32 p, a, b` as `FSETP.<cmp>.AND p, PT, a, b, PT`.
   fixtures/e_ptx_redux (+-0, +-inf, a NaN) = GB300 bitwise on both front-ends.
+- PTX forms of the mslk decode kernels (2026-11-06; fixtures/s_ptx_packed = GB300 bitwise on
+  both front-ends, 50/50 runs, with subnormal, infinite and NaN lanes; ptxas output read with
+  nvdisasm): `fma.rn.f32x2` / `mul.rn.f32x2` / `add.rn.f32x2` / `sub.rn.f32x2` on .b64
+  registers as `FFMA2` / `FMUL2` / `FADD2` (sub: `FADD2 d, a, -c`), operands `.F32x2.HI_LO`
+  (lane 0 = the low 32 bits): one rounding to nearest per lane, subnormals kept, NaN results
+  the canonical 0x7fffffff. Only `.rn` is accepted: without it ptxas may contract a mul and an
+  add into one FFMA2, and `.rz/.rm/.rp`, `.ftz`, `.sat` and immediate operands are refused.
+  `cvt.rn.{bf16x2,f16x2}.f32 d, a, b` as `F2FP.{BF16,F16}.F32.PACK_AB d, a, b` (a in the high
+  half; `.relu` / `.satfinite` / other roundings refused unless the narrow-format path, N-CVT-LP,
+  covers them). `ld` / `st` `.v2.b64`, one register per element. Vector operands whose
+  registers are not consecutive (`st.shared.v4.b32 [a], {%r262, %r261, %r260, %r259}`) go
+  through hidden scratch registers `%__vec0..7`: moves into them before a store, out of them
+  after a load (ptxas allocates the registers instead; the values are the same). `div.s32`
+  (a zero divisor is a fault: the PTX ISA leaves the result unspecified) and `cp.async.ca`
+  4 / 8 bytes, `.cg` 16 bytes (`LDGSTS.E` / `.E.64` / `.E.BYPASS.128`) are covered by the same
+  fixture.
+- Numerics of those forms: the two halves of a 64-bit PTX register are f32x2 lanes, each with
+  its own node (`num::lane_reg`; the high half under the pseudo index `idx | V_HI`, which the
+  PTX front-end keeps free). `mov.b64` packing and unpacking, 64-bit moves, loads and stores
+  keep each lane's node (crates/sim/tests/ptx_lanes.rs); `fma.rn.f32x2` is tracked as FFMA2 is
+  (x*1 + 0 outside segment mode; per lane in segment mode). Segment mode builds no slice for half
+  a register: a tainted lane without a node is a recorded slice failure, not a guess.
 - Rung 2e (cuBLAS nvjet, r2_cublas_gemm bitwise = GB300): `PMTRIG` (no-op);
   `SYNCS.ARRIVE.TRANS64.RED.A0TR` / `.A0TX` (no arrival; expect / complete tx, checked against
   ptxas: `mbarrier.expect_tx` / `complete_tx`); `UTCBAR.MULTICAST` (cta_group::1, mask operand
@@ -2726,8 +2766,8 @@ forms seen. Any other form is a hard error.
   `R2P PR, R, mask` (inverse of P2R) is lowered but not exercised by a hardware test.
   Equivalence fixtures (docs/equiv-reassoc.md; c_attn_core_ref / c_attn_core_flash bitwise =
   GB300): `FADD2` (f32x2 sum, as FFMA2 with b = 1). `LDGSTS.E[.LTC128B]` 4- and 8-byte forms
-  (cp.async.ca 4 / 8 bytes, zero-fill predicate as for .128) are lowered but not exercised by a
-  hardware test (cuBLAS's SIMT sgemm, which uses them, does not run to the end yet).
+  (cp.async.ca 4 / 8 bytes, zero-fill predicate as for .128) are lowered; the plain forms are
+  exercised by fixtures/s_ptx_packed (= GB300), the zero-fill forms by no hardware test.
   From D's torch-op sweep (docs/capture.md; the kernels' outputs match GB300 bitwise where they
   run to the end): `FADD.SAT`, `FSEL` with `-x` / `|x|` operands (the modifier applies to the
   selected value), `VIADD Rd, Ra, -Rb` / `-URb`, `BREAK.RELIABLE` (E-BSYNC), `ST.E` (generic =
@@ -4027,7 +4067,8 @@ the exact y's position within its ulp (its own lattice).
   pairs with the correlated round-toward-zero means (K = 960-16384: 1.03-1.14x of Tier 3).
   Normal partial sums fail under heavy-tailed or scale-mixture terms (bf16 outliers 2.6x):
   the tier refuses when y's excess kurtosis exceeds 1 (docs/errdist.md §3.2). The
-  block-scaled chain CLT (`tier2::single` / `pair`) is always refused.
+  block-scaled chain CLT (`tier2::single` / `pair`) is always refused; block-scaled
+  chains use `tier2bs` (N-ERRDIST-BSCLT).
 - If wrong: Tier 2 is the default headline only where it also agrees with the run's Tier 3
   cross-check (300 inputs); otherwise the headline is Tier 3.
 
@@ -4078,6 +4119,24 @@ scale. The output-level binomial interval alone was about 3x too narrow on MXF8.
   across seeds.
 - If wrong: intervals too narrow when inputs are few (the t interval assumes the per-input
   fractions' mean is near normal); the point estimates stay unbiased.
+
+### N-ERRDIST-BSCLT · code
+**Tier 2 on a block-scaled MMA chain (MX, NVFP4) takes the partial sums as normal given y,
+and the steps' errors as independent given y and y's lattice class** (the lowest set bit
+over all terms, against y's ulp). Each step is one alignment truncation at
+Q = 2^(emax - F) and one round toward zero (N-MMA-BS); the class fixes every step's lattice
+law and y's position within its ulp. The largest step residues stay discrete; the rest and
+the truncations are a zero-inflated normal.
+- Where: `errdist/tier2bs.rs` (`ChainPre`, `estimate`, `y_kurtosis`); gate in
+  `crates/cli/src/errdist.rs` `analytic`.
+- Status: **argued; single kernels only.** The tier is refused when y's excess kurtosis
+  (from the group-mixture cumulants of the terms) exceeds `tier2::KURT_MAX` = 1, as for the
+  DAG CLT: on MXF8, outliers (2.54x of Tier 3, kurtosis 84), ints_scaled (2.35x, 34),
+  lognormal, Student t and code specs are refused; normal (0.97x) and Laplace (1.01x)
+  pass. Pairs are refused structurally, not run: the pair combination came out 0.77x of
+  Tier 3 on an MXF8 reverse-K pair (docs/errdist.md §5.3.1).
+- If wrong: an applicable estimate still has to agree with the run's Tier 3 cross-check to
+  become the headline (docs/errdist.md §3.2).
 
 ### N-ERRDIST-IDENT · code
 **An instruction slice computes the real function it was fitted to** (non-chain programs).

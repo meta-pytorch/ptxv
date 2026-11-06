@@ -1075,6 +1075,9 @@ pub fn cmd(a: &Args) -> Result<()> {
                 "N-ERRDIST-CF",
                 "N-ERRDIST-FLIP",
             ],
+            2 if e.method.starts_with("CLT on the MMA chain") => {
+                &["N-ERRDIST-TEMPLATE", "N-ERRDIST-CLT", "N-ERRDIST-BSCLT"]
+            }
             2 => &["N-ERRDIST-TEMPLATE", "N-ERRDIST-CLT", "N-ERRDIST-FLIP"],
             0 => &["N-ERRDIST-TEMPLATE"],
             _ => &[],
@@ -1676,6 +1679,43 @@ fn analytic(
                 );
                 out.push(e);
             }
+        }
+    }
+    // Block-scaled chains (MX, NVFP4): tier 2 on the MMA chain(s), one alignment truncation
+    // and one round toward zero per step, conditioned on y and y's lattice class
+    // (`tier2bs`, docs/errdist.md §5.3.1).
+    let scaled = fmts
+        .values()
+        .any(|f| matches!(f, Format::Ue8m0 | Format::Ue4m3));
+    if scaled && !uniform && !out.iter().any(|e| e.tier == 0) {
+        if sc.is_some() {
+            // Pairs: the combination of the two chains' errors (independent given y and its
+            // lattice class) came out 0.77x Tier 3 on an MXF8 reverse-K pair, at 1000 s; not
+            // run (N-ERRDIST-BSCLT).
+            notes.push(
+                "tier 2 (block-scaled chain) not run: pairs of block-scaled kernels are not validated (0.77x on an MXF8 reverse-K pair)"
+                    .into(),
+            );
+        } else {
+            let t2 = std::time::Instant::now();
+            let pr = tier2bs::ChainPre::new(&sr);
+            let mut e = tier2bs::estimate(&pr, None, st.r.out_fmt);
+            e.outputs = st.r.outputs.len() as u64;
+            e.seconds = t2.elapsed().as_secs_f64();
+            let kurt = tier2bs::y_kurtosis(&sr);
+            let ok = kurt <= tier2::KURT_MAX;
+            e.applicability.push(format!(
+                "y's excess kurtosis {kurt:.3} {} {} (block-scaled chain CLT){}",
+                if ok { "<=" } else { ">" },
+                tier2::KURT_MAX,
+                if ok {
+                    " ok"
+                } else {
+                    ": heavy-tailed or scale-mixture terms FAILS"
+                }
+            ));
+            e.applicable = Some(ok);
+            out.push(e);
         }
     }
     if no_tier1 {

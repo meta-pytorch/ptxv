@@ -1,0 +1,42 @@
+name = "setmaxnreg_pool"
+description = """
+E-SETMAXNREG: does setmaxnreg.inc wait for registers the CTA's pool does not have? .maxnreg 64,
+256 threads; warpgroup 0 releases 3,072 registers (dec 40), warpgroup 1 asks for (N - 64) x 128
+(inc N). `ptxv probe probes/setmaxnreg_pool`: results.txt. The expectations are the model's
+verdicts (E-SETMAXNREG: no pool); GB300 hangs on inc96."""
+ptx = "kernel.ptx"
+entry = "setmaxnreg_pool"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [256]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "inc80"
+summary = "2,048 registers requested, 3,072 released"
+expect = ["clean"]
+
+[[variants]]
+id = "inc88"
+summary = "3,072 requested: exactly what was released"
+expect = ["clean"]
+marker = "@INC"
+find = "setmaxnreg.inc.sync.aligned.u32 80;"
+replace = "setmaxnreg.inc.sync.aligned.u32 88;"
+
+[[variants]]
+id = "inc96"
+summary = "4,096 requested: more than was released"
+expect = ["clean"]
+marker = "@INC"
+find = "setmaxnreg.inc.sync.aligned.u32 80;"
+replace = "setmaxnreg.inc.sync.aligned.u32 96;"

@@ -1067,6 +1067,27 @@ fn s_f2i_f64_matches_hardware() {
     }
 }
 
+/// L-ROSETTA, E-SETMAXNREG: the PTX forms of the mslk decode kernels (fixtures/s_ptx_packed:
+/// fma / mul / add / sub .rn.f32x2, cvt.rn.{f16x2,bf16x2}.f32, div.s32, cp.async.ca / .cg,
+/// ld / st .v2.b64, vector operands whose registers are not consecutive, setmaxnreg) agree with
+/// GB300 bitwise on both front-ends (run 2026-11-06, GPU 3, 50/50 runs), including subnormal,
+/// infinite and NaN lanes.
+#[test]
+fn s_ptx_packed_matches_hardware() {
+    let case = Case::load(root().join("fixtures/s_ptx_packed")).unwrap();
+    let expected = std::fs::read(root().join("fixtures/s_ptx_packed/expected/out.bin")).unwrap();
+    assert_eq!(fnv(&expected), 0xee08a5ce622b0a7b);
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
+            .verdict
+            .expect("s_ptx_packed certifies");
+        assert_eq!(v.classes(), ["clean"], "{front}: {:#?}", v.findings);
+        assert_eq!(v.outputs[0], expected, "{front}: differs from GB300");
+    }
+}
+
 /// L-SHF: shifts by a run-time amount (fixtures/s_shf: shl / shr .b32 / .u64 / .s64,
 /// shf.{l,r}.{clamp,wrap}; SASS SHF.{L,R}[.W].{U32,S32,U64,S64}[.HI]) with amounts 0..33, at the
 /// 32 / 64 boundaries, >= 64 and >= 2^31 agree with GB300 bitwise on both front-ends (run

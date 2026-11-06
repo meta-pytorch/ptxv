@@ -385,7 +385,13 @@ avoid, so both are conservative.
      before them are far smaller than the normal law says). Measured: bf16 GEMM with normal
      inputs 0.09; laplace 0.5; outliers (2% N(0, 64²)) 335; lognormal 62; Student t(3)
      4e8;
-   - the chain CLT on block-scaled chains: always refused (the matrix has it 2-100x off);
+   - the chain CLT on block-scaled chains (`tier2::single` / `pair`): always refused (the
+     matrix has it 2-100x off);
+   - the block-scaled chain tier (`tier2bs`, §5.3.1): y's excess kurtosis at most 1, from
+     the terms' group-mixture cumulants (a block scale or an outlier channel is a mixture
+     over the group). Measured on MXF8: normal 0.02, laplace 0.13, codes 77, outliers 84,
+     ints_scaled 34, lognormal 15.5, Student t 1.6e5. Pairs of block-scaled kernels:
+     refused, not run;
    - AG's non-chain tiers: their own checks (§9), and the cross-check below is required
      (refused without Tier 3).
 2. **The Tier 3 cross-check**: every run samples Tier 3 (300 inputs to start). An analytic
@@ -567,8 +573,49 @@ Applicability: add / FMA / TF32 DAGs (validated, §7.1). Plain MMA chains over n
 are Tier 1's domain (the DAG CLT is 0.8-1.4x there) and report not applicable.
 Block-scaled chains use the chain CLT (`tier2::single` / `pair`: per-step residue-exact
 local moments from `tier1::local_moments`, zero-inflated normal error), applicable only when
-y's position in its ulp is near uniform (TV ≤ 0.05), which MX recipes never are.
-Runtime: 0.03-7 s.
+y's position in its ulp is near uniform (TV ≤ 0.05), which MX recipes never are, and the
+block-scaled chain tier (§5.3.1). Runtime: 0.03-7 s.
+
+#### 5.3.1 Block-scaled chains
+
+`tier2bs.rs` `ChainPre` / `estimate`; single MX kernels (MXF8, MXF4). Each tensor-core step
+is one alignment to the step's largest exponent, a truncation of every term and of the
+accumulator at Q = 2^(emax − F), an exact sum and one round toward zero to the result's
+f32 grid (N-MMA-BS).
+- **Lattice class.** Narrow-format terms sit on coarse grids: an output whose terms all
+  have their lowest set bit at or above L is exact at every step whose ulp is at most 2^L.
+  The tier conditions on y and on y's lattice class (the lowest set bit over all terms,
+  against y's ulp). The class fixes every step's lattice law (the accumulator's lattice is
+  the larger of the previous terms' lattice and the previous result's ulp) and y's position
+  within its ulp (on the grid, or an odd multiple of 2^-k ulp).
+- **Step error.** The final round toward zero is a residue uniform on the 2^k grid below
+  the result's ulp (k = ulp − max(Q, lattice); none when k ≤ 0). The truncations have
+  exact moments from the term atoms (block scale times element products, under the spec
+  and the recipe).
+- **Given y and the class**, partial sums are normal sub-sums of y; the largest step
+  residues stay discrete, the rest and the truncations are a zero-inflated normal. The PMF
+  over output ulps follows from y's position, the error law and the final rounding.
+- **Gate:** y's excess kurtosis ≤ 1 (§3.2). The estimate is still computed and reported
+  when refused.
+- **Pairs: refused, not run.** Combining two chains' errors as independent given y and its
+  class came out 0.77x of Tier 3 on the MXF8 reverse-K pair (normal), at 1,000 s.
+- **NVFP4** with a global scale has 4e7 term atoms per step: tiers 1-2 are not run.
+
+MXF8 single kernel (`r3_cute_mxf8`), against a 20,000-input Tier 3:
+
+| spec | y excess kurtosis | gate | tier2bs / Tier 3 | tier2bs seconds |
+|---|---|---|---|---|
+| normal | 0.02 | pass | 0.966 | 13 |
+| laplace | 0.13 | pass | 1.009 | 38 |
+| lognormal | 15.5 | refused | 0.955 | 7 |
+| Student t | 1.6e5 | refused | 1.12 | 110 |
+| outliers | 84 | refused | 2.54 | 161 |
+| codes | 77 | refused | 1.07 | 247 |
+| ints_scaled | 34 | refused | 2.35 | 83 |
+
+MXF4: codes 1.95x (kurtosis 36, refused); Student t: Tier 3 sees P(differ) = 0 at 20,000
+inputs and tier2bs gives 4e-12 (kurtosis 4e13, refused). The other MXF4 rows are Tier 0.
+Every refusal above is the gate's.
 
 ### 5.4 Tier 3: Monte Carlo through the DAG
 
@@ -1083,19 +1130,60 @@ Notes:
 | inerr/silumul-pair/rel1e-4 | 3 | - | 0.2059 [0.206, 0.206] | 0.2237 | 0.714 | refused (correctly) | Tier 3 cross-check (300 inputs) | 0.206 [0.204, 0.208] | agree |
 | inerr/addnorm-pair/rel1e-4 | 3 | - | 0.06637 [0.0653, 0.0674] | 0.5009 | 6.73 | refused (correctly) | Tier 3 cross-check (13010 inputs) | 0.08318 [0.0569, 0.109] | agree |
 
+### 7.4 Block-scaled rows with the block-scaled chain tier (2026-11-06)
+
+The 25 MX / NVFP4 rows of §7.3 under the default policy with `tier2bs` (§5.3.1), against
+the same 20,000-input truth. Every headline is right (within max(5%, the truth's 95%
+half-width), or Tier 3 itself).
+- **Two new Tier 2 headlines:** MXF8 normal (0.966x) and laplace (1.009x); the gate
+  passes and the cross-check agrees at 300 inputs.
+- **Refused by the gate** (7 single rows): MXF8 Student t, lognormal, outliers,
+  codes, ints_scaled; MXF4 codes and Student t. The cross-check fails on all but MXF4
+  Student t (4e-12 against a Tier 3 of 0), lognormal (0.955x) included.
+- **Not run:** pairs (structural refusal), NVFP4 (4e7 term atoms per step), and rows that
+  Tier 0 answers.
+
+| row | headline tier | headline / truth | truth P(differ) | tier2bs | tier2bs / truth | gate (y excess kurtosis) | cross-check (inputs) | default run, s |
+|---|---|---|---|---|---|---|---|---|
+| mxf8/single/normal-mx | 2 | 0.966 | 0.04498 | 0.04346 | 0.966 | pass (0.024) | agrees (300) | 42 |
+| mxf8/single/student_t-mx | 3 | 1.005 | 0.08835 | 0.09894 | 1.120 | refused (1.64e+05) | FAILS (300) | 207 |
+| mxf8/single/laplace-mx | 2 | 1.009 | 0.1093 | 0.1103 | 1.009 | pass (0.13) | agrees (300) | 59 |
+| mxf8/single/lognormal-mx | 3 | 1.008 | 0.00501 | 0.004786 | 0.955 | refused (15.5) | FAILS (300) | 41 |
+| mxf8/single/outliers-mx | 3 | 0.998 | 0.3109 | 0.7882 | 2.535 | refused (84.3) | FAILS (300) | 234 |
+| mxf8/single/codes | 3 | 1.000 | 0.8462 | 0.9074 | 1.072 | refused (77.4) | FAILS (300) | 311 |
+| mxf8/single/ints | 0 | 0 = 0 | 0 | - | - | not run | - | 19 |
+| mxf8/single/ints_scaled | 3 | 1.003 | 0.292 | 0.686 | 2.349 | refused (34.3) | FAILS (300) | 654 |
+| mxf8/pair-rev/normal-mx | 3 | 0.999 | 0.03405 | - | - | not run (pair) | - | 147 |
+| mxf8/pair-rev/codes | 3 | 1.001 | 0.8403 | - | - | not run (pair) | - | 340 |
+| mxf8/pair-rev/ints_scaled | 3 | 1.001 | 0.2436 | - | - | not run (pair) | - | 179 |
+| mxf8/pair-rev/student_t-mx | 3 | 1.004 | 0.06531 | - | - | not run (pair) | - | 233 |
+| mxf8/pair-cublas/normal-mx | 0 | 0 = 0 | 0 | - | - | not run (pair) | - | 66 |
+| mxf4/single/normal-mx | 0 | 0 = 0 | 0 | - | - | not run | - | 17 |
+| mxf4/single/codes | 3 | 1.002 | 0.3346 | 0.6525 | 1.950 | refused (36) | FAILS (300) | 45 |
+| mxf4/single/student_t-mx | 3 | 0 = 0 | 0 | 3.929e-12 | - | refused (4.3e+13) | agrees (300) | 32 |
+| mxf4/single/laplace-mx | 0 | 0 = 0 | 0 | - | - | not run | - | 18 |
+| mxf4/pair-rev/codes | 3 | 1.004 | 0.1595 | - | - | not run (pair) | - | 135 |
+| mxf4/pair-rev/student_t-mx | 3 | 0 = 0 | 0 | - | - | not run (pair) | - | 78 |
+| nvf4/single/normal-nv | 3 | 0 = 0 | 0 | - | - | not run | - | 30 |
+| nvf4/single/student_t-nv | 3 | 0.768 | 7.019e-08 | - | - | not run | - | 61 |
+| nvf4/single/codes | 3 | 1.000 | 0.7877 | - | - | not run | - | 30 |
+| nvf4/pair-dq/normal-nv | 3 | 0 = 0 | 0 | - | - | not run (pair) | - | 77 |
+| nvf4/pair-dq/codes | 3 | 1.000 | 0.5593 | - | - | not run (pair) | - | 61 |
+| nvf4/pair-cublas/normal-nv | 0 | 0 = 0 | 0 | - | - | not run (pair) | - | 69 |
+
 ## 8. Assumptions and open items
 
-ASSUMPTIONS.md: N-ERRDIST-IID, -TEMPLATE, -RESIDUE, -MARKOV, -CF, -CLT, -PAIR, -FLIP,
--MC. These are estimates, not proofs. Only Tier 0 is exact (and only on the support of the
-element laws), and Tier 3 is exact per sample.
+ASSUMPTIONS.md: N-ERRDIST-IID, -TEMPLATE, -RESIDUE, -MARKOV, -CF, -CLT, -BSCLT, -PAIR,
+-FLIP, -MC. These are estimates, not proofs. Only Tier 0 is exact (and only on the support
+of the element laws), and Tier 3 is exact per sample.
 
 Open items:
 - a joint chain for block-scaled pairs that share the K partition (Tier 1 1.2-1.3x, the
   main remaining bias);
 - Tier 1's residual 6% on MX normal / Laplace recipes (bits above the tracked two);
 - Tier 1 speed on MXF8 random codes (> 60 min) and NVFP4 (skipped above 5e6 atoms);
-- Tier 2's DAG CLT on plain MMA chains over narrow inputs (0.86-2.85x; Tier 1 covers them)
-  and a block-scaled DAG CLT;
+- Tier 2's DAG CLT on plain MMA chains over narrow inputs (0.86-2.85x; Tier 1 covers them);
+  tier2bs on pairs (0.77x on an MXF8 reverse-K pair) and on NVFP4 with a global scale;
 - per-index scale masks in the spec (true small-K runs on a K = 256 kernel; Tier 1's small-K
   coverage is the synthetic one-step tests);
 - softmax, norms, attention and elementwise programs have their own analytic tiers (§9).

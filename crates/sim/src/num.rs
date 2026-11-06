@@ -679,6 +679,44 @@ fn file_tag(f: File) -> u8 {
     f as u8
 }
 
+/// Numerics pseudo-index bit of the high half of a 64-bit PTX register: lane 1 of a packed
+/// f32x2 value (`mov.b64 %rd, {lo, hi}`, `fma.rn.f32x2`, `ld.b64`) is tracked under
+/// `idx | V_HI`. Never an executable register: the PTX front-end keeps indices below it.
+pub(crate) const V_HI: u16 = 0x8000;
+
+/// The register holding lane `i` (0 / 1) of a packed f32x2 value whose low lane is `r`: the
+/// next SASS register, or the high half of a PTX register (`V_HI`).
+pub(crate) fn lane_reg(r: Reg, i: usize) -> Reg {
+    match (r.file, i) {
+        (_, 0) => r,
+        (File::V, _) => Reg {
+            file: File::V,
+            idx: r.idx | V_HI,
+        },
+        _ => Reg {
+            file: r.file,
+            idx: r.idx + i as u16,
+        },
+    }
+}
+
+/// Lane `i` of a packed f32x2 operand (`F2Lanes`), as a 32-bit value.
+fn f2_lane_val((v, l): &(Val, F2Lanes), i: usize) -> Val {
+    match (v, l) {
+        (Val::Reg(r, _), F2Lanes::Pair | F2Lanes::Swap) => {
+            let k = usize::from((*l == F2Lanes::Swap) == (i == 0));
+            Val::Reg(lane_reg(*r, k), 1)
+        }
+        (Val::Reg(r, _), F2Lanes::Bcast) => Val::Reg(*r, 1),
+        _ => v.clone(),
+    }
+}
+
+/// A PTX register's high-half pseudo-register (`V_HI`).
+fn is_v_hi(r: Reg) -> bool {
+    r.file == File::V && r.idx & V_HI != 0
+}
+
 fn mem_key(loc: Loc) -> (u8, u64, u64) {
     match loc {
         Loc::Shared { cta, off } => (0, cta as u64, off as u64),
@@ -768,6 +806,13 @@ impl NumState {
             None => {
                 self.reg.remove(&k);
             }
+        }
+        // A write of a whole PTX register also replaces its high half (a lane-1 node is set
+        // after its lane 0).
+        if d.file == File::V && !is_v_hi(d) {
+            let h = (t as u32, file_tag(d.file), d.idx | V_HI);
+            self.touched.push(h);
+            self.reg.remove(&h);
         }
     }
     pub(crate) fn leaf(&mut self, bits: u32, pc: u32) -> u32 {
@@ -1346,6 +1391,13 @@ impl Machine {
         let Some(ns) = self.num.as_mut() else { return };
         let n = ns.node_of(t, a);
         ns.set(t, d, n);
+        // A PTX register's high half (an f32x2 lane) moves with it.
+        if let (File::V, Val::Reg(r, _)) = (d.file, a) {
+            if r.file == File::V {
+                let h = ns.node_of_reg(t, lane_reg(*r, 1));
+                ns.set(t, lane_reg(d, 1), h);
+            }
+        }
         // A 64-bit move into 32-bit registers (SASS `LDC.64 R10`) also overwrites R11.
         let slots = match a {
             Val::Reg(_, k) => *k,
@@ -1386,6 +1438,33 @@ impl Machine {
         ns.set(t, d, None);
     }
 
+    /// PTX `mov.b64 d, {lo, hi}`: the halves keep their nodes as d's lanes (exact moves).
+    pub(crate) fn num_pack64(&mut self, t: usize, d: Reg, lo: &Val, hi: &Val) {
+        let Some(ns) = self.num.as_mut() else { return };
+        let (a, b) = (ns.node_of(t, lo), ns.node_of(t, hi));
+        ns.set(t, d, a);
+        if d.file == File::V {
+            ns.set(t, lane_reg(d, 1), b);
+        }
+    }
+
+    /// PTX `mov.b64 {lo, hi}, a`: a's lanes keep their nodes (exact moves).
+    pub(crate) fn num_unpack64(&mut self, t: usize, lo: Option<Reg>, hi: Option<Reg>, a: &Val) {
+        let Some(ns) = self.num.as_mut() else { return };
+        let (na, nb) = match a {
+            Val::Reg(r, _) if r.file == File::V => {
+                (ns.node_of_reg(t, *r), ns.node_of_reg(t, lane_reg(*r, 1)))
+            }
+            _ => (None, None),
+        };
+        if let Some(r) = lo {
+            ns.set(t, r, na);
+        }
+        if let Some(r) = hi {
+            ns.set(t, r, nb);
+        }
+    }
+
     /// FFMA2: lane i of `d` is a*b + c. Tracked only in the form x*1 + 0 (cuBLAS's alpha = 1,
     /// beta = 0 epilogue), with the 1 and the +0 constants (no history, not input-derived):
     /// that is exactly x + 0, an `Add` with a +0 leaf (exact; it only turns -0 into +0).
@@ -1404,26 +1483,7 @@ impl Machine {
             return;
         }
         let Some(ns) = self.num.as_mut() else { return };
-        let lane_val = |(v, l): &(Val, F2Lanes), i: usize| -> Val {
-            match (v, l) {
-                (Val::Reg(r, _), F2Lanes::Pair | F2Lanes::Swap) => {
-                    let k = if (*l == F2Lanes::Swap) == (i == 0) {
-                        1
-                    } else {
-                        0
-                    };
-                    Val::Reg(
-                        Reg {
-                            file: r.file,
-                            idx: r.idx + k,
-                        },
-                        1,
-                    )
-                }
-                (Val::Reg(r, _), F2Lanes::Bcast) => Val::Reg(*r, 1),
-                _ => v.clone(),
-            }
-        };
+        let lane_val = f2_lane_val;
         let mut out = [None, None];
         let mut lost = false;
         for (i, o) in out.iter_mut().enumerate() {
@@ -1451,10 +1511,7 @@ impl Machine {
             }
         }
         for (i, o) in out.into_iter().enumerate() {
-            let di = Reg {
-                file: d.file,
-                idx: d.idx + i as u16,
-            };
+            let di = lane_reg(d, i);
             let Some((nx, xv)) = o else {
                 ns.set(t, di, None);
                 continue;
@@ -1493,40 +1550,39 @@ impl Machine {
         vals: [[u32; 2]; 3],
         pc: u32,
     ) {
-        let lane_val = |(v, l): &(Val, F2Lanes), i: usize| -> Val {
-            match (v, l) {
-                (Val::Reg(r, _), F2Lanes::Pair | F2Lanes::Swap) => {
-                    let k = if (*l == F2Lanes::Swap) == (i == 0) {
-                        1
-                    } else {
-                        0
-                    };
-                    Val::Reg(
-                        Reg {
-                            file: r.file,
-                            idx: r.idx + k,
-                        },
-                        1,
-                    )
-                }
-                (Val::Reg(r, _), F2Lanes::Bcast) => Val::Reg(*r, 1),
-                _ => v.clone(),
-            }
-        };
+        let lane_val = f2_lane_val;
         let lanes: Vec<[Val; 3]> = (0..2).map(|i| ops.map(|o| lane_val(o, i))).collect();
-        // Lane 1 must not read a register lane 0 writes (d + 0).
-        let clash = lanes[1]
-            .iter()
-            .any(|v| matches!(v, Val::Reg(r, _) if *r == d));
+        // PTX registers: a tainted lane without a node would need an instruction slice of
+        // half a 64-bit register, which seg.rs does not build. Fail closed.
+        let ns = self.num.as_ref().unwrap();
+        if lanes.iter().flatten().any(|v| {
+            matches!(v, Val::Reg(r, _) if r.file == File::V
+                && ns.node_of(t, v).is_none() && ns.taint.reg_t(t, *r))
+        }) {
+            let ns = self.num.as_mut().unwrap();
+            ns.seg_fails
+                .entry(pc)
+                .or_insert_with(|| "f32x2 lane of a PTX register without a node (no slice)".into());
+            for (i, v) in lanes.iter().enumerate() {
+                self.num_clobber(t, lane_reg(d, i), &[&v[0], &v[1], &v[2]], pc);
+            }
+            return;
+        }
+        // Lane 1 must not read a register lane 0 writes (d + 0; a PTX register: either half,
+        // since writing lane 0 replaces the whole register).
+        let clash = lanes.iter().enumerate().any(|(i, l)| {
+            l.iter().any(|v| match v {
+                Val::Reg(r, _) if d.file == File::V => r.file == File::V && r.idx & !V_HI == d.idx,
+                Val::Reg(r, _) => i == 1 && *r == d,
+                _ => false,
+            })
+        });
         // Materialize every source first (lane 0's write must not change lane 1's sources).
         let mut r = [0u32; 2];
         for (i, ri) in r.iter_mut().enumerate() {
             *ri = fp::f32_fma(vals[0][i], vals[1][i], Some(vals[2][i]), Rnd::Rn, false);
         }
-        let di = |i: usize| Reg {
-            file: d.file,
-            idx: d.idx + i as u16,
-        };
+        let di = |i: usize| lane_reg(d, i);
         // A clash (`FFMA2 R10, R11.F32, R6.F32, R10.F32`): both lanes read their sources
         // before either writes, so make both nodes first, then write them.
         if clash && !lanes.iter().any(|v| matches!(v[1], Val::Imm(0x3f80_0000))) {
@@ -1704,32 +1760,53 @@ impl Machine {
             file: d.file,
             idx: d.idx + i as u16,
         };
-        // (register, byte offset of its word in the access, or None: not one f32 word).
-        let regs: Vec<(Reg, Option<u64>)> = if n > 1 {
+        // (register, byte offset of its word in the access or None: not one f32 word, the
+        // register's own bytes for its taint or None: a high-half lane, no taint of its own).
+        type Slot = (Reg, Option<u64>, Option<(u64, u64)>);
+        let word = |r: Reg, w: Option<u64>| -> Slot {
+            (r, w, Some(w.map_or((0, bytes as u64), |w| (w, 4))))
+        };
+        // 64-bit PTX registers: two f32 lanes (`lane_reg`), the register's taint over both.
+        let pair = |i: u8| -> [Slot; 2] {
+            let r = reg(i);
+            let o = 8 * i as u64;
+            [
+                (r, Some(o), Some((o, 8))),
+                (lane_reg(r, 1), Some(o + 4), None),
+            ]
+        };
+        let regs: Vec<Slot> = if n > 1 {
             let es = bytes / n;
-            (0..n)
-                .map(|i| (reg(i), (es == 4).then_some(4 * i as u64)))
-                .collect()
+            if d.file == File::V && es == 8 {
+                (0..n).flat_map(pair).collect()
+            } else {
+                (0..n)
+                    .map(|i| word(reg(i), (es == 4).then_some(4 * i as u64)))
+                    .collect()
+            }
         } else if d.file == File::V {
             // One PTX register per access: 32-bit, or a 64-bit / 128-bit (two-slot) value.
             if bytes == 4 {
-                vec![(d, Some(0))]
+                vec![word(d, Some(0))]
+            } else if bytes % 8 == 0 {
+                (0..bytes / 8).flat_map(pair).collect()
             } else {
-                (0..(bytes / 8).max(1)).map(|i| (reg(i), None)).collect()
+                vec![word(d, None)]
             }
         } else if bytes >= 4 {
             (0..bytes / 4)
-                .map(|i| (reg(i), Some(4 * i as u64)))
+                .map(|i| word(reg(i), Some(4 * i as u64)))
                 .collect()
         } else {
-            vec![(d, None)]
+            vec![word(d, None)]
         };
-        for (r, w) in regs {
+        for (r, w, own) in regs {
             // This register's own bytes (a whole-word register: its word; else the access).
             let (sp, a, off) = mem_key(loc);
-            let (lo, n) = w.map_or((0, bytes as u64), |w| (w, 4));
-            let rt = (lo..lo + n).any(|b| ns.taint.mem.contains(&(sp, a, off + b)));
-            ns.taint.ld_read.push((t, r, rt));
+            if let Some((lo, n)) = own {
+                let rt = (lo..lo + n).any(|b| ns.taint.mem.contains(&(sp, a, off + b)));
+                ns.taint.ld_read.push((t, r, rt));
+            }
             let node = w.and_then(|w| {
                 let (sp, a, off) = mem_key(loc);
                 let k = (sp, a, off + w);
@@ -1925,9 +2002,25 @@ impl Machine {
             }),
             _ => false,
         };
+        // The register holding word i of a store of PTX registers with 64-bit elements
+        // (`st.b64`, `st.v2.b64`, `st.b128`): lane i % 2 of element i / 2.
+        let v_pair = |i: u16| -> Option<Reg> {
+            match v {
+                Val::Reg(r, n) if r.file == File::V && bytes / (*n).max(1) >= 8 => Some(lane_reg(
+                    Reg {
+                        file: File::V,
+                        idx: r.idx + i / 2,
+                    },
+                    (i % 2) as usize,
+                )),
+                _ => None,
+            }
+        };
         if halves {
         } else if bytes == 4 {
             self.num_node_mat(t, v);
+        } else if bytes.is_multiple_of(4) && v_pair(0).is_some() {
+            // Lanes of PTX registers: only their nodes (no slices; num_ffma2_seg).
         } else if bytes.is_multiple_of(4) {
             // A vector store of 32-bit registers (STS.64 of a quotient and a sum): each word's
             // input-derived value is materialized as for a 4-byte store.
@@ -1981,6 +2074,9 @@ impl Machine {
         let words = (bytes as u16).div_ceil(4);
         for i in 0..words {
             let n = match v {
+                _ if bytes.is_multiple_of(4) && v_pair(i).is_some() => {
+                    ns.node_of_reg(t, v_pair(i).unwrap())
+                }
                 Val::Reg(r, _) if split => ns.node_of(
                     t,
                     &Val::Reg(
@@ -3143,7 +3239,9 @@ impl Taint {
         }
     }
     fn reg_t(&self, t: usize, r: Reg) -> bool {
-        self.reg.contains(&(t as u32, r.file as u8, r.idx))
+        // A PTX register's high half (V_HI) has the whole register's taint.
+        let idx = if is_v_hi(r) { r.idx & !V_HI } else { r.idx };
+        self.reg.contains(&(t as u32, r.file as u8, idx))
     }
     pub(crate) fn reg_tainted(&self, t: usize, r: Reg) -> bool {
         self.reg_t(t, r)
@@ -3434,6 +3532,13 @@ impl Machine {
                 let k = (t as u32, file_tag(r.file), r.idx);
                 if dg.contains(&t) || !ns.touched.contains(&k) {
                     ns.reg.remove(&k);
+                }
+                // The high half of a PTX register (V_HI) too.
+                if r.file == File::V {
+                    let h = (t as u32, file_tag(r.file), r.idx | V_HI);
+                    if dg.contains(&t) || !ns.touched.contains(&h) {
+                        ns.reg.remove(&h);
+                    }
                 }
             }
         }

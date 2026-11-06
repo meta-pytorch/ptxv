@@ -428,6 +428,18 @@ pub const REGISTRY: &[Assumption] = &[
         },
     },
     Assumption {
+        id: "E-SETMAXNREG",
+        kind: "code",
+        status: "argued",
+        title: "setmaxnreg / USETMAXREG is a no-op and an increase always completes (GB300 hangs when the CTA's register pool cannot satisfy it)",
+        applies: |k| {
+            k.code.iter().any(|i| {
+                let t = i.text.to_lowercase();
+                t.contains("setmaxnreg") || t.contains("usetmaxreg")
+            })
+        },
+    },
+    Assumption {
         id: "E-RET",
         kind: "code",
         status: "enforced",
@@ -904,6 +916,14 @@ pub const REGISTRY: &[Assumption] = &[
         kind: "code",
         status: "argued",
         title: "errdist tier 3: per-sample exact; output-level CIs treat outputs as independent",
+        // Applies to `ptxv errdist` estimates, not to check verdicts.
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-BSCLT",
+        kind: "code",
+        status: "argued",
+        title: "errdist tier 2 on block-scaled chains: normal partial sums given y and its lattice class",
         // Applies to `ptxv errdist` estimates, not to check verdicts.
         applies: |_| false,
     },

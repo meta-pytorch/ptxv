@@ -29,4 +29,5 @@ pub mod stats;
 pub mod tier0;
 pub mod tier1;
 pub mod tier2;
+pub mod tier2bs;
 pub mod validate;

@@ -3452,6 +3452,7 @@ fn lower_line(
         }
         // setmaxnreg: the register budget does not change what the model executes. The
         // TRY_ALLOC form always succeeds here (on hardware a failure is retried).
+        // ASSUME(E-SETMAXNREG)
         "USETMAXREG" if has("DEALLOC") || (has("ALLOC") && !has("TRY_ALLOC")) => Op::Nop,
         "USETMAXREG" if has("TRY_ALLOC") => Op::Plop3 {
             d: lw.pdst(lw.op(0)?)?,

@@ -177,6 +177,39 @@ struct Lower<'a> {
     /// Hidden scratch register for those expansions (allocated only if a statement needs it:
     /// `%__x64`).
     tmp_v: Option<Reg>,
+    /// Ops to run before the lowered one, under the same guard (moves into `vec_v`).
+    pre: Vec<Op>,
+    /// Hidden consecutive scratch registers for vector operands whose registers are not
+    /// consecutive (`st.shared.v4.b32 [a], {%r262, %r261, %r260, %r259}`): `%__vec0..7`.
+    vec_v: Option<Reg>,
+}
+
+/// Most elements of a vector operand (`.v8`).
+const VEC_SCRATCH: u16 = 8;
+
+/// Does this statement have a `{...}` vector operand of an `ld` / `st` whose registers are not
+/// consecutive (it needs the vector scratch registers)?
+fn needs_vec_scratch(text: &str, regs: &HashMap<String, Reg>) -> bool {
+    let t = text.trim();
+    let t = match t.strip_prefix('@') {
+        Some(r) => r.split_once(char::is_whitespace).map_or("", |x| x.1).trim(),
+        None => t,
+    };
+    if !(t.starts_with("ld.") || t.starts_with("st.")) {
+        return false;
+    }
+    let Some((_, rest)) = t.split_once('{') else {
+        return false;
+    };
+    let Some((inner, _)) = rest.split_once('}') else {
+        return false;
+    };
+    let rs: Vec<Option<&Reg>> = inner.split(',').map(|x| regs.get(x.trim())).collect();
+    rs.len() > 1
+        && rs.iter().enumerate().any(|(i, r)| match (r, rs[0]) {
+            (Some(r), Some(r0)) => r.file != r0.file || r.idx != r0.idx + i as u16,
+            _ => true,
+        })
 }
 
 /// Does this statement's expansion need the hidden scratch register?
@@ -270,6 +303,45 @@ impl<'a> Lower<'a> {
             reg: Some(self.pred_dst(s)?),
             neg,
         })
+    }
+
+    /// An `ld` / `st` vector operand `{%r16, %r17, ...}` -> (first register, count, moves).
+    /// Registers that are not consecutive go through the vector scratch registers: the moves
+    /// into them run before a store (`pre`), out of them after a load (`extra`).
+    fn reg_vec_mem(&self, s: &str, load: bool) -> Result<(Reg, u8, Vec<Op>)> {
+        if let Ok((r, n)) = self.reg_vec(s) {
+            return Ok((r, n, vec![]));
+        }
+        let mut moves = Vec::new();
+        let inner = s.trim().trim_start_matches('{').trim_end_matches('}');
+        let regs: Vec<Reg> = inner
+            .split(',')
+            .map(|r| self.reg(r.trim()))
+            .collect::<Result<_>>()?;
+        let base = self
+            .vec_v
+            .ok_or_else(|| self.err("internal: no vector scratch registers"))?;
+        if regs.len() > VEC_SCRATCH as usize || regs.iter().any(|r| r.file != File::V) {
+            return Err(self.err("vector operand registers must be consecutive"));
+        }
+        for (i, r) in regs.iter().enumerate() {
+            let tmp = Reg {
+                file: File::V,
+                idx: base.idx + i as u16,
+            };
+            moves.push(if load {
+                Op::Mov {
+                    d: *r,
+                    a: Val::Reg(tmp, 1),
+                }
+            } else {
+                Op::Mov {
+                    d: tmp,
+                    a: Val::Reg(*r, 1),
+                }
+            });
+        }
+        Ok((base, regs.len() as u8, moves))
     }
 
     /// `{%r16, %r17, ...}` -> (first register, count); registers must be consecutive.
@@ -895,6 +967,24 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
             idx: (vreg_names.len() - 1) as u16,
         });
     }
+    let mut vec_v = None;
+    if insts_src
+        .iter()
+        .any(|st| needs_vec_scratch(&st.text, &regs))
+    {
+        vec_v = Some(Reg {
+            file: File::V,
+            idx: vreg_names.len() as u16,
+        });
+        for i in 0..VEC_SCRATCH {
+            vreg_names.push(format!("%__vec{i}"));
+        }
+    }
+    // The numerics track the high half of a 64-bit register under `idx | 0x8000`
+    // (sim::num::V_HI): indices stay below it.
+    if vreg_names.len() > 0x8000 {
+        bail!("kernel {name}: more than 32768 virtual registers");
+    }
 
     // Pass 2: instructions. A statement may lower to several ops (`Lower::extra`); branch
     // targets and labels are statement indices until remapped below.
@@ -910,11 +1000,14 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
             text: &st.text,
             extra: Vec::new(),
             tmp_v,
+            pre: Vec::new(),
+            vec_v,
         };
         let inst = lower_inst(&mut lw).with_context(|| format!("in kernel {name}"))?;
         start.push(code.len());
         let (guard, loc, text) = (inst.guard, inst.loc, inst.text.clone());
-        let mut ops = vec![inst.op.clone()];
+        let mut ops = lw.pre.clone();
+        ops.push(inst.op.clone());
         ops.extend(lw.extra.iter().cloned());
         // Every op of an expansion runs under the statement's guard, so none but the last
         // may write it.
@@ -926,6 +1019,15 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
                 return Err(lw.err("expansion writes its own guard predicate"))
                     .with_context(|| format!("in kernel {name}"));
             }
+        }
+        for op in lw.pre {
+            code.push(Inst {
+                guard,
+                op,
+                uniform: false,
+                loc,
+                text: text.clone(),
+            });
         }
         code.push(inst);
         for op in lw.extra {
@@ -1085,6 +1187,54 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             d: lw.dst(op_n(0)?)?,
             a: lw.val(op_n(1)?)?,
         },
+        // Packed f32x2 (sm_100+): `fma.rn.f32x2`, `mul.rn.f32x2`, `add.rn.f32x2`, `sub.rn
+        // .f32x2` on .b64 registers, lane 0 in the low 32 bits. ptxas emits FFMA2 / FMUL2 /
+        // FADD2: one rounding to nearest per lane, subnormals kept, canonical NaN
+        // (fixtures/s_ptx_packed = GB300). Without `.rn`, ptxas may contract mul + add into
+        // one FFMA2, and other rounding modes, .ftz and .sat are not modeled: all refused.
+        // ASSUME(L-ROSETTA)
+        "add" | "sub" | "mul" | "fma" if mods.last() == Some(&"f32x2") => {
+            let rest = &mods[..mods.len() - 1];
+            if rest != ["rn"] {
+                bail!(lw.err(format!(
+                    "{base}.f32x2 with modifiers {rest:?} not modeled (only .rn)"
+                )));
+            }
+            let reg = |s: &str| -> Result<(Val, F2Lanes)> {
+                match lw.val(s)? {
+                    v @ Val::Reg(..) => Ok((v, F2Lanes::Pair)),
+                    _ => bail!(lw.err(format!("{base}.f32x2 operand `{s}` must be a register"))),
+                }
+            };
+            let d = lw.dst(op_n(0)?)?;
+            let (a, b) = (reg(op_n(1)?)?, reg(op_n(2)?)?);
+            let one = (Val::Imm(0x3f80_0000), F2Lanes::Bcast);
+            match base {
+                // a*1 + b: the rounded sum (as FADD2); sub negates b.
+                "add" | "sub" => Op::Ffma2 {
+                    d,
+                    a,
+                    b: one,
+                    c: b,
+                    neg: [false, false, base == "sub"],
+                },
+                // a*b + (-0): the rounded product (as FMUL2).
+                "mul" => Op::Ffma2 {
+                    d,
+                    a,
+                    b,
+                    c: (Val::Imm(0x8000_0000), F2Lanes::Bcast),
+                    neg: [false; 3],
+                },
+                _ => Op::Ffma2 {
+                    d,
+                    a,
+                    b,
+                    c: reg(op_n(3)?)?,
+                    neg: [false; 3],
+                },
+            }
+        }
         // f64 arithmetic: as ptxas lowers it (DADD a, -b for sub; DMUL; DFMA).
         "add" | "sub" | "mul" | "fma" if tname == "f64" => {
             let rnd = if has("rz") {
@@ -1754,6 +1904,17 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         // A timing hint only: it cannot change which schedules are possible.
         // ASSUME(E-NANOSLEEP): see ASSUMPTIONS.md
         "nanosleep" => Op::Nop,
+        // setmaxnreg.{inc,dec}.sync.aligned.u32 N (ptxas: USETMAXREG): only the register budget
+        // changes. N must be an immediate in 24..=256, a multiple of 8. ASSUME(E-SETMAXNREG)
+        "setmaxnreg" => {
+            if !matches!(mods, ["inc" | "dec", "sync", "aligned", "u32"]) {
+                bail!(lw.err(format!("setmaxnreg form .{} not modeled", mods.join("."))));
+            }
+            match parse_int(op_n(0)?) {
+                Some(n) if (24..=256).contains(&n) && n % 8 == 0 && ops.len() == 1 => Op::Nop,
+                _ => bail!(lw.err("setmaxnreg wants one immediate in 24..=256, a multiple of 8")),
+            }
+        }
         "cvta" => {
             let to = has("to");
             let space = mods
@@ -1789,6 +1950,17 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     d: lw.dst(op_n(0)?)?,
                     a: Val::Imm(0),
                     b: lw.val(op_n(1)?)?,
+                }
+            } else if mods == ["rn", "bf16x2", "f32"] || mods == ["rn", "f16x2", "f32"] {
+                // cvt.rn.{bf16x2,f16x2}.f32 d, a, b: d = {a (high half), b}, each rounded to
+                // nearest even; ptxas emits F2FP.{BF16,F16}.F32.PACK_AB d, a, b
+                // (fixtures/s_ptx_packed = GB300). .relu / .satfinite / other roundings are
+                // the narrow-format path (cvt_lp) or refused. ASSUME(L-ROSETTA)
+                let (d, a, b) = (lw.dst(op_n(0)?)?, lw.val(op_n(1)?)?, lw.val(op_n(2)?)?);
+                if to == "bf16x2" {
+                    Op::F2fpBf16 { d, a, b }
+                } else {
+                    Op::F2fpF16 { d, a, b }
                 }
             } else if to == "bf16" && from == "f32" && has("rn") {
                 // cvt.rn.bf16.f32 (SASS F2FP.BF16.F32.PACK_AB Rd, RZ, Ra).
@@ -2158,17 +2330,18 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 .iter()
                 .find_map(|m| m.strip_prefix('v').and_then(|x| x.parse::<u8>().ok()));
             if let Some(n) = vec_n {
-                if bits > 32 {
-                    bail!(lw.err("only vector elements up to 32 bits are modeled"));
+                // 64-bit elements: `.v2.b64` (one PTX register each).
+                if bits > 64 || bits == 64 && n != 2 {
+                    bail!(lw.err("only vector elements up to 32 bits, and .v2.b64, are modeled"));
                 }
                 let sync = mem_sync(mods, false).map_err(|e| lw.err(e.to_string()))?;
                 let opnd = if base == "ld" { op_n(0)? } else { op_n(1)? };
-                let (r, k) = lw.reg_vec(opnd)?;
+                let (r, k, moves) = lw.reg_vec_mem(opnd, base == "ld")?;
                 if k != n {
                     bail!(lw.err("vector length does not match .vN"));
                 }
                 let bytes = (bits / 8).max(1) * n;
-                return Ok(Inst {
+                let inst = Inst {
                     guard,
                     op: if base == "ld" {
                         Op::Ld {
@@ -2192,7 +2365,13 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     uniform: false,
                     loc: lw.line,
                     text: text.to_string(),
-                });
+                };
+                if base == "ld" {
+                    lw.extra = moves;
+                } else {
+                    lw.pre = moves;
+                }
+                return Ok(inst);
             }
             let sync = mem_sync(mods, false).map_err(|e| lw.err(e.to_string()))?;
             if let Some(m) = sync {
@@ -2864,5 +3043,115 @@ mod tests {
         ));
         assert!(one("setp.lt.f32 %p1|%p2, %r1, %r2;").is_err());
         assert!(one("setp.lt.and.f32 %p1, %r1, %r2, %p3;").is_err());
+    }
+
+    /// Every op one statement lowers to (64-bit registers %rd0..7 declared too).
+    fn ops(line: &str) -> Result<Vec<Op>> {
+        let src = format!(
+            ".version 9.0\n.target sm_103a\n.address_size 64\n.visible .entry k()\n{{\n\
+             .reg .pred %p<4>;\n.reg .b32 %r<8>;\n.reg .b64 %rd<8>;\n{line}\nret;\n}}\n"
+        );
+        let k = parse_kernel(&src, None)?;
+        Ok(k.code[..k.code.len() - 1]
+            .iter()
+            .map(|i| i.op.clone())
+            .collect())
+    }
+
+    #[test]
+    fn packed_f32x2_forms() {
+        let f2 = |l: &str| match &ops(l).unwrap()[..] {
+            [Op::Ffma2 { a, b, c, neg, .. }] => (a.1, b.clone(), c.clone(), *neg),
+            o => panic!("{l}: {o:?}"),
+        };
+        let pair = F2Lanes::Pair;
+        let (a, b, c, neg) = f2("fma.rn.f32x2 %rd1, %rd2, %rd3, %rd4;");
+        assert_eq!((a, b.1, c.1, neg), (pair, pair, pair, [false; 3]));
+        // mul: a*b + (-0); add / sub: a*1 + (+-b).
+        let (_, _, c, _) = f2("mul.rn.f32x2 %rd1, %rd2, %rd3;");
+        assert_eq!(c, (Val::Imm(0x8000_0000), F2Lanes::Bcast));
+        let (_, b, c, neg) = f2("add.rn.f32x2 %rd1, %rd2, %rd3;");
+        assert_eq!(
+            (b, c.1, neg),
+            ((Val::Imm(0x3f80_0000), F2Lanes::Bcast), pair, [false; 3])
+        );
+        let (_, _, _, neg) = f2("sub.rn.f32x2 %rd1, %rd2, %rd3;");
+        assert_eq!(neg, [false, false, true]);
+        // Fail closed: no rounding modifier (ptxas may contract), other roundings, ftz, sat,
+        // immediates.
+        for l in [
+            "fma.f32x2 %rd1, %rd2, %rd3, %rd4;",
+            "mul.f32x2 %rd1, %rd2, %rd3;",
+            "add.f32x2 %rd1, %rd2, %rd3;",
+            "fma.rz.f32x2 %rd1, %rd2, %rd3, %rd4;",
+            "add.rn.ftz.f32x2 %rd1, %rd2, %rd3;",
+            "mul.rn.sat.f32x2 %rd1, %rd2, %rd3;",
+            "add.rn.f32x2 %rd1, %rd2, 0;",
+        ] {
+            assert!(ops(l).is_err(), "{l}");
+        }
+    }
+
+    #[test]
+    fn cvt_x2_vectors_setmaxnreg_forms() {
+        assert!(matches!(
+            &ops("cvt.rn.bf16x2.f32 %r1, %r2, %r3;").unwrap()[..],
+            [Op::F2fpBf16 { .. }]
+        ));
+        assert!(matches!(
+            &ops("cvt.rn.f16x2.f32 %r1, %r2, %r3;").unwrap()[..],
+            [Op::F2fpF16 { .. }]
+        ));
+        assert!(ops("cvt.rz.bf16x2.f32 %r1, %r2, %r3;").is_err());
+        assert!(ops("cvt.rn.relu.bf16x2.f32 %r1, %r2, %r3;").is_err());
+        // Registers that are not consecutive: moves into the scratch block before a store,
+        // out of it after a load.
+        match &ops("st.shared.v4.b32 [%r1], {%r5, %r4, %r3, %r2};").unwrap()[..] {
+            [
+                Op::Mov { .. },
+                Op::Mov { .. },
+                Op::Mov { .. },
+                Op::Mov { .. },
+                Op::St {
+                    bytes: 16,
+                    v: Val::Reg(_, 4),
+                    ..
+                },
+            ] => {}
+            o => panic!("{o:?}"),
+        }
+        match &ops("ld.shared.v2.b32 {%r3, %r1}, [%r2];").unwrap()[..] {
+            [
+                Op::Ld { n: 2, bytes: 8, .. },
+                Op::Mov { .. },
+                Op::Mov { .. },
+            ] => {}
+            o => panic!("{o:?}"),
+        }
+        match &ops("ld.shared.v2.b64 {%rd1, %rd2}, [%r2];").unwrap()[..] {
+            [
+                Op::Ld {
+                    n: 2, bytes: 16, ..
+                },
+            ] => {}
+            o => panic!("{o:?}"),
+        }
+        assert!(ops("ld.shared.v4.b64 {%rd1, %rd2, %rd3, %rd4}, [%r2];").is_err());
+        assert!(matches!(
+            &ops("setmaxnreg.inc.sync.aligned.u32 232;").unwrap()[..],
+            [Op::Nop]
+        ));
+        assert!(matches!(
+            &ops("setmaxnreg.dec.sync.aligned.u32 24;").unwrap()[..],
+            [Op::Nop]
+        ));
+        for l in [
+            "setmaxnreg.inc.sync.aligned.u32 20;",
+            "setmaxnreg.dec.sync.aligned.u32 100;",
+            "setmaxnreg.inc.sync.aligned.u32 %r1;",
+            "setmaxnreg.inc.u32 64;",
+        ] {
+            assert!(ops(l).is_err(), "{l}");
+        }
     }
 }

@@ -5449,18 +5449,18 @@ impl Machine {
             Op::Pack64 { d, lo, hi } => {
                 let v = (self.rd(t, lo)? & 0xffff_ffff) | (self.rd(t, hi)? << 32);
                 self.wr(t, *d, v, 2);
-                self.num_clobber(t, *d, &[lo, hi], pc);
+                // The halves are f32x2 lanes to the numerics (exact moves).
+                self.num_pack64(t, *d, lo, hi);
             }
             Op::Unpack64 { lo, hi, a } => {
                 let v = self.rd(t, a)?;
                 if let Some(r) = lo {
                     self.wr(t, *r, v & 0xffff_ffff, 1);
-                    self.num_clobber(t, *r, &[a], pc);
                 }
                 if let Some(r) = hi {
                     self.wr(t, *r, v >> 32, 1);
-                    self.num_clobber(t, *r, &[a], pc);
                 }
+                self.num_unpack64(t, *lo, *hi, a);
             }
             Op::LeaHi {
                 d,
@@ -6394,6 +6394,18 @@ impl Machine {
                             idx: d.idx + i as u16,
                         };
                         self.wr(t, r, v, 1);
+                    }
+                    self.num_ld(t, *d, loc, (*bytes, *n, *sext), &data);
+                    return Ok(Flow::Next);
+                }
+                if d.file == File::V && *n > 1 && *bytes / *n == 8 {
+                    // PTX ld.v2.b64: one register per 64-bit element.
+                    for (i, c) in data.chunks(8).enumerate() {
+                        let r = Reg {
+                            file: File::V,
+                            idx: d.idx + i as u16,
+                        };
+                        self.wr(t, r, u64::from_le_bytes(c.try_into().unwrap()), 1);
                     }
                     self.num_ld(t, *d, loc, (*bytes, *n, *sext), &data);
                     return Ok(Flow::Next);
