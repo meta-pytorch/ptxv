@@ -1,0 +1,28 @@
+name = "probe_bar_exit_warp_partial"
+description = """
+probes/bar_exit_warp with 48 threads: warp 1 is a partial warp (16 lanes), nobody exits, and
+32 + 16 threads run bar.sync 1, 64 (`full`)."""
+ptx = "../kernel.ptx"
+entry = "probe_bar_exit_warp"
+grid = [1, 1, 1]
+block = [48, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [96]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "full"
+summary = "32 + 16 threads run bar.sync 1, 64"
+expect = ["clean"]
+hw_note = "GB300 completes (ptxv probe, 2026-11-05): the 16-lane warp counts 32"
+marker = "@KEEP0"
+find = "%r4, 16"
+replace = "%r4, 32"

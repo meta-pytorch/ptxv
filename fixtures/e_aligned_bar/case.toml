@@ -59,8 +59,12 @@ summary = "lanes 16-31 of warp 0 skip the joined bar.sync with a guard"
 marker = "@JOIN"
 find = "bar.sync"
 replace = "@%p2 bar.sync"
-expect = ["deadlock", "violation"]
-# SASS: ptxas sends lanes 16-31 to EXIT before the BAR, which the rest of the warp then runs
-# together (exited lanes do not count): only the count shortfall is left.
-expect_sass = ["deadlock"]
-hw_note = "GB300 completes: BAR counts the half-exited warp as a full warp arrival (2 x 32 = 64). The deadlock is a model false alarm (E-BAR-EXIT counts threads); the PTX violation (an aligned barrier guarded off in part of the warp) is the point of this variant"
+# PTX: an aligned barrier guarded off in part of the warp (the point of this variant). A
+# counted barrier counts warps: once lanes 16-31 have exited, lanes 0-15 arrive for the whole
+# warp (32 + 32 = 64; E-BAR-EXIT, probes/bar_exit_warp), so no deadlock.
+expect = ["violation"]
+# SASS: ptxas sends lanes 16-31 to EXIT before the BAR, which lanes 0-15 then run together:
+# legal, and the half-exited warp counts as a full warp arrival. It used to be a deadlock
+# (thread counting), a false alarm.
+expect_sass = ["clean"]
+hw_note = "GB300 completes: BAR counts the half-exited warp as a full warp arrival (2 x 32 = 64; probes/bar_exit_warp)"

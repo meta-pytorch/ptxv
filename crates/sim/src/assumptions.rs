@@ -723,10 +723,24 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |k| any(k, |o| matches!(o, Op::Lop3 { pq: Some(_), .. })),
     },
     Assumption {
+        id: "L-SHF",
+        kind: "code",
+        status: "validated",
+        title: "SHF / shf / shl / shr: u32 amount clamped to 32 (.U32/.S32) or 64 (.U64/.S64), mod 32 with .W (fixtures/s_shf)",
+        applies: |k| any(k, |o| matches!(o, Op::Shf { .. })),
+    },
+    Assumption {
         id: "L-CTRL",
         kind: "code",
         status: "validated",
         title: "control word layout hi>>41 (stall/yield/wbar/rbar/wait/reuse)",
+        applies: sass,
+    },
+    Assumption {
+        id: "L-SB-ORDER",
+        kind: "code",
+        status: "validated",
+        title: "a memory-pipe read scoreboard covers every earlier memory-pipe operand read (probes/sb_mio_order)",
         applies: sass,
     },
     Assumption {
@@ -763,6 +777,13 @@ pub const REGISTRY: &[Assumption] = &[
         status: "validated",
         title: "FADD is IEEE RN, no FTZ, canonical NaN",
         applies: |k| any(k, |o| matches!(o, Op::Fadd { .. })),
+    },
+    Assumption {
+        id: "N-F2I-F64",
+        kind: "code",
+        status: "validated",
+        title: "F2I.*.F64 / cvt.r*i.*.f64: round, saturate, NaN 2^31 / 2^63 (fixtures/s_f2i_f64)",
+        applies: |k| any(k, |o| matches!(o, Op::F2I { f64: true, .. })),
     },
     Assumption {
         id: "N-FALU",

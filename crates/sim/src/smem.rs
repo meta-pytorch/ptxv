@@ -71,7 +71,7 @@ fn weak_machine(m: Machine, w: &Arc<Kernel>, strong: &Kernel) -> Machine {
 }
 
 /// Does the kernel have an acquiring LDS (S-SMEM-STRONG)?
-fn acquiring_lds(k: &Kernel) -> bool {
+pub fn acquiring_lds(k: &Kernel) -> bool {
     k.code.iter().any(|i| {
         matches!(
             &i.op,

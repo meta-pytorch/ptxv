@@ -3243,6 +3243,49 @@ pub struct Outcome {
     pub reasons: Vec<String>,
     pub steps: usize,
     pub seconds: f64,
+    /// Races the certificate's own (unforced) runs reported: each is a race in a feasible
+    /// execution of the model. The exploration that replaces a failed certificate decides
+    /// the verdict, but may run out of budget before it reaches them (`run_races`).
+    pub races: Vec<Finding>,
+}
+
+/// The races of a failed certificate's runs that stand in the reference (LDS/STS strong)
+/// model: all of them, unless the certified kernel had LDS/STS plain (`weak`: whether the
+/// strong kernel has acquiring LDS), where those a strong re-check may dismiss
+/// (`smem::strong_race`) are dropped. Printed now (before the exploration, which may run out
+/// of budget or time) and returned for `merge_run_races`.
+fn run_races(o: &Outcome, weak: Option<bool>, what: &str) -> Vec<Finding> {
+    let rs: Vec<Finding> = o
+        .races
+        .iter()
+        .filter(|f| weak.is_none_or(|acq| !crate::smem::strong_race(&f.sig, acq)))
+        .cloned()
+        .collect();
+    for f in &rs {
+        eprintln!(
+            "certificate run race ({what}): {}: {}",
+            f.sig,
+            f.msg.lines().next().unwrap_or("")
+        );
+    }
+    rs
+}
+
+/// An exploration that did not complete keeps the races the certificate's runs found (a
+/// feasible execution reaches each), with a note.
+fn merge_run_races(v: &mut Verdict, races: Vec<Finding>) {
+    if v.complete {
+        return;
+    }
+    for f in races {
+        if !v.findings.iter().any(|x| x.sig == f.sig) {
+            v.notes.push(format!(
+                "race {} found by the certificate's run (a feasible execution), not reached by the exploration",
+                f.sig
+            ));
+            v.findings.push(f);
+        }
+    }
 }
 
 /// One logged run under one leader policy: (final machine, findings, terminal, steps,
@@ -3412,6 +3455,7 @@ fn certify_inner(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Ou
             ],
             steps: 0,
             seconds: 0.0,
+            races: vec![],
         };
     }
     let m0 = crate::explore::clc_eager(m0);
@@ -3425,6 +3469,7 @@ fn certify_inner(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Ou
             ],
             steps: 0,
             seconds: t0.elapsed().as_secs_f64(),
+            races: vec![],
         };
     }
     // ASSUME(E-ELECT): certify each leader policy separately (as `per_leader_policy`).
@@ -3444,6 +3489,7 @@ fn certify_inner(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Ou
         .and_then(|v| v.parse().ok())
         .unwrap_or(256);
     let mut ring_runs = 0usize;
+    let mut run_race_list: Vec<Finding> = Vec::new();
     let mut ring_pruned = 0usize;
     let mut ring_counters: BTreeSet<String> = BTreeSet::new();
     let mut ring_choices = 0usize;
@@ -3545,13 +3591,25 @@ fn certify_inner(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Ou
         }
         // Exit-time contract findings (E-BULK-EXIT) are happens-before checks at the end:
         // every schedule's clocks contain the run's (C-WAIT), so the run reports the union.
-        // So are the two-level check's havoc probes (kind "probe", l1.rs).
-        let (contract, fs): (Vec<Finding>, Vec<Finding>) = fs
-            .into_iter()
-            .partition(|f| f.kind == "contract" || f.kind == "probe");
+        // So are the two-level check's havoc probes (kind "probe", l1.rs). So is a tcgen05
+        // shared-memory descriptor's version field (E-DESC-VERSION, "desc-version:"): a check
+        // of a descriptor value, which the certificate (schedule-independent values) makes the
+        // same in every schedule; the explorer adds nothing, at 35 GB per kernel on a
+        // 4096 x 4096 x 8192 tile.
+        let (contract, fs): (Vec<Finding>, Vec<Finding>) = fs.into_iter().partition(|f| {
+            f.kind == "contract" || f.kind == "probe" || f.sig.starts_with("desc-version:")
+        });
         for f in contract {
             if !findings.iter().any(|x| x.sig == f.sig) {
                 findings.push(f);
+            }
+        }
+        // Races of an unforced run (C-RING runs with forced reads may not be executions).
+        if forced_desc == 0 {
+            for f in fs.iter().filter(|f| f.kind == "race") {
+                if !run_race_list.iter().any(|x| x.sig == f.sig) {
+                    run_race_list.push(f.clone());
+                }
             }
         }
         if !fs.is_empty() {
@@ -3634,6 +3692,7 @@ fn certify_inner(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Ou
             reasons,
             steps,
             seconds,
+            races: run_race_list,
         };
     }
     let mut keep_note = None;
@@ -3704,6 +3763,7 @@ fn certify_inner(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Ou
         reasons: vec![],
         steps,
         seconds,
+        races: vec![],
     }
 }
 
@@ -3761,10 +3821,14 @@ pub fn check_certified(m0: Machine, max_states: usize) -> Verdict {
         }
         report_fallback("launch (LDS/STS plain)", &ow);
         report_fallback("launch (LDS/STS strong)", &os);
+        let acq = crate::smem::acquiring_lds(&m0.k);
+        let mut races = run_races(&ow, Some(acq), "launch (LDS/STS plain)");
+        races.extend(run_races(&os, None, "launch (LDS/STS strong)"));
         let first = ow.reasons.first().cloned().unwrap_or_default();
         let mut v = crate::smem::two_pass(m0, |m| crate::explore::explore(m, max_states));
         v.notes
             .push(format!("certificate failed ({first}), explored instead"));
+        merge_run_races(&mut v, races);
         return v;
     }
     check_certified_one(m0, max_states)
@@ -3814,11 +3878,14 @@ fn check_certified_one(m0: Machine, max_states: usize) -> Verdict {
         }
         None => {
             report_fallback("launch", &o);
+            let weak = (m0.weak_stop > 0).then_some(m0.weak_stop == 2);
+            let races = run_races(&o, weak, "launch");
             let mut v = crate::explore::explore(m0, max_states);
             v.notes.push(format!(
                 "certificate failed ({}), explored instead",
                 o.reasons.first().map(String::as_str).unwrap_or("?")
             ));
+            merge_run_races(&mut v, races);
             v
         }
     }
@@ -3893,11 +3960,14 @@ fn check_sliced_one(
             None => {
                 report_fallback(&format!("cluster {c}"), &o);
                 explored += 1;
+                let weak = (m.weak_stop > 0).then_some(m.weak_stop == 2);
+                let races = run_races(&o, weak, &format!("cluster {c}"));
                 let mut v = crate::explore::explore_slice(m, max_states, Some(c));
                 v.notes.push(format!(
                     "cluster {c}: certificate failed ({}), explored",
                     o.reasons.first().map(String::as_str).unwrap_or("?")
                 ));
+                merge_run_races(&mut v, races);
                 v
             }
         };

@@ -1,0 +1,38 @@
+name = "s_f2i_f64"
+description = """
+f64 -> integer conversions against GB300 bitwise, both front-ends: cvt.{rzi,rni,rmi,rpi}
+.{s64,u64,s32,u32}.f64 = SASS F2I[.S64|.U64|.U32].F64[.TRUNC|.FLOOR|.CEIL] (torch's cross
+entropy: F2I.S64.F64.TRUNC). 256 operands (gen.py: signed zeros, subnormals, infinities, NaNs,
+ties, the 32 / 64-bit range boundaries and their neighbours, every magnitude class) through
+all 16 forms. tests/fixtures.rs checks the model against the FNV-1a hash of the output GB300
+wrote (`ptxv hw` compares every word)."""
+ptx = "kernel.ptx"
+entry = "f2i_f64"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u64"
+shape = [256]
+init = "file"
+file = "data/in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u64"
+shape = [4096]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -629,7 +629,10 @@ pub enum Op {
         cout: Option<Reg>,
         neg_a: bool,
     },
-    /// Funnel shift of the 64-bit value `hi:lo`; result is the high or low 32 bits.
+    /// Funnel shift of the 64-bit value `hi:lo`; result is the high or low 32 bits. The u32
+    /// shift amount is clamped to 32 (`wide = false`: SHF .U32 / .S32, PTX shf.*.clamp,
+    /// shl / shr .b32) or 64 (`wide`: SHF .U64 / .S64), or taken mod 32 (`wrap`: SHF.*.W,
+    /// shf.*.wrap). GB300: fixtures/s_shf. ASSUME(L-SHF)
     Shf {
         d: Reg,
         lo: Val,
@@ -638,6 +641,8 @@ pub enum Op {
         right: bool,
         signed: bool,
         high: bool,
+        wide: bool,
+        wrap: bool,
     },
     /// Three-input bitwise LUT (a = 0xF0, b = 0xCC, c = 0xAA convention).
     Lop3 {
@@ -1111,6 +1116,9 @@ pub enum Op {
         rnd: Rnd,
         /// `.FTZ`: a subnormal source is 0 first (matters for FLOOR / CEIL).
         ftz: bool,
+        /// `.F64`: an f64 source (a register pair; `cvt.r*i.*.f64`). NaN gives 2^31 (32-bit)
+        /// or 2^63 (64-bit). GB300: fixtures/s_f2i_f64. ASSUME(N-F2I-F64)
+        f64: bool,
     },
     /// PTX `mov.b64 %d, {lo, hi}`: d = hi << 32 | lo.
     Pack64 {

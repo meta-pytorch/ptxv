@@ -328,6 +328,54 @@ impl Prog {
         Ok(out)
     }
 
+    /// The element indices the leaves read, per buffer name (a sampling `Plan`'s input).
+    pub fn leaf_reads(&self, out: &mut BTreeMap<String, Vec<u64>>) {
+        for op in &self.ops {
+            if let Op::Leaf { buf, idx, .. } = op {
+                out.entry(self.bufs[*buf as usize].clone())
+                    .or_default()
+                    .push(*idx);
+            }
+        }
+    }
+
+    /// Per op: the leaf's position in a planned sample's compact buffer (`u32::MAX` for
+    /// other ops).
+    pub fn leaf_positions(&self, plan: &super::spec::Plan) -> Result<Vec<u32>, String> {
+        self.ops
+            .iter()
+            .map(|op| match op {
+                Op::Leaf { buf, idx, .. } => {
+                    let name = &self.bufs[*buf as usize];
+                    plan.position(name, *idx)
+                        .and_then(|j| u32::try_from(j).ok())
+                        .ok_or_else(|| format!("{name}[{idx}] is not in the sampling plan"))
+                }
+                _ => Ok(u32::MAX),
+            })
+            .collect()
+    }
+
+    /// Leaf values from a planned sample's compact buffers (`leaf_positions`).
+    pub fn leaves_at(
+        &self,
+        bytes: &BTreeMap<String, Vec<u8>>,
+        pos: &[u32],
+    ) -> Result<LeafVals, String> {
+        let mut out = vec![Operand::from_value(0.0); self.ops.len()];
+        for (i, op) in self.ops.iter().enumerate() {
+            if let Op::Leaf { buf, idx, fmt } = op {
+                let name = &self.bufs[*buf as usize];
+                let b = bytes
+                    .get(name)
+                    .ok_or_else(|| format!("no bytes for buffer {name}"))?;
+                out[i] = decode(b, pos[i] as u64, *fmt)
+                    .ok_or_else(|| format!("{name}[{idx}] out of range"))?;
+            }
+        }
+        Ok(out)
+    }
+
     /// Evaluate every op (f32 values) with the calibrated models.
     pub fn eval(&self, lv: &LeafVals) -> Vec<f32> {
         let mut w = lv.clone();

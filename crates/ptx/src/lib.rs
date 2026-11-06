@@ -1433,6 +1433,41 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 b: lw.val(op_n(2)?)?,
             }
         }
+        // `neg.f32 d, a` (no .ftz): what ptxas emits, `FADD d, -a, -RZ` (exact for every non-NaN
+        // value, -0 + -0 = -0 included; a NaN gives the canonical NaN; fixtures/e_ptx_redux).
+        "neg" if tname == "f32" && !has("ftz") => Op::Fadd {
+            d: lw.dst(op_n(0)?)?,
+            a: lw.val(op_n(1)?)?,
+            b: Val::Imm(0x8000_0000),
+            rnd: Rnd::Rn,
+            neg: [true, false],
+            abs: [false; 2],
+            ftz: false,
+            sat: false,
+        },
+        // `shf.{l,r}.{clamp,wrap}.b32 d, a, b, c`: funnel shift of b:a by c, clamped to 32 or
+        // mod 32 (GB300: fixtures/s_shf). ASSUME(L-SHF)
+        "shf" => {
+            let wrap = match (has("clamp"), has("wrap")) {
+                (true, false) => false,
+                (false, true) => true,
+                _ => bail!(lw.err("shf needs exactly one of .clamp / .wrap")),
+            };
+            if has("l") == has("r") || bits != 32 {
+                bail!(lw.err("shf form not modeled"));
+            }
+            Op::Shf {
+                d: lw.dst(op_n(0)?)?,
+                lo: lw.val(op_n(1)?)?,
+                hi: lw.val(op_n(2)?)?,
+                sh: lw.val(op_n(3)?)?,
+                right: has("r"),
+                signed: false,
+                high: has("l"),
+                wide: false,
+                wrap,
+            }
+        }
         // `neg.s32 d, a` = 0 - a.
         "neg" if tname.starts_with('s') => Op::Int {
             op: IntOp::Sub,
@@ -1515,6 +1550,45 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             a: lw.val(op_n(1)?)?,
             b: lw.val(op_n(2)?)?,
         },
+        // setp.<cmp>[.ftz].f32 p, a, b (one predicate, no combining operand) as SASS
+        // `FSETP.<cmp>[.FTZ].AND p, PT, a, b, PT`: the ordered compares are false and the `u`
+        // ones true when an operand is NaN.
+        "setp" if tname == "f32" => {
+            let cmp = match mods[0] {
+                "eq" => FCmp::Eq,
+                "ne" => FCmp::Ne,
+                "lt" => FCmp::Lt,
+                "le" => FCmp::Le,
+                "gt" => FCmp::Gt,
+                "ge" => FCmp::Ge,
+                "equ" => FCmp::Equ,
+                "neu" => FCmp::Neu,
+                "ltu" => FCmp::Ltu,
+                "leu" => FCmp::Leu,
+                "gtu" => FCmp::Gtu,
+                "geu" => FCmp::Geu,
+                "num" => FCmp::Num,
+                "nan" => FCmp::Nan,
+                c => bail!(lw.err(format!("unsupported setp compare {c}"))),
+            };
+            if !matches!(mods.len(), 2 | 3) || mods.len() == 3 && mods[1] != "ftz" {
+                bail!(lw.err("setp.f32 modifiers not modeled"));
+            }
+            if op_n(0)?.contains('|') || op_n(3).is_ok() {
+                bail!(lw.err("setp.f32 with p|q or a combining predicate not modeled"));
+            }
+            Op::Fsetp {
+                d: lw.pred_dst(op_n(0)?)?,
+                cmp,
+                a: lw.val(op_n(1)?)?,
+                b: lw.val(op_n(2)?)?,
+                neg: [false; 2],
+                abs: [false; 2],
+                c: Pred::TRUE,
+                bop: BoolOp::And,
+                ftz: has("ftz"),
+            }
+        }
         "setp" => {
             let s = tname.starts_with('s');
             let cmp = match (mods[0], s) {
@@ -1557,6 +1631,42 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 tid0_falls: false,
                 cond: None,
                 div: None,
+            }
+        }
+        "redux" => {
+            // redux.sync.{add,min,max}.{u32,s32} / .{and,or,xor}.b32 /
+            // .{min,max}[.abs][.NaN].f32 d, a, membermask (full warp only): the SASS
+            // REDUX / CREDUX forms ptxas emits for them (mslk decode: redux.sync.max.NaN.f32 is
+            // CREDUX.MAX.F32.NAN), with every member lane receiving the result.
+            // ASSUME(L-ROSETTA): fixtures/e_ptx_redux = GB300.
+            if parse_int(op_n(2)?) != Some(u32::MAX as u64) && op_n(2)? != "-1" {
+                bail!(lw.err("redux.sync with a partial membermask not modeled"));
+            }
+            let op = match mods {
+                ["sync", "add", "u32" | "s32"] => ReduxOp::Sum,
+                ["sync", "and", "b32"] => ReduxOp::And,
+                ["sync", "or", "b32"] => ReduxOp::Or,
+                ["sync", "xor", "b32"] => ReduxOp::Xor,
+                ["sync", "min", "u32"] => ReduxOp::MinU,
+                ["sync", "max", "u32"] => ReduxOp::MaxU,
+                ["sync", "min", "s32"] => ReduxOp::MinS,
+                ["sync", "max", "s32"] => ReduxOp::MaxS,
+                ["sync", m @ ("min" | "max"), rest @ .., "f32"]
+                    if matches!(rest, [] | ["abs"] | ["NaN"] | ["abs", "NaN"]) =>
+                {
+                    let (abs, nan) = (rest.contains(&"abs"), rest.contains(&"NaN"));
+                    if *m == "min" {
+                        ReduxOp::MinF { abs, nan }
+                    } else {
+                        ReduxOp::MaxF { abs, nan }
+                    }
+                }
+                _ => bail!(lw.err("redux.sync form not modeled")),
+            };
+            Op::Redux {
+                d: lw.dst(op_n(0)?)?,
+                a: lw.val(op_n(1)?)?,
+                op,
             }
         }
         "vote" => {
@@ -1722,6 +1832,28 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     bits: type_bits(to).unwrap(),
                     rnd: Rnd::Rz,
                     ftz: has("ftz"),
+                    f64: false,
+                }
+            } else if from == "f64"
+                && matches!(to, "s32" | "u32" | "s64" | "u64")
+                && n == 3
+                && matches!(mods[0], "rzi" | "rni" | "rmi" | "rpi")
+            {
+                // cvt.r{z,n,m,p}i.{s,u}{32,64}.f64 (SASS F2I[.S64|.U64|.U32].F64[.TRUNC|.FLOOR|
+                // .CEIL]). ASSUME(N-F2I-F64)
+                Op::F2I {
+                    d: lw.dst(op_n(0)?)?,
+                    a: lw.val(op_n(1)?)?,
+                    signed: to.starts_with('s'),
+                    bits: type_bits(to).unwrap(),
+                    rnd: match mods[0] {
+                        "rzi" => Rnd::Rz,
+                        "rni" => Rnd::Rn,
+                        "rmi" => Rnd::Rm,
+                        _ => Rnd::Rp,
+                    },
+                    ftz: false,
+                    f64: true,
                 }
             } else if let Some(op) = cvt_lp(lw, mods, &ops)? {
                 op
@@ -2665,5 +2797,72 @@ mod tests {
                 .any(|i| matches!(i.op, Op::TmaLoad { dims: 2, .. }))
         );
         assert_eq!(k.smem_bytes, 0x400 + 8192 + 8);
+    }
+
+    fn one(line: &str) -> Result<Op> {
+        let src = format!(
+            ".version 9.0\n.target sm_103a\n.address_size 64\n.visible .entry k()\n{{\n\
+             .reg .pred %p<4>;\n.reg .b32 %r<8>;\n{line}\nret;\n}}\n"
+        );
+        Ok(parse_kernel(&src, None)?.code[0].op.clone())
+    }
+
+    #[test]
+    fn redux_neg_setp_f32_forms() {
+        let red = |l: &str| match one(l).unwrap() {
+            Op::Redux { op, .. } => op,
+            o => panic!("{l}: {o:?}"),
+        };
+        assert_eq!(
+            red("redux.sync.max.NaN.f32 %r1, %r2, 0xffffffff;"),
+            ReduxOp::MaxF {
+                abs: false,
+                nan: true
+            }
+        );
+        assert_eq!(
+            red("redux.sync.min.abs.f32 %r1, %r2, 0xffffffff;"),
+            ReduxOp::MinF {
+                abs: true,
+                nan: false
+            }
+        );
+        assert_eq!(red("redux.sync.add.s32 %r1, %r2, -1;"), ReduxOp::Sum);
+        assert_eq!(
+            red("redux.sync.max.s32 %r1, %r2, 0xffffffff;"),
+            ReduxOp::MaxS
+        );
+        assert_eq!(red("redux.sync.or.b32 %r1, %r2, 0xffffffff;"), ReduxOp::Or);
+        // Fail closed: partial member masks and forms that do not exist.
+        assert!(one("redux.sync.max.NaN.f32 %r1, %r2, 0xffff;").is_err());
+        assert!(one("redux.sync.add.f32 %r1, %r2, 0xffffffff;").is_err());
+        assert!(one("redux.sync.max.NaN.abs.f32 %r1, %r2, 0xffffffff;").is_err());
+        assert!(matches!(
+            one("neg.f32 %r1, %r2;").unwrap(),
+            Op::Fadd {
+                neg: [true, false],
+                ftz: false,
+                ..
+            }
+        ));
+        assert!(one("neg.ftz.f32 %r1, %r2;").is_err());
+        assert!(matches!(
+            one("setp.leu.f32 %p1, %r1, 0f00000000;").unwrap(),
+            Op::Fsetp {
+                cmp: FCmp::Leu,
+                ftz: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            one("setp.gt.ftz.f32 %p1, %r1, %r2;").unwrap(),
+            Op::Fsetp {
+                cmp: FCmp::Gt,
+                ftz: true,
+                ..
+            }
+        ));
+        assert!(one("setp.lt.f32 %p1|%p2, %r1, %r2;").is_err());
+        assert!(one("setp.lt.and.f32 %p1, %r1, %r2, %p3;").is_err());
     }
 }

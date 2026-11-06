@@ -770,8 +770,10 @@ FA4's fix for its warp-role barrier bug): `UMOV UR, -1; BRA.DIV UR, slow; BAR.SY
 ### E-BAR-EXIT · code
 **Barriers and exited threads.**
 - `bar.sync` without a thread count waits only for threads that have not exited.
-- A barrier with an explicit count waits for that many *arrivals*; exited threads do not
-  arrive.
+- A barrier with an explicit count counts *warps*: a warp's arrival counts the warp size (32),
+  its exited or nonexistent lanes arriving with its live ones (BAR is executed per warp). A
+  warp none of whose lanes arrives (all exited) adds nothing. The explorer's barrier
+  reductions (`arv_current`, `bar_oversub`) bound each warp that may arrive by 32.
 - Where: `exec.rs` `bar_try_release`, `Op::Exit`.
 - Status: **validated** (2026-10-30, `probes/bar_exit` on GB300):
   - whole warp exited: completes;
@@ -781,9 +783,17 @@ FA4's fix for its warp-role barrier bug): `UMOV UR, -1; BRA.DIV UR, slow; BAR.SY
 
   The simulator reproduces all four on both front-ends (regression test
   `probe_bar_exit_matches_hardware`).
+- Partly exited warps (2026-11-05, `probes/bar_exit_warp`, `ptxv probe` on GB300): 16 + 32,
+  1 + 32 and 16 + 16 survivors of two warps complete `bar.sync 1, 64`; 16 survivors of one
+  warp complete `bar.sync 1, 32` alone; 16 survivors that `bar.arrive 1, 64` release a full
+  warp's `bar.sync 1, 64`; a 48-thread block (a 16-lane last warp) completes `bar.sync 1, 64`;
+  16 + 32 survivors of `bar.sync 1, 96` (the third warp exited) **hang**, and with the third
+  warp present complete. Both front-ends reproduce all nine
+  (`probe_bar_exit_warp_matches_hardware`). Where: `Machine::bar_arrivals`.
 - History: until 2026-10-30 the first two cases were reported as deadlocks, which was a false
   alarm. The ISA says *"barriers exclusively waiting on arrivals from exited threads are always
-  released"*.
+  released"*. Until 2026-11-05 counted barriers counted threads: a half-exited warp at a
+  counted BAR (fixtures/e_aligned_bar AB3, SASS) was a false deadlock.
 
 ### E-BAR-ARRIVE · code
 **`bar.arrive` / `BAR.ARV` on a named barrier.**
@@ -1545,8 +1555,15 @@ already finished loader warps never wait for.
 **A tcgen05 shared-memory matrix descriptor with the fixed bits 46-48 (descriptor version) at 0
 behaves on GB300 like one with the documented value 0b001.** `check` reports such descriptors
 as a violation (sig `desc-version:<pc>`). `ptxv equiv` accepts them as a precondition and lists
-"relies on: E-DESC-VERSION". Triton 3.5's tcgen05 kernels leave the bits at 0.
-- Where: `exec.rs` (the descriptor check), `cli/src/equiv.rs` `prepare`.
+"relies on: E-DESC-VERSION". Triton 3.5's tcgen05 kernels leave the bits at 0. The finding
+does not break the E-WELLSYNC certificate. It checks a descriptor value, and the certificate
+shows that values are schedule-independent, so every schedule reports the same finding. It
+therefore passes through the certificate like a contract finding: it stays reported, and
+the certificate still decides the launch. Before, Triton's tcgen05 kernels always fell back
+to exploration, at 35 GB per kernel on a 4096 x 4096 x 8192 tile
+(`tests/wellsync.rs` `desc_version_finding_does_not_break_the_certificate`).
+- Where: `exec.rs` (the descriptor check), `cli/src/equiv.rs` `prepare`, `wellsync.rs` (the
+  certificate's findings).
 - Status: **validated** for the kernels that use it: the Triton bf16 matmul
   (`fixtures/c_triton_mm_bf16`), run on GB300 on 2000 random inputs, is bitwise equal to
   cuBLAS's and to the simulator's outputs. The attention kernel `r4_attn_triton` matches its
@@ -2045,6 +2062,13 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
   `warpsync_release`, `access_x`) and the `Machine::wlog` slot (empty, unhashed, dropped by
   clones). `--slices`: per cluster, then the cross-cluster check of E-CTA-INDEP (a certified
   slice's run touches exactly the bytes every schedule touches).
+- A failed certificate's unforced runs are executions of the model: a race one of them
+  reports (unless the run had LDS/STS plain and `smem::strong_race` may dismiss it) is
+  printed (`certificate run race (...)`) and added to the verdict of the exploration that
+  replaces the certificate when that exploration does not complete (`run_races`,
+  `merge_run_races`; `tests/wellsync.rs`
+  `certificate_run_race_survives_an_incomplete_exploration`). C-RING runs with forced reads
+  do not count.
 - Evidence: `crates/sim/tests/wellsync.rs` runs the certificate on every fixture variant
   and both front-ends: a certified verdict must equal the expected (exhaustive) one, and on
   a representative subset the certified output equals the exhaustive explorer's unique
@@ -2149,10 +2173,21 @@ transaction completes on the mbarrier at the operand's offset in the CTA of the 
 pair whose peer bit is the mbarrier address's own (CUTLASS's 2SM multicast loads clear the peer
 bit: the pair leader's mbarrier).
 - Where: `exec.rs` `Op::TmaLoad` (`mask` with `pair`).
-- Status: **unvalidated**.
+- Status: **validated** (2026-11-05) by `probes/tma_2cta_mcast`: cluster of 4, one load of a
+  512-byte box by rank 0 with ctaMask 0xf / 1 / 2 / 4 / 8 / 3 / 6, the mbarrier of rank 0 or 1,
+  the destination address of rank 0 or 1, with and without `.cta_group::2`; each CTA's
+  mbarrier expects 512, 1024, or the model's bytes, and is polled for ~10 ms (168 configs).
+  On GB300 the box lands in every masked rank at the destination's offset (the destination
+  address's rank does not matter); without `.cta_group::2` each destination completes its
+  own mbarrier (the mbarrier rank does not matter); with it, the mbarrier at the offset in
+  rank (r & ~1) | (mbarrier rank & 1), so a pair leader's mbarrier gets 1024 bytes for mask
+  0xf. Every flag agrees with the rule (an mbarrier that gets fewer bytes than it expects
+  never completes; more: either, the transactions can step over zero, not used), and the 56
+  configs where every mbarrier expects exactly the model's bytes equal both front-ends bitwise
+  (`crates/sim/tests/tma_2cta_mcast.rs`). End to end: the cuBLAS 2-CTA nvjet kernels above
+  (E-PAIR) use `UTMALDG.3D.MULTICAST.2CTA` and equal GPU bitwise.
 - If wrong: *false alarm* (deadlock / tx mismatch on the wrong mbarrier) or *miss* if a
   transaction completes an mbarrier that should still wait.
-- Retire: a 2-CTA multicast probe that reads back which mbarrier each destination signals.
 
 ### S-TMA-GATHER4 · code
 **`cp.async.bulk.tensor.2d...tile::gather4 [d], [map, {c, r0, r1, r2, r3}], [m]`** (SASS
@@ -2323,8 +2358,23 @@ the issuing pipe.
   column j holds its own word 4i + j (rank << 16 | 4i + j); no word comes from the peer.
   End to end: cuBLASLt's NVFP4 kernel `fixtures/c_smm_nvf4` (M = N = 128 as an M = 256 pair
   tile, B split 64 / 64) equals GB300 bitwise (docs/equiv-mma.md §5).
-- If wrong: other shapes (M = 128 pairs, N > 16) may split differently; the model rejects
-  them as unmodeled.
+- **M = 128 pairs** (PTX ISA "Layout B", `cta_group::2`, dense): CTA i supplies A rows 0..63
+  of its own descriptor (D rows 64i..) and B rows (N/2)i.. ; its D row r, column c is at TMEM
+  lane r + 64 (c / (N/2)), column c % (N/2): lanes 0..63 hold the first half of N, lanes
+  64..127 the second, N/2 columns wide (`exec.rs` `mma_d_layout`, `MmaD`). Shapes: N = 16..256
+  in steps of 16 for M = 128 and 256 (PTX ISA table 48); A in TMEM, block scaling and sparsity
+  with M = 128 pairs are rejected (not measured).
+- Status (M = 128 pairs, 2026-11-05): **validated** by `probes/tc_m128` (kind::f16 bf16, N = 16,
+  32, 48, 64, 128, 256; kind::f8f6f4 e4m3, N = 16, 32, 64; M = 256 N = 32 / 64 as controls).
+  Each CTA's whole TMEM is sentinel-filled before the MMA and dumped after it; with operands
+  that encode (A row, B row, CTA) in the exact result, exactly the cells above change, with
+  the predicted rows. Both front-ends equal GB300 bitwise on every config
+  (`crates/sim/tests/tc_m128.rs`; fixture `e_mma_pair_m128`). End to end: the cuBLAS 2-CTA
+  nvjet kernels with M = 64 per CTA (`..._64x32_64x16_2x2_2cta_h_bz_NNT` for 512 x 128 x 512
+  and 512 x 256 x 512, `..._128x64_64x10_2x2_2cta_...` for 1024 x 128 x 1024) certify
+  (E-WELLSYNC) and equal their captured GPU outputs bitwise; before, their epilogue's reads of
+  lanes 64..127 were reported as reads of never-written TMEM.
+- If wrong: sparse M = 128 pairs ("Layout C") and other forms are rejected as unmodeled.
 
 ### S-RESERVED · code
 **Reserved shared memory (0x0..0x3ff) starts at 0, except in `cta_group::2` cubins**
@@ -2522,6 +2572,11 @@ copies a tensor-map template to shared memory, then after `BSYNC` all 32 lanes r
   mask: s_alu2 deadlocked and faulted in some schedules.) `BREAK Bb` (`BREAK.RELIABLE`, torch's
   elementwise loops leaving a region early) removes the executing lanes from Bb's mask, and
   lanes already parked at Bb's `BSYNC` are released if the rest of the mask is now there.
+- A lane's `EXIT` re-checks the lanes of its warp parked at a plain `WARPSYNC` or a `BSYNC`
+  (`exit_warpsync_release`): exited lanes do not take part. Before 2026-11-05 only
+  `WARPSYNC.COLLECTIVE.ALL` was re-checked, so lanes that parked at `WARPSYNC.ALL` before
+  their warp-mates' `EXIT` stayed parked (a DPOR-only false deadlock on e_aligned_bar AB3,
+  SASS; GB300 completes, probes/bar_exit_warp `half`).
 - Status: **argued** from the ISA's reconvergence semantics and the CUTLASS source
   (`__syncwarp` there); not probed. Before this, BSSY/BSYNC were no-ops, which reported a race
   on that pattern. s_alu2's divergent division paths match GB300 bitwise.
@@ -2558,6 +2613,11 @@ ordinary load by that thread at the fence and at the TMA (race-checked).
 16-unit bitmap;** words are unallocated / allocated-unwritten / written.
 - Where: `exec.rs` `tmem_*`, `machine.rs` `Tmem`.
 - **M=64 MMA** (`cta_group::1`): D row i is lane lane0 + 32(i/16) + i%16, lane0 = 0 or 16.
+  **M=128** (`cta_group::1`): row i is lane i, for every N = 8..256 in steps of 8 (PTX ISA
+  table 48; `probes/tc_m128`: N = 8, 16, 24, 40, 136, 256 for kind::f16 and 8, 24 for
+  kind::f8f6f4 write exactly lanes 0..127 x columns 0..N-1 of a sentinel-filled TMEM, both
+  front-ends bitwise). N % 16 != 0 with A in TMEM or block scaling is rejected (not measured).
+  M = 128 with `cta_group::2`: E-PAIR.
   **`tcgen05.ld.16x64b.xN`** (SASS `LDTM.16dp64bit`): lane l of the warp reads TMEM lane
   l/4 + 8(l%2), register j column 2j + (l/2)%2. **SASS loads take the lane quadrant from the
   warp**, and the address's lane field only mod 32 (cuBLAS passes lane 0 / 16 from every
@@ -2572,6 +2632,11 @@ ordinary load by that thread at the fence and at the TMA (race-checked).
   (`tcgen05.mma [d], [a], ...`): A row i at the lane D's row i uses, relative to A's lane
   field, two bf16 per 32-bit column, the even K index in the low half. **MN-major** shared
   operands (swizzled): CUTLASS's canonical ((T,s/16,m),(8,k)) : ((1,T,LBO),(s/2,SBO)).
+  Without swizzle (kind::f16; the mslk decode kernels' A): ((T,1,m),(8,k)) : ((1,T,SBO),(1T,LBO)),
+  i.e. element (r, k) at (r/8) SBO + (r%8) 2 + (k/8) LBO + (k%8) 16 bytes: the roles of LBO and
+  SBO swap relative to the swizzled forms. `probes/tc_m128` `mma_img` (raw shared-memory images):
+  A, B and both MN-major, two LBO / SBO arrangements each, M = 128 / 64, N = 8..32, decode
+  correctly and equal both front-ends bitwise.
   Validated end to end: Triton's flash attention (S = QK^T read back with `.16x32bx2`, P
   stored to TMEM and used as A, V as an MN-major B) and cuBLAS nvjet (`.16x256b`) match GB300
   bitwise.
@@ -2630,6 +2695,12 @@ forms seen. Any other form is a hard error.
   encoding's 32-bit field (bits 32..63), sign-extended (`UIADD3.64 UR52, ..., -0x800` is
   `0xfffff800_...`; zero-extended, the tensor-map pointer it steps back left the parameter
   block and the run faulted).
+- PTX forms lowered to the same IR as the SASS ptxas emits for them (2026-11-05, the mslk
+  decode kernels): `redux.sync.{add,min,max}.{u32,s32}` / `.{and,or,xor}.b32` /
+  `.{min,max}[.abs][.NaN].f32` (full member mask only; every lane gets the result) as
+  `REDUX` / `CREDUX`; `neg.f32` as `FADD d, -a, -RZ` (a NaN becomes the canonical NaN, not a
+  sign flip); `setp.<cmp>[.ftz].f32 p, a, b` as `FSETP.<cmp>.AND p, PT, a, b, PT`.
+  fixtures/e_ptx_redux (+-0, +-inf, a NaN) = GB300 bitwise on both front-ends.
 - Rung 2e (cuBLAS nvjet, r2_cublas_gemm bitwise = GB300): `PMTRIG` (no-op);
   `SYNCS.ARRIVE.TRANS64.RED.A0TR` / `.A0TX` (no arrival; expect / complete tx, checked against
   ptxas: `mbarrier.expect_tx` / `complete_tx`); `UTCBAR.MULTICAST` (cta_group::1, mask operand
@@ -2765,6 +2836,28 @@ leader CTA and warp range).
   2026-11-04). Other `LOP3` modifiers are errors.
 - If wrong: wrong control flow wherever the predicate output is used.
 
+### L-SHF · code
+**A shift by a run-time u32 amount `n` clamps to the operand width, unsigned: `SHF` .U32 / .S32
+use min(n, 32), .U64 / .S64 min(n, 64); `.W` takes n mod 32.** The 64-bit `hi:lo` is shifted
+(arithmetic for .S32 / .S64 right shifts) and `.HI` selects the upper word. n >= 2^31 is a large
+amount, not a negative one. PTX: `shl` / `shr` saturate at the width, `shf.*.clamp` at 32,
+`shf.*.wrap` mod 32 (ptxas lowers them to these SHF forms and relies on the clamp, e.g. the
+low word of `shl.b64` is `SHF.L.U32 d, x, n, RZ`).
+- Where: `ir` `Op::Shf` (`wide`, `wrap`); `sass` `lower_line` (`SHF` / `USHF`; .W with a
+  64-bit type and unknown modifiers are errors); `ptx` (`shf`); `exec.rs` `shf_amount` /
+  `shf_value` (also the undefined-bit mask).
+- Status: **validated** by `fixtures/s_shf` (authored PTX, both front-ends): 64 x 128 lanes x 64
+  amounts (0..33, 47 / 48 / 63 / 64 / 65 / 95..97 / 127..129 / 191 / 192 / 255..257 / 511 /
+  1023 / 2^16, 2^31 - 1, 2^31, 2^31 + 1, ..., 2^32 - 1) through every form, plus uniform-operand
+  rows; GB300 output equal to both front-ends bitwise (20/20 runs, 2026-11-05,
+  `s_shf_matches_hardware`). USHF (uniform datapath) shares the model; ptxas emitted no USHF
+  for the probe, so it is covered by argument only.
+- History: SHF used to take n mod 64. FA4's causal / local masks
+  (`r2p_bitmask_below`: `0xffffffff >> max(32 (k + 1) - limit, 0)`, n up to 128) then kept
+  columns they mask: c_fa4_causal / c_fa4_local certified clean with 36,288 / 50,751 output
+  bytes different from the GPU's. Both are now bitwise equal.
+- If wrong: wrong values (silent), wherever a shift amount can reach the width.
+
 ### L-CTRL · code
 **Control word layout `hi >> 41`:** stall[0:4), yield[4], wbar[5:8), rbar[8:11), wait[11:17),
 reuse[17:21); 7 = no scoreboard; waits take effect before issue.
@@ -2828,6 +2921,29 @@ reuse[17:21); 7 = no scoreboard; waits take effect before issue.
 - Where: `scoreboard.rs` (`ASYNC_READ`, the untracked-read rule).
 - Status: **validated** by the sweep (each rule was forced by a hardware counterexample or a
   false positive).
+- If wrong: *miss* (WAR on registers).
+
+### L-SB-ORDER · code
+**A read scoreboard on a memory-pipe instruction covers the operand reads of every earlier
+memory-pipe instruction** (`MIO_INORDER`: LDS / STS / LDG / STG / LD / ST / ATOMS / SHFL /
+LDGSTS / LDL / STL / LDSM / STSM), tracked by an earlier read scoreboard or not: once it is
+released (a wait on it), they have read their registers. Applied only where the covering
+instruction executes whenever the earlier one did: it is unguarded, or it has the same guard,
+not redefined in between (a guarded-off instruction may release its scoreboard at once; not
+probed, kept conservative).
+- Where: `scoreboard.rs` `check` (the `rbar` of a memory-queue instruction adds `RCOV`
+  covers to the pending reads before it; a wait on that read scoreboard retires them).
+- Status: **validated** by `probes/sb_mio_order` (GB300, 2026-11-05, `results.txt`): an
+  `STS [Rt]` with no read scoreboard, an `STS [Rt+0x400]` with rd=SB4 (optionally an
+  `LDG` with rd=SB2 in between: quack rmsnorm_bwd N=256's shape), then `LDC Rt` waiting on SB4
+  only: 0 of 1000 runs wrong (1184 CTAs x 256 threads each); the `LDG`'s read scoreboard as
+  the only cover: 0 of 1000. Controls: the read scoreboard on the first STS instead (the
+  second uncovered): 200 of 200 runs wrong (~38k words per run); no wait: 200 of 200 (~600k
+  words). The static check agrees on all five windows (`probes/sb_mio_order/fixture`,
+  `probe_sb_mio_order_matches_hardware`).
+- History: until 2026-11-05 an untracked read was attached to the *next* read scoreboard only,
+  so quack rmsnorm_bwd N=256 (`@P5 STS.64 [R2], RZ` .. `@!P4 LDG` rd=SB2 .. `@P5 STS.64
+  [R2+0x1100], RZ` rd=SB4, `@!P4 LDC.64 R2` waiting on SB4) reported a WAR: a false alarm.
 - If wrong: *miss* (WAR on registers).
 
 ### L-STALL · code
@@ -3349,6 +3465,24 @@ N-SOFTMAX (x_j an input or a computed score) and v_j input leaves:
   GB300's output. The FTZ rule was forced by 12 mismatches of the two simpler rules.
 - If wrong: *miss* or *false alarm* in numerics and in any value-dependent control flow.
 
+### N-F2I-F64 · code
+**f64 -> integer (`F2I[.S64|.U64|.U32].F64[.TRUNC|.FLOOR|.CEIL]`, PTX `cvt.r{z,n,m,p}i.{s,u}{32,64}
+.f64`): the f64 rounded to an integer in the mode (none = nearest-even), saturated to the
+destination range (infinities to the bounds); NaN gives 0x80000000 for the 32-bit forms (signed
+and unsigned, unlike the f32 source's 0) and 2^63 for the 64-bit forms.** Subnormals round like
+any value (no flush). Other modifiers on an f64 source (`.FTZ`, `.NTZ`, ...) are lifting
+errors.
+- Where: `sass` `lower_line` (`F2I` with `.F64`), `ptx` (`cvt`), `exec.rs` (`Op::F2I`,
+  `f64: true`).
+- Status: **validated** by `fixtures/s_f2i_f64` (authored PTX, both front-ends): 256 operands
+  (`gen.py`: signed zeros, subnormals, infinities, NaNs with payloads, ties, 2^31 / 2^32 /
+  2^63 / 2^64 and their bit neighbours, every magnitude class, random patterns) through all 16
+  forms equal GB300 (100/100 runs, 2026-11-05, `s_f2i_f64_matches_hardware`). The first
+  hypothesis (NaN 0 for 32-bit, as for f32) differed in exactly those 48 words.
+- Unblocks torch's cross entropy with label smoothing (`reduce_kernel<.., sum_functor<long>>`:
+  `F2I.S64.F64.TRUNC`).
+- If wrong: wrong values (silent).
+
 ### N-FCHK · code
 **SASS `FCHK P, a, b` (ptxas's `div.rn.f32` range check) sets P unless 25 <= ea <= 254,
 2 <= eb <= 251 and -124 <= ea - eb <= 126** (biased exponent fields; signs and significands do
@@ -3407,8 +3541,14 @@ input binade 2^-8..2^2 (51 segments on an input truncated to 17..21 mantissa bit
 - Where: `fp.rs` `DEFAULT_MMA`, `exec.rs` `complete_mma`.
 - Status: **validated, and enforced at its edges.** It is the unique match of 820 candidates
   on 49,152 GB300 outputs (docs/rung1a.md). That calibration covers finite normal inputs only;
-  subnormal/Inf/NaN inputs or accumulators now give `unmodeled`. Other shapes and formats are
-  rejected by the idesc check; the narrow kinds are N-MMA-F8 / N-MMA-BS.
+  subnormal/Inf/NaN inputs or accumulators now give `unmodeled`. Other formats are rejected by
+  the idesc check; the narrow kinds are N-MMA-F8 / N-MMA-BS. Shapes (PTX ISA table 48, the
+  layouts in S-TMEM / E-PAIR): `cta_group::1` M = 64 or 128 with N = 8..256 in steps of 8
+  (M = 128 N % 16 != 0 only with A in shared memory and without block scaling: measured
+  forms), `cta_group::2` M = 128 or 256 with N = 16..256 in steps of 16; anything else is
+  `unmodeled`. The arithmetic does not depend on N or the layout: `probes/tc_m128` random-operand
+  configs (M = 128 N = 8 / 24, pairs N = 32 / 64 / 256, e4m3 for N-MMA-F8) equal the model
+  bitwise.
 - **Error contract** used by numerics and equivalence (`MmaModel::eps_terms`, docs/equiv-mma.md
   §1). A step adding n terms (products and the accumulator) satisfies |computed - sum| <=
   ((n - 1) 2^-25 + 2^-23 (1 + (n - 1) 2^-25)) sum |terms|, which is about 10u for n = 17. It

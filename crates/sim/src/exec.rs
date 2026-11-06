@@ -1080,12 +1080,15 @@ impl Machine {
         // too: it has no member mask, and ptxas places it after a `BSYNC` (reconvergence,
         // which the model does not track) when lanes diverged before (rung 3a: lane 0 copies
         // tensor-map templates, then all 32 lanes shuffle).
-        // PTX `vote.sync` with the full member mask (the only one the front-end accepts)
-        // likewise waits for every live lane of the warp.
+        // PTX `vote.sync` and `redux.sync` with the full member mask (the only one the
+        // front-end accepts) likewise wait for every live lane of the warp.
         if inst.op.is_warp_aligned()
             && (self.k.front == Front::Ptx || matches!(inst.op, Op::Shfl { .. }))
             || self.k.front == Front::Ptx
-                && matches!(inst.op, Op::VoteAll { .. } | Op::VoteAny { .. })
+                && matches!(
+                    inst.op,
+                    Op::VoteAll { .. } | Op::VoteAny { .. } | Op::Redux { .. }
+                )
         {
             let w = self.threads[members[0]].warp;
             let live = self
@@ -2786,8 +2789,12 @@ impl Machine {
                         },
                     });
                 }
-                if let (Some(&t), Some(v)) = (active.first(), acc) {
-                    self.wr(t, *d, v as u64, 1);
+                // A uniform destination (SASS) is written once; a PTX register in every lane.
+                if let Some(v) = acc {
+                    let n = if d.is_uniform() { 1 } else { active.len() };
+                    for &t in &active[..n.min(active.len())] {
+                        self.wr(t, *d, v as u64, 1);
+                    }
                 }
             }
             // ASSUME(E-BSYNC): see ASSUMPTIONS.md
@@ -3458,6 +3465,44 @@ impl Machine {
         }
     }
 
+    /// After a lane of `warp` exited: release the lanes parked at a plain `WARPSYNC` or a
+    /// `BSYNC` if every other lane they wait for is parked there too or has exited.
+    fn exit_warpsync_release(&mut self, warp: u32) -> Result<(), String> {
+        let Some(u) = self.warp_threads(warp).find(|&u| {
+            self.threads[u].st == St::WarpSync
+                && matches!(
+                    self.k.code[self.threads[u].pc as usize].op,
+                    Op::WarpSync {
+                        collective: false,
+                        ..
+                    } | Op::Bsync { .. }
+                )
+        }) else {
+            return Ok(());
+        };
+        let at = self.threads[u].pc;
+        let m = match &self.k.code[at as usize].op {
+            Op::WarpSync { mask, .. } => {
+                let mask = mask.clone();
+                self.rd(u, &mask)? as u32
+            }
+            Op::Bsync { b } => {
+                let b = *b;
+                let parked = self
+                    .warp_threads(warp)
+                    .filter(|&i| {
+                        self.threads[i].st == St::WarpSync
+                            && matches!(self.k.code[self.threads[i].pc as usize].op, Op::Bsync { b: c } if c == b)
+                    })
+                    .fold(0u32, |m, i| m | 1 << self.threads[i].lane);
+                self.warps[warp as usize].bmask[b as usize] | parked
+            }
+            _ => unreachable!(),
+        };
+        self.warpsync_release(warp, m, at);
+        Ok(())
+    }
+
     fn warpsync_release(&mut self, warp: u32, mask: u32, pc: u32) {
         let lanes: Vec<usize> = (0..self.threads.len())
             .filter(|&i| {
@@ -3707,22 +3752,16 @@ impl Machine {
                 right,
                 signed,
                 high,
+                wide,
+                wrap,
                 ..
             } => {
                 if u(sh) != 0 {
                     return Some(!0);
                 }
                 let v = (u32_(hi) as u64) << 32 | u32_(lo) as u64;
-                let s = (val(sh) & 63) as u32;
-                let r = if *right {
-                    if *signed && v >> 63 == 1 {
-                        (v >> s) | !(u64::MAX >> s)
-                    } else {
-                        v >> s
-                    }
-                } else {
-                    v << s
-                };
+                // An undefined sign bit makes the fill undefined: shf_value smears it.
+                let r = shf_value(v, shf_amount(val(sh), *wide, *wrap), *right, *signed);
                 (if *high { r >> 32 } else { r & 0xffff_ffff }) as u32 as u64
             }
             Op::Int {
@@ -5486,6 +5525,37 @@ impl Machine {
                 bits,
                 rnd,
                 ftz,
+                f64: true,
+            } => {
+                // ASSUME(N-F2I-F64): round to an integral f64 (exact), then Rust's saturating
+                // `as`; NaN gives 2^31 / 2^63 (fixtures/s_f2i_f64 = GB300).
+                let x = f64::from_bits(self.rd(t, a)?);
+                let x = match rnd {
+                    Rnd::Rz => x.trunc(),
+                    Rnd::Rn => x.round_ties_even(),
+                    Rnd::Rm => x.floor(),
+                    Rnd::Rp => x.ceil(),
+                };
+                let _ = ftz;
+                let r = match (*bits, *signed) {
+                    (64, _) if x.is_nan() => 1 << 63,
+                    (_, _) if x.is_nan() => 1 << 31,
+                    (64, true) => x as i64 as u64,
+                    (64, false) => x as u64,
+                    (_, true) => x as i32 as u32 as u64,
+                    (_, false) => x as u32 as u64,
+                };
+                self.wr(t, *d, r, *bits / 32);
+                self.num_clobber(t, *d, &[a], pc);
+            }
+            Op::F2I {
+                d,
+                a,
+                signed,
+                bits,
+                rnd,
+                ftz,
+                f64: false,
             } => {
                 // Rust's float->int `as` truncates, saturates, and maps NaN to 0, as F2I does;
                 // other roundings first round to an integral f32 (exact).
@@ -6021,18 +6091,13 @@ impl Machine {
                 right,
                 signed,
                 high,
+                wide,
+                wrap,
             } => {
                 let v = (self.rd(t, hi)? << 32) | (self.rd(t, lo)? & 0xffff_ffff);
-                let s = (self.rd(t, sh)? & 63) as u32;
-                let r = if *right {
-                    if *signed {
-                        ((v as i64) >> s) as u64
-                    } else {
-                        v >> s
-                    }
-                } else {
-                    v << s
-                };
+                // ASSUME(L-SHF): the u32 amount wraps mod 32 (.W) or clamps to the type width.
+                let n = shf_amount(self.rd(t, sh)?, *wide, *wrap);
+                let r = shf_value(v, n, *right, *signed);
                 self.wr(t, *d, if *high { r >> 32 } else { r & 0xffff_ffff }, 1);
                 self.num_clobber(t, *d, &[lo, sh, hi], pc);
             }
@@ -6764,6 +6829,10 @@ impl Machine {
                 let warp = th.warp;
                 // Lanes parked at a WARPSYNC.COLLECTIVE.ALL may now be complete without it.
                 self.collective_all_release(warp);
+                // So may lanes parked at a plain WARPSYNC or a BSYNC: exited lanes do not take
+                // part (`@!P EXIT` before `WARPSYNC.ALL; BAR.SYNC`, fixtures/e_aligned_bar AB3,
+                // GB300 completes). ASSUME(E-BSYNC)
+                self.exit_warpsync_release(warp)?;
                 // ASSUME(S-REMOTE-INFLIGHT): the CTA's last thread exits while a remote
                 // operation to it is in flight: it can land in released shared memory.
                 if self
@@ -7661,6 +7730,41 @@ impl Machine {
         }
     }
 
+    /// Arrivals a named barrier's generation has counted. A counted barrier counts warps:
+    /// a warp's arrival counts the warp size, its exited (or nonexistent) lanes arriving with
+    /// its live ones (GB300: probes/bar_exit_warp). An all-threads barrier counts threads
+    /// against the live ones (E-BAR-EXIT).
+    pub fn bar_arrivals(&self, bar: &Bar) -> usize {
+        let n = bar.arrived.len() + bar.arrivers.len();
+        if bar.count.is_none() {
+            return n;
+        }
+        // ASSUME(E-BAR-EXIT): lanes of an arriving warp that exited without arriving in this
+        // generation, or do not exist, count as arrived.
+        let arrived = |u: u32| {
+            bar.arrived.binary_search(&u).is_ok() || bar.arrivers.binary_search(&u).is_ok()
+        };
+        let mut warps: Vec<u32> = bar
+            .arrived
+            .iter()
+            .chain(&bar.arrivers)
+            .map(|&t| self.threads[t as usize].warp)
+            .collect();
+        warps.sort_unstable();
+        warps.dedup();
+        n + warps
+            .into_iter()
+            .map(|w| {
+                let lanes = self.warp_threads(w);
+                let gone = lanes
+                    .clone()
+                    .filter(|&u| self.threads[u].st == St::Exited && !arrived(u as u32))
+                    .count();
+                32usize.saturating_sub(lanes.len()) + gone
+            })
+            .sum::<usize>()
+    }
+
     fn bar_try_release(&mut self, cta: u16, id: u32) {
         let Some(bar) = self.bars.get(&(cta, id)) else {
             return;
@@ -7673,8 +7777,10 @@ impl Machine {
                 .filter(|t| t.cta == cta && t.st != St::Exited)
                 .count(),
         };
-        let n = bar.arrived.len() + bar.arrivers.len();
-        if n < need || n == 0 {
+        if bar.arrived.is_empty() && bar.arrivers.is_empty() {
+            return;
+        }
+        if self.bar_arrivals(bar) < need {
             return;
         }
         let Bar {
@@ -8245,6 +8351,142 @@ impl Machine {
         Ok(())
     }
 
+    /// D's place in TMEM for a `tcgen05.mma` shape, checking the shape against the PTX ISA's
+    /// table (9.7.18.2.1) for the forms modeled. `lp`: a narrow kind (f8f6f4, or `scaled`).
+    /// ASSUME(S-TMEM, E-PAIR): the layouts (PTX ISA 9.7.18.10.5; GB300: probes/tc_m128,
+    /// r2_cublas_gemm, r1c_2sm).
+    #[allow(clippy::too_many_arguments)]
+    fn mma_d_layout(
+        m: u32,
+        n: u32,
+        group: usize,
+        d: u32,
+        a_tmem: bool,
+        scaled: bool,
+    ) -> Result<MmaD, String> {
+        let (n, lane0, col0) = (n as usize, (d >> 16) as usize, (d & 0xffff) as usize);
+        let shape_err = |why: &str| {
+            Err(format!(
+                "MMA shape M={m} N={n} (cta_group::{group}{}) not modeled: {why}",
+                if a_tmem { ", A in TMEM" } else { "" }
+            ))
+        };
+        if n == 0 || n > 256 {
+            return shape_err("N must be 8..256");
+        }
+        // (rows per CTA, blocks, B rows per CTA, lane alignments allowed)
+        let (rows, blocks, nb, lanes): (usize, Vec<DBlock>, usize, &[usize]) = match (group, m) {
+            // Layout F (M = 64, cta_group::1): row i at lane lane0 + 32(i/16) + i%16,
+            // lane0 = 0 or 16.
+            (1, 64) => {
+                if n % 8 != 0 || scaled {
+                    return shape_err("M = 64 needs N % 8 == 0 and no block scaling");
+                }
+                let b = (0..4)
+                    .map(|g| (lane0 + 32 * g, 16, col0, n, 16 * g, 0))
+                    .collect();
+                (64, b, n, &[0, 16])
+            }
+            // Layout D (M = 128, cta_group::1): row i at lane i. N = 8..256 in steps of 8
+            // (GB300: N = 8, 24, 40, 136 for kind::f16, 8 and 24 for kind::f8f6f4). Not yet
+            // measured: N % 16 != 0 with A in TMEM or with block scaling.
+            (1, 128) => {
+                if n % 16 != 0 && (n % 8 != 0 || a_tmem || scaled) {
+                    return shape_err(
+                        "M = 128 needs N % 8 == 0 (N % 16 == 0 with A in TMEM or block scaling)",
+                    );
+                }
+                (128, vec![(0, 128, col0, n, 0, 0)], n, &[0])
+            }
+            // Layout A (M = 256, cta_group::2): each CTA's 128 rows at lanes 0..127, B rows
+            // (N/2) i.. from CTA i.
+            (2, 256) => {
+                if n % 16 != 0 {
+                    return shape_err("cta_group::2 needs N % 16 == 0");
+                }
+                (128, vec![(0, 128, col0, n, 0, 0)], n / 2, &[0])
+            }
+            // Layout B (M = 128, cta_group::2, dense): CTA i holds D rows 64i.. (A rows
+            // 0..63 of its own shared memory) and the B rows (N/2) i.. ; D row r, column c
+            // of the CTA is at lane r + 64 (c / (N/2)), column c % (N/2): the two halves of
+            // N side by side in lanes 0..63 and 64..127, N/2 columns wide.
+            (2, 128) => {
+                if n % 16 != 0 || a_tmem || scaled {
+                    return shape_err(
+                        "M = 128 with cta_group::2 is modeled for N % 16 == 0, A in shared memory, no block scaling",
+                    );
+                }
+                let h = n / 2;
+                (
+                    64,
+                    vec![(0, 64, col0, h, 0, 0), (64, 64, col0, h, 0, h)],
+                    h,
+                    &[0],
+                )
+            }
+            _ => return shape_err("M must be 64 / 128 (cta_group::1) or 128 / 256 (cta_group::2)"),
+        };
+        let width = blocks.iter().map(|b| b.2 + b.3).max().unwrap_or(0);
+        if !lanes.contains(&lane0) || width > TMEM_COLS {
+            return Err(format!(
+                "MMA D at TMEM lane {lane0} column {col0} (+{}) out of range",
+                width - col0
+            ));
+        }
+        Ok(MmaD {
+            rows,
+            n,
+            nb,
+            lane0,
+            blocks,
+        })
+    }
+
+    /// Reads (race-checked) D's current words for one CTA in row-major order [row * N + col],
+    /// and the OR of `tmem_block`'s state bits (1: never written, 2: unallocated).
+    fn mma_d_read(&mut self, cta: u16, lay: &MmaD, op: &AsyncOp) -> (Vec<u32>, u8) {
+        let mut out = vec![0u32; lay.rows * lay.n];
+        let mut st = 0u8;
+        for &(l, nl, c, nc, r0, n0) in &lay.blocks {
+            let (w, s) =
+                self.tmem_block(cta, (l, nl), (c, nc), op.actor, &op.vc, op.pc, None, false);
+            st |= s;
+            for i in 0..nl {
+                out[(r0 + i) * lay.n + n0..(r0 + i) * lay.n + n0 + nc]
+                    .copy_from_slice(&w[i * nc..i * nc + nc]);
+            }
+        }
+        (out, st)
+    }
+
+    /// Writes (race-checked) D for one CTA from row-major words [row * N + col].
+    fn mma_d_write(&mut self, cta: u16, lay: &MmaD, op: &AsyncOp, v: &[u32]) {
+        for &(l, nl, c, nc, r0, n0) in &lay.blocks {
+            let mut w = Vec::with_capacity(nl * nc);
+            for i in 0..nl {
+                w.extend_from_slice(&v[(r0 + i) * lay.n + n0..(r0 + i) * lay.n + n0 + nc]);
+            }
+            self.tmem_block(
+                cta,
+                (l, nl),
+                (c, nc),
+                op.actor,
+                &op.vc,
+                op.pc,
+                Some(&w),
+                true,
+            );
+        }
+    }
+
+    /// Whether any cell of D in this CTA is unallocated (an MMA that does not read D).
+    fn mma_d_unalloc(&self, cta: u16, lay: &MmaD) -> bool {
+        let tm = &self.tmem[cta as usize];
+        lay.blocks.iter().any(|&(l, nl, c, nc, _, _)| {
+            (l..l + nl).any(|lane| (c..c + nc).any(|col| *tm.init.get(tmem_idx(lane, col)) == 2))
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     // ASSUME(E-ASYNC-STEP): see ASSUMPTIONS.md
     #[allow(clippy::too_many_arguments)]
@@ -8277,7 +8519,7 @@ impl Machine {
         let n = f(17, 6) << 3;
         let m = f(24, 5) << 4;
         // MN-major operands (bits 15/16) are modeled for swizzled layouts (Triton's flash
-        // attention: V as the B of P x V).
+        // attention: V as the B of P x V) and without swizzle (mslk decode).
         if sparse != 0
             || sat != 0
             || nega != 0
@@ -8294,40 +8536,19 @@ impl Machine {
                 "instruction descriptor {idesc:#x}: only bf16 x bf16 -> f32 is modeled so far (D fmt {cfmt}, A {afmt}, B {bfmt})"
             ));
         }
-        // cta_group::2 (E-PAIR): CTA i of the pair holds A rows / D rows 128i.., and B rows
-        // (N/2)i.. at the same descriptor addresses (GB300: r1c_2sm bitwise).
+        // cta_group::2 (E-PAIR): CTA i of the pair holds its D rows and A rows at the same
+        // descriptor addresses, and B rows (N/2)i.. (GB300: r1c_2sm, probes/tc_m128).
         let ctas: Vec<u16> = std::iter::once(cta0).chain(peer).collect();
         // M=64 (cta_group::1, cuBLAS nvjet): D row i is TMEM lane lane0 + 32(i/16) + i%16,
         // lane0 = 0 or 16 (half of each warp's sub-partition; read back with
         // tcgen05.ld.16x64b). ASSUME(S-TMEM): validated bitwise against GB300 (r2_cublas_gemm).
-        let m64 = m == 64 && ctas.len() == 1;
-        let ok_n = if m64 { n % 8 == 0 } else { n % 16 == 0 };
-        if !(m64 || m == 128 * ctas.len() as u32) || n == 0 || !ok_n || n > 256 {
-            return Err(format!(
-                "MMA shape M={m} N={n} not modeled (M=128 per CTA of the group, N%16==0; or M=64 N%8==0 in one CTA)"
-            ));
-        }
-        let rows = if m64 { 64usize } else { 128 };
-        let nh = n / ctas.len() as u32;
-        let (lane0, col0) = ((d >> 16) as usize, (d & 0xffff) as usize);
-        if !(lane0 == 0 || m64 && lane0 == 16) || col0 + n as usize > TMEM_COLS {
-            return Err(format!(
-                "MMA D at TMEM lane {lane0} column {col0} (+{n}) out of range"
-            ));
-        }
-        // D's TMEM lane runs (first lane, lanes), in row order.
-        let runs: Vec<(usize, usize)> = if m64 {
-            (0..4).map(|g| (lane0 + 32 * g, 16)).collect()
-        } else {
-            vec![(lane0, 128)]
-        };
-        let row_lane = |mi: usize| {
-            if m64 {
-                lane0 + 32 * (mi / 16) + mi % 16
-            } else {
-                lane0 + mi
-            }
-        };
+        let lay = Self::mma_d_layout(m, n, ctas.len(), d, a_tmem, false)?;
+        let m64 = m == 64;
+        let rows = lay.rows;
+        let nh = lay.nb as u32;
+        let lane0 = lay.lane0;
+        // The lane of A row i (A in TMEM): D's lane for row i, column 0.
+        let row_lane = |mi: usize| lay.loc(mi, 0).0;
         // PTX ISA: descriptor bits 46-48 are the fixed constant 0b001. Triton 3.5 leaves them 0
         // and GB300 computes correctly anyway: a contract violation, reported, not a fault.
         for (which, dsc) in [("A", adesc), ("B", bdesc)] {
@@ -8351,13 +8572,6 @@ impl Machine {
         let (sb, lbob, sbob, swb) = Self::smem_desc(bdesc)?;
         // MN-major is carried as a flag bit on the swizzle span.
         const MN: u32 = 1 << 31;
-        for (maj, sw) in [(amaj, swa), (bmaj, swb)] {
-            if maj != 0 && sw == 0 {
-                return Err(format!(
-                    "instruction descriptor {idesc:#x}: MN-major operand without swizzle not modeled"
-                ));
-            }
-        }
         let swa = if amaj != 0 { swa | MN } else { swa };
         let swb = if bmaj != 0 { swb | MN } else { swb };
         const K: usize = 16;
@@ -8366,8 +8580,17 @@ impl Machine {
         // MN-major, swizzled (CUTLASS's canonical layout ((T,s/16,m),(8,k)) :
         // ((1,T,LBO),(s/2,SBO)) for span s): 8 K-rows of `s` bytes along M/N per atom, atoms
         // LBO apart along M/N and SBO apart along K, then the address swizzle.
+        // MN-major without swizzle (CUTLASS INTERLEAVE ((T,1,m),(8,k)) : ((1,T,SBO),(1T,LBO)):
+        // 16-byte chunks of 8 M/N elements, 8 K-rows of them 16 bytes apart, chunks SBO apart
+        // along M/N, K groups of 8 LBO apart; GB300: probes/tc_m128 mma_img, mslk decode).
         let elem = |start: u32, lbo: u32, sbo: u32, sw: u32, r: usize, k: usize| {
-            if sw & MN != 0 {
+            if sw == MN {
+                start
+                    + (r as u32 / 8) * sbo
+                    + (r as u32 % 8) * 2
+                    + (k as u32 / 8) * lbo
+                    + (k as u32 % 8) * 16
+            } else if sw & MN != 0 {
                 let sw = sw & !MN;
                 let per = sw as usize / 2;
                 swz(
@@ -8541,29 +8764,13 @@ impl Machine {
         let mut accs: Vec<Vec<f32>> = Vec::with_capacity(ctas.len());
         for &cta in &ctas {
             if !enable {
-                let tm = &self.tmem[cta as usize];
-                unalloc |= (0..rows).any(|mi| {
-                    (0..n as usize).any(|ni| *tm.init.get(tmem_idx(row_lane(mi), col0 + ni)) == 2)
-                });
+                unalloc |= self.mma_d_unalloc(cta, &lay);
                 accs.push(vec![0.0; rows * n as usize]);
                 continue;
             }
-            let mut words = Vec::with_capacity(rows * n as usize);
-            for &run in &runs {
-                let (w, st) = self.tmem_block(
-                    cta,
-                    run,
-                    (col0, n as usize),
-                    op.actor,
-                    &op.vc,
-                    op.pc,
-                    None,
-                    false,
-                );
-                words.extend(w);
-                unalloc |= st & 2 != 0;
-                uninit |= st & 1 != 0;
-            }
+            let (words, st) = self.mma_d_read(cta, &lay, op);
+            unalloc |= st & 2 != 0;
+            uninit |= st & 1 != 0;
             let v: Vec<f32> = words.into_iter().map(f32::from_bits).collect();
             if outside.is_none() {
                 if let Some(acc) = v.iter().find(|a| !normal(**a as f64)) {
@@ -8633,21 +8840,7 @@ impl Machine {
         // Pass 3: write D (race-checked) and the numerics shadow.
         let per = rows * n as usize;
         for (ci, &cta) in ctas.iter().enumerate() {
-            let mut at = ci * per;
-            for &run in &runs {
-                let len = run.1 * n as usize;
-                self.tmem_block(
-                    cta,
-                    run,
-                    (col0, n as usize),
-                    op.actor,
-                    &op.vc,
-                    op.pc,
-                    Some(&results[at..at + len]),
-                    true,
-                );
-                at += len;
-            }
+            self.mma_d_write(cta, &lay, op, &results[ci * per..(ci + 1) * per]);
             if outside.is_none() && self.num.is_some() {
                 let a = &a_all[ci];
                 for mi in 0..rows {
@@ -8662,8 +8855,8 @@ impl Machine {
                         // ASSUME(N-MMA): one step of the calibrated model per K = 16 slice.
                         self.num_mma(
                             cta,
-                            row_lane(mi),
-                            col0 + ni,
+                            lay.loc(mi, ni).0,
+                            lay.loc(mi, ni).1,
                             enable,
                             acc,
                             (&prods, &ops),
@@ -8795,36 +8988,9 @@ impl Machine {
             _ => None,
         };
         let ctas: Vec<u16> = std::iter::once(cta0).chain(peer).collect();
-        let m64 = m == 64 && ctas.len() == 1;
-        let ok_n = if m64 { n % 8 == 0 } else { n % 16 == 0 };
-        if !(m64 || m == 128 * ctas.len() as u32) || n == 0 || !ok_n || n > 256 {
-            return Err(format!(
-                "MMA shape M={m} N={n} not modeled (M=128 per CTA of the group, N%16==0; or M=64 N%8==0 in one CTA)"
-            ));
-        }
-        if scaled && m64 {
-            return bad("block scaling with M = 64");
-        }
-        let rows = if m64 { 64usize } else { 128 };
-        let nh = n / ctas.len() as u32;
-        let (lane0, col0) = ((d >> 16) as usize, (d & 0xffff) as usize);
-        if !(lane0 == 0 || m64 && lane0 == 16) || col0 + n as usize > TMEM_COLS {
-            return Err(format!(
-                "MMA D at TMEM lane {lane0} column {col0} (+{n}) out of range"
-            ));
-        }
-        let runs: Vec<(usize, usize)> = if m64 {
-            (0..4).map(|g| (lane0 + 32 * g, 16)).collect()
-        } else {
-            vec![(lane0, 128)]
-        };
-        let row_lane = |mi: usize| {
-            if m64 {
-                lane0 + 32 * (mi / 16) + mi % 16
-            } else {
-                lane0 + mi
-            }
-        };
+        let lay = Self::mma_d_layout(m, n, ctas.len(), d, a_tmem, scaled)?;
+        let rows = lay.rows;
+        let nh = lay.nb as u32;
         for (which, dsc) in [("A", adesc), ("B", bdesc)] {
             let v = (dsc >> 46) & 7;
             if v != 1 {
@@ -8949,29 +9115,13 @@ impl Machine {
         let mut accs: Vec<Vec<u32>> = Vec::with_capacity(ctas.len());
         for &cta in &ctas {
             if !enable {
-                let tm = &self.tmem[cta as usize];
-                unalloc |= (0..rows).any(|mi| {
-                    (0..n as usize).any(|ni| *tm.init.get(tmem_idx(row_lane(mi), col0 + ni)) == 2)
-                });
+                unalloc |= self.mma_d_unalloc(cta, &lay);
                 accs.push(vec![0; rows * n as usize]);
                 continue;
             }
-            let mut words = Vec::with_capacity(rows * n as usize);
-            for &run in &runs {
-                let (w, st) = self.tmem_block(
-                    cta,
-                    run,
-                    (col0, n as usize),
-                    op.actor,
-                    &op.vc,
-                    op.pc,
-                    None,
-                    false,
-                );
-                words.extend(w);
-                unalloc |= st & 2 != 0;
-                uninit |= st & 1 != 0;
-            }
+            let (words, st) = self.mma_d_read(cta, &lay, op);
+            unalloc |= st & 2 != 0;
+            uninit |= st & 1 != 0;
             if outside.is_none() {
                 let ok = |w: &u32| {
                     if f16_d {
@@ -9128,21 +9278,7 @@ impl Machine {
             outside = Some("MMA f16 result overflow".into());
         }
         for (ci, &cta) in ctas.iter().enumerate() {
-            let mut at = ci * per;
-            for &run in &runs {
-                let len = run.1 * n as usize;
-                self.tmem_block(
-                    cta,
-                    run,
-                    (col0, n as usize),
-                    op.actor,
-                    &op.vc,
-                    op.pc,
-                    Some(&results[at..at + len]),
-                    true,
-                );
-                at += len;
-            }
+            self.mma_d_write(cta, &lay, op, &results[ci * per..(ci + 1) * per]);
             // 8-bit operand and scale-factor provenance (N-HALF-LEAF): each product's factors
             // as input-byte leaves, read where the step reads them. FP4 kinds (K = 64): a code
             // per nibble, element j of a row at byte 16 (j / 32) + (j % 32) / 2 of its slice,
@@ -9207,7 +9343,8 @@ impl Machine {
                     for ni in 0..n as usize {
                         let r = results[ci * per + mi * n as usize + ni];
                         if outside.is_some() || f16_d {
-                            self.num_tmem_forget(cta, row_lane(mi), col0 + ni);
+                            let (l, c) = lay.loc(mi, ni);
+                            self.num_tmem_forget(cta, l, c);
                             continue;
                         }
                         let a = &a_all[ci][mi * kn..mi * kn + kn];
@@ -9284,8 +9421,8 @@ impl Machine {
                         };
                         self.num_mma(
                             cta,
-                            row_lane(mi),
-                            col0 + ni,
+                            lay.loc(mi, ni).0,
+                            lay.loc(mi, ni).1,
                             enable,
                             acc,
                             (&prods, &ops),
@@ -9914,6 +10051,7 @@ fn shifted_out(code: &[Inst], pc: usize, d: Reg, diff: u64) -> bool {
                 right: true,
                 signed: false,
                 high: false,
+                ..
             } if *dd == d && *l == d && *s < 32 && diff >> *s == 0
         ) && i.guard.is_always();
     }
@@ -10003,4 +10141,121 @@ fn check_aligned(space: Space, a: u64, n: usize) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// SHF's effective shift: the u32 amount mod 32 with `.W`, else clamped to 32 (.U32 / .S32) or
+/// 64 (.U64 / .S64). GB300: fixtures/s_shf. ASSUME(L-SHF)
+pub fn shf_amount(sh: u64, wide: bool, wrap: bool) -> u32 {
+    let n = sh & 0xffff_ffff;
+    (if wrap {
+        n & 31
+    } else {
+        n.min(if wide { 64 } else { 32 })
+    }) as u32
+}
+
+/// `hi:lo` shifted by `n` <= 64 (arithmetic right shift when `signed`).
+pub fn shf_value(v: u64, n: u32, right: bool, signed: bool) -> u64 {
+    match (right, signed) {
+        (true, true) => ((v as i64 as i128) >> n) as u64,
+        (true, false) => ((v as u128) >> n) as u64,
+        (false, _) => ((v as u128) << n) as u64,
+    }
+}
+
+/// (first lane, lanes, first column, columns, first D row, first D column) of a D block.
+type DBlock = (usize, usize, usize, usize, usize, usize);
+
+/// Where one CTA's part of a `tcgen05.mma` D lives in TMEM (`Machine::mma_d_layout`).
+#[derive(Clone, Debug)]
+struct MmaD {
+    /// D (and A) rows per CTA.
+    rows: usize,
+    /// D columns (the instruction's N).
+    n: usize,
+    /// B rows read from each CTA of the group.
+    nb: usize,
+    /// D's lane field (0, or 16 for M = 64).
+    lane0: usize,
+    /// (first lane, lanes, first column, columns, first D row, first D column): consecutive
+    /// lanes hold consecutive rows, consecutive columns consecutive D columns.
+    blocks: Vec<DBlock>,
+}
+
+impl MmaD {
+    /// The TMEM (lane, column) of D row `mi`, column `ni`.
+    fn loc(&self, mi: usize, ni: usize) -> (usize, usize) {
+        for &(l, nl, c, nc, r0, n0) in &self.blocks {
+            if (r0..r0 + nl).contains(&mi) && (n0..n0 + nc).contains(&ni) {
+                return (l + mi - r0, c + ni - n0);
+            }
+        }
+        unreachable!("D element ({mi}, {ni}) outside its layout")
+    }
+}
+
+#[cfg(test)]
+mod mma_shape_tests {
+    use super::*;
+
+    /// The shapes `mma_d_layout` accepts follow the PTX ISA table (9.7.18.2.1) for the forms
+    /// measured on GB300 (probes/tc_m128), and every D element has exactly one TMEM cell.
+    #[test]
+    fn mma_shapes_and_layouts() {
+        let ok =
+            |m, n, g, a_tmem, scaled| Machine::mma_d_layout(m, n, g, 0, a_tmem, scaled).is_ok();
+        // cta_group::1, M = 128: N = 8..256 in steps of 8 (A in smem, not block-scaled).
+        for n in (8..=256).step_by(8) {
+            assert!(ok(128, n, 1, false, false), "M128 N{n}");
+            assert!(ok(64, n, 1, false, false), "M64 N{n}");
+            assert_eq!(
+                ok(128, n, 1, true, false),
+                n % 16 == 0,
+                "M128 N{n} A in TMEM"
+            );
+            assert_eq!(ok(128, n, 1, false, true), n % 16 == 0, "M128 N{n} scaled");
+            assert!(!ok(64, n, 1, false, true), "M64 scaled");
+            // cta_group::2: N = 16..256 in steps of 16, for M = 128 and 256.
+            assert_eq!(ok(128, n, 2, false, false), n % 16 == 0, "pair M128 N{n}");
+            assert_eq!(ok(256, n, 2, false, false), n % 16 == 0, "pair M256 N{n}");
+            assert!(!ok(128, n, 2, true, false) && !ok(128, n, 2, false, true));
+        }
+        for (m, g) in [(32, 1), (256, 1), (64, 2), (512, 2)] {
+            assert!(!ok(m, 64, g, false, false), "M{m} group {g}");
+        }
+        assert!(!ok(128, 0, 1, false, false) && !ok(128, 264, 1, false, false));
+        // Lane alignment: 16 only for M = 64; columns within the 512.
+        assert!(Machine::mma_d_layout(64, 64, 1, 16 << 16, false, false).is_ok());
+        assert!(Machine::mma_d_layout(128, 64, 1, 16 << 16, false, false).is_err());
+        assert!(Machine::mma_d_layout(128, 64, 2, 16 << 16, false, false).is_err());
+        assert!(Machine::mma_d_layout(128, 256, 1, 256, false, false).is_ok());
+        assert!(Machine::mma_d_layout(128, 256, 1, 257, false, false).is_err());
+        // cta_group::2 M = 128 is N/2 columns wide.
+        assert!(Machine::mma_d_layout(128, 256, 2, 384, false, false).is_ok());
+        assert!(Machine::mma_d_layout(128, 256, 2, 385, false, false).is_err());
+        // Layout B: D row r, column c at lane r + 64 (c / (N/2)), column c % (N/2).
+        let l = Machine::mma_d_layout(128, 32, 2, 8, false, false).unwrap();
+        assert_eq!((l.rows, l.nb), (64, 16));
+        assert_eq!(l.loc(0, 0), (0, 8));
+        assert_eq!(l.loc(63, 15), (63, 23));
+        assert_eq!(l.loc(0, 16), (64, 8));
+        assert_eq!(l.loc(37, 31), (101, 23));
+        // Each layout is a bijection onto its cells.
+        for (m, n, g, d) in [
+            (128, 32, 2, 0),
+            (128, 8, 1, 4),
+            (64, 24, 1, 16 << 16),
+            (256, 48, 2, 0),
+        ] {
+            let l = Machine::mma_d_layout(m, n, g, d, false, false).unwrap();
+            let mut seen = std::collections::HashSet::new();
+            for r in 0..l.rows {
+                for c in 0..l.n {
+                    assert!(seen.insert(l.loc(r, c)), "M{m} N{n}: ({r}, {c})");
+                }
+            }
+            let cells: usize = l.blocks.iter().map(|b| b.1 * b.3).sum();
+            assert_eq!(cells, l.rows * l.n);
+        }
+    }
 }

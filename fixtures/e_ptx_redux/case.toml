@@ -1,0 +1,37 @@
+name = "e_ptx_redux"
+description = """
+PTX redux.sync (f32 max / min [.abs] [.NaN]; add.u32, min.s32, max.u32, xor.b32), neg.f32 and
+setp.<cmp>.f32 on one warp (kernel.ptx): the forms lifted for the mslk decode kernels
+(redux.sync.max.NaN.f32 is SASS CREDUX.MAX.F32.NAN). Inputs include +-0, +-inf and a NaN.
+expected/out.bin is GB300's output (2026-11-05)."""
+ptx = "kernel.ptx"
+entry = "e_ptx_redux"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [64]
+init = "file"
+file = "data/in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32, 16]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -208,8 +208,8 @@ enum Cmd {
         #[arg(long)]
         errstate: Option<PathBuf>,
         /// Also run Tier 1 (the residue-exact chain of MMA outputs; minutes on wide scale
-        /// ranges, about 1 GiB per step). Default: tier 0, tier 2 where its applicability
-        /// check passes, else tier 3.
+        /// ranges, hours at K = 4096; memory flat in K). Default: tier 0, tier 2 where its
+        /// applicability check passes, else tier 3.
         #[arg(long)]
         tier1: bool,
         /// Accepted for compatibility (Tier 1 is opt-in now: --tier1).

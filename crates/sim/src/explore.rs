@@ -2291,6 +2291,12 @@ impl Machine {
             return true;
         };
         let mut n = bar.arrived.len() + bar.arrivers.len();
+        // Arrivals so far and threads that may still arrive, per warp (E-BAR-EXIT: a warp
+        // that arrives counts the warp size).
+        let mut per_warp: HashMap<u32, usize> = HashMap::new();
+        for &a in bar.arrived.iter().chain(&bar.arrivers) {
+            *per_warp.entry(self.threads[a as usize].warp).or_default() += 1;
+        }
         let mut memo: Vec<(u32, Vec<BarRead>, bool)> = Vec::new();
         for (u, th) in self.live_threads() {
             if u == t
@@ -2316,12 +2322,21 @@ impl Machine {
             });
             if may {
                 n += 1;
+                *per_warp.entry(th.warp).or_default() += 1;
                 if n + 1 > c as usize {
                     return false;
                 }
             }
         }
-        n < c as usize
+        // ASSUME(E-BAR-EXIT): before `t` arrives, a warp with an arrival counts at most the
+        // warp size (one less for `t`'s own warp: `t` is live and has not arrived), its
+        // exited lanes included.
+        let tw = self.threads[t].warp;
+        let bound: usize = per_warp
+            .iter()
+            .map(|(&w, &k)| k.max(if w == tw { 31 } else { 32 }))
+            .sum();
+        bound < c as usize
     }
 
     pub fn bar_oversub(&self, cta: u16, id: u32, count: Option<u32>) -> bool {
@@ -2330,6 +2345,7 @@ impl Machine {
         };
         let bit = if id < 32 { 1u32 << id } else { u32::MAX };
         let mut n = 0;
+        let mut per_warp: HashMap<u32, usize> = HashMap::new();
         // The walk is a function of the pc and the values it read: threads that agree on
         // them (typically the lanes of a warp) share one walk.
         let mut memo: Vec<(u32, Vec<BarRead>, bool)> = Vec::new();
@@ -2352,12 +2368,14 @@ impl Machine {
             });
             if may {
                 n += 1;
+                *per_warp.entry(th.warp).or_default() += 1;
                 if n > c as usize {
                     return true;
                 }
             }
         }
-        false
+        // ASSUME(E-BAR-EXIT): a warp that arrives counts the warp size.
+        per_warp.values().map(|&k| k.max(32)).sum::<usize>() > c as usize
     }
 
     /// Can thread `t` still reach a barrier in `bit`? A walk of the control-flow graph from

@@ -225,6 +225,30 @@ def test_classify_check():
         == "rejected"
     )
     assert harness.classify_check(124, "", "", True)["status"] == "budget"
+    # The certificate run's race (printed by ptxv before it explores) decides an exploration
+    # that ran out of budget or time.
+    err = (
+        "certificate for launch (LDS/STS plain) does not hold (25000 steps, 9.0s); exploring instead. Reasons:\n"
+        "  - the run reported findings (race); the explorer decides them: first: race on ...\n"
+        "certificate run race (launch (LDS/STS strong)): race:proxy:123:456: proxy race on smem byte 0x1a00\n"
+    )
+    r = harness.classify_check(1, row(["clean"], False), err, False)
+    assert (r["status"], r["cert_run"]) == ("caught", True), r
+    assert "race:proxy:123:456" in r["why"]
+    r = harness.classify_check(124, "", err, True)
+    assert (r["status"], r["cert_run"]) == ("caught", True), r
+    # A run's findings alone (no standing race printed) do not count.
+    only = "\n".join(err.splitlines()[:2]) + "\n"
+    assert (
+        harness.classify_check(1, row(["clean"], False), only, False)["status"]
+        == "budget"
+    )
+    assert (
+        harness.cert_run_race("certificate run race (cluster 3): race:x: y\n")
+        == "cluster 3: race:x"
+    )
+    # A complete clean exploration stays clean whatever the certificate run said.
+    assert harness.classify_check(0, row(["clean"]), err, False)["status"] == "clean"
 
 
 def test_delay_plans_hit_sync_lines():

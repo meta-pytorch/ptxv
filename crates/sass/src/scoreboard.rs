@@ -423,7 +423,8 @@ struct Pend {
     /// Minimum number of newer operations issued on the same scoreboard since (saturating).
     newer: u8,
     /// (A memory-queue read) also complete once any of these writes (scoreboard, pc) of a
-    /// later memory-queue instruction completed: the queue is in order (on every path).
+    /// later memory-queue instruction completed: the queue is in order (on every path). A
+    /// scoreboard with `RCOV` set is a later memory-queue instruction's *read* scoreboard.
     cov: BTreeSet<(u8, usize)>,
     /// The producer's guard predicate has not been redefined since (on every path).
     gok: bool,
@@ -441,6 +442,8 @@ impl Pend {
 }
 
 const NO_SB: u8 = 6;
+/// Tags a `Pend::cov` entry as a read scoreboard (else a write scoreboard).
+const RCOV: u8 = 0x80;
 /// Asynchronous read with no read scoreboard yet; attached to the next one that has one.
 const UNTRACKED: u8 = 7;
 
@@ -570,8 +573,8 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
             .collect();
         let done_w: BTreeSet<(u8, usize)> = st
             .keys()
-            .filter(|k| k.0 < NO_SB && k.1 && c.wait >> k.0 & 1 == 1)
-            .map(|k| (k.0, k.2))
+            .filter(|k| k.0 < NO_SB && c.wait >> k.0 & 1 == 1)
+            .map(|k| (if k.1 { k.0 } else { k.0 | RCOV }, k.2))
             .collect();
         st.retain(|k, v| {
             if !k.1 && v.cov.iter().any(|w| done_w.contains(w)) {
@@ -889,6 +892,29 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
             .into_iter()
             .filter(|r| r.0 == b'R' || uniform_unit && r.0 == b'U')
             .collect();
+        if let (Some(sb), true) = (c.rbar, mio) {
+            // Memory-queue reads issued before this one complete no later than it does: its
+            // read scoreboard covers them, tracked or not (GB300: probes/sb_mio_order, an
+            // `STS [Rt]` with no read scoreboard, then `LDG` and `STS [Rt+0x400]` with rd=SB4,
+            // then `LDC Rt` waiting on SB4 only: 0 of 1000 runs wrong; with the scoreboard on
+            // the first STS instead, every run loses the second STS's address; quack
+            // rmsnorm_bwd N=256). Only where this instruction executes whenever the earlier
+            // one did: unguarded, or the same guard not redefined since (a guarded-off
+            // instruction may release its scoreboard at once). ASSUME(L-SB-ORDER)
+            for (k, v) in st.iter_mut() {
+                let same_guard = match (l.guard.as_deref(), lines[k.2].guard.as_deref()) {
+                    (None, _) => true,
+                    (Some(a), Some(b)) => a == b && v.gok,
+                    _ => false,
+                };
+                if !k.1
+                    && same_guard
+                    && MIO_INORDER.contains(&lines[k.2].opcode.split('.').next().unwrap_or(""))
+                {
+                    v.cov.insert((sb | RCOV, pc));
+                }
+            }
+        }
         if let Some(sb) = c.rbar {
             // In-order operand reads: earlier untracked reads complete no later than this one.
             let untracked: Vec<_> = st.keys().filter(|k| k.0 == UNTRACKED).cloned().collect();
@@ -1156,10 +1182,7 @@ mod tests {
             def_use(&line("PLOP3.LUT P1, P0, !P0, PT, !P1, 0x80, 0xc8")),
             (vec![r(b'P', 1), r(b'P', 0)], vec![r(b'P', 0), r(b'P', 1)])
         );
-        assert_eq!(
-            def_use(&line("R2P PR, R0.B1, 0x7f")).1,
-            vec![r(b'R', 0)]
-        );
+        assert_eq!(def_use(&line("R2P PR, R0.B1, 0x7f")).1, vec![r(b'R', 0)]);
         assert_eq!(
             def_use(&line("PLOP3.LUT P0, PT, P1, PT, PT, 0x8, 0x0")),
             (vec![r(b'P', 0)], vec![r(b'P', 1)])

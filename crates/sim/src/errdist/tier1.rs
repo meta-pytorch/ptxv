@@ -1878,6 +1878,18 @@ pub fn run(sch: &ChainSchema, opts: Opts) -> Result<ChainLaw, String> {
                 incoming[*cs].push((cx, *w, t));
             }
         }
+        // Memory: a transition is keyed by the accumulator's residue law, which changes from
+        // step to step, and the residue laws by step; keep only this step's transitions (the
+        // next step reuses the ones it shares) and the laws of steps to come. Unbounded, the
+        // caches grew ~1 GiB per step (K = 960 bf16: 67 GB).
+        {
+            let used: std::collections::HashSet<TKey> = phase1
+                .iter()
+                .flat_map(|(v, _, _)| v.iter().map(|x| x.2))
+                .collect();
+            trans.retain(|k, _| used.contains(k));
+            prc.retain(|k, _| k.0 > si);
+        }
         let state_ref = &state;
         let results: Vec<(Vec<DHist>, Vec<DHist>)> = par_map(nc, threads, |cs| {
             let mut nx: Vec<DHist> = vec![DHist::default(); NL];

@@ -1,0 +1,116 @@
+// Skeleton for the MIO operand-read order probe (see patch.py, case.toml). 256 threads per
+// CTA; thread t's slots: region 0 = smem[4t], region 1 = smem[0x400 + 4t], region 2 =
+// smem[0x800 + 4t]. Eight ld.shared.v4 (thread t: smem 0x8000 + 16t + 4096i) keep the memory pipe busy and their results live; the
+// 32 `st.shared` to 0x4000.. are placeholder slots that patch.py overwrites with the probe
+// window. Shared memory is zeroed first; after the barrier every thread dumps its three slots
+// and the xor of its loads (0 with zero inputs).
+.version 9.0
+.target sm_103a
+.address_size 64
+.extern .shared .align 16 .b8 sm[];
+
+.visible .entry sb_mio_order(.param .u64 out_p, .param .u64 in_p, .param .u32 bogus)
+{
+    .reg .b32 %r<80>;
+    .reg .b64 %rd<10>;
+    .reg .pred %p<2>;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, sm;
+    shl.b32 %r3, %r1, 2;
+    add.u32 %r4, %r2, %r3;
+    ld.param.u64 %rd1, [in_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mul.wide.u32 %rd2, %r1, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    ld.global.u32 %r6, [%rd3];
+    add.u32 %r5, %r1, 1510000000;
+    add.u32 %r5, %r5, %r6;
+    // Zero the CTA's 64 KB of shared memory first (16384 words, 64 per thread).
+    shl.b32 %r8, %r1, 4;
+    add.u32 %r8, %r8, %r2;
+    mov.u32 %r70, 0;
+ZERO:
+    shl.b32 %r71, %r70, 10;
+    add.u32 %r71, %r71, %r4;
+    st.shared.u32 [%r71], 0;
+    add.u32 %r70, %r70, 1;
+    setp.lt.u32 %p1, %r70, 64;
+    @%p1 bra ZERO;
+    bar.sync 0;
+    ld.shared.v4.u32 {%r10,%r11,%r12,%r13}, [%r8+32768];
+    ld.shared.v4.u32 {%r14,%r15,%r16,%r17}, [%r8+36864];
+    ld.shared.v4.u32 {%r18,%r19,%r20,%r21}, [%r8+40960];
+    ld.shared.v4.u32 {%r22,%r23,%r24,%r25}, [%r8+45056];
+    ld.shared.v4.u32 {%r26,%r27,%r28,%r29}, [%r8+49152];
+    ld.shared.v4.u32 {%r30,%r31,%r32,%r33}, [%r8+53248];
+    ld.shared.v4.u32 {%r34,%r35,%r36,%r37}, [%r8+57344];
+    ld.shared.v4.u32 {%r38,%r39,%r40,%r41}, [%r8+61440];
+    st.shared.u32 [%r4+16384], %r5;
+    st.shared.u32 [%r4+17408], %r5;
+    st.shared.u32 [%r4+18432], %r5;
+    st.shared.u32 [%r4+19456], %r5;
+    st.shared.u32 [%r4+20480], %r5;
+    st.shared.u32 [%r4+21504], %r5;
+    st.shared.u32 [%r4+22528], %r5;
+    st.shared.u32 [%r4+23552], %r5;
+    st.shared.u32 [%r4+24576], %r5;
+    st.shared.u32 [%r4+25600], %r5;
+    st.shared.u32 [%r4+26624], %r5;
+    st.shared.u32 [%r4+27648], %r5;
+    st.shared.u32 [%r4+28672], %r5;
+    st.shared.u32 [%r4+29696], %r5;
+    st.shared.u32 [%r4+30720], %r5;
+    st.shared.u32 [%r4+31744], %r5;
+    bar.sync 0;
+    ld.shared.u32 %r50, [%r4];
+    ld.shared.u32 %r51, [%r4+1024];
+    ld.shared.u32 %r52, [%r4+2048];
+    xor.b32 %r53, %r10, %r11;
+    xor.b32 %r53, %r53, %r12;
+    xor.b32 %r53, %r53, %r13;
+    xor.b32 %r53, %r53, %r14;
+    xor.b32 %r53, %r53, %r15;
+    xor.b32 %r53, %r53, %r16;
+    xor.b32 %r53, %r53, %r17;
+    xor.b32 %r53, %r53, %r18;
+    xor.b32 %r53, %r53, %r19;
+    xor.b32 %r53, %r53, %r20;
+    xor.b32 %r53, %r53, %r21;
+    xor.b32 %r53, %r53, %r22;
+    xor.b32 %r53, %r53, %r23;
+    xor.b32 %r53, %r53, %r24;
+    xor.b32 %r53, %r53, %r25;
+    xor.b32 %r53, %r53, %r26;
+    xor.b32 %r53, %r53, %r27;
+    xor.b32 %r53, %r53, %r28;
+    xor.b32 %r53, %r53, %r29;
+    xor.b32 %r53, %r53, %r30;
+    xor.b32 %r53, %r53, %r31;
+    xor.b32 %r53, %r53, %r32;
+    xor.b32 %r53, %r53, %r33;
+    xor.b32 %r53, %r53, %r34;
+    xor.b32 %r53, %r53, %r35;
+    xor.b32 %r53, %r53, %r36;
+    xor.b32 %r53, %r53, %r37;
+    xor.b32 %r53, %r53, %r38;
+    xor.b32 %r53, %r53, %r39;
+    xor.b32 %r53, %r53, %r40;
+    xor.b32 %r53, %r53, %r41;
+    xor.b32 %r53, %r53, %r6;
+    ld.global.u32 %r7, [%rd3+4];
+    xor.b32 %r53, %r53, %r7;
+    // Values defined after the window: their registers are free for patch.py inside it.
+    ld.global.u32 %r62, [%rd3+8];
+    ld.global.u32 %r63, [%rd3+12];
+    xor.b32 %r53, %r53, %r62;
+    xor.b32 %r53, %r53, %r63;
+    ld.param.u64 %rd4, [out_p];
+    cvta.to.global.u64 %rd4, %rd4;
+    mov.u32 %r60, %ctaid.x;
+    shl.b32 %r61, %r60, 8;
+    add.u32 %r61, %r61, %r1;
+    mul.wide.u32 %rd5, %r61, 16;
+    add.u64 %rd6, %rd4, %rd5;
+    st.global.v4.u32 [%rd6], {%r50, %r51, %r52, %r53};
+    ret;
+}

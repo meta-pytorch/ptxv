@@ -262,3 +262,19 @@ library = "flash_attn.cute 4.0.0b24, torch 2.12.0a0+git808dd93"
 files = ["jit.cubin"]
 kind = "capture"
 cmd = "FA4_SEQ=256 FA4_HDIM=128 $PY tools/capture.py --file tools/capture_examples/fa4_fwd.py --out $OUT"
+
+[[fixture]]
+name = "c_fa4_causal"
+vendor = "FlashAttention-4 (flash_attn.cute, CuTeDSL)"
+library = "flash_attn.cute 4.0.0b24, torch 2.12.0a0+git808dd93"
+files = ["jit.cubin"]
+kind = "capture"
+cmd = "FA4_SEQ=256 FA4_HDIM=128 FA4_MASK=causal $PY tools/capture.py --file tools/capture_examples/fa4_fwd.py --out $OUT"
+
+[[fixture]]
+name = "c_fa4_local"
+vendor = "FlashAttention-4 (flash_attn.cute, CuTeDSL)"
+library = "flash_attn.cute 4.0.0b24, torch 2.12.0a0+git808dd93"
+files = ["jit.cubin"]
+kind = "capture"
+cmd = "FA4_SEQ=256 FA4_HDIM=128 FA4_MASK=local $PY tools/capture.py --file tools/capture_examples/fa4_fwd.py --out $OUT"

@@ -196,8 +196,24 @@ fn kernel(
     dir: &Path,
     segments: bool,
 ) -> Result<Kernel> {
+    let rss = |what: &str| {
+        if std::env::var("PTXV_ERRDIST_MEM").is_ok() {
+            let kb = std::fs::read_to_string("/proc/self/status")
+                .ok()
+                .and_then(|s| {
+                    s.lines()
+                        .find(|l| l.starts_with("VmRSS:"))
+                        .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+                })
+                .unwrap_or(0);
+            eprintln!("mem: {what}: {} MiB", kb >> 10);
+        }
+    };
+    rss("before prepare");
     let mut run = prepare(base, k, max_states, dir, segments)?;
+    rss("after prepare");
     let mut prog = Prog::extract(&run.m).map_err(|e| anyhow!("{}: {e}", run.label()))?;
+    rss(&format!("after extract ({} ops)", prog.ops.len()));
     // Untracked outputs: why no slice could be built (segment mode).
     if prog.outputs.iter().any(|o| o.is_none()) {
         if let Some(ns) = run.m.num.as_ref() {
@@ -348,6 +364,9 @@ fn simulate(
         let r = kernel(&base, &f.reference, f.max_states, dir, seg)?;
         let c = kernel(&base, ck, f.max_states, dir, seg)?;
         if !seg && (untracked(&r) || untracked(&c)) {
+            // Free the first extraction before the second (each kernel holds its simulator
+            // state: 13 GB on a 4096 x 4096 x 8192 tile).
+            drop((r, c));
             let r = kernel(&base, &f.reference, f.max_states, dir, true)?;
             let c = kernel(&base, ck, f.max_states, dir, true)?;
             Ok((r, Some(c)))
@@ -536,18 +555,22 @@ pub fn cmd(a: &Args) -> Result<()> {
         );
     }
     let ls = model.layouts.clone();
-    let threads = if a.threads == 0 {
+    let mut threads = if a.threads == 0 {
         std::thread::available_parallelism().map_or(8, |n| n.get())
     } else {
         a.threads
     };
-    let (rp, cp) = if a.pre_round {
-        (model.r.pre_round(), model.c.as_ref().map(|c| c.pre_round()))
-    } else {
-        (model.r.clone(), model.c.clone())
+    // --pre-round evaluates modified copies; otherwise the model's programs (no copy: a
+    // 4096 x 4096 x 32768 tile's DAG is gigabytes).
+    let pre = a
+        .pre_round
+        .then(|| (model.r.pre_round(), model.c.as_ref().map(|c| c.pre_round())));
+    let (rp, cp) = match &pre {
+        Some((r, c)) => (r, c.as_ref()),
+        None => (&model.r, model.c.as_ref()),
     };
     let pair = model.c.is_some();
-    let mut st = ptxv_sim::errdist::mc::Setup::new(&rp, cp.as_ref()).map_err(|e| anyhow!(e))?;
+    let mut st = ptxv_sim::errdist::mc::Setup::new(rp, cp).map_err(|e| anyhow!(e))?;
     // The worst-case bound's distribution and the check of every observed error against it
     // (closed forms only; --pre-round compares other values).
     if !a.pre_round {
@@ -558,6 +581,22 @@ pub fn cmd(a: &Args) -> Result<()> {
             .map(|w| (w.rel, w.k_u * 2f64.powi(-24), w.abs, w.scale_one));
     }
     let st = st;
+    // The default thread count fits Tier 3's workers in 70% of the memory left (the cgroup's
+    // limit less its use, else MemAvailable): one worker holds a sample and the programs' op
+    // states.
+    if a.threads == 0 {
+        let sp = ptxv_sim::errdist::mc::Sparse::new(&st, &spec, &ls).map_err(|e| anyhow!(e))?;
+        let per = ptxv_sim::errdist::mc::bytes_per_worker(&st, &sp, &ls);
+        let fit = ptxv_sim::errdist::mc::threads_for_memory(per, threads);
+        if fit < threads {
+            eprintln!(
+                "note: {fit} tier 3 threads (of {threads}): about {} MiB per worker, {} MiB left",
+                per >> 20,
+                ptxv_sim::errdist::mc::memory_budget() >> 20
+            );
+            threads = fit;
+        }
+    }
     if a.explore {
         print!(
             "{}",
@@ -2172,13 +2211,20 @@ fn validate_with(
             let cd = mc::outputs(c, &wc);
             mismatch += dag_mismatch(c, &cd, co);
         }
-        let keep = mc::keep_set(st.r.outputs.len(), 256, t);
+        let keep = mc::keep_set(st.tracked.len(), 256, t);
+        let at = |v: &[f32]| -> Vec<f32> {
+            st.tracked
+                .iter()
+                .map(|&o| v.get(o as usize).copied().unwrap_or(0.0))
+                .collect()
+        };
+        let (rt, ct) = (at(&ro), co.as_deref().map(at));
         mc::observe(
             st,
             &mc::InputEval {
                 w: &wr,
-                r_out: &ro,
-                c_out: co.as_deref(),
+                r_out: &rt,
+                c_out: ct.as_deref(),
             },
             &mut obs,
             &keep,

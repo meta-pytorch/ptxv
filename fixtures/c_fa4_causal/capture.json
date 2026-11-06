@@ -1,0 +1,85 @@
+{
+ "what": "run() of fa4_fwd.py",
+ "argv": [
+  "--file",
+  "tools/capture_examples/fa4_fwd.py",
+  "--out",
+  "DIR"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "kernel_cutlass_kernel_flash_attncuteflash_fwd_sm100FlashAttentionForwardSm100_object_at__tensor0000o11101213_tensor0000o11101213_tensor0000o10111213_tensor0000o11101213_None_None_None_Non_0",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    512,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 232448,
+   "pdl": 0,
+   "cubin": "jit.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": true,
+ "buffers": [
+  {
+   "name": "q",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    256,
+    1,
+    128
+   ],
+   "size": 65536
+  },
+  {
+   "name": "k",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    256,
+    1,
+    128
+   ],
+   "size": 65536
+  },
+  {
+   "name": "v",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    256,
+    1,
+    128
+   ],
+   "size": 65536
+  },
+  {
+   "name": "out0",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    256,
+    1,
+    128
+   ],
+   "size": 65536
+  }
+ ],
+ "unresolved": [],
+ "warnings": [
+  "PTX .version 9.3 rewritten to 9.0"
+ ]
+}

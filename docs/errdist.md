@@ -53,8 +53,18 @@ ptxv errdist --model FILE --inputs spec.json [--json out.json] [--mc N] [--tier1
   the set). Keep N ≤ 1000 on shared GPUs.
 - `--mc N`: Tier 3 inputs, default 300 (the cross-check and the fallback; `--mc 0` skips
   it, and the chain tiers then rest on their structural checks alone).
-- `--tier1` also runs Tier 1 (seconds to minutes; 15+ min on MXF8 random codes; about 1 GiB
-  per MMA step). With `--json`, a preliminary report is written before the analytic tiers
+- `--threads N`: Tier 3 workers. The default is the number of cores, capped so the workers
+  fit in 70% of the memory left: the cgroup's limit less its use (e.g. `systemd-run -p
+  MemoryMax=48G`), else MemAvailable. A note gives the count and the estimate per worker.
+  Tier 3 draws only the input elements the DAG's leaves read (whole MX / NVFP4 scale
+  blocks), and loops over tracked outputs only. A one-tile cut of a 4096 x 4096 x 8192
+  GEMM samples 2M of 67M elements per input.
+  - Each element comes from its own stream, keyed (seed, sample, buffer, element), so a
+    value does not depend on which other elements are drawn.
+  - Tier 3 numbers moved within their seed-to-seed spread when this sampler replaced the
+    sequential one.
+- `--tier1` also runs Tier 1 (seconds to minutes; 15+ min on MXF8 random codes; about 13 min
+  for a K = 960 bf16 chain, hours at K = 4096; a few GB, flat in K). With `--json`, a preliminary report is written before the analytic tiers
   run. `--no-tier1` is accepted and ignored.
 - `--out DIR`: scratch directory; by default one per process under `$TMPDIR`, removed at the
   end (concurrent runs never share one).

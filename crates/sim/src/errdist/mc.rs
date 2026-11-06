@@ -34,7 +34,10 @@ pub const U: f64 = 1.0 / 16_777_216.0; // 2^-24
 pub struct Setup<'a> {
     pub r: &'a Prog,
     pub c: Option<&'a Prog>,
-    /// Per output: the reference's MMA chain (steps), for the exact value and S.
+    /// The outputs the reference tracks (an input-dependent value), ascending: the outputs
+    /// Monte Carlo and validation observe.
+    pub tracked: Vec<u32>,
+    /// Per tracked output: the reference's MMA chain (steps), for the exact value and S.
     pub chain: Vec<Option<Vec<u32>>>,
     /// The worst-case bound |e| <= rel |y| + k S + abs (k in absolute units: k_u u; S = 1
     /// with the fourth field), when known: its distribution and the check of every observed
@@ -56,15 +59,20 @@ impl<'a> Setup<'a> {
         // TF32 splits: the exact value is that of the f32 inputs (hi(x) stands for x, lo parts
         // are errors), so such outputs take the real-arithmetic path, not the chain's products
         // of parts (N-ERRDIST-DAG).
-        let chain: Vec<Option<Vec<u32>>> = (0..r.outputs.len())
-            .map(|o| match r.outputs[o] {
+        let tracked: Vec<u32> = (0..r.outputs.len() as u32)
+            .filter(|&o| r.outputs[o as usize].is_some())
+            .collect();
+        let chain: Vec<Option<Vec<u32>>> = tracked
+            .iter()
+            .map(|&o| match r.outputs[o as usize] {
                 Some(root) if r.has_tf32(root) => None,
-                _ => r.chain(o).map(|x| x.0),
+                _ => r.chain(o as usize).map(|x| x.0),
             })
             .collect();
         Ok(Setup {
             r,
             c,
+            tracked,
             chain,
             wc: None,
         })
@@ -217,15 +225,17 @@ impl Obs {
     }
 }
 
-/// What one input contributes: the outputs of R (and C) as f32 values, given the evaluated
-/// reference program state (for the exact values).
+/// What one input contributes: the outputs of R (and C) as f32 values at the tracked outputs
+/// (`Setup::tracked`, in that order), given the evaluated reference program state (for the
+/// exact values).
 pub struct InputEval<'a> {
     pub w: &'a [crate::mma_lp::Operand],
     pub r_out: &'a [f32],
     pub c_out: Option<&'a [f32]>,
 }
 
-/// Accumulate one input's outputs into `obs`. `keep`: outputs to keep in the subsample.
+/// Accumulate one input's outputs into `obs`. `keep`: positions in `Setup::tracked` to keep
+/// in the subsample.
 pub fn observe(
     st: &Setup,
     ev: &InputEval,
@@ -247,8 +257,10 @@ pub fn observe(
     let mut ki = 0;
     // Agent AG: non-chain outputs take their exact value from the real-arithmetic evaluation.
     let mut real: Option<Vec<(super::nonlin::real::Dd, f64)>> = None;
-    for o in 0..n {
-        let ex = match (&st.chain[o], st.r.outputs[o]) {
+    obs.skipped += (n - st.tracked.len()) as u64;
+    for (k, &o32) in st.tracked.iter().enumerate() {
+        let o = o32 as usize;
+        let ex = match (&st.chain[k], st.r.outputs[o]) {
             (Some(ch), _) => st.r.exact(ch, ev.w, acc),
             (None, Some(op)) => {
                 let t = real.get_or_insert_with(|| super::nonlin::real::eval(st.r, ev.w));
@@ -260,8 +272,8 @@ pub fn observe(
             }
         };
         obs.seen += 1;
-        let rv = ev.r_out[o] as f64;
-        let cnf = ev.c_out.is_some_and(|c| !c[o].is_finite());
+        let rv = ev.r_out[k] as f64;
+        let cnf = ev.c_out.is_some_and(|c| !c[k].is_finite());
         if !ex.y.is_finite() || !ex.s.is_finite() || !rv.is_finite() || cnf {
             obs.nonfinite += 1;
             continue;
@@ -278,7 +290,7 @@ pub fn observe(
         let mut kref = None;
         let e = match ev.c_out {
             Some(c) => {
-                let cv = c[o] as f64;
+                let cv = c[k] as f64;
                 let ec = (cv - ex.y) - ex.y_lo;
                 obs.er.add(er);
                 obs.ec.add(ec);
@@ -286,7 +298,7 @@ pub fn observe(
                 obs.er_u.add(er / us);
                 obs.ec_u.add(ec / us);
                 obs.erc_u += (er / us) * (ec / us);
-                obs.differ += (c[o].to_bits() != ev.r_out[o].to_bits()) as u64;
+                obs.differ += (c[k].to_bits() != ev.r_out[k].to_bits()) as u64;
                 cv - rv
             }
             None => {
@@ -328,14 +340,14 @@ pub fn observe(
         ma += eu.abs();
         mx = mx.max(eu.abs());
         cnt += 1;
-        while ki < keep.len() && keep[ki] < o {
+        while ki < keep.len() && keep[ki] < k {
             ki += 1;
         }
-        let kept = ki < keep.len() && keep[ki] == o;
+        let kept = ki < keep.len() && keep[ki] == k;
         if kept {
             obs.sample.push((eu, el, e));
             let ey = match ev.c_out {
-                Some(c) => (c[o] as f64 - ex.y) - ex.y_lo,
+                Some(c) => (c[k] as f64 - ex.y) - ex.y_lo,
                 None => er,
             };
             obs.pairs.push((ex.y + ex.y_lo, ey));
@@ -430,8 +442,106 @@ pub struct McCfg {
     pub per_output: bool,
 }
 
+/// A sampling plan for the programs' leaves and each program's leaf positions in it.
+pub struct Sparse {
+    pub plan: super::spec::Plan,
+    pub pos_r: Vec<u32>,
+    pub pos_c: Option<Vec<u32>>,
+}
+
+impl Sparse {
+    /// Sample only what the leaves of R (and C) read (`spec::Plan`).
+    pub fn new(st: &Setup, spec: &Spec, layouts: &[Layout]) -> Result<Sparse, String> {
+        let mut reads = BTreeMap::new();
+        st.r.leaf_reads(&mut reads);
+        if let Some(c) = st.c {
+            c.leaf_reads(&mut reads);
+        }
+        // PTXV_MC_DENSE: draw whole buffers (the planned and the whole sample agree on every
+        // element the leaves read; this is the check).
+        let plan = if std::env::var("PTXV_MC_DENSE").is_ok() {
+            super::spec::Plan::default()
+        } else {
+            super::spec::Plan::new(spec, layouts, &reads)?
+        };
+        Ok(Sparse {
+            pos_r: st.r.leaf_positions(&plan)?,
+            pos_c: st.c.map(|c| c.leaf_positions(&plan)).transpose()?,
+            plan,
+        })
+    }
+}
+
+/// Output values at the tracked outputs (`Setup::tracked`; untracked in `p`: 0).
+pub fn tracked_outputs(p: &Prog, w: &[crate::mma_lp::Operand], tracked: &[u32]) -> Vec<f32> {
+    tracked
+        .iter()
+        .map(|&o| p.outputs[o as usize].map_or(0.0, |i| w[i as usize].v as f32))
+        .collect()
+}
+
+/// Bytes one Tier 3 worker holds while evaluating an input (the sample, the programs' op
+/// states, the real-arithmetic evaluation of non-chain outputs), for the default thread
+/// count.
+pub fn bytes_per_worker(st: &Setup, sp: &Sparse, layouts: &[Layout]) -> u64 {
+    let op = std::mem::size_of::<crate::mma_lp::Operand>() as u64;
+    let ops = st.r.ops.len() as u64 + st.c.map_or(0, |c| c.ops.len() as u64);
+    let sample: u64 = layouts
+        .iter()
+        .map(|l| match sp.plan.elems.get(&l.name) {
+            Some(v) => 8 * v.len() as u64 + 4 * v.len() as u64,
+            None => 8 * l.elems() as u64 + l.bytes as u64,
+        })
+        .sum();
+    // Leaves + clean leaves + C, the real evaluation (Dd + f64 per op), outputs.
+    2 * sample + ops * (2 * op + 24) + 8 * st.tracked.len() as u64 + (64 << 20)
+}
+
+/// Threads for Tier 3 within a memory budget: 70% of what is left (`memory_budget`).
+pub fn threads_for_memory(per_worker: u64, want: usize) -> usize {
+    let n = (memory_budget() / 10 * 7 / per_worker.max(1)).max(1) as usize;
+    n.min(want.max(1))
+}
+
+/// Bytes this process may still allocate: the tightest cgroup on its path (memory.max less
+/// memory.current; systemd-run MemoryMax), else MemAvailable.
+pub fn memory_budget() -> u64 {
+    let mut lim = u64::MAX;
+    let num = |p: &std::path::Path| -> Option<u64> {
+        std::fs::read_to_string(p).ok()?.trim().parse::<u64>().ok()
+    };
+    if let Ok(cg) = std::fs::read_to_string("/proc/self/cgroup") {
+        for line in cg.lines() {
+            if let Some(path) = line.strip_prefix("0::") {
+                let mut p = std::path::PathBuf::from("/sys/fs/cgroup");
+                p.push(path.trim_start_matches('/'));
+                loop {
+                    if let (Some(max), Some(cur)) =
+                        (num(&p.join("memory.max")), num(&p.join("memory.current")))
+                    {
+                        lim = lim.min(max.saturating_sub(cur));
+                    }
+                    if !p.pop() || p == std::path::Path::new("/sys/fs/cgroup") {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let avail = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|m| {
+            m.lines()
+                .find(|l| l.starts_with("MemAvailable:"))
+                .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+        })
+        .map_or(u64::MAX, |kb| kb * 1024);
+    lim.min(avail)
+}
+
 /// Tier 3: evaluate both programs on `cfg.n` inputs.
 pub fn run(st: &Setup, spec: &Spec, layouts: &[Layout], cfg: &McCfg) -> Result<Obs, String> {
+    let sp = Sparse::new(st, spec, layouts)?;
     let next = AtomicU64::new(0);
     let out = Mutex::new(Obs::default());
     let err: Mutex<Option<String>> = Mutex::new(None);
@@ -447,7 +557,7 @@ pub fn run(st: &Setup, spec: &Spec, layouts: &[Layout], cfg: &McCfg) -> Result<O
                         break;
                     }
                     let t = cfg.first + i;
-                    match one(st, spec, layouts, t, cfg, &mut obs, &mut acc) {
+                    match one(st, &sp, spec, layouts, t, cfg, &mut obs, &mut acc) {
                         Ok(()) => {}
                         Err(e) => {
                             *err.lock().unwrap() = Some(e);
@@ -477,8 +587,10 @@ pub fn keep_set(n: usize, keep: usize, t: u64) -> Vec<usize> {
     v
 }
 
+#[allow(clippy::too_many_arguments)]
 fn one(
     st: &Setup,
+    sp: &Sparse,
     spec: &Spec,
     layouts: &[Layout],
     t: u64,
@@ -486,7 +598,7 @@ fn one(
     obs: &mut Obs,
     acc: &mut ExpAcc,
 ) -> Result<(), String> {
-    let smp = super::spec::sample(spec, layouts, t)?;
+    let smp = super::spec::sample_with(spec, layouts, t, Some(&sp.plan))?;
     let mut causes: Vec<String> = Vec::new();
     if smp.ood.overflow > 0 {
         causes.push("input overflow (saturated or infinite)".into());
@@ -497,9 +609,9 @@ fn one(
     if smp.ood.bad_scale > 0 {
         causes.push("zero ue4m3 scale".into());
     }
-    let mut wr = st.r.leaves(&smp.bytes)?;
+    let mut wr = st.r.leaves_at(&smp.bytes, &sp.pos_r)?;
     st.r.eval_into(&mut wr);
-    let r_out = outputs(st.r, &wr);
+    let r_out = tracked_outputs(st.r, &wr, &st.tracked);
     for e in ood_events(st.r, &wr) {
         causes.push(e.to_string());
     }
@@ -507,18 +619,18 @@ fn one(
     let wx = if smp.clean.is_empty() {
         None
     } else {
-        let mut w = st.r.leaves(&smp.clean_bytes())?;
+        let mut w = st.r.leaves_at(&smp.clean_bytes(), &sp.pos_r)?;
         st.r.eval_into(&mut w);
         Some(w)
     };
     let c_vals = match st.c {
         Some(c) => {
-            let mut wc = c.leaves(&smp.bytes)?;
+            let mut wc = c.leaves_at(&smp.bytes, sp.pos_c.as_deref().unwrap_or(&[]))?;
             c.eval_into(&mut wc);
             for e in ood_events(c, &wc) {
                 causes.push(e.to_string());
             }
-            Some(outputs(c, &wc))
+            Some(tracked_outputs(c, &wc, &st.tracked))
         }
         None => None,
     };
@@ -531,7 +643,7 @@ fn one(
             *obs.ood.entry(c).or_default() += 1;
         }
     }
-    let keep = keep_set(st.r.outputs.len(), cfg.keep, t);
+    let keep = keep_set(st.tracked.len(), cfg.keep, t);
     let nf0 = obs.nonfinite;
     obs.cur = t;
     observe(

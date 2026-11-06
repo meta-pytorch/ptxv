@@ -75,6 +75,10 @@ hardware counterexample or a false positive:
 2. **These reads happen in issue order.** ptxas puts a read scoreboard only on the last STG of
    a burst. An untracked asynchronous read is attached to the next read that has a read
    scoreboard; it is also released when its own instruction's write scoreboard is waited on.
+   Any later memory-pipe read scoreboard covers it, not only the next one (L-SB-ORDER,
+   probes/sb_mio_order: `STS` with none, `LDG` with rd=SB2, `STS` with rd=SB4, then the
+   address overwritten after a wait on SB4 only: 0/1000 runs wrong on GB300; the scoreboard on
+   the first STS instead: 200/200 wrong).
 3. **Vector instructions read uniform operands at issue**, with or without a read scoreboard.
    `LDTM tmem[UR4]` is followed immediately by `R2UR UR4, …` with no wait (6 false positives
    before this rule); in rung 1c ptxas overwrites the `desc[UR6]` of an `STG` that has

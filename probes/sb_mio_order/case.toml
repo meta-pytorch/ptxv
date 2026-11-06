@@ -1,0 +1,46 @@
+name = "probe_sb_mio_order"
+description = """
+Probe for L-SB-ORDER (scoreboard rule 2, docs/sass-ctrl.md): does a read scoreboard released
+by a later memory-pipe instruction cover the operand reads of earlier ones (STS, LDG), so that
+an overwrite of their address register needs to wait only for the last one? quack rmsnorm_bwd
+N=256 relies on it: `@P5 STS.64 [R2], RZ`, `@!P4 LDG ... (rd SB2)`, `@P5 STS.64 [R2+0x1100], RZ
+(rd SB4)`, `@!P4 LDC.64 R2 (wait SB4)`. Not a plain `ptxv probe`: patch.py builds the windows
+from the ptxas cubin of kernel.ptx (see its header); run each with
+`ptxv hw-worker probes/sb_mio_order <variant.cubin> --runs N --scrub --expected expected.bin`.
+Every thread's slots must read {v, v, 0, 0} (v = 0x5a00c580 + tid): an STS that read its
+address after the LDC wrote 0xc00 (smem 0x800) misses its slot."""
+ptx = "kernel.ptx"
+entry = "sb_mio_order"
+grid = [1184, 1, 1]
+block = [256, 1, 1]
+dynamic_smem = 65536
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1212416]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "u32"
+value = 3072
+
+[[variants]]
+id = "good"
+summary = "the unpatched skeleton (the simulator runs this one)"
+expect = ["clean"]

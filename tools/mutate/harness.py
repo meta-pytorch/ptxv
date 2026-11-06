@@ -85,6 +85,20 @@ def capped(
     return p.returncode, p.stdout, p.stderr, time.time() - t0
 
 
+_CERT_RACE = re.compile(r"^certificate run race \((.*?)\): (.+?):(?: |$)")
+
+
+def cert_run_race(err: str) -> str | None:
+    """The certificate whose own run found a race that stands (`ptxv check --certify` prints
+    `certificate run race (WHAT): SIG: ...` before exploring: a race in a feasible execution,
+    in the LDS/STS-strong model), as `WHAT: SIG`, or None."""
+    for line in err.splitlines():
+        m = _CERT_RACE.match(line)
+        if m:
+            return f"{m.group(1)}: {m.group(2)}"
+    return None
+
+
 def classify_check(rc: int, out: str, err: str, timeout_hit: bool) -> dict:
     """One `ptxv check --json` run -> {status, got, ...}.
 
@@ -93,6 +107,13 @@ def classify_check(rc: int, out: str, err: str, timeout_hit: bool) -> dict:
     case does not load / lift / compile).
     """
     if timeout_hit or rc in (124, 137) or rc < 0:
+        # The certificate's report comes before the exploration that ran out of time.
+        if w := cert_run_race(err):
+            return {
+                "status": "caught",
+                "why": f"certificate run reported a race ({w}); exploration timed out rc={rc}",
+                "cert_run": True,
+            }
         return {"status": "budget", "why": f"timeout/killed rc={rc}"}
     try:
         doc = json.loads(out.strip().splitlines()[-1]) if out.strip() else None
@@ -121,6 +142,14 @@ def classify_check(rc: int, out: str, err: str, timeout_hit: bool) -> dict:
     }
     if bad:
         res["status"] = "caught"
+    elif not v.get("complete") and (w := cert_run_race(err)):
+        # The certificate's run is one feasible execution: a race it reported (with LDS/STS
+        # strong, as ptxv's own strong re-check) is a finding even when the exploration that
+        # replaces the certificate runs out of budget before reaching it (r3_grouped_mm's
+        # epilogue mutants: 152 CTAs).
+        res["status"] = "caught"
+        res["why"] = f"certificate run reported a race ({w})"
+        res["cert_run"] = True
     elif not v.get("complete"):
         res["status"] = "budget"
         res["why"] = "state budget"
@@ -153,6 +182,8 @@ def run_check(
     ]
     if certify:
         cmd.append("--certify")
+    if getattr(a, "slices", False):
+        cmd.append("--slices")
     rc, out, err, secs = capped(cmd, a.mem, a.timeout, {"PTXV_THREADS": str(a.threads)})
     r = classify_check(rc, out, err, secs >= a.timeout)
     r.update(
@@ -162,6 +193,8 @@ def run_check(
             "wall": round(secs, 2),
         }
     )
+    if getattr(a, "slices", False):
+        r["slices"] = True
     return r
 
 
@@ -352,6 +385,17 @@ def cmd_check(a):
     ):  # drop rejected runs (e.g. transient tool failures) and run them again
         prev = [r for r in prev if r["status"] != "rejected"]
         path.write_text("".join(json.dumps(r) + "\n" for r in prev))
+    mrx = re.compile(a.mutants) if getattr(a, "mutants", None) else None
+    crx = re.compile(a.only) if a.only else None
+    if getattr(a, "redo", False):
+        # Rerun the selected mutants: their old records go (the modes being run only).
+        sel = lambda r: (
+            (not crx or crx.search(r["case"]))
+            and (not mrx or mrx.search(r["mutant"]))
+            and r["mode"] in a.modes
+        )
+        prev = [r for r in prev if not sel(r)]
+        path.write_text("".join(json.dumps(r) + "\n" for r in prev))
     done = {(r["case"], r["mutant"], r["front"], r["mode"]) for r in prev}
     # With --certify, a failed certificate falls back to exploration, so plain exploration
     # adds information only where --certify said clean: --explore-all to run it everywhere.
@@ -363,7 +407,7 @@ def cmd_check(a):
     }
     jobs = []
     for key, d in mutant_dirs(runs, a.only):
-        if key not in el:
+        if key not in el or (mrx and not mrx.search(d.name)):
             continue
         for f in el[key]["fronts"]:
             for mode in a.modes:
@@ -1178,6 +1222,7 @@ def main(argv=None):
         "--cases", help="case list file (path [base-variant] [arch] per line)"
     )
     ap.add_argument("--only", help="regex on the case key")
+    ap.add_argument("--mutants", help="check: regex on the mutant name")
     ap.add_argument("--ops", help="comma list of mutation operators (gen)")
     ap.add_argument(
         "--modes",
@@ -1192,6 +1237,18 @@ def main(argv=None):
     )
     ap.add_argument(
         "--retry-rejected", action="store_true", help="check: rerun rejected runs"
+    )
+    ap.add_argument(
+        "--slices",
+        action="store_true",
+        help="check: pass --slices to ptxv check (independent clusters one at a time, "
+        "E-CTA-INDEP); with --only for the cases whose whole launch is too large",
+    )
+    ap.add_argument(
+        "--redo",
+        action="store_true",
+        help="check: rerun the selected (--only) mutants even if they have a record; the "
+        "new record replaces the old one",
     )
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--threads", type=int, default=2, help="PTXV_THREADS per check")

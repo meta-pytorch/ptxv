@@ -85,7 +85,14 @@ $H report --out RUNS/report.md
 - **GPUs.** `--gpus` sets `PTXV_GPUS`. Use idle GPUs only (never one in use by others). A
   run that finds every allowed GPU busy waits and retries. Multi-GPU cases need two GPUs in
   the list.
-- `--only REGEX` restricts every step to some case keys.
+- `--only REGEX` restricts every step to some case keys; `--mutants REGEX` (check) to some
+  mutants, and `--redo` reruns their check records.
+- `--slices` (check) passes `--slices` to ptxv: one cluster at a time (E-CTA-INDEP), for
+  cases whose whole launch is too large to certify or explore within the limits (e.g.
+  `r3_grouped_mm`, 152 CTAs): `--only r3_grouped_mm --slices`.
+- A race found by a failed certificate's own run (ptxv prints `certificate run race (...)`
+  before it explores; a feasible execution, LDS/STS-strong model) makes a run `caught` even
+  when the exploration after it runs out of states or time (`cert_run` in check.jsonl).
 
 ## Reading the results
 
@@ -238,6 +245,16 @@ read it.**
   front-end's attribution of the `UTMASTG` source read (`complete_tma_store`) or its address
   range for this tensor map, against the `STS.128` addresses. This needs a ptxv-side trace
   of the store's shadow accesses.
+- **Fixed** (fixtures/e_gmm_epilogue_reuse, E-ASYNC-STEP): a wait covers only the bulk groups
+  flushed on its own scoreboard. The certificate's run now reports the race (`race:proxy`),
+  so the certificate fails. Plain `--certify` then explores the whole launch (152 CTAs) and
+  ends as `budget`; the certificate runs alone take longer than the 150 s limit. With
+  `harness.py check --slices` (ptxv `--certify --slices`, E-CTA-INDEP) the first GEMM
+  cluster's certificate run reports the race after ~5 s, ptxv prints it as `certificate run
+  race (cluster 1048576): race:proxy:3737:3581: ...` before exploring, and the harness
+  classifies both mutants as `caught` (`cert_run`), 2026-11-05. The good kernel certifies
+  under `--slices` (77 clusters, contract-only). ptxv's verdict also keeps such a race when
+  the exploration that replaces the certificate does not complete (`merge_run_races`).
 
 ### Known misses, re-found
 

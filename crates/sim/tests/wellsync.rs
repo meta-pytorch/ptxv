@@ -139,6 +139,11 @@ const MUST_CERTIFY: &[(&str, &str, &str)] = &[
     ("r1b_pipeline", "good", "sass"),
     ("r1c_cluster", "good", "sass"),
     ("r1c_2sm", "good", "sass"),
+    // cta_group::2 M = 128 (Layout B) and M = 128 N = 8 (probes/tc_m128).
+    ("e_mma_pair_m128", "good", "ptx"),
+    ("e_mma_pair_m128", "good", "sass"),
+    ("e_mma_m128_n8", "good", "ptx"),
+    ("e_mma_m128_n8", "good", "sass"),
     ("r1e_pdl", "good", "sass"),
     ("e_bararv", "good", "sass"),
     ("e_barover", "good", "sass"),
@@ -230,6 +235,30 @@ fn branch_on_unwritten_predicate_is_reported() {
 /// control-word wait on another scoreboard (the `BSYNC`'s SB3) used to drain every bulk
 /// group and hide it; the certificate run must now report the race. The good kernel still
 /// certifies (contract-only: E-BULK-EXIT).
+/// A failed certificate whose own run found a race: when the exploration that replaces it
+/// runs out of budget first, the verdict still reports the race (a feasible execution
+/// reaches it; tools/mutate classifies r3_grouped_mm's miss-3 mutants by it).
+#[test]
+fn certificate_run_race_survives_an_incomplete_exploration() {
+    let case = Case::load(root().join("fixtures/r0_tma_sum")).unwrap();
+    for front in ["ptx", "sass"] {
+        let v = ptxv_sim::wellsync::check_certified(machine(&case, "B02", front), 2);
+        assert!(!v.complete, "{front}");
+        assert!(
+            v.classes().contains(&"race".to_string()),
+            "{front}: {:#?}",
+            v
+        );
+        assert!(
+            v.notes
+                .iter()
+                .any(|n| n.contains("found by the certificate's run")),
+            "{front}: {:?}",
+            v.notes
+        );
+    }
+}
+
 #[test]
 fn tma_store_wait_counts_its_own_scoreboard() {
     if vendor_missing(&["r3_grouped_mm"]) {
@@ -762,5 +791,33 @@ fn fadd_orders_outside_the_outputs_are_refused() {
             .any(|r| r.contains("C-FADD") && r.contains("different values")),
         "{:#?}",
         o.reasons
+    );
+}
+
+/// E-DESC-VERSION: Triton 3.5 leaves a tcgen05 shared-memory descriptor's fixed bits 46-48 at
+/// 0. The finding checks a descriptor value, which the certificate makes the same in every
+/// schedule, so it passes through the certificate like a contract finding: the kernel
+/// certifies (one run for all schedules) and the finding is still reported.
+#[test]
+fn desc_version_finding_does_not_break_the_certificate() {
+    let case = Case::load(root().join("fixtures/c_triton_mm_bf16")).unwrap();
+    let v = ptxv_sim::wellsync::check_certified(machine(&case, "good", "sass"), 100_000);
+    assert!(
+        v.notes.iter().any(|n| n.contains("well-synchronized")),
+        "{:?}",
+        v.notes
+    );
+    assert!(
+        v.findings
+            .iter()
+            .any(|f| f.sig.starts_with("desc-version:")),
+        "{:?}",
+        v.findings.iter().map(|f| &f.sig).collect::<Vec<_>>()
+    );
+    assert!(
+        v.findings
+            .iter()
+            .all(|f| f.kind != "violation" || f.sig.starts_with("desc-version:")),
+        "only the descriptor finding"
     );
 }

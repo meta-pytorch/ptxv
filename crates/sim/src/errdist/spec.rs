@@ -1222,41 +1222,165 @@ fn put_code(buf: &mut [u8], fmt: Format, dtype: &str, i: usize, code: u32) {
     }
 }
 
-/// The real values of one tensor for one sample (element distribution x axis scales).
-fn real_values(t: &TensorSpec, n: usize, shape: &[u64], r: &mut Rng) -> Vec<f64> {
-    let mut mult = vec![1.0f64; n];
-    let strides: Vec<u64> = (0..shape.len())
-        .map(|a| shape[a + 1..].iter().product())
-        .collect();
-    let mut axes: Vec<(usize, Vec<f64>)> = Vec::new();
-    for s in &t.scales {
-        let len = *shape.get(s.axis).unwrap_or(&1) as usize;
-        axes.push((s.axis, (0..len).map(|_| s.dist.sample(r)).collect()));
-    }
-    if let Some(o) = &t.outliers {
-        let len = *shape.get(o.axis).unwrap_or(&1) as usize;
-        axes.push((
-            o.axis,
-            (0..len)
-                .map(|_| if r.unit() < o.prob { o.factor } else { 1.0 })
-                .collect(),
-        ));
-    }
-    for (ax, v) in &axes {
-        if *ax >= shape.len() {
-            continue;
-        }
-        for (i, m) in mult.iter_mut().enumerate() {
-            let idx = (i as u64 / strides[*ax]) % shape[*ax];
-            *m *= v[idx as usize];
-        }
-    }
-    (0..n).map(|i| mult[i] * t.dist.sample(r)).collect()
+/// Which elements of each input buffer a program reads (`Plan::new`): a sample then draws
+/// only those. Buffers absent from `elems` are drawn whole. Elements are drawn from
+/// counter-based streams keyed (seed, sample, buffer, element), so a value does not depend on
+/// which other elements are drawn: a planned sample agrees with the full one on every element
+/// it holds.
+#[derive(Clone, Debug, Default)]
+pub struct Plan {
+    /// Per sparse buffer: the sorted element indices drawn (a sample's bytes hold them in this
+    /// order: compact position j is element `elems[name][j]`).
+    pub elems: BTreeMap<String, Vec<u64>>,
+    /// Per sparse block-scaled code buffer: its scale blocks that are drawn, (scale byte,
+    /// code elements).
+    pub blocks: BTreeMap<String, Vec<(u64, Vec<u64>)>>,
 }
 
-/// Draw input sample `idx` for every buffer in `layouts`.
-// ASSUME(N-ERRDIST-IID): the sampler draws exactly the spec's law.
+impl Plan {
+    /// From the element indices the programs' leaves read, per buffer name. Block-scaled
+    /// buffers widen to whole scale blocks (the block maximum sets the scale) and their scale
+    /// buffer to those blocks' bytes; packed e2m1 to both elements of a byte; a buffer whose
+    /// recipe needs every element (nvfp4's global scale) is drawn whole.
+    pub fn new(
+        spec: &Spec,
+        layouts: &[Layout],
+        reads: &BTreeMap<String, Vec<u64>>,
+    ) -> Result<Plan, String> {
+        let mut p = Plan::default();
+        let scale_bufs: BTreeMap<String, String> = spec.scale_buffers().into_iter().collect();
+        for l in layouts {
+            if scale_bufs.contains_key(&l.name) {
+                continue;
+            }
+            let Some(t) = spec.tensor(&l.name) else {
+                continue;
+            };
+            let mut need: Vec<u64> = reads.get(&l.name).cloned().unwrap_or_default();
+            need.sort_unstable();
+            need.dedup();
+            let n = l.elems() as u64;
+            if need.iter().any(|&i| i >= n) {
+                return Err(format!("{}: a leaf reads past the buffer", l.name));
+            }
+            match &t.quant {
+                Quant::Mx { block, scales, .. }
+                | Quant::Nvfp4 {
+                    block,
+                    scales,
+                    global_scale: false,
+                } => {
+                    let sneed: Vec<u64> = {
+                        let mut v = reads.get(scales).cloned().unwrap_or_default();
+                        v.sort_unstable();
+                        v.dedup();
+                        v
+                    };
+                    let blocks: Vec<(u64, Vec<u64>)> = blocks_of(l, *block)?
+                        .into_iter()
+                        .filter(|(s, idxs)| {
+                            sneed.binary_search(s).is_ok()
+                                || idxs.iter().any(|i| need.binary_search(i).is_ok())
+                        })
+                        .collect();
+                    let mut e: Vec<u64> = blocks.iter().flat_map(|b| b.1.iter().copied()).collect();
+                    if l.fmt == Format::E2m1 {
+                        e.extend(e.clone().iter().map(|i| i ^ 1).filter(|&i| i < n));
+                    }
+                    e.sort_unstable();
+                    e.dedup();
+                    let mut s: Vec<u64> = blocks.iter().map(|b| b.0).collect();
+                    s.sort_unstable();
+                    s.dedup();
+                    p.elems.insert(l.name.clone(), e);
+                    p.elems.insert(scales.clone(), s);
+                    p.blocks.insert(l.name.clone(), blocks);
+                }
+                Quant::Nvfp4 { .. } => {} // global scale: every element
+                _ => {
+                    if l.fmt == Format::E2m1 {
+                        need.extend(need.clone().iter().map(|i| i ^ 1).filter(|&i| i < n));
+                        need.sort_unstable();
+                        need.dedup();
+                    }
+                    p.elems.insert(l.name.clone(), need);
+                }
+            }
+        }
+        Ok(p)
+    }
+
+    /// The compact position of element `i` of buffer `name` (`i` itself for a whole buffer).
+    pub fn position(&self, name: &str, i: u64) -> Option<u64> {
+        match self.elems.get(name) {
+            None => Some(i),
+            Some(v) => v.binary_search(&i).ok().map(|j| j as u64),
+        }
+    }
+
+    /// Elements drawn, over all buffers (None: whole buffers).
+    pub fn drawn(&self) -> usize {
+        self.elems.values().map(|v| v.len()).sum()
+    }
+}
+
+/// Bytes of `m` elements of format `f` in a compact buffer.
+fn compact_bytes(f: Format, dtype: &str, m: usize) -> usize {
+    match f {
+        Format::E2m1 => m.div_ceil(2),
+        Format::F32 => 4 * m,
+        Format::Bf16 | Format::F16 => 2 * m,
+        _ => {
+            let _ = dtype;
+            m
+        }
+    }
+}
+
+/// The base of one tensor's per-element streams for one sample.
+fn stream_base(seed: u64, sample: u64, name: &str) -> u64 {
+    let mut x =
+        seed ^ sample.wrapping_mul(0xd1b5_4a32_d192_ed03) ^ special::hash_str(name).rotate_left(17);
+    special::splitmix(&mut x)
+}
+
+/// The stream of element (or axis index) `i` under `base`.
+fn keyed(base: u64, i: u64) -> Rng {
+    let mut x = base ^ i.wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(29);
+    Rng::new(special::splitmix(&mut x))
+}
+
+/// The real value of element `i` of one tensor for one sample (element distribution x axis
+/// scales x outlier channels), from its own stream.
+fn real_value(t: &TensorSpec, i: u64, shape: &[u64], strides: &[u64], bases: &[u64]) -> f64 {
+    let mut m = 1.0f64;
+    let coord = |ax: usize| (i / strides[ax]) % shape[ax];
+    for (k, s) in t.scales.iter().enumerate() {
+        if s.axis < shape.len() {
+            m *= s.dist.sample(&mut keyed(bases[1 + k], coord(s.axis)));
+        }
+    }
+    if let Some(o) = &t.outliers {
+        if o.axis < shape.len() && keyed(bases[1 + t.scales.len()], coord(o.axis)).unit() < o.prob {
+            m *= o.factor;
+        }
+    }
+    m * t.dist.sample(&mut keyed(bases[0], i))
+}
+
+/// Draw input sample `idx` for every buffer in `layouts` (every element).
 pub fn sample(spec: &Spec, layouts: &[Layout], idx: u64) -> Result<Sample, String> {
+    sample_with(spec, layouts, idx, None)
+}
+
+/// Draw input sample `idx`: with a plan, only its elements (compact buffers, `Plan`).
+// ASSUME(N-ERRDIST-IID): the sampler draws exactly the spec's law.
+pub fn sample_with(
+    spec: &Spec,
+    layouts: &[Layout],
+    idx: u64,
+    plan: Option<&Plan>,
+) -> Result<Sample, String> {
     let mut out = BTreeMap::new();
     let mut clean = BTreeMap::new();
     let mut ood = Ood::default();
@@ -1269,31 +1393,65 @@ pub fn sample(spec: &Spec, layouts: &[Layout], idx: u64) -> Result<Sample, Strin
         let t = spec
             .tensor(&l.name)
             .ok_or_else(|| format!("no distribution for input buffer {}", l.name))?;
-        let mut r = Rng::stream(spec.seed, idx, &l.name);
         let n = l.elems();
         let shape = l.logical_shape(t);
+        let strides: Vec<u64> = (0..shape.len())
+            .map(|a| shape[a + 1..].iter().product())
+            .collect();
+        let sparse = plan.and_then(|p| p.elems.get(&l.name));
+        // Element at compact position j.
+        let elem = |j: usize| sparse.map_or(j as u64, |v| v[j]);
+        let m = sparse.map_or(n, |v| v.len());
+        let bases: Vec<u64> = std::iter::once(stream_base(spec.seed, idx, &l.name))
+            .chain(
+                (0..t.scales.len())
+                    .map(|k| stream_base(spec.seed, idx, &format!("{}#scale{k}", l.name))),
+            )
+            .chain(std::iter::once(stream_base(
+                spec.seed,
+                idx,
+                &format!("{}#outliers", l.name),
+            )))
+            .collect();
         // Joint (value, error) pairs: the value comes from the pair.
         let (x, pair_err) = match &t.error {
             Some(InputError::Pairs { pairs, .. }) => {
-                let mut re = Rng::stream(spec.seed, idx, &format!("{}#pair", l.name));
-                let k: Vec<usize> = (0..n)
-                    .map(|_| re.below(pairs.len() as u64) as usize)
+                let b = stream_base(spec.seed, idx, &format!("{}#pair", l.name));
+                let k: Vec<usize> = (0..m)
+                    .map(|j| keyed(b, elem(j)).below(pairs.len() as u64) as usize)
                     .collect();
                 (
                     k.iter().map(|&j| pairs[j][0]).collect::<Vec<f64>>(),
                     Some(k.iter().map(|&j| pairs[j][1]).collect::<Vec<f64>>()),
                 )
             }
-            _ => (real_values(t, n, &shape, &mut r), None),
+            _ => (
+                (0..m)
+                    .map(|j| real_value(t, elem(j), &shape, &strides, &bases))
+                    .collect::<Vec<f64>>(),
+                None,
+            ),
         };
-        let mut buf = vec![0u8; l.bytes];
-        ood.elements += n as u64;
+        let bytes = if sparse.is_some() {
+            compact_bytes(l.fmt, &l.dtype, m)
+        } else {
+            l.bytes
+        };
+        let mut buf = vec![0u8; bytes];
+        ood.elements += m as u64;
         if t.error.is_some() && !matches!(t.quant, Quant::Round) {
             return Err(format!(
                 "{}: an input error needs quant round (a float buffer)",
                 l.name
             ));
         }
+        // Compact position of element i (block recipes).
+        let pos = |i: u64| -> usize {
+            match sparse {
+                None => i as usize,
+                Some(v) => v.binary_search(&i).expect("planned block element"),
+            }
+        };
         match &t.quant {
             Quant::Round => {
                 let f = match l.dtype.as_str() {
@@ -1307,54 +1465,57 @@ pub fn sample(spec: &Spec, layouts: &[Layout], idx: u64) -> Result<Sample, Strin
                         ));
                     }
                 };
-                for (i, v) in x.iter().enumerate() {
+                for (j, v) in x.iter().enumerate() {
                     let (q, of) = f.round(*v, false);
                     ood.overflow += of as u64;
                     ood.nonfinite += !q.is_finite() as u64;
-                    put_code(&mut buf, f, &l.dtype, i, f.code(q));
+                    put_code(&mut buf, f, &l.dtype, j, f.code(q));
                 }
                 // The kernel's view: round_dtype(value + e); the reference keeps `buf`.
                 if let Some(err) = &t.error {
-                    let mut re = Rng::stream(spec.seed, idx, &format!("{}#err", l.name));
-                    let mut nbuf = vec![0u8; l.bytes];
+                    let be = stream_base(spec.seed, idx, &format!("{}#err", l.name));
+                    let mut nbuf = vec![0u8; bytes];
                     let lin = err.linear();
-                    for (i, v) in x.iter().enumerate() {
+                    for (j, v) in x.iter().enumerate() {
                         let (q, _) = f.round(*v, false);
                         let noisy = match (err, &pair_err, lin) {
                             (InputError::Round { format }, _, _) => format.round(q, false).0,
-                            (_, Some(pe), _) => q + pe[i],
+                            (_, Some(pe), _) => q + pe[j],
                             (_, None, Some([a, b, s0, s1])) => {
-                                q + a + b * q + (s0 * s0 + s1 * s1 * q * q).sqrt() * re.normal()
+                                q + a
+                                    + b * q
+                                    + (s0 * s0 + s1 * s1 * q * q).sqrt()
+                                        * keyed(be, elem(j)).normal()
                             }
                             _ => q,
                         };
                         let (qn, of) = f.round(noisy, false);
                         ood.overflow += of as u64;
                         ood.nonfinite += !qn.is_finite() as u64;
-                        put_code(&mut nbuf, f, &l.dtype, i, f.code(qn));
+                        put_code(&mut nbuf, f, &l.dtype, j, f.code(qn));
                     }
                     clean.insert(l.name.clone(), std::mem::replace(&mut buf, nbuf));
                 }
             }
             Quant::Codes { format } => {
                 let f = format.unwrap_or(l.fmt);
-                for (i, v) in x.iter().enumerate() {
+                for (j, v) in x.iter().enumerate() {
                     if *v < 0.0 || v.fract() != 0.0 || *v >= 2f64.powi(f.width() as i32) {
                         return Err(format!("{}: quant codes: {v} is not a {f:?} code", l.name));
                     }
                     ood.nonfinite += !f.value(*v as u32).is_finite() as u64;
-                    put_code(&mut buf, f, &l.dtype, i, *v as u32);
+                    put_code(&mut buf, f, &l.dtype, j, *v as u32);
                 }
             }
             Quant::Cast { format } => {
-                for (i, v) in x.iter().enumerate() {
+                for (j, v) in x.iter().enumerate() {
                     let (q, of) = format.round(*v, true);
                     ood.overflow += of as u64;
-                    put_code(&mut buf, *format, &l.dtype, i, format.code(q));
+                    put_code(&mut buf, *format, &l.dtype, j, format.code(q));
                 }
             }
             Quant::Mx {
-                elem,
+                elem: ef,
                 block,
                 scales,
                 scale_rule,
@@ -1362,19 +1523,22 @@ pub fn sample(spec: &Spec, layouts: &[Layout], idx: u64) -> Result<Sample, Strin
                 let sl = by_name
                     .get(scales.as_str())
                     .ok_or_else(|| format!("{}: scale buffer {scales} is not an input", l.name))?;
-                let mut sbuf = vec![0u8; sl.bytes];
-                for (sbyte, idxs) in blocks_of(l, *block)? {
-                    let amax = idxs
-                        .iter()
-                        .map(|&i| x[i as usize].abs())
-                        .fold(0.0, f64::max);
-                    let e = scale_rule.exponent(amax, *elem);
-                    sbuf[sbyte as usize] = (e + 127) as u8;
+                let ssparse = plan.and_then(|p| p.elems.get(scales));
+                let mut sbuf = vec![0u8; ssparse.map_or(sl.bytes, |v| v.len())];
+                let blocks = match plan.and_then(|p| p.blocks.get(&l.name)) {
+                    Some(b) => b.clone(),
+                    None => blocks_of(l, *block)?,
+                };
+                for (sbyte, idxs) in blocks {
+                    let amax = idxs.iter().map(|&i| x[pos(i)].abs()).fold(0.0, f64::max);
+                    let e = scale_rule.exponent(amax, *ef);
+                    let sp = ssparse.map_or(sbyte as usize, |v| v.binary_search(&sbyte).unwrap());
+                    sbuf[sp] = (e + 127) as u8;
                     let s = 2f64.powi(e);
                     for &i in &idxs {
-                        let (q, of) = elem.round(x[i as usize] / s, true);
+                        let (q, of) = ef.round(x[pos(i)] / s, true);
                         ood.overflow += of as u64;
-                        put_code(&mut buf, *elem, &l.dtype, i as usize, elem.code(q));
+                        put_code(&mut buf, *ef, &l.dtype, pos(i), ef.code(q));
                     }
                 }
                 out.insert(scales.clone(), sbuf);
@@ -1387,7 +1551,8 @@ pub fn sample(spec: &Spec, layouts: &[Layout], idx: u64) -> Result<Sample, Strin
                 let sl = by_name
                     .get(scales.as_str())
                     .ok_or_else(|| format!("{}: scale buffer {scales} is not an input", l.name))?;
-                let mut sbuf = vec![0u8; sl.bytes];
+                let ssparse = plan.and_then(|p| p.elems.get(scales));
+                let mut sbuf = vec![0u8; ssparse.map_or(sl.bytes, |v| v.len())];
                 let gs = if *global_scale {
                     let a = x.iter().fold(0.0f64, |m, v| m.max(v.abs()));
                     if a > 0.0 {
@@ -1398,25 +1563,27 @@ pub fn sample(spec: &Spec, layouts: &[Layout], idx: u64) -> Result<Sample, Strin
                 } else {
                     1.0
                 };
-                for (sbyte, idxs) in blocks_of(l, *block)? {
-                    let amax = idxs
-                        .iter()
-                        .map(|&i| x[i as usize].abs())
-                        .fold(0.0, f64::max);
+                let blocks = match plan.and_then(|p| p.blocks.get(&l.name)) {
+                    Some(b) => b.clone(),
+                    None => blocks_of(l, *block)?,
+                };
+                for (sbyte, idxs) in blocks {
+                    let amax = idxs.iter().map(|&i| x[pos(i)].abs()).fold(0.0, f64::max);
                     let (s, of) = Format::Ue4m3.round(amax / (6.0 * gs), true);
                     ood.overflow += of as u64;
                     let sc = Format::Ue4m3.code(s);
                     ood.bad_scale += (sc == 0) as u64;
-                    sbuf[sbyte as usize] = sc as u8;
+                    let sp = ssparse.map_or(sbyte as usize, |v| v.binary_search(&sbyte).unwrap());
+                    sbuf[sp] = sc as u8;
                     let div = if s == 0.0 { 1.0 } else { s * gs };
                     for &i in &idxs {
-                        let (q, of) = Format::E2m1.round(x[i as usize] / div, true);
+                        let (q, of) = Format::E2m1.round(x[pos(i)] / div, true);
                         ood.overflow += of as u64;
                         put_code(
                             &mut buf,
                             Format::E2m1,
                             &l.dtype,
-                            i as usize,
+                            pos(i),
                             Format::E2m1.code(q),
                         );
                     }
@@ -1464,6 +1631,77 @@ fn blocks_of(l: &Layout, block: usize) -> Result<Vec<(u64, Vec<u64>)>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn planned_sample_agrees_with_the_whole_one() {
+        // Axis scales, outlier channels, an input error, MX and NVFP4 block recipes, packed
+        // e2m1: every element a plan draws has the whole sample's code.
+        let spec = Spec::from_value(
+            serde_json::json!({
+                "version": 1, "seed": 3,
+                "tensors": {
+                    "x": {"dist": {"kind": "laplace"}, "shape": [8, 64],
+                          "scales": [{"axis": 0, "dist": {"kind": "log_normal", "sigma": 0.5}}],
+                          "outliers": {"axis": 1, "prob": 0.1, "factor": 8.0},
+                          "error": {"kind": "relative", "std": 1e-3}},
+                    "a": {"dist": {"kind": "normal"},
+                          "quant": {"kind": "mx", "elem": "e4m3", "block": 32, "scales": "sa"}},
+                    "b": {"dist": {"kind": "normal"},
+                          "quant": {"kind": "nvfp4", "block": 16, "scales": "sb"}}
+                }
+            }),
+            std::path::Path::new("."),
+        )
+        .unwrap();
+        let lay = |name: &str, dtype: &str, n: u64, bytes: usize, fmt| Layout {
+            name: name.into(),
+            dtype: dtype.into(),
+            shape: vec![n],
+            bytes,
+            fmt,
+            blocks: None,
+        };
+        let layouts = vec![
+            lay("x", "f32", 512, 2048, Format::F32),
+            lay("a", "u8", 256, 256, Format::E4m3),
+            lay("sa", "u8", 8, 8, Format::Ue8m0),
+            lay("b", "u8", 256, 128, Format::E2m1),
+            lay("sb", "u8", 16, 16, Format::Ue4m3),
+        ];
+        let reads: BTreeMap<String, Vec<u64>> = [
+            ("x".to_string(), vec![3, 64, 65, 300, 511]),
+            ("a".to_string(), vec![5, 200]),
+            ("b".to_string(), vec![17, 254]),
+        ]
+        .into_iter()
+        .collect();
+        let plan = Plan::new(&spec, &layouts, &reads).unwrap();
+        assert_eq!(plan.elems["a"].len(), 64, "two MX blocks of 32");
+        assert_eq!(plan.elems["sb"], vec![1, 15]);
+        for t in 0..4 {
+            let full = sample(&spec, &layouts, t).unwrap();
+            let part = sample_with(&spec, &layouts, t, Some(&plan)).unwrap();
+            for (name, fmt) in [
+                ("x", Format::F32),
+                ("a", Format::E4m3),
+                ("sa", Format::Ue8m0),
+                ("b", Format::E2m1),
+                ("sb", Format::Ue4m3),
+            ] {
+                for i in plan.elems[name].iter().copied() {
+                    let j = plan.position(name, i).unwrap();
+                    let d = |b: &BTreeMap<String, Vec<u8>>, k: u64| {
+                        crate::errdist::chain::decode(&b[name], k, fmt).unwrap().v
+                    };
+                    assert_eq!(d(&full.bytes, i).to_bits(), d(&part.bytes, j).to_bits());
+                    if name == "x" {
+                        let (fc, pc) = (full.clean_bytes(), part.clean_bytes());
+                        assert_eq!(d(&fc, i).to_bits(), d(&pc, j).to_bits());
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn pairs_moments_follow_the_value() {

@@ -3345,6 +3345,14 @@ impl Machine {
                     .map(|&t| (t, seed || srcs.iter().any(|&r| tn.reg_t(t, r))))
                     .collect(),
             );
+            // A reduction across the warp: every lane's result depends on every lane's
+            // operand.
+            if matches!(inst.op, Op::Redux { .. }) {
+                if let Some(per) = tn.cur_pure.as_mut() {
+                    let any = per.iter().any(|x| x.1);
+                    per.iter_mut().for_each(|x| x.1 = any);
+                }
+            }
             // SEL / FSEL with an input-independent predicate: the result is the chosen operand
             // for every input, so it carries that operand's taint only (a causal mask's
             // `FSEL R, R, -INF, P` leaves the input-independent -inf).

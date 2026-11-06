@@ -349,6 +349,55 @@ fn probe_bar_exit_matches_hardware() {
         check_dir("probes", "bar_exit", v, "sass");
     }
 }
+/// L-SB-ORDER (probes/sb_mio_order, GB300 2026-11-05): the static scoreboard check accepts the
+/// windows where a later memory-pipe read scoreboard covers an earlier STS's address read
+/// (0 of 1000 runs wrong, also with an LDG in between: quack rmsnorm_bwd N=256's shape) and
+/// flags the two that fail on every run.
+#[test]
+fn probe_sb_mio_order_matches_hardware() {
+    let case = Case::load(root().join("probes/sb_mio_order/fixture")).unwrap();
+    for v in [
+        "good",
+        "inorder",
+        "inorder_ldg",
+        "rd_on_ldg",
+        "rd_on_a",
+        "nowait",
+    ] {
+        let k = kernel(&case, v, "sass");
+        let launch = build_launch(&case, &k).unwrap();
+        let r = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)));
+        let verdict = r.verdict.expect("certifies");
+        assert_eq!(
+            verdict.classes(),
+            case.variant(v).unwrap().expect_for("sass"),
+            "{v}: {:#?}",
+            verdict.findings
+        );
+    }
+}
+/// E-BAR-EXIT on partly exited warps: a counted barrier counts a warp's arrival as the warp
+/// size, its exited or nonexistent lanes included (probes/bar_exit_warp, run 2026-11-05: half,
+/// one-lane and two half warps complete `bar.sync 1, 64`, 16 lanes complete `bar.sync 1, 32`
+/// alone, a 16-lane partial warp counts 32; 2 warps short of `bar.sync 1, 96` hang).
+#[test]
+fn probe_bar_exit_warp_matches_hardware() {
+    for v in [
+        "half",
+        "both_half",
+        "one_lane",
+        "half_alone",
+        "half_short",
+        "half_full96",
+        "half_arrive",
+        "control",
+    ] {
+        check_dir("probes", "bar_exit_warp", v, "ptx");
+        check_dir("probes", "bar_exit_warp", v, "sass");
+    }
+    check_dir("probes", "bar_exit_warp/partial", "full", "ptx");
+    check_dir("probes", "bar_exit_warp/partial", "full", "sass");
+}
 /// The model agrees with GB300 on every probe variant (probes/bar_arrive, run 2026-11-02;
 /// `mismatch` traps on hardware, reported as a violation).
 #[test]
@@ -464,6 +513,52 @@ fn r1c_2sm_good() {
 fn r1c_2sm_b12_commit_mask() {
     check_dpor("r1c_2sm", "B12", "ptx", 2_000_000);
     check_dpor("r1c_2sm", "B12", "sass", 2_000_000);
+}
+
+// tcgen05.mma shapes measured with probes/tc_m128: cta_group::2 with M = 128 (PTX ISA Layout B:
+// each CTA's 64 rows in lanes 0..63 / 64..127 for the two halves of N) and cta_group::1 M = 128
+// with N = 8. Verdicts on both front-ends (explorer and DPOR), then the certified output against
+// GB300's TMEM dump, bit for bit (sentinel cells included).
+#[test]
+fn e_mma_pair_m128_verdicts() {
+    for v in ["good", "B12", "n8"] {
+        both("e_mma_pair_m128", v);
+    }
+}
+#[test]
+fn e_mma_m128_n8_verdicts() {
+    for v in ["good", "n4"] {
+        both("e_mma_m128_n8", v);
+    }
+    // A race: the explorers agree on the verdict, not on the outcomes it leaves (E-DRF).
+    check_stateful("e_mma_m128_n8", "B05", "ptx", 2_000_000);
+    check_stateful("e_mma_m128_n8", "B05", "sass", 2_000_000);
+}
+// The PTX forms lifted for the mslk decode kernels: redux.sync (f32 and integer), neg.f32,
+// setp.<cmp>.f32 (bitwise against GB300 in e_mma_m128_shapes_match_hardware).
+#[test]
+fn e_ptx_redux_verdicts() {
+    both("e_ptx_redux", "good");
+}
+#[test]
+fn e_mma_m128_shapes_match_hardware() {
+    for case in ["e_mma_pair_m128", "e_mma_m128_n8", "e_ptx_redux"] {
+        let case = Case::load(root().join("fixtures").join(case)).unwrap();
+        for front in ["ptx", "sass"] {
+            let k = kernel(&case, "good", front);
+            let launch = build_launch(&case, &k).unwrap();
+            let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
+                .verdict
+                .unwrap_or_else(|| panic!("{} {front} certifies", case.m.name));
+            assert_eq!(v.classes(), ["clean"], "{:#?}", v.findings);
+            let report = case.expect_report(&v.outputs[0]).unwrap();
+            assert!(
+                !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+                "{} {front}: {report:?}",
+                case.m.name
+            );
+        }
+    }
 }
 
 // Rung 1d: CLC. The launch/cancel dependency is new, so the good kernel is also cross-checked
@@ -746,6 +841,8 @@ fn e_exitbound_races_on_the_way_out() {
 /// c_cve_sdpa_f32 (CUTLASS fmha, f32 on TF32 tensor cores) certifies in one run; its
 /// float-max atomics interleave past 200k states when explored.
 const CERTIFY_ONLY: &[&str] = &[
+    // Two CTAs of 128 threads (beyond 200k states on SASS; e_mma_pair_m128_verdicts explores it).
+    "e_mma_pair_m128",
     "r3b_trtllm_bmm",
     "r3b_trtllm_bmm_k2048",
     "s_cpasync_mbar",
@@ -760,6 +857,10 @@ const CERTIFY_ONLY: &[&str] = &[
     // FA4 forward, head dim 128 (AL's fa_hd128): its retry stub polls the same mbarrier
     // through an address computed after the wait (E-SPIN stub parity).
     "c_fa4_hd128",
+    // FA4 forward with causal / local (64, 0) masks: mask words 0xffffffff >> n, n up to 128
+    // (SHF clamp, L-SHF; fixtures/s_shf).
+    "c_fa4_causal",
+    "c_fa4_local",
     // fixtures/c_equiv_online: four warps' float-max atomics on one word per row.
     "c_online_ok",
     "c_online_bad_mp",
@@ -943,6 +1044,50 @@ fn certified_hash(dir: &str, case: &str, gb300: u64) {
         "{}: output differs from GB300's",
         case.m.name
     );
+}
+
+/// N-F2I-F64: f64 -> integer conversions (fixtures/s_f2i_f64: cvt.r{z,n,m,p}i.{s,u}{32,64}.f64 =
+/// SASS F2I[.S64|.U64|.U32].F64[.TRUNC|.FLOOR|.CEIL], 256 special and random operands) agree
+/// with GB300 bitwise on both front-ends (run 2026-11-05, GPU 3, 100/100 runs).
+#[test]
+fn s_f2i_f64_matches_hardware() {
+    let case = Case::load(root().join("fixtures/s_f2i_f64")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
+            .verdict
+            .expect("s_f2i_f64 certifies");
+        assert_eq!(v.classes(), ["clean"], "{front}: {:#?}", v.findings);
+        assert_eq!(
+            fnv(&v.outputs[0]),
+            0x484a8cbc44fc8165,
+            "{front}: differs from GB300"
+        );
+    }
+}
+
+/// L-SHF: shifts by a run-time amount (fixtures/s_shf: shl / shr .b32 / .u64 / .s64,
+/// shf.{l,r}.{clamp,wrap}; SASS SHF.{L,R}[.W].{U32,S32,U64,S64}[.HI]) with amounts 0..33, at the
+/// 32 / 64 boundaries, >= 64 and >= 2^31 agree with GB300 bitwise on both front-ends (run
+/// 2026-11-05, GPU 0, 20/20 runs). Amounts >= 64 used to wrap mod 64 in SHF, which made
+/// FA4's causal / local mask words wrong (fixtures/c_fa4_causal, c_fa4_local).
+#[test]
+fn s_shf_matches_hardware() {
+    let case = Case::load(root().join("fixtures/s_shf")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
+            .verdict
+            .expect("s_shf certifies");
+        assert_eq!(v.classes(), ["clean"], "{front}: {:#?}", v.findings);
+        assert_eq!(
+            fnv(&v.outputs[0]),
+            0x3f8e417548beb899,
+            "{front}: differs from GB300"
+        );
+    }
 }
 
 /// The rung-4 f32 ALU forms (N-FALU, N-FCHK, fixtures/s_alu2: 720,896 output words) agree

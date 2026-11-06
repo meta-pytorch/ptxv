@@ -543,6 +543,7 @@ pub(crate) fn eval_inst(
             bits,
             rnd,
             ftz,
+            f64: false,
             ..
         } if *bits != 64 => {
             let u = if *ftz { fp::f32_ftz(w(a)) } else { w(a) };

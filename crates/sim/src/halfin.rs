@@ -737,6 +737,7 @@ impl Machine {
                     right,
                     signed: false,
                     high: false,
+                    ..
                 } if k % 8 == 0 && *k < 32 => match (get(lo), get(hi)) {
                     (Some(x), Some(h)) if h == [Some(Src::Zero); 4] => {
                         let s = (*k / 8) as usize;

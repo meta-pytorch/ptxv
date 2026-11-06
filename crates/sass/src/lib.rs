@@ -1002,6 +1002,49 @@ fn lower_line(
                 bits: if has("U64") || has("S64") { 64 } else { 32 },
                 rnd,
                 ftz: has("FTZ"),
+                f64: false,
+            }
+        }
+        // F2I[.S64|.U64|.U32].F64[.TRUNC|.FLOOR|.CEIL] Rd, Ra (cvt.r{z,n,m,p}i.{s,u}{32,64}.f64,
+        // torch's cross entropy): an f64 source (register pair) rounded to an integer,
+        // saturated, NaN 2^31 (32-bit) / 2^63 (64-bit). Other modifiers (.FTZ, .NTZ, .S32
+        // spelled out, F16 sources) are not modeled. GB300: fixtures/s_f2i_f64, all 16 forms.
+        // ASSUME(N-F2I-F64)
+        "F2I" if has("F64") && !has("F16") => {
+            if let Some(m) = mods.iter().find(|m| {
+                !matches!(
+                    **m,
+                    "F64" | "U32" | "U64" | "S64" | "TRUNC" | "FLOOR" | "CEIL"
+                )
+            }) {
+                bail!(lw.err(format!("F2I.F64 modifier not modeled: {m}")));
+            }
+            if mods.last() == Some(&"F64")
+                && mods.len() > 1
+                && !matches!(mods[0], "U32" | "U64" | "S64")
+                || mods
+                    .iter()
+                    .filter(|m| matches!(**m, "U32" | "U64" | "S64"))
+                    .count()
+                    > 1
+            {
+                bail!(lw.err("F2I.F64 form not modeled"));
+            }
+            let rnd = match (has("TRUNC"), has("FLOOR"), has("CEIL")) {
+                (true, false, false) => Rnd::Rz,
+                (false, true, false) => Rnd::Rm,
+                (false, false, true) => Rnd::Rp,
+                (false, false, false) => Rnd::Rn,
+                _ => bail!(lw.err("F2I with two roundings")),
+            };
+            Op::F2I {
+                d: lw.dst(lw.op(0)?)?,
+                a: lw.val(lw.op(1)?, 8)?,
+                signed: !has("U32") && !has("U64"),
+                bits: if has("U64") || has("S64") { 64 } else { 32 },
+                rnd,
+                ftz: false,
+                f64: true,
             }
         }
         "F2F" if mods == ["F32", "F64"] || mods == ["F64", "F32"] => {
@@ -1626,17 +1669,37 @@ fn lower_line(
                 }
             }
         }
+        // `SHF.{L,R}[.W].{U32,S32,U64,S64}[.HI] d, lo, sh, hi`: funnel shift of hi:lo by the u32
+        // `sh`, clamped to 32 (.U32 / .S32) or 64 (.U64 / .S64), or mod 32 with .W (GB300:
+        // fixtures/s_shf, every amount class incl. >= 64 and >= 2^31). ASSUME(L-SHF)
         "SHF" | "USHF" => {
-            let right = has("R");
-            let signed = has("S32") || has("S64");
+            let (mut dir, mut ty, mut wrap, mut high) = (None, None, false, false);
+            for m in mods {
+                match *m {
+                    "L" | "R" if dir.is_none() => dir = Some(*m == "R"),
+                    "U32" | "S32" | "U64" | "S64" if ty.is_none() => ty = Some(*m),
+                    "W" => wrap = true,
+                    "HI" => high = true,
+                    _ => bail!(lw.err("SHF modifier not modeled")),
+                }
+            }
+            let (Some(right), Some(ty)) = (dir, ty) else {
+                bail!(lw.err("SHF without a direction or type"));
+            };
+            let wide = ty.ends_with("64");
+            if wrap && wide {
+                bail!(lw.err("SHF.W with a 64-bit type not modeled"));
+            }
             Op::Shf {
                 d: lw.dst(lw.op(0)?)?,
                 lo: lw.val(lw.op(1)?, 4)?,
                 sh: lw.val(lw.op(2)?, 4)?,
                 hi: lw.val(lw.op(3)?, 4)?,
                 right,
-                signed,
-                high: has("HI"),
+                signed: ty.starts_with('S'),
+                high,
+                wide,
+                wrap,
             }
         }
         "LOP3" | "ULOP3" => {
@@ -4176,6 +4239,65 @@ mod tests {
         let k = depbar_kinds(&lines, &code);
         assert_eq!(k[1].unwrap()[0], DEP_CP);
         assert_eq!(k[3].unwrap()[0], DEP_BULK);
+    }
+
+    #[test]
+    fn shf_forms() {
+        match lower1("SHF.R.U32.HI R36, RZ, R36, R132.reuse").unwrap() {
+            Op::Shf {
+                right: true,
+                signed: false,
+                high: true,
+                wide: false,
+                wrap: false,
+                ..
+            } => {}
+            o => panic!("{o:?}"),
+        }
+        assert!(matches!(
+            lower1("SHF.L.U64.HI R29, R10, R8, R11").unwrap(),
+            Op::Shf {
+                right: false,
+                high: true,
+                wide: true,
+                wrap: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            lower1("SHF.R.W.U32 R21, R10, R8, R11").unwrap(),
+            Op::Shf {
+                wrap: true,
+                wide: false,
+                ..
+            }
+        ));
+        assert!(lower1("SHF.R.W.U64 R21, R10, R8, R11").is_err());
+        assert!(lower1("SHF.R.U32.XYZ R21, R10, R8, R11").is_err());
+        assert!(lower1("SHF.U32 R21, R10, R8, R11").is_err());
+        assert!(matches!(
+            lower1("F2I.S64.F64.TRUNC R28, R4").unwrap(),
+            Op::F2I {
+                f64: true,
+                signed: true,
+                bits: 64,
+                rnd: Rnd::Rz,
+                ..
+            }
+        ));
+        assert!(matches!(
+            lower1("F2I.F64.FLOOR R2, R4").unwrap(),
+            Op::F2I {
+                f64: true,
+                signed: true,
+                bits: 32,
+                rnd: Rnd::Rm,
+                ..
+            }
+        ));
+        assert!(lower1("F2I.FTZ.S64.F64.TRUNC R28, R4").is_err());
+        assert!(lower1("F2I.S64.F64.TRUNC.NTZ R28, R4").is_err());
+        assert!(lower1("F2I.S64.U32.F64.TRUNC R28, R4").is_err());
     }
 
     #[test]
