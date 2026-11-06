@@ -36,6 +36,7 @@ mod errdist_html;
 mod jsonout;
 mod mufu_sweep;
 mod sweep;
+mod trace_dump;
 
 // The explorer's threads clone and drop machine pages at a high rate; glibc malloc's arenas
 // contend under that (and mimalloc is faster single-threaded too).
@@ -1016,6 +1017,11 @@ fn cmd_check(
                 }
             }
             print_verdict(&v, f, &verdict, &expect, &refuted, gbc.as_ref());
+            // Debugging / figures: PTXV_TRACE_DUMP=<dir> writes each finding's replayed witness.
+            if let Some(d) = std::env::var_os("PTXV_TRACE_DUMP") {
+                let p = Path::new(&d).join(format!("{v}.{f}.trace.json"));
+                trace_dump::write(make1(), &verdict, &v, f, &p)?;
+            }
             // Captured cases (tools/capture.py) carry the GPU's output bytes.
             let mut expect_report = Vec::new();
             for (i, o) in verdict.outputs.iter().enumerate() {
