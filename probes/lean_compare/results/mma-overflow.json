@@ -1,0 +1,56 @@
+{
+  "scope": "BF16 normal/zero operands, C=+/-0, bounded synthetic sums",
+  "ptxv_revision": "fb0569a095ff5dc9e46a8d3a476c155ca100a98f",
+  "matching_rows": 8705,
+  "underflow_witness_positive_zero": true,
+  "disagreements": [
+    {
+      "input": [
+        "0x7f00",
+        "0x4000"
+      ],
+      "rust": "0x7f7fffff",
+      "lean": "0x7f800000",
+      "matches": false
+    },
+    {
+      "input": [
+        "0xff00",
+        "0x4000"
+      ],
+      "rust": "0xff7fffff",
+      "lean": "0xff800000",
+      "matches": false
+    }
+  ],
+  "overflow_checks": [
+    {
+      "input": [
+        "0x7f00",
+        "0x4000"
+      ],
+      "rust": "0x7f7fffff",
+      "lean": "0x7f800000",
+      "matches": false
+    },
+    {
+      "input": [
+        "0xff00",
+        "0x4000"
+      ],
+      "rust": "0xff7fffff",
+      "lean": "0xff800000",
+      "matches": false
+    }
+  ],
+  "input_sha256": "a1d40437156dea32013a5494ee6aa6effa38f0876bd141c514dabb51e98f326d",
+  "output_sha256": "41d137a6dd33b91c61d6526c6224088c0c46edb616708c8b2be6182d9efe5d78",
+  "sources": {
+    "crates/sim/src/fp.rs": "d311e2db7702656f45616957b3d8e08723f9f94840a9d8578ee3b76776a7923f",
+    "lean_model/Blackwell/PtxvCheck.lean": "5e7d4b32ee95bd5759c6d65a6c042a11e29c276f8572c03fe97449a027e86852",
+    "lean_model/Blackwell/GB300Math/TensorAccumulatorBlackwell.lean": "5d3867b8de1331283beaacf8b898f3f29f4337cc393aa73b615f1065a836e286",
+    "lean_model/Shared/GB300Math/TensorCore.lean": "2a20e7929ac9372c6efacb4f6fb6db47314557a7d09f5f2253e8c60de3b73cdd",
+    "probes/lean_compare/mma_cross_check.py": "6acce49fdeea5b0dd07c08bd56926c22c86fed6a717319b547305ba6630422dd"
+  },
+  "passed": false
+}

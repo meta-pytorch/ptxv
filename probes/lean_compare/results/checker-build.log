@@ -1,0 +1,33 @@
+ℹ [4/25] Replayed GB300Math.Fp64Seed
+info: Shared/GB300Math/Fp64Seed.lean:60:0: 'GB300Math.Fp64Seed.ignores_low_word' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/Fp64Seed.lean:61:0: 'GB300Math.Fp64Seed.zero_low_output' depends on axioms: [propext, Quot.sound]
+ℹ [5/25] Replayed GB300Math.TanhSmall
+info: Shared/GB300Math/TanhSmall.lean:33:0: 'GB300Math.TanhSmall.quantization' depends on axioms: [propext, Classical.choice, Quot.sound]
+info: Shared/GB300Math/TanhSmall.lean:35:0: 'GB300Math.TanhSmall.lower_endpoint' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/TanhSmall.lean:36:0: 'GB300Math.TanhSmall.first_input_plateau' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/TanhSmall.lean:37:0: 'GB300Math.TanhSmall.upper_endpoint' depends on axioms: [propext, Quot.sound]
+ℹ [7/25] Replayed GB300Math.Mufu
+info: Shared/GB300Math/Mufu.lean:189:0: 'GB300Math.Mufu.ex2_zero' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/Mufu.lean:190:0: 'GB300Math.Mufu.lg2_one' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/Mufu.lean:191:0: 'GB300Math.Mufu.rsq_negative_zero' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/Mufu.lean:192:0: 'GB300Math.Mufu.sqrt_negative_zero' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/Mufu.lean:193:0: 'GB300Math.Mufu.tanh_downward_step' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/Mufu.lean:194:0: 'GB300Math.Mufu.tanh16_truncates' depends on axioms: [propext, Quot.sound]
+ℹ [8/25] Replayed GB300Math.MufuSm103
+info: Blackwell/GB300Math/MufuSm103.lean:42:0: 'GB300Math.MufuSm103.bf16_upper_bits_ignored' depends on axioms: [propext, Quot.sound]
+info: Blackwell/GB300Math/MufuSm103.lean:43:0: 'GB300Math.MufuSm103.tanh_bf16_truncates' depends on axioms: [propext, Classical.choice, Quot.sound]
+info: Blackwell/GB300Math/MufuSm103.lean:44:0: 'GB300Math.MufuSm103.unsupported_operation' depends on axioms: [propext, Classical.choice, Quot.sound]
+ℹ [17/25] Replayed GB300Math.TensorAccumulatorBlackwell
+info: Blackwell/GB300Math/TensorAccumulatorBlackwell.lean:64:0: 'GB300Math.TensorAccumulatorBlackwell.clamp_order_discriminator' depends on axioms: [propext, Quot.sound]
+info: Blackwell/GB300Math/TensorAccumulatorBlackwell.lean:65:0: 'GB300Math.TensorAccumulatorBlackwell.intermediate_rounding_discriminator' depends on axioms: [propext, Quot.sound]
+✔ [20/25] Built MufuSm103Check (820ms)
+✔ [21/25] Built MufuSm103Check:c.o (400ms)
+✔ [22/25] Built check_mufu_sm103:exe (363ms)
+ℹ [23/25] Built PtxvCheck (2.1s)
+info: Blackwell/PtxvCheck.lean:52:0: 'PtxvCheck.bf16_underflow_zero' depends on axioms: [propext, Quot.sound]
+info: Blackwell/PtxvCheck.lean:78:0: 'PtxvCheck.bf16_overflow_infinity' depends on axioms: [propext, Quot.sound]
+info: Blackwell/PtxvCheck.lean:79:0: 'PtxvCheck.bf16_negative_overflow_infinity' depends on axioms: [propext, Quot.sound]
+info: Blackwell/PtxvCheck.lean:80:0: 'PtxvCheck.bf16_large_products_cancel' depends on axioms: [propext, Quot.sound]
+✔ [24/25] Built PtxvCheck:c.o (404ms)
+✔ [25/25] Built check_ptxv:exe (362ms)
+Build completed successfully (25 jobs).

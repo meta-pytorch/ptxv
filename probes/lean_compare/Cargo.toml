@@ -1,0 +1,29 @@
+[package]
+name = "ptxv-lean-bridge"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+ptxv-sim = { path = "../../crates/sim" }
+ptxv-ir = { path = "../../crates/ir" }
+serde_json = "1"
+
+[dev-dependencies]
+ptxv-case = { path = "../../crates/case" }
+ptxv-ptx = { path = "../../crates/ptx" }
+ptxv-sass = { path = "../../crates/sass" }
+
+[[test]]
+name = "upstream_mufu"
+path = "../../crates/sim/tests/mufu.rs"
+
+[[test]]
+name = "upstream_mma_zero"
+path = "../../crates/sim/tests/mma_zero.rs"
+
+[profile.release]
+overflow-checks = true
+debug-assertions = true

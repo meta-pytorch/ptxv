@@ -1,0 +1,6 @@
+'GB300Math.tanh_preserves_tiny_words' depends on axioms: [propext, Quot.sound]
+'GB300Math.ex2_tiny_words' depends on axioms: [propext, Quot.sound]
+'GB300Math.tanh_negative_zero' depends on axioms: [propext, Quot.sound]
+'GB300Math.lg2_negative_subnormal_ftz' depends on axioms: [propext, Quot.sound]
+'GB300Math.lg2_negative_subnormal_default' depends on axioms: [propext, Quot.sound]
+'GB300Math.lg2_modes_differ' depends on axioms: [propext, Quot.sound]

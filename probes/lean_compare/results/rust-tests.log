@@ -1,0 +1,26 @@
+   Compiling ptxv-lean-bridge v0.1.0 (/home/rusch/Projects/ptxv-lean-model/probes/lean_compare)
+    Finished `release` profile [optimized] target(s) in 3.43s
+     Running unittests src/main.rs (probes/lean_compare/target/release/deps/ptxv_lean_bridge-baf1d1d74a954a6f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running ../../crates/sim/tests/mma_zero.rs (probes/lean_compare/target/release/deps/upstream_mma_zero-d61eab9feb89283c)
+
+running 1 test
+test mma_zero_both_fronts_match_gb300 ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.18s
+
+     Running ../../crates/sim/tests/mufu.rs (probes/lean_compare/target/release/deps/upstream_mufu-81049c805caf5999)
+
+running 5 tests
+test mufu_model_replays_full_gb300_sweep ... ignored, slow (minutes): replays all 2^32 inputs of every f32 op
+test approx_ptx_matches_gb300 ... ok
+test s_mufu_sass_matches_gb300 ... ok
+test f64_approx_matches_gb300 ... ok
+test mufu_model_replays_gb300_sweep_sample ... ok
+
+test result: ok. 4 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.42s
+

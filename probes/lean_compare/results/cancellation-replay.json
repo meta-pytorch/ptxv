@@ -1,0 +1,12 @@
+[
+  {
+    "architecture": 103,
+    "exit_code": 0,
+    "diagnostic": "cells=128 mismatches=0 expected=0"
+  },
+  {
+    "architecture": 80,
+    "exit_code": 1,
+    "diagnostic": "uncaught exception: Expected GB300 architecture 103"
+  }
+]
