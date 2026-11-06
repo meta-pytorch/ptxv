@@ -160,8 +160,8 @@ enum Cmd {
         /// ~/.cache/ptxv/errdist). Without --inputs it stops there (docs/errdist.md §1.1).
         #[arg(long, num_args = 0..=1, default_missing_value = "-")]
         compile: Option<PathBuf>,
-        /// Query stage: analyze a compiled model under --inputs (no simulation; Tier 3 only
-        /// with --mc N; non-chain tables compiled or extended here are written back).
+        /// Query stage: analyze a compiled model under --inputs (no simulation; non-chain
+        /// tables compiled or extended here are written back).
         #[arg(long)]
         model: Option<PathBuf>,
         /// Write the JSON report here (docs/errdist.md §3).
@@ -174,7 +174,8 @@ enum Cmd {
         /// Which candidate of the equiv.toml.
         #[arg(long, default_value_t = 0)]
         candidate: usize,
-        /// Monte Carlo inputs through the numerics DAG (Tier 3).
+        /// Monte Carlo inputs through the numerics DAG (Tier 3). Default 300: the
+        /// cross-check of Tier 2 and the fallback headline when Tier 2 refuses; 0 skips it.
         #[arg(long)]
         mc: Option<usize>,
         /// Validation inputs run through the simulator.
@@ -200,8 +201,13 @@ enum Cmd {
         /// Also run the uniform-residue heuristic (every residue law uniform) for comparison.
         #[arg(long)]
         uniform: bool,
-        /// Skip tier 1 (the residue-exact chain; minutes on wide scale ranges).
+        /// Also run Tier 1 (the residue-exact chain of MMA outputs; minutes on wide scale
+        /// ranges, about 1 GiB per step). Default: tier 0, tier 2 where its applicability
+        /// check passes, else tier 3.
         #[arg(long)]
+        tier1: bool,
+        /// Accepted for compatibility (Tier 1 is opt-in now: --tier1).
+        #[arg(long, hide = true)]
         no_tier1: bool,
     },
     /// Compare a candidate case with a reference case (both captured by tools/capture.py):
@@ -1783,6 +1789,7 @@ fn run() -> Result<()> {
             explore,
             pre_round,
             uniform,
+            tier1,
             no_tier1,
         } => errdist::cmd(&errdist::Args {
             path,
@@ -1801,7 +1808,7 @@ fn run() -> Result<()> {
             explore,
             pre_round,
             uniform,
-            no_tier1,
+            tier1: tier1 && !no_tier1,
         })?,
         Cmd::Compare {
             reference,

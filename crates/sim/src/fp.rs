@@ -607,6 +607,31 @@ pub fn int_to_f32(v: u64, signed: bool, rnd: ptxv_ir::Rnd) -> f32 {
     f64_to_f32(f, rnd)
 }
 
+/// Integer -> f64 (I2F.F64): exact up to 53 significant bits, otherwise rounded with `rnd`.
+pub fn int_to_f64(v: u64, signed: bool, rnd: ptxv_ir::Rnd) -> f64 {
+    use ptxv_ir::Rnd;
+    let (neg, m) = if signed && (v as i64) < 0 {
+        (true, (v as i64).unsigned_abs())
+    } else {
+        (false, v)
+    };
+    let s = (64 - m.leading_zeros()).saturating_sub(53);
+    let mut t = m >> s;
+    if s > 0 {
+        let r = m & ((1u64 << s) - 1);
+        let half = 1u64 << (s - 1);
+        let up = match rnd {
+            Rnd::Rn => r > half || (r == half && t & 1 == 1),
+            Rnd::Rz => false,
+            Rnd::Rp => r != 0 && !neg,
+            Rnd::Rm => r != 0 && neg,
+        };
+        t += up as u64;
+    }
+    let f = t as f64 * (2f64).powi(s as i32);
+    if neg { -f } else { f }
+}
+
 /// f32 -> bf16 as the GPU's converters (`F2FP.BF16.F32.PACK_AB`, `F2F.BF16.F32`): round to
 /// nearest even, every NaN -> the canonical 0x7fff (GB300: fixtures/s_ptx_cute_ops).
 pub fn f32_to_bf16_rn_gpu(u: u32) -> u16 {
@@ -1012,11 +1037,7 @@ pub fn sum_round_terms(terms: &[Term], frac: Option<u8>, rz: bool, floor: bool) 
     };
     let nz: Vec<&Term> = terms.iter().filter(|t| t.v != 0.0).collect();
     if nz.is_empty() {
-        return if !terms.is_empty() && terms.iter().all(|t| t.v.is_sign_negative()) {
-            -0.0
-        } else {
-            0.0
-        };
+        return 0.0; // a zero MMA result is +0, even from -0 terms only (N-MMA, probes/mma_zero)
     }
     if nz.iter().any(|t| !t.v.is_finite()) {
         return nz.iter().map(|t| t.v).sum::<f64>() as f32;
@@ -1051,12 +1072,7 @@ fn exp_of(x: f64) -> i32 {
 pub fn sum_round_f32(terms: &[f64], frac: Option<u8>, rz: bool) -> f32 {
     let nz: Vec<f64> = terms.iter().copied().filter(|t| *t != 0.0).collect();
     if nz.is_empty() {
-        // exact zero: -0 only if every term is -0
-        return if terms.iter().all(|t| t.is_sign_negative()) && !terms.is_empty() {
-            -0.0
-        } else {
-            0.0
-        };
+        return 0.0; // a zero MMA result is +0, even from -0 terms only (N-MMA, probes/mma_zero)
     }
     if nz.iter().any(|t| !t.is_finite()) {
         let s: f64 = nz.iter().sum();
@@ -1084,6 +1100,8 @@ pub fn sum_round_f32(terms: &[f64], frac: Option<u8>, rz: bool) -> f32 {
 }
 
 /// Round `v * 2^e` to f32 (24-bit significand, subnormals, overflow); `sticky` breaks ties.
+/// A result that is zero is +0, also when a negative `v` underflows: the tensor cores' rule
+/// (GB300, probes/mma_zero), and every caller is an MMA model. ASSUME(N-MMA)
 pub fn round_int_to_f32(v: i128, e: i32, rz: bool, sticky: i32) -> f32 {
     if v == 0 {
         return 0.0;
@@ -1124,7 +1142,7 @@ pub fn round_int_to_f32(v: i128, e: i32, rz: bool, sticky: i32) -> f32 {
         m as f64 * 2f64.powi(qe)
     };
     let r = val as f32; // exact: m fits in 24 bits
-    if neg { -r } else { r }
+    if neg && r != 0.0 { -r } else { r }
 }
 
 #[cfg(test)]
@@ -1146,5 +1164,46 @@ mod mma_tests {
             sum_round_f32(&[1.0, -2f64.powi(-40)], None, true),
             1.0 - 2f32.powi(-24)
         );
+    }
+
+    /// Every zero MMA result is +0 on GB300 (probes/mma_zero), for every model in use.
+    /// The reported witness: K = 16, one nonzero product bf16 0x16b2 x 0x96e5 = exactly
+    /// -40762 * 2^-178, below f32's range; the rest +0 x anything.
+    #[test]
+    fn zero_results_are_positive() {
+        let bf = |u: u32| f32::from_bits(u << 16) as f64;
+        let (a, b) = (bf(0x16b2), bf(0x96e5));
+        assert_eq!(a * b, -40762.0 * 2f64.powi(-178));
+        let p2 = |e: i32| 2f64.powi(e);
+        let sets: Vec<Vec<(f64, f64)>> = vec![
+            vec![(a, b)],                                    // negative underflow
+            vec![(a, -b)],                                   // positive underflow
+            vec![(-0.0, 1.0); 16],                           // all products -0
+            vec![(1.0, 1.0), (-1.0, 1.0)],                   // exact cancellation
+            vec![(-p2(-80), p2(-80)), (p2(-81), p2(-80))],   // two tiny, sum -2^-161
+            vec![(-(1.0 + p2(-7)) * p2(-75), p2(-74)), (p2(-75), p2(-74))], // residue -2^-156
+        ];
+        for md in [DEFAULT_MMA, HMMA_MODEL, TMMA_MODEL, MmaModel::EXACT_RN] {
+            for s in &sets {
+                for pad in [0.0, -0.0] {
+                    let mut t: Vec<Term> = s
+                        .iter()
+                        .map(|&(x, y)| Term::prod(x, y, md.exp_from_inputs))
+                        .collect();
+                    while t.len() < md.group as usize {
+                        t.push(Term::prod(0.0, pad, md.exp_from_inputs));
+                    }
+                    for acc in [0.0f32, -0.0] {
+                        let r = md.apply_terms(acc, &t);
+                        assert_eq!(r.to_bits(), 0, "{} {s:?} pad {pad} acc {acc}", md.name());
+                    }
+                }
+            }
+        }
+        assert_eq!(round_int_to_f32(-1, -200, true, 0).to_bits(), 0);
+        assert_eq!(round_int_to_f32(-1, -200, false, 0).to_bits(), 0);
+        assert_eq!(sum_round_f32(&[-0.0, -0.0], None, true).to_bits(), 0);
+        // A subnormal result keeps its sign (GB300 likewise).
+        assert_eq!(round_int_to_f32(-1, -140, true, 0), -(2f32.powi(-140)));
     }
 }

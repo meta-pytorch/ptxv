@@ -196,8 +196,11 @@ attention outputs it returns NaN: their evaluation data is not exported yet.
     and moments, `out_of_domain`, `validation` in `meta`).
   - Not expressible in spec v1 (`AdapterError`): `clip`, per-tensor-scaled fp8, mxf6.
 - `ptxv.errdist(target, inputs, ref=None, metric="abs" | "u" | "ulp", seed=,
-  mc_inputs=, sim_trials=, gpu_trials=)` raises NotImplementedError until the binary has the
-  subcommand.
+  mc_inputs=, sim_trials=, gpu_trials=, tier1=False)` raises NotImplementedError until the
+  binary has the subcommand. The headline is Tier 0, else Tier 2 where its applicability
+  check and the default 300-input Tier 3 cross-check pass, else Tier 3 (docs/errdist.md
+  §3.2); Tier 1 only with `tier1=True`. `ErrDist.tier` is the headline's tier,
+  `ErrDist.crosscheck` the cross-check entries.
 
 ## Tests
 

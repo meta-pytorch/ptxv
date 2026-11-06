@@ -1,0 +1,167 @@
+// FA4 forward split-role handoffs, minimal 1-CTA model (5 warps, 160 threads).
+//   warps 0,1 : softmax    (warp w of the softmax warpgroup, w = warp)
+//   warps 2,3 : correction (paired with softmax warp w = warp - 2)
+//   warp  4   : MMA        (TMEM allocator)
+// Base kernel = post-fix:
+//   * TMEM lifetime: one mbarrier (count 160 = every TMEM user). Phase 0: everyone arrives,
+//     then waits parity 0 before ld.shared of the TMEM address (was tmem.wait_for_alloc()
+//     = bar.sync TmemPtr,160). Phase 1: softmax/correction arrive at the end (was bar.arrive
+//     TmemPtr,160); MMA arrives and waits parity 1 before tcgen05.dealloc (was bar.sync).
+//   * Softmax stats: full[w] / empty[w] mbarriers, count 32 (one warp each side).
+//     Softmax: acquire empty[w] -> tcgen05.st P -> st.shared sScale[row] -> arrive full[w].
+//     Correction: wait full[w] -> ld.shared sScale[row] -> tcgen05.st O -> arrive empty[w].
+//     (pre-fix: bar.arrive SoftmaxStatsW0+stage*4+w,64 / bar.sync same id,64 and one
+//     stage-indexed empty mbarrier with count 64 = all correction threads.)
+//   * tcgen05.fence::before/after_thread_sync around the TMEM-lifetime handoffs are added in
+//     every variant (the real kernel has none; variants *_nofence drop them).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry d117107863(.param .u64 out_p)
+.maxntid 160, 1, 1
+{
+    .reg .pred  %p<16>;
+    .reg .b32   %r<40>;
+    .reg .b64   %rd<8>;
+    .shared .align 16 .b32 tmem_slot;
+    .shared .align 8 .b64 mbar_tm;          // post-fix pipeline_tmem_sync (full barrier only)
+    .shared .align 8 .b64 mbar_full[2];     // post-fix stats full, index slot*4 + w
+    .shared .align 8 .b64 mbar_empty[2];    // post-fix stats empty, index slot*4 + w
+    .shared .align 8 .b64 mbar_E;           // pre-fix stats empty, index stage (count 64)
+    .shared .align 4 .b32 sScale[64];
+
+    ld.param.u64    %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32         %r0, %tid.x;
+    shr.u32         %r1, %r0, 5;            // warp
+    and.b32         %r2, %r0, 31;           // lane
+    mov.u32         %r3, tmem_slot;
+    mov.u32         %r4, mbar_tm;
+    mov.u32         %r5, mbar_full;
+    mov.u32         %r6, mbar_empty;
+    mov.u32         %r7, mbar_E;
+    mov.u32         %r8, sScale;
+
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r4], 160;
+    mbarrier.init.shared::cta.b64 [%r5], 32;
+    mbarrier.init.shared::cta.b64 [%r5+8], 32;
+    mbarrier.init.shared::cta.b64 [%r6], 32;
+    mbarrier.init.shared::cta.b64 [%r6+8], 32;
+    mbarrier.init.shared::cta.b64 [%r7], 64;
+    fence.mbarrier_init.release.cluster;
+INIT_DONE:
+    bar.sync        0;                      // pipeline init sync: all threads, one pc
+
+    setp.eq.u32     %p1, %r1, 4;
+    @%p1 bra        MMA;
+    setp.ge.u32     %p2, %r1, 2;
+    @%p2 bra        CORR;
+
+    // ===================== softmax (warps 0, 1) =====================
+    mbarrier.arrive.shared::cta.b64 _, [%r4];                   // @STMA
+STMW:                                                           // @XSTMW
+    mbarrier.try_wait.parity.shared::cta.b64 %p3, [%r4], 0;     // @XSTMW
+    @!%p3 bra       STMW;                                       // @XSTMW
+    tcgen05.fence::after_thread_sync;                           // @XTCF
+    ld.shared.b32   %r10, [%r3];            // tmem.retrieve_ptr
+    shl.b32         %r11, %r1, 21;          // (32 * warp) << 16: TMEM lane quadrant
+    add.u32         %r12, %r10, %r11;
+    shl.b32         %r13, %r1, 3;
+    add.u32         %r14, %r6, %r13;        // stats empty barrier       // @SEMP
+    add.u32         %r15, %r5, %r13;        // &mbar_full[w]
+    add.u32         %r16, %r1, 2;           // pre-fix bar id SoftmaxStatsW0 + stage*4 + w
+    shl.b32         %r17, %r0, 2;
+    add.u32         %r18, %r8, %r17;        // &sScale[row], row = 32w + lane
+    mov.u32         %r19, 1;                // sm_stats_producer_phase
+SACQ0:
+    mbarrier.try_wait.parity.shared::cta.b64 %p4, [%r14], %r19;
+    @!%p4 bra       SACQ0;
+    xor.b32         %r19, %r19, 1;
+    mov.u32         %r20, 0;
+SLOOP:
+    mad.lo.u32      %r21, %r0, 16, %r20;
+    add.u32         %r21, %r21, 1;          // acc_scale stand-in: row*16 + i + 1
+    tcgen05.st.sync.aligned.32x32b.x2.b32 [%r12], {%r21, %r21}; // P -> TMEM
+    tcgen05.wait::st.sync.aligned;
+    st.shared.b32   [%r18], %r21;           // sScale[row] = acc_scale
+    mbarrier.arrive.shared::cta.b64 _, [%r15];                  // @SCOM
+SACQ:
+    mbarrier.try_wait.parity.shared::cta.b64 %p5, [%r14], %r19;
+    @!%p5 bra       SACQ;
+    xor.b32         %r19, %r19, 1;
+    add.u32         %r20, %r20, 1;
+    setp.lt.u32     %p6, %r20, 2;
+    @%p6 bra        SLOOP;
+    tcgen05.fence::before_thread_sync;                          // @XTCF
+    mbarrier.arrive.shared::cta.b64 _, [%r4];                   // @STMB
+    bra             DONE;
+
+    // ===================== correction (warps 2, 3) =====================
+CORR:
+    mbarrier.arrive.shared::cta.b64 _, [%r4];                   // @CTMA
+CTMW:                                                           // @XCTMW
+    mbarrier.try_wait.parity.shared::cta.b64 %p7, [%r4], 0;     // @XCTMW
+    @!%p7 bra       CTMW;                                       // @XCTMW
+    tcgen05.fence::after_thread_sync;                           // @XTCF
+    ld.shared.b32   %r10, [%r3];            // tmem.retrieve_ptr
+    shl.b32         %r11, %r1, 21;
+    add.u32         %r12, %r10, %r11;
+    sub.u32         %r22, %r1, 2;           // w
+    shl.b32         %r13, %r22, 3;
+    add.u32         %r14, %r6, %r13;        // stats empty barrier       // @CEMP
+    add.u32         %r15, %r5, %r13;        // &mbar_full[w]
+    add.u32         %r16, %r22, 2;          // pre-fix bar id SoftmaxStatsW0 + stage*4 + w
+    sub.u32         %r23, %r0, 64;          // row = 32w + lane
+    shl.b32         %r17, %r23, 2;
+    add.u32         %r18, %r8, %r17;        // &sScale[row]
+    mov.u32         %r19, 0;                // sm_stats_consumer_phase
+    mov.u32         %r20, 0;
+CLOOP:
+CWT:                                                            // @XCWL
+    mbarrier.try_wait.parity.shared::cta.b64 %p8, [%r15], %r19; // @CWAIT
+    @!%p8 bra       CWT;                                        // @XCWB
+    ld.shared.b32   %r24, [%r18];           // scale = sScale[row]
+    tcgen05.st.sync.aligned.32x32b.x2.b32 [%r12], {%r24, %r24}; // rescale O in TMEM
+    tcgen05.wait::st.sync.aligned;
+    mbarrier.arrive.shared::cta.b64 _, [%r14];                  // consumer_release
+    xor.b32         %r19, %r19, 1;
+    mad.lo.u32      %r25, %r23, 2, %r20;
+    mul.wide.u32    %rd2, %r25, 4;
+    add.u64         %rd3, %rd1, %rd2;
+    st.global.b32   [%rd3], %r24;           // out[row][i] = scale
+    add.u32         %r20, %r20, 1;
+    setp.lt.u32     %p9, %r20, 2;
+    @%p9 bra        CLOOP;
+    tcgen05.ld.sync.aligned.32x32b.x2.b32 {%r26, %r27}, [%r12];
+    tcgen05.wait::ld.sync.aligned;
+    add.u32         %r29, %r23, 128;
+    mul.wide.u32    %rd4, %r29, 4;
+    add.u64         %rd5, %rd1, %rd4;
+    st.global.b32   [%rd5], %r26;           // out[OOFF + row] = O
+    tcgen05.fence::before_thread_sync;                          // @XTCF
+    mbarrier.arrive.shared::cta.b64 _, [%r4];                   // @CTMB
+    bra             DONE;
+
+    // ===================== MMA (warp 4) =====================
+MMA:
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    tcgen05.fence::before_thread_sync;                          // @XTCF
+    mbarrier.arrive.shared::cta.b64 _, [%r4];                   // @MTMA
+MTMW0:                                                          // @XMTMW0
+    mbarrier.try_wait.parity.shared::cta.b64 %p10, [%r4], 0;    // @XMTMW0
+    @!%p10 bra      MTMW0;                                      // @XMTMW0
+    tcgen05.fence::after_thread_sync;                           // @XTCF
+    ld.shared.b32   %r10, [%r3];            // tmem.retrieve_ptr
+    tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+    mbarrier.arrive.shared::cta.b64 _, [%r4];                   // @MTMB
+MTMW1:                                                          // @XMTMW1
+    mbarrier.try_wait.parity.shared::cta.b64 %p11, [%r4], 1;    // @XMTMW1
+    @!%p11 bra      MTMW1;                                      // @XMTMW1
+    tcgen05.fence::after_thread_sync;                           // @XTCF
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r10, 32;
+DONE:
+    ret;
+}

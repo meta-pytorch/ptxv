@@ -47,7 +47,8 @@ pub struct Args {
     pub explore: bool,
     pub pre_round: bool,
     pub uniform: bool,
-    pub no_tier1: bool,
+    /// Run Tier 1 too (opt-in).
+    pub tier1: bool,
 }
 
 /// One kernel ready for errdist: its preconditions and its program.
@@ -192,6 +193,17 @@ fn kernel(
 ) -> Result<Kernel> {
     let mut run = prepare(base, k, max_states, dir, segments)?;
     let mut prog = Prog::extract(&run.m).map_err(|e| anyhow!("{}: {e}", run.label()))?;
+    // Untracked outputs: why no slice could be built (segment mode).
+    if prog.outputs.iter().any(|o| o.is_none()) {
+        if let Some(ns) = run.m.num.as_ref() {
+            for (pc, e) in ns.seg_fails.iter().take(4) {
+                run.notes.push(format!(
+                    "no slice at {}: {e}",
+                    run.m.k.describe(*pc as usize)
+                ));
+            }
+        }
+    }
     // Agent AG: identify the instruction slices (non-chain outputs).
     let (ids, idents) =
         ptxv_sim::errdist::nonlin::prepare(&mut prog, &run.m).map_err(|e| anyhow!(e))?;
@@ -301,7 +313,12 @@ pub(crate) fn layouts(ks: &[&Kernel]) -> Result<Vec<Layout>> {
 /// Simulate the case's kernel(s). Agent AG: segment mode when some output is untracked
 /// without it (softmax, norms, multi-launch regions whose launches communicate through global
 /// memory).
-fn simulate(path: &Path, candidate: usize, dir: &Path) -> Result<(Kernel, Option<Kernel>)> {
+fn simulate(
+    path: &Path,
+    candidate: usize,
+    dir: &Path,
+    force_seg: bool,
+) -> Result<(Kernel, Option<Kernel>)> {
     let untracked = |k: &Kernel| k.prog.outputs.iter().any(|o| o.is_none());
     if path.extension().is_some_and(|e| e == "toml") {
         let base = path.parent().unwrap_or(Path::new(".")).to_path_buf();
@@ -310,9 +327,10 @@ fn simulate(path: &Path, candidate: usize, dir: &Path) -> Result<(Kernel, Option
             .candidates
             .get(candidate)
             .ok_or_else(|| anyhow!("no candidate {candidate}"))?;
-        let r = kernel(&base, &f.reference, f.max_states, dir, f.segments)?;
-        let c = kernel(&base, ck, f.max_states, dir, f.segments)?;
-        if !f.segments && (untracked(&r) || untracked(&c)) {
+        let seg = f.segments || force_seg;
+        let r = kernel(&base, &f.reference, f.max_states, dir, seg)?;
+        let c = kernel(&base, ck, f.max_states, dir, seg)?;
+        if !seg && (untracked(&r) || untracked(&c)) {
             let r = kernel(&base, &f.reference, f.max_states, dir, true)?;
             let c = kernel(&base, ck, f.max_states, dir, true)?;
             Ok((r, Some(c)))
@@ -329,18 +347,38 @@ fn simulate(path: &Path, candidate: usize, dir: &Path) -> Result<(Kernel, Option
             certify: true,
             expect_bound_u: None,
         };
-        match kernel(Path::new("/"), &k, 200_000, dir, false) {
+        match kernel(Path::new("/"), &k, 200_000, dir, force_seg) {
             Ok(x) if !untracked(&x) => Ok((x, None)),
             _ => Ok((kernel(Path::new("/"), &k, 200_000, dir, true)?, None)),
         }
     }
 }
 
+/// A scratch directory removed when dropped.
+struct TmpDir(PathBuf);
+
+impl Drop for TmpDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 pub fn cmd(a: &Args) -> Result<()> {
+    // Scratch: --out, else a directory of this process (concurrent runs must not share one),
+    // removed at the end.
+    let tmp = a.out.is_none().then(|| {
+        TmpDir(std::env::temp_dir().join(format!(
+            "ptxv-errdist-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        )))
+    });
     let dir = a
         .out
         .clone()
-        .unwrap_or_else(|| std::env::temp_dir().join("ptxv-errdist"));
+        .unwrap_or_else(|| tmp.as_ref().unwrap().0.clone());
     std::fs::create_dir_all(&dir)?;
     // The model file of this run: queried (--model) or written (--compile).
     let mut model_file: Option<PathBuf> = a.model.clone();
@@ -368,7 +406,25 @@ pub fn cmd(a: &Args) -> Result<()> {
             .as_ref()
             .ok_or_else(|| anyhow!("a case directory or equiv.toml (or --model FILE)"))?;
         let t0 = std::time::Instant::now();
-        let (r, c) = simulate(path, a.candidate, &dir)?;
+        let (mut r, mut c) = simulate(path, a.candidate, &dir, false)?;
+        // Never report from a graph that disagrees with the simulator: probe two sampled
+        // inputs; on a mismatch, retry in segment mode, and refuse if that disagrees too.
+        if let Some(ip) = &a.inputs {
+            let spec = load_spec(ip)?;
+            let (m, n) = dag_probe(&r, c.as_ref(), &spec, &dir)?;
+            if m > 0 {
+                println!(
+                    "the numerics DAG disagrees with the simulator on {m} of {n} tracked outputs over 2 probe inputs: retrying in segment mode"
+                );
+                (r, c) = simulate(path, a.candidate, &dir, true)?;
+                let (m2, n2) = dag_probe(&r, c.as_ref(), &spec, &dir)?;
+                if m2 > 0 {
+                    bail!(
+                        "the numerics DAG disagrees with the simulator on {m2} of {n2} tracked outputs over 2 probe inputs, in segment mode too (default extraction: {m} of {n}); refusing to report from it"
+                    );
+                }
+            }
+        }
         let mut labels = vec![];
         for k in std::iter::once(&r).chain(c.iter()) {
             labels.push(k.run.label());
@@ -390,9 +446,15 @@ pub fn cmd(a: &Args) -> Result<()> {
         for k in &ks {
             if !k.prog.outputs.is_empty() && k.prog.outputs.iter().all(|o| o.is_none()) {
                 bail!(
-                    "{}: the numerics DAG tracks none of its {} outputs",
+                    "{}: the numerics DAG tracks none of its {} outputs{}",
                     k.run.label(),
-                    k.prog.outputs.len()
+                    k.prog.outputs.len(),
+                    k.run
+                        .notes
+                        .iter()
+                        .filter(|n| n.starts_with("no slice at"))
+                        .map(|n| format!("; {n}"))
+                        .collect::<String>()
                 );
             }
         }
@@ -478,10 +540,9 @@ pub fn cmd(a: &Args) -> Result<()> {
         );
         return Ok(());
     }
-    // Queries of a compiled model skip Tier 3 unless asked (--mc N).
-    let n =
-        a.mc.or(spec.engine.mc_inputs)
-            .unwrap_or(if kernels.is_some() { 1000 } else { 0 });
+    // Tier 3: the cross-check of the analytic tiers and the fallback headline (--mc 0 skips
+    // it; a model query then rests on the structural checks).
+    let n = a.mc.or(spec.engine.mc_inputs).unwrap_or(MC_DEFAULT);
     let t0 = std::time::Instant::now();
     let obs = ptxv_sim::errdist::mc::run(
         &st,
@@ -530,6 +591,21 @@ pub fn cmd(a: &Args) -> Result<()> {
         ..Default::default()
     };
     rep.out_of_domain = ood(&obs);
+    if obs.nonfinite > 0 {
+        rep.notes.push(format!(
+            "{} of {} outputs ({:.3e}) are NaN / Inf in Tier 3 ({} of {} inputs): out of domain, outside the error statistics",
+            obs.nonfinite,
+            obs.seen,
+            obs.nonfinite as f64 / obs.seen.max(1) as f64,
+            obs.nonfinite_inputs,
+            obs.inputs
+        ));
+    }
+    if n > 0 && obs.compared == 0 {
+        rep.notes.push(
+            "TIER 3 COMPARED NO OUTPUTS: every output is non-finite, untracked or has no nonzero term; its P(differ) says nothing".into(),
+        );
+    }
     rep.worst_case = model.worst.clone().map(|mut w| {
         if st.wc.is_some() && obs.wc_checked > 0 {
             let mut v = obs.wc_sample.clone();
@@ -553,7 +629,7 @@ pub fn cmd(a: &Args) -> Result<()> {
         rep.estimates.push(est);
     } else {
         rep.notes
-            .push("tier 3 not run (model query; --mc N runs it)".into());
+            .push("tier 3 not run (--mc 0): no cross-check of the analytic tiers".into());
     }
     let ks: Vec<&Kernel> = kernels
         .as_ref()
@@ -570,8 +646,16 @@ pub fn cmd(a: &Args) -> Result<()> {
     if n_sim > 0 {
         let t1 = std::time::Instant::now();
         let v = validate_sim(&st, &spec, &ls, &ks, n_sim, first, threads.min(n_sim), &dir)?;
+        if v.mismatch > 0 && !a.pre_round {
+            bail!(
+                "the numerics DAG disagrees with the simulator on {} tracked outputs over {} validation inputs; refusing to report from it",
+                v.mismatch,
+                v.inputs
+            );
+        }
         let mut val =
             ptxv_sim::errdist::validate::against_sample("sim", "tier 3", &obs, &v.obs, v.mismatch);
+        flag_nonfinite(&mut val, &obs, &v.obs);
         val.notes
             .push(format!("{:.1}s", t1.elapsed().as_secs_f64()));
         rep.validation.push(val);
@@ -589,6 +673,7 @@ pub fn cmd(a: &Args) -> Result<()> {
                 let mut val = ptxv_sim::errdist::validate::against_sample(
                     "gpu", "tier 3", &obs, &v.obs, v.mismatch,
                 );
+                flag_nonfinite(&mut val, &obs, &v.obs);
                 val.notes
                     .push(format!("GPU {gpu}, {:.1}s", t1.elapsed().as_secs_f64()));
                 rep.validation.push(val);
@@ -631,48 +716,87 @@ pub fn cmd(a: &Args) -> Result<()> {
             nl_query(&ids, st.r, st.c, &spec, &ls, model_file.as_deref()).map_err(|e| anyhow!(e)),
         );
     }
-    anas.push(analytic(&st, &spec, &ls, false, a.no_tier1));
+    anas.push(analytic(&st, &spec, &ls, false, !a.tier1));
     for ana in anas {
         match ana {
             Ok(mut e) => {
                 rep.notes.extend(std::mem::take(&mut e.1));
+                // Tier 1 (the chains' residue chain, the non-chain exact-site convolution) is
+                // opt-in.
+                let n1 = e.0.iter().filter(|x| x.tier == 1).count();
+                if !a.tier1 && n1 > 0 {
+                    e.0.retain(|x| x.tier != 1);
+                    rep.notes.push("tier 1 not run (opt-in: --tier1)".into());
+                }
                 rep.estimates.extend(e.0);
                 rep.residue.extend(e.2);
             }
             Err(e) => rep.notes.push(format!("analytic tiers not run: {e}")),
         }
     }
-    // Agent AG: a nonlin estimate is applicable where it agrees with Tier 3 (|p - p3| <=
-    // max(5% of p3, half Tier 3's CI), or p inside Tier 3's CI); without Tier 3 it is not
-    // chosen as the headline.
+    // The Tier 3 cross-check (docs/errdist.md §3.2): every analytic estimate (tiers 1-2,
+    // chain and non-chain) must agree with this run's Tier 3, |p - p3| <= max(5% of p3,
+    // half Tier 3's interval) or p inside it; one that does not is not applicable and the
+    // headline falls back. Without Tier 3 (a model query without --mc), the non-chain
+    // estimates (validated only through this check) are not applicable and the chain ones
+    // rest on their structural checks.
     let t3 = rep
         .estimates
         .iter()
         .find(|e| e.tier == 3)
         .and_then(|e| e.p_differ);
-    for e in rep.estimates.iter_mut().filter(|e| {
-        e.applicable.is_none()
-            && (e.method.starts_with("elementwise") || e.method.starts_with("linearized"))
-    }) {
-        let (ok, why) = match (t3, e.p_differ) {
-            (Some((p3, lo, hi)), Some((p, _, _))) => {
+    let mut disagree = vec![];
+    for (k, e) in rep.estimates.iter_mut().enumerate() {
+        if !(e.tier == 1 || e.tier == 2) {
+            continue;
+        }
+        let nl = e.method.starts_with("elementwise") || e.method.starts_with("linearized");
+        let Some((p, _, _)) = e.p_differ else {
+            continue;
+        };
+        match t3 {
+            Some((p3, lo, hi)) => {
                 let tol = (0.05 * p3).max(0.5 * (hi - lo));
                 let ok = (p - p3).abs() <= tol || (p >= lo && p <= hi);
-                (
-                    ok,
-                    format!(
-                        "agrees with Tier 3 ({p:.3e} vs {p3:.3e}, tolerance {tol:.2e}) {}",
-                        if ok { "ok" } else { "FAILS" }
-                    ),
-                )
+                e.applicability.push(format!(
+                    "Tier 3 cross-check ({n} inputs): {p:.3e} vs {p3:.3e} [{lo:.3e}, {hi:.3e}], tolerance {tol:.2e} {}",
+                    if ok { "ok" } else { "FAILS" }
+                ));
+                if !ok {
+                    disagree.push(format!(
+                        "tier {} ({:.40}...) {p:.3e} vs tier 3 {p3:.3e} [{lo:.3e}, {hi:.3e}]",
+                        e.tier, e.method
+                    ));
+                }
+                e.applicable = Some(e.applicable.unwrap_or(true) && ok);
+                rep.crosscheck.push(ptxv_sim::errdist::report::CrossCheck {
+                    estimate: k,
+                    tier: e.tier,
+                    p,
+                    p3,
+                    p3_lo: lo,
+                    p3_hi: hi,
+                    tol,
+                    inputs: n as u64,
+                    agrees: ok,
+                });
             }
-            _ => (
-                false,
-                "no Tier 3 to check against (--mc N) FAILS".to_string(),
-            ),
-        };
-        e.applicable = Some(ok);
-        e.applicability.push(why);
+            None => {
+                if nl || e.applicable.is_none() {
+                    e.applicable = Some(false);
+                    e.applicability
+                        .push("no Tier 3 to cross-check against (--mc N) FAILS".into());
+                } else {
+                    e.applicability
+                        .push("no Tier 3 cross-check (--mc N): structural checks only".into());
+                }
+            }
+        }
+    }
+    for d in disagree {
+        rep.notes.push(format!(
+            "TIER 3 CROSS-CHECK FAILS: {d}; the headline falls back to tier 3"
+        ));
     }
     if a.uniform {
         match analytic(&st, &spec, &ls, true, false) {
@@ -699,14 +823,15 @@ pub fn cmd(a: &Args) -> Result<()> {
     for (src, v, gpu) in &observed {
         for e in rep.estimates.iter().filter(|e| e.tier < 3) {
             let mut x = ptxv_sim::errdist::validate::against_estimate(src, e, &v.obs, v.mismatch);
+            flag_nonfinite(&mut x, &obs, &v.obs);
             if let Some(g) = gpu {
                 x.notes.push(format!("GPU {g}"));
             }
             rep.validation.push(x);
         }
     }
-    // The headline: tier 0 when it applies, else tier 1 or tier 2 where they pass their own
-    // applicability checks, else tier 3.
+    // The headline: tier 0 when it applies, else tier 1 (opt-in) or tier 2 where they pass
+    // their applicability checks and the Tier 3 cross-check, else tier 3.
     let ok = |e: &ptxv_sim::errdist::report::Estimate| {
         e.applicable == Some(true) && e.p_differ.is_some()
     };
@@ -783,6 +908,36 @@ pub fn cmd(a: &Args) -> Result<()> {
     Ok(())
 }
 
+/// NaN / Inf outputs in a validation run: noted with Tier 3's rate; the validation fails when
+/// the observed run has them and Tier 3 (the model) has none, or none of the observed
+/// outputs could be compared.
+fn flag_nonfinite(
+    v: &mut ptxv_sim::errdist::report::Validation,
+    t3: &ptxv_sim::errdist::mc::Obs,
+    o: &ptxv_sim::errdist::mc::Obs,
+) {
+    if o.nonfinite == 0 && o.compared > 0 {
+        return;
+    }
+    let fr = |x: &ptxv_sim::errdist::mc::Obs| x.nonfinite as f64 / x.seen.max(1) as f64;
+    v.notes.push(format!(
+        "non-finite outputs (NaN / Inf): observed {} of {} ({:.3e}), Tier 3 {:.3e}; out of domain, outside the compared statistics",
+        o.nonfinite,
+        o.seen,
+        fr(o),
+        fr(t3)
+    ));
+    if (o.nonfinite > 0 && t3.nonfinite == 0) || o.compared == 0 {
+        v.agree = false;
+        v.notes.push(if o.compared == 0 {
+            "DISAGREE: no observed output could be compared".to_string()
+        } else {
+            "DISAGREE: the observed run has NaN / Inf outputs the model does not account for"
+                .to_string()
+        });
+    }
+}
+
 fn wc_check(source: &str, o: &ptxv_sim::errdist::mc::Obs) -> ptxv_sim::errdist::report::WorstCheck {
     ptxv_sim::errdist::report::WorstCheck {
         source: source.into(),
@@ -791,6 +946,10 @@ fn wc_check(source: &str, o: &ptxv_sim::errdist::mc::Obs) -> ptxv_sim::errdist::
         max_ratio: o.wc_ratio,
     }
 }
+
+/// Tier 3 inputs when compiling a case without --mc: the cross-check of the analytic tiers
+/// and the fallback headline when they refuse.
+const MC_DEFAULT: usize = 300;
 
 /// Above this many monomials summed over the DAG's polynomial forms (`proof_work`), errdist
 /// skips the worst-case proof: building them is quadratic in the chain length (about 5e6
@@ -1300,12 +1459,19 @@ fn analytic(
                 };
                 e.outputs = st.r.outputs.len() as u64;
                 e.seconds = t2.elapsed().as_secs_f64();
+                // Block-scaled chains: the matrix has this tier 2-100x off (docs/errdist.md
+                // §6); reported for comparison, never the headline.
+                e.applicable = Some(false);
+                e.applicability.push(
+                    "block-scaled chain CLT: not validated (the matrix has it 2-100x off) FAILS"
+                        .into(),
+                );
                 out.push(e);
             }
         }
     }
     if no_tier1 {
-        notes.push("tier 1 skipped (--no-tier1)".into());
+        notes.push("tier 1 not run (opt-in: --tier1)".into());
         return Ok((out, notes, vec![]));
     }
     let t1 = std::time::Instant::now();
@@ -1432,6 +1598,23 @@ pub(crate) fn report_text(rep: &ptxv_sim::errdist::report::Report) -> String {
     for e in &rep.estimates {
         estimate_text(&mut o, e);
     }
+    // Applicability of the analytic tiers (structural checks and the Tier 3 cross-check), and
+    // the headline.
+    for e in rep.estimates.iter().filter(|e| e.tier == 1 || e.tier == 2) {
+        outln!(
+            o,
+            "tier {} {}:",
+            e.tier,
+            match e.applicable {
+                Some(true) => "applicable",
+                Some(false) => "REFUSED",
+                None => "applicability unchecked",
+            }
+        );
+        for a in &e.applicability {
+            outln!(o, "    {a}");
+        }
+    }
     for r in &rep.residue {
         outln!(
             o,
@@ -1529,7 +1712,95 @@ pub(crate) fn report_text(rep: &ptxv_sim::errdist::report::Report) -> String {
     for n in &rep.notes {
         outln!(o, "note: {n}");
     }
+    summary_text(&mut o, rep);
     o
+}
+
+/// |k| (output ulps) at cumulative probability q of a PMF over output ulps.
+fn abs_ulp_quantile(pmf: &[(i64, f64)], q: f64) -> Option<i64> {
+    let mut a: BTreeMap<i64, f64> = BTreeMap::new();
+    for &(k, p) in pmf {
+        *a.entry(k.abs()).or_default() += p;
+    }
+    let t: f64 = a.values().sum();
+    if t <= 0.0 {
+        return None;
+    }
+    let mut c = 0.0;
+    for (k, p) in a {
+        c += p / t;
+        if c >= q - 1e-12 {
+            return Some(k);
+        }
+    }
+    None
+}
+
+/// The closing summary: which tier answered, P(differ), typical and largest errors in output
+/// ulps, the proven worst case.
+fn summary_text(o: &mut String, rep: &ptxv_sim::errdist::report::Report) {
+    let Some(e) = rep.estimates.get(rep.best) else {
+        return;
+    };
+    let t3 = rep.estimates.iter().find(|e| e.tier == 3);
+    let why = match e.tier {
+        0 => "exact (tier 0)".to_string(),
+        3 => {
+            let refused = rep
+                .estimates
+                .iter()
+                .any(|x| (x.tier == 1 || x.tier == 2) && x.applicable == Some(false));
+            if refused {
+                "tier 3 (Monte Carlo; the analytic tiers refused, see above)".into()
+            } else {
+                "tier 3 (Monte Carlo)".into()
+            }
+        }
+        t => format!(
+            "tier {t} ({}){}",
+            e.method.split([':', ';']).next().unwrap_or(""),
+            if rep
+                .crosscheck
+                .iter()
+                .any(|c| c.estimate == rep.best && c.agrees)
+            {
+                ", agrees with the tier 3 cross-check"
+            } else {
+                ""
+            }
+        ),
+    };
+    outln!(o, "\nsummary: {why}");
+    if let Some(p) = e.p_differ {
+        let x = t3
+            .filter(|_| e.tier != 3)
+            .and_then(|t| t.p_differ)
+            .map(|(p3, lo, hi)| format!(" (tier 3: {p3:.3e} [{lo:.3e}, {hi:.3e}])"))
+            .unwrap_or_default();
+        outln!(o, "    P(bits differ) = {:.3e}{x}", p.0);
+    }
+    if !e.pmf_ulp.is_empty() {
+        let q = |p| abs_ulp_quantile(&e.pmf_ulp, p).map_or("-".to_string(), |k| k.to_string());
+        let seen = t3
+            .and_then(|t| t.pmf_ulp.iter().map(|x| x.0.abs()).max())
+            .map(|k| format!(", largest seen in tier 3: {k}"))
+            .unwrap_or_default();
+        outln!(
+            o,
+            "    error in output ulps (|k|): median {}, 99% within {}, 99.9% within {}{seen}",
+            q(0.5),
+            q(0.99),
+            q(0.999)
+        );
+    }
+    if let Some(w) = &rep.worst_case {
+        outln!(
+            o,
+            "    worst case{}: {}",
+            if w.proven { " (proven)" } else { "" },
+            w.human
+        );
+    }
 }
 
 fn estimate_text(o: &mut String, e: &ptxv_sim::errdist::report::Estimate) {
@@ -1673,6 +1944,34 @@ type RunKernels<'a> =
 
 /// Run both kernels on `n` sampled inputs (indices from `first`) through `run_kernel`, compare
 /// with the DAG evaluation and collect the errors.
+/// Tracked outputs where the DAG's value differs from the run's (NaN matches NaN).
+fn dag_mismatch(p: &Prog, dag: &[f32], run: &[f32]) -> u64 {
+    p.outputs
+        .iter()
+        .zip(dag.iter().zip(run))
+        .filter(|(o, (a, b))| {
+            o.is_some() && a.to_bits() != b.to_bits() && !(a.is_nan() && b.is_nan())
+        })
+        .count() as u64
+}
+
+/// The extracted DAG against the simulator on two sampled inputs (outside every other index
+/// range): (mismatching tracked outputs, compared). A graph that does not track the inputs
+/// (a conversion the extraction folded to a constant, a compensation it lost) reproduces the
+/// captured input only.
+fn dag_probe(r: &Kernel, c: Option<&Kernel>, spec: &Spec, dir: &Path) -> Result<(u64, u64)> {
+    let st =
+        ptxv_sim::errdist::mc::Setup::new(&r.prog, c.map(|c| &c.prog)).map_err(|e| anyhow!(e))?;
+    let ks: Vec<&Kernel> = std::iter::once(r).chain(c).collect();
+    let ls = layouts(&ks)?;
+    let v = validate_sim(&st, spec, &ls, &ks, 2, 3 << 40, 2, dir)?;
+    let tracked: u64 = ks
+        .iter()
+        .map(|k| k.prog.outputs.iter().filter(|o| o.is_some()).count() as u64)
+        .sum();
+    Ok((v.mismatch, 2 * tracked))
+}
+
 fn validate_with(
     st: &ptxv_sim::errdist::mc::Setup,
     spec: &Spec,
@@ -1692,20 +1991,12 @@ fn validate_with(
         let mut wr = st.r.leaves(&smp.bytes).map_err(|e| anyhow!(e))?;
         st.r.eval_into(&mut wr);
         let rd = mc::outputs(st.r, &wr);
-        mismatch += rd
-            .iter()
-            .zip(&ro)
-            .filter(|(a, b)| a.to_bits() != b.to_bits())
-            .count() as u64;
+        mismatch += dag_mismatch(st.r, &rd, &ro);
         if let (Some(c), Some(co)) = (st.c, co.as_ref()) {
             let mut wc = c.leaves(&smp.bytes).map_err(|e| anyhow!(e))?;
             c.eval_into(&mut wc);
             let cd = mc::outputs(c, &wc);
-            mismatch += cd
-                .iter()
-                .zip(co)
-                .filter(|(a, b)| a.to_bits() != b.to_bits())
-                .count() as u64;
+            mismatch += dag_mismatch(c, &cd, co);
         }
         let keep = mc::keep_set(st.r.outputs.len(), 256, t);
         mc::observe(

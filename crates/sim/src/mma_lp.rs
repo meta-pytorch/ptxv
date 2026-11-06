@@ -271,11 +271,7 @@ impl LpMmaModel {
         };
         let nz: Vec<&(f64, i32)> = t.iter().filter(|x| x.0 != 0.0).collect();
         if nz.is_empty() {
-            return if !t.is_empty() && t.iter().all(|x| x.0.is_sign_negative()) {
-                -0.0
-            } else {
-                0.0
-            };
+            return 0.0; // a zero result is +0 (N-MMA, probes/mma_zero)
         }
         let emax = nz.iter().map(|x| x.1).max().unwrap();
         let q = emax - f as i32;
@@ -309,11 +305,7 @@ const F16: Tgt = Tgt {
 fn round_exact(t: &[(f64, i32)], rz: bool, tgt: Tgt, via32: bool) -> f64 {
     let nz: Vec<f64> = t.iter().map(|x| x.0).filter(|v| *v != 0.0).collect();
     if nz.is_empty() {
-        return if !t.is_empty() && t.iter().all(|x| x.0.is_sign_negative()) {
-            -0.0
-        } else {
-            0.0
-        };
+        return 0.0; // a zero result is +0 (N-MMA, probes/mma_zero)
     }
     let lo = nz.iter().map(|&v| exp_of(v) - 52).min().unwrap();
     let mut acc: i128 = 0;
@@ -323,7 +315,8 @@ fn round_exact(t: &[(f64, i32)], rz: bool, tgt: Tgt, via32: bool) -> f64 {
     round_int(acc, lo, rz, tgt, via32)
 }
 
-/// Round v * 2^e to the target (RZ or RN-even; subnormals; overflow to max (RZ) or Inf).
+/// Round v * 2^e to the target (RZ or RN-even; subnormals; overflow to max (RZ) or Inf; a zero
+/// result is +0).
 fn round_int(v: i128, e: i32, rz: bool, tgt: Tgt, via32: bool) -> f64 {
     if tgt.mbits == F16.mbits && via32 {
         let x = round_int(v, e, rz, F32, false);
@@ -363,7 +356,9 @@ fn round_int(v: i128, e: i32, rz: bool, tgt: Tgt, via32: bool) -> f64 {
     } else {
         m as f64 * 2f64.powi(qe)
     };
-    if neg { -val } else { val }
+    // A result that underflows to zero is +0, whatever the sign of the exact sum (GB300,
+    // probes/mma_zero; ASSUME(N-MMA)).
+    if neg && val != 0.0 { -val } else { val }
 }
 
 #[cfg(test)]
@@ -393,6 +388,38 @@ mod tests {
             h,
             crate::fp::f32_to_f16_rn((1.0f32 + 2f32.powi(-9)).to_bits()) as u32
         );
+    }
+
+    /// A zero result is +0 (GB300, probes/mma_zero: e4m3 / e2m1, f32 and f16 D): all products
+    /// -0, exact cancellation, with C = -0 or none; an underflowing (block-scaled) sum.
+    #[test]
+    fn zero_results_are_positive() {
+        let e = |c| Operand::new(c, Lp::E4m3);
+        let (one, mone, nz) = (e(0x38), e(0xb8), e(0x80)); // 1, -1, -0
+        for (md, f16, neg0) in [
+            (DEFAULT_LP_MMA, false, 0x8000_0000),
+            (DEFAULT_LP_MMA_F16, true, 0x8000),
+        ] {
+            for acc in [None, Some(0u32), Some(neg0)] {
+                let d = md.step(acc, &[nz; 32], &[one; 32], f16);
+                assert_eq!(d, 0, "{} all -0, acc {acc:?}", md.name());
+                let d = md.step(acc, &[one, mone], &[one, one], f16);
+                assert_eq!(d, 0, "{} 1 - 1, acc {acc:?}", md.name());
+            }
+        }
+        // mxf8-style terms a b sa sb that underflow f32 (scales 2^-127 each)
+        let sc = Operand::scale(0, Lp::Ue8m0);
+        let t = [e(0xb8).mul(&one).mul(&sc).mul(&sc)];
+        assert_eq!(DEFAULT_LP_MMA.step_terms(Some(0x8000_0000), &t, false), 0);
+        assert_eq!(DEFAULT_LP_MMA.step_terms(None, &t, false), 0);
+        // FP4 units with no live product and C = -0
+        let s1 = [Operand::scale(127, Lp::Ue8m0); 4];
+        let p = [-0.0f64; 64];
+        assert_eq!(DEFAULT_FP4_MMA.step(Some(0x8000_0000), &p, &s1, &s1, 16), 0);
+        let tiny = [Operand::scale(1, Lp::Ue8m0); 4]; // 2^-126
+        let mut p = [0.0f64; 64];
+        p[0] = -0.5;
+        assert_eq!(DEFAULT_FP4_MMA.step(None, &p, &tiny, &tiny, 16), 0);
     }
 }
 
@@ -490,7 +517,7 @@ impl Fp4Model {
             emax = Some(emax.map_or(exp_of(a), |e| e.max(exp_of(a))));
         }
         let Some(emax) = emax else {
-            return acc.unwrap_or(0);
+            return 0; // nothing live and a zero (or no) accumulator: +0 (N-MMA, probes/mma_zero)
         };
         let q = emax - self.frac as i32;
         let mut sum: i128 = 0;

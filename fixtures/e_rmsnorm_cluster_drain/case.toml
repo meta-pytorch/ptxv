@@ -1,0 +1,75 @@
+name = "e_rmsnorm_cluster_drain"
+# The reporters' case (2026-11-05), written for GB200 (arch
+# sm_100a there); run here on the default sm_103a.
+description = """
+A FusedRMSNormBwd bug (PipelineStasAsync migration): exit drain of the cluster row-reduction
+exchange. Every CTA of a 2-CTA cluster is producer and consumer: per row it st.async's its partial
+into every CTA's reduction slot (complete_tx on that CTA's full barrier), waits its own full
+barrier, reads, then REMOTE-arrives (.release.cta by default) on every CTA's empty barrier.
+good = producer_tail (wait empty[] on all stages before exit); bug = the pre-fix epilogue (wait only
+the last-used stage). Control nodrain = no exit wait at all (B13-like)."""
+ptx = "kernel.ptx"
+entry = "stas_drain"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [2, 4]
+init = "normal"
+seed = 7
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [2, 4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "fix: producer_tail drains every stage's empty barrier before exit (K=2 rows)"
+expect = ["clean"]
+
+[[variants]]
+id = "bug"
+summary = "pre-fix: drain only the last-used stage's empty barrier (K=2 rows)"
+marker = "@EARLIER"
+replace = "<delete>"
+expect = ["violation"]
+hw_note = "cluster-lifetime UB if an earlier-stage remote arrive is still in flight at exit (S-REMOTE-INFLIGHT); GB300 output correct 1000/1000 (a late arrive into an exited CTA leaves no visible trace)"
+
+[[variants]]
+id = "good_k3"
+summary = "fix, K=3 rows (stage 0 reused)"
+marker = "@K"
+find = "%r14, 2;"
+replace = "%r14, 3;"
+expect = ["clean"]
+
+[[variants]]
+id = "bug_k3"
+summary = "pre-fix, K=3 rows"
+marker = "@K"
+find = "%r14, 2;"
+replace = "%r14, 3;"
+edits = [{ marker = "@EARLIER", replace = "<delete>" }]
+expect = ["violation"]
+
+[[variants]]
+id = "nodrain"
+summary = "control: no exit drain at all (peers' last remote arrives unordered with exit)"
+marker = "@EARLIER"
+replace = "<delete>"
+edits = [{ marker = "@LAST", replace = "<delete>" }]
+expect = ["violation"]

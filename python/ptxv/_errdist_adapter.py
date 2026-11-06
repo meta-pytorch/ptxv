@@ -182,10 +182,10 @@ def argv(job: Any, work: Path) -> list[str]:
     cmd = ["errdist", target, "--inputs", str(sp), "--json", str(work / "errdist.json")]
     if job.args.get("per_output"):
         cmd.append("--per-output")
-    # Tier 1 can take minutes on wide scale ranges: opt in with tier1=True (or use
-    # ptxv.errdist_model, which compiles once and queries in seconds).
-    if not job.args.get("tier1"):
-        cmd.append("--no-tier1")
+    # Tier 1 is opt-in (minutes on wide scale ranges): tier1=True. Tier 3 runs a few hundred
+    # inputs by default (the cross-check of Tier 2); mc_inputs (the spec's engine) overrides.
+    if job.args.get("tier1"):
+        cmd.append("--tier1")
     return cmd
 
 
@@ -219,12 +219,12 @@ def query_argv(model: Path, args: dict, work: Path) -> list[str]:
         "--json",
         str(work / DOC_FILE),
     ]
-    if args.get("mc_inputs"):
+    if args.get("mc_inputs") is not None:
         cmd += ["--mc", str(int(args["mc_inputs"]))]
     if args.get("per_output"):
         cmd.append("--per-output")
-    if not args.get("tier1", True):
-        cmd.append("--no-tier1")
+    if args.get("tier1"):
+        cmd.append("--tier1")
     return cmd
 
 

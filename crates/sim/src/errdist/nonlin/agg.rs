@@ -995,6 +995,33 @@ fn k_law(ol: &OutLaw) -> Vec<(i64, f64)> {
                 let k = (u + 0.5 + x).floor() - (u + 0.5).floor();
                 *m.entry(k as i64).or_default() += p / ol.r as f64;
             }
+        } else if ol.d.h > 0.5 && ol.d.p.len() > 1 {
+            // A grid coarser than the ulp: each atom stands for its cell [x - h/2, x + h/2)
+            // (as a point it would put its whole mass on one K: a constant P(K = 0) =
+            // P(atom at 0) however wide the law). The tent kernel against a uniform cell:
+            // P(K = k) is the cell's overlap with [k - 1/2, k + 1/2) (the position shift
+            // averages out across the cell).
+            // Integers beyond +-W ulps: their mass at its centroid (the PMF keeps |k| <= W
+            // exactly, the moments the rest).
+            const W: f64 = 32.0;
+            let (a, b) = (x - ol.d.h / 2.0, x + ol.d.h / 2.0);
+            for (lo, hi) in [(a, b.min(-W - 0.5)), (a.max(W + 0.5), b)] {
+                if hi > lo {
+                    let c = (0.5 * (lo + hi)).round() as i64;
+                    *m.entry(c).or_default() += p * (hi - lo) / ol.d.h;
+                }
+            }
+            let (a, b) = (a.max(-W - 0.5), b.min(W + 0.5));
+            if b > a {
+                let (k0, k1) = ((a + 0.5).floor() as i64, (b + 0.5).floor() as i64);
+                for k in k0..=k1 {
+                    let lo = a.max(k as f64 - 0.5);
+                    let hi = b.min(k as f64 + 0.5);
+                    if hi > lo {
+                        *m.entry(k).or_default() += p * (hi - lo) / ol.d.h;
+                    }
+                }
+            }
         } else {
             let f = x.floor();
             let fr = x - f;

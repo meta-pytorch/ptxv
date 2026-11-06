@@ -25,15 +25,7 @@ fn errdist(path: &str, spec: &str, extra: &[&str]) -> serde_json::Value {
     ));
     let scratch = js.with_extension("d");
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_ptxv"))
-        .args([
-            "errdist",
-            path,
-            "--inputs",
-            spec,
-            "--mc",
-            "200",
-            "--no-tier1",
-        ])
+        .args(["errdist", path, "--inputs", spec, "--mc", "200"])
         .args(["--sim-trials", "0"])
         .args(["--json", js.to_str().unwrap()])
         .args(["--out", scratch.to_str().unwrap()])

@@ -148,6 +148,12 @@ pub struct Obs {
     pub ood_inputs: u64,
     /// Outputs with S = 0 (no nonzero term) or an untracked value: skipped.
     pub skipped: u64,
+    /// Outputs (of R or C, or the exact value) that are NaN / Inf: out of domain, outside
+    /// the error statistics; and the inputs with any.
+    pub nonfinite: u64,
+    pub nonfinite_inputs: u64,
+    /// Tracked outputs seen (finite or not).
+    pub seen: u64,
     /// Per output: u-scale moments (when requested).
     pub per_output: Vec<Acc>,
 }
@@ -189,6 +195,9 @@ impl Obs {
         }
         self.ood_inputs += o.ood_inputs;
         self.skipped += o.skipped;
+        self.nonfinite += o.nonfinite;
+        self.nonfinite_inputs += o.nonfinite_inputs;
+        self.seen += o.seen;
         if self.per_output.is_empty() {
             self.per_output = o.per_output;
         } else {
@@ -225,6 +234,7 @@ pub fn observe(
     }
     let (mut ms, mut ma, mut cnt, mut mx) = (0.0, 0.0, 0u64, 0f64);
     let (d0, c0) = (obs.differ, obs.compared);
+    let nf0 = obs.nonfinite;
     let mut ki = 0;
     // Agent AG: non-chain outputs take their exact value from the real-arithmetic evaluation.
     let mut real: Option<Vec<(super::nonlin::real::Dd, f64)>> = None;
@@ -240,12 +250,14 @@ pub fn observe(
                 continue;
             }
         };
-        if !ex.y.is_finite() || !ex.s.is_finite() {
-            obs.skipped += 1;
+        obs.seen += 1;
+        let rv = ev.r_out[o] as f64;
+        let cnf = ev.c_out.is_some_and(|c| !c[o].is_finite());
+        if !ex.y.is_finite() || !ex.s.is_finite() || !rv.is_finite() || cnf {
+            obs.nonfinite += 1;
             continue;
         }
-        let rv = ev.r_out[o] as f64;
-        if ex.s == 0.0 || !rv.is_finite() {
+        if ex.s == 0.0 {
             obs.skipped += 1;
             continue;
         }
@@ -258,10 +270,6 @@ pub fn observe(
         let e = match ev.c_out {
             Some(c) => {
                 let cv = c[o] as f64;
-                if !cv.is_finite() {
-                    obs.skipped += 1;
-                    continue;
-                }
                 let ec = (cv - ex.y) - ex.y_lo;
                 obs.er.add(er);
                 obs.ec.add(ec);
@@ -343,6 +351,9 @@ pub fn observe(
     if cnt > 0 {
         obs.input_means.push((ms / cnt as f64, ma / cnt as f64));
         obs.input_max_u.push(mx);
+    }
+    if obs.nonfinite > nf0 {
+        obs.nonfinite_inputs += 1;
     }
     if obs.compared > c0 {
         obs.input_differ
@@ -490,6 +501,7 @@ fn one(
     };
     causes.sort();
     causes.dedup();
+    let causes_empty = causes.is_empty();
     if !causes.is_empty() {
         obs.ood_inputs += 1;
         for c in causes {
@@ -497,6 +509,7 @@ fn one(
         }
     }
     let keep = keep_set(st.r.outputs.len(), cfg.keep, t);
+    let nf0 = obs.nonfinite;
     observe(
         st,
         &InputEval {
@@ -509,6 +522,13 @@ fn one(
         cfg.per_output,
         acc,
     );
+    // NaN / Inf outputs: out of domain (counted, never dropped silently).
+    if obs.nonfinite > nf0 {
+        obs.ood_inputs += causes_empty as u64;
+        *obs.ood
+            .entry("non-finite output (NaN / Inf)".to_string())
+            .or_default() += 1;
+    }
     Ok(())
 }
 

@@ -1,0 +1,49 @@
+name = "c_lse_naive"
+description = """
+Captured in process by ptxv.capture (python/ptxv). 1 launch(es), binary only (cubins from CUPTI):
+  0: lse_naive grid [4, 1, 1] block [128, 1, 1]
+Agent AN's errdist demo (log-sum-exp over rows of x[4, 64] f32). Source:
+tools/capture_examples/triton_lse.py (lse_naive)."""
+cubin = "k0.cubin"
+entry = "lse_naive"
+grid = [4, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 8
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [4, 64]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+expect = "expected/y.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

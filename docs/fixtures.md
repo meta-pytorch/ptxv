@@ -1,7 +1,7 @@
 # Fixtures that need regeneration
 
 Some fixtures run third-party kernels (cuBLAS / cuBLASLt, CUTLASS, TRT-LLM-gen via flashinfer,
-DeepEP, FlashAttention). Their kernel binaries are not distributed with ptxv; everything else
+DeepEP, FlashAttention 2 and 4). Their kernel binaries are not distributed with ptxv; everything else
 in those fixture directories is (case.toml with variants and expected verdicts, inputs, GPU
 outputs). `fixtures/VENDOR_FIXTURES.toml` lists each one: the vendor, the missing files, the
 library version it was captured with and the capture command. Tests that need a missing file
@@ -21,6 +21,7 @@ python3 tools/regen_fixture.py --list        # what is present / missing
 | CUTLASS CuTeDSL (the copy bundled with flashinfer) | 4.6.1 (flashinfer 0.5.3) | r2_cute_gemm, r2_cute_small, r2_cute_wrap, r3_cute_mxf4, r3_cute_mxf8, r3_cute_nvf4 |
 | flashinfer + flashinfer-cubin (trtllm-gen) | 0.5.3 | r3b_trtllm_bmm, r3b_trtllm_bmm_k2048, r3b_trtllm_bmm_partial, r3b_trtllm_moe |
 | DeepEP (2 GPUs) | 1.2.1 (upstream 567632d) | r4b_moe, r4c_chunk2, r4c_dwrap, r4c_nowrap (and r4b_coreader, which reads r4b_moe) |
+| FlashAttention-4 (flash_attn.cute) | 4.0.0b24 | c_fa4_fwd, c_fa4_hd128 |
 
 Other versions may select different kernels, in which case a fixture's expected verdicts can
 change; `ptxv check` on the regenerated case shows what the new kernel does.

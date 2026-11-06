@@ -81,6 +81,13 @@ impl Dd {
 /// Real values (and scales) of every op of a program at the leaves of `w` (an evaluated or a
 /// leaves-only state: only the leaves are read). NaN where an op has no real counterpart (an
 /// unidentified slice) and above it.
+/// S of a sum: the sum of |terms| of its expanded form, except that an exactly cancelling
+/// sum (Kahan's compensation (t - s) - v, zero in real arithmetic) has none: counting its
+/// terms would compound S through every later step (3^512 over a 512-step Kahan sum).
+fn s_of(v: Dd, s: f64) -> f64 {
+    if v.hi == 0.0 && v.lo == 0.0 { 0.0 } else { s }
+}
+
 pub fn eval(p: &Prog, w: &[crate::mma_lp::Operand]) -> Vec<(Dd, f64)> {
     let mut r: Vec<(Dd, f64)> = Vec::with_capacity(p.ops.len());
     let nan = (Dd::new(f64::NAN), f64::NAN);
@@ -115,7 +122,8 @@ pub fn eval(p: &Prog, w: &[crate::mma_lp::Operand]) -> Vec<(Dd, f64)> {
             Op::Round { arg, .. } => r[*arg as usize],
             Op::Add { a, b, .. } => {
                 let (x, y) = (r[*a as usize], r[*b as usize]);
-                (x.0.add(y.0), x.1 + y.1)
+                let v = x.0.add(y.0);
+                (v, s_of(v, x.1 + y.1))
             }
             Op::Fma {
                 a,
@@ -135,7 +143,7 @@ pub fn eval(p: &Prog, w: &[crate::mma_lp::Operand]) -> Vec<(Dd, f64)> {
                     v = v.add(if *neg_c { z.0.neg() } else { z.0 });
                     s += z.1;
                 }
-                (v, s)
+                (v, s_of(v, s))
             }
             Op::Nl(nl) => match nl {
                 NlOp::Max { a, b, min } => {

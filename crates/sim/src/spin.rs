@@ -117,6 +117,28 @@ fn operand_regs(addr: &Addr, parity: &Val) -> Vec<Reg> {
     v
 }
 
+/// The pc of the branch (or `@d EXIT`) that decides the retry of the try_wait at `w`: the
+/// straight-line code before it is pure and keeps the poll operands (`retry_shape` step 1),
+/// so a check of the retry stub may run it first (ptxas computes the stub's address register
+/// there: FA4's `try_wait [UR10+0xc0]; ...; UR6 = UR10 + 0xc0; @!P0 bra stub` with the stub
+/// `R2 = UR6; try_wait [R2+URZ]`).
+pub fn retry_branch(code: &[Inst], w: usize) -> Option<usize> {
+    let Op::MbarTryWait { d, .. } = &code.get(w)?.op else {
+        return None;
+    };
+    for (pc, i) in code.iter().enumerate().skip(w + 1) {
+        match &i.op {
+            Op::Bra { .. } if i.guard.reg == Some(*d) => return Some(pc),
+            Op::Exit if i.guard.reg == Some(*d) => return Some(pc),
+            Op::Bra { .. } | Op::Exit => return None,
+            op if model_nop(op) || pure_dst(op).is_some() => {}
+            Op::MbarTryWait { .. } if i.guard.reg == Some(*d) && i.guard.neg => {}
+            _ => return None,
+        }
+    }
+    None
+}
+
 /// Why try_wait at `w` violates the retry shape (Err), or Ok(None) if it has it. Ok(Some((s,
 /// w2))): it has it once the parity that the recomputing stub `s..w2` passes to the try_wait
 /// at `w2` equals the original; the executor checks that on every successful poll at `w`.
@@ -258,9 +280,10 @@ pub fn retry_shape(m: &Machine, w: usize) -> Result<Option<(usize, usize)>, Stri
                 {
                     // The stub may also poll through a recomputed address register
                     // (`R0 = UR9; try_wait [R0+0x30]` for `try_wait [UR9+0x30]`, or the
-                    // same text after rewriting R0): the executor checks that it names the
-                    // same mbarrier, with the parity.
-                    if !clob.is_empty() && d2 == d && b2 == bit31 {
+                    // same text after rewriting R0), or through a register computed before
+                    // the wait (FA4: `try_wait [UR9+0x8]`, stub `try_wait [R2+URZ+0x8]`):
+                    // the executor checks that it names the same mbarrier, with the parity.
+                    if d2 == d && b2 == bit31 && (!clob.is_empty() || i.op != code[w].op) {
                         w2 = Some(q);
                     }
                 }
@@ -736,6 +759,37 @@ pub fn poll_loops(code: &[Inst], front: ptxv_ir::Front) -> Vec<PollLoop> {
                 } else if pure_dst(&inst.op).is_some() {
                     done.extend(inst.op.dst_regs());
                 }
+            }
+            // A prefix write (h..l) that is not loop-invariant and that l..b does not overwrite
+            // leaves the loop with a value computed from a failed iteration (`H: mov r7, r5;
+            // l: ld r5; ...` with r7 read after the loop: the previous load's value). The
+            // model runs the prefix once, before the first iteration, so such a register must
+            // be dead after the loop.
+            let mut stale: BTreeSet<Reg> = BTreeSet::new();
+            for inst in &code[h..l] {
+                if pure_dst(&inst.op).is_some() {
+                    stale.extend(inst.op.dst_regs().into_iter().filter(|r| !inv.contains(r)));
+                }
+            }
+            for inst in &code[l..=b] {
+                if inst.guard.is_always() {
+                    for r in inst.op.dst_regs() {
+                        stale.remove(&r);
+                    }
+                    if let Op::Ld { d, n, .. } = &inst.op {
+                        for k in 0..(*n).max(1) as u16 {
+                            stale.remove(&Reg {
+                                file: d.file,
+                                idx: d.idx + if d.file == ptxv_ir::File::V { 0 } else { k },
+                            });
+                        }
+                    }
+                }
+            }
+            if let Some(r) = live_after(code, b + 1, &stale) {
+                return Err(format!(
+                    "register {r:?} is carried from one iteration to the next: the loop head writes it from the previous iteration's values and it is read after the loop"
+                ));
             }
             if !code[b].guard.reg.is_some_and(|r| writes.contains(&r)) {
                 return Err("the branch condition does not depend on the loop".into());

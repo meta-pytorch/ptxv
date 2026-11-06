@@ -34,6 +34,8 @@ fn errdist(path: &str, spec: &str, extra: &[&str]) -> Result<serde_json::Value, 
             "2000",
             "--sim-trials",
             "0",
+            // These tests check the non-chain tier 1 (opt-in) beside tiers 0 and 2.
+            "--tier1",
         ])
         .args(["--json", js.to_str().unwrap()])
         .args(["--out", scratch.to_str().unwrap()])

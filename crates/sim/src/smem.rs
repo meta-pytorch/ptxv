@@ -100,7 +100,8 @@ fn finish(mut v: Verdict, strong: bool) -> Verdict {
     v
 }
 
-/// Does the weak verdict depend on LDS/STS being plain? A race between two LDS/STS is none in
+/// Does the weak verdict depend on LDS/STS being plain? A race between two LDS/STS (or an
+/// LDS/STS and an ATOMS, `race-ldsts` in exec.rs) is none in
 /// the strong model; a global-memory race may be ordered by an acquiring LDS. Any other race
 /// (an async-proxy write against an LDS, say) is one in both, and the verdict reports it.
 fn needs_strong(v: &Verdict, k: &Kernel) -> bool {

@@ -60,6 +60,16 @@ pub struct Reg {
     pub idx: u16,
 }
 
+/// The (id, thread count) a `BarSync` names, from its operands' values (`packed`: the SASS
+/// register form `BAR.SYNC Ra, Ra`).
+pub fn bar_args(id: u64, count: Option<u64>, packed: bool) -> (u32, Option<u32>) {
+    if packed {
+        (id as u32 & 0xf, count.map(|c| (c as u32) >> 16))
+    } else {
+        (id as u32, count.map(|c| c as u32))
+    }
+}
+
 impl Reg {
     pub fn is_uniform(&self) -> bool {
         matches!(self.file, File::UR | File::UP)
@@ -77,6 +87,17 @@ pub enum ReduxOp {
     MaxU,
     MinS,
     MaxS,
+    /// `CREDUX.MIN|.MAX[ABS].F32[.NAN]` (redux.sync.min|max[.abs][.NaN].f32): f32 min / max
+    /// with FMNMX's order (-0 < +0); `abs`: of |x|; NaN inputs are ignored unless `nan`,
+    /// which makes any NaN input give the canonical NaN.
+    MinF {
+        abs: bool,
+        nan: bool,
+    },
+    MaxF {
+        abs: bool,
+        nan: bool,
+    },
 }
 
 /// Special (read-only) registers.
@@ -567,7 +588,7 @@ pub enum Op {
         data: Vec<u8>,
     },
     /// Warp-collective reduction of `a` over active lanes into uniform `d` (SASS `REDUX`
-    /// = AND, `.OR`, `.XOR`, `.SUM`; `CREDUX.MIN/.MAX[.S32]`).
+    /// = AND, `.OR`, `.XOR`, `.SUM`; `CREDUX.MIN/.MAX[.S32]`, `CREDUX.MIN/.MAX[ABS].F32[.NAN]`).
     Redux {
         d: Reg,
         a: Val,
@@ -639,6 +660,9 @@ pub enum Op {
         b: Pred,
         c: Pred,
         lut: u8,
+        /// SASS `PLOP3.LUT Pd, Pd2, a, b, c, lut, lut2`: a second output, the second LUT of
+        /// the same inputs (read before either is written). ASSUME(L-ROSETTA)
+        d2: Option<(Reg, u8)>,
     },
     Setp {
         d: Reg,
@@ -765,10 +789,12 @@ pub enum Op {
         a: Val,
         b: Val,
     },
-    /// SASS `R2P PR, a, mask`: predicate Pi = bit i of a, for i in mask (inverse of P2R).
+    /// SASS `R2P PR, a[.Bk], mask`: predicate Pi = bit `shift` + i of a (`shift` = 8k for
+    /// byte k), for i in mask (inverse of P2R).
     R2p {
         a: Val,
         mask: u32,
+        shift: u8,
     },
     /// SASS `F2FP.BF16.F32.PACK_AB d, a, b`: d = bf16(a) << 16 | bf16(b), round to nearest even.
     F2fpBf16 {
@@ -913,6 +939,10 @@ pub enum Op {
         /// naming different masks run the region up to `ENDCOLLECTIVE` one mask group at a
         /// time (GB300: fixtures/s_warpcoll).
         collective: bool,
+        /// SASS `WARPSYNC.COLLECTIVE.ALL end` (the divergent path of a non-aligned
+        /// `barrier.sync`): the lanes wait until every live lane of the warp is parked at such
+        /// an instruction (any pc), then each pc's lanes enter its region (E-COLLECTIVE-ALL).
+        all: bool,
     },
     /// SASS `ENDCOLLECTIVE`: closes the region opened by the `WARPSYNC.COLLECTIVE` at `start`;
     /// the next waiting mask group there may enter.
@@ -940,6 +970,14 @@ pub enum Op {
         id: Val,
         count: Option<Val>,
         arrive: bool,
+        /// SASS `BAR.SYNC Ra, Ra` (ptxas's register form; `id` and `count` are the same
+        /// register): the id is bits 0..3, the thread count bits 16.. (ptxas builds
+        /// `count << 16 | id & 0xf`). Read with `Op::bar_args`.
+        packed: bool,
+        /// `.aligned` (PTX `bar.*`, `barrier.*.aligned`; SASS `BAR` outside a
+        /// `WARPSYNC.COLLECTIVE` region): every live lane of a warp executes the same barrier
+        /// instruction together (E-ALIGNED).
+        aligned: bool,
     },
     /// `mbarrier.init`. `encoded`: `count` is the raw 64-bit state word (SASS SYNCS.EXCH.64).
     MbarInit {
@@ -959,6 +997,10 @@ pub enum Op {
         count: Option<Val>,
         /// `tx` completes transaction bytes instead of expecting them (`mbarrier.complete_tx`).
         complete: bool,
+        /// PTX `.release.cluster`: a release at cluster scope, which orders the thread's
+        /// earlier remote arrivals / st.async before it (S-REMOTE-INFLIGHT). SASS has no such
+        /// arrive: ptxas emits `MEMBAR.ALL.GPU; ERRBAR; CGAERRBAR` before it (a Fence).
+        cluster: bool,
     },
     /// `clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128
     /// [resp], [mbar]` (SASS `UGETNEXTWORKID.SELFCAST [resp], [mbar]`): ask to cancel a CTA that
@@ -1054,6 +1096,8 @@ pub enum Op {
         /// low bits, or the high half with `hi`: `I2F.U16 Rd, Ra.H1`).
         bits: u8,
         hi: bool,
+        /// `I2F.F64.*`: an f64 result in the register pair `d`, `d + 1`.
+        f64: bool,
     },
     /// f32 -> integer, truncating (`F2I.TRUNC`, `cvt.rzi.u32.f32`); out of range saturates.
     F2I {
@@ -1062,6 +1106,11 @@ pub enum Op {
         signed: bool,
         /// Destination width: 32, or 64 (`F2I.U64.TRUNC`, a register pair).
         bits: u8,
+        /// Rounding to an integer: `.TRUNC` Rz, none Rn (cvt.rni: libdevice's sinf / cosf
+        /// range reduction), `.FLOOR` Rm, `.CEIL` Rp.
+        rnd: Rnd,
+        /// `.FTZ`: a subnormal source is 0 first (matters for FLOOR / CEIL).
+        ftz: bool,
     },
     /// PTX `mov.b64 %d, {lo, hi}`: d = hi << 32 | lo.
     Pack64 {
@@ -1172,6 +1221,9 @@ pub enum Op {
     BulkWait {
         n: u32,
         read: bool,
+        /// SASS `DEPBAR.LE SBk, 0` on a scoreboard that also counts cp.async groups on some
+        /// path: also complete every cp.async of the thread (the scoreboard is empty after).
+        cp: bool,
     },
     /// `tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [dst], ncols` (warp-wide).
     TmemAlloc {
@@ -1194,6 +1246,9 @@ pub enum Op {
         addr: Val,
         mbar: Val,
         v: Val,
+        /// 4, 8 or 16 bytes (`.b32`, `.b64` / `.v2.b32`, `.v4.b32` / `.v2.b64`; SASS `STAS`,
+        /// `STAS.64`, `STAS.128`): completes that many transaction bytes.
+        bytes: u8,
     },
     /// SASS `UTCATOMSWS.AND URZ, URmask`: allocator bitmap &= mask.
     TmemFreeRaw {
@@ -1275,6 +1330,10 @@ pub enum Op {
         /// register 2j + h of lane l is TMEM lane l/4 + 8h, column 4j + l%4 (GB300:
         /// probes/tmem_16x128b).
         s16x128b: bool,
+        /// `tcgen05.ld.red.32x32b.xN.{min,max}[.abs][.NaN].f32` (SASS `LDTM.STAT.xN.MIN|MAX
+        /// [ABS].F32[.NAN] Rred, Rd, tmem[..]`): also the min / max of the N loaded f32 values
+        /// into this register (`ReduxOp::MinF` / `MaxF` semantics; GB300: probes/tmem_ldred).
+        red: Option<(Reg, ReduxOp)>,
     },
     /// `tcgen05.wait::ld`
     TmemWaitLd,
@@ -1485,6 +1544,13 @@ impl Op {
     }
 
     /// PTX `.sync.aligned` instructions: every lane of the warp must execute them together.
+    /// An aligned named barrier (`Op::BarSync { aligned: true }`): a convergence point like
+    /// the warp-aligned operations (E-ALIGNED), kept apart from `is_warp_aligned` because
+    /// SASS barriers are aligned too and the explorer handles barriers on its own.
+    pub fn is_aligned_bar(&self) -> bool {
+        matches!(self, Op::BarSync { aligned: true, .. })
+    }
+
     pub fn is_warp_aligned(&self) -> bool {
         matches!(
             self,
@@ -1747,7 +1813,9 @@ impl Op {
                 x
             }
             Op::TmemAllocRaw { units, .. } => vec![units.clone()],
-            Op::StAsync { addr, mbar, v: y } => vec![addr.clone(), mbar.clone(), y.clone()],
+            Op::StAsync {
+                addr, mbar, v: y, ..
+            } => vec![addr.clone(), mbar.clone(), y.clone()],
             Op::TmemDealloc { taddr, ncols } => vec![taddr.clone(), ncols.clone()],
             Op::TcCp { taddr, sdesc, .. } => vec![taddr.clone(), sdesc.clone()],
             Op::Mma {
@@ -1838,7 +1906,7 @@ impl Op {
                 x.extend(*cout);
                 x
             }
-            Op::I2F { d, .. } => vec![*d],
+            Op::I2F { d, f64, .. } => span(*d, 1 + *f64 as u16),
             Op::F2I { d, bits, .. } => span(*d, *bits as u16 / 32),
             Op::LdConst { d, bytes, .. } => span(*d, (*bytes as u16 / 4).max(1)),
             Op::MulWide { d, .. } => span(*d, 2),
@@ -1872,7 +1940,7 @@ impl Op {
             | Op::F2fpBf16 { d, .. }
             | Op::Redux { d, .. }
             | Op::Shf { d, .. }
-            | Op::Plop3 { d, .. }
+            | Op::Plop3 { d, d2: None, .. }
             | Op::Setp { d, .. }
             | Op::VoteAll { d, .. }
             | Op::Fadd { d, .. }
@@ -1895,6 +1963,11 @@ impl Op {
             | Op::Prmt { d, .. }
             | Op::MbarTryWait { d, .. } => vec![*d],
             Op::Mapa { d, .. } | Op::Ffma2 { d, .. } => span(*d, 2),
+            Op::Plop3 {
+                d,
+                d2: Some((d2, _)),
+                ..
+            } => vec![*d, *d2],
             Op::LeaHi {
                 d, cout: Some(c), ..
             } => vec![*d, *c],
@@ -1923,7 +1996,11 @@ impl Op {
             Op::Ld { d, bytes, .. } => span(*d, (*bytes as u16 / 4).max(1)),
             Op::ClcQuery { d, .. } => span(*d, 4),
             Op::TmemAllocRaw { d, ok, .. } => vec![*d, *ok],
-            Op::TmemLd { d, n, .. } => span(*d, *n as u16),
+            Op::TmemLd { d, n, red, .. } => {
+                let mut x = span(*d, *n as u16);
+                x.extend(red.map(|r| r.0));
+                x
+            }
             Op::LdLocal { d, bytes, .. } => span(*d, (*bytes as u16 / 4).max(1)),
             Op::Ld256 { hi, lo, .. } => {
                 let mut x = span(*lo, 4);

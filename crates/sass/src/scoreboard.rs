@@ -368,6 +368,13 @@ pub fn def_use(l: &SassLine) -> (Vec<RegKey>, Vec<RegKey>) {
             .take_while(|o| is_pred_tok(o) && !o.starts_with('!'))
             .count()
     };
+    // `LDTM.STAT.xN.<op>.F32 Rred, Rd, tmem[..]` (tcgen05.ld.red): Rred and N registers Rd...
+    if base == "LDTM" && l.opcode.starts_with("LDTM.STAT.") && ops.len() == 3 {
+        operand_regs(&ops[0], 1, &mut defs);
+        operand_regs(&ops[1], w, &mut defs);
+        operand_regs(&ops[2], 1, &mut uses);
+        return (defs, uses);
+    }
     // `LDG.E.ENL2.256 Rhi, Rlo, [..]`: two 4-register destinations.
     if base == "LDG" && l.opcode.contains(".ENL2.256") && ops.len() == 3 {
         operand_regs(&ops[0], 4, &mut defs);
@@ -1137,6 +1144,21 @@ mod tests {
         assert_eq!(
             def_use(&line("UTCATOMSWS.FIND_AND_SET.ALIGN UP0, UR4, UR4")),
             (vec![r(b'Q', 0), r(b'U', 4)], vec![r(b'U', 4)])
+        );
+        assert_eq!(
+            def_use(&line("LDTM.STAT.x4.MAX.F32 R37, R4, tmem[UR6]")),
+            (
+                vec![r(b'R', 37), r(b'R', 4), r(b'R', 5), r(b'R', 6), r(b'R', 7)],
+                vec![r(b'U', 6)]
+            )
+        );
+        assert_eq!(
+            def_use(&line("PLOP3.LUT P1, P0, !P0, PT, !P1, 0x80, 0xc8")),
+            (vec![r(b'P', 1), r(b'P', 0)], vec![r(b'P', 0), r(b'P', 1)])
+        );
+        assert_eq!(
+            def_use(&line("R2P PR, R0.B1, 0x7f")).1,
+            vec![r(b'R', 0)]
         );
         assert_eq!(
             def_use(&line("PLOP3.LUT P0, PT, P1, PT, PT, 0x8, 0x0")),

@@ -26,7 +26,6 @@ fn correlated_rounding_means_on_a_long_mma_pair() {
             "fixtures/errdist/normal.json",
             "--mc",
             "500",
-            "--no-tier1",
             "--sim-trials",
             "0",
         ])

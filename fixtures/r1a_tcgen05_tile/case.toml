@@ -105,7 +105,9 @@ marker = "@B16"
 find = "tcgen05.alloc"
 replace = "@!%p6 tcgen05.alloc"
 expect = ["violation"]
-expect_sass = ["deadlock", "trap"]
+# violation (E-ALIGNED): in the deadlocked schedule lanes 1-31 wait at the aligned BAR.SYNC
+# while lane 0 waits at a WARPSYNC.ALL, so the warp can never converge.
+expect_sass = ["deadlock", "trap", "violation"]
 hw_note = "ptxas compiles lane 0's alloc and lanes 1-31's relinquish as two paths that race on ptxas's internal relinquish flag; if the relinquish wins, the tcgen05 guardrail traps"
 
 [[variants]]

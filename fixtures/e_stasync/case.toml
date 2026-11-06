@@ -1,0 +1,62 @@
+name = "e_stasync"
+description = """
+st.async with mbarrier::complete_tx: rank 1 of a 2-CTA cluster stores one word into rank 0's
+shared memory and completes 4 transaction bytes on rank 0's mbarrier; rank 0 waits on the
+barrier, then reads the word (PTX st.async / SASS STAS)."""
+ptx = "kernel.ptx"
+entry = "e_stasync"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+hw_note = "GB300 matches the simulator bitwise, 200/200 (2026-11-05)"
+
+[[variants]]
+id = "SA1"
+summary = "rank 0 expects 8 transaction bytes; st.async completes only 4"
+marker = "@EXPECT"
+find = "4;"
+replace = "8;"
+expect = ["deadlock"]
+hw_note = "GB300 hangs (watchdog, 2026-11-05)"
+
+[[variants]]
+id = "SA2"
+summary = "rank 0 reads the word without waiting on the barrier"
+marker = "@POLL"
+replace = "<delete>"
+expect = ["nondeterministic", "race", "violation"]
+hw_note = "GB300 wrong 1/200 (reads the word before it lands, 2026-11-05)"
+
+[[variants.edits]]
+marker = "@LOOP"
+replace = "<delete>"
+
+[[variants]]
+id = "SA3"
+summary = "rank 0 neither waits nor reads: it can exit while rank 1's st.async is in flight"
+marker = "@POLL"
+replace = "<delete>"
+expect = ["violation"]
+
+[[variants.edits]]
+marker = "@LOOP"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@READ"
+replace = "<delete>"

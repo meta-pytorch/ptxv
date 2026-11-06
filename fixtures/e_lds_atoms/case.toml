@@ -1,0 +1,39 @@
+name = "e_lds_atoms"
+description = """
+S-SMEM-STRONG with a shared-memory atomic: a plain shared load (SASS LDS) against a
+red.shared.or (SASS ATOMS.OR) of another warp. On SASS both are strong at CTA scope, so the
+unsynchronized pair is a schedule-dependent outcome, not a data race (the FA4 fmax-fold report: it
+was reported as a race because the strong re-check only took LDS/STS pairs)."""
+ptx = "kernel.ptx"
+entry = "e_lds_atoms"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+hw_note = "GB300 matches the simulator bitwise (out = 3), 1000/1000 (2026-11-05)"
+
+[[variants]]
+id = "LA1"
+summary = "no named barrier between the fold and the read"
+marker = "@ARRIVE"
+replace = "<delete>"
+expect = ["race"]
+expect_sass = ["nondeterministic"]
+hw_note = "GB300 reads the word before the fold (out = 1) 1000/1000 (2026-11-05)"
+
+[[variants.edits]]
+marker = "@SYNC"
+replace = "<delete>"

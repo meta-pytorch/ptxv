@@ -58,6 +58,11 @@ returning false and letting the thread do something else).
   at the continuation (`spin::live_after`, predicate-aware). Whether `w2` polls the same phase
   is checked whenever the original poll succeeds: the stub runs on a copy of the thread
   (`check_stub_parity`); a different phase gives `unmodeled`.
+  The stub may also poll through a register computed between the wait and its retry branch
+  (FA4: `TRYWAIT [UR10+0xc0]; ...; UR6 = UR10+0xc0; @!P0 BRA stub`, stub `R2 = UR6; TRYWAIT
+  [R2+URZ]`): that segment is pure (`spin::retry_branch`), so `check_stub_parity` runs it
+  first, with the poll's predicate false as on the retry path, then the stub, and compares
+  the mbarrier address and parity as before.
 
   **Peeks** (rung 2, CuTeDSL): CUTLASS tests an mbarrier early (`try_wait` into a predicate),
   does other work, and later skips or runs a blocking wait loop depending on the result. Such
@@ -603,7 +608,9 @@ and the search branched on every order (dispatch: no flow completed in 300k stat
     sender's poll for a free slot, once the head allows it, passes for every later head;
   - the step runs on a copy once per candidate. Every member must end at the same pc and
     state, with the same predicates and uniform registers, and with registers that differ only
-    where they are dead (`spin::live_after`). A poll iteration that fails for some value ends
+    where they are dead (`spin::live_after`), and the memory it wrote (ranges and bytes) must
+    agree: a step that stores the loaded value (`LDS R5; ...; STG [..], R5` in one step) is
+    not value-insensitive (fixtures/e_lds_atoms LA1 lost an outcome before). A poll iteration that fails for some value ends
     elsewhere, so it is refused.
 - The load then runs:
   - without a footprint on its location (it commutes with the writes there);
@@ -641,7 +648,9 @@ and the search branched on every order (dispatch: no flow completed in 300k stat
 
 ### E-CLOCK · code
 **SASS clock reads return 0, and `vprintf` does nothing.** DeepEP bounds every spin with a
-`clock64()` timeout (`CS2R Rd, SR_CLOCKLO`; ~200 G cycles) that prints and traps. The model has
+`clock64()` timeout (`CS2R Rd, SR_CLOCKLO`; ~200 G cycles) that prints and traps; torch's
+symmetric-memory `barrier_kernel` bounds its CAS spins with `%globaltimer` (`CS2R Rd,
+SR_GLOBALTIMERLO`), read as 0 alike. The model has
 no time, so a timeout is a schedule property it cannot decide; it reads the clock as 0 so the
 difference never exceeds the bound, and a poll loop around it stays a stutter loop (E-SPIN
 warp-level polls). The `vprintf` before a trap is skipped; the `BPT.TRAP` after it is modeled.
@@ -661,6 +670,10 @@ PTX lanes stay independent threads.
   flashinfer's routing assigns each token its slot within an expert with `ATOMS.ADD`, so the
   permutation depends on it, the MoE output does not). The certificate does not rely on it
   (C-ORDER refuses such atomics).
+- Memory instructions joined: `LD*` / `ST*` / atomics / `LDTM` and (2026-11-05) `STTM`: FA4's
+  softmax warps store P with `STTM`, wait (`FENCE.VIEW.ASYNC.T`) and one elected lane per warp
+  arrives on the MMA warp's mbarrier; without the join every other lane's `STTM` raced with
+  the PV `UTCHMMA` (a false race in every FA4 forward / decode kernel).
 - Where: `exec.rs` `step_split` (lockstep VC join), `Machine::atom_lanes_rev`.
 - Status: **argued.** ptxas's own warp-synchronous code (TMEM dealloc bookkeeping) depends on
   it, and without it that code races.
@@ -678,8 +691,22 @@ same mbarriers.
 - SASS `SHFL` is gated the same way (all live lanes of the warp arrive first): ptxas only
   emits it where the warp is converged, reconverging with `BSYNC` after divergence, and the
   model treats `BSSY`/`BSYNC` as no-ops.
+- **Aligned named barriers** (`bar.sync` / `bar.arrive` = `barrier.*.aligned`, and every
+  SASS `BAR` outside a `WARPSYNC.COLLECTIVE` region): every live lane of a warp executes the
+  same barrier instruction together. A split waits at one until the rest of the warp is there;
+  if the other live lanes are at a different aligned barrier (or a `WARPSYNC`), the warp can
+  never converge: a `violation` (divergent aligned barrier), as is an aligned barrier guarded
+  off in part of the warp (PTX). ptxas assumes it too: it compiles `bar.sync` in both arms of
+  a branch to `@P0 WARPSYNC.ALL; @P0 BAR; @!P0 WARPSYNC.ALL; @!P0 BAR`, and the non-aligned
+  `barrier.sync` to `BRA.DIV` around the `BAR` with a collective slow path. Only the per-warp
+  rule is modeled: different warps reaching one barrier from different pcs (what
+  compute-sanitizer synccheck also flags, the FA4 warp-role bug's pre-fix) is clean (GB200 completes).
+  `IR Op::BarSync::aligned`, `exec.rs` `aligned_bar_others`, `sass` `aligned_bars`.
 - Where: `exec.rs` `split_enabled`, `exec`.
 - Status: **validated.** The PTX ISA requires it, and B16 (partial-warp alloc) hangs GB300.
+  Named barriers: two halves of a warp at two `bar.sync 1, 64` hang GB300, at two
+  `barrier.sync 1, 64` complete (fixtures/e_aligned_bar AB1 / AB2, `ptxv probe`
+  2026-11-05); the FA4 warp-role case's `probe_intrawarp` hangs GB200 (fixtures/e_fa4_warp_roles).
 - If wrong: *false alarm*.
 
 ### E-WARPCOLL · code
@@ -718,6 +745,27 @@ slow path = `WARPSYNC.COLLECTIVE Rm, end; op...; ENDCOLLECTIVE; end:`.
   docs/compare.md) is certified clean and bitwise = GB300.
 - If wrong: *miss/false alarm* only for collective regions entered by lanes at different
   instructions (unmodeled: they wait).
+
+### E-COLLECTIVE-ALL · code
+**ptxas's divergent path of a non-aligned `barrier.sync`** (CuTeDSL `barrier(aligned=False)`;
+FA4's fix for its warp-role barrier bug): `UMOV UR, -1; BRA.DIV UR, slow; BAR.SYNC id, n` with the slow path
+`WARPSYNC.COLLECTIVE.ALL end; BAR.SYNC R, R; ENDCOLLECTIVE; end:` (R = n << 16 | id).
+- `WARPSYNC.COLLECTIVE.ALL` parks the arriving lanes until every live lane of the warp is parked
+  at such an instruction, at any pc (two branches each with their own barrier.sync have two);
+  then all of them go on, their histories joined, each into its own region. An exiting lane
+  re-checks. Inside, the barrier counts threads as everywhere in the model (E-BAR-EXIT); since
+  all live lanes of the warp arrive, that equals GB300's per-warp count.
+- Where: `exec.rs` `Op::WarpSync { all: true }`, `collective_all_release`, `Op::Exit`.
+- Status: **validated** (2026-11-05, GB300 GPU 3, fixtures/s_bardiv*.cu): both warps split into
+  two barrier branches (count 64): completes, neighbours' values visible (s_bardiv, hw 20/20
+  bitwise); warp 0 split, warp 1 converged (64): completes (s_bardiv_mixed, 20/20); warp 0
+  split, warp 1 converged, count 96: hangs (e_bardiv_short: model deadlock); half of each warp
+  at the barrier (two branches, count 32), the other half spinning on a flag set after it:
+  hangs (e_bardiv_hang: model deadlock; per-thread counting would complete). Same kernel with
+  one barrier branch: ptxas emits `WARPSYNC.ALL; BAR.SYNC` instead (hangs; modeled already).
+- If wrong: *miss / false alarm* for lanes that reach the gate and never the barrier, or a
+  gate that does not wait for lanes at other collective instructions (not observed).
+- Retire: a per-warp barrier arrival model (AJ's aligned-barrier work).
 
 ### E-BAR-EXIT · code
 **Barriers and exited threads.**
@@ -1031,6 +1079,16 @@ that is false (src-size 0) writes zeros and reads nothing.
   the old bytes in the model; on hardware it may see either: reported as a race only when
   another thread's access is involved.
 - If wrong: *miss* for a thread that reads its own cp.async destination before waiting.
+- Scoreboard reuse (2026-11-05, mslk's FA4 decode): ptxas may count cp.async groups
+  (LDGDEPBAR's write scoreboard) and bulk groups (UTMACMDFLUSH's read scoreboard) on the same
+  SBk. Each `DEPBAR.LE SBk, n` is classified by the kinds that may be outstanding on SBk where
+  it is reached (`sass` `depbar_kinds`, a path-insensitive dataflow; `DEPBAR.LE SBk, 0`
+  clears SBk): one kind, that wait; both with n = 0, both waits (the scoreboard drains); both
+  with n > 0, not lowered. Before, any DEPBAR on such an SBk was a bulk wait, the cp.async
+  never landed, and the kernel silently read zeros.
+- A thread that exits with a cp.async it never waited for (no wait_group / mbarrier arrive
+  retired it) is reported (`violation`, `cp-async-exit:<pc>`): its write has no defined
+  completion.
 
 ### E-CPASYNC-MBAR · code
 **`cp.async.mbarrier.arrive.shared.b64 [m]` makes the mbarrier track every `cp.async` the
@@ -2049,6 +2107,19 @@ faults (reported as `fault`). This is what multicast slices rely on: cuBLAS
   of 2^35 - 256 that its coordinate 2^30 cancels, and it clips padded token rows with a
   coordinate in an 8-row dimension; the store matches GB300 bitwise.
 
+### S-TMA-2CTA-MCAST · code
+**`UTMALDG.<N>D.MULTICAST.2CTA`** (cp.async.bulk.tensor ... .multicast::cluster.cta_group::2;
+cuBLAS's 2-CTA nvjet kernels, picked for bf16 M = N >= 512): the box lands at the same offset
+in every CTA rank of the ctaMask (UR bits 16..31, as `.MULTICAST`), and each destination's
+transaction completes on the mbarrier at the operand's offset in the CTA of the destination's
+pair whose peer bit is the mbarrier address's own (CUTLASS's 2SM multicast loads clear the peer
+bit: the pair leader's mbarrier).
+- Where: `exec.rs` `Op::TmaLoad` (`mask` with `pair`).
+- Status: **unvalidated**.
+- If wrong: *false alarm* (deadlock / tx mismatch on the wrong mbarrier) or *miss* if a
+  transaction completes an mbarrier that should still wait.
+- Retire: a 2-CTA multicast probe that reads back which mbarrier each destination signals.
+
 ### S-TMA-GATHER4 · code
 **`cp.async.bulk.tensor.2d...tile::gather4 [d], [map, {c, r0, r1, r2, r3}], [m]`** (SASS
 `UTMALDG.2D.GATHER4`) loads `box[0]` elements at column c of each of the four rows into shared
@@ -2264,7 +2335,8 @@ front-end keeps the PTX model, where a weak shared access can race.
   - with a race, the strong kernel decides.
 
   So a missing `bar.sync` between warps shows up on SASS as `nondeterministic` output, not
-  as `race` (or not at all if the values agree). Strong reads are recorded as reads for POR
+  as `race` (or not at all if the values agree). The same holds for an `LDS`/`STS` against an
+  `ATOMS` (shared atomics are strong; fixtures/e_lds_atoms). Strong reads are recorded as reads for POR
   (they commute).
 - Where: `sass` `SMEM_RELAXED`, `smem_acquires`; `sim` `smem.rs`; `exec.rs` `access_x`.
 - Status: **validated** (litmus, above); zero observations is not a proof.
@@ -2285,6 +2357,62 @@ states, like async-after-exit), since otherwise a schedule exists in which X exi
   issue but never observes the landing, a late landing is missed. Remote `ld/st.shared::cluster`
   get only the immediate check, not the terminal one.
 - If wrong: *false alarm* if hardware keeps the memory alive until the whole cluster exits.
+
+### S-REMOTE-INFLIGHT · code
+**A remote mbarrier arrival (`mbarrier.arrive[.expect_tx] .shared::cluster` to another CTA,
+SASS `SYNCS.ARRIVE.TRANS64.RED`) and an `st.async` into another CTA (with its complete_tx) are
+in flight from issue until delivered.** Deliveries are separate steps the explorer schedules
+at any time, in any order among the issuer's remote operations (also to different
+mbarriers), except that a release of the issuer at cluster scope or wider delivers all of
+them first: `barrier.cluster.arrive` (not `.relaxed`), `fence.acq_rel` / `fence.sc` at cluster
+/ gpu / sys scope, `mbarrier.arrive.release.cluster`, SASS `MEMBAR.ALL.GPU` / `.SYS`.
+`.release.cta` and `.relaxed` arrivals deliver nothing. The issuer's exit delivers nothing
+either. Arrivals and st.async to the issuer's own CTA land at issue, as before.
+- Violations (S-CLUSTER-LIFE): the target CTA's last thread exits while one is in flight to
+  it; a delivery after the target exited; at the end, a delivery the target never waited for
+  (no successful wait on the phase it counted toward or a later one) unless a later cluster
+  release of the issuer (which would have drained it) happens-before a target thread's exit.
+  The last one decides it order-independently, so the certificate (E-WELLSYNC) refuses such
+  a run.
+- Why: a FusedRMSNormBwd bug: the pre-fix epilogue waited only on the last stage's
+  empty barrier; the peer's `.release.cta` arrive on the other stage's barrier, issued earlier,
+  could still land after the exit. With arrivals landing at issue, program order made it
+  look ordered (the reporters' case was clean on both fronts). Now: fixtures/e_rmsnorm_cluster_drain
+  `bug`/`bug_k3` are violations, `good`/`good_k3` clean, on both fronts.
+- SASS evidence for the drain: ptxas emits `MEMBAR.ALL.GPU; ERRBAR; CGAERRBAR` before a
+  `.release.cluster` arrive and before `barrier.cluster.arrive`, and nothing before a
+  `.release.cta` arrive (sm_103a, ptxas 13.0); `CGAERRBAR` presumably waits for the CTA's
+  outstanding cluster (CGA) operations.
+- One pending operation per warp instruction and target mbarrier: the lanes of one
+  instruction that arrive on (or st.async into) the same mbarrier land together, in lane
+  order (`push_remote`). Deliveries read the target's exit key (space 4, index 1), which the
+  exit of its last thread writes, so deliveries to one CTA commute with each other; the
+  TMA-completion reduction (`sync_ample`) takes them as candidates too.
+- State space (stateful explorer): the reporters' 2-CTA case 6k -> 20k (PTX), 0.2k -> 0.6k
+  (SASS); r1c_cluster PTX 3.7k -> 11k, SASS 1.1k -> 2.3k; r1c_2sm SASS 99k -> 358k (ptxas's
+  peer `SYNCS.ARRIVE.TRANS64.RED` for cta_group::2 TMA); c_smm_nvf4 SASS 991 -> 832.
+- Where: `exec.rs` `Op::MbarArrive`, `Op::StAsync`, `complete_remote`, `drain_remote`,
+  `Op::Exit`, `exit_checks`; `machine.rs` `AsyncKind::Remote`, `remote_obs`, `mbar_seen`.
+  `PTXV_REMOTE_ATOMIC=1` lands them at issue (the old model).
+- Status: **argued.** Not observed on hardware: a late arrival into an exited CTA leaves no
+  visible trace on GB300 or GB200 (the reporters saw nothing even with no drain). The FIFO-free order
+  among one issuer's remote arrivals is the conservative reading of the PTX memory model
+  (`.release.cta` does not order them for another CTA).
+- If wrong: *false alarm* if hardware delivers one thread's remote arrivals in order, or
+  keeps a CTA's shared memory until its inbound arrivals land; *miss* if a cluster-scope
+  release does not wait for earlier remote arrivals.
+- Retire: a GB300 probe that observes a late remote arrival (e.g. into a CTA that a
+  co-resident successor reuses).
+
+### S-ALIGN · code
+**A load, store or atomic of `n` bytes (`n` a power of two; a vector counts its whole size,
+`ld.v4.u32` = 16, SASS `LDS.128` = 16) must be `n`-aligned; a misaligned one is a `fault`.**
+Global, shared, shared::cluster and generic addresses; parameter space is not checked.
+- Where: `exec.rs` `check_aligned` (`Op::Ld`, `Op::St`, `Op::Atom`).
+- Status: **validated.** GB300 traps with "misaligned address" on `st.global.u64` at +4,
+  `ld.shared.v4.u32` at +8, `atom.global.add.u64` (ptxas: `REDG.E.ADD.64`) at +4 and
+  `st.global.u32` at +2 (fixtures/e_misaligned, `ptxv probe` 2026-11-05). Found by AK.
+- If wrong: *false alarm* only if some form tolerated a misaligned address.
 
 ### S-GLOBAL · code
 **Global memory is touched only by this kernel:** buffers come from the case, and nothing else
@@ -2512,6 +2640,32 @@ forms seen. Any other form is a hard error.
     `ARRIVES.LDGSTSBAR.64.TRANSCNT [a]` / `.ARVCNT [a]`: ptxas's `cp.async.mbarrier.arrive` /
     `.noinc` (E-CPASYNC-MBAR; fixtures/s_cpasync_mbar = GB300 1000/1000);
   - `SYNCS.PHASECHK.TRANS64.TRYWAIT PT, [a], R` (result discarded): lowered as a no-op (E-SPIN).
+- Real CuTeDSL kernels (FA4 forward / decode, quack softmax, mslk decode, FA4 block sparsity;
+  2026-11-05):
+  - `CREDUX.MIN|.MAX|.MINABS|.MAXABS.F32[.NAN]` (redux.sync f32): FMNMX's order (-0 < +0) over
+    the active lanes, `ABS` of |x|, NaN inputs ignored unless `.NAN` (then the canonical NaN);
+    a lone NaN gives the canonical NaN too. `PLOP3.LUT Pd, Pd2, a, b, c, lut, lut2`: Pd2 =
+    lut2(a, b, c) with the same index convention (only `0xc8`, the block-sparsity kernel's
+    all / any, exercised). `R2P PR, Ra.Bk, mask`: byte k of Ra. `LEA.HI d, a, -b, RZ, s`
+    (torch's fp8 conversion). All in fixtures/s_lift_l (262,144 words, GB300 bitwise, 20/20
+    runs; 32-, 16- and 1-lane reductions over special f32 patterns).
+  - `LDTM.STAT.xN.MIN|MAX[ABS].F32[.NAN] Rred, Rd, tmem[..]` (tcgen05.ld.red 32x32b; FA4's row
+    max): Rd.. as `LDTM.xN`, Rred the min / max of the N values with the CREDUX semantics;
+    `Rred = RZ` is a plain load. GB300 traps (misaligned address) when the start column is
+    odd; the model reports a fault there. `LDTM tmem[UR+-0x10]`: the negative offset added to
+    the 32-bit TMEM address (mslk decode). probes/tmem_ldred (16,384 words, all-NaN and +-0
+    rows, GB300 bitwise 100/100).
+  - `BAR.SYNC Ra, Ra` / `BAR.ARV Ra, Ra` (ptxas's register form): id = Ra bits 0..3, thread
+    count = Ra >> 16 (ptxas builds `count << 16 | id & 0xf`; validated through
+    fixtures/s_bardiv, E-COLLECTIVE-ALL). Two different registers are not lowered.
+  - `F2I[.FTZ][.U32|.S64|.U64][.TRUNC|.FLOOR|.CEIL][.NTZ]` (cvt.r{z,n,m,p}i: libdevice
+    sinf / cosf use `F2I.FTZ.NTZ`): `.FTZ` flushes a subnormal source first, the f32 is
+    rounded to an integer, then converted with saturation (NaN: 0, or 2^63 for 64-bit);
+    `.NTZ` has no effect on the integer. `I2F.F64[.S64|.U64|.S32][.RZ|.RM|.RP]`: correctly
+    rounded int -> f64. Other F2I / I2F modifiers are not lowered (before, any F2I with
+    `.TRUNC` and any I2F without F64 / F16 / FTZ were accepted whatever else they carried).
+    fixtures/s_f2i (393,216 words, GB300 bitwise 20/20); the Triton 1 - cos(x) /
+    2 sin^2(x/2) pair (agent AN) then certifies, bitwise = GPU.
 
 ### L-PTX-HINT · code
 **PTX cache hints do not change semantics:** `cp.async`'s `.L2::cache_hint` (with its
@@ -3196,6 +3350,19 @@ input binade 2^-8..2^2 (51 segments on an input truncated to 17..21 mantissa bit
   An f32 result below the normal range is rounded toward zero, less than 2^-149 off. The
   canonical forms add that to the absolute part of every MMA step (the relative contract
   alone does not cover it).
+- **Signed zeros: every zero result is +0** (validated, `probes/mma_zero`, GB300, CUDA 13.0,
+  2026-11-05). It holds whether the sum is exactly zero (all products ±0, also all -0 with
+  C = -0; exact cancellation) or a nonzero sum below 2^-149 that rounds to zero (one product
+  or a cancellation residue, either sign), with C disabled, C = +0 or C = -0. Subnormal
+  results keep their sign. Measured on tcgen05 kind::f16 (bf16 M128 / M64, f16 M128),
+  kind::tf32, kind::f8f6f4 (e4m3, e2m1; f32 and f16 D), mma.sync m16n8k16 bf16 / f16 and
+  m16n8k8 tf32 (C from registers and RZ). Before 2026-11-05 the models followed IEEE
+  (-0 for an underflowing negative sum, or when every term was -0), which differed from
+  GB300 on up to 12% of a probe config's outputs (all -0 vs +0) and in the reported case
+  (witness: K = 16, one product bf16 0x16b2 x 0x96e5 = -40762 * 2^-178, GB300 +0). Where: `fp.rs`
+  `round_int_to_f32` / `sum_round_*`, `mma_lp.rs` `round_int` / `sum_round` / `round_exact` /
+  `Fp4Model::step`, `errdist/chain.rs` `step`; `crates/sim/tests/mma_zero.rs` replays the
+  probe bitwise (both front-ends for tcgen05, SASS for mma.sync).
 
 ### N-HMMA · code
 **One `HMMA.16816.F32.BF16` (`mma.sync.m16n8k16` bf16 × bf16 + f32) is the N-MMA model:
@@ -3206,7 +3373,8 @@ largest eₐ + e_b, truncated toward zero 25 bits below it, summed exactly, roun
   accumulating steps) scores 820 candidates on 98,304 GB300 outputs (6 input sets: normal,
   log-uniform 2^±12 / 2^±30, cancellation, alignment and accumulator probes): exactly this
   model matches all, as for tcgen05 (2026-11-03). `probes/hmma/expected` is checked bitwise in
-  `cargo test`. Subnormal / Inf / NaN inputs or accumulators give `unmodeled`.
+  `cargo test`. Subnormal / Inf / NaN inputs or accumulators give `unmodeled`. Zero results
+  are +0, as N-MMA (probes/mma_zero, bf16 and tf32, C in registers or RZ).
 - Numerics: each HMMA is one `NodeKind::Mma` node per output element (`num.rs` `num_hmma`), with
   N-MMA's error contract. Operand halves come from 16-bit provenance (N-HALF-LEAF).
 - **TF32: `HMMA.1688.F32.TF32`** (`mma.sync.m16n8k8` tf32, f32 words in the registers) is
@@ -3412,7 +3580,8 @@ This is the kind::f16 structure (N-MMA) with one group of 32 instead of 16.
     with it: FP4 products cannot separate the candidates further.
 
   `probes/mma_f8/expected/` holds 9 of these runs, and `cargo test` checks both front-ends
-  bitwise (tests/mma_lp.rs).
+  bitwise (tests/mma_lp.rs). Zero results are +0, as N-MMA (probes/mma_zero: e4m3 / e2m1,
+  f32 and f16 D, C disabled / ±0).
 - Not modeled, reported as `unmodeled`:
   - NaN / Inf operands or accumulators, subnormal f32 accumulators, f16 overflow;
   - MN-major or TMEM A operands, sparsity, negate.
@@ -3506,6 +3675,9 @@ Arithmetic:
 - Not modeled, reported as `unmodeled` / outside the model: NaN scales; NaN / Inf operands;
   subnormal f32 accumulators (D is f32 only for these kinds); MN-major or TMEM A operands;
   M = 64.
+- Zero results (also scaled sums that underflow) are +0, N-MMA's rule. Unmeasured for the
+  block-scaled kinds themselves: probes/mma_zero covers kind::f8f6f4 and the other kinds,
+  which share the rule; the code path is the same.
 - Error contracts (docs/equiv-mma.md §5): mxf8f6f4 is N-MMA-F8's (one scale pair per step
   scales every product alike). mxf4 / mxf4nvf4 (`mma_lp::fp4_eps`): unit sums are multiples of
   2^(se - 2) (ue8m0) or 2^(se - 8) (ue4m3), so the setter is exact. A live unit has a product
@@ -3642,11 +3814,13 @@ bilinear moments of (x, lo, d), including its covariance with y. P(differ) integ
 the exact y's position within its ulp (its own lattice).
 - Where: `errdist/tier2.rs` (`dag`, `DagClt::law`, `dag_single`, `dag_pair`).
 - Status: **argued; validated on add / FMA / TF32 DAGs** (reductions, split-K, atomics,
-  scans, 1x / 3xTF32 GEMMs: within 5% of Tier 3, docs/errdist.md §7). On plain MMA chains
-  over narrow inputs it is 0.8-1.4x off and reports itself not applicable (Tier 1's
-  domain). The block-scaled chain CLT (`tier2::single` / `pair`, per-step residue-exact
-  moments) checks y's position against uniform and is rarely applicable.
-- If wrong: Tier 2 is a fast estimate; Tiers 1 and 3 refine it.
+  scans, 1x / 3xTF32 GEMMs: within 5% of Tier 3, docs/errdist.md §7) and on long bf16 MMA
+  pairs with the correlated round-toward-zero means (K = 960-16384: 1.03-1.14x of Tier 3).
+  Normal partial sums fail under heavy-tailed or scale-mixture terms (bf16 outliers 2.6x):
+  the tier refuses when y's excess kurtosis exceeds 1 (docs/errdist.md §3.2). The
+  block-scaled chain CLT (`tier2::single` / `pair`) is always refused.
+- If wrong: Tier 2 is the default headline only where it also agrees with the run's Tier 3
+  cross-check (300 inputs); otherwise the headline is Tier 3.
 
 ### N-ERRDIST-PAIR · code
 **A pair's difference D = C - R comes from both kernels' pre-final deviations, taken as

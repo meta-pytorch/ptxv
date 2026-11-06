@@ -31,12 +31,23 @@ print(eq.headline)
 # PROVEN L1 (same function) for every input, |C - R| <= ... * sum|terms|
 
 # 2. Numerics: distribution of C - R under an input distribution
+#    (analyzed once, then queried per distribution)
 model = ptxv.errdist_model(cand.kernels[0], ref=ref.kernels[0])
-print(model(D.Normal(0, 1)))
+e = model(D.Normal(0, 1))
+print(e.tier, e.meta["p_differ"], e.worst_case)
 print(model(D.Normal(0, 1).quantize("mxf8")))
 ```
 
-The same steps from the command line, on a captured case directory: `ptxv check <case>`, `ptxv compare <ref> <cand>`, `ptxv errdist <equiv.toml> --inputs <spec.json>`.
+The same steps from the command line, on captured case directories: `ptxv check <case>`, `ptxv compare <ref> <cand>`, `ptxv errdist <equiv.toml> --inputs <spec.json>`. The end of an `errdist` report for a bf16 GEMM pair (cuBLAS against a Triton kernel that sums K in reverse), inputs ~ N(0, 1):
+
+```
+summary: tier 2 (CLT on both DAGs), agrees with the tier 3 cross-check
+    P(bits differ) = 3.829e-5 (tier 3: 3.499e-5 [2.533e-5, 4.714e-5])
+    error in output ulps (|k|): median 0, 99% within 0, 99.9% within 0, largest seen in tier 3: 4
+    worst case (proven): |C - R| <= 2 bf16 ulps of the exact result + 3.56e-6 x sum|a_k*b_k| + 9.2e-41
+```
+
+errdist answers with an analytic central-limit model (Tier 2) when its applicability checks pass and a small Monte Carlo run (Tier 3) agrees; otherwise with Tier 3. Inputs that make every rounding exact are proven to give zero error (Tier 0). See [docs/errdist.md](docs/errdist.md).
 
 ## Build
 

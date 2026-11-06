@@ -38,6 +38,9 @@ summary = "pre-fix: no barrier between a slow warp's read of tile s and a fast w
 marker = "@LEAD"
 replace = "<delete>"
 expect = ["race"]
+# SASS: the read is an LDS against the fold's ATOMS, which the strong re-check (S-SMEM-STRONG)
+# keeps; the outputs then differ (beyond 2M states, so the race tag is not reached).
+expect_sass = ["nondeterministic"]
 
 [[variants]]
 id = "good_3tiles"
@@ -53,6 +56,9 @@ summary = "pre-fix, three tiles"
 marker = "@LEAD"
 replace = "<delete>"
 expect = ["race"]
+# SASS: the read is an LDS against the fold's ATOMS, which the strong re-check (S-SMEM-STRONG)
+# keeps; the outputs then differ (beyond 2M states, so the race tag is not reached).
+expect_sass = ["nondeterministic"]
 
 [[variants.edits]]
 marker = "@NT"

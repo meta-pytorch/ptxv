@@ -279,8 +279,14 @@ pub(crate) fn eval_inst(
         Op::Fchk { a, b, .. } => fp::fchk(w(a), w(b)) as u64,
         // Predicate logic (torch's rsqrtf combines the subnormal test with the bounds test:
         // `PLOP3.LUT P0, PT, PT, PT, PT, 0x80, 0x8` then `@!P6 PLOP3.LUT P0, PT, P1, ...`).
-        Op::Plop3 { a, b, c, lut, .. } => {
+        Op::Plop3 {
+            a, b, c, lut, d2, ..
+        } => {
             let i = ((rp(a) as u8) << 2) | ((rp(b) as u8) << 1) | rp(c) as u8;
+            let lut = match d2 {
+                Some((r, lut2)) if *r == dst => lut2,
+                _ => lut,
+            };
             ((lut >> i) & 1) as u64
         }
         Op::Sel { a, b, p, .. } => (if rp(p) { w(a) } else { w(b) }) as u64,
@@ -509,8 +515,46 @@ pub(crate) fn eval_inst(
             ) as u64
         }
         Op::CvtF32Bf16 { a, .. } => (rv(a) & 0xffff) << 16,
-        // Packing two f32 values into a bf16 / f16 pair (a: high half, b: low half), and byte
-        // permutes: as exec.rs (16-bit outputs of elementwise kernels).
+        // Integer <-> f32 conversions of exponent fields (Triton's log: `I2FP.F32.S32` of the
+        // extracted exponent), as exec.rs; 64-bit (register pair) forms are not modeled.
+        Op::I2F {
+            a,
+            signed,
+            rnd,
+            bits,
+            hi,
+            f64: false,
+            ..
+        } if *bits != 64 => {
+            let x = rv(a) >> if *hi { 16 } else { 0 };
+            let x = match (*bits, *signed) {
+                (16, true) => x as u16 as i16 as i64 as u64,
+                (16, false) => x & 0xffff,
+                (8, true) => x as u8 as i8 as i64 as u64,
+                (8, false) => x & 0xff,
+                (_, true) => x as u32 as i32 as i64 as u64,
+                (_, false) => x & 0xffff_ffff,
+            };
+            fp::int_to_f32(x, *signed, *rnd).to_bits() as u64
+        }
+        Op::F2I {
+            a,
+            signed,
+            bits,
+            rnd,
+            ftz,
+            ..
+        } if *bits != 64 => {
+            let u = if *ftz { fp::f32_ftz(w(a)) } else { w(a) };
+            let x = f32::from_bits(u);
+            let x = match rnd {
+                Rnd::Rz => x,
+                Rnd::Rn => x.round_ties_even(),
+                Rnd::Rm => x.floor(),
+                Rnd::Rp => x.ceil(),
+            };
+            (if *signed { x as i32 as u32 } else { x as u32 }) as u64
+        }
         Op::F2fpBf16 { a, b, .. } => {
             ((fp::f32_to_bf16_rn_gpu(w(a)) as u64) << 16) | fp::f32_to_bf16_rn_gpu(w(b)) as u64
         }

@@ -5,12 +5,13 @@ JSON report, and a compile-once / query-many split (§1.1) are implemented. §2 
 version 1) and §3 (report, version 1) are fixed interfaces.
 - **Tier 0** (exact) and **Tier 3** (Monte Carlo through the DAG, bit-exact per sample,
   matching GB300 on every run in §7) are the ground truth.
-- **Tier 1** (residue-exact Markov chain, MMA chains of every kind) and **Tier 2** (the DAG
-  CLT: reductions, split-K, atomics, scans, FMA chains, 1x / 3xTF32) each report an
-  applicability check. The report's `best` is Tier 0 when it applies, else Tier 1 or Tier 2
-  where their checks pass, else Tier 3. §7.1 is the validation matrix that the checks
-  encode: where a tier passes its check it is within 5% of Tier 3 on P(differ) (8% on two
-  heavy-tailed bf16 rows), and where the matrix shows a bias the check fails.
+- **The default (§3.2)**: Tier 0 when it applies, else **Tier 2** (the DAG CLT: reductions,
+  split-K, atomics, scans, FMA and MMA chains, 1x / 3xTF32; AG's linearized tiers on
+  non-chain programs) where its applicability check passes, else Tier 3. Every run also
+  runs a small Tier 3 (300 inputs) as a cross-check: a Tier 2 that disagrees with it beyond
+  its interval is refused and the headline falls back to Tier 3.
+- **Tier 1** (residue-exact Markov chain; AG's exact-site convolution on non-chain
+  programs) is opt-in: `--tier1`, `tier1=True`.
 
 `ptxv equiv` proves a worst-case bound τ(x) on |C(x) − R(x)| for every input. `ptxv errdist`
 estimates the *distribution* of the error for inputs drawn from a user-given distribution:
@@ -28,9 +29,9 @@ guarantee.
 ```
 ptxv errdist <case-dir | equiv.toml> --inputs spec.json [--json out.json] [--html out.html]
              [--candidate N] [--mc N] [--sim-trials N] [--gpu-trials N] [--per-output]
-             [--pre-round] [--uniform] [--explore] [--threads N] [--out DIR] [--no-tier1]
+             [--pre-round] [--uniform] [--explore] [--threads N] [--out DIR] [--tier1]
 ptxv errdist <case-dir | equiv.toml> [--candidate N] --compile [FILE]
-ptxv errdist --model FILE --inputs spec.json [--json out.json] [--mc N] [--no-tier1]
+ptxv errdist --model FILE --inputs spec.json [--json out.json] [--mc N] [--tier1]
 ```
 
 - A case directory: one kernel, C − exact.
@@ -43,13 +44,30 @@ ptxv errdist --model FILE --inputs spec.json [--json out.json] [--mc N] [--no-ti
 - `--explore` prints per-step local-error statistics from 50 sampled inputs.
 - `--gpu-trials N` runs N sampled inputs on a free GB300 (`PTXV_GPUS` restricts
   the set). Keep N ≤ 1000 on shared GPUs.
-- `--no-tier1` skips Tier 1 (seconds to minutes; 15+ min on MXF8 random codes). With
-  `--json`, a preliminary report is written before the analytic tiers run.
+- `--mc N`: Tier 3 inputs, default 300 (the cross-check and the fallback; `--mc 0` skips
+  it, and the chain tiers then rest on their structural checks alone).
+- `--tier1` also runs Tier 1 (seconds to minutes; 15+ min on MXF8 random codes; about 1 GiB
+  per MMA step). With `--json`, a preliminary report is written before the analytic tiers
+  run. `--no-tier1` is accepted and ignored.
+- `--out DIR`: scratch directory; by default one per process under `$TMPDIR`, removed at the
+  end (concurrent runs never share one).
 - `--compile [FILE]` / `--model FILE`: the model file (§1.1).
 - `--html FILE` writes one self-contained page (inline SVG, no scripts or external assets):
   P(differ) per tier and observed with 95% intervals, the PMFs over output ulps overlaid
   (predictions dashed, observations solid, log axis, |k| ≤ 24) with a table view, and the
   text summary.
+
+Guards (never report from bad data):
+- **The DAG must agree with the simulator.** With `--inputs`, the extracted numerics DAG is
+  evaluated on two sampled inputs and compared bit for bit with the simulator's tracked
+  outputs. A graph that folded an input-dependent value to a constant (bf16 ↔ f32 bit
+  conversions, Kahan's compensation) reproduces the captured input only. On a mismatch the
+  kernels are re-extracted in segment mode; if that graph disagrees too, errdist refuses.
+  A DAG mismatch in the simulator validation is also a refusal.
+- **NaN / Inf outputs are out of domain**, counted and reported: the `out_of_domain` cause
+  `non-finite output (NaN / Inf)` (fraction of inputs) and a note with the fraction of
+  outputs; a Tier 3 that compared no output says so. A validation run whose outputs have
+  NaN / Inf that Tier 3 does not, or with nothing to compare, does not agree.
 
 Examples (the runs of §7):
 
@@ -57,7 +75,7 @@ Examples (the runs of §7):
 PTXV_GPUS=3 ptxv errdist fixtures/c_equiv_mm_bf16/equiv.toml --candidate 1 \
     --inputs fixtures/errdist/normal.json --mc 4000 --gpu-trials 1000 --json out.json
 ptxv errdist fixtures/c_equiv_mxf8_triton/equiv.toml --candidate 1 \
-    --inputs fixtures/errdist/mxf8_codes.json --mc 400 --no-tier1
+    --inputs fixtures/errdist/mxf8_codes.json --mc 400
 ptxv errdist fixtures/r3_cute_mxf8 --inputs fixtures/errdist/mxf8_gauss.json --mc 300 --uniform
 ```
 
@@ -87,7 +105,8 @@ inside it.
   the full report (Tier 3, simulator validation, analytic tiers) and writes the non-chain
   tables (AG's original `--compile FILE`).
 - `--model FILE --inputs spec.json` is **the** query path for every program: no simulator,
-  no validation runs, Tier 3 only with `--mc N`. Chain programs get Tiers 0-2 (§5).
+  no validation runs, the default 300-input Tier 3 cross-check (`--mc N`; 0 skips it).
+  Chain programs get Tiers 0 and 2 (§5), Tier 1 with `--tier1`.
   Non-chain programs get AG's tiers (§9) from the nonlin section, which is compiled at the
   first query (or extended when the spec reaches new binades) and written back, plus the
   DAG CLT where the DAG is a sum of products. Given a case path too, the case key must
@@ -101,12 +120,14 @@ simulator run, so minutes for large kernels. Query times:
 - Tier 1: 8-13 s (bf16 normal), 25-200 s (MX single kernels; §7.1).
 
 Tier 1's cost per query is its chain, which depends on the input law, so the compile stage
-cannot precompute it. `tier1=False` / `--no-tier1` keeps queries at seconds.
+cannot precompute it; it is opt-in (`tier1=True` / `--tier1`).
 
 Python: `m = ptxv.errdist_model(target, ref=None)` compiles once (cached under
 `$PTXV_CACHE/errdist-models/<hash of the case trees and the binary>`) and returns `m` with
-`m(inputs, metric="abs", tier1=True, mc_inputs=None) -> ErrDist`. Queries are memoized per
-input distribution, in memory and on disk:
+`m(inputs, metric="abs", tier1=False, mc_inputs=None) -> ErrDist` (`mc_inputs` None: the
+default 300-input cross-check; 0 skips it). `ErrDist.tier` is the headline's tier and
+`ErrDist.crosscheck` the cross-check entries. Queries are memoized per input distribution,
+in memory and on disk:
 
 ```python
 m = ptxv.errdist_model("fixtures/r4_sum_torch")
@@ -212,7 +233,8 @@ Schema: `crates/sim/src/errdist/report.rs`. Top level:
 | `spec` | the input spec, echoed |
 | `outputs`, `output_format`, `templates` | output elements per input, their format, chain templates |
 | `estimates` | one entry per tier that ran (below) |
-| `best` | index into `estimates` of the headline estimate, in tier order: Tier 0 when it applies, else a Tier 1, else a Tier 2 whose `applicable` is true, else Tier 3. AG's non-chain estimates (§9) are applicable when they agree with Tier 3 (none without Tier 3) |
+| `best` | index into `estimates` of the headline estimate (§3.2): Tier 0 when it applies, else a Tier 1 (opt-in), else a Tier 2 whose `applicable` is true, else Tier 3 |
+| `crosscheck` | per analytic estimate against this run's Tier 3: `{estimate, tier, p, p3, p3_lo, p3_hi, tol, inputs, agrees}` (§3.2) |
 | `out_of_domain` | `{mass, by_cause, method}`: probability that an input leaves the modeled domain (overflow, NaN / Inf, zero or NaN scales, subnormal accumulators), never dropped silently |
 | `validation` | predicted vs observed on sampled inputs (simulator, GB300) |
 | `residue` | per rounding site: largest Fourier coefficient of the residue at the ulp frequency, TV bound of the uniform model, whether it was used |
@@ -278,6 +300,68 @@ K = 2000 for a 64 x 64 bf16 GEMM pair; `ptxv equiv` has no such limit). Precondi
 proof (the kernels' own, N-TF32) are listed; `proven` is true without any. The bound is computed when
 the model is compiled and stored in its `programs` section, so `--model` queries report it
 too. Text output, `--html` and Python (`ErrDist.worst_case`) show it.
+
+### 3.2 Default policy and the Tier 3 cross-check
+
+The headline (`best`) is Tier 0 when it applies (a certificate, identical programs, exact
+enumeration), else Tier 2 where it is applicable, else Tier 3. Tier 1 is opt-in
+(`--tier1`); with it, an applicable Tier 1 comes before Tier 2.
+
+Tier 2 is applicable when two checks pass. A confident wrong Tier 2 is the failure to
+avoid, so both are conservative.
+
+1. **Structural** (before any sampling; recorded in `applicability`):
+   - the DAG CLT: y's excess kurtosis, from the product terms' moments, at most 1
+     (`tier2::KURT_MAX`). The tier treats the partial sums as normal given y; heavy-tailed or
+     scale-mixture terms break that (a few large terms dominate y, and the partial sums
+     before them are far smaller than the normal law says). Measured: bf16 GEMM with normal
+     inputs 0.09; laplace 0.5; outliers (2% N(0, 64²)) 335; lognormal 62; Student t(3)
+     4e8;
+   - the chain CLT on block-scaled chains: always refused (the matrix has it 2-100x off);
+   - AG's non-chain tiers: their own checks (§9), and the cross-check below is required
+     (refused without Tier 3).
+2. **The Tier 3 cross-check**: every run samples a small Tier 3 (300 inputs by default).
+   An analytic estimate agrees when |p − p3| ≤ max(5% of p3, half Tier 3's interval), or p
+   lies inside that interval. One that disagrees is refused, the report notes `TIER 3
+   CROSS-CHECK FAILS`, and the headline falls back to Tier 3. `crosscheck` lists every
+   comparison. With `--mc 0` (a model query without Tier 3), chain estimates rest on the
+   structural checks alone.
+
+The text report prints each analytic tier's verdict ("applicable" or "REFUSED") with its
+checks, and ends with a summary: which tier answered, P(differ) (with Tier 3's interval),
+the error in output ulps (|k| at the median, 99% and 99.9% of the headline's PMF, and the
+largest Tier 3 saw), and the proven worst case. Two runs with the defaults:
+
+```
+$ ptxv errdist fixtures/c_equiv_mm_bf16/equiv.toml --candidate 1 \
+      --inputs fixtures/errdist/normal.json
+...
+tier 2 applicable:
+    0 of 64 sampled outputs outside the DAG tier's domain, carrying -0.000e0 of P(differ) 3.829e-5 ok
+    e.g. MMA DAG (5 error terms), y's excess kurtosis 0.094 <= 1 ok
+    Tier 3 cross-check (300 inputs): 3.829e-5 vs 3.499e-5 [2.533e-5, 4.714e-5], tolerance 1.09e-5 ok
+
+summary: tier 2 (CLT on both DAGs), agrees with the tier 3 cross-check
+    P(bits differ) = 3.829e-5 (tier 3: 3.499e-5 [2.533e-5, 4.714e-5])
+    error in output ulps (|k|): median 0, 99% within 0, 99.9% within 0, largest seen in tier 3: 4
+    worst case (proven): |C - R| <= 2 bf16 ulps of the exact result + 3.56e-6 x sum|a_k*b_k| + 9.2e-41
+
+$ ptxv errdist fixtures/c_mm_bf16_nnt --inputs fixtures/errdist/outliers.json
+...
+tier 2 REFUSED:
+    64 of 64 sampled outputs outside the DAG tier's domain, carrying 8.706e-5 of P(differ) 8.706e-5 FAILS
+    e.g. y's excess kurtosis 335.194 > 1: heavy-tailed or scale-mixture terms, the partial sums are not normal given y FAILS
+    Tier 3 cross-check (300 inputs): 8.706e-5 vs 3.174e-5 [2.257e-5, 4.339e-5], tolerance 1.04e-5 FAILS
+
+summary: tier 3 (Monte Carlo; the analytic tiers refused, see above)
+    P(bits differ) = 3.174e-5
+    error in output ulps (|k|): median 0, 99% within 0, 99.9% within 0, largest seen in tier 3: 10
+    worst case (proven): |C - y| <= 1 bf16 ulp of the exact result + 2.36e-6 x sum|a_k*b_k| + 4.6e-41
+```
+
+The first is a bf16 GEMM pair (cuBLAS against Triton with reversed K). The second is one
+bf16 GEMM whose inputs have 2% large outliers; there Tier 2 would have said 2.7x Tier 3, and
+both checks refuse it.
 
 ## 4. The error of an accumulation chain
 
@@ -712,7 +796,8 @@ headline is never worse than Tier 3.
   sgemms plus an add launch, against x @ (w1 + w2) (`fixtures/errdist/mm2.toml`).
 - **Checks before estimating.**
   - Byte workspaces that no leaf reads keep their captured bytes.
-  - A program whose DAG tracks no output is refused.
+  - A program whose DAG tracks no output is refused; the message names the instruction
+    each failed slice could not evaluate.
   - So is a program whose DAG disagrees with the captured GPU output at the captured input.
     For example, inductor's `addmm` copies its input with a device-to-device memcpy, which
     the capture does not record (`fixtures/errdist/c_mm2_addmm`). Recording memcpys in
@@ -723,7 +808,10 @@ headline is never worse than Tier 3.
   - multiplier and divisor forms;
   - a / b;
   - polynomials up to degree 3;
-  - named functions (erf, gelu, tanh-gelu, silu, ...) with an outer affine map.
+  - named functions (erf, gelu, tanh-gelu, silu, log, ...) with an outer affine map.
+    Triton's `tl.log` is a software polynomial with an integer exponent extraction
+    (`I2FP.F32.S32`), which the slice evaluator models (I2F / F2I of 8-32 bits); it is
+    identified as log (`fixtures/c_lse_naive`, `c_lse_stable`).
 
   Constants snap to named values (log2 e, ln 2, 1/128, eps, √(2/π), 0.044715, powers of
   two) when that keeps the fit.

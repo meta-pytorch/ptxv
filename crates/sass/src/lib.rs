@@ -580,14 +580,28 @@ impl<'a> Lw<'a> {
 
     /// `tmem[UR4+0x10]` / `gdesc[UR4]` / `idesc[UR17]` -> (register value, offset).
     fn bracket(&self, s: &str, prefix: &str, n: u8) -> Result<(Val, u32)> {
+        self.bracket_neg(s, prefix, n, false)
+    }
+
+    /// `bracket`; `neg`: a negative offset (`tmem[UR5+-0x10]`) is allowed, as its 32-bit
+    /// two's complement (for executors that add the offset with wrapping arithmetic).
+    fn bracket_neg(&self, s: &str, prefix: &str, n: u8, neg: bool) -> Result<(Val, u32)> {
         let inner = s
             .trim()
             .strip_prefix(prefix)
             .and_then(|x| x.strip_prefix('['))
             .and_then(|x| x.strip_suffix(']'))
             .ok_or_else(|| self.err(format!("expected {prefix}[..], got {s}")))?;
+        // `tmem[UR5+-0x10]`: a negative offset, added to the 32-bit TMEM address like a
+        // positive one (ptxas folds `taddr - 16` into it; GB300: probes/tmem_ldred).
         let (r, off) = match inner.split_once('+') {
-            Some((r, o)) => (r, hex(o).ok_or_else(|| self.err("bad offset"))?),
+            Some((r, o)) => match o.strip_prefix('-') {
+                Some(n) if neg => (
+                    r,
+                    hex(n).ok_or_else(|| self.err("bad offset"))?.wrapping_neg(),
+                ),
+                _ => (r, hex(o).ok_or_else(|| self.err("bad offset"))?),
+            },
             None => (inner, 0),
         };
         let v = self.val(r, 4 * n)?;
@@ -904,42 +918,92 @@ fn lower_line(
             signed: !has("U32"),
         },
         // I2F[.S64|.U64|.S16|.U16|.S8|.U8]: the source width selects the bits converted.
-        "I2F" | "I2FP" if !has("F64") && !has("F16") && !has("FTZ") => Op::I2F {
-            d: lw.dst(lw.op(0)?)?,
-            hi: lw.op(1)?.trim_end_matches(".reuse").ends_with(".H1"),
-            a: lw.val(
-                lw.op(1)?
-                    .trim_end_matches(".reuse")
-                    .trim_end_matches(".H1")
-                    .trim_end_matches(".H0"),
-                if has("U64") || has("S64") { 8 } else { 4 },
-            )?,
-            signed: !mods.iter().any(|m| m.starts_with('U')),
-            bits: if has("U64") || has("S64") {
-                64
-            } else if has("U16") || has("S16") {
-                16
-            } else if has("U8") || has("S8") {
-                8
-            } else {
-                32
-            },
-            rnd: if has("RP") {
-                Rnd::Rp
-            } else if has("RM") {
-                Rnd::Rm
-            } else if has("RZ") {
-                Rnd::Rz
-            } else {
-                Rnd::Rn
-            },
-        },
-        "F2I" if has("TRUNC") && !has("F64") => Op::F2I {
-            d: lw.dst(lw.op(0)?)?,
-            a: lw.val(lw.op(1)?, 4)?,
-            signed: !has("U32") && !has("U64"),
-            bits: if has("U64") || has("S64") { 64 } else { 32 },
-        },
+        // I2F[.F64][.S64|.U64|.U32|.S16|.U16|.S8|.U8][.RZ|.RM|.RP] (I2FP: the same); `.F64`:
+        // an f64 result (libdevice sinf's large-argument reduction: `I2F.F64.S64`; GB300:
+        // fixtures/s_f2i).
+        "I2F" | "I2FP"
+            if !has("F16")
+                && !has("FTZ")
+                && mods.iter().all(|m| {
+                    matches!(
+                        *m,
+                        "F64"
+                            | "F32"
+                            | "S64"
+                            | "U64"
+                            | "S32"
+                            | "U32"
+                            | "S16"
+                            | "U16"
+                            | "S8"
+                            | "U8"
+                            | "RZ"
+                            | "RM"
+                            | "RP"
+                    )
+                }) =>
+        {
+            Op::I2F {
+                f64: has("F64"),
+                d: lw.dst(lw.op(0)?)?,
+                hi: lw.op(1)?.trim_end_matches(".reuse").ends_with(".H1"),
+                a: lw.val(
+                    lw.op(1)?
+                        .trim_end_matches(".reuse")
+                        .trim_end_matches(".H1")
+                        .trim_end_matches(".H0"),
+                    if has("U64") || has("S64") { 8 } else { 4 },
+                )?,
+                signed: !mods.iter().any(|m| m.starts_with('U')),
+                bits: if has("U64") || has("S64") {
+                    64
+                } else if has("U16") || has("S16") {
+                    16
+                } else if has("U8") || has("S8") {
+                    8
+                } else {
+                    32
+                },
+                rnd: if has("RP") {
+                    Rnd::Rp
+                } else if has("RM") {
+                    Rnd::Rm
+                } else if has("RZ") {
+                    Rnd::Rz
+                } else {
+                    Rnd::Rn
+                },
+            }
+        }
+        // F2I[.FTZ][.U32|.S64|.U64][.TRUNC|.FLOOR|.CEIL][.NTZ] Rd, Ra (cvt.r{n,z,m,p}i.s32.f32
+        // ...): an f32 source rounded to an integer, saturated, NaN 0 (32-bit) / 2^63 (64-bit).
+        // `.FTZ` and `.NTZ` do not change the integer (a subnormal rounds to 0 or +-1 only with
+        // FLOOR / CEIL, see the exec arm); GB300: fixtures/s_lift_k, s_f2i.
+        "F2I" if !has("F64") && !has("F16") => {
+            if let Some(m) = mods.iter().find(|m| {
+                !matches!(
+                    **m,
+                    "FTZ" | "NTZ" | "U32" | "S32" | "U64" | "S64" | "TRUNC" | "FLOOR" | "CEIL"
+                )
+            }) {
+                bail!(lw.err(format!("F2I modifier not modeled: {m}")));
+            }
+            let rnd = match (has("TRUNC"), has("FLOOR"), has("CEIL")) {
+                (true, false, false) => Rnd::Rz,
+                (false, true, false) => Rnd::Rm,
+                (false, false, true) => Rnd::Rp,
+                (false, false, false) => Rnd::Rn,
+                _ => bail!(lw.err("F2I with two roundings")),
+            };
+            Op::F2I {
+                d: lw.dst(lw.op(0)?)?,
+                a: lw.val(lw.op(1)?, 4)?,
+                signed: !has("U32") && !has("U64"),
+                bits: if has("U64") || has("S64") { 64 } else { 32 },
+                rnd,
+                ftz: has("FTZ"),
+            }
+        }
         "F2F" if mods == ["F32", "F64"] || mods == ["F64", "F32"] => {
             let to64 = mods[0] == "F64";
             Op::F2F {
@@ -1605,16 +1669,25 @@ fn lower_line(
                 pq,
             }
         }
+        // `PLOP3.LUT Pd, Pd2, a, b, c, lut, lut2`: Pd = lut(a, b, c), Pd2 = lut2(a, b, c)
+        // (GB300: fixtures/s_lift_l, the block-sparsity kernel's all / any `P1, P0, !P0, PT,
+        // !P1, 0x80, 0xc8`). With Pd2 = PT, ptxas fills lut2 with anything.
         "PLOP3" | "UPLOP3" => {
-            if lw.op(1)? != "PT" && lw.op(1)? != "UPT" {
-                bail!(lw.err("PLOP3 second output not modeled"));
+            if !mods.is_empty() && mods != ["LUT"] || l.operands.len() != 7 {
+                bail!(lw.err("PLOP3 form not modeled"));
             }
+            let lut2 = hex(lw.op(6)?).ok_or_else(|| lw.err("bad lut"))? as u8;
+            let d2 = match lw.op(1)? {
+                "PT" | "UPT" => None,
+                p => Some((lw.pdst(p)?, lut2)),
+            };
             Op::Plop3 {
                 d: lw.pdst(lw.op(0)?)?,
                 a: lw.pred(lw.op(2)?)?,
                 b: lw.pred(lw.op(3)?)?,
                 c: lw.pred(lw.op(4)?)?,
                 lut: hex(lw.op(5)?).ok_or_else(|| lw.err("bad lut"))? as u8,
+                d2,
             }
         }
         "ISETP" | "UISETP" => {
@@ -1861,10 +1934,27 @@ fn lower_line(
             a: lw.val(lw.op(1)?, 4)?,
             b: Val::Imm(0),
         },
-        "R2P" if mods.is_empty() && lw.op(0)? == "PR" => Op::R2p {
-            a: lw.val(lw.op(1)?, 4)?,
-            mask: hex(lw.op(2)?).ok_or_else(|| lw.err("bad mask"))? & 0x7f,
-        },
+        // `R2P PR, Ra[.B1|.B2|.B3], mask`: byte k of Ra to P0..P6 (FA4's mask bit tests;
+        // GB300: fixtures/s_lift_l).
+        "R2P" if mods.is_empty() && lw.op(0)? == "PR" => {
+            let src = lw.op(1)?.trim_end_matches(".reuse");
+            let (src, shift) = match src.rsplit_once(".B") {
+                Some((r, k)) if matches!(k, "0" | "1" | "2" | "3") => {
+                    (r, 8 * k.parse::<u8>().unwrap())
+                }
+                Some(_) => bail!(lw.err(format!("R2P operand selector not modeled: {src}"))),
+                None => (src, 0),
+            };
+            let mask = hex(lw.op(2)?).ok_or_else(|| lw.err("bad mask"))?;
+            if mask > 0x7f {
+                bail!(lw.err(format!("R2P mask {mask:#x} beyond P6 not modeled")));
+            }
+            Op::R2p {
+                a: lw.val(src, 4)?,
+                mask,
+                shift,
+            }
+        }
         "R2UR" => {
             uniform = false; // collective: reads the value from the active lanes
             if l.operands.len() == 3 {
@@ -1917,6 +2007,19 @@ fn lower_line(
                 ("CREDUX", ["MAX"]) => ReduxOp::MaxU,
                 ("CREDUX", ["MIN", "S32"]) => ReduxOp::MinS,
                 ("CREDUX", ["MAX", "S32"]) => ReduxOp::MaxS,
+                // `CREDUX.MIN|.MAX|.MINABS|.MAXABS.F32[.NAN]` (redux.sync f32 forms; GB300:
+                // fixtures/s_lift_l).
+                ("CREDUX", [m, "F32", rest @ ..])
+                    if matches!(*m, "MIN" | "MAX" | "MINABS" | "MAXABS")
+                        && (rest.is_empty() || rest == ["NAN"]) =>
+                {
+                    let (abs, nan) = (m.ends_with("ABS"), rest == ["NAN"]);
+                    if m.starts_with("MIN") {
+                        ReduxOp::MinF { abs, nan }
+                    } else {
+                        ReduxOp::MaxF { abs, nan }
+                    }
+                }
                 _ => bail!(lw.err(format!("unsupported SASS opcode `{}`", l.opcode))),
             };
             Op::Redux {
@@ -2319,10 +2422,19 @@ fn lower_line(
         // stores (ptxas's divergent-path lowering of mbarrier.init). The simulator decodes
         // mbarriers from memory, so this has no further effect.
         "SYNCS" if has("CCTL") && has("IVALL") => Op::Nop, // scheduling / convergence hint; scoreboards are checked in scoreboard.rs
-        "WARPSYNC" if mods.is_empty() || mods == ["ALL"] || mods == ["COLLECTIVE"] => {
+        "WARPSYNC"
+            if mods.is_empty()
+                || mods == ["ALL"]
+                || mods == ["COLLECTIVE"]
+                || mods == ["COLLECTIVE", "ALL"] =>
+        {
+            let all = mods == ["COLLECTIVE", "ALL"];
+            if all && l.operands.len() != 1 {
+                bail!(lw.err("WARPSYNC.COLLECTIVE.ALL form not modeled"));
+            }
             if has("COLLECTIVE") {
                 // `WARPSYNC.COLLECTIVE Rm, `(end)``: `end` must follow the region's ENDCOLLECTIVE.
-                let t = lw.op(1)?;
+                let t = lw.op(if all { 0 } else { 1 })?;
                 let lbl = t
                     .trim_start_matches('`')
                     .trim_start_matches('(')
@@ -2338,6 +2450,7 @@ fn lower_line(
                     lw.val(lw.op(0)?, 4)?
                 },
                 collective: has("COLLECTIVE"),
+                all,
             }
         }
         // Region end of `WARPSYNC.COLLECTIVE`; `start` is filled in after lowering.
@@ -2409,10 +2522,14 @@ fn lower_line(
             pair: has("2CTA"),
         },
         "STAS" => {
-            // `STAS [Ra.64], Rv`: Ra = shared::cluster address, Ra+1 = its mbarrier.
-            if !mods.is_empty() {
-                bail!(lw.err("STAS variant not modeled"));
-            }
+            // `STAS[.64|.128] [Ra.64], Rv`: Ra = shared::cluster address, Ra+1 = its mbarrier;
+            // Rv.. = 1, 2 or 4 data registers.
+            let bytes: u8 = match mods {
+                [] => 4,
+                ["64"] => 8,
+                ["128"] => 16,
+                _ => bail!(lw.err("STAS variant not modeled")),
+            };
             let a = lw.op(0)?.trim_start_matches('[').trim_end_matches(']');
             let r = a
                 .strip_suffix(".64")
@@ -2427,7 +2544,8 @@ fn lower_line(
                     },
                     1,
                 ),
-                v: lw.val(lw.op(1)?, 4)?,
+                v: lw.val(lw.op(1)?, bytes)?,
+                bytes,
             }
         }
         "UTCATOMSWS" if has("AND") => Op::TmemFreeRaw {
@@ -2536,6 +2654,31 @@ fn lower_line(
         "LDTM" => {
             let mut s16x256b = false;
             let mut s16x128b = false;
+            // `LDTM.STAT.xN.MIN|MAX[ABS].F32[.NAN] Rred, Rd, tmem[..]` (tcgen05.ld.red, 32x32b
+            // only): Rred = min / max of the N values loaded into Rd.. (FA4's row max).
+            let (red_op, mods, vop) = match mods {
+                ["STAT", x, m, "F32", rest @ ..]
+                    if x.starts_with('x')
+                        && matches!(*m, "MIN" | "MAX" | "MINABS" | "MAXABS")
+                        && (rest.is_empty() || rest == ["NAN"]) =>
+                {
+                    let (abs, nan) = (m.ends_with("ABS"), rest == ["NAN"]);
+                    let op = if m.starts_with("MIN") {
+                        ReduxOp::MinF { abs, nan }
+                    } else {
+                        ReduxOp::MaxF { abs, nan }
+                    };
+                    (Some(op), &mods[1..2], 1)
+                }
+                ["STAT", ..] => bail!(lw.err(format!("LDTM.STAT form not modeled: {}", l.opcode))),
+                _ => (None, mods, 0),
+            };
+            let red = match red_op {
+                // The reduced value discarded (RZ): a plain load.
+                Some(_) if lw.op(0)? == "RZ" => None,
+                Some(op) => Some((lw.dst(lw.op(0)?)?, op)),
+                None => None,
+            };
             let (n, s16x64b, half): (u8, bool, Option<u8>) = match mods {
                 [x] if x.starts_with('x') => (
                     x[1..].parse().map_err(|_| lw.err("LDTM count"))?,
@@ -2578,9 +2721,12 @@ fn lower_line(
                     bail!(lw.err("LDTM shape not modeled yet (only 32x32b, 16x64b, 16x32bx2 .xN)"))
                 }
             };
-            let (taddr, off) = lw.bracket(lw.op(1)?, "tmem", 1)?;
+            if red_op.is_some() && lw.op(vop)? == "RZ" {
+                bail!(lw.err("LDTM.STAT with the loaded values discarded (RZ) not modeled"));
+            }
+            let (taddr, off) = lw.bracket_neg(lw.op(vop + 1)?, "tmem", 1, true)?;
             Op::TmemLd {
-                d: lw.dst(lw.op(0)?)?,
+                d: lw.dst(lw.op(vop)?)?,
                 n,
                 taddr,
                 off,
@@ -2589,6 +2735,7 @@ fn lower_line(
                 half,
                 s16x256b,
                 s16x128b,
+                red,
             }
         }
         // IDP.2A.{LO,HI}.{U16,S16}.{U8,S8} Rd, Ra, Rb, Rc: dp2a (cuDNN's address arithmetic).
@@ -2821,10 +2968,23 @@ fn lower_line(
                 None if arrive => bail!(lw.err("BAR.ARV without a thread count")),
                 None => None,
             };
+            let id = lw.val(lw.op(0)?, 4)?;
+            // `BAR.SYNC R4, R4`: ptxas's register form (`barrier.sync %r, %r`, and the
+            // divergent path of a non-aligned barrier.sync): R4 = count << 16 | id & 0xf.
+            let packed = match (&id, &count) {
+                (Val::Reg(a, _), Some(Val::Reg(b, _))) if a == b => true,
+                (Val::Reg(..), Some(Val::Reg(..))) => {
+                    bail!(lw.err("BAR with different id and count registers not modeled"))
+                }
+                _ => false,
+            };
             Op::BarSync {
-                id: lw.val(lw.op(0)?, 4)?,
+                id,
                 count,
                 arrive,
+                packed,
+                // Except in a collective region (`aligned_bars`).
+                aligned: true,
             }
         }
         // mbarrier.inval
@@ -2853,6 +3013,7 @@ fn lower_line(
                     remote: false,
                     count: None,
                     complete: false,
+                    cluster: false,
                 },
                 // `.RED`: arrive.expect_tx on another CTA's mbarrier (shared::cluster address).
                 ["ARRIVE", "TRANS64", "RED"] => Op::MbarArrive {
@@ -2861,6 +3022,7 @@ fn lower_line(
                     remote: true,
                     count: None,
                     complete: false,
+                    cluster: false,
                 },
                 // `.RED.A1T0`: a plain arrival there.
                 ["ARRIVE", "TRANS64", "RED", "A1T0"] if lw.op(2)? == "RZ" => Op::MbarArrive {
@@ -2869,6 +3031,7 @@ fn lower_line(
                     remote: true,
                     count: None,
                     complete: false,
+                    cluster: false,
                 },
                 // `A1T0`: one arrival, no transaction bytes (plain mbarrier.arrive).
                 ["ARRIVE", "TRANS64", "A1T0"] if lw.op(2)? == "RZ" => Op::MbarArrive {
@@ -2877,6 +3040,7 @@ fn lower_line(
                     remote: false,
                     count: None,
                     complete: false,
+                    cluster: false,
                 },
                 // `.A0TR` / `.A0TX`: no arrival; expect / complete the transaction bytes
                 // (`mbarrier.expect_tx` / `mbarrier.complete_tx`, checked against ptxas).
@@ -2886,6 +3050,7 @@ fn lower_line(
                     remote: true,
                     count: Some(Val::Imm(0)),
                     complete: *z == "A0TX",
+                    cluster: false,
                 },
                 // `.RED.A0T1`: no arrival, expect one transaction unit; ptxas emits it before
                 // `ARRIVES.LDGSTSBAR.64.TRANSCNT` for `cp.async.mbarrier.arrive` (no .noinc),
@@ -2896,6 +3061,7 @@ fn lower_line(
                     remote: true,
                     count: Some(Val::Imm(0)),
                     complete: false,
+                    cluster: false,
                 },
                 _ => bail!(lw.err("SYNCS.ARRIVE variant not modeled")),
             }
@@ -2952,18 +3118,23 @@ fn lower_line(
             d: lw.dst(lw.op(0)?)?,
             a: lw.val(lw.op(1)?, 4)?,
         },
-        // `CS2R Rd, SR_CLOCKLO` (clock64): ASSUME(E-CLOCK) the clock reads 0 every time, so
+        // `CS2R Rd, SR_CLOCKLO` (clock64) / `SR_GLOBALTIMERLO` (%globaltimer: torch's
+        // symmetric-memory barrier timeout): ASSUME(E-CLOCK) the clock reads 0 every time, so
         // timeout checks (`clock64() - start > N`) never fire.
-        "CS2R" if l.operands.len() == 2 && lw.op(1)? == "SR_CLOCKLO" => Op::Mov {
-            d: lw.dst(lw.op(0)?)?,
-            a: Val::Reg(
-                Reg {
-                    file: File::R,
-                    idx: RZ,
-                },
-                2,
-            ),
-        },
+        "CS2R"
+            if l.operands.len() == 2 && matches!(lw.op(1)?, "SR_CLOCKLO" | "SR_GLOBALTIMERLO") =>
+        {
+            Op::Mov {
+                d: lw.dst(lw.op(0)?)?,
+                a: Val::Reg(
+                    Reg {
+                        file: File::R,
+                        idx: RZ,
+                    },
+                    2,
+                ),
+            }
+        }
         "CS2R" if l.operands.len() == 2 && lw.op(1)? == "SRZ" => Op::Mov {
             d: lw.dst(lw.op(0)?)?,
             a: Val::Reg(
@@ -3016,11 +3187,17 @@ fn lower_line(
             // in the peer CTA (cp.async.bulk.tensor ... .cta_group::2).
             // `.2D.GATHER4` (cp.async.bulk.tensor.2d...tile::gather4): URa+2 is the column,
             // URa+3..URa+6 the four row coordinates (5 coords; exec.rs `complete_tma`).
-            let multicast = mods.len() == 2 && mods[1] == "MULTICAST";
-            let pair = mods.len() == 2 && mods[1] == "2CTA";
+            // `.MULTICAST.2CTA`: both (cuBLAS's 2-CTA nvjet kernels, M = N >= 512).
+            let multicast = mods.len() >= 2 && mods[1] == "MULTICAST";
+            let pair = mods[1..] == ["2CTA"] || mods[1..] == ["MULTICAST", "2CTA"];
             let gather4 = mods == ["2D", "GATHER4"];
-            if mods.len() != 1 && !multicast && !pair && !gather4 {
-                bail!(lw.err("UTMALDG variant not modeled yet (im2col)"));
+            let known = mods.len() == 1
+                || mods[1..] == ["MULTICAST"]
+                || mods[1..] == ["2CTA"]
+                || mods[1..] == ["MULTICAST", "2CTA"]
+                || gather4;
+            if !known || !mods[0].ends_with('D') {
+                bail!(lw.err(format!("UTMALDG form not modeled: {}", l.opcode)));
             }
             let dims: u8 = mods[0]
                 .trim_end_matches('D')
@@ -3219,6 +3396,7 @@ fn lower_line(
             b: Pred::TRUE,
             c: Pred::TRUE,
             lut: 0xff,
+            d2: None,
         },
         // SHFL.<mode> Pout, Rd, Ra, b, c (PTX shfl.sync operands; the full member mask).
         "SHFL" => {
@@ -3453,6 +3631,31 @@ fn sass_strong(mods: &[&str]) -> Option<MemSync> {
     })
 }
 
+/// ASSUME(E-ALIGNED): every SASS `BAR` is executed by the whole (live) warp at once. ptxas
+/// compiles PTX `bar.sync` / `barrier.sync.aligned` to `[WARPSYNC.ALL;] BAR.SYNC`, predicated
+/// per branch when the PTX branches (it assumes convergence), and the non-aligned
+/// `barrier.sync` to `BRA.DIV` around the same `BAR` with a `WARPSYNC.COLLECTIVE` slow path
+/// (sm_103a, ptxas 13.0). A `BAR` inside a collective region (the slow path) is therefore
+/// the non-aligned form; any other is aligned. GB300: two halves of a warp at two `bar.sync`
+/// hang, at two `barrier.sync` complete (fixtures/e_aligned_bar AB1 / AB2, `ptxv probe`).
+fn aligned_bars(code: &mut [Inst]) {
+    let regions: Vec<(usize, usize)> = code
+        .iter()
+        .enumerate()
+        .filter_map(|(i, x)| match x.op {
+            Op::EndCollective { start } => Some((start, i)),
+            _ => None,
+        })
+        .collect();
+    for (s, e) in regions {
+        for x in &mut code[s.min(e)..=e] {
+            if let Op::BarSync { aligned, .. } = &mut x.op {
+                *aligned = false;
+            }
+        }
+    }
+}
+
 pub fn load_cubin(cubin: &Path, kernel: &str) -> Result<Kernel> {
     let dis = run_tool("nvdisasm", &["-c", "-hex", cubin.to_str().unwrap()])?;
     let meta = read_meta(cubin, kernel)?;
@@ -3632,6 +3835,11 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
         .filter(|l| l.opcode == "LDGDEPBAR")
         .filter_map(|l| l.hi.and_then(|h| scoreboard::Ctrl::decode(h).wbar))
         .collect();
+    // ptxas reuses scoreboards: one kernel may count cp.async groups and bulk groups on the
+    // same SBk in different places (mslk's FA4 decode: LDGDEPBAR's and UTMACMDFLUSH's are
+    // both SB0). Which kind a `DEPBAR.LE SBk` waits for is decided per instruction, by the
+    // kinds that may be outstanding on SBk when it is reached; both: not modeled.
+    let reach = depbar_kinds(&lines, &code);
     for (i, l) in lines.iter().enumerate() {
         if l.opcode != "DEPBAR.LE" || l.operands.len() != 2 {
             continue;
@@ -3641,10 +3849,39 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
             .and_then(|k| k.parse::<u8>().ok());
         let n = u32::from_str_radix(l.operands[1].trim_start_matches("0x"), 16).ok();
         if let (Some(sb), Some(n)) = (sb, n) {
-            if bulk_sbs.contains(&sb) {
-                code[i].op = Op::BulkWait { n, read: true };
-            } else if cp_sbs.contains(&sb) {
-                code[i].op = Op::CpAsyncWait { n };
+            let kinds = reach[i].map_or(0, |r| r[sb as usize & 7]);
+            match kinds {
+                DEP_CP => code[i].op = Op::CpAsyncWait { n },
+                DEP_BULK => {
+                    code[i].op = Op::BulkWait {
+                        n,
+                        read: true,
+                        cp: false,
+                    }
+                }
+                0 if bulk_sbs.contains(&sb) => {
+                    code[i].op = Op::BulkWait {
+                        n,
+                        read: true,
+                        cp: false,
+                    }
+                }
+                // Both kinds on some path (paths the analysis cannot tell apart, e.g. per
+                // warp): with n = 0 the scoreboard drains, so both kinds complete.
+                k if k == DEP_CP | DEP_BULK && n == 0 => {
+                    code[i].op = Op::BulkWait {
+                        n,
+                        read: true,
+                        cp: true,
+                    }
+                }
+                0 if cp_sbs.contains(&sb) => code[i].op = Op::CpAsyncWait { n },
+                0 => {}
+                _ => bail!(
+                    "sass {:#06x}: `{}` may wait for cp.async groups and bulk groups on SB{sb} (not modeled)",
+                    l.addr,
+                    l.text
+                ),
             }
         }
     }
@@ -3660,6 +3897,7 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
         })
         .map(|(i, _)| i)
         .collect();
+    aligned_bars(&mut code);
     smem_acquires(&lines, &mut code);
     let static_findings = scoreboard::check(&lines, &code)?;
     let pend = meta.params.iter().map(|p| p.1 + p.2).max().unwrap_or(0);
@@ -3686,6 +3924,91 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
         bulk_read_waits,
         parts: vec![],
     })
+}
+
+const DEP_CP: u8 = 1;
+const DEP_BULK: u8 = 2;
+
+/// For each instruction, the kinds of asynchronous group (`DEP_CP`: LDGDEPBAR's write
+/// scoreboard, `DEP_BULK`: UTMACMDFLUSH's read scoreboard) that may be outstanding on each
+/// scoreboard when it is reached (None: unreachable). A `DEPBAR.LE SBk, 0` clears SBk.
+fn depbar_kinds(lines: &[SassLine], code: &[Inst]) -> Vec<Option<[u8; 8]>> {
+    let ret_sites: Vec<usize> = code
+        .iter()
+        .enumerate()
+        .filter(|(_, i)| matches!(i.op, Op::Call { .. } | Op::CallAbs { .. }))
+        .map(|(i, _)| i + 1)
+        .collect();
+    let succ = |pc: usize| -> Vec<usize> {
+        let i = &code[pc];
+        let next = if pc + 1 < code.len() {
+            vec![pc + 1]
+        } else {
+            vec![]
+        };
+        match &i.op {
+            Op::Bra {
+                target,
+                tid0_falls: false,
+                div: None,
+                ..
+            } if i.guard.is_always() => vec![*target],
+            Op::Bra { target, .. } => [vec![*target], next].concat(),
+            Op::Exit | Op::Trap { .. } if i.guard.is_always() => vec![],
+            Op::Call { target } => [vec![*target], next].concat(),
+            Op::Ret { .. } => ret_sites.clone(),
+            Op::Brx { targets, .. } => targets.clone(),
+            _ => next,
+        }
+    };
+    let mut input: Vec<Option<[u8; 8]>> = vec![None; lines.len()];
+    if lines.is_empty() {
+        return input;
+    }
+    input[0] = Some([0; 8]);
+    let mut work = vec![0usize];
+    while let Some(pc) = work.pop() {
+        let mut st = input[pc].unwrap();
+        let l = &lines[pc];
+        let c = l.hi.map(scoreboard::Ctrl::decode);
+        match l.opcode.as_str() {
+            "LDGDEPBAR" => {
+                if let Some(sb) = c.and_then(|c| c.wbar) {
+                    st[sb as usize & 7] |= DEP_CP;
+                }
+            }
+            "UTMACMDFLUSH" => {
+                if let Some(sb) = c.and_then(|c| c.rbar) {
+                    st[sb as usize & 7] |= DEP_BULK;
+                }
+            }
+            "DEPBAR.LE"
+                if l.guard.is_none() && l.operands.get(1).map(|s| s.as_str()) == Some("0x0") =>
+            {
+                if let Some(sb) = l.operands[0]
+                    .strip_prefix("SB")
+                    .and_then(|k| k.parse::<usize>().ok())
+                {
+                    st[sb & 7] = 0;
+                }
+            }
+            _ => {}
+        }
+        for q in succ(pc) {
+            if q >= input.len() {
+                continue;
+            }
+            let new = match input[q] {
+                None => st,
+                Some(old) => std::array::from_fn(|k| old[k] | st[k]),
+            };
+            if input[q] != Some(new) {
+                input[q] = Some(new);
+                work.push(q);
+            }
+        }
+    }
+    input
 }
 
 enum F2fpKind {
@@ -3768,5 +4091,210 @@ mod tests {
         assert_eq!(parse_half("5.9604644775390625e-08"), Some(1));
         assert_eq!(parse_half("1.875"), Some(0x3f80));
         assert_eq!(parse_half("0"), Some(0));
+    }
+
+    /// Lower one disassembled instruction (no labels, no encoding).
+    fn lower1(text: &str) -> Result<Op> {
+        let body = text.trim();
+        let (guard, body) = match body.strip_prefix('@') {
+            Some(r) => {
+                let (g, r) = r.split_once(' ').unwrap();
+                (Some(g.to_string()), r.trim())
+            }
+            None => (None, body),
+        };
+        let (opcode, ops) = body.split_once(' ').unwrap_or((body, ""));
+        let l = SassLine {
+            addr: 0,
+            guard,
+            opcode: opcode.into(),
+            operands: split_ops(ops),
+            text: body.into(),
+            hi: None,
+            lo: None,
+        };
+        let mut labels = HashMap::new();
+        labels.insert(".L_x_1".to_string(), 0u32);
+        let mut a2i = HashMap::new();
+        a2i.insert(0u32, 0usize);
+        lower_line(&l, &labels, &a2i, &CubinMeta::default(), None).map(|i| i.op)
+    }
+
+    fn r(idx: u16) -> Reg {
+        Reg { file: File::R, idx }
+    }
+
+    /// `DEPBAR.LE SB0` after a cp.async commit and after a bulk commit on the same scoreboard
+    /// (control words from mslk's FA4 decode): each gets its own kind.
+    #[test]
+    fn depbar_kinds_per_instruction() {
+        let mk = |addr: u32, text: &str, hi: u64| {
+            let (opcode, ops) = text.split_once(' ').unwrap_or((text, ""));
+            SassLine {
+                addr,
+                guard: None,
+                opcode: opcode.into(),
+                operands: split_ops(ops),
+                text: text.into(),
+                hi: Some(hi),
+                lo: None,
+            }
+        };
+        let lines = vec![
+            mk(0x00, "LDGDEPBAR", 0x000e240000000000),
+            mk(0x10, "DEPBAR.LE SB0, 0x0", 0x000fc80000000000),
+            mk(0x20, "UTMACMDFLUSH", 0x0001e20000000000),
+            mk(0x30, "DEPBAR.LE SB0, 0x0", 0x000fc80000000000),
+            mk(0x40, "EXIT", 0x000fea0003800000),
+        ];
+        let code: Vec<Inst> = lines
+            .iter()
+            .map(|l| {
+                lower_line(
+                    l,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &CubinMeta::default(),
+                    None,
+                )
+                .unwrap()
+            })
+            .collect();
+        let k = depbar_kinds(&lines, &code);
+        assert_eq!(k[1].unwrap()[0], DEP_CP);
+        assert_eq!(k[3].unwrap()[0], DEP_BULK);
+    }
+
+    #[test]
+    fn real_kernel_forms() {
+        assert!(matches!(
+            lower1("CREDUX.MAX.F32.NAN UR10, R12").unwrap(),
+            Op::Redux {
+                op: ReduxOp::MaxF {
+                    abs: false,
+                    nan: true
+                },
+                ..
+            }
+        ));
+        assert!(matches!(
+            lower1("CREDUX.MINABS.F32 UR7, R2.reuse").unwrap(),
+            Op::Redux {
+                op: ReduxOp::MinF {
+                    abs: true,
+                    nan: false
+                },
+                ..
+            }
+        ));
+        assert!(lower1("CREDUX.MAX.F64 UR7, R2").is_err());
+        assert!(lower1("CREDUX.MAX.F32.FTZ UR7, R2").is_err());
+        match lower1("PLOP3.LUT P1, P0, !P0, PT, !P1, 0x80, 0xc8").unwrap() {
+            Op::Plop3 {
+                lut,
+                d2: Some((d2, lut2)),
+                ..
+            } => {
+                assert_eq!((lut, lut2, d2.idx), (0x80, 0xc8, 0));
+            }
+            o => panic!("{o:?}"),
+        }
+        assert!(matches!(
+            lower1("PLOP3.LUT P0, PT, P1, PT, PT, 0x8, 0x80").unwrap(),
+            Op::Plop3 { d2: None, .. }
+        ));
+        assert!(matches!(
+            lower1("R2P PR, R0.B2, 0x7f").unwrap(),
+            Op::R2p {
+                shift: 16,
+                mask: 0x7f,
+                ..
+            }
+        ));
+        assert!(lower1("R2P PR, R0.H1, 0x7f").is_err());
+        assert!(lower1("R2P PR, R0, 0xff").is_err());
+        match lower1("LDTM.x8 R4, tmem[UR5+-0x10]").unwrap() {
+            Op::TmemLd {
+                off,
+                n: 8,
+                red: None,
+                ..
+            } => assert_eq!(off, 0xffff_fff0),
+            o => panic!("{o:?}"),
+        }
+        match lower1("LDTM.STAT.x32.MAX.F32 R37, R4, tmem[UR4+0x20]").unwrap() {
+            Op::TmemLd {
+                d,
+                n: 32,
+                off: 0x20,
+                red:
+                    Some((
+                        rd,
+                        ReduxOp::MaxF {
+                            abs: false,
+                            nan: false,
+                        },
+                    )),
+                ..
+            } => {
+                assert_eq!((d, rd), (r(4), r(37)));
+            }
+            o => panic!("{o:?}"),
+        }
+        assert!(matches!(
+            lower1("LDTM.STAT.x32.MAX.F32 RZ, R4, tmem[UR4]").unwrap(),
+            Op::TmemLd {
+                red: None,
+                n: 32,
+                ..
+            }
+        ));
+        assert!(lower1("LDTM.STAT.x32.MAX.F32 R4, RZ, tmem[UR4]").is_err());
+        assert!(lower1("LDTM.STAT.16dp32bit_t0_t15.x8.MAX.F32 R4, R8, tmem[UR4]").is_err());
+        // Negative offsets only on loads.
+        assert!(lower1("STTM.x8 tmem[UR5+-0x10], R4").is_err());
+        match lower1("BAR.SYNC.DEFER_BLOCKING R4, R4").unwrap() {
+            Op::BarSync {
+                packed: true,
+                arrive: false,
+                ..
+            } => {}
+            o => panic!("{o:?}"),
+        }
+        assert!(lower1("BAR.SYNC.DEFER_BLOCKING R4, R5").is_err());
+        assert!(matches!(
+            lower1("BAR.SYNC.DEFER_BLOCKING R4, 0x40").unwrap(),
+            Op::BarSync { packed: false, .. }
+        ));
+        assert!(matches!(
+            lower1("WARPSYNC.COLLECTIVE.ALL `(.L_x_1)").unwrap(),
+            Op::WarpSync {
+                collective: true,
+                all: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            lower1("UTMALDG.3D.MULTICAST.2CTA [UR8], [UR10], UR4").unwrap(),
+            Op::TmaLoad {
+                mask: Some(_),
+                pair: true,
+                dims: 3,
+                ..
+            }
+        ));
+        assert!(lower1("UTMALDG.3D.IM2COL [UR8], [UR10]").is_err());
+        assert!(matches!(
+            lower1("UISETP.EQ.U32.XOR UP0, UPT, UR4, 0xc, !UP1").unwrap(),
+            Op::Setp { xor: true, .. }
+        ));
+        assert!(matches!(
+            lower1("LEA.HI R5, R6, -R5, RZ, 0x1c").unwrap(),
+            Op::LeaHi {
+                neg_b: true,
+                shift: 0x1c,
+                ..
+            }
+        ));
     }
 }

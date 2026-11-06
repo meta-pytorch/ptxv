@@ -179,13 +179,21 @@ def test_model_argv(tmp_path):
         {
             "default": D.Normal(0, 1).spec(),
             "inputs": {},
-            "tier1": False,
+            "tier1": True,
             "mc_inputs": 100,
         },
         tmp_path / "q",
     )
     assert q[:3] == ["errdist", "--model", str(tmp_path / "m.json")]
-    assert "--no-tier1" in q and q[q.index("--mc") + 1] == "100"
+    assert "--tier1" in q and q[q.index("--mc") + 1] == "100"
+    q0 = A.query_argv(
+        tmp_path / "m.json",
+        {"default": D.Normal(0, 1).spec(), "inputs": {}},
+        tmp_path / "q0",
+    )
+    assert (
+        "--tier1" not in q0 and "--mc" not in q0
+    )  # defaults: no tier 1, 300 tier 3 inputs
     assert (tmp_path / "q" / "spec.json").exists()
 
 
@@ -196,8 +204,10 @@ def test_errdist_model_chain_and_nonchain():
     import ptxv
 
     m = ptxv.errdist_model(str(FIX / "r4_sum_torch"))
-    e = m(D.Normal(0, 1), tier1=False)
+    e = m(D.Normal(0, 1))
     assert 0.55 < e.meta["p_differ"][0] < 0.8  # tier 3: 0.674
+    # the default: tier 2 headline, cross-checked against a small tier 3
+    assert e.tier == 2 and e.crosscheck and all(c["agrees"] for c in e.crosscheck)
     wc = e.worst_case  # the kernel's own bound, stored in the compiled model
     assert wc["available"] and wc["kind"] == "single" and wc["form"] == "sum"
     assert m(D.Normal(0, 1), tier1=False) is not None

@@ -1,0 +1,615 @@
+name = "e_fa4_warp_roles"
+# The reporters' case (2026-11-05), written for GB200 (arch
+# sm_100a there); run here on the default sm_103a.
+description = """
+An FA4 forward bug (flash_fwd_sm100.py): compute-sanitizer synccheck reported divergent aligned
+named barriers. Pre-fix, the TmemPtr barrier (bar.sync from tmem.wait_for_alloc() in the MMA,
+softmax and correction branches; bar.arrive at the end of softmax/correction; bar.sync before
+tmem.free in MMA) and the SoftmaxStatsW0+stage*4+w barrier (bar.arrive in softmax, bar.sync in
+correction, 64 threads) are aligned barriers reached from different pcs. The fix moves both
+handoffs to mbarriers: pipeline_tmem_sync (one stage, every TMEM user arrives, waits parity 0;
+MMA waits parity 1 before free) and pipeline_sm_stats with sp_stage*4 stages of one warp each.
+1 CTA, 2 softmax + 2 correction + 1 MMA warp, 2 stats rounds per pair."""
+ptx = "kernel.ptx"
+entry = "d117107863"
+grid = [1, 1, 1]
+block = [160, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [192]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "post-fix: TMEM lifetime and softmax-stats handoffs through mbarriers (pipeline_tmem_sync; per-(slot*4+warp) full/empty)"
+expect = ["clean"]
+
+[[variants]]
+id = "prefix"
+summary = "pre-fix: TmemPtr bar.sync/bar.arrive 1,160 from the MMA, softmax and correction branches; stats bar.arrive (softmax) / bar.sync (correction) id 2+w,64; one stage-indexed empty mbarrier (count 64)"
+marker = "@STMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+expect = ["clean"]
+hw_note = "PTX-level: aligned bar.sync/bar.arrive of one id reached from different pcs by different warps (compute-sanitizer synccheck error). GB200 completes; ptxv models the per-warp rule only (E-ALIGNED), so clean"
+
+[[variants.edits]]
+marker = "@CTMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@MTMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@MTMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@XSTMW"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XCTMW"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XMTMW0"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XMTMW1"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@STMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.arrive 1, 160;"
+
+[[variants.edits]]
+marker = "@CTMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.arrive 1, 160;"
+
+[[variants.edits]]
+marker = "@SEMP"
+find = "add.u32         %r14, %r6, %r13;"
+replace = "mov.u32         %r14, %r7;"
+
+[[variants.edits]]
+marker = "@CEMP"
+find = "add.u32         %r14, %r6, %r13;"
+replace = "mov.u32         %r14, %r7;"
+
+[[variants.edits]]
+marker = "@SCOM"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r15];"
+replace = "bar.arrive %r16, 64;"
+
+[[variants.edits]]
+marker = "@XCWL"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@CWAIT"
+find = "mbarrier.try_wait.parity.shared::cta.b64 %p8, [%r15], %r19;"
+replace = "bar.sync %r16, 64;"
+
+[[variants.edits]]
+marker = "@XCWB"
+replace = "<delete>"
+
+[[variants]]
+id = "prefix_tmem"
+summary = "pre-fix TMEM lifetime (TmemPtr named barrier) only; stats as post-fix"
+marker = "@STMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+expect = ["clean"]
+
+[[variants.edits]]
+marker = "@CTMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@MTMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@MTMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@XSTMW"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XCTMW"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XMTMW0"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XMTMW1"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@STMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.arrive 1, 160;"
+
+[[variants.edits]]
+marker = "@CTMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.arrive 1, 160;"
+
+[[variants]]
+id = "prefix_stats"
+summary = "pre-fix softmax-stats handoff (named barrier 2+w, 64) only; TMEM as post-fix"
+marker = "@SEMP"
+find = "add.u32         %r14, %r6, %r13;"
+replace = "mov.u32         %r14, %r7;"
+expect = ["clean"]
+
+[[variants.edits]]
+marker = "@CEMP"
+find = "add.u32         %r14, %r6, %r13;"
+replace = "mov.u32         %r14, %r7;"
+
+[[variants.edits]]
+marker = "@SCOM"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r15];"
+replace = "bar.arrive %r16, 64;"
+
+[[variants.edits]]
+marker = "@XCWL"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@CWAIT"
+find = "mbarrier.try_wait.parity.shared::cta.b64 %p8, [%r15], %r19;"
+replace = "bar.sync %r16, 64;"
+
+[[variants.edits]]
+marker = "@XCWB"
+replace = "<delete>"
+
+[[variants]]
+id = "probe_intrawarp"
+summary = "probe (not the bug): pre-fix, plus each correction warp splits lanes 0-15 / 16-31 onto two different aligned bar.sync %r16,64 instructions (intra-warp divergence)"
+marker = "@STMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+expect = ["deadlock", "violation"]
+hw_note = "GB200 hangs (watchdog, 2/2 attempts, reporters' run). E-ALIGNED: divergent aligned barrier (was clean before ptxv modeled .aligned on named barriers)"
+
+[[variants.edits]]
+marker = "@CTMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@MTMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@MTMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@XSTMW"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XCTMW"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XMTMW0"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XMTMW1"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@STMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.arrive 1, 160;"
+
+[[variants.edits]]
+marker = "@CTMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.arrive 1, 160;"
+
+[[variants.edits]]
+marker = "@SEMP"
+find = "add.u32         %r14, %r6, %r13;"
+replace = "mov.u32         %r14, %r7;"
+
+[[variants.edits]]
+marker = "@CEMP"
+find = "add.u32         %r14, %r6, %r13;"
+replace = "mov.u32         %r14, %r7;"
+
+[[variants.edits]]
+marker = "@SCOM"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r15];"
+replace = "bar.arrive %r16, 64;"
+
+[[variants.edits]]
+marker = "@XCWL"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@CWAIT"
+find = "mbarrier.try_wait.parity.shared::cta.b64 %p8, [%r15], %r19;"
+replace = "setp.lt.u32     %p12, %r2, 16;\n    @%p12 bra       CWLO;\n    bar.sync        %r16, 64;               // lanes 16..31\n    bra             CWJ;\nCWLO:\n    bar.sync        %r16, 64;               // lanes 0..15 (another pc)\nCWJ:"
+
+[[variants.edits]]
+marker = "@XCWB"
+replace = "<delete>"
+
+[[variants]]
+id = "good_nofence"
+summary = "post-fix without the tcgen05 fences around the TMEM-lifetime handoffs (as in the real kernel)"
+marker = "@XTCF"
+replace = "<delete>"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "prefix_nofence"
+summary = "pre-fix without the tcgen05 fences around the TMEM-lifetime handoffs (as in the real kernel)"
+marker = "@XTCF"
+replace = "<delete>"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants.edits]]
+marker = "@STMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@CTMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@MTMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@MTMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@XSTMW"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XCTMW"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XMTMW0"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XMTMW1"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@STMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.arrive 1, 160;"
+
+[[variants.edits]]
+marker = "@CTMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.arrive 1, 160;"
+
+[[variants.edits]]
+marker = "@SEMP"
+find = "add.u32         %r14, %r6, %r13;"
+replace = "mov.u32         %r14, %r7;"
+
+[[variants.edits]]
+marker = "@CEMP"
+find = "add.u32         %r14, %r6, %r13;"
+replace = "mov.u32         %r14, %r7;"
+
+[[variants.edits]]
+marker = "@SCOM"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r15];"
+replace = "bar.arrive %r16, 64;"
+
+[[variants.edits]]
+marker = "@XCWL"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@CWAIT"
+find = "mbarrier.try_wait.parity.shared::cta.b64 %p8, [%r15], %r19;"
+replace = "bar.sync %r16, 64;"
+
+[[variants.edits]]
+marker = "@XCWB"
+replace = "<delete>"
+
+[[variants]]
+id = "ctl_nowait"
+summary = "control: post-fix without the correction wait on full[w] (sScale read unordered after the softmax store)"
+marker = "@XCWL"
+replace = "<delete>"
+expect = ["deadlock", "race", "violation"]
+expect_sass = ["deadlock", "nondeterministic", "violation"]
+
+[[variants.edits]]
+marker = "@CWAIT"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XCWB"
+replace = "<delete>"
+
+[[variants]]
+id = "ctl_prefix_nosync"
+summary = "control: pre-fix without the correction bar.sync 2+w,64"
+marker = "@STMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+expect = ["deadlock", "race", "violation"]
+expect_sass = ["deadlock", "nondeterministic", "violation"]
+
+[[variants.edits]]
+marker = "@CTMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@MTMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@MTMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@XSTMW"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XCTMW"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XMTMW0"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XMTMW1"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@STMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.arrive 1, 160;"
+
+[[variants.edits]]
+marker = "@CTMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.arrive 1, 160;"
+
+[[variants.edits]]
+marker = "@SEMP"
+find = "add.u32         %r14, %r6, %r13;"
+replace = "mov.u32         %r14, %r7;"
+
+[[variants.edits]]
+marker = "@CEMP"
+find = "add.u32         %r14, %r6, %r13;"
+replace = "mov.u32         %r14, %r7;"
+
+[[variants.edits]]
+marker = "@SCOM"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r15];"
+replace = "bar.arrive %r16, 64;"
+
+[[variants.edits]]
+marker = "@XCWL"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XCWB"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@CWAIT"
+replace = "<delete>"
+
+[[variants]]
+id = "ctl_nofreewait"
+summary = "control: post-fix, MMA frees TMEM without waiting phase 1 (no rendezvous with the TMEM users before tcgen05.dealloc)"
+marker = "@XMTMW1"
+replace = "<delete>"
+expect = ["race"]
+expect_sass = ["race", "violation"]
+
+[[variants]]
+id = "unaligned"
+summary = "other: pre-fix protocol with unaligned barrier.cta.sync / barrier.cta.arrive (the alternative fix in today's tree, pipeline.py NamedBarrier aligned=False)"
+marker = "@STMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "barrier.cta.sync 1, 160;"
+expect = ["clean"]
+hw_note = "ptxas lowers barrier.cta.sync to BRA.DIV + WARPSYNC.COLLECTIVE.ALL / BAR.SYNC R9,R9 / ENDCOLLECTIVE (lifts since E-COLLECTIVE-ALL)"
+
+[[variants.edits]]
+marker = "@CTMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "barrier.cta.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@MTMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "barrier.cta.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@MTMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "barrier.cta.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@XSTMW"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XCTMW"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XMTMW0"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XMTMW1"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@STMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "barrier.cta.arrive 1, 160;"
+
+[[variants.edits]]
+marker = "@CTMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "barrier.cta.arrive 1, 160;"
+
+[[variants.edits]]
+marker = "@SEMP"
+find = "add.u32         %r14, %r6, %r13;"
+replace = "mov.u32         %r14, %r7;"
+
+[[variants.edits]]
+marker = "@CEMP"
+find = "add.u32         %r14, %r6, %r13;"
+replace = "mov.u32         %r14, %r7;"
+
+[[variants.edits]]
+marker = "@SCOM"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r15];"
+replace = "barrier.cta.arrive %r16, 64;"
+
+[[variants.edits]]
+marker = "@XCWL"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@CWAIT"
+find = "mbarrier.try_wait.parity.shared::cta.b64 %p8, [%r15], %r19;"
+replace = "barrier.cta.sync %r16, 64;"
+
+[[variants.edits]]
+marker = "@XCWB"
+replace = "<delete>"
+
+[[variants]]
+id = "probe_intrawarp_unaligned"
+summary = "probe (not the bug): as probe_intrawarp but both halves use unaligned barrier.cta.sync %r16,64 (legal for a divergent warp)"
+marker = "@STMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+expect = ["clean"]
+hw_note = "GB200: completes 200/200 (reporters' run). SASS: BRA.DIV + WARPSYNC.COLLECTIVE.ALL slow path (E-COLLECTIVE-ALL)"
+
+[[variants.edits]]
+marker = "@CTMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@MTMA"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@MTMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@XSTMW"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XCTMW"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XMTMW0"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@XMTMW1"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@STMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.arrive 1, 160;"
+
+[[variants.edits]]
+marker = "@CTMB"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "bar.arrive 1, 160;"
+
+[[variants.edits]]
+marker = "@SEMP"
+find = "add.u32         %r14, %r6, %r13;"
+replace = "mov.u32         %r14, %r7;"
+
+[[variants.edits]]
+marker = "@CEMP"
+find = "add.u32         %r14, %r6, %r13;"
+replace = "mov.u32         %r14, %r7;"
+
+[[variants.edits]]
+marker = "@SCOM"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r15];"
+replace = "bar.arrive %r16, 64;"
+
+[[variants.edits]]
+marker = "@XCWL"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@CWAIT"
+find = "mbarrier.try_wait.parity.shared::cta.b64 %p8, [%r15], %r19;"
+replace = "setp.lt.u32     %p12, %r2, 16;\n    @%p12 bra       CWLO;\n    barrier.cta.sync %r16, 64;               // lanes 16..31\n    bra             CWJ;\nCWLO:\n    barrier.cta.sync %r16, 64;               // lanes 0..15 (another pc)\nCWJ:"
+
+[[variants.edits]]
+marker = "@XCWB"
+replace = "<delete>"

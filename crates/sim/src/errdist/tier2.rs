@@ -939,6 +939,8 @@ pub struct DagClt {
     /// the term in B = sum over nodes of beta x (the nodes' value-proportional error means),
     /// its variance, and its coefficient in y. Empty with TF32 splits.
     pub bias: Vec<BiasTerm>,
+    /// y's excess kurtosis from the product terms (0 when not computed: TF32 splits).
+    pub y_kurt: f64,
 }
 
 /// A product term of `DagClt::bias`: (its leaves' canonical hashes, (c, v, y)).
@@ -2187,6 +2189,36 @@ pub fn dag(
             x.2 += sg * y_of.get(&e).copied().unwrap_or(0.0);
         }
         out.bias = bias.into_iter().collect();
+        // y's excess kurtosis from the product terms (independent products, y = sum y_g
+        // t_g): the applicability check's measure of how far y and its partial sums are
+        // from normal.
+        let raw = |i: u32| -> Result<[f64; 4], String> {
+            match &p.ops[i as usize] {
+                Op::Const(c) => Ok([*c, c * c, c.powi(3), c.powi(4)]),
+                _ => {
+                    let l = leaf_law(i)?;
+                    let t = l.pmf.total().max(1e-300);
+                    let mut r = [0.0; 4];
+                    for (v, q) in l.pmf.v.iter().zip(&l.pmf.p) {
+                        for (k, x) in r.iter_mut().enumerate() {
+                            *x += q * v.powi(k as i32 + 1) / t;
+                        }
+                    }
+                    Ok(r)
+                }
+            }
+        };
+        let (mut k2, mut k4) = (0.0, 0.0);
+        for &(e, fa, fb, sg, _) in &prods {
+            let c = sg * y_of.get(&e).copied().unwrap_or(0.0);
+            let (a, b) = (raw(fa)?, raw(fb)?);
+            let r: Vec<f64> = (0..4).map(|k| a[k] * b[k]).collect();
+            let mu2 = r[1] - r[0] * r[0];
+            let mu4 = r[3] - 4.0 * r[2] * r[0] + 6.0 * r[1] * r[0] * r[0] - 3.0 * r[0].powi(4);
+            k2 += c * c * mu2;
+            k4 += c.powi(4) * (mu4 - 3.0 * mu2 * mu2);
+        }
+        out.y_kurt = if k2 > 0.0 { k4 / (k2 * k2) } else { 0.0 };
     }
     // Product groups: the input-quantization error of TF32 splits (exact products: 0).
     for ((a, b), ks) in &groups {
@@ -2528,17 +2560,32 @@ fn cell_probs(
         .collect()
 }
 
-/// The DAG tier's domain: add / FMA DAGs (reductions, split-K, atomics, scans) and TF32
-/// split MMAs over f32 inputs, as validated by the matrix (docs/errdist.md). Plain MMA
-/// chains over narrow inputs are Tier 1's: their few, coarse-grid step residues are not
-/// what the per-node residue model is validated on.
+/// Largest excess kurtosis of y for which the DAG tier is applicable: the tier treats the
+/// partial sums as normal given y, which heavy-tailed or scale-mixture terms break (a few
+/// large terms dominate y and the partial sums before them are far smaller than the normal
+/// law says).
+pub const KURT_MAX: f64 = 1.0;
+
+/// The DAG tier's structural applicability (before any Tier 3 cross-check): y close to
+/// normal (excess kurtosis from the product terms at most `KURT_MAX`).
 fn dag_applicable(d: &DagClt) -> (bool, String) {
-    if d.has_mma && !d.has_tf32 {
-        (false, "MMA chain over narrow inputs: Tier 1's domain (tier 2's per-node residue model is validated on add/FMA DAGs and TF32 splits) FAILS".into())
+    if d.y_kurt > KURT_MAX {
+        (
+            false,
+            format!(
+                "y's excess kurtosis {:.3} > {KURT_MAX}: heavy-tailed or scale-mixture terms, the partial sums are not normal given y FAILS",
+                d.y_kurt
+            ),
+        )
     } else {
         (
             true,
-            format!("add/FMA/TF32 DAG ({} error terms) ok", d.terms.len()),
+            format!(
+                "{} DAG ({} error terms), y's excess kurtosis {:.3} <= {KURT_MAX} ok",
+                if d.has_mma { "MMA" } else { "add/FMA/TF32" },
+                d.terms.len(),
+                d.y_kurt
+            ),
         )
     }
 }
@@ -2922,7 +2969,11 @@ pub fn dag_estimate(
         p,
         if ok { "ok" } else { "FAILS" }
     )];
-    if let Some(x) = ests.iter().find(|x| x.applicable == Some(false)) {
+    if let Some(x) = ests
+        .iter()
+        .find(|x| x.applicable == Some(false))
+        .or(ests.first())
+    {
         e.applicability
             .extend(x.applicability.iter().map(|s| format!("e.g. {s}")));
     }

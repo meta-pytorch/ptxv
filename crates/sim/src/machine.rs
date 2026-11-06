@@ -1057,6 +1057,19 @@ pub enum AsyncKind {
         writes: Vec<CpPending>,
         tx: bool,
     },
+    /// ASSUME(S-REMOTE-INFLIGHT): a remote mbarrier arrival / complete_tx (`mbarrier.arrive
+    /// .shared::cluster` to another CTA) or `st.async` into another CTA, in flight from issue
+    /// until delivered: `store` = (offset, value) of st.async words, `tx` the transaction
+    /// bytes (negative: completed), `n` arrivals. The lanes of one warp instruction that
+    /// target the same mbarrier are one operation (`fresh` while that instruction executes).
+    Remote {
+        cta: u16,
+        mbar: u32,
+        tx: i64,
+        n: u32,
+        store: Vec<(u32, u32)>,
+        fresh: bool,
+    },
     /// TMA store (shared::cta -> global) in bulk group `group` of its issuer.
     TmaStore {
         cta: u16,
@@ -1312,6 +1325,15 @@ pub struct Machine {
     pub pending: Vec<AsyncOp>,
     /// Completed async operations (cta, actor, clock, pc), sorted: checked at exit.
     pub completed: Vec<(u16, u32, u32, u32)>,
+    /// ASSUME(S-REMOTE-INFLIGHT): remote operations delivered as async steps (not drained by
+    /// their issuer's cluster release): (target CTA, mbarrier, phase it counted toward, pc,
+    /// issuer), sorted. At the end, the target must have waited on that phase or a later one
+    /// (`mbar_seen`): otherwise nothing kept it from exiting before the delivery. A later
+    /// cluster release of the issuer (which would have drained it) moves the entry to
+    /// `remote`, the happens-before check.
+    pub remote_obs: Vec<(u16, u32, u64, u32, u32)>,
+    /// Per mbarrier (cta, offset): the latest phase whose completion a wait observed.
+    pub mbar_seen: BTreeMap<(u16, u32), u64>,
     /// Completed generations per named barrier (cta, id).
     pub bar_gen: BTreeMap<(u16, u32), u32>,
     /// Per named barrier (cta, id): the join of the clocks its last completed generation
@@ -1853,6 +1875,8 @@ impl Hash for Machine {
         self.bars.hash(h);
         self.pending.hash(h);
         self.completed.hash(h);
+        self.remote_obs.hash(h);
+        self.mbar_seen.hash(h);
         self.bar_gen.hash(h);
         self.bar_prev.hash(h);
         self.clusters.hash(h);
@@ -1983,6 +2007,8 @@ impl Machine {
             bars: BTreeMap::new(),
             pending: Vec::new(),
             completed: Vec::new(),
+            remote_obs: Vec::new(),
+            mbar_seen: BTreeMap::new(),
             bar_gen: BTreeMap::new(),
             bar_prev: BTreeMap::new(),
             clusters: BTreeMap::new(),

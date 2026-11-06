@@ -701,9 +701,10 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
                 log.exit_ev[t] = Some(log.ev(t as u32, &vc, pc));
             }
         }
-        Op::BarSync { id, .. } => {
+        Op::BarSync { id, packed, .. } => {
             for &t in &active {
                 let Ok(idv) = m.rd(t, id) else { continue };
+                let idv = ptxv_ir::bar_args(idv, None, *packed).0 as u64;
                 let cta = m.threads[t].cta;
                 let g = m.bar_gen.get(&(cta, idv as u32)).copied().unwrap_or(0);
                 let vc = m.threads[t].vc.clone();

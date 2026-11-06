@@ -1,3 +1,5 @@
 /target
 /out
 __pycache__
+fixtures/out/
+probes/out/

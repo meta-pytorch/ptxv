@@ -1,0 +1,129 @@
+name = "c_fa4_hd128"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): run() of multi.py. 1 launch(es),
+PTX from the JIT (kernel.ptx; its own cubin kept as jit.cubin):
+  0: kernel_cutlass_kernel_flash_attncuteflash_fwd_sm100FlashAttentionForwardSm100_object_at__tensor0000o11101213_t grid [1, 1, 1] block [512, 1, 1]
+Regenerate: CUDA_VISIBLE_DEVICES=<gpu> FA4_SEQ=256 FA4_HDIM=128 $PTXV_PYTHON tools/capture.py --file tools/capture_examples/fa4_fwd.py --out DIR"""
+cubin = "jit.cubin"
+entry = "kernel_cutlass_kernel_flash_attncuteflash_fwd_sm100FlashAttentionForwardSm100_object_at__tensor0000o11101213_tensor0000o11101213_tensor0000o10111213_tensor0000o11101213_None_None_None_Non_0"
+grid = [1, 1, 1]
+block = [512, 1, 1]
+dynamic_smem = 232448
+outputs = ["out0"]
+
+[[buffers]]
+name = "q"
+dtype = "bf16"
+shape = [1, 256, 1, 128]
+init = "file"
+file = "data/q.bin"
+
+[[buffers]]
+name = "k"
+dtype = "bf16"
+shape = [1, 256, 1, 128]
+init = "file"
+file = "data/k.bin"
+
+[[buffers]]
+name = "v"
+dtype = "bf16"
+shape = [1, 256, 1, 128]
+init = "file"
+file = "data/v.bin"
+
+[[buffers]]
+name = "out0"
+dtype = "bf16"
+shape = [1, 256, 1, 128]
+init = "zeros"
+expect = "expected/out0.bin"
+
+[[params]]
+kind = "bytes"
+hex = "00010000800000000100000001000000"
+
+[[params]]
+kind = "bytes"
+hex = "00010000800000000100000001000000"
+
+[[params]]
+kind = "bytes"
+hex = "80000000000100000100000001000000"
+
+[[params]]
+kind = "bytes"
+hex = "00010000800000000100000001000000"
+
+[[params]]
+kind = "tensormap"
+buffer = "q"
+byte_offset = 0
+box = [64, 128, 1, 1]
+dims = [128, 256, 1, 1]
+strides = [256, 256, 65536]
+swizzle = "128B"
+raw = "0000c0bdf8ff00003265040010000000100000000010000000000000000000007f000000ff0000000000000000000000000000000000003f7f00000000000000"
+
+[[params]]
+kind = "tensormap"
+buffer = "k"
+byte_offset = 0
+box = [64, 128, 1, 1]
+dims = [128, 256, 1, 1]
+strides = [256, 256, 65536]
+swizzle = "128B"
+raw = "0000c1bdf8ff00003265040010000000100000000010000000000000000000007f000000ff0000000000000000000000000000000000003f7f00000000000000"
+
+[[params]]
+kind = "tensormap"
+buffer = "v"
+byte_offset = 0
+box = [64, 128, 1, 1]
+dims = [128, 256, 1, 1]
+strides = [256, 256, 65536]
+swizzle = "128B"
+raw = "0000c2bdf8ff00003265040010000000100000000010000000000000000000007f000000ff0000000000000000000000000000000000003f7f00000000000000"
+
+[[params]]
+kind = "tensormap"
+buffer = "out0"
+byte_offset = 0
+box = [64, 128, 1, 1]
+dims = [128, 256, 1, 1]
+strides = [256, 256, 65536]
+swizzle = "128B"
+raw = "0000c3bdf8ff00003265040010000000100000000010000000000000000000007f000000ff0000000000000000000000000000000000003f7f00000000000000"
+
+[[params]]
+kind = "u32"
+value = 1040356334
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "010000000100000000000100"
+
+[[params]]
+kind = "bytes"
+hex = "0100000001000000000071f1"
+
+[[params]]
+kind = "u32"
+value = 1
+
+[[params]]
+kind = "u32"
+value = 1
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

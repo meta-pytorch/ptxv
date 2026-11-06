@@ -576,11 +576,9 @@ pub fn step(
                 && terms.len() <= md.group as usize =>
         {
             scratch.clear();
-            let mut all_neg = true;
             for &(a, b) in terms {
                 let (x, y) = (&lv[a as usize], &lv[b as usize]);
                 let v = x.v * y.v;
-                all_neg &= v.is_sign_negative();
                 if v != 0.0 {
                     let e = if md.exp_from_inputs {
                         exp_of(x.v) + exp_of(y.v)
@@ -591,11 +589,10 @@ pub fn step(
                 }
             }
             let a = acc.unwrap_or(0.0) as f64;
-            all_neg &= a.is_sign_negative();
             if a != 0.0 {
                 scratch.push((a, exp_of(a)));
             }
-            trunc_sum(scratch, md.frac_bits.unwrap() as i32, md.final_rz, all_neg)
+            trunc_sum(scratch, md.frac_bits.unwrap() as i32, md.final_rz)
         }
         StepModel::Mma(md) => {
             let t: Vec<crate::fp::Term> = terms
@@ -615,25 +612,22 @@ pub fn step(
                 && terms.len() <= md.group as usize =>
         {
             scratch.clear();
-            let mut all_neg = !terms.is_empty() || acc.is_some();
             for (j, &(a, b)) in terms.iter().enumerate() {
                 let mut o = lv[a as usize].mul(&lv[b as usize]);
                 if let Some(&(sa, sb)) = scales.get(j) {
                     o = o.mul(&lv[sa as usize]).mul(&lv[sb as usize]);
                 }
-                all_neg &= o.v.is_sign_negative();
                 if o.v != 0.0 {
                     scratch.push((o.v, o.ef));
                 }
             }
             if let Some(a) = acc {
                 let a = a as f64;
-                all_neg &= a.is_sign_negative();
                 if a != 0.0 {
                     scratch.push((a, exp_of(a)));
                 }
             }
-            trunc_sum(scratch, md.frac.unwrap() as i32, true, all_neg)
+            trunc_sum(scratch, md.frac.unwrap() as i32, true)
         }
         StepModel::Lp(md) => {
             let t: Vec<Operand> = terms
@@ -683,7 +677,7 @@ pub fn step(
                 emax = Some(emax.map_or(exp_of(a), |e| e.max(exp_of(a))));
             }
             let Some(emax) = emax else {
-                return acc.unwrap_or(0.0);
+                return 0.0; // a zero result is +0 (N-MMA)
             };
             let q = emax - md.frac as i32;
             let mut s: i128 = 0;
@@ -699,10 +693,11 @@ pub fn step(
 }
 
 /// Truncate each (value, alignment exponent) toward zero at 2^(emax - frac), add exactly,
-/// round once to f32 (toward zero with `rz`). Empty: +-0.
-fn trunc_sum(t: &[(f64, i32)], frac: i32, rz: bool, all_neg: bool) -> f32 {
+/// round once to f32 (toward zero with `rz`). A zero result (empty, cancelled or underflowed)
+/// is +0, as on GB300 (N-MMA, probes/mma_zero).
+fn trunc_sum(t: &[(f64, i32)], frac: i32, rz: bool) -> f32 {
     if t.is_empty() {
-        return if all_neg { -0.0 } else { 0.0 };
+        return 0.0;
     }
     let emax = t.iter().map(|x| x.1).max().unwrap();
     let q = emax - frac;

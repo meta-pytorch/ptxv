@@ -744,6 +744,11 @@ const CERTIFY_ONLY: &[&str] = &[
     "c_mm_bf16_ttn",
     "c_mm_bf16_mcast",
     "c_cve_sdpa_f32",
+    // FlashAttention-4 forward: 16 warps; certified in one run (E-WELLSYNC).
+    "c_fa4_fwd",
+    // FA4 forward, head dim 128 (AL's fa_hd128): its retry stub polls the same mbarrier
+    // through an address computed after the wait (E-SPIN stub parity).
+    "c_fa4_hd128",
     // fixtures/c_equiv_online: four warps' float-max atomics on one word per row.
     "c_online_ok",
     "c_online_bad_mp",
@@ -2346,8 +2351,27 @@ fn e_fmax_fold() {
     both("e_fmax_fold", "good");
     for v in ["prefix", "good_3tiles", "prefix_3tiles"] {
         check_stateful("e_fmax_fold", v, "ptx", 2_000_000);
-        check_stateful("e_fmax_fold", v, "sass", 2_000_000);
     }
+    check_stateful("e_fmax_fold", "good_3tiles", "sass", 2_000_000);
+    // SASS pre-fix: LDS vs ATOMS is a race kept by the strong re-check (S-SMEM-STRONG); its
+    // schedules exceed 2M states, so the test asks only for the finding.
+    for v in ["prefix", "prefix_3tiles"] {
+        check_finds("e_fmax_fold", v, "sass", 200_000);
+    }
+}
+
+/// An incomplete exploration that must still report every expected (non-clean) class.
+fn check_finds(case: &str, variant: &str, front: &str, max_states: usize) {
+    let case = Case::load(root().join("fixtures").join(case)).unwrap();
+    let k = kernel(&case, variant, front);
+    let launch = build_launch(&case, &k).unwrap();
+    let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), max_states);
+    let expect = case.variant(variant).unwrap().expect_for(front);
+    assert!(
+        !expect.iter().any(|e| e == "clean") && v.meets(&expect),
+        "{variant}/{front}: got {:?}, want {expect:?}",
+        v.classes()
+    );
 }
 
 /// The signal-pad channel bug with the barrier's atom.cas spin loops (E-SPIN CAS polls): ring flags sharing
@@ -2381,4 +2405,187 @@ fn c_block_sparsity() {
     clean_and_bitwise("c_block_sparsity", "good", "sass", false);
     check_stateful("c_block_sparsity", "prefix", "ptx", 2_000_000);
     check_stateful("c_block_sparsity", "prefix", "sass", 2_000_000);
+}
+
+/// SASS forms of real CuTeDSL kernels (fixtures/s_lift_l: CREDUX.{MIN,MAX}[ABS].F32[.NAN] over
+/// 32 / 16 / 1 lanes, PLOP3 with a second predicate output, R2P PR, Rx.Bk, LEA.HI with -b;
+/// 1,048,576 output bytes) agree with GB300 bitwise (run 2026-11-05, GPU 3; 20/20 runs).
+#[test]
+fn s_lift_l_matches_hardware() {
+    // The 16- and 1-lane reductions split warps (no certificate, C-WARP): explored.
+    let case = Case::load(root().join("fixtures/s_lift_l")).unwrap();
+    let k = binary_kernel(&case, "good").unwrap();
+    let launch = build_launch(&case, &k).unwrap();
+    let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 200_000);
+    assert!(v.complete, "s_lift_l: incomplete");
+    assert_eq!(v.classes(), ["clean"], "{:#?}", v.findings);
+    assert_eq!(v.distinct_outputs, 1);
+    assert_eq!(
+        fnv(&v.outputs[0]),
+        6231483402960366304,
+        "s_lift_l: output differs from GB300's"
+    );
+}
+
+/// tcgen05.ld.red (LDTM.STAT.xN.MIN|MAX[ABS].F32[.NAN]) and a negative TMEM offset
+/// (`tmem[UR+-0x10]`): probes/tmem_ldred agrees with GB300 bitwise (2026-11-05, 100/100).
+#[test]
+fn probe_tmem_ldred_matches_hardware() {
+    certified_hash("probes", "tmem_ldred", 16475847427938539045);
+}
+
+/// E-COLLECTIVE-ALL: ptxas's BRA.DIV / WARPSYNC.COLLECTIVE.ALL / BAR.SYNC R, R / ENDCOLLECTIVE
+/// path of a non-aligned barrier.sync. The two kernels GB300 completes are clean with one
+/// output equal to GB300's (hw 20/20 bitwise); the two it hangs on deadlock.
+#[test]
+fn bardiv_matches_hardware() {
+    for (name, hash) in [
+        ("s_bardiv", 699766608600163605u64),
+        ("s_bardiv_mixed", 14485688438926170181),
+    ] {
+        let case = Case::load(root().join("fixtures").join(name)).unwrap();
+        let k = binary_kernel(&case, "good").unwrap();
+        assert!(
+            k.code
+                .iter()
+                .any(|i| matches!(i.op, ptxv_ir::Op::WarpSync { all: true, .. })),
+            "{name}: no WARPSYNC.COLLECTIVE.ALL lowered"
+        );
+        let launch = build_launch(&case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 200_000);
+        assert!(v.complete, "{name}: incomplete");
+        assert_eq!(v.classes(), ["clean"], "{name}: {:#?}", v.findings);
+        assert_eq!(v.distinct_outputs, 1, "{name}");
+        assert_eq!(
+            fnv(&v.outputs[0]),
+            hash,
+            "{name}: output differs from GB300's"
+        );
+    }
+    for name in ["e_bardiv_hang", "e_bardiv_short"] {
+        let case = Case::load(root().join("fixtures").join(name)).unwrap();
+        let k = binary_kernel(&case, "good").unwrap();
+        let launch = build_launch(&case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 200_000);
+        assert!(v.complete, "{name}: incomplete");
+        assert_eq!(v.classes(), ["deadlock"], "{name}: {:#?}", v.findings);
+    }
+}
+
+/// F2I with RN / FLOOR / CEIL (libdevice sinf / cosf: F2I.FTZ.NTZ) and I2F.F64 from 64- and
+/// 32-bit integers in every rounding (fixtures/s_f2i; 1,572,864 output bytes) agree with GB300
+/// bitwise (2026-11-05, GPU 3, 20/20 runs).
+#[test]
+fn s_f2i_matches_hardware() {
+    certified_hash("fixtures", "s_f2i", 8370786828746058149);
+}
+/// PTX `st.async ... mbarrier::complete_tx::bytes` lowers to StAsync (its store completes 4
+/// transaction bytes on the target's mbarrier), as SASS STAS does. It used to lower to a plain
+/// st, leaving the good kernel a spurious deadlock on the PTX front-end.
+#[test]
+fn e_stasync_complete_tx() {
+    for v in ["good", "SA1", "SA3"] {
+        both("e_stasync", v);
+    }
+    for front in ["ptx", "sass"] {
+        check_stateful("e_stasync", "SA2", front, 100_000);
+    }
+}
+
+/// 64-bit selp (b64 / u64 / s64, register and immediate operands) keeps all 64 bits, on both
+/// front-ends; fixtures/s_selp64's expected bytes match GB300 (ptxv hw, 2026-11-05).
+#[test]
+fn s_selp64_keeps_64_bits() {
+    let case = Case::load(root().join("fixtures/s_selp64")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 10_000);
+        assert_eq!(v.classes(), ["clean"], "{front}: {:#?}", v.findings);
+        assert_eq!(v.outputs.len(), 1);
+        let r = case.expect_report(&v.outputs[0]).unwrap();
+        assert!(
+            r.iter().all(|l| l.contains("bitwise equal")),
+            "{front}: {r:?}"
+        );
+    }
+}
+
+/// LDS vs ATOMS (S-SMEM-STRONG): on SASS an unsynchronized plain shared load against a
+/// shared-memory atomic of another warp is a schedule-dependent outcome, not a race (both are
+/// strong at CTA scope); on PTX it is a data race. The strong re-check used to take LDS/STS
+/// pairs only, and E-POLL-ANY treated the LDS as value-insensitive although the same step
+/// stored the loaded value, which lost the second outcome.
+#[test]
+fn e_lds_atoms_strong_recheck() {
+    both("e_lds_atoms", "good");
+    // PTX: the stateful explorer reports the race in one order (E-DRF); DPOR also reverses it.
+    check_stateful("e_lds_atoms", "LA1", "ptx", 100_000);
+    check("e_lds_atoms", "LA1", "sass");
+}
+
+/// E-ALIGNED for named barriers: two halves of a warp at two different aligned bar.sync
+/// (SASS BAR) is a divergent aligned barrier (GB300 hangs); the non-aligned barrier.sync is
+/// legal there (GB300 completes; SASS: ptxas's BRA.DIV / WARPSYNC.COLLECTIVE.ALL path).
+#[test]
+fn e_aligned_bar_divergence() {
+    for v in ["good", "AB1", "AB2", "AB3"] {
+        both("e_aligned_bar", v);
+    }
+}
+
+/// The FA4 forward warp-role barrier case: the per-warp divergence probe
+/// is a violation, the cross-warp pre-fix protocol and the fix are clean.
+#[test]
+fn e_fa4_warp_roles_fa4_aligned_barriers() {
+    for v in [
+        "good",
+        "prefix",
+        "prefix_tmem",
+        "prefix_stats",
+        "probe_intrawarp",
+        "good_nofence",
+        "prefix_nofence",
+    ] {
+        both("e_fa4_warp_roles", v);
+    }
+    // Racy controls: the stateful explorer reports each race in one order (E-DRF).
+    for v in ["ctl_nowait", "ctl_prefix_nosync", "ctl_nofreewait"] {
+        for front in ["ptx", "sass"] {
+            check_stateful("e_fa4_warp_roles", v, front, 200_000);
+        }
+    }
+    both("e_fa4_warp_roles", "unaligned");
+    // SASS: the BRA.DIV / WARPSYNC.COLLECTIVE.ALL slow path in both halves leaves DPOR
+    // incomplete at 2M states; the stateful explorer takes ~36k.
+    check("e_fa4_warp_roles", "probe_intrawarp_unaligned", "ptx");
+    check_stateful("e_fa4_warp_roles", "probe_intrawarp_unaligned", "sass", 200_000);
+}
+
+/// The FusedRMSNormBwd cluster exit-drain case (S-REMOTE-INFLIGHT): the
+/// pre-fix epilogue drains only the last stage's empty barrier, so the peer's earlier
+/// `.release.cta` remote arrive on the other stage can land after the exit. It used to be
+/// clean (remote arrivals landed at issue); the fix and the no-drain control are as before.
+#[test]
+fn e_rmsnorm_cluster_drain_remote_arrive_exit_drain() {
+    for v in ["good", "bug", "good_k3", "bug_k3", "nodrain"] {
+        both("e_rmsnorm_cluster_drain", v);
+    }
+}
+
+/// S-ALIGN: misaligned ld / st / atom of every width are faults on both front-ends (GB300
+/// traps: misaligned address, fixtures/e_misaligned).
+#[test]
+fn e_misaligned_accesses_fault() {
+    for v in ["good", "MA1", "MA2", "MA3", "MA4"] {
+        both("e_misaligned", v);
+    }
+}
+
+/// st.async of every width (.b32 / .b64 / .v2 / .v4; SASS STAS / STAS.64 / STAS.128) completes
+/// its byte count; GB300 matches the good variant bitwise and hangs on SW1.
+#[test]
+fn e_stasync_wide_widths() {
+    both("e_stasync_wide", "good");
+    both("e_stasync_wide", "SW1");
 }

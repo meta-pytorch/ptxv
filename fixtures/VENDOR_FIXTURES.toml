@@ -18,6 +18,7 @@
 #   CUTLASS 4.6.1 CuTeDSL (the copy bundled with flashinfer 0.5.3)
 #   flashinfer 0.5.3 with flashinfer-cubin (trtllm-gen kernels)
 #   DeepEP  1.2.1.2026.6.4.43822+567632d (upstream 567632d), torch as above
+#   flash_attn.cute 4.0.0b24 (FlashAttention-4), torch as above
 
 [[fixture]]
 name = "r2_cublas_gemm"
@@ -245,3 +246,19 @@ library = "torch 2.12.0a0+git808dd93, CUDA 13.0"
 files = ["k0.cubin"]
 kind = "capture"
 cmd = "$PY tools/capture.py --file tools/capture_examples/sdpa_flash.py --out $OUT"
+
+[[fixture]]
+name = "c_fa4_fwd"
+vendor = "FlashAttention-4 (flash_attn.cute, CuTeDSL)"
+library = "flash_attn.cute 4.0.0b24, torch 2.12.0a0+git808dd93"
+files = ["jit.cubin"]
+kind = "capture"
+cmd = "$PY tools/capture.py --file tools/capture_examples/fa4_fwd.py --out $OUT"
+
+[[fixture]]
+name = "c_fa4_hd128"
+vendor = "FlashAttention-4 (flash_attn.cute, CuTeDSL)"
+library = "flash_attn.cute 4.0.0b24, torch 2.12.0a0+git808dd93"
+files = ["jit.cubin"]
+kind = "capture"
+cmd = "FA4_SEQ=256 FA4_HDIM=128 $PY tools/capture.py --file tools/capture_examples/fa4_fwd.py --out $OUT"

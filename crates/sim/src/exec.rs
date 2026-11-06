@@ -771,8 +771,9 @@ impl Machine {
             }
             // Keyed by the earlier access: one finding per conflicting write/read site, even
             // when ptxas unrolled the other side into many instructions.
-            // `race-ldsts`: both sides are SASS LDS/STS of a thread, which the strong model
-            // does not count as a race (S-SMEM-STRONG, smem.rs re-checks).
+            // `race-ldsts`: both sides are SASS LDS/STS (or ATOMS: shared-memory atomics,
+            // strong) of a thread, which the strong model does not count as a race
+            // (S-SMEM-STRONG, smem.rs re-checks).
             let ldsts = |x: u32, at: u32| {
                 self.k.front == Front::Sass
                     && (x as usize) < self.threads.len()
@@ -782,6 +783,9 @@ impl Machine {
                             space: Space::Shared,
                             ..
                         } | Op::St {
+                            space: Space::Shared,
+                            ..
+                        } | Op::Atom {
                             space: Space::Shared,
                             ..
                         }
@@ -946,6 +950,39 @@ impl Machine {
         vc_join(&mut th.vc, &j);
     }
 
+    /// For a split of `members` at the aligned barrier at `pc`: None if every live lane of
+    /// the warp is in the split; Some(true) if every other live lane is at a different
+    /// aligned barrier or a WARPSYNC, not yet executed (divergent: they can never converge,
+    /// each waits for the other); Some(false)
+    /// otherwise (the others may still arrive here).
+    pub fn aligned_bar_others(&self, members: &[usize], pc: u32) -> Option<bool> {
+        let w = self.threads[members[0]].warp;
+        let mut any = false;
+        let mut div = true;
+        for u in self.warp_threads(w) {
+            let th = &self.threads[u];
+            if th.st == St::Exited || members.contains(&u) {
+                continue;
+            }
+            any = true;
+            div &= th.pc != pc
+                && self.k.code.get(th.pc as usize).is_some_and(|i| {
+                    // A WARPSYNC waits for this split too (`@P0 WARPSYNC.ALL; @P0 BAR`,
+                    // ptxas's predicated form of two aligned bar.sync in a branch).
+                    (th.st == St::Run && i.op.is_aligned_bar())
+                        || (matches!(th.st, St::Run | St::WarpSync)
+                            && matches!(
+                                i.op,
+                                Op::WarpSync {
+                                    collective: false,
+                                    ..
+                                }
+                            ))
+                });
+        }
+        any.then_some(div)
+    }
+
     pub fn split_enabled(&self, members: &[usize], pc: u32) -> bool {
         let inst = &self.k.code[pc as usize];
         // PTX `.sync.aligned` instructions are convergence points: they execute once every
@@ -967,6 +1004,18 @@ impl Machine {
                 .count();
             if members.len() < live {
                 return false;
+            }
+        }
+        // ASSUME(E-ALIGNED): an aligned named barrier (`bar.sync`, `barrier.sync.aligned`,
+        // SASS `BAR` without the WARPSYNC of the non-aligned form) is a convergence point too:
+        // a split runs it once every live lane of the warp is at it. If the other live lanes
+        // are at a different aligned barrier, the warp can never converge (GB200 hangs,
+        // the FA4 warp-role case's probe_intrawarp): the split runs, and `exec` reports it.
+        if inst.op.is_aligned_bar() {
+            if let Some(div) = self.aligned_bar_others(members, pc) {
+                if !div {
+                    return false;
+                }
             }
         }
         // ASSUME(E-SPIN): a warp-level poll loop's split at its head runs only when the
@@ -1879,6 +1928,17 @@ impl Machine {
         // completion (through an mbarrier, a commit, or wait_group) before exiting: otherwise the
         // CTA can exit first in some schedule. Checked like a race, so independent of the order
         // in which this schedule happened to complete the op.
+        // ASSUME(S-REMOTE-INFLIGHT): a remote operation the target never waited for (no wait
+        // on the phase it counted toward or a later one) can land after the target exited.
+        for &(cta, mbar, phase, pc, _) in &self.remote_obs.clone() {
+            if self.mbar_seen.get(&(cta, mbar)).is_none_or(|&s| s <= phase) {
+                let msg = format!(
+                    "the remote operation at {} lands on CTA {cta}'s mbarrier at {mbar:#x} (phase {phase}), which no thread of CTA {cta} waits for: CTA {cta} can exit while it is in flight (wait for every remote arrival before exiting; S-REMOTE-INFLIGHT)",
+                    self.k.describe(pc as usize)
+                );
+                self.report("violation", format!("remote-unobserved:{pc}"), msg);
+            }
+        }
         let completed = std::mem::take(&mut self.completed);
         for &(cta, actor, clock, pc) in &completed {
             let observed = self
@@ -1999,6 +2059,7 @@ impl Machine {
         self.k.front == Front::Sass
             || self.k.code.get(pc as usize).is_some_and(|i| {
                 i.op.is_warp_aligned()
+                    || i.op.is_aligned_bar()
                     || matches!(
                         i.op,
                         Op::Elect { .. }
@@ -2162,7 +2223,11 @@ impl Machine {
     ) -> bool {
         let k = self.k.clone();
         type Out = Vec<(u32, St, Vec<u64>, Vec<u64>)>;
-        let mut first: Option<(Out, Vec<u64>)> = None;
+        // What the step wrote to memory: (space, id, lo, hi, bytes). A step that stores the
+        // loaded value (`LDS R5; ...; STG [..], R5` in one step) is not value-insensitive even
+        // when the registers it leaves differ only where they are dead.
+        type Wrote = Vec<(u8, u32, u64, u64, Vec<u8>)>;
+        let mut first: Option<(Out, Vec<u64>, Wrote)> = None;
         let mut dead: std::collections::BTreeSet<Reg> = Default::default();
         let file = if k.front == Front::Sass {
             File::R
@@ -2171,7 +2236,7 @@ impl Machine {
         };
         for v in vals {
             let mut c = self.clone();
-            c.fp = None;
+            c.fp = Some(Box::default());
             c.num = None;
             c.gfoot = None;
             c.sfoot = None;
@@ -2198,10 +2263,24 @@ impl Machine {
                 })
                 .collect();
             let ur = c.warps[warp as usize].ur.clone();
+            let mut fp = c.fp.take().unwrap();
+            fp.normalize();
+            let mut wrote: Wrote = Vec::new();
+            for &(sp, id, lo, hi) in &fp.w {
+                let mem = match sp {
+                    0 | 10 => (id < c.smem.len() as u32).then(|| &c.smem[id as usize]),
+                    1 | 11 => (id < c.gmem.len() as u32).then(|| &c.gmem[id as usize]),
+                    _ => continue,
+                };
+                let bytes = mem.map_or(vec![], |m| {
+                    (lo..hi).map(|i| *m.bytes.get(i as usize)).collect()
+                });
+                wrote.push((sp, id, lo, hi, bytes));
+            }
             match &first {
-                None => first = Some((out, ur)),
-                Some((o0, ur0)) => {
-                    if *ur0 != ur {
+                None => first = Some((out, ur, wrote)),
+                Some((o0, ur0, w0)) => {
+                    if *ur0 != ur || *w0 != wrote {
                         return false;
                     }
                     for (a, b) in o0.iter().zip(&out) {
@@ -2220,7 +2299,9 @@ impl Machine {
                 }
             }
         }
-        let Some((o0, _)) = first else { return false };
+        let Some((o0, _, _)) = first else {
+            return false;
+        };
         if dead.is_empty() {
             return true;
         }
@@ -2304,7 +2385,11 @@ impl Machine {
                 && members.len() > 1
                 && matches!(
                     inst.op,
-                    Op::Ld { .. } | Op::St { .. } | Op::Atom { .. } | Op::TmemLd { .. }
+                    Op::Ld { .. }
+                        | Op::St { .. }
+                        | Op::Atom { .. }
+                        | Op::TmemLd { .. }
+                        | Op::TmemSt { .. }
                 )
             {
                 let j = vc_join_all(members.iter().map(|&t| &self.threads[t].vc));
@@ -2361,6 +2446,15 @@ impl Machine {
         };
         if self.launch.poll_acquire && r.is_ok() {
             self.poll_exit_acquire(members, pc);
+        }
+        // S-REMOTE-INFLIGHT: later instructions issue new remote operations.
+        for o in &mut self.pending {
+            if let AsyncKind::Remote {
+                fresh: f @ true, ..
+            } = &mut o.kind
+            {
+                *f = false;
+            }
         }
         r
     }
@@ -2475,6 +2569,38 @@ impl Machine {
                 self.report("violation", format!("aligned:{pc}"), msg);
             }
         }
+        // ASSUME(E-ALIGNED): an aligned barrier executed by part of the warp's live lanes:
+        // the others are at a different aligned barrier (split_enabled), or guarded off.
+        if inst.op.is_aligned_bar() && !active.is_empty() {
+            let w = self.threads[members[0]].warp;
+            let live: Vec<usize> = self
+                .warp_threads(w)
+                .filter(|&u| self.threads[u].st != St::Exited)
+                .collect();
+            if active.len() < live.len() {
+                let elsewhere: Vec<usize> = live
+                    .iter()
+                    .copied()
+                    .filter(|u| !members.contains(u))
+                    .collect();
+                let why = match elsewhere.first() {
+                    Some(&u) => format!(
+                        "{} is at a different aligned barrier or WARPSYNC, {}",
+                        self.actor_name(u as u32),
+                        k.describe(self.threads[u].pc as usize)
+                    ),
+                    None => "the others are guarded off".to_string(),
+                };
+                let msg = format!(
+                    "aligned barrier {} executed by {} of the warp's {} live lanes ({}); every lane of a warp must execute the same aligned barrier instruction together: {why} (divergent aligned barrier; GB200 hangs)",
+                    k.describe(pc as usize),
+                    active.len(),
+                    live.len(),
+                    self.actor_name(members[0] as u32),
+                );
+                self.report("violation", format!("aligned-bar:{pc}"), msg);
+            }
+        }
         // A warp-collective matrix op whose guard is false in every lane does nothing
         // (`@P0 LDSM.16.M88.4` in CUTLASS's fmha, P0 warp-uniform).
         if active.is_empty()
@@ -2532,6 +2658,14 @@ impl Machine {
                 let mut acc: Option<u32> = None;
                 for &t in &active {
                     let x = self.rd(t, a)? as u32;
+                    // f32 forms: |x| first; a lone NaN is still the canonical NaN (GB300:
+                    // fixtures/s_lift_l). ASSUME(L-ROSETTA)
+                    if let R::MinF { abs, nan } | R::MaxF { abs, nan } = *op {
+                        let x = if abs { x & 0x7fff_ffff } else { x };
+                        let min = matches!(op, R::MinF { .. });
+                        acc = Some(fp::f32_minmax(acc.unwrap_or(x), x, min, nan, false));
+                        continue;
+                    }
                     acc = Some(match acc {
                         None => x,
                         Some(v) => match op {
@@ -2543,6 +2677,7 @@ impl Machine {
                             R::MaxU => v.max(x),
                             R::MinS => (v as i32).min(x as i32) as u32,
                             R::MaxS => (v as i32).max(x as i32) as u32,
+                            R::MinF { .. } | R::MaxF { .. } => unreachable!(),
                         },
                     });
                 }
@@ -2596,10 +2731,30 @@ impl Machine {
                 }
                 return Ok(());
             }
+            // ASSUME(E-COLLECTIVE-ALL): see ASSUMPTIONS.md
+            Op::WarpSync {
+                collective: true,
+                all: true,
+                ..
+            } => {
+                for &t in members {
+                    let th = self.threads[t].make_mut();
+                    if active.contains(&t) {
+                        th.st = St::WarpSync;
+                    } else {
+                        th.pc = pc + 1;
+                    }
+                }
+                if let Some(&t0) = members.first() {
+                    self.collective_all_release(self.threads[t0].warp);
+                }
+                return Ok(());
+            }
             // ASSUME(E-COLLECTIVE): see ASSUMPTIONS.md
             Op::WarpSync {
                 mask,
                 collective: true,
+                all: false,
             } => {
                 let mut groups: Vec<u32> = Vec::new();
                 for &t in &active {
@@ -2646,7 +2801,10 @@ impl Machine {
                         })
                         .map(|(i, _)| i);
                     if let Some(t1) = next {
-                        if let Op::WarpSync { mask, .. } = &k.code[*start].op {
+                        if let Op::WarpSync {
+                            mask, all: false, ..
+                        } = &k.code[*start].op
+                        {
                             let m = self.rd(t1, mask)? as u32;
                             self.collective_release(w, m, *start as u32);
                         }
@@ -3142,6 +3300,59 @@ impl Machine {
         }
     }
 
+    /// ASSUME(E-COLLECTIVE-ALL): once every live lane of `warp` is parked at a
+    /// `WARPSYNC.COLLECTIVE.ALL` (any pc), all of them go on into their regions, their
+    /// histories joined (the warp converged there).
+    fn collective_all_release(&mut self, warp: u32) {
+        let at_gate = |m: &Self, i: usize| {
+            m.threads[i].st == St::WarpSync
+                && matches!(
+                    m.k.code[m.threads[i].pc as usize].op,
+                    Op::WarpSync {
+                        collective: true,
+                        all: true,
+                        ..
+                    }
+                )
+        };
+        let lanes: Vec<usize> = (0..self.threads.len())
+            .filter(|&i| self.threads[i].warp == warp && self.threads[i].st != St::Exited)
+            .collect();
+        if lanes.is_empty() || !lanes.iter().all(|&i| at_gate(self, i)) {
+            return;
+        }
+        if self.wlog.is_on() {
+            crate::wellsync::warpsync_released(self, warp, u32::MAX, &lanes); // wellsync.rs
+        }
+        let mut j = VC::new();
+        for &i in &lanes {
+            vc_join(&mut j, &self.threads[i].vc);
+        }
+        for &i in &lanes {
+            let th = self.threads[i].make_mut();
+            th.vc = j.clone();
+            vc_tick(&mut th.vc, i as u32);
+            th.st = St::Run;
+            th.pc += 1;
+        }
+    }
+
+    /// cp.async.wait_group n: the thread's cp.async groups older than its newest n land.
+    fn cp_async_wait(&mut self, t: usize, n: u32) {
+        let th = &self.threads[t];
+        let upto = th.cp_group.saturating_sub(n);
+        let cta = th.cta;
+        let (done, rest): (Vec<_>, Vec<_>) =
+            th.cp_pending.iter().cloned().partition(|c| c.group < upto);
+        self.threads[t].make_mut().cp_pending = rest;
+        for c in done {
+            let loc = Loc::Shared { cta, off: c.off };
+            self.access(t as u32, &c.vc, c.pc, loc, c.data.len(), Some(&c.data));
+            self.sync_clear(loc);
+            self.num_cp_async(c.src, cta, c.off, &c.data);
+        }
+    }
+
     fn warpsync_release(&mut self, warp: u32, mask: u32, pc: u32) {
         let lanes: Vec<usize> = (0..self.threads.len())
             .filter(|&i| {
@@ -3158,7 +3369,7 @@ impl Machine {
             &self.k.code[self.threads[i].pc as usize].op,
         ) {
             (Op::Bsync { b }, Op::Bsync { b: c }) => b == c,
-            (Op::WarpSync { .. }, Op::WarpSync { .. }) => true,
+            (Op::WarpSync { all: a, .. }, Op::WarpSync { all: b, .. }) => a == b,
             _ => false,
         };
         if lanes
@@ -3667,6 +3878,7 @@ impl Machine {
                 new,
             } => {
                 let a = self.addr(t, addr)?;
+                check_aligned(*space, a, *bytes as usize)?;
                 let loc = self.resolve(t, *space, a, *bytes as usize)?;
                 let wide = *bytes == 8;
                 let bmask = if wide { u64::MAX } else { 0xffff_ffff };
@@ -3829,6 +4041,7 @@ impl Machine {
                 }
                 self.pending.clear();
                 self.completed.clear();
+                self.remote_obs.clear();
                 return Ok(Flow::Stay);
             }
             Op::Trap { why } => {
@@ -3846,6 +4059,7 @@ impl Machine {
                 }
                 self.pending.clear();
                 self.completed.clear();
+                self.remote_obs.clear();
                 return Ok(Flow::Stay);
             }
             Op::TmemAlloc { dst, ncols } => {
@@ -3969,25 +4183,95 @@ impl Machine {
                     Some(_) => self.wr(t, *d, (lo >> 32) & 0xffff_ffff, 1),
                 }
             }
-            Op::StAsync { addr, mbar, v } => {
+            Op::StAsync {
+                addr,
+                mbar,
+                v,
+                bytes,
+            } => {
+                let n = *bytes as usize;
                 let a = self.rd(t, addr)?;
+                check_aligned(Space::SharedCluster, a, n)?;
                 let m = self.rd(t, mbar)?;
                 if self.dead_target(t, a, pc)? {
                     self.tick(t);
                     return Ok(Flow::Next);
                 }
-                let loc = self.resolve(t, Space::SharedCluster, a, 4)?;
-                let Loc::Shared { cta, .. } = loc else {
+                let loc = self.resolve(t, Space::SharedCluster, a, n)?;
+                let Loc::Shared { cta, off: so } = loc else {
                     unreachable!()
                 };
                 if cta != self.threads[t].cta {
                     self.note_remote(cta, t as u32, pc);
                 }
-                let x = self.rd(t, v)? as u32;
+                // The data: PTX `.vN` one virtual register per element; SASS consecutive
+                // 32-bit registers; else one register (a 64-bit virtual one for `.b64`).
+                let mut data: Vec<u8> = Vec::with_capacity(n);
+                match v {
+                    Val::Reg(r, k) if r.file == File::V && *k >= 2 => {
+                        let w = n / *k as usize;
+                        for i in 0..*k as u16 {
+                            let x = self.rd(
+                                t,
+                                &Val::Reg(
+                                    Reg {
+                                        file: r.file,
+                                        idx: r.idx + i,
+                                    },
+                                    1,
+                                ),
+                            )?;
+                            data.extend_from_slice(&x.to_le_bytes()[..w]);
+                        }
+                    }
+                    Val::Reg(r, _) if r.file != File::V && n > 4 => {
+                        for i in 0..(n / 4) as u16 {
+                            let x = self.rd(
+                                t,
+                                &Val::Reg(
+                                    Reg {
+                                        file: r.file,
+                                        idx: r.idx + i,
+                                    },
+                                    1,
+                                ),
+                            )?;
+                            data.extend_from_slice(&(x as u32).to_le_bytes());
+                        }
+                    }
+                    _ => data.extend_from_slice(&self.rd(t, v)?.to_le_bytes()[..n.min(8)]),
+                }
+                if data.len() != n {
+                    return Err(format!("st.async of {n} bytes from {v:?} not modeled"));
+                }
+                let words: Vec<(u32, u32)> = data
+                    .chunks(4)
+                    .enumerate()
+                    .map(|(i, c)| {
+                        (
+                            so + 4 * i as u32,
+                            u32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+                        )
+                    })
+                    .collect();
                 let vc = self.threads[t].vc.clone();
                 let vis = self.threads[t].vis.clone();
+                // ASSUME(S-REMOTE-INFLIGHT): into another CTA, in flight until delivered.
+                if cta != self.threads[t].cta && remote_inflight() {
+                    let Loc::Shared { cta: mc, off: mo } =
+                        self.resolve(t, Space::SharedCluster, m, 8)?
+                    else {
+                        unreachable!()
+                    };
+                    if mc != cta {
+                        return Err("st.async with its mbarrier in another CTA than the data is not modeled".into());
+                    }
+                    self.push_remote(t, pc, cta, mo, -(n as i64), 0, words, vc, vis);
+                    self.tick(t);
+                    return Ok(Flow::Next);
+                }
                 // ASSUME(E-ASYNC-STEP): the store and its complete_tx happen in one step.
-                self.access(t as u32, &vc, pc, loc, 4, Some(&x.to_le_bytes()));
+                self.access(t as u32, &vc, pc, loc, n, Some(&data));
                 let Loc::Shared { cta: mc, off } = self.resolve(t, Space::SharedCluster, m, 8)?
                 else {
                     unreachable!()
@@ -3995,7 +4279,7 @@ impl Machine {
                 self.rec(0, mc as u32, off as u64, off as u64 + 8, false);
                 self.mbar_atomic(t as u32, &vc, &vis, pc, mc, off)?;
                 let mb = self.mbars.get_mut(&(mc, off)).unwrap();
-                mb.tx -= 4;
+                mb.tx -= n as i64;
                 vc_join(&mut mb.cur, &vc);
                 self.mbar_maybe_complete(mc, off);
                 self.tick(t);
@@ -4221,6 +4505,7 @@ impl Machine {
                 half,
                 s16x256b,
                 s16x128b,
+                red,
             } => {
                 if half.is_some_and(|h| self.threads[t].lane / 16 != h as u32) {
                     return Ok(Flow::Next); // the other half of the warp's lanes
@@ -4330,10 +4615,28 @@ impl Machine {
                 } else {
                     (t as u32, self.threads[t].vc.clone())
                 };
+                // GB300 traps (misaligned address) on a tcgen05.ld.red at an odd column; a plain
+                // load there is fine (probes/tmem_ldred).
+                if red.is_some() && !col0.is_multiple_of(2) {
+                    return Err(format!(
+                        "tcgen05.ld.red at odd TMEM column {col0}: misaligned address (GB300 traps)"
+                    ));
+                }
                 let mut states = 0u8;
+                let mut acc: Option<u32> = None;
                 for j in 0..*n as usize {
                     let col = col0 + cstep * j + cadd;
                     let (w, st) = self.tmem_access(cta, lane, col, actor, &vc, pc, None);
+                    // tcgen05.ld.red: fold the loaded values (ReduxOp f32 semantics).
+                    if let Some((
+                        _,
+                        ptxv_ir::ReduxOp::MinF { abs, nan } | ptxv_ir::ReduxOp::MaxF { abs, nan },
+                    )) = red
+                    {
+                        let x = if *abs { w & 0x7fff_ffff } else { w };
+                        let min = matches!(red, Some((_, ptxv_ir::ReduxOp::MinF { .. })));
+                        acc = Some(fp::f32_minmax(acc.unwrap_or(x), x, min, *nan, false));
+                    }
                     states |= match st {
                         0 => 1,
                         2 => 2,
@@ -4350,6 +4653,16 @@ impl Machine {
                             .make_mut()
                             .pending_ld
                             .push((r.file as u8, r.idx));
+                    }
+                }
+                if let (Some((rd, _)), Some(v)) = (red, acc) {
+                    self.wr(t, *rd, v as u64, 1);
+                    self.num_clobber(t, *rd, &[], pc);
+                    if *tracked {
+                        self.threads[t]
+                            .make_mut()
+                            .pending_ld
+                            .push((rd.file as u8, rd.idx));
                     }
                 }
                 self.tmem_state_report(states, "tcgen05.ld", pc);
@@ -4391,7 +4704,12 @@ impl Machine {
             }
             Op::BulkCommit => self.threads[t].make_mut().bulk_group += 1,
             // Enabled (split_enabled) once every group older than the newest n completed.
-            Op::BulkWait { n, .. } => self.bulk_wait(t, *n),
+            Op::BulkWait { n, cp, .. } => {
+                self.bulk_wait(t, *n);
+                if *cp {
+                    self.cp_async_wait(t, 0);
+                }
+            }
             Op::TmaStore {
                 dims,
                 src,
@@ -4454,6 +4772,12 @@ impl Machine {
             Op::Fence {
                 kind: k @ (FenceKind::Membar(sc) | FenceKind::Release(sc)),
             } => {
+                // ASSUME(S-REMOTE-INFLIGHT): a release at cluster scope or wider (SASS
+                // MEMBAR.ALL.GPU, which ptxas follows with ERRBAR; CGAERRBAR) delivers the
+                // thread's remote operations first.
+                if !matches!(sc, Scope::Cta) {
+                    self.drain_remote(t);
+                }
                 if let FenceKind::Membar(_) = k {
                     self.acquire_pending(t, Some(*sc));
                     // ASSUME(E-HW-L1): PTX fence.acq_rel / fence.sc at gpu / sys scope ends
@@ -4541,6 +4865,9 @@ impl Machine {
             }
             // ASSUME(E-CLUSTER-BAR): see ASSUMPTIONS.md
             Op::ClusterArrive { release } => {
+                if *release {
+                    self.drain_remote(t); // ASSUME(S-REMOTE-INFLIGHT)
+                }
                 let cta = self.threads[t].cta;
                 let (cid, _) = self.launch.cluster_of(cta as u32);
                 self.rec_sync(13, cid, 0, 1, true);
@@ -4975,6 +5302,7 @@ impl Machine {
                 rnd,
                 bits,
                 hi,
+                f64,
             } => {
                 let x = self.rd(t, a)? >> if *hi { 16 } else { 0 };
                 let x = match (*bits, *signed) {
@@ -4986,12 +5314,34 @@ impl Machine {
                     (_, true) => x as u32 as i32 as i64 as u64,
                     (_, false) => x & 0xffff_ffff,
                 };
-                self.wr(t, *d, fp::int_to_f32(x, *signed, *rnd).to_bits() as u64, 1);
+                if *f64 {
+                    self.wr(t, *d, fp::int_to_f64(x, *signed, *rnd).to_bits(), 2);
+                } else {
+                    self.wr(t, *d, fp::int_to_f32(x, *signed, *rnd).to_bits() as u64, 1);
+                }
                 self.num_clobber(t, *d, &[a], pc);
             }
-            Op::F2I { d, a, signed, bits } => {
-                // Rust's float->int `as` truncates, saturates, and maps NaN to 0, as F2I does.
-                let x = f32::from_bits(self.rd(t, a)? as u32);
+            Op::F2I {
+                d,
+                a,
+                signed,
+                bits,
+                rnd,
+                ftz,
+            } => {
+                // Rust's float->int `as` truncates, saturates, and maps NaN to 0, as F2I does;
+                // other roundings first round to an integral f32 (exact).
+                let mut u = self.rd(t, a)? as u32;
+                if *ftz {
+                    u = fp::f32_ftz(u);
+                }
+                let x = f32::from_bits(u);
+                let x = match rnd {
+                    Rnd::Rz => x,
+                    Rnd::Rn => x.round_ties_even(),
+                    Rnd::Rm => x.floor(),
+                    Rnd::Rp => x.ceil(),
+                };
                 // 64-bit results: NaN gives 2^63 (fixtures/s_cvt), saturation as Rust's.
                 let r = match (*bits, *signed) {
                     (64, _) if x.is_nan() => 1 << 63,
@@ -5237,8 +5587,8 @@ impl Machine {
                     self.num_sel(t, *d, v, *p, pc);
                 }
             }
-            Op::R2p { a, mask } => {
-                let x = self.rd(t, a)?;
+            Op::R2p { a, mask, shift } => {
+                let x = self.rd(t, a)? >> shift;
                 for i in 0..7u16 {
                     if mask >> i & 1 == 1 {
                         let p = Reg {
@@ -5562,11 +5912,21 @@ impl Machine {
                     self.num_clobber(t, *d, &[a, b, c], pc);
                 }
             }
-            Op::Plop3 { d, a, b, c, lut } => {
+            Op::Plop3 {
+                d,
+                a,
+                b,
+                c,
+                lut,
+                d2,
+            } => {
                 let i = ((self.prd(t, *a) as u8) << 2)
                     | ((self.prd(t, *b) as u8) << 1)
                     | self.prd(t, *c) as u8;
                 self.wp(t, *d, (lut >> i) & 1 == 1);
+                if let Some((d2, lut2)) = d2 {
+                    self.wp(t, *d2, (lut2 >> i) & 1 == 1);
+                }
             }
             Op::Setp {
                 d,
@@ -5721,6 +6081,7 @@ impl Machine {
                 sext,
             } => {
                 let a = self.addr(t, addr)?;
+                check_aligned(*space, a, *bytes as usize)?;
                 let loc = self.resolve(t, *space, a, *bytes as usize)?;
                 let vc = self.threads[t].vc.clone();
                 let sc = sync.map_or(0, |m| strong_code(m.scope));
@@ -5873,6 +6234,7 @@ impl Machine {
                 sync,
             } => {
                 let a = self.addr(t, addr)?;
+                check_aligned(*space, a, *bytes as usize)?;
                 let loc = self.resolve(t, *space, a, *bytes as usize)?;
                 let data: Vec<u8> = if let Val::Reg(r @ Reg { file: File::V, .. }, n @ 2..) = v {
                     // PTX `st.vN`: one virtual register per element.
@@ -6214,20 +6576,7 @@ impl Machine {
                 self.tick(t);
             }
             Op::CpAsyncCommit => self.threads[t].make_mut().cp_group += 1,
-            Op::CpAsyncWait { n } => {
-                let th = &self.threads[t];
-                let upto = th.cp_group.saturating_sub(*n);
-                let cta = th.cta;
-                let (done, rest): (Vec<_>, Vec<_>) =
-                    th.cp_pending.iter().cloned().partition(|c| c.group < upto);
-                self.threads[t].make_mut().cp_pending = rest;
-                for c in done {
-                    let loc = Loc::Shared { cta, off: c.off };
-                    self.access(t as u32, &c.vc, c.pc, loc, c.data.len(), Some(&c.data));
-                    self.sync_clear(loc);
-                    self.num_cp_async(c.src, cta, c.off, &c.data);
-                }
-            }
+            Op::CpAsyncWait { n } => self.cp_async_wait(t, *n),
             Op::Exit => {
                 self.rec_gate(t, 1);
                 // ASSUME(E-EXIT-FENCE): kernel completion acquires the thread's relaxed
@@ -6235,9 +6584,46 @@ impl Machine {
                 if let Some(sc) = self.launch.exit_fence {
                     self.acquire_pending(t, Some(sc));
                 }
+                // A cp.async the thread never waited for (wait_group / mbarrier arrive) has
+                // no defined completion: its shared-memory write is lost in the model.
+                if let Some(c) = self.threads[t].cp_pending.first() {
+                    let msg = format!(
+                        "{} exits with the cp.async issued at {} never waited for (cp.async.wait_group / cp.async.mbarrier.arrive)",
+                        self.actor_name(t as u32),
+                        self.k.describe(c.pc as usize)
+                    );
+                    let key = format!("cp-async-exit:{}", c.pc);
+                    self.report("violation", key, msg);
+                }
                 let th = self.threads[t].make_mut();
                 th.st = St::Exited;
                 let cta = th.cta;
+                let warp = th.warp;
+                // Lanes parked at a WARPSYNC.COLLECTIVE.ALL may now be complete without it.
+                self.collective_all_release(warp);
+                // ASSUME(S-REMOTE-INFLIGHT): the CTA's last thread exits while a remote
+                // operation to it is in flight: it can land in released shared memory.
+                if self
+                    .threads
+                    .iter()
+                    .filter(|u| u.cta == cta)
+                    .all(|u| u.st == St::Exited)
+                {
+                    self.rec(4, cta as u32, 1, 2, true);
+                    if let Some(o) = self
+                        .pending
+                        .iter()
+                        .find(|o| matches!(o.kind, AsyncKind::Remote { cta: c, .. } if c == cta))
+                    {
+                        let msg = format!(
+                            "CTA {cta} exits while {}'s remote operation at {} to it is still in flight: it can land after the exit (wait for every remote arrival before exiting; S-REMOTE-INFLIGHT)",
+                            self.actor_name(o.issuer),
+                            self.k.describe(o.pc as usize)
+                        );
+                        let sig = format!("remote-inflight-exit:{}", o.pc);
+                        self.report("violation", sig, msg);
+                    }
+                }
                 // An all-threads barrier may now be complete without this thread.
                 let ids: Vec<u32> = self
                     .bars
@@ -6252,13 +6638,19 @@ impl Machine {
                 return Ok(Flow::Stay);
             }
             // ASSUME(E-BAR-EXIT, E-BAR-ARRIVE): see ASSUMPTIONS.md
-            Op::BarSync { id, count, arrive } => {
+            Op::BarSync {
+                id,
+                count,
+                arrive,
+                packed,
+                ..
+            } => {
                 let arrive = *arrive;
-                let id = self.rd(t, id)? as u32;
                 let count = match count {
-                    Some(c) => Some(self.rd(t, c)? as u32),
+                    Some(c) => Some(self.rd(t, c)?),
                     None => None,
                 };
+                let (id, count) = ptxv_ir::bar_args(self.rd(t, id)?, count, *packed);
                 let cta = self.threads[t].cta;
                 if count.is_none() {
                     if let Some(s) = self.sfoot.as_ref() {
@@ -6425,7 +6817,12 @@ impl Machine {
                 remote,
                 count,
                 complete,
+                cluster,
             } => {
+                // A release at cluster scope orders the thread's earlier remote operations.
+                if *cluster {
+                    self.drain_remote(t);
+                }
                 let arrivals = match count {
                     Some(c) => self.rd(t, c)?,
                     None => 1,
@@ -6457,6 +6854,15 @@ impl Machine {
                 };
                 let vc = self.threads[t].vc.clone();
                 let vis = self.threads[t].vis.clone();
+                // ASSUME(S-REMOTE-INFLIGHT): an arrival on another CTA's mbarrier is in flight
+                // until delivered (`complete_async`), in any order with the issuer's other
+                // remote operations.
+                if cta != self.threads[t].cta && remote_inflight() {
+                    let tx = if *complete { -txv } else { txv };
+                    self.push_remote(t, pc, cta, off, tx, arrivals as u32, vec![], vc, vis);
+                    self.tick(t);
+                    return Ok(Flow::Next);
+                }
                 self.rec(0, cta as u32, off as u64, off as u64 + 8, false);
                 self.mbar_atomic(t as u32, &vc, &vis, pc, cta, off)?;
                 let mb = self.mbars.get_mut(&(cta, off)).unwrap();
@@ -6531,6 +6937,12 @@ impl Machine {
                         };
                         let k = if want < 0 { u64::MAX } else { want as u64 };
                         self.rec_acq(sync_key(2, cta as u64, off as u64, k));
+                        // ASSUME(S-REMOTE-INFLIGHT): the remote arrivals of phases <= want
+                        // were delivered before this wait (`remote_obs`).
+                        if want >= 0 && !self.remote_obs.is_empty() {
+                            let s = self.mbar_seen.entry((cta, off)).or_insert(0);
+                            *s = (*s).max(want as u64 + 1);
+                        }
                     }
                     let vis = self.threads[t].vis.clone();
                     self.mbar_atomic(t as u32, &vc, &vis, pc, cta, off)?;
@@ -6589,8 +7001,8 @@ impl Machine {
                 let me = self.threads[t].cta;
                 // Destination CTAs: the rank in the address, or every rank in the ctaMask
                 // (same offsets in each).
-                let mut mbar_cta = None;
-                let targets: Vec<u16> = match mask {
+                // (destination CTA, mbarrier CTA)
+                let targets: Vec<(u16, u16)> = match mask {
                     None => {
                         let d = self.rank_cta(me, dsta)?;
                         let mc = self.rank_cta(me, mba)?;
@@ -6604,8 +7016,7 @@ impl Machine {
                             }
                             self.note_remote(mc, t as u32, pc);
                         }
-                        mbar_cta = Some(mc);
-                        vec![d]
+                        vec![(d, mc)]
                     }
                     Some(mv) => {
                         // SASS `UTMALDG.MULTICAST`: the ctaMask is bits 16..31 of the UR
@@ -6616,10 +7027,25 @@ impl Machine {
                         } else {
                             mv
                         } & 0xffff;
+                        // ASSUME(S-TMA-2CTA-MCAST): with `.2CTA` too (cuBLAS's 2-CTA nvjet
+                        // kernels), each destination's transaction completes on the mbarrier at
+                        // `mbar`'s offset in the CTA of the destination's pair whose peer bit is
+                        // the mbarrier address's (CUTLASS: the pair leader's).
+                        let mrank = if *pair {
+                            let mc = self.rank_cta(me, mba)?;
+                            Some(self.launch.cluster_of(mc as u32).1 as u64 & 1)
+                        } else {
+                            None
+                        };
                         let mut v = Vec::new();
                         for r in 0..16u64 {
                             if mv >> r & 1 == 1 {
-                                v.push(self.rank_cta(me, r << 24)?);
+                                let d = self.rank_cta(me, r << 24)?;
+                                let mc = match mrank {
+                                    Some(b) => self.rank_cta(me, (r & !1 | b) << 24)?,
+                                    None => d,
+                                };
+                                v.push((d, mc));
                             }
                         }
                         v
@@ -6637,13 +7063,20 @@ impl Machine {
                     (tm, cs)
                 };
                 // One async op per destination: multicast copies land independently.
-                for cta in targets {
+                for (cta, mcta) in targets {
                     if cta != me {
                         let rank = self.launch.cluster_of(cta as u32).1 as u64;
                         if self.dead_target(t, rank << 24, pc)? {
                             continue;
                         }
                         self.note_remote(cta, t as u32, pc);
+                    }
+                    if mcta != cta && mcta != me && mask.is_some() {
+                        let rank = self.launch.cluster_of(mcta as u32).1 as u64;
+                        if self.dead_target(t, rank << 24, pc)? {
+                            continue;
+                        }
+                        self.note_remote(mcta, t as u32, pc);
                     }
                     let serial = self.threads[t].tma_count;
                     self.threads[t].make_mut().tma_count += 1;
@@ -6660,7 +7093,7 @@ impl Machine {
                         kind: AsyncKind::Tma {
                             cta,
                             dst: (dsta & 0xff_ffff) as u32,
-                            mbar_cta: mbar_cta.unwrap_or(cta),
+                            mbar_cta: mcta,
                             mbar: (mba & 0xff_ffff) as u32,
                             tmap: tm.clone(),
                             coords: cs.clone(),
@@ -6837,6 +7270,28 @@ impl Machine {
         let mut m = self.clone();
         m.fp = None;
         m.num = None;
+        // The pure code between the wait and its retry branch runs before the stub (it may
+        // compute the stub's operands); with the poll failed, as when the stub runs.
+        if let (Some(b), Op::MbarTryWait { d, .. }) = (
+            crate::spin::retry_branch(&self.k.code, pc as usize),
+            &self.k.code[pc as usize].op,
+        ) {
+            if w2 != pc {
+                m.wp(t, *d, false);
+                for p in pc + 1..b as u32 {
+                    let i = &m.k.code[p as usize];
+                    // A re-poll would block or change the result: skipped (it is the same
+                    // poll, `retry_shape`).
+                    if matches!(i.op, Op::MbarTryWait { .. }) {
+                        continue;
+                    }
+                    m.threads[t].make_mut().pc = p;
+                    if m.exec(&[t], p).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
         m.threads[t].make_mut().pc = s;
         for p in s..w2 {
             if m.exec(&[t], p).is_err() {
@@ -7215,6 +7670,10 @@ impl Machine {
             | AsyncKind::Clc { cta, .. }
             | AsyncKind::TmaStore { cta, .. }
             | AsyncKind::CpArrive { cta, .. } => *cta,
+            AsyncKind::Remote { .. } => {
+                self.complete_remote(&op, false);
+                return;
+            }
         };
         self.rec_async_gate(op.issuer, op.actor);
         // Async-after-exit is checked at the end, order-independently (exit_checks).
@@ -7232,7 +7691,7 @@ impl Machine {
         }
         match op.kind.clone() {
             // Completed through `complete_clc` (a scheduler choice with outcomes).
-            AsyncKind::Clc { .. } => unreachable!(),
+            AsyncKind::Clc { .. } | AsyncKind::Remote { .. } => unreachable!(),
             AsyncKind::Tma {
                 cta,
                 dst,
@@ -7338,6 +7797,174 @@ impl Machine {
                         self.mbar_maybe_complete(cta, mbar);
                     }
                 }
+            }
+        }
+    }
+
+    /// ASSUME(S-REMOTE-INFLIGHT): issue a remote arrival / st.async word of thread `t`: merged
+    /// into the operation the same instruction of the same warp already issued to that
+    /// mbarrier (the lanes of one instruction land together), else a new one.
+    #[allow(clippy::too_many_arguments)]
+    fn push_remote(
+        &mut self,
+        t: usize,
+        pc: u32,
+        cta: u16,
+        mbar: u32,
+        tx: i64,
+        n: u32,
+        store: Vec<(u32, u32)>,
+        vc: VC,
+        vis: VC,
+    ) {
+        let w = self.threads[t].warp;
+        let threads = &self.threads;
+        if let Some(o) = self.pending.iter_mut().find(|o| {
+            o.pc == pc
+                && threads[o.issuer as usize].warp == w
+                && matches!(o.kind, AsyncKind::Remote { cta: c, mbar: b, fresh: true, .. }
+                    if c == cta && b == mbar)
+        }) {
+            if let AsyncKind::Remote {
+                tx: ot,
+                n: on,
+                store: os,
+                ..
+            } = &mut o.kind
+            {
+                *ot += tx;
+                *on += n;
+                os.extend(store);
+            }
+            vc_join(&mut o.vc, &vc);
+            vc_join(&mut o.vis, &vis);
+            return;
+        }
+        self.push_async(AsyncOp {
+            fifo: None,
+            actor: t as u32,
+            vc,
+            issuer: t as u32,
+            pc,
+            kind: AsyncKind::Remote {
+                cta,
+                mbar,
+                tx,
+                n,
+                store,
+                fresh: true,
+            },
+            vis,
+        });
+    }
+
+    /// ASSUME(S-REMOTE-INFLIGHT): deliver a remote arrival / st.async (`AsyncKind::Remote`).
+    /// Its delivery reads the target CTA's exit key (space 4, index 1), which the exit of the
+    /// CTA's last thread writes: the explorer orders deliveries against the target's exit,
+    /// and deliveries to one CTA stay independent of each other.
+    fn complete_remote(&mut self, op: &AsyncOp, drained: bool) {
+        let AsyncKind::Remote {
+            cta,
+            mbar,
+            tx,
+            n,
+            ref store,
+            ..
+        } = op.kind
+        else {
+            unreachable!()
+        };
+        self.rec(4, cta as u32, 1, 2, false);
+        if let Err(e) = self.check_alive(cta, op.actor) {
+            let msg = format!(
+                "{e}: its remote operation issued at {} landed after CTA {cta} exited (in flight at the exit; S-REMOTE-INFLIGHT)",
+                self.k.describe(op.pc as usize)
+            );
+            self.report("violation", format!("cluster-life:{}", op.pc), msg);
+            return;
+        }
+        for &(off, x) in store {
+            self.access(
+                op.actor,
+                &op.vc,
+                op.pc,
+                Loc::Shared { cta, off },
+                4,
+                Some(&x.to_le_bytes()),
+            );
+        }
+        self.rec(0, cta as u32, mbar as u64, mbar as u64 + 8, false);
+        if let Err(e) = self.mbar_atomic(op.actor, &op.vc, &op.vis, op.pc, cta, mbar) {
+            self.report(fault_kind(&e), format!("remote:{}", op.pc), e);
+            return;
+        }
+        let Some(mb) = self.mbars.get_mut(&(cta, mbar)) else {
+            return;
+        };
+        mb.tx += tx;
+        let phase = mb.phase as u64;
+        if !drained {
+            let e = (cta, mbar, phase, op.pc, op.issuer);
+            if let Err(k) = self.remote_obs.binary_search(&e) {
+                self.remote_obs.insert(k, e);
+            }
+        }
+        if n == 0 {
+            let mb = self.mbars.get_mut(&(cta, mbar)).unwrap();
+            vc_join(&mut mb.cur, &op.vc);
+            self.mbar_maybe_complete(cta, mbar);
+        }
+        for i in 0..n {
+            // The certificate's log (wellsync.rs) stashes each change before it happens.
+            if i > 0 {
+                if let Err(e) = self.mbar_atomic(op.actor, &op.vc, &op.vis, op.pc, cta, mbar) {
+                    self.report(fault_kind(&e), format!("remote:{}", op.pc), e);
+                    return;
+                }
+            }
+            let Some(mb) = self.mbars.get_mut(&(cta, mbar)) else {
+                return;
+            };
+            if mb.pending == 0 {
+                let msg = format!(
+                    "mbarrier at {mbar:#x} of CTA {cta}: more arrivals than the expected count {} (remote arrive at {})",
+                    mb.expected,
+                    self.k.describe(op.pc as usize)
+                );
+                self.report("fault", format!("remote-overflow:{}", op.pc), msg);
+                return;
+            }
+            mb.pending -= 1;
+            vc_join(&mut mb.cur, &op.vc);
+            self.mbar_maybe_complete(cta, mbar);
+        }
+    }
+
+    /// Deliver thread `t`'s remote operations still in flight, in issue order: a release at
+    /// cluster scope (barrier.cluster.arrive, fence at cluster scope or wider, a
+    /// `.release.cluster` arrive or store) orders them before it (SASS: the `CGAERRBAR` ptxas
+    /// emits for those). ASSUME(S-REMOTE-INFLIGHT)
+    fn drain_remote(&mut self, t: usize) {
+        while let Some(i) = self
+            .pending
+            .iter()
+            .position(|o| o.issuer == t as u32 && matches!(o.kind, AsyncKind::Remote { .. }))
+        {
+            let op = self.pending.remove(i);
+            self.complete_remote(&op, true);
+        }
+        // Delivered earlier as async steps: this release would have drained them, so they
+        // are ordered before it; the target must exit after it (`remote`, S-CLUSTER-LIFE).
+        let mine: Vec<_> = self
+            .remote_obs
+            .iter()
+            .filter(|e| e.4 == t as u32)
+            .copied()
+            .collect();
+        if !mine.is_empty() {
+            self.remote_obs.retain(|e| e.4 != t as u32);
+            for (cta, _, _, pc, _) in mine {
+                self.note_remote(cta, t as u32, pc);
             }
         }
     }
@@ -9189,4 +9816,26 @@ pub fn vip_where(loc: Loc) -> Option<(u32, u64)> {
         Loc::Shared { cta, off } => Some((0x8000_0000 | cta as u32, off as u64)),
         Loc::Param { .. } => None,
     }
+}
+
+/// ASSUME(S-REMOTE-INFLIGHT): remote arrivals / st.async are in flight until delivered
+/// (`PTXV_REMOTE_ATOMIC=1`: they land at issue, as before).
+fn remote_inflight() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PTXV_REMOTE_ATOMIC").is_err())
+}
+
+/// ASSUME(S-ALIGN): a memory access of `n` bytes (a power of two; vectors count their whole
+/// size: ld.v4.u32 = 16) must be `n`-aligned: GB300 traps ("misaligned address") on a
+/// misaligned st.global.u64 / .v4 (AK, 2026-11-05). Parameter space is not checked.
+fn check_aligned(space: Space, a: u64, n: usize) -> Result<(), String> {
+    if space == Space::Param || !n.is_power_of_two() || n <= 1 {
+        return Ok(());
+    }
+    if !a.is_multiple_of(n as u64) {
+        return Err(format!(
+            "misaligned address {a:#x} for a {n}-byte access (GB300 traps: misaligned address)"
+        ));
+    }
+    Ok(())
 }

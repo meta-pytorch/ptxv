@@ -248,6 +248,11 @@ impl Machine {
                     "cp.async.mbarrier.arrive issued at {} completes",
                     self.k.describe(op.pc as usize)
                 ),
+                AsyncKind::Remote { cta, .. } => format!(
+                    "remote operation issued at {} by {} lands in CTA {cta}",
+                    self.k.describe(op.pc as usize),
+                    self.actor_name(op.issuer)
+                ),
                 AsyncKind::Clc { .. } => unreachable!(),
             };
             out.push((Action::Async(i), what));
@@ -2111,6 +2116,7 @@ pub(crate) fn peekskip_set(m: &Machine) -> BTreeMap<u32, (BTreeSet<u32>, BTreeSe
                         b,
                         c,
                         lut,
+                        d2: None,
                     } if i.guard.is_always() => {
                         let mut v = [Tri::U; 2];
                         for (w, vw) in v.iter_mut().enumerate() {
@@ -2226,7 +2232,10 @@ type BarRead = (BarKey, u64);
 /// count (`Machine::bar_oversub`), for any of warp `w`'s threads there? Operands that cannot
 /// be read: conservatively yes.
 fn bar_spills(m: &Machine, w: u32, pc: u32) -> bool {
-    let ptxv_ir::Op::BarSync { id, count, .. } = &m.k.code[pc as usize].op else {
+    let ptxv_ir::Op::BarSync {
+        id, count, packed, ..
+    } = &m.k.code[pc as usize].op
+    else {
         return false;
     };
     let Some(count) = count else {
@@ -2235,7 +2244,10 @@ fn bar_spills(m: &Machine, w: u32, pc: u32) -> bool {
     m.warp_threads(w)
         .filter(|&t| m.threads[t].pc == pc && m.threads[t].st == St::Run)
         .any(|t| match (m.rd(t, id).ok(), m.rd(t, count).ok()) {
-            (Some(i), Some(c)) => m.bar_oversub(m.threads[t].cta, i as u32, Some(c as u32)),
+            (Some(i), Some(c)) => {
+                let (i, c) = ptxv_ir::bar_args(i, Some(c), *packed);
+                m.bar_oversub(m.threads[t].cta, i, c)
+            }
             _ => true,
         })
 }
@@ -2706,6 +2718,7 @@ impl Machine {
                     Op::BarSync {
                         id: Val::Imm(v), ..
                     } => *v >= 32 || (1u32 << v) & bit != 0,
+                    Op::BarSync { packed: true, .. } => true,
                     Op::BarSync { id, .. } if bit != u32::MAX => match rval(id, &mut used, reads) {
                         Some(v) => v >= 32 || (1u32 << v) & bit != 0,
                         None => true,
@@ -3285,6 +3298,7 @@ fn sync_ample(
             AsyncKind::Tma { mbar_cta, mbar, .. } => Some((*mbar_cta as u32, *mbar as u64)),
             AsyncKind::Commit { cta, mbar }
             | AsyncKind::Clc { cta, mbar, .. }
+            | AsyncKind::Remote { cta, mbar, .. }
             | AsyncKind::CpArrive { cta, mbar, .. } => Some((*cta as u32, *mbar as u64)),
             AsyncKind::Mma { .. } | AsyncKind::Cp { .. } | AsyncKind::TmaStore { .. } => None,
         };
@@ -3437,6 +3451,7 @@ fn sync_ample(
                 AsyncKind::Tma { mbar_cta, mbar, .. } => e.push((*mbar_cta as u32, *mbar as u64)),
                 AsyncKind::Commit { cta, mbar }
                 | AsyncKind::Clc { cta, mbar, .. }
+                | AsyncKind::Remote { cta, mbar, .. }
                 | AsyncKind::CpArrive { cta, mbar, .. } => e.push((*cta as u32, *mbar as u64)),
                 AsyncKind::Mma { .. } | AsyncKind::Cp { .. } | AsyncKind::TmaStore { .. } => {}
             }
@@ -3844,7 +3859,10 @@ fn sync_ample(
             // checked like any other entity's (as `refine` sees them: their own mbarriers,
             // phases from here on); this operation itself is not one of them.
             if op.fifo.is_none() {
-                if !matches!(op.kind, AsyncKind::Tma { .. })
+                // ASSUME(S-REMOTE-INFLIGHT): a remote arrival / st.async delivery likewise (data,
+                // then arrivals on its mbarrier; its exit-key read conflicts with the target's
+                // last exit).
+                if !matches!(op.kind, AsyncKind::Tma { .. } | AsyncKind::Remote { .. })
                     || !clip_on
                     || std::env::var("PTXV_NO_TMA_POR").is_ok()
                 {
@@ -7698,6 +7716,7 @@ fn la_rejoin(m: &Machine, w: u32, ts: &[usize]) -> Option<(u32, u32, u32)> {
             Op::WarpSync {
                 mask,
                 collective: false,
+                ..
             } => m.rd(t, mask).is_ok_and(|x| x as u32 & live == live),
             Op::Bsync { b } => m.warps[w as usize].bmask[*b as usize] & live == live,
             _ => false,

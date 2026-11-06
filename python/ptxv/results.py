@@ -281,6 +281,22 @@ class ErrDist:
         (`checks`, `exceed` must be 0). None outside errdist reports."""
         return (self.report or {}).get("worst_case")
 
+    @property
+    def tier(self) -> int | None:
+        """ptxv errdist reports: the headline's tier (0 proof, 1 opt-in residue chain, 2 CLT
+        where its applicability check and the Tier 3 cross-check pass, else 3 Monte Carlo)."""
+        r = self.report or {}
+        e = r.get("estimates") or []
+        b = r.get("best", 0)
+        return e[b]["tier"] if b < len(e) else None
+
+    @property
+    def crosscheck(self) -> list:
+        """ptxv errdist reports: each analytic estimate against the run's Tier 3 (p, p3, its
+        interval, the tolerance, `agrees`); an estimate that disagrees is never the
+        headline. Empty without Tier 3 (mc_inputs=0)."""
+        return (self.report or {}).get("crosscheck") or []
+
     @classmethod
     def from_summary(
         cls,

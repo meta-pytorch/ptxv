@@ -187,6 +187,27 @@ pub struct Report {
     /// single kernels: the kernel's own bound against the exact value).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worst_case: Option<WorstCase>,
+    /// Each analytic estimate checked against this run's Tier 3 (docs/errdist.md §3.2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crosscheck: Vec<CrossCheck>,
+}
+
+/// An analytic estimate against Tier 3: agreement means |p - p3| <= max(5% of p3, half Tier
+/// 3's interval) or p inside Tier 3's interval; a disagreeing estimate is not applicable.
+#[derive(Clone, Debug, Serialize, serde::Deserialize, Default)]
+pub struct CrossCheck {
+    /// Index into `estimates`.
+    pub estimate: usize,
+    pub tier: u8,
+    pub p: f64,
+    pub p3: f64,
+    /// Tier 3's interval and the tolerance used.
+    pub p3_lo: f64,
+    pub p3_hi: f64,
+    pub tol: f64,
+    /// Tier 3 inputs behind p3.
+    pub inputs: u64,
+    pub agrees: bool,
 }
 
 /// The rigorous per-output bound |e| <= rel |y| + k_u u S(x) + abs (u = 2^-24, y the exact

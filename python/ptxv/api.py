@@ -229,9 +229,11 @@ class ErrdistModel:
     """A compiled `ptxv errdist` model: `m(inputs) -> ErrDist` in seconds.
 
     The compile stage (simulating the kernel(s) and extracting their numerics programs) runs
-    once per case and is cached by the case contents; each query runs the analytic tiers
-    (Tier 1 when `tier1`, Tier 2 always; Tier 3 only with `mc_inputs`) on the model and is
-    memoized per input distribution. Local backend only.
+    once per case and is cached by the case contents; each query runs Tier 0, Tier 2 and a
+    small Tier 3 cross-check (300 inputs; `mc_inputs` overrides, 0 skips it) on the model,
+    Tier 1 only when `tier1`, and is memoized per input distribution. The headline is Tier 0
+    when it applies, else Tier 2 where its applicability check and the cross-check pass,
+    else Tier 3 (`ErrDist.tier`, `ErrDist.crosscheck`). Local backend only.
     """
 
     def __init__(self, target: Any, *, ref: Any = None, binary: str | None = None):
@@ -284,7 +286,7 @@ class ErrdistModel:
         inputs: Any,
         *,
         metric: str = "abs",
-        tier1: bool = True,
+        tier1: bool = False,
         mc_inputs: int | None = None,
         seed: int = 1,
     ):

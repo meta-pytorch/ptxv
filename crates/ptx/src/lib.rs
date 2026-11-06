@@ -1267,6 +1267,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 b,
                 c: Pred::TRUE,
                 lut,
+                d2: None,
             }
         }
         "selp" => {
@@ -1604,6 +1605,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         b: Pred::TRUE,
                         c: Pred::TRUE,
                         lut: 0x0f,
+                        d2: None,
                     });
                     Op::VoteAll {
                         d,
@@ -1704,6 +1706,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     rnd,
                     bits: 32,
                     hi: false,
+                    f64: false,
                 }
             } else if from == "f32"
                 && matches!(to, "s32" | "u32" | "s64" | "u64")
@@ -1716,6 +1719,8 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     a: lw.val(op_n(1)?)?,
                     signed: to.starts_with('s'),
                     bits: type_bits(to).unwrap(),
+                    rnd: Rnd::Rz,
+                    ftz: has("ftz"),
                 }
             } else if let Some(op) = cvt_lp(lw, mods, &ops)? {
                 op
@@ -1919,6 +1924,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         half: None,
                         s16x256b: has("16x256b"),
                         s16x128b: has("16x128b"),
+                        red: None,
                     }
                 }
                 "wait::ld" => Op::TmemWaitLd,
@@ -1959,6 +1965,49 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     kind: FenceKind::TcAfter,
                 },
                 _ => bail!(lw.err(format!("tcgen05.{sub} is not modeled yet"))),
+            }
+        }
+        // st.async.shared::cluster.mbarrier::complete_tx::bytes.b32 [addr], v, [mbar]: a store
+        // into (another CTA's) shared memory that completes 4 transaction bytes on the
+        // mbarrier there (SASS STAS). Lowering it as a plain st dropped the complete_tx.
+        "st" if has("async") => {
+            let vn = mods
+                .iter()
+                .find_map(|m| m.strip_prefix('v').and_then(|x| x.parse::<u32>().ok()))
+                .unwrap_or(1);
+            let bytes = bits as u32 / 8 * vn;
+            if !(has("mbarrier::complete_tx::bytes") && has("shared::cluster"))
+                || !(bits == 32 || bits == 64)
+                || !matches!(bytes, 4 | 8 | 16)
+                || has("release")
+                || has("mmio")
+            {
+                bail!(lw.err(
+                    "only st.async.shared::cluster.mbarrier::complete_tx::bytes of 4, 8 or 16 bytes is modeled"
+                ));
+            }
+            let reg = |s: &str| -> Result<Val> {
+                let a = lw.addr(s)?;
+                if a.off != 0 || a.base2.is_some() {
+                    bail!(lw.err("st.async wants register addresses"));
+                }
+                a.base
+                    .ok_or_else(|| lw.err("st.async wants register addresses"))
+            };
+            let v = if vn > 1 {
+                let (r, k) = lw.reg_vec(op_n(1)?)?;
+                if k as u32 != vn {
+                    bail!(lw.err("vector length does not match .vN"));
+                }
+                Val::Reg(r, k)
+            } else {
+                lw.val(op_n(1)?)?
+            };
+            Op::StAsync {
+                addr: reg(op_n(0)?)?,
+                v,
+                mbar: reg(op_n(2)?)?,
+                bytes: bytes as u8,
             }
         }
         "ld" | "st" => {
@@ -2206,6 +2255,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         "bar" if mods == ["warp", "sync"] => Op::WarpSync {
             mask: lw.val(op_n(0)?)?,
             collective: false,
+            all: false,
         },
         "bar" | "barrier" => {
             let arrive = has("arrive");
@@ -2219,7 +2269,15 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 None if arrive => bail!(lw.err("bar.arrive requires a thread count")),
                 None => None,
             };
-            Op::BarSync { id, count, arrive }
+            // `bar.*` is `barrier.*.aligned`.
+            let aligned = base == "bar" || has("aligned");
+            Op::BarSync {
+                id,
+                count,
+                arrive,
+                packed: false,
+                aligned,
+            }
         }
         // ASSUME(E-PDL): see ASSUMPTIONS.md
         "griddepcontrol" => match mods.first().copied() {
@@ -2274,6 +2332,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     remote,
                     count,
                     complete: false,
+                    cluster: has("release") && has("cluster"),
                 }
             }
             Some("try_wait") if has("parity") => Op::MbarTryWait {
@@ -2379,6 +2438,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     remote: false,
                     count: Some(Val::Imm(0)),
                     complete: false,
+                    cluster: false,
                 }
             }
         }
@@ -2473,6 +2533,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             Op::BulkWait {
                 n: n as u32,
                 read: has("read"),
+                cp: false,
             }
         }
         "cp" if mods.starts_with(&["async", "bulk", "tensor"]) => {

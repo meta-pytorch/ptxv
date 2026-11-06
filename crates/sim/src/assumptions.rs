@@ -86,11 +86,13 @@ pub const REGISTRY: &[Assumption] = &[
         id: "E-CLOCK",
         kind: "code",
         status: "argued",
-        title: "SASS clock reads (CS2R SR_CLOCKLO) return 0: timeouts never fire, vprintf is a no-op",
+        title: "SASS clock reads (CS2R SR_CLOCKLO / SR_GLOBALTIMERLO) return 0: timeouts never fire, vprintf is a no-op",
         applies: |k| {
-            k.code
-                .iter()
-                .any(|i| i.text.contains("SR_CLOCKLO") || i.text.contains("vprintf"))
+            k.code.iter().any(|i| {
+                i.text.contains("SR_CLOCKLO")
+                    || i.text.contains("SR_GLOBALTIMERLO")
+                    || i.text.contains("vprintf")
+            })
         },
     },
     Assumption {
@@ -129,8 +131,8 @@ pub const REGISTRY: &[Assumption] = &[
         id: "E-ALIGNED",
         kind: "code",
         status: "validated",
-        title: ".sync.aligned instructions are warp convergence points",
-        applies: |k| any(k, |o| o.is_warp_aligned()),
+        title: ".sync.aligned instructions and aligned barriers are warp convergence points",
+        applies: |k| any(k, |o| o.is_warp_aligned() || o.is_aligned_bar()),
     },
     Assumption {
         id: "E-WELLSYNC",
@@ -266,6 +268,13 @@ pub const REGISTRY: &[Assumption] = &[
                 )
             })
         },
+    },
+    Assumption {
+        id: "E-COLLECTIVE-ALL",
+        kind: "code",
+        status: "validated",
+        title: "WARPSYNC.COLLECTIVE.ALL waits for every live lane of the warp at any such gate (non-aligned barrier.sync slow path)",
+        applies: |k| any(k, |o| matches!(o, Op::WarpSync { all: true, .. })),
     },
     Assumption {
         id: "E-BAR-EXIT",
@@ -473,6 +482,24 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |k| any(k, |o| matches!(o, Op::TmaLoad { .. } | Op::TmaStore { .. })),
     },
     Assumption {
+        id: "S-TMA-2CTA-MCAST",
+        kind: "code",
+        status: "unvalidated",
+        title: "a multicast 2-CTA TMA load completes each destination's tx on its pair's mbarrier (peer bit of the operand)",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::TmaLoad {
+                        mask: Some(_),
+                        pair: true,
+                        ..
+                    }
+                )
+            })
+        },
+    },
+    Assumption {
         id: "S-PROXY",
         kind: "code",
         status: "validated",
@@ -588,6 +615,28 @@ pub const REGISTRY: &[Assumption] = &[
         status: "argued",
         title: "remote smem accesses must happen-before some exit of the target CTA",
         applies: cluster,
+    },
+    Assumption {
+        id: "S-REMOTE-INFLIGHT",
+        kind: "code",
+        status: "argued",
+        title: "remote mbarrier arrivals and st.async are in flight until delivered, unordered, drained by the issuer's cluster-scope releases",
+        applies: |k| {
+            any(k, |o| {
+                matches!(o, Op::MbarArrive { remote: true, .. } | Op::StAsync { .. })
+            })
+        },
+    },
+    Assumption {
+        id: "S-ALIGN",
+        kind: "code",
+        status: "validated",
+        title: "ld/st/atom of n bytes (power of two) must be n-aligned, else a fault",
+        applies: |k| {
+            any(k, |o| {
+                matches!(o, Op::Ld { .. } | Op::St { .. } | Op::Atom { .. })
+            })
+        },
     },
     Assumption {
         id: "S-GLOBAL",
