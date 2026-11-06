@@ -4067,14 +4067,17 @@ error). Atomic adds are evaluated as round-to-nearest adds in the simulator's or
 
 ### N-ERRDIST-MC · code
 **Tier 3 evaluates the numerics DAG on sampled inputs, which is bit-exact per sample**
-given N-EQUIV, N-MMA and the simulator / GPU validation. Its confidence intervals
-(Clopper-Pearson for P(differ), normal for the mean) count outputs as independent. Outputs
-of one input are correlated, so the intervals are too narrow by up to sqrt(outputs per
-input) in the worst case. The per-input means are reported for a between-input check.
-- Where: `errdist/mc.rs` `estimate`; `errdist/validate.rs`.
+given N-EQUIV, N-MMA and the simulator / GPU validation. Its confidence intervals take
+inputs as the independent unit. For P(differ) this is the wider of Clopper-Pearson over
+outputs and a batch-means (Student t) interval over the per-input fractions; for the mean,
+batch means per input. Outputs of one input are correlated: a GEMM row, an MX block's
+scale. The output-level binomial interval alone was about 3x too narrow on MXF8.
+- Where: `errdist/mc.rs` `p_interval`, `estimate`; `errdist/validate.rs`.
 - Status: **argued.** Simulator and GPU runs reproduce the DAG's outputs bit for bit (0
-  mismatches, docs/errdist.md §7).
-- If wrong: intervals too narrow; the point estimates stay unbiased.
+  mismatches, docs/errdist.md §7). On MXF8 the batch-means interval matches the spread
+  across seeds.
+- If wrong: intervals too narrow when inputs are few (the t interval assumes the per-input
+  fractions' mean is near normal); the point estimates stay unbiased.
 
 ### N-ERRDIST-IDENT · code
 **An instruction slice computes the real function it was fitted to** (non-chain programs).

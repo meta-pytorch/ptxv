@@ -22,6 +22,11 @@ pub fn against_sample(
 ) -> Validation {
     let mut a: Vec<f64> = pred.sample.iter().map(|x| x.0).collect();
     let mut b: Vec<f64> = obs.sample.iter().map(|x| x.0).collect();
+    // NaN errors (a NaN output, or inf - inf) have no place in the sorted sample.
+    let before = a.len() + b.len();
+    a.retain(|x| !x.is_nan());
+    b.retain(|x| !x.is_nan());
+    let nans = before - a.len() - b.len();
     sort(&mut a);
     sort(&mut b);
     let (ks_d, ks_p) = ks2(&a, &b, pred.inputs as f64, obs.inputs as f64);
@@ -31,14 +36,26 @@ pub fn against_sample(
         .map(|&p| (p, quantile(&a, p), quantile(&b, p)))
         .collect();
     let pd = |o: &Obs| o.differ as f64 / o.compared.max(1) as f64;
-    let ci = super::special::clopper_pearson(obs.differ, obs.compared, 0.05);
+    let ci = super::mc::p_interval(obs, 0.05);
     // Batch-means CI of the observed mean (u scale).
     let bm: Vec<f64> = obs.input_means.iter().map(|x| x.0).collect();
     let m = bm.iter().sum::<f64>() / bm.len().max(1) as f64;
     let v = bm.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (bm.len().max(2) - 1) as f64;
     let hw = 1.96 * (v / bm.len().max(1) as f64).sqrt();
     let mut notes = vec![];
-    let mean_ok = (pred.u.mean() - obs.u.mean()).abs() <= hw + 1e-12 + 2.0 * pred_hw(pred);
+    if nans > 0 {
+        notes.push(format!(
+            "{nans} NaN errors left out of the distribution tests"
+        ));
+    }
+    // A NaN or infinite error (a kernel's NaN / inf output) has no mean: P(differ) and the
+    // distribution tests carry the comparison.
+    let finite = pred.u.mean().is_finite() && obs.u.mean().is_finite();
+    if !finite {
+        notes.push("mean (u scale) not compared: non-finite errors".into());
+    }
+    let mean_ok =
+        !finite || (pred.u.mean() - obs.u.mean()).abs() <= hw + 1e-12 + 2.0 * pred_hw(pred);
     if !mean_ok {
         notes.push(format!(
             "mean (u scale) differs: predicted {:.4e}, observed {:.4e} +- {:.2e}",
@@ -49,8 +66,8 @@ pub fn against_sample(
     }
     // The predicted P(differ) must lie in the observed 99.9% interval (sampling noise of the
     // prediction included: its own interval must overlap).
-    let pci = super::special::clopper_pearson(pred.differ, pred.compared, 0.001);
-    let oci = super::special::clopper_pearson(obs.differ, obs.compared, 0.001);
+    let pci = super::mc::p_interval(pred, 0.001);
+    let oci = super::mc::p_interval(obs, 0.001);
     // Outputs of one input are correlated: also accept within 3.29 batch-means standard
     // errors over inputs (99.9%).
     let bm_ok = match (bm_se(&pred.input_differ), bm_se(&obs.input_differ)) {
@@ -155,9 +172,10 @@ pub fn against_estimate(
     mismatch: u64,
 ) -> Validation {
     let pd = obs.differ as f64 / obs.compared.max(1) as f64;
-    let ci = super::special::clopper_pearson(obs.differ, obs.compared, 0.05);
-    let oci = super::special::clopper_pearson(obs.differ, obs.compared, 0.001);
+    let ci = super::mc::p_interval(obs, 0.05);
+    let oci = super::mc::p_interval(obs, 0.001);
     let mut b: Vec<f64> = obs.sample.iter().map(|x| x.1).collect();
+    b.retain(|x| !x.is_nan());
     sort(&mut b);
     let mut notes = vec![];
     let p = est.p_differ.map(|x| x.0);

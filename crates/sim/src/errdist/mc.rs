@@ -676,6 +676,40 @@ pub fn outputs(p: &Prog, w: &[crate::mma_lp::Operand]) -> Vec<f32> {
         .collect()
 }
 
+/// The interval of P(differ) at level 1 - alpha. Inputs are the independent unit: outputs of
+/// one input share its elements (a GEMM row, an MX block's scale), so the interval is the
+/// wider of the binomial (Clopper-Pearson) interval over outputs and the batch-means interval
+/// over inputs (Student t over the per-input fractions). Outputs alone were ~3x too narrow
+/// on MXF8 (seed-to-seed spread +-0.0002 against +-0.00007).
+// ASSUME(N-ERRDIST-MC): inputs are independent.
+pub fn p_interval(obs: &Obs, alpha: f64) -> (f64, f64) {
+    let (cl, ch) = super::special::clopper_pearson(obs.differ, obs.compared, alpha);
+    let f = &obs.input_differ;
+    let n = f.len();
+    if n < 2 {
+        return (cl, ch);
+    }
+    let p = obs.differ as f64 / obs.compared.max(1) as f64;
+    let m = f.iter().sum::<f64>() / n as f64;
+    let v = f.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (n - 1) as f64;
+    let hw = t_quantile(1.0 - alpha / 2.0, (n - 1) as f64) * (v / n as f64).sqrt();
+    ((p - hw).max(0.0).min(cl), (p + hw).min(1.0).max(ch))
+}
+
+/// The q quantile of Student's t with `df` degrees of freedom (bisection).
+pub fn t_quantile(q: f64, df: f64) -> f64 {
+    let (mut lo, mut hi) = (0.0f64, 1e3f64);
+    for _ in 0..100 {
+        let mid = 0.5 * (lo + hi);
+        if super::special::student_t_cdf(mid, df) < q {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
 /// A Tier 3 (or observed) estimate from collected errors.
 // ASSUME(N-ERRDIST-MC): output-level intervals treat outputs as independent.
 pub fn estimate(obs: &Obs, tier: u8, method: &str, out_fmt: Format) -> super::report::Estimate {
@@ -729,7 +763,7 @@ pub fn estimate(obs: &Obs, tier: u8, method: &str, out_fmt: Format) -> super::re
     } else {
         vec![]
     };
-    let (lo, hi) = super::special::clopper_pearson(obs.differ, obs.compared, 0.05);
+    let (lo, hi) = p_interval(obs, 0.05);
     // Histogram of the u-scale error over the central 99.98%.
     let hist_u = if su.len() > 10 {
         let (a, b) = (quantile(&su, 1e-4), quantile(&su, 1.0 - 1e-4));
@@ -1047,4 +1081,34 @@ pub fn explore_steps(
         );
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn p_interval_counts_inputs_not_outputs() {
+        // 100 inputs of 1000 outputs: half the inputs differ everywhere, half nowhere. The
+        // outputs' binomial interval is +-0.03; the inputs carry the information: +-0.1.
+        let mut o = Obs {
+            differ: 50_000,
+            compared: 100_000,
+            ..Default::default()
+        };
+        o.input_differ = (0..100).map(|i| (i % 2) as f64).collect();
+        let (lo, hi) = p_interval(&o, 0.05);
+        assert!(lo < 0.41 && hi > 0.59, "[{lo}, {hi}]");
+        // Independent outputs: the binomial interval stands.
+        let mut o = Obs {
+            differ: 50_000,
+            compared: 100_000,
+            ..Default::default()
+        };
+        o.input_differ = vec![0.5; 100];
+        let (lo, hi) = p_interval(&o, 0.05);
+        let (cl, ch) = super::super::special::clopper_pearson(50_000, 100_000, 0.05);
+        assert_eq!((lo, hi), (cl, ch));
+        assert!((t_quantile(0.975, 1e6) - 1.96).abs() < 1e-3);
+    }
 }

@@ -84,6 +84,10 @@ pub fn sort(v: &mut [f64]) {
 /// Two-sample KS statistic of sorted samples, and its asymptotic p-value with effective sizes
 /// (n_eff, m_eff) (dependent samples: the number of independent units behind each).
 pub fn ks2(a: &[f64], b: &[f64], n_eff: f64, m_eff: f64) -> (f64, f64) {
+    // A NaN never compares equal: the merge below would not advance.
+    if a.iter().chain(b).any(|x| x.is_nan()) {
+        return (f64::NAN, f64::NAN);
+    }
     if a.is_empty() || b.is_empty() {
         return (f64::NAN, f64::NAN);
     }
@@ -106,6 +110,10 @@ pub fn ks2(a: &[f64], b: &[f64], n_eff: f64, m_eff: f64) -> (f64, f64) {
 /// samples, standardized, and an approximate p-value (their interpolation for k = 2). With
 /// dependent samples the p-value is optimistic; `ks2`'s effective sizes are the safer read.
 pub fn ad2(a: &[f64], b: &[f64]) -> (f64, f64) {
+    // A NaN never compares equal: the merge below would not advance.
+    if a.iter().chain(b).any(|x| x.is_nan()) {
+        return (f64::NAN, f64::NAN);
+    }
     let (n1, n2) = (a.len() as f64, b.len() as f64);
     if a.is_empty() || b.is_empty() {
         return (f64::NAN, f64::NAN);
@@ -222,5 +230,15 @@ mod tests {
         assert!(ks2(&a, &c, 4000.0, 4000.0).1 < 1e-3);
         assert!(ad2(&a, &b).1 > 0.01, "{:?}", ad2(&a, &b));
         assert!(ad2(&a, &c).1 < 0.01);
+    }
+
+    /// A NaN in both samples stopped the merge from advancing (an endless loop on a gelu
+    /// pair under Student-t inputs, where the kernel's output is NaN).
+    #[test]
+    fn nan_samples_terminate() {
+        let a = [-1.0, f64::NAN, 0.0, 1.0];
+        let b = [-2.0, f64::NAN, 2.0];
+        assert!(ks2(&a, &b, 4.0, 3.0).0.is_nan());
+        assert!(ad2(&a, &b).0.is_nan());
     }
 }
