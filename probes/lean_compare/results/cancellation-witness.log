@@ -1,0 +1,4 @@
+'GB300Math.TensorCancellationWitness.all_inputs_finite' depends on axioms: [propext]
+'GB300Math.TensorCancellationWitness.exact_dyadic_sum' depends on axioms: [propext]
+'GB300Math.TensorCancellationWitness.blackwell_prediction' depends on axioms: [propext, Quot.sound]
+'GB300Math.TensorCancellationWitness.blackwell_absolute_error' depends on axioms: [propext]

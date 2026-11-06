@@ -1,0 +1,7 @@
+{
+  "revision": "5ef396e35a856a19e24befde631d0bb1ec0a237b",
+  "lean_toolchain": "leanprover/lean4:v4.34.0",
+  "source_archive_sha256": "98a033904d8e6d03a3a10945041a5557a57adc8c9601b53455ed6a173fd3605a",
+  "source_inventory_sha256": "33d491222a74cac0841d94a23e529de2151d2c30f7f3a15bcd4692e01569314f",
+  "source_inventory_files": 1205
+}

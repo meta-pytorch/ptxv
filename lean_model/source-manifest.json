@@ -1,0 +1,2559 @@
+{
+  "source_revision": "9e252ec040017a0adbd16ed96b27c6cc6b02919a",
+  "files": [
+    {
+      "path": "Audit.lean",
+      "sha256": "110d12e939e23ecba41ca325cf092992ddff8eb968742965c0f3bf2de6dcbdf5"
+    },
+    {
+      "path": "Blackwell/BulkReduction.lean",
+      "sha256": "3e9a60f6165c63c45eb78d72b722851d6f1593d26f94ba320f5b3d39b4ac68f6"
+    },
+    {
+      "path": "Blackwell/FabricAddCheck.lean",
+      "sha256": "0d5097ee1ac9ea32932fd76935d0d2b9bab275266f62f92e8d741480bca75872"
+    },
+    {
+      "path": "Blackwell/FabricBF16.lean",
+      "sha256": "ac92e6cdfa571b0c677171297fc203147395c220c9001264428a32dfee4fead2"
+    },
+    {
+      "path": "Blackwell/FabricBF16CancellationBounds.lean",
+      "sha256": "f75ba330eda3b71d7b86dbd234a418a21cff8be0f3c6f944ed2db3049d508f6b"
+    },
+    {
+      "path": "Blackwell/FabricBF16Decode.lean",
+      "sha256": "1d9b08ae1ea0d6c3c8b9c6eec5b8f353ef7531cb041d73bf07f5051d6e0efa42"
+    },
+    {
+      "path": "Blackwell/FabricBF16Extremes.lean",
+      "sha256": "54a103ad85c31aa0cd4d87b6cebc9b142afb92ecbd25ebc35ee75f03545751ff"
+    },
+    {
+      "path": "Blackwell/FabricBF16Layout.lean",
+      "sha256": "c1c970324727938294d876d0831ce4c1aa6114f9d861d2088a420da6baa661bf"
+    },
+    {
+      "path": "Blackwell/FabricBF16Pair.lean",
+      "sha256": "fae1172cecae34ce4f2a70c9b19e01a03bd9e50a2fe47bdb509d4fd9c56527da"
+    },
+    {
+      "path": "Blackwell/FabricBF16Permutation.lean",
+      "sha256": "c58027f6c46e76b26446229671e8825dfced4df47c75c717379312b91fff8dca"
+    },
+    {
+      "path": "Blackwell/FabricBF16Relative.lean",
+      "sha256": "5d34865ddeddc4ba99d80d36916cd4e85a98cb23da7d71dfde5e8f111c8ab255"
+    },
+    {
+      "path": "Blackwell/FabricBF16RoundBounds.lean",
+      "sha256": "1ebbaa652e52c0a79e6da688e94961e139b95d8e26a49e770281207ad41e916e"
+    },
+    {
+      "path": "Blackwell/FabricBF16StochasticBounds.lean",
+      "sha256": "47b7adb37b75cf583c379b9e4969e61d89197ae2a7be0dbfe52d913e6babf728"
+    },
+    {
+      "path": "Blackwell/FabricBF16V2.lean",
+      "sha256": "dadbb31e4362d4db5ee1205ad9a3c2039ab9d567aca833fb23c43e706ef1e162"
+    },
+    {
+      "path": "Blackwell/FabricBF16V2Bounds.lean",
+      "sha256": "8819e437140cefce05f3572d03215c7deec9c8abf9b321f1780a24b001dccca0"
+    },
+    {
+      "path": "Blackwell/FabricBF16V2Properties.lean",
+      "sha256": "8b88669c5fd6c31fcbc5798780c6d06e1dbb50b717731c8aed238f261f5976df"
+    },
+    {
+      "path": "Blackwell/FabricDirectedBounds.lean",
+      "sha256": "962647669a05366464bbd6e5287f5686df46184f98077732e5522c8bc2ca2e47"
+    },
+    {
+      "path": "Blackwell/FabricEntropy.lean",
+      "sha256": "0dde92b1357ee67538a33fc980ca05c8a157b8c3b3e6e121433678e4fe71eb9f"
+    },
+    {
+      "path": "Blackwell/FabricExtremes.lean",
+      "sha256": "1ff750d8dd4a3c9cc311aa03ace74f72d875e3de791d2e792545799caaeb226b"
+    },
+    {
+      "path": "Blackwell/FabricF16.lean",
+      "sha256": "a398c77b58a5d67624bfdc50f114651dbd0c5a41e846fe62f680a5f534e7e42f"
+    },
+    {
+      "path": "Blackwell/FabricF16Bounds.lean",
+      "sha256": "0eb68ca3ccfe1305d1b0011c33b26701162595769e74ed3064061b17604b3185"
+    },
+    {
+      "path": "Blackwell/FabricF16Check.lean",
+      "sha256": "a850eee0262718a92cb77ae525a85c23a71cdbafe0cfe14e1ddef17dfb6a8274"
+    },
+    {
+      "path": "Blackwell/FabricF16Decode.lean",
+      "sha256": "5a9a0a8ea87740c83cc1f196f9d5551208e6ba0b82dbc2668531030844c39a6b"
+    },
+    {
+      "path": "Blackwell/FabricF16ExactBounds.lean",
+      "sha256": "6ae9977cf0c56fe29cfaeb4f5af146bd77e7bfe8de753b8312d7ffbfa4a01bd4"
+    },
+    {
+      "path": "Blackwell/FabricF16StochasticBounds.lean",
+      "sha256": "90eeb40216e3943c598a5f019b51a4179081d433a742f8f09a5e7618578b1aa6"
+    },
+    {
+      "path": "Blackwell/FabricF16V2.lean",
+      "sha256": "80318b29563a0c7559cf1f242726aa189b201e1925c2cf9db3d879ef164578eb"
+    },
+    {
+      "path": "Blackwell/FabricF16V2Bounds.lean",
+      "sha256": "214cbe99a5db3ca61ef9e7b691ae9e93c845cb994af9c860aea2927334b6c9cf"
+    },
+    {
+      "path": "Blackwell/FabricF16V2Check.lean",
+      "sha256": "0527078399c51c598d4dd84d9e28db091b3e2c5701867fbc0701b5422dda2dba"
+    },
+    {
+      "path": "Blackwell/FabricF16V2Witnesses.lean",
+      "sha256": "44d3ea74f1d8a2178892d6bd3df8aeee1e1489a89c064d6eab189ee9c5aa59a7"
+    },
+    {
+      "path": "Blackwell/FabricF32.lean",
+      "sha256": "606e2153ab34b9e6a4f64c9fe537adb22699ed830925f085a11834f21714b6e5"
+    },
+    {
+      "path": "Blackwell/FabricF32Bounds.lean",
+      "sha256": "7827457028bfd42d742bc5a9674f64e6bec81bb47f7fbcd1a6a91cf70e24dbcf"
+    },
+    {
+      "path": "Blackwell/FabricF32Check.lean",
+      "sha256": "518240ddfe23748a419dd5af631a81bbc46e4bb88591e2972ee59a4f755ca270"
+    },
+    {
+      "path": "Blackwell/FabricF32Decode.lean",
+      "sha256": "8d8735746bcb1db7dc8c20708bbf841b935dedefdb75c5f4234cc1e905a2ee74"
+    },
+    {
+      "path": "Blackwell/FabricF32Permutation.lean",
+      "sha256": "4522e3c52c56234ded1e5f0ec30cd5052d68d692fa88ac02205b86550d37393e"
+    },
+    {
+      "path": "Blackwell/FabricF32Properties.lean",
+      "sha256": "5d711d8575908be03e8dfae082abca092746f2f49484b070b0284fb05d5fbe32"
+    },
+    {
+      "path": "Blackwell/FabricF32RoundBounds.lean",
+      "sha256": "958b3cc2d0b4f5dd34d43e17625866b813cc3838bb06c75743306b32d036ca2a"
+    },
+    {
+      "path": "Blackwell/FabricF32Scale.lean",
+      "sha256": "1459bd3c7f7e833c61ed638402429577d75881ac83e7b165b3f6cd2e84e0b054"
+    },
+    {
+      "path": "Blackwell/FabricF64.lean",
+      "sha256": "af406cbca5a45b74cf67d12b1ec4291bd7d76018f9a6cdf78e79368699b6a2e9"
+    },
+    {
+      "path": "Blackwell/FabricF64Bounds.lean",
+      "sha256": "b63bb96bb735b66e629e0a90608979b79aa3405a30fb81209e6764485c41aa91"
+    },
+    {
+      "path": "Blackwell/FabricF64Check.lean",
+      "sha256": "b49d4b2d23b7f7f0f87e4ca6949450aa56ee483a0c5e4fefd29e112332433b90"
+    },
+    {
+      "path": "Blackwell/FabricF64Decode.lean",
+      "sha256": "6683821a5aa1d708e22030e81985973003be38787320e4745db12d90a2ccff54"
+    },
+    {
+      "path": "Blackwell/FabricF64Relative.lean",
+      "sha256": "2b46c1ba5808b45783ddcd2747a1e827785ef231d0a0cc8547902b67c0565114"
+    },
+    {
+      "path": "Blackwell/FabricFP8.lean",
+      "sha256": "a08d09c8711c1d0ec1331d9e84d8a0f34e8b862a309441f95d2ab7d66f83798a"
+    },
+    {
+      "path": "Blackwell/FabricFP8Bounds.lean",
+      "sha256": "ad927674bf95cc35da2b3a59fa1b4275923fef0b8b7a2003660cd462e85bbf99"
+    },
+    {
+      "path": "Blackwell/FabricScale.lean",
+      "sha256": "a6a56093e1b4792fdb6014f3f82a358cecae9dad186a0fee9d6822bb4f8d1986"
+    },
+    {
+      "path": "Blackwell/FswzaddCheck.lean",
+      "sha256": "77b6767e5245ab72debf9b96cebbdb87c45d26a5578a91b2668e41249f3b3be5"
+    },
+    {
+      "path": "Blackwell/FswzaddGeneralCheck.lean",
+      "sha256": "2868762a658c763a09c7d7952b5775783abceab2e79e2f05d3e2bd7fa4e658b9"
+    },
+    {
+      "path": "Blackwell/GB300Math/Fswzadd.lean",
+      "sha256": "f9f96e2df543a3cf102c919832ab979b610387c7bcca7f25ffcaf59b458d4e9c"
+    },
+    {
+      "path": "Blackwell/GB300Math/FswzaddGeneral.lean",
+      "sha256": "71b7618d603d1ce946a27938b3f9a5b5b639b756677dfc58ac21cb53699fc08e"
+    },
+    {
+      "path": "Blackwell/GB300Math/MatrixLoad.lean",
+      "sha256": "5e8a2a797248c2d690f3f679e38e6c8437af7c9437401103ab40eb4db2f58bc3"
+    },
+    {
+      "path": "Blackwell/GB300Math/MatrixStore.lean",
+      "sha256": "6818874692eb3248a56a659b6df4ffa8cfeeabb7cc63a20cf8ac7869a74130e6"
+    },
+    {
+      "path": "Blackwell/GB300Math/MatrixTranspose.lean",
+      "sha256": "966d8faa154f5c826d19f02d80b698205715f8800233895df885281e7acfca52"
+    },
+    {
+      "path": "Blackwell/GB300Math/MufuSm103.lean",
+      "sha256": "e4cc7c2383016deb89b6350bcf9068a961304c93eee81b2ee9fa44c05cf10288"
+    },
+    {
+      "path": "Blackwell/GB300Math/MultisamplePayloadExact.lean",
+      "sha256": "ea1a764fdccd1d05325a43621fcfa4f2a92ad2b7698a8b8d7b1bbe48622de64f"
+    },
+    {
+      "path": "Blackwell/GB300Math/Stochastic.lean",
+      "sha256": "0f10468dc8265d2d7d102e636cc834793e62acdf0ba626c6bb2d3320826e0d68"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticBias.lean",
+      "sha256": "a6f797a81ab6d543bb58219d643e344a2abe7d3d1fcb60c4b9e02e09357fa1b1"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticBoundaries.lean",
+      "sha256": "030e2c79b53ee56a4158fa5e9e50d1e78bd43ec316b8da3fc5c08dc4ec89d2ab"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticContract.lean",
+      "sha256": "654a102c1c3ae19733a37931a41a5bf1f48d9330e514fa8b7089bf97b673b5c8"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticCorrelation.lean",
+      "sha256": "5b57385dd001539758d5b3d364468e25610f068d9f0bbdef95045eeeaed0d226"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticFinite.lean",
+      "sha256": "07cbdae3522ba5cb6e3b2a7b4534bde934cb526f2ecf180c8970ae2eeae15162"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticFloor.lean",
+      "sha256": "bfdb0ae13cdac1019639f6caef8432101e1fe3686d31295858e92ae6e35617cf"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticMoments.lean",
+      "sha256": "ac2bf6de7a143e5bc05e1ae75ecc1badf8939253afa1362d18cf886492af7dc7"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticNativeAccuracy.lean",
+      "sha256": "1482fe6d2d03cd64f2d51d017500c28b53634fb33471f532ca17868f5490a304"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticNativeContract.lean",
+      "sha256": "93dfb522602b3f7a3d1327d12b2039875bc96ce953a52e7b91715106b4cd36c6"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticNativeSm103.lean",
+      "sha256": "3692749e9cbab78a7e7915b6924670a7a5a878c59c77931bb5dc91e12150e2ae"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticNormal.lean",
+      "sha256": "544b113013d5b41bd882092101dea174ca9c79e7c97e3770aa966b878662b090"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticPacked.lean",
+      "sha256": "3ad6b7b71052dc6def31d105008e613961130e12aa1eaef39e07d5d73aac1392"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticProbability.lean",
+      "sha256": "3b1a99f7a71ddd26ca1ea587311a0fe9874abf6d33007e003fee97f5914f3810"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticSaturation.lean",
+      "sha256": "5d91f1b8eecbd91a68fb60f3df07297e30b8d6511f73fcacc550806a0eb99e96"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticSigned.lean",
+      "sha256": "e89fbc72d0a4818f87c34ea3ce321cfaf13e10c6a34a6f3c3e2eb06f816ac72d"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticSm103.lean",
+      "sha256": "a0aad6a191fbc113da0fc243528cb81eaa14fba2fea599e406fdf18d1204d294"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticSubnormal.lean",
+      "sha256": "59f627b4559a70ea5ddcafc09f2f9fd9ff41452980d46128bb85a19bdb29ad9d"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticUnderflow.lean",
+      "sha256": "21ec3ccc0e30e41fbe64e59dbeb78073f1ad63cc69b1594ece3113ba4c5100bb"
+    },
+    {
+      "path": "Blackwell/GB300Math/StochasticValue.lean",
+      "sha256": "cdc776ad005abeb5f60da508109367b47b008eccf3a13085907e1fe37ce7a234"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorAccumulatorBlackwell.lean",
+      "sha256": "5d3867b8de1331283beaacf8b898f3f29f4337cc393aa73b615f1065a836e286"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorAlignmentLoss.lean",
+      "sha256": "aefff03ceb9cdb9dad28d59c6124b87b18a2d66261b0474016a5ab801d390a31"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorAlignmentProperties.lean",
+      "sha256": "0136d5576f096f38026cb23bab0dfde8ed9442228d5b4cc80e0746bb3a187452"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorArrayEncodingBounds.lean",
+      "sha256": "dea08cc248a9eb78b6940c0616de1bb23dd40dd697d5d72cb4eabc8dd4619dd4"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorBlackwell.lean",
+      "sha256": "b5047df98c83011cd4371f6dca9c191ade29a4a0bec1d16c61428a00ce01a12c",
+      "imported_sha256": "4d0104253991261e0a4620a8a6aaca825ad4eda7ba5c2bf3649d84ad40f122da",
+      "change": "Import shared tensor primitives directly and retain the GB300 alignment claim"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorBlackwellUnderflow.lean",
+      "sha256": "509e2de287180eb2cba78f7f83671795fadb06c9a9a62fc549dd3c0fc4747260",
+      "imported_sha256": "1b70b11bc052b1f76bcbf4dc46905b35a913665764eba6250b565bbac0acfa15",
+      "change": "Retain the GB300 alignment claim"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorCancellationBounds.lean",
+      "sha256": "da9f622ee68e8c31f1d2bc7c7d9418744b554eeff740f3804a25f709ef5d7bb1"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorDecompression.lean",
+      "sha256": "0427e7d75e6b876e22a109fe5693745f0607c238ac3fc483ab5ff1a540a2e622"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorDoubleShapes.lean",
+      "sha256": "7536355c19dcf0745d29dae92ebb3949d046c94ef9ba5b18c695d438825e315e"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorDyadicAlignment.lean",
+      "sha256": "20ae2bc69ee22d5a82765b089be93e4a27bdd47415411a426e92a59ffcba5c7b"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorEncodingBounds.lean",
+      "sha256": "1c78c7d640a736d551d6625f0c8c8bc67f85d48a2e9b39d2792b2ec1a7c367ff"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorError.lean",
+      "sha256": "f14c4ff6e36933804d78ed7301e918afbb01011e4986dc7cee03944208aef355"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorGroupError.lean",
+      "sha256": "fac9cca7ea3f6092b000a4a04eae53a9b33259ae53074c559f99f65f5ac588c5"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorLegacyBlackwell.lean",
+      "sha256": "4548c868335e28bcff0d7c114807a5607b429af0b3edc45810679d6049442672"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorLegacyFP8.lean",
+      "sha256": "9aab64f7723bf68425949460fafd97d2c975c933c84ee5593d88558508587dbb"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorMixed16.lean",
+      "sha256": "645594b5827f63dbb8eff5a8cfdefcbad4fe00d42203b71cb0c6aa2f53bfeb7f"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorRelations.lean",
+      "sha256": "bd2576233cf592dab287b49efd16c0525f0a088b6edb5cf85c6a165a0fafb756"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorScaledBlackwell.lean",
+      "sha256": "49df112064df30a2c08cb0439fac40bc2aa2e81f855188a2eb553d2aa4388c31"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorScaledIdeal.lean",
+      "sha256": "89683191e99485ea62542f2695c436abf12381b7d37a04277747b1c1f15463bc"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorScaledSelected.lean",
+      "sha256": "478f9faf6edca7aff647799d464f1b26aea1fcadae8196e991fefe6f727b2024"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorScaledSmall.lean",
+      "sha256": "6b376e1b257a2d6046a1e64a482600ed17fe096d8851e623821c2c1458741633"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorShift.lean",
+      "sha256": "4a3f971e1e6e812f7e11749ca97c9f8af30efa7c536afd5ddc415eeceec44acd"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorSmallBlackwell.lean",
+      "sha256": "5029682e4ba53ce5f9ce2aa7bcc8d07be5b2fbc34947c82abda9719916848646"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorSmallHalf.lean",
+      "sha256": "1cd6e9e6d17deab17808bec6a989db08f666f3d7857a189ffa574e24d41fdb38"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorSparseBF16Blackwell.lean",
+      "sha256": "f0819b889f3c7cafab2b7137ed200a029c44b467d766bcc68f8827d15a52228a"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorSparseBlackwell.lean",
+      "sha256": "07234b21149fdeee8cdb708556ad1766f26439f783dbcdc204d01caf0560b918"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorSparseCodes.lean",
+      "sha256": "3a009b43db271dbddadc5d1e4c7ccf02f8fb82e425af9c515f7f0e3c1900ec67"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorSparseSelectors.lean",
+      "sha256": "275e1a641859be7e0faf231234f1537bca60e9f8a53dce921c87ad571b2f0e81"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorSparseSmall.lean",
+      "sha256": "b835078bc4a2a25f0738eb15d2de55cd9a6b173efcd2b24f08c72513fe7de26c"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorSparseSmallLayout.lean",
+      "sha256": "ccefa8cd5ada30b56285b1e7b9d94b3b4dce0f55fbdd361ac6a8dc1c049df2d1"
+    },
+    {
+      "path": "Blackwell/GB300Math/TensorSubnormalBounds.lean",
+      "sha256": "39007f155f0262f7131a909389b4a89c0786d5e8678bf518ce98798119599bcf"
+    },
+    {
+      "path": "Blackwell/GB300Math/TextureGradient3DBounds.lean",
+      "sha256": "402be3209871f9c2d7e602f007c1b60b19fb71fac06a40bf1a94f372abbc503e"
+    },
+    {
+      "path": "Blackwell/GB300Math/TextureGradientNormBounds.lean",
+      "sha256": "d5da45a6537e2fffadb53374808260de23526f6453386e9608dc61228877512f"
+    },
+    {
+      "path": "Blackwell/GB300Math/TextureRounding.lean",
+      "sha256": "73e8310e4ad306a25c13c307a867bd719b6610e590b7e9bbb74dbc785084f51c"
+    },
+    {
+      "path": "Blackwell/GB300Math/TextureSeamlessIdeal.lean",
+      "sha256": "61e9f6d751a5779241f2457bcb5f3d3ad0ca99c9a81c3397a898e1d1a119f12b"
+    },
+    {
+      "path": "Blackwell/MatrixLoadReplay.lean",
+      "sha256": "21fc3f451fb395de00acc9ea4d298289e512c5253e5b17d7c609d4cb1e706514"
+    },
+    {
+      "path": "Blackwell/MatrixStoreReplay.lean",
+      "sha256": "3a0b12e608d7829f85c1d2da0538e575a72c70a749f01fc173e8bd824b000421"
+    },
+    {
+      "path": "Blackwell/MatrixTransposeReplay.lean",
+      "sha256": "9a761ed6133d7450eb7f74ef093b32224189d0df6e58353065ad7f37693bc136"
+    },
+    {
+      "path": "Blackwell/MufuBf16Accuracy.lean",
+      "sha256": "8ad5173ff3982d84b010f0a6255c9c0ad38e0129aff330d5be4211d2b4a909e4"
+    },
+    {
+      "path": "Blackwell/MufuBf16Order.lean",
+      "sha256": "9b99f3a531ac3867e75ff14f25c7f86ae18629fd9ea9dc9fe82bf52d8dab499e"
+    },
+    {
+      "path": "Blackwell/MufuBf16OrderCoverage.lean",
+      "sha256": "4b0ed65a2761aa1353fd30ffec00d17b94276a8c1d145fb09144692fcd94cdba"
+    },
+    {
+      "path": "Blackwell/MufuHalfDomain.lean",
+      "sha256": "a278711d8463254a852bc59c3c495bf7cc1a6ca307c0d368230d0cedec91b968"
+    },
+    {
+      "path": "Blackwell/MufuModelTotality.lean",
+      "sha256": "d7d8f5d20846e677ca995eeb68247449751a4e7e07beda3903aab8db21ac5554"
+    },
+    {
+      "path": "Blackwell/MufuModifiers.lean",
+      "sha256": "b28830d5de9966ebf53c4716e484b6fb01a551347c33aac2646e26994f51101b"
+    },
+    {
+      "path": "Blackwell/MufuReciprocalBounds.lean",
+      "sha256": "6aa749119846e176862455dd60fc2d42bf0ceb5cd4062902ec3424a0fe30ef34"
+    },
+    {
+      "path": "Blackwell/MufuReciprocalFloatLib.lean",
+      "sha256": "0d717e098cffa961598e81b86656adbf61fbcce2f20129fb05a86e5102e56c95"
+    },
+    {
+      "path": "Blackwell/MufuReciprocalRealBounds.lean",
+      "sha256": "ef8d264111bfe6079b73e0ed2845a8ce800a3162fbdeb1ea515a9949d094cd32"
+    },
+    {
+      "path": "Blackwell/MufuReciprocalSelectorAccuracy.lean",
+      "sha256": "3e166a29e09f3bd4b4532ef410c7e2fc9fbf5e7de6c1be3589db660462b44986"
+    },
+    {
+      "path": "Blackwell/MufuRootBounds.lean",
+      "sha256": "5021f1b9b85482536f8fa61e7f1fa04c7a269fa1a9e094c06fa0662b6a7a3504"
+    },
+    {
+      "path": "Blackwell/MufuRootFloatLibAccuracy.lean",
+      "sha256": "9d615870c1d31d1f32d881c630e41b157cd9b625be554f596910901ba4196f79"
+    },
+    {
+      "path": "Blackwell/MufuRootRealBounds.lean",
+      "sha256": "f29a95a4d20f7ed8dcb349bc9f9c18545413cf83226644c4d30bdd851ae080d3"
+    },
+    {
+      "path": "Blackwell/MufuRootSelectorAccuracy.lean",
+      "sha256": "46fe3fe26ae577f812a0ed9f59e9937b641c9f6415d34c27bc620aa4a9e190e1"
+    },
+    {
+      "path": "Blackwell/MufuRsqTightBounds.lean",
+      "sha256": "458c20aed84f82c693709dabf170700acbdeb0585ae1ff97e2cdafd199dfa3dc"
+    },
+    {
+      "path": "Blackwell/MufuRsqTightRealBounds.lean",
+      "sha256": "713a93677d5119f56f62a4ca704e371fb71f2744e764258d56964efd85d503a0"
+    },
+    {
+      "path": "Blackwell/MufuSelector.lean",
+      "sha256": "adfbb3040b12562ac27d6c7d83cf9a95b05baf45a4e1f7f5d0c25b68c4dbd355"
+    },
+    {
+      "path": "Blackwell/MufuSelectorSm103.lean",
+      "sha256": "638d53c382653a0db552ea6461db71d43611d34178a6203ef11f13f5c5bc7161"
+    },
+    {
+      "path": "Blackwell/MufuSm103Check.lean",
+      "sha256": "6a8c6104ceed65c9e1501c76afb5e3e9971faede43f2cd5e6a4518f3972f848d"
+    },
+    {
+      "path": "Blackwell/MultimemFp8MinMaxWitness.lean",
+      "sha256": "c846f9387018711c91de3aa998bb45093d825a1d9041abd6e1e630fa7dabac9e"
+    },
+    {
+      "path": "Blackwell/MultimemOrderWitness.lean",
+      "sha256": "bb6cddc41b4188f7c8de5d4a7c6b01abffcd8a8830913b332db74464560ff489"
+    },
+    {
+      "path": "Blackwell/MultimemReduction.lean",
+      "sha256": "156812f315a14f652d7c40cc445208c78990879a255125593e4c1dba6d85eef9"
+    },
+    {
+      "path": "Blackwell/MultimemUpdates.lean",
+      "sha256": "387e04d26e7076532d9c4907e1f375fdac44110f24e4c940e031a09a56a56149"
+    },
+    {
+      "path": "Blackwell/S2F6.lean",
+      "sha256": "50698550991034554fc39cfeda2afb9b6062a2f0a1c94c079a1826466d91121b"
+    },
+    {
+      "path": "Blackwell/S2F6FloatLibAccuracy.lean",
+      "sha256": "af7f48b1c2a3c38e61afb758eff59c5e623f1744581838afe9edd2ea03eeb193"
+    },
+    {
+      "path": "Blackwell/S2F6Rounding.lean",
+      "sha256": "6884bfce14299307af082c176b91af32cf4a6116273cc1f0dbcf9d782793d33f"
+    },
+    {
+      "path": "Blackwell/SmallConversionNativeSm103.lean",
+      "sha256": "893e43b1f1a1875453ce20c8bd2b14c37b948aa015e0860a94e355f7a0e1c479"
+    },
+    {
+      "path": "Blackwell/SmallConversionNativeSm103Proof.lean",
+      "sha256": "d482bc1412fe9436dfc506bd5ed73aa65b73598c50f0e6d1cf787e2ea8a4c633"
+    },
+    {
+      "path": "Blackwell/StochasticCheck.lean",
+      "sha256": "a56bc760011cbe7a545b32f4fad6623c6121ef0c8e5d2465e21c0f2d19fde99b"
+    },
+    {
+      "path": "Blackwell/StochasticNativeSm103Check.lean",
+      "sha256": "ef8f2d0d06da555026e118f5979f376ca88bcc07812a2217b9e5b282d65ff559"
+    },
+    {
+      "path": "Blackwell/StochasticSm103Check.lean",
+      "sha256": "ab2ed4e6db01e9bc425911aa7f7ac90e9e285fd11ac92f1b82c4bf79c8864f28"
+    },
+    {
+      "path": "Blackwell/StochasticSmall.lean",
+      "sha256": "7f40a1d121acb121fe242eac49c1a9a91ebb386d2c5ed3b31fa03e328ce8c087"
+    },
+    {
+      "path": "Blackwell/TensorAccumulatorBlackwellReplay.lean",
+      "sha256": "0206adc1b8a8ba7a53985bb1dfef2944bf2cc9d42044ae6ea040eff14243c6af"
+    },
+    {
+      "path": "Blackwell/TensorBlackwellReplay.lean",
+      "sha256": "da8324a27c55eed4fb4cc93a003a816422db96df18359e9b3a68c587f159d6cb"
+    },
+    {
+      "path": "Blackwell/TensorCancellationReplay.lean",
+      "sha256": "a6ebd8de5fa3618c221fd3f058671a2f9a79d203ce745256f9a99cd7c05ade6d",
+      "imported_sha256": "8ae123950c6ac1b163555ee75bf58ac29e44945c0e83a366d1e98d258a8932e0",
+      "change": "Restrict the replay to SM103"
+    },
+    {
+      "path": "Blackwell/TensorCancellationWitness.lean",
+      "sha256": "3284c9ca3bdd548a07ff82cdc266c8d21bcf67174c85a5bf3962cccc93e463af",
+      "imported_sha256": "2bce0e68b6c2d5823e22dda6557289baca511db97feb06b9f4814983585e18aa",
+      "change": "Retain GB300 predictions and error bounds"
+    },
+    {
+      "path": "Blackwell/TensorCollectorReplay.lean",
+      "sha256": "5ce91ff71281abcac72b7115c003f13cd22d4d424f34526135358766059054fb"
+    },
+    {
+      "path": "Blackwell/TensorDecompressionProofs.lean",
+      "sha256": "397ffd1c72b68138b7b399f0a361029440d96a60a59a8296eafc969dcd502103"
+    },
+    {
+      "path": "Blackwell/TensorDecompressionReplay.lean",
+      "sha256": "42abea66bcf66a8ec935254079e32b3431be327c860c951e7b5ea0878b50cd46"
+    },
+    {
+      "path": "Blackwell/TensorDenseHalfBlackwellReplay.lean",
+      "sha256": "192e177064e680b00d22ae9b9dfefc6312a261f43367e6cf40b69303f6639c12"
+    },
+    {
+      "path": "Blackwell/TensorDenseModifierReplay.lean",
+      "sha256": "664aee124ee7e47e093a037ad94f7a8fc04585991239c9c9140a91a9e617cb3c"
+    },
+    {
+      "path": "Blackwell/TensorDouble.lean",
+      "sha256": "e6c7fee8e862b81c9d02906d92660a27b3c0d885916ec057db0814832e234aea"
+    },
+    {
+      "path": "Blackwell/TensorDoubleModifiers.lean",
+      "sha256": "4e3d28d8e97b7facae2a1fed20099c3eb2a6cfb747c1bfd334f86901d150cecf"
+    },
+    {
+      "path": "Blackwell/TensorDoubleShapesReplay.lean",
+      "sha256": "c0bec3bb8f5964c55fd548151694414d14eadcddbc6999d305b326a47e0c5583"
+    },
+    {
+      "path": "Blackwell/TensorDoubleZero.lean",
+      "sha256": "37eabd8abb409a44c144cf1f282f281c791b5cd029ac587cd94d4dd817c09ba0"
+    },
+    {
+      "path": "Blackwell/TensorInteger.lean",
+      "sha256": "4f8046e56bc422d0f18faf993bca4cf5088332aa9d93474a523191770e8c6f0b"
+    },
+    {
+      "path": "Blackwell/TensorIntegerSm103.lean",
+      "sha256": "1de4d11e3ab06824f3d0044991b991be3f64f40bf465077901e00a1411e343b8"
+    },
+    {
+      "path": "Blackwell/TensorIntegerZero.lean",
+      "sha256": "754b4b7aa3ca92bd482cfe6bae1b1a03a6cccc7a9f7cd865d24b451aa7af6320"
+    },
+    {
+      "path": "Blackwell/TensorLegacyBlackwellReplay.lean",
+      "sha256": "275ffa1e9c6f7e942c1b6b20c5210f98492db2e0e9a5968581021d9a421c0487"
+    },
+    {
+      "path": "Blackwell/TensorLegacyFP8Replay.lean",
+      "sha256": "bd72c17cb170f4c4249c8c4eaafaecdff835f52c874639ae1d1ea16ba11f65fc"
+    },
+    {
+      "path": "Blackwell/TensorMixed16Replay.lean",
+      "sha256": "56d639d7c0ae75ba7837c79a4800d64e1c101f4c609c6942a9e28a55a7b0e447"
+    },
+    {
+      "path": "Blackwell/TensorPartitionCases.lean",
+      "sha256": "5c9babbf385b19b268d17d3e8ad8c331f34229a00743c3b6bfd0800142ee0900",
+      "imported_sha256": "a934dec1cf5fd9a3903251f4ae6084fce1163bd7af8c4ab8200e4be063b799ab",
+      "change": "Retain GB300 predictions and mathematical ideal claims"
+    },
+    {
+      "path": "Blackwell/TensorPermutationCases.lean",
+      "sha256": "90e5c9575bc7a962e55ac6a975aa6519a8c208eeeec0a8e15e4dbe29755322c6",
+      "imported_sha256": "86bae7fb02892a7ca81b2f1494b4315658e424cbfc88829efd46edf6073c9227",
+      "change": "Retain GB300 predictions and mathematical ideal claims"
+    },
+    {
+      "path": "Blackwell/TensorPermutationNormalCases.lean",
+      "sha256": "0b1c291784d726a8bc733dbb1853df018aa207a5c1b4a9b3958420ca1d49488c",
+      "imported_sha256": "5d8071082f5aa336cfb7fd3551d33d8f7e3200d83db17a82d72b3df39eec0754",
+      "change": "Retain GB300 predictions and mathematical ideal claims"
+    },
+    {
+      "path": "Blackwell/TensorPermutationReplay.lean",
+      "sha256": "b5ed1c16a3aa6dc4dceea1bcd3dc9129947fc87d975a0e6b792c449602b42db5"
+    },
+    {
+      "path": "Blackwell/TensorScaleSelectorsReplay.lean",
+      "sha256": "f955a0098a2aa918537cf6249476b51f9a65006569fe7bf05c9652c5f943916a"
+    },
+    {
+      "path": "Blackwell/TensorScaledBlackwellReplay.lean",
+      "sha256": "1af1c8cfb95f59aeabdaa2342ed40476e2a250b690c175dda6b51eef3dc0c07c"
+    },
+    {
+      "path": "Blackwell/TensorScaledCancellation.lean",
+      "sha256": "c697409387c8a225cd4d3808c3475f71b8f741b9bd646f544a734367064d8f4c"
+    },
+    {
+      "path": "Blackwell/TensorScaledFamilyCases.lean",
+      "sha256": "038a796b876963d47b4154f3db70702e21cfe691cacd41e22290ed81dc8c4a16"
+    },
+    {
+      "path": "Blackwell/TensorScaledIdealReplay.lean",
+      "sha256": "b18b766201870b4cda04b513ea2f0e6e92dbd8a2c205269f56532099dfb5f8ff"
+    },
+    {
+      "path": "Blackwell/TensorScaledSelectedCases.lean",
+      "sha256": "14c3e9b4c846d4610dbf9a8006b19df69cbd1cef6f12afcd627f07df6b101db3"
+    },
+    {
+      "path": "Blackwell/TensorScaledSmallReplay.lean",
+      "sha256": "9c67694284e1fe88d597db27b3a331f79939cacebd491f54b527b9b50861c8ba"
+    },
+    {
+      "path": "Blackwell/TensorScaledSmallTransposeReplay.lean",
+      "sha256": "8f4ee36f33c5496ba1deb3016d33a33617f402ed7cad62fa3faf4bc43de23dfa"
+    },
+    {
+      "path": "Blackwell/TensorScaledSparseReplay.lean",
+      "sha256": "8001d73231a36f1cc6f99b634e5f7797746fc87b6a4cad1bfbfd644e7f5414b9"
+    },
+    {
+      "path": "Blackwell/TensorScaledUE8M0Replay.lean",
+      "sha256": "dda3db79af184c927c4d63f36ce3188b60d44c1f5cf2f767d30d6251b536dd94"
+    },
+    {
+      "path": "Blackwell/TensorScaledWitness.lean",
+      "sha256": "d8ae3ffa035fc8809d925b84869253d5593ceda03562fe940f3d404c3970600e"
+    },
+    {
+      "path": "Blackwell/TensorShiftReplay.lean",
+      "sha256": "b90076bd940bb9322555cc93a470dafbe2dc1dc6f5b58e92a1253a81598de226"
+    },
+    {
+      "path": "Blackwell/TensorSmallBlackwellReplay.lean",
+      "sha256": "fd12b77a8c6abc6fb8f2549d04153d02d9a3cc0f7a73a661802dbbde77e33640"
+    },
+    {
+      "path": "Blackwell/TensorSmallHalfReplay.lean",
+      "sha256": "64e35158520be726abbcae83dcde56c7e721b09401b34aefaac826a547914d70"
+    },
+    {
+      "path": "Blackwell/TensorSmallNegateReplay.lean",
+      "sha256": "9ae843fd7cf12882f7e9154c991b0f5bd35e0470dd9a29858e1de11bddbd78d3"
+    },
+    {
+      "path": "Blackwell/TensorSmallTransposeReplay.lean",
+      "sha256": "28adc23bcadfc35eba42e9893bba0782c60ebbc4802f8423c6e75afe3bcee439"
+    },
+    {
+      "path": "Blackwell/TensorSmallTwoCTAReplay.lean",
+      "sha256": "0ce20a009f0728f3f17947c37893973f3933accde1afd7d6be48d4b5d8bb0398"
+    },
+    {
+      "path": "Blackwell/TensorSmallWSReplay.lean",
+      "sha256": "9045b9fc7fb19c8ad570077ceb2212c0c36ca18715f696bdb941ac1b53c6e90c"
+    },
+    {
+      "path": "Blackwell/TensorSparseBF16BlackwellReplay.lean",
+      "sha256": "fd7a5a03ecd1c776aec14293fda9b49ffb64ee51c7e8758d901fe472c098bd7e"
+    },
+    {
+      "path": "Blackwell/TensorSparseBlackwellReplay.lean",
+      "sha256": "6a4f357fe49d37604c5fcb4db328d0ad92ad9db5257bc76958d0806b33b1d242"
+    },
+    {
+      "path": "Blackwell/TensorSparseCodesReplay.lean",
+      "sha256": "9857ebaab6908f17f7bc37a826c433c0d47d6963377ed29c7969affb9f88d008"
+    },
+    {
+      "path": "Blackwell/TensorSparseSelectorsReplay.lean",
+      "sha256": "ae3429e1363e9b74c4d1ab7c25f837aff6806c37603a789655304bd904ca8737"
+    },
+    {
+      "path": "Blackwell/TensorSparseSmallLayoutReplay.lean",
+      "sha256": "79c46f9f321534ee5a20a534e1fde5017430f874279b59768df249c49360590f"
+    },
+    {
+      "path": "Blackwell/TensorSparseSmallReplay.lean",
+      "sha256": "bc2ee4938d4c5eb4c27d0c487a6ea67610730a9ff49cac5a9db85294757e7455"
+    },
+    {
+      "path": "Blackwell/TensorSparseWSReplay.lean",
+      "sha256": "21e933790d3b1cf803eb4ffed2296a7f52bf21e03987193cc97a88454a551ff7"
+    },
+    {
+      "path": "Blackwell/TensorTF32TransposeLayout.lean",
+      "sha256": "e1897eed7bee7546def3f7e64e5d8f061821581dff7e38ec5c42566ef2d18b83"
+    },
+    {
+      "path": "Blackwell/TensorTransposeLayout.lean",
+      "sha256": "af7a7085f753160376ab95e5daeb89e5847564170d685511c668463c994b8820"
+    },
+    {
+      "path": "Blackwell/TensorTwoCTAReplay.lean",
+      "sha256": "7364878341150194e5274013e347500c85badc71010ade784e7c7a3cada941bc"
+    },
+    {
+      "path": "Blackwell/TensorWSReplay.lean",
+      "sha256": "1e75e86199cdbf48a30f3cecbf8c5ccbed3fcb51f385aa6b97223aa6f91c3a4f"
+    },
+    {
+      "path": "Blackwell/TextureLargeCoordinatesSm103.lean",
+      "sha256": "5c055ec3ff764f38c7e27d3ae3da1aa5425e73e06b929597336c251cbdae86ff",
+      "imported_sha256": "43bbad7de3238a85cba8786793dbb98a1ad5be6cbac953edca7a43c096d78b29",
+      "change": "Remove a cross-architecture comparison comment"
+    },
+    {
+      "path": "Blackwell/VectorAtomic.lean",
+      "sha256": "9037788394f8545d562f722331266178f35b22dea4078eb3dfc50e7ec537d8a0"
+    },
+    {
+      "path": "GpuMath.lean",
+      "sha256": "9e51368fc2803d4fb453c79e8b1620e1b62157e0824277a93de69995624b8b7f",
+      "imported_sha256": "4f29fe40c28e0a8b5b5b8e19ef110eee805a0c78fe6e650fca19194b99732e0d",
+      "change": "GB300-only aggregate imports"
+    },
+    {
+      "path": "Shared/Accuracy.lean",
+      "sha256": "a0531d5e988c0dbbc97bf6c70dab50d80eaebd686813f4a24d72384f783ea47f"
+    },
+    {
+      "path": "Shared/AlternateFloat.lean",
+      "sha256": "d5e7f0c4c20e8524ed0df2ae34032bf0b2cd8e6801f01581368e30c7254daf8e"
+    },
+    {
+      "path": "Shared/AlternateFloatAddExact.lean",
+      "sha256": "d73c8069c77322976dd4aa786ef78b97a0316414039a063ab20451bd5338bacb"
+    },
+    {
+      "path": "Shared/AlternateFloatAlgebra.lean",
+      "sha256": "2e96ed6582d2feefea6b1b14bdaa00a96e10642c5a2cd3dee990a15fd743caec"
+    },
+    {
+      "path": "Shared/AlternateFloatDecodedFmaBounds.lean",
+      "sha256": "dbb1edea3e911fb29b45d64d5a6f9d0fcaabeb8de0268019a700cafa0b3d4ec1"
+    },
+    {
+      "path": "Shared/AlternateFloatEncodeBound.lean",
+      "sha256": "1bbee87167891337e29846cee65680e26f2068bbbf348410862b50736a18e812"
+    },
+    {
+      "path": "Shared/AlternateFloatEncodeRoundTrip.lean",
+      "sha256": "bc876d89e3ff465b6e527b7e11b1cedbd04f6c8a79a7679206462f45b6607159"
+    },
+    {
+      "path": "Shared/AlternateFloatFloatLib.lean",
+      "sha256": "8c66d37dd043bd677a62d9be22a0a3f9f43bbc47df2d2a879ba16931c926fe5a"
+    },
+    {
+      "path": "Shared/AlternateFloatFmaBounds.lean",
+      "sha256": "07aaed1237fefdb87efd0352577249cf2918fc488eeb36dd6971c9d89d19aa81"
+    },
+    {
+      "path": "Shared/AlternateFloatFmaExact.lean",
+      "sha256": "b74fee4f3101813ad8bf6434db3afff078456178b512565913d16e87a4c4ad0d"
+    },
+    {
+      "path": "Shared/AlternateFloatMagnitudeBounds.lean",
+      "sha256": "ca12abf7549ad6a3b9bf6da16e2d781149bd44dda39a14d5c9729130b0d24a06"
+    },
+    {
+      "path": "Shared/AlternateFloatNormalRelative.lean",
+      "sha256": "8d63c7310ac14f36b5763df0118bdd498320a23e36048611ea9432661611de87"
+    },
+    {
+      "path": "Shared/AlternateFloatOperationBounds.lean",
+      "sha256": "83ff7a42cea7eeb9e0031fda5100c8a43028902ab7cb412db0be811322c5f3fb"
+    },
+    {
+      "path": "Shared/AlternateFloatPackRoundTrip.lean",
+      "sha256": "24da40cc53207322e2fbb673d2e2a940db26a4349b90a5b1485b98eacc77448f"
+    },
+    {
+      "path": "Shared/AlternateFloatPairBounds.lean",
+      "sha256": "7b8f4746d9267c9de98315771c38985052d5357e9ea8b279da9d8709ef0b7ee2"
+    },
+    {
+      "path": "Shared/AlternateFloatPairContracts.lean",
+      "sha256": "ca744f55dedd54af4ab77430550cc55c7e2c41fb663368f09c8fa07923801981"
+    },
+    {
+      "path": "Shared/AlternateFloatPairRational.lean",
+      "sha256": "cc0393f13791cda4540a8c3a940b5c0727bced2b197d1395be2b58e61101c23b"
+    },
+    {
+      "path": "Shared/AlternateFloatRationalBounds.lean",
+      "sha256": "5a27d4a9a5ba0c2cf1e5560e0110bb40513791463e47602a10fd3dc2bad63aac"
+    },
+    {
+      "path": "Shared/AlternateFloatRoundBounds.lean",
+      "sha256": "53eff37b92b4185703b462996b7fa0a80d8ff3c82cb137ebc0a0920f74c80898"
+    },
+    {
+      "path": "Shared/AluModifiers.lean",
+      "sha256": "7cb7954a2babb3017cb990b8c61098870ce38a7912424fbcbb2721dc2a2b2070"
+    },
+    {
+      "path": "Shared/Approx.lean",
+      "sha256": "2f60ab959ae09d96f52a744c872055dda2a0dc552a2d04ac9405eef8e77b4388"
+    },
+    {
+      "path": "Shared/Arithmetic.lean",
+      "sha256": "0d6726318fff6356ceac23507d83f6e2d1f0324704996ad8254a262da280a22e"
+    },
+    {
+      "path": "Shared/Atomic.lean",
+      "sha256": "12e95ec1a77776481f63e617de7beb6c7380c922548ac24a5e79211b2cca1ca8"
+    },
+    {
+      "path": "Shared/Carryless.lean",
+      "sha256": "924da365b5859e27116fbb00a3b0d37f80943e12d784fe269cf262752995ba00"
+    },
+    {
+      "path": "Shared/Check.lean",
+      "sha256": "f4ac112960d4e6b9f214d92fa8ab097c6fea0512509546bb3bfd0d516ba8e8c6"
+    },
+    {
+      "path": "Shared/ConversionModifiers.lean",
+      "sha256": "a9f43937c5a2983b484f97637757327bea01f21b0fb9e9945ab611e16c98a790"
+    },
+    {
+      "path": "Shared/ConversionTransitionScan.lean",
+      "sha256": "132439483ee352e7b40ddb22004db3556f256971f0de5081001417a8cdae989f"
+    },
+    {
+      "path": "Shared/Conversions.lean",
+      "sha256": "e54976ae5828c6f5e497975a2403215734436e64ce3fc90c800c73982fabe7fd"
+    },
+    {
+      "path": "Shared/CudaLog2.lean",
+      "sha256": "2c123622e4cb1e5ea99489d9f7faee3f37b59e60fad7a42e93f6267d814a049c"
+    },
+    {
+      "path": "Shared/CycleIntegerTail.lean",
+      "sha256": "737f993013d8b4f8c22e8395aa9244fd476121d3dd3b9a800b1ac0cf0f9b8b3d"
+    },
+    {
+      "path": "Shared/DivisionPtx.lean",
+      "sha256": "05cac937381303604069815d8a004db546fbe3685df45d6aa75252b050a50bf5"
+    },
+    {
+      "path": "Shared/Exp2Analytic.lean",
+      "sha256": "cfa069438c72d5063a007fa46ac04f50df1f15f9f807acd7b327e157913f9341"
+    },
+    {
+      "path": "Shared/Exp2Argument.lean",
+      "sha256": "18e08b92a5cc15ac77a118dfabe19c44d7383852c00588914e2bdf2c4ee5b3bf"
+    },
+    {
+      "path": "Shared/Exp2Boundary.lean",
+      "sha256": "9e3f1686f1c6b31cbd4d4250ad1ad04bc7343b7cbf4c21b5adb59e5790582ffc"
+    },
+    {
+      "path": "Shared/Exp2Bounds.lean",
+      "sha256": "91fe1a521a61c76e616b91f584f436d2133c258a1218cd9d8a35c15fbf1876af"
+    },
+    {
+      "path": "Shared/Exp2Cells.lean",
+      "sha256": "678f9e2600cb6848ebe70d382fac4834c67691ffdcac35b2bb2d5eaeece34384"
+    },
+    {
+      "path": "Shared/Exp2Decode.lean",
+      "sha256": "a9ea1fda6fce753044c29becddcd1631e06d130259fb0ef7ff497d00916fd102"
+    },
+    {
+      "path": "Shared/Exp2Domain.lean",
+      "sha256": "06b6168ea5371ac00a84104512b0b23447232c98e88099eca67fe935d9831802"
+    },
+    {
+      "path": "Shared/Exp2Fraction.lean",
+      "sha256": "41e8914aef6c3592b33280f359324514fbeb9324b9ca67e73868fb25c5901ae2"
+    },
+    {
+      "path": "Shared/Exp2Interpolation.lean",
+      "sha256": "10950def3ee8b5356f8deec721abe82f2b83c4cdd15c59f02b82dcb809edc159"
+    },
+    {
+      "path": "Shared/Exp2Local.lean",
+      "sha256": "d74067f3aade0f72cc715ce9994cc77edadebf56bdf57582f459c676607f17f3"
+    },
+    {
+      "path": "Shared/Exp2Relative.lean",
+      "sha256": "fbe120bd650d48624cb0a80eb79335930980757a9b027ca4a6bbebbfc265ae3b"
+    },
+    {
+      "path": "Shared/Exp2Uniform.lean",
+      "sha256": "e36ff94f85e25f7a7c8d153d081da1f71659607facbb2a4c157516e38cb95993"
+    },
+    {
+      "path": "Shared/F16Selectors.lean",
+      "sha256": "349654f70922fa296c16f2c73816c19f7346406f5973007c7aacf676c011fd4f"
+    },
+    {
+      "path": "Shared/F2FPExtra.lean",
+      "sha256": "56c1da0b68f6e1e50cbbe01b3a4082e2fedbe557e53725b63ad42cfd357df9e0"
+    },
+    {
+      "path": "Shared/FabricGeneralBounds.lean",
+      "sha256": "936d872feb36791a1a7e79fffc7edf2d74e454cd5451e80d73065dfd4ebfbc79"
+    },
+    {
+      "path": "Shared/FabricRounding.lean",
+      "sha256": "0af955f9e6d73013e88bee82ee72d4d1d4a4bc7771e561ac49ae2228eaa6012b"
+    },
+    {
+      "path": "Shared/FabricRoundingBounds.lean",
+      "sha256": "c8b7e8cae22db86182832ef5063855a67a78cec08d489e04bad7b9514cba5586"
+    },
+    {
+      "path": "Shared/FixedNormal.lean",
+      "sha256": "b360e328f36d94de0a56ec1ea508d488afe54471ee19534cc907f6eb8cdb2ddb"
+    },
+    {
+      "path": "Shared/FixedToWord.lean",
+      "sha256": "6bb5a51c0f580b3fc7342f078b20916664c62376a2ae7a7418d5bb568e56a8aa"
+    },
+    {
+      "path": "Shared/FloatAtomicTrace.lean",
+      "sha256": "d948b102ef54b6b51fcf660cba5f016b67bd5ec4de18fbf7852dc370c71914f3"
+    },
+    {
+      "path": "Shared/FloatConversionModifiers.lean",
+      "sha256": "d4a5fb68389156c24041e9c18db144caaf75bcd0321cfb3352f06dc26b59052f"
+    },
+    {
+      "path": "Shared/FmaImmediate.lean",
+      "sha256": "a001ab4754ae87d9784ee46b3a6baa8bd07b3d35f1870a23dffe4b8c536a5e51"
+    },
+    {
+      "path": "Shared/Fp64RsqBounds.lean",
+      "sha256": "07c8dd3a7c94ed2cd2602204f91ac7363e7cc36bde4dfc2fca7fd2d492d3177a"
+    },
+    {
+      "path": "Shared/Fp64RsqClassification.lean",
+      "sha256": "906eb9f8023287fbf74ad7ac2445d49242250f29b601cfa1a615ffba795e6964"
+    },
+    {
+      "path": "Shared/Fp64RsqFloatLib.lean",
+      "sha256": "05f0702a4b324bf0c01102915aecb10d2f4e06a71e3d142a9a902b2ae894ecb3"
+    },
+    {
+      "path": "Shared/Fp64SeedAccuracy.lean",
+      "sha256": "163d8aec995f462d42f6efb836857c42f1871eafcefec747b28ecbcc916f8e79"
+    },
+    {
+      "path": "Shared/Fp64SeedBoundary.lean",
+      "sha256": "2e52cb9dfdadaa4f461ee2e75f2b4fefb69ce7ffa500cb15104c73fac294faa3"
+    },
+    {
+      "path": "Shared/Fp64SeedBounds.lean",
+      "sha256": "54182cc51ec249462a9b4d2a3646cd02636c1c3184ea52dc62f6a3fa402fb836",
+      "imported_sha256": "5863a80783c88d6807474016ec5d108ba53fdfcb6ed7095545e297e8548b7bef",
+      "change": "Whitespace cleanup only"
+    },
+    {
+      "path": "Shared/Fp64SeedCheck.lean",
+      "sha256": "c091e645c9918540ebda44c30e00890d252ab5114f3321cec400fea47e0c9b45"
+    },
+    {
+      "path": "Shared/GB300Math/Basic.lean",
+      "sha256": "e33bc6e69437b0cdf439e8671f62dc4ad427687283448ef81e8c7948f6209c95"
+    },
+    {
+      "path": "Shared/GB300Math/Fp64Seed.lean",
+      "sha256": "5ce18bcdc3027e41b99ce6b2a77e13261b3af2d944263a158f7581fda7eb1252"
+    },
+    {
+      "path": "Shared/GB300Math/Mufu.lean",
+      "sha256": "9e2f504c4174aef95d461109acc1e7cec1d97854fd74f1ca7521e3f50407619f"
+    },
+    {
+      "path": "Shared/GB300Math/MufuTables.lean",
+      "sha256": "403f0a66370f46850ee3fb8839e0c2f4399c5acebaf1f5f38f1ccf02efeedbdc"
+    },
+    {
+      "path": "Shared/GB300Math/MultisampleFetch.lean",
+      "sha256": "220db0179d8cefab6d438c43e673e7e1ff5089a3969f0c80fc152f39e71683fc"
+    },
+    {
+      "path": "Shared/GB300Math/MultisampleFormats.lean",
+      "sha256": "af6fb24f1b5445c0d9c57ab37ceabefc3e991ec69f272e90e2af6d0203d16f79"
+    },
+    {
+      "path": "Shared/GB300Math/MultisampleNarrowFormats.lean",
+      "sha256": "6d098425b7d1a5731cb32f353757def327ce6ee27a8e01864a7379aaa3d1e545"
+    },
+    {
+      "path": "Shared/GB300Math/SeedTables.lean",
+      "sha256": "8cf4728c1c776283d2d236ead32c4a12801cdbe650633d2c0bf5b4b6d4ecdb15"
+    },
+    {
+      "path": "Shared/GB300Math/SparseMetadata.lean",
+      "sha256": "d2d32cd67c2397242a47d2bae3eeb23db4848505ad836d3a2c3689017ca96c63"
+    },
+    {
+      "path": "Shared/GB300Math/SpecialCases.lean",
+      "sha256": "a79527247deb6b73d846d8fc1fc0bf77f2939bfb145458a71e84f8811d0ab5d1"
+    },
+    {
+      "path": "Shared/GB300Math/SpecialFma.lean",
+      "sha256": "50e2f581888aa9cf6254fcc483f4bfbbee56c81b8d2cc60852478744a922f997"
+    },
+    {
+      "path": "Shared/GB300Math/SpecialFmaOob.lean",
+      "sha256": "59073bd196a49de74a3fe2439536f1d7e49998511fb5a07131c6844f182d88b7"
+    },
+    {
+      "path": "Shared/GB300Math/SurfaceBoundary.lean",
+      "sha256": "23bef44df678d78be14b968151b97c2a45a4b7b34527f8b24d00a5b1c095f385"
+    },
+    {
+      "path": "Shared/GB300Math/SurfaceBounds.lean",
+      "sha256": "523ca98d5dc45a9d8b9d2fe94afbd3b5ecb7ed74d257f3caf16da3023fec1698"
+    },
+    {
+      "path": "Shared/GB300Math/SurfaceNumeric.lean",
+      "sha256": "bd6db92b52aea211e6d31e0f00521d62f0599f335167348ad816685f7928d1a3"
+    },
+    {
+      "path": "Shared/GB300Math/TanhSmall.lean",
+      "sha256": "552cf113522b3d5aa3339f79a44b43687cdbe47517e55cab00b6b09d94ada004"
+    },
+    {
+      "path": "Shared/GB300Math/TanhTables.lean",
+      "sha256": "0c14f331df1769009c29f1c5cc2e5833f8a09fd6a1f533e088a1411040c95a3b"
+    },
+    {
+      "path": "Shared/GB300Math/TensorCore.lean",
+      "sha256": "2a20e7929ac9372c6efacb4f6fb6db47314557a7d09f5f2253e8c60de3b73cdd"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropy.lean",
+      "sha256": "389d2a173496400df33c63c3c30d5e619ef0fa8227c3ab83df44b744c25e782b"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyArea.lean",
+      "sha256": "0b968a843259ad35dc053a04eec5ef968adaf5f8eea26f0b1c8dfb7ff5d7f574"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyArithmetic.lean",
+      "sha256": "82686e6f240576aeac771dd7627d086d51ac3dbc268d3f197eb833be0c1860be"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyArithmeticBounds.lean",
+      "sha256": "12beccd723b609558897c676fde09fc299e957af8c585830f90c683023d614d0"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyArithmeticWitness.lean",
+      "sha256": "914f12e6d8ab365f4fedb97b8c5839ac19638a90b71b012c058a54a440e93e19"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyAxis.lean",
+      "sha256": "f2cd746a7af94b22dccc0b0e031f37f46b4c037632638ada6f2c941bb9d5c6c4"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyBlend.lean",
+      "sha256": "0c447f1d50ffa6070c20ecda3a080f56c5d3630a1d5716f5fcc053b81b175b49"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyGeneral.lean",
+      "sha256": "c47997195991d3269d2034060fcab708cbba833a6a06c6558f9b0fb48fd97632"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyGeneralMipmap.lean",
+      "sha256": "4e0114c63f7f1b878317e6bb208dcaaccc948e0a9f636b522afb5e494452940e"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyJointMipmap.lean",
+      "sha256": "951248639e5e756556cbd030090f95b1d2f29b14afb9690b3bb9a9a83922fb83"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyLargeMipmap.lean",
+      "sha256": "e7fad194b0f95e515ed6330534caf53abdc937efce6fd4030977bec4fef18941"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyMipmap.lean",
+      "sha256": "427bb07cd06bba7e5f0fc63ac5fdc3bfeacffbe413537ce07a4f37af8a9b1e83"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyMipmapArithmetic.lean",
+      "sha256": "bae71c306760ccbe9a3942203f6f5f3ee1eb143d9ebd0fbd285f692a51ff0fdb"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyMipmapCaps.lean",
+      "sha256": "bf9909348485fa6c98e4e8dbacdf17d926e2f5694f776c7e9a6ccbe36de77971"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyMipmapCoordinates.lean",
+      "sha256": "d2d1a80b9f3ab7b8a4195536abb65b872f817216d3538f2217c12b1aba0c3a04"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyMipmapStep.lean",
+      "sha256": "a5a4ded761fd53bd97f54e7a5dbfaebea06f3b6e62a45c7a428dee5074d2ed5a"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyMipmapWeights.lean",
+      "sha256": "58ebb8afea1e924c8ad78a5264e1242cee668a2e82a4deee3c6bc0c4467765df"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyOriented.lean",
+      "sha256": "a8769ccf5ee434a6cd880a9e692559a6dbb82ada033f1630b8becff82e29349b"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyOrientedBounds.lean",
+      "sha256": "fdfa23b4143233ca1720a0ac43e9676a7d545b9bc9548dbb3512561c0d756af2"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyOrientedMipmap.lean",
+      "sha256": "83f2bd5ae9c22792da5d1cb50ace08c74ee367d5aaf5e165a15593f992fc39db"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyRankTwo.lean",
+      "sha256": "f923a6f6d97cccdbf16d9c39b309f4f4e8939720994fa64bf4c2e16837d6f261"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyTapBounds.lean",
+      "sha256": "f08b3c5e42cecb643f08dd92e178cac8bd286fa321cae1552f85fdfd1f7e9175"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyTaps.lean",
+      "sha256": "a51614e6fdc772314bdbb09ffe6c8574f2459bcb3391849a80e2a22aa511e6ce"
+    },
+    {
+      "path": "Shared/GB300Math/TextureAnisotropyWeightLaws.lean",
+      "sha256": "3152832ceb46b7728174635fa3ae4cf13096c76273891d872ccda4bbb0a5588c"
+    },
+    {
+      "path": "Shared/GB300Math/TextureBC6.lean",
+      "sha256": "ca262dafc98a5684e0dd6fc6ae3b11c7f7562039c349366fc6c278996d1ccaff"
+    },
+    {
+      "path": "Shared/GB300Math/TextureBC6Tables.lean",
+      "sha256": "07f97c36aa881f619f460dc3390265af27ba4b017e49e9ee42212fc0eeb02ee0"
+    },
+    {
+      "path": "Shared/GB300Math/TextureBC7.lean",
+      "sha256": "130574817011499b1ca15fe237e05d91471fa6581f60e5d71ab5eb6350737d5e"
+    },
+    {
+      "path": "Shared/GB300Math/TextureBC7Tables.lean",
+      "sha256": "d100d2f0b19aeeca72a043aa8e61b32a4525103276ce85fa40eff79821458512"
+    },
+    {
+      "path": "Shared/GB300Math/TextureBCAlpha.lean",
+      "sha256": "b8103be232ec2a4745026e0c78adbae3263db168016e48ca33027cdafa0055f3"
+    },
+    {
+      "path": "Shared/GB300Math/TextureBlockColor.lean",
+      "sha256": "0a75fdfc0c63d71a204cb32b10937940c284670c86f0ae45069c96389f407709"
+    },
+    {
+      "path": "Shared/GB300Math/TextureClampBound.lean",
+      "sha256": "6bd91fcd39462be3f1bf9bbfb7dc9b49cbbb92a90ff9f845cbf4025c918f847b"
+    },
+    {
+      "path": "Shared/GB300Math/TextureClampOrder.lean",
+      "sha256": "db7e0ce7e2c2decf838d63dd76df58765139876cfd1eeb08b7608b375c9f0e0c"
+    },
+    {
+      "path": "Shared/GB300Math/TextureCubeGather.lean",
+      "sha256": "38caf90b84b2beea1f54f11ecea1e1e050d54e029d46bf3262eb8fc4996013a4"
+    },
+    {
+      "path": "Shared/GB300Math/TextureDepth24.lean",
+      "sha256": "83356f5ce409a04b656fe08c214a13a32d8b64f9b75d2432a96653f8eac18c88"
+    },
+    {
+      "path": "Shared/GB300Math/TextureDepth24Bounds.lean",
+      "sha256": "589384613cf0d52cdc0f8f1c0119b3e3d2b838115cf06b68b721a883e8b77c87"
+    },
+    {
+      "path": "Shared/GB300Math/TextureDepthCompare.lean",
+      "sha256": "6ff080bf3b5788f58073aa84dee3d76065a54ed888a6bba400615ba358b3a61b"
+    },
+    {
+      "path": "Shared/GB300Math/TextureDepthGather.lean",
+      "sha256": "cd58fd0a553e09b039a71576f7041e42aca033dc39e61abaa930cb8148c64027"
+    },
+    {
+      "path": "Shared/GB300Math/TextureDepthGeometry.lean",
+      "sha256": "168396bc971d1d89272060ca72897d4280e2e52b2abde3685b03872a27c3eb2d"
+    },
+    {
+      "path": "Shared/GB300Math/TextureDepthNormalized.lean",
+      "sha256": "4c9372de10defa5d46e9e4c9bbac11d7b5ef874ab25a24b337d2d4849f598daa"
+    },
+    {
+      "path": "Shared/GB300Math/TextureDepthNormalizedBounds.lean",
+      "sha256": "32854586074f3a42b8f1715ddb3829b3ac37b96ec81eab890ecd7a0ce6180e89"
+    },
+    {
+      "path": "Shared/GB300Math/TextureDepthPCF.lean",
+      "sha256": "372f64b236fd9b42ffec143859837966127f5a4371f48b7568f250cd08df4ac4"
+    },
+    {
+      "path": "Shared/GB300Math/TextureDepthPCFBounds.lean",
+      "sha256": "4c4a75a1ea43a7e4f5eb386bb7c5d2cde0e5abb5b1def3c1c5e9d2c20d5edb97"
+    },
+    {
+      "path": "Shared/GB300Math/TextureDescriptorRelation.lean",
+      "sha256": "2cbbdba8db01ebc9613bb88c4efacc6f0e049e1bb7401ab95a7e56ac61048da4"
+    },
+    {
+      "path": "Shared/GB300Math/TextureFormatsCore.lean",
+      "sha256": "8dab1839df119d7183626d6ca91f9f3265ed91051e5926f751621fc1b2225ced",
+      "imported_sha256": "040ab0bd617f31fee072c03d673b9bba06223ff5362eb3a3ed912d08383d40cc",
+      "change": "Whitespace cleanup only"
+    },
+    {
+      "path": "Shared/GB300Math/TextureFormatsCoreBridge.lean",
+      "sha256": "374dffc68ee9fedb06d7c23360bce20a96596dedfd8c8b3d54d18d93a517d641"
+    },
+    {
+      "path": "Shared/GB300Math/TextureGradient1D.lean",
+      "sha256": "670d91677dee67e947991ceec42f9f21567c3e29adbaf06a6ebdc1c775fde17b"
+    },
+    {
+      "path": "Shared/GB300Math/TextureGradient2D.lean",
+      "sha256": "3054b6991fdff0b02fa7f1737cbb424c1bb2b39ac2435662ab443e13803ec5c1"
+    },
+    {
+      "path": "Shared/GB300Math/TextureGradient3D.lean",
+      "sha256": "870232f190e276a861b6653c3ccfd3bf5fcfcf5bd2ca2dc0ee0e5e2f559518fb"
+    },
+    {
+      "path": "Shared/GB300Math/TextureGradientAxis.lean",
+      "sha256": "9331a0d1cd755bc600eaa902e3f79cd18ee79528b207631379d5dc66609d3e2f"
+    },
+    {
+      "path": "Shared/GB300Math/TextureGradientBounds.lean",
+      "sha256": "d77d871014f9147ee49578b897878f665301b3dcaa47dfb0519ba3a8657d68fb"
+    },
+    {
+      "path": "Shared/GB300Math/TextureGradientCoordinateBounds.lean",
+      "sha256": "05ca099f6c1c2cb8e8327d7366e348ff7b74a2bbc68483eac5a2de3cb888855a"
+    },
+    {
+      "path": "Shared/GB300Math/TextureGradientCoordinateSymmetry.lean",
+      "sha256": "f4ca6c0ac9e89bbceeda3a2a496e5538c74431ef0247c09db097158ea61314d5"
+    },
+    {
+      "path": "Shared/GB300Math/TextureGradientCube.lean",
+      "sha256": "4fdb38857af5cb8c32a395aeacb63bd53c843dc02364636308ea65f3e74bf8d6"
+    },
+    {
+      "path": "Shared/GB300Math/TextureHalfExact.lean",
+      "sha256": "72ebaf63c718464506998da33e7a52ad0eeaef1052e97669f3e1ca2a89a11462"
+    },
+    {
+      "path": "Shared/GB300Math/TextureHalfFloatLib.lean",
+      "sha256": "8154dbc06febb2634defffca9354ae16b28292eda23dacde60a37c49b1e2d1de"
+    },
+    {
+      "path": "Shared/GB300Math/TextureMipmap.lean",
+      "sha256": "d37875452b1d403ae0b527ee45904725251fb751830d7ed04973edf17aeb4d32"
+    },
+    {
+      "path": "Shared/GB300Math/TextureOffsets.lean",
+      "sha256": "73932183ef7bdb5f7e4cf96f751f2e9e296ed55fc9c50e2f296df502e0a3d145"
+    },
+    {
+      "path": "Shared/GB300Math/TexturePackedViews.lean",
+      "sha256": "b00ce6e687a3b0d2768604b65349d47e71652df267cac20f59688ecac5e93994"
+    },
+    {
+      "path": "Shared/GB300Math/TexturePlanes.lean",
+      "sha256": "d2cf687bc7a89d27873a4a54797f0b2108cfed081c71fd33debc3d0a7a79fc6a"
+    },
+    {
+      "path": "Shared/GB300Math/TextureRatio.lean",
+      "sha256": "8a98ffd074f2fe5a9a8114d5eeee19c01973c793cf9db15651e4c7b6a9bc922b"
+    },
+    {
+      "path": "Shared/GB300Math/TextureReturn.lean",
+      "sha256": "731318d1e65b392842c816e5c7966d41e98e0d868b9b7c17830836e16ce1b4da"
+    },
+    {
+      "path": "Shared/GB300Math/TextureSeamless.lean",
+      "sha256": "caf579919fde912d569071bc1670542c6ca7d1f0674f8ce803269d9f6da5f378"
+    },
+    {
+      "path": "Shared/GB300Math/TextureSeamlessBounds.lean",
+      "sha256": "5d689a337765566a57cbb5009a62ab0c974affca3124efc2c54cc4278d7861c6"
+    },
+    {
+      "path": "Shared/GB300Math/TextureSeamlessBridge.lean",
+      "sha256": "7adc289ee467c6d5af3d2b4d756f6f554dbe085b4c40ac1a7aa2059b233c64c9"
+    },
+    {
+      "path": "Shared/GB300Math/TextureSparse.lean",
+      "sha256": "2618f65b2940a39ac55e3ec22b2da86c4d01b670220b0aff1f9ba0e3749333f6"
+    },
+    {
+      "path": "Shared/GB300Math/TextureSparsePartial.lean",
+      "sha256": "b94b468fdf5e71a2145d53d9d3fd0b82c79722b7539bbbe270182065cad3696e"
+    },
+    {
+      "path": "Shared/GB300Math/VulkanDepthFilter.lean",
+      "sha256": "774481d04a1f3cadbd8c5cd2d51d4f4288963aa41d817ae81ac3f20952b7a86f"
+    },
+    {
+      "path": "Shared/GB300Math/VulkanDepthOracle.lean",
+      "sha256": "23cd8b2cb989bd804d6decfa5e5a8dedbd9801dac83d68e091c6febce9e011db"
+    },
+    {
+      "path": "Shared/GB300Math/VulkanHandle.lean",
+      "sha256": "aa9f6250044d019cc653e10a22c1e283a2afd7eaa5425484886c737b93b7f42f"
+    },
+    {
+      "path": "Shared/GB300Math/VulkanMultisample.lean",
+      "sha256": "778c9c9eb382efe464b5fb513397ae2a8b9d9da1aa91d18d72de5548a5c6e611"
+    },
+    {
+      "path": "Shared/GB300Math/WmmaArithmetic.lean",
+      "sha256": "86e7286fd389a25bcd1ddd3e3ef969ead9d6576531f389b30b53b5a402d93a23"
+    },
+    {
+      "path": "Shared/GB300Math/WmmaFragmentBytes.lean",
+      "sha256": "1912a56ce5fb05d716283b1db4fb7971e4aac16eb9da0f21f42368eeefa656fe"
+    },
+    {
+      "path": "Shared/GB300Math/WmmaFragmentMap.lean",
+      "sha256": "8a9d5dc1ccd38f0ea6576ea25f9115ba5d40e1d350a147e1ffc73bdf5dbc48be"
+    },
+    {
+      "path": "Shared/GB300Math/WmmaFragmentProperties.lean",
+      "sha256": "0d645b1117786ff53ee818646f062f0051fe3e567c6df88cdccab5a5c4fc1416"
+    },
+    {
+      "path": "Shared/GB300Math/WmmaIntegerBoundaries.lean",
+      "sha256": "7baff377af41acf8e99b9342f3f42da13e7a581c4fd4e2813770d5606047ecb6"
+    },
+    {
+      "path": "Shared/GB300Math/WmmaMovement.lean",
+      "sha256": "10cfc44e9170619baafb55637bbfaf214b99e9464a99d17169df7bcd9cc08141"
+    },
+    {
+      "path": "Shared/GB300Math/XorSign.lean",
+      "sha256": "afdf87c89ac4db27a64fee784c8fe8b2727bb4ccb8f953870413ebdf222d46d3"
+    },
+    {
+      "path": "Shared/GB300Math/XorSignProperties.lean",
+      "sha256": "029204af8bb5fa6da7c6776f34ee0cd89bfc5370614c5187e2b459f0f9f3d305"
+    },
+    {
+      "path": "Shared/GB300Math/YcbcrShader.lean",
+      "sha256": "79b4cad2b1c74224a72ceb4d42890e2f412093595db30f45ddb097a2c215da59"
+    },
+    {
+      "path": "Shared/GB300Math/YcbcrShaderNormalization.lean",
+      "sha256": "36907971c9d1d0a40fd4bf6d8a77fb348b92c9c72a7fdd2c444630f1be03938b"
+    },
+    {
+      "path": "Shared/I2FSelectors.lean",
+      "sha256": "21dd86c76b5b6e4ce6ac789c3b5c3adf1b75646c0f1446f27895f815be54cd25"
+    },
+    {
+      "path": "Shared/Integer.lean",
+      "sha256": "1ec20a939537a5addbccf78e016aea5808665af31dd696ba4b58c0d8fb9ca5fb"
+    },
+    {
+      "path": "Shared/IntegerAtomic.lean",
+      "sha256": "49c9e59f22d2b065b9b2730cda618cc02bf7838da54a63ea2ce4932cd3f8d542"
+    },
+    {
+      "path": "Shared/IntegerCarry.lean",
+      "sha256": "e7e77cc6946e0680f66e89145c69ae39236d82a285a2f883564140876417009c"
+    },
+    {
+      "path": "Shared/IntegerCarryExtra.lean",
+      "sha256": "9903b04985defecf1f77797cd591f4657d2a4cbc2a6cf410bc01d92a0d3e0ca9"
+    },
+    {
+      "path": "Shared/IntegerMisc.lean",
+      "sha256": "95e9d981fb6aecfcfce8e9d037d6dce5b1b60eee6ed7f87ad20534f04a6830d6"
+    },
+    {
+      "path": "Shared/IntegerPredicates.lean",
+      "sha256": "56c137b78b36d8fa14dd9773f9e13d6dec7162466406bd0f7eb5cba66330cf73"
+    },
+    {
+      "path": "Shared/Lg2NearOne.lean",
+      "sha256": "fa48bbc23db6b4594405c4d743dd1d06d9293eb05e7836de52adf8fe2fd1a0da"
+    },
+    {
+      "path": "Shared/Log2CellData.lean",
+      "sha256": "65e790b0047b15e2dfff4715662f28a84a67a351af699c12493bf11a254a7dc1"
+    },
+    {
+      "path": "Shared/Log2Centers.lean",
+      "sha256": "8db53fd823b5c1724d0f751216417f2beee906ab3f11b78329c534ac737c1c1a"
+    },
+    {
+      "path": "Shared/Log2Classification.lean",
+      "sha256": "7e7fceb01908c1477a5e38a13594a6663fa8c990164fabfb303269a43ac2b20b"
+    },
+    {
+      "path": "Shared/Log2Complete.lean",
+      "sha256": "ae5da4cb21d7821ef76a73eff733a91b5b2a30f398186932550deb3e8cb8ffa0"
+    },
+    {
+      "path": "Shared/Log2Drop.lean",
+      "sha256": "ef8d25a8e39bc8c50e6ce36f412af9cec051a701c457284c8bce529faad96b98"
+    },
+    {
+      "path": "Shared/Log2Encoding.lean",
+      "sha256": "280f6c36b79b4f31f1bc104fa24cf9df80d0b8389b044c9ce2347e09d12fa308"
+    },
+    {
+      "path": "Shared/Log2Fixed.lean",
+      "sha256": "10344f89dda4f1bdb54c907a249ff5e322f93f10a98b38547b97a25d8da524ad"
+    },
+    {
+      "path": "Shared/Log2Input.lean",
+      "sha256": "ff56179a8bcfe3c74382fcc9b0e4ef32a265ff531a92b80a36416ed284af6565"
+    },
+    {
+      "path": "Shared/Log2Interpolation.lean",
+      "sha256": "a3a5ae5dd1cfccccc939cf643ac7095a9381b51b69c598e48485a42807a7c2ac"
+    },
+    {
+      "path": "Shared/Log2LibraryContrast.lean",
+      "sha256": "17353122ec1169d7cc933f1ab80ef311a0c6e12c8a94bbf286ac389d2d73846c"
+    },
+    {
+      "path": "Shared/Log2Local.lean",
+      "sha256": "18a412d86ce97948260d6e61d75bfd090a91ea83b8a01f72aa978615ac7f33cf",
+      "imported_sha256": "4660cd8ef05f079e7e1ea079beb68825e401b6ca0747f1b5005f6852edafb741",
+      "change": "Whitespace cleanup only"
+    },
+    {
+      "path": "Shared/Log2LocalInterpolation.lean",
+      "sha256": "aef4f3764761e3dab5fcd8cb2d66aa57afe62f16494cde17b41a5eaaf2ab3c5e"
+    },
+    {
+      "path": "Shared/Log2NearEncoding.lean",
+      "sha256": "b50d16faf805ee099163c9476d567617af3b268b3991373b1614333f9a06646b"
+    },
+    {
+      "path": "Shared/Log2NearFixed.lean",
+      "sha256": "469454553bbbde0214703b1482789eb4b668713bb29fa4af0d79e907151ef505"
+    },
+    {
+      "path": "Shared/Log2NearOne.lean",
+      "sha256": "77e436175c3fe7667d7e8ef48c761444473a84d6301323f5331397ab960087f3"
+    },
+    {
+      "path": "Shared/Log2OneSidedCells.lean",
+      "sha256": "a991df4db6c78825aad468e4ee52084ea2663394169be0fb762c6d863122fa17"
+    },
+    {
+      "path": "Shared/Log2OneSidedPolynomial.lean",
+      "sha256": "ff4eaaa792064e4314652b7e3422b90ac2811d5a6d200af4fa42ada0b9aab467"
+    },
+    {
+      "path": "Shared/Log2OneSidedTable.lean",
+      "sha256": "98c0e9a94c47e057f3cd33661ba33e60fc91d97c5f84efc7ad54ac25e6a89a94"
+    },
+    {
+      "path": "Shared/Log2Perturb.lean",
+      "sha256": "9c8649d89abc8e004d9172bcec07138cdd6467c638289d0f9314f9fedf8a75b3"
+    },
+    {
+      "path": "Shared/Log2Polynomial.lean",
+      "sha256": "12a2de0a46ba3a080ee6cc06cb28b36408ad68c213483714250a9f53d516a0b1"
+    },
+    {
+      "path": "Shared/Log2PtxAll.lean",
+      "sha256": "7c032e0eda3a5bfa74225d543436e5df15f48b478942e0e1cb06a0b8fbe34db5"
+    },
+    {
+      "path": "Shared/Log2PtxContract.lean",
+      "sha256": "a656986f8be1f3b1e633416a4c2b4f2f953e1839571e357946cf0d0d5efc7dae"
+    },
+    {
+      "path": "Shared/Log2PtxRange.lean",
+      "sha256": "683587e81bcdcf7b19cd39bdcfb353ea618ad594cbee0a1c5916142e9b86c036"
+    },
+    {
+      "path": "Shared/Log2Relative.lean",
+      "sha256": "a8f35fb5d753647f5ee8c301355af0e0dd02215cf0311f7b7906eb96f5db5274"
+    },
+    {
+      "path": "Shared/Log2RelativeArithmetic.lean",
+      "sha256": "0a597df744f2f595bb7039c8d0ff1b641d7f04fd5008e3365da7127120ca4ea2"
+    },
+    {
+      "path": "Shared/Log2RelativeCells.lean",
+      "sha256": "b226ae0cbca255bee7c8ae77f01021269c5e3fe05b38e20518b1b37873208e95"
+    },
+    {
+      "path": "Shared/Log2RelativePolynomial.lean",
+      "sha256": "e1c69730f8bd32447408f4310e1e658c3405393d57fb901977dc193851a3c1b6"
+    },
+    {
+      "path": "Shared/Log2RelativeTable.lean",
+      "sha256": "2011e155eb1cd8c4ca90dd3ef015cabcad5e9bd6bfe6283fcbda7020bb4cb11e"
+    },
+    {
+      "path": "Shared/Log2ScaledEncoding.lean",
+      "sha256": "e15df508a34f3fc5ba43dec078a1a41de8b3482202d666b0d6cf82a6daa08ff4"
+    },
+    {
+      "path": "Shared/Log2ScaledFixed.lean",
+      "sha256": "ed3a11a43d5b6a3c7d47bc971782ea0e9694f87888d88880db1617f9825b6fed"
+    },
+    {
+      "path": "Shared/Log2Series.lean",
+      "sha256": "f618a8bf8e79aac7f31f6a077b7654654a4ca5688207420c191fc4a4e7452255"
+    },
+    {
+      "path": "Shared/Log2SubAdd.lean",
+      "sha256": "7005605f4f69df774de89982a1fd84b9586876be5106eb2d00459185b49a71fe"
+    },
+    {
+      "path": "Shared/Log2SubAddDecode.lean",
+      "sha256": "b402c624f9312850b940a99725b59dacdc8f958568526bec9919539abd00df35"
+    },
+    {
+      "path": "Shared/Log2SubShape.lean",
+      "sha256": "741e73b728912e524512c441115992a1e9a47b976bf24c33b598547ff4d52216"
+    },
+    {
+      "path": "Shared/Log2Subnormal.lean",
+      "sha256": "e81ad6d3722b1c9b97682241ba2d5a3474346c14dbf42465779238b089de641a"
+    },
+    {
+      "path": "Shared/Log2Table.lean",
+      "sha256": "72405f07eb49f55910f91e7ca46b44fc0cb333952e4b1bedf88dedb19dbbef2f"
+    },
+    {
+      "path": "Shared/Log2TightCells.lean",
+      "sha256": "04f92f6d7dcd971ac3abcf194961e097223fba1e59a39797f2ef8f6466d9f732"
+    },
+    {
+      "path": "Shared/Log2TightPolynomial.lean",
+      "sha256": "45252cebe063e88a6fb3c6ce54a5e550bfdc2f6e69658baab13c2b9c56660927"
+    },
+    {
+      "path": "Shared/Log2TightTable.lean",
+      "sha256": "b8ba72f1f8e1beae4fb4217075162d64eb7a527fee0d092b100ce781b0ee6ea6"
+    },
+    {
+      "path": "Shared/Log2Uniform.lean",
+      "sha256": "3b766eb6a2157a48b69e077ace5217026a62bcbc38d7cfcc926e6a6f95baaeeb"
+    },
+    {
+      "path": "Shared/MinMax3Redux.lean",
+      "sha256": "8fa1f4454fbd965c6b6863e7c523df587e973cfa5884763093eb41b70086e8bf"
+    },
+    {
+      "path": "Shared/MixedScalar.lean",
+      "sha256": "bfa7f2bcf26d9463330a2942ef84ee4e53a67ed9e98c1ee334af7fcfc7f4fb92"
+    },
+    {
+      "path": "Shared/MufuModifierExhaustive.lean",
+      "sha256": "beaca5f8149e3398f0e21b0cea8acbb40247e16d7da4d05ba66200e3063d61cd"
+    },
+    {
+      "path": "Shared/MufuPacked.lean",
+      "sha256": "ce77cb39f2f15bab13a99ca2c045af7921d233a386d701d67ef59df0dbdb0f01"
+    },
+    {
+      "path": "Shared/MufuPackedAccuracy.lean",
+      "sha256": "86e2682805d48becc538b920b7db5aa73f2456168d4d7cc821b519182e7831a4"
+    },
+    {
+      "path": "Shared/MufuPackedExhaustive.lean",
+      "sha256": "308d74cbcf34a18a82430920a580fad9f1059699b6fba06a76ce5ae97caad320"
+    },
+    {
+      "path": "Shared/MufuPackedSelectorExhaustive.lean",
+      "sha256": "65543e1a608b4f583fe9a01573e22a343da36e4f5fee4f872cca110a41a08caa"
+    },
+    {
+      "path": "Shared/MufuProperties.lean",
+      "sha256": "41bc29b0020c0b9454b82d92373f35713178a324a2e8b6a910a76c6ca7f09a09"
+    },
+    {
+      "path": "Shared/MufuRcp32Accuracy.lean",
+      "sha256": "e71fe76795912c2553251f386abcd8409fa84871569420a2deedc10ba37f65c0"
+    },
+    {
+      "path": "Shared/MufuRcp32Bounds.lean",
+      "sha256": "ac2ebb584245d9b33b78e84458bd09b27203c4697e33e4599f3245f20909ac9b"
+    },
+    {
+      "path": "Shared/MufuRcp32Classification.lean",
+      "sha256": "8e9bfc1dcaf85918bbd9355c2b30bda5e619db19bff23464b58d3ae838da9207"
+    },
+    {
+      "path": "Shared/MufuRcp32FloatLib.lean",
+      "sha256": "df1f7a1846b0ff9895690cb52552a004a43d4a41c6256210bb5ca67829aef9af"
+    },
+    {
+      "path": "Shared/MufuRcp32Interpolation.lean",
+      "sha256": "3ff32d4ce74df2a40a7c42f5323fa7e62a8f59044a21e6f018fd5cd080f67509"
+    },
+    {
+      "path": "Shared/MufuRcp32Scaling.lean",
+      "sha256": "8ccb0d1a8a06d6f7191648bbe0fa908ea1f7c65a2913d2b6ce74b9c2dad44c7b"
+    },
+    {
+      "path": "Shared/MufuRcp32Signed.lean",
+      "sha256": "d9ea31911d97f57c9d20c399cf427ad68281b8dd11fedfb245fac79172e7fdb1"
+    },
+    {
+      "path": "Shared/MufuRcp32Tail.lean",
+      "sha256": "f0d0581db3b1b55fb60baf09819d1cb0772fc82d6478c43a309cdbf130f8d57b"
+    },
+    {
+      "path": "Shared/MufuRcp64Bounds.lean",
+      "sha256": "a56fa17fbed82a037cb9c3935dd66fbe0cfeb46e066f172b4ae27f58ec01d86c"
+    },
+    {
+      "path": "Shared/MufuRcp64Classification.lean",
+      "sha256": "afc0328763561297e9aff3743e0961e5c6f6d4b0312e279f7b8e4bdb2f46b97c"
+    },
+    {
+      "path": "Shared/MufuRcp64Decode.lean",
+      "sha256": "8b98f00d6d6277e2b936176b65c7e4fb65fa25a7fc68218004ca940a0a254360"
+    },
+    {
+      "path": "Shared/MufuRcp64FullDecode.lean",
+      "sha256": "6c3f2b707038dcd838fb6ac5747cd86f4aa6e6272515ce178c2c3e1db677bbb0"
+    },
+    {
+      "path": "Shared/MufuRcp64FullOutput.lean",
+      "sha256": "d8181637fb9a9262c68370579016011dd3a04054af5d68a892de94dd4622fde7"
+    },
+    {
+      "path": "Shared/MufuRcp64NormalSign.lean",
+      "sha256": "3d15a4e0c5edd5470cbf472452c2f9a8481c042c5bea856ee1738b622173101f"
+    },
+    {
+      "path": "Shared/MufuRcp64Output.lean",
+      "sha256": "ff8e5b5af786f5f67f114c58782b83db18df4fa5c97e189aad123eaea837684d"
+    },
+    {
+      "path": "Shared/MufuRcp64ScaleAccuracy.lean",
+      "sha256": "e127b71b4a231bf55ab6d4fd750010ea68ddcc6f2b50e1fe051b54b4fb42848a"
+    },
+    {
+      "path": "Shared/MufuRcp64Scaling.lean",
+      "sha256": "6d004707e2abe3ee7aa8a618c14ae93e45f309cafc0d35d23f3893d604a9982f"
+    },
+    {
+      "path": "Shared/MufuRcp64SignedCore.lean",
+      "sha256": "ce3bdbe098d3655c440e5083ff165bc3c51bbfa9011dad3088131f635c730f8b",
+      "imported_sha256": "36cfd08de231fbe6b6e9dac51938e12d59506ba7c3436d727e5200b2fa711268",
+      "change": "Whitespace cleanup only"
+    },
+    {
+      "path": "Shared/MufuRcp64Specials.lean",
+      "sha256": "0a44cdc41bbe00e6c4e32dc6a51e225b1e29ae2f14b9f33ca748ce7a8dc01701"
+    },
+    {
+      "path": "Shared/MufuRcp64Tail.lean",
+      "sha256": "1f942e9a99d84533417d65d70d49062cee4e786e602db21210b95302b727a7f7"
+    },
+    {
+      "path": "Shared/MufuRcp64Witnesses.lean",
+      "sha256": "7323e0ae746bc7bc60fd7cb2c5e740095930aebb62ffa1cb93c4bb3f046e9b95"
+    },
+    {
+      "path": "Shared/MufuTableBounds.lean",
+      "sha256": "90f7bb265f7c8474fff19a872c776eaaee1c9fe47f6230a9481ca39d8aa685e8"
+    },
+    {
+      "path": "Shared/MultisampleFetchReplay.lean",
+      "sha256": "048b1fbebd45ef504f264d11030a60d37c27c8217e7b55f25a79d8fc0f5c5738"
+    },
+    {
+      "path": "Shared/MultisampleFormatsCheck.lean",
+      "sha256": "74e70d22a563d5571512b20b341455fcf43f3541a43eb72305679368c8acc725"
+    },
+    {
+      "path": "Shared/NarrowFloatInteger.lean",
+      "sha256": "9d8493e8e3a3f1eb8de73707d2744c4b6104e9daec9eaaa42f9f514965bbd7fd"
+    },
+    {
+      "path": "Shared/NativeIntegerControls.lean",
+      "sha256": "7148632a179e03e90355a4bd9c6ebe3ee02b54020e20e6d7a850b9af0a3a1392"
+    },
+    {
+      "path": "Shared/NativeIntegerModifiers.lean",
+      "sha256": "90232e3b5bf6e0775dc314c20becc6110d226c3046e5fad5e7dab9025005d371"
+    },
+    {
+      "path": "Shared/NativeIntegerProperties.lean",
+      "sha256": "ea30416b1859a2ec7abf348efbce5b7af9f9476fb417ddbfdf306be0c220fd41"
+    },
+    {
+      "path": "Shared/NativeMixedScalar.lean",
+      "sha256": "0745e153e9c75bdcb3df34d083a886f8808fadbb562c5d114ccde0884b0cfea3"
+    },
+    {
+      "path": "Shared/PackedConversion.lean",
+      "sha256": "4c3eea5d2d7773aa477bd759778c8714596b31634966b430dba2972bf48229d1"
+    },
+    {
+      "path": "Shared/PackedDot.lean",
+      "sha256": "5ae6540e1580221278d69296d249444fb7f6d75fafb6bf446702ec292a871e03"
+    },
+    {
+      "path": "Shared/PackedIntegerNew.lean",
+      "sha256": "9367aa02006339fbcfed7c69873816af4d3732e174979c5b06343933047ce3b8"
+    },
+    {
+      "path": "Shared/PackedIntegerProperties.lean",
+      "sha256": "a24dc949440d767d22b5a4271f9b16831245c2974806cac65a0b1123ebadd7c8"
+    },
+    {
+      "path": "Shared/PackedMinMax.lean",
+      "sha256": "85c85433c03376b02eb1fdb3723ac5cb803e9220759e325c1743d9a0ca03efd9"
+    },
+    {
+      "path": "Shared/PackedMixed.lean",
+      "sha256": "59c5bedc9610f8bab19845e6e66e6a6d7ad9e8f53ebce19b3c244df94aa8c4ef"
+    },
+    {
+      "path": "Shared/PackedModifiers.lean",
+      "sha256": "e96cc05cc1e1abd0a393a663804f77259aecb8e0b8d85aa5bfb8ea1c699554c6"
+    },
+    {
+      "path": "Shared/PackedOutput.lean",
+      "sha256": "355783c5833e0c02edc898f174d3a06c91e76a77d614a25ccb6e85a6cfd81024"
+    },
+    {
+      "path": "Shared/PredicateExtra.lean",
+      "sha256": "d44bf743cd43034ba452a5bfe8d17c6cf15dbca613da26b11ea53d1fb5d61ae8"
+    },
+    {
+      "path": "Shared/PredicateModifiers.lean",
+      "sha256": "06fa51ed099d2d67befbff7c429a04534f09e8e7cd337ab1fe10d005564d577c"
+    },
+    {
+      "path": "Shared/PredicateSelectors.lean",
+      "sha256": "ff788c226ebeb38d7520713029a839462aa5808fc3d9c412222ae91dd071bd66"
+    },
+    {
+      "path": "Shared/Predicates.lean",
+      "sha256": "448e807151ff0ad14240ff5192daac3e6b05c0d1db34f9cfe88418ef06a51f58"
+    },
+    {
+      "path": "Shared/PrmtModes.lean",
+      "sha256": "65f6d3aa34460d02db2fb061bcea6266ed0337dde521e61602f1b871014a103d"
+    },
+    {
+      "path": "Shared/QFloatJoint.lean",
+      "sha256": "978bfda67073d2f4f1fab805493001d4f9c3e6adef16c9885d387a3e35f16ff0"
+    },
+    {
+      "path": "Shared/QFloatModifiers.lean",
+      "sha256": "1e962153a171fe83fa7b68acea4a41de616878ad94b5915e0ed5aace9638a3d3"
+    },
+    {
+      "path": "Shared/QFloatSelectorJoint.lean",
+      "sha256": "cf52c23c27eff86bd41f9e4f5c6b9fb538dca92d4d96bacb067162dab27d0a6e"
+    },
+    {
+      "path": "Shared/RadianAll.lean",
+      "sha256": "706a24eb1945fccb7cc831a324cf0943f603a664a9c318bc969e2c9eedf251c3"
+    },
+    {
+      "path": "Shared/RadianError.lean",
+      "sha256": "23e5119675197dae2253480ac51fbcbb648b28862f9db091fe4eaa5f500c02cd"
+    },
+    {
+      "path": "Shared/RadianNegative.lean",
+      "sha256": "57e37d1c16507a9845ec3c86b20cd90227e9a780e87be2e7b5d2dcd856d9aea9"
+    },
+    {
+      "path": "Shared/RadianScale.lean",
+      "sha256": "9eb11accf933bea16195d936fda2f91453fc951ce52d5fd28335f3b829136679"
+    },
+    {
+      "path": "Shared/RadianSigned.lean",
+      "sha256": "0fb787a2bfd67a49cbcb9b24c52e00b78d5ab8edc2a00751c0ac9fcaa433d63b"
+    },
+    {
+      "path": "Shared/RadianTiny.lean",
+      "sha256": "a096a366fa63289316ab1116ce7f1273ce43ad365e2ab327091434616d620b9d"
+    },
+    {
+      "path": "Shared/RadianTinyIdeal.lean",
+      "sha256": "a02e1a1f1ad07bf6e15b67e9fd7e516faad5a9f9e4a2486043f48e09d64950b2"
+    },
+    {
+      "path": "Shared/RadianTinyMul.lean",
+      "sha256": "6b167eb7d179d4e9339c18ffdc32d5e9af1f4d16d96ea887b7fc99ed153d9888"
+    },
+    {
+      "path": "Shared/RcpBounds.lean",
+      "sha256": "bd069c1371d777b612ad2d00e49267c967b0086b921ba082e07cc5aacadd5910",
+      "imported_sha256": "33cc1b87dcdb01ac9d21de141ae126186e18b324cf8f3ee69715a33fa3b4baa8",
+      "change": "Whitespace cleanup only"
+    },
+    {
+      "path": "Shared/RcpExponent253.lean",
+      "sha256": "5d8b0626796bb5dd792bff5f2aa626dbb7eaaafe442e9d5f1be0ac5911b53581"
+    },
+    {
+      "path": "Shared/RcpFtzBoundary.lean",
+      "sha256": "e2e18d7f8fc9c29ba4c7f99a46d1a44c6ac5106a0f08e11ff542f53fd8919267"
+    },
+    {
+      "path": "Shared/RcpPtxAdapter.lean",
+      "sha256": "5fa697a3a9957bb3463e827c8757e1ff0d7f0fa6315768b7892553887ca5d61c"
+    },
+    {
+      "path": "Shared/RcpPtxBounds.lean",
+      "sha256": "5b070b0c5c6a93211fe635ee00d7eb1f4e3c25c6dbb5969319c3abb7bc3ba470"
+    },
+    {
+      "path": "Shared/RcpPtxExtreme.lean",
+      "sha256": "166c8783b19b581ee22a6a8b0eccce8d350f8727e15b8aab1a41fe65ca78ff72"
+    },
+    {
+      "path": "Shared/RcpPtxFtz.lean",
+      "sha256": "1e7ee27e7b51067ea5cc92d64b0731b6f9f83d9bd6ad4c0977e5f86fc1f32d0a"
+    },
+    {
+      "path": "Shared/RcpPtxHigh.lean",
+      "sha256": "309d80739b4916c29096724c4e51134919c6cbeaad2b47699570a54fca72b4d4"
+    },
+    {
+      "path": "Shared/RcpPtxOverflow.lean",
+      "sha256": "96ecc2918946f9e814401a6776f02f0a3ab15e1529c8e8baa0026b5e9114eb7c"
+    },
+    {
+      "path": "Shared/RcpPtxRounding.lean",
+      "sha256": "df9f37290aea1ec1904f2eca7b3ba7ed494f959039bf443bfb1b647333cb7ec0"
+    },
+    {
+      "path": "Shared/RcpPtxScale.lean",
+      "sha256": "de08f8de08297a079e42fcacc217f421c0e44cbd7899ed8048c738d898d1e7e8"
+    },
+    {
+      "path": "Shared/RcpPtxSubnormal.lean",
+      "sha256": "90e9ea0de6a794519af237956dad344f739cac3efd4eab48ab092d0c8c9d6167"
+    },
+    {
+      "path": "Shared/RcpPtxValues.lean",
+      "sha256": "fa5127d89c80e9fd5d1e935a6651fb56aa759c6fa2f91fb863a40031f4e9df49"
+    },
+    {
+      "path": "Shared/RcpPtxWrapper.lean",
+      "sha256": "660312b7c4737f96849f6ce3e3a1a2f79534d6ce1d6f902b8950db506f09b89d"
+    },
+    {
+      "path": "Shared/Root32Classification.lean",
+      "sha256": "c814a04fdb27cf627f5b9d3158f1d7e054e43161f3fc7a3f8a9d531eefd799fb"
+    },
+    {
+      "path": "Shared/Root32FloatLib.lean",
+      "sha256": "ce055683ab3c80442abf2266150a42e99a37c961d207652ab34c8b0578a8d6ec"
+    },
+    {
+      "path": "Shared/RootPtxScale.lean",
+      "sha256": "7147cf0648f153753ae914a84d2d77af3ebb372f373d09ae40f8b40515d1325d"
+    },
+    {
+      "path": "Shared/RootPtxSubnormal.lean",
+      "sha256": "c26c055653ee0404eaf54bbd305af3bf284ad9fec25473e6d18bd518301812eb"
+    },
+    {
+      "path": "Shared/RsqBounds.lean",
+      "sha256": "d3d2a373240a271ffcb09ef481842213ecec4c69143f19f2489b2b21719d9fcd",
+      "imported_sha256": "a7b7c1b3db0935a70c7db37c04d273ffbfc50de398375f7bb821b4c429b89828",
+      "change": "Whitespace cleanup only"
+    },
+    {
+      "path": "Shared/RsqCells.lean",
+      "sha256": "447ec3af1fd9d0f403b33576dbf3d0815f83a33fbf96731302cfc381a91384c6"
+    },
+    {
+      "path": "Shared/RsqPtxBounds.lean",
+      "sha256": "2b054363823ed9b23415125048cc14ceaa2de11af90f30780d1a9092b52c1887"
+    },
+    {
+      "path": "Shared/RsqPtxCells.lean",
+      "sha256": "1b5f089402866a917c1519ae1f61fe380f77e7ed611d257856e222f88589b0ee"
+    },
+    {
+      "path": "Shared/RsqPtxSubnormal.lean",
+      "sha256": "e3f9192ebc801dce6cf8256647bb4d6006c3baede6b0ac7310bc17816467a67a"
+    },
+    {
+      "path": "Shared/RsqPtxValues.lean",
+      "sha256": "455ca438ce7507d04a775fe0fae241f99432bcbccf23b3eebfcbc580a2e75340"
+    },
+    {
+      "path": "Shared/RsqPtxWrapper.lean",
+      "sha256": "74d2df3037c04ea70522f27d0c8ee9b7755c276e0d1e0aba9bdd7135a1cc79fe"
+    },
+    {
+      "path": "Shared/RsqTightness.lean",
+      "sha256": "3b919b12b471962e4864dbc5231c49590a9f155e27b076a6dd662e266ccad70b"
+    },
+    {
+      "path": "Shared/ScalarImmediate.lean",
+      "sha256": "bc41dab2cf03abcb8180cfbc93ffc09dec8aa78a710da995131ed08d61540053"
+    },
+    {
+      "path": "Shared/ScalarModifiers.lean",
+      "sha256": "89a988b2f70b0dcc8cf90b50c07dbdd83e333383964e3411cc7a5bc38eab9e8b"
+    },
+    {
+      "path": "Shared/ScaledBF16Scan.lean",
+      "sha256": "db2e8c0e2522058b87b6a5c645be4f0f158a2f180df76c62da80a6f55f30fe1c"
+    },
+    {
+      "path": "Shared/ScaledConversionAccuracy.lean",
+      "sha256": "68b20853147ded8169fd3fad3acbb59e93981a29bd18166c6e72900364e41798"
+    },
+    {
+      "path": "Shared/ScaledConversionAccuracyE2M1.lean",
+      "sha256": "88780437b2dbda2d4e616bb07734ff919a80b0a623cfda8d29dd1a66dd5271c3"
+    },
+    {
+      "path": "Shared/ScaledConversionAccuracyE2M3.lean",
+      "sha256": "6c3a8ca94fda38eb01a5bcec0c584a753b5e0994f8a973e42722fabf41121a30"
+    },
+    {
+      "path": "Shared/ScaledConversionAccuracyE3M2.lean",
+      "sha256": "ff5f32824679c25ba96ad364ba2724a893bef8f93beb99d8a262d505fba83d98"
+    },
+    {
+      "path": "Shared/ScaledConversionAccuracyE4M3.lean",
+      "sha256": "ba02dab6c5061b9d472d587917732f190b6be73019f870754f9ec95603f1ce02"
+    },
+    {
+      "path": "Shared/ScaledConversionAccuracyE5M2.lean",
+      "sha256": "1f2d65d65d9e80fec2e399a362ffca71bafc537dbc0aa17f4fd6f581a6fa49ce"
+    },
+    {
+      "path": "Shared/ScaledFP6FP4Exact.lean",
+      "sha256": "1198dbef4d34b826c51e6d862537925a7f816e20ed7a62fe4471b4757c89af0a"
+    },
+    {
+      "path": "Shared/ScaledMultiply.lean",
+      "sha256": "85fe4ac243a350c28393c4caa2bc2922b04d9e02619396943e08e1c89a6a1e81"
+    },
+    {
+      "path": "Shared/ScaledSmallAccuracyBoundaries.lean",
+      "sha256": "a5e4d152d5bb770c652eb1567a8db6cf74eb859af7e12e50d475a083dffa7db4"
+    },
+    {
+      "path": "Shared/ScaledSmallFloatLibAccuracy.lean",
+      "sha256": "4b70a557fce69d517c02027dc946a17701af7e41a14b1aaee7381500d9bef5cf"
+    },
+    {
+      "path": "Shared/SeedTightness.lean",
+      "sha256": "07670f12655b76b4197922e7d2de554a3ab4f09a7b43af33714ada966f8fddf2"
+    },
+    {
+      "path": "Shared/SinCosSmallBounds.lean",
+      "sha256": "568200f401bb535939d43f262eca9acff0f4f1978a6581cc54e3042e9a714c1b"
+    },
+    {
+      "path": "Shared/SineArgument.lean",
+      "sha256": "7acde188f0ac99a5f54438cde0d47cd358132dd717708908709f410e5f39c8a4"
+    },
+    {
+      "path": "Shared/SineArgumentError.lean",
+      "sha256": "5b10da3a4361c93f4b39de5c16735c9a1fdc3eeadac12c3bcccb2cd22e61d149"
+    },
+    {
+      "path": "Shared/SineCellData.lean",
+      "sha256": "af12c8022fcff4d44a34272cc97f1a362a908d44e5c4bdfde60ddabfc20752d4"
+    },
+    {
+      "path": "Shared/SineCellsProof.lean",
+      "sha256": "6d3d892f1b35ea42d3208dad9dd2ee752587e8969ca4fe330643015f7ef28b6e"
+    },
+    {
+      "path": "Shared/SineFixedDecode.lean",
+      "sha256": "6f6af64f45dd08e29e4423f4243305c00190c8a12a2ade58fd82a915e7f7e003"
+    },
+    {
+      "path": "Shared/SineInterpolationInteger.lean",
+      "sha256": "6026fd7c124f2c4e7612c869f0cf18ba1363beb0b78217aba8350bcb9bd53c99"
+    },
+    {
+      "path": "Shared/SineLocal.lean",
+      "sha256": "d2728a4910bec2fa3870fe8c7333527b4640a17f70462437f1e62653d24a95a7"
+    },
+    {
+      "path": "Shared/SineModelBridge.lean",
+      "sha256": "c0d1630e8eb70507df715a3a33f70dcb4d9a320249c574115f05858e2591a87f"
+    },
+    {
+      "path": "Shared/SinePhase.lean",
+      "sha256": "ec4daf4547ddf01a4c04e727be89c4406e58bbc0426965f0b8ede2f9ebae73dc"
+    },
+    {
+      "path": "Shared/SinePhaseResult.lean",
+      "sha256": "467c7cd7883b50d0924fc5d670c4096977e6cdc12c31b320b6a3d7607139bf0a"
+    },
+    {
+      "path": "Shared/SinePolynomialBounds.lean",
+      "sha256": "4a494745af298259dc495b2f935dd2a6e43622859571cf3f536147c2aa8c8834"
+    },
+    {
+      "path": "Shared/SineSubnormal.lean",
+      "sha256": "1d62f5b5518b12f53a1c90f3ecf8dcf8ed9f5ed837eac5237718eb7c2eef0a83"
+    },
+    {
+      "path": "Shared/SineTableBounds.lean",
+      "sha256": "f626776465887774a774771bc154419d0afe3369b4f278d5532559e5d5d98714"
+    },
+    {
+      "path": "Shared/SineTaylor.lean",
+      "sha256": "e6d51478055201d41d2c074c0fcd70591fb4a976b28fb1a2ade98c2ff8614760"
+    },
+    {
+      "path": "Shared/SineUniform.lean",
+      "sha256": "8180fd27c74bb24747407432b6df108aa39c6f3d7329cc09c065ff3b2c09d9f2"
+    },
+    {
+      "path": "Shared/SmallConversionError.lean",
+      "sha256": "5bfe4407b7ee57d7d2a9479ca3d814aa97b24eb68325e33b4464cc89551b4b74"
+    },
+    {
+      "path": "Shared/SmallConversionFloatLib.lean",
+      "sha256": "d16604075f9257b14ae10edda576a02438cb8561bb77b8afd47acf594ad163e5"
+    },
+    {
+      "path": "Shared/SmallConversionMerge.lean",
+      "sha256": "074e1035f47b159ca685ab0e49ce5c5a7dc9fa709496e8fd2088aeacf4462f09"
+    },
+    {
+      "path": "Shared/SmallConversionNative.lean",
+      "sha256": "0bb31d57431d2e017e72904894ab524e80f51e9a56a184a7d5f2be27e3e6398e"
+    },
+    {
+      "path": "Shared/SmallConversions.lean",
+      "sha256": "d8bc6e5fb8e64277942ab9a7e8c76ffc6b7796bfeb941b187233589dd5cc630a"
+    },
+    {
+      "path": "Shared/SmallFormats.lean",
+      "sha256": "cf45f930c6e151e8b22c3545d40aa2070d21261fd20ec5fb61037e4c1c2cbc75"
+    },
+    {
+      "path": "Shared/SpecialFmaCheck.lean",
+      "sha256": "b086c8c4851fabf4826423efa5522ea324d225c7615d1097a37d3d5d26407296"
+    },
+    {
+      "path": "Shared/SqrtBoundaryProperties.lean",
+      "sha256": "fbd26f02b0dc51189371492dbeb7651874a6318b9c494045b8a083aba56db53c"
+    },
+    {
+      "path": "Shared/SqrtBounds.lean",
+      "sha256": "085588dbbe0a648549948df3f4734be349b742cb59f7acf8616b5a4cbe87f00f"
+    },
+    {
+      "path": "Shared/SqrtTightBounds.lean",
+      "sha256": "b3881b4b681ba3ea729809b1c12072873ebb39b3437ca64dfe66aa83269fa242"
+    },
+    {
+      "path": "Shared/TanhAccuracyFloor.lean",
+      "sha256": "23810a2301fcf5e5ace931874f076502b9e917d3e35ee2d18a594134636ca55a"
+    },
+    {
+      "path": "Shared/TanhCentralAnalytic.lean",
+      "sha256": "da4ead2c157ecfada2b69ce6d14bc4feb3619abb4a062407f531100a55e9b6ad"
+    },
+    {
+      "path": "Shared/TanhCentralCells.lean",
+      "sha256": "c6dd123e91c8b0495a42f017f3bd49986ac88ba71dbed7c9fe3ec53301526294"
+    },
+    {
+      "path": "Shared/TanhCentralData.lean",
+      "sha256": "148809cf300c1b3cf9519c244ffa816d9c18dc023f673860e581fb767067415e"
+    },
+    {
+      "path": "Shared/TanhCentralIndex.lean",
+      "sha256": "eed403513760b50d6b460d28976f3562c15937d7e3ecabc23e5f7a822cc6e530"
+    },
+    {
+      "path": "Shared/TanhCentralInteger.lean",
+      "sha256": "58f13cc2a3e900de774135b1390c24dda072140ec0883bc49a6e9e3555ef8745"
+    },
+    {
+      "path": "Shared/TanhCentralModel.lean",
+      "sha256": "353175b30b35d245ba73af49823ebd57a274ff76a81376e161ac1ea73ab2e683"
+    },
+    {
+      "path": "Shared/TanhCentralPolynomial.lean",
+      "sha256": "184f1a365c5c176f23bfee7a2963adb8813e2dec54485928fa4a03f45e461500"
+    },
+    {
+      "path": "Shared/TanhCentralUniform.lean",
+      "sha256": "0cfacceaa09f66ded8593af0b0048182b1eebfcc51120ea32258ea8e595d8b9a"
+    },
+    {
+      "path": "Shared/TanhDiscontinuity.lean",
+      "sha256": "cd8286717846762df4946c29edfe6354ed844daa941cf52c31b1d6487364c815"
+    },
+    {
+      "path": "Shared/TanhLinear.lean",
+      "sha256": "d56a68ac61aef690af9b530c714d4144a3d89488b3108b26ff79525f60baa27b"
+    },
+    {
+      "path": "Shared/TanhNativeCore.lean",
+      "sha256": "9128917839512159a3cb40deb527166f0eaa12d8bdeda85d447cd876108dca58"
+    },
+    {
+      "path": "Shared/TanhPlateau.lean",
+      "sha256": "397ddc1d3c805686e62566dad36c1ec3744317cd1c0eb9c5716e5b12de6d640f"
+    },
+    {
+      "path": "Shared/TanhRange.lean",
+      "sha256": "cc0769cabd316d944d2ff011973d7ca945d7547692eaad1f3d26a7275aed55fb"
+    },
+    {
+      "path": "Shared/TanhSmallCheck.lean",
+      "sha256": "502bb3c8f66792185bd30c8eedcf36767fffbad4585aa4746429c77a7ff3582c"
+    },
+    {
+      "path": "Shared/TanhTail.lean",
+      "sha256": "381f9f07154954a853af8c89043bb97ffc827a2d1b825c4661f3e92197e008e3"
+    },
+    {
+      "path": "Shared/Texture.lean",
+      "sha256": "3a19981379e1e2b27fda780dd6d3481cf359a87e29c81d40b27546a79bd0beb5"
+    },
+    {
+      "path": "Shared/Texture3DArithmetic.lean",
+      "sha256": "05534a4e0bdcc74900ef06b8958209c3c608ad2c05e22df7beb8fe345b8f52cb"
+    },
+    {
+      "path": "Shared/TextureAddress.lean",
+      "sha256": "ec162ec4ccce97d9e6adf70675d9b777bb363cd2f10144e619b931891c38ea11"
+    },
+    {
+      "path": "Shared/TextureAnisotropyAreaCheck.lean",
+      "sha256": "efd31033f2466407254462cacad791a0d11a82857b1f6561328e6e20a20756d7"
+    },
+    {
+      "path": "Shared/TextureAnisotropyArithmeticCheck.lean",
+      "sha256": "15f79e7b12dbb953f7f49b88d6d83fbea919ed8bb5aae5c380dc0806856bdf46"
+    },
+    {
+      "path": "Shared/TextureAnisotropyAxisReplay.lean",
+      "sha256": "b4d4888576626f9bf979f9f30d02471ec6a1c06d20e9dc8a0248e4b9782a7cdc"
+    },
+    {
+      "path": "Shared/TextureAnisotropyBlendCheck.lean",
+      "sha256": "e946347964170f41e263b672845949c9b316e004ef4538e351615d27a5e10efe"
+    },
+    {
+      "path": "Shared/TextureAnisotropyGeneralArithmeticCheck.lean",
+      "sha256": "4f85fac80339c69d1e01386971ff0b9d3e90301186c417528282bba8c996bddd"
+    },
+    {
+      "path": "Shared/TextureAnisotropyGeneralCheck.lean",
+      "sha256": "478e333554753ba5f3f7c5bdbc1da1776a9df1b177b880410010bd0ce8fe7371"
+    },
+    {
+      "path": "Shared/TextureAnisotropyGeneralMipmapCheck.lean",
+      "sha256": "daaee1c57b75027d86b5487c73c00566856913839e61640368ecc461e84f82af"
+    },
+    {
+      "path": "Shared/TextureAnisotropyJointMipmapCheck.lean",
+      "sha256": "105b0916e5c037829e3c93f9d5a24ba28de9280a69e830118c884b55561f7030"
+    },
+    {
+      "path": "Shared/TextureAnisotropyLargeMipmapCheck.lean",
+      "sha256": "2f9e20703624f5b55d7f066e11b1dcadd2bf27da6431c3bbe8d9bc659c366f55"
+    },
+    {
+      "path": "Shared/TextureAnisotropyMipmapArithmeticCheck.lean",
+      "sha256": "49efcffc415796f67a6dc56444cde99dd520cb3d3452abdd7f28633ac2b0cbf6"
+    },
+    {
+      "path": "Shared/TextureAnisotropyMipmapCapRealBounds.lean",
+      "sha256": "a2b9c07052a87302f00680243125b98fd550019c190b6117cd911017d8eaa376"
+    },
+    {
+      "path": "Shared/TextureAnisotropyMipmapCheck.lean",
+      "sha256": "604decfe5ebbf227808a7ec5ba44ce6cdcd6bea26f50e25c2a94b67656ee9d52"
+    },
+    {
+      "path": "Shared/TextureAnisotropyMipmapCoordinatesCheck.lean",
+      "sha256": "0bc92487f1ff40cba8d3f853590450a0552064e0c68634711eb23b3c8b5c0a9a"
+    },
+    {
+      "path": "Shared/TextureAnisotropyMipmapRealBounds.lean",
+      "sha256": "d7c80bfe810301a4b67dc482f24541156db858660a8120214fc602eab5d91935"
+    },
+    {
+      "path": "Shared/TextureAnisotropyOrientedCheck.lean",
+      "sha256": "f2da72ec0fd9a2ecfddd6323d4dc64828d80b677081ae9f85f3253020a2ae8cc"
+    },
+    {
+      "path": "Shared/TextureAnisotropyOrientedMipmapCheck.lean",
+      "sha256": "795224c21fe700ade254127f103eee61e21c5c94af57d01fc5aae88f8aa425bd"
+    },
+    {
+      "path": "Shared/TextureAnisotropyRankTwoCheck.lean",
+      "sha256": "8a15fd88c87fd9d9e1313c7f2648be0341fc2ddc2e28fd555c330be58c727c85"
+    },
+    {
+      "path": "Shared/TextureAnisotropyReplay.lean",
+      "sha256": "fa2163e389e265a7c5017a9706b6ed2b3216a6ed1b424c67387bf6e9678ae7a5"
+    },
+    {
+      "path": "Shared/TextureAnisotropyTapsCheck.lean",
+      "sha256": "c8b7503251a13d4f8918894a8d9a66ca485b05a03643d1653b019657be5cae7a"
+    },
+    {
+      "path": "Shared/TextureArithmetic.lean",
+      "sha256": "e5f084f40e5eb98895fe6bd1845b0f65f8a97af6e0219910179cbb8d013b5d4c"
+    },
+    {
+      "path": "Shared/TextureBits.lean",
+      "sha256": "69f57768ff2fc66b8062981ff04f9b031f6bf0c63a467f025ca2bb3381835887"
+    },
+    {
+      "path": "Shared/TextureBounds.lean",
+      "sha256": "679c64ea7be3b614d7b11d1f89464926e9f3ab420c618c6681b227d73a7efc99"
+    },
+    {
+      "path": "Shared/TextureClampReal.lean",
+      "sha256": "f2eebece29434795b774592581bf5ce51797919f78efed1b11f60939b54dc84c"
+    },
+    {
+      "path": "Shared/TextureCube.lean",
+      "sha256": "76189f5ff84d194bddfe0fcfc5f1a4272effa076597c422be18e3afbd9257ba1"
+    },
+    {
+      "path": "Shared/TextureCubeExceptional.lean",
+      "sha256": "aedf6527fcd82572d06e89d1b66261380345150a7b8919c582d8111473bbbb88"
+    },
+    {
+      "path": "Shared/TextureCubeGeneral.lean",
+      "sha256": "ed8d4a287f793ba2dc89c91fef67372b92848b5642e5a67dcad23d79026cd9d4"
+    },
+    {
+      "path": "Shared/TextureCubeLayered.lean",
+      "sha256": "524dd9d7967501502a12b480c00258b3d4a88a94a79350b872835f144026d58f"
+    },
+    {
+      "path": "Shared/TextureCubeSeamless.lean",
+      "sha256": "4348a87d401972637278e84c9611d8e81c5d45a0c9706257cff86d38eeaa23ff"
+    },
+    {
+      "path": "Shared/TextureDepth24Check.lean",
+      "sha256": "4d688930c48fc57a051d4e075eb8c05f69484fda882f0001b72ac847a0cca56d"
+    },
+    {
+      "path": "Shared/TextureDepthCompareCheck.lean",
+      "sha256": "5ee2141a11adbad53846b8be3ef7dfe247fa429424c63209efb61449e894b7b8"
+    },
+    {
+      "path": "Shared/TextureDepthGatherCheck.lean",
+      "sha256": "8bf2f78ed0cc6a56e191442aed8dc1a9411efe7877d76bc2408befb2bcc6cd30"
+    },
+    {
+      "path": "Shared/TextureDepthGeometryCheck.lean",
+      "sha256": "d83923185ad57795cbbe4506faae2124d50a6afdcb0355e73b86f91ae1beab0a"
+    },
+    {
+      "path": "Shared/TextureDepthNormalizedCheck.lean",
+      "sha256": "119fa9649f18f1972eed58fb3a51f3cdc0e65db7e44ab295c7ef580c7e7a3053"
+    },
+    {
+      "path": "Shared/TextureDepthPCFBridge.lean",
+      "sha256": "f9d63dca50e140c1a06ca3a6c496292ab051bb9ec10b2e1821c115903abeacb3"
+    },
+    {
+      "path": "Shared/TextureDepthPCFCheck.lean",
+      "sha256": "d37c5fee90665ad0a2b6151876085a015a3730b8a20c522be2222761cdbb7ba7"
+    },
+    {
+      "path": "Shared/TextureDepthScanCheck.lean",
+      "sha256": "c6cbb330e55999a46d3cdb330b1ceb6a96619dc95fef28801149e44a047a18f9"
+    },
+    {
+      "path": "Shared/TextureFetchGather.lean",
+      "sha256": "3e188d75e0bf6ab7eee78e41039e3438a034d82e696f68034570df829162087b"
+    },
+    {
+      "path": "Shared/TextureFiltered.lean",
+      "sha256": "2835ee2485a19ab1630273948bb4002f4ea50201e6dda3f94fd08cbad21f5219"
+    },
+    {
+      "path": "Shared/TextureFormats.lean",
+      "sha256": "f738bb3a5202f25c8fd19d7820045630c5d5cbd31397debeffe7a54aee0c8d61"
+    },
+    {
+      "path": "Shared/TextureGradient.lean",
+      "sha256": "c7d78f93960e1bbbd8929d3cb802f573572c1f857897f76d961a5c9ee6d4acb3"
+    },
+    {
+      "path": "Shared/TextureGradient1DCheck.lean",
+      "sha256": "fb438b9d8c34c4f59b9448bb63db80a0bf99adf81d39a691bec51e3956a6a9f5"
+    },
+    {
+      "path": "Shared/TextureGradient2DCheck.lean",
+      "sha256": "5a5d075840371a11aacf45207375f91c35f0036f5a8f09482626ee5a0581a5a2"
+    },
+    {
+      "path": "Shared/TextureGradient3DCheck.lean",
+      "sha256": "8bac4a862e92f94151063f653911ed5d4fde75ff7e179cc3f31f5af119e1ac24"
+    },
+    {
+      "path": "Shared/TextureGradientAxisCheck.lean",
+      "sha256": "da5792d144740ac6e772e5cc56dfe9d596b04e089ff5c3295c12ff774ff555b4"
+    },
+    {
+      "path": "Shared/TextureGradientBounds.lean",
+      "sha256": "127d7f715902793377c14cc14fd0d9505d735995fb05903b52cc4ffa67a25f6a"
+    },
+    {
+      "path": "Shared/TextureGradientCertificates.lean",
+      "sha256": "eef358556654510f46188a1f52995bb20a7063e98cc08d6f08ce6da66cfc483e"
+    },
+    {
+      "path": "Shared/TextureGradientCubeCheck.lean",
+      "sha256": "874c1f29aa7af915b2cf55514c8591b67707d06dfd736d31232f221ef2b35791"
+    },
+    {
+      "path": "Shared/TextureIrregularCoordinates.lean",
+      "sha256": "aac7cb3eefe8739db0baa21f5ef1c3e842210518eae2c716d5707e66777e2218"
+    },
+    {
+      "path": "Shared/TextureLayered.lean",
+      "sha256": "1b4d02e334c5247bd41c6f93b8c3eafaa21e5915daf6df5f851fe6dbbd841e5d"
+    },
+    {
+      "path": "Shared/TextureLinearCoordinates.lean",
+      "sha256": "b90a2f1d8d245ead6a8dcbc397f7ca8dc53a4111eacad247d8fa74ae99fcbffa"
+    },
+    {
+      "path": "Shared/TextureLod.lean",
+      "sha256": "590b2bc9f7c970928a663aca96c512785d034a7b42f01d58f3f57ab5cad89592"
+    },
+    {
+      "path": "Shared/TextureMipmapCheck.lean",
+      "sha256": "93b1a37d031cf84f2141a51d2cba6ff8192e1401a99cbfdc435ee92e93039a96"
+    },
+    {
+      "path": "Shared/TexturePackedViewsCheck.lean",
+      "sha256": "436c57ef2cab265d682ee7d1acc894b65d191bbfa4352c10bab876511b3f8009"
+    },
+    {
+      "path": "Shared/TextureSeamlessCheck.lean",
+      "sha256": "ac1df52c91ddd6d92f232e5a761e1e7645659cb1e42afbb481c1136c9e56e070"
+    },
+    {
+      "path": "Shared/UniformCarry.lean",
+      "sha256": "cfa19242d759cddd8b9ffe329141f6d85acb95bc981c4eaf92d71c802762c2f4"
+    },
+    {
+      "path": "Shared/UniformInteger.lean",
+      "sha256": "397f100ab94ede6d04b2657dd4c9e18de3720642ac8c2f25495a01d25508ab09"
+    },
+    {
+      "path": "Shared/UniformSelect.lean",
+      "sha256": "c4e05bd20ce2bd21cc2475bc5db8ecbfc7b0d71f1fb6b1a6a30b366d4bc7e113"
+    },
+    {
+      "path": "Shared/UniformWide.lean",
+      "sha256": "e57afeb326c41a95e126cefa1c3dd30601fc08ed552313771b7cf03da888d643"
+    },
+    {
+      "path": "Shared/UniformWideCarry.lean",
+      "sha256": "b30d538e0207f281fe77ef8746c85d763b3e3a0e8462adc446442c24740def58"
+    },
+    {
+      "path": "Shared/VideoInteger.lean",
+      "sha256": "4d6c22c5f0b790c13fcecbf8317b958d44d73eac51f58677eabb88a91e012bda"
+    },
+    {
+      "path": "Shared/VimnmxPredicateConsumer.lean",
+      "sha256": "c34c618411ec42384a7679a18e5dbbb2b55eb6078863bfad70f217c2e7eff810"
+    },
+    {
+      "path": "Shared/VimnmxPredicates.lean",
+      "sha256": "a4b87d51c8ad29156476b85f8b372a3d05240846889f56ae425a34d3c33e514a"
+    },
+    {
+      "path": "Shared/VulkanDepthCheck.lean",
+      "sha256": "4031b86b719bb5afbe6a6fccf744a9349d8e4a5db44e382abbb237789e5a29d1"
+    },
+    {
+      "path": "Shared/VulkanDepthFilterCheck.lean",
+      "sha256": "b096dfeb8ecb24e5c58d226c547d461e7c22f371a8e1f8e290e11e60d04f88fb"
+    },
+    {
+      "path": "Shared/VulkanMultisampleCheck.lean",
+      "sha256": "e25f49480ae490738e3b12962ff36ebd20a3648fe9ae1e62b52fc7b752ebb56b"
+    },
+    {
+      "path": "Shared/VulkanMultisampleFormatsCheck.lean",
+      "sha256": "2386fcc77275ddee0d67691e4e88582ddfa7c94b67c55c7e4ab9af509a02ecec"
+    },
+    {
+      "path": "Shared/VulkanMultisampleNarrowCheck.lean",
+      "sha256": "ba7b945d08f300ce37db43b32d8bc0123c6460de0e46195ecc503211f8478e63"
+    },
+    {
+      "path": "Shared/Warp.lean",
+      "sha256": "57b77ac19250dc386d7d80895b07e788bf6ebebb57095defbe49c4afc77c9275"
+    },
+    {
+      "path": "Shared/WarpMatch.lean",
+      "sha256": "2411183385948b1a4b63400f6a9c20e72d3fc60893672eb51289ef3cc87835d4"
+    },
+    {
+      "path": "Shared/WmmaArithmeticReplay.lean",
+      "sha256": "8c43293288cdff732b4e39feb7c0b8d76f744895d5f89879a1dc603d95ccf61c"
+    },
+    {
+      "path": "Shared/WmmaFragmentMapReplay.lean",
+      "sha256": "716bc2bf4f24c3a34c0276527120e59b8fee1ee6b701b33a02caf0022025c422"
+    },
+    {
+      "path": "Shared/WmmaMovementReplay.lean",
+      "sha256": "542f75f620af3cccfcb529176a6e713aad8113d0cb6ddce38cbba5c3dd52f474"
+    },
+    {
+      "path": "Shared/XorSignCheck.lean",
+      "sha256": "7c20f3fbb651073da4e46c60084b392f96cea427d3bbaac66598e681c11031fa"
+    },
+    {
+      "path": "Shared/YcbcrShaderCheck.lean",
+      "sha256": "1cbcc395b31c3ce4b0dc1c6ce2edb9719a5c4d7b192688c44c4da0b014008f24"
+    },
+    {
+      "path": "floatlib-lock.json",
+      "sha256": "eed202fa2e77b3c8f4e1d98f05497594c161b0eb7664f2743cc26294c872e08d"
+    },
+    {
+      "path": "lake-manifest.json",
+      "sha256": "feb3334658a28d2fddf0deba60fea77ff9a7d90abaa7d834535c42f0945ffce9"
+    },
+    {
+      "path": "lakefile.toml",
+      "sha256": "a0b4ba29933b8cd8f9d6ae8b970ea0c593c19ec4e43607ca7cf6aae0da1553aa",
+      "imported_sha256": "72144c8c7382a582f62781134dd8e4e9ff681eb463dd0fbfebfddbc43bb0e1ae",
+      "integration_change": "Register Rust/Lean bridge checker and its tensor dependency",
+      "change": "GB300 build targets and selected tensor module registration"
+    },
+    {
+      "path": "lean-toolchain",
+      "sha256": "8733782dc070a99b312039cda424f601b80f3be6f6f512627da5ba25adc27632"
+    }
+  ],
+  "scope": "Original model snapshot plus local integration changes; sha256 identifies current files.",
+  "hardware_scope": {
+    "gpu": "NVIDIA GB300",
+    "sm": 103
+  }
+}

@@ -1,0 +1,118 @@
+{
+  "date": "2026-11-06T16:48:39.160866+00:00",
+  "branch": "rusch/lean-model",
+  "base_revision": "88fe5ba67b1c2ea3a330d4dc3b361e2d9ac4e395",
+  "scope": "Working source snapshot identified by hashes, before final commit amend; Rust sources and existing probes match the base revision.",
+  "simulator_changes": false,
+  "source_manifest_entries_verified": 629,
+  "lean_core_build": true,
+  "lean_axiom_audit": true,
+  "lean_witness_axiom_audit": true,
+  "audited_theorem_axioms": [
+    "propext",
+    "Quot.sound"
+  ],
+  "lean_smoke_checks": 5,
+  "scalar_forms": 21,
+  "scalar_comparisons": 4805496,
+  "floatlib_source_files_verified": 1205,
+  "synthetic_mma_comparisons": 8705,
+  "retained_mma_comparisons": 150528,
+  "optional_overflow_check": {
+    "exit_code": 1,
+    "disagreements": 2,
+    "status": "Both signs disagree with the unchanged Rust base; not an equivalence pass"
+  },
+  "rust_tests": {
+    "passed": 5,
+    "ignored": 1,
+    "lockfile": "probes/lean_compare/Cargo.lock",
+    "receipt_reused": "Rust crates, test sources, bridge and lockfile unchanged"
+  },
+  "clippy": true,
+  "python_compile": true,
+  "arc_lint": "Unavailable: no lint engine configured",
+  "arc_f": "Unavailable: command not installed",
+  "full_root_workspace_tests": "Not run; standalone bridge lockfile used",
+  "new_gpu_capture": false,
+  "commands": {
+    "lean": [
+      "lake build",
+      "lake env lean Audit.lean",
+      "lake build check_mufu_sm103 check_ptxv",
+      "lake build +GB300Math.TensorBlackwell +GB300Math.TensorBlackwellUnderflow",
+      "lake env lean Blackwell/TensorCancellationWitness.lean",
+      "lake env lean Blackwell/TensorCancellationReplay.lean"
+    ],
+    "lean_working_directory": "lean_model",
+    "root": [
+      "python3 lean_model/tests/smoke.py",
+      "cargo test --locked --offline --release --manifest-path probes/lean_compare/Cargo.toml --target-dir probes/lean_compare/target",
+      "python3 probes/lean_compare/cross_check.py --output /tmp/ptxv-lean-gb300-scalar --floatlib /data/users/rusch/kernel-verification-eval-20261027/torchlib-floatlib/floatlib",
+      "python3 probes/lean_compare/mma_cross_check.py --output /tmp/ptxv-lean-gb300-mma --capture /data/users/rusch/gb300-math-artifacts/gb300-validation-20261105/batch15/auto01/captures/tensor-selected-holdout01",
+      "python3 probes/lean_compare/mma_cross_check.py --output /tmp/ptxv-lean-gb300-overflow --check-overflow"
+    ]
+  },
+  "limits": [
+    "Default Lake targets do not compile every optional source",
+    "FloatLib comparisons use the existing dependency build after source hash checks",
+    "Executable comparisons are not a universal Rust/Lean or hardware equivalence proof"
+  ],
+  "sources": {
+    "lean_model/README.md": "54fc2a323f1e3a6306d5ad4716dc57c92bd45f24f059bbf59278b98442ea4bda",
+    "lean_model/source-manifest.json": "3c3609b60273a0bc51cba2de52a34333b702691665e9233ccae2bec05f537db4",
+    "lean_model/floatlib-lock.json": "eed202fa2e77b3c8f4e1d98f05497594c161b0eb7664f2743cc26294c872e08d",
+    "lean_model/floatlib-sources.json": "33d491222a74cac0841d94a23e529de2151d2c30f7f3a15bcd4692e01569314f",
+    "lean_model/lakefile.toml": "a0b4ba29933b8cd8f9d6ae8b970ea0c593c19ec4e43607ca7cf6aae0da1553aa",
+    "lean_model/lake-manifest.json": "feb3334658a28d2fddf0deba60fea77ff9a7d90abaa7d834535c42f0945ffce9",
+    "lean_model/lean-toolchain": "8733782dc070a99b312039cda424f601b80f3be6f6f512627da5ba25adc27632",
+    "lean_model/Audit.lean": "110d12e939e23ecba41ca325cf092992ddff8eb968742965c0f3bf2de6dcbdf5",
+    "lean_model/Blackwell/PtxvCheck.lean": "5e7d4b32ee95bd5759c6d65a6c042a11e29c276f8572c03fe97449a027e86852",
+    "lean_model/tests/smoke.py": "d7eb551b60f4250b0fc2ae8e431e9394bda230d67295245434f8b89eedac5e25",
+    "probes/lean_compare/Cargo.toml": "fb36328dbf688d727ffddc1da7971dd8df03ecda147aba4142ee1c5b7c40973a",
+    "probes/lean_compare/Cargo.lock": "31bd2d78ecbe408794e354166b127005ed1986ad232193663561da5ea3ae4aa7",
+    "probes/lean_compare/src/main.rs": "a67f0f9d26a2eb502f43baa161d69fd6de14256dbbe36fe0bc2a1e83d3acb487",
+    "probes/lean_compare/cross_check.py": "fa125b2a69a2300e13f4955880d7a5745d4ea83fde3337d5db9a777930038458",
+    "probes/lean_compare/mma_cross_check.py": "6acce49fdeea5b0dd07c08bd56926c22c86fed6a717319b547305ba6630422dd",
+    "probes/lean_compare/README.md": "81994bcc3c9d64ce96644e7845445b781706195ddbc1a4f59e82c489a054339b",
+    "probes/lean_compare/RESULTS.md": "feab5bac5b8620a16db53fde24b0a8da81a408bbeb0f9988861cb6f716f827aa",
+    "crates/sim/src/fp.rs": "d311e2db7702656f45616957b3d8e08723f9f94840a9d8578ee3b76776a7923f",
+    "lean_model/certificate-imports.json": "73c2074e4f121f399e9e52e4d173b5e509ac62d572638e924c4de8046c96c7e4",
+    "lean_model/Blackwell/GB300Math/TensorBlackwell.lean": "b5047df98c83011cd4371f6dca9c191ade29a4a0bec1d16c61428a00ce01a12c",
+    "lean_model/Blackwell/GB300Math/TensorBlackwellUnderflow.lean": "509e2de287180eb2cba78f7f83671795fadb06c9a9a62fc549dd3c0fc4747260",
+    "lean_model/Blackwell/TensorCancellationWitness.lean": "3284c9ca3bdd548a07ff82cdc266c8d21bcf67174c85a5bf3962cccc93e463af",
+    "lean_model/Blackwell/TensorCancellationReplay.lean": "a6ebd8de5fa3618c221fd3f058671a2f9a79d203ce745256f9a99cd7c05ade6d"
+  },
+  "receipts": {
+    "axioms.log": "cb8f987765725950bb498eb8f3c50a50901dbfe88df6edf95a6ed5595537689b",
+    "cancellation-replay-build.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "cancellation-replay.json": "98862f758ad2f239a25eeb04492bb02240b6dee879a96112bcda075ba1fcf928",
+    "cancellation-witness.log": "0a2b146f111b03fde0ddaead5362984a321c0802469d149212b2c475e7054b70",
+    "checker-build.log": "aa95be9aa10212c4a247c95320a0afd311cf4f80c221953b92a9e54b7a9e5619",
+    "clippy.log": "288391b612d3ce93c36446ac0e72a46b85f5b003392795a7a1d26f99a9d50f2a",
+    "core-build-final.log": "d00d8006b90654a85ca0f826a926e810f4281fa41853ff2f69fedffd0f55f6b8",
+    "core-build.log": "23361269e2f1cb278fb399a3e53de2d56497d6860fdfa84c12c093a33ab48aa6",
+    "mma-overflow.json": "ed199d16ab72f512cb173f5b1a497a4af67f2291ddebbc2b84c8ec8a3321eb27",
+    "mma.json": "e002c0c7be913ce4b0130bf22c7a87f8c072b1c568a822aa5c2c94b68eca1098",
+    "rust-build.log": "00897a06bbf08699800746524a3c410034f513496df63e45a5ae45834c36b318",
+    "rust-tests.log": "ce10603a48c1d4824e731e9001eca5a3d26478dea2131cae25b8ce516861e783",
+    "scalar.json": "31b4d13500495c8aa453ec5b863bde7613b69453e67e39d97438791859143709",
+    "scope.json": "bcb2dcb09e125b7eb78837e245d657efd0ab2e9a72af29ee4b7a502b3fc3b84f",
+    "smoke.json": "06f45b137b536fcbf3206d89812cbc53904421e05e1135675b763a23ed7e3522",
+    "tensor-build.log": "d2b44d5018ca7408a3846962b76ec2b326f38881b1ee287b69623c27dbd69461"
+  },
+  "hardware_scope": {
+    "gpu": "NVIDIA GB300",
+    "sm": 103
+  },
+  "lean_source_files": 626,
+  "fresh_lean_build": true,
+  "lean_tensor_alignment_build": true,
+  "lean_cancellation_witness_audit": true,
+  "lean_replay_architecture_gate": {
+    "sm103_zero_matrix": "passed",
+    "sm80": "rejected"
+  },
+  "scalar_outputs_match_previous_snapshot": true,
+  "clippy_receipt_reused": "Rust crates, bridge and lockfile unchanged"
+}
