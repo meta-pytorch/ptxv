@@ -1,0 +1,31 @@
+// S-PROXY probe for cp.async writers: 256 threads cp.async (LDGSTS) a 16 KiB tile into shared
+// memory, cp.async.wait_all, [fence.proxy.async.shared::cta,] bar.sync, then thread 0 stores the
+// tile to global with a TMA store (cp.async.bulk.tensor, UTMASTG, async proxy). Variants (case.toml): `none`
+// drops the fence; `st_none` writes the tile with ld.global + st.shared and no fence (the
+// writer class of rung 1b B04, a sensitivity check of this kernel).
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry cpasync_bulk(.param .u64 pin, .param .align 64 .b8 tmap_o[128])
+{ .reg .b64 %rd<10>; .reg .b32 %r<20>; .reg .pred %p<3>;
+  .shared .align 128 .b8 tile[16384];
+  ld.param.u64 %rd1, [pin]; mov.b64 %rd8, tmap_o; cvta.param.u64 %rd2, %rd8;
+  mov.u32 %r1, %tid.x; mov.u32 %r2, tile; mov.u32 %r9, %ctaid.x;
+  mul.wide.u32 %rd9, %r9, 16384; add.s64 %rd1, %rd1, %rd9; shl.b32 %r8, %r9, 6; mov.u32 %r14, 0;
+  shl.b32 %r3, %r1, 4; add.u32 %r4, %r2, %r3;
+  cvt.u64.u32 %rd3, %r3; add.s64 %rd4, %rd1, %rd3;
+  cp.async.cg.shared.global [%r4], [%rd4], 16;                    // @CP0
+  add.u32 %r5, %r4, 4096; add.s64 %rd5, %rd4, 4096;
+  cp.async.cg.shared.global [%r5], [%rd5], 16;                    // @CP1
+  add.u32 %r6, %r4, 8192; add.s64 %rd6, %rd4, 8192;
+  cp.async.cg.shared.global [%r6], [%rd6], 16;                    // @CP2
+  add.u32 %r7, %r4, 12288; add.s64 %rd7, %rd4, 12288;
+  cp.async.cg.shared.global [%r7], [%rd7], 16;                    // @CP3
+  cp.async.wait_all;
+  fence.proxy.async.shared::cta;                                   // @FENCE
+  bar.sync 0;
+  setp.eq.u32 %p1, %r1, 0;
+  @%p1 cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd2, {%r14, %r8}], [%r2];
+  @%p1 cp.async.bulk.commit_group;
+  @%p1 cp.async.bulk.wait_group 0;
+  ret; }

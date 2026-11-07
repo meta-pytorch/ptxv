@@ -1,0 +1,38 @@
+name = "probe_f64_queue"
+description = """
+Probe (L-OPCLASS) for the f64 pipe on GB300: ptxas gives some DADD / DMUL / DFMA no write
+scoreboard and covers them with a wait on a later f64 op's scoreboard (in-order completion,
+as POPC and MUFU). kernel.ptx: (a-1)/(a+1) by ptxas's DFMA reciprocal refinement, b-a, b*b and
+an fma (gen.py inputs). expected/ is GB300's output (ptxas cubin,
+`ptxv hw-worker probes/f64_queue <cubin> --runs 1 --dump`)."""
+ptx = "kernel.ptx"
+entry = "f64q"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024, 4]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024, 8]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

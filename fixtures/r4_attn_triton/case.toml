@@ -71,12 +71,12 @@ value = 0
 [[variants]]
 id = "good"
 summary = "as compiled by Triton"
-expect = ["violation"]
-hw_note = "lifts completely (LDTM/STTM .16dp32bit halves, UTCHMMA with A in TMEM and an MN-major B, cp.async with zero fill, LDSM); the run matches GB300 bitwise (expected/). The one violation is a PTX contract one: Triton 3.5 leaves the fixed bits 46-48 of its shared-memory descriptors 0 (GB300 ignores them, as in rung 2)"
+expect = ["contract"]
+hw_note = "lifts completely (LDTM/STTM .16dp32bit halves, UTCHMMA with A in TMEM and an MN-major B, cp.async with zero fill, LDSM); the run matches GB300 bitwise (expected/). The one finding is a PTX contract one: Triton 3.5 leaves the fixed bits 46-48 of its shared-memory descriptors 0 (GB300's MMA ignores them: E-DESC-VERSION, probes/desc_version)"
 
 [[variants]]
 id = "nosb"
 summary = "SASS: LDTM.16dp32bit_t16_t31 R4 (S = Q K^T, read back) at 0x11d0 gets no write scoreboard (wr SB2 -> none)"
 patch = [{ at = "@0x11d0", wbar = 7 }]
-expect = ["violation"]
+expect = ["contract", "violation"]
 hw_note = "the softmax reads S before tcgen05.ld has written it"

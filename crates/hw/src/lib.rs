@@ -107,6 +107,12 @@ cuda_fns! {
     fn cuCtxSetCurrent(ctx: CUcontext) -> CUresult;
     fn cuModuleLoadData(m: *mut CUmodule, image: *const c_void) -> CUresult;
     fn cuModuleGetFunction(f: *mut CUfunction, m: CUmodule, name: *const c_char) -> CUresult;
+    fn cuModuleGetGlobal_v2(
+        p: *mut CUdeviceptr,
+        bytes: *mut usize,
+        m: CUmodule,
+        name: *const c_char,
+    ) -> CUresult;
     fn cuMemAlloc_v2(p: *mut CUdeviceptr, bytes: usize) -> CUresult;
     fn cuMemcpyHtoD_v2(dst: CUdeviceptr, src: *const c_void, n: usize) -> CUresult;
     fn cuMemcpyDtoH_v2(dst: *mut c_void, src: CUdeviceptr, n: usize) -> CUresult;
@@ -292,9 +298,31 @@ pub fn run_with(
         // Launches with their own cubin (kernels from several library modules): one module
         // per (cubin, device), kept alive with the others.
         let mut own: BTreeMap<(String, u32), CUmodule> = BTreeMap::new();
+        // Module data globals each launch's constant banks name (S-GLOBAL-INIT):
+        // (module key (None: the case's), device, global).
+        let main_cubin = m.cubin.as_deref();
+        let mut referenced: Vec<(Option<String>, u32, ptxv_sass::elf::DataSym)> = Vec::new();
         for l in &launches {
             set(l.device)?;
             let mut module = modules[l.device as usize];
+            let key = l.cubin.filter(|c| Some(*c) != main_cubin);
+            let globals = match key {
+                None => ptxv_sass::elf::Elf::parse(image)
+                    .and_then(|e| e.kernel_globals(l.entry))
+                    .unwrap_or_default(),
+                Some(c) => ptxv_sass::elf::Elf::parse(&std::fs::read(case.dir.join(c))?)
+                    .and_then(|e| e.kernel_globals(l.entry))
+                    .unwrap_or_default(),
+            };
+            for g in globals {
+                let k = (key.map(String::from), l.device);
+                if !referenced
+                    .iter()
+                    .any(|(c, d, x)| (c.clone(), *d) == k && x.name == g.name)
+                {
+                    referenced.push((k.0, k.1, g));
+                }
+            }
             if let Some(c) = l.cubin {
                 let key = (c.to_string(), l.device);
                 if !own.contains_key(&key) {
@@ -337,6 +365,30 @@ pub fn run_with(
             fs.push(f);
         }
 
+        if !m.multicast.is_empty() {
+            bail!(
+                "case has NVLS multicast objects ({}): not supported by the hardware runner",
+                m.multicast.len()
+            );
+        }
+        // The module holding a global: the case's (per device) or a launch's own cubin.
+        let module_of = |c: Option<&str>, d: u32| -> Result<CUmodule> {
+            match c.filter(|c| Some(*c) != main_cubin) {
+                None => Ok(modules[d as usize]),
+                Some(c) => own.get(&(c.to_string(), d)).copied().ok_or_else(|| {
+                    anyhow::anyhow!("global in cubin {c} on GPU {d}: no launch loads that module")
+                }),
+            }
+        };
+        let global_ptr = |md: CUmodule, name: &str| -> Result<(CUdeviceptr, usize)> {
+            let (mut p, mut n) = (0, 0);
+            let cname = CString::new(name)?;
+            ck(
+                cuModuleGetGlobal_v2(&mut p, &mut n, md, cname.as_ptr()),
+                &format!("cuModuleGetGlobal({name})"),
+            )?;
+            Ok((p, n))
+        };
         let mut dptr: BTreeMap<String, (CUdeviceptr, Vec<u8>)> = BTreeMap::new();
         for b in &m.buffers {
             let init = match inputs.get(&b.name) {
@@ -355,12 +407,43 @@ pub fn run_with(
             };
             let mut p = 0;
             set(b.device)?;
-            ck(cuMemAlloc_v2(&mut p, init.len().max(1)), "cuMemAlloc")?;
+            if let Some(sym) = &b.symbol {
+                // The module's own global (S-GLOBAL-INIT), rewritten with `init` every run.
+                let (gp, n) = global_ptr(module_of(b.cubin.as_deref(), b.device)?, sym)?;
+                if init.len() > n {
+                    bail!(
+                        "buffer {} ({} bytes) backs global {sym} of {n} bytes",
+                        b.name,
+                        init.len()
+                    );
+                }
+                p = gp;
+            } else {
+                ck(cuMemAlloc_v2(&mut p, init.len().max(1)), "cuMemAlloc")?;
+            }
             ck(
                 cuMemcpyHtoD_v2(p, init.as_ptr() as *const c_void, init.len()),
                 "HtoD",
             )?;
             dptr.insert(b.name.clone(), (p, init));
+        }
+        // Globals the case does not declare start every run from their ELF initial value, as
+        // in the simulator (S-GLOBAL-INIT), not from what the previous run left.
+        for (c, d, g) in &referenced {
+            if m.global_buffer(c.as_deref(), &g.name, *d).is_some() {
+                continue;
+            }
+            set(*d)?;
+            let (p, _) = global_ptr(module_of(c.as_deref(), *d)?, &g.name)?;
+            let init = g.init.clone().unwrap_or_else(|| vec![0; g.size as usize]);
+            let mut name = format!("global:{}", g.name);
+            if let Some(c) = c {
+                name += &format!("[{c}]");
+            }
+            if *d != 0 {
+                name += &format!("@gpu{d}");
+            }
+            dptr.insert(name, (p, init));
         }
         // Pointer tables (`ptrs`): filled in with the device addresses just assigned.
         for b in m.buffers.iter().filter(|b| !b.ptrs.is_empty()) {
@@ -686,18 +769,79 @@ pub fn free_gpus() -> Result<Vec<u32>> {
             (!ours.contains(&pid)).then_some(u.trim())
         })
         .collect();
-    // PTXV_GPUS=3 or 0,3: only these GPUs, even when others are free (shared boxes).
-    let allowed: Option<Vec<u32>> = std::env::var("PTXV_GPUS")
-        .ok()
-        .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect());
-    Ok(gpus
+    let all: Vec<(u32, String)> = gpus
         .lines()
         .filter_map(|l| {
             let (i, u) = l.split_once(',')?;
-            (!busy.contains(&u.trim()))
-                .then(|| i.trim().parse().ok())
-                .flatten()
+            Some((i.trim().parse().ok()?, u.trim().to_string()))
         })
+        .collect();
+    let allowed = allowed_gpus(
+        std::env::var("PTXV_GPUS").ok().as_deref(),
+        std::env::var("CUDA_VISIBLE_DEVICES").ok().as_deref(),
+        &all,
+    );
+    Ok(all
+        .iter()
+        .filter(|(_, u)| !busy.contains(&u.as_str()))
+        .map(|(i, _)| *i)
         .filter(|i| allowed.as_ref().is_none_or(|a| a.contains(i)))
         .collect())
+}
+
+/// The GPUs (nvidia-smi indices) `ptxv` may pick, from `PTXV_GPUS` (`3` or `0,3`: indices),
+/// else from `CUDA_VISIBLE_DEVICES` read as the CUDA runtime reads it: a comma-separated list
+/// of indices or `GPU-` UUID prefixes, ending at the first entry that names no device (an
+/// empty or all-invalid list allows none). The worker is launched with
+/// `CUDA_VISIBLE_DEVICES` set to the chosen index, so the caller's setting must restrict the
+/// choice, not be overridden by it. None: no restriction. Index order is nvidia-smi's (PCI
+/// bus), which is the runtime's on a node of identical GPUs.
+pub fn allowed_gpus(
+    ptxv_gpus: Option<&str>,
+    cuda_visible: Option<&str>,
+    all: &[(u32, String)],
+) -> Option<Vec<u32>> {
+    if let Some(v) = ptxv_gpus {
+        return Some(v.split(',').filter_map(|x| x.trim().parse().ok()).collect());
+    }
+    let v = cuda_visible?;
+    let mut out = Vec::new();
+    for e in v.split(',').map(str::trim) {
+        let hit = if let Ok(i) = e.parse::<u32>() {
+            all.iter().find(|(j, _)| *j == i)
+        } else if e.starts_with("GPU-") {
+            let m: Vec<_> = all.iter().filter(|(_, u)| u.starts_with(e)).collect();
+            if m.len() == 1 { Some(m[0]) } else { None }
+        } else {
+            None
+        };
+        match hit {
+            Some((i, _)) if !out.contains(i) => out.push(*i),
+            Some(_) => {}
+            None => break,
+        }
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod gpu_env_tests {
+    use super::allowed_gpus;
+
+    #[test]
+    fn cuda_visible_devices_restricts_the_choice() {
+        let all: Vec<(u32, String)> = (0..4).map(|i| (i, format!("GPU-{i}a{i}b-0000"))).collect();
+        // PTXV_GPUS wins.
+        assert_eq!(allowed_gpus(Some("3"), Some("2"), &all), Some(vec![3]));
+        // Unset both: no restriction.
+        assert_eq!(allowed_gpus(None, None, &all), None);
+        // Indices, UUID prefixes, stop at the first invalid entry.
+        assert_eq!(allowed_gpus(None, Some("3"), &all), Some(vec![3]));
+        assert_eq!(allowed_gpus(None, Some("3,1"), &all), Some(vec![3, 1]));
+        assert_eq!(allowed_gpus(None, Some("GPU-2a2"), &all), Some(vec![2]));
+        assert_eq!(allowed_gpus(None, Some("1,7,3"), &all), Some(vec![1]));
+        assert_eq!(allowed_gpus(None, Some("GPU-"), &all), Some(vec![]));
+        assert_eq!(allowed_gpus(None, Some(""), &all), Some(vec![]));
+        assert_eq!(allowed_gpus(None, Some("-1"), &all), Some(vec![]));
+    }
 }

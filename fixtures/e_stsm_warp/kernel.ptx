@@ -1,0 +1,46 @@
+//
+// One warp: every lane stores a matrix row with stmatrix, then reads another lane's row with
+// ld.shared.v4 after bar.warp.sync -1 (the pattern of a Triton warp-local layout conversion).
+// With .reqntid 32 ptxas drops the bar.warp.sync: in SASS the LDS is ordered after the other
+// lanes' STSM only by the converged warp (E-LOCKSTEP).
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.extern .shared .align 16 .b8 smem[];
+
+.visible .entry stsm_warp(
+	.param .u64 in_ptr,
+	.param .u64 out_ptr
+)
+.reqntid 32
+{
+	.reg .b32 %r<16>;
+	.reg .b64 %rd<8>;
+	.reg .pred %p<2>;
+
+	ld.param.u64 %rd1, [in_ptr];
+	ld.param.u64 %rd2, [out_ptr];
+	mov.u32 %r1, %tid.x;
+	// in[lane * 4 .. lane * 4 + 3]
+	mul.wide.u32 %rd3, %r1, 16;
+	add.s64 %rd4, %rd1, %rd3; // @DATA
+	ld.global.v4.b32 {%r2, %r3, %r4, %r5}, [%rd4];
+	// lane's row address: smem + lane * 16
+	mov.u32 %r6, smem;
+	shl.b32 %r7, %r1, 4; // @ROW
+	add.s32 %r8, %r6, %r7;
+	stmatrix.sync.aligned.m8n8.x4.shared.b16 [%r8], {%r2, %r3, %r4, %r5};
+	bar.warp.sync -1; // @WSYNC
+	// (divergent store slot) // @DIV
+	// read the row of lane (lane + 1) % 32
+	add.s32 %r9, %r1, 1;
+	and.b32 %r9, %r9, 31;
+	shl.b32 %r10, %r9, 4; // @READ
+	add.s32 %r11, %r6, %r10;
+	ld.shared.v4.b32 {%r12, %r13, %r14, %r15}, [%r11];
+	add.s64 %rd5, %rd2, %rd3;
+	st.global.v4.b32 [%rd5], {%r12, %r13, %r14, %r15};
+	ret;
+}

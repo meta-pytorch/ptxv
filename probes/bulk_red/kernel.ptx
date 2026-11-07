@@ -1,0 +1,86 @@
+// probes/bulk_red: cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32 (SASS
+// UBLKRED.G.S.ADD.F32.RN) against GB300. 5 CTAs x 128 threads.
+// - CTA 0: its threads copy a[0..4096) into shared memory, fence.proxy.async, and one elected
+//   thread issues two 8 KB bulk adds into out[0..4096) (init: b), commit, wait_group 0.
+//   (a, b) are edge pairs (gen.py): signed zeros, subnormals, ties, overflow, Inf, NaN.
+// - CTAs 1..4: each copies 1024 small integers c[cta][..] into shared memory and adds them
+//   with one 4 KB bulk add into the same out[4096..5120) (init: d): concurrent bulk
+//   reductions of the same words; the sums are exact, so any order gives one result.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry bulk_red(
+    .param .u64 pa,
+    .param .u64 pc,
+    .param .u64 pout
+)
+.maxntid 128, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<16>;
+    .shared .align 128 .b8 buf[16384];
+
+    ld.param.u64    %rd1, [pa];
+    ld.param.u64    %rd2, [pc];
+    ld.param.u64    %rd3, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %ctaid.x;
+    mov.u32         %r3, buf;
+    setp.ne.u32     %p1, %r2, 0;
+    @%p1 bra        OTHERS;
+    // CTA 0: 4096 words, 32 per thread.
+    mov.u32         %r4, 0;
+L0:
+    mad.lo.u32      %r5, %r4, 128, %r1;
+    mul.wide.u32    %rd4, %r5, 4;
+    add.s64         %rd5, %rd1, %rd4;
+    ld.global.u32   %r6, [%rd5];
+    shl.b32         %r7, %r5, 2;
+    add.u32         %r8, %r3, %r7;
+    st.shared.u32   [%r8], %r6;
+    add.u32         %r4, %r4, 1;
+    setp.lt.u32     %p2, %r4, 32;
+    @%p2 bra        L0;
+    fence.proxy.async.shared::cta;
+    bar.sync        0;
+    setp.ne.u32     %p3, %r1, 0;
+    @%p3 bra        DONE;
+    cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32 [%rd3], [%r3], 8192;
+    add.s64         %rd6, %rd3, 8192;
+    add.u32         %r9, %r3, 8192;
+    cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32 [%rd6], [%r9], 8192;
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+    bra             DONE;
+OTHERS:
+    // CTA k in 1..4: c[k - 1][0..1024), 8 per thread.
+    sub.u32         %r10, %r2, 1;
+    mov.u32         %r4, 0;
+L1:
+    mad.lo.u32      %r5, %r4, 128, %r1;
+    mad.lo.u32      %r11, %r10, 1024, %r5;
+    mul.wide.u32    %rd4, %r11, 4;
+    add.s64         %rd5, %rd2, %rd4;
+    ld.global.u32   %r6, [%rd5];
+    shl.b32         %r7, %r5, 2;
+    add.u32         %r8, %r3, %r7;
+    st.shared.u32   [%r8], %r6;
+    add.u32         %r4, %r4, 1;
+    setp.lt.u32     %p2, %r4, 8;
+    @%p2 bra        L1;
+    fence.proxy.async.shared::cta;
+    bar.sync        0;
+    setp.ne.u32     %p3, %r1, 0;
+    @%p3 bra        DONE;
+    add.s64         %rd7, %rd3, 16384;
+    cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32 [%rd7], [%r3], 4096;
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+DONE:
+    ret;
+}

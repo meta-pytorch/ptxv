@@ -1,0 +1,56 @@
+name = "probe_tmap_param_copy"
+description = """
+Probe (S-TMAP) for a tensor map copied out of the kernel parameters (its raw driver bytes),
+patched on the device with tensormap.replace, published with tensormap.cp_fenceproxy and used
+by a TMA load: see kernel.ptx. expected/out.bin is the GB300 output (the box, then the map
+bytes)."""
+ptx = "kernel.ptx"
+entry = "tmap_param_copy"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [32, 64]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [544]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "map"
+dtype = "u8"
+shape = [128]
+init = "zeros"
+
+[[params]]
+kind = "tensormap"
+buffer = "in"
+box = [32, 16]
+dims = [64, 32]
+strides = [256]
+swizzle = "none"
+raw = "00100000007f00009003000010000000000000000000000000000000000000003f0000001f0000000000000000000000000000000000001f0f0000000000000000080000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "map"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

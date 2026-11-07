@@ -1,0 +1,54 @@
+name = "s_globals"
+description = """
+Module data globals (`__device__` variables, globals.cu) shared by three launches of one module
+on one GPU: bump, bump, readout. `counter` (.nv.global) is declared by the case (buffer
+`symbol = "counter"`, starting at 1000, as a captured value would); `table` (.nv.global.init) is
+not, so it starts from its ELF initial value (S-GLOBAL-INIT). The kernels reach both through
+relocated words in constant bank 4. expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+cubin = "kernel.cubin"
+entry = "bump"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [9]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "counter"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+values = [[0, 1000.0]]
+symbol = "counter"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[launches]]
+entry = "bump"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+params = [{ kind = "ptr", buffer = "out" }]
+
+[[launches]]
+entry = "readout"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+params = [{ kind = "ptr", buffer = "out" }]
+
+[[variants]]
+id = "good"
+summary = "as compiled"
+expect = ["clean"]
+
+[[variants]]
+id = "unordered"
+summary = "readout not stream-ordered after the bumps: it races with their table writes"
+after = [[2, -1]]
+expect = ["race"]

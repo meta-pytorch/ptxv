@@ -1,0 +1,123 @@
+# GB300 (sm_103a, CUDA 13.0), 2026-11-06: CUDA_VISIBLE_DEVICES=1 probes/warp_order/run.sh 50
+# 'wrong' counts loads that returned a value other than the program-order one. Every pair
+# runs with no __syncwarp / bar.warp.sync between the store and the load. xwarp with
+# 1 warp per CTA has no writer warp and is skipped. diverge: lanes on both sides of a
+# lane-dependent branch run their loops one after the other (wrong ~= all checks).
+== build un: SASS shared-memory accesses of probe()
+        /*0040*/                   BSSY.RECONVERGENT B0, 0x170 ;
+        /*0130*/                   STS [R2], R7 ;
+        /*0160*/                   BSYNC.RECONVERGENT B0 ;
+        /*03e0*/              @!P6 STS.128 [R0+UR5], R36 ;
+        /*0430*/              @!P5 LDS.128 R44, [R0+UR5] ;
+        /*0470*/              @!P6 STS.128 [R0+UR5], R32 ;
+        /*04b0*/              @!P5 LDS.128 R4, [R0+UR5] ;
+        /*0500*/              @!P6 STS.128 [R0+UR5], R40 ;
+        /*0510*/              @!P5 LDS.128 R8, [R0+UR5] ;
+        /*06d0*/              @!P6 STS.128 [R0+UR5], R36 ;
+        /*0710*/              @!P5 LDS.128 R12, [R0+UR5] ;
+        /*07b0*/              @!P6 STS.128 [R0+UR5], R32 ;
+        /*0800*/              @!P5 LDS.128 R16, [R0+UR5] ;
+        /*0950*/              @!P6 STS.128 [R0+UR5], R36 ;
+        /*0970*/              @!P5 LDS.128 R20, [R0+UR5] ;
+        /*0980*/              @!P6 STS.128 [R0+UR5], R40 ;
+        /*0990*/              @!P5 LDS.128 R24, [R0+UR5] ;
+        /*0ac0*/              @!P6 STS.128 [R0+UR5], R32 ;
+        /*0af0*/              @!P5 LDS.128 R28, [R0+UR5] ;
+        /*0cc0*/              @!P1 STS [R0+UR5], R23 ;
+        /*0ce0*/              @!P0 LDS R4, [R0+UR5] ;
+        /*0d10*/              @!P1 STS [R0+UR5], R22 ;
+        /*0d40*/              @!P0 LDS R5, [R0+UR5] ;
+        /*0d60*/              @!P1 STS [R0+UR5], R25 ;
+        /*0da0*/              @!P0 LDS R6, [R0+UR5] ;
+        /*0dc0*/              @!P1 STS [R0+UR5], R24 ;
+        /*0df0*/              @!P0 LDS R7, [R0+UR5] ;
+        /*0e10*/              @!P1 STS [R0+UR5], R27 ;
+        /*0e20*/              @!P0 LDS R8, [R0+UR5] ;
+        /*0e30*/              @!P1 STS [R0+UR5], R26 ;
+        /*0e50*/              @!P0 LDS R9, [R0+UR5] ;
+        /*0ea0*/              @!P1 STS [R0+UR5], R23 ;
+        /*0ed0*/              @!P0 LDS R10, [R0+UR5] ;
+        /*0f10*/              @!P1 STS [R0+UR5], R22 ;
+        /*0f40*/              @!P0 LDS R11, [R0+UR5] ;
+        /*0f70*/              @!P1 STS [R0+UR5], R25 ;
+        /*0fb0*/              @!P0 LDS R12, [R0+UR5] ;
+        /*0fe0*/              @!P1 STS [R0+UR5], R24 ;
+        /*1040*/              @!P0 LDS R13, [R0+UR5] ;
+        /*10b0*/              @!P1 STS [R0+UR5], R27 ;
+# runs=50 warps/cta=32 ctas=296 iters=4096
+wr32   checks 46556774400 wrong 0
+wr128  checks 23278387200 wrong 0
+wr64r  checks 23278387200 wrong 0
+stsm   checks 7759462400 wrong 0
+rw32   checks 46556774400 wrong 0
+rw128  checks 23278387200 wrong 0
+ldsm   checks 7759462400 wrong 0
+xwarp  checks 23278387200 wrong 23187142673
+diverge checks 46556774400 wrong 46545408000
+# runs=50 warps/cta=1 ctas=2368 iters=4096
+wr32   checks 11639193600 wrong 0
+wr128  checks 5819596800 wrong 0
+wr64r  checks 5819596800 wrong 0
+stsm   checks 1939865600 wrong 0
+rw32   checks 11639193600 wrong 0
+rw128  checks 5819596800 wrong 0
+ldsm   checks 1939865600 wrong 0
+xwarp  checks 0 wrong 0
+diverge checks 11639193600 wrong 11636352000
+== build u1: SASS shared-memory accesses of probe()
+        /*0040*/                   BSSY.RECONVERGENT B0, 0x170 ;
+        /*0130*/                   STS [R0], R9 ;
+        /*0160*/                   BSYNC.RECONVERGENT B0 ;
+        /*0380*/              @!P2 STS.128 [R3+UR9], R8 ;
+        /*0390*/              @!P1 LDS.128 R4, [R3+UR9] ;
+        /*04e0*/              @!P2 STS [R3+UR9], R6 ;
+        /*0500*/              @!P1 LDS R5, [R3+UR9] ;
+        /*0780*/                   BSSY.RECONVERGENT B0, 0x8e0 ;
+        /*07c0*/                   STSM.16.M88.4 [R12], R8 ;
+        /*07d0*/              @!P1 LDS.128 R4, [R3] ;
+        /*0800*/                   BSSY.RECONVERGENT B1, 0x8c0 ;
+        /*08b0*/                   BSYNC.RECONVERGENT B1 ;
+        /*08d0*/                   BSYNC.RECONVERGENT B0 ;
+        /*09d0*/              @!P2 STS [R3+UR9+0x4], R6 ;
+        /*09f0*/              @!P1 LDS R4, [R3+UR9+0x4] ;
+        /*0b10*/                   LDS R13, [R3+UR9] ;
+        /*0b40*/                   LDS R12, [R3+UR9+0x4] ;
+        /*0b50*/                   LDS R15, [R3+UR9+0x8] ;
+        /*0b60*/                   LDS R14, [R3+UR9+0xc] ;
+        /*0bc0*/              @!P1 LDS.128 R4, [R3+UR9] ;
+        /*0c30*/              @!P2 STS.128 [R3+UR9], R8 ;
+        /*0da0*/              @!P1 LDS R6, [R3+UR9] ;
+        /*0df0*/              @!P0 LDS R5, [R3+UR9] ;
+        /*0e00*/              @!P2 STS [R3+UR9], R8 ;
+        /*0f30*/                   BSSY.RECONVERGENT B0, 0x1140 ;
+        /*0f90*/                   STS [R3+UR9], R4 ;
+        /*0fd0*/                   STS [R3+UR9], R4 ;
+        /*1090*/                   LDS R4, [R3+UR9] ;
+        /*1130*/                   BSYNC.RECONVERGENT B0 ;
+        /*1290*/                   LDS R17, [R16] ;
+        /*12f0*/                   LDSM.16.M88.4 R4, [R19] ;
+        /*1300*/              @!P1 STS.128 [R3], R8 ;
+        /*14e0*/                   BSSY.RECONVERGENT B0, 0x15e0 ;
+        /*1540*/                   STS [R4], R5 ;
+        /*1570*/              @!P1 LDS R6, [R4] ;
+        /*15d0*/                   BSYNC.RECONVERGENT B0 ;
+# runs=50 warps/cta=32 ctas=296 iters=4096
+wr32   checks 46556774400 wrong 0
+wr128  checks 23278387200 wrong 0
+wr64r  checks 23278387200 wrong 0
+stsm   checks 7759462400 wrong 0
+rw32   checks 46556774400 wrong 0
+rw128  checks 23278387200 wrong 0
+ldsm   checks 7759462400 wrong 0
+xwarp  checks 23278387200 wrong 23242562604
+diverge checks 46556774400 wrong 46545408000
+# runs=50 warps/cta=1 ctas=2368 iters=4096
+wr32   checks 11639193600 wrong 0
+wr128  checks 5819596800 wrong 0
+wr64r  checks 5819596800 wrong 0
+stsm   checks 1939865600 wrong 0
+rw32   checks 11639193600 wrong 0
+rw128  checks 5819596800 wrong 0
+ldsm   checks 1939865600 wrong 0
+xwarp  checks 0 wrong 0
+diverge checks 11639193600 wrong 11636352000

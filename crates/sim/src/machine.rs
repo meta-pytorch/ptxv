@@ -346,6 +346,9 @@ pub struct Epoch {
     /// 0: a plain access; otherwise a strong access at scope `strong - 1` (`strong_code`).
     /// Strong accesses that are morally strong do not race with each other (S-SCOPE).
     pub strong: u8,
+    /// A plain write of the value already there (S-SAME-VALUE): a read sees that value in
+    /// either order, so reads are not checked against it.
+    pub sv: bool,
 }
 
 /// `Epoch::strong` of a TMEM allocation / deallocation (`tmem_mark`): every word is written.
@@ -399,6 +402,8 @@ pub struct Sh {
     /// thread's unordered atomic (FastTrack's single last-write epoch is precise only when
     /// every write covers the earlier ones).
     pub hw: Option<Box<[Epoch]>>,
+    /// The last write `w` went through a multicast (NVLS) view (S-MC-ALIAS); false: unicast.
+    pub mcv: bool,
 }
 
 /// The reads since the last write, one per actor, sorted by actor (canonical state: commuting
@@ -437,6 +442,15 @@ impl Sh {
         }
         if let Some(h) = self.hw.as_mut() {
             h.iter_mut().for_each(d);
+            // ASSUME(S-SAME-VALUE): a plain last write with uncovered earlier writes means
+            // those wrote the same value (the same-value rule in `access_x`); demoted strong
+            // writes need not have, so the last write joins them.
+            if let Some(w) = self.w.take() {
+                let mut v = h.to_vec();
+                v.push(w);
+                v.sort_unstable_by_key(|e| (e.actor, e.strong, e.clock));
+                *h = v.into_boxed_slice();
+            }
         }
         match &mut self.r {
             Readers::Inline(n, a) => a[..*n as usize].iter_mut().for_each(d),
@@ -547,7 +561,7 @@ impl Epoch {
     fn words(&self) -> (u64, u64) {
         (
             (self.actor as u64) << 32 | self.clock as u64,
-            (self.pc as u64) << 8 | self.strong as u64 | 1 << 63,
+            (self.pc as u64) << 8 | self.strong as u64 | (self.sv as u64) << 62 | 1 << 63,
         )
     }
 }
@@ -568,6 +582,9 @@ impl Hash for Sh {
             let (a, b) = e.words();
             h.write_u64(a);
             h.write_u64(b);
+        }
+        if self.mcv {
+            h.write_u64(1 << 61);
         }
         if let Some(hw) = &self.hw {
             h.write_u64(hw.len() as u64 | 1 << 62);
@@ -936,6 +953,9 @@ pub struct Thread {
     /// fence.proxy.async executions of this thread (S-PROXY): its clock then (own entry and
     /// what it had observed of every other thread).
     pub fences: Vec<VC>,
+    /// fence.proxy.alias executions of this thread, and its start after a stream-ordered
+    /// previous grid (a kernel boundary orders aliases too), as for `fences` (S-MC-ALIAS).
+    pub alias_fences: Vec<VC>,
     /// Bulk groups committed so far (the open group's id).
     pub bulk_group: u32,
     /// The read scoreboard of each committed bulk group (SASS `UTMACMDFLUSH`'s rbar, by group
@@ -1124,7 +1144,15 @@ pub enum AsyncKind {
     /// tcgen05.commit: arrive on `mbar` once every earlier op in the same pipe completed.
     Commit { cta: u16, mbar: u32 },
     /// clusterlaunchcontrol.try_cancel response: 16 bytes to `resp` + complete_tx(16) on `mbar`.
-    Clc { cta: u16, resp: u32, mbar: u32 },
+    /// `others`: the rest of the issuer's cluster, for a multicast try_cancel
+    /// (UGETNEXTWORKID.BROADCAST): each gets the response and the completion on its own
+    /// mbarrier at the same offsets (probes/clc_mcast).
+    Clc {
+        cta: u16,
+        resp: u32,
+        mbar: u32,
+        others: Vec<u16>,
+    },
     /// `cp.async.mbarrier.arrive` (async half): the issuer's cp.async writes then, on `mbar`,
     /// complete one transaction unit (`tx`) or arrive once.
     CpArrive {
@@ -1153,6 +1181,8 @@ pub enum AsyncKind {
         tmap: Arc<TmapDesc>,
         coords: Vec<i64>,
         group: u32,
+        /// A bulk f32 add-reduction (`Op::TmaStore { red: true }`).
+        red: bool,
     },
 }
 
@@ -1188,6 +1218,32 @@ pub struct TmapDesc {
     pub boxd: Vec<u32>,
     /// 4-bit elements (16U4_ALIGN8B): dims / box in bytes, coordinate 0 in elements.
     pub elem4: bool,
+    /// The element type when it is f32 / f16 / bf16 (what a tensor add-reduction adds);
+    /// None for other types (a reduction through them is unmodeled).
+    pub fdtype: Option<ptxv_ir::FFmt>,
+    /// A shared-to-shared bulk copy (`UBLKCP.S.S`): the source is this CTA's shared memory at
+    /// offset `base`, not global memory.
+    pub smem_src: Option<u16>,
+}
+
+/// An NVLS multicast object: addresses [base, base + size) are a multicast view of one
+/// bound range per GPU (S-MULTIMEM).
+#[derive(Clone, Debug)]
+pub struct McObj {
+    pub name: String,
+    pub base: u64,
+    pub size: u64,
+    pub binds: Vec<McBind>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct McBind {
+    pub device: u32,
+    /// Offset in the multicast object.
+    pub offset: u64,
+    pub alloc: usize,
+    pub alloc_off: u64,
+    pub size: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -1231,6 +1287,9 @@ pub struct Grid {
     /// Stream-order override (`NextLaunch::after`): the grid this one waits for instead of
     /// the previous one on its GPU (None inside: nothing).
     pub after: Option<Option<usize>>,
+    /// Constant-bank words (bank, byte offset, value) that hold a module data global's
+    /// address: its buffer's address + addend (S-GLOBAL-INIT). They override the bank bytes.
+    pub cbank_relocs: Vec<(u8, u32, u64)>,
 }
 
 impl Grid {
@@ -1254,6 +1313,11 @@ pub type MmaCache = std::sync::Arc<
 pub struct Launch {
     pub grids: Vec<Grid>,
     pub allocs: Vec<Alloc>,
+    /// NVLS multicast objects (case `multicast`, S-MULTIMEM).
+    pub mcast: Vec<McObj>,
+    /// E-MC-ALIAS-HW: multicast and unicast views of the same bytes are one location (case
+    /// `mc_alias = "hw"`); default false: the PTX alias proxy (S-MC-ALIAS).
+    pub mc_alias_hw: bool,
     pub tensormaps: Vec<TmapDesc>,
     pub outputs: Vec<usize>,
     /// Groups of allocations that must end bitwise equal (case `replicas`).
@@ -1525,6 +1589,16 @@ pub struct Machine {
     /// Not hashed, transient: the current access is an fp32 atomic add with no returned value
     /// (`red.add.f32`): `gfoot` files it as a reduction, not a read and a write.
     pub red_access: bool,
+    /// Not hashed, diagnostic: per global 16-bit word, the last f16 / bf16 bulk reduction into
+    /// it (async actor, its own clock). A later one by another actor that does not happen
+    /// after it is order-dependent (N-BULK-RED), reported rather than explored.
+    pub red16: std::collections::HashMap<(usize, u64), (u32, u32)>,
+    /// Not hashed, transient: the current access goes through a multicast (NVLS) view
+    /// (S-MC-ALIAS).
+    pub mc_view: bool,
+    /// Not hashed: some multimem.ld_reduce lane of this run returned the nearest-even
+    /// neighbour of a sum whose rounding direction on GB300 is not modeled (N-MULTIMEM).
+    pub mc_inexact: bool,
     /// Not hashed: per global byte, which actor accessed it first, and whether several did /
     /// any wrote (single deterministic runs, `explore_symmetric`).
     pub gown: Option<Box<GOwn>>,
@@ -1542,6 +1616,19 @@ pub struct Machine {
     /// never-written shared memory is recorded here (first byte) instead of reported: the
     /// loaded registers become undefined, and only a use of them is a finding (S-INIT).
     pub stale: Option<Option<u32>>,
+    /// Per thread: own clock when its warp last diverged (`Machine::wdiv`); an access with an own
+    /// clock at least this one ran after it (intra-warp race labels, E-WARP-ORDER). History
+    /// for a label only: not part of the state hash.
+    pub div_clk: Arc<Vec<u32>>,
+    /// Per warp: it may be diverged on hardware (E-WARP-ORDER): set when the lanes of a split
+    /// leave an instruction at different pcs (or a live lane is not in the split), cleared
+    /// when a `BSYNC` / `WARPSYNC` releases every live lane together; false at launch. Used
+    /// for intra-warp race labels only: not part of the state hash.
+    pub wdiv: Arc<Vec<bool>>,
+    /// Not hashed: C-ORDER's dead-read probe (wellsync.rs `dead_reads`). Loads by these
+    /// (thread, pc) leave their destination registers undefined (S-INIT), so a use of the
+    /// loaded value is reported where it reaches a sink.
+    pub dead_probe: Option<Arc<BTreeSet<(u32, u32)>>>,
     /// Not hashed, transient: set while an operation that read partly undefined registers
     /// runs: the undefined bits of its result (slot i in bits 32i..32i+32), S-INIT.
     pub vmask: Option<u64>,
@@ -2100,6 +2187,7 @@ impl Machine {
                     ld_pend: vec![],
                     written: vec![0; nv.div_ceil(64)],
                     fences: vec![],
+                    alias_fences: vec![],
                     bulk_group: 0,
                     bulk_sb: Vec::new(),
                     bulk_done: vec![],
@@ -2133,6 +2221,8 @@ impl Machine {
         let mut m = Machine {
             k,
             launch,
+            div_clk: Arc::new(vec![0; threads.len()]),
+            wdiv: Arc::new(vec![false; warps.len()]),
             threads: CowVec::new(threads),
             warps: CowVec::new(warps),
             smem: CowVec::new(smem),
@@ -2165,12 +2255,16 @@ impl Machine {
             vipr: Default::default(),
             vip_read: 0,
             red_access: false,
+            red16: Default::default(),
+            mc_view: false,
+            mc_inexact: false,
             gown: None,
             mma_cache: Default::default(),
             findings: Vec::new(),
             num: None,
             elect_choice: None,
             stale: None,
+            dead_probe: None,
             vmask: None,
             fp: None,
             live: 0..0,
@@ -2229,6 +2323,7 @@ impl Machine {
                             clock: 0,
                             pc: 0,
                             strong: STRONG_SYS,
+                            sv: false,
                         },
                         atomics: vec![],
                     },

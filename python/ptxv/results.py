@@ -67,7 +67,7 @@ class Verdict:
     refuted_opt_in: refuted assumptions the verdict relies on by explicit opt-in.
     gb300: the second level's summary (the hardware-model check: states, observable / latent
     counts, stale reads only it sees), or None when it did not run. `observable` / `latent` /
-    `latent_closed_world` list the classified findings.
+    `latent_closed_world` / `latent_needs_divergence` list the classified findings.
     """
 
     classes: list[str]
@@ -124,6 +124,13 @@ class Verdict:
         """PTX-model findings latent on GB300 only under E-L1-CLOSED: observable when a
         co-resident kernel fills the line (witness `gb300_witness`). Not in `latent`."""
         return [f for f in self.findings if f.gb300 == "latent-closed-world"]
+
+    @property
+    def latent_needs_divergence(self) -> list[Finding]:
+        """Intra-warp PTX-model races between lanes of one warp that stays converged between
+        the accesses (PTX front-end): GB300 orders them unless the warp diverges or the
+        compiler reorders them (E-LOCKSTEP). Not in `latent`."""
+        return [f for f in self.findings if f.gb300 == "latent-needs-divergence"]
 
     @property
     def clean(self) -> bool:

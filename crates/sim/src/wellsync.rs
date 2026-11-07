@@ -37,7 +37,7 @@
 //!   arrival in generation g is HB-after every arrival of generation g-1 (for barrier.cluster
 //!   it suffices that the thread waited on g-1 itself).
 //! * **C-ORDER** (values): every pair of conflicting strong accesses (ld/st with a
-//!   scope, atomics) is HB-ordered, except two atomics of the same commutative operation
+//!   scope, atomics; found by a sweep in run order, `order.rs`) is HB-ordered, except two atomics of the same commutative operation
 //!   (add/or/and/xor, not exch) whose results are unused and which do not acquire; plain
 //!   accesses are covered by the run's race detector (any race fails the certificate); the
 //!   lanes of one SASS atomic step are ordered by lane order (E-LOCKSTEP; C-WARP keeps them
@@ -95,8 +95,8 @@
 //!   and uniform operations, which run once per lane group; PTX elect / vote / redux /
 //!   tcgen05.alloc), lanes of the same warp that run that pc in another group are HB-ordered
 //!   with them. SASS per-lane memory / sync instructions only need the first part (the
-//!   E-LOCKSTEP join; more lanes only add happens-before); SASS lane-local arithmetic and
-//!   branches need neither. BSYNC only parks lanes BSSY recorded; a WARPSYNC/BSYNC release
+//!   E-LOCKSTEP join; more lanes only add happens-before); SASS lane-local arithmetic,
+//!   branches and BREAK (each lane clears its own mask bit; see `membership`) need neither. BSYNC only parks lanes BSSY recorded; a WARPSYNC/BSYNC release
 //!   waits only for lanes whose exit is HB-before every arrival (exits do not re-check
 //!   warpsync releases).
 //! * The run reports no finding except exit-time `contract` findings (E-BULK-EXIT, a
@@ -141,6 +141,7 @@ use crate::explore::Action;
 use crate::explore::Verdict;
 use crate::machine::*;
 
+mod order;
 pub mod ring;
 
 /// The log slot on `Machine` (`Machine::wlog`): empty except in a certificate run. Clones are
@@ -413,7 +414,6 @@ pub struct SyncLog {
     runs: HashMap<(u32, u32), Vec<Run>>,
     strong: Vec<SAcc>,
     tmem: BTreeMap<u16, Vec<(Ev, VC)>>,
-    exit_ev: Vec<Option<Ev>>,
     polls: Vec<PollRec>,
     /// `seq` when the current instruction started.
     inst_seq: u64,
@@ -433,8 +433,10 @@ pub struct SyncLog {
 const MAX_RUNS: usize = 256;
 /// Poll executions checked by C-POLL before giving up (each keeps a machine copy).
 const MAX_POLLS: usize = 4096;
-/// Pairwise strong-access checks before giving up.
+/// Unordered overlapping strong-access pairs visited before giving up (C-ORDER, order.rs).
 const MAX_PAIRS: u64 = 200_000_000;
+/// C-ORDER conflicts collected for the dead-read probe (`dead_reads`) before giving up.
+const MAX_DEAD_PAIRS: usize = 1 << 14;
 
 impl SyncLog {
     pub fn new(m: &Machine) -> SyncLog {
@@ -446,7 +448,6 @@ impl SyncLog {
             last_nt: vec![u32::MAX; n],
             cl_last: vec![None; n],
             ptaint: vec![None; n],
-            exit_ev: vec![None; n],
             ..Default::default()
         }
     }
@@ -496,6 +497,13 @@ fn membership(m: &Machine, pc: u32) -> (bool, bool) {
     let op = &m.k.code[pc as usize].op;
     match op {
         Op::WarpSync { .. } | Op::Bsync { .. } => (false, false),
+        // SASS BREAK clears each active lane's own bit of the warp's convergence mask and then
+        // releases lanes parked at that barrier's BSYNC once every lane still in the mask is
+        // parked. Bit l changes only by lane l's own BSSY / BREAK or by a release that lane l
+        // is parked in, and the release fires on the first event after which the set is
+        // complete, joining only the parked lanes' clocks: the mask, the release point and
+        // its clocks are the same however the breaking lanes are grouped (E-BSYNC).
+        Op::Break { .. } if m.k.front == Front::Sass => (false, false),
         // SASS per-lane instructions without effects: who runs them together is irrelevant.
         _ if m.k.front == Front::Sass && !inst_uniform(m, pc) && sass_lane_local(op) => {
             (false, false)
@@ -504,6 +512,7 @@ fn membership(m: &Machine, pc: u32) -> (bool, bool) {
         // run's lanes must run them together.
         Op::Elect { .. }
         | Op::VoteAny { .. }
+        | Op::MatchAny { .. }
         | Op::VoteAll { .. }
         | Op::Redux { .. }
         | Op::R2Ur { .. }
@@ -511,6 +520,7 @@ fn membership(m: &Machine, pc: u32) -> (bool, bool) {
         | Op::StMatrix { .. }
         | Op::Bssy { .. }
         | Op::Break { .. }
+        | Op::BMov { .. }
         | Op::Bra { any: true, .. }
         | Op::Bra { div: Some(_), .. }
         | Op::EndCollective { .. }
@@ -534,11 +544,13 @@ fn membership(m: &Machine, pc: u32) -> (bool, bool) {
         _ if op.is_warp_aligned() => (false, true),
         Op::Elect { .. }
         | Op::VoteAny { .. }
+        | Op::MatchAny { .. }
         | Op::VoteAll { .. }
         | Op::Redux { .. }
         | Op::R2Ur { .. }
         | Op::Bssy { .. }
         | Op::Break { .. }
+        | Op::BMov { .. }
         | Op::TmemAlloc { .. }
         | Op::TmemDealloc { .. }
         | Op::TmemRelinquish => (true, true),
@@ -585,6 +597,10 @@ fn sass_lane_local(op: &Op) -> bool {
             | Op::R2p { .. }
             | Op::Ffma2 { .. }
             | Op::Hfma2 { .. }
+            | Op::Hfma2Bf16 { .. }
+            | Op::FfmaBf16 { .. }
+            | Op::Hmnmx2Bf16 { .. }
+            | Op::Vhmnmx { .. }
             | Op::CvtF32Bf16 { .. }
             | Op::F2fpBf16 { .. }
             | Op::Bfe { .. }
@@ -696,12 +712,6 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
         cas_pre(m, log, &active, pc);
     }
     match &inst.op {
-        Op::Exit => {
-            for &t in &active {
-                let vc = m.threads[t].vc.clone();
-                log.exit_ev[t] = Some(log.ev(t as u32, &vc, pc));
-            }
-        }
         Op::BarSync { id, packed, .. } => {
             for &t in &active {
                 let Ok(idv) = m.rd(t, id) else { continue };
@@ -1032,7 +1042,10 @@ fn effectful(op: &Op) -> bool {
         || matches!(
             op,
             Op::Ld { .. }
+                | Op::LdReduce { .. }
                 | Op::St { .. }
+                | Op::Ld256 { .. }
+                | Op::St256 { .. }
                 | Op::Atom { .. }
                 | Op::StAsync { .. }
                 | Op::TmaLoad { .. }
@@ -1055,12 +1068,14 @@ fn effectful(op: &Op) -> bool {
                 // Lane collectives: their result depends on who runs them together.
                 | Op::Elect { .. }
                 | Op::VoteAny { .. }
+                | Op::MatchAny { .. }
                 | Op::VoteAll { .. }
                 | Op::Redux { .. }
                 | Op::Shfl { .. }
                 | Op::R2Ur { .. }
                 | Op::Bssy { .. }
                 | Op::Break { .. }
+                | Op::BMov { .. }
         )
 }
 
@@ -1117,7 +1132,10 @@ fn look_step(
             return Ok(());
         }
     }
-    if effectful(&inst.op) && !visible {
+    // A predicated-off instruction does nothing (`@!P0 NANOSLEEP` and the `@!P0` re-poll of a
+    // retry stub after its try_wait passed).
+    let live = members.iter().any(|&t| c.prd(t, inst.guard));
+    if live && effectful(&inst.op) && !visible {
         return Err(format!("{} runs on one side only", k.describe(pc as usize)));
     }
     if !c.split_enabled(members, pc) {
@@ -1330,11 +1348,16 @@ fn walk_dead(
             c.threads[t].make_mut().pc = pc as u32;
         }
     };
-    // (copy, unknown registers, registers still to kill, pc)
-    let mut stack: Vec<(Machine, Vec<Reg>, Vec<Reg>, usize)> =
-        vec![(fresh(a), vec![], regs, start)];
+    // Which bits of each differing register differ (all, at the meeting point): byte
+    // permutes, constant shifts and moves carry them bit by bit, and a result in which none
+    // differ is the same on both sides. CuTe's `PRMT R0, R15, 0x7632, R0` keeps the old R0's
+    // upper half, which the next `SHF.L.U32 R5, R0, 0x10, RZ` shifts out.
+    let masks0: Vec<(Reg, u32)> = regs.iter().map(|&r| (r, !0u32)).collect();
+    // (copy, unknown registers, registers still to kill, their differing bits, pc)
+    type Walk = (Machine, Vec<Reg>, Vec<Reg>, Vec<(Reg, u32)>, usize);
+    let mut stack: Vec<Walk> = vec![(fresh(a), vec![], regs, masks0, start)];
     let mut budget = 4 * LOOKAHEAD;
-    while let Some((mut c, mut unk, mut diff, mut at)) = stack.pop() {
+    while let Some((mut c, mut unk, mut diff, mut dm, mut at)) = stack.pop() {
         loop {
             if diff.is_empty() {
                 break;
@@ -1347,17 +1370,109 @@ fn walk_dead(
             let inst = &k.code[at];
             let srcs = inst.op.src_regs();
             let g = inst.guard.reg;
-            if let Some(r) = diff.iter().find(|r| srcs.contains(r) || g == Some(**r)) {
-                return Err(format!(
-                    "where the paths meet ({}), {r:?}, which they leave different, is read at {}",
-                    k.describe(start),
-                    k.describe(at)
-                ));
-            }
             let known = g.is_none_or(|r| !unk.contains(&r));
             let on: Vec<bool> = members.iter().map(|&t| c.prd(t, inst.guard)).collect();
             let all_on = known && on.iter().all(|&x| x);
             let all_off = known && on.iter().all(|&x| !x);
+            if let Some(r) = diff.iter().find(|r| srcs.contains(r) || g == Some(**r)) {
+                let m = |v: &Val| -> Option<u32> {
+                    match v {
+                        // A 64-bit operand: not tracked (its second register may differ).
+                        Val::Reg(q, n) if *n > 1 && q.file != File::V => {
+                            let hit = (0..*n as u16).any(|i| {
+                                diff.contains(&Reg {
+                                    file: q.file,
+                                    idx: q.idx + i,
+                                })
+                            });
+                            if hit { None } else { Some(0) }
+                        }
+                        Val::Reg(q, _) if diff.contains(q) => {
+                            if !matches!(q.file, File::R | File::UR) {
+                                return None;
+                            }
+                            Some(dm.iter().find(|x| x.0 == *q).map_or(!0, |x| x.1))
+                        }
+                        _ => Some(0),
+                    }
+                };
+                let carried: Option<(Reg, u32)> = match &inst.op {
+                    Op::Mov { d, a } => m(a).map(|x| (*d, x)),
+                    Op::Prmt {
+                        d,
+                        a,
+                        sel: Val::Imm(sl),
+                        b,
+                    } => match (m(a), m(b)) {
+                        (Some(ma), Some(mb)) => {
+                            let src = ma as u64 | (mb as u64) << 32;
+                            let mut out = 0u32;
+                            for i in 0..4 {
+                                let n = (sl >> (4 * i)) & 0xf;
+                                let byte = (src >> (8 * (n & 7))) & 0xff;
+                                let bm = if n & 8 != 0 {
+                                    if byte & 0x80 != 0 { 0xff } else { 0 }
+                                } else {
+                                    byte
+                                };
+                                out |= (bm as u32) << (8 * i);
+                            }
+                            Some((*d, out))
+                        }
+                        _ => None,
+                    },
+                    Op::Shf {
+                        d,
+                        lo,
+                        sh: Val::Imm(n),
+                        hi,
+                        right,
+                        signed,
+                        high,
+                        wide,
+                        wrap,
+                    } => match (m(lo), m(hi)) {
+                        (Some(ml), Some(mh)) => {
+                            let v = (mh as u64) << 32 | ml as u64;
+                            let r = crate::exec::shf_value(
+                                v,
+                                crate::exec::shf_amount(*n, *wide, *wrap),
+                                *right,
+                                *signed,
+                            );
+                            Some((*d, (if *high { r >> 32 } else { r & 0xffff_ffff }) as u32))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let Some((d, mask)) = carried.filter(|_| {
+                    all_on && g.is_none_or(|q| !diff.contains(&q) && !unk.contains(&q))
+                }) else {
+                    return Err(format!(
+                        "where the paths meet ({}), {r:?}, which they leave different, is read at {}",
+                        k.describe(start),
+                        k.describe(at)
+                    ));
+                };
+                let unknown = srcs.iter().any(|q| unk.contains(q));
+                if look_step(&mut c, members, obj, parity, true).is_err() {
+                    fallback(at, &diff)?;
+                    break;
+                }
+                diff.retain(|q| *q != d);
+                dm.retain(|x| x.0 != d);
+                unk.retain(|q| *q != d);
+                if mask != 0 && real(&d) {
+                    diff.push(d);
+                    dm.push((d, mask));
+                }
+                if unknown {
+                    unk.push(d);
+                }
+                at = c.threads[members[0]].pc as usize;
+                continue;
+            }
             if known && !all_on && !all_off && matches!(inst.op, Op::Bra { .. } | Op::Exit) {
                 fallback(at, &diff)?; // the lanes part ways
                 break;
@@ -1372,7 +1487,7 @@ fn walk_dead(
             match &inst.op {
                 Op::Exit if all_on => break, // the lanes end
                 Op::Exit if !known => {
-                    stack.push((fresh(&c), unk.clone(), diff.clone(), at + 1));
+                    stack.push((fresh(&c), unk.clone(), diff.clone(), dm.clone(), at + 1));
                     break;
                 }
                 Op::Bra {
@@ -1384,7 +1499,7 @@ fn walk_dead(
                 } if !known => {
                     let mut t = fresh(&c);
                     set_pc(&mut t, *target);
-                    stack.push((t, unk.clone(), diff.clone(), *target));
+                    stack.push((t, unk.clone(), diff.clone(), dm.clone(), *target));
                     at += 1;
                     set_pc(&mut c, at);
                     continue;
@@ -1398,6 +1513,7 @@ fn walk_dead(
             let from_memory = matches!(
                 inst.op,
                 Op::Ld { .. }
+                    | Op::LdReduce { .. }
                     | Op::Ld256 { .. }
                     | Op::LdLocal { .. }
                     | Op::LdMatrix { .. }
@@ -1686,31 +1802,12 @@ pub fn released(m: &mut Machine, threads: &[usize]) {
 }
 
 /// Hook (exec.rs `warpsync_release`, before it changes anything): `lanes` (live lanes of the
-/// mask, all parked) are released; the mask's exited lanes must have exited HB-before every
-/// arrival, since an exit does not re-check the release.
-pub fn warpsync_released(m: &mut Machine, warp: u32, mask: u32, lanes: &[usize]) {
+/// mask, all parked) are released. An exited lane of the mask need not have exited
+/// HB-before the arrivals: in an order where it exits after them, its exit re-checks the
+/// release (`exit_warpsync_release`, E-BSYNC) and frees the same lanes with the same joined
+/// clock (an exit adds none), so the order changes no value or happens-before edge.
+pub fn warpsync_released(m: &mut Machine, _warp: u32, _mask: u32, lanes: &[usize]) {
     let mut log = take(m);
-    let base = m.warp_threads(warp);
-    for x in base.clone() {
-        let lane = (x - base.start) as u32;
-        if mask >> lane & 1 == 0 || m.threads[x].st != St::Exited {
-            continue;
-        }
-        let ok = log.exit_ev[x].is_some_and(|e| {
-            lanes
-                .iter()
-                .all(|&y| e.hb(y as u32, u64::MAX, &m.threads[y].vc))
-        });
-        if !ok {
-            log.fail(
-                format!("wsync-exit:{warp}:{}", m.threads[lanes[0]].pc),
-                format!(
-                    "C-WARP: lane {lane} of warp {warp} exits without happening-before the convergence at {} (in another order the release would wait for it)",
-                    m.k.describe(m.threads[lanes[0]].pc as usize)
-                ),
-            );
-        }
-    }
     let nt = log.next_tok;
     log.next_tok += 1;
     for &t in lanes {
@@ -2120,12 +2217,20 @@ fn analyze(m: &Machine, log: &SyncLog) -> Vec<String> {
     for s in ring_why {
         add(s);
     }
+    // Words plain writes of equal bytes may share unordered (order.rs `pair`).
+    let polled: HashSet<((u8, u32), u64)> = log
+        .polls
+        .iter()
+        .flat_map(|p| (p.lo / 4..=(p.hi.max(p.lo + 1) - 1) / 4).map(move |w| (p.key, w)))
+        .collect();
+    let forced = m.ring.as_ref().is_some_and(|r| !r.force.is_empty());
+    let same_ok = (choices.is_empty() && !forced).then_some(&polled);
     RING_OUT.with(|r| *r.borrow_mut() = (choices, counters));
     let (cas_why, cas_ok) = cas_check(m, log);
     for s in cas_why {
         add(s);
     }
-    for s in strong_conflicts(m, &log.strong, &cas_ok) {
+    for s in strong_conflicts(m, &log.strong, &cas_ok, same_ok) {
         add(s);
     }
     // C-WARP: concurrent groups at one pc.
@@ -2950,12 +3055,13 @@ fn cas_check(m: &Machine, log: &SyncLog) -> (Vec<String>, HashSet<CasWord>) {
 }
 
 /// Conflicting strong accesses not ordered by happens-before (C-ORDER).
-fn strong_conflicts(m: &Machine, acc: &[SAcc], cas_ok: &HashSet<CasWord>) -> Vec<String> {
+fn strong_conflicts(
+    m: &Machine,
+    acc: &[SAcc],
+    cas_ok: &HashSet<CasWord>,
+    same_ok: order::SameOk,
+) -> Vec<String> {
     let mut out = Vec::new();
-    let mut by: BTreeMap<(u8, u32), Vec<&SAcc>> = BTreeMap::new();
-    for a in acc {
-        by.entry(a.key).or_default().push(a);
-    }
     // Debugging: PTXV_WS_WORD=space:alloc:offset prints the strong accesses of one word.
     if let Ok(w) = std::env::var("PTXV_WS_WORD") {
         let f: Vec<u64> = w
@@ -2968,10 +3074,11 @@ fn strong_conflicts(m: &Machine, acc: &[SAcc], cas_ok: &HashSet<CasWord>) -> Vec
                 .filter(|a| a.key == (sp as u8, al as u32) && a.lo <= off && off < a.hi)
             {
                 eprintln!(
-                    "WORD seq={} {} write={} rmw={:?} clock={} amb={} vc={:?}",
+                    "WORD seq={} {} write={} val={:02x?} rmw={:?} clock={} amb={} vc={:?}",
                     a.ev.seq,
                     describe_ev(m, &a.ev),
                     a.write,
+                    a.val,
                     a.rmw,
                     a.ev.clock,
                     a.ev.amb,
@@ -2990,85 +3097,58 @@ fn strong_conflicts(m: &Machine, acc: &[SAcc], cas_ok: &HashSet<CasWord>) -> Vec
             }
         }
     }
-    let mut pairs = 0u64;
-    // C-FADD: words with unordered fp32 atomic adds (decided per word below).
-    let mut fwords: BTreeMap<((u8, u32), u64, u64), ()> = BTreeMap::new();
-    for (key, mut v) in by {
-        v.sort_by_key(|a| (a.lo, a.ev.seq));
-        for i in 0..v.len() {
-            let a = v[i];
-            for b in &v[i + 1..] {
-                if b.lo >= a.hi {
-                    break;
-                }
-                pairs += 1;
-                if pairs > MAX_PAIRS {
-                    out.push(format!(
-                        "C-ORDER: more than {MAX_PAIRS} overlapping strong-access pairs (not checked)"
-                    ));
-                    return out;
-                }
-                if !(a.write || b.write) || a.ev.actor == b.ev.actor {
-                    continue;
-                }
-                let (x, y) = if a.ev.seq < b.ev.seq {
-                    (a, *b)
-                } else {
-                    (*b, a)
-                };
-                if x.ev.hb(y.ev.actor, y.ev.seq, &y.vc) {
-                    continue;
-                }
-                // Two links of a CAS chain that C-CAS determined.
-                if x.at.is_some()
-                    && y.at.is_some()
-                    && (x.lo, x.hi) == (y.lo, y.hi)
-                    && cas_ok.contains(&(key, x.lo, x.hi))
-                {
-                    continue;
-                }
-                // Lanes of one SASS atomic step: performed in lane order (E-LOCKSTEP).
-                if x.step.is_some() && x.step == y.step {
-                    continue;
-                }
-                // Commutative atomics with unused results that do not acquire.
-                if let (Some((ox, ux, qx, kx)), Some((oy, uy, qy, ky))) = (x.rmw, y.rmw) {
-                    let comm = !matches!(
-                        ox,
-                        AtomOp::Exch | AtomOp::FAddFtz | AtomOp::CasSpin | AtomOp::Cas
-                    );
-                    if (ox == oy || kx && ky) && comm && !ux && !uy && !qx && !qy {
-                        continue;
-                    }
-                    // fp32 adds of one word: their order may change the bits (C-FADD).
-                    if ox == AtomOp::FAddFtz
-                        && oy == AtomOp::FAddFtz
-                        && !ux
-                        && !uy
-                        && !qx
-                        && !qy
-                        && x.fadd.is_some()
-                        && y.fadd.is_some()
-                        && (x.lo, x.hi) == (y.lo, y.hi)
-                    {
-                        fwords.insert((key, x.lo, x.hi), ());
-                        continue;
-                    }
-                }
-                out.push(format!(
-                    "C-ORDER: strong accesses to {} {} byte {:#x} by {} and {} are not ordered (the value read or left depends on the schedule)",
-                    if key.0 == 0 { "shared memory of CTA" } else { "global allocation" },
-                    key.1,
-                    a.lo.max(b.lo),
-                    describe_ev(m, &x.ev),
-                    describe_ev(m, &y.ev)
-                ));
-                if out.len() >= 8 && std::env::var("PTXV_WS_ALL").is_err() {
-                    return out;
+    // The pairs are found by a sweep in run order (order.rs), not enumerated.
+    let all = std::env::var("PTXV_WS_ALL").is_ok();
+    let found = order::search(acc, cas_ok, MAX_DEAD_PAIRS, MAX_PAIRS, same_ok);
+    // Pairs of a write and a plain (non-atomic) read by a thread: the dead-read candidates
+    // (`dead_reads`): if the value read reaches nothing, the order does not matter.
+    let mut cand: Option<DeadCand> =
+        (!found.capped && found.conflicts.len() < MAX_DEAD_PAIRS).then(Default::default);
+    for (i, &(xi, yi)) in found.conflicts.iter().enumerate() {
+        let (x, y) = (&acc[xi], &acc[yi]);
+        let msg = format!(
+            "C-ORDER: strong accesses to {} {} byte {:#x} by {} and {} are not ordered (the value read or left depends on the schedule)",
+            if x.key.0 == 0 {
+                "shared memory of CTA"
+            } else {
+                "global allocation"
+            },
+            x.key.1,
+            x.lo.max(y.lo),
+            describe_ev(m, &x.ev),
+            describe_ev(m, &y.ev)
+        );
+        let read = |a: &SAcc| {
+            (!a.write && a.rmw.is_none() && (a.ev.actor as usize) < m.threads.len())
+                .then_some((a.ev.actor, a.ev.pc))
+        };
+        match (cand.as_mut(), read(x).xor(read(y))) {
+            (Some(c), Some(r)) => {
+                c.0.insert(r);
+                if i < 8 || all {
+                    c.1.push(msg.clone());
                 }
             }
+            _ => cand = None,
+        }
+        if i < 8 || all {
+            if x.key.0 == 0 {
+                CORDER_SMEM.with(|c| c.borrow_mut().push((x.ev.pc, y.ev.pc, msg.clone())));
+            }
+            out.push(msg);
         }
     }
+    DEAD_CAND.with(|d| *d.borrow_mut() = cand.filter(|c| !c.0.is_empty()));
+    if found.capped {
+        out.push(format!(
+            "C-ORDER: more than {MAX_PAIRS} unordered overlapping strong-access pairs (not checked)"
+        ));
+        return out;
+    }
+    if out.len() >= 8 && !all {
+        return out;
+    }
+    let fwords = found.fwords;
     for w in fwords.keys() {
         if let Err(e) = fadd_word(m, acc, *w) {
             out.push(e);
@@ -3078,6 +3158,59 @@ fn strong_conflicts(m: &Machine, acc: &[SAcc], cas_ok: &HashSet<CasWord>) -> Vec
         }
     }
     out
+}
+
+thread_local! {
+    /// C-ORDER pairs on shared memory seen since `corder_take`: (earlier pc, later pc,
+    /// reason). Root causes reported with a racy or nondeterministic verdict.
+    static CORDER_SMEM: std::cell::RefCell<Vec<(u32, u32, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The shared-memory C-ORDER pairs recorded since the last call (and clear them).
+fn corder_take() -> Vec<(u32, u32, String)> {
+    CORDER_SMEM.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
+/// A verdict that has a race or nondeterministic outputs, from a launch whose certificate run
+/// had unordered strong shared-memory pairs (C-ORDER under S-SMEM-STRONG: not data races):
+/// report each pair first, as a finding of kind `unordered` (not a verdict class), so the
+/// order the outcome depends on is named next to its consequence (a global race downstream,
+/// say).
+fn add_root_pairs(v: &mut Verdict, pairs: Vec<(u32, u32, String)>) {
+    let consequence = v.distinct_outputs > 1
+        || v.findings
+            .iter()
+            .any(|f| f.kind == "race" || f.kind == "nondeterministic");
+    if !consequence {
+        return;
+    }
+    let mut roots = Vec::new();
+    for (a, b, msg) in pairs {
+        let sig = format!("unordered-smem:{a}:{b}");
+        if roots.iter().any(|f: &Finding| f.sig == sig) || v.findings.iter().any(|f| f.sig == sig) {
+            continue;
+        }
+        roots.push(Finding {
+            kind: "unordered".into(),
+            sig,
+            msg: format!(
+                "possible root cause: {}; with LDS/STS strong (S-SMEM-STRONG) this is not a data race, but the verdict's race / nondeterministic outcome may depend on this order (a barrier between the accesses orders it)",
+                msg.trim_start_matches("C-ORDER: ")
+            ),
+            trace: vec![],
+            pcs: vec![a, b],
+            gb300: None,
+        });
+    }
+    if !roots.is_empty() {
+        v.notes.push(format!(
+            "{} unordered shared-memory pair(s) from the certificate's run listed first (kind `unordered`, not a verdict class)",
+            roots.len()
+        ));
+        roots.append(&mut v.findings);
+        v.findings = roots;
+    }
 }
 
 thread_local! {
@@ -3291,6 +3424,9 @@ fn merge_run_races(v: &mut Verdict, races: Vec<Finding>) {
 /// One logged run under one leader policy: (final machine, findings, terminal, steps,
 /// reasons the certificate fails).
 fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String>) {
+    // The dead-read probe reruns from the start (`dead_reads`).
+    let m0 = m.dead_probe.is_none().then(|| m.clone());
+    DEAD_CAND.with(|d| *d.borrow_mut() = None);
     m.wlog = LogSlot(Some(Box::new(SyncLog::new(&m))));
     if std::env::var("PTXV_WS_NOLOG").is_ok() {
         m.wlog = LogSlot(None);
@@ -3349,12 +3485,80 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
     let mut why = extra;
     match m.wlog.0.take() {
         Some(log) => {
+            // ASSUME(S-SAME-VALUE): the run's written values stand for every schedule's only
+            // when every read is determined: no strong accesses (atomics, flags, C-RING
+            // counters) and no polls, whose values may differ in another schedule
+            // (fixtures/e_ring_warp W1: equal in the run, a race elsewhere).
+            if fs.iter().any(|f| f.sig.starts_with("same-value:"))
+                && (!log.strong.is_empty() || !log.polls.is_empty())
+            {
+                why.push(
+                    "S-SAME-VALUE: writes of equal values in a run with strong accesses or polls, whose values may depend on the schedule"
+                        .into(),
+                );
+            }
             why.extend(analyze(&m, &log));
             CARRY.with(|p| *p.borrow_mut() = carry(&log));
         }
         None => why.push("no log (PTXV_WS_NOLOG)".into()),
     }
+    if let (Some(m0), Some((reads, msgs))) = (m0, DEAD_CAND.with(|d| d.borrow_mut().take())) {
+        if let Some(note) = dead_reads(m0, &reads, &fs, ok) {
+            why.retain(|w| !msgs.contains(w));
+            fs.push(note);
+        }
+    }
     (m, fs, ok, steps, why)
+}
+
+/// C-ORDER dead reads. Every C-ORDER conflict of the run is a write against a plain read by
+/// a thread (`reads`: thread, pc), whose value may differ in another schedule. Rerun the same
+/// launch with those loads leaving their registers undefined (`Machine::dead_probe`, S-INIT):
+/// undefined bits propagate through register-only operations and are reported where they
+/// reach memory, an address, a predicate or control flow, or a synchronization operand. If
+/// the rerun reports no use the run did not (and ends as the run did), no read value reaches
+/// anything along the run's path, so a read of any other value leaves the same events: the
+/// conflicts change nothing (BlackwellScoreSummary: warps that skip the named barrier read the
+/// TMEM address before it is stored and never use it). Returns the note recording it.
+fn dead_reads(
+    mut m0: Machine,
+    reads: &BTreeSet<(u32, u32)>,
+    fs: &[Finding],
+    ok: bool,
+) -> Option<Finding> {
+    m0.dead_probe = Some(Arc::new(reads.clone()));
+    let k = m0.k.clone();
+    // The rerun is a logged run too: keep the thread-local results of this one.
+    let carry = CARRY.with(|p| p.borrow().clone());
+    let ring_out = RING_OUT.with(|r| std::mem::take(&mut *r.borrow_mut()));
+    let pruned = RING_PRUNED.with(|p| p.borrow_mut().take());
+    let eager = EAGER_FAILED.with(|e| e.get());
+    let corder = CORDER_SMEM.with(|c| c.borrow().clone());
+    let (_, fs1, ok1, _, _) = run_logged(m0);
+    CORDER_SMEM.with(|c| *c.borrow_mut() = corder);
+    CARRY.with(|p| *p.borrow_mut() = carry);
+    RING_OUT.with(|r| *r.borrow_mut() = ring_out);
+    RING_PRUNED.with(|p| *p.borrow_mut() = pruned);
+    EAGER_FAILED.with(|e| e.set(eager));
+    let used = fs1
+        .iter()
+        .filter(|f| f.sig.starts_with("uninit-reg:"))
+        .any(|f| !fs.iter().any(|g| g.sig == f.sig));
+    if used || ok1 != ok {
+        return None;
+    }
+    let first = reads.iter().next().copied().unwrap_or_default();
+    Some(Finding {
+        kind: "note".into(),
+        sig: format!("dead-read:{}", first.1),
+        msg: format!(
+            "C-ORDER: {} load(s) unordered with a write read values that reach nothing (rerun with them undefined, S-INIT), first at {}",
+            reads.len(),
+            k.describe(first.1 as usize)
+        ),
+        trace: vec![],
+        ..Default::default()
+    })
 }
 
 /// A global byte range (allocation, first byte, end) and an access to it.
@@ -3368,6 +3572,9 @@ pub struct Carry {
     pub reads: Vec<Poison>,
 }
 
+/// C-ORDER dead-read candidates: the plain reads (thread, pc) and the reasons they account for.
+type DeadCand = (BTreeSet<(u32, u32)>, Vec<String>);
+
 thread_local! {
     /// The last logged run executed a try_cancel with every CTA launched up front.
     static EAGER_FAILED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -3375,6 +3582,10 @@ thread_local! {
     static CARRY: std::cell::RefCell<Carry> = std::cell::RefCell::new(Carry::default());
     /// The last logged run was a C-RING run whose choices no execution makes (why).
     static RING_PRUNED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    /// The last analysis' C-ORDER dead-read candidates: the reads (thread, pc) and the
+    /// reasons they account for, when every C-ORDER conflict is a write against such a read.
+    static DEAD_CAND: std::cell::RefCell<Option<DeadCand>> =
+        const { std::cell::RefCell::new(None) };
     /// The last analysis' C-RING choices (run order) and the counters it relied on.
     static RING_OUT: std::cell::RefCell<(Vec<ring::ChoiceRec>, BTreeSet<String>)> =
         std::cell::RefCell::new(Default::default());
@@ -3395,6 +3606,7 @@ fn carry(log: &SyncLog) -> Carry {
         clock: e.clock + e.amb as u32,
         pc: e.pc,
         strong: 0,
+        sv: false,
     };
     let mut by: BTreeMap<u32, Vec<&SAcc>> = BTreeMap::new();
     let mut out = Carry::default();
@@ -3636,13 +3848,18 @@ fn certify_runs(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Out
         }
         // Exit-time contract findings (E-BULK-EXIT) are happens-before checks at the end:
         // every schedule's clocks contain the run's (C-WAIT), so the run reports the union.
-        // So are the two-level check's havoc probes (kind "probe", l1.rs). So is a tcgen05
-        // shared-memory descriptor's version field (E-DESC-VERSION, "desc-version:"): a check
-        // of a descriptor value, which the certificate (schedule-independent values) makes the
+        // So are the two-level check's havoc probes (kind "probe", l1.rs), and notes (kind
+        // "note": S-SAME-VALUE's equal-value writes, which change no value). So is a tcgen05
+        // shared-memory descriptor's version field (E-DESC-VERSION, "desc-version:", a
+        // `contract` finding for tcgen05.mma, a violation for tcgen05.cp): a check of a
+        // descriptor value, which the certificate (schedule-independent values) makes the
         // same in every schedule; the explorer adds nothing, at 35 GB per kernel on a
         // 4096 x 4096 x 8192 tile.
         let (contract, fs): (Vec<Finding>, Vec<Finding>) = fs.into_iter().partition(|f| {
-            f.kind == "contract" || f.kind == "probe" || f.sig.starts_with("desc-version:")
+            f.kind == "contract"
+                || f.kind == "probe"
+                || f.kind == "note"
+                || f.sig.starts_with("desc-version:")
         });
         for f in contract {
             if !findings.iter().any(|x| x.sig == f.sig) {
@@ -3849,7 +4066,9 @@ pub fn check_certified(m0: Machine, max_states: usize) -> Verdict {
         if let Some(v) = ow.verdict {
             return v;
         }
+        corder_take();
         let os = certify(m0.clone());
+        let roots = corder_take();
         if let Some(mut v) = os.verdict {
             v.notes.push(format!(
                 "certified with LDS/STS as relaxed .cta strong accesses (S-SMEM-STRONG); with them plain it was not ({})",
@@ -3874,6 +4093,7 @@ pub fn check_certified(m0: Machine, max_states: usize) -> Verdict {
         v.notes
             .push(format!("certificate failed ({first}), explored instead"));
         merge_run_races(&mut v, races);
+        add_root_pairs(&mut v, roots);
         return v;
     }
     check_certified_one(m0, max_states)

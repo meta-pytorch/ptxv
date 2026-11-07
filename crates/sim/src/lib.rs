@@ -27,6 +27,7 @@ pub mod mma_lp;
 pub mod mufu;
 pub mod mufu_sample;
 mod mufu_tables;
+pub mod multimem;
 pub mod norm;
 pub mod num;
 pub mod residency;
@@ -48,6 +49,37 @@ use ptxv_ir::Kernel;
 
 /// Build the launch (memory map, parameter block, tensor maps) for a case and kernel.
 // ASSUME(S-GLOBAL): see ASSUMPTIONS.md
+/// A tensor-map parameter's element size, extents, byte strides and box. The captured
+/// descriptor (`raw`) is what the TMA unit reads: its element type, extents, strides and box
+/// decide the bytes a copy moves and its complete_tx, whatever dtype the case gives the buffer
+/// behind it (a CuTe kernel's f32 map over storage captured as f64: FusedDoubleRMSNormBwd).
+/// Without a decodable descriptor, or with element strides / a swizzle atom the TMA model does
+/// not cover (exec.rs refuses those in memory), the case's geometry. ASSUME(S-TMAP)
+fn param_tmap_geometry(
+    b: &ptxv_case::Buffer,
+    dims: &Option<Vec<u64>>,
+    strides: &Option<Vec<u64>>,
+    boxd: &[u32],
+    raw: &Option<String>,
+    elem4: bool,
+) -> (u32, Vec<u64>, Vec<u64>, Vec<u32>) {
+    let (dims, strides) = ptxv_case::tmap_geometry(b, dims, strides);
+    let dec = raw
+        .as_ref()
+        .filter(|_| !elem4)
+        .and_then(|hex| {
+            (0..hex.len() / 2)
+                .map(|i| u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok())
+                .collect::<Option<Vec<u8>>>()
+        })
+        .and_then(|bytes| tmap::decode(&bytes).ok())
+        .filter(|d| d.estrides.iter().all(|&e| e == 1) && d.swizzle_atom == tmap::SwizzleAtom::B16);
+    match dec {
+        Some(d) => (d.esize, d.dims, d.strides, d.boxd),
+        None => (b.elem_bytes() as u32, dims, strides, boxd.to_vec()),
+    }
+}
+
 pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
     let m = &case.m;
     let mut allocs = Vec::new();
@@ -58,13 +90,69 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
             init: b.init_bytes(),
         });
     }
+    // NVLS multicast objects get address slots after the buffers; they have no storage of
+    // their own (S-MULTIMEM).
+    let nb = m.buffers.len();
     let base_of = |name: &str| -> Result<u64> {
-        let i = m
-            .buffers
+        if let Some(i) = m.buffers.iter().position(|b| b.name == name) {
+            return Ok(GLOBAL_BASE + ((i as u64) << 32));
+        }
+        let j = m
+            .multicast
             .iter()
-            .position(|b| b.name == name)
+            .position(|c| c.name == name)
             .ok_or_else(|| anyhow::anyhow!("no buffer {name}"))?;
-        Ok(GLOBAL_BASE + ((i as u64) << 32))
+        Ok(GLOBAL_BASE + (((nb + j) as u64) << 32))
+    };
+    let mut mcast = Vec::new();
+    for (j, c) in m.multicast.iter().enumerate() {
+        if m.buffers.iter().any(|b| b.name == c.name) {
+            bail!("multicast {}: name used by a buffer", c.name);
+        }
+        let mut binds = Vec::new();
+        for bd in &c.binds {
+            let ai = m
+                .buffers
+                .iter()
+                .position(|b| b.name == bd.buffer)
+                .ok_or_else(|| anyhow::anyhow!("multicast {}: no buffer {}", c.name, bd.buffer))?;
+            let b = &m.buffers[ai];
+            if b.device != bd.device {
+                bail!(
+                    "multicast {}: buffer {} is on GPU {}, bound for GPU {}",
+                    c.name,
+                    b.name,
+                    b.device,
+                    bd.device
+                );
+            }
+            if bd.byte_offset + bd.size > b.bytes() as u64 || bd.offset + bd.size > c.size {
+                bail!("multicast {}: bind of {} out of range", c.name, b.name);
+            }
+            binds.push(McBind {
+                device: bd.device,
+                offset: bd.offset,
+                alloc: ai,
+                alloc_off: bd.byte_offset,
+                size: bd.size,
+            });
+        }
+        mcast.push(McObj {
+            name: c.name.clone(),
+            base: GLOBAL_BASE + (((nb + j) as u64) << 32),
+            size: c.size,
+            binds,
+        });
+    }
+    // ASSUME(E-MC-ALIAS-HW): opt-in, the views are one location (no alias-proxy check).
+    let mc_alias_hw = match std::env::var("PTXV_MC_ALIAS")
+        .ok()
+        .or_else(|| m.mc_alias.clone())
+        .as_deref()
+    {
+        None | Some("strict") => false,
+        Some("hw") => true,
+        Some(x) => bail!("mc_alias: unknown mode {x} (strict, hw)"),
     };
     // Pointer tables (`ptrs`): filled in now that every buffer has its address.
     for (i, b) in m.buffers.iter().enumerate() {
@@ -81,6 +169,18 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
             .map(|p| (p.entry, &p.params[..], p.param_cbank, p.smem_bytes))
             .collect()
     };
+    // A launch whose block contradicts the shape the kernel was compiled for is not the
+    // launch that ran (a capture that paired the launch with another specialization's code).
+    let ntids: Vec<Option<ptxv_ir::Ntid>> = if k.parts.is_empty() {
+        vec![k.ntid]
+    } else {
+        k.parts.iter().map(|p| p.ntid).collect()
+    };
+    for (l, n) in launches.iter().zip(&ntids) {
+        if let Some(why) = n.and_then(|n| n.mismatch(l.block)) {
+            bail!("capture mismatch: launch of {}: {why}", l.entry);
+        }
+    }
     if parts.len() != launches.len() {
         bail!(
             "kernel has {} parts, case launches {} kernels",
@@ -143,21 +243,43 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
                                 swizzle,
                                 offset,
                                 elem4,
-                                ..
+                                raw,
                             } => {
+                                // As on the GPU (hw::run), the raw bytes with word 0 = the
+                                // buffer address: kernels that copy the map out of the
+                                // parameters read them. ASSUME(S-TMAP)
+                                if let Some(r) = raw {
+                                    let rb = ptxv_case::param_bytes(r)?;
+                                    if rb.len() > 128
+                                        || rb.len() < 8
+                                        || fo + rb.len() > params.len()
+                                    {
+                                        bail!(
+                                            "param {}: raw tensor map must be 8..128 bytes inside the param",
+                                            p.name
+                                        );
+                                    }
+                                    params[fo..fo + rb.len()].copy_from_slice(&rb);
+                                    params[fo..fo + 8].copy_from_slice(
+                                        &(base_of(buffer)? + offset).to_le_bytes(),
+                                    );
+                                }
                                 let b = case.buffer(buffer)?;
-                                let (dims, strides) = ptxv_case::tmap_geometry(b, dims, strides);
+                                let (esize, dims, strides, boxd) =
+                                    param_tmap_geometry(b, dims, strides, r#box, raw, *elem4);
                                 tensormaps.push(TmapDesc {
                                     grid: gi,
                                     param_off: fo as u32,
                                     buffer: buffer.clone(),
                                     base: base_of(buffer)? + offset,
-                                    esize: b.elem_bytes() as u32,
+                                    esize,
                                     dims,
                                     strides,
-                                    boxd: r#box.clone(),
+                                    boxd,
                                     swizzle: ptxv_case::swizzle_of(swizzle)?.0,
                                     elem4: *elem4,
+                                    fdtype: fdtype_of(&b.dtype),
+                                    smem_src: None,
                                 });
                             }
                             _ => bail!("param {}: only ptr / tensormap fields", p.name),
@@ -171,7 +293,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
                     strides,
                     swizzle,
                     offset,
-                    raw: _,
+                    raw,
                     elem4,
                 } => {
                     if p.size != 128 {
@@ -181,20 +303,35 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
                             p.size
                         );
                     }
+                    // The raw bytes (word 0 = the buffer address), as hw::run passes them:
+                    // device code that copies the map out of the parameters (CuTe grouped
+                    // GEMMs patch a shared-memory copy and publish it) reads them.
+                    // ASSUME(S-TMAP)
+                    if let Some(r) = raw {
+                        let rb = ptxv_case::param_bytes(r)?;
+                        if rb.len() > 128 || rb.len() < 8 {
+                            bail!("param {}: raw tensor map must be 8..128 bytes", p.name);
+                        }
+                        params[o..o + rb.len()].copy_from_slice(&rb);
+                        params[o..o + 8]
+                            .copy_from_slice(&(base_of(buffer)? + offset).to_le_bytes());
+                    }
                     let b = case.buffer(buffer)?;
-                    let es = b.elem_bytes() as u64;
-                    let (dims, strides) = ptxv_case::tmap_geometry(b, dims, strides);
+                    let (es, dims, strides, boxd) =
+                        param_tmap_geometry(b, dims, strides, r#box, raw, *elem4);
                     tensormaps.push(TmapDesc {
                         grid: gi,
                         param_off: p.offset,
                         buffer: buffer.clone(),
                         base: base_of(buffer)? + offset,
-                        esize: es as u32,
+                        esize: es,
                         dims,
                         strides,
-                        boxd: r#box.clone(),
+                        boxd,
                         swizzle: ptxv_case::swizzle_of(swizzle)?.0,
                         elem4: *elem4,
+                        fdtype: fdtype_of(&b.dtype),
+                        smem_src: None,
                     });
                 }
             }
@@ -250,10 +387,12 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
                     Some(Some(a))
                 }
             },
+            cbank_relocs: vec![],
         };
         cta0 += g.ctas();
         grids.push(g);
     }
+    global_buffers(case, k, &mut allocs, &mut grids)?;
     let outputs = m
         .outputs
         .iter()
@@ -326,6 +465,8 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
         grids,
         replicas,
         allocs,
+        mcast,
+        mc_alias_hw,
         tensormaps,
         outputs,
         mma_model,
@@ -354,6 +495,88 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
         refuted_opt_in,
     })
     .with_hw_model_env())
+}
+
+/// Module data globals (`__device__` variables) the kernels' constant banks name: each
+/// (module, symbol, GPU) is one buffer, the case's (`Buffer::symbol`) or an automatic one
+/// appended to `allocs` with the ELF initial bytes, and each relocated bank word gets that
+/// buffer's address. ASSUME(S-GLOBAL-INIT)
+fn global_buffers(
+    case: &Case,
+    k: &Kernel,
+    allocs: &mut Vec<Alloc>,
+    grids: &mut [Grid],
+) -> Result<()> {
+    let m = &case.m;
+    let launches = m.all_launches();
+    let parts: Vec<(&[ptxv_ir::GlobalSym], &[ptxv_ir::GlobalReloc])> = if k.parts.is_empty() {
+        vec![(&k.globals, &k.global_relocs)]
+    } else {
+        k.parts
+            .iter()
+            .map(|p| (&p.globals[..], &p.global_relocs[..]))
+            .collect()
+    };
+    let main = m.cubin.as_deref();
+    // (GPU, module (None: the case's), symbol) -> alloc index, for automatic buffers.
+    type AutoKey<'a> = (u32, Option<&'a str>, &'a str);
+    let mut auto: Vec<(AutoKey, usize)> = Vec::new();
+    for (gi, (l, (globals, relocs))) in launches.iter().zip(parts).enumerate() {
+        let module = l.cubin.filter(|c| Some(*c) != main);
+        for r in relocs {
+            let g = &globals[r.global as usize];
+            let i = match m.global_buffer(module, &g.name, l.device) {
+                Some(i) => {
+                    let b = &m.buffers[i];
+                    if (b.bytes() as u64) < g.size {
+                        bail!(
+                            "buffer {} backs global {} ({} bytes) but has {} bytes",
+                            b.name,
+                            g.name,
+                            g.size,
+                            b.bytes()
+                        );
+                    }
+                    i
+                }
+                None => {
+                    let key = (l.device, module, g.name.as_str());
+                    match auto.iter().find(|(x, _)| *x == key) {
+                        Some(&(_, i)) => i,
+                        None => {
+                            let mut name = format!("global:{}", g.name);
+                            if let Some(c) = module {
+                                name += &format!("[{c}]");
+                            }
+                            if l.device != 0 {
+                                name += &format!("@gpu{}", l.device);
+                            }
+                            allocs.push(Alloc {
+                                name,
+                                base: GLOBAL_BASE + ((allocs.len() as u64) << 32),
+                                init: g.init.clone().unwrap_or_else(|| vec![0; g.size as usize]),
+                            });
+                            auto.push((key, allocs.len() - 1));
+                            allocs.len() - 1
+                        }
+                    }
+                }
+            };
+            let base = allocs[i].base;
+            // The relocated symbols' synthetic addresses (ptxv_sass::elf::SYM_BASE) sit above
+            // the buffers.
+            if base >= 0x7f00_0000_0000 {
+                bail!(
+                    "too many buffers: {} reaches the relocated-symbol range",
+                    allocs[i].name
+                );
+            }
+            grids[gi]
+                .cbank_relocs
+                .push((r.bank, r.off, base.wrapping_add(r.addend as u64)));
+        }
+    }
+    Ok(())
 }
 
 /// Refuted assumptions the case may use: its `assume_refuted` plus `PTXV_ASSUME_REFUTED`
@@ -457,5 +680,15 @@ pub fn spec_exact(case: &Case) -> Result<Option<Vec<exact::Expansion>>> {
             Ok(Some(out))
         }
         s => bail!("unknown spec {s}"),
+    }
+}
+
+/// The float type of a buffer dtype (f32 / f16 / bf16), for tensor add-reductions.
+fn fdtype_of(d: &str) -> Option<ptxv_ir::FFmt> {
+    match d {
+        "f32" => Some(ptxv_ir::FFmt::F32),
+        "f16" => Some(ptxv_ir::FFmt::F16),
+        "bf16" => Some(ptxv_ir::FFmt::Bf16),
+        _ => None,
     }
 }

@@ -1,0 +1,37 @@
+name = "probe_flo_popc"
+description = """
+Probe (L-OPCLASS) for the FLO / POPC queue on GB300: ptxas schedules `FLO.U32` with no write
+scoreboard and reads its result after a wait on a later `POPC`'s (kernel.ptx, gen.py).
+expected/ is GB300's output (ptxas cubin, `ptxv hw-worker probes/flo_popc <cubin> --runs 1
+--dump`)."""
+ptx = "kernel.ptx"
+entry = "flopopc"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024, 2]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024, 2]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

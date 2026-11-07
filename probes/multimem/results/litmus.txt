@@ -1,0 +1,4 @@
+variant 0: runs 200 slots/run 32768 readers 3: stale reads 0 in 0 runs, timeouts 0
+variant 1: runs 200 slots/run 32768 readers 3: stale reads 0 in 0 runs, timeouts 0
+variant 2: runs 200 slots/run 32768 readers 3: stale reads 415792 in 200 runs, timeouts 0
+variant 3: runs 200 slots/run 32768 readers 3: stale reads 0 in 0 runs, timeouts 0

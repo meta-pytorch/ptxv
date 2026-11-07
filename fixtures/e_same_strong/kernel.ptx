@@ -1,0 +1,38 @@
+// Fixture for C-ORDER equal-value writes (wellsync/order.rs `pair`): lane 0 of each of two
+// warps stores the same value, computed from a relaxed (strong) global load, to one shared
+// word with no order between them; after a barrier thread 0 reads the word. The strong load
+// keeps the plain-LDS/STS certificate out (S-SAME-VALUE refuses a run with strong accesses),
+// so the certificate with LDS/STS strong (S-SMEM-STRONG) decides.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_same_strong(.param .u64 out_p, .param .u64 in_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    .shared .align 4 .b32 word;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [in_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    shr.u32 %r2, %r1, 5;
+    and.b32 %r3, %r1, 31;
+    mov.u32 %r4, word;
+    ld.relaxed.gpu.global.u32 %r5, [%rd2];
+    mul.lo.u32 %r6, %r5, 3;
+    add.u32 %r6, %r6, 0;                 // @VAL
+    setp.ne.u32 %p1, %r3, 0;
+    @%p1 bra SKIP;
+    st.shared.u32 [%r4], %r6;
+SKIP:
+    bar.sync 0;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra DONE;
+    ld.shared.u32 %r7, [%r4];
+    st.global.u32 [%rd1], %r7;
+DONE:
+    ret;
+}

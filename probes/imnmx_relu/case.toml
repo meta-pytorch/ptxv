@@ -1,0 +1,38 @@
+name = "probe_imnmx_relu"
+description = """
+Probe (N-INT16X2, L-ROSETTA) for integer min / max with .relu: SASS VIMNMX.RELU,
+VIMNMX.S16x2.RELU and VIADDMNMX.RELU (ptxas's fusion of an add with min / max.relu.s32),
+register and immediate operands (kernel.ptx). in.bin is probes/int16x2's (edge and random
+16-bit halves). expected/ is GB300's output (ptxas cubin, `ptxv hw-worker probes/imnmx_relu
+<cubin> --runs 3 --dump`)."""
+ptx = "kernel.ptx"
+entry = "imnmx_relu"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024, 3]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [7, 1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

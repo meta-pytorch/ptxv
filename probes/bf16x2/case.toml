@@ -1,0 +1,66 @@
+name = "probe_bf16x2"
+description = """
+Probe (N-BF16X2) for packed bf16 arithmetic and atomics on GB300 (kernel.ptx, gen.py):
+mul / add / sub / fma / neg .bf16x2 and .bf16 in the forms ptxas lowers to SASS HMUL2 / HADD2 /
+HFMA2 .BF16_V2 (lane selectors, -RZ addend, immediate pairs, .RELU), and
+atom / red .add.noftz .bf16x2 / .v2.bf16 / .bf16 (ATOMG / REDG .E.ADD.BF16x2.RN, CAS loops), on
+edge, tie and random operands. expected/ is GB300's output (ptxas cubin, `ptxv hw-worker
+probes/bf16x2 <cubin> --runs 1 --dump`)."""
+ptx = "kernel.ptx"
+entry = "bf16x2"
+grid = [16, 1, 1]
+block = [256, 1, 1]
+outputs = ["out", "m"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [4096, 3]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "m"
+dtype = "u32"
+shape = [4, 4096]
+init = "file"
+file = "m.bin"
+expect = "expected/m.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [16, 4096]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "m"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+# The PTX front-end refuses mul / add .bf16x2 without .rn (ptxas may contract them into one
+# HFMA2); in this kernel ptxas did not (each result is stored), so the .rn forms give the same
+# bits: the PTX replay uses them.
+[[variants]]
+id = "rn"
+summary = "the non-.rn mul / add of j = 3, 5, 9 written as .rn (PTX front-end replay)"
+marker = "@nrn1"
+find = "mul.bf16x2"
+replace = "mul.rn.bf16x2"
+edits = [
+  { marker = "@nrn2", find = "add.bf16x2", replace = "add.rn.bf16x2" },
+  { marker = "@nrn3", find = "mul.bf16", replace = "mul.rn.bf16" },
+]
+expect = ["clean"]

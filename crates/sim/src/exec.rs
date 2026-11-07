@@ -23,7 +23,11 @@ use crate::machine::*;
 /// A simulator error is either a fault of the kernel (bad address, ...) or a limit of the
 /// model ("... not modeled ..."), which makes the verdict inconclusive, not the kernel wrong.
 fn fault_kind(e: &str) -> &'static str {
-    if e.contains("not modeled") || e.contains("unmodeled") {
+    if e.contains("undefined behavior (PTX)") {
+        // S-MULTIMEM: a non-multimem access to a multicast address or a multimem operation
+        // on a unicast one.
+        "violation"
+    } else if e.contains("not modeled") || e.contains("unmodeled") {
         "unmodeled"
     } else if e.contains("after all its threads exited") {
         // S-CLUSTER-LIFE: the same rule `exit_checks` reports order-independently.
@@ -177,6 +181,10 @@ impl Machine {
             // is reported. ASSUME(S-CBANK)
             0x2f8 => LOCAL_GENERIC_BASE & 0xffff_ffff,
             0x2fc => LOCAL_GENERIC_BASE >> 32,
+            // ASSUME(L-ALIAS-FENCE): the word ptxas's fence.proxy.alias sequence tests (bit 0
+            // set: MEMBAR.SC.GPU only; clear: MEMBAR.SC.SYS + CCTL.IVALL). 0 on every GB300
+            // probed (probes/multimem/results/c2d8.txt).
+            0x2d8 => 0,
             _ => {
                 return Err(format!(
                     "read of unmodeled driver constant c[0x0][{off:#x}]"
@@ -402,6 +410,9 @@ impl Machine {
     }
 
     pub fn wp(&mut self, t: usize, r: Reg, b: bool) {
+        // ASSUME(S-INIT): a predicate computed from undefined bits is undefined (`vmask`
+        // nonzero while a register-only operation on undefined inputs runs).
+        let undef = self.stale.is_some() || self.vmask.is_some_and(|m| m != 0);
         match r.file {
             File::P => {
                 if r.idx == 7 && self.k.front == Front::Sass {
@@ -410,7 +421,11 @@ impl Machine {
                 let th = self.threads[t].make_mut();
                 let (w, bit) = ((r.idx / 64) as usize, r.idx % 64);
                 th.preds[w] = (th.preds[w] & !(1 << bit)) | ((b as u64) << bit);
-                th.pdef[w] |= 1 << bit;
+                if undef {
+                    th.pdef[w] &= !(1 << bit);
+                } else {
+                    th.pdef[w] |= 1 << bit;
+                }
             }
             File::UP => {
                 if r.idx == 7 {
@@ -419,7 +434,11 @@ impl Machine {
                 let w = self.threads[t].warp as usize;
                 let wp = self.warps[w].make_mut();
                 wp.up = (wp.up & !(1 << r.idx)) | ((b as u8) << r.idx);
-                wp.up_def |= 1 << r.idx;
+                if undef {
+                    wp.up_def &= !(1 << r.idx);
+                } else {
+                    wp.up_def |= 1 << r.idx;
+                }
             }
             _ => {}
         }
@@ -498,7 +517,11 @@ impl Machine {
                             a >= al.base && a + n as u64 <= al.base + al.init.len() as u64
                         })
                         .ok_or_else(|| {
-                            format!("global address {a:#x} (+{n}) is outside every allocation")
+                            if self.mc_object(a).is_some() {
+                                self.mc_misuse(a)
+                            } else {
+                                format!("global address {a:#x} (+{n}) is outside every allocation")
+                            }
                         })?;
                     Loc::Global {
                         alloc: i,
@@ -516,6 +539,190 @@ impl Machine {
             }
         }
         Ok(loc)
+    }
+
+    // ---------------------------------------------------------------- multicast (NVLS)
+
+    /// The multicast object whose address range holds `a`.
+    pub fn mc_object(&self, a: u64) -> Option<usize> {
+        self.launch
+            .mcast
+            .iter()
+            .position(|c| a >= c.base && a < c.base + c.size)
+    }
+
+    /// The error for a non-multimem access to a multicast address. ASSUME(S-MULTIMEM)
+    fn mc_misuse(&self, a: u64) -> String {
+        if self.k.front == Front::Ptx {
+            format!(
+                "access to multicast (NVLS) address {a:#x} by a non-multimem operation: undefined behavior (PTX)"
+            )
+        } else {
+            format!(
+                "access to multicast (NVLS) address {a:#x} by an instruction other than LDGMC / STG / REDG: not modeled"
+            )
+        }
+    }
+
+    /// PTX: the instruction at `pc` is a `multimem.*` (the front lowers multimem.st / .red to
+    /// St / Atom, as ptxas lowers them to STG / REDG). SASS: any STG / REDG may be one.
+    fn is_multimem_inst(&self, pc: u32) -> bool {
+        self.k.front == Front::Sass || self.k.code[pc as usize].text.contains("multimem.")
+    }
+
+    /// Multimem access of `n` bytes at `a`: one global location per GPU whose bind covers it,
+    /// in GPU order. None: `a` is not a multicast address. ASSUME(S-MULTIMEM)
+    pub fn mc_resolve(&self, a: u64, n: usize) -> Option<Result<Vec<Loc>, String>> {
+        let c = &self.launch.mcast[self.mc_object(a)?];
+        let off = a - c.base;
+        let end = off + n as u64;
+        if end > c.size {
+            return Some(Err(format!(
+                "multimem access at {a:#x} (+{n}) past the end of multicast object {}",
+                c.name
+            )));
+        }
+        let mut devs: Vec<u32> = c.binds.iter().map(|b| b.device).collect();
+        devs.sort_unstable();
+        devs.dedup();
+        let mut out = Vec::new();
+        for d in devs {
+            let hit: Vec<_> = c
+                .binds
+                .iter()
+                .filter(|b| b.device == d && b.offset < end && off < b.offset + b.size)
+                .collect();
+            match hit[..] {
+                [b] if b.offset <= off && end <= b.offset + b.size => out.push(Loc::Global {
+                    alloc: b.alloc,
+                    off: b.alloc_off + (off - b.offset),
+                }),
+                [] => {
+                    return Some(Err(format!(
+                        "multimem access at {a:#x} (+{n}): GPU {d} has no memory bound at offset {off:#x} of multicast object {}: not modeled",
+                        c.name
+                    )));
+                }
+                _ => {
+                    return Some(Err(format!(
+                        "multimem access at {a:#x} (+{n}) straddles binds of multicast object {} on GPU {d}: not modeled",
+                        c.name
+                    )));
+                }
+            }
+        }
+        Some(Ok(out))
+    }
+
+    /// The locations a thread's load / store / atomic at `a` touches: one, or (a multimem
+    /// store / reduction on a multicast address) one per GPU. ASSUME(S-MULTIMEM)
+    fn mem_locs(
+        &self,
+        t: usize,
+        space: Space,
+        a: u64,
+        n: usize,
+        pc: u32,
+    ) -> Result<Vec<Loc>, String> {
+        if !self.launch.mcast.is_empty() && matches!(space, Space::Global | Space::Generic) {
+            if let Some(r) = self.mc_resolve(a, n) {
+                if !self.is_multimem_inst(pc) {
+                    return Err(self.mc_misuse(a));
+                }
+                return r;
+            }
+        }
+        if self.k.front == Front::Ptx && self.k.code[pc as usize].text.contains("multimem.") {
+            return Err(format!(
+                "multimem operation on {a:#x}, not a multicast address: undefined behavior (PTX)"
+            ));
+        }
+        Ok(vec![self.resolve(t, space, a, n)?])
+    }
+
+    /// Whether allocation `alloc` backs part of a multicast object (S-MC-ALIAS applies).
+    fn mc_backed(&self, alloc: usize) -> bool {
+        self.launch
+            .mcast
+            .iter()
+            .any(|c| c.binds.iter().any(|b| b.alloc == alloc))
+    }
+
+    /// ASSUME(S-MC-ALIAS): an access through one view (multicast `mc` or unicast) of a byte
+    /// whose last write went through the other is ordered after that write only if a
+    /// fence.proxy.alias (or a kernel boundary) lies on the happens-before path from the write
+    /// to it: by the writer after the write, or by any thread that observed the write before
+    /// the fence, with the fence happening before the access (PTX proxy-preserved base
+    /// causality order). Writes then take the access's view.
+    #[allow(clippy::too_many_arguments)]
+    fn alias_check(
+        &mut self,
+        loc: Loc,
+        n: usize,
+        vc: &VC,
+        pc: u32,
+        mc: bool,
+        write: bool,
+        strong: u8,
+    ) {
+        let Loc::Global { alloc, off } = loc else {
+            return;
+        };
+        if self.launch.mcast.is_empty() || self.launch.mc_alias_hw || !self.mc_backed(alloc) {
+            return;
+        }
+        let mut bad: Option<(u64, Epoch)> = None;
+        for i in 0..n as u64 {
+            let s = self.gmem[alloc].sh.get((off + i) as usize);
+            let Some(w) = s.w else { continue };
+            // Two strong accesses (a flag written by multimem.red, polled through the unicast
+            // address) are not checked: they synchronize as usual.
+            if s.mcv == mc || bad.is_some() || (strong != 0 && w.strong != 0) {
+                continue;
+            }
+            let covered = self.threads.iter().enumerate().any(|(f, th)| {
+                let seen = vc_get(vc, f as u32);
+                th.alias_fences
+                    .iter()
+                    .any(|fv| w.clock <= vc_get(fv, w.actor) && vc_get(fv, f as u32) <= seen)
+            });
+            if !covered {
+                bad = Some((off + i, w));
+            }
+        }
+        if let Some((b, w)) = bad {
+            let (vw, va) = if mc {
+                ("unicast", "multicast")
+            } else {
+                ("multicast", "unicast")
+            };
+            let sig = format!("race:alias:{}:{pc}", w.pc);
+            let msg = format!(
+                "alias-proxy race on gmem byte {b:#x} of {}: {vw} write by {} at {} is not ordered before the {va} {} at {} (no fence.proxy.alias or kernel boundary on the happens-before path)",
+                self.launch.allocs[alloc].name,
+                self.actor_name(w.actor),
+                self.k.describe(w.pc as usize),
+                if write { "write" } else { "read" },
+                self.k.describe(pc as usize)
+            );
+            self.report("race", sig, msg);
+        }
+    }
+
+    /// Record the view of a write (after `access_x` set the new last write).
+    fn alias_mark(&mut self, loc: Loc, n: usize, mc: bool) {
+        let Loc::Global { alloc, off } = loc else {
+            return;
+        };
+        if self.launch.mcast.is_empty() || !self.mc_backed(alloc) {
+            return;
+        }
+        for i in 0..n {
+            let a = off as usize + i;
+            if self.gmem[alloc].sh.get(a).mcv != mc {
+                self.gmem[alloc].sh.get_mut(a).mcv = mc;
+            }
+        }
     }
 
     fn space_name(loc: &Loc) -> &'static str {
@@ -572,6 +779,10 @@ impl Machine {
         if let (Loc::Global { alloc, off }, Some(g)) = (loc, self.gown.as_mut()) {
             g.add(alloc, off, n, actor, write.is_some());
         }
+        if !self.launch.mcast.is_empty() {
+            let mcv = self.mc_view;
+            self.alias_check(loc, n, vc, pc, mcv, write.is_some(), strong);
+        }
         let mut out = Vec::with_capacity(n);
         if let Loc::Param { grid, off } = loc {
             let params = &self.launch.grids[grid as usize].params;
@@ -623,6 +834,7 @@ impl Machine {
             clock: vc_get(vc, actor),
             pc,
             strong,
+            sv: false,
         };
         let mut races: Vec<(Epoch, &'static str, u64)> = Vec::new();
         let mut uninit: Option<usize> = None;
@@ -701,13 +913,48 @@ impl Machine {
                 !ordered || !(hw_order || cta_of(e.actor) == my_cta && e.strong >= strong)
             }
         };
+        // ASSUME(S-SAME-VALUE): a plain write of the byte the last (plain) write left there
+        // conflicts with nothing: every unordered access to the byte sees that value in any
+        // order. The unordered writes and reads stay in the shadow, so that later accesses
+        // are still checked against them.
+        let same_value = |s: &Sh, a: usize, bytes: &Pages<u8>| -> bool {
+            match (write, s.w) {
+                (Some(wr), Some(w)) => {
+                    strong == 0 && w.strong == 0 && !vip && *bytes.get(a) == wr[a - base as usize]
+                }
+                _ => false,
+            }
+        };
+        let mut benign: Vec<(Epoch, u64)> = Vec::new();
         // Page by page: one copy-on-write check per run of bytes.
         let mut i = 0;
         while i < n {
             let a0 = base as usize + i;
+            let bytes = &mem.bytes;
             let k = mem.sh.for_run(a0, n - i, |a, s| {
+                if same_value(s, a, bytes) {
+                    let w_ord = |w: &Epoch| w.actor == actor || w.hb(vc);
+                    let rd_ord = |r: &Epoch| {
+                        r.actor == actor
+                            || r.hb(vc)
+                            || rd_done && r.clock <= vc_get(vc, r.actor | RR_BIT)
+                    };
+                    if let Some(w) = s.writes().find(|w| !w_ord(w)) {
+                        benign.push((*w, a as u64));
+                    }
+                    // Unordered writes stay for every later access; an ordered write that is
+                    // not itself same-value stays for later reads, which skip this one.
+                    let mut hw: Vec<Epoch> =
+                        s.writes().filter(|w| !w_ord(w) || !w.sv).copied().collect();
+                    hw.sort_unstable_by_key(|e| (e.actor, e.strong, e.clock));
+                    hw.dedup();
+                    s.hw = (!hw.is_empty()).then(|| hw.into_boxed_slice());
+                    s.r.retain(|r| !rd_ord(r));
+                    s.w = Some(Epoch { sv: true, ..me });
+                    return;
+                }
                 for w in s.writes() {
-                    if w.actor != actor && !w.hb(vc) {
+                    if w.actor != actor && !w.hb(vc) && (write.is_some() || !w.sv) {
                         let kind = if write.is_some() {
                             "write-write"
                         } else {
@@ -757,6 +1004,10 @@ impl Machine {
             }
             out.extend_from_slice(&mem.bytes.run(a0)[..k]);
             i += k;
+        }
+        if write.is_some() && !self.launch.mcast.is_empty() {
+            let mcv = self.mc_view;
+            self.alias_mark(loc, n, mcv);
         }
         if let Some((wh, off)) = vip_where(loc) {
             if vip {
@@ -839,6 +1090,24 @@ impl Machine {
                 }
             }
         }
+        // ASSUME(S-SAME-VALUE): reported as a note (kind "note": no class, does not stop the
+        // certificate); the PTX model calls the pair a race.
+        if let Some(&(other, a)) = benign.first() {
+            if !self.morally_strong(other.actor, other.strong, actor, strong) {
+                let sig = format!("same-value:{}:{}:{pc}", Self::space_name(&loc), other.pc);
+                if !self.findings.iter().any(|f| f.sig == sig) {
+                    let msg = format!(
+                        "unordered writes of the same value to {} byte {a:#x}: {} at {} and {} at {}; every order leaves that value (S-SAME-VALUE)",
+                        Self::space_name(&loc),
+                        self.actor_name(other.actor),
+                        self.k.describe(other.pc as usize),
+                        self.actor_name(actor),
+                        self.k.describe(pc as usize)
+                    );
+                    self.report("note", sig, msg);
+                }
+            }
+        }
         // Strong accesses that are morally strong with each other do not race (S-SCOPE).
         races
             .retain(|(other, _, _)| !self.morally_strong(other.actor, other.strong, actor, strong));
@@ -876,15 +1145,58 @@ impl Machine {
                 "race"
             };
             let sig = format!("{tag}:{}:{}:{}", Self::space_name(&loc), other.pc, kind);
+            let space = match loc {
+                Loc::Global { alloc, .. } => format!("gmem ({})", self.launch.allocs[alloc].name),
+                _ => Self::space_name(&loc).to_string(),
+            };
             let msg = format!(
-                "{kind} race on {} byte {a:#x}: {} at {} and {} at {} are not ordered by happens-before",
-                Self::space_name(&loc),
+                "{kind} race on {space} byte {a:#x}: {} at {} and {} at {} are not ordered by happens-before",
                 self.actor_name(other.actor),
                 self.k.describe(other.pc as usize),
                 self.actor_name(actor),
                 self.k.describe(pc as usize)
             );
+            // ASSUME(E-WARP-ORDER): two lanes of one warp, converged from the earlier access
+            // to this one (no divergence in between, `Machine::wdiv` / `Machine::div_clk`), both
+            // plain memory instructions: a PTX-model race that GB300 orders (in-order issue,
+            // probes/warp_order) unless the warp diverges or ptxas reorders. The SASS front
+            // orders these pairs (lockstep join), so only PTX reports them.
+            let warp_latent = self.k.front == Front::Ptx
+                && (other.actor as usize) < self.threads.len()
+                && (actor as usize) < self.threads.len()
+                && {
+                    let (a, b) = (
+                        &self.threads[other.actor as usize],
+                        &self.threads[actor as usize],
+                    );
+                    let plain = |at: u32| {
+                        matches!(
+                            self.k.code[at as usize].op,
+                            Op::Ld { .. }
+                                | Op::St { .. }
+                                | Op::Atom { .. }
+                                | Op::StMatrix { .. }
+                                | Op::LdMatrix { .. }
+                        )
+                    };
+                    a.warp == b.warp
+                        && !self.warp_div(b.warp)
+                        && other.clock
+                            >= self.div_clk.get(other.actor as usize).copied().unwrap_or(0)
+                        && plain(other.pc)
+                        && plain(pc)
+                };
+            let fresh = !self.findings.iter().any(|f| f.sig == sig);
             self.report_pcs("race", sig, msg, vec![other.pc, pc]);
+            if warp_latent && fresh {
+                if let Some(f) = self.findings.last_mut() {
+                    f.gb300 = Some(crate::twolevel::Gb300 {
+                        class: crate::twolevel::LATENT_DIV.into(),
+                        reason: "intra-warp: both accesses are by lanes of one warp that stays converged from the first to the second (no divergence point between them); GB300 issues a converged warp's memory instructions in program order (probes/warp_order), so the race needs divergence (or a compiler reordering) to show; the PTX memory model still requires bar.warp.sync".into(),
+                        witness: None,
+                    });
+                }
+            }
         }
         out
     }
@@ -1095,13 +1407,31 @@ impl Machine {
             || self.k.front == Front::Ptx
                 && matches!(
                     inst.op,
-                    Op::VoteAll { .. } | Op::VoteAny { .. } | Op::Redux { .. }
+                    Op::VoteAll { .. }
+                        | Op::VoteAny { .. }
+                        | Op::Redux { .. }
+                        | Op::MatchAny { .. }
                 )
         {
             let w = self.threads[members[0]].warp;
+            // A SASS SHFL does not wait for lanes parked at a BSYNC: they rendezvous there
+            // with the lanes the BSSY recorded, these included, so they do not come here
+            // first (ptxas's warp-aggregated atomic: `VOTEU.ANY / FLO / POPC / @leader ATOMG
+            // / SHFL.IDX` in a branch one lane takes, the others at the BSYNC; Triton MoE
+            // `_verify_kernel`).
+            let sass_shfl = self.k.front == Front::Sass && matches!(inst.op, Op::Shfl { .. });
             let live = self
                 .warp_threads(w)
-                .filter(|&u| self.threads[u].st != St::Exited)
+                .filter(|&u| {
+                    let th = &self.threads[u];
+                    th.st != St::Exited
+                        && !(sass_shfl
+                            && !members.contains(&u)
+                            && matches!(
+                                self.k.code.get(th.pc as usize).map(|i| &i.op),
+                                Some(Op::Bsync { .. })
+                            ))
+                })
                 .count();
             if members.len() < live {
                 return false;
@@ -1227,12 +1557,18 @@ impl Machine {
             None => None,
         };
         self.l1_cta_launch(cta); // ASSUME(E-L1-CORES): see l1_cores.rs
+        let mc = !self.launch.mcast.is_empty();
         for t in 0..self.threads.len() {
             if self.threads[t].cta == cta && self.threads[t].st == St::Unlaunched {
                 let th = self.threads[t].make_mut();
                 th.st = St::Run;
                 if let Some(d) = &done {
                     vc_join(&mut th.vc, d);
+                    // ASSUME(S-MC-ALIAS): a kernel boundary is on the proxy-preserved path.
+                    if mc {
+                        let v = th.vc.clone();
+                        th.alias_fences.push(v);
+                    }
                 }
             }
         }
@@ -1317,9 +1653,8 @@ impl Machine {
         (g.cta0..g.cta0 + g.ctas()).all(|c| {
             self.triggered[c as usize / 64] >> (c % 64) & 1 == 1
                 || self
-                    .threads
-                    .iter()
-                    .all(|t| t.cta as u32 != c || t.st == St::Exited)
+                    .cta_threads(c as u16)
+                    .all(|t| self.threads[t].st == St::Exited)
         })
     }
 
@@ -1518,10 +1853,22 @@ impl Machine {
         };
         let me = t as u32;
         let hw = self.launch.hw_order;
-        if c.writer == me
-            || (!hw
-                && (!self.morally_strong(c.writer, strong_code(c.scope), me, strong_code(m.scope))
-                    || !self.scope_includes(c.rel_scope, c.writer, me)))
+        // The thread's own write: nothing to acquire, unless it was a read-modify-write that
+        // continued another thread's release sequence (`sync_publish` joins the clocks): an
+        // NVLS barrier's `multimem.red` +1 followed by a poll of the same flag.
+        if c.writer == me {
+            if hw || m.acquires() {
+                let mut v = self.threads[t].vc.clone();
+                vc_join(&mut v, &c.rel);
+                if v != self.threads[t].vc {
+                    self.threads[t].make_mut().vc = v;
+                }
+            }
+            return;
+        }
+        if !hw
+            && (!self.morally_strong(c.writer, strong_code(c.scope), me, strong_code(m.scope))
+                || !self.scope_includes(c.rel_scope, c.writer, me))
         {
             return;
         }
@@ -1589,7 +1936,13 @@ impl Machine {
     /// launched), or None (the request fails; allowed at any time, E-CLC).
     pub fn complete_clc(&mut self, i: usize, victim: Option<u16>) {
         let op = self.pending.remove(i);
-        let AsyncKind::Clc { cta, resp, mbar } = op.kind else {
+        let AsyncKind::Clc {
+            cta,
+            resp,
+            mbar,
+            others,
+        } = op.kind.clone()
+        else {
             unreachable!()
         };
         // DPOR: a CTA that already launched removed a "cancel it" outcome, so the completion
@@ -1607,45 +1960,58 @@ impl Machine {
         }
         let words: [u32; 4] = match victim {
             Some(v) => {
-                self.rec(4, v as u32, 0, 1, true);
+                // The whole cluster of `v` (its rank 0) is cancelled (probes/clc_mcast).
+                let vs: Vec<u16> = (0..self.launch.cluster_size(v as u32))
+                    .filter_map(|r| self.launch.cta_of_rank(v as u32, r))
+                    .map(|u| u as u16)
+                    .collect();
+                for &u in &vs {
+                    self.rec(4, u as u32, 0, 1, true);
+                }
                 for t in 0..self.threads.len() {
-                    if self.threads[t].cta == v {
+                    if vs.contains(&self.threads[t].cta) {
                         self.threads[t].make_mut().st = St::Exited;
                     }
                 }
-                // GB300 (probes/clc): {first ctaid.x, .y, 1, 0}; failure {2, 0, 0, 0}.
+                // GB300 (probes/clc, probes/clc_mcast): {first ctaid.x, .y, 1, 0}.
                 let [x, y, _] = self.launch.ctaid(v as u32);
                 [x, y, 1, 0]
             }
+            // Failure: {2, 0, 0, 0} (probes/clc); a multicast failure is all zero
+            // (probes/clc_mcast).
+            None if !others.is_empty() => [0; 4],
             None => [2, 0, 0, 0],
         };
         let data: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-        self.access(
-            op.actor,
-            &op.vc,
-            op.pc,
-            Loc::Shared { cta, off: resp },
-            16,
-            Some(&data),
-        );
-        let rec = (cta, op.actor, vc_get(&op.vc, op.actor), op.pc);
-        if let Err(k) = self.completed.binary_search(&rec) {
-            self.completed.insert(k, rec);
-        }
-        self.rec(0, cta as u32, mbar as u64, mbar as u64 + 8, false);
-        self.mbar_materialize(cta, mbar);
-        if self.mbars.contains_key(&(cta, mbar)) {
-            let _ = self.mbar_atomic(op.actor, &op.vc, &op.vis, op.pc, cta, mbar);
-            let mb = self.mbars.get_mut(&(cta, mbar)).unwrap();
-            mb.tx -= 16;
-            vc_join(&mut mb.cur, &op.vc);
-            self.mbar_maybe_complete(cta, mbar);
-        } else {
-            let msg = format!(
-                "try_cancel issued at {} signals an uninitialized mbarrier at {mbar:#x}",
-                self.k.describe(op.pc as usize)
+        for c in std::iter::once(cta).chain(others.iter().copied()) {
+            self.access(
+                op.actor,
+                &op.vc,
+                op.pc,
+                Loc::Shared { cta: c, off: resp },
+                16,
+                Some(&data),
             );
-            self.report("violation", format!("clc-uninit:{}", op.pc), msg);
+            let rec = (c, op.actor, vc_get(&op.vc, op.actor), op.pc);
+            if let Err(k) = self.completed.binary_search(&rec) {
+                self.completed.insert(k, rec);
+            }
+            self.rec(0, c as u32, mbar as u64, mbar as u64 + 8, false);
+            self.mbar_materialize(c, mbar);
+            if self.mbars.contains_key(&(c, mbar)) {
+                let _ = self.mbar_atomic(op.actor, &op.vc, &op.vis, op.pc, c, mbar);
+                let mb = self.mbars.get_mut(&(c, mbar)).unwrap();
+                mb.tx -= 16;
+                vc_join(&mut mb.cur, &op.vc);
+                self.mbar_maybe_complete(c, mbar);
+            } else {
+                let msg = format!(
+                    "try_cancel issued at {} signals an uninitialized mbarrier at {mbar:#x} of {}",
+                    self.k.describe(op.pc as usize),
+                    self.cta_name(c)
+                );
+                self.report("violation", format!("clc-uninit:{}", op.pc), msg);
+            }
         }
     }
 
@@ -1714,6 +2080,7 @@ impl Machine {
             clock: vc_get(vc, actor),
             pc,
             strong: TMEM_MARK,
+            sv: false,
         };
         // The mark is a write of every word: an access it does not happen-after is a race
         // (use before free / after alloc). Checking it here, and not only at a later access,
@@ -1784,6 +2151,7 @@ impl Machine {
             clock: vc_get(vc, actor),
             pc,
             strong: 0,
+            sv: false,
         };
         let i = tmem_idx(lane, col);
         self.rec(2, cta as u32, i as u64, i as u64 + 1, write.is_some());
@@ -1864,6 +2232,7 @@ impl Machine {
             clock: vc_get(vc, actor),
             pc,
             strong: 0,
+            sv: false,
         };
         let mut out = vec![0u32; nl * nc];
         let mut states = 0u8;
@@ -2169,6 +2538,7 @@ impl Machine {
                         i.op,
                         Op::Elect { .. }
                             | Op::VoteAny { .. }
+                            | Op::MatchAny { .. }
                             | Op::VoteAll { .. }
                             | Op::Redux { .. }
                     )
@@ -2189,11 +2559,11 @@ impl Machine {
         let tracked = self.fp.is_some();
         let polls = !self.polls.is_empty() || !self.wpolls.is_empty();
         let ids: Vec<usize> = if tracked || polls {
-            self.threads
-                .iter()
-                .enumerate()
-                .filter(|(_, t)| t.warp == warp && t.pc == pc0 && t.st == St::Run)
-                .map(|(i, _)| i)
+            self.warp_threads(warp)
+                .filter(|&i| {
+                    let t = &self.threads[i];
+                    t.pc == pc0 && t.st == St::Run
+                })
                 .collect()
         } else {
             vec![]
@@ -2453,6 +2823,51 @@ impl Machine {
         lo..end
     }
 
+    /// E-WARP-ORDER: may `warp` be diverged on hardware (`Machine::wdiv`)?
+    pub(crate) fn warp_div(&self, warp: u32) -> bool {
+        self.wdiv.get(warp as usize).copied().unwrap_or(true)
+    }
+
+    /// E-WARP-ORDER: after `members` ran one instruction, the live ones at different pcs (or
+    /// another live lane of the warp not among them) diverge the warp.
+    fn note_divergence(&mut self, warp: u32, members: &[usize]) {
+        if self.warp_div(warp) {
+            return;
+        }
+        let mut pc = None;
+        let split = members.iter().any(|&t| {
+            let th = &self.threads[t];
+            th.st != St::Exited && *pc.get_or_insert(th.pc) != th.pc
+        }) || self
+            .warp_threads(warp)
+            .any(|u| self.threads[u].st != St::Exited && !members.contains(&u));
+        if split {
+            if let Some(x) = Arc::make_mut(&mut self.wdiv).get_mut(warp as usize) {
+                *x = true;
+            }
+            for u in self.warp_threads(warp) {
+                let c = vc_get(&self.threads[u].vc, u as u32);
+                if let Some(x) = Arc::make_mut(&mut self.div_clk).get_mut(u) {
+                    *x = c;
+                }
+            }
+        }
+    }
+
+    /// E-WARP-ORDER: `lanes` of `warp` were released together (BSYNC / WARPSYNC); if they are
+    /// all of its live lanes, the warp is converged again.
+    fn note_convergence(&mut self, warp: u32, lanes: &[usize]) {
+        if self.warp_div(warp)
+            && self
+                .warp_threads(warp)
+                .all(|u| self.threads[u].st == St::Exited || lanes.contains(&u))
+        {
+            if let Some(x) = Arc::make_mut(&mut self.wdiv).get_mut(warp as usize) {
+                *x = false;
+            }
+        }
+    }
+
     fn step_split_inner(&mut self, warp: u32, pc0: u32) {
         let wt = self.warp_threads(warp);
         let mut members: Vec<usize> = wt
@@ -2502,18 +2917,28 @@ impl Machine {
                 return;
             }
             // ASSUME(E-LOCKSTEP): see ASSUMPTIONS.md
-            // SASS: a converged split executes in lockstep, so its lanes' memory effects are
-            // ordered by instruction (ptxas relies on this for its own warp-synchronous code).
-            // PTX lanes are independent threads and get no such ordering.
+            // ASSUME(E-WARP-ORDER): in-order issue of a converged warp (probes/warp_order).
+            // SASS: a converged warp executes in lockstep and issues its memory instructions
+            // in order, so its lanes' memory effects are ordered by instruction (ptxas relies
+            // on this for its own warp-synchronous code, and drops `bar.warp.sync` where it
+            // knows the warp is converged: Triton's STSM / LDS.128 with `.reqntid 32`).
+            // STSM / LDSM are full-warp collectives, executed by every lane together, so their
+            // join needs no convergence condition. The other memory instructions are joined
+            // for every split, as before (E-LOCKSTEP: gating them on `converged` made
+            // e_mma_pair_m128's exploration exceed 2M states). PTX lanes are independent
+            // threads and get no such ordering.
             if k.front == Front::Sass
                 && members.len() > 1
                 && matches!(
                     inst.op,
                     Op::Ld { .. }
+                        | Op::LdReduce { .. }
                         | Op::St { .. }
                         | Op::Atom { .. }
                         | Op::TmemLd { .. }
                         | Op::TmemSt { .. }
+                        | Op::StMatrix { .. }
+                        | Op::LdMatrix { .. }
                 )
             {
                 let j = vc_join_all(members.iter().map(|&t| &self.threads[t].vc));
@@ -2523,6 +2948,8 @@ impl Machine {
                     vc_tick(&mut th.vc, t as u32);
                 }
             }
+            // E-WARP-ORDER: lanes leaving an instruction at different pcs diverge the warp.
+            self.note_divergence(warp, &members);
             // Continue only while the split stays together, runnable, and not blocked, and no
             // other lane of the warp joined it (it must re-merge at a scheduling point).
             let t0 = &self.threads[members[0]];
@@ -2641,6 +3068,127 @@ impl Machine {
     }
 
     fn exec_inner(&mut self, members: &[usize], pc: u32) -> Result<(), String> {
+        let poison = self.sinit_pre(members, pc);
+        let r = self.exec_inner_body(members, pc);
+        if r.is_ok() {
+            for (t, regs) in poison {
+                self.poison_regs(t, &regs);
+            }
+        }
+        r
+    }
+
+    /// S-INIT before `pc` runs for `members`: report undefined values that reach a sink in
+    /// the guard or in a warp-level operation's operands; return the registers (per thread)
+    /// that become undefined after it: the destinations of a register-only operation whose
+    /// guard is undefined (the result is the new or the old value), and of `R2UR` / `HMMA`
+    /// on undefined inputs.
+    fn sinit_pre(&mut self, members: &[usize], pc: u32) -> Vec<(usize, Vec<Reg>)> {
+        let k = self.k.clone();
+        let inst = &k.code[pc as usize];
+        let mut poison = Vec::new();
+        // ASSUME(S-INIT-PRED): a guard (or a branch condition, which the SASS lifter makes
+        // the guard) that is undefined (never written, or computed from undefined values) is
+        // a sink unless the guarded operation is register-only.
+        let ug: Vec<(usize, Reg)> = members
+            .iter()
+            .filter_map(|&t| self.pred_undef(t, inst.guard).map(|r| (t, r)))
+            .collect();
+        if let Some(&(t, r)) = ug.first() {
+            if reg_only(&inst.op) {
+                for &(u, _) in &ug {
+                    poison.push((u, inst.op.dst_regs()));
+                }
+            } else {
+                self.report_uninit(t, r, pc);
+            }
+        }
+        // Warp-level operations (run here, not by `exec_thread`, which checks the others).
+        let active: Vec<usize> = members
+            .iter()
+            .copied()
+            .filter(|&t| self.prd(t, inst.guard))
+            .collect();
+        let undef_in = |m: &Self, regs: &[Reg]| -> Option<(usize, Reg)> {
+            active.iter().find_map(|&t| {
+                regs.iter()
+                    .find(|r| m.reg_umask(t, **r) != 0)
+                    .map(|r| (t, *r))
+            })
+        };
+        let sink: Option<Vec<Reg>> = match &inst.op {
+            // Addresses and stored data; branch conditions and masks; votes and
+            // reductions (their results steer control flow); SHFL's lane and clamp (SHFL's
+            // data carries its undefined bits, below).
+            Op::StMatrix { .. }
+            | Op::LdMatrix { .. }
+            | Op::Bra { .. }
+            | Op::VoteAny { .. }
+            | Op::VoteAll { .. }
+            | Op::Redux { .. }
+            | Op::WarpSync { .. }
+            | Op::Elect { .. } => Some(inst.op.src_regs()),
+            Op::Shfl { lane, clamp, .. } => Some(
+                [lane, clamp]
+                    .iter()
+                    .filter_map(|v| match v {
+                        Val::Reg(r, _) => Some(*r),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        };
+        if let Some(regs) = sink {
+            if let Some((t, r)) = undef_in(self, &regs) {
+                self.report_uninit(t, r, pc);
+            }
+        }
+        if matches!(inst.op, Op::R2Ur { .. } | Op::Hmma { .. })
+            && undef_in(self, &inst.op.src_regs()).is_some()
+        {
+            for &t in &active {
+                poison.push((t, inst.op.dst_regs()));
+            }
+        }
+        poison
+    }
+
+    /// Make `regs` of thread `t` wholly undefined (S-INIT).
+    fn poison_regs(&mut self, t: usize, regs: &[Reg]) {
+        let sass = self.k.front == Front::Sass;
+        for r in regs {
+            let (w, bit) = ((r.idx / 64) as usize, r.idx % 64);
+            match r.file {
+                File::R | File::V if r.idx < 255 || r.file == File::V => {
+                    let th = self.threads[t].make_mut();
+                    if let Some(x) = th.written.get_mut(w) {
+                        *x &= !(1 << bit);
+                    }
+                }
+                File::UR if r.idx < 255 => {
+                    let wi = self.threads[t].warp as usize;
+                    let wp = self.warps[wi].make_mut();
+                    if let Some(x) = wp.ur_written.get_mut(w) {
+                        *x &= !(1 << bit);
+                    }
+                }
+                File::P if !(r.idx == 7 && sass) => {
+                    let th = self.threads[t].make_mut();
+                    if let Some(x) = th.pdef.get_mut(w) {
+                        *x &= !(1 << bit);
+                    }
+                }
+                File::UP if r.idx != 7 => {
+                    let wi = self.threads[t].warp as usize;
+                    self.warps[wi].make_mut().up_def &= !(1 << r.idx);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn exec_inner_body(&mut self, members: &[usize], pc: u32) -> Result<(), String> {
         let k = self.k.clone();
         let inst = &k.code[pc as usize];
         // A control-word wait on the bulk read scoreboard holds for every member, guard or not.
@@ -2651,14 +3199,6 @@ impl Machine {
             for &t in members {
                 self.bulk_wait(t, 0, Some(k.bulk_read_waits[i].1));
             }
-        }
-        // ASSUME(S-INIT-PRED): a guard (or a branch condition, which the SASS lifter makes
-        // the guard) that nothing has written is a read of an undefined value.
-        if let Some((t, r)) = members
-            .iter()
-            .find_map(|&t| self.pred_undef(t, inst.guard).map(|r| (t, r)))
-        {
-            self.report_uninit(t, r, pc);
         }
         let active: Vec<usize> = members
             .iter()
@@ -2690,9 +3230,8 @@ impl Machine {
         if k.front == Front::Ptx && inst.op.is_warp_aligned() && !active.is_empty() {
             let w = self.threads[members[0]].warp;
             let live = self
-                .threads
-                .iter()
-                .filter(|t| t.warp == w && t.st != St::Exited)
+                .warp_threads(w)
+                .filter(|&u| self.threads[u].st != St::Exited)
                 .count();
             if active.len() < live {
                 let msg = format!(
@@ -2750,7 +3289,7 @@ impl Machine {
             return Ok(());
         }
         match &inst.op {
-            Op::R2Ur { d, a, p } => {
+            Op::R2Ur { d, a, p, or } => {
                 let vals: Vec<u64> = active
                     .iter()
                     .map(|&t| self.rd(t, a))
@@ -2758,7 +3297,15 @@ impl Machine {
                 if let Some(&v0) = vals.first() {
                     if let Some(p) = p {
                         for (&t, &v) in active.iter().zip(&vals) {
-                            self.wr(t, *p, (v != v0) as u64, 1);
+                            let old = *or
+                                && self.prd(
+                                    t,
+                                    Pred {
+                                        reg: Some(*p),
+                                        neg: false,
+                                    },
+                                );
+                            self.wr(t, *p, (old || v != v0) as u64, 1);
                         }
                     } else if vals.iter().any(|&v| v != v0)
                         && !shifted_out(
@@ -2775,6 +3322,24 @@ impl Machine {
                         );
                     }
                     self.wr(active[0], *d, v0, 1);
+                }
+            }
+            Op::MatchAny { d, a, wide } => {
+                let vals: Vec<u64> = active
+                    .iter()
+                    .map(|&t| {
+                        self.rd(t, a)
+                            .map(|v| if *wide { v } else { v & 0xffff_ffff })
+                    })
+                    .collect::<Result<_, _>>()?;
+                for (i, &t) in active.iter().enumerate() {
+                    let mask = active
+                        .iter()
+                        .zip(&vals)
+                        .filter(|(_, v)| **v == vals[i])
+                        .fold(0u64, |m, (&u, _)| m | 1 << self.threads[u].lane);
+                    self.wr(t, *d, mask, 1);
+                    self.num_clobber(t, *d, &[a], pc);
                 }
             }
             Op::VoteAny { d, a } => {
@@ -2840,10 +3405,60 @@ impl Machine {
                 }
                 return Ok(());
             }
+            // ASSUME(E-BSYNC): BMOV moves a convergence barrier's lane mask to / from a
+            // register. Clearing needs the whole warp there (else a later part would save the
+            // cleared mask); a restore needs every executing lane to agree.
+            Op::BMov { b, r, to_b, clear } => {
+                let Some(&t0) = members.first() else {
+                    return Ok(());
+                };
+                let wi = self.threads[t0].warp as usize;
+                if *to_b {
+                    let mut v = None;
+                    for &t in &active {
+                        let x = self.rd(t, &Val::Reg(*r, 1))? as u32;
+                        if v.replace(x).is_some_and(|y| y != x) {
+                            return Err(format!(
+                                "BMOV to B{b} at {}: the lanes restore different masks",
+                                k.describe(pc as usize)
+                            ));
+                        }
+                    }
+                    if let Some(v) = v {
+                        self.warps[wi].make_mut().bmask[*b as usize] = v;
+                    }
+                } else if !active.is_empty() {
+                    let m = self.warps[wi].bmask[*b as usize];
+                    let here = active
+                        .iter()
+                        .fold(0u32, |x, &t| x | 1 << self.threads[t].lane);
+                    // Clearing a barrier that records lanes outside this part of the warp:
+                    // what the other part would then save is not known. A mask within the
+                    // part (or empty: Triton's spare barrier register) is.
+                    if *clear && m & !here != 0 {
+                        return Err(format!(
+                            "BMOV.32.CLEAR of B{b} at {} by lanes {here:#x} while it records lanes {m:#x}: not modeled",
+                            k.describe(pc as usize)
+                        ));
+                    }
+                    for &t in &active {
+                        self.wr(t, *r, m as u64, 1);
+                        self.num_clobber(t, *r, &[], pc);
+                    }
+                    if *clear {
+                        self.warps[wi].make_mut().bmask[*b as usize] = 0;
+                    }
+                }
+                for &t in members {
+                    self.threads[t].make_mut().pc = pc + 1;
+                }
+                return Ok(());
+            }
             // ASSUME(E-BSYNC): see ASSUMPTIONS.md
-            Op::Break { b } => {
+            Op::Break { b, cond } => {
                 let gone = active
                     .iter()
+                    .filter(|&&t| cond.is_none_or(|c| self.prd(t, c)))
                     .fold(0u32, |m, &t| m | 1 << self.threads[t].lane);
                 for &t in members {
                     self.threads[t].make_mut().pc = pc + 1;
@@ -2853,11 +3468,10 @@ impl Machine {
                     self.warps[wi as usize].make_mut().bmask[*b as usize] &= !gone;
                     // Lanes parked at that BSYNC may be complete now.
                     let parked: Vec<(u32, u32)> = self
-                        .threads
-                        .iter()
+                        .warp_threads(wi)
+                        .map(|u| &self.threads[u])
                         .filter(|th| {
-                            th.warp == wi
-                                && th.st == St::WarpSync
+                            th.st == St::WarpSync
                                 && matches!(self.k.code[th.pc as usize].op, Op::Bsync { b: c } if c == *b)
                         })
                         .map(|th| (th.lane, th.pc))
@@ -2931,14 +3545,10 @@ impl Machine {
                 }
                 if let Some(&t0) = members.first() {
                     let w = self.threads[t0].warp;
-                    let next = self
-                        .threads
-                        .iter()
-                        .enumerate()
-                        .find(|(_, th)| {
-                            th.warp == w && th.st == St::WarpSync && th.pc == *start as u32
-                        })
-                        .map(|(i, _)| i);
+                    let next = self.warp_threads(w).find(|&i| {
+                        let th = &self.threads[i];
+                        th.st == St::WarpSync && th.pc == *start as u32
+                    });
                     if let Some(t1) = next {
                         if let Op::WarpSync {
                             mask, all: false, ..
@@ -2966,11 +3576,10 @@ impl Machine {
                         // BSYNC would otherwise leave the earlier one parked for good).
                         // ASSUME(E-BSYNC)
                         let parked = self
-                            .threads
-                            .iter()
+                            .warp_threads(wi)
+                            .map(|u| &self.threads[u])
                             .filter(|th| {
-                                th.warp == wi
-                                    && th.st == St::WarpSync
+                                th.st == St::WarpSync
                                     && matches!(self.k.code[th.pc as usize].op, Op::Bsync { b: c } if c == *b)
                             })
                             .fold(0u32, |m, th| m | 1 << th.lane);
@@ -3067,6 +3676,10 @@ impl Machine {
                 for &t in &active {
                     by_lane[self.threads[t].lane as usize] = t;
                 }
+                // ASSUME(E-STSM-DUP): lanes of one stmatrix whose rows overlap (Triton passes one
+                // address for replicated rows) write a byte once when they write the same value;
+                // different values are a violation (the order is not specified or probed).
+                let mut wrote: Vec<(Loc, u32, usize)> = Vec::new();
                 for (i, vi) in v.iter().enumerate() {
                     for j in 0..8usize {
                         let row_lane = by_lane[8 * i + j];
@@ -3078,6 +3691,23 @@ impl Machine {
                             if !*trans {
                                 let loc =
                                     self.resolve(row_lane, Space::Shared, row + 4 * q as u64, 4)?;
+                                if let Some(&(_, w0, s0)) = wrote.iter().find(|x| x.0 == loc) {
+                                    if w0 != w {
+                                        let msg = format!(
+                                            "{} at {}: {} and {} write different values to the same shared word {:?} in one stmatrix (which lane wins is not specified)",
+                                            self.actor_name(src as u32),
+                                            self.k.describe(pc as usize),
+                                            self.actor_name(s0 as u32),
+                                            self.actor_name(src as u32),
+                                            loc
+                                        );
+                                        self.report("violation", format!("stsm-dup:{pc}"), msg);
+                                    }
+                                    // The first lane's write stands (the violation covers a
+                                    // differing value).
+                                    continue;
+                                }
+                                wrote.push((loc, w, src));
                                 self.access(src as u32, &vc, pc, loc, 4, Some(&w.to_le_bytes()));
                                 // A whole 32-bit word: it keeps its node (N-LEAF).
                                 self.num_st(src, vi, loc, 4);
@@ -3100,7 +3730,13 @@ impl Machine {
                     self.tick(t);
                 }
             }
-            Op::LdMatrix { d, n, addr, trans } => {
+            Op::LdMatrix {
+                d,
+                n,
+                addr,
+                trans,
+                b8,
+            } => {
                 if active.len() != 32 {
                     return Err(format!(
                         "ldmatrix executed by {} lanes (needs the full warp)",
@@ -3111,57 +3747,94 @@ impl Machine {
                 for &t in &active {
                     by_lane[self.threads[t].lane as usize] = t;
                 }
-                let mut out = Vec::new();
-                for i in 0..*n as usize {
-                    for &t in &active {
-                        let l = self.threads[t].lane as usize;
-                        let vc = self.threads[t].vc.clone();
-                        // (row, byte offset in the row) of the two b16 elements lane l gets.
-                        let parts: [(usize, u64); 2] = if !*trans {
-                            [(l / 4, 4 * (l % 4) as u64), (l / 4, 4 * (l % 4) as u64 + 2)]
-                        } else {
-                            [
-                                (2 * (l % 4), 2 * (l / 4) as u64),
-                                (2 * (l % 4) + 1, 2 * (l / 4) as u64),
-                            ]
-                        };
-                        let mut w = 0u32;
-                        // Without .trans both halves are one aligned 32-bit word of the row.
-                        let mut word = None;
-                        let mut hlocs = [None; 2];
-                        for (h, (row, off)) in parts.into_iter().enumerate() {
-                            let rl = by_lane[8 * i + row];
-                            let base = self.addr(rl, addr)?;
-                            let loc = self.resolve(rl, Space::Shared, base + off, 2)?;
-                            hlocs[h] = Some(loc);
-                            if !*trans && h == 0 {
-                                word = match loc {
-                                    Loc::Shared { off, .. } if off % 4 == 0 => Some(loc),
-                                    _ => None,
-                                };
+                if *b8 {
+                    // ASSUME(L-ROSETTA): m16n16 .trans .b8 (probes/ldsm_b8).
+                    let mut out = Vec::new();
+                    for r in 0..*n as usize {
+                        let (m, h) = (r / 2, r % 2);
+                        for &t in &active {
+                            let l = self.threads[t].lane as usize;
+                            let vc = self.threads[t].vc.clone();
+                            let mut w = 0u32;
+                            let mut locs = [None; 4];
+                            for (b, slot) in locs.iter_mut().enumerate() {
+                                let rl = by_lane[16 * m + 4 * (l % 4) + b];
+                                let base = self.addr(rl, addr)?;
+                                let col = (l / 4 + 8 * h) as u64;
+                                let loc = self.resolve(rl, Space::Shared, base + col, 1)?;
+                                *slot = Some(loc);
+                                let x = self.access(t as u32, &vc, pc, loc, 1, None);
+                                w |= (x[0] as u32) << (8 * b);
                             }
-                            let b = self.access(t as u32, &vc, pc, loc, 2, None);
-                            w |= (u16::from_le_bytes([b[0], b[1]]) as u32) << (16 * h);
+                            out.push((t, r, w, locs));
                         }
-                        out.push((t, i, w, word, hlocs));
                     }
-                }
-                for (t, i, w, word, hlocs) in out {
-                    let r = Reg {
-                        file: d.file,
-                        idx: d.idx + i as u16,
-                    };
-                    self.wr(t, r, w as u64, 1);
-                    // 16-bit provenance: each half from its own row (`.trans` reshuffles them).
-                    self.half_ldsm(t, r, hlocs);
-                    // ASSUME(N-LEAF): the word moves intact, with its node.
-                    match word.and_then(|loc| self.num.as_ref().and_then(|ns| ns.mem_node(loc))) {
-                        Some(n) => self.num_put(t, r, Some(n)),
-                        None => self.num_clobber(t, r, &[], pc),
+                    for (t, r, w, locs) in out {
+                        let reg = Reg {
+                            file: d.file,
+                            idx: d.idx + r as u16,
+                        };
+                        self.wr(t, reg, w as u64, 1);
+                        self.half_ldsm_bytes(t, reg, locs);
+                        self.num_clobber(t, reg, &[], pc);
                     }
-                }
-                for &t in &active {
-                    self.tick(t);
+                    for &t in &active {
+                        self.tick(t);
+                    }
+                } else {
+                    let mut out = Vec::new();
+                    for i in 0..*n as usize {
+                        for &t in &active {
+                            let l = self.threads[t].lane as usize;
+                            let vc = self.threads[t].vc.clone();
+                            // (row, byte offset in the row) of the two b16 elements lane l gets.
+                            let parts: [(usize, u64); 2] = if !*trans {
+                                [(l / 4, 4 * (l % 4) as u64), (l / 4, 4 * (l % 4) as u64 + 2)]
+                            } else {
+                                [
+                                    (2 * (l % 4), 2 * (l / 4) as u64),
+                                    (2 * (l % 4) + 1, 2 * (l / 4) as u64),
+                                ]
+                            };
+                            let mut w = 0u32;
+                            // Without .trans both halves are one aligned 32-bit word of the row.
+                            let mut word = None;
+                            let mut hlocs = [None; 2];
+                            for (h, (row, off)) in parts.into_iter().enumerate() {
+                                let rl = by_lane[8 * i + row];
+                                let base = self.addr(rl, addr)?;
+                                let loc = self.resolve(rl, Space::Shared, base + off, 2)?;
+                                hlocs[h] = Some(loc);
+                                if !*trans && h == 0 {
+                                    word = match loc {
+                                        Loc::Shared { off, .. } if off % 4 == 0 => Some(loc),
+                                        _ => None,
+                                    };
+                                }
+                                let b = self.access(t as u32, &vc, pc, loc, 2, None);
+                                w |= (u16::from_le_bytes([b[0], b[1]]) as u32) << (16 * h);
+                            }
+                            out.push((t, i, w, word, hlocs));
+                        }
+                    }
+                    for (t, i, w, word, hlocs) in out {
+                        let r = Reg {
+                            file: d.file,
+                            idx: d.idx + i as u16,
+                        };
+                        self.wr(t, r, w as u64, 1);
+                        // 16-bit provenance: each half from its own row (`.trans` reshuffles them).
+                        self.half_ldsm(t, r, hlocs);
+                        // ASSUME(N-LEAF): the word moves intact, with its node.
+                        match word.and_then(|loc| self.num.as_ref().and_then(|ns| ns.mem_node(loc)))
+                        {
+                            Some(n) => self.num_put(t, r, Some(n)),
+                            None => self.num_clobber(t, r, &[], pc),
+                        }
+                    }
+                    for &t in &active {
+                        self.tick(t);
+                    }
                 }
             }
             // ASSUME(N-HMMA): see ASSUMPTIONS.md
@@ -3494,40 +4167,53 @@ impl Machine {
     }
 
     /// After a lane of `warp` exited: release the lanes parked at a plain `WARPSYNC` or a
-    /// `BSYNC` if every other lane they wait for is parked there too or has exited.
+    /// `BSYNC` if every other lane they wait for is parked there too or has exited. Each
+    /// barrier lanes are parked at is checked (lanes of nested regions park at different ones).
     fn exit_warpsync_release(&mut self, warp: u32) -> Result<(), String> {
-        let Some(u) = self.warp_threads(warp).find(|&u| {
-            self.threads[u].st == St::WarpSync
-                && matches!(
-                    self.k.code[self.threads[u].pc as usize].op,
-                    Op::WarpSync {
-                        collective: false,
-                        ..
-                    } | Op::Bsync { .. }
-                )
-        }) else {
-            return Ok(());
-        };
-        let at = self.threads[u].pc;
-        let m = match &self.k.code[at as usize].op {
-            Op::WarpSync { mask, .. } => {
-                let mask = mask.clone();
-                self.rd(u, &mask)? as u32
-            }
-            Op::Bsync { b } => {
-                let b = *b;
-                let parked = self
-                    .warp_threads(warp)
-                    .filter(|&i| {
-                        self.threads[i].st == St::WarpSync
-                            && matches!(self.k.code[self.threads[i].pc as usize].op, Op::Bsync { b: c } if c == b)
-                    })
-                    .fold(0u32, |m, i| m | 1 << self.threads[i].lane);
-                self.warps[warp as usize].bmask[b as usize] | parked
-            }
-            _ => unreachable!(),
-        };
-        self.warpsync_release(warp, m, at);
+        let mut ats: Vec<u32> = self
+            .warp_threads(warp)
+            .filter(|&u| {
+                self.threads[u].st == St::WarpSync
+                    && matches!(
+                        self.k.code[self.threads[u].pc as usize].op,
+                        Op::WarpSync {
+                            collective: false,
+                            ..
+                        } | Op::Bsync { .. }
+                    )
+            })
+            .map(|u| self.threads[u].pc)
+            .collect();
+        ats.sort_unstable();
+        ats.dedup();
+        for at in ats {
+            // An earlier release in this loop may have moved the lanes on.
+            let Some(u) = self
+                .warp_threads(warp)
+                .find(|&u| self.threads[u].st == St::WarpSync && self.threads[u].pc == at)
+            else {
+                continue;
+            };
+            let m = match &self.k.code[at as usize].op {
+                Op::WarpSync { mask, .. } => {
+                    let mask = mask.clone();
+                    self.rd(u, &mask)? as u32
+                }
+                Op::Bsync { b } => {
+                    let b = *b;
+                    let parked = self
+                        .warp_threads(warp)
+                        .filter(|&i| {
+                            self.threads[i].st == St::WarpSync
+                                && matches!(self.k.code[self.threads[i].pc as usize].op, Op::Bsync { b: c } if c == b)
+                        })
+                        .fold(0u32, |m, i| m | 1 << self.threads[i].lane);
+                    self.warps[warp as usize].bmask[b as usize] | parked
+                }
+                _ => unreachable!(),
+            };
+            self.warpsync_release(warp, m, at);
+        }
         Ok(())
     }
 
@@ -3567,6 +4253,7 @@ impl Machine {
                 th.st = St::Run;
                 th.pc += 1;
             }
+            self.note_convergence(warp, &lanes);
             // The released lanes have passed this convergence barrier.
             if let Op::Bsync { b } = self.k.code[pc as usize].op {
                 let done = lanes
@@ -3707,7 +4394,7 @@ impl Machine {
             format!("{:?}{}", r.file, r.idx)
         };
         let msg = format!(
-            "{} reads register {name}, which nothing has written (or was loaded from shared memory nothing wrote), at {}",
+            "{} reads register {name}, whose value is undefined (nothing has written it, it was loaded from shared memory nothing wrote, or it was computed from such a value), where it reaches memory, an address, control flow or synchronization, at {}",
             self.actor_name(t as u32),
             self.k.describe(pc as usize)
         );
@@ -3720,14 +4407,52 @@ impl Machine {
         let r = self.exec_thread_inner(t, inst, pc);
         self.stale = None;
         self.vmask = None;
+        // C-ORDER dead-read probe (wellsync.rs `dead_reads`): the load's registers hold no
+        // defined bit, so any use of them is reported (S-INIT).
+        if matches!(inst.op, Op::Ld { .. })
+            && self
+                .dead_probe
+                .as_ref()
+                .is_some_and(|p| p.contains(&(t as u32, pc)))
+        {
+            for d in inst.op.dst_regs() {
+                self.make_undefined(t, d);
+            }
+        }
         r
+    }
+
+    /// Register `r` of thread `t` (its warp's, for a uniform register) holds no defined bit.
+    fn make_undefined(&mut self, t: usize, r: Reg) {
+        let i = r.idx as usize;
+        match r.file {
+            File::V | File::R if r.file == File::V || i < 255 => {
+                if let Some(x) = self.threads[t].make_mut().written.get_mut(i / 64) {
+                    *x &= !(1u64 << (i % 64));
+                }
+            }
+            File::UR if i < 255 => {
+                let w = self.threads[t].warp as usize;
+                self.warps[w].make_mut().ur_written[i / 64] &= !(1u64 << (i % 64));
+            }
+            File::P if i != 7 => {
+                if let Some(x) = self.threads[t].make_mut().pdef.get_mut(i / 64) {
+                    *x &= !(1u64 << (i % 64));
+                }
+            }
+            File::UP if i < 7 => {
+                let w = self.threads[t].warp as usize;
+                self.warps[w].make_mut().up_def &= !(1u8 << i);
+            }
+            _ => {}
+        }
     }
 
     /// S-INIT for a register-only operation that read undefined bits: the undefined bits of
     /// its result (bit-precise where a byte permute, shift, mask, select, pack or low-bits
-    /// arithmetic discards undefined input bits; otherwise the whole result), or None when
-    /// the read itself is reported (any other operation, or a predicate result that depends
-    /// on an undefined bit).
+    /// arithmetic discards undefined input bits; otherwise the whole result). A predicate
+    /// result is undefined when the mask is nonzero (`wp`). None when the read itself is
+    /// reported: any operation that is not register-only (a sink).
     fn undef_result(&self, t: usize, op: &Op) -> Option<u64> {
         let u = |v: &Val| self.val_umask(t, v);
         let u32_ = |v: &Val| self.val_umask(t, v) as u32;
@@ -3838,9 +4563,8 @@ impl Machine {
                         m |= 1 << bit;
                     }
                 }
-                if p.is_some() && m != 0 {
-                    return None; // the predicate depends on an undefined bit
-                }
+                // A predicate output is undefined when m != 0 (`wp`).
+                let _ = p;
                 m as u64
             }
             Op::Imad {
@@ -3887,23 +4611,31 @@ impl Machine {
                 shift,
                 cout: None,
                 neg_a: false,
+                neg_b: false,
                 ..
             } => up((u32_(a).checked_shl(*shift as u32).unwrap_or(0)) | u32_(b)) as u64,
             // S-INIT-PRED: P2R / R2P move predicates through a register bit by bit (a
             // spill of PR keeps unwritten predicates undefined, R2P restores them so).
-            Op::P2r { a, mask, .. } => {
+            Op::P2r {
+                a,
+                mask,
+                uniform,
+                shift,
+                ..
+            } => {
                 let pu = (0..7u16)
                     .filter(|&i| {
                         self.reg_umask(
                             t,
                             Reg {
-                                file: File::P,
+                                file: if *uniform { File::UP } else { File::P },
                                 idx: i,
                             },
                         ) != 0
                     })
                     .fold(0u32, |m, i| m | 1 << i);
-                ((u32_(a) & !mask) | (pu & mask)) as u64
+                let m = mask << shift;
+                ((u32_(a) & !m) | ((pu << shift) & m)) as u64
             }
             Op::R2p { .. } => 0,
             // A predicate LUT whose output does not depend on its undefined inputs.
@@ -3927,7 +4659,11 @@ impl Machine {
                         outs |= 1 << (l >> i & 1);
                     }
                     if outs == 0b11 {
-                        return None;
+                        // The output predicate is undefined (wp); its first use is
+                        // reported. ptxas's uniformizing loop (`PLOP3.LUT P0, PT, P0, P1, ...`
+                        // before the `R2UR P0` that defines P0) computes one it never reads
+                        // (probes/memhints).
+                        return Some(!0);
                     }
                 }
                 0
@@ -3935,13 +4671,161 @@ impl Machine {
             Op::F2fpBf16 { a, b, .. } => {
                 (if u(a) != 0 { 0xffff_0000u64 } else { 0 }) | if u(b) != 0 { 0xffff } else { 0 }
             }
-            op if propagates_undef(op)
-                && op
-                    .dst_regs()
-                    .iter()
-                    .all(|d| matches!(d.file, File::R | File::UR | File::V)) =>
+            // Half-lane operations: a lane is undefined only if a half it selects is
+            // (`PRMT R6, R14, 0x7632, R6` leaves R6's high half undefined, then
+            // `HFMA2 R5, R6.H0_H0, ...` reads only the low half; probes/f16_arith).
+            Op::Hfma2 { a, b, c, sel, .. }
+            | Op::Hfma2Bf16 { a, b, c, sel, .. }
+            | Op::Vhmnmx { a, b, c, sel, .. } => {
+                let um = [u32_(a), u32_(b), u32_(c)];
+                (0..2u32)
+                    .filter(|&lane| (0..3).any(|k| sel[k].lane(um[k], lane) != 0))
+                    .fold(0u64, |m, lane| m | 0xffff << (16 * lane))
+            }
+            // HSETP2: Pd from lane 0, Pq from lane 1; a lane is undefined if a half it
+            // selects is, unless the combining predicate decides it (`.AND` with a false
+            // one, `.OR` with a true one). Both outputs share one mask: any undefined lane
+            // leaves both undefined (Triton's tensor_stats: `HSETP2.BF16_V2.EQ.AND P3, PT,
+            // R19.H0_H0, RZ.H0_H0, !P0` with R19's high half undefined).
+            Op::Hsetp2Bf16 {
+                d,
+                q,
+                a,
+                b,
+                sel,
+                c,
+                bop,
+                ..
+            } => {
+                let um = [u32_(a), u32_(b)];
+                let cu = self.pred_undef(t, *c).is_some();
+                let decided = !cu
+                    && match bop {
+                        BoolOp::And => !self.prd(t, *c),
+                        BoolOp::Or => self.prd(t, *c),
+                        BoolOp::Xor => false,
+                    };
+                let lane_undef =
+                    |lane: u32| !decided && (cu || (0..2).any(|k| sel[k].lane(um[k], lane) != 0));
+                let used = |r: &Option<Reg>| r.is_some_and(|r| !(r.file == File::P && r.idx == 7));
+                if lane_undef(0) && used(&Some(*d)) || lane_undef(1) && used(q) {
+                    !0
+                } else {
+                    0
+                }
+            }
+            // Packed f32x2 FMA / add / mul: lane i of the result reads lane i of each operand
+            // only (ptxas packs values of different rows into one FADD2 / FMUL2: an undefined
+            // row must not taint the other lane).
+            Op::Ffma2 { a, b, c, .. } => {
+                let lane = |(v, l): &(Val, F2Lanes)| -> [bool; 2] {
+                    let (lo, hi) = match v {
+                        // The pair is the register and the next one, whatever width the
+                        // operand was lifted with.
+                        Val::Reg(r, _) if r.file != File::V && *l != F2Lanes::Bcast => {
+                            let nx = Reg {
+                                file: r.file,
+                                idx: r.idx + 1,
+                            };
+                            (self.reg_umask(t, *r) != 0, self.reg_umask(t, nx) != 0)
+                        }
+                        _ => {
+                            let m = u(v);
+                            (m != 0, m != 0)
+                        }
+                    };
+                    match l {
+                        F2Lanes::Bcast => [lo, lo],
+                        F2Lanes::Pair => [lo, hi],
+                        F2Lanes::Swap => [hi, lo],
+                    }
+                };
+                let (x, y, z) = (lane(a), lane(b), lane(c));
+                (if x[0] || y[0] || z[0] {
+                    0xffff_ffffu64
+                } else {
+                    0
+                }) | if x[1] || y[1] || z[1] {
+                    0xffff_ffff_0000_0000
+                } else {
+                    0
+                }
+            }
+            // Float compares combined with a defined predicate that decides the result alone
+            // (`AND` with false, `OR` with true) do not use their operands; HSETP2 reads only
+            // the selected 16-bit half of each operand (triton _metrics_2d: `PRMT R18, RZ,
+            // 0x7610, R18` leaves the high half undefined, `HSETP2 ... R18.H0_H0, ..., !P0`).
+            Op::Fsetp { c, bop, .. } | Op::Dsetp { c, bop, .. }
+                if self.pred_undef(t, *c).is_none()
+                    && matches!(
+                        (bop, self.prd(t, *c)),
+                        (BoolOp::And, false) | (BoolOp::Or, true)
+                    ) =>
             {
-                all(op.src_vals().iter().map(u).fold(0, |x, y| x | y))
+                0
+            }
+            // Narrow packs / unpacks: lane by lane (nvfp4 quant: `F2FP.E4M3.F32.PACK_AB_MERGE_C
+            // R31, R31, R16, RZ` with R31 undefined, then `F2FP.F16.E4M3.UNPACK_B` of its low
+            // lane only).
+            Op::CvtPack {
+                a,
+                b,
+                c,
+                half,
+                to,
+                rnd,
+                ..
+            } => {
+                let lb = crate::lowp::lane_bits(*to);
+                let lm = (1u32 << lb) - 1;
+                let (ua, ub, uc) = (u32_(a), u32_(b), u32_(c));
+                let rs = *rnd == LpRnd::Rs && uc != 0;
+                let (ca, cb) = match half {
+                    Some(_) => (ua >> 16 != 0, ua & 0xffff != 0),
+                    None => (ua != 0, ub != 0),
+                };
+                let lanes = (if ca || rs { lm << lb } else { 0 }) | if cb || rs { lm } else { 0 };
+                let merge = if lb == 16 {
+                    0
+                } else {
+                    uc.checked_shl(2 * lb).unwrap_or(0)
+                };
+                (lanes | merge) as u64
+            }
+            // HADD2.F32 Rd, -RZ, Ra.H0_H0: one 16-bit half of a.
+            Op::CvtF32F16 { a, hi, .. } => {
+                let m = u32_(a);
+                if (if *hi { m >> 16 } else { m & 0xffff }) != 0 {
+                    !0
+                } else {
+                    0
+                }
+            }
+            Op::CvtUnpack { a, hi, from, .. } => {
+                let lb = crate::lowp::lane_bits(*from);
+                let m = (1u32 << lb) - 1;
+                let x = if *hi { u32_(a) >> 16 } else { u32_(a) };
+                (if (x >> lb) & m != 0 {
+                    0xffff_0000u64
+                } else {
+                    0
+                }) | if x & m != 0 { 0xffff } else { 0 }
+            }
+            // Compares: every output undefined (the "decided" ISETP is not here).
+            Op::Setp { .. }
+            | Op::Fsetp { .. }
+            | Op::Dsetp { .. }
+            | Op::DsetpMinMax { .. }
+            | Op::Fchk { .. } => !0,
+            // Register-only operations: carry-outs and other predicate outputs are undefined
+            // with the rest (`wp`).
+            op if propagates_undef(op) => {
+                let m = op.src_vals().iter().map(u).fold(0, |x, y| x | y);
+                if m == 0 && op.src_regs().iter().any(|r| self.reg_umask(t, *r) != 0) {
+                    !0
+                } else {
+                    all(m)
+                }
             }
             _ => return None,
         };
@@ -4042,6 +4926,18 @@ impl Machine {
             _ => false,
         };
         if let (Some(r), false) = (undef, decided) {
+            // Debug: PTXV_UNDEF_TRACE=<thread> prints every instruction that thread runs on
+            // undefined inputs (where an S-INIT report's undefined bits came from).
+            if std::env::var("PTXV_UNDEF_TRACE").is_ok_and(|x| x.parse() == Ok(t)) {
+                eprintln!(
+                    "undef t{t} {} reads {:?}{} umask {:#x} -> {:?}",
+                    self.k.describe(pc as usize),
+                    r.file,
+                    r.idx,
+                    self.reg_umask(t, r),
+                    self.undef_result(t, &inst.op)
+                );
+            }
             match self.undef_result(t, &inst.op) {
                 Some(m) => self.vmask = Some(m),
                 None => self.report_uninit(t, r, pc),
@@ -4094,7 +4990,19 @@ impl Machine {
             } => {
                 let a = self.addr(t, addr)?;
                 check_aligned(*space, a, *bytes as usize)?;
-                let loc = self.resolve(t, *space, a, *bytes as usize)?;
+                // ASSUME(S-MULTIMEM): a reduction on a multicast address (multimem.red; SASS
+                // REDG) is one reduction per bound location, all at once.
+                let locs = self.mem_locs(t, *space, a, *bytes as usize, pc)?;
+                let mc = locs.len() != 1 || self.mc_object(a).is_some();
+                if mc
+                    && (d.is_some()
+                        || p.is_some()
+                        || matches!(op, AtomOp::Cas | AtomOp::CasSpin | AtomOp::Exch))
+                {
+                    return Err(format!(
+                        "atomic with a result on multicast address {a:#x}: not modeled"
+                    ));
+                }
                 let wide = *bytes == 8;
                 let bmask = if wide { u64::MAX } else { 0xffff_ffff };
                 let x = self.rd(t, v)? & bmask;
@@ -4118,55 +5026,94 @@ impl Machine {
                 };
                 let vc = self.threads[t].vc.clone();
                 let sc = strong_code(sync.scope);
-                if self.l1.is_some() {
-                    self.l1_atom(t, loc, *bytes as usize); // ASSUME(E-HW-L1)
-                }
-                self.red_access = *op == AtomOp::FAddFtz && d.is_none();
-                let old = self.access_x(t as u32, &vc, pc, loc, *bytes as usize, None, sc);
-                self.sync_observe(t, loc, *sync);
-                let mut o = 0u64;
-                for (i, b) in old.iter().enumerate() {
-                    o |= (*b as u64) << (8 * i);
-                }
-                let n = match op {
-                    AtomOp::Or => o | x,
-                    AtomOp::And => o & x,
-                    AtomOp::Add => o.wrapping_add(x),
-                    AtomOp::Exch => x,
-                    AtomOp::Xor => o ^ x,
-                    AtomOp::MinU if wide => o.min(x),
-                    AtomOp::MaxU if wide => o.max(x),
-                    AtomOp::MinS if wide => (o as i64).min(x as i64) as u64,
-                    AtomOp::MaxS if wide => (o as i64).max(x as i64) as u64,
-                    AtomOp::MinU => (o as u32).min(x as u32) as u64,
-                    AtomOp::MaxU => (o as u32).max(x as u32) as u64,
-                    AtomOp::MinS => (o as i32).min(x as i32) as u32 as u64,
-                    AtomOp::MaxS => (o as i32).max(x as i32) as u32 as u64,
-                    // ASSUME(N-FALU): as FADD.FTZ (round to nearest, flush).
-                    AtomOp::FAddFtz => fp::f32_fma(
-                        o as u32,
-                        0x3f80_0000,
-                        Some(x as u32),
-                        ptxv_ir::Rnd::Rn,
-                        true,
-                    ) as u64,
-                    AtomOp::CasSpin | AtomOp::Cas => {
-                        if o == cmp {
-                            x
-                        } else {
-                            o
-                        }
+                self.mc_view = mc;
+                let mut res = None;
+                for &loc in &locs {
+                    if self.l1.is_some() {
+                        self.l1_atom(t, loc, *bytes as usize); // ASSUME(E-HW-L1)
                     }
-                };
-                let swapped = matches!(op, AtomOp::CasSpin | AtomOp::Cas) && o == cmp;
-                // A failed `Cas` is a read only (no write, nothing published): a poll loop
-                // of failing compare-and-swaps leaves memory untouched.
-                if *op != AtomOp::Cas || swapped {
-                    let data: Vec<u8> = (0..*bytes).map(|i| (n >> (8 * i)) as u8).collect();
-                    self.access_x(t as u32, &vc, pc, loc, *bytes as usize, Some(&data), sc);
-                    self.sync_publish(t, loc, *sync, true);
+                    self.red_access = *op == AtomOp::FAddFtz && d.is_none();
+                    let old = self.access_x(t as u32, &vc, pc, loc, *bytes as usize, None, sc);
+                    self.sync_observe(t, loc, *sync);
+                    let mut o = 0u64;
+                    for (i, b) in old.iter().enumerate() {
+                        o |= (*b as u64) << (8 * i);
+                    }
+                    let n = match op {
+                        AtomOp::Or => o | x,
+                        AtomOp::And => o & x,
+                        AtomOp::Add => o.wrapping_add(x),
+                        AtomOp::Exch => x,
+                        AtomOp::Xor => o ^ x,
+                        AtomOp::MinU if wide => o.min(x),
+                        AtomOp::MaxU if wide => o.max(x),
+                        AtomOp::MinS if wide => (o as i64).min(x as i64) as u64,
+                        AtomOp::MaxS if wide => (o as i64).max(x as i64) as u64,
+                        AtomOp::MinU => (o as u32).min(x as u32) as u64,
+                        AtomOp::MaxU => (o as u32).max(x as u32) as u64,
+                        // ASSUME(L-ROSETTA): probes/atom_inc.
+                        AtomOp::Inc if wide => return Err("64-bit atom.inc not modeled".into()),
+                        AtomOp::Inc => {
+                            if o as u32 >= x as u32 {
+                                0
+                            } else {
+                                o as u32 as u64 + 1
+                            }
+                        }
+                        AtomOp::MinS => (o as i32).min(x as i32) as u32 as u64,
+                        AtomOp::MaxS => (o as i32).max(x as i32) as u32 as u64,
+                        AtomOp::Dec if wide => return Err("64-bit atom.dec not modeled".into()),
+                        AtomOp::Dec => {
+                            let (o, x) = (o as u32, x as u32);
+                            (if o == 0 || o > x { x } else { o - 1 }) as u64
+                        }
+                        // ASSUME(N-FALU): as FADD.FTZ (round to nearest, flush).
+                        AtomOp::FAddFtz => fp::f32_fma(
+                            o as u32,
+                            0x3f80_0000,
+                            Some(x as u32),
+                            ptxv_ir::Rnd::Rn,
+                            true,
+                        ) as u64,
+                        // ASSUME(N-BF16X2): per lane as HADD2.BF16_V2.
+                        AtomOp::AddBf16x2 => {
+                            let (o, x) = (o as u32, x as u32);
+                            let lane = |i: u32| {
+                                fp::bf16_fma((o >> (16 * i)) as u16, 0x3f80, (x >> (16 * i)) as u16)
+                                    as u64
+                            };
+                            lane(1) << 16 | lane(0)
+                        }
+                        AtomOp::AddBf16 => fp::bf16_fma(o as u16, 0x3f80, x as u16) as u64,
+                        AtomOp::CasSpin | AtomOp::Cas => {
+                            if o == cmp {
+                                x
+                            } else {
+                                o
+                            }
+                        }
+                    };
+                    let swapped = matches!(op, AtomOp::CasSpin | AtomOp::Cas) && o == cmp;
+                    // A failed `Cas` is a read only (no write, nothing published): a poll loop
+                    // of failing compare-and-swaps leaves memory untouched.
+                    if *op != AtomOp::Cas || swapped {
+                        let data: Vec<u8> = (0..*bytes).map(|i| (n >> (8 * i)) as u8).collect();
+                        self.access_x(t as u32, &vc, pc, loc, *bytes as usize, Some(&data), sc);
+                        self.sync_publish(t, loc, *sync, true);
+                    }
+                    self.red_access = false;
+                    res = Some((o, swapped, n));
+                    let fadd = (*op == AtomOp::FAddFtz).then_some((o as u32, x as u32, n as u32));
+                    let fmax = matches!(op, AtomOp::MaxS | AtomOp::MinU)
+                        && self.num_fmax_atom(t, v, loc, (o as u32, x as u32, n as u32), pc);
+                    if matches!(op, AtomOp::AddBf16x2 | AtomOp::AddBf16) {
+                        self.num_atom_bf16(t, v, loc, *bytes, n as u32, *d, pc);
+                    } else if !fmax {
+                        self.num_atom(t, v, loc, fadd, *d, pc);
+                    }
                 }
-                self.red_access = false;
+                self.mc_view = false;
+                let (o, swapped, _n) = res.expect("one location");
                 if let Some(d) = d {
                     let (r, w) = if *op == AtomOp::CasSpin {
                         (swapped as u64, 1)
@@ -4183,12 +5130,6 @@ impl Machine {
                         true
                     };
                     self.wp(t, *p, v);
-                }
-                let fadd = (*op == AtomOp::FAddFtz).then_some((o as u32, x as u32, n as u32));
-                let fmax = matches!(op, AtomOp::MaxS | AtomOp::MinU)
-                    && self.num_fmax_atom(t, v, loc, (o as u32, x as u32, n as u32), pc);
-                if !fmax {
-                    self.num_atom(t, v, loc, fadd, *d, pc);
                 }
                 // A failed compare-and-swap only read, like a load: no new epoch (otherwise
                 // every failed attempt of a lane that polls alongside a succeeding one would
@@ -4346,9 +5287,6 @@ impl Machine {
                 mbar,
                 multicast,
             } => {
-                if *multicast {
-                    return Err("multicast clusterlaunchcontrol.try_cancel is not modeled".into());
-                }
                 if self.clc_eager {
                     return Err("try_cancel executed although every CTA was launched up front (E-CLC eager launch): not modeled on this path".into());
                 }
@@ -4375,6 +5313,15 @@ impl Machine {
                         cta,
                         resp: roff,
                         mbar: moff,
+                        others: if *multicast {
+                            (0..self.launch.cluster_size(cta as u32))
+                                .filter_map(|r| self.launch.cta_of_rank(cta as u32, r))
+                                .filter(|&u| u != cta as u32)
+                                .map(|u| u as u16)
+                                .collect()
+                        } else {
+                            vec![]
+                        },
                     },
                     vis: self.threads[t].vis.clone(),
                 });
@@ -4899,16 +5846,26 @@ impl Machine {
             }
             Op::R2Ur { .. }
             | Op::VoteAny { .. }
+            | Op::MatchAny { .. }
             | Op::Redux { .. }
             | Op::WarpSync { .. }
             | Op::Bssy { .. }
             | Op::Break { .. }
+            | Op::BMov { .. }
             | Op::Bsync { .. } => {
                 return Err("warp-collective op reached the per-thread executor".into());
             }
             // ASSUME(S-PROXY): record where in this thread's history the fence sits (and what
             // it observed); the async proxy sees the generic writes that happen-before the
             // fence once the fence HB its op.
+            // ASSUME(S-MC-ALIAS): record the fence for the alias-proxy check (`alias_check`).
+            Op::Fence {
+                kind: FenceKind::ProxyAlias,
+            } => {
+                let v = self.threads[t].vc.clone();
+                self.threads[t].make_mut().alias_fences.push(v);
+                self.tick(t);
+            }
             Op::Fence {
                 kind: FenceKind::ProxyAsync,
             } => {
@@ -4917,6 +5874,11 @@ impl Machine {
 
                 self.tick(t);
             }
+            // ASSUME(S-PROXY): global-memory proxy ordering is not checked; the fence orders
+            // nothing the model tracks (in particular no shared-memory async read).
+            Op::Fence {
+                kind: FenceKind::ProxyAsyncGlobal,
+            } => self.tick(t),
             Op::BulkCommit => {
                 let sb = self
                     .k
@@ -4931,7 +5893,7 @@ impl Machine {
             Op::BulkWait { n, cp, sb, .. } => {
                 self.bulk_wait(t, *n, sb.map(|s| 1 << s));
                 if *cp {
-                    self.cp_async_wait(t, 0);
+                    self.cp_async_wait(t, *n);
                 }
             }
             Op::TmaStore {
@@ -4940,6 +5902,7 @@ impl Machine {
                 off,
                 tmap,
                 coords,
+                red,
             } => {
                 let srca = self.rd(t, src)?.wrapping_add(*off as u64);
                 let tma = self.rd(t, tmap)?;
@@ -4979,6 +5942,7 @@ impl Machine {
                         tmap: tm,
                         coords: cs,
                         group,
+                        red: *red,
                     },
                     vis: self.threads[t].vis.clone(),
                 });
@@ -5010,9 +5974,21 @@ impl Machine {
                         self.l1_inval(t, pc);
                     }
                 }
+                // ASSUME(L-ALIAS-FENCE): ptxas lowers fence.proxy.alias to `UP2UR.B3 URx, UPR,
+                // URx, 0xff` (URx = c[0x0][0x2d8]), a branch on bit 0 of URx to `MEMBAR.SC.GPU`
+                // or `MEMBAR.SC.SYS; CCTL.IVALL`, then `UR2UP UPR, URx.B3`; a MEMBAR.SC
+                // inside that bracket is the alias fence.
+                let alias = self.k.front == Front::Sass
+                    && !self.launch.mcast.is_empty()
+                    && self.k.code[pc as usize].text.contains("MEMBAR.SC.")
+                    && alias_bracket(&self.k.code, pc as usize);
                 let th = self.threads[t].make_mut();
                 th.membar_vc = th.vc.clone();
                 th.membar_scope = *sc;
+                if alias {
+                    let v = th.vc.clone();
+                    th.alias_fences.push(v);
+                }
                 self.tick(t);
             }
             Op::Fence {
@@ -5221,6 +6197,10 @@ impl Machine {
                     IntOp::MulHiU => ((x as u128 * y as u128) >> w) as u64,
                     IntOp::MulHiS => ((sx(x) as i128 * sx(y) as i128) >> w) as u64,
                     IntOp::Popc => mask(*bits, x).count_ones() as u64,
+                    IntOp::Add16x2 => {
+                        (x.wrapping_add(y) & 0xffff)
+                            | ((x >> 16).wrapping_add(y >> 16) & 0xffff) << 16
+                    }
                     IntOp::Bmsk | IntOp::BmskWrap => {
                         let (s, n) = if *op == IntOp::BmskWrap {
                             (x & 31, y & 31)
@@ -5279,6 +6259,8 @@ impl Machine {
                 v,
                 tracked,
                 half,
+                s16x256b,
+                s16x128b,
             } => {
                 if half.is_some_and(|h| self.threads[t].lane / 16 != h as u32) {
                     return Ok(Flow::Next); // the other half of the warp's lanes
@@ -5294,8 +6276,22 @@ impl Machine {
                 if self.k.front == Front::Sass {
                     lane0 = 32 * wq + lane0 % 32;
                 }
-                let lane = lane0 + if half.is_some() { l % 16 } else { l };
-                if lane0 != 32 * wq && !(half.is_some() && lane0 == 32 * wq + 16) {
+                let sixteen = half.is_some() || *s16x256b || *s16x128b;
+                // (lane, column) of register j: the tcgen05.ld layouts (probes/tmem_st16).
+                // ASSUME(S-TMEM)
+                let cell = |j: usize| {
+                    if *s16x128b {
+                        (lane0 + l / 4 + 8 * (j % 2), col0 + 4 * (j / 2) + l % 4)
+                    } else if *s16x256b {
+                        (
+                            lane0 + l / 4 + 8 * (j / 2 % 2),
+                            col0 + 8 * (j / 4) + 2 * (l % 4) + j % 2,
+                        )
+                    } else {
+                        (lane0 + if half.is_some() { l % 16 } else { l }, col0 + j)
+                    }
+                };
+                if lane0 != 32 * wq && !(sixteen && lane0 == 32 * wq + 16) {
                     let msg = format!(
                         "{} (warp quadrant {wq}) addresses TMEM lanes {lane0}.. at {}: a warp may only access lanes {}..{}",
                         self.actor_name(t as u32),
@@ -5305,11 +6301,13 @@ impl Machine {
                     );
                     self.report("violation", format!("tmem-quadrant:{pc}"), msg);
                 }
-                if lane >= TMEM_LANES || col0 + v.len() > TMEM_COLS {
-                    return Err(format!(
-                        "tcgen05.st outside TMEM (lane {lane}, columns {col0}+{})",
-                        v.len()
-                    ));
+                for j in 0..v.len() {
+                    let (lane, col) = cell(j);
+                    if lane >= TMEM_LANES || col >= TMEM_COLS {
+                        return Err(format!(
+                            "tcgen05.st outside TMEM (lane {lane}, column {col})"
+                        ));
+                    }
                 }
                 let vals: Vec<u32> = v
                     .iter()
@@ -5326,9 +6324,10 @@ impl Machine {
                 };
                 let mut states = 0u8;
                 for (j, w) in vals.iter().enumerate() {
-                    let (_, st) = self.tmem_access(cta, lane, col0 + j, actor, &vc, pc, Some(*w));
+                    let (lane, col) = cell(j);
+                    let (_, st) = self.tmem_access(cta, lane, col, actor, &vc, pc, Some(*w));
                     states |= if st == 2 { 2 } else { 0 };
-                    self.num_tmem_st(t, &v[j], cta, lane, col0 + j);
+                    self.num_tmem_st(t, &v[j], cta, lane, col);
                 }
                 self.tmem_state_report(states, "tcgen05.st", pc);
             }
@@ -5498,6 +6497,7 @@ impl Machine {
                 sx32,
                 cin,
                 neg_b,
+                not_b,
                 cout,
             } => {
                 let lo = self.rd(t, a)? & 0xffff_ffff;
@@ -5510,7 +6510,13 @@ impl Machine {
                 let hi = ((wide << shift) >> 32) & 0xffff_ffff;
                 let ci = cin.map(|p| self.prd(t, p) as u64).unwrap_or(0);
                 let bv = self.rd(t, b)? & 0xffff_ffff;
-                let bv = if *neg_b { (!bv & 0xffff_ffff) + 1 } else { bv };
+                let bv = if *neg_b {
+                    (!bv & 0xffff_ffff) + 1
+                } else if *not_b {
+                    !bv & 0xffff_ffff
+                } else {
+                    bv
+                };
                 let sum = hi.wrapping_add(bv).wrapping_add(ci);
                 let r = sum & 0xffff_ffff;
                 if let Some(p) = cout {
@@ -5598,14 +6604,18 @@ impl Machine {
                     Rnd::Rp => x.ceil(),
                 };
                 // 64-bit results: NaN gives 2^63 (fixtures/s_cvt), saturation as Rust's.
+                // 16-bit (F2I.S16 / .U16): saturated to the 16-bit range, NaN 0, sign- / zero-
+                // extended to the register (probes/f2i16; ASSUME(N-F2I16)).
                 let r = match (*bits, *signed) {
                     (64, _) if x.is_nan() => 1 << 63,
                     (64, true) => x as i64 as u64,
                     (64, false) => x as u64,
+                    (16, true) => x as i16 as i32 as u32 as u64,
+                    (16, false) => x as u16 as u64,
                     (_, true) => x as i32 as u32 as u64,
                     (_, false) => x as u32 as u64,
                 };
-                self.wr(t, *d, r, *bits / 32);
+                self.wr(t, *d, r, (*bits / 32).max(1));
                 self.num_clobber(t, *d, &[a], pc);
             }
             Op::Ffma {
@@ -5651,26 +6661,36 @@ impl Machine {
                 min,
                 ftz,
                 nan,
+                xorsign,
             } => {
-                let x = fmod(self.rd(t, a)? as u32, neg[0], abs[0]);
-                let y = fmod(self.rd(t, b)? as u32, neg[1], abs[1]);
                 let lo = self.prd(t, *min);
-                let mut r = fp::f32_minmax(x, y, lo, *nan, *ftz);
-                if let Some(c) = c {
-                    let z = fmod(self.rd(t, c)? as u32, neg[2], abs[2]);
-                    r = fp::f32_minmax(r, z, lo, *nan, *ftz);
+                if *xorsign {
+                    // ASSUME(N-XORSIGN): the operands' own sign bits (the lifter checked the
+                    // |x| forms).
+                    let (x, y) = (self.rd(t, a)? as u32, self.rd(t, b)? as u32);
+                    let r = fp::f32_minmax_xorsign(x, y, lo, *nan, *ftz);
+                    self.wr(t, *d, r as u64, 1);
+                    self.num_fmnmx(t, *d, &[a, b], None, pc);
+                } else {
+                    let x = fmod(self.rd(t, a)? as u32, neg[0], abs[0]);
+                    let y = fmod(self.rd(t, b)? as u32, neg[1], abs[1]);
+                    let mut r = fp::f32_minmax(x, y, lo, *nan, *ftz);
+                    if let Some(c) = c {
+                        let z = fmod(self.rd(t, c)? as u32, neg[2], abs[2]);
+                        r = fp::f32_minmax(r, z, lo, *nan, *ftz);
+                    }
+                    self.wr(t, *d, r as u64, 1);
+                    let plain = !*ftz && !*nan && !neg.iter().chain(abs).any(|&m| m);
+                    // The min / max choice must not depend on input data.
+                    let lo_const = min.reg.is_none_or(|p| {
+                        !self.num.as_ref().is_some_and(|n| n.taint.reg_tainted(t, p))
+                    });
+                    let srcs: Vec<&Val> = match c {
+                        Some(c) => vec![a, b, c],
+                        None => vec![a, b],
+                    };
+                    self.num_fmnmx(t, *d, &srcs, (plain && lo_const).then_some(lo), pc);
                 }
-                self.wr(t, *d, r as u64, 1);
-                let plain = !*ftz && !*nan && !neg.iter().chain(abs).any(|&m| m);
-                // The min / max choice must not depend on input data.
-                let lo_const = min
-                    .reg
-                    .is_none_or(|p| !self.num.as_ref().is_some_and(|n| n.taint.reg_tainted(t, p)));
-                let srcs: Vec<&Val> = match c {
-                    Some(c) => vec![a, b, c],
-                    None => vec![a, b],
-                };
-                self.num_fmnmx(t, *d, &srcs, (plain && lo_const).then_some(lo), pc);
             }
             Op::Fsetp {
                 d,
@@ -5704,25 +6724,31 @@ impl Machine {
             // ASSUME(L-ROSETTA): fixtures/s_routing_forms = GB300.
             Op::Hsetp2Bf16 {
                 d,
+                q,
                 cmp,
                 a,
                 b,
-                hi,
+                sel,
+                neg,
+                abs,
                 c,
                 bop,
+                f16,
             } => {
-                let lane = |v: u32, h: bool| (if h { v >> 16 } else { v & 0xffff }) << 16;
-                let x = lane(self.rd(t, a)? as u32, hi[0]);
-                let y = lane(self.rd(t, b)? as u32, hi[1]);
-                let r = fp::f32_cmp(x, y, *cmp, false);
-                let q = self.prd(t, *c);
-                let v = match bop {
-                    BoolOp::And => r && q,
-                    BoolOp::Or => r || q,
-                    BoolOp::Xor => r != q,
+                let (x, y) = (self.rd(t, a)? as u32, self.rd(t, b)? as u32);
+                let pc_in = self.prd(t, *c);
+                let comb = |r: bool| match bop {
+                    BoolOp::And => r && pc_in,
+                    BoolOp::Or => r || pc_in,
+                    BoolOp::Xor => r != pc_in,
                 };
-                self.wp(t, *d, v);
-                self.num_fsetp(t, *d, *cmp, a, b, false);
+                for (lane, p) in [(0u32, Some(*d)), (1, *q)] {
+                    if let Some(p) = p {
+                        let r = fp::hsetp2_lane((x, y), *sel, (*neg, *abs), *f16, *cmp, lane);
+                        self.wp(t, p, comb(r));
+                        self.num_fsetp(t, p, *cmp, a, b, false);
+                    }
+                }
             }
             Op::Fset {
                 d,
@@ -5842,17 +6868,22 @@ impl Machine {
                     self.num_sel(t, *d, v, *p, pc);
                 }
             }
-            Op::R2p { a, mask, shift } => {
+            Op::R2p {
+                a,
+                mask,
+                shift,
+                uniform,
+            } => {
                 let x = self.rd(t, a)? >> shift;
                 let u = self.val_umask(t, a) >> shift;
                 for i in 0..7u16 {
                     if mask >> i & 1 == 1 {
                         let p = Reg {
-                            file: File::P,
+                            file: if *uniform { File::UP } else { File::P },
                             idx: i,
                         };
                         self.wp(t, p, x >> i & 1 == 1);
-                        if u >> i & 1 == 1 {
+                        if u >> i & 1 == 1 && !*uniform {
                             // S-INIT-PRED: restored from an undefined bit.
                             self.threads[t].make_mut().pdef[0] &= !(1 << i);
                         }
@@ -5862,6 +6893,21 @@ impl Machine {
             // ASSUME(N-FALU): IEEE conversions. F2F keeps a NaN's sign and payload (shifted;
             // quiet bit set), as Rust's float casts do (fixtures/s_cvt); f16 -> f32 gives the
             // canonical NaN, f32 -> f16 0x7fff.
+            Op::FCvt {
+                d,
+                a,
+                from,
+                to,
+                rnd,
+                ftz,
+                int,
+                hi,
+            } => {
+                let x = self.rd(t, a)? >> if *hi { 16 } else { 0 };
+                let r = fp::fcvt(x, *from, *to, *rnd, *ftz, *int);
+                self.wr(t, *d, r, if *to == FFmt::F64 { 2 } else { 1 });
+                self.num_clobber(t, *d, &[a], pc);
+            }
             Op::F2F { d, a, to64, rnd } => {
                 let x = self.rd(t, a)?;
                 if *to64 {
@@ -5952,8 +6998,9 @@ impl Machine {
                 from,
                 to,
                 relu,
+                byte,
             } => {
-                let x = (self.rd(t, a)? >> if *hi { 16 } else { 0 }) as u32;
+                let x = (self.rd(t, a)? >> (if *hi { 16 } else { 0 } + 8 * *byte as u32)) as u32;
                 let r = crate::lowp::unpack(x, *from, *to, *relu);
                 self.wr(t, *d, r as u64, 1);
                 self.num_clobber(t, *d, &[a], pc);
@@ -5971,6 +7018,7 @@ impl Machine {
                 signed,
                 max,
                 neg_b,
+                relu,
             } => {
                 let bv = self.rd(t, b)? as u32;
                 let bv = if *neg_b { bv.wrapping_neg() } else { bv };
@@ -5982,6 +7030,8 @@ impl Machine {
                     (true, false) => (s as i32).min(z as i32) as u32,
                     (true, true) => (s as i32).max(z as i32) as u32,
                 };
+                // .RELU (probes/imnmx_relu): clamp the signed result at 0.
+                let r = if *relu { (r as i32).max(0) as u32 } else { r };
                 self.wr(t, *d, r as u64, 1);
                 self.num_clobber(t, *d, &[a, b, c], pc);
             }
@@ -5992,30 +7042,61 @@ impl Machine {
                 c,
                 signed,
                 max,
+                x16,
+                relu,
             } => {
                 let v = [self.rd(t, a)?, self.rd(t, b)?, self.rd(t, c)?].map(|x| x as u32);
-                let r = match (*signed, *max) {
-                    (false, false) => v.into_iter().min(),
-                    (false, true) => v.into_iter().max(),
-                    (true, false) => v.into_iter().map(|x| x as i32).min().map(|x| x as u32),
-                    (true, true) => v.into_iter().map(|x| x as i32).max().map(|x| x as u32),
+                let r = if *x16 {
+                    // N-INT16X2: per 16-bit lane.
+                    let lane = |k: u32| -> u32 {
+                        let l = v.map(|x| (x >> (16 * k)) as u16);
+                        let r = match (*signed, *max) {
+                            (false, false) => l.into_iter().min(),
+                            (false, true) => l.into_iter().max(),
+                            (true, false) => {
+                                l.into_iter().map(|x| x as i16).min().map(|x| x as u16)
+                            }
+                            (true, true) => l.into_iter().map(|x| x as i16).max().map(|x| x as u16),
+                        };
+                        let r = if *relu {
+                            r.map(|x| (x as i16).max(0) as u16)
+                        } else {
+                            r
+                        };
+                        (r.unwrap() as u32) << (16 * k)
+                    };
+                    Some(lane(1) | lane(0))
+                } else {
+                    match (*signed, *max) {
+                        (false, false) => v.into_iter().min(),
+                        (false, true) => v.into_iter().max(),
+                        (true, false) => v.into_iter().map(|x| x as i32).min().map(|x| x as u32),
+                        (true, true) => v.into_iter().map(|x| x as i32).max().map(|x| x as u32),
+                    }
+                    .map(|x| if *relu { (x as i32).max(0) as u32 } else { x })
                 };
                 self.wr(t, *d, r.unwrap() as u64, 1);
                 self.num_clobber(t, *d, &[a, b, c], pc);
             }
-            Op::P2r { d, a, mask } => {
-                let mut pr = 0u64;
+            Op::P2r {
+                d,
+                a,
+                mask,
+                uniform,
+                shift,
+            } => {
+                let mut pr = 1u64 << 7; // PT / UPT
                 for i in 0..7u16 {
                     let p = Pred {
                         reg: Some(Reg {
-                            file: File::P,
+                            file: if *uniform { File::UP } else { File::P },
                             idx: i,
                         }),
                         neg: false,
                     };
                     pr |= (self.prd(t, p) as u64) << i;
                 }
-                let m = *mask as u64;
+                let (m, pr) = ((*mask as u64) << shift, pr << shift);
                 let r = (self.rd(t, a)? & !m & 0xffff_ffff) | (pr & m);
                 self.wr(t, *d, r, 1);
                 self.num_clobber(t, *d, &[a], pc);
@@ -6038,6 +7119,20 @@ impl Machine {
                             format!("read past constant bank {bank} (c[{bank:#x}][{o:#x}])")
                         })?;
                         v |= (*b as u64) << (8 * i);
+                    }
+                    // A word holding a module global's address: its buffer's. ASSUME(S-GLOBAL-INIT)
+                    let g = self.launch.g(self.threads[t].cta as u32);
+                    for &(rb, ro, rv) in &g.cbank_relocs {
+                        if rb != *bank {
+                            continue;
+                        }
+                        for i in 0..(*bytes).min(8) as u32 {
+                            let at = o.wrapping_add(i);
+                            if at >= ro && at < ro + 8 {
+                                let byte = (rv >> (8 * (at - ro))) & 0xff;
+                                v = (v & !(0xff << (8 * i))) | (byte << (8 * i));
+                            }
+                        }
                     }
                     v
                 };
@@ -6092,11 +7187,14 @@ impl Machine {
                 shift,
                 cout,
                 neg_a,
+                neg_b,
             } => {
                 let sa = (self.rd(t, a)? << shift) & 0xffff_ffff;
                 // A negated operand adds its complement plus one (as IADD3), which the carry sees.
                 let sa = if *neg_a { (!sa & 0xffff_ffff) + 1 } else { sa };
-                let r = sa + (self.rd(t, b)? & 0xffff_ffff);
+                let bv = self.rd(t, b)? & 0xffff_ffff;
+                let bv = if *neg_b { (!bv & 0xffff_ffff) + 1 } else { bv };
+                let r = sa + bv;
                 if let Some(co) = cout {
                     self.wp(t, *co, r >> 32 != 0);
                 }
@@ -6104,6 +7202,7 @@ impl Machine {
                 // `LEA d, s, k, 0x0`: s + k (3xTF32 low-part rounding).
                 let tf = *shift == 0
                     && !*neg_a
+                    && !*neg_b
                     && cout.is_none()
                     && self.num_tf32_lor(t, *d, &[a, b], r as u32, pc);
                 if !tf {
@@ -6262,7 +7361,14 @@ impl Machine {
                     self.num_fadd(t, *d, a, b, (x, y, r), *rnd == Rnd::Rz, pc);
                 }
             }
-            Op::Ffma2 { d, a, b, c, neg } => {
+            Op::Ffma2 {
+                d,
+                a,
+                b,
+                c,
+                neg,
+                rnd,
+            } => {
                 let lanes = |m: &mut Self, (v, l): &(Val, F2Lanes)| -> Result<[u32; 2], String> {
                     let x = m.rd(t, v)?;
                     let (lo, hi) = (x as u32, (x >> 32) as u32);
@@ -6278,22 +7384,114 @@ impl Machine {
                     sign(lanes(self, b)?, neg[1]),
                     sign(lanes(self, c)?, neg[2]),
                 );
-                // One rounding to nearest per lane; NaN results are canonical.
-                let r = [0, 1].map(|i| fp::f32_fma(x[i], y[i], Some(z[i]), Rnd::Rn, false));
+                // One rounding per lane in the mode; NaN results are canonical.
+                let r = [0, 1].map(|i| fp::f32_fma(x[i], y[i], Some(z[i]), *rnd, false));
                 self.wr(t, *d, r[0] as u64 | (r[1] as u64) << 32, 2);
-                self.num_ffma2(t, *d, [a, b, c], *neg, [x, y, z], pc);
+                if *rnd == Rnd::Rn {
+                    self.num_ffma2(t, *d, [a, b, c], *neg, [x, y, z], pc);
+                } else {
+                    self.num_clobber(t, *d, &[&a.0, &b.0, &c.0], pc);
+                }
             }
-            Op::Hfma2 { d, a, b, c, neg_a } => {
-                let (x, y, z) = (
+            Op::Hfma2 {
+                d,
+                a,
+                b,
+                c,
+                neg_a,
+                neg_c,
+                sel,
+            } => {
+                let v = [
                     self.rd(t, a)? as u32,
                     self.rd(t, b)? as u32,
                     self.rd(t, c)? as u32,
-                );
-                let x = if *neg_a { x ^ 0x8000_8000 } else { x };
-                let lo = fp::f16_fma_rn(x as u16, y as u16, z as u16) as u32;
-                let hi =
-                    fp::f16_fma_rn((x >> 16) as u16, (y >> 16) as u16, (z >> 16) as u16) as u32;
+                ];
+                let h = |k: usize, lane: u32| {
+                    let x = sel[k].lane(v[k], lane);
+                    let n = (k == 0 && *neg_a) || (k == 2 && *neg_c);
+                    x ^ ((n as u16) << 15)
+                };
+                let lo = fp::f16_fma_rn(h(0, 0), h(1, 0), h(2, 0)) as u32;
+                let hi = fp::f16_fma_rn(h(0, 1), h(1, 1), h(2, 1)) as u32;
                 self.wr(t, *d, ((hi << 16) | lo) as u64, 1);
+                self.num_clobber(t, *d, &[a, b, c], pc);
+            }
+            // ASSUME(N-BF16X2): see ASSUMPTIONS.md
+            Op::Hfma2Bf16 {
+                d,
+                a,
+                b,
+                c,
+                sel,
+                neg,
+                abs,
+                relu,
+            } => {
+                let v = [
+                    self.rd(t, a)? as u32,
+                    self.rd(t, b)? as u32,
+                    self.rd(t, c)? as u32,
+                ];
+                let r = fp::hfma2_bf16(v, *sel, (*neg, *abs), *relu);
+                self.wr(t, *d, r as u64, 1);
+                // `|x|` lanes are not followed by the numerics (as .RELU).
+                let opaque = *relu || abs.contains(&true);
+                self.num_hfma2_bf16(t, *d, [a, b, c], v, (*sel, *neg, opaque), r, pc);
+            }
+            // ASSUME(N-BF16X2): see ASSUMPTIONS.md
+            Op::FfmaBf16 {
+                d,
+                a,
+                b,
+                c,
+                hi,
+                neg,
+                rnd,
+                sat,
+            } => {
+                let v = [
+                    self.rd(t, a)? as u32,
+                    self.rd(t, b)? as u32,
+                    self.rd(t, c)? as u32,
+                ];
+                let r = fp::ffma_bf16(v, *hi, *neg, *rnd, *sat);
+                self.wr(t, *d, r as u64, 1);
+                self.num_ffma_bf16(t, *d, [a, b, c], v, (*hi, *neg, *rnd, *sat), r, pc);
+            }
+            // ASSUME(N-BF16X2): see ASSUMPTIONS.md
+            Op::Hmnmx2Bf16 {
+                d,
+                a,
+                b,
+                sel,
+                min,
+                nan,
+                xorsign,
+            } => {
+                let (x, y) = (self.rd(t, a)? as u32, self.rd(t, b)? as u32);
+                let r = fp::hmnmx2_bf16((x, y), *sel, self.prd(t, *min), *nan, *xorsign);
+                self.wr(t, *d, r as u64, 1);
+                self.num_clobber(t, *d, &[a, b], pc);
+            }
+            Op::Vhmnmx {
+                d,
+                a,
+                b,
+                c,
+                sel,
+                abs,
+                min,
+                nan,
+                f16,
+            } => {
+                let v = [
+                    self.rd(t, a)? as u32,
+                    self.rd(t, b)? as u32,
+                    self.rd(t, c)? as u32,
+                ];
+                let r = fp::vhmnmx(v, *sel, *abs, (self.prd(t, *min), *nan, *f16));
+                self.wr(t, *d, r as u64, 1);
                 self.num_clobber(t, *d, &[a, b, c], pc);
             }
             Op::CvtF32Bf16 { d, a } => {
@@ -6325,6 +7523,77 @@ impl Machine {
                     _ => return Err("cvta for this space not modeled yet".into()),
                 };
                 self.wr(t, *d, r, 2);
+            }
+            Op::LdReduce {
+                d,
+                n,
+                bytes,
+                addr,
+                op,
+                ty,
+                acc: _,
+                sync,
+            } => {
+                // ASSUME(S-MULTIMEM): one load per bound location, each with the
+                // instruction's semantics, all at once; the switch reduces them (N-MULTIMEM).
+                let a = self.addr(t, addr)?;
+                check_aligned(Space::Global, a, *bytes as usize)?;
+                let locs = match self.mc_resolve(a, *bytes as usize) {
+                    Some(r) => r?,
+                    None => {
+                        return Err(format!(
+                            "multimem.ld_reduce on {a:#x}, not a multicast address: undefined behavior (PTX)"
+                        ));
+                    }
+                };
+                let vc = self.threads[t].vc.clone();
+                let sc = sync.map_or(0, |m| strong_code(m.scope));
+                self.mc_view = true;
+                let mut vals = Vec::with_capacity(locs.len());
+                for &loc in &locs {
+                    vals.push(self.access_x(t as u32, &vc, pc, loc, *bytes as usize, None, sc));
+                    if let Some(m) = sync {
+                        self.sync_observe(t, loc, *m);
+                    }
+                }
+                self.mc_view = false;
+                // LDGMC is a strong load: it bypasses L1; an acquire invalidates it.
+                if self.l1.is_some()
+                    && sync
+                        .is_some_and(|m| m.acquires() && matches!(m.scope, Scope::Gpu | Scope::Sys))
+                {
+                    self.l1_inval(t, pc); // ASSUME(E-HW-L1)
+                }
+                let r = crate::multimem::reduce(*op, *ty, &vals)?;
+                self.mc_inexact |= r.inexact;
+                let data = r.bytes;
+                let wide = ty.lane_bytes() == 8;
+                if d.file == File::V && wide {
+                    for (i, c) in data.chunks(8).enumerate() {
+                        let rr = Reg {
+                            file: File::V,
+                            idx: d.idx + i as u16,
+                        };
+                        self.wr(t, rr, u64::from_le_bytes(c.try_into().unwrap()), 1);
+                        self.num_clobber(t, rr, &[], pc);
+                    }
+                } else {
+                    for (i, c) in data.chunks(4).enumerate() {
+                        let rr = Reg {
+                            file: d.file,
+                            idx: d.idx + i as u16,
+                        };
+                        self.wr(t, rr, u32::from_le_bytes(c.try_into().unwrap()) as u64, 1);
+                        self.num_clobber(t, rr, &[], pc);
+                    }
+                }
+                let _ = n;
+                if let Some(ns) = self.num.as_mut() {
+                    ns.warnings.insert(format!(
+                        "multimem.ld_reduce result is an opaque leaf for numerics at {}",
+                        self.k.describe(pc as usize)
+                    ));
+                }
             }
             Op::Ld {
                 d,
@@ -6502,7 +7771,11 @@ impl Machine {
             } => {
                 let a = self.addr(t, addr)?;
                 check_aligned(*space, a, *bytes as usize)?;
-                let loc = self.resolve(t, *space, a, *bytes as usize)?;
+                // ASSUME(S-MULTIMEM): a store to a multicast address (multimem.st; SASS STG)
+                // stores to every bound location, each a store with the instruction's
+                // semantics, all at once.
+                let locs = self.mem_locs(t, *space, a, *bytes as usize, pc)?;
+                let mc = locs.len() != 1 || self.mc_object(a).is_some();
                 let data: Vec<u8> = if let Val::Reg(r @ Reg { file: File::V, .. }, n @ 2..) = v {
                     // PTX `st.vN`: one virtual register per element.
                     let w = (*bytes / *n) as usize;
@@ -6550,14 +7823,18 @@ impl Machine {
                 };
                 let vc = self.threads[t].vc.clone();
                 let sc = sync.map_or(0, |m| strong_code(m.scope));
-                self.access_x(t as u32, &vc, pc, loc, *bytes as usize, Some(&data), sc);
-                if self.l1.is_some() {
-                    self.l1_store(t, loc, &data); // ASSUME(E-HW-L1)
+                self.mc_view = mc;
+                for &loc in &locs {
+                    self.access_x(t as u32, &vc, pc, loc, *bytes as usize, Some(&data), sc);
+                    if self.l1.is_some() {
+                        self.l1_store(t, loc, &data); // ASSUME(E-HW-L1)
+                    }
+                    match sync {
+                        Some(m) => self.sync_publish(t, loc, *m, false),
+                        None => self.sync_clear(loc),
+                    }
                 }
-                match sync {
-                    Some(m) => self.sync_publish(t, loc, *m, false),
-                    None => self.sync_clear(loc),
-                }
+                self.mc_view = false;
                 // A release store publishes the thread's current clock: later events of the
                 // thread must not look covered by it (FastTrack ticks after a release). Without
                 // this, a plain write after `st.release` in the same clock window looked
@@ -6566,7 +7843,9 @@ impl Machine {
                 if sync.is_some_and(|m| m.releases()) {
                     self.tick(t);
                 }
-                self.num_st(t, v, loc, *bytes);
+                for &loc in &locs {
+                    self.num_st(t, v, loc, *bytes);
+                }
             }
             Op::Dp2a {
                 d,
@@ -6635,6 +7914,7 @@ impl Machine {
             }
             Op::Ld256 { hi, lo, addr, sync } => {
                 let a = self.addr(t, addr)?;
+                check_aligned(Space::Global, a, 32)?;
                 let loc = self.resolve(t, Space::Global, a, 32)?;
                 let vc = self.threads[t].vc.clone();
                 let sc = sync.map_or(0, |m| strong_code(m.scope));
@@ -6662,6 +7942,45 @@ impl Machine {
                         other => other,
                     };
                     self.num_ld(t, base, l, (16, 1, false), &data[16 * h..16 * h + 16]);
+                }
+            }
+            Op::St256 { lo, hi, addr, sync } => {
+                let a = self.addr(t, addr)?;
+                check_aligned(Space::Global, a, 32)?;
+                let loc = self.resolve(t, Space::Global, a, 32)?;
+                let mut data = Vec::with_capacity(32);
+                for i in 0..8u16 {
+                    let base = if i < 4 { *lo } else { *hi };
+                    let r = Reg {
+                        file: base.file,
+                        idx: base.idx + i % 4,
+                    };
+                    let w = self.rd(t, &Val::Reg(r, 1))?;
+                    data.extend_from_slice(&(w as u32).to_le_bytes());
+                }
+                let vc = self.threads[t].vc.clone();
+                let sc = sync.map_or(0, |m| strong_code(m.scope));
+                self.access_x(t as u32, &vc, pc, loc, 32, Some(&data), sc);
+                if self.l1.is_some() {
+                    self.l1_store(t, loc, &data); // ASSUME(E-HW-L1)
+                }
+                match sync {
+                    Some(m) => self.sync_publish(t, loc, *m, false),
+                    None => self.sync_clear(loc),
+                }
+                if sync.is_some_and(|m| m.releases()) {
+                    self.tick(t);
+                }
+                // Numerics: two 16-byte vector stores.
+                for (h, base) in [(0u64, *lo), (1, *hi)] {
+                    let l = match loc {
+                        Loc::Global { alloc, off } => Loc::Global {
+                            alloc,
+                            off: off + 16 * h,
+                        },
+                        other => other,
+                    };
+                    self.num_st(t, &Val::Reg(base, 4), l, 16);
                 }
             }
             // Local memory is private to the thread: no races, no other observers.
@@ -7037,6 +8356,7 @@ impl Machine {
                     clock: vc_get(&vc, t as u32),
                     pc,
                     strong: 0,
+                    sv: false,
                 };
                 if let Some(old) = self.mbars.get(&(cta, off)).cloned() {
                     for e in std::iter::once(old.init).chain(old.atomics.iter().copied()) {
@@ -7263,6 +8583,7 @@ impl Machine {
                 pair,
                 off,
                 mbar_off,
+                src_smem,
             } => {
                 let dsta = self.rd(t, dst)?.wrapping_add(*off as u64);
                 let mba = self.rd(t, mbar)?.wrapping_add(*mbar_off as u64);
@@ -7320,7 +8641,21 @@ impl Machine {
                         v
                     }
                 };
-                let (tm, cs) = if *dims == 0 {
+                let (tm, cs) = if *dims == 0 && *src_smem {
+                    // UBLKCP.S.S: the source is this CTA's shared memory, `tma` 16-byte units
+                    // (SASS) or bytes (PTX), as bulk_map. ASSUME(S-TMA)
+                    let (mut tm, cs) = self.bulk_map_units(tma)?;
+                    let sa = self.rd(t, &coords[0])?;
+                    let n = tm.dims[0] * 16;
+                    let Loc::Shared { off, .. } = self.resolve(t, Space::Shared, sa, n as usize)?
+                    else {
+                        unreachable!()
+                    };
+                    let m = Arc::make_mut(&mut tm);
+                    m.base = off as u64;
+                    m.smem_src = Some(me);
+                    (tm, cs)
+                } else if *dims == 0 {
                     self.bulk_map(t, tma, &coords[0])?
                 } else {
                     let tm = self.tmap_at(t, tma, *dims, pc)?;
@@ -7466,11 +8801,24 @@ impl Machine {
                     swizzle: d.swizzle,
                     boxd: d.boxd,
                     elem4: false,
+                    fdtype: match d.dtype {
+                        crate::tmap::Dtype::F32 => Some(FFmt::F32),
+                        crate::tmap::Dtype::F16 => Some(FFmt::F16),
+                        crate::tmap::Dtype::Bf16 => Some(FFmt::Bf16),
+                        _ => None,
+                    },
+                    smem_src: None,
                 })
             }
         };
         if m.dims.len() != dims as usize {
-            return Err("TMA dimensionality does not match the tensor map".into());
+            return Err(format!(
+                "TMA dimensionality does not match the tensor map ({dims}D access, map of rank {} with dims {:?}, box {:?}, buffer {})",
+                m.dims.len(),
+                m.dims,
+                m.boxd,
+                m.buffer
+            ));
         }
         Ok(m)
     }
@@ -7513,6 +8861,43 @@ impl Machine {
                 swizzle: 0,
                 boxd: vec![n as u32],
                 elem4: false,
+                // The non-tensor reduction (UBLKRED.G.S.ADD.F32.RN) adds f32 words.
+                fdtype: Some(FFmt::F32),
+                smem_src: None,
+            }),
+            vec![0],
+        ))
+    }
+
+    /// The 1-D map of a bulk copy of `units` (16-byte units on SASS, bytes on PTX) with no
+    /// base yet (`UBLKCP.S.S`; see `bulk_map`).
+    fn bulk_map_units(&self, units: u64) -> Result<(Arc<TmapDesc>, Vec<i64>), String> {
+        let n = if self.k.front == ptxv_ir::Front::Ptx {
+            let b = units & 0xffff_ffff;
+            if !b.is_multiple_of(16) {
+                return Err(format!("cp.async.bulk of {b} bytes: not a multiple of 16"));
+            }
+            b / 16
+        } else {
+            units & 0xffff
+        };
+        if n == 0 {
+            return Err("bulk copy of 0 bytes".into());
+        }
+        Ok((
+            Arc::new(TmapDesc {
+                grid: 0,
+                param_off: 0,
+                buffer: String::new(),
+                base: 0,
+                esize: 16,
+                dims: vec![n],
+                strides: vec![],
+                swizzle: 0,
+                boxd: vec![n as u32],
+                elem4: false,
+                fdtype: None,
+                smem_src: None,
             }),
             vec![0],
         ))
@@ -7807,9 +9192,8 @@ impl Machine {
         let need = match bar.count {
             Some(c) => c as usize,
             None => self
-                .threads
-                .iter()
-                .filter(|t| t.cta == cta && t.st != St::Exited)
+                .cta_threads(cta)
+                .filter(|&t| self.threads[t].st != St::Exited)
                 .count(),
         };
         if bar.arrived.is_empty() && bar.arrivers.is_empty() {
@@ -7903,6 +9287,7 @@ impl Machine {
             clock: vc_get(vc, actor),
             pc,
             strong: STRONG_SYS,
+            sv: false,
         };
         if init.actor != actor && !init.hb(vc) && !init.hb(vis) {
             self.mbar_race(init, me, off);
@@ -8012,7 +9397,8 @@ impl Machine {
                 tmap,
                 coords,
                 group,
-            } => self.complete_tma_store(&op, cta, src, tmap, coords, group),
+                red,
+            } => self.complete_tma_store(&op, cta, src, tmap, coords, group, red),
             AsyncKind::Mma {
                 cta,
                 peer,
@@ -8423,12 +9809,13 @@ impl Machine {
                 (64, b, n, &[0, 16])
             }
             // Layout D (M = 128, cta_group::1): row i at lane i. N = 8..256 in steps of 8
-            // (GB300: N = 8, 24, 40, 136 for kind::f16, 8 and 24 for kind::f8f6f4). Not yet
-            // measured: N % 16 != 0 with A in TMEM or with block scaling.
+            // (GB300: N = 8, 24, 40, 136 for kind::f16, 8 and 24 for kind::f8f6f4; block-scaled
+            // N = 8 for mxf8f6f4 / mxf4 / mxf4nvf4, probes/mma_bs expected/n8). Not yet
+            // measured: N % 16 != 0 with A in TMEM, or block-scaled N % 16 == 8 above 8.
             (1, 128) => {
-                if n % 16 != 0 && (n % 8 != 0 || a_tmem || scaled) {
+                if n % 16 != 0 && (n % 8 != 0 || a_tmem || scaled && n != 8) {
                     return shape_err(
-                        "M = 128 needs N % 8 == 0 (N % 16 == 0 with A in TMEM or block scaling)",
+                        "M = 128 needs N % 8 == 0 (N % 16 == 0 with A in TMEM, N = 8 or N % 16 == 0 with block scaling)",
                     );
                 }
                 (128, vec![(0, 128, col0, n, 0, 0)], n, &[0])
@@ -8584,8 +9971,9 @@ impl Machine {
         let lane0 = lay.lane0;
         // The lane of A row i (A in TMEM): D's lane for row i, column 0.
         let row_lane = |mi: usize| lay.loc(mi, 0).0;
-        // PTX ISA: descriptor bits 46-48 are the fixed constant 0b001. Triton 3.5 leaves them 0
-        // and GB300 computes correctly anyway: a contract violation, reported, not a fault.
+        // PTX ISA: descriptor bits 46-48 are the fixed constant 0b001. Triton 3.5 leaves them 0.
+        // ASSUME(E-DESC-VERSION): GB300's MMA ignores them (probes/desc_version: all 8 values,
+        // 80 layouts, bitwise equal): a `contract` finding, not a violation.
         for (which, dsc) in [("A", adesc), ("B", bdesc)] {
             if which == "A" && a_tmem {
                 continue;
@@ -8593,10 +9981,10 @@ impl Machine {
             let v = (dsc >> 46) & 7;
             if v != 1 {
                 let msg = format!(
-                    "tcgen05.mma at {}: {which} shared-memory descriptor bits 46-48 are {v:#05b}; the PTX ISA requires the fixed value 0b001 (GB300 ignores them)",
+                    "tcgen05.mma at {}: {which} shared-memory descriptor bits 46-48 are {v:#05b}; the PTX ISA requires the fixed value 0b001 (GB300's MMA ignores them: E-DESC-VERSION, probes/desc_version)",
                     self.k.describe(op.pc as usize)
                 );
-                self.report("violation", format!("desc-version:{}", op.pc), msg);
+                self.report("contract", format!("desc-version:{}", op.pc), msg);
             }
         }
         let (sa, lboa, sboa, swa) = if a_tmem {
@@ -9026,14 +10414,15 @@ impl Machine {
         let lay = Self::mma_d_layout(m, n, ctas.len(), d, a_tmem, scaled)?;
         let rows = lay.rows;
         let nh = lay.nb as u32;
+        // ASSUME(E-DESC-VERSION): see the kind::f16 path.
         for (which, dsc) in [("A", adesc), ("B", bdesc)] {
             let v = (dsc >> 46) & 7;
             if v != 1 {
                 let msg = format!(
-                    "tcgen05.mma at {}: {which} shared-memory descriptor bits 46-48 are {v:#05b}; the PTX ISA requires the fixed value 0b001 (GB300 ignores them)",
+                    "tcgen05.mma at {}: {which} shared-memory descriptor bits 46-48 are {v:#05b}; the PTX ISA requires the fixed value 0b001 (GB300's MMA ignores them: E-DESC-VERSION, probes/desc_version)",
                     self.k.describe(op.pc as usize)
                 );
-                self.report("violation", format!("desc-version:{}", op.pc), msg);
+                self.report("contract", format!("desc-version:{}", op.pc), msg);
             }
         }
         let (sa, lboa, sboa, swa) = Self::smem_desc(adesc)?;
@@ -9509,7 +10898,33 @@ impl Machine {
             };
             let a = w.actor as usize;
             if a >= self.threads.len() {
-                continue; // written by an async unit (TMA): same proxy
+                // Written by an async unit. TMA: the same proxy. cp.async writes in the
+                // generic proxy (PTX ISA), so the PTX model wants a fence.proxy.async after
+                // its completion that happens-before the async read; GB300 does not (no
+                // failure on scrubbed runs): a contract finding. ASSUME(E-CPASYNC-PROXY)
+                let cp = matches!(
+                    self.k.code.get(w.pc as usize).map(|i| &i.op),
+                    Some(Op::CpAsync { .. })
+                );
+                if !cp {
+                    continue;
+                }
+                let fenced = self.threads.iter().enumerate().any(|(f, th)| {
+                    let seen = vc_get(vc, f as u32);
+                    th.fences
+                        .iter()
+                        .any(|fv| w.clock <= vc_get(fv, w.actor) && vc_get(fv, f as u32) <= seen)
+                });
+                if !fenced {
+                    let msg = format!(
+                        "smem byte {:#x} written by cp.async at {} is read by the async proxy ({what} at {}) with no fence.proxy.async after the copy completed: the PTX ISA requires one; GB300 orders it (E-CPASYNC-PROXY)",
+                        off as usize + i,
+                        self.k.describe(w.pc as usize),
+                        self.k.describe(pc as usize)
+                    );
+                    self.report("contract", format!("cpasync-proxy:{}:{pc}", w.pc), msg);
+                }
+                continue;
             }
             // ASSUME(S-PROXY): a fence by any thread that observed the write (write HB fence)
             // and happens-before the async op covers it (probes/proxy_fence: the issuer's own
@@ -9525,6 +10940,21 @@ impl Machine {
                         .any(|fv| w.clock <= vc_get(fv, w.actor) && vc_get(fv, f as u32) <= seen)
                 });
             if covered {
+                continue;
+            }
+            // A cp.async write (completed in its thread's name at the wait): a contract
+            // finding, not a race (GB300 orders it). ASSUME(E-CPASYNC-PROXY)
+            if matches!(
+                self.k.code.get(w.pc as usize).map(|i| &i.op),
+                Some(Op::CpAsync { .. })
+            ) {
+                let msg = format!(
+                    "smem byte {:#x} written by cp.async at {} is read by the async proxy ({what} at {}) with no fence.proxy.async after the copy completed: the PTX ISA requires one; GB300 orders it (E-CPASYNC-PROXY)",
+                    off as usize + i,
+                    self.k.describe(w.pc as usize),
+                    self.k.describe(pc as usize)
+                );
+                self.report("contract", format!("cpasync-proxy:{}:{pc}", w.pc), msg);
                 continue;
             }
             let sig = format!("race:proxy:{}:{pc}", w.pc);
@@ -9559,6 +10989,7 @@ impl Machine {
         false
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn complete_tma_store(
         &mut self,
         op: &AsyncOp,
@@ -9567,6 +10998,7 @@ impl Machine {
         tmap: Arc<TmapDesc>,
         coords: Vec<i64>,
         group: u32,
+        red: bool,
     ) {
         let op = op.clone();
         if cta != self.threads[op.issuer as usize].cta {
@@ -9636,7 +11068,19 @@ impl Machine {
                 );
                 return;
             }
-            if inb {
+            if inb && red {
+                if let Err(e) = self.bulk_red(
+                    &op,
+                    Loc::Shared { cta, off: soff },
+                    alloc,
+                    goff,
+                    &data,
+                    m.fdtype,
+                ) {
+                    self.report("unmodeled", format!("bulk-red:{}", op.pc), e);
+                    return;
+                }
+            } else if inb {
                 // Out-of-bounds box elements are not written.
                 self.access(
                     op.actor,
@@ -9666,6 +11110,101 @@ impl Machine {
             .make_mut()
             .bulk_done
             .push((group, op.vc.clone()));
+    }
+
+    /// One element run of a bulk add-reduction (`cp.reduce.async.bulk[.tensor]...add`, SASS
+    /// `UBLKRED.G.S.ADD.F32.RN` / `UTMAREDG.ND.ADD`) from shared memory at `from` (bytes `data`)
+    /// into global memory, element type `fdtype` (f32 / f16 / bf16): per element an atomic
+    /// read-modify-write at GPU scope by the bulk op's actor (concurrent
+    /// reductions of one word do not race; their order is a schedule choice), round to nearest
+    /// with subnormals kept and the canonical NaN (GB300: probes/bulk_red). The errdist graph
+    /// records each word as an atomic add of the shared word's node. ASSUME(N-BULK-RED)
+    fn bulk_red(
+        &mut self,
+        op: &AsyncOp,
+        from: Loc,
+        alloc: usize,
+        goff: u64,
+        data: &[u8],
+        fdtype: Option<FFmt>,
+    ) -> Result<(), String> {
+        let sc = strong_code(Scope::Gpu);
+        let w = match fdtype {
+            Some(FFmt::F32) => 4,
+            Some(FFmt::F16 | FFmt::Bf16) => 2,
+            _ => {
+                return Err(format!(
+                    "bulk add-reduction at {} through a tensor map whose element type is not f32 / f16 / bf16",
+                    self.k.describe(op.pc as usize)
+                ));
+            }
+        };
+        let f = fdtype.unwrap();
+        for k in 0..data.len() / w {
+            let loc = Loc::Global {
+                alloc,
+                off: goff + (w * k) as u64,
+            };
+            let mut x = [0u8; 4];
+            x[..w].copy_from_slice(&data[w * k..w * k + w]);
+            let x = u32::from_le_bytes(x);
+            // Only f32 sums count as commuting reductions across clusters (N-ATOMIC: their
+            // order is covered by the numerics bound). A 16-bit add is order-dependent and its
+            // sum is not tracked, so overlapping 16-bit reductions of two clusters stay a
+            // conflict (moe.scatter_add_along_first_dim: duplicate rows reduced in bf16 by
+            // different CTAs gave a "clean" verdict whose output differed from the GPU's).
+            self.red_access = f == FFmt::F32;
+            let old = self.access_x(op.actor, &op.vc, op.pc, loc, w, None, sc);
+            let mut o = [0u8; 4];
+            o[..w].copy_from_slice(&old[..w]);
+            let o = u32::from_le_bytes(o);
+            let r = if f == FFmt::F32 {
+                fp::f32_add_rn(o, x)
+            } else {
+                fp::add16(o as u16, x as u16, f) as u32
+            };
+            self.access_x(
+                op.actor,
+                &op.vc,
+                op.pc,
+                loc,
+                w,
+                Some(&r.to_le_bytes()[..w]),
+                sc,
+            );
+            self.red_access = false;
+            if f != FFmt::F32 {
+                // Two unordered 16-bit reductions of one word: the result depends on their
+                // order, which the explorer does not branch on (N-BULK-RED).
+                let me = (op.actor, vc_get(&op.vc, op.actor));
+                if let Some((a, c)) = self.red16.insert((alloc, goff + (w * k) as u64), me) {
+                    if a != op.actor && vc_get(&op.vc, a) < c {
+                        self.report(
+                            "unmodeled",
+                            format!("bulk-red16-order:{}", op.pc),
+                            format!(
+                                "f16 / bf16 bulk reductions from two unordered asynchronous operations into one global word (at {}): the sum depends on their order, which is not explored",
+                                self.k.describe(op.pc as usize)
+                            ),
+                        );
+                    }
+                }
+            }
+            if f == FFmt::F32 {
+                let src = match from {
+                    Loc::Shared { cta, off } => Loc::Shared {
+                        cta,
+                        off: off + (w * k) as u32,
+                    },
+                    l => l,
+                };
+                self.num_bulk_add(src, loc, (o, x, r), op.pc);
+            } else {
+                // 16-bit sums are not tracked by the errdist graph: the word loses its node.
+                self.num_forget(loc);
+            }
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -9775,7 +11314,11 @@ impl Machine {
             m.boxd.iter().map(|&b| b as u64).product()
         };
         let es = m.esize as usize;
-        let (alloc, boff) = self.tmap_alloc(&m);
+        // UBLKCP.S.S: the source is the issuing CTA's shared memory at offset `base`.
+        let (alloc, boff) = match m.smem_src {
+            Some(_) => (usize::MAX, m.base),
+            None => self.tmap_alloc(&m),
+        };
         // Element addresses first; then the accesses, merged into contiguous runs: one
         // shadow update per run keeps whole shadow pages uniform (`Pages::for_run`). All bytes
         // are accessed by the same actor at the same clock, so grouping changes nothing else.
@@ -9832,7 +11375,10 @@ impl Machine {
             }
             r
         };
-        let size = self.launch.allocs[alloc].init.len() as u64;
+        let size = match m.smem_src {
+            Some(c) => self.launch.g(c as u32).smem_bytes as u64,
+            None => self.launch.allocs[alloc].init.len() as u64,
+        };
         if elems
             .iter()
             .any(|e| e.1.is_some_and(|g| g + es as u64 > size))
@@ -9848,8 +11394,24 @@ impl Machine {
             return;
         }
         let mut src: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+        if let Some(c) = m.smem_src {
+            if let Err(e) = self.check_alive(c, op.actor) {
+                self.report("violation", format!("cluster-life:{}", op.pc), e);
+                return;
+            }
+        }
         for (off, n) in runs(elems.iter().filter_map(|e| e.1).collect()) {
-            let d = self.access(op.actor, &op.vc, op.pc, Loc::Global { alloc, off }, n, None);
+            let loc = match m.smem_src {
+                Some(c) => {
+                    self.proxy_check(c, off as u32, n, &op.vc, op.pc, "the bulk copy");
+                    Loc::Shared {
+                        cta: c,
+                        off: off as u32,
+                    }
+                }
+                None => Loc::Global { alloc, off },
+            };
+            let d = self.access(op.actor, &op.vc, op.pc, loc, n, None);
             src.insert(off, d);
         }
         let fetch = |goff: u64| -> &[u8] {
@@ -9881,6 +11443,8 @@ impl Machine {
         }
         // Origins are tracked for 2-byte (bf16) inputs, the MMA operands modeled so far.
         for (soff, g) in elems {
+            // A shared-memory source keeps no input provenance.
+            let g = g.filter(|_| m.smem_src.is_none());
             if self.num.is_some() {
                 let data = img[&soff].to_vec();
                 self.half_copy(
@@ -10101,6 +11665,31 @@ fn fmod(u: u32, neg: bool, abs: bool) -> u32 {
 
 /// Register-only operations whose result is undefined when a source is (S-INIT): computed,
 /// not reported, unless a destination is a predicate (control flow) or not a data register.
+/// S-INIT: an operation that only computes registers (and predicates) from registers: an
+/// undefined input or guard makes its outputs undefined instead of being reported.
+fn reg_only(op: &Op) -> bool {
+    let dst = op.dst_regs();
+    !dst.is_empty()
+        && dst
+            .iter()
+            .all(|d| matches!(d.file, File::R | File::UR | File::V | File::P | File::UP))
+        && (propagates_undef(op)
+            || matches!(
+                op,
+                Op::Sel { .. }
+                    | Op::Fsel { .. }
+                    | Op::Setp { .. }
+                    | Op::Fsetp { .. }
+                    | Op::Hsetp2Bf16 { .. }
+                    | Op::Dsetp { .. }
+                    | Op::DsetpMinMax { .. }
+                    | Op::Fchk { .. }
+                    | Op::Plop3 { .. }
+                    | Op::P2r { .. }
+                    | Op::R2p { .. }
+            ))
+}
+
 fn propagates_undef(op: &Op) -> bool {
     matches!(
         op,
@@ -10125,6 +11714,10 @@ fn propagates_undef(op: &Op) -> bool {
             | Op::Ffma2 { .. }
             | Op::Fmnmx { .. }
             | Op::Hfma2 { .. }
+            | Op::Hfma2Bf16 { .. }
+            | Op::FfmaBf16 { .. }
+            | Op::Hmnmx2Bf16 { .. }
+            | Op::Vhmnmx { .. }
             | Op::CvtF32Bf16 { .. }
             | Op::F2fpBf16 { .. }
             | Op::Pack64 { .. }
@@ -10135,6 +11728,7 @@ fn propagates_undef(op: &Op) -> bool {
             | Op::DivFull { .. }
             | Op::Dp2a { .. }
             | Op::F2F { .. }
+            | Op::FCvt { .. }
             | Op::CvtF32F16 { .. }
             | Op::F2fpF16 { .. }
             | Op::F2fF16 { .. }
@@ -10229,6 +11823,18 @@ impl MmaD {
     }
 }
 
+/// Whether instruction `pc` lies between ptxas's `UP2UR.Bk` / `UR2UP UPR, ...Bk` pair of a
+/// fence.proxy.alias lowering (L-ALIAS-FENCE), within a few instructions each way.
+fn alias_bracket(code: &[ptxv_ir::Inst], pc: usize) -> bool {
+    let before = code[pc.saturating_sub(8)..pc]
+        .iter()
+        .any(|i| i.text.trim_start().starts_with("UP2UR.B"));
+    let after = code[pc + 1..(pc + 6).min(code.len())]
+        .iter()
+        .any(|i| i.text.trim_start().starts_with("UR2UP UPR"));
+    before && after
+}
+
 #[cfg(test)]
 mod mma_shape_tests {
     use super::*;
@@ -10248,7 +11854,11 @@ mod mma_shape_tests {
                 n % 16 == 0,
                 "M128 N{n} A in TMEM"
             );
-            assert_eq!(ok(128, n, 1, false, true), n % 16 == 0, "M128 N{n} scaled");
+            assert_eq!(
+                ok(128, n, 1, false, true),
+                n % 16 == 0 || n == 8,
+                "M128 N{n} scaled"
+            );
             assert!(!ok(64, n, 1, false, true), "M64 scaled");
             // cta_group::2: N = 16..256 in steps of 16, for M = 128 and 256.
             assert_eq!(ok(128, n, 2, false, false), n % 16 == 0, "pair M128 N{n}");

@@ -125,7 +125,8 @@ memory; PTX scope model (moral strength, release/acquire, scoped fences) and fla
 1000/1000 on GB300 (stale L1), B19 latent (20,000 runs), B56 SASS-safe.*
 *1g ✅ done 2026-10-30 ([docs/rung1g.md](docs/rung1g.md)) on **3 GPUs** (the fourth is busy): one-shot all-reduce
 over symmetric memory, two calls; replica-equality check (N4); both fronts exhaustive (SASS good: 3.3M states), bitwise = GB300; B21/B22/B24
-caught; B24 diverges on GB300 every run. Multicast/NVLS (B23) not done.*
+caught; B24 diverges on GB300 every run. Multicast/NVLS: 1h below.*
+*1h ✅ 2026-11-06 ([docs/nvls.md](docs/nvls.md)): NVLS multicast objects (case `[[multicast]]`, capture), `multimem.ld_reduce` / `.st` / `.red` and SASS `LDGMC` / `STG` / `REDG`, alias proxy (S-MC-ALIAS), GB300 numerics (N-MULTIMEM); `fixtures/r1h_nvls` with B23/B63/B64/B65.*
 1a tcgen05 single-CTA tile (alloc → mma → commit → ld → dealloc) · 1b S-stage TMA↔MMA pipeline,
 persistent over T tiles · 1c 2-CTA cluster (`cta_group::2`, multicast TMA, multicast commit,
 final cluster barrier) · 1d CLC persistent scheduler · 1e PDL pair of kernels · 1f **2-GPU**

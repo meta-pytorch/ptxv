@@ -259,16 +259,20 @@ pub(crate) fn eval_inst(
             }) as u64
         }
         Op::Hsetp2Bf16 {
+            q: qd,
             cmp,
             a,
             b,
-            hi,
+            sel,
+            neg,
+            abs,
             c,
             bop,
+            f16,
             ..
         } => {
-            let lane = |v: u32, h: bool| (if h { v >> 16 } else { v & 0xffff }) << 16;
-            let r = fp::f32_cmp(lane(w(a), hi[0]), lane(w(b), hi[1]), *cmp, false);
+            let lane = (Some(dst) == *qd) as u32;
+            let r = fp::hsetp2_lane((w(a), w(b)), *sel, (*neg, *abs), *f16, *cmp, lane);
             let q = rp(c);
             (match bop {
                 BoolOp::And => r && q,
@@ -299,6 +303,15 @@ pub(crate) fn eval_inst(
         Op::Fmnmx {
             a,
             b,
+            min,
+            ftz,
+            nan,
+            xorsign: true,
+            ..
+        } => fp::f32_minmax_xorsign(w(a), w(b), rp(min), *nan, *ftz) as u64,
+        Op::Fmnmx {
+            a,
+            b,
             c,
             neg,
             abs,
@@ -316,6 +329,46 @@ pub(crate) fn eval_inst(
             }
             r as u64
         }
+        Op::Hfma2Bf16 {
+            a,
+            b,
+            c,
+            sel,
+            neg,
+            abs,
+            relu,
+            ..
+        } => fp::hfma2_bf16([w(a), w(b), w(c)], *sel, (*neg, *abs), *relu) as u64,
+        Op::FfmaBf16 {
+            a,
+            b,
+            c,
+            hi,
+            neg,
+            rnd,
+            sat,
+            ..
+        } => fp::ffma_bf16([w(a), w(b), w(c)], *hi, *neg, *rnd, *sat) as u64,
+        Op::Hmnmx2Bf16 {
+            a,
+            b,
+            sel,
+            min,
+            nan,
+            xorsign,
+            ..
+        } => fp::hmnmx2_bf16((w(a), w(b)), *sel, rp(min), *nan, *xorsign) as u64,
+        Op::Vhmnmx {
+            a,
+            b,
+            c,
+            sel,
+            abs,
+            min,
+            nan,
+            f16,
+            ..
+        } => fp::vhmnmx([w(a), w(b), w(c)], *sel, *abs, (rp(min), *nan, *f16)) as u64,
         Op::Shf {
             lo,
             sh,
@@ -463,13 +516,19 @@ pub(crate) fn eval_inst(
             }) as u64
         }
         // `P2R d, PR, a, mask`: d = (a & !mask) | (bit i = Pi, i in mask).
-        Op::P2r { a, mask, .. } => {
-            let mut pr = 0u64;
+        Op::P2r {
+            a,
+            mask,
+            uniform,
+            shift,
+            ..
+        } => {
+            let mut pr = 1u64 << 7; // PT / UPT
             for i in 0..7u16 {
                 if mask >> i & 1 == 1 {
                     let p = Pred {
                         reg: Some(Reg {
-                            file: File::P,
+                            file: if *uniform { File::UP } else { File::P },
                             idx: i,
                         }),
                         neg: false,
@@ -477,12 +536,19 @@ pub(crate) fn eval_inst(
                     pr |= (rp(&p) as u64) << i;
                 }
             }
-            let m = *mask as u64;
+            let (m, pr) = ((*mask as u64) << shift, pr << shift);
             (rv(a) & !m & 0xffff_ffff) | (pr & m)
         }
         // FFMA2 / FMUL2 / FADD2: the lane `dst` holds (exec.rs: lanes of a 64-bit operand are
         // its two registers; `.F32` broadcasts the low one).
-        Op::Ffma2 { d, a, b, c, neg } => {
+        Op::Ffma2 {
+            d,
+            a,
+            b,
+            c,
+            neg,
+            rnd,
+        } => {
             let lane = dst.idx.wrapping_sub(d.idx);
             if lane > 1 {
                 return Err("FFMA2 lane".into());
@@ -510,7 +576,7 @@ pub(crate) fn eval_inst(
                 opv(a) ^ n(0),
                 opv(b) ^ n(1),
                 Some(opv(c) ^ n(2)),
-                Rnd::Rn,
+                *rnd,
                 false,
             ) as u64
         }
@@ -545,7 +611,7 @@ pub(crate) fn eval_inst(
             ftz,
             f64: false,
             ..
-        } if *bits != 64 => {
+        } if *bits == 32 => {
             let u = if *ftz { fp::f32_ftz(w(a)) } else { w(a) };
             let x = f32::from_bits(u);
             let x = match rnd {
@@ -955,7 +1021,11 @@ impl Slicer<'_> {
     ) -> Result<SVal, String> {
         if matches!(
             inst.op,
-            Op::Shfl { .. } | Op::Ld { .. } | Op::Atom { .. } | Op::TmemLd { .. }
+            Op::Shfl { .. }
+                | Op::Ld { .. }
+                | Op::LdReduce { .. }
+                | Op::Atom { .. }
+                | Op::TmemLd { .. }
         ) {
             return Err(format!(
                 "{} (moves an input-derived value without a node)",
@@ -1535,6 +1605,8 @@ mod tests {
             d: r(9),
             a: Val::Reg(r(1), 1),
             mask: 0x24,
+            uniform: false,
+            shift: 0,
         };
         let f = vals(0xffff_ff00, 0);
         assert_eq!(eval_inst(&p2r, r(9), &f, &preds).unwrap(), 0xffff_ff24);
@@ -1543,6 +1615,8 @@ mod tests {
             d: r(9),
             a: Val::Reg(r(1), 1),
             mask: 0x40,
+            uniform: false,
+            shift: 0,
         };
         assert_eq!(eval_inst(&p2r6, r(9), &f, &preds).unwrap(), 0x24);
         let setp = |cmp, and| Op::Setp {

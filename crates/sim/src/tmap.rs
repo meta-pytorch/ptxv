@@ -245,8 +245,11 @@ pub fn decode(b: &[u8]) -> Result<Decoded, String> {
             .iter()
             .zip(&estrides)
             .fold(esize as u64, |p, (&bx, &e)| p * (bx / e) as u64);
+        // Maps built on the device (tensormap.replace into zeroed memory: Triton's device-side
+        // descriptors, CuTeDSL grouped GEMMs) leave both derived words 0, and GB300 runs them
+        // (probes/tmap_device): 0 means "not provided", any other value must match.
         let q8 = u64_at(b, 0x40);
-        if q8 != box_bytes {
+        if q8 != box_bytes && q8 != 0 {
             return Err(format!(
                 "tensor map: word 0x40 = {q8:#x}, expected box bytes {box_bytes:#x} \
                  (esize * prod(box / estride)); stale or unknown encoding"
@@ -254,7 +257,7 @@ pub fn decode(b: &[u8]) -> Result<Decoded, String> {
         }
         let rep = if swizzle == 0 { 16 } else { 8 * swizzle as u64 };
         let q9 = u64_at(b, 0x48);
-        if q9 != rep {
+        if q9 != rep && q9 != 0 {
             return Err(format!(
                 "tensor map: word 0x48 = {q9:#x}, expected swizzle repeat {rep:#x}"
             ));
@@ -393,6 +396,9 @@ mod tests {
         b[10] &= !0x40;
         b[0x37] = 31; // box 0 = 32 without updating word 0x40
         assert!(decode(&b).unwrap_err().contains("word 0x40"));
+        // Device-built maps leave the derived words 0 (probes/tmap_device).
+        b[0x40..0x50].fill(0);
+        assert!(decode(&b).is_ok());
         assert!(decode(&b[..64]).is_err());
     }
 

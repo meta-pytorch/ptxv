@@ -61,8 +61,15 @@ for address, rank, dtype, swizzle, L2, dims, strides, boxes), but bit 1 of word 
 bytes 64..127 are not the derived words: cuBLAS packs consecutive descriptors 64 bytes apart
 (r2_cublas_gemm params 192/256 and 1216/1280), so bytes 64..127 of one map are the next map.
 Since that kernel runs correctly, the hardware evidently needs only bytes 0..63 of a bit-1
-descriptor (inferred). Whether it needs words 0x40/0x48 of a driver-built map is unknown;
-the decoder checks them for consistency and errors if they are stale.
+descriptor (inferred). The hardware does not need words 0x40/0x48 either: a map built on
+the device with `tensormap.replace` into zeroed memory leaves both 0 and loads correctly
+(probes/tmap_device, GB300). The decoder accepts 0 there and otherwise checks them for
+consistency, erroring if they are stale.
+
+CuTe grouped GEMMs copy only bytes 0..63 of a parameter map into zeroed shared memory, clear
+bit 21 of word 0x08, patch address / dims / strides, and publish the 128 bytes. The
+simulator therefore places a case's `raw` descriptor bytes (word 0 = the buffer address) in
+the parameter space, as the hardware run passes them (probes/tmap_param_copy, GB300).
 
 The extent-1 dim 2 of the cuBLAS maps has stride 0 in the descriptor (the r2 case's declared
 strides 32768 / 131072 / 262144 for that dim were synthesized by capture.py).

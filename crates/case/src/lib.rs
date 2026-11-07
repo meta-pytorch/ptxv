@@ -125,6 +125,18 @@ pub struct Manifest {
     #[serde(default)]
     pub read_done: bool,
     pub buffers: Vec<Buffer>,
+    /// NVLS multicast objects (`cuMulticastCreate` + `cuMulticastBindMem` + `cuMemMap` of the
+    /// multicast handle): an address range that is a multicast view of one bound range per GPU.
+    /// Parameters and pointer words name them like buffers (S-MULTIMEM).
+    #[serde(default)]
+    pub multicast: Vec<Multicast>,
+    /// Alias proxy between the multicast and unicast views of the same bytes (S-MC-ALIAS):
+    /// None / "strict" (default): PTX, an access through one view is ordered after a write
+    /// through the other only with a `fence.proxy.alias` on the happens-before path (or a
+    /// kernel boundary). "hw" (opt-in, E-MC-ALIAS-HW): the views are one location.
+    /// `PTXV_MC_ALIAS=strict|hw` overrides.
+    #[serde(default)]
+    pub mc_alias: Option<String>,
     pub params: Vec<ParamSpec>,
     /// Further kernels launched after the first one on the same stream, in order (same PTX
     /// file, same buffers). Rung 1e: programmatic dependent launch.
@@ -261,6 +273,57 @@ pub struct Buffer {
     /// and on hardware (tools/capture_dist.py).
     #[serde(default)]
     pub ptrs: Vec<BufferPtr>,
+    /// The buffer backs a module data global (`__device__` variable) of this name: the
+    /// kernels' relocated constant-bank words naming it hold the buffer's address (simulator)
+    /// and, on hardware, the buffer is the module's own global (`cuModuleGetGlobal`), filled
+    /// with `init` before every run. One buffer per (module, symbol, `device`). A global a
+    /// kernel references without such a buffer starts from its ELF initial value
+    /// (S-GLOBAL-INIT).
+    #[serde(default)]
+    pub symbol: Option<String>,
+    /// The module defining `symbol`: a launch's own `cubin` (default: the case's cubin, or the
+    /// compiled PTX).
+    #[serde(default)]
+    pub cubin: Option<String>,
+}
+
+impl Manifest {
+    /// The case buffer backing global `symbol` of module `cubin` (a launch's `cubin`; None:
+    /// the case's) on GPU `device`, if the case declares one.
+    pub fn global_buffer(&self, cubin: Option<&str>, symbol: &str, device: u32) -> Option<usize> {
+        let main = self.cubin.as_deref();
+        fn norm<'a>(c: Option<&'a str>, main: Option<&str>) -> Option<&'a str> {
+            c.filter(|c| Some(*c) != main)
+        }
+        self.buffers.iter().position(|b| {
+            b.symbol.as_deref() == Some(symbol)
+                && b.device == device
+                && norm(b.cubin.as_deref(), main) == norm(cubin, main)
+        })
+    }
+}
+
+/// An NVLS multicast object: `size` bytes of multicast address space whose range
+/// [`offset`, `offset + size`) of each bind is backed, on GPU `device`, by `buffer` from
+/// `byte_offset` on (`cuMulticastBindMem`). A multicast access reaches the bind of every GPU
+/// that covers it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Multicast {
+    pub name: String,
+    pub size: u64,
+    pub binds: Vec<McBind>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct McBind {
+    pub device: u32,
+    /// Offset in the multicast object.
+    #[serde(default)]
+    pub offset: u64,
+    pub buffer: String,
+    #[serde(default)]
+    pub byte_offset: u64,
+    pub size: u64,
 }
 
 /// An 8-byte pointer to `buffer` + `byte_offset`, stored at byte `offset` of a buffer.
@@ -299,10 +362,12 @@ pub enum ParamSpec {
         /// Shared-memory swizzle: "none" (default), "32B", "64B", "128B".
         #[serde(default)]
         swizzle: Option<String>,
-        /// Hardware runs only: the descriptor bytes as captured (hex, up to 128 bytes; the
-        /// first 8 are replaced by the buffer's address). For frameworks that build
-        /// descriptors with bits `cuTensorMapEncodeTiled` does not set; the model uses the
-        /// geometry above, which the capture matched against these bytes.
+        /// The descriptor bytes as captured (hex, up to 128 bytes; the first 8 are replaced by
+        /// the buffer's address). Hardware runs pass them instead of encoding the geometry
+        /// (for frameworks that set bits `cuTensorMapEncodeTiled` does not); the simulator
+        /// puts them in the parameter bytes for kernels that copy the map out, and models
+        /// TMAs on the parameter itself with the geometry above, which the capture matched
+        /// against these bytes. ASSUME(S-TMAP)
         #[serde(default)]
         raw: Option<String>,
         /// 4-bit elements, two per byte (`CU_TENSOR_MAP_DATA_TYPE_16U4_ALIGN8B`; `raw` required
@@ -490,6 +555,11 @@ impl Buffer {
                 "u8" => out.push(v as u8),
                 "u16" => out.extend_from_slice(&(v as u16).to_le_bytes()),
                 "f16" => out.extend_from_slice(&f64_to_f16_rn(v).to_le_bytes()),
+                "f64" => out.extend_from_slice(&v.to_bits().to_le_bytes()),
+                "i16" => out.extend_from_slice(&(v as i16).to_le_bytes()),
+                "i8" => out.push(v as i8 as u8),
+                // Narrow float codes: only `zeros` (and raw `bits` / `file`) are meaningful.
+                "e4m3" => out.push(0),
                 d => panic!("init for dtype {d} not implemented"),
             }
         }
@@ -647,6 +717,14 @@ impl Case {
     /// the captured GPU bytes (`expect`). One line per output buffer that has them; empty when
     /// none has.
     pub fn expect_report(&self, output: &[u8]) -> Result<Vec<String>> {
+        self.expect_report_tol(output, false)
+    }
+
+    /// `expect_report`; with `ulp_ok` (the run used a rounding the model only calibrates,
+    /// N-MULTIMEM-ROUND16), an output whose differing elements are all one unit in the last
+    /// place off (adjacent encodings of its dtype) is reported as within one ulp, not as a
+    /// mismatch.
+    pub fn expect_report_tol(&self, output: &[u8], ulp_ok: bool) -> Result<Vec<String>> {
         let mut lines = Vec::new();
         let mut at = 0;
         for o in &self.m.outputs {
@@ -662,6 +740,26 @@ impl Case {
                 .get(off..off + want.len())
                 .ok_or_else(|| anyhow!("{o}: expected bytes run past the buffer"))?;
             let diff: Vec<usize> = (0..want.len()).filter(|&i| got[i] != want[i]).collect();
+            let es = b.elem_bytes();
+            let one_ulp = ulp_ok
+                && matches!(b.dtype.as_str(), "bf16" | "f16" | "f32")
+                && off.is_multiple_of(es)
+                && want.len().is_multiple_of(es)
+                && !diff.is_empty()
+                && diff.iter().all(|&i| {
+                    let e = i / es * es;
+                    let v = |x: &[u8]| x.iter().rev().fold(0u64, |a, &y| a << 8 | y as u64);
+                    v(&got[e..e + es]).abs_diff(v(&want[e..e + es])) == 1
+                });
+            if one_ulp {
+                let n: std::collections::BTreeSet<usize> = diff.iter().map(|i| i / es).collect();
+                lines.push(format!(
+                    "{o}: within one ulp of the captured GPU output: {} of {} elements one unit in the last place off, the rest bitwise equal (multimem.ld_reduce rounding, N-MULTIMEM-ROUND16)",
+                    n.len(),
+                    want.len() / es
+                ));
+                continue;
+            }
             lines.push(match diff.first() {
                 None => format!(
                     "{o}: bitwise equal to the captured GPU output ({} bytes)",

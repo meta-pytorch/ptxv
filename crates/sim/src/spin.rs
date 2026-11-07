@@ -62,7 +62,12 @@ fn pure_dst(op: &Op) -> Option<Option<Reg>> {
         | Op::Setp { d, .. }
         | Op::Fadd { d, .. }
         | Op::Hfma2 { d, .. }
+        | Op::Hfma2Bf16 { d, .. }
+        | Op::FfmaBf16 { d, .. }
+        | Op::Hmnmx2Bf16 { d, .. }
+        | Op::Vhmnmx { d, .. }
         | Op::CvtF32Bf16 { d, .. }
+        | Op::Prmt { d, .. }
         | Op::Brev { d, .. }
         | Op::AddMinMax { d, .. }
         | Op::IntMnmx3 { d, .. }
@@ -77,6 +82,10 @@ fn pure_dst(op: &Op) -> Option<Option<Reg>> {
         | Op::Fsel { d, .. }
         | Op::F2fpBf16 { d, .. }
         | Op::Cvta { d, .. } => Some(*d),
+        // A register spill reload (`LDL.LU R0, [R1+0xa0]` between CUTLASS's TRYWAIT and its
+        // retry branch): thread-private memory, which no op the recognizer accepts writes (a
+        // spill store is not pure), so every iteration reloads the same value. ASSUME(E-SPIN)
+        Op::LdLocal { d, .. } => Some(*d),
         Op::Nop => None,
         _ => return None,
     })
@@ -608,6 +617,83 @@ pub type PollLoop = (usize, Result<(usize, usize), String>);
 /// register-only, so a failed iteration only re-reads the flag, and the race detector sees
 /// that read once (`blocked_poll_read`). A plain loop with another shape (a reduction over
 /// loaded values, a carried counter) is not a poll and is not listed.
+/// Registers an instruction reads, guard and predicate operands included.
+fn inst_reads(inst: &Inst) -> Vec<Reg> {
+    let mut reads = inst.op.src_regs();
+    reads.extend(inst.guard.reg);
+    if let Op::Plop3 { a, b, c, .. } = &inst.op {
+        reads.extend([a.reg, b.reg, c.reg].into_iter().flatten());
+    }
+    if let Op::Setp { and, .. } = &inst.op {
+        reads.extend(and.reg);
+    }
+    reads
+}
+
+/// Loop h..=b (back branch at b) around the load at l: does the guard of any of its exits
+/// (EXIT, or a branch to a target outside h..=b) depend on the loaded value? Registers only
+/// (as `poll_loops`' own test). Forward dataflow over the loop's control flow (fall-through,
+/// branches inside h..=b, the back edge b -> h) to a fixpoint: an instruction that reads a
+/// tainted register (guard included), and the load itself, taint what they write; an
+/// unguarded write that reads no tainted register clears its destinations; a guarded one
+/// that reads none changes nothing (it may not run).
+fn loop_exit_tainted(code: &[Inst], l: usize, h: usize, b: usize) -> bool {
+    use std::collections::HashSet;
+    let n = b + 1 - h;
+    let mut inn: Vec<HashSet<Reg>> = vec![HashSet::new(); n];
+    let mut work: Vec<usize> = (h..=b).collect();
+    let mut queued = vec![true; n];
+    let succ = |p: usize| -> Vec<usize> {
+        let inst = &code[p];
+        let mut v = Vec::new();
+        let uncond = inst.guard.is_always();
+        match &inst.op {
+            Op::Bra { target, .. } => {
+                if (h..=b).contains(target) {
+                    v.push(*target);
+                }
+                if !uncond && p < b {
+                    v.push(p + 1);
+                }
+            }
+            Op::Exit if uncond => {}
+            _ if p < b => v.push(p + 1),
+            _ => {}
+        }
+        v
+    };
+    while let Some(p) = work.pop() {
+        queued[p - h] = false;
+        let inst = &code[p];
+        let mut t = inn[p - h].clone();
+        let reads = inst_reads(inst).iter().any(|r| t.contains(r));
+        if p == l || reads {
+            t.extend(inst.op.dst_regs());
+        } else if inst.guard.is_always() {
+            for d in inst.op.dst_regs() {
+                t.remove(&d);
+            }
+        }
+        for q in succ(p) {
+            let before = inn[q - h].len();
+            inn[q - h].extend(t.iter().copied());
+            if inn[q - h].len() != before && !queued[q - h] {
+                queued[q - h] = true;
+                work.push(q);
+            }
+        }
+    }
+    (h..=b).any(|p| {
+        let inst = &code[p];
+        let exit = match &inst.op {
+            Op::Exit => true,
+            Op::Bra { target, .. } => p != b && (*target < h || *target > b),
+            _ => false,
+        };
+        exit && inst_reads(inst).iter().any(|r| inn[p - h].contains(r))
+    })
+}
+
 pub fn poll_loops(code: &[Inst], front: ptxv_ir::Front) -> Vec<PollLoop> {
     let mut out = Vec::new();
     for (l, i) in code.iter().enumerate() {
@@ -677,6 +763,14 @@ pub fn poll_loops(code: &[Inst], front: ptxv_ir::Front) -> Vec<PollLoop> {
             if !taint.contains(&g) {
                 continue;
             }
+        }
+        // An unconditional back branch: the loop leaves through its exits (EXIT, a branch out
+        // of h..=b). When no exit's guard depends on the loaded value (a pipelined main loop
+        // that reads a `volatile` word each iteration and stores what it read), it is not a
+        // poll either. The taint only grows here, lap after lap to a fixpoint, so a value
+        // carried around the loop any number of times is followed.
+        if code[b].guard.is_always() && !any && !loop_exit_tainted(code, l, h, b) {
+            continue;
         }
         let shape = (|| {
             if any || code[b].guard.is_always() {
@@ -796,11 +890,60 @@ pub fn poll_loops(code: &[Inst], front: ptxv_ir::Front) -> Vec<PollLoop> {
             }
             Ok((h, b))
         })();
+        // A compare-and-swap update loop (ptxas's CAS loop for an atomic without a native form,
+        // e.g. `atom.add.noftz.bf16`) is not a poll: the model runs each iteration as a step,
+        // and that terminates, since a failed attempt reads a value another thread wrote after
+        // this thread's previous read (each failure consumes one of finitely many writes).
+        if shape.is_err() && cas && cas_update_loop(code, l, h, b) {
+            continue;
+        }
         if strong || shape.is_ok() {
             out.push((l, shape));
         }
     }
     out
+}
+
+/// `H: <pure ops>; l: d = cas [a], cmp, new; <pure ops>; @p bra H` where the only register
+/// carried from one iteration to the next is `cmp`, rewritten from `d` (a move) before the
+/// branch: an atomic read-modify-write by compare-and-swap.
+fn cas_update_loop(code: &[Inst], l: usize, h: usize, b: usize) -> bool {
+    let Op::Atom {
+        d: Some(d),
+        v: Val::Reg(cmp, _),
+        ..
+    } = &code[l].op
+    else {
+        return false;
+    };
+    let (d, cmp) = (*d, *cmp);
+    let pure = (h..b).all(|p| p == l || pure_dst(&code[p].op).is_some() || model_nop(&code[p].op));
+    let refresh = (l + 1..b).any(|p| {
+        code[p].guard.is_always()
+            && code[p].op.dst_regs() == [cmp]
+            && code[p].op.src_regs().iter().all(|r| *r == d)
+            && !code[p].op.src_regs().is_empty()
+    });
+    if !pure || !refresh {
+        return false;
+    }
+    let mut writes = std::collections::HashSet::new();
+    for inst in &code[h..b] {
+        writes.extend(inst.op.dst_regs());
+    }
+    let mut done = std::collections::HashSet::new();
+    for inst in &code[h..=b] {
+        let mut reads = inst.op.src_regs();
+        reads.extend(inst.guard.reg);
+        if reads
+            .iter()
+            .any(|r| writes.contains(r) && !done.contains(r) && *r != cmp)
+        {
+            return false;
+        }
+        done.extend(inst.op.dst_regs());
+    }
+    true
 }
 
 /// A split that arrives at a poll load (`Machine::polls`) that would fail stops there without
@@ -1014,9 +1157,12 @@ pub fn wpoll_loops(code: &[Inst], front: ptxv_ir::Front) -> Vec<(usize, usize)> 
             // Progress loops (DeepEP combine's receiver coordinator) republish their state
             // every iteration: a stutter iteration rewrites the same bytes (checked at run
             // time, `wpoll_dry`).
-            Op::St { .. } | Op::Exit | Op::Fence { .. } | Op::Shfl { .. } => true,
+            Op::St { .. } | Op::St256 { .. } | Op::Exit | Op::Fence { .. } | Op::Shfl { .. } => {
+                true
+            }
             Op::VoteAll { .. }
             | Op::VoteAny { .. }
+            | Op::MatchAny { .. }
             | Op::Bssy { .. }
             | Op::Bsync { .. }
             | Op::WarpSync { .. }

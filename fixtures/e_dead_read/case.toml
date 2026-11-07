@@ -1,0 +1,46 @@
+name = "e_dead_read"
+description = """
+Fixture for C-ORDER dead reads (wellsync.rs `dead_reads`): warp 1 loads a shared word that
+thread 0 stores without ordering against it. The good kernel never uses warp 1's value: the
+certificate holds (SASS, where LDS/STS are strong, S-SMEM-STRONG); DR1 stores it, DR2
+branches on it."""
+ptx = "kernel.ptx"
+entry = "e_dead_read"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+# PTX: ld/st.shared are plain, so warp 1's load races with the store (and may read the
+# never-written word); the value is unused, so no violation.
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "DR1"
+summary = "warp 1 stores the value it loaded: its output depends on the order"
+marker = "@USE"
+find = "st.global.u32 [%rd3], %r1;"
+replace = "st.global.u32 [%rd3], %r5;"
+expect = ["race", "violation"]
+expect_sass = ["nondeterministic", "violation"]
+
+[[variants]]
+id = "DR2"
+summary = "warp 1 branches on the value it loaded"
+marker = "@USE"
+find = "st.global.u32 [%rd3], %r1;"
+replace = "setp.eq.u32 %p3, %r5, 42; @%p3 bra.uni DONE; st.global.u32 [%rd3], %r1; DONE:"
+expect = ["race", "violation"]
+expect_sass = ["nondeterministic", "violation"]

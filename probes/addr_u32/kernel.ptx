@@ -1,0 +1,35 @@
+// Probe (L-ROSETTA): generic loads / stores whose address is a 32-bit register zero-extended
+// plus a 64-bit uniform base (SASS `ST.E [R.U32+UR]` / `LD.E [R.U32+UR]`, and `[RZ.U32+UR]`
+// for a zero offset; NVSHMEM-style dispatch kernels). Thread t (64 threads) loads
+// in[(t * 5) mod 64] and stores it plus t to out[t]; thread 0 also stores in[0] to out[64]
+// through the bare uniform base.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry addr_u32(.param .u64 pin, .param .u64 pout)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<2>;
+    ld.param.u64 %rd1, [pin];
+    ld.param.u64 %rd2, [pout];
+    mov.u32 %r0, %tid.x;
+    mul.lo.u32 %r1, %r0, 5;
+    and.b32 %r1, %r1, 63;
+    shl.b32 %r2, %r1, 2;
+    cvt.u64.u32 %rd3, %r2;
+    add.s64 %rd4, %rd1, %rd3;
+    ld.u32 %r3, [%rd4];
+    add.u32 %r4, %r3, %r0;
+    shl.b32 %r5, %r0, 2;
+    cvt.u64.u32 %rd5, %r5;
+    add.s64 %rd6, %rd2, %rd5;
+    st.u32 [%rd6], %r4;
+    setp.ne.u32 %p1, %r0, 0;
+    @%p1 bra DONE;
+    ld.u32 %r6, [%rd1];
+    st.u32 [%rd2+256], %r6;
+DONE:
+    ret;
+}

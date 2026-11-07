@@ -1,0 +1,37 @@
+//
+// S-INIT poison propagation: lanes 16..31 skip a predicated load, add its (undefined)
+// destination to a parameter with a 64-bit add (SASS: IADD3 with a carry-out predicate, then
+// IADD3.X), and a store under the same predicate discards their results (the shape of
+// Triton's _philox_checksum_kernel). Variants store unconditionally or branch on a compare of
+// the undefined sum.
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry uninit_discard(
+	.param .u64 in_ptr,
+	.param .u64 out_ptr,
+	.param .u64 addend
+)
+.reqntid 32
+{
+	.reg .pred %p<4>;
+	.reg .b32 %r<4>;
+	.reg .b64 %rd<12>;
+
+	ld.param.u64 %rd1, [in_ptr];
+	ld.param.u64 %rd2, [out_ptr];
+	ld.param.u64 %rd9, [addend];
+	mov.u32 %r1, %tid.x;
+	setp.lt.u32 %p1, %r1, 16;
+	mul.wide.u32 %rd3, %r1, 8;
+	add.s64 %rd4, %rd1, %rd3;
+	@%p1 ld.global.u64 %rd5, [%rd4];
+	add.s64 %rd6, %rd5, %rd9;
+	add.s64 %rd7, %rd2, %rd3;
+	// (branch slot) // @BRA
+	@%p1 st.global.u64 [%rd7], %rd6; // @STORE
+DONE:
+	ret;
+}

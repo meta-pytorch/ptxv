@@ -1,0 +1,46 @@
+name = "probe_tmap_device"
+description = """
+Probe (S-TMAP) for a tensor map built on the device with tensormap.replace (words 0x40 / 0x48
+left 0), published with tensormap.cp_fenceproxy and used by a TMA load: see kernel.ptx.
+expected/out.bin is the GB300 output (the box, then the map bytes)."""
+ptx = "kernel.ptx"
+entry = "tmap_device"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [32, 64]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [544]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "map"
+dtype = "u8"
+shape = [128]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "map"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

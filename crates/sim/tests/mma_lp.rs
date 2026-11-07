@@ -93,8 +93,22 @@ fn mma_f8_both_fronts_match_gb300() {
 /// ue4m3 scales in TMEM) through both front-ends against recorded GB300 outputs.
 #[test]
 fn mma_bs_both_fronts_match_gb300() {
+    mma_bs_configs("", 10);
+}
+
+/// N-MMA-BS: block-scaled M = 128, N = 8 (FA4 decode's UTCQMMA): probes/mma_bs with the first
+/// MMA at N = 64 and the three accumulating ones at N = 8 (expected/n8/configs.json). GB300:
+/// columns 0..7 = the N = 64 result bit for bit, columns 8.. keep the first MMA's.
+#[test]
+fn mma_bs_n8_both_fronts_match_gb300() {
+    mma_bs_configs("n8", 5);
+}
+
+/// probes/mma_bs's configurations in expected/<sub>/configs.json (operands from expected/,
+/// GB300's D from expected/<sub>/), both front-ends.
+fn mma_bs_configs(sub: &str, count: usize) {
     let base = Case::load(root().join("probes/mma_bs")).unwrap();
-    let dir = std::env::temp_dir().join("ptxv-test-mma_bs");
+    let dir = std::env::temp_dir().join(format!("ptxv-test-mma_bs{sub}"));
     std::fs::create_dir_all(&dir).unwrap();
     let ptx = base.variant_ptx("good").unwrap();
     let (p, cubin) = (dir.join("k.ptx"), dir.join("k.cubin"));
@@ -102,8 +116,9 @@ fn mma_bs_both_fronts_match_gb300() {
     ptxv_sass::ptxas(&p, &cubin, &base.m.arch).unwrap();
     let exp = base.dir.join("expected");
     let cfgs: Vec<serde_json::Value> =
-        serde_json::from_str(&std::fs::read_to_string(exp.join("configs.json")).unwrap()).unwrap();
-    assert_eq!(cfgs.len(), 10);
+        serde_json::from_str(&std::fs::read_to_string(exp.join(sub).join("configs.json")).unwrap())
+            .unwrap();
+    assert_eq!(cfgs.len(), count);
     for c in &cfgs {
         let name = c["name"].as_str().unwrap();
         let mut case = base.clone();
@@ -124,7 +139,7 @@ fn mma_bs_both_fronts_match_gb300() {
                 u += 1;
             }
         }
-        let hw = std::fs::read(exp.join(format!("{name}.D.bin"))).unwrap();
+        let hw = std::fs::read(exp.join(sub).join(format!("{name}.D.bin"))).unwrap();
         for k in [
             ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap(),
             ptxv_sass::load_cubin(&cubin, &case.m.entry).unwrap(),

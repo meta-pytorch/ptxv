@@ -120,8 +120,8 @@ value = 0
 [[variants]]
 id = "good"
 summary = "as compiled by Triton 3.5"
-expect = ["race", "violation"]
-expect_sass = ["violation"]
+expect = ["contract", "race"]
+expect_sass = ["contract"]
 
 [[variants]]
 id = "fenced"

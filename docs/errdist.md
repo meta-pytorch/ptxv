@@ -132,6 +132,17 @@ inside it.
   match the file's.
 - `best` picks across all of them in tier order (§3).
 
+The compile stage first checks each kernel's execution (race-free, one output per input:
+`wellsync::check_certified`, exploring when the certificate does not hold). A `ptxv check
+--certify` of the same case, variant and binary stores that verdict in
+`$PTXV_CACHE/check/<key>.json` (crates/cli/src/vcache.rs), and the compile stage reads it
+instead of exploring again; it stores its own check the same way. The key hashes every file
+under the case directory (inputs in `data/` included), the variant, the front-end, the ptxv
+binary (path, size, modification time) and the `PTXV_*` environment except thread counts,
+output and cache settings. A complete stored verdict serves any state cap; an incomplete one
+serves caps up to its own. The report notes a reused verdict. `PTXV_NO_VCACHE=1` turns the
+cache off.
+
 Measured on a 144-core host. Compile takes 0.7-2.2 s for the small fixtures; it is the
 simulator run, so minutes for large kernels. Query times:
 - Tier 2: 0.03-2 s (sums, TF32, bf16);

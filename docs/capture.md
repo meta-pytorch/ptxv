@@ -160,7 +160,11 @@ Two other changes:
 
 - `PTXV_LIFT_REPORT=1` now reports every launch's kernel (`lift report for K: N kinds of
   instruction not lowered`). A fully lowered case goes on to the check.
-- `PTXV_GPUS=3` (or `0,3`) restricts which GPUs `hw` / `equiv` may pick.
+- `PTXV_GPUS=3` (or `0,3`) restricts which GPUs `hw` / `equiv` may pick. Without it,
+  `CUDA_VISIBLE_DEVICES` restricts the choice, read as the CUDA runtime reads it (indices or
+  `GPU-` UUID prefixes, up to the first entry that names no device). Before 2026-11-06 it was
+  ignored: the worker's own `CUDA_VISIBLE_DEVICES` replaced it, so `CUDA_VISIBLE_DEVICES=3
+  ptxv hw` could run on any free GPU.
 
 ## Smoke test (2026-11-03, torch 2.12, Triton 3.5, GB300)
 

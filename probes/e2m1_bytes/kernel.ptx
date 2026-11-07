@@ -1,0 +1,36 @@
+// probes/e2m1_bytes: cvt.rn[.relu].f16x2.e2m1x2 of each byte of a 32-bit register (SASS
+// F2FP[.RELU].F16.E2M1.UNPACK_B Rd, Ra[.B1|.B2|.B3]). Thread g (one CTA of 256) loads
+// w = in[g] (byte k of w = (g + 85k) mod 256: every byte value in every position) and stores
+// out[j][g], j = 0..3: byte j of w converted; j = 4: byte 1 with .relu.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry e2m1_bytes(.param .u64 pin, .param .u64 pout)
+.maxntid 256, 1, 1
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .b8 %c<4>;
+    ld.param.u64 %rd1, [pin];
+    ld.param.u64 %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r0, %tid.x;
+    mul.wide.u32 %rd3, %r0, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    ld.global.u32 %r1, [%rd4];
+    mov.b32 {%c0, %c1, %c2, %c3}, %r1;
+    cvt.rn.f16x2.e2m1x2 %r10, %c0;
+    cvt.rn.f16x2.e2m1x2 %r11, %c1;
+    cvt.rn.f16x2.e2m1x2 %r12, %c2;
+    cvt.rn.f16x2.e2m1x2 %r13, %c3;
+    cvt.rn.relu.f16x2.e2m1x2 %r14, %c1;
+    st.global.u32 [%rd5], %r10;
+    st.global.u32 [%rd5+1024], %r11;
+    st.global.u32 [%rd5+2048], %r12;
+    st.global.u32 [%rd5+3072], %r13;
+    st.global.u32 [%rd5+4096], %r14;
+    ret;
+}

@@ -1,0 +1,38 @@
+name = "probe_hsetp2"
+description = """
+Probe (L-ROSETTA) for HSETP2 / HSETP2.BF16_V2 on GB300: setp.<cmp>.f16x2 / .bf16x2 with both
+predicate outputs for all 14 comparisons, scalar setp.f16 / .bf16 on halves, |x| != INF and a
+compare against a constant pair with distinct halves (`HSETP2.GT.AND P, P, R, 8, 16, PT`), over
+half patterns special in either format (gen.py). Each compare sets two result bits. expected/
+is GB300's output (ptxas cubin, `ptxv hw-worker probes/hsetp2 <cubin> --runs 1 --dump`)."""
+ptx = "kernel.ptx"
+entry = "hsetp2"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024, 2]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024, 4]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

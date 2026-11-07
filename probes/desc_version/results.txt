@@ -1,0 +1,26 @@
+# GB300 (sm_103a, CUDA 13.0), 2026-11-06: CUDA_VISIBLE_DEVICES=1 probes/desc_version/run.sh
+# configs: kind::f16 (bf16) and kind::f8f6f4 (e4m3) x layouts {none, 128B base 32B, 128B, 64B,
+# 32B} x A / B K- or MN-major x 2 (LBO, SBO); M = 128, N = 64, one MMA; D = 128 x 64 f32.
+80 configs x 8192 f32 outputs
+reference (1, 1): cells left at the fill value: 0
+reference (1, 1): distinct dumps among configs: 69
+va=0 vb=0 run 0: 80/80 configs bitwise equal to (1, 1)
+va=0 vb=0 run 1: 80/80 configs bitwise equal to (1, 1)
+va=0 vb=1 run 0: 80/80 configs bitwise equal to (1, 1)
+va=0 vb=1 run 1: 80/80 configs bitwise equal to (1, 1)
+va=1 vb=0 run 0: 80/80 configs bitwise equal to (1, 1)
+va=1 vb=0 run 1: 80/80 configs bitwise equal to (1, 1)
+va=1 vb=1 run 0: 80/80 configs bitwise equal to (1, 1)
+va=1 vb=1 run 1: 80/80 configs bitwise equal to (1, 1)
+va=2 vb=2 run 0: 80/80 configs bitwise equal to (1, 1)
+va=2 vb=2 run 1: 80/80 configs bitwise equal to (1, 1)
+va=3 vb=3 run 0: 80/80 configs bitwise equal to (1, 1)
+va=3 vb=3 run 1: 80/80 configs bitwise equal to (1, 1)
+va=4 vb=4 run 0: 80/80 configs bitwise equal to (1, 1)
+va=4 vb=4 run 1: 80/80 configs bitwise equal to (1, 1)
+va=5 vb=5 run 0: 80/80 configs bitwise equal to (1, 1)
+va=5 vb=5 run 1: 80/80 configs bitwise equal to (1, 1)
+va=6 vb=6 run 0: 80/80 configs bitwise equal to (1, 1)
+va=6 vb=6 run 1: 80/80 configs bitwise equal to (1, 1)
+va=7 vb=7 run 0: 80/80 configs bitwise equal to (1, 1)
+va=7 vb=7 run 1: 80/80 configs bitwise equal to (1, 1)

@@ -37,11 +37,82 @@ mod jsonout;
 mod mufu_sweep;
 mod sweep;
 mod trace_dump;
+mod vcache;
 
 // The explorer's threads clone and drop machine pages at a high rate; glibc malloc's arenas
-// contend under that (and mimalloc is faster single-threaded too).
+// contend under that (and mimalloc is faster single-threaded too). mimalloc 2's arenas stop
+// growing near 400 GB of live heap (on 1.3 TB hosts: "cannot use OS memory
+// since it is too large with respect to the maximum object size", then allocation failure),
+// so PTXV_SYSTEM_ALLOC=1 selects the system allocator for the largest explorations. The choice
+// is made once, at the first allocation (getenv allocates nothing), so every block is freed
+// by the allocator that made it.
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: Alloc = Alloc;
+
+struct Alloc;
+
+static ALLOC_SYS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+unsafe extern "C" {
+    fn getenv(name: *const std::ffi::c_char) -> *const std::ffi::c_char;
+}
+
+impl Alloc {
+    #[inline]
+    fn system() -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        match ALLOC_SYS.load(Relaxed) {
+            1 => false,
+            2 => true,
+            _ => {
+                // SAFETY: a NUL-terminated name; the result is only compared with null.
+                let set = unsafe { !getenv(c"PTXV_SYSTEM_ALLOC".as_ptr()).is_null() };
+                ALLOC_SYS.store(if set { 2 } else { 1 }, Relaxed);
+                set
+            }
+        }
+    }
+}
+
+// SAFETY: forwards to one of two allocators, fixed before the first allocation.
+unsafe impl std::alloc::GlobalAlloc for Alloc {
+    unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
+        unsafe {
+            if Self::system() {
+                std::alloc::System.alloc(l)
+            } else {
+                mimalloc::MiMalloc.alloc(l)
+            }
+        }
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
+        unsafe {
+            if Self::system() {
+                std::alloc::System.dealloc(p, l)
+            } else {
+                mimalloc::MiMalloc.dealloc(p, l)
+            }
+        }
+    }
+    unsafe fn alloc_zeroed(&self, l: std::alloc::Layout) -> *mut u8 {
+        unsafe {
+            if Self::system() {
+                std::alloc::System.alloc_zeroed(l)
+            } else {
+                mimalloc::MiMalloc.alloc_zeroed(l)
+            }
+        }
+    }
+    unsafe fn realloc(&self, p: *mut u8, l: std::alloc::Layout, n: usize) -> *mut u8 {
+        unsafe {
+            if Self::system() {
+                std::alloc::System.realloc(p, l, n)
+            } else {
+                mimalloc::MiMalloc.realloc(p, l, n)
+            }
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -256,6 +327,8 @@ enum Cmd {
         emit_bound: Option<PathBuf>,
     },
     /// Run variants on a free GPU (child process + watchdog) and compare with the simulator.
+    /// The GPU is picked among those PTXV_GPUS lists (nvidia-smi indices), else among those
+    /// CUDA_VISIBLE_DEVICES names (indices or GPU- UUID prefixes), else among all free ones.
     Hw {
         case: PathBuf,
         #[arg(long, default_value = "all")]
@@ -365,6 +438,38 @@ enum Cmd {
     },
 }
 
+/// The default output directory of a case under `root`: `<root>/<case name>`, owned by the
+/// case directory recorded in its `.case` file. A directory of that name that belongs to
+/// another case (two cases whose names agree, e.g. truncated kernel names) is not reused:
+/// the case gets `<root>/<name>-<hash of its directory>` instead, so a run never reads
+/// another case's cubin.
+fn default_out(root: &Path, case: &Case) -> Result<PathBuf> {
+    let me = std::fs::canonicalize(&case.dir).unwrap_or_else(|_| case.dir.clone());
+    let me = me.to_string_lossy().to_string();
+    let claim = |d: &Path| -> Result<bool> {
+        std::fs::create_dir_all(d)?;
+        let f = d.join(".case");
+        match std::fs::read_to_string(&f) {
+            Ok(owner) => Ok(owner.trim() == me),
+            Err(_) => {
+                std::fs::write(&f, format!("{me}\n"))?;
+                Ok(true)
+            }
+        }
+    };
+    let plain = root.join(&case.m.name);
+    if ptxv_sim::dist::get().is_some() || claim(&plain)? {
+        return Ok(plain);
+    }
+    // FNV-1a of the case directory.
+    let h = me.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x100_0000_01b3)
+    });
+    let d = root.join(format!("{}-{:08x}", case.m.name, h as u32));
+    claim(&d)?;
+    Ok(d)
+}
+
 pub(crate) fn out_dir(case: &Case, out: &Option<PathBuf>) -> Result<PathBuf> {
     let d = match out {
         Some(o) => o.clone(),
@@ -372,7 +477,7 @@ pub(crate) fn out_dir(case: &Case, out: &Option<PathBuf>) -> Result<PathBuf> {
             let root = std::env::var("PTXV_ROOT")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("."));
-            root.join("out").join(&case.m.name)
+            default_out(&root.join("out"), case)?
         }
     };
     // Multi-node ranks share the file system: each writes its own copies.
@@ -673,12 +778,17 @@ fn print_verdict(
                     "latent" => "a PTX-model bug not reachable on current GB300 hardware",
                     "latent-closed-world" =>
                         "observable on GB300 with a co-resident kernel that fills the line",
+                    "latent-needs-divergence" =>
+                        "intra-warp, latent: needs divergence (or a compiler reordering)",
                     _ => "not decided",
                 },
                 g.reason
             );
         }
         let n = f.trace.len();
+        if n == 0 && f.kind == "note" {
+            continue;
+        }
         let show = &f.trace[n.saturating_sub(8)..];
         println!(
             "      trace ({} steps{}):",
@@ -919,7 +1029,7 @@ fn cmd_check(
                     }
                 }
                 if ok {
-                    for line in case.expect_report(&m.outputs())? {
+                    for line in case.expect_report_tol(&m.outputs(), m.mc_inexact)? {
                         println!("    {line}");
                     }
                 }
@@ -1010,7 +1120,21 @@ fn cmd_check(
                 }
             };
             let make1 = || machine(case, k.clone()).expect("machine");
+            // The plain certificate check is what errdist / equiv run as their precondition
+            // (equiv.rs `prepare`): store it for them (vcache.rs).
+            // (errdist builds the machine from the case without the variant's `after` edits.)
+            let plain = certify
+                && case.variant(&v)?.after.is_empty()
+                && !slices
+                && groups.is_none()
+                && std::env::var("PTXV_EXPLORER").as_deref() != Ok("dpor");
+            let vkey = plain
+                .then(|| vcache::key(&case.dir, &v, f, "certify"))
+                .flatten();
             let mut verdict = check(&make1, "");
+            if let Some(key) = &vkey {
+                vcache::store(key, max_states, &verdict);
+            }
             // ASSUME(S-CGA-SHAPE): only the sliced certificate check covers both cluster shapes
             // of a launch with a preferred cluster dimension (and their mixes).
             if m1.launch.preferred_shape().is_some() && !(slices && certify && groups.is_none()) {
@@ -1076,8 +1200,10 @@ fn cmd_check(
             }
             // Captured cases (tools/capture.py) carry the GPU's output bytes.
             let mut expect_report = Vec::new();
+            // N-MULTIMEM-ROUND16: multimem reductions whose rounding the model only calibrates.
+            let ulp_ok = !case.m.multicast.is_empty();
             for (i, o) in verdict.outputs.iter().enumerate() {
-                for line in case.expect_report(o)? {
+                for line in case.expect_report_tol(o, ulp_ok)? {
                     println!("    expect (output {i}): {line}");
                     expect_report.push(format!("output {i}: {line}"));
                 }

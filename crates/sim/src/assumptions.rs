@@ -124,7 +124,21 @@ pub const REGISTRY: &[Assumption] = &[
         id: "E-LOCKSTEP",
         kind: "code",
         status: "argued",
-        title: "SASS: converged lanes are ordered instruction by instruction",
+        title: "SASS: lanes executing together in a split are ordered instruction by instruction (STSM / LDSM included)",
+        applies: sass,
+    },
+    Assumption {
+        id: "E-STSM-DUP",
+        kind: "code",
+        status: "argued",
+        title: "lanes of one stmatrix writing a shared word with the same value write it once; different values are a violation",
+        applies: |k| any(k, |o| matches!(o, Op::StMatrix { .. })),
+    },
+    Assumption {
+        id: "E-WARP-ORDER",
+        kind: "code",
+        status: "validated",
+        title: "a converged warp's shared-memory instructions issue in program order (SASS: lockstep join; PTX: intra-warp races labelled latent-needs-divergence)",
         applies: sass,
     },
     Assumption {
@@ -148,6 +162,14 @@ pub const REGISTRY: &[Assumption] = &[
         status: "argued",
         title: "launch groups closed under stream order, checked one after another with a cross-group race check, stand for the whole case",
         // Added to a verdict only when `ptxv check --groups` decided it (groups.rs).
+        applies: never,
+    },
+    Assumption {
+        id: "E-MC-ALIAS-HW",
+        kind: "code",
+        status: "argued",
+        title: "opt-in: multicast and unicast views of NVLS memory need no fence.proxy.alias (GB300 litmus: validated for multicast write / unicast read only)",
+        // Added to a verdict when the case sets mc_alias = "hw" (for_machine).
         applies: never,
     },
     Assumption {
@@ -383,7 +405,7 @@ pub const REGISTRY: &[Assumption] = &[
         id: "E-DESC-VERSION",
         kind: "code",
         status: "validated",
-        title: "tcgen05 shared-memory descriptor bits 46-48 (version) = 0 behave as the fixed value on GB300 (equiv only)",
+        title: "tcgen05.mma ignores shared-memory descriptor bits 46-48 (version) on GB300: a value other than 0b001 is a contract finding",
         applies: never,
     },
     Assumption {
@@ -519,17 +541,42 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |k| any(k, |o| matches!(o, Op::TmaStore { .. } | Op::Mma { .. })),
     },
     Assumption {
+        id: "S-MULTIMEM",
+        kind: "code",
+        status: "argued",
+        title: "a multimem access (multimem.* / LDGMC, and STG / REDG on a multicast address) is one access per bound GPU with the instruction's semantics, all at once",
+        // Added to a verdict when the case has multicast objects (for_machine).
+        applies: never,
+    },
+    Assumption {
+        id: "S-MC-ALIAS",
+        kind: "code",
+        status: "argued",
+        title: "accesses through the multicast and unicast views of the same bytes are ordered only by a fence.proxy.alias or a kernel boundary on the happens-before path (PTX alias proxy)",
+        applies: never,
+    },
+    Assumption {
+        id: "E-CPASYNC-PROXY",
+        kind: "code",
+        status: "unvalidated",
+        title: "cp.async writes reach a later async-proxy read (TMA store, tcgen05.mma) without fence.proxy.async; reported as a contract finding",
+        applies: |k| {
+            any(k, |o| matches!(o, Op::CpAsync { .. }))
+                && any(k, |o| matches!(o, Op::TmaStore { .. } | Op::Mma { .. }))
+        },
+    },
+    Assumption {
         id: "S-INIT",
         kind: "code",
         status: "enforced",
-        title: "unwritten register/smem reads are reported (not yet: async-op address operands)",
+        title: "unwritten registers / smem are undefined; undefined values propagate through register-only operations and are reported where they reach a sink (memory, address, control flow, synchronization)",
         applies: always,
     },
     Assumption {
         id: "S-INIT-PRED",
         kind: "code",
         status: "enforced",
-        title: "predicates start undefined; a read before any write is reported (PT/UPT are constants)",
+        title: "predicates start undefined (PT/UPT are constants) and are undefined when computed from undefined values; reported at sinks",
         applies: always,
     },
     Assumption {
@@ -618,6 +665,8 @@ pub const REGISTRY: &[Assumption] = &[
                         o,
                         Op::Ld { sync: Some(_), .. }
                             | Op::St { sync: Some(_), .. }
+                            | Op::Ld256 { sync: Some(_), .. }
+                            | Op::St256 { sync: Some(_), .. }
                             | Op::Atom { .. }
                             | Op::Fence {
                                 kind: FenceKind::Membar(_)
@@ -653,7 +702,14 @@ pub const REGISTRY: &[Assumption] = &[
         title: "ld/st/atom of n bytes (power of two) must be n-aligned, else a fault",
         applies: |k| {
             any(k, |o| {
-                matches!(o, Op::Ld { .. } | Op::St { .. } | Op::Atom { .. })
+                matches!(
+                    o,
+                    Op::Ld { .. }
+                        | Op::St { .. }
+                        | Op::Ld256 { .. }
+                        | Op::St256 { .. }
+                        | Op::Atom { .. }
+                )
             })
         },
     },
@@ -665,11 +721,25 @@ pub const REGISTRY: &[Assumption] = &[
         applies: always,
     },
     Assumption {
+        id: "S-GLOBAL-INIT",
+        kind: "code",
+        status: "argued",
+        title: "a module global without a case buffer starts from its ELF initial value",
+        applies: |k| !k.globals.is_empty() || k.parts.iter().any(|p| !p.globals.is_empty()),
+    },
+    Assumption {
         id: "S-CBANK",
         kind: "code",
         status: "validated",
         title: "driver constant bank layout (dims, param base, stack)",
         applies: sass,
+    },
+    Assumption {
+        id: "S-SAME-VALUE",
+        kind: "code",
+        status: "validated",
+        title: "unordered plain writes of the byte value already there conflict with nothing",
+        applies: |k| any(k, |o| matches!(o, Op::St { .. })),
     },
     Assumption {
         id: "S-SMEM-ADDR32",
@@ -721,8 +791,15 @@ pub const REGISTRY: &[Assumption] = &[
         id: "S-TMAP",
         kind: "code",
         status: "validated",
-        title: "device-built tensor maps: the reverse-engineered CUtensorMap layout; fence.proxy.tensormap per using thread",
-        applies: |k| any(k, |o| matches!(o, Op::TmapFence { .. })),
+        title: "tensor maps: the reverse-engineered CUtensorMap layout (device-built maps, and captured parameter maps' geometry); fence.proxy.tensormap per using thread",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::TmapFence { .. } | Op::TmaLoad { .. } | Op::TmaStore { .. }
+                )
+            })
+        },
     },
     Assumption {
         id: "S-BRA-COND",
@@ -746,6 +823,13 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |k| any(k, |o| matches!(o, Op::TcCp { .. })),
     },
     Assumption {
+        id: "L-ALIAS-FENCE",
+        kind: "code",
+        status: "validated",
+        title: "SASS: a MEMBAR.SC inside ptxas's UP2UR.B3 / UR2UP bracket is fence.proxy.alias; driver word c[0x0][0x2d8] = 0 (GB300 probe)",
+        applies: never,
+    },
+    Assumption {
         id: "L-NVDISASM",
         kind: "code",
         status: "trusted",
@@ -758,6 +842,13 @@ pub const REGISTRY: &[Assumption] = &[
         status: "validated",
         title: "SASS lowering table (seen forms only; others are errors)",
         applies: sass,
+    },
+    Assumption {
+        id: "L-RPCMOV",
+        kind: "code",
+        status: "validated",
+        title: "RPCMOV.32 Rpc.LO: a per-thread slot only RPCMOV touches (probes/rpcmov)",
+        applies: |k| k.code.iter().any(|i| i.text.contains("RPCMOV")),
     },
     Assumption {
         id: "L-PTX-HINT",
@@ -862,6 +953,78 @@ pub const REGISTRY: &[Assumption] = &[
         status: "validated",
         title: "FCHK = exponent-range test measured on GB300 (probes/fchk)",
         applies: |k| any(k, |o| matches!(o, Op::Fchk { .. })),
+    },
+    Assumption {
+        id: "N-BF16X2",
+        kind: "code",
+        status: "validated",
+        title: "packed / mixed bf16 arithmetic and bf16 atomics: one rounding, NaN 0x7fff (probes/bf16x2, bf16_ext)",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::Hfma2Bf16 { .. }
+                        | Op::FfmaBf16 { .. }
+                        | Op::Hmnmx2Bf16 { .. }
+                        | Op::Vhmnmx { .. }
+                        | Op::Atom {
+                            op: ptxv_ir::AtomOp::AddBf16x2 | ptxv_ir::AtomOp::AddBf16,
+                            ..
+                        }
+                )
+            })
+        },
+    },
+    Assumption {
+        id: "N-XORSIGN",
+        kind: "code",
+        status: "validated",
+        title: "FMNMX.XORSIGN / HMNMX2.XORSIGN: min/max of |a|, |b| with sign(a) XOR sign(b) (probes/fmnmx_xorsign)",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::Fmnmx { xorsign: true, .. } | Op::Hmnmx2Bf16 { xorsign: true, .. }
+                )
+            })
+        },
+    },
+    Assumption {
+        id: "N-FCVT",
+        kind: "code",
+        status: "validated",
+        title: "FRND / F2F between f64, f32, f16, bf16: IEEE rounding, NaN payload rules (probes/fcvt)",
+        applies: |k| any(k, |o| matches!(o, Op::FCvt { .. })),
+    },
+    Assumption {
+        id: "N-F2I16",
+        kind: "code",
+        status: "validated",
+        title: "F2I.S16 / .U16: round, saturate to 16 bits, NaN 0, extended in the register (probes/f2i16)",
+        applies: |k| any(k, |o| matches!(o, Op::F2I { bits: 16, .. })),
+    },
+    Assumption {
+        id: "N-INT16X2",
+        kind: "code",
+        status: "validated",
+        title: "VIMNMX / VIMNMX3 .U16x2 / .S16x2: per 16-bit lane min / max (probes/int16x2)",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::IntMnmx3 { x16: true, .. }
+                        | Op::IntMnmx3 { relu: true, .. }
+                        | Op::AddMinMax { relu: true, .. }
+                )
+            })
+        },
+    },
+    Assumption {
+        id: "N-BULK-RED",
+        kind: "code",
+        status: "validated",
+        title: "UBLKRED.G.S.ADD.F32.RN: per-word atomic f32 add, RN, no flush, canonical NaN (probes/bulk_red)",
+        applies: |k| any(k, |o| matches!(o, Op::TmaStore { red: true, .. })),
     },
     Assumption {
         id: "N-MUFU",
@@ -1099,6 +1262,31 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |_| false,
     },
     Assumption {
+        id: "N-MULTIMEM",
+        kind: "code",
+        status: "validated",
+        title: "multimem.ld_reduce arithmetic: integers exact; f32 add = window-truncated exact sum, round to nearest even; f16/bf16 min/max = minNum/maxNum (GB300 bitwise, probes/multimem)",
+        applies: |k| any(k, |o| matches!(o, Op::LdReduce { .. })),
+    },
+    Assumption {
+        id: "N-MULTIMEM-ROUND16",
+        kind: "code",
+        status: "unvalidated",
+        title: "f16/bf16 multimem.ld_reduce add: the rounding direction of a non-representable sum follows a dither from the other lanes of its 8-byte group (99.7% bf16 / 96.7% f16 of random lanes); results compared within one ulp",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::LdReduce {
+                        op: ptxv_ir::McOp::Add,
+                        ty: ptxv_ir::McTy::F16 | ptxv_ir::McTy::Bf16,
+                        ..
+                    }
+                )
+            })
+        },
+    },
+    Assumption {
         id: "N-MMA",
         kind: "code",
         status: "enforced",
@@ -1267,6 +1455,17 @@ pub fn for_machine(m: &crate::machine::Machine) -> Vec<String> {
     }
     if m.launch.read_done {
         v.push("E-READ-DONE".into());
+    }
+    if !m.launch.mcast.is_empty() {
+        v.push("S-MULTIMEM".into());
+        v.push(if m.launch.mc_alias_hw {
+            "E-MC-ALIAS-HW".into()
+        } else {
+            "S-MC-ALIAS".into()
+        });
+        if m.k.front == Front::Sass {
+            v.push("L-ALIAS-FENCE".into());
+        }
     }
     v
 }

@@ -115,7 +115,9 @@ fn kernel(case: &Case, variant: &str, front: &str) -> ptxv_ir::Kernel {
 
 fn machine(case: &Case, variant: &str, front: &str) -> Machine {
     let k = kernel(case, variant, front);
-    let launch = build_launch(case, &k).unwrap();
+    // The variant's launch-order edits (`Variant::after`) belong to the launch: without them a
+    // stream-order mutant (s_globals `unordered`) certified as the ordered original.
+    let launch = build_launch(&case.for_variant(variant).unwrap(), &k).unwrap();
     Machine::new(Arc::new(k), Arc::new(launch))
 }
 
@@ -420,6 +422,8 @@ fn certified_outputs_match_exploration() {
         ("e_ring_warp", "good", "sass"),
         ("e_poll_any", "good", "ptx"),
         ("e_poll_any", "good", "sass"),
+        // A lane exits inside a BSSY region while the others converge (E-BSYNC exit order).
+        ("e_bsync_exit", "good", "sass"),
     ] {
         let case = Case::load(root().join("fixtures").join(c)).unwrap();
         let m = machine(&case, v, f);
@@ -503,7 +507,9 @@ fn ring_mutants_are_refused_with_their_reason() {
         ("e_ring_warp", "R2", "race"),
         ("e_ring_warp", "R4", "C-RING: not chunking-oblivious"),
         ("e_ring_warp", "R7", "C-RING: not chunking-oblivious"),
-        ("e_ring_warp", "W1", "race"),
+        // W1's racing writes store equal values in the certificate's run, but the values come
+        // through polls, so S-SAME-VALUE refuses rather than accepting the note.
+        ("e_ring_warp", "W1", "S-SAME-VALUE"),
     ] {
         let case = Case::load(root().join("fixtures").join(fx)).unwrap();
         for front in ["ptx", "sass"] {
@@ -799,8 +805,8 @@ fn fadd_orders_outside_the_outputs_are_refused() {
 
 /// E-DESC-VERSION: Triton 3.5 leaves a tcgen05 shared-memory descriptor's fixed bits 46-48 at
 /// 0. The finding checks a descriptor value, which the certificate makes the same in every
-/// schedule, so it passes through the certificate like a contract finding: the kernel
-/// certifies (one run for all schedules) and the finding is still reported.
+/// schedule, so it passes through the certificate: the kernel certifies (one run for all
+/// schedules) and the finding is still reported, as a `contract` finding.
 #[test]
 fn desc_version_finding_does_not_break_the_certificate() {
     let case = Case::load(root().join("fixtures/c_triton_mm_bf16")).unwrap();
@@ -817,10 +823,15 @@ fn desc_version_finding_does_not_break_the_certificate() {
         "{:?}",
         v.findings.iter().map(|f| &f.sig).collect::<Vec<_>>()
     );
+    // A contract finding (GB300's MMA ignores the bits, probes/desc_version), no violation.
     assert!(
         v.findings
             .iter()
-            .all(|f| f.kind != "violation" || f.sig.starts_with("desc-version:")),
-        "only the descriptor finding"
+            .all(|f| !f.sig.starts_with("desc-version:") || f.kind == "contract"),
+        "descriptor finding is a contract one"
+    );
+    assert!(
+        v.findings.iter().all(|f| f.kind != "violation"),
+        "no violation"
     );
 }

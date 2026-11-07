@@ -816,7 +816,7 @@ fn check_groups_pre(
                     || (!v.complete && !bounded)
                     || v.findings
                         .iter()
-                        .any(|f| f.kind != "contract" && f.kind != "probe")
+                        .any(|f| f.kind != "contract" && f.kind != "probe" && f.kind != "note")
                 {
                     None
                 } else if !meet.differ.is_empty() {

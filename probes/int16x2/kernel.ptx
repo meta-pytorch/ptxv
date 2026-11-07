@@ -1,0 +1,81 @@
+// probes/int16x2: packed 16-bit integer min / max (SASS VIMNMX / VIMNMX3 .U16x2 / .S16x2) and
+// a 64-bit `(sext(a) << s) - y` (SASS IADD3 -R / LEA + LEA.HI.X.SX32 with a ~R operand)
+// against GB300. Thread g (4 CTAs x 256) loads (a, b, c) = in[g] (gen.py) and y = in64[g], and
+// stores out[j][g]:
+//   j = 0: min.u16x2 a, b        (VIMNMX.U16x2 .., PT)
+//   j = 1: max.u16x2 a, b        (VIMNMX.U16x2 .., !PT)
+//   j = 2: min.s16x2 a, b        (VIMNMX.S16x2 .., PT)
+//   j = 3: max.s16x2 a, b        (VIMNMX.S16x2 .., !PT)
+//   j = 4: max.u16x2 (max.u16x2 a, b), c   (VIMNMX3.U16x2 .., !PT)
+//   j = 5: min.u16x2 (min.u16x2 a, b), c   (VIMNMX3.U16x2 .., PT)
+//   j = 6: max.s16x2 (max.s16x2 a, b), c   (VIMNMX3.S16x2 .., !PT)
+//   j = 7: min.u16x2 a, 0x43124312         (immediate operand)
+//   j = 8, 9: the low / high word of (sext(a) << 2) - y
+//   j = 10, 11: the low / high word of (sext(b) << 30) - y
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry int16x2(
+    .param .u64 pin,
+    .param .u64 pin64,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<40>;
+    .reg .b64   %rd<20>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    ld.param.u64    %rd9, [pin64];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd9, %rd9;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %ctaid.x;
+    mad.lo.u32      %r3, %r2, 256, %r1;
+    mul.wide.u32    %rd3, %r3, 12;
+    add.s64         %rd3, %rd1, %rd3;
+    ld.global.u32   %r4, [%rd3];
+    ld.global.u32   %r5, [%rd3+4];
+    ld.global.u32   %r6, [%rd3+8];
+    mul.wide.u32    %rd10, %r3, 8;
+    add.s64         %rd10, %rd9, %rd10;
+    ld.global.u64   %rd11, [%rd10];
+    mul.wide.u32    %rd4, %r3, 4;
+    add.s64         %rd4, %rd2, %rd4;
+    min.u16x2       %r10, %r4, %r5;
+    max.u16x2       %r11, %r4, %r5;
+    min.s16x2       %r12, %r4, %r5;
+    max.s16x2       %r13, %r4, %r5;
+    max.u16x2       %r20, %r4, %r5;
+    max.u16x2       %r14, %r20, %r6;
+    min.u16x2       %r21, %r4, %r5;
+    min.u16x2       %r15, %r21, %r6;
+    max.s16x2       %r22, %r4, %r5;
+    max.s16x2       %r16, %r22, %r6;
+    mov.b32         %r18, 0x43124312;
+    min.u16x2       %r17, %r4, %r18;
+    cvt.s64.s32     %rd12, %r4;
+    shl.b64         %rd12, %rd12, 2;
+    sub.s64         %rd13, %rd12, %rd11;
+    mov.b64         {%r30, %r31}, %rd13;
+    cvt.s64.s32     %rd14, %r5;
+    shl.b64         %rd14, %rd14, 30;
+    sub.s64         %rd15, %rd14, %rd11;
+    mov.b64         {%r32, %r33}, %rd15;
+    st.global.u32   [%rd4], %r10;
+    st.global.u32   [%rd4+4096], %r11;
+    st.global.u32   [%rd4+8192], %r12;
+    st.global.u32   [%rd4+12288], %r13;
+    st.global.u32   [%rd4+16384], %r14;
+    st.global.u32   [%rd4+20480], %r15;
+    st.global.u32   [%rd4+24576], %r16;
+    st.global.u32   [%rd4+28672], %r17;
+    st.global.u32   [%rd4+32768], %r30;
+    st.global.u32   [%rd4+36864], %r31;
+    st.global.u32   [%rd4+40960], %r32;
+    st.global.u32   [%rd4+45056], %r33;
+    ret;
+}

@@ -1,0 +1,1 @@
+multimem.st.relaxed.sys.v4.f32 from member 0: all members equal = 1

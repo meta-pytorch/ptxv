@@ -1,0 +1,27 @@
+name = "e_smem_root"
+description = """
+Two warps: warp 1 stores a shared flag and warp 0 loads it with no barrier between them; the
+loaded value is the output. PTX: a data race. SASS (S-SMEM-STRONG): not a race, but the output
+depends on the order (nondeterministic), and `check --certify` lists the STS / LDS pair first
+as an `unordered` finding (the root cause), as for the mslk moe index_shuffling bug."""
+ptx = "kernel.ptx"
+entry = "smem_root"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["race"]
+expect_sass = ["nondeterministic"]

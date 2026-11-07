@@ -36,7 +36,12 @@
 //!   reads other bytes of the line does that: on GB300 these are observable with such a
 //!   neighbour (DeepEP notify_dispatch, docs/deepep-coreader.md). The witness is the havoc
 //!   check's `stale-l1-havoc:<pc>`;
-//! - **undecided**: no level-2 match, but level 2 was not exhaustive.
+//! - **undecided**: no level-2 match, but level 2 was not exhaustive; also every alias-proxy
+//!   race (`race:alias:`, S-MC-ALIAS), whose order this model does not represent;
+//! - **latent-needs-divergence** (set when the race is reported, not here; PTX front only):
+//!   two lanes of one warp that stays converged between the accesses, both plain memory
+//!   instructions. GB300 issues them in program order (E-LOCKSTEP, probes/warp_order), so the
+//!   race shows only if the warp diverges between them or the compiler reorders them.
 //!
 //! The havoc check (`l1_cores.rs`, `l1_havoc_check`) runs inside the level-2 run as a probe
 //! (`L1::havoc_probe`): it is predictive (one run covers every schedule with the same
@@ -58,10 +63,15 @@ use crate::machine::Finding;
 use crate::machine::Launch;
 use crate::machine::Machine;
 
+/// Class of an intra-warp PTX race in a converged warp (E-LOCKSTEP), set when the race is
+/// reported (exec.rs), not by the hardware-model run.
+pub const LATENT_DIV: &str = "latent-needs-divergence";
+
 /// The GB300 classification of one PTX-model finding.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Gb300 {
-    /// "observable" | "latent" | "latent-closed-world" | "undecided".
+    /// "observable" | "latent" | "latent-closed-world" | "undecided" |
+    /// "latent-needs-divergence" (`LATENT_DIV`).
     pub class: String,
     pub reason: String,
     /// The level-2 finding that shows it: observable, its signature; latent-closed-world, the
@@ -111,8 +121,10 @@ pub fn wanted(v: &Verdict, launch: &Launch) -> Option<String> {
     }
 }
 
+/// Race / stale findings without a label yet (an intra-warp race in a converged warp is
+/// labelled when reported, `LATENT_DIV`).
 fn classifiable(f: &Finding) -> bool {
-    f.kind == "race" || f.kind == "stale"
+    (f.kind == "race" || f.kind == "stale") && f.gb300.is_none()
 }
 
 /// The hardware model's launch for a level-1 launch.
@@ -120,6 +132,7 @@ pub fn hw_launch(l: &Launch) -> Launch {
     let mut h = l.clone();
     h.hw_l1 = true;
     h.hw_order = true;
+    h.mc_alias_hw = true; // E-MC-ALIAS-HW
     h.poll_acquire = false;
     h.refuted_opt_in.clear();
     // Closed world (E-L1-CLOSED): outside fills are probed separately (`hw_machine`), so a
@@ -226,6 +239,17 @@ pub fn classify(v1: &mut Verdict, v2: &Verdict, st: &L1Stats, m: &Machine) -> Gb
     };
     let d = |pc: u32| m.k.describe(pc as usize);
     for f in v1.findings.iter_mut().filter(|f| classifiable(f)) {
+        // Alias-proxy races (S-MC-ALIAS) are outside this model, which orders memory by
+        // address; E-MC-ALIAS-HW (`mc_alias = "hw"`) is the measured GB300 alternative.
+        if f.sig.starts_with("race:alias:") {
+            f.gb300 = Some(Gb300 {
+                class: "undecided".into(),
+                reason: "alias-proxy order (multicast vs unicast view) is not part of the hardware model; rerun with mc_alias = \"hw\" (E-MC-ALIAS-HW) for the measured GB300 behavior".into(),
+                witness: None,
+            });
+            c.undecided += 1;
+            continue;
+        }
         let (reads, global, ww) = reads_of(f);
         // 1. The same finding under the hardware model.
         if let Some(i) = v2
@@ -393,7 +417,7 @@ pub fn classify(v1: &mut Verdict, v2: &Verdict, st: &L1Stats, m: &Machine) -> Gb
     let covered: Vec<u32> = v1
         .findings
         .iter()
-        .filter(|f| classifiable(f))
+        .filter(|f| f.kind == "race" || f.kind == "stale")
         .flat_map(|f| reads_of(f).0)
         .chain(v2.findings.iter().filter_map(stale_read))
         .collect();

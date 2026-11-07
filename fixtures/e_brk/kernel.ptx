@@ -1,0 +1,102 @@
+// Fixture for SASS BREAK lane membership (E-BSYNC, C-WARP): 64 threads. Lanes with
+// tid % 4 != 3 store 32 words to shared memory under one predicate; ptxas threads the predicated
+// stores into a chain of branches inside a BSSY.RELIABLE B1 region, and the lanes that skip
+// them reach `BREAK.RELIABLE B1` by a different path than the lanes that ran them. Then a
+// barrier and a read of the word of the lane 32 away (the other warp).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_brk(.param .u64 out_p, .param .u64 in_p)
+{
+    .reg .b32 %r<200>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<8>;
+    .shared .align 4 .b32 buf[2048];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [in_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    and.b32 %r2, %r1, 3;
+    setp.ne.u32 %p1, %r2, 3;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.u64 %rd4, %rd2, %rd3;
+    mov.u32 %r7, buf;
+    shl.b32 %r8, %r1, 2;
+    add.u32 %r9, %r7, %r8;
+    xor.b32 %r10, %r1, 32;               // neighbour in the other warp
+    shl.b32 %r11, %r10, 2;
+    add.u32 %r12, %r7, %r11;
+    st.shared.u32 [%r9], 0;
+    ld.global.u32 %r20, [%rd4+0];
+    ld.global.u32 %r21, [%rd4+256];
+    ld.global.u32 %r22, [%rd4+512];
+    ld.global.u32 %r23, [%rd4+768];
+    ld.global.u32 %r24, [%rd4+1024];
+    ld.global.u32 %r25, [%rd4+1280];
+    ld.global.u32 %r26, [%rd4+1536];
+    ld.global.u32 %r27, [%rd4+1792];
+    ld.global.u32 %r28, [%rd4+2048];
+    ld.global.u32 %r29, [%rd4+2304];
+    ld.global.u32 %r30, [%rd4+2560];
+    ld.global.u32 %r31, [%rd4+2816];
+    ld.global.u32 %r32, [%rd4+3072];
+    ld.global.u32 %r33, [%rd4+3328];
+    ld.global.u32 %r34, [%rd4+3584];
+    ld.global.u32 %r35, [%rd4+3840];
+    ld.global.u32 %r36, [%rd4+4096];
+    ld.global.u32 %r37, [%rd4+4352];
+    ld.global.u32 %r38, [%rd4+4608];
+    ld.global.u32 %r39, [%rd4+4864];
+    ld.global.u32 %r40, [%rd4+5120];
+    ld.global.u32 %r41, [%rd4+5376];
+    ld.global.u32 %r42, [%rd4+5632];
+    ld.global.u32 %r43, [%rd4+5888];
+    ld.global.u32 %r44, [%rd4+6144];
+    ld.global.u32 %r45, [%rd4+6400];
+    ld.global.u32 %r46, [%rd4+6656];
+    ld.global.u32 %r47, [%rd4+6912];
+    ld.global.u32 %r48, [%rd4+7168];
+    ld.global.u32 %r49, [%rd4+7424];
+    ld.global.u32 %r50, [%rd4+7680];
+    ld.global.u32 %r51, [%rd4+7936];
+    @!%p1 st.shared.u32 [%r9+0], %r20;   // @ST0
+    @!%p1 st.shared.u32 [%r9+256], %r21;
+    @!%p1 st.shared.u32 [%r9+512], %r22;
+    @!%p1 st.shared.u32 [%r9+768], %r23;
+    @!%p1 st.shared.u32 [%r9+1024], %r24;
+    @!%p1 st.shared.u32 [%r9+1280], %r25;
+    @!%p1 st.shared.u32 [%r9+1536], %r26;
+    @!%p1 st.shared.u32 [%r9+1792], %r27;
+    @!%p1 st.shared.u32 [%r9+2048], %r28;
+    @!%p1 st.shared.u32 [%r9+2304], %r29;
+    @!%p1 st.shared.u32 [%r9+2560], %r30;
+    @!%p1 st.shared.u32 [%r9+2816], %r31;
+    @!%p1 st.shared.u32 [%r9+3072], %r32;
+    @!%p1 st.shared.u32 [%r9+3328], %r33;
+    @!%p1 st.shared.u32 [%r9+3584], %r34;
+    @!%p1 st.shared.u32 [%r9+3840], %r35;
+    @!%p1 st.shared.u32 [%r9+4096], %r36;
+    @!%p1 st.shared.u32 [%r9+4352], %r37;
+    @!%p1 st.shared.u32 [%r9+4608], %r38;
+    @!%p1 st.shared.u32 [%r9+4864], %r39;
+    @!%p1 st.shared.u32 [%r9+5120], %r40;
+    @!%p1 st.shared.u32 [%r9+5376], %r41;
+    @!%p1 st.shared.u32 [%r9+5632], %r42;
+    @!%p1 st.shared.u32 [%r9+5888], %r43;
+    @!%p1 st.shared.u32 [%r9+6144], %r44;
+    @!%p1 st.shared.u32 [%r9+6400], %r45;
+    @!%p1 st.shared.u32 [%r9+6656], %r46;
+    @!%p1 st.shared.u32 [%r9+6912], %r47;
+    @!%p1 st.shared.u32 [%r9+7168], %r48;
+    @!%p1 st.shared.u32 [%r9+7424], %r49;
+    @!%p1 st.shared.u32 [%r9+7680], %r50;
+    @!%p1 st.shared.u32 [%r9+7936], %r51;
+    bar.sync 0;                          // @BAR
+    ld.shared.u32 %r13, [%r12];
+    mul.wide.u32 %rd7, %r1, 4;
+    add.u64 %rd8, %rd1, %rd7;
+    st.global.u32 [%rd8], %r13;
+    ret;
+}

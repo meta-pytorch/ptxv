@@ -210,10 +210,17 @@ impl Machine {
                 let gi = self
                     .launch
                     .grid_index(self.threads[op.issuer as usize].cta as u32);
-                for &c in unlaunched
-                    .iter()
-                    .filter(|&&c| self.launch.grid_index(c as u32) == gi)
-                {
+                // A cluster launch cancels whole clusters: the victim is a cluster's rank-0 CTA
+                // whose cluster is entirely unlaunched (probes/clc_mcast). ASSUME(E-CLC)
+                for &c in unlaunched.iter().filter(|&&c| {
+                    self.launch.grid_index(c as u32) == gi
+                        && self.launch.cluster_of(c as u32).1 == 0
+                        && (0..self.launch.cluster_size(c as u32)).all(|r| {
+                            self.launch
+                                .cta_of_rank(c as u32, r)
+                                .is_some_and(|u| unlaunched.contains(&(u as u16)))
+                        })
+                }) {
                     out.push((
                         Action::Clc(i, Some(c)),
                         format!("try_cancel issued at {issued} cancels {}", self.cta_name(c)),
@@ -359,11 +366,13 @@ pub struct Verdict {
 impl Verdict {
     pub fn classes(&self) -> Vec<String> {
         // Havoc probes (kind "probe", the two-level check's level 2: l1.rs, twolevel.rs) are
-        // witnesses for classification, not findings of the check.
+        // witnesses for classification, not findings of the check; `unordered` root-cause
+        // pairs (wellsync.rs `add_root_pairs`) explain a race / nondeterminism found anyway;
+        // notes (kind "note", S-SAME-VALUE) are not findings either.
         let mut c: Vec<String> = self
             .findings
             .iter()
-            .filter(|f| f.kind != "probe")
+            .filter(|f| f.kind != "probe" && f.kind != "unordered" && f.kind != "note")
             .map(|f| f.kind.clone())
             .collect();
         if self.distinct_outputs > 1 {
@@ -511,6 +520,7 @@ pub fn ctas_independent(m: &Machine) -> bool {
         Op::Ld { space, sync, .. } | Op::St { space, sync, .. } => {
             sync.is_some() && !matches!(space, Space::Shared | Space::SharedCluster)
         }
+        Op::Ld256 { sync, .. } | Op::St256 { sync, .. } => sync.is_some(),
         Op::ClcTryCancel { .. } | Op::ClcQuery { .. } => !m.clc_eager,
         // griddepcontrol is a no-op in a single-grid launch (E-PDL).
         _ => false,
@@ -955,6 +965,7 @@ fn exit_bound(m: &Machine, warp: u32, pc: u32) -> bool {
                         | Op::Trap { .. }
                         | Op::VoteAll { .. }
                         | Op::VoteAny { .. }
+                        | Op::MatchAny { .. }
                         | Op::Redux { .. }
                 ) =>
             {
@@ -3322,6 +3333,12 @@ fn sync_ample(
     };
     let mut pend_bars: HashMap<(u32, u32), Vec<(u32, u64)>> = HashMap::new();
     for o in &m.pending {
+        if let AsyncKind::Clc { others, mbar, .. } = &o.kind {
+            pend_bars
+                .entry((m.threads[o.issuer as usize].warp, o.pc))
+                .or_default()
+                .extend(others.iter().map(|&c| (c as u32, *mbar as u64)));
+        }
         let bar = match &o.kind {
             AsyncKind::Tma { mbar_cta, mbar, .. } => Some((*mbar_cta as u32, *mbar as u64)),
             AsyncKind::Commit { cta, mbar }
@@ -3474,6 +3491,9 @@ fn sync_ample(
                 .or_default();
             if k == skip {
                 continue;
+            }
+            if let AsyncKind::Clc { others, mbar, .. } = &o.kind {
+                e.extend(others.iter().map(|&c| (c as u32, *mbar as u64)));
             }
             match &o.kind {
                 AsyncKind::Tma { mbar_cta, mbar, .. } => e.push((*mbar_cta as u32, *mbar as u64)),
@@ -7722,12 +7742,12 @@ impl LaWarp {
                 }
                 LaStep::Next
             }
-            Op::R2Ur { d, a, p } => {
+            Op::R2Ur { d, a, p, or } => {
                 let v = match self.val(m, c, a) {
                     Av::K(x) => Av::K(x),
                     _ => Av::U,
                 };
-                let pv = if matches!(v, Av::K(_)) {
+                let pv = if matches!(v, Av::K(_)) && !*or {
                     Av::K(0)
                 } else {
                     Av::N
@@ -7771,6 +7791,10 @@ impl LaWarp {
                         | Op::Mapa { .. }
                         | Op::Cvta { .. }
                         | Op::Hfma2 { .. }
+                        | Op::Hfma2Bf16 { .. }
+                        | Op::FfmaBf16 { .. }
+                        | Op::Hmnmx2Bf16 { .. }
+                        | Op::Vhmnmx { .. }
                 );
                 let vals = op.src_vals();
                 let out: Vec<(ptxv_ir::Reg, Av)> = if pure {
@@ -8028,6 +8052,11 @@ fn lookahead(
     for (k, o) in m.pending.iter().enumerate() {
         if k == skip {
             continue;
+        }
+        if let AsyncKind::Clc { others, mbar, .. } = &o.kind {
+            for &c in others {
+                res.arrive((c as u32, *mbar as u64), 1);
+            }
         }
         if let AsyncKind::Commit { cta, mbar }
         | AsyncKind::Clc { cta, mbar, .. }

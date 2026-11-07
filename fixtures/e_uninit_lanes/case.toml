@@ -1,0 +1,44 @@
+name = "e_uninit_lanes"
+description = """
+S-INIT lane precision for narrow packs (2026-11-06): the high e4m3 lane is undefined in
+threads 16..31, every thread stores the f32 widening of the low lane. SASS: clean (F2FP pack /
+unpack and HADD2.F32 of one half carry undefined bits lane by lane; before, the whole pack was
+undefined: triton _nvfp4x2_k_quant_kernel). PTX: registers are defined or not as a whole, so the
+PTX front reports the store."""
+ptx = "kernel.ptx"
+entry = "uninit_lanes"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [64]
+init = "normal"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "stores the defined low lane"
+expect = ["violation"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "hi"
+summary = "stores the high lane: undefined in threads 16..31"
+edits = [{ marker = "@LANE", find = "%h2;", replace = "%h3;" }]
+expect = ["violation"]

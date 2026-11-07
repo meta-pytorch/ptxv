@@ -176,7 +176,34 @@ pub(crate) fn prepare(
         let make = || machine(&case, kern.clone()).expect("machine");
         ptxv_sim::explore::explore_symmetric(&make, max_states, &mut |_, _| {})
     } else if k.certify {
-        ptxv_sim::wellsync::check_certified(machine(&case, kern.clone())?, max_states)
+        // `ptxv check --certify` may have run this check already (vcache.rs).
+        let key = case
+            .variant(&k.variant)?
+            .after
+            .is_empty()
+            .then(|| crate::vcache::key(&case.dir, &k.variant, &k.front, "certify"))
+            .flatten();
+        match key
+            .as_deref()
+            .and_then(|key| crate::vcache::load(key, max_states))
+        {
+            Some(v) => {
+                notes.push(format!(
+                    "execution check: the verdict of an earlier `ptxv check --certify` of the same case, variant and binary ({} states{})",
+                    v.states,
+                    if v.complete { ", complete" } else { "" }
+                ));
+                v
+            }
+            None => {
+                let v =
+                    ptxv_sim::wellsync::check_certified(machine(&case, kern.clone())?, max_states);
+                if let Some(key) = &key {
+                    crate::vcache::store(key, max_states, &v);
+                }
+                v
+            }
+        }
     } else {
         explore(machine(&case, kern.clone())?, max_states)
     };
@@ -184,29 +211,9 @@ pub(crate) fn prepare(
     // break the preconditions; they are listed as what the verdict relies on.
     notes.extend(v.notes.iter().cloned());
     let mut classes = v.classes();
-    // ASSUME(E-DESC-VERSION): Triton 3.5 leaves the fixed bits 46-48 of its tcgen05
-    // shared-memory descriptors 0; GB300 ignores them (every Triton tcgen05 fixture matches it
-    // bitwise). A PTX-contract deviation the hardware tolerates, listed as relied on.
-    let desc = |f: &&ptxv_sim::machine::Finding| {
-        f.kind == "violation" && f.sig.starts_with("desc-version:")
-    };
-    if v.findings.iter().any(|f| desc(&f)) {
-        notes.push(format!(
-            "relies on: E-DESC-VERSION ({} tcgen05.mma with shared-memory descriptor bits 46-48 = 0; GB300 ignores them)",
-            v.findings.iter().filter(desc).count()
-        ));
-        if !v
-            .findings
-            .iter()
-            .any(|f| f.kind == "violation" && !desc(&f))
-        {
-            classes.retain(|c| c != "violation");
-            if classes.is_empty() {
-                classes.push("clean".into());
-            }
-        }
-    }
     let nondet = classes.iter().any(|c| c == "nondeterministic");
+    // ASSUME(E-DESC-VERSION): a tcgen05.mma descriptor with bits 46-48 = 0 is a `contract`
+    // finding (GB300 ignores the bits, probes/desc_version), listed here as relied on.
     if classes.iter().any(|c| c == "contract") {
         for f in v.findings.iter().filter(|f| f.kind == "contract") {
             notes.push(format!("relies on: {}", f.msg));

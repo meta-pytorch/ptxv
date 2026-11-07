@@ -1,0 +1,65 @@
+// Probe (L-ROSETTA): ldmatrix.sync.aligned.m16n16.x1 / .x2.trans.shared.b8 (SASS
+// LDSM.8.MT1616[.2], FA4 fp8 decode). Thread l supplies the address of row l%16 of matrix l/16:
+// 32 * ((7 l + 3) mod 32) in a 1024-byte shared buffer. The buffer holds byte o = o & 0xff for
+// the first pair of loads and o >> 8 for the second, so each register byte names its source.
+// out[16 l + k]: k 0..3 = x2 (fill 1), 4..5 = x1 (fill 1), 8..11 = x2 (fill 2), 12..13 = x1
+// (fill 2); k 6, 7, 14, 15 stay 0.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry ldsm_b8(.param .u64 pout)
+{
+    .reg .b32 %r<40>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    .shared .align 128 .b8 buf[1024];
+    ld.param.u64 %rd1, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r0, %tid.x;
+    mov.u32 %r1, buf;
+    // fill 1: word i (i = l + 32 m) = bytes 4i..4i+3 (low 8 bits)
+    mov.u32 %r2, 0;
+FILL1:
+    shl.b32 %r3, %r2, 5;
+    add.u32 %r3, %r3, %r0;          // word index
+    shl.b32 %r4, %r3, 2;            // byte offset
+    and.b32 %r5, %r4, 255;
+    mul.lo.u32 %r5, %r5, 0x01010101;
+    add.u32 %r5, %r5, 0x03020100;
+    add.u32 %r6, %r1, %r4;
+    st.shared.u32 [%r6], %r5;
+    add.u32 %r2, %r2, 1;
+    setp.lt.u32 %p1, %r2, 8;
+    @%p1 bra FILL1;
+    bar.sync 0;
+    mad.lo.u32 %r7, %r0, 7, 3;
+    and.b32 %r7, %r7, 31;
+    shl.b32 %r7, %r7, 5;
+    add.u32 %r7, %r1, %r7;
+    ldmatrix.sync.aligned.m16n16.x2.trans.shared.b8 {%r10, %r11, %r12, %r13}, [%r7];
+    ldmatrix.sync.aligned.m16n16.x1.trans.shared.b8 {%r14, %r15}, [%r7];
+    bar.sync 0;
+    mov.u32 %r2, 0;
+FILL2:
+    shl.b32 %r3, %r2, 5;
+    add.u32 %r3, %r3, %r0;
+    shl.b32 %r4, %r3, 2;
+    shr.u32 %r5, %r4, 8;
+    mul.lo.u32 %r5, %r5, 0x01010101;
+    add.u32 %r6, %r1, %r4;
+    st.shared.u32 [%r6], %r5;
+    add.u32 %r2, %r2, 1;
+    setp.lt.u32 %p1, %r2, 8;
+    @%p1 bra FILL2;
+    bar.sync 0;
+    ldmatrix.sync.aligned.m16n16.x2.trans.shared.b8 {%r20, %r21, %r22, %r23}, [%r7];
+    ldmatrix.sync.aligned.m16n16.x1.trans.shared.b8 {%r24, %r25}, [%r7];
+    mul.wide.u32 %rd2, %r0, 64;
+    add.u64 %rd3, %rd1, %rd2;
+    st.global.v4.u32 [%rd3], {%r10, %r11, %r12, %r13};
+    st.global.v2.u32 [%rd3+16], {%r14, %r15};
+    st.global.v4.u32 [%rd3+32], {%r20, %r21, %r22, %r23};
+    st.global.v2.u32 [%rd3+48], {%r24, %r25};
+    ret;
+}

@@ -1,0 +1,37 @@
+name = "probe_e2m1_bytes"
+description = """
+Probe (N-CVT-LP) for the byte selector of F2FP[.RELU].F16.E2M1.UNPACK_B Rd, Ra[.B1|.B2|.B3]
+(cvt.rn[.relu].f16x2.e2m1x2 of each byte of a register; FA4 int4 KV decode): every byte value
+in every position (kernel.ptx). expected/ is GB300's output (ptxas cubin, `ptxv hw-worker
+probes/e2m1_bytes <cubin> --runs 3 --dump`)."""
+ptx = "kernel.ptx"
+entry = "e2m1_bytes"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [256]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [5, 256]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

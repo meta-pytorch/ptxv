@@ -136,6 +136,37 @@ Model changes the kernels forced:
 | `S2R SR_SWINHI`, generic addresses in the shared window (S-SWIN): `LD.E` / `ST.E` / `LD.E.U16`, generic `mapa`, `cvta.shared` | s_routing_forms: this and the peer CTA's shared memory in a 2-CTA cluster |
 
 
+## Round 5 (kernel DB: msl_ops / mslk, agent L2): instructions added
+
+Lowered in `crates/sass/src/l2.rs` (and the PTX forms in `crates/ptx/src/l2.rs`); every other
+modifier of these opcodes is refused.
+
+| form | validation |
+|---|---|
+| `FRND[.F64\|.F16\|.BF16][.FTZ][.TRUNC\|.FLOOR\|.CEIL]` (+ PTX `cvt.r{n,z,m,p}i[.ftz]` between equal float types) | **probes/fcvt**, 8192 edge / tie / random inputs per form, both front-ends bitwise (N-FCVT) |
+| `F2F.{BF16,F16}.F64[.RZ\|.RM\|.RP]`, `F2F.F64.{BF16,F16} Rd, Ra[.H1]`, `F2F.BF16.F16[.R*]`, `F2F.F16.BF16[.R*]` (+ PTX `cvt`) | probes/fcvt (single rounding from f64, f64 NaN payloads kept, f16 <-> bf16 NaN canonical) |
+| `VIMNMX.{U16x2,S16x2}`, `VIMNMX3.{U16x2,S16x2}` (+ PTX `min` / `max .u16x2 / .s16x2`) | **probes/int16x2**, both front-ends (N-INT16X2) |
+| `LEA.HI.X.SX32 Rd, Ra, ~Rb, s, P`; `LEA Rd, Pc, Ra, -Rb, s` | probes/int16x2: ptxas's `IMAD.X ~Ry` rewritten into the LEA.HI.X form (cubins/lea.cubin), same GB300 bytes |
+| `FCHK P, -Ra, b` | **probes/fchk_neg**: probes/fchk with the negate bit, identical predicates (N-FCHK) |
+| `FCHK P, \|Ra\|, \|Rb\|` | **probes/fchk_abs**: probes/fchk with both abs bits, identical predicates (N-FCHK) |
+| `RPCMOV.32 Rpc.LO, Ra` / `RPCMOV.32 Rd, Rpc.LO` | **probes/rpcmov** (patched cubin; L-RPCMOV): a per-thread slot past the register count; kernels with a non-trap CALL refused |
+| `F2I[.FTZ].{S16,U16}[.TRUNC\|.FLOOR\|.CEIL].NTZ` (+ PTX `cvt.r*i[.ftz].{s16,u16}.f32`) | **probes/f2i16**: saturated, NaN 0, extended in the register (N-F2I16) |
+| `CCTL.E.PF1` / `CCTL.E.PF2` (prefetch.global.L1 / .L2): no effect | probes/f2i16 runs both |
+| `BREAK[.RELIABLE] Pc, Bb` | **probes/div_ftz**: div.rn.ftz.f32 slow path on edge pairs (E-BSYNC) |
+| `UTCQMMA` / `tcgen05.mma` block-scaled M = 128 N = 8 (shape check relaxed) | **probes/mma_bs expected/n8**, both front-ends (N-MMA-BS, S-TMEM) |
+| `ATOMG.E.INC[.STRONG.GPU]` (+ PTX `atom.inc.u32`) | **probes/atom_inc**, both front-ends (L-ROSETTA) |
+| `BMOV.32[.CLEAR] Rd, Bb`, `BMOV.32 Bb, Ra` | the parallel_attn_bwd_dkv case (E-BSYNC); not probed alone |
+| `[R.U32+UR]` generic addresses, `UTMAREDG ... desc[URZ]`, device-built tensor maps (words 0x40/0x48 = 0) | operand syntax; **probes/tmap_device**, **probes/tmap_param_copy** (S-TMAP; raw tensor-map parameter bytes visible to device code) |
+| `LDSM.8.MT1616[.2]` (ldmatrix.m16n16.x1 / .x2.trans.b8) | **probes/ldsm_b8**, SASS (L-ROSETTA) |
+| PTX `tcgen05.st / ld .16x32bx2 [a], split` | **probes/tmem_x2**, both front-ends (S-TMEM) |
+| `LDTM.STAT.16dp32bit_t0_t15 / _t16_t31 .xN.MIN/MAX[ABS].F32[.NAN]` | **probes/tmem_ldred16**, SASS (S-TMEM) |
+| `STTM.16dp256bit[.xN]`, `STTM.16dp128bit[.xN]` (+ PTX `tcgen05.st.16x256b / .16x128b`) | **probes/tmem_st16**, both front-ends (S-TMEM) |
+| `F2FP[.RELU].F16.E2M1.UNPACK_B Rd, Ra.B1 / .B2 / .B3` (+ PTX `cvt.rn[.relu].f16x2.e2m1x2` of a `mov.b32 {..}` byte) | **probes/e2m1_bytes**, both front-ends (N-CVT-LP) |
+| `VIMNMX.RELU`, `VIMNMX.S16x2.RELU`, `VIADDMNMX.RELU` (+ PTX `min / max.relu.s32 / .s16x2`) | **probes/imnmx_relu**, both front-ends (N-INT16X2) |
+| `UTMAREDG.<N>D.ADD` (+ PTX `cp.reduce.async.bulk.tensor...add.tile.bulk_group`) on f32 / f16 / bf16 tensors | **probes/tma_red**, edge pairs per type, both front-ends (N-BULK-RED) |
+| `UBLKCP.S.S [URd], [URs], URn` (+ PTX `cp.async.bulk.shared::cluster.shared::cta`) | **probes/bulk_s2s**: 2-CTA cluster, peer and self copies, both front-ends (S-TMA) |
+| `UBLKRED.G.S.ADD.F32.RN [URg], [URs], URn` (+ PTX `cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32`) | **probes/bulk_red**: per-word atomic f32 add (RN, no flush, canonical NaN), four CTAs on the same words, both front-ends (N-BULK-RED) |
+
 ## Round 1 (rung 4): instructions added (all through `sass` `lower_line`, semantics in `fp.rs` / `exec.rs`)
 
 The second column says how each form was checked on GB300.
@@ -228,6 +259,40 @@ The Triton kernels also pass on the PTX front. (Round 1: 24 of 32 ran; base: 3.)
 | gather | at::native::_scatter_gather_elementwise_kernel (1) | yes |  | sass: [clean] | sass: yes |
 | fill | at::native::vectorized_elementwise_kernel (1) | yes |  | sass: [clean] | sass: yes |
 | add_i32 | at::native::vectorized_elementwise_kernel (1) | yes |  | sass: [clean] | sass: yes |
+
+## Round 5 (mslk / msl_ops kernel DB): instructions added, each with a GB300 probe
+
+Every form below fails closed on modifiers its probe does not cover. Since 60b9a5f a
+per-opcode modifier gate (`crates/sass/src/modset.rs`, test `tests/modifier_audit.rs`) refuses
+any modifier outside the audited set before an arm runs.
+
+| SASS form | PTX source | semantics (GB300) | probe |
+|---|---|---|---|
+| `FMNMX.XORSIGN` | `min` / `max.xorsign.abs.f32` | min/max of \|a\|, \|b\| (FMNMX NaN rules); sign = sign(a) xor sign(b) of the stored operands, a NaN operand's sign included and `\|UR\|` ignored for the sign; a NaN result is 0x7fffffff | probes/fmnmx_xorsign |
+| `HFMA2` / `HMUL2` / `HADD2.BF16_V2[.RELU]` | `fma` / `mul` / `add` / `sub.rn.bf16x2`, `neg.bf16x2` | per lane: one rounding to bf16 (RNE), subnormals kept, every NaN result 0x7fff (neg of a NaN too); `-RZ` addend keeps -0 | probes/bf16x2 |
+| `FHFMA` / `FHADD.BF16`, `HMNMX2.BF16_V2[.NAN][.XORSIGN]` | `fma` / `add.f32.bf16`, `min` / `max.bf16x2` | f32 FMA of the widened halves, one rounding in the instruction's mode; min/max as FMNMX on the widenings, NaN 0x7fff | probes/bf16_ext |
+| `REDG.E.ADD.BF16x2.RN`, `ATOMG.E.ADD.BF16x2.RN` | `red` / `atom.add.noftz.bf16x2` | per lane bf16 add, RNE, NaN 0x7fff; not commutative-exact (excluded from C-ORDER) | probes/bf16x2 |
+| `REDUX.SUM.S32` | `redux.sync.add.s32` | wrapping sum over the active lanes (partial masks) | probes/redux_s32 |
+| `FFMA2` / `FMUL2` / `FADD2 .RZ/.RM/.RP` | `.rz/.rm/.rp.f32x2` | one rounding in the mode | probes/bf16_ext |
+| `IMAD.WIDE R, a, b, -c` | `mul.wide` + `sub.s64` | a*b - c mod 2^64 | probes/int_misc |
+| `POPC` | `popc.b32` | variable latency, in-order queue (scoreboard cover) | probes/int_misc |
+| `UP2UR` | (CuTe predicate spill) | uniform P2R | lift_l_forms |
+| `VIADD.16x2` | `add.u16x2` / `add.s16x2` | two 16-bit lanes mod 2^16, no carry between lanes | probes/viadd16x2 |
+| `LDG.E.ENL2.256 Rhi, Rlo` / `STG.E.ENL2.256 [a], Rlo, Rhi` | `ld` / `st.global.v8.b32` | 32-byte access, 32-byte aligned; bytes 0..16 in the `lo` quad (second operand of the load, first data operand of the store) | probes/ldst256 |
+| `HFMA2.BF16_V2 d, -RZ.H0_H0, RZ.H0_H0, \|R\|[.H1_H1]` | `abs.bf16x2` / `abs.bf16` | sign bits cleared, then -0*0 + \|x\|: NaN 0x7fff, -0 to +0 | probes/bf16_abs |
+| `HFMA2` / `HMUL2` / `HADD2` (f16) with `.H0_H0` / `.H1_H1`, `.reuse`, immediate pairs | `fma` / `mul` / `add` / `sub .rn.f16[x2]`, `mul.f16` that cannot be contracted | per lane one f16 rounding; HMUL2 = a*b + -0, HADD2 = a*1 + c | probes/f16_arith |
+| `LDSM.16.M88.N` / `.MT88.N` | `ldmatrix.sync.aligned.m8n8.x{1,2,4}[.trans].shared.b16` | (PTX front added) | probes/ldmatrix_ptx |
+| `LDG.E.NA[...]`, `ST.E.EF.128`, `LD` / `ST` / `ATOM` `.STRONG.SM` | `.L1::no_allocate`, `.L1::evict_first`, `.cta` scope | cache hints dropped; `.SM` = CTA scope | probes/memhints |
+| `STG.E.64.MMIO.SYS` | `st.mmio.relaxed.sys` | strong relaxed `.sys` store; other `.MMIO` forms refused | probes/memhints |
+| `UBLKPF.L2`, `R2UR.OR P, UR, R` | `cp.async.bulk.prefetch.L2` | no-op; `.OR` ORs the lane's "differs" bit into P | probes/memhints |
+| `FLO` scoreboards | - | FLO shares POPC's in-order queue (L-OPCLASS) | probes/flo_popc |
+| `REDUX`, `FRND` scoreboards | - | REDUX is one in-order queue; FRND joins the MUFU / conversion queue (L-OPCLASS) | msl_ops captures |
+| f64 results without a scoreboard | - | complete 128 counted stall cycles after issue (`F64_LAT`, ptxas's NOP padding) | msl_ops captures |
+| `HMNMX2.BF16_V2 d, a, hi, lo, p`, `VHMNMX ... RZ.Hx_Hx` | `min` / `max.bf16x2` with constants | bf16 immediate pair from the encoding (checked against the print); RZ = +0 | msl_ops captures |
+| SASS `SHFL` in a lane-subset BSSY region | (warp-aggregated atomics) | runs over the lanes present; lanes parked at a BSYNC are not waited for | DeepEP hybrid, Triton MoE |
+| f64 pipe scoreboards | - | DADD / DMUL / DFMA complete in order (L-OPCLASS) | probes/f64_queue |
+| `STTM` then `LDTM` on the same registers | - | the TMEM queue reads the store's registers first (L-OPREAD) | probes/sttm_ldtm |
+| `FENCE.VIEW.ASYNC.S` / `.G` / `.T` | `fence.proxy.async[.shared::*]` / `.global` / `tcgen05.wait::st` | each orders only its state space; `.G` covers no shared-memory check, `.T` is `tcgen05.wait::st` (S-PROXY) | probes/proxy_fence `global` |
 
 ## MUFU (N-MUFU)
 

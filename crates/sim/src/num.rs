@@ -111,6 +111,14 @@ pub enum NodeKind {
     },
 }
 
+/// What a 16-bit bf16 operand half holds for the numerics (`Machine::bf16_half`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Bf16Half {
+    Node(u32),
+    Const(u16),
+    Unknown,
+}
+
 /// Which TF32 part of an f32 value x (its node's hw value) a `Tf32` node is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
 pub enum Tf32Part {
@@ -2605,6 +2613,326 @@ impl Machine {
         }
     }
 
+    /// What 16-bit half `h` (0 = low) of operand `v` holds as a bf16 value: a node (an input
+    /// element, a rounding), a constant (an immediate or provably zero bytes), or unknown.
+    fn bf16_half(&mut self, t: usize, v: &Val, h: u32) -> Bf16Half {
+        if let Val::Imm(c) = v {
+            return Bf16Half::Const((*c >> (16 * h)) as u16);
+        }
+        let Some(b) = self.half_val(t, v) else {
+            return Bf16Half::Unknown;
+        };
+        let k = 2 * h as usize;
+        match self.half_op(b[k], b[k + 1]) {
+            crate::halfin::HalfOp::Zero => Bf16Half::Const(0),
+            crate::halfin::HalfOp::Node(n) => Bf16Half::Node(n),
+            crate::halfin::HalfOp::Unknown => Bf16Half::Unknown,
+        }
+    }
+
+    /// One lane of a bf16 FMA (`Op::Hfma2Bf16`, the bf16 atomic adds) as numerics nodes: a
+    /// `Round` (to bf16) of an f32 `Add` (b = 1.0: HADD2), `Fma` with the constant 1 (a
+    /// negated sum) or `Fma` without addend (c = -0: HMUL2). These are the hardware's single
+    /// rounding: a sum or product of two bf16 values rounded first to f32 and then to bf16 is
+    /// the one rounding to bf16 (f32 has at least 2 x 8 + 2 bits; the product of two bf16 is
+    /// exact in f32 down to where its bf16 rounding cannot change). The f32 intermediate is
+    /// checked against the hardware lane `hw`. A general FMA (a nonzero addend) is not one of
+    /// them (its f32 rounding can move a bf16 tie): None, as is any unknown operand.
+    /// ASSUME(N-BF16X2): see ASSUMPTIONS.md
+    fn bf16_lane_node(
+        &mut self,
+        ops: [Bf16Half; 3],
+        neg: [bool; 3],
+        hw: u16,
+        pc: u32,
+    ) -> Option<u32> {
+        let ns = self.num.as_mut()?;
+        if ops.contains(&Bf16Half::Unknown) {
+            return None;
+        }
+        let bits = |o: Bf16Half, ns: &NumState| -> u32 {
+            match o {
+                Bf16Half::Node(n) => ns.nodes[n as usize].hw,
+                Bf16Half::Const(c) => (c as u32) << 16,
+                Bf16Half::Unknown => 0,
+            }
+        };
+        let node = |o: Bf16Half, ns: &mut NumState| -> u32 {
+            match o {
+                Bf16Half::Node(n) => n,
+                _ => {
+                    let b = bits(o, ns);
+                    ns.const_leaf(b, pc)
+                }
+            }
+        };
+        // Values after the operand sign flips.
+        let v: Vec<u32> = (0..3)
+            .map(|k| bits(ops[k], ns) ^ ((neg[k] as u32) << 31))
+            .collect();
+        let one = Bf16Half::Const(0x3f80);
+        let (kind, r, ex, av) = if ops[1] == one && !neg[1] {
+            let (na, nc) = (node(ops[0], ns), node(ops[2], ns));
+            let r = fp::f32_fma(v[0], 0x3f80_0000, Some(v[2]), Rnd::Rn, false);
+            let sg = |e: &Expansion, n: bool| if n { exact::neg(e) } else { e.clone() };
+            let ex = exact::add(
+                &sg(&ns.nodes[na as usize].exact, neg[0]),
+                &sg(&ns.nodes[nc as usize].exact, neg[2]),
+            );
+            let av = exact::add(
+                &exact::from(f32::from_bits(v[0]) as f64),
+                &exact::from(f32::from_bits(v[2]) as f64),
+            );
+            let kind = if !neg[0] && !neg[2] {
+                NodeKind::Add(na, nc, false)
+            } else {
+                let n1 = ns.const_leaf(0x3f80_0000, pc);
+                NodeKind::Fma {
+                    a: na,
+                    b: n1,
+                    c: Some(nc),
+                    neg_ab: neg[0],
+                    neg_c: neg[2],
+                }
+            };
+            (kind, r, ex, av)
+        } else if bits(ops[2], ns) ^ ((neg[2] as u32) << 31) == 0x8000_0000 {
+            let (na, nb) = (node(ops[0], ns), node(ops[1], ns));
+            let r = fp::f32_fma(v[0], v[1], None, Rnd::Rn, false);
+            let mut ex = exact::mul(&ns.nodes[na as usize].exact, &ns.nodes[nb as usize].exact);
+            if neg[0] != neg[1] {
+                ex = exact::neg(&ex);
+            }
+            let av = exact::mul(
+                &exact::from(f32::from_bits(v[0]) as f64),
+                &exact::from(f32::from_bits(v[1]) as f64),
+            );
+            let kind = NodeKind::Fma {
+                a: na,
+                b: nb,
+                c: None,
+                neg_ab: neg[0] != neg[1],
+                neg_c: false,
+            };
+            (kind, r, ex, av)
+        } else {
+            return None;
+        };
+        if fp::f32_to_bf16_rn_gpu(r) != hw {
+            ns.warnings.insert(format!(
+                "bf16 lane at pc {pc}: the f32 intermediate does not round to the hardware result"
+            ));
+            return None;
+        }
+        let err = exact::sub(&exact::from(f32::from_bits(r) as f64), &av);
+        ns.nodes.push(Node {
+            kind,
+            hw: r,
+            exact: ex,
+            err,
+            pc,
+        });
+        let f = (ns.nodes.len() - 1) as u32;
+        let wide = (hw as u32) << 16;
+        ns.nodes.push(Node {
+            kind: NodeKind::Round { arg: f, f16: false },
+            hw: wide,
+            exact: ns.nodes[f as usize].exact.clone(),
+            err: exact::sub(
+                &exact::from(f32::from_bits(wide) as f64),
+                &exact::from(f32::from_bits(r) as f64),
+            ),
+            pc,
+        });
+        Some((ns.nodes.len() - 1) as u32)
+    }
+
+    /// `Op::Hfma2Bf16` wrote `d` = `r` from operand words `v`: each lane a `bf16_lane_node`
+    /// (its bytes `N{node}`), or unknown bytes (with `num_clobber`'s warning for operands that
+    /// carried rounding error). `.RELU` lanes are not followed.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn num_hfma2_bf16(
+        &mut self,
+        t: usize,
+        d: Reg,
+        ops: [&Val; 3],
+        _v: [u32; 3],
+        (sel, neg, relu): ([HSel; 3], [bool; 3], bool),
+        r: u32,
+        pc: u32,
+    ) {
+        if self.num.is_none() {
+            return;
+        }
+        let mut bytes: crate::halfin::Bytes = [None; 4];
+        let mut lost = false;
+        for lane in 0..2u32 {
+            let mut h = [Bf16Half::Unknown; 3];
+            for k in 0..3 {
+                let half = match sel[k] {
+                    HSel::Pair => lane,
+                    HSel::H0 => 0,
+                    HSel::H1 => 1,
+                };
+                h[k] = self.bf16_half(t, ops[k], half);
+            }
+            let n = if relu {
+                None
+            } else {
+                self.bf16_lane_node(h, neg, (r >> (16 * lane)) as u16, pc)
+            };
+            match n {
+                Some(n) => {
+                    bytes[2 * lane as usize] = Some(crate::halfin::Src::N { node: n, b: 0 });
+                    bytes[2 * lane as usize + 1] = Some(crate::halfin::Src::N { node: n, b: 1 });
+                }
+                None => lost = true,
+            }
+        }
+        if lost {
+            let srcs: Vec<&Val> = ops.to_vec();
+            self.num_clobber(t, d, &srcs, pc);
+        } else {
+            self.num.as_mut().unwrap().set(t, d, None);
+        }
+        self.half_set_reg(t, d, Some(bytes));
+    }
+
+    /// `Op::FfmaBf16` wrote `d` = `r` (f32): with round to nearest and no saturation, an f32
+    /// `Add` (b = 1.0, no sign flips: FHADD) or `Fma` node of the bf16 halves' nodes (input
+    /// elements, roundings, constants) and c's node; else, or with an unknown half, as
+    /// `num_clobber`. ASSUME(N-BF16X2): see ASSUMPTIONS.md
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn num_ffma_bf16(
+        &mut self,
+        t: usize,
+        d: Reg,
+        ops: [&Val; 3],
+        v: [u32; 3],
+        (hi, neg, rnd, sat): ([bool; 2], [bool; 3], Rnd, bool),
+        r: u32,
+        pc: u32,
+    ) {
+        if self.num.is_none() {
+            return;
+        }
+        let ha = self.bf16_half(t, ops[0], hi[0] as u32);
+        let hb = self.bf16_half(t, ops[1], hi[1] as u32);
+        if rnd != Rnd::Rn || sat || ha == Bf16Half::Unknown || hb == Bf16Half::Unknown {
+            self.num_clobber(t, d, &ops, pc);
+            return;
+        }
+        let nc = self.num_node_mat(t, ops[2]);
+        let ns = self.num.as_mut().unwrap();
+        let node = |h: Bf16Half, ns: &mut NumState| match h {
+            Bf16Half::Node(n) => n,
+            Bf16Half::Const(c) => ns.const_leaf((c as u32) << 16, pc),
+            Bf16Half::Unknown => unreachable!(),
+        };
+        let (na, nb) = (node(ha, ns), node(hb, ns));
+        let nc = nc.unwrap_or_else(|| ns.leaf_for(t, ops[2], v[2], pc));
+        let bits = |n: u32, ng: bool, ns: &NumState| ns.nodes[n as usize].hw ^ ((ng as u32) << 31);
+        let (x, y, z) = (
+            bits(na, neg[0], ns),
+            bits(nb, neg[1], ns),
+            bits(nc, neg[2], ns),
+        );
+        let sg = |e: &Expansion, n: bool| if n { exact::neg(e) } else { e.clone() };
+        let ex = exact::add(
+            &sg(
+                &exact::mul(&ns.nodes[na as usize].exact, &ns.nodes[nb as usize].exact),
+                neg[0] != neg[1],
+            ),
+            &sg(&ns.nodes[nc as usize].exact, neg[2]),
+        );
+        let av = exact::add(
+            &exact::mul(
+                &exact::from(f32::from_bits(x) as f64),
+                &exact::from(f32::from_bits(y) as f64),
+            ),
+            &exact::from(f32::from_bits(z) as f64),
+        );
+        let add = hb == Bf16Half::Const(0x3f80) && !neg.iter().any(|&n| n);
+        let kind = if add {
+            NodeKind::Add(na, nc, false)
+        } else {
+            NodeKind::Fma {
+                a: na,
+                b: nb,
+                c: Some(nc),
+                neg_ab: neg[0] != neg[1],
+                neg_c: neg[2],
+            }
+        };
+        let err = exact::sub(&exact::from(f32::from_bits(r) as f64), &av);
+        ns.nodes.push(Node {
+            kind,
+            hw: r,
+            exact: ex,
+            err,
+            pc,
+        });
+        let id = (ns.nodes.len() - 1) as u32;
+        ns.set(t, d, Some(id));
+    }
+
+    /// A bf16 atomic add (`AtomOp::AddBf16x2` / `AddBf16`, `bytes` 4 / 2) at `loc` of operand
+    /// `v` (bits `x`) to the old value `o`, leaving `n`: each lane a `bf16_lane_node` of the
+    /// location's old bytes and the operand's half, written as the location's byte provenance
+    /// (unknown when untracked); `d` gets the old bytes. One schedule's order: certification
+    /// refuses unordered bf16 adds of one location (C-ORDER).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn num_atom_bf16(
+        &mut self,
+        t: usize,
+        v: &Val,
+        loc: Loc,
+        bytes: u8,
+        n: u32,
+        d: Option<Reg>,
+        pc: u32,
+    ) {
+        let Some(ns) = self.num.as_mut() else { return };
+        let k = mem_key(loc);
+        ns.note_write(k);
+        ns.other_atomics += 1;
+        ns.mem.remove(&k);
+        let old = self.half_mem(loc, bytes as usize, None);
+        let mut out: Vec<Option<crate::halfin::Src>> = vec![None; bytes as usize];
+        for lane in 0..(bytes as u32 / 2) {
+            let i = 2 * lane as usize;
+            let a = match self.half_op(old[i], old[i + 1]) {
+                crate::halfin::HalfOp::Zero => Bf16Half::Const(0),
+                crate::halfin::HalfOp::Node(n) => Bf16Half::Node(n),
+                crate::halfin::HalfOp::Unknown => Bf16Half::Unknown,
+            };
+            let c = self.bf16_half(t, v, lane);
+            let node = self.bf16_lane_node(
+                [a, Bf16Half::Const(0x3f80), c],
+                [false; 3],
+                (n >> (16 * lane)) as u16,
+                pc,
+            );
+            if let Some(nd) = node {
+                out[i] = Some(crate::halfin::Src::N { node: nd, b: 0 });
+                out[i + 1] = Some(crate::halfin::Src::N { node: nd, b: 1 });
+            }
+        }
+        self.half_mem_set(crate::halfin::hkey(loc), &out);
+        if let Some(d) = d {
+            self.num.as_mut().unwrap().set(t, d, None);
+            let mut b: crate::halfin::Bytes = [None; 4];
+            for (i, s) in old.iter().enumerate().take(4) {
+                b[i] = *s;
+            }
+            if bytes == 2 {
+                b[2] = Some(crate::halfin::Src::Zero);
+                b[3] = Some(crate::halfin::Src::Zero);
+            }
+            self.half_set_reg(t, d, Some(b));
+        }
+    }
+
     /// F2FP.BF16.F32.PACK_AB `d` = (bf16(a) << 16) | bf16(b), round to nearest even: the halves
     /// are `Round` nodes of the operands' nodes (16-bit provenance `N`); a constant operand
     /// gives a constant half (zero bytes for 0), an untracked one unknown bytes.
@@ -2704,6 +3032,44 @@ impl Machine {
     }
 
     /// A 4-byte copy between memory locations (TMA store): the value keeps its node.
+    /// One word of a bulk f32 add-reduction: global `to` (old bits o) += shared `from` (bits
+    /// x), result r. As `num_atom`'s atomic add, with the shared word's node (or a leaf) as the
+    /// addend.
+    pub(crate) fn num_bulk_add(&mut self, from: Loc, to: Loc, (o, x, r): (u32, u32, u32), pc: u32) {
+        let Some(ns) = self.num.as_mut() else { return };
+        let k = mem_key(to);
+        ns.note_write(k);
+        let no = ns.mem.get(&k).copied().unwrap_or_else(|| ns.leaf(o, pc));
+        let nx = ns
+            .mem
+            .get(&mem_key(from))
+            .copied()
+            .unwrap_or_else(|| ns.leaf(x, pc));
+        let ex = exact::add(&ns.nodes[no as usize].exact, &ns.nodes[nx as usize].exact);
+        let a_v = exact::add(
+            &exact::from(f32::from_bits(o) as f64),
+            &exact::from(f32::from_bits(x) as f64),
+        );
+        let err = exact::sub(&exact::from(f32::from_bits(r) as f64), &a_v);
+        ns.nodes.push(Node {
+            kind: NodeKind::AtomAdd(no, nx),
+            hw: r,
+            exact: ex,
+            err,
+            pc,
+        });
+        ns.atomic_adds += 1;
+        let id = (ns.nodes.len() - 1) as u32;
+        ns.mem.insert(k, id);
+    }
+
+    /// A word written with a value the graph does not track: it loses its node.
+    pub(crate) fn num_forget(&mut self, loc: Loc) {
+        let Some(ns) = self.num.as_mut() else { return };
+        ns.note_write(mem_key(loc));
+        ns.mem.remove(&mem_key(loc));
+    }
+
     pub(crate) fn num_copy(&mut self, from: Loc, to: Loc) {
         let Some(ns) = self.num.as_mut() else { return };
         ns.note_write(mem_key(to));
@@ -3068,6 +3434,7 @@ fn pure_op(op: &Op) -> bool {
             | Op::CvtInt { .. }
             | Op::R2Ur { .. }
             | Op::VoteAny { .. }
+            | Op::MatchAny { .. }
             | Op::VoteAll { .. }
             | Op::Redux { .. }
             | Op::Flo { .. }
@@ -3080,6 +3447,10 @@ fn pure_op(op: &Op) -> bool {
             | Op::Fadd { .. }
             | Op::Ffma2 { .. }
             | Op::Hfma2 { .. }
+            | Op::Hfma2Bf16 { .. }
+            | Op::FfmaBf16 { .. }
+            | Op::Hmnmx2Bf16 { .. }
+            | Op::Vhmnmx { .. }
             | Op::CvtF32Bf16 { .. }
             | Op::Cvta { .. }
             | Op::Bfe { .. }
@@ -3142,6 +3513,10 @@ fn pos_free_regs(op: &Op) -> (Vec<Reg>, bool) {
             generic = *space == Space::Generic;
             addr.base.iter().chain(addr.base2.iter()).for_each(&mut v);
         }
+        Op::Ld256 { addr, .. } | Op::St256 { addr, .. } => {
+            addr.base.iter().chain(addr.base2.iter()).for_each(&mut v);
+        }
+        Op::LdReduce { addr, .. } => addr.base.iter().chain(addr.base2.iter()).for_each(&mut v),
         Op::TmaLoad { coords, .. } | Op::TmaStore { coords, .. } => coords.iter().for_each(&mut v),
         _ => {}
     }
@@ -3168,6 +3543,10 @@ fn value_regs(op: &Op) -> Vec<Reg> {
         | Op::Atom { v: x, .. }
         | Op::StAsync { v: x, .. }
         | Op::StLocal { v: x, .. } => v(x),
+        Op::St256 { lo, hi, .. } => {
+            v(&Val::Reg(*lo, 4));
+            v(&Val::Reg(*hi, 4));
+        }
         Op::Shfl { a, .. } => v(a),
         // A warp-collective MMA: every operand is data (any lane's feeds every lane's result).
         Op::Hmma { a, b, c, .. } => a.iter().chain(b).chain(c).for_each(v),
@@ -3514,7 +3893,7 @@ impl Machine {
             && !inst.uniform
             && !matches!(
                 inst.op,
-                Op::VoteAny { .. } | Op::VoteAll { .. } | Op::Redux { .. }
+                Op::VoteAny { .. } | Op::VoteAll { .. } | Op::Redux { .. } | Op::MatchAny { .. }
             );
         let dg: Vec<usize> = match inst.guard.reg {
             Some(g) if data_guard && per_thread => members

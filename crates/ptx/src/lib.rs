@@ -12,12 +12,15 @@
 //! anything it does not model yet; we never skip an instruction.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
 use ptxv_ir::*;
+
+mod l2;
 
 /// ptxas puts user shared memory after a 1 KiB system-reserved prefix on Blackwell; we
 /// mirror that so PTX and SASS reports show the same smem offsets.
@@ -28,6 +31,76 @@ struct Stmt {
     line: u32,
     labels: Vec<String>,
     text: String,
+}
+
+/// (opcode, operands) of a statement, its guard dropped.
+fn stmt_parts(text: &str) -> (&str, Vec<&str>) {
+    let t = text.trim().trim_end_matches(';').trim();
+    let t = match t.strip_prefix('@') {
+        Some(r) => r.split_once(char::is_whitespace).map_or("", |x| x.1).trim(),
+        None => t,
+    };
+    let (op, rest) = t.split_once(char::is_whitespace).unwrap_or((t, ""));
+    let ops = rest
+        .split(',')
+        .map(|x| x.trim().trim_matches(|c| c == '{' || c == '}').trim())
+        .filter(|x| !x.is_empty())
+        .collect();
+    (op, ops)
+}
+
+/// Destinations of `mul.f16` / `mul.f16x2` without `.rn` that ptxas cannot contract into an
+/// FMA: every use is a multiplicand of `mul` / `fma`, a store or a conversion (Triton's
+/// int4 / fp8 KV dequant: `mul.f16 %rs230, %rs6, %rs229` feeding `fma.rn.f16` as a). Any
+/// other use (an add / sub, an fma addend, a move ptxas could propagate) leaves the mul
+/// refused.
+fn uncontractible_f16_muls(insts: &[&Stmt]) -> HashSet<String> {
+    let mut cand: HashSet<String> = HashSet::new();
+    for st in insts {
+        let (op, ops) = stmt_parts(&st.text);
+        if op.starts_with("mul.")
+            && (op.ends_with(".f16") || op.ends_with(".f16x2"))
+            && !op.split('.').any(|m| m == "rn")
+        {
+            if let Some(d) = ops.first() {
+                cand.insert(d.to_string());
+            }
+        }
+    }
+    // Registers every use of which is a store or a conversion (the destinations of `mov`
+    // packs that only get stored).
+    let stored_only = |r: &str| {
+        insts.iter().all(|st| {
+            let (op, ops) = stmt_parts(&st.text);
+            let base = op.split('.').next().unwrap_or("");
+            let is_def = |i: usize| i == 0 && !matches!(base, "st" | "red" | "atom");
+            ops.iter()
+                .enumerate()
+                .all(|(i, o)| is_def(i) || *o != r || matches!(base, "st" | "cvt"))
+        })
+    };
+    for st in insts {
+        let (op, ops) = stmt_parts(&st.text);
+        let base = op.split('.').next().unwrap_or("");
+        let is_def = |i: usize| i == 0 && !matches!(base, "st" | "red" | "atom");
+        for (i, o) in ops.iter().enumerate() {
+            if is_def(i) || !cand.contains(*o) {
+                continue;
+            }
+            let safe = match base {
+                "mul" => true,
+                "fma" => i == 1 || i == 2,
+                "st" | "cvt" => true,
+                // `mov.b32 %r13, {%h10, %h10}`: a pack whose result is only stored.
+                "mov" => st.text.contains('{') && stored_only(ops[0]),
+                _ => false,
+            };
+            if !safe {
+                cand.remove(*o);
+            }
+        }
+    }
+    cand
 }
 
 /// Remove comments, keeping newlines so line numbers survive.
@@ -168,6 +241,8 @@ struct Lower<'a> {
     labels: &'a HashMap<String, usize>,
     /// Shared symbols -> shared-window address; param symbols -> param-space offset.
     shared_syms: &'a HashMap<String, u32>,
+    /// `.local` arrays of the kernel (`__local_depot0`): offsets in the thread's local frame.
+    local_syms: &'a HashMap<String, u32>,
     param_syms: &'a HashMap<String, u32>,
     line: u32,
     text: &'a str,
@@ -179,6 +254,8 @@ struct Lower<'a> {
     tmp_v: Option<Reg>,
     /// Ops to run before the lowered one, under the same guard (moves into `vec_v`).
     pre: Vec<Op>,
+    /// `mul.f16[x2]` destinations ptxas cannot contract (`uncontractible_f16_muls`).
+    f16_mul_ok: &'a HashSet<String>,
     /// Hidden consecutive scratch registers for vector operands whose registers are not
     /// consecutive (`st.shared.v4.b32 [a], {%r262, %r261, %r260, %r259}`): `%__vec0..7`.
     vec_v: Option<Reg>,
@@ -195,7 +272,7 @@ fn needs_vec_scratch(text: &str, regs: &HashMap<String, Reg>) -> bool {
         Some(r) => r.split_once(char::is_whitespace).map_or("", |x| x.1).trim(),
         None => t,
     };
-    if !(t.starts_with("ld.") || t.starts_with("st.")) {
+    if !(t.starts_with("ld.") || t.starts_with("st.") || t.starts_with("ldmatrix.")) {
         return false;
     }
     let Some((_, rest)) = t.split_once('{') else {
@@ -219,7 +296,9 @@ fn needs_scratch(text: &str) -> bool {
         Some(r) => r.split_once(char::is_whitespace).map_or("", |x| x.1).trim(),
         None => t,
     };
-    t.starts_with("mad.lo.s64") || t.starts_with("mad.lo.u64")
+    t.starts_with("mad.lo.s64")
+        || t.starts_with("mad.lo.u64")
+        || (t.starts_with("atom.") || t.starts_with("red.")) && t.contains(".v2.bf16")
 }
 
 impl<'a> Lower<'a> {
@@ -285,6 +364,9 @@ impl<'a> Lower<'a> {
         }
         if let Some(&a) = self.shared_syms.get(s) {
             return Ok(Val::SReg(SReg::SharedAddr(a)));
+        }
+        if let Some(&a) = self.local_syms.get(s) {
+            return Ok(Val::Imm(a as u64));
         }
         if let Some(&a) = self.param_syms.get(s) {
             return Ok(Val::Imm(a as u64));
@@ -516,6 +598,7 @@ fn cvt_lp(lw: &Lower, mods: &[&str], ops: &[String]) -> Result<Option<Op>> {
                 from: f,
                 to: t,
                 relu,
+                byte: 0,
             },
             _ => return Ok(None),
         },
@@ -572,8 +655,16 @@ fn mem_sync(mods: &[&str], rmw: bool) -> Result<Option<MemSync>> {
             scope: Scope::Sys,
         }));
     }
+    // ld/st.mmio.relaxed.sys: a strong relaxed system-scope access (SASS STG.E.64.MMIO.SYS,
+    // probes/memhints).
     if mods.contains(&"mmio") {
-        bail!("ld/st.mmio not modeled");
+        if sem != Some(Sem::Relaxed) || scope_of(mods) != Some(Scope::Sys) || rmw {
+            bail!("only ld/st.mmio.relaxed.sys is modeled");
+        }
+        return Ok(Some(MemSync {
+            sem: Sem::Relaxed,
+            scope: Scope::Sys,
+        }));
     }
     Ok(match (sem, rmw) {
         (None, false) => None,
@@ -753,11 +844,12 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
         .lines()
         .map(|l| {
             let t = l.trim_start();
-            if t.starts_with(".loc") || t.starts_with(".file") {
-                ""
-            } else {
-                l
-            }
+            // (`.local` declarations stay: only `.loc` itself.)
+            let dir = |d: &str| {
+                t.strip_prefix(d)
+                    .is_some_and(|r| r.is_empty() || r.starts_with(char::is_whitespace))
+            };
+            if dir(".loc") || dir(".file") { "" } else { l }
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -872,6 +964,8 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
     let mut vreg_names = Vec::new();
     let mut npred = 0u16;
     let mut shared_syms = HashMap::new();
+    let mut local_syms = HashMap::new();
+    let mut local_bytes = 0u32;
     let mut shared_syms_pre: Vec<(String, u32)> = Vec::new();
     let mut smem = SMEM_RESERVED;
     // Module-scope shared variables (before the entry). `.extern .shared x[]` is the dynamic
@@ -944,6 +1038,15 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
             smem += size;
             continue;
         }
+        // `.local .align A .b8 __local_depot0[N]` (the compiler's stack frame, addressed through
+        // `%SPL`): per-thread local memory, as SASS LDL / STL (offsets from 0).
+        if let Some(rest) = t.strip_prefix(".local") {
+            let (name, align, size) = shared_decl(rest)?;
+            local_bytes = local_bytes.div_ceil(align) * align;
+            local_syms.insert(name, local_bytes);
+            local_bytes += size;
+            continue;
+        }
         if t.starts_with('.') {
             continue; // other directives (.maxntid, .pragma, ...) do not affect semantics here
         }
@@ -986,6 +1089,7 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
         bail!("kernel {name}: more than 32768 virtual registers");
     }
 
+    let f16_mul_ok = uncontractible_f16_muls(&insts_src);
     // Pass 2: instructions. A statement may lower to several ops (`Lower::extra`); branch
     // targets and labels are statement indices until remapped below.
     let mut code = Vec::new();
@@ -995,6 +1099,7 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
             regs: &regs,
             labels: &labels,
             shared_syms: &shared_syms,
+            local_syms: &local_syms,
             param_syms: &param_syms,
             line: st.line,
             text: &st.text,
@@ -1002,6 +1107,7 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
             tmp_v,
             pre: Vec::new(),
             vec_v,
+            f16_mul_ok: &f16_mul_ok,
         };
         let inst = lower_inst(&mut lw).with_context(|| format!("in kernel {name}"))?;
         start.push(code.len());
@@ -1052,6 +1158,30 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
         }
     }
 
+    // `.reqntid x[, y[, z]]` / `.maxntid ...` between the parameter list and the body.
+    let ntid = {
+        let head = &src[entry_at..body_start];
+        let head = head.rsplit_once(')').map_or(head, |x| x.1);
+        let dir = |d: &str| -> Option<[u32; 3]> {
+            let i = head.find(d)? + d.len();
+            let rest = &head[i..];
+            let end = rest.find(['.', '{', '\n']).unwrap_or(rest.len());
+            let v: Vec<u32> = rest[..end]
+                .split(',')
+                .filter_map(|x| x.trim().parse().ok())
+                .collect();
+            (!v.is_empty() && v.len() <= 3).then(|| {
+                [
+                    v[0],
+                    v.get(1).copied().unwrap_or(1),
+                    v.get(2).copied().unwrap_or(1),
+                ]
+            })
+        };
+        dir(".reqntid")
+            .map(|dims| Ntid { req: true, dims })
+            .or_else(|| dir(".maxntid").map(|dims| Ntid { req: false, dims }))
+    };
     Ok(Kernel {
         name,
         front: Front::Ptx,
@@ -1070,6 +1200,9 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
         bulk_read_waits: vec![],
         bulk_commit_sb: vec![],
         parts: vec![],
+        ntid,
+        globals: vec![],
+        global_relocs: vec![],
     })
 }
 
@@ -1112,7 +1245,214 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             .ok_or_else(|| lw.err(format!("missing operand {i}")))
     };
 
+    // The 16-bit float type of an arithmetic op (`bf16x2` / `f16x2` are not in `type_bits`).
+    let ht = mods.last().copied().unwrap_or("");
+    let half_t = matches!(ht, "bf16" | "bf16x2" | "f16" | "f16x2");
     let op = match base {
+        // Agent L2's forms (l2.rs): cvt.r*i between equal float types, cvt f64 <-> f16 /
+        // bf16 and f16 <-> bf16, min / max .u16x2 / .s16x2, cp.reduce.async.bulk .add.f32.
+        _ if l2::claims(base, mods) => l2::lower(lw, base, mods, &ops)?,
+        // Packed / scalar bf16 arithmetic as the SASS ptxas emits (`HFMA2.BF16_V2`, `HMUL2`,
+        // `HADD2`; probes/bf16x2, both front-ends): `fma.rn[.relu]`, `mul.rn`, `add.rn`,
+        // `sub.rn` .bf16x2 / .bf16 and `neg.bf16x2` / `.bf16` (-0*0 - x: a NaN becomes 0x7fff).
+        // Without `.rn` ptxas may contract a mul and an add into one HFMA2: refused, as are
+        // immediates, `.ftz` / `.sat` / `.oob` and f16 arithmetic. ASSUME(N-BF16X2)
+        // Mixed precision `fma` / `add` / `sub` `.{rn,rz,rm,rp}[.sat].f32.bf16`: SASS FHFMA.BF16 /
+        // FHADD.BF16 (probes/bf16_ext, both front-ends). ASSUME(N-BF16X2)
+        "add" | "sub" | "fma"
+            if ht == "bf16" && mods.len() >= 2 && mods[mods.len() - 2] == "f32" =>
+        {
+            let rest = &mods[..mods.len() - 2];
+            let rnd = match rest.iter().find(|m| **m != "sat") {
+                Some(&"rn") => Rnd::Rn,
+                Some(&"rz") => Rnd::Rz,
+                Some(&"rm") => Rnd::Rm,
+                Some(&"rp") => Rnd::Rp,
+                _ => bail!(lw.err(format!("{base}.f32.bf16 needs a rounding mode"))),
+            };
+            if rest.len() > 2 || rest.len() == 2 && !rest.contains(&"sat") {
+                bail!(lw.err(format!(
+                    "{base}.f32.bf16 with modifiers {rest:?} not modeled"
+                )));
+            }
+            let reg = |i: usize| -> Result<Val> {
+                let v = lw.val(op_n(i)?)?;
+                if !matches!(v, Val::Reg(..)) {
+                    bail!(lw.err(format!("{base}.f32.bf16 immediate operand not modeled")));
+                }
+                Ok(v)
+            };
+            let d = lw.dst(op_n(0)?)?;
+            let (a, b, c) = if base == "fma" {
+                (reg(1)?, reg(2)?, reg(3)?)
+            } else {
+                (reg(1)?, Val::Imm(0x3f80), reg(2)?)
+            };
+            Op::FfmaBf16 {
+                d,
+                a,
+                b,
+                c,
+                hi: [false; 2],
+                neg: [false, false, base == "sub"],
+                rnd,
+                sat: has("sat"),
+            }
+        }
+        // `min` / `max` [.NaN] [.xorsign.abs] `.bf16x2` / `.bf16`: SASS HMNMX2.BF16_V2
+        // (probes/bf16_ext). ASSUME(N-BF16X2)
+        "min" | "max" if matches!(ht, "bf16" | "bf16x2") => {
+            let rest = &mods[..mods.len() - 1];
+            if rest
+                .iter()
+                .any(|m| !matches!(*m, "NaN" | "xorsign" | "abs"))
+                || has("xorsign") != has("abs")
+            {
+                bail!(lw.err(format!("{base}.{ht} with modifiers {rest:?} not modeled")));
+            }
+            let reg = |i: usize| -> Result<Val> {
+                let v = lw.val(op_n(i)?)?;
+                if !matches!(v, Val::Reg(..)) {
+                    bail!(lw.err(format!("{base}.{ht} immediate operand not modeled")));
+                }
+                Ok(v)
+            };
+            let d = lw.dst(op_n(0)?)?;
+            let op = Op::Hmnmx2Bf16 {
+                d,
+                a: reg(1)?,
+                b: reg(2)?,
+                sel: [HSel::Pair; 2],
+                min: Pred {
+                    reg: None,
+                    neg: base == "max",
+                },
+                nan: has("NaN"),
+                xorsign: has("xorsign"),
+            };
+            if ht == "bf16" {
+                extra.push(Op::Int {
+                    op: IntOp::And,
+                    bits: 32,
+                    d,
+                    a: Val::Reg(d, 1),
+                    b: Val::Imm(0xffff),
+                });
+            }
+            op
+        }
+        // f16 arithmetic as ptxas emits it (SASS `HFMA2` / `HMUL2` / `HADD2`, probes/f16_arith):
+        // `fma.rn`, `mul.rn`, `add.rn`, `sub.rn` `.f16` / `.f16x2`, and `mul.f16[x2]` without
+        // `.rn` where no use lets ptxas contract it (`uncontractible_f16_muls`). Register
+        // operands only; `.ftz` / `.sat` / `.relu` are refused. ASSUME(L-ROSETTA)
+        "add" | "sub" | "mul" | "fma" if matches!(ht, "f16" | "f16x2") => {
+            let rest = &mods[..mods.len() - 1];
+            let d_name = op_n(0)?.trim();
+            let ok = rest == ["rn"]
+                || base == "mul" && rest.is_empty() && lw.f16_mul_ok.contains(d_name);
+            if !ok {
+                bail!(lw.err(format!(
+                    "{base}.{ht} with modifiers {rest:?} not modeled (only .rn, or a mul ptxas cannot contract)"
+                )));
+            }
+            let reg = |i: usize| -> Result<Val> {
+                let v = lw.val(op_n(i)?)?;
+                if !matches!(v, Val::Reg(..)) {
+                    bail!(lw.err(format!("{base}.{ht} immediate operand not modeled")));
+                }
+                Ok(v)
+            };
+            let d = lw.dst(op_n(0)?)?;
+            let (a, b, c, neg_c) = match base {
+                "mul" => (reg(1)?, reg(2)?, Val::Imm(0x8000_8000), false),
+                "add" | "sub" => (reg(1)?, Val::Imm(0x3c00_3c00), reg(2)?, base == "sub"),
+                _ => (reg(1)?, reg(2)?, reg(3)?, false),
+            };
+            let op = Op::Hfma2 {
+                d,
+                a,
+                b,
+                c,
+                neg_a: false,
+                neg_c,
+                sel: [HSel::Pair; 3],
+            };
+            if ht == "f16" {
+                extra.push(Op::Int {
+                    op: IntOp::And,
+                    bits: 32,
+                    d,
+                    a: Val::Reg(d, 1),
+                    b: Val::Imm(0xffff),
+                });
+            }
+            op
+        }
+        // `abs.bf16x2` / `.bf16`: -0*0 + |x| (SASS `HFMA2.BF16_V2 d, -RZ.H0_H0, RZ.H0_H0, |R|`;
+        // a NaN becomes 0x7fff).
+        "add" | "sub" | "mul" | "fma" | "neg" | "abs" if matches!(ht, "bf16" | "bf16x2") => {
+            let rest = &mods[..mods.len() - 1];
+            let ok = match base {
+                "neg" | "abs" => rest.is_empty(),
+                "fma" => rest == ["rn"] || rest == ["rn", "relu"],
+                _ => rest == ["rn"],
+            };
+            if !ok {
+                bail!(lw.err(format!(
+                    "{base}.{ht} with modifiers {rest:?} not modeled (only .rn, fma .rn.relu)"
+                )));
+            }
+            let reg = |i: usize| -> Result<Val> {
+                let v = lw.val(op_n(i)?)?;
+                if !matches!(v, Val::Reg(..)) {
+                    bail!(lw.err(format!("{base}.{ht} immediate operand not modeled")));
+                }
+                Ok(v)
+            };
+            let d = lw.dst(op_n(0)?)?;
+            let (a, b, c, neg) = match base {
+                "mul" => (reg(1)?, reg(2)?, Val::Imm(0x8000_8000), [false; 3]),
+                "add" | "sub" => (
+                    reg(1)?,
+                    Val::Imm(0x3f80_3f80),
+                    reg(2)?,
+                    [false, false, base == "sub"],
+                ),
+                "neg" => (
+                    Val::Imm(0x8000_8000),
+                    Val::Imm(0),
+                    reg(1)?,
+                    [false, false, true],
+                ),
+                "abs" => (Val::Imm(0x8000_8000), Val::Imm(0), reg(1)?, [false; 3]),
+                _ => (reg(1)?, reg(2)?, reg(3)?, [false; 3]),
+            };
+            let op = Op::Hfma2Bf16 {
+                d,
+                a,
+                b,
+                c,
+                sel: [HSel::Pair; 3],
+                neg,
+                abs: [false, false, base == "abs"],
+                relu: has("relu"),
+            };
+            if ht == "bf16" {
+                // A 16-bit register: the high lane (computed from the operands' high bits)
+                // cleared.
+                extra.push(Op::Int {
+                    op: IntOp::And,
+                    bits: 32,
+                    d,
+                    a: Val::Reg(d, 1),
+                    b: Val::Imm(0xffff),
+                });
+            }
+            op
+        }
+        "add" | "sub" | "mul" | "fma" | "neg" | "abs" | "min" | "max" if half_t => {
+            bail!(lw.err(format!("{base}.{ht} not modeled")))
+        }
         "mov" if op_n(0)?.trim().starts_with('{') => {
             let halves: Vec<&str> = op_n(0)?
                 .trim()
@@ -1120,8 +1460,11 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 .split(',')
                 .map(|x| x.trim())
                 .collect();
-            if halves.len() != 2 || (bits != 64 && bits != 32) {
-                bail!(lw.err("only mov.b64 {lo, hi} / mov.b32 {lo, hi} unpacking is modeled"));
+            if !(halves.len() == 2 && (bits == 64 || bits == 32) || halves.len() == 4 && bits == 32)
+            {
+                bail!(lw.err(
+                    "only mov.b64 {lo, hi} / mov.b32 {lo, hi} / mov.b32 {b0, b1, b2, b3} unpacking is modeled"
+                ));
             }
             let r = |x: &str| -> Result<Option<Reg>> {
                 if x == "_" {
@@ -1139,7 +1482,17 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     sel: Val::Imm(sel),
                     b: Val::Imm(0),
                 };
-                let mut ops: Vec<Op> = [(r(halves[0])?, 0x4410), (r(halves[1])?, 0x4432)]
+                // `mov.b32 {b0, b1, b2, b3}, r`: four bytes, each zero-extended.
+                let sels: &[u64] = if halves.len() == 4 {
+                    &[0x4440, 0x4441, 0x4442, 0x4443]
+                } else {
+                    &[0x4410, 0x4432]
+                };
+                let mut ops: Vec<Op> = halves
+                    .iter()
+                    .zip(sels)
+                    .map(|(h, &sel)| Ok((r(h)?, sel)))
+                    .collect::<Result<Vec<_>>>()?
                     .into_iter()
                     .filter_map(|(d, sel)| d.map(|d| half(d, sel)))
                     .collect();
@@ -1189,17 +1542,21 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         },
         // Packed f32x2 (sm_100+): `fma.rn.f32x2`, `mul.rn.f32x2`, `add.rn.f32x2`, `sub.rn
         // .f32x2` on .b64 registers, lane 0 in the low 32 bits. ptxas emits FFMA2 / FMUL2 /
-        // FADD2: one rounding to nearest per lane, subnormals kept, canonical NaN
-        // (fixtures/s_ptx_packed = GB300). Without `.rn`, ptxas may contract mul + add into
-        // one FFMA2, and other rounding modes, .ftz and .sat are not modeled: all refused.
+        // FADD2: one rounding per lane, subnormals kept, canonical NaN (fixtures/s_ptx_packed
+        // = GB300; `.rz` / `.rm` / `.rp`: FFMA2.RZ etc., probes/bf16_ext). Without a rounding
+        // mode ptxas may contract mul + add into one FFMA2; that, .ftz and .sat are refused.
         // ASSUME(L-ROSETTA)
         "add" | "sub" | "mul" | "fma" if mods.last() == Some(&"f32x2") => {
             let rest = &mods[..mods.len() - 1];
-            if rest != ["rn"] {
-                bail!(lw.err(format!(
-                    "{base}.f32x2 with modifiers {rest:?} not modeled (only .rn)"
-                )));
-            }
+            let rnd = match rest {
+                ["rn"] => Rnd::Rn,
+                ["rz"] => Rnd::Rz,
+                ["rm"] => Rnd::Rm,
+                ["rp"] => Rnd::Rp,
+                _ => bail!(lw.err(format!(
+                    "{base}.f32x2 with modifiers {rest:?} not modeled (one of .rn / .rz / .rm / .rp)"
+                ))),
+            };
             let reg = |s: &str| -> Result<(Val, F2Lanes)> {
                 match lw.val(s)? {
                     v @ Val::Reg(..) => Ok((v, F2Lanes::Pair)),
@@ -1217,14 +1574,19 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     b: one,
                     c: b,
                     neg: [false, false, base == "sub"],
+                    rnd,
                 },
-                // a*b + (-0): the rounded product (as FMUL2).
+                // a*b + (-0): the rounded product (as FMUL2; +0 under .rm).
                 "mul" => Op::Ffma2 {
                     d,
                     a,
                     b,
-                    c: (Val::Imm(0x8000_0000), F2Lanes::Bcast),
+                    c: (
+                        Val::Imm(if rnd == Rnd::Rm { 0 } else { 0x8000_0000 }),
+                        F2Lanes::Bcast,
+                    ),
                     neg: [false; 3],
+                    rnd,
                 },
                 _ => Op::Ffma2 {
                     d,
@@ -1232,6 +1594,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     b,
                     c: reg(op_n(3)?)?,
                     neg: [false; 3],
+                    rnd,
                 },
             }
         }
@@ -1442,9 +1805,20 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             len: lw.val(op_n(3)?)?,
             signed: tname.starts_with('s'),
         },
-        // min.f32 / max.f32 [.ftz] [.NaN] (2 or 3 sources), as SASS FMNMX / FMNMX3.
+        // min.f32 / max.f32 [.ftz] [.NaN] (2 or 3 sources), as SASS FMNMX / FMNMX3;
+        // `.xorsign.abs` (two sources): FMNMX.XORSIGN (probes/fmnmx_xorsign). ASSUME(N-XORSIGN)
         "min" | "max" if tname == "f32" => {
             let n = (1..4).take_while(|&i| op_n(i).is_ok()).count();
+            if let Some(m) = mods
+                .iter()
+                .find(|m| !matches!(**m, "ftz" | "NaN" | "xorsign" | "abs" | "f32"))
+            {
+                bail!(lw.err(format!("{base}.f32: modifier .{m} not modeled")));
+            }
+            let xorsign = has("xorsign");
+            if xorsign != has("abs") || (xorsign && n != 2) {
+                bail!(lw.err(format!("{base}.f32: .xorsign.abs form not modeled")));
+            }
             Op::Fmnmx {
                 d: lw.dst(op_n(0)?)?,
                 a: lw.val(op_n(1)?)?,
@@ -1462,8 +1836,45 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 },
                 ftz: has("ftz"),
                 nan: has("NaN"),
+                xorsign,
             }
         }
+        // `not.b16` / `.b32` / `.b64`: x XOR all ones of the width.
+        "not" if matches!(tname, "b16" | "b32" | "b64") => Op::Int {
+            op: IntOp::Xor,
+            bits,
+            d: lw.dst(op_n(0)?)?,
+            a: lw.val(op_n(1)?)?,
+            b: Val::Imm(if bits == 64 {
+                u64::MAX
+            } else {
+                (1u64 << bits) - 1
+            }),
+        },
+        // `add.u16x2` / `add.s16x2` (SASS VIADD.16x2; probes/viadd16x2): two 16-bit lanes,
+        // each modulo 2^16. The .sat form (s16x2 only) is not modeled.
+        "add" if matches!(mods, ["u16x2" | "s16x2"]) => Op::Int {
+            op: IntOp::Add16x2,
+            bits: 32,
+            d: lw.dst(op_n(0)?)?,
+            a: lw.val(op_n(1)?)?,
+            b: lw.val(op_n(2)?)?,
+        },
+        // `popc.b32` (SASS POPC; probes/int_misc). `.b64` is not modeled.
+        "popc" if mods == ["b32"] => Op::Int {
+            op: IntOp::Popc,
+            bits: 32,
+            d: lw.dst(op_n(0)?)?,
+            a: lw.val(op_n(1)?)?,
+            b: Val::Imm(0),
+        },
+        // `bfind[.shiftamt].u32` (SASS FLO.U32[.SH]; probes/flo_popc): 0xffffffff for 0.
+        // `.s32` / `.u64` are not modeled.
+        "bfind" if mods == ["u32"] || mods == ["shiftamt", "u32"] => Op::Flo {
+            d: lw.dst(op_n(0)?)?,
+            a: lw.val(op_n(1)?)?,
+            sh: mods.len() == 2,
+        },
         "bmsk" => Op::Int {
             op: if has("wrap") {
                 IntOp::BmskWrap
@@ -1538,6 +1949,47 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 lane: lw.val(op_n(2)?)?,
                 clamp: lw.val(op_n(3)?)?,
                 mode,
+            }
+        }
+        // `ldmatrix.sync.aligned.m8n8.x{1,2,4}[.trans].shared.b16 {d..}, [a]` (SASS LDSM).
+        "ldmatrix" => {
+            if !(has("m8n8") && has("b16"))
+                || mods.iter().any(|m| {
+                    !matches!(
+                        *m,
+                        "sync"
+                            | "aligned"
+                            | "m8n8"
+                            | "x1"
+                            | "x2"
+                            | "x4"
+                            | "trans"
+                            | "shared"
+                            | "b16"
+                    )
+                })
+            {
+                bail!(
+                    lw.err(
+                        "only ldmatrix.sync.aligned.m8n8.x{1,2,4}[.trans].shared.b16 is modeled"
+                    )
+                );
+            }
+            let num: u8 = mods
+                .iter()
+                .find_map(|m| m.strip_prefix('x').and_then(|x| x.parse().ok()))
+                .ok_or_else(|| lw.err("missing .xN"))?;
+            let (d, n, moves) = lw.reg_vec_mem(op_n(0)?, true)?;
+            if n != num {
+                bail!(lw.err("register count does not match .xN"));
+            }
+            extra.extend(moves);
+            Op::LdMatrix {
+                d,
+                n,
+                addr: lw.addr(op_n(1)?)?,
+                trans: has("trans"),
+                b8: false,
             }
         }
         "stmatrix" => {
@@ -1703,6 +2155,61 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         // setp.<cmp>[.ftz].f32 p, a, b (one predicate, no combining operand) as SASS
         // `FSETP.<cmp>[.FTZ].AND p, PT, a, b, PT`: the ordered compares are false and the `u`
         // ones true when an operand is NaN.
+        // `setp.<cmp>.f16 / .bf16 p, a, b` and `.f16x2 / .bf16x2 p|q, a, b` (SASS HSETP2
+        // [.BF16_V2], probes/hsetp2): per lane the exact f32 widening compared; no `.ftz`, no
+        // combining predicate.
+        "setp" if matches!(ht, "f16" | "f16x2" | "bf16" | "bf16x2") => {
+            let cmp = match mods[0] {
+                "eq" => FCmp::Eq,
+                "ne" => FCmp::Ne,
+                "lt" => FCmp::Lt,
+                "le" => FCmp::Le,
+                "gt" => FCmp::Gt,
+                "ge" => FCmp::Ge,
+                "equ" => FCmp::Equ,
+                "neu" => FCmp::Neu,
+                "ltu" => FCmp::Ltu,
+                "leu" => FCmp::Leu,
+                "gtu" => FCmp::Gtu,
+                "geu" => FCmp::Geu,
+                "num" => FCmp::Num,
+                "nan" => FCmp::Nan,
+                c => bail!(lw.err(format!("unsupported setp compare {c}"))),
+            };
+            if mods.len() != 2 || ops.len() != 3 {
+                bail!(lw.err(format!(
+                    "setp.{} form not modeled (no .ftz, no combining predicate)",
+                    mods.join(".")
+                )));
+            }
+            let x2 = ht.ends_with("x2");
+            let (d, q) = match op_n(0)?.split_once('|') {
+                Some((p, q)) if x2 => (lw.pred_dst(p.trim())?, Some(lw.pred_dst(q.trim())?)),
+                None if !x2 => (lw.pred_dst(op_n(0)?)?, None),
+                _ => bail!(lw.err("setp half destination form")),
+            };
+            let reg = |i: usize| -> Result<Val> {
+                let v = lw.val(op_n(i)?)?;
+                if !matches!(v, Val::Reg(..)) {
+                    bail!(lw.err("setp half immediate operand not modeled"));
+                }
+                Ok(v)
+            };
+            let sel = if x2 { HSel::Pair } else { HSel::H0 };
+            Op::Hsetp2Bf16 {
+                d,
+                q,
+                cmp,
+                a: reg(1)?,
+                b: reg(2)?,
+                sel: [sel; 2],
+                neg: [false; 2],
+                abs: [false; 2],
+                c: Pred::TRUE,
+                bop: BoolOp::And,
+                f16: ht.starts_with("f16"),
+            }
+        }
         "setp" if tname == "f32" => {
             let cmp = match mods[0] {
                 "eq" => FCmp::Eq,
@@ -1817,6 +2324,19 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 d: lw.dst(op_n(0)?)?,
                 a: lw.val(op_n(1)?)?,
                 op,
+            }
+        }
+        // `match.any.sync.b32` / `.b64 d, a, membermask` (SASS MATCH.ANY[.U64]): full warp only,
+        // as vote (probes/match_any).
+        "match" if matches!(mods, ["any", "sync", "b32" | "b64"]) => {
+            if parse_int(op_n(2)?) != Some(u32::MAX as u64) && parse_int(op_n(2)?) != Some(u64::MAX)
+            {
+                bail!(lw.err("match.any.sync with a partial membermask not modeled"));
+            }
+            Op::MatchAny {
+                d: lw.dst(op_n(0)?)?,
+                a: lw.val(op_n(1)?)?,
+                wide: has("b64"),
             }
         }
         "vote" => {
@@ -2195,10 +2715,15 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     }
                 }
                 "ld" => {
-                    if !has("32x32b") && !has("16x64b") && !has("16x128b") && !has("16x256b") {
+                    let x2 = has("16x32bx2");
+                    if !has("32x32b") && !has("16x64b") && !has("16x128b") && !has("16x256b") && !x2
+                    {
                         bail!(lw.err(
-                            "only the 32x32b, 16x64b, 16x128b and 16x256b tcgen05.ld shapes are modeled"
+                            "only the 32x32b, 16x64b, 16x128b, 16x256b and 16x32bx2 tcgen05.ld shapes are modeled"
                         ));
+                    }
+                    if x2 != (ops.len() == 3) || ops.len() > 3 {
+                        bail!(lw.err("tcgen05.ld: unexpected operands"));
                     }
                     let (d, n) = lw.reg_vec(op_n(0)?)?;
                     let num: u8 = mods
@@ -2219,30 +2744,55 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     let taddr = a
                         .base
                         .ok_or_else(|| lw.err("tmem address must be a register"))?;
-                    Op::TmemLd {
+                    let ld = |half: Option<u8>, off: u32| Op::TmemLd {
                         d,
                         n,
-                        taddr,
-                        off: a.off as u32,
+                        taddr: taddr.clone(),
+                        off,
                         tracked: true,
                         s16x64b: has("16x64b"),
-                        half: None,
+                        half,
                         s16x256b: has("16x256b"),
                         s16x128b: has("16x128b"),
                         red: None,
+                    };
+                    if x2 {
+                        // `.16x32bx2 d, [a], split`: lanes 0..15 at a, lanes 16..31 at
+                        // a + split columns (SASS LDTM.16dp32bit_t0_t15 + _t16_t31;
+                        // probes/tmem_x2). ASSUME(S-TMEM)
+                        let split = parse_int(op_n(2)?.trim())
+                            .ok_or_else(|| lw.err("bad split offset"))?
+                            as u32;
+                        extra.push(ld(Some(1), (a.off as u32).wrapping_add(split)));
+                        ld(Some(0), a.off as u32)
+                    } else {
+                        ld(None, a.off as u32)
                     }
                 }
                 "wait::ld" => Op::TmemWaitLd,
                 "wait::st" => Op::TmemWaitSt,
                 "st" => {
-                    if !has("32x32b") {
-                        bail!(lw.err("only the 32x32b tcgen05.st shape is modeled so far"));
+                    let x2 = has("16x32bx2");
+                    if !has("32x32b") && !has("16x256b") && !has("16x128b") && !x2 {
+                        bail!(lw.err(
+                            "only the 32x32b / 16x256b / 16x128b / 16x32bx2 tcgen05.st shapes are modeled so far"
+                        ));
+                    }
+                    if ops.len() != 2 + x2 as usize {
+                        bail!(lw.err("tcgen05.st: unexpected operands"));
                     }
                     let num: usize = mods
                         .iter()
-                        .find_map(|m| m.strip_prefix('x').and_then(|x| x.parse().ok()))
-                        .ok_or_else(|| lw.err("missing .xN"))?;
-                    let v: Vec<Val> = op_n(1)?
+                        .find_map(|m| m.strip_prefix('x').and_then(|x| x.parse::<usize>().ok()))
+                        .ok_or_else(|| lw.err("missing .xN"))?
+                        * if has("16x256b") {
+                            4
+                        } else if has("16x128b") {
+                            2
+                        } else {
+                            1
+                        };
+                    let v: Vec<Val> = op_n(1 + x2 as usize)?
                         .trim()
                         .trim_start_matches('{')
                         .trim_end_matches('}')
@@ -2253,14 +2803,28 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         bail!(lw.err("register count does not match .xN"));
                     }
                     let a = lw.addr(op_n(0)?)?;
-                    Op::TmemSt {
-                        taddr: a
-                            .base
-                            .ok_or_else(|| lw.err("tmem address must be a register"))?,
-                        off: a.off as u32,
-                        v,
+                    let taddr = a
+                        .base
+                        .ok_or_else(|| lw.err("tmem address must be a register"))?;
+                    let st = |half: Option<u8>, off: u32| Op::TmemSt {
+                        taddr: taddr.clone(),
+                        off,
+                        v: v.clone(),
                         tracked: true,
-                        half: None,
+                        half,
+                        s16x256b: has("16x256b"),
+                        s16x128b: has("16x128b"),
+                    };
+                    if x2 {
+                        // `.16x32bx2 [a], split, {v}`: as tcgen05.ld.16x32bx2.
+                        // ASSUME(S-TMEM)
+                        let split = parse_int(op_n(1)?.trim())
+                            .ok_or_else(|| lw.err("bad split offset"))?
+                            as u32;
+                        extra.push(st(Some(1), (a.off as u32).wrapping_add(split)));
+                        st(Some(0), a.off as u32)
+                    } else {
+                        st(None, a.off as u32)
                     }
                 }
                 "fence::before_thread_sync" => Op::Fence {
@@ -2313,6 +2877,256 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 v,
                 mbar: reg(op_n(2)?)?,
                 bytes: bytes as u8,
+            }
+        }
+        // `ld` / `st` `.local` (scalar, up to 32 bits) through a `.local` array's address: the
+        // thread's local memory, as SASS LDL / STL. ASSUME(L-ROSETTA)
+        "ld" | "st" if has("local") => {
+            if mods.iter().any(|m| m.starts_with('v')) || bits > 32 {
+                bail!(lw.err("only scalar ld / st .local of up to 32 bits are modeled"));
+            }
+            if base == "ld" && tname.starts_with('s') && bits < 32 {
+                bail!(lw.err("sign-extending ld.local not modeled"));
+            }
+            if let Some(m) = mods
+                .iter()
+                .find(|m| type_bits(m).is_none() && **m != "local")
+            {
+                bail!(lw.err(format!("{base}.local: modifier .{m} not modeled")));
+            }
+            let bytes = (bits / 8).max(1) as u32;
+            if base == "ld" {
+                Op::LdLocal {
+                    d: lw.dst(op_n(0)?)?,
+                    bytes,
+                    addr: lw.addr(op_n(1)?)?,
+                }
+            } else {
+                Op::StLocal {
+                    bytes,
+                    addr: lw.addr(op_n(0)?)?,
+                    v: lw.val(op_n(1)?)?,
+                }
+            }
+        }
+        // ASSUME(S-MULTIMEM): multimem.st / .red lower to a global St / Atom (as ptxas lowers
+        // them to STG / REDG); the simulator sends them to every bound location when the
+        // address is a multicast one. multimem.ld_reduce is its own op.
+        "multimem" => {
+            let kind = mods.first().copied().unwrap_or("");
+            if !matches!(kind, "ld_reduce" | "st" | "red") {
+                bail!(lw.err(format!("multimem.{kind} not modeled")));
+            }
+            let rest = &mods[1..];
+            if let Some(m) = rest.iter().find(|m| {
+                !matches!(
+                    **m,
+                    "weak"
+                        | "relaxed"
+                        | "acquire"
+                        | "release"
+                        | "cta"
+                        | "cluster"
+                        | "gpu"
+                        | "sys"
+                        | "global"
+                        | "add"
+                        | "min"
+                        | "max"
+                        | "and"
+                        | "or"
+                        | "xor"
+                        | "acc::f32"
+                        | "acc::f16"
+                        | "v2"
+                        | "v4"
+                        | "v8"
+                        | "b32"
+                        | "b64"
+                        | "u32"
+                        | "u64"
+                        | "s32"
+                        | "s64"
+                        | "f32"
+                        | "f64"
+                        | "f16"
+                        | "f16x2"
+                        | "bf16"
+                        | "bf16x2"
+                        | "e4m3"
+                        | "e4m3x2"
+                        | "e4m3x4"
+                        | "e5m2"
+                        | "e5m2x2"
+                        | "e5m2x4"
+                )
+            }) {
+                bail!(lw.err(format!("multimem.{kind}: modifier .{m} not modeled")));
+            }
+            let tyname = *rest.last().unwrap_or(&"");
+            let (ety, ebytes): (McTy, u8) = match tyname {
+                "u32" | "b32" => (McTy::U32, 4),
+                "s32" => (McTy::S32, 4),
+                "u64" | "b64" => (McTy::U64, 8),
+                "s64" => (McTy::S64, 8),
+                "f32" => (McTy::F32, 4),
+                "f64" => (McTy::F64, 8),
+                "f16" => (McTy::F16, 2),
+                "f16x2" => (McTy::F16, 4),
+                "bf16" => (McTy::Bf16, 2),
+                "bf16x2" => (McTy::Bf16, 4),
+                "e4m3" => (McTy::E4m3, 1),
+                "e4m3x2" => (McTy::E4m3, 2),
+                "e4m3x4" => (McTy::E4m3, 4),
+                "e5m2" => (McTy::E5m2, 1),
+                "e5m2x2" => (McTy::E5m2, 2),
+                "e5m2x4" => (McTy::E5m2, 4),
+                _ => bail!(lw.err("multimem: missing type")),
+            };
+            let vec_n = rest
+                .iter()
+                .find_map(|m| m.strip_prefix('v').and_then(|x| x.parse::<u8>().ok()))
+                .unwrap_or(1);
+            let bytes = ebytes * vec_n;
+            if !matches!(bytes, 4 | 8 | 16) {
+                bail!(lw.err("multimem: only 32 / 64 / 128-bit accesses are modeled"));
+            }
+            let has_r = |m: &str| rest.contains(&m);
+            let sem = if has_r("acquire") {
+                Some(Sem::Acquire)
+            } else if has_r("release") {
+                Some(Sem::Release)
+            } else if has_r("relaxed") {
+                Some(Sem::Relaxed)
+            } else {
+                None
+            };
+            let scope = scope_of(rest);
+            // Defaults (PTX ISA): ld_reduce / st weak, red relaxed at .sys.
+            let sync = match (kind, sem) {
+                ("red", s) => Some(MemSync {
+                    sem: s.unwrap_or(Sem::Relaxed),
+                    scope: scope.unwrap_or(Scope::Sys),
+                }),
+                (_, None) => None,
+                (_, Some(s)) => Some(MemSync {
+                    sem: s,
+                    scope: scope.unwrap_or(Scope::Gpu),
+                }),
+            };
+            if let Some(m) = sync {
+                if (kind == "ld_reduce" && m.releases()) || (kind != "ld_reduce" && m.acquires()) {
+                    bail!(lw.err("invalid memory semantics for this multimem operation"));
+                }
+            }
+            let op = if has_r("add") {
+                McOp::Add
+            } else if has_r("min") {
+                McOp::Min
+            } else if has_r("max") {
+                McOp::Max
+            } else if has_r("and") {
+                McOp::And
+            } else if has_r("or") {
+                McOp::Or
+            } else if has_r("xor") {
+                McOp::Xor
+            } else {
+                McOp::Add
+            };
+            let regs = (bytes / 4).max(1);
+            match kind {
+                "ld_reduce" => {
+                    let wide = ety.lane_bytes() == 8;
+                    let (d, k, moves) = if wide {
+                        (lw.dst(op_n(0)?)?, 1, vec![])
+                    } else if regs > 1 {
+                        lw.reg_vec_mem(op_n(0)?, true)?
+                    } else {
+                        (
+                            lw.dst(op_n(0)?.trim_matches(|c| c == '{' || c == '}'))?,
+                            1,
+                            vec![],
+                        )
+                    };
+                    if !wide && k != regs {
+                        bail!(lw.err(
+                            "multimem.ld_reduce: destination count does not match the access"
+                        ));
+                    }
+                    let addr = lw.addr(op_n(1)?)?;
+                    lw.extra = moves;
+                    Op::LdReduce {
+                        d,
+                        n: k,
+                        bytes,
+                        addr,
+                        op,
+                        ty: ety,
+                        acc: has_r("acc::f32") || has_r("acc::f16"),
+                        sync,
+                    }
+                }
+                "st" => {
+                    let wide = ety.lane_bytes() == 8;
+                    let addr = lw.addr(op_n(0)?)?;
+                    let v = if !wide && regs > 1 {
+                        let (r, k, moves) = lw.reg_vec_mem(op_n(1)?, false)?;
+                        if k != regs {
+                            bail!(lw.err("multimem.st: source count does not match the access"));
+                        }
+                        lw.pre = moves;
+                        Val::Reg(r, k)
+                    } else {
+                        lw.val(op_n(1)?.trim_matches(|c| c == '{' || c == '}'))?
+                    };
+                    Op::St {
+                        space: Space::Global,
+                        bytes,
+                        addr,
+                        v,
+                        sync,
+                    }
+                }
+                _ => {
+                    // multimem.red: the integer reductions and the scalar f32 add (as SASS
+                    // REDG .F32.FTZ.RN) are modeled; vector / 16-bit float adds are not.
+                    let aop = match (op, ety, vec_n) {
+                        (McOp::Add, McTy::F32, 1) => AtomOp::FAddFtz,
+                        (
+                            _,
+                            McTy::F32
+                            | McTy::F64
+                            | McTy::F16
+                            | McTy::Bf16
+                            | McTy::E4m3
+                            | McTy::E5m2,
+                            _,
+                        ) => {
+                            bail!(lw.err("multimem.red on this float type / vector not modeled"))
+                        }
+                        (McOp::Add, _, 1) => AtomOp::Add,
+                        (McOp::And, _, 1) => AtomOp::And,
+                        (McOp::Or, _, 1) => AtomOp::Or,
+                        (McOp::Xor, _, 1) => AtomOp::Xor,
+                        (McOp::Min, McTy::S32 | McTy::S64, 1) => AtomOp::MinS,
+                        (McOp::Max, McTy::S32 | McTy::S64, 1) => AtomOp::MaxS,
+                        (McOp::Min, _, 1) => AtomOp::MinU,
+                        (McOp::Max, _, 1) => AtomOp::MaxU,
+                        _ => bail!(lw.err("multimem.red with a vector not modeled")),
+                    };
+                    Op::Atom {
+                        p: None,
+                        op: aop,
+                        space: Space::Global,
+                        bytes,
+                        addr: lw.addr(op_n(0)?)?,
+                        v: lw.val(op_n(1)?)?,
+                        d: None,
+                        sync: sync.unwrap(),
+                        new: None,
+                    }
+                }
             }
         }
         "ld" | "st" => {
@@ -2399,6 +3213,105 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 }
             }
         }
+        // `atom` / `red` `.add.noftz` `.bf16x2` / `.v2.bf16` / `.bf16` on global memory: per-lane
+        // bf16 adds (SASS `ATOMG` / `REDG .E.ADD.BF16x2.RN`; the scalar form is a CAS loop with
+        // `HADD2.BF16_V2`). `.v2.bf16` packs its two halves through the scratch register.
+        // probes/bf16x2, both front-ends. ASSUME(N-BF16X2)
+        "atom" | "red" if has("noftz") => {
+            let bf = match ht {
+                "bf16x2" => true,
+                "bf16" => false,
+                _ => bail!(lw.err(format!("{base}.noftz.{ht} not modeled"))),
+            };
+            if let Some(m) = mods.iter().find(|m| {
+                !matches!(
+                    **m,
+                    "add"
+                        | "noftz"
+                        | "bf16"
+                        | "bf16x2"
+                        | "v2"
+                        | "relaxed"
+                        | "acquire"
+                        | "release"
+                        | "acq_rel"
+                        | "cta"
+                        | "cluster"
+                        | "gpu"
+                        | "sys"
+                        | "global"
+                )
+            }) {
+                bail!(lw.err(format!("{base}: modifier .{m} not modeled")));
+            }
+            if !has("add") || !has("global") || (has("v2") && bf) {
+                bail!(lw.err(format!("{base}.noftz form not modeled")));
+            }
+            let pair = bf || has("v2");
+            let sync = mem_sync(mods, true)
+                .map_err(|e| lw.err(e.to_string()))?
+                .unwrap();
+            let (d, a, v) = if base == "atom" {
+                (Some(op_n(0)?), op_n(1)?, op_n(2)?)
+            } else {
+                (None, op_n(0)?, op_n(1)?)
+            };
+            let halves = |x: &str| -> Option<Vec<String>> {
+                let inner = x.trim().strip_prefix('{')?.strip_suffix('}')?;
+                Some(inner.split(',').map(|h| h.trim().to_string()).collect())
+            };
+            let (v, d) = if has("v2") {
+                let tmp = lw.scratch_v()?;
+                let (Some(vh), dh) = (halves(v), d.map(halves)) else {
+                    bail!(lw.err("v2.bf16 operands must be {a, b} vectors"));
+                };
+                if vh.len() != 2
+                    || dh
+                        .as_ref()
+                        .is_some_and(|x| x.as_ref().is_none_or(|x| x.len() != 2))
+                {
+                    bail!(lw.err("v2.bf16 operands must be {a, b} vectors"));
+                }
+                lw.pre.push(Op::Prmt {
+                    d: tmp,
+                    a: lw.val(&vh[0])?,
+                    sel: Val::Imm(0x5410),
+                    b: lw.val(&vh[1])?,
+                });
+                if let Some(Some(dh)) = dh {
+                    for (h, sel) in [(&dh[0], 0x4410), (&dh[1], 0x4432)] {
+                        if h != "_" {
+                            extra.push(Op::Prmt {
+                                d: lw.dst(h)?,
+                                a: Val::Reg(tmp, 1),
+                                sel: Val::Imm(sel),
+                                b: Val::Imm(0),
+                            });
+                        }
+                    }
+                    (Val::Reg(tmp, 1), Some(tmp))
+                } else {
+                    (Val::Reg(tmp, 1), None)
+                }
+            } else {
+                (lw.val(v)?, d.map(|x| lw.dst(x)).transpose()?)
+            };
+            Op::Atom {
+                p: None,
+                op: if pair {
+                    AtomOp::AddBf16x2
+                } else {
+                    AtomOp::AddBf16
+                },
+                space: Space::Global,
+                bytes: if pair { 4 } else { 2 },
+                addr: lw.addr(a)?,
+                v,
+                d,
+                sync,
+                new: None,
+            }
+        }
         "atom" | "red" => {
             // Fail closed: every modifier must be one modeled here (no `.noftz`, cache hints,
             // vectors or 16-bit types).
@@ -2413,6 +3326,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         | "cas"
                         | "min"
                         | "max"
+                        | "inc"
                         | "b32"
                         | "b64"
                         | "u32"
@@ -2454,6 +3368,8 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 AtomOp::Exch
             } else if has("cas") && base == "atom" {
                 AtomOp::Cas
+            } else if (has("inc") || has("dec")) && tname == "u32" {
+                if has("inc") { AtomOp::Inc } else { AtomOp::Dec }
             } else if (has("min") || has("max")) && matches!(tname, "u32" | "s32" | "u64" | "s64") {
                 // Integer min / max (CUTLASS / CuTeDSL `smem_fmax`: a float max through
                 // `red.max.s32` for non-negative and `red.min.u32` for negative values).
@@ -2513,10 +3429,17 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             }
         }
         "clusterlaunchcontrol" if has("try_cancel") => {
+            // `.multicast::cluster::all`: every CTA of the cluster gets the response and the
+            // completion at the same offsets (SASS UGETNEXTWORKID.BROADCAST, probes/clc_mcast).
+            let multicast = mods.contains(&"multicast::cluster::all");
             if !(has("async") && has("shared::cta") && has("mbarrier::complete_tx::bytes"))
-                || mods.iter().any(|m| m.starts_with("multicast"))
+                || mods
+                    .iter()
+                    .any(|m| m.starts_with("multicast") && *m != "multicast::cluster::all")
             {
-                bail!(lw.err("only the non-multicast try_cancel to shared::cta is modeled"));
+                bail!(
+                    lw.err("only try_cancel to shared::cta [.multicast::cluster::all] is modeled")
+                );
             }
             Op::ClcTryCancel {
                 resp: lw
@@ -2527,7 +3450,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     .addr(op_n(1)?)?
                     .base
                     .ok_or_else(|| lw.err("register address"))?,
-                multicast: false,
+                multicast,
             }
         }
         "clusterlaunchcontrol" if has("query_cancel") => {
@@ -2605,12 +3528,31 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             } else if has("acq_rel") || has("sc") {
                 // ASSUME(S-SCOPE): fence.sc is treated as fence.acq_rel (no SC order is
                 // modeled beyond what the interleaving gives).
+                // The scope is required (PTX ISA `fence{.sem}.scope`): no default that could be
+                // stronger than what the kernel asked for.
                 Op::Fence {
-                    kind: FenceKind::Membar(scope_of(mods).unwrap_or(Scope::Sys)),
+                    kind: FenceKind::Membar(
+                        scope_of(mods).ok_or_else(|| lw.err("fence without a scope"))?,
+                    ),
                 }
             } else if mods.first() == Some(&"proxy") && has("async") {
+                // `fence.proxy.async` with no state space orders all of them (ptxas: MEMBAR.ALL.GPU
+                // + FENCE.VIEW.ASYNC.S); `.global` orders global memory only, which no proxy
+                // check models, so it never covers a shared-memory check. ASSUME(S-PROXY)
+                match &mods[1..] {
+                    ["async"] | ["async", "shared::cta" | "shared::cluster"] => Op::Fence {
+                        kind: FenceKind::ProxyAsync,
+                    },
+                    ["async", "global"] => Op::Fence {
+                        kind: FenceKind::ProxyAsyncGlobal,
+                    },
+                    _ => bail!(lw.err("this fence.proxy form is not modeled")),
+                }
+            } else if mods == ["proxy", "alias"] {
+                // ASSUME(S-MC-ALIAS): a bidirectional proxy fence (no release / acquire of
+                // its own).
                 Op::Fence {
-                    kind: FenceKind::ProxyAsync,
+                    kind: FenceKind::ProxyAlias,
                 }
             } else {
                 bail!(lw.err("this fence is not modeled yet"))
@@ -2759,6 +3701,9 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         // size, [mbar]` and `cp.async.bulk.global.shared::cta.bulk_group [dst], [src], size`.
         // Lowered as TMA ops with `dims = 0`; `tmap` carries the byte count (exec.rs
         // `bulk_map`), `coords[0]` the global address.
+        // `cp.async.bulk.prefetch.L2.global [a], size` (SASS UBLKPF.L2): a cache hint
+        // (probes/memhints).
+        "cp" if mods == ["async", "bulk", "prefetch", "L2", "global"] => Op::Nop,
         "cp" if mods.len() >= 4
             && mods[..2] == ["async", "bulk"]
             && !has("tensor")
@@ -2809,6 +3754,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         g.base
                             .ok_or_else(|| lw.err("global address must be a register"))?,
                     ],
+                    red: false,
                 }
             } else {
                 if !has("mbarrier::complete_tx::bytes") {
@@ -2833,6 +3779,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     ],
                     mask: None,
                     pair: false,
+                    src_smem: false,
                 }
             }
         }
@@ -2887,6 +3834,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         off: sa.off as u32,
                         tmap: lw.val(tm)?,
                         coords,
+                        red: false,
                     },
                     uniform: false,
                     loc: lw.line,
@@ -2945,6 +3893,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 coords,
                 mask,
                 pair: has("cta_group::2"),
+                src_smem: false,
             }
         }
         _ => bail!(lw.err(format!("unsupported PTX instruction `{opcode}`"))),
@@ -3083,7 +4032,6 @@ mod tests {
             "fma.f32x2 %rd1, %rd2, %rd3, %rd4;",
             "mul.f32x2 %rd1, %rd2, %rd3;",
             "add.f32x2 %rd1, %rd2, %rd3;",
-            "fma.rz.f32x2 %rd1, %rd2, %rd3, %rd4;",
             "add.rn.ftz.f32x2 %rd1, %rd2, %rd3;",
             "mul.rn.sat.f32x2 %rd1, %rd2, %rd3;",
             "add.rn.f32x2 %rd1, %rd2, 0;",

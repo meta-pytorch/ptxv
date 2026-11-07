@@ -83,8 +83,24 @@ write_only=())` is a context manager. The calling thread runs the region normall
     of the parameters reaches (`cuMemGetAddressRange`) is copied out. At API_EXIT, after
     another synchronize, the same allocations are copied again. Each launch is therefore a
     self-contained case, whatever ran before it.
+  - Pointer tables (2026-11-06): the first 1 MB from each parameter pointer (within its
+    allocation; before 2026-11-07, only whole allocations up to 1 MB, which missed tables in
+    torch's 2 MiB small-tensor segments) is read and scanned for 8-byte words inside other
+    allocations; those allocations are snapshotted
+    too (one level). The case writer turns such words in non-float buffers into `ptrs`
+    entries (filled with the target buffer's address in the simulator and on hardware), so a
+    multi-tensor kernel that loads tensor addresses from a table reads the captured tensors.
+    A data word that happens to equal a device address is taken for a pointer (warned as
+    "pointer words inside buffers").
   - Module images: `CUPTI_CBID_RESOURCE_MODULE_LOADED` from `import ptxv` on, written once
-    per content hash.
+    per content hash. When several captured modules define the launched name (CuTeDSL
+    truncates specialized kernel names), modules compiled for another block shape
+    (`EIATTR_REQNTID`) are dropped first; then the module the launch recorded (handle map)
+    is used, else one whose parameter layout (`EIATTR_KPARAM_INFO`) matches the launch's,
+    with a warning if several distinct images match. The handle map needs the image to load
+    inside the load call: under `CUDA_MODULE_LOADING=LAZY` (the default) a library's module
+    loads at its first launch and later launches of it have no recorded image. Capture with
+    `CUDA_MODULE_LOADING=EAGER` when several specializations share a kernel name.
 - **Why CUPTI.** launchcap (`probes/launchcap`) interposes symbols with LD_PRELOAD. Loaded
   into a running process, it misses every entry point the runtime already resolved through
   `cuGetProcAddress`. CUPTI sees every launch, needs no re-exec, and can be switched on and
@@ -96,16 +112,33 @@ write_only=())` is a context manager. The calling thread runs the region normall
   changes.
 - **Buffers.**
   - Boundaries come from torch's caching allocator: blocks live at entry, plus allocations
-    recorded during the region by `torch.cuda.memory._record_memory_history`.
+    recorded during the region by `torch.cuda.memory._record_memory_history`. A block
+    allocated in the region counts only if it is live at a launch of the group (trace
+    `time_us` against the launch record's `t_us`, both wall clock): a freed block whose memory
+    two later tensors share does not join them into one buffer.
+  - A pointer equal to a named tensor's end belongs to that tensor only if nothing follows it
+    in the buffer's address range.
   - Names, dtypes and shapes come from tensors bound to local variables of the calling frame
     (or `names=`). Other buffers are `W0`, `W1`, ... as u8.
   - Without torch, buffers are whole driver allocations.
+- **Stale names.** A named tensor smaller than the live allocator block at its address
+  (beyond the allocator's 512-byte rounding) does not bound the buffer: the buffer takes the
+  block's extent, with a warning (a workspace reusing a freed tensor's block). Where a tensor
+  map reads a buffer as an element type of another size than its name says, the buffer takes
+  the tensor map's type.
+- **Vacuous inputs.** capture.json `warnings` name every input buffer whose bytes are all
+  one value (all zeros: a buffer a collective or another stream fills after the snapshot, so
+  V = 0 gives O = 0 whatever the kernel computes), and every launch outside the case that
+  points into an input after that input's snapshot and before the case's last launch (its
+  writes are not in the initial contents). `fb/kernel_db/scan_inputs.py` finds uniform
+  inputs in existing case directories (single- and multi-device).
 - **Outputs.**
   - An output is a buffer the group changed, or one allocated inside the region (it may get
     back the bytes it held).
-  - Outputs allocated in the region start as zeros. Older ones keep their bytes, as for an
-    in-place update. List write-only outputs allocated before the region in `write_only`, so
-    their stale bytes do not become inputs.
+  - Every output starts from its pre-launch snapshot (2026-11-06; before, outputs allocated
+    in the region started as zeros): bytes no kernel writes, e.g. rows of a `torch.empty`
+    output a kernel leaves alone, compare equal with the captured output. Older outputs keep
+    their bytes, as for an in-place update. Outputs listed in `write_only` start as zeros.
   - Override with `case(outputs=[...])`.
 - **Selection.**
   - `cap.kernels` deduplicates by kernel and launch shape (`Kernel.instances` holds every
