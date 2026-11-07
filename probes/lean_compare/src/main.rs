@@ -1,9 +1,12 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 // This source code is licensed under the BSD-style license in the root LICENSE.
 
-use std::{env, error::Error, fs};
+use std::env;
+use std::error::Error;
+use std::fs;
 
-use ptxv_sim::{fp, mufu_sample};
+use ptxv_sim::fp;
+use ptxv_sim::mufu_sample;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().skip(1).collect();

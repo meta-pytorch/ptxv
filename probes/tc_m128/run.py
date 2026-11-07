@@ -19,6 +19,7 @@ Inputs (bf16, K = 16, per CTA rank c: A[c] 128 rows, B[c] 256 rows):
 D is the dump of all 128 lanes x 256 columns of each CTA's TMEM after the MMA; unwritten cells
 hold the sentinel 0xff800000 | lane << 8 | column.
 """
+
 import json
 import os
 import shutil
@@ -35,10 +36,16 @@ PTXV = os.environ.get("PTXV", "ptxv")
 
 # (name, entry, M, N, data); mma_pair is cta_group::2 (cluster of 2), mma_one cta_group::1.
 CONFIGS = (
-    [(f"pair_m128_n{n}", "mma_pair", 128, n, "pattern") for n in (16, 32, 48, 64, 128, 256)]
+    [
+        (f"pair_m128_n{n}", "mma_pair", 128, n, "pattern")
+        for n in (16, 32, 48, 64, 128, 256)
+    ]
     + [(f"pair_m128_n{n}_rand", "mma_pair", 128, n, "random") for n in (32, 64, 256)]
     + [(f"pair_m256_n{n}", "mma_pair", 256, n, "pattern") for n in (32, 64)]
-    + [(f"one_m128_n{n}", "mma_one", 128, n, "pattern") for n in (8, 16, 24, 40, 136, 256)]
+    + [
+        (f"one_m128_n{n}", "mma_one", 128, n, "pattern")
+        for n in (8, 16, 24, 40, 136, 256)
+    ]
     + [(f"one_m128_n{n}_rand", "mma_one", 128, n, "random") for n in (8, 24)]
     + [("one_m64_n8", "mma_one", 64, 8, "pattern")]
     + [(f"pair_f8_m128_n{n}", "mma_pair_f8", 128, n, "e4m3") for n in (16, 32, 64)]
@@ -112,12 +119,14 @@ def inputs(data, ctas, seed):
     elif data == "e4m3":
         # random normal e4m3 codes (exponent field 1..15, not the NaN code 0x7f / 0xff)
         rng = np.random.default_rng(seed)
+
         def codes(shape):
             c = rng.integers(0, 256, shape, dtype=np.uint16).astype(np.uint8)
             e = (c >> 3) & 15
             c = np.where(e == 0, c | 0x08, c)
             c = np.where((c & 0x7F) == 0x7F, c ^ 1, c)
             return c.astype(np.uint8).view(np.uint16).reshape(shape[:-1] + (16,))
+
         return codes((ctas, 128, 32)), codes((ctas, 256, 32))
     else:
         rng = np.random.default_rng(seed)
@@ -134,15 +143,34 @@ def gen():
         a, b = inputs(data, ctas, 1000 + i)
         a.tofile(os.path.join(EXP, f"{name}.A.bin"))
         b.tofile(os.path.join(EXP, f"{name}.B.bin"))
-        meta.append(dict(name=name, entry=entry, m=m, n=n, data=data, ctas=ctas,
-                         idesc=idesc(m, n, data == "e4m3")))
+        meta.append(
+            dict(
+                name=name,
+                entry=entry,
+                m=m,
+                n=n,
+                data=data,
+                ctas=ctas,
+                idesc=idesc(m, n, data == "e4m3"),
+            )
+        )
     for i, (name, m, n, data, la, lb) in enumerate(IMG):
         a, b = inputs(data, 1, 2000 + i)
         image(a[0, :m], la, 4096).tofile(os.path.join(EXP, f"{name}.A.bin"))
         image(b[0, :n], lb, 8192).tofile(os.path.join(EXP, f"{name}.B.bin"))
-        meta.append(dict(name=name, entry="mma_img", m=m, n=n, data=data, ctas=1,
-                         idesc=idesc(m, n) | la[0] << 15 | lb[0] << 16,
-                         aflags=flags(la), bflags=flags(lb)))
+        meta.append(
+            dict(
+                name=name,
+                entry="mma_img",
+                m=m,
+                n=n,
+                data=data,
+                ctas=1,
+                idesc=idesc(m, n) | la[0] << 15 | lb[0] << 16,
+                aflags=flags(la),
+                bflags=flags(lb),
+            )
+        )
     with open(os.path.join(EXP, "configs.json"), "w") as f:
         json.dump(meta, f, indent=0)
 
@@ -203,9 +231,12 @@ def case_toml(cfg, exp=EXP):
     if cfg["entry"] == "mma_img":
         # raw images (A 4096 bytes, B 8192 bytes) and the two descriptor-flag parameters
         t = t.replace("shape = [1, 128, 16]", "shape = [2048]").replace(
-            "shape = [1, 256, 16]", "shape = [4096]")
-        extra = "".join(f'\n[[params]]\nkind = "u64"\nvalue = {cfg[k]}\n'
-                        for k in ("aflags", "bflags"))
+            "shape = [1, 256, 16]", "shape = [4096]"
+        )
+        extra = "".join(
+            f'\n[[params]]\nkind = "u64"\nvalue = {cfg[k]}\n'
+            for k in ("aflags", "bflags")
+        )
         t = t.replace("\n[[variants]]", extra + "\n[[variants]]")
     return t
 
@@ -220,7 +251,9 @@ def run(names):
         with open(os.path.join(d, "case.toml"), "w") as f:
             f.write(case_toml(cfg))
         out = os.path.join(d, "out")
-        r = subprocess.run([PTXV, "probe", d, "--out", out], capture_output=True, text=True)
+        r = subprocess.run(
+            [PTXV, "probe", d, "--out", out], capture_output=True, text=True
+        )
         dump = os.path.join(out, "good.probe.bin")
         if r.returncode or not os.path.exists(dump):
             print(cfg["name"], "FAILED", r.stdout[-2000:], r.stderr[-2000:])
@@ -244,26 +277,36 @@ def report(names):
             # Per lane: the written columns and the (A row, B row, B CTA) of the first / last.
             runs = []
             for lane in range(128):
-                cols = [col for col in range(256)
-                        if d[c, lane, col] != (0xFF800000 | lane << 8 | col)]
+                cols = [
+                    col
+                    for col in range(256)
+                    if d[c, lane, col] != (0xFF800000 | lane << 8 | col)
+                ]
                 if not cols:
                     continue
                 dec = []
                 for col in (cols[0], cols[-1]):
-                    v = int(struct.unpack("<f", struct.pack("<I", int(d[c, lane, col])))[0])
+                    v = int(
+                        struct.unpack("<f", struct.pack("<I", int(d[c, lane, col])))[0]
+                    )
                     dec.append((v % 512, (v >> 9) % 2048 - 1, v >> 20))
                 runs.append((lane, cols[0], cols[-1], len(cols), dec))
             # Print lane groups with the same column run.
             i = 0
             while i < len(runs):
                 j = i
-                while j + 1 < len(runs) and runs[j + 1][1:4] == runs[i][1:4] \
-                        and runs[j + 1][0] == runs[j][0] + 1:
+                while (
+                    j + 1 < len(runs)
+                    and runs[j + 1][1:4] == runs[i][1:4]
+                    and runs[j + 1][0] == runs[j][0] + 1
+                ):
                     j += 1
                 l0, c0, c1, nc, d0 = runs[i]
-                print(f"  cta {c} lanes {l0}..{runs[j][0]} cols {c0}..{c1} ({nc}):"
-                      f" first lane (arow, brow, bcta) {d0[0]}..{d0[1]};"
-                      f" last lane {runs[j][4][0]}..{runs[j][4][1]}")
+                print(
+                    f"  cta {c} lanes {l0}..{runs[j][0]} cols {c0}..{c1} ({nc}):"
+                    f" first lane (arow, brow, bcta) {d0[0]}..{d0[1]};"
+                    f" last lane {runs[j][4][0]}..{runs[j][4][1]}"
+                )
                 i = j + 1
 
 

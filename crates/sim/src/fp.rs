@@ -1177,11 +1177,11 @@ mod mma_tests {
         assert_eq!(a * b, -40762.0 * 2f64.powi(-178));
         let p2 = |e: i32| 2f64.powi(e);
         let sets: Vec<Vec<(f64, f64)>> = vec![
-            vec![(a, b)],                                    // negative underflow
-            vec![(a, -b)],                                   // positive underflow
-            vec![(-0.0, 1.0); 16],                           // all products -0
-            vec![(1.0, 1.0), (-1.0, 1.0)],                   // exact cancellation
-            vec![(-p2(-80), p2(-80)), (p2(-81), p2(-80))],   // two tiny, sum -2^-161
+            vec![(a, b)],                                                   // negative underflow
+            vec![(a, -b)],                                                  // positive underflow
+            vec![(-0.0, 1.0); 16],                                          // all products -0
+            vec![(1.0, 1.0), (-1.0, 1.0)],                                  // exact cancellation
+            vec![(-p2(-80), p2(-80)), (p2(-81), p2(-80))],                  // two tiny, sum -2^-161
             vec![(-(1.0 + p2(-7)) * p2(-75), p2(-74)), (p2(-75), p2(-74))], // residue -2^-156
         ];
         for md in [DEFAULT_MMA, HMMA_MODEL, TMMA_MODEL, MmaModel::EXACT_RN] {

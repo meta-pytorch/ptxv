@@ -15,6 +15,7 @@ given as exact values and encoded per operand format; a case that a format canno
 is skipped for it. The positions are in configs.json (`cases`: name, family, D word index,
 and the exact sum's sign / magnitude class), which crates/sim/tests/mma_zero.rs replays.
 """
+
 import json
 import math
 import os
@@ -106,7 +107,10 @@ FMT = {  # name: (encoder, K, bytes per element (0.5: packed fp4))
 # ------------------------------------------------------------------ cases
 
 P2 = lambda e: 2.0**e  # noqa: E731
-WIT_A, WIT_B = 0x16B2, 0x96E5  # the reported witness: one product, exactly -40762 * 2^-178
+WIT_A, WIT_B = (
+    0x16B2,
+    0x96E5,
+)  # the reported witness: one product, exactly -40762 * 2^-178
 
 
 def bf(u):
@@ -140,7 +144,12 @@ def cases():
     # all products exactly zero
     for az in [0.0, -0.0]:
         for b in [1.0, -1.0]:
-            add(f"zeros_{'+' if math.copysign(1, az) > 0 else '-'}0x{b:+}", "zeros", [(az, b)] * 32, ["p"])
+            add(
+                f"zeros_{'+' if math.copysign(1, az) > 0 else '-'}0x{b:+}",
+                "zeros",
+                [(az, b)] * 32,
+                ["p"],
+            )
     add("zeros_one-0", "zeros", [(-0.0, 1.0)] + [(0.0, 1.0)] * 31, ["p"])
     add("zeros_one+0", "zeros", [(0.0, 1.0)] + [(-0.0, 1.0)] * 31, ["p"])
     # exact cancellation
@@ -161,8 +170,13 @@ def cases():
     # an underflowing product next to a nonzero accumulator
     for cv in [P2(-126), -P2(-126), 1.0]:
         for s in [1, -1]:
-            add(f"acc_{cv:g}_{'+' if s > 0 else '-'}2^-160", "acc", [(s * P2(-80), P2(-80))], ["p"],
-                [(f"c{cv:g}", cv)])
+            add(
+                f"acc_{cv:g}_{'+' if s > 0 else '-'}2^-160",
+                "acc",
+                [(s * P2(-80), P2(-80))],
+                ["p"],
+                [(f"c{cv:g}", cv)],
+            )
     return out
 
 
@@ -193,10 +207,14 @@ for m, md in [("m128", M128N16), ("m64", M64N16)]:
         CONFIGS.append((f"tc_bf16_{m}_en{en}", "tc_f16", "bf16", md | 0x490, en, True))
 for en in [0, 1]:
     CONFIGS.append((f"tc_f16_m128_en{en}", "tc_f16", "f16", M128N16 | 0x10, en, False))
-    CONFIGS.append((f"tc_tf32_m128_en{en}", "tc_tf32", "tf32", M128N16 | 0x910, en, False))
+    CONFIGS.append(
+        (f"tc_tf32_m128_en{en}", "tc_tf32", "tf32", M128N16 | 0x910, en, False)
+    )
     CONFIGS.append((f"tc_e4m3_m128_en{en}", "tc_f8", "e4m3", M128N16 | 0x10, en, True))
     CONFIGS.append((f"tc_e4m3f16d_m128_en{en}", "tc_f8", "e4m3", M128N16, en, True))
-    CONFIGS.append((f"tc_e2m1_m128_en{en}", "tc_f8", "e2m1", M128N16 | 0x1690, en, True))
+    CONFIGS.append(
+        (f"tc_e2m1_m128_en{en}", "tc_f8", "e2m1", M128N16 | 0x1690, en, True)
+    )
 CONFIGS += [
     ("hm_bf16_c", "hm", "bf16", 0, 1, True),
     ("hm_bf16_rz", "hm0", "bf16", 0, 0, True),
@@ -300,14 +318,32 @@ def gen():
             # an f16 D: one TMEM column per element, in its low half
             cw = enc_f16(c) if "f16d" in name else f32_bits(c)
             C[4 * w : 4 * w + 4] = struct.pack("<I", cw)
-            cmeta.append({"name": cn, "family": fam, "word": w,
-                          "exact": exact_class(pv, c, en), "c": f32_bits(c)})
+            cmeta.append(
+                {
+                    "name": cn,
+                    "family": fam,
+                    "word": w,
+                    "exact": exact_class(pv, c, en),
+                    "c": f32_bits(c),
+                }
+            )
         for nm, buf in [("A", A), ("B", B), ("C", C)]:
             with open(os.path.join(EXP, f"{name}.{nm}.bin"), "wb") as f:
                 f.write(buf)
-        meta.append({"name": name, "entry": entry, "fmt": fmt, "idesc": idesc, "en": en,
-                     "modeled": modeled, "grid": tiles, "block": 128 if tc else 32,
-                     "d_bytes": len(C), "cases": cmeta})
+        meta.append(
+            {
+                "name": name,
+                "entry": entry,
+                "fmt": fmt,
+                "idesc": idesc,
+                "en": en,
+                "modeled": modeled,
+                "grid": tiles,
+                "block": 128 if tc else 32,
+                "d_bytes": len(C),
+                "cases": cmeta,
+            }
+        )
         print(f"{name}: {len(rows)} cases, {tiles} tiles")
     with open(os.path.join(EXP, "configs.json"), "w") as f:
         json.dump(meta, f, indent=0)
@@ -338,16 +374,24 @@ def case_toml(cfg, files_dir):
     params = ""
     for nm in ["A", "B", "C"]:
         size = os.path.getsize(os.path.join(files_dir, f"{cfg['name']}.{nm}.bin"))
-        bufs += (f'\n[[buffers]]\nname = "{nm}"\ndtype = "u8"\nshape = [{size}]\ninit = "file"\n'
-                 f'file = "{os.path.join(files_dir, cfg["name"] + "." + nm + ".bin")}"\n')
+        bufs += (
+            f'\n[[buffers]]\nname = "{nm}"\ndtype = "u8"\nshape = [{size}]\ninit = "file"\n'
+            f'file = "{os.path.join(files_dir, cfg["name"] + "." + nm + ".bin")}"\n'
+        )
     for nm in ["A", "B", "C", "D"]:
         params += f'\n[[params]]\nkind = "ptr"\nbuffer = "{nm}"\n'
     if cfg["entry"].startswith("tc"):
         for v in [cfg["idesc"], cfg["en"]]:
             params += f'\n[[params]]\nkind = "u32"\nvalue = {v}\n'
-    return CASE_TOML.format(name=cfg["name"], entry=cfg["entry"], grid=cfg["grid"],
-                            block=cfg["block"], bufs=bufs, dwords=cfg["d_bytes"] // 4,
-                            params=params)
+    return CASE_TOML.format(
+        name=cfg["name"],
+        entry=cfg["entry"],
+        grid=cfg["grid"],
+        block=cfg["block"],
+        bufs=bufs,
+        dwords=cfg["d_bytes"] // 4,
+        params=params,
+    )
 
 
 def run(names):
@@ -360,7 +404,9 @@ def run(names):
         with open(os.path.join(d, "case.toml"), "w") as f:
             f.write(case_toml(cfg, EXP))
         out = os.path.join(d, "out")
-        r = subprocess.run([PTXV, "probe", d, "--out", out], capture_output=True, text=True)
+        r = subprocess.run(
+            [PTXV, "probe", d, "--out", out], capture_output=True, text=True
+        )
         dump = os.path.join(out, "good.probe.bin")
         if r.returncode or not os.path.exists(dump):
             print(cfg["name"], "FAILED", r.stdout[-2000:], r.stderr[-2000:])
@@ -392,8 +438,13 @@ def report():
             u = struct.unpack("<I", D[4 * c["word"] : 4 * c["word"] + 4])[0]
             if "f16d" in cfg["name"]:  # f16 in the low half: widen for the classes
                 u = f32_bits(struct.unpack("<e", struct.pack("<H", u & 0xFFFF))[0])
-            key = (cfg["name"], c["family"], c["exact"], c["name"].split("/")[1],
-                   c["name"].split("/")[2] if cfg["en"] else "Coff")
+            key = (
+                cfg["name"],
+                c["family"],
+                c["exact"],
+                c["name"].split("/")[1],
+                c["name"].split("/")[2] if cfg["en"] else "Coff",
+            )
             rows.setdefault(key, {}).setdefault(sign_class(u), []).append(c["name"])
     for k in sorted(rows):
         print(" | ".join(k), "->", {s: len(v) for s, v in rows[k].items()})

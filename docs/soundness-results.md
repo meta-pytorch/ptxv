@@ -1202,6 +1202,6 @@ Unmutated kernels under random delays on GB300:
 | D127_case_t9 | ok | 13 |   |
 | D127_min | ok | 13 |   |
 | D127_min_vote | hw-harness-error | 1 |  Error: in kernel bs_reduce |         `vote.sync.any.pred %p12, %p3, -1` |
-| D127_real | hw-harness-error | 1 |  Error: in kernel kernel_cutlass_kernel_opskernelscuteexternmslk_flash_attncompute_block_sparsityBlockSparsityKernel_object_at__BlockSparseTensorsmask_block_cnttensorptri32gmemoi64i641mask_block_idxtensorp_0 |         `mad.lo.s64 	%rd21, %rd11, %rd1, %rd20` |
+| D127_real | hw-harness-error | 1 |  Error: in kernel kernel_cutlass_kernel_opskernelscuteexternmslk_flash_attncompute_block_sparsityBlockSparsityKernel_object_at__BlockSparseTensorsmask_block_cnttensorptri32gmemoi64i641mask_block_idxtensorp_0 |         `mad.lo.s64  %rd21, %rd11, %rd1, %rd20` |
 | D129_or_thermo | ok | 13 |   |
 | D129_or_thermo_3t | ok | 13 |   |

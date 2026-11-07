@@ -15,9 +15,20 @@ PROBE = Path(__file__).resolve().parent
 REPO = PROBE.parents[1]
 ROOT = REPO / "lean_model"
 NATIVE = (
-    "ex2.ftz", "rcp.ftz", "rsq.ftz", "sqrt.ftz", "lg2.ftz",
-    "sin.raw", "cos.raw", "tanh", "rcp64h", "rsq64h",
-    "ex2.f16", "ex2.bf16", "tanh.f16", "tanh.bf16",
+    "ex2.ftz",
+    "rcp.ftz",
+    "rsq.ftz",
+    "sqrt.ftz",
+    "lg2.ftz",
+    "sin.raw",
+    "cos.raw",
+    "tanh",
+    "rcp64h",
+    "rsq64h",
+    "ex2.f16",
+    "ex2.bf16",
+    "tanh.f16",
+    "tanh.bf16",
 )
 WRAPPED = ("ex2", "rcp", "rsq", "sqrt", "lg2", "sin", "cos")
 
@@ -47,7 +58,9 @@ def validate_floatlib(path: Path) -> dict:
         raise ValueError("FloatLib source inventory has the wrong size")
     for name, expected in sources.items():
         if sha(path / name) != expected["sha256"]:
-            raise ValueError(f"FloatLib source differs from the pinned revision: {name}")
+            raise ValueError(
+                f"FloatLib source differs from the pinned revision: {name}"
+            )
     if (path / "lean-toolchain").read_text() != (ROOT / "lean-toolchain").read_text():
         raise ValueError("FloatLib and this package must use the same Lean toolchain")
     return {"pin": pin, "source_files_verified": len(sources)}
@@ -94,8 +107,14 @@ def reject(command: list[str], reason: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--rust", type=Path, default=PROBE / "target/release/ptxv-lean-bridge")
-    parser.add_argument("--floatlib", type=Path, help="Already-built FloatLib checkout matching floatlib-lock.json")
+    parser.add_argument(
+        "--rust", type=Path, default=PROBE / "target/release/ptxv-lean-bridge"
+    )
+    parser.add_argument(
+        "--floatlib",
+        type=Path,
+        help="Already-built FloatLib checkout matching floatlib-lock.json",
+    )
     args = parser.parse_args()
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
@@ -112,8 +131,12 @@ def main() -> None:
     if args.floatlib:
         args.floatlib = args.floatlib.resolve()
         floatlib_validation = validate_floatlib(args.floatlib)
-        dependency_path = checked(["lake", "env", "printenv", "LEAN_PATH"], cwd=args.floatlib).strip()
-        approx_env["LEAN_PATH"] = str(ROOT / ".lake/build/lib/lean") + os.pathsep + dependency_path
+        dependency_path = checked(
+            ["lake", "env", "printenv", "LEAN_PATH"], cwd=args.floatlib
+        ).strip()
+        approx_env["LEAN_PATH"] = (
+            str(ROOT / ".lake/build/lib/lean") + os.pathsep + dependency_path
+        )
         lean_executable = checked(["lake", "env", "which", "lean"], cwd=ROOT).strip()
     words = corpus()
     for sample in samples.values():
@@ -153,19 +176,35 @@ def main() -> None:
             hardware_bad += h != int(sample["chunk_hashes"][0], 16)
             hardware_words = 65536
         if op in WRAPPED:
-            wide_input, wide_output = out / f"{op}.wide-input", out / f"{op}.wide-output"
-            wide_input.write_bytes(b"".join(struct.pack("<8I", x, 0, 0, 0, 0, 0, 0, 0) for x in xs))
+            wide_input, wide_output = (
+                out / f"{op}.wide-input",
+                out / f"{op}.wide-output",
+            )
+            wide_input.write_bytes(
+                b"".join(struct.pack("<8I", x, 0, 0, 0, 0, 0, 0, 0) for x in xs)
+            )
             wide_output.write_bytes(b"".join(struct.pack("<2I", ys[x], 0) for x in xs))
             manifest = out / f"{op}.tsv"
             manifest.write_text(f"{op}\tfalse\t{wide_input}\t{wide_output}\n")
-            command = [lean_executable, "--run", str(ROOT / "Shared/Approx.lean"), str(manifest)]
+            command = [
+                lean_executable,
+                "--run",
+                str(ROOT / "Shared/Approx.lean"),
+                str(manifest),
+            ]
         else:
             command = [str(lean), op, str(inp), str(output)]
         p = run(command, env=approx_env if op in WRAPPED else None)
         (out / f"{op}.log").write_text(p.stdout + p.stderr)
-        row = {"operation": op, "words": len(xs), "lean_passed": p.returncode == 0,
-               "recorded_hardware_words": hardware_words, "hardware_mismatches": hardware_bad,
-               "input_sha256": sha(inp), "output_sha256": sha(output)}
+        row = {
+            "operation": op,
+            "words": len(xs),
+            "lean_passed": p.returncode == 0,
+            "recorded_hardware_words": hardware_words,
+            "hardware_mismatches": hardware_bad,
+            "input_sha256": sha(inp),
+            "output_sha256": sha(output),
+        }
         report["rows"].append(row)
         print(json.dumps(row), flush=True)
         failed |= p.returncode != 0 or hardware_bad != 0
@@ -182,16 +221,25 @@ def main() -> None:
     malformed.write_bytes(inp.read_bytes()[:-1])
     reject([str(lean), "rcp.ftz", str(malformed), str(output)], "Invalid byte lengths")
     report["negative_controls"].append("partial input word rejected")
-    for path in sorted((ROOT / "Shared").rglob("*.lean")) + sorted((ROOT / "Blackwell").rglob("*.lean")):
+    for path in sorted((ROOT / "Shared").rglob("*.lean")) + sorted(
+        (ROOT / "Blackwell").rglob("*.lean")
+    ):
         report["sources"][str(path.relative_to(REPO))] = sha(path)
-    for path in (REPO / "crates/sim/src/mufu.rs", REPO / "crates/sim/src/mufu_tables.rs",
-                 REPO / "crates/sim/src/fp.rs", PROBE / "Cargo.lock",
-                 PROBE / "src/main.rs", Path(__file__).resolve()):
+    for path in (
+        REPO / "crates/sim/src/mufu.rs",
+        REPO / "crates/sim/src/mufu_tables.rs",
+        REPO / "crates/sim/src/fp.rs",
+        PROBE / "Cargo.lock",
+        PROBE / "src/main.rs",
+        Path(__file__).resolve(),
+    ):
         report["sources"][str(path.relative_to(REPO))] = sha(path)
     report["passed"] = not failed
     (out / "cross-check.json").write_text(json.dumps(report, indent=2) + "\n")
     if failed:
-        raise SystemExit("Cross-check failed; inspect per-operation logs and cross-check.json")
+        raise SystemExit(
+            "Cross-check failed; inspect per-operation logs and cross-check.json"
+        )
 
 
 if __name__ == "__main__":

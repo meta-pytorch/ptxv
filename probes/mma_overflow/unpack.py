@@ -24,7 +24,9 @@ def unpack(item):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("log", type=Path)
-    parser.add_argument("--output", type=Path, help="New directory for unpacked artifacts")
+    parser.add_argument(
+        "--output", type=Path, help="New directory for unpacked artifacts"
+    )
     args = parser.parse_args()
     text = args.log.read_text()
     if text.lstrip().startswith("{"):
@@ -37,7 +39,9 @@ def main():
     root = Path(__file__).resolve().parent
     if report["compute_capability"] != [10, 3]:
         raise ValueError("Capture is not from SM103")
-    if report["ptx_sha256"] != probe.sha((root.parent / "mma_zero/kernel.ptx").read_bytes()):
+    if report["ptx_sha256"] != probe.sha(
+        (root.parent / "mma_zero/kernel.ptx").read_bytes()
+    ):
         raise ValueError("PTX source differs from captured source")
     output = args.output or root / "expected"
     output.mkdir(exist_ok=False)
@@ -56,10 +60,15 @@ def main():
         if cfg["repeat_hashes"] != [probe.sha(data)] * 3:
             raise ValueError("Repeat hash mismatch")
         cells = 2048 if cfg["entry"].startswith("tc") else 128
-        if data != b"".join(struct.pack("<I", case["output"]) * cells for case in cfg["cases"]):
+        if data != b"".join(
+            struct.pack("<I", case["output"]) * cells for case in cfg["cases"]
+        ):
             raise ValueError("Captured summary does not match full output tiles")
         (output / f"{name}.D.bin").write_bytes(data)
-        configs.append({k: v for k, v in cfg.items() if k not in ("inputs", "output") } | {"name": name})
+        configs.append(
+            {k: v for k, v in cfg.items() if k not in ("inputs", "output")}
+            | {"name": name}
+        )
     (output / "configs.json").write_text(json.dumps(configs, indent=2) + "\n")
     print(f"Retained {len(configs)} configurations in {output}")
 
