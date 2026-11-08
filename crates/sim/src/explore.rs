@@ -2203,11 +2203,16 @@ pub(crate) fn peekskip_set(m: &Machine) -> BTreeMap<u32, (BTreeSet<u32>, BTreeSe
                         dm.insert(*sd, (f(val(&dm, *and, 0)), f(val(&dm, *and, 1))));
                         work.push((pc + 1, dm));
                     }
-                    Op::VoteAny { d: vd, a }
+                    Op::VoteAny {
+                        d: vd,
+                        a,
+                        mask: None,
+                    }
                     | Op::VoteAll {
                         d: vd,
                         a,
                         uni: false,
+                        mask: None,
                     } if i.guard.is_always() && !guarded => {
                         dm.insert(*vd, (val(&dm, *a, 0), val(&dm, *a, 1)));
                         work.push((pc + 1, dm));

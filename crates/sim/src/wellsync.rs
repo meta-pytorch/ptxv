@@ -540,12 +540,13 @@ fn membership(m: &Machine, pc: u32) -> (bool, bool) {
         // E-LOCKSTEP join of a memory access; a try_wait's lanes witness each other, C-WAIT);
         // more lanes joining only adds happens-before.
         _ if m.k.front == Front::Sass => (true, false),
+        // PTX `redux.sync` / `shfl.sync` / `vote.sync` with a subset membermask: each mask
+        // group runs on its own once every live lane of its mask has arrived (split_enabled,
+        // exec.rs), reading and writing only that group's lanes; which other groups share
+        // the step does not change its effect or its violation check (E-WARPCOLL).
+        _ if op.member_mask().is_some() => (false, false),
         // PTX `.sync.aligned`: the explorer runs it only with every live lane (split_enabled).
         _ if op.is_warp_aligned() => (false, true),
-        // PTX `redux.sync` with a subset membermask: it runs only once every live lane the
-        // mask names has arrived (split_enabled), whatever paths they came by; lanes outside
-        // the mask joining them are a violation (exec.rs).
-        Op::Redux { mask: Some(_), .. } => (false, true),
         Op::Elect { .. }
         | Op::VoteAny { .. }
         | Op::MatchAny { .. }
@@ -678,10 +679,7 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
         }
         let evs: Vec<Ev> = members
             .iter()
-            .map(|&t| {
-                let vc = m.threads[t].vc.clone();
-                log.ev(t as u32, &vc, pc)
-            })
+            .map(|&t| log.ev(t as u32, &m.threads[t].vc, pc))
             .collect();
         let seq = log.seq;
         let runs = log.runs.entry((w, pc)).or_default();
@@ -3440,6 +3438,13 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
     }
     let mut fs = Vec::new();
     let mut steps = 0usize;
+    // PTXV_CERT_PROGRESS=N: print the step count every N steps (stderr), for timing runs that
+    // do not finish.
+    let progress = std::env::var("PTXV_CERT_PROGRESS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0);
+    let t0 = std::time::Instant::now();
     let mut extra = Vec::new();
     let mut sched = crate::explore::DetSched::default();
     let mut faults = crate::explore::FaultLoop::default();
@@ -3452,6 +3457,12 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
         }
         m.apply(&a);
         steps += 1;
+        if progress.is_some_and(|n| steps.is_multiple_of(n)) {
+            eprintln!(
+                "[certificate] {steps} steps {:.1}s",
+                t0.elapsed().as_secs_f64()
+            );
+        }
         // `certify_inner` launched every CTA up front (E-CLC): a try_cancel that executes
         // ends the run (its fault would repeat), and the certificate starts over lazily.
         if m.clc_eager

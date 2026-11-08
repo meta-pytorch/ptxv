@@ -1,4 +1,4 @@
-# l2alias, GB300 devgpu042 (members = CUDA_VISIBLE_DEVICES 0,1 or 0,1,3), CUDA 13.0, 2026-11-07. "reader R": member running the reader CTAs (0 = the writer GPU). var 5 spin S = flag S ns before the data (detector control).
+# l2alias, GB300 (members = CUDA_VISIBLE_DEVICES 0,1 or 0,1,3), CUDA 13.0, 2026-11-07. "reader R": member running the reader CTAs (0 = the writer GPU). var 5 spin S = flag S ns before the data (detector control).
 members 2 reader 0 var 5 noise 0 spin 0ns: runs 50, words/run 2097152: stale words 0, CTAs with stale 0 / 3200, runs with stale 0, timeouts 0
 members 2 reader 1 var 5 noise 0 spin 0ns: runs 50, words/run 2097152: stale words 2272, CTAs with stale 25 / 3200, runs with stale 12, timeouts 0
 members 2 reader 0 var 5 noise 0 spin 300ns: runs 50, words/run 2097152: stale words 286880, CTAs with stale 777 / 3200, runs with stale 49, timeouts 0

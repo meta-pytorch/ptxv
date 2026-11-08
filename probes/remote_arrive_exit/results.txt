@@ -1,4 +1,4 @@
-GB300 (devgpu042), CUDA 13.0, 152 SMs, 2026-11-07. Counts: launches x test clusters per launch.
+GB300, CUDA 13.0, 152 SMs, 2026-11-07. Counts: launches x test clusters per launch.
 
 rae.cu (5 runs per mode, 76 clusters, delay 50 us):
   mode 0 (late remote arrive into exited rank 0): unspecified launch failure (also with no successor kernel, and with delay 0)

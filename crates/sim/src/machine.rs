@@ -211,6 +211,54 @@ pub fn vc_join_all<'a>(vs: impl IntoIterator<Item = &'a VC>) -> VC {
     j
 }
 
+/// `a` joined with every clock of `vs`: each distinct base merged once, then the own
+/// entries the result does not already cover inserted together. Equal to joining them one by
+/// one (the join is associative and commutative); a barrier's arrivals after an earlier
+/// barrier share one base, so this is one merge instead of one per arrival.
+pub fn vc_join_many(a: &mut VC, vs: &[&VC]) {
+    let mut bases: Vec<&Arc<VcBase>> = vs.iter().map(|v| &v.base).collect();
+    bases.sort_unstable_by_key(|b| Arc::as_ptr(b) as usize);
+    bases.dedup_by(|x, y| Arc::ptr_eq(x, y));
+    for b in bases {
+        vc_join(
+            a,
+            &VC {
+                base: b.clone(),
+                own: (0, 0),
+            },
+        );
+    }
+    let mut own: Vec<(u32, u32)> = vs
+        .iter()
+        .map(|v| v.own)
+        .filter(|&(i, c)| c != 0 && vc_get(a, i) < c)
+        .collect();
+    if own.is_empty() {
+        return;
+    }
+    own.sort_unstable();
+    let mut e = a.entries();
+    let mut out = Vec::with_capacity(e.len() + own.len());
+    let mut k = 0;
+    for (i, c) in own {
+        while k < e.len() && e[k].0 < i {
+            out.push(e[k]);
+            k += 1;
+        }
+        match out.last_mut() {
+            Some(l) if l.0 == i => l.1 = l.1.max(c),
+            _ if k < e.len() && e[k].0 == i => {
+                out.push((i, e[k].1.max(c)));
+                k += 1;
+            }
+            _ => out.push((i, c)),
+        }
+    }
+    out.extend(e.drain(k..));
+    a.base = VcBase::from(out);
+    a.own = (0, 0);
+}
+
 pub fn vc_join(a: &mut VC, b: &VC) {
     if b.base.e.is_empty() && b.own.1 == 0 {
         return;
@@ -301,6 +349,38 @@ pub fn rr_new(v: &VC, rr: &VC) -> Option<VC> {
         .filter(|&(a, c)| vc_get(v, a) < c)
         .collect();
     (!e.is_empty()).then(|| vc_from_sorted(e))
+}
+
+/// `vc_get(vc, ·)` with the last answers kept (direct-mapped by actor): a shadow check asks
+/// the same clock once per byte of an access.
+pub struct VcMemo<'a> {
+    vc: &'a VC,
+    slots: [std::cell::Cell<(u64, u32)>; 32],
+}
+
+impl<'a> VcMemo<'a> {
+    pub fn new(vc: &'a VC) -> Self {
+        VcMemo {
+            vc,
+            slots: Default::default(),
+        }
+    }
+    #[inline]
+    pub fn get(&self, i: u32) -> u32 {
+        let s = &self.slots[i as usize % 32];
+        let (k, c) = s.get();
+        if k == i as u64 + 1 {
+            return c;
+        }
+        let c = vc_get(self.vc, i);
+        s.set((i as u64 + 1, c));
+        c
+    }
+    /// `e.hb(vc)`.
+    #[inline]
+    pub fn hb(&self, e: &Epoch) -> bool {
+        e.clock <= self.get(e.actor)
+    }
 }
 
 #[inline]
@@ -514,7 +594,9 @@ impl Readers {
         let s = self.as_slice();
         // Fast path: at most one read of `e.actor`, not plainer than `e` (the common case):
         // exactly the per-actor `insert`.
-        let mut mine = s.iter().filter(|x| x.actor == e.actor);
+        // The list is sorted by actor: `e.actor`'s reads are one run, found by bisection.
+        let lo = s.partition_point(|x| x.actor < e.actor);
+        let mut mine = s[lo..].iter().take_while(|x| x.actor == e.actor);
         let one = mine.next().is_none_or(|x| x.strong >= e.strong) && mine.next().is_none();
         if one {
             self.insert(e);

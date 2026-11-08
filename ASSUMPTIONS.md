@@ -848,6 +848,18 @@ warp in one step**: every lane's source registers are read, then every destinati
   register full mask. Its `mask_mismatch` variant (32 lanes on 0xaaaaaaaa) completes on GB300
   with every lane holding the full-warp sum; ptxas emits a plain `REDUX`, so the SASS verdict is
   clean while the PTX verdict reports the mismatch.
+- PTX `shfl.sync` / `vote.sync` (any / all / uni / ballot) with a partial or register
+  membermask, and lanes naming different masks at one instruction (2026-11-07): the executing
+  lanes are partitioned by the mask each names; each group waits for the live lanes of its
+  mask and runs once, together with lanes of the same mask standing at another instruction of
+  the same kind (`redux.sync`: same operation), each lane reading its own operands and writing
+  its own destination. A group whose lanes (with those partners) differ from its mask is a
+  violation. Validated by probes/coll_split (pair masks, a pair split across two `shfl.sync`
+  or two `vote.sync.ballot`) and probes/shfl_mask (half-warp masks on the two sides of a
+  branch, quad-mask `shfl.up` / `vote.any` / `.all` / `.uni`, a 0xffff `shfl.down` the other
+  half skips, `redux.sync` groups split across two instructions): PTX front bitwise = GB300
+  (50/50 scrubbed). shfl_mask's `skip_half` (32 lanes on 0xffff) is a violation. ptxas's
+  `WARPSYNC.EXCLUSIVE Rm` before a quad-mask `VOTE` is refused on the SASS front.
 - If wrong: *miss* only if the hardware could expose a half-done exchange, which a
   `.sync.aligned` instruction cannot.
 
@@ -1712,7 +1724,7 @@ view after a write through the other needs only the usual happens-before.
   the writes may land after the flag) were also 0: this probe did not show that it can detect
   late data (`LDGMC` bypasses L1, and the all-member poll leaves time), so the reverse shape
   is **not validated**, only not contradicted. Write-after-read is not probed.
-  Sensitive reverse probe (`probes/multimem/l2alias.cu`, devgpu042, 2 and 3 GB300, 2026-11-07,
+  Sensitive reverse probe (`probes/multimem/l2alias.cu`, 2 and 3 GB300, 2026-11-07,
   `results/l2alias.txt`). One writer GPU, 64 CTAs, each bulk-storing 128 KiB to its own
   unicast buffer and then adding to a per-CTA multicast flag. 64 reader CTAs, on the
   writer's GPU or a peer, each poll one flag and immediately `multimem.ld_reduce` that CTA's
@@ -3801,8 +3813,8 @@ forms seen. Any other form is a hard error.
 - PTX front additions (2026-11-07, SCALE pilot): `abs[.ftz].f32` as ptxas's FADD |a|, -RZ and
   `abs.s32` as IABS (probes/abs_f32); `cvt.rn.f32.f64` / `cvt.f64.f32` (F2F), `cvt.sat.f32.f32`
   (FADD.SAT RZ, a) and `cvt.r{n,m,p,z}i[.ftz].{s,u}{32,64}.f32` (F2I) (probes/cvt_misc); a
-  register or partial immediate `redux.sync` membermask (subset semantics: E-WARPCOLL,
-  probes/redux_mask); immediate elements in vector stores; `prmt.b32` (default mode,
+  register or partial immediate `redux.sync` / `shfl.sync` / `vote.sync` membermask (per
+  mask group: E-WARPCOLL, probes/redux_mask, probes/coll_split, probes/shfl_mask); immediate elements in vector stores; `prmt.b32` (default mode,
   probes/prmt_ptx); `createpolicy.fractional` when its result is only the policy operand of
   `.L2::cache_hint` instructions (a zero placeholder: L-PTX-HINT; other uses refused);
   `sqrt.rn.f32` as the IEEE square root, NaN 0x7fffffff (the f64 root rounded to f32, then

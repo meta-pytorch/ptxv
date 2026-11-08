@@ -1,4 +1,4 @@
-GB300 devgpu042 GPUs 0 (victim) and 1 (peer), CUDA 13.0, 2026-11-07. ./tse_peer runs dst noise D first_mode last_mode; first block also ran with 5 runs per mode at D = 200 / 1000 / 3000 ns (mode 3): wrong in 5/5 runs each.
+GB300 GPUs 0 (victim) and 1 (peer), CUDA 13.0, 2026-11-07. ./tse_peer runs dst noise D first_mode last_mode; first block also ran with 5 runs per mode at D = 200 / 1000 / 3000 ns (mode 3): wrong in 5/5 runs each.
 dst peer noise 1 mode 0 D 0ns: 4864 CTAs x 200 runs: 0 runs with wrong words (0 words)
 dst peer noise 1 mode 1 D 0ns: 4864 CTAs x 200 runs: 0 runs with wrong words (0 words)
 dst peer noise 1 mode 2 D 0ns: 4864 CTAs x 200 runs: 200 runs with wrong words (7863451640 words)

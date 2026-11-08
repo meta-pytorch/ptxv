@@ -1,4 +1,4 @@
-GB300 devgpu042, GPUs 0 (writer) and 1 (reader), CUDA 13.0, 2026-11-07. ./weak_flag runs var.
+GB300, GPUs 0 (writer) and 1 (reader), CUDA 13.0, 2026-11-07. ./weak_flag runs var.
 The 'nvnoise:' lines ran alongside a separate NVLink-traffic process without MPS (time-sliced, not concurrent): weak evidence.
 var 0: runs 500 x 4096 slots x 256 words: stale words 0 in 0 runs, timeouts 0
 var 1: runs 500 x 4096 slots x 256 words: stale words 0 in 0 runs, timeouts 0

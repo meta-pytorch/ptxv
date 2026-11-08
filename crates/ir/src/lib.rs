@@ -660,6 +660,8 @@ pub enum Op {
     VoteAny {
         d: Reg,
         a: Pred,
+        /// PTX membermask when not the full warp (as `Redux::mask`; E-WARPCOLL).
+        mask: Option<Val>,
     },
     /// Warp-collective match, SASS `MATCH.ANY[.U64] Rd, Ra` (`match.any.sync.b32` / `.b64`):
     /// per lane, `d` = mask of the active lanes whose `a` (64 bits if `wide`) equals its own
@@ -840,6 +842,8 @@ pub enum Op {
         d: Reg,
         a: Pred,
         uni: bool,
+        /// PTX membermask when not the full warp (as `Redux::mask`; E-WARPCOLL).
+        mask: Option<Val>,
     },
     /// Warp-collective: exactly one active thread (the lowest lane) gets `d = true`.
     Elect {
@@ -1351,6 +1355,8 @@ pub enum Op {
         /// Predicate result (`shfl.sync ... d|p`, SASS `SHFL.UP P0, ...`): the source lane was
         /// in range.
         p: Option<Reg>,
+        /// PTX membermask when not the full warp (as `Redux::mask`; E-WARPCOLL).
+        mask: Option<Val>,
     },
     /// `bfe d, a, pos, len`: bit-field extract (sign-extended if `signed`).
     Bfe {
@@ -1916,6 +1922,18 @@ impl Op {
         matches!(self, Op::BarSync { aligned: true, .. })
     }
 
+    /// The PTX membermask of a warp collective that names part of the warp (`redux.sync`,
+    /// `shfl.sync`, `vote.sync`): the lanes it names execute it together (E-WARPCOLL).
+    pub fn member_mask(&self) -> Option<&Val> {
+        match self {
+            Op::Redux { mask, .. }
+            | Op::Shfl { mask, .. }
+            | Op::VoteAny { mask, .. }
+            | Op::VoteAll { mask, .. } => mask.as_ref(),
+            _ => None,
+        }
+    }
+
     pub fn is_warp_aligned(&self) -> bool {
         matches!(
             self,
@@ -2096,10 +2114,24 @@ impl Op {
                 ..
             } => vec![a.clone(), Val::Reg(*p, 1)],
             Op::R2Ur { a, .. } => vec![a.clone()],
-            Op::VoteAny { a, .. } | Op::VoteAll { a, .. } => vec![pr(a)],
+            Op::VoteAny { a, mask, .. } | Op::VoteAll { a, mask, .. } => {
+                let mut x = vec![pr(a)];
+                x.extend(mask.iter().cloned());
+                x
+            }
             Op::MatchAny { a, .. } => vec![a.clone()],
             Op::Bfe { a, pos, len, .. } => vec![a.clone(), pos.clone(), len.clone()],
-            Op::Shfl { a, lane, clamp, .. } => vec![a.clone(), lane.clone(), clamp.clone()],
+            Op::Shfl {
+                a,
+                lane,
+                clamp,
+                mask,
+                ..
+            } => {
+                let mut x = vec![a.clone(), lane.clone(), clamp.clone()];
+                x.extend(mask.iter().cloned());
+                x
+            }
             Op::StMatrix { addr, v: vs, .. } => {
                 let mut x = ad(addr);
                 x.extend(vs.iter().cloned());

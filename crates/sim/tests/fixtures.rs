@@ -37,8 +37,7 @@ fn kernel(case: &Case, variant: &str, front: &str) -> ptxv_ir::Kernel {
             .map(|l| match front {
                 "ptx" => ptxv_ptx::parse_kernel(&ptx, Some(l.entry)).unwrap(),
                 _ => {
-                    let dir =
-                        std::env::temp_dir().join(format!("ptxv-test-{}-{variant}", case.m.name));
+                    let dir = scratch_dir(&case.m.name, variant);
                     std::fs::create_dir_all(&dir).unwrap();
                     let p = dir.join("k.ptx");
                     std::fs::write(&p, &ptx).unwrap();
@@ -53,7 +52,7 @@ fn kernel(case: &Case, variant: &str, front: &str) -> ptxv_ir::Kernel {
     match front {
         "ptx" => ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap(),
         _ => {
-            let dir = std::env::temp_dir().join(format!("ptxv-test-{}-{variant}", case.m.name));
+            let dir = scratch_dir(&case.m.name, variant);
             std::fs::create_dir_all(&dir).unwrap();
             let p = dir.join("k.ptx");
             std::fs::write(&p, &ptx).unwrap();
@@ -1027,9 +1026,20 @@ fn captured_outputs_match_the_gpu() {
     assert!(n > 0, "no captured fixtures");
 }
 
+/// A scratch directory unique to this process and call: tests that share a case name
+/// (e.g. `r1h_nvls` and `r1h_nvls_alias_hw`) and concurrent suites must not share files.
+fn scratch_dir(name: &str, variant: &str) -> std::path::PathBuf {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "ptxv-test-{}-{n}-{name}-{variant}",
+        std::process::id()
+    ))
+}
+
 /// A binary-only case's variant: its cubin plus the variant's control-bit patch.
 fn binary_kernel(case: &Case, variant: &str) -> anyhow::Result<ptxv_ir::Kernel> {
-    let dir = std::env::temp_dir().join(format!("ptxv-test-{}-{variant}", case.m.name));
+    let dir = scratch_dir(&case.m.name, variant);
     std::fs::create_dir_all(&dir)?;
     let c = dir.join("k.cubin");
     std::fs::copy(case.dir.join(case.m.cubin.as_ref().unwrap()), &c)?;
@@ -1576,11 +1586,23 @@ fn probe_warpsync_pairs_verdicts() {
     probe_bitwise("probes/warpsync_pairs", "good", "sass");
 }
 
-/// Collectives whose pair mask is reached at different instructions (probes/coll_split, SASS):
-/// GB300 combines them; the model runs the identical WARPSYNC.COLLECTIVE regions as one.
+/// Collectives whose pair mask is reached at different instructions (probes/coll_split): GB300
+/// combines them. SASS: the model runs the identical WARPSYNC.COLLECTIVE regions as one; PTX:
+/// each mask group runs with its lanes at other shfl.sync / vote.sync instructions (E-WARPCOLL).
 #[test]
 fn probe_coll_split_matches_hardware() {
     probe_bitwise_cubin("probes/coll_split", Some("kernel.cubin"));
+    probe_bitwise("probes/coll_split", "good", "ptx");
+}
+
+/// PTX shfl.sync / vote.sync / redux.sync with partial member masks (probes/shfl_mask): half-warp
+/// and quad masks, mask groups split across instructions = GB300 on the PTX front (the SASS
+/// front refuses ptxas's WARPSYNC.EXCLUSIVE); lanes outside the mask executing it: violation.
+#[test]
+fn probe_shfl_mask_verdicts() {
+    probe_bitwise("probes/shfl_mask", "good", "ptx");
+    check_dir("probes", "shfl_mask", "good", "ptx");
+    check_dir("probes", "shfl_mask", "skip_half", "ptx");
 }
 
 /// tcgen05.mma.kind::f16 with f16 operands and kind::tf32 (instruction descriptor A / B

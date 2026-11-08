@@ -20,6 +20,48 @@ use ptxv_ir::*;
 use crate::fp;
 use crate::machine::*;
 
+/// A kernel, an instruction index and that instruction's source registers.
+type SrcMemo = Option<(Arc<Kernel>, u32, std::rc::Rc<[Reg]>)>;
+
+thread_local! {
+    /// The source registers of the last instruction asked for (`src_regs_at`).
+    static SRC_LAST: std::cell::RefCell<SrcMemo> = const { std::cell::RefCell::new(None) };
+}
+
+/// `inst.op.src_regs()` for `inst` = `k.code[pc]`, kept for the last (kernel, pc): the lanes
+/// of a warp run one instruction in turn, so this is one computation per warp instruction
+/// instead of one allocation per lane. Any other `inst` is computed afresh.
+fn src_regs_at(k: &Arc<Kernel>, inst: &Inst, pc: u32) -> std::rc::Rc<[Reg]> {
+    if !k
+        .code
+        .get(pc as usize)
+        .is_some_and(|i| std::ptr::eq(i, inst))
+    {
+        return inst.op.src_regs().into();
+    }
+    SRC_LAST.with_borrow_mut(|c| {
+        if let Some((kk, p, r)) = c.as_ref() {
+            if *p == pc && Arc::ptr_eq(kk, k) {
+                return r.clone();
+            }
+        }
+        let r: std::rc::Rc<[Reg]> = inst.op.src_regs().into();
+        *c = Some((k.clone(), pc, r.clone()));
+        r
+    })
+}
+
+/// `Machine::slot_umask` from its two inputs.
+#[inline]
+fn slot_umask_of(vmask: Option<u64>, stale: bool, s: u16) -> u32 {
+    match vmask {
+        _ if stale => !0,
+        Some(m) if s < 2 => (m >> (32 * s)) as u32,
+        Some(m) if m != 0 => !0,
+        _ => 0,
+    }
+}
+
 /// A simulator error is either a fault of the kernel (bad address, ...) or a limit of the
 /// model ("... not modeled ..."), which makes the verdict inconclusive, not the kernel wrong.
 fn fault_kind(e: &str) -> &'static str {
@@ -269,12 +311,7 @@ impl Machine {
     /// load of never-written shared memory runs, those of `vmask` while an operation on
     /// partly undefined registers runs.
     fn slot_umask(&self, s: u16) -> u32 {
-        match self.vmask {
-            _ if self.stale.is_some() => !0,
-            Some(m) if s < 2 => (m >> (32 * s)) as u32,
-            Some(m) if m != 0 => !0,
-            _ => 0,
-        }
+        slot_umask_of(self.vmask, self.stale.is_some(), s)
     }
 
     /// Undefined bits of a 32-bit register (S-INIT): all of them until it is written; a
@@ -342,13 +379,11 @@ impl Machine {
                 }
             }
             File::R => {
-                let um: Vec<u32> = (0..slots.max(1) as u16)
-                    .map(|s| self.slot_umask(s))
-                    .collect();
+                let (vm, stale) = (self.vmask, self.stale.is_some());
                 let th = self.threads[t].make_mut();
                 for s in 0..slots.max(1) as u16 {
                     let i = r.idx + s;
-                    let u = um[s as usize];
+                    let u = slot_umask_of(vm, stale, s);
                     if i < 255 {
                         th.regs[i as usize] = (v >> (32 * s)) & 0xffff_ffff
                             | if u != !0 { (u as u64) << 32 } else { 0 };
@@ -361,14 +396,12 @@ impl Machine {
                 }
             }
             File::UR => {
-                let um: Vec<u32> = (0..slots.max(1) as u16)
-                    .map(|s| self.slot_umask(s))
-                    .collect();
+                let (vm, stale) = (self.vmask, self.stale.is_some());
                 let w = self.threads[t].warp as usize;
                 let wp = self.warps[w].make_mut();
                 for s in 0..slots.max(1) as u16 {
                     let i = r.idx + s;
-                    let u = um[s as usize];
+                    let u = slot_umask_of(vm, stale, s);
                     if i < 255 {
                         wp.ur[i as usize] = (v >> (32 * s)) & 0xffff_ffff
                             | if u != !0 { (u as u64) << 32 } else { 0 };
@@ -937,6 +970,7 @@ impl Machine {
             }
         };
         let mut benign: Vec<(Epoch, u64)> = Vec::new();
+        let vm = VcMemo::new(vc);
         // Page by page: one copy-on-write check per run of bytes.
         let mut i = 0;
         while i < n {
@@ -944,11 +978,11 @@ impl Machine {
             let bytes = &mem.bytes;
             let k = mem.sh.for_run(a0, n - i, |a, s| {
                 if same_value(s, a, bytes) {
-                    let w_ord = |w: &Epoch| w.actor == actor || w.hb(vc);
+                    let w_ord = |w: &Epoch| w.actor == actor || vm.hb(w);
                     let rd_ord = |r: &Epoch| {
                         r.actor == actor
-                            || r.hb(vc)
-                            || rd_done && r.clock <= vc_get(vc, r.actor | RR_BIT)
+                            || vm.hb(r)
+                            || rd_done && r.clock <= vm.get(r.actor | RR_BIT)
                     };
                     if let Some(w) = s.writes().find(|w| !w_ord(w)) {
                         benign.push((*w, a as u64));
@@ -965,7 +999,7 @@ impl Machine {
                     return;
                 }
                 for w in s.writes() {
-                    if w.actor != actor && !w.hb(vc) && (write.is_some() || !w.sv) {
+                    if w.actor != actor && !vm.hb(w) && (write.is_some() || !w.sv) {
                         let kind = if write.is_some() {
                             "write-write"
                         } else {
@@ -977,8 +1011,8 @@ impl Machine {
                 if write.is_some() {
                     let rd_ord = |r: &Epoch| {
                         r.actor == actor
-                            || r.hb(vc)
-                            || rd_done && r.clock <= vc_get(vc, r.actor | RR_BIT)
+                            || vm.hb(r)
+                            || rd_done && r.clock <= vm.get(r.actor | RR_BIT)
                     };
                     for r in &s.r {
                         if !rd_ord(r) {
@@ -989,7 +1023,7 @@ impl Machine {
                         s.r.clear();
                         s.hw = None;
                     } else {
-                        let w_ord = |w: &Epoch| w.actor == actor || w.hb(vc);
+                        let w_ord = |w: &Epoch| w.actor == actor || vm.hb(w);
                         let mut hw: Vec<Epoch> =
                             s.writes().filter(|w| keep(w, w_ord(w))).copied().collect();
                         hw.sort_unstable_by_key(|e| (e.actor, e.strong, e.clock));
@@ -1457,19 +1491,35 @@ impl Machine {
         // too: it has no member mask, and ptxas places it after a `BSYNC` (reconvergence,
         // which the model does not track) when lanes diverged before (rung 3a: lane 0 copies
         // tensor-map templates, then all 32 lanes shuffle).
-        // PTX `vote.sync` (full member mask only) and `redux.sync` with the full mask
-        // likewise wait for every live lane of the warp; a `redux.sync` with a subset
-        // membermask waits for the live lanes the mask names (read from the first member;
-        // E-WARPCOLL).
-        if let (Front::Ptx, Op::Redux { mask: Some(m), .. }) = (self.k.front, &inst.op) {
-            let Ok(m) = self.rd(members[0], m) else {
-                return true;
-            };
+        // PTX `vote.sync` / `redux.sync` / `shfl.sync` with the full mask
+        // likewise wait for every live lane of the warp; a collective with subset membermasks
+        // waits, for each mask its lanes name, for the live lanes of that mask (E-WARPCOLL).
+        if let (Front::Ptx, Some(m)) = (self.k.front, inst.op.member_mask()) {
             let w = self.threads[members[0]].warp;
-            return self.warp_threads(w).all(|u| {
-                let th = &self.threads[u];
-                th.st == St::Exited || m >> th.lane & 1 == 0 || members.contains(&u)
-            });
+            let mut seen: Vec<u32> = Vec::new();
+            for &t in members {
+                let Ok(v) = self.rd(t, m) else {
+                    return true;
+                };
+                let v = v as u32;
+                if seen.contains(&v) {
+                    continue;
+                }
+                seen.push(v);
+                // Lanes of the mask at another instruction of the same kind with the same
+                // mask combine with this one (GB300: probes/coll_split, probes/shfl_mask).
+                let ready = self.warp_threads(w).all(|u| {
+                    let th = &self.threads[u];
+                    th.st == St::Exited
+                        || v >> th.lane & 1 == 0
+                        || members.contains(&u)
+                        || self.mask_partner(u, pc, v)
+                });
+                if !ready {
+                    return false;
+                }
+            }
+            return true;
         }
         if inst.op.is_warp_aligned()
             && (self.k.front == Front::Ptx || matches!(inst.op, Op::Shfl { .. }))
@@ -2914,6 +2964,21 @@ impl Machine {
     /// The threads of CTA `cta` (threads are stored CTA by CTA).
     pub fn cta_threads(&self, cta: u16) -> std::ops::Range<usize> {
         let n = self.threads.len();
+        let lo = self.cta_lo(cta);
+        let mut end = lo;
+        while end < n && self.threads[end].cta == cta {
+            end += 1;
+        }
+        lo..end
+    }
+
+    /// `cta_threads(cta)` lazily: the scan for its end stops when the caller does.
+    fn cta_threads_lazy(&self, cta: u16) -> impl Iterator<Item = usize> + '_ {
+        (self.cta_lo(cta)..self.threads.len()).take_while(move |&t| self.threads[t].cta == cta)
+    }
+
+    fn cta_lo(&self, cta: u16) -> usize {
+        let n = self.threads.len();
         let (mut lo, mut hi) = (0, n);
         while lo < hi {
             let mid = (lo + hi) / 2;
@@ -2923,11 +2988,7 @@ impl Machine {
                 hi = mid;
             }
         }
-        let mut end = lo;
-        while end < n && self.threads[end].cta == cta {
-            end += 1;
-        }
-        lo..end
+        lo
     }
 
     /// Indices of `warp`'s threads (threads are laid out warp by warp).
@@ -3385,7 +3446,11 @@ impl Machine {
                 _ => {}
             }
         }
-        if k.front == Front::Ptx && inst.op.is_warp_aligned() && !active.is_empty() {
+        if k.front == Front::Ptx
+            && inst.op.is_warp_aligned()
+            && inst.op.member_mask().is_none()
+            && !active.is_empty()
+        {
             let w = self.threads[members[0]].warp;
             let live = self
                 .warp_threads(w)
@@ -3446,6 +3511,48 @@ impl Machine {
             }
             return Ok(());
         }
+        // E-WARPCOLL: a PTX collective with partial membermasks runs once per mask group (the
+        // lanes naming one mask), together with the group's lanes at other instructions of the
+        // same kind (GB300 combines them: probes/coll_split, probes/shfl_mask). Executing lanes
+        // that differ from their mask are reported.
+        if k.front == Front::Ptx && inst.op.member_mask().is_some() && !active.is_empty() {
+            let m = inst.op.member_mask().unwrap().clone();
+            let w = self.threads[active[0]].warp;
+            let mut groups: Vec<(u32, Vec<usize>)> = Vec::new();
+            for &t in &active {
+                let g = self.rd(t, &m)? as u32;
+                match groups.iter_mut().find(|x| x.0 == g) {
+                    Some(x) => x.1.push(t),
+                    None => groups.push((g, vec![t])),
+                }
+            }
+            for (want, g) in groups {
+                let partners: Vec<usize> = self
+                    .warp_threads(w)
+                    .filter(|&u| !members.contains(&u) && self.mask_partner(u, pc, want))
+                    .collect();
+                let got = g
+                    .iter()
+                    .chain(&partners)
+                    .fold(0u32, |x, &t| x | 1 << self.threads[t].lane);
+                let live = self
+                    .warp_threads(w)
+                    .filter(|&u| self.threads[u].st != St::Exited)
+                    .fold(0u32, |x, u| x | 1 << self.threads[u].lane);
+                if got != want & live {
+                    let msg = format!(
+                        "{} executed by lanes {got:#010x} of warp {w} with membermask {want:#010x}",
+                        k.describe(pc as usize)
+                    );
+                    self.report("violation", format!("member-mask:{pc}"), msg);
+                }
+                self.exec_combined(&g, &partners, pc)?;
+            }
+            for &t in members {
+                self.threads[t].make_mut().pc = pc + 1;
+            }
+            return Ok(());
+        }
         match &inst.op {
             Op::R2Ur { d, a, p, or } => {
                 let vals: Vec<u64> = active
@@ -3500,7 +3607,7 @@ impl Machine {
                     self.num_clobber(t, *d, &[a], pc);
                 }
             }
-            Op::VoteAny { d, a } => {
+            Op::VoteAny { d, a, .. } => {
                 let mut mask = 0u64;
                 for &t in &active {
                     if self.prd(t, *a) {
@@ -3511,58 +3618,12 @@ impl Machine {
                     self.wr(t, *d, mask, 1);
                 }
             }
-            Op::Redux { d, a, op, mask } => {
-                use ptxv_ir::ReduxOp as R;
-                // E-WARPCOLL: the executing lanes must be exactly those the membermask names.
-                if let (Some(m), Some(&t0)) = (mask, active.first()) {
-                    let want = self.rd(t0, m)? as u32;
-                    let got = active
-                        .iter()
-                        .fold(0u32, |x, &t| x | 1 << self.threads[t].lane);
-                    let agree = active
-                        .iter()
-                        .all(|&t| self.rd(t, m).ok().map(|v| v as u32) == Some(want));
-                    if got != want || !agree {
-                        let msg = format!(
-                            "redux.sync at {} executed by lanes {got:#010x} of warp {} with \
-                             membermask {want:#010x}{}",
-                            self.k.describe(pc as usize),
-                            self.threads[t0].warp,
-                            if agree {
-                                ""
-                            } else {
-                                " (lanes disagree on the mask)"
-                            }
-                        );
-                        self.report("violation", format!("redux-mask:{pc}"), msg);
-                    }
-                }
-                let mut acc: Option<u32> = None;
+            Op::Redux { d, a, op, .. } => {
+                let mut xs = Vec::with_capacity(active.len());
                 for &t in &active {
-                    let x = self.rd(t, a)? as u32;
-                    // f32 forms: |x| first; a lone NaN is still the canonical NaN (GB300:
-                    // fixtures/s_lift_l). ASSUME(L-ROSETTA)
-                    if let R::MinF { abs, nan } | R::MaxF { abs, nan } = *op {
-                        let x = if abs { x & 0x7fff_ffff } else { x };
-                        let min = matches!(op, R::MinF { .. });
-                        acc = Some(fp::f32_minmax(acc.unwrap_or(x), x, min, nan, false));
-                        continue;
-                    }
-                    acc = Some(match acc {
-                        None => x,
-                        Some(v) => match op {
-                            R::And => v & x,
-                            R::Or => v | x,
-                            R::Xor => v ^ x,
-                            R::Sum => v.wrapping_add(x),
-                            R::MinU => v.min(x),
-                            R::MaxU => v.max(x),
-                            R::MinS => (v as i32).min(x as i32) as u32,
-                            R::MaxS => (v as i32).max(x as i32) as u32,
-                            R::MinF { .. } | R::MaxF { .. } => unreachable!(),
-                        },
-                    });
+                    xs.push(self.rd(t, a)? as u32);
                 }
+                let acc = redux_fold(*op, &xs);
                 // A uniform destination (SASS) is written once; a PTX register in every lane.
                 if let Some(v) = acc {
                     let n = if d.is_uniform() { 1 } else { active.len() };
@@ -4258,6 +4319,7 @@ impl Machine {
                 clamp,
                 mode,
                 p,
+                ..
             } => {
                 let mut by_lane: [Option<usize>; 32] = [None; 32];
                 for &t in &active {
@@ -4314,7 +4376,7 @@ impl Machine {
                     self.num_put(t, *d, n);
                 }
             }
-            Op::VoteAll { d, a, uni } => {
+            Op::VoteAll { d, a, uni, .. } => {
                 let v = active.iter().all(|&t| self.prd(t, *a))
                     || *uni && active.iter().all(|&t| !self.prd(t, *a));
                 for &t in &active {
@@ -4444,6 +4506,168 @@ impl Machine {
                 }
             }
         }
+    }
+
+    /// Is lane `u` waiting at another PTX collective of the same kind as the one at `pc`, whose
+    /// membermask is `mask` and whose guard holds (E-WARPCOLL)?
+    fn mask_partner(&self, u: usize, pc: u32, mask: u32) -> bool {
+        let th = &self.threads[u];
+        if th.st != St::Run || th.pc == pc || mask >> th.lane & 1 == 0 {
+            return false;
+        }
+        let (Some(a), Some(b)) = (
+            self.k.code.get(pc as usize),
+            self.k.code.get(th.pc as usize),
+        ) else {
+            return false;
+        };
+        std::mem::discriminant(&a.op) == std::mem::discriminant(&b.op)
+            && b.op
+                .member_mask()
+                .is_some_and(|m| self.rd(u, m).ok().map(|v| v as u32) == Some(mask))
+            && self.prd(u, b.guard)
+    }
+
+    /// A PTX shfl / vote.sync executed by `active` here together with `partners`, lanes of its
+    /// mask at other instructions of the same kind: each lane reads its own instruction's
+    /// operands and writes its own destination; the partners go on after theirs.
+    fn exec_combined(
+        &mut self,
+        active: &[usize],
+        partners: &[usize],
+        pc: u32,
+    ) -> Result<(), String> {
+        let k = self.k.clone();
+        let lanes: Vec<(usize, u32)> = active
+            .iter()
+            .map(|&t| (t, pc))
+            .chain(partners.iter().map(|&u| (u, self.threads[u].pc)))
+            .collect();
+        let op_of = |q: u32| &k.code[q as usize].op;
+        match op_of(pc) {
+            Op::Shfl { .. } => {
+                let mut by_lane: [Option<(usize, u32)>; 32] = [None; 32];
+                for &(t, q) in &lanes {
+                    by_lane[self.threads[t].lane as usize] = Some((t, q));
+                }
+                let mut out = Vec::new();
+                for &(t, q) in &lanes {
+                    let Op::Shfl {
+                        lane, clamp, mode, ..
+                    } = op_of(q)
+                    else {
+                        unreachable!()
+                    };
+                    let c = self.rd(t, clamp)? as u32;
+                    let me = self.threads[t].lane;
+                    let seg = (c >> 8) & 31;
+                    let min_lane = me & seg;
+                    let max_lane = min_lane | (c & 31 & !seg);
+                    let b = self.rd(t, lane)? as u32 & 31;
+                    let (j, ok) = match mode {
+                        ShflMode::Idx => {
+                            let j = min_lane | (b & !seg);
+                            (j, j <= max_lane)
+                        }
+                        ShflMode::Up => (me.wrapping_sub(b), me >= max_lane + b),
+                        ShflMode::Down => (me + b, me + b <= max_lane),
+                        ShflMode::Bfly => ((me ^ b) & 31, (me ^ b) <= max_lane),
+                    };
+                    let src = if ok { j as usize } else { me as usize };
+                    let Some((st, sq)) = by_lane[src] else {
+                        return Err(format!(
+                            "shfl reads lane {src}, which is not executing it (result undefined)"
+                        ));
+                    };
+                    let Op::Shfl { a: sa, .. } = op_of(sq) else {
+                        unreachable!()
+                    };
+                    out.push((t, q, self.rd(st, sa)?, self.val_umask(st, sa), ok));
+                }
+                for (t, q, v, um, ok) in out {
+                    let Op::Shfl { d, p, a, .. } = op_of(q) else {
+                        unreachable!()
+                    };
+                    if let Some(p) = p {
+                        self.wp(t, *p, ok);
+                    }
+                    self.vmask = (um != 0).then_some(um);
+                    self.wr(t, *d, v, 1);
+                    self.vmask = None;
+                    self.num_clobber(t, *d, &[a], q);
+                }
+            }
+            Op::VoteAny { .. } => {
+                let mut m = 0u64;
+                for &(t, q) in &lanes {
+                    let Op::VoteAny { a, .. } = op_of(q) else {
+                        unreachable!()
+                    };
+                    if self.prd(t, *a) {
+                        m |= 1 << self.threads[t].lane;
+                    }
+                }
+                for &(t, q) in &lanes {
+                    let Op::VoteAny { d, .. } = op_of(q) else {
+                        unreachable!()
+                    };
+                    self.wr(t, *d, m, 1);
+                }
+            }
+            Op::VoteAll { .. } => {
+                let mut all = true;
+                let mut none = true;
+                for &(t, q) in &lanes {
+                    let Op::VoteAll { a, .. } = op_of(q) else {
+                        unreachable!()
+                    };
+                    let x = self.prd(t, *a);
+                    all &= x;
+                    none &= !x;
+                }
+                for &(t, q) in &lanes {
+                    let Op::VoteAll { d, uni, .. } = op_of(q) else {
+                        unreachable!()
+                    };
+                    self.wp(t, *d, all || *uni && none);
+                }
+            }
+            Op::Redux { op, .. } => {
+                let mut xs = Vec::new();
+                for &(t, q) in &lanes {
+                    let Op::Redux { a, op: o, .. } = op_of(q) else {
+                        unreachable!()
+                    };
+                    if o != op {
+                        return Err(format!(
+                            "{}: lanes of one membermask at redux.sync instructions of different operations",
+                            k.describe(pc as usize)
+                        ));
+                    }
+                    xs.push(self.rd(t, a)? as u32);
+                }
+                if let Some(v) = redux_fold(*op, &xs) {
+                    for &(t, q) in &lanes {
+                        let Op::Redux { d, .. } = op_of(q) else {
+                            unreachable!()
+                        };
+                        self.wr(t, *d, v as u64, 1);
+                    }
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "{} with lanes of its membermask at other instructions not modeled",
+                    k.describe(pc as usize)
+                ));
+            }
+        }
+        for &u in partners {
+            let th = self.threads[u].make_mut();
+            th.pc += 1;
+            self.tick(u);
+        }
+        Ok(())
     }
 
     /// The ENDCOLLECTIVE of the WARPSYNC.COLLECTIVE at `start` (`start` if none).
@@ -4955,7 +5179,14 @@ impl Machine {
                 let xs = [val(a) as u32, val(b) as u32, val(c) as u32];
                 let mut m = 0u32;
                 for bit in 0..32 {
-                    let free: Vec<usize> = (0..3).filter(|&k| us[k] >> bit & 1 == 1).collect();
+                    let (mut fa, mut nf) = ([0usize; 3], 0);
+                    for (k, u) in us.iter().enumerate() {
+                        if u >> bit & 1 == 1 {
+                            fa[nf] = k;
+                            nf += 1;
+                        }
+                    }
+                    let free = &fa[..nf];
                     if free.is_empty() {
                         continue;
                     }
@@ -5254,7 +5485,7 @@ impl Machine {
             }
         };
         if !self.threads[t].pending_ld.is_empty() {
-            for r in inst.op.src_regs() {
+            for &r in src_regs_at(&self.k, inst, pc).iter() {
                 let key = (r.file as u8, r.idx);
                 if self.threads[t].pending_ld.contains(&key) {
                     let name = if r.file == File::V {
@@ -5351,7 +5582,7 @@ impl Machine {
                 .collect(),
             _ => vec![],
         };
-        let undef = inst.op.src_regs().into_iter().find(|r| {
+        let undef = src_regs_at(&self.k, inst, pc).iter().copied().find(|r| {
             if sts_data.contains(r) || tmem_data.contains(r) {
                 return false;
             }
@@ -9878,17 +10109,21 @@ impl Machine {
         let Some(bar) = self.bars.get(&(cta, id)) else {
             return;
         };
-        let need = match bar.count {
-            Some(c) => c as usize,
-            None => self
-                .cta_threads(cta)
-                .filter(|&t| self.threads[t].st != St::Exited)
-                .count(),
-        };
         if bar.arrived.is_empty() && bar.arrivers.is_empty() {
             return;
         }
-        if self.bar_arrivals(bar) < need {
+        let have = self.bar_arrivals(bar);
+        let short = match bar.count {
+            Some(c) => have < c as usize,
+            // Fewer arrivals than live threads: counting stops at the first live thread past
+            // the arrivals (one count per arrival, not one per CTA thread).
+            None => self
+                .cta_threads_lazy(cta)
+                .filter(|&t| self.threads[t].st != St::Exited)
+                .nth(have)
+                .is_some(),
+        };
+        if short {
             return;
         }
         let Bar {
@@ -9922,10 +10157,14 @@ impl Machine {
         *g += 1;
         // Waiters acquire every arrival: their own and the bar.arrive releases.
         let mut j = rel;
-        for &a in &arrived {
-            vc_join(&mut j, &self.threads[a as usize].vc);
-            // ASSUME(E-READ-DONE): an arrival carries its completed reads.
-            if self.launch.read_done {
+        let vcs: Vec<&VC> = arrived
+            .iter()
+            .map(|&a| &self.threads[a as usize].vc)
+            .collect();
+        crate::machine::vc_join_many(&mut j, &vcs);
+        // ASSUME(E-READ-DONE): an arrival carries its completed reads.
+        if self.launch.read_done {
+            for &a in &arrived {
                 let rr = self.read_release(a as usize);
                 if let Some(rr) = crate::machine::rr_new(&j, &rr) {
                     vc_join(&mut j, &rr);
@@ -12473,6 +12712,37 @@ impl Machine {
         }
         Ok(())
     }
+}
+
+/// The REDUX / CREDUX reduction of the active lanes' 32-bit values (None: no lane).
+fn redux_fold(op: ptxv_ir::ReduxOp, xs: &[u32]) -> Option<u32> {
+    use ptxv_ir::ReduxOp as R;
+    let mut acc: Option<u32> = None;
+    for &x in xs {
+        // f32 forms: |x| first; a lone NaN is still the canonical NaN (GB300:
+        // fixtures/s_lift_l). ASSUME(L-ROSETTA)
+        if let R::MinF { abs, nan } | R::MaxF { abs, nan } = op {
+            let x = if abs { x & 0x7fff_ffff } else { x };
+            let min = matches!(op, R::MinF { .. });
+            acc = Some(fp::f32_minmax(acc.unwrap_or(x), x, min, nan, false));
+            continue;
+        }
+        acc = Some(match acc {
+            None => x,
+            Some(v) => match op {
+                R::And => v & x,
+                R::Or => v | x,
+                R::Xor => v ^ x,
+                R::Sum => v.wrapping_add(x),
+                R::MinU => v.min(x),
+                R::MaxU => v.max(x),
+                R::MinS => (v as i32).min(x as i32) as u32,
+                R::MaxS => (v as i32).max(x as i32) as u32,
+                R::MinF { .. } | R::MaxF { .. } => unreachable!(),
+            },
+        });
+    }
+    acc
 }
 
 /// Lets `Hash` values feed a `&mut dyn Hasher`.

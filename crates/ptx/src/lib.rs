@@ -397,6 +397,20 @@ fn needs_scratch(text: &str) -> bool {
 }
 
 impl<'a> Lower<'a> {
+    /// A `.sync` membermask operand: None for the full warp (`0xffffffff`, `-1`), else the
+    /// immediate or register naming part of it (E-WARPCOLL; probes/redux_mask,
+    /// probes/shfl_mask). An empty or wider immediate, or a predicate, is refused.
+    fn member_mask(&self, s: &str) -> Result<Option<Val>> {
+        let s = s.trim();
+        match parse_int(s) {
+            _ if s == "-1" => Ok(None),
+            Some(m) if m == u32::MAX as u64 || m == u64::MAX => Ok(None),
+            Some(m) if m <= u32::MAX as u64 && m != 0 => Ok(Some(Val::Imm(m))),
+            None if self.reg(s).is_ok_and(|r| r.file != File::P) => Ok(Some(self.val(s)?)),
+            _ => bail!(self.err("membermask form not modeled")),
+        }
+    }
+
     fn scratch_v(&self) -> Result<Reg> {
         self.tmp_v
             .ok_or_else(|| self.err("internal: no scratch register"))
@@ -2168,9 +2182,10 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             } else {
                 bail!(lw.err("shfl mode"));
             };
-            if !has("sync") || parse_int(op_n(4)?) != Some(u32::MAX as u64) && op_n(4)? != "-1" {
-                bail!(lw.err("only shfl.sync with a full member mask is modeled"));
+            if !has("sync") {
+                bail!(lw.err("only shfl.sync is modeled"));
             }
+            let mask = lw.member_mask(op_n(4)?)?;
             // `d|p`: the in-range predicate.
             let (dd, pp) = match op_n(0)?.split_once('|') {
                 Some((d, p)) => (d.trim(), Some(lw.pred_dst(p.trim())?)),
@@ -2183,6 +2198,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 lane: lw.val(op_n(2)?)?,
                 clamp: lw.val(op_n(3)?)?,
                 mode,
+                mask,
             }
         }
         // `ldmatrix.sync.aligned.m8n8.x{1,2,4}[.trans].shared.b16 {d..}, [a]` (SASS LDSM).
@@ -2821,10 +2837,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     )
                 );
             }
-            if parse_int(op_n(2)?) != Some(u32::MAX as u64) && parse_int(op_n(2)?) != Some(u64::MAX)
-            {
-                bail!(lw.err("vote.sync with a partial membermask not modeled"));
-            }
+            let mask = lw.member_mask(op_n(2)?)?;
             let a = lw.pred_src(op_n(1)?)?;
             let not_a = Pred {
                 reg: a.reg,
@@ -2834,6 +2847,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 Op::VoteAny {
                     d: lw.dst(op_n(0)?)?,
                     a,
+                    mask,
                 }
             } else {
                 let d = lw.pred_dst(op_n(0)?)?;
@@ -2846,6 +2860,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         d,
                         a,
                         uni: has("uni"),
+                        mask,
                     }
                 } else if has("any") {
                     extra.push(Op::Plop3 {
@@ -2860,6 +2875,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         d,
                         a: not_a,
                         uni: false,
+                        mask,
                     }
                 } else {
                     bail!(lw.err("vote.sync mode not modeled"));

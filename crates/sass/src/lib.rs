@@ -2156,6 +2156,7 @@ fn lower_line(
                 d: lw.pdst(lw.op(0)?)?,
                 a: lw.pred(lw.op(1)?)?,
                 uni: mods == ["EQ"],
+                mask: None,
             }
         }
         "ELECT" => {
@@ -2769,6 +2770,7 @@ fn lower_line(
                 Op::VoteAny {
                     d: lw.pdst(lw.op(0)?)?,
                     a: lw.pred(lw.op(1)?)?,
+                    mask: None,
                 }
             } else {
                 if lw.op(1)? != "UPT" && lw.op(1)? != "PT" {
@@ -2777,6 +2779,7 @@ fn lower_line(
                 Op::VoteAny {
                     d: lw.dst(lw.op(0)?)?,
                     a: lw.pred(lw.op(2)?)?,
+                    mask: None,
                 }
             }
         }
@@ -4429,6 +4432,7 @@ fn lower_line(
                 clamp: lw.val(lw.op(4)?, 4)?,
                 mode,
                 p,
+                mask: None,
             }
         }
         _ => bail!(lw.err(format!("unsupported SASS opcode `{}`", l.opcode))),
