@@ -374,3 +374,60 @@ def test_same_name_specializations_keep_their_own_cubin(torch):
     assert np.array_equal(c.expected()["b"], (x * 3).cpu().numpy())
     v = cap.all().check()
     assert v.clean and v.sim_equals_gpu
+
+
+def test_ptx_kept_for_every_kernel_of_a_case(torch, tmp_path):
+    """Two Triton kernels from two modules in one case: their PTX (Triton's cache, matched to
+    the captured machine code) is merged into one kernel.ptx and the PTX front checks it."""
+    import subprocess
+
+    import ptxv
+    import triton
+    import triton.language as tl
+
+    @triton.jit
+    def px_add(x, y, n, B: tl.constexpr):
+        o = tl.program_id(0) * B + tl.arange(0, B)
+        tl.store(y + o, tl.load(x + o, mask=o < n) + 1.0, mask=o < n)
+
+    @triton.jit
+    def px_mul(x, y, n, B: tl.constexpr):
+        o = tl.program_id(0) * B + tl.arange(0, B)
+        tl.store(y + o, tl.load(x + o, mask=o < n) * 2.0, mask=o < n)
+
+    x = torch.randn(256, device="cuda")
+    y = torch.empty_like(x)
+    z = torch.empty_like(x)
+    px_add[(2,)](x, y, 256, B=128)
+    px_mul[(2,)](y, z, 256, B=128)
+    torch.cuda.synchronize()
+    with ptxv.capture() as cap:
+        y = torch.empty_like(x)
+        z = torch.empty_like(x)
+        px_add[(2,)](x, y, 256, B=128)
+        px_mul[(2,)](y, z, 256, B=128)
+    d = tmp_path / "c"
+    cap.select(index=[0, 1]).write(d, ptx=True)
+    toml = (d / "case.toml").read_text()
+    src = (d / "kernel.ptx").read_text()
+    assert (
+        'ptx = "kernel.ptx"' in toml
+        and ".entry px_add" in src
+        and ".entry px_mul" in src
+    )
+    r = subprocess.run(
+        [
+            os.environ.get("PTXV_BIN", "ptxv"),
+            "check",
+            str(d),
+            "--variant",
+            "good",
+            "--front",
+            "ptx",
+            "--certify",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr

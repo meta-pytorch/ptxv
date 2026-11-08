@@ -213,7 +213,9 @@ class Launches:
         outputs: buffer names to compare (default: buffers the launches changed, and buffers
         allocated inside the region). write_only: outputs whose initial bytes the kernels do
         not read (they start as zeros instead of their pre-launch bytes). ptx: a PTX case
-        when Triton's cache holds this kernel's PTX. prune: blank other kernels' code in
+        when the toolchain kept every kernel's PTX (Triton's cache, CuTeDSL
+        CUTE_DSL_KEEP=ptx,cubin dumps, PTXV_PTX_DIRS / PTXV_NVCC_PTX_DIR; matched to the
+        captured machine code, _ptxsrc); without it that PTX is still written as jit.ptx. prune: blank other kernels' code in
         module cubins. rename: buffer name -> name in the case.
         """
         from ._casewriter import write_case

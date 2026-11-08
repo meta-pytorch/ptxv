@@ -33,7 +33,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
-from . import _cupti
+from . import _cupti, _ptxsrc
 from ._cubin import (
     decode_tmap,
     elf_defines,
@@ -569,8 +569,22 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
             f"launches of {sorted(split)} run different modules under one name: each keeps "
             "its own cubin"
         )
-    ptx_of = _triton_ptx(names, {n: image(p) for n, p in cubin_of.items()})
-    use_ptx = ptx and not split and len(names) == 1 and next(iter(names)) in ptx_of
+    # PTX kept by the toolchain (Triton cache, CuTeDSL dumps, PTXV_PTX_DIRS), matched to the
+    # captured machine code (_ptxsrc). Every kernel of the case needs its PTX; kernels from
+    # several modules become one merged PTX text. Launches of one name running different
+    # modules cannot share one PTX text (one definition per entry): those stay binary-only.
+    ptx_of = _ptxsrc.find_ptx({n: image(p) for n, p in cubin_of.items()})
+    ptx_src = None
+    if names and all(n in ptx_of for n in names):
+        try:
+            ptx_src = _ptxsrc.merge_ptx([ptx_of[n] for n in sorted(names)])
+        except ValueError as e:
+            warnings.append(f"PTX of the case's kernels not merged: {e}")
+    elif ptx_of:
+        warnings.append(
+            "no PTX kept for " + ", ".join(sorted(n[:60] for n in names - set(ptx_of)))
+        )
+    use_ptx = ptx and not split and ptx_src is not None
     by_hash: dict[str, str] = {}
     cubin_files: list[str] = []
     for (la, _), src in zip(plaunches, lcubin):
@@ -587,8 +601,8 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
                 data if not prune else prune_cubin(data, keep)
             )
         cubin_files.append(by_hash[h])
-    if len(names) == 1 and next(iter(names)) in ptx_of:
-        src = ptx_of[next(iter(names))]
+    if ptx_src is not None:
+        src = ptx_src
         m = re.search(r"^\.version (\d+)\.(\d+)", src, re.M)
         if m and (int(m.group(1)), int(m.group(2))) > (9, 0):
             src = src.replace(m.group(0), ".version 9.0", 1)
@@ -643,7 +657,12 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
     )
     desc = (
         f"\nCaptured in process by ptxv.capture (python/ptxv). {len(plaunches)} launch(es), "
-        + ("PTX from Triton's cache" if use_ptx else "binary only (cubins from CUPTI)")
+        + (
+            "PTX kept by the toolchain"
+            if use_ptx
+            else "binary only (cubins from CUPTI)"
+            + (", PTX in jit.ptx" if ptx_src is not None else "")
+        )
         + f":\n{kern_lines}"
     )
     desc = desc.replace("\\", "\\\\").replace('"', '\\"')
@@ -718,6 +737,7 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
             for i, (la, _) in enumerate(plaunches)
         ],
         "ptx": use_ptx,
+        "jit_ptx": ptx_src is not None and not use_ptx,
         "buffers": [
             {
                 "name": b["name"],
@@ -733,23 +753,3 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
         "warnings": warnings + list(cap.warnings),
     }
     (out / "capture.json").write_text(json.dumps(meta, indent=1))
-
-
-def _triton_ptx(names: set[str], cubins: dict[str, bytes]) -> dict[str, str]:
-    """PTX of Triton kernels whose compiled cubin in Triton's cache equals the captured one."""
-    root = os.environ.get("TRITON_CACHE_DIR") or os.path.expanduser("~/.triton/cache")
-    out = {}
-    if not os.path.isdir(root):
-        return out
-    for n in names:
-        want = hashlib.sha1(cubins[n]).hexdigest()
-        for c in glob.glob(os.path.join(root, "*", f"{n}.cubin")):
-            try:
-                if hashlib.sha1(_read(Path(c))).hexdigest() == want:
-                    p = c[: -len(".cubin")] + ".ptx"
-                    if os.path.exists(p):
-                        out[n] = Path(p).read_text()
-                        break
-            except OSError:
-                continue
-    return out

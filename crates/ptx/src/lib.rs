@@ -2184,6 +2184,10 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
     // targets and labels are statement indices until remapped below.
     let mut code = Vec::new();
     let mut start = Vec::with_capacity(insts_src.len() + 1);
+    // PTXV_LIFT_REPORT: list every statement the front-end does not lower (grouped by reason
+    // and opcode) instead of stopping at the first, as the SASS front does.
+    let report = std::env::var("PTXV_LIFT_REPORT").is_ok();
+    let mut unlowered: Vec<(String, usize, String)> = Vec::new();
     for (si, st) in insts_src.iter().enumerate() {
         let mut lw = Lower {
             regs: &regs,
@@ -2210,7 +2214,30 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
             hint_policies: &hint_policies,
             brx_tables: &brx_tables,
         };
-        let inst = lower_inst(&mut lw).with_context(|| format!("in kernel {name}"))?;
+        let inst = match lower_inst(&mut lw) {
+            Ok(i) => i,
+            Err(e) if report => {
+                let msg = format!("{e:#}");
+                let first = msg.lines().next().unwrap_or("").to_string();
+                let why = match first.split_once(": ") {
+                    Some((l, r)) if l.starts_with("ptx line ") => r.to_string(),
+                    _ => first,
+                };
+                let opc = st
+                    .text
+                    .split_whitespace()
+                    .find(|t| !t.starts_with('@'))
+                    .unwrap_or("");
+                let key = format!("{why} [{opc}]");
+                match unlowered.iter_mut().find(|u| u.0 == key) {
+                    Some(u) => u.1 += 1,
+                    None => unlowered.push((key, 1, st.text.replace('\n', " "))),
+                }
+                start.push(code.len());
+                continue;
+            }
+            Err(e) => return Err(e).with_context(|| format!("in kernel {name}")),
+        };
         start.push(code.len());
         let (guard, loc, text) = (inst.guard, inst.loc, inst.text.clone());
         let mut ops = lw.pre.clone();
@@ -2245,6 +2272,21 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
                 loc,
                 text: text.clone(),
             });
+        }
+    }
+    if report {
+        eprintln!(
+            "lift report for {name}: {} kinds of instruction not lowered",
+            unlowered.len()
+        );
+        for (why, n, ex) in &unlowered {
+            eprintln!("{n:5} {why}\n      e.g. {ex}");
+        }
+        if !unlowered.is_empty() {
+            bail!(
+                "in kernel {name}: {} kinds of instruction not lowered",
+                unlowered.len()
+            );
         }
     }
     start.push(code.len());
