@@ -3910,6 +3910,26 @@ impl Machine {
                 for &t in members {
                     self.threads[t].make_mut().pc = if taken { *target as u32 } else { pc + 1 };
                 }
+                // Falling through, the lanes of the member mask are converged: ptxas's fast
+                // path of a `bar.warp.sync` (`__syncwarp`, often merged with the following
+                // `elect.sync`) has no WARPSYNC, so the fall-through orders them as the slow
+                // path's WARPSYNC.COLLECTIVE does (DeepEP hybrid dispatch: `tma_store_wait();
+                // __syncwarp();` then the elected lane's TMA load). ASSUME(E-COLLECTIVE)
+                if !taken && !active.is_empty() {
+                    if self.wlog.is_on() {
+                        let w = self.threads[members[0]].warp;
+                        crate::wellsync::warpsync_released(self, w, lanes, members); // wellsync.rs
+                    }
+                    let mut j = VC::new();
+                    for &t in members {
+                        vc_join(&mut j, &self.threads[t].vc);
+                    }
+                    for &t in members {
+                        let th = self.threads[t].make_mut();
+                        th.vc = j.clone();
+                        vc_tick(&mut th.vc, t as u32);
+                    }
+                }
                 return Ok(());
             }
             Op::Bra {

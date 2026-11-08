@@ -876,6 +876,13 @@ slow path = `WARPSYNC.COLLECTIVE Rm, end; op...; ENDCOLLECTIVE; end:`.
   warp is inside the region; `ENDCOLLECTIVE` lets the next parked group in. A lane whose mask
   does not contain itself is an error. Lanes of one mask parked at a different collective
   instruction are not combined (they wait: a deadlock, not a wrong value).
+- `BRA.DIV` falling through (2026-11-07): the lanes of the member mask are converged, and the
+  fall-through orders them (their clocks are joined) as the slow path's `WARPSYNC.COLLECTIVE`
+  does. ptxas lowers `__syncwarp()` (`bar.warp.sync -1`, often merged with the next
+  `elect.sync`) to `BRA.DIV 0xffffffff, slow` with no WARPSYNC on the converged path, so
+  without the join a lane's DEPBAR-completed bulk store had no happens-before to the elected
+  lane's bulk load into the same shared bytes (DeepEP hybrid dispatch, a false race).
+  probes/syncwarp_fast (that shape): GB300 50/50, both front-ends bitwise and clean.
 - `REDUX` (AND) / `.OR` / `.XOR` / `.SUM`, `CREDUX.MIN` / `.MAX` (`.S32`): reduction of the
   active lanes' 32-bit values into the uniform register. `SR_LEMASK` / `GEMASK` / `GTMASK` /
   `EQMASK` as `%lanemask_*`.
@@ -3852,6 +3859,9 @@ forms seen. Any other form is a hard error.
   corpus records); `brx.idx[.uni] i, $L` with `$L: .branchtargets ...` (per thread, as `bra`, to entry i; an
   index outside the list is a fault, as SASS `BRX` to an address that is not a branch target;
   probes/brx_idx, 30 SCALE corpus records). GB300 bitwise on both front-ends where probed.
+- `copysign.f32 d, a, b` (2026-11-07, 36 SCALE corpus records): b with the sign bit of a, a
+  bit operation (ptxas: `LOP3.LUT d, b, 0x80000000, a, 0xb8`). probes/copysign (NaN payloads,
+  signed zeros, Inf, subnormals, an immediate operand): GB300 50/50, both front-ends bitwise.
 - PTX syntax (2026-11-07, SCALE pilot): `%lanemask_{lt,le,ge,gt,eq}` as SR_LTMASK etc.;
   registers declared without `%` inside an inline-asm scope (`{.reg .s64 a; ...}`, CuTeDSL);
   `[%rd+-N]` addresses; a `{...}` operand list starting a continuation line (after a comma, or
@@ -3864,7 +3874,14 @@ forms seen. Any other form is a hard error.
   stored or converted (Triton's RMSNorm before `cvt.rn.bf16x2.f32`), and `add` / `sub.f32x2`
   when neither operand is a float mul without `.rn`; ptxas cannot contract those into FFMA2.
   probes/f32x2_norn (FMUL2 / FADD2 in ptxas's output): GB300 100/100 scrubbed, both front-ends
-  bitwise. Other plain forms stay refused.
+  bitwise. Also `.rn` (2026-11-07, 301 SCALE corpus records refused): a `mul.f32x2` read as an
+  `fma.rn.f32x2` addend, or unpacked into halves read by any scalar op (add / sub / neg / fma
+  addend), a half repacked into the other lane of a vector read by anything but a repack
+  (Triton's `mov.b64 {_, hi}, p; mov.b64 v, {hi, x}; add.f32x2`), or into its own lane of a
+  vector read only as above. ptxas 13.0 emits FMUL2 and the readers apart (no FFMA / FFMA2);
+  probes/f32x2_unpack (cancelling operands: a contraction would differ in 43 of 255 lanes):
+  GB300 50/50 scrubbed, both front-ends bitwise. 238 of the 301 records then lift. A product
+  read directly by a plain `add` / `sub.f32x2` (FFMA2) stays refused.
 - `add` / `sub` / `mul` `.bf16x2` / `.bf16` with no rounding modifier (2026-11-07, SCALE
   pilot): the same rule as f32x2 (ptxas emits HADD2.BF16_V2 / HFMA2.BF16_V2 ..., -RZ).
   probes/bf16_norn: GB300 50/50 scrubbed, both front-ends bitwise. Plain `fma.bf16x2` stays
@@ -3959,6 +3976,39 @@ is rejected (fail closed).
   front-ends, bitwise equal to probes/ldst256's output.
 - If wrong: *miss* only if a hint changed the data or the completion order.
 - Retire: never needed for verdicts; listed so that dropped modifiers are visible.
+
+### PTX-FMAD · code
+**A PTX float `mul` without a rounding modifier and the `add` / `sub` without one that reads
+it are contracted as ptxas 13.0's default (`--fmad=true`) contracts them.** The PTX ISA leaves
+this to the code generator: "mul/add sequences with no rounding modifiers may be optimized to
+use fused-multiply-add instructions on the target device", while an explicit rounding modifier
+is "treated conservatively". The rounding of such a pair is therefore implementation-defined
+at the PTX contract level (either value is allowed); the model fixes the one ptxas 13.0
+produces. The SASS front-end is exact (it executes the FFMA / FMUL + FADD ptxas emitted).
+- Where: `ptx` `fmad_pairs` (analysis), `lower_inst` add / sub arm (`ASSUME(PTX-FMAD)`).
+- Contracted (one FFMA / FFMA.FTZ / FFMA.SAT / DFMA, a sub negating the product or the addend):
+  an `.f32` / `.f64` mul whose result is read once, by an add / sub of the same type and
+  `.ftz` setting in the same basic block (no label or branch between), neither guarded, the
+  mul's operands not redefined in between, and the add's other operand not also such a mul.
+  `.sat` on the add is kept (FFMA.SAT).
+- Not contracted, as ptxas: a rounding modifier on either instruction; `mul.ftz` with an add
+  without `.ftz`, or the reverse (FMUL.FTZ + FADD; FMUL + FADD.FTZ.SAT).
+- Refused (fail closed): a mul read several times with a plain add / sub among the readers, a
+  plain add / sub of two such muls (which product ptxas folds is not modeled), a product
+  passed through `neg` (ptxas folds it: FFMA -a, b, c), a pair across blocks, under a guard
+  (ptxas if-converts and then kept a shared product apart: FMUL + FSEL + FADD), or with an
+  operand redefined in between, and a mul before a reader that precedes it (a loop).
+- Status: **validated** by probes/fmad (2026-11-07): every contracted and kept-apart form on
+  random, cancelling, subnormal, signed-zero and Inf / NaN operands; GB300 50/50 scrubbed,
+  PTX and SASS fronts bitwise (the unfused value differs from GB300's in 122 of 232 finite
+  lanes of output 0). Before, the PTX front rounded the product separately: `a = b =
+  0x3f800800, c = -1`: GB300 0x3a000400, PTX front 0x3a000000.
+- Records: no probe or fixture in the repo has a contractible pair (Triton and CUTLASS emit
+  `fma.rn` themselves). KA records with one either check the SASS front (a `cubin`) or do not
+  lift for other reasons (mslk fa4 decode / fwd). SCALE corpus PTX files with a plain mul read
+  by a plain add / sub: 554 (list kept outside the repo).
+- If wrong: *false alarm* on bitwise / equivalence / error-distribution results of the PTX
+  front only; other toolchains or `--fmad=false` may contract differently.
 
 ### L-LOP3-P · code
 **`LOP3.LUT Pd, Rd, a, b, c, lut, Pq` sets Pd = (result != 0) OR Pq; `LOP3.LUT.PAND` sets
@@ -4146,6 +4196,10 @@ complete.**
   on a later f64 op's scoreboard, and lets a later f64 op overwrite a register an earlier
   one reads (rd set) with no wait. probes/f64_queue reproduces both; GB300 output = model,
   both front-ends bitwise (before: a false SCOREBOARD violation and Triton split-k's f64 LSE).
+  `DSETP` is in the f64 queue too (2026-11-07): ptxas leaves `DADD R6` with no write
+  scoreboard and reads R6 right after a wait on a later `DSETP`'s scoreboard, under 128 stall
+  cycles later (CuTe PtgcRecordKernel, a false SCOREBOARD violation; probes/f64_dsetp = GB300
+  50/50, both front-ends bitwise).
   Conversions with an f64 operand (`I2F.F64.*`, `F2F.F32.F64`, `F2F.F64.*`, `F2I.*.F64`) are
   in the f64 queue, not the conversion queue (2026-11-07): ptxas leaves `I2F.F64.U64.RZ R8`
   with no write scoreboard and reads R8 after a wait on a later `I2F.F64.RM`'s scoreboard

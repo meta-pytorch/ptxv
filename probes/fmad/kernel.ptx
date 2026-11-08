@@ -1,0 +1,89 @@
+// probes/fmad: ptxas 13.0's default contraction (--fmad=true) of a mul without a rounding
+// modifier into the add / sub without one that reads it (PTX-FMAD). 256 threads; a, b, c =
+// in[3 t .. 3 t + 2] (gen.py: random words, subnormals, signed zeros, Inf / NaN, products
+// near -c); out[16 t + i]:
+//   0: mul + add (product first)       1: add c, product          2: sub product, c
+//   3: sub c, product                  4: mul.ftz + add.ftz       5: mul.ftz + add (not fused)
+//   6: mul + add.sat                   7: mul + add.rn (not fused) 8: mul.rn + add (not fused)
+//   9: mul + sub.ftz.sat (not fused)   10: mul by 0.5 + add 1.0   11: c b + a, with an
+//      unrelated instruction between, as bits plus trunc(a)
+//   12/13: f64 mul + add (lo, hi)      14/15: f64 mul + sub (lo, hi)
+// ptxas: FFMA / FFMA.FTZ / FFMA.SAT / DFMA where fused, FMUL + FADD elsewhere (it also keeps
+// a guarded pair apart, FMUL + FSEL + FADD, when the product is shared: refused by the model).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry fmad(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<64>;
+    .reg .b64   %rd<16>;
+    .reg .f64   %fd<16>;
+    .reg .pred  %p<4>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 12;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.f32   %r2, [%rd4];
+    ld.global.f32   %r3, [%rd4+4];
+    ld.global.f32   %r4, [%rd4+8];
+    mul.wide.u32    %rd5, %r1, 64;
+    add.s64         %rd6, %rd2, %rd5;
+    mul.f32         %r10, %r2, %r3;
+    add.f32         %r11, %r10, %r4;
+    st.global.f32   [%rd6], %r11;
+    mul.f32         %r12, %r2, %r3;
+    add.f32         %r13, %r4, %r12;
+    st.global.f32   [%rd6+4], %r13;
+    mul.f32         %r14, %r2, %r3;
+    sub.f32         %r15, %r14, %r4;
+    st.global.f32   [%rd6+8], %r15;
+    mul.f32         %r16, %r2, %r3;
+    sub.f32         %r17, %r4, %r16;
+    st.global.f32   [%rd6+12], %r17;
+    mul.ftz.f32     %r18, %r2, %r3;
+    add.ftz.f32     %r19, %r18, %r4;
+    st.global.f32   [%rd6+16], %r19;
+    mul.ftz.f32     %r20, %r2, %r3;
+    add.f32         %r21, %r20, %r4;
+    st.global.f32   [%rd6+20], %r21;
+    mul.f32         %r22, %r2, %r3;
+    add.sat.f32     %r23, %r22, %r4;
+    st.global.f32   [%rd6+24], %r23;
+    mul.f32         %r24, %r2, %r3;
+    add.rn.f32      %r25, %r24, %r4;
+    st.global.f32   [%rd6+28], %r25;
+    mul.rn.f32      %r26, %r2, %r3;
+    add.f32         %r27, %r26, %r4;
+    st.global.f32   [%rd6+32], %r27;
+    mul.f32         %r28, %r2, %r3;
+    sub.ftz.sat.f32 %r29, %r28, %r4;
+    st.global.f32   [%rd6+36], %r29;
+    mul.f32         %r30, %r2, 0f3F000000;
+    add.f32         %r31, %r30, 0f3F800000;
+    st.global.f32   [%rd6+40], %r31;
+    mul.f32         %r32, %r4, %r3;
+    cvt.rzi.s32.f32 %r34, %r2;
+    add.f32         %r33, %r32, %r2;
+    add.s32         %r35, %r34, %r33;
+    st.global.u32   [%rd6+44], %r35;
+    cvt.f64.f32     %fd1, %r2;
+    cvt.f64.f32     %fd2, %r3;
+    cvt.f64.f32     %fd3, %r4;
+    mul.f64         %fd4, %fd1, %fd2;
+    mul.f64         %fd5, %fd4, %fd1;
+    add.f64         %fd6, %fd5, %fd3;
+    st.global.f64   [%rd6+48], %fd6;
+    mul.f64         %fd7, %fd4, %fd2;
+    sub.f64         %fd8, %fd3, %fd7;
+    st.global.f64   [%rd6+56], %fd8;
+    ret;
+}

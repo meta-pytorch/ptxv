@@ -63,6 +63,7 @@ fn is_unpack(st: &Stmt, op: &str) -> bool {
 
 fn uncontractible_f16_muls(insts: &[&Stmt]) -> HashSet<String> {
     let mut cand: HashSet<String> = HashSet::new();
+    let mut x2: HashSet<String> = HashSet::new();
     for st in insts {
         let (op, ops) = stmt_parts(&st.text);
         if op.starts_with("mul.")
@@ -73,9 +74,67 @@ fn uncontractible_f16_muls(insts: &[&Stmt]) -> HashSet<String> {
         {
             if let Some(d) = ops.first() {
                 cand.insert(d.to_string());
+                if op.ends_with(".f32x2") {
+                    x2.insert(d.to_string());
+                }
             }
         }
     }
+    // The statements reading `r` (not defining it), with the operand index.
+    let readers = |r: &str| -> Vec<(&Stmt, usize)> {
+        let mut out = Vec::new();
+        for st in insts {
+            let (op, ops) = stmt_parts(&st.text);
+            let base = op.split('.').next().unwrap_or("");
+            let unpack = base == "mov" && is_unpack(st, op);
+            for (i, o) in ops.iter().enumerate() {
+                let def = (i == 0 || unpack && i + 1 < ops.len())
+                    && !matches!(base, "st" | "red" | "atom");
+                if !def && *o == r {
+                    out.push((*st, i));
+                }
+            }
+        }
+        out
+    };
+    // A pack `mov.b64 %p, {lo, hi}`'s destination.
+    let pack_dst = |st: &Stmt| -> Option<String> {
+        let (op, ops) = stmt_parts(&st.text);
+        (op.starts_with("mov.") && !is_unpack(st, op) && st.text.contains('{'))
+            .then(|| ops[0].to_string())
+    };
+    // f32x2: ptxas keeps an FMUL2 whose halves are unpacked apart from the scalar ops reading
+    // them (FMUL2 + FADD; FFMA with the half as its addend), and an FFMA2 reading the product
+    // as its addend apart from it (probes/f32x2_unpack). A half repacked into a vector is
+    // followed once more: in the other lane (Triton's `mov.b64 {_, hi}, p; mov.b64 v, {hi,
+    // x}; add.f32x2`: FMUL2 + FADD2) the vector may be read by anything but a repack; in its
+    // own lane only by multiplicands, fma operands, stores, conversions or unpacks whose
+    // halves are not repacked.
+    let pack_ok = |p: &str, crossed: bool| {
+        readers(p).iter().all(|&(st, i)| {
+            let (op, ops) = stmt_parts(&st.text);
+            let no_repack = |hs: &[&str]| {
+                hs.iter()
+                    .all(|h| readers(h).iter().all(|&(s2, _)| pack_dst(s2).is_none()))
+            };
+            match op.split('.').next().unwrap_or("") {
+                "mul" | "fma" | "st" | "cvt" => true,
+                "mov" if is_unpack(st, op) && i + 1 == ops.len() => no_repack(&ops[..i]),
+                "add" | "sub" if crossed => true,
+                _ => false,
+            }
+        })
+    };
+    // Half `h` of a product, from lane `lane` of the unpack.
+    let half_ok = |h: &str, lane: usize| {
+        readers(h).iter().all(|&(st, i)| match pack_dst(st) {
+            None => true,
+            Some(p) => {
+                let (_, ops) = stmt_parts(&st.text);
+                ops.len() == 3 && pack_ok(&p, i - 1 != lane)
+            }
+        })
+    };
     // Registers every use of which is a store or a conversion (the destinations of `mov`
     // packs that only get stored).
     let stored_only = |r: &str| {
@@ -102,11 +161,16 @@ fn uncontractible_f16_muls(insts: &[&Stmt]) -> HashSet<String> {
             }
             let safe = match base {
                 "mul" => true,
-                "fma" => i == 1 || i == 2,
+                "fma" => i == 1 || i == 2 || i == 3 && x2.contains(*o),
                 "st" | "cvt" => true,
                 // `mov.b32 %r13, {%h10, %h10}`: a pack whose result is only stored;
                 // `mov.b64 {%r64, %r65}, %rd15`: an unpack whose halves are only stored or
                 // converted (Triton's f32x2 RMSNorm before cvt.rn.bf16x2.f32).
+                "mov" if is_unpack(st, op) && i + 1 == ops.len() && i > 0 && x2.contains(*o) => ops
+                    [..i]
+                    .iter()
+                    .enumerate()
+                    .all(|(l, r)| *r == "_" || half_ok(r, l)),
                 "mov" if is_unpack(st, op) && i + 1 == ops.len() && i > 0 => {
                     ops[..i].iter().all(|r| stored_only(r))
                 }
@@ -119,6 +183,174 @@ fn uncontractible_f16_muls(insts: &[&Stmt]) -> HashSet<String> {
         }
     }
     cand
+}
+
+/// A plain `add` / `sub` `.f32` / `.f64` that ptxas contracts with the plain `mul` producing
+/// one of its operands (PTX-FMAD): the mul's two operands and the add operand it fills.
+#[derive(Clone, Debug)]
+struct Fmad {
+    a: String,
+    b: String,
+    slot: usize,
+}
+
+/// `%name` tokens of an operand string.
+fn reg_tokens(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let j = (i + 1..b.len())
+                .find(|&j| !(b[j].is_ascii_alphanumeric() || b[j] == b'_' || b[j] == b'$'))
+                .unwrap_or(b.len());
+            out.push(&s[i..j]);
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// PTX-FMAD: ptxas 13.0's default (`--fmad=true`) contraction of a float `mul` without a
+/// rounding modifier into the `add` / `sub` without one that reads it (probes/fmad). Modeled
+/// where the shape is unambiguous: an `.f32` / `.f64` mul (`.ftz` or not) whose result is read
+/// once, by an add / sub (`.sat` allowed) of the same type and `.ftz` setting in the same
+/// basic block, neither guarded, with the mul's operands not redefined in between and the add's other
+/// operand not such a mul. Returns the contracted adds by statement index, and statements
+/// refused because ptxas may contract them in a way not modeled (a mul read several times
+/// with a plain add / sub among the readers, across blocks, through `neg`, ...).
+fn fmad_pairs(insts: &[&Stmt]) -> (HashMap<usize, Fmad>, HashMap<usize, String>) {
+    let mut pairs = HashMap::new();
+    let mut refuse: HashMap<usize, String> = HashMap::new();
+    let guard_of = |t: &str| -> String {
+        let t = t.trim();
+        if t.starts_with('@') {
+            t.split_whitespace().next().unwrap_or("").to_string()
+        } else {
+            String::new()
+        }
+    };
+    // (type, ftz, sat, has rounding) of a float add / sub / mul.
+    fn fop(op: &str) -> Option<(&str, &str, bool, bool, bool)> {
+        let mut it = op.split('.');
+        let base = it.next()?;
+        if !matches!(base, "add" | "sub" | "mul") {
+            return None;
+        }
+        let mods: Vec<&str> = it.collect();
+        let ty = *mods.last()?;
+        if !matches!(ty, "f32" | "f64") {
+            return None;
+        }
+        let rnd = mods.iter().any(|m| matches!(*m, "rn" | "rz" | "rm" | "rp"));
+        Some((base, ty, mods.contains(&"ftz"), mods.contains(&"sat"), rnd))
+    }
+    let mut occ: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, st) in insts.iter().enumerate() {
+        for r in reg_tokens(&st.text) {
+            occ.entry(r).or_default().push(i);
+        }
+    }
+    for (i, st) in insts.iter().enumerate() {
+        let (op, ops) = stmt_parts(&st.text);
+        let Some(("mul", ty, ftz, sat, false)) = fop(op) else {
+            continue;
+        };
+        let Some(&d) = ops.first() else { continue };
+        let uses: Vec<usize> = occ[d].iter().copied().filter(|&j| j != i).collect();
+        // Readers that ptxas could fold the product into.
+        let plain_add = |j: usize| -> bool {
+            let (o, _) = stmt_parts(&insts[j].text);
+            matches!(fop(o), Some(("add" | "sub", _, _, _, false)))
+        };
+        let through_neg = |j: usize| stmt_parts(&insts[j].text).0.starts_with("neg.");
+        if !uses.iter().any(|&j| plain_add(j) || through_neg(j)) {
+            continue;
+        }
+        let why = |w: &str| format!("{op} {d} read by a {w}: ptxas may contract it (PTX-FMAD)");
+        let j = uses[0];
+        if uses.len() != 1 || occ[d].iter().filter(|&&k| k == i).count() != 1 {
+            for &j in &uses {
+                if plain_add(j) || through_neg(j) {
+                    refuse.insert(j, why("plain add / sub, and read or written elsewhere too"));
+                }
+            }
+            continue;
+        }
+        if through_neg(j) {
+            refuse.insert(j, why("neg (contraction through neg not modeled)"));
+            continue;
+        }
+        let (aop, aops) = stmt_parts(&insts[j].text);
+        let (_, aty, aftz, _, _) = fop(aop).unwrap();
+        if sat || aty != ty {
+            refuse.insert(j, why("plain add / sub of another form"));
+            continue;
+        }
+        if aftz != ftz {
+            // ptxas keeps FMUL.FTZ + FADD and FMUL + FADD.FTZ apart (probes/fmad).
+            continue;
+        }
+        let srcs: Vec<&str> = ops[1..].iter().flat_map(|o| reg_tokens(o)).collect();
+        if j <= i {
+            refuse.insert(j, why("plain add / sub before it (a loop)"));
+            continue;
+        }
+        let redef = insts[i + 1..j].iter().any(|s| {
+            let (o, so) = stmt_parts(&s.text);
+            let b = o.split('.').next().unwrap_or("");
+            let def = if is_unpack(s, o) || s.text.contains('|') {
+                // `mov.b64 {a, b}, x`, `setp p|q`: every token before the last operand.
+                so[..so.len().saturating_sub(1)].join(",")
+            } else if matches!(b, "st" | "red" | "prefetch" | "bar" | "barrier") {
+                String::new()
+            } else {
+                so.first().map(|x| x.to_string()).unwrap_or_default()
+            };
+            reg_tokens(&def).iter().any(|r| srcs.contains(r))
+        });
+        let crosses = insts[i + 1..=j].iter().any(|s| !s.labels.is_empty())
+            || insts[i + 1..j].iter().any(|s| {
+                let b = stmt_parts(&s.text).0.split('.').next().unwrap_or("");
+                matches!(b, "bra" | "brx" | "ret" | "exit" | "call")
+            });
+        // A guarded pair: ptxas if-converts it and may then add the selected product
+        // unfused (FMUL + FSEL + FADD where the product is shared; PTX-FMAD).
+        let guarded = !guard_of(&st.text).is_empty() || !guard_of(&insts[j].text).is_empty();
+        if crosses || redef || guarded {
+            refuse.insert(
+                j,
+                why(
+                    "plain add / sub in another block, under a guard, or after its operands change",
+                ),
+            );
+            continue;
+        }
+        let Some(slot) = (1..=2).find(|&k| aops.get(k).is_some_and(|x| x.trim() == d)) else {
+            refuse.insert(j, why("plain add / sub in an unexpected operand"));
+            continue;
+        };
+        if let Some(prev) = pairs.insert(
+            j,
+            Fmad {
+                a: ops[1].to_string(),
+                b: ops[2].to_string(),
+                slot,
+            },
+        ) {
+            let _ = prev;
+            refuse.insert(
+                j,
+                why("plain add / sub of two such muls (which one ptxas folds is not modeled)"),
+            );
+        }
+    }
+    for j in refuse.keys() {
+        pairs.remove(j);
+    }
+    (pairs, refuse)
 }
 
 /// Destinations of float `mul`s without `.rn` (ptxas may contract them into an FMA with an
@@ -331,6 +563,9 @@ struct Lower<'a> {
     f16_mul_ok: &'a HashSet<String>,
     /// Destinations of float muls without `.rn` (`loose_mul_dsts`).
     loose_muls: &'a HashSet<String>,
+    /// This statement's PTX-FMAD contraction (`fmad_pairs`), or why it is refused.
+    fmad: Option<&'a Fmad>,
+    fmad_refuse: Option<&'a String>,
     /// `createpolicy` destinations used only as cache hints (`hint_only_policies`).
     hint_policies: &'a HashSet<String>,
     /// `.branchtargets` lists by their label (`brx.idx`).
@@ -1238,12 +1473,13 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
 
     let f16_mul_ok = uncontractible_f16_muls(&insts_src);
     let loose_muls = loose_mul_dsts(&insts_src);
+    let (fmad, fmad_refuse) = fmad_pairs(&insts_src);
     let hint_policies = hint_only_policies(&insts_src);
     // Pass 2: instructions. A statement may lower to several ops (`Lower::extra`); branch
     // targets and labels are statement indices until remapped below.
     let mut code = Vec::new();
     let mut start = Vec::with_capacity(insts_src.len() + 1);
-    for st in &insts_src {
+    for (si, st) in insts_src.iter().enumerate() {
         let mut lw = Lower {
             regs: &regs,
             labels: &labels,
@@ -1258,6 +1494,8 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
             vec_v,
             f16_mul_ok: &f16_mul_ok,
             loose_muls: &loose_muls,
+            fmad: fmad.get(&si),
+            fmad_refuse: fmad_refuse.get(&si),
             hint_policies: &hint_policies,
             brx_tables: &brx_tables,
         };
@@ -1387,6 +1625,9 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
     let base = parts[0];
     let mods = &parts[1..];
     let has = |m: &str| mods.contains(&m);
+    if let Some(w) = lw.fmad_refuse {
+        bail!(lw.err(format!("{w}; not modeled")));
+    }
     let ty = mods
         .iter()
         .rev()
@@ -1777,6 +2018,43 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     abs: [false; 3],
                     rnd,
                 },
+            }
+        }
+        // PTX-FMAD: ptxas contracts the plain mul producing operand `slot` into this plain
+        // add / sub: one FFMA / DFMA, a sub negating the product (slot 2) or the addend.
+        // ASSUME(PTX-FMAD)
+        "add" | "sub" if matches!(tname, "f32" | "f64") && lw.fmad.is_some() => {
+            let f = lw.fmad.unwrap();
+            let other = lw.val(op_n(3 - f.slot)?)?;
+            let (a, b) = (lw.val(&f.a)?, lw.val(&f.b)?);
+            let neg = [
+                base == "sub" && f.slot == 2,
+                false,
+                base == "sub" && f.slot == 1,
+            ];
+            let d = lw.dst(op_n(0)?)?;
+            if tname == "f64" {
+                Op::Dfma {
+                    d,
+                    a,
+                    b,
+                    c: Some(other),
+                    neg,
+                    abs: [false; 3],
+                    rnd: Rnd::Rn,
+                }
+            } else {
+                Op::Ffma {
+                    d,
+                    a,
+                    b,
+                    c: Some(other),
+                    neg,
+                    abs: [false; 3],
+                    rnd: Rnd::Rn,
+                    ftz: has("ftz"),
+                    sat: has("sat"),
+                }
             }
         }
         // f64 arithmetic: as ptxas lowers it (DADD a, -b for sub; DMUL; DFMA).
@@ -2661,7 +2939,8 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 f16: ht.starts_with("f16"),
             }
         }
-        "setp" if tname == "f32" => {
+        // setp.<cmp>.f32 (FSETP) / .f64 (DSETP: ptxas's f64 compare, no .ftz).
+        "setp" if matches!(tname, "f32" | "f64") => {
             let cmp = match mods[0] {
                 "eq" => FCmp::Eq,
                 "ne" => FCmp::Ne,
@@ -2679,22 +2958,40 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 "nan" => FCmp::Nan,
                 c => bail!(lw.err(format!("unsupported setp compare {c}"))),
             };
-            if !matches!(mods.len(), 2 | 3) || mods.len() == 3 && mods[1] != "ftz" {
-                bail!(lw.err("setp.f32 modifiers not modeled"));
+            if !matches!(mods.len(), 2 | 3)
+                || mods.len() == 3 && (mods[1] != "ftz" || tname == "f64")
+            {
+                bail!(lw.err(format!("setp.{tname} modifiers not modeled")));
             }
             if op_n(0)?.contains('|') || op_n(3).is_ok() {
-                bail!(lw.err("setp.f32 with p|q or a combining predicate not modeled"));
+                bail!(lw.err(format!(
+                    "setp.{tname} with p|q or a combining predicate not modeled"
+                )));
             }
-            Op::Fsetp {
-                d: lw.pred_dst(op_n(0)?)?,
-                cmp,
-                a: lw.val(op_n(1)?)?,
-                b: lw.val(op_n(2)?)?,
-                neg: [false; 2],
-                abs: [false; 2],
-                c: Pred::TRUE,
-                bop: BoolOp::And,
-                ftz: has("ftz"),
+            let (d, a, b) = (lw.pred_dst(op_n(0)?)?, lw.val(op_n(1)?)?, lw.val(op_n(2)?)?);
+            if tname == "f64" {
+                Op::Dsetp {
+                    d,
+                    cmp,
+                    a,
+                    b,
+                    neg: [false; 2],
+                    abs: [false; 2],
+                    c: Pred::TRUE,
+                    bop: BoolOp::And,
+                }
+            } else {
+                Op::Fsetp {
+                    d,
+                    cmp,
+                    a,
+                    b,
+                    neg: [false; 2],
+                    abs: [false; 2],
+                    c: Pred::TRUE,
+                    bop: BoolOp::And,
+                    ftz: has("ftz"),
+                }
             }
         }
         "setp" => {
@@ -2727,6 +3024,18 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 ex: None,
             }
         }
+        // `copysign.f32 d, a, b`: b with the sign bit of a (ptxas: LOP3.LUT d, a, 0x80000000, b,
+        // 0xb8 or equivalent; a pure bit operation, NaNs included: probes/copysign).
+        "copysign" if mods == ["f32"] => Op::Lop3 {
+            d: lw.dst(op_n(0)?)?,
+            a: lw.val(op_n(1)?)?,
+            b: lw.val(op_n(2)?)?,
+            c: Val::Imm(0x8000_0000),
+            // (a & c) | (b & !c)
+            lut: 0xe4,
+            p: None,
+            pq: None,
+        },
         // `brx.idx[.uni] i, $L`: jump to entry i of the `.branchtargets` list labelled $L
         // (an index outside it is an error: PTX leaves it undefined). Per thread, as `bra`.
         "brx" if has("idx") && mods.iter().all(|m| matches!(*m, "idx" | "uni")) => {
@@ -4723,6 +5032,55 @@ mod tests {
     }
 
     #[test]
+    fn fmad_contraction() {
+        // PTX-FMAD: a plain mul read once by a plain add / sub in its block is one FFMA.
+        let last = |l: &str| ops(l).unwrap().last().cloned().unwrap();
+        match last("mul.f32 %r1, %r2, %r3;\nadd.f32 %r4, %r5, %r1;") {
+            Op::Ffma {
+                c: Some(Val::Reg(..)),
+                neg,
+                sat: false,
+                ..
+            } => assert_eq!(neg, [false; 3]),
+            o => panic!("{o:?}"),
+        }
+        match last("mul.f32 %r1, %r2, %r3;\nsub.f32 %r4, %r5, %r1;") {
+            Op::Ffma { neg, .. } => assert_eq!(neg, [true, false, false]),
+            o => panic!("{o:?}"),
+        }
+        match last("mul.f32 %r1, %r2, %r3;\nsub.sat.f32 %r4, %r1, %r5;") {
+            Op::Ffma { neg, sat: true, .. } => assert_eq!(neg, [false, false, true]),
+            o => panic!("{o:?}"),
+        }
+        assert!(matches!(
+            last("mul.f64 %rd1, %rd2, %rd3;\nadd.f64 %rd4, %rd1, %rd5;"),
+            Op::Dfma {
+                c: Some(Val::Reg(..)),
+                ..
+            }
+        ));
+        // Kept apart: a rounding modifier on either, .ftz on one only.
+        for l in [
+            "mul.f32 %r1, %r2, %r3;\nadd.rn.f32 %r4, %r1, %r5;",
+            "mul.rn.f32 %r1, %r2, %r3;\nadd.f32 %r4, %r1, %r5;",
+            "mul.ftz.f32 %r1, %r2, %r3;\nadd.f32 %r4, %r1, %r5;",
+        ] {
+            assert!(matches!(last(l), Op::Fadd { .. }), "{l}");
+        }
+        // Refused: ambiguous or unmodeled contractions.
+        for l in [
+            "mul.f32 %r1, %r2, %r3;\nadd.f32 %r4, %r1, %r5;\nst.global.f32 [%rd1], %r1;",
+            "mul.f32 %r1, %r2, %r3;\nmul.f32 %r6, %r2, %r5;\nadd.f32 %r4, %r1, %r6;",
+            "mul.f32 %r1, %r2, %r3;\nneg.f32 %r6, %r1;\nadd.f32 %r4, %r6, %r5;",
+            "@%p1 mul.f32 %r1, %r2, %r3;\n@%p1 add.f32 %r4, %r1, %r5;",
+            "mul.f32 %r1, %r2, %r3;\nmov.f32 %r2, 0f3F800000;\nadd.f32 %r4, %r1, %r5;",
+            "mul.f32 %r1, %r2, %r3;\n@%p1 bra L1;\nL1:\nadd.f32 %r4, %r1, %r5;",
+        ] {
+            assert!(ops(l).is_err(), "{l}");
+        }
+    }
+
+    #[test]
     fn packed_f32x2_forms() {
         let f2 = |l: &str| match &ops(l).unwrap()[..] {
             [Op::Ffma2 { a, b, c, neg, .. }] => (a.1, b.clone(), c.clone(), *neg),
@@ -4749,6 +5107,27 @@ mod tests {
         assert!(ops("mul.f32x2 %rd1, %rd2, %rd3;\nadd.rn.f32x2 %rd4, %rd1, %rd3;").is_err());
         assert!(ops("mul.rn.f32x2 %rd1, %rd2, %rd3;\nadd.f32x2 %rd4, %rd1, %rd3;").is_ok());
         assert!(ops("mul.f32x2 %rd1, %rd2, %rd3;\nsub.f32x2 %rd4, %rd3, %rd1;").is_err());
+        // Unpacked halves read by scalar ops, an fma addend, a cross-lane repack into an add.
+        assert!(
+            ops("mul.f32x2 %rd1, %rd2, %rd3;\nmov.b64 {%r1, %r2}, %rd1;\nadd.f32 %r3, %r1, %r2;")
+                .is_ok()
+        );
+        assert!(ops("mul.f32x2 %rd1, %rd2, %rd3;\nfma.rn.f32x2 %rd4, %rd2, %rd2, %rd1;").is_ok());
+        assert!(
+            ops(
+                "mul.f32x2 %rd1, %rd2, %rd3;\nmov.b64 {_, %r2}, %rd1;\nmov.b64 %rd4, {%r2, %r3};\n\
+             add.f32x2 %rd5, %rd4, %rd2;"
+            )
+            .is_ok()
+        );
+        // Same lane: ptxas could see through the moves (refused).
+        assert!(
+            ops(
+                "mul.f32x2 %rd1, %rd2, %rd3;\nmov.b64 {%r1, _}, %rd1;\nmov.b64 %rd4, {%r1, %r3};\n\
+             add.f32x2 %rd5, %rd4, %rd2;"
+            )
+            .is_err()
+        );
         // Scopes: after a directive line without `;`, and not a continuation operand list.
         assert!(ops(".loc 1 2 3\n{ .reg .b32 a; mov.b32 a, %r1; mov.b32 %r2, a; }").is_ok());
         assert!(ops("mov.b64\n {%r1, %r2}, %rd1;\n{ .reg .b32 a; mov.b32 a, %r1; }").is_ok());

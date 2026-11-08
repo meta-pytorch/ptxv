@@ -281,7 +281,7 @@ fn inorder_queue(opcode: &str) -> &str {
         "F2I" | "I2F" | "F2F" if opcode.split('.').any(|m| m == "F64") => "f64",
         "MUFU" | "F2I" | "I2F" | "F2F" | "FRND" => "xu",
         "POPC" | "FLO" => "bit",
-        "DADD" | "DMUL" | "DFMA" => "f64",
+        "DADD" | "DMUL" | "DFMA" | "DSETP" => "f64",
         b => b,
     }
 }
@@ -890,7 +890,8 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
             // scoreboard, each read after waits on later REDUXes' scoreboards; the capture's
             // output = GB300).
             // And the f64 pipe (`DFMA R2, -R12, R4, 1` with no scoreboard, R2 read after a wait
-            // on a later `DADD R6`'s; probes/f64_queue = GB300, Triton's split-k LSE).
+            // on a later `DADD R6`'s; probes/f64_queue = GB300, Triton's split-k LSE), DSETP
+            // included (`DADD R6` read after a wait on a later `DSETP`'s; probes/f64_dsetp).
             if matches!(
                 base,
                 "LDTM"
@@ -910,6 +911,7 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
                     | "DADD"
                     | "DMUL"
                     | "DFMA"
+                    | "DSETP"
             ) {
                 let mine = inorder_queue(&l.opcode);
                 let ldtm: Vec<_> = st

@@ -1586,6 +1586,14 @@ fn probe_warpsync_pairs_verdicts() {
     probe_bitwise("probes/warpsync_pairs", "good", "sass");
 }
 
+/// PTX-FMAD: plain mul + add / sub contracted as ptxas 13.0 does, and the forms it keeps apart
+/// (probes/fmad) = GB300 on both front-ends.
+#[test]
+fn probe_fmad_matches_hardware() {
+    probe_bitwise("probes/fmad", "good", "ptx");
+    probe_bitwise("probes/fmad", "good", "sass");
+}
+
 /// Collectives whose pair mask is reached at different instructions (probes/coll_split): GB300
 /// combines them. SASS: the model runs the identical WARPSYNC.COLLECTIVE regions as one; PTX:
 /// each mask group runs with its lanes at other shfl.sync / vote.sync instructions (E-WARPCOLL).
@@ -1603,6 +1611,23 @@ fn probe_shfl_mask_verdicts() {
     probe_bitwise("probes/shfl_mask", "good", "ptx");
     check_dir("probes", "shfl_mask", "good", "ptx");
     check_dir("probes", "shfl_mask", "skip_half", "ptx");
+}
+
+/// E-COLLECTIVE: `BRA.DIV 0xffffffff` falling through orders the converged lanes as the slow
+/// path's WARPSYNC.COLLECTIVE does (probes/syncwarp_fast, DeepEP's `__syncwarp()` + elect
+/// shape) = GB300 on both front-ends.
+#[test]
+fn probe_syncwarp_fast_matches_hardware() {
+    probe_bitwise("probes/syncwarp_fast", "good", "ptx");
+    probe_bitwise("probes/syncwarp_fast", "good", "sass");
+}
+
+/// PTX copysign.f32 (probes/copysign: NaN payloads, signed zeros, Inf, subnormals) = GB300
+/// on both front-ends.
+#[test]
+fn probe_copysign_matches_hardware() {
+    probe_bitwise("probes/copysign", "good", "ptx");
+    probe_bitwise("probes/copysign", "good", "sass");
 }
 
 /// tcgen05.mma.kind::f16 with f16 operands and kind::tf32 (instruction descriptor A / B
@@ -1816,6 +1841,14 @@ fn probe_f64_queue_matches_hardware() {
     probe_bitwise("probes/f64_queue", "good", "sass");
 }
 
+/// L-OPCLASS: DSETP in the f64 queue (a DADD with no write scoreboard read after a wait on a
+/// later DSETP's), PTX setp.<cmp>.f64 (probes/f64_dsetp) = GB300 on both front-ends.
+#[test]
+fn probe_f64_dsetp_matches_hardware() {
+    probe_bitwise("probes/f64_dsetp", "good", "ptx");
+    probe_bitwise("probes/f64_dsetp", "good", "sass");
+}
+
 /// A TMEM load overwrites the registers of the TMEM store before it with no wait; the queue
 /// reads them first (probes/sttm_ldtm, GB300 1000/1000).
 #[test]
@@ -1904,6 +1937,14 @@ fn probe_cpasync_srcsize_matches_hardware() {
 fn probe_f32x2_norn_matches_hardware() {
     probe_bitwise("probes/f32x2_norn", "good", "ptx");
     probe_bitwise("probes/f32x2_norn", "good", "sass");
+}
+
+/// Plain mul.f32x2 read as an fma addend, unpacked into scalar ops, or repacked across lanes
+/// into an add.f32x2 (probes/f32x2_unpack): ptxas keeps FMUL2 apart; = GB300 on both fronts.
+#[test]
+fn probe_f32x2_unpack_matches_hardware() {
+    probe_bitwise("probes/f32x2_unpack", "good", "ptx");
+    probe_bitwise("probes/f32x2_unpack", "good", "sass");
 }
 
 /// The cp.async scoreboard counts the warp's commits: copies issued on two divergent paths,

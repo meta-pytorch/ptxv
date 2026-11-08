@@ -1,0 +1,28 @@
+name = "probe_syncwarp_fast"
+description = """
+Probe (E-COLLECTIVE) for the fast path of ptxas's `__syncwarp()` + elect.sync lowering:
+`BRA.DIV 0xffffffff` falling through (converged warp, no WARPSYNC) between one lane's
+wait_group.read on its bulk store and the elected lane's bulk load into the same shared bytes
+(DeepEP hybrid dispatch's shape; kernel.ptx). expected/ is GB300's output (kernel.cubin =
+ptxas -arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "syncwarp_fast"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["buf"]
+
+[[buffers]]
+name = "buf"
+dtype = "u32"
+shape = [32]
+init = "file"
+file = "in.bin"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "buf"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

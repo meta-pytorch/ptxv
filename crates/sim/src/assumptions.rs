@@ -968,6 +968,23 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |k| k.front == Front::Ptx && k.code.iter().any(|i| i.text.contains(".L2::")),
     },
     Assumption {
+        id: "PTX-FMAD",
+        kind: "code",
+        status: "validated",
+        title: "PTX mul + add / sub without rounding modifiers contracted as ptxas 13.0's default --fmad=true (probes/fmad); ambiguous shapes refused",
+        applies: |k| {
+            k.front == Front::Ptx
+                && k.code.iter().any(|i| {
+                    // add.f64 alone is a DFMA a * 1.0 + b (ptx lower_inst).
+                    let one = ptxv_ir::Val::Imm(1f64.to_bits());
+                    let t = i.text.trim_start();
+                    (matches!(i.op, Op::Ffma { c: Some(_), .. })
+                        || matches!(&i.op, Op::Dfma { c: Some(_), b, .. } if *b != one))
+                        && (t.starts_with("add.") || t.starts_with("sub."))
+                })
+        },
+    },
+    Assumption {
         id: "L-LOP3-P",
         kind: "code",
         status: "validated",

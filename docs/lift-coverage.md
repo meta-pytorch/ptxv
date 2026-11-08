@@ -278,6 +278,7 @@ any modifier outside the audited set before an arm runs.
 | `REDG.E.ADD.F32x4` / `F32x2.FTZ.RN` | `red.global.add.v4` / `.v2.f32` | one FADD.FTZ atomic per element, each on its own | probes/red_vec |
 | `BRX Ra -off` (BRANCH_TARGETS) | `brx.idx[.uni] i, $L` / `$L: .branchtargets ...` | per-thread jump to target i; an index outside the list is a fault | probes/brx_idx |
 | `REDUX.SUM.S32` | `redux.sync.add.s32` | wrapping sum over the active lanes (partial masks) | probes/redux_s32 |
+| `LOP3.LUT ..., 0x80000000, ..., 0xb8` | `copysign.f32` | b with the sign bit of a (bit operation) | probes/copysign |
 | `REDUX` / `CREDUX` | `redux.sync` with a partial immediate or register membermask | reduction over the lanes the mask names; executing lanes != mask is a violation (PTX) | probes/redux_mask |
 | `SHFL` / `VOTE` | `shfl.sync` / `vote.sync` with a partial immediate or register membermask | per mask group, combined with the group's lanes at another instruction of the same kind; executing lanes != mask is a violation (PTX) | probes/coll_split, probes/shfl_mask (PTX front; SASS `WARPSYNC.EXCLUSIVE` refused) |
 | `FFMA2` / `FMUL2` / `FADD2 .RZ/.RM/.RP` | `.rz/.rm/.rp.f32x2` | one rounding in the mode | probes/bf16_ext |
@@ -287,6 +288,7 @@ any modifier outside the audited set before an arm runs.
 | `VIADD.16x2` | `add.u16x2` / `add.s16x2` | two 16-bit lanes mod 2^16, no carry between lanes | probes/viadd16x2 |
 | `LDG.E.ENL2.256 Rhi, Rlo` / `STG.E.ENL2.256 [a], Rlo, Rhi` | `ld` / `st.global.v8.b32` | 32-byte access, 32-byte aligned; bytes 0..16 in the `lo` quad (second operand of the load, first data operand of the store) | probes/ldst256 |
 | `LDG` / `STG .E.ELL2.256`, `.E.EFL2.256` | `ld` / `st.global.L2::evict_last` / `L2::evict_first .v8.b32` | as ENL2 (eviction hint dropped, L-PTX-HINT) | probes/ldst256_l2 |
+| `FFMA` / `FFMA.FTZ` / `FFMA.SAT` / `DFMA` | `mul` + `add` / `sub` `.f32` / `.f64` without rounding modifiers | ptxas 13.0's default contraction where unambiguous (one reader, one block, same `.ftz`, unguarded); ambiguous shapes refused (PTX-FMAD) | probes/fmad |
 | `HFMA2.BF16_V2 d, -RZ.H0_H0, RZ.H0_H0, \|R\|[.H1_H1]` | `abs.bf16x2` / `abs.bf16` | sign bits cleared, then -0*0 + \|x\|: NaN 0x7fff, -0 to +0 | probes/bf16_abs |
 | `HFMA2` / `HMUL2` / `HADD2` (f16) with `.H0_H0` / `.H1_H1`, `.reuse`, immediate pairs | `fma` / `mul` / `add` / `sub .rn.f16[x2]`, `mul.f16` that cannot be contracted | per lane one f16 rounding; HMUL2 = a*b + -0, HADD2 = a*1 + c | probes/f16_arith |
 | `LDSM.16.M88.N` / `.MT88.N` | `ldmatrix.sync.aligned.m8n8.x{1,2,4}[.trans].shared.b16` | (PTX front added) | probes/ldmatrix_ptx |
@@ -297,7 +299,7 @@ any modifier outside the audited set before an arm runs.
 | `F2F.F32.F64` / `F2F.F64.F32`, `FADD.SAT d, RZ, a`, `F2I...NTZ` | `cvt.rn.f32.f64` / `cvt.f64.f32`, `cvt.sat.f32.f32`, `cvt.r{n,m,p,z}i[.ftz].{s,u}{32,64}.f32` (PTX front added) | as the SASS ops | probes/cvt_misc |
 | `FADD[.FTZ] d, \|a\|, -RZ`, `IABS` | `abs[.ftz].f32`, `abs.s32` | \|a\| + -0 (canonical NaN); two's-complement abs | probes/abs_f32 |
 | `S2R SR_LTMASK` etc. | `%lanemask_{lt,le,ge,gt,eq}`; `%`-less scope registers; `[%rd+-N]`; `{...}` operands continued after a comma | PTX syntax only | probes/ptx_syntax |
-| `FMUL2` / `FADD2` | `mul` / `add` / `sub.f32x2` with no rounding modifier | .rn where no use lets ptxas contract (a mul only multiplied, stored, converted or unpacked into those; an add / sub of no such mul) | probes/f32x2_norn |
+| `FMUL2` / `FADD2` | `mul` / `add` / `sub.f32x2` with no rounding modifier | .rn where no use lets ptxas contract (a mul only multiplied, stored, converted, an fma addend, or unpacked into halves read by scalar ops or repacked across lanes; an add / sub of no such mul) | probes/f32x2_norn, probes/f32x2_unpack |
 | `HADD2.BF16_V2`, `HFMA2.BF16_V2 d, a, b, -RZ` | `add` / `sub` / `mul` `.bf16[x2]` with no rounding modifier | .rn under the f32x2 rule | probes/bf16_norn |
 | ptxas's div.rn.f32 expansion (MUFU.RCP, FFMA refinement, slow-path CALL) | `rcp.rn.f32` | IEEE 1 / a, NaN canonical | probes/rcp_rn |
 | `F2F.F32.F64.{RZ,RM,RP}` | `cvt.{rz,rm,rp}.f32.f64` | directed rounding | probes/cvt_f64_rnd |
@@ -319,7 +321,8 @@ any modifier outside the audited set before an arm runs.
 | f64 results without a scoreboard | - | complete 128 counted stall cycles after issue (`F64_LAT`, ptxas's NOP padding) | msl_ops captures |
 | `HMNMX2.BF16_V2 d, a, hi, lo, p`, `VHMNMX ... RZ.Hx_Hx` | `min` / `max.bf16x2` with constants | bf16 immediate pair from the encoding (checked against the print); RZ = +0 | msl_ops captures |
 | SASS `SHFL` in a lane-subset BSSY region | (warp-aggregated atomics) | runs over the lanes present; lanes parked at a BSYNC are not waited for | DeepEP hybrid, Triton MoE |
-| f64 pipe scoreboards | - | DADD / DMUL / DFMA complete in order (L-OPCLASS) | probes/f64_queue |
+| f64 pipe scoreboards | - | DADD / DMUL / DFMA / DSETP complete in order (L-OPCLASS) | probes/f64_queue, probes/f64_dsetp |
+| `DSETP.<cmp>.AND` | `setp.<cmp>.f64` (all 14 compares; no p\|q, no combining predicate) | as SASS DSETP | probes/f64_dsetp |
 | `STTM` then `LDTM` on the same registers | - | the TMEM queue reads the store's registers first (L-OPREAD) | probes/sttm_ldtm |
 | `FENCE.VIEW.ASYNC.S` / `.G` / `.T` | `fence.proxy.async[.shared::*]` / `.global` / `tcgen05.wait::st` | each orders only its state space; `.G` covers no shared-memory check, `.T` is `tcgen05.wait::st` (S-PROXY) | probes/proxy_fence `global` |
 
