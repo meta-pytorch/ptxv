@@ -1437,6 +1437,10 @@ fn show_mono(m: &Mono, names: &[String]) -> String {
 // ASSUME(N-REASSOC): see ASSUMPTIONS.md
 #[allow(clippy::type_complexity)]
 fn rigorous(cr: &Canon, cc: &Canon) -> Result<(f64, f64, f64, Vec<(Mono, f64, f64, f64)>), String> {
+    if let Some(reason) = cr.untracked.as_ref().or(cc.untracked.as_ref()) {
+        return Err(reason.clone());
+    }
+
     if cr
         .poly
         .keys()
@@ -1612,6 +1616,13 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
                     _ => "canonical rounding DAGs differ".into(),
                 },
             );
+        }
+        if let Some(reason) = cr.untracked.as_ref().or(cc.untracked.as_ref()) {
+            note!(1, reason.clone());
+            note!(2, reason.clone());
+            if tau_k.is_some() {
+                note!(3, reason.clone());
+            }
         }
         // L1: equal coefficient maps.
         let mut diff: Vec<(Mono, f64, f64)> = Vec::new();

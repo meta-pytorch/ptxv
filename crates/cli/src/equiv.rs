@@ -405,6 +405,32 @@ fn outs(m: &Machine) -> Vec<(u32, Option<u32>)> {
         .collect()
 }
 
+fn check_output_history(m: &Machine) -> Result<()> {
+    let allocation = m.launch.outputs[0];
+    let state = m.num.as_ref().unwrap();
+    let bytes = if state.half.f16_outputs.contains(&allocation)
+        || state.half.bf16_outputs.contains(&allocation)
+    {
+        2
+    } else {
+        4
+    };
+    for (index, (_, node)) in outs(m).iter().enumerate() {
+        if node.is_none()
+            && (0..bytes).any(|byte| {
+                state.taint.memory_unit_input_derived((
+                    1,
+                    allocation as u64,
+                    (index * bytes + byte) as u64,
+                ))
+            })
+        {
+            bail!("output {index} is input-derived but has no source numeric history");
+        }
+    }
+    Ok(())
+}
+
 /// Nonzero outputs without a numerics node: values the shadow does not express over the
 /// inputs.
 fn untracked_count(m: &Machine) -> usize {
@@ -1894,6 +1920,10 @@ pub fn cmd_equiv(
                     );
                 }
             }
+        }
+        if f.elementwise != Some(true) {
+            check_output_history(&r.m)?;
+            check_output_history(&cand.m)?;
         }
         let rep =
             ptxv_sim::equiv::compare(&side(&r, &names), &side(&cand, &names), &names, f.tau_k);
