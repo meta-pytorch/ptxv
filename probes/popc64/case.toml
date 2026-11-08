@@ -1,0 +1,36 @@
+name = "probe_popc64"
+description = """
+Probe (L-ROSETTA) for popc.b64 (ptxas: POPC of each half and an add): 256 64-bit words, edge
+patterns and random (kernel.ptx, gen.py). expected/ is GB300's output (kernel.cubin = ptxas
+-arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "popc64"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [512]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [256]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

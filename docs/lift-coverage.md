@@ -277,6 +277,7 @@ any modifier outside the audited set before an arm runs.
 | `MUFU.RSQ` + Newton step + slow-path `CALL` (ptxas) | `sqrt.rn.f32` | IEEE square root, round to nearest even; negative / NaN inputs give 0x7fffffff | probes/sqrt_rn |
 | `LD.E.U8` / `LD.E.S8` / `ST.E.U8`; `ATOMG` / `REDG .E.ADD.STRONG.SM` | `ld` / `st.u8`, `ld.s8` (generic); `atom` / `red.global.cta` | byte accesses (S8 sign-extended); `.SM` = CTA scope | probes/generic8 |
 | `REDG.E.ADD.F32x4` / `F32x2.FTZ.RN` | `red.global.add.v4` / `.v2.f32` | one FADD.FTZ atomic per element, each on its own | probes/red_vec |
+| `ATOMG.E.ADD.F32x4` / `F32x2.FTZ.RN` | `atom.global.add.v4` / `.v2.f32` | as REDG, each element's old value returned; destination overlapping a later source refused | probes/atom_vec |
 | `BRX Ra -off` (BRANCH_TARGETS) | `brx.idx[.uni] i, $L` / `$L: .branchtargets ...` | per-thread jump to target i; an index outside the list is a fault | probes/brx_idx |
 | `REDUX.SUM.S32` | `redux.sync.add.s32` | wrapping sum over the active lanes (partial masks) | probes/redux_s32 |
 | `LOP3.LUT ..., 0x80000000, ..., 0xb8` | `copysign.f32` | b with the sign bit of a (bit operation) | probes/copysign |
@@ -295,6 +296,7 @@ any modifier outside the audited set before an arm runs.
 | `FADD.FTZ.SAT d, RZ, a`, `FADD.FTZ d, a, -RZ` | `cvt.ftz.sat.f32.f32`, `cvt.ftz.f32.f32` | as the SASS ops | probes/cvt_ftz |
 | immediates | decimal float literals (`20.`, `1.0`, `.5e1`) and `0d` in `.f32` / `.f64` instructions | f64 value rounded to nearest even for .f32; `0f` raw, zero-extended in .f64 | probes/float_lit |
 | `FSETP.GEU \|a\|, +INF` + `IADD 0x1000` + `LOP3 & 0xffffe000` | `cvt.rna.tf32.f32` | ties-away round to 19 bits; Inf / NaN only masked | probes/cvt_tf32 |
+| `F2FP [.SATFINITE] [.RELU] .TF32.F32.PACK_B [.RZ]` | `cvt.rn` / `.rz [.relu] [.satfinite] .tf32.f32` | round off 13 bits (RN even / RZ); NaN -> 0x7fffe000; relu: negative -> +0; satfinite: Inf / overflow -> +-0x7f7fe000 | probes/cvt_tf32_rn |
 | (`CCTL.E.RML2`, refused) | `discard.global.L2 [a], 128` | weak stores of undefined data over the line (S-INIT) | probes/discard_l2 (PTX front) |
 | `IMMA.16832.S8.S8.SAT` | `mma.sync.aligned.m16n8k32.row.col.satfinite.s32.s8.s8.s32` | exact integer sum, saturated to s32 (N-IMMA) | probes/imma_s8 |
 | `HMUL2.BF16_V2` | plain `mul.bf16` / `.bf16x2` reaching only stores, conversions, mma operands, multiplicands through packs / unpacks / prmt / shfl | .rn (ptxas cannot contract) | probes/bf16_sink |
@@ -303,6 +305,7 @@ any modifier outside the audited set before an arm runs.
 | `FFMA2` / `FMUL2` / `FADD2 .RZ/.RM/.RP` | `.rz/.rm/.rp.f32x2` | one rounding in the mode | probes/bf16_ext |
 | `IMAD.WIDE R, a, b, -c` | `mul.wide` + `sub.s64` | a*b - c mod 2^64 | probes/int_misc |
 | `POPC` | `popc.b32` | variable latency, in-order queue (scoreboard cover) | probes/int_misc |
+| `POPC` x 2 + `IADD3` | `popc.b64` | popc of each half, summed | probes/popc64 |
 | `UP2UR` | (CuTe predicate spill) | uniform P2R | lift_l_forms |
 | `VIADD.16x2` | `add.u16x2` / `add.s16x2` | two 16-bit lanes mod 2^16, no carry between lanes | probes/viadd16x2 |
 | `LDG.E.ENL2.256 Rhi, Rlo` / `STG.E.ENL2.256 [a], Rlo, Rhi` | `ld` / `st.global.v8.b32` | 32-byte access, 32-byte aligned; bytes 0..16 in the `lo` quad (second operand of the load, first data operand of the store) | probes/ldst256 |

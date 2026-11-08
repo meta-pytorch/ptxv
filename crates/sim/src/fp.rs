@@ -1330,6 +1330,36 @@ pub const TMMA_MODEL: MmaModel = MmaModel {
     exp_from_inputs: true,
 };
 
+/// `cvt.rn / .rz [.relu] [.satfinite] .tf32.f32` (SASS `F2FP [.SATFINITE] [.RELU]
+/// .TF32.F32.PACK_B [.RZ]`) on GB300 (probes/cvt_tf32_rn, all eight forms on every sign and
+/// exponent): the low 13 mantissa bits rounded off (nearest even, or toward zero for `rz`),
+/// subnormals kept; every NaN gives 0x7fffe000 (`.relu` included); `.relu` makes any other
+/// negative input (-0, -Inf included) +0; Inf, and a nearest rounding that overflows, give Inf,
+/// with `.satfinite` the largest finite tf32 of the same sign. ASSUME(N-FCVT)
+pub fn cvt_tf32(x: u32, rz: bool, sat: bool, relu: bool) -> u32 {
+    const MAX: u32 = 0x7f7f_e000;
+    let s = x & 0x8000_0000;
+    if x & 0x7fff_ffff > 0x7f80_0000 {
+        return 0x7fff_e000;
+    }
+    if relu && s != 0 {
+        return 0;
+    }
+    let inf = |s: u32| s | if sat { MAX } else { 0x7f80_0000 };
+    if x & 0x7fff_ffff == 0x7f80_0000 {
+        return inf(s);
+    }
+    let mut r = x & !0x1fff;
+    let low = x & 0x1fff;
+    if !rz && (low > 0x1000 || low == 0x1000 && r & 0x2000 != 0) {
+        r += 0x2000;
+    }
+    if r & 0x7fff_ffff == 0x7f80_0000 {
+        return inf(s);
+    }
+    r
+}
+
 /// How the TF32 MMA reads an f32 register word: the low 13 mantissa bits are dropped
 /// (probes/tmma). ASSUME(N-HMMA)
 pub fn tf32_in(x: u32) -> u32 {

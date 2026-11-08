@@ -3233,7 +3233,11 @@ treated as sufficient.** Since rung 1f:
   observations whose writer its scope includes, and SASS `CCTL.IVALL` acquires all of them).
 - `red.global.add.v2` / `.v4.f32` (SASS `REDG.E.ADD.F32x2` / `F32x4.FTZ.RN`) is one FADD.FTZ
   atomic per element, each on its own (the PTX ISA gives no atomicity across elements;
-  2026-11-07, probes/red_vec = GB300 on both front-ends); a vector `ATOMG` is refused.
+  2026-11-07, probes/red_vec = GB300 on both front-ends). `atom.global.add.v2` / `.v4.f32`
+  (SASS `ATOMG.E.ADD.F32x2` / `F32x4.FTZ.RN`; Triton's `atom.global.gpu.acq_rel.add.v2.f32`)
+  is the same per element and returns each element's old value; a destination overlapping a
+  later source element is refused (2026-11-07, probes/atom_vec: specials and subnormals in
+  addends and starting values, GB300 20/20, both front-ends bitwise).
 - SASS: `ATOMG` / `REDG .E.<op>.STRONG.SM` (PTX `atom` / `red.global.cta`) are CTA-scope
   atomics (2026-11-07; probes/generic8 = GB300 on both front-ends, with generic `LD.E.U8` /
   `.S8` and `ST.E.U8`).
@@ -3968,7 +3972,8 @@ forms seen. Any other form is a hard error.
   CuTe grouped TF32x3 GEMM uses it to materialize flags); PTX `.local` arrays
   (`__local_depot0`, through `%SPL`) are the thread's local memory with offsets from 0, and
   scalar `ld` / `st .local` of up to 32 bits are SASS `LDL` / `STL` (the `.loc` filter used to
-  drop `.local` declarations); `popc.b32` is `POPC`; `not.b16/32/64` is XOR with all ones.
+  drop `.local` declarations); `popc.b32` is `POPC`, `popc.b64` a `POPC` per half and an add (probes/popc64, GB300 20/20,
+  both front-ends bitwise, 2026-11-07); `not.b16/32/64` is XOR with all ones.
 - Rung 2e (cuBLAS nvjet, r2_cublas_gemm bitwise = GB300): `PMTRIG` (no-op);
   `SYNCS.ARRIVE.TRANS64.RED.A0TR` / `.A0TX` (no arrival; expect / complete tx, checked against
   ptxas: `mbarrier.expect_tx` / `complete_tx`); `UTCBAR.MULTICAST` (cta_group::1, mask operand
@@ -5169,6 +5174,13 @@ zero-extended in its register (as `F2F.BF16.F32`; not observable from PTX).
   argued. `cvt.bf16.f16` / `cvt.f16.bf16` without a rounding modifier (PX: 5 kernel-DB
   records) are ptxas's F2F.BF16.F16 / F2F.F16.BF16, nearest: probes/cvt_bf16_f16 on every
   16-bit pattern, GB300 20/20, both front-ends bitwise (2026-11-07).
+  `cvt.rn` / `.rz [.relu] [.satfinite] .tf32.f32` (SASS `F2FP [.SATFINITE] [.RELU]
+  .TF32.F32.PACK_B [.RZ] Rd, Ra`; UMA Nitro) rounds off the low 13 mantissa bits (nearest
+  even or toward zero), keeps subnormals, gives 0x7fffe000 for every NaN (`.relu` included),
+  +0 for any other negative input under `.relu`, and Inf for Inf or a nearest rounding that
+  overflows (`.satfinite`: the largest finite tf32, 0x7f7fe000, with the sign): probes/cvt_tf32_rn,
+  all eight forms on 65,536 words (every sign and exponent, mantissas at the rounding edges),
+  GB300 20/20, both front-ends bitwise (2026-11-07). Numerics provenance is opaque for it.
 - If wrong: *miss* or *false alarm* in numerics (Triton fake-quant rounding, f64
   layer-norm statistics, mslk fp8 quantizers).
 

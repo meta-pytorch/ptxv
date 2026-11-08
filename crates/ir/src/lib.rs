@@ -1781,6 +1781,16 @@ pub enum Op {
         a: Val,
         bf16: bool,
     },
+    /// SASS `F2FP [.SATFINITE] [.RELU] .TF32.F32.PACK_B [.RZ] Rd, Ra` (cvt.rn / .rz [.relu]
+    /// [.satfinite] .tf32.f32): `a` rounded to tf32 (10 mantissa bits), nearest even or toward
+    /// zero (`rz`), in an f32 container (fp::cvt_tf32; probes/cvt_tf32_rn).
+    CvtTf32 {
+        d: Reg,
+        a: Val,
+        rz: bool,
+        sat: bool,
+        relu: bool,
+    },
     /// SASS `F2FP.F16.F32.PACK_AB Rd, Ra, Rb`: d = f16(a) << 16 | f16(b), round to nearest.
     F2fpF16 {
         d: Reg,
@@ -2030,6 +2040,7 @@ impl Op {
             | Op::FCvt { a, .. }
             | Op::CvtF32F16 { a, .. }
             | Op::F2fF16 { a, .. }
+            | Op::CvtTf32 { a, .. }
             | Op::R2p { a, .. }
             | Op::CvtUnpack { a, .. } => vec![a.clone()],
             Op::Redux { a, mask, .. } => {
@@ -2506,6 +2517,7 @@ impl Op {
             | Op::Dp2a { d, .. }
             | Op::CvtF32F16 { d, .. }
             | Op::F2fF16 { d, .. }
+            | Op::CvtTf32 { d, .. }
             | Op::F2fpF16 { d, .. } => vec![*d],
             Op::F2F { d, to64, .. } => span(*d, if *to64 { 2 } else { 1 }),
             Op::FCvt { d, to, .. } => span(*d, if *to == FFmt::F64 { 2 } else { 1 }),

@@ -1350,6 +1350,18 @@ fn lower_line(
                 }
             }
         }
+        // `F2FP [.SATFINITE] [.RELU] .TF32.F32.PACK_B [.RZ] Rd, Ra` (cvt.rn / .rz [.relu]
+        // [.satfinite] .tf32.f32; probes/cvt_tf32_rn).
+        "F2FP" if f2fp_tf32(mods).is_some() => {
+            let (rz, sat, relu) = f2fp_tf32(mods).unwrap();
+            Op::CvtTf32 {
+                d: lw.dst(lw.op(0)?)?,
+                a: lw.fval(lw.op(1)?)?,
+                rz,
+                sat,
+                relu,
+            }
+        }
         "F2FP" if mods == ["F16", "F32", "PACK_AB"] => Op::F2fpF16 {
             d: lw.dst(lw.op(0)?)?,
             a: lw.fval(lw.op(1)?)?,
@@ -3149,9 +3161,8 @@ fn lower_line(
                 if lw.op(0)? != "PT" {
                     bail!(lw.err("ATOMG with a predicate result not modeled"));
                 }
-                if vector {
-                    bail!(lw.err("vector ATOMG not modeled"));
-                }
+                // A vector ATOMG (`.F32x2` / `.F32x4`): Rd and Rb are the first of their
+                // consecutive registers, one FADD.FTZ atomic per element (probes/atom_vec).
                 let d = match lw.op(1)? {
                     "RZ" => None,
                     x => Some(lw.dst(x)?),
@@ -3161,7 +3172,7 @@ fn lower_line(
                     space: Space::Global,
                     bytes,
                     addr: wide_addr(lw.addr(lw.op(2)?)?),
-                    v: lw.val(lw.op(3)?, bytes)?,
+                    v: lw.val(lw.op(3)?, if vector { 4 } else { bytes })?,
                     d,
                     sync,
                     p: None,
@@ -4518,9 +4529,9 @@ fn atom_mod_known(m: &str) -> bool {
 /// modeled. Besides `.E`, `.STRONG` and the scope: `.ADD` / `.OR` / `.AND` / `.XOR` / `.EXCH`
 /// [`.64`] (integer; `.ADD.S32` / `.U32` add alike: the sum wraps either way, probes/redux_s32),
 /// `.MIN` / `.MAX` [`.S32` | `.U32` | `.64` | `.S64`], `.ADD.F32.FTZ.RN` (Triton's
-/// tl.atomic_add on f32) and `.ADD.BF16x2.RN` (per-lane bf16 add, probes/bf16x2, N-BF16X2).
-/// Everything else in the sm_103a table (`.F16x2`, `.F16x4` / `.x8`, `.F32x2` / `.x4`, `.F64`,
-/// `.INC` / `.DEC`, `.CAS` handled elsewhere) is refused.
+/// tl.atomic_add on f32), `.ADD.BF16x2.RN` (per-lane bf16 add, probes/bf16x2, N-BF16X2),
+/// `.ADD.F32x2` / `.F32x4.FTZ.RN` (per-element f32 adds) and `.ADD.F64.RN`. Everything else in
+/// the sm_103a table (`.F16x2`, `.F16x4` / `.x8`, `.CAS` handled elsewhere) is refused.
 fn atomg_op(mods: &[&str]) -> Option<(AtomOp, u8)> {
     let mut core: Vec<&str> = mods
         .iter()
@@ -4539,7 +4550,7 @@ fn atomg_op(mods: &[&str]) -> Option<(AtomOp, u8)> {
     match core.as_slice() {
         ["ADD", "S32"] => Some((AtomOp::Add, 4)),
         ["ADD", "F32", "FTZ", "RN"] => Some((AtomOp::FAddFtz, 4)),
-        // REDG only (a vector red: one FADD.FTZ atomic per element; the ATOMG arm refuses it).
+        // A vector atom / red (one FADD.FTZ atomic per element; probes/red_vec, probes/atom_vec).
         ["ADD", "F32x2", "FTZ", "RN"] => Some((AtomOp::FAddFtz, 8)),
         ["ADD", "F32x4", "FTZ", "RN"] => Some((AtomOp::FAddFtz, 16)),
         ["ADD", "F64", "RN"] => Some((AtomOp::FAdd64, 8)),
@@ -5171,6 +5182,20 @@ enum F2fpKind {
 /// `[SATFINITE] [RELU] <to> <F32|F16|BF16> <PACK_AB[_MERGE_C]|UNPACK_B_MERGE_C> [RZ|RP|RS]` or
 /// `[RELU] <F16|BF16> <from> UNPACK_B` -> (to, from, kind, rounding, satfinite, relu). f16 / bf16
 /// targets only with `.RS` or `.SATFINITE` (the plain RN forms are `F2fpF16` / `F2fpBf16`).
+/// `F2FP [.SATFINITE] [.RELU] .TF32.F32.PACK_B [.RZ]` -> (rz, sat, relu).
+fn f2fp_tf32(mods: &[&str]) -> Option<(bool, bool, bool)> {
+    let mut i = 0;
+    let sat = mods.first() == Some(&"SATFINITE");
+    i += sat as usize;
+    let relu = mods.get(i) == Some(&"RELU");
+    i += relu as usize;
+    match mods.get(i..)? {
+        ["TF32", "F32", "PACK_B"] => Some((false, sat, relu)),
+        ["TF32", "F32", "PACK_B", "RZ"] => Some((true, sat, relu)),
+        _ => None,
+    }
+}
+
 fn f2fp_lp(mods: &[&str]) -> Option<(Lp, Lp, F2fpKind, LpRnd, bool, bool)> {
     let fmt = |m: &str| {
         Some(match m {
@@ -5311,6 +5336,7 @@ mod tests {
             "LDG.E.NA.U8.STRONG.SYS R26, desc[UR4][R12.64]",
             "ST.E.EF.128 desc[UR4][R28.64+0x40], R16",
             "ATOM.E.MAX.64.STRONG.SM P0, R4, desc[UR4][R28.64], R6",
+            "ATOMG.E.ADD.F32x2.FTZ.RN.STRONG.GPU PT, R2, desc[UR6][R4.64], R10",
         ];
         for l in ok {
             lower1(l).unwrap_or_else(|e| panic!("{l}: {e}"));
@@ -5332,7 +5358,6 @@ mod tests {
             "REDUX.OR.S32 UR5, R10",
             "REDUX.MIN UR5, R10",
             "REDG.E.ADD.F16x2.RN.STRONG.GPU desc[UR6][R4.64], R11",
-            "ATOMG.E.ADD.F32x2.FTZ.RN.STRONG.GPU PT, R2, desc[UR6][R4.64], R10",
             "REDG.E.INC.STRONG.GPU desc[UR6][R4.64], R10",
             "ATOMG.E.ADD.F16x4.GPU.RN.STRONG PT, R1, desc[UR6][R4.64], R10",
             "FHFMA.BF16 R1, -R2, R3, R4",

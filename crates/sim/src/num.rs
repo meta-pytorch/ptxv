@@ -3873,6 +3873,7 @@ pub(crate) fn pure_op(op: &Op) -> bool {
             | Op::F2fpBf16 { .. }
             | Op::F2fpF16 { .. }
             | Op::F2fF16 { .. }
+            | Op::CvtTf32 { .. }
             | Op::CvtF32F16 { .. }
             | Op::CvtPack { .. }
             | Op::CvtRsX4 { .. }

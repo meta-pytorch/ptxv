@@ -29,8 +29,8 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
     (
         "ATOMG",
         &[
-            "64", "ADD", "BF16x2", "CAS", "DEC", "E", "EXCH", "F32", "F64", "FTZ", "GPU", "INC",
-            "MAX", "MIN", "OR", "RN", "S32", "S64", "SM", "STRONG", "SYS",
+            "64", "ADD", "BF16x2", "CAS", "DEC", "E", "EXCH", "F32", "F32x2", "F32x4", "F64",
+            "FTZ", "GPU", "INC", "MAX", "MIN", "OR", "RN", "S32", "S64", "SM", "STRONG", "SYS",
         ],
     ),
     (
@@ -96,11 +96,13 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
             "F32",
             "PACK_AB",
             "PACK_AB_MERGE_C",
+            "PACK_B",
             "RELU",
             "RP",
             "RS",
             "RZ",
             "SATFINITE",
+            "TF32",
             "UNPACK_B",
             "UNPACK_B_MERGE_C",
         ],

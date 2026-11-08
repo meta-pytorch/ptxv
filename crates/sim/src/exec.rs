@@ -6059,24 +6059,41 @@ impl Machine {
                     1,
                 );
             }
-            // A vector red.add.v2 / .v4.f32 (REDG.E.ADD.F32x2 / F32x4): one atomic per element,
-            // each on its own (PTX ISA: no atomicity across the elements; probes/red_vec).
+            // A vector atom / red.add.v2 / .v4.f32 (ATOMG / REDG.E.ADD.F32x2 / F32x4): one
+            // atomic per element, each on its own (PTX ISA: no atomicity across the elements;
+            // probes/red_vec, probes/atom_vec); an atom returns each element's old value in the
+            // destination register of the same index.
             Op::Atom {
                 op: AtomOp::FAddFtz,
                 space,
                 bytes: b @ (8 | 16),
                 addr,
                 v: Val::Reg(r, _),
-                d: None,
+                d,
                 sync,
                 p: None,
                 new: None,
             } => {
                 let a = self.addr(t, addr)?;
                 check_aligned(*space, a, *b as usize)?;
+                // The address is read once (an ATOMG's destination may be its address register,
+                // `ATOMG.E.ADD.F32x4 PT, R4, [R4.64], R16`); a destination that overlaps a later
+                // source element is refused (the hardware reads every source first).
+                if let Some(d) = d {
+                    let n = *b as u16 / 4;
+                    if d.file == r.file && d.idx != r.idx && d.idx < r.idx + n && r.idx < d.idx + n
+                    {
+                        return Err(
+                            "vector atom destination overlapping its sources: not modeled".into(),
+                        );
+                    }
+                }
                 for k in 0..(*b / 4) {
-                    let mut ad = addr.clone();
-                    ad.off += 4 * k as i64;
+                    let ad = Addr {
+                        base: None,
+                        base2: None,
+                        off: a.wrapping_add(4 * k as u64) as i64,
+                    };
                     let sub = Inst {
                         op: Op::Atom {
                             op: AtomOp::FAddFtz,
@@ -6090,7 +6107,10 @@ impl Machine {
                                 },
                                 1,
                             ),
-                            d: None,
+                            d: d.map(|d| Reg {
+                                file: d.file,
+                                idx: d.idx + k as u16,
+                            }),
                             sync: *sync,
                             p: None,
                             new: None,
@@ -8209,6 +8229,18 @@ impl Machine {
                     fp::f32_to_f16_rn(x)
                 };
                 self.wr(t, *d, r as u64, 1);
+            }
+            // ASSUME(N-FCVT): fp::cvt_tf32 = GB300 (probes/cvt_tf32_rn).
+            Op::CvtTf32 {
+                d,
+                a,
+                rz,
+                sat,
+                relu,
+            } => {
+                let x = self.rd(t, a)? as u32;
+                self.wr(t, *d, fp::cvt_tf32(x, *rz, *sat, *relu) as u64, 1);
+                self.num_clobber(t, *d, &[a], pc);
             }
             Op::F2fpF16 { d, a, b } => {
                 let (x, y) = (self.rd(t, a)? as u32, self.rd(t, b)? as u32);
@@ -13469,6 +13501,7 @@ fn propagates_undef(op: &Op) -> bool {
             | Op::CvtF32F16 { .. }
             | Op::F2fpF16 { .. }
             | Op::F2fF16 { .. }
+            | Op::CvtTf32 { .. }
             | Op::CvtPack { .. }
             | Op::CvtRsX4 { .. }
             | Op::CvtUnpack { .. }

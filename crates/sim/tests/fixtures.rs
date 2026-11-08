@@ -1642,6 +1642,14 @@ fn probe_copysign_matches_hardware() {
     probe_bitwise("probes/copysign", "good", "sass");
 }
 
+/// cvt.rn / .rz [.relu] [.satfinite] .tf32.f32 (F2FP [.SATFINITE] [.RELU] .TF32.F32.PACK_B
+/// [.RZ]; probes/cvt_tf32_rn, 65,536 words x 8 forms) = GB300 on both front-ends.
+#[test]
+fn probe_cvt_tf32_rn_matches_hardware() {
+    probe_bitwise("probes/cvt_tf32_rn", "good", "ptx");
+    probe_bitwise("probes/cvt_tf32_rn", "good", "sass");
+}
+
 /// PTX cvt.rna.tf32.f32 (probes/cvt_tf32: ties, NaN payloads, Inf, subnormals) = GB300 on
 /// both front-ends.
 #[test]
@@ -2312,6 +2320,34 @@ fn probe_red_vec_matches_hardware() {
             "{front}: {report:?}"
         );
     }
+}
+
+/// Vector float atomics with a result, atom.global.add.v4 / .v2.f32 (ATOMG.E.ADD.F32x4 /
+/// F32x2.FTZ.RN; probes/atom_vec) = GB300 on both front-ends, returned old values included.
+#[test]
+fn probe_atom_vec_matches_hardware() {
+    probe_bitwise("probes/atom_vec", "good", "ptx");
+    probe_bitwise("probes/atom_vec", "good", "sass");
+}
+
+/// A vector atom whose destination overlaps a later source element is refused.
+#[test]
+fn atom_vec_overlap_refused() {
+    let src = std::fs::read_to_string(root().join("probes/atom_vec/kernel.ptx")).unwrap();
+    let bad = src.replace(
+        "{%f5, %f6, %f7, %f8}, [%rd6], {%f1, %f2, %f3, %f4}",
+        "{%f2, %f3, %f4, %f5}, [%rd6], {%f1, %f2, %f3, %f4}",
+    );
+    assert_ne!(bad, src);
+    let err = ptxv_ptx::parse_kernel(&bad, Some("atom_vec")).unwrap_err();
+    assert!(format!("{err:#}").contains("overlapping"), "{err:#}");
+}
+
+/// popc.b64 (two POPC + IADD3; probes/popc64) = GB300 on both front-ends.
+#[test]
+fn probe_popc64_matches_hardware() {
+    probe_bitwise("probes/popc64", "good", "ptx");
+    probe_bitwise("probes/popc64", "good", "sass");
 }
 
 /// mad.wide.{s,u}16 with an immediate multiplier (probes/mad_wide16) = GB300.

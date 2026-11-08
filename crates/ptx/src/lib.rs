@@ -909,6 +909,7 @@ fn needs_scratch(text: &str) -> bool {
         || t.starts_with("mad.lo.u64")
         || t.starts_with("mad.wide.s16")
         || t.starts_with("mad.wide.u16")
+        || t.starts_with("popc.b64")
         || t.starts_with("mov.b32") && t.contains('{')
         || (t.starts_with("atom.") || t.starts_with("red.")) && t.contains(".v2.bf16")
 }
@@ -2821,7 +2822,42 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             a: lw.val(op_n(1)?)?,
             b: lw.val(op_n(2)?)?,
         },
-        // `popc.b32` (SASS POPC; probes/int_misc). `.b64` is not modeled.
+        // `popc.b64` (ptxas: a POPC per half and an add; probes/popc64): popc of the low word,
+        // plus popc of the high word through the scratch register.
+        "popc" if mods == ["b64"] => {
+            let tmp = lw.scratch_v()?;
+            let d = lw.dst(op_n(0)?)?;
+            let a = lw.val(op_n(1)?)?;
+            pre.push(Op::Int {
+                op: IntOp::ShrU,
+                bits: 64,
+                d: tmp,
+                a: a.clone(),
+                b: Val::Imm(32),
+            });
+            pre.push(Op::Int {
+                op: IntOp::Popc,
+                bits: 32,
+                d: tmp,
+                a: Val::Reg(tmp, 1),
+                b: Val::Imm(0),
+            });
+            extra.push(Op::Int {
+                op: IntOp::Add,
+                bits: 32,
+                d,
+                a: Val::Reg(d, 1),
+                b: Val::Reg(tmp, 1),
+            });
+            Op::Int {
+                op: IntOp::Popc,
+                bits: 32,
+                d,
+                a,
+                b: Val::Imm(0),
+            }
+        }
+        // `popc.b32` (SASS POPC; probes/int_misc).
         "popc" if mods == ["b32"] => Op::Int {
             op: IntOp::Popc,
             bits: 32,
@@ -4120,6 +4156,28 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         // `cvt.rna.tf32.f32 d, a`: round to 19 bits, ties away (ptxas: a finite a gets + 0x1000,
         // then & 0xffffe000; Inf / NaN are only masked, so a NaN with no payload above bit 12
         // becomes Inf: probes/cvt_tf32). The finite test as integer ops: exponent != 0xff.
+        // `cvt.rn / .rz [.relu] [.satfinite] .tf32.f32` (SASS F2FP [.SATFINITE] [.RELU]
+        // .TF32.F32.PACK_B [.RZ]; probes/cvt_tf32_rn).
+        "cvt"
+            if mods.len() >= 3
+                && mods[mods.len() - 2..] == ["tf32", "f32"]
+                && matches!(mods[0], "rn" | "rz")
+                && mods[1..mods.len() - 2]
+                    .iter()
+                    .all(|m| matches!(*m, "relu" | "satfinite")) =>
+        {
+            let mid = &mods[1..mods.len() - 2];
+            if mid.len() > 1 && mid[0] == mid[1] {
+                bail!(lw.err("cvt.tf32 modifier repeated"));
+            }
+            Op::CvtTf32 {
+                d: lw.dst(op_n(0)?)?,
+                a: lw.val(op_n(1)?)?,
+                rz: mods[0] == "rz",
+                sat: mid.contains(&"satfinite"),
+                relu: mid.contains(&"relu"),
+            }
+        }
         "cvt" if mods == ["rna", "tf32", "f32"] => {
             let a = lw.val(op_n(1)?)?;
             let d = lw.dst(op_n(0)?)?;
@@ -5138,9 +5196,12 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 new: None,
             }
         }
-        // red.global.add.v2 / .v4.f32 [a], {..} (SASS REDG.E.ADD.F32x2 / F32x4.FTZ.RN): one
-        // FADD.FTZ atomic per element, each on its own (probes/red_vec).
-        "red"
+        // red.global.add.v2 / .v4.f32 [a], {..} (SASS REDG.E.ADD.F32x2 / F32x4.FTZ.RN) and
+        // atom.global.add.v2 / .v4.f32 {..}, [a], {..} (ATOMG; Triton's tl.atomic_add on a
+        // vectorized f32 tensor, `atom.global.gpu.acq_rel.add.v2.f32`): one FADD.FTZ atomic per
+        // element, each on its own; an atom returns each element's old value (probes/red_vec,
+        // probes/atom_vec).
+        "atom" | "red"
             if (has("v2") || has("v4"))
                 && has("add")
                 && has("f32")
@@ -5159,23 +5220,46 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                             | "cluster"
                             | "gpu"
                             | "sys"
-                    )
+                    ) || (base == "atom" && matches!(*m, "acquire" | "acq_rel"))
                 }) =>
         {
             let n = if has("v4") { 4 } else { 2 };
-            let (r, cnt, moves) = lw.reg_vec_mem(op_n(1)?, false)?;
+            let ret = base == "atom";
+            let (r, cnt, moves) = lw.reg_vec_mem(op_n(ret as usize + 1)?, false)?;
             if cnt != n {
-                bail!(lw.err("red vector operand count"));
+                bail!(lw.err(format!("{base} vector operand count")));
             }
             pre.extend(moves);
+            let d = if ret {
+                // The old values come back through the same scratch registers as the sources
+                // when the destinations are not consecutive: element k reads source k before
+                // it writes destination k.
+                let (dr, dcnt, back) = lw.reg_vec_mem(op_n(0)?, true)?;
+                if dcnt != n {
+                    bail!(lw.err("atom vector operand count"));
+                }
+                // Fail closed: a destination that overlaps a later source element.
+                if back.is_empty()
+                    && dr.file == r.file
+                    && dr.idx != r.idx
+                    && dr.idx < r.idx + n as u16
+                    && r.idx < dr.idx + n as u16
+                {
+                    bail!(lw.err("atom vector destination overlapping its sources not modeled"));
+                }
+                extra.extend(back);
+                Some(dr)
+            } else {
+                None
+            };
             Op::Atom {
                 p: None,
                 op: AtomOp::FAddFtz,
                 space: Space::Global,
                 bytes: 4 * n,
-                addr: lw.addr(op_n(0)?)?,
+                addr: lw.addr(op_n(ret as usize)?)?,
                 v: Val::Reg(r, 1),
-                d: None,
+                d,
                 sync: mem_sync(mods, true)
                     .map_err(|e| lw.err(e.to_string()))?
                     .unwrap(),
