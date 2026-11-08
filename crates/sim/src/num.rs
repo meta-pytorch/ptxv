@@ -3148,33 +3148,49 @@ fn pos_free_regs(op: &Op) -> (Vec<Reg>, bool) {
     (out, generic)
 }
 
-fn value_regs(op: &Op) -> Vec<Reg> {
-    let mut out = Vec::new();
-    let mut v = |x: &Val| {
-        if let Val::Reg(r, n) = x {
-            for i in 0..(*n).max(1) as u16 {
-                out.push(Reg {
-                    file: r.file,
-                    idx: r.idx + if r.file == File::V { 0 } else { i },
-                });
-                if r.file == File::V {
-                    break;
-                }
-            }
-        }
-    };
+fn value_vals(op: &Op) -> Vec<Val> {
     match op {
-        Op::St { v: x, .. }
-        | Op::Atom { v: x, .. }
-        | Op::StAsync { v: x, .. }
-        | Op::StLocal { v: x, .. } => v(x),
-        Op::Shfl { a, .. } => v(a),
-        // A warp-collective MMA: every operand is data (any lane's feeds every lane's result).
-        Op::Hmma { a, b, c, .. } => a.iter().chain(b).chain(c).for_each(v),
-        Op::StMatrix { v: xs, .. } | Op::TmemSt { v: xs, .. } => xs.iter().for_each(v),
-        _ => {}
+        Op::St { v, .. } | Op::Atom { v, .. } | Op::StAsync { v, .. } | Op::StLocal { v, .. } => {
+            vec![v.clone()]
+        }
+        Op::Shfl { a, .. } => vec![a.clone()],
+        Op::Hmma { a, b, c, .. } => a.iter().chain(b).chain(c).cloned().collect(),
+        Op::StMatrix { v, .. } | Op::TmemSt { v, .. } => v.clone(),
+        _ => vec![],
     }
-    out
+}
+
+fn operand_regs(values: &[Val]) -> Vec<Reg> {
+    values
+        .iter()
+        .flat_map(|value| match value {
+            Val::Reg(r, slots) => (0..if r.file == File::V {
+                1
+            } else {
+                (*slots).max(1)
+            })
+                .map(|i| Reg {
+                    file: r.file,
+                    idx: r.idx + i as u16,
+                })
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+fn value_regs(op: &Op) -> Vec<Reg> {
+    operand_regs(&value_vals(op))
+}
+
+fn control_regs(op: &Op) -> Vec<Reg> {
+    let mut operands = op.src_vals();
+    for value in value_vals(op) {
+        if let Some(index) = operands.iter().position(|operand| *operand == value) {
+            operands.remove(index);
+        }
+    }
+    operand_regs(&operands)
 }
 
 /// A LOP3 member before it executes (`Taint::lop_pre`): (thread, operand and old destination
@@ -3316,10 +3332,9 @@ impl Machine {
         } else {
             (vec![], false)
         };
-        let ctl: Vec<Reg> = srcs
-            .iter()
-            .copied()
-            .filter(|r| !vals.contains(r) && !free.0.contains(r))
+        let ctl: Vec<Reg> = control_regs(&inst.op)
+            .into_iter()
+            .filter(|r| !free.0.contains(r))
             .collect();
         // Position mode: control may depend on the position if every cluster decides the
         // same: the guard outcomes and control operand values that depend on it go into the
@@ -3845,5 +3860,142 @@ mod lop3_taint_tests {
         // R ^ x with x tainted in bit 3: bit 3.
         let (m5, _) = lop3_taint(0x3c, [0, 0x8, 0, 0], [0, 0x8, 0, 0], false);
         assert_eq!(m5, 0x8);
+    }
+}
+
+#[cfg(test)]
+mod control_dependency_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn run_body_finish_ir(
+        body: &str,
+        input: f64,
+        use_lop3_ir: bool,
+        finish: &str,
+    ) -> (NumState, (u32, Option<u32>)) {
+        let mut machine = run_machine_body_finish_ir(body, input, use_lop3_ir, finish, false);
+        let word = u32::from_le_bytes(std::array::from_fn(|byte| *machine.gmem[1].bytes.get(byte)));
+        let state = *machine.num.take().unwrap();
+        let node = state.mem.get(&(1, 1, 0)).copied();
+        if let Some(node) = node {
+            assert_eq!(state.nodes[node as usize].hw, word);
+        }
+        (state, (word, node))
+    }
+
+    fn run_machine_body_finish_ir(
+        body: &str,
+        input: f64,
+        use_lop3_ir: bool,
+        finish: &str,
+        half_inputs: bool,
+    ) -> Machine {
+        let ptx = format!(
+            r#"
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 input, .param .u64 output) {{
+  .reg .b64 %p<2>;
+  .reg .b32 %r<2>;
+  .reg .f32 %f<2>;
+  .reg .f64 %fd<2>;
+  .reg .pred %q;
+  .reg .b64 %w;
+  ld.param.u64 %p0, [input];
+  ld.param.u64 %p1, [output];
+  ld.global.u32 %r0, [%p0];
+  {body}
+  {finish}
+  ret;
+}}
+"#
+        );
+        let mut kernel = ptxv_ptx::parse_kernel(&ptx, Some("k")).unwrap();
+        if use_lop3_ir {
+            // The PTX parser does not expose LOP3; exercise its original IR execution path.
+            for instruction in &mut kernel.code {
+                if let Op::Int {
+                    op: IntOp::And,
+                    d,
+                    a: Val::Imm(0),
+                    b: Val::Imm(0),
+                    ..
+                } = instruction.op
+                {
+                    instruction.op = Op::Lop3 {
+                        d,
+                        a: Val::Imm(0),
+                        b: Val::Imm(0),
+                        c: Val::Imm(0),
+                        lut: 0,
+                        p: None,
+                        pq: None,
+                    };
+                }
+            }
+        }
+        let kernel = Arc::new(kernel);
+        let manifest = serde_json::from_value(serde_json::json!({
+            "name": "untracked-zero", "description": "missing integer history",
+            "entry": "k", "grid": [1,1,1], "block": [1,1,1], "outputs": ["out"],
+            "buffers": [
+                {"name":"x", "dtype":if half_inputs { "bf16" } else { "f32" }, "shape":[if half_inputs { 2 } else { 1 }], "init":"zeros", "values":[[0,input]]},
+                {"name":"out", "dtype":"f32", "shape":[1], "init":"zeros"}
+            ],
+            "params": [{"kind":"ptr","buffer":"x"}, {"kind":"ptr","buffer":"out"}],
+            "variants": []
+        })).unwrap();
+        let case = ptxv_case::Case {
+            dir: std::path::PathBuf::new(),
+            m: manifest,
+        };
+        let launch = Arc::new(crate::build_launch(&case, &kernel).unwrap());
+        let mut machine = Machine::new(kernel, launch);
+        let mut state = NumState::default();
+        state.not_inputs.insert(1);
+        if half_inputs {
+            state.half.inputs.insert(0, crate::halfin::Half::Bf16);
+        } else {
+            state.f32_inputs.insert(0);
+        }
+        state.taint.taint_alloc(0, 4);
+        machine.num = Some(Box::new(state));
+        let (machine, findings, completed) = crate::explore::run_once(machine);
+        assert!(completed, "{findings:?}");
+        assert!(findings.is_empty(), "{findings:?}");
+        machine
+    }
+
+    #[test]
+    fn address_value_alias_still_reports_control_dependency() {
+        let body = "cvt.u64.u32 %w, %r0; add.u64 %p1, %p1, %w; st.global.u32 [%p1], %p1;";
+        let (state, output) = run_body_finish_ir(body, 0.0, false, "");
+        assert_eq!(output.0, 0);
+        assert!(state
+            .taint
+            .violations
+            .iter()
+            .any(|message| message.contains("address / control")));
+    }
+    #[test]
+    fn source_validity_and_branch_mask_are_control_inputs() {
+        let predicate = Reg { file: File::P, idx: 0 };
+        let mask = Reg { file: File::UR, idx: 0 };
+        let address = Addr { base: None, base2: None, off: 0 };
+        let copy = Op::CpAsync {
+            dst: address.clone(), src: address, bytes: 4,
+            src_ok: Pred { reg: Some(predicate), neg: false },
+        };
+        assert!(control_regs(&copy).contains(&predicate));
+        let branch = Op::Bra {
+            target: 0, any: false, tid0_falls: false,
+            cond: Some(Pred { reg: Some(predicate), neg: false }),
+            div: Some(Val::Reg(mask, 1)),
+        };
+        let controls = control_regs(&branch);
+        assert!(controls.contains(&predicate));
+        assert!(controls.contains(&mask));
     }
 }
