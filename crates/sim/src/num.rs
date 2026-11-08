@@ -103,6 +103,16 @@ pub enum NodeKind {
     },
     /// Segment mode: a value computed from tracked nodes by an instruction slice (`seg.rs`).
     Seg(SegRef),
+    /// Segment mode: a choice made by input data. `pred` is the slice computing the predicate
+    /// (0 / 1) from its argument nodes; the value is `a` where `pred ^ neg` holds, else `b`.
+    /// A store under a data-dependent guard (`@P STS [x], v`) leaves `Sel(P, v, old)` in every
+    /// word it covers, whichever way this input went (N-ERRDIST-SEL).
+    Sel {
+        pred: SegRef,
+        neg: bool,
+        a: u32,
+        b: u32,
+    },
     /// A TF32 part of the f32 value `arg` (3xTF32 split, N-TF32): the high part the TF32 MMA
     /// reads, or a low-part factor of a split.
     Tf32 {
@@ -266,6 +276,9 @@ pub struct NumState {
     /// Instructions of div.rn sequences (computed on first use).
     idiom_pcs: Option<BTreeSet<u32>>,
     pub seg_fails: BTreeMap<u32, String>,
+    /// Stores under a data-dependent guard modeled as selections (`NodeKind::Sel`): their
+    /// guards are part of the dataflow, not a different one.
+    pub sel_pcs: BTreeSet<u32>,
     /// Leaves of input-independent constants (N-FINITE).
     const_leaves: std::collections::HashSet<u32>,
     /// `fin` per node.
@@ -584,21 +597,7 @@ pub fn fmax_diamond(code: &[Inst], bra: usize) -> Option<(usize, usize)> {
         return None;
     };
     let p = b.guard.reg?;
-    let atom = |i: usize| match &code.get(i)?.op {
-        Op::Atom {
-            op,
-            space: Space::Shared,
-            bytes: 4,
-            addr,
-            v: Val::Reg(v, 1),
-            d: None,
-            p: None,
-            ..
-        } if code[i].guard.is_always() && matches!(op, AtomOp::MaxS | AtomOp::MinU) => {
-            Some((*op, addr.clone(), *v))
-        }
-        _ => None,
-    };
+    let atom = |i: usize| fmax_atom(code, i);
     let (op1, a1, v1) = atom(bra + 1)?;
     let Op::Bra {
         target: join,
@@ -617,29 +616,48 @@ pub fn fmax_diamond(code: &[Inst], bra: usize) -> Option<(usize, usize)> {
     if op1 == op2 || a1 != a2 || v1 != v2 {
         return None;
     }
-    // The predicate: the last write of P before the branch, in straight-line code that writes
-    // neither P nor v after it and that no branch enters.
-    let mut i = bra;
+    if !sign_setp(code, bra, p, v1) {
+        return None;
+    }
+    // Taken where the sign bit is clear (P) unless the guard is negated: then the target must
+    // be the signed max.
+    let taken_clear = !b.guard.neg;
+    let (max_pc, min_pc) = if (op2 == AtomOp::MaxS) == taken_clear {
+        (bra + 3, bra + 1)
+    } else {
+        return None;
+    };
+    Some((max_pc, min_pc))
+}
+
+/// Whether P = (v as i32 >= 0) at the branch `first`: the last write of P before it is
+/// `ISETP.GE P, v, RZ` (or `.GT P, v, -1`), unguarded, in straight-line code that writes
+/// neither P nor v after it and that no branch enters.
+fn sign_setp(code: &[Inst], first: usize, p: Reg, v: Reg) -> bool {
+    let mut i = first;
     let setp = loop {
-        i = i.checked_sub(1)?;
+        let Some(j) = i.checked_sub(1) else {
+            return false;
+        };
+        i = j;
         let inst = &code[i];
         if inst.op.dst_regs().contains(&p) {
             break i;
         }
-        if inst.op.dst_regs().contains(&v1)
+        if inst.op.dst_regs().contains(&v)
             || matches!(
                 inst.op,
                 Op::Bra { .. } | Op::Exit | Op::Call { .. } | Op::Ret { .. }
             )
         {
-            return None;
+            return false;
         }
     };
     let entered = code
         .iter()
-        .any(|x| matches!(x.op, Op::Bra { target, .. } if target > setp && target <= bra));
+        .any(|x| matches!(x.op, Op::Bra { target, .. } if target > setp && target <= first));
     if entered || !code[setp].guard.is_always() {
-        return None;
+        return false;
     }
     let Op::Setp {
         d,
@@ -653,29 +671,125 @@ pub fn fmax_diamond(code: &[Inst], bra: usize) -> Option<(usize, usize)> {
         ex: None,
     } = code[setp].op
     else {
-        return None;
+        return false;
     };
     let k = match sb {
         Val::Imm(x) => *x as u32,
-        _ => return None,
+        _ => return false,
     };
-    // P = (v as i32 >= 0).
-    let sign_clear = match (cmp, k) {
-        (Cmp::GeS, 0) | (Cmp::GtS, 0xffff_ffff) => true,
-        _ => return None,
+    let sign_clear = matches!((cmp, k), (Cmp::GeS, 0) | (Cmp::GtS, 0xffff_ffff));
+    d == p && sa == v && and.is_always() && sign_clear
+}
+
+/// An unguarded shared 4-byte `ATOMS.MAX.S32` / `ATOMS.MIN` (unsigned) of a register with no
+/// destination at `i`: (op, address, value register).
+fn fmax_atom(code: &[Inst], i: usize) -> Option<(AtomOp, Addr, Reg)> {
+    match &code.get(i)?.op {
+        Op::Atom {
+            op,
+            space: Space::Shared,
+            bytes: 4,
+            addr,
+            v: Val::Reg(v, 1),
+            d: None,
+            p: None,
+            ..
+        } if code[i].guard.is_always() && matches!(op, AtomOp::MaxS | AtomOp::MinU) => {
+            Some((*op, addr.clone(), *v))
+        }
+        _ => None,
+    }
+}
+
+/// The sequential form of the float atomic max (N-FMAX, CuTeDSL's `smem_fmax`): two skips on
+/// one sign predicate, `@P BRA A1; ATOMS.MIN RZ, [a], v; A1: ...; @!P BRA A2;
+/// ATOMS.MAX.S32 RZ, [a], v; A2:`, with only `NOP` / `BSYNC` / `BSSY` between the first atomic
+/// and the second branch, in either order. Exactly one atomic executes: the unsigned min
+/// where v's sign bit is set, the signed max where it is clear. Returns the two atomics' pcs
+/// (max, min) for either branch `bra`.
+// ASSUME(N-FMAX): see ASSUMPTIONS.md
+pub fn fmax_seq(code: &[Inst], bra: usize) -> Option<(usize, usize)> {
+    // A skip: `@[!]P BRA bra+2` over an atomic; (P, negated, atomic).
+    let skip = |b: usize| {
+        let inst = code.get(b)?;
+        let Op::Bra {
+            target,
+            any: false,
+            tid0_falls: false,
+            cond: None,
+            div: None,
+        } = inst.op
+        else {
+            return None;
+        };
+        let p = inst.guard.reg?;
+        if target != b + 2 {
+            return None;
+        }
+        let (op, a, v) = fmax_atom(code, b + 1)?;
+        Some((p, inst.guard.neg, op, a, v))
     };
-    if d != p || sa != v1 || !and.is_always() || !sign_clear {
+    let filler = |i: usize| {
+        matches!(code[i].op, Op::Nop | Op::Bsync { .. } | Op::Bssy { .. })
+            && code[i].guard.is_always()
+    };
+    let (p, neg, op, a, v) = skip(bra)?;
+    // The partner: after this skip's atomic, or before this branch.
+    let mut partner = None;
+    let mut j = bra + 2;
+    while j < code.len() && filler(j) {
+        j += 1;
+    }
+    if let Some(x) = skip(j) {
+        partner = Some((bra, j, x));
+    }
+    if partner.is_none() {
+        let mut j = bra;
+        while j > 0 && filler(j - 1) {
+            j -= 1;
+        }
+        // code[j - 1] is the partner's atomic, code[j - 2] its branch.
+        if let Some(b0) = j.checked_sub(2) {
+            if let Some(x) = skip(b0) {
+                partner = Some((b0, bra, x));
+            }
+        }
+    }
+    let (first, second, (p2, neg2, op2, a2, v2)) = partner?;
+    let ((pf, negf, opf), (ps, negs, ops)) = if first == bra {
+        ((p, neg, op), (p2, neg2, op2))
+    } else {
+        ((p2, neg2, op2), (p, neg, op))
+    };
+    if pf != ps || negf == negs || opf == ops || a != a2 || v != v2 {
         return None;
     }
-    // Taken where the sign bit is clear (P) unless the guard is negated: then the target must
-    // be the signed max.
-    let taken_clear = !b.guard.neg;
-    let (max_pc, min_pc) = if (op2 == AtomOp::MaxS) == taken_clear {
-        (bra + 3, bra + 1)
-    } else {
+    // No branch enters between the first skip's atomic and the second branch, other than the
+    // first skip's own target.
+    let entered = code.iter().enumerate().any(|(i, x)| {
+        matches!(x.op, Op::Bra { target, .. }
+            if target > first + 1 && target <= second && !(i == first && target == first + 2))
+    });
+    if entered || !sign_setp(code, first, pf, v) {
         return None;
+    }
+    // Each atomic runs where its skip's guard is false: the min where the sign bit is set
+    // (P false), so the min's skip is `@P` and the max's `@!P`.
+    let (max_pc, min_pc) = if opf == AtomOp::MinU {
+        (second + 1, first + 1)
+    } else {
+        (first + 1, second + 1)
     };
+    let min_neg = if opf == AtomOp::MinU { negf } else { negs };
+    if min_neg {
+        return None;
+    }
     Some((max_pc, min_pc))
+}
+
+/// A branch of a float atomic max (N-FMAX), either form: the atomics' pcs (max, min).
+pub fn fmax_branch(code: &[Inst], bra: usize) -> Option<(usize, usize)> {
+    fmax_diamond(code, bra).or_else(|| fmax_seq(code, bra))
 }
 
 /// Bits of an operand before its `-x` modifier (`vals` hold them after).
@@ -725,6 +839,32 @@ fn is_v_hi(r: Reg) -> bool {
     r.file == File::V && r.idx & V_HI != 0
 }
 
+/// A store under a data-dependent guard, before it executes (`Machine::num_gst_pre`).
+pub(crate) struct GstPre {
+    keys: Vec<(u8, u64, u64)>,
+    old: Vec<Option<u32>>,
+    pred: Result<crate::seg::SProg, String>,
+    neg: bool,
+}
+
+/// The 32-bit word at byte `at` past `loc` (shared or global memory).
+fn word_at(m: &Machine, loc: Loc, at: u64) -> u32 {
+    let b: Vec<u8> = match loc {
+        Loc::Shared { cta, off } => (0..4)
+            .map(|i| {
+                *m.smem[cta as usize]
+                    .bytes
+                    .get(off as usize + at as usize + i)
+            })
+            .collect(),
+        Loc::Global { alloc, off } => (0..4)
+            .map(|i| *m.gmem[alloc].bytes.get((off + at) as usize + i))
+            .collect(),
+        Loc::Param { .. } => vec![0; 4],
+    };
+    u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+}
+
 fn mem_key(loc: Loc) -> (u8, u64, u64) {
     match loc {
         Loc::Shared { cta, off } => (0, cta as u64, off as u64),
@@ -745,6 +885,14 @@ impl NumState {
         match &nd.kind {
             NodeKind::Leaf => format!("{v}"),
             NodeKind::Opaque => format!("opaque({v})"),
+            NodeKind::Sel { a, b, neg, .. } => {
+                format!(
+                    "sel({}p ? {} : {})",
+                    if *neg { "!" } else { "" },
+                    d(*a),
+                    d(*b)
+                )
+            }
             NodeKind::Input((a, i)) => format!("in{a}[{i}]"),
             NodeKind::Add(a, b, _) => format!("({} + {})", d(*a), d(*b)),
             NodeKind::AtomAdd(a, b) => format!("atom({} + {})", d(*a), d(*b)),
@@ -865,7 +1013,13 @@ impl NumState {
             f32::from_bits(self.nodes[a as usize].hw),
             f32::from_bits(self.nodes[b as usize].hw),
         );
-        let hw = if (ha >= hb) != min { ha } else { hb };
+        let hw = f32::from_bits(fp::f32_minmax(
+            ha.to_bits(),
+            hb.to_bits(),
+            min,
+            false,
+            false,
+        ));
         let exact = if pick_a { ea.clone() } else { eb.clone() };
         self.nodes.push(Node {
             kind: NodeKind::Max { a, b, min },
@@ -988,6 +1142,15 @@ impl NumState {
         n
     }
 
+    /// Whether node `n` is non-NaN for every admissible input: a non-NaN constant leaf, or
+    /// `fin` (N-FINITE).
+    pub(crate) fn non_nan(&mut self, n: u32) -> bool {
+        let konst = matches!(self.nodes[n as usize].kind, NodeKind::Leaf)
+            && self.const_leaves.contains(&n)
+            && !f32::from_bits(self.nodes[n as usize].hw).is_nan();
+        konst || self.fin(n)
+    }
+
     /// Whether node `n` is finite for every input with finite elements on which no operation
     /// of the DAG overflows (N-FINITE): inputs, finite constants, and sums, products, MMA steps,
     /// roundings, exp2 / tanh / sin / cos and TF32 parts of such nodes; a max (min) of one
@@ -1003,6 +1166,9 @@ impl NumState {
             let kids: Vec<u32> = match &nd.kind {
                 NodeKind::Leaf | NodeKind::Opaque | NodeKind::Input(_) => vec![],
                 NodeKind::Seg(p) => p.0.args.clone(),
+                NodeKind::Sel { pred, a, b, .. } => {
+                    pred.0.args.iter().copied().chain([*a, *b]).collect()
+                }
                 NodeKind::Add(a, b, _) | NodeKind::AtomAdd(a, b) => vec![*a, *b],
                 NodeKind::Fma { a, b, c, .. } => {
                     [Some(*a), Some(*b), *c].into_iter().flatten().collect()
@@ -1054,6 +1220,8 @@ impl NumState {
                     let ok_const = |k: u32| konst(k) && self.nodes[k as usize].hw != bad;
                     (f(a) && f(b)) || (f(a) && ok_const(*b)) || (f(b) && ok_const(*a))
                 }
+                // The predicate's arguments do not reach the value.
+                NodeKind::Sel { a, b, .. } => f(a) && f(b),
                 NodeKind::Mufu { func, .. } => {
                     matches!(
                         func,
@@ -1237,19 +1405,14 @@ impl Machine {
             for (q, i) in k.code.iter().enumerate() {
                 if matches!(i.op, Op::Bsync { .. }) {
                     if crate::seg::rcprn_at(self, q as u32).is_some() {
-                        // The fast path's Newton step (not instructions interleaved with it).
-                        set.extend(q as u32 - 4..=q as u32);
+                        // The sequence's own instructions (its fast path's Newton step; not
+                        // instructions interleaved with it).
+                        set.extend(crate::seg::rcprn_pcs(self, q as u32));
                     }
-                    if let Some((_, b, _)) = crate::seg::divrn_at(self, q as u32) {
-                        // From the MUFU.RCP of the divisor to the BSYNC.
-                        let lo = (0..q)
-                            .rev()
-                            .take(20)
-                            .find(|&p| {
-                                matches!(&k.code[p].op, Op::Mufu { func: MufuFunc::Rcp, a: Val::Reg(x, _), .. } if *x == b)
-                            })
-                            .unwrap_or(q);
-                        set.extend(lo as u32..=q as u32);
+                    if let Some(lo) = crate::seg::divrn_lo(self, q as u32) {
+                        // From the MUFU.RCP of the divisor (constant divisor: the first
+                        // quotient FFMA) to the BSYNC.
+                        set.extend(lo..=q as u32);
                     }
                 }
             }
@@ -1328,26 +1491,37 @@ impl Machine {
 
     /// Segment mode: FMNMX `d = min/max(a, b[, c])` of tracked values (no modifiers, FTZ or
     /// NaN propagation; an input-independent min/max predicate): exact `Max` nodes.
-    pub(crate) fn num_fmnmx(&mut self, t: usize, d: Reg, ops: &[&Val], min: Option<bool>, pc: u32) {
+    /// `nan` (`FMNMX.NAN`): NaN-propagating, the same maximum where no operand is NaN; a node
+    /// only when every operand is non-NaN for every admissible input (N-FINITE).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn num_fmnmx(
+        &mut self,
+        t: usize,
+        d: Reg,
+        ops: &[&Val],
+        bits: &[u32],
+        min: Option<bool>,
+        nan: bool,
+        pc: u32,
+    ) {
         let Some(ns) = self.num.as_ref() else { return };
         if !ns.segments || min.is_none() {
             self.num_clobber(t, d, ops, pc);
             return;
         }
         let mut nodes = Vec::new();
-        for v in ops {
+        for (v, &b) in ops.iter().zip(bits) {
             match self.num_node_mat(t, v) {
                 Some(n) => nodes.push(n),
                 None => {
-                    // A constant operand (Triton's running maximum starts at -inf).
+                    // A constant operand (Triton's running maximum starts at -inf), as read
+                    // before the instruction wrote its destination.
                     let ns = self.num.as_mut().unwrap();
                     if matches!(v, Val::Reg(r, _) if ns.taint.reg_t(t, *r)) {
                         self.num_clobber(t, d, ops, pc);
                         return;
                     }
-                    let bits = self.rd(t, v).unwrap_or(0) as u32;
-                    let ns = self.num.as_mut().unwrap();
-                    nodes.push(ns.const_leaf(bits, pc));
+                    nodes.push(ns.const_leaf(b, pc));
                 }
             }
         }
@@ -1365,11 +1539,93 @@ impl Machine {
             ns.set(t, d, None);
             return;
         }
+        if nan && !nodes.clone().into_iter().all(|n| ns.non_nan(n)) {
+            self.num_clobber(t, d, ops, pc);
+            return;
+        }
+        let ns = self.num.as_mut().unwrap();
         let mut acc = nodes[0];
         for &n in &nodes[1..] {
             acc = ns.max_node(acc, n, min, pc);
         }
         ns.set(t, d, Some(acc));
+    }
+
+    /// Segment mode: `R2UR d, a` (a value uniform over the active lanes): the uniform register holds the
+    /// first active lane's value, so every active lane's `d` gets that lane's node (each lane
+    /// reads the uniform register).
+    pub(crate) fn num_r2ur(&mut self, active: &[usize], d: Reg, a: &Val) {
+        let Some(&t0) = active.first() else { return };
+        if !self.num.as_ref().is_some_and(|n| n.segments) {
+            return;
+        }
+        let n = self.num_node_mat(t0, a);
+        let ns = self.num.as_mut().unwrap();
+        for &t in active {
+            ns.set(t, d, n);
+        }
+    }
+
+    /// Segment mode: `CREDUX.MAX|MIN.F32[.NAN]` (redux.sync.max|min[.NaN].f32, no `.abs`)
+    /// over the active lanes: the maximum (minimum) of their operands, exact and
+    /// order-independent, as a tree of `Max` nodes (the input-independent lanes folded into
+    /// one constant). The uniform destination is read by every lane: each active lane gets the
+    /// node. `.NAN` requires every operand non-NaN for every admissible input (N-FINITE),
+    /// where it is the same maximum. Otherwise the destination is untracked.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn num_redux_f(
+        &mut self,
+        active: &[usize],
+        vals: &[u32],
+        d: Reg,
+        a: &Val,
+        min: bool,
+        nan: bool,
+        pc: u32,
+    ) {
+        if !self.num.as_ref().is_some_and(|n| n.segments) {
+            return;
+        }
+        let mut nodes = Vec::new();
+        let mut konst: Option<u32> = None;
+        for (&t, &bits) in active.iter().zip(vals) {
+            match self.num_node_mat(t, a) {
+                Some(n) => nodes.push(n),
+                None => {
+                    let ns = self.num.as_ref().unwrap();
+                    if matches!(a, Val::Reg(r, _) if ns.taint.reg_t(t, *r)) {
+                        return;
+                    }
+                    konst = Some(match konst {
+                        Some(k) => fp::f32_minmax(k, bits, min, nan, false),
+                        None => bits,
+                    });
+                }
+            }
+        }
+        let ns = self.num.as_mut().unwrap();
+        if nodes.is_empty() {
+            return;
+        }
+        if let Some(k) = konst {
+            if f32::from_bits(k).is_nan() {
+                return;
+            }
+            nodes.push(ns.const_leaf(k, pc));
+        }
+        if nan && !nodes.clone().into_iter().all(|n| ns.non_nan(n)) {
+            ns.seg_fails
+                .entry(pc)
+                .or_insert_with(|| "CREDUX.NAN of a value not provably non-NaN (no node)".into());
+            return;
+        }
+        let mut acc = nodes[0];
+        for &n in &nodes[1..] {
+            acc = ns.max_node(acc, n, min, pc);
+        }
+        for &t in active {
+            ns.set(t, d, Some(acc));
+        }
     }
 
     /// Segment mode: FSETP `P = a cmp b` (combined with PT, no modifiers): remembered, so a
@@ -2108,6 +2364,156 @@ impl Machine {
         }
     }
 
+    /// Segment mode, before a store whose guard depends on input data (thread `t`, executed or
+    /// not): the words it covers and their nodes before it (`None`: input-derived without a
+    /// node), and the slice of its guard predicate. None when not such a store, or when the
+    /// store is outside what `num_gst_post` models (it then stays a taint violation).
+    pub(crate) fn num_gst_pre(&mut self, t: usize, inst: &Inst, pc: u32) -> Option<GstPre> {
+        let ns = self.num.as_ref()?;
+        let g = inst.guard.reg?;
+        if !ns.segments || ns.taint.position || !ns.taint.reg_t(t, g) {
+            return None;
+        }
+        let Op::St {
+            space,
+            bytes,
+            addr,
+            v,
+            ..
+        } = &inst.op
+        else {
+            return None;
+        };
+        let words_ok = match v {
+            Val::Reg(r, _) => r.file == File::R,
+            Val::Imm(0) => true,
+            _ => false,
+        };
+        if !words_ok || !bytes.is_multiple_of(4) || *bytes > 16 {
+            return None;
+        }
+        let a = self.addr(t, addr).ok()?;
+        let loc = self.resolve(t, *space, a, *bytes as usize).ok()?;
+        let (sp, al, off) = mem_key(loc);
+        if sp > 1 {
+            return None;
+        }
+        let pred = self.seg_slice(t, g);
+        let mut keys = Vec::new();
+        let mut old = Vec::new();
+        for i in 0..(*bytes / 4) as u64 {
+            let k = (sp, al, off + 4 * i);
+            let bits = word_at(self, loc, 4 * i);
+            let ns = self.num.as_mut().unwrap();
+            let n = match ns.mem.get(&k) {
+                Some(&n) => Some(n),
+                None if (0..4).any(|b| ns.taint.mem.contains(&(sp, al, off + 4 * i + b))) => None,
+                None => Some(ns.const_leaf(bits, pc)),
+            };
+            keys.push(k);
+            old.push(n);
+        }
+        Some(GstPre {
+            keys,
+            old,
+            pred,
+            neg: inst.guard.neg,
+        })
+    }
+
+    /// After the store of `num_gst_pre`: word i becomes `Sel(P, new_i, old_i)` (the guard's
+    /// predicate, the stored value's node, the node before), the same node whether or not this
+    /// input executed it; a word whose value or old value is input-derived without a node, or
+    /// whose predicate has no slice, loses its node and the guard stays a violation.
+    pub(crate) fn num_gst_post(
+        &mut self,
+        t: usize,
+        inst: &Inst,
+        pc: u32,
+        executed: bool,
+        g: GstPre,
+    ) {
+        let Op::St { v, .. } = &inst.op else { return };
+        let mut ok = true;
+        let mut sels = Vec::new();
+        for (i, (&k, &old)) in g.keys.iter().zip(&g.old).enumerate() {
+            let w = match v {
+                Val::Reg(r, _) => Val::Reg(
+                    Reg {
+                        file: r.file,
+                        idx: r.idx + i as u16,
+                    },
+                    1,
+                ),
+                x => x.clone(),
+            };
+            let nv = match self.num_node_mat(t, &w) {
+                Some(n) => Some(n),
+                None => {
+                    let ns = self.num.as_ref().unwrap();
+                    if matches!(&w, Val::Reg(r, _) if ns.taint.reg_t(t, *r)) {
+                        None
+                    } else {
+                        let bits = self.rd(t, &w).unwrap_or(0) as u32;
+                        Some(self.num.as_mut().unwrap().const_leaf(bits, pc))
+                    }
+                }
+            };
+            sels.push((k, nv, old));
+            ok &= nv.is_some() && old.is_some();
+        }
+        let ns = self.num.as_mut().unwrap();
+        let pred = match g.pred {
+            Ok(p) if ok => p,
+            Ok(_) => {
+                for (k, ..) in sels {
+                    ns.mem.remove(&k);
+                }
+                ns.seg_fails.entry(pc).or_insert_with(|| {
+                    "store under a data-dependent guard of an input-derived value without a node"
+                        .into()
+                });
+                return;
+            }
+            Err(e) => {
+                for (k, ..) in sels {
+                    ns.mem.remove(&k);
+                }
+                ns.seg_fails
+                    .entry(pc)
+                    .or_insert_with(|| format!("guard predicate of a store: {e}"));
+                return;
+            }
+        };
+        let pred = SegRef(std::sync::Arc::new(pred));
+        ns.seg_pcs.extend(pred.0.pcs());
+        for (k, nv, old) in sels {
+            let (a, b) = (nv.unwrap(), old.unwrap());
+            let pick_a = executed;
+            let src = if pick_a { a } else { b };
+            let (hw, exact) = (
+                ns.nodes[src as usize].hw,
+                ns.nodes[src as usize].exact.clone(),
+            );
+            ns.nodes.push(Node {
+                kind: NodeKind::Sel {
+                    pred: pred.clone(),
+                    neg: g.neg,
+                    a,
+                    b,
+                },
+                hw,
+                exact,
+                err: vec![],
+                pc,
+            });
+            let id = (ns.nodes.len() - 1) as u32;
+            ns.note_write(k);
+            ns.mem.insert(k, id);
+        }
+        ns.sel_pcs.insert(pc);
+    }
+
     /// STL of `v` to local word `addr` of thread `t` (private memory): the word keeps its node.
     pub(crate) fn num_local_st(&mut self, t: usize, v: &Val, addr: u32) {
         self.half_local_st(t, v, addr);
@@ -2352,7 +2758,7 @@ impl Machine {
             .into_iter()
             .chain((pc as usize).checked_sub(3))
             .any(|b| {
-                fmax_diamond(&self.k.code, b)
+                fmax_branch(&self.k.code, b)
                     .is_some_and(|(x1, x2)| x1 == pc as usize || x2 == pc as usize)
             });
         if !in_diamond || ns.taint.position {
@@ -3304,6 +3710,7 @@ impl NumState {
                 NodeKind::Fma { .. }
                 | NodeKind::Max { .. }
                 | NodeKind::Seg(_)
+                | NodeKind::Sel { .. }
                 | NodeKind::Tf32 { .. } => {
                     // Segment mode (equiv) only (and TF32 parts): a term of the tree above, its own error not
                     // analyzed here (Thm 1 is not an identity through it).
@@ -3674,6 +4081,11 @@ impl Taint {
             self.cur_read = true;
         }
     }
+    /// Whether memory byte (space, allocation, offset) holds input-derived data.
+    pub fn byte_tainted(&self, k: (u8, u64, u64)) -> bool {
+        self.mem.contains(&k)
+    }
+
     pub(crate) fn write(&mut self, key: (u8, u64), off: u64, n: u64) {
         self.check_gen(key);
         let t = self.cur_src || self.cur_read;
@@ -3814,7 +4226,7 @@ impl Machine {
             if !position && members.iter().any(|&t| tn.reg_t(t, g)) {
                 // ASSUME(N-FMAX): both sides of a float atomic max diamond compute the same
                 // update (the numerics check its operands are non-NaN floats).
-                if fmax_diamond(&k.code, pc as usize).is_some() {
+                if fmax_branch(&k.code, pc as usize).is_some() {
                     tn.fmax_pcs.insert(pc);
                 } else {
                     let v = format!("guard of {describe} depends on input data");
@@ -4232,5 +4644,68 @@ mod lop3_taint_tests {
         // R ^ x with x tainted in bit 3: bit 3.
         let (m5, _) = lop3_taint(0x3c, [0, 0x8, 0, 0], [0, 0x8, 0, 0], false);
         assert_eq!(m5, 0x8);
+    }
+}
+
+#[cfg(test)]
+mod fmax_seq_tests {
+    use super::fmax_branch;
+    use super::fmax_seq;
+
+    fn kernel(body: &str) -> ptxv_ir::Kernel {
+        // Each instruction with a zero control word (`nvdisasm -hex` layout).
+        let mut text = String::from(".text.k:\n");
+        for l in body.lines() {
+            text.push_str(l);
+            text.push('\n');
+            if l.trim_start().starts_with("/*") {
+                text.push_str("        /* 0x000fc00000000000 */\n");
+            }
+        }
+        ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).expect("lower")
+    }
+
+    /// CuTeDSL's `smem_fmax` (FA4 decode, sass 0x3e40..0x3ec0): two skips on one sign
+    /// predicate, the unsigned min where the sign bit is set, the signed max where it is clear,
+    /// with a BSYNC between them. Both branches are recognized; swapping the atomics (the max
+    /// where the sign bit is set) or reading another value is not.
+    #[test]
+    fn sequential_float_atomic_max() {
+        let good = "
+        /*0000*/                   ISETP.GE.AND P1, PT, R4, RZ, PT ;
+        /*0010*/               @P1 BRA `(.L_x_58) ;
+        /*0020*/                   ATOMS.MIN RZ, [R23+0x10], R4 ;
+.L_x_58:
+        /*0030*/                   NOP ;
+        /*0040*/                   BSYNC.RECONVERGENT B0 ;
+        /*0050*/              @!P1 BRA `(.L_x_56) ;
+        /*0060*/                   ATOMS.MAX.S32 RZ, [R23+0x10], R4 ;
+.L_x_56:
+        /*0070*/                   NOP ;
+        /*0080*/                   EXIT ;
+";
+        let k = kernel(good);
+        assert_eq!(fmax_seq(&k.code, 1), Some((6, 2)));
+        assert_eq!(fmax_seq(&k.code, 5), Some((6, 2)));
+        assert_eq!(fmax_branch(&k.code, 5), Some((6, 2)));
+        let swapped = good
+            .replace("ATOMS.MIN RZ", "ATOMS.TMP RZ")
+            .replace("ATOMS.MAX.S32 RZ", "ATOMS.MIN RZ")
+            .replace("ATOMS.TMP RZ", "ATOMS.MAX.S32 RZ");
+        let k = kernel(&swapped);
+        assert_eq!(fmax_seq(&k.code, 1), None);
+        assert_eq!(fmax_seq(&k.code, 5), None);
+        let other = good.replace(
+            "ATOMS.MAX.S32 RZ, [R23+0x10], R4",
+            "ATOMS.MAX.S32 RZ, [R23+0x10], R5",
+        );
+        let k = kernel(&other);
+        assert_eq!(fmax_seq(&k.code, 1), None);
+        let rewritten = good.replace(
+            "        /*0040*/                   BSYNC.RECONVERGENT B0 ;",
+            "        /*0040*/                   MOV R4, RZ ;",
+        );
+        let k = kernel(&rewritten);
+        assert_eq!(fmax_seq(&k.code, 1), None);
     }
 }

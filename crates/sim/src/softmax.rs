@@ -1894,6 +1894,7 @@ fn kind_name(k: &NodeKind) -> &'static str {
     match k {
         NodeKind::Leaf => "constant",
         NodeKind::Opaque => "untracked value",
+        NodeKind::Sel { .. } => "data-dependent selection",
         NodeKind::Input(_) => "input",
         NodeKind::Add(..) => "add",
         NodeKind::AtomAdd(..) => "atomic add",

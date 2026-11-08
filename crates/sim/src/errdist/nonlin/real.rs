@@ -146,6 +146,23 @@ pub fn eval(p: &Prog, w: &[crate::mma_lp::Operand]) -> Vec<(Dd, f64)> {
                 (v, s_of(v, s))
             }
             Op::Nl(nl) => match nl {
+                // ASSUME(N-ERRDIST-SEL): the exact algorithm takes the branch its predicate
+                // gives at the arguments' exact values (rounded to f32).
+                NlOp::Sel {
+                    pred,
+                    args,
+                    neg,
+                    a,
+                    b,
+                } => {
+                    let v: Vec<f32> = args.iter().map(|&j| r[j as usize].0.v() as f32).collect();
+                    let mut scratch = Vec::new();
+                    if NlOp::sel_holds(pred, *neg, &v, &mut scratch) {
+                        r[*a as usize]
+                    } else {
+                        r[*b as usize]
+                    }
+                }
                 NlOp::Max { a, b, min } => {
                     let (x, y) = (r[*a as usize], r[*b as usize]);
                     // NaN-propagation order kept explicit (max.f32 returns the non-NaN operand).

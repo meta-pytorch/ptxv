@@ -1324,6 +1324,27 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |_| false,
     },
     Assumption {
+        id: "N-ERRDIST-INTFIX",
+        kind: "code",
+        status: "argued",
+        title: "errdist holds integer input buffers at their captured values (not taint sources)",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-FINCAP",
+        kind: "code",
+        status: "argued",
+        title: "errdist extracts the DAG with non-finite captured float input elements set to 0 (the input distributions are finite)",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-SEL",
+        kind: "code",
+        status: "argued",
+        title: "a store under a data-dependent guard is a selection P ? v : old (re-evaluated per input by Tier 3; linearized / CLT tiers refused)",
+        applies: |_| false,
+    },
+    Assumption {
         id: "N-ERRDIST-INERR",
         kind: "code",
         status: "argued",

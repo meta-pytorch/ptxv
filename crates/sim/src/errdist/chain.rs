@@ -104,6 +104,10 @@ pub struct Prog {
     pub out_fmt: Format,
     /// Buffer names of leaves.
     pub bufs: Vec<String>,
+    /// Output elements without a DAG whose bytes are input-derived (the simulator's taint):
+    /// errdist refuses rather than report on the other outputs alone.
+    #[serde(default)]
+    pub dep_untracked: Vec<u32>,
 }
 
 /// Decoded leaf values of one sample: per op (leaves only), value and alignment exponents.
@@ -148,14 +152,21 @@ impl Prog {
                 Format::F32
             },
             bufs: m.launch.allocs.iter().map(|a| a.name.clone()).collect(),
+            dep_untracked: vec![],
         };
         let mut map: HashMap<u32, u32> = HashMap::new();
         let model = m.launch.mma_model;
-        for r in roots {
+        let w = if f16 || bf16 { 2 } else { 4 };
+        for (i, r) in roots.into_iter().enumerate() {
             let o = match r {
                 Some(n) => Some(p.convert(m, n, &mut map, model)?),
                 None => None,
             };
+            if o.is_none()
+                && (0..w).any(|b| ns.taint.byte_tainted((1, oi as u64, (w * i + b) as u64)))
+            {
+                p.dep_untracked.push(i as u32);
+            }
             p.outputs.push(o);
         }
         Ok(p)
@@ -195,6 +206,14 @@ impl Prog {
                     [Some(*a), Some(*b), *c].into_iter().flatten().collect()
                 }
                 NodeKind::Leaf | NodeKind::Input(_) => vec![],
+                NodeKind::Opaque => {
+                    return Err(format!(
+                        "errdist does not model node kind Opaque: an input-derived value without \
+                         a node, read at {}{}",
+                        m.k.describe(node.pc as usize),
+                        seg_fail_note(ns)
+                    ));
+                }
                 k => match super::nonlin::ops::kids(k) {
                     Some(v) => v,
                     None => {
@@ -310,6 +329,14 @@ impl Prog {
             map.insert(n, (self.ops.len() - 1) as u32);
         }
         Ok(map[&root])
+    }
+
+    /// Number of data-dependent selections (`NlOp::Sel`) in the program.
+    pub fn selections(&self) -> usize {
+        self.ops
+            .iter()
+            .filter(|o| matches!(o, Op::Nl(super::nonlin::ops::NlOp::Sel { .. })))
+            .count()
     }
 
     /// Leaf values decoded from buffer bytes (by buffer name).
@@ -563,6 +590,16 @@ impl Prog {
     }
 }
 
+/// The first slice failures of a segment-mode run, for an error message.
+fn seg_fail_note(ns: &crate::num::NumState) -> String {
+    let v: Vec<String> = ns.seg_fails.values().take(4).cloned().collect();
+    if v.is_empty() {
+        String::new()
+    } else {
+        format!(" (slice failures: {})", v.join("; "))
+    }
+}
+
 fn kind_name(k: &NodeKind) -> &'static str {
     match k {
         NodeKind::Leaf => "Leaf",
@@ -576,6 +613,7 @@ fn kind_name(k: &NodeKind) -> &'static str {
         NodeKind::Fma { .. } => "Fma",
         NodeKind::Max { .. } => "Max",
         NodeKind::Seg(_) => "Seg",
+        NodeKind::Sel { .. } => "Sel",
         NodeKind::Tf32 { .. } => "Tf32",
     }
 }

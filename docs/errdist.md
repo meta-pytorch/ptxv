@@ -237,7 +237,7 @@ Formats: `f32`, `bf16`, `f16`, `e4m3`, `e5m2`, `e2m1`, `ue8m0`, `ue4m3`.
 
 | kind | fields | codes |
 |---|---|---|
-| `round` | | round to nearest even to the buffer's float dtype (f32 / bf16 / f16); overflow is out-of-domain |
+| `round` | | round to nearest even to the buffer's float dtype (f32 / bf16 / f16 / e4m3); overflow is out-of-domain |
 | `codes` | `format` (default: what the kernel reads) | the distribution's values are the codes |
 | `cast` | `format` | RNE to a narrow format, saturating (`cvt.rn.satfinite`), no scale |
 | `mx` | `elem`, `block` = 32, `scales`, `scale_rule` = `ceil` | per block of `block` elements along K: ue8m0 scale 2^E with E = ceil(log2(amax / max_elem)) (`ceil`) or floor(log2 amax) − emax_elem (`floor`, OCP MX v1.0); elements RNE(x / 2^E), saturating |
@@ -1218,7 +1218,14 @@ headline is never worse than Tier 3.
   - instruction slices (`NlOp::Seg`: the instructions between two numerics nodes, evaluated
     bit-exactly by `seg.rs`);
   - MUFU ops (`NlOp::Mufu`);
-  - maxima (`NlOp::Max`);
+  - maxima (`NlOp::Max`), including `FMNMX.NAN`, `CREDUX.MAX/MIN.F32[.NAN]` warp reductions
+    (a tree of maxima over the lanes, the uniform result in every lane) and float atomic
+    maxima on shared memory (N-FMAX: CUTLASS's diamond and CuTeDSL's sequential
+    `smem_fmax`). The `.NAN` forms need every operand non-NaN for every admissible input
+    (N-FINITE), where they are the same maximum; maxima evaluate in `FMNMX` order (-0 < +0);
+  - data-dependent selections (`NlOp::Sel`, N-ERRDIST-SEL): a store under a guard computed
+    from input data (`@P STS [x], v`) leaves `P ? v : old`, the predicate an instruction slice
+    re-evaluated per input (§9.9);
   - the chain ops (Add, Fma, Round, Mma).
 - **Multi-launch regions.** These are extracted through global memory: x @ w1 + x @ w2 as two
   sgemms plus an add launch, against x @ (w1 + w2) (`fixtures/errdist/mm2.toml`).
@@ -1449,6 +1456,92 @@ GB300 (`--gpu-trials 32`, GPU 0, normal spec):
   - bf16 cuBLAS epilogues with `UTMAREDG.3D.ADD` (TMA reduce-add: unsupported SASS
     opcode);
   - specs with axis scales or outliers (no elementwise law; the linearized tiers still run).
+
+### 9.9 Untracked values, data-dependent control, and outputs (2026-11-06)
+
+An input-derived value without a node or a slice is an `Opaque` leaf of the numerics DAG.
+errdist refuses such a program, naming the instruction that read the value and the first
+slice failures. On the mslk kernel database every FA4 decode case failed this way. The
+untracked value was the row maximum: a `CREDUX.MAX.F32.NAN` per warp, `FMUL` by the softmax
+scale, `FMNMX.NAN` with -1e30, then CuTeDSL's float atomic max on shared memory in its
+sequential form, read back by `LDS.128` into the `FFMA2` of the exp2 argument. The rest of the
+decode (packed `FFMA2` / `FMUL2` / `FADD2`, `MUFU.EX2`, the online rescale, the tcgen05 MMA
+steps) was already modeled.
+
+What extraction now covers:
+- **Warp reductions and NaN-propagating maxima:** §9.1.
+- **Integer inputs** (N-ERRDIST-INTFIX). Integer buffers (a sequence length, indices) are
+  never leaves, so Tier 3 always holds them at their captured values. errdist's numerics
+  run no longer treats them as taint sources, and control flow on a sequence length is
+  fixed instead of a data-dependent guard. The report notes the buffers.
+- **Non-finite captured inputs** (N-ERRDIST-FINCAP). The extraction run sets infinities and
+  NaNs in float input buffers to +0: the input distributions are finite. FA4 combine's
+  captured `lse_partial` is -inf for empty splits, which put `lse != -inf` on a path no
+  sample takes.
+- **div.rn by a constant** (N-SEG). `x / 6.0f` compiles to `FCHK P, x, 6`, a reciprocal of 6
+  refined from constants (possibly hoisted out of the sequence), the quotient tail
+  `q0 = x y`, `r = x - 6 q0`, `q = y r + q0`, and a branch to the slow path. It is one `DivRn`
+  (the correctly rounded quotient) like the `MUFU.RCP` form. Its branch was the data-dependent
+  control flow of mslk `quantize_nvfp4`.
+- **Guarded stores** (N-ERRDIST-SEL). FA4 decode stores `sum > 0 ? 1 / sum : 0` with two
+  complementary guarded `STS`. Each covered word becomes `Sel(P, v, old)` for every input,
+  whichever branch the captured input took.
+  - Tier 3 evaluates the predicate per input, bit-exactly.
+  - The exact value takes the branch the predicate gives at its arguments' exact values.
+  - The linearized and CLT tiers follow one branch at their nominal inputs. They are refused
+    on any program with a selection: no check proves the branch fixed over the input
+    distribution's support.
+  - The elementwise law re-evaluates the selection per code and still applies.
+- **Slice identification with dependent arguments.** The reciprocal slice of FA4's
+  normalization has the row sum and its two partial sums as arguments, so the fit over all
+  arguments is singular. One-argument forms are tried too (a zero intercept where the slice's
+  value at the origin takes the other branch). A named or polynomial form needs at least 8
+  (degree + 3 for polynomials) distinct argument values. The reciprocal had been fitted as
+  -2.7e32 gelu(-a0) on 8 distinct values, and Tier 3 reported errors of 1e70 ulps.
+- **FMNMX / CREDUX read before the write.** The numerics hooks of `FMNMX` and `CREDUX` ran
+  after the destination was written, so `FMNMX R28, R7, R28` took R28's new value as the
+  constant operand: the DAG held max(x, x at capture). The probe check refused the result
+  (msl_ops `BlackwellCompressionLseDecodeCombine`, 59 of 64 outputs off by 1-2 ulp on sampled
+  inputs). Operand values are now read before the write.
+
+No output is skipped silently:
+- an output buffer that is not f32 / bf16 / f16 (narrow-format codes) is a refusal that
+  names the buffer and its type;
+- outputs without a DAG whose bytes are input-derived (the simulator's taint) are a refusal
+  when the DAG tracks the others. Before, Tier 3 averaged over the tracked outputs only.
+  Outputs without a DAG and without input-derived bytes are constants, as before.
+
+Results on the kernel databases (N(0,1) inputs, the exact fp32 reference; headline Tier 3
+unless noted; P(differ) against the correctly rounded exact value):
+
+| case | P(differ) [95%] | note |
+|---|---|---|
+| mslk fa4.decode_sm100 bf16 h8 kv1 d128 s128 | 0.384 [0.381, 0.386] | mean \|C - exact\| 2.3e-4 |
+| same, s256 | 0.388 [0.386, 0.390] | |
+| same, s1024 | 0.401 [0.399, 0.403] | |
+| same, h4 / h2 kv2, s256 | 0.388 / 0.389 | |
+| mslk quack softmax_fwd 64x1024 | 1.72e-5 | |
+| mslk quack softmax_bwd | 8.32e-5 | |
+| mslk quack cross_entropy_fwd | 0.303 | |
+| mslk quack cross_entropy_bwd | 1.11e-5 | |
+| mslk quack topk_fwd k8 | 0 [0, 2.4e-5] | |
+| mslk quant.dequantize_fp8_row 64x512 | 5.1e-6 [0, 1.5e-5] | |
+| msl_ops cute BlackwellCompressionLseDecodeCombine | 0.518 [0.507, 0.528] | was refused (DAG off) |
+
+FA4 decode's linearized tier is refused (16 selections; its Tier 3 cross-check also differs,
+0.428 vs 0.384). Refused, with the reason in the error:
+- `quant.quantize_nvfp4`: out0 holds u8 nvfp4 codes. The div.rn branches are resolved; a code
+  output has no exact value to compare with.
+- FA4 combine (`fa4.combine*`, split-KV decode's second launch): the accumulation runs under
+  `@!P FFMA2` with P = !(scale > 0), a register write under a data-dependent guard.
+  N-ERRDIST-SEL covers stores only. The cases captured with `lse_partial` as u8 also have no
+  leaves for it.
+- `quant.fake_quantize_nvfp4`: a SASS lift gap (`RZ.H0_H0`).
+
+The 162-row matrix (§7.3) with this extraction: no headline tier changed and no headline left
+its truth interval. Tier 2 values moved by up to 3% in 34 rows; the nonlinear Tier 2 differs
+run to run by that much with an unchanged binary (c_lse_naive/laplace: 0.1197-0.1210 over four
+runs at 13e4cc4, against a recorded 0.1184).
 
 ## 10. Composition: errstate files and chains of kernels
 

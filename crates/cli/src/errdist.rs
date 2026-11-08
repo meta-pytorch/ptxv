@@ -25,7 +25,6 @@ use super::equiv::EquivFile;
 use super::equiv::KernelRef;
 use super::equiv::Run;
 use super::equiv::out_only;
-use super::equiv::prepare;
 
 pub struct Args {
     pub path: Option<PathBuf>,
@@ -85,6 +84,9 @@ pub(crate) struct Model {
     /// The output buffer's name and shape (the errstate's tensor).
     #[serde(default)]
     pub out_name: Option<(String, Vec<u64>)>,
+    /// Output buffers after the first (not analyzed; the report says so).
+    #[serde(default)]
+    pub other_outputs: Vec<String>,
 }
 
 impl Model {
@@ -210,7 +212,7 @@ fn kernel(
         }
     };
     rss("before prepare");
-    let mut run = prepare(base, k, max_states, dir, segments)?;
+    let mut run = super::equiv::prepare_with(base, k, max_states, dir, segments, true)?;
     rss("after prepare");
     let mut prog = Prog::extract(&run.m).map_err(|e| anyhow!("{}: {e}", run.label()))?;
     rss(&format!("after extract ({} ops)", prog.ops.len()));
@@ -277,22 +279,30 @@ fn kernel(
     }
     if let Some(g) = super::equiv::gpu_output_f32(&run.case).filter(|_| !atomics) {
         if g.len() == prog.outputs.len() {
-            let differ = prog
-                .outputs
-                .iter()
-                .zip(&g)
-                .filter(|(o, y)| {
-                    o.is_some_and(|o| {
-                        let h = f32::from_bits(prog.hw[o as usize]);
-                        h.to_bits() != y.to_bits() && !(h.is_nan() && y.is_nan())
+            // N-ERRDIST-FINCAP: the DAG was extracted on modified inputs; the case is checked
+            // with a plain simulator run at the captured inputs instead.
+            let same = |h: f32, y: &f32| h.to_bits() == y.to_bits() || (h.is_nan() && y.is_nan());
+            let differ = match &run.captured_out {
+                Some(s) => s.iter().zip(&g).filter(|(h, y)| !same(**h, y)).count(),
+                None => prog
+                    .outputs
+                    .iter()
+                    .zip(&g)
+                    .filter(|(o, y)| {
+                        o.is_some_and(|o| !same(f32::from_bits(prog.hw[o as usize]), y))
                     })
-                })
-                .count();
+                    .count(),
+            };
             if differ > 0 {
                 bail!(
-                    "{}: {differ} of {} outputs of the numerics DAG differ from the captured GPU outputs at the captured input (work between the captured launches missing from the case, e.g. a device-to-device memcpy?)",
+                    "{}: {differ} of {} outputs of the {} differ from the captured GPU outputs at the captured input (work between the captured launches missing from the case, e.g. a device-to-device memcpy?)",
                     run.label(),
-                    g.len()
+                    g.len(),
+                    if run.captured_out.is_some() {
+                        "simulator"
+                    } else {
+                        "numerics DAG"
+                    }
                 );
             }
         }
@@ -388,6 +398,29 @@ fn simulate(
             _ => Ok((kernel(Path::new("/"), &k, 200_000, dir, true)?, None)),
         }
     }
+}
+
+/// The kernel's output buffers after the first.
+fn other_outputs(k: &Kernel) -> Vec<String> {
+    let l = &k.run.m.launch;
+    l.outputs
+        .iter()
+        .skip(1)
+        .map(|&o| l.allocs[o].name.clone())
+        .collect()
+}
+
+/// The kernel's output buffer: its name and dtype in the case.
+fn out_dtype(k: &Kernel) -> Option<(String, String)> {
+    let l = &k.run.m.launch;
+    let name = &l.allocs[*l.outputs.first()?].name;
+    k.run
+        .case
+        .m
+        .buffers
+        .iter()
+        .find(|b| &b.name == name)
+        .map(|b| (name.clone(), b.dtype.clone()))
 }
 
 /// The kernel's output buffer: its name and shape.
@@ -494,6 +527,34 @@ pub fn cmd(a: &Args) -> Result<()> {
                 eprintln!("leaves of {}: {:?}", k.run.label(), k.prog.leaf_formats());
             }
         }
+        // Never report on a subset of the outputs: an output buffer of another element type
+        // (codes), or input-dependent outputs without a DAG, is a refusal.
+        for k in &ks {
+            if let Some((name, dt)) =
+                out_dtype(k).filter(|(_, d)| !matches!(d.as_str(), "f32" | "bf16" | "f16"))
+            {
+                bail!(
+                    "{}: output buffer {name} is {dt}: errdist models f32 / bf16 / f16 outputs (narrow-format codes are not compared with an exact value)",
+                    k.run.label()
+                );
+            }
+            let d = &k.prog.dep_untracked;
+            if !d.is_empty() && d.len() < k.prog.outputs.len() {
+                bail!(
+                    "{}: {} of {} outputs are input-dependent but have no numerics DAG (first: element {}){}; errdist does not report on the other outputs alone",
+                    k.run.label(),
+                    d.len(),
+                    k.prog.outputs.len(),
+                    d[0],
+                    k.run
+                        .notes
+                        .iter()
+                        .filter(|n| n.starts_with("no slice at"))
+                        .map(|n| format!("; {n}"))
+                        .collect::<String>()
+                );
+            }
+        }
         // Agent AG: nothing to estimate when the DAG tracks no output.
         for k in &ks {
             if !k.prog.outputs.is_empty() && k.prog.outputs.iter().all(|o| o.is_none()) {
@@ -522,6 +583,7 @@ pub fn cmd(a: &Args) -> Result<()> {
             idents: ks.iter().map(|k| k.idents.clone()).collect(),
             worst: Some(worst_case(&r, c.as_ref())),
             out_name: out_buffer(&r),
+            other_outputs: other_outputs(&r),
         };
         if let Some(cp) = &a.compile {
             let out = if cp.as_os_str().is_empty() || cp.as_os_str() == "-" {
@@ -701,6 +763,13 @@ pub fn cmd(a: &Args) -> Result<()> {
         ..Default::default()
     };
     rep.out_of_domain = ood(&obs);
+    if !model.other_outputs.is_empty() {
+        rep.notes.push(format!(
+            "output buffers not analyzed: {} (errdist reports the first output buffer, {})",
+            model.other_outputs.join(", "),
+            model.out_name.as_ref().map_or("?", |o| o.0.as_str())
+        ));
+    }
     if let Some(p) = &a.errstate {
         use ptxv_sim::errdist::errstate::*;
         if obs.pairs.is_empty() {
@@ -915,6 +984,26 @@ pub fn cmd(a: &Args) -> Result<()> {
         .find(|e| e.tier == 3)
         .map(|e| (e.abs.mean_abs, e.abs.std))
         .filter(|_| spec.has_input_errors());
+    // ASSUME(N-ERRDIST-SEL): a choice made by input data (a store under a data-dependent
+    // guard) is re-evaluated per input by Tier 3 and by the elementwise law; the linearized and
+    // CLT tiers take one branch at their nominal inputs, so they are refused (no proof that the
+    // branch is fixed over the input distribution's support).
+    let sels = st.r.selections() + st.c.map_or(0, |c| c.selections());
+    if sels > 0 {
+        for e in rep
+            .estimates
+            .iter_mut()
+            .filter(|e| (e.tier == 1 || e.tier == 2) && !e.method.starts_with("elementwise"))
+        {
+            e.applicable = Some(false);
+            e.applicability.push(format!(
+                "{sels} data-dependent selections (stores under a guard computed from input data): this tier follows one branch, and the branch is not proven fixed over the input distribution's support FAILS"
+            ));
+        }
+        rep.notes.push(format!(
+            "{sels} data-dependent selections in the DAG (N-ERRDIST-SEL): Tier 3 evaluates the branch per input"
+        ));
+    }
     let mut disagree = vec![];
     for (k, e) in rep.estimates.iter_mut().enumerate() {
         if !(e.tier == 1 || e.tier == 2) {
@@ -1045,6 +1134,9 @@ pub fn cmd(a: &Args) -> Result<()> {
     ];
     if spec.has_input_errors() {
         rep.assumptions.push("N-ERRDIST-INERR".into());
+    }
+    if sels > 0 {
+        rep.assumptions.push("N-ERRDIST-SEL".into());
     }
     // Agent AG: a non-chain program's estimates rest on the nonlin assumptions.
     for e in rep.estimates.iter().filter(|_| nonchain) {
@@ -2194,6 +2286,19 @@ type RunKernels<'a> =
 /// with the DAG evaluation and collect the errors.
 /// Tracked outputs where the DAG's value differs from the run's (NaN matches NaN).
 fn dag_mismatch(p: &Prog, dag: &[f32], run: &[f32]) -> u64 {
+    if std::env::var("PTXV_ERRDIST_DEBUG").is_ok() {
+        let bad = p
+            .outputs
+            .iter()
+            .zip(dag.iter().zip(run))
+            .enumerate()
+            .filter(|(_, (o, (a, b)))| {
+                o.is_some() && a.to_bits() != b.to_bits() && !(a.is_nan() && b.is_nan())
+            });
+        for (i, (_, (a, b))) in bad.take(4) {
+            eprintln!("dag mismatch: output {i}: DAG {a:e} simulator {b:e}");
+        }
+    }
     p.outputs
         .iter()
         .zip(dag.iter().zip(run))
@@ -2243,6 +2348,26 @@ fn validate_with(
         if !smp.clean.is_empty() {
             wr = st.r.leaves(&smp.clean_bytes()).map_err(|e| anyhow!(e))?;
             st.r.eval_into(&mut wr);
+        }
+        if std::env::var("PTXV_ERRDIST_DEBUG").is_ok() && dag_mismatch(st.r, &rd, &ro) > 0 {
+            if let Some((k, o)) = st.r.outputs.iter().enumerate().find_map(|(k, o)| {
+                o.filter(|_| rd[k].to_bits() != ro[k].to_bits())
+                    .map(|o| (k, o))
+            }) {
+                eprintln!("output {k} = op {o}; DAG {:e} simulator {:e}", rd[k], ro[k]);
+                let lo = (o as usize).saturating_sub(14);
+                for (i, (op, w)) in
+                    st.r.ops
+                        .iter()
+                        .zip(&wr)
+                        .enumerate()
+                        .take(o as usize + 1)
+                        .skip(lo)
+                {
+                    let d = format!("{op:?}");
+                    eprintln!("  op {i} = {:e}: {}", w.v, &d[..d.len().min(240)]);
+                }
+            }
         }
         mismatch += dag_mismatch(st.r, &rd, &ro);
         if let (Some(c), Some(co)) = (st.c, co.as_ref()) {

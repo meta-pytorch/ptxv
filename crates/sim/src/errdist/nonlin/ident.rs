@@ -559,6 +559,23 @@ fn fit_form(
     cands: &[(f64, u8)],
 ) -> Option<RealFn> {
     let cols: Vec<usize> = (0..nargs).filter(|i| Some(*i) != mul).collect();
+    fit_form_cols(p, probes, func, mul, pow, nargs, cands, cols)
+}
+
+/// `fit_form` with the inner argument over the arguments `cols` only (the others' coefficients
+/// 0): arguments that are linearly dependent on the probes (a sum and its two terms, both
+/// arguments of a slice) leave the full least-squares problem singular.
+#[allow(clippy::too_many_arguments)]
+fn fit_form_cols(
+    p: &SProg,
+    probes: &[(Vec<f64>, f64)],
+    func: Func,
+    mul: Option<usize>,
+    pow: i32,
+    nargs: usize,
+    cands: &[(f64, u8)],
+    cols: Vec<usize>,
+) -> Option<RealFn> {
     let h_of = |a: &[f64], g: f64| -> Option<f64> {
         match mul {
             Some(j) if a[j] != 0.0 && pow < 0 => Some(g * a[j]),
@@ -593,7 +610,13 @@ fn fit_form(
         .map(|b| f32::from_bits(b) as f64)
         .and_then(|g| func.inv(g));
     let mut best: Option<RealFn> = None;
-    for fixed in [c0_fixed, None] {
+    // A single-argument form also tries a zero intercept (1 / a, a slice whose value at the
+    // origin is not on the form, e.g. a guarded reciprocal).
+    let zero = (cols.len() == 1 && nargs > 1 && c0_fixed.is_none()).then_some(0.0);
+    for fixed in [c0_fixed, zero, None] {
+        if fixed.is_none() && zero.is_some() && best.is_some() {
+            continue;
+        }
         let (c0, cs) = match fixed {
             Some(c0) => {
                 let rr: Vec<(Vec<f64>, f64)> =
@@ -637,9 +660,24 @@ fn fit_form(
     best
 }
 
+/// Distinct values of argument `k` over the probes.
+fn distinct(probes: &[(Vec<f64>, f64)], k: usize) -> usize {
+    let mut v: Vec<u64> = probes.iter().map(|p| p.0[k].to_bits()).collect();
+    v.sort_unstable();
+    v.dedup();
+    v.len()
+}
+
+/// Fewest distinct argument values for a fitted named or polynomial form: with only a few,
+/// any two-parameter family fits them.
+const MIN_DISTINCT: usize = 8;
+
 /// Fit `alpha + beta * named(c a_0)` for one-argument slices.
 fn fit_named(probes: &[(Vec<f64>, f64)], cands: &[(f64, u8)], k: usize) -> Vec<RealFn> {
     let mut out = Vec::new();
+    if distinct(probes, k) < MIN_DISTINCT {
+        return out;
+    }
     let n = probes.first().map_or(1, |p| p.0.len());
     let rpi = (2.0 / std::f64::consts::PI).sqrt();
     for &name in NAMED {
@@ -685,7 +723,7 @@ fn fit_named(probes: &[(Vec<f64>, f64)], cands: &[(f64, u8)], k: usize) -> Vec<R
 fn fit_poly(probes: &[(Vec<f64>, f64)], cands: &[(f64, u8)], k: usize) -> Vec<RealFn> {
     let n = probes.first().map_or(1, |p| p.0.len());
     let mut out = Vec::new();
-    for deg in 1..=3usize {
+    for deg in (1..=3usize).filter(|d| distinct(probes, k) >= d + 3) {
         let rows: Vec<(Vec<f64>, f64)> = probes
             .iter()
             .map(|(a, g)| ((1..=deg).map(|i| a[k].powi(i as i32)).collect(), *g))
@@ -783,6 +821,23 @@ pub fn identify(p: &SProg, probes: &[(Vec<f64>, f64)]) -> Result<RealFn, String>
                     if let Some(r) = fit_form(p, &probes, f.clone(), Some(j), pow, n, &cands) {
                         found.push(r);
                     }
+                }
+            }
+        }
+    }
+    // One argument at a time (dependent arguments).
+    if n >= 2 && !found.iter().any(|r| r.snapped) {
+        for f in [
+            Func::Exp2,
+            Func::Rcp,
+            Func::Rsqrt,
+            Func::Sqrt,
+            Func::Tanh,
+            Func::Ident,
+        ] {
+            for k in 0..n {
+                if let Some(r) = fit_form_cols(p, &probes, f.clone(), None, 1, n, &cands, vec![k]) {
+                    found.push(r);
                 }
             }
         }

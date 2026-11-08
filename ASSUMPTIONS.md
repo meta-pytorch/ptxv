@@ -4610,8 +4610,10 @@ stored, as a backward slice along the thread's executed instruction trace (`seg.
   is excused when the instruction is inside a materialized slice (`ptxv equiv` lists them as
   "relies on: N-SEG"). Branches that depend on input data are still violations, except
   ptxas's `div.rn.f32` sequence (`MUFU.RCP`, `FCHK`, five `FFMA`, `@!P BRA`, a call of
-  `*div_rn*slowpath*`, `BSYNC`), which is one `DivRn`: the correctly rounded quotient on both
-  paths, as PTX defines `div.rn.f32`. Registers the slow path may write (other than the
+  `*div_rn*slowpath*`, `BSYNC`; for a divisor known at compile time, `FCHK P, a, b` with an
+  immediate b and the quotient tail `q0 = a y`, `r = a - b q0`, `q = y r + q0`, the reciprocal
+  y refined from constants and possibly hoisted out of the sequence), which is one `DivRn`:
+  the correctly rounded quotient on both paths, as PTX defines `div.rn.f32`. Registers the slow path may write (other than the
   quotient) must be dead after it on every thread's trace (`seg::divrn_dead`).
 - Also nodes: a product of two tracked nodes, the same one twice included (x * x in sums of
   squares); FFMA2 / FMUL2 / FADD2 lane by lane (two FFMA / FADD on the lanes' registers). A
@@ -5349,8 +5351,11 @@ branch takes (a taint precondition relaxation, `ptxv equiv`).** `num.rs` `fmax_d
 recognizes: `ISETP.GE.AND P, PT, v, RZ, PT` (or `.GT ... v, -0x1`), straight-line (no write
 of P or v, no branch target) to `@[!]P BRA T`; the fall-through `ATOMS.MAX.S32 RZ, [a], v` or
 `ATOMS.MIN RZ, [a], v` (unsigned), `BRA J`, the other at T, J right after it; the signed max
-where v's sign bit is clear, the unsigned min where it is set. Its data-dependent branch is
-not a violation; each of its atomics makes the shared word's node `Max(old, v)`.
+where v's sign bit is clear, the unsigned min where it is set. `fmax_seq` recognizes the
+sequential form (CuTeDSL's `smem_fmax`, FA4 decode): `@P BRA A1; ATOMS.MIN RZ, [a], v; A1:`,
+then only `NOP` / `BSYNC` / `BSSY`, then `@!P BRA A2; ATOMS.MAX.S32 RZ, [a], v; A2:`, with the
+same sign test on P; exactly one atomic executes. Its data-dependent branches are not
+violations; each of its atomics makes the shared word's node `Max(old, v)`.
 - Argument: for non-NaN float bit patterns L (the word) and v: if v's sign bit is clear, every
   L with the sign bit set is a negative signed integer below v (and a float below or equal:
   -0 < +0), and non-negative floats order as signed integers; if v's sign bit is set, every L
@@ -5837,6 +5842,52 @@ Leaves of a packed 16-bit word that the output does not depend on are checked at
 - Status: **argued.** Agrees with Tier 3 within its CI on gelu / silu / softcap, silu*mul and
   add (f32 and bf16), single and pairs (docs/errdist.md §9).
 - If wrong: the law of another population of elements.
+
+### N-ERRDIST-INTFIX · code
+**errdist holds integer input buffers (i8 / i16 / i32 / i64 / u32 / u64) at their captured
+values.** They are not taint sources in errdist's numerics run, so control flow on them (a
+sequence length, a block count) is fixed rather than a data-dependent violation.
+- Where: `cli/src/equiv.rs` `prepare_with` (`int_buffer`), called by `cli/src/errdist.rs`
+  `kernel`.
+- Status: **argued.** Integer buffers are never DAG leaves (the leaf formats are f32, bf16,
+  f16 and the narrow float formats), so Tier 3 never resamples them: it already evaluates
+  every input with the captured lengths and indices. The report notes the buffers.
+- If wrong: none for the reported distribution, which is conditional on the captured integer
+  inputs; another sequence length is another errdist run.
+
+### N-ERRDIST-FINCAP · code
+**errdist's extraction run replaces every non-finite element (infinity, NaN) of an f32 / bf16
+/ f16 input buffer with +0.** The captured data can hold them (FA4 combine's `lse_partial` is
+-inf for a split with no keys); errdist's input distributions are finite, so a path taken on
+an infinite element is a path no sample takes. The report notes the count.
+- Where: `cli/src/equiv.rs` `finite_inputs`, called from `prepare_with` in errdist mode.
+- Status: **argued.** The DAG is extracted on one input and re-evaluated on samples; control
+  that depends on input data is still a taint violation unless excused (N-FINITE, N-SEG,
+  N-ERRDIST-SEL), now judged on finite values. The race / deadlock exploration still runs on
+  the captured data, and so does the comparison with the captured GPU outputs (a plain
+  simulator run at the unmodified input stands in for the DAG's values there).
+- If wrong: none for finite distributions. A distribution with infinite support points would
+  need its own extraction path.
+
+### N-ERRDIST-SEL · code
+**A store under a guard computed from input data (`@P STS [x], v`) is the selection
+`P ? v : old` in every word it covers.** Segment mode builds `NodeKind::Sel` with the guard's
+predicate as an instruction slice of its argument nodes, whichever way the captured input
+went, and the guard is then not a taint violation (`relies on: N-ERRDIST-SEL`). Tier 3
+evaluates the predicate per input, bit-exactly. The exact value takes the branch the
+predicate gives at its arguments' exact values rounded to f32. The linearized and CLT tiers
+follow one branch at their nominal inputs, so they are refused on any program with a
+selection; the elementwise law re-evaluates it per code and still applies.
+- Where: `num.rs` `num_gst_pre` / `num_gst_post`, `errdist/nonlin/ops.rs` `NlOp::Sel`,
+  `errdist/nonlin/real.rs`, `cli/src/errdist.rs` (the refusal), `cli/src/equiv.rs`.
+- Status: **argued.** A store's address does not depend on input data (the taint check), so
+  each covered word holds either the stored value or the previous one; the previous value
+  must have a node or be an input-independent constant, else the guard stays a violation.
+  On FA4 decode (`fa4.decode_sm100`, `sum > 0 ? 1 / sum : 0`) the DAG agrees with the
+  simulator bit for bit on the probe and validation inputs.
+- If wrong: the exact reference's branch differs from the kernel's only where rounding moves
+  the predicate's arguments across its threshold; Tier 3's C - exact then counts the other
+  branch's value as error.
 
 ### N-ERRDIST-INERR · code
 **An input's error is independent across elements, and the linearized tier pushes it

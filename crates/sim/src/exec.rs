@@ -3618,6 +3618,9 @@ impl Machine {
                         );
                     }
                     self.wr(active[0], *d, v0, 1);
+                    if p.is_none() {
+                        self.num_r2ur(&active, *d, a);
+                    }
                 }
             }
             Op::MatchAny { d, a, wide } => {
@@ -3661,6 +3664,12 @@ impl Machine {
                     for &t in &active[..n.min(active.len())] {
                         self.wr(t, *d, v as u64, 1);
                     }
+                }
+                if let ptxv_ir::ReduxOp::MinF { abs: false, nan }
+                | ptxv_ir::ReduxOp::MaxF { abs: false, nan } = *op
+                {
+                    let min = matches!(op, ptxv_ir::ReduxOp::MinF { .. });
+                    self.num_redux_f(&active, &xs, *d, a, min, nan, pc);
                 }
             }
             // ASSUME(E-BSYNC): see ASSUMPTIONS.md
@@ -4462,11 +4471,21 @@ impl Machine {
                 let n = members.len();
                 for i in 0..n {
                     let t = members[if rev { n - 1 - i } else { i }];
+                    // A store under a data-dependent guard: a selection (segment mode).
+                    let gst = if matches!(inst.op, Op::St { .. }) {
+                        self.num_gst_pre(t, inst, pc)
+                    } else {
+                        None
+                    };
                     let flow = if active.contains(&t) {
                         self.exec_thread(t, inst, pc)?
                     } else {
                         Flow::Next
                     };
+                    if let Some(g) = gst {
+                        let ex = active.contains(&t);
+                        self.num_gst_post(t, inst, pc, ex, g);
+                    }
                     let th = self.threads[t].make_mut();
                     match flow {
                         Flow::Next if th.st == St::Run => th.pc = pc + 1,
@@ -7554,17 +7573,20 @@ impl Machine {
                     let (x, y) = (self.rd(t, a)? as u32, self.rd(t, b)? as u32);
                     let r = fp::f32_minmax_xorsign(x, y, lo, *nan, *ftz);
                     self.wr(t, *d, r as u64, 1);
-                    self.num_fmnmx(t, *d, &[a, b], None, pc);
+                    self.num_fmnmx(t, *d, &[a, b], &[x, y], None, *nan, pc);
                 } else {
                     let x = fmod(self.rd(t, a)? as u32, neg[0], abs[0]);
                     let y = fmod(self.rd(t, b)? as u32, neg[1], abs[1]);
                     let mut r = fp::f32_minmax(x, y, lo, *nan, *ftz);
+                    // Operand values before the write (the destination may alias one).
+                    let mut bits = vec![x, y];
                     if let Some(c) = c {
                         let z = fmod(self.rd(t, c)? as u32, neg[2], abs[2]);
                         r = fp::f32_minmax(r, z, lo, *nan, *ftz);
+                        bits.push(z);
                     }
                     self.wr(t, *d, r as u64, 1);
-                    let plain = !*ftz && !*nan && !neg.iter().chain(abs).any(|&m| m);
+                    let plain = !*ftz && !neg.iter().chain(abs).any(|&m| m);
                     // The min / max choice must not depend on input data.
                     let lo_const = min.reg.is_none_or(|p| {
                         !self.num.as_ref().is_some_and(|n| n.taint.reg_tainted(t, p))
@@ -7573,7 +7595,15 @@ impl Machine {
                         Some(c) => vec![a, b, c],
                         None => vec![a, b],
                     };
-                    self.num_fmnmx(t, *d, &srcs, (plain && lo_const).then_some(lo), pc);
+                    self.num_fmnmx(
+                        t,
+                        *d,
+                        &srcs,
+                        &bits,
+                        (plain && lo_const).then_some(lo),
+                        *nan,
+                        pc,
+                    );
                 }
             }
             Op::Fsetp {
