@@ -155,7 +155,11 @@ def compare(
 
 
 def check(x: Any, *, session: Any = None, wait: bool = True, **args: Any):
-    """Execution verdict of a captured kernel, `ptxv.Case` or case directory."""
+    """Execution verdict of a captured kernel, `ptxv.Case` or case directory.
+
+    nonfinite=True scans every terminal state's float outputs for NaN / Inf (`--nonfinite`;
+    "strict": `--nonfinite-strict`); the result's `nonfinite` holds the scan.
+    """
     return (session or _session()).check(x, wait=wait, **args)
 
 

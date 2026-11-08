@@ -557,6 +557,12 @@ pub fn cmd(a: &Args) -> Result<()> {
         }
         // Agent AG: nothing to estimate when the DAG tracks no output.
         for k in &ks {
+            if k.prog.outputs.is_empty() {
+                bail!(
+                    "{}: the output buffer holds no whole element of its format (nothing to estimate)",
+                    k.run.label()
+                );
+            }
             if !k.prog.outputs.is_empty() && k.prog.outputs.iter().all(|o| o.is_none()) {
                 bail!(
                     "{}: the numerics DAG tracks none of its {} outputs{}",
@@ -763,6 +769,26 @@ pub fn cmd(a: &Args) -> Result<()> {
         ..Default::default()
     };
     rep.out_of_domain = ood(&obs);
+    if obs.inputs > 0 {
+        // No samples seen: no estimate (the interval at n = 0 is the whole [0, 1]).
+        let cp = |k: u64, n: u64| {
+            if n == 0 {
+                return [0.0, 0.0, 1.0];
+            }
+            let (lo, hi) = ptxv_sim::errdist::special::clopper_pearson(k, n, 0.05);
+            [k as f64 / n as f64, lo, hi]
+        };
+        rep.p_nonfinite = Some(ptxv_sim::errdist::report::PNonfinite {
+            element: cp(obs.out_nonfinite, obs.seen),
+            input: cp(obs.out_nonfinite_inputs, obs.inputs),
+            outputs: obs.seen,
+            inputs: obs.inputs,
+            method: format!(
+                "Tier 3: the kernel's tracked outputs (the candidate's in a pair) that are NaN / Inf over {} sampled inputs",
+                obs.inputs
+            ),
+        });
+    }
     if !model.other_outputs.is_empty() {
         rep.notes.push(format!(
             "output buffers not analyzed: {} (errdist reports the first output buffer, {})",
@@ -1970,6 +1996,19 @@ pub(crate) fn report_text(rep: &ptxv_sim::errdist::report::Report) -> String {
         rep.out_of_domain.mass,
         rep.out_of_domain.by_cause
     );
+    if let Some(p) = &rep.p_nonfinite {
+        outln!(
+            o,
+            "P(output NaN / Inf) = {:.4e} [{:.4e}, {:.4e}] per output, {:.4e} [{:.4e}, {:.4e}] per input (Tier 3, {} inputs)",
+            p.element[0],
+            p.element[1],
+            p.element[2],
+            p.input[0],
+            p.input[1],
+            p.input[2],
+            p.inputs
+        );
+    }
     for v in &rep.validation {
         outln!(
             o,

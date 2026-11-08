@@ -560,7 +560,7 @@ impl Buffer {
             "bf16" | "f16" | "u16" | "i16" => 2,
             "f32" | "u32" | "i32" => 4,
             "f64" | "u64" | "i64" => 8,
-            "u8" | "i8" | "e4m3" => 1,
+            "u8" | "i8" | "e4m3" | "e5m2" => 1,
             d => panic!("unknown dtype {d}"),
         }
     }
@@ -628,7 +628,7 @@ impl Buffer {
                 "i16" => out.extend_from_slice(&(v as i16).to_le_bytes()),
                 "i8" => out.push(v as i8 as u8),
                 // Narrow float codes: only `zeros` (and raw `bits` / `file`) are meaningful.
-                "e4m3" => out.push(0),
+                "e4m3" | "e5m2" => out.push(0),
                 d => panic!("init for dtype {d} not implemented"),
             }
         }

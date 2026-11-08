@@ -32,6 +32,7 @@ pub mod mufu_sample;
 mod mufu_tables;
 pub mod multimem;
 pub mod nic;
+pub mod nonfinite;
 pub mod norm;
 pub mod num;
 pub mod race_dead;

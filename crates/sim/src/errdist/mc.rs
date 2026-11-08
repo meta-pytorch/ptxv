@@ -167,6 +167,10 @@ pub struct Obs {
     /// the error statistics; and the inputs with any.
     pub nonfinite: u64,
     pub nonfinite_inputs: u64,
+    /// Tracked outputs of the kernel itself (R, or C in a pair) that are NaN / Inf, and the
+    /// inputs with any: P(output non-finite) (`ptxv check --nonfinite` scans the same).
+    pub out_nonfinite: u64,
+    pub out_nonfinite_inputs: u64,
     /// Tracked outputs seen (finite or not).
     pub seen: u64,
     /// Per output: u-scale moments (when requested).
@@ -214,6 +218,8 @@ impl Obs {
         self.skipped += o.skipped;
         self.nonfinite += o.nonfinite;
         self.nonfinite_inputs += o.nonfinite_inputs;
+        self.out_nonfinite += o.out_nonfinite;
+        self.out_nonfinite_inputs += o.out_nonfinite_inputs;
         self.seen += o.seen;
         if self.per_output.is_empty() {
             self.per_output = o.per_output;
@@ -254,12 +260,18 @@ pub fn observe(
     let (mut ms, mut ma, mut cnt, mut mx) = (0.0, 0.0, 0u64, 0f64);
     let (d0, c0) = (obs.differ, obs.compared);
     let nf0 = obs.nonfinite;
+    let onf0 = obs.out_nonfinite;
     let mut ki = 0;
     // Agent AG: non-chain outputs take their exact value from the real-arithmetic evaluation.
     let mut real: Option<Vec<(super::nonlin::real::Dd, f64)>> = None;
     obs.skipped += (n - st.tracked.len()) as u64;
     for (k, &o32) in st.tracked.iter().enumerate() {
         let o = o32 as usize;
+        let kernel_nf = match ev.c_out {
+            Some(c) => !c[k].is_finite(),
+            None => !ev.r_out[k].is_finite(),
+        };
+        obs.out_nonfinite += kernel_nf as u64;
         let ex = match (&st.chain[k], st.r.outputs[o]) {
             (Some(ch), _) => st.r.exact(ch, ev.w, acc),
             (None, Some(op)) => {
@@ -381,6 +393,9 @@ pub fn observe(
     }
     if obs.nonfinite > nf0 {
         obs.nonfinite_inputs += 1;
+    }
+    if obs.out_nonfinite > onf0 {
+        obs.out_nonfinite_inputs += 1;
     }
     if obs.compared > c0 {
         obs.input_differ

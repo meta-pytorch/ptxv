@@ -301,6 +301,24 @@ verdict's classes do not change. `--no-gb300` turns the second level off. A refu
 assumption (E-POLL-ACQ) can back a verdict only with an explicit opt-in (case
 `assume_refuted`, `--assume-refuted`), which the verdict names.
 
+**NaN / Inf outputs (opt-in, `crates/sim/src/nonfinite.rs`).** `ptxv check --nonfinite`
+(Python `check(..., nonfinite=True)`) scans the float output buffers of every distinct
+terminal state by dtype (f64, f32, f16, bf16, e4m3 (NaN only), e5m2; fp4 / fp6 have no
+NaN / Inf) and adds a `nonfinite-output` finding per buffer with NaN / Inf when every float
+input element is finite. Inputs that already hold NaN / Inf make it a note
+(`--nonfinite-strict`: a finding). Provenance: during the check, every arithmetic
+instruction (FADD / FFMA / FFMA2 / MUFU / div, the f16 / bf16 / fp8 / fp4 conversions,
+HFMA2, DFMA) whose result is non-finite while its operands were finite (overflow, 0 / 0,
+log / rsqrt of 0 or a negative), or NaN while no operand was NaN (inf - inf, 0 * inf), is a
+*birth*, reported with its operands. Moves, selects, min / max and loads are never births and
+an infinite constant is an operand like any other, so a mask's -inf is not one; the NaN it
+later produces is. A finding names the births of its kind (Inf or NaN). Birth counts are
+executions seen during the check: an explored check repeats them per schedule. The
+simulator's NaN / Inf behavior is GB300's on the probed instructions (fixtures
+c_nonfinite_*: satfinite e4m3 / e5m2 conversions saturate, MUFU.EX2 overflows to +inf,
+`max.f32(NaN, 0)` = 0, f16 conversion overflow; outputs bitwise equal to the captures).
+errdist reports P(output NaN / Inf) from its Tier 3 count (`p_nonfinite`, docs/errdist.md).
+
 User invariants: a small predicate language over skeleton state, e.g. "stage `s` is written
 by TMA at most once per phase", "every tile is claimed exactly once across CLC + atomics", or
 "a rank never reuses buffer `b` before all peers signal done".

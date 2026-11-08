@@ -62,6 +62,20 @@ fn slot_umask_of(vmask: Option<u64>, stale: bool, s: u16) -> u32 {
     }
 }
 
+/// --nonfinite: one operand or result lane (format, bits).
+type NfLane = crate::nonfinite::Lane;
+
+/// --nonfinite: how an instruction's result lanes sit in its destination registers.
+#[derive(Clone, Copy)]
+enum NfOut {
+    /// Every destination register: this many lanes of the format, from bit 0.
+    Lanes(crate::nonfinite::Fmt, u32),
+    /// The first destination register only: this many lanes from bit 0.
+    Low(crate::nonfinite::Fmt, u32),
+    /// A 64-bit value (register pair, or one 64-bit PTX register).
+    F64,
+}
+
 /// A simulator error is either a fault of the kernel (bad address, ...) or a limit of the
 /// model ("... not modeled ..."), which makes the verdict inconclusive, not the kernel wrong.
 fn fault_kind(e: &str) -> &'static str {
@@ -5099,7 +5113,18 @@ impl Machine {
         self.stale = None;
         self.vmask = None;
         self.wundef = 0;
+        // --nonfinite (nonfinite.rs): operand lanes before the write (the destination may
+        // alias an operand).
+        let nf = if crate::nonfinite::on() {
+            self.nf_operands(t, &inst.op)
+        } else {
+            None
+        };
         let r = self.exec_thread_inner(t, inst, pc);
+        if let (Some((ops, out)), true) = (nf, r.is_ok()) {
+            let res = self.nf_result(t, &inst.op, out);
+            crate::nonfinite::record(pc, t, &ops, &res);
+        }
         self.stale = None;
         self.vmask = None;
         // C-ORDER dead-read probe (wellsync.rs `dead_reads`): the load's registers hold no
@@ -5116,6 +5141,123 @@ impl Machine {
         }
         self.wundef = 0;
         r
+    }
+
+    /// --nonfinite (nonfinite.rs): the float operand lanes of an arithmetic instruction and
+    /// the layout of its result; None for every other instruction (moves, selects, min / max,
+    /// loads, integer ops: never a birth).
+    fn nf_operands(&self, t: usize, op: &Op) -> Option<(Vec<NfLane>, NfOut)> {
+        use crate::nonfinite::Fmt;
+        let f32s = |vs: &[&Val]| -> Vec<NfLane> {
+            vs.iter()
+                .map(|v| (Fmt::F32, self.rd(t, v).unwrap_or(0) & 0xffff_ffff))
+                .collect()
+        };
+        let halves = |vs: &[&Val], f: Fmt| -> Vec<NfLane> {
+            vs.iter()
+                .flat_map(|v| {
+                    let x = self.rd(t, v).unwrap_or(0);
+                    [(f, x & 0xffff), (f, (x >> 16) & 0xffff)]
+                })
+                .collect()
+        };
+        Some(match op {
+            Op::Fadd { a, b, .. } => (f32s(&[a, b]), NfOut::Lanes(Fmt::F32, 1)),
+            Op::Ffma { a, b, c, .. } => {
+                let mut v = vec![a, b];
+                v.extend(c.iter());
+                (f32s(&v), NfOut::Lanes(Fmt::F32, 1))
+            }
+            Op::DivFull { a, b, .. } => (f32s(&[a, b]), NfOut::Lanes(Fmt::F32, 1)),
+            Op::Ffma2 { a, b, c, .. } => {
+                let mut v = Vec::new();
+                for (x, l) in [a, b, c] {
+                    let bits = self.rd(t, x).unwrap_or(0);
+                    v.push((Fmt::F32, bits & 0xffff_ffff));
+                    if *l != ptxv_ir::F2Lanes::Bcast {
+                        v.push((Fmt::F32, bits >> 32));
+                    }
+                }
+                (v, NfOut::Lanes(Fmt::F32, 1))
+            }
+            Op::Mufu { a, fmt, .. } => match fmt {
+                ptxv_ir::MufuFmt::F32 => (f32s(&[a]), NfOut::Lanes(Fmt::F32, 1)),
+                ptxv_ir::MufuFmt::F16x2 => (halves(&[a], Fmt::F16), NfOut::Lanes(Fmt::F16, 2)),
+                ptxv_ir::MufuFmt::Bf16x2 => (halves(&[a], Fmt::Bf16), NfOut::Lanes(Fmt::Bf16, 2)),
+                _ => return None,
+            },
+            Op::F2fpBf16 { a, b, .. } => (f32s(&[a, b]), NfOut::Lanes(Fmt::Bf16, 2)),
+            Op::F2fpF16 { a, b, .. } => (f32s(&[a, b]), NfOut::Lanes(Fmt::F16, 2)),
+            Op::F2fF16 { a, bf16, .. } => (
+                f32s(&[a]),
+                NfOut::Low(if *bf16 { Fmt::Bf16 } else { Fmt::F16 }, 1),
+            ),
+            Op::Hfma2 { a, b, c, .. } => (halves(&[a, b, c], Fmt::F16), NfOut::Lanes(Fmt::F16, 2)),
+            Op::Hfma2Bf16 { a, b, c, .. } => {
+                (halves(&[a, b, c], Fmt::Bf16), NfOut::Lanes(Fmt::Bf16, 2))
+            }
+            Op::CvtPack { a, b, half, to, .. } => {
+                let ops = match half {
+                    Some(h) => halves(&[a], Fmt::of_lp(*h)),
+                    None => f32s(&[a, b]),
+                };
+                (ops, NfOut::Low(Fmt::of_lp(*to), 2))
+            }
+            Op::Dfma { a, b, c, .. } => {
+                let mut v = vec![a, b];
+                v.extend(c.iter());
+                (
+                    v.iter()
+                        .map(|x| (Fmt::F64, self.rd(t, x).unwrap_or(0)))
+                        .collect(),
+                    NfOut::F64,
+                )
+            }
+            _ => return None,
+        })
+    }
+
+    /// --nonfinite: the result lanes `nf_operands` described, after the write.
+    fn nf_result(&self, t: usize, op: &Op, out: NfOut) -> Vec<NfLane> {
+        let regs: Vec<Reg> = op
+            .dst_regs()
+            .into_iter()
+            .filter(|r| matches!(r.file, File::R | File::V))
+            .collect();
+        let rd = |r: Reg, n: u8| self.rd(t, &Val::Reg(r, n)).unwrap_or(0);
+        match out {
+            NfOut::Lanes(f, k) => {
+                let w = f.bits();
+                regs.iter()
+                    .flat_map(|&r| {
+                        let x = rd(r, 1) & 0xffff_ffff;
+                        (0..k).map(move |i| (f, (x >> (w * i)) & ((1u64 << w) - 1)))
+                    })
+                    .collect()
+            }
+            NfOut::Low(f, k) => {
+                let w = f.bits();
+                regs.first()
+                    .map(|&r| {
+                        let x = rd(r, 1);
+                        (0..k)
+                            .map(|i| (f, (x >> (w * i)) & ((1u64 << w) - 1)))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            }
+            NfOut::F64 => regs
+                .first()
+                .map(|&r| {
+                    let x = if r.file == File::V {
+                        rd(r, 1)
+                    } else {
+                        rd(r, 2)
+                    };
+                    vec![(crate::nonfinite::Fmt::F64, x)]
+                })
+                .unwrap_or_default(),
+        }
     }
 
     /// The value of never-stored local word `w` of thread `t`: 0, or the multi-fill rerun's

@@ -993,6 +993,8 @@ fn captured_outputs_match_the_gpu() {
                 .collect(),
         };
         for (front, k) in ks {
+            // The front's own expectation (a case's `expect_sass` differs from its PTX one).
+            let expect = case.variant("good").unwrap().expect_for(front);
             let launch = build_launch(&case, &k).unwrap();
             let m = Machine::new(Arc::new(k), Arc::new(launch));
             // Launches too large to explore whole (cuBLAS, 8 CTAs in clusters of 4) are decided

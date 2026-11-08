@@ -561,7 +561,7 @@ impl Prog {
     /// accumulator chain.
     pub fn chain(&self, out: usize) -> Option<(Vec<u32>, Vec<u32>)> {
         let mut top = Vec::new();
-        let mut n = self.outputs[out]?;
+        let mut n = (*self.outputs.get(out)?)?;
         loop {
             match &self.ops[n as usize] {
                 Op::Round { arg, .. } => {

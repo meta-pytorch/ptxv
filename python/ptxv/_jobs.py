@@ -133,6 +133,13 @@ def argv(spec: JobSpec, work: Path) -> tuple[list[str], dict[str, Path]]:  # noq
         # The GB300 hardware-model classification of races / stale reads (default on).
         if a.get("gb300", True) is False:
             cmd.append("--no-gb300")
+        # NaN / Inf scan of the outputs (True, or "strict": a finding even with non-finite
+        # inputs).
+        nf = a.get("nonfinite")
+        if nf == "strict":
+            cmd.append("--nonfinite-strict")
+        elif nf:
+            cmd.append("--nonfinite")
         return cmd, files
     if spec.kind in ("compare", "equiv"):
         files["bound"] = work / "bound.json"

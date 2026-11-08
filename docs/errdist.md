@@ -315,6 +315,7 @@ Schema: `crates/sim/src/errdist/report.rs`. Top level:
 | `best` | index into `estimates` of the headline estimate (§3.2): Tier 0 when it applies, else a Tier 1 (opt-in), else a Tier 2 whose `applicable` is true, else Tier 3 |
 | `crosscheck` | per analytic estimate against this run's Tier 3: `{estimate, tier, p, p3, p3_lo, p3_hi, tol, inputs, agrees}` (§3.2) |
 | `out_of_domain` | `{mass, by_cause, method}`: probability that an input leaves the modeled domain (overflow, NaN / Inf, zero or NaN scales, subnormal accumulators), never dropped silently |
+| `p_nonfinite` | `{element, input, outputs, inputs, method}`: P(output NaN / Inf) from Tier 3, `[p, lo, hi]` (95% Clopper-Pearson) per tracked output element and per input sample; the kernel's own outputs (the candidate's in a pair), as `ptxv check --nonfinite` scans them |
 | `validation` | predicted vs observed on sampled inputs (simulator, GB300) |
 | `residue` | per rounding site: largest Fourier coefficient of the residue at the ulp frequency, TV bound of the uniform model, whether it was used |
 | `per_output` | with `--per-output` |

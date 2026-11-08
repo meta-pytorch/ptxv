@@ -190,6 +190,8 @@ DT = {
     torch.int8: "i8",
     torch.uint8: "u8",
     torch.bool: "u8",
+    torch.float8_e4m3fn: "e4m3",
+    torch.float8_e5m2: "e5m2",
 }
 ESIZE = {
     "bf16": 2,
@@ -204,6 +206,8 @@ ESIZE = {
     "i64": 8,
     "u8": 1,
     "i8": 1,
+    "e4m3": 1,
+    "e5m2": 1,
 }
 
 # ---------------------------------------------------------------- inputs

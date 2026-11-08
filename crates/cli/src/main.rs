@@ -35,6 +35,7 @@ mod errdist;
 mod errdist_html;
 mod jsonout;
 mod mufu_sweep;
+mod nonfinite;
 mod sweep;
 mod trace_dump;
 mod vcache;
@@ -189,6 +190,14 @@ enum Cmd {
         /// `none` (also PTXV_HW_PROFILE).
         #[arg(long)]
         hw_profile: Option<String>,
+        /// Scan every terminal state's float outputs for NaN / Inf: a `nonfinite-output`
+        /// finding when every float input element is finite (else a note), with the
+        /// instructions that produced the first non-finite values from operands without one.
+        #[arg(long)]
+        nonfinite: bool,
+        /// --nonfinite, and a finding even when an input already holds NaN / Inf.
+        #[arg(long)]
+        nonfinite_strict: bool,
     },
     /// Numerics of one deterministic run: exact error per output, bounds, Thm 1 check.
     Num {
@@ -784,6 +793,9 @@ struct CheckRow {
     /// undefined.
     #[serde(skip_serializing_if = "Option::is_none")]
     two_level: Option<TwoLevel>,
+    /// `--nonfinite`: NaN / Inf scan of the outputs and their producing instructions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nonfinite: Option<nonfinite::Report>,
 }
 
 fn print_verdict(
@@ -993,6 +1005,7 @@ fn cmd_check(
     certify: bool,
     groups: &Option<String>,
     gb300: bool,
+    nonfinite: Option<bool>,
 ) -> Result<Vec<CheckRow>> {
     let dir = out_dir(case, out)?;
     let mut rows = Vec::new();
@@ -1225,7 +1238,15 @@ fn cmd_check(
             let vkey = plain
                 .then(|| vcache::key(&case.dir, &v, f, "certify"))
                 .flatten();
+            if nonfinite.is_some() {
+                ptxv_sim::nonfinite::enable();
+            }
             let mut verdict = check(&make1, "");
+            let births = if nonfinite.is_some() {
+                ptxv_sim::nonfinite::take()
+            } else {
+                vec![]
+            };
             if let Some(key) = &vkey {
                 vcache::store(key, max_states, &verdict);
             }
@@ -1286,6 +1307,8 @@ fn cmd_check(
                     gbc = Some(c);
                 }
             }
+            let nf =
+                nonfinite.map(|strict| nonfinite::analyze(case, &m1, &mut verdict, births, strict));
             print_verdict(&v, f, &verdict, &expect, &refuted, gbc.as_ref());
             // The two-level verdict: anything undefined under the strict model -> the SASS
             // front under the hardware profile. Both levels are reported.
@@ -1375,6 +1398,25 @@ fn cmd_check(
                 }
                 two_level = Some(t);
             }
+            if let Some(r) = &nf {
+                println!(
+                    "    nonfinite: {} terminal output(s), {} with NaN / Inf; inputs with NaN / Inf: {}; {} producing instruction(s)",
+                    r.terminal_outputs,
+                    r.terminal_outputs_nonfinite,
+                    r.inputs.len(),
+                    r.births.len()
+                );
+                for b in r.births.iter().take(8) {
+                    println!(
+                        "      {}: {} ({} -> {}), {} time(s)",
+                        b.at,
+                        b.birth.kind,
+                        b.birth.operands.join(", "),
+                        b.birth.result,
+                        b.birth.count
+                    );
+                }
+            }
             // Debugging / figures: PTXV_TRACE_DUMP=<dir> writes each finding's replayed witness.
             if let Some(d) = std::env::var_os("PTXV_TRACE_DUMP") {
                 let p = Path::new(&d).join(format!("{v}.{f}.trace.json"));
@@ -1412,6 +1454,7 @@ fn cmd_check(
                 verdict,
                 gb300: gbc,
                 two_level,
+                nonfinite: nf,
             });
         }
     }
@@ -1892,6 +1935,7 @@ fn cmd_suite(case: &Case, runs: usize, out: &Option<PathBuf>) -> Result<()> {
         false,
         &None,
         gb300_enabled(false),
+        None,
     )?;
     println!("\n-- numerics (good variant) --");
     let (nums, expected) = cmd_num(case, "good", out)?;
@@ -2057,6 +2101,8 @@ fn run() -> Result<()> {
             assume_refuted,
             no_gb300,
             hw_profile,
+            nonfinite,
+            nonfinite_strict,
         } => {
             let j = json.then(|| jsonout::begin("check"));
             if let Some(p) = hw_profile {
@@ -2109,6 +2155,7 @@ fn run() -> Result<()> {
                 certify,
                 &groups,
                 gb300_enabled(no_gb300),
+                (nonfinite || nonfinite_strict).then_some(nonfinite_strict),
             )?;
             let pass = rows.iter().all(|r| r.pass);
             if let Some(j) = j {
