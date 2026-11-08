@@ -1662,6 +1662,7 @@ fn reg_only(op: &ptxv_ir::Op) -> bool {
             | Op::Sel { .. }
             | Op::Prmt { .. }
             | Op::Bfe { .. }
+            | Op::Bfi { .. }
             | Op::Pack64 { .. }
             | Op::Unpack64 { .. }
             | Op::Nop
@@ -7922,6 +7923,7 @@ impl LaWarp {
                         | Op::Sel { .. }
                         | Op::Prmt { .. }
                         | Op::Bfe { .. }
+                        | Op::Bfi { .. }
                         | Op::Pack64 { .. }
                         | Op::Unpack64 { .. }
                         | Op::LdConst { .. }

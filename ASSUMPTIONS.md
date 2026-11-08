@@ -4090,6 +4090,12 @@ forms seen. Any other form is a hard error.
   operand and masks with 0xffffe000 (ties away from zero); Inf / NaN are only masked, so a NaN
   whose payload is all below bit 13 becomes Inf. probes/cvt_tf32 (ties, near overflow, NaN
   payloads, Inf, subnormals): GB300 50/50, both front-ends bitwise.
+- `bfi.b32 d, a, b, pos, len` (2026-11-07, PX: 17 kernel-DB records): b with bits pos ..
+  pos + len - 1 replaced by the low bits of a, pos and len taken mod 256, bits above 31
+  dropped, b itself for len 0 or pos > 31 (ptxas: PRMT of the low bytes, BMSK, SHF.L, LOP3
+  0xe2). `clz.b32` (6 records): 31 - bfind.u32, 32 for 0 (FLO.U32 + IADD3). probes/bfi_clz
+  (pos / len around 0, 31, 32, 255, 256; immediates; zero and all-ones a): GB300 50/50, both
+  front-ends bitwise. `.b64` forms are refused.
 - `cvt.ftz.sat.f32.f32` / `cvt.ftz.f32.f32` (2026-11-07, PX: 49 kernel-DB records): ptxas
   emits `FADD.FTZ.SAT d, RZ, a` (clamp to [0, 1], NaN and subnormals +0) and
   `FADD.FTZ d, a, -RZ` (subnormals to a zero of their sign, -0 kept, NaN canonical).
@@ -4152,7 +4158,40 @@ forms seen. Any other form is a hard error.
   N = 16: D at column 64 with A in shared memory, D at column 128 with A in TMEM at
   [taddr + 184 + 8]): GB300 50/50 scrubbed, both front-ends bitwise. GB300 also ran N = 8 with
   A in TMEM (the PTX ISA requires N % 16 == 0 there) and gave the A-in-shared-memory result;
-  the model still refuses that shape.
+  the model still refuses that shape. An immediate enable-input-d (`..., idesc, 0` / `1`,
+  CuTeDSL; PX: 22 kernel-DB records) is a constant predicate: 0 overwrites D, 1 accumulates
+  (ptxas: UTCHMMA ... !UPT / UPT). probes/tc_mma_imm (`0` then `1` on the same D, and `0` with
+  A in TMEM): GB300 20/20 scrubbed, both front-ends bitwise.
+- `min` / `max.f64`, `neg` / `abs.f64` (2026-11-07, PX: 2 + 2 kernel-DB records), as ptxas
+  emits them: `DSETP.MIN/MAX.AND p, q, a, b` (p: a is the min / max, -0 below +0, a NaN
+  loses; q: both NaN), a 64-bit select, and when both are NaN b's NaN quieted (high word |
+  0x80000, payload kept: not canonical as for f32); `DADD d, -RZ, -a` / `DADD d, -RZ, |a|`.
+  The PTX front uses two hidden predicates for p and q. probes/f64_misc (all pairs of 15
+  specials incl. signaling / negative NaNs with payloads, random): GB300 50/50, both
+  front-ends bitwise. `rsqrt.approx.f64` (ptxas: MUFU.RSQ64H, two DFMA refinements and a
+  slow path) is refused.
+- `div.rn.ftz.f32` / `sqrt.rn.ftz.f32` (2026-11-07, PX: 6 + 5 kernel-DB records): the IEEE
+  quotient / root of the operands with subnormals flushed to a zero of their sign, the result
+  flushed too, NaN canonical. probes/ftz_div_sqrt (subnormal operands, quotients around
+  2^-126, specials, random; 85 quotients differ from the unflushed IEEE ones): GB300 50/50,
+  both front-ends bitwise (SASS: certified; the slow-path divergence exceeds the explicit
+  exploration budget).
+- Cluster special registers (2026-11-07, PX: 11 kernel-DB records): `%cluster_ctaid.d` =
+  ctaid.d mod cluster.d, `%cluster_nctaid.d` = cluster.d, `%clusterid.d` = ctaid.d / cluster.d,
+  `%nclusterid.d` = grid.d / cluster.d (ptxas reads the shapes from the driver table at
+  `c[0x0][0x2a0 + ... - 0xa0 * SR_CgaSize]`, S-CGA-SHAPE). probes/cluster_sreg (grid 4 x 4 x 2,
+  clusters 2 x 2 x 1, all 14 cluster registers): GB300 20/20, both front-ends bitwise.
+- Byte moves (2026-11-07, PX: 27 + 3 kernel-DB records): `mov.b32 r, {b0, b1, b2, b3}` packs
+  the low byte of each (b0 lowest), `mov.b16 h, {lo, hi}` the low bytes of two (upper half
+  clear), `mov.b16 {lo, hi}, h` unpacks two bytes zero-extended (as the existing
+  `mov.b32 {b0, b1, b2, b3}, r`). probes/mov_pack (CUTLASS-style `.b8` scoped registers: byte
+  reverse, byte swap, mixed words): GB300 50/50, both front-ends bitwise. `mov.b128` is
+  refused (no 128-bit registers).
+- Inline-asm scopes (2026-11-07, PX): a scoped range declaration (`.reg .u32 %tmp32_<1>;`,
+  `.reg .pred %p<1>;`, Triton's spin loops) renames its expanded names (`%tmp32_0`) as well,
+  so their uses resolve (they were "unknown register": 33 kernel-DB records) and a scoped
+  `%p0` no longer refers to the body's `%p0` (an alias that clobbered it); a word right after
+  `.` is never renamed (`mad.lo.u32` next to a scoped register `lo` became `mad.lo__sN.u32`).
 - SASS `FFMA2` / `FMUL2` / `FADD2` with a negated uniform register (`-UR6.F32`,
   `-UR6.F32x2.HI_LO`: ptxas folds `neg.f32` of kernel parameters) and `|R|` operands (abs.f32
   of both halves folded; applied before a negation) (2026-11-07, SCALE pilot).
@@ -5111,7 +5150,9 @@ zero-extended in its register (as `F2F.BF16.F32`; not observable from PTX).
   overflow and subnormal thresholds, NaN payloads, random values; every 8th 16-bit pattern
   plus 64 edges), 34 conversion forms including the `.H1` ones, both front-ends bitwise
   (`probe_fcvt_matches_hardware`), 2026-11-06. The zero-extension of 16-bit results is
-  argued.
+  argued. `cvt.bf16.f16` / `cvt.f16.bf16` without a rounding modifier (PX: 5 kernel-DB
+  records) are ptxas's F2F.BF16.F16 / F2F.F16.BF16, nearest: probes/cvt_bf16_f16 on every
+  16-bit pattern, GB300 20/20, both front-ends bitwise (2026-11-07).
 - If wrong: *miss* or *false alarm* in numerics (Triton fake-quant rounding, f64
   layer-norm statistics, mslk fp8 quantizers).
 

@@ -1,0 +1,53 @@
+// probes/mov_pack: byte packing / unpacking moves in an inline-asm scope with .b8 registers
+// (CUTLASS / CuTeDSL): mov.b32 {b0, b1, b2, b3}, r and mov.b32 r, {b3, b2, b1, b0} (byte
+// reverse), mov.b16 {lo, hi}, h and mov.b16 h, {hi, lo} (byte swap), and a 4-byte pack of
+// bytes from different words. 32 threads; x, y = in[2 t .. 2 t + 1] (gen.py); out[4 t ..
+// 4 t + 3] = reversed x, swapped low half of x (zero-extended), {x.b0, y.b1, x.b2, y.b3},
+// the 16-bit pack of y's bytes 2 and 1.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry mov_pack(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 32, 1, 1
+{
+    .reg .b16   %rs<8>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 8;
+    add.s64         %rd4, %rd1, %rd3;
+    mul.wide.u32    %rd5, %r1, 16;
+    add.s64         %rd6, %rd2, %rd5;
+    ld.global.v2.b32 {%r2, %r3}, [%rd4];
+    {
+        .reg .b8 byte0, byte1, byte2, byte3;
+        mov.b32 {byte0, byte1, byte2, byte3}, %r2;
+        mov.b32 %r4, {byte3, byte2, byte1, byte0};
+    }
+    cvt.u16.u32     %rs1, %r2;
+    {
+        .reg .b8 lo, hi;
+        mov.b16 {lo, hi}, %rs1;
+        mov.b16 %rs2, {hi, lo};
+    }
+    cvt.u32.u16     %r5, %rs2;
+    {
+        .reg .b8 a0, a1, a2, a3, c0, c1, c2, c3;
+        mov.b32 {a0, a1, a2, a3}, %r2;
+        mov.b32 {c0, c1, c2, c3}, %r3;
+        mov.b32 %r6, {a0, c1, a2, c3};
+        mov.b16 %rs3, {c2, c1};
+    }
+    cvt.u32.u16     %r7, %rs3;
+    st.global.v4.b32 [%rd6], {%r4, %r5, %r6, %r7};
+    ret;
+}

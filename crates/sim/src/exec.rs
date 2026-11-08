@@ -262,6 +262,10 @@ impl Machine {
             SReg::WarpId => (th.tid[0] + th.tid[1] * g.block[0]) / 32,
             SReg::ClusterCtaRank => self.launch.cluster_of(cta).1,
             SReg::ClusterNCtaRank => g.cluster_size(),
+            SReg::ClusterCtaId(d) => self.launch.ctaid(cta)[d as usize] % g.cluster[d as usize],
+            SReg::ClusterNCtaId(d) => g.cluster[d as usize],
+            SReg::ClusterId(d) => self.launch.ctaid(cta)[d as usize] / g.cluster[d as usize],
+            SReg::NClusterId(d) => g.grid[d as usize] / g.cluster[d as usize],
             // ASSUME(S-CGA-SHAPE)
             SReg::CgaShape => g.cga_shape,
             SReg::LaneMaskLt => (1u32 << th.lane) - 1,
@@ -7333,6 +7337,26 @@ impl Machine {
                 self.wr(t, *d, mask(*bits, r), (*bits / 32).max(1));
                 self.num_clobber(t, *d, &[a, b], pc);
             }
+            Op::Bfi { d, a, b, pos, len } => {
+                // PTX bfi.b32 (probes/bfi_clz): pos and len mod 256, bits above 31 dropped.
+                let x = self.rd(t, a)? as u32;
+                let y = self.rd(t, b)? as u32;
+                let p = (self.rd(t, pos)? & 0xff) as u32;
+                let l = (self.rd(t, len)? & 0xff) as u32;
+                let r = if l == 0 || p > 31 {
+                    y
+                } else {
+                    let w = l.min(32 - p);
+                    let m = if w >= 32 {
+                        u32::MAX
+                    } else {
+                        ((1u32 << w) - 1) << p
+                    };
+                    (y & !m) | ((x << p) & m)
+                };
+                self.wr(t, *d, r as u64, 1);
+                self.num_clobber(t, *d, &[a, b, pos, len], pc);
+            }
             Op::Bfe {
                 d,
                 a,
@@ -13297,6 +13321,7 @@ fn propagates_undef(op: &Op) -> bool {
             | Op::Lop3 { .. }
             | Op::Prmt { .. }
             | Op::Bfe { .. }
+            | Op::Bfi { .. }
             | Op::I2F { .. }
             | Op::F2I { .. }
             | Op::Fadd { .. }

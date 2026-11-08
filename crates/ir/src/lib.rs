@@ -121,6 +121,14 @@ pub enum SReg {
     ClusterCtaRank,
     /// Number of CTAs in the cluster (`%cluster_nctarank`).
     ClusterNCtaRank,
+    /// `%cluster_ctaid.{x,y,z}`: this CTA's position in its cluster (ctaid mod cluster dim).
+    ClusterCtaId(u8),
+    /// `%cluster_nctaid.{x,y,z}`: the cluster shape.
+    ClusterNCtaId(u8),
+    /// `%clusterid.{x,y,z}`: the cluster's position in the grid (ctaid / cluster dim).
+    ClusterId(u8),
+    /// `%nclusterid.{x,y,z}`: clusters per grid dimension.
+    NClusterId(u8),
     /// SASS `SR_CgaSize`: which of the launch's cluster shapes this CTA's cluster has, 0 for
     /// the regular shape and 1 for the preferred one (a launch with a preferred cluster
     /// dimension mixes both). ptxas reads the cluster special registers from the driver's
@@ -1366,6 +1374,15 @@ pub enum Op {
         len: Val,
         signed: bool,
     },
+    /// `bfi.b32 d, a, b, pos, len`: b with bits pos .. pos + len - 1 replaced by the low bits of
+    /// a; pos and len taken mod 256, bits above 31 dropped (len 0 or pos > 31: b).
+    Bfi {
+        d: Reg,
+        a: Val,
+        b: Val,
+        pos: Val,
+        len: Val,
+    },
     /// `tcgen05.st.sync.aligned.32x32b.xN [taddr + off], {v..}`: TMEM lane (taddr lane +
     /// this lane), columns col..col+N-1. Asynchronous until `tcgen05.wait::st`.
     TmemSt {
@@ -2127,6 +2144,7 @@ impl Op {
             }
             Op::MatchAny { a, .. } => vec![a.clone()],
             Op::Bfe { a, pos, len, .. } => vec![a.clone(), pos.clone(), len.clone()],
+            Op::Bfi { a, b, pos, len, .. } => vec![a.clone(), b.clone(), pos.clone(), len.clone()],
             Op::Shfl {
                 a,
                 lane,
@@ -2414,6 +2432,7 @@ impl Op {
             | Op::CvtUnpack { d, .. }
             | Op::Shfl { d, p: None, .. }
             | Op::Bfe { d, .. }
+            | Op::Bfi { d, .. }
             | Op::LeaHi { d, cout: None, .. }
             | Op::Mufu { d, .. }
             | Op::Fmnmx { d, .. }

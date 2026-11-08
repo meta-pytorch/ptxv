@@ -818,6 +818,8 @@ struct Lower<'a> {
     tmp_v: Option<Reg>,
     /// A hidden register nothing writes (`%__undef`): the indeterminate data of `discard`.
     undef_v: Option<Reg>,
+    /// Two hidden predicates (`min` / `max.f64`: DSETP.MIN/MAX's select and both-NaN).
+    tmp_p: Option<Reg>,
     /// Ops to run before the lowered one, under the same guard (moves into `vec_v`).
     pre: Vec<Op>,
     /// `mul.f16[x2]` / `mul.f32x2` destinations ptxas cannot contract
@@ -898,9 +900,16 @@ fn needs_scratch(text: &str) -> bool {
         || t.starts_with("tensormap.")
         || t.starts_with("cvt.rna.tf32.f32")
         || t.starts_with("sqrt.rn.f32")
+        || t.starts_with("sqrt.rn.ftz.f32")
+        || t.starts_with("div.rn.ftz.f32")
+        || (t.starts_with("min.") || t.starts_with("max."))
+            && t.split_whitespace()
+                .next()
+                .is_some_and(|o| o.ends_with(".f64"))
         || t.starts_with("mad.lo.u64")
         || t.starts_with("mad.wide.s16")
         || t.starts_with("mad.wide.u16")
+        || t.starts_with("mov.b32") && t.contains('{')
         || (t.starts_with("atom.") || t.starts_with("red.")) && t.contains(".v2.bf16")
 }
 
@@ -960,6 +969,11 @@ impl<'a> Lower<'a> {
             ("%warpid", None) => SReg::WarpId,
             ("%cluster_ctarank", None) => SReg::ClusterCtaRank,
             ("%cluster_nctarank", None) => SReg::ClusterNCtaRank,
+            // probes/cluster_sreg.
+            ("%cluster_ctaid", Some(c)) => SReg::ClusterCtaId(dim(c)?),
+            ("%cluster_nctaid", Some(c)) => SReg::ClusterNCtaId(dim(c)?),
+            ("%clusterid", Some(c)) => SReg::ClusterId(dim(c)?),
+            ("%nclusterid", Some(c)) => SReg::NClusterId(dim(c)?),
             ("%lanemask_lt", None) => SReg::LaneMaskLt,
             ("%lanemask_le", None) => SReg::LaneMaskLe,
             ("%lanemask_ge", None) => SReg::LaneMaskGe,
@@ -1396,7 +1410,7 @@ fn flatten_scopes(src: &str) -> String {
                         .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
                     && !r.starts_with(':')
                 {
-                    names.push(l.to_string());
+                    names.push((l.to_string(), format!("{l}__s{n}")));
                     rest = r;
                 } else {
                     break;
@@ -1406,15 +1420,24 @@ fn flatten_scopes(src: &str) -> String {
                 for tok in r.split([' ', '\t', '\n', ',']) {
                     let tok = tok.trim();
                     if !tok.is_empty() && !tok.starts_with('.') {
-                        names.push(tok.split('<').next().unwrap().to_string());
+                        let (base, count) = match tok.split_once('<') {
+                            Some((b, c)) => {
+                                (b, c.trim_end_matches('>').trim().parse::<usize>().ok())
+                            }
+                            None => (tok, None),
+                        };
+                        names.push((base.to_string(), format!("{base}__s{n}")));
+                        // `.reg .u32 %tmp32_<1>` declares %tmp32_0 (renamed %tmp32___sN0, as
+                        // the declaration `%tmp32___sN<1>` expands): its uses are renamed too,
+                        // so a scoped `%p<1>` no longer aliases the body's %p0.
+                        for i in 0..count.unwrap_or(0) {
+                            names.push((format!("{base}{i}"), format!("{base}__s{n}{i}")));
+                        }
                     }
                 }
             }
         }
-        let map = names
-            .into_iter()
-            .map(|x| (x.clone(), format!("{x}__s{n}")))
-            .collect();
+        let map = names;
         renames.push((o, c, map));
         out[o] = b' ';
         out[c] = b' ';
@@ -1443,9 +1466,12 @@ fn flatten_scopes(src: &str) -> String {
                     i += 1;
                 }
                 let w = &seg[st..i];
+                // A word right after `.` is a modifier or directive (`mad.lo.u32` next to a
+                // scoped register `lo`), never a name.
+                let modifier = st > 0 && sb[st - 1] == b'.';
                 match map.iter().find(|(a, _)| a == w) {
-                    Some((_, r)) => res.push_str(r),
-                    None => res.push_str(w),
+                    Some((_, r)) if !modifier => res.push_str(r),
+                    _ => res.push_str(w),
                 }
             } else {
                 res.push(ch);
@@ -1743,6 +1769,17 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
             idx: (vreg_names.len() - 1) as u16,
         });
     }
+    let mut tmp_p = None;
+    if insts_src.iter().any(|st| {
+        let op = stmt_parts(&st.text).0;
+        (op.starts_with("min.") || op.starts_with("max.")) && op.ends_with(".f64")
+    }) {
+        tmp_p = Some(Reg {
+            file: File::P,
+            idx: npred,
+        });
+        npred += 2;
+    }
     let mut vec_v = None;
     if insts_src
         .iter()
@@ -1785,6 +1822,7 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
             extra: Vec::new(),
             tmp_v,
             undef_v,
+            tmp_p,
             pre: Vec::new(),
             vec_v,
             f16_mul_ok: &f16_mul_ok,
@@ -2170,10 +2208,11 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 .split(',')
                 .map(|x| x.trim())
                 .collect();
-            if !(halves.len() == 2 && (bits == 64 || bits == 32) || halves.len() == 4 && bits == 32)
+            if !(halves.len() == 2 && matches!(bits, 16 | 32 | 64)
+                || halves.len() == 4 && bits == 32)
             {
                 bail!(lw.err(
-                    "only mov.b64 {lo, hi} / mov.b32 {lo, hi} / mov.b32 {b0, b1, b2, b3} unpacking is modeled"
+                    "only mov.b64 {lo, hi} / mov.b32 {lo, hi} / mov.b32 {b0, b1, b2, b3} / mov.b16 {lo, hi} unpacking is modeled"
                 ));
             }
             let r = |x: &str| -> Result<Option<Reg>> {
@@ -2183,7 +2222,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     lw.dst(x).map(Some)
                 }
             };
-            if bits == 32 {
+            if bits <= 32 {
                 // `mov.b32 {h0, h1}, r`: two 16-bit halves, as PRMT with zero upper bytes.
                 let a = lw.val(op_n(1)?)?;
                 let half = |d: Reg, sel: u64| Op::Prmt {
@@ -2193,8 +2232,11 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     b: Val::Imm(0),
                 };
                 // `mov.b32 {b0, b1, b2, b3}, r`: four bytes, each zero-extended.
+                // `mov.b16 {b0, b1}, h`: two bytes (probes/mov_pack).
                 let sels: &[u64] = if halves.len() == 4 {
                     &[0x4440, 0x4441, 0x4442, 0x4443]
+                } else if bits == 16 {
+                    &[0x4440, 0x4441]
                 } else {
                     &[0x4410, 0x4432]
                 };
@@ -2227,10 +2269,56 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 .split(',')
                 .map(|x| x.trim())
                 .collect();
-            if halves.len() != 2 || (bits != 64 && bits != 32) {
-                bail!(lw.err("only mov.b64 / mov.b32 %d, {lo, hi} packing is modeled"));
+            if !(halves.len() == 2 && matches!(bits, 16 | 32 | 64)
+                || halves.len() == 4 && bits == 32)
+            {
+                bail!(lw.err(
+                    "only mov.b64 / mov.b32 / mov.b16 %d, {lo, hi} and mov.b32 %d, {b0, b1, b2, b3} packing is modeled"
+                ));
             }
-            if bits == 32 {
+            if halves.len() == 4 {
+                // `mov.b32 r, {b0, b1, b2, b3}`: the low byte of each, b0 lowest; three PRMTs
+                // through the scratch register (probes/mov_pack).
+                let t = lw
+                    .tmp_v
+                    .ok_or_else(|| lw.err("internal: no scratch register"))?;
+                let tv = Val::Reg(t, 1);
+                let b = |i: usize| lw.val(halves[i]);
+                pre.push(Op::Prmt {
+                    d: t,
+                    a: b(0)?,
+                    sel: Val::Imm(0x0040),
+                    b: b(1)?,
+                });
+                pre.push(Op::Prmt {
+                    d: t,
+                    a: tv.clone(),
+                    sel: Val::Imm(0x0410),
+                    b: b(2)?,
+                });
+                Op::Prmt {
+                    d: lw.dst(op_n(0)?)?,
+                    a: tv,
+                    sel: Val::Imm(0x4210),
+                    b: b(3)?,
+                }
+            } else if bits == 16 {
+                // `mov.b16 h, {lo, hi}`: the low byte of each, upper half cleared.
+                let d = lw.dst(op_n(0)?)?;
+                extra.push(Op::Int {
+                    op: IntOp::And,
+                    bits: 32,
+                    d,
+                    a: Val::Reg(d, 1),
+                    b: Val::Imm(0xffff),
+                });
+                Op::Prmt {
+                    d,
+                    a: lw.val(halves[0])?,
+                    sel: Val::Imm(0x0040),
+                    b: lw.val(halves[1])?,
+                }
+            } else if bits == 32 {
                 // `mov.b32 r, {h0, h1}`: r = h1 << 16 | h0 (PRMT bytes a0 a1 b0 b1).
                 Op::Prmt {
                     d: lw.dst(op_n(0)?)?,
@@ -2584,6 +2672,31 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 p: lw.pred_src(op_n(3)?)?,
             }
         }
+        // `bfi.b32` (ptxas: PRMT / BMSK / SHF / LOP3; probes/bfi_clz). `.b64` is not modeled.
+        "bfi" if mods == ["b32"] => Op::Bfi {
+            d: lw.dst(op_n(0)?)?,
+            a: lw.val(op_n(1)?)?,
+            b: lw.val(op_n(2)?)?,
+            pos: lw.val(op_n(3)?)?,
+            len: lw.val(op_n(4)?)?,
+        },
+        // `clz.b32 d, a` = 31 - bfind.u32 a (ptxas: FLO.U32 + IADD3 -d, 0x1f; 32 for 0;
+        // probes/bfi_clz). `.b64` is not modeled.
+        "clz" if mods == ["b32"] => {
+            let d = lw.dst(op_n(0)?)?;
+            extra.push(Op::Int {
+                op: IntOp::Sub,
+                bits: 32,
+                d,
+                a: Val::Imm(31),
+                b: Val::Reg(d, 1),
+            });
+            Op::Flo {
+                d,
+                a: lw.val(op_n(1)?)?,
+                sh: false,
+            }
+        }
         "bfe" => Op::Bfe {
             d: lw.dst(op_n(0)?)?,
             a: lw.val(op_n(1)?)?,
@@ -2593,6 +2706,63 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         },
         // min.f32 / max.f32 [.ftz] [.NaN] (2 or 3 sources), as SASS FMNMX / FMNMX3;
         // `.xorsign.abs` (two sources): FMNMX.XORSIGN (probes/fmnmx_xorsign). ASSUME(N-XORSIGN)
+        // min / max.f64 as ptxas: DSETP.MIN/MAX.AND p, q, a, b (p: a is the min / max, -0
+        // below +0, a NaN loses; q: both NaN), a 64-bit select, and with q b's NaN quieted
+        // (high word | 0x80000) (probes/f64_misc).
+        "min" | "max" if mods == ["f64"] => {
+            let p = lw
+                .tmp_p
+                .ok_or_else(|| lw.err("internal: no scratch predicates"))?;
+            let q = Reg {
+                file: File::P,
+                idx: p.idx + 1,
+            };
+            let tmp = lw.scratch_v()?;
+            let d = lw.dst(op_n(0)?)?;
+            let (a, b) = (lw.val(op_n(1)?)?, lw.val(op_n(2)?)?);
+            pre.push(Op::DsetpMinMax {
+                d: p,
+                q: Some(q),
+                a: a.clone(),
+                b: b.clone(),
+                max: base == "max",
+            });
+            pre.push(Op::Sel {
+                d,
+                a,
+                b,
+                p: Pred {
+                    reg: Some(p),
+                    neg: false,
+                },
+            });
+            pre.push(Op::Int {
+                op: IntOp::Or,
+                bits: 64,
+                d: tmp,
+                a: Val::Reg(d, 2),
+                b: Val::Imm(0x0008_0000_0000_0000),
+            });
+            Op::Sel {
+                d,
+                a: Val::Reg(tmp, 2),
+                b: Val::Reg(d, 2),
+                p: Pred {
+                    reg: Some(q),
+                    neg: false,
+                },
+            }
+        }
+        // neg / abs.f64 (ptxas: DADD d, -RZ, -a / DADD d, -RZ, |a|; probes/f64_misc).
+        "neg" | "abs" if mods == ["f64"] => Op::Dfma {
+            d: lw.dst(op_n(0)?)?,
+            a: Val::Imm(0),
+            b: Val::Imm(1f64.to_bits()),
+            c: Some(lw.val(op_n(1)?)?),
+            neg: [true, false, base == "neg"],
+            abs: [false, false, base == "abs"],
+            rnd: Rnd::Rn,
+        },
         "min" | "max" if tname == "f32" => {
             let n = (1..4).take_while(|&i| op_n(i).is_ok()).count();
             if let Some(m) = mods
@@ -2747,6 +2917,54 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 ftz: false,
                 sat: false,
             }
+        }
+        // div.rn.ftz.f32 / sqrt.rn.ftz.f32: the IEEE result of the operands flushed (subnormals
+        // to a zero of their sign), the result flushed too (probes/ftz_div_sqrt). Flushes are
+        // FADD.FTZ x, -RZ (also canonicalizing NaN, which the quotient / root does anyway).
+        "div" | "sqrt" if mods == ["rn", "ftz", "f32"] => {
+            let flush = |d: Reg, a: Val| Op::Fadd {
+                d,
+                a,
+                b: Val::Imm(0x8000_0000),
+                rnd: Rnd::Rn,
+                neg: [false; 2],
+                abs: [false; 2],
+                ftz: true,
+                sat: false,
+            };
+            let tmp = lw.scratch_v()?;
+            let d = lw.dst(op_n(0)?)?;
+            pre.push(flush(tmp, lw.val(op_n(1)?)?));
+            if base == "div" {
+                // d may alias a (already in tmp) or b.
+                pre.push(flush(d, lw.val(op_n(2)?)?));
+                pre.push(Op::DivFull {
+                    d,
+                    a: Val::Reg(tmp, 1),
+                    b: Val::Reg(d, 1),
+                    rn: true,
+                });
+            } else {
+                pre.push(Op::F2F {
+                    d: tmp,
+                    a: Val::Reg(tmp, 1),
+                    to64: true,
+                    rnd: Rnd::Rn,
+                });
+                pre.push(Op::DivSqrt64 {
+                    d: tmp,
+                    a: Val::Reg(tmp, 2),
+                    b: None,
+                    rnd: Rnd::Rn,
+                });
+                pre.push(Op::F2F {
+                    d,
+                    a: Val::Reg(tmp, 2),
+                    to64: false,
+                    rnd: Rnd::Rn,
+                });
+            }
+            flush(d, Val::Reg(d, 1))
         }
         // rcp.rn.f32 d, a: the IEEE 1 / a (ptxas: the div.rn.f32 expansion; probes/rcp_rn).
         "rcp" if mods == ["rn", "f32"] => Op::DivFull {
@@ -4207,7 +4425,16 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         adesc,
                         bdesc: lw.val(op_n(2)?)?,
                         idesc: lw.val(op_n(3)?)?,
-                        enable_d: lw.pred_src(op_n(ops.len() - 1)?)?,
+                        // An immediate enable-input-d (CuTeDSL: `..., idesc, 0`): 0 overwrites
+                        // D, 1 accumulates (probes/tc_mma_imm).
+                        enable_d: match op_n(ops.len() - 1)?.trim() {
+                            "0" => Pred {
+                                reg: None,
+                                neg: true,
+                            },
+                            "1" => Pred::TRUE,
+                            s => lw.pred_src(s)?,
+                        },
                         pair,
                         disable,
                         a_tmem,
@@ -5781,6 +6008,21 @@ mod tests {
         ] {
             assert!(ops(l).is_err(), "{l}");
         }
+    }
+
+    #[test]
+    fn scoped_names_not_modifiers() {
+        let s = flatten_scopes(
+            "{\nmov.b32 %r9, 0;\n{ .reg .b32 lo; mad.lo.u32 lo, %r1, %r2, %r3; mov.b32 %r4, lo; }\n}",
+        );
+        assert!(s.contains("mad.lo.u32 lo__s0,"), "{s}");
+        assert!(s.contains("%r4, lo__s0;"), "{s}");
+        // A scoped range declaration renames its expanded names.
+        let s = flatten_scopes(
+            "{\nmov.b32 %r9, 0;\n{ .reg .u32 %t_<2>; .reg .pred %p<1>; setp.eq.u32 %p0, %t_1, 0; }\n}",
+        );
+        assert!(s.contains("%t___s0<2>") && s.contains("%p__s0<1>"), "{s}");
+        assert!(s.contains("setp.eq.u32 %p__s00, %t___s01, 0"), "{s}");
     }
 
     #[test]

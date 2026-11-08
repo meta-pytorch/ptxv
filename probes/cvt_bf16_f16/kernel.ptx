@@ -1,0 +1,37 @@
+// probes/cvt_bf16_f16: cvt.bf16.f16 and cvt.f16.bf16 without a rounding modifier (ptxas:
+// F2F.BF16.F16 / F2F.F16.BF16, nearest), on every 16-bit pattern. 256 threads x 256
+// patterns: out[i] = cvt.bf16.f16(i) | cvt.f16.bf16(i) << 16, i = 256 t + k.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry cvt_bf16_f16(
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .pred  %p<2>;
+    .reg .b16   %h<4>;
+    .reg .b32   %r<12>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32         %r1, %tid.x;
+    shl.b32         %r2, %r1, 8;
+    mul.wide.u32    %rd2, %r2, 4;
+    add.s64         %rd3, %rd1, %rd2;
+    mov.u32         %r3, 0;
+LOOP:
+    add.u32         %r4, %r2, %r3;
+    cvt.u16.u32     %h1, %r4;
+    cvt.bf16.f16    %h2, %h1;
+    cvt.f16.bf16    %h3, %h1;
+    mov.b32         %r5, {%h2, %h3};
+    st.global.b32   [%rd3], %r5;
+    add.s64         %rd3, %rd3, 4;
+    add.u32         %r3, %r3, 1;
+    setp.lt.u32     %p1, %r3, 256;
+    @%p1 bra        LOOP;
+    ret;
+}

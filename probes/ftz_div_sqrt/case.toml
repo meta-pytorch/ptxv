@@ -1,0 +1,36 @@
+name = "probe_ftz_div_sqrt"
+description = """
+Probe (L-ROSETTA) for div.rn.ftz.f32 and sqrt.rn.ftz.f32 on subnormal operands, quotients
+near the subnormal boundary, specials and random words (kernel.ptx, gen.py). expected/ is
+GB300's output (kernel.cubin = ptxas -arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "ftz_div_sqrt"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [512]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

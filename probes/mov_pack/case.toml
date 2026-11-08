@@ -1,0 +1,36 @@
+name = "probe_mov_pack"
+description = """
+Probe (L-ROSETTA) for byte packing / unpacking moves with .b8 registers in inline-asm scopes:
+mov.b32 four bytes both ways, mov.b16 two bytes both ways (kernel.ptx, gen.py). expected/ is
+GB300's output (kernel.cubin = ptxas -arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "mov_pack"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [64]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

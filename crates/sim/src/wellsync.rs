@@ -617,6 +617,7 @@ fn sass_lane_local(op: &Op) -> bool {
             | Op::CvtF32Bf16 { .. }
             | Op::F2fpBf16 { .. }
             | Op::Bfe { .. }
+            | Op::Bfi { .. }
             | Op::I2F { .. }
             | Op::F2I { .. }
             | Op::Pack64 { .. }

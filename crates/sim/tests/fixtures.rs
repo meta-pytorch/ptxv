@@ -1658,6 +1658,57 @@ fn probe_discard_l2_verdicts() {
     check_dir("probes", "discard_l2", "read_after", "ptx");
 }
 
+/// cvt.bf16.f16 / cvt.f16.bf16 without a rounding modifier on every pattern
+/// (probes/cvt_bf16_f16) = GB300 on both front-ends.
+#[test]
+fn probe_cvt_bf16_f16_matches_hardware() {
+    probe_bitwise("probes/cvt_bf16_f16", "good", "ptx");
+    probe_bitwise("probes/cvt_bf16_f16", "good", "sass");
+}
+
+/// min / max / neg / abs .f64 (probes/f64_misc) = GB300 on both front-ends.
+#[test]
+fn probe_f64_misc_matches_hardware() {
+    probe_bitwise("probes/f64_misc", "good", "ptx");
+    probe_bitwise("probes/f64_misc", "good", "sass");
+}
+
+/// div.rn.ftz.f32 / sqrt.rn.ftz.f32 (probes/ftz_div_sqrt) = GB300 on both front-ends.
+#[test]
+fn probe_ftz_div_sqrt_matches_hardware() {
+    probe_bitwise("probes/ftz_div_sqrt", "good", "ptx");
+    probe_bitwise("probes/ftz_div_sqrt", "good", "sass");
+}
+
+/// Cluster special registers (probes/cluster_sreg) = GB300 on both front-ends.
+#[test]
+fn probe_cluster_sreg_matches_hardware() {
+    probe_bitwise("probes/cluster_sreg", "good", "ptx");
+    probe_bitwise("probes/cluster_sreg", "good", "sass");
+}
+
+/// Byte packing / unpacking moves (probes/mov_pack) = GB300 on both front-ends.
+#[test]
+fn probe_mov_pack_matches_hardware() {
+    probe_bitwise("probes/mov_pack", "good", "ptx");
+    probe_bitwise("probes/mov_pack", "good", "sass");
+}
+
+/// tcgen05.mma with an immediate enable-input-d (probes/tc_mma_imm) = GB300 on both
+/// front-ends.
+#[test]
+fn probe_tc_mma_imm_matches_hardware() {
+    probe_bitwise("probes/tc_mma_imm", "good", "ptx");
+    probe_bitwise("probes/tc_mma_imm", "good", "sass");
+}
+
+/// bfi.b32 / clz.b32 (probes/bfi_clz) = GB300 on both front-ends.
+#[test]
+fn probe_bfi_clz_matches_hardware() {
+    probe_bitwise("probes/bfi_clz", "good", "ptx");
+    probe_bitwise("probes/bfi_clz", "good", "sass");
+}
+
 /// cvt.ftz.sat.f32.f32 / cvt.ftz.f32.f32 (probes/cvt_ftz) = GB300 on both front-ends.
 #[test]
 fn probe_cvt_ftz_matches_hardware() {

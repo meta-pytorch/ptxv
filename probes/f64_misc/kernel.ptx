@@ -1,0 +1,36 @@
+// probes/f64_misc: min.f64, max.f64, neg.f64, abs.f64 (ptxas: DSETP.MIN/MAX + SEL + NaN
+// quieting; DADD -RZ, -a / |a|). 256 threads; a, b = in[2 t], in[2 t + 1] (f64, gen.py:
+// signed zeros, infinities, quiet / signaling / negative NaNs with payloads, subnormals,
+// random); out[4 t ..] = max(a, b), min(a, b), -a, |a|.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry f64_misc(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<4>;
+    .reg .f64   %fd<8>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 16;
+    add.s64         %rd4, %rd1, %rd3;
+    mul.wide.u32    %rd5, %r1, 32;
+    add.s64         %rd6, %rd2, %rd5;
+    ld.global.v2.f64 {%fd1, %fd2}, [%rd4];
+    max.f64         %fd3, %fd1, %fd2;
+    min.f64         %fd4, %fd1, %fd2;
+    neg.f64         %fd5, %fd1;
+    abs.f64         %fd6, %fd1;
+    st.global.v2.f64 [%rd6], {%fd3, %fd4};
+    st.global.v2.f64 [%rd6+16], {%fd5, %fd6};
+    ret;
+}

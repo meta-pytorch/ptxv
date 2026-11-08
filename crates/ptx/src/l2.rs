@@ -124,9 +124,15 @@ pub(super) fn lower(lw: &Lower, base: &str, mods: &[&str], ops: &[String]) -> Re
                 int = m.ends_with('i');
             }
             let widen = to == FFmt::F64 && from != FFmt::F64;
+            // `cvt.bf16.f16` / `cvt.f16.bf16` without a rounding modifier: ptxas rounds to
+            // nearest (F2F.BF16.F16, F2F.F16.BF16; probes/cvt_bf16_f16).
+            let half_pair = matches!(
+                (to, from),
+                (FFmt::Bf16, FFmt::F16) | (FFmt::F16, FFmt::Bf16)
+            );
             let rnd = match rnd {
                 Some(r) if !widen => r,
-                None if widen => Rnd::Rn,
+                None if widen || half_pair => Rnd::Rn,
                 _ => bail!(lw.err(format!("cvt.{} not modeled", mods.join(".")))),
             };
             if int != (to == from) || ops.len() != 2 {

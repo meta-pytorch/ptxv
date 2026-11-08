@@ -280,6 +280,13 @@ any modifier outside the audited set before an arm runs.
 | `BRX Ra -off` (BRANCH_TARGETS) | `brx.idx[.uni] i, $L` / `$L: .branchtargets ...` | per-thread jump to target i; an index outside the list is a fault | probes/brx_idx |
 | `REDUX.SUM.S32` | `redux.sync.add.s32` | wrapping sum over the active lanes (partial masks) | probes/redux_s32 |
 | `LOP3.LUT ..., 0x80000000, ..., 0xb8` | `copysign.f32` | b with the sign bit of a (bit operation) | probes/copysign |
+| `F2F.BF16.F16` / `F2F.F16.BF16` | `cvt.bf16.f16` / `cvt.f16.bf16` without a rounding modifier | nearest | probes/cvt_bf16_f16 |
+| `DSETP.MIN/MAX.AND` + `SEL` / `FSEL` + `LOP3 0x80000`; `DADD -RZ, -a / \|a\|` | `min` / `max.f64`; `neg` / `abs.f64` | as the SASS ops | probes/f64_misc |
+| ptxas's div.rn / sqrt.rn FTZ expansions | `div.rn.ftz.f32`, `sqrt.rn.ftz.f32` | IEEE on flushed operands, result flushed | probes/ftz_div_sqrt |
+| `S2R SR_CTAID` + `LDC c[0x0][0x2a0.. - 0xa0 * SR_CgaSize]` | `%cluster_ctaid`, `%cluster_nctaid`, `%clusterid`, `%nclusterid` | ctaid mod / div the cluster shape | probes/cluster_sreg |
+| `PRMT` | `mov.b32 r, {b0, b1, b2, b3}`, `mov.b16 h, {lo, hi}`, `mov.b16 {lo, hi}, h` | byte pack / unpack | probes/mov_pack |
+| `UTCHMMA ... !UPT` / `UPT` | `tcgen05.mma ..., idesc, 0` / `1` (immediate enable-input-d) | constant predicate: overwrite / accumulate | probes/tc_mma_imm |
+| `PRMT` + `BMSK` + `SHF.L` + `LOP3 0xe2`; `FLO.U32` + `IADD3 -d, 0x1f` | `bfi.b32`; `clz.b32` | pos / len mod 256, clipped at bit 31; 32 for 0 | probes/bfi_clz |
 | `FADD.FTZ.SAT d, RZ, a`, `FADD.FTZ d, a, -RZ` | `cvt.ftz.sat.f32.f32`, `cvt.ftz.f32.f32` | as the SASS ops | probes/cvt_ftz |
 | immediates | decimal float literals (`20.`, `1.0`, `.5e1`) and `0d` in `.f32` / `.f64` instructions | f64 value rounded to nearest even for .f32; `0f` raw, zero-extended in .f64 | probes/float_lit |
 | `FSETP.GEU \|a\|, +INF` + `IADD 0x1000` + `LOP3 & 0xffffe000` | `cvt.rna.tf32.f32` | ties-away round to 19 bits; Inf / NaN only masked | probes/cvt_tf32 |
