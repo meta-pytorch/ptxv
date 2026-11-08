@@ -5,8 +5,8 @@
 //   k 65..81:  .x16.min.NaN at (lane 16, col 32), split 48
 //   k 82..90:  .x8.max.abs at (lane 0, col 8), split 72
 //   k 91..95:  .x4.min.abs.NaN at (lane 16, col 100), split 4
-// out[96 t + k]. kernel.cubin = ptxas -arch=sm_103a kernel.ptx (the PTX front-end does not
-// parse tcgen05.ld.red).
+// out[96 t + k]. kernel.cubin = ptxas -arch=sm_103a kernel.ptx (fixtures.rs also lowers
+// kernel.ptx on the PTX front-end).
 .version 9.0
 .target sm_103a
 .address_size 64

@@ -1,0 +1,47 @@
+// probes/ld_sext64: signed loads narrower than 64 bits into 64-bit registers sign-extend to 64
+// bits; unsigned ones zero-extend (Triton: `ld.param.s32 %rd11` of an ignore index compared
+// with an int64 label). 64 threads; w = in[t] (edge patterns, random); out[k * 64 + t] (64-bit):
+//   0: ld.global.s32 %rd   1: ld.global.u32 %rd   2: ld.global.s16 %rd (low half)
+//   3: ld.global.s8 %rd (low byte)   4: ld.param.s32 %rd (pv = -100)   5: ld.global.s32 into
+//   an .s64 register, then setp.eq.s64 against the param (1 / 0)
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry ld_sext64(
+    .param .u64 pin,
+    .param .u64 pout,
+    .param .u32 pv
+)
+.maxntid 64, 1, 1
+{
+    .reg .pred  %p<2>;
+    .reg .b32   %r<4>;
+    .reg .b64   %rd<16>;
+    .reg .s64   %sd<2>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    mul.wide.u32    %rd5, %r1, 8;
+    add.s64         %rd6, %rd2, %rd5;
+    ld.global.s32   %rd7, [%rd4];
+    st.global.b64   [%rd6], %rd7;
+    ld.global.u32   %rd8, [%rd4];
+    st.global.b64   [%rd6+512], %rd8;
+    ld.global.s16   %rd9, [%rd4];
+    st.global.b64   [%rd6+1024], %rd9;
+    ld.global.s8    %rd10, [%rd4];
+    st.global.b64   [%rd6+1536], %rd10;
+    ld.param.s32    %rd11, [pv];
+    st.global.b64   [%rd6+2048], %rd11;
+    ld.global.s32   %sd1, [%rd4];
+    setp.eq.s64     %p1, %sd1, %rd11;
+    selp.u64        %rd12, 1, 0, %p1;
+    st.global.b64   [%rd6+2560], %rd12;
+    ret;
+}

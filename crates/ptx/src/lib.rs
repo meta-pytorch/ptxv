@@ -589,6 +589,167 @@ fn loose_mul_dsts(insts: &[&Stmt]) -> HashSet<String> {
         .collect()
 }
 
+/// RN(1 / c) for a normal f32 `c` (exact integer arithmetic; `c`'s reciprocal is normal for
+/// 2^-126 <= |c| <= 2^126).
+fn recip_rn_f32(c: u32) -> u32 {
+    let s = c & 0x8000_0000;
+    let e = ((c >> 23) & 0xff) as i32;
+    let m = (c & 0x7f_ffff | 0x80_0000) as u128; // c = m * 2^(e - 150)
+    // 1 / c = 2^(150 - e) / m; q = floor(2^64 / m) has 41 or 42 bits.
+    let num = 1u128 << 64;
+    let (mut q, r) = (num / m, num % m);
+    let bits = 128 - q.leading_zeros() as i32;
+    let sh = bits - 24;
+    let low = q & ((1u128 << sh) - 1);
+    q >>= sh;
+    let half = 1u128 << (sh - 1);
+    if low > half || low == half && (r != 0 || q & 1 == 1) {
+        q += 1;
+    }
+    // value = q * 2^(sh - 64 + 150 - e); q in [2^23, 2^24] (2^24 after a carry).
+    let mut exp = sh - 64 + 150 - e + 23;
+    if q == 1 << 24 {
+        q >>= 1;
+        exp += 1;
+    }
+    s | ((exp + 127) as u32) << 23 | (q as u32 & 0x7f_ffff)
+}
+
+/// ptxas folds `div.full` / `div.approx [.ftz] .f32 d, a, C` with a constant divisor (an
+/// immediate, or a register whose only definition is a `mov` of one that dominates the
+/// division) into `mul [.ftz] .f32 d, a, RN(1/C)` for 2^-126 <= |C| <= 2^126, C != +-1 (then
+/// a plain mul, contracted into a following add as any other: PTX-FMAD); C = 1 is `a` (`.ftz`:
+/// a + -0), C = -1 is -a + -0 (probes/div_const). The statements are rewritten so; other
+/// constants (the scaled range) stay divisions. ASSUME(PTX-FMAD)
+fn div_by_const(stmts: &mut [Stmt]) {
+    // Registers with exactly one definition, an unguarded `mov` of an f32 literal.
+    let mut defs: HashMap<String, (usize, Option<u32>)> = HashMap::new();
+    let mut ndefs: HashMap<String, usize> = HashMap::new();
+    for (i, st) in stmts.iter().enumerate() {
+        let t = st.text.trim();
+        if t.is_empty() || t.starts_with('.') {
+            continue;
+        }
+        let (op, ops) = stmt_parts(t);
+        let base = op.split('.').next().unwrap_or("");
+        if matches!(base, "st" | "red" | "prefetch" | "bar" | "barrier" | "cp") {
+            continue;
+        }
+        let Some(d0) = ops.first() else { continue };
+        // The destination text: a `{a, b}` vector, `p|q`, or the first operand.
+        let body = t
+            .strip_prefix('@')
+            .map_or(t, |r| r.split_once(char::is_whitespace).map_or("", |x| x.1))
+            .trim();
+        let rest = body
+            .split_once(char::is_whitespace)
+            .map_or("", |x| x.1)
+            .trim_start();
+        let dtoks = if rest.starts_with('{') {
+            reg_tokens(rest.split('}').next().unwrap_or(""))
+        } else if t.contains('|') {
+            ops.iter().flat_map(|o| reg_tokens(o)).collect::<Vec<_>>()
+        } else {
+            reg_tokens(d0)
+        };
+        for r in dtoks {
+            *ndefs.entry(r.to_string()).or_default() += 1;
+            let lit = (matches!(op, "mov.b32" | "mov.f32" | "mov.u32")
+                && !t.starts_with('@')
+                && ops.len() == 2)
+                .then(|| {
+                    let x = ops[1].trim();
+                    parse_int(x)
+                        .filter(|_| x.starts_with("0f") || x.starts_with("0F"))
+                        .map(|v| v as u32)
+                        .or_else(|| float_lit(x, Some(32)).flatten().map(|v| v as u32))
+                })
+                .flatten();
+            defs.insert(r.to_string(), (i, lit));
+        }
+    }
+    // Branch sources per label (a `brx` table target is reachable from anywhere).
+    let mut srcs: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, st) in stmts.iter().enumerate() {
+        let (op, ops) = stmt_parts(&st.text);
+        if op.starts_with("bra") {
+            if let Some(l) = ops.last() {
+                srcs.entry(l.trim().to_string()).or_default().push(i);
+            }
+        } else if st.text.contains(".branchtargets") {
+            for l in st
+                .text
+                .split(".branchtargets")
+                .nth(1)
+                .unwrap_or("")
+                .split(',')
+            {
+                srcs.entry(l.trim().trim_end_matches(';').to_string())
+                    .or_default()
+                    .push(usize::MAX);
+            }
+        }
+    }
+    // `def` dominates `use_` when control enters (def, use_] only through def's fallthrough.
+    let dominates = |def: usize, use_: usize| -> bool {
+        def < use_
+            && stmts[def + 1..=use_].iter().all(|s| {
+                s.labels.iter().all(|l| {
+                    srcs.get(l)
+                        .is_none_or(|v| v.iter().all(|&b| b >= def && b < use_))
+                })
+            })
+    };
+    let mut rewrites = Vec::new();
+    for (i, st) in stmts.iter().enumerate() {
+        let t = st.text.trim().to_string();
+        let (guard, body) = match t.strip_prefix('@') {
+            Some(r) => {
+                let (g, b) = r.split_once(char::is_whitespace).unwrap_or((r, ""));
+                (format!("@{g} "), b.trim().to_string())
+            }
+            None => (String::new(), t.clone()),
+        };
+        let (op, ops) = stmt_parts(&body);
+        let ftz = match op {
+            "div.full.f32" | "div.approx.f32" => false,
+            "div.full.ftz.f32" | "div.approx.ftz.f32" => true,
+            _ => continue,
+        };
+        if ops.len() != 3 {
+            continue;
+        }
+        let b = ops[2].trim();
+        let c = if b.starts_with("0f") || b.starts_with("0F") {
+            parse_int(b).map(|v| v as u32)
+        } else if b.starts_with('%') {
+            match (defs.get(b), ndefs.get(b)) {
+                (Some(&(di, Some(v))), Some(1)) if dominates(di, i) => Some(v),
+                _ => None,
+            }
+        } else {
+            float_lit(b, Some(32)).flatten().map(|v| v as u32)
+        };
+        let Some(c) = c else { continue };
+        let (d, a) = (ops[0].trim(), ops[1].trim());
+        let e = (c >> 23) & 0xff;
+        let f = if ftz { ".ftz" } else { "" };
+        let new = match c {
+            0x3f80_0000 if ftz => format!("add.rn.ftz.f32 {d}, {a}, 0f80000000"),
+            0x3f80_0000 => format!("mov.b32 {d}, {a}"),
+            0xbf80_0000 => format!("sub.rn{f}.f32 {d}, 0f80000000, {a}"),
+            _ if (1..=252).contains(&e) || c & 0x7fff_ffff == 0x7e80_0000 => {
+                format!("mul{f}.f32 {d}, {a}, 0f{:08X}", recip_rn_f32(c))
+            }
+            _ => continue,
+        };
+        rewrites.push((i, format!("{guard}{new}")));
+    }
+    for (i, t) in rewrites {
+        stmts[i].text = t;
+    }
+}
+
 /// `createpolicy` destinations used only as the cache-policy operand of `.L2::cache_hint`
 /// instructions (their value is then irrelevant to the model).
 fn hint_only_policies(insts: &[&Stmt]) -> HashSet<String> {
@@ -802,6 +963,7 @@ fn parse_int(s: &str) -> Option<u64> {
 
 struct Lower<'a> {
     regs: &'a HashMap<String, Reg>,
+    wide_regs: &'a HashSet<String>,
     labels: &'a HashMap<String, usize>,
     /// Shared symbols -> shared-window address; param symbols -> param-space offset.
     shared_syms: &'a HashMap<String, u32>,
@@ -1637,10 +1799,14 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
         off += size;
     }
 
-    let stmts = split_statements(&src, body_start, body_end);
+    let mut stmts = split_statements(&src, body_start, body_end);
+    div_by_const(&mut stmts);
 
     // Pass 1: declarations, labels.
     let mut regs = HashMap::new();
+    // Registers declared 64 bits wide (`.reg .b64` / `.s64` / `.u64`): a signed narrower load
+    // into one sign-extends to 64 bits.
+    let mut wide_regs: HashSet<String> = HashSet::new();
     let mut vreg_names = Vec::new();
     let mut npred = 0u16;
     let mut shared_syms = HashMap::new();
@@ -1707,6 +1873,9 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
                         }
                         r
                     };
+                    if matches!(toks.first(), Some(&".b64" | &".s64" | &".u64")) {
+                        wide_regs.insert(nm.clone());
+                    }
                     regs.insert(nm, r);
                 }
             }
@@ -1814,6 +1983,7 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
     for (si, st) in insts_src.iter().enumerate() {
         let mut lw = Lower {
             regs: &regs,
+            wide_regs: &wide_regs,
             labels: &labels,
             shared_syms: &shared_syms,
             local_syms: &local_syms,
@@ -2112,6 +2282,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 a,
                 b,
                 c,
+                abs_a: false,
                 neg_a: false,
                 neg_c,
                 sel: [HSel::Pair; 3],
@@ -2126,6 +2297,35 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 });
             }
             op
+        }
+        // `abs` / `neg` `.f16` / `.f16x2` (SASS `HADD2 d, |R|, -RZ.H0_H0` / `HADD2 d, -R,
+        // -RZ.H0_H0`): |x| or -x plus -0 (a NaN becomes the canonical 0x7fff;
+        // probes/f16_absneg). ASSUME(L-ROSETTA)
+        "abs" | "neg" if matches!(ht, "f16" | "f16x2") && mods.len() == 1 => {
+            let d = lw.dst(op_n(0)?)?;
+            let a = lw.val(op_n(1)?)?;
+            if !matches!(a, Val::Reg(..)) {
+                bail!(lw.err(format!("{base}.{ht} immediate operand not modeled")));
+            }
+            if ht == "f16" {
+                extra.push(Op::Int {
+                    op: IntOp::And,
+                    bits: 32,
+                    d,
+                    a: Val::Reg(d, 1),
+                    b: Val::Imm(0xffff),
+                });
+            }
+            Op::Hfma2 {
+                d,
+                a,
+                b: Val::Imm(0x3c00_3c00),
+                c: Val::Imm(0x8000_8000),
+                abs_a: base == "abs",
+                neg_a: base == "neg",
+                neg_c: false,
+                sel: [HSel::Pair; 3],
+            }
         }
         // `abs.bf16x2` / `.bf16`: -0*0 + |x| (SASS `HFMA2.BF16_V2 d, -RZ.H0_H0, RZ.H0_H0, |R|`;
         // a NaN becomes 0x7fff).
@@ -4360,12 +4560,26 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             } else if let Some(op) = cvt_lp(lw, mods, &ops)? {
                 op
             } else if int(to) && int(from) && n == 2 {
-                Op::CvtInt {
-                    d: lw.dst(op_n(0)?)?,
-                    a: lw.val(op_n(1)?)?,
-                    from_bits: type_bits(from).unwrap(),
-                    to_bits: type_bits(to).unwrap(),
-                    signed: from.starts_with('s'),
+                let (fb, tb) = (type_bits(from).unwrap(), type_bits(to).unwrap());
+                if tb < fb && to.starts_with('s') {
+                    // Narrowing to a signed type (`cvt.s8.s32 %rs, %r`): the low tb bits,
+                    // sign-extended to the destination register (PTX ISA; ptxas I2F.S8 for
+                    // a following cvt.rn.f32.s16; probes/cvt_s8_narrow).
+                    Op::CvtInt {
+                        d: lw.dst(op_n(0)?)?,
+                        a: lw.val(op_n(1)?)?,
+                        from_bits: tb,
+                        to_bits: tb.max(32),
+                        signed: true,
+                    }
+                } else {
+                    Op::CvtInt {
+                        d: lw.dst(op_n(0)?)?,
+                        a: lw.val(op_n(1)?)?,
+                        from_bits: fb,
+                        to_bits: tb,
+                        signed: from.starts_with('s'),
+                    }
                 }
             } else {
                 bail!(lw.err("this cvt is not modeled yet"))
@@ -4561,6 +4775,38 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                             "only the 32x32b, 16x64b, 16x128b, 16x256b and 16x32bx2 tcgen05.ld shapes are modeled"
                         ));
                     }
+                    // `tcgen05.ld.red...{min,max}[.abs][.NaN].f32 {d..}, red, [a][, split]`:
+                    // also the min / max of the loaded values into `red` (SASS LDTM.STAT;
+                    // probes/tmem_ldred, probes/tmem_ldred16 on both front-ends).
+                    let is_red = has("red");
+                    let red = if is_red {
+                        if !has("f32") || has("min") == has("max") || !(has("32x32b") || x2) {
+                            bail!(lw.err("tcgen05.ld.red form not modeled"));
+                        }
+                        let (abs, nan) = (has("abs"), has("NaN"));
+                        let op = if has("min") {
+                            ReduxOp::MinF { abs, nan }
+                        } else {
+                            ReduxOp::MaxF { abs, nan }
+                        };
+                        Some((lw.dst(op_n(1)?)?, op))
+                    } else {
+                        None
+                    };
+                    let ops: Vec<&str> = if is_red {
+                        ops.iter()
+                            .enumerate()
+                            .filter(|(i, _)| *i != 1)
+                            .map(|(_, o)| o.as_str())
+                            .collect()
+                    } else {
+                        ops.iter().map(|o| o.as_str()).collect()
+                    };
+                    let op_n = |i: usize| -> Result<&str> {
+                        ops.get(i)
+                            .copied()
+                            .ok_or_else(|| lw.err(format!("missing operand {i}")))
+                    };
                     if x2 != (ops.len() == 3) || ops.len() > 3 {
                         bail!(lw.err("tcgen05.ld: unexpected operands"));
                     }
@@ -4593,7 +4839,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         half,
                         s16x256b: has("16x256b"),
                         s16x128b: has("16x128b"),
-                        red: None,
+                        red,
                     };
                     if x2 {
                         // `.16x32bx2 d, [a], split`: lanes 0..15 at a, lanes 16..31 at
@@ -5028,9 +5274,12 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 .iter()
                 .find_map(|m| m.strip_prefix('v').and_then(|x| x.parse::<u8>().ok()));
             if let Some(n) = vec_n {
-                // 64-bit elements: `.v2.b64` (one PTX register each).
-                if bits > 64 || bits == 64 && n != 2 {
-                    bail!(lw.err("only vector elements up to 32 bits, and .v2.b64, are modeled"));
+                // 64-bit elements: `.v2.b64` (one PTX register each), and the 32-byte
+                // `.global.v4.b64` (SASS LDG / STG.E.ENL2.256; probes/ldg256_mask).
+                if bits > 64 || bits == 64 && !(n == 2 || n == 4 && space == Space::Global) {
+                    bail!(lw.err(
+                        "only vector elements up to 32 bits, .v2.b64 and .global.v4.b64 are modeled"
+                    ));
                 }
                 let sync = mem_sync(mods, false).map_err(|e| lw.err(e.to_string()))?;
                 let opnd = if base == "ld" { op_n(0)? } else { op_n(1)? };
@@ -5078,8 +5327,20 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 }
             }
             if base == "ld" {
+                let d = lw.dst(op_n(0)?)?;
+                // `ld.s32 %rd, [a]` (a 64-bit register): sign-extended to 64 bits (PTX ISA;
+                // Triton's `ld.param.s32 %rd11` of an ignore index; probes/ld_sext64).
+                if tname.starts_with('s') && bits < 64 && lw.wide_regs.contains(op_n(0)?.trim()) {
+                    extra.push(Op::CvtInt {
+                        d,
+                        a: Val::Reg(d, 1),
+                        from_bits: bits,
+                        to_bits: 64,
+                        signed: true,
+                    });
+                }
                 Op::Ld {
-                    d: lw.dst(op_n(0)?)?,
+                    d,
                     n: 1,
                     space,
                     bytes,
@@ -6164,6 +6425,33 @@ mod tests {
         );
         assert!(s.contains("%t___s0<2>") && s.contains("%p__s0<1>"), "{s}");
         assert!(s.contains("setp.eq.u32 %p__s00, %t___s01, 0"), "{s}");
+    }
+
+    /// recip_rn_f32 = RN(1 / c) (ptxas's folded div.full / div.approx constants).
+    #[test]
+    fn recip_constants() {
+        for (c, r) in [
+            (0x4040_0000u32, 0x3eaa_aaabu32),
+            (0x3fb8_aa3b, 0x3f31_7218),
+            (0x4b00_0000, 0x3400_0000),
+            (0x7e80_0000, 0x0080_0000),
+            (0x0080_0000, 0x7e80_0000),
+            (0x4120_0000, 0x3dcc_cccd),
+            (0xc0e0_0000, 0xbe12_4925),
+            (0x3dcc_cccd, 0x4120_0000),
+        ] {
+            assert_eq!(super::recip_rn_f32(c), r, "{c:#x}");
+        }
+        // Against f64 (1 / c is never within 2^-53 relative of an f32 tie here).
+        let mut x = 0x1234_5678u32;
+        for _ in 0..200_000 {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            let c = x & 0x807f_ffff | (1 + x % 252) << 23;
+            let want = ((1.0 / f32::from_bits(c) as f64) as f32).to_bits();
+            assert_eq!(super::recip_rn_f32(c), want, "{c:#x}");
+        }
     }
 
     #[test]

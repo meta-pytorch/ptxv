@@ -2,8 +2,8 @@ name = "probe_tmem_ldred"
 description = """
 Probe for tcgen05.ld.red (SASS LDTM.STAT.xN.MIN|MAX[ABS].F32[.NAN]: FA4's row max) and a
 negative TMEM address offset (SASS `LDTM.x8 R, tmem[UR+-0x10]`, the mslk decode kernel); see
-kernel.ptx (kernel.cubin = ptxas -arch=sm_103a kernel.ptx: the PTX front-end does not parse
-tcgen05.ld.red). Inputs: random words with 12% special f32 patterns (zeros, NaNs, infinities,
+kernel.ptx (kernel.cubin = ptxas -arch=sm_103a kernel.ptx; fixtures.rs also lowers kernel.ptx
+on the PTX front-end). Inputs: random words with 12% special f32 patterns (zeros, NaNs, infinities,
 subnormals), thread 5's row all NaNs (distinct payloads), thread 6's row alternating +0 / -0.
 tests/fixtures.rs checks the simulator against the GB300 output hash."""
 cubin = "kernel.cubin"

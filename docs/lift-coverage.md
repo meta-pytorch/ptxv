@@ -161,7 +161,8 @@ modifier of these opcodes is refused.
 | PTX `tensormap.replace.tile.*.shared::cta.b1024`, `tensormap.cp_fenceproxy`, `fence.proxy.tensormap::generic.acquire` | ptxas's LDS / LOP3 / STS read-modify-write per field, per-lane release copy, TmapFence; **probes/tmap_replace** (every field / ordinal / value), tmap_device and tmap_param_copy on the PTX front (S-TMAP) |
 | `LDSM.8.MT1616[.2]` (ldmatrix.m16n16.x1 / .x2.trans.b8) | **probes/ldsm_b8**, SASS (L-ROSETTA) |
 | PTX `tcgen05.st / ld .16x32bx2 [a], split` | **probes/tmem_x2**, both front-ends (S-TMEM) |
-| `LDTM.STAT.16dp32bit_t0_t15 / _t16_t31 .xN.MIN/MAX[ABS].F32[.NAN]` | **probes/tmem_ldred16**, SASS (S-TMEM) |
+| `LDTM.STAT.16dp32bit_t0_t15 / _t16_t31 .xN.MIN/MAX[ABS].F32[.NAN]` | **probes/tmem_ldred16**, both fronts (S-TMEM) |
+| `LDTM.STAT.xN.MIN/MAX[ABS].F32[.NAN]` (`tcgen05.ld.red.32x32b`) | **probes/tmem_ldred**, both fronts (S-TMEM) |
 | `STTM.16dp256bit[.xN]`, `STTM.16dp128bit[.xN]` (+ PTX `tcgen05.st.16x256b / .16x128b`) | **probes/tmem_st16**, both front-ends (S-TMEM) |
 | `F2FP[.RELU].F16.E2M1.UNPACK_B Rd, Ra.B1 / .B2 / .B3` (+ PTX `cvt.rn[.relu].f16x2.e2m1x2` of a `mov.b32 {..}` byte) | **probes/e2m1_bytes**, both front-ends (N-CVT-LP) |
 | `VIMNMX.RELU`, `VIMNMX.S16x2.RELU`, `VIADDMNMX.RELU` (+ PTX `min / max.relu.s32 / .s16x2`) | **probes/imnmx_relu**, both front-ends (N-INT16X2) |
@@ -309,9 +310,14 @@ any modifier outside the audited set before an arm runs.
 | `UP2UR` | (CuTe predicate spill) | uniform P2R | lift_l_forms |
 | `VIADD.16x2` | `add.u16x2` / `add.s16x2` | two 16-bit lanes mod 2^16, no carry between lanes | probes/viadd16x2 |
 | `LDG.E.ENL2.256 Rhi, Rlo` / `STG.E.ENL2.256 [a], Rlo, Rhi` | `ld` / `st.global.v8.b32` | 32-byte access, 32-byte aligned; bytes 0..16 in the `lo` quad (second operand of the load, first data operand of the store) | probes/ldst256 |
+| `LDG.E.ENL2.256 Rhi, Rlo, [a], mask` | `ld.global.v8.b32` / `.v4.b64` with some elements unused | each half's selected words compacted from its base register (RZ: none); others untouched | probes/ldg256_mask |
 | `LDG` / `STG .E.ELL2.256`, `.E.EFL2.256` | `ld` / `st.global.L2::evict_last` / `L2::evict_first .v8.b32` | as ENL2 (eviction hint dropped, L-PTX-HINT) | probes/ldst256_l2 |
+| `FMUL [.FTZ] a, RN(1/C)` (or FFMA into an add), `FADD +-a, -RZ` for C = +-1 | `div.full` / `div.approx [.ftz] .f32 a, C`, C an immediate or a dominating `mov` constant | ptxas's constant fold, then PTX-FMAD as a plain mul | probes/div_const |
 | `FFMA` / `FFMA.FTZ` / `FFMA.SAT` / `DFMA` | `mul` + `add` / `sub` `.f32` / `.f64` without rounding modifiers | ptxas 13.0's default contraction where unambiguous (one reader, one block, same `.ftz`, unguarded); ambiguous shapes refused (PTX-FMAD) | probes/fmad |
 | `HFMA2.BF16_V2 d, -RZ.H0_H0, RZ.H0_H0, \|R\|[.H1_H1]` | `abs.bf16x2` / `abs.bf16` | sign bits cleared, then -0*0 + \|x\|: NaN 0x7fff, -0 to +0 | probes/bf16_abs |
+| (PTX) | `ld[.param / .global].s32` / `.s16` / `.s8` into a 64-bit register | sign-extended to 64 bits (unsigned: zero) | probes/ld_sext64 |
+| (PTX) | `cvt.s8` / `.s16 .s32` / `.s64` narrowing | the kept bits sign-extended to the destination register | probes/cvt_s8_narrow |
+| `HADD2 d, \|R\|, -RZ.H0_H0` / `HADD2 d, -R, -RZ.H0_H0` | `abs` / `neg .f16[x2]` | per lane \|x\| or -x plus -0; NaN -> 0x7fff | probes/f16_absneg |
 | `HFMA2` / `HMUL2` / `HADD2` (f16) with `.H0_H0` / `.H1_H1`, `.reuse`, immediate pairs | `fma` / `mul` / `add` / `sub .rn.f16[x2]`, `mul.f16` that cannot be contracted | per lane one f16 rounding; HMUL2 = a*b + -0, HADD2 = a*1 + c | probes/f16_arith |
 | `LDSM.16.M88.N` / `.MT88.N` | `ldmatrix.sync.aligned.m8n8.x{1,2,4}[.trans].shared.b16` | (PTX front added) | probes/ldmatrix_ptx |
 | `LDG.E.NA[...]`, `ST.E.EF.128`, `LD` / `ST` / `ATOM` `.STRONG.SM` | `.L1::no_allocate`, `.L1::evict_first`, `.cta` scope | cache hints dropped; `.SM` = CTA scope | probes/memhints |

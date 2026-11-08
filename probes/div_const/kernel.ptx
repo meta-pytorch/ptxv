@@ -1,0 +1,68 @@
+// probes/div_const: div.full / div.approx [.ftz] .f32 by a constant, which ptxas folds into
+// FMUL [.FTZ] by RN(1/C) (contracted into a following add / sub as a plain mul), FADD for C =
+// +-1. 128 threads; a = in[t], b = in[128 + t] (gen.py); out[k * 128 + t] per form below.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry div_const(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 128, 1, 1
+{
+    .reg .b32   %r<4>;
+    .reg .f32   %f<48>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    add.s64         %rd5, %rd2, %rd3;
+    ld.global.f32   %f1, [%rd4];
+    ld.global.f32   %f2, [%rd4+512];
+    mov.b32         %f20, 0f3FB8AA3B;
+    // out[0 * 128 + t]: a / 3 (immediate)
+    div.full.f32 %f30, %f1, 0f40400000;
+    st.global.f32   [%rd5+0], %f30;
+    // out[1 * 128 + t]: a / log2e (mov register) + b, contracted
+    div.full.f32 %f31, %f1, %f20;
+    add.f32 %f44, %f31, %f2;
+    st.global.f32   [%rd5+512], %f44;
+    // out[2 * 128 + t]: div.approx.ftz a / 10
+    div.approx.ftz.f32 %f32, %f1, 0f41200000;
+    st.global.f32   [%rd5+1024], %f32;
+    // out[3 * 128 + t]: a / 1
+    div.full.f32 %f33, %f1, 0f3F800000;
+    st.global.f32   [%rd5+1536], %f33;
+    // out[4 * 128 + t]: a / -1
+    div.full.f32 %f34, %f1, 0fBF800000;
+    st.global.f32   [%rd5+2048], %f34;
+    // out[5 * 128 + t]: ftz a / 1
+    div.full.ftz.f32 %f35, %f1, 0f3F800000;
+    st.global.f32   [%rd5+2560], %f35;
+    // out[6 * 128 + t]: ftz a / -1
+    div.full.ftz.f32 %f36, %f1, 0fBF800000;
+    st.global.f32   [%rd5+3072], %f36;
+    // out[7 * 128 + t]: a / 2^126
+    div.full.f32 %f37, %f1, 0f7E800000;
+    st.global.f32   [%rd5+3584], %f37;
+    // out[8 * 128 + t]: a / 2^-126
+    div.full.f32 %f38, %f1, 0f00800000;
+    st.global.f32   [%rd5+4096], %f38;
+    // out[9 * 128 + t]: b - a / -7, contracted
+    div.full.f32 %f39, %f1, 0fC0E00000;
+    sub.f32 %f45, %f2, %f39;
+    st.global.f32   [%rd5+4608], %f45;
+    // out[10 * 128 + t]: a / 3.0 (decimal)
+    div.full.f32 %f40, %f1, 3.0;
+    st.global.f32   [%rd5+5120], %f40;
+    // out[11 * 128 + t]: div.approx a / 0.1
+    div.approx.f32 %f41, %f1, 0f3DCCCCCD;
+    st.global.f32   [%rd5+5632], %f41;
+    ret;
+}

@@ -3833,7 +3833,10 @@ ordinary load by that thread at the fence and at the TMA (race-checked).
   split columns (`probes/tmem_x2`: st .x2 / .x4 / .x16 and ld .x8 = GB300).
   **`LDTM.STAT.16dp32bit_t0_t15` / `_t16_t31`** (`tcgen05.ld.red.16x32bx2`, FA4 decode's row
   max) reduce the N values the half loads, as the 32x32b form (`probes/tmem_ldred16`: .x64
-  max, .x16 min.NaN, .x8 max.abs, .x4 min.abs.NaN on special-heavy data = GB300).
+  max, .x16 min.NaN, .x8 max.abs, .x4 min.abs.NaN on special-heavy data = GB300). The PTX
+  front-end lowers `tcgen05.ld.red.{32x32b,16x32bx2}...{min,max}[.abs][.NaN].f32 {d..}, red,
+  [a][, split]` to the same load with the reduction into `red`; other forms are refused
+  (probes/tmem_ldred and tmem_ldred16 kernel.ptx = GB300 bitwise, 2026-11-07).
   **A in TMEM**
   (`tcgen05.mma [d], [a], ...`): A row i at the lane D's row i uses, relative to A's lane
   field, two bf16 per 32-bit column, the even K index in the low half. **MN-major** shared
@@ -3973,7 +3976,18 @@ forms seen. Any other form is a hard error.
   (`__local_depot0`, through `%SPL`) are the thread's local memory with offsets from 0, and
   scalar `ld` / `st .local` of up to 32 bits are SASS `LDL` / `STL` (the `.loc` filter used to
   drop `.local` declarations); `popc.b32` is `POPC`, `popc.b64` a `POPC` per half and an add (probes/popc64, GB300 20/20,
-  both front-ends bitwise, 2026-11-07); `not.b16/32/64` is XOR with all ones.
+  both front-ends bitwise, 2026-11-07); `abs` / `neg .f16[x2]` are `HADD2 d, |R|, -RZ.H0_H0` /
+  `HADD2 d, -R, -RZ.H0_H0` (per lane |x| or -x plus -0: a NaN becomes 0x7fff; probes/f16_absneg
+  on every f16 pattern, GB300 20/20, both front-ends bitwise, 2026-11-07); `not.b16/32/64` is
+  XOR with all ones. A narrowing integer `cvt` to a signed type (`cvt.s8.s32 %rs, %r`, Triton's
+  int8 dequantize) sign-extends the kept bits to the destination register (PTX ISA; ptxas
+  `I2F.S8` for a following `cvt.rn.f32.s16`); the PTX front zero-extended them before
+  2026-11-07 (a sim != GPU kernel-DB record, mslk fa4 dequantize_kv): probes/cvt_s8_narrow,
+  GB300 20/20, both front-ends bitwise. A signed load narrower than 64 bits into a register
+  declared 64 bits wide (`ld.param.s32 %rd11`, Triton's ignore index compared with an int64
+  label) sign-extends to 64 bits (PTX ISA; the PTX front zero-extended above bit 31 before
+  2026-11-07: the sim != GPU record msl_ops triton._finish.f32.72): probes/ld_sext64, GB300
+  20/20, both front-ends bitwise.
 - Rung 2e (cuBLAS nvjet, r2_cublas_gemm bitwise = GB300): `PMTRIG` (no-op);
   `SYNCS.ARRIVE.TRANS64.RED.A0TR` / `.A0TX` (no arrival; expect / complete tx, checked against
   ptxas: `mbarrier.expect_tx` / `complete_tx`); `UTCBAR.MULTICAST` (cta_group::1, mask operand
@@ -4038,7 +4052,12 @@ forms seen. Any other form is a hard error.
   - `SHFL.{UP,DOWN,IDX,BFLY} P, ...` (P = the source lane was in range), `BMSK[.W]` /
     `UBMSK` (`fixtures/s_bmsk`).
   - `LDG.E.ENL2.256 Rhi, Rlo, [..]` (bytes 0..16 to Rlo, 16..32 to Rhi, checked against
-    ptxas's `ld.global.v8.b32`), `LDG.E.S8/.S16` / `LDS.S16` (sign-extended), `F2F.F32.F64` /
+    ptxas's `ld.global.v8.b32`); with a fourth operand `mask` (ptxas's form of a
+    `ld.global.v8.b32` / `.v4.b64` only some of whose elements are used; bit i = word i), each
+    half's selected words go, in order, to consecutive registers from that half's base (RZ
+    for a half with none) and no other register is written (2026-11-07; before, all eight
+    were written, clobbering live registers; probes/ldg256_mask, 18 element subsets, GB300
+    20/20, both front-ends bitwise; PTX `.global.v4.b64` lifted with it), `LDG.E.S8/.S16` / `LDS.S16` (sign-extended), `F2F.F32.F64` /
     `.F64.F32` / `.F16.F32`, `F2FP.F16.F32.PACK_AB`, `HADD2.F32 Rd, -RZ, Ra.H0_H0` (f16 ->
     f32), `F2I.S64/.U64.TRUNC`, `I2F.S64/.U64/.S16/.U16 (Ra.H1)/.S8`, `LEA.HI` with `-Rb`
     (`fixtures/s_cvt`).
@@ -4305,6 +4324,17 @@ produces. The SASS front-end is exact (it executes the FFMA / FMUL + FADD ptxas 
   passed through `neg` (ptxas folds it: FFMA -a, b, c), a pair across blocks, under a guard
   (ptxas if-converts and then kept a shared product apart: FMUL + FSEL + FADD), or with an
   operand redefined in between, and a mul before a reader that precedes it (a loop).
+- `div.full` / `div.approx [.ftz] .f32 d, a, C` with a constant divisor (an immediate,
+  decimal or `0f`, or a register whose only definition is an unguarded `mov` of one that
+  dominates the division) is ptxas's `FMUL [.FTZ] d, a, RN(1/C)` for 2^-126 <= |C| <= 2^126,
+  C != +-1, and contracts as a plain mul (FFMA a, RN(1/C), c with a following add); C = 1 is
+  a (`.ftz`: FADD.FTZ a, -RZ), C = -1 is FADD -a, -RZ. `div_by_const` rewrites such statements
+  to that `mul` / `mov` / add before the analysis; other constants (the scaled range) stay
+  divisions. Before 2026-11-07 they ran as the general expansion (MUFU.RCP of C): the sim !=
+  GPU record mslk fmha.merge_attentions_varargs (lse / log2e, then + max, as one FFMA).
+  probes/div_const: 12 forms (immediates, a mov register, decimal, +-1, .ftz, div.approx,
+  2^+-126, contracted add / sub) on specials and random values, GB300 20/20, both front-ends
+  bitwise; `recip_constants` checks RN(1/C) on 200,000 constants.
 - Status: **validated** by probes/fmad (2026-11-07): every contracted and kept-apart form on
   random, cancelling, subnormal, signed-zero and Inf / NaN operands; GB300 50/50 scrubbed,
   PTX and SASS fronts bitwise (the unfused value differs from GB300's in 122 of 232 finite

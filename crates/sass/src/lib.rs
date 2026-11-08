@@ -2519,6 +2519,7 @@ fn lower_line(
                 _ => bail!(lw.err("operand count")),
             };
             let mut ops: Vec<(Val, HSel, bool)> = Vec::new();
+            let mut abs_a = false;
             let mut i = 0;
             while i < toks.len() {
                 if Some(ops.len()) == imm_at {
@@ -2543,6 +2544,17 @@ fn lower_line(
                 let (neg, t) = match t.strip_prefix('-') {
                     Some(r) => (true, r),
                     None => (false, t),
+                };
+                // `|R|` / `|R|.H0_H0` (a only): the absolute value (PTX abs.f16x2;
+                // probes/f16_absneg).
+                let stripped;
+                let t = match t.strip_prefix('|').and_then(|x| x.split_once('|')) {
+                    Some((r, rest)) if ops.is_empty() && !neg => {
+                        abs_a = true;
+                        stripped = format!("{r}{rest}");
+                        stripped.as_str()
+                    }
+                    _ => t,
                 };
                 let (r, sel) = if let Some(r) = t.strip_suffix(".H0_H0") {
                     (r, HSel::H0)
@@ -2573,6 +2585,7 @@ fn lower_line(
                 a: a.0,
                 b: b.0,
                 c: c.0,
+                abs_a,
                 neg_a: a.2,
                 neg_c: c.2,
                 sel: [a.1, b.1, c.1],
@@ -3868,12 +3881,38 @@ fn lower_line(
                 }),
             }
         }
-        "LDG" if has("256") => Op::Ld256 {
-            hi: lw.dst(lw.op(0)?)?,
-            lo: lw.dst(lw.op(1)?)?,
-            addr: wide_e_addr(lw.addr(lw.op(2)?)?, has("E")),
-            sync: sass_strong(mods),
-        },
+        // `LDG.E.ENL2.256 Rhi, Rlo, [a], mask`: only the mask's words, each half's compacted
+        // from its base register (RZ for a half with none); probes/ldg256_mask.
+        "LDG" if has("256") => {
+            let mask = match lw.l.operands.get(3) {
+                None => 0xff,
+                Some(m) => {
+                    let m = m.trim();
+                    let v = m
+                        .strip_prefix("0x")
+                        .and_then(|h| u8::from_str_radix(h, 16).ok())
+                        .ok_or_else(|| lw.err("bad LDG.256 mask"))?;
+                    if v == 0 || lw.l.operands.len() > 4 {
+                        bail!(lw.err("LDG.256 mask form not modeled"));
+                    }
+                    v
+                }
+            };
+            let (hi, lo) = (lw.dst(lw.op(0)?)?, lw.dst(lw.op(1)?)?);
+            // A half's base is RZ exactly when the mask selects none of its words.
+            for (r, m) in [(lo, mask & 0xf), (hi, mask >> 4)] {
+                if (r.file == File::R && r.idx == RZ) != (m == 0) {
+                    bail!(lw.err("LDG.256 destination / mask combination not modeled"));
+                }
+            }
+            Op::Ld256 {
+                hi,
+                lo,
+                addr: wide_e_addr(lw.addr(lw.op(2)?)?, has("E")),
+                sync: sass_strong(mods),
+                mask,
+            }
+        }
         "STG" if has("256") => {
             if lw.op(1)? == "RZ" || lw.op(2)? == "RZ" {
                 bail!(lw.err("STG.256 with RZ data not modeled"));
@@ -5370,6 +5409,25 @@ mod tests {
             "UP2UR UR37, UPR, URZ, 0x80",
         ];
         for l in refused {
+            assert!(lower1(l).is_err(), "{l} must be refused");
+        }
+    }
+
+    /// Masked LDG.256: accepted when each half's base is RZ exactly when its mask is empty.
+    #[test]
+    fn ldg256_mask_forms() {
+        for l in [
+            "LDG.E.ENL2.256 R2, RZ, desc[UR4][R2.64], 0xc0",
+            "LDG.E.ENL2.256 RZ, R8, desc[UR4][R2.64], 0x3",
+            "LDG.E.ENL2.256 R4, R2, desc[UR4][R2.64], 0x3c",
+        ] {
+            assert!(lower1(l).is_ok(), "{l}");
+        }
+        for l in [
+            "LDG.E.ENL2.256 R2, R4, desc[UR4][R2.64], 0xc0",
+            "LDG.E.ENL2.256 RZ, R4, desc[UR4][R2.64], 0x30",
+            "LDG.E.ENL2.256 R2, R4, desc[UR4][R2.64], 0x0",
+        ] {
             assert!(lower1(l).is_err(), "{l} must be refused");
         }
     }

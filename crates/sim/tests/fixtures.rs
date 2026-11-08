@@ -1390,11 +1390,49 @@ fn probe_tmem_x2_matches_hardware() {
 }
 
 /// S-TMEM: LDTM.STAT.16dp32bit_t0_t15 / _t16_t31 .xN.MIN|MAX[ABS].F32[.NAN]
-/// (tcgen05.ld.red.16x32bx2; probes/tmem_ldred16) = GB300 (SASS: the PTX front-end does not
-/// parse tcgen05.ld.red).
+/// (tcgen05.ld.red.16x32bx2; probes/tmem_ldred16) = GB300 on both front-ends (the PTX one
+/// lowers kernel.ptx's tcgen05.ld.red to TmemLd with `red`).
 #[test]
 fn probe_tmem_ldred16_matches_hardware() {
     probe_bitwise_cubin("probes/tmem_ldred16", Some("kernel.cubin"));
+    let case = Case::load(root().join("probes/tmem_ldred16")).unwrap();
+    let v = certify_ptx_file(&case);
+    let report = case.expect_report(&v.outputs[0]).unwrap();
+    assert!(
+        !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+        "ptx: {report:?}"
+    );
+}
+
+/// tcgen05.ld.red forms beyond 32x32b / 16x32bx2 min / max .f32 are refused.
+#[test]
+fn tmem_ldred_ptx_other_forms_refused() {
+    let src = std::fs::read_to_string(root().join("probes/tmem_ldred/kernel.ptx")).unwrap();
+    for (from, to) in [
+        ("32x32b.x32.max.f32", "16x64b.x32.max.f32"),
+        ("32x32b.x32.max.f32", "32x32b.x32.max.min.f32"),
+        ("32x32b.x32.max.f32", "32x32b.x32.max.u32"),
+    ] {
+        let bad = src.replacen(from, to, 1);
+        assert_ne!(bad, src);
+        assert!(
+            ptxv_ptx::parse_kernel(&bad, Some("probe_tmem_ldred")).is_err(),
+            "{to}"
+        );
+    }
+}
+
+/// Certify a cubin-only case's kernel.ptx on the PTX front-end (clean, one output).
+fn certify_ptx_file(case: &Case) -> ptxv_sim::explore::Verdict {
+    let src = std::fs::read_to_string(case.dir.join("kernel.ptx")).unwrap();
+    let k = ptxv_ptx::parse_kernel(&src, Some(&case.m.entry)).unwrap();
+    let launch = build_launch(case, &k).unwrap();
+    let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
+        .verdict
+        .unwrap_or_else(|| panic!("{} ptx certifies", case.m.name));
+    assert_eq!(v.classes(), ["clean"], "{:#?}", v.findings);
+    assert_eq!(v.outputs.len(), 1);
+    v
 }
 
 /// N-HMMA: probes/hmma (mma.sync m16n8k16 bf16, 4 accumulating steps per 16x8 tile) against
@@ -2348,6 +2386,46 @@ fn atom_vec_overlap_refused() {
 fn probe_popc64_matches_hardware() {
     probe_bitwise("probes/popc64", "good", "ptx");
     probe_bitwise("probes/popc64", "good", "sass");
+}
+
+/// Masked 32-byte loads (LDG.E.ENL2.256 ..., mask: ld.global.v4.b64 / .v8.b32 with some
+/// elements unused) and st.global.v4.b64 (probes/ldg256_mask) = GB300 on both front-ends.
+#[test]
+fn probe_ldg256_mask_matches_hardware() {
+    probe_bitwise("probes/ldg256_mask", "good", "ptx");
+    probe_bitwise("probes/ldg256_mask", "good", "sass");
+}
+
+/// abs / neg .f16x2 / .f16 (HADD2 |R| / -R, -RZ.H0_H0; probes/f16_absneg, every f16 pattern)
+/// = GB300 on both front-ends.
+#[test]
+fn probe_f16_absneg_matches_hardware() {
+    probe_bitwise("probes/f16_absneg", "good", "ptx");
+    probe_bitwise("probes/f16_absneg", "good", "sass");
+}
+
+/// Narrowing integer cvt to a signed type sign-extends into the destination register
+/// (probes/cvt_s8_narrow) = GB300 on both front-ends.
+#[test]
+fn probe_cvt_s8_narrow_matches_hardware() {
+    probe_bitwise("probes/cvt_s8_narrow", "good", "ptx");
+    probe_bitwise("probes/cvt_s8_narrow", "good", "sass");
+}
+
+/// div.full / div.approx .f32 by a constant = FMUL by RN(1/C), contracted like a plain mul
+/// (probes/div_const) = GB300 on both front-ends.
+#[test]
+fn probe_div_const_matches_hardware() {
+    probe_bitwise("probes/div_const", "good", "ptx");
+    probe_bitwise("probes/div_const", "good", "sass");
+}
+
+/// Signed loads into 64-bit registers sign-extend to 64 bits (probes/ld_sext64) = GB300 on
+/// both front-ends.
+#[test]
+fn probe_ld_sext64_matches_hardware() {
+    probe_bitwise("probes/ld_sext64", "good", "ptx");
+    probe_bitwise("probes/ld_sext64", "good", "sass");
 }
 
 /// mad.wide.{s,u}16 with an immediate multiplier (probes/mad_wide16) = GB300.
@@ -3878,10 +3956,18 @@ fn s_lift_l_matches_hardware() {
 }
 
 /// tcgen05.ld.red (LDTM.STAT.xN.MIN|MAX[ABS].F32[.NAN]) and a negative TMEM offset
-/// (`tmem[UR+-0x10]`): probes/tmem_ldred agrees with GB300 bitwise (2026-11-05, 100/100).
+/// (`tmem[UR+-0x10]`): probes/tmem_ldred agrees with GB300 bitwise (2026-11-05, 100/100), on
+/// the PTX front-end too (tcgen05.ld.red.32x32b).
 #[test]
 fn probe_tmem_ldred_matches_hardware() {
     certified_hash("probes", "tmem_ldred", 16475847427938539045);
+    let case = Case::load(root().join("probes/tmem_ldred")).unwrap();
+    let v = certify_ptx_file(&case);
+    assert_eq!(
+        fnv(&v.outputs[0]),
+        16475847427938539045,
+        "ptx: output differs from GB300's"
+    );
 }
 
 /// E-COLLECTIVE-ALL: ptxas's BRA.DIV / WARPSYNC.COLLECTIVE.ALL / BAR.SYNC R, R / ENDCOLLECTIVE

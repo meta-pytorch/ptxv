@@ -1017,12 +1017,15 @@ pub enum Op {
     },
     /// Packed half2 FMA `d = a*b + c` (per 16-bit half), SASS `HFMA2` (`HMUL2` is c = -0,
     /// `HADD2` is b = 1.0; PTX `fma` / `mul` / `add` / `sub` `.f16[x2]`): `sel` picks which half
-    /// of each operand feeds both lanes (`.H0_H0` / `.H1_H1`); `neg_a` / `neg_c` flip signs.
+    /// of each operand feeds both lanes (`.H0_H0` / `.H1_H1`); `abs_a` clears a's sign bits
+    /// (`|R|`; PTX `abs.f16x2` is `HADD2 d, |R|, -RZ.H0_H0`), then `neg_a` / `neg_c` flip
+    /// signs.
     Hfma2 {
         d: Reg,
         a: Val,
         b: Val,
         c: Val,
+        abs_a: bool,
         neg_a: bool,
         neg_c: bool,
         sel: [HSel; 3],
@@ -1807,13 +1810,18 @@ pub enum Op {
         b: Val,
         rn: bool,
     },
-    /// SASS `LDG.E.ENL2.256 Rhi, Rlo, [Ra.64]` (`ld.global.v8.b32`): a 32-byte global load;
-    /// bytes 0..16 go to Rlo..Rlo+3, bytes 16..32 to Rhi..Rhi+3 (checked against ptxas).
+    /// SASS `LDG.E.ENL2.256 Rhi, Rlo, [Ra.64][, mask]` (`ld.global.v8.b32` / `.v4.b64`): a
+    /// 32-byte global load; bytes 0..16 go to Rlo..Rlo+3, bytes 16..32 to Rhi..Rhi+3 (checked
+    /// against ptxas). `mask` (bit i: word i; 0xff without the operand, ptxas's form when only
+    /// some elements are used): each half's selected words go, in order, to consecutive
+    /// registers from that half's base (RZ when the half selects none); the rest are not
+    /// written (probes/ldg256_mask).
     Ld256 {
         hi: Reg,
         lo: Reg,
         addr: Addr,
         sync: Option<MemSync>,
+        mask: u8,
     },
     /// SASS `STG.E.ENL2.256 [Ra.64], Rlo, Rhi` (`st.global.v8.b32`): a 32-byte global store;
     /// bytes 0..16 come from Rlo..Rlo+3, bytes 16..32 from Rhi..Rhi+3 (the reverse of the
@@ -2506,9 +2514,9 @@ impl Op {
                 x
             }
             Op::LdLocal { d, bytes, .. } => span(*d, (*bytes as u16 / 4).max(1)),
-            Op::Ld256 { hi, lo, .. } => {
-                let mut x = span(*lo, 4);
-                x.extend(span(*hi, 4));
+            Op::Ld256 { hi, lo, mask, .. } => {
+                let mut x = span(*lo, (mask & 0xf).count_ones() as u16);
+                x.extend(span(*hi, (mask >> 4).count_ones() as u16));
                 x
             }
             Op::Shfl { d, p: Some(p), .. } => vec![*d, *p],

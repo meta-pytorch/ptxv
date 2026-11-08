@@ -1,0 +1,37 @@
+name = "probe_div_const"
+description = """
+Probe (L-ROSETTA) for div.full / div.approx [.ftz] .f32 by a constant (immediate, decimal, or a
+register holding one), which ptxas folds into FMUL by RN(1/C) (contracted into a following add /
+sub) or, for C = +-1, FADD: 12 forms on specials and random values (kernel.ptx, gen.py).
+expected/ is GB300's output (kernel.cubin = ptxas -arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "div_const"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [256]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1536]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1,0 +1,45 @@
+// probes/f16_absneg: abs / neg .f16x2 and .f16 (SASS HADD2 d, |R|, -RZ.H0_H0 and HADD2 d,
+// -R, -RZ.H0_H0) on every f16 pattern: in[i] = (2i + 1) << 16 | 2i, i < 32768. 256 threads, 128
+// iterations; out[i] = abs.f16x2, out[32768 + i] = neg.f16x2, out[65536 + i] = abs.f16 of the
+// low half, out[98304 + i] = neg.f16 of the high half (16-bit results zero-extended).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry f16_absneg(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .pred  %p<2>;
+    .reg .b16   %h<6>;
+    .reg .b32   %r<12>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r4, %tid.x;
+LOOP:
+    mul.wide.u32    %rd3, %r4, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    add.s64         %rd5, %rd2, %rd3;
+    ld.global.b32   %r1, [%rd4];
+    abs.f16x2       %r2, %r1;
+    neg.f16x2       %r3, %r1;
+    mov.b32         {%h1, %h2}, %r1;
+    abs.f16         %h3, %h1;
+    neg.f16         %h4, %h2;
+    cvt.u32.u16     %r5, %h3;
+    cvt.u32.u16     %r6, %h4;
+    st.global.b32   [%rd5], %r2;
+    st.global.b32   [%rd5+131072], %r3;
+    st.global.b32   [%rd5+262144], %r5;
+    st.global.b32   [%rd5+393216], %r6;
+    add.u32         %r4, %r4, 256;
+    setp.lt.u32     %p1, %r4, 32768;
+    @%p1 bra        LOOP;
+    ret;
+}

@@ -8711,6 +8711,7 @@ impl Machine {
                 a,
                 b,
                 c,
+                abs_a,
                 neg_a,
                 neg_c,
                 sel,
@@ -8721,7 +8722,10 @@ impl Machine {
                     self.rd(t, c)? as u32,
                 ];
                 let h = |k: usize, lane: u32| {
-                    let x = sel[k].lane(v[k], lane);
+                    let mut x = sel[k].lane(v[k], lane);
+                    if k == 0 && *abs_a {
+                        x &= 0x7fff;
+                    }
                     let n = (k == 0 && *neg_a) || (k == 2 && *neg_c);
                     x ^ ((n as u16) << 15)
                 };
@@ -9253,7 +9257,13 @@ impl Machine {
                 self.resolve(t, Space::Generic, a, 1)?;
                 self.wp(t, *p, false);
             }
-            Op::Ld256 { hi, lo, addr, sync } => {
+            Op::Ld256 {
+                hi,
+                lo,
+                addr,
+                sync,
+                mask,
+            } => {
                 let a = self.addr(t, addr)?;
                 check_aligned(Space::Global, a, 32)?;
                 let loc = self.resolve(t, Space::Global, a, 32)?;
@@ -9265,24 +9275,50 @@ impl Machine {
                 } else if self.l1.is_some() {
                     self.l1_load(t, pc, loc, &mut data); // ASSUME(E-HW-L1)
                 }
-                for (i, c) in data.chunks(4).enumerate() {
-                    let base = if i < 4 { *lo } else { *hi };
-                    let r = Reg {
-                        file: base.file,
-                        idx: base.idx + (i % 4) as u16,
-                    };
-                    self.wr(t, r, u32::from_le_bytes([c[0], c[1], c[2], c[3]]) as u64, 1);
-                }
-                // Numerics: two 16-byte vector loads (each register keeps its word's node).
-                for (h, base) in [(0usize, *lo), (1, *hi)] {
-                    let l = match loc {
-                        Loc::Global { alloc, off } => Loc::Global {
-                            alloc,
-                            off: off + 16 * h as u64,
-                        },
-                        other => other,
-                    };
-                    self.num_ld(t, base, l, (16, 1, false), &data[16 * h..16 * h + 16]);
+                if *mask != 0xff {
+                    // Each half's selected words, compacted from its base register; numerics
+                    // per word.
+                    let mut k = [0u16; 2];
+                    for (i, c) in data.chunks(4).enumerate() {
+                        if mask >> i & 1 == 0 {
+                            continue;
+                        }
+                        let base = if i < 4 { *lo } else { *hi };
+                        let r = Reg {
+                            file: base.file,
+                            idx: base.idx + k[i / 4],
+                        };
+                        k[i / 4] += 1;
+                        self.wr(t, r, u32::from_le_bytes([c[0], c[1], c[2], c[3]]) as u64, 1);
+                        let l = match loc {
+                            Loc::Global { alloc, off } => Loc::Global {
+                                alloc,
+                                off: off + 4 * i as u64,
+                            },
+                            other => other,
+                        };
+                        self.num_ld(t, r, l, (4, 1, false), &data[4 * i..4 * i + 4]);
+                    }
+                } else {
+                    for (i, c) in data.chunks(4).enumerate() {
+                        let base = if i < 4 { *lo } else { *hi };
+                        let r = Reg {
+                            file: base.file,
+                            idx: base.idx + (i % 4) as u16,
+                        };
+                        self.wr(t, r, u32::from_le_bytes([c[0], c[1], c[2], c[3]]) as u64, 1);
+                    }
+                    // Numerics: two 16-byte vector loads (each register keeps its word's node).
+                    for (h, base) in [(0usize, *lo), (1, *hi)] {
+                        let l = match loc {
+                            Loc::Global { alloc, off } => Loc::Global {
+                                alloc,
+                                off: off + 16 * h as u64,
+                            },
+                            other => other,
+                        };
+                        self.num_ld(t, base, l, (16, 1, false), &data[16 * h..16 * h + 16]);
+                    }
                 }
             }
             Op::St256 { lo, hi, addr, sync } => {

@@ -1,0 +1,41 @@
+name = "probe_ld_sext64"
+description = """
+Probe (L-ROSETTA) for signed loads narrower than 64 bits into 64-bit registers (sign-extended
+to 64 bits; unsigned zero-extended): ld.global.s32 / .u32 / .s16 / .s8 and ld.param.s32 into
+.b64 / .s64 registers (kernel.ptx). expected/ is GB300's output (kernel.cubin = ptxas
+-arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "ld_sext64"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [64]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [768]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 4294967196
+
+[[variants]]
+id = "good"
+expect = ["clean"]

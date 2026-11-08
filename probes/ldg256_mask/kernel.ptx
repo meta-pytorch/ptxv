@@ -1,0 +1,117 @@
+// probes/ldg256_mask: 32-byte global loads with only some elements used, which ptxas emits as
+// LDG.E.ENL2.256 Rhi, Rlo, [a], mask (each half's selected words compacted from its base
+// register, RZ for a half with none): ld.global.v4.b64 / .v8.b32 blocks 18, each with one
+// subset of elements used; thread t loads 32 bytes at in + 1024 j + 32 t and stores the used
+// elements, in order, to out (element k of thread t at word slot (w + k) * 32 + t, 64-bit
+// elements as two words). The last statement stores block 0's line back with
+// st.global.v4.b64 at out2 + 32 t (STG.E.ENL2.256).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry ldg256_mask(
+    .param .u64 pin,
+    .param .u64 pout,
+    .param .u64 pout2
+)
+.maxntid 32, 1, 1
+{
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<32>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    ld.param.u64    %rd11, [pout2];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd11, %rd11;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd4, %r1, 32;
+    add.s64         %rd3, %rd1, %rd4;
+    mul.wide.u32    %rd5, %r1, 8;
+    add.s64         %rd9, %rd2, %rd5;
+    mul.wide.u32    %rd6, %r1, 4;
+    add.s64         %rd10, %rd2, %rd6;
+    // block 0: v4.b64, elements [0]
+    ld.global.v4.b64 {%rd20, %rd21, %rd22, %rd23}, [%rd3+0];
+    st.global.b64   [%rd9+0], %rd20;
+    // block 1: v4.b64, elements [1]
+    ld.global.v4.b64 {%rd20, %rd21, %rd22, %rd23}, [%rd3+1024];
+    st.global.b64   [%rd9+256], %rd21;
+    // block 2: v4.b64, elements [2]
+    ld.global.v4.b64 {%rd20, %rd21, %rd22, %rd23}, [%rd3+2048];
+    st.global.b64   [%rd9+512], %rd22;
+    // block 3: v4.b64, elements [3]
+    ld.global.v4.b64 {%rd20, %rd21, %rd22, %rd23}, [%rd3+3072];
+    st.global.b64   [%rd9+768], %rd23;
+    // block 4: v4.b64, elements [0, 1]
+    ld.global.v4.b64 {%rd20, %rd21, %rd22, %rd23}, [%rd3+4096];
+    st.global.b64   [%rd9+1024], %rd20;
+    st.global.b64   [%rd9+1280], %rd21;
+    // block 5: v4.b64, elements [1, 2]
+    ld.global.v4.b64 {%rd20, %rd21, %rd22, %rd23}, [%rd3+5120];
+    st.global.b64   [%rd9+1536], %rd21;
+    st.global.b64   [%rd9+1792], %rd22;
+    // block 6: v4.b64, elements [0, 3]
+    ld.global.v4.b64 {%rd20, %rd21, %rd22, %rd23}, [%rd3+6144];
+    st.global.b64   [%rd9+2048], %rd20;
+    st.global.b64   [%rd9+2304], %rd23;
+    // block 7: v4.b64, elements [2, 3]
+    ld.global.v4.b64 {%rd20, %rd21, %rd22, %rd23}, [%rd3+7168];
+    st.global.b64   [%rd9+2560], %rd22;
+    st.global.b64   [%rd9+2816], %rd23;
+    // block 8: v4.b64, elements [0, 1, 2]
+    ld.global.v4.b64 {%rd20, %rd21, %rd22, %rd23}, [%rd3+8192];
+    st.global.b64   [%rd9+3072], %rd20;
+    st.global.b64   [%rd9+3328], %rd21;
+    st.global.b64   [%rd9+3584], %rd22;
+    // block 9: v4.b64, elements [1, 2, 3]
+    ld.global.v4.b64 {%rd20, %rd21, %rd22, %rd23}, [%rd3+9216];
+    st.global.b64   [%rd9+3840], %rd21;
+    st.global.b64   [%rd9+4096], %rd22;
+    st.global.b64   [%rd9+4352], %rd23;
+    // block 10: v4.b64, elements [0, 2]
+    ld.global.v4.b64 {%rd20, %rd21, %rd22, %rd23}, [%rd3+10240];
+    st.global.b64   [%rd9+4608], %rd20;
+    st.global.b64   [%rd9+4864], %rd22;
+    // block 11: v4.b64, elements [1, 3]
+    ld.global.v4.b64 {%rd20, %rd21, %rd22, %rd23}, [%rd3+11264];
+    st.global.b64   [%rd9+5120], %rd21;
+    st.global.b64   [%rd9+5376], %rd23;
+    // block 12: v4.b64, elements [0, 1, 2, 3]
+    ld.global.v4.b64 {%rd20, %rd21, %rd22, %rd23}, [%rd3+12288];
+    st.global.b64   [%rd9+5632], %rd20;
+    st.global.b64   [%rd9+5888], %rd21;
+    st.global.b64   [%rd9+6144], %rd22;
+    st.global.b64   [%rd9+6400], %rd23;
+    // block 13: v8.b32, elements [5]
+    ld.global.v8.b32 {%r20, %r21, %r22, %r23, %r24, %r25, %r26, %r27}, [%rd3+13312];
+    st.global.b32   [%rd10+6656], %r25;
+    // block 14: v8.b32, elements [0, 7]
+    ld.global.v8.b32 {%r20, %r21, %r22, %r23, %r24, %r25, %r26, %r27}, [%rd3+14336];
+    st.global.b32   [%rd10+6784], %r20;
+    st.global.b32   [%rd10+6912], %r27;
+    // block 15: v8.b32, elements [1, 2, 6]
+    ld.global.v8.b32 {%r20, %r21, %r22, %r23, %r24, %r25, %r26, %r27}, [%rd3+15360];
+    st.global.b32   [%rd10+7040], %r21;
+    st.global.b32   [%rd10+7168], %r22;
+    st.global.b32   [%rd10+7296], %r26;
+    // block 16: v8.b32, elements [3, 4]
+    ld.global.v8.b32 {%r20, %r21, %r22, %r23, %r24, %r25, %r26, %r27}, [%rd3+16384];
+    st.global.b32   [%rd10+7424], %r23;
+    st.global.b32   [%rd10+7552], %r24;
+    // block 17: v8.b32, elements [0, 1, 2, 3, 4, 5, 6, 7]
+    ld.global.v8.b32 {%r20, %r21, %r22, %r23, %r24, %r25, %r26, %r27}, [%rd3+17408];
+    st.global.b32   [%rd10+7680], %r20;
+    st.global.b32   [%rd10+7808], %r21;
+    st.global.b32   [%rd10+7936], %r22;
+    st.global.b32   [%rd10+8064], %r23;
+    st.global.b32   [%rd10+8192], %r24;
+    st.global.b32   [%rd10+8320], %r25;
+    st.global.b32   [%rd10+8448], %r26;
+    st.global.b32   [%rd10+8576], %r27;
+    ld.global.v4.b64 {%rd20, %rd21, %rd22, %rd23}, [%rd3];
+    add.s64         %rd12, %rd11, %rd4;
+    st.global.v4.b64 [%rd12], {%rd20, %rd21, %rd22, %rd23};
+    ret;
+}

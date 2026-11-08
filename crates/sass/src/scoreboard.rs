@@ -447,10 +447,16 @@ pub fn def_use(l: &SassLine) -> (Vec<RegKey>, Vec<RegKey>) {
         operand_regs(&ops[2], 1, &mut uses);
         return (defs, uses);
     }
-    // `LDG.E.ENL2.256 Rhi, Rlo, [..]`: two 4-register destinations.
-    if base == "LDG" && l.opcode.contains(".ENL2.256") && ops.len() == 3 {
-        operand_regs(&ops[0], 4, &mut defs);
-        operand_regs(&ops[1], 4, &mut defs);
+    // `LDG.E.ENL2.256 Rhi, Rlo, [..][, mask]`: two 4-register destinations, or with a mask
+    // as many registers per half as it selects words there.
+    if base == "LDG" && l.opcode.contains(".256") && (ops.len() == 3 || ops.len() == 4) {
+        let mask = ops
+            .get(3)
+            .and_then(|m| m.trim().strip_prefix("0x"))
+            .and_then(|h| u8::from_str_radix(h, 16).ok())
+            .unwrap_or(0xff);
+        operand_regs(&ops[0], (mask >> 4).count_ones() as u16, &mut defs);
+        operand_regs(&ops[1], (mask & 0xf).count_ones() as u16, &mut defs);
         operand_regs(&ops[2], 1, &mut uses);
         return (defs, uses);
     }
