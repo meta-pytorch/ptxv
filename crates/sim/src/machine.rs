@@ -1730,8 +1730,9 @@ pub struct Machine {
     /// never-written shared memory is recorded here (first byte) instead of reported: the
     /// loaded registers become undefined, and only a use of them is a finding (S-INIT).
     pub stale: Option<Option<u32>>,
-    /// S-INIT: the shared / global store running writes undefined bits (`Sh::undef`).
-    pub wundef: bool,
+    /// S-INIT: the bytes of the shared / global store running that hold undefined bits (bit i =
+    /// byte i of its data; `Sh::undef` per byte).
+    pub wundef: u64,
     /// S-INIT: global stores of undefined data (allocation, offset, bytes, pc), checked at
     /// terminal states (`exit_checks`); an index into `Sh::undef`, not part of the state hash.
     pub gundef: Arc<Vec<(usize, u64, u32, u32)>>,
@@ -2405,7 +2406,7 @@ impl Machine {
             elect_choice: None,
             stale: None,
             dead_probe: None,
-            wundef: false,
+            wundef: 0,
             gundef: Arc::new(Vec::new()),
             tmaps_used: Arc::new(Vec::new()),
             undef_ok_from: None,

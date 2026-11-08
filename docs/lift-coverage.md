@@ -158,6 +158,7 @@ modifier of these opcodes is refused.
 | `ATOMG.E.INC[.STRONG.GPU]` (+ PTX `atom.inc.u32`) | **probes/atom_inc**, both front-ends (L-ROSETTA) |
 | `BMOV.32[.CLEAR] Rd, Bb`, `BMOV.32 Bb, Ra` | the parallel_attn_bwd_dkv case (E-BSYNC); not probed alone |
 | `[R.U32+UR]` generic addresses, `UTMAREDG ... desc[URZ]`, device-built tensor maps (words 0x40/0x48 = 0) | operand syntax; **probes/tmap_device**, **probes/tmap_param_copy** (S-TMAP; raw tensor-map parameter bytes visible to device code) |
+| PTX `tensormap.replace.tile.*.shared::cta.b1024`, `tensormap.cp_fenceproxy`, `fence.proxy.tensormap::generic.acquire` | ptxas's LDS / LOP3 / STS read-modify-write per field, per-lane release copy, TmapFence; **probes/tmap_replace** (every field / ordinal / value), tmap_device and tmap_param_copy on the PTX front (S-TMAP) |
 | `LDSM.8.MT1616[.2]` (ldmatrix.m16n16.x1 / .x2.trans.b8) | **probes/ldsm_b8**, SASS (L-ROSETTA) |
 | PTX `tcgen05.st / ld .16x32bx2 [a], split` | **probes/tmem_x2**, both front-ends (S-TMEM) |
 | `LDTM.STAT.16dp32bit_t0_t15 / _t16_t31 .xN.MIN/MAX[ABS].F32[.NAN]` | **probes/tmem_ldred16**, SASS (S-TMEM) |
@@ -279,6 +280,9 @@ any modifier outside the audited set before an arm runs.
 | `BRX Ra -off` (BRANCH_TARGETS) | `brx.idx[.uni] i, $L` / `$L: .branchtargets ...` | per-thread jump to target i; an index outside the list is a fault | probes/brx_idx |
 | `REDUX.SUM.S32` | `redux.sync.add.s32` | wrapping sum over the active lanes (partial masks) | probes/redux_s32 |
 | `LOP3.LUT ..., 0x80000000, ..., 0xb8` | `copysign.f32` | b with the sign bit of a (bit operation) | probes/copysign |
+| `FSETP.GEU \|a\|, +INF` + `IADD 0x1000` + `LOP3 & 0xffffe000` | `cvt.rna.tf32.f32` | ties-away round to 19 bits; Inf / NaN only masked | probes/cvt_tf32 |
+| (`CCTL.E.RML2`, refused) | `discard.global.L2 [a], 128` | weak stores of undefined data over the line (S-INIT) | probes/discard_l2 (PTX front) |
+| `HMUL2.BF16_V2` | plain `mul.bf16` / `.bf16x2` reaching only stores, conversions, mma operands, multiplicands through packs / unpacks / prmt / shfl | .rn (ptxas cannot contract) | probes/bf16_sink |
 | `REDUX` / `CREDUX` | `redux.sync` with a partial immediate or register membermask | reduction over the lanes the mask names; executing lanes != mask is a violation (PTX) | probes/redux_mask |
 | `SHFL` / `VOTE` | `shfl.sync` / `vote.sync` with a partial immediate or register membermask | per mask group, combined with the group's lanes at another instruction of the same kind; executing lanes != mask is a violation (PTX) | probes/coll_split, probes/shfl_mask (PTX front; SASS `WARPSYNC.EXCLUSIVE` refused) |
 | `FFMA2` / `FMUL2` / `FADD2 .RZ/.RM/.RP` | `.rz/.rm/.rp.f32x2` | one rounding in the mode | probes/bf16_ext |

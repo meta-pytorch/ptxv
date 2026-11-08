@@ -878,7 +878,7 @@ impl Machine {
         let mut races: Vec<(Epoch, &'static str, u64)> = Vec::new();
         let mut uninit: Option<usize> = None;
         let undef_ok_from = self.undef_ok_from;
-        if self.wundef && write.is_some() {
+        if self.wundef != 0 && write.is_some() {
             if let Loc::Global { alloc, off } = loc {
                 Arc::make_mut(&mut self.gundef).push((alloc, off, n as u32, pc));
             }
@@ -987,9 +987,14 @@ impl Machine {
                             || vm.hb(r)
                             || rd_done && r.clock <= vm.get(r.actor | RR_BIT)
                     };
-                    if let Some(w) = s.writes().find(|w| !w_ord(w)) {
-                        benign.push((*w, a as u64));
+                    let unordered = s.writes().find(|w| !w_ord(w)).copied();
+                    if let Some(w) = unordered {
+                        benign.push((w, a as u64));
                     }
+                    // S-INIT: a defined store of the same bytes makes them defined, unless an
+                    // unordered store of undefined data may land after it.
+                    let und = (a - base as usize) < 64 && wundef >> (a - base as usize) & 1 == 1;
+                    s.undef = und || unordered.is_some() && s.undef;
                     // Unordered writes stay for every later access; an ordered write that is
                     // not itself same-value stays for later reads, which skip this one.
                     let mut hw: Vec<Epoch> =
@@ -1034,7 +1039,8 @@ impl Machine {
                         s.r.retain(|r| keep(r, rd_ord(r)));
                     }
                     s.w = Some(me);
-                    s.undef = wundef;
+                    // Per byte (`wundef` bit i = byte i of the store's data).
+                    s.undef = (a - base as usize) < 64 && wundef >> (a - base as usize) & 1 == 1;
                 } else if vip {
                 } else {
                     // ASSUME(S-INIT): shared memory outside the driver-initialized reserved
@@ -4024,9 +4030,9 @@ impl Machine {
                                     continue;
                                 }
                                 wrote.push((loc, w, src));
-                                self.wundef = um != 0;
+                                self.wundef = byte_umask(um, 4);
                                 self.access(src as u32, &vc, pc, loc, 4, Some(&w.to_le_bytes()));
-                                self.wundef = false;
+                                self.wundef = 0;
                                 // A whole 32-bit word: it keeps its node (N-LEAF).
                                 self.num_st(src, vi, loc, 4);
                             } else {
@@ -4037,9 +4043,9 @@ impl Machine {
                                     let loc =
                                         self.resolve(tl, Space::Shared, base + 2 * j as u64, 2)?;
                                     let half = ((w >> (16 * h)) as u16).to_le_bytes();
-                                    self.wundef = (um >> (16 * h)) & 0xffff != 0;
+                                    self.wundef = byte_umask(um >> (16 * h), 2);
                                     self.access(src as u32, &vc, pc, loc, 2, Some(&half));
-                                    self.wundef = false;
+                                    self.wundef = 0;
                                     self.half_stsm_half(src, vi, h, loc);
                                 }
                             }
@@ -5054,7 +5060,7 @@ impl Machine {
     fn exec_thread(&mut self, t: usize, inst: &Inst, pc: u32) -> Result<Flow, String> {
         self.stale = None;
         self.vmask = None;
-        self.wundef = false;
+        self.wundef = 0;
         let r = self.exec_thread_inner(t, inst, pc);
         self.stale = None;
         self.vmask = None;
@@ -5070,7 +5076,7 @@ impl Machine {
                 self.make_undefined(t, d);
             }
         }
-        self.wundef = false;
+        self.wundef = 0;
         r
     }
 
@@ -5564,41 +5570,87 @@ impl Machine {
         // Global stores (and `atom.exch`, a store that returns the old value) likewise: a load
         // of the bytes gives undefined registers, and bytes still undefined when the launch
         // ends are reported then (`exit_checks`).
-        let sts_data: Vec<Reg> = match &inst.op {
+        // The data registers with the bytes of the store each supplies (`first`, `count`).
+        // PTX `st.vN`: one virtual register per element of bytes / N bytes; SASS: one 32-bit
+        // register per word (STS.64 / .128, STG.E.ENL2.256).
+        let sts_data: Vec<(Reg, u32, u32)> = match &inst.op {
             // Every space a store can resolve to shared or global memory: generic and
             // shared::cluster (DSMEM) addresses included.
             Op::St {
                 space: Space::Shared | Space::SharedCluster | Space::Global | Space::Generic,
+                bytes,
                 v: Val::Reg(vr, n),
                 ..
             }
             | Op::Atom {
                 op: AtomOp::Exch,
                 space: Space::Shared | Space::SharedCluster | Space::Global | Space::Generic,
+                bytes,
                 v: Val::Reg(vr, n),
                 ..
-            } if vr.file != File::V || self.k.front == Front::Ptx => (0..(*n).max(1) as u16)
-                .map(|i| Reg {
-                    file: vr.file,
-                    idx: if vr.file == File::V {
-                        vr.idx
-                    } else {
-                        vr.idx + i
-                    },
-                })
-                .collect(),
+            } if vr.file != File::V || self.k.front == Front::Ptx => {
+                let (bytes, n) = (*bytes as u32, (*n).max(1) as u32);
+                if vr.file == File::V && n >= 2 {
+                    let w = bytes / n;
+                    (0..n)
+                        .map(|i| {
+                            (
+                                Reg {
+                                    file: vr.file,
+                                    idx: vr.idx + i as u16,
+                                },
+                                i * w,
+                                w,
+                            )
+                        })
+                        .collect()
+                } else if vr.file == File::V {
+                    vec![(*vr, 0, bytes)]
+                } else {
+                    (0..n)
+                        .map(|i| {
+                            let first = 4 * i;
+                            let count = bytes.saturating_sub(first).min(4);
+                            (
+                                Reg {
+                                    file: vr.file,
+                                    idx: vr.idx + i as u16,
+                                },
+                                first,
+                                count,
+                            )
+                        })
+                        .collect()
+                }
+            }
             _ => vec![],
         };
-        // A narrow store (`low_only`) writes only the low bytes of its register.
-        if sts_data.iter().any(|r| {
-            let u = self.reg_umask(t, *r);
-            match low_only {
-                Some((v, m)) if v == *r => u & m != 0,
-                _ => u != 0,
+        // S-INIT: which bytes of the store are undefined, per byte (a vector store with one
+        // undefined register marks only that register's bytes). A narrow store (`low_only`)
+        // writes only the low bytes of its register.
+        let mut wundef = 0u64;
+        for &(r, first, count) in &sts_data {
+            let mut u = self.reg_umask(t, r);
+            if let Some((v, lo)) = low_only {
+                if v == r {
+                    u &= lo;
+                }
             }
-        }) {
-            self.wundef = true;
+            let m = if r.file == File::V {
+                // Virtual registers are defined or not as a whole.
+                if u != 0 {
+                    (1u64 << count.min(63)) - 1
+                } else {
+                    0
+                }
+            } else {
+                byte_umask(u, count)
+            };
+            if first < 64 {
+                wundef |= m << first;
+            }
         }
+        self.wundef = wundef;
         // tcgen05.st data: undefined words are stored as never written (S-INIT, below).
         let tmem_data: Vec<Reg> = match &inst.op {
             Op::TmemSt { v, .. } => v
@@ -5611,7 +5663,7 @@ impl Machine {
             _ => vec![],
         };
         let undef = src_regs_at(&self.k, inst, pc).iter().copied().find(|r| {
-            if sts_data.contains(r) || tmem_data.contains(r) {
+            if sts_data.iter().any(|x| x.0 == *r) || tmem_data.contains(r) {
                 return false;
             }
             if let (
@@ -13033,6 +13085,14 @@ fn remote_reserved(mbar: u32, msg: String) -> (&'static str, String) {
     } else {
         ("violation", msg)
     }
+}
+
+/// S-INIT: the bytes (bit j = byte j, j < `count` <= 4) of a 32-bit register's undefined-bit
+/// mask `u` that hold an undefined bit.
+fn byte_umask(u: u32, count: u32) -> u64 {
+    (0..count.min(4))
+        .filter(|j| (u >> (8 * j)) & 0xff != 0)
+        .fold(0u64, |m, j| m | 1 << j)
 }
 
 #[cfg(test)]

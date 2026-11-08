@@ -61,6 +61,43 @@ fn is_unpack(st: &Stmt, op: &str) -> bool {
         .is_some_and(|(_, rest)| rest.trim_start().starts_with('{'))
 }
 
+/// Whether every use of `r`, through at most `depth` packs / unpacks (`mov.b32 %r, {%h1,
+/// %h2}`, `mov.b64 {%r1, %r2}, %rd`), is one ptxas cannot contract a mul into: a store, a
+/// conversion, an `mma` operand, a multiplicand of `mul` / `fma`, or a `prmt` / `shfl.sync`
+/// source whose result is such (Triton's bf16 dequant: plain
+/// `mul.bf16`s packed into `.b32`, then `.b64`, unpacked into an `mma.sync` B operand;
+/// probes/bf16_sink).
+fn sink_only(insts: &[&Stmt], r: &str, depth: u32) -> bool {
+    if depth == 0 {
+        return false;
+    }
+    insts.iter().all(|st| {
+        let (op, ops) = stmt_parts(&st.text);
+        let base = op.split('.').next().unwrap_or("");
+        let unpack = base == "mov" && is_unpack(st, op);
+        ops.iter().enumerate().all(|(i, o)| {
+            let def =
+                (i == 0 || unpack && i + 1 < ops.len()) && !matches!(base, "st" | "red" | "atom");
+            if def || *o != r {
+                return true;
+            }
+            match base {
+                "st" | "cvt" | "mma" | "mul" => true,
+                "fma" => i == 1 || i == 2,
+                "mov" if unpack => ops[..i]
+                    .iter()
+                    .all(|h| *h == "_" || sink_only(insts, h, depth - 1)),
+                "mov" if st.text.contains('{') => sink_only(insts, ops[0], depth - 1),
+                // A byte permute of a packed product (CUTLASS / Triton fragment shuffles).
+                "prmt" if i == 1 || i == 2 => sink_only(insts, ops[0], depth - 1),
+                // A shuffled value (the source operand of shfl.sync).
+                "shfl" if i == 1 && !ops[0].contains('|') => sink_only(insts, ops[0], depth - 1),
+                _ => false,
+            }
+        })
+    })
+}
+
 fn uncontractible_f16_muls(insts: &[&Stmt]) -> HashSet<String> {
     let mut cand: HashSet<String> = HashSet::new();
     let mut x2: HashSet<String> = HashSet::new();
@@ -135,22 +172,6 @@ fn uncontractible_f16_muls(insts: &[&Stmt]) -> HashSet<String> {
             }
         })
     };
-    // Registers every use of which is a store or a conversion (the destinations of `mov`
-    // packs that only get stored).
-    let stored_only = |r: &str| {
-        insts.iter().all(|st| {
-            let (op, ops) = stmt_parts(&st.text);
-            let base = op.split('.').next().unwrap_or("");
-            // `mov.b64 {%r1, %r2}, %rd3` defines every register but the last.
-            let unpack = base == "mov" && is_unpack(st, op);
-            let is_def = |i: usize| {
-                (i == 0 || unpack && i + 1 < ops.len()) && !matches!(base, "st" | "red" | "atom")
-            };
-            ops.iter()
-                .enumerate()
-                .all(|(i, o)| is_def(i) || *o != r || matches!(base, "st" | "cvt"))
-        })
-    };
     for st in insts {
         let (op, ops) = stmt_parts(&st.text);
         let base = op.split('.').next().unwrap_or("");
@@ -172,9 +193,13 @@ fn uncontractible_f16_muls(insts: &[&Stmt]) -> HashSet<String> {
                     .enumerate()
                     .all(|(l, r)| *r == "_" || half_ok(r, l)),
                 "mov" if is_unpack(st, op) && i + 1 == ops.len() && i > 0 => {
-                    ops[..i].iter().all(|r| stored_only(r))
+                    ops[..i].iter().all(|r| *r == "_" || sink_only(insts, r, 6))
                 }
-                "mov" => st.text.contains('{') && stored_only(ops[0]),
+                "mov" => st.text.contains('{') && sink_only(insts, ops[0], 6),
+                // An mma operand; a byte permute or shuffle whose result is only such uses.
+                "mma" => true,
+                "prmt" if i == 1 || i == 2 => sink_only(insts, ops[0], 6),
+                "shfl" if i == 1 && !ops[0].contains('|') => sink_only(insts, ops[0], 6),
                 _ => false,
             };
             if !safe {
@@ -556,6 +581,8 @@ struct Lower<'a> {
     /// Hidden scratch register for those expansions (allocated only if a statement needs it:
     /// `%__x64`).
     tmp_v: Option<Reg>,
+    /// A hidden register nothing writes (`%__undef`): the indeterminate data of `discard`.
+    undef_v: Option<Reg>,
     /// Ops to run before the lowered one, under the same guard (moves into `vec_v`).
     pre: Vec<Op>,
     /// `mul.f16[x2]` / `mul.f32x2` destinations ptxas cannot contract
@@ -586,6 +613,10 @@ fn needs_vec_scratch(text: &str, regs: &HashMap<String, Reg>) -> bool {
         Some(r) => r.split_once(char::is_whitespace).map_or("", |x| x.1).trim(),
         None => t,
     };
+    // tensormap.replace's read-modify-write holds the map word in `%__vec0`.
+    if t.starts_with("tensormap.") {
+        return true;
+    }
     // tcgen05.mma `[taddr + off]` operands add the offset into a scratch register.
     if t.starts_with("tcgen05.mma") {
         return t.split('[').skip(1).any(|x| {
@@ -624,6 +655,8 @@ fn needs_scratch(text: &str) -> bool {
         None => t,
     };
     t.starts_with("mad.lo.s64")
+        || t.starts_with("tensormap.")
+        || t.starts_with("cvt.rna.tf32.f32")
         || t.starts_with("sqrt.rn.f32")
         || t.starts_with("mad.lo.u64")
         || t.starts_with("mad.wide.s16")
@@ -1452,6 +1485,17 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
             idx: (vreg_names.len() - 1) as u16,
         });
     }
+    let mut undef_v = None;
+    if insts_src
+        .iter()
+        .any(|st| stmt_parts(&st.text).0.starts_with("discard."))
+    {
+        vreg_names.push("%__undef".to_string());
+        undef_v = Some(Reg {
+            file: File::V,
+            idx: (vreg_names.len() - 1) as u16,
+        });
+    }
     let mut vec_v = None;
     if insts_src
         .iter()
@@ -1490,6 +1534,7 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
             text: &st.text,
             extra: Vec::new(),
             tmp_v,
+            undef_v,
             pre: Vec::new(),
             vec_v,
             f16_mul_ok: &f16_mul_ok,
@@ -3038,6 +3083,33 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 ex: None,
             }
         }
+        // `discard.global.L2 [a], 128` (SASS `CCTL.E.RML2 [Ra]`): the 128-byte line's contents
+        // become indeterminate (PTX: a weak write of an unstable indeterminate value), modeled
+        // as weak stores of a register nothing writes: later loads give undefined data
+        // (S-INIT), and the write is race-checked. ASSUME(S-INIT)
+        "discard" if mods == ["global", "L2"] => {
+            if parse_int(op_n(1)?.trim()) != Some(128) {
+                bail!(lw.err("discard size must be 128"));
+            }
+            let a = lw.addr(op_n(0)?)?;
+            let u = lw
+                .undef_v
+                .ok_or_else(|| lw.err("internal: no undefined register"))?;
+            let st = |i: i64| Op::St {
+                space: Space::Global,
+                bytes: 8,
+                addr: Addr {
+                    off: a.off + 8 * i,
+                    ..a.clone()
+                },
+                v: Val::Reg(u, 1),
+                sync: None,
+            };
+            for i in 0..15 {
+                lw.pre.push(st(i));
+            }
+            st(15)
+        }
         // `copysign.f32 d, a, b`: b with the sign bit of a (ptxas: LOP3.LUT d, a, 0x80000000, b,
         // 0xb8 or equivalent; a pure bit operation, NaNs included: probes/copysign).
         "copysign" if mods == ["f32"] => Op::Lop3 {
@@ -3050,6 +3122,263 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             p: None,
             pq: None,
         },
+        // `tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned
+        // [g], [s], 128`: warp-collective copy of the 128-byte map to global memory, lane l
+        // word l (ptxas: `LDS` + `ATOMG.E.EXCH.STRONG.GPU` per lane), as release stores; the
+        // reader's fence.proxy.tensormap::generic.acquire then sees it (S-TMAP).
+        "tensormap"
+            if mods
+                == [
+                    "cp_fenceproxy",
+                    "global",
+                    "shared::cta",
+                    "tensormap::generic",
+                    "release",
+                    "gpu",
+                    "sync",
+                    "aligned",
+                ] =>
+        {
+            if parse_int(op_n(2)?.trim()) != Some(128) {
+                bail!(lw.err("tensormap.cp_fenceproxy size must be 128"));
+            }
+            let (g, sm) = (lw.addr(op_n(0)?)?, lw.addr(op_n(1)?)?);
+            let x = lw.scratch_v()?;
+            let w = Reg {
+                file: File::V,
+                idx: lw
+                    .vec_v
+                    .ok_or_else(|| lw.err("internal: no vector scratch"))?
+                    .idx,
+            };
+            lw.pre.push(Op::Int {
+                op: IntOp::Shl,
+                bits: 32,
+                d: x,
+                a: Val::SReg(SReg::LaneId),
+                b: Val::Imm(2),
+            });
+            if sm.base2.is_some() || g.base2.is_some() {
+                bail!(lw.err("tensormap.cp_fenceproxy address form not modeled"));
+            }
+            lw.pre.push(Op::Ld {
+                d: w,
+                n: 1,
+                space: Space::Shared,
+                bytes: 4,
+                addr: Addr {
+                    base2: Some(Val::Reg(x, 1)),
+                    ..sm
+                },
+                sync: None,
+                sext: false,
+            });
+            // One collective copy: the warp's lanes leave it together, each having the whole
+            // map's writes ordered before its own later accesses (as `bar.warp.sync -1`).
+            extra.push(Op::WarpSync {
+                mask: Val::Imm(0xffff_ffff),
+                collective: false,
+                all: false,
+            });
+            Op::St {
+                space: Space::Global,
+                bytes: 4,
+                addr: Addr {
+                    base2: Some(Val::Reg(x, 1)),
+                    ..g
+                },
+                v: Val::Reg(w, 1),
+                sync: Some(MemSync {
+                    sem: Sem::Release,
+                    scope: Scope::Gpu,
+                }),
+            }
+        }
+        // `tensormap.replace.tile.<field>.shared::cta.b1024.<b32|b64> [tm], [ord,] v`: as ptxas
+        // 13.0 lowers it, a read-modify-write of the field's bits in the 128-byte map in shared
+        // memory (LDS, LOP3 0xb8, STS; probes/tmap_replace). Layout (byte offsets): 0x00
+        // global_address (64 bits); 0x08: rank bits 4..6, elemtype 7..10 (+ bit 16 for 11 / 12),
+        // interleave 11..12, swizzle 13..14 (mode 4: bit 22), fill 15; 0x0c + 4 i: global_stride
+        // [i] >> 4 (low 32 bits), 0x1c bits 4 i..4 i + 3: its bits 36..39; 0x20 + 4 i:
+        // global_dim[i] - 1; 0x34 bits 3 i..3 i + 2: element_stride[i] - 1; byte 0x37 + i:
+        // box_dim[i] - 1. ASSUME(S-TMAP)
+        "tensormap" if mods.first() == Some(&"replace") => {
+            let field = mods.get(2).copied().unwrap_or("");
+            if mods.get(1) != Some(&"tile")
+                || mods.get(3) != Some(&"shared::cta")
+                || mods.get(4) != Some(&"b1024")
+                || mods.len() != 6
+            {
+                bail!(
+                    lw.err("tensormap.replace form not modeled (only .tile .shared::cta .b1024)")
+                );
+            }
+            let base = lw.addr(op_n(0)?)?;
+            let at = |off: i64| Addr {
+                base: base.base.clone(),
+                base2: base.base2.clone(),
+                off: base.off + off,
+            };
+            let indexed = matches!(
+                field,
+                "box_dim" | "global_dim" | "global_stride" | "element_stride"
+            );
+            let ord = if indexed {
+                match parse_int(op_n(1)?.trim()) {
+                    Some(o @ 0..=4) => o as i64,
+                    _ => bail!(lw.err("tensormap.replace ordinal must be an immediate 0..4")),
+                }
+            } else {
+                0
+            };
+            let vs = op_n(if indexed { 2 } else { 1 })?;
+            let v = lw.val(vs)?;
+            let imm = parse_int(vs.trim());
+            let x = lw.scratch_v()?;
+            let w = Reg {
+                file: File::V,
+                idx: lw
+                    .vec_v
+                    .ok_or_else(|| lw.err("internal: no vector scratch"))?
+                    .idx,
+            };
+            let ld = |off: i64| Op::Ld {
+                d: w,
+                n: 1,
+                space: Space::Shared,
+                bytes: 4,
+                addr: at(off),
+                sync: None,
+                sext: false,
+            };
+            let int = |op: IntOp, bits: u8, a: Val, b: u64| Op::Int {
+                op,
+                bits,
+                d: x,
+                a,
+                b: Val::Imm(b),
+            };
+            // (old & !mask) | (new & mask) into word `off`; `new` already shifted into place.
+            let merge = |lw: &mut Lower, off: i64, new: Val, mask: u32| {
+                lw.pre.push(ld(off));
+                lw.pre.push(Op::Lop3 {
+                    d: w,
+                    a: Val::Reg(w, 1),
+                    b: Val::Imm(mask as u64),
+                    c: new,
+                    lut: 0xb8,
+                    p: None,
+                    pq: None,
+                });
+                Op::St {
+                    space: Space::Shared,
+                    bytes: 4,
+                    addr: at(off),
+                    v: Val::Reg(w, 1),
+                    sync: None,
+                }
+            };
+            let xv = Val::Reg(x, 1);
+            let enum_v = |max: u64| -> Result<u64> {
+                match imm {
+                    Some(i) if i <= max => Ok(i),
+                    _ => bail!(lw.err(format!(
+                        "tensormap.replace .{field} needs an immediate 0..{max}"
+                    ))),
+                }
+            };
+            match (field, mods[5]) {
+                ("global_address", "b64") => Op::St {
+                    space: Space::Shared,
+                    bytes: 8,
+                    addr: at(0),
+                    v,
+                    sync: None,
+                },
+                ("rank", "b32") => {
+                    lw.pre.push(int(IntOp::Shl, 32, v, 4));
+                    merge(lw, 8, xv, 0x70)
+                }
+                ("elemtype", "b32") => {
+                    let e = enum_v(15)?;
+                    let (code, hi) = match e {
+                        0..=10 => (e, false),
+                        11 => (7, true),
+                        12 => (8, true),
+                        _ => (e - 2, false),
+                    };
+                    if hi {
+                        lw.pre.push(ld(8));
+                        lw.pre.push(Op::Int {
+                            op: IntOp::Or,
+                            bits: 32,
+                            d: w,
+                            a: Val::Reg(w, 1),
+                            b: Val::Imm(0x1_0000),
+                        });
+                        lw.pre.push(Op::St {
+                            space: Space::Shared,
+                            bytes: 4,
+                            addr: at(8),
+                            v: Val::Reg(w, 1),
+                            sync: None,
+                        });
+                    }
+                    merge(lw, 8, Val::Imm(code << 7), 0x780)
+                }
+                ("interleave_layout", "b32") => {
+                    let e = enum_v(2)?;
+                    merge(lw, 8, Val::Imm(e << 11), 0x1800)
+                }
+                ("swizzle_mode", "b32") => {
+                    let e = enum_v(4)?;
+                    let bits = if e == 4 { 0x40_0000 } else { e << 13 };
+                    merge(lw, 8, Val::Imm(bits), 0x40_6000)
+                }
+                ("fill_mode", "b32") => {
+                    let e = enum_v(1)?;
+                    merge(lw, 8, Val::Imm(e << 15), 0x8000)
+                }
+                ("global_dim", "b32") => {
+                    lw.pre.push(int(IntOp::Add, 32, v, 0xffff_ffff));
+                    Op::St {
+                        space: Space::Shared,
+                        bytes: 4,
+                        addr: at(0x20 + 4 * ord),
+                        v: xv,
+                        sync: None,
+                    }
+                }
+                ("box_dim", "b32") | ("element_stride", "b32") => {
+                    let (off, sh, mask) = if field == "box_dim" {
+                        let b = 0x37 + ord;
+                        (b & !3, 8 * (b & 3) as u64, 0xffu32 << (8 * (b & 3)))
+                    } else {
+                        (0x34, 3 * ord as u64, 7u32 << (3 * ord))
+                    };
+                    lw.pre.push(int(IntOp::Add, 32, v, 0xffff_ffff));
+                    lw.pre.push(int(IntOp::Shl, 32, xv.clone(), sh));
+                    merge(lw, off, xv, mask)
+                }
+                ("global_stride", "b64") => {
+                    lw.pre.push(int(IntOp::ShrU, 64, v.clone(), 4));
+                    lw.pre.push(Op::St {
+                        space: Space::Shared,
+                        bytes: 4,
+                        addr: at(0xc + 4 * ord),
+                        v: xv.clone(),
+                        sync: None,
+                    });
+                    lw.pre.push(int(IntOp::ShrU, 64, v, 36));
+                    lw.pre.push(int(IntOp::Shl, 32, xv.clone(), 4 * ord as u64));
+                    merge(lw, 0x1c, xv, 0xfu32 << (4 * ord))
+                }
+                _ => bail!(lw.err(format!(
+                    "tensormap.replace .{field}.{} not modeled",
+                    mods[5]
+                ))),
+            }
+        }
         // `brx.idx[.uni] i, $L`: jump to entry i of the `.branchtargets` list labelled $L
         // (an index outside it is an error: PTX leaves it undefined). Per thread, as `bra`.
         "brx" if has("idx") && mods.iter().all(|m| matches!(*m, "idx" | "uni")) => {
@@ -3254,6 +3583,38 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 space,
                 to_generic: !to,
             }
+        }
+        // `cvt.rna.tf32.f32 d, a`: round to 19 bits, ties away (ptxas: a finite a gets + 0x1000,
+        // then & 0xffffe000; Inf / NaN are only masked, so a NaN with no payload above bit 12
+        // becomes Inf: probes/cvt_tf32). The finite test as integer ops: exponent != 0xff.
+        "cvt" if mods == ["rna", "tf32", "f32"] => {
+            let a = lw.val(op_n(1)?)?;
+            let d = lw.dst(op_n(0)?)?;
+            let x = lw.scratch_v()?;
+            let xv = Val::Reg(x, 1);
+            let int = |op: IntOp, d: Reg, a: Val, b: Val| Op::Int {
+                op,
+                bits: 32,
+                d,
+                a,
+                b,
+            };
+            for (i, (op, b)) in [
+                (IntOp::ShrU, 23u64),
+                (IntOp::And, 0xff),
+                (IntOp::Add, 1),
+                (IntOp::ShrU, 8),
+                (IntOp::Xor, 1),
+                (IntOp::Shl, 12),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let src = if i == 0 { a.clone() } else { xv.clone() };
+                lw.pre.push(int(op, x, src, Val::Imm(b)));
+            }
+            lw.pre.push(int(IntOp::Add, d, a, xv));
+            int(IntOp::And, d, Val::Reg(d, 1), Val::Imm(0xffff_e000))
         }
         "cvt" => {
             let n = mods.len();
@@ -4519,6 +4880,18 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     },
                     _ => bail!(lw.err("this fence.proxy form is not modeled")),
                 }
+            } else if mods.len() == 4
+                && mods[..3] == ["proxy", "tensormap::generic", "acquire"]
+                && matches!(mods[3], "cta" | "cluster" | "gpu" | "sys")
+            {
+                // fence.proxy.tensormap::generic.acquire.<scope> [a], 128 (ptxas: CCTL.E.C.LDCU
+                // .IV.DEEP + UTMACCTL.IV [a], lifted as TmapFence on the SASS front). ASSUME(S-TMAP)
+                if parse_int(op_n(1)?.trim()) != Some(128) {
+                    bail!(lw.err("fence.proxy.tensormap size must be 128"));
+                }
+                Op::TmapFence {
+                    addr: lw.addr(op_n(0)?)?,
+                }
             } else if mods == ["proxy", "alias"] {
                 // ASSUME(S-MC-ALIAS): a bidirectional proxy fence (no release / acquire of
                 // its own).
@@ -5152,6 +5525,21 @@ mod tests {
         assert!(ops("mul.bf16x2 %r1, %r2, %r3;\nadd.bf16x2 %r4, %r1, %r3;").is_err());
         assert!(ops("mul.rn.bf16x2 %r1, %r2, %r3;\nadd.bf16x2 %r4, %r1, %r3;").is_ok());
         assert!(ops("fma.bf16x2 %r1, %r2, %r3, %r4;").is_err());
+        // Through packs, prmt, shfl into mma / cvt: accepted; a pack into an add: refused.
+        assert!(
+            ops(
+                ".reg .b16 %rs<8>;\nmul.bf16 %rs1, %rs2, %rs3;\nmov.b32 %r1, {%rs1, %rs4};\n\
+             prmt.b32 %r2, %r1, %r3, 0x5410;\nmov.b32 {%rs5, %rs6}, %r2;\ncvt.f32.bf16 %r4, %rs5;"
+            )
+            .is_ok()
+        );
+        assert!(
+            ops(
+                ".reg .b16 %rs<8>;\nmul.bf16 %rs1, %rs2, %rs3;\nmov.b32 %r1, {%rs1, %rs4};\n\
+             add.bf16x2 %r2, %r1, %r3;"
+            )
+            .is_err()
+        );
         // A pack of two plain muls that is only stored (Triton bf16 scale).
         assert!(
             ops(

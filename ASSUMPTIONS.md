@@ -2835,7 +2835,14 @@ stays clean, "relies on E-CPASYNC-PROXY"), not a race.
     other reader (TMA, MMA, other atomics) reports; global bytes still undefined at a terminal state are reported
     (`uninit-gmem-exit`), except the tail of a used tensor map (S-TMAP-TAIL). Before, the
     store was the report (cute FusedRMSNormCombineFwdParallelTOPKStream's reduction
-    buffer: clean now, `fixtures/e_uninit_smem`).
+    buffer: clean now, `fixtures/e_uninit_smem`). Per byte (2026-11-07): a vector store
+    marks only the bytes of its undefined registers (SASS: per byte of each 32-bit register;
+    PTX `st.vN`: per element), and a store of the bytes a location already holds makes them
+    defined unless an unordered store of undefined data may land after it. Before, one
+    undefined register of an `STS.128` / `ST.E.128` marked all 16 bytes: msl
+    BlackwellHistogramSelect rank 0 reads entry 56 of a vector store whose entry 59 is
+    undefined (GB300 with 21 adversarial shared-memory fills: outputs bitwise equal to the
+    clean run; `fixtures/e_uninit_vec`).
   - `REDUX` (2026-11-07): an undefined bit in any active lane's operand makes the result
     undefined in every lane (a sum carries into all bits), reported where it is used. Before,
     the operand was a sink: Triton's cross-warp reduction (corpus pilot dash/5819, `_col_phase`)
@@ -2886,6 +2893,12 @@ stays clean, "relies on E-CPASYNC-PROXY"), not a race.
   NaN-poisoned; before, all four registers were undefined and the output store was reported).
 - If wrong: *miss* for unchecked operand kinds.
 
+- `discard.global.L2 [a], 128` (PTX front, 2026-11-07, 3 SCALE corpus kernels): the line's
+  contents become indeterminate (PTX: a weak write of an unstable indeterminate value),
+  modeled as weak stores of a register nothing writes, so a later load gives undefined data
+  and the write is race-checked. probes/discard_l2: write, discard, rewrite, read = GB300 50/50
+  bitwise; `read_after` (no rewrite) is a violation, while GB300 returned the pre-discard
+  values in all runs (the PTX contract allows either). SASS `CCTL.E.RML2` stays refused.
 ### S-INIT-FILLS · code
 **Multi-fill rerun (an evidence class, not a certificate).** When every S-INIT report of a
 verdict is undefined data left in global memory at the end of the launch
@@ -3611,6 +3624,16 @@ ordinary load by that thread at the fence and at the TMA (race-checked).
   copies, so phase 0 completed after two copies. Descriptors with element strides or a swizzle
   atom the TMA model does not cover keep the case geometry (`lib.rs` `param_tmap_geometry`; test
   `tensormap_param_geometry_comes_from_the_descriptor`).
+- PTX front (2026-11-07, 20 SCALE corpus records): `tensormap.replace.tile.<field>
+  .shared::cta.b1024` lowers to ptxas 13.0's read-modify-write of the field's bits in shared
+  memory (layout learned from ptxas's code for every field, ordinal and enum value: 0x08 rank /
+  elemtype / interleave / swizzle / fill bits, 0x0c + 4 i and 0x1c strides, 0x20 + 4 i dims - 1,
+  0x34 element strides - 1, byte 0x37 + i box dims - 1; elemtype 11 / 12 also set bit 16, which
+  0..10 leave alone); `tensormap.cp_fenceproxy...release.gpu.sync.aligned [g], [s], 128` is lane
+  l copying word l as a release store, the warp leaving it together; `fence.proxy.tensormap
+  ::generic.acquire.<scope> [a], 128` is the SASS front's TmapFence. probes/tmap_replace
+  (random map bytes, every field / ordinal / value): GB300 50/50, both front-ends bitwise;
+  probes/tmap_device and probes/tmap_param_copy now bitwise on the PTX front too.
 
 ### S-BRA-COND · code
 **`@P0 BRA P1, target`** (a guard and a condition operand; the CUTLASS grouped GEMM, rung 3a)
@@ -3917,6 +3940,10 @@ forms seen. Any other form is a hard error.
 - `copysign.f32 d, a, b` (2026-11-07, 36 SCALE corpus records): b with the sign bit of a, a
   bit operation (ptxas: `LOP3.LUT d, b, 0x80000000, a, 0xb8`). probes/copysign (NaN payloads,
   signed zeros, Inf, subnormals, an immediate operand): GB300 50/50, both front-ends bitwise.
+- `cvt.rna.tf32.f32` (2026-11-07, 12 SCALE corpus records): ptxas adds 0x1000 to a finite
+  operand and masks with 0xffffe000 (ties away from zero); Inf / NaN are only masked, so a NaN
+  whose payload is all below bit 13 becomes Inf. probes/cvt_tf32 (ties, near overflow, NaN
+  payloads, Inf, subnormals): GB300 50/50, both front-ends bitwise.
 - PTX syntax (2026-11-07, SCALE pilot): `%lanemask_{lt,le,ge,gt,eq}` as SR_LTMASK etc.;
   registers declared without `%` inside an inline-asm scope (`{.reg .s64 a; ...}`, CuTeDSL);
   `[%rd+-N]` addresses; a `{...}` operand list starting a continuation line (after a comma, or
@@ -3943,6 +3970,12 @@ forms seen. Any other form is a hard error.
   refused. A pack `mov.b32 %r, {%h1, %h2}` of plain muls that is only stored is accepted
   (ptxas emits one HMUL2.BF16_V2 for the two muls; probes/bf16_norn word 4, SCALE pilot
   dash/1703).
+  Through packs and unpacks (`.b32`, `.b64`), `prmt` and `shfl.sync` (2026-11-07, 10 SCALE
+  corpus records), a plain `mul.bf16` / `.bf16x2` whose products reach only stores,
+  conversions, `mma` operands or multiplicands is `.rn` too (Triton's dequant into an
+  `mma.sync` B operand; a fused-attention recompute through prmt / shfl / prmt into cvt).
+  probes/bf16_sink: GB300 50/50, both front-ends bitwise (ptxas: HMUL2.BF16_V2, PRMT, SHFL,
+  HMMA, no HFMA2).
 - `rcp.rn.f32` (2026-11-07, SCALE pilot) as `div.rn.f32 d, 1.0, a`: the IEEE reciprocal,
   subnormals kept, NaN 0x7fffffff. probes/rcp_rn (4096 inputs: specials, subnormals,
   magnitudes near 2^+-126; GB300 50/50 scrubbed, also equal to the f64 reciprocal rounded to

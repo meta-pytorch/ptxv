@@ -1340,17 +1340,27 @@ fn probe_tmem_st16_matches_hardware() {
 
 /// S-TMAP: a tensor map built on the device with tensormap.replace (derived words 0x40 / 0x48
 /// left 0), published with tensormap.cp_fenceproxy and used by a TMA load = GB300
-/// (probes/tmap_device: the box and the published map bytes; SASS only).
+/// (probes/tmap_device: the box and the published map bytes) on both front-ends.
 #[test]
 fn probe_tmap_device_matches_hardware() {
+    probe_bitwise("probes/tmap_device", "good", "ptx");
     probe_bitwise("probes/tmap_device", "good", "sass");
 }
 
+/// S-TMAP: tensormap.replace on every field / ordinal / enum value over random map bytes, and
+/// tensormap.cp_fenceproxy (probes/tmap_replace) = GB300 on both front-ends.
+#[test]
+fn probe_tmap_replace_matches_hardware() {
+    probe_bitwise("probes/tmap_replace", "good", "ptx");
+    probe_bitwise("probes/tmap_replace", "good", "sass");
+}
+
 /// S-TMAP: a driver-encoded map copied out of the kernel parameters (its raw bytes), patched
-/// with tensormap.replace, published and used by a TMA load (probes/tmap_param_copy; SASS
-/// only, as probes/tmap_device: the PTX front-end does not lower tensormap.replace).
+/// with tensormap.replace, published and used by a TMA load (probes/tmap_param_copy) on both
+/// front-ends.
 #[test]
 fn probe_tmap_param_copy_matches_hardware() {
+    probe_bitwise("probes/tmap_param_copy", "good", "ptx");
     probe_bitwise("probes/tmap_param_copy", "good", "sass");
 }
 
@@ -1628,6 +1638,30 @@ fn probe_syncwarp_fast_matches_hardware() {
 fn probe_copysign_matches_hardware() {
     probe_bitwise("probes/copysign", "good", "ptx");
     probe_bitwise("probes/copysign", "good", "sass");
+}
+
+/// PTX cvt.rna.tf32.f32 (probes/cvt_tf32: ties, NaN payloads, Inf, subnormals) = GB300 on
+/// both front-ends.
+#[test]
+fn probe_cvt_tf32_matches_hardware() {
+    probe_bitwise("probes/cvt_tf32", "good", "ptx");
+    probe_bitwise("probes/cvt_tf32", "good", "sass");
+}
+
+/// S-INIT: discard.global.L2 makes the line indeterminate (probes/discard_l2): rewritten
+/// before the read = GB300 on the PTX front; read after the discard: a violation.
+#[test]
+fn probe_discard_l2_verdicts() {
+    probe_bitwise("probes/discard_l2", "good", "ptx");
+    check_dir("probes", "discard_l2", "read_after", "ptx");
+}
+
+/// Plain mul.bf16 / .bf16x2 reaching mma / cvt through packs, prmt and shfl
+/// (probes/bf16_sink) = GB300 on both front-ends.
+#[test]
+fn probe_bf16_sink_matches_hardware() {
+    probe_bitwise("probes/bf16_sink", "good", "ptx");
+    probe_bitwise("probes/bf16_sink", "good", "sass");
 }
 
 /// tcgen05.mma.kind::f16 with f16 operands and kind::tf32 (instruction descriptor A / B
@@ -3756,6 +3790,16 @@ fn bounded_search_never_reports_clean() {
 fn undefined_values_through_shared_memory() {
     both("e_uninit_smem", "good");
     both("e_uninit_smem", "store_all");
+}
+
+/// S-INIT per byte for vector stores (fixtures/e_uninit_vec): a v4 store with one undefined
+/// register marks only its 4 bytes; reading the defined lanes, or overwriting the undefined
+/// global lane before exit, is clean; reading the undefined lane, or leaving it, is reported.
+#[test]
+fn vector_store_with_one_undefined_lane() {
+    for v in ["good", "read_undef", "keep_undef"] {
+        both("e_uninit_vec", v);
+    }
 }
 
 /// Root pairs (S-SMEM-STRONG, fixtures/e_smem_root): a cross-warp STS / LDS pair with no

@@ -1,0 +1,64 @@
+// probes/bf16_sink: plain mul.bf16 / mul.bf16x2 whose products reach only uses ptxas cannot
+// contract into (L-ROSETTA): (1) four mul.bf16 packed into .b32, then .b64, unpacked into the
+// B operand of mma.sync.m16n8k16.bf16 (Triton's dequant); (2) a mul.bf16x2 through prmt,
+// shfl.sync and prmt, unpacked into cvt.f32.bf16. 32 threads (one warp); x = in[8 t ..
+// 8 t + 7] (bf16 pairs as words), A = in[256 + 4 t .. 256 + 4 t + 3] (gen.py); out[8 t ..
+// 8 t + 3] = the mma result (f32), out[8 t + 4 .. 8 t + 5] = the two converted halves.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry bf16_sink(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 32, 1, 1
+{
+    .reg .b16   %rs<32>;
+    .reg .b32   %r<64>;
+    .reg .b64   %rd<16>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 32;
+    add.s64         %rd4, %rd1, %rd3;
+    add.s64         %rd5, %rd2, %rd3;
+    ld.global.v4.b32 {%r2, %r3, %r4, %r5}, [%rd4];
+    ld.global.v4.b32 {%r6, %r7, %r8, %r9}, [%rd4+16];
+    mul.wide.u32    %rd6, %r1, 16;
+    add.s64         %rd7, %rd1, %rd6;
+    ld.global.v4.b32 {%r10, %r11, %r12, %r13}, [%rd7+1024];
+    mov.b32         {%rs1, %rs2}, %r2;
+    mov.b32         {%rs3, %rs4}, %r3;
+    mov.b32         {%rs5, %rs6}, %r4;
+    mov.b32         {%rs7, %rs8}, %r5;
+    mul.bf16        %rs9, %rs1, %rs2;
+    mul.bf16        %rs10, %rs3, %rs4;
+    mul.bf16        %rs11, %rs5, %rs6;
+    mul.bf16        %rs12, %rs7, %rs8;
+    mov.b32         %r20, {%rs9, %rs10};
+    mov.b32         %r21, {%rs11, %rs12};
+    mov.b64         %rd8, {%r20, %r21};
+    mov.b64         {%r22, %r23}, %rd8;
+    mov.b32         %r24, 0f00000000;
+    mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32
+        {%r25, %r26, %r27, %r28},
+        {%r10, %r11, %r12, %r13},
+        {%r22, %r23},
+        {%r24, %r24, %r24, %r24};
+    st.global.v4.f32 [%rd5], {%r25, %r26, %r27, %r28};
+    mul.bf16x2      %r30, %r6, %r7;
+    mov.b32         %r31, 0x3210;
+    prmt.b32        %r32, %r30, %r8, 0x5410;
+    xor.b32         %r33, %r1, 1;
+    shfl.sync.idx.b32 %r34, %r32, %r33, 31, -1;
+    prmt.b32        %r35, %r34, %r9, 0x1076;
+    mov.b32         {%rs13, %rs14}, %r35;
+    cvt.f32.bf16    %r36, %rs13;
+    cvt.f32.bf16    %r37, %rs14;
+    st.global.v2.f32 [%rd5+16], {%r36, %r37};
+    ret;
+}
