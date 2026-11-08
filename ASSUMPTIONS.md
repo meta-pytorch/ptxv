@@ -4090,6 +4090,19 @@ forms seen. Any other form is a hard error.
   operand and masks with 0xffffe000 (ties away from zero); Inf / NaN are only masked, so a NaN
   whose payload is all below bit 13 becomes Inf. probes/cvt_tf32 (ties, near overflow, NaN
   payloads, Inf, subnormals): GB300 50/50, both front-ends bitwise.
+- `cvt.ftz.sat.f32.f32` / `cvt.ftz.f32.f32` (2026-11-07, PX: 49 kernel-DB records): ptxas
+  emits `FADD.FTZ.SAT d, RZ, a` (clamp to [0, 1], NaN and subnormals +0) and
+  `FADD.FTZ d, a, -RZ` (subnormals to a zero of their sign, -0 kept, NaN canonical).
+  probes/cvt_ftz (signed zeros, subnormals, NaN payloads, infinities, 1 and neighbors): GB300
+  50/50, both front-ends bitwise.
+- Float literals (2026-11-07, PX: 38 kernel-DB records): a decimal literal (`1.0`, `20.`,
+  `.5e1`, `1.4426950408889634`) is an f64 value (PTX ISA) rounded to nearest even in an `.f32`
+  instruction (`1.00000017881393432617`, a tie, gives 0x3f800002; `1e-46` +0; `1e39` +Inf);
+  a `0d` literal in an `.f32` instruction is converted the same way; a `0f` literal keeps its
+  32 raw bits, zero-extended in an `.f64` instruction (`mov.f64 d, 0f3DCCCCCD` gives
+  0x000000003dcccccd on GB300, not 0.1f widened). The type is the instruction's last type
+  modifier; a decimal literal in an instruction whose last type is not `.f32` / `.f64` is
+  refused. probes/float_lit: GB300 50/50, both front-ends bitwise.
 - PTX syntax (2026-11-07, SCALE pilot): `%lanemask_{lt,le,ge,gt,eq}` as SR_LTMASK etc.;
   registers declared without `%` inside an inline-asm scope (`{.reg .s64 a; ...}`, CuTeDSL);
   `[%rd+-N]` addresses; a `{...}` operand list starting a continuation line (after a comma, or
@@ -4241,6 +4254,25 @@ produces. The SASS front-end is exact (it executes the FFMA / FMUL + FADD ptxas 
   `fma.rn` themselves). KA records with one either check the SASS front (a `cubin`) or do not
   lift for other reasons (mslk fa4 decode / fwd). SCALE corpus PTX files with a plain mul read
   by a plain add / sub: 554 (list kept outside the repo).
+- `.f32x2` (2026-11-07, PX: 4 kernel-DB records whose PTX-front output was 1 ulp off GB300,
+  e.g. a Triton gated product sum; 127 records refused on plain `mul` / `add.f32x2`): ptxas
+  13.0 contracts a `mul.f32x2` into every `add` / `sub.f32x2` reading it when all its readers
+  are such adds with the same rounding mode and `.ftz` setting, **explicit `.rn` / `.rz` /
+  `.rm` / `.rp` included** (FFMA2, FFMA2.RZ, FFMA2.RM; none = `.rn`, so `mul.f32x2` +
+  `add.rn.f32x2` contracts too), the mul then disappearing; with any other reader (a store, an
+  fma or mul operand, an unpack, an add of another mode, `add p, p`) it contracts none (FMUL2
+  + FADD2). Scalar `.rn` pairs and `.rn` f64 / f16 / bf16 (x2) pairs stay apart, as the ISA's
+  "treated conservatively" says; the f32x2 behavior departs from it. Contraction happens
+  before ptxas merges equal expressions (probes/fmad2: four equal products in separate
+  registers keep their own decisions). An add / sub of two such muls folds its first
+  operand's product (FMUL2 of the second, FFMA2), whichever is defined first, when the second
+  has no other reader (probes/fmad2: 64 of 64 lanes match that fold, 0 the other) (scalar FFMA does the same; still refused there). A label no branch
+  names (Triton's `$L__tmp` debug labels) does not end the block. `fmad2_pairs`; refused: a
+  contracting reader in another block, under a guard, before the mul or after its operands
+  change, an add of two such muls whose second is read elsewhere too, and a qualifying add
+  next to a reader of a kind not probed (e.g. `selp`). probes/fmad2:
+  GB300 50/50 scrubbed, both fronts bitwise; the unfused value differs on all 64 lanes of the
+  `.rn` pair.
 - If wrong: *false alarm* on bitwise / equivalence / error-distribution results of the PTX
   front only; other toolchains or `--fmad=false` may contract differently.
 
@@ -5320,6 +5352,21 @@ largest eₐ + e_b, truncated toward zero 25 bits below it, summed exactly, roun
   operands give `unmodeled`. Numerics: each HMMA.1688 is an `Mma` node per output element with
   N-MMA's contract for 9 terms; its factors are TF32 parts of tracked values (N-TF32).
 - If wrong: *miss* or *false alarm* in numerics.
+
+
+### N-IMMA · code
+**`IMMA.16832.S8.S8.SAT` (`mma.sync.aligned.m16n8k32.row.col.satfinite.s32.s8.s8.s32`) is
+D = sat_s32(C + Σ_{k<32} A[m][k] B[k][n]) in exact integers.** Fragments as in the PTX ISA
+(g = lane / 4, t = lane % 4): a_j byte i = A[g + 8 (j & 1)][4 t + i + 16 (j >> 1)], b_j byte
+i = B[4 t + i + 16 j][g], c_j / d_j = [g + 8 (j >> 1)][2 t + (j & 1)].
+- Where: `exec.rs` `imma_s8` (`Op::Hmma { s8: true }`); the PTX front lowers only this
+  `mma.sync` integer shape, the SASS front only `IMMA.16832.S8.S8.SAT` (other IMMA modifiers
+  are outside modset.rs and refused).
+- Status: **validated**: probes/imma_s8 (one warp, 4 chained steps, 512 outputs: random
+  bytes, all -128 x -128, -128 x 127, C within 2^19 of both s32 limits; 9 outputs saturate at
+  INT32_MAX and 24 at INT32_MIN, later steps start from saturated C) is bitwise equal to
+  GB300 on both front-ends (50/50 scrubbed runs, 2026-11-07). On the same inputs a wrapping
+  sum differs from GB300 on 87 outputs, a clamp after each product (k order) on 36.
 
 ### N-TF32 · code
 **TF32 operands and the 3xTF32 split (`num.rs` `NodeKind::Tf32`, `equiv.rs` `tf32_chain`;

@@ -167,6 +167,7 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
     ("IADD3", &["X"]),
     ("IDP", &["2A", "HI", "LO", "S16", "S8", "U16", "U8"]),
     ("IMAD", &["HI", "IADD", "MOV", "SHL", "U32", "WIDE", "X"]),
+    ("IMMA", &["16832", "S8", "SAT"]),
     (
         "ISETP",
         &[

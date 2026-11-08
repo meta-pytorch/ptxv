@@ -1658,6 +1658,36 @@ fn probe_discard_l2_verdicts() {
     check_dir("probes", "discard_l2", "read_after", "ptx");
 }
 
+/// cvt.ftz.sat.f32.f32 / cvt.ftz.f32.f32 (probes/cvt_ftz) = GB300 on both front-ends.
+#[test]
+fn probe_cvt_ftz_matches_hardware() {
+    probe_bitwise("probes/cvt_ftz", "good", "ptx");
+    probe_bitwise("probes/cvt_ftz", "good", "sass");
+}
+
+/// Decimal / cross-width float literals (probes/float_lit) = GB300 on both front-ends.
+#[test]
+fn probe_float_lit_matches_hardware() {
+    probe_bitwise("probes/float_lit", "good", "ptx");
+    probe_bitwise("probes/float_lit", "good", "sass");
+}
+
+/// mul.f32x2 contracted into add / sub.f32x2 of the same rounding mode, .rn included
+/// (probes/fmad2) = GB300 on both front-ends.
+#[test]
+fn probe_fmad2_matches_hardware() {
+    probe_bitwise("probes/fmad2", "good", "ptx");
+    probe_bitwise("probes/fmad2", "good", "sass");
+}
+
+/// mma.sync m16n8k32 s8 satfinite / IMMA.16832.S8.S8.SAT (probes/imma_s8) = GB300 on both
+/// front-ends, saturating on both s32 limits.
+#[test]
+fn probe_imma_s8_matches_hardware() {
+    probe_bitwise("probes/imma_s8", "good", "ptx");
+    probe_bitwise("probes/imma_s8", "good", "sass");
+}
+
 /// Plain mul.bf16 / .bf16x2 reaching mma / cvt through packs, prmt and shfl
 /// (probes/bf16_sink) = GB300 on both front-ends.
 #[test]

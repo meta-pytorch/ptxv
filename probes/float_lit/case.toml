@@ -1,0 +1,37 @@
+name = "probe_float_lit"
+description = """
+Probe (L-ROSETTA) for float literal operands: decimal literals (`0.1`, `20.`, `.5e1`, a tie,
+underflow, overflow) in .f32 / .f64 instructions, `0d` in .f32, `0f` in .f64 (kernel.ptx,
+gen.py). expected/ is GB300's output (kernel.cubin = ptxas -arch=sm_103a kernel.ptx,
+`ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "float_lit"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [32]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1868,6 +1868,12 @@ pub enum Op {
         b: Vec<Val>,
         c: Vec<Val>,
         tf32: bool,
+        /// `mma.sync.m16n8k32.row.col.satfinite.s32.s8.s8.s32` (SASS `IMMA.16832.S8.S8.SAT`):
+        /// A 16x32 and B 32x8 signed bytes, four per register, C / D s32; the same register
+        /// shapes with k offsets of 4 per lane quad and 16 per register pair: a_j byte i =
+        /// A[g + 8 (j & 1)][4 t + i + 16 (j >> 1)], b_j byte i = B[4 t + i + 16 j][g].
+        /// D = C + A B in exact integers, saturated to s32.
+        s8: bool,
     },
 }
 

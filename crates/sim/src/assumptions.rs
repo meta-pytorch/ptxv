@@ -995,7 +995,7 @@ pub const REGISTRY: &[Assumption] = &[
         id: "PTX-FMAD",
         kind: "code",
         status: "validated",
-        title: "PTX mul + add / sub without rounding modifiers contracted as ptxas 13.0's default --fmad=true (probes/fmad); ambiguous shapes refused",
+        title: "PTX mul + add / sub contracted as ptxas 13.0's default --fmad=true: without rounding modifiers, and .f32x2 of equal modes (probes/fmad, probes/fmad2); ambiguous shapes refused",
         applies: |k| {
             k.front == Front::Ptx
                 && k.code.iter().any(|i| {
@@ -1003,7 +1003,10 @@ pub const REGISTRY: &[Assumption] = &[
                     let one = ptxv_ir::Val::Imm(1f64.to_bits());
                     let t = i.text.trim_start();
                     (matches!(i.op, Op::Ffma { c: Some(_), .. })
-                        || matches!(&i.op, Op::Dfma { c: Some(_), b, .. } if *b != one))
+                        || matches!(&i.op, Op::Dfma { c: Some(_), b, .. } if *b != one)
+                        // add / sub.f32x2 alone is FFMA2 a * 1.0 + b; contracted: FFMA2 a * b + c.
+                        || matches!(&i.op, Op::Ffma2 { b, .. }
+                            if b.0 != ptxv_ir::Val::Imm(0x3f80_0000)))
                         && (t.starts_with("add.") || t.starts_with("sub."))
                 })
         },
@@ -1480,7 +1483,14 @@ pub const REGISTRY: &[Assumption] = &[
         kind: "code",
         status: "validated",
         title: "HMMA.16816.F32.BF16 = the N-MMA model per instruction (probes/hmma, 98,304 GB300 outputs)",
-        applies: |k| any(k, |o| matches!(o, Op::Hmma { .. })),
+        applies: |k| any(k, |o| matches!(o, Op::Hmma { s8: false, .. })),
+    },
+    Assumption {
+        id: "N-IMMA",
+        kind: "code",
+        status: "validated",
+        title: "IMMA.16832.S8.S8.SAT = exact integer C + A B saturated to s32 (probes/imma_s8, GB300 bitwise)",
+        applies: |k| any(k, |o| matches!(o, Op::Hmma { s8: true, .. })),
     },
     Assumption {
         id: "N-TF32",

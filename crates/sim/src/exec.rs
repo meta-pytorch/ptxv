@@ -4328,12 +4328,29 @@ impl Machine {
                     self.num_clobber(t, *d, &[], pc);
                 }
             }
-            Op::Hmma { d, a, b, c, tf32 } => {
+            Op::Hmma {
+                d,
+                a,
+                b,
+                c,
+                tf32,
+                s8,
+            } => {
                 if active.len() != 32 {
                     return Err(format!(
                         "HMMA executed by {} lanes (needs the full warp)",
                         active.len()
                     ));
+                }
+                if *s8 {
+                    self.imma_s8(&active, *d, a, b, c)?;
+                    for &t in &active {
+                        self.tick(t);
+                    }
+                    for &t in members {
+                        self.threads[t].make_mut().pc = pc + 1;
+                    }
+                    return Ok(());
                 }
                 if *tf32 {
                     self.hmma_tf32(&active, *d, a, b, c, pc)?;
@@ -12973,6 +12990,69 @@ impl Machine {
     /// operand word is read as tf32 (`fp::TF32_IN`) and every output is one step of
     /// `fp::TMMA_MODEL` over its 8 products and accumulator. Results are not tracked by the
     /// numerics (f32 operand provenance through MMA is not modeled). ASSUME(N-HMMA)
+    /// `IMMA.16832.S8.S8.SAT` / `mma.sync.m16n8k32.row.col.satfinite.s32.s8.s8.s32` (layout in
+    /// `Op::Hmma`): D = C + A B in exact integers, saturated to s32 (probes/imma_s8).
+    // ASSUME(N-IMMA): see ASSUMPTIONS.md
+    fn imma_s8(
+        &mut self,
+        active: &[usize],
+        d: Reg,
+        a: &[Val],
+        b: &[Val],
+        c: &[Val],
+    ) -> Result<(), String> {
+        if c.is_empty() {
+            return Err("IMMA with a zero C operand not modeled".into());
+        }
+        let mut am = [[0i64; 32]; 16];
+        let mut bm = [[0i64; 8]; 32];
+        let mut cm = [[0i64; 8]; 16];
+        // The 32 active threads must be the warp's lanes 0..31, once each (the fragment
+        // layout is per lane).
+        let mut lanes = [usize::MAX; 32];
+        for &t in active {
+            let l = self.threads[t].lane as usize;
+            if l >= 32 || lanes[l] != usize::MAX {
+                return Err("IMMA needs each lane of the warp exactly once".into());
+            }
+            lanes[l] = t;
+        }
+        for &t in active {
+            let l = self.threads[t].lane as usize;
+            let (g, q) = (l / 4, l % 4);
+            for (j, v) in a.iter().enumerate() {
+                let x = self.rd(t, v)? as u32;
+                for i in 0..4 {
+                    am[g + 8 * (j & 1)][4 * q + i + 16 * (j >> 1)] =
+                        (x >> (8 * i)) as u8 as i8 as i64;
+                }
+            }
+            for (j, v) in b.iter().enumerate() {
+                let x = self.rd(t, v)? as u32;
+                for i in 0..4 {
+                    bm[4 * q + i + 16 * j][g] = (x >> (8 * i)) as u8 as i8 as i64;
+                }
+            }
+            for (j, v) in c.iter().enumerate() {
+                cm[g + 8 * (j >> 1)][2 * q + (j & 1)] = self.rd(t, v)? as u32 as i32 as i64;
+            }
+        }
+        for (l, &t) in lanes.iter().enumerate() {
+            let (g, q) = (l / 4, l % 4);
+            for j in 0..4usize {
+                let (row, col) = (g + 8 * (j >> 1), 2 * q + (j & 1));
+                let s = cm[row][col] + (0..32).map(|k| am[row][k] * bm[k][col]).sum::<i64>();
+                let r = s.clamp(i32::MIN as i64, i32::MAX as i64) as i32 as u32;
+                let dr = Reg {
+                    file: d.file,
+                    idx: d.idx + j as u16,
+                };
+                self.wr(t, dr, r as u64, 1);
+            }
+        }
+        Ok(())
+    }
+
     fn hmma_tf32(
         &mut self,
         active: &[usize],

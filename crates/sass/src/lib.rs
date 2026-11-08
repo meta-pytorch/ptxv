@@ -3688,14 +3688,20 @@ fn lower_line(
         }
         // HMMA.16816.F32.BF16 Rd, Ra, Rb, Rc: mma.sync m16n8k16 bf16 x bf16 + f32.
         // HMMA.1688.F32.BF16 (mma.sync m16n8k8 bf16): A two registers, B one (probes/bmma8).
-        "HMMA"
+        "HMMA" | "IMMA"
             if mods == ["16816", "F32", "BF16"]
                 || mods == ["1688", "F32", "TF32"]
-                || mods == ["1688", "F32", "BF16"] =>
+                || mods == ["1688", "F32", "BF16"]
+                || base == "IMMA" && mods == ["16832", "S8", "S8", "SAT"] =>
         {
             uniform = false;
             let regs = |s: &str, n: u16| -> Result<Vec<Val>> {
                 let s = s.trim_end_matches(".reuse");
+                // IMMA's operand layouts (`R88.ROW`, `R80.COL`), as the instruction requires.
+                let s = s
+                    .trim_end_matches(".ROW")
+                    .trim_end_matches(".COL")
+                    .trim_end_matches(".reuse");
                 if s == "RZ" {
                     return Ok(vec![]);
                 }
@@ -3724,6 +3730,7 @@ fn lower_line(
                 b,
                 c: regs(lw.op(3)?, 4)?,
                 tf32: mods[2] == "TF32",
+                s8: base == "IMMA",
             }
         }
         "LDS" => {

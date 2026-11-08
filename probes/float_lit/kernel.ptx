@@ -1,0 +1,53 @@
+// probes/float_lit: decimal float literals and cross-width hex literals as operands (ptxas
+// converts them to the instruction type; PTX evaluates decimal literals as f64). 32 threads;
+// x = in[t] (f32, gen.py). out[16 t ..]: 0 mov 0.1, 1 mov 1.00000017881393432617 (a tie),
+// 2 mov 1e-46, 3 mov 1e39, 4 x * 1.4426950408889634, 5 x > 20. ? 1.0 : -2.5, 6 mov
+// 0d3FB999999999999A, 7 mov .5e1, 8..9 mov.f64 0.1, 10..11 mov.f64 0f3DCCCCCD (raw bits,
+// zero-extended), 12..13 x (as f64) + 1.0e-300, 14 x + 3.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry float_lit(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<2>;
+    .reg .b32   %r<4>;
+    .reg .f32   %f<20>;
+    .reg .f64   %fd<8>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    mul.wide.u32    %rd5, %r1, 64;
+    add.s64         %rd6, %rd2, %rd5;
+    ld.global.f32   %f1, [%rd4];
+    mov.f32         %f2, 0.1;
+    mov.f32         %f3, 1.00000017881393432617;
+    mov.f32         %f4, 1e-46;
+    mov.f32         %f5, 1e39;
+    mul.rn.f32      %f6, %f1, 1.4426950408889634;
+    setp.gt.f32     %p1, %f1, 20.;
+    selp.f32        %f7, 1.0, -2.5, %p1;
+    mov.f32         %f8, 0d3FB999999999999A;
+    mov.f32         %f9, .5e1;
+    mov.f64         %fd1, 0.1;
+    mov.f64         %fd2, 0f3DCCCCCD;
+    cvt.f64.f32     %fd3, %f1;
+    add.rn.f64      %fd4, %fd3, 1.0e-300;
+    add.rn.f32      %f10, %f1, 3.;
+    st.global.v4.f32 [%rd6], {%f2, %f3, %f4, %f5};
+    st.global.v4.f32 [%rd6+16], {%f6, %f7, %f8, %f9};
+    st.global.v2.f64 [%rd6+32], {%fd1, %fd2};
+    st.global.f64   [%rd6+48], %fd4;
+    st.global.f32   [%rd6+56], %f10;
+    ret;
+}
