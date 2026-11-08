@@ -26,6 +26,9 @@ use crate::num::NumState;
 
 pub const PARAM_BASE: u64 = 0x7e00_0000_0000;
 pub const GLOBAL_BASE: u64 = 0x7000_0000_0000;
+
+/// Racing reads per race signature (`Machine::race_log`).
+pub type RaceLog = Arc<std::sync::Mutex<BTreeMap<String, Option<BTreeSet<(u32, u32)>>>>>;
 /// The generic shared window (4 GB): its low word is a shared::cluster address.
 /// ASSUME(S-SWIN): GB300 puts it elsewhere (high word 0xfffa in fixtures/s_routing_forms);
 /// only its being one 4 GB-aligned window matters.
@@ -404,6 +407,9 @@ pub struct Sh {
     pub hw: Option<Box<[Epoch]>>,
     /// The last write `w` went through a multicast (NVLS) view (S-MC-ALIAS); false: unicast.
     pub mcv: bool,
+    /// S-INIT: the last write stored undefined bits (an `STS` of an undefined register); a
+    /// load reads it as never written.
+    pub undef: bool,
 }
 
 /// The reads since the last write, one per actor, sorted by actor (canonical state: commuting
@@ -585,6 +591,9 @@ impl Hash for Sh {
         }
         if self.mcv {
             h.write_u64(1 << 61);
+        }
+        if self.undef {
+            h.write_u64(7 << 60);
         }
         if let Some(hw) = &self.hw {
             h.write_u64(hw.len() as u64 | 1 << 62);
@@ -997,6 +1006,9 @@ pub struct Thread {
     /// issue, pc). `cp_group` counts committed groups (the open group's id).
     pub cp_pending: Vec<CpPending>,
     pub cp_group: u32,
+    /// Result of the thread's last completed `bar.red` (E-BAR-RED): the reduction, the number
+    /// of true contributions, and whether every waiter's was true.
+    pub bar_res: Option<(ptxv_ir::BarRedOp, u32, bool)>,
     /// E-READ-DONE (case `read_done`): loads whose destination registers no instruction has
     /// used yet: (register file, first register, count, clock of the read).
     pub ld_pend: Vec<(u8, u16, u8, u32)>,
@@ -1005,6 +1017,8 @@ pub struct Thread {
 #[derive(Clone, Debug, Hash)]
 pub struct CpPending {
     pub group: u32,
+    /// The warp's LDGDEPBAR count when it was issued (SASS: SB0 counts the warp's commits).
+    pub wgroup: u32,
     pub off: u32,
     /// The global source (allocation, byte offset); None: zero fill.
     pub src: Option<(usize, u64)>,
@@ -1025,6 +1039,9 @@ pub struct Warp {
     pub ur_written: [u64; 4],
     /// Lanes recorded by `BSSY Bb` for each convergence barrier b (E-BSYNC).
     pub bmask: [u32; 16],
+    /// SASS: LDGDEPBAR executions by the warp (any lanes): the cp.async scoreboard counts
+    /// the warp's commits, not each thread's (E-CPASYNC).
+    pub cp_seq: u32,
 }
 
 #[derive(Clone, Debug, Hash, Serialize)]
@@ -1101,6 +1118,9 @@ pub struct Bar {
     pub arrivers: Vec<u32>,
     /// Join of the arrivers' clocks at their arrivals: released to the waiters.
     pub rel: VC,
+    /// Per waiter, sorted: its `bar.red` reduction (None: a plain `bar.sync`) and its
+    /// contribution (E-BAR-RED).
+    pub red: Vec<(u32, Option<ptxv_ir::BarRedOp>, bool)>,
     /// Explicit thread count, or None for "all threads of the CTA", which waits only for
     /// threads that have not exited (GB300 probe, ASSUMPTIONS.md E-BAR-EXIT).
     pub count: Option<u32>,
@@ -1616,6 +1636,19 @@ pub struct Machine {
     /// never-written shared memory is recorded here (first byte) instead of reported: the
     /// loaded registers become undefined, and only a use of them is a finding (S-INIT).
     pub stale: Option<Option<u32>>,
+    /// S-INIT: the shared / global store running writes undefined bits (`Sh::undef`).
+    pub wundef: bool,
+    /// S-INIT: global stores of undefined data (allocation, offset, bytes, pc), checked at
+    /// terminal states (`exit_checks`); an index into `Sh::undef`, not part of the state hash.
+    pub gundef: Arc<Vec<(usize, u64, u32, u32)>>,
+    /// Tensor maps in global memory a TMA used (allocation, offset), for S-TMAP-TAIL.
+    pub tmaps_used: Arc<Vec<(usize, u64)>>,
+    /// S-TMAP-TAIL: while a tensor map is read, undefined bytes from this offset on are not
+    /// a use.
+    pub undef_ok_from: Option<usize>,
+    /// S-INIT-FILLS (fills.rs): the value unwritten state holds in a multi-fill rerun; None:
+    /// 0. Not hashed (constant over a run).
+    pub fill: Option<crate::fills::Fill>,
     /// Per thread: own clock when its warp last diverged (`Machine::wdiv`); an access with an own
     /// clock at least this one ran after it (intra-warp race labels, E-WARP-ORDER). History
     /// for a label only: not part of the state hash.
@@ -1629,6 +1662,11 @@ pub struct Machine {
     /// (thread, pc) leave their destination registers undefined (S-INIT), so a use of the
     /// loaded value is reported where it reaches a sink.
     pub dead_probe: Option<Arc<BTreeSet<(u32, u32)>>>,
+    /// Not hashed, shared by every copy of a machine: the racing reads seen so far, per race
+    /// signature (`race_dead.rs`). Some(reads (thread, pc)) while every read of that race is
+    /// a thread's non-acquiring load; None once one is not (a write-write race, an atomic,
+    /// an asynchronous read).
+    pub race_log: Option<RaceLog>,
     /// Not hashed, transient: set while an operation that read partly undefined registers
     /// runs: the undefined bits of its result (slot i in bits 32i..32i+32), S-INIT.
     pub vmask: Option<u64>,
@@ -2164,6 +2202,7 @@ impl Machine {
                     up_def: 0,
                     ur_written: [0; 4],
                     bmask: [0; 16],
+                    cp_seq: 0,
                 }));
             }
             for t in 0..tpc {
@@ -2204,6 +2243,7 @@ impl Machine {
                     local: Vec::new(),
                     cp_pending: Vec::new(),
                     cp_group: 0,
+                    bar_res: None,
                 }));
             }
         }
@@ -2265,6 +2305,12 @@ impl Machine {
             elect_choice: None,
             stale: None,
             dead_probe: None,
+            wundef: false,
+            gundef: Arc::new(Vec::new()),
+            tmaps_used: Arc::new(Vec::new()),
+            undef_ok_from: None,
+            race_log: None,
+            fill: None,
             vmask: None,
             fp: None,
             live: 0..0,

@@ -57,8 +57,8 @@ and for each zero class:
 |---|---|---|---|---|
 | tc_bf16_m128_en0 / en1 | tcgen05 kind::f16 bf16, M128 N16 | 65,536 / 67,584 | 510 / 516 (282) | 1,460 / 1,493 (all -0 vs +0) |
 | tc_bf16_m64_en0 / en1 | tcgen05 kind::f16 bf16, M64 N16 | 65,536 / 67,584 | 510 / 516 (282) | 1,460 / 1,493 |
-| tc_f16_m128_en0 / en1 | tcgen05 kind::f16 f16 | 6,144 | 42 (42) | (f16 inputs not modeled) |
-| tc_tf32_m128_en0 / en1 | tcgen05 kind::tf32 | 65,536 / 67,584 | 510 / 516 (282) | (not modeled) |
+| tc_f16_m128_en0 / en1 | tcgen05 kind::f16 f16 | 6,144 | 42 (42) | (modeled since 2026-11-07: = GB300) |
+| tc_tf32_m128_en0 / en1 | tcgen05 kind::tf32 | 65,536 / 67,584 | 510 / 516 (282) | (modeled since 2026-11-07: = GB300) |
 | tc_e4m3_m128_en0 / en1 | tcgen05 kind::f8f6f4 e4m3, f32 D | 6,144 | 42 (42) | 504 / 2 |
 | tc_e4m3f16d_m128_en0 / en1 | kind::f8f6f4 e4m3, f16 D | 6,144 | 42 (42) | 504 / 2 |
 | tc_e2m1_m128_en0 / en1 | kind::f8f6f4 e2m1 | 4,096 | 30 (30) | 504 / 2 |

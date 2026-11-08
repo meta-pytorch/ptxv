@@ -1,0 +1,21 @@
+// Probe for abs.s64, brev.b32 and rcp.{rn,rz,rm,rp}.f64 on edge and random inputs. Thread i
+// reads 64-bit word i of in (an integer and, as bits, an f64); writes 8 words at 8i.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry ptx_misc2(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<20>; .reg .b32 %r<8>; .reg .f64 %fd<8>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mul.wide.u32 %rd3, %r1, 8; add.s64 %rd4, %rd1, %rd3;
+  mul.wide.u32 %rd5, %r1, 48; add.s64 %rd6, %rd2, %rd5;
+  ld.global.u64 %rd7, [%rd4]; mov.b64 %fd1, %rd7; cvt.u32.u64 %r2, %rd7;
+  abs.s64 %rd8, %rd7;
+  brev.b32 %r3, %r2;
+  rcp.rn.f64 %fd2, %fd1; rcp.rz.f64 %fd3, %fd1; rcp.rm.f64 %fd4, %fd1;
+  st.global.u64 [%rd6], %rd8;
+  st.global.u32 [%rd6+8], %r3;
+  st.global.u32 [%rd6+12], %r1;
+  st.global.f64 [%rd6+16], %fd2; st.global.f64 [%rd6+24], %fd3; st.global.f64 [%rd6+32], %fd4;
+  rcp.rp.f64 %fd5, %fd1; st.global.f64 [%rd6+40], %fd5;
+  ret; }

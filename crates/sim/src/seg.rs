@@ -547,6 +547,7 @@ pub(crate) fn eval_inst(
             b,
             c,
             neg,
+            abs,
             rnd,
         } => {
             let lane = dst.idx.wrapping_sub(d.idx);
@@ -572,10 +573,11 @@ pub(crate) fn eval_inst(
                 }
             };
             let n = |k: usize| if neg[k] { 0x8000_0000 } else { 0 };
+            let m = |k: usize| if abs[k] { 0x7fff_ffff } else { !0 };
             fp::f32_fma(
-                opv(a) ^ n(0),
-                opv(b) ^ n(1),
-                Some(opv(c) ^ n(2)),
+                opv(a) & m(0) ^ n(0),
+                opv(b) & m(1) ^ n(1),
+                Some(opv(c) & m(2) ^ n(2)),
                 *rnd,
                 false,
             ) as u64

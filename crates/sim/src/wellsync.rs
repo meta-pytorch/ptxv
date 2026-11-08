@@ -542,6 +542,10 @@ fn membership(m: &Machine, pc: u32) -> (bool, bool) {
         _ if m.k.front == Front::Sass => (true, false),
         // PTX `.sync.aligned`: the explorer runs it only with every live lane (split_enabled).
         _ if op.is_warp_aligned() => (false, true),
+        // PTX `redux.sync` with a subset membermask: it runs only once every live lane the
+        // mask names has arrived (split_enabled), whatever paths they came by; lanes outside
+        // the mask joining them are a violation (exec.rs).
+        Op::Redux { mask: Some(_), .. } => (false, true),
         Op::Elect { .. }
         | Op::VoteAny { .. }
         | Op::MatchAny { .. }
@@ -3427,6 +3431,9 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
     // The dead-read probe reruns from the start (`dead_reads`).
     let m0 = m.dead_probe.is_none().then(|| m.clone());
     DEAD_CAND.with(|d| *d.borrow_mut() = None);
+    // E-RACE-DEAD: the run's racing reads (race_dead.rs).
+    let race_log = m0.as_ref().and_then(|_| crate::race_dead::new_log());
+    m.race_log = race_log.clone();
     m.wlog = LogSlot(Some(Box::new(SyncLog::new(&m))));
     if std::env::var("PTXV_WS_NOLOG").is_ok() {
         m.wlog = LogSlot(None);
@@ -3502,63 +3509,71 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
         }
         None => why.push("no log (PTXV_WS_NOLOG)".into()),
     }
-    if let (Some(m0), Some((reads, msgs))) = (m0, DEAD_CAND.with(|d| d.borrow_mut().take())) {
-        if let Some(note) = dead_reads(m0, &reads, &fs, ok) {
+    if let Some(m0) = m0 {
+        // Dead reads: C-ORDER conflicts against plain loads, and plain races, whose loaded
+        // values reach nothing (one rerun with the loads undefined decides; `probe_run`).
+        let corder = DEAD_CAND.with(|d| d.borrow_mut().take());
+        let races = race_log
+            .map(|l| crate::race_dead::candidates(&l, &fs))
+            .unwrap_or_default();
+        let probe = |reads: &BTreeSet<(u32, u32)>| probe_run(&m0, reads, &fs, ok);
+        let (corder_dead, dead_races) = match &corder {
+            Some((reads, _)) => {
+                let mut all = reads.clone();
+                all.extend(races.iter().flat_map(|c| c.1.iter().copied()));
+                if probe(&all) {
+                    (true, races.iter().map(|c| c.0.clone()).collect())
+                } else if races.is_empty() {
+                    (false, BTreeSet::new())
+                } else {
+                    (probe(reads), crate::race_dead::decide(&races, probe))
+                }
+            }
+            None => (false, crate::race_dead::decide(&races, probe)),
+        };
+        if let (true, Some((reads, msgs))) = (corder_dead, corder) {
             why.retain(|w| !msgs.contains(w));
-            fs.push(note);
+            let first = reads.iter().next().copied().unwrap_or_default();
+            fs.push(Finding {
+                kind: "note".into(),
+                sig: format!("dead-read:{}", first.1),
+                msg: format!(
+                    "C-ORDER: {} load(s) unordered with a write read values that reach nothing (rerun with them undefined, S-INIT), first at {}",
+                    reads.len(),
+                    m0.k.describe(first.1 as usize)
+                ),
+                trace: vec![],
+                ..Default::default()
+            });
         }
+        crate::race_dead::mark(&mut fs, &dead_races);
     }
     (m, fs, ok, steps, why)
 }
 
-/// C-ORDER dead reads. Every C-ORDER conflict of the run is a write against a plain read by
-/// a thread (`reads`: thread, pc), whose value may differ in another schedule. Rerun the same
-/// launch with those loads leaving their registers undefined (`Machine::dead_probe`, S-INIT):
-/// undefined bits propagate through register-only operations and are reported where they
-/// reach memory, an address, a predicate or control flow, or a synchronization operand. If
-/// the rerun reports no use the run did not (and ends as the run did), no read value reaches
-/// anything along the run's path, so a read of any other value leaves the same events: the
-/// conflicts change nothing (BlackwellScoreSummary: warps that skip the named barrier read the
-/// TMEM address before it is stored and never use it). Returns the note recording it.
-fn dead_reads(
-    mut m0: Machine,
-    reads: &BTreeSet<(u32, u32)>,
-    fs: &[Finding],
-    ok: bool,
-) -> Option<Finding> {
-    m0.dead_probe = Some(Arc::new(reads.clone()));
-    let k = m0.k.clone();
+/// Dead reads (C-ORDER conflicts against plain loads, E-RACE-DEAD races): rerun the launch
+/// with the loads `reads` (thread, pc) leaving their registers undefined (`Machine::dead_probe`,
+/// S-INIT): undefined bits propagate through register-only operations and are reported where
+/// they reach memory, an address, a predicate or control flow, or a synchronization operand.
+/// True if the rerun reports no use the run did not and ends as the run did: no read value
+/// reaches anything along the run's path, so a read of any other value leaves the same events
+/// (BlackwellScoreSummary: warps that skip the named barrier read the TMEM address before it
+/// is stored and never use it).
+fn probe_run(m0: &Machine, reads: &BTreeSet<(u32, u32)>, fs: &[Finding], ok: bool) -> bool {
+    let m = crate::race_dead::probe_machine(m0, reads);
     // The rerun is a logged run too: keep the thread-local results of this one.
     let carry = CARRY.with(|p| p.borrow().clone());
     let ring_out = RING_OUT.with(|r| std::mem::take(&mut *r.borrow_mut()));
     let pruned = RING_PRUNED.with(|p| p.borrow_mut().take());
     let eager = EAGER_FAILED.with(|e| e.get());
     let corder = CORDER_SMEM.with(|c| c.borrow().clone());
-    let (_, fs1, ok1, _, _) = run_logged(m0);
+    let (_, fs1, ok1, _, _) = run_logged(m);
     CORDER_SMEM.with(|c| *c.borrow_mut() = corder);
     CARRY.with(|p| *p.borrow_mut() = carry);
     RING_OUT.with(|r| *r.borrow_mut() = ring_out);
     RING_PRUNED.with(|p| *p.borrow_mut() = pruned);
     EAGER_FAILED.with(|e| e.set(eager));
-    let used = fs1
-        .iter()
-        .filter(|f| f.sig.starts_with("uninit-reg:"))
-        .any(|f| !fs.iter().any(|g| g.sig == f.sig));
-    if used || ok1 != ok {
-        return None;
-    }
-    let first = reads.iter().next().copied().unwrap_or_default();
-    Some(Finding {
-        kind: "note".into(),
-        sig: format!("dead-read:{}", first.1),
-        msg: format!(
-            "C-ORDER: {} load(s) unordered with a write read values that reach nothing (rerun with them undefined, S-INIT), first at {}",
-            reads.len(),
-            k.describe(first.1 as usize)
-        ),
-        trace: vec![],
-        ..Default::default()
-    })
+    ok1 == ok && crate::race_dead::no_new_use(fs, &fs1)
 }
 
 /// A global byte range (allocation, first byte, end) and an access to it.
@@ -3859,6 +3874,7 @@ fn certify_runs(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Out
             f.kind == "contract"
                 || f.kind == "probe"
                 || f.kind == "note"
+                || f.kind == "race-dead"
                 || f.sig.starts_with("desc-version:")
         });
         for f in contract {
@@ -4052,6 +4068,14 @@ pub fn slice_machine(mut m0: Machine, c: u32) -> Machine {
 /// `ptxv check --certify`: the certificate, else exhaustive exploration (printing why;
 /// PTXV_CERTIFY_ONLY=1: an incomplete verdict instead of exploring).
 pub fn check_certified(m0: Machine, max_states: usize) -> Verdict {
+    let base = m0.clone();
+    let mut v = check_certified_inner(m0, max_states);
+    // S-INIT-FILLS: undefined values that reach only output data.
+    crate::fills::check(&base, &mut v);
+    v
+}
+
+fn check_certified_inner(m0: Machine, max_states: usize) -> Verdict {
     // ASSUME(S-SMEM-STRONG): the certificate on the weak kernel (LDS/STS plain) first, as
     // `smem::two_pass` does for exploration. If that fails, the certificate on the kernel
     // itself (LDS/STS relaxed strong at CTA scope, the hardware-faithful model): a race

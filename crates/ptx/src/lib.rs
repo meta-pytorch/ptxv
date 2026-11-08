@@ -54,12 +54,21 @@ fn stmt_parts(text: &str) -> (&str, Vec<&str>) {
 /// int4 / fp8 KV dequant: `mul.f16 %rs230, %rs6, %rs229` feeding `fma.rn.f16` as a). Any
 /// other use (an add / sub, an fma addend, a move ptxas could propagate) leaves the mul
 /// refused.
+/// `mov.b64 {%r1, %r2}, %rd3` (an unpack: the vector is the destination), not a pack.
+fn is_unpack(st: &Stmt, op: &str) -> bool {
+    st.text
+        .split_once(op)
+        .is_some_and(|(_, rest)| rest.trim_start().starts_with('{'))
+}
+
 fn uncontractible_f16_muls(insts: &[&Stmt]) -> HashSet<String> {
     let mut cand: HashSet<String> = HashSet::new();
     for st in insts {
         let (op, ops) = stmt_parts(&st.text);
         if op.starts_with("mul.")
-            && (op.ends_with(".f16") || op.ends_with(".f16x2"))
+            && [".f16", ".f16x2", ".bf16", ".bf16x2", ".f32x2"]
+                .iter()
+                .any(|t| op.ends_with(t))
             && !op.split('.').any(|m| m == "rn")
         {
             if let Some(d) = ops.first() {
@@ -73,7 +82,11 @@ fn uncontractible_f16_muls(insts: &[&Stmt]) -> HashSet<String> {
         insts.iter().all(|st| {
             let (op, ops) = stmt_parts(&st.text);
             let base = op.split('.').next().unwrap_or("");
-            let is_def = |i: usize| i == 0 && !matches!(base, "st" | "red" | "atom");
+            // `mov.b64 {%r1, %r2}, %rd3` defines every register but the last.
+            let unpack = base == "mov" && is_unpack(st, op);
+            let is_def = |i: usize| {
+                (i == 0 || unpack && i + 1 < ops.len()) && !matches!(base, "st" | "red" | "atom")
+            };
             ops.iter()
                 .enumerate()
                 .all(|(i, o)| is_def(i) || *o != r || matches!(base, "st" | "cvt"))
@@ -91,11 +104,70 @@ fn uncontractible_f16_muls(insts: &[&Stmt]) -> HashSet<String> {
                 "mul" => true,
                 "fma" => i == 1 || i == 2,
                 "st" | "cvt" => true,
-                // `mov.b32 %r13, {%h10, %h10}`: a pack whose result is only stored.
+                // `mov.b32 %r13, {%h10, %h10}`: a pack whose result is only stored;
+                // `mov.b64 {%r64, %r65}, %rd15`: an unpack whose halves are only stored or
+                // converted (Triton's f32x2 RMSNorm before cvt.rn.bf16x2.f32).
+                "mov" if is_unpack(st, op) && i + 1 == ops.len() && i > 0 => {
+                    ops[..i].iter().all(|r| stored_only(r))
+                }
                 "mov" => st.text.contains('{') && stored_only(ops[0]),
                 _ => false,
             };
             if !safe {
+                cand.remove(*o);
+            }
+        }
+    }
+    cand
+}
+
+/// Destinations of float `mul`s without `.rn` (ptxas may contract them into an FMA with an
+/// add that reads them).
+fn loose_mul_dsts(insts: &[&Stmt]) -> HashSet<String> {
+    insts
+        .iter()
+        .filter_map(|st| {
+            let (op, ops) = stmt_parts(&st.text);
+            let f = op.ends_with(".f16")
+                || op.ends_with(".f16x2")
+                || op.ends_with(".bf16")
+                || op.ends_with(".bf16x2")
+                || op.ends_with(".f32x2")
+                || op.ends_with(".f32")
+                || op.ends_with(".f64");
+            (op.starts_with("mul.") && f && !op.split('.').any(|m| m == "rn"))
+                .then(|| ops.first().map(|d| d.to_string()))
+                .flatten()
+        })
+        .collect()
+}
+
+/// `createpolicy` destinations used only as the cache-policy operand of `.L2::cache_hint`
+/// instructions (their value is then irrelevant to the model).
+fn hint_only_policies(insts: &[&Stmt]) -> HashSet<String> {
+    let mut cand: HashSet<String> = HashSet::new();
+    for st in insts {
+        let (op, ops) = stmt_parts(&st.text);
+        if op.starts_with("createpolicy.") {
+            if let Some(d) = ops.first() {
+                cand.insert(d.to_string());
+            }
+        }
+    }
+    for st in insts {
+        let (op, ops) = stmt_parts(&st.text);
+        if op.starts_with("createpolicy.") {
+            continue;
+        }
+        let hint = op.split('.').any(|m| m == "L2::cache_hint");
+        let base = op.split('.').next().unwrap_or("");
+        let def0 = !matches!(base, "st" | "red" | "atom" | "cp" | "prefetch");
+        for (i, o) in ops.iter().enumerate() {
+            // A plain definition (`mov.u64 %rd2, 0x0` before the createpolicy) is no use.
+            if i == 0 && def0 && !st.text.contains('{') {
+                continue;
+            }
+            if cand.contains(*o) && !(hint && i + 1 == ops.len()) {
                 cand.remove(*o);
             }
         }
@@ -254,8 +326,15 @@ struct Lower<'a> {
     tmp_v: Option<Reg>,
     /// Ops to run before the lowered one, under the same guard (moves into `vec_v`).
     pre: Vec<Op>,
-    /// `mul.f16[x2]` destinations ptxas cannot contract (`uncontractible_f16_muls`).
+    /// `mul.f16[x2]` / `mul.f32x2` destinations ptxas cannot contract
+    /// (`uncontractible_f16_muls`).
     f16_mul_ok: &'a HashSet<String>,
+    /// Destinations of float muls without `.rn` (`loose_mul_dsts`).
+    loose_muls: &'a HashSet<String>,
+    /// `createpolicy` destinations used only as cache hints (`hint_only_policies`).
+    hint_policies: &'a HashSet<String>,
+    /// `.branchtargets` lists by their label (`brx.idx`).
+    brx_tables: &'a HashMap<String, Vec<String>>,
     /// Hidden consecutive scratch registers for vector operands whose registers are not
     /// consecutive (`st.shared.v4.b32 [a], {%r262, %r261, %r260, %r259}`): `%__vec0..7`.
     vec_v: Option<Reg>,
@@ -272,7 +351,20 @@ fn needs_vec_scratch(text: &str, regs: &HashMap<String, Reg>) -> bool {
         Some(r) => r.split_once(char::is_whitespace).map_or("", |x| x.1).trim(),
         None => t,
     };
-    if !(t.starts_with("ld.") || t.starts_with("st.") || t.starts_with("ldmatrix.")) {
+    // tcgen05.mma `[taddr + off]` operands add the offset into a scratch register.
+    if t.starts_with("tcgen05.mma") {
+        return t.split('[').skip(1).any(|x| {
+            x.split(']').next().is_some_and(|a| {
+                a.contains('+') && !a.trim_end().ends_with("+ 0") && !a.trim_end().ends_with("+0")
+            })
+        });
+    }
+    if !(t.starts_with("ld.")
+        || t.starts_with("st.")
+        || t.starts_with("red.global.add.v")
+        || t.starts_with("ldmatrix.")
+        || t.starts_with("mma."))
+    {
         return false;
     }
     let Some((_, rest)) = t.split_once('{') else {
@@ -297,7 +389,10 @@ fn needs_scratch(text: &str) -> bool {
         None => t,
     };
     t.starts_with("mad.lo.s64")
+        || t.starts_with("sqrt.rn.f32")
         || t.starts_with("mad.lo.u64")
+        || t.starts_with("mad.wide.s16")
+        || t.starts_with("mad.wide.u16")
         || (t.starts_with("atom.") || t.starts_with("red.")) && t.contains(".v2.bf16")
 }
 
@@ -343,6 +438,11 @@ impl<'a> Lower<'a> {
             ("%warpid", None) => SReg::WarpId,
             ("%cluster_ctarank", None) => SReg::ClusterCtaRank,
             ("%cluster_nctarank", None) => SReg::ClusterNCtaRank,
+            ("%lanemask_lt", None) => SReg::LaneMaskLt,
+            ("%lanemask_le", None) => SReg::LaneMaskLe,
+            ("%lanemask_ge", None) => SReg::LaneMaskGe,
+            ("%lanemask_gt", None) => SReg::LaneMaskGt,
+            ("%lanemask_eq", None) => SReg::LaneMaskEq,
             _ => return None,
         })
     }
@@ -356,7 +456,8 @@ impl<'a> Lower<'a> {
         if let Some(sr) = Self::sreg(s) {
             return Ok(Val::SReg(sr));
         }
-        if s.starts_with('%') {
+        // Registers declared without `%` (`{.reg .s64 a; ...}` inline asm, renamed `a__sN`).
+        if s.starts_with('%') || self.regs.contains_key(s) {
             return Ok(Val::Reg(self.reg(s)?, 1));
         }
         if let Some(v) = parse_int(s) {
@@ -396,34 +497,41 @@ impl<'a> Lower<'a> {
         }
         let mut moves = Vec::new();
         let inner = s.trim().trim_start_matches('{').trim_end_matches('}');
-        let regs: Vec<Reg> = inner
+        // Store sources may be immediates (`st.global.v2.b32 [a], {0, %r120}`).
+        let vals: Vec<Val> = inner
             .split(',')
-            .map(|r| self.reg(r.trim()))
+            .map(|r| match self.reg(r.trim()) {
+                Ok(r) => Ok(Val::Reg(r, 1)),
+                Err(e) if load => Err(e),
+                Err(_) => self.val(r.trim()),
+            })
             .collect::<Result<_>>()?;
         let base = self
             .vec_v
             .ok_or_else(|| self.err("internal: no vector scratch registers"))?;
-        if regs.len() > VEC_SCRATCH as usize || regs.iter().any(|r| r.file != File::V) {
+        let bad = |v: &Val| {
+            !matches!(v, Val::Reg(r, _) if r.file == File::V || false) && !matches!(v, Val::Imm(_))
+        };
+        if vals.len() > VEC_SCRATCH as usize || vals.iter().any(bad) {
             return Err(self.err("vector operand registers must be consecutive"));
         }
-        for (i, r) in regs.iter().enumerate() {
+        for (i, v) in vals.iter().enumerate() {
             let tmp = Reg {
                 file: File::V,
                 idx: base.idx + i as u16,
             };
-            moves.push(if load {
-                Op::Mov {
+            moves.push(match (load, v) {
+                (true, Val::Reg(r, _)) => Op::Mov {
                     d: *r,
                     a: Val::Reg(tmp, 1),
-                }
-            } else {
-                Op::Mov {
+                },
+                _ => Op::Mov {
                     d: tmp,
-                    a: Val::Reg(*r, 1),
-                }
+                    a: v.clone(),
+                },
             });
         }
-        Ok((base, regs.len() as u8, moves))
+        Ok((base, vals.len() as u8, moves))
     }
 
     /// `{%r16, %r17, ...}` -> (first register, count); registers must be consecutive.
@@ -464,11 +572,13 @@ impl<'a> Lower<'a> {
         let (b, off) = if let Some(p) = inner.rfind(['+', '-']).filter(|&p| p > 0) {
             let o =
                 parse_int(&inner[p..].replace('+', "")).ok_or_else(|| self.err("bad offset"))?;
-            (inner[..p].trim(), o as i64)
+            // `[%rd17+-2097152]`: a `+` before the signed offset.
+            let b = inner[..p].trim();
+            (b.strip_suffix('+').unwrap_or(b).trim(), o as i64)
         } else {
             (inner, 0)
         };
-        if b.starts_with('%') {
+        if b.starts_with('%') || self.regs.contains_key(b) {
             return Ok(Addr {
                 base: Some(Val::Reg(self.reg(b)?, 1)),
                 base2: None,
@@ -678,8 +788,9 @@ fn mem_sync(mods: &[&str], rmw: bool) -> Result<Option<MemSync>> {
 /// Inline-asm scopes (`{ .reg .pred p; L: ... }` inside an entry body, as Triton emits for
 /// every try_wait) are flattened: labels and registers declared in a scope are renamed
 /// `name__sN` within it, and the braces become spaces, so lines keep their positions. A scope
-/// brace is one at statement position (first on its line, or after `;`, `{`, `}` or a label);
-/// vector operand braces are not.
+/// brace is one at statement position (after `;`, a scope brace, a label, or a directive line
+/// such as `.loc`); vector operand braces, also those starting a continuation line of an
+/// instruction (`mma.sync...f32\n {%r1, ..},`), are not.
 fn flatten_scopes(src: &str) -> String {
     let b = src.as_bytes();
     // Pass 1: find scope braces (depth >= 2: inside an entry body).
@@ -687,12 +798,13 @@ fn flatten_scopes(src: &str) -> String {
     let mut stack: Vec<usize> = Vec::new();
     let mut scopes: Vec<(usize, usize)> = Vec::new();
     let mut prev = b';';
-    let mut line_start = true; // only whitespace since the last newline
+    // First character of the statement in progress (None: at statement position).
+    let mut pending: Option<u8> = None;
     // An array initializer (`.global .b8 _$_str[11] = {95, 95, ...};`, Triton's assert
     // strings) is not a scope.
     let mut in_init = false;
     for (i, &c) in b.iter().enumerate() {
-        let stmt_pos = line_start || matches!(prev, b';' | b'{' | b'}' | b':');
+        let stmt_pos = pending.is_none();
         if in_init {
             in_init = c != b'}';
             if !c.is_ascii_whitespace() {
@@ -705,6 +817,9 @@ fn flatten_scopes(src: &str) -> String {
             b'{' if depth == 0 || stmt_pos => {
                 depth += 1;
                 stack.push(i);
+                pending = None;
+                prev = c;
+                continue;
             }
             b'}' if stmt_pos && !stack.is_empty() => {
                 let open = stack.pop().unwrap();
@@ -712,14 +827,23 @@ fn flatten_scopes(src: &str) -> String {
                     scopes.push((open, i));
                 }
                 depth -= 1;
+                pending = None;
+                prev = c;
+                continue;
             }
             _ => {}
         }
+        let label_colon = c == b':' && b.get(i + 1) != Some(&b':') && (i == 0 || b[i - 1] != b':');
+        if c == b';' || label_colon {
+            pending = None;
+        } else if c == b'\n' && pending == Some(b'.') {
+            // A directive line without `;` (`.loc 1 2 3`, `.maxntid 128, 1, 1`) ends here.
+            pending = None;
+        } else if !c.is_ascii_whitespace() && pending.is_none() {
+            pending = Some(c);
+        }
         if !c.is_ascii_whitespace() {
             prev = c;
-            line_start = false;
-        } else if c == b'\n' {
-            line_start = true;
         }
     }
     if scopes.is_empty() {
@@ -987,6 +1111,7 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
     }
     let mut labels = HashMap::new();
     let mut insts_src: Vec<&Stmt> = Vec::new();
+    let mut brx_tables: HashMap<String, Vec<String>> = HashMap::new();
     for st in &stmts {
         for l in &st.labels {
             labels.insert(l.clone(), insts_src.len());
@@ -1047,6 +1172,14 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
             local_bytes += size;
             continue;
         }
+        // `$L_brx_0: .branchtargets L1, L2, ...;`: the target list of `brx.idx i, $L_brx_0`.
+        if let Some(rest) = t.strip_prefix(".branchtargets") {
+            let names: Vec<String> = rest.split(',').map(|x| x.trim().to_string()).collect();
+            for l in &st.labels {
+                brx_tables.insert(l.clone(), names.clone());
+            }
+            continue;
+        }
         if t.starts_with('.') {
             continue; // other directives (.maxntid, .pragma, ...) do not affect semantics here
         }
@@ -1090,6 +1223,8 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
     }
 
     let f16_mul_ok = uncontractible_f16_muls(&insts_src);
+    let loose_muls = loose_mul_dsts(&insts_src);
+    let hint_policies = hint_only_policies(&insts_src);
     // Pass 2: instructions. A statement may lower to several ops (`Lower::extra`); branch
     // targets and labels are statement indices until remapped below.
     let mut code = Vec::new();
@@ -1108,6 +1243,9 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
             pre: Vec::new(),
             vec_v,
             f16_mul_ok: &f16_mul_ok,
+            loose_muls: &loose_muls,
+            hint_policies: &hint_policies,
+            brx_tables: &brx_tables,
         };
         let inst = lower_inst(&mut lw).with_context(|| format!("in kernel {name}"))?;
         start.push(code.len());
@@ -1151,6 +1289,9 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
         for i in code.iter_mut() {
             if let Op::Bra { target, .. } = &mut i.op {
                 *target = start[*target];
+            }
+            if let Op::Brx { targets, .. } = &mut i.op {
+                targets.iter_mut().for_each(|t| *t = start[*t]);
             }
         }
         for v in labels.values_mut() {
@@ -1239,6 +1380,8 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
     let bits = ty.map(|t| t.0).unwrap_or(32);
     let tname = ty.map(|t| t.1).unwrap_or("b32");
     let mut extra: Vec<Op> = Vec::new();
+    // Ops to run before the lowered one (moved into `lw.pre` at the end).
+    let mut pre: Vec<Op> = Vec::new();
     let op_n = |i: usize| -> Result<&str> {
         ops.get(i)
             .map(|s| s.as_str())
@@ -1392,10 +1535,20 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         // a NaN becomes 0x7fff).
         "add" | "sub" | "mul" | "fma" | "neg" | "abs" if matches!(ht, "bf16" | "bf16x2") => {
             let rest = &mods[..mods.len() - 1];
+            // No rounding modifier: .rn where ptxas cannot contract, as for f32x2 (a mul no use
+            // of which lets ptxas contract it; an add / sub of no loose mul; probes/bf16_norn).
+            let plain_ok = rest.is_empty()
+                && match base {
+                    "mul" => lw.f16_mul_ok.contains(op_n(0)?.trim()),
+                    "add" | "sub" => ![op_n(1)?, op_n(2)?]
+                        .iter()
+                        .any(|o| lw.loose_muls.contains(o.trim())),
+                    _ => false,
+                };
             let ok = match base {
                 "neg" | "abs" => rest.is_empty(),
                 "fma" => rest == ["rn"] || rest == ["rn", "relu"],
-                _ => rest == ["rn"],
+                _ => rest == ["rn"] || plain_ok,
             };
             if !ok {
                 bail!(lw.err(format!(
@@ -1544,11 +1697,22 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         // .f32x2` on .b64 registers, lane 0 in the low 32 bits. ptxas emits FFMA2 / FMUL2 /
         // FADD2: one rounding per lane, subnormals kept, canonical NaN (fixtures/s_ptx_packed
         // = GB300; `.rz` / `.rm` / `.rp`: FFMA2.RZ etc., probes/bf16_ext). Without a rounding
-        // mode ptxas may contract mul + add into one FFMA2; that, .ftz and .sat are refused.
+        // mode ptxas may contract mul + add into one FFMA2: accepted as .rn only for a mul no
+        // use of which lets ptxas contract it (`uncontractible_f16_muls`) and for an add / sub
+        // that reads no such mul (probes/f32x2_norn = GB300); .ftz and .sat are refused.
         // ASSUME(L-ROSETTA)
         "add" | "sub" | "mul" | "fma" if mods.last() == Some(&"f32x2") => {
             let rest = &mods[..mods.len() - 1];
+            let plain_ok = rest.is_empty()
+                && match base {
+                    "mul" => lw.f16_mul_ok.contains(op_n(0)?.trim()),
+                    "add" | "sub" => ![op_n(1)?, op_n(2)?]
+                        .iter()
+                        .any(|o| lw.loose_muls.contains(o.trim())),
+                    _ => false,
+                };
             let rnd = match rest {
+                [] if plain_ok => Rnd::Rn,
                 ["rn"] => Rnd::Rn,
                 ["rz"] => Rnd::Rz,
                 ["rm"] => Rnd::Rm,
@@ -1574,6 +1738,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     b: one,
                     c: b,
                     neg: [false, false, base == "sub"],
+                    abs: [false; 3],
                     rnd,
                 },
                 // a*b + (-0): the rounded product (as FMUL2; +0 under .rm).
@@ -1586,6 +1751,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         F2Lanes::Bcast,
                     ),
                     neg: [false; 3],
+                    abs: [false; 3],
                     rnd,
                 },
                 _ => Op::Ffma2 {
@@ -1594,6 +1760,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     b,
                     c: reg(op_n(3)?)?,
                     neg: [false; 3],
+                    abs: [false; 3],
                     rnd,
                 },
             }
@@ -1902,6 +2069,73 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             b: lw.val(op_n(2)?)?,
             rn: has("rn"),
         },
+        // `brev.b32 d, a` (SASS BREV; probes/ptx_misc2).
+        "brev" if mods == ["b32"] => Op::Brev {
+            d: lw.dst(op_n(0)?)?,
+            a: lw.val(op_n(1)?)?,
+        },
+        // rcp.{rn,rz,rm,rp}.f64 d, a = div.<rnd>.f64 d, 1.0, a (probes/ptx_misc2).
+        "rcp"
+            if mods.len() == 2
+                && mods[1] == "f64"
+                && matches!(mods[0], "rn" | "rz" | "rm" | "rp") =>
+        {
+            Op::DivSqrt64 {
+                d: lw.dst(op_n(0)?)?,
+                a: Val::Imm(1f64.to_bits()),
+                b: Some(lw.val(op_n(1)?)?),
+                rnd: match mods[0] {
+                    "rz" => Rnd::Rz,
+                    "rm" => Rnd::Rm,
+                    "rp" => Rnd::Rp,
+                    _ => Rnd::Rn,
+                },
+            }
+        }
+        // sqrt.rn.f32 d, a: the IEEE square root (ptxas: MUFU.RSQ, a Newton step and a slow path),
+        // as the f64 square root rounded to f32 (exact: 53 >= 2 * 24 + 2 bits, no double-
+        // rounding error), through the scratch register; NaN results 0x7fffffff
+        // (probes/sqrt_rn: GB300 = IEEE on 4096 patterns).
+        "sqrt" if mods == ["rn", "f32"] => {
+            let tmp = lw.scratch_v()?;
+            pre.push(Op::F2F {
+                d: tmp,
+                a: lw.val(op_n(1)?)?,
+                to64: true,
+                rnd: Rnd::Rn,
+            });
+            pre.push(Op::DivSqrt64 {
+                d: tmp,
+                a: Val::Reg(tmp, 2),
+                b: None,
+                rnd: Rnd::Rn,
+            });
+            pre.push(Op::F2F {
+                d: tmp,
+                a: Val::Reg(tmp, 2),
+                to64: false,
+                rnd: Rnd::Rn,
+            });
+            // + (-0): the identity except on a NaN, which becomes the canonical 0x7fffffff
+            // (GB300's result for negative and NaN inputs).
+            Op::Fadd {
+                d: lw.dst(op_n(0)?)?,
+                a: Val::Reg(tmp, 1),
+                b: Val::Imm(0x8000_0000),
+                rnd: Rnd::Rn,
+                neg: [false; 2],
+                abs: [false; 2],
+                ftz: false,
+                sat: false,
+            }
+        }
+        // rcp.rn.f32 d, a: the IEEE 1 / a (ptxas: the div.rn.f32 expansion; probes/rcp_rn).
+        "rcp" if mods == ["rn", "f32"] => Op::DivFull {
+            d: lw.dst(op_n(0)?)?,
+            a: Val::Imm(0x3f80_0000),
+            b: lw.val(op_n(1)?)?,
+            rn: true,
+        },
         "div" | "rem" | "min" | "max" if !tname.starts_with('f') => {
             let s = tname.starts_with('s');
             let op = match (base, s) {
@@ -1952,6 +2186,84 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             }
         }
         // `ldmatrix.sync.aligned.m8n8.x{1,2,4}[.trans].shared.b16 {d..}, [a]` (SASS LDSM).
+        // `mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {d0..3}, {a0..3}, {b0, b1},
+        // {c0..3}` / `m16n8k8.row.col.f32.tf32.tf32.f32` (SASS HMMA.16816.F32.BF16 /
+        // HMMA.1688.F32.TF32, `Op::Hmma`; probes/mma_sync_ptx).
+        "mma" => {
+            // (tf32, A / B registers); m16n8k8 bf16: HMMA.1688.F32.BF16 (probes/bmma8).
+            let (tf32, na, nb) = match mods {
+                [
+                    "sync",
+                    "aligned",
+                    "m16n8k16",
+                    "row",
+                    "col",
+                    "f32",
+                    "bf16",
+                    "bf16",
+                    "f32",
+                ] => (false, 4, 2),
+                [
+                    "sync",
+                    "aligned",
+                    "m16n8k8",
+                    "row",
+                    "col",
+                    "f32",
+                    "bf16",
+                    "bf16",
+                    "f32",
+                ] => (false, 2, 1),
+                [
+                    "sync",
+                    "aligned",
+                    "m16n8k8",
+                    "row",
+                    "col",
+                    "f32",
+                    "tf32",
+                    "tf32",
+                    "f32",
+                ] => (true, 4, 2),
+                _ => bail!(lw.err(
+                    "only mma.sync.aligned.{m16n8k16,m16n8k8}.row.col.f32.bf16.bf16.f32 / \
+                     m16n8k8.row.col.f32.tf32.tf32.f32 are modeled"
+                )),
+            };
+            let list = |i: usize, n: usize| -> Result<Vec<Val>> {
+                let v: Vec<Val> = op_n(i)?
+                    .trim()
+                    .trim_start_matches('{')
+                    .trim_end_matches('}')
+                    .split(',')
+                    .map(|r| match lw.val(r)? {
+                        v @ Val::Reg(..) => Ok(v),
+                        _ => bail!(lw.err("mma operand must be a register")),
+                    })
+                    .collect::<Result<_>>()?;
+                if v.len() != n {
+                    bail!(lw.err("mma: unexpected fragment size"));
+                }
+                Ok(v)
+            };
+            let (a, b, c) = (list(1, na)?, list(2, nb)?, list(3, 4)?);
+            let (d, n, moves) = lw.reg_vec_mem(op_n(0)?, true)?;
+            if n != 4 {
+                bail!(lw.err("mma: unexpected fragment size"));
+            }
+            extra.extend(moves);
+            Op::Hmma { d, a, b, c, tf32 }
+        }
+        // `movmatrix.sync.aligned.m8n8.trans.b16 d, a` (SASS MOVM.16.MT88; probes/movm).
+        "movmatrix" => {
+            if mods != ["sync", "aligned", "m8n8", "trans", "b16"] {
+                bail!(lw.err("only movmatrix.sync.aligned.m8n8.trans.b16 is modeled"));
+            }
+            Op::MovMatrix {
+                d: lw.dst(op_n(0)?)?,
+                a: lw.val(op_n(1)?)?,
+            }
+        }
         "ldmatrix" => {
             if !(has("m8n8") && has("b16"))
                 || mods.iter().any(|m| {
@@ -2047,6 +2359,26 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             ftz: false,
             sat: false,
         },
+        // `abs[.ftz].f32 d, a`: what ptxas emits, `FADD[.FTZ] d, |a|, -RZ` (a NaN gives the
+        // canonical NaN; probes/abs_f32 = GB300).
+        "abs" if tname == "f32" && mods.iter().all(|m| matches!(*m, "ftz" | "f32")) => Op::Fadd {
+            d: lw.dst(op_n(0)?)?,
+            a: lw.val(op_n(1)?)?,
+            b: Val::Imm(0x8000_0000),
+            rnd: Rnd::Rn,
+            neg: [false, false],
+            abs: [true, false],
+            ftz: has("ftz"),
+            sat: false,
+        },
+        // `abs.s32 d, a` (IABS; abs(INT_MIN) = INT_MIN).
+        "abs" if mods == ["s32"] || mods == ["s64"] => Op::Int {
+            op: IntOp::Abs,
+            bits: if mods == ["s64"] { 64 } else { 32 },
+            d: lw.dst(op_n(0)?)?,
+            a: lw.val(op_n(1)?)?,
+            b: Val::Imm(0),
+        },
         // `shf.{l,r}.{clamp,wrap}.b32 d, a, b, c`: funnel shift of b:a by c, clamped to 32 or
         // mod 32 (GB300: fixtures/s_shf). ASSUME(L-SHF)
         "shf" => {
@@ -2130,6 +2462,44 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 b: lw.val(op_n(2)?)?,
             }
         }
+        // `mad.wide.{s,u}16 d, a, imm, c`: d = ext16(a) * ext16(imm) + c in 32 bits (the 16x16
+        // product is exact), a extended into the scratch register (probes/mad_wide16). A
+        // register b is refused.
+        "mad" if has("wide") && bits == 16 => {
+            let signed = tname == "s16";
+            let ext = |v: u64| {
+                if signed {
+                    v as u16 as i16 as i32 as u32
+                } else {
+                    v as u16 as u32
+                }
+            };
+            let b = match lw.val(op_n(2)?)? {
+                Val::Imm(v) => Val::Imm(ext(v) as u64),
+                _ => bail!(lw.err("mad.wide.{s,u}16 with a register multiplier not modeled")),
+            };
+            let tmp = lw.scratch_v()?;
+            pre.push(Op::CvtInt {
+                d: tmp,
+                a: lw.val(op_n(1)?)?,
+                from_bits: 16,
+                to_bits: 32,
+                signed,
+            });
+            Op::Imad {
+                d: lw.dst(op_n(0)?)?,
+                a: Val::Reg(tmp, 1),
+                b,
+                c: lw.val(op_n(3)?)?,
+                neg_c: false,
+                not_c: false,
+                wide: false,
+                hi: false,
+                signed: false,
+                cin: None,
+                cout: None,
+            }
+        }
         // `mad.wide.s32 d, a, b, c` (Triton's address arithmetic): 32x32 -> 64 plus a 64-bit c.
         "mad" if has("wide") && bits == 32 => Op::Imad {
             d: lw.dst(op_n(0)?)?,
@@ -2145,6 +2515,26 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             cout: None,
         },
         "prefetch" => Op::Nop, // a cache hint
+        // `prmt.b32 d, a, b, c` (default mode): SASS `PRMT d, a, c, b` (probes/prmt_ptx).
+        "prmt" if mods == ["b32"] => Op::Prmt {
+            d: lw.dst(op_n(0)?)?,
+            a: lw.val(op_n(1)?)?,
+            sel: lw.val(op_n(3)?)?,
+            b: lw.val(op_n(2)?)?,
+        },
+        // `createpolicy.fractional...b64 d[, f]`: a cache-policy descriptor. Its value matters
+        // only to the cache; accepted when every use is the policy operand of an
+        // `.L2::cache_hint` instruction (then a zero placeholder). ASSUME(L-PTX-HINT)
+        "createpolicy" if has("fractional") && has("b64") => {
+            let d = op_n(0)?.trim();
+            if !lw.hint_policies.contains(d) {
+                bail!(lw.err("createpolicy whose value is used as data not modeled"));
+            }
+            Op::Mov {
+                d: lw.dst(d)?,
+                a: Val::Imm(0),
+            }
+        }
         "mul" if has("lo") || !tname.starts_with('f') => Op::Int {
             op: IntOp::Mul,
             bits,
@@ -2158,6 +2548,51 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         // `setp.<cmp>.f16 / .bf16 p, a, b` and `.f16x2 / .bf16x2 p|q, a, b` (SASS HSETP2
         // [.BF16_V2], probes/hsetp2): per lane the exact f32 widening compared; no `.ftz`, no
         // combining predicate.
+        // `set.<cmp>.{u32,f16x2,bf16x2}.{f16x2,bf16x2} d, a, b` (SASS HSET2[.BF16_V2][.BF]):
+        // per half 0xffff / 0 (u32) or 1.0 / 0 in the operand format (probes/hset2).
+        "set" if matches!(ht, "f16x2" | "bf16x2") && mods.len() == 3 && ops.len() == 3 => {
+            let cmp = match mods[0] {
+                "eq" => FCmp::Eq,
+                "ne" => FCmp::Ne,
+                "lt" => FCmp::Lt,
+                "le" => FCmp::Le,
+                "gt" => FCmp::Gt,
+                "ge" => FCmp::Ge,
+                "equ" => FCmp::Equ,
+                "neu" => FCmp::Neu,
+                "ltu" => FCmp::Ltu,
+                "leu" => FCmp::Leu,
+                "gtu" => FCmp::Gtu,
+                "geu" => FCmp::Geu,
+                "num" => FCmp::Num,
+                "nan" => FCmp::Nan,
+                c => bail!(lw.err(format!("unsupported set compare {c}"))),
+            };
+            let bf = match mods[1] {
+                "u32" => false,
+                t if t == ht => true,
+                _ => bail!(lw.err("set: destination type not modeled")),
+            };
+            let reg = |i: usize| -> Result<Val> {
+                match lw.val(op_n(i)?)? {
+                    v @ Val::Reg(..) => Ok(v),
+                    _ => bail!(lw.err("set half immediate operand not modeled")),
+                }
+            };
+            Op::Hset2 {
+                d: lw.dst(op_n(0)?)?,
+                cmp,
+                a: reg(1)?,
+                b: reg(2)?,
+                sel: [HSel::Pair; 2],
+                neg: [false; 2],
+                abs: [false; 2],
+                c: Pred::TRUE,
+                bop: BoolOp::And,
+                f16: ht == "f16x2",
+                bf,
+            }
+        }
         "setp" if matches!(ht, "f16" | "f16x2" | "bf16" | "bf16x2") => {
             let cmp = match mods[0] {
                 "eq" => FCmp::Eq,
@@ -2276,6 +2711,28 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 ex: None,
             }
         }
+        // `brx.idx[.uni] i, $L`: jump to entry i of the `.branchtargets` list labelled $L
+        // (an index outside it is an error: PTX leaves it undefined). Per thread, as `bra`.
+        "brx" if has("idx") && mods.iter().all(|m| matches!(*m, "idx" | "uni")) => {
+            let l = op_n(1)?.trim();
+            let names = lw
+                .brx_tables
+                .get(l)
+                .ok_or_else(|| lw.err(format!("brx.idx: no .branchtargets labelled {l}")))?;
+            let mut targets = Vec::with_capacity(names.len());
+            for n in names {
+                targets.push(
+                    *lw.labels
+                        .get(n.as_str())
+                        .ok_or_else(|| lw.err(format!("unknown label {n}")))?,
+                );
+            }
+            Op::Brx {
+                base: lw.val(op_n(0)?)?,
+                off: 0,
+                targets,
+            }
+        }
         "bra" => {
             let l = op_n(0)?;
             let target = *lw
@@ -2296,9 +2753,19 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             // REDUX / CREDUX forms ptxas emits for them (mslk decode: redux.sync.max.NaN.f32 is
             // CREDUX.MAX.F32.NAN), with every member lane receiving the result.
             // ASSUME(L-ROSETTA): fixtures/e_ptx_redux = GB300.
-            if parse_int(op_n(2)?) != Some(u32::MAX as u64) && op_n(2)? != "-1" {
-                bail!(lw.err("redux.sync with a partial membermask not modeled"));
-            }
+            // Any other membermask (a register, Triton / CUDA C++ `mov.b32 %r92, -1`, or a
+            // partial immediate): the redux waits for the live lanes it names and reduces over
+            // them; executing lanes that differ from the mask are reported (probes/redux_mask
+            // = GB300). ASSUME(E-WARPCOLL)
+            let mask = match parse_int(op_n(2)?) {
+                _ if op_n(2)?.trim() == "-1" => None,
+                Some(m) if m == u32::MAX as u64 => None,
+                Some(m) if m <= u32::MAX as u64 && m != 0 => Some(Val::Imm(m)),
+                None if lw.reg(op_n(2)?.trim()).is_ok_and(|r| r.file != File::P) => {
+                    Some(lw.val(op_n(2)?)?)
+                }
+                _ => bail!(lw.err("redux.sync membermask form not modeled")),
+            };
             let op = match mods {
                 ["sync", "add", "u32" | "s32"] => ReduxOp::Sum,
                 ["sync", "and", "b32"] => ReduxOp::And,
@@ -2324,6 +2791,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 d: lw.dst(op_n(0)?)?,
                 a: lw.val(op_n(1)?)?,
                 op,
+                mask,
             }
         }
         // `match.any.sync.b32` / `.b64 d, a, membermask` (SASS MATCH.ANY[.U64]): full warp only,
@@ -2489,42 +2957,80 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     a: Val::Imm(0),
                     b: lw.val(op_n(1)?)?,
                 }
-            } else if to == "f32" && matches!(from, "s32" | "u32") {
-                // cvt.{rn,rz,rm,rp}.f32.{s32,u32} (SASS I2FP.F32.S32 / I2F).
-                let rnd = if has("rz") {
-                    Rnd::Rz
-                } else if has("rm") {
-                    Rnd::Rm
-                } else if has("rp") {
-                    Rnd::Rp
-                } else if has("rn") {
-                    Rnd::Rn
-                } else {
-                    bail!(lw.err("cvt.f32 from an integer needs a rounding modifier"))
+            } else if matches!(to, "f32" | "f64")
+                && matches!(from, "s16" | "u16" | "s32" | "u32" | "s64" | "u64")
+                && n <= 3
+            {
+                // cvt[.{rn,rz,rm,rp}].{f32,f64}.{s,u}{16,32,64} (SASS I2FP.F32.S32 / I2F[.F64]
+                // [.S16|.U16|.S64|.U64][.RZ|.RM|.RP]; probes/cvt_i2f). ptxas requires the
+                // rounding modifier.
+                let bits: u8 = from[1..].parse().unwrap();
+                let rnd = match mods[0] {
+                    "rz" => Rnd::Rz,
+                    "rm" => Rnd::Rm,
+                    "rp" => Rnd::Rp,
+                    "rn" => Rnd::Rn,
+                    _ => bail!(lw.err("cvt to a float from an integer needs a rounding modifier")),
                 };
                 Op::I2F {
                     d: lw.dst(op_n(0)?)?,
                     a: lw.val(op_n(1)?)?,
-                    signed: from == "s32",
+                    signed: from.starts_with('s'),
                     rnd,
-                    bits: 32,
+                    bits,
                     hi: false,
-                    f64: false,
+                    f64: to == "f64",
                 }
             } else if from == "f32"
                 && matches!(to, "s32" | "u32" | "s64" | "u64")
-                && (mods == ["rzi", to, from] || mods == ["rzi", "ftz", to, from])
+                && matches!(mods[0], "rzi" | "rni" | "rmi" | "rpi")
+                && (n == 3 || n == 4 && mods[1] == "ftz")
             {
-                // cvt.rzi[.ftz].{s,u}{32,64}.f32 (SASS F2I[.U32|.S64|.U64].TRUNC): as F2I
-                // (a subnormal input truncates to 0 with or without .ftz).
+                // cvt.r{z,n,m,p}i[.ftz].{s,u}{32,64}.f32 (SASS F2I[.FTZ][.U32|.S64|.U64]
+                // [.TRUNC|.FLOOR|.CEIL][.NTZ]; fixtures/s_f2i, probes/cvt_misc): round to an
+                // integer, saturate, NaN 0.
                 Op::F2I {
                     d: lw.dst(op_n(0)?)?,
                     a: lw.val(op_n(1)?)?,
                     signed: to.starts_with('s'),
                     bits: type_bits(to).unwrap(),
-                    rnd: Rnd::Rz,
+                    rnd: match mods[0] {
+                        "rzi" => Rnd::Rz,
+                        "rni" => Rnd::Rn,
+                        "rmi" => Rnd::Rm,
+                        _ => Rnd::Rp,
+                    },
                     ftz: has("ftz"),
                     f64: false,
+                }
+            } else if matches!(mods, [_, "f32", "f64"] if matches!(mods[0], "rn" | "rz" | "rm" | "rp"))
+                || mods == ["f64", "f32"]
+            {
+                // cvt.r{n,z,m,p}.f32.f64 / cvt.f64.f32 (SASS F2F.F32.F64[.RZ|.RM|.RP] /
+                // F2F.F64.F32; probes/cvt_misc).
+                Op::F2F {
+                    d: lw.dst(op_n(0)?)?,
+                    a: lw.val(op_n(1)?)?,
+                    to64: to == "f64",
+                    rnd: match mods[0] {
+                        "rz" => Rnd::Rz,
+                        "rm" => Rnd::Rm,
+                        "rp" => Rnd::Rp,
+                        _ => Rnd::Rn,
+                    },
+                }
+            } else if mods == ["sat", "f32", "f32"] {
+                // cvt.sat.f32.f32 (SASS FADD.SAT d, RZ, a; probes/cvt_misc): clamp to [0, 1],
+                // NaN 0.
+                Op::Fadd {
+                    d: lw.dst(op_n(0)?)?,
+                    a: Val::Imm(0),
+                    b: lw.val(op_n(1)?)?,
+                    rnd: Rnd::Rn,
+                    neg: [false; 2],
+                    abs: [false; 2],
+                    ftz: false,
+                    sat: true,
                 }
             } else if from == "f64"
                 && matches!(to, "s32" | "u32" | "s64" | "u64")
@@ -2589,7 +3095,9 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 "mma" => {
                     cg1()?;
                     let vec = |x: &str| mods.contains(&x);
-                    let kind = if has("kind::f16") {
+                    // kind::tf32 is UTCHMMA too: the instruction descriptor's A / B format
+                    // (2) tells it from kind::f16 (N-MMA).
+                    let kind = if has("kind::f16") || has("kind::tf32") {
                         MmaKind::F16
                     } else if has("kind::f8f6f4") {
                         MmaKind::F8f6f4
@@ -2606,7 +3114,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         }
                     } else {
                         bail!(lw.err(
-                            "tcgen05.mma kind not modeled (f16, f8f6f4, mxf8f6f4, mxf4, mxf4nvf4)"
+                            "tcgen05.mma kind not modeled (f16, tf32, f8f6f4, mxf8f6f4, mxf4, mxf4nvf4)"
                         ))
                     };
                     let scaled = !matches!(kind, MmaKind::F16 | MmaKind::F8f6f4);
@@ -2641,22 +3149,40 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     } else {
                         vec![]
                     };
-                    let da = lw.addr(op_n(0)?)?;
-                    if da.off != 0 {
-                        bail!(lw.err("tcgen05.mma with a TMEM address offset not modeled"));
-                    }
-                    let d = da
-                        .base
-                        .ok_or_else(|| lw.err("tmem address must be a register"))?;
+                    // `[taddr + off]`: the offset adds to the TMEM address word (as SASS
+                    // `tmem[URa+off]` and tcgen05.cp), computed into a vector scratch register
+                    // (probes/tc_mma_off).
+                    let mut tmem_addr = |s: &str, slot: u16| -> Result<Val> {
+                        let ta = lw.addr(s)?;
+                        let base = ta
+                            .base
+                            .ok_or_else(|| lw.err("tmem address must be a register"))?;
+                        if ta.off == 0 {
+                            return Ok(base);
+                        }
+                        let off = u32::try_from(ta.off)
+                            .map_err(|_| lw.err("tcgen05.mma: negative TMEM address offset"))?;
+                        let v = lw
+                            .vec_v
+                            .ok_or_else(|| lw.err("internal: no vector scratch registers"))?;
+                        let tmp = Reg {
+                            file: File::V,
+                            idx: v.idx + slot,
+                        };
+                        pre.push(Op::Int {
+                            op: IntOp::Add,
+                            bits: 32,
+                            d: tmp,
+                            a: base,
+                            b: Val::Imm(off as u64),
+                        });
+                        Ok(Val::Reg(tmp, 1))
+                    };
+                    let d = tmem_addr(op_n(0)?, 0)?;
                     // `[a]`: A in TMEM.
                     let a_tmem = op_n(1)?.trim().starts_with('[');
                     let adesc = if a_tmem {
-                        let aa = lw.addr(op_n(1)?)?;
-                        if aa.off != 0 {
-                            bail!(lw.err("tcgen05.mma with an A TMEM offset not modeled"));
-                        }
-                        aa.base
-                            .ok_or_else(|| lw.err("tmem address must be a register"))?
+                        tmem_addr(op_n(1)?, 1)?
                     } else {
                         lw.val(op_n(1)?)?
                     };
@@ -3312,6 +3838,50 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 new: None,
             }
         }
+        // red.global.add.v2 / .v4.f32 [a], {..} (SASS REDG.E.ADD.F32x2 / F32x4.FTZ.RN): one
+        // FADD.FTZ atomic per element, each on its own (probes/red_vec).
+        "red"
+            if (has("v2") || has("v4"))
+                && has("add")
+                && has("f32")
+                && has("global")
+                && mods.iter().all(|m| {
+                    matches!(
+                        *m,
+                        "global"
+                            | "add"
+                            | "f32"
+                            | "v2"
+                            | "v4"
+                            | "relaxed"
+                            | "release"
+                            | "cta"
+                            | "cluster"
+                            | "gpu"
+                            | "sys"
+                    )
+                }) =>
+        {
+            let n = if has("v4") { 4 } else { 2 };
+            let (r, cnt, moves) = lw.reg_vec_mem(op_n(1)?, false)?;
+            if cnt != n {
+                bail!(lw.err("red vector operand count"));
+            }
+            pre.extend(moves);
+            Op::Atom {
+                p: None,
+                op: AtomOp::FAddFtz,
+                space: Space::Global,
+                bytes: 4 * n,
+                addr: lw.addr(op_n(0)?)?,
+                v: Val::Reg(r, 1),
+                d: None,
+                sync: mem_sync(mods, true)
+                    .map_err(|e| lw.err(e.to_string()))?
+                    .unwrap(),
+                new: None,
+            }
+        }
         "atom" | "red" => {
             // Fail closed: every modifier must be one modeled here (no `.noftz`, cache hints,
             // vectors or 16-bit types).
@@ -3334,6 +3904,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         | "s32"
                         | "s64"
                         | "f32"
+                        | "f64"
                         | "relaxed"
                         | "acquire"
                         | "release"
@@ -3356,6 +3927,8 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 .unwrap_or(Space::Generic);
             let op = if has("add") && tname == "f32" {
                 AtomOp::FAddFtz
+            } else if has("add") && tname == "f64" {
+                AtomOp::FAdd64
             } else if has("add") {
                 AtomOp::Add
             } else if has("or") {
@@ -3382,7 +3955,9 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             } else {
                 bail!(lw.err("this atom/red operation is not modeled yet"));
             };
-            if (tname.starts_with('f') && op != AtomOp::FAddFtz) || (bits != 32 && bits != 64) {
+            if (tname.starts_with('f') && !matches!(op, AtomOp::FAddFtz | AtomOp::FAdd64))
+                || (bits != 32 && bits != 64)
+            {
                 bail!(lw.err("only 32/64-bit integer atom/red are modeled"));
             }
             let sync = mem_sync(mods, true)
@@ -3492,6 +4067,48 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             collective: false,
             all: false,
         },
+        // `bar.red.popc.u32 d, a{, b}, {!}c` / `bar.red.{and,or}.pred p, a{, b}, {!}c` (SASS
+        // BAR.RED + B2R.RESULT; probes/bar_red). ASSUME(E-BAR-RED)
+        "bar" | "barrier" if has("red") => {
+            let known = |m: &&str| {
+                matches!(
+                    *m,
+                    "red" | "cta" | "aligned" | "popc" | "and" | "or" | "u32" | "pred"
+                )
+            };
+            let (op, popc) = match (
+                has("popc") && has("u32"),
+                has("and"),
+                has("or"),
+                has("pred"),
+            ) {
+                (true, false, false, false) => (BarRedOp::Popc, true),
+                (false, true, false, true) => (BarRedOp::And, false),
+                (false, false, true, true) => (BarRedOp::Or, false),
+                _ => bail!(lw.err("bar.red form not modeled")),
+            };
+            if !mods.iter().all(known) {
+                bail!(lw.err("bar.red modifier not modeled"));
+            }
+            let (count, c) = match ops.len() {
+                3 => (None, op_n(2)?),
+                4 => (Some(lw.val(op_n(2)?)?), op_n(3)?),
+                _ => bail!(lw.err("bar.red operands")),
+            };
+            let d = op_n(0)?;
+            extra.push(Op::BarResult {
+                d: if popc { Some(lw.dst(d)?) } else { None },
+                p: if popc { None } else { Some(lw.pred_dst(d)?) },
+            });
+            Op::BarSync {
+                id: lw.val(op_n(1)?)?,
+                count,
+                arrive: false,
+                packed: false,
+                aligned: base == "bar" || has("aligned"),
+                red: Some((op, lw.pred_src(c)?)),
+            }
+        }
         "bar" | "barrier" => {
             let arrive = has("arrive");
             let known = |m: &&str| matches!(*m, "sync" | "arrive" | "cta" | "aligned");
@@ -3512,6 +4129,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 arrive,
                 packed: false,
                 aligned,
+                red: None,
             }
         }
         // ASSUME(E-PDL): see ASSUMPTIONS.md
@@ -3589,7 +4207,9 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     cluster: has("release") && has("cluster"),
                 }
             }
-            Some("try_wait") if has("parity") => Op::MbarTryWait {
+            // test_wait: the non-suspending form, alike for the model (as SASS PHASECHK without
+            // .TRYWAIT; E-SPIN).
+            Some("try_wait" | "test_wait") if has("parity") => Op::MbarTryWait {
                 d: lw.pred_dst(op_n(0)?)?,
                 addr: lw.addr(op_n(1)?)?,
                 parity: lw.val(op_n(2)?)?,
@@ -3622,6 +4242,10 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             }
             let hint = has("L2::cache_hint");
             let n_extra = ops.len() - 3 - hint as usize;
+            // The fourth operand: src-size (immediate or register; the first src-size bytes
+            // are copied, the rest zero-filled; probes/cpasync_srcsize = GB300) or the
+            // ignore-src predicate.
+            let mut src_size = None;
             let src_ok = match n_extra {
                 0 => Pred::TRUE,
                 1 => {
@@ -3632,7 +4256,11 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                             neg: true,
                         },
                         Some(n) if n == size => Pred::TRUE,
-                        Some(_) => bail!(lw.err("cp.async with a partial src-size not modeled")),
+                        Some(n) if n < size => {
+                            src_size = Some(Val::Imm(n));
+                            Pred::TRUE
+                        }
+                        Some(_) => bail!(lw.err("cp.async src-size larger than its cp-size")),
                         None => match lw.reg(o.trim_start_matches('!')) {
                             Ok(r) if r.file == File::P => {
                                 let p = lw.pred_src(o)?;
@@ -3641,7 +4269,10 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                                     neg: !p.neg,
                                 }
                             }
-                            _ => bail!(lw.err("cp.async with a register src-size not modeled")),
+                            _ => {
+                                src_size = Some(lw.val(o)?);
+                                Pred::TRUE
+                            }
                         },
                     }
                 }
@@ -3652,6 +4283,8 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 src: lw.addr(op_n(1)?)?,
                 bytes: size as u32,
                 src_ok,
+                src_size,
+                zfill: false,
             }
         }
         "cp" if mods == ["async", "commit_group"] => Op::CpAsyncCommit,
@@ -3704,6 +4337,20 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         // `cp.async.bulk.prefetch.L2.global [a], size` (SASS UBLKPF.L2): a cache hint
         // (probes/memhints).
         "cp" if mods == ["async", "bulk", "prefetch", "L2", "global"] => Op::Nop,
+        // `cp.async.bulk.prefetch.tensor.<n>d.L2.global[.tile][.L2::cache_hint] [tmap,
+        // {coords}][, policy]` (SASS UTMAPF.L2.<n>D): a cache hint (probes/tma_prefetch).
+        "cp" if mods.len() >= 6
+            && mods[..3] == ["async", "bulk", "prefetch"]
+            && mods[3] == "tensor"
+            && matches!(mods[4], "1d" | "2d" | "3d" | "4d" | "5d")
+            && mods[5..]
+                .iter()
+                .all(|m| matches!(*m, "L2" | "global" | "tile" | "L2::cache_hint"))
+            && has("L2")
+            && has("global") =>
+        {
+            Op::Nop
+        }
         "cp" if mods.len() >= 4
             && mods[..2] == ["async", "bulk"]
             && !has("tensor")
@@ -3899,6 +4546,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         _ => bail!(lw.err(format!("unsupported PTX instruction `{opcode}`"))),
     };
     lw.extra = extra;
+    lw.pre.extend(pre);
     Ok(Inst {
         guard,
         op,
@@ -3961,9 +4609,46 @@ mod tests {
             ReduxOp::MaxS
         );
         assert_eq!(red("redux.sync.or.b32 %r1, %r2, 0xffffffff;"), ReduxOp::Or);
-        // Fail closed: partial member masks and forms that do not exist.
-        assert!(one("redux.sync.max.NaN.f32 %r1, %r2, 0xffff;").is_err());
+        // Fail closed: forms that do not exist, an empty membermask.
+        assert!(one("redux.sync.max.NaN.u32 %r1, %r2, 0xffff;").is_err());
         assert!(one("redux.sync.add.f32 %r1, %r2, 0xffffffff;").is_err());
+        assert!(one("redux.sync.add.s32 %r1, %r2, 0;").is_err());
+        // A register or partial immediate membermask: the redux over the lanes it names.
+        assert!(matches!(
+            &ops("redux.sync.add.s32 %r1, %r2, %r3;").unwrap()[..],
+            [Op::Redux {
+                op: ReduxOp::Sum,
+                mask: Some(Val::Reg(..)),
+                ..
+            }]
+        ));
+        assert!(matches!(
+            &ops("redux.sync.add.s32 %r1, %r2, 0xff;").unwrap()[..],
+            [Op::Redux {
+                mask: Some(Val::Imm(0xff)),
+                ..
+            }]
+        ));
+        assert!(matches!(
+            one("redux.sync.add.s32 %r1, %r2, 0xffffffff;").unwrap(),
+            Op::Redux { mask: None, .. }
+        ));
+        // createpolicy used only as a cache hint: a placeholder; used as data: refused.
+        assert!(ops("createpolicy.fractional.L2::evict_first.b64 %rd2, 1.0;\nld.global.L2::cache_hint.b32 %r1, [%rd1], %rd2;").is_ok());
+        assert!(ops("createpolicy.fractional.L2::evict_first.b64 %rd2, 1.0;\nst.global.b64 [%rd1], %rd2;").is_err());
+        assert!(matches!(
+            &ops("prmt.b32 %r1, %r2, %r3, 0x7632U;").unwrap()[..],
+            [Op::Prmt { .. }]
+        ));
+        // A vector store with an immediate element: moves into the scratch block.
+        assert!(matches!(
+            &ops("st.global.v2.b32 [%rd1], {0, %r2};").unwrap()[..],
+            [
+                Op::Mov { a: Val::Imm(0), .. },
+                Op::Mov { .. },
+                Op::St { bytes: 8, .. }
+            ]
+        ));
         assert!(one("redux.sync.max.NaN.abs.f32 %r1, %r2, 0xffffffff;").is_err());
         assert!(matches!(
             one("neg.f32 %r1, %r2;").unwrap(),
@@ -4026,12 +4711,35 @@ mod tests {
         );
         let (_, _, _, neg) = f2("sub.rn.f32x2 %rd1, %rd2, %rd3;");
         assert_eq!(neg, [false, false, true]);
-        // Fail closed: no rounding modifier (ptxas may contract), other roundings, ftz, sat,
-        // immediates.
+        // No rounding modifier: .rn where ptxas cannot contract (a lone mul; an add of no
+        // loose mul), refused where it can (a mul feeding an add, that add, fma).
+        assert!(ops("mul.f32x2 %rd1, %rd2, %rd3;").is_ok());
+        assert!(ops("add.f32x2 %rd1, %rd2, %rd3;").is_ok());
+        assert!(ops("mul.f32x2 %rd1, %rd2, %rd3;\nmul.f32x2 %rd4, %rd1, %rd3;").is_ok());
+        assert!(ops("mul.f32x2 %rd1, %rd2, %rd3;\nadd.rn.f32x2 %rd4, %rd1, %rd3;").is_err());
+        assert!(ops("mul.rn.f32x2 %rd1, %rd2, %rd3;\nadd.f32x2 %rd4, %rd1, %rd3;").is_ok());
+        assert!(ops("mul.f32x2 %rd1, %rd2, %rd3;\nsub.f32x2 %rd4, %rd3, %rd1;").is_err());
+        // Scopes: after a directive line without `;`, and not a continuation operand list.
+        assert!(ops(".loc 1 2 3\n{ .reg .b32 a; mov.b32 a, %r1; mov.b32 %r2, a; }").is_ok());
+        assert!(ops("mov.b64\n {%r1, %r2}, %rd1;\n{ .reg .b32 a; mov.b32 a, %r1; }").is_ok());
+        assert!(ops("mov.b32 %r1, %lanemask_lt;\nld.global.u32 %r2, [%rd1+-8];").is_ok());
+        // bf16x2 / bf16: the same rule.
+        assert!(ops("sub.bf16x2 %r1, %r2, %r3;").is_ok());
+        assert!(ops("mul.bf16x2 %r1, %r2, %r3;\nst.global.b32 [%rd1], %r1;").is_ok());
+        assert!(ops("mul.bf16x2 %r1, %r2, %r3;\nadd.bf16x2 %r4, %r1, %r3;").is_err());
+        assert!(ops("mul.rn.bf16x2 %r1, %r2, %r3;\nadd.bf16x2 %r4, %r1, %r3;").is_ok());
+        assert!(ops("fma.bf16x2 %r1, %r2, %r3, %r4;").is_err());
+        // A pack of two plain muls that is only stored (Triton bf16 scale).
+        assert!(
+            ops(
+                ".reg .b16 %rs<8>;\nmul.bf16 %rs1, %rs2, %rs3;\nmul.bf16 %rs4, %rs5, %rs6;\n\
+             mov.b32 %r1, {%rs1, %rs4};\nst.global.b32 [%rd1], %r1;"
+            )
+            .is_ok()
+        );
+        // Fail closed: other roundings, ftz, sat, immediates.
         for l in [
             "fma.f32x2 %rd1, %rd2, %rd3, %rd4;",
-            "mul.f32x2 %rd1, %rd2, %rd3;",
-            "add.f32x2 %rd1, %rd2, %rd3;",
             "add.rn.ftz.f32x2 %rd1, %rd2, %rd3;",
             "mul.rn.sat.f32x2 %rd1, %rd2, %rd3;",
             "add.rn.f32x2 %rd1, %rd2, 0;",

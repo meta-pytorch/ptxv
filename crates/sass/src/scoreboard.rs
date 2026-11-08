@@ -269,6 +269,23 @@ const VAR_LAT: &[&str] = &[
 /// The f64 pipe: completes in issue order (probes/f64_queue). ASSUME(L-OPCLASS)
 const F64_PIPE: &[&str] = &["DADD", "DMUL", "DFMA"];
 
+/// The in-order completion queue of a scoreboard-free write (the cover rule in `check`): the
+/// shared-memory queue, the conversion / transcendental unit, POPC / FLO, the f64 pipe (with the
+/// conversions that have an f64 operand: ptxas covers `I2F.F64.U64.RZ R8` with no scoreboard
+/// by a wait on a later `I2F.F64.RM`'s, not on the `I2F.U16`'s issued between; probes/cvt_i2f
+/// = GB300), or the opcode itself. ASSUME(L-OPCLASS)
+fn inorder_queue(opcode: &str) -> &str {
+    let b = opcode.split('.').next().unwrap_or("");
+    match b {
+        "LDS" | "SHFL" | "LDSM" | "ATOMS" => "shared",
+        "F2I" | "I2F" | "F2F" if opcode.split('.').any(|m| m == "F64") => "f64",
+        "MUFU" | "F2I" | "I2F" | "F2F" | "FRND" => "xu",
+        "POPC" | "FLO" => "bit",
+        "DADD" | "DMUL" | "DFMA" => "f64",
+        b => b,
+    }
+}
+
 /// Stall cycles after which an f64-pipe result with no write scoreboard is in its register:
 /// ptxas for sm_103a pads such results with NOPs (`st=15` x 3, `st=4`) and reads them no
 /// sooner than 128 cycles later (Triton layernorm / split-k / pps kernels). ASSUME(L-OPCLASS)
@@ -884,23 +901,10 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
                     | "DMUL"
                     | "DFMA"
             ) {
-                let shq = |b: &str| matches!(b, "LDS" | "SHFL" | "LDSM" | "ATOMS");
-                let xu = |b: &str| matches!(b, "MUFU" | "F2I" | "I2F" | "F2F" | "FRND");
-                let bitq = |b: &str| matches!(b, "POPC" | "FLO");
-                let same = |b: &str| {
-                    b == base
-                        || (shq(b) && shq(base))
-                        || (xu(b) && xu(base))
-                        || (bitq(b) && bitq(base))
-                        || (F64_PIPE.contains(&b) && F64_PIPE.contains(&base))
-                };
+                let mine = inorder_queue(&l.opcode);
                 let ldtm: Vec<_> = st
                     .keys()
-                    .filter(|k| {
-                        k.0 == NO_SB
-                            && k.1
-                            && same(lines[k.2].opcode.split('.').next().unwrap_or(""))
-                    })
+                    .filter(|k| k.0 == NO_SB && k.1 && inorder_queue(&lines[k.2].opcode) == mine)
                     .cloned()
                     .collect();
                 for k in ldtm {

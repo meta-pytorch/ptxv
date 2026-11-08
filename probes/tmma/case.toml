@@ -5,6 +5,7 @@ N-HMMA TF32 probe: D[128x128] f32 = A[128x64] * B[128x64]^T through mma.sync m16
 operands (tmma.cu). `ptxv calib-mma probes/tmma` scores the MmaModel family and the tf32 input
 conversions against GB300; the default inputs (normal) are compared with expected/ (GB300) in
 cargo test."""
+ptx = "kernel.ptx"
 cubin = "kernel.cubin"
 entry = "tmma"
 grid = [32, 1, 1]

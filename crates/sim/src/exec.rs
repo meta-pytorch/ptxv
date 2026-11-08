@@ -838,6 +838,12 @@ impl Machine {
         };
         let mut races: Vec<(Epoch, &'static str, u64)> = Vec::new();
         let mut uninit: Option<usize> = None;
+        let undef_ok_from = self.undef_ok_from;
+        if self.wundef && write.is_some() {
+            if let Loc::Global { alloc, off } = loc {
+                Arc::make_mut(&mut self.gundef).push((alloc, off, n as u32, pc));
+            }
+        }
         let (mem, base): (&mut Mem, u64) = match loc {
             Loc::Shared { cta, off } => (&mut self.smem[cta as usize], off as u64),
             Loc::Global { alloc, off } => (&mut self.gmem[alloc], off),
@@ -863,6 +869,8 @@ impl Machine {
             }
         }
         let rd_done = self.launch.read_done;
+        let wundef = self.wundef;
+        let undef_ok = undef_ok_from.map(|o| base as usize + o);
         // E-POLL-ANY: the values of watched locations this write overwrites (monotonicity).
         let vip_old: Vec<((u32, u64, u8), u64)> =
             match (write.is_some(), vip_where(loc), self.vip.as_ref()) {
@@ -986,11 +994,20 @@ impl Machine {
                         s.r.retain(|r| keep(r, rd_ord(r)));
                     }
                     s.w = Some(me);
+                    s.undef = wundef;
                 } else if vip {
                 } else {
                     // ASSUME(S-INIT): shared memory outside the driver-initialized reserved
                     // prefix holds stale data until written (B02: the previous launch's tile).
-                    if s.w.is_none() && shared && a >= SMEM_RESERVED && uninit.is_none() {
+                    // S-INIT: global bytes are undefined only after a store of undefined data;
+                    // a reader that tolerates them (`undef_ok_from`: a tensor map's ignored
+                    // tail) does not see them.
+                    let und = if shared {
+                        (s.w.is_none() || s.undef) && a >= SMEM_RESERVED
+                    } else {
+                        s.undef && undef_ok.is_none_or(|o| a < o)
+                    };
+                    if und && uninit.is_none() {
                         uninit = Some(a);
                         if let Some(st) = self.stale.as_mut() {
                             st.get_or_insert(a as u32);
@@ -1061,12 +1078,25 @@ impl Machine {
             }
         }
         if let Some(a) = uninit.filter(|_| self.stale.is_none()) {
-            let msg = format!(
-                "{} at {} reads shared memory byte {a:#x}, which nothing wrote in this launch (on hardware: stale data from an earlier kernel)",
-                self.actor_name(actor),
-                self.k.describe(pc as usize)
-            );
-            self.report("violation", format!("uninit-smem:{pc}"), msg);
+            if shared {
+                let msg = format!(
+                    "{} at {} reads shared memory byte {a:#x}, which nothing wrote in this launch (on hardware: stale data from an earlier kernel), or which holds undefined data a shared store wrote (S-INIT)",
+                    self.actor_name(actor),
+                    self.k.describe(pc as usize)
+                );
+                self.report("violation", format!("uninit-smem:{pc}"), msg);
+            } else {
+                let msg = format!(
+                    "{} at {} reads global byte {a:#x} of {}, which holds undefined data a store wrote (S-INIT)",
+                    self.actor_name(actor),
+                    self.k.describe(pc as usize),
+                    match loc {
+                        Loc::Global { alloc, .. } => self.launch.allocs[alloc].name.clone(),
+                        _ => String::new(),
+                    }
+                );
+                self.report("violation", format!("uninit-gmem:{pc}"), msg);
+            }
         }
         // ASSUME(E-LAUNCH-GROUPS): accesses of earlier launch groups this one must follow.
         if let (Loc::Global { alloc, off }, Some(xg)) = (loc, self.xg.as_ref()) {
@@ -1114,9 +1144,6 @@ impl Machine {
         // One finding per (instruction pair, kind); report the first byte.
         let mut seen = std::collections::BTreeSet::new();
         for (other, kind, a) in races {
-            if !seen.insert((other.pc, kind)) {
-                continue;
-            }
             // Keyed by the earlier access: one finding per conflicting write/read site, even
             // when ptxas unrolled the other side into many instructions.
             // `race-ldsts`: both sides are SASS LDS/STS (or ATOMS: shared-memory atomics,
@@ -1145,6 +1172,33 @@ impl Machine {
                 "race"
             };
             let sig = format!("{tag}:{}:{}:{}", Self::space_name(&loc), other.pc, kind);
+            // race_dead.rs: every racing read of this signature, before the per-access
+            // deduplication below (each thread's read must be made undefined in the rerun).
+            if let Some(log) = &self.race_log {
+                let read = match kind {
+                    "write-read" => Some((actor, pc)),
+                    "read-write" => Some((other.actor, other.pc)),
+                    _ => None,
+                };
+                let ok = read.filter(|&(t, at)| {
+                    (t as usize) < self.threads.len()
+                        && matches!(&self.k.code[at as usize].op,
+                            Op::Ld { sync, .. } if !sync.is_some_and(|s| s.acquires()))
+                });
+                let mut g = log.lock().unwrap();
+                let e = g
+                    .entry(sig.clone())
+                    .or_insert_with(|| Some(Default::default()));
+                match (e.as_mut(), ok) {
+                    (Some(set), Some(r)) => {
+                        set.insert(r);
+                    }
+                    _ => *e = None,
+                }
+            }
+            if !seen.insert((other.pc, kind)) {
+                continue;
+            }
             let space = match loc {
                 Loc::Global { alloc, .. } => format!("gmem ({})", self.launch.allocs[alloc].name),
                 _ => Self::space_name(&loc).to_string(),
@@ -1400,8 +1454,20 @@ impl Machine {
         // too: it has no member mask, and ptxas places it after a `BSYNC` (reconvergence,
         // which the model does not track) when lanes diverged before (rung 3a: lane 0 copies
         // tensor-map templates, then all 32 lanes shuffle).
-        // PTX `vote.sync` and `redux.sync` with the full member mask (the only one the
-        // front-end accepts) likewise wait for every live lane of the warp.
+        // PTX `vote.sync` (full member mask only) and `redux.sync` with the full mask
+        // likewise wait for every live lane of the warp; a `redux.sync` with a subset
+        // membermask waits for the live lanes the mask names (read from the first member;
+        // E-WARPCOLL).
+        if let (Front::Ptx, Op::Redux { mask: Some(m), .. }) = (self.k.front, &inst.op) {
+            let Ok(m) = self.rd(members[0], m) else {
+                return true;
+            };
+            let w = self.threads[members[0]].warp;
+            return self.warp_threads(w).all(|u| {
+                let th = &self.threads[u];
+                th.st == St::Exited || m >> th.lane & 1 == 0 || members.contains(&u)
+            });
+        }
         if inst.op.is_warp_aligned()
             && (self.k.front == Front::Ptx || matches!(inst.op, Op::Shfl { .. }))
             || self.k.front == Front::Ptx
@@ -2342,11 +2408,15 @@ impl Machine {
         if states & 2 != 0 {
             self.report("violation", format!("tmem-unalloc:{pc}"), format!("{what} at {} accesses TMEM columns that are not allocated (never allocated, or already deallocated)", self.k.describe(pc as usize)));
         } else if states & 1 != 0 {
+            // S-INIT: the loaded registers are undefined (no defined bit); a use of them is
+            // reported where it reaches a sink (`uninit-reg`). Not a finding by itself
+            // (Triton's peeled-loop prologue loads the scores of an MMA it skipped when the
+            // loop runs zero times, dash/5713).
             self.report(
-                "violation",
+                "note",
                 format!("tmem-uninit-ld:{pc}"),
                 format!(
-                    "{what} at {} reads TMEM that was never written since allocation",
+                    "{what} at {} reads TMEM that was never written since allocation (or written with undefined data): its registers are undefined (S-INIT), reported where they are used",
                     self.k.describe(pc as usize)
                 ),
             );
@@ -2376,6 +2446,47 @@ impl Machine {
         self.pipe_actor_id(t)
     }
 
+    /// S-INIT at a terminal state: global bytes still holding undefined data a store wrote
+    /// (`Machine::gundef`, `Sh::undef`) leave the kernel. ASSUME(S-TMAP-TAIL): bytes 0x40..0x7f
+    /// of a tensor map a TMA of the launch used are ignored by GB300 (probes/tmap_tail): a
+    /// `contract` finding; any other byte is a violation.
+    fn undef_gmem_check(&mut self) {
+        let list = self.gundef.clone();
+        for &(alloc, off, n, pc) in list.iter() {
+            let (mut tail, mut other) = (None, None);
+            for i in 0..n as u64 {
+                let a = off + i;
+                if !self.gmem[alloc].sh.get(a as usize).undef {
+                    continue;
+                }
+                let in_tail = self
+                    .tmaps_used
+                    .iter()
+                    .any(|&(ma, mo)| ma == alloc && a >= mo + 64 && a < mo + 128);
+                if in_tail {
+                    tail.get_or_insert(a);
+                } else {
+                    other.get_or_insert(a);
+                }
+            }
+            let name = self.launch.allocs[alloc].name.clone();
+            if let Some(a) = other {
+                let msg = format!(
+                    "the store at {} leaves undefined data in global byte {a:#x} of {name} when the launch ends (S-INIT)",
+                    self.k.describe(pc as usize)
+                );
+                self.report("violation", format!("uninit-gmem-exit:{pc}"), msg);
+            }
+            if let Some(a) = tail {
+                let msg = format!(
+                    "the store at {} leaves undefined data in byte {a:#x} of {name}, in bytes 0x40..0x7f of a tensor map a TMA used: GB300 ignores them (S-TMAP-TAIL, probes/tmap_tail)",
+                    self.k.describe(pc as usize)
+                );
+                self.report("contract", format!("tmap-tail-undef:{pc}"), msg);
+            }
+        }
+    }
+
     /// Keep pending async ops in a canonical order (by actor, then issue clock), so that
     /// commuting issues produce identical states. Per-pipe FIFO order is preserved.
     fn push_async(&mut self, op: AsyncOp) {
@@ -2397,6 +2508,7 @@ impl Machine {
 
     /// Checks to run when the kernel finishes (TMEM leaks).
     pub fn exit_checks(&mut self) {
+        self.undef_gmem_check();
         // An async operation must complete before its CTA exits (it writes or reads the CTA's
         // shared memory / TMEM). That is guaranteed only if some thread of the CTA observed the
         // completion (through an mbarrier, a commit, or wait_group) before exiting: otherwise the
@@ -3117,17 +3229,32 @@ impl Machine {
             })
         };
         let sink: Option<Vec<Reg>> = match &inst.op {
-            // Addresses and stored data; branch conditions and masks; votes and
-            // reductions (their results steer control flow); SHFL's lane and clamp (SHFL's
-            // data carries its undefined bits, below).
-            Op::StMatrix { .. }
-            | Op::LdMatrix { .. }
-            | Op::Bra { .. }
+            // Addresses and stored data; branch conditions and masks; votes (their results
+            // steer control flow); SHFL's lane and clamp (SHFL's data carries its undefined
+            // bits, below). A reduction's data carries its undefined bits (below).
+            Op::Bra { .. }
             | Op::VoteAny { .. }
             | Op::VoteAll { .. }
-            | Op::Redux { .. }
             | Op::WarpSync { .. }
             | Op::Elect { .. } => Some(inst.op.src_regs()),
+            // STSM / LDSM: the address (STSM's data marks the bytes undefined, an LDSM of
+            // undefined bytes gives undefined registers: S-INIT through memory).
+            Op::StMatrix { addr, .. } | Op::LdMatrix { addr, .. } => Some(
+                addr.base
+                    .iter()
+                    .chain(addr.base2.iter())
+                    .flat_map(|v| match v {
+                        Val::Reg(r, n) if r.file != File::V => (0..(*n).max(1) as u16)
+                            .map(|i| Reg {
+                                file: r.file,
+                                idx: r.idx + i,
+                            })
+                            .collect::<Vec<_>>(),
+                        Val::Reg(r, _) => vec![*r],
+                        _ => vec![],
+                    })
+                    .collect(),
+            ),
             Op::Shfl { lane, clamp, .. } => Some(
                 [lane, clamp]
                     .iter()
@@ -3144,8 +3271,14 @@ impl Machine {
                 self.report_uninit(t, r, pc);
             }
         }
-        if matches!(inst.op, Op::R2Ur { .. } | Op::Hmma { .. })
-            && undef_in(self, &inst.op.src_regs()).is_some()
+        // REDUX: an undefined bit in any active lane's operand may reach every bit of the
+        // result (sum carries), in every lane; the result is undefined and reported where it
+        // is used (Triton's cross-warp reduction: warps without loaded partials reduce
+        // undefined registers and drop the result, dash/5819).
+        if matches!(
+            inst.op,
+            Op::R2Ur { .. } | Op::Hmma { .. } | Op::Redux { .. }
+        ) && undef_in(self, &inst.op.src_regs()).is_some()
         {
             for &t in &active {
                 poison.push((t, inst.op.dst_regs()));
@@ -3227,6 +3360,17 @@ impl Machine {
                 }
             }
         }
+        // SASS cp.async scoreboard: per warp (E-CPASYNC).
+        if k.front == Front::Sass && !active.is_empty() {
+            let w = self.threads[active[0]].warp;
+            match inst.op {
+                Op::CpAsyncCommit => self.warps[w as usize].make_mut().cp_seq += 1,
+                Op::CpAsyncWait { n } | Op::BulkWait { n, cp: true, .. } => {
+                    self.cp_async_wait_warp(w, n, &active)
+                }
+                _ => {}
+            }
+        }
         if k.front == Front::Ptx && inst.op.is_warp_aligned() && !active.is_empty() {
             let w = self.threads[members[0]].warp;
             let live = self
@@ -3280,7 +3424,7 @@ impl Machine {
         if active.is_empty()
             && matches!(
                 inst.op,
-                Op::LdMatrix { .. } | Op::StMatrix { .. } | Op::Hmma { .. }
+                Op::LdMatrix { .. } | Op::StMatrix { .. } | Op::Hmma { .. } | Op::MovMatrix { .. }
             )
         {
             for &t in members {
@@ -3353,8 +3497,32 @@ impl Machine {
                     self.wr(t, *d, mask, 1);
                 }
             }
-            Op::Redux { d, a, op } => {
+            Op::Redux { d, a, op, mask } => {
                 use ptxv_ir::ReduxOp as R;
+                // E-WARPCOLL: the executing lanes must be exactly those the membermask names.
+                if let (Some(m), Some(&t0)) = (mask, active.first()) {
+                    let want = self.rd(t0, m)? as u32;
+                    let got = active
+                        .iter()
+                        .fold(0u32, |x, &t| x | 1 << self.threads[t].lane);
+                    let agree = active
+                        .iter()
+                        .all(|&t| self.rd(t, m).ok().map(|v| v as u32) == Some(want));
+                    if got != want || !agree {
+                        let msg = format!(
+                            "redux.sync at {} executed by lanes {got:#010x} of warp {} with \
+                             membermask {want:#010x}{}",
+                            self.k.describe(pc as usize),
+                            self.threads[t0].warp,
+                            if agree {
+                                ""
+                            } else {
+                                " (lanes disagree on the mask)"
+                            }
+                        );
+                        self.report("violation", format!("redux-mask:{pc}"), msg);
+                    }
+                }
                 let mut acc: Option<u32> = None;
                 for &t in &active {
                     let x = self.rd(t, a)? as u32;
@@ -3595,8 +3763,22 @@ impl Machine {
                         th.pc = pc + 1;
                     }
                 }
+                // A plain WARPSYNC whose lanes name different masks (ptxas's `shfl.sync` over
+                // lane pairs: `WARPSYNC R8`, R8 = 3 << (lane & 0x1e)): each mask group is
+                // released on its own once its lanes are all parked.
+                let mut groups = vec![m];
+                if let Op::WarpSync { mask, .. } = &inst.op {
+                    for &t in active.iter().skip(1) {
+                        let g = self.rd(t, mask)? as u32;
+                        if !groups.contains(&g) {
+                            groups.push(g);
+                        }
+                    }
+                }
                 if let Some(&t0) = active.first() {
-                    self.warpsync_release(self.threads[t0].warp, m, pc);
+                    for g in groups {
+                        self.warpsync_release(self.threads[t0].warp, g, pc);
+                    }
                 }
                 return Ok(());
             }
@@ -3687,6 +3869,11 @@ impl Machine {
                         for q in 0..4usize {
                             let src = by_lane[4 * j + q];
                             let w = self.rd(src, vi)? as u32;
+                            // S-INIT: undefined data marks the bytes undefined (`Sh::undef`).
+                            let um = match vi {
+                                Val::Reg(r, _) => self.reg_umask(src, *r),
+                                _ => 0,
+                            };
                             let vc = self.threads[src].vc.clone();
                             if !*trans {
                                 let loc =
@@ -3708,7 +3895,9 @@ impl Machine {
                                     continue;
                                 }
                                 wrote.push((loc, w, src));
+                                self.wundef = um != 0;
                                 self.access(src as u32, &vc, pc, loc, 4, Some(&w.to_le_bytes()));
+                                self.wundef = false;
                                 // A whole 32-bit word: it keeps its node (N-LEAF).
                                 self.num_st(src, vi, loc, 4);
                             } else {
@@ -3719,7 +3908,9 @@ impl Machine {
                                     let loc =
                                         self.resolve(tl, Space::Shared, base + 2 * j as u64, 2)?;
                                     let half = ((w >> (16 * h)) as u16).to_le_bytes();
+                                    self.wundef = (um >> (16 * h)) & 0xffff != 0;
                                     self.access(src as u32, &vc, pc, loc, 2, Some(&half));
+                                    self.wundef = false;
                                     self.half_stsm_half(src, vi, h, loc);
                                 }
                             }
@@ -3756,6 +3947,7 @@ impl Machine {
                             let l = self.threads[t].lane as usize;
                             let vc = self.threads[t].vc.clone();
                             let mut w = 0u32;
+                            let mut und = false;
                             let mut locs = [None; 4];
                             for (b, slot) in locs.iter_mut().enumerate() {
                                 let rl = by_lane[16 * m + 4 * (l % 4) + b];
@@ -3763,18 +3955,24 @@ impl Machine {
                                 let col = (l / 4 + 8 * h) as u64;
                                 let loc = self.resolve(rl, Space::Shared, base + col, 1)?;
                                 *slot = Some(loc);
+                                // S-INIT: undefined bytes give an undefined register.
+                                self.stale = Some(None);
                                 let x = self.access(t as u32, &vc, pc, loc, 1, None);
+                                und |= self.stale.take().flatten().is_some();
                                 w |= (x[0] as u32) << (8 * b);
                             }
-                            out.push((t, r, w, locs));
+                            out.push((t, r, w, locs, und));
                         }
                     }
-                    for (t, r, w, locs) in out {
+                    for (t, r, w, locs, und) in out {
                         let reg = Reg {
                             file: d.file,
                             idx: d.idx + r as u16,
                         };
                         self.wr(t, reg, w as u64, 1);
+                        if und {
+                            self.make_undefined(t, reg);
+                        }
                         self.half_ldsm_bytes(t, reg, locs);
                         self.num_clobber(t, reg, &[], pc);
                     }
@@ -3799,6 +3997,7 @@ impl Machine {
                             let mut w = 0u32;
                             // Without .trans both halves are one aligned 32-bit word of the row.
                             let mut word = None;
+                            let mut und = false;
                             let mut hlocs = [None; 2];
                             for (h, (row, off)) in parts.into_iter().enumerate() {
                                 let rl = by_lane[8 * i + row];
@@ -3811,18 +4010,24 @@ impl Machine {
                                         _ => None,
                                     };
                                 }
+                                // S-INIT: undefined bytes give an undefined register.
+                                self.stale = Some(None);
                                 let b = self.access(t as u32, &vc, pc, loc, 2, None);
+                                und |= self.stale.take().flatten().is_some();
                                 w |= (u16::from_le_bytes([b[0], b[1]]) as u32) << (16 * h);
                             }
-                            out.push((t, i, w, word, hlocs));
+                            out.push((t, i, w, word, hlocs, und));
                         }
                     }
-                    for (t, i, w, word, hlocs) in out {
+                    for (t, i, w, word, hlocs, und) in out {
                         let r = Reg {
                             file: d.file,
                             idx: d.idx + i as u16,
                         };
                         self.wr(t, r, w as u64, 1);
+                        if und {
+                            self.make_undefined(t, r);
+                        }
                         // 16-bit provenance: each half from its own row (`.trans` reshuffles them).
                         self.half_ldsm(t, r, hlocs);
                         // ASSUME(N-LEAF): the word moves intact, with its node.
@@ -3838,6 +4043,44 @@ impl Machine {
                 }
             }
             // ASSUME(N-HMMA): see ASSUMPTIONS.md
+            // ASSUME(L-ROSETTA): probes/movm = GB300.
+            Op::MovMatrix { d, a } => {
+                if active.len() != 32 {
+                    return Err(format!(
+                        "movmatrix executed by {} lanes (needs the full warp)",
+                        active.len()
+                    ));
+                }
+                let mut lanes = [0usize; 32];
+                for &t in &active {
+                    lanes[self.threads[t].lane as usize] = t;
+                }
+                let src: Vec<(u64, u64, Option<crate::halfin::Bytes>)> = lanes
+                    .iter()
+                    .map(|&t| Ok((self.rd(t, a)?, self.val_umask(t, a), self.half_val(t, a))))
+                    .collect::<Result<_, String>>()?;
+                for (l, &t) in lanes.iter().enumerate() {
+                    let (g, q) = (l / 4, l % 4);
+                    let (mut v, mut um) = (0u64, 0u64);
+                    let mut hb: crate::halfin::Bytes = Default::default();
+                    // Element (i, j) is in lane 4i + j/2, half j % 2; d holds (2q + h, g).
+                    for h in 0..2 {
+                        let (sl, sh) = (4 * (2 * q + h) + g / 2, g % 2);
+                        let (x, m, b) = &src[sl];
+                        v |= (x >> (16 * sh) & 0xffff) << (16 * h);
+                        um |= (m >> (16 * sh) & 0xffff) << (16 * h);
+                        if let Some(b) = b {
+                            hb[2 * h] = b[2 * sh];
+                            hb[2 * h + 1] = b[2 * sh + 1];
+                        }
+                    }
+                    self.half_set_reg(t, *d, Some(hb));
+                    self.vmask = (um != 0).then_some(um);
+                    self.wr(t, *d, v, 1);
+                    self.vmask = None;
+                    self.num_clobber(t, *d, &[], pc);
+                }
+            }
             Op::Hmma { d, a, b, c, tf32 } => {
                 if active.len() != 32 {
                     return Err(format!(
@@ -3894,6 +4137,10 @@ impl Machine {
                     return Err("HMMA accumulator (subnormal/Inf/NaN) is outside the calibrated model: not modeled".into());
                 }
                 let model = fp::HMMA_MODEL;
+                // HMMA.1688.F32.BF16 (m16n8k8: A two registers, B one): the same fragments for
+                // k < 8 and the same model over 8 products (probes/bmma8: `ptxv calib-mma
+                // --step 8` matches exactly this model on all 98,304 outputs).
+                let kk = if a.len() == 2 { 8 } else { 16 };
                 // Numerics: the 16-bit provenance of every operand element and the
                 // accumulators' nodes, read before any result is written (d may be c).
                 use crate::halfin::HalfOp;
@@ -3926,7 +4173,7 @@ impl Machine {
                     let (g, q) = (l / 4, l % 4);
                     for j in 0..4usize {
                         let (row, col) = (g + 8 * (j >> 1), 2 * q + (j & 1));
-                        let terms: Vec<fp::Term> = (0..16)
+                        let terms: Vec<fp::Term> = (0..kk)
                             .map(|k| {
                                 fp::Term::prod(
                                     am[row][k] as f64,
@@ -3945,7 +4192,7 @@ impl Machine {
                             // ASSUME(N-HMMA): one step of the calibrated model per instruction.
                             let prods: Vec<f64> = terms.iter().map(|x| x.v).collect();
                             let ops: Vec<HalfOp> =
-                                (0..16).flat_map(|k| [ap[row][k], bp[k][col]]).collect();
+                                (0..kk).flat_map(|k| [ap[row][k], bp[k][col]]).collect();
                             self.num_hmma(
                                 t,
                                 dr,
@@ -4152,18 +4399,48 @@ impl Machine {
 
     /// cp.async.wait_group n: the thread's cp.async groups older than its newest n land.
     fn cp_async_wait(&mut self, t: usize, n: u32) {
+        let upto = self.threads[t].cp_group.saturating_sub(n);
+        self.cp_async_complete(t, |c| c.group < upto);
+    }
+
+    /// SASS `DEPBAR.LE SBk, n` on the cp.async scoreboard: the scoreboard counts the warp's
+    /// LDGDEPBAR executions (divergent paths count separately), so every lane's copies older
+    /// than the warp's newest n commits are complete, whichever lane issued them.
+    /// ASSUME(E-CPASYNC)
+    fn cp_async_wait_warp(&mut self, w: u32, n: u32, active: &[usize]) {
+        let upto = self.warps[w as usize].cp_seq.saturating_sub(n);
+        let lanes: Vec<usize> = self
+            .warp_threads(w)
+            .filter(|&u| self.threads[u].st != St::Exited)
+            .collect();
+        let mut vcs = Vec::new();
+        for u in lanes {
+            vcs.extend(self.cp_async_complete(u, |c| c.wgroup < upto));
+        }
+        // The waiting lanes are ordered after every copy the wait retired (another lane's
+        // included).
+        for &a in active {
+            let th = self.threads[a].make_mut();
+            for vc in &vcs {
+                vc_join(&mut th.vc, vc);
+            }
+        }
+    }
+
+    /// Complete the pending copies `done` selects; their issue clocks.
+    fn cp_async_complete(&mut self, t: usize, done: impl Fn(&CpPending) -> bool) -> Vec<VC> {
         let th = &self.threads[t];
-        let upto = th.cp_group.saturating_sub(n);
         let cta = th.cta;
-        let (done, rest): (Vec<_>, Vec<_>) =
-            th.cp_pending.iter().cloned().partition(|c| c.group < upto);
+        let (done, rest): (Vec<_>, Vec<_>) = th.cp_pending.iter().cloned().partition(done);
         self.threads[t].make_mut().cp_pending = rest;
+        let vcs = done.iter().map(|c| c.vc.clone()).collect();
         for c in done {
             let loc = Loc::Shared { cta, off: c.off };
             self.access(t as u32, &c.vc, c.pc, loc, c.data.len(), Some(&c.data));
             self.sync_clear(loc);
             self.num_cp_async(c.src, cta, c.off, &c.data);
         }
+        vcs
     }
 
     /// After a lane of `warp` exited: release the lanes parked at a plain `WARPSYNC` or a
@@ -4188,16 +4465,29 @@ impl Machine {
         ats.dedup();
         for at in ats {
             // An earlier release in this loop may have moved the lanes on.
-            let Some(u) = self
+            if !self
                 .warp_threads(warp)
-                .find(|&u| self.threads[u].st == St::WarpSync && self.threads[u].pc == at)
-            else {
+                .any(|u| self.threads[u].st == St::WarpSync && self.threads[u].pc == at)
+            {
                 continue;
-            };
+            }
             let m = match &self.k.code[at as usize].op {
+                // Each mask group parked at a plain WARPSYNC (they may differ by lane).
                 Op::WarpSync { mask, .. } => {
                     let mask = mask.clone();
-                    self.rd(u, &mask)? as u32
+                    let mut groups = Vec::new();
+                    for v in self.warp_threads(warp) {
+                        if self.threads[v].st == St::WarpSync && self.threads[v].pc == at {
+                            let g = self.rd(v, &mask)? as u32;
+                            if !groups.contains(&g) {
+                                groups.push(g);
+                            }
+                        }
+                    }
+                    for g in groups {
+                        self.warpsync_release(warp, g, at);
+                    }
+                    continue;
                 }
                 Op::Bsync { b } => {
                     let b = *b;
@@ -4404,6 +4694,7 @@ impl Machine {
     fn exec_thread(&mut self, t: usize, inst: &Inst, pc: u32) -> Result<Flow, String> {
         self.stale = None;
         self.vmask = None;
+        self.wundef = false;
         let r = self.exec_thread_inner(t, inst, pc);
         self.stale = None;
         self.vmask = None;
@@ -4419,7 +4710,15 @@ impl Machine {
                 self.make_undefined(t, d);
             }
         }
+        self.wundef = false;
         r
+    }
+
+    /// The value of never-stored local word `w` of thread `t`: 0, or the multi-fill rerun's
+    /// fill (S-INIT-FILLS, fills.rs).
+    fn fill_local(&self, t: usize, w: u32) -> u32 {
+        self.fill
+            .map_or(0, |f| f.word(4 << 40 | (t as u64) << 24 | (w / 4) as u64))
     }
 
     /// Register `r` of thread `t` (its warp's, for a uniform register) holds no defined bit.
@@ -4892,7 +5191,60 @@ impl Machine {
             } => Some(r.file),
             _ => None,
         };
+        // A shared store's undefined data marks the bytes undefined (`Sh::undef`) instead of
+        // being reported: a load of them gives undefined registers, any other reader reports.
+        // The address is still a sink.
+        // Global stores (and `atom.exch`, a store that returns the old value) likewise: a load
+        // of the bytes gives undefined registers, and bytes still undefined when the launch
+        // ends are reported then (`exit_checks`).
+        let sts_data: Vec<Reg> = match &inst.op {
+            Op::St {
+                space: Space::Shared | Space::Global,
+                v: Val::Reg(vr, n),
+                ..
+            }
+            | Op::Atom {
+                op: AtomOp::Exch,
+                space: Space::Shared | Space::Global,
+                v: Val::Reg(vr, n),
+                ..
+            } if vr.file != File::V || self.k.front == Front::Ptx => (0..(*n).max(1) as u16)
+                .map(|i| Reg {
+                    file: vr.file,
+                    idx: if vr.file == File::V {
+                        vr.idx
+                    } else {
+                        vr.idx + i
+                    },
+                })
+                .collect(),
+            _ => vec![],
+        };
+        // A narrow store (`low_only`) writes only the low bytes of its register.
+        if sts_data.iter().any(|r| {
+            let u = self.reg_umask(t, *r);
+            match low_only {
+                Some((v, m)) if v == *r => u & m != 0,
+                _ => u != 0,
+            }
+        }) {
+            self.wundef = true;
+        }
+        // tcgen05.st data: undefined words are stored as never written (S-INIT, below).
+        let tmem_data: Vec<Reg> = match &inst.op {
+            Op::TmemSt { v, .. } => v
+                .iter()
+                .filter_map(|x| match x {
+                    Val::Reg(r, _) => Some(*r),
+                    _ => None,
+                })
+                .collect(),
+            _ => vec![],
+        };
         let undef = inst.op.src_regs().into_iter().find(|r| {
+            if sts_data.contains(r) || tmem_data.contains(r) {
+                return false;
+            }
             if let (
                 Some(f),
                 Op::StLocal {
@@ -4977,6 +5329,48 @@ impl Machine {
                     1,
                 );
             }
+            // A vector red.add.v2 / .v4.f32 (REDG.E.ADD.F32x2 / F32x4): one atomic per element,
+            // each on its own (PTX ISA: no atomicity across the elements; probes/red_vec).
+            Op::Atom {
+                op: AtomOp::FAddFtz,
+                space,
+                bytes: b @ (8 | 16),
+                addr,
+                v: Val::Reg(r, _),
+                d: None,
+                sync,
+                p: None,
+                new: None,
+            } => {
+                let a = self.addr(t, addr)?;
+                check_aligned(*space, a, *b as usize)?;
+                for k in 0..(*b / 4) {
+                    let mut ad = addr.clone();
+                    ad.off += 4 * k as i64;
+                    let sub = Inst {
+                        op: Op::Atom {
+                            op: AtomOp::FAddFtz,
+                            space: *space,
+                            bytes: 4,
+                            addr: ad,
+                            v: Val::Reg(
+                                Reg {
+                                    file: r.file,
+                                    idx: r.idx + k as u16,
+                                },
+                                1,
+                            ),
+                            d: None,
+                            sync: *sync,
+                            p: None,
+                            new: None,
+                        },
+                        ..inst.clone()
+                    };
+                    self.exec_thread_inner(t, &sub, pc)?;
+                }
+                return Ok(Flow::Next);
+            }
             Op::Atom {
                 op,
                 space,
@@ -5028,12 +5422,21 @@ impl Machine {
                 let sc = strong_code(sync.scope);
                 self.mc_view = mc;
                 let mut res = None;
+                // S-INIT: the returned old value (the last location's, as `res`) is undefined.
+                let mut old_undef = false;
                 for &loc in &locs {
                     if self.l1.is_some() {
                         self.l1_atom(t, loc, *bytes as usize); // ASSUME(E-HW-L1)
                     }
                     self.red_access = *op == AtomOp::FAddFtz && d.is_none();
+                    // S-INIT: an exchange only returns the old bytes; undefined ones give an
+                    // undefined destination (reported when used), not a report here (dist_moe
+                    // publishes a tensor map word by word with `atom.exch`, discarding the result).
+                    if *op == AtomOp::Exch {
+                        self.stale = Some(None);
+                    }
                     let old = self.access_x(t as u32, &vc, pc, loc, *bytes as usize, None, sc);
+                    old_undef = self.stale.take().flatten().is_some();
                     self.sync_observe(t, loc, *sync);
                     let mut o = 0u64;
                     for (i, b) in old.iter().enumerate() {
@@ -5085,6 +5488,8 @@ impl Machine {
                             lane(1) << 16 | lane(0)
                         }
                         AtomOp::AddBf16 => fp::bf16_fma(o as u16, 0x3f80, x as u16) as u64,
+                        // As DADD (DFMA a * 1.0 + c, one rounding to nearest).
+                        AtomOp::FAdd64 => fp::f64_fma(o, 1f64.to_bits(), Some(x), ptxv_ir::Rnd::Rn),
                         AtomOp::CasSpin | AtomOp::Cas => {
                             if o == cmp {
                                 x
@@ -5120,7 +5525,11 @@ impl Machine {
                     } else {
                         (o, if wide { 2 } else { 1 })
                     };
+                    if old_undef {
+                        self.stale = Some(None);
+                    }
                     self.wr(t, *d, r, w);
+                    self.stale = None;
                 }
                 if let Some(p) = p {
                     // Generic: the address resolved to global memory (performed).
@@ -5139,6 +5548,16 @@ impl Machine {
                 }
             }
             Op::Call { target } => return Ok(Flow::Jump(*target as u32)),
+            Op::Brx { targets, base, .. } if self.k.front == Front::Ptx => {
+                let i = self.rd(t, base)? as u32 as usize;
+                let Some(&to) = targets.get(i) else {
+                    return Err(format!(
+                        "brx.idx with index {i}, outside its {} branch targets (undefined)",
+                        targets.len()
+                    ));
+                };
+                return Ok(Flow::Jump(to as u32));
+            }
             Op::Brx { base, off, targets } => {
                 let a = (self.rd(t, base)? as i64).wrapping_add(*off);
                 let to = (a >> 4) as usize + self.k.entry_of(pc as usize);
@@ -5734,6 +6153,9 @@ impl Machine {
                             idx: d.idx + j as u16,
                         };
                         self.wr(t, r, w as u64, 1);
+                        if st == 0 {
+                            self.make_undefined(t, r);
+                        }
                         self.num_tmem_ld(t, r, cta, lane, col);
                         if *tracked {
                             self.threads[t]
@@ -5809,6 +6231,9 @@ impl Machine {
                         idx: d.idx + j as u16,
                     };
                     self.wr(t, r, w as u64, 1);
+                    if st == 0 {
+                        self.make_undefined(t, r);
+                    }
                     self.num_tmem_ld(t, r, cta, lane, col);
                     if *tracked {
                         self.threads[t]
@@ -5819,6 +6244,9 @@ impl Machine {
                 }
                 if let (Some((rd, _)), Some(v)) = (red, acc) {
                     self.wr(t, *rd, v as u64, 1);
+                    if states & 1 != 0 {
+                        self.make_undefined(t, *rd);
+                    }
                     self.num_clobber(t, *rd, &[], pc);
                     if *tracked {
                         self.threads[t]
@@ -6327,6 +6755,12 @@ impl Machine {
                     let (lane, col) = cell(j);
                     let (_, st) = self.tmem_access(cta, lane, col, actor, &vc, pc, Some(*w));
                     states |= if st == 2 { 2 } else { 0 };
+                    // S-INIT: undefined data leaves the word as never written: a tcgen05.ld
+                    // of it gives undefined registers, an MMA reading it reports.
+                    let und = matches!(&v[j], Val::Reg(r, _) if self.reg_umask(t, *r) != 0);
+                    if und && st != 2 {
+                        *self.tmem[cta as usize].init.get_mut(tmem_idx(lane, col)) = 0;
+                    }
                     self.num_tmem_st(t, &v[j], cta, lane, col);
                 }
                 self.tmem_state_report(states, "tcgen05.st", pc);
@@ -6341,7 +6775,10 @@ impl Machine {
                 let a = self.addr(t, addr)?;
                 let loc = self.resolve(t, Space::Global, a, 128)?;
                 let vc = self.threads[t].vc.clone();
+                // ASSUME(S-TMAP-TAIL): the fence reads the 128-byte map; its tail is ignored.
+                self.undef_ok_from = Some(64);
                 let bytes = self.access(t as u32, &vc, pc, loc, 128, None);
+                self.undef_ok_from = None;
                 let clock = vc_get(&self.threads[t].vc, t as u32);
                 let th = self.threads[t].make_mut();
                 th.tmap_fence.retain(|(x, _, _)| *x != a);
@@ -6364,7 +6801,11 @@ impl Machine {
                 self.mbars.remove(&(cta, off));
                 self.tick(t);
             }
-            Op::StMatrix { .. } | Op::Shfl { .. } | Op::LdMatrix { .. } | Op::Hmma { .. } => {
+            Op::StMatrix { .. }
+            | Op::Shfl { .. }
+            | Op::LdMatrix { .. }
+            | Op::Hmma { .. }
+            | Op::MovMatrix { .. } => {
                 return Err("warp-collective op reached the per-thread executor".into());
             }
             Op::MulWide { d, a, b, signed } => {
@@ -6750,6 +7191,41 @@ impl Machine {
                     }
                 }
             }
+            Op::Hset2 {
+                d,
+                cmp,
+                a,
+                b,
+                sel,
+                neg,
+                abs,
+                c,
+                bop,
+                f16,
+                bf,
+            } => {
+                let (x, y) = (self.rd(t, a)? as u32, self.rd(t, b)? as u32);
+                let pc_in = self.prd(t, *c);
+                let one: u64 = match (*bf, *f16) {
+                    (false, _) => 0xffff,
+                    (true, true) => 0x3c00,
+                    (true, false) => 0x3f80,
+                };
+                let mut v = 0u64;
+                for lane in 0..2u32 {
+                    let r = fp::hsetp2_lane((x, y), *sel, (*neg, *abs), *f16, *cmp, lane);
+                    let r = match bop {
+                        BoolOp::And => r && pc_in,
+                        BoolOp::Or => r || pc_in,
+                        BoolOp::Xor => r != pc_in,
+                    };
+                    if r {
+                        v |= one << (16 * lane);
+                    }
+                }
+                self.wr(t, *d, v, 1);
+                self.num_clobber(t, *d, &[a, b], pc);
+            }
             Op::Fset {
                 d,
                 cmp,
@@ -6918,6 +7394,30 @@ impl Machine {
                     self.wr(t, *d, fp::f64_to_f32(f, *rnd).to_bits() as u64, 1);
                 }
                 self.num_clobber(t, *d, &[a], pc);
+            }
+            Op::BarResult { d, p } => {
+                let Some((op, n, all)) = self.threads[t].bar_res else {
+                    return Err("B2R.RESULT before any completed bar.red".into());
+                };
+                use ptxv_ir::BarRedOp as B;
+                if let Some(d) = d {
+                    if op != B::Popc {
+                        return Err("B2R.RESULT count after bar.red.and / .or not modeled".into());
+                    }
+                    self.wr(t, *d, n as u64, 1);
+                }
+                if let Some(p) = p {
+                    let b = match op {
+                        B::And => all,
+                        B::Or => n > 0,
+                        B::Popc => {
+                            return Err(
+                                "B2R.RESULT predicate after bar.red.popc not modeled".into()
+                            );
+                        }
+                    };
+                    self.wp(t, *p, b);
+                }
             }
             Op::CvtF32F16 { d, a, hi } => {
                 let h = (self.rd(t, a)? >> if *hi { 16 } else { 0 }) as u16;
@@ -7367,6 +7867,7 @@ impl Machine {
                 b,
                 c,
                 neg,
+                abs,
                 rnd,
             } => {
                 let lanes = |m: &mut Self, (v, l): &(Val, F2Lanes)| -> Result<[u32; 2], String> {
@@ -7378,16 +7879,27 @@ impl Machine {
                         F2Lanes::Swap => [hi, lo],
                     })
                 };
-                let sign = |v: [u32; 2], n: bool| if n { v.map(|w| w ^ 0x8000_0000) } else { v };
+                let sign = |v: [u32; 2], k: usize| {
+                    let v = if abs[k] {
+                        v.map(|w| w & 0x7fff_ffff)
+                    } else {
+                        v
+                    };
+                    if neg[k] {
+                        v.map(|w| w ^ 0x8000_0000)
+                    } else {
+                        v
+                    }
+                };
                 let (x, y, z) = (
-                    sign(lanes(self, a)?, neg[0]),
-                    sign(lanes(self, b)?, neg[1]),
-                    sign(lanes(self, c)?, neg[2]),
+                    sign(lanes(self, a)?, 0),
+                    sign(lanes(self, b)?, 1),
+                    sign(lanes(self, c)?, 2),
                 );
                 // One rounding per lane in the mode; NaN results are canonical.
                 let r = [0, 1].map(|i| fp::f32_fma(x[i], y[i], Some(z[i]), *rnd, false));
                 self.wr(t, *d, r[0] as u64 | (r[1] as u64) << 32, 2);
-                if *rnd == Rnd::Rn {
+                if *rnd == Rnd::Rn && !abs.iter().any(|&x| x) {
                     self.num_ffma2(t, *d, [a, b, c], *neg, [x, y, z], pc);
                 } else {
                     self.num_clobber(t, *d, &[&a.0, &b.0, &c.0], pc);
@@ -7730,8 +8242,11 @@ impl Machine {
                             let unwritten = |m: &Self, i: usize| match loc {
                                 Loc::Shared { cta, off } => (0..4).any(|b| {
                                     let a = off as usize + 4 * i + b;
-                                    a >= SMEM_RESERVED && m.smem[cta as usize].sh.get(a).w.is_none()
+                                    let s = m.smem[cta as usize].sh.get(a);
+                                    a >= SMEM_RESERVED && (s.w.is_none() || s.undef)
                                 }),
+                                Loc::Global { alloc, off } => (0..4)
+                                    .any(|b| m.gmem[alloc].sh.get(off as usize + 4 * i + b).undef),
                                 _ => true,
                             };
                             for (i, w) in words.iter().enumerate() {
@@ -7994,7 +8509,7 @@ impl Machine {
                 let loc = &self.threads[t].local;
                 let (v, um) = match loc.binary_search_by_key(&w, |e| e.0) {
                     Ok(j) => (loc[j].1 & 0xffff_ffff, loc[j].1 >> 32),
-                    Err(_) => (0, 0xffff_ffff),
+                    Err(_) => (self.fill_local(t, w) as u64, 0xffff_ffff),
                 };
                 let um = (um >> sh) & m;
                 self.vmask = (um != 0).then_some(um);
@@ -8042,7 +8557,7 @@ impl Machine {
                     // ASSUME(S-INIT): never-stored local memory is undefined.
                     let (v, um) = match loc.binary_search_by_key(&w, |e| e.0) {
                         Ok(j) => (loc[j].1 & 0xffff_ffff, (loc[j].1 >> 32) as u32),
-                        Err(_) => (0, u32::MAX),
+                        Err(_) => (self.fill_local(t, w) as u64, u32::MAX),
                     };
                     let r = Reg {
                         file: d.file,
@@ -8101,35 +8616,77 @@ impl Machine {
                 src,
                 bytes,
                 src_ok,
+                src_size,
+                zfill,
             } => {
                 let vc = self.threads[t].vc.clone();
                 let mut from = None;
-                let data = if !self.prd(t, *src_ok) {
-                    vec![0; *bytes as usize]
+                let full = *bytes as usize;
+                // ASSUME(E-CPASYNC): (source address, bytes copied); the rest is zero-filled.
+                let (sa, n) = if !self.prd(t, *src_ok) {
+                    (0, 0)
                 } else {
                     let sa = self.addr(t, src)?;
-                    let sloc = self.resolve(t, Space::Global, sa, *bytes as usize)?;
+                    match (src_size, *zfill) {
+                        (Some(s), _) => {
+                            let s = self.rd(t, s)? as u32 as usize;
+                            if s > full {
+                                self.report(
+                                    "violation",
+                                    format!("cp-async-srcsize:{pc}"),
+                                    format!(
+                                        "cp.async at {} with src-size {s} larger than its cp-size {full} (undefined in the PTX ISA)",
+                                        self.k.describe(pc as usize)
+                                    ),
+                                );
+                            }
+                            (sa, s.min(full))
+                        }
+                        (None, true) => {
+                            let z = (sa % full as u64) as usize;
+                            (sa - z as u64, full - z)
+                        }
+                        (None, false) => (sa, full),
+                    }
+                };
+                let mut data = if n == 0 {
+                    Vec::new()
+                } else {
+                    let sloc = self.resolve(t, Space::Global, sa, n)?;
                     if let Loc::Global { alloc, off } = sloc {
                         from = Some((alloc, off));
                     }
-                    self.access(t as u32, &vc, pc, sloc, *bytes as usize, None)
+                    self.access(t as u32, &vc, pc, sloc, n, None)
                 };
                 let da = self.addr(t, dst)?;
-                let Loc::Shared { off, .. } =
-                    self.resolve(t, Space::Shared, da, *bytes as usize)?
-                else {
+                let Loc::Shared { off, .. } = self.resolve(t, Space::Shared, da, full)? else {
                     unreachable!()
                 };
+                let wgroup = self.warps[self.threads[t].warp as usize].cp_seq;
                 let th = self.threads[t].make_mut();
                 let group = th.cp_group;
-                th.cp_pending.push(CpPending {
-                    group,
-                    off,
-                    src: from,
-                    data,
-                    vc,
-                    pc,
-                });
+                if n > 0 {
+                    th.cp_pending.push(CpPending {
+                        group,
+                        wgroup,
+                        off,
+                        src: from,
+                        data: std::mem::take(&mut data),
+                        vc: vc.clone(),
+                        pc,
+                    });
+                }
+                if n < full {
+                    th.cp_pending.push(CpPending {
+                        group,
+                        wgroup,
+                        off: off + n as u32,
+                        src: None,
+                        data: vec![0; full - n],
+                        vc,
+                        pc,
+                    });
+                }
             }
             // ASSUME(E-CPASYNC-MBAR): every cp.async the thread issued so far (committed or
             // not) lands with this op; a later wait_group does not wait for them again.
@@ -8231,9 +8788,11 @@ impl Machine {
                 count,
                 arrive,
                 packed,
+                red,
                 ..
             } => {
                 let arrive = *arrive;
+                let vote = red.map(|(op, p)| (op, self.prd(t, p)));
                 let count = match count {
                     Some(c) => Some(self.rd(t, c)?),
                     None => None,
@@ -8249,6 +8808,7 @@ impl Machine {
                     arrived: vec![],
                     arrivers: vec![],
                     rel: VC::new(),
+                    red: vec![],
                     count,
                 });
                 if bar.count != count {
@@ -8320,6 +8880,10 @@ impl Machine {
                     let bar = self.bars.get_mut(&(cta, id)).unwrap();
                     if let Err(k) = bar.arrived.binary_search(&(t as u32)) {
                         bar.arrived.insert(k, t as u32);
+                    }
+                    if let Err(k) = bar.red.binary_search_by_key(&(t as u32), |e| e.0) {
+                        bar.red
+                            .insert(k, (t as u32, vote.map(|v| v.0), vote.is_some_and(|v| v.1)));
                     }
                     self.threads[t].make_mut().st = St::Bar;
                     self.bar_try_release(cta, id);
@@ -8412,15 +8976,12 @@ impl Machine {
                 if *cluster {
                     self.drain_remote(t);
                 }
+                // A count (PTX `mbarrier.arrive [a], count`, SASS `.ART0` with the count in a
+                // register) is that many arrivals at once (probes/mbar_count).
                 let arrivals = match count {
-                    Some(c) => self.rd(t, c)?,
+                    Some(c) => self.rd(t, c)? as u32,
                     None => 1,
                 };
-                if arrivals > 1 {
-                    return Err(
-                        "mbarrier.arrive with a count other than 1 is not modeled yet".into(),
-                    );
-                }
                 let a = self.addr(t, addr)?;
                 if *remote && self.dead_target(t, a, pc)? {
                     self.tick(t);
@@ -8448,7 +9009,7 @@ impl Machine {
                 // remote operations.
                 if cta != self.threads[t].cta && remote_inflight() {
                     let tx = if *complete { -txv } else { txv };
-                    self.push_remote(t, pc, cta, off, tx, arrivals as u32, vec![], vc, vis);
+                    self.push_remote(t, pc, cta, off, tx, arrivals, vec![], vc, vis);
                     self.tick(t);
                     return Ok(Flow::Next);
                 }
@@ -8456,14 +9017,15 @@ impl Machine {
                 self.mbar_atomic(t as u32, &vc, &vis, pc, cta, off)?;
                 let mb = self.mbars.get_mut(&(cta, off)).unwrap();
                 mb.tx += if *complete { -txv } else { txv };
-                if arrivals == 1 {
-                    if mb.pending == 0 {
+                if arrivals > 0 {
+                    if mb.pending < arrivals {
                         return Err(format!(
-                            "mbarrier at {off:#x}: more arrivals than the expected count {}",
-                            mb.expected
+                            "mbarrier at {off:#x}: more arrivals than the expected count {} \
+                             ({arrivals} with {} pending)",
+                            mb.expected, mb.pending
                         ));
                     }
-                    mb.pending -= 1;
+                    mb.pending -= arrivals;
                 }
                 vc_join(&mut mb.cur, &vc);
                 self.mbar_maybe_complete(cta, off);
@@ -8733,7 +9295,16 @@ impl Machine {
                     format!("TMA tensor-map operand {tma:#x} is neither a declared tensor map nor in global memory ({e})")
                 })?;
                 let vc = self.threads[t].vc.clone();
+                // ASSUME(S-TMAP-TAIL): GB300's TMA ignores bytes 0x40..0x7f of a tensor map in
+                // global memory (probes/tmap_tail): undefined bytes there are not a use.
+                self.undef_ok_from = Some(64);
                 let bytes = self.access(t as u32, &vc, pc, loc, 128, None);
+                self.undef_ok_from = None;
+                if let Loc::Global { alloc, off } = loc {
+                    if !self.tmaps_used.contains(&(alloc, off)) {
+                        Arc::make_mut(&mut self.tmaps_used).push((alloc, off));
+                    }
+                }
                 let mut fenced = self.threads[t]
                     .tmap_fence
                     .iter()
@@ -9206,8 +9777,28 @@ impl Machine {
             arrived,
             rel,
             count,
+            red,
             ..
         } = self.bars.remove(&(cta, id)).unwrap();
+        // E-BAR-RED: the waiters' reduction, written to each bar.red waiter's barrier result.
+        // Waiters of one generation with different reductions (or bar.red with bar.sync) are
+        // reported: no result is modeled for them.
+        if red.iter().any(|e| e.1.is_some()) {
+            let op = red[0].1;
+            if red.iter().any(|e| e.1 != op) {
+                let msg = format!(
+                    "named barrier {id} completes a generation whose waiters use different \
+                     reductions (bar.red / bar.sync mixed)"
+                );
+                self.report("violation", format!("barred:{id}"), msg);
+            } else if let Some(op) = op {
+                let n = red.iter().filter(|e| e.2).count() as u32;
+                let all = n as usize == red.len();
+                for e in &red {
+                    self.threads[e.0 as usize].make_mut().bar_res = Some((op, n, all));
+                }
+            }
+        }
         let g = self.bar_gen.entry((cta, id)).or_insert(0);
         let key = sync_key(1, cta as u64, id as u64, *g as u64);
         *g += 1;
@@ -9901,6 +10492,33 @@ impl Machine {
         }
     }
 
+    /// S-INIT: an MMA that read undefined TMEM (an accumulator, A, or scale factors never
+    /// written since allocation, or written with undefined data) leaves all of D undefined:
+    /// its cells are marked never written, so a tcgen05.ld of them gives undefined registers
+    /// and a later accumulating MMA propagates them; a use is reported where it reaches a
+    /// sink. Recorded as a note (Triton's peeled attention prologue, dash/5713: the PV MMA of
+    /// a skipped iteration consumes the unwritten scores, its result is overwritten).
+    fn mma_d_poison(&mut self, ctas: &[u16], lay: &MmaD, pc: u32, what: &str) {
+        for &cta in ctas {
+            let tm = &mut self.tmem[cta as usize];
+            for &(l, nl, c, nc, _, _) in &lay.blocks {
+                for lane in l..l + nl {
+                    for col in c..c + nc {
+                        let i = tmem_idx(lane, col);
+                        if *tm.init.get(i) != 2 {
+                            *tm.init.get_mut(i) = 0;
+                        }
+                    }
+                }
+            }
+        }
+        let msg = format!(
+            "tcgen05.mma at {} reads {what} TMEM that was never written since allocation (or written with undefined data): its result is undefined (S-INIT), reported where it is used",
+            self.k.describe(pc as usize)
+        );
+        self.report("note", format!("mma-undef:{pc}"), msg);
+    }
+
     /// Whether any cell of D in this CTA is unallocated (an MMA that does not read D).
     fn mma_d_unalloc(&self, cta: u16, lay: &MmaD) -> bool {
         let tm = &self.tmem[cta as usize];
@@ -9953,11 +10571,30 @@ impl Machine {
                 "instruction descriptor {idesc:#x}: sparsity/saturate/negate/MN-major/shift not modeled yet"
             ));
         }
-        if cfmt != 1 || afmt != 1 || bfmt != 1 {
+        // Operand formats: kind::f16 f16 = 0 / bf16 = 1, kind::tf32 tf32 = 2, A and B alike; f32
+        // D. Each K slice is 32 bytes of a row: 16 elements of 2 bytes, 8 of 4 (tf32).
+        if cfmt != 1 || afmt != bfmt || afmt > 2 {
             return Err(format!(
-                "instruction descriptor {idesc:#x}: only bf16 x bf16 -> f32 is modeled so far (D fmt {cfmt}, A {afmt}, B {bfmt})"
+                "instruction descriptor {idesc:#x}: only f16 / bf16 / tf32 inputs (A = B) with f32 D are modeled so far (D fmt {cfmt}, A {afmt}, B {bfmt})"
             ));
         }
+        let ew: u32 = if afmt == 2 { 4 } else { 2 };
+        if ew == 4 && (amaj != 0 || bmaj != 0) {
+            return Err(format!(
+                "instruction descriptor {idesc:#x}: MN-major tf32 operands not modeled yet"
+            ));
+        }
+        // Elements per 16-byte core-matrix row.
+        let per = 16 / ew;
+        // An element's value: f16, bf16 (the high half of an f32), or an f32 word read as tf32
+        // (low 13 mantissa bits dropped: probes/tc_tf32, `ptxv calib-mma`).
+        let cvt = move |w: u32| -> f64 {
+            match afmt {
+                0 => fp::f16_to_f64(w as u16),
+                1 => f32::from_bits(w << 16) as f64,
+                _ => f32::from_bits(fp::tf32_in(w)) as f64,
+            }
+        };
         // cta_group::2 (E-PAIR): CTA i of the pair holds its D rows and A rows at the same
         // descriptor addresses, and B rows (N/2)i.. (GB300: r1c_2sm, probes/tc_m128).
         let ctas: Vec<u16> = std::iter::once(cta0).chain(peer).collect();
@@ -9997,7 +10634,7 @@ impl Machine {
         const MN: u32 = 1 << 31;
         let swa = if amaj != 0 { swa | MN } else { swa };
         let swb = if bmaj != 0 { swb | MN } else { swb };
-        const K: usize = 16;
+        let kk = (32 / ew) as usize;
         // ASSUME(S-TMA): swizzled K-major: row r at (r/8)*SBO + (r%8)*span, K contiguous within
         // the row (the K=16 slice must not cross it), then the address swizzle.
         // MN-major, swizzled (CUTLASS's canonical layout ((T,s/16,m),(8,k)) :
@@ -10028,11 +10665,11 @@ impl Machine {
                 start
                     + (r as u32 / 8) * sbo
                     + (r as u32 % 8) * 16
-                    + (k as u32 / 8) * lbo
-                    + (k as u32 % 8) * 2
+                    + (k as u32 / per) * lbo
+                    + (k as u32 % per) * ew
             } else {
                 swz(
-                    start + (r as u32 / 8) * sbo + (r as u32 % 8) * sw + k as u32 * 2,
+                    start + (r as u32 / 8) * sbo + (r as u32 % 8) * sw + k as u32 * ew,
                     sw,
                 )
             }
@@ -10041,36 +10678,36 @@ impl Machine {
             if a_tmem && start == sa && sw == swa && start == 0 && sw == 0 || sw & MN != 0 {
                 continue;
             }
-            if sw != 0 && (start % sw) as usize + K * 2 > sw as usize {
+            if sw != 0 && (start % sw) as usize + 32 > sw as usize {
                 return Err(format!(
                     "MMA K slice at smem {start:#x} crosses a {sw}-byte swizzle row: not modeled"
                 ));
             }
         }
         let rd_mat = |me: &mut Machine, cta: u16, start, lbo, sbo, sw, rows: usize| -> Vec<f64> {
-            let mut v = Vec::with_capacity(rows * K);
-            // One access per run of elements that are contiguous in shared memory: 8 (one
-            // 16-byte core-matrix row / swizzle chunk) when the start is 16-byte aligned.
+            let mut v = Vec::with_capacity(rows * kk);
+            // One access per run of elements that are contiguous in shared memory: one 16-byte
+            // core-matrix row / swizzle chunk when the start is 16-byte aligned.
+            let pe = per as usize;
             let run = if (0..rows).all(|r| {
-                (0..K).all(|k| {
+                (0..kk).all(|k| {
                     elem(start, lbo, sbo, sw, r, k)
-                        == elem(start, lbo, sbo, sw, r, k & !7) + 2 * (k as u32 & 7)
+                        == elem(start, lbo, sbo, sw, r, k - k % pe) + ew * (k % pe) as u32
                 })
             }) {
-                8
+                pe
             } else {
                 1
             };
             for r in 0..rows {
-                for k0 in (0..K).step_by(run) {
+                for k0 in (0..kk).step_by(run) {
                     let off = elem(start, lbo, sbo, sw, r, k0);
-                    let len = 2 * run;
+                    let len = ew as usize * run;
                     me.proxy_check(cta, off, len, &op.vc, op.pc, "tcgen05.mma");
                     let b = me.access(op.actor, &op.vc, op.pc, Loc::Shared { cta, off }, len, None);
-                    for e in b.chunks_exact(2) {
-                        v.push(
-                            f32::from_bits((u16::from_le_bytes([e[0], e[1]]) as u32) << 16) as f64,
-                        );
+                    for e in b.chunks_exact(ew as usize) {
+                        let w = e.iter().rev().fold(0u32, |x, &y| x << 8 | y as u32);
+                        v.push(cvt(w));
                     }
                 }
             }
@@ -10086,12 +10723,12 @@ impl Machine {
                 .flat_map(|r| {
                     [
                         elem(start, lbo, sbo, sw, r, 0),
-                        elem(start, lbo, sbo, sw, r, K - 1),
+                        elem(start, lbo, sbo, sw, r, kk - 1),
                     ]
                 })
                 .max()
                 .unwrap()
-                + 2;
+                + ew;
             if last as usize > self.launch.g(cta0 as u32).smem_bytes as usize {
                 return Err(format!(
                     "MMA operand at smem {start:#x} reads past shared memory (to {last:#x})"
@@ -10102,24 +10739,30 @@ impl Machine {
         for &c in &ctas {
             b.extend(rd_mat(self, c, sb, lbob, sbob, swb, nh as usize));
         }
-        // A in TMEM: row i at the lane D's row i uses (relative to A's address), K/2 columns
-        // of two bf16 each, the even element in the low half.
+        // A in TMEM: row i at the lane D's row i uses (relative to A's address), 8 columns of
+        // two 16-bit elements each (the even element in the low half) or one tf32 word.
         // ASSUME(S-TMEM): see ASSUMPTIONS.md
+        let mut a_uninit = false;
         let a_all: Vec<Vec<f64>> = if a_tmem {
             let (al, ac) = ((adesc >> 16) as usize & 0xffff, (adesc & 0xffff) as usize);
-            if !(al == 0 || m64 && al == 16) || ac + K / 2 > TMEM_COLS {
+            if !(al == 0 || m64 && al == 16) || ac + 8 > TMEM_COLS {
                 return Err(format!("MMA A at TMEM lane {al} column {ac} out of range"));
             }
             let mut out = Vec::new();
             for &c in &ctas {
-                let mut v = Vec::with_capacity(rows * K);
+                let mut v = Vec::with_capacity(rows * kk);
                 for mi in 0..rows {
                     let lane = row_lane(mi) - lane0 + al;
-                    for j in 0..K / 2 {
-                        let (w, _) =
+                    for j in 0..8 {
+                        let (w, st) =
                             self.tmem_access(c, lane, ac + j, op.actor, &op.vc, op.pc, None);
-                        for h in 0..2 {
-                            v.push(f32::from_bits((w >> (16 * h)) << 16) as f64);
+                        a_uninit |= st == 0;
+                        if ew == 4 {
+                            v.push(cvt(w));
+                        } else {
+                            for h in 0..2 {
+                                v.push(cvt((w >> (16 * h)) & 0xffff));
+                            }
                         }
                     }
                 }
@@ -10134,10 +10777,14 @@ impl Machine {
         // Numerics: the 16-bit provenance of each operand element (an input element, a rounded
         // value, zero, or unknown).
         use crate::halfin::HalfOp;
+        // tf32 elements: unknown provenance.
         let prov_mat = |me: &mut Machine, cta: u16, start, lbo, sbo, sw, rows: usize| {
             (0..rows)
-                .flat_map(|r| (0..K).map(move |k| (r, k)))
+                .flat_map(|r| (0..kk).map(move |k| (r, k)))
                 .map(|(r, k)| {
+                    if ew == 4 {
+                        return HalfOp::Unknown;
+                    }
                     let off = elem(start, lbo, sbo, sw, r, k);
                     let b = me.half_mem(Loc::Shared { cta, off }, 2, None);
                     me.half_op(b[0], b[1])
@@ -10149,10 +10796,14 @@ impl Machine {
             for &c in &ctas {
                 if a_tmem {
                     let (al, ac) = ((adesc >> 16) as usize & 0xffff, (adesc & 0xffff) as usize);
-                    let mut v = Vec::with_capacity(rows * K);
+                    let mut v = Vec::with_capacity(rows * kk);
                     for mi in 0..rows {
                         let lane = row_lane(mi) - lane0 + al;
-                        for j in 0..K / 2 {
+                        for j in 0..8 {
+                            if ew == 4 {
+                                v.push(HalfOp::Unknown);
+                                continue;
+                            }
                             let w = self.half_tmem(c, lane, ac + j);
                             v.push(self.half_op(w[0], w[1]));
                             v.push(self.half_op(w[2], w[3]));
@@ -10173,13 +10824,20 @@ impl Machine {
         };
         // ASSUME(N-MMA): the model is calibrated on finite normal (or zero) inputs only.
         let normal = |x: f64| x == 0.0 || (x.is_finite() && x.abs() >= f32::MIN_POSITIVE as f64);
+        // f16 subnormal inputs too (calibrated: normal f16).
+        let normal_in = |x: f64| normal(x) && (afmt != 0 || x == 0.0 || x.abs() >= 2f64.powi(-14));
         let mut outside = a_all
             .iter()
             .flatten()
             .chain(b.iter())
-            .find(|&&x| !normal(x))
+            .find(|&&x| !normal_in(x))
             .map(|x| format!("MMA input {x:e}"));
-        let model = self.launch.mma_model;
+        // tf32: 8 products per step (probes/tc_tf32: TMMA_MODEL with truncated inputs).
+        let model = if ew == 4 {
+            fp::TMMA_MODEL
+        } else {
+            self.launch.mma_model
+        };
         let mut uninit = false;
         let mut unalloc = false;
         // Pass 1: read the accumulators (race-checked TMEM reads; pass 3 overwrites them, so
@@ -10237,11 +10895,11 @@ impl Machine {
                         let a = &a_all[ci];
                         for mi in 0..rows {
                             for ni in 0..n as usize {
-                                let terms: Vec<fp::Term> = (0..K)
+                                let terms: Vec<fp::Term> = (0..kk)
                                     .map(|k| {
                                         fp::Term::prod(
-                                            a[mi * K + k],
-                                            b[ni * K + k],
+                                            a[mi * kk + k],
+                                            b[ni * kk + k],
                                             model.exp_from_inputs,
                                         )
                                     })
@@ -10270,12 +10928,12 @@ impl Machine {
                     for ni in 0..n as usize {
                         let r = f32::from_bits(results[ci * per + mi * n as usize + ni]);
                         let prods: Vec<f64> =
-                            (0..K).map(|k| a[mi * K + k] * b[ni * K + k]).collect();
-                        let ops: Vec<HalfOp> = (0..K)
-                            .flat_map(|k| [a_prov[ci][mi * K + k], b_prov[ni * K + k]])
+                            (0..kk).map(|k| a[mi * kk + k] * b[ni * kk + k]).collect();
+                        let ops: Vec<HalfOp> = (0..kk)
+                            .flat_map(|k| [a_prov[ci][mi * kk + k], b_prov[ni * kk + k]])
                             .collect();
                         let acc = accs[ci][mi * n as usize + ni];
-                        // ASSUME(N-MMA): one step of the calibrated model per K = 16 slice.
+                        // ASSUME(N-MMA): one step of the calibrated model per 32-byte K slice.
                         self.num_mma(
                             cta,
                             lay.loc(mi, ni).0,
@@ -10301,12 +10959,13 @@ impl Machine {
         if unalloc {
             self.tmem_state_report(2, "tcgen05.mma", op.pc);
         }
-        if uninit {
-            let msg = format!(
-                "tcgen05.mma at {} accumulates (enable_input_d = 1) into TMEM that was never written since allocation: the result includes garbage",
-                self.k.describe(op.pc as usize)
-            );
-            self.report("violation", format!("mma-uninit-acc:{}", op.pc), msg);
+        if uninit || a_uninit {
+            let what = if a_uninit {
+                "its A operand from"
+            } else {
+                "an accumulator (enable_input_d = 1) in"
+            };
+            self.mma_d_poison(&ctas, &lay, op.pc, what);
         }
         Ok(())
     }
@@ -10868,19 +11527,13 @@ impl Machine {
         if unalloc {
             self.tmem_state_report(2, "tcgen05.mma", op.pc);
         }
-        if uninit {
-            let msg = format!(
-                "tcgen05.mma at {} accumulates (enable_input_d = 1) into TMEM that was never written since allocation: the result includes garbage",
-                self.k.describe(op.pc as usize)
-            );
-            self.report("violation", format!("mma-uninit-acc:{}", op.pc), msg);
-        }
-        if sf_uninit {
-            let msg = format!(
-                "tcgen05.mma at {} reads scale factors from TMEM that was never written since allocation",
-                self.k.describe(op.pc as usize)
-            );
-            self.report("violation", format!("mma-uninit-sf:{}", op.pc), msg);
+        if uninit || sf_uninit {
+            let what = if sf_uninit {
+                "scale factors from"
+            } else {
+                "an accumulator (enable_input_d = 1) in"
+            };
+            self.mma_d_poison(&ctas, &lay, op.pc, what);
         }
         Ok(())
     }

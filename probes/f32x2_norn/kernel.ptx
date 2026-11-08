@@ -1,0 +1,26 @@
+// Probe for packed f32x2 arithmetic with no rounding modifier where ptxas cannot contract:
+// Triton's RMSNorm shape (mul.f32x2 of mul.f32x2, unpacked and converted to bf16x2) and an
+// add / sub of loads. Each thread reads 4 f32 pairs and writes 2 bf16x2 words and 2 f32 pairs.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry f32x2_norn(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<20>; .reg .b32 %r<40>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mov.u32 %r2, %ctaid.x; mov.u32 %r3, %ntid.x; mad.lo.s32 %r1, %r2, %r3, %r1;
+  mul.wide.u32 %rd3, %r1, 32; add.s64 %rd4, %rd1, %rd3; add.s64 %rd5, %rd2, %rd3;
+  ld.global.v2.b64 {%rd6, %rd7}, [%rd4];
+  ld.global.v2.b64 {%rd8, %rd9}, [%rd4+16];
+  mul.f32x2 %rd10, %rd6, %rd7;
+  mul.f32x2 %rd11, %rd8, %rd10;
+  mov.b64 {%r10, %r11}, %rd11;
+  cvt.rn.bf16x2.f32 %r12, %r11, %r10;
+  add.f32x2 %rd12, %rd6, %rd8;
+  sub.f32x2 %rd13, %rd7, %rd9;
+  mov.b64 {%r13, %r14}, %rd12;
+  cvt.rn.bf16x2.f32 %r15, %r14, %r13;
+  st.global.v2.b32 [%rd5], {%r12, %r15};
+  st.global.v2.b64 [%rd5+16], {%rd12, %rd13};
+  st.global.b64 [%rd5+8], %rd10;
+  ret; }

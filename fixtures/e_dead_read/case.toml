@@ -22,9 +22,9 @@ buffer = "out"
 
 [[variants]]
 id = "good"
-# PTX: ld/st.shared are plain, so warp 1's load races with the store (and may read the
-# never-written word); the value is unused, so no violation.
-expect = ["race"]
+# PTX: ld/st.shared are plain, so warp 1's load races with the store; its value is unused, so
+# the race is `race-dead` (E-RACE-DEAD) and the verdict clean.
+expect = ["clean"]
 expect_sass = ["clean"]
 
 [[variants]]

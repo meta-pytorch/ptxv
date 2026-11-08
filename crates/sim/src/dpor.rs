@@ -283,9 +283,13 @@ pub fn explore_dpor(m0: Machine, max_states: usize) -> Verdict {
     if m0.launch.env.residency.is_some() || m0.launch.env.tmem_cotenant {
         return crate::explore::explore(m0, max_states);
     }
-    crate::smem::two_pass(m0, |m0| {
+    let base = m0.clone();
+    let mut v = crate::smem::two_pass(m0, |m0| {
         crate::explore::per_leader_policy(m0, 1, |m, _| explore_dpor_one(m, max_states))
-    })
+    });
+    // S-INIT-FILLS: undefined values that reach only output data.
+    crate::fills::check(&base, &mut v);
+    v
 }
 
 fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {

@@ -1,0 +1,36 @@
+name = "probe_prmt_ptx"
+description = """
+Probe (L-ROSETTA) for PTX prmt.b32 (default mode; SASS PRMT d, a, c, b) with random register
+selectors (sign-replicate nibbles included) and immediate selectors (kernel.ptx, gen.py).
+expected/ is GB300's output (ptxas cubin, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "prmt_ptx"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [768]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

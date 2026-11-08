@@ -825,10 +825,21 @@ fn lower_line(
         // LEA.HI.X ~Rb, FCHK -Ra (agent L2's forms, l2.rs).
         _ if l2::claims(&lw, base, mods) => l2::lower(&lw, base, mods, meta)?,
         "NOP" => Op::Nop,
+        // `MOVM.16.MT88 Rd, Ra` (movmatrix.sync.aligned.m8n8.trans.b16; probes/movm).
+        "MOVM" if mods == ["16", "MT88"] => {
+            uniform = false;
+            Op::MovMatrix {
+                d: lw.dst(lw.op(0)?.trim_end_matches(".reuse"))?,
+                a: lw.val(lw.op(1)?.trim_end_matches(".reuse"), 4)?,
+            }
+        }
         // Tensor-map prefetch (prefetch.tensormap): a cache hint.
         "UTMACCTL" if has("PF") => Op::Nop,
         // `UBLKPF.L2 [URa], URb` (cp.async.bulk.prefetch.L2): a cache hint (probes/memhints).
         "UBLKPF" if mods == ["L2"] => Op::Nop,
+        // `UTMAPF.L2.<n>D [URa], [URb], desc[..]` (cp.async.bulk.prefetch.tensor tile mode): a
+        // cache hint (probes/tma_prefetch).
+        "UTMAPF" if has("L2") && mods.len() == 2 => Op::Nop,
         // fence.proxy.tensormap::generic.acquire: ptxas emits `CCTL.E.C.LDCU.IV.DEEP [a]`
         // (drop the constant-cache copy) then `UTMACCTL.IV [a]` (the TMA unit's).
         "UTMACCTL" if mods == ["IV"] => {
@@ -1210,13 +1221,24 @@ fn lower_line(
                 f64: true,
             }
         }
-        "F2F" if mods == ["F32", "F64"] || mods == ["F64", "F32"] => {
+        // F2F.F32.F64[.RZ|.RM|.RP] (cvt.r{n,z,m,p}.f32.f64; probes/cvt_misc), F2F.F64.F32.
+        "F2F"
+            if mods == ["F64", "F32"]
+                || mods.len() <= 3
+                    && mods[..2] == ["F32", "F64"]
+                    && mods[2..].iter().all(|m| matches!(*m, "RZ" | "RM" | "RP")) =>
+        {
             let to64 = mods[0] == "F64";
             Op::F2F {
                 d: lw.dst(lw.op(0)?)?,
                 a: lw.val(lw.op(1)?, if to64 { 4 } else { 8 })?,
                 to64,
-                rnd: Rnd::Rn,
+                rnd: match mods.get(2) {
+                    Some(&"RZ") => Rnd::Rz,
+                    Some(&"RM") => Rnd::Rm,
+                    Some(&"RP") => Rnd::Rp,
+                    _ => Rnd::Rn,
+                },
             }
         }
         // HADD2.F32 Rd, -RZ, Ra.H0_H0: an f16 -> f32 conversion.
@@ -1492,13 +1514,19 @@ fn lower_line(
         // Pd = lane 0 bop Pc, Pq = lane 1 bop Pc. Operands: `[-][|]R[|][.reuse][.H0_H0|.H1_H1]`,
         // RZ, or an immediate pair printed `hi, lo` (bits from the encoding, checked against the
         // print). ASSUME(L-ROSETTA): fixtures/s_routing_forms, probes/hsetp2 = GB300.
-        "HSETP2" if {
+        // `HSET2[.BF16_V2][.BF].<cmp>.<bop> Rd, a, b, Pc`: the same comparison as a register
+        // (probes/hset2).
+        "HSETP2" | "HSET2" if {
             let m = if mods.first() == Some(&"BF16_V2") { &mods[1..] } else { mods };
+            let m = if base == "HSET2" && m.first() == Some(&"BF") { &m[1..] } else { m };
             m.len() == 2
         } =>
         {
             let bf16 = mods.first() == Some(&"BF16_V2");
             let m = if bf16 { &mods[1..] } else { mods };
+            let set = base == "HSET2";
+            let bf = set && m.first() == Some(&"BF");
+            let m = if bf { &m[1..] } else { m };
             let cmp = match m[0] {
                 "LT" => FCmp::Lt,
                 "EQ" => FCmp::Eq,
@@ -1522,12 +1550,19 @@ fn lower_line(
                 "XOR" => BoolOp::Xor,
                 _ => bail!(lw.err("HSETP2 combiner not modeled")),
             };
-            let d = lw.pdst(lw.op(0)?)?;
-            let q = match lw.op(1)? {
-                "PT" => None,
-                p => Some(lw.pdst(p)?),
+            let (d, q) = if set {
+                (lw.dst(lw.op(0)?)?, None)
+            } else {
+                (
+                    lw.pdst(lw.op(0)?)?,
+                    match lw.op(1)? {
+                        "PT" => None,
+                        p => Some(lw.pdst(p)?),
+                    },
+                )
             };
-            let toks: Vec<String> = (2..l.operands.len() - 1)
+            let first = if set { 1 } else { 2 };
+            let toks: Vec<String> = (first..l.operands.len() - 1)
                 .map(|i| lw.op(i).map(|x| x.replace(".reuse", "")))
                 .collect::<Result<_>>()?;
             let c = lw.pred(lw.op(l.operands.len() - 1)?)?;
@@ -1597,18 +1632,34 @@ fn lower_line(
                 ops.push((v, sel, neg, abs));
                 i += 1;
             }
-            Op::Hsetp2Bf16 {
-                d,
-                q,
-                cmp,
-                a: ops[0].0.clone(),
-                b: ops[1].0.clone(),
-                sel: [ops[0].1, ops[1].1],
-                neg: [ops[0].2, ops[1].2],
-                abs: [ops[0].3, ops[1].3],
-                c,
-                bop,
-                f16: !bf16,
+            if set {
+                Op::Hset2 {
+                    d,
+                    cmp,
+                    a: ops[0].0.clone(),
+                    b: ops[1].0.clone(),
+                    sel: [ops[0].1, ops[1].1],
+                    neg: [ops[0].2, ops[1].2],
+                    abs: [ops[0].3, ops[1].3],
+                    c,
+                    bop,
+                    f16: !bf16,
+                    bf,
+                }
+            } else {
+                Op::Hsetp2Bf16 {
+                    d,
+                    q,
+                    cmp,
+                    a: ops[0].0.clone(),
+                    b: ops[1].0.clone(),
+                    sel: [ops[0].1, ops[1].1],
+                    neg: [ops[0].2, ops[1].2],
+                    abs: [ops[0].3, ops[1].3],
+                    c,
+                    bop,
+                    f16: !bf16,
+                }
             }
         }
         "FSETP" | "FSET" if base == "FSETP" || mods.first() == Some(&"BF") => {
@@ -1860,7 +1911,8 @@ fn lower_line(
                     "STTM shape not modeled yet (only 32x32b, 16x32bx2, 16x128b, 16x256b .xN)"
                 )),
             };
-            let (taddr, off) = lw.bracket(lw.op(0)?, "tmem", 1)?;
+            // A negative offset (`STTM.x32 tmem[UR7+-0x60]`), as LDTM (probes/tmem_stneg).
+            let (taddr, off) = lw.bracket_neg(lw.op(0)?, "tmem", 1, true)?;
             let src = lw.op(1)?;
             let v: Vec<Val> = if src == "RZ" {
                 vec![Val::Imm(0); n]
@@ -2513,17 +2565,27 @@ fn lower_line(
                 let n = if l == F2Lanes::Bcast { 4 } else { 8 };
                 Ok((lw.val(r, n)?, l))
             };
-            // `-R16.F32`: the operand negated (fixtures/s_lift_k = GB300). ASSUME(L-ROSETTA)
+            // `-R16.F32`, `-UR4.F32`: the operand negated (fixtures/s_lift_k, probes/ffma2_ur =
+            // GB300). ASSUME(L-ROSETTA)
+            // `|R20|.F32x2.HI_LO`: the absolute value (probes/ffma2_ur = GB300).
             let mut neg = [false; 3];
+            let mut abs = [false; 3];
             let mut f2n = |k: usize, s: &str| -> Result<(Val, F2Lanes)> {
                 let s = match s.strip_prefix('-') {
-                    Some(r) if r.starts_with('R') => {
+                    Some(r) if r.starts_with('R') || r.starts_with("UR") || r.starts_with('|') => {
                         neg[k] = true;
                         r
                     }
                     _ => s,
                 };
-                f2(s)
+                let s = match s.strip_prefix('|').and_then(|r| r.split_once('|')) {
+                    Some((r, rest)) => {
+                        abs[k] = true;
+                        format!("{r}{rest}")
+                    }
+                    None => s.to_string(),
+                };
+                f2(&s)
             };
             if base == "FADD2" {
                 // FADD2 d, a, c: a*1 + c, one rounding to nearest per lane: the sum (N-FALU).
@@ -2534,6 +2596,7 @@ fn lower_line(
                     b: (Val::Imm(0x3f80_0000), F2Lanes::Bcast),
                     c,
                     neg,
+                    abs,
                     rnd,
                 }
             } else {
@@ -2552,6 +2615,7 @@ fn lower_line(
                     b,
                     c,
                     neg,
+                    abs,
                     rnd,
                 }
             }
@@ -2745,6 +2809,7 @@ fn lower_line(
                 d: lw.dst(lw.op(0)?)?,
                 a: lw.val(lw.op(1)?, 4)?,
                 op,
+                mask: None,
             }
         }
         // `ATOMS.CAST.SPIN P, [Ra], Rc, Rc+1`: CAS (compare Rc, new Rc+1), P = swapped.
@@ -3038,13 +3103,15 @@ fn lower_line(
                 scope: sass_scope(mods).unwrap_or(Scope::Cta),
             };
             let wide_addr = |a: Addr| wide_e_addr(a, has("E"));
+            let vector = op == AtomOp::FAddFtz && bytes > 4;
             if base == "REDG" {
                 Op::Atom {
                     op,
                     space: Space::Global,
                     bytes,
                     addr: wide_addr(lw.addr(lw.op(0)?)?),
-                    v: lw.val(lw.op(1)?, bytes)?,
+                    // A vector red: the first of its consecutive data registers.
+                    v: lw.val(lw.op(1)?, if vector { 4 } else { bytes })?,
                     d: None,
                     sync,
                     p: None,
@@ -3054,6 +3121,9 @@ fn lower_line(
                 // Operand 0 is a predicate destination (PT here).
                 if lw.op(0)? != "PT" {
                     bail!(lw.err("ATOMG with a predicate result not modeled"));
+                }
+                if vector {
+                    bail!(lw.err("vector ATOMG not modeled"));
                 }
                 let d = match lw.op(1)? {
                     "RZ" => None,
@@ -3546,8 +3616,8 @@ fn lower_line(
                 b8: false,
             }
         }
-        // LDGSTS.E.BYPASS[.LTC128B].128 [Rd+off], desc[UR][Ra.64]: cp.async.cg 16 bytes (no
-        // zero-fill / ignore-src operand seen).
+        // LDGSTS.E[.BYPASS][.LTC128B][.128|.64][.ZFILL] [Rd+off], desc[UR][Ra.64][, P]:
+        // cp.async 16 / 8 / 4 bytes.
         "LDGSTS" => {
             // A third operand: the source-valid predicate; `!PT` = src-size 0, zero fill
             // (Triton's masked cp.async of the prefetch past the last block: its address is
@@ -3574,6 +3644,10 @@ fn lower_line(
                 src: lw.addr(lw.op(1)?)?,
                 bytes,
                 src_ok,
+                src_size: None,
+                // `.ZFILL`: a partial src-size s as source address + bytes - s
+                // (probes/cpasync_srcsize = GB300).
+                zfill: has("ZFILL"),
             }
         }
         "LDGDEPBAR" => Op::CpAsyncCommit,
@@ -3586,7 +3660,12 @@ fn lower_line(
             }
         }
         // HMMA.16816.F32.BF16 Rd, Ra, Rb, Rc: mma.sync m16n8k16 bf16 x bf16 + f32.
-        "HMMA" if mods == ["16816", "F32", "BF16"] || mods == ["1688", "F32", "TF32"] => {
+        // HMMA.1688.F32.BF16 (mma.sync m16n8k8 bf16): A two registers, B one (probes/bmma8).
+        "HMMA"
+            if mods == ["16816", "F32", "BF16"]
+                || mods == ["1688", "F32", "TF32"]
+                || mods == ["1688", "F32", "BF16"] =>
+        {
             uniform = false;
             let regs = |s: &str, n: u16| -> Result<Vec<Val>> {
                 let s = s.trim_end_matches(".reuse");
@@ -3606,8 +3685,9 @@ fn lower_line(
                     })
                     .collect())
             };
-            let a = regs(lw.op(1)?, 4)?;
-            let b = regs(lw.op(2)?, 2)?;
+            let bf16_k8 = mods == ["1688", "F32", "BF16"];
+            let a = regs(lw.op(1)?, if bf16_k8 { 2 } else { 4 })?;
+            let b = regs(lw.op(2)?, if bf16_k8 { 1 } else { 2 })?;
             if a.is_empty() || b.is_empty() {
                 bail!(lw.err("HMMA with a zero A/B operand not modeled"));
             }
@@ -3616,7 +3696,7 @@ fn lower_line(
                 a,
                 b,
                 c: regs(lw.op(3)?, 4)?,
-                tf32: mods[0] == "1688",
+                tf32: mods[2] == "TF32",
             }
         }
         "LDS" => {
@@ -3640,11 +3720,13 @@ fn lower_line(
                 sext: has("S16") || has("S8"),
             }
         }
-        // 32-byte accesses (`ld` / `st.global.v8.b32`, probes/ldst256). ENL2 is the L2
-        // eviction-priority hint ptxas prints on every 256-bit global access (no ordering
-        // effect); a .256 form without it, or with RZ data, fails closed.
-        "LDG" if has("256") && !has("ENL2") => bail!(lw.err("LDG.256 without .ENL2 not modeled")),
-        "STG" if has("256") && !has("ENL2") => bail!(lw.err("STG.256 without .ENL2 not modeled")),
+        // 32-byte accesses (`ld` / `st.global.v8.b32`, probes/ldst256). ENL2 / ELL2 / EFL2 is
+        // the L2 eviction policy every 256-bit global access carries (normal, PTX
+        // `.L2::evict_last`, `.L2::evict_first`; probes/ldst256_l2): no ordering effect. A .256
+        // form without one, or with RZ data, fails closed.
+        "LDG" | "STG" if has("256") && !(has("ENL2") || has("ELL2") || has("EFL2")) => {
+            bail!(lw.err("LDG / STG.256 without an L2 eviction policy not modeled"))
+        }
         // `LDGMC.E.<op>.<type>[.RN].STRONG.SYS Rd, [Ra.64+URb]` / `[RZ.U32+URb]`:
         // multimem.ld_reduce (S-MULTIMEM; probes/multimem/forms_sass.txt). `HPADD`: the
         // `.acc::f32` / `.acc::f16` add. ptxas emits `.STRONG.SYS` for every PTX semantics
@@ -3739,13 +3821,13 @@ fn lower_line(
                 }),
             }
         }
-        "LDG" if has("ENL2") && has("256") => Op::Ld256 {
+        "LDG" if has("256") => Op::Ld256 {
             hi: lw.dst(lw.op(0)?)?,
             lo: lw.dst(lw.op(1)?)?,
             addr: wide_e_addr(lw.addr(lw.op(2)?)?, has("E")),
             sync: sass_strong(mods),
         },
-        "STG" if has("ENL2") && has("256") => {
+        "STG" if has("256") => {
             if lw.op(1)? == "RZ" || lw.op(2)? == "RZ" {
                 bail!(lw.err("STG.256 with RZ data not modeled"));
             }
@@ -3812,6 +3894,44 @@ fn lower_line(
             }
         }
         // BAR.SYNC id[, count] / BAR.ARV id, count (bar.arrive: counts without waiting).
+        // `BAR.RED.{POPC,AND,OR}[.DEFER_BLOCKING] id[, count], {!}P` and its result
+        // `B2R.RESULT Rd[, Pd]` (bar.red; probes/bar_red). ASSUME(E-BAR-RED)
+        "BAR" if has("RED") => {
+            let op = match (has("POPC"), has("AND"), has("OR")) {
+                (true, false, false) => BarRedOp::Popc,
+                (false, true, false) => BarRedOp::And,
+                (false, false, true) => BarRedOp::Or,
+                _ => bail!(lw.err("BAR.RED form not modeled")),
+            };
+            let n = l.operands.len();
+            if !(2..=3).contains(&n) {
+                bail!(lw.err("BAR.RED operands not modeled"));
+            }
+            let id = lw.val(lw.op(0)?, 4)?;
+            let count = if n == 3 { Some(lw.val(lw.op(1)?, 4)?) } else { None };
+            if !matches!(id, Val::Imm(_)) || count.as_ref().is_some_and(|c| !matches!(c, Val::Imm(_))) {
+                bail!(lw.err("BAR.RED with register operands not modeled"));
+            }
+            Op::BarSync {
+                id,
+                count,
+                arrive: false,
+                packed: false,
+                aligned: true,
+                red: Some((op, lw.pred(lw.op(n - 1)?)?)),
+            }
+        }
+        "B2R" if mods == ["RESULT"] => {
+            let d = lw.op(0)?;
+            Op::BarResult {
+                d: if d == "RZ" { None } else { Some(lw.dst(d)?) },
+                p: match l.operands.get(1) {
+                    None => None,
+                    Some(p) if p == "PT" => None,
+                    Some(p) => Some(lw.pdst(p)?),
+                },
+            }
+        }
         "BAR" if has("SYNC") || has("ARV") => {
             let arrive = has("ARV");
             let count = match l.operands.get(1) {
@@ -3836,6 +3956,7 @@ fn lower_line(
                 packed,
                 // Except in a collective region (`aligned_bars`).
                 aligned: true,
+                red: None,
             }
         }
         // mbarrier.inval
@@ -3893,6 +4014,19 @@ fn lower_line(
                     complete: false,
                     cluster: false,
                 },
+                // `.ART0` / `.RED.ART0`: the arrival count in the third operand, no transaction
+                // bytes (`mbarrier.arrive [a], count` on a shared::cta / shared::cluster
+                // address; probes/mbar_count).
+                ["ARRIVE", "TRANS64", "ART0"] | ["ARRIVE", "TRANS64", "RED", "ART0"] => {
+                    Op::MbarArrive {
+                        addr: lw.addr(lw.op(1)?)?,
+                        tx: None,
+                        remote: mods.len() == 4,
+                        count: Some(lw.val(lw.op(2)?, 4)?),
+                        complete: false,
+                        cluster: false,
+                    }
+                }
                 // `.A0TR` / `.A0TX`: no arrival; expect / complete the transaction bytes
                 // (`mbarrier.expect_tx` / `mbarrier.complete_tx`, checked against ptxas).
                 ["ARRIVE", "TRANS64", "RED", z @ ("A0TR" | "A0TX")] => Op::MbarArrive {
@@ -4368,6 +4502,10 @@ fn atomg_op(mods: &[&str]) -> Option<(AtomOp, u8)> {
     match core.as_slice() {
         ["ADD", "S32"] => Some((AtomOp::Add, 4)),
         ["ADD", "F32", "FTZ", "RN"] => Some((AtomOp::FAddFtz, 4)),
+        // REDG only (a vector red: one FADD.FTZ atomic per element; the ATOMG arm refuses it).
+        ["ADD", "F32x2", "FTZ", "RN"] => Some((AtomOp::FAddFtz, 8)),
+        ["ADD", "F32x4", "FTZ", "RN"] => Some((AtomOp::FAddFtz, 16)),
+        ["ADD", "F64", "RN"] => Some((AtomOp::FAdd64, 8)),
         ["ADD", "BF16x2", "RN"] => Some((AtomOp::AddBf16x2, 4)),
         [..] if core.contains(&"ADD") => int(AtomOp::Add),
         [..] if core.contains(&"OR") => int(AtomOp::Or),
@@ -5106,6 +5244,9 @@ mod tests {
             "ATOMG.E.ADD.BF16x2.RN.STRONG.GPU PT, R16, desc[UR4][R2.64+0x5000], R4",
             "ATOMG.E.ADD.S32.STRONG.GPU PT, R27, desc[UR12][R26.64], R29",
             "REDG.E.ADD.S32.STRONG.GPU desc[UR4][R2.64+0x200], R9",
+            "REDG.E.ADD.F64.RN.STRONG.GPU desc[UR6][R4.64], R10",
+            "REDG.E.ADD.F32x2.FTZ.RN.STRONG.GPU desc[UR6][R4.64], R10",
+            "REDG.E.ADD.F32x4.FTZ.RN.STRONG.GPU desc[UR6][R4.64], R8",
             "FHFMA.BF16.RZ R19, R4.reuse.H1, R5.reuse.H1, R6.reuse",
             "FHFMA.BF16.SAT R25, R4.reuse, R5, R7.reuse",
             "FHADD.BF16.RZ R24, R4.H1, -R7",
@@ -5151,8 +5292,7 @@ mod tests {
             "REDUX.OR.S32 UR5, R10",
             "REDUX.MIN UR5, R10",
             "REDG.E.ADD.F16x2.RN.STRONG.GPU desc[UR6][R4.64], R11",
-            "REDG.E.ADD.F32x2.FTZ.RN.STRONG.GPU desc[UR6][R4.64], R10",
-            "REDG.E.ADD.F64.RN.STRONG.GPU desc[UR6][R4.64], R10",
+            "ATOMG.E.ADD.F32x2.FTZ.RN.STRONG.GPU PT, R2, desc[UR6][R4.64], R10",
             "REDG.E.INC.STRONG.GPU desc[UR6][R4.64], R10",
             "ATOMG.E.ADD.F16x4.GPU.RN.STRONG PT, R1, desc[UR6][R4.64], R10",
             "FHFMA.BF16 R1, -R2, R3, R4",
@@ -5394,8 +5534,14 @@ mod tests {
         assert!(lower1("LDTM.STAT.x32.MAX.F32 R4, RZ, tmem[UR4]").is_err());
         assert!(lower1("LDTM.STAT.16dp256bit.x8.MAX.F32 R4, R8, tmem[UR4]").is_err());
         assert!(lower1("LDTM.STAT.16dp32bit_t0_t15.x8.MAX.F32 R4, R8, tmem[UR4]").is_ok());
-        // Negative offsets only on loads.
-        assert!(lower1("STTM.x8 tmem[UR5+-0x10], R4").is_err());
+        // Negative offsets on stores too (probes/tmem_stneg): the 32-bit two's complement.
+        assert!(matches!(
+            lower1("STTM.x8 tmem[UR5+-0x10], R4").unwrap(),
+            Op::TmemSt {
+                off: 0xffff_fff0,
+                ..
+            }
+        ));
         match lower1("BAR.SYNC.DEFER_BLOCKING R4, R4").unwrap() {
             Op::BarSync {
                 packed: true,

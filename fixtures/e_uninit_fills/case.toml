@@ -1,0 +1,43 @@
+name = "e_uninit_fills"
+description = """
+S-INIT-FILLS (multi-fill rerun, an empirical evidence class): undefined registers reach the
+output only as data, through min(x, -inf), which is -inf for every value of x. Reported as
+`undef-insensitive` (outputs bitwise equal over 6 fills), not clean: the register-level
+propagation does not decide it. Variant add stores x + 1: the outputs differ between fills,
+so the report stays a violation."""
+ptx = "kernel.ptx"
+entry = "uninit_fills"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [32]
+init = "normal"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "min(x, -inf) of the undefined x: the same output in every fill"
+expect = ["undef-insensitive"]
+
+[[variants]]
+id = "add"
+summary = "x + 1 of the undefined x: the output depends on it"
+edits = [{ marker = "@OP", find = "min.f32 %f2, %f1, 0fFF800000;", replace = "add.f32 %f2, %f1, 0f3F800000;" }]
+expect = ["violation"]

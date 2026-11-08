@@ -1,0 +1,50 @@
+name = "probe_mbar_count"
+description = """
+Probe for mbarrier.arrive with an arrival count (SASS SYNCS.ARRIVE.TRANS64.ART0 and
+.RED.ART0): counts from registers and immediates on shared::cta and shared::cluster
+addresses, phases completed by one or two counted arrivals, test_wait results per step
+(kernel.ptx). expected/ is GB300's output (ptxas cubin, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "mbar_count"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [32]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 0
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "over"
+summary = "the second arrival counts 3 with 2 pending"
+expect = ["deadlock", "fault"]
+hw_note = "GB300: unspecified launch failure (ptxv hw-worker, 2026-11-07)"
+marker = "@OVER"
+find = "[%r2], 2;"
+replace = "[%r2], 3;"

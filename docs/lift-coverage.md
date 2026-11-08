@@ -87,7 +87,7 @@ static instruction counts.
 
 | form | validation |
 |---|---|
-| `HMMA.16816.F32.BF16` (warp-collective; PTX ISA fragments) | **probes/hmma**: `ptxv calib-mma` over 820 candidate models, 6 input sets, 98,304 outputs: exactly `g16-f25-rz-accin-tzero-einputs` matches all (the tcgen05 model; N-HMMA); expected/ in cargo test; torch flash attention = GB300 |
+| `HMMA.16816.F32.BF16` (warp-collective; PTX ISA fragments; PTX `mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32` and the m16n8k8 tf32 form since 2026-11-07) | **probes/hmma**: `ptxv calib-mma` over 820 candidate models, 6 input sets, 98,304 outputs: exactly `g16-f25-rz-accin-tzero-einputs` matches all (the tcgen05 model; N-HMMA); expected/ in cargo test; torch flash attention = GB300 |
 | `LDSM.16.M88.{1,2,4}` / `.MT88.{1,2,4}` (ldmatrix) | **fixtures/s_sm80** (all 6 forms, lane-dependent row addresses), bitwise |
 | `LDGSTS.E.BYPASS[.LTC128B].128` (+ source predicate: zero fill), `LDGDEPBAR`, `DEPBAR.LE SB0, n` | s_sm80 (2 groups, wait 1 / 0, zero fill); both flash attentions (E-CPASYNC) |
 | `STL[.128]`, `LDL[.LU]` (local memory) | s_sm80 (dynamically indexed array) |
@@ -123,6 +123,7 @@ Model changes the kernels forced:
 | form | validation |
 |---|---|
 | `UTMALDG.2D.GATHER4` (+ PTX `.tile::gather4`) | **fixtures/s_gather4** (6 gathers, 4 swizzles, out-of-bounds rows / columns, unaligned starts), both front-ends = GB300 1000/1000; unaligned columns are illegal instructions (variant `misaligned`, S-TMA-GATHER4) |
+| `SYNCS.ARRIVE.TRANS64.ART0` / `.RED.ART0` (mbarrier.arrive with a count) | probes/mbar_count = GB300, both front-ends (S-MBAR) |
 | `SYNCS.ARRIVE.TRANS64.RED.A0T1`, `ARRIVES.LDGSTSBAR.64.TRANSCNT` / `.ARVCNT` (cp.async.mbarrier.arrive [.noinc]) | **fixtures/s_cpasync_mbar** = GB300 1000/1000 (E-CPASYNC-MBAR) |
 | `SYNCS.PHASECHK.TRANS64.TRYWAIT PT, ...` (no-op), peek tokens through `SEL` / `ISETP` (E-SPIN) | fixtures/r3b_trtllm_bmm certified, = GB300 bitwise |
 
@@ -272,13 +273,19 @@ any modifier outside the audited set before an arm runs.
 | `HFMA2` / `HMUL2` / `HADD2.BF16_V2[.RELU]` | `fma` / `mul` / `add` / `sub.rn.bf16x2`, `neg.bf16x2` | per lane: one rounding to bf16 (RNE), subnormals kept, every NaN result 0x7fff (neg of a NaN too); `-RZ` addend keeps -0 | probes/bf16x2 |
 | `FHFMA` / `FHADD.BF16`, `HMNMX2.BF16_V2[.NAN][.XORSIGN]` | `fma` / `add.f32.bf16`, `min` / `max.bf16x2` | f32 FMA of the widened halves, one rounding in the instruction's mode; min/max as FMNMX on the widenings, NaN 0x7fff | probes/bf16_ext |
 | `REDG.E.ADD.BF16x2.RN`, `ATOMG.E.ADD.BF16x2.RN` | `red` / `atom.add.noftz.bf16x2` | per lane bf16 add, RNE, NaN 0x7fff; not commutative-exact (excluded from C-ORDER) | probes/bf16x2 |
+| `MUFU.RSQ` + Newton step + slow-path `CALL` (ptxas) | `sqrt.rn.f32` | IEEE square root, round to nearest even; negative / NaN inputs give 0x7fffffff | probes/sqrt_rn |
+| `LD.E.U8` / `LD.E.S8` / `ST.E.U8`; `ATOMG` / `REDG .E.ADD.STRONG.SM` | `ld` / `st.u8`, `ld.s8` (generic); `atom` / `red.global.cta` | byte accesses (S8 sign-extended); `.SM` = CTA scope | probes/generic8 |
+| `REDG.E.ADD.F32x4` / `F32x2.FTZ.RN` | `red.global.add.v4` / `.v2.f32` | one FADD.FTZ atomic per element, each on its own | probes/red_vec |
+| `BRX Ra -off` (BRANCH_TARGETS) | `brx.idx[.uni] i, $L` / `$L: .branchtargets ...` | per-thread jump to target i; an index outside the list is a fault | probes/brx_idx |
 | `REDUX.SUM.S32` | `redux.sync.add.s32` | wrapping sum over the active lanes (partial masks) | probes/redux_s32 |
+| `REDUX` / `CREDUX` | `redux.sync` with a partial immediate or register membermask | reduction over the lanes the mask names; executing lanes != mask is a violation (PTX) | probes/redux_mask |
 | `FFMA2` / `FMUL2` / `FADD2 .RZ/.RM/.RP` | `.rz/.rm/.rp.f32x2` | one rounding in the mode | probes/bf16_ext |
 | `IMAD.WIDE R, a, b, -c` | `mul.wide` + `sub.s64` | a*b - c mod 2^64 | probes/int_misc |
 | `POPC` | `popc.b32` | variable latency, in-order queue (scoreboard cover) | probes/int_misc |
 | `UP2UR` | (CuTe predicate spill) | uniform P2R | lift_l_forms |
 | `VIADD.16x2` | `add.u16x2` / `add.s16x2` | two 16-bit lanes mod 2^16, no carry between lanes | probes/viadd16x2 |
 | `LDG.E.ENL2.256 Rhi, Rlo` / `STG.E.ENL2.256 [a], Rlo, Rhi` | `ld` / `st.global.v8.b32` | 32-byte access, 32-byte aligned; bytes 0..16 in the `lo` quad (second operand of the load, first data operand of the store) | probes/ldst256 |
+| `LDG` / `STG .E.ELL2.256`, `.E.EFL2.256` | `ld` / `st.global.L2::evict_last` / `L2::evict_first .v8.b32` | as ENL2 (eviction hint dropped, L-PTX-HINT) | probes/ldst256_l2 |
 | `HFMA2.BF16_V2 d, -RZ.H0_H0, RZ.H0_H0, \|R\|[.H1_H1]` | `abs.bf16x2` / `abs.bf16` | sign bits cleared, then -0*0 + \|x\|: NaN 0x7fff, -0 to +0 | probes/bf16_abs |
 | `HFMA2` / `HMUL2` / `HADD2` (f16) with `.H0_H0` / `.H1_H1`, `.reuse`, immediate pairs | `fma` / `mul` / `add` / `sub .rn.f16[x2]`, `mul.f16` that cannot be contracted | per lane one f16 rounding; HMUL2 = a*b + -0, HADD2 = a*1 + c | probes/f16_arith |
 | `LDSM.16.M88.N` / `.MT88.N` | `ldmatrix.sync.aligned.m8n8.x{1,2,4}[.trans].shared.b16` | (PTX front added) | probes/ldmatrix_ptx |
@@ -286,6 +293,27 @@ any modifier outside the audited set before an arm runs.
 | `STG.E.64.MMIO.SYS` | `st.mmio.relaxed.sys` | strong relaxed `.sys` store; other `.MMIO` forms refused | probes/memhints |
 | `UBLKPF.L2`, `R2UR.OR P, UR, R` | `cp.async.bulk.prefetch.L2` | no-op; `.OR` ORs the lane's "differs" bit into P | probes/memhints |
 | `FLO` scoreboards | - | FLO shares POPC's in-order queue (L-OPCLASS) | probes/flo_popc |
+| `F2F.F32.F64` / `F2F.F64.F32`, `FADD.SAT d, RZ, a`, `F2I...NTZ` | `cvt.rn.f32.f64` / `cvt.f64.f32`, `cvt.sat.f32.f32`, `cvt.r{n,m,p,z}i[.ftz].{s,u}{32,64}.f32` (PTX front added) | as the SASS ops | probes/cvt_misc |
+| `FADD[.FTZ] d, \|a\|, -RZ`, `IABS` | `abs[.ftz].f32`, `abs.s32` | \|a\| + -0 (canonical NaN); two's-complement abs | probes/abs_f32 |
+| `S2R SR_LTMASK` etc. | `%lanemask_{lt,le,ge,gt,eq}`; `%`-less scope registers; `[%rd+-N]`; `{...}` operands continued after a comma | PTX syntax only | probes/ptx_syntax |
+| `FMUL2` / `FADD2` | `mul` / `add` / `sub.f32x2` with no rounding modifier | .rn where no use lets ptxas contract (a mul only multiplied, stored, converted or unpacked into those; an add / sub of no such mul) | probes/f32x2_norn |
+| `HADD2.BF16_V2`, `HFMA2.BF16_V2 d, a, b, -RZ` | `add` / `sub` / `mul` `.bf16[x2]` with no rounding modifier | .rn under the f32x2 rule | probes/bf16_norn |
+| ptxas's div.rn.f32 expansion (MUFU.RCP, FFMA refinement, slow-path CALL) | `rcp.rn.f32` | IEEE 1 / a, NaN canonical | probes/rcp_rn |
+| `F2F.F32.F64.{RZ,RM,RP}` | `cvt.{rz,rm,rp}.f32.f64` | directed rounding | probes/cvt_f64_rnd |
+| `BAR.RED.{POPC,AND,OR}[.DEFER_BLOCKING] id[, n], {!}P`, `B2R.RESULT Rd[, Pd]` | `bar.red.popc.u32`, `bar.red.{and,or}.pred` | reduction over the generation's waiters (E-BAR-RED) | probes/bar_red |
+| `I2F[.F64][.S16\|.U16\|.S64\|.U64][.RZ\|.RM\|.RP]` | `cvt.<rnd>.{f32,f64}.{s,u}{16,32,64}` | as the SASS ops | probes/cvt_i2f |
+| negate + select (64-bit), `BREV`, ptxas's f64 division expansion | `abs.s64`, `brev.b32`, `rcp.<rnd>.f64` | two's-complement abs; bit reverse; 1 / a | probes/ptx_misc2 |
+| `UTCHMMA` with an f16 or tf32 instruction descriptor (A / B format 0 / 2) | `tcgen05.mma.kind::f16` (f16 A / B), `.kind::tf32` | N-MMA over 16 f16 / 8 tf32 (truncated) products per step | probes/tc_f16, probes/tc_tf32 |
+| `STTM` with a negative TMEM offset (`tmem[UR+-0x60]`) | `tcgen05.st [taddr - n]` | offset added to the 32-bit TMEM address | probes/tmem_stneg |
+| `UTCHMMA` with offset TMEM addresses (ptxas adds them into URs) | `tcgen05.mma [taddr + off], [a + off], ...` | offset added to the TMEM address word | probes/tc_mma_off |
+| `FFMA2 d, a, -URn.F32[x2.HI_LO], c`, `FMUL2 d, \|R\|.F32x2.HI_LO, imm` | `neg.f32` of parameters / `abs.f32` of halves feeding `.f32x2` ops | negated uniform operand; absolute value | probes/ffma2_ur |
+| `UTMAPF.L2.<n>D` | `cp.async.bulk.prefetch.tensor.<n>d.L2.global[.tile]` | no-op (cache hint) | probes/tma_prefetch |
+| `ATOMG` / `REDG` `.E.ADD.F64.RN` | `atom` / `red` `.add.f64` | one f64 add, nearest (as DADD) | probes/atom_f64 |
+| `IMAD` on the extended operand | `mad.wide.{s,u}16 d, a, imm, c` | 32-bit ext16(a) * ext16(imm) + c | probes/mad_wide16 |
+| `HSET2[.BF16_V2][.BF].<cmp>.<bop>` | `set.<cmp>.{u32,bf16x2,f16x2}.{bf16x2,f16x2}` | per half 0xffff / 0, `.BF` 1.0 / 0 | probes/hset2 |
+| `MOVM.16.MT88` | `movmatrix.sync.aligned.m8n8.trans.b16` | warp transpose of 8x8 16-bit elements | probes/movm |
+| `HMMA.1688.F32.BF16` | `mma.sync.aligned.m16n8k8.row.col.f32.bf16.bf16.f32` | N-HMMA over 8 products (calibrated) | probes/bmma8 |
+| `LDGSTS...ZFILL [d], [a + size - s], P` | `cp.async ..., size, s` (s immediate or register) | first s bytes from the rounded-down address, the rest zero; !P = s 0 | probes/cpasync_srcsize |
 | `REDUX`, `FRND` scoreboards | - | REDUX is one in-order queue; FRND joins the MUFU / conversion queue (L-OPCLASS) | msl_ops captures |
 | f64 results without a scoreboard | - | complete 128 counted stall cycles after issue (`F64_LAT`, ptxas's NOP padding) | msl_ops captures |
 | `HMNMX2.BF16_V2 d, a, hi, lo, p`, `VHMNMX ... RZ.Hx_Hx` | `min` / `max.bf16x2` with constants | bf16 immediate pair from the encoding (checked against the print); RZ = +0 | msl_ops captures |

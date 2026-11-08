@@ -231,3 +231,41 @@ fn equal_value_strong_writes_certify_and_different_ones_do_not() {
         ev.findings
     );
 }
+
+/// E-RACE-DEAD (race_dead.rs): in e_race_dead every thread loads a word thread 0 then
+/// overwrites. The good kernel's racing loads are never used: explored and certified, on both
+/// front-ends, the races are `race-dead` findings and the verdict is clean. RD1 (warp 1 stores
+/// the value it loaded) keeps the race.
+#[test]
+fn dead_racy_loads_are_race_dead_and_used_ones_stay_races() {
+    let case = Case::load(root().join("fixtures/e_race_dead")).unwrap();
+    for front in ["ptx", "sass"] {
+        let m = machine(&case, "good", front);
+        let ev = explore(m.clone(), 200_000);
+        assert!(ev.complete);
+        assert_eq!(ev.classes(), ["clean"], "{front}: {:#?}", ev.findings);
+        assert!(
+            ev.findings.iter().any(|f| f.kind == "race-dead"),
+            "{front}: {:#?}",
+            ev.findings
+        );
+        let o = certify(m);
+        let cv = o
+            .verdict
+            .unwrap_or_else(|| panic!("{front}: good does not certify: {:#?}", o.reasons));
+        assert_eq!(cv.classes(), ["clean"]);
+        assert!(cv.findings.iter().any(|f| f.kind == "race-dead"));
+        assert_eq!(cv.outputs, ev.outputs);
+        let m = machine(&case, "RD1", front);
+        let ev = explore(m.clone(), 200_000);
+        assert_eq!(
+            ev.classes(),
+            case.variant("RD1").unwrap().expect_for(front),
+            "{front}: {:#?}",
+            ev.findings
+        );
+        assert!(!ev.findings.iter().any(|f| f.kind == "race-dead"));
+        let o = certify(m);
+        assert!(o.verdict.is_none(), "{front}: RD1 certified");
+    }
+}

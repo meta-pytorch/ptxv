@@ -220,6 +220,39 @@ synchronization operations interleave; races among plain accesses are found with
   theorem holds for race-free programs.
 - Retire: a litmus campaign for the proxies (docs/design.md §7.2).
 
+### E-RACE-DEAD · code
+**A race whose racing loads' values reach nothing has no effect on the outcome** (class
+`race-dead`: kept as a finding with its GB300 label, no verdict class; 2026-11-07). A
+read-write race is a plain or relaxed load by a thread that happens-before does not order with
+a write; the load may return either value. The check is run again with every racing load
+(thread, pc) of the race leaving its destination registers undefined (`Machine::dead_probe`),
+and S-INIT reports any undefined bit that reaches a store, an address, a predicate or branch,
+an atomic or synchronization operand (so also every output). If the rerun reports no finding
+the first run did not, and ends as it did, the loaded value reaches nothing on any explored
+path, so a load of the other value leaves the same events; otherwise the race stays `race`.
+Applied only when the races are the check's only failing findings (no violation, fault,
+deadlock or unmodeled finding; one output for the explorer): a run that already reports
+undefined values cannot show that the racing loads add none (a use of a never-written
+location has the same signature as a use of a probed load; fixtures e_elect B46,
+e_stasync SA2), and the rerun must report no failing finding at all.
+- Which loads: `Machine::race_log` records every racing read of every explored transition
+  (exec.rs, before the per-instruction deduplication of findings), shared by every copy of the
+  machine; the decision needs a complete exploration (or the certificate's run, which covers
+  every schedule). A race with another kind of read side (write-write, an atomic, an
+  acquiring load, which synchronizes with what it reads, an asynchronous unit) stays `race`.
+- Where: `race_dead.rs`; explorer `explore.rs` `explore_one` (a second exploration of the same
+  model with the loads undefined); certificate `wellsync.rs` `run_logged` / `probe_run`
+  (with C-ORDER's dead reads). DPOR (`--dpor`) does not apply it.
+- Status: **argued** from the S-INIT semantics: a value that never reaches a sink cannot change
+  memory, control flow or synchronization, so both values of the racing load give the same
+  execution. Relies on S-INIT's sink coverage (its listed limits apply).
+- Evidence: fixtures/e_race_dead: good (threads other than 0 load a word thread 0 then
+  overwrites; warp 1 never uses it) is `race-dead` and clean on both front-ends, explored and
+  certified; RD1 (warp 1 stores the value) stays `race` (tests/reductions.rs). Triton kernels
+  that `tl.load` a scalar in every thread and store it from one lane:
+  `_kernel_map_routing_global`, `_local_stats_partial_reduction`.
+- If wrong: *miss*, for a use of the loaded value S-INIT does not report.
+
 ### E-ELECT · code
 **Which lane `elect.sync` / `ELECT` picks.** The PTX ISA says *"elects one predicated active
 leader … deterministically, i.e. the same leader … for the same membermask"*, without saying
@@ -806,6 +839,15 @@ warp in one step**: every lane's source registers are read, then every destinati
   @leader ATOMG / SHFL.IDX` in a branch a subset of lanes takes; DeepEP hybrid dispatch,
   Triton MoE `_verify_kernel`) then shuffles among the lanes in the region, as the hardware
   does, instead of deadlocking.
+- PTX `redux.sync` with a membermask naming a subset of the warp (an immediate other than
+  0xffffffff, or a register; 2026-11-07): the lanes the mask names (live ones) execute it
+  together and it reduces over them. A mismatch between the executing lanes and the mask, or
+  lanes that disagree on the mask, is a violation (PTX: undefined). Validated by
+  probes/redux_mask (GB300 bitwise on both front-ends): even / odd halves on 0x55555555 /
+  0xaaaaaaaa, a register 0x0000ffff beside an immediate 0xffff0000, one lane on 0x8, and a
+  register full mask. Its `mask_mismatch` variant (32 lanes on 0xaaaaaaaa) completes on GB300
+  with every lane holding the full-warp sum; ptxas emits a plain `REDUX`, so the SASS verdict is
+  clean while the PTX verdict reports the mismatch.
 - If wrong: *miss* only if the hardware could expose a half-done exchange, which a
   `.sync.aligned` instruction cannot.
 
@@ -834,7 +876,10 @@ slow path = `WARPSYNC.COLLECTIVE Rm, end; op...; ENDCOLLECTIVE; end:`.
   instead of GB300's per-group ones). torch.topk's gatherTopK (fixtures pair in
   docs/compare.md) is certified clean and bitwise = GB300.
 - If wrong: *miss/false alarm* only for collective regions entered by lanes at different
-  instructions (unmodeled: they wait).
+  instructions (unmodeled: they wait). This happens: probes/warpsync_pairs, where the two lanes
+  of each pair reach separate `WARPSYNC.COLLECTIVE` instructions (ptxas 13.0's lowering of
+  `bar.warp.sync` on a pair mask in two branches), deadlocks in the model and completes on
+  GB300 (2026-11-07).
 
 ### E-COLLECTIVE-ALL · code
 **ptxas's divergent path of a non-aligned `barrier.sync`** (CuTeDSL `barrier(aligned=False)`;
@@ -984,6 +1029,25 @@ FA4's fix for its warp-role barrier bug): `UMOV UR, -1; BRA.DIV UR, slow; BAR.SY
 - If wrong: *cost* only (more interleavings of arrivals; the reachability count is
   conservative).
 
+
+### E-BAR-RED · code
+**Barrier reductions (`bar.red`, SASS `BAR.RED` + `B2R.RESULT`).**
+- `bar.red.popc.u32 d, a{, b}, {!}c` / `bar.red.{and,or}.pred p, a{, b}, {!}c` is a
+  `bar.sync a{, b}` whose waiters each contribute predicate `c`, read at arrival. When the
+  generation completes, each waiter's barrier result is set from the generation's waiters:
+  the number of true contributions (`.popc`), all true (`.and`), any true (`.or`).
+- ptxas emits `BAR.RED.{POPC,AND,OR}.DEFER_BLOCKING id[, count], {!}P` followed by
+  `B2R.RESULT Rd` (`.popc`) or `B2R.RESULT RZ, Pd` (`.and` / `.or`); the model keeps the
+  result per thread until the next `bar.red` and reads it at `B2R.RESULT`. A count read after
+  `.and` / `.or`, a predicate after `.popc`, or a `B2R.RESULT` before any `bar.red` is refused
+  at run time; `BAR.RED` with register id or count operands is refused at lift.
+- Waiters of one generation using different reductions, or `bar.red` together with plain
+  `bar.sync`, are reported (violation) and get no result. `bar.arrive` arrivals in a
+  `bar.red` generation do not contribute.
+- probes/bar_red (2026-11-07, SCALE pilot: ptxas's `bar.red.or.pred` exit vote): CTA-wide
+  popc / and / or on barriers 0-2 with plain and negated sources, and counted barriers 3-4
+  (count 64) reached by warps 0-1 only. GB300 200/200 scrubbed, equal to the reduction
+  computed from the inputs; both front-ends bitwise.
 ### E-GRID · code
 **Exhaustive only for the captured launch:** the grid, block and cluster shape from the case,
 with no shrinking. Whether its CTAs are all resident at once is E-RESIDENCY (until
@@ -1173,9 +1237,25 @@ thread's clock at issue: nothing the thread did after issuing orders it. A sourc
 that is false (src-size 0) writes zeros and reads nothing.
 - Where: `exec.rs` `Op::CpAsync` / `CpAsyncCommit` / `CpAsyncWait`, `Thread::cp_pending`;
   `sass` lowering of `LDGSTS`, `LDGDEPBAR` and the `DEPBAR.LE` post-pass; `ptx` lowering of
-  `cp.async.{ca,cg}` (src-size 0 or an ignore-src predicate: zero fill; a partial or register
-  src-size is rejected), `commit_group`, `wait_group`, and `wait_all` (= commit_group +
-  wait_group 0).
+  `cp.async.{ca,cg}` (src-size 0 or an ignore-src predicate: zero fill), `commit_group`,
+  `wait_group`, and `wait_all` (= commit_group + wait_group 0).
+- Scoreboard scope (2026-11-07): on the SASS front `DEPBAR.LE SBk, n` waits on the warp's
+  scoreboard, which counts the warp's LDGDEPBAR executions (divergent paths count once each):
+  every lane's copies older than the warp's newest n commits complete, and the waiting lanes
+  are ordered after them (`Warp::cp_seq`, `CpPending::wgroup`). The per-thread rule (PTX
+  semantics) still applies on top. Before, only the waiting thread's own copies counted:
+  a false race in CUDA C++ `cp.async.wait_group; __syncwarp()` (ptxas: `DEPBAR.LE SB0, 0x5;
+  NOP; LDS`, scale dash/6393; GB300 1000/1000 scrubbed runs = simulator). probes/cpasync_warp:
+  odd / even lanes copy on two divergent paths, one converged DEPBAR, each lane reads its
+  neighbour's slot: GB300 1000/1000 scrubbed runs correct for wait_group 0 and 1 (the second
+  group also landed in time with 1, so the probe does not show the counting itself).
+- src-size (2026-11-07): an immediate or register src-size s copies the first s bytes and
+  zero-fills the rest (s larger than the cp-size: a violation). ptxas encodes a partial s as
+  `LDGSTS...ZFILL` with source address + size - s (the address's low bits mod the size are the
+  zero count) and a predicate false for s = 0; Triton's masked loads use s = 16 / 0.
+  probes/cpasync_srcsize (16-, 8-, 4-byte copies, s from registers and an immediate): GB300
+  200/200 scrubbed runs, both front-ends bitwise. Before, `.ZFILL` was admitted and ignored
+  (16 bytes read from the shifted address) and a register src-size was not lowered.
 - Status: **validated**: `fixtures/s_sm80` (two groups, wait_group 1 then 0, zero fill),
   torch's sm80 flash attention (3-stage pipeline) and Triton's flash attention (masked
   prefetch past the end) match GB300 bitwise. A read of the destination before the wait sees
@@ -2283,6 +2363,14 @@ parity p has completed (so parity 1 succeeds immediately after init).
 - Where: `exec.rs` mbarrier ops, `try_wait_result`, `complete_tma`.
 - Status: **validated.** r0 B01 hangs on GB300 as predicted (tx never reaches 0), and the r0
   B02 hang mode reproduced under witness replay. Bitwise agreement holds on all good kernels.
+- Arrival counts (2026-11-07): `mbarrier.arrive [a], count` (SASS
+  `SYNCS.ARRIVE.TRANS64.ART0` / `.RED.ART0`, the count in a register) subtracts `count` from
+  the pending count at once; a count above the pending count is a fault. probes/mbar_count
+  (register and immediate counts, shared::cta and shared::cluster addresses, phases
+  completed by one or two counted arrivals; test_wait after each step): GB300 50/50
+  scrubbed, both front-ends bitwise; its `over` variant (3 arrivals with 2 pending) is an
+  unspecified launch failure on GB300. A remote counted arrival in flight (S-REMOTE-INFLIGHT)
+  is delivered as `count` single arrivals.
 
 ### S-MBAR-MEM · code
 **An mbarrier can be initialized by a plain `STS.64` of the encoded state word:**
@@ -2576,16 +2664,44 @@ stays clean, "relies on E-CPASYNC-PROXY"), not a race.
     whose defined combining predicate decides the result (`AND` false, `OR` true) are
     defined. msl_ops triton `_nvfp4x2_k_quant_kernel` (25 FCHK sites) and `_metrics_2d`
     were reported before (`fixtures/e_uninit_lanes`);
-  - not tracked through shared memory: an `STS` of an undefined value is a sink (cute
-    FusedRMSNormCombineFwdParallelTOPKStream: `LDS.64` of shared memory nothing wrote, summed
-    and stored back with `STS`; whether the sum reaches an output is not decided).
+  - through memory (2026-11-06): a shared or global store (or `atom.exch`) of undefined data
+    marks the bytes undefined (`Sh::undef`) instead of being reported; a load or an
+    `atom.exch` of them gives undefined registers (as for never-written shared memory); any
+    other reader (TMA, MMA, other atomics) reports; global bytes still undefined at a terminal state are reported
+    (`uninit-gmem-exit`), except the tail of a used tensor map (S-TMAP-TAIL). Before, the
+    store was the report (cute FusedRMSNormCombineFwdParallelTOPKStream's reduction
+    buffer: clean now, `fixtures/e_uninit_smem`).
+  - `REDUX` (2026-11-07): an undefined bit in any active lane's operand makes the result
+    undefined in every lane (a sum carries into all bits), reported where it is used. Before,
+    the operand was a sink: Triton's cross-warp reduction (corpus pilot dash/5819, `_col_phase`)
+    loads the warp partials only in threads tid < 32 (`@!P1 LDS R12`), every warp runs
+    `REDUX.SUM.S32` on R12, and only thread 0 stores the result (`fixtures/e_uninit_redux`).
+  - `STSM` data marks the shared bytes undefined like `STS`, and an `LDSM` of undefined
+    bytes gives undefined registers (2026-11-07; their addresses stay sinks).
+  - TMEM (2026-11-07): a `tcgen05.st` of undefined data leaves the words as never written;
+    a `tcgen05.ld` of never-written words gives undefined registers (a `tcgen05.ld.red`
+    result too), reported where used; the load itself is a `note` (`tmem-uninit-ld:<pc>`, was
+    a violation). An MMA that reads never-written TMEM (accumulator with `enable_input_d`, A
+    in TMEM, scale factors) leaves all of its D undefined (never written) and records a
+    `note` (`mma-undef:<pc>`); before, an accumulator or scale-factor read was a violation
+    (`mma-uninit-acc` / `-sf`) and an A read was not checked. Triton's pipelined attention prologue
+    (corpus pilot dash/5713, `_t_causal_attention_kernel`) skips the first QK^T MMA when the
+    loop runs zero times but its `LDTM` stays unconditional (GB300 with TMEM poisoned by a
+    NaN tcgen05 matmul on every SM before each call: 0/20 wrong outputs, finite-fill control
+    0/20; corpus pilot findings, 2026-11-07). `fixtures/e_uninit_tmem` is that shape with
+    the scores unused: clean. dash/5713 itself stays reported: the scores feed the softmax
+    (row max, `MUFU.EX2`), the O rescale factor (`FMUL R4, R111, R4` at 0x2eb0 on O loaded
+    from TMEM) and P (`STTM`, then the PV MMA), and reach the output stores; that the result
+    does not depend on them (O is zero there, m is reset by `FSEL R152, R152, -INF, P0`) is
+    a property of the values, which this register-level propagation does not decide; the
+    multi-fill rerun reports it `undef-insensitive` (S-INIT-FILLS).
   - Debug knob: `PTXV_UNDEF_TRACE=<thread>` prints each instruction the thread runs on
     undefined inputs (where a report's undefined bits came from).
   - sinks (reported): store data and addresses, every load / atomic / async-copy / TMA /
     tcgen05 / mbarrier / barrier operand that `Op::src_regs` lists, a guard of anything
     that is not register-only (branches, `EXIT`, memory, synchronization), branch conditions
     and `BRA.DIV` masks, `STSM` / `LDSM` operands, `SHFL` lane and clamp (its data keeps the
-    source lane's mask), votes, `REDUX`, `WARPSYNC` masks, `ELECT`, and every operation not
+    source lane's mask), votes, `WARPSYNC` masks, `ELECT`, and every operation not
     listed as register-only. Anything not known to be register-only is a sink.
   - Where: `exec.rs` `undef_result`, `wp`, `reg_only`, `sinit_pre`, `poison_regs`,
     `exec_thread_inner`.
@@ -2604,6 +2720,37 @@ stays clean, "relies on E-CPASYNC-PROXY"), not a race.
   uses (fixtures/c_mm_f32_gemmsn_tn: clean, `hw --scrub` 1000/1000 = simulator with smem
   NaN-poisoned; before, all four registers were undefined and the output store was reported).
 - If wrong: *miss* for unchecked operand kinds.
+
+### S-INIT-FILLS · code
+**Multi-fill rerun (an evidence class, not a certificate).** When every S-INIT report of a
+verdict is undefined data left in global memory at the end of the launch
+(`uninit-gmem-exit`), no undefined bit reached a branch, address, predicate, guard,
+synchronization operand or non-load reader on the explored paths (those are sinks, reported
+as `uninit-reg` / `uninit-smem` / `uninit-gmem`, and any of them refuses the rerun). The
+launch is rerun on one deterministic schedule per fill, with every unwritten register,
+uniform register, shared byte outside the reserved prefix, TMEM word and never-stored local
+word holding the fill: 0, NaN (0x7fffffff), +Inf, -Inf, and two pseudo-random patterns. If
+the output buffers are bitwise equal in all six runs (each run reaching every reported
+undefined output, and no run reporting a sink), the
+reports become kind `undef-insensitive`, with the note `undef-fills: 6 fills ... outputs
+bitwise equal`; otherwise they stay violations and the note says which fill differed.
+  Not run when the verdict has a race or several outcomes: undefined data from an
+  ordering bug (a read before its write in some schedule) depends on the schedule.
+- Where: `fills.rs` (`check`, called by `explore`, `explore_dpor`, `check_certified`);
+  `PTXV_NO_FILLS` turns it off.
+- Status: **argued** (2026-11-07). The gap: six fills are six points of a function of the
+  undefined values; an output that differs only for other values (a compare against a
+  specific constant, an exact cancellation that NaN and Inf break but random words do not)
+  is missed. One schedule per fill: outputs that also depend on the schedule are compared
+  on that schedule only. Undefined predicates are not filled (they would be sinks).
+- Evidence: `fixtures/e_uninit_fills` (min(x, -inf) of an undefined x: undef-insensitive;
+  x + 1: violation). Corpus pilot dash/5713 (Triton `_t_causal_attention_kernel`): Triton
+  reads never-written TMEM (the scores of a QK^T MMA its peeled prologue skipped), and
+  correctness depends on later value masking (O is zero there, m is reset to -inf, the PV
+  result is overwritten): undef-insensitive in 6 fills, consistent with GB300 0/20 wrong
+  under a NaN TMEM poison. The PTX good variants of `e_uninit_f32x2` / `e_uninit_lanes`
+  (lane-coarse PTX propagation) are undef-insensitive too.
+- If wrong: *miss* of an output that depends on undefined values only at untried values.
 
 ### S-INIT-PRED · code
 **Predicates start undefined too, and reading one before any write is reported** like an
@@ -2646,6 +2793,28 @@ GB300 was wrong or hung in 198/200 runs. On GB300 the unwritten P4 is not false 
 - If wrong: *false alarm* where hardware defines a predicate the model does not write (an
   unmodelled instruction's predicate output); *miss* only for predicates the lifter writes
   that hardware does not.
+
+### S-TMAP-TAIL · code
+**GB300's TMA ignores bytes 0x40..0x7f of a 128-byte tensor map in global memory.** A store
+that leaves undefined data there is a `contract` finding (`tmap-tail-undef:<pc>`), not an
+S-INIT violation, when a TMA of the launch uses that map; a TMA reading undefined bytes in
+0x00..0x3f is a violation (`uninit-gmem`). msl_ops dist_moe (`dm_combine_w2` / `w4`) copies
+only the 64-byte template and publishes the rest of the map with lanes 16..31's undefined
+registers (`ATOMG.EXCH` at 0x2790).
+  The tensormap proxy fence (`fence.proxy.tensormap`, `UTMACCTL.IV`) reads the 128 bytes with
+  the same exemption.
+- Where: `exec.rs` `tmap_at` and `Op::TmapFence` (`undef_ok_from`), `undef_gmem_check` (from
+  `exit_checks`).
+- Status: **validated** (`probes/tmap_tail`, GB300, CUDA 13.0, 2026-11-06): 24 driver-encoded
+  rank-2 maps (u32 / f32 with NaN OOB fill; swizzle none / 32B / 64B / 128B; boxes inside
+  and across both tensor edges), each loaded through global memory with bytes 0x40..0x7f as
+  encoded (the derived box-bytes / swizzle-repeat words are nonzero), zero, all-ones and
+  random (3 runs each): every shared-memory tile bitwise equal to the first encoded run's (0
+  of 216 loads with the tail altered differ, 0 of 48 repeat encoded loads). Library-built maps (cuBLAS packs maps 64 bytes apart) were already
+  evidence that bytes 64..127 are not read (docs/tensormap.md). Not probed: rank > 2,
+  im2col, sub-byte types.
+- If wrong: *miss* of a TMA that depends on the undefined tail.
+- Retire: NVIDIA documentation of the descriptor layout.
 
 ### S-DSMEM · code
 **A CTA's shared addresses are `(cluster rank << 24) | offset`**, its window inside the
@@ -2751,6 +2920,12 @@ treated as sufficient.** Since rung 1f:
 - A morally strong read whose thread the release's scope includes acquires it at once
   (acquire read) or at its next acquire fence (relaxed read; `fence.acq_rel.<scope>` acquires
   observations whose writer its scope includes, and SASS `CCTL.IVALL` acquires all of them).
+- `red.global.add.v2` / `.v4.f32` (SASS `REDG.E.ADD.F32x2` / `F32x4.FTZ.RN`) is one FADD.FTZ
+  atomic per element, each on its own (the PTX ISA gives no atomicity across elements;
+  2026-11-07, probes/red_vec = GB300 on both front-ends); a vector `ATOMG` is refused.
+- SASS: `ATOMG` / `REDG .E.<op>.STRONG.SM` (PTX `atom` / `red.global.cta`) are CTA-scope
+  atomics (2026-11-07; probes/generic8 = GB300 on both front-ends, with generic `LD.E.U8` /
+  `.S8` and `ST.E.U8`).
 - SASS: `LDG/STG.E.STRONG.<SYS|GPU|SM>` are relaxed strong accesses; `MEMBAR.*.<scope>` is a
   release fence; `CCTL.IVALL` is an acquire fence (ptxas: `ld.acquire` = `LDG.STRONG` +
   `CCTL.IVALL`, `st.release` = `MEMBAR` + `STG.STRONG`, `fence.acq_rel` = `MEMBAR` +
@@ -3051,6 +3226,16 @@ copies a tensor-map template to shared memory, then after `BSYNC` all 32 lanes r
   `WARPSYNC.COLLECTIVE.ALL` was re-checked, so lanes that parked at `WARPSYNC.ALL` before
   their warp-mates' `EXIT` stayed parked (a DPOR-only false deadlock on e_aligned_bar AB3,
   SASS; GB300 completes, probes/bar_exit_warp `half`).
+- A plain `WARPSYNC Rm` whose lanes name different masks (2026-11-07; CuTeDSL RouterEpilogue:
+  `WARPSYNC R8`, R8 = 3 << (lane & 0x1e), before pair shuffles; PTX `bar.warp.sync` on a
+  per-lane mask) releases each mask group once its live lanes are parked, at this or another
+  plain `WARPSYNC`. Before, only the first arriving lane's group was released and the rest
+  stayed parked (a false deadlock in both RouterEpilogue msl_ops cases; now clean and bitwise
+  = their GB300 captures). probes/warpsync_pairs (pair-mask exchanges through shared memory:
+  converged, after a branch, the two lanes of each pair on different paths) = GB300 on the
+  PTX front-end (50/50 scrubbed). ptxas 13.0 lowers those `bar.warp.sync` to
+  `WARPSYNC.COLLECTIVE`, where pair lanes at different collective instructions still wait for
+  each other: a false deadlock on the SASS front-end (E-COLLECTIVE).
 - Status: **argued** from the ISA's reconvergence semantics and the CUTLASS source
   (`__syncwarp` there); not probed. Before this, BSSY/BSYNC were no-ops, which reported a race
   on that pattern. s_alu2's divergent division paths match GB300 bitwise.
@@ -3372,7 +3557,9 @@ forms seen. Any other form is a hard error.
     `Rred = RZ` is a plain load. GB300 traps (misaligned address) when the start column is
     odd; the model reports a fault there. `LDTM tmem[UR+-0x10]`: the negative offset added to
     the 32-bit TMEM address (mslk decode). probes/tmem_ldred (16,384 words, all-NaN and +-0
-    rows, GB300 bitwise 100/100).
+    rows, GB300 bitwise 100/100). `STTM tmem[UR+-0x60]` likewise (2026-11-07, 6 SCALE corpus
+    records refused it as "bad offset"): probes/tmem_stneg (`STTM.x8 tmem[UR4+-0x10]`, read
+    back) = GB300 on both front-ends, 50/50 scrubbed.
   - `BAR.SYNC Ra, Ra` / `BAR.ARV Ra, Ra` (ptxas's register form): id = Ra bits 0..3, thread
     count = Ra >> 16 (ptxas builds `count << 16 | id & 0xf`; validated through
     fixtures/s_bardiv, E-COLLECTIVE-ALL). Two different registers are not lowered.
@@ -3384,6 +3571,81 @@ forms seen. Any other form is a hard error.
     `.TRUNC` and any I2F without F64 / F16 / FTZ were accepted whatever else they carried).
     fixtures/s_f2i (393,216 words, GB300 bitwise 20/20); the Triton 1 - cos(x) /
     2 sin^2(x/2) pair (agent AN) then certifies, bitwise = GPU.
+- PTX front additions (2026-11-07, SCALE pilot): `abs[.ftz].f32` as ptxas's FADD |a|, -RZ and
+  `abs.s32` as IABS (probes/abs_f32); `cvt.rn.f32.f64` / `cvt.f64.f32` (F2F), `cvt.sat.f32.f32`
+  (FADD.SAT RZ, a) and `cvt.r{n,m,p,z}i[.ftz].{s,u}{32,64}.f32` (F2I) (probes/cvt_misc); a
+  register or partial immediate `redux.sync` membermask (subset semantics: E-WARPCOLL,
+  probes/redux_mask); immediate elements in vector stores; `prmt.b32` (default mode,
+  probes/prmt_ptx); `createpolicy.fractional` when its result is only the policy operand of
+  `.L2::cache_hint` instructions (a zero placeholder: L-PTX-HINT; other uses refused);
+  `sqrt.rn.f32` as the IEEE square root, NaN 0x7fffffff (the f64 root rounded to f32, then
+  + -0; GB300's ptxas code gives exactly that on 4096 patterns, probes/sqrt_rn; 10 SCALE
+  corpus records); `brx.idx[.uni] i, $L` with `$L: .branchtargets ...` (per thread, as `bra`, to entry i; an
+  index outside the list is a fault, as SASS `BRX` to an address that is not a branch target;
+  probes/brx_idx, 30 SCALE corpus records). GB300 bitwise on both front-ends where probed.
+- PTX syntax (2026-11-07, SCALE pilot): `%lanemask_{lt,le,ge,gt,eq}` as SR_LTMASK etc.;
+  registers declared without `%` inside an inline-asm scope (`{.reg .s64 a; ...}`, CuTeDSL);
+  `[%rd+-N]` addresses; a `{...}` operand list starting a continuation line (after a comma, or
+  after a bare mnemonic line as in `mma.sync...f32` then `{%r1, ..},`) is an operand, not a
+  scope; a directive line without `;` (`.loc`) still ends a statement. Before, such a list
+  unbalanced the scope pass, which then renamed a later label and reported it unknown.
+  probes/ptx_syntax: GB300 50/50 scrubbed, both front-ends bitwise.
+- Packed f32x2 with no rounding modifier (2026-11-07): `mul.f32x2` is `.rn` when every use is
+  a multiplicand, a store, a conversion, or an unpack (`mov.b64 {lo, hi}`) whose halves are only
+  stored or converted (Triton's RMSNorm before `cvt.rn.bf16x2.f32`), and `add` / `sub.f32x2`
+  when neither operand is a float mul without `.rn`; ptxas cannot contract those into FFMA2.
+  probes/f32x2_norn (FMUL2 / FADD2 in ptxas's output): GB300 100/100 scrubbed, both front-ends
+  bitwise. Other plain forms stay refused.
+- `add` / `sub` / `mul` `.bf16x2` / `.bf16` with no rounding modifier (2026-11-07, SCALE
+  pilot): the same rule as f32x2 (ptxas emits HADD2.BF16_V2 / HFMA2.BF16_V2 ..., -RZ).
+  probes/bf16_norn: GB300 50/50 scrubbed, both front-ends bitwise. Plain `fma.bf16x2` stays
+  refused. A pack `mov.b32 %r, {%h1, %h2}` of plain muls that is only stored is accepted
+  (ptxas emits one HMUL2.BF16_V2 for the two muls; probes/bf16_norn word 4, SCALE pilot
+  dash/1703).
+- `rcp.rn.f32` (2026-11-07, SCALE pilot) as `div.rn.f32 d, 1.0, a`: the IEEE reciprocal,
+  subnormals kept, NaN 0x7fffffff. probes/rcp_rn (4096 inputs: specials, subnormals,
+  magnitudes near 2^+-126; GB300 50/50 scrubbed, also equal to the f64 reciprocal rounded to
+  f32): both front-ends bitwise. `.ftz` stays refused.
+- `cvt.{rz,rm,rp}.f32.f64` / SASS `F2F.F32.F64.{RZ,RM,RP}` (2026-11-07, SCALE pilot): directed
+  rounding of the f64 (overflow to the largest finite value where the direction says so).
+  probes/cvt_f64_rnd: GB300 50/50 scrubbed, both front-ends bitwise.
+- More PTX forms (2026-11-07, SCALE pilot): `cvt.{rn,rz,rm,rp}.{f32,f64}.{s,u}{16,32,64}` as
+  I2F (probes/cvt_i2f: edge and random 64-bit inputs); `abs.s64`, `brev.b32`,
+  `rcp.{rn,rz,rm,rp}.f64` as `div.<rnd>.f64 d, 1.0, a` (probes/ptx_misc2). GB300 50/50
+  scrubbed each, both front-ends bitwise.
+- PTX `tcgen05.mma [taddr + off], [a + off], ...` (2026-11-07, SCALE pilot): the offset adds
+  to the TMEM address word, as SASS `tmem[URa+off]` and `tcgen05.cp`; the PTX front computes it
+  into a vector scratch register under the statement's guard. probes/tc_mma_off (M = 128,
+  N = 16: D at column 64 with A in shared memory, D at column 128 with A in TMEM at
+  [taddr + 184 + 8]): GB300 50/50 scrubbed, both front-ends bitwise. GB300 also ran N = 8 with
+  A in TMEM (the PTX ISA requires N % 16 == 0 there) and gave the A-in-shared-memory result;
+  the model still refuses that shape.
+- SASS `FFMA2` / `FMUL2` / `FADD2` with a negated uniform register (`-UR6.F32`,
+  `-UR6.F32x2.HI_LO`: ptxas folds `neg.f32` of kernel parameters) and `|R|` operands (abs.f32
+  of both halves folded; applied before a negation) (2026-11-07, SCALE pilot).
+  probes/ffma2_ur: GB300 50/50 scrubbed, both front-ends bitwise.
+- `cp.async.bulk.prefetch.tensor.<n>d.L2.global[.tile][.L2::cache_hint]` / SASS
+  `UTMAPF.L2.<n>D` (2026-11-07, SCALE pilot) as a cache hint, no memory effect (like
+  `UBLKPF.L2`); `.im2col` forms refused. probes/tma_prefetch: GB300 50/50 scrubbed, both
+  front-ends bitwise.
+- `atom` / `red` `.add.f64` / SASS `ATOMG` / `REDG` `.E.ADD.F64.RN` (2026-11-07, SCALE pilot):
+  one f64 add rounded to nearest, subnormals kept, as DADD (inf + -inf gives 0xfff8000000000000
+  on GB300, as the DADD model). Not commutative for the explorer (the order changes the bits).
+  probes/atom_f64 (each thread's own word: specials, ties, subnormal sums, overflow; plus exact
+  red adds to 4 shared words): GB300 100/100 scrubbed, both front-ends bitwise.
+- `mad.wide.{s,u}16 d, a, imm, c` (2026-11-07, SCALE pilot): d = ext16(a) * ext16(imm) + c in
+  32 bits (a extended into the scratch register; a register multiplier is refused).
+  probes/mad_wide16: GB300 50/50 scrubbed, both front-ends bitwise.
+- `set.<cmp>.{u32,bf16x2,f16x2}.{bf16x2,f16x2}` / SASS `HSET2[.BF16_V2][.BF].<cmp>.<bop> d, a,
+  b, Pc` (2026-11-07, SCALE pilot): HSETP2's per-lane comparison combined with Pc, written per
+  half as 0xffff / 0, or with `.BF` 1.0 in the operand format (bf16 0x3f80, f16 0x3c00) / 0.
+  probes/hset2 (14 comparisons over bf16 and f16 specials, register and immediate-pair
+  operands): GB300 50/50 scrubbed, both front-ends bitwise.
+- `movmatrix.sync.aligned.m8n8.trans.b16` / SASS `MOVM.16.MT88` (2026-11-07, SCALE pilot,
+  binary-only kernel dash/4901): warp-collective transpose of the 8x8 matrix of 16-bit
+  elements (row lane / 4, columns 2 (lane % 4) + {0, 1}); undefined halves move with their
+  data; the f32 numerics see the result as a fresh value. probes/movm (lane-coded and random
+  halves, two transposes in a row): GB300 50/50 scrubbed, both front-ends bitwise.
 - DeepEP hybrid / DeepCP tokens (2026-11-06; probes/memhints, GB300 500/500 scrubbed runs,
   both front-ends bitwise): `LDG.E.NA[.U8|.64][.STRONG.SYS]` and `LDG.E.NA.128.CONSTANT` are
   `.L1::no_allocate` (a cache hint; `.CONSTANT` = `.nc` as before), `ST.E.EF.128` is
@@ -3422,6 +3684,10 @@ is rejected (fail closed).
 - Status: **argued**: the PTX ISA defines them as cache-eviction priorities and prefetch
   sizes, with no effect on the values copied or on ordering. fixtures/s_ptx_cute_ops (one
   `.L2::128B` copy) = GB300 bitwise.
+- SASS: the L2 eviction policy of a 256-bit global access (`LDG` / `STG .E.ENL2.256`,
+  `.ELL2` = PTX `.L2::evict_last`, `.EFL2` = `.L2::evict_first`) is likewise dropped
+  (2026-11-07; 4 SCALE corpus records refused ELL2): probes/ldst256_l2 = GB300 on both
+  front-ends, bitwise equal to probes/ldst256's output.
 - If wrong: *miss* only if a hint changed the data or the completion order.
 - Retire: never needed for verdicts; listed so that dropped modifiers are visible.
 
@@ -3606,8 +3872,12 @@ complete.**
   on a later f64 op's scoreboard, and lets a later f64 op overwrite a register an earlier
   one reads (rd set) with no wait. probes/f64_queue reproduces both; GB300 output = model,
   both front-ends bitwise (before: a false SCOREBOARD violation and Triton split-k's f64 LSE).
-  Not merged with the MUFU / conversion queue (`MUFU.RCP64H`, `F2F.F64`): no evidence either
-  way.
+  Conversions with an f64 operand (`I2F.F64.*`, `F2F.F32.F64`, `F2F.F64.*`, `F2I.*.F64`) are
+  in the f64 queue, not the conversion queue (2026-11-07): ptxas leaves `I2F.F64.U64.RZ R8`
+  with no write scoreboard and reads R8 after a wait on a later `I2F.F64.RM`'s scoreboard
+  only, not on the scoreboard of the `I2F.U16` issued between them (probes/cvt_i2f, GB300
+  50/50 scrubbed = model, both front-ends bitwise). `MUFU.RCP64H` stays in the conversion
+  queue: no evidence either way.
 - `FLO` shares `POPC`'s queue (2026-11-06): ptxas gives `FLO.U32` no write scoreboard and
   reads its result after a wait on a later `POPC`'s (DeepEP hybrid; probes/flo_popc, GB300
   500/500 scrubbed runs = model, both front-ends bitwise). `BREV` is not merged: no evidence.
@@ -4377,14 +4647,25 @@ random bf16 lanes and 96.7% of f16 lanes; misses include groups with a NaN lane.
 - Where: `fp.rs` `DEFAULT_MMA`, `exec.rs` `complete_mma`.
 - Status: **validated, and enforced at its edges.** It is the unique match of 820 candidates
   on 49,152 GB300 outputs (docs/rung1a.md). That calibration covers finite normal inputs only;
-  subnormal/Inf/NaN inputs or accumulators now give `unmodeled`. Other formats are rejected by
-  the idesc check; the narrow kinds are N-MMA-F8 / N-MMA-BS. Shapes (PTX ISA table 48, the
+  subnormal/Inf/NaN inputs or accumulators now give `unmodeled`. f16 and tf32 operands: below;
+  other formats (f16 D, mixed A / B) are rejected by the idesc check; the narrow kinds are N-MMA-F8 / N-MMA-BS. Shapes (PTX ISA table 48, the
   layouts in S-TMEM / E-PAIR): `cta_group::1` M = 64 or 128 with N = 8..256 in steps of 8
   (M = 128 N % 16 != 0 only with A in shared memory, and with block scaling only N = 8:
   measured forms), `cta_group::2` M = 128 or 256 with N = 16..256 in steps of 16; anything else is
   `unmodeled`. The arithmetic does not depend on N or the layout: `probes/tc_m128` random-operand
   configs (M = 128 N = 8 / 24, pairs N = 32 / 64 / 256, e4m3 for N-MMA-F8) equal the model
   bitwise.
+- **f16 and tf32 operands** (2026-11-07): kind::f16 with f16 A / B (instruction descriptor
+  format 0) is the same model over 16 products (unique match of 820 candidates, `ptxv
+  calib-mma probes/tc_f16`, 6 input sets / 49,152 GB300 outputs; f16 subnormal inputs are
+  `unmodeled`); kind::tf32 (format 2; PTX `kind::tf32` = SASS `UTCHMMA` with that descriptor)
+  is `g8-f25-rz-accin-tzero-einputs` over 8 products with the low 13 mantissa bits of each f32
+  word dropped, as `mma.sync` tf32 (N-HMMA; unique with g16 among 2,460 model x conversion
+  candidates, `ptxv calib-mma probes/tc_tf32`, 49,152 outputs). A tf32 K slice is 8 elements of
+  4 bytes (16-byte core-matrix rows of 4; K-major only, MN-major tf32 is `unmodeled`), A in
+  TMEM one element per column. probes/tc_f16 and probes/tc_tf32 (D[128x64], 4 / 8 MMAs) are
+  bitwise = GB300 on both front-ends (50/50 scrubbed), and probes/mma_zero's kind::f16 f16 and
+  kind::tf32 configs (signed zeros, subnormal results) now replay bitwise too.
 - **Error contract** used by numerics and equivalence (`MmaModel::eps_terms`, docs/equiv-mma.md
   §1). A step adding n terms (products and the accumulator) satisfies |computed - sum| <=
   ((n - 1) 2^-25 + 2^-23 (1 + (n - 1) 2^-25)) sum |terms|, which is about 10u for n = 17. It
@@ -4426,7 +4707,15 @@ random bf16 lanes and 96.7% of f16 lanes; misses include groups with a NaN lane.
 **One `HMMA.16816.F32.BF16` (`mma.sync.m16n8k16` bf16 × bf16 + f32) is the N-MMA model:
 `g16-f25-rz-accin-tzero-einputs`** (all 16 products and the accumulator aligned to the
 largest eₐ + e_b, truncated toward zero 25 bits below it, summed exactly, rounded toward zero).
-- Where: `fp.rs` `HMMA_MODEL`, `exec.rs` `Op::Hmma` (fragments as in the PTX ISA).
+- Where: `fp.rs` `HMMA_MODEL`, `exec.rs` `Op::Hmma` (fragments as in the PTX ISA). The PTX
+  front lowers `mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32` and
+  `m16n8k8.row.col.f32.tf32.tf32.f32` to the same op (2026-11-07, SCALE pilot); probes/hmma and
+  probes/tmma through it are bitwise equal to GB300 (their kernel.ptx assembled by ptxas: the
+  same output, 20/20 scrubbed), and probes/mma_zero now runs every config on both fronts.
+  `mma.sync.m16n8k8` bf16 (SASS `HMMA.1688.F32.BF16`, 2026-11-07, SCALE pilot): the same
+  model over 8 products; `ptxv calib-mma probes/bmma8 --step 8` (8 accumulating steps,
+  6 input sets, 98,304 GB300 outputs) matches exactly `g16-f25-rz-accin-tzero-einputs` (and
+  its g8 twin); probes/bmma8 expected/ in cargo test on both fronts.
 - Status: **validated**: `ptxv calib-mma probes/hmma` (one warp per 16x8 tile, K = 64 in 4
   accumulating steps) scores 820 candidates on 98,304 GB300 outputs (6 input sets: normal,
   log-uniform 2^±12 / 2^±30, cancellation, alignment and accumulator probes): exactly this

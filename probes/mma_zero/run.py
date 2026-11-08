@@ -206,9 +206,9 @@ for m, md in [("m128", M128N16), ("m64", M64N16)]:
     for en in [0, 1]:
         CONFIGS.append((f"tc_bf16_{m}_en{en}", "tc_f16", "bf16", md | 0x490, en, True))
 for en in [0, 1]:
-    CONFIGS.append((f"tc_f16_m128_en{en}", "tc_f16", "f16", M128N16 | 0x10, en, False))
+    CONFIGS.append((f"tc_f16_m128_en{en}", "tc_f16", "f16", M128N16 | 0x10, en, True))
     CONFIGS.append(
-        (f"tc_tf32_m128_en{en}", "tc_tf32", "tf32", M128N16 | 0x910, en, False)
+        (f"tc_tf32_m128_en{en}", "tc_tf32", "tf32", M128N16 | 0x910, en, True)
     )
     CONFIGS.append((f"tc_e4m3_m128_en{en}", "tc_f8", "e4m3", M128N16 | 0x10, en, True))
     CONFIGS.append((f"tc_e4m3f16d_m128_en{en}", "tc_f8", "e4m3", M128N16, en, True))

@@ -124,7 +124,7 @@ pub fn wanted(v: &Verdict, launch: &Launch) -> Option<String> {
 /// Race / stale findings without a label yet (an intra-warp race in a converged warp is
 /// labelled when reported, `LATENT_DIV`).
 fn classifiable(f: &Finding) -> bool {
-    (f.kind == "race" || f.kind == "stale") && f.gb300.is_none()
+    (f.kind == "race" || f.kind == "race-dead" || f.kind == "stale") && f.gb300.is_none()
 }
 
 /// The hardware model's launch for a level-1 launch.
@@ -293,7 +293,7 @@ pub fn classify(v1: &mut Verdict, v2: &Verdict, st: &L1Stats, m: &Machine) -> Gb
         }
         // 3. Not reachable: why.
         let mut why = Vec::new();
-        if f.kind == "race" {
+        if f.kind == "race" || f.kind == "race-dead" {
             why.push(
                 "with GB300's ordering (sequentially consistent memory behind the L1s: a relaxed poll that observed a signal is ordered after everything its writer did before the signal) the accesses are ordered"
                     .to_string(),
@@ -301,7 +301,7 @@ pub fn classify(v1: &mut Verdict, v2: &Verdict, st: &L1Stats, m: &Machine) -> Gb
         }
         if ww {
             why.push("both accesses are writes, and L1 is write-through".into());
-        } else if !global && f.kind == "race" {
+        } else if !global && (f.kind == "race" || f.kind == "race-dead") {
             why.push("not a global-memory access, so L1 does not apply".into());
         } else {
             for &r in &reads {
@@ -417,7 +417,7 @@ pub fn classify(v1: &mut Verdict, v2: &Verdict, st: &L1Stats, m: &Machine) -> Gb
     let covered: Vec<u32> = v1
         .findings
         .iter()
-        .filter(|f| f.kind == "race" || f.kind == "stale")
+        .filter(|f| f.kind == "race" || f.kind == "race-dead" || f.kind == "stale")
         .flat_map(|f| reads_of(f).0)
         .chain(v2.findings.iter().filter_map(stale_read))
         .collect();

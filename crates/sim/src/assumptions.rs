@@ -107,6 +107,13 @@ pub const REGISTRY: &[Assumption] = &[
         },
     },
     Assumption {
+        id: "E-RACE-DEAD",
+        kind: "code",
+        status: "argued",
+        title: "a race whose racing loads' values reach no S-INIT sink does not change the outcome",
+        applies: |k| any(k, |o| matches!(o, Op::Ld { .. })),
+    },
+    Assumption {
         id: "E-DRF",
         kind: "code",
         status: "argued",
@@ -133,6 +140,20 @@ pub const REGISTRY: &[Assumption] = &[
         status: "argued",
         title: "lanes of one stmatrix writing a shared word with the same value write it once; different values are a violation",
         applies: |k| any(k, |o| matches!(o, Op::StMatrix { .. })),
+    },
+    Assumption {
+        id: "S-INIT-FILLS",
+        kind: "code",
+        status: "argued",
+        title: "undef-insensitive: undefined values that reach only output data leave the outputs bitwise equal over 6 fills (empirical evidence, not a certificate)",
+        applies: never,
+    },
+    Assumption {
+        id: "S-TMAP-TAIL",
+        kind: "code",
+        status: "validated",
+        title: "GB300's TMA ignores bytes 0x40..0x7f of a tensor map in global memory (undefined bytes there: contract finding)",
+        applies: never,
     },
     Assumption {
         id: "E-WARP-ORDER",
@@ -318,6 +339,17 @@ pub const REGISTRY: &[Assumption] = &[
         status: "validated",
         title: "a counted named barrier completes a generation every count arrivals; surplus arrivals start the next",
         applies: |k| any(k, |o| matches!(o, Op::BarSync { count: Some(_), .. })),
+    },
+    Assumption {
+        id: "E-BAR-RED",
+        kind: "code",
+        status: "validated",
+        title: "bar.red reduces the waiters' predicates of one barrier generation; each waiter reads the result",
+        applies: |k| {
+            any(k, |o| {
+                matches!(o, Op::BarSync { red: Some(_), .. } | Op::BarResult { .. })
+            })
+        },
     },
     Assumption {
         id: "E-GRID",

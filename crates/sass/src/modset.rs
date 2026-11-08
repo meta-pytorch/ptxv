@@ -29,8 +29,8 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
     (
         "ATOMG",
         &[
-            "64", "ADD", "BF16x2", "CAS", "DEC", "E", "EXCH", "F32", "FTZ", "GPU", "INC", "MAX",
-            "MIN", "OR", "RN", "S32", "S64", "STRONG", "SYS",
+            "64", "ADD", "BF16x2", "CAS", "DEC", "E", "EXCH", "F32", "F64", "FTZ", "GPU", "INC",
+            "MAX", "MIN", "OR", "RN", "S32", "S64", "SM", "STRONG", "SYS",
         ],
     ),
     (
@@ -40,7 +40,11 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
             "SPIN", "XOR",
         ],
     ),
-    ("BAR", &["ARV", "DEFER_BLOCKING", "SYNC"]),
+    ("B2R", &["RESULT"]),
+    (
+        "BAR",
+        &["AND", "ARV", "DEFER_BLOCKING", "OR", "POPC", "RED", "SYNC"],
+    ),
     ("BMOV", &["32", "CLEAR"]),
     ("BMSK", &["W"]),
     ("BPT", &["TRAP"]),
@@ -139,6 +143,13 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
     ("HMNMX2", &["BF16_V2", "NAN", "XORSIGN"]),
     ("HMUL2", &["BF16_V2"]),
     (
+        "HSET2",
+        &[
+            "AND", "BF", "BF16_V2", "EQ", "EQU", "GE", "GEU", "GT", "GTU", "LE", "LEU", "LT",
+            "LTU", "NAN", "NE", "NEU", "NUM", "OR", "XOR",
+        ],
+    ),
+    (
         "HSETP2",
         &[
             "AND", "BF16_V2", "EQ", "EQU", "GE", "GEU", "GT", "GTU", "LE", "LEU", "LT", "LTU",
@@ -164,15 +175,17 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
     ),
     (
         "LD",
-        &["128", "64", "E", "GPU", "SM", "STRONG", "SYS", "U16"],
+        &[
+            "128", "64", "E", "GPU", "S8", "SM", "STRONG", "SYS", "U16", "U8",
+        ],
     ),
     ("LDC", &["64", "U8"]),
     ("LDCU", &["128", "64", "U16", "U8"]),
     (
         "LDG",
         &[
-            "128", "256", "64", "CONSTANT", "E", "EF", "EL", "ENL2", "GPU", "LTC128B", "NA", "S16",
-            "S8", "SM", "STRONG", "SYS", "U16", "U8",
+            "128", "256", "64", "CONSTANT", "E", "EF", "EFL2", "EL", "ELL2", "ENL2", "GPU",
+            "LTC128B", "NA", "S16", "S8", "SM", "STRONG", "SYS", "U16", "U8",
         ],
     ),
     ("LDGDEPBAR", &[]),
@@ -219,6 +232,7 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
     ("MATCH", &["ANY", "U64"]),
     ("MEMBAR", &["ALL", "CTA", "GPU", "SC", "SYS"]),
     ("MOV", &["SPILL"]),
+    ("MOVM", &["16", "MT88"]),
     (
         "MUFU",
         &[
@@ -240,8 +254,8 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
     (
         "REDG",
         &[
-            "64", "ADD", "BF16x2", "E", "F32", "FTZ", "GPU", "MAX", "MIN", "RN", "S32", "S64",
-            "STRONG", "SYS",
+            "64", "ADD", "BF16x2", "E", "F32", "F32x2", "F32x4", "F64", "FTZ", "GPU", "MAX", "MIN",
+            "RN", "S32", "S64", "SM", "STRONG", "SYS",
         ],
     ),
     ("REDUX", &["OR", "S32", "SUM", "XOR"]),
@@ -255,14 +269,16 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
     ("SHFL", &["BFLY", "DOWN", "IDX", "UP"]),
     (
         "ST",
-        &["128", "64", "E", "EF", "GPU", "SM", "STRONG", "SYS", "U16"],
+        &[
+            "128", "64", "E", "EF", "GPU", "SM", "STRONG", "SYS", "U16", "U8",
+        ],
     ),
     ("STAS", &["128", "64"]),
     (
         "STG",
         &[
-            "128", "256", "64", "E", "EF", "EL", "ENL2", "GPU", "MMIO", "SM", "STRONG", "SYS",
-            "U16", "U8",
+            "128", "256", "64", "E", "EF", "EFL2", "EL", "ELL2", "ENL2", "GPU", "MMIO", "SM",
+            "STRONG", "SYS", "U16", "U8",
         ],
     ),
     ("STL", &["128", "64", "S16", "U16", "U8"]),
@@ -287,7 +303,7 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
     (
         "SYNCS",
         &[
-            "64", "A0T1", "A0TR", "A0TX", "A1T0", "ARRIVE", "CCTL", "EXCH", "IV", "IVALL",
+            "64", "A0T1", "A0TR", "A0TX", "A1T0", "ARRIVE", "ART0", "CCTL", "EXCH", "IV", "IVALL",
             "PHASECHK", "RED", "TRANS64", "TRYWAIT",
         ],
     ),
@@ -330,6 +346,7 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
         "UTMALDG",
         &["1D", "2CTA", "2D", "3D", "4D", "5D", "GATHER4", "MULTICAST"],
     ),
+    ("UTMAPF", &["1D", "2D", "3D", "4D", "5D", "L2"]),
     ("UTMAREDG", &["1D", "2D", "3D", "4D", "5D", "ADD"]),
     ("UTMASTG", &["2D", "3D", "4D", "5D"]),
     ("UVIRTCOUNT", &["DEALLOC", "SMPOOL"]),

@@ -76,6 +76,14 @@ impl Reg {
     }
 }
 
+/// `bar.red` reduction (SASS `BAR.RED.POPC` / `.AND` / `.OR`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BarRedOp {
+    Popc,
+    And,
+    Or,
+}
+
 /// `REDUX` / `CREDUX` reduction (32-bit lanes).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ReduxOp {
@@ -384,6 +392,8 @@ pub enum LpRnd {
 /// `tcgen05.mma` kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MmaKind {
+    /// `.kind::f16` and `.kind::tf32` (SASS `UTCHMMA`): the instruction descriptor's A / B
+    /// format tells them apart (f16 = 0, bf16 = 1, tf32 = 2).
     F16,
     F8f6f4,
     /// `.kind::mxf8f6f4.block_scale`: ue8m0 scales, one per 32 K elements.
@@ -407,6 +417,9 @@ pub enum AtomOp {
     /// f32 add, round to nearest, subnormals flushed (`ATOM.E.ADD.F32.FTZ.RN`,
     /// `atom.add.f32`).
     FAddFtz,
+    /// f64 add, round to nearest even, subnormals kept (`ATOMG` / `REDG` `.E.ADD.F64.RN`,
+    /// `atom` / `red` `.add.f64`; probes/atom_f64).
+    FAdd64,
     /// bf16x2 add per lane, round to nearest even, subnormals kept, NaN results 0x7fff
     /// (`ATOMG` / `REDG` `.E.ADD.BF16x2.RN`, `atom` / `red` `.add.noftz.bf16x2`, N-BF16X2).
     AddBf16x2,
@@ -723,6 +736,10 @@ pub enum Op {
         d: Reg,
         a: Val,
         op: ReduxOp,
+        /// PTX `redux.sync` membermask when not the full warp (immediate or register): the
+        /// lanes it names execute it together; executing lanes that differ from it are
+        /// reported (E-WARPCOLL, probes/redux_mask). None: the full warp (and SASS).
+        mask: Option<Val>,
     },
     /// Atomic read-modify-write on memory; `d` gets the old value.
     Atom {
@@ -904,6 +921,29 @@ pub enum Op {
         bop: BoolOp,
         f16: bool,
     },
+    /// `movmatrix.sync.aligned.m8n8.trans.b16 d, a` (SASS `MOVM.16.MT88 Rd, Ra`, warp-collective):
+    /// the 8x8 matrix of 16-bit elements whose row g = lane / 4, columns 2t, 2t + 1 (t = lane % 4)
+    /// are lane's low and high halves, transposed (probes/movm).
+    MovMatrix {
+        d: Reg,
+        a: Val,
+    },
+    /// SASS `HSET2[.BF16_V2][.BF].<cmp>.<bop> d, a, b, Pc` (`set.<cmp>.{u32,f16x2,bf16x2}.{f16x2,
+    /// bf16x2}`): `Hsetp2Bf16`'s per-lane result combined with Pc, as a register: half k is
+    /// 0xffff when true (`bf`: 1.0 in the operand format), else 0 (probes/hset2).
+    Hset2 {
+        d: Reg,
+        cmp: FCmp,
+        a: Val,
+        b: Val,
+        sel: [HSel; 2],
+        neg: [bool; 2],
+        abs: [bool; 2],
+        c: Pred,
+        bop: BoolOp,
+        f16: bool,
+        bf: bool,
+    },
     /// SASS `FSET.BF.cmp.bop d, a, b, c`: Fsetp's predicate as a register, 1.0f when true
     /// (`.BF`), else 0.
     Fset {
@@ -959,6 +999,8 @@ pub enum Op {
         b: (Val, F2Lanes),
         c: (Val, F2Lanes),
         neg: [bool; 3],
+        /// `|R|` operands (SASS only; applied before `neg`).
+        abs: [bool; 3],
         rnd: Rnd,
     },
     /// Packed half2 FMA `d = a*b + c` (per 16-bit half), SASS `HFMA2` (`HMUL2` is c = -0,
@@ -1136,6 +1178,8 @@ pub enum Op {
     /// SASS `BRX Ra -off` / `BRXU URa -off` (ptxas jump tables): jump to the code address
     /// `Ra + next + off` within this kernel (16 bytes per instruction), per thread. `targets`:
     /// the instructions nvdisasm lists as `BRANCH_TARGETS`; any other address is an error.
+    /// PTX `brx.idx i, $L` (`off` 0): jump to `targets[i]` (the `.branchtargets` list); an
+    /// index outside it is an error.
     Brx {
         base: Val,
         off: i64,
@@ -1222,6 +1266,17 @@ pub enum Op {
         /// `WARPSYNC.COLLECTIVE` region): every live lane of a warp executes the same barrier
         /// instruction together (E-ALIGNED).
         aligned: bool,
+        /// `bar.red` (SASS `BAR.RED`): the waiting thread contributes this predicate; at
+        /// release every waiter's barrier result (read by `BarResult`) is the reduction over
+        /// the generation's waiters. ASSUME(E-BAR-RED)
+        red: Option<(BarRedOp, Pred)>,
+    },
+    /// SASS `B2R.RESULT Rd[, Pd]` (the result half of PTX `bar.red`): `d` = the number of
+    /// true contributions of this thread's last `bar.red.popc` generation, `p` = the
+    /// `.and` / `.or` result of its last `bar.red.and` / `.or`. ASSUME(E-BAR-RED)
+    BarResult {
+        d: Option<Reg>,
+        p: Option<Reg>,
     },
     /// `mbarrier.init`. `encoded`: `count` is the raw 64-bit state word (SASS SYNCS.EXCH.64).
     MbarInit {
@@ -1236,8 +1291,9 @@ pub enum Op {
         /// `.shared::cluster` address (SASS `SYNCS.ARRIVE.*.RED`): the rank byte selects the
         /// CTA whose mbarrier receives the arrival.
         remote: bool,
-        /// PTX `mbarrier.arrive [a], count` (None: one arrival); 1 and 0 (no arrival: SASS
-        /// `.A0TR` = `mbarrier.expect_tx`, `.A0TX` = `mbarrier.complete_tx`) are modeled.
+        /// PTX `mbarrier.arrive [a], count` (None: one arrival; SASS `.ART0`: the count in a
+        /// register); 0 = no arrival (SASS `.A0TR` = `mbarrier.expect_tx`, `.A0TX` =
+        /// `mbarrier.complete_tx`).
         count: Option<Val>,
         /// `tx` completes transaction bytes instead of expecting them (`mbarrier.complete_tx`).
         complete: bool,
@@ -1765,6 +1821,13 @@ pub enum Op {
         /// zeros are written and global memory is not read (Triton's masked prefetch past the
         /// end: `!PT`).
         src_ok: Pred,
+        /// PTX `cp.async ..., cp-size, src-size` with src-size not cp-size: the first
+        /// src-size bytes are copied, the rest zero-filled (src-size > cp-size: a violation).
+        src_size: Option<Val>,
+        /// SASS `LDGSTS...ZFILL`: the source address's low bits (mod `bytes`) are the number
+        /// of trailing zero bytes; the copied bytes start at the address rounded down
+        /// (ptxas encodes src-size s as address + bytes - s; probes/cpasync_srcsize).
+        zfill: bool,
     },
     /// `cp.async.commit_group` (SASS `LDGDEPBAR`): close the open group.
     CpAsyncCommit,
@@ -1789,7 +1852,8 @@ pub enum Op {
     /// b1 = B[2t+8, 2t+9][g]; c0, c1 = C[g][2t, 2t+1], c2, c3 = C[g+8][2t, 2t+1].
     /// `tf32`: `mma.sync.m16n8k8...tf32` (SASS `HMMA.1688.F32.TF32`): A 16x8 and B 8x8, one
     /// f32 word per element: a0 = A[g][t], a1 = A[g+8][t], a2 = A[g][t+4], a3 = A[g+8][t+4];
-    /// b0 = B[t][g], b1 = B[t+4][g]; C / D as above.
+    /// b0 = B[t][g], b1 = B[t+4][g]; C / D as above. Two A and one B registers:
+    /// `mma.sync.m16n8k8` bf16 (SASS `HMMA.1688.F32.BF16`), the k16 fragments for k < 8.
     Hmma {
         d: Reg,
         a: Vec<Val>,
@@ -1915,8 +1979,12 @@ impl Op {
             | Op::CvtF32F16 { a, .. }
             | Op::F2fF16 { a, .. }
             | Op::R2p { a, .. }
-            | Op::CvtUnpack { a, .. }
-            | Op::Redux { a, .. } => vec![a.clone()],
+            | Op::CvtUnpack { a, .. } => vec![a.clone()],
+            Op::Redux { a, mask, .. } => {
+                let mut x = vec![a.clone()];
+                x.extend(mask.iter().cloned());
+                x
+            }
             Op::CvtPack { a, b, c, .. } => vec![a.clone(), b.clone(), c.clone()],
             Op::CvtRsX4 { src, rbits, .. } => {
                 let mut x = src.to_vec();
@@ -1942,7 +2010,8 @@ impl Op {
             Op::Vhmnmx { a, b, c, min, .. } => vec![a.clone(), b.clone(), c.clone(), pr(min)],
             Op::Fsetp { a, b, c, .. }
             | Op::Fset { a, b, c, .. }
-            | Op::Hsetp2Bf16 { a, b, c, .. } => {
+            | Op::Hsetp2Bf16 { a, b, c, .. }
+            | Op::Hset2 { a, b, c, .. } => {
                 vec![a.clone(), b.clone(), pr(c)]
             }
             Op::LdConst { base, .. } => vec![base.clone()],
@@ -2049,9 +2118,12 @@ impl Op {
                 x.push(y.clone());
                 x
             }
-            Op::CpAsync { dst, src, .. } => {
+            Op::CpAsync {
+                dst, src, src_size, ..
+            } => {
                 let mut x = ad(dst);
                 x.extend(ad(src));
+                x.extend(src_size.iter().cloned());
                 x
             }
             Op::CpAsyncMbarArrive { addr, .. } => ad(addr),
@@ -2076,10 +2148,29 @@ impl Op {
                 x
             }
             Op::Atom {
-                addr, v: y, new, ..
+                addr,
+                v: y,
+                new,
+                op,
+                bytes,
+                ..
             } => {
                 let mut x = ad(addr);
-                x.push(y.clone());
+                match y {
+                    // A vector red.add.f32 (REDG.E.ADD.F32x2 / F32x4): every data register.
+                    Val::Reg(r, _) if *op == AtomOp::FAddFtz && *bytes > 4 => {
+                        for k in 0..(*bytes / 4) as u16 {
+                            x.push(Val::Reg(
+                                Reg {
+                                    file: r.file,
+                                    idx: r.idx + k,
+                                },
+                                1,
+                            ));
+                        }
+                    }
+                    _ => x.push(y.clone()),
+                }
                 x.extend(new.iter().cloned());
                 x
             }
@@ -2101,14 +2192,16 @@ impl Op {
                 x.push(parity.clone());
                 x
             }
+            Op::MovMatrix { a, .. } => vec![a.clone()],
             Op::Ret { addr } => vec![addr.clone()],
             Op::Brx { base, .. } => vec![base.clone()],
             Op::CallAbs { target, .. } => vec![target.clone()],
             Op::Bra { cond: Some(c), .. } | Op::Break { cond: Some(c), .. } => vec![pr(c)],
             Op::WarpSync { mask, .. } | Op::TmemFreeRaw { mask } => vec![mask.clone()],
-            Op::BarSync { id, count, .. } => {
+            Op::BarSync { id, count, red, .. } => {
                 let mut x = vec![id.clone()];
                 x.extend(count.iter().cloned());
+                x.extend(red.iter().map(|(_, p)| pr(p)));
                 x
             }
             Op::ClcTryCancel { resp, mbar, .. } => vec![resp.clone(), mbar.clone()],
@@ -2173,6 +2266,7 @@ impl Op {
             Op::BMov { .. } => vec![],
             Op::Bra { div: Some(m), .. } => vec![m.clone()],
             Op::Elect { .. }
+            | Op::BarResult { .. }
             | Op::EndCollective { .. }
             | Op::Bssy { .. }
             | Op::Bsync { .. }
@@ -2338,6 +2432,7 @@ impl Op {
                 x
             }
             Op::Shfl { d, p: Some(p), .. } => vec![*d, *p],
+            Op::BarResult { d, p } => d.iter().chain(p.iter()).copied().collect(),
             Op::DivFull { d, .. }
             | Op::Dp2a { d, .. }
             | Op::CvtF32F16 { d, .. }
@@ -2348,6 +2443,7 @@ impl Op {
             Op::Dfma { d, .. } => span(*d, 2),
             Op::DivSqrt64 { d, .. } => vec![*d],
             Op::Dsetp { d, .. } => vec![*d],
+            Op::Hset2 { d, .. } | Op::MovMatrix { d, .. } => vec![*d],
             Op::Hsetp2Bf16 { d, q, .. } => {
                 let mut x = vec![*d];
                 x.extend(*q);

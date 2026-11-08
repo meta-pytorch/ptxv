@@ -1,0 +1,36 @@
+name = "probe_abs_f32"
+description = """
+Probe (L-ROSETTA) for abs.f32 / abs.ftz.f32 (ptxas: FADD[.FTZ] |a|, -RZ) and abs.s32 (IABS) on
+special patterns (zeros, subnormals, infinities, NaN payloads, INT_MIN) and random words
+(kernel.ptx, gen.py). expected/ is GB300's output (ptxas cubin, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "abs_f32"
+grid = [1, 1, 1]
+block = [1024, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [3072]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

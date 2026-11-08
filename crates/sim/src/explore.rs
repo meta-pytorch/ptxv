@@ -368,11 +368,17 @@ impl Verdict {
         // Havoc probes (kind "probe", the two-level check's level 2: l1.rs, twolevel.rs) are
         // witnesses for classification, not findings of the check; `unordered` root-cause
         // pairs (wellsync.rs `add_root_pairs`) explain a race / nondeterminism found anyway;
-        // notes (kind "note", S-SAME-VALUE) are not findings either.
+        // notes (kind "note", S-SAME-VALUE) are not findings either, nor races whose loaded
+        // values are dead (kind "race-dead", E-RACE-DEAD: kept in the findings).
         let mut c: Vec<String> = self
             .findings
             .iter()
-            .filter(|f| f.kind != "probe" && f.kind != "unordered" && f.kind != "note")
+            .filter(|f| {
+                !matches!(
+                    f.kind.as_str(),
+                    "probe" | "unordered" | "note" | "race-dead"
+                )
+            })
             .map(|f| f.kind.clone())
             .collect();
         if self.distinct_outputs > 1 {
@@ -780,6 +786,7 @@ fn local_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)
                             addr,
                             tx: None,
                             remote: false,
+                            count,
                             ..
                         } => {
                             let active: Vec<usize> = members()
@@ -790,12 +797,17 @@ fn local_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)
                                 Default::default();
                             let mut ok = true;
                             for &t in &active {
-                                match m
-                                    .addr(t, addr)
-                                    .and_then(|a| m.resolve(t, ptxv_ir::Space::Shared, a, 8))
-                                {
-                                    Ok(crate::exec::Loc::Shared { cta, off }) => {
-                                        *per.entry((cta, off)).or_insert(0) += 1
+                                let n = match count {
+                                    Some(c) => m.rd(t, c).map(|n| n as u32),
+                                    None => Ok(1),
+                                };
+                                match (
+                                    n,
+                                    m.addr(t, addr)
+                                        .and_then(|a| m.resolve(t, ptxv_ir::Space::Shared, a, 8)),
+                                ) {
+                                    (Ok(n), Ok(crate::exec::Loc::Shared { cta, off })) => {
+                                        *per.entry((cta, off)).or_insert(0) += n
                                     }
                                     _ => ok = false,
                                 }
@@ -4131,8 +4143,11 @@ fn sync_ample(
 
 pub fn explore(m0: Machine, max_states: usize) -> Verdict {
     let note = crate::residency::reliance_note(&m0);
+    let base = m0.clone();
     let mut v = crate::smem::two_pass(m0, |m| explore_slice(m, max_states, None));
     v.notes.extend(note);
+    // S-INIT-FILLS: undefined values that reach only output data.
+    crate::fills::check(&base, &mut v);
     v
 }
 
@@ -4907,7 +4922,30 @@ fn check_lookahead(
     }
 }
 
-fn explore_one(m0: Machine, max_states: usize, threads: usize) -> Verdict {
+fn explore_one(mut m0: Machine, max_states: usize, threads: usize) -> Verdict {
+    // E-RACE-DEAD: every racing read of every explored transition (race_dead.rs).
+    let log = if m0.dead_probe.is_none() {
+        crate::race_dead::new_log()
+    } else {
+        None
+    };
+    m0.race_log = log.clone();
+    let (mut v, peek, vip) = explore_one_models(m0.clone(), max_states, threads);
+    if let Some(log) = log.filter(|_| v.complete && v.distinct_outputs <= 1) {
+        let cands = crate::race_dead::candidates(&log, &v.findings);
+        let dead = crate::race_dead::decide(&cands, |reads| {
+            let m = crate::race_dead::probe_machine(&m0, reads);
+            let w = explore_one_model(m, max_states, threads, peek, vip);
+            w.complete && crate::race_dead::no_new_use(&v.findings, &w.findings)
+        });
+        crate::race_dead::mark(&mut v.findings, &dead);
+    }
+    v
+}
+
+/// `explore_one` before the dead-race check: the verdict and the model it came from (peek
+/// changes, value-insensitive poll level).
+fn explore_one_models(m0: Machine, max_states: usize, threads: usize) -> (Verdict, bool, u8) {
     let v = explore_one_model(m0.clone(), max_states, threads, true, 2);
     // A racy kernel's outcomes depend on orders of plain accesses that the reductions do
     // not keep (E-DRF); the peek changes remove branching that used to expose some of them.
@@ -4933,7 +4971,7 @@ fn explore_one(m0: Machine, max_states: usize, threads: usize) -> Verdict {
                     "a race was found: explored again with value-insensitive polls (E-POLL-ANY) on relaxed loads only ({} states with acquire loads too)",
                     v.states
                 ));
-                return w;
+                return (w, true, 1);
             }
         }
         let mut w = explore_one_model(m0, max_states, threads, false, 0);
@@ -4941,9 +4979,9 @@ fn explore_one(m0: Machine, max_states: usize, threads: usize) -> Verdict {
             "a race was found: explored again without the peek changes (E-SPIN) and value-insensitive polls (E-POLL-ANY) ({} states with them)",
             v.states
         ));
-        return w;
+        return (w, false, 0);
     }
-    v
+    (v, true, 2)
 }
 
 fn explore_one_model(
@@ -7480,11 +7518,16 @@ impl LaWarp {
                 if g == Av::K(0) {
                     return LaStep::Next;
                 }
+                // A count the lookahead does not know: any number of arrivals.
                 let n = match count {
                     None => 1,
                     Some(v) => match self.val(m, c, v) {
                         Av::K(x) => x,
-                        _ => 1,
+                        _ => {
+                            unknown_target(res, changed);
+                            *changed = true;
+                            return LaStep::Next;
+                        }
                     },
                 };
                 if n == 0 {
@@ -7704,6 +7747,16 @@ impl LaWarp {
                             wild("divergent branch")
                         }
                     }
+                }
+            }
+            Op::Brx { base, targets, .. } if m.k.front == ptxv_ir::Front::Ptx => {
+                match self.val(m, c, base) {
+                    Av::K(b) => match targets.get(b as u32 as usize) {
+                        Some(&to) => LaStep::Jump(to as u32),
+                        None => wild("brx.idx index"),
+                    },
+                    Av::U => LaStep::Fork(targets.iter().map(|&q| Some(q as u32)).collect()),
+                    _ => wild("divergent brx.idx"),
                 }
             }
             Op::Brx { base, off, targets } => match self.val(m, c, base) {

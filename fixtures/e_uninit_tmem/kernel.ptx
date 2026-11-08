@@ -1,0 +1,52 @@
+//
+// S-INIT for a load of never-written TMEM (the shape of Triton's peeled-loop prologue,
+// dash/5713): the tcgen05.st that would fill the columns runs only when the trip count `n`
+// is nonzero (here 0), but the tcgen05.ld after it is unconditional; its value is used only
+// under the same condition. Variant use: the loaded value is stored unconditionally.
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry uninit_tmem(
+	.param .u64 out_ptr,
+	.param .u32 n
+)
+.maxntid 32, 1, 1
+{
+	.reg .pred %p<4>;
+	.reg .b32 %r<16>;
+	.reg .b64 %rd<8>;
+	.shared .align 16 .b32 tmem_slot;
+
+	ld.param.u64 %rd1, [out_ptr];
+	cvta.to.global.u64 %rd1, %rd1;
+	ld.param.u32 %r9, [n];
+	mov.u32 %r0, %tid.x;
+	mov.u32 %r2, tmem_slot;
+	tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r2], 32;
+	tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+	tcgen05.fence::before_thread_sync;
+	bar.sync 0;
+	tcgen05.fence::after_thread_sync;
+	ld.shared.b32 %r5, [%r2];
+	setp.ne.u32 %p1, %r9, 0;
+	@!%p1 bra SKIP;
+	add.u32 %r6, %r0, 1;
+	mov.u32 %r7, %r6;
+	tcgen05.st.sync.aligned.32x32b.x2.b32 [%r5], {%r6, %r7};
+	tcgen05.wait::st.sync.aligned;
+SKIP:
+	tcgen05.ld.sync.aligned.32x32b.x2.b32 {%r10, %r11}, [%r5];
+	tcgen05.wait::ld.sync.aligned;
+	selp.u32 %r13, %r10, 7, %p1; // @USE
+	mul.wide.u32 %rd3, %r0, 4;
+	add.u64 %rd4, %rd1, %rd3;
+	@%p1 st.global.u32 [%rd4], %r13;
+	@!%p1 st.global.u32 [%rd4], 7;
+	tcgen05.fence::before_thread_sync;
+	bar.sync 0;
+	tcgen05.fence::after_thread_sync;
+	tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r5, 32;
+	ret;
+}

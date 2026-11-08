@@ -34,7 +34,9 @@ buffer = "out"
 [[variants]]
 id = "good"
 summary = "stores the defined low lane"
-expect = ["violation"]
+# PTX: lane-coarse propagation reports the store; the outputs are equal in every fill
+# (S-INIT-FILLS).
+expect = ["undef-insensitive"]
 expect_sass = ["clean"]
 
 [[variants]]

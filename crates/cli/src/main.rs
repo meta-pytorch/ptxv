@@ -364,6 +364,10 @@ enum Cmd {
         /// Narrow kinds: only the format configurations whose name contains this.
         #[arg(long)]
         only: Option<String>,
+        /// Products per MMA step (default: 16 for bf16, 8 for tf32; 8 for a bf16 m16n8k8
+        /// case, probes/bmma8).
+        #[arg(long)]
+        step: Option<usize>,
     },
     /// Narrow-format cvt sweep on GB300 (probes/cvt_lp): compare with the model; `--record`
     /// writes the per-op hardware hashes cargo test replays.
@@ -2091,13 +2095,18 @@ fn run() -> Result<()> {
             }
             println!("{}", serde_json::to_string(&r)?);
         }
-        Cmd::CalibMma { case, out, only } => {
+        Cmd::CalibMma {
+            case,
+            out,
+            only,
+            step,
+        } => {
             let c = Case::load(&case)?;
             // A byte-operand probe (probes/mma_f8) calibrates the narrow kinds.
             if c.buffer("A")?.dtype == "u8" {
                 calib_lp::run(&c, &out, only.as_deref())?
             } else {
-                calib::run(&c, &out)?
+                calib::run(&c, &out, step)?
             }
         }
         Cmd::Probe {

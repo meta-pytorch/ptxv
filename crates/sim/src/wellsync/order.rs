@@ -90,6 +90,7 @@ pub(super) fn pair(x: &SAcc, y: &SAcc, cas_ok: &HashSet<CasWord>, same_ok: SameO
             ox,
             AtomOp::Exch
                 | AtomOp::FAddFtz
+                | AtomOp::FAdd64
                 | AtomOp::AddBf16x2
                 | AtomOp::AddBf16
                 | AtomOp::CasSpin

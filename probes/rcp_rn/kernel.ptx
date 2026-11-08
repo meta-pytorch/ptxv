@@ -1,0 +1,15 @@
+// Probe for rcp.rn.f32 (IEEE 1 / a, subnormals kept) on random bits, specials, subnormals and
+// large magnitudes. Thread i: a = words 4i..4i+3 of in; writes 1 / a for each.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry rcp_rn(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<8>; .reg .b32 %r<4>; .reg .f32 %f<12>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mul.wide.u32 %rd3, %r1, 16; add.s64 %rd4, %rd1, %rd3;
+  add.s64 %rd5, %rd2, %rd3;
+  ld.global.v4.f32 {%f1, %f2, %f3, %f4}, [%rd4];
+  rcp.rn.f32 %f5, %f1; rcp.rn.f32 %f6, %f2; rcp.rn.f32 %f7, %f3; rcp.rn.f32 %f8, %f4;
+  st.global.v4.f32 [%rd5], {%f5, %f6, %f7, %f8};
+  ret; }
