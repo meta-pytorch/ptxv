@@ -567,6 +567,12 @@ fn r1d_good() {
     check_dir("fixtures", "r1d_clc", "good", "ptx");
     check_dpor("r1d_clc", "good", "sass", 2_000_000);
 }
+/// mov.b128 q, {lo, hi} / mov.b128 {lo, hi}, q (CuTe DSL's CLC response from .v2.b64).
+#[test]
+fn r1d_v2pack() {
+    check_dpor("r1d_clc", "v2pack", "ptx", 2_000_000);
+    check_dpor("r1d_clc", "v2pack", "sass", 2_000_000);
+}
 #[test]
 fn r1d_b17_unwaited_response() {
     check_dpor("r1d_clc", "B17", "ptx", 2_000_000);
@@ -2469,6 +2475,32 @@ fn probe_printf_clock_matches_hardware() {
             "{front}: {report:?}"
         );
     }
+}
+
+/// cvta.to.local of a stack buffer's generic address (probes/local_cvta) = GB300 on both
+/// fronts; a generic address outside the local window converted and stored through faults.
+#[test]
+fn probe_local_cvta_matches_hardware() {
+    probe_bitwise("probes/local_cvta", "good", "ptx");
+    probe_bitwise("probes/local_cvta", "good", "sass");
+    let case = Case::load(root().join("probes/local_cvta")).unwrap();
+    let src = std::fs::read_to_string(case.dir.join("kernel.ptx")).unwrap();
+    let bad = src.replace(
+        "cvta.to.local.u64 %rd5, %rd3;",
+        "cvta.to.local.u64 %rd5, %rd2;",
+    );
+    assert_ne!(bad, src);
+    let k = ptxv_ptx::parse_kernel(&bad, Some("local_cvta")).unwrap();
+    let launch = build_launch(&case, &k).unwrap();
+    let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 200_000);
+    assert_eq!(v.classes(), ["fault"], "{:#?}", v.findings);
+    assert!(
+        v.findings
+            .iter()
+            .any(|f| f.msg.contains("outside the local window")),
+        "{:#?}",
+        v.findings
+    );
 }
 
 /// S-GLOBAL-INIT on both front-ends: module .global variables with and without initializers

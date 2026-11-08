@@ -315,6 +315,8 @@ any modifier outside the audited set before an arm runs.
 | `LDG.E.ENL2.256 Rhi, Rlo, [a], mask` | `ld.global.v8.b32` / `.v4.b64` with some elements unused | each half's selected words compacted from its base register (RZ: none); others untouched | probes/ldg256_mask |
 | `LDG` / `STG .E.ELL2.256`, `.E.EFL2.256` | `ld` / `st.global.L2::evict_last` / `L2::evict_first .v8.b32` | as ENL2 (eviction hint dropped, L-PTX-HINT) | probes/ldst256_l2 |
 | `CS2R Rd, SR_CLOCKLO` / `SR_GLOBALTIMERLO`, `CALL.ABS.NOINC` vprintf, `c[0x0][0x2f8]` | `%clock64` / `%globaltimer`, `call.uni vprintf`, `cvta.local.u64` | clocks 0, vprintf a no-op (note per site), unmapped generic local base (E-CLOCK, S-CBANK) | probes/printf_clock |
+| `IADD3` / `IMAD.IADD` with the window base (folded) | `cvta.to.local.u64` | generic minus the local generic base; outside the window, ld / st `.local` fault (S-CBANK) | probes/local_cvta |
+| (moves) | `mov.b128 q, {lo, hi}` / `mov.b128 {lo, hi}, q` | a .b128 register is two 64-bit slots (a cluster-launch-control response for `query_cancel`) | fixtures/r1d_clc v2pack |
 | `LDC.64 c[0x4][..]` (`R_CUDA_64` to `.nv.global[.init]`) | `.global` module variables, `mov.b64 %rd, sym`, `[sym+off]` | one buffer per (module, symbol, GPU): captured bytes, else initializer, else zeros (noted) (S-GLOBAL-INIT) | probes/ptx_globals |
 | `MEMBAR.SC.<scope>` [+ `ERRBAR` + `CCTL.IVALL`] | `membar.cta` / `.gl` / `.sys` | as `fence.sc.<scope>` (S-SCOPE) | probes/fence_scopes |
 | nothing / `CCTL.IVALL` | `fence.acquire.cta` / `.cluster` / `.gpu` | acquire of that scope only (S-SCOPE) | probes/fence_scopes |

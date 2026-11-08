@@ -2073,6 +2073,13 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
                         };
                         if is_b128 {
                             vreg_names.push(format!("{nm}.hi"));
+                            regs.insert(
+                                format!("{nm}.hi"),
+                                Reg {
+                                    file: File::V,
+                                    idx: (vreg_names.len() - 1) as u16,
+                                },
+                            );
                         }
                         r
                     };
@@ -2655,6 +2662,48 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         }
         "add" | "sub" | "mul" | "fma" | "neg" | "abs" | "min" | "max" if half_t => {
             bail!(lw.err(format!("{base}.{ht} not modeled")))
+        }
+        // `mov.b128 q, {lo, hi}` / `mov.b128 {lo, hi}, q`: a .b128 register is two 64-bit
+        // slots (CuTe DSL packs a cluster-launch-control response loaded as .v2.b64 for
+        // clusterlaunchcontrol.query_cancel).
+        "mov" if bits == 128 => {
+            let (vec, q) = if op_n(1)?.trim().starts_with('{') {
+                (op_n(1)?, op_n(0)?)
+            } else {
+                (op_n(0)?, op_n(1)?)
+            };
+            let halves: Vec<&str> = vec
+                .trim()
+                .trim_matches(|c| c == '{' || c == '}')
+                .split(',')
+                .map(|x| x.trim())
+                .collect();
+            if halves.len() != 2 || !vec.trim().starts_with('{') {
+                bail!(lw.err("only mov.b128 q, {lo, hi} and mov.b128 {lo, hi}, q are modeled"));
+            }
+            let q = q.trim();
+            let (qlo, qhi) = (lw.reg(q)?, lw.reg(&format!("{q}.hi"))?);
+            let pack = op_n(1)?.trim().starts_with('{');
+            let mut ops = Vec::new();
+            for (h, qr) in halves.iter().zip([qlo, qhi]) {
+                if pack {
+                    ops.push(Op::Mov {
+                        d: qr,
+                        a: lw.val(h)?,
+                    });
+                } else if *h != "_" {
+                    ops.push(Op::Mov {
+                        d: lw.dst(h)?,
+                        a: Val::Reg(qr, 1),
+                    });
+                }
+            }
+            if ops.is_empty() {
+                bail!(lw.err("mov.b128 {_, _} has no destination"));
+            }
+            let last = ops.pop().unwrap();
+            pre.extend(ops);
+            last
         }
         "mov" if op_n(0)?.trim().starts_with('{') => {
             let halves: Vec<&str> = op_n(0)?
@@ -4617,6 +4666,17 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         }
         "cvta" if has("local") && !has("to") && has("u64") => Op::Int {
             op: IntOp::Add,
+            bits: 64,
+            d: lw.dst(op_n(0)?)?,
+            a: lw.val(op_n(1)?)?,
+            b: Val::Imm(LOCAL_GENERIC_BASE),
+        },
+        // `cvta.to.local.u64 d, a` (nvcc: the local address of a stack buffer whose generic
+        // address `%SP + k` was taken, e.g. for a printf argument list): the inverse of the arm
+        // above. A generic address outside the local window is undefined in PTX; here it
+        // gives an offset of 2^32 or more, which ld / st .local reject. ASSUME(S-CBANK)
+        "cvta" if has("local") && has("to") && has("u64") => Op::Int {
+            op: IntOp::Sub,
             bits: 64,
             d: lw.dst(op_n(0)?)?,
             a: lw.val(op_n(1)?)?,

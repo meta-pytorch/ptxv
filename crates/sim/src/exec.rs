@@ -542,6 +542,14 @@ impl Machine {
         Ok(v)
     }
 
+    /// A local-memory address (LDL / STL, `ld` / `st` `.local`): an offset in the thread's
+    /// frame. An operand sum that leaves the 32-bit window (PTX `cvta.to.local` of a generic
+    /// address outside the local window, undefined in PTX) is an error, not truncated.
+    pub(crate) fn local_addr(&self, t: usize, a: &Addr) -> Result<u32, String> {
+        let v = self.addr(t, a)?;
+        u32::try_from(v).map_err(|_| format!("local address {v:#x} outside the local window"))
+    }
+
     // ---------------------------------------------------------------- memory
 
     pub fn resolve(&self, t: usize, space: Space, a: u64, n: usize) -> Result<Loc, String> {
@@ -9463,7 +9471,7 @@ impl Machine {
             // Local memory is private to the thread: no races, no other observers.
             Op::LdLocal { d, bytes, addr } if *bytes < 4 => {
                 // LDL.U8 / .U16: zero-extended byte / half of the word holding it.
-                let a = self.addr(t, addr)? as u32;
+                let a = self.local_addr(t, addr)?;
                 if !a.is_multiple_of(*bytes) {
                     return Err(format!("unaligned local load at {a:#x}"));
                 }
@@ -9481,7 +9489,7 @@ impl Machine {
             }
             Op::StLocal { bytes, addr, v } if *bytes < 4 => {
                 // STL.U8 / .U16: the low byte / half into the word holding it.
-                let a = self.addr(t, addr)? as u32;
+                let a = self.local_addr(t, addr)?;
                 if !a.is_multiple_of(*bytes) {
                     return Err(format!("unaligned local store at {a:#x}"));
                 }
@@ -9509,7 +9517,7 @@ impl Machine {
                 }
             }
             Op::LdLocal { d, bytes, addr } => {
-                let a = self.addr(t, addr)? as u32;
+                let a = self.local_addr(t, addr)?;
                 if !a.is_multiple_of(4) {
                     return Err(format!("unaligned local load at {a:#x}"));
                 }
@@ -9552,7 +9560,7 @@ impl Machine {
                 }
             }
             Op::StLocal { bytes, addr, v } => {
-                let a = self.addr(t, addr)? as u32;
+                let a = self.local_addr(t, addr)?;
                 if !a.is_multiple_of(4) {
                     return Err(format!("unaligned local store at {a:#x}"));
                 }
