@@ -51,7 +51,8 @@
 //!   or exit at the same pc with the same live registers and at least the run's clock and
 //!   pending releases. The run itself continues with the least clock of the exiting candidates
 //!   it has seen when the load runs (a poll that read a later release in the run may read an
-//!   earlier one elsewhere). Atomic or partially overlapping flag writes are not checked.
+//!   earlier one elsewhere). Partially overlapping flag writes are not checked; atomic ones
+//!   only as an arrival counter (C-POLL-ATOM, `poll_atomic_counter`).
 //!   Liveness: for an exiting iteration, every candidate it fails on must be HB-before
 //!   (hence coherence-before) an exiting concurrent candidate. Otherwise the failing write
 //!   may be coherence-latest and the poll may spin forever (fixture e_poll_any `dl`).
@@ -2534,6 +2535,137 @@ fn poll_try(
     Ok((m.threads[r.t].pc != h).then(|| (m, at_load.unwrap())))
 }
 
+/// C-POLL-ATOM (ASSUMPTIONS.md E-WELLSYNC): an exiting poll whose concurrent writes are
+/// atomics. Accepted when (1) every strong write of the poll's bytes not HB-ordered with it is
+/// an integer `add` of the same width (u32 / u64) whose result is unused and which does not
+/// acquire (RED), (2) each adds a positive amount and the base value plus all of them does not
+/// wrap (so a proper subset of the adds sums to less than all of them), (3) the run's read
+/// returned the base plus every concurrent add (it exited after all of them landed), and
+/// (4) the iteration, replayed on the base plus every other subset sum, fails. An iteration
+/// that failed in the run must fail on every subset sum, the full one included (C-POLL). Then in every
+/// execution the poll exits only on the value after all concurrent adds, which only the full
+/// set produces; an acquire read of it reads the coherence-last of those RMWs, which is in the
+/// release sequence of each of them, so it synchronizes with all of their releases: the same
+/// clock as in the run. Liveness: the adds are not HB-after the poll, so they do not wait for
+/// it and all land. Err(None): the shape does not apply; Err(Some(why)): why it is refused.
+fn poll_atomic_counter(log: &SyncLog, r: &PollRec) -> Result<(), Option<String>> {
+    let n = (r.hi - r.lo) as usize;
+    if n != 4 && n != 8 {
+        return Err(None);
+    }
+    let mut adds: Vec<&SAcc> = Vec::new();
+    for a in log.strong.iter() {
+        if !a.write || a.key != r.key || a.hi <= r.lo || r.hi <= a.lo {
+            continue;
+        }
+        if a.ev.hb(r.t as u32, r.ev.seq, &r.vc) || r.ev.hb(a.ev.actor, a.ev.seq, &a.vc) {
+            continue;
+        }
+        match a.rmw {
+            Some((AtomOp::Add, false, false, _))
+                if a.fadd.is_none() && a.lo == r.lo && a.hi == r.hi =>
+            {
+                adds.push(a)
+            }
+            Some(_) => {
+                return Err(Some(
+                    "a concurrent atomic is not an unused, non-acquiring integer add of the polled width".into(),
+                ));
+            }
+            None => return Err(None),
+        }
+    }
+    if adds.is_empty() {
+        return Err(None);
+    }
+    if adds.len() > 16 {
+        return Err(Some(format!(
+            "{} concurrent adds (at most 16 are checked)",
+            adds.len()
+        )));
+    }
+    let word = |b: &[u8]| -> u64 {
+        let mut x = [0u8; 8];
+        x[..n].copy_from_slice(&b[..n]);
+        u64::from_le_bytes(x)
+    };
+    let mask = if n == 8 { u64::MAX } else { u32::MAX as u64 };
+    let incs: Vec<u64> = adds
+        .iter()
+        .map(|a| word(&a.val).wrapping_sub(word(&a.old)) & mask)
+        .collect();
+    let run_exits = match poll_try(r, None) {
+        Ok(x) => x.is_some(),
+        Err(e) => return Err(Some(format!("replaying the poll: {e}"))),
+    };
+    // The base: the value before the first concurrent add the run made (else the value the
+    // run's read saw: no concurrent add came before it).
+    let first = adds.iter().min_by_key(|a| a.ev.seq).unwrap();
+    let base = if first.ev.seq < r.ev.seq {
+        word(&first.old)
+    } else {
+        word(&mem_bytes(&r.at, loc_of(r.key, r.lo), n))
+    };
+    let half = mask >> 1;
+    let mut full = base as u128;
+    for &i in &incs {
+        if i == 0 || i > half {
+            return Err(Some(
+                "a concurrent add of zero or of a negative amount".into(),
+            ));
+        }
+        full += i as u128;
+    }
+    if full > mask as u128 {
+        return Err(Some("the adds may wrap the counter".into()));
+    }
+    let full = full as u64;
+    if run_exits && adds.iter().any(|a| a.ev.seq > r.ev.seq) {
+        return Err(Some(
+            "the run's exiting read did not see every concurrent add".into(),
+        ));
+    }
+    // Subset sums other than the full one (with it, for an iteration that failed in the run:
+    // it must fail on every value, as in C-POLL).
+    let mut sums = std::collections::BTreeSet::new();
+    let top = if run_exits {
+        (1u32 << incs.len()) - 1
+    } else {
+        1u32 << incs.len()
+    };
+    for sub in 0u32..top {
+        let mut v = base;
+        for (k, &i) in incs.iter().enumerate() {
+            if sub >> k & 1 == 1 {
+                v += i;
+            }
+        }
+        sums.insert(v);
+        if sums.len() > 256 {
+            return Err(Some("more than 256 distinct partial counts".into()));
+        }
+    }
+    let _ = full;
+    for v in sums {
+        let bytes = v.to_le_bytes()[..n].to_vec();
+        match poll_try(r, Some((&bytes, &None))) {
+            Ok(None) => {}
+            Ok(Some(_)) if run_exits => {
+                return Err(Some(format!(
+                    "the poll may exit on the partial count {v} (before every concurrent add landed)"
+                )));
+            }
+            Ok(Some(_)) => {
+                return Err(Some(format!(
+                    "an iteration that failed in the run exits on the count {v}"
+                )));
+            }
+            Err(e) => return Err(Some(format!("replaying the poll on {v}: {e}"))),
+        }
+    }
+    Ok(())
+}
+
 /// C-POLL: every execution of a poll load reads the flag's HB-latest write before it (unique:
 /// two unordered writes are a race or fail C-ORDER) or a strong write concurrent with it. For
 /// each such candidate, the iteration must end as in the run: a failing iteration fails on
@@ -2559,7 +2691,14 @@ fn poll_check(m: &Machine, log: &SyncLog) -> Vec<String> {
         };
         let conc = match poll_conc(log, r, |_| true) {
             Ok(c) => c,
+            // C-POLL-ATOM: a counter of commutative atomic adds polled until every
+            // concurrent add has landed.
+            Err((_, "an atomic")) if poll_atomic_counter(log, r).is_ok() => continue,
             Err((e, what)) => {
+                let what = match poll_atomic_counter(log, r) {
+                    Err(Some(why)) => format!("{what} ({why})"),
+                    _ => what.to_string(),
+                };
                 fail(
                     &mut out,
                     format!(

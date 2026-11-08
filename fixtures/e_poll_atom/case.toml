@@ -1,0 +1,54 @@
+name = "e_poll_atom"
+description = """
+C-POLL-ATOM (E-WELLSYNC): a poll on an arrival counter of atomic adds (red.release.add from
+three CTAs), exiting at the full count. The certificate accepts it (only all three adds give
+3); exiting on a partial count (ge1) is refused and races."""
+ptx = "kernel.ptx"
+entry = "e_poll_atom"
+grid = [3, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [3]
+init = "zeros"
+
+[[buffers]]
+name = "cnt"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[params]]
+kind = "ptr"
+buffer = "cnt"
+
+[[variants]]
+id = "good"
+summary = "poll until the count is 3 (every add landed)"
+expect = ["clean"]
+
+[[variants]]
+id = "ge1"
+summary = "poll until the count is nonzero, then write data[2]: exits on a partial count, write-write race (deterministic outputs)"
+marker = "@COND"
+find = "setp.ne.u32 %p3, %r5, 3;"
+replace = "setp.eq.u32 %p3, %r5, 0;"
+edits = [{ marker = "@USE", find = "ld.global.u32 %r8, [%rd2+8];", replace = "mov.u32 %r8, 0; st.global.u32 [%rd2+8], %r8;" }]
+expect = ["race"]

@@ -1,0 +1,34 @@
+// E-HW-CORW: CTA 1's thread 0 stores 1 to slot (weak, no fence: it publishes nothing); CTA
+// 0's thread 0 polls slot with ld.relaxed.sys until it reads 1, then stores 0 to slot with a
+// plain st.global. Strict PTX model: both pairs race. GB300 hardware model: the poll and the
+// store still race (observable), the clear is coherence-ordered after the store (latent).
+//   weakpoll: the poll is a weak ld.global: the write-write race stays observable
+//   noread: no poll: the write-write race is observable (and the final value either)
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_hw_corw(.param .u64 slot_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [slot_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra DONE;
+    mov.u32 %r2, %ctaid.x;
+    setp.eq.u32 %p2, %r2, 0;
+    @%p2 bra READER;
+    st.global.u32 [%rd1], 1;
+    bra DONE;
+READER:
+SPIN:                                      // @SPIN
+    ld.relaxed.sys.global.u32 %r5, [%rd1]; // @POLL // @SPIN
+    setp.ne.u32 %p3, %r5, 1;               // @SPIN
+    @%p3 bra SPIN;                         // @SPIN
+    st.global.u32 [%rd1], 0;
+DONE:
+    ret;
+}

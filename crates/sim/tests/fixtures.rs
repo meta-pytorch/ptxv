@@ -2861,6 +2861,25 @@ fn l1_litmus() {
             let op = dv.findings.iter().any(|x| x.sig.starts_with("stale-l1:"));
             let mut dc = dv.classes();
             dc.retain(|c| c != "nondeterministic");
+            // DPOR does not run the E-RACE-DEAD probe: a race the stateful explorer marked
+            // dead (neg-payld's masked stress load) stays a race there, with the same sig.
+            let dead: Vec<&str> = sv
+                .findings
+                .iter()
+                .filter(|x| x.kind == "race-dead")
+                .map(|x| x.sig.as_str())
+                .collect();
+            if !dead.is_empty() {
+                assert!(
+                    dead.iter().all(|s| dv.findings.iter().any(|x| x.sig == *s)),
+                    "{v}/{f} (DPOR): {:#?}",
+                    dv.findings
+                );
+                dc.retain(|c| c != "race");
+                if dc.is_empty() {
+                    dc.push("clean".into());
+                }
+            }
             assert_eq!(dc, want, "{v}/{f} (DPOR): {:#?}", dv.findings);
             assert!(
                 !op || stale,
@@ -3440,6 +3459,62 @@ fn twolevel_r1f_pingpong() {
     }
 }
 
+/// E-HW-WEAK-FLAG: a weak flag store after fence.sc.sys (msl DeepEP nvlink barrier) races in
+/// the strict model and is latent under the hardware model; without the writer's fence the
+/// race stays observable.
+#[test]
+fn twolevel_weak_flag() {
+    if std::env::var("PTXV_HW_L1").is_ok() || std::env::var("PTXV_HW_MODEL").is_ok() {
+        return;
+    }
+    let case = Case::load(root().join("fixtures/e_weak_flag")).unwrap();
+    for f in ["ptx", "sass"] {
+        for v in ["good", "nofence"] {
+            let k = kernel(&case, v, f);
+            let launch = build_launch(&case, &k).unwrap();
+            let m1 = Machine::new(Arc::new(k), Arc::new(launch));
+            let mut v1 = explore(m1.clone(), 100_000);
+            assert!(v1.findings.iter().any(|x| x.kind == "race"), "{v} {f}");
+            let why = ptxv_sim::twolevel::wanted(&v1, &m1.launch).unwrap();
+            ptxv_sim::twolevel::run(&mut v1, &m1, why, &mut |m| explore(m, 100_000));
+            let obs = v1
+                .findings
+                .iter()
+                .any(|x| x.gb300.as_ref().is_some_and(|g| g.class == "observable"));
+            assert_eq!(obs, v == "nofence", "{v} {f}: {:#?}", v1.findings);
+        }
+    }
+}
+
+/// E-HW-CORW: a plain store that clears a word its thread polled strongly (DeepEP hybrid
+/// dispatch clearing NIC-written slots, docs/nic.md finding L) races in the strict model; on
+/// GB300 the clear is coherence-after the store it read (latent). The store/poll race stays
+/// observable; a weak poll or no poll leaves the write-write race observable.
+#[test]
+fn twolevel_hw_corw() {
+    if std::env::var("PTXV_HW_L1").is_ok() || std::env::var("PTXV_HW_MODEL").is_ok() {
+        return;
+    }
+    let case = Case::load(root().join("fixtures/e_hw_corw")).unwrap();
+    for f in ["ptx", "sass"] {
+        for v in ["good", "weakpoll", "noread"] {
+            let k = kernel(&case, v, f);
+            let launch = build_launch(&case, &k).unwrap();
+            let m1 = Machine::new(Arc::new(k), Arc::new(launch));
+            let mut v1 = explore(m1.clone(), 100_000);
+            let ww =
+                |x: &ptxv_sim::machine::Finding| x.kind == "race" && x.msg.contains("write-write");
+            assert!(v1.findings.iter().any(ww), "{v} {f}: {:#?}", v1.findings);
+            let why = ptxv_sim::twolevel::wanted(&v1, &m1.launch).unwrap();
+            ptxv_sim::twolevel::run(&mut v1, &m1, why, &mut |m| explore(m, 100_000));
+            for x in v1.findings.iter().filter(|x| ww(x)) {
+                let c = &x.gb300.as_ref().unwrap().class;
+                assert_eq!(c == "observable", v != "good", "{v} {f}: {:#?}", x);
+            }
+        }
+    }
+}
+
 /// E-POLL-ACQ is refuted: a case that sets `poll_acquire` is refused unless it opts in
 /// explicitly (`assume_refuted`), and the launch then names the opt-in. Only refuted IDs can be
 /// opted into.
@@ -3989,6 +4064,15 @@ fn e_remote_fifo_orders_hb_ordered_arrivals() {
         both("e_remote_fifo", v);
     }
     both("e_remote_fifo_strict", "good");
+}
+
+/// C-POLL-ATOM (E-WELLSYNC): an arrival counter of atomic adds polled to its full count is
+/// certified; a poll that exits on a partial count is refused and races.
+#[test]
+fn e_poll_atom_counter_poll() {
+    for v in ["good", "ge1"] {
+        both("e_poll_atom", v);
+    }
 }
 
 /// S-ALIGN: misaligned ld / st / atom of every width are faults on both front-ends (GB300

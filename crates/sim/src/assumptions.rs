@@ -233,6 +233,22 @@ pub const REGISTRY: &[Assumption] = &[
         applies: never,
     },
     Assumption {
+        id: "E-HW-CORW",
+        kind: "code",
+        status: "argued",
+        title: "GB300 hardware model (two-level only): a write after the thread's strong read of the last write's bytes is coherence-after every earlier write of them",
+        // Part of the level-2 hardware model (twolevel.rs MODEL), not of level-1 verdicts.
+        applies: never,
+    },
+    Assumption {
+        id: "E-HW-WEAK-FLAG",
+        kind: "code",
+        status: "validated",
+        title: "GB300 hardware model (two-level only): an aligned weak global store of <= 8 bytes after a sys fence is a relaxed sys store releasing the fence's clock",
+        // Part of the level-2 hardware model (twolevel.rs MODEL), not of level-1 verdicts.
+        applies: never,
+    },
+    Assumption {
         id: "E-HW-L1",
         kind: "code",
         status: "probed",

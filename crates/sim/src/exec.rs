@@ -1003,10 +1003,21 @@ impl Machine {
                     hw.dedup();
                     s.hw = (!hw.is_empty()).then(|| hw.into_boxed_slice());
                     s.r.retain(|r| !rd_ord(r));
+                    s.r.forget_rf();
                     s.w = Some(Epoch { sv: true, ..me });
                     return;
                 }
+                // ASSUME(E-HW-CORW), hardware model only: this thread's last read of the byte
+                // was strong (it bypassed L1) and returned the last write's bytes, with no
+                // write since. Memory behind the L1s is sequentially consistent, so every
+                // write of the shadow is coherence-before that read and so before this write
+                // (CoRW): no order between them is left to timing.
+                let corw =
+                    hw_order && write.is_some() && s.r.iter().any(|r| r.actor == actor && r.sv);
                 for w in s.writes() {
+                    if corw {
+                        break;
+                    }
                     if w.actor != actor && !vm.hb(w) && (write.is_some() || !w.sv) {
                         let kind = if write.is_some() {
                             "write-write"
@@ -1037,6 +1048,7 @@ impl Machine {
                         hw.sort_unstable_by_key(|e| (e.actor, e.strong, e.clock));
                         s.hw = (!hw.is_empty()).then(|| hw.into_boxed_slice());
                         s.r.retain(|r| keep(r, rd_ord(r)));
+                        s.r.forget_rf();
                     }
                     s.w = Some(me);
                     // Per byte (`wundef` bit i = byte i of the store's data).
@@ -1059,7 +1071,11 @@ impl Machine {
                             st.get_or_insert(a as u32);
                         }
                     }
-                    s.r.insert_read(me);
+                    // E-HW-CORW: a strong read returns the memory bytes of the last write.
+                    s.r.insert_read(Epoch {
+                        sv: hw_order && strong != 0,
+                        ..me
+                    });
                 }
             });
             if let Some(wr) = write {
@@ -1878,7 +1894,10 @@ impl Machine {
         // E-HW-L1 hardware ordering (Launch::hw_order, two-level check only): memory behind
         // the L1s is sequentially consistent, so a strong write passes on its writer's whole
         // history, at system scope.
-        let (mut rel, rel_scope) = if self.launch.hw_order {
+        let (mut rel, rel_scope) = if self.launch.hw_order && self.weak_pub {
+            // ASSUME(E-HW-WEAK-FLAG): a weak flag store releases what its sys fence did.
+            (th.membar_vc.clone(), Scope::Sys)
+        } else if self.launch.hw_order {
             (th.vc.clone(), Scope::Sys)
         } else if m.releases() {
             (th.vc.clone(), m.scope)
@@ -8761,8 +8780,27 @@ impl Machine {
                     (0..*bytes).map(|i| (x >> (8 * i)) as u8).collect()
                 };
                 let vc = self.threads[t].vc.clone();
+                // ASSUME(E-HW-WEAK-FLAG) in the GB300 hardware model (two-level check), an
+                // aligned weak global store of at most 8 bytes after a sys-scope fence of its
+                // thread is a relaxed sys store: single-copy atomic, morally strong with
+                // strong accesses, and it publishes the clock at that fence.
+                let weak_flag = self.launch.hw_order
+                    && sync.is_none()
+                    && *bytes <= 8
+                    && !mc
+                    && locs.iter().all(|l| matches!(l, Loc::Global { .. }))
+                    && {
+                        let th = &self.threads[t];
+                        th.membar_scope == Scope::Sys && th.membar_vc != VC::new()
+                    };
+                let wsync = weak_flag.then_some(MemSync {
+                    sem: Sem::Relaxed,
+                    scope: Scope::Sys,
+                });
+                let sync = if weak_flag { &wsync } else { sync };
                 let sc = sync.map_or(0, |m| strong_code(m.scope));
                 self.mc_view = mc;
+                self.weak_pub = weak_flag;
                 for &loc in &locs {
                     self.access_x(t as u32, &vc, pc, loc, *bytes as usize, Some(&data), sc);
                     if self.l1.is_some() {
@@ -8773,6 +8811,7 @@ impl Machine {
                         None => self.sync_clear(loc),
                     }
                 }
+                self.weak_pub = false;
                 self.mc_view = false;
                 if self.launch.nic.is_some() {
                     for &loc in &locs {

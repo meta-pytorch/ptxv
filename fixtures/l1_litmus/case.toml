@@ -98,7 +98,11 @@ marker = "@ENTRY"
 find = "// (entry slot)"
 replace = "fence.acq_rel.sys;"
 edits = [{ marker = "@STRESS", find = "// (stress slot)", replace = "ld.global.u32 %r9, [%rd1]; and.b32 %r9, %r9, -2147483648;" }, { marker = "@POST", find = "// (post slot)", replace = "fence.acq_rel.sys;" }]
-expect = ["race"]
+# The stress load's value is masked to 0 (dead): `race-dead`, verdict clean (E-RACE-DEAD).
+# Before 2026-11-07 the explorer's race log kept racing reads from its first search (an
+# acquire poll taken as value-insensitive acquires nothing, so the final payload read looked
+# racy) and the race stayed a race; the certificate (C-POLL-ATOM) and the explorer now agree.
+expect = ["clean"]
 
 [[variants]]
 id = "pr0-lineshare"

@@ -295,6 +295,11 @@ e_stasync SA2), and the rerun must report no failing finding at all.
   machine; the decision needs a complete exploration (or the certificate's run, which covers
   every schedule). A race with another kind of read side (write-write, an atomic, an
   acquiring load, which synchronizes with what it reads, an asynchronous unit) stays `race`.
+- The racing reads come from the search whose verdict is returned. When a race makes
+  the explorer search again (without the value-insensitive polls or the peek changes), the
+  race log is cleared first (2026-11-07). The first search's value-insensitive acquire polls
+  acquire nothing, so they logged reads that the returned search orders. That made
+  fixtures/l1_litmus neg-payld a race in exploration but race-dead in the certificate.
 - Where: `race_dead.rs`; explorer `explore.rs` `explore_one` (a second exploration of the same
   model with the loads undefined); certificate `wellsync.rs` `run_logged` / `probe_run`
   (with C-ORDER's dead reads). DPOR (`--dpor`) does not apply it.
@@ -1642,6 +1647,56 @@ GPU.
 - Where: `l1.rs`, `l1_cores.rs`; `exec.rs` (`Op::Ld`, `Ld256`, `St`, `Atom`, `Fence`; `sync_publish`,
   `sync_observe_cell`, `morally_strong` for `hw_order`); `twolevel.rs`.
 
+### E-HW-WEAK-FLAG · code
+**GB300 hardware model (two-level check only): an aligned weak global store of at most 8
+bytes, after a sys-scope fence of its thread, is a relaxed sys store** (`Launch::hw_order`;
+`exec.rs` `Op::St`, `sync_publish`). It is single-copy atomic, morally strong with strong
+accesses (no race with a strong poll), and publishes the thread's clock at that fence
+(`membar_vc`), not its whole history. Level-1 (PTX) verdicts are unchanged: there the store
+is weak and races.
+- Why it exists: msl DeepEP's `nvlink_barrier_wo_local_sync` (index L5) signals peers with
+  a plain `ST.E` after `MEMBAR.SC.SYS`; the peer polls with `LD.E.STRONG.SYS` and ends with
+  `MEMBAR.SC.SYS; CCTL.IVALL`. The hardware model classified the flag races, and the
+  downstream races in DeepEP combine (bulk writes waited by `wait_group 0`, then published
+  through this barrier), as observable, because only strong writes published.
+- Status: **validated** (`probes/weak_flag`, GB300, 2 GPUs over NVLink, 2026-11-07). The
+  writer stores 256 payload words per slot (weak) into the peer GPU, then `fence.sc.sys` and
+  a weak 32-bit flag store. The reader polls `ld.volatile`, then `fence.sc.sys`, then reads
+  the payload weakly with its L1 warmed with the old values. 4096 slots per run.
+  - Weak flag: 0 stale words in 500 runs.
+  - Weak flag with a concurrent NVLink co-tenant under MPS: 0 in 300 runs.
+  - `st.relaxed.sys` flag: 0 in 500 runs.
+  - Controls: without the writer fence, 26,688 stale words in 343/500 runs (40,512 in 42/300
+    under the MPS co-tenant); without the reader fence, every word is stale.
+- Scope: only after a sys-scope fence (`fence.sc.sys` / `fence.acq_rel.sys`, SASS
+  `MEMBAR.SC.SYS` / `MEMBAR.ALL.SYS`); without one the store stays weak, as the control
+  requires. Not covered: wider or misaligned stores, shared memory, multicast.
+- If wrong: *miss* of a stale read behind a weak flag (a race called latent).
+- Where: `exec.rs` `Op::St` (`weak_flag`), `sync_publish` (`weak_pub`); `twolevel.rs` MODEL.
+
+### E-HW-CORW · code
+**GB300 hardware model (two-level check only): a write by a thread to bytes whose last read
+by that thread was a strong load returning the last write's bytes is coherence-after every
+earlier write of those bytes** (`Launch::hw_order`; `exec.rs` `access_x`, `Epoch::sv` on
+reads). Level-1 (PTX) verdicts are unchanged: the write-write race stays a PTX race.
+- Why it exists: msl DeepEP hybrid dispatch polls a NIC-written slot with `ld.acquire.sys`
+  and clears it with a plain `STG` (docs/nic.md finding L). The hardware model called the
+  NIC write / clear pair observable, although the clear cannot be ordered before a write
+  its own thread already read.
+- Argument: E-HW-L1 memory behind the L1s is sequentially consistent and a strong load
+  bypasses L1, so the load returns the memory value, the last write in the explored order;
+  every write of the byte's shadow precedes it in coherence order. Read-to-write coherence
+  of one location (CoRW, single-copy atomicity per byte) puts the thread's later write after
+  them. Only write-write pairs are dropped; the read's own races and other threads' reads are
+  still checked.
+- Status: **argued** from E-HW-L1 (coherence per location); no separate probe.
+- Scope: the read must be strong (a weak read may return stale L1 bytes) and the thread's
+  latest read of the byte (a later plain read of it replaces the mark); any write to the byte
+  in between clears the mark.
+- If wrong: *miss* of a final-value race (a write-write race called latent).
+- Where: `exec.rs` `access_x` (`corw`), `machine.rs` `Readers::forget_rf`; `twolevel.rs`
+  MODEL.
+
 ### E-L1-CLOSED · code
 **Closed world for L1: no agent outside the case loads case buffers on an SM the case uses.**
 Implicit in E-HW-L1 until 2026-11-04; listed in every `hw_l1` verdict without `l1_havoc`.
@@ -2252,6 +2307,36 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
     candidate against that clock. An exit releases the thread's whole history (the next
     grid on its GPU joins its final clock), so a strong store's open clock window
     (non-ticking) is closed at EXIT in a certificate run.
+  - **C-POLL-ATOM** (2026-11-07, index L2's `Sm100GemmRsMultimemKernel` flags, DeepEP's
+    DeviceSyncer). A poll whose concurrent writes are atomics (C-POLL refuses those) is
+    accepted when:
+    - every strong write of the polled bytes not HB-ordered with the poll is an integer
+      `add` of the polled width (u32 / u64) whose result is unused and that does not
+      acquire (`red`, SASS `REDG` / `RED`);
+    - each adds a positive amount (as a signed value of the width), and the base plus all
+      of them does not wrap. So a proper subset of the adds sums to less than all of them.
+      The base is the value before the first concurrent add the run made, or the value the
+      run read if none came before it;
+    - an exiting iteration in the run read after every concurrent add (it saw the full
+      sum), and replayed on the base plus every other subset sum it fails;
+    - an iteration that failed in the run fails on every subset sum, the full one included
+      (as in C-POLL);
+    - at most 16 concurrent adds and 256 distinct partial sums; otherwise it is refused.
+
+    Argument. Adds commute, so after any set S of the concurrent adds (and every add
+    HB-before the poll, which the base includes) the word holds base + sum(S). Subsets
+    over-approximate the sets an execution can show, which only adds failing replays. The
+    poll exits only on the full sum, and only S = all concurrent adds produces it. The value
+    it then reads is written by the coherence-last of those RMWs, and each RMW is in the
+    release sequence of every coherence-earlier release on the word. So an acquire read of
+    the full sum synchronizes with every add's release: the same set as in the run, with
+    the clocks of the certificate's induction. The exit, its registers and its
+    synchronization are therefore the run's.
+    Liveness: none of the adds is HB-after the poll, so none waits for it, and by the
+    progress induction all of them are performed. The poll then reads the full sum (E-SPIN)
+    and exits.
+    Fixture `e_poll_atom` (good: certified; ge1, an exit on a partial count: refused and
+    races).
   - **C-CAS.** Compare-and-swap semaphores (E-SPIN poll loops whose poll operation is a
     CAS: torch symmetric memory's put `while (cas(&w, 0, 1) != 0);` and wait `while
     (cas(&w, 1, 0) != 1);`, `MEMBAR.SYS` / `ATOM.E.CAS.STRONG.SYS` / `CCTL.IVALL`). A put and

@@ -102,7 +102,7 @@ pub struct Gb300Check {
     pub extra: Vec<Finding>,
 }
 
-pub const MODEL: &str = "E-HW-L1: non-coherent per-SM L1 (CCTL.IVALL and kernel boundaries invalidate) over sequentially consistent memory (a strong read that observes a strong write is ordered after the writer's history, at any scope); closed world (E-L1-CLOSED), with the havoc check (E-L1-HAVOC) as a probe for outside fills; no refuted assumption";
+pub const MODEL: &str = "E-HW-L1: non-coherent per-SM L1 (CCTL.IVALL and kernel boundaries invalidate) over sequentially consistent memory (a strong read that observes a strong write is ordered after the writer's history, at any scope; an aligned weak global store of at most 8 bytes after a sys fence counts as a relaxed sys store releasing the fence's clock, E-HW-WEAK-FLAG; a write after its thread's strong read of the last write is coherence-after it, E-HW-CORW); closed world (E-L1-CLOSED), with the havoc check (E-L1-HAVOC) as a probe for outside fills; no refuted assumption";
 
 /// Does level 1's verdict call for the hardware model? Some(reason) if so.
 pub fn wanted(v: &Verdict, launch: &Launch) -> Option<String> {
@@ -300,7 +300,7 @@ pub fn classify(v1: &mut Verdict, v2: &Verdict, st: &L1Stats, m: &Machine) -> Gb
             );
         }
         if ww {
-            why.push("both accesses are writes, and L1 is write-through".into());
+            why.push("both accesses are writes, and L1 is write-through (a write after its thread's strong read of the other write is coherence-after it, E-HW-CORW)".into());
         } else if !global && (f.kind == "race" || f.kind == "race-dead") {
             why.push("not a global-memory access, so L1 does not apply".into());
         } else {

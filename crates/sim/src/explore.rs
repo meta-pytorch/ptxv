@@ -5028,7 +5028,16 @@ fn explore_one_models(m0: Machine, max_states: usize, threads: usize) -> (Verdic
     {
         // First without the acquire loads among the value-insensitive polls, which is what
         // usually needed the edge; then without any of the changes.
+        // E-RACE-DEAD: the race log must describe the search whose verdict is returned; a
+        // value-insensitive acquire poll acquires nothing, so the first search logs racing
+        // reads (after the poll) that the plain model orders (fixtures/l1_litmus neg-payld).
+        let clear_log = |m: &Machine| {
+            if let Some(l) = &m.race_log {
+                l.lock().unwrap().clear();
+            }
+        };
         if vip_model {
+            clear_log(&m0);
             let w = explore_one_model(m0.clone(), max_states, threads, true, 1);
             if !w.findings.iter().any(|f| f.kind == "race") {
                 let mut w = w;
@@ -5039,6 +5048,7 @@ fn explore_one_models(m0: Machine, max_states: usize, threads: usize) -> (Verdic
                 return (w, true, 1);
             }
         }
+        clear_log(&m0);
         let mut w = explore_one_model(m0, max_states, threads, false, 0);
         w.notes.push(format!(
             "a race was found: explored again without the peek changes (E-SPIN) and value-insensitive polls (E-POLL-ANY) ({} states with them)",

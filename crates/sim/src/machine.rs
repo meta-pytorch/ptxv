@@ -429,8 +429,10 @@ pub struct Epoch {
     /// 0: a plain access; otherwise a strong access at scope `strong - 1` (`strong_code`).
     /// Strong accesses that are morally strong do not race with each other (S-SCOPE).
     pub strong: u8,
-    /// A plain write of the value already there (S-SAME-VALUE): a read sees that value in
-    /// either order, so reads are not checked against it.
+    /// On a write: a plain write of the value already there (S-SAME-VALUE): a read sees that
+    /// value in either order, so reads are not checked against it. On a read (`Sh::r`,
+    /// hardware model only, E-HW-CORW): a strong read that returned the bytes of the shadow's
+    /// last write, with no write to the byte since.
     pub sv: bool,
 }
 
@@ -568,6 +570,14 @@ impl Readers {
     #[inline]
     pub fn clear(&mut self) {
         *self = Readers::default();
+    }
+    /// A write to the byte: no kept read returned the bytes of the (new) last write
+    /// (E-HW-CORW, `Epoch::sv` on reads).
+    pub fn forget_rf(&mut self) {
+        match self {
+            Readers::Inline(n, a) => a[..*n as usize].iter_mut().for_each(|e| e.sv = false),
+            Readers::Heap(v) => v.iter_mut().for_each(|e| e.sv = false),
+        }
     }
     /// Keep the reads for which `f` holds (order kept).
     pub fn retain(&mut self, mut f: impl FnMut(&Epoch) -> bool) {
@@ -1710,6 +1720,9 @@ pub struct Machine {
     /// Not hashed, transient: the current access goes through a multicast (NVLS) view
     /// (S-MC-ALIAS).
     pub mc_view: bool,
+    /// E-HW-WEAK-FLAG: the store being published is a weak flag store (publish the clock at
+    /// the thread's last sys-scope fence, not its whole history).
+    pub weak_pub: bool,
     /// Not hashed: some multimem.ld_reduce lane of this run returned the nearest-even
     /// neighbour of a sum whose rounding direction on GB300 is not modeled (N-MULTIMEM).
     pub mc_inexact: bool,
@@ -2398,6 +2411,7 @@ impl Machine {
             red_access: false,
             red16: Default::default(),
             mc_view: false,
+            weak_pub: false,
             mc_inexact: false,
             gown: None,
             mma_cache: Default::default(),
