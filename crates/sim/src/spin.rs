@@ -459,8 +459,9 @@ pub fn is_peek(m: &Machine, w: usize) -> bool {
     if retry_shape(m, w).is_ok() {
         return false;
     }
-    // Known predicates and registers along a path.
-    type Env = (BTreeMap<Reg, bool>, BTreeMap<Reg, u64>);
+    // Known predicates and registers along a path; the registers that depend on a failed
+    // test's result; whether a branch or side effect of the path did.
+    type Env = (BTreeMap<Reg, bool>, BTreeMap<Reg, u64>, BTreeSet<Reg>, bool);
     let konst = |e: &Env, v: &Val| -> Option<u64> {
         match v {
             Val::Imm(x) => Some(*x),
@@ -476,11 +477,18 @@ pub fn is_peek(m: &Machine, w: usize) -> bool {
         }
     };
     let mut seen = BTreeSet::new();
-    let start: Env = ([(*d, false)].into(), BTreeMap::new());
+    let start: Env = ([(*d, false)].into(), BTreeMap::new(), [*d].into(), false);
     let mut work = vec![(w + 1, start)];
     while let Some((pc, env)) = work.pop() {
+        // Back at the test: a spin only if the way back depended on a failed result (the
+        // same path is taken when the test succeeds otherwise, so the loop is the kernel's,
+        // not a wait; FA bwd Sm100 / BlackwellFusedTopkSelection test once before a tile
+        // loop whose empty case skips the result).
         if pc == w {
-            return false;
+            if env.3 {
+                return false;
+            }
+            continue;
         }
         if !seen.insert((pc, env.clone())) {
             continue;
@@ -491,6 +499,7 @@ pub fn is_peek(m: &Machine, w: usize) -> bool {
         let g = i.guard;
         // Does an instruction guarded by `g` run (None: unknown)?
         let runs = pval(&env, &g);
+        let reads_failed = inst_reads(i).iter().any(|r| env.2.contains(r));
         match &i.op {
             Op::MbarTryWait { .. } if g.is_always() && retry_shape(m, pc).is_ok() => continue,
             // Another peek: assume it fails too.
@@ -499,8 +508,10 @@ pub fn is_peek(m: &Machine, w: usize) -> bool {
                 if runs == Some(false) {
                 } else if runs == Some(true) {
                     nv.0.insert(*d2, false);
+                    nv.2.insert(*d2);
                 } else {
                     nv.0.remove(d2);
+                    nv.2.insert(*d2);
                 }
                 work.push((pc + 1, nv));
             }
@@ -514,14 +525,18 @@ pub fn is_peek(m: &Machine, w: usize) -> bool {
                 }
             }
             Op::Call { .. } | Op::Ret { .. } | Op::Brx { .. } => return false,
-            Op::Bra { target, .. } => match runs {
-                Some(true) => work.push((*target, env)),
-                Some(false) => work.push((pc + 1, env)),
-                None => {
-                    work.push((*target, env.clone()));
-                    work.push((pc + 1, env));
+            Op::Bra { target, .. } => {
+                let mut env = env;
+                env.3 |= reads_failed;
+                match runs {
+                    Some(true) => work.push((*target, env)),
+                    Some(false) => work.push((pc + 1, env)),
+                    None => {
+                        work.push((*target, env.clone()));
+                        work.push((pc + 1, env));
+                    }
                 }
-            },
+            }
             op => {
                 let mut nv = env.clone();
                 // The known value written, if the instruction runs.
@@ -570,6 +585,16 @@ pub fn is_peek(m: &Machine, w: usize) -> bool {
                 for r in op.dst_regs() {
                     nv.0.remove(&r);
                     nv.1.remove(&r);
+                    if reads_failed {
+                        nv.2.insert(r);
+                    } else if runs == Some(true) {
+                        nv.2.remove(&r);
+                    }
+                }
+                // A side effect that depends on a failed result may steer later control
+                // through memory.
+                if reads_failed && pure_dst(op).is_none() && !model_nop(op) {
+                    nv.3 = true;
                 }
                 if let (Some((r, Some(v))), Some(true)) = (known, runs) {
                     if r.file == ptxv_ir::File::P || r.file == ptxv_ir::File::UP {

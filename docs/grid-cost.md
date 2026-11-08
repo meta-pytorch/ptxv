@@ -1,6 +1,6 @@
 # Grid cost: checking large launches without simulating every thread
 
-Status: design (2026-11-07); reduction 3 implemented, 1 and 2 not yet. Owner: SC.
+Status: reductions 3 and 1 implemented (1 by replay, below), 2 not yet. Owner: SC.
 
 ## Problem
 
@@ -24,6 +24,19 @@ iterating loops whose iterations are implied by earlier ones, and (3) a cheaper 
 Only (1) and (2) change the asymptotics.
 
 ## Reduction 1: representative CTAs (E-CTA-REP)
+
+**As implemented** (`rep.rs`, `--rep`, ASSUMPTIONS.md E-CTA-REP): the affine domain below is
+replaced by replay. The position run records the dataflow graph of the register instructions
+that compute every position-dependent control value and global address from `%ctaid`; each
+other CTA replays that graph with its own threads (the simulator's own instructions), compares
+its control values with the representative's and computes its exact addresses. Exact for any
+arithmetic (division, min, carries; no overflow reasoning), at a per-CTA cost of the graph's
+size instead of zero. Regimes are the classes of CTAs with equal control values. The footprint
+check enumerates every CTA's accesses (64-byte words), not a lattice. Not yet: TMA coordinates
+that depend on the position, clusters, values through memory, launches too large to build a
+machine for (the 16M-thread OOMs).
+
+The design as first written:
 
 **Claim.** A CTA's execution is a function of its position (`%ctaid`, cluster rank), the launch
 parameters, `%tid`, and the bytes it loads. Run one CTA c0 with a taint shadow whose sources are

@@ -34,6 +34,7 @@ pub mod nic;
 pub mod norm;
 pub mod num;
 pub mod race_dead;
+pub mod rep;
 pub mod residency;
 pub mod seg;
 pub mod slices;

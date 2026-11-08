@@ -1,0 +1,40 @@
+//
+// E-CTA-REP fixture: y[i] = 2 * x[i] + ctaid.x for i = ctaid.x * 128 + tid.x < n
+// (fixtures/e_cta_rep).
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_cta_rep(
+    .param .u64 px,
+    .param .u64 py,
+    .param .u32 pn
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<8>;
+    .reg .f32 %f<4>;
+    .reg .b64 %rd<8>;
+
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [py];
+    ld.param.u32 %r1, [pn];
+    mov.u32 %r2, %ctaid.x;
+    mov.u32 %r3, %tid.x;
+    mad.lo.s32 %r4, %r2, 128, %r3; // @IDX
+    setp.ge.s32 %p1, %r4, %r1; // @MASK
+    @%p1 bra DONE;
+    cvta.to.global.u64 %rd3, %rd1;
+    cvta.to.global.u64 %rd4, %rd2;
+    mul.wide.s32 %rd5, %r4, 4;
+    add.s64 %rd6, %rd3, %rd5;
+    add.s64 %rd7, %rd4, %rd5;
+    ld.global.f32 %f1, [%rd6];
+    add.f32 %f2, %f1, %f1; // @DATA
+    cvt.rn.f32.u32 %f3, %r2;
+    add.f32 %f2, %f2, %f3;
+    st.global.f32 [%rd7], %f2;
+DONE:
+    ret;
+}

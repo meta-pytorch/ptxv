@@ -269,3 +269,63 @@ fn dead_racy_loads_are_race_dead_and_used_ones_stay_races() {
         assert!(o.verdict.is_none(), "{front}: RD1 certified");
     }
 }
+
+/// E-CTA-REP (rep.rs, fixtures/e_cta_rep): with representative CTAs the check keeps the full
+/// certificate's classes. good: two representatives (CTAs 0-6 and the tail CTA 7) for 8 CTAs,
+/// clean. TAIL1 (the tail CTA stores past the end), AND and STRIDE (CTAs write each other's
+/// elements) and N1024 (CTA 7, never simulated, stores past the end: its replayed address)
+/// are found. DATACTL (a branch on loaded data) is refused, and the fallback decides it.
+#[test]
+fn representative_ctas_keep_verdicts() {
+    let case = Case::load(root().join("fixtures/e_cta_rep")).unwrap();
+    for front in ["ptx", "sass"] {
+        for variant in ["good", "TAIL1", "AND", "STRIDE", "N1024", "DATACTL"] {
+            let make = || machine(&case, variant, front);
+            let full = ptxv_sim::wellsync::check_certified(make(), 200_000);
+            let mut fell_back = false;
+            let rep = ptxv_sim::rep::check(&make, 200_000, &mut |_, _| {}, &mut || {
+                fell_back = true;
+                ptxv_sim::wellsync::check_certified(make(), 200_000)
+            });
+            let expect = case.variant(variant).unwrap().expect_for(front);
+            assert_eq!(
+                full.classes(),
+                expect,
+                "{front} {variant}: {:#?}",
+                full.findings
+            );
+            assert_eq!(
+                rep.classes(),
+                expect,
+                "{front} {variant}: {:#?}",
+                rep.findings
+            );
+            let used = rep.assumptions.iter().any(|a| a == "E-CTA-REP");
+            assert_eq!(
+                used,
+                variant != "DATACTL",
+                "{front} {variant}: {:#?}",
+                rep.notes
+            );
+            assert_eq!(fell_back, !used, "{front} {variant}");
+            if variant == "good" {
+                assert!(
+                    rep.notes
+                        .iter()
+                        .any(|n| n.contains("2 representatives for 8 CTAs")),
+                    "{front}: {:#?}",
+                    rep.notes
+                );
+            }
+            if variant == "DATACTL" {
+                assert!(
+                    rep.notes
+                        .iter()
+                        .any(|n| n.starts_with("E-CTA-REP refused: data-dependent control")),
+                    "{front}: {:#?}",
+                    rep.notes
+                );
+            }
+        }
+    }
+}

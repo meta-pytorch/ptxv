@@ -93,8 +93,15 @@ returning false and letting the thread do something else).
   test that returns false while the phase is pending (`Machine::peeks`). It qualifies when,
   assuming it and every other peek fail, every path from it back to itself passes a
   retry-shaped (blocking) try_wait (`spin::is_peek`, which tracks the result predicate). A
-  success is progress, so a peek cannot spin without the mbarrier moving. Other try_waits
-  without the retry shape are still blocked on and reported `unmodeled` (fixture r0 B49).
+  success is progress, so a peek cannot spin without the mbarrier moving. A path back to the
+  test that passes no blocking wait also qualifies when none of its branches and side effects
+  depends on a failed result (forward dataflow from every assumed-failed result, guards
+  included; a store or other side effect reading one counts as a dependence): the same path is
+  taken when the test succeeds, so that loop is the kernel's own, not a wait (2026-11-07;
+  FA bwd Sm100, BlackwellFusedTopkSelection: a test before a tile loop whose empty case skips
+  the result; fixtures/e_peek_loop good, and SPIN, whose loop repeats while the test fails,
+  stays `unmodeled`). Other try_waits without the retry shape are still blocked on and
+  reported `unmodeled` (fixture r0 B49).
   (rung 3b) The walk also follows the result through a token register: trtllm-gen keeps it
   as `SEL R4, RZ, 0x1, !P1` and later decides with `ISETP.NE.AND P1, PT, R4, 0x1` whether to
   wait (known predicates and registers from SEL with constant operands and integer EQ/NE
@@ -219,6 +226,54 @@ synchronization operations interleave; races among plain accesses are found with
   accesses. The race itself is still reported, so a clean verdict stays correct as long as the
   theorem holds for race-free programs.
 - Retire: a litmus campaign for the proxies (docs/design.md §7.2).
+
+### E-CTA-REP · code
+**A CTA whose position-dependent control values equal a representative's behaves as the
+representative does, up to its global addresses** (`ptxv check --certify --rep`;
+docs/grid-cost.md reduction 1; 2026-11-07). A CTA's execution is a function of its position
+(`%ctaid`), of values equal in every CTA (parameters, `%tid`, constant banks, E-CLOCK's clock)
+and of the bytes it loads. For a representative CTA r three runs of r's slice decide:
+- a data run (num.rs taint with every global byte a source, `Taint::all_global`): no guard,
+  control operand or address depends on loaded data; a comparison excused by N-FMAX or
+  N-FINITE refuses;
+- a position run (num.rs taint, `%ctaid` the source, as E-CTA-INDEP's symmetry check): every
+  position-dependent guard, control operand (`Taint::trace`'s points) and global address
+  operand (`pos_free_regs`, and a cp.async source) is recorded with the dataflow graph of the
+  per-thread register instructions that computed it from `%ctaid`, every other operand a
+  constant;
+- the certificate (E-WELLSYNC) on r's slice; a representative that stands for no other CTA is
+  explored instead when it does not certify.
+For every other CTA c the graph is replayed on c's corresponding threads by the instructions
+themselves (`Machine::exec_pure`, so `%ctaid` reads c's position). If every recorded control
+value equals r's, c takes r's path: by induction over the path, every other control value is
+position- and data-independent, hence equal. So c has r's synchronization, shared-memory
+addresses and global accesses, at its replayed addresses. c's verdict is r's when its accesses
+also overlap each other exactly as r's do (the same pairs: the same races and orders under the
+same happens-before) and lie in their allocations. An address outside every allocation is a
+`fault` finding of c. Across CTAs, a byte one CTA writes and another accesses is a `race`. This
+is more conservative than the explorer, which keeps S-SAME-VALUE writes as notes. A CTA whose
+control values differ joins a later regime with its own representative (at most `PTXV_REP_MAX`,
+default 16).
+- Refusals: the launch is then checked as before, with the cause in a note
+  `E-CTA-REP refused: ...`. Causes: a multi-kernel launch; clusters of more than one CTA;
+  multicast, NIC or multi-GPU memory; data-dependent control or address; a global atomic or
+  strong access; a position-dependent value through memory or a cross-lane operation (vote,
+  match, redux, R2UR); TMA coordinates that depend on the position; a global access completing
+  after its instruction; S-SAME-VALUE in a representative; a non-certified representative that
+  stands for other CTAs; more than `PTXV_REP_MAX` regimes.
+- Outputs: only representatives run, so the launch's outputs are not assembled or compared.
+- Where: `rep.rs` (hooks in exec.rs `exec_traced` and `access_x`); CLI `--rep` (PTXV_REP=1).
+- Status: **argued**. It relies on the replay reproducing c's values: every instruction of the
+  graph is a per-thread register instruction (num.rs `pure_op`, cross-lane ones excluded) whose
+  sources and old destinations are set before it runs, and a recorded node whose register
+  changed by a write the log did not see is not replayable.
+- Evidence: fixtures/e_cta_rep. good: 2 representatives for 8 CTAs (CTAs 0-6, the tail CTA 7),
+  clean. TAIL1 (the tail stores past the end): fault. AND and STRIDE (CTAs write each other's
+  elements): race. N1024 (CTA 7 is never simulated and stores past the end: its replayed
+  address): fault. DATACTL (a branch on loaded data): refused, decided by the fallback. Each
+  mutant has the full certificate's classes on both front-ends (tests/reductions.rs).
+  Measured: triton `_finish_block_lanes` (5000 CTAs) and quack rmsnorm 4096x8192 (4096 CTAs)
+  each certify with one representative.
 
 ### E-RACE-DEAD · code
 **A race whose racing loads' values reach nothing has no effect on the outcome** (class

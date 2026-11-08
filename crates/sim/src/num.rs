@@ -1812,7 +1812,7 @@ impl Machine {
             // This register's own bytes (a whole-word register: its word; else the access).
             let (sp, a, off) = mem_key(loc);
             if let Some((lo, n)) = own {
-                let rt = (lo..lo + n).any(|b| ns.taint.mem.contains(&(sp, a, off + b)));
+                let rt = (lo..lo + n).any(|b| ns.taint.mem_has((sp, a, off + b)));
                 ns.taint.ld_read.push((t, r, rt));
             }
             let node = w.and_then(|w| {
@@ -2062,11 +2062,7 @@ impl Machine {
                         let tw = ns.taint.reg_t(t, w);
                         for b in 0..4u64 {
                             let k = (sp, a, off + 4 * i as u64 + b);
-                            if tw {
-                                ns.taint.mem.insert(k);
-                            } else {
-                                ns.taint.mem.remove(&k);
-                            }
+                            ns.taint.mem_set(k, tw);
                         }
                     }
                 }
@@ -2121,11 +2117,7 @@ impl Machine {
         let tainted = matches!(v, Val::Reg(r, _) if ns.taint.reg_t(t, *r));
         for b in 0..4u64 {
             let k = (4u8, t as u64, addr as u64 + b);
-            if tainted {
-                ns.taint.mem.insert(k);
-            } else {
-                ns.taint.mem.remove(&k);
-            }
+            ns.taint.mem_set(k, tainted);
         }
         match n {
             Some(n) => {
@@ -2141,7 +2133,7 @@ impl Machine {
     pub(crate) fn num_local_ld(&mut self, t: usize, d: Reg, addr: u32) {
         self.half_local_ld(t, d, addr);
         let Some(ns) = self.num.as_mut() else { return };
-        if (0..4u64).any(|b| ns.taint.mem.contains(&(4u8, t as u64, addr as u64 + b))) {
+        if (0..4u64).any(|b| ns.taint.mem_has((4u8, t as u64, addr as u64 + b))) {
             ns.taint.cur_read = true;
         }
         let n = ns.mem.get(&(4, t as u64, addr as u64)).copied();
@@ -3109,13 +3101,9 @@ impl Machine {
         {
             let ns = self.num.as_mut().unwrap();
             for b in 0..data.len() as u64 {
-                let t = src.is_some_and(|(a, o)| ns.taint.mem.contains(&(1, a as u64, o + b)));
+                let t = src.is_some_and(|(a, o)| ns.taint.mem_has((1, a as u64, o + b)));
                 let k = (0u8, cta as u64, off as u64 + b);
-                if t {
-                    ns.taint.mem.insert(k);
-                } else {
-                    ns.taint.mem.remove(&k);
-                }
+                ns.taint.mem_set(k, t);
             }
         }
         let launch = self.launch.clone();
@@ -3423,7 +3411,7 @@ impl NumState {
 
 /// Register-only operations (no memory, synchronization or control): every source is a
 /// value, and the result is tainted if any source is.
-fn pure_op(op: &Op) -> bool {
+pub(crate) fn pure_op(op: &Op) -> bool {
     matches!(
         op,
         Op::Mov { .. }
@@ -3490,7 +3478,7 @@ fn pure_op(op: &Op) -> bool {
 /// where or whether something happens.
 /// Position mode: registers of `op` that may depend on the CTA's position (global addresses,
 /// TMA coordinates), and whether they are a generic address (must resolve to global).
-fn pos_free_regs(op: &Op) -> (Vec<Reg>, bool) {
+pub(crate) fn pos_free_regs(op: &Op) -> (Vec<Reg>, bool) {
     let mut out = Vec::new();
     let mut v = |x: &Val| {
         if let Val::Reg(r, n) = x {
@@ -3523,7 +3511,7 @@ fn pos_free_regs(op: &Op) -> (Vec<Reg>, bool) {
     (out, generic)
 }
 
-fn value_regs(op: &Op) -> Vec<Reg> {
+pub(crate) fn value_regs(op: &Op) -> Vec<Reg> {
     let mut out = Vec::new();
     let mut v = |x: &Val| {
         if let Val::Reg(r, n) = x {
@@ -3609,6 +3597,10 @@ pub struct Taint {
     /// outcome or operand value), in order. Clusters are symmetric when corresponding threads
     /// have equal traces.
     pub trace: std::collections::HashMap<u32, Vec<(u32, u64)>>,
+    /// Every global byte is a source (E-CTA-REP: whatever a CTA loads from global memory
+    /// may differ between CTAs) until written with an untainted value (`clean_global`).
+    pub all_global: bool,
+    clean_global: std::collections::HashSet<(u64, u64)>,
 }
 
 impl Taint {
@@ -3624,6 +3616,26 @@ impl Taint {
     }
     pub(crate) fn reg_tainted(&self, t: usize, r: Reg) -> bool {
         self.reg_t(t, r)
+    }
+    /// Whether memory byte (space, object, offset) is tainted (`all_global`: every global
+    /// byte not since written untainted).
+    pub(crate) fn mem_has(&self, k: (u8, u64, u64)) -> bool {
+        self.mem.contains(&k)
+            || self.all_global && k.0 == 1 && !self.clean_global.contains(&(k.1, k.2))
+    }
+    pub(crate) fn mem_set(&mut self, k: (u8, u64, u64), tainted: bool) {
+        if tainted {
+            self.mem.insert(k);
+        } else {
+            self.mem.remove(&k);
+        }
+        if self.all_global && k.0 == 1 {
+            if tainted {
+                self.clean_global.remove(&(k.1, k.2));
+            } else {
+                self.clean_global.insert((k.1, k.2));
+            }
+        }
     }
     /// The tainted bits of register `r` of thread `t`.
     fn reg_mask(&self, t: usize, r: Reg) -> u32 {
@@ -3657,7 +3669,7 @@ impl Taint {
     }
     pub(crate) fn read(&mut self, key: (u8, u64), off: u64, n: u64) {
         self.check_gen(key);
-        self.last_read = (off..off + n).any(|b| self.mem.contains(&(key.0, key.1, b)));
+        self.last_read = (off..off + n).any(|b| self.mem_has((key.0, key.1, b)));
         if self.last_read {
             self.cur_read = true;
         }
@@ -3666,11 +3678,7 @@ impl Taint {
         self.check_gen(key);
         let t = self.cur_src || self.cur_read;
         for b in off..off + n {
-            if t {
-                self.mem.insert((key.0, key.1, b));
-            } else {
-                self.mem.remove(&(key.0, key.1, b));
-            }
+            self.mem_set((key.0, key.1, b), t);
         }
     }
 }

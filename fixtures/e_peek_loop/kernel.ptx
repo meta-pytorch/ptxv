@@ -1,0 +1,58 @@
+// Fixture for E-SPIN peeks (spin.rs `is_peek`): warp 0 tests an mbarrier once per iteration of
+// a two-iteration loop, before the loop body decides whether it needs the result. Iteration 0
+// skips the result; iteration 1 uses it, with a blocking wait when the test failed. The way
+// back to the test does not depend on the test's result (FA bwd Sm100 /
+// BlackwellFusedTopkSelection: a test before a tile loop whose empty case skips it).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_peek_loop(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<5>;
+    .shared .align 8 .b64 bar;
+    .shared .align 4 .b32 slot;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r3, bar;
+    mov.u32 %r9, slot;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra INITED;
+    mbarrier.init.shared::cta.b64 [%r3], 1;
+INITED:
+    bar.sync 0;
+    shr.u32 %r4, %r1, 5;
+    setp.eq.u32 %p3, %r4, 1;
+    @%p3 bra PRODUCER;
+    // warp 0
+    mov.u32 %r10, 0;
+OUTER:
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r3], 0;
+    setp.eq.u32 %p2, %r10, 0;
+    @%p2 bra NEXT;
+    @%p1 bra GOT;
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p4, [%r3], 0;
+    @!%p4 bra WAIT;
+GOT:
+    ld.shared.u32 %r6, [%r9];
+    add.u32 %r7, %r6, %r1;
+    mul.wide.u32 %rd2, %r1, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r7;
+NEXT:
+    add.u32 %r10, %r10, 1;
+    setp.lt.u32 %p2, %r10, 2;            // @BACK
+    @%p2 bra OUTER;
+    bra DONE;
+PRODUCER:
+    setp.ne.u32 %p1, %r1, 32;
+    @%p1 bra DONE;
+    st.shared.u32 [%r9], %r1;
+    mbarrier.arrive.release.cta.shared::cta.b64 _, [%r3];
+DONE:
+    ret;
+}

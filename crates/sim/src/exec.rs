@@ -837,6 +837,9 @@ impl Machine {
             }
             return out;
         }
+        if self.num.is_some() {
+            crate::rep::access(self, actor, pc, loc, n, write.is_some(), strong);
+        }
         // Strong accesses also as synchronization (spaces 10/11): plain-vs-strong conflicts are
         // races, found by vector clocks in either order (E-DRF), strong-vs-strong are not. Two
         // strong reads commute (memory, the synchronization source and the per-actor reader
@@ -3249,9 +3252,11 @@ impl Machine {
             .copied()
             .filter(|&t| self.prd(t, guard))
             .collect();
+        crate::rep::pre(self, members, &active, pc);
         self.taint_pre(members, &active, pc);
         let r = self.exec_inner(members, pc);
         self.taint_post(members, &active, pc);
+        crate::rep::post(self, members, &active, pc);
         r
     }
 

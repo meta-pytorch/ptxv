@@ -3012,15 +3012,29 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             if tname.starts_with('f') {
                 bail!(lw.err("float setp not modeled yet"));
             }
+            if op_n(0)?.contains('|') {
+                bail!(lw.err("setp with p|q not modeled"));
+            }
+            // `setp.CmpOp.BoolOp d, a, b, c`: d = (a CmpOp b) BoolOp c.
+            let comb = ["and", "or", "xor"].into_iter().find(|m| mods.contains(m));
+            let (and, or, xor) = match comb {
+                None => {
+                    if op_n(3).is_ok() {
+                        bail!(lw.err("setp with a fourth operand and no boolean operation"));
+                    }
+                    (Pred::TRUE, false, false)
+                }
+                Some(c) => (lw.pred_src(op_n(3)?)?, c == "or", c == "xor"),
+            };
             Op::Setp {
                 d: lw.pred_dst(op_n(0)?)?,
                 cmp,
                 bits,
                 a: lw.val(op_n(1)?)?,
                 b: lw.val(op_n(2)?)?,
-                and: Pred::TRUE,
-                or: false,
-                xor: false,
+                and,
+                or,
+                xor,
                 ex: None,
             }
         }

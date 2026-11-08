@@ -114,6 +114,14 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |k| any(k, |o| matches!(o, Op::Ld { .. })),
     },
     Assumption {
+        id: "E-CTA-REP",
+        kind: "code",
+        status: "argued",
+        title: "a CTA whose replayed position-dependent control values equal a certified representative's takes its path",
+        // Added to a verdict only when `--rep` decided it (rep.rs).
+        applies: never,
+    },
+    Assumption {
         id: "E-DRF",
         kind: "code",
         status: "argued",

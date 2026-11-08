@@ -148,6 +148,11 @@ enum Cmd {
         /// explore when it does not hold, printing why. With --slices: per cluster.
         #[arg(long)]
         certify: bool,
+        /// With --certify: representative CTAs (E-CTA-REP): certify a few CTAs and replay the
+        /// position-dependent values of the others; the launch is checked as before when the
+        /// reduction refuses (also PTXV_REP=1).
+        #[arg(long)]
+        rep: bool,
         /// Check a multi-launch case one group of launches at a time (E-LAUNCH-GROUPS):
         /// `auto`, or the later groups as `a,b;c-d` (group 1 is the rest). Each group by
         /// certificate, the last one by exploration if that fails, with a cross-group race
@@ -1142,7 +1147,10 @@ fn cmd_check(
                             },
                         )
                     }),
-                    _ if slices && certify => {
+                    _ if slices
+                        && certify
+                        && !std::env::var("PTXV_REP").is_ok_and(|v| v == "1") =>
+                    {
                         drop(m);
                         ptxv_sim::wellsync::check_sliced(&make, max_states, &mut |c, v| {
                             println!(
@@ -1160,6 +1168,32 @@ fn cmd_check(
                                 v.seconds
                             )
                         })
+                    }
+                    _ if certify && std::env::var("PTXV_REP").is_ok_and(|v| v == "1") => {
+                        drop(m);
+                        ptxv_sim::rep::check(
+                            &make,
+                            max_states,
+                            &mut |c, v| {
+                                println!(
+                                    "  {label}representative CTA {c}: {:?} states={} {:.1}s",
+                                    v.classes(),
+                                    v.states,
+                                    v.seconds
+                                )
+                            },
+                            &mut || {
+                                if slices {
+                                    ptxv_sim::wellsync::check_sliced(
+                                        &make,
+                                        max_states,
+                                        &mut |_, _| {},
+                                    )
+                                } else {
+                                    ptxv_sim::wellsync::check_certified(make(), max_states)
+                                }
+                            },
+                        )
                     }
                     _ if certify => ptxv_sim::wellsync::check_certified(m, max_states),
                     _ if slices => {
@@ -2003,6 +2037,7 @@ fn run() -> Result<()> {
             out,
             slices,
             certify,
+            rep,
             groups,
             json,
             residency,
@@ -2015,12 +2050,18 @@ fn run() -> Result<()> {
             if let Some(p) = hw_profile {
                 let _ = HW_PROFILE.set(p);
             }
+            if rep {
+                // The check paths read it (`ptxv_sim::rep`).
+                // SAFETY: argument handling on the main thread; no other thread runs yet.
+                unsafe { std::env::set_var("PTXV_REP", "1") };
+            }
             if !assume_refuted.is_empty() {
                 // build_launch reads it (ptxv_sim::assume_refuted), on every check path.
                 let mut ids = assume_refuted.join(",");
                 if let Ok(e) = std::env::var("PTXV_ASSUME_REFUTED") {
                     ids = format!("{e},{ids}");
                 }
+                // SAFETY: argument handling on the main thread; no other thread runs yet.
                 unsafe { std::env::set_var("PTXV_ASSUME_REFUTED", ids) };
             }
             let mut c = Case::load(&case)?;
