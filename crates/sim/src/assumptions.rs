@@ -188,8 +188,8 @@ pub const REGISTRY: &[Assumption] = &[
     Assumption {
         id: "E-MC-ALIAS-HW",
         kind: "code",
-        status: "argued",
-        title: "opt-in: multicast and unicast views of NVLS memory need no fence.proxy.alias (GB300 litmus: validated for multicast write / unicast read only)",
+        status: "validated",
+        title: "opt-in: multicast and unicast views of NVLS memory need no fence.proxy.alias (GB300 litmus: multicast write / unicast read and unicast write / multimem.ld_reduce)",
         // Added to a verdict when the case sets mc_alias = "hw" (for_machine).
         applies: never,
     },
@@ -278,6 +278,14 @@ pub const REGISTRY: &[Assumption] = &[
         status: "argued",
         title: "a used read is ordered before writes that depend on a later strong store of its thread (opt-in)",
         // Added to a verdict when the case sets `read_done`.
+        applies: never,
+    },
+    Assumption {
+        id: "E-REMOTE-FIFO",
+        kind: "code",
+        status: "validated",
+        title: "remote mbarrier arrivals from one CTA to one CTA land in happens-before issue order (opt-in)",
+        // Added to a verdict when the case sets `remote_fifo`.
         applies: never,
     },
     Assumption {
@@ -1487,6 +1495,9 @@ pub fn for_machine(m: &crate::machine::Machine) -> Vec<String> {
     }
     if m.launch.read_done {
         v.push("E-READ-DONE".into());
+    }
+    if m.launch.remote_fifo {
+        v.push("E-REMOTE-FIFO".into());
     }
     if !m.launch.mcast.is_empty() {
         v.push("S-MULTIMEM".into());

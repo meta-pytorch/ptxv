@@ -1553,14 +1553,21 @@ fn probe_tmem_stneg_matches_hardware() {
     probe_bitwise("probes/tmem_stneg", "good", "sass");
 }
 
-/// bar.warp.sync on per-lane pair masks (probes/warpsync_pairs): the PTX front's plain WARPSYNC
-/// releases each mask group on its own (= GB300). The SASS front (ptxas 13.0: WARPSYNC.COLLECTIVE)
-/// still reports a deadlock where the two lanes of a pair wait at different collective
-/// instructions (E-COLLECTIVE; GB300 completes).
+/// bar.warp.sync on per-lane pair masks (probes/warpsync_pairs) = GB300 on both front-ends: the
+/// PTX front's plain WARPSYNC releases each mask group on its own; on the SASS front (ptxas
+/// 13.0: WARPSYNC.COLLECTIVE per call site) the two lanes of a pair at different collective
+/// instructions enter together (E-COLLECTIVE).
 #[test]
 fn probe_warpsync_pairs_verdicts() {
     probe_bitwise("probes/warpsync_pairs", "good", "ptx");
-    check_dir("probes", "warpsync_pairs", "good", "sass");
+    probe_bitwise("probes/warpsync_pairs", "good", "sass");
+}
+
+/// Collectives whose pair mask is reached at different instructions (probes/coll_split, SASS):
+/// GB300 combines them; the model runs the identical WARPSYNC.COLLECTIVE regions as one.
+#[test]
+fn probe_coll_split_matches_hardware() {
+    probe_bitwise_cubin("probes/coll_split", Some("kernel.cubin"));
 }
 
 /// tcgen05.mma.kind::f16 with f16 operands and kind::tf32 (instruction descriptor A / B
@@ -3795,6 +3802,17 @@ fn e_rmsnorm_cluster_drain_remote_arrive_exit_drain() {
     for v in ["good", "bug", "good_k3", "bug_k3", "nodrain"] {
         both("e_rmsnorm_cluster_drain", v);
     }
+}
+
+/// E-REMOTE-FIFO (opt-in): remote arrivals from one CTA to one CTA land in happens-before
+/// issue order (FA4 2-CTA teardown shape): clean with the option, a violation without it,
+/// and still a violation when no barrier orders the two issues or the first comes after.
+#[test]
+fn e_remote_fifo_orders_hb_ordered_arrivals() {
+    for v in ["good", "nobar", "late"] {
+        both("e_remote_fifo", v);
+    }
+    both("e_remote_fifo_strict", "good");
 }
 
 /// S-ALIGN: misaligned ld / st / atom of every width are faults on both front-ends (GB300

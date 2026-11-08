@@ -493,6 +493,11 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
             Ok("0") => false,
             _ => m.read_done,
         },
+        remote_fifo: match std::env::var("PTXV_REMOTE_FIFO").as_deref() {
+            Ok("1") => true,
+            Ok("0") => false,
+            _ => m.remote_fifo,
+        },
         hw_order: false,
         refuted_opt_in,
     })

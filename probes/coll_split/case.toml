@@ -1,0 +1,39 @@
+name = "probe_coll_split"
+description = """
+Probe (E-COLLECTIVE) for collectives whose member mask names a lane pair reached by the two
+lanes at different instructions (ptxas 13.0: one WARPSYNC.COLLECTIVE slow path per call site):
+shfl.sync.bfly converged, after a branch, with the pair split across two shfl instructions,
+and a split vote.sync.ballot (kernel.ptx; kernel.cubin = ptxas -arch=sm_103a kernel.ptx: the
+PTX front-end does not model shfl.sync / vote.sync with a partial mask). expected/ is GB300's
+output (`ptxv hw-worker`)."""
+cubin = "kernel.cubin"
+entry = "coll_split"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [64]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [256]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

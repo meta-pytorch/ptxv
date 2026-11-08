@@ -124,6 +124,12 @@ pub struct Manifest {
     /// the receivers consumed their slots. `PTXV_READ_DONE=0|1` overrides.
     #[serde(default)]
     pub read_done: bool,
+    /// E-REMOTE-FIFO (opt-in, GB300 probe probes/remote_arrive_exit): remote mbarrier
+    /// arrivals from one source CTA to one target CTA land in the order of their issues when
+    /// those are ordered by happens-before (remote stores / st.async excluded).
+    /// `PTXV_REMOTE_FIFO=0|1` overrides.
+    #[serde(default)]
+    pub remote_fifo: bool,
     pub buffers: Vec<Buffer>,
     /// NVLS multicast objects (`cuMulticastCreate` + `cuMulticastBindMem` + `cuMemMap` of the
     /// multicast handle): an address range that is a multicast view of one bound range per GPU.

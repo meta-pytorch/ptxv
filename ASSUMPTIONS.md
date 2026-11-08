@@ -875,11 +875,22 @@ slow path = `WARPSYNC.COLLECTIVE Rm, end; op...; ENDCOLLECTIVE; end:`.
   separately; the alternative "only guard-true lanes branch" would give the 24-lane ballot
   instead of GB300's per-group ones). torch.topk's gatherTopK (fixtures pair in
   docs/compare.md) is certified clean and bitwise = GB300.
+- **Lanes of one mask at different `WARPSYNC.COLLECTIVE` instructions** (2026-11-07; ptxas
+  13.0 emits one slow path per call site, so a pair split across two branches parks at two):
+  GB300 combines them. probes/coll_split (pair masks 3 << (lane & 30)): with the pair's lanes
+  at two different `shfl.sync.bfly` (source = destination register) or `vote.sync.ballot`
+  call sites, every lane gets its partner's value and the pair's ballot, 50/50 scrubbed, as if
+  both ran one instruction (serialized regions would read an overwritten register). Model:
+  the group enters once all its live lanes are parked at collective instructions whose regions
+  are the same code (operations and guards); they run one of the regions together and each
+  lane continues after its own region's `ENDCOLLECTIVE` (`Thread::coll_home`); a group
+  entering after another left a region is ordered after it. Regions that differ keep waiting
+  (unmodeled). SASS `SHFL` also does not wait for lanes parked at a `WARPSYNC` or standing at
+  another `SHFL` (the two sides of a branch shuffling within their own lanes). Before, both
+  cases deadlocked: probes/warpsync_pairs (ptxas's lowering of a split `bar.warp.sync`) and
+  probes/coll_split now equal GB300 on the SASS front-end.
 - If wrong: *miss/false alarm* only for collective regions entered by lanes at different
-  instructions (unmodeled: they wait). This happens: probes/warpsync_pairs, where the two lanes
-  of each pair reach separate `WARPSYNC.COLLECTIVE` instructions (ptxas 13.0's lowering of
-  `bar.warp.sync` on a pair mask in two branches), deadlocks in the model and completes on
-  GB300 (2026-11-07).
+  instructions whose regions differ (unmodeled: they wait).
 
 ### E-COLLECTIVE-ALL · code
 **ptxas's divergent path of a non-aligned `barrier.sync`** (CuTeDSL `barrier(aligned=False)`;
@@ -1680,7 +1691,8 @@ before itself, for write-after-read checks only.
 view after a write through the other needs only the usual happens-before.
 - Why it exists: GB300 does not show the alias-proxy reordering that PTX allows, and the
   CuTe multimem GEMM + reduce-scatter kernels in the kernel DB use no `fence.proxy.alias`.
-- Status: **argued**; validated for one shape (multicast write, unicast read). `probes/multimem` `mm litmus` (4 GB300, one NVLink
+- Status: **validated** for two shapes (multicast write then unicast read; unicast write then
+  `multimem.ld_reduce`, below). `probes/multimem` `mm litmus` (4 GB300, one NVLink
   domain, 2026-11-06, `results/litmus.txt`): a writer does `multimem.st` of 16 bytes then
   `multimem.red.release.sys` +1 on a flag slot; readers on the 3 other GPUs poll their
   unicast flag with `ld.acquire.sys` and read the data through the unicast address. 200 runs x
@@ -1695,6 +1707,19 @@ view after a write through the other needs only the usual happens-before.
   the writes may land after the flag) were also 0: this probe did not show that it can detect
   late data (`LDGMC` bypasses L1, and the all-member poll leaves time), so the reverse shape
   is **not validated**, only not contradicted. Write-after-read is not probed.
+  Sensitive reverse probe (`probes/multimem/l2alias.cu`, devgpu042, 2 and 3 GB300, 2026-11-07,
+  `results/l2alias.txt`). One writer GPU, 64 CTAs, each bulk-storing 128 KiB to its own
+  unicast buffer and then adding to a per-CTA multicast flag. 64 reader CTAs, on the
+  writer's GPU or a peer, each poll one flag and immediately `multimem.ld_reduce` that CTA's
+  bytes, last bulk copy first. Detector control: with the flag issued before the data,
+  stale words appear at 0 ns spin (peer reader, 25 of 3,200 CTAs), 300 ns (777 and 2,815 of
+  3,200) and 1 us (2,872 and 2,962 of 3,200). L2's shape (`wait_group 0`, `red.release` /
+  `ld.acquire`, no `fence.proxy.alias`), with and without HBM co-tenant noise, readers on
+  the writer GPU and on peers, 2 and 3 members: 0 stale words in 76,800 CTA-instances
+  (2.1e6 words per run, 200 runs per configuration). Also 0 with `wait_group.read` only
+  (relaxed or release flag), with `st.global` data, and with the fence. So a write that
+  completed before the flag is never stale through the multicast view. The fence-free and
+  fenced shapes cannot be told apart at this resolution.
 - Where: `lib.rs` `build_launch` (`mc_alias_hw`); `exec.rs` `alias_check`.
 - If wrong: *miss* of an alias-proxy race in cases that opt in.
 - Retire: a PTX ISA statement that multicast views are not aliases, or litmus coverage of the
@@ -1733,6 +1758,12 @@ violation; equivalence accepts `contract` findings as preconditions and names th
   32 waves, each refilling the shared memory the previous CTA stored from: exiting right after
   the commit gave 0 wrong words in 200 runs; the positive control (the CTA overwrites its own
   buffer after the commit) 200/200 runs wrong. cuBLAS's nvjet GEMM relies on it.
+  Peer destination (`tse_peer.cu`, 2026-11-07, DeepEP's shape: bulk stores to the other GPU
+  over NVLink, with co-tenant kernels on both GPUs writing across NVLink): exit right after
+  the commit gave 0 wrong words in 200 runs x 4864 CTAs; the overwrite control was wrong in
+  200/200 runs. Overwriting 200 ns-3 us after the commit was still wrong in every run (the
+  bulk engine reads the source microseconds late); 10 us and later was not. The SM keeps the
+  CTA's shared memory until those reads finish.
 - If wrong: *miss* of a store reading freed shared memory after exit.
 - Retire: a statement in NVIDIA documentation either way.
 
@@ -1752,6 +1783,59 @@ already finished loader warps never wait for.
   runs, every CTA.
 - If wrong: *miss* of a commit arriving on the next CTA's mbarrier.
 - Retire: a statement in NVIDIA documentation either way.
+
+### E-REMOTE-FIFO · code
+**Opt-in: remote mbarrier arrivals from one CTA to one CTA land in the order of their
+issues, when the issues are ordered by happens-before** (case `remote_fifo = true`,
+`PTXV_REMOTE_FIFO=0|1`). Before a remote arrival B from CTA S lands on CTA T, every arrival
+from S to T still in flight whose issue happens-before B's issue lands first (oldest first);
+one that already landed as an async step while T never waited on its phase is covered when
+T waits on B's phase (or, if B was drained by its issuer's cluster release, by that
+release, as in S-REMOTE-INFLIGHT). Remote stores and `st.async` words are not covered and
+stay in flight as in S-REMOTE-INFLIGHT. This is weaker than "a thread's arrivals land by its
+next CTA barrier": it orders arrivals only against later arrivals to the same CTA.
+- Why it exists: FA4's 2-CTA forward (`FlashAttentionForwardSm100`, index L1). CTA 1's last
+  `.release.cta` consumer releases (sass 0xa4b0 / 0xb2f0) land on leader EMPTY barriers that
+  no thread waits for. The issuing warps then reach named barrier 2 (`BAR.ARV 0x2, 0x1a0`),
+  after which CTA 1's MMA warp sends the dealloc arrive (0x4520) that the leader waits for
+  before exiting. Under S-REMOTE-INFLIGHT the first arrivals may still be in flight at the
+  exit (violation). With this option the case certifies (E-WELLSYNC, 1372 steps, outputs =
+  GPU), and so does ptxas's `tcgen05.alloc.cta_group::2` ack at 0x2330 (the same warp's
+  0x4520 arrive follows it). The FusedRMSNormBwd pre-fix epilogue
+  (fixtures/e_rmsnorm_cluster_drain `bug`, `bug_k3`: one thread's earlier-stage arrive, then
+  its last-stage arrive that the target waits for) is also clean under it. That matches
+  GB300 (1000/1000 correct), but the source is still outside the PTX contract.
+- Not a PTX rule: under the PTX model an arrive is not cumulative through a later release of
+  another thread, so neither a `.release.cluster` A nor a `.release.cluster` B orders A
+  before the exit (both remain violations in the strict model). The fix inside the contract
+  is a wait on every stage's final phase (producer_tail) or a cluster barrier before exit.
+- Status: **validated** for the probed shapes (`probes/remote_arrive_exit`, GB300, CUDA 13.0,
+  2026-11-07). On GB300 a remote arrive or `st.shared::cluster` that reaches an exited CTA
+  fails the launch (`cudaErrorLaunchFailure`). A late access is a crash, not a silent write:
+  in `rae.cu` the successor CTAs on the exited CTA's SM never saw a changed word.
+  `fa4pair.cu` / `fa4quad.cu` (one binary, targets chosen at runtime, 76 or 38 test clusters
+  per launch): warps 0-7 of rank 1 arrive on rank 0 (`fence.proxy.async` +
+  `.release.cta`, FA4's SASS sequence), then `bar.sync` or `bar.arrive`; warp 8 arrives on the
+  mbarrier rank 0 waits for, and rank 0 exits. Also tested: thread 0 issues B itself right
+  after its arrivals (`same`). Result: 0 failed launches in about 3.6e5 test clusters,
+  including up to 256 arrivals per thread ahead of B, 64-1024 remote stores per thread to a
+  third CTA, and DSMEM noise clusters.
+  Positive controls fail in every process at or before the 4th launch: the same arrive
+  issued after the barrier, and 64 remote stores per thread to rank 0 ahead of the barrier.
+  So remote stores do stay in flight past a barrier and another warp's arrive, which is why
+  they are excluded. Order, measured directly (`order.cu`): the source issues arrivals A on
+  X, then (after `bar.sync`, or in the same thread) B on Y. The target waits on Y and at
+  once test_waits X; X incomplete = B landed before A. Configurations: clusters of 2-16,
+  source in the same TPC as the target or not, 1-256 A arrivals per thread, 0-500 ns between A
+  and B, DSMEM noise CTAs in the cluster, a co-tenant process under MPS. Result: 0 of 401,200
+  clusters saw B before A. Positive control, the same shape with remote stores in place of A:
+  24,914 of 64,400 clusters saw B before a store. That control was blind in some
+  configurations (clusters of 8 / 16 without noise, 500 ns): 0 there. Stores from the same
+  thread as B were never overtaken (0 of 15,200). A cluster stays inside one GPC, so
+  arrivals across GPCs cannot occur and were not tested.
+- If wrong: *miss* of an arrival landing in an exited CTA (on GB300: a failed launch).
+- Retire: an NVIDIA statement on remote-arrival ordering.
+- Where: `exec.rs` `complete_remote`, `deliver_fifo_before`, `fifo_transfer`.
 
 ### E-DESC-VERSION · code
 **tcgen05.mma ignores the fixed bits 46-48 (descriptor version) of its shared-memory matrix
@@ -3005,6 +3089,11 @@ states, like async-after-exit), since otherwise a schedule exists in which X exi
   issue but never observes the landing, a late landing is missed. Remote `ld/st.shared::cluster`
   get only the immediate check, not the terminal one.
 - If wrong: *false alarm* if hardware keeps the memory alive until the whole cluster exits.
+- GB300 (`probes/remote_arrive_exit` rae.cu / window.cu, 2026-11-07): it does not. A remote
+  mbarrier arrive or `st.shared::cluster` that reaches an exited peer fails the launch
+  (`cudaErrorLaunchFailure`). Successor CTAs already resident on the exited CTA's SM were
+  never written. A violation of this rule is therefore a crash on GB300, not a silent
+  corruption.
 
 ### S-REMOTE-INFLIGHT · code
 **A remote mbarrier arrival (`mbarrier.arrive[.expect_tx] .shared::cluster` to another CTA,
@@ -3049,8 +3138,11 @@ either. Arrivals and st.async to the issuer's own CTA land at issue, as before.
 - If wrong: *false alarm* if hardware delivers one thread's remote arrivals in order, or
   keeps a CTA's shared memory until its inbound arrivals land; *miss* if a cluster-scope
   release does not wait for earlier remote arrivals.
-- Retire: a GB300 probe that observes a late remote arrival (e.g. into a CTA that a
-  co-resident successor reuses).
+- GB300 (`probes/remote_arrive_exit`, 2026-11-07): remote *stores* issued before a barrier
+  and another warp's arrive can still be in flight when the target exits (the launch fails,
+  every process). Remote *arrivals* were never seen out of happens-before issue order (0 of
+  401,200 clusters, `order.cu`), which is the opt-in E-REMOTE-FIFO.
+- Retire: an NVIDIA statement on remote-operation ordering.
 
 ### S-ALIGN · code
 **A load, store or atomic of `n` bytes (`n` a power of two; a vector counts its whole size,
@@ -3234,8 +3326,8 @@ copies a tensor-map template to shared memory, then after `BSYNC` all 32 lanes r
   = their GB300 captures). probes/warpsync_pairs (pair-mask exchanges through shared memory:
   converged, after a branch, the two lanes of each pair on different paths) = GB300 on the
   PTX front-end (50/50 scrubbed). ptxas 13.0 lowers those `bar.warp.sync` to
-  `WARPSYNC.COLLECTIVE`, where pair lanes at different collective instructions still wait for
-  each other: a false deadlock on the SASS front-end (E-COLLECTIVE).
+  `WARPSYNC.COLLECTIVE`; pair lanes at different collective instructions enter together
+  (E-COLLECTIVE), so the SASS front-end equals GB300 too.
 - Status: **argued** from the ISA's reconvergence semantics and the CUTLASS source
   (`__syncwarp` there); not probed. Before this, BSSY/BSYNC were no-ops, which reported a race
   on that pattern. s_alu2's divergent division paths match GB300 bitwise.

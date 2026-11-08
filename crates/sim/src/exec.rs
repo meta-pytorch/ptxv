@@ -1493,10 +1493,21 @@ impl Machine {
                     th.st != St::Exited
                         && !(sass_shfl
                             && !members.contains(&u)
-                            && matches!(
+                            && (matches!(
                                 self.k.code.get(th.pc as usize).map(|i| &i.op),
                                 Some(Op::Bsync { .. })
-                            ))
+                            )
+                                // Lanes at another SHFL (the other side of a branch, each
+                                // side shuffling within its own lanes; probes/coll_split)
+                                // do not come here first.
+                                || th.pc != pc
+                                    && matches!(
+                                        self.k.code.get(th.pc as usize).map(|i| &i.op),
+                                        Some(Op::Shfl { .. })
+                                    )
+                                // Lanes parked at a WARPSYNC wait for their own group (a
+                                // WARPSYNC.COLLECTIVE region runs one mask group at a time).
+                                || th.st == St::WarpSync))
                 })
                 .count();
             if members.len() < live {
@@ -2516,7 +2527,7 @@ impl Machine {
         // in which this schedule happened to complete the op.
         // ASSUME(S-REMOTE-INFLIGHT): a remote operation the target never waited for (no wait
         // on the phase it counted toward or a later one) can land after the target exited.
-        for &(cta, mbar, phase, pc, _) in &self.remote_obs.clone() {
+        for &(cta, mbar, phase, pc, _, _) in &self.remote_obs.clone() {
             if self.mbar_seen.get(&(cta, mbar)).is_none_or(|&s| s <= phase) {
                 let msg = format!(
                     "the remote operation at {} lands on CTA {cta}'s mbarrier at {mbar:#x} (phase {phase}), which no thread of CTA {cta} waits for: CTA {cta} can exit while it is in flight (wait for every remote arrival before exiting; S-REMOTE-INFLIGHT)",
@@ -3702,28 +3713,48 @@ impl Machine {
                 // One mask group at a time: the lowest lane's group enters first.
                 if let Some(&t0) = active.first() {
                     let m = self.rd(t0, mask)? as u32;
-                    self.collective_release(self.threads[t0].warp, m, pc);
+                    self.collective_release(self.threads[t0].warp, m, pc, None);
                 }
                 return Ok(());
             }
             // ASSUME(E-COLLECTIVE): see ASSUMPTIONS.md
             Op::EndCollective { start } => {
+                // A lane that ran this region for its own identical one (`coll_home`) goes on
+                // after that region's ENDCOLLECTIVE.
+                let mut starts = vec![*start as u32];
                 for &t in members {
-                    self.threads[t].make_mut().pc = pc + 1;
+                    let home = self.threads[t].coll_home;
+                    let th = self.threads[t].make_mut();
+                    th.pc = pc + 1;
+                    if let Some(h) = home {
+                        th.coll_home = None;
+                        let end = self.coll_end(h);
+                        self.threads[t].make_mut().pc = end + 1;
+                        if !starts.contains(&h) {
+                            starts.push(h);
+                        }
+                    }
                 }
                 if let Some(&t0) = members.first() {
                     let w = self.threads[t0].warp;
-                    let next = self.warp_threads(w).find(|&i| {
-                        let th = &self.threads[i];
-                        th.st == St::WarpSync && th.pc == *start as u32
-                    });
-                    if let Some(t1) = next {
-                        if let Op::WarpSync {
-                            mask, all: false, ..
-                        } = &k.code[*start].op
-                        {
-                            let m = self.rd(t1, mask)? as u32;
-                            self.collective_release(w, m, *start as u32);
+                    // The next group enters after this one left: ordered after it.
+                    let mut after = VC::new();
+                    for &t in members {
+                        vc_join(&mut after, &self.threads[t].vc);
+                    }
+                    for s in starts {
+                        let next = self.warp_threads(w).find(|&i| {
+                            let th = &self.threads[i];
+                            th.st == St::WarpSync && th.pc == s
+                        });
+                        if let Some(t1) = next {
+                            if let Op::WarpSync {
+                                mask, all: false, ..
+                            } = &k.code[s as usize].op
+                            {
+                                let m = self.rd(t1, mask)? as u32;
+                                self.collective_release(w, m, s, Some(&after));
+                            }
                         }
                     }
                 }
@@ -4340,23 +4371,91 @@ impl Machine {
     /// its live lanes are parked there and no other lane of the warp is inside the region
     /// (between `pc` and its `ENDCOLLECTIVE`): groups run the region one at a time.
     /// ASSUME(E-COLLECTIVE)
-    fn collective_release(&mut self, warp: u32, mask: u32, pc: u32) {
-        let end = (pc as usize + 1..self.k.code.len())
-            .find(|&q| matches!(self.k.code[q].op, Op::EndCollective { start } if start == pc as usize))
-            .unwrap_or(pc as usize) as u32;
-        let busy = self
-            .threads
-            .iter()
-            .any(|th| th.warp == warp && th.st != St::Exited && th.pc > pc && th.pc <= end);
-        let ready = self.threads.iter().all(|th| {
-            th.warp != warp
-                || (mask >> th.lane) & 1 == 0
-                || th.st == St::Exited
-                || (th.st == St::WarpSync && th.pc == pc)
-        });
-        if !busy && ready {
-            self.warpsync_release(warp, mask, pc);
+    fn collective_release(&mut self, warp: u32, mask: u32, pc: u32, after: Option<&VC>) {
+        // Lanes of the group may wait at another WARPSYNC.COLLECTIVE whose region is the same
+        // code (ptxas emits one slow path per call site): on GB300 they enter together and
+        // their collective instructions combine (probes/coll_split). They run this region and
+        // go back to theirs at its ENDCOLLECTIVE (`coll_home`).
+        let at = |m: &Self, i: usize| -> Option<u32> {
+            let th = &m.threads[i];
+            if th.st != St::WarpSync {
+                return None;
+            }
+            match &m.k.code[th.pc as usize].op {
+                Op::WarpSync {
+                    mask: mk,
+                    collective: true,
+                    all: false,
+                } if th.pc == pc
+                    || m.rd(i, mk).ok().map(|v| v as u32) == Some(mask)
+                        && m.coll_same(th.pc, pc) =>
+                {
+                    Some(th.pc)
+                }
+                _ => None,
+            }
+        };
+        let lanes: Vec<usize> = self
+            .warp_threads(warp)
+            .filter(|&i| {
+                (mask >> self.threads[i].lane) & 1 == 1 && self.threads[i].st != St::Exited
+            })
+            .collect();
+        let homes: Vec<Option<u32>> = lanes.iter().map(|&i| at(self, i)).collect();
+        if homes.iter().any(|h| h.is_none()) {
+            return;
         }
+        let mut regions: Vec<u32> = homes.iter().flatten().copied().collect();
+        regions.sort_unstable();
+        regions.dedup();
+        let busy = regions.iter().any(|&s| {
+            let end = self.coll_end(s);
+            self.threads
+                .iter()
+                .any(|th| th.warp == warp && th.st != St::Exited && th.pc > s && th.pc <= end)
+        });
+        if busy {
+            return;
+        }
+        for (&i, h) in lanes.iter().zip(&homes) {
+            let h = h.unwrap();
+            if h != pc {
+                let th = self.threads[i].make_mut();
+                th.coll_home = Some(h);
+                th.pc = pc;
+            }
+        }
+        self.warpsync_release(warp, mask, pc);
+        if let Some(a) = after {
+            for &i in &lanes {
+                if self.threads[i].st == St::Run {
+                    vc_join(&mut self.threads[i].make_mut().vc, a);
+                }
+            }
+        }
+    }
+
+    /// The ENDCOLLECTIVE of the WARPSYNC.COLLECTIVE at `start` (`start` if none).
+    fn coll_end(&self, start: u32) -> u32 {
+        (start as usize + 1..self.k.code.len())
+            .find(|&q| matches!(self.k.code[q].op, Op::EndCollective { start: s } if s == start as usize))
+            .unwrap_or(start as usize) as u32
+    }
+
+    /// Are the regions of the WARPSYNC.COLLECTIVEs at `a` and `b` the same code (operations
+    /// and guards, the ENDCOLLECTIVE excepted)?
+    fn coll_same(&self, a: u32, b: u32) -> bool {
+        let (ea, eb) = (self.coll_end(a), self.coll_end(b));
+        if ea == a || eb == b || ea - a != eb - b {
+            return false;
+        }
+        (1..ea - a).all(|k| {
+            let (x, y) = (
+                &self.k.code[(a + k) as usize],
+                &self.k.code[(b + k) as usize],
+            );
+            x.op == y.op && x.guard == y.guard
+        })
     }
 
     /// ASSUME(E-COLLECTIVE-ALL): once every live lane of `warp` is parked at a
@@ -10157,6 +10256,10 @@ impl Machine {
         else {
             unreachable!()
         };
+        // ASSUME(E-REMOTE-FIFO)
+        if self.launch.remote_fifo {
+            self.deliver_fifo_before(op);
+        }
         self.rec(4, cta as u32, 1, 2, false);
         if let Err(e) = self.check_alive(cta, op.actor) {
             let msg = format!(
@@ -10187,10 +10290,22 @@ impl Machine {
         mb.tx += tx;
         let phase = mb.phase as u64;
         if !drained {
-            let e = (cta, mbar, phase, op.pc, op.issuer);
+            let e = (
+                cta,
+                mbar,
+                phase,
+                op.pc,
+                op.issuer,
+                vc_get(&op.vc, op.issuer),
+            );
             if let Err(k) = self.remote_obs.binary_search(&e) {
                 self.remote_obs.insert(k, e);
             }
+        }
+        // ASSUME(E-REMOTE-FIFO): earlier arrivals from this CTA to `cta` that already landed
+        // as async steps landed before this one: observing this one's phase covers them.
+        if self.launch.remote_fifo && store.is_empty() {
+            self.fifo_transfer(op, cta, mbar, phase, drained);
         }
         if n == 0 {
             let mb = self.mbars.get_mut(&(cta, mbar)).unwrap();
@@ -10246,9 +10361,86 @@ impl Machine {
             .collect();
         if !mine.is_empty() {
             self.remote_obs.retain(|e| e.4 != t as u32);
-            for (cta, _, _, pc, _) in mine {
+            for (cta, _, _, pc, _, _) in mine {
                 self.note_remote(cta, t as u32, pc);
             }
+        }
+    }
+
+    /// ASSUME(E-REMOTE-FIFO): remote arrival `op` from CTA S just landed on mbarrier `mbar`
+    /// of CTA `tgt` (toward `phase`). Arrivals from S to `tgt` that landed earlier as async
+    /// steps (`remote_obs`) and whose issue happens-before `op`'s landed before it, so their
+    /// obligation becomes `op`'s: the target must wait on `mbar`'s `phase` or later (or, when
+    /// `op` was drained by its issuer's cluster release, that release must happen-before the
+    /// target's exit, `note_remote`).
+    fn fifo_transfer(&mut self, op: &AsyncOp, tgt: u16, mbar: u32, phase: u64, drained: bool) {
+        let src = self.threads[op.issuer as usize].cta;
+        let is_arrive =
+            |k: &Kernel, pc: u32| matches!(k.code[pc as usize].op, Op::MbarArrive { .. });
+        let mut moved = Vec::new();
+        self.remote_obs.retain(|e| {
+            let take = e.0 == tgt
+                && (e.1, e.2) != (mbar, phase)
+                && self.threads[e.4 as usize].cta == src
+                && is_arrive(&self.k, e.3)
+                && vc_get(&op.vc, e.4) >= e.5;
+            if take {
+                moved.push(*e);
+            }
+            !take
+        });
+        for e in moved {
+            if drained {
+                self.note_remote(tgt, op.issuer, e.3);
+            } else {
+                let n = (tgt, mbar, phase, e.3, e.4, e.5);
+                if let Err(k) = self.remote_obs.binary_search(&n) {
+                    self.remote_obs.insert(k, n);
+                }
+            }
+        }
+    }
+
+    /// ASSUME(E-REMOTE-FIFO): before remote arrival `op` lands, deliver every pending remote
+    /// arrival (not st.async) from the same source CTA to the same target CTA whose issue
+    /// happens-before `op`'s issue, oldest first. They count as drained: `op` itself carries
+    /// the obligation to be observed before the target exits.
+    fn deliver_fifo_before(&mut self, op: &AsyncOp) {
+        let AsyncKind::Remote {
+            cta: tgt,
+            ref store,
+            ..
+        } = op.kind
+        else {
+            return;
+        };
+        if !store.is_empty() {
+            return;
+        }
+        let src = self.threads[op.issuer as usize].cta;
+        loop {
+            let threads = &self.threads;
+            let mut best: Option<(usize, u32)> = None;
+            for (i, o) in self.pending.iter().enumerate() {
+                let AsyncKind::Remote { cta, ref store, .. } = o.kind else {
+                    continue;
+                };
+                if cta != tgt || !store.is_empty() || threads[o.issuer as usize].cta != src {
+                    continue;
+                }
+                let c = vc_get(&o.vc, o.issuer);
+                if vc_get(&op.vc, o.issuer) < c {
+                    continue;
+                }
+                if best.is_none_or(|(_, bc)| c < bc) {
+                    best = Some((i, c));
+                }
+            }
+            let Some((i, _)) = best else {
+                break;
+            };
+            let a = self.pending.remove(i);
+            self.complete_remote(&a, true);
         }
     }
 

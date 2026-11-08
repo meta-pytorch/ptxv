@@ -36,7 +36,3 @@ buffer = "out"
 [[variants]]
 id = "good"
 expect = ["clean"]
-# ptxas 13.0 lowers each bar.warp.sync to WARPSYNC.COLLECTIVE; the two lanes of a pair parked
-# at different collective instructions are not combined (E-COLLECTIVE): a false deadlock.
-expect_sass = ["deadlock"]
-hw_note = "GB300 completes, 50/50 scrubbed (ptxv hw-worker, 2026-11-07)"

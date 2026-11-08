@@ -1009,6 +1009,10 @@ pub struct Thread {
     /// Result of the thread's last completed `bar.red` (E-BAR-RED): the reduction, the number
     /// of true contributions, and whether every waiter's was true.
     pub bar_res: Option<(ptxv_ir::BarRedOp, u32, bool)>,
+    /// E-COLLECTIVE: the `WARPSYNC.COLLECTIVE` this lane parked at, while it runs an identical
+    /// region elsewhere with the rest of its mask group (lanes of one mask at different
+    /// collective instructions enter together; GB300: probes/coll_split).
+    pub coll_home: Option<u32>,
     /// E-READ-DONE (case `read_done`): loads whose destination registers no instruction has
     /// used yet: (register file, first register, count, clock of the read).
     pub ld_pend: Vec<(u8, u16, u8, u32)>,
@@ -1361,6 +1365,8 @@ pub struct Launch {
     pub env: crate::residency::Env,
     /// E-READ-DONE: no load buffering through completed reads (case `read_done`).
     pub read_done: bool,
+    /// E-REMOTE-FIFO: remote arrivals from one CTA to one CTA land in happens-before issue order.
+    pub remote_fifo: bool,
     /// The GB300 hardware model's ordering (E-HW-L1, two-level check, twolevel.rs): memory
     /// behind the L1s is sequentially consistent, so every strong write publishes its
     /// writer's clock and every strong read that observes it acquires that clock, at any
@@ -1546,8 +1552,9 @@ pub struct Machine {
     /// issuer), sorted. At the end, the target must have waited on that phase or a later one
     /// (`mbar_seen`): otherwise nothing kept it from exiting before the delivery. A later
     /// cluster release of the issuer (which would have drained it) moves the entry to
-    /// `remote`, the happens-before check.
-    pub remote_obs: Vec<(u16, u32, u64, u32, u32)>,
+    /// `remote`, the happens-before check. Last field: the issuer's clock at issue
+    /// (E-REMOTE-FIFO moves an entry to a later arrival's mbarrier and phase).
+    pub remote_obs: Vec<(u16, u32, u64, u32, u32, u32)>,
     /// Per mbarrier (cta, offset): the latest phase whose completion a wait observed.
     pub mbar_seen: BTreeMap<(u16, u32), u64>,
     /// Completed generations per named barrier (cta, id).
@@ -2244,6 +2251,7 @@ impl Machine {
                     cp_pending: Vec::new(),
                     cp_group: 0,
                     bar_res: None,
+                    coll_home: None,
                 }));
             }
         }
