@@ -150,6 +150,10 @@ pub enum SReg {
     /// `(SWINHI << 32) | (rank << 24) | offset` is that shared::cluster address
     /// (`cvta.shared`, generic `mapa`). ASSUME(S-SWIN): see ASSUMPTIONS.md
     SharedWindowHi,
+    /// PTX: the address of module global `i` (`Kernel::globals`; `mov.b64 %rd, sym`,
+    /// `[sym+off]`): the base of the buffer the launch backs it with (S-GLOBAL-INIT; looked
+    /// up as the relocated word `GLOBAL_RELOC_BANK`, offset 8 i).
+    GlobalAddr(u32),
 }
 
 /// A value operand.
@@ -573,6 +577,10 @@ pub enum FenceKind {
     /// Acquire side only (SASS `CCTL.IVALL`, which ptxas emits after acquire loads and after
     /// `MEMBAR` for `fence.acq_rel`): earlier strong loads' observations take effect.
     Acquire,
+    /// PTX `fence.acquire.<scope>` below `.sys` (ptxas: `CCTL.IVALL` for `.cluster` / `.gpu`,
+    /// nothing for `.cta`): earlier strong loads' observations of writers the scope includes
+    /// take effect (no wider; S-SCOPE).
+    AcquireAt(Scope),
     /// `fence.proxy.async[.shared::cta|.shared::cluster]`, SASS `FENCE.VIEW.ASYNC.S`: orders
     /// generic and async-proxy accesses to shared memory (S-PROXY).
     ProxyAsync,
@@ -854,9 +862,12 @@ pub enum Op {
         mask: Option<Val>,
     },
     /// Warp-collective: exactly one active thread (the lowest lane) gets `d = true`.
+    /// `mask`: a PTX membermask held in a register; every lane must read the full warp
+    /// (E-ELECT).
     Elect {
         d: Reg,
         lane: Option<Reg>,
+        mask: Option<Val>,
     },
     /// f32 add. Each input's sign is first cleared (`abs`, `|R|`) then flipped (`neg`, `-R`).
     /// `ftz` (`.FTZ`): subnormal inputs and results are flushed to zero of the same sign;
@@ -2352,6 +2363,7 @@ impl Op {
             Op::BMov { r, to_b: true, .. } => vec![Val::Reg(*r, 1)],
             Op::BMov { .. } => vec![],
             Op::Bra { div: Some(m), .. } => vec![m.clone()],
+            Op::Elect { mask: Some(m), .. } => vec![m.clone()],
             Op::Elect { .. }
             | Op::BarResult { .. }
             | Op::EndCollective { .. }
@@ -2430,7 +2442,7 @@ impl Op {
                 x.extend(*p);
                 x
             }
-            Op::Elect { d, lane } => {
+            Op::Elect { d, lane, .. } => {
                 let mut x = vec![*d];
                 x.extend(*lane);
                 x
@@ -2700,6 +2712,9 @@ pub struct GlobalSym {
     /// The `.nv.global.init` bytes; None: a `.nv.global` (zero-initialized) symbol.
     pub init: Option<Vec<u8>>,
 }
+
+/// The constant bank the PTX front's module-global relocations name (`SReg::GlobalAddr`).
+pub const GLOBAL_RELOC_BANK: u8 = 0x1f;
 
 /// A relocated 8-byte constant-bank word holding `globals[global]`'s address + `addend`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

@@ -1,0 +1,37 @@
+name = "probe_elect_regmask"
+description = """
+Probe (E-ELECT) for elect.sync with its membermask in a register: a mov of -1 (DeepEP's inline
+asm) and an `or` that is -1 at run time; a partial register mask is refused when executed.
+expected/ is GB300's output for good (kernel.cubin = ptxas -arch=sm_103a kernel.ptx,
+`ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "elect_regmask"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "full-warp register masks"
+expect = ["clean"]
+
+[[variants]]
+id = "partial"
+summary = "a register mask of half the warp"
+marker = "@MASK"
+find = "-1;"
+replace = "0xffff;"
+expect = ["unmodeled"]
+# ptxas 13.0 drops the register mask: ELECT P, UR, PT, as for -1.
+expect_sass = ["clean"]

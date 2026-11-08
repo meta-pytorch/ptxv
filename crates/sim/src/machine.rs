@@ -1443,6 +1443,8 @@ pub type MmaCache = std::sync::Arc<
 /// Everything about a launch that does not change during execution.
 #[derive(Clone, Debug)]
 pub struct Launch {
+    /// Launch-level notes (sig, message): S-GLOBAL-INIT's zero-initialized module globals.
+    pub notes: Vec<(String, String)>,
     pub grids: Vec<Grid>,
     pub allocs: Vec<Alloc>,
     /// NVLS multicast objects (case `multicast`, S-MULTIMEM).

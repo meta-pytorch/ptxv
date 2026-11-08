@@ -294,7 +294,11 @@ fn side(who: &str, dir_case: &Path, out: &Path, max_states: usize) -> Result<Sid
     let classes = v.classes();
     // One line per kind of finding: how many, and the first.
     let mut kinds: Vec<(&str, usize, String)> = Vec::new();
-    for f in v.findings.iter().filter(|f| f.kind != "contract") {
+    // Informational notes (vprintf sites, S-GLOBAL-INIT zero globals) are not blockers.
+    for f in v.findings.iter().filter(|f| {
+        f.kind != "contract"
+            && !(f.kind == "note" && (f.sig.starts_with("printf:") || f.sig == "global-zero"))
+    }) {
         match kinds.iter_mut().find(|k| k.0 == f.kind) {
             Some(k) => k.1 += 1,
             None => kinds.push((&f.kind, 1, first_line(&f.msg))),

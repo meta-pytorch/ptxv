@@ -416,8 +416,35 @@ impl Verdict {
     }
 }
 
-/// Schedule-independent findings of the kernel (SASS scoreboard hazards), as findings.
+/// Schedule-independent findings of the kernel (SASS scoreboard hazards), as findings, plus
+/// notes: each vprintf call site (E-CLOCK: not run; a timeout or print path exists there) and
+/// the launch's (S-GLOBAL-INIT: a module global assumed zero at module load).
 pub(crate) fn static_findings(m: &Machine) -> Vec<Finding> {
+    let mut notes: Vec<Finding> = m
+        .k
+        .code
+        .iter()
+        .enumerate()
+        .filter(|(_, i)| {
+            matches!(&i.op, ptxv_ir::Op::CallAbs { syms, .. }
+                if syms.iter().any(|(_, n)| n == "vprintf"))
+        })
+        .map(|(pc, _)| Finding {
+            kind: "note".into(),
+            sig: format!("printf:{pc}"),
+            msg: format!(
+                "vprintf reachable at {} (not modeled: no memory effect, the result undefined; E-CLOCK)",
+                m.k.describe(pc)
+            ),
+            ..Default::default()
+        })
+        .collect();
+    notes.extend(m.launch.notes.iter().map(|(sig, msg)| Finding {
+        kind: "note".into(),
+        sig: sig.clone(),
+        msg: msg.clone(),
+        ..Default::default()
+    }));
     m.k.static_findings
         .iter()
         .map(|f| Finding {
@@ -432,6 +459,7 @@ pub(crate) fn static_findings(m: &Machine) -> Vec<Finding> {
                 .collect(),
             ..Default::default()
         })
+        .chain(notes)
         .collect()
 }
 
@@ -7873,7 +7901,7 @@ impl LaWarp {
                     _ => wild("unknown RET"),
                 }
             }
-            Op::Elect { d, lane } => {
+            Op::Elect { d, lane, .. } => {
                 self.guarded(m, c, *d, Av::E, g);
                 if let Some(l) = lane {
                     self.guarded(m, c, *l, Av::U, g);

@@ -301,6 +301,7 @@ any modifier outside the audited set before an arm runs.
 | (`CCTL.E.RML2`, refused) | `discard.global.L2 [a], 128` | weak stores of undefined data over the line (S-INIT) | probes/discard_l2 (PTX front) |
 | `IMMA.16832.S8.S8.SAT` | `mma.sync.aligned.m16n8k32.row.col.satfinite.s32.s8.s8.s32` | exact integer sum, saturated to s32 (N-IMMA) | probes/imma_s8 |
 | `HMUL2.BF16_V2` | plain `mul.bf16` / `.bf16x2` reaching only stores, conversions, mma operands, multiplicands through packs / unpacks / prmt / shfl | .rn (ptxas cannot contract) | probes/bf16_sink |
+| `HMUL2.BF16_V2`, `SEL`, `STSM` / bare `STTM`, `LDTM` (32x32b.x1) | plain `mul.bf16` through `selp` into `stmatrix` / `tcgen05.st`; `tcgen05.{st,ld}.32x32b.x1` | .rn (ptxas cannot contract); x1 TMEM access | probes/bf16_selp |
 | `REDUX` / `CREDUX` | `redux.sync` with a partial immediate or register membermask | reduction over the lanes the mask names; executing lanes != mask is a violation (PTX) | probes/redux_mask |
 | `SHFL` / `VOTE` | `shfl.sync` / `vote.sync` with a partial immediate or register membermask | per mask group, combined with the group's lanes at another instruction of the same kind; executing lanes != mask is a violation (PTX) | probes/coll_split, probes/shfl_mask (PTX front; SASS `WARPSYNC.EXCLUSIVE` refused) |
 | `FFMA2` / `FMUL2` / `FADD2 .RZ/.RM/.RP` | `.rz/.rm/.rp.f32x2` | one rounding in the mode | probes/bf16_ext |
@@ -312,6 +313,10 @@ any modifier outside the audited set before an arm runs.
 | `LDG.E.ENL2.256 Rhi, Rlo` / `STG.E.ENL2.256 [a], Rlo, Rhi` | `ld` / `st.global.v8.b32` | 32-byte access, 32-byte aligned; bytes 0..16 in the `lo` quad (second operand of the load, first data operand of the store) | probes/ldst256 |
 | `LDG.E.ENL2.256 Rhi, Rlo, [a], mask` | `ld.global.v8.b32` / `.v4.b64` with some elements unused | each half's selected words compacted from its base register (RZ: none); others untouched | probes/ldg256_mask |
 | `LDG` / `STG .E.ELL2.256`, `.E.EFL2.256` | `ld` / `st.global.L2::evict_last` / `L2::evict_first .v8.b32` | as ENL2 (eviction hint dropped, L-PTX-HINT) | probes/ldst256_l2 |
+| `CS2R Rd, SR_CLOCKLO` / `SR_GLOBALTIMERLO`, `CALL.ABS.NOINC` vprintf, `c[0x0][0x2f8]` | `%clock64` / `%globaltimer`, `call.uni vprintf`, `cvta.local.u64` | clocks 0, vprintf a no-op (note per site), unmapped generic local base (E-CLOCK, S-CBANK) | probes/printf_clock |
+| `LDC.64 c[0x4][..]` (`R_CUDA_64` to `.nv.global[.init]`) | `.global` module variables, `mov.b64 %rd, sym`, `[sym+off]` | one buffer per (module, symbol, GPU): captured bytes, else initializer, else zeros (noted) (S-GLOBAL-INIT) | probes/ptx_globals |
+| `MEMBAR.SC.<scope>` [+ `ERRBAR` + `CCTL.IVALL`] | `membar.cta` / `.gl` / `.sys` | as `fence.sc.<scope>` (S-SCOPE) | probes/fence_scopes |
+| nothing / `CCTL.IVALL` | `fence.acquire.cta` / `.cluster` / `.gpu` | acquire of that scope only (S-SCOPE) | probes/fence_scopes |
 | `FMUL [.FTZ] a, RN(1/C)` (or FFMA into an add), `FADD +-a, -RZ` for C = +-1 | `div.full` / `div.approx [.ftz] .f32 a, C`, C an immediate or a dominating `mov` constant | ptxas's constant fold, then PTX-FMAD as a plain mul | probes/div_const |
 | `FFMA` / `FFMA.FTZ` / `FFMA.SAT` / `DFMA` | `mul` + `add` / `sub` `.f32` / `.f64` without rounding modifiers | ptxas 13.0's default contraction where unambiguous (one reader, one block, same `.ftz`, unguarded); ambiguous shapes refused (PTX-FMAD) | probes/fmad |
 | `HFMA2.BF16_V2 d, -RZ.H0_H0, RZ.H0_H0, \|R\|[.H1_H1]` | `abs.bf16x2` / `abs.bf16` | sign bits cleared, then -0*0 + \|x\|: NaN 0x7fff, -0 to +0 | probes/bf16_abs |
@@ -391,3 +396,6 @@ any modifier outside the audited set before an arm runs.
   subnormal / Inf / NaN operands (N-MMA, N-HMMA); generic addresses in the shared window
   (`QSPC` returns false, `cvta.shared` is rejected); `LDGSTS` other than `.128`; HMMA other
   than `.16816.F32.BF16`.
+| `ELECT P, UR, PT` (ptxas drops a register membermask) | `elect.sync d\|p, %r` (mask in a register) | full warp checked when executed; partial refused (E-ELECT) | probes/elect_regmask |
+| `UBLKCP.S.G` / `UBLKCP.G.S` with the policy in `desc[UR]` | `cp.async.bulk.{shared::cluster.global.mbarrier::complete_tx::bytes,global.shared::cta.bulk_group}.L2::cache_hint` | the copy; hint and policy operand dropped (L-PTX-HINT) | probes/bulk_hint |
+| `CALL.ABS.NOINC` (`__assertfail`), `BPT.TRAP` | `call.uni __assertfail, (param0, .., param4)` | trap: the grid is aborted (E-CLOCK) | probes/assertfail |

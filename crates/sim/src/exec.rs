@@ -257,6 +257,15 @@ impl Machine {
         let th = &self.threads[t];
         let cta = th.cta as u32;
         let g = self.launch.g(cta);
+        // ASSUME(S-GLOBAL-INIT): a PTX module global's address is its buffer's (0 if the
+        // launch backs none: an access then faults).
+        if let SReg::GlobalAddr(i) = s {
+            return g
+                .cbank_relocs
+                .iter()
+                .find(|&&(b, o, _)| b == ptxv_ir::GLOBAL_RELOC_BANK && o == 8 * i)
+                .map_or(0, |&(_, _, v)| v);
+        }
         (match s {
             SReg::Tid(d) => th.tid[d as usize],
             SReg::NTid(d) => g.block[d as usize],
@@ -280,6 +289,7 @@ impl Machine {
             // ASSUME(S-DSMEM): see ASSUMPTIONS.md
             SReg::SharedAddr(off) => (self.launch.cluster_of(cta).1 << 24) | off,
             SReg::SharedWindowHi => (SHARED_GENERIC_BASE >> 32) as u32,
+            SReg::GlobalAddr(_) => unreachable!(),
         }) as u64
     }
 
@@ -4587,7 +4597,14 @@ impl Machine {
                 }
             }
             // ASSUME(E-ELECT): see ASSUMPTIONS.md
-            Op::Elect { d, lane } => {
+            Op::Elect { d, lane, mask } => {
+                if let Some(m) = mask {
+                    for &t in &active {
+                        if self.rd(t, m)? as u32 != u32::MAX {
+                            return Err("elect.sync with a partial membermask not modeled".into());
+                        }
+                    }
+                }
                 let lowest = active.iter().copied().min_by_key(|&t| self.threads[t].lane);
                 let leader = match self.elect_choice.take() {
                     Some(c) if active.contains(&c) => Some(c),
@@ -7178,6 +7195,15 @@ impl Machine {
                 self.acquire_pending(t, None);
                 if self.l1.is_some() {
                     self.l1_inval(t, pc); // ASSUME(E-HW-L1): CCTL.IVALL
+                }
+            }
+            // ASSUME(S-SCOPE): a scoped acquire fence acquires only within its scope.
+            Op::Fence {
+                kind: FenceKind::AcquireAt(sc),
+            } => {
+                self.acquire_pending(t, Some(*sc));
+                if self.l1.is_some() && !matches!(sc, Scope::Cta) {
+                    self.l1_inval(t, pc); // ASSUME(E-HW-L1): ptxas's CCTL.IVALL
                 }
             }
             Op::Mapa { d, a, rank } => {

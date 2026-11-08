@@ -2428,6 +2428,108 @@ fn probe_ld_sext64_matches_hardware() {
     probe_bitwise("probes/ld_sext64", "good", "sass");
 }
 
+/// membar.{cta,gl,sys} / fence.acquire.{cta,cluster,gpu,sys}: every variant's verdict on both
+/// front-ends (probes/fence_scopes; good = GB300).
+#[test]
+fn probe_fence_scopes_verdicts() {
+    for v in [
+        "good",
+        "sys",
+        "acq_sys",
+        "acq_cta",
+        "acq_cluster",
+        "rel_cta",
+        "acq_cta_local",
+    ] {
+        check_dir("probes", "fence_scopes", v, "ptx");
+        check_dir("probes", "fence_scopes", v, "sass");
+    }
+}
+
+/// E-CLOCK on both front-ends: clocks 0, vprintf a no-op noted per site, cvta.local
+/// (probes/printf_clock) = GB300.
+#[test]
+fn probe_printf_clock_matches_hardware() {
+    for front in ["ptx", "sass"] {
+        let case = Case::load(root().join("probes/printf_clock")).unwrap();
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+        assert!(v.complete, "{front}");
+        assert_eq!(v.classes(), ["clean"], "{front}: {:#?}", v.findings);
+        assert!(
+            v.findings
+                .iter()
+                .any(|f| f.kind == "note" && f.msg.contains("vprintf reachable")),
+            "{front}"
+        );
+        let report = case.expect_report(&v.outputs[0]).unwrap();
+        assert!(
+            report.iter().all(|l| l.contains("bitwise equal")),
+            "{front}: {report:?}"
+        );
+    }
+}
+
+/// S-GLOBAL-INIT on both front-ends: module .global variables with and without initializers
+/// (probes/ptx_globals) = GB300; the zero-initialized ones are noted by name.
+#[test]
+fn probe_ptx_globals_matches_hardware() {
+    for front in ["ptx", "sass"] {
+        let case = Case::load(root().join("probes/ptx_globals")).unwrap();
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 200_000);
+        assert!(v.complete, "{front}");
+        assert_eq!(v.classes(), ["clean"], "{front}: {:#?}", v.findings);
+        assert!(
+            v.findings
+                .iter()
+                .any(|f| f.kind == "note" && f.msg.ends_with(": scratch, zero")),
+            "{front}: {:#?}",
+            v.findings
+        );
+        let report = case.expect_report(&v.outputs[0]).unwrap();
+        assert!(
+            report.iter().all(|l| l.contains("bitwise equal")),
+            "{front}: {report:?}"
+        );
+    }
+}
+
+/// elect.sync with a register membermask (probes/elect_regmask) = GB300; a partial register
+/// mask is refused on PTX when executed.
+#[test]
+fn probe_elect_regmask_matches_hardware() {
+    probe_bitwise("probes/elect_regmask", "good", "ptx");
+    probe_bitwise("probes/elect_regmask", "good", "sass");
+    check_dir("probes", "elect_regmask", "partial", "ptx");
+    check_dir("probes", "elect_regmask", "partial", "sass");
+}
+
+/// cp.async.bulk with .L2::cache_hint both ways (probes/bulk_hint) = GB300.
+#[test]
+fn probe_bulk_hint_matches_hardware() {
+    probe_bitwise("probes/bulk_hint", "good", "ptx");
+    probe_bitwise("probes/bulk_hint", "good", "sass");
+}
+
+/// call.uni __assertfail (probes/assertfail): not taken = GB300; taken, a trap on both fronts.
+#[test]
+fn probe_assertfail_matches_hardware() {
+    probe_bitwise("probes/assertfail", "good", "ptx");
+    probe_bitwise("probes/assertfail", "good", "sass");
+    check_dir("probes", "assertfail", "taken", "ptx");
+    check_dir("probes", "assertfail", "taken", "sass");
+}
+
+/// plain mul.bf16 through selp into stmatrix / tcgen05.st (probes/bf16_selp) = GB300.
+#[test]
+fn probe_bf16_selp_matches_hardware() {
+    probe_bitwise("probes/bf16_selp", "good", "ptx");
+    probe_bitwise("probes/bf16_selp", "good", "sass");
+}
+
 /// mad.wide.{s,u}16 with an immediate multiplier (probes/mad_wide16) = GB300.
 #[test]
 fn probe_mad_wide16_matches_hardware() {
@@ -2976,6 +3078,7 @@ fn r4b_notify_group_is_exhaustive() {
         each[1]
             .findings
             .iter()
+            .filter(|f| f.kind != "note")
             .all(|f| f.msg.contains("notify_dispatch"))
     );
     // The hardware model.
@@ -3070,6 +3173,7 @@ fn r4b_torch_group_certifies() {
         each[0]
             .findings
             .iter()
+            .filter(|f| f.kind != "note")
             .all(|f| f.sig.starts_with("bulk-store-at-exit:")),
         "{:#?}",
         each[0].findings
@@ -3477,7 +3581,7 @@ fn r4b_coreader_notify() {
     assert!(v.complete);
     assert_eq!(v.classes(), ["stale"], "{:#?}", v.findings);
     assert_eq!(stale_pcs(&v), want);
-    for f in &v.findings {
+    for f in v.findings.iter().filter(|f| f.kind != "note") {
         assert!(
             f.msg.contains("kernel 2 CTA 0 + kernel 4 CTA 0")
                 || f.msg.contains("kernel 3 CTA 0 + kernel 5 CTA 0"),

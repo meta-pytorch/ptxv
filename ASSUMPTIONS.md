@@ -331,6 +331,11 @@ which lane.
     of no idiom like that.
   - **SASS front-end: validated.** It uses the lowest active lane, which GB300 picked for all
     8 active sets in `probes/elect` (2026-10-30).
+  - A PTX membermask held in a register (DeepEP: `mov.b32 %r, -1`) is read when executed:
+    every executing lane must hold 0xffffffff, else the record is refused (unmodeled). An
+    immediate other than -1 is refused at lift. ptxas 13.0 drops the register (`ELECT P, UR,
+    PT` even for 0xffff), so the SASS front sees a full-warp elect. probes/elect_regmask:
+    GB300 20/20, both fronts bitwise (2026-11-08).
 - Evidence: fixture e_elect B46 (code that assumes the leader is lane 0) is a race on PTX,
   clean on SASS, and correct on GB300.
 - If wrong (SASS): *miss*, if a future chip elects differently. Re-run `ptxv probe probes/elect`
@@ -770,7 +775,20 @@ SR_GLOBALTIMERLO`), read as 0 alike. The model has
 no time, so a timeout is a schedule property it cannot decide; it reads the clock as 0 so the
 difference never exceeds the bound, and a poll loop around it stays a stutter loop (E-SPIN
 warp-level polls). The `vprintf` before a trap is skipped; the `BPT.TRAP` after it is modeled.
-- Where: `crates/sass/src/lib.rs` (`CS2R ... SR_CLOCKLO`), `exec.rs` `CallAbs`.
+- PTX front (2026-11-07, front parity): `%clock` / `%clock64` / `%globaltimer[_lo|_hi]` read
+  0; `call.uni (retval0), vprintf, (param0, param1)` does nothing (its `st.param`s are dropped,
+  `ld.param [retval0]` gives an undefined register: S-INIT); `cvta.local.u64` adds the SASS
+  front's unmapped generic local base (S-CBANK). Each vprintf call site (either front) is a
+  note "vprintf reachable at ...", so a timeout / print path is visible per record.
+  probes/printf_clock: DeepEP's timeout shape (clock64 + globaltimer deltas, a stack-built
+  argument buffer, vprintf, trap), GB300 50/50, both front-ends bitwise.
+  `call.uni __assertfail, (param0, .., param4)` (Triton / CUDA device asserts; 2026-11-08)
+  aborts the grid as the SASS front's `CALL.ABS` to it (a trap; its `st.param`s are dropped).
+  probes/assertfail: not taken, GB300 20/20 and both fronts bitwise; taken, both fronts report
+  the trap and GB300 fails the launch with "device-side assert triggered", printing the
+  message from the module `.global` initializers.
+- Where: `crates/sass/src/lib.rs` (`CS2R ... SR_CLOCKLO`), `exec.rs` `CallAbs`; `ptx`
+  `vprintf_calls`, `Lower::val`, the `cvta` arm; `explore.rs` `static_findings` (notes).
 - Status: **argued.** The timeouts guard against hangs of seconds; a hang the model sees is a
   deadlock finding instead of a trap.
 - If wrong: *miss* on code whose results depend on elapsed time (none in the captured stacks:
@@ -3231,6 +3249,17 @@ treated as sufficient.** Since rung 1f:
 - A morally strong read whose thread the release's scope includes acquires it at once
   (acquire read) or at its next acquire fence (relaxed read; `fence.acq_rel.<scope>` acquires
   observations whose writer its scope includes, and SASS `CCTL.IVALL` acquires all of them).
+- `membar.cta` / `.gl` / `.sys` are `fence.sc.cta` / `.gpu` / `.sys` (PTX ISA; ptxas emits the
+  same `MEMBAR.SC.<scope>` [+ `ERRBAR` + `CCTL.IVALL`]) and are modeled as `fence.sc` is (as
+  `fence.acq_rel` at that scope: no total SC order beyond the interleaving, which is weaker
+  than PTX, not stronger). `fence.acquire.cta` / `.cluster` / `.gpu` acquire only
+  observations whose writer the scope includes (`.sys`: all); ptxas emits nothing for `.cta`
+  and `CCTL.IVALL` for `.cluster` / `.gpu`, so the SASS front is exact for the code (an
+  all-scope acquire after `.cluster` / `.gpu`, none after `.cta`: LDG.STRONG.SM is read as
+  relaxed, so a CTA-scope acquire pattern is reported there, weaker than the hardware).
+  probes/fence_scopes (2026-11-07): cross-CTA and in-CTA message passing; acquire narrowed to
+  `.cta` / `.cluster` or release to `membar.cta` across CTAs is reported on the PTX front;
+  GB300 50/50 on the good variant.
 - `red.global.add.v2` / `.v4.f32` (SASS `REDG.E.ADD.F32x2` / `F32x4.FTZ.RN`) is one FADD.FTZ
   atomic per element, each on its own (the PTX ISA gives no atomicity across elements;
   2026-11-07, probes/red_vec = GB300 on both front-ends). `atom.global.add.v2` / `.v4.f32`
@@ -3562,14 +3591,23 @@ each (module, symbol, GPU) with one buffer: the case buffer declaring `symbol` (
 `device`), whose `init` is the captured contents, or else an automatic buffer holding the
 `.nv.global.init` bytes (zeros for `.nv.global`). Launches of one module on one GPU share it, so
 its state carries from launch to launch within the case. On hardware the buffer is the module's
-own global (`cuModuleGetGlobal`), rewritten with the same bytes before every run.
+own global (`cuModuleGetGlobal`), rewritten with the same bytes before every run. An
+automatic buffer with neither captured bytes nor an initializer is listed in one note per
+launch ("N module global(s) without captured bytes or an initializer, zero at module load
+assumed: X, ..."; 2026-11-07), so the assumption shows per record. The PTX front reads the
+module's `.global` declarations (`.visible` / `.extern` / `.weak`, scalars and arrays, integer
+initializers as element bytes) and resolves a symbol operand (`mov.b64 %rd, sym`,
+`[sym+off]`) to the same buffer, through a synthetic relocated word in bank 0x1f; a symbol with
+any other initializer (`generic(...)`, floats) is refused where used (2026-11-08).
 - Where: `lib.rs` `build_launch` (`global_buffers`), `exec.rs` `Op::LdConst`, `hw` `run_with`,
-  `sass/src/elf.rs` `Elf::data_symbol`.
+  `sass/src/elf.rs` `Elf::data_symbol`, `ptx/src/lib.rs` `parse_kernel` (module `.global`
+  lines), `exec.rs` `SReg::GlobalAddr`.
 - Status: **argued.** A captured case declares the globals its kernels' banks name, with their
   device contents at the snapshot (`tools/capture_dist.py`, `ptxv.capture`). An automatic buffer
   is right for a fresh module and wrong for a long-running process whose earlier kernels
   changed the global (DeepEP's `epSyncer` counts barrier rounds). fixtures/s_globals is
-  bitwise equal to GB300.
+  bitwise equal to GB300; probes/ptx_globals (initialized, zero and scratch globals, PTX front)
+  is bitwise equal to GB300 on both fronts (20/20, 2026-11-08).
 - Not modeled: a global reached through a relocated instruction immediate (`32@lo(sym)`,
   relocatable code): address 0, as before. `__constant__` globals.
 - If wrong: *miss* or *false alarm*: the kernels run from other initial state than the
@@ -4169,7 +4207,10 @@ forms seen. Any other form is a hard error.
   conversions, `mma` operands or multiplicands is `.rn` too (Triton's dequant into an
   `mma.sync` B operand; a fused-attention recompute through prmt / shfl / prmt into cvt).
   probes/bf16_sink: GB300 50/50, both front-ends bitwise (ptxas: HMUL2.BF16_V2, PRMT, SHFL,
-  HMMA, no HFMA2).
+  HMMA, no HFMA2). Also through a `selp` data operand (Triton's MX GEMM NaN override
+  `selp.b16 %h, 0x7FC0, %prod, %p`) and into `stmatrix` / `tcgen05.st` (2026-11-08, 9 PX
+  records): probes/bf16_selp, GB300 20/20, both front-ends bitwise (HMUL2.BF16_V2, SEL, STSM /
+  STTM, no HFMA2).
 - `rcp.rn.f32` (2026-11-07, SCALE pilot) as `div.rn.f32 d, 1.0, a`: the IEEE reciprocal,
   subnormals kept, NaN 0x7fffffff. probes/rcp_rn (4096 inputs: specials, subnormals,
   magnitudes near 2^+-126; GB300 50/50 scrubbed, also equal to the f64 reciprocal rounded to
@@ -4288,14 +4329,16 @@ instruction of the kernel names. A kernel that also contains a `CALL` other than
 - If wrong: *miss* or *false alarm* (a wrong restored value).
 
 ### L-PTX-HINT · code
-**PTX cache hints do not change semantics:** `cp.async`'s `.L2::cache_hint` (with its
-cache-policy operand) and `.L2::64B` / `.L2::128B` / `.L2::256B` prefetch sizes are accepted
-and dropped by the PTX front-end. Every other unknown modifier of the instructions it lowers
+**PTX cache hints do not change semantics:** `cp.async`'s and non-tensor `cp.async.bulk`'s
+`.L2::cache_hint` (with its cache-policy operand) and `.L2::64B` / `.L2::128B` / `.L2::256B`
+prefetch sizes are accepted and dropped by the PTX front-end. Every other unknown modifier of the instructions it lowers
 is rejected (fail closed).
-- Where: `ptx` `lower_inst`, the `cp.async` arm (`ASSUME(L-PTX-HINT)`).
+- Where: `ptx` `lower_inst`, the `cp.async` and `cp.async.bulk` arms (`ASSUME(L-PTX-HINT)`).
 - Status: **argued**: the PTX ISA defines them as cache-eviction priorities and prefetch
   sizes, with no effect on the values copied or on ordering. fixtures/s_ptx_cute_ops (one
-  `.L2::128B` copy) = GB300 bitwise.
+  `.L2::128B` copy) = GB300 bitwise. probes/bulk_hint (cp.async.bulk with `.L2::cache_hint`
+  both ways; ptxas puts the policy in the UBLKCP memory descriptor) = GB300 20/20 on both
+  front-ends (2026-11-08).
 - SASS: the L2 eviction policy of a 256-bit global access (`LDG` / `STG .E.ENL2.256`,
   `.ELL2` = PTX `.L2::evict_last`, `.EFL2` = `.L2::evict_first`) is likewise dropped
   (2026-11-07; 4 SCALE corpus records refused ELL2): probes/ldst256_l2 = GB300 on both

@@ -98,7 +98,7 @@ fn model_nop(op: &Op) -> bool {
         op,
         Op::Nop
             | Op::Fence {
-                kind: FenceKind::Acquire
+                kind: FenceKind::Acquire | FenceKind::AcquireAt(_)
             }
     )
 }

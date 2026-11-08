@@ -1,0 +1,76 @@
+// probes/bf16_selp: plain mul.bf16 whose products reach only uses ptxas cannot contract into
+// (L-ROSETTA), through Triton's NaN override (selp.b16 of 0x7FC0 or the product), a pack, and
+// stmatrix or tcgen05.st (Triton's MX GEMM epilogues). 32 threads; w = in[2 t], v = in[2 t + 1]
+// (bf16 pairs); p0 = w.lo * w.hi, p1 = v.lo * v.hi, s0 = (in[64 + t] & 1) ? 0x7FC0 : p0; the
+// pack {s0, p1} is stored by stmatrix.m8n8.x1 to shared, read back word t and written to
+// out[t]. p2 = w.lo * v.hi, s2 = (in[64 + t] & 1) ? p2 : 0x7FC0, p3 = w.hi * v.lo; the pack
+// {s2, p3} is stored by tcgen05.st.32x32b.x1 to TMEM, loaded back and written to out[32 + t].
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry bf16_selp(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<2>;
+    .reg .b16   %rs<16>;
+    .reg .b32   %r<24>;
+    .reg .b64   %rd<12>;
+    .shared .align 16 .b8 sm[128];
+    .shared .align 16 .b32 taddr_s;
+
+    mov.u32         %r14, taddr_s;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r14], 32;
+    tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    tcgen05.fence::after_thread_sync;
+    ld.shared.u32   %r15, [%r14];
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 8;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.v2.b32 {%r2, %r3}, [%rd4];
+    mul.wide.u32    %rd5, %r1, 4;
+    add.s64         %rd6, %rd1, %rd5;
+    ld.global.u32   %r4, [%rd6+256];
+    and.b32         %r5, %r4, 1;
+    setp.ne.u32     %p1, %r5, 0;
+    mov.b32         {%rs1, %rs2}, %r2;
+    mov.b32         {%rs3, %rs4}, %r3;
+    mul.bf16        %rs5, %rs1, %rs2;
+    mul.bf16        %rs6, %rs3, %rs4;
+    selp.b16        %rs7, 0x7FC0, %rs5, %p1;
+    mov.b32         %r6, {%rs7, %rs6};
+    mov.u32         %r7, sm;
+    and.b32         %r8, %r1, 7;
+    shl.b32         %r9, %r8, 4;
+    add.u32         %r10, %r7, %r9;
+    stmatrix.sync.aligned.m8n8.x1.shared.b16 [%r10], {%r6};
+    bar.sync        0;
+    shl.b32         %r11, %r1, 2;
+    add.u32         %r12, %r7, %r11;
+    ld.shared.u32   %r13, [%r12];
+    add.s64         %rd7, %rd2, %rd5;
+    st.global.u32   [%rd7], %r13;
+    mul.bf16        %rs8, %rs1, %rs4;
+    mul.bf16        %rs9, %rs2, %rs3;
+    selp.b16        %rs10, %rs8, 0x7FC0, %p1;
+    mov.b32         %r16, {%rs10, %rs9};
+    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r15], {%r16};
+    tcgen05.wait::st.sync.aligned;
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 {%r17}, [%r15];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.u32   [%rd7+128], %r17;
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    tcgen05.fence::after_thread_sync;
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r15, 32;
+    ret;
+}

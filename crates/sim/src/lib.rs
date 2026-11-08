@@ -399,7 +399,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
         cta0 += g.ctas();
         grids.push(g);
     }
-    global_buffers(case, k, &mut allocs, &mut grids)?;
+    let notes = global_buffers(case, k, &mut allocs, &mut grids)?;
     let outputs = m
         .outputs
         .iter()
@@ -470,6 +470,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
         vec![]
     };
     Ok((Launch {
+        notes,
         grids,
         replicas,
         allocs,
@@ -520,7 +521,9 @@ fn global_buffers(
     k: &Kernel,
     allocs: &mut Vec<Alloc>,
     grids: &mut [Grid],
-) -> Result<()> {
+) -> Result<Vec<(String, String)>> {
+    let mut notes = Vec::new();
+    let mut zeroed: Vec<String> = Vec::new();
     let m = &case.m;
     let launches = m.all_launches();
     let parts: Vec<(&[ptxv_ir::GlobalSym], &[ptxv_ir::GlobalReloc])> = if k.parts.is_empty() {
@@ -565,6 +568,9 @@ fn global_buffers(
                             if l.device != 0 {
                                 name += &format!("@gpu{}", l.device);
                             }
+                            if g.init.is_none() {
+                                zeroed.push(g.name.clone());
+                            }
                             allocs.push(Alloc {
                                 name,
                                 base: GLOBAL_BASE + ((allocs.len() as u64) << 32),
@@ -590,7 +596,21 @@ fn global_buffers(
                 .push((r.bank, r.off, base.wrapping_add(r.addend as u64)));
         }
     }
-    Ok(())
+    // One note for all of them (CUB kernels name dozens of internal globals).
+    zeroed.sort();
+    if !zeroed.is_empty() {
+        let shown: Vec<&str> = zeroed.iter().take(3).map(String::as_str).collect();
+        notes.push((
+            "global-zero".to_string(),
+            format!(
+                "{} module global(s) without captured bytes or an initializer, zero at module load assumed (S-GLOBAL-INIT): {}{}",
+                zeroed.len(),
+                shown.join(", "),
+                if zeroed.len() > 3 { ", ..." } else { "" }
+            ),
+        ));
+    }
+    Ok(notes)
 }
 
 /// Refuted assumptions the case may use: its `assume_refuted` plus `PTXV_ASSUME_REFUTED`

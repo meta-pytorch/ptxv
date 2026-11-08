@@ -1921,6 +1921,8 @@ fn lower_line(
         "STTM" => {
             // shape: 0 = 32x32b / 16x32bx2, 1 = 16x128b, 2 = 16x256b (probes/tmem_st16).
             let (n, half, shape): (usize, Option<u8>, u8) = match mods {
+                // Bare `STTM tmem[..], R` is tcgen05.st.32x32b.x1 (probes/bf16_selp).
+                [] => (1, None, 0),
                 [x] if x.starts_with('x') => {
                     (x[1..].parse().map_err(|_| lw.err("STTM count"))?, None, 0)
                 }
@@ -2196,6 +2198,7 @@ fn lower_line(
             Op::Elect {
                 d: lw.pdst(lw.op(0)?)?,
                 lane,
+                mask: None,
             }
         }
         // IMAD[.WIDE|.HI][.U32][.X] d, [Pcout,] a, b, c[, Pcin]
@@ -3522,6 +3525,8 @@ fn lower_line(
                 None => None,
             };
             let (n, s16x64b, half): (u8, bool, Option<u8>) = match mods {
+                // Bare `LDTM R, tmem[..]` is tcgen05.ld.32x32b.x1 (probes/bf16_selp).
+                [] => (1, false, None),
                 [x] if x.starts_with('x') => (
                     x[1..].parse().map_err(|_| lw.err("LDTM count"))?,
                     false,

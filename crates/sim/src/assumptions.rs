@@ -743,6 +743,7 @@ pub const REGISTRY: &[Assumption] = &[
                                 kind: FenceKind::Membar(_)
                                     | FenceKind::Release(_)
                                     | FenceKind::Acquire
+                                    | FenceKind::AcquireAt(_)
                             }
                     )
                 })

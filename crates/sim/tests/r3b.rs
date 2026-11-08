@@ -193,6 +193,7 @@ fn r3b_bmm_good() {
     let sigs: std::collections::BTreeSet<&str> = v
         .findings
         .iter()
+        .filter(|f| f.kind != "note")
         .map(|f| f.sig.split(':').next().unwrap())
         .collect();
     assert_eq!(

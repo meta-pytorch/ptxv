@@ -1,0 +1,63 @@
+// probes/assertfail: Triton's device-assert shape on the PTX front: `call.uni __assertfail,
+// (param0, .., param4)` with string arguments from module .global arrays (cvta.global), then
+// trap. 32 threads; out[t] = in[t] * 2; the assert fires iff some in[t] > 1000 (never in good).
+.version 8.8
+.target sm_103a
+.address_size 64
+.extern .func __assertfail
+(
+    .param .b64 __assertfail_param_0,
+    .param .b64 __assertfail_param_1,
+    .param .b32 __assertfail_param_2,
+    .param .b64 __assertfail_param_3,
+    .param .b64 __assertfail_param_4
+)
+;
+.global .align 1 .b8 assertFunc_0[8] = {112, 114, 111, 98, 101, 0, 0, 0};
+.global .align 1 .b8 assertFile_0[4] = {102, 46, 112, 0};
+.global .align 1 .b8 assertMessage_0[6] = {98, 105, 103, 33, 33, 0};
+
+.visible .entry assertfail(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<2>;
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<16>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.u32   %r2, [%rd4];
+    setp.gt.u32     %p1, %r2, 1000; // @COND
+    @%p1 bra        $ASSERT;
+    shl.b32         %r3, %r2, 1;
+    add.s64         %rd5, %rd2, %rd3;
+    st.global.u32   [%rd5], %r3;
+    ret;
+$ASSERT:
+    { // callseq 0, 0
+    .param .b64 param0;
+    .param .b64 param1;
+    .param .b32 param2;
+    .param .b64 param3;
+    .param .b64 param4;
+    mov.b64         %rd6, assertFunc_0;
+    cvta.global.u64 %rd7, %rd6;
+    st.param.b64    [param3], %rd7;
+    mov.b64         %rd8, assertFile_0;
+    cvta.global.u64 %rd9, %rd8;
+    st.param.b64    [param1], %rd9;
+    mov.b64         %rd10, assertMessage_0;
+    cvta.global.u64 %rd11, %rd10;
+    st.param.b64    [param0], %rd11;
+    st.param.b64    [param4], 1;
+    st.param.b32    [param2], 42;
+    call.uni __assertfail, (param0, param1, param2, param3, param4);
+    } // callseq 0
+    trap;
+}

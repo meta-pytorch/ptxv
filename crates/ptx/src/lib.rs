@@ -64,9 +64,9 @@ fn is_unpack(st: &Stmt, op: &str) -> bool {
 /// Whether every use of `r`, through at most `depth` packs / unpacks (`mov.b32 %r, {%h1,
 /// %h2}`, `mov.b64 {%r1, %r2}, %rd`), is one ptxas cannot contract a mul into: a store, a
 /// conversion, an `mma` operand, a multiplicand of `mul` / `fma`, or a `prmt` / `shfl.sync`
-/// source whose result is such (Triton's bf16 dequant: plain
+/// source or `selp` data operand whose result is such, a `stmatrix` / `tcgen05.st` source (Triton's bf16 dequant: plain
 /// `mul.bf16`s packed into `.b32`, then `.b64`, unpacked into an `mma.sync` B operand;
-/// probes/bf16_sink).
+/// probes/bf16_sink; the NaN-override `selp`, `stmatrix` and `tcgen05.st`: probes/bf16_selp).
 fn sink_only(insts: &[&Stmt], r: &str, depth: u32) -> bool {
     if depth == 0 {
         return false;
@@ -82,8 +82,11 @@ fn sink_only(insts: &[&Stmt], r: &str, depth: u32) -> bool {
                 return true;
             }
             match base {
-                "st" | "cvt" | "mma" | "mul" => true,
+                "st" | "stmatrix" | "cvt" | "mma" | "mul" => true,
+                "tcgen05" => op.starts_with("tcgen05.st."),
                 "fma" => i == 1 || i == 2,
+                // A select between the product and another value (Triton's NaN override).
+                "selp" if i == 1 || i == 2 => sink_only(insts, ops[0], depth - 1),
                 "mov" if unpack => ops[..i]
                     .iter()
                     .all(|h| *h == "_" || sink_only(insts, h, depth - 1)),
@@ -183,7 +186,9 @@ fn uncontractible_f16_muls(insts: &[&Stmt]) -> HashSet<String> {
             let safe = match base {
                 "mul" => true,
                 "fma" => i == 1 || i == 2 || i == 3 && x2.contains(*o),
-                "st" | "cvt" => true,
+                "st" | "stmatrix" | "cvt" => true,
+                "tcgen05" => op.starts_with("tcgen05.st."),
+                "selp" if i == 1 || i == 2 => sink_only(insts, ops[0], 6),
                 // `mov.b32 %r13, {%h10, %h10}`: a pack whose result is only stored;
                 // `mov.b64 {%r64, %r65}, %rd15`: an unpack whose halves are only stored or
                 // converted (Triton's f32x2 RMSNorm before cvt.rn.bf16x2.f32).
@@ -589,6 +594,90 @@ fn loose_mul_dsts(insts: &[&Stmt]) -> HashSet<String> {
         .collect()
 }
 
+/// `call.uni (retval0), vprintf, (param0, param1)` (DeepEP's timeout prints): the call becomes
+/// `__vprintf` (no effect, as the SASS front's `CALL.ABS.NOINC `(vprintf)`; ASSUME(E-CLOCK)),
+/// the `st.param` of its arguments `__nop`, and the `ld.param` of its result a move of the
+/// undefined register (S-INIT: the count printf returns is not modeled, a use is reported).
+/// `call.uni __assertfail, (p0, .., p4)` (CUDA / Triton device asserts) likewise becomes
+/// `__assertfail`, the SASS front's `CALL.ABS` to it: the grid is aborted (a trap).
+fn vprintf_calls(stmts: &mut [Stmt]) {
+    let names = |s: &str| -> Vec<String> {
+        s.trim()
+            .trim_start_matches('(')
+            .trim_end_matches(')')
+            .split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect()
+    };
+    let calls: Vec<usize> = (0..stmts.len())
+        .filter(|&i| {
+            let (op, _) = stmt_parts(&stmts[i].text);
+            op.starts_with("call")
+                && (stmts[i].text.contains("vprintf") || stmts[i].text.contains("__assertfail"))
+        })
+        .collect();
+    for i in calls {
+        let t = stmts[i].text.trim().to_string();
+        // `call.uni (ret), vprintf, (p0, p1)`: ret and the argument names.
+        let parts: Vec<&str> = t.splitn(2, char::is_whitespace).collect();
+        let rest = parts.get(1).copied().unwrap_or("");
+        let (ret, after) = match rest.trim_start().strip_prefix('(') {
+            Some(r) => match r.split_once(')') {
+                Some((a, b)) => (names(a), b),
+                None => continue,
+            },
+            None => (vec![], rest),
+        };
+        let after = after.trim().trim_start_matches(',').trim();
+        let (callee, rest, nargs, max_ret) = if let Some(a) = after.strip_prefix("vprintf") {
+            ("__vprintf", a, 2, 1)
+        } else if let Some(a) = after.strip_prefix("__assertfail") {
+            ("__assertfail", a, 5, 0)
+        } else {
+            continue;
+        };
+        let args = names(rest.trim().trim_start_matches(','));
+        if t.starts_with('@') || ret.len() > max_ret || args.len() != nargs {
+            continue; // left as is: refused by the lowering
+        }
+        stmts[i].text = callee.to_string();
+        for st in stmts[i.saturating_sub(16)..i].iter_mut() {
+            let (op, ops) = stmt_parts(&st.text);
+            if op.starts_with("st.param")
+                && ops.first().is_some_and(|a| {
+                    let a = a
+                        .trim()
+                        .trim_start_matches('[')
+                        .trim_end_matches(']')
+                        .trim();
+                    args.iter().any(|p| p == a)
+                })
+            {
+                st.text = "__nop".to_string();
+            }
+        }
+        if let Some(r) = ret.first() {
+            let end = (i + 4).min(stmts.len());
+            for st in stmts[i + 1..end].iter_mut() {
+                let (op, ops) = stmt_parts(&st.text);
+                if op.starts_with("ld.param")
+                    && ops.get(1).is_some_and(|a| {
+                        a.trim()
+                            .trim_start_matches('[')
+                            .trim_end_matches(']')
+                            .trim()
+                            == r
+                    })
+                {
+                    let d = ops[0].trim().to_string();
+                    st.text = format!("mov.b32 {d}, %__undef");
+                }
+            }
+        }
+    }
+}
+
 /// RN(1 / c) for a normal f32 `c` (exact integer arithmetic; `c`'s reciprocal is normal for
 /// 2^-126 <= |c| <= 2^126).
 fn recip_rn_f32(c: u32) -> u32 {
@@ -942,6 +1031,9 @@ fn float_lit(s: &str, ty: Option<u32>) -> Option<Option<u64>> {
     })
 }
 
+/// Generic base of the local window (the SASS front's `c[0x0][0x2f8]`; S-CBANK).
+const LOCAL_GENERIC_BASE: u64 = 0x7d00_0000_0000;
+
 fn parse_int(s: &str) -> Option<u64> {
     let s = s.trim();
     let (neg, s) = match s.strip_prefix('-') {
@@ -964,6 +1056,8 @@ fn parse_int(s: &str) -> Option<u64> {
 struct Lower<'a> {
     regs: &'a HashMap<String, Reg>,
     wide_regs: &'a HashSet<String>,
+    /// Module `.global` symbols: index into `Kernel::globals`, or why it is not modeled.
+    global_syms: &'a HashMap<String, Result<u32, String>>,
     labels: &'a HashMap<String, usize>,
     /// Shared symbols -> shared-window address; param symbols -> param-space offset.
     shared_syms: &'a HashMap<String, u32>,
@@ -1155,6 +1249,18 @@ impl<'a> Lower<'a> {
         if let Some(sr) = Self::sreg(s) {
             return Ok(Val::SReg(sr));
         }
+        // ASSUME(E-CLOCK): clock reads are 0, as on the SASS front (timeouts never fire).
+        if matches!(
+            s,
+            "%clock"
+                | "%clock_hi"
+                | "%clock64"
+                | "%globaltimer"
+                | "%globaltimer_lo"
+                | "%globaltimer_hi"
+        ) {
+            return Ok(Val::Imm(0));
+        }
         // Registers declared without `%` (`{.reg .s64 a; ...}` inline asm, renamed `a__sN`).
         if s.starts_with('%') || self.regs.contains_key(s) {
             return Ok(Val::Reg(self.reg(s)?, 1));
@@ -1168,6 +1274,10 @@ impl<'a> Lower<'a> {
         }
         if let Some(v) = parse_int(s) {
             return Ok(Val::Imm(v));
+        }
+        if let Some(g) = self.global_syms.get(s) {
+            let i = g.clone().map_err(|e| self.err(e))?;
+            return Ok(Val::SReg(SReg::GlobalAddr(i)));
         }
         if let Some(&a) = self.shared_syms.get(s) {
             return Ok(Val::SReg(SReg::SharedAddr(a)));
@@ -1287,6 +1397,14 @@ impl<'a> Lower<'a> {
         if b.starts_with('%') || self.regs.contains_key(b) {
             return Ok(Addr {
                 base: Some(Val::Reg(self.reg(b)?, 1)),
+                base2: None,
+                off,
+            });
+        }
+        if let Some(g) = self.global_syms.get(b) {
+            let i = g.clone().map_err(|e| self.err(e))?;
+            return Ok(Addr {
+                base: Some(Val::SReg(SReg::GlobalAddr(i))),
                 base2: None,
                 off,
             });
@@ -1801,6 +1919,7 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
 
     let mut stmts = split_statements(&src, body_start, body_end);
     div_by_const(&mut stmts);
+    vprintf_calls(&mut stmts);
 
     // Pass 1: declarations, labels.
     let mut regs = HashMap::new();
@@ -1817,8 +1936,66 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
     // Module-scope shared variables (before the entry). `.extern .shared x[]` is the dynamic
     // shared memory window: it starts after all static shared memory.
     let mut externs = Vec::new();
+    // Module-scope `.global` variables (DeepEP's `epSyncer`, printf's `$str`): one
+    // `GlobalSym` each (initializer bytes, or None: the launch's S-GLOBAL-INIT buffer).
+    let mut globals: Vec<GlobalSym> = Vec::new();
+    let mut global_syms: HashMap<String, Result<u32, String>> = HashMap::new();
     for line in src[..entry_at].split([';', '\n']) {
         let t = line.trim();
+        let g = t
+            .trim_start_matches(".visible")
+            .trim_start()
+            .trim_start_matches(".extern")
+            .trim_start()
+            .trim_start_matches(".weak")
+            .trim_start();
+        if let Some(rest) = g.strip_prefix(".global ") {
+            let (decl, init) = match rest.split_once('=') {
+                Some((d, i)) => (d, Some(i.trim())),
+                None => (rest, None),
+            };
+            let (name, _align, size) = shared_decl(decl)?;
+            let elem = decl
+                .split_whitespace()
+                .find_map(|x| x.strip_prefix('.').and_then(type_bits))
+                .map_or(1, |b| (b as usize / 8).max(1));
+            let bytes = match init {
+                None => Ok(None),
+                Some(i) => {
+                    let vals: Option<Vec<u64>> = i
+                        .trim_start_matches('{')
+                        .trim_end_matches('}')
+                        .split(',')
+                        .map(|x| parse_int(x.trim()))
+                        .collect();
+                    match vals {
+                        Some(v) if v.len() * elem <= size as usize => {
+                            let mut b: Vec<u8> = v
+                                .iter()
+                                .flat_map(|x| x.to_le_bytes()[..elem].to_vec())
+                                .collect();
+                            b.resize(size as usize, 0);
+                            Ok(Some(b))
+                        }
+                        _ => Err(format!("global {name}: initializer `{i}` not modeled")),
+                    }
+                }
+            };
+            match bytes {
+                Ok(init) => {
+                    global_syms.insert(name.clone(), Ok(globals.len() as u32));
+                    globals.push(GlobalSym {
+                        name,
+                        size: size as u64,
+                        init,
+                    });
+                }
+                Err(e) => {
+                    global_syms.insert(name, Err(e));
+                }
+            }
+            continue;
+        }
         if let Some(rest) = t.strip_prefix(".extern") {
             if let Some(rest) = rest.trim().strip_prefix(".shared") {
                 let (name, align, _) = shared_decl(rest)?;
@@ -1931,13 +2108,14 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
     let mut undef_v = None;
     if insts_src
         .iter()
-        .any(|st| stmt_parts(&st.text).0.starts_with("discard."))
+        .any(|st| stmt_parts(&st.text).0.starts_with("discard.") || st.text == "__vprintf")
     {
         vreg_names.push("%__undef".to_string());
         undef_v = Some(Reg {
             file: File::V,
             idx: (vreg_names.len() - 1) as u16,
         });
+        regs.insert("%__undef".to_string(), undef_v.unwrap());
     }
     let mut tmp_p = None;
     if insts_src.iter().any(|st| {
@@ -1984,6 +2162,7 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
         let mut lw = Lower {
             regs: &regs,
             wide_regs: &wide_regs,
+            global_syms: &global_syms,
             labels: &labels,
             shared_syms: &shared_syms,
             local_syms: &local_syms,
@@ -2100,8 +2279,15 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
         bulk_commit_sb: vec![],
         parts: vec![],
         ntid,
-        globals: vec![],
-        global_relocs: vec![],
+        global_relocs: (0..globals.len() as u32)
+            .map(|i| GlobalReloc {
+                bank: GLOBAL_RELOC_BANK,
+                off: 8 * i,
+                global: i,
+                addend: 0,
+            })
+            .collect(),
+        globals,
     })
 }
 
@@ -4305,10 +4491,13 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         }
         "elect" => {
             // elect.sync d|p, membermask. Only the full-warp mask is modeled (the leader is
-            // chosen among the active threads executing it).
-            if op_n(1)? != "0xffffffff" && op_n(1)? != "-1" {
-                bail!(lw.err("elect.sync with a partial membermask not modeled"));
-            }
+            // chosen among the active threads executing it); a register mask is checked when
+            // executed (E-ELECT).
+            let mask = match op_n(1)? {
+                "0xffffffff" | "-1" => None,
+                m if m.starts_with('%') => Some(lw.val(m)?),
+                _ => bail!(lw.err("elect.sync with a partial membermask not modeled")),
+            };
             let (d, p) = op_n(0)?
                 .split_once('|')
                 .ok_or_else(|| lw.err("elect.sync wants d|p"))?;
@@ -4320,6 +4509,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             Op::Elect {
                 d: lw.pred_dst(p.trim())?,
                 lane,
+                mask,
             }
         }
         "ret" | "exit" => Op::Exit,
@@ -4340,6 +4530,30 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 _ => bail!(lw.err("setmaxnreg wants one immediate in 24..=256, a multiple of 8")),
             }
         }
+        // `cvta.local.u64 d, a` (DeepEP: `%SP` from `%SPL`, only ever a vprintf argument
+        // pointer): the generic address of the local window, as the SASS front's
+        // `c[0x0][0x2f8]` (unmapped: a generic access through it is reported). ASSUME(S-CBANK)
+        // The pre-pass's rewrites (vprintf_calls).
+        "__nop" => Op::Nop,
+        name @ ("__vprintf" | "__assertfail") => {
+            const EXT: u64 = 0xffff_0000_0000_0000;
+            let sym = if name == "__vprintf" {
+                "vprintf"
+            } else {
+                "__assertfail"
+            };
+            Op::CallAbs {
+                target: Val::Imm(EXT),
+                syms: vec![(EXT, sym.to_string())],
+            }
+        }
+        "cvta" if has("local") && !has("to") && has("u64") => Op::Int {
+            op: IntOp::Add,
+            bits: 64,
+            d: lw.dst(op_n(0)?)?,
+            a: lw.val(op_n(1)?)?,
+            b: Val::Imm(LOCAL_GENERIC_BASE),
+        },
         "cvta" => {
             let to = has("to");
             let space = mods
@@ -5783,6 +5997,17 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             Some("launch_dependents") => Op::GridDepLaunch,
             _ => bail!(lw.err("unknown griddepcontrol form")),
         },
+        // `membar.cta` / `.gl` / `.sys` = `fence.sc.cta` / `.gpu` / `.sys` (PTX ISA; ptxas emits
+        // the same MEMBAR.SC.<scope> [+ ERRBAR + CCTL.IVALL]), modeled as fence.sc is
+        // (probes/fence_scopes). ASSUME(S-SCOPE)
+        "membar" => Op::Fence {
+            kind: FenceKind::Membar(match mods {
+                ["cta"] => Scope::Cta,
+                ["gl"] => Scope::Gpu,
+                ["sys"] => Scope::Sys,
+                _ => bail!(lw.err("this membar form is not modeled")),
+            }),
+        },
         "fence" => {
             if has("mbarrier_init") {
                 Op::Fence {
@@ -5804,13 +6029,19 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     kind: FenceKind::Release(scope_of(mods).unwrap_or(Scope::Sys)),
                 }
             } else if mods.first() == Some(&"acquire") {
-                // fence.acquire.sys (ptxas: CCTL.IVALL). Narrower scopes are not modeled: the
-                // acquire is not scoped here (FenceKind::Acquire).
-                if scope_of(mods).unwrap_or(Scope::Sys) != Scope::Sys {
-                    bail!(lw.err("only fence.acquire.sys is modeled"));
+                // fence.acquire.sys (ptxas: CCTL.IVALL): FenceKind::Acquire. `.cta` / `.cluster`
+                // / `.gpu` (ptxas: nothing / CCTL.IVALL / CCTL.IVALL): an acquire of that scope
+                // only (probes/fence_scopes). ASSUME(S-SCOPE)
+                if mods.len() != 2 {
+                    bail!(lw.err("this fence.acquire form is not modeled"));
                 }
-                Op::Fence {
-                    kind: FenceKind::Acquire,
+                match scope_of(mods).ok_or_else(|| lw.err("fence.acquire without a scope"))? {
+                    Scope::Sys => Op::Fence {
+                        kind: FenceKind::Acquire,
+                    },
+                    sc => Op::Fence {
+                        kind: FenceKind::AcquireAt(sc),
+                    },
                 }
             } else if mods.first() == Some(&"proxy") && has("async") {
                 // `fence.proxy.async` with no state space orders all of them (ptxas: MEMBAR.ALL.GPU
@@ -6029,22 +6260,24 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             && (mods[2].starts_with("shared") && mods[3] == "global"
                 || mods[2] == "global" && mods[3] == "shared::cta") =>
         {
-            // Fail closed on every other modifier (multicast, cache hints with their extra
-            // operand, cta_group).
-            let known = if mods[2] == "global" {
-                mods.len() == 5 && mods[4] == "bulk_group"
-            } else {
-                mods.len() == 5
-                    && mods[4] == "mbarrier::complete_tx::bytes"
-                    && matches!(mods[2], "shared::cta" | "shared::cluster")
-            };
+            // ASSUME(L-PTX-HINT): a trailing `.L2::cache_hint` and its cache-policy operand
+            // (last) are a performance hint only. Fail closed on every other modifier
+            // (multicast, cta_group).
+            let hint = mods.len() == 6 && mods[5] == "L2::cache_hint";
+            let known = mods.len() == 5 + hint as usize
+                && if mods[2] == "global" {
+                    mods[4] == "bulk_group"
+                } else {
+                    mods[4] == "mbarrier::complete_tx::bytes"
+                        && matches!(mods[2], "shared::cta" | "shared::cluster")
+                };
             if !known {
                 bail!(lw.err(format!(
                     "cp.async.bulk form .{} not modeled",
                     mods.join(".")
                 )));
             }
-            if ops.len() != if mods[2] == "global" { 3 } else { 4 } {
+            if ops.len() != if mods[2] == "global" { 3 } else { 4 } + hint as usize {
                 bail!(lw.err("cp.async.bulk: unexpected operands"));
             }
             let reg_of = |a: Addr, what: &str| -> Result<(Val, u32)> {
