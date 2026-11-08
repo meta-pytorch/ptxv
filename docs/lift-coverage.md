@@ -301,6 +301,7 @@ any modifier outside the audited set before an arm runs.
 | (`CCTL.E.RML2`, refused) | `discard.global.L2 [a], 128` | weak stores of undefined data over the line (S-INIT) | probes/discard_l2 (PTX front) |
 | `IMMA.16832.S8.S8.SAT` | `mma.sync.aligned.m16n8k32.row.col.satfinite.s32.s8.s8.s32` | exact integer sum, saturated to s32 (N-IMMA) | probes/imma_s8 |
 | `HMUL2.BF16_V2` | plain `mul.bf16` / `.bf16x2` reaching only stores, conversions, mma operands, multiplicands through packs / unpacks / prmt / shfl | .rn (ptxas cannot contract) | probes/bf16_sink |
+| `FMUL2` + `FADD2` apart | plain `mul.f32x2` halves repacked next to values not from the product (own lane or other); integer reads of the product (`shr`, `xor`, ...) | .rn (ptxas cannot contract; `{p.lo, p.hi}` refused) | probes/f32x2_repack |
 | `HMUL2.BF16_V2`, `SEL`, `STSM` / bare `STTM`, `LDTM` (32x32b.x1) | plain `mul.bf16` through `selp` into `stmatrix` / `tcgen05.st`; `tcgen05.{st,ld}.32x32b.x1` | .rn (ptxas cannot contract); x1 TMEM access | probes/bf16_selp |
 | `REDUX` / `CREDUX` | `redux.sync` with a partial immediate or register membermask | reduction over the lanes the mask names; executing lanes != mask is a violation (PTX) | probes/redux_mask |
 | `SHFL` / `VOTE` | `shfl.sync` / `vote.sync` with a partial immediate or register membermask | per mask group, combined with the group's lanes at another instruction of the same kind; executing lanes != mask is a violation (PTX) | probes/coll_split, probes/shfl_mask (PTX front; SASS `WARPSYNC.EXCLUSIVE` refused) |

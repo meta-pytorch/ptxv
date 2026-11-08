@@ -2530,6 +2530,19 @@ fn probe_bf16_selp_matches_hardware() {
     probe_bitwise("probes/bf16_selp", "good", "sass");
 }
 
+/// mul.f32x2 halves repacked next to other values, integer reads of the product
+/// (probes/f32x2_repack) = GB300; the identity repack {p.lo, p.hi} (FFMA2) is refused on PTX.
+#[test]
+fn probe_f32x2_repack_matches_hardware() {
+    probe_bitwise("probes/f32x2_repack", "good", "ptx");
+    probe_bitwise("probes/f32x2_repack", "good", "sass");
+    let src = std::fs::read_to_string(root().join("probes/f32x2_repack/kernel.ptx")).unwrap();
+    let ident = src.replace("{%r14, %r2}; // @K", "{%r14, %r15}; // @K");
+    assert_ne!(ident, src);
+    let e = ptxv_ptx::parse_kernel(&ident, Some("f32x2_repack")).unwrap_err();
+    assert!(format!("{e:#}").contains("mul.f32x2"), "{e:#}");
+}
+
 /// mad.wide.{s,u}16 with an immediate multiplier (probes/mad_wide16) = GB300.
 #[test]
 fn probe_mad_wide16_matches_hardware() {
@@ -4139,6 +4152,26 @@ fn e_stasync_complete_tx() {
 fn ffma2_lanes_keep_their_own_undefined_bits() {
     both("e_uninit_f32x2", "good");
     both("e_uninit_f32x2", "hi");
+}
+
+/// S-INIT per lane of a PTX f32x2 virtual register (fixtures/e_uninit_f32x2_lanes): a
+/// `mov.b64 {a, b}` pack of a defined and an undefined lane keeps the defined lane defined
+/// through add.f32x2 and the unpack; storing the undefined lane is reported.
+#[test]
+fn ptx_f32x2_register_lanes_keep_their_own_undefined_bits() {
+    both("e_uninit_f32x2_lanes", "good");
+    both("e_uninit_f32x2_lanes", "store_hi");
+}
+
+/// S-TCGEN05 (fixtures/s_tc_st_mma): a thread's own tcgen05.st, wait::st, then its
+/// tcgen05.mma with no tcgen05.fence in that thread is ordered; the MMA issued before the
+/// wait::st races with the store.
+#[test]
+fn own_tcgen05_st_wait_orders_later_mma() {
+    both("s_tc_st_mma", "good");
+    // The race leaves outcomes DPOR also enumerates: the stateful verdict only.
+    check_stateful("s_tc_st_mma", "early", "ptx", 100_000);
+    check_stateful("s_tc_st_mma", "early", "sass", 100_000);
 }
 
 /// S-INIT lane precision for narrow packs (fixtures/e_uninit_lanes): F2FP pack / unpack and

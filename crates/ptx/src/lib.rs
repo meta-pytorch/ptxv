@@ -165,13 +165,37 @@ fn uncontractible_f16_muls(insts: &[&Stmt]) -> HashSet<String> {
             }
         })
     };
-    // Half `h` of a product, from lane `lane` of the unpack.
-    let half_ok = |h: &str, lane: usize| {
+    // Whether `o` may hold a lane of product `prod`: a copy, a select, or an unpack of `prod`
+    // or of a register some plain `mov` defines.
+    let from_prod = |o: &str, prod: &str| {
+        let copied = |s: &str| {
+            insts.iter().any(|st| {
+                let (op, ops) = stmt_parts(&st.text);
+                op.starts_with("mov.") && !st.text.contains('{') && ops.first() == Some(&s)
+            })
+        };
+        insts.iter().any(|st| {
+            let (op, ops) = stmt_parts(&st.text);
+            let base = op.split('.').next().unwrap_or("");
+            if base == "mov" && is_unpack(st, op) {
+                let src = ops[ops.len() - 1];
+                ops[..ops.len() - 1].contains(&o) && (src == prod || copied(src))
+            } else {
+                matches!(base, "mov" | "selp") && ops.first() == Some(&o)
+            }
+        })
+    };
+    // Half `h` of product `prod`, from lane `lane` of the unpack. Repacked into its own lane
+    // next to a value not from `prod`, it is no longer the product (ptxas keeps FMUL2 and the
+    // FADD2 apart, as for the other lane; the identity repack `{p.lo, p.hi}` contracts:
+    // probes/f32x2_repack).
+    let half_ok = |h: &str, lane: usize, prod: &str| {
         readers(h).iter().all(|&(st, i)| match pack_dst(st) {
             None => true,
             Some(p) => {
                 let (_, ops) = stmt_parts(&st.text);
-                ops.len() == 3 && pack_ok(&p, i - 1 != lane)
+                let other = ops.get(if i == 1 { 2 } else { 1 }).copied().unwrap_or("");
+                ops.len() == 3 && pack_ok(&p, i - 1 != lane || !from_prod(other, prod))
             }
         })
     };
@@ -187,6 +211,8 @@ fn uncontractible_f16_muls(insts: &[&Stmt]) -> HashSet<String> {
                 "mul" => true,
                 "fma" => i == 1 || i == 2 || i == 3 && x2.contains(*o),
                 "st" | "stmatrix" | "cvt" => true,
+                // Integer reads of the product's bits (Triton's stochastic rounding).
+                "shr" | "shl" | "and" | "or" | "xor" => true,
                 "tcgen05" => op.starts_with("tcgen05.st."),
                 "selp" if i == 1 || i == 2 => sink_only(insts, ops[0], 6),
                 // `mov.b32 %r13, {%h10, %h10}`: a pack whose result is only stored;
@@ -196,7 +222,7 @@ fn uncontractible_f16_muls(insts: &[&Stmt]) -> HashSet<String> {
                     [..i]
                     .iter()
                     .enumerate()
-                    .all(|(l, r)| *r == "_" || half_ok(r, l)),
+                    .all(|(l, r)| *r == "_" || half_ok(r, l, o)),
                 "mov" if is_unpack(st, op) && i + 1 == ops.len() && i > 0 => {
                     ops[..i].iter().all(|r| *r == "_" || sink_only(insts, r, 6))
                 }
@@ -6843,14 +6869,23 @@ mod tests {
             )
             .is_ok()
         );
-        // Same lane: ptxas could see through the moves (refused).
+        // Same lane next to a value not from the product: no contraction (probes/f32x2_repack).
         assert!(
             ops(
                 "mul.f32x2 %rd1, %rd2, %rd3;\nmov.b64 {%r1, _}, %rd1;\nmov.b64 %rd4, {%r1, %r3};\n\
              add.f32x2 %rd5, %rd4, %rd2;"
             )
-            .is_err()
+            .is_ok()
         );
+        // The identity repack (directly, through a copy, or a second unpack) contracts: refused.
+        for l in [
+            "mov.b64 {%r1, %r2}, %rd1;\nmov.b64 %rd4, {%r1, %r2};",
+            "mov.b64 {%r1, %r2}, %rd1;\nmov.b32 %r3, %r2;\nmov.b64 %rd4, {%r1, %r3};",
+            "mov.b64 {%r1, _}, %rd1;\nmov.b64 {_, %r2}, %rd1;\nmov.b64 %rd4, {%r1, %r2};",
+        ] {
+            let k = format!("mul.f32x2 %rd1, %rd2, %rd3;\n{l}\nadd.f32x2 %rd5, %rd4, %rd2;");
+            assert!(ops(&k).is_err(), "{k}");
+        }
         // Scopes: after a directive line without `;`, and not a continuation operand list.
         assert!(ops(".loc 1 2 3\n{ .reg .b32 a; mov.b32 a, %r1; mov.b32 %r2, a; }").is_ok());
         assert!(ops("mov.b64\n {%r1, %r2}, %rd1;\n{ .reg .b32 a; mov.b32 a, %r1; }").is_ok());

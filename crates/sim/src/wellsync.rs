@@ -1174,7 +1174,12 @@ fn reg_diff(a: &Machine, b: &Machine, members: &[usize]) -> Result<Vec<RegLoc>, 
         }
         for i in 0..x.regs.len() {
             let wb = |th: &Thread| th.written[i / 64] >> (i % 64) & 1;
-            if x.regs[i] != y.regs[i] || wb(x) != wb(y) {
+            let vu = |th: &Thread| {
+                th.vund
+                    .binary_search_by_key(&(i as u16), |e| e.0)
+                    .map_or(0, |j| th.vund[j].1)
+            };
+            if x.regs[i] != y.regs[i] || wb(x) != wb(y) || vu(x) != vu(y) {
                 out.push((0, t, i as u16));
             }
         }

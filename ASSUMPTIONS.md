@@ -2710,6 +2710,24 @@ a divergent path.
 - (rung 2) `tcgen05.st` is asynchronous like `ld`; `wait::st` completes the stores only for
   the same thread's later tcgen05 ops. Another thread sees them through
   `fence::before_thread_sync`, a synchronization, and `fence::after_thread_sync`.
+- (2026-11-08) "The same thread's later tcgen05 ops" include its MMA pipe (`tcgen05.mma` /
+  `cp` / `shift`): `wait::st` / `wait::ld` order the thread's completed `tcgen05.st` /
+  `tcgen05.ld` before the asynchronous tcgen05 operations it issues afterwards, with no
+  `tcgen05.fence` (`exec.rs` `tc_wait_orders_pipe`; before, only its later `tcgen05.ld` /
+  `st` were ordered, and the PTX front reported a race between a thread's own `tcgen05.st`
+  of the A operand and its later `tcgen05.mma` in the mslk mx8mx4 grouped GEMM).
+  PTX ISA 9.7.18.6.1: `.wait::*` are synchronous tcgen05 instructions, "inherently ordered
+  with respect to other tcgen05 operations" of the thread, and `tcgen05.st -> tcgen05.wait::st`
+  is implicitly pipelined (9.7.18.6.2.1); 9.7.18.6.4.2 ("Non-pipelined instructions, same
+  thread") orders `st; wait::st; ld` with no fence, and the fence in its example 2 follows an
+  mbarrier wait, not a tcgen05.wait. GB300 (`probes/tc_st_mma`, 296 CTAs x 2000 iterations
+  per mode, 9.47M words each): an MMA issued by the storing thread right after its own
+  `STTM` read the new words in every case, as C and as A in TMEM, with and without the fences
+  and also with no `wait::st` (so the probe shows the hardware order but cannot separate
+  wait::st from issue order). The SASS front already orders them (STTM is the thread's own
+  scoreboarded access), so `sass_gb300` needs no profile item. Stores by other threads of
+  the warp or CTA still need the fences (the remaining mx8mx4 PTX races).
+  Fixture `s_tc_st_mma` (clean; the MMA issued before `wait::st`: race).
 - SASS `STTM` / `LDTM` are scoreboarded (L-MEMSB) and modeled as the thread's own accesses.
 - Where: `exec.rs` `tc_actor`, `pipe_actor`, `push_async`.
 - Status: **argued, medium confidence.** It follows the PTX ISA's examples. On GB300 the
@@ -2966,7 +2984,13 @@ stays clean, "relies on E-CPASYNC-PROXY"), not a race.
   - packed f32x2 `FFMA2` / `FADD2` / `FMUL2`: each lane of the result is undefined only if
     the same lane of an operand is (2026-11-06; before, either lane tainted both: a false
     alarm on CuTeDSL FlashAttentionBackwardPreprocess, which packs two rows in one FADD2,
-    `fixtures/e_uninit_f32x2`);
+    `fixtures/e_uninit_f32x2`); PTX front (2026-11-08): a virtual register keeps undefined
+    bits per bit (`Thread::vund`), `mov.b64 %rd, {lo, hi}` / `mov.b64 {lo, hi}, %rd` keep each
+    half's, and `.f32x2` operations read each lane's. Before, a PTX virtual register was
+    defined or undefined as a whole: FlashAttentionBackwardPreprocess 1x1x16384 repacks
+    products of two rows into one 64-bit register, the out-of-range row poisoned the in-range
+    one, and the PTX front reported undef-insensitive at ptx:647 where SASS is clean (a lowering
+    imprecision, not an uninitialized read; `fixtures/e_uninit_f32x2_lanes`);
   - lane by lane too (2026-11-06): `F2FP` narrow packs (`PACK_AB[_MERGE_C]`, `.RS` random
     bits taint both lanes) and unpacks (`UNPACK_B`), `HADD2.F32 Rd, -RZ, Ra.Hx_Hx` (one
     half), `HSETP2.BF16_V2` (the selected half of each operand); `FSETP` / `DSETP` / `HSETP2`
@@ -3073,7 +3097,8 @@ bitwise equal`; otherwise they stay violations and the note says which fill diff
   correctness depends on later value masking (O is zero there, m is reset to -inf, the PV
   result is overwritten): undef-insensitive in 6 fills, consistent with GB300 0/20 wrong
   under a NaN TMEM poison. The PTX good variants of `e_uninit_f32x2` / `e_uninit_lanes`
-  (lane-coarse PTX propagation) are undef-insensitive too.
+  were undef-insensitive too until PTX registers kept undefined bits per lane (2026-11-08;
+  clean since, as on SASS).
 - If wrong: *miss* of an output that depends on undefined values only at untried values.
 
 ### S-INIT-PRED · code
@@ -4196,6 +4221,13 @@ forms seen. Any other form is a hard error.
   probes/f32x2_unpack (cancelling operands: a contraction would differ in 43 of 255 lanes):
   GB300 50/50 scrubbed, both front-ends bitwise. 238 of the 301 records then lift. A product
   read directly by a plain `add` / `sub.f32x2` (FFMA2) stays refused.
+  A half repacked into its own lane next to a value not from its product (2026-11-08, CuTe /
+  FA4 backward preprocess: `{q.hi, p.hi}`, `{q.lo, p.lo}`) is treated as the other-lane case,
+  and integer reads of the product bits (`shr` / `shl` / `and` / `or` / `xor`, Triton's
+  stochastic rounding) as stores. The identity repack `{p.lo, p.hi}` (or with a copy, select
+  or second unpack of p in the other lane) stays refused: ptxas 13.0 contracts it into FFMA2.
+  probes/f32x2_repack (cancelling addends): FMUL2 + FADD2 in ptxas's output, GB300 50/50
+  scrubbed, both front-ends bitwise; 8 PX records then lift.
 - `add` / `sub` / `mul` `.bf16x2` / `.bf16` with no rounding modifier (2026-11-07, SCALE
   pilot): the same rule as f32x2 (ptxas emits HADD2.BF16_V2 / HFMA2.BF16_V2 ..., -RZ).
   probes/bf16_norn: GB300 50/50 scrubbed, both front-ends bitwise. Plain `fma.bf16x2` stays

@@ -51,7 +51,15 @@ fn src_regs_at(k: &Arc<Kernel>, inst: &Inst, pc: u32) -> std::rc::Rc<[Reg]> {
     })
 }
 
-/// `Machine::slot_umask` from its two inputs.
+/// S-INIT: the undefined bits of written PTX virtual register `idx` (`Thread::vund`).
+fn vund_of(th: &Thread, idx: u16) -> u64 {
+    th.vund
+        .binary_search_by_key(&idx, |e| e.0)
+        .map_or(0, |i| th.vund[i].1)
+}
+
+/// The undefined bits of 32-bit slot `s` of a result, from `Machine::vmask` and whether a
+/// stale read is running.
 #[inline]
 fn slot_umask_of(vmask: Option<u64>, stale: bool, s: u16) -> u32 {
     match vmask {
@@ -342,10 +350,6 @@ impl Machine {
     /// Undefined bits of slot `s` of the value being written (S-INIT): all of them while a
     /// load of never-written shared memory runs, those of `vmask` while an operation on
     /// partly undefined registers runs.
-    fn slot_umask(&self, s: u16) -> u32 {
-        slot_umask_of(self.vmask, self.stale.is_some(), s)
-    }
-
     /// Undefined bits of a 32-bit register (S-INIT): all of them until it is written; a
     /// written R / UR register keeps the undefined bits of its value in bits 32..63.
     pub fn reg_umask(&self, t: usize, r: Reg) -> u32 {
@@ -354,7 +358,10 @@ impl Machine {
             return 0;
         }
         match r.file {
-            File::V if th.written[r.idx as usize / 64] >> (r.idx % 64) & 1 == 1 => 0,
+            File::V if th.written[r.idx as usize / 64] >> (r.idx % 64) & 1 == 1 => {
+                let m = vund_of(th, r.idx);
+                m as u32 | (m >> 32) as u32
+            }
             File::R if th.written[r.idx as usize / 64] >> (r.idx % 64) & 1 == 1 => {
                 (th.regs[r.idx as usize] >> 32) as u32
             }
@@ -401,13 +408,28 @@ impl Machine {
     pub fn wr(&mut self, t: usize, r: Reg, v: u64, slots: u8) {
         match r.file {
             File::V => {
-                let stale = self.slot_umask(0) != 0 || self.slot_umask(1) != 0;
+                // S-INIT: wholly undefined: unwritten; partly (some bits of `vmask`): written,
+                // with the undefined bits in `Thread::vund`.
+                let m = if self.stale.is_some() {
+                    !0
+                } else {
+                    self.vmask.unwrap_or(0)
+                };
                 let th = self.threads[t].make_mut();
                 th.regs[r.idx as usize] = v;
-                if stale {
+                if m == !0 {
                     th.written[r.idx as usize / 64] &= !(1 << (r.idx % 64));
                 } else {
                     th.written[r.idx as usize / 64] |= 1 << (r.idx % 64);
+                }
+                let i = th.vund.binary_search_by_key(&r.idx, |e| e.0);
+                match (i, m != 0 && m != !0) {
+                    (Ok(i), true) => th.vund[i].1 = m,
+                    (Err(i), true) => th.vund.insert(i, (r.idx, m)),
+                    (Ok(i), false) => {
+                        th.vund.remove(i);
+                    }
+                    (Err(_), false) => {}
                 }
             }
             File::R => {
@@ -2686,6 +2708,22 @@ impl Machine {
     }
 
     /// Clock for a new op in thread t's in-order tcgen05 pipe (includes all earlier ops).
+    /// ASSUME(S-TCGEN05): tcgen05.wait::st (`st`) / wait::ld orders the thread's completed
+    /// tcgen05.st / tcgen05.ld before its later asynchronous tcgen05 operations, the MMA pipe's
+    /// included, with no tcgen05.fence (PTX ISA 9.7.18.6.1: wait is a synchronous tcgen05
+    /// instruction, inherently ordered with the thread's other tcgen05 operations; 9.7.18.6.4.2
+    /// "Non-pipelined instructions, same thread": st; wait::st; ld; probes/tc_st_mma). Other
+    /// threads still need fence::before_thread_sync, a synchronization and
+    /// fence::after_thread_sync.
+    fn tc_wait_orders_pipe(&mut self, t: usize, st: bool) {
+        let a = self.tc_actor_id(t);
+        let th = self.threads[t].make_mut();
+        let c = if st { th.tc_st } else { th.tc_ld };
+        if c > 0 {
+            vc_join(&mut th.pipe_vc, &vc_single(a, c));
+        }
+    }
+
     fn pipe_issue(&mut self, t: usize) -> (u32, VC) {
         let a = self.pipe_actor(t);
         let th = self.threads[t].make_mut();
@@ -5232,7 +5270,14 @@ impl Machine {
                         << (32 * i)
                 })
                 .fold(0, |a, b| a | b),
-            Val::Reg(r, _) if self.reg_umask(t, *r) != 0 => !0,
+            Val::Reg(r, _) => {
+                let th = &self.threads[t];
+                if th.written[r.idx as usize / 64] >> (r.idx % 64) & 1 == 1 {
+                    vund_of(th, r.idx)
+                } else {
+                    !0
+                }
+            }
             _ => 0,
         }
     }
@@ -5727,6 +5772,11 @@ impl Machine {
                             };
                             (self.reg_umask(t, *r) != 0, self.reg_umask(t, nx) != 0)
                         }
+                        // A PTX f32x2 register: its own lanes' undefined bits (`Thread::vund`).
+                        Val::Reg(r, _) if r.file == File::V => {
+                            let m = u(v);
+                            (m & 0xffff_ffff != 0, m >> 32 != 0)
+                        }
                         _ => {
                             let m = u(v);
                             (m != 0, m != 0)
@@ -5815,6 +5865,10 @@ impl Machine {
             | Op::Dsetp { .. }
             | Op::DsetpMinMax { .. }
             | Op::Fchk { .. } => !0,
+            // PTX `mov.b64 %d, {lo, hi}` / `mov.b64 {lo, hi}, %a`: each half keeps its own
+            // undefined bits (the halves of an f32x2 value are separate lanes).
+            Op::Pack64 { lo, hi, .. } => u(lo) & 0xffff_ffff | (u(hi) & 0xffff_ffff) << 32,
+            Op::Unpack64 { a, .. } => u(a),
             // Register-only operations: carry-outs and other predicate outputs are undefined
             // with the rest (`wp`).
             op if propagates_undef(op) => {
@@ -6892,6 +6946,7 @@ impl Machine {
                         let a = self.tc_actor(t);
                         let th = self.threads[t].make_mut();
                         vc_tick(&mut th.tc_vc, a);
+                        th.tc_ld = vc_get(&th.tc_vc, a);
                         (a, th.tc_vc.clone())
                     } else {
                         (t as u32, self.threads[t].vc.clone())
@@ -7027,7 +7082,10 @@ impl Machine {
                 }
                 self.tmem_state_report(states, "tcgen05.ld", pc);
             }
-            Op::TmemWaitLd => self.threads[t].make_mut().pending_ld.clear(),
+            Op::TmemWaitLd => {
+                self.threads[t].make_mut().pending_ld.clear();
+                self.tc_wait_orders_pipe(t, false);
+            }
             Op::Fence {
                 kind: FenceKind::TcBefore,
             } => {
@@ -7479,7 +7537,7 @@ impl Machine {
                 self.num_clobber(t, *d, &[a], pc);
             }
             // tcgen05.st: written through the thread's tcgen05 actor (asynchronous); wait::st
-            // makes the stores part of the thread's history.
+            // orders the stores before the thread's later tcgen05 operations (`TmemWaitSt`).
             Op::TmemSt {
                 taddr,
                 off,
@@ -7545,6 +7603,7 @@ impl Machine {
                     let a = self.tc_actor(t);
                     let th = self.threads[t].make_mut();
                     vc_tick(&mut th.tc_vc, a);
+                    th.tc_st = vc_get(&th.tc_vc, a);
                     (a, th.tc_vc.clone())
                 } else {
                     (t as u32, self.threads[t].vc.clone())
@@ -7567,7 +7626,7 @@ impl Machine {
             // ASSUME(S-TCGEN05): wait::st completes the stores for this thread's later tcgen05
             // operations (same actor); other threads see them only through
             // fence::before_thread_sync + a sync + fence::after_thread_sync (PTX ISA 9.7.18.6.4.4).
-            Op::TmemWaitSt => {}
+            Op::TmemWaitSt => self.tc_wait_orders_pipe(t, true),
             // The mbarrier object ends: later plain accesses to its bytes are ordinary memory.
             // ASSUME(S-TMAP): see ASSUMPTIONS.md
             Op::TmapFence { addr } => {
@@ -7720,12 +7779,17 @@ impl Machine {
             }
             Op::Unpack64 { lo, hi, a } => {
                 let v = self.rd(t, a)?;
+                // Each half gets its own undefined bits (S-INIT).
+                let vm = self.vmask;
                 if let Some(r) = lo {
+                    self.vmask = vm.map(|m| m & 0xffff_ffff);
                     self.wr(t, *r, v & 0xffff_ffff, 1);
                 }
                 if let Some(r) = hi {
+                    self.vmask = vm.map(|m| m >> 32);
                     self.wr(t, *r, v >> 32, 1);
                 }
+                self.vmask = vm;
                 self.num_unpack64(t, *lo, *hi, a);
             }
             Op::LeaHi {
@@ -10457,6 +10521,7 @@ impl Machine {
                     && a.preds == b.preds
                     && a.pdef == b.pdef
                     && a.written == b.written
+                    && a.vund == b.vund
                     && wa.ur == wb.ur
                     && wa.up == wb.up
                     && wa.up_def == wb.up_def

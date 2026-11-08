@@ -1,0 +1,41 @@
+name = "s_tc_st_mma"
+description = """
+S-TCGEN05 (2026-11-08): a thread's own tcgen05.st, then tcgen05.wait::st, then its tcgen05.mma
+with no tcgen05.fence in that thread: ordered (PTX ISA 9.7.18.6.1, wait is a synchronous
+tcgen05 instruction; 9.7.18.6.4.2 st; wait::st; ld; GB300 probes/tc_st_mma, also without
+wait::st). The other threads' stores reach the MMA through fence::before_thread_sync,
+bar.sync and fence::after_thread_sync. Before, the PTX front reported a race on the issuing
+thread's own TMEM lane (mslk mx8mx4 grouped GEMM). early: the MMA is issued before the
+wait::st: a race."""
+ptx = "kernel.ptx"
+entry = "tc_st_mma"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2048]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "thread 0's MMA after its own wait::st, no fence in thread 0"
+expect = ["clean"]
+
+[[variants]]
+id = "early"
+summary = "thread 0 issues the MMA before the wait::st"
+expect = ["race"]
+[[variants.edits]]
+marker = "@MMA"
+replace = "<delete>"
+[[variants.edits]]
+marker = "@EARLY"
+find = "// @EARLY"
+replace = "@%p0 tcgen05.mma.cta_group::1.kind::f16 [%r10], %rd3, %rd5, %r32, %p3;"

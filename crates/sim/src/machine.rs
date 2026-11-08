@@ -1061,9 +1061,17 @@ pub struct Thread {
     pub tma_count: u32,
     /// Registers written by tcgen05.ld that are undefined until tcgen05.wait::ld.
     pub pending_ld: Vec<(u8, u16)>,
+    /// Clock (of the thread's tcgen05.ld/st actor) of its last tcgen05.st / tcgen05.ld: what
+    /// wait::st / wait::ld orders before its later MMA-pipe operations (S-TCGEN05).
+    pub tc_st: u32,
+    pub tc_ld: u32,
     /// Bitset over `regs`: slot written since launch (S-INIT: reads of unwritten registers
     /// are reported).
     pub written: Vec<u64>,
+    /// S-INIT, PTX virtual registers: the undefined bits of written registers that are partly
+    /// undefined (sorted by index; absent: wholly defined). A 64-bit register packs two f32x2
+    /// lanes that may come from different rows (`mov.b64 %rd, {%r1, %r2}`).
+    pub vund: Vec<(u16, u64)>,
     /// fence.proxy.async executions of this thread (S-PROXY): its clock then (own entry and
     /// what it had observed of every other thread).
     pub fences: Vec<VC>,
@@ -2351,8 +2359,11 @@ impl Machine {
                     pipe_vc: VC::new(),
                     tma_count: 0,
                     pending_ld: vec![],
+                    tc_st: 0,
+                    tc_ld: 0,
                     ld_pend: vec![],
                     written: vec![0; nv.div_ceil(64)],
+                    vund: vec![],
                     fences: vec![],
                     alias_fences: vec![],
                     bulk_group: 0,
