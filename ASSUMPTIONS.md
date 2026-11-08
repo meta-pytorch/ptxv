@@ -4392,17 +4392,30 @@ at the PTX contract level (either value is allowed); the model fixes the one ptx
 produces. The SASS front-end is exact (it executes the FFMA / FMUL + FADD ptxas emitted).
 - Where: `ptx` `fmad_pairs` (analysis), `lower_inst` add / sub arm (`ASSUME(PTX-FMAD)`).
 - Contracted (one FFMA / FFMA.FTZ / FFMA.SAT / DFMA, a sub negating the product or the addend):
-  an `.f32` / `.f64` mul whose result is read once, by an add / sub of the same type and
-  `.ftz` setting in the same basic block (no label or branch between), neither guarded, the
-  mul's operands not redefined in between, and the add's other operand not also such a mul.
-  `.sat` on the add is kept (FFMA.SAT).
+  an `.f32` / `.f64` mul whose every live reader is an add / sub of the same type and `.ftz`
+  setting with the product in one operand, in the same basic block after it (a label no
+  branch names does not end the block), unguarded, with the mul's operands not redefined in
+  between: ptxas contracts it into each reader and drops the mul. Readers through a plain
+  copy (`mov`) or a `neg` (FFMA -a, b, c) count as the readers they feed. `.sat` on the add
+  is kept (FFMA.SAT). All or nothing per mul (2026-11-08, probes/fmad_multi): any other live
+  reader keeps the FMUL and every reader then rounds the product (FMUL + FADD): a store, a mul
+  or fma operand, a compare, `max`, a conversion, a shuffle, a reduction, `add.rn`, an add of
+  the other `.ftz` setting, `add p, p`, a `neg` or copy read by such, a reader in another
+  block or reached through a join (a guarded mul read by an unguarded add: FMUL + FADD). Dead
+  readers do not count (ptxas removes them first; liveness by register name, so a statement
+  counted dead is dead). An add / sub of two such products folds the one with no other
+  reader, the first operand's when both have none (probes/fmad_multi: also when the second
+  is defined first); the other mul keeps its FMUL for all its readers. Readers are the
+  statements the mul's definition reaches: every reader of the register when it has one
+  definition, else those before the next unguarded (or same-guard) redefinition in the block
+  (inline-asm scopes that reuse one register for a chain).
 - Not contracted, as ptxas: a rounding modifier on either instruction; `mul.ftz` with an add
   without `.ftz`, or the reverse (FMUL.FTZ + FADD; FMUL + FADD.FTZ.SAT).
-- Refused (fail closed): a mul read several times with a plain add / sub among the readers, a
-  plain add / sub of two such muls (which product ptxas folds is not modeled), a product
-  passed through `neg` (ptxas folds it: FFMA -a, b, c), a pair across blocks, under a guard
-  (ptxas if-converts and then kept a shared product apart: FMUL + FSEL + FADD), or with an
-  operand redefined in between, and a mul before a reader that precedes it (a loop).
+- Refused (fail closed), when no other reader keeps the FMUL: a contracting reader in another
+  block or before the mul (ptxas contracts across an if-converted branch in some kernels and
+  not in others), under a guard, or after the mul's operands change; a guarded mul; a
+  definition among several that reaches the end of its block; an add of two products both
+  read elsewhere too.
 - `div.full` / `div.approx [.ftz] .f32 d, a, C` with a constant divisor (an immediate,
   decimal or `0f`, or a register whose only definition is an unguarded `mov` of one that
   dominates the division) is ptxas's `FMUL [.FTZ] d, a, RN(1/C)` for 2^-126 <= |C| <= 2^126,
@@ -4414,7 +4427,13 @@ produces. The SASS front-end is exact (it executes the FFMA / FMUL + FADD ptxas 
   probes/div_const: 12 forms (immediates, a mov register, decimal, +-1, .ftz, div.approx,
   2^+-126, contracted add / sub) on specials and random values, GB300 20/20, both front-ends
   bitwise; `recip_constants` checks RN(1/C) on 200,000 constants.
-- Status: **validated** by probes/fmad (2026-11-07): every contracted and kept-apart form on
+- Status: **validated** by probes/fmad_multi (2026-11-08): 28 multi-reader shapes (two adds,
+  add + sub, `.sat`, `.ftz`, through `neg` and `mov`, dead readers; add + store / mul / setp /
+  `add.rn` / fma addend / `add p, p` / other `.ftz` / `neg` / `max` / `cvt` / copy; adds of two
+  products with either read elsewhere), addends cancelling the product to +- 1 ulp: PTX and
+  SASS fronts bitwise (GB300 below). 55 kernel_db records then lift, each PTX front = SASS
+  front of ptxas's cubin bitwise (`ptxv num`).
+  probes/fmad (2026-11-07): every contracted and kept-apart form on
   random, cancelling, subnormal, signed-zero and Inf / NaN operands; GB300 50/50 scrubbed,
   PTX and SASS fronts bitwise (the unfused value differs from GB300's in 122 of 232 finite
   lanes of output 0). Before, the PTX front rounded the product separately: `a = b =

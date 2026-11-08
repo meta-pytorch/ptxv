@@ -2477,6 +2477,14 @@ fn probe_printf_clock_matches_hardware() {
     }
 }
 
+/// PTX-FMAD for a plain mul.f32 with several readers (probes/fmad_multi): all or nothing per
+/// mul, adds of two products = GB300 on both fronts.
+#[test]
+fn probe_fmad_multi_matches_hardware() {
+    probe_bitwise("probes/fmad_multi", "good", "ptx");
+    probe_bitwise("probes/fmad_multi", "good", "sass");
+}
+
 /// cvta.to.local of a stack buffer's generic address (probes/local_cvta) = GB300 on both
 /// fronts; a generic address outside the local window converted and stored through faults.
 #[test]
