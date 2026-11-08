@@ -1,0 +1,38 @@
+name = "probe_f32x2_sinks"
+description = """
+Probe (PTX-FMAD) for plain mul.f32x2 products that no add / sub.f32x2 reads directly: a selp of
+the product added afterwards, the product as an fma addend, a mov copy as a multiplicand, a
+loop-carried product (register redefined) unpacked into scalar adds; ptxas keeps each an
+FMUL2 (kernel.ptx). in.bin = gen.py; expected/ is GB300's output (kernel.cubin = ptxas
+-arch=sm_103a kernel.ptx, `ptxv hw`)."""
+ptx = "kernel.ptx"
+entry = "f32x2_sinks"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [2048]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2048]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -573,6 +573,14 @@ fn r1d_v2pack() {
     check_dpor("r1d_clc", "v2pack", "ptx", 2_000_000);
     check_dpor("r1d_clc", "v2pack", "sass", 2_000_000);
 }
+/// CLC on a 3-D grid: get_first_ctaid::z and .v4 (ctaid.z in the high half of word 1).
+#[test]
+fn r1d_clc3d() {
+    for v in ["good", "v4"] {
+        check_dpor("r1d_clc3d", v, "ptx", 2_000_000);
+        check_dpor("r1d_clc3d", v, "sass", 2_000_000);
+    }
+}
 #[test]
 fn r1d_b17_unwaited_response() {
     check_dpor("r1d_clc", "B17", "ptx", 2_000_000);
@@ -1381,10 +1389,11 @@ fn probe_atom_inc_matches_hardware() {
 }
 
 /// L-ROSETTA: LDSM.8.MT1616[.2] (ldmatrix.m16n16.x1 / .x2.trans.b8; probes/ldsm_b8) = GB300
-/// (SASS: the PTX front-end does not lower ldmatrix).
+/// on both fronts.
 #[test]
 fn probe_ldsm_b8_matches_hardware() {
     probe_bitwise("probes/ldsm_b8", "good", "sass");
+    probe_bitwise("probes/ldsm_b8", "good", "ptx");
 }
 
 /// S-TMEM: tcgen05.st / ld .16x32bx2 with a split offset (probes/tmem_x2; SASS STTM / LDTM
@@ -2102,6 +2111,9 @@ fn probe_xu_war_matches_hardware() {
 fn probe_sttm_ldtm_matches_hardware() {
     probe_bitwise("probes/sttm_ldtm", "good", "ptx");
     probe_bitwise("probes/sttm_ldtm", "good", "sass");
+    // tcgen05.ld destinations listed out of order (CuTe DSL: descending): PTX front.
+    probe_bitwise("probes/sttm_ldtm", "permuted", "ptx");
+    probe_bitwise("probes/sttm_ldtm", "permuted", "sass");
 }
 
 /// abs.bf16x2 / abs.bf16 as HFMA2.BF16_V2 -RZ, RZ, |R| (probes/bf16_abs) = GB300.
@@ -2483,6 +2495,14 @@ fn probe_printf_clock_matches_hardware() {
 fn probe_fmad_multi_matches_hardware() {
     probe_bitwise("probes/fmad_multi", "good", "ptx");
     probe_bitwise("probes/fmad_multi", "good", "sass");
+}
+
+/// PTX-FMAD: plain mul.f32x2 products no add / sub.f32x2 reads directly (selp, fma addend,
+/// mov copy, loop-carried and unpacked; probes/f32x2_sinks) = GB300 on both fronts.
+#[test]
+fn probe_f32x2_sinks_matches_hardware() {
+    probe_bitwise("probes/f32x2_sinks", "good", "ptx");
+    probe_bitwise("probes/f32x2_sinks", "good", "sass");
 }
 
 /// cvta.to.local of a stack buffer's generic address (probes/local_cvta) = GB300 on both

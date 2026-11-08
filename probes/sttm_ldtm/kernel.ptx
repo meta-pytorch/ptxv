@@ -44,12 +44,12 @@
   tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r40,%r41,%r42,%r43,%r44,%r45,%r46,%r47,%r48,%r49,%r50,%r51,%r52,%r53,%r54,%r55}, [%r106];
   tcgen05.wait::ld.sync.aligned;
   tcgen05.wait::st.sync.aligned;
-  tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r60,%r61,%r62,%r63,%r64,%r65,%r66,%r67,%r68,%r69,%r70,%r71,%r72,%r73,%r74,%r75}, [%r105];
+  tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r60,%r61,%r62,%r63,%r64,%r65,%r66,%r67,%r68,%r69,%r70,%r71,%r72,%r73,%r74,%r75}, [%r105];  // @PLD
   tcgen05.wait::ld.sync.aligned;
-  st.global.v4.u32 [%rd5+0], {%r60,%r61,%r62,%r63};
-  st.global.v4.u32 [%rd5+16], {%r64,%r65,%r66,%r67};
-  st.global.v4.u32 [%rd5+32], {%r68,%r69,%r70,%r71};
-  st.global.v4.u32 [%rd5+48], {%r72,%r73,%r74,%r75};
+  st.global.v4.u32 [%rd5+0], {%r60,%r61,%r62,%r63};  // @PST0
+  st.global.v4.u32 [%rd5+16], {%r64,%r65,%r66,%r67};  // @PST1
+  st.global.v4.u32 [%rd5+32], {%r68,%r69,%r70,%r71};  // @PST2
+  st.global.v4.u32 [%rd5+48], {%r72,%r73,%r74,%r75};  // @PST3
   st.global.v4.u32 [%rd5+64], {%r40,%r41,%r42,%r43};
   st.global.v4.u32 [%rd5+80], {%r44,%r45,%r46,%r47};
   st.global.v4.u32 [%rd5+96], {%r48,%r49,%r50,%r51};

@@ -1695,6 +1695,9 @@ pub enum Op {
         /// [ABS].F32[.NAN] Rred, Rd, tmem[..]`): also the min / max of the N loaded f32 values
         /// into this register (`ReduxOp::MinF` / `MaxF` semantics; GB300: probes/tmem_ldred).
         red: Option<(Reg, ReduxOp)>,
+        /// PTX: the destination registers when they are not consecutive (`d` is the first);
+        /// register j of the load goes to `regs[j]`.
+        regs: Option<Vec<Reg>>,
     },
     /// `tcgen05.wait::ld`
     TmemWaitLd,
@@ -2520,8 +2523,10 @@ impl Op {
             }
             Op::ClcQuery { d, .. } => span(*d, 4),
             Op::TmemAllocRaw { d, ok, .. } => vec![*d, *ok],
-            Op::TmemLd { d, n, red, .. } => {
-                let mut x = span(*d, *n as u16);
+            Op::TmemLd {
+                d, n, red, regs, ..
+            } => {
+                let mut x = regs.clone().unwrap_or_else(|| span(*d, *n as u16));
                 x.extend(red.map(|r| r.0));
                 x
             }

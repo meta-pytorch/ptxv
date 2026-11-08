@@ -37,3 +37,28 @@ buffer = "out"
 [[variants]]
 id = "good"
 expect = ["clean"]
+
+[[variants]]
+id = "permuted"
+summary = "the second tcgen05.ld lists its destinations out of order (pairs swapped), the stores follow"
+expect = ["clean"]
+[[variants.edits]]
+marker = "@PLD"
+find = "{%r60,%r61,%r62,%r63,%r64,%r65,%r66,%r67,%r68,%r69,%r70,%r71,%r72,%r73,%r74,%r75}"
+replace = "{%r61,%r60,%r63,%r62,%r65,%r64,%r67,%r66,%r69,%r68,%r71,%r70,%r73,%r72,%r75,%r74}"
+[[variants.edits]]
+marker = "@PST0"
+find = "{%r60,%r61,%r62,%r63}"
+replace = "{%r61,%r60,%r63,%r62}"
+[[variants.edits]]
+marker = "@PST1"
+find = "{%r64,%r65,%r66,%r67}"
+replace = "{%r65,%r64,%r67,%r66}"
+[[variants.edits]]
+marker = "@PST2"
+find = "{%r68,%r69,%r70,%r71}"
+replace = "{%r69,%r68,%r71,%r70}"
+[[variants.edits]]
+marker = "@PST3"
+find = "{%r72,%r73,%r74,%r75}"
+replace = "{%r73,%r72,%r75,%r74}"

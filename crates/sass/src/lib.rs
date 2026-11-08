@@ -3583,6 +3583,7 @@ fn lower_line(
                 s16x256b,
                 s16x128b,
                 red,
+                regs: None,
             }
         }
         // IDP.2A.{LO,HI}.{U16,S16}.{U8,S8} Rd, Ra, Rb, Rc: dp2a (cuDNN's address arithmetic).

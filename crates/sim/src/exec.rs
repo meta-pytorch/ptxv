@@ -2263,8 +2263,10 @@ impl Machine {
                     }
                 }
                 // GB300 (probes/clc, probes/clc_mcast): {first ctaid.x, .y, 1, 0}.
-                let [x, y, _] = self.launch.ctaid(v as u32);
-                [x, y, 1, 0]
+                // ctaid.z in the high half of word 1 (ptxas decodes get_first_ctaid::y / ::z
+                // as word1 & 0xffff / word1 >> 16).
+                let [x, y, z] = self.launch.ctaid(v as u32);
+                [x, y | z << 16, 1, 0]
             }
             // Failure: {2, 0, 0, 0} (probes/clc); a multicast failure is all zero
             // (probes/clc_mcast).
@@ -6603,7 +6605,8 @@ impl Machine {
                 match ctaid {
                     None => self.wp(t, *d, hi & 1 == 1),
                     Some(0) => self.wr(t, *d, lo & 0xffff_ffff, 1),
-                    Some(_) => self.wr(t, *d, (lo >> 32) & 0xffff_ffff, 1),
+                    Some(1) => self.wr(t, *d, (lo >> 32) & 0xffff, 1),
+                    Some(_) => self.wr(t, *d, (lo >> 48) & 0xffff, 1),
                 }
             }
             Op::StAsync {
@@ -6929,7 +6932,15 @@ impl Machine {
                 s16x256b,
                 s16x128b,
                 red,
+                regs,
             } => {
+                let reg_j = |j: usize| match regs {
+                    Some(v) => v[j],
+                    None => Reg {
+                        file: d.file,
+                        idx: d.idx + j as u16,
+                    },
+                };
                 if half.is_some_and(|h| self.threads[t].lane / 16 != h as u32) {
                     return Ok(Flow::Next); // the other half of the warp's lanes
                 }
@@ -6991,10 +7002,7 @@ impl Machine {
                             2 => 2,
                             _ => 0,
                         };
-                        let r = Reg {
-                            file: d.file,
-                            idx: d.idx + j as u16,
-                        };
+                        let r = reg_j(j);
                         self.wr(t, r, w as u64, 1);
                         if st == 0 {
                             self.make_undefined(t, r);
@@ -7069,10 +7077,7 @@ impl Machine {
                         2 => 2,
                         _ => 0,
                     };
-                    let r = Reg {
-                        file: d.file,
-                        idx: d.idx + j as u16,
-                    };
+                    let r = reg_j(j);
                     self.wr(t, r, w as u64, 1);
                     if st == 0 {
                         self.make_undefined(t, r);

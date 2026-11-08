@@ -1,0 +1,67 @@
+// r1d_clc on a 3-D grid: 2 x 1 x 2 one-warp CTAs over 4 tiles, tile = ctaid.x + 2 ctaid.z;
+// out[32 * tile + lane] = 1000 * tile + lane. After each tile, thread 0 tries to cancel a CTA
+// that has not launched and takes over its tile, decoding the response with
+// get_first_ctaid::x and ::z (variant v4: get_first_ctaid.v4 {x, y, z, _}). ctaid.z sits in
+// the high half of response word 1.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry r1d_clc3d(.param .u64 out)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<8>;
+    .reg .b32   %r<24>;
+    .reg .b64   %rd<8>;
+    .reg .b128  %q<2>;
+    .shared .align 16 .b8 resp[16];
+    .shared .align 8 .b8 bar[8];
+    .shared .align 4 .b32 next_tile;
+
+    mov.u32         %r0, %tid.x;
+    mov.u32         %r1, resp;
+    mov.u32         %r2, bar;
+    mov.u32         %r3, next_tile;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r2], 1;
+INIT_DONE:
+    bar.sync        0;
+    ld.param.u64    %rd0, [out];
+    cvta.to.global.u64 %rd1, %rd0;
+    mov.u32         %r4, %ctaid.x;
+    mov.u32         %r9, %ctaid.z;
+    shl.b32         %r9, %r9, 1;
+    add.u32         %r4, %r4, %r9;                  // tile
+    mov.u32         %r5, 0;                         // wait parity
+TILE:
+    mul.lo.u32      %r6, %r4, 1000;
+    add.u32         %r6, %r6, %r0;
+    shl.b32         %r7, %r4, 5;
+    add.u32         %r7, %r7, %r0;
+    mul.wide.u32    %rd2, %r7, 4;
+    add.u64         %rd3, %rd1, %rd2;
+    st.global.u32   [%rd3], %r6;
+    bar.sync        0;
+    @%p0 bra        NEXT;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r2], 16;
+    clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128 [%r1], [%r2];
+W:
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], %r5;
+    @!%p1 bra       W;
+    ld.shared.b128  %q0, [%r1];
+    clusterlaunchcontrol.query_cancel.is_canceled.pred.b128 %p2, %q0;
+    mov.u32         %r8, 0xffffffff;
+    @%p2 clusterlaunchcontrol.query_cancel.get_first_ctaid::x.b32.b128 %r8, %q0;    // @V4X
+    @%p2 clusterlaunchcontrol.query_cancel.get_first_ctaid::z.b32.b128 %r10, %q0;   // @V4Z
+    @%p2 shl.b32    %r10, %r10, 1;
+    @%p2 add.u32    %r8, %r8, %r10;
+    st.shared.u32   [%r3], %r8;
+NEXT:
+    bar.sync        0;
+    ld.shared.u32   %r4, [%r3];
+    xor.b32         %r5, %r5, 1;
+    setp.ne.u32     %p3, %r4, 0xffffffff;
+    @%p3 bra        TILE;
+    ret;
+}

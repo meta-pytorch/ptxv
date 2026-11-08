@@ -1,0 +1,38 @@
+name = "r1d_clc3d"
+description = """
+Rung 1d on a 3-D grid (2 x 1 x 2 CTAs, 4 tiles): cluster launch control whose response is
+decoded with get_first_ctaid::x and ::z (variant v4: get_first_ctaid.v4); ctaid.z is the high
+half of response word 1, as ptxas decodes it."""
+ptx = "kernel.ptx"
+entry = "r1d_clc3d"
+grid = [2, 1, 2]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "get_first_ctaid::x and ::z"
+expect = ["clean"]
+
+[[variants]]
+id = "v4"
+summary = "get_first_ctaid.v4 {x, _, z, _}"
+expect = ["clean"]
+[[variants.edits]]
+marker = "@V4X"
+find = "clusterlaunchcontrol.query_cancel.get_first_ctaid::x.b32.b128 %r8, %q0;"
+replace = "clusterlaunchcontrol.query_cancel.get_first_ctaid.v4.b32.b128 {%r8, _, %r10, _}, %q0;"
+[[variants.edits]]
+marker = "@V4Z"
+find = "@%p2 clusterlaunchcontrol.query_cancel.get_first_ctaid::z.b32.b128 %r10, %q0;"
+replace = ""

@@ -865,6 +865,84 @@ fn fmad2_pairs(
     (pairs, refuse, decided)
 }
 
+/// PTX-FMAD for `.f32x2`: plain `mul.f32x2` destinations that no `add` / `sub.f32x2` can read,
+/// whichever definition of the register reaches it (register names, so loop-carried and
+/// redefined registers are covered): every statement naming the register reads it as a
+/// multiplicand or fma operand (FFMA2 cannot absorb a product as its addend:
+/// probes/f32x2_unpack), stores it, selects it (`selp`: FMUL2, FSEL, then FADD2 for an add of
+/// the selection: probes/f32x2_sinks), copies it with `mov` (the copy is followed), or unpacks
+/// it into halves that no statement repacks (ptxas keeps FMUL2 apart from scalar readers:
+/// probes/f32x2_unpack).
+/// ptxas has nothing to contract such a mul into: it is one FMUL2 (.rn).
+fn x2_no_add_readers(insts: &[&Stmt]) -> HashSet<String> {
+    let mut readers: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+    let mut packed: HashSet<&str> = HashSet::new();
+    for (j, st) in insts.iter().enumerate() {
+        let (op, ops) = stmt_parts(&st.text);
+        let base = op.split('.').next().unwrap_or("");
+        let unpack = base == "mov" && is_unpack(st, op);
+        if base == "mov" && !unpack && st.text.contains('{') {
+            for o in &ops[1..] {
+                packed.extend(reg_tokens(o));
+            }
+        }
+        for (i, o) in ops.iter().enumerate() {
+            let def =
+                (i == 0 || unpack && i + 1 < ops.len()) && !matches!(base, "st" | "red" | "atom");
+            if !def {
+                for r in reg_tokens(o) {
+                    readers.entry(r).or_default().push((j, i));
+                }
+            }
+        }
+    }
+    let ok = |d: &str| -> bool {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut stack = vec![d.to_string()];
+        while let Some(r) = stack.pop() {
+            if seen.len() > 64 {
+                return false;
+            }
+            if !seen.insert(r.clone()) {
+                continue;
+            }
+            for &(j, i) in readers.get(r.as_str()).map(|v| v.as_slice()).unwrap_or(&[]) {
+                let st = insts[j];
+                let (op, ops) = stmt_parts(&st.text);
+                let base = op.split('.').next().unwrap_or("");
+                let fine = match base {
+                    "mul" | "fma" if op.ends_with(".f32x2") => true,
+                    "st" => true,
+                    "selp" => i == 1 || i == 2,
+                    "mov" if is_unpack(st, op) => {
+                        i + 1 == ops.len()
+                            && ops[..i].iter().all(|h| *h == "_" || !packed.contains(h))
+                    }
+                    "mov" if !st.text.contains('{') && ops.len() == 2 => {
+                        stack.push(ops[0].to_string());
+                        true
+                    }
+                    _ => false,
+                };
+                if !fine {
+                    return false;
+                }
+            }
+        }
+        true
+    };
+    insts
+        .iter()
+        .filter_map(|st| {
+            let (op, ops) = stmt_parts(&st.text);
+            (op == "mul.f32x2")
+                .then(|| ops.first().map(|d| d.to_string()))
+                .flatten()
+        })
+        .filter(|d| ok(d))
+        .collect()
+}
+
 /// Destinations of float `mul`s without `.rn` (ptxas may contract them into an FMA with an
 /// add that reads them).
 fn loose_mul_dsts(insts: &[&Stmt]) -> HashSet<String> {
@@ -1644,6 +1722,20 @@ impl<'a> Lower<'a> {
 
     /// `{%r16, %r17, ...}` -> (first register, count); registers must be consecutive.
     fn reg_vec(&self, s: &str) -> Result<(Reg, u8)> {
+        // A vector register (`.reg .v4 .s32 abcd`) named whole: its components.
+        let t = s.trim();
+        if !t.starts_with('{') && self.regs.contains_key(&format!("{t}.y")) {
+            let n = if self.regs.contains_key(&format!("{t}.w")) {
+                4
+            } else {
+                2
+            };
+            let list: Vec<String> = ["x", "y", "z", "w"][..n]
+                .iter()
+                .map(|c| format!("{t}.{c}"))
+                .collect();
+            return self.reg_vec(&format!("{{{}}}", list.join(", ")));
+        }
         let inner = s.trim().trim_start_matches('{').trim_end_matches('}');
         let regs: Vec<Reg> = inner
             .split(',')
@@ -2313,6 +2405,41 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
         }
         if let Some(rest) = t.strip_prefix(".reg") {
             let toks: Vec<&str> = rest.split_whitespace().collect();
+            // `.reg .v4 .s32 abcd;` (an inline-asm vector register): consecutive slots named
+            // `abcd.x`, `.y`, `.z`, `.w`; `abcd` itself is the first.
+            if let Some(n) = toks
+                .first()
+                .and_then(|t| t.strip_prefix(".v"))
+                .and_then(|n| n.parse::<usize>().ok())
+            {
+                if !matches!(n, 2 | 4) || toks.len() < 3 || toks[1] == ".pred" {
+                    bail!(
+                        "ptx line {}: vector register declaration not modeled",
+                        st.line
+                    );
+                }
+                for nm in toks[2..].join(" ").split(',') {
+                    let nm = nm.trim();
+                    if nm.contains('<') {
+                        bail!("ptx line {}: vector register ranges not modeled", st.line);
+                    }
+                    for (k, c) in ["x", "y", "z", "w"][..n].iter().enumerate() {
+                        vreg_names.push(format!("{nm}.{c}"));
+                        let r = Reg {
+                            file: File::V,
+                            idx: (vreg_names.len() - 1) as u16,
+                        };
+                        if matches!(toks[1], ".b64" | ".s64" | ".u64") {
+                            wide_regs.insert(format!("{nm}.{c}"));
+                        }
+                        if k == 0 {
+                            regs.insert(nm.to_string(), r);
+                        }
+                        regs.insert(format!("{nm}.{c}"), r);
+                    }
+                }
+                continue;
+            }
             let is_pred = toks.first() == Some(&".pred");
             // A .b128 register takes two consecutive 64-bit slots (low, high).
             let is_b128 = toks.first() == Some(&".b128");
@@ -2449,7 +2576,8 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
     let f16_mul_ok = uncontractible_f16_muls(&insts_src);
     let loose_muls = loose_mul_dsts(&insts_src);
     let (mut fmad, mut fmad_refuse) = fmad_pairs(&insts_src, &brx_tables);
-    let (fmad2, fmad2_refuse, x2_decided) = fmad2_pairs(&insts_src, &brx_tables);
+    let (fmad2, fmad2_refuse, mut x2_decided) = fmad2_pairs(&insts_src, &brx_tables);
+    x2_decided.extend(x2_no_add_readers(&insts_src));
     fmad.extend(fmad2);
     fmad_refuse.extend(fmad2_refuse);
     let hint_policies = hint_only_policies(&insts_src);
@@ -3941,6 +4069,39 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 a: lw.val(op_n(1)?)?,
             }
         }
+        // `ldmatrix.sync.aligned.m16n16.x{1,2}.trans.shared.b8` (FA4 / CuTe fp8): two registers
+        // per matrix, as SASS LDSM.8.MT1616[.2] (probes/ldsm_b8). ASSUME(L-ROSETTA)
+        "ldmatrix" if has("m16n16") => {
+            if !(has("b8") && has("trans"))
+                || mods.iter().any(|m| {
+                    !matches!(
+                        *m,
+                        "sync" | "aligned" | "m16n16" | "x1" | "x2" | "trans" | "shared" | "b8"
+                    )
+                })
+            {
+                bail!(lw.err("only ldmatrix.sync.aligned.m16n16.x{1,2}.trans.shared.b8 is modeled of the m16n16 forms"));
+            }
+            let num: u8 = if has("x2") {
+                2
+            } else if has("x1") {
+                1
+            } else {
+                bail!(lw.err("missing .xN"))
+            };
+            let (d, n, moves) = lw.reg_vec_mem(op_n(0)?, true)?;
+            if n != 2 * num {
+                bail!(lw.err("register count does not match .xN (two per matrix)"));
+            }
+            extra.extend(moves);
+            Op::LdMatrix {
+                d,
+                n,
+                addr: lw.addr(op_n(1)?)?,
+                trans: true,
+                b8: true,
+            }
+        }
         "ldmatrix" => {
             if !(has("m8n8") && has("b16"))
                 || mods.iter().any(|m| {
@@ -4379,7 +4540,13 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         }
         "setp" => {
             let s = tname.starts_with('s');
-            let cmp = match (mods[0], s) {
+            // ptxas also takes the type before the comparison (`setp.u32.eq`, an inline-asm
+            // spelling in CuTe DSL kernels).
+            let c0 = match mods {
+                [t, c, ..] if type_bits(t).is_some() && !t.starts_with('f') => *c,
+                _ => mods[0],
+            };
+            let cmp = match (c0, s) {
                 ("eq", _) => Cmp::Eq,
                 ("ne", _) => Cmp::Ne,
                 ("lt", false) | ("lo", _) => Cmp::LtU,
@@ -5418,7 +5585,24 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     if x2 != (ops.len() == 3) || ops.len() > 3 {
                         bail!(lw.err("tcgen05.ld: unexpected operands"));
                     }
-                    let (d, n) = lw.reg_vec(op_n(0)?)?;
+                    // Destination registers need not be consecutive (CuTe DSL lists them in
+                    // descending order): the load writes each listed register.
+                    let list: Vec<Reg> = op_n(0)?
+                        .trim()
+                        .trim_matches(|c| c == '{' || c == '}')
+                        .split(',')
+                        .map(|r| lw.reg(r.trim()))
+                        .collect::<Result<_>>()?;
+                    if list.is_empty() || list.len() > 255 || list.iter().any(|r| r.file != File::V)
+                    {
+                        bail!(lw.err("tcgen05.ld destinations must be 1..255 registers"));
+                    }
+                    let (d, n) = (list[0], list.len() as u8);
+                    let consecutive = list
+                        .iter()
+                        .enumerate()
+                        .all(|(i, r)| r.idx == d.idx + i as u16);
+                    let regs = (!consecutive).then_some(list);
                     let num: u8 = mods
                         .iter()
                         .find_map(|m| m.strip_prefix('x').and_then(|x| x.parse().ok()))
@@ -5448,6 +5632,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         s16x256b: has("16x256b"),
                         s16x128b: has("16x128b"),
                         red,
+                        regs: regs.clone(),
                     };
                     if x2 {
                         // `.16x32bx2 d, [a], split`: lanes 0..15 at a, lanes 16..31 at
@@ -6281,13 +6466,54 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 multicast,
             }
         }
+        // `get_first_ctaid.v4.b32.b128 {x, y, z, _}, q`: one query per named element (the
+        // fourth is 0; ptxas: MOV / LOP3 / SHF of the response words, RZ).
+        "clusterlaunchcontrol" if has("query_cancel") && has("get_first_ctaid") && has("v4") => {
+            let q = lw.reg(op_n(1)?.trim())?;
+            let elems: Vec<&str> = op_n(0)?
+                .trim()
+                .trim_matches(|c| c == '{' || c == '}')
+                .split(',')
+                .map(|x| x.trim())
+                .collect();
+            if elems.len() != 4 {
+                bail!(lw.err("get_first_ctaid.v4 takes four destinations"));
+            }
+            let mut ops = Vec::new();
+            for (k, e) in elems.iter().enumerate() {
+                if *e == "_" {
+                    continue;
+                }
+                ops.push(if k < 3 {
+                    Op::ClcQuery {
+                        d: lw.dst(e)?,
+                        q,
+                        ctaid: Some(k as u8),
+                    }
+                } else {
+                    Op::Mov {
+                        d: lw.dst(e)?,
+                        a: Val::Imm(0),
+                    }
+                });
+            }
+            let last = ops
+                .pop()
+                .ok_or_else(|| lw.err("get_first_ctaid.v4 has no destination"))?;
+            pre.extend(ops);
+            last
+        }
         "clusterlaunchcontrol" if has("query_cancel") => {
+            // GB300 response (ptxas's decoding): word 0 ctaid.x, word 1 ctaid.y | ctaid.z << 16,
+            // bit 0 of word 2 is_canceled (E-CLC).
             let ctaid = if has("is_canceled") {
                 None
             } else if has("get_first_ctaid::x") {
                 Some(0)
             } else if has("get_first_ctaid::y") {
                 Some(1)
+            } else if has("get_first_ctaid::z") {
+                Some(2)
             } else {
                 bail!(lw.err("this query_cancel form is not modeled"));
             };
@@ -7106,6 +7332,28 @@ mod tests {
                 "{l}"
             );
         }
+    }
+
+    #[test]
+    fn vector_register() {
+        // `.reg .v4 .s32 abcd;` in an inline-asm scope: components, and the whole as a vector.
+        let v = ops("{\n.reg .v4 .s32 abcd;\nmov.s32 abcd.x, %r1;\nmov.s32 abcd.y, %r2;\nmov.s32 abcd.z, %r3;\nmov.s32 abcd.w, %r4;\nst.global.v4.s32 [%rd1], abcd;\n}").unwrap();
+        let regs: Vec<Reg> = v[..4].iter().map(|o| o.dst_regs()[0]).collect();
+        assert!(regs.windows(2).all(|w| w[1].idx == w[0].idx + 1), "{v:?}");
+        assert!(ops("{\n.reg .v3 .s32 abc;\n}").is_err());
+    }
+
+    #[test]
+    fn setp_type_before_compare() {
+        // `setp.u32.eq` (ptxas accepts the type first) = `setp.eq.u32`.
+        assert_eq!(
+            ops("setp.u32.eq %p1, %r1, 3;").unwrap(),
+            ops("setp.eq.u32 %p1, %r1, 3;").unwrap()
+        );
+        assert_eq!(
+            ops("setp.s32.lt %p1, %r1, %r2;").unwrap(),
+            ops("setp.lt.s32 %p1, %r1, %r2;").unwrap()
+        );
     }
 
     #[test]

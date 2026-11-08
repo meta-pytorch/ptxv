@@ -1318,7 +1318,11 @@ so B14 is caught without hiding data races.
 **Cluster launch control.** In a kernel that issues `clusterlaunchcontrol.try_cancel`, every
 CTA starts unlaunched and the explorer launches CTAs in any order. A try_cancel response either
 fails (`{2, 0, 0, 0}`, allowed at any time) or cancels *any* CTA that has not launched
-(`{ctaid.x, ctaid.y, 1, 0}`); a cancelled CTA never runs. The response is 16 bytes written to
+(`{ctaid.x, ctaid.y | ctaid.z << 16, 1, 0}`); a cancelled CTA never runs. ctaid.z's place is
+ptxas 13.0's decoding (get_first_ctaid::y = word 1 & 0xffff, ::z = word 1 >> 16, .v4 = {x, y,
+z, 0}; fixtures/r1d_clc3d, both fronts, 2026-11-08). probes/clc3d (16 x 4 x 128 CTAs, three
+GB300 runs): every successful response is {x, y | z << 16, 1, 0} of a CTA that never ran,
+1966-1968 cancels per run, z up to 127. The response is 16 bytes written to
 shared memory plus `complete_tx(16)` on the mbarrier. DPOR: a launch and a cancel of the same
 CTA write its launch key, and a response completion reads the keys of CTAs that already
 launched (each removed a possible outcome).
@@ -4232,6 +4236,14 @@ forms seen. Any other form is a hard error.
   or second unpack of p in the other lane) stays refused: ptxas 13.0 contracts it into FFMA2.
   probes/f32x2_repack (cancelling addends): FMUL2 + FADD2 in ptxas's output, GB300 50/50
   scrubbed, both front-ends bitwise; 8 PX records then lift.
+- A plain `mul.f32x2` whose register no `add` / `sub.f32x2` can read (2026-11-08,
+  `x2_no_add_readers`; by register name, so loop-carried and redefined accumulators are
+  covered): every statement naming it reads it as a multiplicand or fma operand, stores it,
+  selects it (`selp`), copies it (`mov`, followed) or unpacks it into halves no statement
+  repacks. ptxas has nothing to contract it into (FMUL2). probes/f32x2_sinks (a selp of the
+  product then an add, the product as an fma addend, a copy as a multiplicand, a loop-carried
+  product unpacked into scalar adds; cancelling addends): GB300 50/50 scrubbed, both fronts
+  bitwise; 6 PX records then lift.
 - `add` / `sub` / `mul` `.bf16x2` / `.bf16` with no rounding modifier (2026-11-07, SCALE
   pilot): the same rule as f32x2 (ptxas emits HADD2.BF16_V2 / HFMA2.BF16_V2 ..., -RZ).
   probes/bf16_norn: GB300 50/50 scrubbed, both front-ends bitwise. Plain `fma.bf16x2` stays

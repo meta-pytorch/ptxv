@@ -1,0 +1,23 @@
+name = "probe_clc3d"
+description = """
+Probe (hardware only) for the CLC response encoding on a 3-D grid (E-CLC): per CTA {ran,
+is_canceled, raw response words, get_first_ctaid::y, ::z}, 16 x 4 x 128 CTAs (check.py)."""
+ptx = "kernel.ptx"
+entry = "probe_clc3d"
+grid = [16, 4, 128]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [65536]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

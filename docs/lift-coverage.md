@@ -159,7 +159,7 @@ modifier of these opcodes is refused.
 | `BMOV.32[.CLEAR] Rd, Bb`, `BMOV.32 Bb, Ra` | the parallel_attn_bwd_dkv case (E-BSYNC); not probed alone |
 | `[R.U32+UR]` generic addresses, `UTMAREDG ... desc[URZ]`, device-built tensor maps (words 0x40/0x48 = 0) | operand syntax; **probes/tmap_device**, **probes/tmap_param_copy** (S-TMAP; raw tensor-map parameter bytes visible to device code) |
 | PTX `tensormap.replace.tile.*.shared::cta.b1024`, `tensormap.cp_fenceproxy`, `fence.proxy.tensormap::generic.acquire` | ptxas's LDS / LOP3 / STS read-modify-write per field, per-lane release copy, TmapFence; **probes/tmap_replace** (every field / ordinal / value), tmap_device and tmap_param_copy on the PTX front (S-TMAP) |
-| `LDSM.8.MT1616[.2]` (ldmatrix.m16n16.x1 / .x2.trans.b8) | **probes/ldsm_b8**, SASS (L-ROSETTA) |
+| `LDSM.8.MT1616[.2]` (ldmatrix.m16n16.x1 / .x2.trans.b8) | **probes/ldsm_b8**, SASS and PTX fronts (L-ROSETTA) |
 | PTX `tcgen05.st / ld .16x32bx2 [a], split` | **probes/tmem_x2**, both front-ends (S-TMEM) |
 | `LDTM.STAT.16dp32bit_t0_t15 / _t16_t31 .xN.MIN/MAX[ABS].F32[.NAN]` | **probes/tmem_ldred16**, both fronts (S-TMEM) |
 | `LDTM.STAT.xN.MIN/MAX[ABS].F32[.NAN]` (`tcgen05.ld.red.32x32b`) | **probes/tmem_ldred**, both fronts (S-TMEM) |
@@ -317,6 +317,8 @@ any modifier outside the audited set before an arm runs.
 | `CS2R Rd, SR_CLOCKLO` / `SR_GLOBALTIMERLO`, `CALL.ABS.NOINC` vprintf, `c[0x0][0x2f8]` | `%clock64` / `%globaltimer`, `call.uni vprintf`, `cvta.local.u64` | clocks 0, vprintf a no-op (note per site), unmapped generic local base (E-CLOCK, S-CBANK) | probes/printf_clock |
 | `IADD3` / `IMAD.IADD` with the window base (folded) | `cvta.to.local.u64` | generic minus the local generic base; outside the window, ld / st `.local` fault (S-CBANK) | probes/local_cvta |
 | (moves) | `mov.b128 q, {lo, hi}` / `mov.b128 {lo, hi}, q` | a .b128 register is two 64-bit slots (a cluster-launch-control response for `query_cancel`) | fixtures/r1d_clc v2pack |
+| `MOV` / `LOP3` / `SHF` of the response words | `clusterlaunchcontrol.query_cancel.get_first_ctaid::z` / `.v4` | word 1 >> 16 (ctaid.z); .v4 = {x, y, z, 0} (E-CLC) | fixtures/r1d_clc3d |
+| `LDTM` (consecutive registers) | `tcgen05.ld` with destinations not consecutive (CuTe DSL lists them in descending order) | register j of the load into the j-th listed register | probes/sttm_ldtm permuted |
 | `LDC.64 c[0x4][..]` (`R_CUDA_64` to `.nv.global[.init]`) | `.global` module variables, `mov.b64 %rd, sym`, `[sym+off]` | one buffer per (module, symbol, GPU): captured bytes, else initializer, else zeros (noted) (S-GLOBAL-INIT) | probes/ptx_globals |
 | `MEMBAR.SC.<scope>` [+ `ERRBAR` + `CCTL.IVALL`] | `membar.cta` / `.gl` / `.sys` | as `fence.sc.<scope>` (S-SCOPE) | probes/fence_scopes |
 | nothing / `CCTL.IVALL` | `fence.acquire.cta` / `.cluster` / `.gpu` | acquire of that scope only (S-SCOPE) | probes/fence_scopes |
@@ -337,6 +339,7 @@ any modifier outside the audited set before an arm runs.
 | `FADD[.FTZ] d, \|a\|, -RZ`, `IABS` | `abs[.ftz].f32`, `abs.s32` | \|a\| + -0 (canonical NaN); two's-complement abs | probes/abs_f32 |
 | `S2R SR_LTMASK` etc. | `%lanemask_{lt,le,ge,gt,eq}`; `%`-less scope registers; `[%rd+-N]`; `{...}` operands continued after a comma | PTX syntax only | probes/ptx_syntax |
 | `FFMA2[.RZ/.RM/.RP]` | `mul.f32x2` read only by `add` / `sub.f32x2` of its rounding mode (none = `.rn`), explicit modifiers included | contracted into each (PTX-FMAD); any other reader: none | probes/fmad2 |
+| `FMUL2` | plain `mul.f32x2` no `add` / `sub.f32x2` can read (selp, fma addend, copies, multiplicands, stores, unpacked halves not repacked; loop-carried too) | .rn (ptxas cannot contract; PTX-FMAD) | probes/f32x2_sinks |
 | `FMUL2` / `FADD2` | `mul` / `add` / `sub.f32x2` with no rounding modifier | .rn where no use lets ptxas contract (a mul only multiplied, stored, converted, an fma addend, or unpacked into halves read by scalar ops or repacked across lanes; an add / sub of no such mul) | probes/f32x2_norn, probes/f32x2_unpack |
 | `HADD2.BF16_V2`, `HFMA2.BF16_V2 d, a, b, -RZ` | `add` / `sub` / `mul` `.bf16[x2]` with no rounding modifier | .rn under the f32x2 rule | probes/bf16_norn |
 | ptxas's div.rn.f32 expansion (MUFU.RCP, FFMA refinement, slow-path CALL) | `rcp.rn.f32` | IEEE 1 / a, NaN canonical | probes/rcp_rn |
