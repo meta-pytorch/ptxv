@@ -54,6 +54,7 @@ const IGNORED: &[&str] = &[
     "PTXV_LA_DEBUG",
     "PTXV_LA_STATS",
     "PTXV_LA_TRACE",
+    "PTXV_NO_INPUT_COVERAGE",
 ];
 
 const VERSION: u32 = 1;

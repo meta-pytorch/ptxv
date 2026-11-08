@@ -4174,6 +4174,58 @@ fn own_tcgen05_st_wait_orders_later_mma() {
     check_stateful("s_tc_st_mma", "early", "sass", 100_000);
 }
 
+/// Input coverage and input mutation (fixtures/e_sentinel_fill, the shape of a
+/// bucket-fill kernel): on the all-valid input the check is clean with one untaken
+/// input-dependent side (`ok != 0` never false); setting ok = 0 in two lanes of different warps
+/// gives the race on the sentinel word; the fixed shape (only valid lanes store) stays clean;
+/// a comparison of a value computed from the input word is refused.
+#[test]
+fn input_coverage_and_mutation_find_the_sentinel_race() {
+    let case = Case::load(root().join("fixtures/e_sentinel_fill")).unwrap();
+    for front in ["ptx", "sass"] {
+        for (v, want) in [("good", "race"), ("fixed", "clean")] {
+            both("e_sentinel_fill", v);
+            let k = kernel(&case, v, front);
+            let launch = build_launch(&case, &k).unwrap();
+            let m = Machine::new(Arc::new(k), Arc::new(launch));
+            let c = ptxv_sim::coverage::analyze(&m);
+            assert_eq!(c.untaken.len(), 1, "{v}/{front}: {:#?}", c.untaken);
+            assert!(
+                !c.untaken[0].never && c.untaken[0].sources.starts_with("ok["),
+                "{:#?}",
+                c.untaken
+            );
+            let (muts, refused) = ptxv_sim::coverage::plan(&m, &c, 4, 2);
+            assert!(refused.is_empty(), "{refused:#?}");
+            assert_eq!(muts.len(), 1);
+            assert_eq!(muts[0].label, "ok[0]=0, ok[32]=0");
+            let w = ptxv_sim::wellsync::check_certified(
+                ptxv_sim::coverage::apply(&m, &muts[0]),
+                100_000,
+            );
+            assert_eq!(
+                w.classes(),
+                vec![want.to_string()],
+                "{v}/{front}: {:#?}",
+                w.findings
+            );
+        }
+        let k = kernel(&case, "derived", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let m = Machine::new(Arc::new(k), Arc::new(launch));
+        let c = ptxv_sim::coverage::analyze(&m);
+        let (muts, refused) = ptxv_sim::coverage::plan(&m, &c, 4, 2);
+        assert!(
+            muts.is_empty() && refused.len() == 1,
+            "{front}: {muts:#?} {refused:#?}"
+        );
+        assert!(
+            refused[0].reason.contains("not a single input word"),
+            "{refused:#?}"
+        );
+    }
+}
+
 /// S-INIT lane precision for narrow packs (fixtures/e_uninit_lanes): F2FP pack / unpack and
 /// HADD2.F32 of one half keep undefined bits per lane, so a defined low lane stays defined.
 #[test]

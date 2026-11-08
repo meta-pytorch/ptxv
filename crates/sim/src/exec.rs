@@ -847,6 +847,9 @@ impl Machine {
         write: Option<&[u8]>,
         strong: u8,
     ) -> Vec<u8> {
+        if let Some(p) = self.prov.as_mut() {
+            p.on_access(actor, loc, n, write.is_some()); // coverage.rs
+        }
         let atomic = strong != 0;
         // E-POLL-ANY: the read of a value-insensitive poll (`vip_ok`).
         let vip = self.vip_read == 1 && write.is_none() && atomic && vip_where(loc).is_some();
@@ -3427,7 +3430,14 @@ impl Machine {
 
     fn exec_inner(&mut self, members: &[usize], pc: u32) -> Result<(), String> {
         let poison = self.sinit_pre(members, pc);
+        let cov = self.prov.is_some();
+        if cov {
+            crate::coverage::pre(self, members, pc);
+        }
         let r = self.exec_inner_body(members, pc);
+        if cov && r.is_ok() {
+            crate::coverage::post(self, pc);
+        }
         if r.is_ok() {
             for (t, regs) in poison {
                 self.poison_regs(t, &regs);

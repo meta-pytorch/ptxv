@@ -8,6 +8,7 @@
 //! ptxv simulator and model checker.
 
 pub mod assumptions;
+pub mod coverage;
 pub mod dist;
 pub mod dpor;
 pub mod elementwise;

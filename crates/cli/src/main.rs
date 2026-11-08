@@ -198,6 +198,23 @@ enum Cmd {
         /// --nonfinite, and a finding even when an input already holds NaN / Inf.
         #[arg(long)]
         nonfinite_strict: bool,
+        /// Skip the input-coverage notes: one deterministic run that records which sides of
+        /// input-dependent comparisons any thread took (also PTXV_NO_INPUT_COVERAGE).
+        #[arg(long)]
+        no_input_coverage: bool,
+        /// Check again on mutated inputs: for up to N untaken input-dependent comparison
+        /// sides that compare one input word against a constant, write a value that flips
+        /// the comparison into --mutate-elements elements and run the check on that input.
+        /// Results are reported apart (`on-mutated-input`), never in the verdict.
+        #[arg(long, default_value_t = 0)]
+        mutate_inputs: usize,
+        /// Elements per mutation (--mutate-inputs), spread over threads of different warps.
+        #[arg(long, default_value_t = 2)]
+        mutate_elements: usize,
+        /// A mutation given by hand, checked like the --mutate-inputs ones: `name[i]=v`
+        /// element writes, comma-separated (e.g. 'ok[0]=0,ok[432]=0'). Repeatable.
+        #[arg(long)]
+        mutate_input: Vec<String>,
     },
     /// Numerics of one deterministic run: exact error per output, bounds, Thm 1 check.
     Num {
@@ -730,6 +747,30 @@ fn fronts(f: &str) -> Vec<&'static str> {
     }
 }
 
+/// `--mutate-input` specs.
+static MUTATE_SPECS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// Input coverage (coverage.rs): (notes on, --mutate-inputs, --mutate-elements).
+static INPUT_COV: std::sync::OnceLock<(bool, usize, usize)> = std::sync::OnceLock::new();
+
+/// One check on a mutated input (`--mutate-inputs`): its own evidence, never the verdict.
+#[derive(Serialize)]
+struct MutatedRow {
+    /// `buffer[element]=value, ...`.
+    mutation: String,
+    /// The comparison it flips and the side it makes taken (null: given with --mutate-input).
+    pc: Option<u32>,
+    at: String,
+    makes: bool,
+    classes: Vec<String>,
+    complete: bool,
+    certified: bool,
+    states: usize,
+    findings: Vec<ptxv_sim::machine::Finding>,
+    notes: Vec<String>,
+    seconds: f64,
+}
+
 /// `--hw-profile` (`PTXV_HW_PROFILE`, default "gb300").
 static HW_PROFILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
@@ -796,6 +837,16 @@ struct CheckRow {
     /// `--nonfinite`: NaN / Inf scan of the outputs and their producing instructions.
     #[serde(skip_serializing_if = "Option::is_none")]
     nonfinite: Option<nonfinite::Report>,
+    /// Input coverage (coverage.rs): input-dependent comparison sides no thread took in one
+    /// run of the captured input. A note, not part of the verdict.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_coverage: Option<ptxv_sim::coverage::Coverage>,
+    /// `--mutate-inputs`: checks on mutated inputs (evidence class `on-mutated-input`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    mutated_inputs: Vec<MutatedRow>,
+    /// `--mutate-inputs`: untaken sides not mutated, and why.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    mutation_refusals: Vec<ptxv_sim::coverage::Refusal>,
 }
 
 fn print_verdict(
@@ -1417,6 +1468,106 @@ fn cmd_check(
                     );
                 }
             }
+            // Input coverage (A) and checks on mutated inputs (B), apart from the verdict.
+            let (cov_on, n_mut, k_mut) = INPUT_COV.get().copied().unwrap_or((true, 0, 2));
+            let mut input_coverage = None;
+            let mut mutated_inputs = Vec::new();
+            let mut mutation_refusals = Vec::new();
+            let specs = MUTATE_SPECS.get().cloned().unwrap_or_default();
+            if cov_on || n_mut > 0 || !specs.is_empty() {
+                let cov = ptxv_sim::coverage::analyze(&m1);
+                println!(
+                    "    input coverage: {} input-dependent comparison(s), {} side(s) not taken on this input ({:.1}s)",
+                    cov.sites,
+                    cov.untaken.len(),
+                    cov.seconds
+                );
+                for u in cov.untaken.iter().take(20) {
+                    println!("    note: {}", u.note);
+                }
+                if n_mut > 0 || !specs.is_empty() {
+                    let (mut muts, refused) = if n_mut > 0 {
+                        ptxv_sim::coverage::plan(&m1, &cov, n_mut, k_mut)
+                    } else {
+                        (vec![], vec![])
+                    };
+                    let elem = |name: &str| {
+                        case.m
+                            .buffers
+                            .iter()
+                            .find(|b| b.name == name)
+                            .map(|b| b.elem_bytes())
+                    };
+                    for sp in &specs {
+                        muts.push(
+                            ptxv_sim::coverage::parse_mutation(&m1, sp, &elem)
+                                .map_err(|e| anyhow::anyhow!("--mutate-input {sp}: {e}"))?,
+                        );
+                    }
+                    for r in &refused {
+                        println!(
+                            "    mutate-inputs: not mutated: {}: {}",
+                            m1.k.describe(r.pc as usize),
+                            r.reason
+                        );
+                    }
+                    for mu in muts {
+                        let t0 = Instant::now();
+                        let mm = ptxv_sim::coverage::apply(&m1, &mu);
+                        let make_m = || mm.clone();
+                        let vm = check(&make_m, "mutated input: ");
+                        let at = if mu.pc == u32::MAX {
+                            "given with --mutate-input".to_string()
+                        } else {
+                            m1.k.describe(mu.pc as usize)
+                        };
+                        let row = MutatedRow {
+                            mutation: mu.label.clone(),
+                            pc: (mu.pc != u32::MAX).then_some(mu.pc),
+                            at: at.clone(),
+                            makes: mu.never,
+                            classes: vm.classes(),
+                            complete: vm.complete,
+                            certified: vm.assumptions.iter().any(|a| a == "E-WELLSYNC"),
+                            states: vm.states,
+                            findings: vm.findings.clone(),
+                            notes: vm.notes.clone(),
+                            seconds: t0.elapsed().as_secs_f64(),
+                        };
+                        println!(
+                            "    on-mutated-input: {} ({}): {:?} states={}{} {:.1}s",
+                            row.mutation,
+                            if mu.pc == u32::MAX {
+                                at.clone()
+                            } else {
+                                format!(
+                                    "makes {} side of {} taken",
+                                    if mu.never { "the true" } else { "the false" },
+                                    at
+                                )
+                            },
+                            row.classes,
+                            row.states,
+                            if row.complete || row.certified {
+                                ""
+                            } else {
+                                " INCOMPLETE"
+                            },
+                            row.seconds
+                        );
+                        for x in row.findings.iter().filter(|x| x.kind != "note").take(6) {
+                            println!(
+                                "      on-mutated-input {}: {}",
+                                x.kind.to_uppercase(),
+                                x.msg.lines().next().unwrap_or("")
+                            );
+                        }
+                        mutated_inputs.push(row);
+                    }
+                    mutation_refusals = refused;
+                }
+                input_coverage = Some(cov);
+            }
             // Debugging / figures: PTXV_TRACE_DUMP=<dir> writes each finding's replayed witness.
             if let Some(d) = std::env::var_os("PTXV_TRACE_DUMP") {
                 let p = Path::new(&d).join(format!("{v}.{f}.trace.json"));
@@ -1455,6 +1606,9 @@ fn cmd_check(
                 gb300: gbc,
                 two_level,
                 nonfinite: nf,
+                input_coverage,
+                mutated_inputs,
+                mutation_refusals,
             });
         }
     }
@@ -2103,8 +2257,18 @@ fn run() -> Result<()> {
             hw_profile,
             nonfinite,
             nonfinite_strict,
+            no_input_coverage,
+            mutate_inputs,
+            mutate_elements,
+            mutate_input,
         } => {
+            let _ = MUTATE_SPECS.set(mutate_input);
             let j = json.then(|| jsonout::begin("check"));
+            let _ = INPUT_COV.set((
+                !no_input_coverage && std::env::var("PTXV_NO_INPUT_COVERAGE").is_err(),
+                mutate_inputs,
+                mutate_elements.max(1),
+            ));
             if let Some(p) = hw_profile {
                 let _ = HW_PROFILE.set(p);
             }

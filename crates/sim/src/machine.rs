@@ -1780,6 +1780,8 @@ pub struct Machine {
     /// S-INIT-FILLS (fills.rs): the value unwritten state holds in a multi-fill rerun; None:
     /// 0. Not hashed (constant over a run).
     pub fill: Option<crate::fills::Fill>,
+    /// Input coverage (coverage.rs): the provenance shadow of a deterministic run. Not hashed.
+    pub prov: Option<Box<crate::coverage::ProvState>>,
     /// Per thread: own clock when its warp last diverged (`Machine::wdiv`); an access with an own
     /// clock at least this one ran after it (intra-warp race labels, E-WARP-ORDER). History
     /// for a label only: not part of the state hash.
@@ -2452,6 +2454,7 @@ impl Machine {
             undef_ok_from: None,
             race_log: None,
             fill: None,
+            prov: None,
             vmask: None,
             fp: None,
             live: 0..0,
