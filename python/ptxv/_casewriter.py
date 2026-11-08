@@ -509,6 +509,7 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
     mods = [m for m in mods if m.exists()]
     names = {la.name for la, _ in plaunches}
     cubin_of: dict[str, Path] = {}
+    defining: dict[str, list[Path]] = {}
     psizes = {}
     for la, _ in plaunches:
         ps = la.record.get("params") or []
@@ -516,6 +517,7 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
             psizes.setdefault(la.name, [len(p["hex"]) // 2 for p in ps])
     for n in names:
         c = [m for m in mods if elf_defines(image(m), n)]
+        defining[n] = c
         if not c:
             raise CaseError(
                 f"no captured module defines {n}: its module was loaded before ptxv's hook. "
@@ -549,21 +551,42 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
                     "layout; the smallest is used"
                 )
         cubin_of[n] = min(c, key=os.path.getsize)
-    ptx_of = _triton_ptx(names, {n: image(p) for n, p in cubin_of.items()})
-    use_ptx = ptx and len(names) == 1 and next(iter(names)) in ptx_of
-    by_hash: dict[str, str] = {}
-    cubin_file: dict[str, str] = {}
+    # Each launch's image: its recorded module when that is one of several different images
+    # defining the name (specializations of one CuTeDSL / Triton kernel launched in one
+    # region), else the name's choice above.
+    lcubin: list[Path] = []
     for la, _ in plaunches:
-        src = cubin_of[la.name]
+        own = [m for m in defining[la.name] if m.stem == la.record.get("module")]
+        lcubin.append(own[0] if own else cubin_of[la.name])
+    split = {
+        la.name
+        for (la, _), src in zip(plaunches, lcubin)
+        if hashlib.sha1(image(src)).digest()
+        != hashlib.sha1(image(cubin_of[la.name])).digest()
+    }
+    if split:
+        warnings.append(
+            f"launches of {sorted(split)} run different modules under one name: each keeps "
+            "its own cubin"
+        )
+    ptx_of = _triton_ptx(names, {n: image(p) for n, p in cubin_of.items()})
+    use_ptx = ptx and not split and len(names) == 1 and next(iter(names)) in ptx_of
+    by_hash: dict[str, str] = {}
+    cubin_files: list[str] = []
+    for (la, _), src in zip(plaunches, lcubin):
         data = image(src)
         h = hashlib.sha1(data).hexdigest()
         if h not in by_hash:
             by_hash[h] = "jit.cubin" if use_ptx else f"k{len(by_hash)}.cubin"
-            keep = {m for m in names if cubin_of[m] == src}
+            keep = {
+                m.name
+                for (m, _), q in zip(plaunches, lcubin)
+                if hashlib.sha1(image(q)).hexdigest() == h
+            }
             (out / by_hash[h]).write_bytes(
                 data if not prune else prune_cubin(data, keep)
             )
-        cubin_file[la.name] = by_hash[h]
+        cubin_files.append(by_hash[h])
     if len(names) == 1 and next(iter(names)) in ptx_of:
         src = ptx_of[next(iter(names))]
         m = re.search(r"^\.version (\d+)\.(\d+)", src, re.M)
@@ -627,7 +650,7 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
     out_names = [b["name"] for b in outs]
     toml = [
         f'name = {q(name)}\ndescription = """{desc}"""\n'
-        + ('ptx = "kernel.ptx"\n' if use_ptx else f'cubin = "{cubin_file[l0.name]}"\n')
+        + ('ptx = "kernel.ptx"\n' if use_ptx else f'cubin = "{cubin_files[0]}"\n')
         + f"entry = {q(l0.name)}\ngrid = {list(l0.grid)}\nblock = {list(l0.block)}\n"
         + (f"cluster = {list(l0.cluster)}\n" if l0.cluster != (1, 1, 1) else "")
         # cudaLaunchAttributePreferredClusterDimension (S-CGA-SHAPE).
@@ -661,7 +684,7 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
             )
         toml.append(s)
     toml += toml_params(plaunches[0][1], "params")
-    for la, params in plaunches[1:]:
+    for i, (la, params) in enumerate(plaunches[1:], 1):
         s = f"[[launches]]\nentry = {q(la.name)}\ngrid = {list(la.grid)}\nblock = {list(la.block)}\n"
         if la.cluster != (1, 1, 1):
             s += f"cluster = {list(la.cluster)}\n"
@@ -670,8 +693,8 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
         s += f"dynamic_smem = {la.smem}\n"
         if la.pdl:
             s += "pdl = true\n"
-        if not use_ptx and cubin_file[la.name] != cubin_file[l0.name]:
-            s += f'cubin = "{cubin_file[la.name]}"\n'
+        if not use_ptx and cubin_files[i] != cubin_files[0]:
+            s += f'cubin = "{cubin_files[i]}"\n'
         toml.append(s)
         toml += toml_params(params, "launches.params")
     toml.append(
@@ -690,9 +713,9 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
                 "smem": la.smem,
                 "pdl": int(la.pdl),
                 "op": la.tag,
-                "cubin": cubin_file[la.name],
+                "cubin": cubin_files[i],
             }
-            for la, _ in plaunches
+            for i, (la, _) in enumerate(plaunches)
         ],
         "ptx": use_ptx,
         "buffers": [

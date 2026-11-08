@@ -496,7 +496,7 @@ fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
             // `cur` is only read when a frame is first reached, so it need not be restored.
             continue;
         };
-        if states >= max_states {
+        if states >= max_states || crate::membudget::exceeded() {
             complete = false;
             break;
         }
@@ -559,7 +559,11 @@ fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
         }
     }
     Verdict {
-        notes: vec![],
+        notes: if complete {
+            vec![]
+        } else {
+            crate::membudget::note().into_iter().collect()
+        },
         states,
         transitions,
         complete,

@@ -25,6 +25,7 @@ pub mod l1;
 pub mod l1_cores;
 pub mod lowp;
 pub mod machine;
+pub mod membudget;
 pub mod mma_lp;
 pub mod mufu;
 pub mod mufu_sample;

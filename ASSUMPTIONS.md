@@ -4379,6 +4379,24 @@ complete.**
   only, not on the scoreboard of the `I2F.U16` issued between them (probes/cvt_i2f, GB300
   50/50 scrubbed = model, both front-ends bitwise). `MUFU.RCP64H` stays in the conversion
   queue: no evidence either way.
+- The conversion / transcendental queue and the f64 pipe read their operands in issue order
+  (2026-11-07): a later op of the same queue (`inorder_queue`: `xu`, or `f64` with the
+  conversions that have an f64 operand) does not overwrite a register an earlier one has not
+  read yet, with no wait on the earlier one's read scoreboard. ptxas schedules this for sm_103a
+  and sm_100a (CuTe top-k: `F2F.F64.F32 R98, R6` with rd=SB1, then `F2F.F64.F32 R6, R19` with no
+  wait on SB1; Triton attention backward: `MUFU.EX2 R151, R147` with rd=SB1, then `MUFU.EX2
+  R147, R33`; and without the read scoreboard in its own schedules). probes/xu_war: variant
+  `rd_sb` puts a never-waited read scoreboard on the first of such a pair; GB300 = model, 200
+  runs per variant (before: a false SCOREBOARD WAR violation).
+- The f64 pipe is fixed-latency on sm_100a (2026-11-07): ptxas 13.0 for sm_100a gives `DADD` /
+  `DMUL` / `DFMA` no write scoreboard and reads their results after stall counts alone
+  (`DFMA R4, -R6, R2, 1` with st=8, then `DFMA R4, R4, R4, R4`), where for sm_103a it pads them
+  with NOPs or scoreboards them. The check keys on the cubin's SM version (ELF `e_flags`): for
+  sm_100 these three are not in `VAR_LAT` (a write scoreboard, if present, is still honoured);
+  every other SM keeps the sm_103a sets. probes/f64_queue/cubins/sm100a.cubin (the probe's PTX
+  built for sm_100a) certifies with GB300's IEEE-exact outputs; before, a false SCOREBOARD
+  violation (also reported on fp64 Triton RMSNorm cubins from a GB200 sweep). `POPC` is not
+  changed: ptxas 13.0 still scoreboards it for sm_100a in the int_misc / flo_popc probes.
 - `FLO` shares `POPC`'s queue (2026-11-06): ptxas gives `FLO.U32` no write scoreboard and
   reads its result after a wait on a later `POPC`'s (DeepEP hybrid; probes/flo_popc, GB300
   500/500 scrubbed runs = model, both front-ends bitwise). `BREV` is not merged: no evidence.

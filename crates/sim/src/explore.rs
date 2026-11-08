@@ -5740,7 +5740,8 @@ impl Search<'_> {
             }
             if self.visited.insert(f) {
                 // Multi-node: rank 0 applies the cap to the sum over ranks.
-                if self.states.fetch_add(1, Ordering::Relaxed) + 1 > self.max_states
+                if (self.states.fetch_add(1, Ordering::Relaxed) + 1 > self.max_states
+                    || crate::membudget::exceeded())
                     && self.dist.is_none()
                 {
                     self.stop.store(true, Ordering::Relaxed);
@@ -5908,7 +5909,11 @@ fn explore_round(
     let states = search.states.load(Ordering::Relaxed);
     let found = search.found.into_inner().unwrap();
     let mut v = Verdict {
-        notes: vec![],
+        notes: if complete {
+            vec![]
+        } else {
+            crate::membudget::note().into_iter().collect()
+        },
         states,
         transitions,
         complete,

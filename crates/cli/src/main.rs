@@ -1464,7 +1464,19 @@ fn cmd_num_with(
         if f == "ptx" && case.m.cubin.is_some() {
             continue; // binary-only case
         }
-        let (k, _) = load(case, variant, f, &dir)?;
+        let k = match load(case, variant, f, &dir) {
+            Ok((k, _)) => k,
+            // A PTX the front-end does not parse (forms ptxas compiles but the PTX lift does
+            // not model): the SASS front alone gives the run (`hw`'s expected bytes).
+            Err(e) if f == "ptx" => {
+                println!(
+                    "num {variant} ptx : not run, the PTX front-end refuses it ({}); SASS front only",
+                    format!("{e:#}").lines().last().unwrap_or("").trim()
+                );
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         let mut m = machine(case, k)?;
         m.num = Some(Box::new(ptxv_sim::num::NumState::with_mma_eps(
             m.launch.mma_model.eps(),

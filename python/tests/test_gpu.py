@@ -342,3 +342,35 @@ def test_same_name_kernels_use_the_launched_module(torch):
     assert k.launches[0].record.get("module"), k.launches[0].record
     v = k.check()
     assert v.clean and v.sim_equals_gpu
+
+
+def test_same_name_specializations_keep_their_own_cubin(torch):
+    # Two specializations of one Triton kernel (constexpr S) share the entry name; each
+    # launch's case cubin is its own module's, so both outputs match the GPU.
+    import ptxv
+    import triton
+    import triton.language as tl
+
+    @triton.jit
+    def scale_kernel(x, y, n, S: tl.constexpr, BLOCK: tl.constexpr):
+        i = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        m = i < n
+        tl.store(y + i, tl.load(x + i, mask=m) * S, mask=m)
+
+    def run(x):
+        a, b = torch.empty_like(x), torch.empty_like(x)
+        scale_kernel[(2,)](x, a, 256, S=2.0, BLOCK=128)
+        scale_kernel[(2,)](x, b, 256, S=3.0, BLOCK=128)
+        return a, b
+
+    x = torch.randn(256, device="cuda")
+    run(x)  # compile and load both specializations first
+    torch.cuda.synchronize()
+    with ptxv.capture() as cap:
+        a, b = run(x)
+        torch.cuda.synchronize()
+    c = cap.all().case()
+    assert np.array_equal(c.expected()["a"], (x * 2).cpu().numpy())
+    assert np.array_equal(c.expected()["b"], (x * 3).cpu().numpy())
+    v = cap.all().check()
+    assert v.clean and v.sim_equals_gpu

@@ -71,6 +71,9 @@ pub struct CubinMeta {
     /// Data globals whose addresses those banks hold, and the words holding them.
     pub globals: Vec<ptxv_ir::GlobalSym>,
     pub global_relocs: Vec<ptxv_ir::GlobalReloc>,
+    /// SM version the cubin was compiled for (ELF `e_flags` bits 8..16: 100 for sm_100a, 103
+    /// for sm_103a); 0 when unknown. Selects arch-specific opcode latencies (scoreboard.rs).
+    pub sm: u32,
 }
 
 fn tool(name: &str) -> String {
@@ -145,9 +148,20 @@ fn hex(s: &str) -> Option<u32> {
     u32::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok()
 }
 
+/// SM version in an ELF64 cubin's `e_flags` (bits 8..16; 0 for anything else).
+pub fn elf_sm(b: &[u8]) -> u32 {
+    if b.len() < 0x34 || b[..4] != *b"\x7fELF" || b[4] != 2 {
+        return 0;
+    }
+    (u32::from_le_bytes([b[0x30], b[0x31], b[0x32], b[0x33]]) >> 8) & 0xff
+}
+
 pub fn read_meta(cubin: &Path, kernel: &str) -> Result<CubinMeta> {
     let elf = run_tool("cuobjdump", &["-elf", cubin.to_str().unwrap()])?;
-    let mut m = CubinMeta::default();
+    let mut m = CubinMeta {
+        sm: std::fs::read(cubin).map(|b| elf_sm(&b)).unwrap_or(0),
+        ..Default::default()
+    };
     for line in elf.lines() {
         let cols: Vec<&str> = line.split_whitespace().collect();
         if let Some(name) = cols.last() {
@@ -5022,7 +5036,7 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
     aligned_bars(&mut code);
     smem_acquires(&lines, &mut code);
     l2::check_kernel(&code)?;
-    let static_findings = scoreboard::check(&lines, &code)?;
+    let static_findings = scoreboard::check(&lines, &code, meta.sm)?;
     let pend = meta.params.iter().map(|p| p.1 + p.2).max().unwrap_or(0);
     let params = meta
         .params

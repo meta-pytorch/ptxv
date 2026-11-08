@@ -1873,6 +1873,10 @@ fn probe_fchk_abs_matches_hardware() {
 fn probe_f64_queue_matches_hardware() {
     probe_bitwise("probes/f64_queue", "good", "ptx");
     probe_bitwise("probes/f64_queue", "good", "sass");
+    // L-OPCLASS on sm_100a: the same kernel built for sm_100a (ptxas 13.0, cubins/sm100a.cubin)
+    // covers its f64 results with stall counts only (fixed-latency f64 pipe); the outputs are
+    // IEEE-exact, so GB300's expected/ applies.
+    probe_bitwise_cubin("probes/f64_queue", Some("cubins/sm100a.cubin"));
 }
 
 /// L-OPCLASS: DSETP in the f64 queue (a DADD with no write scoreboard read after a wait on a
@@ -1881,6 +1885,28 @@ fn probe_f64_queue_matches_hardware() {
 fn probe_f64_dsetp_matches_hardware() {
     probe_bitwise("probes/f64_dsetp", "good", "ptx");
     probe_bitwise("probes/f64_dsetp", "good", "sass");
+}
+
+/// The f64 / conversion queue reads operands in issue order: a later `F2F.F64.F32` overwrites
+/// the source of an earlier one that has a read scoreboard, with no wait on it (variant
+/// `rd_sb`; the form ptxas emits in CuTe top-k for sm_103a and sm_100a) = GB300
+/// (probes/xu_war).
+#[test]
+fn probe_xu_war_matches_hardware() {
+    for variant in ["good", "rd_sb"] {
+        let case = Case::load(root().join("probes/xu_war")).unwrap();
+        let k = binary_kernel(&case, variant).unwrap();
+        let launch = build_launch(&case, &k).unwrap();
+        let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
+            .verdict
+            .unwrap_or_else(|| panic!("xu_war {variant} certifies"));
+        assert_eq!(v.classes(), ["clean"], "{variant}: {:#?}", v.findings);
+        let report = case.expect_report(&v.outputs[0]).unwrap();
+        assert!(
+            !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+            "{variant}: {report:?}"
+        );
+    }
 }
 
 /// A TMEM load overwrites the registers of the TMEM store before it with no wait; the queue

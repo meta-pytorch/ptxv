@@ -43,7 +43,9 @@
 #   allocator hands out, which a correct kernel does not read). Outputs carry the GPU's bytes
 #   (`expect`, expected/NAME.bin), which `ptxv check` compares with the simulator.
 # * Each kernel's cubin is the smallest captured ELF image defining it; kernels from other
-#   modules than the first launch's name their own (`[[launches]] cubin`). When every launch is
+#   modules than the first launch's name their own (`[[launches]] cubin`). When different
+#   images define one name (specializations of a Triton / CuTeDSL kernel), each launch takes
+#   the image of its own module handle (cubincap's handles.jsonl) and the case is binary. When every launch is
 #   one Triton / CuTeDSL kernel with dumped PTX, the case is a PTX case (both front-ends) and
 #   the JIT's cubin is kept as jit.cubin for reference.
 # Not captured: cudaMemcpy / cudaMemset inside the op (not kernel launches), work on other
@@ -63,7 +65,7 @@ import sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 LC = os.path.join(ROOT, "probes/launchcap")
-CUDA = "/usr/local/cuda-13.0"
+CUDA = os.environ.get("PTXV_CUDA_HOME", "/usr/local/cuda-13.0")
 
 
 def parse_args():
@@ -115,6 +117,13 @@ def build_probes():
     import sysconfig  # noqa: F401  (the conda env's lib holds libcupti)
 
     lib = os.path.join(sys.prefix, "lib")
+    # A pip environment's CUPTI lives in the nvidia cu13 wheel.
+    for cand in [lib] + glob.glob(
+        os.path.join(sys.prefix, "lib/python3*/site-packages/nvidia/cu13/lib")
+    ):
+        if os.path.exists(os.path.join(cand, "libcupti.so.13")):
+            lib = cand
+            break
     inc = glob.glob(f"{CUDA}/targets/*/include")[0]
     so_lc, so_cc = f"{WORK}/launchcap.so", f"{WORK}/cubincap.so"
     subprocess.run(
@@ -124,7 +133,7 @@ def build_probes():
     )
     subprocess.run(
         ["gcc", "-shared", "-fPIC", "-O2", "-o", so_cc, f"{LC}/cubincap.c", f"-I{inc}"]
-        + [f"-L{lib}", "-l:libcupti.so.13", f"-Wl,-rpath,{lib}"],
+        + [f"-L{lib}", "-l:libcupti.so.13", f"-Wl,-rpath,{lib}", "-ldl"],
         check=True,
     )
     return so_lc, so_cc
@@ -143,6 +152,9 @@ if os.environ.get("PTXV_CAPTURE_CHILD") != "1":  # re-exec under the recorders
         LAUNCHCAP_IMAGES=IMG,
         LAUNCHCAP_MEMOPS="1",
         CUBINCAP_DIR=CUB,
+        # Every module loads with its library (handles.jsonl names its image); lazily
+        # loaded modules would arrive inside the first launch, with no load call to map.
+        CUDA_MODULE_LOADING="EAGER",
         TRITON_KERNEL_DUMP="1",
         TRITON_DUMP_DIR=DUMP + "/triton",
         TRITON_ALWAYS_COMPILE="1",
@@ -929,18 +941,58 @@ def prune(data, keep):
 
 
 images = glob.glob(f"{CUB}/*.cubin") + glob.glob(f"{IMG}/*.bin")
-cubin_of = {}
-for r, _ in launches:
+# The CUPTI image each module / library handle came from (cubincap's handles.jsonl).
+image_of_handle = {}
+if os.path.exists(f"{CUB}/handles.jsonl"):
+    for ln in open(f"{CUB}/handles.jsonl"):
+        d = json.loads(ln)
+        image_of_handle[d["handle"]] = f"{CUB}/{d['file']}.cubin"
+_sha = {}
+
+
+def sha(p):
+    if p not in _sha:
+        _sha[p] = hashlib.sha1(open(p, "rb").read()).hexdigest()
+    return _sha[p]
+
+
+def launch_cubin(r):
+    """The cubin of launch r: the smallest captured image defining its name, or, when several
+    different images define it (specializations of one Triton / CuTeDSL kernel share its
+    name), the image of the launch's own module / library handle."""
     n = r["name"]
-    if n in cubin_of:
-        continue
     # CUPTI's module images are exact; launchcap's image dump (library images CUPTI may not
     # see) sizes an ELF from its headers.
     c = [p for p in images if p.startswith(CUB) and elf_defines(p, n)]
     c = c or [p for p in images if elf_defines(p, n)]
     if not c:
         sys.exit(f"capture: no captured cubin defines {n}")
-    cubin_of[n] = min(c, key=os.path.getsize)
+    if len({sha(p) for p in c}) > 1:
+        own = [image_of_handle.get(r.get(k)) for k in ("lib", "mod") if r.get(k)]
+        own = [p for p in own if p in c]
+        if own:
+            return own[0]
+        warnings.append(
+            f"{n}: {len({sha(p) for p in c})} different captured images define it and the "
+            "launch's own module was not identified; the smallest is used"
+        )
+    return min(c, key=os.path.getsize)
+
+
+for r, _ in launches:
+    r["_cubin"] = launch_cubin(r)
+cubin_of = {}  # name -> the first launch's cubin
+split_names = set()  # names whose launches run different images
+for r, _ in launches:
+    n = r["name"]
+    if n in cubin_of and sha(cubin_of[n]) != sha(r["_cubin"]):
+        split_names.add(n)
+    cubin_of.setdefault(n, r["_cubin"])
+if split_names:
+    warnings.append(
+        f"launches of {sorted(split_names)} run different images under one name: each keeps "
+        "its own cubin (binary case)"
+    )
 
 ptx_of = {}
 for p in glob.glob(f"{DUMP}/**/*.ptx", recursive=True):
@@ -950,6 +1002,7 @@ for p in glob.glob(f"{DUMP}/**/*.ptx", recursive=True):
 names = {r["name"] for r, _ in launches}
 use_ptx = (
     not A.binary
+    and not split_names
     and all(n in ptx_of for n in names)
     and len({ptx_of[n][0] for n in names}) == 1
 )
@@ -960,25 +1013,23 @@ for sub in ("data", "expected"):
     shutil.rmtree(f"{out}/{sub}", ignore_errors=True)
 for f in glob.glob(f"{out}/*.cubin") + glob.glob(f"{out}/*.ptx"):
     os.remove(f)
-cubin_file = {}  # source path -> case-relative file
 by_hash = {}
-for n in [r["name"] for r, _ in launches]:
-    src = cubin_of[n]
-    h = hashlib.sha1(open(src, "rb").read()).hexdigest()
+for r, _ in launches:
+    n, src = r["name"], r["_cubin"]
+    h = sha(src)
     if h not in by_hash:
         by_hash[h] = "jit.cubin" if use_ptx else f"k{len(by_hash)}.cubin"
-        keep = {m for m in names if cubin_of[m] == src}
+        keep = {q["name"] for q, _ in launches if sha(q["_cubin"]) == h}
         data = open(src, "rb").read()
         open(f"{out}/{by_hash[h]}", "wb").write(
             data if A.no_prune else prune(data, keep)
         )
-    cubin_file[n] = by_hash[h]
+    r["_cubin_file"] = by_hash[h]
     # A compiled-in cluster shape (`__cluster_dims__`, routing's cluster kernel) applies when
     # the launch names none.
     cd = cubin_cluster(open(src, "rb").read(), n)
-    for r, _ in launches:
-        if r["name"] == n and r["cluster"] == [1, 1, 1] and cd and cd != [1, 1, 1]:
-            r["cluster"] = cd
+    if r["cluster"] == [1, 1, 1] and cd and cd != [1, 1, 1]:
+        r["cluster"] = cd
 if not use_ptx and len(names) == 1 and next(iter(names)) in ptx_of:
     open(f"{out}/jit.ptx", "w").write(
         ptx_of[next(iter(names))][1]
@@ -1069,7 +1120,7 @@ toml = [
     f'''name = {q(name)}
 description = """{desc}"""
 '''
-    + ('ptx = "kernel.ptx"\n' if use_ptx else f'cubin = "{cubin_file[r0["name"]]}"\n')
+    + ('ptx = "kernel.ptx"\n' if use_ptx else f'cubin = "{r0["_cubin_file"]}"\n')
     + f"""entry = {q(r0["name"])}
 grid = {r0["grid"]}
 block = {r0["block"]}
@@ -1111,8 +1162,8 @@ for r, params in launches[1:]:
     s += f"dynamic_smem = {r['smem']}\n"
     if r.get("pdl"):
         s += "pdl = true\n"
-    if not use_ptx and cubin_file[r["name"]] != cubin_file[r0["name"]]:
-        s += f'cubin = "{cubin_file[r["name"]]}"\n'
+    if not use_ptx and r["_cubin_file"] != r0["_cubin_file"]:
+        s += f'cubin = "{r["_cubin_file"]}"\n'
     toml.append(s)
     toml += toml_params(params, "launches.params")
 toml.append('[[variants]]\nid = "good"\nsummary = "as captured"\nexpect = ["clean"]\n')
@@ -1138,7 +1189,7 @@ meta = {
             ),
             "smem": r["smem"],
             "pdl": r.get("pdl", 0),
-            "cubin": cubin_file[r["name"]],
+            "cubin": r["_cubin_file"],
         }
         for r, _ in launches
     ],

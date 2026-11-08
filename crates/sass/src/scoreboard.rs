@@ -269,6 +269,15 @@ const VAR_LAT: &[&str] = &[
 /// The f64 pipe: completes in issue order (probes/f64_queue). ASSUME(L-OPCLASS)
 const F64_PIPE: &[&str] = &["DADD", "DMUL", "DFMA"];
 
+/// Is `base` variable-latency in a cubin for SM version `sm` (0: unknown, treated as sm_103a)?
+/// The f64 pipe is fixed-latency on sm_100a (full-rate FP64): ptxas 13.0 for sm_100a gives
+/// DADD / DMUL / DFMA no write scoreboard and covers their results with stall counts alone
+/// (`DFMA R4, -R6, R2, 1` st=8, then `DFMA R4, R4, R4, R4`; probes/f64_queue/cubins/sm100a.cubin),
+/// where for sm_103a it pads them with NOPs or scoreboards them. ASSUME(L-OPCLASS)
+fn var_lat(base: &str, sm: u32) -> bool {
+    VAR_LAT.contains(&base) && !(sm == 100 && F64_PIPE.contains(&base))
+}
+
 /// The in-order completion queue of a scoreboard-free write (the cover rule in `check`): the
 /// shared-memory queue, the conversion / transcendental unit, POPC / FLO, the f64 pipe (with the
 /// conversions that have an f64 operand: ptxas covers `I2F.F64.U64.RZ R8` with no scoreboard
@@ -284,6 +293,14 @@ fn inorder_queue(opcode: &str) -> &str {
         "DADD" | "DMUL" | "DFMA" | "DSETP" => "f64",
         b => b,
     }
+}
+
+/// The in-order queue of a unit whose operand reads and result writes both follow issue order
+/// (a later op of the same queue cannot write a register before an earlier one read it): the
+/// conversion / transcendental queue and the f64 pipe. ASSUME(L-OPCLASS)
+fn queued_unit(opcode: &str) -> Option<&str> {
+    let q = inorder_queue(opcode);
+    matches!(q, "xu" | "f64").then_some(q)
 }
 
 /// Stall cycles after which an f64-pipe result with no write scoreboard is in its register:
@@ -550,7 +567,7 @@ fn reg_name(r: RegKey) -> String {
 }
 
 // ASSUME(L-STALL, L-MEMSB): see ASSUMPTIONS.md
-pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
+pub fn check(lines: &[SassLine], code: &[Inst], sm: u32) -> Result<Vec<StaticFinding>> {
     if lines.iter().any(|l| l.hi.is_none()) {
         bail!("scoreboard check needs `nvdisasm -hex` encodings");
     }
@@ -712,6 +729,10 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
             // The f64 pipe reads and writes in issue order: a later DADD / DMUL / DFMA cannot
             // overwrite a register an earlier one has not read (ptxas: `DADD R8, -R8, R10` with
             // rd=SB0, then `DMUL R10, R10, R10` with no wait; probes/f64_queue = GB300).
+            // The conversion / transcendental queue likewise, and the conversions with an f64
+            // operand with the f64 pipe (`inorder_queue`): CuTe top-k, ptxas for sm_103a and
+            // sm_100a, `F2F.F64.F32 R98, R6` with rd=SB1, then `F2F.F64.F32 R6, R19` with no
+            // wait on SB1 (probes/xu_war; ptxas's own schedules give such reads no scoreboard).
             // TMEM loads likewise write after the earlier TMEM stores and loads of the warp
             // read their registers (the TMEM queue).
             let queued_war = !write
@@ -720,7 +741,7 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
                     "LDG" | "LDS" | "LD" | "LDL" | "LDSM" | "SHFL" | "LDGMC"
                 ) && (MIO_INORDER.contains(&base_of(ppc))
                     || matches!(base_of(ppc), "ATOMG" | "ATOM" | "REDG" | "RED"))
-                    || F64_PIPE.contains(&base_of(pc)) && F64_PIPE.contains(&base_of(ppc))
+                    || queued_unit(&lines[pc].opcode) == Some(inorder_queue(&lines[ppc].opcode))
                     || base_of(pc) == "LDTM" && matches!(base_of(ppc), "STTM" | "LDTM"));
             // `LDTM.16dp32bit_t0_t15` then `_t16_t31` into the same registers: each writes only
             // its own half of the warp's lanes (PTX `.16x32bx2`, split by ptxas).
@@ -832,7 +853,7 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
             }
         }
         let base = l.opcode.split('.').next().unwrap_or("");
-        let var = VAR_LAT.contains(&base);
+        let var = var_lat(base, sm);
         let issue = |st: &mut State, sb: u8, write: bool, regs: BTreeSet<RegKey>| {
             for (k, v) in st.iter_mut() {
                 if k.0 == sb {
