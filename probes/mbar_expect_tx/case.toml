@@ -1,0 +1,47 @@
+name = "probe_mbar_expect_tx"
+description = """
+Probe (S-MBAR) for mbarrier.expect_tx / complete_tx (SASS SYNCS.ARRIVE.TRANS64.RED.A0TR /
+.A0TX): tx-count changes with no arrival, from registers and immediates, shared::cta and
+shared::cluster addresses, the tx-count going negative; test_wait results per step; a
+complete_tx after a fence publishing a shared store to a waiter (kernel.ptx). expected/ is
+GB300's output (ptxas -arch=sm_103a kernel.ptx, `ptxv hw`)."""
+ptx = "kernel.ptx"
+entry = "mbar_expect_tx"
+grid = [1, 1, 1]
+block = [96, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [4]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "relaxed"
+summary = "no fence before the complete_tx: the waiter's read of x races with the store in PTX (complete_tx is relaxed); the SASS front runs STS / LDS as strong .cta accesses (S-SMEM-STRONG), so it is clean there"
+expect = ["race"]
+expect_sass = ["clean"]
+marker = "@NOFENCE"
+find = "fence.acq_rel.cta;"
+replace = ""

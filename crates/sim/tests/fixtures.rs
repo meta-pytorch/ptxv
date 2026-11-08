@@ -2497,6 +2497,24 @@ fn probe_fmad_multi_matches_hardware() {
     probe_bitwise("probes/fmad_multi", "good", "sass");
 }
 
+/// min / max [.NaN] [.ftz] .abs.f32 with three sources (FMNMX3 |a|, |b|, |c|) on every triple
+/// of 16 edge patterns = GB300 on both fronts (probes/fmnmx3_abs).
+#[test]
+fn probe_fmnmx3_abs_matches_hardware() {
+    probe_bitwise("probes/fmnmx3_abs", "good", "ptx");
+    probe_bitwise("probes/fmnmx3_abs", "good", "sass");
+}
+
+/// mbarrier.expect_tx / complete_tx (probes/mbar_expect_tx): tx-count steps = GB300 on both
+/// fronts; without a fence the relaxed complete_tx publishes nothing (a race on the PTX front).
+#[test]
+fn probe_mbar_expect_tx_matches_hardware() {
+    probe_bitwise("probes/mbar_expect_tx", "good", "ptx");
+    probe_bitwise("probes/mbar_expect_tx", "good", "sass");
+    check_dir("probes", "mbar_expect_tx", "relaxed", "ptx");
+    check_dir("probes", "mbar_expect_tx", "relaxed", "sass");
+}
+
 /// PTX-FMAD for plain mul.f16 (probes/fmad_f16): HFMA2 into every add / sub reader, HMUL2 +
 /// HADD2 when the product is also converted or packed = GB300 on both fronts.
 #[test]

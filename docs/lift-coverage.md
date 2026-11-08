@@ -124,6 +124,7 @@ Model changes the kernels forced:
 |---|---|
 | `UTMALDG.2D.GATHER4` (+ PTX `.tile::gather4`) | **fixtures/s_gather4** (6 gathers, 4 swizzles, out-of-bounds rows / columns, unaligned starts), both front-ends = GB300 1000/1000; unaligned columns are illegal instructions (variant `misaligned`, S-TMA-GATHER4) |
 | `SYNCS.ARRIVE.TRANS64.ART0` / `.RED.ART0` (mbarrier.arrive with a count) | probes/mbar_count = GB300, both front-ends (S-MBAR) |
+| `SYNCS.ARRIVE.TRANS64.RED.A0TR` / `.A0TX` (mbarrier.expect_tx / complete_tx, PTX `[.relaxed] [.cta / .cluster]`) | probes/mbar_expect_tx = GB300, both front-ends; relaxed: publishes only what a prior fence released (S-MBAR) |
 | `SYNCS.ARRIVE.TRANS64.RED.A0T1`, `ARRIVES.LDGSTSBAR.64.TRANSCNT` / `.ARVCNT` (cp.async.mbarrier.arrive [.noinc]) | **fixtures/s_cpasync_mbar** = GB300 1000/1000 (E-CPASYNC-MBAR) |
 | `SYNCS.PHASECHK.TRANS64.TRYWAIT PT, ...` (no-op), peek tokens through `SEL` / `ISETP` (E-SPIN) | fixtures/r3b_trtllm_bmm certified, = GB300 bitwise |
 
@@ -272,6 +273,7 @@ any modifier outside the audited set before an arm runs.
 | SASS form | PTX source | semantics (GB300) | probe |
 |---|---|---|---|
 | `FMNMX.XORSIGN` | `min` / `max.xorsign.abs.f32` | min/max of \|a\|, \|b\| (FMNMX NaN rules); sign = sign(a) xor sign(b) of the stored operands, a NaN operand's sign included and `\|UR\|` ignored for the sign; a NaN result is 0x7fffffff | probes/fmnmx_xorsign |
+| `FMNMX3 \|a\|, \|b\|, \|c\|` `[.FTZ/.NAN]` | `min` / `max [.ftz] [.NaN] .abs.f32` with three sources | min / max of the absolute values (FMNMX3 NaN rules) | probes/fmnmx3_abs |
 | `HFMA2` / `HMUL2` / `HADD2.BF16_V2[.RELU]` | `fma` / `mul` / `add` / `sub.rn.bf16x2`, `neg.bf16x2` | per lane: one rounding to bf16 (RNE), subnormals kept, every NaN result 0x7fff (neg of a NaN too); `-RZ` addend keeps -0 | probes/bf16x2 |
 | `FHFMA` / `FHADD.BF16`, `HMNMX2.BF16_V2[.NAN][.XORSIGN]` | `fma` / `add.f32.bf16`, `min` / `max.bf16x2` | f32 FMA of the widened halves, one rounding in the instruction's mode; min/max as FMNMX on the widenings, NaN 0x7fff | probes/bf16_ext |
 | `REDG.E.ADD.BF16x2.RN`, `ATOMG.E.ADD.BF16x2.RN` | `red` / `atom.add.noftz.bf16x2` | per lane bf16 add, RNE, NaN 0x7fff; not commutative-exact (excluded from C-ORDER) | probes/bf16x2 |

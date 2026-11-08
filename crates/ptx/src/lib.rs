@@ -904,19 +904,27 @@ fn fmad2_pairs(
 /// multiplicand or fma operand (FFMA2 cannot absorb a product as its addend:
 /// probes/f32x2_unpack), stores it, selects it (`selp`: FMUL2, FSEL, then FADD2 for an add of
 /// the selection: probes/f32x2_sinks), copies it with `mov` (the copy is followed), or unpacks
-/// it into halves that no statement repacks (ptxas keeps FMUL2 apart from scalar readers:
-/// probes/f32x2_unpack).
+/// it into halves (ptxas keeps FMUL2 apart from scalar readers: probes/f32x2_unpack); a
+/// vector repacked from a half, or from a copy of one, must pass the same test.
 /// ptxas has nothing to contract such a mul into: it is one FMUL2 (.rn).
 fn x2_no_add_readers(insts: &[&Stmt]) -> HashSet<String> {
     let mut readers: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
-    let mut packed: HashSet<&str> = HashSet::new();
+    // Scalar register -> the vectors packed from it / its plain copies.
+    let mut packs: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut copies: HashMap<&str, Vec<&str>> = HashMap::new();
     for (j, st) in insts.iter().enumerate() {
         let (op, ops) = stmt_parts(&st.text);
         let base = op.split('.').next().unwrap_or("");
         let unpack = base == "mov" && is_unpack(st, op);
         if base == "mov" && !unpack && st.text.contains('{') {
             for o in &ops[1..] {
-                packed.extend(reg_tokens(o));
+                for r in reg_tokens(o) {
+                    packs.entry(r).or_default().push(ops[0]);
+                }
+            }
+        } else if base == "mov" && !unpack && ops.len() == 2 {
+            for r in reg_tokens(ops[1]) {
+                copies.entry(r).or_default().push(ops[0]);
             }
         }
         for (i, o) in ops.iter().enumerate() {
@@ -947,9 +955,27 @@ fn x2_no_add_readers(insts: &[&Stmt]) -> HashSet<String> {
                     "mul" | "fma" if op.ends_with(".f32x2") => true,
                     "st" => true,
                     "selp" => i == 1 || i == 2,
+                    // Halves: scalar readers keep FMUL2 apart (probes/f32x2_unpack); a vector
+                    // repacked from a half or a copy of it is followed like the product (the
+                    // identity repack contracts: probes/f32x2_repack).
                     "mov" if is_unpack(st, op) => {
-                        i + 1 == ops.len()
-                            && ops[..i].iter().all(|h| *h == "_" || !packed.contains(h))
+                        if i + 1 != ops.len() {
+                            false
+                        } else {
+                            let mut hs: Vec<&str> =
+                                ops[..i].iter().copied().filter(|h| *h != "_").collect();
+                            let mut hseen: HashSet<&str> = HashSet::new();
+                            while let Some(h) = hs.pop() {
+                                if !hseen.insert(h) {
+                                    continue;
+                                }
+                                hs.extend(copies.get(h).map(|v| v.as_slice()).unwrap_or(&[]));
+                                for v in packs.get(h).map(|v| v.as_slice()).unwrap_or(&[]) {
+                                    stack.push(v.to_string());
+                                }
+                            }
+                            true
+                        }
                     }
                     "mov" if !st.text.contains('{') && ops.len() == 2 => {
                         stack.push(ops[0].to_string());
@@ -3668,8 +3694,9 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             len: lw.val(op_n(3)?)?,
             signed: tname.starts_with('s'),
         },
-        // min.f32 / max.f32 [.ftz] [.NaN] (2 or 3 sources), as SASS FMNMX / FMNMX3;
-        // `.xorsign.abs` (two sources): FMNMX.XORSIGN (probes/fmnmx_xorsign). ASSUME(N-XORSIGN)
+        // min.f32 / max.f32 [.ftz] [.NaN] (2 or 3 sources), as SASS FMNMX / FMNMX3; `.abs`
+        // (three sources): FMNMX3 |a|, |b|, |c|; `.xorsign.abs` (two sources): FMNMX.XORSIGN
+        // (probes/fmnmx_xorsign). ASSUME(N-XORSIGN)
         // min / max.f64 as ptxas: DSETP.MIN/MAX.AND p, q, a, b (p: a is the min / max, -0
         // below +0, a NaN loses; q: both NaN), a 64-bit select, and with q b's NaN quieted
         // (high word | 0x80000) (probes/f64_misc).
@@ -3736,7 +3763,9 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 bail!(lw.err(format!("{base}.f32: modifier .{m} not modeled")));
             }
             let xorsign = has("xorsign");
-            if xorsign != has("abs") || (xorsign && n != 2) {
+            // `.abs` alone (three sources; ptxas: FMNMX3 |a|, |b|, |c|, probes/fmnmx3_abs).
+            let abs3 = has("abs") && !xorsign && n == 3;
+            if !abs3 && (xorsign != has("abs") || (xorsign && n != 2)) {
                 bail!(lw.err(format!("{base}.f32: .xorsign.abs form not modeled")));
             }
             Op::Fmnmx {
@@ -3749,7 +3778,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     None
                 },
                 neg: [false; 3],
-                abs: [false; 3],
+                abs: [abs3; 3],
                 min: Pred {
                     reg: None,
                     neg: base == "max",
@@ -6790,6 +6819,33 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     cluster: has("release") && has("cluster"),
                 }
             }
+            // `mbarrier.expect_tx` / `complete_tx [.relaxed] [.cta | .cluster] .shared{::cta,
+            // ::cluster}.b64 [a], tx`: no arrival, tx added to / taken from the tx-count, relaxed
+            // (ptxas: SYNCS.ARRIVE.TRANS64.RED.A0TR / .A0TX; S-MBAR).
+            Some(m @ ("expect_tx" | "complete_tx")) => {
+                if let Some(x) = mods[1..].iter().find(|x| {
+                    !matches!(
+                        **x,
+                        "relaxed"
+                            | "cta"
+                            | "cluster"
+                            | "shared"
+                            | "shared::cta"
+                            | "shared::cluster"
+                            | "b64"
+                    )
+                }) {
+                    bail!(lw.err(format!("mbarrier.{m}: modifier .{x} not modeled")));
+                }
+                Op::MbarArrive {
+                    addr: lw.addr(op_n(0)?)?,
+                    tx: Some(lw.val(op_n(1)?)?),
+                    remote: has("shared::cluster"),
+                    count: Some(Val::Imm(0)),
+                    complete: m == "complete_tx",
+                    cluster: false,
+                }
+            }
             // test_wait: the non-suspending form, alike for the model (as SASS PHASECHK without
             // .TRYWAIT; E-SPIN).
             Some("try_wait" | "test_wait") if has("parity") => Op::MbarTryWait {
@@ -7467,6 +7523,26 @@ mod tests {
     }
 
     #[test]
+    fn max_abs_three_sources() {
+        // `max.NaN.abs.f32 d, a, b, c` = FMNMX3.NAN |a|, |b|, |c|; two sources need .xorsign.
+        let v = ops("max.NaN.abs.f32 %r1, %r2, %r3, %r4;").unwrap();
+        assert!(
+            matches!(
+                v[0],
+                Op::Fmnmx {
+                    c: Some(_),
+                    abs: [true, true, true],
+                    nan: true,
+                    xorsign: false,
+                    ..
+                }
+            ),
+            "{v:?}"
+        );
+        assert!(ops("max.abs.f32 %r1, %r2, %r3;").is_err());
+    }
+
+    #[test]
     fn setp_type_before_compare() {
         // `setp.u32.eq` (ptxas accepts the type first) = `setp.eq.u32`.
         assert_eq!(
@@ -7684,6 +7760,23 @@ mod tests {
              add.f32x2 %rd5, %rd4, %rd2;"
             )
             .is_ok()
+        );
+        // Halves repacked into a vector no add / sub.f32x2 reads (a loop-carried accumulator
+        // scaled each iteration): the mul is FMUL2.
+        assert!(
+            ops(
+                "mul.f32x2 %rd1, %rd1, %rd3;\nmov.b64 {%r1, %r2}, %rd1;\nmov.b32 %r3, %r2;\n\
+             mov.b64 %rd1, {%r1, %r3};\nmul.f32x2 %rd5, %rd1, %rd2;\nst.global.b64 [%rd6], %rd5;"
+            )
+            .is_ok()
+        );
+        // .. but read by an add through the repack: refused.
+        assert!(
+            ops(
+                "mul.f32x2 %rd1, %rd1, %rd3;\nmov.b64 {%r1, %r2}, %rd1;\nmov.b32 %r3, %r2;\n\
+             mov.b64 %rd1, {%r1, %r3};\nadd.f32x2 %rd5, %rd1, %rd2;\nst.global.b64 [%rd6], %rd5;"
+            )
+            .is_err()
         );
         // The identity repack (directly, through a copy, or a second unpack) contracts: refused.
         for l in [

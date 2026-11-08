@@ -2684,6 +2684,19 @@ parity p has completed (so parity 1 succeeds immediately after init).
   scrubbed, both front-ends bitwise; its `over` variant (3 arrivals with 2 pending) is an
   unspecified launch failure on GB300. A remote counted arrival in flight (S-REMOTE-INFLIGHT)
   is delivered as `count` single arrivals.
+- `mbarrier.expect_tx` / `complete_tx` (2026-11-08; SASS `SYNCS.ARRIVE.TRANS64.RED.A0TR` /
+  `.A0TX`, `.A0T1`): no arrival, the tx-count raised / lowered (it may go negative), the phase
+  completing when pending and tx are both 0. They are relaxed (PTX ISA): on the thread's own
+  CTA's mbarrier they publish only what the thread's last fence released (`membar_vc`),
+  unlike an arrival. Before, the model joined the issuer's whole clock, so a store published
+  by a bare complete_tx was not a race. On another CTA's mbarrier (SASS `.RED.A0TX` in
+  CUTLASS / cuBLAS kernels) the issuer's whole clock is still joined, stronger than relaxed:
+  the target's waiter must be ordered after the op landed for the cluster-lifetime check
+  (S-CLUSTER-LIFE), and the clock is what carries that. The PTX front refuses that case at
+  run time (unmodeled) instead of over-synchronizing. probes/mbar_expect_tx (register / immediate tx,
+  shared::cta and shared::cluster addresses, tx below 0, test_wait per step; a fence then
+  complete_tx publishing a shared store): GB300 50/50 scrubbed, both front-ends bitwise; its
+  `relaxed` variant (no fence) is a race on the PTX front (clean on SASS: S-SMEM-STRONG).
 
 ### S-MBAR-MEM · code
 **An mbarrier can be initialized by a plain `STS.64` of the encoded state word:**
@@ -4250,7 +4263,10 @@ forms seen. Any other form is a hard error.
   repacks. ptxas has nothing to contract it into (FMUL2). probes/f32x2_sinks (a selp of the
   product then an add, the product as an fma addend, a copy as a multiplicand, a loop-carried
   product unpacked into scalar adds; cancelling addends): GB300 50/50 scrubbed, both fronts
-  bitwise; 6 PX records then lift.
+  bitwise; 6 PX records then lift. Halves that are repacked (directly or through copies)
+  are followed into the repacked vector, which must pass the same test (2026-11-08: a Triton
+  fp8 GEMM's accumulator scaled each iteration, unpacked into mma accumulators and repacked);
+  a repacked vector an add reads stays refused.
 - `add` / `sub` / `mul` `.bf16x2` / `.bf16` with no rounding modifier (2026-11-07, SCALE
   pilot): the same rule as f32x2 (ptxas emits HADD2.BF16_V2 / HFMA2.BF16_V2 ..., -RZ).
   probes/bf16_norn: GB300 50/50 scrubbed, both front-ends bitwise. Plain `fma.bf16x2` stays
@@ -5188,6 +5204,9 @@ N-SOFTMAX (x_j an input or a computed score) and v_j input leaves:
 - `FMNMX` (`min.f32` / `max.f32`, predicate operand PT = min, !PT = max) and `FMNMX3`: -0 is
   below +0; a NaN operand is ignored, two NaNs give the canonical NaN; `.NAN` (`min.NaN`): any
   NaN operand gives the canonical NaN; `.FTZ` flushes subnormal operands.
+  `|x|` operands (PTX `min` / `max` `.abs.f32` with three sources: FMNMX3 |a|, |b|, |c|)
+  compare the cleared-sign values under the same rules (probes/fmnmx3_abs, every triple of 16
+  edge patterns, GB300 50/50 scrubbed, 2026-11-08).
 - `FSETP.<cmp>[.FTZ].<AND|OR|XOR>`: the 16 PTX comparisons (ordered ones false on NaN,
   `U` forms true), combined with the predicate operand.
 - Conversions (rung 5, `fixtures/s_cvt`): `F2F.F64.F32` / `.F32.F64` keep a NaN's sign and

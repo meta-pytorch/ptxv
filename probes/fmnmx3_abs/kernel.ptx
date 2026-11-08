@@ -1,0 +1,45 @@
+// probes/fmnmx3_abs: PTX min / max [.NaN] [.ftz] .abs.f32 with three sources (SASS FMNMX3
+// [.NAN] [.FTZ] |a|, |b|, |c|) against GB300. Thread g (16 CTAs x 256) loads (a, b, c) =
+// in[g] (gen.py: every triple of 16 edge patterns) and stores out[j][g]:
+//   j = 0: max.abs a, b, c        j = 1: max.NaN.abs a, b, c
+//   j = 2: min.abs a, b, c        j = 3: min.NaN.abs a, b, c
+//   j = 4: max.ftz.abs a, b, c    j = 5: min.ftz.NaN.abs a, b, c
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry fmnmx3_abs(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %ctaid.x;
+    mad.lo.u32      %r3, %r2, 256, %r1;
+    mul.wide.u32    %rd3, %r3, 16;
+    add.s64         %rd3, %rd1, %rd3;
+    ld.global.v4.u32 {%r4, %r5, %r6, %r7}, [%rd3];
+    mul.wide.u32    %rd4, %r3, 4;
+    add.s64         %rd4, %rd2, %rd4;
+    max.abs.f32         %r10, %r4, %r5, %r6;
+    max.NaN.abs.f32     %r11, %r4, %r5, %r6;
+    min.abs.f32         %r12, %r4, %r5, %r6;
+    min.NaN.abs.f32     %r13, %r4, %r5, %r6;
+    max.ftz.abs.f32     %r14, %r4, %r5, %r6;
+    min.ftz.NaN.abs.f32 %r15, %r4, %r5, %r6;
+    st.global.u32   [%rd4], %r10;
+    st.global.u32   [%rd4+16384], %r11;
+    st.global.u32   [%rd4+32768], %r12;
+    st.global.u32   [%rd4+49152], %r13;
+    st.global.u32   [%rd4+65536], %r14;
+    st.global.u32   [%rd4+81920], %r15;
+    ret;
+}

@@ -10011,6 +10011,12 @@ impl Machine {
                     unreachable!()
                 };
                 if cta != self.threads[t].cta {
+                    if arrivals == 0 && self.k.front == Front::Ptx {
+                        return Err(format!(
+                            "mbarrier.expect_tx / complete_tx on the mbarrier of another CTA ({cta}) not modeled \
+                             (relaxed, yet the cluster-lifetime check needs it ordered; S-MBAR)"
+                        ));
+                    }
                     self.note_remote(cta, t as u32, pc);
                 }
                 let txv = match tx {
@@ -10041,8 +10047,18 @@ impl Machine {
                         ));
                     }
                     mb.pending -= arrivals;
+                    vc_join(&mut mb.cur, &vc);
+                } else if cta == self.threads[t].cta {
+                    // ASSUME(S-MBAR): an arrival releases; `mbarrier.expect_tx` /
+                    // `complete_tx` (count 0, SASS `.A0TR` / `.A0TX` / `.A0T1`) on the thread's
+                    // own CTA's mbarrier are relaxed (PTX ISA): they release only what the
+                    // thread's last fence did. On another CTA's (SASS only): its whole clock.
+                    let mv = self.threads[t].membar_vc.clone();
+                    let mb = self.mbars.get_mut(&(cta, off)).unwrap();
+                    vc_join(&mut mb.cur, &mv);
+                } else {
+                    vc_join(&mut mb.cur, &vc);
                 }
-                vc_join(&mut mb.cur, &vc);
                 self.mbar_maybe_complete(cta, off);
                 self.tick(t);
             }
@@ -11243,6 +11259,10 @@ impl Machine {
             self.fifo_transfer(op, cta, mbar, phase, drained);
         }
         if n == 0 {
+            // st.async's complete_tx releases. ASSUME(S-MBAR): so does a SASS expect_tx /
+            // complete_tx (.A0TR / .A0TX) on another CTA's mbarrier, stronger than the PTX ISA's
+            // relaxed: the waiter must see it landed (S-CLUSTER-LIFE), which the clock carries.
+            // The PTX front refuses that case (MbarArrive).
             let mb = self.mbars.get_mut(&(cta, mbar)).unwrap();
             vc_join(&mut mb.cur, &op.vc);
             self.mbar_maybe_complete(cta, mbar);
