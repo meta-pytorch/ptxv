@@ -84,6 +84,27 @@ pub(super) fn pair(x: &SAcc, y: &SAcc, cas_ok: &HashSet<CasWord>, same_ok: SameO
     }) {
         return Pair::Fine;
     }
+    // C-TICKET: writes of a ticket word (atomics and strong stores), whose orders the
+    // certificate enumerates (ticket.rs).
+    if (x.lo, x.hi) == (y.lo, y.hi)
+        && (x.write || x.rmw.is_some())
+        && (y.write || y.rmw.is_some())
+        && super::TICKET_OK.with(|t| t.borrow().contains(&(x.key.0, x.key.1, x.lo)))
+    {
+        return Pair::Fine;
+    }
+    // C-POLL-ATOM coherence: a strong store by a thread after its exiting poll of a counter of
+    // adds is coherence-after every add the exit needed (the read saw the full sum, written by
+    // the coherence-last of them; the store is program-order-after the read: CoRW), so the
+    // value left is the store's in every execution.
+    if (x.lo, x.hi) == (y.lo, y.hi)
+        && x.rmw.is_some()
+        && y.write
+        && y.rmw.is_none()
+        && super::poll_atom_before(x, y)
+    {
+        return Pair::Fine;
+    }
     // Commutative atomics with unused results that do not acquire.
     if let (Some((ox, ux, qx, kx)), Some((oy, uy, qy, ky))) = (x.rmw, y.rmw) {
         let comm = !matches!(

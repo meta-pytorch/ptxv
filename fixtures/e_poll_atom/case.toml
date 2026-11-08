@@ -45,6 +45,14 @@ summary = "poll until the count is 3 (every add landed)"
 expect = ["clean"]
 
 [[variants]]
+id = "reset"
+summary = "the poller resets the counter after its exit: ordered after the adds by coherence"
+marker = "@RESET"
+find = "mov.u32 %r9, 0;"
+replace = "st.relaxed.gpu.global.u32 [%rd3], 0;"
+expect = ["clean"]
+
+[[variants]]
 id = "ge1"
 summary = "poll until the count is nonzero, then write data[2]: exits on a partial count, write-write race (deterministic outputs)"
 marker = "@COND"

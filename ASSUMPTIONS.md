@@ -2335,8 +2335,51 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
     Liveness: none of the adds is HB-after the poll, so none waits for it, and by the
     progress induction all of them are performed. The poll then reads the full sum (E-SPIN)
     and exits.
-    Fixture `e_poll_atom` (good: certified; ge1, an exit on a partial count: refused and
-    races).
+    Reset by the poller: a strong store to the polled bytes by the polling thread,
+    program-order-after an exiting read that C-POLL-ATOM accepted, is coherence-after every
+    add that exit needed: the read saw the full sum, written by the coherence-last of them,
+    and a write program-order-after a read of a location is coherence-after the write it read
+    (CoRW, sequential consistency per location for morally strong accesses; a pair that is
+    not morally strong is a race for the race detector). C-ORDER accepts those pairs (the
+    value left is the store's in every execution); adds the exit did not need (a later round)
+    still need happens-before. Index L2's multimem kernel resets its cross-GPU flag word this
+    way after polling it.
+    Fixture `e_poll_atom` (good and reset: certified; ge1, an exit on a partial count: refused
+    and races).
+  - **C-TICKET** (2026-11-07, index L2's tile scheduler and arrival counters,
+    `wellsync/ticket.rs`). C-ORDER refuses unordered atomics whose results are used. A
+    *ticket word* is one where some atomic's result is used and every strong access in the
+    run is a write of the same bytes by one lane of a thread (one lane per instruction step):
+    a relaxed read-modify-write (not acquiring; not a compare-and-swap, which is C-CAS's) or a
+    strong store. No load reads it (a poll is C-POLL's); plain accesses are races for the
+    race detector. Given the order of its writes (its coherence order), every value its
+    atomics return is determined, so that order is the only freedom; the certificate
+    enumerates it:
+    - the first run that finds ticket words restarts the search in ticket mode, where C-ORDER
+      leaves the writes of those words unordered and each run forces a prefix of every word's
+      writer sequence: a lane at a gated write waits until the writes before its forced
+      position are done. Waiting only delays a write, so a forced run that ends is an
+      execution; a run stuck with a lane waiting for a forced writer that never writes is
+      no execution (that writer cannot write first) and is dropped;
+    - branches, as dynamic partial-order reduction: everything else that conflicts is ordered
+      by happens-before (the certificate's conditions, checked on every run), so a ticket
+      word's writes are the only dependent events left unordered. For each write c_i past
+      the forced prefix and each other thread u, with c_j u's first later write of the word:
+      if c_j happens-after none of c_i .. c_{j-1}, a run forces the prefix up to c_i with u in
+      place of c_i's writer. These are a superset of Flanagan-Godefroid's backtracking points
+      (which reverse only the last such pair); a write that happens-after one of them is
+      reached by reversing an earlier pair. The writes do not synchronize with each other
+      (relaxed, not acquiring), so the run's happens-before has no edge that only this order
+      created. Each forced prefix runs once;
+    - every run must certify on its own and all must leave the same outputs. Results that
+      depend on which thread processed which ticket are refused (`C-TICKET: the claim order
+      reaches the outputs`), as are more than 256 runs (`PTXV_RING_MAX_RUNS`, shared with
+      C-RING) and a word that stops qualifying in a later run.
+    Not a permutation argument: a persistent kernel's CTA-local state (pipeline stage and
+    phase) depends on how many tickets its CTA processed, so "a claimant's work is a function
+    of the ticket value" does not hold in general; the enumeration needs no such property.
+    Fixture `e_ticket` (good: 95 runs, certified; ctaid: refused, nondeterministic; race:
+    refused, race).
   - **C-CAS.** Compare-and-swap semaphores (E-SPIN poll loops whose poll operation is a
     CAS: torch symmetric memory's put `while (cas(&w, 0, 1) != 0);` and wait `while
     (cas(&w, 1, 0) != 1);`, `MEMBAR.SYS` / `ATOM.E.CAS.STRONG.SYS` / `CCTL.IVALL`). A put and
@@ -3590,6 +3633,24 @@ t0 and t64), which made the certificate refuse and the explorer run out of state
   stays in `Sh::hw` while ordered. A plain last write with uncovered earlier writes therefore
   implies they wrote the same value; launch groups' `demote` (strong writes made plain) moves the last write into
   them, so that the rule cannot apply there. Strong writes keep their own rules (C-ORDER).
+- Own store (2026-11-07, msl DeepEP `DeviceSyncer`: every CTA stores the next
+  `currentCountIdx`, then reads it back): a plain read of a byte whose shadow holds the
+  reader's own plain store is not checked against the shadow's writes; a note
+  (`same-value:...:own`). By the rule above every write in the shadow stored the current value
+  (a store of another value drops the others), so the own store did, and coherence lets the
+  read return only the own store or a later one. Writes made later are checked against the
+  read when they come: another value races with it, the same value takes the same-value path.
+  A store of another value that happens before the read but is unordered with the own store
+  is a write-write race with it, reported at whichever store comes second. Only plain stores
+  of threads on the reader's GPU qualify: an async-proxy, NVLS-view, NIC, peer-GPU or DSMEM
+  store in the shadow disqualifies the byte, as do strong writes demoted at a launch-group
+  boundary (`Sh::mixed`). Only thread reads (not an async proxy's read). Per byte, so the own
+  store must cover every byte read; other threads (same warp or SM) do not count. The read is
+  still recorded in the shadow's readers, so later stores and landing async writes are checked
+  against it. The shadow is keyed by allocation (`Loc::Global { alloc, off }`): two mappings
+  of one physical page that a case lists as separate allocations are outside the claim (as
+  for the rest of the shadow); the NVLS view is the one alias modeled (S-MC-ALIAS). Fixture
+  `s_sv_own` (good clean; `diff`, `noown`, `xhb` race).
 - Not covered: read-modify-write sequences that happen to agree (FA4's idempotent row-max
   revert): those are reported as races.
 - Certificate (E-WELLSYNC): one run shows equal values only for that schedule. The certificate

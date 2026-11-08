@@ -559,6 +559,53 @@ fn ring_search_runs_every_choice() {
     }
 }
 
+/// C-POLL-ATOM: the poller's reset of the counter after its exit is ordered after the adds
+/// the exit needed (coherence), so the certificate holds; without the poll it would be a
+/// C-ORDER conflict.
+#[test]
+fn poll_atom_reset_certifies() {
+    let case = Case::load(root().join("fixtures/e_poll_atom")).unwrap();
+    for front in ["ptx", "sass"] {
+        let o = certify(machine(&case, "reset", front));
+        assert!(
+            o.verdict.is_some(),
+            "e_poll_atom/reset/{front}: {:#?}",
+            o.reasons
+        );
+    }
+}
+
+/// C-TICKET: a persistent tile scheduler (atom.inc ticket counter, arrival counter reset by
+/// the last arriver) certifies with one run per claim order; outputs that depend on the
+/// claimant, and tiles that share an output word, are refused with their reasons.
+#[test]
+fn ticket_counter_orders_are_enumerated() {
+    let case = Case::load(root().join("fixtures/e_ticket")).unwrap();
+    for front in ["ptx", "sass"] {
+        let v = certify(machine(&case, "good", front))
+            .verdict
+            .unwrap_or_else(|| panic!("e_ticket/good/{front} does not certify"));
+        let note = v
+            .notes
+            .iter()
+            .find(|n| n.starts_with("C-TICKET"))
+            .unwrap_or_else(|| panic!("no C-TICKET note: {:?}", v.notes));
+        assert!(note.contains("2 ticket counter(s)"), "{note}");
+        for (var, want) in [
+            ("ctaid", "C-TICKET: the claim order reaches the outputs"),
+            ("race", "reported findings (race"),
+        ] {
+            let o = certify(machine(&case, var, front));
+            assert!(o.verdict.is_none(), "e_ticket/{var}/{front} certified");
+            assert!(
+                o.reasons.iter().any(|r| r.contains(want)),
+                "e_ticket/{var}/{front}: {:#?}",
+                o.reasons
+            );
+        }
+    }
+}
+
 /// The first call of a two-call multi-GPU capture (as tests/fixtures.rs `first_call`): each
 /// GPU's first launch, the outputs named in `keep`; `expect = false` drops the GPU bytes.
 fn first_call(mut case: Case, keep: &[&str], expect: bool) -> Case {

@@ -90,6 +90,12 @@
 //!   the earliest member's); a poll of several classes is a choice, and the certificate runs
 //!   once per sequence of classes (forcing reads, `Machine::ring`), every run must certify,
 //!   and all must leave the same outputs (chunking-obliviousness). See `ring.rs`.
+//! * **C-TICKET** (atomic counters whose results steer the program: a persistent kernel's
+//!   tile scheduler, an arrival counter reset by its last arriver). A word written only by
+//!   one-lane relaxed atomics and strong stores, some atomic's result used, is a ticket word:
+//!   C-ORDER leaves its writes unordered and the certificate runs once per order of them
+//!   (forced writer prefixes, dynamic partial-order reduction); every run must certify and all
+//!   must leave the same outputs. See `ticket.rs`.
 //! * **C-WARP** (lane membership): an instruction whose effect depends on which lanes run it
 //!   together is run by lanes that became ready at that pc in one event (one instruction or
 //!   one barrier release), and, if more lanes joining would change it (SASS lane collectives
@@ -144,6 +150,7 @@ use crate::machine::*;
 
 mod order;
 pub mod ring;
+pub mod ticket;
 
 /// The log slot on `Machine` (`Machine::wlog`): empty except in a certificate run. Clones are
 /// empty, so speculative copies (poll / retry-stub lookahead, explorer states) record nothing.
@@ -1966,6 +1973,7 @@ fn describe_ev(m: &Machine, e: &Ev) -> String {
 /// Check the log against the final machine; returns the reasons the certificate fails.
 fn analyze(m: &Machine, log: &SyncLog) -> Vec<String> {
     FADD_NONDET.with(|f| f.borrow_mut().clear());
+    POLL_ATOM_SEEN.with(|p| p.borrow_mut().clear());
     let mut why: Vec<String> = log.fails.values().cloned().collect();
     // One reason per condition and instruction: lanes of one warp fail alike.
     let mut seen: std::collections::HashSet<String> = Default::default();
@@ -2548,7 +2556,7 @@ fn poll_try(
 /// release sequence of each of them, so it synchronizes with all of their releases: the same
 /// clock as in the run. Liveness: the adds are not HB-after the poll, so they do not wait for
 /// it and all land. Err(None): the shape does not apply; Err(Some(why)): why it is refused.
-fn poll_atomic_counter(log: &SyncLog, r: &PollRec) -> Result<(), Option<String>> {
+fn poll_atomic_counter(log: &SyncLog, r: &PollRec) -> Result<Vec<(u32, u32, u32)>, Option<String>> {
     let n = (r.hi - r.lo) as usize;
     if n != 4 && n != 8 {
         return Err(None);
@@ -2663,7 +2671,62 @@ fn poll_atomic_counter(log: &SyncLog, r: &PollRec) -> Result<(), Option<String>>
             Err(e) => return Err(Some(format!("replaying the poll on {v}: {e}"))),
         }
     }
-    Ok(())
+    // The adds an exiting read needed: (actor, clock, pc) of each.
+    Ok(if run_exits {
+        adds.iter()
+            .map(|a| (a.ev.actor, a.ev.clock, a.ev.pc))
+            .collect()
+    } else {
+        vec![]
+    })
+}
+
+/// C-POLL-ATOM accepted the poll `r`; an exiting one is recorded for C-ORDER (`POLL_ATOM_SEEN`).
+fn poll_atom_ok(log: &SyncLog, r: &PollRec) -> bool {
+    match poll_atomic_counter(log, r) {
+        Ok(adds) => {
+            if !adds.is_empty() {
+                POLL_ATOM_SEEN.with(|p| {
+                    p.borrow_mut().push(PollAtomSeen {
+                        key: r.key,
+                        lo: r.lo,
+                        hi: r.hi,
+                        t: r.t as u32,
+                        seq: r.ev.seq,
+                        adds,
+                    })
+                });
+            }
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// An exiting poll that C-POLL-ATOM accepted: the polled bytes, the poller, its read's run
+/// position, and the adds (actor, clock, pc) the exit needed.
+#[derive(Clone, Debug)]
+struct PollAtomSeen {
+    key: (u8, u32),
+    lo: u64,
+    hi: u64,
+    t: u32,
+    seq: u64,
+    adds: Vec<(u32, u32, u32)>,
+}
+
+/// C-POLL-ATOM coherence (C-ORDER, order.rs): `y` is a strong store by a thread whose earlier
+/// exiting poll of the same bytes needed the add `x` (CoRW orders them).
+fn poll_atom_before(x: &SAcc, y: &SAcc) -> bool {
+    POLL_ATOM_SEEN.with(|p| {
+        p.borrow().iter().any(|s| {
+            s.key == y.key
+                && (s.lo, s.hi) == (y.lo, y.hi)
+                && s.t == y.ev.actor
+                && s.seq < y.ev.seq
+                && s.adds.contains(&(x.ev.actor, x.ev.clock, x.ev.pc))
+        })
+    })
 }
 
 /// C-POLL: every execution of a poll load reads the flag's HB-latest write before it (unique:
@@ -2693,7 +2756,7 @@ fn poll_check(m: &Machine, log: &SyncLog) -> Vec<String> {
             Ok(c) => c,
             // C-POLL-ATOM: a counter of commutative atomic adds polled until every
             // concurrent add has landed.
-            Err((_, "an atomic")) if poll_atomic_counter(log, r).is_ok() => continue,
+            Err((_, "an atomic")) if poll_atom_ok(log, r) => continue,
             Err((e, what)) => {
                 let what = match poll_atomic_counter(log, r) {
                     Err(Some(why)) => format!("{what} ({why})"),
@@ -3625,7 +3688,10 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
     if ok {
         m.exit_checks();
         fs.append(&mut m.findings);
-    } else if let Some(why) = ring::stuck_infeasible(&m).filter(|_| extra.is_empty()) {
+    } else if let Some(why) = ring::stuck_infeasible(&m)
+        .or_else(|| ticket::stuck_infeasible(&m))
+        .filter(|_| extra.is_empty())
+    {
         // C-RING: a forced read waits for a write that never comes while the poll would exit
         // on a value already written: no execution makes this run's choices.
         RING_PRUNED.with(|p| *p.borrow_mut() = Some(why));
@@ -3656,6 +3722,12 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
             }
             why.extend(analyze(&m, &log));
             CARRY.with(|p| *p.borrow_mut() = carry(&log));
+            let (force, claims) = m
+                .ring
+                .as_ref()
+                .map(|r| (r.tick_force.clone(), r.tick_claims.clone()))
+                .unwrap_or_default();
+            TICKET_OUT.with(|t| *t.borrow_mut() = ticket::analyze(&m, &log, &force, &claims));
         }
         None => why.push("no log (PTXV_WS_NOLOG)".into()),
     }
@@ -3714,6 +3786,7 @@ fn probe_run(m0: &Machine, reads: &BTreeSet<(u32, u32)>, fs: &[Finding], ok: boo
     // The rerun is a logged run too: keep the thread-local results of this one.
     let carry = CARRY.with(|p| p.borrow().clone());
     let ring_out = RING_OUT.with(|r| std::mem::take(&mut *r.borrow_mut()));
+    let tick_out = TICKET_OUT.with(|r| std::mem::take(&mut *r.borrow_mut()));
     let pruned = RING_PRUNED.with(|p| p.borrow_mut().take());
     let eager = EAGER_FAILED.with(|e| e.get());
     let corder = CORDER_SMEM.with(|c| c.borrow().clone());
@@ -3721,6 +3794,7 @@ fn probe_run(m0: &Machine, reads: &BTreeSet<(u32, u32)>, fs: &[Finding], ok: boo
     CORDER_SMEM.with(|c| *c.borrow_mut() = corder);
     CARRY.with(|p| *p.borrow_mut() = carry);
     RING_OUT.with(|r| *r.borrow_mut() = ring_out);
+    TICKET_OUT.with(|r| *r.borrow_mut() = tick_out);
     RING_PRUNED.with(|p| *p.borrow_mut() = pruned);
     EAGER_FAILED.with(|e| e.set(eager));
     ok1 == ok && crate::race_dead::no_new_use(fs, &fs1)
@@ -3754,6 +3828,19 @@ thread_local! {
     /// The last analysis' C-RING choices (run order) and the counters it relied on.
     static RING_OUT: std::cell::RefCell<(Vec<ring::ChoiceRec>, BTreeSet<String>)> =
         std::cell::RefCell::new(Default::default());
+    /// C-TICKET: the last logged run's ticket words and branches (ticket.rs).
+    static TICKET_OUT: std::cell::RefCell<ticket::TickOut> =
+        std::cell::RefCell::new(Default::default());
+    /// C-POLL-ATOM: the exiting polls of the current analysis and the adds they needed.
+    static POLL_ATOM_SEEN: std::cell::RefCell<Vec<PollAtomSeen>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// C-TICKET: the gated ticket atomics (pc -> word) of the current ticket-mode search.
+    static TICKET_PCS: std::cell::RefCell<BTreeSet<u32>> =
+        const { std::cell::RefCell::new(BTreeSet::new()) };
+    /// C-TICKET: the ticket words whose claim orders the certificate enumerates (C-ORDER
+    /// leaves their claims unordered, order.rs).
+    static TICKET_OK: std::cell::RefCell<BTreeSet<ring::Word>> =
+        const { std::cell::RefCell::new(BTreeSet::new()) };
 }
 
 /// `Carry` of a certificate run.
@@ -3880,6 +3967,12 @@ fn certify_runs(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Out
             races: vec![],
         };
     }
+    // C-TICKET: the ticket atomics this search gates (empty: not in ticket mode). A first run
+    // that finds ticket words restarts the search in ticket mode on `m_in`.
+    let tick_pcs: BTreeSet<u32> = TICKET_PCS.with(|t| t.borrow().clone());
+    let tick_ok: BTreeSet<ring::Word> = TICKET_OK.with(|t| t.borrow().clone());
+    let tick_mode = !tick_pcs.is_empty();
+    let m_in = (!tick_mode).then(|| m0.clone());
     let m0 = crate::explore::clc_eager(m0);
     let elects =
         m0.k.front == Front::Ptx && m0.k.code.iter().any(|i| matches!(i.op, Op::Elect { .. }));
@@ -3916,25 +4009,46 @@ fn certify_runs(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Out
     let mut ring_counters: BTreeSet<String> = BTreeSet::new();
     let mut ring_choices = 0usize;
     type Forcing = BTreeMap<(u32, u32, u32), ring::Forced>;
-    let mut work: Vec<(bool, Option<Forcing>)> =
-        policies.iter().map(|&hi| (hi, None)).rev().collect();
+    let mut work: Vec<(bool, Option<Forcing>, ticket::TickForce)> = policies
+        .iter()
+        .map(|&hi| (hi, None, Default::default()))
+        .rev()
+        .collect();
+    // C-TICKET: forced claimant prefixes already run (per leader policy).
+    let mut tick_seen: BTreeSet<(bool, ticket::TickForce)> = BTreeSet::new();
+    let mut tick_runs = 0usize;
+    let mut tick_pruned = 0usize;
+    let mut tick_words: BTreeSet<ring::Word> = BTreeSet::new();
     let mut first_out: Option<(Vec<u8>, String)> = None;
     // Final machines and carries of the runs (launch groups continue from their meet).
     let mut leaves: Vec<(Machine, Carry)> = Vec::new();
-    while let Some((hi, force)) = work.pop() {
+    while let Some((hi, force, tforce)) = work.pop() {
+        if tick_mode && !tick_seen.insert((hi, tforce.clone())) {
+            continue;
+        }
         if ring_runs >= max_runs {
-            reasons.push(format!(
-                "C-RING: more than {max_runs} runs (one per sequence of choices; PTXV_RING_MAX_RUNS)"
-            ));
+            reasons.push(if tick_mode {
+                format!(
+                    "C-TICKET: more than {max_runs} runs (one per claim order of the ticket counters and sequence of C-RING choices; PTXV_RING_MAX_RUNS)"
+                )
+            } else {
+                format!(
+                    "C-RING: more than {max_runs} runs (one per sequence of choices; PTXV_RING_MAX_RUNS)"
+                )
+            });
             break;
         }
         ring_runs += 1;
+        tick_runs += tick_mode as usize;
         let mut m = m0.clone();
         m.elect_high = hi;
         let forced_desc = force.as_ref().map(|f| f.len()).unwrap_or(0);
-        m.ring = Some(Arc::new(ring::RingCtl::new(
-            force.clone().unwrap_or_default(),
-        )));
+        let tforced: usize = tforce.values().map(|v| v.len()).sum();
+        let mut ctl = ring::RingCtl::new(force.clone().unwrap_or_default());
+        ctl.tick_pcs = tick_pcs.clone();
+        ctl.tick_words = tick_ok.clone();
+        ctl.tick_force = tforce.clone();
+        m.ring = Some(Arc::new(ctl));
         let (m, fs, ok, n, why) = run_logged(m);
         steps += n;
         if EAGER_FAILED.with(|f| f.get()) {
@@ -3950,8 +4064,23 @@ fn certify_runs(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Out
         }
         let pruned = RING_PRUNED.with(|p| p.borrow_mut().take());
         let (choices, counters) = RING_OUT.with(|r| std::mem::take(&mut *r.borrow_mut()));
+        let tout = TICKET_OUT.with(|r| std::mem::take(&mut *r.borrow_mut()));
+        // C-TICKET: the first run found ticket words: restart in ticket mode, which gates
+        // their atomics and enumerates their claim orders.
+        if !tick_mode && ring_runs == 1 && !tout.words.is_empty() {
+            if let Some(m_in) = m_in {
+                let pcs: BTreeSet<u32> = tout.words.values().flatten().copied().collect();
+                let words: BTreeSet<ring::Word> = tout.words.keys().copied().collect();
+                TICKET_PCS.with(|t| *t.borrow_mut() = pcs);
+                TICKET_OK.with(|t| *t.borrow_mut() = words);
+                let o = certify_runs(m_in, keep);
+                TICKET_PCS.with(|t| t.borrow_mut().clear());
+                TICKET_OK.with(|t| t.borrow_mut().clear());
+                return o;
+            }
+        }
         ring_counters.extend(counters);
-        let tag = match (hi, forced_desc) {
+        let mut tag = match (hi, forced_desc) {
             (true, 0) => " (leader policy: highest active lane)".to_string(),
             (false, 0) => String::new(),
             (true, k) => {
@@ -3959,6 +4088,15 @@ fn certify_runs(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Out
             }
             (false, k) => format!(" (C-RING run with {k} forced read(s))"),
         };
+        if tforced > 0 {
+            tag.push_str(&format!(" (C-TICKET run with {tforced} forced claim(s))"));
+        }
+        if tick_mode {
+            for b in &tout.bad {
+                reasons.push(format!("{b}{tag}"));
+            }
+            tick_words.extend(tout.words.keys().copied());
+        }
         for w in why {
             reasons.push(format!("{w}{tag}"));
         }
@@ -4004,7 +4142,7 @@ fn certify_runs(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Out
                 for &(lane, ord) in &c.lanes {
                     f.insert((lane, c.id.1, ord), forced_to(x));
                 }
-                work.push((hi, Some(f)));
+                work.push((hi, Some(f), tforce.clone()));
             }
             for &(lane, ord) in &c.lanes {
                 pin.insert((lane, c.id.1, ord), forced_to(c.run_class));
@@ -4012,10 +4150,20 @@ fn certify_runs(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Out
         }
         if pruned.is_some() {
             ring_pruned += 1;
+            tick_pruned += (tforced > 0) as usize;
             if !reasons.is_empty() {
                 break;
             }
             continue;
+        }
+        // C-TICKET: the other claim orders this run shows (dynamic partial-order reduction),
+        // each with this run's C-RING forcing.
+        if tick_mode {
+            for c in tout.children {
+                if !tick_seen.contains(&(hi, c.clone())) {
+                    work.push((hi, force.clone(), c));
+                }
+            }
         }
         if std::env::var("PTXV_WS_DEBUG").is_ok() {
             for f in &fs {
@@ -4067,6 +4215,12 @@ fn certify_runs(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Out
             // C-RING: every sequence of choices must leave the same outputs (chunking-
             // obliviousness, checked semantically).
             match &first_out {
+                Some((x, what)) if *x != o && tick_mode => {
+                    reasons.push(format!(
+                        "C-TICKET: the claim order reaches the outputs: the run{tag} leaves other outputs than {what} (which thread processes which ticket changes the results)"
+                    ));
+                    break;
+                }
                 Some((x, what)) if *x != o && forced_desc + ring_choices > 0 => {
                     reasons.push(format!(
                         "C-RING: not chunking-oblivious: the run{tag} leaves other outputs than {what} (the observed counter values reach the results)"
@@ -4176,6 +4330,24 @@ fn certify_runs(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Out
         .map(|mut v| {
             v.notes.extend(fadd_note);
             v.notes.extend(keep_note);
+            if tick_mode {
+                v.notes.push(format!(
+                    "C-TICKET: {} ticket counter(s) whose claim results steer the program; {} claim order(s) run ({} dropped as infeasible), every one certified with the same outputs; counters: {}",
+                    tick_words.len(),
+                    tick_runs - tick_pruned,
+                    tick_pruned,
+                    tick_words
+                        .iter()
+                        .map(|w| format!(
+                            "{} {} byte {:#x}",
+                            if w.0 == 0 { "smem of CTA" } else { "global allocation" },
+                            w.1,
+                            w.2
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ));
+            }
             // ASSUME(E-RESIDENCY): the certified run has every CTA resident; a cross-CTA wait
             // is decided only under that assumption (residency::analyze lifts it).
             v.notes.extend(crate::residency::reliance_note(&m0));

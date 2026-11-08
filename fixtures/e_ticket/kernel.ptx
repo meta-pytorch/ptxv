@@ -1,0 +1,46 @@
+// C-TICKET: a persistent tile scheduler. Thread 0 of each of two CTAs claims tiles with
+// atom.inc on `next` (limit 5: the six claims return 0..5 and leave 0) until it gets a ticket
+// >= 4, writes 10 t + 1 to out[t] for each tile t, then adds 1 to the arrival counter `cnt`;
+// the last arriver (old value 1) resets it to 0 with a relaxed store. Which CTA processes
+// which tile depends on the schedule; the outputs do not.
+//   ctaid: out[t] = %ctaid: the claim order reaches the outputs (nondeterministic)
+//   race:  out[t & 1]: tiles 0 and 2 (1 and 3) write one word, from two CTAs in some orders
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_ticket(.param .u64 out_p, .param .u64 next_p, .param .u64 cnt_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<6>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [next_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    ld.param.u64 %rd3, [cnt_p];
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra DONE;
+    mov.u32 %r2, %ctaid.x;
+LOOP:
+    atom.relaxed.gpu.global.inc.u32 %r5, [%rd2], 5;
+    setp.ge.u32 %p2, %r5, 4;
+    @%p2 bra CLAIMED;
+    mov.u32 %r9, %r5;
+    and.b32 %r9, %r5, 1;                   // @IDX
+    mov.u32 %r9, %r5;                      // @IDX2
+    mul.wide.u32 %rd4, %r9, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    mad.lo.u32 %r6, %r5, 10, 1;            // @VAL
+    st.global.u32 [%rd5], %r6;
+    bra LOOP;
+CLAIMED:
+    atom.relaxed.gpu.global.add.u32 %r7, [%rd3], 1;
+    setp.ne.u32 %p3, %r7, 1;
+    @%p3 bra DONE;
+    st.relaxed.gpu.global.u32 [%rd3], 0;
+DONE:
+    ret;
+}

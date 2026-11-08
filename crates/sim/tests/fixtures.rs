@@ -4098,8 +4098,50 @@ fn e_remote_fifo_orders_hb_ordered_arrivals() {
 /// certified; a poll that exits on a partial count is refused and races.
 #[test]
 fn e_poll_atom_counter_poll() {
-    for v in ["good", "ge1"] {
+    for v in ["good", "reset", "ge1"] {
         both("e_poll_atom", v);
+    }
+}
+
+/// S-SAME-VALUE with the reader's own store (msl DeepEP DeviceSyncer currentCountIdx): two
+/// CTAs store the same value and read it back: clean. A different value, a reader without its
+/// own store, or a different-valued store that happens before the read but is unordered with
+/// the reader's store: race.
+#[test]
+fn s_sv_own_store() {
+    both("s_sv_own", "good");
+    // Racing variants: the stateful explorer's verdict only (DPOR also enumerates the
+    // nondeterministic outputs the race leaves).
+    stateful_classes("s_sv_own", &["diff", "noown", "xhb"]);
+}
+
+/// E-HW-CORW fixture classes at level 1 (the level-2 classification: twolevel_hw_corw).
+#[test]
+fn e_hw_corw_classes() {
+    stateful_classes("e_hw_corw", &["good", "weakpoll", "noread"]);
+}
+
+/// C-TICKET fixture classes (the certificate side: tests/wellsync.rs).
+#[test]
+fn e_ticket_classes() {
+    both("e_ticket", "good");
+    stateful_classes("e_ticket", &["ctaid", "race"]);
+}
+
+/// The stateful explorer's classes of `variants` on both front-ends equal the expected ones.
+fn stateful_classes(case: &str, variants: &[&str]) {
+    let case = Case::load(root().join("fixtures").join(case)).unwrap();
+    for &v in variants {
+        for f in ["ptx", "sass"] {
+            let k = kernel(&case, v, f);
+            let launch = build_launch(&case, &k).unwrap();
+            let r = explore(Machine::new(Arc::new(k), Arc::new(launch)), 100_000);
+            assert_eq!(
+                r.classes(),
+                case.variant(v).unwrap().expect_for(f),
+                "{v} {f}"
+            );
+        }
     }
 }
 

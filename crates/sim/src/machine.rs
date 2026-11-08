@@ -492,6 +492,10 @@ pub struct Sh {
     /// S-INIT: the last write stored undefined bits (an `STS` of an undefined register); a
     /// load reads it as never written.
     pub undef: bool,
+    /// The writes may have stored different values: strong writes demoted at a launch-group
+    /// boundary (`demote`). Until the next plain write of another value, the same-value
+    /// invariant (every write of the shadow stored the current value) does not hold.
+    pub mixed: bool,
 }
 
 /// The reads since the last write, one per actor, sorted by actor (canonical state: commuting
@@ -525,6 +529,12 @@ impl Sh {
                 e.strong = 0;
             }
         };
+        if self
+            .writes()
+            .any(|e| e.strong != 0 && e.strong != TMEM_MARK)
+        {
+            self.mixed = true;
+        }
         if let Some(w) = self.w.as_mut() {
             d(w);
         }
@@ -686,6 +696,9 @@ impl Hash for Sh {
         }
         if self.undef {
             h.write_u64(7 << 60);
+        }
+        if self.mixed {
+            h.write_u64(5 << 60);
         }
         if let Some(hw) = &self.hw {
             h.write_u64(hw.len() as u64 | 1 << 62);

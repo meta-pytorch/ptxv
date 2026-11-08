@@ -964,6 +964,21 @@ impl Machine {
                 .cta
         };
         let my_cta = cta_of(actor);
+        // S-SAME-VALUE, own write: the writers that qualify (plain stores of threads of this
+        // GPU; into shared memory, of the owning CTA only).
+        let launch = &self.launch;
+        let dev_of = |c: u16| launch.grids[launch.grid_index(c as u32)].device;
+        let my_dev = dev_of(my_cta);
+        let smem_cta = match loc {
+            Loc::Shared { cta, .. } => Some(cta),
+            _ => None,
+        };
+        let sv_writer = |w: &Epoch| {
+            w.strong == 0
+                && w.actor < nth
+                && dev_of(cta_of(w.actor)) == my_dev
+                && smem_cta.is_none_or(|c| cta_of(w.actor) == c)
+        };
         let hw_order = self.launch.hw_order;
         let keep = |e: &Epoch, ordered: bool| -> bool {
             if strong == 0 {
@@ -987,6 +1002,7 @@ impl Machine {
             }
         };
         let mut benign: Vec<(Epoch, u64)> = Vec::new();
+        let mut own_benign: Option<(Epoch, u64)> = None;
         let vm = VcMemo::new(vc);
         // Page by page: one copy-on-write check per run of bytes.
         let mut i = 0;
@@ -1028,8 +1044,31 @@ impl Machine {
                 // (CoRW): no order between them is left to timing.
                 let corw =
                     hw_order && write.is_some() && s.r.iter().any(|r| r.actor == actor && r.sv);
+                // ASSUME(S-SAME-VALUE), own write: a plain read of a byte whose shadow holds
+                // this thread's own plain store. By the same-value rule every write of the
+                // shadow stored the current value (a store of another value drops the others),
+                // so the own store did; coherence lets the read return only the own store or a
+                // later one, and every later one in the shadow stored that value too. Writes not
+                // yet made are checked against this read when they come (a different value
+                // races with it; the same value takes the same-value path). Only plain stores
+                // of threads of this GPU qualify (no async proxy, NVLS view, NIC, peer GPU or
+                // DSMEM store); per byte, so the own store must cover every byte read.
+                let own_cover = write.is_none()
+                    && actor < nth
+                    && strong == 0
+                    && !vip
+                    && !s.mcv
+                    && !s.mixed
+                    && s.writes().any(|w| w.actor == actor)
+                    && s.writes().all(sv_writer);
+                if own_cover && own_benign.is_none() {
+                    own_benign = s
+                        .writes()
+                        .find(|w| w.actor != actor && !vm.hb(w) && !w.sv)
+                        .map(|w| (*w, a as u64));
+                }
                 for w in s.writes() {
-                    if corw {
+                    if corw || own_cover {
                         break;
                     }
                     if w.actor != actor && !vm.hb(w) && (write.is_some() || !w.sv) {
@@ -1055,6 +1094,7 @@ impl Machine {
                     if strong == 0 {
                         s.r.clear();
                         s.hw = None;
+                        s.mixed = false;
                     } else {
                         let w_ord = |w: &Epoch| w.actor == actor || vm.hb(w);
                         let mut hw: Vec<Epoch> =
@@ -1212,6 +1252,26 @@ impl Machine {
                     );
                     self.report("note", sig, msg);
                 }
+            }
+        }
+        // The own-store case: a note too, so that the certificate's same-value restriction
+        // (no strong accesses, no polls: the values written are fixed by the inputs) applies.
+        if let Some((other, a)) = own_benign {
+            let sig = format!(
+                "same-value:{}:{}:{pc}:own",
+                Self::space_name(&loc),
+                other.pc
+            );
+            if !self.findings.iter().any(|f| f.sig == sig) {
+                let msg = format!(
+                    "read of {} byte {a:#x} by {} at {} after its own store, unordered with the store of {} at {}: every store of the byte left the value of the own store, so the read returns it in any order (S-SAME-VALUE, own store)",
+                    Self::space_name(&loc),
+                    self.actor_name(actor),
+                    self.k.describe(pc as usize),
+                    self.actor_name(other.actor),
+                    self.k.describe(other.pc as usize)
+                );
+                self.report("note", sig, msg);
             }
         }
         // Strong accesses that are morally strong with each other do not race (S-SCOPE).
@@ -1525,6 +1585,12 @@ impl Machine {
 
     pub fn split_enabled(&self, members: &[usize], pc: u32) -> bool {
         let inst = &self.k.code[pc as usize];
+        // C-TICKET: a ticket atomic waits for the claims before its forced position.
+        if self.ring.as_ref().is_some_and(|r| r.tick_pcs.contains(&pc))
+            && !self.ticket_ready(members, pc)
+        {
+            return false;
+        }
         // PTX `.sync.aligned` instructions are convergence points: they execute once every
         // live lane of the warp has arrived (ptxas emits WARPSYNC before them). SASS `SHFL`
         // too: it has no member mask, and ptxas places it after a `BSYNC` (reconvergence,
@@ -3216,6 +3282,10 @@ impl Machine {
     }
 
     pub(crate) fn exec(&mut self, members: &[usize], pc: u32) -> Result<(), String> {
+        // C-TICKET (wellsync/ticket.rs): claims of the gated ticket atomics, in order.
+        if self.ring.as_ref().is_some_and(|r| r.tick_pcs.contains(&pc)) {
+            self.ticket_count(members, pc);
+        }
         // wellsync.rs: the certificate run logs every instruction (no-op otherwise).
         let r = if self.wlog.is_on() {
             crate::wellsync::pre_inst(self, members, pc);

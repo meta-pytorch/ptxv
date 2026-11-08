@@ -36,7 +36,7 @@ expect = ["race"]
 
 [[variants]]
 id = "noread"
-summary = "the clear without a poll: either order, observable"
+summary = "the clear without a poll: either order, observable (the final value is either; the stateful explorer stops at the race, so its classes have no nondeterministic)"
 marker = "@SPIN"
 replace = "<delete>"
-expect = ["nondeterministic", "race"]
+expect = ["race"]
