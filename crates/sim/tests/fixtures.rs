@@ -3652,6 +3652,62 @@ fn multi_fill_rerun_separates_value_insensitive_outputs() {
     both("e_uninit_fills", "add");
 }
 
+/// The second level of the two-level verdict: the SASS front under the GB300 hardware
+/// profile (hwprofile.rs), certificate first, profile-discharged contract findings removed.
+fn sass_gb300(case: &str, variant: &str) -> String {
+    let case = Case::load(root().join("fixtures").join(case)).unwrap();
+    let k = kernel(&case, variant, "sass");
+    let launch = build_launch(&case, &k).unwrap();
+    let m = Machine::new(Arc::new(k), Arc::new(launch));
+    let p = ptxv_sim::hwprofile::GB300;
+    let m2 = ptxv_sim::hwprofile::machine(&m, p);
+    let mut v = ptxv_sim::wellsync::check_certified(m2.clone(), 100_000);
+    ptxv_sim::hwprofile::discharge(&mut v, &m2, p);
+    ptxv_sim::hwprofile::result(&v)
+}
+
+/// Two-level verdict (fixtures/e_twolevel_bulk): no wait_group.read before exit is a contract
+/// deviation at level 1 and certifies under the GB300 profile (E-BULK-EXIT); without the
+/// proxy fence both levels report the race; with the wait both are clean.
+#[test]
+fn contract_only_kernel_certifies_under_the_gb300_profile() {
+    for v in ["good", "waited", "nofence"] {
+        both("e_twolevel_bulk", v);
+    }
+    assert_eq!(sass_gb300("e_twolevel_bulk", "good"), "certified");
+    assert_eq!(sass_gb300("e_twolevel_bulk", "waited"), "certified");
+    assert_eq!(sass_gb300("e_twolevel_bulk", "nofence"), "race");
+}
+
+/// A bounded search never reports `clean` (fixtures/e_deep_race): a race deep in a wide state
+/// space, under a 20k-state cap, at 1, 8, 32 and 64 worker threads, is the race (found by the
+/// search or by the deterministic run to the end that follows a search with no terminal
+/// state); the race-free variant is `inconclusive`. Before, 8+ workers spent the cap
+/// breadth-first and reported `clean` with no terminal state.
+#[test]
+fn bounded_search_never_reports_clean() {
+    let case = Case::load(root().join("fixtures/e_deep_race")).unwrap();
+    for front in ["ptx", "sass"] {
+        for workers in [1, 8, 32, 64] {
+            for (v, want) in [("good", "race"), ("one", "inconclusive")] {
+                let k = kernel(&case, v, front);
+                let launch = build_launch(&case, &k).unwrap();
+                let r = ptxv_sim::explore::explore_threads(
+                    Machine::new(Arc::new(k), Arc::new(launch)),
+                    20_000,
+                    workers,
+                );
+                let c = r.classes();
+                assert!(
+                    !r.complete && !c.iter().any(|x| x == "clean"),
+                    "{v}/{front}/{workers}: {c:?}"
+                );
+                assert!(c.iter().any(|x| x == want), "{v}/{front}/{workers}: {c:?}");
+            }
+        }
+    }
+}
+
 /// S-INIT through shared memory (fixtures/e_uninit_smem): an STS of undefined data marks the
 /// bytes undefined, an LDS of them gives undefined registers; discarded: clean; stored to
 /// global memory: reported.

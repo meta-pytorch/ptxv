@@ -177,6 +177,13 @@ enum Cmd {
         /// model (E-HW-L1) to classify each as observable or latent (also PTXV_GB300=0).
         #[arg(long)]
         no_gb300: bool,
+        /// Hardware profile of the two-level verdict: when the strict check reports anything
+        /// undefined (race, violation, contract deviation, undefined values, ...), the SASS
+        /// front is checked again with every probe-backed assumption of the profile on, and
+        /// both levels are reported (`ptx_contract`, `sass_gb300`). `gb300` (default) or
+        /// `none` (also PTXV_HW_PROFILE).
+        #[arg(long)]
+        hw_profile: Option<String>,
     },
     /// Numerics of one deterministic run: exact error per output, bounds, Thm 1 check.
     Num {
@@ -709,6 +716,48 @@ fn fronts(f: &str) -> Vec<&'static str> {
     }
 }
 
+/// `--hw-profile` (`PTXV_HW_PROFILE`, default "gb300").
+static HW_PROFILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn hw_profile() -> (String, Option<&'static [ptxv_sim::hwprofile::Item]>) {
+    let name = HW_PROFILE
+        .get()
+        .cloned()
+        .or_else(|| std::env::var("PTXV_HW_PROFILE").ok())
+        .unwrap_or_else(|| "gb300".into());
+    let p = ptxv_sim::hwprofile::named(&name);
+    (name, p)
+}
+
+/// One hardware assumption a second-level verdict used.
+#[derive(Serialize, Clone)]
+struct HwUsed {
+    id: String,
+    probe: String,
+    /// The contract findings it discharged (signatures); empty for a model switch.
+    discharged: Vec<String>,
+}
+
+/// The two-level verdict: the strict (contract) check, and the SASS front under the hardware
+/// profile. Both always appear; the second never replaces the first.
+#[derive(Serialize, Clone)]
+struct TwoLevel {
+    /// The strict check's classes (of this row's front).
+    ptx_contract: String,
+    contract_front: String,
+    /// "certified" | "clean" | "incomplete" | the remaining classes.
+    sass_gb300: String,
+    hw_profile: String,
+    hw_assumptions: Vec<HwUsed>,
+    sass_classes: Vec<String>,
+    sass_complete: bool,
+    sass_certified: bool,
+    sass_states: usize,
+    sass_findings: Vec<ptxv_sim::machine::Finding>,
+    sass_notes: Vec<String>,
+    seconds: f64,
+}
+
 #[derive(Serialize)]
 struct CheckRow {
     variant: String,
@@ -726,6 +775,10 @@ struct CheckRow {
     /// verdict's race / stale findings (each finding's `gb300`). None: not needed or disabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     gb300: Option<ptxv_sim::twolevel::Gb300Check>,
+    /// The two-level verdict (`--hw-profile`): set when the strict check reported anything
+    /// undefined.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    two_level: Option<TwoLevel>,
 }
 
 fn print_verdict(
@@ -938,7 +991,10 @@ fn cmd_check(
 ) -> Result<Vec<CheckRow>> {
     let dir = out_dir(case, out)?;
     let mut rows = Vec::new();
+    let (profile_name, profile) = hw_profile();
     for v in variants(case, variant) {
+        // The variant's SASS check under the hardware profile, shared by its fronts' rows.
+        let mut level2: Option<(Verdict, Vec<HwUsed>, f64)> = None;
         for f in fronts(front) {
             if f == "ptx" && case.m.cubin.is_some() {
                 continue; // binary-only case
@@ -1197,6 +1253,94 @@ fn cmd_check(
                 }
             }
             print_verdict(&v, f, &verdict, &expect, &refuted, gbc.as_ref());
+            // The two-level verdict: anything undefined under the strict model -> the SASS
+            // front under the hardware profile. Both levels are reported.
+            let mut two_level = None;
+            if let Some(p) = profile.filter(|_| ptxv_sim::hwprofile::wanted(&verdict)) {
+                if level2.is_none() {
+                    let t0 = Instant::now();
+                    let k2 = if f == "sass" {
+                        k.clone()
+                    } else {
+                        load(case, &v, "sass", &dir)?.0
+                    };
+                    let ms = machine(case, k2)?;
+                    let make2 = || ptxv_sim::hwprofile::machine(&ms, p);
+                    group_log.borrow_mut().clear();
+                    let mut v2 = check(&make2, "GB300 profile: ");
+                    let used = ptxv_sim::hwprofile::discharge(&mut v2, &make2(), p)
+                        .into_iter()
+                        .map(|(id, sigs)| HwUsed {
+                            probe: p
+                                .iter()
+                                .find(|i| i.id == id)
+                                .map(|i| i.probe.to_string())
+                                .unwrap_or_default(),
+                            id,
+                            discharged: sigs,
+                        })
+                        .collect();
+                    level2 = Some((v2, used, t0.elapsed().as_secs_f64()));
+                }
+                let (v2, used, secs) = level2.as_ref().unwrap();
+                let t = TwoLevel {
+                    ptx_contract: verdict.classes().join(","),
+                    contract_front: f.into(),
+                    sass_gb300: ptxv_sim::hwprofile::result(v2),
+                    hw_profile: profile_name.clone(),
+                    hw_assumptions: used.clone(),
+                    sass_classes: v2.classes(),
+                    sass_complete: v2.complete,
+                    sass_certified: v2.assumptions.iter().any(|a| a == "E-WELLSYNC"),
+                    sass_states: v2.states,
+                    sass_findings: v2.findings.clone(),
+                    sass_notes: v2.notes.clone(),
+                    seconds: *secs,
+                };
+                println!(
+                    "    ptx_contract: {} ({} front, strict model)",
+                    t.ptx_contract, t.contract_front
+                );
+                println!(
+                    "    sass_gb300: {} (SASS front, hardware profile {}; {} states{}) using {}",
+                    t.sass_gb300,
+                    t.hw_profile,
+                    t.sass_states,
+                    if t.sass_complete || t.sass_certified {
+                        ""
+                    } else {
+                        ", incomplete"
+                    },
+                    if t.hw_assumptions.is_empty() {
+                        "no hardware assumption".to_string()
+                    } else {
+                        t.hw_assumptions
+                            .iter()
+                            .map(|u| {
+                                if u.discharged.is_empty() {
+                                    format!("{} [{}]", u.id, u.probe)
+                                } else {
+                                    format!(
+                                        "{} [{}; discharges {}]",
+                                        u.id,
+                                        u.probe,
+                                        u.discharged.join(" ")
+                                    )
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    }
+                );
+                for x in t.sass_findings.iter().take(6) {
+                    println!(
+                        "      sass_gb300 {}: {}",
+                        x.kind.to_uppercase(),
+                        x.msg.lines().next().unwrap_or("")
+                    );
+                }
+                two_level = Some(t);
+            }
             // Debugging / figures: PTXV_TRACE_DUMP=<dir> writes each finding's replayed witness.
             if let Some(d) = std::env::var_os("PTXV_TRACE_DUMP") {
                 let p = Path::new(&d).join(format!("{v}.{f}.trace.json"));
@@ -1233,6 +1377,7 @@ fn cmd_check(
                 refuted_opt_in: refuted,
                 verdict,
                 gb300: gbc,
+                two_level,
             });
         }
     }
@@ -1294,6 +1439,7 @@ fn cmd_num_with(
         if !ok {
             bail!("numerics run of {variant} ({f}) did not terminate cleanly: {findings:?}");
         }
+        note_ref_faults(&format!("numerics run of {variant} ({f})"), &findings);
         let ns = m.num.as_ref().unwrap();
         let oi = m.launch.outputs[0];
         let mem = &m.gmem[oi];
@@ -1526,6 +1672,24 @@ pub(crate) fn hw_run_cubin(
     })
 }
 
+/// Faults (and unmodeled steps) of the simulator runs that produced `ptxv hw`'s expected
+/// bytes: printed by `cmd_hw`, so that a GPU / simulator mismatch is not taken for a GPU
+/// problem when the reference itself went wrong.
+static REF_FAULTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn note_ref_faults(run: &str, findings: &[ptxv_sim::machine::Finding]) {
+    let mut g = REF_FAULTS.lock().unwrap();
+    for f in findings
+        .iter()
+        .filter(|f| f.kind == "fault" || f.kind == "unmodeled")
+    {
+        let line = format!("{run}: {} {}", f.kind, f.msg.lines().next().unwrap_or(""));
+        if !g.contains(&line) {
+            g.push(line);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_hw(
     case: &Case,
@@ -1545,6 +1709,16 @@ fn cmd_hw(
         bail!("no free GPU (all have foreign compute processes)")
     };
     println!("hw: using GPU(s) {} (free: {free:?})", gpu_env(case, gpu)?);
+    let ref_faults = REF_FAULTS.lock().unwrap().clone();
+    if !ref_faults.is_empty() {
+        println!(
+            "hw: the simulator run that produced the expected output reported {} fault(s) / unmodeled step(s); a mismatch below may be the simulator's, not the GPU's:",
+            ref_faults.len()
+        );
+        for l in ref_faults.iter().take(5) {
+            println!("hw:   {l}");
+        }
+    }
     let mut rows = Vec::new();
     for v in variants(case, variant) {
         let front = if case.m.cubin.is_some() {
@@ -1580,8 +1754,15 @@ fn cmd_hw(
                 String::new()
             } else {
                 format!(" first failing runs: {:?}", row.mismatch_runs)
-            }
+            },
         );
+        if !ref_faults.is_empty() && !row.mismatch_runs.is_empty() {
+            println!(
+                "hw {:<6} mismatch against a faulted simulator reference ({} fault(s), above): not evidence of a GPU problem",
+                row.variant,
+                ref_faults.len()
+            );
+        }
         rows.push(row);
     }
     Ok(rows)
@@ -1828,8 +2009,12 @@ fn run() -> Result<()> {
             tmem_cotenant,
             assume_refuted,
             no_gb300,
+            hw_profile,
         } => {
             let j = json.then(|| jsonout::begin("check"));
+            if let Some(p) = hw_profile {
+                let _ = HW_PROFILE.set(p);
+            }
             if !assume_refuted.is_empty() {
                 // build_launch reads it (ptxv_sim::assume_refuted), on every check path.
                 let mut ids = assume_refuted.join(",");
@@ -1912,10 +2097,12 @@ fn run() -> Result<()> {
                 let dir = out_dir(&c, &out)?;
                 for v in variants(&c, &variant) {
                     let (k, _) = load(&c, &v, "sass", &dir)?;
-                    let (m, _, ok) = ptxv_sim::explore::run_once(machine(&c, k)?);
+                    let (m, fs, ok) = ptxv_sim::explore::run_once(machine(&c, k)?);
                     if !ok {
                         bail!("{v} does not terminate in the simulator");
                     }
+                    REF_FAULTS.lock().unwrap().clear();
+                    note_ref_faults(&format!("simulator run of {v}"), &fs);
                     cmd_hw(&c, &v, runs, timeout, &out, &m.outputs(), scrub, &delay)?;
                 }
                 return Ok(());
@@ -1926,10 +2113,11 @@ fn run() -> Result<()> {
             let expected = if std::env::var("PTXV_HW_EXPECT").as_deref() == Ok("run") {
                 let dir = out_dir(&c, &out)?;
                 let (k, _) = load(&c, "good", "sass", &dir)?;
-                let (m, _, ok) = ptxv_sim::explore::run_once(machine(&c, k)?);
+                let (m, fs, ok) = ptxv_sim::explore::run_once(machine(&c, k)?);
                 if !ok {
                     bail!("the good variant does not terminate in the simulator");
                 }
+                note_ref_faults("simulator run of good", &fs);
                 m.outputs()
             } else {
                 cmd_num(&c, "good", &out)?.1

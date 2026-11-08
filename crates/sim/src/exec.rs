@@ -2586,7 +2586,8 @@ impl Machine {
                     "the remote operation at {} lands on CTA {cta}'s mbarrier at {mbar:#x} (phase {phase}), which no thread of CTA {cta} waits for: CTA {cta} can exit while it is in flight (wait for every remote arrival before exiting; S-REMOTE-INFLIGHT)",
                     self.k.describe(pc as usize)
                 );
-                self.report("violation", format!("remote-unobserved:{pc}"), msg);
+                let (kind, msg) = remote_reserved(mbar, msg);
+                self.report(kind, format!("remote-unobserved:{pc}"), msg);
             }
         }
         let completed = std::mem::take(&mut self.completed);
@@ -5539,14 +5540,16 @@ impl Machine {
         // of the bytes gives undefined registers, and bytes still undefined when the launch
         // ends are reported then (`exit_checks`).
         let sts_data: Vec<Reg> = match &inst.op {
+            // Every space a store can resolve to shared or global memory: generic and
+            // shared::cluster (DSMEM) addresses included.
             Op::St {
-                space: Space::Shared | Space::Global,
+                space: Space::Shared | Space::SharedCluster | Space::Global | Space::Generic,
                 v: Val::Reg(vr, n),
                 ..
             }
             | Op::Atom {
                 op: AtomOp::Exch,
-                space: Space::Shared | Space::Global,
+                space: Space::Shared | Space::SharedCluster | Space::Global | Space::Generic,
                 v: Val::Reg(vr, n),
                 ..
             } if vr.file != File::V || self.k.front == Front::Ptx => (0..(*n).max(1) as u16)
@@ -6316,7 +6319,7 @@ impl Machine {
                 };
                 let (actor, vc) = self.pipe_issue(t);
                 self.push_async(AsyncOp {
-                    fifo: Some(t as u32),
+                    fifo: Some(t as u64),
                     actor,
                     vc,
                     issuer: t as u32,
@@ -6366,7 +6369,7 @@ impl Machine {
                 };
                 let (actor, vc) = self.pipe_issue(t);
                 self.push_async(AsyncOp {
-                    fifo: Some(t as u32),
+                    fifo: Some(t as u64),
                     actor,
                     vc,
                     issuer: t as u32,
@@ -6406,7 +6409,7 @@ impl Machine {
                     }
                     let (actor, vc) = self.pipe_issue(t);
                     self.push_async(AsyncOp {
-                        fifo: Some(t as u32),
+                        fifo: Some(t as u64),
                         actor,
                         vc,
                         issuer: t as u32,
@@ -9109,13 +9112,18 @@ impl Machine {
                         .iter()
                         .find(|o| matches!(o.kind, AsyncKind::Remote { cta: c, .. } if c == cta))
                     {
+                        let mbar = match o.kind {
+                            AsyncKind::Remote { mbar, .. } => mbar,
+                            _ => unreachable!(),
+                        };
                         let msg = format!(
                             "CTA {cta} exits while {}'s remote operation at {} to it is still in flight: it can land after the exit (wait for every remote arrival before exiting; S-REMOTE-INFLIGHT)",
                             self.actor_name(o.issuer),
                             self.k.describe(o.pc as usize)
                         );
                         let sig = format!("remote-inflight-exit:{}", o.pc);
-                        self.report("violation", sig, msg);
+                        let (kind, msg) = remote_reserved(mbar, msg);
+                        self.report(kind, sig, msg);
                     }
                 }
                 // An all-threads barrier may now be complete without this thread.
@@ -10487,8 +10495,10 @@ impl Machine {
             vc_join(&mut o.vis, &vis);
             return;
         }
+        // ASSUME(S-REMOTE-INFLIGHT): one warp's remote operations on one mbarrier land in
+        // issue order (PTX coherence: program-ordered morally strong RMWs on one location).
         self.push_async(AsyncOp {
-            fifo: None,
+            fifo: Some(remote_pipe(w, cta, mbar)),
             actor: t as u32,
             vc,
             issuer: t as u32,
@@ -10531,7 +10541,8 @@ impl Machine {
                 "{e}: its remote operation issued at {} landed after CTA {cta} exited (in flight at the exit; S-REMOTE-INFLIGHT)",
                 self.k.describe(op.pc as usize)
             );
-            self.report("violation", format!("cluster-life:{}", op.pc), msg);
+            let (kind, msg) = remote_reserved(mbar, msg);
+            self.report(kind, format!("cluster-life:{}", op.pc), msg);
             return;
         }
         for &(off, x) in store {
@@ -12974,6 +12985,29 @@ fn alias_bracket(code: &[ptxv_ir::Inst], pc: usize) -> bool {
         .iter()
         .any(|i| i.text.trim_start().starts_with("UR2UP UPR"));
     before && after
+}
+
+/// The in-order pipe (`AsyncOp::fifo`) of warp `w`'s remote operations on CTA `cta`'s
+/// mbarrier at `mbar`; disjoint from the tcgen05 pipes (thread ids).
+pub fn remote_pipe(w: u32, cta: u16, mbar: u32) -> u64 {
+    1 << 63 | (w as u64) << 48 | (cta as u64) << 32 | mbar as u64
+}
+
+/// ASSUME(S-REMOTE-RESERVED): a remote arrival on an mbarrier in the reserved shared-memory
+/// prefix (ptxas / driver bookkeeping: the peer's arrival of ptxas's tcgen05.alloc
+/// cta_group::2 handshake on 0x48) is not the kernel's to wait for: a lifetime finding about
+/// it is a contract finding (the protocol is ptxas's), not a kernel violation.
+fn remote_reserved(mbar: u32, msg: String) -> (&'static str, String) {
+    if (mbar as usize) < SMEM_RESERVED {
+        (
+            "contract",
+            format!(
+                "{msg} [the mbarrier is in the reserved shared-memory prefix (ptxas / driver bookkeeping, e.g. the tcgen05.alloc cta_group::2 handshake at 0x48): S-REMOTE-RESERVED]"
+            ),
+        )
+    } else {
+        ("violation", msg)
+    }
 }
 
 #[cfg(test)]

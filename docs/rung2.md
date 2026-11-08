@@ -272,14 +272,16 @@ under E-DRF.
 
 **A parallel explorer.**
 - *Design.* Work-stealing DFS over a sharded visited set (`PTXV_THREADS`; the default is
-  every core, capped by the state cap). A thief unshares the state it steals, because
+  every core; either way at most one worker per 50k states of the cap, so that a capped
+  search runs the same number of depth-first lines on any machine with enough cores). A thief unshares the state it steals, because
   contention on shared reference counts was 40% of cycles at 64 threads. The CLI uses
   mimalloc.
 - *Check.* Every complete run gives the same classes, states, terminal states and outputs
   as the serial search.
 - *Effect.* 20–78x on large runs. The 2-tile CuTeDSL SASS (728k states) takes 48 s instead
   of 56 min.
-- *Caveat.* A capped run depends on the thread schedule.
+- *Caveat.* A capped run depends on the thread schedule. Under the per-worker bound
+  (`STATES_PER_WORKER`) it no longer depends on the number of cores beyond cap / 50k.
 
 Before both pieces, single-threaded exploration itself got 2.7x faster (profile-driven):
 - MMA results are memoized;

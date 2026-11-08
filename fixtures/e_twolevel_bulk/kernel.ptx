@@ -1,0 +1,42 @@
+//
+// Two-level verdict (hardware profile gb300): every thread writes a word of a shared tile,
+// fences the generic proxy against the async proxy, and after bar.sync thread 0 stores the
+// tile with a bulk copy (cp.async.bulk.global.shared::cta.bulk_group) and exits without
+// cp.async.bulk.wait_group.read: the PTX ISA requires the wait before the shared memory goes
+// away (contract), GB300 drains the store first (E-BULK-EXIT, probes/tma_store_exit), so the
+// SASS front certifies under the profile. Variants: waited (wait_group.read: clean at both
+// levels), nofence (no fence.proxy.async: the bulk copy can read stale tile bytes, a race at
+// both levels).
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry twolevel_bulk(
+	.param .u64 out_ptr
+)
+.reqntid 32
+{
+	.reg .pred %p<4>;
+	.reg .b32 %r<8>;
+	.reg .b64 %rd<4>;
+	.shared .align 128 .b32 tile[32];
+
+	ld.param.u64 %rd1, [out_ptr];
+	cvta.to.global.u64 %rd1, %rd1;
+	mov.u32 %r1, %tid.x;
+	mov.u32 %r2, tile;
+	shl.b32 %r3, %r1, 2;
+	add.u32 %r4, %r2, %r3;
+	add.u32 %r5, %r1, 7;
+	st.shared.u32 [%r4], %r5;
+	fence.proxy.async.shared::cta; // @FENCE
+	bar.sync 0;
+	setp.ne.u32 %p1, %r1, 0;
+	@%p1 bra DONE;
+	cp.async.bulk.global.shared::cta.bulk_group [%rd1], [%r2], 128;
+	cp.async.bulk.commit_group;
+	// (wait slot) // @WAIT
+DONE:
+	ret;
+}

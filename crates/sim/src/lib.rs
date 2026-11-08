@@ -20,6 +20,7 @@ pub mod fills;
 pub mod fp;
 pub mod groups;
 pub mod halfin;
+pub mod hwprofile;
 pub mod l1;
 pub mod l1_cores;
 pub mod lowp;

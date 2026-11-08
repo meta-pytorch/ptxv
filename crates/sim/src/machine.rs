@@ -1296,8 +1296,9 @@ pub enum AsyncKind {
 
 #[derive(Clone, Debug, Hash)]
 pub struct AsyncOp {
-    /// In-order pipe this op belongs to (issuing thread for tcgen05), or None (unordered).
-    pub fifo: Option<u32>,
+    /// In-order pipe this op belongs to, or None (unordered): the issuing thread for tcgen05;
+    /// `remote_pipe` for remote mbarrier operations (S-REMOTE-INFLIGHT).
+    pub fifo: Option<u64>,
     pub actor: u32,
     pub vc: VC,
     pub issuer: u32,

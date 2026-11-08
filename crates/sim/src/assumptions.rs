@@ -142,6 +142,13 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |k| any(k, |o| matches!(o, Op::StMatrix { .. })),
     },
     Assumption {
+        id: "S-REMOTE-RESERVED",
+        kind: "code",
+        status: "argued",
+        title: "remote arrivals on reserved-prefix mbarriers (ptxas's tcgen05.alloc cta_group::2 handshake at 0x48) are ptxas's protocol: lifetime findings about them are contract findings",
+        applies: never,
+    },
+    Assumption {
         id: "S-INIT-FILLS",
         kind: "code",
         status: "argued",
@@ -1481,6 +1488,13 @@ pub const REGISTRY: &[Assumption] = &[
         kind: "code",
         status: "argued",
         title: "Cor 1a bound: first-order, per-node epsilon",
+        applies: never,
+    },
+    Assumption {
+        id: "H-PROFILE",
+        kind: "process",
+        status: "argued",
+        title: "two-level verdicts: a hardware profile turns on only probe-backed assumptions; the strict (contract) verdict is always reported next to the profile's SASS verdict",
         applies: never,
     },
     Assumption {

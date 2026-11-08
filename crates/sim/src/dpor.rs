@@ -44,7 +44,7 @@ enum Pid {
     /// A split, named by its lowest thread. Splits of a warp diverge and merge; each thread's
     /// program order is carried by `Exec::threads`.
     Split(u32),
-    Fifo(u32),
+    Fifo(u64),
     Op(u32, u32),
 }
 

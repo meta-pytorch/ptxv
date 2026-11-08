@@ -387,8 +387,18 @@ impl Verdict {
         }
         c.sort();
         c.dedup();
+        // An incomplete search with nothing found proves nothing: `inconclusive`, never
+        // `clean` (a breadth-heavy search under a state cap can stop before any terminal
+        // state). A certificate is a complete verdict.
         if c.is_empty() {
-            c.push("clean".into());
+            c.push(
+                if self.complete {
+                    "clean"
+                } else {
+                    "inconclusive"
+                }
+                .into(),
+            );
         }
         c
     }
@@ -429,19 +439,24 @@ fn elect_all() -> bool {
     std::env::var("PTXV_ELECT").as_deref() == Ok("all")
 }
 
-/// Worker threads for the stateful explorer: PTXV_THREADS, else every core, but at most one
-/// per 10k states of the cap. Under a small cap many workers search breadth-first in effect
-/// and may stop before any of them reaches a terminal state; a bounded search for bugs wants
-/// depth, as the serial search gives it.
+/// States of the cap per worker thread (`threads`).
+pub const STATES_PER_WORKER: usize = 50_000;
+
+/// Worker threads for the stateful explorer: PTXV_THREADS, else every core, and in both
+/// cases at most one per `STATES_PER_WORKER` states of the cap. The workers share the cap,
+/// and each runs its own depth-first line: a line that reaches a terminal state costs
+/// about (branching) x (depth) states, so W lines under a cap of S states reach the end
+/// only while S / W covers that. NIC ep4s_dispatch under 400k states: 391 terminal states
+/// at 8 workers, 20 at 12, none at 16 to 32 (and from 24 workers on, none of its races).
+/// With the bound the number of workers of a capped search depends on the cap, not on the
+/// cores, from cap / STATES_PER_WORKER cores on.
 pub fn threads(max_states: usize) -> usize {
-    std::env::var("PTXV_THREADS")
+    let want = std::env::var("PTXV_THREADS")
         .ok()
         .and_then(|s| s.parse().ok())
         .filter(|&n: &usize| n > 0)
-        .unwrap_or_else(|| {
-            let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-            cores.min(max_states / 10_000).max(1)
-        })
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
+    want.min(max_states / STATES_PER_WORKER).max(1)
 }
 
 /// Stack size of explorer threads (instruction semantics recurse a little; be generous).
@@ -3924,6 +3939,10 @@ fn sync_ample(
         // entities, and this entity's non-pipe ops, can conflict.
         if let Action::Async(j) = a {
             let op = &m.pending[*j];
+            // Remote operations in their per-mbarrier issue order: not a candidate.
+            if op.fifo.is_some() && matches!(op.kind, AsyncKind::Remote { .. }) {
+                return false;
+            }
             if fps[i].all {
                 return false;
             }
@@ -4164,6 +4183,18 @@ pub fn explore(m0: Machine, max_states: usize) -> Verdict {
     // S-INIT-FILLS: undefined values that reach only output data.
     crate::fills::check(&base, &mut v);
     v
+}
+
+/// `explore` with an explicit number of worker threads instead of `threads` (PTXV_THREADS):
+/// for tests that compare thread counts.
+pub fn explore_threads(m0: Machine, max_states: usize, workers: usize) -> Verdict {
+    crate::smem::two_pass(m0, |m| {
+        let m = clc_eager(m);
+        let mut v = per_leader_policy(m, workers.max(1), |m, n| explore_one(m, max_states, n));
+        v.findings
+            .sort_by(|a, b| (&a.kind, &a.sig).cmp(&(&b.kind, &b.sig)));
+        v
+    })
 }
 
 /// Clusters (CTAs without clusters) of a single-grid launch, by id.
@@ -4946,6 +4977,25 @@ fn explore_one(mut m0: Machine, max_states: usize, threads: usize) -> Verdict {
     };
     m0.race_log = log.clone();
     let (mut v, peek, vip) = explore_one_models(m0.clone(), max_states, threads);
+    // A bounded search shares its state cap among its workers: W workers each go about W
+    // times less deep, and a wide state space can use the whole cap without reaching a
+    // terminal state (NIC ep4s_dispatch: 32 workers, 400k states, none terminal; 8 workers
+    // find its races). Then one deterministic run to the end adds depth: its findings are
+    // witnesses of that run (happens-before races, violations), the verdict stays incomplete.
+    if !v.complete && v.terminal_states == 0 && std::env::var("PTXV_NO_DEPTH_RUN").is_err() {
+        let (_, fs, ok) = run_once(m0.clone());
+        let mut added = 0usize;
+        for f in fs {
+            if !v.findings.iter().any(|g| g.sig == f.sig) {
+                v.findings.push(f);
+                added += 1;
+            }
+        }
+        v.notes.push(format!(
+            "the bounded search reached no terminal state; one deterministic run {} added {added} finding(s)",
+            if ok { "to the end" } else { "(not to the end)" }
+        ));
+    }
     if let Some(log) = log.filter(|_| v.complete && v.distinct_outputs <= 1) {
         let cands = crate::race_dead::candidates(&log, &v.findings);
         let dead = crate::race_dead::decide(&cands, |reads| {

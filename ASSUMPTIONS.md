@@ -2765,7 +2765,9 @@ stays clean, "relies on E-CPASYNC-PROXY"), not a race.
     whose defined combining predicate decides the result (`AND` false, `OR` true) are
     defined. msl_ops triton `_nvfp4x2_k_quant_kernel` (25 FCHK sites) and `_metrics_2d`
     were reported before (`fixtures/e_uninit_lanes`);
-  - through memory (2026-11-06): a shared or global store (or `atom.exch`) of undefined data
+  - through memory (2026-11-06; generic and shared::cluster addresses, DSMEM included, since
+    2026-11-07: BlackwellHistogramSelect's `ST.E.128` into a peer CTA): a shared or global
+    store (or `atom.exch`) of undefined data
     marks the bytes undefined (`Sh::undef`) instead of being reported; a load or an
     `atom.exch` of them gives undefined registers (as for never-written shared memory); any
     other reader (TMA, MMA, other atomics) reports; global bytes still undefined at a terminal state are reported
@@ -3152,14 +3154,42 @@ either. Arrivals and st.async to the issuer's own CTA land at issue, as before.
   visible trace on GB300 or GB200 (the reporters saw nothing even with no drain). The FIFO-free order
   among one issuer's remote arrivals is the conservative reading of the PTX memory model
   (`.release.cta` does not order them for another CTA).
-- If wrong: *false alarm* if hardware delivers one thread's remote arrivals in order, or
-  keeps a CTA's shared memory until its inbound arrivals land; *miss* if a cluster-scope
-  release does not wait for earlier remote arrivals.
+- Order (2026-11-07): one warp's remote operations on one mbarrier land in issue order
+  (`AsyncOp::fifo` = `remote_pipe(warp, cta, mbar)`). PTX: two arrivals by one thread on one
+  mbarrier are program-ordered morally strong read-modify-writes of one location, so
+  coherence order follows program order (PTX ISA memory model, Coherence axiom over base
+  causality order). Operations on different mbarriers stay unordered (`.release.cta` orders
+  nothing for another CTA). Ordered per warp, not per thread: two instructions of one warp
+  with disjoint lane sets on one mbarrier are also kept in order, which the PTX model does
+  not require (a possible *miss*; remote arrivals are normally issued by one elected lane).
+  Remote operations in such an order are not TMA-completion reduction candidates.
+- If wrong: *false alarm* if hardware delivers one thread's remote arrivals in order across
+  mbarriers, or keeps a CTA's shared memory until its inbound arrivals land; *miss* if a
+  cluster-scope release does not wait for earlier remote arrivals.
 - GB300 (`probes/remote_arrive_exit`, 2026-11-07): remote *stores* issued before a barrier
   and another warp's arrive can still be in flight when the target exits (the launch fails,
   every process). Remote *arrivals* were never seen out of happens-before issue order (0 of
   401,200 clusters, `order.cu`), which is the opt-in E-REMOTE-FIFO.
 - Retire: an NVIDIA statement on remote-operation ordering.
+
+### S-REMOTE-RESERVED · code
+**A remote arrival on an mbarrier in the reserved shared-memory prefix (offset < 0x400) is
+ptxas's or the driver's protocol, not the kernel's.** ptxas implements
+`tcgen05.alloc.cta_group::2` with a handshake on the reserved mbarrier at 0x48: the peer
+waits on its own 0x48 and arrives on the leader's (`SYNCS.ARRIVE.TRANS64.RED.A1T0 RZ,
+[R13+URZ], RZ` after `ATOMS.OR` into the allocator words). The last such arrival is never
+waited for, so S-REMOTE-INFLIGHT's lifetime checks (`remote-unobserved`,
+`remote-inflight-exit`, a delivery after the target exited) fire on every cta_group::2
+kernel. For reserved-prefix mbarriers they are `contract` findings instead of violations.
+- Where: `exec.rs` `remote_reserved` (exit_checks, `Op::Exit`, `complete_remote`).
+- Status: **argued** (2026-11-07). Evidence: msl_ops FlashAttentionForwardSm100 2-CTA
+  (cases-MN `cute.FlashAttentionForwardSm100.bf16.1x384x1x128`): the third of MN's three
+  S-REMOTE-INFLIGHT violations, sass 0x2330, is this handshake; GB300 runs of cta_group::2
+  kernels show no effect. Whether a late handshake arrival can disturb the next CTA on the SM
+  (which reuses the reserved prefix) is not probed.
+- If wrong: *miss* of a ptxas / driver protocol bug.
+- Retire: a GB300 probe that observes a late remote arrival (e.g. into a CTA that a
+  co-resident successor reuses).
 
 ### S-NIC-DB · code
 **The doorbell of an IBGDA queue pair is a strong system-scope store (`st.mmio.relaxed.sys`,
@@ -5591,6 +5621,33 @@ diagnostics (`corr`), not carried. Richer states (a factor model, low rank) woul
 ---
 
 ## H: hardware testing (process)
+
+### H-PROFILE · process
+**Two-level verdicts: `ptx_contract` and `sass_gb300`.** When the strict check (the case's
+model, PTX or SASS front) reports anything undefined or deviating (a race, a stale read, a
+violation, a contract deviation, undefined values, a deadlock, several outcomes; anything
+but clean / unmodeled), `ptxv check` checks the variant's SASS front again under a hardware
+profile (`--hw-profile gb300`, the default; `none` / `PTXV_HW_PROFILE=none` turns it off)
+and reports both levels: `ptx_contract: <classes>` (strict) and `sass_gb300: certified |
+clean | incomplete | <classes>`, with the profile assumptions the second level used. The
+second level never replaces the first: a contract finding stays a finding of the row.
+Profile `gb300` (`crates/sim/src/hwprofile.rs`), every entry probe-backed:
+- model switches: E-HW-L1 (non-coherent per-SM L1; GB300 litmus, docs/poll-acq-litmus.md),
+  E-MC-ALIAS-HW (multicast / unicast views one location; `probes/multimem` `mm litmus` and
+  `probes/l2alias`, validated for multicast write then unicast read and unicast write then
+  `multimem.ld_reduce`; write-after-read is not probed and the profile applies it anyway, a
+  possible *miss*), E-REMOTE-FIFO (one CTA's remote mbarrier arrivals to another land in
+  happens-before issue order; `probes/remote_arrive_exit` `order.cu`);
+- discharged contract deviations: E-BULK-EXIT (`probes/tma_store_exit`, `bulk-store-at-exit`),
+  E-TC-EXIT (`probes/tc_commit_exit`, `tc-commit-at-exit`), E-DESC-VERSION
+  (`probes/desc_version`, `desc-version`), S-TMAP-TAIL (`probes/tmap_tail`,
+  `tmap-tail-undef`).
+Not in the profile: argued or unvalidated assumptions (E-CPASYNC-PROXY, S-REMOTE-RESERVED,
+E-POLL-ACQ (refuted), the twolevel.rs `hw_order` model).
+- Evidence: `fixtures/e_twolevel_bulk` (`good`: contract at level 1, certified under the
+  profile; `nofence`: race at both levels; `waited`: clean).
+- If wrong: a `sass_gb300: certified` is as good as the probes behind the assumptions it
+  lists, on the hardware and toolkit they ran on.
 
 ### H-RUNS · process
 **N clean hardware runs are evidence, not proof.** "GB300 correct 1,000/1,000" bounds a

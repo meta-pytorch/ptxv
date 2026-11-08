@@ -1,0 +1,32 @@
+name = "e_deep_race"
+description = """
+A race deep in the run (after 16 atomic adds to one shared counter by lane 0 of each of 4 warps): lane 0 of warps 0
+and 1 store to one global word unordered. Exhaustively: a race. Under a small state cap the
+verdict must be the race or `inconclusive`, never `clean`, at any number of worker threads
+(tests/fixtures.rs `bounded_search_never_reports_clean`)."""
+ptx = "kernel.ptx"
+entry = "deep_race"
+grid = [1, 1, 1]
+block = [1024, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "lane 0 of warps 0 and 1 store one word unordered: a race"
+expect = ["race"]
+
+[[variants]]
+id = "one"
+summary = "only warp 0 stores: clean"
+edits = [{ marker = "@RACE", find = "st.global.u32 [%rd1], %r8;", replace = "setp.ne.u32 %p3, %r2, 0; @!%p3 st.global.u32 [%rd1], %r2;" }]
+expect = ["clean"]

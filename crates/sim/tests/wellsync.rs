@@ -129,6 +129,8 @@ const SKIP: &[&str] = &[
     "r4b_moe",
     // r3_grouped_mm's mutants: tma_store_wait_counts_its_own_scoreboard.
     "e_gmm_epilogue_reuse",
+    // A bounded-search fixture (bounded_search_never_reports_clean): too wide to explore.
+    "e_deep_race",
 ];
 
 /// Variants the certificate must keep proving (a regression guard on its strength).
@@ -239,7 +241,8 @@ fn branch_on_unwritten_predicate_is_reported() {
 /// certifies (contract-only: E-BULK-EXIT).
 /// A failed certificate whose own run found a race: when the exploration that replaces it
 /// runs out of budget first, the verdict still reports the race (a feasible execution
-/// reaches it; tools/mutate classifies r3_grouped_mm's miss-3 mutants by it).
+/// reaches it; tools/mutate classifies r3_grouped_mm's miss-3 mutants by it). The deterministic
+/// run that follows a search with no terminal state (explore.rs) may report it first.
 #[test]
 fn certificate_run_race_survives_an_incomplete_exploration() {
     let case = Case::load(root().join("fixtures/r0_tma_sum")).unwrap();
@@ -254,7 +257,8 @@ fn certificate_run_race_survives_an_incomplete_exploration() {
         assert!(
             v.notes
                 .iter()
-                .any(|n| n.contains("found by the certificate's run")),
+                .any(|n| n.contains("found by the certificate's run")
+                    || n.contains("one deterministic run")),
             "{front}: {:?}",
             v.notes
         );
