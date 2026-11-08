@@ -1,0 +1,38 @@
+name = "probe_mapa_lanes"
+description = """
+Probe (S-DSMEM) for mapa.shared::cluster with a rank outside the cluster: every lane computes
+a peer address from %laneid in a cluster of 2, only lanes 0 and 1 store through it
+(kernel.ptx). ptxas lowers mapa to PRMT R, rank, 0x654, a (no check): the model gives an
+undefined address for ranks >= the cluster size instead of a fault, and reports a use
+(variant oob). expected/ is GB300's output (kernel.cubin = ptxas -arch=sm_103a kernel.ptx,
+`ptxv hw`)."""
+ptx = "kernel.ptx"
+entry = "mapa_lanes"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+cluster = [2, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "oob"
+summary = "lane 2 stores through its out-of-cluster address"
+marker = "@OOB"
+find = "setp.lt.u32     %p1, %r1, 2;"
+replace = "setp.lt.u32     %p1, %r1, 3;"
+expect = ["fault", "violation"]
+expect_sass = ["fault"]

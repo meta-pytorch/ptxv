@@ -7291,19 +7291,28 @@ impl Machine {
                 let a = self.rd(t, a)?;
                 let r = self.rd(t, rank)?;
                 let cs = self.launch.cluster_size(self.threads[t].cta as u32);
-                if r >= cs as u64 {
-                    return Err(format!("mapa to CTA rank {r} (cluster size {cs})"));
-                }
                 // A generic address (mapa.u64 on the shared window) keeps its high word.
                 if a >> 32 != 0 && a >> 32 != SHARED_GENERIC_BASE >> 32 {
                     return Err(format!("mapa of {a:#x}: not a shared address"));
                 }
-                self.wr(
-                    t,
-                    *d,
-                    (a & !0xff00_0000) | (r << 24),
-                    1 + (a >> 32 != 0) as u8,
-                );
+                let n = 1 + (a >> 32 != 0) as u8;
+                self.wr(t, *d, (a & !0xff00_0000) | ((r & 0xff) << 24), n);
+                // ASSUME(S-DSMEM): a rank outside the cluster gives an undefined address, not a
+                // fault (ptxas: PRMT R, rank, 0x654, a, no check; CuTe computes a peer address
+                // in every lane and uses it only in lanes below the cluster size). Any use of
+                // it is reported (S-INIT).
+                if r >= cs as u64 {
+                    self.make_undefined(t, *d);
+                    if n == 2 && d.file != File::V {
+                        self.make_undefined(
+                            t,
+                            Reg {
+                                file: d.file,
+                                idx: d.idx + 1,
+                            },
+                        );
+                    }
+                }
             }
             // ASSUME(E-PDL): the trigger orders no memory; it only lets the next grid launch.
             Op::GridDepLaunch => {

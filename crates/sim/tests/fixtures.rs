@@ -2497,12 +2497,31 @@ fn probe_fmad_multi_matches_hardware() {
     probe_bitwise("probes/fmad_multi", "good", "sass");
 }
 
+/// PTX-FMAD for plain mul.f16 (probes/fmad_f16): HFMA2 into every add / sub reader, HMUL2 +
+/// HADD2 when the product is also converted or packed = GB300 on both fronts.
+#[test]
+fn probe_fmad_f16_matches_hardware() {
+    probe_bitwise("probes/fmad_f16", "good", "ptx");
+    probe_bitwise("probes/fmad_f16", "good", "sass");
+}
+
 /// PTX-FMAD: plain mul.f32x2 products no add / sub.f32x2 reads directly (selp, fma addend,
 /// mov copy, loop-carried and unpacked; probes/f32x2_sinks) = GB300 on both fronts.
 #[test]
 fn probe_f32x2_sinks_matches_hardware() {
     probe_bitwise("probes/f32x2_sinks", "good", "ptx");
     probe_bitwise("probes/f32x2_sinks", "good", "sass");
+}
+
+/// S-DSMEM: mapa with a rank outside the cluster gives an undefined address, not a fault
+/// (probes/mapa_lanes): good = GB300 on both fronts; a store through it is reported (GB300
+/// fails the launch).
+#[test]
+fn probe_mapa_lanes_matches_hardware() {
+    probe_bitwise("probes/mapa_lanes", "good", "ptx");
+    probe_bitwise("probes/mapa_lanes", "good", "sass");
+    check_dir("probes", "mapa_lanes", "oob", "ptx");
+    check_dir("probes", "mapa_lanes", "oob", "sass");
 }
 
 /// cvta.to.local of a stack buffer's generic address (probes/local_cvta) = GB300 on both

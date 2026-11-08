@@ -331,7 +331,7 @@ fn fmad_pairs(
         }
         let mods: Vec<&str> = it.collect();
         let ty = *mods.last()?;
-        if !matches!(ty, "f32" | "f64") {
+        if !matches!(ty, "f32" | "f64" | "f16") {
             return None;
         }
         let rnd = mods.iter().any(|m| matches!(*m, "rn" | "rz" | "rm" | "rp"));
@@ -461,30 +461,31 @@ fn fmad_pairs(
             }
         }
     }
-    // The statements definition `i` of `r` reaches, or None (a definition among several that
-    // reaches the end of its block).
-    let reach = |i: usize, r: &str| -> Option<Vec<usize>> {
+    // The statements definition `i` of `r` reaches in its block, and whether it may reach past
+    // the block's end (a definition among several that is not redefined in its block).
+    let reach = |i: usize, r: &str| -> (Vec<usize>, bool) {
         if ndefs.get(r) == Some(&1) {
-            return Some(
+            return (
                 readers_of
                     .get(r)
                     .map(|v| v.iter().copied().filter(|&j| j != i).collect())
                     .unwrap_or_default(),
+                false,
             );
         }
         let mut out = Vec::new();
         for j in i + 1..n {
             if block[j] != block[i] {
-                return None;
+                return (out, true);
             }
             if dr[j].1.contains(&r) {
                 out.push(j);
             }
             if dr[j].0.contains(&r) && (guards[j].is_empty() || guards[j] == guards[i]) {
-                return Some(out);
+                return (out, false);
             }
         }
-        None
+        (out, true)
     };
     // Per mul: its contracting readers (add, product slot, product negated), or why not.
     enum Use {
@@ -504,10 +505,19 @@ fn fmad_pairs(
         // (defining statement, register, negated, depth)
         let mut stack = vec![(i, d, false, 0u32)];
         while let Some((k, r, neg, depth)) = stack.pop() {
-            let Some(rs) = reach(k, r) else {
-                unknown.get_or_insert("read or written elsewhere too".into());
-                continue;
-            };
+            let (rs, escapes) = reach(k, r);
+            if escapes {
+                // Live past its block (the register has other definitions): its readers there
+                // are not known. A reader in the block that keeps the mul still decides it.
+                unknown.get_or_insert("plain add / sub, and read or written elsewhere too".into());
+                any_add |= readers_of.get(r).is_some_and(|v| {
+                    v.iter().any(|&j| {
+                        matches!(fop(parts[j].0), Some(("add" | "sub", ..)))
+                            || parts[j].0.starts_with("neg.")
+                            || parts[j].0.starts_with("mov.")
+                    })
+                });
+            }
             for j in rs {
                 if !live[j] {
                     continue;
@@ -541,10 +551,19 @@ fn fmad_pairs(
                         && (*jop == format!("neg.{ty}") && !ftz
                             || matches!(jbase, "mov")
                                 && (jop.ends_with(ty)
-                                    || jop.ends_with(if ty == "f32" { "b32" } else { "b64" }))) =>
+                                    || jop.ends_with(match ty {
+                                        "f16" => "b16",
+                                        "f32" => "b32",
+                                        _ => "b64",
+                                    }))) =>
                     {
                         any_add |= jbase == "neg";
-                        if !guards[j].is_empty() || !same {
+                        if ty == "f16" {
+                            // Not followed: refuse the adds it reaches (the Unknown arm below).
+                            any_add = true;
+                            unknown
+                                .get_or_insert("copy / neg of an f16 product (not probed)".into());
+                        } else if !guards[j].is_empty() || !same {
                             unknown.get_or_insert(
                                 "copy / neg in another block or under a guard".into(),
                             );
@@ -585,9 +604,13 @@ fn fmad_pairs(
                 let msg = format!("{op} {d} read by a {w}: ptxas may contract it (PTX-FMAD)");
                 let mut stack = vec![(i, d, 0u32)];
                 while let Some((k, r, depth)) = stack.pop() {
-                    for j in reach(k, r)
-                        .unwrap_or_else(|| readers_of.get(r).cloned().unwrap_or_default())
-                    {
+                    let (rs, escapes) = reach(k, r);
+                    let rs = if escapes {
+                        readers_of.get(r).cloned().unwrap_or_default()
+                    } else {
+                        rs
+                    };
+                    for j in rs {
                         if j == k || !live[j] {
                             continue;
                         }
@@ -627,6 +650,15 @@ fn fmad_pairs(
                 continue;
             }
             let single = |i: usize| cand[&i].len() == 1;
+            if parts[j].0.ends_with(".f16") {
+                let (op, _) = &parts[j];
+                refuse.insert(j, format!("{op} of two plain f16 mul products (not probed): ptxas may contract it (PTX-FMAD)"));
+                for &(i, _) in ms {
+                    cand.remove(&i);
+                }
+                drop = Some(usize::MAX);
+                break;
+            }
             let (m1, m2) = if ms[0].1 == 1 {
                 (ms[0].0, ms[1].0)
             } else {
@@ -648,6 +680,7 @@ fn fmad_pairs(
             break;
         }
         match drop {
+            Some(usize::MAX) => {}
             Some(i) => {
                 cand.remove(&i);
             }
@@ -2912,8 +2945,13 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         "add" | "sub" | "mul" | "fma" if matches!(ht, "f16" | "f16x2") => {
             let rest = &mods[..mods.len() - 1];
             let d_name = op_n(0)?.trim();
+            // Scalar .f16 without `.rn`: fmad_pairs decides the contraction (PTX-FMAD); a plain
+            // mul or add it does not contract (or refuse) rounds once.
+            let scalar_plain =
+                ht == "f16" && rest.is_empty() && matches!(base, "mul" | "add" | "sub");
             let ok = rest == ["rn"]
-                || base == "mul" && rest.is_empty() && lw.f16_mul_ok.contains(d_name);
+                || base == "mul" && rest.is_empty() && lw.f16_mul_ok.contains(d_name)
+                || scalar_plain;
             if !ok {
                 bail!(lw.err(format!(
                     "{base}.{ht} with modifiers {rest:?} not modeled (only .rn, or a mul ptxas cannot contract)"
@@ -2927,22 +2965,10 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 Ok(v)
             };
             let d = lw.dst(op_n(0)?)?;
-            let (a, b, c, neg_c) = match base {
-                "mul" => (reg(1)?, reg(2)?, Val::Imm(0x8000_8000), false),
-                "add" | "sub" => (reg(1)?, Val::Imm(0x3c00_3c00), reg(2)?, base == "sub"),
-                _ => (reg(1)?, reg(2)?, reg(3)?, false),
-            };
-            let op = Op::Hfma2 {
-                d,
-                a,
-                b,
-                c,
-                abs_a: false,
-                neg_a: false,
-                neg_c,
-                sel: [HSel::Pair; 3],
-            };
-            if ht == "f16" {
+            // PTX-FMAD: the contracted add / sub is one HFMA2 (probes/fmad_f16).
+            // ASSUME(PTX-FMAD)
+            if let (true, "add" | "sub", Some(f)) = (scalar_plain, base, lw.fmad) {
+                let sub = base == "sub";
                 extra.push(Op::Int {
                     op: IntOp::And,
                     bits: 32,
@@ -2950,8 +2976,43 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     a: Val::Reg(d, 1),
                     b: Val::Imm(0xffff),
                 });
+                Op::Hfma2 {
+                    d,
+                    a: lw.val(&f.a)?,
+                    b: lw.val(&f.b)?,
+                    c: reg(3 - f.slot)?,
+                    abs_a: false,
+                    neg_a: (sub && f.slot == 2) ^ f.neg,
+                    neg_c: sub && f.slot == 1,
+                    sel: [HSel::Pair; 3],
+                }
+            } else {
+                let (a, b, c, neg_c) = match base {
+                    "mul" => (reg(1)?, reg(2)?, Val::Imm(0x8000_8000), false),
+                    "add" | "sub" => (reg(1)?, Val::Imm(0x3c00_3c00), reg(2)?, base == "sub"),
+                    _ => (reg(1)?, reg(2)?, reg(3)?, false),
+                };
+                let op = Op::Hfma2 {
+                    d,
+                    a,
+                    b,
+                    c,
+                    abs_a: false,
+                    neg_a: false,
+                    neg_c,
+                    sel: [HSel::Pair; 3],
+                };
+                if ht == "f16" {
+                    extra.push(Op::Int {
+                        op: IntOp::And,
+                        bits: 32,
+                        d,
+                        a: Val::Reg(d, 1),
+                        b: Val::Imm(0xffff),
+                    });
+                }
+                op
             }
-            op
         }
         // `abs` / `neg` `.f16` / `.f16x2` (SASS `HADD2 d, |R|, -RZ.H0_H0` / `HADD2 d, -R,
         // -RZ.H0_H0`): |x| or -x plus -0 (a NaN becomes the canonical 0x7fff;
@@ -7326,11 +7387,73 @@ mod tests {
             "@%p1 mul.f32 %r1, %r2, %r3;\n@%p1 add.f32 %r4, %r1, %r5;",
             "mul.f32 %r1, %r2, %r3;\nmov.f32 %r2, 0f3F800000;\nadd.f32 %r4, %r1, %r5;",
             "mul.f32 %r1, %r2, %r3;\n@%p1 bra L1;\nL1:\nadd.f32 %r4, %r1, %r5;",
+            // A definition among several live past its block, read by an add there.
+            "mov.f32 %r1, 0f00000000;\nmul.f32 %r1, %r1, %r3;\nbra.uni L1;\nL1:\nadd.f32 %r4, %r5, %r1;",
         ] {
             assert!(
                 ops(&format!("{l}\nst.global.f32 [%rd1], %r4;")).is_err(),
                 "{l}"
             );
+        }
+    }
+
+    #[test]
+    fn fmad_contraction_f16() {
+        // PTX-FMAD for scalar .f16 (probes/fmad_f16): HFMA2 into every add / sub reader; a
+        // converted product keeps HMUL2 + HADD2; copies, negs and two-product adds refused.
+        let all = |l: &str| {
+            ops(&format!(
+                ".reg .b16 %h<8>;\n{l}\nst.global.b16 [%rd1], %h4;\nst.global.b16 [%rd1], %h5;"
+            ))
+        };
+        let hfmas = |v: &[Op]| {
+            v.iter()
+                .filter(|o| {
+                    matches!(
+                        o,
+                        Op::Hfma2 {
+                            b: Val::Reg(..),
+                            c: Val::Reg(..),
+                            ..
+                        }
+                    )
+                })
+                .count()
+        };
+        let v =
+            all("mul.f16 %h1, %h2, %h3;\nadd.f16 %h4, %h6, %h1;\nsub.f16 %h5, %h1, %h6;").unwrap();
+        assert_eq!(hfmas(&v), 2, "{v:?}");
+        assert!(
+            matches!(
+                v[v.len() - 4],
+                Op::Hfma2 {
+                    neg_a: false,
+                    neg_c: true,
+                    ..
+                }
+            ),
+            "{v:?}"
+        );
+        let v = all("mul.f16 %h1, %h2, %h3;\nsub.f16 %h4, %h6, %h1;\nmov.b16 %h5, %h6;").unwrap();
+        assert!(
+            v.iter().any(|o| matches!(
+                o,
+                Op::Hfma2 {
+                    neg_a: true,
+                    neg_c: false,
+                    ..
+                }
+            )),
+            "{v:?}"
+        );
+        let v = all("mul.f16 %h1, %h2, %h3;\nadd.f16 %h4, %h1, %h6;\ncvt.f32.f16 %r1, %h1;\nmov.b16 %h5, %h6;\nst.global.f32 [%rd1], %r1;").unwrap();
+        assert_eq!(hfmas(&v), 0, "{v:?}");
+        for l in [
+            "mul.f16 %h1, %h2, %h3;\nmov.b16 %h7, %h1;\nadd.f16 %h4, %h7, %h6;\nmov.b16 %h5, %h6;",
+            "mul.f16 %h1, %h2, %h3;\nneg.f16 %h7, %h1;\nadd.f16 %h4, %h7, %h6;\nmov.b16 %h5, %h6;",
+            "mul.f16 %h1, %h2, %h3;\nmul.f16 %h7, %h2, %h6;\nadd.f16 %h4, %h1, %h7;\nmov.b16 %h5, %h6;",
+        ] {
+            assert!(all(l).is_err(), "{l}");
         }
     }
 

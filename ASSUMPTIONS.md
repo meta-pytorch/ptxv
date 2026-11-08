@@ -3177,6 +3177,13 @@ traps with *illegal instruction*: `probes/reserved_smem`, variant `cluster_untag
 replaces the rank byte.
 - Evidence: ptxas forms every shared address as `LEA R, SR_CgaCtaId, off, 0x18`, and lowers
   `mapa ..., 0` to `PRMT R, RZ, 0x654, R` (clear the top byte).
+- `mapa` with a rank outside the cluster (2026-11-08): ptxas lowers mapa to `PRMT R, rank,
+  0x654, a` with no check, and CuTe kernels compute a peer address in every lane (rank =
+  %laneid) and use it only in lanes below the cluster size. The result is an undefined
+  address (S-INIT), not a fault; an access through it is reported. Before, the mapa itself
+  faulted (PTX front runs of CuTe 2-CTA GEMMs). probes/mapa_lanes: GB300 50/50 scrubbed, both
+  fronts bitwise; variant oob (a lane stores through rank 2): reported on both fronts, GB300
+  fails the launch.
 - Where: `exec.rs` `sreg` (`SharedAddr`), `resolve`, `rank_cta`, `Mapa`.
 - Status: **validated** by rung 1c bitwise agreement (remote arrive + multicast TMA).
 - If wrong: *miss* / *false alarm* on DSMEM addressing; would show up as lift disagreements.
@@ -4421,13 +4428,20 @@ produces. The SASS front-end is exact (it executes the FFMA / FMUL + FADD ptxas 
   statements the mul's definition reaches: every reader of the register when it has one
   definition, else those before the next unguarded (or same-guard) redefinition in the block
   (inline-asm scopes that reuse one register for a chain).
+- Scalar `.f16` (2026-11-08, probes/fmad_f16): the same rule, a plain `mul.f16` into plain
+  `add.f16` / `sub.f16` readers (one HFMA2 each, the result in the low half); a converted,
+  stored or f16x2-packed product keeps HMUL2 + HADD2. Refused for `.f16`: a `mov` copy or `neg`
+  of the product read by an add (not probed), an add of two products.
 - Not contracted, as ptxas: a rounding modifier on either instruction; `mul.ftz` with an add
   without `.ftz`, or the reverse (FMUL.FTZ + FADD; FMUL + FADD.FTZ.SAT).
 - Refused (fail closed), when no other reader keeps the FMUL: a contracting reader in another
   block or before the mul (ptxas contracts across an if-converted branch in some kernels and
   not in others), under a guard, or after the mul's operands change; a guarded mul; a
-  definition among several that reaches the end of its block; an add of two products both
-  read elsewhere too.
+  definition among several that reaches the end of its block (unless a reader in the block
+  keeps the FMUL); an add of two products both read elsewhere too. From the multi-reader rule
+  until the f16 extension (both 2026-11-08) such a definition with no reader in its block
+  was lowered as not contracted; 15 kernel_db records (loop-carried products) lifted that way
+  and are refused again.
 - `div.full` / `div.approx [.ftz] .f32 d, a, C` with a constant divisor (an immediate,
   decimal or `0f`, or a register whose only definition is an unguarded `mov` of one that
   dominates the division) is ptxas's `FMUL [.FTZ] d, a, RN(1/C)` for 2^-126 <= |C| <= 2^126,

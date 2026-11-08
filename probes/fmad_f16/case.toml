@@ -1,0 +1,38 @@
+name = "probe_fmad_f16"
+description = """
+Probe (PTX-FMAD) for plain mul.f16 / add.f16 / sub.f16 (kernel.ptx): a product read only by
+adds / subs is contracted into each (HFMA2); one also stored or packed into an f16x2 add is
+contracted into none (HMUL2 + HADD2). Each group has its own operands. in.bin = gen.py (in 3
+of 4 groups the addends cancel the product to +- 1 ulp). expected/ is GB300's output
+(kernel.cubin = ptxas -arch=sm_103a kernel.ptx, `ptxv hw`)."""
+ptx = "kernel.ptx"
+entry = "fmad_f16"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [2560]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2048]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
