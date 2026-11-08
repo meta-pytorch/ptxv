@@ -260,6 +260,7 @@ impl Machine {
                     self.k.describe(op.pc as usize),
                     self.actor_name(op.issuer)
                 ),
+                AsyncKind::Nic { .. } => format!("{} executes", self.actor_name(op.actor)),
                 AsyncKind::Clc { .. } => unreachable!(),
             };
             out.push((Action::Async(i), what));
@@ -515,6 +516,7 @@ pub fn ctas_independent(m: &Machine) -> bool {
     use ptxv_ir::Space;
     // ASSUME(E-TMEM-COTENANT): CTAs sharing an SM share its tensor memory allocator.
     if std::env::var("PTXV_NO_CTA_POR").is_ok()
+        || m.nic.is_some()
         || !m.launch.env.tmem_share.is_empty()
         || m.launch.grids.len() != 1
         || m.threads.iter().any(|t| t.st == St::Unlaunched)
@@ -1029,7 +1031,9 @@ fn sync_por_ok(m: &Machine) -> bool {
     use ptxv_ir::Op;
     use ptxv_ir::Space;
     // ASSUME(E-TMEM-COTENANT): the footprints do not name an SM partner's allocator.
+    // S-NIC-*: the learned footprints do not cover NIC queue pairs (nic.rs).
     if std::env::var("PTXV_NO_SYNC_POR").is_ok()
+        || m.nic.is_some()
         || !m.launch.env.tmem_share.is_empty()
         || (m.launch.grids.len() != 1 || m.threads.iter().any(|t| t.st == St::Unlaunched))
             && std::env::var("PTXV_NO_GRID_POR").is_ok()
@@ -3357,7 +3361,10 @@ fn sync_ample(
             | AsyncKind::Clc { cta, mbar, .. }
             | AsyncKind::Remote { cta, mbar, .. }
             | AsyncKind::CpArrive { cta, mbar, .. } => Some((*cta as u32, *mbar as u64)),
-            AsyncKind::Mma { .. } | AsyncKind::Cp { .. } | AsyncKind::TmaStore { .. } => None,
+            AsyncKind::Mma { .. }
+            | AsyncKind::Cp { .. }
+            | AsyncKind::TmaStore { .. }
+            | AsyncKind::Nic { .. } => None,
         };
         let e = pend_bars
             .entry((m.threads[o.issuer as usize].warp, o.pc))
@@ -3513,7 +3520,10 @@ fn sync_ample(
                 | AsyncKind::Clc { cta, mbar, .. }
                 | AsyncKind::Remote { cta, mbar, .. }
                 | AsyncKind::CpArrive { cta, mbar, .. } => e.push((*cta as u32, *mbar as u64)),
-                AsyncKind::Mma { .. } | AsyncKind::Cp { .. } | AsyncKind::TmaStore { .. } => {}
+                AsyncKind::Mma { .. }
+                | AsyncKind::Cp { .. }
+                | AsyncKind::TmaStore { .. }
+                | AsyncKind::Nic { .. } => {}
             }
         }
         let mut completable: HashSet<(u32, u64)> = HashSet::new();
@@ -7639,10 +7649,14 @@ impl LaWarp {
             Op::Bra {
                 target,
                 div: Some(dm),
+                any: conv,
                 ..
             } => {
                 if c.body.is_some() {
                     return wild("BRA.DIV in an elected body");
+                }
+                if *conv {
+                    return LaStep::Fork(vec![Some(*target as u32), Some(pc + 1)]);
                 }
                 let target = *target as u32;
                 let lanes = self

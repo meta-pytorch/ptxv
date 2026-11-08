@@ -630,6 +630,12 @@ impl<'a> Lw<'a> {
             } else if let Some(h) = part.strip_prefix("-0x") {
                 a.off -= i64::from_str_radix(h, 16).map_err(|_| self.err("bad offset"))?;
             } else {
+                // `[RZ.U32+UR6]`: the zero register as a 32-bit base (an address in the
+                // uniform register alone; ptxas's STG.E.64.MMIO.SYS doorbell form).
+                let part = part
+                    .strip_suffix(".U32")
+                    .filter(|p| *p == "RZ")
+                    .unwrap_or(part);
                 let v = self.val(part, 4)?;
                 if matches!(v, Val::Imm(0)) {
                     continue; // RZ / URZ
@@ -1059,11 +1065,16 @@ fn lower_line(
                 Some(b) => (b, true),
                 None => (lw.op(i + 1)?, false),
             };
+            let (b, not_b) = match b.strip_prefix('~').filter(|b| b.contains('R')) {
+                Some(b) => (b, true),
+                None => (b, false),
+            };
             Op::LeaHi {
                 d,
                 a: lw.val(lw.op(i)?, 4)?,
                 b: lw.val(b, 4)?,
                 neg_b,
+                not_b,
                 c: if sx32 {
                     Val::Imm(0)
                 } else {
@@ -1073,7 +1084,6 @@ fn lower_line(
                 sx32,
                 cin,
                 cout,
-                not_b: false,
             }
         }
         "IABS" => Op::Int {
@@ -4249,7 +4259,7 @@ fn lower_line(
             b: lw.val(lw.op(3)?, 4)?,
         },
         // `[@P] BRA.DIV URm, `(label)``: warp-collective divergence test (Op::Bra `div`).
-        "BRA" if mods == ["DIV"] && l.operands.len() == 2 => {
+        "BRA" if (mods == ["DIV"] || mods == ["CONV"]) && l.operands.len() == 2 => {
             let t = lw.op(1)?;
             let lbl = t
                 .trim_start_matches('`')
@@ -4264,7 +4274,7 @@ fn lower_line(
             uniform = false;
             Op::Bra {
                 target,
-                any: false,
+                any: has("CONV"),
                 tid0_falls: false,
                 cond: None,
                 div: Some(lw.val(lw.op(0)?, 4)?),
@@ -4691,7 +4701,8 @@ fn wide_e_addr(mut a: Addr, e: bool) -> Addr {
         .any(|b| matches!(b, Val::Reg(r, 2) if r.file == File::UR));
     if e && !ur64 {
         if let Some(Val::Reg(r, 1)) = a.base {
-            if r.file == File::R {
+            // `[RZ.U32+UR28]` (the zero base dropped): the uniform pair holds the address.
+            if r.file == File::R || r.file == File::UR && a.base2.is_none() {
                 a.base = Some(Val::Reg(r, 2));
             }
         }
@@ -4931,7 +4942,9 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
     // kinds that may be outstanding on SBk when it is reached; both: not modeled.
     let reach = depbar_kinds(&lines, &code);
     for (i, l) in lines.iter().enumerate() {
-        if l.opcode != "DEPBAR.LE" || l.operands.len() != 2 {
+        // A trailing `{list}` (scoreboards drained to zero) is not an async-group wait here:
+        // groups counted on a listed scoreboard stay outstanding (conservative).
+        if l.opcode != "DEPBAR.LE" || !(2..=3).contains(&l.operands.len()) {
             continue;
         }
         let sb = l.operands[0]
@@ -5585,5 +5598,16 @@ mod tests {
                 ..
             }
         ));
+        assert!(matches!(
+            lower1("LEA.HI.X.SX32 R0, R2, ~R3, 0x1, P2").unwrap(),
+            Op::LeaHi {
+                not_b: true,
+                neg_b: false,
+                sx32: true,
+                cin: Some(_),
+                ..
+            }
+        ));
+        assert!(matches!(lower1("UBLKPF.L2 [UR6], UR4").unwrap(), Op::Nop));
     }
 }

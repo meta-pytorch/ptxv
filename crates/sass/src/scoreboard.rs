@@ -585,7 +585,7 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
         }
     };
     // `DEPBAR.LE SBk, n`: at most n operations outstanding on SBk; `DEPBAR {5,4,3}`: none on
-    // each listed scoreboard.
+    // each listed scoreboard; `DEPBAR.LE SBk, n, {4,3}`: both.
     let mut depbar: Vec<Vec<(u8, u8)>> = vec![vec![]; lines.len()];
     for (pc, l) in lines.iter().enumerate() {
         if !l.opcode.starts_with("DEPBAR") {
@@ -612,11 +612,21 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
             .operands
             .get(1)
             .and_then(|o| u8::from_str_radix(o.trim_start_matches("0x"), 16).ok());
-        let (true, Some(sb), Some(n), 2) = (l.opcode == "DEPBAR.LE", sb, n, l.operands.len())
+        let (true, Some(sb), Some(n), 2..=3) = (l.opcode == "DEPBAR.LE", sb, n, l.operands.len())
         else {
             bail!("sass {:#06x}: unsupported DEPBAR form `{}`", l.addr, l.text)
         };
         depbar[pc].push((sb, n));
+        if let Some(list) = l.operands.get(2) {
+            let bad = || anyhow::anyhow!("sass {:#06x}: bad DEPBAR `{}`", l.addr, l.text);
+            let list = list
+                .strip_prefix('{')
+                .and_then(|x| x.strip_suffix('}'))
+                .ok_or_else(bad)?;
+            for k in list.split(',') {
+                depbar[pc].push((k.trim().parse::<u8>().map_err(|_| bad())?, 0));
+            }
+        }
     }
     let mut input: Vec<Option<State>> = vec![None; lines.len()];
     input[0] = Some(State::new());

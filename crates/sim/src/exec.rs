@@ -523,6 +523,9 @@ impl Machine {
                                 format!("global address {a:#x} (+{n}) is outside every allocation")
                             }
                         })?;
+                    if self.launch.nic.is_some() {
+                        self.nic_domain_check(t, i)?; // ASSUME(S-NIC-DOMAIN)
+                    }
                     Loc::Global {
                         alloc: i,
                         off: a - self.launch.allocs[i].base,
@@ -3819,10 +3822,11 @@ impl Machine {
                     self.exec_thread(rep, inst, pc)?;
                 }
             }
-            // ASSUME(E-COLLECTIVE): BRA.DIV: the whole split goes one way.
+            // ASSUME(E-COLLECTIVE): BRA.DIV / BRA.CONV: the whole split goes one way.
             Op::Bra {
                 target,
                 div: Some(dm),
+                any: conv,
                 ..
             } => {
                 let lanes = members
@@ -3833,6 +3837,13 @@ impl Machine {
                         active.len() != members.len() || self.rd(t0, dm)? as u32 != lanes
                     }
                     _ => false,
+                };
+                // BRA.CONV branches where BRA.DIV falls through (the guard-false split
+                // falls through both).
+                let taken = if *conv {
+                    !taken && !active.is_empty()
+                } else {
+                    taken
                 };
                 for &t in members {
                     self.threads[t].make_mut().pc = if taken { *target as u32 } else { pc + 1 };
@@ -5533,6 +5544,9 @@ impl Machine {
                     // publishes a tensor map word by word with `atom.exch`, discarding the result).
                     if *op == AtomOp::Exch {
                         self.stale = Some(None);
+                    }
+                    if self.nic.is_some() {
+                        self.nic_gpu_atomic(t, loc, *bytes as usize, pc); // ASSUME(S-NIC-ATOMIC)
                     }
                     let old = self.access_x(t as u32, &vc, pc, loc, *bytes as usize, None, sc);
                     old_undef = self.stale.take().flatten().is_some();
@@ -8449,6 +8463,11 @@ impl Machine {
                     }
                 }
                 self.mc_view = false;
+                if self.launch.nic.is_some() {
+                    for &loc in &locs {
+                        self.nic_store(t, pc, loc, &data, *sync); // nic.rs
+                    }
+                }
                 // A release store publishes the thread's current clock: later events of the
                 // thread must not look covered by it (FastTrack ticks after a release). Without
                 // this, a plain write after `st.release` in the same clock window looked
@@ -10055,6 +10074,11 @@ impl Machine {
                 self.complete_remote(&op, false);
                 return;
             }
+            // The NIC is not part of any CTA: it may run after its issuer exited.
+            AsyncKind::Nic { qp } => {
+                self.complete_nic(&op, *qp as usize);
+                return;
+            }
         };
         self.rec_async_gate(op.issuer, op.actor);
         // Async-after-exit is checked at the end, order-independently (exit_checks).
@@ -10072,7 +10096,9 @@ impl Machine {
         }
         match op.kind.clone() {
             // Completed through `complete_clc` (a scheduler choice with outcomes).
-            AsyncKind::Clc { .. } | AsyncKind::Remote { .. } => unreachable!(),
+            AsyncKind::Clc { .. } | AsyncKind::Remote { .. } | AsyncKind::Nic { .. } => {
+                unreachable!()
+            }
             AsyncKind::Tma {
                 cta,
                 dst,

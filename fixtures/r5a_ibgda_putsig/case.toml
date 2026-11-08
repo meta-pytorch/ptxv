@@ -1,0 +1,269 @@
+name = "r5a_ibgda_putsig"
+description = """
+Rung 5a. Two GPUs in different NVLink domains (two nodes): rank 0 posts an RDMA write and an
+atomic fetch-add signal on one IBGDA queue pair (mlx5 WQEs as DOCA GPUNetIO builds them), rings
+the doorbell and polls the completion; rank 1 polls the signal and reads the data
+(docs/nic.md)."""
+ptx = "kernel.ptx"
+entry = "ibgda"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+domains = [0, 1]
+
+[[nic_qps]]
+name = "qp0"
+device = 0
+peer = 1
+qpn = 0x42
+sq = "sq"
+sq_wqes = 2
+cq = "cq"
+cq_cqes = 2
+db = "uar"
+
+[[nic_mrs]]
+key = 0x100
+buffer = "src"
+
+[[nic_mrs]]
+key = 0x101
+buffer = "sink"
+
+[[nic_mrs]]
+key = 0x200
+buffer = "dst"
+
+[[nic_mrs]]
+key = 0x201
+buffer = "sig"
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "sq"
+dtype = "u8"
+shape = [128]
+init = "zeros"
+device = 0
+
+# CQEs start owned by the hardware: opcode invalid (0xf), owner bit 1.
+[[buffers]]
+name = "cq"
+dtype = "u8"
+shape = [128]
+init = "zeros"
+values = [[63, 241], [127, 241]]
+device = 0
+
+# The doorbell register (UAR page).
+[[buffers]]
+name = "uar"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "dbr"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "sink"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "dst"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "sig"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+device = 1
+
+[[params]]
+kind = "u32"
+value = 0
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[params]]
+kind = "ptr"
+buffer = "sq"
+
+[[params]]
+kind = "ptr"
+buffer = "cq"
+
+[[params]]
+kind = "ptr"
+buffer = "uar"
+
+[[params]]
+kind = "ptr"
+buffer = "dbr"
+
+[[params]]
+kind = "ptr"
+buffer = "sink"
+
+[[params]]
+kind = "ptr"
+buffer = "dst"
+
+[[params]]
+kind = "ptr"
+buffer = "sig"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[launches]]
+entry = "ibgda"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+device = 1
+params = [
+    { kind = "u32", value = 1 },
+    { kind = "ptr", buffer = "src" },
+    { kind = "ptr", buffer = "sq" },
+    { kind = "ptr", buffer = "cq" },
+    { kind = "ptr", buffer = "uar" },
+    { kind = "ptr", buffer = "dbr" },
+    { kind = "ptr", buffer = "sink" },
+    { kind = "ptr", buffer = "dst" },
+    { kind = "ptr", buffer = "sig" },
+    { kind = "ptr", buffer = "out" },
+]
+
+[[variants]]
+id = "good"
+summary = "put with signal on one QP, fenced doorbell, completion polled before the send buffer is reused"
+expect = ["clean"]
+
+[[variants]]
+id = "N1"
+summary = "no fence before the doorbell: the NIC can fetch stale WQEs"
+marker = "@FENCE"
+find = "fence.release.gpu;"
+replace = "// (no fence)"
+expect = ["race"]
+
+[[variants]]
+id = "N2"
+summary = "a CTA-scope fence before the doorbell (GPU scope or wider is required)"
+marker = "@FENCE"
+find = "fence.release.gpu;"
+replace = "fence.release.cta;"
+expect = ["race"]
+
+[[variants]]
+id = "N3"
+summary = "signal before data: the atomic WQE in slot 0, the write in slot 1"
+marker = "@SLOTW"
+find = "%rd4, 0;"
+replace = "%rd4, 64;"
+edits = [
+    { marker = "@SLOTS", find = "%rd4, 64;", replace = "%rd4, 0;" },
+    { marker = "@CTRLW", find = "0x0342000008000000", replace = "0x0342000008010000" },
+    { marker = "@CTRLS", find = "0x0442000012010000", replace = "0x0442000012000000" },
+]
+expect = ["nondeterministic", "race"]
+
+[[variants]]
+id = "N4"
+summary = "CQ not polled: the send buffer is reused while the NIC may still read it"
+marker = "@CQPOLL"
+find = "@%p2 bra        CQPOLL;"
+replace = "// (no CQ poll)"
+expect = ["nondeterministic", "race"]
+
+[[variants]]
+id = "N5"
+summary = "the last segment of the signal WQE is written after the doorbell"
+marker = "@WQES4"
+find = "st.global.v2.b64 [%rd21+48], {%rd38, %rd13};"
+replace = "// (moved below the doorbell)"
+edits = [
+    { marker = "@LATE", find = "// (late WQE slot)", replace = "st.global.v2.b64 [%rd21+48], {%rd38, %rd13};" },
+]
+expect = ["race"]
+
+[[variants]]
+id = "N6"
+summary = "wrong rkey for the data write: a remote access error, nothing is delivered"
+marker = "@RKEY"
+find = "0x0000000000020000"
+replace = "0x0000000000030000"
+expect = ["deadlock", "fault"]
+
+[[variants]]
+id = "N7"
+summary = "the receiver polls the signal relaxed, with no acquire: the data read is not ordered after the NIC's write"
+marker = "@SIGPOLL"
+find = "ld.acquire.sys"
+replace = "ld.relaxed.sys"
+expect = ["race"]
+
+[[variants]]
+id = "N8"
+summary = "the receiver loads from rank 0's buffer directly: another NVLink domain is reachable only through the NIC"
+marker = "@DIRECT"
+find = "[%rd1];"
+replace = "[%rd43];"
+expect = ["fault"]
+
+[[variants]]
+id = "T"
+summary = "signal by an 8-byte RDMA write of a token (mscclpp's IBGDA signal) instead of the fetch-add"
+marker = "@TOKSRC"
+find = "// (token source)"
+replace = "st.global.u64 [%rd8], %rd31;"
+edits = [
+    { marker = "@CTRLS", find = "0x0442000012010000", replace = "0x0342000008010000" },
+    { marker = "@ATOMADD", find = "0x0100000000000000", replace = "0x0101000008000000" },
+    { marker = "@ATOMCMP", find = "%rd37, 0;", replace = "%rd37, %rd13;" },
+]
+expect = ["clean"]
+
+[[variants]]
+id = "N9"
+summary = "token signal posted before the data write: the token lands first"
+marker = "@TOKSRC"
+find = "// (token source)"
+replace = "st.global.u64 [%rd8], %rd31;"
+edits = [
+    { marker = "@CTRLS", find = "0x0442000012010000", replace = "0x0342000008000000" },
+    { marker = "@ATOMADD", find = "0x0100000000000000", replace = "0x0101000008000000" },
+    { marker = "@ATOMCMP", find = "%rd37, 0;", replace = "%rd37, %rd13;" },
+    { marker = "@SLOTW", find = "%rd4, 0;", replace = "%rd4, 64;" },
+    { marker = "@SLOTS", find = "%rd4, 64;", replace = "%rd4, 0;" },
+    { marker = "@CTRLW", find = "0x0342000008000000", replace = "0x0342000008010000" },
+]
+expect = ["nondeterministic", "race"]

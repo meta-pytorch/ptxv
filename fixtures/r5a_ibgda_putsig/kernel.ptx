@@ -1,0 +1,164 @@
+// Rung 5a fixture: put-with-signal over GPU-initiated RDMA (IBGDA, docs/nic.md).
+//
+//   Rank 0 (GPU 0, node 0) and rank 1 (GPU 1, node 1) run the same kernel; they are in
+//   different NVLink domains, so the only path between them is the NIC. Rank 0 writes a
+//   16-byte payload into its send buffer, posts two mlx5 WQEs on QP 0x42 the way DOCA GPUNetIO
+//   does (doca_gpu_dev_verbs_put + _signal, EXCLUSIVE sharing mode): an RDMA write of the
+//   payload into rank 1's dst, then an atomic fetch-add of 1 on rank 1's signal word, both
+//   with CQ update. It releases (fence.release.gpu), rings the doorbell (st.mmio.relaxed.sys),
+//   updates the doorbell record and rings again, polls the second CQE's owner bit
+//   (ld.relaxed.sys + fence.acquire.sys), and only then reuses the send buffer. Rank 1 polls
+//   its signal word with ld.acquire.sys, then copies dst to out: out = {0x100..0x103}.
+//
+// Mutants (case.toml): no fence before the doorbell; a CTA-scope fence; the signal WQE
+// posted before the data WQE; the CQ not polled before the send buffer is reused; the WQE
+// of the signal written after the doorbell; a wrong rkey; the receiver polls relaxed with no
+// acquire; the receiver reads rank 0's memory directly (a different NVLink domain). Variant T
+// signals with an 8-byte RDMA write of a token instead of the fetch-add (mscclpp's form,
+// S-NIC-FLAG); N9 is T with the token WQE posted before the data WQE.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry ibgda(
+    .param .u32 rank,
+    .param .u64 src,
+    .param .u64 sq,
+    .param .u64 cq,
+    .param .u64 uar,
+    .param .u64 dbr,
+    .param .u64 sink,
+    .param .u64 dst,
+    .param .u64 sig,
+    .param .u64 out
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<8>;
+    .reg .b32   %r<24>;
+    .reg .b64   %rd<64>;
+
+    mov.u32         %r0, %tid.x;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        DONE;
+    ld.param.u32    %r1, [rank];
+    ld.param.u64    %rd1, [dst];
+    ld.param.u64    %rd2, [sig];
+    setp.ne.u32     %p1, %r1, 0;
+    @%p1 bra        RECV;
+
+    // ---------------------------------------------------------------- rank 0: sender
+    ld.param.u64    %rd3, [src];
+    ld.param.u64    %rd4, [sq];
+    ld.param.u64    %rd5, [cq];
+    ld.param.u64    %rd6, [uar];
+    ld.param.u64    %rd7, [dbr];
+    ld.param.u64    %rd8, [sink];
+    mov.u32         %r2, 256;
+    st.global.u32   [%rd3], %r2;
+    add.u32         %r2, %r2, 1;
+    st.global.u32   [%rd3+4], %r2;
+    add.u32         %r2, %r2, 1;
+    st.global.u32   [%rd3+8], %r2;
+    add.u32         %r2, %r2, 1;
+    st.global.u32   [%rd3+12], %r2;
+
+    // Big-endian images of the four addresses the WQEs carry (bswap64).
+    mov.u64         %rd40, %rd1;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd10, %rd50, %rd51;         // BE(dst)
+    mov.u64         %rd40, %rd3;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd11, %rd50, %rd51;         // BE(src)
+    mov.u64         %rd40, %rd2;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd12, %rd50, %rd51;         // BE(sig)
+    mov.u64         %rd40, %rd8;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd13, %rd50, %rd51;         // BE(sink)
+
+    // WQE slots: the data write in slot 0 (index 0), the signal in slot 1 (index 1).
+    add.u64         %rd20, %rd4, 0;                                 // @SLOTW
+    add.u64         %rd21, %rd4, 64;                                // @SLOTS
+    // RDMA write (opcode 0x08, 3 segments, CQ update): ctrl, raddr/rkey, data.
+    mov.u64         %rd30, 0x0342000008000000;                      // @CTRLW
+    mov.u64         %rd31, 0x0000000008000000;
+    st.global.v2.b64 [%rd20], {%rd30, %rd31};
+    mov.u64         %rd32, 0x0000000000020000;                      // @RKEY
+    st.global.v2.b64 [%rd20+16], {%rd10, %rd32};
+    mov.u64         %rd33, 0x0001000010000000;
+    st.global.v2.b64 [%rd20+32], {%rd33, %rd11};
+    // Atomic fetch-add of 1 (opcode 0x12, 4 segments, CQ update): ctrl, raddr/rkey, add/compare, data.
+    mov.u64         %rd34, 0x0442000012010000;                      // @CTRLS
+    st.global.v2.b64 [%rd21], {%rd34, %rd31};                       // @WQES
+    mov.u64         %rd35, 0x0000000001020000;
+    st.global.v2.b64 [%rd21+16], {%rd12, %rd35};                    // @WQES
+    mov.u64         %rd36, 0x0100000000000000;                      // @ATOMADD
+    mov.u64         %rd37, 0;                                       // @ATOMCMP
+    st.global.v2.b64 [%rd21+32], {%rd36, %rd37};                    // @WQES3
+    mov.u64         %rd38, 0x0101000008000000;
+    st.global.v2.b64 [%rd21+48], {%rd38, %rd13};                    // @WQES4
+    // DOCA mark_wqes_ready / submit_db: release, doorbell, doorbell record, doorbell again.
+    // (token source)                                               // @TOKSRC
+    fence.release.gpu;                                              // @FENCE
+    mov.u64         %rd39, 0x0042000000020000;
+    st.mmio.relaxed.sys.global.b64 [%rd6], %rd39;
+    // (late WQE slot)                                              // @LATE
+    mov.u32         %r3, 0x02000000;
+    st.relaxed.sys.global.b32 [%rd7], %r3;
+    st.mmio.relaxed.sys.global.b64 [%rd6], %rd39;
+    // DOCA poll_cq_at for the last WQE (CQE 1): owner bit 0 on the first pass.
+CQPOLL:
+    ld.relaxed.sys.global.u8 %r4, [%rd5+127];
+    and.b32         %r5, %r4, 1;
+    setp.ne.u32     %p2, %r5, 0;
+    @%p2 bra        CQPOLL;                                         // @CQPOLL
+    fence.acquire.sys;
+    // Reuse the send buffer.
+    mov.u32         %r6, 0xdead;
+    st.global.u32   [%rd3], %r6;
+    bra             DONE;
+
+    // ---------------------------------------------------------------- rank 1: receiver
+RECV:
+SIGPOLL:
+    ld.acquire.sys.global.u64 %rd41, [%rd2];                        // @SIGPOLL
+    setp.eq.u64     %p3, %rd41, 0;
+    @%p3 bra        SIGPOLL;
+    ld.param.u64    %rd43, [src];
+    ld.global.u32   %r10, [%rd1];                                   // @DIRECT
+    ld.global.u32   %r11, [%rd1+4];
+    ld.global.u32   %r12, [%rd1+8];
+    ld.global.u32   %r13, [%rd1+12];
+    ld.param.u64    %rd42, [out];
+    st.global.u32   [%rd42], %r10;
+    st.global.u32   [%rd42+4], %r11;
+    st.global.u32   [%rd42+8], %r12;
+    st.global.u32   [%rd42+12], %r13;
+DONE:
+    ret;
+}

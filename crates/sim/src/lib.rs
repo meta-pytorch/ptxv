@@ -29,6 +29,7 @@ pub mod mufu;
 pub mod mufu_sample;
 mod mufu_tables;
 pub mod multimem;
+pub mod nic;
 pub mod norm;
 pub mod num;
 pub mod race_dead;
@@ -458,6 +459,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
             m.name
         );
     }
+    let nic = nic::NicCfg::from_case(m, &allocs)?.map(std::sync::Arc::new);
     let refuted_opt_in: Vec<String> = if poll_acquire {
         vec!["E-POLL-ACQ".into()]
     } else {
@@ -500,6 +502,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
         },
         hw_order: false,
         refuted_opt_in,
+        nic,
     })
     .with_hw_model_env())
 }

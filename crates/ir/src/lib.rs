@@ -1173,6 +1173,8 @@ pub enum Op {
         /// SASS `BRA.DIV URm, target` (ptxas's collective lowering of a run-time member
         /// mask): warp-collective; every lane of the executing split branches unless the guard
         /// holds on all of them and their lane mask equals URm (GB300: fixtures/s_warpcoll).
+        /// With `any` set: SASS `BRA.CONV URm, target`, the inverse test (branches exactly
+        /// when that BRA.DIV would fall through).
         div: Option<Val>,
     },
     /// SASS `BRX Ra -off` / `BRXU URa -off` (ptxas jump tables): jump to the code address

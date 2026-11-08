@@ -59,6 +59,15 @@
 #   doorbell register a synthetic 8-byte buffer, the handle's remote addresses pointers into
 #   the peer's buffers, and its keys `[[nic_mrs]]` covering the buffer each address falls in.
 #   `DOMAINS` (one NVLink domain per rank) becomes `domains`.
+# * Several hosts (--nnodes N --node-rank i --master-addr --master-port, the script run once
+#   per host with one shared --work): each host's torchrun records its local ranks, node 0
+#   waits for every rank.json and merges. rank.json carries the host name, the GPU's NVLink
+#   fabric state (nvidia-smi) and the process's RC QPs (`rdma res show qp`: local / remote
+#   QPN). POSIX-fd and legacy-IPC keys are per host; launch times are taken relative to a
+#   common barrier per host. Each IBGDA handle's peer is the rank whose QP is its QP's remote
+#   QPN, else the rank whose handle has its rkey as lkey at its remote base, else the nic()
+#   label (capture.json "nic_pairs"). `domains`: one NVLink domain per host, or per fabric
+#   clique when a kernel pointer of one rank resolves into memory owned on another host.
 import argparse
 import glob
 import hashlib
@@ -66,9 +75,11 @@ import json
 import os
 import re
 import shutil
+import socket
 import struct
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(
@@ -106,6 +117,21 @@ def parse_args():
     )
     ap.add_argument("--name", help="case name (default: the directory name)")
     ap.add_argument(
+        "--nnodes",
+        type=int,
+        default=1,
+        help="hosts: run this script once per host (--node-rank), same --work on a shared filesystem",
+    )
+    ap.add_argument("--node-rank", type=int, default=0)
+    ap.add_argument("--master-addr", help="node 0's address (--nnodes > 1)")
+    ap.add_argument("--master-port", type=int)
+    ap.add_argument(
+        "--wait",
+        type=int,
+        default=600,
+        help="node 0: seconds to wait for the other hosts' rank.json after its torchrun exits",
+    )
+    ap.add_argument(
         "--kernels", help="regex: keep only launches whose kernel name matches"
     )
     ap.add_argument("--no-warmup", action="store_true")
@@ -137,7 +163,10 @@ def u64(raw, off):
 def build_probes():
     lib = os.path.join(sys.prefix, "lib")
     inc = glob.glob(f"{CUDA}/targets/*/include")[0]
-    so_lc, so_cc = f"{WORK}/launchcap.so", f"{WORK}/cubincap.so"
+    # Per host: the hosts share WORK and may differ in toolchain.
+    d = f"{WORK}/node{A.node_rank}" if A.nnodes > 1 else WORK
+    os.makedirs(d, exist_ok=True)
+    so_lc, so_cc = f"{d}/launchcap.so", f"{d}/cubincap.so"
     subprocess.run(
         ["gcc", "-shared", "-fPIC", "-O2", "-o", so_lc, f"{LC}/launchcap.c", "-ldl"]
         + [f"-I{CUDA}/include"],
@@ -159,10 +188,19 @@ def parent():
         )
     if len(vis.split(",")) < A.nproc:
         sys.exit(f"capture_dist: {A.nproc} ranks but CUDA_VISIBLE_DEVICES={vis}")
-    shutil.rmtree(WORK, ignore_errors=True)
-    for r in range(A.nproc):
+    if A.nnodes == 1:
+        shutil.rmtree(WORK, ignore_errors=True)
+    else:
+        # WORK is shared by the hosts and cleaned by the caller; each host makes its ranks'.
+        if not (A.master_addr and A.master_port and A.work):
+            sys.exit(
+                "capture_dist: --nnodes > 1 needs --master-addr, --master-port, --work"
+            )
+        if glob.glob(f"{WORK}/r*/rank.json"):
+            sys.exit(f"capture_dist: {WORK} holds an earlier recording; clean it first")
+    for r in range(A.node_rank * A.nproc, (A.node_rank + 1) * A.nproc):
         for d in ("cupti", "images"):
-            os.makedirs(f"{WORK}/r{r}/{d}")
+            os.makedirs(f"{WORK}/r{r}/{d}", exist_ok=A.nnodes > 1)
     so_lc, so_cc = build_probes()
     env = dict(
         os.environ,
@@ -174,13 +212,18 @@ def parent():
         CUBINCAP_DIR=f"{WORK}/r%r/cupti",
         PTXV_CAPTURE_DIST_WORK=WORK,
     )
-    port = 29500 + os.getpid() % 2000
+    port = A.master_port or 29500 + os.getpid() % 2000
+    hosts = []
+    if A.nnodes > 1:
+        hosts = ["--nnodes", str(A.nnodes), "--node-rank", str(A.node_rank)]
+        hosts += ["--master-addr", A.master_addr]
     cmd = [
         sys.executable,
         "-m",
         "torch.distributed.run",
         "--nproc-per-node",
         str(A.nproc),
+        *hosts,
         "--master-port",
         str(port),
         os.path.abspath(__file__),
@@ -192,6 +235,18 @@ def parent():
     if r.returncode:
         sys.exit(
             f"capture_dist: torchrun failed ({r.returncode}); recordings in {WORK}"
+        )
+    if A.node_rank:
+        return  # node 0 merges
+    want = [f"{WORK}/r{r}/rank.json" for r in range(A.nproc * A.nnodes)]
+    for _ in range(A.wait * 2):
+        if all(os.path.exists(w) for w in want):
+            break
+        time.sleep(0.5)
+    miss = [w for w in want if not os.path.exists(w)]
+    if miss:
+        sys.exit(
+            f"capture_dist: {len(miss)} rank(s) never wrote rank.json, e.g. {miss[0]}"
         )
     merge()
     if not A.work:
@@ -271,6 +326,48 @@ def nic_describe(mod, inputs, dev_read):
         ] + [tuple(x) for x in d.get("regions", [])]
         out.append(q)
     return out
+
+
+def rdma_qps_of(pid):
+    """This process's RC QPs as the kernel lists them (`rdma res show qp`): local and remote QPN
+    per HCA. The remote QPN is what pairs a GPU's QP with its peer's across hosts."""
+    try:
+        out = subprocess.run(
+            ["rdma", "-j", "res", "show", "qp"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout
+        qs = json.loads(out or "[]")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    return [
+        {k: q.get(k) for k in ("ifname", "port", "lqpn", "rqpn", "type", "state")}
+        for q in qs
+        if q.get("pid") == pid and q.get("type") == "RC"
+    ]
+
+
+def gpu_fabric(uuid):
+    """NVLink fabric membership of this rank's GPU (nvidia-smi -q: cluster UUID, clique id)."""
+    idx = uuid if uuid.startswith("GPU-") else f"GPU-{uuid}"
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "-q", "-i", idx], capture_output=True, text=True, timeout=60
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    f, sec = {}, False
+    for ln in out.splitlines():
+        if ln.strip() == "Fabric":
+            sec = True
+        elif sec and ":" in ln:
+            k, v = (x.strip() for x in ln.split(":", 1))
+            if k in ("State", "Status", "CliqueId", "ClusterUUID"):
+                f[k] = v
+        elif sec and ln.strip() and not ln.startswith(" " * 8):
+            sec = False
+    return f
 
 
 def worker():  # noqa: C901 (per-rank capture worker: one linear pass over shared capture state)
@@ -393,7 +490,11 @@ def worker():  # noqa: C901 (per-rank capture worker: one linear pass over share
     dist.barrier()
     torch.cuda.synchronize()
     first = sum(1 for _ in open(CAP)) if os.path.exists(CAP) else 0
+    # Host clock at a point every rank passed together (after the barrier): launch times of
+    # ranks on different hosts are compared relative to it.
+    t_ref = time.monotonic_ns()
     nic = nic_describe(mod, inputs, _dev_read) if hasattr(mod, "nic") else []
+    rdma_qps = rdma_qps_of(os.getpid()) if nic else []
     vmm = [json.loads(ln) for ln in open(CAP)][:first]
     vmm = [r for r in vmm if "vmm" in r]
     pre_blocks = active_blocks()
@@ -533,6 +634,14 @@ def worker():  # noqa: C901 (per-rank capture worker: one linear pass over share
         "world": world,
         "device": torch.cuda.current_device(),
         "uuid": str(getattr(torch.cuda.get_device_properties(local), "uuid", "")),
+        "host": socket.gethostname(),
+        "node": int(os.environ.get("GROUP_RANK", A.node_rank)),
+        "local_rank": local,
+        "t_ref": t_ref,
+        "fabric": gpu_fabric(
+            str(getattr(torch.cuda.get_device_properties(local), "uuid", ""))
+        ),
+        "rdma_qps": rdma_qps,
         "torch": torch.__version__,
         "pre_blocks": pre_blocks,
         "plain": [(a, z, k) for a, (z, k) in plain.items()],
@@ -660,10 +769,88 @@ def split_packed(r, x):
     x["params"] = [{"offset": o, "hex": raw[o : o + z].hex()} for o, z in lay]
 
 
+def nic_pairing(ranks, warnings, notes):
+    """Peer of each IBGDA handle, (rank, handle index) -> (peer rank, how), from what the
+    hosts recorded rather than the target's nic() label:
+    * "qpn": the kernel's view of the rank's process (`rdma res show qp`) gives the handle's
+      QP (sq_num) a remote QPN; the peer is the one rank owning a handle with that QPN whose
+      own remote QPN is this QP. QPNs are per HCA, so this holds across hosts.
+    * "rkey": else, the one other rank with a handle whose lkey is this handle's rkey and whose
+      local base is this handle's remote base (one registered buffer per direction pair).
+    Disagreement with nic() is a warning; the recorded pairing wins."""
+    qs = {}  # (rank, handle index) -> handle
+    for r, m in enumerate(ranks):
+        for qi, q in enumerate(m.get("nic", [])):
+            if not q.get("extra"):
+                qs[(r, qi)] = q
+    rq = {}  # (rank, lqpn) -> {rqpn}
+    for r, m in enumerate(ranks):
+        for e in m.get("rdma_qps", []):
+            if e.get("rqpn") is not None:
+                rq.setdefault((r, e["lqpn"]), set()).add(e["rqpn"])
+    out, counts, bad = {}, {"qpn": 0, "rkey": 0, "nic()": 0}, 0
+    for (r, qi), q in qs.items():
+        lq = q["qp_fields"]["sq_num"]
+        how, peer = "nic()", q["peer"]
+        rem = rq.get((r, lq), set())
+        if len(rem) == 1:
+            (n,) = rem
+            c = {
+                p
+                for (p, pj), x in qs.items()
+                if p != r and x["qp_fields"]["sq_num"] == n and lq in rq.get((p, n), ())
+            }
+            if len(c) == 1:
+                how, peer = "qpn", c.pop()
+        if how == "nic()":
+            c = {
+                p
+                for (p, pj), x in qs.items()
+                if p != r
+                and x["lkey"] == q["rkey"]
+                and x["local_base"] == q["remote_base"]
+            }
+            if len(c) == 1:
+                how, peer = "rkey", c.pop()
+        if peer != q["peer"]:
+            bad += 1
+            warnings.append(
+                f"rank {r}: IBGDA handle {qi} (QP {lq:#x}): nic() names peer {q['peer']}, "
+                f"the recorded pairing ({how}) gives {peer}; {peer} used"
+            )
+        counts[how] += 1
+        out[(r, qi)] = (peer, how)
+    if qs:
+        notes.append(
+            f"IBGDA pairing of {len(qs)} QP(s): {counts['qpn']} by QPN (rdma res show qp), "
+            f"{counts['rkey']} by rkey + remote base, {counts['nic()']} by nic() alone; "
+            f"{bad} disagree with nic()"
+        )
+    return out
+
+
 def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared capture state)
-    R = A.nproc
+    R = A.nproc * A.nnodes
     ranks = [json.load(open(f"{WORK}/r{r}/rank.json")) for r in range(R)]
     warnings, unresolved, notes = [], [], []
+    # Hosts: POSIX fds and legacy IPC handles name allocations only within one host. Host
+    # clocks (launch "t", CLOCK_MONOTONIC) are made comparable across hosts by subtracting
+    # each host's earliest t_ref (taken by every rank right after a common barrier).
+    host = [m.get("host", "") for m in ranks]
+    hosts = list(dict.fromkeys(host))
+    if len(hosts) > 1:
+        ref = {h: min(m["t_ref"] for m in ranks if m["host"] == h) for h in hosts}
+        for m in ranks:
+            for x in m["setup_records"] + m["records"]:
+                if "t" in x:
+                    x["t"] -= ref[m["host"]]
+
+    def fdk(r, x):
+        return f"fd:{host[r]}:{x['fd_dev']}:{x['fd_ino']}"
+
+    def ipck(r, x):
+        return f"ipc:{host[r]}:{x['ipc']}" if len(hosts) > 1 else f"ipc:{x['ipc']}"
+
     kfilter = re.compile(A.kernels) if A.kernels else None
 
     # ------------------------------------------------ physical allocations across ranks
@@ -699,14 +886,14 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                 and not x["fabric"]
                 and x["fd_ino"]
             ):
-                k = f"fd:{x['fd_dev']}:{x['fd_ino']}"
+                k = fdk(r, x)
                 fd_count[k] = fd_count.get(k, 0) + 1
     fd_exports = []  # ambiguous fd exports: [t, rank, phys id, matched]
     for r, m in enumerate(ranks):
         vm = [x for x in m["setup_records"] + m["records"] if "vmm" in x]
         for x in vm:  # exports name a physical allocation globally
             if x["vmm"] == "export" and not x["r"]:
-                key = x["fabric"] or (x["fd_ino"] and f"fd:{x['fd_dev']}:{x['fd_ino']}")
+                key = x["fabric"] or (x["fd_ino"] and fdk(r, x))
                 if key and not x["fabric"] and fd_count.get(key, 0) > 1:
                     continue
                 old = handle_phys[r].get(x["handle"])
@@ -718,7 +905,7 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                 x["vmm"] == "export"
                 and not x["r"]
                 and not x["fabric"]
-                and fd_count.get(f"fd:{x['fd_dev']}:{x['fd_ino']}", 0) > 1
+                and fd_count.get(fdk(r, x), 0) > 1
                 and handle_phys[r].get(x["handle"])
             ):
                 fd_exports.append(
@@ -737,7 +924,7 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                 x["vmm"] == "import"
                 and not x["r"]
                 and not x["fabric"]
-                and fd_count.get(f"fd:{x['fd_dev']}:{x['fd_ino']}", 0) > 1
+                and fd_count.get(fdk(r, x), 0) > 1
             ):
                 continue
             h, kind, need = x["handle"], "mem", 0
@@ -757,6 +944,7 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
             for e in fd_exports
             if not e[3]
             and e[1] != r
+            and host[e[1]] == host[r]
             and e[0] < t
             and phys.get(e[2], {}).get("kind") == kind
             and (phys[e[2]].get("size") or 0) >= need
@@ -785,8 +973,8 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                     (a for a in allocs if a <= x["ptr"] < a + allocs[a]), default=None
                 )
                 size = allocs[base] - (x["ptr"] - base) if base is not None else 1
-                phys[f"ipc:{x['ipc']}"] = {"owner": r, "kind": "mem", "size": size}
-                maps[r].append((x["ptr"], x["ptr"] + size, f"ipc:{x['ipc']}", 0))
+                phys[ipck(r, x)] = {"owner": r, "kind": "mem", "size": size}
+                maps[r].append((x["ptr"], x["ptr"] + size, ipck(r, x), 0))
     for r, m in enumerate(ranks):
         recs = m["setup_records"] + m["records"]
         live = list(maps[r])
@@ -794,7 +982,7 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
             if x["vmm"] == "import" and not x["r"] and id(x) in fd_import:
                 handle_phys[r][x["handle"]] = fd_import[id(x)]
             elif x["vmm"] == "import" and not x["r"]:
-                key = x["fabric"] or f"fd:{x['fd_dev']}:{x['fd_ino']}"
+                key = x["fabric"] or fdk(r, x)
                 if f"g:{key}" not in phys:
                     warnings.append(
                         f"rank {r}: imported allocation {key[:24]}... has no exporter"
@@ -838,7 +1026,7 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                     f"rank {r}: cuMulticastUnbind recorded (binds are taken as of the end of the capture: not modeled)"
                 )
             elif x["vmm"] == "ipc_open" and not x["r"]:
-                pid = f"ipc:{x['ipc']}"
+                pid = ipck(r, x)
                 size = phys.get(pid, {}).get("size", 1)
                 live.append((x["ptr"], x["ptr"] + size, pid, 0))
         maps[r] = live
@@ -1048,6 +1236,10 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
     # scan looks at are data far outside every region.
     bbox = {}
 
+    # Bounding boxes per device (rebuilt when regions are added): most words a pointer-table
+    # scan looks at are data far outside every region.
+    bbox = {}
+
     def region_at(dev, a):
         if bbox.get("n") != len(regions):
             bbox.clear()
@@ -1067,6 +1259,10 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
         return None
 
     maps_box = {}
+
+    xhost_refs = (
+        set()
+    )  # (rank, owner): a pointer of rank r into memory owned on another host
 
     def resolve(r, v):
         """(region index, offset) | ("multicast", ...) | None, for address v seen by rank r."""
@@ -1088,6 +1284,8 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                     return ("multicast", pid, v - s + off)
                 if pid not in owner_va:
                     return None
+                if host[p["owner"]] != host[r]:
+                    xhost_refs.add((r, p["owner"]))
                 return region_at(p["owner"], owner_va[pid] + off + (v - s))
         return region_at(r, v)
 
@@ -1389,11 +1587,24 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
     # IBGDA handles: their remote addresses are VAs of the peer rank (they may resolve to an
     # unrelated buffer of this rank by accident): point them at the peer's buffer.
     nic_qps, nic_mrs = [], []
+    nic_peer = nic_pairing(ranks, warnings, notes)
+    nic_pairs = []
     for r, m in enumerate(ranks):
         for qi, q in enumerate(m.get("nic", [])):
             if q.get("extra"):
                 continue
             f = q["qp_fields"]
+            q["peer"], how = nic_peer.get((r, qi), (q["peer"], "nic()"))
+            nic_pairs.append(
+                {
+                    "rank": r,
+                    "host": host[r],
+                    "qpn": f["sq_num"],
+                    "peer": q["peer"],
+                    "peer_host": host[q["peer"]],
+                    "by": how,
+                }
+            )
             hl = region_at(r, q["addr"])
             loc = {
                 k: region_at(r, f[k]) for k in ("sq_wqe_daddr", "cqe_daddr", "sq_db")
@@ -1462,7 +1673,6 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                 )
             )
     domains = ranks[0].get("domains", [])
-
     # Outputs: regions holding an output tensor of their rank.
     out_regions = {}  # output name -> {rank: region index}
     for r, m in enumerate(ranks):
@@ -1678,7 +1888,7 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
         if a != "--worker" and not a.startswith("--work") and a != WORK
     )
     desc = f"""
-Captured by tools/capture_dist.py (torch {ranks[0]["torch"]}, torchrun --nproc-per-node {R}):
+Captured by tools/capture_dist.py (torch {ranks[0]["torch"]}, torchrun --nproc-per-node {A.nproc}{f" on {len(hosts)} hosts" if len(hosts) > 1 else ""}):
 run() of {os.path.basename(A.file)}. {len(L)} launch(es) on {R} GPUs, binary only:
 {kern_lines}
 Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py {cmdline}"""
@@ -1696,6 +1906,43 @@ Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py {cmdli
         )
         + (f'exit_fence = "{A.exit_fence}"\n' if A.exit_fence else "")
     ]
+    kept_phys = {
+        pid
+        for pid, va in owner_va.items()
+        for i in kept
+        if regions[i]["dev"] == phys[pid]["owner"]
+        and va <= regions[i]["start"] < va + phys[pid]["size"]
+    }
+    if len(hosts) > 1:
+        # Ranks on different hosts: one NVLink domain per host, unless a kernel parameter or
+        # pointer-table word of one rank points through a mapping into memory owned on another
+        # host (a fabric handle: the hosts share an NVLink fabric, e.g. symmetric memory across
+        # GB300 trays); then one domain per fabric clique (nvidia-smi). A mapping no pointer
+        # uses (NCCL's MNNVL buffers) does not count.
+        def fab(r):
+            f = ranks[r].get("fabric") or {}
+            return (
+                (f.get("ClusterUUID"), f.get("CliqueId"))
+                if f.get("ClusterUUID")
+                else host[r]
+            )
+
+        cross = sorted(xhost_refs)
+        if cross:
+            cl = list(dict.fromkeys(fab(r) for r in range(R)))
+            phys_dom = [cl.index(fab(r)) for r in range(R)]
+            notes.append(
+                f"{len(cross)} (rank, owner) pair(s) point into memory across hosts, e.g. {cross[0]}: "
+                f"domains follow the NVLink fabric cliques {phys_dom}"
+            )
+        else:
+            phys_dom = [hosts.index(h) for h in host]
+        if domains and domains != phys_dom:
+            warnings.append(
+                f"the target's DOMAINS {domains} differ from the hosts' {phys_dom}; hosts' used"
+            )
+        domains = phys_dom
+
     if domains:
         toml.append(f"domains = {q(domains)}\n")
     for x in nic_qps:
@@ -1784,13 +2031,6 @@ Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py {cmdli
     )
     open(f"{out}/case.toml", "w").write("\n".join(toml))
 
-    kept_phys = {
-        pid
-        for pid, va in owner_va.items()
-        for i in kept
-        if regions[i]["dev"] == phys[pid]["owner"]
-        and va <= regions[i]["start"] < va + phys[pid]["size"]
-    }
     meta = {
         "argv": [a for a in sys.argv[1:] if a != "--worker"],
         "torch": ranks[0]["torch"],
@@ -1832,6 +2072,16 @@ Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py {cmdli
             if phys.get(pid, {}).get("kind") == "multicast" or pid in kept_phys
         ],
         "multicast": mc_report,
+        "hosts": [
+            {
+                "rank": m["rank"],
+                "host": m.get("host"),
+                "node": m.get("node"),
+                "fabric": m.get("fabric"),
+            }
+            for m in ranks
+        ],
+        "nic_pairs": nic_pairs,
         "symmetric": [
             dict(
                 **{

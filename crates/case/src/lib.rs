@@ -130,6 +130,17 @@ pub struct Manifest {
     /// `PTXV_REMOTE_FIFO=0|1` overrides.
     #[serde(default)]
     pub remote_fifo: bool,
+    /// NVLink domain of each GPU (index = device). GPUs in different domains (different
+    /// nodes) reach each other only through the NIC (`nic_qps`): a direct load or store from
+    /// one domain into another's memory is a fault. Empty: one domain (docs/nic.md).
+    #[serde(default)]
+    pub domains: Vec<u32>,
+    /// GPU-initiated RDMA queue pairs (IBGDA, docs/nic.md): each is executed by a NIC actor.
+    #[serde(default)]
+    pub nic_qps: Vec<NicQp>,
+    /// RDMA memory registrations the NIC checks keys against (docs/nic.md).
+    #[serde(default)]
+    pub nic_mrs: Vec<NicMr>,
     pub buffers: Vec<Buffer>,
     /// NVLS multicast objects (`cuMulticastCreate` + `cuMulticastBindMem` + `cuMemMap` of the
     /// multicast handle): an address range that is a multicast view of one bound range per GPU.
@@ -149,6 +160,58 @@ pub struct Manifest {
     #[serde(default)]
     pub launches: Vec<NextLaunch>,
     pub variants: Vec<Variant>,
+}
+
+/// One reliable-connected queue pair driven by a GPU (IBGDA / DOCA GPUNetIO verbs): its send
+/// queue, completion queue and doorbell live in buffers of the case; the NIC of `device`'s node
+/// executes the WQEs the kernel posts and writes into `peer`'s memory (docs/nic.md).
+#[derive(Debug, Clone, Deserialize)]
+pub struct NicQp {
+    pub name: String,
+    /// GPU that posts WQEs (its node's NIC executes them).
+    pub device: u32,
+    /// GPU whose memory the remote addresses of this QP name.
+    pub peer: u32,
+    /// QP number (what the WQE control segment and the doorbell carry).
+    pub qpn: u32,
+    /// Buffer holding the send-queue ring (64-byte WQE basic blocks).
+    pub sq: String,
+    #[serde(default)]
+    pub sq_offset: u64,
+    /// Number of WQE basic blocks in the ring (a power of two).
+    pub sq_wqes: u32,
+    /// Buffer holding the send completion queue (64-byte CQEs).
+    pub cq: String,
+    #[serde(default)]
+    pub cq_offset: u64,
+    /// Number of CQEs (a power of two).
+    pub cq_cqes: u32,
+    /// Buffer standing for the doorbell register (UAR page) and the register's offset there.
+    pub db: String,
+    #[serde(default)]
+    pub db_offset: u64,
+    /// WQE counter the NIC has consumed up to when the case starts.
+    #[serde(default)]
+    pub sq_ci: u64,
+    /// CQEs the NIC has written when the case starts.
+    #[serde(default)]
+    pub cq_pi: u64,
+    /// Data-placement ordering of the QP: "ibta" (default, in-order). Anything else
+    /// (out-of-order placement) is not modeled.
+    #[serde(default)]
+    pub ordering: Option<String>,
+}
+
+/// A memory registration: `key` (as the WQE's big-endian key field reads) names `buffer`
+/// (+ `offset`, `len` bytes; default: to the end) on the buffer's GPU.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NicMr {
+    pub key: u32,
+    pub buffer: String,
+    #[serde(default)]
+    pub offset: u64,
+    #[serde(default)]
+    pub len: Option<u64>,
 }
 
 /// A kernel launched after the previous one on the same stream.

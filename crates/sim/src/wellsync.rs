@@ -3720,6 +3720,17 @@ fn certify_runs(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Out
             races: vec![],
         };
     }
+    // S-NIC-*: the certificate's conditions do not cover NIC queue pairs (nic.rs).
+    if m0.nic.is_some() {
+        return Outcome {
+            verdict: None,
+            reasons: vec!["NIC queue pairs: decided by exploration (docs/nic.md)".into()],
+            steps: 0,
+            seconds: 0.0,
+            races: vec![],
+        };
+    }
+    let m0 = crate::explore::clc_eager(m0);
     let elects =
         m0.k.front == Front::Ptx && m0.k.code.iter().any(|i| matches!(i.op, Op::Elect { .. }));
     if elects && std::env::var("PTXV_ELECT").as_deref() == Ok("all") {

@@ -891,6 +891,11 @@ slow path = `WARPSYNC.COLLECTIVE Rm, end; op...; ENDCOLLECTIVE; end:`.
   probes/coll_split now equal GB300 on the SASS front-end.
 - If wrong: *miss/false alarm* only for collective regions entered by lanes at different
   instructions whose regions differ (unmodeled: they wait).
+- `BRA.CONV URm, L` (DeepEP's `k_hybrid_combine` exit, `UMOV UR4, -1; BRA.CONV UR4, fast`,
+  slow path = `WARPSYNC.COLLECTIVE ... ENDCOLLECTIVE` inline) is taken exactly where `BRA.DIV
+  URm` would fall through. **Argued** (the inverse test; not run on GB300): no ptxas input
+  that emits it has been reduced to a fixture. If wrong, the other path runs; in the kernels
+  seen both paths do the same work.
 
 ### E-COLLECTIVE-ALL · code
 **ptxas's divergent path of a non-aligned `barrier.sync`** (CuTeDSL `barrier(aligned=False)`;
@@ -3144,6 +3149,136 @@ either. Arrivals and st.async to the issuer's own CTA land at issue, as before.
   401,200 clusters, `order.cu`), which is the opt-in E-REMOTE-FIFO.
 - Retire: an NVIDIA statement on remote-operation ordering.
 
+### S-NIC-DB · code
+**The doorbell of an IBGDA queue pair is a strong system-scope store (`st.mmio.relaxed.sys`,
+SASS `STG.E.64.MMIO.SYS`, or `st.relaxed.sys`) to the QP's doorbell register; the WQE and
+payload stores the NIC reads for the WQEs it announces must happen-before it through a release
+of GPU scope or wider** (`fence.release.gpu` / `.sys`, `fence.acq_rel` / `fence.sc` at those
+scopes, SASS `MEMBAR.ALL.GPU` / `.SYS`, or a release store).
+- Model (nic.rs `nic_store`): a store to a declared doorbell announces WQEs up to the 16-bit
+  producer index it carries; their reads use the ringing thread's release clock (its last
+  release fence, as `sync_publish`), or an empty clock when that fence is narrower than GPU
+  scope or absent. A WQE or payload byte whose last write is not ordered before it is a race
+  (`nic-wqe-unordered`, `nic-src-unordered`); the WQE then executes with the bytes as they are.
+  A weak store to a doorbell, or a store to the doorbell page that is not an 8-byte ring
+  (BlueFlame), is `unmodeled`. The doorbell record (DBR) store is plain memory; the NIC acts
+  on doorbell rings only.
+- Source: DOCA GPUNetIO `doca_gpu_dev_verbs_submit_db` / `ring_db` / `mark_wqes_ready`
+  (fence.release.gpu, then `st.mmio.relaxed.sys`), mlx5 PRM doorbell format (ctrl segment
+  dword 0: WQE index << 8; dword 1: QPN << 8). Fixture r5a_ibgda_putsig N1 (no fence), N2
+  (`.cta` fence), N5 (a WQE segment written after the doorbell).
+- Status: **argued.** Hardware (probes/ibgda P3, 20 configurations x 1e5 iterations): with no
+  fence, or a `.cta` fence, between the WQE / payload stores and the doorbell, no stale WQE,
+  stale payload, error CQE or hang was observed. The requirement follows DOCA and the PTX
+  model (the NIC is an observer outside the GPU); on this hardware a fence-less doorbell
+  verdict may be a false alarm.
+- If wrong: *miss* if a GPU-scope release does not order stores in GPU memory before the
+  NIC's DMA reads; *false alarm* if a narrower fence also suffices.
+- Retire: probes/ibgda P3 with and without each fence.
+
+### S-NIC-ORDER · code
+**The NIC executes a queue pair's WQEs one at a time, in posting order; nothing orders WQEs
+of different queue pairs. Only IBTA ordering is modeled.**
+- Model: one pending `AsyncKind::Nic` op per QP, completing the oldest announced WQE; a QP
+  declared with another `ordering` (out-of-order data placement) gives `unmodeled`.
+- Source: IBTA RC transport (requests of one QP are processed in order); DOCA
+  `0001-gpunetio-dp-ordering-ooo.patch` (dp_ordering off by default).
+- Status: **validated** for the cross-QP half: probes/ibgda P2 observed stale data after a
+  signal on another QP in 1e5 / 1e5 iterations (1 MiB writes; not observed at 8 B / 4 KiB).
+  In-order execution within a QP: argued (P1, P4 consistent).
+- If wrong: *miss* if WQEs of one QP can take effect out of order under IBTA ordering.
+- Retire: probes/ibgda P2 / P4.
+
+### S-NIC-SIGNAL · code
+**An RDMA atomic (fetch-add / compare-swap) takes effect after the same queue pair's earlier
+RDMA writes are placed, and an observer that acquires the atomic's value sees them**
+(put-with-signal without a WQE fence bit).
+- Model: each WQE's clock includes the QP's previous WQE's clock; the atomic is a release.
+- Source: DOCA `doca_gpu_dev_verbs_put_signal_thread` and mscclpp `putWithSignal` post the
+  write and the atomic with no fence bit; NVSHMEM `put_signal` semantics. Fixture
+  r5a_ibgda_putsig N3 (the signal posted first).
+- Status: **validated** (not refuted): probes/ibgda P1, put of 8 B / 4 KiB / 1 MiB then a
+  fetch-add signal on the same QP, stale data not observed in 1e5 iterations per size and
+  receiver variant (15 configurations).
+- If wrong: *miss*.
+- Retire: probes/ibgda P1.
+
+### S-NIC-WRITE · code
+**RDMA write data synchronizes with nothing directly and has no placement order**, within or
+across writes (aligned words are single-copy atomic, S-NIC-WORD; a lone aligned 4- or 8-byte
+write is a release, S-NIC-FLAG). A reader that polls a word of write data and then reads
+other words of it races with them.
+- Status: **argued** (conservative: no ordering or single-copy atomicity is assumed).
+  probes/ibgda P4: a flag write after a large write on one QP was never seen before the data
+  in 1e5 iterations (4 KiB, 1 MiB), so polling a write's last word may be a false alarm here.
+- If wrong: *false alarm* for kernels that poll the last word of a write (not observed in the
+  target kernels).
+- Retire: probes/ibgda P4 would only support a weaker model, not a stronger one.
+
+### S-NIC-WORD · code
+**Each naturally aligned 8-byte word of RDMA write data (4-byte at the edges of a write) lands
+single-copy atomic: a relaxed system-scope write of the NIC.** Unaligned edge bytes are plain
+writes. No order between words and no release (S-NIC-WRITE). A strong load of such a word
+does not race with it; DeepEP's hybrid notify relies on this (`recv_and_reduce`: each count
+of a multi-int put is polled with `ld.acquire.sys` and decoded on its own).
+- Source: PCIe writes do not tear naturally aligned qwords; nothing in IBTA.
+- Where: `nic.rs` `complete_nic` (`OP_RDMA_WRITE`).
+- Status: **validated** by probes/ibgda P2 (1 MiB) and P6a (4 KiB, 1 MiB): the receiver read
+  8-byte words with `ld.relaxed.sys` while a write was landing; 6.03e9 (P2) and 1.3e10 (P6a)
+  words held the old or the new tag, none a mix of both (`other` = 0).
+- If wrong: *miss* of a torn read of an 8-byte word.
+
+### S-NIC-FLAG · code
+**A WQE whose only data segment is a naturally aligned 4- or 8-byte RDMA write lands as one
+strong system-scope write that releases the QP's earlier WQEs** (the same release a fetch-add
+signal gets, S-NIC-SIGNAL). mscclpp's `PortChannelIbgda` signals this way: a 4-byte write of
+the outbound semaphore token into the peer's inbound token, polled with `ld.acquire.sys` /
+`LD.E.STRONG.SYS`.
+- Source: IBTA RC executes a QP's writes in order; a PCIe write of an aligned dword / qword is
+  not torn. Neither says the flag is placed after the earlier write's data (PCIe relaxed
+  ordering may reorder them), so this is the probe's claim.
+- Where: `nic.rs` `complete_nic` (`OP_RDMA_WRITE`).
+- Status: **validated** by probes/ibgda P4 (8-byte flag) and P4b (4-byte flag): a 4 KiB or
+  1 MiB write then the flag on the same QP, one or two doorbells, receiver `ld.acquire.sys` on
+  the flag then the data: stale data not observed, 1e5 iterations each (8 configurations).
+- If wrong: *miss* of a stale read after a flag (the probes saw none).
+
+### S-NIC-ATOMIC · code
+**A NIC atomic is a strong system-scope read-modify-write of an aligned 8-byte word whose
+value is little-endian in memory; NIC atomics are atomic with each other only.** A GPU atomic on
+a word a NIC atomic also updates, unordered with it, is `unmodeled` (`nic-atomic-mixed`).
+- Source: IB atomicity guarantee (IBV_ATOMIC_HCA: between QPs of one HCA).
+- Status: **validated**: probes/ibgda P0 (fetch-adds of 1 leave 1, 2, 3, 4 as little-endian
+  words; the fetched values come back little-endian); P7 (1e5 NIC fetch-adds and 16.8M GPU
+  `red.add.sys` on one word: every NIC add landed, 4.9M GPU adds were lost).
+- If wrong: values (not ordering) differ for kernels that compare the word's value.
+- Retire: probes/ibgda P1 / P7.
+
+### S-NIC-CQE · code
+**With CQ update requested, the NIC writes the WQE's CQE (owner bit = pass parity over the
+ring, opcode 0, WQE counter) after the WQE completed; for an RDMA write, completion means the
+data was placed at the peer. The CQE write is a strong system-scope release of everything the
+WQE and the QP's earlier WQEs did.** A poller that acquires the CQE may reuse the send buffer
+and is ordered after the remote placement.
+- Source: IBTA RC (a write completes once acknowledged); DOCA `poll_cq_at` (owner bit, then
+  `fence.acquire.sys`). Fixture r5a_ibgda_putsig N4 (send buffer reused without polling).
+- Status: **validated** (not refuted): probes/ibgda P5 (poll QP A's CQE, then signal on QP B:
+  stale not observed in 1e5 per size, 8 B / 4 KiB / 1 MiB) and P6 (overwriting the source
+  after the CQE poll: never received, 1e5; without the poll: the overwritten bytes arrived in
+  1e5 / 1e5 iterations).
+- If wrong: *miss* if a completion can precede remote placement or the NIC's last read of the
+  source.
+- Retire: probes/ibgda P5 / P6.
+
+### S-NIC-DOMAIN · code
+**A GPU loads, stores and atomics only memory of its own NVLink domain; another domain's
+memory (another node without multi-node NVLink) is reachable only through the NIC.** A direct
+access is a fault (case `domains`).
+- Where: `exec.rs` `resolve` -> nic.rs `nic_domain_check`. Fixture r5a_ibgda_putsig N8.
+- Status: **argued** (a peer mapping across nodes does not exist without MNNVL).
+- If wrong: *false alarm* on MNNVL systems if `domains` is set wrongly.
+- Retire: n/a (configuration).
+
 ### S-ALIGN · code
 **A load, store or atomic of `n` bytes (`n` a power of two; a vector counts its whole size,
 `ld.v4.u32` = 16, SASS `LDS.128` = 16) must be `n`-aligned; a misaligned one is a `fault`.**
@@ -3947,6 +4082,11 @@ BAR/EXIT on SYNCS) are trusted. The memory model treats the fence as complete at
 - Where: `scoreboard.rs` (no registers to track).
 - Status: **trusted.** Their removal was benign in all sweep mutants, which is weak evidence.
 - If wrong: *miss*.
+- `DEPBAR.LE SBk, n, {j,...}` (DeepEP hybrid kernels, DeepCP a2a) is read as `DEPBAR.LE SBk, n`
+  plus `DEPBAR {j,...}` (each listed scoreboard drained), the meaning the brace list has in
+  the plain `DEPBAR {5,4,3}` form. **Argued**, not probed. For cp.async / bulk groups only the
+  SBk part is a group wait (the listed ones stay outstanding: conservative). If wrong: *miss*
+  for a register written under a listed scoreboard and read after the DEPBAR.
 
 ### L-OPCLASS · code
 **The variable-latency (`VAR_LAT`) and asynchronous-reader (`ASYNC_READ`) opcode sets are

@@ -280,7 +280,8 @@ fn blocked_footprints(m: &Machine, enabled: &BTreeSet<Pid>) -> Vec<(Pid, Footpri
 pub fn explore_dpor(m0: Machine, max_states: usize) -> Verdict {
     // Limited residency and the TMEM co-tenant (residency.rs, tenant.rs): the stateful
     // explorer only (the footprints do not name residency slots or allocation choices).
-    if m0.launch.env.residency.is_some() || m0.launch.env.tmem_cotenant {
+    // NIC queue pairs (nic.rs): the stateful explorer only.
+    if m0.launch.env.residency.is_some() || m0.launch.env.tmem_cotenant || m0.nic.is_some() {
         return crate::explore::explore(m0, max_states);
     }
     let base = m0.clone();

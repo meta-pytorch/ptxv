@@ -4153,6 +4153,20 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         scope_of(mods).ok_or_else(|| lw.err("fence without a scope"))?,
                     ),
                 }
+            } else if mods.first() == Some(&"release") {
+                // fence.release.<scope> (PTX 8.6; ptxas: MEMBAR at the scope, as SASS lifts it).
+                Op::Fence {
+                    kind: FenceKind::Release(scope_of(mods).unwrap_or(Scope::Sys)),
+                }
+            } else if mods.first() == Some(&"acquire") {
+                // fence.acquire.sys (ptxas: CCTL.IVALL). Narrower scopes are not modeled: the
+                // acquire is not scoped here (FenceKind::Acquire).
+                if scope_of(mods).unwrap_or(Scope::Sys) != Scope::Sys {
+                    bail!(lw.err("only fence.acquire.sys is modeled"));
+                }
+                Op::Fence {
+                    kind: FenceKind::Acquire,
+                }
             } else if mods.first() == Some(&"proxy") && has("async") {
                 // `fence.proxy.async` with no state space orders all of them (ptxas: MEMBAR.ALL.GPU
                 // + FENCE.VIEW.ASYNC.S); `.global` orders global memory only, which no proxy

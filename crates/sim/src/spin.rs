@@ -1160,6 +1160,11 @@ pub fn wpoll_loops(code: &[Inst], front: ptxv_ir::Front) -> Vec<(usize, usize)> 
             Op::St { .. } | Op::St256 { .. } | Op::Exit | Op::Fence { .. } | Op::Shfl { .. } => {
                 true
             }
+            // `@p BREAK Bk` right before `@p BRA` out of the loop (DOCA's CQ wait: `@!P0
+            // BREAK B3; @!P0 BRA out`) runs only on the exiting iteration.
+            Op::Break { .. } => code.get(p + 1).is_some_and(|n| {
+                n.guard == code[p].guard && matches!(n.op, Op::Bra { target, .. } if target > b)
+            }),
             Op::VoteAll { .. }
             | Op::VoteAny { .. }
             | Op::MatchAny { .. }

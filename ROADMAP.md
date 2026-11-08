@@ -290,6 +290,11 @@ and async engines, and multi-node adds entries to each:
   queue, nondeterministic completion, HB edges only where verbs guarantee them. The SASS lift
   sees the WQE writes and doorbell stores, and the capture records QP/MR registrations.
   NVSHMEM's host-proxy transport becomes a CPU-thread actor.
+* **Built (2026-11-06, docs/nic.md):** the NIC actor for IBGDA queue pairs (mlx5 WQEs as
+  DOCA GPUNetIO posts them: RDMA write, fetch-add / compare-swap, CQEs), NVLink domains,
+  capture hooks in `tools/capture_dist.py`, fixture `r5a_ibgda_putsig`, GB300 + ConnectX-8
+  probes (probes/ibgda). NVSHMEM's host-proxy transport and BlueFlame doorbells are not
+  modeled.
 * **New bug classes** to add then: missing `quiet` before signal across nodes, reusing a send
   buffer before local completion, assuming put ordering on different QPs, CQ overrun.
 * **Validation** needs a real multi-node setup (a Slurm cluster) for the litmus campaign

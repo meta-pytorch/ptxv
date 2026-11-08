@@ -1198,6 +1198,8 @@ pub enum AsyncKind {
         store: Vec<(u32, u32)>,
         fresh: bool,
     },
+    /// ASSUME(S-NIC-ORDER): QP `qp`'s NIC executes its oldest announced WQE (nic.rs).
+    Nic { qp: u16 },
     /// TMA store (shared::cta -> global) in bulk group `group` of its issuer.
     TmaStore {
         cta: u16,
@@ -1375,6 +1377,8 @@ pub struct Launch {
     /// Refuted assumptions this launch was explicitly allowed to use (case `assume_refuted`,
     /// `--assume-refuted`, `PTXV_ASSUME_REFUTED`) and does use.
     pub refuted_opt_in: Vec<String>,
+    /// GPU-initiated RDMA queue pairs and NVLink domains (nic.rs, docs/nic.md).
+    pub nic: Option<Arc<crate::nic::NicCfg>>,
 }
 
 impl Launch {
@@ -1702,6 +1706,8 @@ pub struct Machine {
     /// E-HW-L1 (opt-in, `Launch::hw_l1`): per-SM L1 lines and the predictive check's logs
     /// (l1.rs). Hashed (the lines) when present.
     pub l1: Option<Arc<crate::l1::L1>>,
+    /// NIC queue pairs' state (nic.rs); None without `Launch::nic` QPs. Hashed.
+    pub nic: Option<Box<crate::nic::NicState>>,
 }
 
 /// A vector shared copy-on-write in chunks of 64 elements, grouped 64 chunks at a time:
@@ -2150,6 +2156,9 @@ impl Hash for Machine {
         if let Some(l1) = &self.l1 {
             l1.hash(h);
         }
+        if let Some(n) = &self.nic {
+            n.hash(h);
+        }
         if !self.vipr.is_empty() {
             self.vipr.hash(h);
         }
@@ -2328,8 +2337,12 @@ impl Machine {
             wlog: Default::default(),
             ring: None,
             l1: None,
+            nic: None,
         };
         m.live = 0..m.threads.len();
+        if let Some(cfg) = m.launch.nic.as_ref().filter(|c| !c.qps.is_empty()) {
+            m.nic = Some(Box::new(crate::nic::NicState::new(cfg)));
+        }
         if m.launch.hw_l1 {
             let mut l1 = crate::l1::L1::new();
             // The hardware model (twolevel.rs) keeps states apart by their L1 logs too.
@@ -2587,6 +2600,8 @@ impl Machine {
             format!("{}'s tcgen05.ld/st", self.thread_name(a - n))
         } else if a < 3 * n {
             format!("{}'s tcgen05 pipe", self.thread_name(a - 2 * n))
+        } else if let Some(s) = self.nic_actor_name(a) {
+            s
         } else {
             let r = a - 3 * n;
             format!(

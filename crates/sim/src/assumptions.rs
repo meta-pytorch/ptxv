@@ -725,6 +725,69 @@ pub const REGISTRY: &[Assumption] = &[
         applies: cluster,
     },
     Assumption {
+        id: "S-NIC-DB",
+        kind: "code",
+        status: "argued",
+        title: "an IBGDA doorbell is a strong .sys store; WQE and payload stores must be released at GPU scope or wider before it",
+        applies: never,
+    },
+    Assumption {
+        id: "S-NIC-ORDER",
+        kind: "code",
+        status: "validated",
+        title: "a QP's WQEs execute one at a time in posting order; QPs are unordered with each other; only IBTA ordering",
+        applies: never,
+    },
+    Assumption {
+        id: "S-NIC-SIGNAL",
+        kind: "code",
+        status: "validated",
+        title: "an RDMA atomic is placed after the same QP's earlier RDMA writes and releases them",
+        applies: never,
+    },
+    Assumption {
+        id: "S-NIC-WRITE",
+        kind: "code",
+        status: "argued",
+        title: "RDMA write data lands as plain writes of the NIC: nothing synchronizes with it directly",
+        applies: never,
+    },
+    Assumption {
+        id: "S-NIC-WORD",
+        kind: "code",
+        status: "validated",
+        title: "each naturally aligned 8-byte word of RDMA write data lands single-copy atomic (a relaxed .sys write)",
+        applies: never,
+    },
+    Assumption {
+        id: "S-NIC-FLAG",
+        kind: "code",
+        status: "validated",
+        title: "a lone aligned 4- or 8-byte RDMA write is one strong .sys write that releases the QP's earlier WQEs",
+        applies: never,
+    },
+    Assumption {
+        id: "S-NIC-ATOMIC",
+        kind: "code",
+        status: "validated",
+        title: "NIC atomics: strong .sys RMW, little-endian 64-bit values, atomic only with other NIC atomics",
+        applies: never,
+    },
+    Assumption {
+        id: "S-NIC-CQE",
+        kind: "code",
+        status: "validated",
+        title: "a CQE is written after its WQE completed (RDMA write: placed at the peer) and releases what the WQE did",
+        applies: never,
+    },
+    Assumption {
+        id: "S-NIC-DOMAIN",
+        kind: "code",
+        status: "argued",
+        title: "GPUs in different NVLink domains reach each other's memory only through the NIC",
+        applies: never,
+    },
+    Assumption {
         id: "S-REMOTE-INFLIGHT",
         kind: "code",
         status: "argued",
@@ -1462,6 +1525,26 @@ pub fn for_kernel(k: &Kernel) -> Vec<String> {
 /// The kernel's assumptions plus those its launch opts into (E-EXIT-FENCE).
 pub fn for_machine(m: &crate::machine::Machine) -> Vec<String> {
     let mut v = for_kernel(&m.k);
+    // NIC queue pairs and NVLink domains (nic.rs, docs/nic.md).
+    if let Some(n) = &m.launch.nic {
+        if !n.qps.is_empty() {
+            for id in [
+                "S-NIC-DB",
+                "S-NIC-ORDER",
+                "S-NIC-SIGNAL",
+                "S-NIC-WRITE",
+                "S-NIC-WORD",
+                "S-NIC-FLAG",
+                "S-NIC-ATOMIC",
+                "S-NIC-CQE",
+            ] {
+                v.push(id.into());
+            }
+        }
+        if !n.domains.is_empty() {
+            v.push("S-NIC-DOMAIN".into());
+        }
+    }
     if m.launch.exit_fence.is_some() {
         v.push("E-EXIT-FENCE".into());
     }

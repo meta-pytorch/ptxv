@@ -623,6 +623,19 @@ fn r1h_nvls() {
     }
 }
 
+// Rung 5a: put-with-signal over an IBGDA queue pair between two NVLink domains (nic.rs,
+// docs/nic.md).
+#[test]
+fn r5a_ibgda_putsig() {
+    for v in [
+        "good", "N1", "N2", "N3", "N4", "N5", "N6", "N7", "N8", "T", "N9",
+    ] {
+        for f in ["ptx", "sass"] {
+            check_dir("fixtures", "r5a_ibgda_putsig", v, f);
+        }
+    }
+}
+
 /// E-MC-ALIAS-HW (opt-in): without the alias-proxy check the missing fence.proxy.alias (B23)
 /// is clean; the scope / ordering mutants still race (B64 in SASS: the alias fence's
 /// MEMBAR.SC.SYS releases, see the case).
@@ -3830,4 +3843,57 @@ fn e_misaligned_accesses_fault() {
 fn e_stasync_wide_widths() {
     both("e_stasync_wide", "good");
     both("e_stasync_wide", "SW1");
+}
+
+/// `MATCH.ANY` / `MATCH.ANY.U64` (full warp and in a divergent branch) and `UBLKPF.L2`
+/// (fixtures/s_match) agree with GB300 bitwise (200 runs, 2026-11-06).
+#[test]
+fn s_match_matches_hardware() {
+    let case = Case::load(root().join("fixtures/s_match")).unwrap();
+    let k = binary_kernel(&case, "good").unwrap();
+    let n = k
+        .code
+        .iter()
+        .filter(|i| matches!(i.op, ptxv_ir::Op::MatchAny { .. }))
+        .count();
+    assert_eq!(n, 3, "MATCH.ANY forms lowered");
+    let launch = build_launch(&case, &k).unwrap();
+    let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 100_000);
+    assert!(v.findings.is_empty(), "{:#?}", v.findings);
+    assert_eq!(v.outputs.len(), 1);
+    let report = case.expect_report(&v.outputs[0]).unwrap();
+    assert!(
+        !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+        "{report:?}"
+    );
+}
+
+/// `HFMA2.BF16_V2` (register and pair-immediate forms), `HADD2.BF16_V2`, `HMUL2.BF16_V2` and
+/// `FHADD.BF16` over normals, subnormals, near-maximum values, zeros, infinities, NaNs and ties
+/// (fixtures/s_hfma2_bf16) agree with GB300 bitwise (20 runs, 2026-11-06).
+#[test]
+fn s_hfma2_bf16_matches_hardware() {
+    let case = Case::load(root().join("fixtures/s_hfma2_bf16")).unwrap();
+    let k = binary_kernel(&case, "good").unwrap();
+    let n = k
+        .code
+        .iter()
+        .filter(|i| matches!(i.op, ptxv_ir::Op::Hfma2Bf16 { .. }))
+        .count();
+    assert_eq!(n, 4, "bf16 forms lowered");
+    let n = k
+        .code
+        .iter()
+        .filter(|i| matches!(i.op, ptxv_ir::Op::FfmaBf16 { .. }))
+        .count();
+    assert_eq!(n, 4, "FHADD.BF16 forms lowered");
+    let launch = build_launch(&case, &k).unwrap();
+    let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 100_000);
+    assert!(v.findings.is_empty(), "{:#?}", v.findings);
+    assert_eq!(v.outputs.len(), 1);
+    let report = case.expect_report(&v.outputs[0]).unwrap();
+    assert!(
+        !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+        "{report:?}"
+    );
 }
