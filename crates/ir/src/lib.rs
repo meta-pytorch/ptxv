@@ -1710,6 +1710,12 @@ pub enum Op {
     /// PTX `div.{rn,rz,rm,rp}.f64 d, a, b` (`b` Some) / `sqrt.{rn,..}.f64 d, a` (`b` None):
     /// IEEE, correctly rounded (ptxas's MUFU.RCP64H / RSQ64H + DFMA expansions are; the NaN
     /// results are measured: probes/f64_ptx).
+    /// PTX `rsqrt.approx.f64 d, a` as ptxas expands it (`fp::rsqrt_approx_f64`: MUFU.RSQ64H,
+    /// one DFMA refinement, a slow path for zero / Inf / NaN / negative / subnormal a).
+    Rsqrt64Approx {
+        d: Reg,
+        a: Val,
+    },
     DivSqrt64 {
         d: Reg,
         a: Val,
@@ -1891,6 +1897,9 @@ pub enum Op {
         /// A[g + 8 (j & 1)][4 t + i + 16 (j >> 1)], b_j byte i = B[4 t + i + 16 j][g].
         /// D = C + A B in exact integers, saturated to s32.
         s8: bool,
+        /// `mma.sync.m16n8k16.row.col.f32.f16.f16.f32` (SASS `HMMA.16816.F32`): f16 A / B
+        /// elements instead of bf16, the same fragments and model (probes/hmma_f16).
+        f16: bool,
     },
 }
 
@@ -2099,6 +2108,7 @@ impl Op {
             }
             Op::Dsetp { a, b, c, .. } => vec![a.clone(), b.clone(), pr(c)],
             Op::DsetpMinMax { a, b, .. } => vec![a.clone(), b.clone()],
+            Op::Rsqrt64Approx { a, .. } => vec![a.clone()],
             Op::DivSqrt64 { a, b, .. } => {
                 let mut x = vec![a.clone()];
                 x.extend(b.iter().cloned());
@@ -2500,7 +2510,7 @@ impl Op {
             Op::F2F { d, to64, .. } => span(*d, if *to64 { 2 } else { 1 }),
             Op::FCvt { d, to, .. } => span(*d, if *to == FFmt::F64 { 2 } else { 1 }),
             Op::Dfma { d, .. } => span(*d, 2),
-            Op::DivSqrt64 { d, .. } => vec![*d],
+            Op::DivSqrt64 { d, .. } | Op::Rsqrt64Approx { d, .. } => vec![*d],
             Op::Dsetp { d, .. } => vec![*d],
             Op::Hset2 { d, .. } | Op::MovMatrix { d, .. } => vec![*d],
             Op::Hsetp2Bf16 { d, q, .. } => {

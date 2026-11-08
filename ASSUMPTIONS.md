@@ -3174,8 +3174,13 @@ the issuing pipe.
   of its own descriptor (D rows 64i..) and B rows (N/2)i.. ; its D row r, column c is at TMEM
   lane r + 64 (c / (N/2)), column c % (N/2): lanes 0..63 hold the first half of N, lanes
   64..127 the second, N/2 columns wide (`exec.rs` `mma_d_layout`, `MmaD`). Shapes: N = 16..256
-  in steps of 16 for M = 128 and 256 (PTX ISA table 48); A in TMEM, block scaling and sparsity
-  with M = 128 pairs are rejected (not measured).
+  in steps of 16 for M = 128 and 256 (PTX ISA table 48); block scaling and sparsity with
+  M = 128 pairs are rejected (not measured). **A in TMEM** (2026-11-07, KA: FlashAttention
+  Bf16x6 forward / backward): every D lane reads the A row in its own TMEM lane, so lanes
+  64..127 (the second N half, B rows of CTA 1) use lanes 64..127's A rows, not lanes 0..63's
+  (`complete_mma` `arow`). probes/tc_pair_atmem (N = 64, pattern operands naming A row, B row
+  and CTA in each exact result; both CTAs' whole TMEM dumped): GB300 20/20, both front-ends
+  bitwise.
 - Status (M = 128 pairs, 2026-11-05): **validated** by `probes/tc_m128` (kind::f16 bf16, N = 16,
   32, 48, 64, 128, 256; kind::f8f6f4 e4m3, N = 16, 32, 64; M = 256 N = 32 / 64 as controls).
   Each CTA's whole TMEM is sentinel-filled before the MMA and dumped after it; with operands
@@ -4168,14 +4173,25 @@ forms seen. Any other form is a hard error.
   0x80000, payload kept: not canonical as for f32); `DADD d, -RZ, -a` / `DADD d, -RZ, |a|`.
   The PTX front uses two hidden predicates for p and q. probes/f64_misc (all pairs of 15
   specials incl. signaling / negative NaNs with payloads, random): GB300 50/50, both
-  front-ends bitwise. `rsqrt.approx.f64` (ptxas: MUFU.RSQ64H, two DFMA refinements and a
-  slow path) is refused.
+  front-ends bitwise. `rsqrt.approx.f64` without .ftz (PX: 4 records) follows ptxas's
+  expansion exactly (`fp::rsqrt_approx_f64`): MUFU.RSQ64H of the high word, one DFMA
+  refinement (e = 1 - a y0^2, y = y0 + (0.375 e + 0.5) y0 e), and outside [2^-1022, 2^1023)
+  its slow path (+-0 -> +-Inf, NaN -> a + a, negative -> 0xfff8000000000000, +Inf -> +0,
+  subnormal -> the refinement of a 2^54 times 2^27). probes/rsqrt_f64 (4096 inputs: specials,
+  boundaries, 1024 subnormals, every exponent, random words): GB300 20/20, both front-ends
+  bitwise.
 - `div.rn.ftz.f32` / `sqrt.rn.ftz.f32` (2026-11-07, PX: 6 + 5 kernel-DB records): the IEEE
   quotient / root of the operands with subnormals flushed to a zero of their sign, the result
   flushed too, NaN canonical. probes/ftz_div_sqrt (subnormal operands, quotients around
   2^-126, specials, random; 85 quotients differ from the unflushed IEEE ones): GB300 50/50,
   both front-ends bitwise (SASS: certified; the slow-path divergence exceeds the explicit
   exploration budget).
+- 64-bit and vector `ld` / `st` `.local` (2026-11-07, PX: 9 kernel-DB records, most also
+  needing device calls): one access per element at its offset (`.v2` / `.v4`), a 64-bit
+  element one virtual register holding both words (`LdLocal` / `StLocal` on a V register of 8
+  bytes). probes/local_vec (v4.b32, v2.b64, b64, f64 stores read back crosswise; ptxas:
+  STL.128 / LDL.128 / LDL.64): GB300 20/20, both front-ends bitwise. `cvta.local` and generic
+  addresses into local memory stay refused.
 - Cluster special registers (2026-11-07, PX: 11 kernel-DB records): `%cluster_ctaid.d` =
   ctaid.d mod cluster.d, `%cluster_nctaid.d` = cluster.d, `%clusterid.d` = ctaid.d / cluster.d,
   `%nclusterid.d` = grid.d / cluster.d (ptxas reads the shapes from the driver table at
@@ -5317,10 +5333,22 @@ random bf16 lanes and 96.7% of f16 lanes; misses include groups with a NaN lane.
   is `g8-f25-rz-accin-tzero-einputs` over 8 products with the low 13 mantissa bits of each f32
   word dropped, as `mma.sync` tf32 (N-HMMA; unique with g16 among 2,460 model x conversion
   candidates, `ptxv calib-mma probes/tc_tf32`, 49,152 outputs). A tf32 K slice is 8 elements of
-  4 bytes (16-byte core-matrix rows of 4; K-major only, MN-major tf32 is `unmodeled`), A in
-  TMEM one element per column. probes/tc_f16 and probes/tc_tf32 (D[128x64], 4 / 8 MMAs) are
+  4 bytes (16-byte core-matrix rows of 4), A in TMEM one element per column. MN-major tf32
+  (idesc bit 15 / 16; KA: MHCRoutingBackwardStream, idesc 0x8088910) is read only through
+  smem descriptor layout 1, SWIZZLE_128B_BASE32B: element (r, k) at swz32(start + (r % 32) 4 +
+  (k % 4) 128 + (r / 32) LBO + (k / 4) SBO), swz32(a) = a ^ (((a >> 7) & 3) << 5) (4-row
+  atoms of 128 bytes, 32-byte granules); GB300 returned all zeros for MN-major tf32 through
+  layouts 0 / 2 / 4 / 6, which stay refused, as does layout 1 anywhere else (K-major,
+  16-bit, tcgen05.cp, narrow kinds). probes/tc_tf32_mn (A MN-major, then B MN-major; layout
+  recovered by solving each D row for the elements read): GB300 20/20, both front-ends
+  bitwise (2026-11-07). probes/tc_f16 and probes/tc_tf32 (D[128x64], 4 / 8 MMAs) are
   bitwise = GB300 on both front-ends (50/50 scrubbed), and probes/mma_zero's kind::f16 f16 and
   kind::tf32 configs (signed zeros, subnormal results) now replay bitwise too.
+- **Finite overflow** (2026-11-07): a step whose truncated sum is 2^128 or more gives Inf of
+  its sign, not FLT_MAX as a literal round toward zero would (`sum_round_terms`, all models).
+  probes/tc_mma_ovf (kind::f16 bf16, inputs of magnitude 2^[58, 65)): 1,647 Inf words on
+  GB300; the earlier model gave FLT_MAX there under a `clean` verdict (4,938 bytes differed).
+  Both front-ends now bitwise, 20/20 scrubbed; HMMA likewise (N-HMMA, probes/hmma_special).
 - **Error contract** used by numerics and equivalence (`MmaModel::eps_terms`, docs/equiv-mma.md
   §1). A step adding n terms (products and the accumulator) satisfies |computed - sum| <=
   ((n - 1) 2^-25 + 2^-23 (1 + (n - 1) 2^-25)) sum |terms|, which is about 10u for n = 17. It
@@ -5371,12 +5399,29 @@ largest eₐ + e_b, truncated toward zero 25 bits below it, summed exactly, roun
   model over 8 products; `ptxv calib-mma probes/bmma8 --step 8` (8 accumulating steps,
   6 input sets, 98,304 GB300 outputs) matches exactly `g16-f25-rz-accin-tzero-einputs` (and
   its g8 twin); probes/bmma8 expected/ in cargo test on both fronts.
+  `mma.sync.m16n8k16.row.col.f32.f16.f16.f32` (SASS `HMMA.16816.F32`, 2026-11-07, PX: 8
+  kernel-DB records): the same fragments and model with f16 elements; `ptxv calib-mma
+  probes/hmma_f16` (6 input sets incl. magnitudes 2^[-14, 14] and cancellation, 98,304 GB300
+  outputs) matches exactly `g16-f25-rz-accin-tzero-einputs`; probes/hmma_f16 expected/ in
+  cargo test on both fronts. f16 subnormal / Inf / NaN elements are refused (not calibrated),
+  as for bf16; the 16-bit numerics provenance treats f16 operands as opaque.
 - Status: **validated**: `ptxv calib-mma probes/hmma` (one warp per 16x8 tile, K = 64 in 4
   accumulating steps) scores 820 candidates on 98,304 GB300 outputs (6 input sets: normal,
   log-uniform 2^±12 / 2^±30, cancellation, alignment and accumulator probes): exactly this
   model matches all, as for tcgen05 (2026-11-03). `probes/hmma/expected` is checked bitwise in
-  `cargo test`. Subnormal / Inf / NaN inputs or accumulators give `unmodeled`. Zero results
-  are +0, as N-MMA (probes/mma_zero, bf16 and tf32, C in registers or RZ).
+  `cargo test`. Zero results are +0, as N-MMA (probes/mma_zero, bf16 and tf32, C in registers
+  or RZ).
+- Special values, bf16 (2026-11-07, `fp.rs` `hmma_bf16_step`): subnormal inputs and
+  accumulators are exact and align at exponent -126; subnormal results are kept (rounded
+  toward zero); a NaN operand, Inf * 0 or Inf - Inf gives 0x7fffffff, otherwise an Inf gives
+  that Inf; a finite sum of 2^128 or more gives Inf of its sign (round-toward-zero to FLT_MAX,
+  the earlier model, was wrong there). probes/hmma_special (160 tests, 20,480 outputs: each
+  case kind above, subnormal x Inf, alignment against products 2^-26 below a subnormal one):
+  GB300 50/50 scrubbed, both front-ends bitwise; of 64 model variants (flush inputs /
+  accumulators / results, overflow to FLT_MAX or Inf, true or -126 subnormal exponent) only
+  this one matches every output. The numerics drop the node of a result with special operands.
+  f16 (HMMA.16816.F32) and tf32 special values stay refused, and so does an f16 result of
+  FLT_MAX magnitude or more.
 - Numerics: each HMMA is one `NodeKind::Mma` node per output element (`num.rs` `num_hmma`), with
   N-MMA's error contract. Operand halves come from 16-bit provenance (N-HALF-LEAF).
 - **TF32: `HMMA.1688.F32.TF32`** (`mma.sync.m16n8k8` tf32, f32 words in the registers) is

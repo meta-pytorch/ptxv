@@ -102,6 +102,10 @@ fn fault_kind(e: &str) -> &'static str {
 /// span. Applied to the CTA shared-memory address, not the offset within the box: a TMA
 /// start that is 128-byte but not (8 rows x span)-aligned (a multicast slice) takes the phase
 /// of its address (GB300, probes/tma_mcast_swizzle). ASSUME(S-TMA)
+/// `smem_desc`'s span code for layout 1, SWIZZLE_128B_BASE32B (32-byte granules XORed with
+/// address bits 7-8; probes/tc_tf32_mn).
+pub const SW128_B32: u32 = 1;
+
 pub fn swz(addr: u32, span: u32) -> u32 {
     let b = match span {
         128 => 7,
@@ -4339,6 +4343,7 @@ impl Machine {
                 c,
                 tf32,
                 s8,
+                f16,
             } => {
                 if active.len() != 32 {
                     return Err(format!(
@@ -4366,7 +4371,18 @@ impl Machine {
                     }
                     return Ok(());
                 }
-                let bf = |x: u32| f32::from_bits(x << 16);
+                // ASSUME(N-HMMA): f16 elements (HMMA.16816.F32) are exact in f32; an f16
+                // subnormal / Inf / NaN is refused (`odd16`), as bf16 ones are below.
+                let f16 = *f16;
+                let bf = |x: u32| {
+                    if f16 {
+                        f32::from_bits(crate::elementwise::f16_to_f32_bits(x as u16))
+                    } else {
+                        f32::from_bits(x << 16)
+                    }
+                };
+                let odd16 =
+                    |x: u32| f16 && (x & 0x7c00 == 0x7c00 || x & 0x7c00 == 0 && x & 0x3ff != 0);
                 let mut am = [[0f32; 16]; 16];
                 let mut bm = [[0f32; 8]; 16];
                 let mut cm = [[0f32; 8]; 16];
@@ -4378,12 +4394,18 @@ impl Machine {
                     let rd = |m: &Self, v: &Val| m.rd(t, v).map(|x| x as u32);
                     for (j, v) in a.iter().enumerate() {
                         let x = rd(self, v)?;
+                        if odd16(x & 0xffff) || odd16(x >> 16) {
+                            return Err("HMMA f16 input (subnormal/Inf/NaN) is outside the calibrated model: not modeled".into());
+                        }
                         let (row, col) = (g + 8 * (j & 1), 2 * q + 8 * (j >> 1));
                         am[row][col] = bf(x & 0xffff);
                         am[row][col + 1] = bf(x >> 16);
                     }
                     for (j, v) in b.iter().enumerate() {
                         let x = rd(self, v)?;
+                        if odd16(x & 0xffff) || odd16(x >> 16) {
+                            return Err("HMMA f16 input (subnormal/Inf/NaN) is outside the calibrated model: not modeled".into());
+                        }
                         let k = 2 * q + 8 * j;
                         bm[k][g] = bf(x & 0xffff);
                         bm[k + 1][g] = bf(x >> 16);
@@ -4392,17 +4414,17 @@ impl Machine {
                         cm[g + 8 * (j >> 1)][2 * q + (j & 1)] = f32::from_bits(rd(self, v)?);
                     }
                 }
+                // bf16: special values follow `fp::hmma_bf16_step` (probes/hmma_special); f16
+                // ones are refused above, and an f16 accumulator / result special here.
                 let odd = |x: f32| !x.is_finite() || (x != 0.0 && !x.is_normal());
-                if am
+                let special = am
                     .iter()
                     .flatten()
                     .chain(bm.iter().flatten())
-                    .any(|&x| odd(x))
-                {
-                    return Err("HMMA input (subnormal/Inf/NaN) is outside the calibrated model: not modeled".into());
-                }
-                if cm.iter().flatten().any(|&x| odd(x)) {
-                    return Err("HMMA accumulator (subnormal/Inf/NaN) is outside the calibrated model: not modeled".into());
+                    .chain(cm.iter().flatten())
+                    .any(|&x| odd(x));
+                if f16 && cm.iter().flatten().any(|&x| odd(x)) {
+                    return Err("HMMA f16 accumulator (subnormal/Inf/NaN) is outside the calibrated model: not modeled".into());
                 }
                 let model = fp::HMMA_MODEL;
                 // HMMA.1688.F32.BF16 (m16n8k8: A two registers, B one): the same fragments for
@@ -4419,13 +4441,15 @@ impl Machine {
                     for &t in &active {
                         let l = self.threads[t].lane as usize;
                         let (g, q) = (l / 4, l % 4);
-                        for (j, v) in a.iter().enumerate() {
+                        // The 16-bit provenance is tracked as bf16 values: f16 operands stay
+                        // Unknown (an opaque input to the numerics).
+                        for (j, v) in a.iter().enumerate().filter(|_| !f16) {
                             let hb = self.half_val(t, v).unwrap_or([None; 4]);
                             let (row, col) = (g + 8 * (j & 1), 2 * q + 8 * (j >> 1));
                             ap[row][col] = self.half_op(hb[0], hb[1]);
                             ap[row][col + 1] = self.half_op(hb[2], hb[3]);
                         }
-                        for (j, v) in b.iter().enumerate() {
+                        for (j, v) in b.iter().enumerate().filter(|_| !f16) {
                             let hb = self.half_val(t, v).unwrap_or([None; 4]);
                             let k = 2 * q + 8 * j;
                             bp[k][g] = self.half_op(hb[0], hb[1]);
@@ -4450,13 +4474,27 @@ impl Machine {
                                 )
                             })
                             .collect();
-                        let r = model.apply_terms(cm[row][col], &terms);
+                        let r = if f16 {
+                            let r = model.apply_terms(cm[row][col], &terms);
+                            if !r.is_finite() || r.abs() == f32::MAX {
+                                return Err("HMMA f16 result overflow is outside the calibrated model: not modeled".into());
+                            }
+                            r
+                        } else {
+                            let pairs: Vec<(f64, f64)> = (0..kk)
+                                .map(|k| (am[row][k] as f64, bm[k][col] as f64))
+                                .collect();
+                            fp::hmma_bf16_step(cm[row][col], &pairs)
+                        };
                         let dr = Reg {
                             file: d.file,
                             idx: d.idx + j as u16,
                         };
                         self.wr(t, dr, r.to_bits() as u64, 1);
-                        if self.num.is_some() {
+                        if special {
+                            // Special operands: the numerics drop the result's node.
+                            self.num_clobber(t, dr, &[], pc);
+                        } else if self.num.is_some() {
                             // ASSUME(N-HMMA): one step of the calibrated model per instruction.
                             let prods: Vec<f64> = terms.iter().map(|x| x.v).collect();
                             let ops: Vec<HalfOp> =
@@ -8014,6 +8052,11 @@ impl Machine {
                     self.wp(t, *q, nan(x) && nan(y));
                 }
             }
+            Op::Rsqrt64Approx { d, a } => {
+                let x = self.rd(t, a)?;
+                self.wr(t, *d, fp::rsqrt_approx_f64(x), 2);
+                self.num_clobber(t, *d, &[a], pc);
+            }
             Op::DivSqrt64 { d, a, b, rnd } => {
                 let x = self.rd(t, a)?;
                 let y = match b {
@@ -9302,6 +9345,26 @@ impl Machine {
                 if !a.is_multiple_of(4) {
                     return Err(format!("unaligned local load at {a:#x}"));
                 }
+                // PTX: a 64-bit virtual register takes both words (ld.local.b64).
+                if d.file == File::V && *bytes == 8 {
+                    let mut v = 0u64;
+                    let mut um = 0u64;
+                    for i in 0..2u32 {
+                        let w = a + 4 * i;
+                        let loc = &self.threads[t].local;
+                        let (x, u) = match loc.binary_search_by_key(&w, |e| e.0) {
+                            Ok(j) => (loc[j].1 & 0xffff_ffff, loc[j].1 >> 32),
+                            Err(_) => (self.fill_local(t, w) as u64, 0xffff_ffff),
+                        };
+                        v |= x << (32 * i);
+                        um |= u << (32 * i);
+                    }
+                    self.vmask = (um != 0).then_some(um);
+                    self.wr(t, *d, v, 2);
+                    self.vmask = None;
+                    self.num_clobber(t, *d, &[], pc);
+                    return Ok(Flow::Next);
+                }
                 for i in 0..(*bytes / 4).max(1) {
                     let w = a + 4 * i;
                     let loc = &self.threads[t].local;
@@ -9327,6 +9390,11 @@ impl Machine {
                 }
                 for i in 0..(*bytes / 4).max(1) {
                     let (x, um) = match v {
+                        // PTX: a 64-bit virtual register supplies both words.
+                        Val::Reg(r, _) if r.file == File::V && *bytes == 8 => {
+                            let u = self.reg_umask(t, *r);
+                            ((self.rd(t, v)? >> (32 * i)) & 0xffff_ffff, u)
+                        }
                         Val::Reg(r, _) => {
                             let r = Reg {
                                 file: r.file,
@@ -9340,6 +9408,7 @@ impl Machine {
                     let w = a + 4 * i;
                     if self.num.is_some() {
                         let vi = match v {
+                            Val::Reg(r, _) if r.file == File::V && *bytes == 8 => Val::Imm(x),
                             Val::Reg(r, _) => Val::Reg(
                                 Reg {
                                     file: r.file,
@@ -11133,6 +11202,8 @@ impl Machine {
         let _ = version; // checked by the caller (`desc_version_check`)
         let span = match layout {
             0 => 0,
+            // SWIZZLE_128B_BASE32B: only MN-major tf32 operands accept it (complete_mma).
+            1 => SW128_B32,
             2 => 128,
             4 => 64,
             6 => 32,
@@ -11173,6 +11244,9 @@ impl Machine {
             self.report("violation", format!("desc-version:{}", op.pc), msg);
         }
         let (start, _lbo, sbo, sw) = Self::smem_desc(sdesc)?;
+        if sw == SW128_B32 {
+            return Err("tcgen05.cp with a SWIZZLE_128B_BASE32B descriptor not modeled".into());
+        }
         let row = |r: u32| {
             if sw == 0 {
                 start + (r / 8) * sbo + (r % 8) * 16
@@ -11290,10 +11364,12 @@ impl Machine {
             // 0..63 of its own shared memory) and the B rows (N/2) i.. ; D row r, column c
             // of the CTA is at lane r + 64 (c / (N/2)), column c % (N/2): the two halves of
             // N side by side in lanes 0..63 and 64..127, N/2 columns wide.
+            // A in TMEM (probes/tc_pair_atmem): each D lane's A row is that lane's TMEM row, so
+            // lanes 64..127 (the second N half) read their own A rows, not lanes 0..63's.
             (2, 128) => {
-                if n % 16 != 0 || a_tmem || scaled {
+                if n % 16 != 0 || scaled {
                     return shape_err(
-                        "M = 128 with cta_group::2 is modeled for N % 16 == 0, A in shared memory, no block scaling",
+                        "M = 128 with cta_group::2 is modeled for N % 16 == 0, no block scaling",
                     );
                 }
                 let h = n / 2;
@@ -11446,11 +11522,6 @@ impl Machine {
             ));
         }
         let ew: u32 = if afmt == 2 { 4 } else { 2 };
-        if ew == 4 && (amaj != 0 || bmaj != 0) {
-            return Err(format!(
-                "instruction descriptor {idesc:#x}: MN-major tf32 operands not modeled yet"
-            ));
-        }
         // Elements per 16-byte core-matrix row.
         let per = 16 / ew;
         // An element's value: f16, bf16 (the high half of an f32), or an f32 word read as tf32
@@ -11473,8 +11544,32 @@ impl Machine {
         let rows = lay.rows;
         let nh = lay.nb as u32;
         let lane0 = lay.lane0;
-        // The lane of A row i (A in TMEM): D's lane for row i, column 0.
-        let row_lane = |mi: usize| lay.loc(mi, 0).0;
+        // A in TMEM: D element (i, j) reads the A row in its own TMEM lane (for most layouts
+        // the lane of row i; M = 128 cta_group::2 puts the second N half at lanes 64..127,
+        // which hold their own A rows: probes/tc_pair_atmem). `a_lanes` lists the lanes read
+        // (relative to lane0), `arow(i, j)` indexes them; with A in shared memory arow = i.
+        let (a_lanes, a_index): (Vec<usize>, Vec<usize>) = if a_tmem {
+            let mut ls: Vec<usize> = (0..rows)
+                .flat_map(|mi| (0..n as usize).map(move |ni| (mi, ni)))
+                .map(|(mi, ni)| lay.loc(mi, ni).0 - lane0)
+                .collect();
+            ls.sort_unstable();
+            ls.dedup();
+            let mut idx = vec![usize::MAX; 128];
+            for (i, &l) in ls.iter().enumerate() {
+                idx[l] = i;
+            }
+            (ls, idx)
+        } else {
+            (vec![], vec![])
+        };
+        let arow = |mi: usize, ni: usize| -> usize {
+            if a_tmem {
+                a_index[lay.loc(mi, ni).0 - lane0]
+            } else {
+                mi
+            }
+        };
         // PTX ISA: descriptor bits 46-48 are the fixed constant 0b001. Triton 3.5 leaves them 0.
         // ASSUME(E-DESC-VERSION): GB300's MMA ignores them (probes/desc_version: all 8 values,
         // 80 layouts, bitwise equal): a `contract` finding, not a violation.
@@ -11497,6 +11592,16 @@ impl Machine {
             Self::smem_desc(adesc)?
         };
         let (sb, lbob, sbob, swb) = Self::smem_desc(bdesc)?;
+        // MN-major tf32 is read only through SWIZZLE_128B_BASE32B (GB300 returns zeros or
+        // garbage for the other layouts: probes/tc_tf32_mn), which nothing else uses.
+        for (name, maj, sw, used) in [("A", amaj, swa, !a_tmem), ("B", bmaj, swb, true)] {
+            if used && ((maj != 0 && ew == 4) != (sw == SW128_B32)) {
+                return Err(format!(
+                    "instruction descriptor {idesc:#x}: {name} {} with smem layout {sw}: not modeled",
+                    if maj != 0 { "MN-major" } else { "K-major" }
+                ));
+            }
+        }
         // MN-major is carried as a flag bit on the swizzle span.
         const MN: u32 = 1 << 31;
         let swa = if amaj != 0 { swa | MN } else { swa };
@@ -11511,7 +11616,17 @@ impl Machine {
         // 16-byte chunks of 8 M/N elements, 8 K-rows of them 16 bytes apart, chunks SBO apart
         // along M/N, K groups of 8 LBO apart; GB300: probes/tc_m128 mma_img, mslk decode).
         let elem = |start: u32, lbo: u32, sbo: u32, sw: u32, r: usize, k: usize| {
-            if sw == MN {
+            if sw == MN | SW128_B32 {
+                // MN-major tf32, SWIZZLE_128B_BASE32B: 128-byte rows of 32 M/N elements, 4 K
+                // rows per atom, atoms LBO apart along M/N and SBO apart along K, then 32-byte
+                // granules XORed with address bits 7-8 (probes/tc_tf32_mn).
+                let a = start
+                    + (r % 32) as u32 * 4
+                    + (k % 4) as u32 * 128
+                    + (r / 32) as u32 * lbo
+                    + (k / 4) as u32 * sbo;
+                a ^ (((a >> 7) & 3) << 5)
+            } else if sw == MN {
                 start
                     + (r as u32 / 8) * sbo
                     + (r as u32 % 8) * 2
@@ -11617,9 +11732,9 @@ impl Machine {
             }
             let mut out = Vec::new();
             for &c in &ctas {
-                let mut v = Vec::with_capacity(rows * kk);
-                for mi in 0..rows {
-                    let lane = row_lane(mi) - lane0 + al;
+                let mut v = Vec::with_capacity(a_lanes.len() * kk);
+                for &rl in &a_lanes {
+                    let lane = rl + al;
                     for j in 0..8 {
                         let (w, st) =
                             self.tmem_access(c, lane, ac + j, op.actor, &op.vc, op.pc, None);
@@ -11663,9 +11778,9 @@ impl Machine {
             for &c in &ctas {
                 if a_tmem {
                     let (al, ac) = ((adesc >> 16) as usize & 0xffff, (adesc & 0xffff) as usize);
-                    let mut v = Vec::with_capacity(rows * kk);
-                    for mi in 0..rows {
-                        let lane = row_lane(mi) - lane0 + al;
+                    let mut v = Vec::with_capacity(a_lanes.len() * kk);
+                    for &rl in &a_lanes {
+                        let lane = rl + al;
                         for j in 0..8 {
                             if ew == 4 {
                                 v.push(HalfOp::Unknown);
@@ -11762,10 +11877,11 @@ impl Machine {
                         let a = &a_all[ci];
                         for mi in 0..rows {
                             for ni in 0..n as usize {
+                                let ar = arow(mi, ni);
                                 let terms: Vec<fp::Term> = (0..kk)
                                     .map(|k| {
                                         fp::Term::prod(
-                                            a[mi * kk + k],
+                                            a[ar * kk + k],
                                             b[ni * kk + k],
                                             model.exp_from_inputs,
                                         )
@@ -11794,10 +11910,11 @@ impl Machine {
                 for mi in 0..rows {
                     for ni in 0..n as usize {
                         let r = f32::from_bits(results[ci * per + mi * n as usize + ni]);
+                        let ar = arow(mi, ni);
                         let prods: Vec<f64> =
-                            (0..kk).map(|k| a[mi * kk + k] * b[ni * kk + k]).collect();
+                            (0..kk).map(|k| a[ar * kk + k] * b[ni * kk + k]).collect();
                         let ops: Vec<HalfOp> = (0..kk)
-                            .flat_map(|k| [a_prov[ci][mi * kk + k], b_prov[ni * kk + k]])
+                            .flat_map(|k| [a_prov[ci][ar * kk + k], b_prov[ni * kk + k]])
                             .collect();
                         let acc = accs[ci][mi * n as usize + ni];
                         // ASSUME(N-MMA): one step of the calibrated model per 32-byte K slice.
@@ -11953,6 +12070,11 @@ impl Machine {
         }
         let (sa, lboa, sboa, swa) = Self::smem_desc(adesc)?;
         let (sb, lbob, sbob, swb) = Self::smem_desc(bdesc)?;
+        if swa == SW128_B32 || swb == SW128_B32 {
+            return Err(
+                "narrow-kind MMA with a SWIZZLE_128B_BASE32B descriptor not modeled".into(),
+            );
+        }
         // Byte `kb` (0..32) of row r's K slice: K-major, no swizzle: 16-byte core-matrix rows,
         // 8-row groups SBO apart, the two 16-byte K chunks LBO apart; swizzled: row r at
         // (r/8)*SBO + (r%8)*span, the slice contiguous, then the address swizzle.
@@ -13352,6 +13474,7 @@ fn propagates_undef(op: &Op) -> bool {
             | Op::CvtUnpack { .. }
             | Op::Dfma { .. }
             | Op::DivSqrt64 { .. }
+            | Op::Rsqrt64Approx { .. }
     )
 }
 
@@ -13509,7 +13632,13 @@ mod mma_shape_tests {
             // cta_group::2: N = 16..256 in steps of 16, for M = 128 and 256.
             assert_eq!(ok(128, n, 2, false, false), n % 16 == 0, "pair M128 N{n}");
             assert_eq!(ok(256, n, 2, false, false), n % 16 == 0, "pair M256 N{n}");
-            assert!(!ok(128, n, 2, true, false) && !ok(128, n, 2, false, true));
+            // A in TMEM: each D lane reads A from its own TMEM lane (probes/tc_pair_atmem).
+            assert_eq!(
+                ok(128, n, 2, true, false),
+                n % 16 == 0,
+                "pair M128 N{n} A in TMEM"
+            );
+            assert!(!ok(128, n, 2, false, true), "pair M128 scaled");
         }
         for (m, g) in [(32, 1), (256, 1), (64, 2), (512, 2)] {
             assert!(!ok(m, 64, g, false, false), "M{m} group {g}");

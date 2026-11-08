@@ -522,6 +522,44 @@ pub fn round_f64(neg: bool, mag: u128, e: i32, rnd: ptxv_ir::Rnd) -> u64 {
     sign | (be as u64) << 52 | (keep as u64 & ((1u64 << 52) - 1))
 }
 
+/// PTX `rsqrt.approx.f64` (no .ftz) as ptxas 13.0 expands it (probes/rsqrt_f64): y0 =
+/// MUFU.RSQ64H of the high word (low word 0), e = fma(a, -(y0 y0), 1), y = fma(fma(e, 0.375,
+/// 0.5), y0 e, y0), every step a DMUL / DFMA rounded to nearest. Outside 2^-1022 <= a <
+/// 2^1023 (high word - 0x100000 >= 0x7fe00000, sign included) its slow path: +-0 -> +-Inf, NaN
+/// -> a + a, negative -> 0xfff8000000000000, +Inf -> +0, subnormal -> the same refinement of
+/// a 2^54, times 2^27. ASSUME(N-MUFU)
+pub fn rsqrt_approx_f64(a: u64) -> u64 {
+    use ptxv_ir::Rnd::Rn;
+    let one = 1f64.to_bits();
+    let main = |x: u64| -> u64 {
+        let y0 = (crate::mufu::rsq64h((x >> 32) as u32) as u64) << 32;
+        let y2 = f64_fma(y0, y0, None, Rn);
+        let e = f64_fma(x, y2 ^ 1 << 63, Some(one), Rn);
+        let r8 = f64_fma(e, 0.375f64.to_bits(), Some(0.5f64.to_bits()), Rn);
+        let r6 = f64_fma(y0, e, None, Rn);
+        f64_fma(r8, r6, Some(y0), Rn)
+    };
+    let hi = (a >> 32) as u32;
+    if hi.wrapping_sub(0x10_0000) < 0x7fe0_0000 {
+        return main(a);
+    }
+    let mag = a & !(1 << 63);
+    if mag == 0 {
+        return (a & 1 << 63) | 0x7ff0_0000_0000_0000;
+    }
+    if mag > 0x7ff0_0000_0000_0000 {
+        return f64_fma(a, one, Some(a), Rn);
+    }
+    if a >> 63 == 1 {
+        return 0xfff8_0000_0000_0000;
+    }
+    if mag == 0x7ff0_0000_0000_0000 {
+        return 0;
+    }
+    let xs = f64_fma(a, 2f64.powi(54).to_bits(), None, Rn);
+    f64_fma(main(xs), 2f64.powi(27).to_bits(), None, Rn)
+}
+
 /// f64 fused multiply-add `a*b + c`, one rounding in mode `rnd` (DFMA; DMUL when `c` is None;
 /// DADD is a*1 + c). Exact in integers. A NaN operand propagates, quieted, sign and payload
 /// kept, in the priority b, c, a (GB300, fixtures/s_f64); an invalid operation gives
@@ -1416,6 +1454,84 @@ impl MmaModel {
     }
 }
 
+/// One `HMMA.16816.F32.BF16` / `.1688` step of HMMA_MODEL extended to special values as GB300
+/// computes them (probes/hmma_special, 20,480 outputs): subnormal inputs and accumulators are
+/// exact and aligned at exponent -126; a NaN operand, Inf * 0 or Inf - Inf gives 0x7fffffff,
+/// otherwise an Inf operand product or accumulator gives that Inf; a finite sum of 2^128 or
+/// more gives Inf of its sign (round-toward-zero would give FLT_MAX); subnormal results are
+/// kept. `prods` are the (a, b) element pairs. ASSUME(N-HMMA)
+pub fn hmma_bf16_step(acc: f32, prods: &[(f64, f64)]) -> f32 {
+    let m = HMMA_MODEL;
+    debug_assert!(m.acc_in_group && m.exp_from_inputs && m.final_rz && !m.trunc_floor);
+    let nan = f32::from_bits(0x7fff_ffff);
+    let (mut pinf, mut ninf) = (false, false);
+    for &(a, b) in prods {
+        if a.is_nan()
+            || b.is_nan()
+            || (a.is_infinite() && b == 0.0)
+            || (b.is_infinite() && a == 0.0)
+        {
+            return nan;
+        }
+        if a.is_infinite() || b.is_infinite() {
+            if (a * b) > 0.0 {
+                pinf = true
+            } else {
+                ninf = true
+            }
+        }
+    }
+    if acc.is_nan() {
+        return nan;
+    }
+    if acc.is_infinite() {
+        if acc > 0.0 { pinf = true } else { ninf = true }
+    }
+    match (pinf, ninf) {
+        (true, true) => return nan,
+        (true, false) => return f32::INFINITY,
+        (false, true) => return f32::NEG_INFINITY,
+        _ => {}
+    }
+    // Subnormals align at -126 (the exponent field's minimum), as normal values at theirs.
+    let ex = |x: f64| exp_of(x).max(-126);
+    let mut terms: Vec<Term> = prods
+        .iter()
+        .filter(|(a, b)| *a != 0.0 && *b != 0.0)
+        .map(|&(a, b)| Term {
+            v: a * b,
+            e: ex(a) + ex(b),
+        })
+        .collect();
+    if acc != 0.0 {
+        terms.push(Term {
+            v: acc as f64,
+            e: ex(acc as f64),
+        });
+    }
+    if terms.is_empty() {
+        return 0.0;
+    }
+    let f = m.frac_bits.unwrap() as i32;
+    let q_exp = terms.iter().map(|t| t.e).max().unwrap() - f;
+    let mut s: i128 = 0;
+    for t in &terms {
+        s += (t.v * 2f64.powi(-q_exp)).trunc() as i128;
+    }
+    if s == 0 {
+        return 0.0;
+    }
+    let lead = 127 - s.unsigned_abs().leading_zeros() as i32;
+    if lead + q_exp >= 128 {
+        return if s > 0 {
+            f32::INFINITY
+        } else {
+            f32::NEG_INFINITY
+        };
+    }
+    round_int_to_f32(s, q_exp, true, 0)
+}
+
 /// Sum `terms`, optionally truncating each to `frac` bits below the largest alignment
 /// exponent, and round once to f32.
 pub fn sum_round_terms(terms: &[Term], frac: Option<u8>, rz: bool, floor: bool) -> f32 {
@@ -1440,6 +1556,15 @@ pub fn sum_round_terms(terms: &[Term], frac: Option<u8>, rz: bool, floor: bool) 
         } else {
             scaled.trunc()
         } as i128;
+    }
+    // A sum of 2^128 or more is Inf of its sign also under the final round toward zero
+    // (GB300: HMMA probes/hmma_special, tcgen05.mma probes/tc_mma_ovf), not FLT_MAX.
+    if acc != 0 && 127 - acc.unsigned_abs().leading_zeros() as i32 + q_exp >= 128 {
+        return if acc > 0 {
+            f32::INFINITY
+        } else {
+            f32::NEG_INFINITY
+        };
     }
     round_int_to_f32(acc, q_exp, rz, 0)
 }
@@ -1537,6 +1662,29 @@ pub fn round_int_to_f32(v: i128, e: i32, rz: bool, sticky: i32) -> f32 {
 #[cfg(test)]
 mod mma_tests {
     use super::*;
+    /// On normal operands without overflow the special-value step is HMMA_MODEL.
+    #[test]
+    fn hmma_bf16_step_is_the_model_on_normals() {
+        let mut s = 0x1234_5678u64;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        for _ in 0..2000 {
+            let bf = |x: u64| f32::from_bits(((x as u32) & 0x8f7f_0000) | 0x3000_0000) as f64;
+            let prods: Vec<(f64, f64)> = (0..16).map(|_| (bf(next()), bf(next()))).collect();
+            let acc = bf(next()) as f32;
+            let terms: Vec<Term> = prods.iter().map(|&(a, b)| Term::prod(a, b, true)).collect();
+            assert_eq!(
+                hmma_bf16_step(acc, &prods).to_bits(),
+                HMMA_MODEL.apply_terms(acc, &terms).to_bits()
+            );
+        }
+        assert!(hmma_bf16_step(0.0, &[(f64::INFINITY, 0.0)]).to_bits() == 0x7fff_ffff);
+        assert!(hmma_bf16_step(0.0, &[(2f64.powi(64), 2f64.powi(64))]) == f32::INFINITY);
+    }
     #[test]
     fn exact_model_is_correct_rounding() {
         let p = [1.0, 2f64.powi(-30), -1.0, 3.0];

@@ -1,0 +1,51 @@
+// probes/local_vec: 64-bit and vector ld / st .local on a `.local` array (ptxas: STL.64 /
+// STL.128 / LDL.64 / LDL.128 or per-element accesses). 32 threads; x = in[4 t .. 4 t + 3];
+// stores st.local.v4.b32 {x0..x3} at 0, st.local.v2.b64 {x0 | x1 << 32, x2 | x3 << 32} at 16,
+// st.local.b64 at 32, st.local.f64 at 40; loads them back crosswise (v2.b64 of the v4.b32,
+// v4.b32 of the v2.b64, b64 / v2.b32 of the scalars) into out[16 t ..].
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry local_vec(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 32, 1, 1
+{
+    .local .align 16 .b8 __local_depot0[64];
+    .reg .b32   %r<24>;
+    .reg .b64   %rd<24>;
+    .reg .f64   %fd<4>;
+
+    mov.u64         %rd20, __local_depot0;
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 16;
+    add.s64         %rd4, %rd1, %rd3;
+    mul.wide.u32    %rd5, %r1, 64;
+    add.s64         %rd6, %rd2, %rd5;
+    ld.global.v4.b32 {%r2, %r3, %r4, %r5}, [%rd4];
+    st.local.v4.b32 [%rd20], {%r2, %r3, %r4, %r5};
+    mov.b64         %rd7, {%r2, %r3};
+    mov.b64         %rd8, {%r4, %r5};
+    st.local.v2.b64 [%rd20+16], {%rd8, %rd7};
+    xor.b64         %rd9, %rd7, %rd8;
+    st.local.b64    [%rd20+32], %rd9;
+    mov.b64         %fd1, %rd8;
+    st.local.f64    [%rd20+40], %fd1;
+    ld.local.v2.b64 {%rd10, %rd11}, [%rd20];
+    ld.local.v4.b32 {%r6, %r7, %r8, %r9}, [%rd20+16];
+    ld.local.b64    %rd12, [%rd20+32];
+    ld.local.v2.b32 {%r10, %r11}, [%rd20+40];
+    ld.local.f64    %fd2, [%rd20+32];
+    st.global.v2.b64 [%rd6], {%rd10, %rd11};
+    st.global.v4.b32 [%rd6+16], {%r6, %r7, %r8, %r9};
+    st.global.b64   [%rd6+32], %rd12;
+    st.global.v2.b32 [%rd6+40], {%r10, %r11};
+    st.global.f64   [%rd6+48], %fd2;
+    ret;
+}

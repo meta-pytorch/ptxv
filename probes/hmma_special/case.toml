@@ -1,0 +1,37 @@
+name = "probe_hmma_special"
+description = """
+Probe (N-HMMA) for mma.sync m16n8k16 bf16 (HMMA.16816.F32.BF16) on special values: subnormal
+inputs and accumulators, subnormal results, Inf / NaN operands and accumulators, finite
+overflow, subnormal x Inf; 160 tests x 128 outputs (kernel.ptx, gen.py). expected/ is GB300's
+output (kernel.cubin = ptxas -arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "hmma_special"
+grid = [160, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [61440]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [20480]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

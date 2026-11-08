@@ -2588,6 +2588,11 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             }
         }
         // ASSUME(N-MUFU): see ASSUMPTIONS.md
+        // rsqrt.approx.f64 (no .ftz): ptxas's refinement and slow path (probes/rsqrt_f64).
+        "rsqrt" if mods == ["approx", "f64"] => Op::Rsqrt64Approx {
+            d: lw.dst(op_n(0)?)?,
+            a: lw.val(op_n(1)?)?,
+        },
         "ex2" | "rcp" | "rsqrt" | "lg2" | "sin" | "cos" | "tanh" | "sqrt" if has("approx") => {
             let func = match base {
                 "ex2" => MufuFunc::Ex2,
@@ -3030,6 +3035,10 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         // HMMA.1688.F32.TF32, `Op::Hmma`; probes/mma_sync_ptx).
         "mma" => {
             // (tf32, A / B registers); m16n8k8 bf16: HMMA.1688.F32.BF16 (probes/bmma8).
+            let f16 = mods
+                == [
+                    "sync", "aligned", "m16n8k16", "row", "col", "f32", "f16", "f16", "f32",
+                ];
             let (tf32, s8, na, nb) = match mods {
                 [
                     "sync",
@@ -3042,6 +3051,8 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     "bf16",
                     "f32",
                 ] => (false, false, 4, 2),
+                // HMMA.16816.F32 (probes/hmma_f16).
+                _ if f16 => (false, false, 4, 2),
                 [
                     "sync",
                     "aligned",
@@ -3079,8 +3090,8 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 ] => (false, true, 4, 2),
                 _ => bail!(lw.err(
                     "only mma.sync.aligned.{m16n8k16,m16n8k8}.row.col.f32.bf16.bf16.f32 / \
-                     m16n8k8.row.col.f32.tf32.tf32.f32 / m16n8k32.row.col.satfinite.s32.s8.s8.s32 \
-                     are modeled"
+                     m16n8k16.row.col.f32.f16.f16.f32 / m16n8k8.row.col.f32.tf32.tf32.f32 / \
+                     m16n8k32.row.col.satfinite.s32.s8.s8.s32 are modeled"
                 )),
             };
             let list = |i: usize, n: usize| -> Result<Vec<Val>> {
@@ -3112,6 +3123,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 c,
                 tf32,
                 s8,
+                f16,
             }
         }
         // `movmatrix.sync.aligned.m8n8.trans.b16 d, a` (SASS MOVM.16.MT88; probes/movm).
@@ -4651,30 +4663,75 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         // `ld` / `st` `.local` (scalar, up to 32 bits) through a `.local` array's address: the
         // thread's local memory, as SASS LDL / STL. ASSUME(L-ROSETTA)
         "ld" | "st" if has("local") => {
-            if mods.iter().any(|m| m.starts_with('v')) || bits > 32 {
-                bail!(lw.err("only scalar ld / st .local of up to 32 bits are modeled"));
-            }
-            if base == "ld" && tname.starts_with('s') && bits < 32 {
-                bail!(lw.err("sign-extending ld.local not modeled"));
-            }
-            if let Some(m) = mods
+            // .v2 / .v4: one access per element at its offset (probes/local_vec); a 64-bit
+            // element is one virtual register (both words).
+            let vn = mods
                 .iter()
-                .find(|m| type_bits(m).is_none() && **m != "local")
-            {
-                bail!(lw.err(format!("{base}.local: modifier .{m} not modeled")));
+                .find_map(|m| m.strip_prefix('v').and_then(|n| n.parse::<u32>().ok()));
+            if bits > 64 || vn.is_some_and(|n| !matches!(n, 2 | 4)) {
+                bail!(lw.err("only ld / st .local of up to 64 bits, .v2 / .v4, are modeled"));
             }
-            let bytes = (bits / 8).max(1) as u32;
-            if base == "ld" {
-                Op::LdLocal {
-                    d: lw.dst(op_n(0)?)?,
-                    bytes,
-                    addr: lw.addr(op_n(1)?)?,
+            if let Some(n) = vn {
+                if base == "ld" && tname.starts_with('s') && bits < 32 {
+                    bail!(lw.err("sign-extending ld.local not modeled"));
                 }
+                let bytes = (bits / 8).max(1) as u32;
+                let list = op_n(if base == "ld" { 0 } else { 1 })?
+                    .trim()
+                    .trim_matches(|c| c == '{' || c == '}')
+                    .split(',')
+                    .map(|x| x.trim().to_string())
+                    .collect::<Vec<_>>();
+                if list.len() != n as usize {
+                    bail!(lw.err("vector length does not match .vN"));
+                }
+                let a = lw.addr(op_n(if base == "ld" { 1 } else { 0 })?)?;
+                let mut ops = Vec::new();
+                for (i, e) in list.iter().enumerate() {
+                    let addr = Addr {
+                        off: a.off + (i as u32 * bytes) as i64,
+                        ..a.clone()
+                    };
+                    ops.push(if base == "ld" {
+                        Op::LdLocal {
+                            d: lw.dst(e)?,
+                            bytes,
+                            addr,
+                        }
+                    } else {
+                        Op::StLocal {
+                            bytes,
+                            addr,
+                            v: lw.val(e)?,
+                        }
+                    });
+                }
+                let last = ops.pop().unwrap();
+                pre.extend(ops);
+                last
             } else {
-                Op::StLocal {
-                    bytes,
-                    addr: lw.addr(op_n(0)?)?,
-                    v: lw.val(op_n(1)?)?,
+                if base == "ld" && tname.starts_with('s') && bits < 32 {
+                    bail!(lw.err("sign-extending ld.local not modeled"));
+                }
+                if let Some(m) = mods
+                    .iter()
+                    .find(|m| type_bits(m).is_none() && **m != "local")
+                {
+                    bail!(lw.err(format!("{base}.local: modifier .{m} not modeled")));
+                }
+                let bytes = (bits / 8).max(1) as u32;
+                if base == "ld" {
+                    Op::LdLocal {
+                        d: lw.dst(op_n(0)?)?,
+                        bytes,
+                        addr: lw.addr(op_n(1)?)?,
+                    }
+                } else {
+                    Op::StLocal {
+                        bytes,
+                        addr: lw.addr(op_n(0)?)?,
+                        v: lw.val(op_n(1)?)?,
+                    }
                 }
             }
         }

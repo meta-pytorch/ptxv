@@ -3692,6 +3692,7 @@ fn lower_line(
             if mods == ["16816", "F32", "BF16"]
                 || mods == ["1688", "F32", "TF32"]
                 || mods == ["1688", "F32", "BF16"]
+                || mods == ["16816", "F32"]
                 || base == "IMMA" && mods == ["16832", "S8", "S8", "SAT"] =>
         {
             uniform = false;
@@ -3729,8 +3730,9 @@ fn lower_line(
                 a,
                 b,
                 c: regs(lw.op(3)?, 4)?,
-                tf32: mods[2] == "TF32",
+                tf32: mods.get(2) == Some(&"TF32"),
                 s8: base == "IMMA",
+                f16: base == "HMMA" && mods == ["16816", "F32"],
             }
         }
         "LDS" => {

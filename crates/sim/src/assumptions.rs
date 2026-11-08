@@ -1482,7 +1482,7 @@ pub const REGISTRY: &[Assumption] = &[
         id: "N-HMMA",
         kind: "code",
         status: "validated",
-        title: "HMMA.16816.F32.BF16 = the N-MMA model per instruction (probes/hmma, 98,304 GB300 outputs)",
+        title: "HMMA.16816.F32[.BF16] = the N-MMA model per instruction (probes/hmma, probes/hmma_f16: 98,304 GB300 outputs each)",
         applies: |k| any(k, |o| matches!(o, Op::Hmma { s8: false, .. })),
     },
     Assumption {

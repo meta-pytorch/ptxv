@@ -280,11 +280,16 @@ any modifier outside the audited set before an arm runs.
 | `BRX Ra -off` (BRANCH_TARGETS) | `brx.idx[.uni] i, $L` / `$L: .branchtargets ...` | per-thread jump to target i; an index outside the list is a fault | probes/brx_idx |
 | `REDUX.SUM.S32` | `redux.sync.add.s32` | wrapping sum over the active lanes (partial masks) | probes/redux_s32 |
 | `LOP3.LUT ..., 0x80000000, ..., 0xb8` | `copysign.f32` | b with the sign bit of a (bit operation) | probes/copysign |
+| `HMMA.16816.F32` | `mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32` | N-HMMA model with f16 elements; f16 subnormal / Inf / NaN refused | probes/hmma_f16 |
 | `F2F.BF16.F16` / `F2F.F16.BF16` | `cvt.bf16.f16` / `cvt.f16.bf16` without a rounding modifier | nearest | probes/cvt_bf16_f16 |
+| `MUFU.RSQ64H` + `DMUL` / `DFMA` + slow-path `CALL` | `rsqrt.approx.f64` | ptxas's refinement and special cases | probes/rsqrt_f64 |
 | `DSETP.MIN/MAX.AND` + `SEL` / `FSEL` + `LOP3 0x80000`; `DADD -RZ, -a / \|a\|` | `min` / `max.f64`; `neg` / `abs.f64` | as the SASS ops | probes/f64_misc |
 | ptxas's div.rn / sqrt.rn FTZ expansions | `div.rn.ftz.f32`, `sqrt.rn.ftz.f32` | IEEE on flushed operands, result flushed | probes/ftz_div_sqrt |
+| `STL.64` / `.128`, `LDL.64` / `.128` | `ld` / `st` `.local` `.b64` / `.f64` / `.v2` / `.v4` | per element; a 64-bit element is one register | probes/local_vec |
 | `S2R SR_CTAID` + `LDC c[0x0][0x2a0.. - 0xa0 * SR_CgaSize]` | `%cluster_ctaid`, `%cluster_nctaid`, `%clusterid`, `%nclusterid` | ctaid mod / div the cluster shape | probes/cluster_sreg |
 | `PRMT` | `mov.b32 r, {b0, b1, b2, b3}`, `mov.b16 h, {lo, hi}`, `mov.b16 {lo, hi}, h` | byte pack / unpack | probes/mov_pack |
+| `UTCHMMA.2CTA tmem[..], gdesc[..]` at M = 128 | `tcgen05.mma.cta_group::2` M = 128 with A in TMEM | each D lane reads its own lane's A row | probes/tc_pair_atmem |
+| `UTCHMMA` idesc bit 15 / 16 with kind::tf32, smem layout 1 | `tcgen05.mma.kind::tf32` MN-major A / B (SWIZZLE_128B_BASE32B) | 4-row 128-byte atoms, 32-byte granule swizzle | probes/tc_tf32_mn |
 | `UTCHMMA ... !UPT` / `UPT` | `tcgen05.mma ..., idesc, 0` / `1` (immediate enable-input-d) | constant predicate: overwrite / accumulate | probes/tc_mma_imm |
 | `PRMT` + `BMSK` + `SHF.L` + `LOP3 0xe2`; `FLO.U32` + `IADD3 -d, 0x1f` | `bfi.b32`; `clz.b32` | pos / len mod 256, clipped at bit 31; 32 for 0 | probes/bfi_clz |
 | `FADD.FTZ.SAT d, RZ, a`, `FADD.FTZ d, a, -RZ` | `cvt.ftz.sat.f32.f32`, `cvt.ftz.f32.f32` | as the SASS ops | probes/cvt_ftz |

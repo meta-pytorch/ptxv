@@ -1658,12 +1658,57 @@ fn probe_discard_l2_verdicts() {
     check_dir("probes", "discard_l2", "read_after", "ptx");
 }
 
+/// tcgen05.mma cta_group::2 M = 128 with A in TMEM (probes/tc_pair_atmem) = GB300 on both
+/// front-ends.
+#[test]
+fn probe_tc_pair_atmem_matches_hardware() {
+    probe_bitwise("probes/tc_pair_atmem", "good", "ptx");
+    probe_bitwise("probes/tc_pair_atmem", "good", "sass");
+}
+
+/// tcgen05.mma kind::tf32 MN-major through SWIZZLE_128B_BASE32B (probes/tc_tf32_mn) = GB300 on
+/// both front-ends.
+#[test]
+fn probe_tc_tf32_mn_matches_hardware() {
+    probe_bitwise("probes/tc_tf32_mn", "good", "ptx");
+    probe_bitwise("probes/tc_tf32_mn", "good", "sass");
+}
+
+/// tcgen05.mma finite overflow to Inf (probes/tc_mma_ovf) = GB300 on both front-ends.
+#[test]
+fn probe_tc_mma_ovf_matches_hardware() {
+    probe_bitwise("probes/tc_mma_ovf", "good", "ptx");
+    probe_bitwise("probes/tc_mma_ovf", "good", "sass");
+}
+
+/// HMMA bf16 on subnormal / Inf / NaN operands and finite overflow (probes/hmma_special) =
+/// GB300 on both front-ends.
+#[test]
+fn probe_hmma_special_matches_hardware() {
+    probe_bitwise("probes/hmma_special", "good", "ptx");
+    probe_bitwise("probes/hmma_special", "good", "sass");
+}
+
+/// mma.sync m16n8k16 f16 / HMMA.16816.F32 (probes/hmma_f16) = GB300 on both front-ends.
+#[test]
+fn probe_hmma_f16_matches_hardware() {
+    probe_bitwise("probes/hmma_f16", "good", "ptx");
+    probe_bitwise("probes/hmma_f16", "good", "sass");
+}
+
 /// cvt.bf16.f16 / cvt.f16.bf16 without a rounding modifier on every pattern
 /// (probes/cvt_bf16_f16) = GB300 on both front-ends.
 #[test]
 fn probe_cvt_bf16_f16_matches_hardware() {
     probe_bitwise("probes/cvt_bf16_f16", "good", "ptx");
     probe_bitwise("probes/cvt_bf16_f16", "good", "sass");
+}
+
+/// rsqrt.approx.f64 without .ftz (probes/rsqrt_f64) = GB300 on both front-ends.
+#[test]
+fn probe_rsqrt_f64_matches_hardware() {
+    probe_bitwise("probes/rsqrt_f64", "good", "ptx");
+    probe_bitwise("probes/rsqrt_f64", "good", "sass");
 }
 
 /// min / max / neg / abs .f64 (probes/f64_misc) = GB300 on both front-ends.
@@ -1678,6 +1723,13 @@ fn probe_f64_misc_matches_hardware() {
 fn probe_ftz_div_sqrt_matches_hardware() {
     probe_bitwise("probes/ftz_div_sqrt", "good", "ptx");
     probe_bitwise("probes/ftz_div_sqrt", "good", "sass");
+}
+
+/// 64-bit and vector ld / st .local (probes/local_vec) = GB300 on both front-ends.
+#[test]
+fn probe_local_vec_matches_hardware() {
+    probe_bitwise("probes/local_vec", "good", "ptx");
+    probe_bitwise("probes/local_vec", "good", "sass");
 }
 
 /// Cluster special registers (probes/cluster_sreg) = GB300 on both front-ends.

@@ -1,0 +1,39 @@
+// probes/rsqrt_f64: rsqrt.approx.f64 (no .ftz; ptxas: MUFU.RSQ64H, a DFMA refinement and a
+// slow path). 256 threads x 16 f64 inputs: out[i] = rsqrt.approx.f64(in[i]), i = 16 t + k
+// (gen.py: signed zeros, infinities, NaN payloads, negatives, subnormals, the 2^-1022 and
+// 2^1023 boundaries, random positives over the whole exponent range).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry rsqrt_f64(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .pred  %p<2>;
+    .reg .b32   %r<8>;
+    .reg .f64   %fd<4>;
+    .reg .b64   %rd<12>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 128;
+    add.s64         %rd4, %rd1, %rd3;
+    add.s64         %rd5, %rd2, %rd3;
+    mov.u32         %r2, 0;
+LOOP:
+    ld.global.f64   %fd1, [%rd4];
+    rsqrt.approx.f64 %fd2, %fd1;
+    st.global.f64   [%rd5], %fd2;
+    add.s64         %rd4, %rd4, 8;
+    add.s64         %rd5, %rd5, 8;
+    add.u32         %r2, %r2, 1;
+    setp.lt.u32     %p1, %r2, 16;
+    @%p1 bra        LOOP;
+    ret;
+}
