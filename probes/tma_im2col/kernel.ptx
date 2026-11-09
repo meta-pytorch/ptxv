@@ -1,0 +1,379 @@
+// probes/tma_im2col (gen.py): im2col TMA through cuTensorMapEncodeIm2col maps.
+// Loads: cp.async.bulk.tensor.{3,4,5}d.shared::cluster.global.im2col (SASS UTMALDG.<n>D.IM2COL),
+// K per map with coordinates and offsets from `coords`, each box copied out to `out` in turn.
+// Stores: cp.async.bulk.tensor.{3,4,5}d.global.shared::cta.im2col_no_offs.bulk_group (SASS
+// UTMASTG.<n>D.IM2COL) of the box `src` holds, KS per map, into tensors s0..s2.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry tma_im2col(
+    .param .align 64 .b8 m0[128],
+    .param .align 64 .b8 m1[128],
+    .param .align 64 .b8 m2[128],
+    .param .align 64 .b8 m3[128],
+    .param .align 64 .b8 m4[128],
+    .param .align 64 .b8 m5[128],
+    .param .align 64 .b8 s0[128],
+    .param .align 64 .b8 s1[128],
+    .param .align 64 .b8 s2[128],
+    .param .u64 out,
+    .param .u64 crd,
+    .param .u64 src
+)
+.maxntid 128, 1, 1
+{
+    .reg .pred %p<8>;
+    .reg .b16 %h<8>;
+    .reg .b32 %r<40>;
+    .reg .b64 %rd<16>;
+    .shared .align 1024 .b8 sm[16384];
+    .shared .align 8 .b64 bar;
+    mov.u32 %r0, %tid.x;
+    mov.u32 %r1, sm;
+    mov.u32 %r2, bar;
+    setp.ne.u32 %p0, %r0, 0;
+    @%p0 bra INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r2], 1;
+    fence.mbarrier_init.release.cluster;
+INIT_DONE:
+    bar.sync 0;
+    ld.param.u64 %rd1, [out];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [crd];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r3, 0;                 // mbarrier phase
+    // load map m0: rank 5, 2048 bytes per box
+    mov.u32 %r4, 0;
+L_m0:
+    @%p0 bra W_m0;
+    mad.lo.u32 %r5, %r4, 32, 0;
+    cvt.u64.u32 %rd3, %r5;
+    add.u64 %rd4, %rd2, %rd3;
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd4];
+    ld.global.v4.u32 {%r14, %r15, %r16, %r17}, [%rd4+16];
+    cvt.u16.u32 %h1, %r15;
+    cvt.u16.u32 %h2, %r16;
+    cvt.u16.u32 %h3, %r17;
+    mbarrier.arrive.expect_tx.shared::cta.b64 %rd5, [%r2], 2048;
+    mov.b64 %rd9, m0;
+    cvta.param.u64 %rd6, %rd9;
+    cp.async.bulk.tensor.5d.shared::cluster.global.im2col.mbarrier::complete_tx::bytes [%r1], [%rd6, {%r10, %r11, %r12, %r13, %r14}], [%r2], {%h1, %h2, %h3};
+W_m0:
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], %r3;
+    @!%p1 bra W_m0;
+    xor.b32 %r3, %r3, 1;
+    shl.b32 %r6, %r0, 4;
+    add.u32 %r8, %r6, 0;
+    setp.lt.u32 %p2, %r8, 2048;
+    add.u32 %r7, %r1, %r8;
+    @%p2 ld.shared.v4.u32 {%r20, %r21, %r22, %r23}, [%r7];
+    cvt.u64.u32 %rd7, %r8;
+    add.u64 %rd8, %rd1, %rd7;
+    @%p2 st.global.v4.u32 [%rd8], {%r20, %r21, %r22, %r23};
+    add.u64 %rd1, %rd1, 2048;
+    fence.proxy.async.shared::cta;
+    bar.sync 0;
+    add.u32 %r4, %r4, 1;
+    setp.lt.u32 %p3, %r4, 8;
+    @%p3 bra L_m0;
+    // load map m1: rank 4, 768 bytes per box
+    mov.u32 %r4, 0;
+L_m1:
+    @%p0 bra W_m1;
+    mad.lo.u32 %r5, %r4, 32, 256;
+    cvt.u64.u32 %rd3, %r5;
+    add.u64 %rd4, %rd2, %rd3;
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd4];
+    ld.global.v4.u32 {%r14, %r15, %r16, %r17}, [%rd4+16];
+    cvt.u16.u32 %h1, %r15;
+    cvt.u16.u32 %h2, %r16;
+    cvt.u16.u32 %h3, %r17;
+    mbarrier.arrive.expect_tx.shared::cta.b64 %rd5, [%r2], 768;
+    mov.b64 %rd9, m1;
+    cvta.param.u64 %rd6, %rd9;
+    cp.async.bulk.tensor.4d.shared::cluster.global.im2col.mbarrier::complete_tx::bytes [%r1], [%rd6, {%r10, %r11, %r12, %r13}], [%r2], {%h1, %h2};
+W_m1:
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], %r3;
+    @!%p1 bra W_m1;
+    xor.b32 %r3, %r3, 1;
+    shl.b32 %r6, %r0, 4;
+    add.u32 %r8, %r6, 0;
+    setp.lt.u32 %p2, %r8, 768;
+    add.u32 %r7, %r1, %r8;
+    @%p2 ld.shared.v4.u32 {%r20, %r21, %r22, %r23}, [%r7];
+    cvt.u64.u32 %rd7, %r8;
+    add.u64 %rd8, %rd1, %rd7;
+    @%p2 st.global.v4.u32 [%rd8], {%r20, %r21, %r22, %r23};
+    add.u64 %rd1, %rd1, 768;
+    fence.proxy.async.shared::cta;
+    bar.sync 0;
+    add.u32 %r4, %r4, 1;
+    setp.lt.u32 %p3, %r4, 8;
+    @%p3 bra L_m1;
+    // load map m2: rank 3, 4096 bytes per box
+    mov.u32 %r4, 0;
+L_m2:
+    @%p0 bra W_m2;
+    mad.lo.u32 %r5, %r4, 32, 512;
+    cvt.u64.u32 %rd3, %r5;
+    add.u64 %rd4, %rd2, %rd3;
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd4];
+    ld.global.v4.u32 {%r14, %r15, %r16, %r17}, [%rd4+16];
+    cvt.u16.u32 %h1, %r15;
+    cvt.u16.u32 %h2, %r16;
+    cvt.u16.u32 %h3, %r17;
+    mbarrier.arrive.expect_tx.shared::cta.b64 %rd5, [%r2], 4096;
+    mov.b64 %rd9, m2;
+    cvta.param.u64 %rd6, %rd9;
+    cp.async.bulk.tensor.3d.shared::cluster.global.im2col.mbarrier::complete_tx::bytes [%r1], [%rd6, {%r10, %r11, %r12}], [%r2], {%h1};
+W_m2:
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], %r3;
+    @!%p1 bra W_m2;
+    xor.b32 %r3, %r3, 1;
+    shl.b32 %r6, %r0, 4;
+    add.u32 %r8, %r6, 0;
+    setp.lt.u32 %p2, %r8, 4096;
+    add.u32 %r7, %r1, %r8;
+    @%p2 ld.shared.v4.u32 {%r20, %r21, %r22, %r23}, [%r7];
+    cvt.u64.u32 %rd7, %r8;
+    add.u64 %rd8, %rd1, %rd7;
+    @%p2 st.global.v4.u32 [%rd8], {%r20, %r21, %r22, %r23};
+    add.u32 %r8, %r6, 2048;
+    setp.lt.u32 %p2, %r8, 4096;
+    add.u32 %r7, %r1, %r8;
+    @%p2 ld.shared.v4.u32 {%r20, %r21, %r22, %r23}, [%r7];
+    cvt.u64.u32 %rd7, %r8;
+    add.u64 %rd8, %rd1, %rd7;
+    @%p2 st.global.v4.u32 [%rd8], {%r20, %r21, %r22, %r23};
+    add.u64 %rd1, %rd1, 4096;
+    fence.proxy.async.shared::cta;
+    bar.sync 0;
+    add.u32 %r4, %r4, 1;
+    setp.lt.u32 %p3, %r4, 8;
+    @%p3 bra L_m2;
+    // load map m3: rank 5, 16384 bytes per box
+    mov.u32 %r4, 0;
+L_m3:
+    @%p0 bra W_m3;
+    mad.lo.u32 %r5, %r4, 32, 768;
+    cvt.u64.u32 %rd3, %r5;
+    add.u64 %rd4, %rd2, %rd3;
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd4];
+    ld.global.v4.u32 {%r14, %r15, %r16, %r17}, [%rd4+16];
+    cvt.u16.u32 %h1, %r15;
+    cvt.u16.u32 %h2, %r16;
+    cvt.u16.u32 %h3, %r17;
+    mbarrier.arrive.expect_tx.shared::cta.b64 %rd5, [%r2], 16384;
+    mov.b64 %rd9, m3;
+    cvta.param.u64 %rd6, %rd9;
+    cp.async.bulk.tensor.5d.shared::cluster.global.im2col.mbarrier::complete_tx::bytes [%r1], [%rd6, {%r10, %r11, %r12, %r13, %r14}], [%r2], {%h1, %h2, %h3};
+W_m3:
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], %r3;
+    @!%p1 bra W_m3;
+    xor.b32 %r3, %r3, 1;
+    shl.b32 %r6, %r0, 4;
+    add.u32 %r8, %r6, 0;
+    setp.lt.u32 %p2, %r8, 16384;
+    add.u32 %r7, %r1, %r8;
+    @%p2 ld.shared.v4.u32 {%r20, %r21, %r22, %r23}, [%r7];
+    cvt.u64.u32 %rd7, %r8;
+    add.u64 %rd8, %rd1, %rd7;
+    @%p2 st.global.v4.u32 [%rd8], {%r20, %r21, %r22, %r23};
+    add.u32 %r8, %r6, 2048;
+    setp.lt.u32 %p2, %r8, 16384;
+    add.u32 %r7, %r1, %r8;
+    @%p2 ld.shared.v4.u32 {%r20, %r21, %r22, %r23}, [%r7];
+    cvt.u64.u32 %rd7, %r8;
+    add.u64 %rd8, %rd1, %rd7;
+    @%p2 st.global.v4.u32 [%rd8], {%r20, %r21, %r22, %r23};
+    add.u32 %r8, %r6, 4096;
+    setp.lt.u32 %p2, %r8, 16384;
+    add.u32 %r7, %r1, %r8;
+    @%p2 ld.shared.v4.u32 {%r20, %r21, %r22, %r23}, [%r7];
+    cvt.u64.u32 %rd7, %r8;
+    add.u64 %rd8, %rd1, %rd7;
+    @%p2 st.global.v4.u32 [%rd8], {%r20, %r21, %r22, %r23};
+    add.u32 %r8, %r6, 6144;
+    setp.lt.u32 %p2, %r8, 16384;
+    add.u32 %r7, %r1, %r8;
+    @%p2 ld.shared.v4.u32 {%r20, %r21, %r22, %r23}, [%r7];
+    cvt.u64.u32 %rd7, %r8;
+    add.u64 %rd8, %rd1, %rd7;
+    @%p2 st.global.v4.u32 [%rd8], {%r20, %r21, %r22, %r23};
+    add.u32 %r8, %r6, 8192;
+    setp.lt.u32 %p2, %r8, 16384;
+    add.u32 %r7, %r1, %r8;
+    @%p2 ld.shared.v4.u32 {%r20, %r21, %r22, %r23}, [%r7];
+    cvt.u64.u32 %rd7, %r8;
+    add.u64 %rd8, %rd1, %rd7;
+    @%p2 st.global.v4.u32 [%rd8], {%r20, %r21, %r22, %r23};
+    add.u32 %r8, %r6, 10240;
+    setp.lt.u32 %p2, %r8, 16384;
+    add.u32 %r7, %r1, %r8;
+    @%p2 ld.shared.v4.u32 {%r20, %r21, %r22, %r23}, [%r7];
+    cvt.u64.u32 %rd7, %r8;
+    add.u64 %rd8, %rd1, %rd7;
+    @%p2 st.global.v4.u32 [%rd8], {%r20, %r21, %r22, %r23};
+    add.u32 %r8, %r6, 12288;
+    setp.lt.u32 %p2, %r8, 16384;
+    add.u32 %r7, %r1, %r8;
+    @%p2 ld.shared.v4.u32 {%r20, %r21, %r22, %r23}, [%r7];
+    cvt.u64.u32 %rd7, %r8;
+    add.u64 %rd8, %rd1, %rd7;
+    @%p2 st.global.v4.u32 [%rd8], {%r20, %r21, %r22, %r23};
+    add.u32 %r8, %r6, 14336;
+    setp.lt.u32 %p2, %r8, 16384;
+    add.u32 %r7, %r1, %r8;
+    @%p2 ld.shared.v4.u32 {%r20, %r21, %r22, %r23}, [%r7];
+    cvt.u64.u32 %rd7, %r8;
+    add.u64 %rd8, %rd1, %rd7;
+    @%p2 st.global.v4.u32 [%rd8], {%r20, %r21, %r22, %r23};
+    add.u64 %rd1, %rd1, 16384;
+    fence.proxy.async.shared::cta;
+    bar.sync 0;
+    add.u32 %r4, %r4, 1;
+    setp.lt.u32 %p3, %r4, 8;
+    @%p3 bra L_m3;
+    // load map m4: rank 5, 4096 bytes per box
+    mov.u32 %r4, 0;
+L_m4:
+    @%p0 bra W_m4;
+    mad.lo.u32 %r5, %r4, 32, 1024;
+    cvt.u64.u32 %rd3, %r5;
+    add.u64 %rd4, %rd2, %rd3;
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd4];
+    ld.global.v4.u32 {%r14, %r15, %r16, %r17}, [%rd4+16];
+    cvt.u16.u32 %h1, %r15;
+    cvt.u16.u32 %h2, %r16;
+    cvt.u16.u32 %h3, %r17;
+    mbarrier.arrive.expect_tx.shared::cta.b64 %rd5, [%r2], 4096;
+    mov.b64 %rd9, m4;
+    cvta.param.u64 %rd6, %rd9;
+    cp.async.bulk.tensor.5d.shared::cluster.global.im2col.mbarrier::complete_tx::bytes [%r1], [%rd6, {%r10, %r11, %r12, %r13, %r14}], [%r2], {%h1, %h2, %h3};
+W_m4:
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], %r3;
+    @!%p1 bra W_m4;
+    xor.b32 %r3, %r3, 1;
+    shl.b32 %r6, %r0, 4;
+    add.u32 %r8, %r6, 0;
+    setp.lt.u32 %p2, %r8, 4096;
+    add.u32 %r7, %r1, %r8;
+    @%p2 ld.shared.v4.u32 {%r20, %r21, %r22, %r23}, [%r7];
+    cvt.u64.u32 %rd7, %r8;
+    add.u64 %rd8, %rd1, %rd7;
+    @%p2 st.global.v4.u32 [%rd8], {%r20, %r21, %r22, %r23};
+    add.u32 %r8, %r6, 2048;
+    setp.lt.u32 %p2, %r8, 4096;
+    add.u32 %r7, %r1, %r8;
+    @%p2 ld.shared.v4.u32 {%r20, %r21, %r22, %r23}, [%r7];
+    cvt.u64.u32 %rd7, %r8;
+    add.u64 %rd8, %rd1, %rd7;
+    @%p2 st.global.v4.u32 [%rd8], {%r20, %r21, %r22, %r23};
+    add.u64 %rd1, %rd1, 4096;
+    fence.proxy.async.shared::cta;
+    bar.sync 0;
+    add.u32 %r4, %r4, 1;
+    setp.lt.u32 %p3, %r4, 8;
+    @%p3 bra L_m4;
+    // load map m5: rank 4, 2048 bytes per box
+    mov.u32 %r4, 0;
+L_m5:
+    @%p0 bra W_m5;
+    mad.lo.u32 %r5, %r4, 32, 1280;
+    cvt.u64.u32 %rd3, %r5;
+    add.u64 %rd4, %rd2, %rd3;
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd4];
+    ld.global.v4.u32 {%r14, %r15, %r16, %r17}, [%rd4+16];
+    cvt.u16.u32 %h1, %r15;
+    cvt.u16.u32 %h2, %r16;
+    cvt.u16.u32 %h3, %r17;
+    mbarrier.arrive.expect_tx.shared::cta.b64 %rd5, [%r2], 2048;
+    mov.b64 %rd9, m5;
+    cvta.param.u64 %rd6, %rd9;
+    cp.async.bulk.tensor.4d.shared::cluster.global.im2col.mbarrier::complete_tx::bytes [%r1], [%rd6, {%r10, %r11, %r12, %r13}], [%r2], {%h1, %h2};
+W_m5:
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], %r3;
+    @!%p1 bra W_m5;
+    xor.b32 %r3, %r3, 1;
+    shl.b32 %r6, %r0, 4;
+    add.u32 %r8, %r6, 0;
+    setp.lt.u32 %p2, %r8, 2048;
+    add.u32 %r7, %r1, %r8;
+    @%p2 ld.shared.v4.u32 {%r20, %r21, %r22, %r23}, [%r7];
+    cvt.u64.u32 %rd7, %r8;
+    add.u64 %rd8, %rd1, %rd7;
+    @%p2 st.global.v4.u32 [%rd8], {%r20, %r21, %r22, %r23};
+    add.u64 %rd1, %rd1, 2048;
+    fence.proxy.async.shared::cta;
+    bar.sync 0;
+    add.u32 %r4, %r4, 1;
+    setp.lt.u32 %p3, %r4, 8;
+    @%p3 bra L_m5;
+    // stores: smem = src (16384 bytes), then the boxes
+    ld.param.u64 %rd10, [src];
+    cvta.to.global.u64 %rd10, %rd10;
+    shl.b32 %r6, %r0, 4;
+F_SRC:
+    cvt.u64.u32 %rd7, %r6;
+    add.u64 %rd8, %rd10, %rd7;
+    ld.global.v4.u32 {%r20, %r21, %r22, %r23}, [%rd8];
+    add.u32 %r7, %r1, %r6;
+    st.shared.v4.u32 [%r7], {%r20, %r21, %r22, %r23};
+    add.u32 %r6, %r6, 2048;
+    setp.lt.u32 %p2, %r6, 16384;
+    @%p2 bra F_SRC;
+    fence.proxy.async.shared::cta;
+    bar.sync 0;
+    @%p0 bra DONE;
+    // store map s0: rank 5
+    mov.u32 %r4, 0;
+S_s0:
+    mad.lo.u32 %r5, %r4, 32, 1536;
+    cvt.u64.u32 %rd3, %r5;
+    add.u64 %rd4, %rd2, %rd3;
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd4];
+    ld.global.v4.u32 {%r14, %r15, %r16, %r17}, [%rd4+16];
+    mov.b64 %rd9, s0;
+    cvta.param.u64 %rd6, %rd9;
+    cp.async.bulk.tensor.5d.global.shared::cta.im2col_no_offs.bulk_group [%rd6, {%r10, %r11, %r12, %r13, %r14}], [%r1];
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+    add.u32 %r4, %r4, 1;
+    setp.lt.u32 %p3, %r4, 4;
+    @%p3 bra S_s0;
+    // store map s1: rank 4
+    mov.u32 %r4, 0;
+S_s1:
+    mad.lo.u32 %r5, %r4, 32, 1664;
+    cvt.u64.u32 %rd3, %r5;
+    add.u64 %rd4, %rd2, %rd3;
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd4];
+    ld.global.v4.u32 {%r14, %r15, %r16, %r17}, [%rd4+16];
+    mov.b64 %rd9, s1;
+    cvta.param.u64 %rd6, %rd9;
+    cp.async.bulk.tensor.4d.global.shared::cta.im2col_no_offs.bulk_group [%rd6, {%r10, %r11, %r12, %r13}], [%r1];
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+    add.u32 %r4, %r4, 1;
+    setp.lt.u32 %p3, %r4, 4;
+    @%p3 bra S_s1;
+    // store map s2: rank 3
+    mov.u32 %r4, 0;
+S_s2:
+    mad.lo.u32 %r5, %r4, 32, 1792;
+    cvt.u64.u32 %rd3, %r5;
+    add.u64 %rd4, %rd2, %rd3;
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd4];
+    ld.global.v4.u32 {%r14, %r15, %r16, %r17}, [%rd4+16];
+    mov.b64 %rd9, s2;
+    cvta.param.u64 %rd6, %rd9;
+    cp.async.bulk.tensor.3d.global.shared::cta.im2col_no_offs.bulk_group [%rd6, {%r10, %r11, %r12}], [%r1];
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+    add.u32 %r4, %r4, 1;
+    setp.lt.u32 %p3, %r4, 4;
+    @%p3 bra S_s2;
+DONE:
+    ret;
+}
