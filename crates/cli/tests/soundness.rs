@@ -96,6 +96,23 @@ fn uniform_register_history_is_shared_across_lanes() {
 }
 
 #[test]
+fn captured_equal_writes_need_a_symbolic_safety_obligation() {
+    for front in ["ptx", "sass"] {
+        for segments in [false, true] {
+            let r = compare("e_same_value_input", front, segments, true, false);
+            assert!(
+                r["pre_reference"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|p| p.as_str().unwrap().contains("symbolic equality")),
+                "{r}"
+            );
+        }
+    }
+}
+
+#[test]
 fn failed_polls_cannot_hide_live_register_or_memory_effects() {
     for case in ["e_poll_conditional_register", "e_mbar_retry_counter"] {
         for front in ["ptx", "sass"] {

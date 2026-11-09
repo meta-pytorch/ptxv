@@ -1,0 +1,16 @@
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 input,.param .u64 output){
+.reg .b64 %p<2>;
+.reg .b32 %r<3>;
+.reg .pred %q;
+ld.param.u64 %p0,[input];
+ld.param.u64 %p1,[output];
+ld.global.b32 %r0,[%p0];
+mov.u32 %r1,%ctaid.x;
+setp.eq.u32 %q,%r1,0;
+selp.b32 %r2,%r0,0,%q; // @RESULT
+st.global.b32 [%p1],%r2;
+ret;
+}

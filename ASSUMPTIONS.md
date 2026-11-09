@@ -4957,6 +4957,10 @@ the captured shape when both kernels pass the preconditions:
   path the model does not lower) or an MMA unit that is not order-invariant within a group.
 - Retire: run proven-L0 pairs on random inputs on GB300 (bitwise), as a standing check.
 
+- A captured S-SAME-VALUE exception involving input-derived bytes is not sufficient for
+  equivalence over all inputs. The numerical run retains an explicit symbolic-equality
+  precondition for such unordered writes. Constant same-value writes remain supported.
+
 ### N-LEAF · code
 **Input values keep their identity through pure data movement.** A 4-byte load of a word of
 an f32 input buffer that no store, copy or atomic of the run has written and that still holds

@@ -954,6 +954,15 @@ impl Machine {
             Loc::Param { .. } => unreachable!(),
         };
         let shared = matches!(loc, Loc::Shared { .. });
+        let symbolic_equal_write = self.num.as_ref().is_some_and(|ns| {
+            let (space, object) = match loc {
+                Loc::Shared { cta, .. } => (0, cta as u64),
+                Loc::Global { alloc, .. } => (1, alloc as u64),
+                Loc::Param { .. } => return false,
+            };
+            ns.taint.current_input_derived()
+                || (0..n).any(|i| ns.taint.mem_has((space, object, base + i as u64)))
+        });
         // Numerics: a write ends any origin the bytes had (a TMA load re-sets it after); the
         // taint shadow follows the bytes.
         if let Some(ns) = self.num.as_mut() {
@@ -1307,6 +1316,14 @@ impl Machine {
                     );
                     self.report("note", sig, msg);
                 }
+            }
+        }
+        if symbolic_equal_write && (!benign.is_empty() || own_benign.is_some()) {
+            if let Some(ns) = self.num.as_mut() {
+                ns.taint.violations.insert(format!(
+                    "unordered input-derived writes at {} are equal only at the captured input; symbolic equality has not been established",
+                    self.k.describe(pc as usize)
+                ));
             }
         }
         // The own-store case: a note too, so that the certificate's same-value restriction

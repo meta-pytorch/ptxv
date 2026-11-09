@@ -4412,6 +4412,10 @@ impl Taint {
         guard_input_derived || source.is_some_and(|source| self.reg_t(thread, source))
     }
 
+    pub(crate) fn current_input_derived(&self) -> bool {
+        self.cur_src || self.cur_read
+    }
+
     pub fn last_read_input_derived(&self) -> bool {
         self.last_read
     }
