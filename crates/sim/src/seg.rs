@@ -25,6 +25,8 @@
 //! the slow path) is one opaque operation (`DivRn`), whose result PTX defines as the
 //! correctly rounded quotient. ASSUME(N-SEG): see ASSUMPTIONS.md
 
+mod helpers;
+
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 
@@ -1123,6 +1125,21 @@ fn divrn_full(m: &Machine, pc: u32) -> Option<(Reg, Val, Reg, u32)> {
     else {
         return None;
     };
+    if !code[fchk as usize].guard.is_always()
+        || (fchk + 1..bra).any(|q| code[q as usize].op.dst_regs().contains(&p))
+        || !matches!(
+            code[bra as usize].op,
+            Op::Bra {
+                any: false,
+                tid0_falls: false,
+                cond: None,
+                div: None,
+                ..
+            }
+        )
+    {
+        return None;
+    }
     let (q, first) = match bval {
         Val::Reg(b, _) => {
             let rcp = (lo..bra).rev().find(|&q| {
@@ -1134,9 +1151,7 @@ fn divrn_full(m: &Machine, pc: u32) -> Option<(Reg, Val, Reg, u32)> {
             if ffmas.len() != 5 {
                 return None;
             }
-            let Op::Ffma { d: q, .. } = code[*ffmas.last()? as usize].op else {
-                return None;
-            };
+            let q = divrn_variable_tail(code, *a, *b, rcp, &ffmas, bra)?;
             (q, rcp)
         }
         Val::Imm(bb) => {
@@ -1145,12 +1160,86 @@ fn divrn_full(m: &Machine, pc: u32) -> Option<(Reg, Val, Reg, u32)> {
         }
         _ => return None,
     };
-    let mov = (call + 1..pc).any(|x| code[x as usize].op.dst_regs().contains(&q))
-        // torch's vectorized kernels: the slow path writes the quotient register itself.
-        || (target..code.len())
-            .take_while(|&x| !matches!(code[x].op, Op::Ret { .. }))
-            .any(|x| code[x].op.dst_regs().contains(&q));
-    mov.then_some((*a, bval.clone(), q, first))
+    helpers::validates_call(
+        m,
+        call as usize,
+        bra as usize + 1..pc as usize,
+        first.min(fchk) as usize,
+        Some(*a),
+        bval,
+        q,
+    )
+    .then_some((*a, bval.clone(), q, first))
+}
+
+fn divrn_variable_tail(
+    code: &[Inst],
+    a: Reg,
+    b: Reg,
+    rcp: u32,
+    pcs: &[u32],
+    bra: u32,
+) -> Option<Reg> {
+    let Op::Mufu {
+        d: r,
+        fmt: MufuFmt::F32,
+        ptx: None,
+        ..
+    } = code[rcp as usize].op
+    else {
+        return None;
+    };
+    if !code[rcp as usize].guard.is_always() {
+        return None;
+    }
+    let fma = |pc: u32| match &code[pc as usize].op {
+        Op::Ffma {
+            d,
+            a,
+            b,
+            c: Some(c),
+            neg,
+            abs: [false, false, false],
+            rnd: Rnd::Rn,
+            ftz: false,
+            sat: false,
+        } if code[pc as usize].guard.is_always() => {
+            Some((*d, a.clone(), b.clone(), c.clone(), *neg))
+        }
+        _ => None,
+    };
+    let [p0, p1, p2, p3, p4] = <[u32; 5]>::try_from(pcs).ok()?;
+    let (e, b0, r0, one, n0) = fma(p0)?;
+    let (y, r1, e1, r2, n1) = fma(p1)?;
+    let (q0, a0, y0, zero, n2) = fma(p2)?;
+    let (rem, b1, q1, a1, n3) = fma(p3)?;
+    let (q, y1, rem1, q2, n4) = fma(p4)?;
+    let reg = |r| Val::Reg(r, 1);
+    if (b0, r0, one, n0) != (reg(b), reg(r), Val::Imm(0x3f80_0000), [true, false, false])
+        || (r1, e1, r2, n1) != (reg(r), reg(e), reg(r), [false; 3])
+        || (a0, y0, zero, n2) != (reg(a), reg(y), Val::Imm(0), [false; 3])
+        || (b1, q1, a1, n3) != (reg(b), reg(q0), reg(a), [true, false, false])
+        || (y1, rem1, q2, n4) != (reg(y), reg(rem), reg(q0), [false; 3])
+    {
+        return None;
+    }
+    let unchanged =
+        |r: Reg, lo: u32, hi: u32| !(lo..hi).any(|p| code[p as usize].op.dst_regs().contains(&r));
+    if !unchanged(b, rcp + 1, p3)
+        || !unchanged(a, rcp, p3)
+        || !unchanged(q, p4 + 1, bra)
+        || !unchanged(r, rcp + 1, p0)
+        || !unchanged(r, p0 + 1, p1)
+        || !unchanged(e, p0 + 1, p1)
+        || !unchanged(y, p1 + 1, p2)
+        || !unchanged(y, p2 + 1, p4)
+        || !unchanged(q0, p2 + 1, p3)
+        || !unchanged(q0, p3 + 1, p4)
+        || !unchanged(rem, p3 + 1, p4)
+    {
+        return None;
+    }
+    Some(q)
 }
 
 /// The quotient tail of a div.rn by the constant b (f32 bits) between the FCHK and the branch:
@@ -1312,17 +1401,6 @@ fn rcprn_full(m: &Machine, pc: u32) -> Option<(Reg, Reg, Vec<u32>)> {
     let call = (p.saturating_sub(8)..e - 5)
         .rev()
         .find(|&x| matches!(code[x].op, Op::Call { .. }))?;
-    let Op::Call { target } = code[call].op else {
-        return None;
-    };
-    // The slow path (up to its return, or the move after the call) writes q.
-    if !(call + 1..e - 5).any(|x| code[x].op.dst_regs().contains(&q))
-        && !(target..code.len())
-            .take_while(|&x| !matches!(code[x].op, Op::Ret { .. }))
-            .any(|x| code[x].op.dst_regs().contains(&q))
-    {
-        return None;
-    }
     let bra = (p.saturating_sub(16)..call).rev().find(|&x| {
         matches!(code[x].op, Op::Bra { target, .. } if target == e - 4)
             && code[x].guard.reg.is_some()
@@ -1389,6 +1467,9 @@ fn rcprn_full(m: &Machine, pc: u32) -> Option<(Reg, Reg, Vec<u32>)> {
     };
     // b must not change between the filter and the fast path.
     if *b3 != b || (add + 1..e - 4).any(|x| code[x].op.dst_regs().contains(&b)) {
+        return None;
+    }
+    if !helpers::validates_call(m, call, bra + 1..e - 5, add, None, &Val::Reg(b, 1), q) {
         return None;
     }
     if ![isetp, lop, add].iter().all(|&i| plain(i)) || !rcp_fast_ok() {

@@ -5076,6 +5076,13 @@ stored, as a backward slice along the thread's executed instruction trace (`seg.
   y refined from constants and possibly hoisted out of the sequence), which is one `DivRn`:
   the correctly rounded quotient on both paths, as PTX defines `div.rn.f32`. Registers the slow path may write (other than the
   quotient) must be dead after it on every thread's trace (`seg::divrn_dead`).
+  Fast-path operands, modifiers and reaching definitions must match the division idiom.
+  The complete slow helper must match a catalogued compiler sequence in `seg/*_rn_helper.json`
+  (each records its fixture source), up to injective register and barrier renaming. All
+  constants, guards and internal edges are checked, together with the caller's argument,
+  result and return-address wiring; outside entries into its body are refused. The same
+  complete-helper requirement applies to reciprocal recognition. Unknown helpers remain
+  untracked.
 - Also nodes: a product of two tracked nodes, the same one twice included (x * x in sums of
   squares); FFMA2 / FMUL2 / FADD2 lane by lane (two FFMA / FADD on the lanes' registers). A
   vector store (`STS.64`) materializes each word's value as a 4-byte store does.
@@ -5101,7 +5108,7 @@ stored, as a backward slice along the thread's executed instruction trace (`seg.
   computes 1/l this way.
 - The div.rn sequence is also recognized when the slow-path function writes the quotient
   register itself (torch's vectorized kernels: no `MOV q, res` after the call); the callee's
-  writes up to its `RET` are checked as before.
+  complete body and the caller's bindings are checked as above.
 - Flag words (2026-11-04, CUTLASS's f32 fmha keeps ex2 range predicates as bits of R108):
   a register is sliced in the bits its reader uses (`Slicer::value_m`). `LOP3` result bit i is
   the LUT of the operands' bits i, so a `LOP3 R = lut(R, imm, imm)` that leaves the demanded
