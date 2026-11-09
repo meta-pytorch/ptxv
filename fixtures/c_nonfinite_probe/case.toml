@@ -86,7 +86,7 @@ hex = "0000000000000000"
 [[variants]]
 id = "good"
 summary = "as captured"
-# PTX front: the byte stores of the e4m3x2 / e5m2x2 conversions leave bytes the simulator
-# calls undefined, with the outputs equal under every fill (undef-insensitive); SASS: clean.
-expect = ["undef-insensitive"]
-expect_sass = ["clean"]
+# The byte stores of the e4m3x2 / e5m2x2 conversions store the defined lane only: clean on
+# both fronts (the PTX front was undef-insensitive before per-byte stores of virtual
+# registers, 2026-11-08).
+expect = ["clean"]

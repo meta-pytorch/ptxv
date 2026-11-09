@@ -5925,6 +5925,23 @@ impl Machine {
                 m
             }
             Op::Unpack64 { a, .. } => u(a),
+            // Conversions of a 16-bit (or narrower) source read only its bits: the selected
+            // half (`F2F.F64.BF16 R2, R16`: ptxas zeroes R16's low half with PRMT and leaves the
+            // high half unwritten; `I2F.U16 Rd, Ra.H1`).
+            Op::FCvt {
+                a,
+                from: FFmt::Bf16 | FFmt::F16,
+                hi,
+                ..
+            } => {
+                let m = u32_(a);
+                all(if *hi { m >> 16 } else { m & 0xffff } as u64)
+            }
+            Op::I2F { a, bits, hi, .. } if *bits < 32 => {
+                let m = u32_(a);
+                let x = if *hi { m >> 16 } else { m };
+                all((x & ((1u32 << *bits) - 1)) as u64)
+            }
             // Register-only operations: carry-outs and other predicate outputs are undefined
             // with the rest (`wp`).
             op if propagates_undef(op) => {

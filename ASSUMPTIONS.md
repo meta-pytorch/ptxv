@@ -3040,7 +3040,12 @@ stays clean, "relies on E-CPASYNC-PROXY"), not a race.
     `cvt.s32.s8`, ...) keep the low bits' undefined bits (a sign extension takes the sign
     bit's). Before, Triton mxfp8 / nvfp4 quantize kernels stored the defined low byte of an
     `e4m3x2` / `e2m1x2` pack whose other byte came from an unwritten register, and the PTX
-    front reported undef-insensitive where SASS is clean (`fixtures/e_uninit_cvt_lanes`);
+    front reported undef-insensitive where SASS is clean (`fixtures/e_uninit_cvt_lanes`).
+    Conversions of a 16-bit or narrower source read only its bits (2026-11-08):
+    `F2F.F64.BF16` / `.F16` (and FRND / F2F of 16-bit formats) the selected half, `I2F.S16` /
+    `.U8` the low bits or `Ra.H1`. Before, `F2F.F64.BF16 R2, R16` after ptxas's
+    `PRMT R16, RZ, 0x7610, R16` (zero into the low half, the high half unwritten) was
+    undefined (`fixtures/e_uninit_half_cvt`);
   - lane by lane too (2026-11-06): `F2FP` narrow packs (`PACK_AB[_MERGE_C]`, `.RS` random
     bits taint both lanes) and unpacks (`UNPACK_B`), `HADD2.F32 Rd, -RZ, Ra.Hx_Hx` (one
     half), `HSETP2.BF16_V2` (the selected half of each operand); `FSETP` / `DSETP` / `HSETP2`

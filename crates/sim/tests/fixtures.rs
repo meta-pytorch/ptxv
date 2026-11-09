@@ -4337,6 +4337,14 @@ fn vector_operand_registers_ptx_sass_parity() {
     }
 }
 
+/// S-INIT through 16-bit-source conversions (fixtures/e_uninit_half_cvt): F2F.F64.BF16 reads
+/// only the low half that ptxas's PRMT zeroed (or the predicated LDG.E.U16 wrote), not the
+/// unwritten high half.
+#[test]
+fn half_source_conversion_reads_its_half() {
+    both("e_uninit_half_cvt", "good");
+}
+
 /// S-TCGEN05 (fixtures/s_tc_st_mma): a thread's own tcgen05.st, wait::st, then its
 /// tcgen05.mma with no tcgen05.fence in that thread is ordered; the MMA issued before the
 /// wait::st races with the store.
