@@ -1267,6 +1267,13 @@ impl NumState {
     }
 }
 
+#[derive(Clone, Debug, Hash)]
+pub struct ReadSnapshot {
+    origins: Vec<bool>,
+    nodes: Vec<Option<u32>>,
+    half: Vec<Option<crate::halfin::Src>>,
+}
+
 pub(crate) struct StoreOrigins {
     words: [bool; 64],
     count: usize,
@@ -3641,94 +3648,166 @@ impl Machine {
         ns.mem.remove(&key);
     }
 
-    pub(crate) fn num_copy(&mut self, from: Loc, to: Loc) {
-        let Some(ns) = self.num.as_mut() else { return };
-        ns.note_write(mem_key(to));
-        match ns.mem.get(&mem_key(from)).copied() {
-            Some(n) => {
-                ns.mem.insert(mem_key(to), n);
-            }
-            None => {
-                ns.mem.remove(&mem_key(to));
-            }
-        }
-    }
-
-    /// A cp.async copy into shared memory at (`cta`, `off`) completed with `data`, read from
-    /// global (allocation, offset) `src` (None: zero fill). Each 4-byte word takes the global
-    /// word's node, or becomes an `Input` leaf if it is an unwritten word of an f32 input still
-    /// holding its initial bits (as a load would, N-LEAF); other words lose their node.
-    // ASSUME(N-LEAF): see ASSUMPTIONS.md
-    pub(crate) fn num_cp_async(
+    pub(crate) fn num_read_snapshot(
         &mut self,
-        src: Option<(usize, u64)>,
-        cta: u16,
-        off: u32,
+        from: Option<Loc>,
         data: &[u8],
-    ) {
-        if self.num.is_none() {
-            return;
-        }
-        self.half_copy(
-            src.map(|(alloc, off)| Loc::Global { alloc, off }),
-            Loc::Shared { cta, off },
-            data.len(),
-            data,
-        );
-        // Taint: the copy completes in a later instruction (the wait), so the destination takes
-        // the source bytes' taint here (zero fill: none).
-        {
-            let ns = self.num.as_mut().unwrap();
-            for b in 0..data.len() as u64 {
-                let t = src.is_some_and(|(a, o)| ns.taint.mem_has((1, a as u64, o + b)));
-                let k = (0u8, cta as u64, off as u64 + b);
-                ns.taint.mem_set(k, t);
+        pc: u32,
+    ) -> Option<ReadSnapshot> {
+        let ns = self.num.as_ref()?;
+        let half = if ns.half.is_on() {
+            match from {
+                Some(loc) => self.half_mem(loc, data.len(), Some(data)),
+                None => vec![Some(crate::halfin::Src::Zero); data.len()],
             }
-        }
+        } else {
+            Vec::new()
+        };
         let launch = self.launch.clone();
         let ns = self.num.as_mut().unwrap();
-        for w in 0..data.len() / 4 {
-            let to = mem_key(Loc::Shared {
-                cta,
-                off: off + 4 * w as u32,
-            });
-            ns.note_write(to);
-            let node = src.and_then(|(alloc, goff)| {
-                let goff = goff + 4 * w as u64;
-                let k = mem_key(Loc::Global { alloc, off: goff });
-                if let Some(&n) = ns.mem.get(&k) {
-                    return Some(n);
+        let origins = match from {
+            Some(loc) => {
+                let (space, allocation, off) = mem_key(loc);
+                ns.taint
+                    .capture_origins((space, allocation), off, data.len())
+            }
+            None => vec![false; data.len()],
+        };
+        let mut nodes = Vec::with_capacity(data.len() / 4);
+        for word in 0..data.len() / 4 {
+            let bits = u32::from_le_bytes(
+                data[4 * word..4 * word + 4]
+                    .try_into()
+                    .expect("complete copy word"),
+            );
+            let mut node = from.and_then(|loc| {
+                let (space, allocation, off) = mem_key(loc);
+                let off = off + 4 * word as u64;
+                let key = (space, allocation, off);
+                if let Some(&node) = ns.mem.get(&key) {
+                    return Some(node);
                 }
-                let bits = u32::from_le_bytes(data[4 * w..4 * w + 4].try_into().ok()?);
+                let alloc = allocation as usize;
                 let init = launch
                     .allocs
                     .get(alloc)?
                     .init
-                    .get(goff as usize..goff as usize + 4)?;
-                if !goff.is_multiple_of(4)
+                    .get(off as usize..off as usize + 4)?;
+                if space != 1
+                    || !off.is_multiple_of(4)
                     || !ns.f32_inputs.contains(&alloc)
-                    || ns.written.contains(&(alloc as u64, goff))
+                    || ns.written.contains(&(allocation, off))
                     || init != bits.to_le_bytes()
                 {
                     return None;
                 }
                 ns.nodes.push(Node {
-                    kind: NodeKind::Input((alloc, goff / 4)),
+                    kind: NodeKind::Input((alloc, off / 4)),
                     hw: bits,
                     exact: exact::from(f32::from_bits(bits) as f64),
                     err: vec![],
-                    pc: 0,
+                    pc,
                 });
-                let id = (ns.nodes.len() - 1) as u32;
-                ns.mem.insert(k, id);
-                Some(id)
+                let node = (ns.nodes.len() - 1) as u32;
+                ns.mem.insert(key, node);
+                Some(node)
             });
-            match node {
-                Some(n) => {
-                    ns.mem.insert(to, n);
+            if node.is_none() && origins[4 * word..4 * word + 4].iter().any(|&origin| origin) {
+                node = Some(ns.leaf_with_origin(bits, pc, true));
+            }
+            nodes.push(node);
+        }
+        Some(ReadSnapshot {
+            origins,
+            nodes,
+            half,
+        })
+    }
+
+    pub(crate) fn num_copy_snapshot(
+        &mut self,
+        to: Loc,
+        data: &[u8],
+        snapshot: Option<&ReadSnapshot>,
+        pc: u32,
+    ) {
+        if self.num.is_none() {
+            return;
+        }
+        let (space, allocation, off) = mem_key(to);
+        let partial = !off.is_multiple_of(4) || !data.len().is_multiple_of(4);
+        let partial_words = if partial {
+            let memory = match to {
+                Loc::Global { alloc, .. } => &self.gmem[alloc],
+                Loc::Shared { cta, .. } => &self.smem[cta as usize],
+                Loc::Param { .. } => return,
+            };
+            (off & !3..off + data.len() as u64)
+                .step_by(4)
+                .map(|offset| {
+                    let bits = u32::from_le_bytes(std::array::from_fn(|byte| {
+                        let index = offset as usize + byte;
+                        if index < memory.bytes.len() {
+                            *memory.bytes.get(index)
+                        } else {
+                            0
+                        }
+                    }));
+                    (offset, bits)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        if let Some(snapshot) = snapshot {
+            if !snapshot.half.is_empty() {
+                self.half_mem_set((space, allocation, off), &snapshot.half);
+            }
+        }
+        let ns = self.num.as_mut().unwrap();
+        match snapshot {
+            Some(snapshot) => ns
+                .taint
+                .restore_origins((space, allocation), off, &snapshot.origins),
+            None => ns
+                .taint
+                .assign_memory(space, allocation, off, off + data.len() as u64, true),
+        }
+        if partial {
+            for (offset, bits) in partial_words {
+                let key = (space, allocation, offset);
+                ns.note_write(key);
+                ns.mem.remove(&key);
+                if ns
+                    .taint
+                    .memory_intersects(space, allocation, offset, offset + 4)
+                {
+                    let node = ns.leaf_with_origin(bits, pc, true);
+                    ns.mem.insert(key, node);
                 }
-                None => {
-                    ns.mem.remove(&to);
+            }
+        } else {
+            for word in 0..data.len() / 4 {
+                let key = (space, allocation, off + 4 * word as u64);
+                ns.note_write(key);
+                let node = snapshot
+                    .and_then(|snapshot| snapshot.nodes[word])
+                    .or_else(|| {
+                        if snapshot.is_none() {
+                            let bits = u32::from_le_bytes(
+                                data[4 * word..4 * word + 4]
+                                    .try_into()
+                                    .expect("complete copy word"),
+                            );
+                            Some(ns.leaf_with_origin(bits, pc, true))
+                        } else {
+                            None
+                        }
+                    });
+                if let Some(node) = node {
+                    ns.mem.insert(key, node);
+                } else {
+                    ns.mem.remove(&key);
                 }
             }
         }
@@ -4206,6 +4285,19 @@ impl Taint {
         for off in start..end {
             let key = (space, allocation, off);
             self.mem_set(key, origin);
+        }
+    }
+
+    fn capture_origins(&self, key: (u8, u64), off: u64, count: usize) -> Vec<bool> {
+        (0..count)
+            .map(|byte| self.memory_unit_input_derived((key.0, key.1, off + byte as u64)))
+            .collect()
+    }
+
+    fn restore_origins(&mut self, key: (u8, u64), off: u64, origins: &[bool]) {
+        for (byte, &origin) in origins.iter().enumerate() {
+            let offset = off + byte as u64;
+            self.assign_memory(key.0, key.1, offset, offset + 1, origin);
         }
     }
 
@@ -5270,6 +5362,121 @@ mod untracked_producer_tests {
             ));
             assert_ne!(run_body_finish_ir(&body, 1.0, false, "").1.0, 0);
         }
+    }
+
+    #[test]
+    fn async_copy_preserves_issue_epoch_at_captured_zero() {
+        let body = ".shared .align 4 .b8 scratch[4]; mov.u64 %w, scratch;             cp.async.ca.shared.global [%w], [%p0], 4; cp.async.commit_group;             st.global.u32 [%p0], 0; cp.async.wait_group 0; ld.shared.u32 %r1, [%w]; mov.b32 %f0, %r1;";
+        let (state, output) = run_body_finish_ir(body, 0.0, false, "st.global.f32 [%p1], %f0;");
+        assert_eq!(output.0, 0);
+        assert_eq!(
+            run_body_finish_ir(body, 1.0, false, "st.global.f32 [%p1], %f0;")
+                .1
+                .0,
+            1.0f32.to_bits()
+        );
+        assert!(
+            output.1.is_some(),
+            "captured input history was lost at completion"
+        );
+        assert!(
+            state.taint.memory_unit_input_derived((1, 1, 0)),
+            "captured input origin was re-read from overwritten source"
+        );
+        assert_eq!(
+            run_body_finish_ir(body, 1.0, false, "st.global.f32 [%p1], %f0;")
+                .1
+                .0,
+            1.0f32.to_bits()
+        );
+    }
+
+    #[test]
+    fn async_copy_preserves_half_bytes_at_issue() {
+        let body = ".shared .align 4 .b8 scratch[4]; mov.u64 %w, scratch;             cp.async.ca.shared.global [%w], [%p0], 4; cp.async.commit_group;             st.global.u32 [%p0], 0; cp.async.wait_group 0;";
+        let machine = run_machine_body_finish_ir(body, 0.0, false, "", true);
+        let dst = machine
+            .k
+            .code
+            .iter()
+            .find_map(|instruction| match &instruction.op {
+                Op::CpAsync { dst, .. } => Some(dst),
+                _ => None,
+            })
+            .unwrap();
+        let location = machine
+            .resolve(0, ptxv_ir::Space::Shared, machine.addr(0, dst).unwrap(), 4)
+            .unwrap();
+        let bytes = machine.half_mem(location, 4, None);
+        for (byte, origin) in bytes.into_iter().enumerate() {
+            assert_eq!(
+                origin,
+                Some(crate::halfin::Src::E {
+                    alloc: 0,
+                    elem: byte as u64 / 2,
+                    b: (byte % 2) as u8
+                })
+            );
+        }
+        let (space, allocation, off) = mem_key(location);
+        assert!(
+            machine
+                .num
+                .as_ref()
+                .unwrap()
+                .taint
+                .memory_unit_input_derived((space, allocation, off))
+        );
+    }
+
+    #[test]
+    fn async_copy_exit_preserves_issue_snapshot() {
+        let body = ".shared .align 4 .b8 scratch[4]; mov.u64 %w, scratch; \
+            cp.async.ca.shared.global [%w], [%p0], 4; cp.async.commit_group; \
+            st.global.u32 [%p0], 0; cp.async.wait_group 0;";
+        let waited = run_machine_body_finish_ir(body, 0.0, false, "", true);
+        let mut kernel = (*waited.k).clone();
+        for instruction in &mut kernel.code {
+            if matches!(instruction.op, Op::CpAsyncWait { .. }) {
+                instruction.op = Op::Nop;
+            }
+        }
+        let mut machine = Machine::new(Arc::new(kernel), waited.launch.clone());
+        let mut state = NumState::default();
+        state.not_inputs.insert(1);
+        state.half.inputs.insert(0, crate::halfin::Half::Bf16);
+        state.taint.taint_alloc(0, 4);
+        machine.num = Some(Box::new(state));
+        let (machine, findings, completed) = crate::explore::run_once(machine);
+        assert!(completed, "{findings:?}");
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].kind, "contract");
+        assert!(findings[0].sig.starts_with("cp-async-exit:"));
+        let dst = machine
+            .k
+            .code
+            .iter()
+            .find_map(|instruction| match &instruction.op {
+                Op::CpAsync { dst, .. } => Some(dst),
+                _ => None,
+            })
+            .unwrap();
+        let location = machine
+            .resolve(0, ptxv_ir::Space::Shared, machine.addr(0, dst).unwrap(), 4)
+            .unwrap();
+        assert_eq!(
+            machine.half_mem(location, 4, None),
+            waited.half_mem(location, 4, None)
+        );
+        let key = mem_key(location);
+        assert!(
+            machine
+                .num
+                .as_ref()
+                .unwrap()
+                .taint
+                .memory_unit_input_derived(key)
+        );
     }
 
     #[test]

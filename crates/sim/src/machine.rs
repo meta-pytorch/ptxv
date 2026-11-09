@@ -1140,6 +1140,7 @@ pub struct CpPending {
     /// The global source (allocation, byte offset); None: zero fill.
     pub src: Option<(usize, u64)>,
     pub data: Vec<u8>,
+    pub snapshot: Option<crate::num::ReadSnapshot>,
     pub vc: VC,
     pub pc: u32,
 }

@@ -5082,7 +5082,12 @@ impl Machine {
             let loc = Loc::Shared { cta, off: c.off };
             self.access(t as u32, &c.vc, c.pc, loc, c.data.len(), Some(&c.data));
             self.sync_clear(loc);
-            self.num_cp_async(c.src, cta, c.off, &c.data);
+            self.num_copy_snapshot(
+                Loc::Shared { cta, off: c.off },
+                &c.data,
+                c.snapshot.as_ref(),
+                c.pc,
+            );
         }
         vcs
     }
@@ -9781,10 +9786,17 @@ impl Machine {
                     }
                     self.access(t as u32, &vc, pc, sloc, n, None)
                 };
+                let snapshot = self.num_read_snapshot(
+                    from.map(|(alloc, off)| Loc::Global { alloc, off }),
+                    &data,
+                    pc,
+                );
                 let da = self.addr(t, dst)?;
                 let Loc::Shared { off, .. } = self.resolve(t, Space::Shared, da, full)? else {
                     unreachable!()
                 };
+                let fill = vec![0; full - n];
+                let fill_snapshot = self.num_read_snapshot(None, &fill, pc);
                 let wgroup = self.warps[self.threads[t].warp as usize].cp_seq;
                 let th = self.threads[t].make_mut();
                 let group = th.cp_group;
@@ -9795,6 +9807,7 @@ impl Machine {
                         off,
                         src: from,
                         data: std::mem::take(&mut data),
+                        snapshot,
                         vc: vc.clone(),
                         pc,
                     });
@@ -9805,7 +9818,8 @@ impl Machine {
                         wgroup,
                         off: off + n as u32,
                         src: None,
-                        data: vec![0; full - n],
+                        data: fill,
+                        snapshot: fill_snapshot,
                         vc,
                         pc,
                     });
@@ -9878,7 +9892,7 @@ impl Machine {
                         let loc = Loc::Shared { cta, off: c.off };
                         self.access(actor, &vc, c.pc, loc, c.data.len(), Some(&c.data));
                         self.sync_clear(loc);
-                        self.num_cp_async(c.src, cta, c.off, &c.data);
+                        self.num_copy_snapshot(loc, &c.data, c.snapshot.as_ref(), c.pc);
                     }
                 }
                 let th = self.threads[t].make_mut();
@@ -13271,6 +13285,8 @@ impl Machine {
                 }
             } else if inb {
                 // Out-of-bounds box elements are not written.
+                let snapshot =
+                    self.num_read_snapshot(Some(Loc::Shared { cta, off: soff }), &data, op.pc);
                 self.access(
                     op.actor,
                     &op.vc,
@@ -13279,17 +13295,11 @@ impl Machine {
                     es,
                     Some(&data),
                 );
-                if es == 4 {
-                    self.num_copy(
-                        Loc::Shared { cta, off: soff },
-                        Loc::Global { alloc, off: goff },
-                    );
-                }
-                self.half_copy(
-                    Some(Loc::Shared { cta, off: soff }),
+                self.num_copy_snapshot(
                     Loc::Global { alloc, off: goff },
-                    es,
                     &data,
+                    snapshot.as_ref(),
+                    op.pc,
                 );
             }
         }
@@ -13416,7 +13426,12 @@ impl Machine {
             let loc = Loc::Shared { cta, off: c.off };
             self.access(op.actor, &op.vc, c.pc, loc, c.data.len(), Some(&c.data));
             self.sync_clear(loc);
-            self.num_cp_async(c.src, cta, c.off, &c.data);
+            self.num_copy_snapshot(
+                Loc::Shared { cta, off: c.off },
+                &c.data,
+                c.snapshot.as_ref(),
+                c.pc,
+            );
         }
         self.rec(0, cta as u32, mbar as u64, mbar as u64 + 8, false);
         self.mbar_materialize(cta, mbar);

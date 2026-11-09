@@ -30,7 +30,7 @@ use crate::machine::Machine;
 use crate::num::NodeKind;
 
 /// Where a register or memory byte comes from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Src {
     Zero,
     /// Byte `b` (0 = low) of element `elem` of input allocation `alloc`.
