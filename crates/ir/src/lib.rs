@@ -2622,7 +2622,7 @@ impl Op {
                 (*bytes as u16 / if ty.lane_bytes() == 8 { 8 } else { 4 }).max(1),
             ),
             Op::LdReduce { d, bytes, .. } => span(*d, (*bytes as u16 / 4).max(1)),
-            Op::ClcQuery { d, .. } => span(*d, 4),
+            Op::ClcQuery { d, .. } => regs(*d, 4),
             Op::TmemAllocRaw { d, ok, .. } => vec![*d, *ok],
             Op::TmemLd {
                 d,
@@ -2646,8 +2646,8 @@ impl Op {
             ),
             Op::LdLocal { d, bytes, .. } => span(*d, (*bytes as u16 / 4).max(1)),
             Op::Ld256 { hi, lo, mask, .. } => {
-                let mut x = span(*lo, (mask & 0xf).count_ones() as u16);
-                x.extend(span(*hi, (mask >> 4).count_ones() as u16));
+                let mut x = regs(*lo, (mask & 0xf).count_ones() as u16);
+                x.extend(regs(*hi, (mask >> 4).count_ones() as u16));
                 x
             }
             Op::Shfl { d, p: Some(p), .. } => vec![*d, *p],

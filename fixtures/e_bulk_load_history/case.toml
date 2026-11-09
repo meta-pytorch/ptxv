@@ -1,0 +1,33 @@
+name = "bulk-load-history"
+description = "Adversarial equivalence audit of bulk-load-history"
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [1, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [8]
+init = "zeros"
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+[[params]]
+kind = "ptr"
+buffer = "x"
+[[params]]
+kind = "ptr"
+buffer = "out"
+[[variants]]
+id = "reference"
+expect = ["clean"]
+[[variants]]
+id = "candidate"
+expect = ["clean"]
+marker = "@RESULT"
+find = "ld.shared.u32 %r1, [%r2+4];"
+replace = "mov.u32 %r1, %r0;"

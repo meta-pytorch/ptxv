@@ -528,3 +528,58 @@ expect = "L0"
     assert!(!text.contains("PROVEN"), "{text}");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn async_memory_rewrites_do_not_reuse_old_histories() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("ptxv-async-history-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for case in ["e_bulk_load_history", "e_bulk_shared_half", "e_clc_history"] {
+        for front in ["ptx", "sass"] {
+            for segments in [false, true] {
+                let source = root.join("fixtures").join(case);
+                let config = dir.join("equiv.toml");
+                std::fs::write(
+                    &config,
+                    format!(
+                        r#"
+max_states = 10000
+trials = 0
+segments = {segments}
+elementwise = false
+reference = {{case = {source:?}, variant = "reference", front = "{front}", certify = true}}
+candidates = [{{case = {source:?}, variant = "candidate", front = "{front}", certify = true}}]
+"#
+                    ),
+                )
+                .unwrap();
+                let result = std::process::Command::new(env!("CARGO_BIN_EXE_ptxv"))
+                    .args([
+                        "equiv",
+                        config.to_str().unwrap(),
+                        "--no-hw",
+                        "--out",
+                        dir.join("result").to_str().unwrap(),
+                    ])
+                    .env("CUDA_VISIBLE_DEVICES", "")
+                    .env("PTXV_NO_VCACHE", "1")
+                    .output()
+                    .unwrap();
+                assert!(
+                    result.status.success(),
+                    "{case}/{front}/{segments}: {}\n{}",
+                    String::from_utf8_lossy(&result.stdout),
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                let report: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(dir.join("result/equiv.json")).unwrap())
+                        .unwrap();
+                assert_eq!(
+                    report[0]["report"]["levels"][0]["holds"], false,
+                    "{case}/{front}/{segments}: {report}"
+                );
+            }
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -1,0 +1,30 @@
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 input, .param .u64 output) {
+    .shared .align 16 .b8 tile[16];
+    .shared .align 8 .b64 barrier;
+    .reg .b64 %p<3>;
+    .reg .b32 %r<5>;
+    .reg .pred %done;
+    ld.param.u64 %p0, [input];
+    ld.param.u64 %p1, [output];
+    add.u64 %p2, %p0, 16;
+    ld.volatile.global.u32 %r0, [%p0];
+    mov.u32 %r2, tile;
+    mov.u32 %r3, barrier;
+    st.shared.u32 [%r2], 0;
+    st.shared.u32 [%r2+4], %r0;
+    st.shared.u32 [%r2+8], 0;
+    st.shared.u32 [%r2+12], 0;
+    mbarrier.init.shared::cta.b64 [%r3], 1;
+    fence.proxy.async.shared::cta;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r3], 16;
+    cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%r2], [%p2], 16, [%r3];
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %done, [%r3], 0;
+    @!%done bra WAIT;
+    ld.shared.u32 %r1, [%r2+4]; // @RESULT
+    st.global.u32 [%p1], %r1;
+    ret;
+}

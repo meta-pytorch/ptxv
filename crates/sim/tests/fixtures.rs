@@ -4646,6 +4646,14 @@ fn undefined_values_through_redux() {
     both("e_uninit_redux", "store_all");
 }
 
+#[test]
+fn asynchronous_memory_rewrites_preserve_execution_semantics() {
+    for case in ["e_bulk_load_history", "e_bulk_shared_half", "e_clc_history"] {
+        both(case, "reference");
+        both(case, "candidate");
+    }
+}
+
 /// S-INIT for tcgen05.ld of never-written TMEM (fixtures/e_uninit_tmem): the registers are
 /// undefined and the load is a note (`tmem-uninit-ld`); unused: clean (was a violation,
 /// Triton peeled prologue dash/5713); stored: reported.

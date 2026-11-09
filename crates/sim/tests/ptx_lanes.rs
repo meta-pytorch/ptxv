@@ -94,6 +94,7 @@ fn f32x2_lanes_keep_their_nodes() {
     let mut ns = ptxv_sim::num::NumState::with_mma_eps(m.launch.mma_model.eps());
     let (xi, oi) = (0, m.launch.outputs[0]);
     ns.f32_inputs.insert(xi);
+    ns.taint.taint_alloc(xi, 16);
     ns.not_inputs.insert(oi);
     m.num = Some(Box::new(ns));
     let (m, _, ok) = ptxv_sim::explore::run_once(m);
@@ -115,6 +116,10 @@ fn f32x2_lanes_keep_their_nodes() {
         let (hw, ex) = out(w as u64);
         assert_eq!(hw, want, "out[{w}] value");
         assert_eq!(ex, want as f64, "out[{w}] exact value");
+        assert!(
+            ns.taint
+                .memory_unit_input_derived((1, oi as u64, 4 * w as u64))
+        );
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -336,20 +336,6 @@ impl Machine {
         self.half_mem_set(hkey(loc), &srcs);
     }
 
-    /// Memory-to-memory copy of `n` bytes (cp.async, TMA store): provenance moves along.
-    pub(crate) fn half_copy(&mut self, from: Option<Loc>, to: Loc, n: usize, data: &[u8]) {
-        let Some(ns) = self.num.as_ref() else { return };
-        if !ns.half.is_on() {
-            return;
-        }
-        let srcs = match from {
-            Some(f) => self.half_mem(f, n, Some(data)),
-            // Zero fill.
-            None => vec![Some(Src::Zero); n],
-        };
-        self.half_mem_set(hkey(to), &srcs);
-    }
-
     /// LDSM: register `r` of thread `t` gets its two halves from shared memory at `locs`.
     pub(crate) fn half_ldsm(&mut self, t: usize, r: Reg, locs: [Option<Loc>; 2]) {
         if !self.num.as_ref().is_some_and(|n| n.half.is_on()) {

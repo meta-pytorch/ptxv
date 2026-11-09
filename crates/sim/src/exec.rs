@@ -2283,6 +2283,7 @@ impl Machine {
             None => [2, 0, 0, 0],
         };
         let data: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let snapshot = self.num_read_snapshot(None, &data, op.pc);
         for c in std::iter::once(cta).chain(others.iter().copied()) {
             self.access(
                 op.actor,
@@ -2291,6 +2292,12 @@ impl Machine {
                 Loc::Shared { cta: c, off: resp },
                 16,
                 Some(&data),
+            );
+            self.num_copy_snapshot(
+                Loc::Shared { cta: c, off: resp },
+                &data,
+                snapshot.as_ref(),
+                op.pc,
             );
             let rec = (c, op.actor, vc_get(&op.vc, op.actor), op.pc);
             if let Err(k) = self.completed.binary_search(&rec) {
@@ -13646,6 +13653,23 @@ impl Machine {
         for (soff, g) in &elems {
             img.insert(*soff, g.map_or(&zero[..], fetch));
         }
+        let snapshots: Vec<_> = if self.num.is_some() {
+            elems
+                .iter()
+                .map(|(soff, g)| {
+                    let source = g.map(|off| match m.smem_src {
+                        Some(cta) => Loc::Shared {
+                            cta,
+                            off: off as u32,
+                        },
+                        None => Loc::Global { alloc, off },
+                    });
+                    self.num_read_snapshot(source, img[soff], op.pc)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         for (off, n) in runs(elems.iter().map(|e| e.0 as u64).collect()) {
             let mut data = Vec::with_capacity(n);
             for o in (off..off + n as u64).step_by(es) {
@@ -13663,24 +13687,20 @@ impl Machine {
                 Some(&data),
             );
         }
-        // Origins are tracked for 2-byte (bf16) inputs, the MMA operands modeled so far.
-        for (soff, g) in elems {
-            // A shared-memory source keeps no input provenance.
-            let g = g.filter(|_| m.smem_src.is_none());
-            if self.num.is_some() {
-                let data = img[&soff].to_vec();
-                self.half_copy(
-                    g.map(|off| Loc::Global { alloc, off }),
-                    Loc::Shared { cta, off: soff },
-                    es,
-                    &data,
+        for ((soff, g), snapshot) in elems.into_iter().zip(snapshots) {
+            self.num_copy_snapshot(
+                Loc::Shared { cta, off: soff },
+                img[&soff],
+                snapshot.as_ref(),
+                op.pc,
+            );
+            if es == 2 {
+                self.num_tma_elem(
+                    cta,
+                    soff,
+                    g.filter(|_| m.smem_src.is_none()).map(|g| (alloc, g / 2)),
                 );
             }
-            self.num_tma_elem(
-                cta,
-                soff,
-                g.filter(|_| es == 2).map(|g| (alloc, g / es as u64)),
-            );
         }
         let bytes = (total as usize * es) as i64;
         let cta = mbar_cta;

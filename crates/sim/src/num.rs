@@ -3658,7 +3658,10 @@ impl Machine {
         let half = if ns.half.is_on() {
             match from {
                 Some(loc) => self.half_mem(loc, data.len(), Some(data)),
-                None => vec![Some(crate::halfin::Src::Zero); data.len()],
+                None => data
+                    .iter()
+                    .map(|&byte| (byte == 0).then_some(crate::halfin::Src::Zero))
+                    .collect(),
             }
         } else {
             Vec::new()
@@ -5215,6 +5218,30 @@ mod untracked_producer_tests {
         let (_, rwitness) = shifted_input(1, 1.0);
         let (_, cwitness) = shifted_input(2, 1.0);
         assert_ne!(rwitness.0, cwitness.0);
+    }
+
+    #[test]
+    fn later_vector_destinations_replace_old_constant_histories() {
+        for segments in [false, true] {
+            for input in [0.0, 1.0] {
+                let machine = run_machine_body_transform(
+                    "mov.b32 %r0, 0; mov.b32 %r1, 0; \
+                     ld.global.v2.b32 {%r0, %r1}, [%p0]; \
+                     mul.f32 %f0, %r1, 0f3F000000;",
+                    input,
+                    false,
+                    "st.global.f32 [%p1], %f0;",
+                    false,
+                    segments,
+                    Some(|_| {}),
+                );
+                let state = machine.num.as_ref().unwrap();
+                assert!(state.taint.memory_unit_input_derived((1, 1, 0)));
+                let node = state.mem.get(&(1, 1, 0)).copied().unwrap();
+                assert_eq!(state.nodes[node as usize].hw, (input as f32).to_bits());
+                assert!(!matches!(state.nodes[node as usize].kind, NodeKind::Leaf));
+            }
+        }
     }
 
     #[test]
