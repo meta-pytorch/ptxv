@@ -229,6 +229,8 @@ HB is tracked with **vector clocks over epochs**, not over individual instructio
 
 ### 3.3 Skeleton slicing (what makes exhaustive search feasible)
 
+**Not implemented** (2026-11-08): there is no skeleton slice or ghost memory; exploration runs the full concrete state. The reductions in use are listed in docs/grid-cost.md (representative CTAs, slices, the E-WELLSYNC certificate, partial-order reduction).
+
 Backward-slice the IR from (a) every sync-visible instruction, (b) every branch condition that
 controls one, and (c) every **address** and descriptor operand of a memory or async op. What
 remains is the skeleton: loop counters, stage indices, phase bits, tile-scheduler state, CLC
@@ -336,7 +338,7 @@ by TMA at most once per phase", "every tile is claimed exactly once across CLC +
 * **Symmetry reduction:** warps, warpgroups, CTAs and ranks that run identical skeleton code
   are canonicalized by sorting their skeleton states. Footprints are *not* symmetric, but they
   are checked separately (§3.3), so this is sound.
-* **Loop cutoffs (toward parameterized proofs):** a pipelined mainloop's skeleton depends on
+* **Loop cutoffs (toward parameterized proofs; not implemented):** a pipelined mainloop's skeleton depends on
   `k mod S`, the phase bits and predicates such as `k == 0` / `k == K-1`. We abstract the
   counter into those predicates and check that the abstraction is exact for the skeleton.
   Exploration then covers *every* K ≥ the cutoff, not just the captured K. When the
@@ -347,7 +349,7 @@ by TMA at most once per phase", "every tile is claimed exactly once across CLC +
   that may be concurrent (anything not ordered by grid-level sync) checks write-footprint
   disjointness across all CTAs and all GPUs. This catches tile-index arithmetic that is only
   wrong at large shapes.
-* **Stochastic mode** for configurations too large to explore exhaustively: PCT (probabilistic
+* **Stochastic mode** (not implemented) for configurations too large to explore exhaustively: PCT (probabilistic
   concurrency testing) gives a stated lower bound on the probability of hitting any bug of
   depth d per run. We report that bound and coverage (skeleton states, epoch pairs, phase
   combinations), never "verified".
