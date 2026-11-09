@@ -94,3 +94,27 @@ fn uniform_register_history_is_shared_across_lanes() {
         assert_eq!(r["report"]["levels"][0]["holds"], false, "{r}");
     }
 }
+
+#[test]
+fn failed_polls_cannot_hide_live_register_or_memory_effects() {
+    for case in ["e_poll_conditional_register", "e_mbar_retry_counter"] {
+        for front in ["ptx", "sass"] {
+            for certify in [false, true] {
+                let r = compare(case, front, true, certify, false);
+                let class = if case == "e_mbar_retry_counter" {
+                    "unmodeled"
+                } else {
+                    "nondeterministic"
+                };
+                assert!(
+                    r["pre_reference"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|p| p.as_str().unwrap().contains(class)),
+                    "{r}"
+                );
+            }
+        }
+    }
+}

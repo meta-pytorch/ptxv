@@ -148,6 +148,50 @@ pub fn retry_branch(code: &[Inst], w: usize) -> Option<usize> {
     None
 }
 
+#[cfg(test)]
+mod retry_tests {
+    use std::sync::Arc;
+
+    #[test]
+    fn retry_counters_are_carried_only_when_the_prefix_is_revisited() {
+        let mut case = ptxv_case::Case::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/e_mbar_retry_counter"),
+        )
+        .unwrap();
+        case.m.params.clear();
+        for (target, accepted) in [(".L_stub", true), (".L_first", false)] {
+            let text = format!(
+                r#".text.k:
+.L_first:
+/*0000*/ SYNCS.PHASECHK.TRANS64.TRYWAIT P0, [R2], R4 ;
+/*0010*/ IADD3 R5, R5, 0x1, RZ ;
+/*0020*/ @!P0 BRA `({target}) ;
+.L_cont:
+/*0030*/ STG.E [R6.64], R5 ;
+/*0040*/ EXIT ;
+.L_stub:
+/*0050*/ SYNCS.PHASECHK.TRANS64.TRYWAIT P0, [R2], R4 ;
+/*0060*/ @!P0 BRA `(.L_stub) ;
+/*0070*/ BRA `(.L_cont) ;
+"#
+            );
+            let mut dis = String::new();
+            for line in text.lines() {
+                dis.push_str(line);
+                dis.push('\n');
+                if line.starts_with("/*") {
+                    dis.push_str("/* 0x000fc00000000000 */\n");
+                }
+            }
+            let k = ptxv_sass::lower(&dis, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+            let launch = crate::build_launch(&case, &k).unwrap();
+            let m = crate::machine::Machine::new(Arc::new(k), Arc::new(launch));
+            assert_eq!(super::retry_shape(&m, 0).is_ok(), accepted, "{target}");
+        }
+    }
+}
+
 /// Why try_wait at `w` violates the retry shape (Err), or Ok(None) if it has it. Ok(Some((s,
 /// w2))): it has it once the parity that the recomputing stub `s..w2` passes to the try_wait
 /// at `w2` equals the original; the executor checks that on every successful poll at `w`.
@@ -232,6 +276,7 @@ pub fn retry_shape(m: &Machine, w: usize) -> Result<Option<(usize, usize)>, Stri
         }
         pc += 1;
     };
+    let branch = pc;
     // 2. The failure path. State: what d can be (0 = false, 1 = unknown after a re-poll,
     //    2 = true). Only no-ops, branches and re-polls; with d true the walk must reach the
     //    continuation (or the original try_wait) through no-ops and unconditional branches.
@@ -304,8 +349,13 @@ pub fn retry_shape(m: &Machine, w: usize) -> Result<Option<(usize, usize)>, Stri
     let same_poll = |op: &Op| same_poll(op) || poll2.as_ref() == Some(op);
     let mut seen = BTreeSet::new();
     let mut work = vec![(w2.unwrap_or(stub), 0u8)];
+    let mut revisits_prefix = false;
     while let Some((pc, dv)) = work.pop() {
-        if pc == w || (pc == cont && dv == 2) {
+        if pc == w {
+            revisits_prefix = true;
+            continue;
+        }
+        if pc == cont && dv == 2 {
             continue;
         }
         if !seen.insert((pc, dv)) {
@@ -359,6 +409,36 @@ pub fn retry_shape(m: &Machine, w: usize) -> Result<Option<(usize, usize)>, Stri
                 }
             }
             _ => return Err(format!("retry path executes {}", m.k.describe(pc))),
+        }
+    }
+    if revisits_prefix {
+        let written: BTreeSet<Reg> = code[w + 1..branch]
+            .iter()
+            .flat_map(|i| i.op.dst_regs())
+            .collect();
+        let mut defined = BTreeSet::from([*d]);
+        for (q, i) in code.iter().enumerate().take(branch).skip(w + 1) {
+            if model_nop(&i.op) || same_poll(&i.op) {
+                continue;
+            }
+            if let Some(r) = inst_reads(i)
+                .into_iter()
+                .find(|r| written.contains(r) && !defined.contains(r))
+            {
+                return Err(format!(
+                    "{} carries {r:?} across failed polls",
+                    m.k.describe(q)
+                ));
+            }
+            if i.guard.is_always() {
+                defined.extend(i.op.dst_regs());
+            }
+        }
+        let conditional: BTreeSet<Reg> = written.difference(&defined).copied().collect();
+        if let Some(r) = live_after(code, cont, &conditional) {
+            return Err(format!(
+                "a failed poll conditionally writes live register {r:?}"
+            ));
         }
     }
     let Some(w2) = w2 else {
@@ -834,7 +914,7 @@ pub fn poll_loops(code: &[Inst], front: ptxv_ir::Front) -> Vec<PollLoop> {
             // head): recomputed to the same value every iteration, so not carried.
             let mut inv = std::collections::HashSet::new();
             for inst in &code[h..l] {
-                if pure_dst(&inst.op).is_some_and(|d| d.is_some()) {
+                if inst.guard.is_always() && pure_dst(&inst.op).is_some_and(|d| d.is_some()) {
                     let mut reads = inst.op.src_regs();
                     reads.extend(inst.guard.reg);
                     if reads.iter().all(|r| !writes.contains(r) || inv.contains(r)) {
@@ -875,7 +955,7 @@ pub fn poll_loops(code: &[Inst], front: ptxv_ir::Front) -> Vec<PollLoop> {
                     if let Op::Atom { d: Some(d), .. } = &inst.op {
                         done.insert(*d);
                     }
-                } else if pure_dst(&inst.op).is_some() {
+                } else if inst.guard.is_always() && pure_dst(&inst.op).is_some() {
                     done.extend(inst.op.dst_regs());
                 }
             }
@@ -903,6 +983,15 @@ pub fn poll_loops(code: &[Inst], front: ptxv_ir::Front) -> Vec<PollLoop> {
                             });
                         }
                     }
+                }
+            }
+            for inst in &code[l..=b] {
+                if inst.guard.is_always() {
+                    for r in inst.op.dst_regs() {
+                        stale.remove(&r);
+                    }
+                } else {
+                    stale.extend(inst.op.dst_regs());
                 }
             }
             if let Some(r) = live_after(code, b + 1, &stale) {

@@ -1,0 +1,34 @@
+name = "poll-conditional-register"
+description = "A failed poll conditionally writes a register used after the successful iteration"
+ptx = "kernel.ptx"
+entry = "k"
+grid = [2,1,1]
+cluster = [2,1,1]
+block = [1,1,1]
+outputs = ["out", "flag"]
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+values = [[0,2]]
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+[[params]]
+kind = "ptr"
+buffer = "flag"
+[[params]]
+kind = "ptr"
+buffer = "out"
+[[variants]]
+id = "reference"
+expect = ["nondeterministic"]
+[[variants]]
+id = "candidate"
+expect = ["clean"]
+marker = "@RESULT"
+find = "mov.b32 %result, 0f40000000;"
+replace = "mov.b32 %result, 0;"

@@ -1,0 +1,35 @@
+name = "mbarrier-retry-counter"
+description = "Adversarial equivalence audit of mbarrier-retry-counter"
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [1, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [8]
+init = "zeros"
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+[[params]]
+kind = "ptr"
+buffer = "x"
+[[params]]
+kind = "ptr"
+buffer = "out"
+[[variants]]
+id = "reference"
+expect = ["unmodeled"]
+[[variants]]
+id = "candidate"
+expect = ["unmodeled"]
+# ptxas removes the unused retry counter when the output is constant.
+expect_sass = ["clean"]
+marker = "@RESULT"
+find = "cvt.rn.f32.u32 %r1, %r5;"
+replace = "mov.u32 %r1, 0;"
