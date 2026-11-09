@@ -4175,37 +4175,40 @@ pub(crate) fn pos_free_regs(op: &Op) -> (Vec<Reg>, bool) {
     (out, generic)
 }
 
-pub(crate) fn value_regs(op: &Op) -> Vec<Reg> {
-    let mut out = Vec::new();
-    let mut v = |x: &Val| {
-        if let Val::Reg(r, n) = x {
-            for i in 0..(*n).max(1) as u16 {
-                out.push(Reg {
-                    file: r.file,
-                    idx: r.idx + if r.file == File::V { 0 } else { i },
-                });
-                if r.file == File::V {
-                    break;
-                }
-            }
-        }
-    };
+fn value_vals(op: &Op) -> Vec<Val> {
     match op {
-        Op::St { v: x, .. }
-        | Op::Atom { v: x, .. }
-        | Op::StAsync { v: x, .. }
-        | Op::StLocal { v: x, .. } => v(x),
-        Op::St256 { lo, hi, .. } => {
-            v(&Val::Reg(*lo, 4));
-            v(&Val::Reg(*hi, 4));
+        Op::St { v, .. } | Op::Atom { v, .. } | Op::StAsync { v, .. } | Op::StLocal { v, .. } => {
+            vec![v.clone()]
         }
-        Op::Shfl { a, .. } => v(a),
-        // A warp-collective MMA: every operand is data (any lane's feeds every lane's result).
-        Op::Hmma { a, b, c, .. } => a.iter().chain(b).chain(c).for_each(v),
-        Op::StMatrix { v: xs, .. } | Op::TmemSt { v: xs, .. } => xs.iter().for_each(v),
-        _ => {}
+        Op::St256 { lo, hi, .. } => vec![Val::Reg(*lo, 4), Val::Reg(*hi, 4)],
+        Op::Shfl { a, .. } => vec![a.clone()],
+        Op::Hmma { a, b, c, .. } => a.iter().chain(b).chain(c).cloned().collect(),
+        Op::StMatrix { v, .. } | Op::TmemSt { v, .. } => v.clone(),
+        _ => vec![],
     }
-    // The other elements of a PTX vector data operand (`Op::vector_src`).
+}
+
+fn operand_regs(values: &[Val]) -> Vec<Reg> {
+    values
+        .iter()
+        .flat_map(|value| match value {
+            Val::Reg(r, slots) => (0..if r.file == File::V {
+                1
+            } else {
+                (*slots).max(1)
+            })
+                .map(|i| Reg {
+                    file: r.file,
+                    idx: r.idx + i as u16,
+                })
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+pub(crate) fn value_regs(op: &Op) -> Vec<Reg> {
+    let mut out = operand_regs(&value_vals(op));
     if let Some((r, k)) = op.vector_src() {
         if !matches!(op, Op::ClcQuery { .. }) {
             out.extend((1..k).map(|i| Reg {
@@ -4215,6 +4218,16 @@ pub(crate) fn value_regs(op: &Op) -> Vec<Reg> {
         }
     }
     out
+}
+
+fn control_regs(op: &Op) -> Vec<Reg> {
+    let mut operands = op.src_vals();
+    for value in value_vals(op) {
+        if let Some(index) = operands.iter().position(|operand| *operand == value) {
+            operands.remove(index);
+        }
+    }
+    operand_regs(&operands)
 }
 
 /// A LOP3 member before it executes (`Taint::lop_pre`): (thread, operand and old destination
@@ -4417,10 +4430,9 @@ impl Machine {
         } else {
             (vec![], false)
         };
-        let ctl: Vec<Reg> = srcs
-            .iter()
-            .copied()
-            .filter(|r| !vals.contains(r) && !free.0.contains(r))
+        let ctl: Vec<Reg> = control_regs(&inst.op)
+            .into_iter()
+            .filter(|r| !free.0.contains(r))
             .collect();
         // Position mode: control may depend on the position if every cluster decides the
         // same: the guard outcomes and control operand values that depend on it go into the
@@ -5594,5 +5606,66 @@ mod untracked_producer_tests {
         );
         let origins = machine.half_mem(Loc::Global { alloc: 1, off: 0 }, 2, None);
         assert!(origins.iter().all(Option::is_none), "{origins:?}");
+    }
+}
+
+#[cfg(test)]
+mod control_dependency_tests {
+    use super::untracked_producer_tests::run_body_finish_ir;
+    use super::*;
+
+    #[test]
+    fn address_value_alias_still_reports_control_dependency() {
+        let body = "cvt.u64.u32 %w, %r0; add.u64 %p1, %p1, %w; st.global.u32 [%p1], %p1;";
+        let (state, output) = run_body_finish_ir(body, 0.0, false, "");
+        assert_eq!(output.0, 0);
+        assert!(
+            state
+                .taint
+                .violations
+                .iter()
+                .any(|message| message.contains("address / control"))
+        );
+    }
+    #[test]
+    fn source_validity_and_branch_mask_are_control_inputs() {
+        let predicate = Reg {
+            file: File::P,
+            idx: 0,
+        };
+        let mask = Reg {
+            file: File::UR,
+            idx: 0,
+        };
+        let address = Addr {
+            base: None,
+            base2: None,
+            off: 0,
+        };
+        let copy = Op::CpAsync {
+            dst: address.clone(),
+            src: address,
+            bytes: 4,
+            src_ok: Pred {
+                reg: Some(predicate),
+                neg: false,
+            },
+            src_size: None,
+            zfill: false,
+        };
+        assert!(control_regs(&copy).contains(&predicate));
+        let branch = Op::Bra {
+            target: 0,
+            any: false,
+            tid0_falls: false,
+            cond: Some(Pred {
+                reg: Some(predicate),
+                neg: false,
+            }),
+            div: Some(Val::Reg(mask, 1)),
+        };
+        let controls = control_regs(&branch);
+        assert!(controls.contains(&predicate));
+        assert!(controls.contains(&mask));
     }
 }

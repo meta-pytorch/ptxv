@@ -2274,11 +2274,16 @@ impl Op {
                 x
             }
             Op::CpAsync {
-                dst, src, src_size, ..
+                dst,
+                src,
+                src_size,
+                src_ok,
+                ..
             } => {
                 let mut x = ad(dst);
                 x.extend(ad(src));
                 x.extend(src_size.iter().cloned());
+                x.push(pr(src_ok));
                 x
             }
             Op::CpAsyncMbarArrive { addr, .. } => ad(addr),
@@ -2351,7 +2356,14 @@ impl Op {
             Op::Ret { addr } => vec![addr.clone()],
             Op::Brx { base, .. } => vec![base.clone()],
             Op::CallAbs { target, .. } => vec![target.clone()],
-            Op::Bra { cond: Some(c), .. } | Op::Break { cond: Some(c), .. } => vec![pr(c)],
+            Op::Bra {
+                cond: Some(c), div, ..
+            } => {
+                let mut x = vec![pr(c)];
+                x.extend(div.iter().cloned());
+                x
+            }
+            Op::Break { cond: Some(c), .. } => vec![pr(c)],
             Op::WarpSync { mask, .. } | Op::TmemFreeRaw { mask } => vec![mask.clone()],
             Op::BarSync { id, count, red, .. } => {
                 let mut x = vec![id.clone()];
