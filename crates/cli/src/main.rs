@@ -386,6 +386,13 @@ enum Cmd {
         /// only warp W spin NS ns on %globaltimer there (repeatable).
         #[arg(long, value_name = "LINE:NS[@WARP]")]
         delay: Vec<String>,
+        /// Skip the simulator pre-pass: compare every GPU run with the GPU output captured
+        /// with the case (each output buffer's `expect` bytes) instead of a `num` run. For
+        /// cases whose numerics run is too slow; needs `expect` covering every output buffer.
+        /// The comparison is bitwise: a kernel that accumulates with atomics in a varying
+        /// order differs from the capture without being wrong.
+        #[arg(long)]
+        no_num: bool,
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -2043,9 +2050,14 @@ pub(crate) fn hw_run_cubin(
                     mismatch_runs: serde_json::from_value(r["mismatch_runs"].clone())?,
                     gpu,
                     outcome: if mism == 0 {
-                        "matches simulator bitwise".into()
+                        format!("matches {} bitwise", REF_KIND.lock().unwrap())
                     } else {
-                        format!("{mism}/{runs} runs differ from the correct output")
+                        match *REF_KIND.lock().unwrap() {
+                            "simulator" => {
+                                format!("{mism}/{runs} runs differ from the correct output")
+                            }
+                            k => format!("{mism}/{runs} runs differ from {k} bitwise"),
+                        }
                     },
                     runs,
                     mismatches: mism,
@@ -2061,6 +2073,33 @@ pub(crate) fn hw_run_cubin(
 /// bytes: printed by `cmd_hw`, so that a GPU / simulator mismatch is not taken for a GPU
 /// problem when the reference itself went wrong.
 static REF_FAULTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// What `ptxv hw`'s expected bytes are (printed in each row's outcome).
+static REF_KIND: std::sync::Mutex<&str> = std::sync::Mutex::new("simulator");
+
+/// `ptxv hw --no-num`'s expected bytes: the output buffers' captured GPU bytes (`expect`),
+/// concatenated in `outputs` order. Refuses a buffer without `expect` or whose `expect`
+/// covers only part of it (the rest of the buffer's final bytes are unknown without a run).
+fn captured_outputs(case: &Case) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    for o in &case.m.outputs {
+        let b = case.buffer(o)?;
+        let Some(p) = &b.expect else {
+            bail!("--no-num: output {o} has no captured GPU bytes (`expect`)")
+        };
+        let want = std::fs::read(p).with_context(|| p.clone())?;
+        if b.expect_offset != 0 || want.len() != b.bytes() {
+            bail!(
+                "--no-num: output {o}'s captured bytes cover [{}, {}) of its {} bytes; the whole buffer is needed",
+                b.expect_offset,
+                b.expect_offset as usize + want.len(),
+                b.bytes()
+            );
+        }
+        out.extend(want);
+    }
+    Ok(out)
+}
 
 fn note_ref_faults(run: &str, findings: &[ptxv_sim::machine::Finding]) {
     let mut g = REF_FAULTS.lock().unwrap();
@@ -2496,9 +2535,16 @@ fn run() -> Result<()> {
             timeout,
             scrub,
             delay,
+            no_num,
             out,
         } => {
             let c = Case::load(&case)?;
+            if no_num {
+                let expected = captured_outputs(&c)?;
+                *REF_KIND.lock().unwrap() = "the captured GPU output";
+                cmd_hw(&c, &variant, runs, timeout, &out, &expected, scrub, &delay)?;
+                return Ok(());
+            }
             // PTXV_HW_EXPECT=variant: each variant against its own deterministic simulator
             // run (a numerics mutant's wrong output, rung 3b).
             if std::env::var("PTXV_HW_EXPECT").as_deref() == Ok("variant") {
