@@ -7091,7 +7091,9 @@ impl Machine {
                 let (wq, l, cta) = {
                     let th = &self.threads[t];
                     // warp's TMEM lane quadrant
-                    ((th.tid[0] / 32 % 4) as usize, th.lane as usize, th.cta)
+                    let block = self.launch.g(th.cta as u32).block;
+                    let rank = th.tid[0] + block[0] * (th.tid[1] + block[1] * th.tid[2]);
+                    ((rank / 32 % 4) as usize, th.lane as usize, th.cta)
                 };
                 // ASSUME(S-TMEM): GB300 takes the quadrant from the warp and only the lane
                 // field mod 32 from the address (probes/tmem_16x64b; cuBLAS's epilogue passes
@@ -7732,7 +7734,9 @@ impl Machine {
                 let col0 = (a & 0xffff) as usize;
                 let (wq, l, cta) = {
                     let th = &self.threads[t];
-                    ((th.tid[0] / 32 % 4) as usize, th.lane as usize, th.cta)
+                    let block = self.launch.g(th.cta as u32).block;
+                    let rank = th.tid[0] + block[0] * (th.tid[1] + block[1] * th.tid[2]);
+                    ((rank / 32 % 4) as usize, th.lane as usize, th.cta)
                 };
                 // ASSUME(S-TMEM): as tcgen05.ld (the lane field counts mod 32 in SASS).
                 if self.k.front == Front::Sass {

@@ -1,0 +1,85 @@
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 input,.param .u64 output){
+.shared .align 4 .b32 slot;
+.reg .b64 %p,%px,%offset,%inputaddr;
+.reg .b32 %r<12>;
+.reg .pred %q<3>;
+ld.param.u64 %p,[output];
+ld.param.u64 %px,[input];
+mov.u32 %r0,%tid.z;
+mov.u32 %r1,%ntid.y;
+mul.lo.u32 %r0,%r0,%r1;
+mov.u32 %r1,%tid.y;
+add.u32 %r0,%r0,%r1;
+mov.u32 %r1,%ntid.x;
+mul.lo.u32 %r0,%r0,%r1;
+mov.u32 %r1,%tid.x;
+add.u32 %r0,%r0,%r1;
+shr.u32 %r1,%r0,5;
+mov.u32 %r2,slot;
+setp.ne.u32 %q0,%r1,0;
+@%q0 bra SKIP_ALLOC;
+tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r2],32;
+tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+SKIP_ALLOC:
+tcgen05.fence::before_thread_sync;
+bar.sync 0;
+tcgen05.fence::after_thread_sync;
+ld.shared.u32 %r3,[slot];
+mul.wide.u32 %offset,%r1,4;
+add.u64 %inputaddr,%px,%offset;
+ld.volatile.global.f32 %r7,[%inputaddr];
+shl.b32 %r4,%r1,21;
+add.u32 %r4,%r4,%r3;
+setp.ne.u32 %q1,%r1,0;
+@%q1 bra SKIP_ST0;
+mov.b32 %r5,%r7;
+tcgen05.st.sync.aligned.32x32b.x1.b32 [%r4],{%r5};
+tcgen05.wait::st.sync.aligned;
+SKIP_ST0:
+tcgen05.fence::before_thread_sync;
+bar.sync 1;
+tcgen05.fence::after_thread_sync;
+setp.ne.u32 %q1,%r1,1;
+@%q1 bra SKIP_ST1;
+mov.b32 %r5,%r7;
+tcgen05.st.sync.aligned.32x32b.x1.b32 [%r4],{%r5};
+tcgen05.wait::st.sync.aligned;
+SKIP_ST1:
+tcgen05.fence::before_thread_sync;
+bar.sync 2;
+tcgen05.fence::after_thread_sync;
+setp.ne.u32 %q1,%r1,2;
+@%q1 bra SKIP_ST2;
+mov.b32 %r5,%r7;
+tcgen05.st.sync.aligned.32x32b.x1.b32 [%r4],{%r5};
+tcgen05.wait::st.sync.aligned;
+SKIP_ST2:
+tcgen05.fence::before_thread_sync;
+bar.sync 3;
+tcgen05.fence::after_thread_sync;
+setp.ne.u32 %q1,%r1,3;
+@%q1 bra SKIP_ST3;
+mov.b32 %r5,%r7;
+tcgen05.st.sync.aligned.32x32b.x1.b32 [%r4],{%r5};
+tcgen05.wait::st.sync.aligned;
+SKIP_ST3:
+tcgen05.fence::before_thread_sync;
+bar.sync 4;
+tcgen05.fence::after_thread_sync;
+@%q0 bra SKIP_LD;
+tcgen05.ld.sync.aligned.32x32b.x1.b32 {%r6},[%r4];
+tcgen05.wait::ld.sync.aligned;
+setp.eq.u32 %q2,%r0,0;
+@%q2 st.global.b32 [%p],%r6; // @RESULT
+SKIP_LD:
+tcgen05.fence::before_thread_sync;
+bar.sync 5;
+tcgen05.fence::after_thread_sync;
+@%q0 bra DONE;
+tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r3,32;
+DONE:
+ret;
+}
