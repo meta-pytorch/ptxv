@@ -615,6 +615,20 @@ pub fn fmax_diamond(code: &[Inst], bra: usize) -> Option<(usize, usize)> {
     if op1 == op2 || a1 != a2 || v1 != v2 {
         return None;
     }
+    if code.iter().enumerate().any(|(i, inst)| {
+        if i == bra {
+            return false;
+        }
+        match &inst.op {
+            Op::Bra { target, .. } | Op::Call { target } => (bra + 1..join).contains(target),
+            Op::Brx { targets, .. } => targets
+                .iter()
+                .any(|target| (bra + 1..join).contains(target)),
+            _ => false,
+        }
+    }) {
+        return None;
+    }
     if !sign_setp(code, bra, p, v1) {
         return None;
     }
@@ -5101,6 +5115,7 @@ mod lop3_taint_tests {
 #[cfg(test)]
 mod fmax_seq_tests {
     use super::fmax_branch;
+    use super::fmax_diamond;
     use super::fmax_seq;
 
     fn kernel(body: &str) -> ptxv_ir::Kernel {
@@ -5114,6 +5129,42 @@ mod fmax_seq_tests {
             }
         }
         ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).expect("lower")
+    }
+
+    #[test]
+    fn float_atomic_max_diamond_has_no_external_entries() {
+        let good = "
+        /*0000*/                   MOV R8, RZ ;
+        /*0010*/                   ISETP.GE.AND P1, PT, R4, RZ, PT ;
+        /*0020*/               @P1 BRA `(.L_signed) ;
+        /*0030*/                   ATOMS.MIN RZ, [R23+0x10], R4 ;
+        /*0040*/                   BRA `(.L_join) ;
+.L_signed:
+        /*0050*/                   ATOMS.MAX.S32 RZ, [R23+0x10], R4 ;
+.L_join:
+        /*0060*/                   EXIT ;
+";
+        let k = kernel(good);
+        assert_eq!(fmax_diamond(&k.code, 2), Some((5, 3)));
+        for target in 3..6 {
+            let mut k = k.clone();
+            k.code[0].op = ptxv_ir::Op::Bra {
+                target,
+                any: false,
+                tid0_falls: false,
+                cond: None,
+                div: None,
+            };
+            assert_eq!(fmax_diamond(&k.code, 2), None, "entry at {target}");
+            k.code[0].op = ptxv_ir::Op::Call { target };
+            assert_eq!(fmax_diamond(&k.code, 2), None, "call entry at {target}");
+            k.code[0].op = ptxv_ir::Op::Brx {
+                targets: vec![target],
+                base: ptxv_ir::Val::Imm(0),
+                off: 0,
+            };
+            assert_eq!(fmax_diamond(&k.code, 2), None, "indexed entry at {target}");
+        }
     }
 
     /// CuTeDSL's `smem_fmax` (FA4 decode, sass 0x3e40..0x3ec0): two skips on one sign
