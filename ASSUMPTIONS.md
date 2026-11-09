@@ -4427,7 +4427,14 @@ forms seen. Any other form is a hard error.
   the model still refuses that shape. An immediate enable-input-d (`..., idesc, 0` / `1`,
   CuTeDSL; PX: 22 kernel-DB records) is a constant predicate: 0 overwrites D, 1 accumulates
   (ptxas: UTCHMMA ... !UPT / UPT). probes/tc_mma_imm (`0` then `1` on the same D, and `0` with
-  A in TMEM): GB300 20/20 scrubbed, both front-ends bitwise.
+  A in TMEM): GB300 20/20 scrubbed, both front-ends bitwise. Operand order after idesc
+  (PTX ISA): an optional braced disable-output-lane vector, the enable-input-d predicate,
+  then an optional scale-input-d immediate (0..15; D = A*B + D*2^-s, not with
+  `.block_scale`). A brace-less second trailing operand is scale-input-d, never a mask:
+  `..., 0, 1` overwrites D (enable 0, the scale of an unread accumulator is moot). A nonzero
+  scale with an enable that may be true is refused until modeled. Kernel DB (2026-11-08):
+  381 records with tcgen05.mma, 164 with a mask (vector + enable, read as such before),
+  none with a scale-input-d operand.
 - `min` / `max.f64`, `neg` / `abs.f64` (2026-11-07, PX: 2 + 2 kernel-DB records), as ptxas
   emits them: `DSETP.MIN/MAX.AND p, q, a, b` (p: a is the min / max, -0 below +0, a NaN
   loses; q: both NaN), a 64-bit select, and when both are NaN b's NaN quieted (high word |

@@ -5504,10 +5504,27 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     if scaled != has("block_scale") || has("ws") || has("sp") {
                         bail!(lw.err("tcgen05.mma variant not modeled"));
                     }
-                    // Operands: [d], a, bdesc, idesc, ([scale_a], [scale_b],) (mask,) p.
+                    // Operands (PTX ISA): [d], a, bdesc, idesc, ([scale_a], [scale_b],)
+                    // ({disable-output-lane},) enable-input-d (, scale-input-d). The lane mask is a
+                    // `{..}` vector; scale-input-d an immediate (kind::f16 / tf32 only).
                     let base = if scaled { 6 } else { 4 };
-                    if !(ops.len() == base + 1 || ops.len() == base + 2) {
+                    let has_mask = ops.get(base).is_some_and(|o| o.trim().starts_with('{'));
+                    let en_i = base + has_mask as usize;
+                    if !(ops.len() == en_i + 1 || ops.len() == en_i + 2) {
                         bail!(lw.err("tcgen05.mma: unexpected operand count"));
+                    }
+                    if ops.len() == en_i + 2 {
+                        // D = A*B + D * 2^-scale (scale 0..15): only 0 is modeled so far; with
+                        // enable-input-d = 0 the accumulator is not read, so any scale is moot.
+                        let sc = parse_int(op_n(en_i + 1)?.trim()).ok_or_else(|| {
+                            lw.err("tcgen05.mma scale-input-d must be an immediate")
+                        })?;
+                        if scaled || !(0..=15).contains(&sc) {
+                            bail!(lw.err("tcgen05.mma scale-input-d not allowed here"));
+                        }
+                        if sc != 0 && op_n(en_i)?.trim() != "0" {
+                            bail!(lw.err("tcgen05.mma scale-input-d != 0 not modeled"));
+                        }
                     }
                     let scale = if scaled {
                         let t = |i: usize| -> Result<Val> {
@@ -5522,7 +5539,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     } else {
                         None
                     };
-                    let disable: Vec<Val> = if ops.len() == base + 2 {
+                    let disable: Vec<Val> = if has_mask {
                         op_n(base)?
                             .trim()
                             .trim_matches(|c| c == '{' || c == '}')
@@ -5576,7 +5593,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         idesc: lw.val(op_n(3)?)?,
                         // An immediate enable-input-d (CuTeDSL: `..., idesc, 0`): 0 overwrites
                         // D, 1 accumulates (probes/tc_mma_imm).
-                        enable_d: match op_n(ops.len() - 1)?.trim() {
+                        enable_d: match op_n(en_i)?.trim() {
                             "0" => Pred {
                                 reg: None,
                                 neg: true,
@@ -7633,6 +7650,49 @@ mod tests {
             "{a:?}"
         );
         assert!(ops("cp.reduce.async.bulk.tensor.2d.global.shared::cta.add.tile.bulk_group.L2::cache_hint [%rd1, {%r1, %r2}], [%r3];").is_err());
+    }
+
+    #[test]
+    fn tcgen05_mma_operand_order() {
+        // [d], a, b, idesc, ({mask},) enable-input-d (, scale-input-d): `..., 0, 1` overwrites D
+        // (enable 0; the scale of an unread accumulator is moot); a nonzero scale with a live
+        // enable is refused until modeled; the mask is a braced vector.
+        let mma = |tail: &str| {
+            ops(&format!(
+                "tcgen05.mma.cta_group::1.kind::f16 [%r1], %rd1, %rd2, %r2, {tail};"
+            ))
+        };
+        let en = |v: &[Op]| match v.last().unwrap() {
+            Op::Mma {
+                enable_d, disable, ..
+            } => (*enable_d, disable.len()),
+            o => panic!("{o:?}"),
+        };
+        assert_eq!(
+            en(&mma("0, 1").unwrap()),
+            (
+                Pred {
+                    reg: None,
+                    neg: true
+                },
+                0
+            )
+        );
+        assert_eq!(en(&mma("1, 0").unwrap()), (Pred::TRUE, 0));
+        assert!(mma("%p1, 1").is_err());
+        assert!(mma("1, 3").is_err());
+        assert_eq!(
+            en(&mma("{%r3, %r4, %r5, %r6}, 1").unwrap()),
+            (Pred::TRUE, 4)
+        );
+        assert_eq!(en(&mma("{%r3, %r4, %r5, %r6}, 0, 2").unwrap()).1, 4);
+        assert!(mma("{%r3, %r4, %r5, %r6}, %p1, 2").is_err());
+    }
+
+    #[test]
+    fn tma_im2col_refused() {
+        assert!(ops("cp.async.bulk.tensor.4d.shared::cluster.global.im2col.mbarrier::complete_tx::bytes [%r1], [%rd1, {%r2, %r3, %r4, %r5}], [%r6], {%rs1, %rs2};").is_err());
+        assert!(ops("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%r1], [%rd1, {%r2, %r3}], [%r6];").is_ok());
     }
 
     #[test]
