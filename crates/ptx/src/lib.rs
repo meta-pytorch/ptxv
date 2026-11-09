@@ -1584,6 +1584,7 @@ fn needs_scratch(text: &str) -> bool {
     t.starts_with("mad.lo.s64")
         || t.starts_with("tensormap.")
         || t.starts_with("cvt.rna.tf32.f32")
+        || t.starts_with("cvt.rn.sat.f16.f32")
         || t.starts_with("sqrt.rn.f32")
         || t.starts_with("sqrt.rn.ftz.f32")
         || t.starts_with("div.rn.ftz.f32")
@@ -3701,7 +3702,8 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 sh: false,
             }
         }
-        "bfe" => Op::Bfe {
+        "bfe" if matches!(tname, "s32" | "u32" | "s64" | "u64") && mods.len() == 1 => Op::Bfe {
+            bits,
             d: lw.dst(op_n(0)?)?,
             a: lw.val(op_n(1)?)?,
             pos: lw.val(op_n(2)?)?,
@@ -4271,7 +4273,12 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             }
         }
         "add" | "sub" | "and" | "or" | "xor" | "shl" | "shr" => {
+            if has("sat") && (!matches!(base, "add" | "sub") || tname != "s32") {
+                bail!(lw.err("integer saturation is modeled only for add/sub.sat.s32"));
+            }
             let op = match base {
+                "add" if has("sat") => IntOp::AddSatS,
+                "sub" if has("sat") => IntOp::SubSatS,
                 "add" => IntOp::Add,
                 "sub" => IntOp::Sub,
                 "and" => IntOp::And,
@@ -4352,12 +4359,18 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             a: Val::Imm(0),
             b: lw.val(op_n(1)?)?,
         },
-        "mul" if has("wide") => Op::MulWide {
-            d: lw.dst(op_n(0)?)?,
-            a: lw.val(op_n(1)?)?,
-            b: lw.val(op_n(2)?)?,
-            signed: tname.starts_with('s'),
-        },
+        "mul" if has("wide") => {
+            if !matches!(mods, ["wide", "s16" | "u16" | "s32" | "u32"]) {
+                bail!(lw.err("mul.wide is modeled only for 16- or 32-bit integer sources"));
+            }
+            Op::MulWide {
+                bits,
+                d: lw.dst(op_n(0)?)?,
+                a: lw.val(op_n(1)?)?,
+                b: lw.val(op_n(2)?)?,
+                signed: tname.starts_with('s'),
+            }
+        }
         "mul" if has("hi") => Op::Int {
             op: if tname.starts_with('s') {
                 IntOp::MulHiS
@@ -5303,11 +5316,29 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     hi: false,
                 }
             } else if to == "f16" && from == "f32" && has("rn") {
+                if mods != ["rn", "f16", "f32"] && mods != ["rn", "sat", "f16", "f32"] {
+                    bail!(lw.err("cvt.rn.f16.f32 modifier not modeled"));
+                }
+                let mut value = lw.val(op_n(1)?)?;
+                if has("sat") {
+                    let tmp = lw.scratch_v()?;
+                    pre.push(Op::Fadd {
+                        d: tmp,
+                        a: value,
+                        b: Val::Imm(0),
+                        rnd: Rnd::Rn,
+                        neg: [false; 2],
+                        abs: [false; 2],
+                        ftz: false,
+                        sat: true,
+                    });
+                    value = Val::Reg(tmp, 1);
+                }
                 // cvt.rn.f16.f32 (SASS F2FP.F16.F32.PACK_AB Rd, RZ, Ra).
                 Op::F2fpF16 {
                     d: lw.dst(op_n(0)?)?,
                     a: Val::Imm(0),
-                    b: lw.val(op_n(1)?)?,
+                    b: value,
                 }
             } else if mods == ["rn", "bf16x2", "f32"] || mods == ["rn", "f16x2", "f32"] {
                 // cvt.rn.{bf16x2,f16x2}.f32 d, a, b: d = {a (high half), b}, each rounded to
@@ -5321,6 +5352,9 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     Op::F2fpF16 { d, a, b }
                 }
             } else if to == "bf16" && from == "f32" && has("rn") {
+                if mods != ["rn", "bf16", "f32"] {
+                    bail!(lw.err("cvt.rn.bf16.f32 modifier not modeled"));
+                }
                 // cvt.rn.bf16.f32 (SASS F2FP.BF16.F32.PACK_AB Rd, RZ, Ra).
                 Op::F2fpBf16 {
                     d: lw.dst(op_n(0)?)?,

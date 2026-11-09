@@ -213,6 +213,8 @@ pub enum ShflMode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum IntOp {
+    AddSatS,
+    SubSatS,
     Add,
     Sub,
     Mul,
@@ -611,8 +613,9 @@ pub enum Op {
         a: Val,
         b: Val,
     },
-    /// 32x32 -> 64 (`mul.wide`).
+    /// `bits` x `bits` -> 2*`bits` (`mul.wide`).
     MulWide {
+        bits: u8,
         d: Reg,
         a: Val,
         b: Val,
@@ -1392,6 +1395,7 @@ pub enum Op {
     },
     /// `bfe d, a, pos, len`: bit-field extract (sign-extended if `signed`).
     Bfe {
+        bits: u8,
         d: Reg,
         a: Val,
         pos: Val,
@@ -2511,7 +2515,7 @@ impl Op {
             Op::I2F { d, f64, .. } => span(*d, 1 + *f64 as u16),
             Op::F2I { d, bits, .. } => span(*d, (*bits as u16 / 32).max(1)),
             Op::LdConst { d, bytes, .. } => span(*d, (*bytes as u16 / 4).max(1)),
-            Op::MulWide { d, .. } => span(*d, 2),
+            Op::MulWide { d, bits, .. } => span(*d, (*bits as u16 / 16).max(1)),
             Op::Int { d, bits, .. }
             | Op::CvtInt {
                 d, to_bits: bits, ..
@@ -2558,7 +2562,6 @@ impl Op {
             | Op::CvtUnpack { d, .. }
             | Op::CvtS2f6x2 { d, .. }
             | Op::Shfl { d, p: None, .. }
-            | Op::Bfe { d, .. }
             | Op::Bfi { d, .. }
             | Op::LeaHi { d, cout: None, .. }
             | Op::Mufu { d, .. }
@@ -2570,6 +2573,7 @@ impl Op {
             | Op::Sel { d, .. }
             | Op::Prmt { d, .. }
             | Op::MbarTryWait { d, .. } => vec![*d],
+            Op::Bfe { d, bits, .. } => span(*d, (*bits as u16 / 32).max(1)),
             Op::Mapa { d, .. } | Op::Ffma2 { d, .. } => span(*d, 2),
             Op::Plop3 {
                 d,

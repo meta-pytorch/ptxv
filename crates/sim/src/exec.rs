@@ -7561,12 +7561,20 @@ impl Machine {
                 self.num_mov(t, *d, a);
             }
             Op::Int { op, bits, d, a, b } => {
-                let (x, y) = (mask(*bits, self.rd(t, a)?), mask(*bits, self.rd(t, b)?));
+                let x = mask(*bits, self.rd(t, a)?);
+                let count_bits = if matches!(op, IntOp::Shl | IntOp::ShrU | IntOp::ShrS) {
+                    32
+                } else {
+                    *bits
+                };
+                let y = mask(count_bits, self.rd(t, b)?);
                 let w = *bits as u32;
                 let sx = |v: u64| ((v << (64 - w)) as i64) >> (64 - w);
                 let r = match op {
                     IntOp::Add => x.wrapping_add(y),
                     IntOp::Sub => x.wrapping_sub(y),
+                    IntOp::AddSatS => (x as i32).saturating_add(y as i32) as u32 as u64,
+                    IntOp::SubSatS => (x as i32).saturating_sub(y as i32) as u32 as u64,
                     IntOp::Mul => x.wrapping_mul(y),
                     IntOp::And => x & y,
                     IntOp::Or => x | y,
@@ -7639,41 +7647,38 @@ impl Machine {
                 self.num_clobber(t, *d, &[a, b, pos, len], pc);
             }
             Op::Bfe {
+                bits,
                 d,
                 a,
                 pos,
                 len,
                 signed,
             } => {
-                // PTX bfe.b32: pos and len are taken mod 256; the field is clamped to the word.
-                let x = self.rd(t, a)? as u32;
+                let x = mask(*bits, self.rd(t, a)?);
                 let p = (self.rd(t, pos)? & 0xff) as u32;
                 let l = (self.rd(t, len)? & 0xff) as u32;
                 let r = if l == 0 {
                     0
                 } else {
-                    let field = if p >= 32 { 0 } else { x >> p };
-                    let width = l.min(32u32.saturating_sub(p.min(32)));
-                    let m = if width >= 32 {
-                        u32::MAX
+                    let w = *bits as u32;
+                    let field = if p >= w { 0 } else { x >> p };
+                    let width = l.min(w.saturating_sub(p));
+                    let m = if width >= 64 {
+                        u64::MAX
                     } else {
-                        (1u32 << width) - 1
+                        (1u64 << width) - 1
                     };
                     let mut v = field & m;
                     if *signed {
-                        let sbit = if p + l >= 32 {
-                            x >> 31
-                        } else {
-                            (x >> (p + l - 1)) & 1
-                        };
-                        if sbit == 1 && l < 32 {
+                        let sbit = (x >> (p + l - 1).min(w - 1)) & 1;
+                        if sbit == 1 {
                             v |= !m;
                         }
                     }
                     v
                 };
-                self.wr(t, *d, r as u64, 1);
-                self.num_clobber(t, *d, &[a], pc);
+                self.wr(t, *d, mask(*bits, r), (*bits / 32).max(1));
+                self.num_clobber(t, *d, &[a, pos, len], pc);
             }
             // tcgen05.st: written through the thread's tcgen05 actor (asynchronous); wait::st
             // orders the stores before the thread's later tcgen05 operations (`TmemWaitSt`).
@@ -7805,14 +7810,21 @@ impl Machine {
             | Op::MovMatrix { .. } => {
                 return Err("warp-collective op reached the per-thread executor".into());
             }
-            Op::MulWide { d, a, b, signed } => {
-                let (x, y) = (self.rd(t, a)? as u32, self.rd(t, b)? as u32);
+            Op::MulWide {
+                bits,
+                d,
+                a,
+                b,
+                signed,
+            } => {
+                let (x, y) = (mask(*bits, self.rd(t, a)?), mask(*bits, self.rd(t, b)?));
+                let shift = 64 - *bits;
                 let r = if *signed {
-                    (x as i32 as i64 * y as i32 as i64) as u64
+                    (((x << shift) as i64 >> shift) * ((y << shift) as i64 >> shift)) as u64
                 } else {
-                    x as u64 * y as u64
+                    x * y
                 };
-                self.wr(t, *d, r, 2);
+                self.wr(t, *d, mask(2 * *bits, r), (*bits / 16).max(1));
                 self.num_clobber(t, *d, &[a, b], pc);
             }
             Op::Imad {

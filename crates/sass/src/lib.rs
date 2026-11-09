@@ -1145,6 +1145,7 @@ fn lower_line(
         },
         // USGXT.U32 d, a, n: keep the low n bits (zero-extend); without .U32 sign-extend.
         "SGXT" | "USGXT" if !has("W") => Op::Bfe {
+            bits: 32,
             d: lw.dst(lw.op(0)?)?,
             a: lw.val(lw.op(1)?, 4)?,
             pos: Val::Imm(0),
