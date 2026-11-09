@@ -1881,6 +1881,20 @@ impl<'a> Lower<'a> {
 /// bf16x2, the `.rs` x4 / f16x2 / bf16x2 packs, and the f16x2 / bf16x2 decodes. None: not a
 /// narrow form.
 fn cvt_lp(lw: &Lower, mods: &[&str], ops: &[String]) -> Result<Option<Op>> {
+    // `cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 d, a, scale` (PTX ISA 9.1): the two
+    // s2f6 codes of the .b16 `a` times the two ue8m0 scales of the .b16 `scale` (N-CVT-LP;
+    // ptxas: F2FP.SATFINITE.BF16.S2_6.UNPACK_B).
+    if mods == ["rn", "satfinite", "scaled::n2::ue8m0", "bf16x2", "s2f6x2"] {
+        if ops.len() != 3 {
+            bail!(lw.err("cvt .s2f6x2: expected d, a, scale"));
+        }
+        return Ok(Some(Op::CvtS2f6x2 {
+            d: lw.dst(ops[0].trim())?,
+            a: lw.val(ops[1].trim())?,
+            hi: false,
+            scale: lw.val(ops[2].trim())?,
+        }));
+    }
     let n = mods.len();
     let (to, from) = (mods[n - 2], mods[n - 1]);
     let has = |m: &str| mods.contains(&m);

@@ -1926,10 +1926,24 @@ fn probe_ldst256_matches_hardware() {
 /// N-CVT-LP, L-NVDISASM: cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 (F2FP.SATFINITE
 /// .BF16.S2_6.UNPACK_B, register and immediate scales, either data half; ptxas 13.1 cubin whose
 /// F2FP encodings nvdisasm 13.0 does not print, decoded by undis.rs) on every (code, scale) pair
-/// of both lanes = GB300 (probes/s2f6_cvt).
+/// of both lanes = GB300 (probes/s2f6_cvt), on both front-ends.
 #[test]
 fn probe_s2f6_cvt_matches_hardware() {
     probe_bitwise_cubin("probes/s2f6_cvt", None);
+    // The PTX front on the cubin's source (the case is binary-only: ptxas 13.0 rejects it).
+    let case = Case::load(root().join("probes/s2f6_cvt")).unwrap();
+    let ptx = std::fs::read_to_string(case.dir.join("kernel.ptx")).unwrap();
+    let k = ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap();
+    let launch = build_launch(&case, &k).unwrap();
+    let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
+        .verdict
+        .expect("s2f6_cvt (ptx) certifies");
+    assert_eq!(v.classes(), ["clean"], "{:#?}", v.findings);
+    let report = case.expect_report(&v.outputs[0]).unwrap();
+    assert!(
+        !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+        "{report:?}"
+    );
 }
 
 /// L-ROSETTA, S-SCOPE: red.global.{or,and,xor}.b32 / .b64 at cta, gpu and sys scope (REDG.E

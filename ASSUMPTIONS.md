@@ -6132,7 +6132,9 @@ Arithmetic:
   gives 0x7fff for every code. `probes/s2f6_cvt` (GB300, 2026-11-08): every (code, scale)
   pair of both lanes through register and immediate scales and either data half = the model
   bitwise (`cargo test`), and `run.sh` checks all 2^32 (data, scale) pairs against a C model
-  on the GPU: 0 mismatches. PTX ISA 9.1: ptxas 13.1 assembles it, ptxas 13.0 does not.
+  on the GPU: 0 mismatches. PTX ISA 9.1: ptxas 13.1 assembles it, ptxas 13.0 does not. The
+  PTX front lowers it to the same op (`a`, `scale` .b16, `hi` = false); `probes/s2f6_cvt`'s
+  kernel.ptx is bitwise on the PTX front as well.
 - Where: `lowp.rs`; `exec.rs` `Op::CvtPack` / `CvtRsX4` / `CvtUnpack` / `CvtS2f6x2`; PTX
   `cvt_lp`; SASS `f2fp_lp`.
 - Status: **validated.** `ptxv cvt-sweep probes/cvt_lp` covers 51 PTX forms, each over every
