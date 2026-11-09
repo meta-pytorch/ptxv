@@ -354,6 +354,22 @@ pub struct Buffer {
     /// compiled PTX).
     #[serde(default)]
     pub cubin: Option<String>,
+    /// Declared input invariant (`[buffers.invariant]`, integer dtypes): every element is
+    /// one of `values` and within [`min`, `max`]. `ptxv check` checks it on the captured bytes
+    /// and never trusts it; input mutation (`--mutate-inputs`) writes only values it admits.
+    #[serde(default)]
+    pub invariant: Option<InputInvariant>,
+}
+
+/// A buffer's declared input invariant (`Buffer::invariant`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct InputInvariant {
+    #[serde(default)]
+    pub values: Option<Vec<i64>>,
+    #[serde(default)]
+    pub min: Option<i64>,
+    #[serde(default)]
+    pub max: Option<i64>,
 }
 
 impl Manifest {

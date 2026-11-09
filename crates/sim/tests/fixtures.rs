@@ -4292,10 +4292,56 @@ fn input_coverage_and_mutation_find_the_sentinel_race() {
                 "{:#?}",
                 c.untaken
             );
-            let (muts, refused) = ptxv_sim::coverage::plan(&m, &c, 4, 2);
+            // Control and addresses depend on the input (the flag guards the slot store,
+            // the bucket id is its address).
+            assert!(!c.input_independent && !c.input_dependent.is_empty());
+            assert_eq!(c.comparisons.len(), 1);
+            assert_eq!((c.comparisons[0].n_true, c.comparisons[0].n_false), (64, 0));
+            // Declared invariants (ok in {0, 1}, bucket in [0, 63]) hold on the capture.
+            let inv =
+                |buffer: &str, values: Option<Vec<i64>>, min, max| ptxv_sim::coverage::Invariant {
+                    buffer: buffer.into(),
+                    values,
+                    min,
+                    max,
+                    elem: 4,
+                    signed: false,
+                };
+            let (dom, notes) = ptxv_sim::coverage::Domain::new(
+                &m,
+                vec![
+                    inv("ok", Some(vec![0, 1]), None, None),
+                    inv("bucket", None, Some(0), Some(63)),
+                ],
+            );
+            assert!(
+                notes
+                    .iter()
+                    .all(|n| n.contains("holds on the captured input")),
+                "{notes:#?}"
+            );
+            let (muts, refused) = ptxv_sim::coverage::plan(&m, &c, 4, 2, &dom);
             assert!(refused.is_empty(), "{refused:#?}");
             assert_eq!(muts.len(), 1);
             assert_eq!(muts[0].label, "ok[0]=0, ok[32]=0");
+            assert!(muts[0].within_invariants);
+            // Unconstrained (no invariants): the same mutation, not within declared invariants.
+            let (m2, _) = ptxv_sim::coverage::plan(&m, &c, 4, 2, &Default::default());
+            assert!(m2[0].label == muts[0].label && !m2[0].within_invariants);
+            // ok in {1} admits no flipping value; ok in {2} does not hold on the capture.
+            let (d1, _) =
+                ptxv_sim::coverage::Domain::new(&m, vec![inv("ok", Some(vec![1]), None, None)]);
+            let (m1, r1) = ptxv_sim::coverage::plan(&m, &c, 4, 2, &d1);
+            assert!(
+                m1.is_empty() && r1[0].reason.contains("declared invariant"),
+                "{r1:#?}"
+            );
+            let (_, n2) =
+                ptxv_sim::coverage::Domain::new(&m, vec![inv("ok", Some(vec![2]), None, None)]);
+            assert!(
+                n2[0].contains("does not hold") && n2[0].contains("64 of 64"),
+                "{n2:#?}"
+            );
             let w = ptxv_sim::wellsync::check_certified(
                 ptxv_sim::coverage::apply(&m, &muts[0]),
                 100_000,
@@ -4311,7 +4357,7 @@ fn input_coverage_and_mutation_find_the_sentinel_race() {
         let launch = build_launch(&case, &k).unwrap();
         let m = Machine::new(Arc::new(k), Arc::new(launch));
         let c = ptxv_sim::coverage::analyze(&m);
-        let (muts, refused) = ptxv_sim::coverage::plan(&m, &c, 4, 2);
+        let (muts, refused) = ptxv_sim::coverage::plan(&m, &c, 4, 2, &Default::default());
         assert!(
             muts.is_empty() && refused.len() == 1,
             "{front}: {muts:#?} {refused:#?}"
@@ -4321,6 +4367,45 @@ fn input_coverage_and_mutation_find_the_sentinel_race() {
             "{refused:#?}"
         );
     }
+}
+
+/// Input coverage beyond comparisons: a kernel whose control, addresses and synchronization
+/// do not touch input data is input-independent (fixtures/s_init); an input-derived FCHK
+/// (division slow-path test, captured silu, fixtures/c_silu) is a site B does not flip, and
+/// the slow path behind it is unexecuted code behind an input-dependent condition.
+#[test]
+fn input_independence_and_predicate_sites() {
+    let run = |name: &str, front: &str| {
+        let case = Case::load(root().join("fixtures").join(name)).unwrap();
+        let k = match &case.m.cubin {
+            Some(c) => ptxv_sass::load_cubin(&case.dir.join(c), &case.m.entry).unwrap(),
+            None => kernel(&case, "good", front),
+        };
+        let launch = build_launch(&case, &k).unwrap();
+        let m = Machine::new(Arc::new(k), Arc::new(launch));
+        ptxv_sim::coverage::analyze(&m)
+    };
+    for front in ["ptx", "sass"] {
+        let c = run("s_init", front);
+        assert!(
+            c.input_independent && c.input_dependent.is_empty() && c.untaken.is_empty(),
+            "{front}: {c:#?}"
+        );
+    }
+    let c = run("c_silu", "sass");
+    assert!(!c.input_independent);
+    assert_eq!(c.untaken.len(), 8, "{:#?}", c.untaken);
+    assert!(
+        c.untaken.iter().all(|u| u.at.contains("FCHK") && u.never),
+        "{:#?}",
+        c.untaken
+    );
+    assert!(c.untaken.iter().all(|u| {
+        u.refuse
+            .as_deref()
+            .is_some_and(|r| r.contains("not a comparison"))
+    }));
+    assert!(c.behind_input > 0 && c.unexecuted.iter().any(|g| g.gate == "input"));
 }
 
 /// S-INIT lane precision for narrow packs (fixtures/e_uninit_lanes): F2FP pack / unpack and

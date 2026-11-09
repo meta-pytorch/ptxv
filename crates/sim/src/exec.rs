@@ -3446,7 +3446,7 @@ impl Machine {
         }
         let r = self.exec_inner_body(members, pc);
         if cov && r.is_ok() {
-            crate::coverage::post(self, pc);
+            crate::coverage::post(self, members, pc);
         }
         if r.is_ok() {
             for (t, regs) in poison {

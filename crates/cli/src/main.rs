@@ -202,6 +202,10 @@ enum Cmd {
         /// input-dependent comparisons any thread took (also PTXV_NO_INPUT_COVERAGE).
         #[arg(long)]
         no_input_coverage: bool,
+        /// Input coverage only: the one deterministic run with the provenance shadow, no
+        /// exploration and no verdict (rows[].got = ["coverage-only"]).
+        #[arg(long)]
+        coverage_only: bool,
         /// Check again on mutated inputs: for up to N untaken input-dependent comparison
         /// sides that compare one input word against a constant, write a value that flips
         /// the comparison into --mutate-elements elements and run the check on that input.
@@ -750,6 +754,8 @@ fn fronts(f: &str) -> Vec<&'static str> {
 /// `--mutate-input` specs.
 static MUTATE_SPECS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
 
+/// `--coverage-only`.
+static COVERAGE_ONLY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 /// Input coverage (coverage.rs): (notes on, --mutate-inputs, --mutate-elements).
 static INPUT_COV: std::sync::OnceLock<(bool, usize, usize)> = std::sync::OnceLock::new();
 
@@ -760,6 +766,9 @@ struct MutatedRow {
     mutation: String,
     /// The comparison it flips and the side it makes taken (null: given with --mutate-input).
     pc: Option<u32>,
+    /// Every element written stays within its buffer's declared invariant (checked on the
+    /// capture): evidence class `on-mutated-input (within declared invariants)`.
+    within_invariants: bool,
     at: String,
     makes: bool,
     classes: Vec<String>,
@@ -1074,6 +1083,51 @@ fn cmd_check(
             let case = &vcase;
             let m = machine(case, k.clone())?;
             let refuted = m.launch.refuted_opt_in.clone();
+            if COVERAGE_ONLY.get().copied().unwrap_or(false) {
+                let cov = ptxv_sim::coverage::analyze(&m);
+                println!(
+                    "COVERAGE {v} {f}: {} input-dependent comparison(s), {} side(s) not taken, input-independent={}, {} unexecuted instruction(s) ({} behind input-dependent conditions, {} behind parameter conditions), terminal={} {:.1}s",
+                    cov.sites,
+                    cov.untaken.len(),
+                    cov.input_independent,
+                    cov.unexecuted_instructions,
+                    cov.behind_input,
+                    cov.behind_parameter,
+                    cov.terminal,
+                    cov.seconds
+                );
+                for u in cov.untaken.iter().take(20) {
+                    println!("    note: {}", u.note);
+                }
+                rows.push(CheckRow {
+                    variant: v.clone(),
+                    front: f.into(),
+                    expect_report: vec![],
+                    pass: true,
+                    expect,
+                    got: vec!["coverage-only".into()],
+                    refuted_opt_in: refuted,
+                    verdict: Verdict {
+                        states: 1,
+                        transitions: 0,
+                        complete: false,
+                        terminal_states: cov.terminal as usize,
+                        distinct_outputs: 0,
+                        findings: vec![],
+                        assumptions: vec![],
+                        notes: vec![],
+                        seconds: cov.seconds,
+                        outputs: vec![],
+                    },
+                    gb300: None,
+                    two_level: None,
+                    nonfinite: None,
+                    input_coverage: Some(cov),
+                    mutated_inputs: vec![],
+                    mutation_refusals: vec![],
+                });
+                continue;
+            }
             // Debugging (rung 4b, large launch groups): PTXV_RUN_ONCE=1 runs one
             // deterministic schedule (explore::run_once) and reports its findings and outputs.
             if std::env::var("PTXV_RUN_ONCE").is_ok() {
@@ -1485,9 +1539,79 @@ fn cmd_check(
                 for u in cov.untaken.iter().take(20) {
                     println!("    note: {}", u.note);
                 }
+                if cov.input_independent {
+                    let raced = verdict.findings.iter().any(|x| x.kind == "race");
+                    println!(
+                        "    input-independent: holds for all inputs of this shape and these parameters (no branch, guard, address or synchronization operand derived from input data in one run; value-dependent parts, such as same-value writes, output determinism and the comparison with the GPU output, hold for this input){}",
+                        if raced {
+                            "; the verdict has a race, under which another schedule can move data differently"
+                        } else {
+                            ""
+                        }
+                    );
+                } else if let Some(d) = cov.input_dependent.first() {
+                    println!(
+                        "    input-dependent control: {} instruction(s) with an input-derived guard, address, control or synchronization operand (first: {} {} from {})",
+                        cov.input_dependent.len(),
+                        d.what,
+                        d.at,
+                        d.inputs
+                            .iter()
+                            .map(|x| x.buffer.clone())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+                if cov.unexecuted_instructions > 0 {
+                    println!(
+                        "    unexecuted: {} instruction(s) no thread executed: {} behind input-dependent conditions, {} behind conditions free of input data (parameters, special registers), {} other",
+                        cov.unexecuted_instructions,
+                        cov.behind_input,
+                        cov.behind_parameter,
+                        cov.unexecuted_instructions - cov.behind_input - cov.behind_parameter
+                    );
+                }
+                // Declared input invariants, checked on the captured bytes.
+                let invs: Vec<ptxv_sim::coverage::Invariant> = case
+                    .m
+                    .buffers
+                    .iter()
+                    .filter_map(|b| {
+                        let i = b.invariant.as_ref()?;
+                        Some(ptxv_sim::coverage::Invariant {
+                            buffer: b.name.clone(),
+                            values: i.values.clone(),
+                            min: i.min,
+                            max: i.max,
+                            elem: b.elem_bytes() as u8,
+                            signed: b.dtype.starts_with('i'),
+                        })
+                    })
+                    .collect();
+                let float_inv: Vec<&str> = case
+                    .m
+                    .buffers
+                    .iter()
+                    .filter(|b| {
+                        b.invariant.is_some()
+                            && !b.dtype.starts_with('i')
+                            && !b.dtype.starts_with('u')
+                    })
+                    .map(|b| b.name.as_str())
+                    .collect();
+                if !float_inv.is_empty() {
+                    anyhow::bail!(
+                        "input invariants are for integer buffers: {}",
+                        float_inv.join(", ")
+                    );
+                }
+                let (dom, inv_notes) = ptxv_sim::coverage::Domain::new(&m1, invs);
+                for n in &inv_notes {
+                    println!("    {n}");
+                }
                 if n_mut > 0 || !specs.is_empty() {
                     let (mut muts, refused) = if n_mut > 0 {
-                        ptxv_sim::coverage::plan(&m1, &cov, n_mut, k_mut)
+                        ptxv_sim::coverage::plan(&m1, &cov, n_mut, k_mut, &dom)
                     } else {
                         (vec![], vec![])
                     };
@@ -1500,7 +1624,7 @@ fn cmd_check(
                     };
                     for sp in &specs {
                         muts.push(
-                            ptxv_sim::coverage::parse_mutation(&m1, sp, &elem)
+                            ptxv_sim::coverage::parse_mutation(&m1, sp, &elem, &dom)
                                 .map_err(|e| anyhow::anyhow!("--mutate-input {sp}: {e}"))?,
                         );
                     }
@@ -1524,6 +1648,7 @@ fn cmd_check(
                         let row = MutatedRow {
                             mutation: mu.label.clone(),
                             pc: (mu.pc != u32::MAX).then_some(mu.pc),
+                            within_invariants: mu.within_invariants,
                             at: at.clone(),
                             makes: mu.never,
                             classes: vm.classes(),
@@ -1535,7 +1660,12 @@ fn cmd_check(
                             seconds: t0.elapsed().as_secs_f64(),
                         };
                         println!(
-                            "    on-mutated-input: {} ({}): {:?} states={}{} {:.1}s",
+                            "    on-mutated-input{}: {} ({}): {:?} states={}{} {:.1}s",
+                            if row.within_invariants {
+                                " (within declared invariants)"
+                            } else {
+                                ""
+                            },
                             row.mutation,
                             if mu.pc == u32::MAX {
                                 at.clone()
@@ -1557,7 +1687,12 @@ fn cmd_check(
                         );
                         for x in row.findings.iter().filter(|x| x.kind != "note").take(6) {
                             println!(
-                                "      on-mutated-input {}: {}",
+                                "      on-mutated-input{} {}: {}",
+                                if row.within_invariants {
+                                    " (within declared invariants)"
+                                } else {
+                                    ""
+                                },
                                 x.kind.to_uppercase(),
                                 x.msg.lines().next().unwrap_or("")
                             );
@@ -2258,11 +2393,13 @@ fn run() -> Result<()> {
             nonfinite,
             nonfinite_strict,
             no_input_coverage,
+            coverage_only,
             mutate_inputs,
             mutate_elements,
             mutate_input,
         } => {
             let _ = MUTATE_SPECS.set(mutate_input);
+            let _ = COVERAGE_ONLY.set(coverage_only);
             let j = json.then(|| jsonout::begin("check"));
             let _ = INPUT_COV.set((
                 !no_input_coverage && std::env::var("PTXV_NO_INPUT_COVERAGE").is_err(),
