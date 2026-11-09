@@ -57,7 +57,7 @@ const IGNORED: &[&str] = &[
     "PTXV_NO_INPUT_COVERAGE",
 ];
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 fn on() -> bool {
     std::env::var_os("PTXV_NO_VCACHE").is_none()
@@ -81,8 +81,8 @@ impl Fnv {
 
 fn eat_dir(h: &mut Fnv, base: &Path, d: &Path) -> std::io::Result<()> {
     let mut es: Vec<PathBuf> = std::fs::read_dir(d)?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .collect();
+        .map(|e| e.map(|e| e.path()))
+        .collect::<std::io::Result<_>>()?;
     es.sort();
     for p in es {
         let rel = p.strip_prefix(base).unwrap_or(&p);
@@ -131,6 +131,43 @@ pub(crate) fn key(case_dir: &Path, variant: &str, front: &str, mode: &str) -> Op
     }
     let dir = case_dir.canonicalize().ok()?;
     eat_dir(&mut h, &dir, &dir).ok()?;
+    let case = ptxv_case::Case::load(&dir).ok()?;
+    let mut dependencies = Vec::new();
+    if !case.m.ptx.is_empty() {
+        dependencies.push(dir.join(&case.m.ptx));
+    }
+    for file in case
+        .m
+        .cubin
+        .iter()
+        .chain(case.m.launches.iter().filter_map(|l| l.cubin.as_ref()))
+        .chain(
+            case.m
+                .variants
+                .iter()
+                .flat_map(|v| v.patch.iter())
+                .filter_map(|p| p.cubin.as_ref()),
+        )
+        .chain(
+            case.m
+                .buffers
+                .iter()
+                .flat_map(|b| [b.file.as_ref(), b.cubin.as_ref()].into_iter().flatten()),
+        )
+    {
+        dependencies.push(dir.join(file));
+    }
+    let mut dependencies = dependencies
+        .into_iter()
+        .map(|p| p.canonicalize())
+        .collect::<std::io::Result<Vec<_>>>()
+        .ok()?;
+    dependencies.sort();
+    dependencies.dedup();
+    for path in dependencies {
+        h.eat(path.as_os_str().as_encoded_bytes());
+        h.eat(&std::fs::read(path).ok()?);
+    }
     Some(format!("{:016x}", h.0))
 }
 
@@ -218,7 +255,33 @@ mod tests {
         let d = std::env::temp_dir().join(format!("ptxv-vcache-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("case/data")).unwrap();
-        std::fs::write(d.join("case/case.toml"), "name = \"x\"").unwrap();
+        std::fs::write(
+            d.join("case/case.toml"),
+            r#"
+name = "x"
+description = "cache dependencies"
+ptx = "../kernel.ptx"
+cubin = "../kernel.cubin"
+entry = "k"
+grid = [1,1,1]
+block = [1,1,1]
+outputs = ["out"]
+params = []
+[[buffers]]
+name = "out"
+dtype = "u8"
+shape = [3]
+init = "file"
+file = "../input.bin"
+[[variants]]
+id = "good"
+expect = ["clean"]
+"#,
+        )
+        .unwrap();
+        for file in ["kernel.ptx", "kernel.cubin", "input.bin"] {
+            std::fs::write(d.join(file), [1u8, 2, 3]).unwrap();
+        }
         std::fs::write(d.join("case/data/a.bin"), [1u8, 2, 3]).unwrap();
         let k0 = key(&d.join("case"), "good", "sass", "certify").unwrap();
         assert_eq!(k0, key(&d.join("case"), "good", "sass", "certify").unwrap());
@@ -227,6 +290,15 @@ mod tests {
         std::fs::write(d.join("case/data/a.bin"), [1u8, 2, 4]).unwrap();
         let k1 = key(&d.join("case"), "good", "sass", "certify").unwrap();
         assert_ne!(k0, k1, "a data file change must change the key");
+        let mut previous = k1.clone();
+        for file in ["kernel.ptx", "kernel.cubin", "input.bin"] {
+            std::fs::write(d.join(file), [1u8, 2, 4]).unwrap();
+            let changed = key(&d.join("case"), "good", "sass", "certify").unwrap();
+            assert_ne!(previous, changed, "external {file} must change the key");
+            previous = changed;
+        }
+        std::fs::remove_file(d.join("input.bin")).unwrap();
+        assert!(key(&d.join("case"), "good", "sass", "certify").is_none());
         let cache = d.join("cache");
         store_in(&cache, &k1, 1000, &verdict(false));
         assert!(load_in(&cache, &k1, 1000).is_some());
