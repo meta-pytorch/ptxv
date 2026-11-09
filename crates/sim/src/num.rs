@@ -268,7 +268,7 @@ pub struct NumState {
     touched: Vec<(u32, u8, u16)>,
     /// Segment mode: per (thread, predicate), the FSETP that wrote it: (trace position,
     /// comparison, operand nodes).
-    pred_src: HashMap<(u32, u16), (usize, FCmp, u32, u32)>,
+    pred_src: HashMap<(u32, Reg), (usize, FCmp, u32, u32)>,
     /// Instructions covered by materialized slices (their data-dependent guards are part of
     /// the slices), and why some value could not be materialized.
     pub seg_pcs: BTreeSet<u32>,
@@ -1661,7 +1661,7 @@ impl Machine {
         if !ns.segments {
             return;
         }
-        let key = (t as u32, d.idx);
+        let key = (t as u32, d);
         ns.pred_src.remove(&key);
         if !plain {
             return;
@@ -2169,7 +2169,7 @@ impl Machine {
         // other = (the operand not chosen, whether `v` is the SEL's first operand).
         if let (true, Some(r), Some((o, v_first))) = (ns.segments, p.reg, other) {
             if let (Some(&(pos, cmp, x, y)), Some(nv), Some(no)) = (
-                ns.pred_src.get(&(t as u32, r.idx)),
+                ns.pred_src.get(&(t as u32, r)),
                 ns.node_of(t, v),
                 ns.node_of(t, o),
             ) {
@@ -5511,6 +5511,68 @@ mod untracked_producer_tests {
                 .iter()
                 .any(|origin| matches!(origin, Some(crate::halfin::Src::E { .. }))),
             "an atomic rewrite must not retain original input identities: {origins:?}"
+        );
+    }
+
+    #[test]
+    fn predicate_files_must_not_alias_comparison_histories() {
+        fn namespaces(kernel: &mut ptxv_ir::Kernel) {
+            kernel.nregs[File::P as usize] = 1;
+            for inst in &mut kernel.code {
+                match &mut inst.op {
+                    Op::Fsetp { d, cmp, .. } => {
+                        *d = Reg {
+                            file: if *cmp == FCmp::Lt { File::P } else { File::UP },
+                            idx: 0,
+                        };
+                    }
+                    Op::Sel { p, .. } => {
+                        p.reg = Some(Reg {
+                            file: File::P,
+                            idx: 0,
+                        })
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let body = ".reg .pred %other; mov.b32 %f0, %r0; \
+            ld.global.f32 %f1, [%p0+4]; \
+            setp.lt.f32 %q, %f0, %f1; setp.gt.f32 %other, %f0, %f1; \
+            selp.f32 %f1, %f0, %f1, %q;";
+        let machine = run_machine_body_transform(
+            body,
+            1.0,
+            false,
+            "st.global.f32 [%p1], %f1;",
+            false,
+            true,
+            Some(namespaces),
+        );
+        let output =
+            u32::from_le_bytes(std::array::from_fn(|byte| *machine.gmem[1].bytes.get(byte)));
+        assert_eq!(output, 1.0f32.to_bits());
+        let state = machine.num.as_ref().unwrap();
+        let node = state.mem_node(Loc::Global { alloc: 1, off: 0 }).unwrap();
+        assert_eq!(
+            state.nodes[node as usize].hw, output,
+            "P0 and UP0 must keep distinct comparison histories"
+        );
+        assert!(
+            matches!(
+                state.nodes[node as usize].kind,
+                NodeKind::Max { min: true, .. }
+            ),
+            "kind={:?}, comparisons={:?}, trace={:?}, code={:?}",
+            state.nodes[node as usize].kind,
+            state.pred_src,
+            state.trace,
+            machine
+                .k
+                .code
+                .iter()
+                .map(|inst| &inst.op)
+                .collect::<Vec<_>>()
         );
     }
 
