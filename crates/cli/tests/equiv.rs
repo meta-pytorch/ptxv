@@ -74,6 +74,27 @@ fn row_sums_are_bounded() {
     let t = equiv_ok("fixtures/c_equiv_sum/equiv.toml", 6);
     assert_eq!(t.matches(", 0 over the bound").count(), 3, "{t}");
     assert!(t.contains("relies on: N-ATOMIC"), "{t}");
+    assert!(
+        t.contains("equivalence scope: primary output buffers"),
+        "{t}"
+    );
+    let dir = std::env::temp_dir().join(format!(
+        "ptxv-test-equiv-fixtures_c_equiv_sum_equiv.toml-{}",
+        std::process::id()
+    ));
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("equiv.json")).unwrap()).unwrap();
+    assert!(
+        report[0]["output_scope"]["reference"]["checked"].is_string(),
+        "{report}"
+    );
+    assert!(
+        !report[0]["output_scope"]["candidate"]["unchecked"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{report}"
+    );
 }
 
 /// Reassociated prefix sums: torch.cumsum vs Triton tl.cumsum.
@@ -383,6 +404,37 @@ fn online_bookkeeping_taint_is_exact() {
         assert!(part.contains(guard), "{case}: {part}");
     }
 }
+
+#[test]
+fn empty_output_list_is_rejected() {
+    let source =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/r2e_tile/case.toml");
+    let manifest = std::fs::read_to_string(source).unwrap();
+    let dir = std::env::temp_dir().join(format!("ptxv-output-scope-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("case.toml"),
+        manifest.replace("outputs = [\"D\"]", "outputs = []"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("equiv.toml"),
+        "candidates = []\nreference = { case = \".\", variant = \"good\", front = \"ptx\" }\n",
+    )
+    .unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ptxv"))
+        .args(["equiv", dir.join("equiv.toml").to_str().unwrap(), "--no-hw"])
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(
+        error.contains("equivalence requires an output buffer"),
+        "{error}"
+    );
+}
+
 #[test]
 fn captured_zero_without_half_history_is_reported_unproven() {
     let dir = std::env::temp_dir().join(format!("ptxv-untracked-half-zero-{}", std::process::id()));

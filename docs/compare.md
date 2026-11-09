@@ -53,6 +53,13 @@ The comparison step runs with `CUDA_VISIBLE_DEVICES=""`.
 [--hw] [--ref-label S] [--cand-label S]` writes `DIR/report.json` and `DIR/report.md`, and prints
 a short summary. Long runs print progress on stderr.
 
+Equivalence covers the first declared output buffer, the final result of a multi-launch
+region. Additional buffers can hold intermediates and are not compared; `output_scope` in
+the report names the checked and unchecked buffers, and the headline identifies partial
+output scope. Cases with no output buffer are rejected. Values that depend on inputs must
+retain numeric history even when their captured value is zero; missing history cannot
+establish equivalence.
+
 ## What it does
 
 1. **Each side** (`crates/cli/src/compare.rs`, in process; a panic becomes a blocker).

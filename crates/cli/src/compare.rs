@@ -904,6 +904,7 @@ pub fn cmd_compare(ref_dir: &Path, cand_dir: &Path, o: &Opts) -> Result<bool> {
         eq_json = json!({
             "level": level,
             "proven": proven,
+            "output_scope": e["output_scope"],
             "levels": e["report"]["levels"],
             "segments": segments,
             "bound_form": forms,
@@ -1200,6 +1201,19 @@ fn headline(level: &str, proven: bool, eq: &Value, gpu: &Value) -> String {
             s += &format!(" ({f:.3} of the bound)");
         }
     }
+    let scope = &eq["output_scope"];
+    let unchecked = |side: &str| {
+        scope[side]["unchecked"]
+            .as_array()
+            .is_some_and(|buffers| !buffers.is_empty())
+    };
+    if unchecked("reference") || unchecked("candidate") {
+        s.push_str(&format!(
+            "; equivalence scope: primary outputs {} and {}; other output buffers unchecked",
+            scope["reference"]["checked"], scope["candidate"]["checked"]
+        ));
+    }
+
     s
 }
 

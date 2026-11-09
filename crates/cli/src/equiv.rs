@@ -163,6 +163,13 @@ pub(crate) fn prepare(
     dir: &Path,
     segments: bool,
 ) -> Result<Run> {
+    let case = Case::load(base.join(&k.case))?;
+    if case.m.outputs.is_empty() {
+        bail!(
+            "equivalence requires an output buffer; {} declares no outputs",
+            case.m.name
+        );
+    }
     prepare_with(base, k, max_states, dir, segments, false)
 }
 
@@ -1917,6 +1924,13 @@ fn captured(r: &Run, c: &Run, rep: &Report, names: &[String]) -> Option<serde_js
     }))
 }
 
+fn output_scope(reference: &Run, candidate: &Run) -> serde_json::Value {
+    serde_json::json!({
+        "reference": {"checked": reference.case.m.outputs[0], "unchecked": reference.case.m.outputs[1..]},
+        "candidate": {"checked": candidate.case.m.outputs[0], "unchecked": candidate.case.m.outputs[1..]},
+    })
+}
+
 pub fn cmd_equiv(
     path: &Path,
     out: &Option<PathBuf>,
@@ -1971,6 +1985,16 @@ pub fn cmd_equiv(
     for c in &f.candidates {
         let cand = prepare(&base, c, f.max_states, &dir, f.segments)?;
         println!("\ncandidate {}", cand.label());
+        if r.case.m.outputs.len() > 1 || cand.case.m.outputs.len() > 1 {
+            println!(
+                "    equivalence scope: primary output buffers {} and {}; unchecked reference buffers {:?}, candidate buffers {:?}",
+                r.case.m.outputs[0],
+                cand.case.m.outputs[0],
+                &r.case.m.outputs[1..],
+                &cand.case.m.outputs[1..]
+            );
+        }
+
         for n in &cand.notes {
             println!("    {n}");
         }
@@ -2346,6 +2370,7 @@ pub fn cmd_equiv(
         json.push(serde_json::json!({
             "reference": r.label(),
             "candidate": cand.label(),
+            "output_scope": output_scope(&r, &cand),
             "strongest": got,
             "proven": proven,
             "preconditions": r.pre.iter().chain(&cand.pre).collect::<Vec<_>>(),
@@ -2473,6 +2498,7 @@ fn bound_json(
         "format": "ptxv-bound",
         "version": 1,
         "u": ptxv_sim::num::U32,
+        "output_scope": output_scope(r, cand),
         "reference": r.label(),
         "candidate": cand.label(),
         "level": level,
