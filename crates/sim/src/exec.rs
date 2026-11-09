@@ -968,6 +968,7 @@ impl Machine {
             if key.0 != 2 {
                 match write {
                     Some(_) => {
+                        ns.half.invalidate_memory(key, off, n);
                         ns.note_write_span(key, off, n as u64);
                         ns.taint.write(key, off, n as u64);
                     }

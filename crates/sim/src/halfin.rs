@@ -106,6 +106,18 @@ pub struct HalfState {
 }
 
 impl HalfState {
+    pub(crate) fn invalidate_memory(&mut self, key: (u8, u64), off: u64, bytes: usize) {
+        if !self.is_on() {
+            return;
+        }
+        for byte in off..off + bytes as u64 {
+            self.mem.remove(&(key.0, key.1, byte));
+            if key.0 == 1 {
+                self.gwritten.insert((key.1, byte));
+            }
+        }
+    }
+
     pub(crate) fn forget_register(&mut self, thread: usize, reg: Reg) {
         if reg.file == File::R {
             self.regs.remove(&(thread as u32, reg.idx));
@@ -1081,5 +1093,103 @@ mod tests {
                 "{c:#x}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod write_history_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::num::NumState;
+
+    fn run_atomic(body: &str, explicit: bool) -> Machine {
+        let ptx = format!(
+            r#"
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 input) {{
+    .reg .b64 %p;
+    .reg .b32 %r;
+    ld.param.u64 %p, [input];
+    {body}
+    ret;
+}}
+"#
+        );
+        let kernel = Arc::new(ptxv_ptx::parse_kernel(&ptx, Some("k")).unwrap());
+        let manifest = serde_json::from_value(serde_json::json!({
+            "name":"half-write-audit", "description":"half-precision write provenance", "entry":"k", "grid":[1,1,1], "block":[1,1,1],
+            "outputs":["x"], "buffers":[{"name":"x", "dtype":"bf16", "shape":[2], "init":"zeros"}],
+            "params":[{"kind":"ptr", "buffer":"x"}], "variants":[]
+        })).unwrap();
+        let case = ptxv_case::Case {
+            dir: std::path::PathBuf::new(),
+            m: manifest,
+        };
+        let launch = Arc::new(crate::build_launch(&case, &kernel).unwrap());
+        let mut machine = Machine::new(kernel, launch);
+        let mut state = NumState::default();
+        state.half.inputs.insert(0, Half::Bf16);
+        state.taint.taint_alloc(0, 4);
+        machine.num = Some(Box::new(state));
+        if explicit {
+            machine.half_mem_set(
+                (1, 0, 0),
+                &[
+                    Some(Src::E {
+                        alloc: 0,
+                        elem: 0,
+                        b: 0,
+                    }),
+                    Some(Src::E {
+                        alloc: 0,
+                        elem: 0,
+                        b: 1,
+                    }),
+                    Some(Src::E {
+                        alloc: 0,
+                        elem: 1,
+                        b: 0,
+                    }),
+                    Some(Src::E {
+                        alloc: 0,
+                        elem: 1,
+                        b: 1,
+                    }),
+                ],
+            );
+        }
+        let (machine, findings, completed) = crate::explore::run_once(machine);
+        assert!(completed && findings.is_empty(), "{findings:?}");
+        machine
+    }
+
+    #[test]
+    fn atomic_rewrites_discard_original_and_explicit_half_histories() {
+        for explicit in [false, true] {
+            let machine = run_atomic("atom.global.exch.b32 %r, [%p], 0;", explicit);
+            let origins = machine.half_mem(Loc::Global { alloc: 0, off: 0 }, 4, Some(&[0; 4]));
+            assert!(origins.iter().all(Option::is_none), "{origins:?}");
+        }
+    }
+
+    #[test]
+    fn failed_compare_exchange_preserves_half_history() {
+        let machine = run_atomic("atom.global.cas.b32 %r, [%p], 1, 0;", false);
+        let origins = machine.half_mem(Loc::Global { alloc: 0, off: 0 }, 4, Some(&[0; 4]));
+        assert!(
+            origins
+                .iter()
+                .all(|origin| matches!(origin, Some(Src::E { .. })))
+        );
+    }
+
+    #[test]
+    fn ordinary_zero_store_keeps_new_constant_history() {
+        let machine = run_atomic("st.global.b32 [%p], 0;", true);
+        let origins = machine.half_mem(Loc::Global { alloc: 0, off: 0 }, 4, Some(&[0; 4]));
+        assert_eq!(origins, vec![Some(Src::Zero); 4]);
     }
 }

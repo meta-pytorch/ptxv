@@ -5489,6 +5489,18 @@ mod untracked_producer_tests {
         written.num_tma_elem(0, 0, Some((0, 0)));
         assert!(written.num.as_ref().unwrap().orig_at(0, 0).is_none());
     }
+    #[test]
+    fn atomic_write_must_invalidate_half_input_origins() {
+        let machine =
+            run_machine_body_finish_ir("atom.global.exch.b32 %r1, [%p0], 0;", 0.0, false, "", true);
+        let origins = machine.half_mem(Loc::Global { alloc: 0, off: 0 }, 2, Some(&[0, 0]));
+        assert!(
+            !origins
+                .iter()
+                .any(|origin| matches!(origin, Some(crate::halfin::Src::E { .. }))),
+            "an atomic rewrite must not retain original input identities: {origins:?}"
+        );
+    }
 
     #[test]
     fn bare_partial_write_invalidates_float_word_history() {
