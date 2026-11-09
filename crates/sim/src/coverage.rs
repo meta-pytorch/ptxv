@@ -536,11 +536,12 @@ pub(crate) fn pre(m: &mut Machine, members: &[usize], pc: u32) {
         ps.acc.remove(&(t as u32));
         ps.racc.remove(&(t as u32));
         let guard = ps.pred(m, t, inst.guard).mask();
+        // Every register read, each element of a PTX vector operand included (`src_regs`).
         let srcs = inst
             .op
-            .src_vals()
+            .src_regs()
             .iter()
-            .fold(guard, |x, v| x | ps.val(m, t, v).mask());
+            .fold(guard, |x, &r| x | ps.reg(m, t, r).mask());
         // Memory written by an instruction other than st / atom (stmatrix, st.v256, cp.async,
         // bulk copies issued by the thread): its registers, plus what it read (`racc`).
         ps.wdata.insert(t as u32, vec![MByte::Mask(srcs)]);

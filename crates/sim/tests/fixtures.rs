@@ -4283,6 +4283,60 @@ fn cvt_pack_bytes_keep_their_own_undefined_bits() {
     }
 }
 
+/// PTX vector operands (fixtures/e_vec_regs): `Op::dst_regs` / `src_regs` name every element
+/// register, so each analysis built on them agrees between the PTX and SASS fronts:
+/// verdicts and outputs (explorer, DPOR, S-INIT poison of mma.sync's four accumulator
+/// registers), input coverage (element 4's comparison and address), the input-data taint
+/// (E-CTA-REP / N-EQUIV precondition) and the constant-guard analysis (E-CONST-BRA).
+#[test]
+fn vector_operand_registers_ptx_sass_parity() {
+    for v in ["good", "mma"] {
+        both("e_vec_regs", v);
+    }
+    let case = Case::load(root().join("fixtures/e_vec_regs")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let m = Machine::new(Arc::new(k), Arc::new(launch));
+        // Input coverage: element 4 (in[4t+3], bytes 12..511) is compared and addresses the
+        // store.
+        let c = ptxv_sim::coverage::analyze(&m);
+        assert_eq!(c.comparisons.len(), 1, "{front}: {:#?}", c.comparisons);
+        let i = &c.comparisons[0].inputs[0];
+        assert_eq!(
+            (i.buffer.as_str(), i.bytes),
+            ("in", Some([12, 511])),
+            "{front}"
+        );
+        assert!(
+            !c.input_independent && !c.input_dependent.is_empty(),
+            "{front}: {c:#?}"
+        );
+        // The input-data taint (rep.rs data run): the address depends on loaded bytes.
+        let mut mt = m.clone();
+        let mut ns = ptxv_sim::num::NumState::with_mma_eps(mt.launch.mma_model.eps());
+        ns.taint.all_global = true;
+        mt.num = Some(Box::new(ns));
+        let (mt, _, ok) = ptxv_sim::explore::run_once(mt);
+        assert!(ok);
+        let tv = &mt.num.as_ref().unwrap().taint.violations;
+        assert!(
+            tv.iter().any(|v| v.contains("depends on input data")),
+            "{front}: {tv:?}"
+        );
+        // E-CONST-BRA: the branch on element 4 is not folded (0 before the load); ptxas
+        // predicates the store instead of branching.
+        let bra =
+            m.k.code
+                .iter()
+                .position(|i| matches!(i.op, ptxv_ir::Op::Bra { .. }) && !i.guard.is_always());
+        assert!(bra.is_some() || front == "sass");
+        if let Some(bra) = bra {
+            assert_eq!(m.bar_cfg.fold[bra], None, "{front}: {}", m.k.describe(bra));
+        }
+    }
+}
+
 /// S-TCGEN05 (fixtures/s_tc_st_mma): a thread's own tcgen05.st, wait::st, then its
 /// tcgen05.mma with no tcgen05.fence in that thread is ordered; the MMA issued before the
 /// wait::st races with the store.

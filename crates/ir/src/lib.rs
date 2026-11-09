@@ -2034,7 +2034,43 @@ impl Op {
         };
         let vals = self.src_vals();
         vals.iter().for_each(&mut v);
+        // A PTX vector operand is consecutive virtual registers, one per element (st.vN /
+        // st.async.vN / atom.exch.vN `{%r1, %r2, ...}`; vector atom.add.f32: one per 4 bytes;
+        // clusterlaunchcontrol's .b128 response: two 64-bit slots). Elsewhere `Val::Reg(V, k)`
+        // is one register of k 32-bit slots.
+        if let Some((r, k)) = self.vector_src() {
+            out.extend((1..k).map(|i| Reg {
+                file: File::V,
+                idx: r.idx + i,
+            }));
+        }
         out
+    }
+
+    /// The vector source operand of this operation, as (first virtual register, count), when
+    /// it spans several virtual registers (`src_regs`, `dst_regs`).
+    pub fn vector_src(&self) -> Option<(Reg, u16)> {
+        match self {
+            Op::St {
+                v: Val::Reg(r, k), ..
+            }
+            | Op::StAsync {
+                v: Val::Reg(r, k), ..
+            }
+            | Op::Atom {
+                op: AtomOp::Exch,
+                v: Val::Reg(r, k),
+                ..
+            } if r.file == File::V && *k >= 2 => Some((*r, *k as u16)),
+            Op::Atom {
+                op: AtomOp::FAddFtz,
+                bytes: b @ (8 | 16),
+                v: Val::Reg(r, _),
+                ..
+            } if r.file == File::V => Some((*r, *b as u16 / 4)),
+            Op::ClcQuery { q, .. } if q.file == File::V => Some((*q, 2)),
+            _ => None,
+        }
     }
 
     /// Operand values read by this operation (registers, immediates, constants, special
@@ -2395,11 +2431,27 @@ impl Op {
 
     /// Registers this operation writes (predicates included). Exhaustive.
     pub fn dst_regs(&self) -> Vec<Reg> {
+        // `n` 32-bit slots: SASS registers d..d+n; a PTX virtual register holds up to 64 bits,
+        // so one register.
         let span = |d: Reg, n: u16| {
+            if d.file == File::V {
+                return vec![d];
+            }
             (0..n.max(1))
                 .map(|i| Reg {
                     file: d.file,
-                    idx: d.idx + if d.file == File::V { 0 } else { i },
+                    idx: d.idx + i,
+                })
+                .collect::<Vec<_>>()
+        };
+        // `n` registers d..d+n in every file: one per element of a PTX vector destination
+        // (`ld.v4.f32 {%f1, %f2, %f3, %f4}`, tcgen05.ld, ldmatrix, mma.sync), as the executor
+        // writes them.
+        let regs = |d: Reg, n: u16| {
+            (0..n.max(1))
+                .map(|i| Reg {
+                    file: d.file,
+                    idx: d.idx + i,
                 })
                 .collect::<Vec<_>>()
         };
@@ -2513,23 +2565,54 @@ impl Op {
                 } else {
                     (*bytes as u16 / 4).max(1)
                 };
-                let mut x = d.map(|d| span(d, w)).unwrap_or_default();
+                // Vector atom.add.f32 (`.v2` / `.v4`): one register per element.
+                let vec_add = *op == AtomOp::FAddFtz && matches!(*bytes, 8 | 16);
+                let mut x = d
+                    .map(|d| if vec_add { regs(d, w) } else { span(d, w) })
+                    .unwrap_or_default();
                 x.extend(*p);
                 x
             }
             Op::Qspc { p, .. } => vec![*p],
-            Op::Ld { d, bytes, .. } | Op::LdReduce { d, bytes, .. } => {
-                span(*d, (*bytes as u16 / 4).max(1))
-            }
+            // PTX: one virtual register per element of `ld.vN` (n > 1), two 64-bit slots for
+            // `.b128`, else one; SASS: one register per 4 bytes.
+            Op::Ld { d, bytes, n, .. } if d.file == File::V => regs(
+                *d,
+                if *n > 1 {
+                    *n as u16
+                } else {
+                    (*bytes as u16 / 8).max(1)
+                },
+            ),
+            Op::Ld { d, bytes, .. } => span(*d, (*bytes as u16 / 4).max(1)),
+            // multimem.ld_reduce: one virtual register per 64-bit lane, else per 4 bytes.
+            Op::LdReduce { d, bytes, ty, .. } if d.file == File::V => regs(
+                *d,
+                (*bytes as u16 / if ty.lane_bytes() == 8 { 8 } else { 4 }).max(1),
+            ),
+            Op::LdReduce { d, bytes, .. } => span(*d, (*bytes as u16 / 4).max(1)),
             Op::ClcQuery { d, .. } => span(*d, 4),
             Op::TmemAllocRaw { d, ok, .. } => vec![*d, *ok],
             Op::TmemLd {
-                d, n, red, regs, ..
+                d,
+                n,
+                red,
+                regs: list,
+                ..
             } => {
-                let mut x = regs.clone().unwrap_or_else(|| span(*d, *n as u16));
+                let mut x = list.clone().unwrap_or_else(|| regs(*d, *n as u16));
                 x.extend(red.map(|r| r.0));
                 x
             }
+            // ld.local: one 64-bit virtual register for 8 bytes, else one per 4 bytes (`.vN`).
+            Op::LdLocal { d, bytes, .. } if d.file == File::V => regs(
+                *d,
+                if *bytes == 8 {
+                    1
+                } else {
+                    (*bytes as u16 / 4).max(1)
+                },
+            ),
             Op::LdLocal { d, bytes, .. } => span(*d, (*bytes as u16 / 4).max(1)),
             Op::Ld256 { hi, lo, mask, .. } => {
                 let mut x = span(*lo, (mask & 0xf).count_ones() as u16);
@@ -2560,8 +2643,8 @@ impl Op {
                 x.extend(*q);
                 x
             }
-            Op::LdMatrix { d, n, .. } => span(*d, *n as u16),
-            Op::Hmma { d, .. } => span(*d, 4),
+            Op::LdMatrix { d, n, .. } => regs(*d, *n as u16),
+            Op::Hmma { d, .. } => regs(*d, 4),
             Op::St { .. }
             | Op::St256 { .. }
             | Op::Bra { .. }
@@ -2921,5 +3004,86 @@ mod tests {
         };
         assert!(max.mismatch([128, 4, 1]).is_none());
         assert!(max.mismatch([1024, 1, 1]).unwrap().contains("maximum"));
+    }
+}
+
+#[cfg(test)]
+mod vector_reg_tests {
+    use super::*;
+
+    fn v(idx: u16) -> Reg {
+        Reg { file: File::V, idx }
+    }
+
+    fn addr() -> Addr {
+        Addr {
+            base: Some(Val::Reg(v(100), 2)),
+            base2: None,
+            off: 0,
+        }
+    }
+
+    /// PTX vector operands are consecutive virtual registers, one per element: every one is
+    /// a destination / source; a 64-bit (or wider-hinted) scalar is one register.
+    #[test]
+    fn vector_operands_name_every_register() {
+        let ld = |n: u8, bytes: u8| Op::Ld {
+            d: v(10),
+            n,
+            space: Space::Global,
+            bytes,
+            addr: addr(),
+            sync: None,
+            sext: false,
+        };
+        assert_eq!(ld(4, 16).dst_regs(), vec![v(10), v(11), v(12), v(13)]);
+        assert_eq!(ld(2, 16).dst_regs(), vec![v(10), v(11)]);
+        assert_eq!(ld(1, 8).dst_regs(), vec![v(10)]);
+        assert_eq!(ld(1, 16).dst_regs(), vec![v(10), v(11)]);
+        // SASS: one register per 4 bytes.
+        let lds = Op::Ld {
+            d: Reg {
+                file: File::R,
+                idx: 4,
+            },
+            n: 1,
+            space: Space::Shared,
+            bytes: 16,
+            addr: addr(),
+            sync: None,
+            sext: false,
+        };
+        assert_eq!(lds.dst_regs().len(), 4);
+        let st = Op::St {
+            space: Space::Global,
+            bytes: 16,
+            addr: addr(),
+            v: Val::Reg(v(20), 4),
+            sync: None,
+        };
+        let s = st.src_regs();
+        for i in 20..24 {
+            assert!(s.contains(&v(i)), "{s:?}");
+        }
+        // A 64-bit scalar operand hint (`Val::Reg(V, 2)`) is one register.
+        let or = Op::Int {
+            op: IntOp::Or,
+            bits: 64,
+            d: v(30),
+            a: Val::Reg(v(31), 2),
+            b: Val::Imm(1),
+        };
+        assert_eq!(or.src_regs(), vec![v(31)]);
+        assert_eq!(or.dst_regs(), vec![v(30)]);
+        let hmma = Op::Hmma {
+            d: v(40),
+            a: vec![Val::Reg(v(50), 1)],
+            b: vec![Val::Reg(v(51), 1)],
+            c: vec![Val::Reg(v(52), 1)],
+            tf32: false,
+            s8: false,
+            f16: false,
+        };
+        assert_eq!(hmma.dst_regs(), vec![v(40), v(41), v(42), v(43)]);
     }
 }

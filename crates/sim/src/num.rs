@@ -3950,6 +3950,15 @@ pub(crate) fn value_regs(op: &Op) -> Vec<Reg> {
         Op::StMatrix { v: xs, .. } | Op::TmemSt { v: xs, .. } => xs.iter().for_each(v),
         _ => {}
     }
+    // The other elements of a PTX vector data operand (`Op::vector_src`).
+    if let Some((r, k)) = op.vector_src() {
+        if !matches!(op, Op::ClcQuery { .. }) {
+            out.extend((1..k).map(|i| Reg {
+                file: r.file,
+                idx: r.idx + i,
+            }));
+        }
+    }
     out
 }
 
