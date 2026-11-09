@@ -1653,6 +1653,9 @@ pub enum Op {
         /// Block-scaled kinds: the TMEM addresses of the A and B scale factors
         /// (`[scale_a], [scale_b]`).
         scale: Option<(Val, Val)>,
+        /// `scale-input-d` (kind::f16 / kind::tf32; SASS `UTCHMMA ..., UPT, s`): D = A B +
+        /// D * 2^-scale_d; 0 = none.
+        scale_d: u8,
     },
     /// `tcgen05.cp.cta_group::1.32x128b.warpx4 [taddr], sdesc` (SASS
     /// `UTCCP.T.S.4x32dp128bit`): copies a 32-row x 16-byte shared-memory matrix (K-major

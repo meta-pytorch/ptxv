@@ -5605,6 +5605,16 @@ random bf16 lanes and 96.7% of f16 lanes; misses include groups with a NaN lane.
   `unmodeled`. The arithmetic does not depend on N or the layout: `probes/tc_m128` random-operand
   configs (M = 128 N = 8 / 24, pairs N = 32 / 64 / 256, e4m3 for N-MMA-F8) equal the model
   bitwise.
+- **scale-input-d** (2026-11-08; `tcgen05.mma ..., enable_input_d, s`, SASS `UTCHMMA ...,
+  UPd, s`, s = 1..15, kind::f16 / kind::tf32 only): D = A B + D * 2^-s is the same step with
+  the accumulator D * 2^-s, exact. `probes/mma_scale_d` (bf16 and tf32, s = 1, 2, 3, 4, 7, 8,
+  9, 12, 15, twice in a row, and with enable-input-d = 0) = the model bitwise on 32,768 GB300
+  outputs per input set, 9 random input sets (one committed). Accumulators whose scaled value
+  is not a normal f32 or zero are `unmodeled`. GB300 truncates a value that falls below 2^-126
+  (toward zero, e.g. 0x807fffff * 2^-1 = 0x803fffff), -0 gives +0, NaN gives 0x7fffffff and Inf
+  stays Inf; this was measured on data/C_special inputs (gen.py) but is not modeled. The
+  numerics shadow restarts a scaled accumulator cell as a leaf, with a warning when its old
+  node carried rounding error (`num_tmem_rescale`). Other kinds with a scale are refused.
 - **f16 and tf32 operands** (2026-11-07): kind::f16 with f16 A / B (instruction descriptor
   format 0) is the same model over 16 products (unique match of 820 candidates, `ptxv
   calib-mma probes/tc_f16`, 6 input sets / 49,152 GB300 outputs; f16 subnormal inputs are

@@ -3482,7 +3482,18 @@ fn lower_line(
             {
                 bail!(lw.err(format!("{base} variant not modeled yet")));
             }
-            let scaled = lw.l.operands.len() == 7;
+            // `UTCHMMA ..., idesc[..], UPd, s`: a trailing immediate is scale-input-d (D = A B +
+            // D * 2^-s; probes/mma_scale_d). Block-scaled kinds have 7 operands instead.
+            let scale_d = match (base, lw.l.operands.get(6)) {
+                ("UTCHMMA", Some(s)) if s.starts_with("0x") => {
+                    let v = hex(s).filter(|&v| (1..16).contains(&v)).ok_or_else(|| {
+                        lw.err(format!("UTCHMMA scale-input-d {s} not modeled"))
+                    })?;
+                    v as u8
+                }
+                _ => 0,
+            };
+            let scaled = lw.l.operands.len() == 7 && scale_d == 0;
             let kind = match (base, scaled) {
                 ("UTCHMMA", false) => MmaKind::F16,
                 ("UTCQMMA", false) => MmaKind::F8f6f4,
@@ -3533,6 +3544,7 @@ fn lower_line(
                 a_tmem,
                 kind,
                 scale,
+                scale_d,
             }
         }
         // `UTCCP.T.S[.2CTA].4x32dp128bit tmem[URa+off], gdesc[URd]` = tcgen05.cp

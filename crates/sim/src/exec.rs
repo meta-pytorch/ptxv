@@ -6849,6 +6849,7 @@ impl Machine {
                 a_tmem,
                 kind,
                 scale,
+                scale_d,
             } => {
                 for m in disable {
                     if self.rd(t, m)? != 0 {
@@ -6903,6 +6904,7 @@ impl Machine {
                         a_tmem: *a_tmem,
                         kind: *kind,
                         scale: sc,
+                        scale_d: *scale_d,
                     },
                     vis: self.threads[t].vis.clone(),
                 });
@@ -11145,6 +11147,7 @@ impl Machine {
                 a_tmem,
                 kind,
                 scale,
+                scale_d,
             } => {
                 if let Err(e) = self.complete_mma(
                     &op,
@@ -11154,7 +11157,7 @@ impl Machine {
                     (adesc, bdesc, idesc),
                     enable,
                     a_tmem,
-                    (kind, scale),
+                    (kind, scale, scale_d),
                 ) {
                     self.report(
                         fault_kind(&e),
@@ -11790,9 +11793,14 @@ impl Machine {
         (adesc, bdesc, idesc): (u64, u64, u32),
         enable: bool,
         a_tmem: bool,
-        (kind, _scale): (ptxv_ir::MmaKind, Option<(u32, u32)>),
+        (kind, _scale, scale_d): (ptxv_ir::MmaKind, Option<(u32, u32)>, u8),
     ) -> Result<(), String> {
         if kind != ptxv_ir::MmaKind::F16 {
+            if scale_d != 0 {
+                return Err(format!(
+                    "scale-input-d with tcgen05.mma {kind:?} not modeled"
+                ));
+            }
             return self.complete_mma_lp(
                 op,
                 cta0,
@@ -12142,10 +12150,22 @@ impl Machine {
             let (words, st) = self.mma_d_read(cta, &lay, op);
             unalloc |= st & 2 != 0;
             uninit |= st & 1 != 0;
-            let v: Vec<f32> = words.into_iter().map(f32::from_bits).collect();
+            let mut v: Vec<f32> = words.into_iter().map(f32::from_bits).collect();
             if outside.is_none() {
                 if let Some(acc) = v.iter().find(|a| !normal(**a as f64)) {
                     outside = Some(format!("MMA accumulator {acc:e}"));
+                }
+            }
+            // ASSUME(N-MMA): scale-input-d. GB300 (probes/mma_scale_d): D * 2^-s enters the
+            // calibrated model exactly when it is a normal f32 or zero; a scaled value below
+            // 2^-126 is truncated, outside the model.
+            if scale_d != 0 && outside.is_none() {
+                let k = 2f64.powi(-(scale_d as i32));
+                if let Some(acc) = v.iter().find(|a| !normal(**a as f64 * k)) {
+                    outside = Some(format!("MMA accumulator {acc:e} scaled by 2^-{scale_d}"));
+                }
+                for x in v.iter_mut() {
+                    *x = (*x as f64 * k) as f32;
                 }
             }
             accs.push(v);
@@ -12225,6 +12245,15 @@ impl Machine {
                             .flat_map(|k| [a_prov[ci][ar * kk + k], b_prov[ni * kk + k]])
                             .collect();
                         let acc = accs[ci][mi * n as usize + ni];
+                        if enable && scale_d != 0 {
+                            self.num_tmem_rescale(
+                                cta,
+                                lay.loc(mi, ni).0,
+                                lay.loc(mi, ni).1,
+                                acc,
+                                op.pc,
+                            );
+                        }
                         // ASSUME(N-MMA): one step of the calibrated model per 32-byte K slice.
                         self.num_mma(
                             cta,

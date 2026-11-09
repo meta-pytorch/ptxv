@@ -5589,6 +5589,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         a_tmem,
                         kind,
                         scale,
+                        scale_d: 0,
                     }
                 }
                 "cp" => {

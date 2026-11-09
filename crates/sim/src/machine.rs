@@ -1269,6 +1269,8 @@ pub enum AsyncKind {
         kind: ptxv_ir::MmaKind,
         /// Block-scaled kinds: TMEM addresses of the A and B scale factors.
         scale: Option<(u32, u32)>,
+        /// scale-input-d: D = A B + D * 2^-scale_d.
+        scale_d: u8,
     },
     /// tcgen05.cp (32x128b.warpx4): the smem matrix `sdesc` -> TMEM `taddr`, 4 columns; with
     /// `peer` (cta_group::2) the same copy in the peer CTA, from its own shared memory.

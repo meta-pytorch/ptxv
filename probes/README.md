@@ -14,6 +14,7 @@ verdict, and `cargo test` checks that the model agrees with the recorded hardwar
 |---|---|---|
 | `s2f6_cvt` | N-CVT-LP, L-NVDISASM | `cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2` (F2FP.SATFINITE.BF16.S2_6.UNPACK_B, ptxas 13.1 cubin): lane i = bf16(RNE, satfinite)(int8(byte i) / 64 * 2^(scale byte i - 127)), scale 0xff -> 0x7fff; all 2^32 (data, scale) pairs, 0 mismatches, SASS bitwise, 2026-11-08 |
 | `red_bitops` | L-ROSETTA, S-SCOPE | red.global.{or,and,xor}.b32 / .b64 at .cta / .gpu / .sys (REDG.E.{OR,AND,XOR}[.64].STRONG.{SM,GPU,SYS}): four threads per word, final words = the order-free result, GB300 5/5 runs; both fronts bitwise, 2026-11-08 |
+| `mma_scale_d` | N-MMA | tcgen05.mma scale-input-d (UTCHMMA ..., UPd, s): D = A B + D * 2^-s = the calibrated step with D scaled exactly (bf16 / tf32, s = 1..15); scaled values below 2^-126 truncate toward zero (not modeled: `unmodeled`); SASS bitwise, 9 input sets, 2026-11-08 |
 | `elect` | E-ELECT | `elect.sync` picks the lowest active lane for all 8 active sets; exactly one leader each |
 | `elect_regmask` | E-ELECT | `elect.sync` with its membermask in a register (mov of -1, an `or` that is -1 at run time); a half-warp register mask is refused on PTX (ptxas drops it: ELECT ..., PT). GB300 20/20, both fronts bitwise, 2026-11-08 |
 | `cluster_flag` | S-CBANK | `c[0x0][0x36c]` = `%is_explicit_cluster`: 1 with `.reqnctapercluster 2,1,1` (nctarank 2, ranks 0/1), 0 without |

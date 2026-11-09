@@ -2613,6 +2613,39 @@ impl Machine {
         ns.mem.insert(key, id);
     }
 
+    /// tcgen05.mma scale-input-d reads accumulator cell (`lane`, `col`) as D * 2^-s
+    /// (`scaled`). The numerics do not model the scaling: the cell becomes a new leaf of the
+    /// scaled value (segment mode: `Opaque`), with a warning when its node carried rounding
+    /// error, which is then no longer tracked.
+    pub(crate) fn num_tmem_rescale(
+        &mut self,
+        cta: u16,
+        lane: usize,
+        col: usize,
+        scaled: f32,
+        pc: u32,
+    ) {
+        let Some(ns) = self.num.as_mut() else { return };
+        let key = (3u8, cta as u64, crate::machine::tmem_idx(lane, col) as u64);
+        if let Some(n) = ns.mem.get(&key).copied() {
+            let node = &ns.nodes[n as usize];
+            if !exact::is_zero(&exact::sub(
+                &exact::from(f32::from_bits(node.hw) as f64),
+                &node.exact,
+            )) {
+                ns.warnings.insert(format!(
+                    "accumulator with rounding error scaled by tcgen05.mma scale-input-d at {} (not tracked)",
+                    self.k.describe(pc as usize)
+                ));
+            }
+        }
+        let leaf = ns.leaf(scaled.to_bits(), pc);
+        if ns.segments {
+            ns.nodes[leaf as usize].kind = NodeKind::Opaque;
+        }
+        ns.mem.insert(key, leaf);
+    }
+
     /// The node of an accumulator operand `v` (bits `bits`): its node (segment mode:
     /// materialized), else a leaf (`Opaque` when input-derived in segment mode).
     pub(crate) fn num_acc_node(&mut self, t: usize, v: &Val, bits: u32, pc: u32) -> Option<u32> {

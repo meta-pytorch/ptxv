@@ -1940,6 +1940,14 @@ fn probe_red_bitops_matches_hardware() {
     probe_bitwise("probes/red_bitops", "good", "sass");
 }
 
+/// N-MMA: tcgen05.mma scale-input-d (UTCHMMA ..., UPd, s; D = A B + D * 2^-s) for kind::f16
+/// (bf16) and kind::tf32 over 9 scales = GB300 (probes/mma_scale_d). SASS front only: the PTX
+/// front-end does not lower scale-input-d.
+#[test]
+fn probe_mma_scale_d_matches_hardware() {
+    probe_bitwise("probes/mma_scale_d", "good", "sass");
+}
+
 /// A cubin probe (no PTX source) certifies clean on the SASS front-end and equals `expected/`.
 fn probe_bitwise_cubin(dir: &str, cubin: Option<&str>) {
     let case = Case::load(root().join(dir)).unwrap();
