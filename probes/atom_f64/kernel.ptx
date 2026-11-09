@@ -1,0 +1,21 @@
+// Probe for atom.add.f64 / red.add.f64 (SASS ATOMG / REDG .E.ADD.F64.RN). Thread i adds b[i]
+// to acc[i] (its own word: deterministic, every rounding case) with atom, returning the old
+// value, and red-adds the integer i % 7 to sum[i % 4] (exact, so the order does not matter).
+// mem: acc[256] | old[256] | sum[4] (f64).
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry atom_f64(.param .u64 pmem, .param .u64 pb)
+{ .reg .b64 %rd<16>; .reg .b32 %r<8>; .reg .f64 %fd<4>;
+  ld.param.u64 %rd1, [pmem]; ld.param.u64 %rd2, [pb];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  add.s64 %rd3, %rd1, 2048; add.s64 %rd4, %rd1, 4096;
+  mov.u32 %r1, %tid.x; mul.wide.u32 %rd5, %r1, 8;
+  add.s64 %rd6, %rd1, %rd5; add.s64 %rd7, %rd2, %rd5; add.s64 %rd8, %rd3, %rd5;
+  ld.global.f64 %fd1, [%rd7];
+  atom.global.add.f64 %fd2, [%rd6], %fd1;
+  st.global.f64 [%rd8], %fd2;
+  rem.u32 %r2, %r1, 7; cvt.rn.f64.u32 %fd3, %r2;
+  and.b32 %r3, %r1, 3; mul.wide.u32 %rd9, %r3, 8; add.s64 %rd10, %rd4, %rd9;
+  red.global.add.f64 [%rd10], %fd3;
+  ret; }

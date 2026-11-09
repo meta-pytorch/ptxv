@@ -24,6 +24,7 @@ ESIZE = {
     "i64": 8,
     "u8": 1,
     "i8": 1,
+    "e4m3": 1,
 }
 
 
@@ -121,6 +122,82 @@ def elf_defines(data: bytes, name: str) -> bool:
     return data[:4] == b"\x7fELF" and (b".text." + name.encode() + b"\x00") in data
 
 
+def _sections(d: bytes) -> dict[str, tuple[int, int]]:
+    """ELF section name -> (file offset, size)."""
+    shoff = u64(d, 0x28)
+    shentsize, shnum, shstrndx = struct.unpack_from("<HHH", d, 0x3A)
+    secs = [
+        struct.unpack_from("<IIQQQQIIQQ", d, shoff + i * shentsize)
+        for i in range(shnum)
+    ]
+    stro = secs[shstrndx][4]
+
+    def cstr(off):
+        return bytes(d[off : d.index(b"\0", off)]).decode(errors="replace")
+
+    return {cstr(stro + sec[0]): (sec[4], sec[5]) for sec in secs}
+
+
+def reqntid(data: bytes, name: str) -> tuple[int, int, int] | None:
+    """The block shape kernel `name` was compiled for (EIATTR_REQNTID, 0x10, from
+    `.maxntid`/`.reqntid` or a CuTeDSL launch config), or None."""
+    try:
+        sec = _sections(data).get(".nv.info." + name)
+    except Exception:
+        return None
+    if not sec:
+        return None
+    off, size = sec
+    i, end = off, off + size
+    while i + 2 <= end:
+        fmt, attr = data[i], data[i + 1]
+        i += 2
+        if fmt == 0x04:
+            n = struct.unpack_from("<H", data, i)[0]
+            i += 2
+            if attr == 0x10 and n == 12:
+                return struct.unpack_from("<III", data, i)
+            i += n
+        else:
+            i += 2
+    return None
+
+
+def kparam_sizes(data: bytes, name: str) -> list[int] | None:
+    """Parameter sizes of kernel `name`, by ordinal, from EIATTR_KPARAM_INFO (0x17) in its
+    `.nv.info.<name>` section; None when the section or the attribute is absent."""
+    try:
+        sec = _sections(data).get(".nv.info." + name)
+    except Exception:
+        return None
+    if not sec:
+        return None
+    off, size = sec
+    d, i, end = data, off, off + size
+    sizes: dict[int, int] = {}
+    while i + 2 <= end:
+        fmt, attr = d[i], d[i + 1]
+        i += 2
+        if fmt == 0x04:  # EIFMT_SVAL: u16 length, payload
+            n = struct.unpack_from("<H", d, i)[0]
+            i += 2
+            if attr == 0x17 and n >= 12:
+                _, ordinal, _poff, tmp = struct.unpack_from("<IHHI", d, i)
+                sizes[ordinal] = (tmp >> 18) & 0x3FFF
+            i += n
+        elif fmt == 0x03:  # EIFMT_HVAL: u16 value
+            i += 2
+        elif fmt == 0x02:  # EIFMT_BVAL: u8 value (padded to 2)
+            i += 2
+        elif fmt == 0x01:  # EIFMT_NVAL: no value
+            pass
+        else:
+            break
+    if not sizes:
+        return None
+    return [sizes.get(k, 0) for k in range(max(sizes) + 1)]
+
+
 def prune(data, keep):
     """A module cubin (libtorch_cuda's hold hundreds of kernels) with the code of every entry
     kernel not in `keep` overwritten by NOPs: same layout, symbols and relocations, so it
@@ -152,3 +229,69 @@ def prune(data, keep):
         if n in entries and n not in keep and sec[1] != 8:  # not SHT_NOBITS
             d[sec[4] : sec[4] + sec[5]] = nop * (sec[5] // 16)
     return bytes(d)
+
+
+def data_globals(data: bytes, kernel: str) -> list[tuple[str, int, bytes | None]]:
+    """Module data globals (`__device__` variables) whose addresses `kernel`'s constant banks
+    hold (R_CUDA_64 relocations of `.nv.constant<N>.<kernel>` or the module's `.nv.constant<N>`
+    against a `.nv.global` / `.nv.global.init` symbol): [(symbol, size, ELF initial bytes or
+    None for zeros)], in relocation order (crates/sass/src/elf.rs `Elf::kernel_globals`)."""
+    d = data
+    if d[:4] != b"\x7fELF":
+        return []
+    shoff = u64(d, 0x28)
+    shentsize, shnum, shstrndx = struct.unpack_from("<HHH", d, 0x3A)
+    secs = [
+        struct.unpack_from("<IIQQQQIIQQ", d, shoff + i * shentsize)
+        for i in range(shnum)
+    ]
+
+    def cstr(off):
+        return bytes(d[off : d.index(b"\0", off)]).decode(errors="replace")
+
+    names = [cstr(secs[shstrndx][4] + s[0]) for s in secs]
+    symtab = next((s for s in secs if s[1] == 2), None)
+    if symtab is None:
+        return []
+    strtab = secs[symtab[6]][4]
+
+    def symbol(i):
+        n, _info, _other, shndx, value, size = struct.unpack_from(
+            "<IBBHQQ", d, symtab[4] + 24 * i
+        )
+        nm = cstr(strtab + n) or (names[shndx] if shndx < len(names) else "")
+        return nm, shndx, value, size
+
+    out, seen = [], set()
+    for bank in range(1, 18):
+        own = f".nv.constant{bank}.{kernel}"
+        si = names.index(own) if own in names else None
+        if si is None and f".nv.constant{bank}" in names:
+            si = names.index(f".nv.constant{bank}")
+        if si is None:
+            continue
+        for rs in secs:
+            if rs[1] != 4 or rs[7] != si:
+                continue
+            for o in range(rs[4], rs[4] + rs[5], 24):
+                _off, info, _add = struct.unpack_from("<QQq", d, o)
+                if info & 0xFFFFFFFF != 2:
+                    continue
+                nm, shndx, value, size = symbol(info >> 32)
+                if shndx >= len(secs) or names[shndx] not in (
+                    ".nv.global",
+                    ".nv.global.init",
+                ):
+                    continue
+                sec = secs[shndx]
+                if nm == names[shndx] and size == 0:
+                    value, size = 0, sec[5]
+                if nm in seen:
+                    continue
+                seen.add(nm)
+                init = None
+                if sec[1] != 8:  # not NOBITS
+                    b = d[sec[4] + value : sec[4] + value + size]
+                    init = bytes(b) + bytes(size - len(b))
+                out.append((nm, size, init))
+    return out

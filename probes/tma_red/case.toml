@@ -1,0 +1,76 @@
+name = "probe_tma_red"
+description = """
+Probe (N-BULK-RED) for tensor bulk reductions, cp.reduce.async.bulk.tensor.2d.global.shared::cta
+.add.tile.bulk_group (SASS UTMAREDG.2D.ADD), on bf16, f16 and f32 tensors: every pair of 64 edge
+patterns per type (kernel.ptx, gen.py). expected/ is GB300's output (ptxas cubin, `ptxv
+hw-worker probes/tma_red <cubin> --runs 3 --dump`)."""
+ptx = "kernel.ptx"
+entry = "tma_red"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["gb", "gh", "gf"]
+
+[[buffers]]
+name = "a16"
+dtype = "u16"
+shape = [4096]
+init = "file"
+file = "a16.bin"
+
+[[buffers]]
+name = "a32"
+dtype = "u32"
+shape = [4096]
+init = "file"
+file = "a32.bin"
+
+[[buffers]]
+name = "gb"
+dtype = "bf16"
+shape = [64, 64]
+init = "file"
+file = "gb.bin"
+expect = "expected/gb.bin"
+
+[[buffers]]
+name = "gh"
+dtype = "f16"
+shape = [64, 64]
+init = "file"
+file = "gh.bin"
+expect = "expected/gh.bin"
+
+[[buffers]]
+name = "gf"
+dtype = "f32"
+shape = [64, 64]
+init = "file"
+file = "gf.bin"
+expect = "expected/gf.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "a16"
+
+[[params]]
+kind = "ptr"
+buffer = "a32"
+
+[[params]]
+kind = "tensormap"
+buffer = "gb"
+box = [64, 64]
+
+[[params]]
+kind = "tensormap"
+buffer = "gh"
+box = [64, 64]
+
+[[params]]
+kind = "tensormap"
+buffer = "gf"
+box = [64, 64]
+
+[[variants]]
+id = "good"
+expect = ["clean"]

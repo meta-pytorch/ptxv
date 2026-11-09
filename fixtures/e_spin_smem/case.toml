@@ -93,13 +93,13 @@ expect = ["deadlock"]
 id = "SP5"
 summary = "the whole warp spins and the producer plain-stores 0: a race that never ends the spin"
 # The memory blow-up repro: before blocked polls, each of the 32 lanes reported a race per
-# iteration inside one transition (16 GB in 50 s). Now the blocked poll's single read is
-# raced by the store.
+# iteration inside one transition (16 GB in 50 s). The store writes the 0 the flag already
+# holds, so it is not a race (S-SAME-VALUE, a note); before 2026-11-06: ["deadlock", "race"].
 marker = "@SET"
 find = "st.release.cta.shared.u32 [%r3], 1;"
 replace = "st.shared.u32 [%r3], 0;"
 edits = [{ marker = "@WHO", find = "setp.ne.u32 %p3, %r1, 0;", replace = "setp.ge.u32 %p3, %r1, 32;" }]
-expect = ["deadlock", "race"]
+expect = ["deadlock"]
 # SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG): the store does not race the poll.
 expect_sass = ["deadlock"]
 

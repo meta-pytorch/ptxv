@@ -44,7 +44,7 @@ enum Pid {
     /// A split, named by its lowest thread. Splits of a warp diverge and merge; each thread's
     /// program order is carried by `Exec::threads`.
     Split(u32),
-    Fifo(u32),
+    Fifo(u64),
     Op(u32, u32),
 }
 
@@ -280,12 +280,17 @@ fn blocked_footprints(m: &Machine, enabled: &BTreeSet<Pid>) -> Vec<(Pid, Footpri
 pub fn explore_dpor(m0: Machine, max_states: usize) -> Verdict {
     // Limited residency and the TMEM co-tenant (residency.rs, tenant.rs): the stateful
     // explorer only (the footprints do not name residency slots or allocation choices).
-    if m0.launch.env.residency.is_some() || m0.launch.env.tmem_cotenant {
+    // NIC queue pairs (nic.rs): the stateful explorer only.
+    if m0.launch.env.residency.is_some() || m0.launch.env.tmem_cotenant || m0.nic.is_some() {
         return crate::explore::explore(m0, max_states);
     }
-    crate::smem::two_pass(m0, |m0| {
+    let base = m0.clone();
+    let mut v = crate::smem::two_pass(m0, |m0| {
         crate::explore::per_leader_policy(m0, 1, |m, _| explore_dpor_one(m, max_states))
-    })
+    });
+    // S-INIT-FILLS: undefined values that reach only output data.
+    crate::fills::check(&base, &mut v);
+    v
 }
 
 fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
@@ -491,7 +496,7 @@ fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
             // `cur` is only read when a frame is first reached, so it need not be restored.
             continue;
         };
-        if states >= max_states {
+        if states >= max_states || crate::membudget::exceeded() {
             complete = false;
             break;
         }
@@ -554,7 +559,11 @@ fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
         }
     }
     Verdict {
-        notes: vec![],
+        notes: if complete {
+            vec![]
+        } else {
+            crate::membudget::note().into_iter().collect()
+        },
         states,
         transitions,
         complete,

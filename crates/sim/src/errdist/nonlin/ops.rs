@@ -37,6 +37,16 @@ pub enum NlOp {
     },
     /// The exact maximum (minimum) of two values.
     Max { a: u32, b: u32, min: bool },
+    /// A choice made by input data (`num::NodeKind::Sel`): `a` where the predicate slice of
+    /// `args` (0 / 1) xor `neg` holds, else `b`. Re-evaluated per input (Tier 3); the analytic
+    /// tiers refuse it (N-ERRDIST-SEL).
+    Sel {
+        pred: Arc<SProg>,
+        args: Vec<u32>,
+        neg: bool,
+        a: u32,
+        b: u32,
+    },
 }
 
 /// Children of a numerics node errdist models as an `NlOp` (None: not such a node).
@@ -45,6 +55,7 @@ pub fn kids(k: &NodeKind) -> Option<Vec<u32>> {
         NodeKind::Seg(p) => p.0.args.clone(),
         NodeKind::Mufu { arg, .. } => vec![*arg],
         NodeKind::Max { a, b, .. } => vec![*a, *b],
+        NodeKind::Sel { pred, a, b, .. } => pred.0.args.iter().copied().chain([*a, *b]).collect(),
         _ => return None,
     })
 }
@@ -74,6 +85,13 @@ pub fn convert(k: &NodeKind, g: &dyn Fn(&u32) -> u32) -> Option<NlOp> {
             a: g(a),
             b: g(b),
             min: *min,
+        },
+        NodeKind::Sel { pred, neg, a, b } => NlOp::Sel {
+            pred: pred.0.clone(),
+            args: pred.0.args.iter().map(g).collect(),
+            neg: *neg,
+            a: g(a),
+            b: g(b),
         },
         _ => return None,
     })
@@ -108,7 +126,14 @@ impl NlOp {
             NlOp::Seg { args, .. } => args.clone(),
             NlOp::Mufu { arg, .. } => vec![*arg],
             NlOp::Max { a, b, .. } => vec![*a, *b],
+            NlOp::Sel { args, a, b, .. } => args.iter().copied().chain([*a, *b]).collect(),
         }
+    }
+
+    /// A `Sel`'s predicate at the given argument values (f32).
+    pub fn sel_holds(pred: &SProg, neg: bool, args: &[f32], scratch: &mut Vec<u64>) -> bool {
+        let a: Vec<u32> = args.iter().map(|x| x.to_bits()).collect();
+        (pred.eval_with(&a, scratch).unwrap_or(0) != 0) != neg
     }
 
     /// The f32 value given each child's f32 value (`val(i)`), bit-exact.
@@ -130,8 +155,23 @@ impl NlOp {
                 mufu_operand(val(*arg).to_bits(), *neg, *abs),
             )),
             NlOp::Max { a, b, min } => {
-                let (x, y) = (val(*a), val(*b));
-                if *min { x.min(y) } else { x.max(y) }
+                // FMNMX's order (-0 < +0), the other operand where one is NaN.
+                let (x, y) = (val(*a).to_bits(), val(*b).to_bits());
+                f32::from_bits(crate::fp::f32_minmax(x, y, *min, false, false))
+            }
+            NlOp::Sel {
+                pred,
+                args,
+                neg,
+                a,
+                b,
+            } => {
+                let v: Vec<f32> = args.iter().map(|&i| val(i)).collect();
+                if NlOp::sel_holds(pred, *neg, &v, scratch) {
+                    val(*a)
+                } else {
+                    val(*b)
+                }
             }
         }
     }
@@ -151,6 +191,7 @@ impl NlOp {
                 ..
             } => (1u8, format!("{func:?}"), ptx, neg, abs).hash(&mut h),
             NlOp::Max { min, .. } => (2u8, min).hash(&mut h),
+            NlOp::Sel { pred, neg, .. } => (3u8, super::ident::func_key(pred), neg).hash(&mut h),
         }
         h.finish()
     }

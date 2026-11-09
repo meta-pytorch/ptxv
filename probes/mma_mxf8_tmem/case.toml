@@ -1,0 +1,94 @@
+name = "probe_mma_mxf8_tmem"
+description = """
+Probe (N-MMA-BS, S-TMEM) for tcgen05.mma.kind::mxf8f6f4.block_scale with A in TMEM and B
+MN-major (SWIZZLE_128B) -- fa4 fwd_sm100_mxfp8's P*V form, idesc 0x08a10000 -- next to the
+calibrated K-major shared-memory path on the same e4m3 operands and ue8m0 scales (kernel.ptx,
+gen.py). D0 = calibrated path, D1 = TMEM A / MN-major B, D2 = MN-major A
+(SWIZZLE_128B) / K-major B (idesc 0x08a08000, fa4 decode's form). expected/ is GB300's output (ptxas
+-arch=sm_103a kernel.ptx, `ptxv hw`)."""
+ptx = "kernel.ptx"
+entry = "mma_mxf8_tmem"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D0", "D1", "D2"]
+
+[[buffers]]
+name = "A"
+dtype = "u8"
+shape = [128, 128]
+init = "file"
+file = "A.bin"
+
+[[buffers]]
+name = "B"
+dtype = "u8"
+shape = [128, 128]
+init = "file"
+file = "B.bin"
+
+[[buffers]]
+name = "SFA"
+dtype = "u32"
+shape = [128, 16]
+init = "file"
+file = "SFA.bin"
+
+[[buffers]]
+name = "SFB"
+dtype = "u32"
+shape = [128, 16]
+init = "file"
+file = "SFB.bin"
+
+[[buffers]]
+name = "D0"
+dtype = "f32"
+shape = [128, 128]
+init = "nan"
+expect = "expected/D0.bin"
+
+[[buffers]]
+name = "D1"
+dtype = "f32"
+shape = [128, 128]
+init = "nan"
+expect = "expected/D1.bin"
+
+[[buffers]]
+name = "D2"
+dtype = "f32"
+shape = [128, 128]
+init = "nan"
+expect = "expected/D2.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "A"
+
+[[params]]
+kind = "ptr"
+buffer = "B"
+
+[[params]]
+kind = "ptr"
+buffer = "SFA"
+
+[[params]]
+kind = "ptr"
+buffer = "SFB"
+
+[[params]]
+kind = "ptr"
+buffer = "D0"
+
+[[params]]
+kind = "ptr"
+buffer = "D1"
+
+[[params]]
+kind = "ptr"
+buffer = "D2"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

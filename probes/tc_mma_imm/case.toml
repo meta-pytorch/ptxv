@@ -1,0 +1,53 @@
+name = "probe_tc_mma_imm"
+description = """
+Probe (L-ROSETTA) for tcgen05.mma with an immediate enable-input-d: D at [taddr + 64] with `0`
+then `1` (2 A B), D at [taddr + 128] with A in TMEM and `0`, N = 16 (kernel.ptx). The output is
+the CTA's whole TMEM (128 lanes x 256 columns, sentinel-filled before the MMAs); expected/D.bin
+is GB300's."""
+ptx = "kernel.ptx"
+entry = "mma_one"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "u16"
+shape = [1, 128, 16]
+init = "file"
+file = "data/A.bin"
+
+[[buffers]]
+name = "B"
+dtype = "u16"
+shape = [1, 256, 16]
+init = "file"
+file = "data/B.bin"
+
+[[buffers]]
+name = "D"
+dtype = "u32"
+shape = [1, 128, 256]
+init = "zeros"
+expect = "expected/D.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "A"
+
+[[params]]
+kind = "ptr"
+buffer = "B"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+# idesc: D f32, A / B bf16, N >> 3 = 2 at bit 17 (N = 16: A in TMEM needs N % 16 == 0), M >> 4 = 8 at bit 24.
+[[params]]
+kind = "u32"
+value = 0x8040490
+
+[[variants]]
+id = "good"
+expect = ["clean"]

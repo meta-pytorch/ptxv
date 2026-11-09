@@ -1,0 +1,41 @@
+// probes/rpcmov (call variant): as kernel.ptx, with a non-inlined device function called between
+// the save and the restore (`CALL.REL.NOINC`, return address in a register). patch_call.py
+// inserts `RPCMOV.32 Rpc.LO, Ra` after the loads and `RPCMOV.32 Rx, Rpc.LO` after the add
+// computing x = a + 0x1234 (after the call), fixing the call offset and return address.
+.version 8.8
+.target sm_103a
+.address_size 64
+.func (.reg .b32 %ret) g(.reg .b32 %x)
+{
+    .reg .b32 %t<4>;
+    mul.lo.u32 %t1, %x, 3;
+    add.u32 %t2, %t1, 1;
+    xor.b32 %ret, %t2, 0x55aa;
+    ret;
+}
+.visible .entry rpcmov(.param .u64 pin, .param .u64 pout)
+.maxntid 128, 1, 1
+{
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<8>;
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %ctaid.x;
+    mad.lo.u32      %r3, %r2, 128, %r1;
+    mul.wide.u32    %rd3, %r3, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.u32   %r4, [%rd4];
+    ld.global.u32   %r5, [%rd4+1024];
+    call.uni (%r7), g, (%r5);
+    add.s32         %r6, %r4, 4660;
+    xor.b32         %r8, %r4, %r5;
+    add.s64         %rd5, %rd2, %rd3;
+    st.global.u32   [%rd5], %r7;
+    st.global.u32   [%rd5+1024], %r5;
+    st.global.u32   [%rd5+2048], %r8;
+    st.global.u32   [%rd5+3072], %r6;
+    ret;
+}

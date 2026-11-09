@@ -1,0 +1,48 @@
+// S-SAME-VALUE, own write: thread 0 of each of two CTAs stores 1 to x (plain), then reads x
+// back (msl DeepEP DeviceSyncer: every CTA stores the next currentCountIdx, then reads it).
+// Each reader's own store wrote 1 and every unordered store of x wrote 1, so the read returns
+// 1 in any order (coherence: the own store or a later one).
+//   diff:  CTA 1 stores 2: the stores race and the reads see either value
+//   noown: CTA 0 does not store: its read races with CTA 1's store
+//   xhb:   CTA 1 stores 2 and releases a flag that CTA 0 acquires after its own store, before
+//          its read: the store of 2 happens before the read but is unordered with CTA 0's
+//          store of 1, and either can be last: race
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry s_sv_own(.param .u64 out_p, .param .u64 x_p, .param .u64 flag_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<6>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [x_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    ld.param.u64 %rd3, [flag_p];
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra DONE;
+    mov.u32 %r2, %ctaid.x;
+    mul.wide.u32 %rd4, %r2, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    setp.eq.u32 %p2, %r2, 0;
+    @%p2 bra A;
+    st.global.u32 [%rd2], 1;               // @BW
+    st.release.gpu.global.u32 [%rd3], 1;
+    ld.global.u32 %r6, [%rd2];
+    st.global.u32 [%rd5], %r6;
+    bra DONE;
+A:
+    st.global.u32 [%rd2], 1;               // @AW
+SPIN:
+    ld.acquire.gpu.global.u32 %r9, [%rd3];
+    setp.lt.u32 %p4, %r9, 0;               // @WAIT
+    @%p4 bra SPIN;
+    ld.global.u32 %r6, [%rd2];
+    st.global.u32 [%rd5], %r6;
+DONE:
+    ret;
+}

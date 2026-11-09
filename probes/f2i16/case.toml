@@ -1,0 +1,50 @@
+name = "probe_f2i16"
+description = """
+Probe (N-F2I16) for f32 -> 16-bit integer conversions, SASS F2I[.FTZ].{S16,U16}[.TRUNC|.FLOOR|
+.CEIL].NTZ (cvt.r{n,z,m,p}i[.ftz].{s16,u16}.f32), stored as 16 bits and widened to 32 (ptxas
+stores the F2I register itself for the non-ftz forms), and the prefetch hints CCTL.E.PF1 /
+CCTL.E.PF2 (prefetch.global.L1 / .L2), on edge and random inputs (kernel.ptx from gen_ptx.py,
+gen.py). expected/ is GB300's output (ptxas cubin, `ptxv hw-worker probes/f2i16 <cubin>
+--runs 3 --dump`)."""
+ptx = "kernel.ptx"
+entry = "f2i16"
+grid = [8, 1, 1]
+block = [256, 1, 1]
+outputs = ["out16", "out32"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [2048]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out16"
+dtype = "u16"
+shape = [16, 2048]
+init = "zeros"
+expect = "expected/out16.bin"
+
+[[buffers]]
+name = "out32"
+dtype = "u32"
+shape = [16, 2048]
+init = "zeros"
+expect = "expected/out32.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out16"
+
+[[params]]
+kind = "ptr"
+buffer = "out32"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

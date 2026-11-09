@@ -1,0 +1,85 @@
+name = "e_cta_rep"
+description = """
+Fixture for E-CTA-REP (rep.rs): an elementwise kernel, y[i] = 2 x[i] + ctaid.x, over n = 1000
+elements in 8 CTAs of 128 threads (each CTA stores values of its own, so two CTAs writing one
+element is a race, not S-SAME-VALUE). CTAs 0-6 take one path, CTA 7 (the tail, 104 live threads) another: two
+representatives (good: clean). TAIL1: the mask admits i = n, so CTA 7 stores past the end of
+y. AND: the index is (ctaid & 1) * 128 + tid, so CTAs 0, 2, 4, 6 write the same elements.
+STRIDE: the index is ctaid * 64 + tid, so neighbouring CTAs overlap. N1024: the mask is
+i < 1024, so every CTA takes CTA 0's path and CTA 7, which no run simulates, stores past the
+end of y (found by its replayed addresses). Each mutant touches only CTAs other than CTA 0
+(positive controls). DATACTL: the store is skipped when the loaded value exceeds 0.5 (control
+on loaded data): the reduction refuses and the launch is checked as before."""
+ptx = "kernel.ptx"
+entry = "e_cta_rep"
+grid = [8, 1, 1]
+block = [128, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [1000]
+init = "uniform"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [1000]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "u32"
+value = 1000
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "TAIL1"
+summary = "the mask admits i = n: CTA 7 stores past the end of y"
+marker = "@MASK"
+find = "setp.ge.s32 %p1, %r4, %r1;"
+replace = "setp.gt.s32 %p1, %r4, %r1;"
+expect = ["fault"]
+
+[[variants]]
+id = "AND"
+summary = "index (ctaid & 1) * 128 + tid: CTAs 0, 2, 4, 6 write the same elements"
+marker = "@IDX"
+find = "mad.lo.s32 %r4, %r2, 128, %r3;"
+replace = "and.b32 %r5, %r2, 1; mad.lo.s32 %r4, %r5, 128, %r3;"
+expect = ["race"]
+
+[[variants]]
+id = "STRIDE"
+summary = "index ctaid * 64 + tid: neighbouring CTAs overlap"
+marker = "@IDX"
+find = "mad.lo.s32 %r4, %r2, 128, %r3;"
+replace = "mad.lo.s32 %r4, %r2, 64, %r3;"
+expect = ["race"]
+
+[[variants]]
+id = "N1024"
+summary = "mask i < 1024: one path for every CTA, and CTA 7 stores past the end of y"
+marker = "@MASK"
+find = "setp.ge.s32 %p1, %r4, %r1;"
+replace = "setp.ge.s32 %p1, %r4, 1024;"
+expect = ["fault"]
+
+[[variants]]
+id = "DATACTL"
+summary = "the store is skipped when the loaded value exceeds 0.5"
+marker = "@DATA"
+find = "add.f32 %f2, %f1, %f1;"
+replace = "add.f32 %f2, %f1, %f1; setp.gt.f32 %p0, %f1, 0f3F000000; @%p0 bra DONE;"
+expect = ["clean"]

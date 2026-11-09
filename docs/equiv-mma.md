@@ -233,8 +233,9 @@ schedule), so they round differently only near ties.
   - HMMA operands and STL values are value registers, not control;
   - half-warp LDTM (`.16x32bx2`) uses the lanes that execute (`eff_active`).
 - **E-DESC-VERSION.** Triton 3.5's tcgen05 shared-memory descriptors leave bits 46–48
-  (version) at 0. `check` reports this, and `ptxv equiv` accepts it as a reliance: GB300
-  ignores those bits, and the captured outputs match the simulator bit for bit.
+  (version) at 0. `check` reports this as a `contract` finding (2026-11-06; a violation
+  before), and `ptxv equiv` lists it as relied on: GB300's MMA ignores those bits
+  (probes/desc_version), and the captured outputs match the simulator bit for bit.
 - **Trials** run with one schedule (`run_once`) unless the kernel has fp32 atomic adds: the
   kernels are race-free (precondition), so every schedule gives the same outputs. Random
   schedules of `c_mm_bf16_nnt` once deadlocked here: a cluster's `barrier.cluster` completing

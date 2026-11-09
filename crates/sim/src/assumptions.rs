@@ -107,6 +107,21 @@ pub const REGISTRY: &[Assumption] = &[
         },
     },
     Assumption {
+        id: "E-RACE-DEAD",
+        kind: "code",
+        status: "argued",
+        title: "a race whose racing loads' values reach no S-INIT sink does not change the outcome",
+        applies: |k| any(k, |o| matches!(o, Op::Ld { .. })),
+    },
+    Assumption {
+        id: "E-CTA-REP",
+        kind: "code",
+        status: "argued",
+        title: "a CTA whose replayed position-dependent control values equal a certified representative's takes its path",
+        // Added to a verdict only when `--rep` decided it (rep.rs).
+        applies: never,
+    },
+    Assumption {
         id: "E-DRF",
         kind: "code",
         status: "argued",
@@ -124,7 +139,42 @@ pub const REGISTRY: &[Assumption] = &[
         id: "E-LOCKSTEP",
         kind: "code",
         status: "argued",
-        title: "SASS: converged lanes are ordered instruction by instruction",
+        title: "SASS: lanes executing together in a split are ordered instruction by instruction (STSM / LDSM included)",
+        applies: sass,
+    },
+    Assumption {
+        id: "E-STSM-DUP",
+        kind: "code",
+        status: "argued",
+        title: "lanes of one stmatrix writing a shared word with the same value write it once; different values are a violation",
+        applies: |k| any(k, |o| matches!(o, Op::StMatrix { .. })),
+    },
+    Assumption {
+        id: "S-REMOTE-RESERVED",
+        kind: "code",
+        status: "argued",
+        title: "remote arrivals on reserved-prefix mbarriers (ptxas's tcgen05.alloc cta_group::2 handshake at 0x48) are ptxas's protocol: lifetime findings about them are contract findings",
+        applies: never,
+    },
+    Assumption {
+        id: "S-INIT-FILLS",
+        kind: "code",
+        status: "argued",
+        title: "undef-insensitive: undefined values that reach only output data leave the outputs bitwise equal over 6 fills (empirical evidence, not a certificate)",
+        applies: never,
+    },
+    Assumption {
+        id: "S-TMAP-TAIL",
+        kind: "code",
+        status: "validated",
+        title: "GB300's TMA ignores bytes 0x40..0x7f of a tensor map in global memory (undefined bytes there: contract finding)",
+        applies: never,
+    },
+    Assumption {
+        id: "E-WARP-ORDER",
+        kind: "code",
+        status: "validated",
+        title: "a converged warp's shared-memory instructions issue in program order (SASS: lockstep join; PTX: intra-warp races labelled latent-needs-divergence)",
         applies: sass,
     },
     Assumption {
@@ -151,6 +201,14 @@ pub const REGISTRY: &[Assumption] = &[
         applies: never,
     },
     Assumption {
+        id: "E-MC-ALIAS-HW",
+        kind: "code",
+        status: "validated",
+        title: "opt-in: multicast and unicast views of NVLS memory need no fence.proxy.alias (GB300 litmus: multicast write / unicast read and unicast write / multimem.ld_reduce)",
+        // Added to a verdict when the case sets mc_alias = "hw" (for_machine).
+        applies: never,
+    },
+    Assumption {
         id: "E-EXIT-FENCE",
         kind: "code",
         status: "argued",
@@ -172,6 +230,22 @@ pub const REGISTRY: &[Assumption] = &[
         status: "validated",
         title: "a SASS shared store releases, at CTA scope, what its thread acquired (opt-in)",
         // Added to a verdict when the case sets `smem_cumulative`.
+        applies: never,
+    },
+    Assumption {
+        id: "E-HW-CORW",
+        kind: "code",
+        status: "argued",
+        title: "GB300 hardware model (two-level only): a write after the thread's strong read of the last write's bytes is coherence-after every earlier write of them",
+        // Part of the level-2 hardware model (twolevel.rs MODEL), not of level-1 verdicts.
+        applies: never,
+    },
+    Assumption {
+        id: "E-HW-WEAK-FLAG",
+        kind: "code",
+        status: "validated",
+        title: "GB300 hardware model (two-level only): an aligned weak global store of <= 8 bytes after a sys fence is a relaxed sys store releasing the fence's clock",
+        // Part of the level-2 hardware model (twolevel.rs MODEL), not of level-1 verdicts.
         applies: never,
     },
     Assumption {
@@ -238,6 +312,14 @@ pub const REGISTRY: &[Assumption] = &[
         applies: never,
     },
     Assumption {
+        id: "E-REMOTE-FIFO",
+        kind: "code",
+        status: "validated",
+        title: "remote mbarrier arrivals from one CTA to one CTA land in happens-before issue order (opt-in)",
+        // Added to a verdict when the case sets `remote_fifo`.
+        applies: never,
+    },
+    Assumption {
         id: "E-CTA-INDEP",
         kind: "code",
         status: "argued",
@@ -298,6 +380,17 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |k| any(k, |o| matches!(o, Op::BarSync { count: Some(_), .. })),
     },
     Assumption {
+        id: "E-BAR-RED",
+        kind: "code",
+        status: "validated",
+        title: "bar.red reduces the waiters' predicates of one barrier generation; each waiter reads the result",
+        applies: |k| {
+            any(k, |o| {
+                matches!(o, Op::BarSync { red: Some(_), .. } | Op::BarResult { .. })
+            })
+        },
+    },
+    Assumption {
         id: "E-GRID",
         kind: "code",
         status: "argued",
@@ -354,11 +447,36 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |k| any(k, |o| matches!(o, Op::TmaStore { .. })),
     },
     Assumption {
+        id: "E-CPASYNC-EXIT",
+        kind: "code",
+        status: "validated",
+        title: "a cp.async no thread waited for lands before the CTA's shared memory is reused",
+        applies: |k| any(k, |o| matches!(o, Op::CpAsync { .. })),
+    },
+    Assumption {
         id: "E-TC-EXIT",
         kind: "code",
         status: "validated",
         title: "a tcgen05.commit no thread waited for arrives before the CTA's shared memory is released",
         applies: |k| any(k, |o| matches!(o, Op::TcCommit { .. })),
+    },
+    Assumption {
+        id: "E-TC-FENCE-NOP",
+        kind: "code",
+        status: "argued",
+        title: "a PTX race the tcgen05 thread-sync fences would order is a contract deviation: GB300 runs the fences as NOPs",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::TmemLd { .. }
+                        | Op::TmemSt { .. }
+                        | Op::Mma { .. }
+                        | Op::TcCp { .. }
+                        | Op::TmemAlloc { .. }
+                )
+            })
+        },
     },
     Assumption {
         id: "E-CPASYNC-MBAR",
@@ -383,7 +501,7 @@ pub const REGISTRY: &[Assumption] = &[
         id: "E-DESC-VERSION",
         kind: "code",
         status: "validated",
-        title: "tcgen05 shared-memory descriptor bits 46-48 (version) = 0 behave as the fixed value on GB300 (equiv only)",
+        title: "tcgen05.mma ignores shared-memory descriptor bits 46-48 (version) on GB300: a value other than 0b001 is a contract finding",
         applies: never,
     },
     Assumption {
@@ -519,17 +637,42 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |k| any(k, |o| matches!(o, Op::TmaStore { .. } | Op::Mma { .. })),
     },
     Assumption {
+        id: "S-MULTIMEM",
+        kind: "code",
+        status: "argued",
+        title: "a multimem access (multimem.* / LDGMC, and STG / REDG on a multicast address) is one access per bound GPU with the instruction's semantics, all at once",
+        // Added to a verdict when the case has multicast objects (for_machine).
+        applies: never,
+    },
+    Assumption {
+        id: "S-MC-ALIAS",
+        kind: "code",
+        status: "argued",
+        title: "accesses through the multicast and unicast views of the same bytes are ordered only by a fence.proxy.alias or a kernel boundary on the happens-before path (PTX alias proxy)",
+        applies: never,
+    },
+    Assumption {
+        id: "E-CPASYNC-PROXY",
+        kind: "code",
+        status: "unvalidated",
+        title: "cp.async writes reach a later async-proxy read (TMA store, tcgen05.mma) without fence.proxy.async; reported as a contract finding",
+        applies: |k| {
+            any(k, |o| matches!(o, Op::CpAsync { .. }))
+                && any(k, |o| matches!(o, Op::TmaStore { .. } | Op::Mma { .. }))
+        },
+    },
+    Assumption {
         id: "S-INIT",
         kind: "code",
         status: "enforced",
-        title: "unwritten register/smem reads are reported (not yet: async-op address operands)",
+        title: "unwritten registers / smem are undefined; undefined values propagate through register-only operations and are reported where they reach a sink (memory, address, control flow, synchronization)",
         applies: always,
     },
     Assumption {
         id: "S-INIT-PRED",
         kind: "code",
         status: "enforced",
-        title: "predicates start undefined; a read before any write is reported (PT/UPT are constants)",
+        title: "predicates start undefined (PT/UPT are constants) and are undefined when computed from undefined values; reported at sinks",
         applies: always,
     },
     Assumption {
@@ -586,6 +729,17 @@ pub const REGISTRY: &[Assumption] = &[
         },
     },
     Assumption {
+        id: "S-RED-ASYNC",
+        kind: "code",
+        status: "probed",
+        title: "red.async.global.add / UREDGR: a completed red that releases at its scope (probes/redasync_litmus)",
+        applies: |k| {
+            k.code
+                .iter()
+                .any(|i| i.text.contains("red.async") || i.text.contains("UREDGR"))
+        },
+    },
+    Assumption {
         id: "S-SMEM-STRONG",
         kind: "code",
         status: "validated",
@@ -618,11 +772,14 @@ pub const REGISTRY: &[Assumption] = &[
                         o,
                         Op::Ld { sync: Some(_), .. }
                             | Op::St { sync: Some(_), .. }
+                            | Op::Ld256 { sync: Some(_), .. }
+                            | Op::St256 { sync: Some(_), .. }
                             | Op::Atom { .. }
                             | Op::Fence {
                                 kind: FenceKind::Membar(_)
                                     | FenceKind::Release(_)
                                     | FenceKind::Acquire
+                                    | FenceKind::AcquireAt(_)
                             }
                     )
                 })
@@ -634,6 +791,69 @@ pub const REGISTRY: &[Assumption] = &[
         status: "argued",
         title: "remote smem accesses must happen-before some exit of the target CTA",
         applies: cluster,
+    },
+    Assumption {
+        id: "S-NIC-DB",
+        kind: "code",
+        status: "argued",
+        title: "an IBGDA doorbell is a strong .sys store; WQE and payload stores must be released at GPU scope or wider before it",
+        applies: never,
+    },
+    Assumption {
+        id: "S-NIC-ORDER",
+        kind: "code",
+        status: "validated",
+        title: "a QP's WQEs execute one at a time in posting order; QPs are unordered with each other; only IBTA ordering",
+        applies: never,
+    },
+    Assumption {
+        id: "S-NIC-SIGNAL",
+        kind: "code",
+        status: "validated",
+        title: "an RDMA atomic is placed after the same QP's earlier RDMA writes and releases them",
+        applies: never,
+    },
+    Assumption {
+        id: "S-NIC-WRITE",
+        kind: "code",
+        status: "argued",
+        title: "RDMA write data lands as plain writes of the NIC: nothing synchronizes with it directly",
+        applies: never,
+    },
+    Assumption {
+        id: "S-NIC-WORD",
+        kind: "code",
+        status: "validated",
+        title: "each naturally aligned 8-byte word of RDMA write data lands single-copy atomic (a relaxed .sys write)",
+        applies: never,
+    },
+    Assumption {
+        id: "S-NIC-FLAG",
+        kind: "code",
+        status: "validated",
+        title: "a lone aligned 4- or 8-byte RDMA write is one strong .sys write that releases the QP's earlier WQEs",
+        applies: never,
+    },
+    Assumption {
+        id: "S-NIC-ATOMIC",
+        kind: "code",
+        status: "validated",
+        title: "NIC atomics: strong .sys RMW, little-endian 64-bit values, atomic only with other NIC atomics",
+        applies: never,
+    },
+    Assumption {
+        id: "S-NIC-CQE",
+        kind: "code",
+        status: "validated",
+        title: "a CQE is written after its WQE completed (RDMA write: placed at the peer) and releases what the WQE did",
+        applies: never,
+    },
+    Assumption {
+        id: "S-NIC-DOMAIN",
+        kind: "code",
+        status: "argued",
+        title: "GPUs in different NVLink domains reach each other's memory only through the NIC",
+        applies: never,
     },
     Assumption {
         id: "S-REMOTE-INFLIGHT",
@@ -653,7 +873,14 @@ pub const REGISTRY: &[Assumption] = &[
         title: "ld/st/atom of n bytes (power of two) must be n-aligned, else a fault",
         applies: |k| {
             any(k, |o| {
-                matches!(o, Op::Ld { .. } | Op::St { .. } | Op::Atom { .. })
+                matches!(
+                    o,
+                    Op::Ld { .. }
+                        | Op::St { .. }
+                        | Op::Ld256 { .. }
+                        | Op::St256 { .. }
+                        | Op::Atom { .. }
+                )
             })
         },
     },
@@ -665,11 +892,64 @@ pub const REGISTRY: &[Assumption] = &[
         applies: always,
     },
     Assumption {
+        id: "S-GLOBAL-INIT",
+        kind: "code",
+        status: "argued",
+        title: "a module global without a case buffer starts from its ELF initial value",
+        applies: |k| !k.globals.is_empty() || k.parts.iter().any(|p| !p.globals.is_empty()),
+    },
+    Assumption {
         id: "S-CBANK",
         kind: "code",
         status: "validated",
         title: "driver constant bank layout (dims, param base, stack)",
         applies: sass,
+    },
+    Assumption {
+        id: "S-SAME-VALUE",
+        kind: "code",
+        status: "validated",
+        title: "unordered plain writes of the byte value already there conflict with nothing",
+        applies: |k| any(k, |o| matches!(o, Op::St { .. })),
+    },
+    Assumption {
+        id: "S-SMEM-ADDR32",
+        kind: "code",
+        status: "validated",
+        title: "shared-memory addresses are 32-bit: address operand parts add modulo 2^32",
+        applies: |k| {
+            mbar(k)
+                || any(k, |o| {
+                    use ptxv_ir::Space::Shared;
+                    use ptxv_ir::Space::SharedCluster;
+                    matches!(
+                        o,
+                        Op::Ld {
+                            space: Shared | SharedCluster,
+                            ..
+                        } | Op::St {
+                            space: Shared | SharedCluster,
+                            ..
+                        } | Op::Atom {
+                            space: Shared | SharedCluster,
+                            ..
+                        }
+                    )
+                })
+        },
+    },
+    Assumption {
+        id: "S-CGA-SHAPE",
+        kind: "code",
+        status: "validated",
+        title: "SR_CgaSize is the cluster's shape index (0 regular, 1 preferred); preferred launches mix shapes per CTA group",
+        applies: |k| {
+            k.code.iter().any(|i| {
+                i.op.src_vals()
+                    .iter()
+                    .any(|v| matches!(v, ptxv_ir::Val::SReg(ptxv_ir::SReg::CgaShape)))
+            })
+        },
     },
     Assumption {
         id: "E-BSYNC",
@@ -682,8 +962,15 @@ pub const REGISTRY: &[Assumption] = &[
         id: "S-TMAP",
         kind: "code",
         status: "validated",
-        title: "device-built tensor maps: the reverse-engineered CUtensorMap layout; fence.proxy.tensormap per using thread",
-        applies: |k| any(k, |o| matches!(o, Op::TmapFence { .. })),
+        title: "tensor maps: the reverse-engineered CUtensorMap layout (device-built maps, and captured parameter maps' geometry); fence.proxy.tensormap per using thread",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::TmapFence { .. } | Op::TmaLoad { .. } | Op::TmaStore { .. }
+                )
+            })
+        },
     },
     Assumption {
         id: "S-BRA-COND",
@@ -707,6 +994,13 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |k| any(k, |o| matches!(o, Op::TcCp { .. })),
     },
     Assumption {
+        id: "L-ALIAS-FENCE",
+        kind: "code",
+        status: "validated",
+        title: "SASS: a MEMBAR.SC inside ptxas's UP2UR.B3 / UR2UP bracket is fence.proxy.alias; driver word c[0x0][0x2d8] = 0 (GB300 probe)",
+        applies: never,
+    },
+    Assumption {
         id: "L-NVDISASM",
         kind: "code",
         status: "trusted",
@@ -721,11 +1015,38 @@ pub const REGISTRY: &[Assumption] = &[
         applies: sass,
     },
     Assumption {
+        id: "L-RPCMOV",
+        kind: "code",
+        status: "validated",
+        title: "RPCMOV.32 Rpc.LO: a per-thread slot only RPCMOV touches (probes/rpcmov)",
+        applies: |k| k.code.iter().any(|i| i.text.contains("RPCMOV")),
+    },
+    Assumption {
         id: "L-PTX-HINT",
         kind: "code",
         status: "argued",
         title: "PTX cp.async .L2::cache_hint (and its policy operand) / .L2::{64,128,256}B are performance hints only",
         applies: |k| k.front == Front::Ptx && k.code.iter().any(|i| i.text.contains(".L2::")),
+    },
+    Assumption {
+        id: "PTX-FMAD",
+        kind: "code",
+        status: "validated",
+        title: "PTX mul + add / sub contracted as ptxas 13.0's default --fmad=true: without rounding modifiers, and .f32x2 of equal modes (probes/fmad, probes/fmad2); ambiguous shapes refused",
+        applies: |k| {
+            k.front == Front::Ptx
+                && k.code.iter().any(|i| {
+                    // add.f64 alone is a DFMA a * 1.0 + b (ptx lower_inst).
+                    let one = ptxv_ir::Val::Imm(1f64.to_bits());
+                    let t = i.text.trim_start();
+                    (matches!(i.op, Op::Ffma { c: Some(_), .. })
+                        || matches!(&i.op, Op::Dfma { c: Some(_), b, .. } if *b != one)
+                        // add / sub.f32x2 alone is FFMA2 a * 1.0 + b; contracted: FFMA2 a * b + c.
+                        || matches!(&i.op, Op::Ffma2 { b, .. }
+                            if b.0 != ptxv_ir::Val::Imm(0x3f80_0000)))
+                        && (t.starts_with("add.") || t.starts_with("sub."))
+                })
+        },
     },
     Assumption {
         id: "L-LOP3-P",
@@ -823,6 +1144,78 @@ pub const REGISTRY: &[Assumption] = &[
         status: "validated",
         title: "FCHK = exponent-range test measured on GB300 (probes/fchk)",
         applies: |k| any(k, |o| matches!(o, Op::Fchk { .. })),
+    },
+    Assumption {
+        id: "N-BF16X2",
+        kind: "code",
+        status: "validated",
+        title: "packed / mixed bf16 arithmetic and bf16 atomics: one rounding, NaN 0x7fff (probes/bf16x2, bf16_ext)",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::Hfma2Bf16 { .. }
+                        | Op::FfmaBf16 { .. }
+                        | Op::Hmnmx2Bf16 { .. }
+                        | Op::Vhmnmx { .. }
+                        | Op::Atom {
+                            op: ptxv_ir::AtomOp::AddBf16x2 | ptxv_ir::AtomOp::AddBf16,
+                            ..
+                        }
+                )
+            })
+        },
+    },
+    Assumption {
+        id: "N-XORSIGN",
+        kind: "code",
+        status: "validated",
+        title: "FMNMX.XORSIGN / HMNMX2.XORSIGN: min/max of |a|, |b| with sign(a) XOR sign(b) (probes/fmnmx_xorsign)",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::Fmnmx { xorsign: true, .. } | Op::Hmnmx2Bf16 { xorsign: true, .. }
+                )
+            })
+        },
+    },
+    Assumption {
+        id: "N-FCVT",
+        kind: "code",
+        status: "validated",
+        title: "FRND / F2F between f64, f32, f16, bf16: IEEE rounding, NaN payload rules (probes/fcvt)",
+        applies: |k| any(k, |o| matches!(o, Op::FCvt { .. })),
+    },
+    Assumption {
+        id: "N-F2I16",
+        kind: "code",
+        status: "validated",
+        title: "F2I.S16 / .U16: round, saturate to 16 bits, NaN 0, extended in the register (probes/f2i16)",
+        applies: |k| any(k, |o| matches!(o, Op::F2I { bits: 16, .. })),
+    },
+    Assumption {
+        id: "N-INT16X2",
+        kind: "code",
+        status: "validated",
+        title: "VIMNMX / VIMNMX3 .U16x2 / .S16x2: per 16-bit lane min / max (probes/int16x2)",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::IntMnmx3 { x16: true, .. }
+                        | Op::IntMnmx3 { relu: true, .. }
+                        | Op::AddMinMax { relu: true, .. }
+                )
+            })
+        },
+    },
+    Assumption {
+        id: "N-BULK-RED",
+        kind: "code",
+        status: "validated",
+        title: "UBLKRED.G.S.ADD.F32.RN: per-word atomic f32 add, RN, no flush, canonical NaN (probes/bulk_red)",
+        applies: |k| any(k, |o| matches!(o, Op::TmaStore { red: true, .. })),
     },
     Assumption {
         id: "N-MUFU",
@@ -971,6 +1364,27 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |_| false,
     },
     Assumption {
+        id: "N-ERRDIST-INTFIX",
+        kind: "code",
+        status: "argued",
+        title: "errdist holds integer input buffers at their captured values (not taint sources)",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-FINCAP",
+        kind: "code",
+        status: "argued",
+        title: "errdist extracts the DAG with non-finite captured float input elements set to 0 (the input distributions are finite)",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-SEL",
+        kind: "code",
+        status: "argued",
+        title: "a store under a data-dependent guard is a selection P ? v : old (re-evaluated per input by Tier 3; linearized / CLT tiers refused)",
+        applies: |_| false,
+    },
+    Assumption {
         id: "N-ERRDIST-INERR",
         kind: "code",
         status: "argued",
@@ -1060,6 +1474,31 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |_| false,
     },
     Assumption {
+        id: "N-MULTIMEM",
+        kind: "code",
+        status: "validated",
+        title: "multimem.ld_reduce arithmetic: integers exact; f32 add = window-truncated exact sum, round to nearest even; f16/bf16 min/max = minNum/maxNum (GB300 bitwise, probes/multimem)",
+        applies: |k| any(k, |o| matches!(o, Op::LdReduce { .. })),
+    },
+    Assumption {
+        id: "N-MULTIMEM-ROUND16",
+        kind: "code",
+        status: "unvalidated",
+        title: "f16/bf16 multimem.ld_reduce add: the rounding direction of a non-representable sum follows a dither from the other lanes of its 8-byte group (99.7% bf16 / 96.7% f16 of random lanes); results compared within one ulp",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::LdReduce {
+                        op: ptxv_ir::McOp::Add,
+                        ty: ptxv_ir::McTy::F16 | ptxv_ir::McTy::Bf16,
+                        ..
+                    }
+                )
+            })
+        },
+    },
+    Assumption {
         id: "N-MMA",
         kind: "code",
         status: "enforced",
@@ -1080,8 +1519,15 @@ pub const REGISTRY: &[Assumption] = &[
         id: "N-HMMA",
         kind: "code",
         status: "validated",
-        title: "HMMA.16816.F32.BF16 = the N-MMA model per instruction (probes/hmma, 98,304 GB300 outputs)",
-        applies: |k| any(k, |o| matches!(o, Op::Hmma { .. })),
+        title: "HMMA.16816.F32[.BF16] = the N-MMA model per instruction (probes/hmma, probes/hmma_f16: 98,304 GB300 outputs each)",
+        applies: |k| any(k, |o| matches!(o, Op::Hmma { s8: false, .. })),
+    },
+    Assumption {
+        id: "N-IMMA",
+        kind: "code",
+        status: "validated",
+        title: "IMMA.16832.S8.S8.SAT = exact integer C + A B saturated to s32 (probes/imma_s8, GB300 bitwise)",
+        applies: |k| any(k, |o| matches!(o, Op::Hmma { s8: true, .. })),
     },
     Assumption {
         id: "N-TF32",
@@ -1141,7 +1587,10 @@ pub const REGISTRY: &[Assumption] = &[
             any(k, |o| {
                 matches!(
                     o,
-                    Op::CvtPack { .. } | Op::CvtRsX4 { .. } | Op::CvtUnpack { .. }
+                    Op::CvtPack { .. }
+                        | Op::CvtRsX4 { .. }
+                        | Op::CvtUnpack { .. }
+                        | Op::CvtS2f6x2 { .. }
                 )
             })
         },
@@ -1151,6 +1600,13 @@ pub const REGISTRY: &[Assumption] = &[
         kind: "code",
         status: "argued",
         title: "Cor 1a bound: first-order, per-node epsilon",
+        applies: never,
+    },
+    Assumption {
+        id: "H-PROFILE",
+        kind: "process",
+        status: "argued",
+        title: "two-level verdicts: a hardware profile turns on only probe-backed assumptions; the strict (contract) verdict is always reported next to the profile's SASS verdict",
         applies: never,
     },
     Assumption {
@@ -1195,6 +1651,26 @@ pub fn for_kernel(k: &Kernel) -> Vec<String> {
 /// The kernel's assumptions plus those its launch opts into (E-EXIT-FENCE).
 pub fn for_machine(m: &crate::machine::Machine) -> Vec<String> {
     let mut v = for_kernel(&m.k);
+    // NIC queue pairs and NVLink domains (nic.rs, docs/nic.md).
+    if let Some(n) = &m.launch.nic {
+        if !n.qps.is_empty() {
+            for id in [
+                "S-NIC-DB",
+                "S-NIC-ORDER",
+                "S-NIC-SIGNAL",
+                "S-NIC-WRITE",
+                "S-NIC-WORD",
+                "S-NIC-FLAG",
+                "S-NIC-ATOMIC",
+                "S-NIC-CQE",
+            ] {
+                v.push(id.into());
+            }
+        }
+        if !n.domains.is_empty() {
+            v.push("S-NIC-DOMAIN".into());
+        }
+    }
     if m.launch.exit_fence.is_some() {
         v.push("E-EXIT-FENCE".into());
     }
@@ -1228,6 +1704,20 @@ pub fn for_machine(m: &crate::machine::Machine) -> Vec<String> {
     }
     if m.launch.read_done {
         v.push("E-READ-DONE".into());
+    }
+    if m.launch.remote_fifo {
+        v.push("E-REMOTE-FIFO".into());
+    }
+    if !m.launch.mcast.is_empty() {
+        v.push("S-MULTIMEM".into());
+        v.push(if m.launch.mc_alias_hw {
+            "E-MC-ALIAS-HW".into()
+        } else {
+            "S-MC-ALIAS".into()
+        });
+        if m.k.front == Front::Sass {
+            v.push("L-ALIAS-FENCE".into());
+        }
     }
     v
 }

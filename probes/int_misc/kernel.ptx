@@ -1,0 +1,51 @@
+// probes/int_misc: integer forms against GB300. Thread g (4 CTAs x 256) loads
+// (a, b, c_lo, c_hi) = in[g] (gen.py), c = c_hi:c_lo, and stores out[8 g + j]:
+//   j = 0, 1: a * 2 (signed, 64-bit) - c     (SASS IMAD.WIDE d, a, 0x2, -c)
+//   j = 2, 3: b * 6 (unsigned, 64-bit) - c   (IMAD.WIDE.U32 d, b, 0x6, -c)
+//   j = 4: popc(a); j = 5: popc(popc(b) + a); j = 6: popc(c_lo) * 3 + popc(c_hi)
+//   (POPC: ptxas gives it no write scoreboard; its results are read right after);
+//   j = 7: popc(a ^ b) + 1.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry int_misc(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<16>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %ctaid.x;
+    mad.lo.u32      %r3, %r2, 256, %r1;
+    mul.wide.u32    %rd3, %r3, 16;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.v4.u32 {%r4, %r5, %r6, %r7}, [%rd4];
+    mul.wide.u32    %rd3, %r3, 32;
+    add.s64         %rd5, %rd2, %rd3;
+    mov.b64         %rd6, {%r6, %r7};
+    mul.wide.s32    %rd7, %r4, 2;
+    sub.s64         %rd8, %rd7, %rd6;
+    mul.wide.u32    %rd9, %r5, 6;
+    sub.s64         %rd10, %rd9, %rd6;
+    popc.b32        %r10, %r4;
+    popc.b32        %r11, %r5;
+    add.s32         %r11, %r11, %r4;
+    popc.b32        %r11, %r11;
+    popc.b32        %r12, %r6;
+    popc.b32        %r13, %r7;
+    mad.lo.s32      %r12, %r12, 3, %r13;
+    xor.b32         %r14, %r4, %r5;
+    popc.b32        %r14, %r14;
+    add.s32         %r14, %r14, 1;
+    st.global.v2.u64 [%rd5], {%rd8, %rd10};
+    st.global.v4.u32 [%rd5+16], {%r10, %r11, %r12, %r14};
+    ret;
+}

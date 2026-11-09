@@ -58,5 +58,5 @@ hex = "0000000000000000"
 [[variants]]
 id = "good"
 summary = "as captured"
-expect = ["violation"]
-hw_note = "the one violation is a PTX contract one: Triton 3.5 leaves the fixed bits 46-48 of its shared-memory descriptors 0 (GB300 ignores them: E-DESC-VERSION); the run matches GB300 bitwise (expected/)"
+expect = ["contract"]
+hw_note = "the one finding is a PTX contract one: Triton 3.5 leaves the fixed bits 46-48 of its shared-memory descriptors 0 (GB300's MMA ignores them: E-DESC-VERSION, probes/desc_version); the run matches GB300 bitwise (expected/)"

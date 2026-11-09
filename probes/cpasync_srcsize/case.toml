@@ -1,0 +1,43 @@
+name = "probe_cpasync_srcsize"
+description = """
+Probe (E-CPASYNC) for cp.async with a src-size operand: a register 16 / 0 (Triton's masked
+load, selp), registers 0..15 (tid & 15) and 0..16 (min(tid, 16)), an immediate 4, and 8- / 4-byte copies
+with src-size tid & 7 / tid & 3 (SASS LDGSTS[.ZFILL]). Shared slots start as 0xee bytes; each
+thread writes its five slots to out (kernel.ptx, gen.py).
+expected/ is GB300's output (ptxas cubin, `ptxv hw-worker probes/cpasync_srcsize <cubin> --runs 1
+--dump`)."""
+ptx = "kernel.ptx"
+entry = "cpasync_srcsize"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u8"
+shape = [2048]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u8"
+shape = [10240]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 77
+
+[[variants]]
+id = "good"
+expect = ["clean"]

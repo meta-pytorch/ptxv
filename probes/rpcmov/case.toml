@@ -1,0 +1,38 @@
+name = "probe_rpcmov"
+description = """
+Probe (L-RPCMOV) for `RPCMOV.32 Rpc.LO, Ra` / `RPCMOV.32 Rd, Rpc.LO` (ptxas spills a register
+into the return-PC register's low half under register pressure, CuTe DSL / CUTLASS kernels).
+rpcmov.cubin is kernel.ptx's ptxas cubin with a save and a restore inserted by patch.py
+(see kernel.ptx). GB300 (`ptxv hw-worker probes/rpcmov rpcmov.cubin --runs 3 --dump`):
+out[3][g] = a, the thread's own saved value; the other rows unchanged."""
+cubin = "rpcmov.cubin"
+entry = "rpcmov"
+grid = [2, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [512]
+init = "bits"
+seed = 3
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4, 256]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

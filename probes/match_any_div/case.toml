@@ -1,0 +1,36 @@
+name = "probe_match_any_div"
+description = """
+Probe (L-ROSETTA) for MATCH.ANY[.U64] on GB300 (match.any.sync.b32 / .b64): divergent lanes with partial membermasks (even / odd lanes, half warps); SASS front only (WARPSYNC Rmask + MATCH.ANY)
+(kernel.ptx, gen.py). Per lane, the mask of the lanes taking part whose key equals its own.
+expected/ is GB300's output (ptxas cubin, `ptxv hw-worker <dir> <cubin> --runs 1 --dump`)."""
+ptx = "kernel.ptx"
+entry = "m"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024, 4]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024, 4]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

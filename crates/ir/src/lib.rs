@@ -76,6 +76,14 @@ impl Reg {
     }
 }
 
+/// `bar.red` reduction (SASS `BAR.RED.POPC` / `.AND` / `.OR`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BarRedOp {
+    Popc,
+    And,
+    Or,
+}
+
 /// `REDUX` / `CREDUX` reduction (32-bit lanes).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ReduxOp {
@@ -111,8 +119,21 @@ pub enum SReg {
     WarpId,
     /// Rank of this CTA in its cluster (`%cluster_ctarank`, SASS `SR_CgaCtaId`).
     ClusterCtaRank,
-    /// Number of CTAs in the cluster (`%cluster_nctarank`, SASS `SR_CgaSize`).
+    /// Number of CTAs in the cluster (`%cluster_nctarank`).
     ClusterNCtaRank,
+    /// `%cluster_ctaid.{x,y,z}`: this CTA's position in its cluster (ctaid mod cluster dim).
+    ClusterCtaId(u8),
+    /// `%cluster_nctaid.{x,y,z}`: the cluster shape.
+    ClusterNCtaId(u8),
+    /// `%clusterid.{x,y,z}`: the cluster's position in the grid (ctaid / cluster dim).
+    ClusterId(u8),
+    /// `%nclusterid.{x,y,z}`: clusters per grid dimension.
+    NClusterId(u8),
+    /// SASS `SR_CgaSize`: which of the launch's cluster shapes this CTA's cluster has, 0 for
+    /// the regular shape and 1 for the preferred one (a launch with a preferred cluster
+    /// dimension mixes both). ptxas reads the cluster special registers from the driver's
+    /// table at `c[0x0][x - 0xa0 * SR_CgaSize]`. ASSUME(S-CGA-SHAPE): see ASSUMPTIONS.md
+    CgaShape,
     /// `%lanemask_lt` (SASS `SR_LTMASK`): the lanes below this one.
     LaneMaskLt,
     /// `%lanemask_le` / `_ge` / `_gt` / `_eq` (SASS `SR_LEMASK` / `GEMASK` / `GTMASK` /
@@ -129,6 +150,10 @@ pub enum SReg {
     /// `(SWINHI << 32) | (rank << 24) | offset` is that shared::cluster address
     /// (`cvta.shared`, generic `mapa`). ASSUME(S-SWIN): see ASSUMPTIONS.md
     SharedWindowHi,
+    /// PTX: the address of module global `i` (`Kernel::globals`; `mov.b64 %rd, sym`,
+    /// `[sym+off]`): the base of the buffer the launch backs it with (S-GLOBAL-INIT; looked
+    /// up as the relocated word `GLOBAL_RELOC_BANK`, offset 8 i).
+    GlobalAddr(u32),
 }
 
 /// A value operand.
@@ -217,6 +242,9 @@ pub enum IntOp {
     Bmsk,
     /// `bmsk.wrap.b32` (SASS `BMSK.W`): a and b taken modulo 32.
     BmskWrap,
+    /// Two independent 16-bit lanes, each a + b modulo 2^16, no carry between them
+    /// (`add.u16x2` / `add.s16x2`, SASS `VIADD.16x2`; probes/viadd16x2). `bits` is 32.
+    Add16x2,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -327,6 +355,26 @@ pub enum Rnd {
     Rp,
 }
 
+/// IEEE binary formats of SASS `FRND` / `F2F` and PTX `cvt` between float types (`Op::FCvt`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FFmt {
+    F16,
+    Bf16,
+    F32,
+    F64,
+}
+
+impl FFmt {
+    /// Width in bits (registers: 16-bit values in the low half of one, f64 in a pair).
+    pub fn bits(self) -> u32 {
+        match self {
+            FFmt::F16 | FFmt::Bf16 => 16,
+            FFmt::F32 => 32,
+            FFmt::F64 => 64,
+        }
+    }
+}
+
 /// Narrow float formats of `cvt` / SASS `F2FP` and of tensor-core operands: OCP FP8
 /// (e4m3, e5m2), FP6 (e2m3, e3m2), FP4 (e2m1), the unsigned scale formats ue8m0 / ue4m3, and
 /// f16 / bf16 (the packed `cvt.rs` forms). Arithmetic: `ptxv_sim::lowp`.
@@ -356,6 +404,8 @@ pub enum LpRnd {
 /// `tcgen05.mma` kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MmaKind {
+    /// `.kind::f16` and `.kind::tf32` (SASS `UTCHMMA`): the instruction descriptor's A / B
+    /// format tells them apart (f16 = 0, bf16 = 1, tf32 = 2).
     F16,
     F8f6f4,
     /// `.kind::mxf8f6f4.block_scale`: ue8m0 scales, one per 32 K elements.
@@ -379,6 +429,14 @@ pub enum AtomOp {
     /// f32 add, round to nearest, subnormals flushed (`ATOM.E.ADD.F32.FTZ.RN`,
     /// `atom.add.f32`).
     FAddFtz,
+    /// f64 add, round to nearest even, subnormals kept (`ATOMG` / `REDG` `.E.ADD.F64.RN`,
+    /// `atom` / `red` `.add.f64`; probes/atom_f64).
+    FAdd64,
+    /// bf16x2 add per lane, round to nearest even, subnormals kept, NaN results 0x7fff
+    /// (`ATOMG` / `REDG` `.E.ADD.BF16x2.RN`, `atom` / `red` `.add.noftz.bf16x2`, N-BF16X2).
+    AddBf16x2,
+    /// The same on one bf16 (2 bytes; PTX `atom` / `red` `.add.noftz.bf16`, a CAS loop in SASS).
+    AddBf16,
     /// Compare-and-swap, SASS `.CAST.SPIN`: `v` is the register pair {compare, new}; the
     /// result (`d` = 1 / 0, `p`) says whether the swap happened.
     CasSpin,
@@ -391,6 +449,72 @@ pub enum AtomOp {
     MaxU,
     MinS,
     MaxS,
+    /// 32-bit wrapping increment / decrement against a bound (PTX `atom.inc.u32` /
+    /// `atom.dec.u32`, SASS `ATOMG.E.INC` / `.DEC`): inc stores `old >= v ? 0 : old + 1`, dec
+    /// stores `old == 0 || old > v ? v : old - 1`.
+    Inc,
+    Dec,
+}
+
+/// Reduction of `multimem.ld_reduce` (SASS `LDGMC`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum McOp {
+    Add,
+    Min,
+    Max,
+    And,
+    Or,
+    Xor,
+}
+
+/// Element type of `multimem.ld_reduce`: the lanes of the access (`.v4.bf16x2` = 8 `Bf16`
+/// lanes). `U*` / `S*` / `B*`: integers; min / max are signed for `S*`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum McTy {
+    U32,
+    S32,
+    U64,
+    S64,
+    F32,
+    F64,
+    F16,
+    Bf16,
+    E4m3,
+    E5m2,
+}
+
+impl McTy {
+    pub fn lane_bytes(self) -> usize {
+        match self {
+            McTy::U64 | McTy::S64 | McTy::F64 => 8,
+            McTy::U32 | McTy::S32 | McTy::F32 => 4,
+            McTy::F16 | McTy::Bf16 => 2,
+            McTy::E4m3 | McTy::E5m2 => 1,
+        }
+    }
+}
+
+/// Which half of a packed 16-bit register an operand lane reads (SASS operand selectors).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum HSel {
+    /// Lane i reads half i (no selector).
+    Pair,
+    /// Both lanes read the low half (`.H0_H0`).
+    H0,
+    /// Both lanes read the high half (`.H1_H1`).
+    H1,
+}
+
+impl HSel {
+    /// The 16 bits lane `lane` (0 = low) of `v` supplies.
+    pub fn lane(self, v: u32, lane: u32) -> u16 {
+        let h = match self {
+            HSel::Pair => lane,
+            HSel::H0 => 0,
+            HSel::H1 => 1,
+        };
+        (v >> (16 * h)) as u16
+    }
 }
 
 /// PTX memory-model scope of a strong operation or fence.
@@ -453,8 +577,21 @@ pub enum FenceKind {
     /// Acquire side only (SASS `CCTL.IVALL`, which ptxas emits after acquire loads and after
     /// `MEMBAR` for `fence.acq_rel`): earlier strong loads' observations take effect.
     Acquire,
-    /// `fence.proxy.async[.shared::cta|.global]`, SASS `FENCE.VIEW.ASYNC.*`
+    /// PTX `fence.acquire.<scope>` below `.sys` (ptxas: `CCTL.IVALL` for `.cluster` / `.gpu`,
+    /// nothing for `.cta`): earlier strong loads' observations of writers the scope includes
+    /// take effect (no wider; S-SCOPE).
+    AcquireAt(Scope),
+    /// `fence.proxy.async[.shared::cta|.shared::cluster]`, SASS `FENCE.VIEW.ASYNC.S`: orders
+    /// generic and async-proxy accesses to shared memory (S-PROXY).
     ProxyAsync,
+    /// `fence.proxy.async.global`, SASS `FENCE.VIEW.ASYNC.G`: orders generic and async-proxy
+    /// accesses to global memory only. It does not order shared memory, so it never covers a
+    /// shared-memory proxy check (S-PROXY).
+    ProxyAsyncGlobal,
+    /// `fence.proxy.alias` (S-MC-ALIAS): orders accesses through virtual aliases (the
+    /// multicast and unicast views of NVLS memory). ptxas: `MEMBAR.SC.GPU; MEMBAR.SC.SYS;
+    /// CCTL.IVALL`; the PTX front lowers it to this plus `Membar(Sys)`.
+    ProxyAlias,
     /// `tcgen05.fence::before_thread_sync`: prior tcgen05 ops are released by the next sync.
     TcBefore,
     /// `tcgen05.fence::after_thread_sync`: later tcgen05 ops are ordered after prior syncs.
@@ -531,11 +668,24 @@ pub enum Op {
         /// `R2UR P, URd, Ra` (ptxas's uniformization loop): URd = the first active lane's
         /// value, and per lane P = (its value differs), i.e. "not covered yet".
         p: Option<Reg>,
+        /// `R2UR.OR P, ...`: P = P | (its value differs) (the second half of a 64-bit
+        /// address; probes/memhints).
+        or: bool,
     },
     /// Warp-collective ballot: `d` (UR/R) = mask of active lanes whose `a` holds.
     VoteAny {
         d: Reg,
         a: Pred,
+        /// PTX membermask when not the full warp (as `Redux::mask`; E-WARPCOLL).
+        mask: Option<Val>,
+    },
+    /// Warp-collective match, SASS `MATCH.ANY[.U64] Rd, Ra` (`match.any.sync.b32` / `.b64`):
+    /// per lane, `d` = mask of the active lanes whose `a` (64 bits if `wide`) equals its own
+    /// (probes/match_any).
+    MatchAny {
+        d: Reg,
+        a: Val,
+        wide: bool,
     },
     /// Find leading one: bit index of the most significant set bit, or 0xffffffff. `sh`
     /// (FLO.SH): 31 - that index (the left shift that normalizes `a`), 0xffffffff for 0.
@@ -559,9 +709,12 @@ pub enum Op {
         max: bool,
         /// `-Rb` (DeepEP: `VIADDMNMX R5, R23, -R45, 0x20, PT`).
         neg_b: bool,
+        /// `.RELU`: the result clamped below at 0 (signed).
+        relu: bool,
     },
     /// SASS `VIMNMX3 d, a, b, c, sel`: the minimum (sel PT) or maximum (!PT) of three 32-bit
-    /// integers, signed unless `.U32`.
+    /// integers, signed unless `.U32`. `x16` (`.U16x2` / `.S16x2`, also two-operand VIMNMX
+    /// with c = b): per 16-bit lane, the lanes packed back in place (N-INT16X2).
     IntMnmx3 {
         d: Reg,
         a: Val,
@@ -569,12 +722,20 @@ pub enum Op {
         c: Val,
         signed: bool,
         max: bool,
+        x16: bool,
+        /// `.RELU`: the (signed) result clamped below at 0, per lane with `x16`.
+        relu: bool,
     },
-    /// SASS `P2R d, PR, a, mask`: d = (a & !mask) | (bit i = Pi, for i in mask).
+    /// SASS `P2R d, PR, a, mask`: d = (a & !mask) | (bit i = Pi, for i in mask). `uniform`:
+    /// `UP2UR URd, UPR, URa, mask`, the bits from the uniform predicates UP0..UP6. Bit 7 is
+    /// PT / UPT (1). `shift` (`.B1`..`.B3`: 8, 16, 24) moves mask and bits to that byte.
     P2r {
         d: Reg,
         a: Val,
         mask: u32,
+        uniform: bool,
+        #[serde(default)]
+        shift: u8,
     },
     /// Load from constant bank `bank` at `base + off` (SASS `LDC R, c[0x2][R6+0xc]`). Banks
     /// other than 0 are the cubin's `.nv.constant<bank>.<kernel>` section, copied into `data`
@@ -593,6 +754,10 @@ pub enum Op {
         d: Reg,
         a: Val,
         op: ReduxOp,
+        /// PTX `redux.sync` membermask when not the full warp (immediate or register): the
+        /// lanes it names execute it together; executing lanes that differ from it are
+        /// reported (E-WARPCOLL, probes/redux_mask). None: the full warp (and SASS).
+        mask: Option<Val>,
     },
     /// Atomic read-modify-write on memory; `d` gets the old value.
     Atom {
@@ -628,6 +793,8 @@ pub enum Op {
         shift: u8,
         cout: Option<Reg>,
         neg_a: bool,
+        /// `LEA Rd, P, Ra, -Rb, s`: (a << s) + ~b + 1, with the carry of that add (l2.rs).
+        neg_b: bool,
     },
     /// Funnel shift of the 64-bit value `hi:lo`; result is the high or low 32 bits. The u32
     /// shift amount is clamped to 32 (`wide = false`: SHF .U32 / .S32, PTX shf.*.clamp,
@@ -691,11 +858,16 @@ pub enum Op {
         d: Reg,
         a: Pred,
         uni: bool,
+        /// PTX membermask when not the full warp (as `Redux::mask`; E-WARPCOLL).
+        mask: Option<Val>,
     },
     /// Warp-collective: exactly one active thread (the lowest lane) gets `d = true`.
+    /// `mask`: a PTX membermask held in a register; every lane must read the full warp
+    /// (E-ELECT).
     Elect {
         d: Reg,
         lane: Option<Reg>,
+        mask: Option<Val>,
     },
     /// f32 add. Each input's sign is first cleared (`abs`, `|R|`) then flipped (`neg`, `-R`).
     /// `ftz` (`.FTZ`): subnormal inputs and results are flushed to zero of the same sign;
@@ -727,7 +899,10 @@ pub enum Op {
     /// SASS `FMNMX d, a, b, p` (`min.f32` / `max.f32`): d = p ? min(a, b) : max(a, b); a NaN
     /// operand is ignored unless both are NaN. `c` (FMNMX3): the minimum / maximum of three.
     /// `nan` (`.NAN`, `min.NaN.f32`): a NaN operand makes the result NaN. Operand modifiers
-    /// as for Ffma.
+    /// as for Ffma. `xorsign` (`.XORSIGN`, `min.xorsign.abs.f32`, two operands): the minimum /
+    /// maximum of |a| and |b| with the sign bit sign(a) XOR sign(b) of the unmodified operands
+    /// (a NaN operand's sign included); a NaN result is the canonical NaN (probes/fmnmx_xorsign,
+    /// N-XORSIGN).
     Fmnmx {
         d: Reg,
         a: Val,
@@ -738,6 +913,7 @@ pub enum Op {
         min: Pred,
         ftz: bool,
         nan: bool,
+        xorsign: bool,
     },
     /// SASS `FSETP.<cmp>.<bop> Pd, PT, a, b, Pc`: Pd = (a cmp b) bop Pc. Operand modifiers as
     /// for Fadd; `ftz`: subnormal operands compare as zero.
@@ -752,17 +928,44 @@ pub enum Op {
         bop: BoolOp,
         ftz: bool,
     },
-    /// SASS `HSETP2.BF16_V2.<cmp>.<bop> Pd, PT, a.Hx_Hx, b.Hy_Hy, Pc` (`setp.<cmp>.bf16`): one
-    /// bf16 lane of each operand (`hi`: the high half), compared as the exact f32 widening;
-    /// Pd = (a cmp b) bop Pc. An immediate pair is `b` with `hi[1] = false`.
+    /// SASS `HSETP2[.BF16_V2].<cmp>.<bop> Pd, Pq, a, b, Pc` (`setp.<cmp>.f16[x2]` / `.bf16[x2]`):
+    /// per lane k, the halves `sel` picks (bf16, or f16 with `f16`) widened exactly to f32,
+    /// `abs` then `neg` applied, compared; Pd = (lane 0) bop Pc, Pq (if any) = (lane 1) bop Pc.
     Hsetp2Bf16 {
+        d: Reg,
+        q: Option<Reg>,
+        cmp: FCmp,
+        a: Val,
+        b: Val,
+        sel: [HSel; 2],
+        neg: [bool; 2],
+        abs: [bool; 2],
+        c: Pred,
+        bop: BoolOp,
+        f16: bool,
+    },
+    /// `movmatrix.sync.aligned.m8n8.trans.b16 d, a` (SASS `MOVM.16.MT88 Rd, Ra`, warp-collective):
+    /// the 8x8 matrix of 16-bit elements whose row g = lane / 4, columns 2t, 2t + 1 (t = lane % 4)
+    /// are lane's low and high halves, transposed (probes/movm).
+    MovMatrix {
+        d: Reg,
+        a: Val,
+    },
+    /// SASS `HSET2[.BF16_V2][.BF].<cmp>.<bop> d, a, b, Pc` (`set.<cmp>.{u32,f16x2,bf16x2}.{f16x2,
+    /// bf16x2}`): `Hsetp2Bf16`'s per-lane result combined with Pc, as a register: half k is
+    /// 0xffff when true (`bf`: 1.0 in the operand format), else 0 (probes/hset2).
+    Hset2 {
         d: Reg,
         cmp: FCmp,
         a: Val,
         b: Val,
-        hi: [bool; 2],
+        sel: [HSel; 2],
+        neg: [bool; 2],
+        abs: [bool; 2],
         c: Pred,
         bop: BoolOp,
+        f16: bool,
+        bf: bool,
     },
     /// SASS `FSET.BF.cmp.bop d, a, b, c`: Fsetp's predicate as a register, 1.0f when true
     /// (`.BF`), else 0.
@@ -795,11 +998,14 @@ pub enum Op {
         b: Val,
     },
     /// SASS `R2P PR, a[.Bk], mask`: predicate Pi = bit `shift` + i of a (`shift` = 8k for
-    /// byte k), for i in mask (inverse of P2R).
+    /// byte k), for i in mask (inverse of P2R). `uniform`: `UR2UP UPR, URa[.Bk][, mask]`, the
+    /// uniform predicates UP0..UP6.
     R2p {
         a: Val,
         mask: u32,
         shift: u8,
+        #[serde(default)]
+        uniform: bool,
     },
     /// SASS `F2FP.BF16.F32.PACK_AB d, a, b`: d = bf16(a) << 16 | bf16(b), round to nearest even.
     F2fpBf16 {
@@ -807,23 +1013,94 @@ pub enum Op {
         a: Val,
         b: Val,
     },
-    /// Packed f32x2 FMA, round to nearest (`fma.rn.f32x2`, SASS FFMA2): `d+i = a_i*b_i + c_i`
-    /// for lanes i = 0, 1. `neg`: operand a / b / c negated (sign bit flipped per lane,
-    /// `-R16.F32`).
+    /// Packed f32x2 FMA (`fma.rn.f32x2`, SASS FFMA2): `d+i = a_i*b_i + c_i` for lanes i = 0, 1,
+    /// one rounding in mode `rnd` (`.RZ` / `.RM` / `.RP`, probes/bf16_ext). `neg`: operand
+    /// a / b / c negated (sign bit flipped per lane, `-R16.F32`).
     Ffma2 {
         d: Reg,
         a: (Val, F2Lanes),
         b: (Val, F2Lanes),
         c: (Val, F2Lanes),
         neg: [bool; 3],
+        /// `|R|` operands (SASS only; applied before `neg`).
+        abs: [bool; 3],
+        rnd: Rnd,
     },
-    /// Packed half2 FMA `d = a*b + c` (per 16-bit half).
+    /// Packed half2 FMA `d = a*b + c` (per 16-bit half), SASS `HFMA2` (`HMUL2` is c = -0,
+    /// `HADD2` is b = 1.0; PTX `fma` / `mul` / `add` / `sub` `.f16[x2]`): `sel` picks which half
+    /// of each operand feeds both lanes (`.H0_H0` / `.H1_H1`); `abs_a` clears a's sign bits
+    /// (`|R|`; PTX `abs.f16x2` is `HADD2 d, |R|, -RZ.H0_H0`), then `neg_a` / `neg_c` flip
+    /// signs.
     Hfma2 {
         d: Reg,
         a: Val,
         b: Val,
         c: Val,
+        abs_a: bool,
         neg_a: bool,
+        neg_c: bool,
+        sel: [HSel; 3],
+    },
+    /// Packed bf16x2 FMA, SASS `HFMA2.BF16_V2[.RELU]` (`HMUL2.BF16_V2` a*b is c = -0,
+    /// `HADD2.BF16_V2` a+b is b = 1.0; PTX `fma` / `mul` / `add` / `sub` `.rn.bf16x2` / `.bf16`,
+    /// `neg.bf16x2`): per lane, a_i*b_i + c_i rounded once to bf16, nearest even, subnormals
+    /// kept, every NaN result 0x7fff; `sel`: which half of each operand feeds both lanes;
+    /// `abs`: the operand's sign bits cleared first (`|R|`; Triton's bf16 abs is
+    /// `HFMA2.BF16_V2 d, -RZ.H0_H0, RZ.H0_H0, |R|`, PTX `abs.bf16x2`), then `neg`: the sign bits
+    /// flipped; `relu`: a negative result (-0 included) becomes +0 (N-BF16X2).
+    Hfma2Bf16 {
+        d: Reg,
+        a: Val,
+        b: Val,
+        c: Val,
+        sel: [HSel; 3],
+        neg: [bool; 3],
+        abs: [bool; 3],
+        relu: bool,
+    },
+    /// Mixed bf16 / f32 FMA, SASS `FHFMA.BF16[.RZ|.RM|.RP][.SAT] d, a[.H1], b[.H1], c`
+    /// (`fma.<rnd>[.sat].f32.bf16`; `FHADD.BF16 d, a, c` is b = 1.0, `add` / `sub .f32.bf16`):
+    /// d = a*b + c with a, b the bf16 halves `hi` selects (widened exactly) and c an f32, one
+    /// rounding to f32 in mode `rnd` (subnormals kept, canonical NaN; `sat` clamps to [+0, 1]
+    /// as FFMA.SAT). `neg`: sign flips of a / b / c (N-BF16X2, probes/bf16_ext).
+    FfmaBf16 {
+        d: Reg,
+        a: Val,
+        b: Val,
+        c: Val,
+        hi: [bool; 2],
+        neg: [bool; 3],
+        rnd: Rnd,
+        sat: bool,
+    },
+    /// SASS `HMNMX2.BF16_V2[.NAN][.XORSIGN] d, a, b, p` (`min` / `max` [.NaN] [.xorsign.abs]
+    /// `.bf16x2` / `.bf16`): per lane, `p` true the minimum, false the maximum, of the bf16
+    /// lanes (`sel`) compared as their f32 widenings, with FMNMX's rules (-0 below +0, one NaN
+    /// ignored unless `nan`); `xorsign`: of |a| and |b| with the sign sign(a) XOR sign(b);
+    /// every NaN result 0x7fff (N-BF16X2, probes/bf16_ext).
+    Hmnmx2Bf16 {
+        d: Reg,
+        a: Val,
+        b: Val,
+        sel: [HSel; 2],
+        min: Pred,
+        nan: bool,
+        xorsign: bool,
+    },
+    /// SASS `VHMNMX[.BF16_V2][.NAN] d, a, b, c, p` (ptxas fuses two half min / max): per lane,
+    /// `p` true the minimum, false the maximum, of the three halves `sel` picks (f16, or bf16
+    /// unless `f16`), `abs` clearing their sign bits first, with FMNMX's rules (-0 below +0,
+    /// NaNs ignored unless `nan`); a NaN result is 0x7fff (probes/vhmnmx).
+    Vhmnmx {
+        d: Reg,
+        a: Val,
+        b: Val,
+        c: Val,
+        sel: [HSel; 3],
+        abs: [bool; 3],
+        min: Pred,
+        nan: bool,
+        f16: bool,
     },
     /// Two lanes into a narrow format: SASS `F2FP[.SATFINITE][.RELU].<to>.F32.PACK_AB[_MERGE_C]
     /// [.RZ|.RP|.RS] Rd, Ra, Rb[, Rc]` and the PTX `cvt.<rnd>[.satfinite][.relu].<to>x2.f32 d, a,
@@ -861,6 +1138,19 @@ pub enum Op {
         from: Lp,
         to: Lp,
         relu: bool,
+        /// Further source bytes to skip (`Ra.B1` / `.B2` / `.B3` of an e2m1x2 byte): the
+        /// source starts at byte 2 * hi + byte.
+        byte: u8,
+    },
+    /// `cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 d, a, scale` / SASS
+    /// `F2FP.SATFINITE.BF16.S2_6.UNPACK_B Rd, Ra[.H1], Rb.H0 | imm.H0`: two s2f6 codes (the
+    /// 16 bits of `a` at its high half if `hi`, else its low half) times the two ue8m0 scales
+    /// in the low 16 bits of `scale` -> bf16x2 (`lowp::cvt_s2f6x2_scaled`). N-CVT-LP.
+    CvtS2f6x2 {
+        d: Reg,
+        a: Val,
+        hi: bool,
+        scale: Val,
     },
     /// bf16 -> f32 (exact).
     CvtF32Bf16 {
@@ -892,6 +1182,19 @@ pub enum Op {
         v: Val,
         sync: Option<MemSync>,
     },
+    /// `multimem.ld_reduce` (SASS `LDGMC`, S-MULTIMEM): load `bytes` from every location the
+    /// multicast address names and reduce them lane by lane. `acc`: `.acc::f32` (16-bit
+    /// floats) / `.acc::f16` (fp8), SASS `HPADD`. `sync` None: `.weak`.
+    LdReduce {
+        d: Reg,
+        n: u8,
+        bytes: u8,
+        addr: Addr,
+        op: McOp,
+        ty: McTy,
+        acc: bool,
+        sync: Option<MemSync>,
+    },
     /// Branch. `any`: the whole active split branches if any active thread's guard holds.
     Bra {
         target: usize,
@@ -906,11 +1209,15 @@ pub enum Op {
         /// SASS `BRA.DIV URm, target` (ptxas's collective lowering of a run-time member
         /// mask): warp-collective; every lane of the executing split branches unless the guard
         /// holds on all of them and their lane mask equals URm (GB300: fixtures/s_warpcoll).
+        /// With `any` set: SASS `BRA.CONV URm, target`, the inverse test (branches exactly
+        /// when that BRA.DIV would fall through).
         div: Option<Val>,
     },
     /// SASS `BRX Ra -off` / `BRXU URa -off` (ptxas jump tables): jump to the code address
     /// `Ra + next + off` within this kernel (16 bytes per instruction), per thread. `targets`:
     /// the instructions nvdisasm lists as `BRANCH_TARGETS`; any other address is an error.
+    /// PTX `brx.idx i, $L` (`off` 0): jump to `targets[i]` (the `.branchtargets` list); an
+    /// index outside it is an error.
     Brx {
         base: Val,
         off: i64,
@@ -967,6 +1274,20 @@ pub enum Op {
     /// skips its `BSYNC`); lanes parked at that BSYNC no longer wait for them.
     Break {
         b: u8,
+        /// `BREAK Pc, Bb` (`@!P6 BREAK.RELIABLE !P5, B1`, ptxas's div.rn slow path): only the
+        /// lanes where the guard and `cond` hold leave the barrier, as `BRA Pc` branches where
+        /// both hold (S-BRA-COND).
+        cond: Option<Pred>,
+    },
+    /// SASS `BMOV.32[.CLEAR] Rd, Bb` (`to_b` false): Rd = convergence barrier b's lane mask in
+    /// every executing lane (`.CLEAR`: then b records no lane); `BMOV.32 Bb, Ra` (`to_b`):
+    /// barrier b's mask = Ra (ptxas's save / clear / restore of a BSSY barrier around a region
+    /// of Triton code). ASSUME(E-BSYNC)
+    BMov {
+        b: u8,
+        r: Reg,
+        to_b: bool,
+        clear: bool,
     },
     /// `bar.sync id[, count]`; no count = all threads of the CTA. `arrive`: `bar.arrive id,
     /// count` (SASS `BAR.ARV`): the thread counts toward (and releases into) the barrier's
@@ -983,6 +1304,17 @@ pub enum Op {
         /// `WARPSYNC.COLLECTIVE` region): every live lane of a warp executes the same barrier
         /// instruction together (E-ALIGNED).
         aligned: bool,
+        /// `bar.red` (SASS `BAR.RED`): the waiting thread contributes this predicate; at
+        /// release every waiter's barrier result (read by `BarResult`) is the reduction over
+        /// the generation's waiters. ASSUME(E-BAR-RED)
+        red: Option<(BarRedOp, Pred)>,
+    },
+    /// SASS `B2R.RESULT Rd[, Pd]` (the result half of PTX `bar.red`): `d` = the number of
+    /// true contributions of this thread's last `bar.red.popc` generation, `p` = the
+    /// `.and` / `.or` result of its last `bar.red.and` / `.or`. ASSUME(E-BAR-RED)
+    BarResult {
+        d: Option<Reg>,
+        p: Option<Reg>,
     },
     /// `mbarrier.init`. `encoded`: `count` is the raw 64-bit state word (SASS SYNCS.EXCH.64).
     MbarInit {
@@ -997,8 +1329,9 @@ pub enum Op {
         /// `.shared::cluster` address (SASS `SYNCS.ARRIVE.*.RED`): the rank byte selects the
         /// CTA whose mbarrier receives the arrival.
         remote: bool,
-        /// PTX `mbarrier.arrive [a], count` (None: one arrival); 1 and 0 (no arrival: SASS
-        /// `.A0TR` = `mbarrier.expect_tx`, `.A0TX` = `mbarrier.complete_tx`) are modeled.
+        /// PTX `mbarrier.arrive [a], count` (None: one arrival; SASS `.ART0`: the count in a
+        /// register); 0 = no arrival (SASS `.A0TR` = `mbarrier.expect_tx`, `.A0TX` =
+        /// `mbarrier.complete_tx`).
         count: Option<Val>,
         /// `tx` completes transaction bytes instead of expecting them (`mbarrier.complete_tx`).
         complete: bool,
@@ -1054,6 +1387,8 @@ pub enum Op {
         /// Predicate result (`shfl.sync ... d|p`, SASS `SHFL.UP P0, ...`): the source lane was
         /// in range.
         p: Option<Reg>,
+        /// PTX membermask when not the full warp (as `Redux::mask`; E-WARPCOLL).
+        mask: Option<Val>,
     },
     /// `bfe d, a, pos, len`: bit-field extract (sign-extended if `signed`).
     Bfe {
@@ -1062,6 +1397,15 @@ pub enum Op {
         pos: Val,
         len: Val,
         signed: bool,
+    },
+    /// `bfi.b32 d, a, b, pos, len`: b with bits pos .. pos + len - 1 replaced by the low bits of
+    /// a; pos and len taken mod 256, bits above 31 dropped (len 0 or pos > 31: b).
+    Bfi {
+        d: Reg,
+        a: Val,
+        b: Val,
+        pos: Val,
+        len: Val,
     },
     /// `tcgen05.st.sync.aligned.32x32b.xN [taddr + off], {v..}`: TMEM lane (taddr lane +
     /// this lane), columns col..col+N-1. Asynchronous until `tcgen05.wait::st`.
@@ -1074,6 +1418,10 @@ pub enum Op {
         tracked: bool,
         /// SASS `STTM.16dp32bit_t0_t15` / `_t16_t31`: as `TmemLd::half`.
         half: Option<u8>,
+        /// `.16x256b` / `.16x128b` (SASS `STTM.16dp256bit` / `.16dp128bit`): the
+        /// `TmemLd` layouts of those shapes (probes/tmem_st16).
+        s16x256b: bool,
+        s16x128b: bool,
     },
     /// SASS `LEA.HI d, a, b, c, s`: d = b + high word of ({c:a} << s). `sx32`
     /// (`LEA.HI.SX32 d, a, b, s`): the upper word is a's sign instead of c.
@@ -1086,6 +1434,8 @@ pub enum Op {
         sx32: bool,
         /// `-Rb`: b enters as its two's complement.
         neg_b: bool,
+        /// `~Rb` (`LEA.HI.X`): b enters complemented (the high word of a 64-bit subtraction).
+        not_b: bool,
         /// `LEA.HI.X`: carry-in added to the result.
         cin: Option<Pred>,
         /// `LEA.HI d, P, a, b, c, s`: carry-out of the 32-bit add.
@@ -1109,7 +1459,8 @@ pub enum Op {
         d: Reg,
         a: Val,
         signed: bool,
-        /// Destination width: 32, or 64 (`F2I.U64.TRUNC`, a register pair).
+        /// Destination width: 16 (`F2I.S16` / `.U16`: saturated to 16 bits, extended), 32, or 64
+        /// (`F2I.U64.TRUNC`, a register pair).
         bits: u8,
         /// Rounding to an integer: `.TRUNC` Rz, none Rn (cvt.rni: libdevice's sinf / cosf
         /// range reduction), `.FLOOR` Rm, `.CEIL` Rp.
@@ -1206,13 +1557,18 @@ pub enum Op {
         /// Byte offset added to `mbar`.
         mbar_off: u32,
         tmap: Val,
-        /// `dims` coordinates; `tile::gather4` (dims = 2): 5, the column then four rows.
+        /// `dims` coordinates; `tile::gather4` (dims = 2): 5, the column then four rows;
+        /// im2col (SASS `.IM2COL`, dims 3..5): dims + 1, the last the packed im2col offsets
+        /// (sim `im2col.rs`).
         coords: Vec<Val>,
         /// `.multicast::cluster` ctaMask: the box lands at the same offsets in every CTA rank
         /// in the mask, each completing the transaction on its own mbarrier at `mbar`'s offset.
         mask: Option<Val>,
         /// `.cta_group::2` (SASS `.2CTA`): the mbarrier may be in the peer CTA of the pair.
         pair: bool,
+        /// `UBLKCP.S.S` / `cp.async.bulk.shared::cluster.shared::cta` (`dims = 0`): `coords[0]`
+        /// is a shared::cta address of the issuing CTA, not a global one.
+        src_smem: bool,
     },
     /// cp.async.bulk.tensor (shared::cta -> global), bulk_group completion.
     TmaStore {
@@ -1221,7 +1577,14 @@ pub enum Op {
         /// Byte offset added to `src`.
         off: u32,
         tmap: Val,
+        /// `dims` coordinates; im2col_no_offs (SASS `UTMASTG.<n>D.IM2COL`): dims + 1, the
+        /// last 0.
         coords: Vec<Val>,
+        /// `cp.reduce.async.bulk...add.f32` (SASS `UBLKRED.G.S.ADD.F32.RN`, `dims = 0` only):
+        /// each f32 of the source is added to the global word instead of stored (an atomic
+        /// read-modify-write per word, round to nearest, subnormals kept, NaN canonical;
+        /// N-BULK-RED).
+        red: bool,
     },
     /// cp.async.bulk.commit_group: close the issuing thread's open bulk group.
     BulkCommit,
@@ -1232,8 +1595,9 @@ pub enum Op {
         /// SASS `DEPBAR.LE SBk, n`: the scoreboard k. Only the bulk groups committed on SBk
         /// (`Kernel::bulk_commit_sb`) count; None (PTX): every group.
         sb: Option<u8>,
-        /// SASS `DEPBAR.LE SBk, 0` on a scoreboard that also counts cp.async groups on some
-        /// path: also complete every cp.async of the thread (the scoreboard is empty after).
+        /// SASS `DEPBAR.LE SBk, n` on a scoreboard that also counts cp.async groups on some
+        /// path: also complete the thread's cp.async groups but the newest n (the scoreboard
+        /// holds at most n of both kinds together, so at most n of each).
         cp: bool,
     },
     /// `tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [dst], ncols` (warp-wide).
@@ -1293,6 +1657,9 @@ pub enum Op {
         /// Block-scaled kinds: the TMEM addresses of the A and B scale factors
         /// (`[scale_a], [scale_b]`).
         scale: Option<(Val, Val)>,
+        /// `scale-input-d` (kind::f16 / kind::tf32; SASS `UTCHMMA ..., UPT, s`): D = A B +
+        /// D * 2^-scale_d; 0 = none.
+        scale_d: u8,
     },
     /// `tcgen05.cp.cta_group::1.32x128b.warpx4 [taddr], sdesc` (SASS
     /// `UTCCP.T.S.4x32dp128bit`): copies a 32-row x 16-byte shared-memory matrix (K-major
@@ -1345,6 +1712,9 @@ pub enum Op {
         /// [ABS].F32[.NAN] Rred, Rd, tmem[..]`): also the min / max of the N loaded f32 values
         /// into this register (`ReduxOp::MinF` / `MaxF` semantics; GB300: probes/tmem_ldred).
         red: Option<(Reg, ReduxOp)>,
+        /// PTX: the destination registers when they are not consecutive (`d` is the first);
+        /// register j of the load goes to `regs[j]`.
+        regs: Option<Vec<Reg>>,
     },
     /// `tcgen05.wait::ld`
     TmemWaitLd,
@@ -1374,6 +1744,12 @@ pub enum Op {
     /// PTX `div.{rn,rz,rm,rp}.f64 d, a, b` (`b` Some) / `sqrt.{rn,..}.f64 d, a` (`b` None):
     /// IEEE, correctly rounded (ptxas's MUFU.RCP64H / RSQ64H + DFMA expansions are; the NaN
     /// results are measured: probes/f64_ptx).
+    /// PTX `rsqrt.approx.f64 d, a` as ptxas expands it (`fp::rsqrt_approx_f64`: MUFU.RSQ64H,
+    /// one DFMA refinement, a slow path for zero / Inf / NaN / negative / subnormal a).
+    Rsqrt64Approx {
+        d: Reg,
+        a: Val,
+    },
     DivSqrt64 {
         d: Reg,
         a: Val,
@@ -1401,6 +1777,22 @@ pub enum Op {
         c: Pred,
         bop: BoolOp,
     },
+    /// A float conversion between IEEE formats, or (`int`) a round to an integral value in the
+    /// same format: SASS `FRND[.F64|.F16|.BF16][.FTZ][.TRUNC|.FLOOR|.CEIL]` (PTX
+    /// `cvt.r{n,z,m,p}i[.ftz].<t>.<t>`), `F2F.{BF16,F16}.F64[.RZ|.RM|.RP]`, `F2F.F64.{BF16,F16}`,
+    /// `F2F.BF16.F16[.R*]`, `F2F.F16.BF16[.R*]`. A 16-bit source is the low half of `a`, the
+    /// high half with `hi` (`Ra.H1`); a 16-bit result is zero-extended. `ftz` (f32 only):
+    /// a subnormal input is a signed zero. NaN results: `fp::fcvt` (N-FCVT).
+    FCvt {
+        d: Reg,
+        a: Val,
+        from: FFmt,
+        to: FFmt,
+        rnd: Rnd,
+        ftz: bool,
+        int: bool,
+        hi: bool,
+    },
     /// SASS `F2F.F32.F64 Rd, Ra` (f64 pair -> f32, rounded per `rnd`) / `F2F.F64.F32 Rd, Ra`
     /// (f32 -> f64 pair, exact).
     F2F {
@@ -1423,6 +1815,16 @@ pub enum Op {
         a: Val,
         bf16: bool,
     },
+    /// SASS `F2FP [.SATFINITE] [.RELU] .TF32.F32.PACK_B [.RZ] Rd, Ra` (cvt.rn / .rz [.relu]
+    /// [.satfinite] .tf32.f32): `a` rounded to tf32 (10 mantissa bits), nearest even or toward
+    /// zero (`rz`), in an f32 container (fp::cvt_tf32; probes/cvt_tf32_rn).
+    CvtTf32 {
+        d: Reg,
+        a: Val,
+        rz: bool,
+        sat: bool,
+        relu: bool,
+    },
     /// SASS `F2FP.F16.F32.PACK_AB Rd, Ra, Rb`: d = f16(a) << 16 | f16(b), round to nearest.
     F2fpF16 {
         d: Reg,
@@ -1439,11 +1841,25 @@ pub enum Op {
         b: Val,
         rn: bool,
     },
-    /// SASS `LDG.E.ENL2.256 Rhi, Rlo, [Ra.64]` (`ld.global.v8.b32`): a 32-byte global load;
-    /// bytes 0..16 go to Rlo..Rlo+3, bytes 16..32 to Rhi..Rhi+3 (checked against ptxas).
+    /// SASS `LDG.E.ENL2.256 Rhi, Rlo, [Ra.64][, mask]` (`ld.global.v8.b32` / `.v4.b64`): a
+    /// 32-byte global load; bytes 0..16 go to Rlo..Rlo+3, bytes 16..32 to Rhi..Rhi+3 (checked
+    /// against ptxas). `mask` (bit i: word i; 0xff without the operand, ptxas's form when only
+    /// some elements are used): each half's selected words go, in order, to consecutive
+    /// registers from that half's base (RZ when the half selects none); the rest are not
+    /// written (probes/ldg256_mask).
     Ld256 {
         hi: Reg,
         lo: Reg,
+        addr: Addr,
+        sync: Option<MemSync>,
+        mask: u8,
+    },
+    /// SASS `STG.E.ENL2.256 [Ra.64], Rlo, Rhi` (`st.global.v8.b32`): a 32-byte global store;
+    /// bytes 0..16 come from Rlo..Rlo+3, bytes 16..32 from Rhi..Rhi+3 (the reverse of the
+    /// load's operand order; ptxas, probes/ldst256).
+    St256 {
+        lo: Reg,
+        hi: Reg,
         addr: Addr,
         sync: Option<MemSync>,
     },
@@ -1469,6 +1885,10 @@ pub enum Op {
         n: u8,
         addr: Addr,
         trans: bool,
+        /// `ldmatrix.m16n16.x{1,2}.trans.b8` (SASS `LDSM.8.MT1616[.2]`): n = 2 x the matrix
+        /// count registers; byte b of register 2m + h of lane l = matrix m (rows addressed by
+        /// lanes 16m..16m+15) row 4(l%4) + b, column l/4 + 8h (probes/ldsm_b8).
+        b8: bool,
     },
     /// `cp.async.cg.shared.global [dst], [src], bytes` (SASS `LDGSTS.E.BYPASS[.LTC128B].128
     /// [Rd+off], desc[UR][Ra.64]`): an asynchronous copy from global to this CTA's shared
@@ -1481,6 +1901,13 @@ pub enum Op {
         /// zeros are written and global memory is not read (Triton's masked prefetch past the
         /// end: `!PT`).
         src_ok: Pred,
+        /// PTX `cp.async ..., cp-size, src-size` with src-size not cp-size: the first
+        /// src-size bytes are copied, the rest zero-filled (src-size > cp-size: a violation).
+        src_size: Option<Val>,
+        /// SASS `LDGSTS...ZFILL`: the source address's low bits (mod `bytes`) are the number
+        /// of trailing zero bytes; the copied bytes start at the address rounded down
+        /// (ptxas encodes src-size s as address + bytes - s; probes/cpasync_srcsize).
+        zfill: bool,
     },
     /// `cp.async.commit_group` (SASS `LDGDEPBAR`): close the open group.
     CpAsyncCommit,
@@ -1505,13 +1932,23 @@ pub enum Op {
     /// b1 = B[2t+8, 2t+9][g]; c0, c1 = C[g][2t, 2t+1], c2, c3 = C[g+8][2t, 2t+1].
     /// `tf32`: `mma.sync.m16n8k8...tf32` (SASS `HMMA.1688.F32.TF32`): A 16x8 and B 8x8, one
     /// f32 word per element: a0 = A[g][t], a1 = A[g+8][t], a2 = A[g][t+4], a3 = A[g+8][t+4];
-    /// b0 = B[t][g], b1 = B[t+4][g]; C / D as above.
+    /// b0 = B[t][g], b1 = B[t+4][g]; C / D as above. Two A and one B registers:
+    /// `mma.sync.m16n8k8` bf16 (SASS `HMMA.1688.F32.BF16`), the k16 fragments for k < 8.
     Hmma {
         d: Reg,
         a: Vec<Val>,
         b: Vec<Val>,
         c: Vec<Val>,
         tf32: bool,
+        /// `mma.sync.m16n8k32.row.col.satfinite.s32.s8.s8.s32` (SASS `IMMA.16832.S8.S8.SAT`):
+        /// A 16x32 and B 32x8 signed bytes, four per register, C / D s32; the same register
+        /// shapes with k offsets of 4 per lane quad and 16 per register pair: a_j byte i =
+        /// A[g + 8 (j & 1)][4 t + i + 16 (j >> 1)], b_j byte i = B[4 t + i + 16 j][g].
+        /// D = C + A B in exact integers, saturated to s32.
+        s8: bool,
+        /// `mma.sync.m16n8k16.row.col.f32.f16.f16.f32` (SASS `HMMA.16816.F32`): f16 A / B
+        /// elements instead of bf16, the same fragments and model (probes/hmma_f16).
+        f16: bool,
     },
 }
 
@@ -1527,7 +1964,10 @@ impl Op {
         matches!(
             self,
             Op::Ld { sync: Some(_), .. }
+                | Op::LdReduce { sync: Some(_), .. }
                 | Op::St { sync: Some(_), .. }
+                | Op::Ld256 { sync: Some(_), .. }
+                | Op::St256 { sync: Some(_), .. }
                 | Op::BarSync { .. }
                 | Op::MbarInit { .. }
                 | Op::MbarArrive { .. }
@@ -1541,6 +1981,7 @@ impl Op {
                 | Op::EndCollective { .. }
                 | Op::Bsync { .. }
                 | Op::Break { .. }
+                | Op::BMov { .. }
                 | Op::TmemAlloc { .. }
                 | Op::TmemAllocRaw { .. }
                 | Op::StAsync { .. }
@@ -1560,6 +2001,18 @@ impl Op {
     /// SASS barriers are aligned too and the explorer handles barriers on its own.
     pub fn is_aligned_bar(&self) -> bool {
         matches!(self, Op::BarSync { aligned: true, .. })
+    }
+
+    /// The PTX membermask of a warp collective that names part of the warp (`redux.sync`,
+    /// `shfl.sync`, `vote.sync`): the lanes it names execute it together (E-WARPCOLL).
+    pub fn member_mask(&self) -> Option<&Val> {
+        match self {
+            Op::Redux { mask, .. }
+            | Op::Shfl { mask, .. }
+            | Op::VoteAny { mask, .. }
+            | Op::VoteAll { mask, .. } => mask.as_ref(),
+            _ => None,
+        }
     }
 
     pub fn is_warp_aligned(&self) -> bool {
@@ -1598,7 +2051,43 @@ impl Op {
         };
         let vals = self.src_vals();
         vals.iter().for_each(&mut v);
+        // A PTX vector operand is consecutive virtual registers, one per element (st.vN /
+        // st.async.vN / atom.exch.vN `{%r1, %r2, ...}`; vector atom.add.f32: one per 4 bytes;
+        // clusterlaunchcontrol's .b128 response: two 64-bit slots). Elsewhere `Val::Reg(V, k)`
+        // is one register of k 32-bit slots.
+        if let Some((r, k)) = self.vector_src() {
+            out.extend((1..k).map(|i| Reg {
+                file: File::V,
+                idx: r.idx + i,
+            }));
+        }
         out
+    }
+
+    /// The vector source operand of this operation, as (first virtual register, count), when
+    /// it spans several virtual registers (`src_regs`, `dst_regs`).
+    pub fn vector_src(&self) -> Option<(Reg, u16)> {
+        match self {
+            Op::St {
+                v: Val::Reg(r, k), ..
+            }
+            | Op::StAsync {
+                v: Val::Reg(r, k), ..
+            }
+            | Op::Atom {
+                op: AtomOp::Exch,
+                v: Val::Reg(r, k),
+                ..
+            } if r.file == File::V && *k >= 2 => Some((*r, *k as u16)),
+            Op::Atom {
+                op: AtomOp::FAddFtz,
+                bytes: b @ (8 | 16),
+                v: Val::Reg(r, _),
+                ..
+            } if r.file == File::V => Some((*r, *b as u16 / 4)),
+            Op::ClcQuery { q, .. } if q.file == File::V => Some((*q, 2)),
+            _ => None,
+        }
     }
 
     /// Operand values read by this operation (registers, immediates, constants, special
@@ -1616,19 +2105,26 @@ impl Op {
             | Op::CvtF32Bf16 { a, .. }
             | Op::Cvta { a, .. }
             | Op::CvtInt { a, .. }
-            | Op::R2Ur { a, .. }
+            | Op::R2Ur { a, or: false, .. }
             | Op::Flo { a, .. }
             | Op::Brev { a, .. }
             | Op::I2F { a, .. }
             | Op::F2I { a, .. }
             | Op::Mufu { a, .. }
             | Op::F2F { a, .. }
+            | Op::FCvt { a, .. }
             | Op::CvtF32F16 { a, .. }
             | Op::F2fF16 { a, .. }
+            | Op::CvtTf32 { a, .. }
             | Op::R2p { a, .. }
-            | Op::CvtUnpack { a, .. }
-            | Op::Redux { a, .. } => vec![a.clone()],
+            | Op::CvtUnpack { a, .. } => vec![a.clone()],
+            Op::Redux { a, mask, .. } => {
+                let mut x = vec![a.clone()];
+                x.extend(mask.iter().cloned());
+                x
+            }
             Op::CvtPack { a, b, c, .. } => vec![a.clone(), b.clone(), c.clone()],
+            Op::CvtS2f6x2 { a, scale, .. } => vec![a.clone(), scale.clone()],
             Op::CvtRsX4 { src, rbits, .. } => {
                 let mut x = src.to_vec();
                 x.push(rbits.clone());
@@ -1649,18 +2145,23 @@ impl Op {
                 x.push(pr(min));
                 x
             }
+            Op::Hmnmx2Bf16 { a, b, min, .. } => vec![a.clone(), b.clone(), pr(min)],
+            Op::Vhmnmx { a, b, c, min, .. } => vec![a.clone(), b.clone(), c.clone(), pr(min)],
             Op::Fsetp { a, b, c, .. }
             | Op::Fset { a, b, c, .. }
-            | Op::Hsetp2Bf16 { a, b, c, .. } => {
+            | Op::Hsetp2Bf16 { a, b, c, .. }
+            | Op::Hset2 { a, b, c, .. } => {
                 vec![a.clone(), b.clone(), pr(c)]
             }
             Op::LdConst { base, .. } => vec![base.clone()],
-            Op::P2r { a, mask, .. } => {
+            Op::P2r {
+                a, mask, uniform, ..
+            } => {
                 let mut x = vec![a.clone()];
                 x.extend((0..7).filter(|i| mask >> i & 1 == 1).map(|i| {
                     Val::Reg(
                         Reg {
-                            file: File::P,
+                            file: if *uniform { File::UP } else { File::P },
                             idx: i,
                         },
                         1,
@@ -1694,6 +2195,7 @@ impl Op {
             }
             Op::Dsetp { a, b, c, .. } => vec![a.clone(), b.clone(), pr(c)],
             Op::DsetpMinMax { a, b, .. } => vec![a.clone(), b.clone()],
+            Op::Rsqrt64Approx { a, .. } => vec![a.clone()],
             Op::DivSqrt64 { a, b, .. } => {
                 let mut x = vec![a.clone()];
                 x.extend(b.iter().cloned());
@@ -1711,6 +2213,8 @@ impl Op {
             }
             Op::Dp2a { a, b, c, .. }
             | Op::Hfma2 { a, b, c, .. }
+            | Op::Hfma2Bf16 { a, b, c, .. }
+            | Op::FfmaBf16 { a, b, c, .. }
             | Op::AddMinMax { a, b, c, .. }
             | Op::IntMnmx3 { a, b, c, .. }
             | Op::Prmt {
@@ -1723,9 +2227,32 @@ impl Op {
             }
             Op::Shf { lo, sh, hi, .. } => vec![lo.clone(), sh.clone(), hi.clone()],
             Op::Plop3 { a, b, c, .. } => vec![pr(a), pr(b), pr(c)],
-            Op::VoteAny { a, .. } | Op::VoteAll { a, .. } => vec![pr(a)],
+            Op::R2Ur {
+                a,
+                p: Some(p),
+                or: true,
+                ..
+            } => vec![a.clone(), Val::Reg(*p, 1)],
+            Op::R2Ur { a, .. } => vec![a.clone()],
+            Op::VoteAny { a, mask, .. } | Op::VoteAll { a, mask, .. } => {
+                let mut x = vec![pr(a)];
+                x.extend(mask.iter().cloned());
+                x
+            }
+            Op::MatchAny { a, .. } => vec![a.clone()],
             Op::Bfe { a, pos, len, .. } => vec![a.clone(), pos.clone(), len.clone()],
-            Op::Shfl { a, lane, clamp, .. } => vec![a.clone(), lane.clone(), clamp.clone()],
+            Op::Bfi { a, b, pos, len, .. } => vec![a.clone(), b.clone(), pos.clone(), len.clone()],
+            Op::Shfl {
+                a,
+                lane,
+                clamp,
+                mask,
+                ..
+            } => {
+                let mut x = vec![a.clone(), lane.clone(), clamp.clone()];
+                x.extend(mask.iter().cloned());
+                x
+            }
             Op::StMatrix { addr, v: vs, .. } => {
                 let mut x = ad(addr);
                 x.extend(vs.iter().cloned());
@@ -1747,15 +2274,21 @@ impl Op {
                 x
             }
             Op::CpAsync {
-                dst, src, src_ok, ..
+                dst,
+                src,
+                src_ok,
+                src_size,
+                ..
             } => {
                 let mut x = ad(dst);
                 x.extend(ad(src));
                 x.push(pr(src_ok));
+                x.extend(src_size.iter().cloned());
                 x
             }
             Op::CpAsyncMbarArrive { addr, .. } => ad(addr),
             Op::Hmma { a, b, c, .. } => a.iter().chain(b).chain(c).cloned().collect(),
+            Op::LdReduce { addr, .. } => ad(addr),
             Op::Ld { addr, .. } | Op::MbarInval { addr } | Op::TmemAlloc { dst: addr, .. } => {
                 let mut x = ad(addr);
                 if let Op::TmemAlloc { ncols, .. } = self {
@@ -1768,11 +2301,36 @@ impl Op {
                 x.push(y.clone());
                 x
             }
+            Op::St256 { addr, lo, hi, .. } => {
+                let mut x = ad(addr);
+                x.push(Val::Reg(*lo, 4));
+                x.push(Val::Reg(*hi, 4));
+                x
+            }
             Op::Atom {
-                addr, v: y, new, ..
+                addr,
+                v: y,
+                new,
+                op,
+                bytes,
+                ..
             } => {
                 let mut x = ad(addr);
-                x.push(y.clone());
+                match y {
+                    // A vector red.add.f32 (REDG.E.ADD.F32x2 / F32x4): every data register.
+                    Val::Reg(r, _) if *op == AtomOp::FAddFtz && *bytes > 4 => {
+                        for k in 0..(*bytes / 4) as u16 {
+                            x.push(Val::Reg(
+                                Reg {
+                                    file: r.file,
+                                    idx: r.idx + k,
+                                },
+                                1,
+                            ));
+                        }
+                    }
+                    _ => x.push(y.clone()),
+                }
                 x.extend(new.iter().cloned());
                 x
             }
@@ -1794,6 +2352,7 @@ impl Op {
                 x.push(parity.clone());
                 x
             }
+            Op::MovMatrix { a, .. } => vec![a.clone()],
             Op::Ret { addr } => vec![addr.clone()],
             Op::Brx { base, .. } => vec![base.clone()],
             Op::CallAbs { target, .. } => vec![target.clone()],
@@ -1804,10 +2363,12 @@ impl Op {
                 x.extend(div.iter().cloned());
                 x
             }
+            Op::Break { cond: Some(c), .. } => vec![pr(c)],
             Op::WarpSync { mask, .. } | Op::TmemFreeRaw { mask } => vec![mask.clone()],
-            Op::BarSync { id, count, .. } => {
+            Op::BarSync { id, count, red, .. } => {
                 let mut x = vec![id.clone()];
                 x.extend(count.iter().cloned());
+                x.extend(red.iter().map(|(_, p)| pr(p)));
                 x
             }
             Op::ClcTryCancel { resp, mbar, .. } => vec![resp.clone(), mbar.clone()],
@@ -1868,8 +2429,12 @@ impl Op {
                 x
             }
             Op::TmemLd { taddr, .. } => vec![taddr.clone()],
+            Op::BMov { r, to_b: true, .. } => vec![Val::Reg(*r, 1)],
+            Op::BMov { .. } => vec![],
             Op::Bra { div: Some(m), .. } => vec![m.clone()],
+            Op::Elect { mask: Some(m), .. } => vec![m.clone()],
             Op::Elect { .. }
+            | Op::BarResult { .. }
             | Op::EndCollective { .. }
             | Op::Bssy { .. }
             | Op::Bsync { .. }
@@ -1896,15 +2461,32 @@ impl Op {
 
     /// Registers this operation writes (predicates included). Exhaustive.
     pub fn dst_regs(&self) -> Vec<Reg> {
+        // `n` 32-bit slots: SASS registers d..d+n; a PTX virtual register holds up to 64 bits,
+        // so one register.
         let span = |d: Reg, n: u16| {
+            if d.file == File::V {
+                return vec![d];
+            }
             (0..n.max(1))
                 .map(|i| Reg {
                     file: d.file,
-                    idx: d.idx + if d.file == File::V { 0 } else { i },
+                    idx: d.idx + i,
+                })
+                .collect::<Vec<_>>()
+        };
+        // `n` registers d..d+n in every file: one per element of a PTX vector destination
+        // (`ld.v4.f32 {%f1, %f2, %f3, %f4}`, tcgen05.ld, ldmatrix, mma.sync), as the executor
+        // writes them.
+        let regs = |d: Reg, n: u16| {
+            (0..n.max(1))
+                .map(|i| Reg {
+                    file: d.file,
+                    idx: d.idx + i,
                 })
                 .collect::<Vec<_>>()
         };
         match self {
+            Op::BMov { r, to_b: false, .. } => vec![*r],
             Op::Mov { d, a } => match a {
                 Val::Reg(_, n) => span(*d, *n as u16),
                 // `LDC.64 R10, c[..]` / `LDCU.128`: one register per 4 bytes.
@@ -1927,7 +2509,7 @@ impl Op {
                 x
             }
             Op::I2F { d, f64, .. } => span(*d, 1 + *f64 as u16),
-            Op::F2I { d, bits, .. } => span(*d, *bits as u16 / 32),
+            Op::F2I { d, bits, .. } => span(*d, (*bits as u16 / 32).max(1)),
             Op::LdConst { d, bytes, .. } => span(*d, (*bytes as u16 / 4).max(1)),
             Op::MulWide { d, .. } => span(*d, 2),
             Op::Int { d, bits, .. }
@@ -1945,12 +2527,13 @@ impl Op {
                 x.extend(*p);
                 x
             }
-            Op::Elect { d, lane } => {
+            Op::Elect { d, lane, .. } => {
                 let mut x = vec![*d];
                 x.extend(*lane);
                 x
             }
             Op::VoteAny { d, .. }
+            | Op::MatchAny { d, .. }
             | Op::Flo { d, .. }
             | Op::Brev { d, .. }
             | Op::AddMinMax { d, .. }
@@ -1965,17 +2548,22 @@ impl Op {
             | Op::VoteAll { d, .. }
             | Op::Fadd { d, .. }
             | Op::Hfma2 { d, .. }
+            | Op::Hfma2Bf16 { d, .. }
+            | Op::FfmaBf16 { d, .. }
+            | Op::Hmnmx2Bf16 { d, .. }
+            | Op::Vhmnmx { d, .. }
             | Op::CvtF32Bf16 { d, .. }
             | Op::CvtPack { d, .. }
             | Op::CvtRsX4 { d, .. }
             | Op::CvtUnpack { d, .. }
+            | Op::CvtS2f6x2 { d, .. }
             | Op::Shfl { d, p: None, .. }
             | Op::Bfe { d, .. }
+            | Op::Bfi { d, .. }
             | Op::LeaHi { d, cout: None, .. }
             | Op::Mufu { d, .. }
             | Op::Fmnmx { d, .. }
             | Op::Fsetp { d, .. }
-            | Op::Hsetp2Bf16 { d, .. }
             | Op::Fset { d, .. }
             | Op::Fchk { d, .. }
             | Op::Fsel { d, .. }
@@ -1992,10 +2580,10 @@ impl Op {
                 d, cout: Some(c), ..
             } => vec![*d, *c],
             Op::Pack64 { d, .. } => vec![*d],
-            Op::R2p { mask, .. } => (0..7)
+            Op::R2p { mask, uniform, .. } => (0..7)
                 .filter(|i| mask >> i & 1 == 1)
                 .map(|i| Reg {
-                    file: File::P,
+                    file: if *uniform { File::UP } else { File::P },
                     idx: i,
                 })
                 .collect(),
@@ -2008,43 +2596,88 @@ impl Op {
                 } else {
                     (*bytes as u16 / 4).max(1)
                 };
-                let mut x = d.map(|d| span(d, w)).unwrap_or_default();
+                // Vector atom.add.f32 (`.v2` / `.v4`): one register per element.
+                let vec_add = *op == AtomOp::FAddFtz && matches!(*bytes, 8 | 16);
+                let mut x = d
+                    .map(|d| if vec_add { regs(d, w) } else { span(d, w) })
+                    .unwrap_or_default();
                 x.extend(*p);
                 x
             }
             Op::Qspc { p, .. } => vec![*p],
+            // PTX: one virtual register per element of `ld.vN` (n > 1), two 64-bit slots for
+            // `.b128`, else one; SASS: one register per 4 bytes.
+            Op::Ld { d, bytes, n, .. } if d.file == File::V => regs(
+                *d,
+                if *n > 1 {
+                    *n as u16
+                } else {
+                    (*bytes as u16 / 8).max(1)
+                },
+            ),
             Op::Ld { d, bytes, .. } => span(*d, (*bytes as u16 / 4).max(1)),
+            // multimem.ld_reduce: one virtual register per 64-bit lane, else per 4 bytes.
+            Op::LdReduce { d, bytes, ty, .. } if d.file == File::V => regs(
+                *d,
+                (*bytes as u16 / if ty.lane_bytes() == 8 { 8 } else { 4 }).max(1),
+            ),
+            Op::LdReduce { d, bytes, .. } => span(*d, (*bytes as u16 / 4).max(1)),
             Op::ClcQuery { d, .. } => span(*d, 4),
             Op::TmemAllocRaw { d, ok, .. } => vec![*d, *ok],
-            Op::TmemLd { d, n, red, .. } => {
-                let mut x = span(*d, *n as u16);
+            Op::TmemLd {
+                d,
+                n,
+                red,
+                regs: list,
+                ..
+            } => {
+                let mut x = list.clone().unwrap_or_else(|| regs(*d, *n as u16));
                 x.extend(red.map(|r| r.0));
                 x
             }
+            // ld.local: one 64-bit virtual register for 8 bytes, else one per 4 bytes (`.vN`).
+            Op::LdLocal { d, bytes, .. } if d.file == File::V => regs(
+                *d,
+                if *bytes == 8 {
+                    1
+                } else {
+                    (*bytes as u16 / 4).max(1)
+                },
+            ),
             Op::LdLocal { d, bytes, .. } => span(*d, (*bytes as u16 / 4).max(1)),
-            Op::Ld256 { hi, lo, .. } => {
-                let mut x = span(*lo, 4);
-                x.extend(span(*hi, 4));
+            Op::Ld256 { hi, lo, mask, .. } => {
+                let mut x = span(*lo, (mask & 0xf).count_ones() as u16);
+                x.extend(span(*hi, (mask >> 4).count_ones() as u16));
                 x
             }
             Op::Shfl { d, p: Some(p), .. } => vec![*d, *p],
+            Op::BarResult { d, p } => d.iter().chain(p.iter()).copied().collect(),
             Op::DivFull { d, .. }
             | Op::Dp2a { d, .. }
             | Op::CvtF32F16 { d, .. }
             | Op::F2fF16 { d, .. }
+            | Op::CvtTf32 { d, .. }
             | Op::F2fpF16 { d, .. } => vec![*d],
             Op::F2F { d, to64, .. } => span(*d, if *to64 { 2 } else { 1 }),
+            Op::FCvt { d, to, .. } => span(*d, if *to == FFmt::F64 { 2 } else { 1 }),
             Op::Dfma { d, .. } => span(*d, 2),
-            Op::DivSqrt64 { d, .. } => vec![*d],
+            Op::DivSqrt64 { d, .. } | Op::Rsqrt64Approx { d, .. } => vec![*d],
             Op::Dsetp { d, .. } => vec![*d],
+            Op::Hset2 { d, .. } | Op::MovMatrix { d, .. } => vec![*d],
+            Op::Hsetp2Bf16 { d, q, .. } => {
+                let mut x = vec![*d];
+                x.extend(*q);
+                x
+            }
             Op::DsetpMinMax { d, q, .. } => {
                 let mut x = vec![*d];
                 x.extend(*q);
                 x
             }
-            Op::LdMatrix { d, n, .. } => span(*d, *n as u16),
-            Op::Hmma { d, .. } => span(*d, 4),
+            Op::LdMatrix { d, n, .. } => regs(*d, *n as u16),
+            Op::Hmma { d, .. } => regs(*d, 4),
             Op::St { .. }
+            | Op::St256 { .. }
             | Op::Bra { .. }
             | Op::EndCollective { .. }
             | Op::Exit
@@ -2058,6 +2691,7 @@ impl Op {
             | Op::Bssy { .. }
             | Op::Bsync { .. }
             | Op::Break { .. }
+            | Op::BMov { to_b: true, .. }
             | Op::BarSync { .. }
             | Op::MbarInit { .. }
             | Op::MbarArrive { .. }
@@ -2148,6 +2782,66 @@ pub struct Kernel {
     /// Kernels of a multi-kernel launch (`Kernel::concat`), in launch order; empty for a
     /// single kernel. Their code is concatenated in `code`.
     pub parts: Vec<KernelPart>,
+    /// The block shape the kernel was compiled for (PTX `.reqntid` / `.maxntid`, cubin
+    /// EIATTR_REQNTID / EIATTR_MAX_THREADS), if declared: a launch must agree with it.
+    #[serde(default)]
+    pub ntid: Option<Ntid>,
+    /// SASS: module data globals (`__device__` variables) whose addresses the kernel's
+    /// constant banks hold, and where (`GlobalReloc`). The launch places each in a buffer.
+    #[serde(default)]
+    pub globals: Vec<GlobalSym>,
+    #[serde(default)]
+    pub global_relocs: Vec<GlobalReloc>,
+}
+
+/// A kernel's declared block shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ntid {
+    /// `.reqntid` / REQNTID: the block must be exactly `dims`; else (`.maxntid` /
+    /// MAX_THREADS) at most dims' product threads.
+    pub req: bool,
+    pub dims: [u32; 3],
+}
+
+impl Ntid {
+    /// Why a launch with `block` contradicts it (None: it agrees).
+    pub fn mismatch(&self, block: [u32; 3]) -> Option<String> {
+        let n = |d: [u32; 3]| d.iter().map(|&x| x as u64).product::<u64>();
+        if self.req && block != self.dims {
+            Some(format!(
+                "block {block:?} differs from the kernel's required block {:?} (.reqntid / EIATTR_REQNTID)",
+                self.dims
+            ))
+        } else if !self.req && n(block) > n(self.dims) {
+            Some(format!(
+                "block {block:?} exceeds the kernel's maximum {:?} (.maxntid / EIATTR_MAX_THREADS)",
+                self.dims
+            ))
+        } else {
+            None
+        }
+    }
+}
+
+/// A module data global (`.nv.global` / `.nv.global.init` symbol) of a cubin.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GlobalSym {
+    pub name: String,
+    pub size: u64,
+    /// The `.nv.global.init` bytes; None: a `.nv.global` (zero-initialized) symbol.
+    pub init: Option<Vec<u8>>,
+}
+
+/// The constant bank the PTX front's module-global relocations name (`SReg::GlobalAddr`).
+pub const GLOBAL_RELOC_BANK: u8 = 0x1f;
+
+/// A relocated 8-byte constant-bank word holding `globals[global]`'s address + `addend`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GlobalReloc {
+    pub bank: u8,
+    pub off: u32,
+    pub global: u32,
+    pub addend: i64,
 }
 
 /// One kernel of a concatenated multi-kernel launch.
@@ -2160,6 +2854,11 @@ pub struct KernelPart {
     pub param_cbank: u32,
     pub smem_bytes: u32,
     pub vreg_names: Vec<String>,
+    #[serde(default)]
+    pub ntid: Option<Ntid>,
+    pub globals: Vec<GlobalSym>,
+    #[serde(default)]
+    pub global_relocs: Vec<GlobalReloc>,
 }
 
 /// SASS control-bit edit used to build binary-only mutants (applied by `ptxv_sass::scoreboard`).
@@ -2253,6 +2952,7 @@ impl Kernel {
     pub fn concat(ks: Vec<Kernel>) -> Kernel {
         assert!(!ks.is_empty());
         let mut out = ks[0].clone();
+        out.ntid = None;
         out.code.clear();
         out.labels.clear();
         out.static_findings.clear();
@@ -2273,6 +2973,9 @@ impl Kernel {
                 param_cbank: k.param_cbank,
                 smem_bytes: k.smem_bytes,
                 vreg_names: k.vreg_names.clone(),
+                ntid: k.ntid,
+                globals: k.globals.clone(),
+                global_relocs: k.global_relocs.clone(),
             });
             for f in 0..5 {
                 out.nregs[f] = out.nregs[f].max(k.nregs[f]);
@@ -2307,4 +3010,127 @@ impl Kernel {
 pub mod cbank {
     /// Generic address of the kernel parameter block (used by TMA tensor-map operands).
     pub const PARAM_GENERIC_BASE: u32 = 0x348;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Ntid;
+
+    #[test]
+    fn ntid_mismatch() {
+        let req = Ntid {
+            req: true,
+            dims: [256, 1, 1],
+        };
+        assert!(req.mismatch([256, 1, 1]).is_none());
+        assert!(
+            req.mismatch([512, 1, 1])
+                .unwrap()
+                .contains("required block")
+        );
+        assert!(req.mismatch([128, 2, 1]).is_some());
+        let max = Ntid {
+            req: false,
+            dims: [512, 1, 1],
+        };
+        assert!(max.mismatch([128, 4, 1]).is_none());
+        assert!(max.mismatch([1024, 1, 1]).unwrap().contains("maximum"));
+    }
+}
+
+#[cfg(test)]
+mod vector_reg_tests {
+    use super::*;
+
+    fn v(idx: u16) -> Reg {
+        Reg { file: File::V, idx }
+    }
+
+    fn addr() -> Addr {
+        Addr {
+            base: Some(Val::Reg(v(100), 2)),
+            base2: None,
+            off: 0,
+        }
+    }
+
+    /// PTX vector operands are consecutive virtual registers, one per element: every one is
+    /// a destination / source; a 64-bit (or wider-hinted) scalar is one register.
+    #[test]
+    fn vector_operands_name_every_register() {
+        let ld = |n: u8, bytes: u8| Op::Ld {
+            d: v(10),
+            n,
+            space: Space::Global,
+            bytes,
+            addr: addr(),
+            sync: None,
+            sext: false,
+        };
+        assert_eq!(ld(4, 16).dst_regs(), vec![v(10), v(11), v(12), v(13)]);
+        assert_eq!(ld(2, 16).dst_regs(), vec![v(10), v(11)]);
+        assert_eq!(ld(1, 8).dst_regs(), vec![v(10)]);
+        assert_eq!(ld(1, 16).dst_regs(), vec![v(10), v(11)]);
+        // SASS: one register per 4 bytes.
+        let lds = Op::Ld {
+            d: Reg {
+                file: File::R,
+                idx: 4,
+            },
+            n: 1,
+            space: Space::Shared,
+            bytes: 16,
+            addr: addr(),
+            sync: None,
+            sext: false,
+        };
+        assert_eq!(lds.dst_regs().len(), 4);
+        let st = Op::St {
+            space: Space::Global,
+            bytes: 16,
+            addr: addr(),
+            v: Val::Reg(v(20), 4),
+            sync: None,
+        };
+        let s = st.src_regs();
+        for i in 20..24 {
+            assert!(s.contains(&v(i)), "{s:?}");
+        }
+        // A 64-bit scalar operand hint (`Val::Reg(V, 2)`) is one register.
+        let or = Op::Int {
+            op: IntOp::Or,
+            bits: 64,
+            d: v(30),
+            a: Val::Reg(v(31), 2),
+            b: Val::Imm(1),
+        };
+        assert_eq!(or.src_regs(), vec![v(31)]);
+        assert_eq!(or.dst_regs(), vec![v(30)]);
+        // tcgen05.ld: d..d+n, or its explicit register list (non-consecutive registers).
+        let tld = |regs: Option<Vec<Reg>>| Op::TmemLd {
+            d: v(40),
+            n: 2,
+            taddr: Val::Imm(0),
+            off: 0,
+            tracked: true,
+            s16x64b: false,
+            half: None,
+            s16x256b: false,
+            s16x128b: false,
+            red: None,
+            regs,
+        };
+        assert_eq!(tld(None).dst_regs(), vec![v(40), v(41)]);
+        assert_eq!(tld(Some(vec![v(7), v(3)])).dst_regs(), vec![v(7), v(3)]);
+        let hmma = Op::Hmma {
+            d: v(40),
+            a: vec![Val::Reg(v(50), 1)],
+            b: vec![Val::Reg(v(51), 1)],
+            c: vec![Val::Reg(v(52), 1)],
+            tf32: false,
+            s8: false,
+            f16: false,
+        };
+        assert_eq!(hmma.dst_regs(), vec![v(40), v(41), v(42), v(43)]);
+    }
 }

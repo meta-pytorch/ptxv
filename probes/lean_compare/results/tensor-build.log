@@ -1,0 +1,15 @@
+ℹ [3/4] Built GB300Math.TensorBlackwell (728ms)
+info: Blackwell/GB300Math/TensorBlackwell.lean:75:0: 'GB300Math.TensorBlackwell.alignment_truncation_bound' depends on axioms: [propext, Classical.choice, Quot.sound]
+info: Blackwell/GB300Math/TensorBlackwell.lean:76:0: 'GB300Math.TensorBlackwell.alignment_preserves_residual' depends on axioms: [propext, Quot.sound]
+info: Blackwell/GB300Math/TensorBlackwell.lean:77:0: 'GB300Math.TensorBlackwell.subnormal_alignment_candidates_differ' depends on axioms: [propext, Quot.sound]
+info: Blackwell/GB300Math/TensorBlackwell.lean:78:0: 'GB300Math.TensorBlackwell.invalid_operand_extent_rejected' depends on axioms: [propext, Quot.sound]
+ℹ [4/4] Built GB300Math.TensorBlackwellUnderflow (900ms)
+info: Blackwell/GB300Math/TensorBlackwellUnderflow.lean:75:0: 'GB300Math.TensorBlackwellUnderflow.alignment_truncation_bound' depends on axioms: [propext,
+ Classical.choice,
+ Quot.sound]
+info: Blackwell/GB300Math/TensorBlackwellUnderflow.lean:76:0: 'GB300Math.TensorBlackwellUnderflow.alignment_preserves_residual' depends on axioms: [propext, Quot.sound]
+info: Blackwell/GB300Math/TensorBlackwellUnderflow.lean:77:0: 'GB300Math.TensorBlackwellUnderflow.subnormal_alignment_candidates_differ' depends on axioms: [propext, Quot.sound]
+info: Blackwell/GB300Math/TensorBlackwellUnderflow.lean:78:0: 'GB300Math.TensorBlackwellUnderflow.invalid_operand_extent_rejected' depends on axioms: [propext, Quot.sound]
+info: Blackwell/GB300Math/TensorBlackwellUnderflow.lean:87:0: 'GB300Math.TensorBlackwellUnderflow.minimum_alignment_step' depends on axioms: [propext, Quot.sound]
+info: Blackwell/GB300Math/TensorBlackwellUnderflow.lean:88:0: 'GB300Math.TensorBlackwellUnderflow.underflow_boundary_discriminator' depends on axioms: [propext, Quot.sound]
+Build completed successfully (4 jobs).

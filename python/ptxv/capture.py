@@ -31,6 +31,7 @@ import re
 import shutil
 import sys
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Sequence
@@ -49,6 +50,10 @@ _DT = {
     "torch.int8": "i8",
     "torch.uint8": "u8",
     "torch.bool": "u8",
+    "torch.uint16": "u16",
+    "torch.uint32": "u32",
+    "torch.uint64": "u64",
+    "torch.float8_e4m3fn": "e4m3",
 }
 
 
@@ -85,14 +90,20 @@ def _tensor_info(name: str, t: Any, before: set[int]) -> TensorInfo | None:
         return None
     if not n:
         return None
-    dt = _DT.get(str(t.dtype), "u8")
+    dt = _DT.get(str(t.dtype))
+    shape = list(t.shape)
+    if dt is None:
+        # Other dtypes (fp8 e5m2, fp4 packs, ...): their bytes, with the last dimension in bytes.
+        dt = "u8"
+        if shape:
+            shape[-1] *= t.element_size()
     whole = bool(
         t.is_contiguous()
         and t.storage_offset() == 0
         and t.numel() * t.element_size() == n
         and t.dim() > 0
     )
-    return TensorInfo(name, p, n, dt, list(t.shape), whole, t.data_ptr(), p in before)
+    return TensorInfo(name, p, n, dt, shape, whole, t.data_ptr(), p in before)
 
 
 def _frame_tensors(frame: Any) -> dict[str, Any]:
@@ -202,7 +213,9 @@ class Launches:
         outputs: buffer names to compare (default: buffers the launches changed, and buffers
         allocated inside the region). write_only: outputs whose initial bytes the kernels do
         not read (they start as zeros instead of their pre-launch bytes). ptx: a PTX case
-        when Triton's cache holds this kernel's PTX. prune: blank other kernels' code in
+        when the toolchain kept every kernel's PTX (Triton's cache, CuTeDSL
+        CUTE_DSL_KEEP=ptx,cubin dumps, PTXV_PTX_DIRS / PTXV_NVCC_PTX_DIR; matched to the
+        captured machine code, _ptxsrc); without it that PTX is still written as jit.ptx. prune: blank other kernels' code in
         module cubins. rename: buffer name -> name in the case.
         """
         from ._casewriter import write_case
@@ -362,11 +375,14 @@ class Capture:
         self.launches: list[Launch] = []
         self.names: dict[str, TensorInfo] = {}
         self.blocks: list[tuple[int, int, str]] = []  # (addr, size, "pre" | "during")
+        # index in blocks -> (alloc time_us, free time_us | None) of "during" blocks
+        self.block_life: dict[int, tuple[int | None, int | None]] = {}
         self.modules: list[str] = []
         self.warnings: list[str] = []
         self.graph_launches = 0
         self.skipped_snapshots = 0
         self._mode = None
+        self._graph_patch = None
         self._torch = None
         self._before_ptrs: set[int] = set()
         self._frame = None
@@ -413,6 +429,7 @@ class Capture:
         if self.ops and t is not None:
             self._mode = _op_tagger(t, lib)
             self._mode.__enter__()
+        self._graph_patch = _suspend_snapshots_in_graph_capture(t, lib)
         return self
 
     def __exit__(self, et: Any, ev: Any, tb: Any) -> None:  # noqa: C901 (teardown steps must run in order on the same state)
@@ -421,6 +438,8 @@ class Capture:
         lib = _cupti.init()
         t = self._torch or sys.modules.get("torch")
         try:
+            if self._graph_patch is not None:
+                self._graph_patch()
             if self._mode is not None:
                 self._mode.__exit__(et, ev, tb)
             if t is not None and t.cuda.is_available() and t.cuda.is_initialized():
@@ -433,9 +452,18 @@ class Capture:
             try:
                 snap = t.cuda.memory._snapshot()
                 for tr in snap.get("device_traces", []):
+                    live: dict[int, int] = {}  # addr -> index in self.block_life
                     for e in tr:
                         if e.get("action") == "alloc":
                             self.blocks.append((e["addr"], e["size"], "during"))
+                            live[e["addr"]] = len(self.blocks) - 1
+                            self.block_life[live[e["addr"]]] = (e.get("time_us"), None)
+                        elif e.get("action") == "free_requested" and e["addr"] in live:
+                            i = live.pop(e["addr"])
+                            self.block_life[i] = (
+                                self.block_life[i][0],
+                                e.get("time_us"),
+                            )
             finally:
                 t.cuda.memory._record_memory_history(enabled=None)
         tensors = dict(_frame_tensors(self._frame)) if self.frame_locals else {}
@@ -466,6 +494,11 @@ class Capture:
                     capture=self,
                 )
             )
+        if not recs:
+            w = _cupti.launch_selftest()
+            if w:
+                self.warnings.append(w)
+                warnings.warn(w, stacklevel=2)
         if self.graph_launches:
             self.warnings.append(
                 f"{self.graph_launches} CUDA graph launches: their kernels are not captured"
@@ -540,6 +573,47 @@ class Capture:
 def capture(names: dict[str, Any] | None = None, **kw: Any) -> Capture:
     """Record the kernels launched inside a `with` block; see `Capture`."""
     return Capture(names, **kw)
+
+
+def _suspend_snapshots_in_graph_capture(torch: Any, lib: Any):
+    """Wrap torch.cuda.CUDAGraph.capture_begin / capture_end so that no snapshot is taken while
+    a graph is being captured: a snapshot synchronizes the context, which is illegal during a
+    capture on any stream (the capture is invalidated, and torch's RNG state is left
+    inconsistent for the rest of the process). Launches recorded meanwhile carry no
+    snapshot. Returns a function that undoes the wrapping, or None without torch."""
+    G = (
+        getattr(getattr(torch, "cuda", None), "CUDAGraph", None)
+        if torch is not None
+        else None
+    )
+    if G is None:
+        return None
+    begin, end = G.capture_begin, G.capture_end
+    saved: list[int] = []
+
+    def capture_begin(self, *a, **k):
+        saved.append(lib.ptxvcap_set_snap(0))
+        try:
+            return begin(self, *a, **k)
+        except BaseException:
+            lib.ptxvcap_set_snap(saved.pop())
+            raise
+
+    def capture_end(self, *a, **k):
+        try:
+            return end(self, *a, **k)
+        finally:
+            if saved:
+                lib.ptxvcap_set_snap(saved.pop())
+
+    G.capture_begin, G.capture_end = capture_begin, capture_end
+
+    def undo():
+        G.capture_begin, G.capture_end = begin, end
+        while saved:
+            lib.ptxvcap_set_snap(saved.pop())
+
+    return undo
 
 
 def _op_tagger(torch: Any, lib: Any):

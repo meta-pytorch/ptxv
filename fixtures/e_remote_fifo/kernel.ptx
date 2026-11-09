@@ -1,0 +1,71 @@
+// E-REMOTE-FIFO: FA4 2-CTA teardown shape (flash_fwd_sm100.py:3446 / :5564 / :5670).
+// Cluster of 2 CTAs, 2 warps each. Rank 0 initializes E (count 1, never waited: the s_p_o
+// EMPTY barrier) and D (count 1: tmem_dealloc_mbar). Rank 1 warp 0 ("correction") arrives
+// remotely on rank 0's E (.release.cta), then bar.sync 1, 64; warp 1 ("MMA") waits at the
+// bar.sync and arrives remotely on rank 0's D; rank 0 thread 0 waits on D, then rank 0 exits.
+// No cluster barrier before exit.
+//   strict model (S-REMOTE-INFLIGHT): E's arrival may be in flight at the exit -> violation
+//   remote_fifo (E-REMOTE-FIFO): it lands before the D arrival (issue ordered by the bar.sync) -> clean
+//   variant nobar: no bar.sync -> violation under both
+//   variant late: warp 0 arrives after the bar.sync -> violation under both
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry remote_fifo(
+    .param .u64 out_ptr
+)
+.maxntid 64, 1, 1
+.reqnctapercluster 2, 1, 1
+{
+    .reg .pred  %p<8>;
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<8>;
+    .shared .align 8 .b8 bars[16];
+
+    mov.u32         %r0, %tid.x;
+    shr.u32         %r1, %r0, 5;                    // warp
+    and.b32         %r2, %r0, 31;                   // lane
+    mov.u32         %r3, %cluster_ctarank;
+    mov.u32         %r4, bars;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        INIT_DONE;
+    mbarrier.init.shared.b64 [%r4], 1;              // E
+    mbarrier.init.shared.b64 [%r4+8], 1;            // D
+INIT_DONE:
+    fence.mbarrier_init.release.cluster;
+    barrier.cluster.arrive.release;
+    barrier.cluster.wait.acquire;
+    setp.ne.u32     %p1, %r3, 0;
+    @%p1 bra        RANK1;
+    @%p0 bra        DONE;
+    add.u32         %r5, %r4, 8;
+WAITD:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r5], 0;
+    @!%p2 bra       WAITD;
+    ld.param.u64    %rd0, [out_ptr];
+    cvta.to.global.u64 %rd1, %rd0;
+    mov.u32         %r6, 1;
+    st.global.u32   [%rd1], %r6;
+    bra             DONE;
+RANK1:
+    setp.ne.u32     %p3, %r2, 0;                    // not lane 0
+    mapa.shared::cluster.u32 %r7, %r4, 0;           // rank 0's E
+    add.u32         %r8, %r7, 8;                    // rank 0's D
+    setp.ne.u32     %p4, %r1, 0;
+    @%p4 bra        MMA;
+    @%p3 bra        CBAR;
+    mbarrier.arrive.release.cta.shared::cluster.b64 _, [%r7];   // @EARLY
+CBAR:
+    bar.sync        1, 64;                          // @BAR
+    @%p3 bra        DONE;
+    bra             DONE;                           // @LATE
+    mbarrier.arrive.release.cta.shared::cluster.b64 _, [%r7];
+    bra             DONE;
+MMA:
+    bar.sync        1, 64;                          // @BAR2
+    @%p3 bra        DONE;
+    mbarrier.arrive.release.cta.shared::cluster.b64 _, [%r8];
+DONE:
+    ret;
+}

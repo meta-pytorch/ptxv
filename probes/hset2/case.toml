@@ -1,0 +1,36 @@
+name = "probe_hset2"
+description = """
+Probe (L-ROSETTA) for set.<cmp>.{u32,bf16x2,f16x2}.{bf16x2,f16x2} (SASS HSET2[.BF16_V2][.BF])
+with register operands and a constant pair (kernel.ptx, gen.py). expected/ is GB300's output
+(ptxas cubin, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "hset2"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [512]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4096]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

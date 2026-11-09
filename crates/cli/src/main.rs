@@ -35,13 +35,85 @@ mod errdist;
 mod errdist_html;
 mod jsonout;
 mod mufu_sweep;
+mod nonfinite;
 mod sweep;
 mod trace_dump;
+mod vcache;
 
 // The explorer's threads clone and drop machine pages at a high rate; glibc malloc's arenas
-// contend under that (and mimalloc is faster single-threaded too).
+// contend under that (and mimalloc is faster single-threaded too). mimalloc 2's arenas stop
+// growing near 400 GB of live heap (on 1.3 TB hosts: "cannot use OS memory
+// since it is too large with respect to the maximum object size", then allocation failure),
+// so PTXV_SYSTEM_ALLOC=1 selects the system allocator for the largest explorations. The choice
+// is made once, at the first allocation (getenv allocates nothing), so every block is freed
+// by the allocator that made it.
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: Alloc = Alloc;
+
+struct Alloc;
+
+static ALLOC_SYS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+unsafe extern "C" {
+    fn getenv(name: *const std::ffi::c_char) -> *const std::ffi::c_char;
+}
+
+impl Alloc {
+    #[inline]
+    fn system() -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        match ALLOC_SYS.load(Relaxed) {
+            1 => false,
+            2 => true,
+            _ => {
+                // SAFETY: a NUL-terminated name; the result is only compared with null.
+                let set = unsafe { !getenv(c"PTXV_SYSTEM_ALLOC".as_ptr()).is_null() };
+                ALLOC_SYS.store(if set { 2 } else { 1 }, Relaxed);
+                set
+            }
+        }
+    }
+}
+
+// SAFETY: forwards to one of two allocators, fixed before the first allocation.
+unsafe impl std::alloc::GlobalAlloc for Alloc {
+    unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
+        unsafe {
+            if Self::system() {
+                std::alloc::System.alloc(l)
+            } else {
+                mimalloc::MiMalloc.alloc(l)
+            }
+        }
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
+        unsafe {
+            if Self::system() {
+                std::alloc::System.dealloc(p, l)
+            } else {
+                mimalloc::MiMalloc.dealloc(p, l)
+            }
+        }
+    }
+    unsafe fn alloc_zeroed(&self, l: std::alloc::Layout) -> *mut u8 {
+        unsafe {
+            if Self::system() {
+                std::alloc::System.alloc_zeroed(l)
+            } else {
+                mimalloc::MiMalloc.alloc_zeroed(l)
+            }
+        }
+    }
+    unsafe fn realloc(&self, p: *mut u8, l: std::alloc::Layout, n: usize) -> *mut u8 {
+        unsafe {
+            if Self::system() {
+                std::alloc::System.realloc(p, l, n)
+            } else {
+                mimalloc::MiMalloc.realloc(p, l, n)
+            }
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -77,6 +149,11 @@ enum Cmd {
         /// explore when it does not hold, printing why. With --slices: per cluster.
         #[arg(long)]
         certify: bool,
+        /// With --certify: representative CTAs (E-CTA-REP): certify a few CTAs and replay the
+        /// position-dependent values of the others; the launch is checked as before when the
+        /// reduction refuses (also PTXV_REP=1).
+        #[arg(long)]
+        rep: bool,
         /// Check a multi-launch case one group of launches at a time (E-LAUNCH-GROUPS):
         /// `auto`, or the later groups as `a,b;c-d` (group 1 is the rest). Each group by
         /// certificate, the last one by exploration if that fails, with a cross-group race
@@ -106,6 +183,42 @@ enum Cmd {
         /// model (E-HW-L1) to classify each as observable or latent (also PTXV_GB300=0).
         #[arg(long)]
         no_gb300: bool,
+        /// Hardware profile of the two-level verdict: when the strict check reports anything
+        /// undefined (race, violation, contract deviation, undefined values, ...), the SASS
+        /// front is checked again with every probe-backed assumption of the profile on, and
+        /// both levels are reported (`ptx_contract`, `sass_gb300`). `gb300` (default) or
+        /// `none` (also PTXV_HW_PROFILE).
+        #[arg(long)]
+        hw_profile: Option<String>,
+        /// Scan every terminal state's float outputs for NaN / Inf: a `nonfinite-output`
+        /// finding when every float input element is finite (else a note), with the
+        /// instructions that produced the first non-finite values from operands without one.
+        #[arg(long)]
+        nonfinite: bool,
+        /// --nonfinite, and a finding even when an input already holds NaN / Inf.
+        #[arg(long)]
+        nonfinite_strict: bool,
+        /// Skip the input-coverage notes: one deterministic run that records which sides of
+        /// input-dependent comparisons any thread took (also PTXV_NO_INPUT_COVERAGE).
+        #[arg(long)]
+        no_input_coverage: bool,
+        /// Input coverage only: the one deterministic run with the provenance shadow, no
+        /// exploration and no verdict (rows[].got = ["coverage-only"]).
+        #[arg(long)]
+        coverage_only: bool,
+        /// Check again on mutated inputs: for up to N untaken input-dependent comparison
+        /// sides that compare one input word against a constant, write a value that flips
+        /// the comparison into --mutate-elements elements and run the check on that input.
+        /// Results are reported apart (`on-mutated-input`), never in the verdict.
+        #[arg(long, default_value_t = 0)]
+        mutate_inputs: usize,
+        /// Elements per mutation (--mutate-inputs), spread over threads of different warps.
+        #[arg(long, default_value_t = 2)]
+        mutate_elements: usize,
+        /// A mutation given by hand, checked like the --mutate-inputs ones: `name[i]=v`
+        /// element writes, comma-separated (e.g. 'ok[0]=0,ok[432]=0'). Repeatable.
+        #[arg(long)]
+        mutate_input: Vec<String>,
     },
     /// Numerics of one deterministic run: exact error per output, bounds, Thm 1 check.
     Num {
@@ -256,6 +369,8 @@ enum Cmd {
         emit_bound: Option<PathBuf>,
     },
     /// Run variants on a free GPU (child process + watchdog) and compare with the simulator.
+    /// The GPU is picked among those PTXV_GPUS lists (nvidia-smi indices), else among those
+    /// CUDA_VISIBLE_DEVICES names (indices or GPU- UUID prefixes), else among all free ones.
     Hw {
         case: PathBuf,
         #[arg(long, default_value = "all")]
@@ -271,6 +386,13 @@ enum Cmd {
         /// only warp W spin NS ns on %globaltimer there (repeatable).
         #[arg(long, value_name = "LINE:NS[@WARP]")]
         delay: Vec<String>,
+        /// Skip the simulator pre-pass: compare every GPU run with the GPU output captured
+        /// with the case (each output buffer's `expect` bytes) instead of a `num` run. For
+        /// cases whose numerics run is too slow; needs `expect` covering every output buffer.
+        /// The comparison is bitwise: a kernel that accumulates with atomics in a varying
+        /// order differs from the capture without being wrong.
+        #[arg(long)]
+        no_num: bool,
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -291,6 +413,10 @@ enum Cmd {
         /// Narrow kinds: only the format configurations whose name contains this.
         #[arg(long)]
         only: Option<String>,
+        /// Products per MMA step (default: 16 for bf16, 8 for tf32; 8 for a bf16 m16n8k8
+        /// case, probes/bmma8).
+        #[arg(long)]
+        step: Option<usize>,
     },
     /// Narrow-format cvt sweep on GB300 (probes/cvt_lp): compare with the model; `--record`
     /// writes the per-op hardware hashes cargo test replays.
@@ -365,6 +491,38 @@ enum Cmd {
     },
 }
 
+/// The default output directory of a case under `root`: `<root>/<case name>`, owned by the
+/// case directory recorded in its `.case` file. A directory of that name that belongs to
+/// another case (two cases whose names agree, e.g. truncated kernel names) is not reused:
+/// the case gets `<root>/<name>-<hash of its directory>` instead, so a run never reads
+/// another case's cubin.
+fn default_out(root: &Path, case: &Case) -> Result<PathBuf> {
+    let me = std::fs::canonicalize(&case.dir).unwrap_or_else(|_| case.dir.clone());
+    let me = me.to_string_lossy().to_string();
+    let claim = |d: &Path| -> Result<bool> {
+        std::fs::create_dir_all(d)?;
+        let f = d.join(".case");
+        match std::fs::read_to_string(&f) {
+            Ok(owner) => Ok(owner.trim() == me),
+            Err(_) => {
+                std::fs::write(&f, format!("{me}\n"))?;
+                Ok(true)
+            }
+        }
+    };
+    let plain = root.join(&case.m.name);
+    if ptxv_sim::dist::get().is_some() || claim(&plain)? {
+        return Ok(plain);
+    }
+    // FNV-1a of the case directory.
+    let h = me.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x100_0000_01b3)
+    });
+    let d = root.join(format!("{}-{:08x}", case.m.name, h as u32));
+    claim(&d)?;
+    Ok(d)
+}
+
 pub(crate) fn out_dir(case: &Case, out: &Option<PathBuf>) -> Result<PathBuf> {
     let d = match out {
         Some(o) => o.clone(),
@@ -372,7 +530,7 @@ pub(crate) fn out_dir(case: &Case, out: &Option<PathBuf>) -> Result<PathBuf> {
             let root = std::env::var("PTXV_ROOT")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("."));
-            root.join("out").join(&case.m.name)
+            default_out(&root.join("out"), case)?
         }
     };
     // Multi-node ranks share the file system: each writes its own copies.
@@ -600,6 +758,77 @@ fn fronts(f: &str) -> Vec<&'static str> {
     }
 }
 
+/// `--mutate-input` specs.
+static MUTATE_SPECS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// `--coverage-only`.
+static COVERAGE_ONLY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+/// Input coverage (coverage.rs): (notes on, --mutate-inputs, --mutate-elements).
+static INPUT_COV: std::sync::OnceLock<(bool, usize, usize)> = std::sync::OnceLock::new();
+
+/// One check on a mutated input (`--mutate-inputs`): its own evidence, never the verdict.
+#[derive(Serialize)]
+struct MutatedRow {
+    /// `buffer[element]=value, ...`.
+    mutation: String,
+    /// The comparison it flips and the side it makes taken (null: given with --mutate-input).
+    pc: Option<u32>,
+    /// Every element written stays within its buffer's declared invariant (checked on the
+    /// capture): evidence class `on-mutated-input (within declared invariants)`.
+    within_invariants: bool,
+    at: String,
+    makes: bool,
+    classes: Vec<String>,
+    complete: bool,
+    certified: bool,
+    states: usize,
+    findings: Vec<ptxv_sim::machine::Finding>,
+    notes: Vec<String>,
+    seconds: f64,
+}
+
+/// `--hw-profile` (`PTXV_HW_PROFILE`, default "gb300").
+static HW_PROFILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn hw_profile() -> (String, Option<&'static [ptxv_sim::hwprofile::Item]>) {
+    let name = HW_PROFILE
+        .get()
+        .cloned()
+        .or_else(|| std::env::var("PTXV_HW_PROFILE").ok())
+        .unwrap_or_else(|| "gb300".into());
+    let p = ptxv_sim::hwprofile::named(&name);
+    (name, p)
+}
+
+/// One hardware assumption a second-level verdict used.
+#[derive(Serialize, Clone)]
+struct HwUsed {
+    id: String,
+    probe: String,
+    /// The contract findings it discharged (signatures); empty for a model switch.
+    discharged: Vec<String>,
+}
+
+/// The two-level verdict: the strict (contract) check, and the SASS front under the hardware
+/// profile. Both always appear; the second never replaces the first.
+#[derive(Serialize, Clone)]
+struct TwoLevel {
+    /// The strict check's classes (of this row's front).
+    ptx_contract: String,
+    contract_front: String,
+    /// "certified" | "clean" | "incomplete" | the remaining classes.
+    sass_gb300: String,
+    hw_profile: String,
+    hw_assumptions: Vec<HwUsed>,
+    sass_classes: Vec<String>,
+    sass_complete: bool,
+    sass_certified: bool,
+    sass_states: usize,
+    sass_findings: Vec<ptxv_sim::machine::Finding>,
+    sass_notes: Vec<String>,
+    seconds: f64,
+}
+
 #[derive(Serialize)]
 struct CheckRow {
     variant: String,
@@ -617,6 +846,23 @@ struct CheckRow {
     /// verdict's race / stale findings (each finding's `gb300`). None: not needed or disabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     gb300: Option<ptxv_sim::twolevel::Gb300Check>,
+    /// The two-level verdict (`--hw-profile`): set when the strict check reported anything
+    /// undefined.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    two_level: Option<TwoLevel>,
+    /// `--nonfinite`: NaN / Inf scan of the outputs and their producing instructions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nonfinite: Option<nonfinite::Report>,
+    /// Input coverage (coverage.rs): input-dependent comparison sides no thread took in one
+    /// run of the captured input. A note, not part of the verdict.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_coverage: Option<ptxv_sim::coverage::Coverage>,
+    /// `--mutate-inputs`: checks on mutated inputs (evidence class `on-mutated-input`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    mutated_inputs: Vec<MutatedRow>,
+    /// `--mutate-inputs`: untaken sides not mutated, and why.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    mutation_refusals: Vec<ptxv_sim::coverage::Refusal>,
 }
 
 fn print_verdict(
@@ -673,12 +919,17 @@ fn print_verdict(
                     "latent" => "a PTX-model bug not reachable on current GB300 hardware",
                     "latent-closed-world" =>
                         "observable on GB300 with a co-resident kernel that fills the line",
+                    "latent-needs-divergence" =>
+                        "intra-warp, latent: needs divergence (or a compiler reordering)",
                     _ => "not decided",
                 },
                 g.reason
             );
         }
         let n = f.trace.len();
+        if n == 0 && f.kind == "note" {
+            continue;
+        }
         let show = &f.trace[n.saturating_sub(8)..];
         println!(
             "      trace ({} steps{}):",
@@ -821,10 +1072,14 @@ fn cmd_check(
     certify: bool,
     groups: &Option<String>,
     gb300: bool,
+    nonfinite: Option<bool>,
 ) -> Result<Vec<CheckRow>> {
     let dir = out_dir(case, out)?;
     let mut rows = Vec::new();
+    let (profile_name, profile) = hw_profile();
     for v in variants(case, variant) {
+        // The variant's SASS check under the hardware profile, shared by its fronts' rows.
+        let mut level2: Option<(Verdict, Vec<HwUsed>, f64)> = None;
         for f in fronts(front) {
             if f == "ptx" && case.m.cubin.is_some() {
                 continue; // binary-only case
@@ -835,6 +1090,51 @@ fn cmd_check(
             let case = &vcase;
             let m = machine(case, k.clone())?;
             let refuted = m.launch.refuted_opt_in.clone();
+            if COVERAGE_ONLY.get().copied().unwrap_or(false) {
+                let cov = ptxv_sim::coverage::analyze(&m);
+                println!(
+                    "COVERAGE {v} {f}: {} input-dependent comparison(s), {} side(s) not taken, input-independent={}, {} unexecuted instruction(s) ({} behind input-dependent conditions, {} behind parameter conditions), terminal={} {:.1}s",
+                    cov.sites,
+                    cov.untaken.len(),
+                    cov.input_independent,
+                    cov.unexecuted_instructions,
+                    cov.behind_input,
+                    cov.behind_parameter,
+                    cov.terminal,
+                    cov.seconds
+                );
+                for u in cov.untaken.iter().take(20) {
+                    println!("    note: {}", u.note);
+                }
+                rows.push(CheckRow {
+                    variant: v.clone(),
+                    front: f.into(),
+                    expect_report: vec![],
+                    pass: true,
+                    expect,
+                    got: vec!["coverage-only".into()],
+                    refuted_opt_in: refuted,
+                    verdict: Verdict {
+                        states: 1,
+                        transitions: 0,
+                        complete: false,
+                        terminal_states: cov.terminal as usize,
+                        distinct_outputs: 0,
+                        findings: vec![],
+                        assumptions: vec![],
+                        notes: vec![],
+                        seconds: cov.seconds,
+                        outputs: vec![],
+                    },
+                    gb300: None,
+                    two_level: None,
+                    nonfinite: None,
+                    input_coverage: Some(cov),
+                    mutated_inputs: vec![],
+                    mutation_refusals: vec![],
+                });
+                continue;
+            }
             // Debugging (rung 4b, large launch groups): PTXV_RUN_ONCE=1 runs one
             // deterministic schedule (explore::run_once) and reports its findings and outputs.
             if std::env::var("PTXV_RUN_ONCE").is_ok() {
@@ -919,7 +1219,7 @@ fn cmd_check(
                     }
                 }
                 if ok {
-                    for line in case.expect_report(&m.outputs())? {
+                    for line in case.expect_report_tol(&m.outputs(), m.mc_inexact)? {
                         println!("    {line}");
                     }
                 }
@@ -972,7 +1272,10 @@ fn cmd_check(
                             },
                         )
                     }),
-                    _ if slices && certify => {
+                    _ if slices
+                        && certify
+                        && !std::env::var("PTXV_REP").is_ok_and(|v| v == "1") =>
+                    {
                         drop(m);
                         ptxv_sim::wellsync::check_sliced(&make, max_states, &mut |c, v| {
                             println!(
@@ -990,6 +1293,32 @@ fn cmd_check(
                                 v.seconds
                             )
                         })
+                    }
+                    _ if certify && std::env::var("PTXV_REP").is_ok_and(|v| v == "1") => {
+                        drop(m);
+                        ptxv_sim::rep::check(
+                            &make,
+                            max_states,
+                            &mut |c, v| {
+                                println!(
+                                    "  {label}representative CTA {c}: {:?} states={} {:.1}s",
+                                    v.classes(),
+                                    v.states,
+                                    v.seconds
+                                )
+                            },
+                            &mut || {
+                                if slices {
+                                    ptxv_sim::wellsync::check_sliced(
+                                        &make,
+                                        max_states,
+                                        &mut |_, _| {},
+                                    )
+                                } else {
+                                    ptxv_sim::wellsync::check_certified(make(), max_states)
+                                }
+                            },
+                        )
                     }
                     _ if certify => ptxv_sim::wellsync::check_certified(m, max_states),
                     _ if slices => {
@@ -1010,7 +1339,47 @@ fn cmd_check(
                 }
             };
             let make1 = || machine(case, k.clone()).expect("machine");
+            // The plain certificate check is what errdist / equiv run as their precondition
+            // (equiv.rs `prepare`): store it for them (vcache.rs).
+            // (errdist builds the machine from the case without the variant's `after` edits.)
+            let plain = certify
+                && case.variant(&v)?.after.is_empty()
+                && !slices
+                && groups.is_none()
+                && std::env::var("PTXV_EXPLORER").as_deref() != Ok("dpor");
+            let vkey = plain
+                .then(|| vcache::key(&case.dir, &v, f, "certify"))
+                .flatten();
+            if nonfinite.is_some() {
+                ptxv_sim::nonfinite::enable();
+            }
             let mut verdict = check(&make1, "");
+            // ASSUME(E-TC-FENCE-NOP): races the tcgen05 thread-sync fences would order are
+            // contract deviations (twolevel::tc_fence_contract).
+            if f == "ptx" {
+                ptxv_sim::twolevel::tc_fence_contract(&mut verdict, &m1, &mut |m| {
+                    check(&|| m.clone(), "tcgen05 fences implied: ")
+                });
+            }
+            let births = if nonfinite.is_some() {
+                ptxv_sim::nonfinite::take()
+            } else {
+                vec![]
+            };
+            if let Some(key) = &vkey {
+                vcache::store(key, max_states, &verdict);
+            }
+            // ASSUME(S-CGA-SHAPE): only the sliced certificate check covers both cluster shapes
+            // of a launch with a preferred cluster dimension (and their mixes).
+            if m1.launch.preferred_shape().is_some() && !(slices && certify && groups.is_none()) {
+                verdict.findings.push(ptxv_sim::machine::Finding {
+                    kind: "unmodeled".into(),
+                    sig: "cga-shape".into(),
+                    msg: "the launch has a preferred cluster dimension: only `--slices --certify` checks both cluster shapes and their mixes (S-CGA-SHAPE); this check used the regular shape only".into(),
+                    trace: vec![],
+                    ..Default::default()
+                });
+            }
             for a in &refuted {
                 verdict.notes.push(format!(
                     "relies on {a}, REFUTED on GB300, by explicit opt-in (case assume_refuted / --assume-refuted / PTXV_ASSUME_REFUTED)"
@@ -1057,7 +1426,297 @@ fn cmd_check(
                     gbc = Some(c);
                 }
             }
+            let nf =
+                nonfinite.map(|strict| nonfinite::analyze(case, &m1, &mut verdict, births, strict));
             print_verdict(&v, f, &verdict, &expect, &refuted, gbc.as_ref());
+            // The two-level verdict: anything undefined under the strict model -> the SASS
+            // front under the hardware profile. Both levels are reported.
+            let mut two_level = None;
+            if let Some(p) = profile.filter(|_| ptxv_sim::hwprofile::wanted(&verdict)) {
+                if level2.is_none() {
+                    let t0 = Instant::now();
+                    let k2 = if f == "sass" {
+                        k.clone()
+                    } else {
+                        load(case, &v, "sass", &dir)?.0
+                    };
+                    let ms = machine(case, k2)?;
+                    let make2 = || ptxv_sim::hwprofile::machine(&ms, p);
+                    group_log.borrow_mut().clear();
+                    let mut v2 = check(&make2, "GB300 profile: ");
+                    let used = ptxv_sim::hwprofile::discharge(&mut v2, &make2(), p)
+                        .into_iter()
+                        .map(|(id, sigs)| HwUsed {
+                            probe: p
+                                .iter()
+                                .find(|i| i.id == id)
+                                .map(|i| i.probe.to_string())
+                                .unwrap_or_default(),
+                            id,
+                            discharged: sigs,
+                        })
+                        .collect();
+                    level2 = Some((v2, used, t0.elapsed().as_secs_f64()));
+                }
+                let (v2, used, secs) = level2.as_ref().unwrap();
+                let t = TwoLevel {
+                    ptx_contract: verdict.classes().join(","),
+                    contract_front: f.into(),
+                    sass_gb300: ptxv_sim::hwprofile::result(v2),
+                    hw_profile: profile_name.clone(),
+                    hw_assumptions: used.clone(),
+                    sass_classes: v2.classes(),
+                    sass_complete: v2.complete,
+                    sass_certified: v2.assumptions.iter().any(|a| a == "E-WELLSYNC"),
+                    sass_states: v2.states,
+                    sass_findings: v2.findings.clone(),
+                    sass_notes: v2.notes.clone(),
+                    seconds: *secs,
+                };
+                println!(
+                    "    ptx_contract: {} ({} front, strict model)",
+                    t.ptx_contract, t.contract_front
+                );
+                println!(
+                    "    sass_gb300: {} (SASS front, hardware profile {}; {} states{}) using {}",
+                    t.sass_gb300,
+                    t.hw_profile,
+                    t.sass_states,
+                    if t.sass_complete || t.sass_certified {
+                        ""
+                    } else {
+                        ", incomplete"
+                    },
+                    if t.hw_assumptions.is_empty() {
+                        "no hardware assumption".to_string()
+                    } else {
+                        t.hw_assumptions
+                            .iter()
+                            .map(|u| {
+                                if u.discharged.is_empty() {
+                                    format!("{} [{}]", u.id, u.probe)
+                                } else {
+                                    format!(
+                                        "{} [{}; discharges {}]",
+                                        u.id,
+                                        u.probe,
+                                        u.discharged.join(" ")
+                                    )
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    }
+                );
+                for x in t.sass_findings.iter().take(6) {
+                    println!(
+                        "      sass_gb300 {}: {}",
+                        x.kind.to_uppercase(),
+                        x.msg.lines().next().unwrap_or("")
+                    );
+                }
+                two_level = Some(t);
+            }
+            if let Some(r) = &nf {
+                println!(
+                    "    nonfinite: {} terminal output(s), {} with NaN / Inf; inputs with NaN / Inf: {}; {} producing instruction(s)",
+                    r.terminal_outputs,
+                    r.terminal_outputs_nonfinite,
+                    r.inputs.len(),
+                    r.births.len()
+                );
+                for b in r.births.iter().take(8) {
+                    println!(
+                        "      {}: {} ({} -> {}), {} time(s)",
+                        b.at,
+                        b.birth.kind,
+                        b.birth.operands.join(", "),
+                        b.birth.result,
+                        b.birth.count
+                    );
+                }
+            }
+            // Input coverage (A) and checks on mutated inputs (B), apart from the verdict.
+            let (cov_on, n_mut, k_mut) = INPUT_COV.get().copied().unwrap_or((true, 0, 2));
+            let mut input_coverage = None;
+            let mut mutated_inputs = Vec::new();
+            let mut mutation_refusals = Vec::new();
+            let specs = MUTATE_SPECS.get().cloned().unwrap_or_default();
+            if cov_on || n_mut > 0 || !specs.is_empty() {
+                let cov = ptxv_sim::coverage::analyze(&m1);
+                println!(
+                    "    input coverage: {} input-dependent comparison(s), {} side(s) not taken on this input ({:.1}s)",
+                    cov.sites,
+                    cov.untaken.len(),
+                    cov.seconds
+                );
+                for u in cov.untaken.iter().take(20) {
+                    println!("    note: {}", u.note);
+                }
+                if cov.input_independent {
+                    let raced = verdict.findings.iter().any(|x| x.kind == "race");
+                    println!(
+                        "    input-independent: holds for all inputs of this shape and these parameters (no branch, guard, address or synchronization operand derived from input data in one run; value-dependent parts, such as same-value writes, output determinism and the comparison with the GPU output, hold for this input){}",
+                        if raced {
+                            "; the verdict has a race, under which another schedule can move data differently"
+                        } else {
+                            ""
+                        }
+                    );
+                } else if let Some(d) = cov.input_dependent.first() {
+                    println!(
+                        "    input-dependent control: {} instruction(s) with an input-derived guard, address, control or synchronization operand (first: {} {} from {})",
+                        cov.input_dependent.len(),
+                        d.what,
+                        d.at,
+                        d.inputs
+                            .iter()
+                            .map(|x| x.buffer.clone())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+                if cov.unexecuted_instructions > 0 {
+                    println!(
+                        "    unexecuted: {} instruction(s) no thread executed: {} behind input-dependent conditions, {} behind conditions free of input data (parameters, special registers), {} other",
+                        cov.unexecuted_instructions,
+                        cov.behind_input,
+                        cov.behind_parameter,
+                        cov.unexecuted_instructions - cov.behind_input - cov.behind_parameter
+                    );
+                }
+                // Declared input invariants, checked on the captured bytes.
+                let invs: Vec<ptxv_sim::coverage::Invariant> = case
+                    .m
+                    .buffers
+                    .iter()
+                    .filter_map(|b| {
+                        let i = b.invariant.as_ref()?;
+                        Some(ptxv_sim::coverage::Invariant {
+                            buffer: b.name.clone(),
+                            values: i.values.clone(),
+                            min: i.min,
+                            max: i.max,
+                            elem: b.elem_bytes() as u8,
+                            signed: b.dtype.starts_with('i'),
+                        })
+                    })
+                    .collect();
+                let float_inv: Vec<&str> = case
+                    .m
+                    .buffers
+                    .iter()
+                    .filter(|b| {
+                        b.invariant.is_some()
+                            && !b.dtype.starts_with('i')
+                            && !b.dtype.starts_with('u')
+                    })
+                    .map(|b| b.name.as_str())
+                    .collect();
+                if !float_inv.is_empty() {
+                    anyhow::bail!(
+                        "input invariants are for integer buffers: {}",
+                        float_inv.join(", ")
+                    );
+                }
+                let (dom, inv_notes) = ptxv_sim::coverage::Domain::new(&m1, invs);
+                for n in &inv_notes {
+                    println!("    {n}");
+                }
+                if n_mut > 0 || !specs.is_empty() {
+                    let (mut muts, refused) = if n_mut > 0 {
+                        ptxv_sim::coverage::plan(&m1, &cov, n_mut, k_mut, &dom)
+                    } else {
+                        (vec![], vec![])
+                    };
+                    let elem = |name: &str| {
+                        case.m
+                            .buffers
+                            .iter()
+                            .find(|b| b.name == name)
+                            .map(|b| b.elem_bytes())
+                    };
+                    for sp in &specs {
+                        muts.push(
+                            ptxv_sim::coverage::parse_mutation(&m1, sp, &elem, &dom)
+                                .map_err(|e| anyhow::anyhow!("--mutate-input {sp}: {e}"))?,
+                        );
+                    }
+                    for r in &refused {
+                        println!(
+                            "    mutate-inputs: not mutated: {}: {}",
+                            m1.k.describe(r.pc as usize),
+                            r.reason
+                        );
+                    }
+                    for mu in muts {
+                        let t0 = Instant::now();
+                        let mm = ptxv_sim::coverage::apply(&m1, &mu);
+                        let make_m = || mm.clone();
+                        let vm = check(&make_m, "mutated input: ");
+                        let at = if mu.pc == u32::MAX {
+                            "given with --mutate-input".to_string()
+                        } else {
+                            m1.k.describe(mu.pc as usize)
+                        };
+                        let row = MutatedRow {
+                            mutation: mu.label.clone(),
+                            pc: (mu.pc != u32::MAX).then_some(mu.pc),
+                            within_invariants: mu.within_invariants,
+                            at: at.clone(),
+                            makes: mu.never,
+                            classes: vm.classes(),
+                            complete: vm.complete,
+                            certified: vm.assumptions.iter().any(|a| a == "E-WELLSYNC"),
+                            states: vm.states,
+                            findings: vm.findings.clone(),
+                            notes: vm.notes.clone(),
+                            seconds: t0.elapsed().as_secs_f64(),
+                        };
+                        println!(
+                            "    on-mutated-input{}: {} ({}): {:?} states={}{} {:.1}s",
+                            if row.within_invariants {
+                                " (within declared invariants)"
+                            } else {
+                                ""
+                            },
+                            row.mutation,
+                            if mu.pc == u32::MAX {
+                                at.clone()
+                            } else {
+                                format!(
+                                    "makes {} side of {} taken",
+                                    if mu.never { "the true" } else { "the false" },
+                                    at
+                                )
+                            },
+                            row.classes,
+                            row.states,
+                            if row.complete || row.certified {
+                                ""
+                            } else {
+                                " INCOMPLETE"
+                            },
+                            row.seconds
+                        );
+                        for x in row.findings.iter().filter(|x| x.kind != "note").take(6) {
+                            println!(
+                                "      on-mutated-input{} {}: {}",
+                                if row.within_invariants {
+                                    " (within declared invariants)"
+                                } else {
+                                    ""
+                                },
+                                x.kind.to_uppercase(),
+                                x.msg.lines().next().unwrap_or("")
+                            );
+                        }
+                        mutated_inputs.push(row);
+                    }
+                    mutation_refusals = refused;
+                }
+                input_coverage = Some(cov);
+            }
             // Debugging / figures: PTXV_TRACE_DUMP=<dir> writes each finding's replayed witness.
             if let Some(d) = std::env::var_os("PTXV_TRACE_DUMP") {
                 let p = Path::new(&d).join(format!("{v}.{f}.trace.json"));
@@ -1065,8 +1724,10 @@ fn cmd_check(
             }
             // Captured cases (tools/capture.py) carry the GPU's output bytes.
             let mut expect_report = Vec::new();
+            // N-MULTIMEM-ROUND16: multimem reductions whose rounding the model only calibrates.
+            let ulp_ok = !case.m.multicast.is_empty();
             for (i, o) in verdict.outputs.iter().enumerate() {
-                for line in case.expect_report(o)? {
+                for line in case.expect_report_tol(o, ulp_ok)? {
                     println!("    expect (output {i}): {line}");
                     expect_report.push(format!("output {i}: {line}"));
                 }
@@ -1092,6 +1753,11 @@ fn cmd_check(
                 refuted_opt_in: refuted,
                 verdict,
                 gb300: gbc,
+                two_level,
+                nonfinite: nf,
+                input_coverage,
+                mutated_inputs,
+                mutation_refusals,
             });
         }
     }
@@ -1144,7 +1810,19 @@ fn cmd_num_with(
         if f == "ptx" && case.m.cubin.is_some() {
             continue; // binary-only case
         }
-        let (k, _) = load(case, variant, f, &dir)?;
+        let k = match load(case, variant, f, &dir) {
+            Ok((k, _)) => k,
+            // A PTX the front-end does not parse (forms ptxas compiles but the PTX lift does
+            // not model): the SASS front alone gives the run (`hw`'s expected bytes).
+            Err(e) if f == "ptx" => {
+                println!(
+                    "num {variant} ptx : not run, the PTX front-end refuses it ({}); SASS front only",
+                    format!("{e:#}").lines().last().unwrap_or("").trim()
+                );
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         let mut m = machine(case, k)?;
         m.num = Some(Box::new(ptxv_sim::num::NumState::with_mma_eps(
             m.launch.mma_model.eps(),
@@ -1153,6 +1831,7 @@ fn cmd_num_with(
         if !ok {
             bail!("numerics run of {variant} ({f}) did not terminate cleanly: {findings:?}");
         }
+        note_ref_faults(&format!("numerics run of {variant} ({f})"), &findings);
         let ns = m.num.as_ref().unwrap();
         let oi = m.launch.outputs[0];
         let mem = &m.gmem[oi];
@@ -1371,9 +2050,14 @@ pub(crate) fn hw_run_cubin(
                     mismatch_runs: serde_json::from_value(r["mismatch_runs"].clone())?,
                     gpu,
                     outcome: if mism == 0 {
-                        "matches simulator bitwise".into()
+                        format!("matches {} bitwise", REF_KIND.lock().unwrap())
                     } else {
-                        format!("{mism}/{runs} runs differ from the correct output")
+                        match *REF_KIND.lock().unwrap() {
+                            "simulator" => {
+                                format!("{mism}/{runs} runs differ from the correct output")
+                            }
+                            k => format!("{mism}/{runs} runs differ from {k} bitwise"),
+                        }
                     },
                     runs,
                     mismatches: mism,
@@ -1383,6 +2067,51 @@ pub(crate) fn hw_run_cubin(
             }
         }
     })
+}
+
+/// Faults (and unmodeled steps) of the simulator runs that produced `ptxv hw`'s expected
+/// bytes: printed by `cmd_hw`, so that a GPU / simulator mismatch is not taken for a GPU
+/// problem when the reference itself went wrong.
+static REF_FAULTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// What `ptxv hw`'s expected bytes are (printed in each row's outcome).
+static REF_KIND: std::sync::Mutex<&str> = std::sync::Mutex::new("simulator");
+
+/// `ptxv hw --no-num`'s expected bytes: the output buffers' captured GPU bytes (`expect`),
+/// concatenated in `outputs` order. Refuses a buffer without `expect` or whose `expect`
+/// covers only part of it (the rest of the buffer's final bytes are unknown without a run).
+fn captured_outputs(case: &Case) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    for o in &case.m.outputs {
+        let b = case.buffer(o)?;
+        let Some(p) = &b.expect else {
+            bail!("--no-num: output {o} has no captured GPU bytes (`expect`)")
+        };
+        let want = std::fs::read(p).with_context(|| p.clone())?;
+        if b.expect_offset != 0 || want.len() != b.bytes() {
+            bail!(
+                "--no-num: output {o}'s captured bytes cover [{}, {}) of its {} bytes; the whole buffer is needed",
+                b.expect_offset,
+                b.expect_offset as usize + want.len(),
+                b.bytes()
+            );
+        }
+        out.extend(want);
+    }
+    Ok(out)
+}
+
+fn note_ref_faults(run: &str, findings: &[ptxv_sim::machine::Finding]) {
+    let mut g = REF_FAULTS.lock().unwrap();
+    for f in findings
+        .iter()
+        .filter(|f| f.kind == "fault" || f.kind == "unmodeled")
+    {
+        let line = format!("{run}: {} {}", f.kind, f.msg.lines().next().unwrap_or(""));
+        if !g.contains(&line) {
+            g.push(line);
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1404,6 +2133,16 @@ fn cmd_hw(
         bail!("no free GPU (all have foreign compute processes)")
     };
     println!("hw: using GPU(s) {} (free: {free:?})", gpu_env(case, gpu)?);
+    let ref_faults = REF_FAULTS.lock().unwrap().clone();
+    if !ref_faults.is_empty() {
+        println!(
+            "hw: the simulator run that produced the expected output reported {} fault(s) / unmodeled step(s); a mismatch below may be the simulator's, not the GPU's:",
+            ref_faults.len()
+        );
+        for l in ref_faults.iter().take(5) {
+            println!("hw:   {l}");
+        }
+    }
     let mut rows = Vec::new();
     for v in variants(case, variant) {
         let front = if case.m.cubin.is_some() {
@@ -1439,8 +2178,15 @@ fn cmd_hw(
                 String::new()
             } else {
                 format!(" first failing runs: {:?}", row.mismatch_runs)
-            }
+            },
         );
+        if !ref_faults.is_empty() && !row.mismatch_runs.is_empty() {
+            println!(
+                "hw {:<6} mismatch against a faulted simulator reference ({} fault(s), above): not evidence of a GPU problem",
+                row.variant,
+                ref_faults.len()
+            );
+        }
         rows.push(row);
     }
     Ok(rows)
@@ -1524,6 +2270,7 @@ fn cmd_suite(case: &Case, runs: usize, out: &Option<PathBuf>) -> Result<()> {
         false,
         &None,
         gb300_enabled(false),
+        None,
     )?;
     println!("\n-- numerics (good variant) --");
     let (nums, expected) = cmd_num(case, "good", out)?;
@@ -1681,20 +2428,45 @@ fn run() -> Result<()> {
             out,
             slices,
             certify,
+            rep,
             groups,
             json,
             residency,
             tmem_cotenant,
             assume_refuted,
             no_gb300,
+            hw_profile,
+            nonfinite,
+            nonfinite_strict,
+            no_input_coverage,
+            coverage_only,
+            mutate_inputs,
+            mutate_elements,
+            mutate_input,
         } => {
+            let _ = MUTATE_SPECS.set(mutate_input);
+            let _ = COVERAGE_ONLY.set(coverage_only);
             let j = json.then(|| jsonout::begin("check"));
+            let _ = INPUT_COV.set((
+                !no_input_coverage && std::env::var("PTXV_NO_INPUT_COVERAGE").is_err(),
+                mutate_inputs,
+                mutate_elements.max(1),
+            ));
+            if let Some(p) = hw_profile {
+                let _ = HW_PROFILE.set(p);
+            }
+            if rep {
+                // The check paths read it (`ptxv_sim::rep`).
+                // SAFETY: argument handling on the main thread; no other thread runs yet.
+                unsafe { std::env::set_var("PTXV_REP", "1") };
+            }
             if !assume_refuted.is_empty() {
                 // build_launch reads it (ptxv_sim::assume_refuted), on every check path.
                 let mut ids = assume_refuted.join(",");
                 if let Ok(e) = std::env::var("PTXV_ASSUME_REFUTED") {
                     ids = format!("{e},{ids}");
                 }
+                // SAFETY: argument handling on the main thread; no other thread runs yet.
                 unsafe { std::env::set_var("PTXV_ASSUME_REFUTED", ids) };
             }
             let mut c = Case::load(&case)?;
@@ -1730,6 +2502,7 @@ fn run() -> Result<()> {
                 certify,
                 &groups,
                 gb300_enabled(no_gb300),
+                (nonfinite || nonfinite_strict).then_some(nonfinite_strict),
             )?;
             let pass = rows.iter().all(|r| r.pass);
             if let Some(j) = j {
@@ -1762,19 +2535,28 @@ fn run() -> Result<()> {
             timeout,
             scrub,
             delay,
+            no_num,
             out,
         } => {
             let c = Case::load(&case)?;
+            if no_num {
+                let expected = captured_outputs(&c)?;
+                *REF_KIND.lock().unwrap() = "the captured GPU output";
+                cmd_hw(&c, &variant, runs, timeout, &out, &expected, scrub, &delay)?;
+                return Ok(());
+            }
             // PTXV_HW_EXPECT=variant: each variant against its own deterministic simulator
             // run (a numerics mutant's wrong output, rung 3b).
             if std::env::var("PTXV_HW_EXPECT").as_deref() == Ok("variant") {
                 let dir = out_dir(&c, &out)?;
                 for v in variants(&c, &variant) {
                     let (k, _) = load(&c, &v, "sass", &dir)?;
-                    let (m, _, ok) = ptxv_sim::explore::run_once(machine(&c, k)?);
+                    let (m, fs, ok) = ptxv_sim::explore::run_once(machine(&c, k)?);
                     if !ok {
                         bail!("{v} does not terminate in the simulator");
                     }
+                    REF_FAULTS.lock().unwrap().clear();
+                    note_ref_faults(&format!("simulator run of {v}"), &fs);
                     cmd_hw(&c, &v, runs, timeout, &out, &m.outputs(), scrub, &delay)?;
                 }
                 return Ok(());
@@ -1785,10 +2567,11 @@ fn run() -> Result<()> {
             let expected = if std::env::var("PTXV_HW_EXPECT").as_deref() == Ok("run") {
                 let dir = out_dir(&c, &out)?;
                 let (k, _) = load(&c, "good", "sass", &dir)?;
-                let (m, _, ok) = ptxv_sim::explore::run_once(machine(&c, k)?);
+                let (m, fs, ok) = ptxv_sim::explore::run_once(machine(&c, k)?);
                 if !ok {
                     bail!("the good variant does not terminate in the simulator");
                 }
+                note_ref_faults("simulator run of good", &fs);
                 m.outputs()
             } else {
                 cmd_num(&c, "good", &out)?.1
@@ -1954,13 +2737,18 @@ fn run() -> Result<()> {
             }
             println!("{}", serde_json::to_string(&r)?);
         }
-        Cmd::CalibMma { case, out, only } => {
+        Cmd::CalibMma {
+            case,
+            out,
+            only,
+            step,
+        } => {
             let c = Case::load(&case)?;
             // A byte-operand probe (probes/mma_f8) calibrates the narrow kinds.
             if c.buffer("A")?.dtype == "u8" {
                 calib_lp::run(&c, &out, only.as_deref())?
             } else {
-                calib::run(&c, &out)?
+                calib::run(&c, &out, step)?
             }
         }
         Cmd::Probe {

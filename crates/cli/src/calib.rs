@@ -20,6 +20,7 @@ use anyhow::Result;
 use anyhow::bail;
 use ptxv_case::Case;
 use ptxv_case::f32_to_bf16_rn;
+use ptxv_case::f64_to_f16_rn;
 use ptxv_sim::fp::MmaModel;
 use ptxv_sim::fp::Term;
 use serde::Serialize;
@@ -87,17 +88,29 @@ impl Conv {
     }
 }
 
-fn sets(m: usize, n: usize, k: usize, tf32: bool) -> Vec<Set> {
-    // bf16 inputs: rounded to bf16; tf32: f32 words (every mantissa bit random where the
-    // value is).
+/// Operand format of a calibration case (the A buffer's dtype).
+#[derive(Clone, Copy, PartialEq)]
+enum Fmt {
+    Bf16,
+    F16,
+    Tf32,
+}
+
+fn sets(m: usize, n: usize, k: usize, fmt: Fmt, step: usize) -> Vec<Set> {
+    // bf16 / f16 inputs: rounded to the format (as f32 words); tf32: f32 words (every
+    // mantissa bit random where the value is).
     let bf = move |x: f64| -> u32 {
-        if tf32 {
-            (x as f32).to_bits()
-        } else {
-            (f32_to_bf16_rn(x as f32) as u32) << 16
+        match fmt {
+            Fmt::Tf32 => (x as f32).to_bits(),
+            Fmt::Bf16 => (f32_to_bf16_rn(x as f32) as u32) << 16,
+            // Subnormal f16 values flush to zero: the calibration covers normal inputs.
+            Fmt::F16 if x.abs() < 2f64.powi(-14) => (0.0f32.copysign(x as f32)).to_bits(),
+            Fmt::F16 => (ptxv_sim::fp::f16_to_f64(f64_to_f16_rn(x)) as f32).to_bits(),
         }
     };
-    let step = if tf32 { 8 } else { 16 };
+    // f16 normals span 2^-14 .. 2^15: smaller exponent ranges keep every input normal.
+    let f16 = fmt == Fmt::F16;
+    let (tiny, big) = if f16 { (13, 4) } else { (39, 10) };
     let mut out = Vec::new();
     let mut r = Rng(7);
     let gen = |r: &mut Rng, len: usize, f: &dyn Fn(&mut Rng, usize) -> f64| -> Vec<u32> {
@@ -121,12 +134,12 @@ fn sets(m: usize, n: usize, k: usize, tf32: bool) -> Vec<Set> {
     });
     out.push(Set {
         name: "logu30",
-        why: "magnitudes 2^[-30,30]: most small products fall below the kept bits",
+        why: "magnitudes 2^[-30,30] (f16: 2^[-14,14]): most small products fall below the kept bits",
         a: gen(&mut r, m * k, &|r, _| {
-            r.sign() * 2f64.powf(r.unit() * 60.0 - 30.0)
+            r.sign() * 2f64.powf(if f16 { r.unit() * 28.0 - 14.0 } else { r.unit() * 60.0 - 30.0 })
         }),
         b: gen(&mut r, n * k, &|r, _| {
-            r.sign() * 2f64.powf(r.unit() * 60.0 - 30.0)
+            r.sign() * 2f64.powf(if f16 { r.unit() * 28.0 - 14.0 } else { r.unit() * 60.0 - 30.0 })
         }),
     });
     // Cancellation: pairs (x, -x(1+tiny)) so the dot product is a small residual of big terms.
@@ -137,7 +150,7 @@ fn sets(m: usize, n: usize, k: usize, tf32: bool) -> Vec<Set> {
             if i % 2 == 0 {
                 2f64.powf(r.unit() * 8.0)
             } else {
-                2f64.powf(r.unit() * 8.0 - 20.0) * r.sign()
+                2f64.powf(r.unit() * 8.0 - if f16 { 14.0 } else { 20.0 }) * r.sign()
             }
         }),
         b: gen(&mut r, n * k, &|r, i| {
@@ -152,7 +165,7 @@ fn sets(m: usize, n: usize, k: usize, tf32: bool) -> Vec<Set> {
     out.push(Set {
         name: "probe_align",
         why: "1 + fifteen products 2^-e (e varies by row): measures how many bits below the max survive",
-        a: (0..m * k).map(|i| if i % step == 0 { bf(1.0) } else { bf(2f64.powi(-((i / k) as i32 % 40))) }).collect(),
+        a: (0..m * k).map(|i| if i % step == 0 { bf(1.0) } else { bf(2f64.powi(-((i / k) as i32 % (tiny + 1)))) }).collect(),
         b: (0..n * k).map(|i| if (i / k).is_multiple_of(2) { bf(1.0) } else { bf(if i % step == 0 { 1.0 } else { 1.5 }) }).collect(),
     });
     // Probe: large accumulator from the first K chunk, then tiny products.
@@ -162,9 +175,9 @@ fn sets(m: usize, n: usize, k: usize, tf32: bool) -> Vec<Set> {
         a: (0..m * k)
             .map(|i| {
                 if i % k < step {
-                    bf(2f64.powi(10 + (i / k) as i32 % 8))
+                    bf(2f64.powi(big + (i / k) as i32 % 8))
                 } else {
-                    bf(2f64.powi(-((i / k) as i32 % 24)))
+                    bf(2f64.powi(-((i / k) as i32 % if f16 { 14 } else { 24 })))
                 }
             })
             .collect(),
@@ -241,7 +254,7 @@ struct Score {
     total: usize,
 }
 
-pub fn run(case: &Case, out: &Option<PathBuf>) -> Result<()> {
+pub fn run(case: &Case, out: &Option<PathBuf>, step: Option<usize>) -> Result<()> {
     let dir = crate::out_dir(case, out)?.join("calib");
     std::fs::create_dir_all(&dir)?;
     let (ba, bb) = (case.buffer("A")?, case.buffer("B")?);
@@ -250,8 +263,13 @@ pub fn run(case: &Case, out: &Option<PathBuf>) -> Result<()> {
         ba.shape[1] as usize,
         bb.shape[0] as usize,
     );
-    let tf32 = ba.dtype == "f32";
-    let step = if tf32 { 8 } else { 16 };
+    let fmt = match ba.dtype.as_str() {
+        "f32" => Fmt::Tf32,
+        "f16" => Fmt::F16,
+        _ => Fmt::Bf16,
+    };
+    let tf32 = fmt == Fmt::Tf32;
+    let step = step.unwrap_or(if tf32 { 8 } else { 16 });
     if k % step != 0 {
         bail!("K must be a multiple of {step}");
     }
@@ -277,14 +295,18 @@ pub fn run(case: &Case, out: &Option<PathBuf>) -> Result<()> {
         models().len() * convs.len()
     );
     let exe = std::env::current_exe()?;
-    let sets = sets(m, n, k, tf32);
+    let sets = sets(m, n, k, fmt, step);
     let words = |v: &[u32]| -> Vec<u8> {
-        if tf32 {
-            v.iter().flat_map(|x| x.to_le_bytes()).collect()
-        } else {
-            v.iter()
+        match fmt {
+            Fmt::Tf32 => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            Fmt::Bf16 => v
+                .iter()
                 .flat_map(|x| ((x >> 16) as u16).to_le_bytes())
-                .collect()
+                .collect(),
+            Fmt::F16 => v
+                .iter()
+                .flat_map(|x| f64_to_f16_rn(f32::from_bits(*x) as f64).to_le_bytes())
+                .collect(),
         }
     };
     let mut hw: Vec<Vec<u32>> = Vec::new();

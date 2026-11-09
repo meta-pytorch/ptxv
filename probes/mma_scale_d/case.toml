@@ -1,0 +1,64 @@
+name = "probe_mma_scale_d"
+description = """
+Probe (N-MMA, L-ROSETTA) for tcgen05.mma scale-input-d (SASS `UTCHMMA ..., UPT, s`): D = A B +
+D * 2^-s for kind::f16 (bf16 A / B) and kind::tf32, M = 128, N = 16, s = 0..15 (kernel.ptx,
+gen.py). TMEM starts as data/C.bin (normal f32 that stay normal when scaled); the output is the
+whole TMEM. expected/D.bin is GB300's (`ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "mma_one"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "u16"
+shape = [1, 128, 16]
+init = "file"
+file = "data/A.bin"
+
+[[buffers]]
+name = "B"
+dtype = "u16"
+shape = [1, 256, 16]
+init = "file"
+file = "data/B.bin"
+
+[[buffers]]
+name = "C"
+dtype = "u32"
+shape = [1, 128, 256]
+init = "file"
+file = "data/C.bin"
+
+[[buffers]]
+name = "D"
+dtype = "u32"
+shape = [1, 128, 256]
+init = "zeros"
+expect = "expected/D.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "A"
+
+[[params]]
+kind = "ptr"
+buffer = "B"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+# idesc (kind::f16): D f32, A / B bf16, N >> 3 = 2 at bit 17, M >> 4 = 8 at bit 24 (the kind::tf32 idesc is in kernel.ptx).
+[[params]]
+kind = "u32"
+value = 0x8040490
+
+[[params]]
+kind = "ptr"
+buffer = "C"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

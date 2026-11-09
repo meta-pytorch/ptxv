@@ -1,0 +1,39 @@
+name = "probe_bf16_ext"
+description = """
+Probe (N-BF16X2, N-FALU) for mixed bf16 / f32 arithmetic and bf16 min / max on GB300
+(kernel.ptx from gen_ptx.py, inputs gen.py): fma / add / sub .{rn,rz,rm,rp}[.sat].f32.bf16
+(SASS FHFMA.BF16 / FHADD.BF16 with lane selectors), min / max [.NaN] [.xorsign.abs] .bf16x2 /
+.bf16 (HMNMX2.BF16_V2), and fma / mul / add / sub .{rz,rm,rp}.f32x2 (FFMA2 / FMUL2 / FADD2 with a
+rounding mode). expected/ is GB300's output (ptxas cubin, `ptxv hw-worker probes/bf16_ext
+<cubin> --runs 1 --dump`)."""
+ptx = "kernel.ptx"
+entry = "bf16_ext"
+grid = [16, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [4096, 4]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [31, 4096]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

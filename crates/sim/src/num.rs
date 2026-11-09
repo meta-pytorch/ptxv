@@ -103,12 +103,30 @@ pub enum NodeKind {
     },
     /// Segment mode: a value computed from tracked nodes by an instruction slice (`seg.rs`).
     Seg(SegRef),
+    /// Segment mode: a choice made by input data. `pred` is the slice computing the predicate
+    /// (0 / 1) from its argument nodes; the value is `a` where `pred ^ neg` holds, else `b`.
+    /// A store under a data-dependent guard (`@P STS [x], v`) leaves `Sel(P, v, old)` in every
+    /// word it covers, whichever way this input went (N-ERRDIST-SEL).
+    Sel {
+        pred: SegRef,
+        neg: bool,
+        a: u32,
+        b: u32,
+    },
     /// A TF32 part of the f32 value `arg` (3xTF32 split, N-TF32): the high part the TF32 MMA
     /// reads, or a low-part factor of a split.
     Tf32 {
         arg: u32,
         part: Tf32Part,
     },
+}
+
+/// What a 16-bit bf16 operand half holds for the numerics (`Machine::bf16_half`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Bf16Half {
+    Node(u32),
+    Const(u16),
+    Unknown,
 }
 
 /// Which TF32 part of an f32 value x (its node's hw value) a `Tf32` node is.
@@ -258,6 +276,9 @@ pub struct NumState {
     /// Instructions of div.rn sequences (computed on first use).
     idiom_pcs: Option<BTreeSet<u32>>,
     pub seg_fails: BTreeMap<u32, String>,
+    /// Stores under a data-dependent guard modeled as selections (`NodeKind::Sel`): their
+    /// guards are part of the dataflow, not a different one.
+    pub sel_pcs: BTreeSet<u32>,
     /// Leaves of input-independent constants (N-FINITE).
     const_leaves: std::collections::HashSet<u32>,
     /// `fin` per node.
@@ -576,21 +597,7 @@ pub fn fmax_diamond(code: &[Inst], bra: usize) -> Option<(usize, usize)> {
         return None;
     };
     let p = b.guard.reg?;
-    let atom = |i: usize| match &code.get(i)?.op {
-        Op::Atom {
-            op,
-            space: Space::Shared,
-            bytes: 4,
-            addr,
-            v: Val::Reg(v, 1),
-            d: None,
-            p: None,
-            ..
-        } if code[i].guard.is_always() && matches!(op, AtomOp::MaxS | AtomOp::MinU) => {
-            Some((*op, addr.clone(), *v))
-        }
-        _ => None,
-    };
+    let atom = |i: usize| fmax_atom(code, i);
     let (op1, a1, v1) = atom(bra + 1)?;
     let Op::Bra {
         target: join,
@@ -609,29 +616,48 @@ pub fn fmax_diamond(code: &[Inst], bra: usize) -> Option<(usize, usize)> {
     if op1 == op2 || a1 != a2 || v1 != v2 {
         return None;
     }
-    // The predicate: the last write of P before the branch, in straight-line code that writes
-    // neither P nor v after it and that no branch enters.
-    let mut i = bra;
+    if !sign_setp(code, bra, p, v1) {
+        return None;
+    }
+    // Taken where the sign bit is clear (P) unless the guard is negated: then the target must
+    // be the signed max.
+    let taken_clear = !b.guard.neg;
+    let (max_pc, min_pc) = if (op2 == AtomOp::MaxS) == taken_clear {
+        (bra + 3, bra + 1)
+    } else {
+        return None;
+    };
+    Some((max_pc, min_pc))
+}
+
+/// Whether P = (v as i32 >= 0) at the branch `first`: the last write of P before it is
+/// `ISETP.GE P, v, RZ` (or `.GT P, v, -1`), unguarded, in straight-line code that writes
+/// neither P nor v after it and that no branch enters.
+fn sign_setp(code: &[Inst], first: usize, p: Reg, v: Reg) -> bool {
+    let mut i = first;
     let setp = loop {
-        i = i.checked_sub(1)?;
+        let Some(j) = i.checked_sub(1) else {
+            return false;
+        };
+        i = j;
         let inst = &code[i];
         if inst.op.dst_regs().contains(&p) {
             break i;
         }
-        if inst.op.dst_regs().contains(&v1)
+        if inst.op.dst_regs().contains(&v)
             || matches!(
                 inst.op,
                 Op::Bra { .. } | Op::Exit | Op::Call { .. } | Op::Ret { .. }
             )
         {
-            return None;
+            return false;
         }
     };
     let entered = code
         .iter()
-        .any(|x| matches!(x.op, Op::Bra { target, .. } if target > setp && target <= bra));
+        .any(|x| matches!(x.op, Op::Bra { target, .. } if target > setp && target <= first));
     if entered || !code[setp].guard.is_always() {
-        return None;
+        return false;
     }
     let Op::Setp {
         d,
@@ -645,29 +671,125 @@ pub fn fmax_diamond(code: &[Inst], bra: usize) -> Option<(usize, usize)> {
         ex: None,
     } = code[setp].op
     else {
-        return None;
+        return false;
     };
     let k = match sb {
         Val::Imm(x) => *x as u32,
-        _ => return None,
+        _ => return false,
     };
-    // P = (v as i32 >= 0).
-    let sign_clear = match (cmp, k) {
-        (Cmp::GeS, 0) | (Cmp::GtS, 0xffff_ffff) => true,
-        _ => return None,
+    let sign_clear = matches!((cmp, k), (Cmp::GeS, 0) | (Cmp::GtS, 0xffff_ffff));
+    d == p && sa == v && and.is_always() && sign_clear
+}
+
+/// An unguarded shared 4-byte `ATOMS.MAX.S32` / `ATOMS.MIN` (unsigned) of a register with no
+/// destination at `i`: (op, address, value register).
+fn fmax_atom(code: &[Inst], i: usize) -> Option<(AtomOp, Addr, Reg)> {
+    match &code.get(i)?.op {
+        Op::Atom {
+            op,
+            space: Space::Shared,
+            bytes: 4,
+            addr,
+            v: Val::Reg(v, 1),
+            d: None,
+            p: None,
+            ..
+        } if code[i].guard.is_always() && matches!(op, AtomOp::MaxS | AtomOp::MinU) => {
+            Some((*op, addr.clone(), *v))
+        }
+        _ => None,
+    }
+}
+
+/// The sequential form of the float atomic max (N-FMAX, CuTeDSL's `smem_fmax`): two skips on
+/// one sign predicate, `@P BRA A1; ATOMS.MIN RZ, [a], v; A1: ...; @!P BRA A2;
+/// ATOMS.MAX.S32 RZ, [a], v; A2:`, with only `NOP` / `BSYNC` / `BSSY` between the first atomic
+/// and the second branch, in either order. Exactly one atomic executes: the unsigned min
+/// where v's sign bit is set, the signed max where it is clear. Returns the two atomics' pcs
+/// (max, min) for either branch `bra`.
+// ASSUME(N-FMAX): see ASSUMPTIONS.md
+pub fn fmax_seq(code: &[Inst], bra: usize) -> Option<(usize, usize)> {
+    // A skip: `@[!]P BRA bra+2` over an atomic; (P, negated, atomic).
+    let skip = |b: usize| {
+        let inst = code.get(b)?;
+        let Op::Bra {
+            target,
+            any: false,
+            tid0_falls: false,
+            cond: None,
+            div: None,
+        } = inst.op
+        else {
+            return None;
+        };
+        let p = inst.guard.reg?;
+        if target != b + 2 {
+            return None;
+        }
+        let (op, a, v) = fmax_atom(code, b + 1)?;
+        Some((p, inst.guard.neg, op, a, v))
     };
-    if d != p || sa != v1 || !and.is_always() || !sign_clear {
+    let filler = |i: usize| {
+        matches!(code[i].op, Op::Nop | Op::Bsync { .. } | Op::Bssy { .. })
+            && code[i].guard.is_always()
+    };
+    let (p, neg, op, a, v) = skip(bra)?;
+    // The partner: after this skip's atomic, or before this branch.
+    let mut partner = None;
+    let mut j = bra + 2;
+    while j < code.len() && filler(j) {
+        j += 1;
+    }
+    if let Some(x) = skip(j) {
+        partner = Some((bra, j, x));
+    }
+    if partner.is_none() {
+        let mut j = bra;
+        while j > 0 && filler(j - 1) {
+            j -= 1;
+        }
+        // code[j - 1] is the partner's atomic, code[j - 2] its branch.
+        if let Some(b0) = j.checked_sub(2) {
+            if let Some(x) = skip(b0) {
+                partner = Some((b0, bra, x));
+            }
+        }
+    }
+    let (first, second, (p2, neg2, op2, a2, v2)) = partner?;
+    let ((pf, negf, opf), (ps, negs, ops)) = if first == bra {
+        ((p, neg, op), (p2, neg2, op2))
+    } else {
+        ((p2, neg2, op2), (p, neg, op))
+    };
+    if pf != ps || negf == negs || opf == ops || a != a2 || v != v2 {
         return None;
     }
-    // Taken where the sign bit is clear (P) unless the guard is negated: then the target must
-    // be the signed max.
-    let taken_clear = !b.guard.neg;
-    let (max_pc, min_pc) = if (op2 == AtomOp::MaxS) == taken_clear {
-        (bra + 3, bra + 1)
-    } else {
+    // No branch enters between the first skip's atomic and the second branch, other than the
+    // first skip's own target.
+    let entered = code.iter().enumerate().any(|(i, x)| {
+        matches!(x.op, Op::Bra { target, .. }
+            if target > first + 1 && target <= second && !(i == first && target == first + 2))
+    });
+    if entered || !sign_setp(code, first, pf, v) {
         return None;
+    }
+    // Each atomic runs where its skip's guard is false: the min where the sign bit is set
+    // (P false), so the min's skip is `@P` and the max's `@!P`.
+    let (max_pc, min_pc) = if opf == AtomOp::MinU {
+        (second + 1, first + 1)
+    } else {
+        (first + 1, second + 1)
     };
+    let min_neg = if opf == AtomOp::MinU { negf } else { negs };
+    if min_neg {
+        return None;
+    }
     Some((max_pc, min_pc))
+}
+
+/// A branch of a float atomic max (N-FMAX), either form: the atomics' pcs (max, min).
+pub fn fmax_branch(code: &[Inst], bra: usize) -> Option<(usize, usize)> {
+    fmax_diamond(code, bra).or_else(|| fmax_seq(code, bra))
 }
 
 /// Bits of an operand before its `-x` modifier (`vals` hold them after).
@@ -717,6 +839,32 @@ fn is_v_hi(r: Reg) -> bool {
     r.file == File::V && r.idx & V_HI != 0
 }
 
+/// A store under a data-dependent guard, before it executes (`Machine::num_gst_pre`).
+pub(crate) struct GstPre {
+    keys: Vec<(u8, u64, u64)>,
+    old: Vec<Option<u32>>,
+    pred: Result<crate::seg::SProg, String>,
+    neg: bool,
+}
+
+/// The 32-bit word at byte `at` past `loc` (shared or global memory).
+fn word_at(m: &Machine, loc: Loc, at: u64) -> u32 {
+    let b: Vec<u8> = match loc {
+        Loc::Shared { cta, off } => (0..4)
+            .map(|i| {
+                *m.smem[cta as usize]
+                    .bytes
+                    .get(off as usize + at as usize + i)
+            })
+            .collect(),
+        Loc::Global { alloc, off } => (0..4)
+            .map(|i| *m.gmem[alloc].bytes.get((off + at) as usize + i))
+            .collect(),
+        Loc::Param { .. } => vec![0; 4],
+    };
+    u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+}
+
 fn mem_key(loc: Loc) -> (u8, u64, u64) {
     match loc {
         Loc::Shared { cta, off } => (0, cta as u64, off as u64),
@@ -737,6 +885,14 @@ impl NumState {
         match &nd.kind {
             NodeKind::Leaf => format!("{v}"),
             NodeKind::Opaque => format!("opaque({v})"),
+            NodeKind::Sel { a, b, neg, .. } => {
+                format!(
+                    "sel({}p ? {} : {})",
+                    if *neg { "!" } else { "" },
+                    d(*a),
+                    d(*b)
+                )
+            }
             NodeKind::Input((a, i)) => format!("in{a}[{i}]"),
             NodeKind::Add(a, b, _) => format!("({} + {})", d(*a), d(*b)),
             NodeKind::AtomAdd(a, b) => format!("atom({} + {})", d(*a), d(*b)),
@@ -857,7 +1013,13 @@ impl NumState {
             f32::from_bits(self.nodes[a as usize].hw),
             f32::from_bits(self.nodes[b as usize].hw),
         );
-        let hw = if (ha >= hb) != min { ha } else { hb };
+        let hw = f32::from_bits(fp::f32_minmax(
+            ha.to_bits(),
+            hb.to_bits(),
+            min,
+            false,
+            false,
+        ));
         let exact = if pick_a { ea.clone() } else { eb.clone() };
         self.nodes.push(Node {
             kind: NodeKind::Max { a, b, min },
@@ -980,6 +1142,15 @@ impl NumState {
         n
     }
 
+    /// Whether node `n` is non-NaN for every admissible input: a non-NaN constant leaf, or
+    /// `fin` (N-FINITE).
+    pub(crate) fn non_nan(&mut self, n: u32) -> bool {
+        let konst = matches!(self.nodes[n as usize].kind, NodeKind::Leaf)
+            && self.const_leaves.contains(&n)
+            && !f32::from_bits(self.nodes[n as usize].hw).is_nan();
+        konst || self.fin(n)
+    }
+
     /// Whether node `n` is finite for every input with finite elements on which no operation
     /// of the DAG overflows (N-FINITE): inputs, finite constants, and sums, products, MMA steps,
     /// roundings, exp2 / tanh / sin / cos and TF32 parts of such nodes; a max (min) of one
@@ -995,6 +1166,9 @@ impl NumState {
             let kids: Vec<u32> = match &nd.kind {
                 NodeKind::Leaf | NodeKind::Opaque | NodeKind::Input(_) => vec![],
                 NodeKind::Seg(p) => p.0.args.clone(),
+                NodeKind::Sel { pred, a, b, .. } => {
+                    pred.0.args.iter().copied().chain([*a, *b]).collect()
+                }
                 NodeKind::Add(a, b, _) | NodeKind::AtomAdd(a, b) => vec![*a, *b],
                 NodeKind::Fma { a, b, c, .. } => {
                     [Some(*a), Some(*b), *c].into_iter().flatten().collect()
@@ -1046,6 +1220,8 @@ impl NumState {
                     let ok_const = |k: u32| konst(k) && self.nodes[k as usize].hw != bad;
                     (f(a) && f(b)) || (f(a) && ok_const(*b)) || (f(b) && ok_const(*a))
                 }
+                // The predicate's arguments do not reach the value.
+                NodeKind::Sel { a, b, .. } => f(a) && f(b),
                 NodeKind::Mufu { func, .. } => {
                     matches!(
                         func,
@@ -1229,19 +1405,14 @@ impl Machine {
             for (q, i) in k.code.iter().enumerate() {
                 if matches!(i.op, Op::Bsync { .. }) {
                     if crate::seg::rcprn_at(self, q as u32).is_some() {
-                        // The fast path's Newton step (not instructions interleaved with it).
-                        set.extend(q as u32 - 4..=q as u32);
+                        // The sequence's own instructions (its fast path's Newton step; not
+                        // instructions interleaved with it).
+                        set.extend(crate::seg::rcprn_pcs(self, q as u32));
                     }
-                    if let Some((_, b, _)) = crate::seg::divrn_at(self, q as u32) {
-                        // From the MUFU.RCP of the divisor to the BSYNC.
-                        let lo = (0..q)
-                            .rev()
-                            .take(20)
-                            .find(|&p| {
-                                matches!(&k.code[p].op, Op::Mufu { func: MufuFunc::Rcp, a: Val::Reg(x, _), .. } if *x == b)
-                            })
-                            .unwrap_or(q);
-                        set.extend(lo as u32..=q as u32);
+                    if let Some(lo) = crate::seg::divrn_lo(self, q as u32) {
+                        // From the MUFU.RCP of the divisor (constant divisor: the first
+                        // quotient FFMA) to the BSYNC.
+                        set.extend(lo..=q as u32);
                     }
                 }
             }
@@ -1320,26 +1491,37 @@ impl Machine {
 
     /// Segment mode: FMNMX `d = min/max(a, b[, c])` of tracked values (no modifiers, FTZ or
     /// NaN propagation; an input-independent min/max predicate): exact `Max` nodes.
-    pub(crate) fn num_fmnmx(&mut self, t: usize, d: Reg, ops: &[&Val], min: Option<bool>, pc: u32) {
+    /// `nan` (`FMNMX.NAN`): NaN-propagating, the same maximum where no operand is NaN; a node
+    /// only when every operand is non-NaN for every admissible input (N-FINITE).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn num_fmnmx(
+        &mut self,
+        t: usize,
+        d: Reg,
+        ops: &[&Val],
+        bits: &[u32],
+        min: Option<bool>,
+        nan: bool,
+        pc: u32,
+    ) {
         let Some(ns) = self.num.as_ref() else { return };
         if !ns.segments || min.is_none() {
             self.num_clobber(t, d, ops, pc);
             return;
         }
         let mut nodes = Vec::new();
-        for v in ops {
+        for (v, &b) in ops.iter().zip(bits) {
             match self.num_node_mat(t, v) {
                 Some(n) => nodes.push(n),
                 None => {
-                    // A constant operand (Triton's running maximum starts at -inf).
+                    // A constant operand (Triton's running maximum starts at -inf), as read
+                    // before the instruction wrote its destination.
                     let ns = self.num.as_mut().unwrap();
                     if matches!(v, Val::Reg(r, _) if ns.taint.reg_t(t, *r)) {
                         self.num_clobber(t, d, ops, pc);
                         return;
                     }
-                    let bits = self.rd(t, v).unwrap_or(0) as u32;
-                    let ns = self.num.as_mut().unwrap();
-                    nodes.push(ns.const_leaf(bits, pc));
+                    nodes.push(ns.const_leaf(b, pc));
                 }
             }
         }
@@ -1357,11 +1539,93 @@ impl Machine {
             ns.set(t, d, None);
             return;
         }
+        if nan && !nodes.clone().into_iter().all(|n| ns.non_nan(n)) {
+            self.num_clobber(t, d, ops, pc);
+            return;
+        }
+        let ns = self.num.as_mut().unwrap();
         let mut acc = nodes[0];
         for &n in &nodes[1..] {
             acc = ns.max_node(acc, n, min, pc);
         }
         ns.set(t, d, Some(acc));
+    }
+
+    /// Segment mode: `R2UR d, a` (a value uniform over the active lanes): the uniform register holds the
+    /// first active lane's value, so every active lane's `d` gets that lane's node (each lane
+    /// reads the uniform register).
+    pub(crate) fn num_r2ur(&mut self, active: &[usize], d: Reg, a: &Val) {
+        let Some(&t0) = active.first() else { return };
+        if !self.num.as_ref().is_some_and(|n| n.segments) {
+            return;
+        }
+        let n = self.num_node_mat(t0, a);
+        let ns = self.num.as_mut().unwrap();
+        for &t in active {
+            ns.set(t, d, n);
+        }
+    }
+
+    /// Segment mode: `CREDUX.MAX|MIN.F32[.NAN]` (redux.sync.max|min[.NaN].f32, no `.abs`)
+    /// over the active lanes: the maximum (minimum) of their operands, exact and
+    /// order-independent, as a tree of `Max` nodes (the input-independent lanes folded into
+    /// one constant). The uniform destination is read by every lane: each active lane gets the
+    /// node. `.NAN` requires every operand non-NaN for every admissible input (N-FINITE),
+    /// where it is the same maximum. Otherwise the destination is untracked.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn num_redux_f(
+        &mut self,
+        active: &[usize],
+        vals: &[u32],
+        d: Reg,
+        a: &Val,
+        min: bool,
+        nan: bool,
+        pc: u32,
+    ) {
+        if !self.num.as_ref().is_some_and(|n| n.segments) {
+            return;
+        }
+        let mut nodes = Vec::new();
+        let mut konst: Option<u32> = None;
+        for (&t, &bits) in active.iter().zip(vals) {
+            match self.num_node_mat(t, a) {
+                Some(n) => nodes.push(n),
+                None => {
+                    let ns = self.num.as_ref().unwrap();
+                    if matches!(a, Val::Reg(r, _) if ns.taint.reg_t(t, *r)) {
+                        return;
+                    }
+                    konst = Some(match konst {
+                        Some(k) => fp::f32_minmax(k, bits, min, nan, false),
+                        None => bits,
+                    });
+                }
+            }
+        }
+        let ns = self.num.as_mut().unwrap();
+        if nodes.is_empty() {
+            return;
+        }
+        if let Some(k) = konst {
+            if f32::from_bits(k).is_nan() {
+                return;
+            }
+            nodes.push(ns.const_leaf(k, pc));
+        }
+        if nan && !nodes.clone().into_iter().all(|n| ns.non_nan(n)) {
+            ns.seg_fails
+                .entry(pc)
+                .or_insert_with(|| "CREDUX.NAN of a value not provably non-NaN (no node)".into());
+            return;
+        }
+        let mut acc = nodes[0];
+        for &n in &nodes[1..] {
+            acc = ns.max_node(acc, n, min, pc);
+        }
+        for &t in active {
+            ns.set(t, d, Some(acc));
+        }
     }
 
     /// Segment mode: FSETP `P = a cmp b` (combined with PT, no modifiers): remembered, so a
@@ -1804,7 +2068,7 @@ impl Machine {
             // This register's own bytes (a whole-word register: its word; else the access).
             let (sp, a, off) = mem_key(loc);
             if let Some((lo, n)) = own {
-                let rt = (lo..lo + n).any(|b| ns.taint.mem.contains(&(sp, a, off + b)));
+                let rt = (lo..lo + n).any(|b| ns.taint.mem_has((sp, a, off + b)));
                 ns.taint.ld_read.push((t, r, rt));
             }
             let node = w.and_then(|w| {
@@ -2054,11 +2318,7 @@ impl Machine {
                         let tw = ns.taint.reg_t(t, w);
                         for b in 0..4u64 {
                             let k = (sp, a, off + 4 * i as u64 + b);
-                            if tw {
-                                ns.taint.mem.insert(k);
-                            } else {
-                                ns.taint.mem.remove(&k);
-                            }
+                            ns.taint.mem_set(k, tw);
                         }
                     }
                 }
@@ -2104,6 +2364,156 @@ impl Machine {
         }
     }
 
+    /// Segment mode, before a store whose guard depends on input data (thread `t`, executed or
+    /// not): the words it covers and their nodes before it (`None`: input-derived without a
+    /// node), and the slice of its guard predicate. None when not such a store, or when the
+    /// store is outside what `num_gst_post` models (it then stays a taint violation).
+    pub(crate) fn num_gst_pre(&mut self, t: usize, inst: &Inst, pc: u32) -> Option<GstPre> {
+        let ns = self.num.as_ref()?;
+        let g = inst.guard.reg?;
+        if !ns.segments || ns.taint.position || !ns.taint.reg_t(t, g) {
+            return None;
+        }
+        let Op::St {
+            space,
+            bytes,
+            addr,
+            v,
+            ..
+        } = &inst.op
+        else {
+            return None;
+        };
+        let words_ok = match v {
+            Val::Reg(r, _) => r.file == File::R,
+            Val::Imm(0) => true,
+            _ => false,
+        };
+        if !words_ok || !bytes.is_multiple_of(4) || *bytes > 16 {
+            return None;
+        }
+        let a = self.addr(t, addr).ok()?;
+        let loc = self.resolve(t, *space, a, *bytes as usize).ok()?;
+        let (sp, al, off) = mem_key(loc);
+        if sp > 1 {
+            return None;
+        }
+        let pred = self.seg_slice(t, g);
+        let mut keys = Vec::new();
+        let mut old = Vec::new();
+        for i in 0..(*bytes / 4) as u64 {
+            let k = (sp, al, off + 4 * i);
+            let bits = word_at(self, loc, 4 * i);
+            let ns = self.num.as_mut().unwrap();
+            let n = match ns.mem.get(&k) {
+                Some(&n) => Some(n),
+                None if (0..4).any(|b| ns.taint.mem.contains(&(sp, al, off + 4 * i + b))) => None,
+                None => Some(ns.const_leaf(bits, pc)),
+            };
+            keys.push(k);
+            old.push(n);
+        }
+        Some(GstPre {
+            keys,
+            old,
+            pred,
+            neg: inst.guard.neg,
+        })
+    }
+
+    /// After the store of `num_gst_pre`: word i becomes `Sel(P, new_i, old_i)` (the guard's
+    /// predicate, the stored value's node, the node before), the same node whether or not this
+    /// input executed it; a word whose value or old value is input-derived without a node, or
+    /// whose predicate has no slice, loses its node and the guard stays a violation.
+    pub(crate) fn num_gst_post(
+        &mut self,
+        t: usize,
+        inst: &Inst,
+        pc: u32,
+        executed: bool,
+        g: GstPre,
+    ) {
+        let Op::St { v, .. } = &inst.op else { return };
+        let mut ok = true;
+        let mut sels = Vec::new();
+        for (i, (&k, &old)) in g.keys.iter().zip(&g.old).enumerate() {
+            let w = match v {
+                Val::Reg(r, _) => Val::Reg(
+                    Reg {
+                        file: r.file,
+                        idx: r.idx + i as u16,
+                    },
+                    1,
+                ),
+                x => x.clone(),
+            };
+            let nv = match self.num_node_mat(t, &w) {
+                Some(n) => Some(n),
+                None => {
+                    let ns = self.num.as_ref().unwrap();
+                    if matches!(&w, Val::Reg(r, _) if ns.taint.reg_t(t, *r)) {
+                        None
+                    } else {
+                        let bits = self.rd(t, &w).unwrap_or(0) as u32;
+                        Some(self.num.as_mut().unwrap().const_leaf(bits, pc))
+                    }
+                }
+            };
+            sels.push((k, nv, old));
+            ok &= nv.is_some() && old.is_some();
+        }
+        let ns = self.num.as_mut().unwrap();
+        let pred = match g.pred {
+            Ok(p) if ok => p,
+            Ok(_) => {
+                for (k, ..) in sels {
+                    ns.mem.remove(&k);
+                }
+                ns.seg_fails.entry(pc).or_insert_with(|| {
+                    "store under a data-dependent guard of an input-derived value without a node"
+                        .into()
+                });
+                return;
+            }
+            Err(e) => {
+                for (k, ..) in sels {
+                    ns.mem.remove(&k);
+                }
+                ns.seg_fails
+                    .entry(pc)
+                    .or_insert_with(|| format!("guard predicate of a store: {e}"));
+                return;
+            }
+        };
+        let pred = SegRef(std::sync::Arc::new(pred));
+        ns.seg_pcs.extend(pred.0.pcs());
+        for (k, nv, old) in sels {
+            let (a, b) = (nv.unwrap(), old.unwrap());
+            let pick_a = executed;
+            let src = if pick_a { a } else { b };
+            let (hw, exact) = (
+                ns.nodes[src as usize].hw,
+                ns.nodes[src as usize].exact.clone(),
+            );
+            ns.nodes.push(Node {
+                kind: NodeKind::Sel {
+                    pred: pred.clone(),
+                    neg: g.neg,
+                    a,
+                    b,
+                },
+                hw,
+                exact,
+                err: vec![],
+                pc,
+            });
+            let id = (ns.nodes.len() - 1) as u32;
+            ns.note_write(k);
+            ns.mem.insert(k, id);
+        }
+        ns.sel_pcs.insert(pc);
+    }
+
     /// STL of `v` to local word `addr` of thread `t` (private memory): the word keeps its node.
     pub(crate) fn num_local_st(&mut self, t: usize, v: &Val, addr: u32) {
         self.half_local_st(t, v, addr);
@@ -2113,11 +2523,7 @@ impl Machine {
         let tainted = matches!(v, Val::Reg(r, _) if ns.taint.reg_t(t, *r));
         for b in 0..4u64 {
             let k = (4u8, t as u64, addr as u64 + b);
-            if tainted {
-                ns.taint.mem.insert(k);
-            } else {
-                ns.taint.mem.remove(&k);
-            }
+            ns.taint.mem_set(k, tainted);
         }
         match n {
             Some(n) => {
@@ -2133,7 +2539,7 @@ impl Machine {
     pub(crate) fn num_local_ld(&mut self, t: usize, d: Reg, addr: u32) {
         self.half_local_ld(t, d, addr);
         let Some(ns) = self.num.as_mut() else { return };
-        if (0..4u64).any(|b| ns.taint.mem.contains(&(4u8, t as u64, addr as u64 + b))) {
+        if (0..4u64).any(|b| ns.taint.mem_has((4u8, t as u64, addr as u64 + b))) {
             ns.taint.cur_read = true;
         }
         let n = ns.mem.get(&(4, t as u64, addr as u64)).copied();
@@ -2205,6 +2611,39 @@ impl Machine {
         };
         let id = ns.push_mma(acc_node, acc, prods, ops, r, pc, eps_of, scales, unit);
         ns.mem.insert(key, id);
+    }
+
+    /// tcgen05.mma scale-input-d reads accumulator cell (`lane`, `col`) as D * 2^-s
+    /// (`scaled`). The numerics do not model the scaling: the cell becomes a new leaf of the
+    /// scaled value (segment mode: `Opaque`), with a warning when its node carried rounding
+    /// error, which is then no longer tracked.
+    pub(crate) fn num_tmem_rescale(
+        &mut self,
+        cta: u16,
+        lane: usize,
+        col: usize,
+        scaled: f32,
+        pc: u32,
+    ) {
+        let Some(ns) = self.num.as_mut() else { return };
+        let key = (3u8, cta as u64, crate::machine::tmem_idx(lane, col) as u64);
+        if let Some(n) = ns.mem.get(&key).copied() {
+            let node = &ns.nodes[n as usize];
+            if !exact::is_zero(&exact::sub(
+                &exact::from(f32::from_bits(node.hw) as f64),
+                &node.exact,
+            )) {
+                ns.warnings.insert(format!(
+                    "accumulator with rounding error scaled by tcgen05.mma scale-input-d at {} (not tracked)",
+                    self.k.describe(pc as usize)
+                ));
+            }
+        }
+        let leaf = ns.leaf(scaled.to_bits(), pc);
+        if ns.segments {
+            ns.nodes[leaf as usize].kind = NodeKind::Opaque;
+        }
+        ns.mem.insert(key, leaf);
     }
 
     /// The node of an accumulator operand `v` (bits `bits`): its node (segment mode:
@@ -2352,7 +2791,7 @@ impl Machine {
             .into_iter()
             .chain((pc as usize).checked_sub(3))
             .any(|b| {
-                fmax_diamond(&self.k.code, b)
+                fmax_branch(&self.k.code, b)
                     .is_some_and(|(x1, x2)| x1 == pc as usize || x2 == pc as usize)
             });
         if !in_diamond || ns.taint.position {
@@ -2605,6 +3044,326 @@ impl Machine {
         }
     }
 
+    /// What 16-bit half `h` (0 = low) of operand `v` holds as a bf16 value: a node (an input
+    /// element, a rounding), a constant (an immediate or provably zero bytes), or unknown.
+    fn bf16_half(&mut self, t: usize, v: &Val, h: u32) -> Bf16Half {
+        if let Val::Imm(c) = v {
+            return Bf16Half::Const((*c >> (16 * h)) as u16);
+        }
+        let Some(b) = self.half_val(t, v) else {
+            return Bf16Half::Unknown;
+        };
+        let k = 2 * h as usize;
+        match self.half_op(b[k], b[k + 1]) {
+            crate::halfin::HalfOp::Zero => Bf16Half::Const(0),
+            crate::halfin::HalfOp::Node(n) => Bf16Half::Node(n),
+            crate::halfin::HalfOp::Unknown => Bf16Half::Unknown,
+        }
+    }
+
+    /// One lane of a bf16 FMA (`Op::Hfma2Bf16`, the bf16 atomic adds) as numerics nodes: a
+    /// `Round` (to bf16) of an f32 `Add` (b = 1.0: HADD2), `Fma` with the constant 1 (a
+    /// negated sum) or `Fma` without addend (c = -0: HMUL2). These are the hardware's single
+    /// rounding: a sum or product of two bf16 values rounded first to f32 and then to bf16 is
+    /// the one rounding to bf16 (f32 has at least 2 x 8 + 2 bits; the product of two bf16 is
+    /// exact in f32 down to where its bf16 rounding cannot change). The f32 intermediate is
+    /// checked against the hardware lane `hw`. A general FMA (a nonzero addend) is not one of
+    /// them (its f32 rounding can move a bf16 tie): None, as is any unknown operand.
+    /// ASSUME(N-BF16X2): see ASSUMPTIONS.md
+    fn bf16_lane_node(
+        &mut self,
+        ops: [Bf16Half; 3],
+        neg: [bool; 3],
+        hw: u16,
+        pc: u32,
+    ) -> Option<u32> {
+        let ns = self.num.as_mut()?;
+        if ops.contains(&Bf16Half::Unknown) {
+            return None;
+        }
+        let bits = |o: Bf16Half, ns: &NumState| -> u32 {
+            match o {
+                Bf16Half::Node(n) => ns.nodes[n as usize].hw,
+                Bf16Half::Const(c) => (c as u32) << 16,
+                Bf16Half::Unknown => 0,
+            }
+        };
+        let node = |o: Bf16Half, ns: &mut NumState| -> u32 {
+            match o {
+                Bf16Half::Node(n) => n,
+                _ => {
+                    let b = bits(o, ns);
+                    ns.const_leaf(b, pc)
+                }
+            }
+        };
+        // Values after the operand sign flips.
+        let v: Vec<u32> = (0..3)
+            .map(|k| bits(ops[k], ns) ^ ((neg[k] as u32) << 31))
+            .collect();
+        let one = Bf16Half::Const(0x3f80);
+        let (kind, r, ex, av) = if ops[1] == one && !neg[1] {
+            let (na, nc) = (node(ops[0], ns), node(ops[2], ns));
+            let r = fp::f32_fma(v[0], 0x3f80_0000, Some(v[2]), Rnd::Rn, false);
+            let sg = |e: &Expansion, n: bool| if n { exact::neg(e) } else { e.clone() };
+            let ex = exact::add(
+                &sg(&ns.nodes[na as usize].exact, neg[0]),
+                &sg(&ns.nodes[nc as usize].exact, neg[2]),
+            );
+            let av = exact::add(
+                &exact::from(f32::from_bits(v[0]) as f64),
+                &exact::from(f32::from_bits(v[2]) as f64),
+            );
+            let kind = if !neg[0] && !neg[2] {
+                NodeKind::Add(na, nc, false)
+            } else {
+                let n1 = ns.const_leaf(0x3f80_0000, pc);
+                NodeKind::Fma {
+                    a: na,
+                    b: n1,
+                    c: Some(nc),
+                    neg_ab: neg[0],
+                    neg_c: neg[2],
+                }
+            };
+            (kind, r, ex, av)
+        } else if bits(ops[2], ns) ^ ((neg[2] as u32) << 31) == 0x8000_0000 {
+            let (na, nb) = (node(ops[0], ns), node(ops[1], ns));
+            let r = fp::f32_fma(v[0], v[1], None, Rnd::Rn, false);
+            let mut ex = exact::mul(&ns.nodes[na as usize].exact, &ns.nodes[nb as usize].exact);
+            if neg[0] != neg[1] {
+                ex = exact::neg(&ex);
+            }
+            let av = exact::mul(
+                &exact::from(f32::from_bits(v[0]) as f64),
+                &exact::from(f32::from_bits(v[1]) as f64),
+            );
+            let kind = NodeKind::Fma {
+                a: na,
+                b: nb,
+                c: None,
+                neg_ab: neg[0] != neg[1],
+                neg_c: false,
+            };
+            (kind, r, ex, av)
+        } else {
+            return None;
+        };
+        if fp::f32_to_bf16_rn_gpu(r) != hw {
+            ns.warnings.insert(format!(
+                "bf16 lane at pc {pc}: the f32 intermediate does not round to the hardware result"
+            ));
+            return None;
+        }
+        let err = exact::sub(&exact::from(f32::from_bits(r) as f64), &av);
+        ns.nodes.push(Node {
+            kind,
+            hw: r,
+            exact: ex,
+            err,
+            pc,
+        });
+        let f = (ns.nodes.len() - 1) as u32;
+        let wide = (hw as u32) << 16;
+        ns.nodes.push(Node {
+            kind: NodeKind::Round { arg: f, f16: false },
+            hw: wide,
+            exact: ns.nodes[f as usize].exact.clone(),
+            err: exact::sub(
+                &exact::from(f32::from_bits(wide) as f64),
+                &exact::from(f32::from_bits(r) as f64),
+            ),
+            pc,
+        });
+        Some((ns.nodes.len() - 1) as u32)
+    }
+
+    /// `Op::Hfma2Bf16` wrote `d` = `r` from operand words `v`: each lane a `bf16_lane_node`
+    /// (its bytes `N{node}`), or unknown bytes (with `num_clobber`'s warning for operands that
+    /// carried rounding error). `.RELU` lanes are not followed.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn num_hfma2_bf16(
+        &mut self,
+        t: usize,
+        d: Reg,
+        ops: [&Val; 3],
+        _v: [u32; 3],
+        (sel, neg, relu): ([HSel; 3], [bool; 3], bool),
+        r: u32,
+        pc: u32,
+    ) {
+        if self.num.is_none() {
+            return;
+        }
+        let mut bytes: crate::halfin::Bytes = [None; 4];
+        let mut lost = false;
+        for lane in 0..2u32 {
+            let mut h = [Bf16Half::Unknown; 3];
+            for k in 0..3 {
+                let half = match sel[k] {
+                    HSel::Pair => lane,
+                    HSel::H0 => 0,
+                    HSel::H1 => 1,
+                };
+                h[k] = self.bf16_half(t, ops[k], half);
+            }
+            let n = if relu {
+                None
+            } else {
+                self.bf16_lane_node(h, neg, (r >> (16 * lane)) as u16, pc)
+            };
+            match n {
+                Some(n) => {
+                    bytes[2 * lane as usize] = Some(crate::halfin::Src::N { node: n, b: 0 });
+                    bytes[2 * lane as usize + 1] = Some(crate::halfin::Src::N { node: n, b: 1 });
+                }
+                None => lost = true,
+            }
+        }
+        if lost {
+            let srcs: Vec<&Val> = ops.to_vec();
+            self.num_clobber(t, d, &srcs, pc);
+        } else {
+            self.num.as_mut().unwrap().set(t, d, None);
+        }
+        self.half_set_reg(t, d, Some(bytes));
+    }
+
+    /// `Op::FfmaBf16` wrote `d` = `r` (f32): with round to nearest and no saturation, an f32
+    /// `Add` (b = 1.0, no sign flips: FHADD) or `Fma` node of the bf16 halves' nodes (input
+    /// elements, roundings, constants) and c's node; else, or with an unknown half, as
+    /// `num_clobber`. ASSUME(N-BF16X2): see ASSUMPTIONS.md
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn num_ffma_bf16(
+        &mut self,
+        t: usize,
+        d: Reg,
+        ops: [&Val; 3],
+        v: [u32; 3],
+        (hi, neg, rnd, sat): ([bool; 2], [bool; 3], Rnd, bool),
+        r: u32,
+        pc: u32,
+    ) {
+        if self.num.is_none() {
+            return;
+        }
+        let ha = self.bf16_half(t, ops[0], hi[0] as u32);
+        let hb = self.bf16_half(t, ops[1], hi[1] as u32);
+        if rnd != Rnd::Rn || sat || ha == Bf16Half::Unknown || hb == Bf16Half::Unknown {
+            self.num_clobber(t, d, &ops, pc);
+            return;
+        }
+        let nc = self.num_node_mat(t, ops[2]);
+        let ns = self.num.as_mut().unwrap();
+        let node = |h: Bf16Half, ns: &mut NumState| match h {
+            Bf16Half::Node(n) => n,
+            Bf16Half::Const(c) => ns.const_leaf((c as u32) << 16, pc),
+            Bf16Half::Unknown => unreachable!(),
+        };
+        let (na, nb) = (node(ha, ns), node(hb, ns));
+        let nc = nc.unwrap_or_else(|| ns.leaf_for(t, ops[2], v[2], pc));
+        let bits = |n: u32, ng: bool, ns: &NumState| ns.nodes[n as usize].hw ^ ((ng as u32) << 31);
+        let (x, y, z) = (
+            bits(na, neg[0], ns),
+            bits(nb, neg[1], ns),
+            bits(nc, neg[2], ns),
+        );
+        let sg = |e: &Expansion, n: bool| if n { exact::neg(e) } else { e.clone() };
+        let ex = exact::add(
+            &sg(
+                &exact::mul(&ns.nodes[na as usize].exact, &ns.nodes[nb as usize].exact),
+                neg[0] != neg[1],
+            ),
+            &sg(&ns.nodes[nc as usize].exact, neg[2]),
+        );
+        let av = exact::add(
+            &exact::mul(
+                &exact::from(f32::from_bits(x) as f64),
+                &exact::from(f32::from_bits(y) as f64),
+            ),
+            &exact::from(f32::from_bits(z) as f64),
+        );
+        let add = hb == Bf16Half::Const(0x3f80) && !neg.iter().any(|&n| n);
+        let kind = if add {
+            NodeKind::Add(na, nc, false)
+        } else {
+            NodeKind::Fma {
+                a: na,
+                b: nb,
+                c: Some(nc),
+                neg_ab: neg[0] != neg[1],
+                neg_c: neg[2],
+            }
+        };
+        let err = exact::sub(&exact::from(f32::from_bits(r) as f64), &av);
+        ns.nodes.push(Node {
+            kind,
+            hw: r,
+            exact: ex,
+            err,
+            pc,
+        });
+        let id = (ns.nodes.len() - 1) as u32;
+        ns.set(t, d, Some(id));
+    }
+
+    /// A bf16 atomic add (`AtomOp::AddBf16x2` / `AddBf16`, `bytes` 4 / 2) at `loc` of operand
+    /// `v` (bits `x`) to the old value `o`, leaving `n`: each lane a `bf16_lane_node` of the
+    /// location's old bytes and the operand's half, written as the location's byte provenance
+    /// (unknown when untracked); `d` gets the old bytes. One schedule's order: certification
+    /// refuses unordered bf16 adds of one location (C-ORDER).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn num_atom_bf16(
+        &mut self,
+        t: usize,
+        v: &Val,
+        loc: Loc,
+        bytes: u8,
+        n: u32,
+        d: Option<Reg>,
+        pc: u32,
+    ) {
+        let Some(ns) = self.num.as_mut() else { return };
+        let k = mem_key(loc);
+        ns.note_write(k);
+        ns.other_atomics += 1;
+        ns.mem.remove(&k);
+        let old = self.half_mem(loc, bytes as usize, None);
+        let mut out: Vec<Option<crate::halfin::Src>> = vec![None; bytes as usize];
+        for lane in 0..(bytes as u32 / 2) {
+            let i = 2 * lane as usize;
+            let a = match self.half_op(old[i], old[i + 1]) {
+                crate::halfin::HalfOp::Zero => Bf16Half::Const(0),
+                crate::halfin::HalfOp::Node(n) => Bf16Half::Node(n),
+                crate::halfin::HalfOp::Unknown => Bf16Half::Unknown,
+            };
+            let c = self.bf16_half(t, v, lane);
+            let node = self.bf16_lane_node(
+                [a, Bf16Half::Const(0x3f80), c],
+                [false; 3],
+                (n >> (16 * lane)) as u16,
+                pc,
+            );
+            if let Some(nd) = node {
+                out[i] = Some(crate::halfin::Src::N { node: nd, b: 0 });
+                out[i + 1] = Some(crate::halfin::Src::N { node: nd, b: 1 });
+            }
+        }
+        self.half_mem_set(crate::halfin::hkey(loc), &out);
+        if let Some(d) = d {
+            self.num.as_mut().unwrap().set(t, d, None);
+            let mut b: crate::halfin::Bytes = [None; 4];
+            for (i, s) in old.iter().enumerate().take(4) {
+                b[i] = *s;
+            }
+            if bytes == 2 {
+                b[2] = Some(crate::halfin::Src::Zero);
+                b[3] = Some(crate::halfin::Src::Zero);
+            }
+            self.half_set_reg(t, d, Some(b));
+        }
+    }
+
     /// F2FP.BF16.F32.PACK_AB `d` = (bf16(a) << 16) | bf16(b), round to nearest even: the halves
     /// are `Round` nodes of the operands' nodes (16-bit provenance `N`); a constant operand
     /// gives a constant half (zero bytes for 0), an untracked one unknown bytes.
@@ -2704,6 +3463,44 @@ impl Machine {
     }
 
     /// A 4-byte copy between memory locations (TMA store): the value keeps its node.
+    /// One word of a bulk f32 add-reduction: global `to` (old bits o) += shared `from` (bits
+    /// x), result r. As `num_atom`'s atomic add, with the shared word's node (or a leaf) as the
+    /// addend.
+    pub(crate) fn num_bulk_add(&mut self, from: Loc, to: Loc, (o, x, r): (u32, u32, u32), pc: u32) {
+        let Some(ns) = self.num.as_mut() else { return };
+        let k = mem_key(to);
+        ns.note_write(k);
+        let no = ns.mem.get(&k).copied().unwrap_or_else(|| ns.leaf(o, pc));
+        let nx = ns
+            .mem
+            .get(&mem_key(from))
+            .copied()
+            .unwrap_or_else(|| ns.leaf(x, pc));
+        let ex = exact::add(&ns.nodes[no as usize].exact, &ns.nodes[nx as usize].exact);
+        let a_v = exact::add(
+            &exact::from(f32::from_bits(o) as f64),
+            &exact::from(f32::from_bits(x) as f64),
+        );
+        let err = exact::sub(&exact::from(f32::from_bits(r) as f64), &a_v);
+        ns.nodes.push(Node {
+            kind: NodeKind::AtomAdd(no, nx),
+            hw: r,
+            exact: ex,
+            err,
+            pc,
+        });
+        ns.atomic_adds += 1;
+        let id = (ns.nodes.len() - 1) as u32;
+        ns.mem.insert(k, id);
+    }
+
+    /// A word written with a value the graph does not track: it loses its node.
+    pub(crate) fn num_forget(&mut self, loc: Loc) {
+        let Some(ns) = self.num.as_mut() else { return };
+        ns.note_write(mem_key(loc));
+        ns.mem.remove(&mem_key(loc));
+    }
+
     pub(crate) fn num_copy(&mut self, from: Loc, to: Loc) {
         let Some(ns) = self.num.as_mut() else { return };
         ns.note_write(mem_key(to));
@@ -2743,13 +3540,9 @@ impl Machine {
         {
             let ns = self.num.as_mut().unwrap();
             for b in 0..data.len() as u64 {
-                let t = src.is_some_and(|(a, o)| ns.taint.mem.contains(&(1, a as u64, o + b)));
+                let t = src.is_some_and(|(a, o)| ns.taint.mem_has((1, a as u64, o + b)));
                 let k = (0u8, cta as u64, off as u64 + b);
-                if t {
-                    ns.taint.mem.insert(k);
-                } else {
-                    ns.taint.mem.remove(&k);
-                }
+                ns.taint.mem_set(k, t);
             }
         }
         let launch = self.launch.clone();
@@ -2950,6 +3743,7 @@ impl NumState {
                 NodeKind::Fma { .. }
                 | NodeKind::Max { .. }
                 | NodeKind::Seg(_)
+                | NodeKind::Sel { .. }
                 | NodeKind::Tf32 { .. } => {
                     // Segment mode (equiv) only (and TF32 parts): a term of the tree above, its own error not
                     // analyzed here (Thm 1 is not an identity through it).
@@ -3057,7 +3851,7 @@ impl NumState {
 
 /// Register-only operations (no memory, synchronization or control): every source is a
 /// value, and the result is tainted if any source is.
-fn pure_op(op: &Op) -> bool {
+pub(crate) fn pure_op(op: &Op) -> bool {
     matches!(
         op,
         Op::Mov { .. }
@@ -3068,6 +3862,7 @@ fn pure_op(op: &Op) -> bool {
             | Op::CvtInt { .. }
             | Op::R2Ur { .. }
             | Op::VoteAny { .. }
+            | Op::MatchAny { .. }
             | Op::VoteAll { .. }
             | Op::Redux { .. }
             | Op::Flo { .. }
@@ -3080,9 +3875,14 @@ fn pure_op(op: &Op) -> bool {
             | Op::Fadd { .. }
             | Op::Ffma2 { .. }
             | Op::Hfma2 { .. }
+            | Op::Hfma2Bf16 { .. }
+            | Op::FfmaBf16 { .. }
+            | Op::Hmnmx2Bf16 { .. }
+            | Op::Vhmnmx { .. }
             | Op::CvtF32Bf16 { .. }
             | Op::Cvta { .. }
             | Op::Bfe { .. }
+            | Op::Bfi { .. }
             | Op::I2F { .. }
             | Op::F2I { .. }
             | Op::Pack64 { .. }
@@ -3106,10 +3906,12 @@ fn pure_op(op: &Op) -> bool {
             | Op::F2fpBf16 { .. }
             | Op::F2fpF16 { .. }
             | Op::F2fF16 { .. }
+            | Op::CvtTf32 { .. }
             | Op::CvtF32F16 { .. }
             | Op::CvtPack { .. }
             | Op::CvtRsX4 { .. }
             | Op::CvtUnpack { .. }
+            | Op::CvtS2f6x2 { .. }
             | Op::Nop
     )
 }
@@ -3119,7 +3921,7 @@ fn pure_op(op: &Op) -> bool {
 /// where or whether something happens.
 /// Position mode: registers of `op` that may depend on the CTA's position (global addresses,
 /// TMA coordinates), and whether they are a generic address (must resolve to global).
-fn pos_free_regs(op: &Op) -> (Vec<Reg>, bool) {
+pub(crate) fn pos_free_regs(op: &Op) -> (Vec<Reg>, bool) {
     let mut out = Vec::new();
     let mut v = |x: &Val| {
         if let Val::Reg(r, n) = x {
@@ -3142,6 +3944,10 @@ fn pos_free_regs(op: &Op) -> (Vec<Reg>, bool) {
             generic = *space == Space::Generic;
             addr.base.iter().chain(addr.base2.iter()).for_each(&mut v);
         }
+        Op::Ld256 { addr, .. } | Op::St256 { addr, .. } => {
+            addr.base.iter().chain(addr.base2.iter()).for_each(&mut v);
+        }
+        Op::LdReduce { addr, .. } => addr.base.iter().chain(addr.base2.iter()).for_each(&mut v),
         Op::TmaLoad { coords, .. } | Op::TmaStore { coords, .. } => coords.iter().for_each(&mut v),
         _ => {}
     }
@@ -3149,15 +3955,30 @@ fn pos_free_regs(op: &Op) -> (Vec<Reg>, bool) {
 }
 
 fn value_vals(op: &Op) -> Vec<Val> {
-    match op {
+    let mut values = match op {
         Op::St { v, .. } | Op::Atom { v, .. } | Op::StAsync { v, .. } | Op::StLocal { v, .. } => {
             vec![v.clone()]
         }
+        Op::St256 { lo, hi, .. } => vec![Val::Reg(*lo, 4), Val::Reg(*hi, 4)],
         Op::Shfl { a, .. } => vec![a.clone()],
         Op::Hmma { a, b, c, .. } => a.iter().chain(b).chain(c).cloned().collect(),
         Op::StMatrix { v, .. } | Op::TmemSt { v, .. } => v.clone(),
         _ => vec![],
+    };
+    if let Some((r, k)) = op.vector_src() {
+        if !matches!(op, Op::ClcQuery { .. }) {
+            values.extend((1..k).map(|i| {
+                Val::Reg(
+                    Reg {
+                        file: r.file,
+                        idx: r.idx + i,
+                    },
+                    1,
+                )
+            }));
+        }
     }
+    values
 }
 
 fn operand_regs(values: &[Val]) -> Vec<Reg> {
@@ -3179,7 +4000,7 @@ fn operand_regs(values: &[Val]) -> Vec<Reg> {
         .collect()
 }
 
-fn value_regs(op: &Op) -> Vec<Reg> {
+pub(crate) fn value_regs(op: &Op) -> Vec<Reg> {
     operand_regs(&value_vals(op))
 }
 
@@ -3246,6 +4067,10 @@ pub struct Taint {
     /// outcome or operand value), in order. Clusters are symmetric when corresponding threads
     /// have equal traces.
     pub trace: std::collections::HashMap<u32, Vec<(u32, u64)>>,
+    /// Every global byte is a source (E-CTA-REP: whatever a CTA loads from global memory
+    /// may differ between CTAs) until written with an untainted value (`clean_global`).
+    pub all_global: bool,
+    clean_global: std::collections::HashSet<(u64, u64)>,
 }
 
 impl Taint {
@@ -3261,6 +4086,26 @@ impl Taint {
     }
     pub(crate) fn reg_tainted(&self, t: usize, r: Reg) -> bool {
         self.reg_t(t, r)
+    }
+    /// Whether memory byte (space, object, offset) is tainted (`all_global`: every global
+    /// byte not since written untainted).
+    pub(crate) fn mem_has(&self, k: (u8, u64, u64)) -> bool {
+        self.mem.contains(&k)
+            || self.all_global && k.0 == 1 && !self.clean_global.contains(&(k.1, k.2))
+    }
+    pub(crate) fn mem_set(&mut self, k: (u8, u64, u64), tainted: bool) {
+        if tainted {
+            self.mem.insert(k);
+        } else {
+            self.mem.remove(&k);
+        }
+        if self.all_global && k.0 == 1 {
+            if tainted {
+                self.clean_global.remove(&(k.1, k.2));
+            } else {
+                self.clean_global.insert((k.1, k.2));
+            }
+        }
     }
     /// The tainted bits of register `r` of thread `t`.
     fn reg_mask(&self, t: usize, r: Reg) -> u32 {
@@ -3294,20 +4139,21 @@ impl Taint {
     }
     pub(crate) fn read(&mut self, key: (u8, u64), off: u64, n: u64) {
         self.check_gen(key);
-        self.last_read = (off..off + n).any(|b| self.mem.contains(&(key.0, key.1, b)));
+        self.last_read = (off..off + n).any(|b| self.mem_has((key.0, key.1, b)));
         if self.last_read {
             self.cur_read = true;
         }
     }
+    /// Whether memory byte (space, allocation, offset) holds input-derived data.
+    pub fn byte_tainted(&self, k: (u8, u64, u64)) -> bool {
+        self.mem.contains(&k)
+    }
+
     pub(crate) fn write(&mut self, key: (u8, u64), off: u64, n: u64) {
         self.check_gen(key);
         let t = self.cur_src || self.cur_read;
         for b in off..off + n {
-            if t {
-                self.mem.insert((key.0, key.1, b));
-            } else {
-                self.mem.remove(&(key.0, key.1, b));
-            }
+            self.mem_set((key.0, key.1, b), t);
         }
     }
 }
@@ -3442,7 +4288,7 @@ impl Machine {
             if !position && members.iter().any(|&t| tn.reg_t(t, g)) {
                 // ASSUME(N-FMAX): both sides of a float atomic max diamond compute the same
                 // update (the numerics check its operands are non-NaN floats).
-                if fmax_diamond(&k.code, pc as usize).is_some() {
+                if fmax_branch(&k.code, pc as usize).is_some() {
                     tn.fmax_pcs.insert(pc);
                 } else {
                     let v = format!("guard of {describe} depends on input data");
@@ -3529,7 +4375,7 @@ impl Machine {
             && !inst.uniform
             && !matches!(
                 inst.op,
-                Op::VoteAny { .. } | Op::VoteAll { .. } | Op::Redux { .. }
+                Op::VoteAny { .. } | Op::VoteAll { .. } | Op::Redux { .. } | Op::MatchAny { .. }
             );
         let dg: Vec<usize> = match inst.guard.reg {
             Some(g) if data_guard && per_thread => members
@@ -3985,8 +4831,12 @@ mod control_dependency_tests {
         let mask = Reg { file: File::UR, idx: 0 };
         let address = Addr { base: None, base2: None, off: 0 };
         let copy = Op::CpAsync {
-            dst: address.clone(), src: address, bytes: 4,
+            dst: address.clone(),
+            src: address,
+            bytes: 4,
             src_ok: Pred { reg: Some(predicate), neg: false },
+            src_size: None,
+            zfill: false,
         };
         assert!(control_regs(&copy).contains(&predicate));
         let branch = Op::Bra {
@@ -3997,5 +4847,68 @@ mod control_dependency_tests {
         let controls = control_regs(&branch);
         assert!(controls.contains(&predicate));
         assert!(controls.contains(&mask));
+    }
+}
+
+#[cfg(test)]
+mod fmax_seq_tests {
+    use super::fmax_branch;
+    use super::fmax_seq;
+
+    fn kernel(body: &str) -> ptxv_ir::Kernel {
+        // Each instruction with a zero control word (`nvdisasm -hex` layout).
+        let mut text = String::from(".text.k:\n");
+        for l in body.lines() {
+            text.push_str(l);
+            text.push('\n');
+            if l.trim_start().starts_with("/*") {
+                text.push_str("        /* 0x000fc00000000000 */\n");
+            }
+        }
+        ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).expect("lower")
+    }
+
+    /// CuTeDSL's `smem_fmax` (FA4 decode, sass 0x3e40..0x3ec0): two skips on one sign
+    /// predicate, the unsigned min where the sign bit is set, the signed max where it is clear,
+    /// with a BSYNC between them. Both branches are recognized; swapping the atomics (the max
+    /// where the sign bit is set) or reading another value is not.
+    #[test]
+    fn sequential_float_atomic_max() {
+        let good = "
+        /*0000*/                   ISETP.GE.AND P1, PT, R4, RZ, PT ;
+        /*0010*/               @P1 BRA `(.L_x_58) ;
+        /*0020*/                   ATOMS.MIN RZ, [R23+0x10], R4 ;
+.L_x_58:
+        /*0030*/                   NOP ;
+        /*0040*/                   BSYNC.RECONVERGENT B0 ;
+        /*0050*/              @!P1 BRA `(.L_x_56) ;
+        /*0060*/                   ATOMS.MAX.S32 RZ, [R23+0x10], R4 ;
+.L_x_56:
+        /*0070*/                   NOP ;
+        /*0080*/                   EXIT ;
+";
+        let k = kernel(good);
+        assert_eq!(fmax_seq(&k.code, 1), Some((6, 2)));
+        assert_eq!(fmax_seq(&k.code, 5), Some((6, 2)));
+        assert_eq!(fmax_branch(&k.code, 5), Some((6, 2)));
+        let swapped = good
+            .replace("ATOMS.MIN RZ", "ATOMS.TMP RZ")
+            .replace("ATOMS.MAX.S32 RZ", "ATOMS.MIN RZ")
+            .replace("ATOMS.TMP RZ", "ATOMS.MAX.S32 RZ");
+        let k = kernel(&swapped);
+        assert_eq!(fmax_seq(&k.code, 1), None);
+        assert_eq!(fmax_seq(&k.code, 5), None);
+        let other = good.replace(
+            "ATOMS.MAX.S32 RZ, [R23+0x10], R4",
+            "ATOMS.MAX.S32 RZ, [R23+0x10], R5",
+        );
+        let k = kernel(&other);
+        assert_eq!(fmax_seq(&k.code, 1), None);
+        let rewritten = good.replace(
+            "        /*0040*/                   BSYNC.RECONVERGENT B0 ;",
+            "        /*0040*/                   MOV R4, RZ ;",
+        );
+        let k = kernel(&rewritten);
+        assert_eq!(fmax_seq(&k.code, 1), None);
     }
 }

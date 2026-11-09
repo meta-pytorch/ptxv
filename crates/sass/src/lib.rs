@@ -29,6 +29,11 @@ use anyhow::bail;
 use ptxv_ir::*;
 
 pub mod elf;
+mod modset;
+mod undis;
+/// The disassembly of an encoding nvdisasm 13.0 prints nothing for, if `undis.rs` knows it.
+pub use undis::decode as decode_unprinted;
+mod l2;
 pub mod scoreboard;
 
 pub const RZ: u16 = 255;
@@ -62,6 +67,19 @@ pub struct CubinMeta {
     pub banks: HashMap<u8, Vec<u8>>,
     /// Synthetic addresses of the relocated symbols in those banks (address, name).
     pub syms: Vec<(u64, String)>,
+    /// EIATTR_REQNTID / EIATTR_MAX_THREADS of the kernel.
+    pub ntid: Option<Ntid>,
+    /// The kernel's register count (`cuobjdump -res-usage`); 0 if unknown.
+    pub regcount: u16,
+    /// Data globals whose addresses those banks hold, and the words holding them.
+    pub globals: Vec<ptxv_ir::GlobalSym>,
+    pub global_relocs: Vec<ptxv_ir::GlobalReloc>,
+    /// SM version the cubin was compiled for (ELF `e_flags` bits 8..16: 100 for sm_100a, 103
+    /// for sm_103a); 0 when unknown. Selects arch-specific opcode latencies (scoreboard.rs).
+    pub sm: u32,
+    /// The kernel's code (`.text.<kernel>`), for the slots nvdisasm prints nothing for
+    /// (`undis.rs`); empty when unknown.
+    pub text: Vec<u8>,
 }
 
 fn tool(name: &str) -> String {
@@ -136,9 +154,20 @@ fn hex(s: &str) -> Option<u32> {
     u32::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok()
 }
 
+/// SM version in an ELF64 cubin's `e_flags` (bits 8..16; 0 for anything else).
+pub fn elf_sm(b: &[u8]) -> u32 {
+    if b.len() < 0x34 || b[..4] != *b"\x7fELF" || b[4] != 2 {
+        return 0;
+    }
+    (u32::from_le_bytes([b[0x30], b[0x31], b[0x32], b[0x33]]) >> 8) & 0xff
+}
+
 pub fn read_meta(cubin: &Path, kernel: &str) -> Result<CubinMeta> {
     let elf = run_tool("cuobjdump", &["-elf", cubin.to_str().unwrap()])?;
-    let mut m = CubinMeta::default();
+    let mut m = CubinMeta {
+        sm: std::fs::read(cubin).map(|b| elf_sm(&b)).unwrap_or(0),
+        ..Default::default()
+    };
     for line in elf.lines() {
         let cols: Vec<&str> = line.split_whitespace().collect();
         if let Some(name) = cols.last() {
@@ -157,11 +186,24 @@ pub fn read_meta(cubin: &Path, kernel: &str) -> Result<CubinMeta> {
     let sect = format!(".nv.info.{kernel}");
     let start = elf.lines().position(|l| l.trim() == sect);
     if let Some(start) = start {
+        let mut attr = String::new();
         for line in elf.lines().skip(start + 1) {
             if line.starts_with('.') {
                 break;
             }
+            if let Some(a) = line.trim().strip_prefix("Attribute:") {
+                attr = a.trim().to_string();
+            }
             if let Some(v) = line.trim().strip_prefix("Value:") {
+                if attr == "EIATTR_REQNTID" || attr == "EIATTR_MAX_THREADS" {
+                    let d: Vec<u32> = v.split_whitespace().filter_map(hex).collect();
+                    if let [x, y, z] = d[..] {
+                        m.ntid = Some(Ntid {
+                            req: attr == "EIATTR_REQNTID",
+                            dims: [x, y, z],
+                        });
+                    }
+                }
                 if v.contains("Ordinal") && v.contains("Offset") {
                     let field = |k: &str| -> Option<u32> {
                         let i = v.find(k)? + k.len();
@@ -179,10 +221,47 @@ pub fn read_meta(cubin: &Path, kernel: &str) -> Result<CubinMeta> {
     }
     m.params.sort();
     let img = elf::Elf::parse(&std::fs::read(cubin)?)?;
+    if let Some(i) = img.find(&format!(".text.{kernel}")) {
+        m.text = img.sections[i].data.clone();
+    }
+    // `cuobjdump -res-usage`: "Function <kernel>:" then "REG:<n> STACK:...".
+    if let Ok(ru) = run_tool("cuobjdump", &["-res-usage", cubin.to_str().unwrap()]) {
+        let mut it = ru.lines();
+        while let Some(l) = it.next() {
+            if l.trim() == format!("Function {kernel}:") {
+                m.regcount = it
+                    .next()
+                    .and_then(|n| n.trim().strip_prefix("REG:"))
+                    .and_then(|n| n.split_whitespace().next())
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(0);
+                break;
+            }
+        }
+    }
     for bank in 1..18u8 {
-        if let Some((data, syms)) = img.bank(bank, kernel)? {
-            m.banks.insert(bank, data);
-            m.syms.extend(syms);
+        if let Some(cb) = img.bank(bank, kernel)? {
+            m.banks.insert(bank, cb.data);
+            m.syms.extend(cb.syms);
+            for (off, g, addend) in cb.data_relocs {
+                let i = match m.globals.iter().position(|x| x.name == g.name) {
+                    Some(i) => i,
+                    None => {
+                        m.globals.push(ptxv_ir::GlobalSym {
+                            name: g.name,
+                            size: g.size,
+                            init: g.init,
+                        });
+                        m.globals.len() - 1
+                    }
+                };
+                m.global_relocs.push(ptxv_ir::GlobalReloc {
+                    bank,
+                    off,
+                    global: i as u32,
+                    addend,
+                });
+            }
         }
     }
     if m.smem_size == 0 {
@@ -244,29 +323,56 @@ pub fn parse_disasm(text: &str, kernel: &str) -> Result<(Vec<SassLine>, HashMap<
         let lo = halves
             .next()
             .and_then(|w| u64::from_str_radix(w.trim().trim_end_matches("*/").trim(), 16).ok());
-        let body = body.trim().trim_end_matches(';').trim();
-        let (guard, body) = if body.starts_with('@') {
-            let (g, r) = body.split_once(char::is_whitespace).unwrap();
-            (Some(g[1..].to_string()), r.trim())
-        } else {
-            (None, body)
-        };
-        let (opcode, ops) = body.split_once(char::is_whitespace).unwrap_or((body, ""));
-        let operands = split_ops(ops);
-        lines.push(SassLine {
-            addr,
-            guard,
-            opcode: opcode.to_string(),
-            operands,
-            text: body.to_string(),
-            hi: None,
-            lo,
-        });
+        lines.push(sass_line(addr, body, lo, None));
     }
     if lines.is_empty() {
         bail!("kernel {kernel} not found in disassembly");
     }
     Ok((lines, labels))
+}
+
+/// One instruction from its printed text (`[@g] OPCODE operands [;]`).
+fn sass_line(addr: u32, body: &str, lo: Option<u64>, hi: Option<u64>) -> SassLine {
+    let body = body.trim().trim_end_matches(';').trim();
+    let (guard, body) = if body.starts_with('@') {
+        let (g, r) = body.split_once(char::is_whitespace).unwrap();
+        (Some(g[1..].to_string()), r.trim())
+    } else {
+        (None, body)
+    };
+    let (opcode, ops) = body.split_once(char::is_whitespace).unwrap_or((body, ""));
+    SassLine {
+        addr,
+        guard,
+        opcode: opcode.to_string(),
+        operands: split_ops(ops),
+        text: body.to_string(),
+        hi,
+        lo,
+    }
+}
+
+/// Fill the 16-byte slots nvdisasm printed nothing for with the encodings `undis::decode`
+/// knows, read from the kernel's code; other holes stay (the kernel is refused later).
+fn fill_unprinted(lines: &mut Vec<SassLine>, text: &[u8]) {
+    let have: std::collections::HashSet<u32> = lines.iter().map(|l| l.addr).collect();
+    // Scan the whole text, not only up to the last printed line: a trailing slot can be
+    // unprinted too. Padding (zero bytes) does not decode.
+    let mut added = false;
+    for o in (0..text.len() / 16 * 16).step_by(16) {
+        if have.contains(&(o as u32)) {
+            continue;
+        }
+        let w = |i: usize| u64::from_le_bytes(text[o + i..o + i + 8].try_into().unwrap());
+        let (lo, hi) = (w(0), w(8));
+        if let Some(t) = undis::decode(lo, hi) {
+            lines.push(sass_line(o as u32, &t, Some(lo), Some(hi)));
+            added = true;
+        }
+    }
+    if added {
+        lines.sort_by_key(|l| l.addr);
+    }
 }
 
 fn split_ops(s: &str) -> Vec<String> {
@@ -410,7 +516,7 @@ impl<'a> Lw<'a> {
                 "CTAID.Z" => SReg::CtaId(2),
                 "LANEID" => SReg::LaneId,
                 "CgaCtaId" => SReg::ClusterCtaRank,
-                "CgaSize" => SReg::ClusterNCtaRank,
+                "CgaSize" => SReg::CgaShape,
                 "LTMASK" => SReg::LaneMaskLt,
                 "LEMASK" => SReg::LaneMaskLe,
                 "GEMASK" => SReg::LaneMaskGe,
@@ -557,13 +663,29 @@ impl<'a> Lw<'a> {
             base2: None,
             off: 0,
         };
+        // `[R2.U32+UR6]` / `[RZ.U32+UR6]` (CuTe DSL dist kernels' generic stores): a 32-bit
+        // register, zero-extended, plus the 64-bit uniform pair UR6:UR7. ASSUME(L-ROSETTA)
+        let mut zext = false;
         for part in inner.split('+') {
-            let part = part.trim();
+            let mut part = part.trim();
+            if let Some(r) = part.strip_suffix(".U32") {
+                if !r.starts_with('R') || zext {
+                    return Err(self.err(format!("bad address {s}")));
+                }
+                zext = true;
+                part = r;
+            }
             if let Some(h) = part.strip_prefix("0x") {
                 a.off += i64::from_str_radix(h, 16).map_err(|_| self.err("bad offset"))?;
             } else if let Some(h) = part.strip_prefix("-0x") {
                 a.off -= i64::from_str_radix(h, 16).map_err(|_| self.err("bad offset"))?;
             } else {
+                // `[RZ.U32+UR6]`: the zero register as a 32-bit base (an address in the
+                // uniform register alone; ptxas's STG.E.64.MMIO.SYS doorbell form).
+                let part = part
+                    .strip_suffix(".U32")
+                    .filter(|p| *p == "RZ")
+                    .unwrap_or(part);
                 let v = self.val(part, 4)?;
                 if matches!(v, Val::Imm(0)) {
                     continue; // RZ / URZ
@@ -573,6 +695,20 @@ impl<'a> Lw<'a> {
                 } else {
                     a.base2 = Some(v);
                 }
+            }
+        }
+        if zext {
+            let mut wide = 0;
+            for b in [&mut a.base, &mut a.base2].into_iter().flatten() {
+                if let Val::Reg(r, 1) = *b {
+                    if r.file == File::UR {
+                        *b = Val::Reg(r, 2);
+                        wide += 1;
+                    }
+                }
+            }
+            if wide != 1 {
+                return Err(self.err(format!("address {s}: .U32 needs one uniform base")));
             }
         }
         Ok(a)
@@ -638,6 +774,39 @@ impl<'a> Lw<'a> {
     }
 }
 
+/// A half immediate pair printed `hi, lo` (f16, or bf16 when `bf16`): its 32 bits from the
+/// encoding's word 32..63, checked against the printed values. ASSUME(L-ROSETTA)
+fn half_imm_pair(lo: Option<u64>, toks: [&str; 2], bf16: bool) -> std::result::Result<u32, String> {
+    let bits = (lo.ok_or("half immediate without encoding")? >> 32 & 0xffff_ffff) as u32;
+    for (tok, half) in [(toks[0], bits >> 16), (toks[1], bits & 0xffff)] {
+        let t = tok.trim().trim_start_matches('+');
+        let ok = if bf16 {
+            let w = f32::from_bits(half << 16);
+            match t {
+                "QNAN" | "-QNAN" => w.is_nan(),
+                "INF" => w == f32::INFINITY,
+                "-INF" => w == f32::NEG_INFINITY,
+                x => x
+                    .parse::<f64>()
+                    .is_ok_and(|p| p == w as f64 || (p as f32) == w),
+            }
+        } else {
+            match t {
+                "QNAN" | "-QNAN" => half & 0x7c00 == 0x7c00 && half & 0x3ff != 0,
+                "INF" => half == 0x7c00,
+                "-INF" => half == 0xfc00,
+                x => parse_half(x) == Some(half as u16),
+            }
+        };
+        if !ok {
+            return Err(format!(
+                "half immediate {tok} is not the encoding's {half:#06x}"
+            ));
+        }
+    }
+    Ok(bits)
+}
+
 fn parse_half(s: &str) -> Option<u16> {
     let v: f64 = s.trim().parse().ok()?;
     let h = f64_to_f16_exact(v)?;
@@ -671,28 +840,62 @@ pub fn f16_to_f64(h: u16) -> f64 {
     }
 }
 
+/// The operand-less EXITs of a function: (line index, guard).
+fn exit_targets(lines: &[SassLine]) -> Vec<(usize, Option<String>)> {
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.opcode == "EXIT" && l.operands.is_empty())
+        .map(|(i, l)| (i, l.guard.clone()))
+        .collect()
+}
+
 // ASSUME(L-ROSETTA): see ASSUMPTIONS.md
 fn lower_line(
     l: &SassLine,
     labels: &HashMap<String, u32>,
     addr_to_idx: &HashMap<u32, usize>,
     meta: &CubinMeta,
-    plain_exit: Option<usize>,
+    exits: &[(usize, Option<String>)],
 ) -> Result<Inst> {
     let lw = Lw { l };
     let parts: Vec<&str> = l.opcode.split('.').collect();
     let base = parts[0];
     let mods = &parts[1..];
     let has = |m: &str| mods.contains(&m);
+    // Fail closed on modifiers: a token outside the audited set of the opcode is refused, so
+    // no arm can silently ignore a modifier it does not know (VIADD.16x2, STG.256).
+    // ASSUME(L-ROSETTA)
+    if let Some(m) = unaudited_mod(base, mods) {
+        bail!(lw.err(format!(
+            "modifier .{m} of {base} not modeled (not in the audited set, modset.rs)"
+        )));
+    }
     let guard = match &l.guard {
         Some(g) => lw.pred(g)?,
         None => Pred::TRUE,
     };
     let mut uniform = base.starts_with('U') || matches!(base, "S2UR" | "LDCU" | "VOTEU");
     let op = match base {
+        // FRND, F2F f64 <-> f16 / bf16 and f16 <-> bf16, RPCMOV, UBLKRED, VIMNMX[3] 16x2,
+        // LEA.HI.X ~Rb, FCHK -Ra (agent L2's forms, l2.rs).
+        _ if l2::claims(&lw, base, mods) => l2::lower(&lw, base, mods, meta)?,
         "NOP" => Op::Nop,
+        // `MOVM.16.MT88 Rd, Ra` (movmatrix.sync.aligned.m8n8.trans.b16; probes/movm).
+        "MOVM" if mods == ["16", "MT88"] => {
+            uniform = false;
+            Op::MovMatrix {
+                d: lw.dst(lw.op(0)?.trim_end_matches(".reuse"))?,
+                a: lw.val(lw.op(1)?.trim_end_matches(".reuse"), 4)?,
+            }
+        }
         // Tensor-map prefetch (prefetch.tensormap): a cache hint.
         "UTMACCTL" if has("PF") => Op::Nop,
+        // `UBLKPF.L2 [URa], URb` (cp.async.bulk.prefetch.L2): a cache hint (probes/memhints).
+        "UBLKPF" if mods == ["L2"] => Op::Nop,
+        // `UTMAPF.L2.<n>D [URa], [URb], desc[..]` (cp.async.bulk.prefetch.tensor tile mode): a
+        // cache hint (probes/tma_prefetch).
+        "UTMAPF" if has("L2") && mods.len() == 2 => Op::Nop,
         // fence.proxy.tensormap::generic.acquire: ptxas emits `CCTL.E.C.LDCU.IV.DEEP [a]`
         // (drop the constant-cache copy) then `UTMACCTL.IV [a]` (the TMA unit's).
         "UTMACCTL" if mods == ["IV"] => {
@@ -712,7 +915,14 @@ fn lower_line(
         // the threads where both hold exit, as `@P0 BRA P2` branches (ASSUME(S-BRA-COND)).
         // Lowered as that branch to a plain EXIT of the function.
         "EXIT" if l.operands.len() == 1 && mods.is_empty() => {
-            let target = plain_exit
+            // The target: a plain EXIT, else an EXIT with this instruction's own guard (Triton's
+            // `@!P0 EXIT P1` ... `@!P0 EXIT`): the branching lanes reach it directly, with the
+            // guard still true there.
+            let target = exits
+                .iter()
+                .find(|e| e.1.is_none())
+                .or_else(|| exits.iter().find(|e| e.1.is_some() && e.1 == l.guard))
+                .map(|e| e.0)
                 .ok_or_else(|| lw.err("EXIT with a condition, no plain EXIT to branch to"))?;
             return Ok(Inst {
                 guard,
@@ -844,6 +1054,25 @@ fn lower_line(
             }
         }
         // `VIADD R0, R0, -UR5` (torch's radix sort): a + (-b), as IADD3 with a negated input.
+        // `VIADD.16x2 d, a, b` (add.u16x2 / add.s16x2; probes/viadd16x2): two 16-bit lanes,
+        // each modulo 2^16, b a register or a 32-bit immediate. Fail closed: a negated or
+        // inverted operand of .16x2, and any other VIADD modifier.
+        "VIADD"
+            if mods == ["16x2"]
+                && lw.l.operands.len() == 3
+                && !lw.l.operands[1..].iter().any(|o| o.starts_with(['-', '~', '|'])) =>
+        {
+            Op::Int {
+                op: IntOp::Add16x2,
+                bits: 32,
+                d: lw.dst(lw.op(0)?)?,
+                a: lw.val(lw.op(1)?, 4)?,
+                b: lw.val(lw.op(2)?, 4)?,
+            }
+        }
+        "VIADD" if !mods.is_empty() => {
+            bail!(lw.err(format!("VIADD.{} not modeled", mods.join("."))))
+        }
         "VIADD" if lw.op(2)?.starts_with("-U") || lw.op(2)?.starts_with("-R") => {
             let (b, neg, not) = lw.modval(lw.op(2)?, 4)?;
             Op::Iadd3 {
@@ -886,11 +1115,16 @@ fn lower_line(
                 Some(b) => (b, true),
                 None => (lw.op(i + 1)?, false),
             };
+            let (b, not_b) = match b.strip_prefix('~').filter(|b| b.contains('R')) {
+                Some(b) => (b, true),
+                None => (b, false),
+            };
             Op::LeaHi {
                 d,
                 a: lw.val(lw.op(i)?, 4)?,
                 b: lw.val(b, 4)?,
                 neg_b,
+                not_b,
                 c: if sx32 {
                     Val::Imm(0)
                 } else {
@@ -1047,13 +1281,24 @@ fn lower_line(
                 f64: true,
             }
         }
-        "F2F" if mods == ["F32", "F64"] || mods == ["F64", "F32"] => {
+        // F2F.F32.F64[.RZ|.RM|.RP] (cvt.r{n,z,m,p}.f32.f64; probes/cvt_misc), F2F.F64.F32.
+        "F2F"
+            if mods == ["F64", "F32"]
+                || mods.len() <= 3
+                    && mods[..2] == ["F32", "F64"]
+                    && mods[2..].iter().all(|m| matches!(*m, "RZ" | "RM" | "RP")) =>
+        {
             let to64 = mods[0] == "F64";
             Op::F2F {
                 d: lw.dst(lw.op(0)?)?,
                 a: lw.val(lw.op(1)?, if to64 { 4 } else { 8 })?,
                 to64,
-                rnd: Rnd::Rn,
+                rnd: match mods.get(2) {
+                    Some(&"RZ") => Rnd::Rz,
+                    Some(&"RM") => Rnd::Rm,
+                    Some(&"RP") => Rnd::Rp,
+                    _ => Rnd::Rn,
+                },
             }
         }
         // HADD2.F32 Rd, -RZ, Ra.H0_H0: an f16 -> f32 conversion.
@@ -1079,6 +1324,26 @@ fn lower_line(
             a: lw.fval(lw.op(1)?)?,
             bf16: mods[0] == "BF16",
         },
+        // `F2FP.SATFINITE.BF16.S2_6.UNPACK_B Rd, Ra[.H1], Rb.H0 | imm.H0`
+        // (cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2; N-CVT-LP, probes/s2f6_cvt). Only
+        // printed by `undis.rs` (nvdisasm 13.0 skips the encoding). The scale is the low half.
+        "F2FP" if mods == ["SATFINITE", "BF16", "S2_6", "UNPACK_B"] => {
+            let a = lw.op(1)?.replace(".reuse", "");
+            let (a, hi) = match a.strip_suffix(".H1") {
+                Some(r) => (r.to_string(), true),
+                None => (a, false),
+            };
+            let sc = lw.op(2)?.replace(".reuse", "");
+            let Some(sc) = sc.strip_suffix(".H0") else {
+                bail!(lw.err("F2FP.S2_6 scale other than the low half (.H0) not modeled"));
+            };
+            Op::CvtS2f6x2 {
+                d: lw.dst(lw.op(0)?)?,
+                a: lw.val(&a, 4)?,
+                hi,
+                scale: lw.val(sc, 4)?,
+            }
+        }
         // Narrow-format F2FP (N-CVT-LP): PACK_AB[_MERGE_C] from two f32, UNPACK_B_MERGE_C from a
         // packed f16x2 / bf16x2, UNPACK_B decodes.
         "F2FP" if f2fp_lp(mods).is_some() => {
@@ -1136,8 +1401,21 @@ fn lower_line(
                         from,
                         to,
                         relu,
+                        byte: 0,
                     }
                 }
+            }
+        }
+        // `F2FP [.SATFINITE] [.RELU] .TF32.F32.PACK_B [.RZ] Rd, Ra` (cvt.rn / .rz [.relu]
+        // [.satfinite] .tf32.f32; probes/cvt_tf32_rn).
+        "F2FP" if f2fp_tf32(mods).is_some() => {
+            let (rz, sat, relu) = f2fp_tf32(mods).unwrap();
+            Op::CvtTf32 {
+                d: lw.dst(lw.op(0)?)?,
+                a: lw.fval(lw.op(1)?)?,
+                rz,
+                sat,
+                relu,
             }
         }
         "F2FP" if mods == ["F16", "F32", "PACK_AB"] => Op::F2fpF16 {
@@ -1177,14 +1455,35 @@ fn lower_line(
         }
         // FMNMX d, a, b, p / FMNMX3 d, a, b, c, p: p = PT selects the minimum, !PT the
         // maximum (ptxas: min.f32 / max.f32). ASSUME(N-FALU)
-        "FMNMX" | "FMNMX3" if mods.iter().all(|m| matches!(*m, "FTZ" | "NAN")) => {
+        // `FMNMX[.FTZ][.NAN].XORSIGN d, |a|, |b|, p` (min / max .xorsign.abs.f32): the result
+        // takes sign(a) XOR sign(b) of the operands as stored, whatever the |x| printed
+        // (probes/fmnmx_xorsign: `|UR6|` holding -448 gives the flipped sign). Only the forms
+        // ptxas emits are accepted: |register| or |uniform register|, or a non-negative
+        // immediate. ASSUME(N-XORSIGN)
+        "FMNMX" | "FMNMX3" if mods.iter().all(|m| matches!(*m, "FTZ" | "NAN" | "XORSIGN")) => {
             let n = if base == "FMNMX3" { 3 } else { 2 };
             if l.operands.len() != n + 2 {
                 bail!(lw.err("operand count"));
             }
+            let xorsign = has("XORSIGN");
+            if xorsign && n != 2 {
+                bail!(lw.err("FMNMX3.XORSIGN not modeled"));
+            }
             let (mut v, mut neg, mut abs) = (Vec::new(), [false; 3], [false; 3]);
             for k in 0..n {
                 let (x, ng, ab) = lw.fmodval(lw.op(1 + k)?)?;
+                if xorsign {
+                    let ok = match &x {
+                        Val::Imm(c) => !ng && !ab && c & 0x8000_0000 == 0,
+                        _ => !ng && ab,
+                    };
+                    if !ok {
+                        bail!(lw.err(format!(
+                            "FMNMX.XORSIGN operand {} not modeled (|register| or a non-negative immediate)",
+                            lw.op(1 + k)?
+                        )));
+                    }
+                }
                 v.push(x);
                 neg[k] = ng;
                 abs[k] = ab;
@@ -1199,6 +1498,7 @@ fn lower_line(
                 min: lw.pred(lw.op(n + 1)?)?,
                 ftz: has("FTZ"),
                 nan: has("NAN"),
+                xorsign,
             }
         }
         // FSETP.<cmp>[.FTZ].<AND|OR|XOR> Pd, PT, a, b, Pc. ASSUME(N-FALU)
@@ -1301,11 +1601,25 @@ fn lower_line(
                 bop,
             }
         }
-        // `HSETP2.BF16_V2.<cmp>.<bop> Pd, PT, Ra.H0_H0, Rb.H1_H1, Pc` or with an immediate pair
-        // (`-INF , -INF`): one bf16 lane per operand (both selectors of an operand name the same
-        // half). ASSUME(L-ROSETTA): fixtures/s_routing_forms = GB300.
-        "HSETP2" if mods.first() == Some(&"BF16_V2") && mods.len() == 3 => {
-            let cmp = match mods[1] {
+        // `HSETP2[.BF16_V2].<cmp>.<bop> Pd, Pq, a, b, Pc` (`setp.<cmp>.f16x2` / `.bf16x2` and the
+        // scalar forms): per lane, the halves (f16 or bf16) widened exactly to f32, compared;
+        // Pd = lane 0 bop Pc, Pq = lane 1 bop Pc. Operands: `[-][|]R[|][.reuse][.H0_H0|.H1_H1]`,
+        // RZ, or an immediate pair printed `hi, lo` (bits from the encoding, checked against the
+        // print). ASSUME(L-ROSETTA): fixtures/s_routing_forms, probes/hsetp2 = GB300.
+        // `HSET2[.BF16_V2][.BF].<cmp>.<bop> Rd, a, b, Pc`: the same comparison as a register
+        // (probes/hset2).
+        "HSETP2" | "HSET2" if {
+            let m = if mods.first() == Some(&"BF16_V2") { &mods[1..] } else { mods };
+            let m = if base == "HSET2" && m.first() == Some(&"BF") { &m[1..] } else { m };
+            m.len() == 2
+        } =>
+        {
+            let bf16 = mods.first() == Some(&"BF16_V2");
+            let m = if bf16 { &mods[1..] } else { mods };
+            let set = base == "HSET2";
+            let bf = set && m.first() == Some(&"BF");
+            let m = if bf { &m[1..] } else { m };
+            let cmp = match m[0] {
                 "LT" => FCmp::Lt,
                 "EQ" => FCmp::Eq,
                 "LE" => FCmp::Le,
@@ -1322,51 +1636,122 @@ fn lower_line(
                 "GEU" => FCmp::Geu,
                 _ => bail!(lw.err("HSETP2 comparison not modeled")),
             };
-            let bop = match mods[2] {
+            let bop = match m[1] {
                 "AND" => BoolOp::And,
                 "OR" => BoolOp::Or,
                 "XOR" => BoolOp::Xor,
                 _ => bail!(lw.err("HSETP2 combiner not modeled")),
             };
-            if lw.op(1)? != "PT" {
-                bail!(lw.err("HSETP2 second output not modeled"));
-            }
-            let half = |o: &str| -> Result<(Val, bool)> {
-                let o = o.replace(".reuse", "");
-                let (r, hi) = match (o.strip_suffix(".H0_H0"), o.strip_suffix(".H1_H1")) {
-                    (Some(r), _) => (r.to_string(), false),
-                    (_, Some(r)) => (r.to_string(), true),
-                    _ => bail!(lw.err(format!("HSETP2 operand {o} not modeled"))),
-                };
-                Ok((lw.val(&r, 4)?, hi))
-            };
-            // A bf16 immediate as nvdisasm prints it (`-INF`, `1`, `0.5`).
-            let bf_imm = |o: &str| -> Result<u64> {
-                let v = lw.fval(o)?;
-                match v {
-                    Val::Imm(b) if b & 0xffff == 0 => Ok(b >> 16),
-                    _ => bail!(lw.err(format!("HSETP2 immediate {o} not modeled"))),
-                }
-            };
-            let (a, ha) = half(lw.op(2)?)?;
-            let (b, hb, c) = if lw.l.operands.len() == 6 {
-                let (x, y) = (bf_imm(lw.op(3)?)?, bf_imm(lw.op(4)?)?);
-                if x != y {
-                    bail!(lw.err("HSETP2 immediate pair with distinct halves not modeled"));
-                }
-                (Val::Imm(x), false, lw.pred(lw.op(5)?)?)
+            let (d, q) = if set {
+                (lw.dst(lw.op(0)?)?, None)
             } else {
-                let (b, hb) = half(lw.op(3)?)?;
-                (b, hb, lw.pred(lw.op(4)?)?)
+                (
+                    lw.pdst(lw.op(0)?)?,
+                    match lw.op(1)? {
+                        "PT" => None,
+                        p => Some(lw.pdst(p)?),
+                    },
+                )
             };
-            Op::Hsetp2Bf16 {
-                d: lw.pdst(lw.op(0)?)?,
-                cmp,
-                a,
-                b,
-                hi: [ha, hb],
-                c,
-                bop,
+            let first = if set { 1 } else { 2 };
+            let toks: Vec<String> = (first..l.operands.len() - 1)
+                .map(|i| lw.op(i).map(|x| x.replace(".reuse", "")))
+                .collect::<Result<_>>()?;
+            let c = lw.pred(lw.op(l.operands.len() - 1)?)?;
+            let is_reg = |x: &str| {
+                let r = x.trim_start_matches('-').trim_start_matches('|');
+                let r = r.split(['.', '|']).next().unwrap_or(r);
+                r == "RZ" || Lw::reg_name(r).is_some()
+            };
+            let imm_at = match toks.len() {
+                2 => None,
+                3 if !is_reg(&toks[1]) && !is_reg(&toks[2]) => Some(1),
+                _ => bail!(lw.err("HSETP2 operand count")),
+            };
+            let mut ops: Vec<(Val, HSel, bool, bool)> = Vec::new();
+            let mut i = 0;
+            while i < toks.len() {
+                if Some(ops.len()) == imm_at {
+                    let bits = (l.lo.ok_or_else(|| lw.err("HSETP2 immediate without encoding"))?
+                        >> 32
+                        & 0xffff_ffff) as u32;
+                    for (tok, half) in [(&toks[i], bits >> 16), (&toks[i + 1], bits & 0xffff)] {
+                        let t = tok.trim().trim_start_matches('+');
+                        let ok = if bf16 {
+                            let w = f32::from_bits(half << 16);
+                            match t {
+                                "QNAN" | "-QNAN" => w.is_nan(),
+                                "INF" => w == f32::INFINITY,
+                                "-INF" => w == f32::NEG_INFINITY,
+                                x => x.parse::<f64>().is_ok_and(|p| p == w as f64 || (p as f32) == w),
+                            }
+                        } else {
+                            match t {
+                                "QNAN" | "-QNAN" => half & 0x7c00 == 0x7c00 && half & 0x3ff != 0,
+                                "INF" => half == 0x7c00,
+                                "-INF" => half == 0xfc00,
+                                x => parse_half(x) == Some(half as u16),
+                            }
+                        };
+                        if !ok {
+                            bail!(lw.err(format!("HSETP2 immediate {tok} is not the encoding's {half:#06x}")));
+                        }
+                    }
+                    ops.push((Val::Imm(bits as u64), HSel::Pair, false, false));
+                    i += 2;
+                    continue;
+                }
+                let t = toks[i].as_str();
+                let (neg, t) = match t.strip_prefix('-') {
+                    Some(r) => (true, r),
+                    None => (false, t),
+                };
+                let (r, sel) = if let Some(r) = t.strip_suffix(".H0_H0") {
+                    (r, HSel::H0)
+                } else if let Some(r) = t.strip_suffix(".H1_H1") {
+                    (r, HSel::H1)
+                } else {
+                    (t, HSel::Pair)
+                };
+                let (abs, r) = match r.strip_prefix('|').and_then(|x| x.strip_suffix('|')) {
+                    Some(x) => (true, x),
+                    None => (false, r),
+                };
+                if r.contains('.') || r.contains('|') || !is_reg(r) {
+                    bail!(lw.err(format!("HSETP2 operand {} not modeled", toks[i])));
+                }
+                let v = if r == "RZ" { Val::Imm(0) } else { lw.val(r, 4)? };
+                ops.push((v, sel, neg, abs));
+                i += 1;
+            }
+            if set {
+                Op::Hset2 {
+                    d,
+                    cmp,
+                    a: ops[0].0.clone(),
+                    b: ops[1].0.clone(),
+                    sel: [ops[0].1, ops[1].1],
+                    neg: [ops[0].2, ops[1].2],
+                    abs: [ops[0].3, ops[1].3],
+                    c,
+                    bop,
+                    f16: !bf16,
+                    bf,
+                }
+            } else {
+                Op::Hsetp2Bf16 {
+                    d,
+                    q,
+                    cmp,
+                    a: ops[0].0.clone(),
+                    b: ops[1].0.clone(),
+                    sel: [ops[0].1, ops[1].1],
+                    neg: [ops[0].2, ops[1].2],
+                    abs: [ops[0].3, ops[1].3],
+                    c,
+                    bop,
+                    f16: !bf16,
+                }
             }
         }
         "FSETP" | "FSET" if base == "FSETP" || mods.first() == Some(&"BF") => {
@@ -1490,6 +1875,7 @@ fn lower_line(
                 "!PT" => true,
                 _ => bail!(lw.err("VIADDMNMX with a predicate selector not modeled")),
             },
+            relu: false,
         },
         // `VIMNMX3 R40, R0, UR5, R33, PT` (cuBLAS gemmSN_NN_kernel): selector PT = min, !PT =
         // max, as VIMNMX (fixtures/s_lift_k = GB300). ASSUME(L-ROSETTA)
@@ -1505,13 +1891,43 @@ fn lower_line(
                     "!PT" | "!UPT" => true,
                     _ => bail!(lw.err("VIMNMX3 with a predicate selector not modeled")),
                 },
+                x16: false,
+                relu: false,
             }
         }
         "P2R" if mods.is_empty() && lw.op(1)? == "PR" => Op::P2r {
             d: lw.dst(lw.op(0)?)?,
             a: lw.val(lw.op(2)?, 4)?,
             mask: hex(lw.op(3)?).ok_or_else(|| lw.err("bad mask"))? & 0x7f,
+            uniform: false,
+            shift: 0,
         },
+        // `UP2UR URd, UPR, URa, mask` (CuTe DSL kernels materializing uniform flags): P2R on
+        // the uniform predicates. `.B3` (byte 3; ptxas's save of UPR around a fence sequence,
+        // mask 0xff with bit 7 = UPT) places the bits in that byte. ASSUME(L-ROSETTA)
+        "UP2UR"
+            if matches!(mods, [] | ["B1"] | ["B2"] | ["B3"]) && lw.op(1)? == "UPR" =>
+        {
+            let m = hex(lw.op(3)?).ok_or_else(|| lw.err("bad mask"))?;
+            // Bit 7 (UPT) only in the byte forms, whose byte goes back through UR2UP's
+            // UP0..UP6.
+            if m & !0xff != 0 || (mods.is_empty() && m & 0x80 != 0) {
+                bail!(lw.err(format!("UP2UR mask {m:#x} not modeled")));
+            }
+            let shift = match mods {
+                ["B1"] => 8,
+                ["B2"] => 16,
+                ["B3"] => 24,
+                _ => 0,
+            };
+            Op::P2r {
+                d: lw.dst(lw.op(0)?)?,
+                a: lw.val(lw.op(2)?, 4)?,
+                mask: m,
+                uniform: true,
+                shift,
+            }
+        }
         // ASSUME(N-MUFU): see ASSUMPTIONS.md
         "MUFU" => {
             let func = match mods.first().copied() {
@@ -1559,17 +1975,38 @@ fn lower_line(
             }
         }
         "STTM" => {
-            let (n, half): (usize, Option<u8>) = match mods {
+            // shape: 0 = 32x32b / 16x32bx2, 1 = 16x128b, 2 = 16x256b (probes/tmem_st16).
+            let (n, half, shape): (usize, Option<u8>, u8) = match mods {
+                // Bare `STTM tmem[..], R` is tcgen05.st.32x32b.x1 (probes/bf16_selp).
+                [] => (1, None, 0),
                 [x] if x.starts_with('x') => {
-                    (x[1..].parse().map_err(|_| lw.err("STTM count"))?, None)
+                    (x[1..].parse().map_err(|_| lw.err("STTM count"))?, None, 0)
                 }
                 [s @ ("16dp32bit_t0_t15" | "16dp32bit_t16_t31"), x] if x.starts_with('x') => (
                     x[1..].parse().map_err(|_| lw.err("STTM count"))?,
                     Some(s.ends_with("t31") as u8),
+                    0,
                 ),
-                _ => bail!(lw.err("STTM shape not modeled yet (only 32x32b, 16x32bx2 .xN)")),
+                [s @ ("16dp256bit" | "16dp128bit"), x @ ..] if x.len() <= 1 => {
+                    let x: usize = match x.first() {
+                        Some(x) => x
+                            .strip_prefix('x')
+                            .and_then(|x| x.parse().ok())
+                            .ok_or_else(|| lw.err("STTM count"))?,
+                        None => 1,
+                    };
+                    if *s == "16dp256bit" {
+                        (4 * x, None, 2)
+                    } else {
+                        (2 * x, None, 1)
+                    }
+                }
+                _ => bail!(lw.err(
+                    "STTM shape not modeled yet (only 32x32b, 16x32bx2, 16x128b, 16x256b .xN)"
+                )),
             };
-            let (taddr, off) = lw.bracket(lw.op(0)?, "tmem", 1)?;
+            // A negative offset (`STTM.x32 tmem[UR7+-0x60]`), as LDTM (probes/tmem_stneg).
+            let (taddr, off) = lw.bracket_neg(lw.op(0)?, "tmem", 1, true)?;
             let src = lw.op(1)?;
             let v: Vec<Val> = if src == "RZ" {
                 vec![Val::Imm(0); n]
@@ -1593,6 +2030,8 @@ fn lower_line(
                 v,
                 tracked: false,
                 half,
+                s16x256b: shape == 2,
+                s16x128b: shape == 1,
             }
         }
         // STSM.16.M88.N[.T] [Ra], Rb: stmatrix.m8n8.xN, registers Rb..Rb+N-1.
@@ -1666,6 +2105,7 @@ fn lower_line(
                     shift: sh,
                     cout,
                     neg_a,
+                    neg_b: false,
                 }
             }
         }
@@ -1800,6 +2240,7 @@ fn lower_line(
                 d: lw.pdst(lw.op(0)?)?,
                 a: lw.pred(lw.op(1)?)?,
                 uni: mods == ["EQ"],
+                mask: None,
             }
         }
         "ELECT" => {
@@ -1813,6 +2254,7 @@ fn lower_line(
             Op::Elect {
                 d: lw.pdst(lw.op(0)?)?,
                 lane,
+                mask: None,
             }
         }
         // IMAD[.WIDE|.HI][.U32][.X] d, [Pcout,] a, b, c[, Pcin]
@@ -1836,8 +2278,11 @@ fn lower_line(
                 None
             };
             let (c, neg_c, not_c) = lw.modval(lw.op(i + 2)?, cbytes)?;
-            if (neg_c || not_c) && cbytes == 8 {
-                bail!(lw.err("negated 64-bit IMAD addend not modeled"));
+            // `IMAD.WIDE[.U32] d, a, b, -c`: the product minus the 64-bit c, mod 2^64
+            // (probes/int_misc = GB300); with a carry-in / carry-out, or `~c`, not modeled.
+            // ASSUME(L-ROSETTA)
+            if cbytes == 8 && (not_c || neg_c && (cout.is_some() || cin.is_some() || hi)) {
+                bail!(lw.err("negated 64-bit IMAD addend not modeled with this form"));
             }
             Op::Imad {
                 d,
@@ -1853,30 +2298,361 @@ fn lower_line(
                 cout,
             }
         }
-        "HFMA2" => {
-            // Operands: d, a, b, c where c may be two f16 immediates "hi, lo".
-            let d = lw.dst(lw.op(0)?)?;
-            let (neg_a, a_s) = match lw.op(1)?.strip_prefix('-') {
-                Some(r) => (true, r),
-                None => (false, lw.op(1)?),
+        // Packed bf16: `HMUL2.BF16_V2 d, a, b` (a*b + -0), `HADD2.BF16_V2 d, a, b` (a*1 + b),
+        // `HFMA2.BF16_V2[.RELU] d, a, b, c`. Operands: `[-]R[.H0_H0|.H1_H1]`, `[-]RZ[...]`, a
+        // uniform register, or an immediate pair printed `hi, lo` (bits from the encoding).
+        // The table's other modifiers (.FTZ, .SAT, .FMZ, .OOB, .F32 with BF16_V2) are refused.
+        // ASSUME(N-BF16X2): probes/bf16x2.
+        "HMUL2" | "HADD2" | "HFMA2" if mods.first() == Some(&"BF16_V2") => {
+            let relu = match &mods[1..] {
+                [] => false,
+                ["RELU"] if base == "HFMA2" => true,
+                m => bail!(lw.err(format!("{base}.BF16_V2 modifier .{} not modeled", m.join(".")))),
             };
-            let a = lw.val(a_s, 4)?;
-            let b = lw.val(lw.op(2)?, 4)?;
-            let c = if l.operands.len() == 5 {
-                match (parse_half(lw.op(3)?), parse_half(lw.op(4)?)) {
-                    (Some(hi), Some(lo)) => Val::Imm(((hi as u64) << 16) | lo as u64),
-                    // `+QNAN` (any NaN prints alike): the pair from the encoding's immediate.
-                    _ => Val::Imm(l.lo.ok_or_else(|| lw.err("bad f16 imm"))? >> 32 & 0xffff_ffff),
+            let n = if base == "HFMA2" { 3 } else { 2 };
+            // Source tokens: one per operand, an immediate pair taking two.
+            let toks: Vec<String> = (1..l.operands.len())
+                .map(|i| lw.op(i).map(|x| x.replace(".reuse", "")))
+                .collect::<Result<_>>()?;
+            let is_reg = |x: &str| {
+                let r = x.trim_start_matches('-');
+                let r = r.split('.').next().unwrap_or(r);
+                r == "RZ" || r == "URZ" || Lw::reg_name(r).is_some()
+            };
+            let imm_at = match (toks.len(), n) {
+                (2, 2) | (3, 3) => None,
+                (3, 2) if !is_reg(&toks[1]) && !is_reg(&toks[2]) => Some(1),
+                (4, 3) if !is_reg(&toks[1]) && !is_reg(&toks[2]) => Some(1),
+                (4, 3) if !is_reg(&toks[2]) && !is_reg(&toks[3]) => Some(2),
+                _ => bail!(lw.err("operand count")),
+            };
+            let mut ops: Vec<(Val, HSel, bool, bool)> = Vec::new();
+            let mut i = 0;
+            while i < toks.len() {
+                if Some(ops.len()) == imm_at {
+                    let bits = (l.lo.ok_or_else(|| lw.err("bf16 immediate without encoding"))?
+                        >> 32
+                        & 0xffff_ffff) as u32;
+                    // The printed values must be the encoding's halves (hi first).
+                    for (tok, half) in [(&toks[i], bits >> 16), (&toks[i + 1], bits & 0xffff)] {
+                        let w = f32::from_bits(half << 16);
+                        let ok = match tok.trim_start_matches('+') {
+                            "QNAN" | "-QNAN" => w.is_nan(),
+                            "INF" => w == f32::INFINITY,
+                            "-INF" => w == f32::NEG_INFINITY,
+                            x => x.parse::<f64>().is_ok_and(|p| p == w as f64 || (p as f32) == w),
+                        };
+                        if !ok {
+                            bail!(lw.err(format!("bf16 immediate {tok} is not the encoding's {half:#06x}")));
+                        }
+                    }
+                    ops.push((Val::Imm(bits as u64), HSel::Pair, false, false));
+                    i += 2;
+                    continue;
                 }
-            } else {
-                lw.val(lw.op(3)?, 4)?
-            };
-            if mods.iter().any(|m| *m != "MMA") {
-                bail!(lw.err("HFMA2 modifier not modeled"));
+                let t = toks[i].as_str();
+                let (neg, t) = match t.strip_prefix('-') {
+                    Some(r) => (true, r),
+                    None => (false, t),
+                };
+                let (r, sel) = if let Some(r) = t.strip_suffix(".H0_H0") {
+                    (r, HSel::H0)
+                } else if let Some(r) = t.strip_suffix(".H1_H1") {
+                    (r, HSel::H1)
+                } else {
+                    (t, HSel::Pair)
+                };
+                // `|R|` / `|R|.H0_H0`: the halves' sign bits cleared (Triton's bf16 abs).
+                let (abs, r) = match r.strip_prefix('|').and_then(|x| x.strip_suffix('|')) {
+                    Some(x) => (true, x),
+                    None => (false, r),
+                };
+                if r.contains('.') || r.contains('|') || !is_reg(r) {
+                    bail!(lw.err(format!("{base}.BF16_V2 operand {} not modeled", toks[i])));
+                }
+                let v = if r == "RZ" || r == "URZ" {
+                    Val::Imm(0)
+                } else {
+                    lw.val(r, 4)?
+                };
+                ops.push((v, sel, neg, abs));
+                i += 1;
             }
-            Op::Hfma2 { d, a, b, c, neg_a }
+            let one = (Val::Imm(0x3f80_3f80), HSel::Pair, false, false);
+            let mzero = (Val::Imm(0x8000_8000), HSel::Pair, false, false);
+            let [a, b, c] = match base {
+                "HMUL2" => [ops[0].clone(), ops[1].clone(), mzero],
+                "HADD2" => [ops[0].clone(), one, ops[1].clone()],
+                _ => [ops[0].clone(), ops[1].clone(), ops[2].clone()],
+            };
+            Op::Hfma2Bf16 {
+                d: lw.dst(lw.op(0)?)?,
+                a: a.0,
+                b: b.0,
+                c: c.0,
+                sel: [a.1, b.1, c.1],
+                neg: [a.2, b.2, c.2],
+                abs: [a.3, b.3, c.3],
+                relu,
+            }
         }
-        "FFMA2" | "FMUL2" | "FADD2" if mods.is_empty() => {
+        // `FHFMA.BF16[.RZ|.RM|.RP][.SAT] d, a[.H1], b[.H1], [-]c` / `FHADD.BF16[...] d, a[.H1],
+        // [-]c` (fma / add / sub `.f32.bf16`): bf16 halves times / plus an f32. Only the forms
+        // probes/bf16_ext covers: register operands, a sign flip on c only. ASSUME(N-BF16X2)
+        "FHFMA" | "FHADD"
+            if mods.first() == Some(&"BF16")
+                && mods[1..].iter().all(|m| matches!(*m, "RZ" | "RM" | "RP" | "SAT"))
+                && mods[1..].iter().filter(|m| **m != "SAT").count() <= 1 =>
+        {
+            let n = if base == "FHFMA" { 3 } else { 2 };
+            if l.operands.len() != n + 1 {
+                bail!(lw.err("operand count"));
+            }
+            let half = |k: usize| -> Result<(Val, bool)> {
+                let t = lw.op(k)?.replace(".reuse", "");
+                let (r, hi) = match (t.strip_suffix(".H1"), t.strip_suffix(".H0")) {
+                    (Some(r), _) => (r.to_string(), true),
+                    (_, Some(r)) => (r.to_string(), false),
+                    _ => (t.clone(), false),
+                };
+                if r.contains(['-', '|', '.']) || Lw::reg_name(&r).is_none() {
+                    bail!(lw.err(format!("{base}.BF16 operand {t} not modeled")));
+                }
+                Ok((lw.val(&r, 4)?, hi))
+            };
+            let (a, ahi) = half(1)?;
+            let (b, bhi) = if n == 3 {
+                half(2)?
+            } else {
+                (Val::Imm(0x3f80), false)
+            };
+            let ct = lw.op(n)?.replace(".reuse", "");
+            let (negc, cr) = match ct.strip_prefix('-') {
+                Some(r) => (true, r.to_string()),
+                None => (false, ct.clone()),
+            };
+            if cr.contains(['|', '.']) || (cr != "RZ" && Lw::reg_name(&cr).is_none()) {
+                bail!(lw.err(format!("{base}.BF16 operand {ct} not modeled")));
+            }
+            let c = if cr == "RZ" { Val::Imm(0) } else { lw.val(&cr, 4)? };
+            Op::FfmaBf16 {
+                d: lw.dst(lw.op(0)?)?,
+                a,
+                b,
+                c,
+                hi: [ahi, bhi],
+                neg: [false, false, negc],
+                rnd: sass_rnd(mods),
+                sat: has("SAT"),
+            }
+        }
+        // `HMNMX2.BF16_V2[.NAN][.XORSIGN] d, a[.Hx_Hx], b[.Hx_Hx], p` (min / max .bf16x2 /
+        // .bf16): `.XORSIGN` takes `|a|`, `|b|` (signs from the stored operands, as
+        // FMNMX.XORSIGN); register operands only. ASSUME(N-BF16X2)
+        "HMNMX2"
+            if mods.first() == Some(&"BF16_V2")
+                && mods[1..].iter().all(|m| matches!(*m, "NAN" | "XORSIGN")) =>
+        {
+            // b may be a bf16 immediate pair (`HMNMX2.BF16_V2 R0, R0, +INF , +INF , PT`).
+            let imm = l.operands.len() == 5;
+            if l.operands.len() != 4 && !imm {
+                bail!(lw.err("operand count"));
+            }
+            let xorsign = has("XORSIGN");
+            let src = |k: usize| -> Result<(Val, HSel)> {
+                let t = lw.op(k)?.replace(".reuse", "");
+                if t == "RZ" && !xorsign {
+                    return Ok((Val::Imm(0), HSel::Pair));
+                }
+                let (abs, r) = match t.strip_prefix('|') {
+                    Some(x) => match x.split_once('|') {
+                        Some((r, rest)) => (true, format!("{r}{rest}")),
+                        None => bail!(lw.err(format!("HMNMX2 operand {t} not modeled"))),
+                    },
+                    None => (false, t.clone()),
+                };
+                let (r, sel) = if let Some(r) = r.strip_suffix(".H0_H0") {
+                    (r.to_string(), HSel::H0)
+                } else if let Some(r) = r.strip_suffix(".H1_H1") {
+                    (r.to_string(), HSel::H1)
+                } else {
+                    (r, HSel::Pair)
+                };
+                if abs != xorsign || r.contains(['-', '.']) || Lw::reg_name(&r).is_none() {
+                    bail!(lw.err(format!("HMNMX2.BF16_V2 operand {t} not modeled")));
+                }
+                Ok((lw.val(&r, 4)?, sel))
+            };
+            let (a, sa) = src(1)?;
+            let (b, sb) = if imm {
+                if xorsign {
+                    bail!(lw.err("HMNMX2.XORSIGN with an immediate not modeled"));
+                }
+                let bits = half_imm_pair(l.lo, [lw.op(2)?, lw.op(3)?], true)
+                    .map_err(|e| lw.err(e))?;
+                (Val::Imm(bits as u64), HSel::Pair)
+            } else {
+                src(2)?
+            };
+            Op::Hmnmx2Bf16 {
+                d: lw.dst(lw.op(0)?)?,
+                a,
+                b,
+                sel: [sa, sb],
+                min: lw.pred(lw.op(if imm { 4 } else { 3 })?)?,
+                nan: has("NAN"),
+                xorsign,
+            }
+        }
+        // `MATCH.ANY[.U64] Rd, Ra` (match.any.sync.b32 / .b64; ptxas emits WARPSYNC first for a
+        // partial membermask): per lane the mask of active lanes holding the same value.
+        // probes/match_any = GB300.
+        "MATCH" if mods == ["ANY"] || mods == ["ANY", "U64"] => {
+            uniform = false;
+            let wide = mods.len() == 2;
+            Op::MatchAny {
+                d: lw.dst(lw.op(0)?)?,
+                a: lw.val(lw.op(1)?, if wide { 8 } else { 4 })?,
+                wide,
+            }
+        }
+        // `VHMNMX[.BF16_V2][.NAN] d, a, b, c, p`: three-input half min / max (ptxas fuses two
+        // HMNMX2). Operands `[|]R[|][.reuse][.H0_H0|.H1_H1]`. probes/vhmnmx = GB300.
+        "VHMNMX" if mods.iter().all(|m| matches!(*m, "BF16_V2" | "NAN")) => {
+            if l.operands.len() != 5 {
+                bail!(lw.err("operand count"));
+            }
+            let src = |k: usize| -> Result<(Val, HSel, bool)> {
+                let t = lw.op(k)?.replace(".reuse", "");
+                let (r, sel) = if let Some(r) = t.strip_suffix(".H0_H0") {
+                    (r, HSel::H0)
+                } else if let Some(r) = t.strip_suffix(".H1_H1") {
+                    (r, HSel::H1)
+                } else {
+                    (t.as_str(), HSel::Pair)
+                };
+                let (abs, r) = match r.strip_prefix('|').and_then(|x| x.strip_suffix('|')) {
+                    Some(x) => (true, x),
+                    None => (false, r),
+                };
+                if r == "RZ" {
+                    return Ok((Val::Imm(0), sel, abs));
+                }
+                if r.contains(['-', '.', '|']) || Lw::reg_name(r).is_none() {
+                    bail!(lw.err(format!("VHMNMX operand {t} not modeled")));
+                }
+                Ok((lw.val(r, 4)?, sel, abs))
+            };
+            let (a, b, c) = (src(1)?, src(2)?, src(3)?);
+            Op::Vhmnmx {
+                d: lw.dst(lw.op(0)?)?,
+                a: a.0,
+                b: b.0,
+                c: c.0,
+                sel: [a.1, b.1, c.1],
+                abs: [a.2, b.2, c.2],
+                min: lw.pred(lw.op(4)?)?,
+                nan: has("NAN"),
+                f16: !has("BF16_V2"),
+            }
+        }
+        // f16x2: `HFMA2[.MMA] d, a, b, c`, `HMUL2 d, a, b` (a*b + -0), `HADD2 d, a, c` (a*1 + c).
+        // Operands: `[-]R[.reuse][.H0_H0|.H1_H1]`, RZ, or an f16 immediate pair printed `hi, lo`
+        // (bits from the encoding, checked against the print). A sign flip only on a and c.
+        // probes/f16_arith = GB300. ASSUME(L-ROSETTA)
+        "HFMA2" | "HMUL2" | "HADD2" if mods.iter().all(|m| *m == "MMA") => {
+            let n = if base == "HFMA2" { 3 } else { 2 };
+            let toks: Vec<String> = (1..l.operands.len())
+                .map(|i| lw.op(i).map(|x| x.replace(".reuse", "")))
+                .collect::<Result<_>>()?;
+            let is_reg = |x: &str| {
+                let r = x.trim_start_matches('-');
+                let r = r.split('.').next().unwrap_or(r);
+                r == "RZ" || Lw::reg_name(r).is_some()
+            };
+            let imm_at = match (toks.len(), n) {
+                (2, 2) | (3, 3) => None,
+                (3, 2) if !is_reg(&toks[1]) && !is_reg(&toks[2]) => Some(1),
+                (4, 3) if !is_reg(&toks[1]) && !is_reg(&toks[2]) => Some(1),
+                (4, 3) if !is_reg(&toks[2]) && !is_reg(&toks[3]) => Some(2),
+                _ => bail!(lw.err("operand count")),
+            };
+            let mut ops: Vec<(Val, HSel, bool)> = Vec::new();
+            let mut abs_a = false;
+            let mut i = 0;
+            while i < toks.len() {
+                if Some(ops.len()) == imm_at {
+                    let bits = (l.lo.ok_or_else(|| lw.err("f16 immediate without encoding"))? >> 32
+                        & 0xffff_ffff) as u32;
+                    for (tok, half) in [(&toks[i], bits >> 16), (&toks[i + 1], bits & 0xffff)] {
+                        let ok = match tok.trim_start_matches('+') {
+                            "QNAN" | "-QNAN" => half & 0x7c00 == 0x7c00 && half & 0x3ff != 0,
+                            "INF" => half == 0x7c00,
+                            "-INF" => half == 0xfc00,
+                            x => parse_half(x) == Some(half as u16),
+                        };
+                        if !ok {
+                            bail!(lw.err(format!("f16 immediate {tok} is not the encoding's {half:#06x}")));
+                        }
+                    }
+                    ops.push((Val::Imm(bits as u64), HSel::Pair, false));
+                    i += 2;
+                    continue;
+                }
+                let t = toks[i].as_str();
+                let (neg, t) = match t.strip_prefix('-') {
+                    Some(r) => (true, r),
+                    None => (false, t),
+                };
+                // `|R|` / `|R|.H0_H0` (a only): the absolute value (PTX abs.f16x2;
+                // probes/f16_absneg).
+                let stripped;
+                let t = match t.strip_prefix('|').and_then(|x| x.split_once('|')) {
+                    Some((r, rest)) if ops.is_empty() && !neg => {
+                        abs_a = true;
+                        stripped = format!("{r}{rest}");
+                        stripped.as_str()
+                    }
+                    _ => t,
+                };
+                let (r, sel) = if let Some(r) = t.strip_suffix(".H0_H0") {
+                    (r, HSel::H0)
+                } else if let Some(r) = t.strip_suffix(".H1_H1") {
+                    (r, HSel::H1)
+                } else {
+                    (t, HSel::Pair)
+                };
+                if r.contains('.') || r.contains('|') || !is_reg(r) {
+                    bail!(lw.err(format!("{base} operand {} not modeled", toks[i])));
+                }
+                let v = if r == "RZ" { Val::Imm(0) } else { lw.val(r, 4)? };
+                ops.push((v, sel, neg));
+                i += 1;
+            }
+            let one = (Val::Imm(0x3c00_3c00), HSel::Pair, false);
+            let mzero = (Val::Imm(0x8000_8000), HSel::Pair, false);
+            let [a, b, c] = match base {
+                "HMUL2" => [ops[0].clone(), ops[1].clone(), mzero],
+                "HADD2" => [ops[0].clone(), one, ops[1].clone()],
+                _ => [ops[0].clone(), ops[1].clone(), ops[2].clone()],
+            };
+            if b.2 {
+                bail!(lw.err(format!("{base} with a negated b not modeled")));
+            }
+            Op::Hfma2 {
+                d: lw.dst(lw.op(0)?)?,
+                a: a.0,
+                b: b.0,
+                c: c.0,
+                abs_a,
+                neg_a: a.2,
+                neg_c: c.2,
+                sel: [a.1, b.1, c.1],
+            }
+        }
+        // `.RZ` / `.RM` / `.RP`: one rounding in that mode (probes/bf16_ext = GB300).
+        "FFMA2" | "FMUL2" | "FADD2" if mods.len() <= 1 && mods.iter().all(|m| matches!(*m, "RZ" | "RM" | "RP")) => {
+            let rnd = sass_rnd(mods);
             let f2 = |s: &str| -> Result<(Val, F2Lanes)> {
                 let (r, l) = if let Some(r) = s.strip_suffix(".F32x2.HI_LO") {
                     (r, F2Lanes::Pair)
@@ -1898,17 +2674,27 @@ fn lower_line(
                 let n = if l == F2Lanes::Bcast { 4 } else { 8 };
                 Ok((lw.val(r, n)?, l))
             };
-            // `-R16.F32`: the operand negated (fixtures/s_lift_k = GB300). ASSUME(L-ROSETTA)
+            // `-R16.F32`, `-UR4.F32`: the operand negated (fixtures/s_lift_k, probes/ffma2_ur =
+            // GB300). ASSUME(L-ROSETTA)
+            // `|R20|.F32x2.HI_LO`: the absolute value (probes/ffma2_ur = GB300).
             let mut neg = [false; 3];
+            let mut abs = [false; 3];
             let mut f2n = |k: usize, s: &str| -> Result<(Val, F2Lanes)> {
                 let s = match s.strip_prefix('-') {
-                    Some(r) if r.starts_with('R') => {
+                    Some(r) if r.starts_with('R') || r.starts_with("UR") || r.starts_with('|') => {
                         neg[k] = true;
                         r
                     }
                     _ => s,
                 };
-                f2(s)
+                let s = match s.strip_prefix('|').and_then(|r| r.split_once('|')) {
+                    Some((r, rest)) => {
+                        abs[k] = true;
+                        format!("{r}{rest}")
+                    }
+                    None => s.to_string(),
+                };
+                f2(&s)
             };
             if base == "FADD2" {
                 // FADD2 d, a, c: a*1 + c, one rounding to nearest per lane: the sum (N-FALU).
@@ -1919,16 +2705,28 @@ fn lower_line(
                     b: (Val::Imm(0x3f80_0000), F2Lanes::Bcast),
                     c,
                     neg,
+                    abs,
+                    rnd,
                 }
             } else {
                 let (d, a, b) = (lw.dst(lw.op(0)?)?, f2n(0, lw.op(1)?)?, f2n(1, lw.op(2)?)?);
-                // FMUL2: a*b + (-0), which is the rounded product (round to nearest).
+                // FMUL2: a*b + (-0), the rounded product (an exact zero product keeps its
+                // sign; under .RM the additive identity is +0 instead).
                 let c = if base == "FMUL2" {
-                    (Val::Imm(0x8000_0000), F2Lanes::Bcast)
+                    let z = if rnd == Rnd::Rm { 0 } else { 0x8000_0000 };
+                    (Val::Imm(z), F2Lanes::Bcast)
                 } else {
                     f2n(2, lw.op(3)?)?
                 };
-                Op::Ffma2 { d, a, b, c, neg }
+                Op::Ffma2 {
+                    d,
+                    a,
+                    b,
+                    c,
+                    neg,
+                    abs,
+                    rnd,
+                }
             }
         }
         // ASSUME(N-FADD, N-FALU): see ASSUMPTIONS.md
@@ -2016,6 +2814,30 @@ fn lower_line(
                 a: lw.val(src, 4)?,
                 mask,
                 shift,
+                uniform: false,
+            }
+        }
+        // `UR2UP UPR, URa.Bk[, mask]`: restores what `UP2UR.Bk` saved (ptxas's fence.proxy.alias
+        // sequence). No mask operand: UP0..UP6. ASSUME(L-ROSETTA)
+        "UR2UP" if mods.is_empty() && lw.op(0)? == "UPR" => {
+            let src = lw.op(1)?;
+            let (src, shift) = match src.rsplit_once(".B") {
+                Some((r, k)) if matches!(k, "0" | "1" | "2" | "3") => {
+                    (r, 8 * k.parse::<u8>().unwrap())
+                }
+                Some(_) => bail!(lw.err(format!("UR2UP operand selector not modeled: {src}"))),
+                None => (src, 0),
+            };
+            let mask = match l.operands.len() {
+                2 => 0x7f,
+                3 => hex(lw.op(2)?).ok_or_else(|| lw.err("bad mask"))? & 0x7f,
+                _ => bail!(lw.err("UR2UP operands not modeled")),
+            };
+            Op::R2p {
+                a: lw.val(src, 4)?,
+                mask,
+                shift,
+                uniform: true,
             }
         }
         "R2UR" => {
@@ -2025,12 +2847,17 @@ fn lower_line(
                     p: Some(lw.pdst(lw.op(0)?)?),
                     d: lw.dst(lw.op(1)?)?,
                     a: lw.val(lw.op(2)?, 4)?,
+                    or: has("OR"),
                 }
             } else {
+                if has("OR") {
+                    bail!(lw.err("R2UR.OR without a predicate"));
+                }
                 Op::R2Ur {
                     p: None,
                     d: lw.dst(lw.op(0)?)?,
                     a: lw.val(lw.op(1)?, 4)?,
+                    or: false,
                 }
             }
         }
@@ -2041,6 +2868,7 @@ fn lower_line(
                 Op::VoteAny {
                     d: lw.pdst(lw.op(0)?)?,
                     a: lw.pred(lw.op(1)?)?,
+                    mask: None,
                 }
             } else {
                 if lw.op(1)? != "UPT" && lw.op(1)? != "PT" {
@@ -2049,6 +2877,7 @@ fn lower_line(
                 Op::VoteAny {
                     d: lw.dst(lw.op(0)?)?,
                     a: lw.pred(lw.op(2)?)?,
+                    mask: None,
                 }
             }
         }
@@ -2065,7 +2894,9 @@ fn lower_line(
                 ("REDUX", []) => ReduxOp::And,
                 ("REDUX", ["OR"]) => ReduxOp::Or,
                 ("REDUX", ["XOR"]) => ReduxOp::Xor,
-                ("REDUX", ["SUM"]) => ReduxOp::Sum,
+                // `.S32` (redux.sync.add.s32): the same wrapping sum (probes/redux_s32,
+                // with partial masks). The other `.S32` forms of the table are refused.
+                ("REDUX", ["SUM"]) | ("REDUX", ["SUM", "S32"]) => ReduxOp::Sum,
                 ("CREDUX", ["MIN"]) => ReduxOp::MinU,
                 ("CREDUX", ["MAX"]) => ReduxOp::MaxU,
                 ("CREDUX", ["MIN", "S32"]) => ReduxOp::MinS,
@@ -2089,6 +2920,7 @@ fn lower_line(
                 d: lw.dst(lw.op(0)?)?,
                 a: lw.val(lw.op(1)?, 4)?,
                 op,
+                mask: None,
             }
         }
         // `ATOMS.CAST.SPIN P, [Ra], Rc, Rc+1`: CAS (compare Rc, new Rc+1), P = swapped.
@@ -2180,7 +3012,7 @@ fn lower_line(
                 d,
                 sync: MemSync {
                     sem: Sem::Relaxed,
-                    scope: sass_scope(mods).unwrap_or(Scope::Gpu),
+                    scope: sass_scope(mods).unwrap_or(Scope::Cta),
                 },
                 p,
                 new: None,
@@ -2215,9 +3047,10 @@ fn lower_line(
             }
             let cmp = lw.dst(lw.op(3)?)?;
             let new = lw.dst(lw.op(4)?)?;
-            if !wide && (new.file != cmp.file || new.idx != cmp.idx + 1) {
-                bail!(lw.err("CAS operands not a register pair"));
-            }
+            // A 32-bit compare and new value in two unrelated registers (`ATOMG.E.CAS PT, R20,
+            // [R4], R26, R20`: ptxas's CAS loop for a scalar bf16 atom.add, probes/bf16x2 =
+            // GB300): compare Rb, new Rc. ASSUME(L-ROSETTA)
+            let pair = new.file == cmp.file && new.idx == cmp.idx + 1;
             Op::Atom {
                 op: AtomOp::Cas,
                 space: if base == "ATOM" {
@@ -2227,14 +3060,20 @@ fn lower_line(
                 },
                 bytes,
                 addr,
-                v: Val::Reg(cmp, 2),
+                v: Val::Reg(cmp, if wide || pair { 2 } else { 1 }),
                 d,
                 sync: MemSync {
                     sem: Sem::Relaxed,
-                    scope: sass_scope(mods).unwrap_or(Scope::Gpu),
+                    scope: sass_scope(mods).unwrap_or(Scope::Cta),
                 },
                 p,
-                new: wide.then_some(Val::Reg(new, 2)),
+                new: if wide {
+                    Some(Val::Reg(new, 2))
+                } else if pair {
+                    None
+                } else {
+                    Some(Val::Reg(new, 1))
+                },
             }
         }
         // Generic integer atomics: `ATOM.E.ADD.STRONG.SYS PT, RZ, [Ra.64], Rb` (DeepEP's
@@ -2291,7 +3130,7 @@ fn lower_line(
                 d,
                 sync: MemSync {
                     sem: Sem::Relaxed,
-                    scope: sass_scope(mods).unwrap_or(Scope::Gpu),
+                    scope: sass_scope(mods).unwrap_or(Scope::Cta),
                 },
                 p,
                 new: None,
@@ -2362,53 +3201,28 @@ fn lower_line(
         // `ATOMG.E.ADD.STRONG.GPU PT, Rd, [Ra], Rb` / `REDG.E.ADD.STRONG.SYS [Ra], Rb`. The
         // release / acquire of atom.release / .acquire are separate MEMBAR / CCTL.IVALL.
         "ATOMG" | "REDG" => {
-            // `.F32.FTZ.RN`: the fp32 add (Triton's tl.atomic_add on f32).
-            let f32_add = has("ADD") && has("F32") && has("FTZ") && has("RN");
-            let op = if f32_add {
-                AtomOp::FAddFtz
-            } else if has("ADD") {
-                AtomOp::Add
-            } else if has("OR") {
-                AtomOp::Or
-            } else if has("AND") {
-                AtomOp::And
-            } else if has("XOR") {
-                AtomOp::Xor
-            } else if has("EXCH") {
-                AtomOp::Exch
-            } else if has("MIN") || has("MAX") {
-                // `ATOMG.E.MIN[.S32|.64|.S64]`, `REDG.E.MAX.S32` (atom / red .min / .max).
-                if let Some(m) = mods.iter().find(|m| !atom_mod_known(m)) {
-                    bail!(lw.err(format!("{base} min / max: modifier .{m} not modeled")));
-                }
-                min_max_op(mods)
-            } else {
-                bail!(lw.err("ATOMG/REDG variant not modeled"));
+            // Fail closed: the modifier set (besides .E, .STRONG and the scope) must be one of
+            // the modeled forms (`atomg_op`).
+            let Some((op, bytes)) = atomg_op(mods) else {
+                bail!(lw.err(format!(
+                    "ATOMG/REDG variant not modeled: .{}",
+                    mods.join(".")
+                )));
             };
-            let min_max = matches!(
-                op,
-                AtomOp::MinU | AtomOp::MaxU | AtomOp::MinS | AtomOp::MaxS
-            );
-            if mods.iter().any(|m| {
-                matches!(*m, "F16x2" | "BF16x2" | "CAS")
-                    || (matches!(*m, "S32" | "S64") && !min_max)
-                    || (*m == "F32" && !f32_add)
-            }) {
-                bail!(lw.err("ATOMG/REDG variant not modeled"));
-            }
-            let bytes = if has("64") || has("S64") { 8 } else { 4 };
             let sync = MemSync {
                 sem: Sem::Relaxed,
-                scope: sass_scope(mods).unwrap_or(Scope::Gpu),
+                scope: sass_scope(mods).unwrap_or(Scope::Cta),
             };
             let wide_addr = |a: Addr| wide_e_addr(a, has("E"));
+            let vector = op == AtomOp::FAddFtz && bytes > 4;
             if base == "REDG" {
                 Op::Atom {
                     op,
                     space: Space::Global,
                     bytes,
                     addr: wide_addr(lw.addr(lw.op(0)?)?),
-                    v: lw.val(lw.op(1)?, bytes)?,
+                    // A vector red: the first of its consecutive data registers.
+                    v: lw.val(lw.op(1)?, if vector { 4 } else { bytes })?,
                     d: None,
                     sync,
                     p: None,
@@ -2419,6 +3233,8 @@ fn lower_line(
                 if lw.op(0)? != "PT" {
                     bail!(lw.err("ATOMG with a predicate result not modeled"));
                 }
+                // A vector ATOMG (`.F32x2` / `.F32x4`): Rd and Rb are the first of their
+                // consecutive registers, one FADD.FTZ atomic per element (probes/atom_vec).
                 let d = match lw.op(1)? {
                     "RZ" => None,
                     x => Some(lw.dst(x)?),
@@ -2428,12 +3244,51 @@ fn lower_line(
                     space: Space::Global,
                     bytes,
                     addr: wide_addr(lw.addr(lw.op(2)?)?),
-                    v: lw.val(lw.op(3)?, bytes)?,
+                    v: lw.val(lw.op(3)?, if vector { 4 } else { bytes })?,
                     d,
                     sync,
                     p: None,
                     new: None,
                 }
+            }
+        }
+        // `UREDGR.E.ADD.NA[.S32 | .64].STRONG.GPU|SYS [URa], URb` (ptxas 13.0's red.async
+        // .global, issued for one elected lane per BRA.U.ANY loop iteration after MEMBAR.ALL.CTA
+        // and waited for by DEPBAR): a red of that scope that releases the issuing thread's
+        // earlier accesses (probes/redasync_litmus: with UREDGR nothing was stale; MEMBAR.ALL.CTA
+        // + REDG gave stale reads). Executed once per warp (uniform datapath). ASSUME(S-RED-ASYNC)
+        "UREDGR" => {
+            let core: Vec<&str> = mods
+                .iter()
+                .copied()
+                .filter(|m| !matches!(*m, "E" | "NA" | "STRONG" | "GPU" | "SYS"))
+                .collect();
+            let bytes = match core.as_slice() {
+                ["ADD"] | ["ADD", "S32"] | ["ADD", "U32"] => 4,
+                ["ADD", "64"] => 8,
+                _ => bail!(lw.err(format!("UREDGR variant not modeled: .{}", mods.join(".")))),
+            };
+            let scope = match (has("GPU"), has("SYS")) {
+                (true, false) => Scope::Gpu,
+                (false, true) => Scope::Sys,
+                _ => bail!(lw.err("UREDGR without .GPU / .SYS not modeled")),
+            };
+            if !has("STRONG") || !has("E") {
+                bail!(lw.err("UREDGR without .E.STRONG not modeled"));
+            }
+            Op::Atom {
+                op: AtomOp::Add,
+                space: Space::Global,
+                bytes,
+                addr: wide_e_addr(lw.addr(lw.op(0)?)?, true),
+                v: lw.val(lw.op(1)?, bytes)?,
+                d: None,
+                sync: MemSync {
+                    sem: Sem::Release,
+                    scope,
+                },
+                p: None,
+                new: None,
             }
         }
         "STS" => {
@@ -2479,7 +3334,7 @@ fn lower_line(
                 .and_then(|x| x.parse::<u8>().ok())
                 .filter(|&b| b < 16)
                 .ok_or_else(|| lw.err("bad convergence barrier"))?;
-            Op::Break { b }
+            Op::Break { b, cond: None }
         }
         // Invalidates the sync unit's view after mbarrier words were written with plain
         // stores (ptxas's divergent-path lowering of mbarrier.init). The simulator decodes
@@ -2627,7 +3482,18 @@ fn lower_line(
             {
                 bail!(lw.err(format!("{base} variant not modeled yet")));
             }
-            let scaled = lw.l.operands.len() == 7;
+            // `UTCHMMA ..., idesc[..], UPd, s`: a trailing immediate is scale-input-d (D = A B +
+            // D * 2^-s; probes/mma_scale_d). Block-scaled kinds have 7 operands instead.
+            let scale_d = match (base, lw.l.operands.get(6)) {
+                ("UTCHMMA", Some(s)) if s.starts_with("0x") => {
+                    let v = hex(s).filter(|&v| (1..16).contains(&v)).ok_or_else(|| {
+                        lw.err(format!("UTCHMMA scale-input-d {s} not modeled"))
+                    })?;
+                    v as u8
+                }
+                _ => 0,
+            };
+            let scaled = lw.l.operands.len() == 7 && scale_d == 0;
             let kind = match (base, scaled) {
                 ("UTCHMMA", false) => MmaKind::F16,
                 ("UTCQMMA", false) => MmaKind::F8f6f4,
@@ -2678,6 +3544,7 @@ fn lower_line(
                 a_tmem,
                 kind,
                 scale,
+                scale_d,
             }
         }
         // `UTCCP.T.S[.2CTA].4x32dp128bit tmem[URa+off], gdesc[URd]` = tcgen05.cp
@@ -2719,6 +3586,20 @@ fn lower_line(
             let mut s16x128b = false;
             // `LDTM.STAT.xN.MIN|MAX[ABS].F32[.NAN] Rred, Rd, tmem[..]` (tcgen05.ld.red, 32x32b
             // only): Rred = min / max of the N values loaded into Rd.. (FA4's row max).
+            // Also `.16dp32bit_t0_t15` / `_t16_t31` (tcgen05.ld.red.16x32bx2, FA4 decode;
+            // probes/tmem_ldred16).
+            let stat_shape = match mods {
+                ["STAT", s @ ("16dp32bit_t0_t15" | "16dp32bit_t16_t31"), ..] => Some(*s),
+                _ => None,
+            };
+            let mods_owned: Vec<&str>;
+            let mods = match stat_shape {
+                Some(_) => {
+                    mods_owned = [&mods[..1], &mods[2..]].concat();
+                    &mods_owned[..]
+                }
+                None => mods,
+            };
             let (red_op, mods, vop) = match mods {
                 ["STAT", x, m, "F32", rest @ ..]
                     if x.starts_with('x')
@@ -2736,6 +3617,14 @@ fn lower_line(
                 ["STAT", ..] => bail!(lw.err(format!("LDTM.STAT form not modeled: {}", l.opcode))),
                 _ => (None, mods, 0),
             };
+            let shaped: Vec<&str>;
+            let mods = match stat_shape {
+                Some(s) => {
+                    shaped = [&[s][..], mods].concat();
+                    &shaped[..]
+                }
+                None => mods,
+            };
             let red = match red_op {
                 // The reduced value discarded (RZ): a plain load.
                 Some(_) if lw.op(0)? == "RZ" => None,
@@ -2743,6 +3632,8 @@ fn lower_line(
                 None => None,
             };
             let (n, s16x64b, half): (u8, bool, Option<u8>) = match mods {
+                // Bare `LDTM R, tmem[..]` is tcgen05.ld.32x32b.x1 (probes/bf16_selp).
+                [] => (1, false, None),
                 [x] if x.starts_with('x') => (
                     x[1..].parse().map_err(|_| lw.err("LDTM count"))?,
                     false,
@@ -2799,6 +3690,7 @@ fn lower_line(
                 s16x256b,
                 s16x128b,
                 red,
+                regs: None,
             }
         }
         // IDP.2A.{LO,HI}.{U16,S16}.{U8,S8} Rd, Ra, Rb, Rc: dp2a (cuDNN's address arithmetic).
@@ -2853,6 +3745,22 @@ fn lower_line(
                 }
             }
         }
+        // LDSM.8.MT1616[.2] Rd, [Ra]: ldmatrix.m16n16.x{1,2}.trans.b8 (FA4 fp8 decode), two
+        // registers per matrix. GB300: probes/ldsm_b8. ASSUME(L-ROSETTA)
+        "LDSM" if mods.first() == Some(&"8") && has("MT1616") => {
+            let n: u8 = match mods {
+                ["8", "MT1616"] => 2,
+                ["8", "MT1616", "2"] => 4,
+                _ => bail!(lw.err(format!("{} not modeled", l.opcode))),
+            };
+            Op::LdMatrix {
+                d: lw.dst(lw.op(0)?)?,
+                n,
+                addr: lw.addr(lw.op(1)?)?,
+                trans: true,
+                b8: true,
+            }
+        }
         // LDSM.16.M88.N / .MT88.N Rd, [Ra]: ldmatrix.m8n8.xN[.trans].b16.
         "LDSM" if has("16") && (has("M88") || has("MT88")) => {
             uniform = false;
@@ -2869,10 +3777,11 @@ fn lower_line(
                 n,
                 addr: lw.addr(lw.op(1)?)?,
                 trans: has("MT88"),
+                b8: false,
             }
         }
-        // LDGSTS.E.BYPASS[.LTC128B].128 [Rd+off], desc[UR][Ra.64]: cp.async.cg 16 bytes (no
-        // zero-fill / ignore-src operand seen).
+        // LDGSTS.E[.BYPASS][.LTC128B][.128|.64][.ZFILL] [Rd+off], desc[UR][Ra.64][, P]:
+        // cp.async 16 / 8 / 4 bytes.
         "LDGSTS" => {
             // A third operand: the source-valid predicate; `!PT` = src-size 0, zero fill
             // (Triton's masked cp.async of the prefetch past the last block: its address is
@@ -2899,6 +3808,10 @@ fn lower_line(
                 src: lw.addr(lw.op(1)?)?,
                 bytes,
                 src_ok,
+                src_size: None,
+                // `.ZFILL`: a partial src-size s as source address + bytes - s
+                // (probes/cpasync_srcsize = GB300).
+                zfill: has("ZFILL"),
             }
         }
         "LDGDEPBAR" => Op::CpAsyncCommit,
@@ -2911,10 +3824,22 @@ fn lower_line(
             }
         }
         // HMMA.16816.F32.BF16 Rd, Ra, Rb, Rc: mma.sync m16n8k16 bf16 x bf16 + f32.
-        "HMMA" if mods == ["16816", "F32", "BF16"] || mods == ["1688", "F32", "TF32"] => {
+        // HMMA.1688.F32.BF16 (mma.sync m16n8k8 bf16): A two registers, B one (probes/bmma8).
+        "HMMA" | "IMMA"
+            if mods == ["16816", "F32", "BF16"]
+                || mods == ["1688", "F32", "TF32"]
+                || mods == ["1688", "F32", "BF16"]
+                || mods == ["16816", "F32"]
+                || base == "IMMA" && mods == ["16832", "S8", "S8", "SAT"] =>
+        {
             uniform = false;
             let regs = |s: &str, n: u16| -> Result<Vec<Val>> {
                 let s = s.trim_end_matches(".reuse");
+                // IMMA's operand layouts (`R88.ROW`, `R80.COL`), as the instruction requires.
+                let s = s
+                    .trim_end_matches(".ROW")
+                    .trim_end_matches(".COL")
+                    .trim_end_matches(".reuse");
                 if s == "RZ" {
                     return Ok(vec![]);
                 }
@@ -2931,8 +3856,9 @@ fn lower_line(
                     })
                     .collect())
             };
-            let a = regs(lw.op(1)?, 4)?;
-            let b = regs(lw.op(2)?, 2)?;
+            let bf16_k8 = mods == ["1688", "F32", "BF16"];
+            let a = regs(lw.op(1)?, if bf16_k8 { 2 } else { 4 })?;
+            let b = regs(lw.op(2)?, if bf16_k8 { 1 } else { 2 })?;
             if a.is_empty() || b.is_empty() {
                 bail!(lw.err("HMMA with a zero A/B operand not modeled"));
             }
@@ -2941,7 +3867,9 @@ fn lower_line(
                 a,
                 b,
                 c: regs(lw.op(3)?, 4)?,
-                tf32: mods[0] == "1688",
+                tf32: mods.get(2) == Some(&"TF32"),
+                s8: base == "IMMA",
+                f16: base == "HMMA" && mods == ["16816", "F32"],
             }
         }
         "LDS" => {
@@ -2965,12 +3893,150 @@ fn lower_line(
                 sext: has("S16") || has("S8"),
             }
         }
-        "LDG" if has("ENL2") && has("256") => Op::Ld256 {
-            hi: lw.dst(lw.op(0)?)?,
-            lo: lw.dst(lw.op(1)?)?,
-            addr: lw.addr(lw.op(2)?)?,
-            sync: sass_strong(mods),
-        },
+        // 32-byte accesses (`ld` / `st.global.v8.b32`, probes/ldst256). ENL2 / ELL2 / EFL2 is
+        // the L2 eviction policy every 256-bit global access carries (normal, PTX
+        // `.L2::evict_last`, `.L2::evict_first`; probes/ldst256_l2): no ordering effect. A .256
+        // form without one, or with RZ data, fails closed.
+        "LDG" | "STG" if has("256") && !(has("ENL2") || has("ELL2") || has("EFL2")) => {
+            bail!(lw.err("LDG / STG.256 without an L2 eviction policy not modeled"))
+        }
+        // `LDGMC.E.<op>.<type>[.RN].STRONG.SYS Rd, [Ra.64+URb]` / `[RZ.U32+URb]`:
+        // multimem.ld_reduce (S-MULTIMEM; probes/multimem/forms_sass.txt). `HPADD`: the
+        // `.acc::f32` / `.acc::f16` add. ptxas emits `.STRONG.SYS` for every PTX semantics
+        // (`.weak` included); acquire adds a CCTL.IVALL after it.
+        "LDGMC" => {
+            let op = match mods.get(1).copied() {
+                Some("ADD") | Some("HPADD") => McOp::Add,
+                Some("MIN") => McOp::Min,
+                Some("MAX") => McOp::Max,
+                Some("AND") => McOp::And,
+                Some("OR") => McOp::Or,
+                Some("XOR") => McOp::Xor,
+                _ => bail!(lw.err("LDGMC operation not modeled")),
+            };
+            let (ty, bytes): (McTy, u8) = match mods.get(2).copied() {
+                Some("32") => (McTy::U32, 4),
+                Some("S32") => (McTy::S32, 4),
+                Some("64") => (McTy::U64, 8),
+                Some("S64") => (McTy::S64, 8),
+                Some("F32") => (McTy::F32, 4),
+                Some("F32x2") => (McTy::F32, 8),
+                Some("F32x4") => (McTy::F32, 16),
+                Some("F64") => (McTy::F64, 8),
+                Some("F16x2") => (McTy::F16, 4),
+                Some("F16x4") => (McTy::F16, 8),
+                Some("F16x8") => (McTy::F16, 16),
+                Some("BF16x2") => (McTy::Bf16, 4),
+                Some("BF16x4") => (McTy::Bf16, 8),
+                Some("BF16x8") => (McTy::Bf16, 16),
+                Some("E4M3x4") => (McTy::E4m3, 4),
+                Some("E4M3x8") => (McTy::E4m3, 8),
+                Some("E4M3x16") => (McTy::E4m3, 16),
+                Some("E5M2x4") => (McTy::E5m2, 4),
+                Some("E5M2x8") => (McTy::E5m2, 8),
+                Some("E5M2x16") => (McTy::E5m2, 16),
+                _ => bail!(lw.err("LDGMC type not modeled")),
+            };
+            if mods.first() != Some(&"E")
+                || !mods[3..]
+                    .iter()
+                    .all(|m| matches!(*m, "RN" | "STRONG" | "SYS"))
+                || !has("STRONG")
+                || !has("SYS")
+            {
+                bail!(lw.err("LDGMC modifiers not modeled"));
+            }
+            let a = lw.op(1)?;
+            let inner = a
+                .trim()
+                .strip_prefix('[')
+                .and_then(|x| x.strip_suffix(']'))
+                .ok_or_else(|| lw.err("bad LDGMC address"))?;
+            let mut addr = Addr {
+                base: None,
+                base2: None,
+                off: 0,
+            };
+            for part in inner.split('+').map(str::trim) {
+                if part == "RZ.U32" || part == "URZ" || part == "RZ" {
+                    continue;
+                }
+                if let Some(h) = part.strip_prefix("0x") {
+                    addr.off += i64::from_str_radix(h, 16).map_err(|_| lw.err("bad offset"))?;
+                    continue;
+                }
+                if let Some(h) = part.strip_prefix("-0x") {
+                    addr.off -= i64::from_str_radix(h, 16).map_err(|_| lw.err("bad offset"))?;
+                    continue;
+                }
+                if part.ends_with(".U32") {
+                    bail!(lw.err("LDGMC with a 32-bit register address not modeled"));
+                }
+                let r = lw.dst(part.trim_end_matches(".64"))?;
+                let v = Val::Reg(r, 2);
+                if addr.base.is_none() {
+                    addr.base = Some(v);
+                } else {
+                    addr.base2 = Some(v);
+                }
+            }
+            Op::LdReduce {
+                d: lw.dst(lw.op(0)?)?,
+                n: (bytes / 4).max(1),
+                bytes,
+                addr,
+                op,
+                ty,
+                acc: mods[1] == "HPADD",
+                sync: Some(MemSync {
+                    sem: Sem::Relaxed,
+                    scope: Scope::Sys,
+                }),
+            }
+        }
+        // `LDG.E.ENL2.256 Rhi, Rlo, [a], mask`: only the mask's words, each half's compacted
+        // from its base register (RZ for a half with none); probes/ldg256_mask.
+        "LDG" if has("256") => {
+            let mask = match lw.l.operands.get(3) {
+                None => 0xff,
+                Some(m) => {
+                    let m = m.trim();
+                    let v = m
+                        .strip_prefix("0x")
+                        .and_then(|h| u8::from_str_radix(h, 16).ok())
+                        .ok_or_else(|| lw.err("bad LDG.256 mask"))?;
+                    if v == 0 || lw.l.operands.len() > 4 {
+                        bail!(lw.err("LDG.256 mask form not modeled"));
+                    }
+                    v
+                }
+            };
+            let (hi, lo) = (lw.dst(lw.op(0)?)?, lw.dst(lw.op(1)?)?);
+            // A half's base is RZ exactly when the mask selects none of its words.
+            for (r, m) in [(lo, mask & 0xf), (hi, mask >> 4)] {
+                if (r.file == File::R && r.idx == RZ) != (m == 0) {
+                    bail!(lw.err("LDG.256 destination / mask combination not modeled"));
+                }
+            }
+            Op::Ld256 {
+                hi,
+                lo,
+                addr: wide_e_addr(lw.addr(lw.op(2)?)?, has("E")),
+                sync: sass_strong(mods),
+                mask,
+            }
+        }
+        "STG" if has("256") => {
+            if lw.op(1)? == "RZ" || lw.op(2)? == "RZ" {
+                bail!(lw.err("STG.256 with RZ data not modeled"));
+            }
+            Op::St256 {
+                lo: lw.dst(lw.op(1)?)?,
+                hi: lw.dst(lw.op(2)?)?,
+                addr: wide_e_addr(lw.addr(lw.op(0)?)?, has("E")),
+                sync: sass_strong(mods),
+            }
+        }
         "LDG" | "LD" => {
             let bytes = if has("64") {
                 8
@@ -2996,6 +4062,9 @@ fn lower_line(
                 sync: sass_strong(mods),
                 sext: has("S8") || has("S16"),
             }
+        }
+        "STG" if has("MMIO") && (!has("SYS") || has("STRONG")) => {
+            bail!(lw.err("STG.MMIO other than .MMIO.SYS not modeled"))
         }
         // `ST.E [R2.64], R5`: a generic-address store (torch's index_select / embedding), as
         // `LD` is a generic load.
@@ -3024,6 +4093,44 @@ fn lower_line(
             }
         }
         // BAR.SYNC id[, count] / BAR.ARV id, count (bar.arrive: counts without waiting).
+        // `BAR.RED.{POPC,AND,OR}[.DEFER_BLOCKING] id[, count], {!}P` and its result
+        // `B2R.RESULT Rd[, Pd]` (bar.red; probes/bar_red). ASSUME(E-BAR-RED)
+        "BAR" if has("RED") => {
+            let op = match (has("POPC"), has("AND"), has("OR")) {
+                (true, false, false) => BarRedOp::Popc,
+                (false, true, false) => BarRedOp::And,
+                (false, false, true) => BarRedOp::Or,
+                _ => bail!(lw.err("BAR.RED form not modeled")),
+            };
+            let n = l.operands.len();
+            if !(2..=3).contains(&n) {
+                bail!(lw.err("BAR.RED operands not modeled"));
+            }
+            let id = lw.val(lw.op(0)?, 4)?;
+            let count = if n == 3 { Some(lw.val(lw.op(1)?, 4)?) } else { None };
+            if !matches!(id, Val::Imm(_)) || count.as_ref().is_some_and(|c| !matches!(c, Val::Imm(_))) {
+                bail!(lw.err("BAR.RED with register operands not modeled"));
+            }
+            Op::BarSync {
+                id,
+                count,
+                arrive: false,
+                packed: false,
+                aligned: true,
+                red: Some((op, lw.pred(lw.op(n - 1)?)?)),
+            }
+        }
+        "B2R" if mods == ["RESULT"] => {
+            let d = lw.op(0)?;
+            Op::BarResult {
+                d: if d == "RZ" { None } else { Some(lw.dst(d)?) },
+                p: match l.operands.get(1) {
+                    None => None,
+                    Some(p) if p == "PT" => None,
+                    Some(p) => Some(lw.pdst(p)?),
+                },
+            }
+        }
         "BAR" if has("SYNC") || has("ARV") => {
             let arrive = has("ARV");
             let count = match l.operands.get(1) {
@@ -3048,6 +4155,7 @@ fn lower_line(
                 packed,
                 // Except in a collective region (`aligned_bars`).
                 aligned: true,
+                red: None,
             }
         }
         // mbarrier.inval
@@ -3105,6 +4213,19 @@ fn lower_line(
                     complete: false,
                     cluster: false,
                 },
+                // `.ART0` / `.RED.ART0`: the arrival count in the third operand, no transaction
+                // bytes (`mbarrier.arrive [a], count` on a shared::cta / shared::cluster
+                // address; probes/mbar_count).
+                ["ARRIVE", "TRANS64", "ART0"] | ["ARRIVE", "TRANS64", "RED", "ART0"] => {
+                    Op::MbarArrive {
+                        addr: lw.addr(lw.op(1)?)?,
+                        tx: None,
+                        remote: mods.len() == 4,
+                        count: Some(lw.val(lw.op(2)?, 4)?),
+                        complete: false,
+                        cluster: false,
+                    }
+                }
                 // `.A0TR` / `.A0TX`: no arrival; expect / complete the transaction bytes
                 // (`mbarrier.expect_tx` / `mbarrier.complete_tx`, checked against ptxas).
                 ["ARRIVE", "TRANS64", "RED", z @ ("A0TR" | "A0TX")] => Op::MbarArrive {
@@ -3141,9 +4262,17 @@ fn lower_line(
             parity: lw.val(lw.op(2)?, 4)?,
             bit31: true,
         },
-        "FENCE" if has("VIEW") && has("ASYNC") => Op::Fence {
+        // Proxy fences by state space (ptxas, sm_103a): `fence.proxy.async[.shared::cta|
+        // .shared::cluster]` is MEMBAR.ALL.<CTA|GPU> + `FENCE.VIEW.ASYNC.S`,
+        // `fence.proxy.async.global` is `FENCE.VIEW.ASYNC.G`, and `tcgen05.wait::st` is
+        // `FENCE.VIEW.ASYNC.T`. Each orders only its own state space. ASSUME(S-PROXY)
+        "FENCE" if mods == ["VIEW", "ASYNC", "S"] => Op::Fence {
             kind: FenceKind::ProxyAsync,
         },
+        "FENCE" if mods == ["VIEW", "ASYNC", "G"] => Op::Fence {
+            kind: FenceKind::ProxyAsyncGlobal,
+        },
+        "FENCE" if mods == ["VIEW", "ASYNC", "T"] => Op::TmemWaitSt,
         // try_cancel without multicast.
         "UGETNEXTWORKID" if mods == ["SELFCAST"] || mods == ["BROADCAST"] => Op::ClcTryCancel {
             resp: lw.ureg_at(lw.op(0)?, 0, 1)?,
@@ -3151,7 +4280,10 @@ fn lower_line(
             multicast: mods == ["BROADCAST"],
         },
         "UTMASTG" => {
-            if mods.len() != 1 {
+            // `UTMASTG.<n>D.IM2COL [URa], [URb]` (cp.async.bulk.tensor...im2col_no_offs): the
+            // coordinates get a trailing 0 for the (absent) im2col offsets (sim im2col.rs).
+            let im2col = mods.len() == 2 && mods[1] == "IM2COL";
+            if mods.len() != 1 && !im2col {
                 bail!(lw.err("UTMASTG variant not modeled"));
             }
             let dims: u8 = mods[0]
@@ -3160,15 +4292,19 @@ fn lower_line(
                 .map_err(|_| lw.err("dims"))?;
             // URa: smem source, then N coordinates; URb: tensor map.
             let t = lw.op(0)?;
-            let coords = (0..dims as u16)
+            let mut coords: Vec<Val> = (0..dims as u16)
                 .map(|k| lw.ureg_at(t, 1 + k, 1))
                 .collect::<Result<_>>()?;
+            if im2col {
+                coords.push(Val::Imm(0));
+            }
             Op::TmaStore {
                 dims,
                 src: lw.ureg_at(t, 0, 1)?,
                 off: 0,
                 tmap: lw.ureg_at(lw.op(1)?, 0, 2)?,
                 coords,
+                red: false,
             }
         }
         // Closes the bulk group (cp.async.bulk.commit_group); its read scoreboard counts the
@@ -3211,7 +4347,9 @@ fn lower_line(
         // The release half of a fence (ptxas: before release stores and in fence.acq_rel); also
         // what a later relaxed cluster arrive releases (E-CLUSTER-BAR). ASSUME(S-SCOPE)
         "MEMBAR" => Op::Fence {
-            kind: FenceKind::Release(sass_scope(mods).unwrap_or(Scope::Sys)),
+            kind: FenceKind::Release(sass_scope(mods).ok_or_else(|| {
+                lw.err("MEMBAR without a scope not modeled (a default scope could be stronger than the hardware)")
+            })?),
         },
         // L1 invalidate: the acquire half (after acquire loads, after MEMBAR in fence.acq_rel,
         // after the final bulk wait).
@@ -3236,6 +4374,7 @@ fn lower_line(
                 coords: vec![lw.ureg_at(lw.op(1)?, 0, 2)?],
                 mask: None,
                 pair: false,
+                src_smem: false,
             }
         }
         "UBLKCP" if mods == ["G", "S"] => Op::TmaStore {
@@ -3244,6 +4383,7 @@ fn lower_line(
             off: 0,
             tmap: lw.val(lw.op(2)?, 4)?,
             coords: vec![lw.ureg_at(lw.op(0)?, 0, 2)?],
+            red: false,
         },
         "UTMALDG" => {
             // `.MULTICAST`: a third operand UR holds the ctaMask. `.2CTA`: the mbarrier may be
@@ -3251,6 +4391,15 @@ fn lower_line(
             // `.2D.GATHER4` (cp.async.bulk.tensor.2d...tile::gather4): URa+2 is the column,
             // URa+3..URa+6 the four row coordinates (5 coords; exec.rs `complete_tma`).
             // `.MULTICAST.2CTA`: both (cuBLAS's 2-CTA nvjet kernels, M = N >= 512).
+            // `.<n>D.IM2COL[.2CTA] [URa], [URb], URo[, desc[URp]]` (cp.async.bulk.tensor
+            // ...im2col): URo holds the packed im2col offsets, appended to the coordinates (sim
+            // im2col.rs); the desc[] cache-policy operand is a hint, dropped (L-PTX-HINT).
+            let im2col = mods.get(1) == Some(&"IM2COL");
+            let mods_i: Vec<&str> = mods.iter().copied().filter(|m| *m != "IM2COL").collect();
+            let mods = &mods_i[..];
+            if im2col && !(mods.len() == 1 || mods[1..] == ["2CTA"]) {
+                bail!(lw.err(format!("UTMALDG form not modeled: {}", l.opcode)));
+            }
             let multicast = mods.len() >= 2 && mods[1] == "MULTICAST";
             let pair = mods[1..] == ["2CTA"] || mods[1..] == ["MULTICAST", "2CTA"];
             let gather4 = mods == ["2D", "GATHER4"];
@@ -3267,9 +4416,15 @@ fn lower_line(
                 .parse()
                 .map_err(|_| lw.err("dims"))?;
             let t = lw.op(0)?;
-            let coords = (0..dims as u16 + if gather4 { 3 } else { 0 })
+            let mut coords: Vec<Val> = (0..dims as u16 + if gather4 { 3 } else { 0 })
                 .map(|k| lw.ureg_at(t, 2 + k, 1))
                 .collect::<Result<_>>()?;
+            if im2col {
+                if dims < 3 || !(l.operands.len() == 3 || l.operands.len() == 4 && lw.op(3)?.starts_with("desc[")) {
+                    bail!(lw.err(format!("UTMALDG.IM2COL operand form not modeled: {}", l.text)));
+                }
+                coords.push(lw.val(lw.op(2)?, 4)?);
+            }
             Op::TmaLoad {
                 dims,
                 dst: lw.ureg_at(t, 0, 1)?,
@@ -3284,6 +4439,7 @@ fn lower_line(
                     None
                 },
                 pair,
+                src_smem: false,
             }
         }
         // barrier.cluster: the arrive is always relaxed in SASS; `.release` is a MEMBAR before it.
@@ -3313,7 +4469,7 @@ fn lower_line(
             b: lw.val(lw.op(3)?, 4)?,
         },
         // `[@P] BRA.DIV URm, `(label)``: warp-collective divergence test (Op::Bra `div`).
-        "BRA" if mods == ["DIV"] && l.operands.len() == 2 => {
+        "BRA" if (mods == ["DIV"] || mods == ["CONV"]) && l.operands.len() == 2 => {
             let t = lw.op(1)?;
             let lbl = t
                 .trim_start_matches('`')
@@ -3328,7 +4484,7 @@ fn lower_line(
             uniform = false;
             Op::Bra {
                 target,
-                any: false,
+                any: has("CONV"),
                 tid0_falls: false,
                 cond: None,
                 div: Some(lw.val(lw.op(0)?, 4)?),
@@ -3483,6 +4639,7 @@ fn lower_line(
                 clamp: lw.val(lw.op(4)?, 4)?,
                 mode,
                 p,
+                mask: None,
             }
         }
         _ => bail!(lw.err(format!("unsupported SASS opcode `{}`", l.opcode))),
@@ -3504,6 +4661,7 @@ fn lower_line(
             | Op::Bssy { .. }
             | Op::Bsync { .. }
             | Op::Break { .. }
+            | Op::BMov { .. }
     ) {
         uniform = false;
     }
@@ -3540,6 +4698,76 @@ fn atom_mod_known(m: &str) -> bool {
     )
 }
 
+/// The operation and width of `ATOMG` / `REDG` with modifiers `mods`, None for a form not
+/// modeled. Besides `.E`, `.STRONG` and the scope: `.ADD` / `.OR` / `.AND` / `.XOR` / `.EXCH`
+/// [`.64`] (integer; `.ADD.S32` / `.U32` add alike: the sum wraps either way, probes/redux_s32),
+/// `.MIN` / `.MAX` [`.S32` | `.U32` | `.64` | `.S64`], `.ADD.F32.FTZ.RN` (Triton's
+/// tl.atomic_add on f32), `.ADD.BF16x2.RN` (per-lane bf16 add, probes/bf16x2, N-BF16X2),
+/// `.ADD.F32x2` / `.F32x4.FTZ.RN` (per-element f32 adds) and `.ADD.F64.RN`. Everything else in
+/// the sm_103a table (`.F16x2`, `.F16x4` / `.x8`, `.CAS` handled elsewhere) is refused.
+fn atomg_op(mods: &[&str]) -> Option<(AtomOp, u8)> {
+    let mut core: Vec<&str> = mods
+        .iter()
+        .copied()
+        .filter(|m| !matches!(*m, "E" | "STRONG" | "GPU" | "SYS" | "SM" | "CTA"))
+        .collect();
+    core.sort_unstable();
+    let int = |op: AtomOp| -> Option<(AtomOp, u8)> {
+        match core.len() {
+            1 => Some((op, 4)),
+            2 if core.contains(&"64") => Some((op, 8)),
+            2 if core.contains(&"U32") => Some((op, 4)),
+            _ => None,
+        }
+    };
+    match core.as_slice() {
+        ["ADD", "S32"] => Some((AtomOp::Add, 4)),
+        ["ADD", "F32", "FTZ", "RN"] => Some((AtomOp::FAddFtz, 4)),
+        // A vector atom / red (one FADD.FTZ atomic per element; probes/red_vec, probes/atom_vec).
+        ["ADD", "F32x2", "FTZ", "RN"] => Some((AtomOp::FAddFtz, 8)),
+        ["ADD", "F32x4", "FTZ", "RN"] => Some((AtomOp::FAddFtz, 16)),
+        ["ADD", "F64", "RN"] => Some((AtomOp::FAdd64, 8)),
+        ["ADD", "BF16x2", "RN"] => Some((AtomOp::AddBf16x2, 4)),
+        [..] if core.contains(&"ADD") => int(AtomOp::Add),
+        [..] if core.contains(&"OR") => int(AtomOp::Or),
+        [..] if core.contains(&"AND") => int(AtomOp::And),
+        [..] if core.contains(&"XOR") => int(AtomOp::Xor),
+        [..] if core.contains(&"EXCH") => int(AtomOp::Exch),
+        // `atom.inc.u32` / `atom.dec.u32` (a CuTe grid barrier's arrival counter): 32-bit only.
+        ["INC"] | ["INC", "U32"] => Some((AtomOp::Inc, 4)),
+        ["DEC"] | ["DEC", "U32"] => Some((AtomOp::Dec, 4)),
+        [..] if core.contains(&"MIN") || core.contains(&"MAX") => {
+            let width = core
+                .iter()
+                .filter(|m| !matches!(**m, "MIN" | "MAX"))
+                .copied()
+                .collect::<Vec<_>>();
+            let bytes = match width.as_slice() {
+                [] | ["U32"] | ["S32"] => 4,
+                ["64"] | ["S64"] => 8,
+                _ => return None,
+            };
+            (core.len() == width.len() + 1).then(|| (min_max_op(&core), bytes))
+        }
+        _ => None,
+    }
+}
+
+/// The audited modifier tokens per base opcode (`modset.rs`), sorted by opcode.
+#[doc(hidden)]
+pub fn audited_mods() -> &'static [(&'static str, &'static [&'static str])] {
+    modset::AUDITED_MODS
+}
+
+/// The first modifier of `base` outside `modset::AUDITED_MODS` (None: all audited).
+fn unaudited_mod<'a>(base: &str, mods: &[&'a str]) -> Option<&'a str> {
+    let ok: &[&str] = modset::AUDITED_MODS
+        .binary_search_by(|(b, _)| (*b).cmp(base))
+        .map(|i| modset::AUDITED_MODS[i].1)
+        .unwrap_or(&[]);
+    mods.iter().find(|m| !ok.contains(m)).copied()
+}
+
 /// `.MIN` / `.MAX` of an integer atomic: `.S32` / `.S64` signed, else unsigned.
 fn min_max_op(mods: &[&str]) -> AtomOp {
     let signed = mods.iter().any(|m| matches!(*m, "S32" | "S64"));
@@ -3551,6 +4779,10 @@ fn min_max_op(mods: &[&str]) -> AtomOp {
     }
 }
 
+/// The scope token of a strong access or atomic. ptxas always prints one on global and
+/// generic atomics and `.STRONG` accesses (corpus audit); where it is absent (ATOM.E.CAST.SPIN,
+/// the shared-memory leg of a generic atomic) callers take `Scope::Cta`, the weakest, so a
+/// default never makes the model stronger than the hardware. ASSUME(S-SCOPE)
 fn sass_scope(mods: &[&str]) -> Option<Scope> {
     mods.iter().find_map(|m| match *m {
         "SYS" => Some(Scope::Sys),
@@ -3673,9 +4905,15 @@ fn smem_acquires(lines: &[SassLine], code: &mut [Inst]) {
 /// without `.64` (cuBLAS's cutlass3x SIMT sgemm: `LEA R10, P0, R8, UR4, 0x2; LEA.HI.X R11,
 /// ...; STG.E [R10], R48`).
 fn wide_e_addr(mut a: Addr, e: bool) -> Addr {
-    if e {
+    // `[R.U32+UR]`: the uniform pair is the 64-bit part, the register stays 32-bit.
+    let ur64 = [&a.base, &a.base2]
+        .into_iter()
+        .flatten()
+        .any(|b| matches!(b, Val::Reg(r, 2) if r.file == File::UR));
+    if e && !ur64 {
         if let Some(Val::Reg(r, 1)) = a.base {
-            if r.file == File::R {
+            // `[RZ.U32+UR28]` (the zero base dropped): the uniform pair holds the address.
+            if r.file == File::R || r.file == File::UR && a.base2.is_none() {
                 a.base = Some(Val::Reg(r, 2));
             }
         }
@@ -3686,12 +4924,20 @@ fn wide_e_addr(mut a: Addr, e: bool) -> Addr {
 /// `.STRONG.<scope>` on LDG / STG: a relaxed strong access (acquire / release are separate
 /// CCTL.IVALL / MEMBAR instructions).
 fn sass_strong(mods: &[&str]) -> Option<MemSync> {
+    // `STG.E.64.MMIO.SYS`: st.mmio.relaxed.sys, a strong relaxed .sys store (probes/memhints;
+    // the STG arm refuses MMIO without SYS).
+    if mods.contains(&"MMIO") {
+        return Some(MemSync {
+            sem: Sem::Relaxed,
+            scope: Scope::Sys,
+        });
+    }
     if !mods.contains(&"STRONG") {
         return None;
     }
     Some(MemSync {
         sem: Sem::Relaxed,
-        scope: sass_scope(mods).unwrap_or(Scope::Gpu),
+        scope: sass_scope(mods).unwrap_or(Scope::Cta),
     })
 }
 
@@ -3740,18 +4986,17 @@ pub struct Unlowered {
 pub fn lift_report(cubin: &Path, kernel: &str) -> Result<Vec<Unlowered>> {
     let dis = run_tool("nvdisasm", &["-c", "-hex", cubin.to_str().unwrap()])?;
     let meta = read_meta(cubin, kernel)?;
-    let (lines, labels) = parse_disasm(&dis, kernel)?;
+    let (mut lines, labels) = parse_disasm(&dis, kernel)?;
+    fill_unprinted(&mut lines, &meta.text);
     let addr_to_idx: HashMap<u32, usize> =
         lines.iter().enumerate().map(|(i, l)| (l.addr, i)).collect();
-    let plain_exit = lines
-        .iter()
-        .position(|l| l.opcode == "EXIT" && l.guard.is_none() && l.operands.is_empty());
+    let exits = exit_targets(&lines);
     Ok(unlowered_lines(
         &lines,
         &labels,
         &addr_to_idx,
         &meta,
-        plain_exit,
+        &exits,
     ))
 }
 
@@ -3760,11 +5005,11 @@ fn unlowered_lines(
     labels: &HashMap<String, u32>,
     addr_to_idx: &HashMap<u32, usize>,
     meta: &CubinMeta,
-    plain_exit: Option<usize>,
+    exits: &[(usize, Option<String>)],
 ) -> Vec<Unlowered> {
     let mut seen: std::collections::BTreeMap<String, (usize, String)> = Default::default();
     for l in lines {
-        if let Err(e) = lower_line(l, labels, addr_to_idx, meta, plain_exit) {
+        if let Err(e) = lower_line(l, labels, addr_to_idx, meta, exits) {
             let first = e.to_string().lines().next().unwrap_or("").to_string();
             let why = first
                 .split_once(": ")
@@ -3784,6 +5029,7 @@ fn unlowered_lines(
 
 pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
     let (mut lines, labels) = parse_disasm(dis, kernel)?;
+    fill_unprinted(&mut lines, &meta.text);
     // Relocated 32-bit halves (`32@lo(X)` / `32@hi(X)`): a label's code address
     // (`FN + .L_x_15@srel`, the return address of a `vprintf` call) or a data symbol (printf
     // format strings, `$str$5`), which only the printf paths of failed device assertions use:
@@ -3814,12 +5060,10 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
     let addr_to_idx: HashMap<u32, usize> =
         lines.iter().enumerate().map(|(i, l)| (l.addr, i)).collect();
     let mut code = Vec::with_capacity(lines.len());
-    let plain_exit = lines
-        .iter()
-        .position(|l| l.opcode == "EXIT" && l.guard.is_none() && l.operands.is_empty());
+    let exits = exit_targets(&lines);
     // PTXV_LIFT_REPORT: list every instruction the model does not lower (a new binary).
     if std::env::var("PTXV_LIFT_REPORT").is_ok() {
-        let seen = unlowered_lines(&lines, &labels, &addr_to_idx, meta, plain_exit);
+        let seen = unlowered_lines(&lines, &labels, &addr_to_idx, meta, &exits);
         eprintln!(
             "lift report for {kernel}: {} kinds of instruction not lowered",
             seen.len()
@@ -3837,7 +5081,7 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
         }
     }
     for l in &lines {
-        code.push(lower_line(l, &labels, &addr_to_idx, meta, plain_exit)?);
+        code.push(lower_line(l, &labels, &addr_to_idx, meta, &exits)?);
     }
     // ENDCOLLECTIVE closes the nearest preceding WARPSYNC.COLLECTIVE.
     for i in 0..code.len() {
@@ -3862,12 +5106,18 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
             code[i].op = Op::EndCollective { start };
         }
     }
-    if lines
+    if let Some((i, l)) = lines
         .iter()
         .enumerate()
-        .any(|(i, l)| l.addr != (i as u32) * 16)
+        .find(|(i, l)| l.addr != (*i as u32) * 16)
     {
-        bail!("instruction addresses are not contiguous 16-byte slots");
+        // nvdisasm prints nothing for an encoding it does not know (a cubin from a newer
+        // ptxas: CuTeDSL's bundled one): the slot is missing from the listing.
+        bail!(
+            "instruction addresses are not contiguous 16-byte slots: nothing printed for {:#06x}..{:#06x} (an encoding this nvdisasm does not know)",
+            i * 16,
+            l.addr
+        );
     }
     let mut klabels: Vec<(usize, String)> = labels
         .iter()
@@ -3905,7 +5155,9 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
     // kinds that may be outstanding on SBk when it is reached; both: not modeled.
     let reach = depbar_kinds(&lines, &code);
     for (i, l) in lines.iter().enumerate() {
-        if l.opcode != "DEPBAR.LE" || l.operands.len() != 2 {
+        // A trailing `{list}` (scoreboards drained to zero) is not an async-group wait here:
+        // groups counted on a listed scoreboard stay outstanding (conservative).
+        if l.opcode != "DEPBAR.LE" || !(2..=3).contains(&l.operands.len()) {
             continue;
         }
         let sb = l.operands[0]
@@ -3933,8 +5185,11 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
                     }
                 }
                 // Both kinds on some path (paths the analysis cannot tell apart, e.g. per
-                // warp): with n = 0 the scoreboard drains, so both kinds complete.
-                k if k == DEP_CP | DEP_BULK && n == 0 => {
+                // warp, or a kernel that commits both on one scoreboard): the scoreboard
+                // counts both kinds, so at most n of the two together stay outstanding, which
+                // implies at most n of each; the model completes only the latter (weaker, so
+                // sound; exact for n = 0). ASSUME(E-CPASYNC)
+                k if k == DEP_CP | DEP_BULK => {
                     code[i].op = Op::BulkWait {
                         n,
                         read: true,
@@ -3975,7 +5230,8 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
         .collect();
     aligned_bars(&mut code);
     smem_acquires(&lines, &mut code);
-    let static_findings = scoreboard::check(&lines, &code)?;
+    l2::check_kernel(&code)?;
+    let static_findings = scoreboard::check(&lines, &code, meta.sm)?;
     let pend = meta.params.iter().map(|p| p.1 + p.2).max().unwrap_or(0);
     let params = meta
         .params
@@ -4000,6 +5256,9 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
         bulk_read_waits,
         bulk_commit_sb,
         parts: vec![],
+        ntid: meta.ntid,
+        globals: meta.globals.clone(),
+        global_relocs: meta.global_relocs.clone(),
     })
 }
 
@@ -4098,6 +5357,20 @@ enum F2fpKind {
 /// `[SATFINITE] [RELU] <to> <F32|F16|BF16> <PACK_AB[_MERGE_C]|UNPACK_B_MERGE_C> [RZ|RP|RS]` or
 /// `[RELU] <F16|BF16> <from> UNPACK_B` -> (to, from, kind, rounding, satfinite, relu). f16 / bf16
 /// targets only with `.RS` or `.SATFINITE` (the plain RN forms are `F2fpF16` / `F2fpBf16`).
+/// `F2FP [.SATFINITE] [.RELU] .TF32.F32.PACK_B [.RZ]` -> (rz, sat, relu).
+fn f2fp_tf32(mods: &[&str]) -> Option<(bool, bool, bool)> {
+    let mut i = 0;
+    let sat = mods.first() == Some(&"SATFINITE");
+    i += sat as usize;
+    let relu = mods.get(i) == Some(&"RELU");
+    i += relu as usize;
+    match mods.get(i..)? {
+        ["TF32", "F32", "PACK_B"] => Some((false, sat, relu)),
+        ["TF32", "F32", "PACK_B", "RZ"] => Some((true, sat, relu)),
+        _ => None,
+    }
+}
+
 fn f2fp_lp(mods: &[&str]) -> Option<(Lp, Lp, F2fpKind, LpRnd, bool, bool)> {
     let fmt = |m: &str| {
         Some(match m {
@@ -4159,9 +5432,156 @@ fn f2fp_lp(mods: &[&str]) -> Option<(Lp, Lp, F2fpKind, LpRnd, bool, bool)> {
     }
 }
 
+/// Lower one disassembled instruction on its own (no labels; `enc`: the encoding's low word,
+/// for immediate forms). For audits and tests of the lifter's accepted forms.
+#[doc(hidden)]
+pub fn lower_text(text: &str, enc: Option<u64>) -> Result<Op> {
+    let body = text.trim().trim_end_matches(';').trim();
+    let (guard, body) = match body.strip_prefix('@') {
+        Some(r) => {
+            let (g, r) = r.split_once(' ').unwrap_or((r, ""));
+            (Some(g.to_string()), r.trim())
+        }
+        None => (None, body),
+    };
+    let (opcode, ops) = body.split_once(' ').unwrap_or((body, ""));
+    let l = SassLine {
+        addr: 0,
+        guard,
+        opcode: opcode.into(),
+        operands: split_ops(ops),
+        text: body.into(),
+        hi: None,
+        lo: enc,
+    };
+    let mut labels = HashMap::new();
+    labels.insert(".L_x_1".to_string(), 0u32);
+    let mut a2i = HashMap::new();
+    a2i.insert(0u32, 0usize);
+    lower_line(&l, &labels, &a2i, &CubinMeta::default(), &[]).map(|i| i.op)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An unprinted known encoding in the last slot of the text is decoded too (the scan
+    /// covers the whole text, not only up to the last printed line); zero padding is not.
+    #[test]
+    fn fill_unprinted_reaches_trailing_slots() {
+        let (lo, hi) = (0x0000002c0002763eu64, 0x190fe40002083417u64);
+        let mut text = vec![0u8; 48];
+        text[16..24].copy_from_slice(&lo.to_le_bytes());
+        text[24..32].copy_from_slice(&hi.to_le_bytes());
+        let mut lines = vec![sass_line(0, "EXIT", None, None)];
+        fill_unprinted(&mut lines, &text);
+        let addrs: Vec<u32> = lines.iter().map(|l| l.addr).collect();
+        assert_eq!(addrs, vec![0, 16]);
+        assert!(lines[1].opcode.starts_with("F2FP.SATFINITE.BF16.S2_6"));
+    }
+
+    /// The forms lifted for the mslk / msl_ops gaps, and the neighbouring ones the probes do
+    /// not cover, which must be refused (fail closed).
+    #[test]
+    fn lift_l_forms() {
+        let ok = [
+            "HMUL2.BF16_V2 R11, R11, R6.H0_H0",
+            "HADD2.BF16_V2 R8, R13, R12.H0_H0",
+            "HADD2.BF16_V2 R13, R4.reuse, -R5.reuse",
+            "HFMA2.BF16_V2 R17, R20, R24, -RZ",
+            "HFMA2.BF16_V2 R12, -RZ.H0_H0, RZ.H0_H0, -R11",
+            "HFMA2.BF16_V2.RELU R18, R4.reuse, R5, R6.reuse",
+            "FMNMX.XORSIGN R24, |R4|.reuse, |R5|.reuse, PT",
+            "FMNMX.FTZ.NAN.XORSIGN R9, |R0|, |R9|, !PT",
+            "FMNMX.XORSIGN R19, |R0|.reuse, |UR6|, PT",
+            "REDUX.SUM.S32 UR5, R10",
+            "REDG.E.ADD.BF16x2.RN.STRONG.GPU desc[UR6][R4.64], R11",
+            "ATOMG.E.ADD.BF16x2.RN.STRONG.GPU PT, R16, desc[UR4][R2.64+0x5000], R4",
+            "ATOMG.E.ADD.S32.STRONG.GPU PT, R27, desc[UR12][R26.64], R29",
+            "REDG.E.ADD.S32.STRONG.GPU desc[UR4][R2.64+0x200], R9",
+            "REDG.E.ADD.F64.RN.STRONG.GPU desc[UR6][R4.64], R10",
+            "REDG.E.ADD.F32x2.FTZ.RN.STRONG.GPU desc[UR6][R4.64], R10",
+            "REDG.E.ADD.F32x4.FTZ.RN.STRONG.GPU desc[UR6][R4.64], R8",
+            "FHFMA.BF16.RZ R19, R4.reuse.H1, R5.reuse.H1, R6.reuse",
+            "FHFMA.BF16.SAT R25, R4.reuse, R5, R7.reuse",
+            "FHADD.BF16.RZ R24, R4.H1, -R7",
+            "HMNMX2.BF16_V2 R18, R4.reuse.H0_H0, R5.reuse.H1_H1, PT",
+            "HMNMX2.BF16_V2.NAN.XORSIGN R16, |R4|, |R5|, PT",
+            "FFMA2.RM R10, R6.reuse.F32x2.HI_LO, R4.reuse.F32x2.HI_LO, R6.reuse.F32x2.LO_HI",
+            "FADD2.RP R12, R6.F32x2.HI_LO, -R4.F32x2.HI_LO",
+            "IMAD.WIDE R28, R21, 0x2, -R26",
+            "IMAD.WIDE.U32 R10, R13, 0x6, -R2",
+            "UP2UR UR37, UPR, URZ, 0x1",
+            "ATOMG.E.CAS.STRONG.GPU PT, R20, [R4], R26, R20",
+            "HFMA2.BF16_V2 R7, -RZ.H0_H0, RZ.H0_H0, |R2|",
+            "HFMA2.BF16_V2 R0, -RZ.H0_H0, RZ.H0_H0, |R2|.reuse.H1_H1",
+            "HFMA2 R4, R7.reuse.H1_H1, R0.reuse.H0_H0, R15.reuse.H0_H0",
+            "MATCH.ANY.U64 R5, R10",
+            "VHMNMX R4, |R4|.H0_H0, |R4|.H1_H1, |R5|.H0_H0, !PT",
+            "HSETP2.BF16_V2.NUM.AND P4, P6, R48, RZ.H0_H0, PT",
+            "UBLKPF.L2 [UR8], UR6",
+            "VHMNMX.BF16_V2 R0, R0, RZ.H0_H0, R12, !PT",
+            "R2UR.OR P0, UR9, R13",
+            "STG.E.64.MMIO.SYS [R28+0x50], R4",
+            "LDG.E.NA.U8.STRONG.SYS R26, desc[UR4][R12.64]",
+            "ST.E.EF.128 desc[UR4][R28.64+0x40], R16",
+            "ATOM.E.MAX.64.STRONG.SM P0, R4, desc[UR4][R28.64], R6",
+            "ATOMG.E.ADD.F32x2.FTZ.RN.STRONG.GPU PT, R2, desc[UR6][R4.64], R10",
+        ];
+        for l in ok {
+            lower1(l).unwrap_or_else(|e| panic!("{l}: {e}"));
+        }
+        let refused = [
+            "STG.E.64.MMIO R1, R2",
+            "STG.E.64.MMIO.STRONG.SYS [R2], R4",
+            "R2UR.OR UR9, R13",
+            "HADD2.BF16_V2.FTZ R1, R2, R3",
+            "HADD2.BF16_V2.SAT R1, R2, R3",
+            "HFMA2.BF16_V2.FMZ R1, R2, R3, R4",
+            "HFMA2.BF16_V2.OOB R1, R2, R3, R4",
+            "HMUL2.BF16_V2 R1, |R2, R3",
+            "HMUL2.BF16_V2 R1, R2.H1_H0, R3",
+            "FMNMX.XORSIGN R1, R2, |R3|, PT",
+            "FMNMX.XORSIGN R1, -|R2|, |R3|, PT",
+            "FMNMX3.XORSIGN R1, |R2|, |R3|, |R4|, PT",
+            "REDUX.S32 UR5, R10",
+            "REDUX.OR.S32 UR5, R10",
+            "REDUX.MIN UR5, R10",
+            "REDG.E.ADD.F16x2.RN.STRONG.GPU desc[UR6][R4.64], R11",
+            "REDG.E.INC.STRONG.GPU desc[UR6][R4.64], R10",
+            "ATOMG.E.ADD.F16x4.GPU.RN.STRONG PT, R1, desc[UR6][R4.64], R10",
+            "FHFMA.BF16 R1, -R2, R3, R4",
+            "FHFMA.BF16.RZ.RM R1, R2, R3, R4",
+            "HMNMX2.BF16_V2 R1, |R2|, |R3|, PT",
+            "HMNMX2.BF16_V2.XORSIGN R1, R2, R3, PT",
+            "FFMA2.RZ.RM R10, R6.F32x2.HI_LO, R4.F32x2.HI_LO, R6.F32x2.HI_LO",
+            "IMAD.WIDE R28, R21, 0x2, ~R26",
+            "IMAD.WIDE.U32.X R10, R13, 0x6, -R2, P0",
+            "UP2UR UR37, UPR, URZ, 0x80",
+        ];
+        for l in refused {
+            assert!(lower1(l).is_err(), "{l} must be refused");
+        }
+    }
+
+    /// Masked LDG.256: accepted when each half's base is RZ exactly when its mask is empty.
+    #[test]
+    fn ldg256_mask_forms() {
+        for l in [
+            "LDG.E.ENL2.256 R2, RZ, desc[UR4][R2.64], 0xc0",
+            "LDG.E.ENL2.256 RZ, R8, desc[UR4][R2.64], 0x3",
+            "LDG.E.ENL2.256 R4, R2, desc[UR4][R2.64], 0x3c",
+        ] {
+            assert!(lower1(l).is_ok(), "{l}");
+        }
+        for l in [
+            "LDG.E.ENL2.256 R2, R4, desc[UR4][R2.64], 0xc0",
+            "LDG.E.ENL2.256 RZ, R4, desc[UR4][R2.64], 0x30",
+            "LDG.E.ENL2.256 R2, R4, desc[UR4][R2.64], 0x0",
+        ] {
+            assert!(lower1(l).is_err(), "{l} must be refused");
+        }
+    }
 
     #[test]
     fn half_imm() {
@@ -4194,7 +5614,7 @@ mod tests {
         labels.insert(".L_x_1".to_string(), 0u32);
         let mut a2i = HashMap::new();
         a2i.insert(0u32, 0usize);
-        lower_line(&l, &labels, &a2i, &CubinMeta::default(), None).map(|i| i.op)
+        lower_line(&l, &labels, &a2i, &CubinMeta::default(), &[]).map(|i| i.op)
     }
 
     fn r(idx: u16) -> Reg {
@@ -4232,7 +5652,7 @@ mod tests {
                     &HashMap::new(),
                     &HashMap::new(),
                     &CubinMeta::default(),
-                    None,
+                    &[],
                 )
                 .unwrap()
             })
@@ -4386,9 +5806,16 @@ mod tests {
             }
         ));
         assert!(lower1("LDTM.STAT.x32.MAX.F32 R4, RZ, tmem[UR4]").is_err());
-        assert!(lower1("LDTM.STAT.16dp32bit_t0_t15.x8.MAX.F32 R4, R8, tmem[UR4]").is_err());
-        // Negative offsets only on loads.
-        assert!(lower1("STTM.x8 tmem[UR5+-0x10], R4").is_err());
+        assert!(lower1("LDTM.STAT.16dp256bit.x8.MAX.F32 R4, R8, tmem[UR4]").is_err());
+        assert!(lower1("LDTM.STAT.16dp32bit_t0_t15.x8.MAX.F32 R4, R8, tmem[UR4]").is_ok());
+        // Negative offsets on stores too (probes/tmem_stneg): the 32-bit two's complement.
+        assert!(matches!(
+            lower1("STTM.x8 tmem[UR5+-0x10], R4").unwrap(),
+            Op::TmemSt {
+                off: 0xffff_fff0,
+                ..
+            }
+        ));
         match lower1("BAR.SYNC.DEFER_BLOCKING R4, R4").unwrap() {
             Op::BarSync {
                 packed: true,
@@ -4432,5 +5859,16 @@ mod tests {
                 ..
             }
         ));
+        assert!(matches!(
+            lower1("LEA.HI.X.SX32 R0, R2, ~R3, 0x1, P2").unwrap(),
+            Op::LeaHi {
+                not_b: true,
+                neg_b: false,
+                sx32: true,
+                cin: Some(_),
+                ..
+            }
+        ));
+        assert!(matches!(lower1("UBLKPF.L2 [UR6], UR4").unwrap(), Op::Nop));
     }
 }

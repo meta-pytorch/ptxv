@@ -1,0 +1,35 @@
+name = "probe_rcp_rn"
+description = """
+Probe (L-ROSETTA) for rcp.rn.f32 on random bits, specials, subnormals and large magnitudes
+(kernel.ptx, gen.py). expected/ is GB300's output (ptxas cubin, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "rcp_rn"
+grid = [1, 1, 1]
+block = [1024, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [4096]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4096]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

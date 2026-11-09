@@ -71,7 +71,9 @@ id = "B06"
 summary = "no tcgen05.fence::after_thread_sync between the mbarrier wait and tcgen05.ld"
 marker = "@B06"
 replace = "<delete>"
-expect = ["race"]
+# The race (MMA's TMEM write vs tcgen05.ld) is ordered once the fence is there: a contract
+# finding (E-TC-FENCE-NOP).
+expect = ["contract"]
 expect_sass = ["clean"]
 hw_note = "PTX-level UB; the fence compiles to a NOP and the LDTM stays after the wait"
 

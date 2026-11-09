@@ -37,8 +37,7 @@ fn kernel(case: &Case, variant: &str, front: &str) -> ptxv_ir::Kernel {
             .map(|l| match front {
                 "ptx" => ptxv_ptx::parse_kernel(&ptx, Some(l.entry)).unwrap(),
                 _ => {
-                    let dir =
-                        std::env::temp_dir().join(format!("ptxv-test-{}-{variant}", case.m.name));
+                    let dir = scratch_dir(&case.m.name, variant);
                     std::fs::create_dir_all(&dir).unwrap();
                     let p = dir.join("k.ptx");
                     std::fs::write(&p, &ptx).unwrap();
@@ -53,7 +52,7 @@ fn kernel(case: &Case, variant: &str, front: &str) -> ptxv_ir::Kernel {
     match front {
         "ptx" => ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap(),
         _ => {
-            let dir = std::env::temp_dir().join(format!("ptxv-test-{}-{variant}", case.m.name));
+            let dir = scratch_dir(&case.m.name, variant);
             std::fs::create_dir_all(&dir).unwrap();
             let p = dir.join("k.ptx");
             std::fs::write(&p, &ptx).unwrap();
@@ -103,8 +102,13 @@ fn check_dir(dir: &str, case: &str, variant: &str, front: &str) {
     let k = kernel(&case, variant, front);
     let launch = build_launch(&case, &k).unwrap();
     let m0 = Machine::new(Arc::new(k), Arc::new(launch));
-    let v = explore(m0.clone(), 2_000_000);
+    let mut v = explore(m0.clone(), 2_000_000);
     assert!(v.complete, "{variant}/{front}: exploration incomplete");
+    // E-TC-FENCE-NOP: as `ptxv check` reports them (races the tcgen05 thread-sync fences
+    // would order are contract findings).
+    let raw = v.classes();
+    ptxv_sim::twolevel::tc_fence_contract(&mut v, &m0, &mut |m| explore(m, 2_000_000));
+    let tc_contract = v.classes() != raw;
     assert_eq!(
         v.classes(),
         case.variant(variant).unwrap().expect_for(front),
@@ -119,6 +123,11 @@ fn check_dir(dir: &str, case: &str, variant: &str, front: &str) {
     // on the race, not on the outcomes it leaves.
     let rechecked =
         |v: &ptxv_sim::explore::Verdict| v.notes.iter().any(|n| n.contains("S-SMEM-STRONG"));
+    if tc_contract {
+        // DPOR reaches the same raw verdict (before the fence-implied reclassification).
+        assert_eq!(d.classes(), raw, "{variant}/{front}: DPOR verdict differs");
+        return;
+    }
     if rechecked(&v) && v.classes().iter().any(|c| c == "race") {
         let drop_nd = |c: Vec<String>| -> Vec<String> {
             c.into_iter().filter(|x| x != "nondeterministic").collect()
@@ -568,6 +577,20 @@ fn r1d_good() {
     check_dir("fixtures", "r1d_clc", "good", "ptx");
     check_dpor("r1d_clc", "good", "sass", 2_000_000);
 }
+/// mov.b128 q, {lo, hi} / mov.b128 {lo, hi}, q (CuTe DSL's CLC response from .v2.b64).
+#[test]
+fn r1d_v2pack() {
+    check_dpor("r1d_clc", "v2pack", "ptx", 2_000_000);
+    check_dpor("r1d_clc", "v2pack", "sass", 2_000_000);
+}
+/// CLC on a 3-D grid: get_first_ctaid::z and .v4 (ctaid.z in the high half of word 1).
+#[test]
+fn r1d_clc3d() {
+    for v in ["good", "v4"] {
+        check_dpor("r1d_clc3d", v, "ptx", 2_000_000);
+        check_dpor("r1d_clc3d", v, "sass", 2_000_000);
+    }
+}
 #[test]
 fn r1d_b17_unwaited_response() {
     check_dpor("r1d_clc", "B17", "ptx", 2_000_000);
@@ -606,13 +629,76 @@ fn r1f_pingpong() {
     }
 }
 
+// Rung 1h: NVLS multicast all-reduce on 2 GPUs (multimem.red barrier, multimem.ld_reduce;
+// S-MULTIMEM, S-MC-ALIAS), both explorers.
+#[test]
+fn r1h_nvls() {
+    for v in ["good", "B23", "B63", "B64", "B65"] {
+        for f in ["ptx", "sass"] {
+            // B65 is PTX undefined behavior; in SASS its STG is a multimem store whose two
+            // ranks' bytes collide (race + nondeterministic: the explorers disagree on the
+            // second class), so only the PTX verdict is checked.
+            if v == "B65" && f == "sass" {
+                continue;
+            }
+            check_dir("fixtures", "r1h_nvls", v, f);
+        }
+    }
+}
+
+// Rung 5a: put-with-signal over an IBGDA queue pair between two NVLink domains (nic.rs,
+// docs/nic.md).
+#[test]
+fn r5a_ibgda_putsig() {
+    for v in [
+        "good", "N1", "N2", "N3", "N4", "N5", "N6", "N7", "N8", "T", "N9",
+    ] {
+        for f in ["ptx", "sass"] {
+            check_dir("fixtures", "r5a_ibgda_putsig", v, f);
+        }
+    }
+}
+
+/// E-MC-ALIAS-HW (opt-in): without the alias-proxy check the missing fence.proxy.alias (B23)
+/// is clean; the scope / ordering mutants still race (B64 in SASS: the alias fence's
+/// MEMBAR.SC.SYS releases, see the case).
+#[test]
+fn r1h_nvls_alias_hw() {
+    for (v, f, want) in [
+        ("good", "ptx", "clean"),
+        ("good", "sass", "clean"),
+        ("B23", "ptx", "clean"),
+        ("B23", "sass", "clean"),
+        ("B63", "ptx", "race"),
+        ("B63", "sass", "race"),
+        ("B64", "ptx", "race"),
+        ("B64", "sass", "clean"),
+    ] {
+        let case = Case::load(root().join("fixtures/r1h_nvls")).unwrap();
+        let k = kernel(&case, v, f);
+        let mut launch = build_launch(&case, &k).unwrap();
+        launch.mc_alias_hw = true;
+        let m0 = Machine::new(Arc::new(k), Arc::new(launch));
+        let r = explore(m0, 2_000_000);
+        assert!(r.complete, "{v}/{f}: incomplete");
+        assert_eq!(
+            r.classes(),
+            vec![want.to_string()],
+            "{v}/{f}: {:#?}",
+            r.findings
+        );
+    }
+}
+
 /// Stateful explorer only, must complete (r1g: DPOR revisits too many traces here).
 fn check_stateful(case: &str, variant: &str, front: &str, max_states: usize) {
     let case = Case::load(root().join("fixtures").join(case)).unwrap();
     let k = kernel(&case, variant, front);
     let launch = build_launch(&case, &k).unwrap();
     let m0 = Machine::new(Arc::new(k), Arc::new(launch));
-    let v = explore(m0, max_states);
+    let mut v = explore(m0.clone(), max_states);
+    // E-TC-FENCE-NOP, as `ptxv check` reports it.
+    ptxv_sim::twolevel::tc_fence_contract(&mut v, &m0, &mut |m| explore(m, max_states));
     let expect = case.variant(variant).unwrap().expect_for(front);
     assert!(
         v.complete && v.meets(&expect),
@@ -641,7 +727,8 @@ fn check_bounded(case: &str, variant: &str, front: &str, max_states: usize) {
     let k = kernel(&case, variant, front);
     let launch = build_launch(&case, &k).unwrap();
     let m0 = Machine::new(Arc::new(k), Arc::new(launch));
-    let v = explore(m0, max_states);
+    let mut v = explore(m0.clone(), max_states);
+    ptxv_sim::twolevel::tc_fence_contract(&mut v, &m0, &mut |m| explore(m, max_states));
     let expect = case.variant(variant).unwrap().expect_for(front);
     assert!(
         v.meets(&expect),
@@ -933,6 +1020,8 @@ fn captured_outputs_match_the_gpu() {
                 .collect(),
         };
         for (front, k) in ks {
+            // The front's own expectation (a case's `expect_sass` differs from its PTX one).
+            let expect = case.variant("good").unwrap().expect_for(front);
             let launch = build_launch(&case, &k).unwrap();
             let m = Machine::new(Arc::new(k), Arc::new(launch));
             // Launches too large to explore whole (cuBLAS, 8 CTAs in clusters of 4) are decided
@@ -966,9 +1055,20 @@ fn captured_outputs_match_the_gpu() {
     assert!(n > 0, "no captured fixtures");
 }
 
+/// A scratch directory unique to this process and call: tests that share a case name
+/// (e.g. `r1h_nvls` and `r1h_nvls_alias_hw`) and concurrent suites must not share files.
+fn scratch_dir(name: &str, variant: &str) -> std::path::PathBuf {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "ptxv-test-{}-{n}-{name}-{variant}",
+        std::process::id()
+    ))
+}
+
 /// A binary-only case's variant: its cubin plus the variant's control-bit patch.
 fn binary_kernel(case: &Case, variant: &str) -> anyhow::Result<ptxv_ir::Kernel> {
-    let dir = std::env::temp_dir().join(format!("ptxv-test-{}-{variant}", case.m.name));
+    let dir = scratch_dir(&case.m.name, variant);
     std::fs::create_dir_all(&dir)?;
     let c = dir.join("k.cubin");
     std::fs::copy(case.dir.join(case.m.cubin.as_ref().unwrap()), &c)?;
@@ -1144,6 +1244,56 @@ fn s_warpcoll_matches_hardware() {
     );
 }
 
+/// Shared-memory address operands add in 32 bits (S-SMEM-ADDR32): probes/smem_addr_wrap,
+/// `LDS R7, [R4+UR4+0x28]` with R4 = 0xffffffd8 in clusters of 2, against GB300 (run
+/// 2026-11-06, 20 runs). A 64-bit sum names CTA rank 256 and faults.
+#[test]
+fn probe_smem_addr_wrap_matches_hardware() {
+    let case = Case::load(root().join("probes/smem_addr_wrap")).unwrap();
+    let k = binary_kernel(&case, "good").unwrap();
+    let launch = build_launch(&case, &k).unwrap();
+    let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 200_000);
+    assert!(v.complete && v.findings.is_empty(), "{:#?}", v.findings);
+    assert_eq!(v.outputs.len(), 1);
+    let report = case.expect_report(&v.outputs[0]).unwrap();
+    assert!(
+        !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+        "{report:?}"
+    );
+}
+
+/// Unordered plain stores of one value (S-SAME-VALUE): probes/same_value, 2 CTAs x 4 warps
+/// storing v to one shared and one global word, GB300 out = v in 1000 / 1000 runs (16 CTAs x
+/// 8 warps: 200 / 200), 2026-11-06. `good` is clean with notes and GB300's output; `differ`
+/// (warp w stores v + w) stays a race on both front-ends.
+#[test]
+fn probe_same_value_matches_hardware() {
+    let case = Case::load(root().join("probes/same_value")).unwrap();
+    // The stateful explorer only: DPOR does not finish on this probe's cross-CTA global
+    // stores within the test's time.
+    for f in ["ptx", "sass"] {
+        let k = kernel(&case, "differ", f);
+        let launch = build_launch(&case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 200_000);
+        assert!(v.complete, "differ/{f}: incomplete");
+        assert_eq!(v.classes(), ["nondeterministic", "race"], "differ/{f}");
+    }
+    for f in ["ptx", "sass"] {
+        let k = kernel(&case, "good", f);
+        let launch = build_launch(&case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 200_000);
+        assert!(v.complete, "good/{f}: incomplete");
+        assert_eq!(v.classes(), ["clean"], "good/{f}");
+        assert!(v.findings.iter().any(|x| x.kind == "note"), "{f}: no note");
+        assert_eq!(v.outputs.len(), 1);
+        let report = case.expect_report(&v.outputs[0]).unwrap();
+        assert!(
+            !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+            "{f}: {report:?}"
+        );
+    }
+}
+
 /// FCHK's predicate (N-FCHK): probes/fchk, a cubin patched to run FCHK on every pair of the
 /// s_alu2 operands, against GB300 (run 2026-11-03).
 #[test]
@@ -1199,6 +1349,120 @@ fn probe_tmem_16x128b_matches_hardware() {
     }
 }
 
+/// S-TMEM: tcgen05.st.16x256b / .16x128b (probes/tmem_st16; SASS STTM.16dp256bit /
+/// .16dp128bit) write the cells the same-shape loads read: both front-ends = GB300.
+#[test]
+fn probe_tmem_st16_matches_hardware() {
+    let case = Case::load(root().join("probes/tmem_st16")).unwrap();
+    let hw = std::fs::read(case.dir.join("expected/out.bin")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let (m, f, _) = ptxv_sim::explore::run_once(Machine::new(Arc::new(k), Arc::new(launch)));
+        assert!(f.is_empty(), "{front}: {f:?}");
+        assert!(
+            m.outputs() == hw,
+            "{front}: simulator output differs from GB300"
+        );
+    }
+}
+
+/// S-TMAP: a tensor map built on the device with tensormap.replace (derived words 0x40 / 0x48
+/// left 0), published with tensormap.cp_fenceproxy and used by a TMA load = GB300
+/// (probes/tmap_device: the box and the published map bytes) on both front-ends.
+#[test]
+fn probe_tmap_device_matches_hardware() {
+    probe_bitwise("probes/tmap_device", "good", "ptx");
+    probe_bitwise("probes/tmap_device", "good", "sass");
+}
+
+/// S-TMAP: tensormap.replace on every field / ordinal / enum value over random map bytes, and
+/// tensormap.cp_fenceproxy (probes/tmap_replace) = GB300 on both front-ends.
+#[test]
+fn probe_tmap_replace_matches_hardware() {
+    probe_bitwise("probes/tmap_replace", "good", "ptx");
+    probe_bitwise("probes/tmap_replace", "good", "sass");
+}
+
+/// S-TMAP: a driver-encoded map copied out of the kernel parameters (its raw bytes), patched
+/// with tensormap.replace, published and used by a TMA load (probes/tmap_param_copy) on both
+/// front-ends.
+#[test]
+fn probe_tmap_param_copy_matches_hardware() {
+    probe_bitwise("probes/tmap_param_copy", "good", "ptx");
+    probe_bitwise("probes/tmap_param_copy", "good", "sass");
+}
+
+/// L-ROSETTA: atom.global.inc.u32 (SASS ATOMG.E.INC) = GB300 (probes/atom_inc), both
+/// front-ends.
+#[test]
+fn probe_atom_inc_matches_hardware() {
+    probe_bitwise("probes/atom_inc", "good", "ptx");
+    probe_bitwise("probes/atom_inc", "good", "sass");
+}
+
+/// L-ROSETTA: LDSM.8.MT1616[.2] (ldmatrix.m16n16.x1 / .x2.trans.b8; probes/ldsm_b8) = GB300
+/// on both fronts.
+#[test]
+fn probe_ldsm_b8_matches_hardware() {
+    probe_bitwise("probes/ldsm_b8", "good", "sass");
+    probe_bitwise("probes/ldsm_b8", "good", "ptx");
+}
+
+/// S-TMEM: tcgen05.st / ld .16x32bx2 with a split offset (probes/tmem_x2; SASS STTM / LDTM
+/// .16dp32bit_t0_t15 + _t16_t31) = GB300, both front-ends.
+#[test]
+fn probe_tmem_x2_matches_hardware() {
+    probe_bitwise("probes/tmem_x2", "good", "ptx");
+    probe_bitwise("probes/tmem_x2", "good", "sass");
+}
+
+/// S-TMEM: LDTM.STAT.16dp32bit_t0_t15 / _t16_t31 .xN.MIN|MAX[ABS].F32[.NAN]
+/// (tcgen05.ld.red.16x32bx2; probes/tmem_ldred16) = GB300 on both front-ends (the PTX one
+/// lowers kernel.ptx's tcgen05.ld.red to TmemLd with `red`).
+#[test]
+fn probe_tmem_ldred16_matches_hardware() {
+    probe_bitwise_cubin("probes/tmem_ldred16", Some("kernel.cubin"));
+    let case = Case::load(root().join("probes/tmem_ldred16")).unwrap();
+    let v = certify_ptx_file(&case);
+    let report = case.expect_report(&v.outputs[0]).unwrap();
+    assert!(
+        !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+        "ptx: {report:?}"
+    );
+}
+
+/// tcgen05.ld.red forms beyond 32x32b / 16x32bx2 min / max .f32 are refused.
+#[test]
+fn tmem_ldred_ptx_other_forms_refused() {
+    let src = std::fs::read_to_string(root().join("probes/tmem_ldred/kernel.ptx")).unwrap();
+    for (from, to) in [
+        ("32x32b.x32.max.f32", "16x64b.x32.max.f32"),
+        ("32x32b.x32.max.f32", "32x32b.x32.max.min.f32"),
+        ("32x32b.x32.max.f32", "32x32b.x32.max.u32"),
+    ] {
+        let bad = src.replacen(from, to, 1);
+        assert_ne!(bad, src);
+        assert!(
+            ptxv_ptx::parse_kernel(&bad, Some("probe_tmem_ldred")).is_err(),
+            "{to}"
+        );
+    }
+}
+
+/// Certify a cubin-only case's kernel.ptx on the PTX front-end (clean, one output).
+fn certify_ptx_file(case: &Case) -> ptxv_sim::explore::Verdict {
+    let src = std::fs::read_to_string(case.dir.join("kernel.ptx")).unwrap();
+    let k = ptxv_ptx::parse_kernel(&src, Some(&case.m.entry)).unwrap();
+    let launch = build_launch(case, &k).unwrap();
+    let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
+        .verdict
+        .unwrap_or_else(|| panic!("{} ptx certifies", case.m.name));
+    assert_eq!(v.classes(), ["clean"], "{:#?}", v.findings);
+    assert_eq!(v.outputs.len(), 1);
+    v
+}
+
 /// N-HMMA: probes/hmma (mma.sync m16n8k16 bf16, 4 accumulating steps per 16x8 tile) against
 /// GB300's output for its default inputs (the calibration over 98,304 outputs is
 /// `ptxv calib-mma probes/hmma`).
@@ -1216,6 +1480,23 @@ fn probe_hmma_matches_hardware() {
         !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
         "{report:?}"
     );
+}
+
+/// PTX mma.sync m16n8k16 bf16 / m16n8k8 tf32 (lowered to `Op::Hmma`) on probes/hmma and
+/// probes/tmma = GB300 (their kernel.ptx assembled by ptxas: the same output, 20/20 scrubbed).
+#[test]
+fn probe_mma_sync_ptx_matches_hardware() {
+    probe_bitwise("probes/hmma", "good", "ptx");
+    probe_bitwise("probes/tmma", "good", "ptx");
+}
+
+/// N-HMMA, m16n8k8 bf16 (SASS HMMA.1688.F32.BF16): probes/bmma8 through both front-ends =
+/// GB300 for the default inputs (`ptxv calib-mma probes/bmma8 --step 8`: the k16 model matches
+/// all 98,304 outputs).
+#[test]
+fn probe_bmma8_matches_hardware() {
+    probe_bitwise_cubin("probes/bmma8", Some("kernel.cubin"));
+    probe_bitwise("probes/bmma8", "good", "ptx");
 }
 
 /// N-HMMA, TF32: probes/tmma (mma.sync m16n8k8 tf32 on raw f32 words, 8 accumulating steps
@@ -1248,12 +1529,24 @@ fn s_lift_k_matches_hardware() {
 
 /// S-PROXY: a fence.proxy.async by any thread that observed the writes and happens-before the
 /// async op covers them (probes/proxy_fence: GB300 1000/1000 correct with the fence after the
-/// barrier, by all threads or by the issuer only; 1000/1000 wrong without).
+/// barrier, by all threads or by the issuer only; 1000/1000 wrong without). `global`: a
+/// fence.proxy.async.global (FENCE.VIEW.ASYNC.G) orders global memory only: a proxy race.
 #[test]
 fn probe_proxy_fence_matches_hardware() {
-    for v in ["good", "after_all", "issuer", "none"] {
+    for v in ["good", "after_all", "issuer", "none", "global"] {
         check_dir("probes", "proxy_fence", v, "ptx");
         check_dir("probes", "proxy_fence", v, "sass");
+    }
+}
+
+/// E-CPASYNC-PROXY: cp.async writes then a TMA store with no fence.proxy.async is a contract
+/// finding, st.shared writers a proxy race (probes/proxy_cpasync; GB300 1000/1000 correct in
+/// every variant).
+#[test]
+fn probe_proxy_cpasync_verdicts() {
+    for v in ["good", "none", "st_none"] {
+        check_dir("probes", "proxy_cpasync", v, "ptx");
+        check_dir("probes", "proxy_cpasync", v, "sass");
     }
 }
 
@@ -1274,6 +1567,1290 @@ fn probe_f64_ptx_matches_hardware() {
         !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
         "{report:?}"
     );
+}
+
+/// A probe's variant certifies clean on front-end `front` and every output equals the GB300
+/// bytes recorded in its `expected/`.
+fn probe_bitwise(dir: &str, variant: &str, front: &str) {
+    let case = Case::load(root().join(dir)).unwrap();
+    let k = kernel(&case, variant, front);
+    let launch = build_launch(&case, &k).unwrap();
+    let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
+        .verdict
+        .unwrap_or_else(|| panic!("{dir} {variant} {front} certifies"));
+    assert_eq!(v.classes(), ["clean"], "{dir} {front}: {:#?}", v.findings);
+    let report = case.expect_report(&v.outputs[0]).unwrap();
+    assert!(
+        !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+        "{dir} {variant} {front}: {report:?}"
+    );
+}
+
+/// N-BF16X2: packed bf16 arithmetic (HMUL2 / HADD2 / HFMA2 .BF16_V2: lane selectors, -RZ
+/// addend, immediate pairs, .RELU) and bf16 atomics (ATOMG / REDG .ADD.BF16x2.RN, the scalar
+/// form's CAS loop) on edge / tie / random operands = GB300 (probes/bf16x2). The PTX replay
+/// uses the `.rn` spelling of the non-`.rn` lines (variant `rn`; same cubin bits).
+#[test]
+fn probe_bf16x2_matches_hardware() {
+    probe_bitwise("probes/bf16x2", "good", "sass");
+    probe_bitwise("probes/bf16x2", "rn", "ptx");
+}
+
+/// N-BF16X2, N-FALU: FHFMA / FHADD .BF16 in every rounding mode and .SAT, HMNMX2.BF16_V2
+/// [.NAN] [.XORSIGN], FFMA2 / FMUL2 / FADD2 .RZ / .RM / .RP = GB300 (probes/bf16_ext).
+#[test]
+fn probe_bf16_ext_matches_hardware() {
+    probe_bitwise("probes/bf16_ext", "good", "ptx");
+    probe_bitwise("probes/bf16_ext", "good", "sass");
+}
+
+/// N-XORSIGN: min / max [.NaN] [.ftz] .xorsign.abs.f32 (FMNMX.XORSIGN with |R|, immediate
+/// and |UR| operands) on every pair of 32 edge patterns = GB300 (probes/fmnmx_xorsign).
+#[test]
+fn probe_fmnmx_xorsign_matches_hardware() {
+    probe_bitwise("probes/fmnmx_xorsign", "good", "ptx");
+    probe_bitwise("probes/fmnmx_xorsign", "good", "sass");
+}
+
+/// REDUX.SUM.S32 and the other redux.sync forms, ATOMG / REDG .ADD.S32 (probes/redux_s32);
+/// with partial active-lane masks behind BRA.DIV, SASS only (probes/redux_s32/masks).
+#[test]
+fn probe_redux_s32_matches_hardware() {
+    probe_bitwise("probes/redux_s32", "good", "ptx");
+    probe_bitwise("probes/redux_s32", "good", "sass");
+    probe_bitwise("probes/redux_s32/masks", "good", "sass");
+}
+
+/// sqrt.rn.f32 on 4096 patterns (probes/sqrt_rn): GB300 = IEEE (NaN 0x7fffffff); the PTX front
+/// and ptxas's MUFU.RSQ / Newton / slow-path code on the SASS front both match.
+#[test]
+fn probe_sqrt_rn_matches_hardware() {
+    probe_bitwise("probes/sqrt_rn", "good", "ptx");
+    probe_bitwise("probes/sqrt_rn", "good", "sass");
+}
+
+/// brx.idx through .branchtargets (probes/brx_idx; `good` = GB300 on both front-ends; `oob`:
+/// an index outside the list, a fault on both).
+#[test]
+fn probe_brx_idx_verdicts() {
+    probe_bitwise("probes/brx_idx", "good", "ptx");
+    probe_bitwise("probes/brx_idx", "good", "sass");
+    check_dir("probes", "brx_idx", "oob", "ptx");
+    check_dir("probes", "brx_idx", "oob", "sass");
+}
+
+/// 256-bit global accesses with L2 eviction hints (LDG / STG .ELL2.256 / .EFL2.256;
+/// probes/ldst256_l2) = GB300 on both front-ends.
+#[test]
+fn probe_ldst256_l2_matches_hardware() {
+    probe_bitwise("probes/ldst256_l2", "good", "ptx");
+    probe_bitwise("probes/ldst256_l2", "good", "sass");
+}
+
+/// STTM with a negative TMEM offset (probes/tmem_stneg) = GB300 on both front-ends.
+#[test]
+fn probe_tmem_stneg_matches_hardware() {
+    probe_bitwise("probes/tmem_stneg", "good", "ptx");
+    probe_bitwise("probes/tmem_stneg", "good", "sass");
+}
+
+/// bar.warp.sync on per-lane pair masks (probes/warpsync_pairs) = GB300 on both front-ends: the
+/// PTX front's plain WARPSYNC releases each mask group on its own; on the SASS front (ptxas
+/// 13.0: WARPSYNC.COLLECTIVE per call site) the two lanes of a pair at different collective
+/// instructions enter together (E-COLLECTIVE).
+#[test]
+fn probe_warpsync_pairs_verdicts() {
+    probe_bitwise("probes/warpsync_pairs", "good", "ptx");
+    probe_bitwise("probes/warpsync_pairs", "good", "sass");
+}
+
+/// PTX-FMAD: plain mul + add / sub contracted as ptxas 13.0 does, and the forms it keeps apart
+/// (probes/fmad) = GB300 on both front-ends.
+#[test]
+fn probe_fmad_matches_hardware() {
+    probe_bitwise("probes/fmad", "good", "ptx");
+    probe_bitwise("probes/fmad", "good", "sass");
+}
+
+/// Collectives whose pair mask is reached at different instructions (probes/coll_split): GB300
+/// combines them. SASS: the model runs the identical WARPSYNC.COLLECTIVE regions as one; PTX:
+/// each mask group runs with its lanes at other shfl.sync / vote.sync instructions (E-WARPCOLL).
+#[test]
+fn probe_coll_split_matches_hardware() {
+    probe_bitwise_cubin("probes/coll_split", Some("kernel.cubin"));
+    probe_bitwise("probes/coll_split", "good", "ptx");
+}
+
+/// PTX shfl.sync / vote.sync / redux.sync with partial member masks (probes/shfl_mask): half-warp
+/// and quad masks, mask groups split across instructions = GB300 on the PTX front (the SASS
+/// front refuses ptxas's WARPSYNC.EXCLUSIVE); lanes outside the mask executing it: violation.
+#[test]
+fn probe_shfl_mask_verdicts() {
+    probe_bitwise("probes/shfl_mask", "good", "ptx");
+    check_dir("probes", "shfl_mask", "good", "ptx");
+    check_dir("probes", "shfl_mask", "skip_half", "ptx");
+}
+
+/// E-COLLECTIVE: `BRA.DIV 0xffffffff` falling through orders the converged lanes as the slow
+/// path's WARPSYNC.COLLECTIVE does (probes/syncwarp_fast, DeepEP's `__syncwarp()` + elect
+/// shape) = GB300 on both front-ends.
+#[test]
+fn probe_syncwarp_fast_matches_hardware() {
+    probe_bitwise("probes/syncwarp_fast", "good", "ptx");
+    probe_bitwise("probes/syncwarp_fast", "good", "sass");
+}
+
+/// PTX copysign.f32 (probes/copysign: NaN payloads, signed zeros, Inf, subnormals) = GB300
+/// on both front-ends.
+#[test]
+fn probe_copysign_matches_hardware() {
+    probe_bitwise("probes/copysign", "good", "ptx");
+    probe_bitwise("probes/copysign", "good", "sass");
+}
+
+/// cvt.rn / .rz [.relu] [.satfinite] .tf32.f32 (F2FP [.SATFINITE] [.RELU] .TF32.F32.PACK_B
+/// [.RZ]; probes/cvt_tf32_rn, 65,536 words x 8 forms) = GB300 on both front-ends.
+#[test]
+fn probe_cvt_tf32_rn_matches_hardware() {
+    probe_bitwise("probes/cvt_tf32_rn", "good", "ptx");
+    probe_bitwise("probes/cvt_tf32_rn", "good", "sass");
+}
+
+/// PTX cvt.rna.tf32.f32 (probes/cvt_tf32: ties, NaN payloads, Inf, subnormals) = GB300 on
+/// both front-ends.
+#[test]
+fn probe_cvt_tf32_matches_hardware() {
+    probe_bitwise("probes/cvt_tf32", "good", "ptx");
+    probe_bitwise("probes/cvt_tf32", "good", "sass");
+}
+
+/// S-INIT: discard.global.L2 makes the line indeterminate (probes/discard_l2): rewritten
+/// before the read = GB300 on the PTX front; read after the discard: a violation.
+#[test]
+fn probe_discard_l2_verdicts() {
+    probe_bitwise("probes/discard_l2", "good", "ptx");
+    check_dir("probes", "discard_l2", "read_after", "ptx");
+}
+
+/// tcgen05.mma cta_group::2 M = 128 with A in TMEM (probes/tc_pair_atmem) = GB300 on both
+/// front-ends.
+#[test]
+fn probe_tc_pair_atmem_matches_hardware() {
+    probe_bitwise("probes/tc_pair_atmem", "good", "ptx");
+    probe_bitwise("probes/tc_pair_atmem", "good", "sass");
+}
+
+/// tcgen05.mma kind::tf32 MN-major through SWIZZLE_128B_BASE32B (probes/tc_tf32_mn) = GB300 on
+/// both front-ends.
+#[test]
+fn probe_tc_tf32_mn_matches_hardware() {
+    probe_bitwise("probes/tc_tf32_mn", "good", "ptx");
+    probe_bitwise("probes/tc_tf32_mn", "good", "sass");
+}
+
+/// tcgen05.mma finite overflow to Inf (probes/tc_mma_ovf) = GB300 on both front-ends.
+#[test]
+fn probe_tc_mma_ovf_matches_hardware() {
+    probe_bitwise("probes/tc_mma_ovf", "good", "ptx");
+    probe_bitwise("probes/tc_mma_ovf", "good", "sass");
+}
+
+/// HMMA bf16 on subnormal / Inf / NaN operands and finite overflow (probes/hmma_special) =
+/// GB300 on both front-ends.
+#[test]
+fn probe_hmma_special_matches_hardware() {
+    probe_bitwise("probes/hmma_special", "good", "ptx");
+    probe_bitwise("probes/hmma_special", "good", "sass");
+}
+
+/// mma.sync m16n8k16 f16 / HMMA.16816.F32 (probes/hmma_f16) = GB300 on both front-ends.
+#[test]
+fn probe_hmma_f16_matches_hardware() {
+    probe_bitwise("probes/hmma_f16", "good", "ptx");
+    probe_bitwise("probes/hmma_f16", "good", "sass");
+}
+
+/// cvt.bf16.f16 / cvt.f16.bf16 without a rounding modifier on every pattern
+/// (probes/cvt_bf16_f16) = GB300 on both front-ends.
+#[test]
+fn probe_cvt_bf16_f16_matches_hardware() {
+    probe_bitwise("probes/cvt_bf16_f16", "good", "ptx");
+    probe_bitwise("probes/cvt_bf16_f16", "good", "sass");
+}
+
+/// rsqrt.approx.f64 without .ftz (probes/rsqrt_f64) = GB300 on both front-ends.
+#[test]
+fn probe_rsqrt_f64_matches_hardware() {
+    probe_bitwise("probes/rsqrt_f64", "good", "ptx");
+    probe_bitwise("probes/rsqrt_f64", "good", "sass");
+}
+
+/// min / max / neg / abs .f64 (probes/f64_misc) = GB300 on both front-ends.
+#[test]
+fn probe_f64_misc_matches_hardware() {
+    probe_bitwise("probes/f64_misc", "good", "ptx");
+    probe_bitwise("probes/f64_misc", "good", "sass");
+}
+
+/// div.rn.ftz.f32 / sqrt.rn.ftz.f32 (probes/ftz_div_sqrt) = GB300 on both front-ends.
+#[test]
+fn probe_ftz_div_sqrt_matches_hardware() {
+    probe_bitwise("probes/ftz_div_sqrt", "good", "ptx");
+    probe_bitwise("probes/ftz_div_sqrt", "good", "sass");
+}
+
+/// 64-bit and vector ld / st .local (probes/local_vec) = GB300 on both front-ends.
+#[test]
+fn probe_local_vec_matches_hardware() {
+    probe_bitwise("probes/local_vec", "good", "ptx");
+    probe_bitwise("probes/local_vec", "good", "sass");
+}
+
+/// Cluster special registers (probes/cluster_sreg) = GB300 on both front-ends.
+#[test]
+fn probe_cluster_sreg_matches_hardware() {
+    probe_bitwise("probes/cluster_sreg", "good", "ptx");
+    probe_bitwise("probes/cluster_sreg", "good", "sass");
+}
+
+/// Byte packing / unpacking moves (probes/mov_pack) = GB300 on both front-ends.
+#[test]
+fn probe_mov_pack_matches_hardware() {
+    probe_bitwise("probes/mov_pack", "good", "ptx");
+    probe_bitwise("probes/mov_pack", "good", "sass");
+}
+
+/// tcgen05.mma with an immediate enable-input-d (probes/tc_mma_imm) = GB300 on both
+/// front-ends.
+#[test]
+fn probe_tc_mma_imm_matches_hardware() {
+    probe_bitwise("probes/tc_mma_imm", "good", "ptx");
+    probe_bitwise("probes/tc_mma_imm", "good", "sass");
+}
+
+/// bfi.b32 / clz.b32 (probes/bfi_clz) = GB300 on both front-ends.
+#[test]
+fn probe_bfi_clz_matches_hardware() {
+    probe_bitwise("probes/bfi_clz", "good", "ptx");
+    probe_bitwise("probes/bfi_clz", "good", "sass");
+}
+
+/// cvt.ftz.sat.f32.f32 / cvt.ftz.f32.f32 (probes/cvt_ftz) = GB300 on both front-ends.
+#[test]
+fn probe_cvt_ftz_matches_hardware() {
+    probe_bitwise("probes/cvt_ftz", "good", "ptx");
+    probe_bitwise("probes/cvt_ftz", "good", "sass");
+}
+
+/// Decimal / cross-width float literals (probes/float_lit) = GB300 on both front-ends.
+#[test]
+fn probe_float_lit_matches_hardware() {
+    probe_bitwise("probes/float_lit", "good", "ptx");
+    probe_bitwise("probes/float_lit", "good", "sass");
+}
+
+/// mul.f32x2 contracted into add / sub.f32x2 of the same rounding mode, .rn included
+/// (probes/fmad2) = GB300 on both front-ends.
+#[test]
+fn probe_fmad2_matches_hardware() {
+    probe_bitwise("probes/fmad2", "good", "ptx");
+    probe_bitwise("probes/fmad2", "good", "sass");
+}
+
+/// mma.sync m16n8k32 s8 satfinite / IMMA.16832.S8.S8.SAT (probes/imma_s8) = GB300 on both
+/// front-ends, saturating on both s32 limits.
+#[test]
+fn probe_imma_s8_matches_hardware() {
+    probe_bitwise("probes/imma_s8", "good", "ptx");
+    probe_bitwise("probes/imma_s8", "good", "sass");
+}
+
+/// Plain mul.bf16 / .bf16x2 reaching mma / cvt through packs, prmt and shfl
+/// (probes/bf16_sink) = GB300 on both front-ends.
+#[test]
+fn probe_bf16_sink_matches_hardware() {
+    probe_bitwise("probes/bf16_sink", "good", "ptx");
+    probe_bitwise("probes/bf16_sink", "good", "sass");
+}
+
+/// tcgen05.mma.kind::f16 with f16 operands and kind::tf32 (instruction descriptor A / B
+/// format 0 / 2): probes/tc_f16 and probes/tc_tf32 = GB300 on both front-ends (the models:
+/// `ptxv calib-mma` on each, N-MMA).
+#[test]
+fn probe_tc_f16_tf32_match_hardware() {
+    for p in ["probes/tc_f16", "probes/tc_tf32"] {
+        probe_bitwise(p, "good", "ptx");
+        probe_bitwise(p, "good", "sass");
+    }
+}
+
+/// mbarrier.arrive with an arrival count (SASS SYNCS.ARRIVE.TRANS64.ART0 / .RED.ART0;
+/// probes/mbar_count; `good` = GB300 on both front-ends; `over`: a count above the pending
+/// count, a fault, as on GB300).
+#[test]
+fn probe_mbar_count_verdicts() {
+    probe_bitwise("probes/mbar_count", "good", "ptx");
+    probe_bitwise("probes/mbar_count", "good", "sass");
+    check_dir("probes", "mbar_count", "over", "ptx");
+    check_dir("probes", "mbar_count", "over", "sass");
+}
+
+/// redux.sync with membermasks naming a subset of the warp, executed by exactly those lanes
+/// (probes/redux_mask; `good` = GB300 on both front-ends; `mask_mismatch`: every lane runs a
+/// redux whose mask is 0xaaaaaaaa, a PTX violation; ptxas's REDUX has no mask, so the SASS
+/// verdict is clean, and GB300 gives every lane the full-warp sum).
+#[test]
+fn probe_redux_mask_verdicts() {
+    probe_bitwise("probes/redux_mask", "good", "ptx");
+    probe_bitwise("probes/redux_mask", "good", "sass");
+    check_dir("probes", "redux_mask", "mask_mismatch", "ptx");
+    check_dir("probes", "redux_mask", "mask_mismatch", "sass");
+}
+
+/// IMAD.WIDE[.U32] with a negated 64-bit addend, POPC read after a wait on a later POPC's
+/// scoreboard (probes/int_misc) = GB300.
+#[test]
+fn probe_int_misc_matches_hardware() {
+    probe_bitwise("probes/int_misc", "good", "ptx");
+    probe_bitwise("probes/int_misc", "good", "sass");
+}
+
+/// 32-byte global loads and stores (ld / ld.nc / st .global.v8.u32 as LDG / STG .E.ENL2.256):
+/// operand order and register quads (probes/ldst256) = GB300.
+#[test]
+fn probe_ldst256_matches_hardware() {
+    probe_bitwise("probes/ldst256", "good", "ptx");
+    probe_bitwise("probes/ldst256", "good", "sass");
+}
+
+/// N-CVT-LP, L-NVDISASM: cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 (F2FP.SATFINITE
+/// .BF16.S2_6.UNPACK_B, register and immediate scales, either data half; ptxas 13.1 cubin whose
+/// F2FP encodings nvdisasm 13.0 does not print, decoded by undis.rs) on every (code, scale) pair
+/// of both lanes = GB300 (probes/s2f6_cvt), on both front-ends.
+#[test]
+fn probe_s2f6_cvt_matches_hardware() {
+    probe_bitwise_cubin("probes/s2f6_cvt", None);
+    // The PTX front on the cubin's source (the case is binary-only: ptxas 13.0 rejects it).
+    let case = Case::load(root().join("probes/s2f6_cvt")).unwrap();
+    let ptx = std::fs::read_to_string(case.dir.join("kernel.ptx")).unwrap();
+    let k = ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap();
+    let launch = build_launch(&case, &k).unwrap();
+    let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
+        .verdict
+        .expect("s2f6_cvt (ptx) certifies");
+    assert_eq!(v.classes(), ["clean"], "{:#?}", v.findings);
+    let report = case.expect_report(&v.outputs[0]).unwrap();
+    assert!(
+        !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+        "{report:?}"
+    );
+}
+
+/// L-ROSETTA, S-SCOPE: red.global.{or,and,xor}.b32 / .b64 at cta, gpu and sys scope (REDG.E
+/// .{OR,AND,XOR}[.64].STRONG.{SM,GPU,SYS}), four threads per word = GB300 (probes/red_bitops).
+#[test]
+fn probe_red_bitops_matches_hardware() {
+    probe_bitwise("probes/red_bitops", "good", "ptx");
+    probe_bitwise("probes/red_bitops", "good", "sass");
+}
+
+/// N-MMA: tcgen05.mma scale-input-d (UTCHMMA ..., UPd, s; D = A B + D * 2^-s) for kind::f16
+/// (bf16) and kind::tf32 over 9 scales = GB300 (probes/mma_scale_d), on both front-ends; the
+/// PTX statements include `..., 0, 8` (enable-input-d 0: the scale of an unread accumulator is
+/// moot, D is overwritten).
+#[test]
+fn probe_mma_scale_d_matches_hardware() {
+    probe_bitwise("probes/mma_scale_d", "good", "sass");
+    probe_bitwise("probes/mma_scale_d", "good", "ptx");
+}
+
+/// S-TMA, S-TMAP: im2col TMA loads (UTMALDG.<n>D.IM2COL) and im2col_no_offs stores
+/// (UTMASTG.<n>D.IM2COL) through cuTensorMapEncodeIm2col maps = GB300 (probes/tma_im2col).
+/// SASS front only: the PTX front-end does not lower im2col.
+#[test]
+fn probe_tma_im2col_matches_hardware() {
+    probe_bitwise("probes/tma_im2col", "good", "sass");
+}
+
+/// A cubin probe (no PTX source) certifies clean on the SASS front-end and equals `expected/`.
+fn probe_bitwise_cubin(dir: &str, cubin: Option<&str>) {
+    let case = Case::load(root().join(dir)).unwrap();
+    let k = match cubin {
+        Some(c) => ptxv_sass::load_cubin(&case.dir.join(c), &case.m.entry).unwrap(),
+        None => binary_kernel(&case, "good").unwrap(),
+    };
+    let launch = build_launch(&case, &k).unwrap();
+    let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
+        .verdict
+        .unwrap_or_else(|| panic!("{dir} {cubin:?} certifies"));
+    assert_eq!(v.classes(), ["clean"], "{dir} {cubin:?}: {:#?}", v.findings);
+    let report = case.expect_report(&v.outputs[0]).unwrap();
+    assert!(
+        !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+        "{dir} {cubin:?}: {report:?}"
+    );
+}
+
+/// N-FCVT: FRND (f32 [.FTZ], .F64, .F16, .BF16 x four roundings), F2F.{BF16,F16}.F64[.R*],
+/// F2F.F64.{BF16,F16} [.H1], F2F.BF16.F16 / F2F.F16.BF16 [.R*] [.H1] on edge, tie and random
+/// inputs = GB300 on both front-ends (probes/fcvt).
+#[test]
+fn probe_fcvt_matches_hardware() {
+    probe_bitwise("probes/fcvt", "good", "ptx");
+    probe_bitwise("probes/fcvt", "good", "sass");
+}
+
+/// N-INT16X2: VIMNMX / VIMNMX3 .U16x2 / .S16x2 (register and immediate) and the 64-bit
+/// `(sext(a) << s) - y` = GB300 (probes/int16x2), both front-ends; the same kernel with its
+/// `IMAD.X ~Ry` high words rewritten into `LEA.HI.X.SX32 Rd, Ra, ~Ry, s, P` (cubins/lea.cubin)
+/// gives the same bytes.
+#[test]
+fn probe_int16x2_matches_hardware() {
+    probe_bitwise("probes/int16x2", "good", "ptx");
+    probe_bitwise("probes/int16x2", "good", "sass");
+    probe_bitwise_cubin("probes/int16x2", Some("cubins/lea.cubin"));
+}
+
+/// N-BULK-RED: cp.reduce.async.bulk ... .add.f32 (UBLKRED.G.S.ADD.F32.RN) on edge pairs, and
+/// four CTAs' concurrent bulk adds into the same words (atomic per word: no race, one result)
+/// = GB300 (probes/bulk_red), both front-ends.
+#[test]
+fn probe_bulk_red_matches_hardware() {
+    // Explored, not certified (the certificate does not cover asynchronous reductions): every
+    // order of the four concurrent bulk adds, one output, equal to GB300's.
+    let case = Case::load(root().join("probes/bulk_red")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = Arc::new(kernel(&case, "good", front));
+        let launch = Arc::new(build_launch(&case, &k).unwrap());
+        let v = ptxv_sim::explore::explore(Machine::new(k, launch), 200_000);
+        assert!(v.complete, "{front}: incomplete");
+        assert_eq!(v.classes(), ["clean"], "{front}: {:#?}", v.findings);
+        assert_eq!(v.distinct_outputs, 1, "{front}");
+        let report = case.expect_report(&v.outputs[0]).unwrap();
+        assert!(
+            !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+            "{front}: {report:?}"
+        );
+    }
+}
+
+/// N-F2I16: F2I[.FTZ].{S16,U16}[.TRUNC|.FLOOR|.CEIL].NTZ (16-bit and widened results) and
+/// the CCTL.E.PF1 / PF2 prefetch hints = GB300 (probes/f2i16), both front-ends.
+#[test]
+fn probe_f2i16_matches_hardware() {
+    probe_bitwise("probes/f2i16", "good", "ptx");
+    probe_bitwise("probes/f2i16", "good", "sass");
+}
+
+/// E-BSYNC: `BREAK.RELIABLE Pc, Bb` in ptxas's div.rn.ftz.f32 slow path (probes/div_ftz, every
+/// pair of 32 edge patterns) = GB300 (SASS; the BREAK exists only there).
+#[test]
+fn probe_div_ftz_matches_hardware() {
+    probe_bitwise("probes/div_ftz", "good", "sass");
+}
+
+/// N-INT16X2: VIMNMX.RELU, VIMNMX.S16x2.RELU, VIADDMNMX.RELU (min / max.relu, an add fused
+/// with min.relu) = GB300 (probes/imnmx_relu), both front-ends.
+#[test]
+fn probe_imnmx_relu_matches_hardware() {
+    probe_bitwise("probes/imnmx_relu", "good", "ptx");
+    probe_bitwise("probes/imnmx_relu", "good", "sass");
+}
+
+/// N-CVT-LP: F2FP[.RELU].F16.E2M1.UNPACK_B Rd, Ra.B1 / .B2 / .B3 (cvt.rn[.relu].f16x2.e2m1x2
+/// of byte k of a register) = GB300 (probes/e2m1_bytes), both front-ends.
+#[test]
+fn probe_e2m1_bytes_matches_hardware() {
+    probe_bitwise("probes/e2m1_bytes", "good", "ptx");
+    probe_bitwise("probes/e2m1_bytes", "good", "sass");
+}
+
+/// N-BULK-RED: UTMAREDG.2D.ADD on bf16, f16 and f32 tensors (every pair of 64 edge patterns)
+/// = GB300 (probes/tma_red), both front-ends.
+#[test]
+fn probe_tma_red_matches_hardware() {
+    let case = Case::load(root().join("probes/tma_red")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = Arc::new(kernel(&case, "good", front));
+        let launch = Arc::new(build_launch(&case, &k).unwrap());
+        let v = ptxv_sim::explore::explore(Machine::new(k, launch), 200_000);
+        assert!(v.complete, "{front}: incomplete");
+        assert_eq!(v.classes(), ["clean"], "{front}: {:#?}", v.findings);
+        let report = case.expect_report(&v.outputs[0]).unwrap();
+        assert!(
+            !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+            "{front}: {report:?}"
+        );
+    }
+}
+
+/// S-TMA: UBLKCP.S.S (cp.async.bulk.shared::cluster.shared::cta) to the peer CTA and to the
+/// issuing CTA of a 2-CTA cluster = GB300 (probes/bulk_s2s), both front-ends.
+#[test]
+fn probe_bulk_s2s_matches_hardware() {
+    let case = Case::load(root().join("probes/bulk_s2s")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = Arc::new(kernel(&case, "good", front));
+        let launch = Arc::new(build_launch(&case, &k).unwrap());
+        let v = ptxv_sim::explore::explore(Machine::new(k, launch), 500_000);
+        assert!(v.complete, "{front}: incomplete");
+        assert_eq!(v.classes(), ["clean"], "{front}: {:#?}", v.findings);
+        let report = case.expect_report(&v.outputs[0]).unwrap();
+        assert!(
+            !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+            "{front}: {report:?}"
+        );
+    }
+}
+
+/// L-RPCMOV: `RPCMOV.32 Rpc.LO, Ra` then `RPCMOV.32 Rd, Rpc.LO` restore each thread's own
+/// value = GB300 (probes/rpcmov, a patched cubin).
+#[test]
+fn probe_rpcmov_matches_hardware() {
+    probe_bitwise_cubin("probes/rpcmov", None);
+}
+
+/// N-FCHK: `FCHK P, -Ra, Rb` (probes/fchk_neg, probes/fchk's cubin with the dividend's negate
+/// bit set) gives probes/fchk's GB300 output hash: the sign is ignored.
+#[test]
+fn probe_fchk_neg_matches_hardware() {
+    certified_hash("probes", "fchk_neg", 0xa83533de36c447d4);
+}
+
+/// N-FCHK: `FCHK P, |Ra|, |Rb|` (probes/fchk_abs, probes/fchk's cubin with both abs bits set)
+/// = GB300: the same output as probes/fchk_neg.
+#[test]
+fn probe_fchk_abs_matches_hardware() {
+    certified_hash("probes", "fchk_abs", 0xa83533de36c447d4);
+}
+
+/// The f64 pipe completes in order: an unscoreboarded DFMA covered by a later DADD's
+/// scoreboard, and a DMUL overwriting a register an earlier DADD reads (probes/f64_queue) =
+/// GB300.
+#[test]
+fn probe_f64_queue_matches_hardware() {
+    probe_bitwise("probes/f64_queue", "good", "ptx");
+    probe_bitwise("probes/f64_queue", "good", "sass");
+    // L-OPCLASS on sm_100a: the same kernel built for sm_100a (ptxas 13.0, cubins/sm100a.cubin)
+    // covers its f64 results with stall counts only (fixed-latency f64 pipe); the outputs are
+    // IEEE-exact, so GB300's expected/ applies.
+    probe_bitwise_cubin("probes/f64_queue", Some("cubins/sm100a.cubin"));
+}
+
+/// L-OPCLASS: DSETP in the f64 queue (a DADD with no write scoreboard read after a wait on a
+/// later DSETP's), PTX setp.<cmp>.f64 (probes/f64_dsetp) = GB300 on both front-ends.
+#[test]
+fn probe_f64_dsetp_matches_hardware() {
+    probe_bitwise("probes/f64_dsetp", "good", "ptx");
+    probe_bitwise("probes/f64_dsetp", "good", "sass");
+}
+
+/// The f64 / conversion queue reads operands in issue order: a later `F2F.F64.F32` overwrites
+/// the source of an earlier one that has a read scoreboard, with no wait on it (variant
+/// `rd_sb`; the form ptxas emits in CuTe top-k for sm_103a and sm_100a) = GB300
+/// (probes/xu_war).
+#[test]
+fn probe_xu_war_matches_hardware() {
+    for variant in ["good", "rd_sb"] {
+        let case = Case::load(root().join("probes/xu_war")).unwrap();
+        let k = binary_kernel(&case, variant).unwrap();
+        let launch = build_launch(&case, &k).unwrap();
+        let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
+            .verdict
+            .unwrap_or_else(|| panic!("xu_war {variant} certifies"));
+        assert_eq!(v.classes(), ["clean"], "{variant}: {:#?}", v.findings);
+        let report = case.expect_report(&v.outputs[0]).unwrap();
+        assert!(
+            !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+            "{variant}: {report:?}"
+        );
+    }
+}
+
+/// A TMEM load overwrites the registers of the TMEM store before it with no wait; the queue
+/// reads them first (probes/sttm_ldtm, GB300 1000/1000).
+#[test]
+fn probe_sttm_ldtm_matches_hardware() {
+    probe_bitwise("probes/sttm_ldtm", "good", "ptx");
+    probe_bitwise("probes/sttm_ldtm", "good", "sass");
+    // tcgen05.ld destinations listed out of order (CuTe DSL: descending): PTX front.
+    probe_bitwise("probes/sttm_ldtm", "permuted", "ptx");
+    probe_bitwise("probes/sttm_ldtm", "permuted", "sass");
+}
+
+/// abs.bf16x2 / abs.bf16 as HFMA2.BF16_V2 -RZ, RZ, |R| (probes/bf16_abs) = GB300.
+#[test]
+fn probe_bf16_abs_matches_hardware() {
+    probe_bitwise("probes/bf16_abs", "good", "ptx");
+    probe_bitwise("probes/bf16_abs", "good", "sass");
+}
+
+/// f16 arithmetic: HFMA2 / HMUL2 / HADD2 with half selectors and immediate pairs, PTX
+/// fma / mul / add / sub .rn .f16[x2] and an uncontractible mul.f16 (probes/f16_arith) = GB300.
+#[test]
+fn probe_f16_arith_matches_hardware() {
+    probe_bitwise("probes/f16_arith", "good", "ptx");
+    probe_bitwise("probes/f16_arith", "good", "sass");
+}
+
+/// PTX ldmatrix x1 / x2.trans / x4 / x4.trans (probes/ldmatrix_ptx) = GB300.
+#[test]
+fn probe_ldmatrix_ptx_matches_hardware() {
+    probe_bitwise("probes/ldmatrix_ptx", "good", "ptx");
+    probe_bitwise("probes/ldmatrix_ptx", "good", "sass");
+}
+
+/// HSETP2 / HSETP2.BF16_V2: both predicate outputs, all comparisons, scalar halves, immediate
+/// pairs with distinct halves (probes/hsetp2) = GB300.
+#[test]
+fn probe_hsetp2_matches_hardware() {
+    probe_bitwise("probes/hsetp2", "good", "ptx");
+    probe_bitwise("probes/hsetp2", "good", "sass");
+}
+
+/// VHMNMX / VHMNMX.BF16_V2 [.NAN]: three-input half min / max, f16 and bf16, |x| operands
+/// (probes/vhmnmx) = GB300. SASS front only (no PTX f16 min / max).
+#[test]
+fn probe_vhmnmx_matches_hardware() {
+    probe_bitwise("probes/vhmnmx", "good", "sass");
+}
+
+/// MATCH.ANY[.U64]: full membermask on both front-ends; divergent lanes with partial masks
+/// (WARPSYNC Rmask / WARPSYNC.COLLECTIVE + MATCH.ANY) on the SASS front (probes/match_any,
+/// probes/match_any_div) = GB300.
+#[test]
+fn probe_match_any_matches_hardware() {
+    probe_bitwise("probes/match_any", "good", "ptx");
+    probe_bitwise("probes/match_any", "good", "sass");
+    probe_bitwise("probes/match_any_div", "good", "sass");
+}
+
+/// Cache-hint and scope tokens of the DeepEP / DeepCP kernels (LDG.NA, ST.EF, LD/ST/ATOM
+/// .STRONG.{SM,GPU,SYS}, STG.E.64.MMIO.SYS, UBLKPF.L2 in ptxas's uniformizing loop with
+/// R2UR.OR) (probes/memhints) = GB300.
+#[test]
+fn probe_memhints_matches_hardware() {
+    probe_bitwise("probes/memhints", "good", "ptx");
+    probe_bitwise("probes/memhints", "good", "sass");
+}
+
+/// FLO and POPC share an in-order queue: an unscoreboarded FLO.U32 read after a wait on a
+/// later POPC's scoreboard (probes/flo_popc, GB300 500/500).
+#[test]
+fn probe_flo_popc_matches_hardware() {
+    probe_bitwise("probes/flo_popc", "good", "ptx");
+    probe_bitwise("probes/flo_popc", "good", "sass");
+}
+
+/// cp.async with a src-size operand (register 16 / 0, registers 0..16, immediate 4; 16-, 8- and
+/// 4-byte copies; SASS LDGSTS[.ZFILL]): the first src-size bytes copied, the rest zero
+/// (probes/cpasync_srcsize) = GB300.
+#[test]
+fn probe_cpasync_srcsize_matches_hardware() {
+    probe_bitwise("probes/cpasync_srcsize", "good", "ptx");
+    probe_bitwise("probes/cpasync_srcsize", "good", "sass");
+}
+
+/// mul / add / sub .f32x2 with no rounding modifier where ptxas cannot contract (a mul of a
+/// mul converted to bf16x2, an add / sub of loads; FMUL2 / FADD2) = .rn (probes/f32x2_norn) =
+/// GB300.
+#[test]
+fn probe_f32x2_norn_matches_hardware() {
+    probe_bitwise("probes/f32x2_norn", "good", "ptx");
+    probe_bitwise("probes/f32x2_norn", "good", "sass");
+}
+
+/// Plain mul.f32x2 read as an fma addend, unpacked into scalar ops, or repacked across lanes
+/// into an add.f32x2 (probes/f32x2_unpack): ptxas keeps FMUL2 apart; = GB300 on both fronts.
+#[test]
+fn probe_f32x2_unpack_matches_hardware() {
+    probe_bitwise("probes/f32x2_unpack", "good", "ptx");
+    probe_bitwise("probes/f32x2_unpack", "good", "sass");
+}
+
+/// The cp.async scoreboard counts the warp's commits: copies issued on two divergent paths,
+/// one converged DEPBAR, each lane reads its neighbour's slot (probes/cpasync_warp; `good` =
+/// GB300; `w1`: the warp's second group is still pending).
+#[test]
+fn probe_cpasync_warp_verdicts() {
+    probe_bitwise("probes/cpasync_warp", "good", "ptx");
+    probe_bitwise("probes/cpasync_warp", "good", "sass");
+    check_dir("probes", "cpasync_warp", "w1", "ptx");
+    check_dir("probes", "cpasync_warp", "w1", "sass");
+}
+
+/// abs.f32 / abs.ftz.f32 (FADD[.FTZ] |a|, -RZ: canonical NaN) and abs.s32 (IABS) on special
+/// patterns (probes/abs_f32) = GB300.
+#[test]
+fn probe_abs_f32_matches_hardware() {
+    probe_bitwise("probes/abs_f32", "good", "ptx");
+    probe_bitwise("probes/abs_f32", "good", "sass");
+}
+
+/// cvt.rn.f32.f64 / cvt.f64.f32 (F2F), cvt.sat.f32.f32 (FADD.SAT RZ, a), cvt.r{n,m,p}i[.ftz]
+/// .{s,u}32.f32 (F2I) on special and random inputs (probes/cvt_misc) = GB300.
+#[test]
+fn probe_cvt_misc_matches_hardware() {
+    probe_bitwise("probes/cvt_misc", "good", "ptx");
+    probe_bitwise("probes/cvt_misc", "good", "sass");
+}
+
+/// PTX prmt.b32 (default mode) = SASS PRMT d, a, c, b (probes/prmt_ptx) = GB300.
+#[test]
+fn probe_prmt_ptx_matches_hardware() {
+    probe_bitwise("probes/prmt_ptx", "good", "ptx");
+    probe_bitwise("probes/prmt_ptx", "good", "sass");
+}
+
+/// %lanemask_*, a `%`-less inline-asm scope register, `[%rd+-N]`, and a vector operand list
+/// continued after a comma (probes/ptx_syntax) = GB300.
+#[test]
+fn probe_ptx_syntax_matches_hardware() {
+    probe_bitwise("probes/ptx_syntax", "good", "ptx");
+    probe_bitwise("probes/ptx_syntax", "good", "sass");
+}
+
+/// add / sub / mul .bf16x2 and .bf16 with no rounding modifier where ptxas cannot contract
+/// (probes/bf16_norn; SASS HADD2.BF16_V2 / HFMA2.BF16_V2) = GB300.
+#[test]
+fn probe_bf16_norn_matches_hardware() {
+    probe_bitwise("probes/bf16_norn", "good", "ptx");
+    probe_bitwise("probes/bf16_norn", "good", "sass");
+}
+
+/// rcp.rn.f32 = the IEEE 1 / a, NaN canonical (probes/rcp_rn; ptxas's div.rn expansion with
+/// its slow-path subroutine) = GB300.
+#[test]
+fn probe_rcp_rn_matches_hardware() {
+    probe_bitwise("probes/rcp_rn", "good", "ptx");
+    probe_bitwise("probes/rcp_rn", "good", "sass");
+}
+
+/// cvt.{rn,rz,rm,rp}.f32.f64 = F2F.F32.F64[.RZ|.RM|.RP] (probes/cvt_f64_rnd) = GB300.
+#[test]
+fn probe_cvt_f64_rnd_matches_hardware() {
+    probe_bitwise("probes/cvt_f64_rnd", "good", "ptx");
+    probe_bitwise("probes/cvt_f64_rnd", "good", "sass");
+}
+
+/// bar.red.{popc,and,or} = BAR.RED + B2R.RESULT, CTA-wide and on counted barriers reached by
+/// two warps (probes/bar_red) = GB300.
+#[test]
+fn probe_bar_red_matches_hardware() {
+    probe_bitwise("probes/bar_red", "good", "ptx");
+    probe_bitwise("probes/bar_red", "good", "sass");
+}
+
+/// cvt.{rn,rz,rm,rp}.{f32,f64}.{s,u}{16,32,64} = I2F[.F64][.S16|.U16|.S64|.U64][.RZ|.RM|.RP]
+/// (probes/cvt_i2f) = GB300.
+#[test]
+fn probe_cvt_i2f_matches_hardware() {
+    probe_bitwise("probes/cvt_i2f", "good", "ptx");
+    probe_bitwise("probes/cvt_i2f", "good", "sass");
+}
+
+/// abs.s64, brev.b32, rcp.{rn,rz,rm,rp}.f64 (probes/ptx_misc2) = GB300.
+#[test]
+fn probe_ptx_misc2_matches_hardware() {
+    probe_bitwise("probes/ptx_misc2", "good", "ptx");
+    probe_bitwise("probes/ptx_misc2", "good", "sass");
+}
+
+/// tcgen05.mma `[taddr + off]` D and A-in-TMEM operands (probes/tc_mma_off) = GB300.
+#[test]
+fn probe_tc_mma_off_matches_hardware() {
+    probe_bitwise("probes/tc_mma_off", "good", "ptx");
+    probe_bitwise("probes/tc_mma_off", "good", "sass");
+}
+
+/// FFMA2 with `-URn.F32` / `-URn.F32x2.HI_LO` operands (probes/ffma2_ur) = GB300.
+#[test]
+fn probe_ffma2_ur_matches_hardware() {
+    probe_bitwise("probes/ffma2_ur", "good", "ptx");
+    probe_bitwise("probes/ffma2_ur", "good", "sass");
+}
+
+/// cp.async.bulk.prefetch.tensor (SASS UTMAPF.L2.2D) as a cache hint (probes/tma_prefetch)
+/// = GB300.
+#[test]
+fn probe_tma_prefetch_matches_hardware() {
+    probe_bitwise("probes/tma_prefetch", "good", "ptx");
+    probe_bitwise("probes/tma_prefetch", "good", "sass");
+}
+
+/// atom.add.f64 / red.add.f64 = ATOMG / REDG .E.ADD.F64.RN (probes/atom_f64) = GB300. The
+/// red adds to shared words do not commute for the reductions (f64 order changes bits), so the
+/// stateful explorer checks every order: one output, GB300's.
+#[test]
+fn probe_atom_f64_matches_hardware() {
+    for front in ["ptx", "sass"] {
+        let case = Case::load(root().join("probes/atom_f64")).unwrap();
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+        assert!(v.complete, "{front}: exploration incomplete");
+        assert_eq!(v.classes(), ["clean"], "{front}: {:#?}", v.findings);
+        assert_eq!(v.outputs.len(), 1, "{front}: one output");
+        let report = case.expect_report(&v.outputs[0]).unwrap();
+        assert!(
+            !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+            "{front}: {report:?}"
+        );
+    }
+}
+
+/// Generic byte accesses (LD.E.U8 / .S8, ST.E.U8) and CTA-scope global atomics (ATOMG / REDG
+/// .STRONG.SM; probes/generic8) = GB300 on both front-ends (explored: the atomic's returned
+/// value depends on the order; every order stores the same output).
+#[test]
+fn probe_generic8_matches_hardware() {
+    for front in ["ptx", "sass"] {
+        let case = Case::load(root().join("probes/generic8")).unwrap();
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+        assert!(v.complete, "{front}: exploration incomplete");
+        assert_eq!(v.classes(), ["clean"], "{front}: {:#?}", v.findings);
+        assert_eq!(v.outputs.len(), 1, "{front}: one output");
+        let report = case.expect_report(&v.outputs[0]).unwrap();
+        assert!(
+            !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+            "{front}: {report:?}"
+        );
+    }
+}
+
+/// Vector float reductions red.global.add.v4 / .v2.f32 (REDG.E.ADD.F32x4 / F32x2; probes/red_vec)
+/// = GB300 on both front-ends (explored; the sums are exact in every order).
+#[test]
+fn probe_red_vec_matches_hardware() {
+    for front in ["ptx", "sass"] {
+        let case = Case::load(root().join("probes/red_vec")).unwrap();
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+        assert!(v.complete, "{front}: exploration incomplete");
+        assert_eq!(v.classes(), ["clean"], "{front}: {:#?}", v.findings);
+        assert_eq!(v.outputs.len(), 1, "{front}: one output");
+        let report = case.expect_report(&v.outputs[0]).unwrap();
+        assert!(
+            !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+            "{front}: {report:?}"
+        );
+    }
+}
+
+/// Vector float atomics with a result, atom.global.add.v4 / .v2.f32 (ATOMG.E.ADD.F32x4 /
+/// F32x2.FTZ.RN; probes/atom_vec) = GB300 on both front-ends, returned old values included.
+#[test]
+fn probe_atom_vec_matches_hardware() {
+    probe_bitwise("probes/atom_vec", "good", "ptx");
+    probe_bitwise("probes/atom_vec", "good", "sass");
+}
+
+/// A vector atom whose destination overlaps a later source element is refused.
+#[test]
+fn atom_vec_overlap_refused() {
+    let src = std::fs::read_to_string(root().join("probes/atom_vec/kernel.ptx")).unwrap();
+    let bad = src.replace(
+        "{%f5, %f6, %f7, %f8}, [%rd6], {%f1, %f2, %f3, %f4}",
+        "{%f2, %f3, %f4, %f5}, [%rd6], {%f1, %f2, %f3, %f4}",
+    );
+    assert_ne!(bad, src);
+    let err = ptxv_ptx::parse_kernel(&bad, Some("atom_vec")).unwrap_err();
+    assert!(format!("{err:#}").contains("overlapping"), "{err:#}");
+}
+
+/// popc.b64 (two POPC + IADD3; probes/popc64) = GB300 on both front-ends.
+#[test]
+fn probe_popc64_matches_hardware() {
+    probe_bitwise("probes/popc64", "good", "ptx");
+    probe_bitwise("probes/popc64", "good", "sass");
+}
+
+/// Masked 32-byte loads (LDG.E.ENL2.256 ..., mask: ld.global.v4.b64 / .v8.b32 with some
+/// elements unused) and st.global.v4.b64 (probes/ldg256_mask) = GB300 on both front-ends.
+#[test]
+fn probe_ldg256_mask_matches_hardware() {
+    probe_bitwise("probes/ldg256_mask", "good", "ptx");
+    probe_bitwise("probes/ldg256_mask", "good", "sass");
+}
+
+/// abs / neg .f16x2 / .f16 (HADD2 |R| / -R, -RZ.H0_H0; probes/f16_absneg, every f16 pattern)
+/// = GB300 on both front-ends.
+#[test]
+fn probe_f16_absneg_matches_hardware() {
+    probe_bitwise("probes/f16_absneg", "good", "ptx");
+    probe_bitwise("probes/f16_absneg", "good", "sass");
+}
+
+/// Narrowing integer cvt to a signed type sign-extends into the destination register
+/// (probes/cvt_s8_narrow) = GB300 on both front-ends.
+#[test]
+fn probe_cvt_s8_narrow_matches_hardware() {
+    probe_bitwise("probes/cvt_s8_narrow", "good", "ptx");
+    probe_bitwise("probes/cvt_s8_narrow", "good", "sass");
+}
+
+/// div.full / div.approx .f32 by a constant = FMUL by RN(1/C), contracted like a plain mul
+/// (probes/div_const) = GB300 on both front-ends.
+#[test]
+fn probe_div_const_matches_hardware() {
+    probe_bitwise("probes/div_const", "good", "ptx");
+    probe_bitwise("probes/div_const", "good", "sass");
+}
+
+/// Signed loads into 64-bit registers sign-extend to 64 bits (probes/ld_sext64) = GB300 on
+/// both front-ends.
+#[test]
+fn probe_ld_sext64_matches_hardware() {
+    probe_bitwise("probes/ld_sext64", "good", "ptx");
+    probe_bitwise("probes/ld_sext64", "good", "sass");
+}
+
+/// membar.{cta,gl,sys} / fence.acquire.{cta,cluster,gpu,sys}: every variant's verdict on both
+/// front-ends (probes/fence_scopes; good = GB300).
+#[test]
+fn probe_fence_scopes_verdicts() {
+    for v in [
+        "good",
+        "sys",
+        "acq_sys",
+        "acq_cta",
+        "acq_cluster",
+        "rel_cta",
+        "acq_cta_local",
+    ] {
+        check_dir("probes", "fence_scopes", v, "ptx");
+        check_dir("probes", "fence_scopes", v, "sass");
+    }
+}
+
+/// E-CLOCK on both front-ends: clocks 0, vprintf a no-op noted per site, cvta.local
+/// (probes/printf_clock) = GB300.
+#[test]
+fn probe_printf_clock_matches_hardware() {
+    for front in ["ptx", "sass"] {
+        let case = Case::load(root().join("probes/printf_clock")).unwrap();
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+        assert!(v.complete, "{front}");
+        assert_eq!(v.classes(), ["clean"], "{front}: {:#?}", v.findings);
+        assert!(
+            v.findings
+                .iter()
+                .any(|f| f.kind == "note" && f.msg.contains("vprintf reachable")),
+            "{front}"
+        );
+        let report = case.expect_report(&v.outputs[0]).unwrap();
+        assert!(
+            report.iter().all(|l| l.contains("bitwise equal")),
+            "{front}: {report:?}"
+        );
+    }
+}
+
+/// PTX-FMAD for a plain mul.f32 with several readers (probes/fmad_multi): all or nothing per
+/// mul, adds of two products = GB300 on both fronts.
+#[test]
+fn probe_fmad_multi_matches_hardware() {
+    probe_bitwise("probes/fmad_multi", "good", "ptx");
+    probe_bitwise("probes/fmad_multi", "good", "sass");
+}
+
+/// min / max [.NaN] [.ftz] .abs.f32 with three sources (FMNMX3 |a|, |b|, |c|) on every triple
+/// of 16 edge patterns = GB300 on both fronts (probes/fmnmx3_abs).
+#[test]
+fn probe_fmnmx3_abs_matches_hardware() {
+    probe_bitwise("probes/fmnmx3_abs", "good", "ptx");
+    probe_bitwise("probes/fmnmx3_abs", "good", "sass");
+}
+
+/// kind::mxf8f6f4 with A in TMEM / B MN-major and with A MN-major = the K-major path = GB300 on
+/// both fronts (probes/mma_mxf8_tmem).
+#[test]
+fn probe_mma_mxf8_tmem_matches_hardware() {
+    probe_bitwise("probes/mma_mxf8_tmem", "good", "ptx");
+    probe_bitwise("probes/mma_mxf8_tmem", "good", "sass");
+}
+
+/// red.async.release.gpu.global.add as a release flag (probes/red_async) = GB300 on both
+/// fronts; the .relaxed form publishes nothing in PTX (a race), while ptxas's UREDGR releases.
+#[test]
+fn probe_red_async_matches_hardware() {
+    // A cross-CTA poll: explored (not certifiable as well-synchronized).
+    let case = Case::load(root().join("probes/red_async")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+        assert!(v.complete, "{front}");
+        assert_eq!(v.classes(), ["clean"], "{front}: {:#?}", v.findings);
+        for out in &v.outputs {
+            let report = case.expect_report(out).unwrap();
+            assert!(
+                report.iter().all(|l| l.contains("bitwise equal")),
+                "{front}: {report:?}"
+            );
+        }
+    }
+    check_dir("probes", "red_async", "relaxed", "ptx");
+    check_dir("probes", "red_async", "relaxed", "sass");
+}
+
+/// mbarrier.expect_tx / complete_tx (probes/mbar_expect_tx): tx-count steps = GB300 on both
+/// fronts; without a fence the relaxed complete_tx publishes nothing (a race on the PTX front).
+#[test]
+fn probe_mbar_expect_tx_matches_hardware() {
+    probe_bitwise("probes/mbar_expect_tx", "good", "ptx");
+    probe_bitwise("probes/mbar_expect_tx", "good", "sass");
+    check_dir("probes", "mbar_expect_tx", "relaxed", "ptx");
+    check_dir("probes", "mbar_expect_tx", "relaxed", "sass");
+}
+
+/// PTX-FMAD for plain mul.f16 (probes/fmad_f16): HFMA2 into every add / sub reader, HMUL2 +
+/// HADD2 when the product is also converted or packed = GB300 on both fronts.
+#[test]
+fn probe_fmad_f16_matches_hardware() {
+    probe_bitwise("probes/fmad_f16", "good", "ptx");
+    probe_bitwise("probes/fmad_f16", "good", "sass");
+}
+
+/// PTX-FMAD: plain mul.f32x2 products no add / sub.f32x2 reads directly (selp, fma addend,
+/// mov copy, loop-carried and unpacked; probes/f32x2_sinks) = GB300 on both fronts.
+#[test]
+fn probe_f32x2_sinks_matches_hardware() {
+    probe_bitwise("probes/f32x2_sinks", "good", "ptx");
+    probe_bitwise("probes/f32x2_sinks", "good", "sass");
+}
+
+/// S-DSMEM: mapa with a rank outside the cluster gives an undefined address, not a fault
+/// (probes/mapa_lanes): good = GB300 on both fronts; a store through it is reported (GB300
+/// fails the launch).
+#[test]
+fn probe_mapa_lanes_matches_hardware() {
+    probe_bitwise("probes/mapa_lanes", "good", "ptx");
+    probe_bitwise("probes/mapa_lanes", "good", "sass");
+    check_dir("probes", "mapa_lanes", "oob", "ptx");
+    check_dir("probes", "mapa_lanes", "oob", "sass");
+}
+
+/// cvta.to.local of a stack buffer's generic address (probes/local_cvta) = GB300 on both
+/// fronts; a generic address outside the local window converted and stored through faults.
+#[test]
+fn probe_local_cvta_matches_hardware() {
+    probe_bitwise("probes/local_cvta", "good", "ptx");
+    probe_bitwise("probes/local_cvta", "good", "sass");
+    let case = Case::load(root().join("probes/local_cvta")).unwrap();
+    let src = std::fs::read_to_string(case.dir.join("kernel.ptx")).unwrap();
+    let bad = src.replace(
+        "cvta.to.local.u64 %rd5, %rd3;",
+        "cvta.to.local.u64 %rd5, %rd2;",
+    );
+    assert_ne!(bad, src);
+    let k = ptxv_ptx::parse_kernel(&bad, Some("local_cvta")).unwrap();
+    let launch = build_launch(&case, &k).unwrap();
+    let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 200_000);
+    assert_eq!(v.classes(), ["fault"], "{:#?}", v.findings);
+    assert!(
+        v.findings
+            .iter()
+            .any(|f| f.msg.contains("outside the local window")),
+        "{:#?}",
+        v.findings
+    );
+}
+
+/// S-GLOBAL-INIT on both front-ends: module .global variables with and without initializers
+/// (probes/ptx_globals) = GB300; the zero-initialized ones are noted by name.
+#[test]
+fn probe_ptx_globals_matches_hardware() {
+    for front in ["ptx", "sass"] {
+        let case = Case::load(root().join("probes/ptx_globals")).unwrap();
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 200_000);
+        assert!(v.complete, "{front}");
+        assert_eq!(v.classes(), ["clean"], "{front}: {:#?}", v.findings);
+        assert!(
+            v.findings
+                .iter()
+                .any(|f| f.kind == "note" && f.msg.ends_with(": scratch, zero")),
+            "{front}: {:#?}",
+            v.findings
+        );
+        let report = case.expect_report(&v.outputs[0]).unwrap();
+        assert!(
+            report.iter().all(|l| l.contains("bitwise equal")),
+            "{front}: {report:?}"
+        );
+    }
+}
+
+/// elect.sync with a register membermask (probes/elect_regmask) = GB300; a partial register
+/// mask is refused on PTX when executed.
+#[test]
+fn probe_elect_regmask_matches_hardware() {
+    probe_bitwise("probes/elect_regmask", "good", "ptx");
+    probe_bitwise("probes/elect_regmask", "good", "sass");
+    check_dir("probes", "elect_regmask", "partial", "ptx");
+    check_dir("probes", "elect_regmask", "partial", "sass");
+}
+
+/// cp.async.bulk with .L2::cache_hint both ways (probes/bulk_hint) = GB300.
+#[test]
+fn probe_bulk_hint_matches_hardware() {
+    probe_bitwise("probes/bulk_hint", "good", "ptx");
+    probe_bitwise("probes/bulk_hint", "good", "sass");
+}
+
+/// call.uni __assertfail (probes/assertfail): not taken = GB300; taken, a trap on both fronts.
+#[test]
+fn probe_assertfail_matches_hardware() {
+    probe_bitwise("probes/assertfail", "good", "ptx");
+    probe_bitwise("probes/assertfail", "good", "sass");
+    check_dir("probes", "assertfail", "taken", "ptx");
+    check_dir("probes", "assertfail", "taken", "sass");
+}
+
+/// plain mul.bf16 through selp into stmatrix / tcgen05.st (probes/bf16_selp) = GB300.
+#[test]
+fn probe_bf16_selp_matches_hardware() {
+    probe_bitwise("probes/bf16_selp", "good", "ptx");
+    probe_bitwise("probes/bf16_selp", "good", "sass");
+}
+
+/// mul.f32x2 halves repacked next to other values, integer reads of the product
+/// (probes/f32x2_repack) = GB300; the identity repack {p.lo, p.hi} (FFMA2) is refused on PTX.
+#[test]
+fn probe_f32x2_repack_matches_hardware() {
+    probe_bitwise("probes/f32x2_repack", "good", "ptx");
+    probe_bitwise("probes/f32x2_repack", "good", "sass");
+    let src = std::fs::read_to_string(root().join("probes/f32x2_repack/kernel.ptx")).unwrap();
+    let ident = src.replace("{%r14, %r2}; // @K", "{%r14, %r15}; // @K");
+    assert_ne!(ident, src);
+    let e = ptxv_ptx::parse_kernel(&ident, Some("f32x2_repack")).unwrap_err();
+    assert!(format!("{e:#}").contains("mul.f32x2"), "{e:#}");
+}
+
+/// mad.wide.{s,u}16 with an immediate multiplier (probes/mad_wide16) = GB300.
+#[test]
+fn probe_mad_wide16_matches_hardware() {
+    probe_bitwise("probes/mad_wide16", "good", "ptx");
+    probe_bitwise("probes/mad_wide16", "good", "sass");
+}
+
+/// set.<cmp>.{u32,bf16x2,f16x2}.{bf16x2,f16x2} = HSET2[.BF16_V2][.BF] (probes/hset2) = GB300.
+#[test]
+fn probe_hset2_matches_hardware() {
+    probe_bitwise("probes/hset2", "good", "ptx");
+    probe_bitwise("probes/hset2", "good", "sass");
+}
+
+/// movmatrix.sync.aligned.m8n8.trans.b16 = MOVM.16.MT88 (probes/movm) = GB300.
+#[test]
+fn probe_movm_matches_hardware() {
+    probe_bitwise("probes/movm", "good", "ptx");
+    probe_bitwise("probes/movm", "good", "sass");
+}
+
+/// Multicast try_cancel (UGETNEXTWORKID.BROADCAST) in a cluster-2 launch: both CTAs get the
+/// response, whole clusters are cancelled (probes/clc_mcast); every schedule is clean.
+#[test]
+fn probe_clc_mcast_follows_hardware() {
+    let case = Case::load(root().join("probes/clc_mcast")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+        assert!(v.complete, "{front}: incomplete");
+        assert_eq!(
+            v.classes(),
+            ["nondeterministic"],
+            "{front}: {:#?}",
+            v.findings
+        );
+        let (mut cancels, mut fails) = (0, 0);
+        for o in &v.outputs {
+            let w: Vec<u32> = o
+                .chunks(4)
+                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                .collect();
+            let cta = |c: usize| &w[8 * c..8 * c + 8];
+            for cl in 0..2 {
+                let (a, b) = (cta(2 * cl), cta(2 * cl + 1));
+                // Whole clusters run or are cancelled; both CTAs get the same response.
+                assert_eq!(a[0], b[0], "{front}: cluster {cl} half ran: {w:?}");
+                if a[0] == 0 {
+                    continue;
+                }
+                assert_eq!(a[1..7], b[1..7], "{front}: responses differ: {w:?}");
+                assert_eq!((a[7], b[7]), (0, 1), "{front}: ranks: {w:?}");
+                if a[1] == 1 {
+                    cancels += 1;
+                    let x = a[2] as usize;
+                    assert!(
+                        x.is_multiple_of(2) && x / 2 != cl,
+                        "{front}: first_ctaid {x}: {w:?}"
+                    );
+                    assert_eq!(a[4..7], [0, 1, 0], "{front}: raw: {w:?}");
+                    assert_eq!((cta(x)[0], cta(x + 1)[0]), (0, 0), "{front}: ran: {w:?}");
+                } else {
+                    fails += 1;
+                    // {2, 0, 0, 0} or all zero (probes/clc_one_cluster).
+                    assert!(
+                        a[2..7] == [0, 0, 0, 0, 0] || a[2..7] == [0, 2, 0, 0, 0],
+                        "{front}: failure: {w:?}"
+                    );
+                }
+            }
+        }
+        assert!(
+            cancels > 0 && fails > 0,
+            "{front}: {cancels} cancels, {fails} failures"
+        );
+    }
+}
+
+/// A multicast try_cancel in a grid of one cluster (probes/clc_one_cluster): nothing to cancel;
+/// the failed response is {2, 0, 0, 0} (GB300's output, one of the model's outcomes) or all
+/// zero, on both fronts, with every CTA launched up front (E-CLC eager launch).
+#[test]
+fn probe_clc_one_cluster_follows_hardware() {
+    let case = Case::load(root().join("probes/clc_one_cluster")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+        assert!(v.complete, "{front}: incomplete");
+        assert_eq!(
+            v.classes(),
+            ["nondeterministic"],
+            "{front}: {:#?}",
+            v.findings
+        );
+        assert_eq!(v.outputs.len(), 2, "{front}");
+        let gpu = v.outputs.iter().filter(|o| {
+            case.expect_report(o)
+                .unwrap()
+                .iter()
+                .all(|l| l.contains("bitwise equal"))
+        });
+        assert_eq!(
+            gpu.count(),
+            1,
+            "{front}: GB300's output is one of the outcomes"
+        );
+    }
+}
+
+/// add.u16x2 / add.s16x2 as VIADD.16x2, register and immediate b: two 16-bit lanes, no carry
+/// between them (probes/viadd16x2) = GB300.
+#[test]
+fn probe_viadd16x2_matches_hardware() {
+    probe_bitwise("probes/viadd16x2", "good", "ptx");
+    probe_bitwise("probes/viadd16x2", "good", "sass");
 }
 
 /// A binary case with several launches (rung 4a: torch's symmetric-memory all-reduce on three
@@ -1453,6 +3030,31 @@ fn s_cas_variants() {
     }
 }
 
+/// Module data globals (fixtures/s_globals, S-GLOBAL-INIT): three launches of one module share
+/// `counter` (a case buffer, `symbol = "counter"`) and `table` (automatic, from
+/// .nv.global.init); outputs = GB300's. Unordered launches race on the globals.
+#[test]
+fn s_globals_variants() {
+    let case = Case::load(root().join("fixtures/s_globals")).unwrap();
+    for v in ["good", "unordered"] {
+        let vcase = case.for_variant(v).unwrap();
+        let m = r4a_machine(&vcase, v);
+        let names: Vec<&str> = m.launch.allocs.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["out", "counter", "global:table"]);
+        let r = explore(m, 200_000);
+        let expect = case.variant(v).unwrap().expect_for("sass");
+        assert!(r.complete && r.meets(&expect), "{v}: {:?}", r.classes());
+        assert!(r.assumptions.iter().any(|a| a == "S-GLOBAL-INIT"));
+        if v == "good" {
+            let report = case.expect_report(&r.outputs[0]).unwrap();
+            assert!(
+                report.len() == 1 && report[0].contains("bitwise equal"),
+                "{report:?}"
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------- rung 4b (docs/rung4.md)
 
 /// Rung 4b: one deterministic schedule of the whole MoE layer (2 GPUs, 28 launches: DeepEP
@@ -1478,7 +3080,12 @@ fn r4b_moe_run_matches_the_gpu() {
     assert!(!case.m.poll_acquire);
     let (m, fs, ok) = r4b_run(&case, "good");
     assert!(ok, "not terminal");
-    let kinds: std::collections::BTreeSet<_> = fs.iter().map(|f| f.kind.as_str()).collect();
+    // Notes (S-SAME-VALUE) are not findings.
+    let kinds: std::collections::BTreeSet<_> = fs
+        .iter()
+        .filter(|f| f.kind != "note")
+        .map(|f| f.kind.as_str())
+        .collect();
     assert_eq!(kinds, ["contract", "race"].into_iter().collect(), "{fs:?}");
     let report = case.expect_report(&m.outputs()).unwrap();
     assert!(
@@ -1711,6 +3318,7 @@ fn r4b_notify_group_is_exhaustive() {
         each[1]
             .findings
             .iter()
+            .filter(|f| f.kind != "note")
             .all(|f| f.msg.contains("notify_dispatch"))
     );
     // The hardware model.
@@ -1746,6 +3354,7 @@ fn r4b_notify_group_is_exhaustive() {
     let mut got: Vec<(String, String, String)> = v1
         .findings
         .iter()
+        .filter(|f| f.kind != "note")
         .map(|f| {
             let g = f.gb300.as_ref().expect("classified");
             if g.class == "latent-closed-world" {
@@ -1804,6 +3413,7 @@ fn r4b_torch_group_certifies() {
         each[0]
             .findings
             .iter()
+            .filter(|f| f.kind != "note")
             .all(|f| f.sig.starts_with("bulk-store-at-exit:")),
         "{:#?}",
         each[0].findings
@@ -1870,6 +3480,25 @@ fn l1_litmus() {
             let op = dv.findings.iter().any(|x| x.sig.starts_with("stale-l1:"));
             let mut dc = dv.classes();
             dc.retain(|c| c != "nondeterministic");
+            // DPOR does not run the E-RACE-DEAD probe: a race the stateful explorer marked
+            // dead (neg-payld's masked stress load) stays a race there, with the same sig.
+            let dead: Vec<&str> = sv
+                .findings
+                .iter()
+                .filter(|x| x.kind == "race-dead")
+                .map(|x| x.sig.as_str())
+                .collect();
+            if !dead.is_empty() {
+                assert!(
+                    dead.iter().all(|s| dv.findings.iter().any(|x| x.sig == *s)),
+                    "{v}/{f} (DPOR): {:#?}",
+                    dv.findings
+                );
+                dc.retain(|c| c != "race");
+                if dc.is_empty() {
+                    dc.push("clean".into());
+                }
+            }
             assert_eq!(dc, want, "{v}/{f} (DPOR): {:#?}", dv.findings);
             assert!(
                 !op || stale,
@@ -2192,7 +3821,7 @@ fn r4b_coreader_notify() {
     assert!(v.complete);
     assert_eq!(v.classes(), ["stale"], "{:#?}", v.findings);
     assert_eq!(stale_pcs(&v), want);
-    for f in &v.findings {
+    for f in v.findings.iter().filter(|f| f.kind != "note") {
         assert!(
             f.msg.contains("kernel 2 CTA 0 + kernel 4 CTA 0")
                 || f.msg.contains("kernel 3 CTA 0 + kernel 5 CTA 0"),
@@ -2449,6 +4078,62 @@ fn twolevel_r1f_pingpong() {
     }
 }
 
+/// E-HW-WEAK-FLAG: a weak flag store after fence.sc.sys (msl DeepEP nvlink barrier) races in
+/// the strict model and is latent under the hardware model; without the writer's fence the
+/// race stays observable.
+#[test]
+fn twolevel_weak_flag() {
+    if std::env::var("PTXV_HW_L1").is_ok() || std::env::var("PTXV_HW_MODEL").is_ok() {
+        return;
+    }
+    let case = Case::load(root().join("fixtures/e_weak_flag")).unwrap();
+    for f in ["ptx", "sass"] {
+        for v in ["good", "nofence"] {
+            let k = kernel(&case, v, f);
+            let launch = build_launch(&case, &k).unwrap();
+            let m1 = Machine::new(Arc::new(k), Arc::new(launch));
+            let mut v1 = explore(m1.clone(), 100_000);
+            assert!(v1.findings.iter().any(|x| x.kind == "race"), "{v} {f}");
+            let why = ptxv_sim::twolevel::wanted(&v1, &m1.launch).unwrap();
+            ptxv_sim::twolevel::run(&mut v1, &m1, why, &mut |m| explore(m, 100_000));
+            let obs = v1
+                .findings
+                .iter()
+                .any(|x| x.gb300.as_ref().is_some_and(|g| g.class == "observable"));
+            assert_eq!(obs, v == "nofence", "{v} {f}: {:#?}", v1.findings);
+        }
+    }
+}
+
+/// E-HW-CORW: a plain store that clears a word its thread polled strongly (DeepEP hybrid
+/// dispatch clearing NIC-written slots, docs/nic.md finding L) races in the strict model; on
+/// GB300 the clear is coherence-after the store it read (latent). The store/poll race stays
+/// observable; a weak poll or no poll leaves the write-write race observable.
+#[test]
+fn twolevel_hw_corw() {
+    if std::env::var("PTXV_HW_L1").is_ok() || std::env::var("PTXV_HW_MODEL").is_ok() {
+        return;
+    }
+    let case = Case::load(root().join("fixtures/e_hw_corw")).unwrap();
+    for f in ["ptx", "sass"] {
+        for v in ["good", "weakpoll", "noread"] {
+            let k = kernel(&case, v, f);
+            let launch = build_launch(&case, &k).unwrap();
+            let m1 = Machine::new(Arc::new(k), Arc::new(launch));
+            let mut v1 = explore(m1.clone(), 100_000);
+            let ww =
+                |x: &ptxv_sim::machine::Finding| x.kind == "race" && x.msg.contains("write-write");
+            assert!(v1.findings.iter().any(ww), "{v} {f}: {:#?}", v1.findings);
+            let why = ptxv_sim::twolevel::wanted(&v1, &m1.launch).unwrap();
+            ptxv_sim::twolevel::run(&mut v1, &m1, why, &mut |m| explore(m, 100_000));
+            for x in v1.findings.iter().filter(|x| ww(x)) {
+                let c = &x.gb300.as_ref().unwrap().class;
+                assert_eq!(c == "observable", v != "good", "{v} {f}: {:#?}", x);
+            }
+        }
+    }
+}
+
 /// E-POLL-ACQ is refuted: a case that sets `poll_acquire` is refused unless it opts in
 /// explicitly (`assume_refuted`), and the launch then names the opt-in. Only refuted IDs can be
 /// opted into.
@@ -2615,10 +4300,18 @@ fn s_lift_l_matches_hardware() {
 }
 
 /// tcgen05.ld.red (LDTM.STAT.xN.MIN|MAX[ABS].F32[.NAN]) and a negative TMEM offset
-/// (`tmem[UR+-0x10]`): probes/tmem_ldred agrees with GB300 bitwise (2026-11-05, 100/100).
+/// (`tmem[UR+-0x10]`): probes/tmem_ldred agrees with GB300 bitwise (2026-11-05, 100/100), on
+/// the PTX front-end too (tcgen05.ld.red.32x32b).
 #[test]
 fn probe_tmem_ldred_matches_hardware() {
     certified_hash("probes", "tmem_ldred", 16475847427938539045);
+    let case = Case::load(root().join("probes/tmem_ldred")).unwrap();
+    let v = certify_ptx_file(&case);
+    assert_eq!(
+        fnv(&v.outputs[0]),
+        16475847427938539045,
+        "ptx: output differs from GB300's"
+    );
 }
 
 /// E-COLLECTIVE-ALL: ptxas's BRA.DIV / WARPSYNC.COLLECTIVE.ALL / BAR.SYNC R, R / ENDCOLLECTIVE
@@ -2677,6 +4370,478 @@ fn e_stasync_complete_tx() {
     for front in ["ptx", "sass"] {
         check_stateful("e_stasync", "SA2", front, 100_000);
     }
+}
+
+/// S-INIT through FFMA2 (fixtures/e_uninit_f32x2): each lane of a packed f32x2 FMA reads only
+/// the same lane of its operands, so an undefined lane 1 leaves lane 0 defined (SASS clean;
+/// storing the undefined lane is reported).
+#[test]
+fn ffma2_lanes_keep_their_own_undefined_bits() {
+    both("e_uninit_f32x2", "good");
+    both("e_uninit_f32x2", "hi");
+}
+
+/// S-INIT per lane of a PTX f32x2 virtual register (fixtures/e_uninit_f32x2_lanes): a
+/// `mov.b64 {a, b}` pack of a defined and an undefined lane keeps the defined lane defined
+/// through add.f32x2 and the unpack; storing the undefined lane is reported.
+#[test]
+fn ptx_f32x2_register_lanes_keep_their_own_undefined_bits() {
+    both("e_uninit_f32x2_lanes", "good");
+    both("e_uninit_f32x2_lanes", "store_hi");
+}
+
+/// S-INIT per byte of narrow conversions on the PTX front (fixtures/e_uninit_cvt_lanes): the
+/// defined low byte of an e4m3x2 pair and of a narrowed word of e2m1x2 bytes, stored with
+/// st.b8, is clean; storing the 16-bit value with its undefined byte is reported.
+#[test]
+fn cvt_pack_bytes_keep_their_own_undefined_bits() {
+    for v in ["good", "store_pair", "store_packed"] {
+        both("e_uninit_cvt_lanes", v);
+    }
+}
+
+/// PTX vector operands (fixtures/e_vec_regs): `Op::dst_regs` / `src_regs` name every element
+/// register, so each analysis built on them agrees between the PTX and SASS fronts:
+/// verdicts and outputs (explorer, DPOR, S-INIT poison of mma.sync's four accumulator
+/// registers), input coverage (element 4's comparison and address), the input-data taint
+/// (E-CTA-REP / N-EQUIV precondition) and the constant-guard analysis (E-CONST-BRA).
+#[test]
+fn vector_operand_registers_ptx_sass_parity() {
+    for v in ["good", "mma"] {
+        both("e_vec_regs", v);
+    }
+    let case = Case::load(root().join("fixtures/e_vec_regs")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let m = Machine::new(Arc::new(k), Arc::new(launch));
+        // Input coverage: element 4 (in[4t+3], bytes 12..511) is compared and addresses the
+        // store.
+        let c = ptxv_sim::coverage::analyze(&m);
+        assert_eq!(c.comparisons.len(), 1, "{front}: {:#?}", c.comparisons);
+        let i = &c.comparisons[0].inputs[0];
+        assert_eq!(
+            (i.buffer.as_str(), i.bytes),
+            ("in", Some([12, 511])),
+            "{front}"
+        );
+        assert!(
+            !c.input_independent && !c.input_dependent.is_empty(),
+            "{front}: {c:#?}"
+        );
+        // The input-data taint (rep.rs data run): the address depends on loaded bytes.
+        let mut mt = m.clone();
+        let mut ns = ptxv_sim::num::NumState::with_mma_eps(mt.launch.mma_model.eps());
+        ns.taint.all_global = true;
+        mt.num = Some(Box::new(ns));
+        let (mt, _, ok) = ptxv_sim::explore::run_once(mt);
+        assert!(ok);
+        let tv = &mt.num.as_ref().unwrap().taint.violations;
+        assert!(
+            tv.iter().any(|v| v.contains("depends on input data")),
+            "{front}: {tv:?}"
+        );
+        // E-CONST-BRA: the branch on element 4 is not folded (0 before the load); ptxas
+        // predicates the store instead of branching.
+        let bra =
+            m.k.code
+                .iter()
+                .position(|i| matches!(i.op, ptxv_ir::Op::Bra { .. }) && !i.guard.is_always());
+        assert!(bra.is_some() || front == "sass");
+        if let Some(bra) = bra {
+            assert_eq!(m.bar_cfg.fold[bra], None, "{front}: {}", m.k.describe(bra));
+        }
+    }
+}
+
+/// S-INIT through 16-bit-source conversions (fixtures/e_uninit_half_cvt): F2F.F64.BF16 reads
+/// only the low half that ptxas's PRMT zeroed (or the predicated LDG.E.U16 wrote), not the
+/// unwritten high half.
+#[test]
+fn half_source_conversion_reads_its_half() {
+    both("e_uninit_half_cvt", "good");
+}
+
+/// E-CPASYNC-EXIT (fixtures/e_cpasync_exit): an exit with a cp.async never waited for whose
+/// destination nobody reads is a contract finding; reading the destination without a wait
+/// (the issuer itself, or another warp after a bar.sync) is a race; after wait_group 0 both
+/// reads are clean. The GB300 profile discharges the contract.
+#[test]
+fn cpasync_exit_is_contract_unless_read() {
+    for v in ["good", "read", "wait", "other_wait"] {
+        both("e_cpasync_exit", v);
+    }
+    // The race leaves outcomes DPOR also enumerates: the stateful verdict only.
+    check_stateful("e_cpasync_exit", "other", "ptx", 100_000);
+    check_stateful("e_cpasync_exit", "other", "sass", 100_000);
+    let p = ptxv_sim::hwprofile::GB300;
+    assert!(
+        p.iter()
+            .any(|i| i.id == "E-CPASYNC-EXIT" && i.discharges == ["cp-async-exit:"])
+    );
+}
+
+/// S-TCGEN05 (fixtures/s_tc_st_mma): a thread's own tcgen05.st, wait::st, then its
+/// tcgen05.mma with no tcgen05.fence in that thread is ordered; the MMA issued before the
+/// wait::st races with the store.
+#[test]
+fn own_tcgen05_st_wait_orders_later_mma() {
+    both("s_tc_st_mma", "good");
+    // The race leaves outcomes DPOR also enumerates: the stateful verdict only.
+    check_stateful("s_tc_st_mma", "early", "ptx", 100_000);
+    check_stateful("s_tc_st_mma", "early", "sass", 100_000);
+}
+
+/// Input coverage and input mutation (fixtures/e_sentinel_fill, the shape of a
+/// bucket-fill kernel): on the all-valid input the check is clean with one untaken
+/// input-dependent side (`ok != 0` never false); setting ok = 0 in two lanes of different warps
+/// gives the race on the sentinel word; the fixed shape (only valid lanes store) stays clean;
+/// a comparison of a value computed from the input word is refused.
+#[test]
+fn input_coverage_and_mutation_find_the_sentinel_race() {
+    let case = Case::load(root().join("fixtures/e_sentinel_fill")).unwrap();
+    for front in ["ptx", "sass"] {
+        for (v, want) in [("good", "race"), ("fixed", "clean")] {
+            both("e_sentinel_fill", v);
+            let k = kernel(&case, v, front);
+            let launch = build_launch(&case, &k).unwrap();
+            let m = Machine::new(Arc::new(k), Arc::new(launch));
+            let c = ptxv_sim::coverage::analyze(&m);
+            assert_eq!(c.untaken.len(), 1, "{v}/{front}: {:#?}", c.untaken);
+            assert!(
+                !c.untaken[0].never && c.untaken[0].sources.starts_with("ok["),
+                "{:#?}",
+                c.untaken
+            );
+            // Control and addresses depend on the input (the flag guards the slot store,
+            // the bucket id is its address).
+            assert!(!c.input_independent && !c.input_dependent.is_empty());
+            assert_eq!(c.comparisons.len(), 1);
+            assert_eq!((c.comparisons[0].n_true, c.comparisons[0].n_false), (64, 0));
+            // Declared invariants (ok in {0, 1}, bucket in [0, 63]) hold on the capture.
+            let inv =
+                |buffer: &str, values: Option<Vec<i64>>, min, max| ptxv_sim::coverage::Invariant {
+                    buffer: buffer.into(),
+                    values,
+                    min,
+                    max,
+                    elem: 4,
+                    signed: false,
+                };
+            let (dom, notes) = ptxv_sim::coverage::Domain::new(
+                &m,
+                vec![
+                    inv("ok", Some(vec![0, 1]), None, None),
+                    inv("bucket", None, Some(0), Some(63)),
+                ],
+            );
+            assert!(
+                notes
+                    .iter()
+                    .all(|n| n.contains("holds on the captured input")),
+                "{notes:#?}"
+            );
+            let (muts, refused) = ptxv_sim::coverage::plan(&m, &c, 4, 2, &dom);
+            assert!(refused.is_empty(), "{refused:#?}");
+            assert_eq!(muts.len(), 1);
+            assert_eq!(muts[0].label, "ok[0]=0, ok[32]=0");
+            assert!(muts[0].within_invariants);
+            // Unconstrained (no invariants): the same mutation, not within declared invariants.
+            let (m2, _) = ptxv_sim::coverage::plan(&m, &c, 4, 2, &Default::default());
+            assert!(m2[0].label == muts[0].label && !m2[0].within_invariants);
+            // ok in {1} admits no flipping value; ok in {2} does not hold on the capture.
+            let (d1, _) =
+                ptxv_sim::coverage::Domain::new(&m, vec![inv("ok", Some(vec![1]), None, None)]);
+            let (m1, r1) = ptxv_sim::coverage::plan(&m, &c, 4, 2, &d1);
+            assert!(
+                m1.is_empty() && r1[0].reason.contains("declared invariant"),
+                "{r1:#?}"
+            );
+            let (_, n2) =
+                ptxv_sim::coverage::Domain::new(&m, vec![inv("ok", Some(vec![2]), None, None)]);
+            assert!(
+                n2[0].contains("does not hold") && n2[0].contains("64 of 64"),
+                "{n2:#?}"
+            );
+            let w = ptxv_sim::wellsync::check_certified(
+                ptxv_sim::coverage::apply(&m, &muts[0]),
+                100_000,
+            );
+            assert_eq!(
+                w.classes(),
+                vec![want.to_string()],
+                "{v}/{front}: {:#?}",
+                w.findings
+            );
+        }
+        let k = kernel(&case, "derived", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let m = Machine::new(Arc::new(k), Arc::new(launch));
+        let c = ptxv_sim::coverage::analyze(&m);
+        let (muts, refused) = ptxv_sim::coverage::plan(&m, &c, 4, 2, &Default::default());
+        assert!(
+            muts.is_empty() && refused.len() == 1,
+            "{front}: {muts:#?} {refused:#?}"
+        );
+        assert!(
+            refused[0].reason.contains("not a single input word"),
+            "{refused:#?}"
+        );
+    }
+}
+
+/// Input coverage beyond comparisons: a kernel whose control, addresses and synchronization
+/// do not touch input data is input-independent (fixtures/s_init); an input-derived FCHK
+/// (division slow-path test, captured silu, fixtures/c_silu) is a site B does not flip, and
+/// the slow path behind it is unexecuted code behind an input-dependent condition.
+#[test]
+fn input_independence_and_predicate_sites() {
+    let run = |name: &str, front: &str| {
+        let case = Case::load(root().join("fixtures").join(name)).unwrap();
+        let k = match &case.m.cubin {
+            Some(c) => ptxv_sass::load_cubin(&case.dir.join(c), &case.m.entry).unwrap(),
+            None => kernel(&case, "good", front),
+        };
+        let launch = build_launch(&case, &k).unwrap();
+        let m = Machine::new(Arc::new(k), Arc::new(launch));
+        ptxv_sim::coverage::analyze(&m)
+    };
+    for front in ["ptx", "sass"] {
+        let c = run("s_init", front);
+        assert!(
+            c.input_independent && c.input_dependent.is_empty() && c.untaken.is_empty(),
+            "{front}: {c:#?}"
+        );
+    }
+    let c = run("c_silu", "sass");
+    assert!(!c.input_independent);
+    assert_eq!(c.untaken.len(), 8, "{:#?}", c.untaken);
+    assert!(
+        c.untaken.iter().all(|u| u.at.contains("FCHK") && u.never),
+        "{:#?}",
+        c.untaken
+    );
+    assert!(c.untaken.iter().all(|u| {
+        u.refuse
+            .as_deref()
+            .is_some_and(|r| r.contains("not a comparison"))
+    }));
+    assert!(c.behind_input > 0 && c.unexecuted.iter().any(|g| g.gate == "input"));
+}
+
+/// S-INIT lane precision for narrow packs (fixtures/e_uninit_lanes): F2FP pack / unpack and
+/// HADD2.F32 of one half keep undefined bits per lane, so a defined low lane stays defined.
+#[test]
+fn narrow_pack_lanes_keep_their_own_undefined_bits() {
+    both("e_uninit_lanes", "good");
+    both("e_uninit_lanes", "hi");
+}
+
+/// S-INIT through a warp reduction (fixtures/e_uninit_redux): redux.sync carries undefined
+/// operand bits to its result; warp 1's undefined sum, dropped: clean (was reported at the
+/// REDUX, Triton cross-warp reduction dash/5819); stored: reported.
+#[test]
+fn undefined_values_through_redux() {
+    both("e_uninit_redux", "good");
+    both("e_uninit_redux", "store_all");
+}
+
+/// S-INIT for tcgen05.ld of never-written TMEM (fixtures/e_uninit_tmem): the registers are
+/// undefined and the load is a note (`tmem-uninit-ld`); unused: clean (was a violation,
+/// Triton peeled prologue dash/5713); stored: reported.
+#[test]
+fn never_written_tmem_load_is_a_note() {
+    both("e_uninit_tmem", "good");
+    both("e_uninit_tmem", "use");
+    let case = Case::load(root().join("fixtures/e_uninit_tmem")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let r = explore(Machine::new(Arc::new(k), Arc::new(launch)), 10_000);
+        assert!(
+            r.findings
+                .iter()
+                .any(|f| f.kind == "note" && f.sig.starts_with("tmem-uninit-ld:")),
+            "{front}: {:#?}",
+            r.findings
+        );
+    }
+}
+
+/// S-INIT-FILLS (fixtures/e_uninit_fills): undefined registers reach the output only as
+/// data; min(x, -inf) gives the same outputs in every fill: `undef-insensitive` (empirical);
+/// x + 1 does not: still a violation.
+#[test]
+fn multi_fill_rerun_separates_value_insensitive_outputs() {
+    both("e_uninit_fills", "good");
+    both("e_uninit_fills", "add");
+}
+
+/// The second level of the two-level verdict: the SASS front under the GB300 hardware
+/// profile (hwprofile.rs), certificate first, profile-discharged contract findings removed.
+fn sass_gb300(case: &str, variant: &str) -> String {
+    let case = Case::load(root().join("fixtures").join(case)).unwrap();
+    let k = kernel(&case, variant, "sass");
+    let launch = build_launch(&case, &k).unwrap();
+    let m = Machine::new(Arc::new(k), Arc::new(launch));
+    let p = ptxv_sim::hwprofile::GB300;
+    let m2 = ptxv_sim::hwprofile::machine(&m, p);
+    let mut v = ptxv_sim::wellsync::check_certified(m2.clone(), 100_000);
+    ptxv_sim::hwprofile::discharge(&mut v, &m2, p);
+    ptxv_sim::hwprofile::result(&v)
+}
+
+/// Two-level verdict (fixtures/e_twolevel_bulk): no wait_group.read before exit is a contract
+/// deviation at level 1 and certifies under the GB300 profile (E-BULK-EXIT); without the
+/// proxy fence both levels report the race; with the wait both are clean.
+#[test]
+fn contract_only_kernel_certifies_under_the_gb300_profile() {
+    for v in ["good", "waited", "nofence"] {
+        both("e_twolevel_bulk", v);
+    }
+    assert_eq!(sass_gb300("e_twolevel_bulk", "good"), "certified");
+    assert_eq!(sass_gb300("e_twolevel_bulk", "waited"), "certified");
+    assert_eq!(sass_gb300("e_twolevel_bulk", "nofence"), "race");
+}
+
+/// A bounded search never reports `clean` (fixtures/e_deep_race): a race deep in a wide state
+/// space, under a 20k-state cap, at 1, 8, 32 and 64 worker threads, is the race (found by the
+/// search or by the deterministic run to the end that follows a search with no terminal
+/// state); the race-free variant is `inconclusive`. Before, 8+ workers spent the cap
+/// breadth-first and reported `clean` with no terminal state.
+#[test]
+fn bounded_search_never_reports_clean() {
+    let case = Case::load(root().join("fixtures/e_deep_race")).unwrap();
+    for front in ["ptx", "sass"] {
+        for workers in [1, 8, 32, 64] {
+            for (v, want) in [("good", "race"), ("one", "inconclusive")] {
+                let k = kernel(&case, v, front);
+                let launch = build_launch(&case, &k).unwrap();
+                let r = ptxv_sim::explore::explore_threads(
+                    Machine::new(Arc::new(k), Arc::new(launch)),
+                    20_000,
+                    workers,
+                );
+                let c = r.classes();
+                assert!(
+                    !r.complete && !c.iter().any(|x| x == "clean"),
+                    "{v}/{front}/{workers}: {c:?}"
+                );
+                assert!(c.iter().any(|x| x == want), "{v}/{front}/{workers}: {c:?}");
+            }
+        }
+    }
+}
+
+/// S-INIT through shared memory (fixtures/e_uninit_smem): an STS of undefined data marks the
+/// bytes undefined, an LDS of them gives undefined registers; discarded: clean; stored to
+/// global memory: reported.
+#[test]
+fn undefined_values_through_shared_memory() {
+    both("e_uninit_smem", "good");
+    both("e_uninit_smem", "store_all");
+}
+
+/// S-INIT per byte for vector stores (fixtures/e_uninit_vec): a v4 store with one undefined
+/// register marks only its 4 bytes; reading the defined lanes, or overwriting the undefined
+/// global lane before exit, is clean; reading the undefined lane, or leaving it, is reported.
+#[test]
+fn vector_store_with_one_undefined_lane() {
+    for v in ["good", "read_undef", "keep_undef"] {
+        both("e_uninit_vec", v);
+    }
+}
+
+/// Root pairs (S-SMEM-STRONG, fixtures/e_smem_root): a cross-warp STS / LDS pair with no
+/// barrier is no race in SASS, but the output depends on it; the certified check lists the
+/// pair first as an `unordered` finding (not a verdict class) next to the nondeterminism.
+#[test]
+fn unordered_smem_pair_is_listed_as_root_cause() {
+    check("e_smem_root", "good", "sass");
+    check_stateful("e_smem_root", "good", "ptx", 10_000);
+    let case = Case::load(root().join("fixtures/e_smem_root")).unwrap();
+    let k = kernel(&case, "good", "sass");
+    let launch = build_launch(&case, &k).unwrap();
+    let v =
+        ptxv_sim::wellsync::check_certified(Machine::new(Arc::new(k), Arc::new(launch)), 10_000);
+    assert_eq!(v.classes(), ["nondeterministic"], "{:#?}", v.findings);
+    let f = v.findings.first().expect("a root-cause finding");
+    assert_eq!(f.kind, "unordered", "{:#?}", v.findings);
+    assert!(
+        f.sig.starts_with("unordered-smem:") && f.pcs.len() == 2,
+        "{f:#?}"
+    );
+}
+
+/// S-INIT poison propagation (fixtures/e_uninit_discard): undefined registers of lanes that
+/// skipped a predicated load flow through a 64-bit add (SASS: a carry-out predicate) into a
+/// store under the same predicate: clean. An unpredicated store or a branch on the sum is a
+/// sink: reported (the store: global bytes still undefined when the launch ends). The SASS good
+/// kernel used to be reported at the IADD3 with the carry-out.
+#[test]
+fn undefined_values_discarded_by_predicated_store_are_clean() {
+    for v in ["good", "store_all", "branch"] {
+        both("e_uninit_discard", v);
+    }
+    let case = Case::load(root().join("fixtures/e_uninit_discard")).unwrap();
+    // The sink: the store (`ST`), or the branch (SASS: ptxas folds it into `@P0 EXIT`).
+    for (v, at) in [("store_all", &["ST"][..]), ("branch", &["BRA", "EXIT"][..])] {
+        for front in ["ptx", "sass"] {
+            let k = kernel(&case, v, front);
+            let launch = build_launch(&case, &k).unwrap();
+            let r = explore(Machine::new(Arc::new(k), Arc::new(launch)), 10_000);
+            assert!(
+                r.findings.iter().any(|f| (f.sig.starts_with("uninit-reg:")
+                    || f.sig.starts_with("uninit-gmem-exit:"))
+                    && at.iter().any(|a| f
+                        .msg
+                        .rsplit(" at ")
+                        .next()
+                        .unwrap_or("")
+                        .to_ascii_uppercase()
+                        .contains(a))),
+                "{v}/{front}: {:#?}",
+                r.findings
+            );
+        }
+    }
+}
+
+/// A warp-local stmatrix -> ld.shared exchange (fixtures/e_stsm_warp): ptxas drops the
+/// `bar.warp.sync -1`, so on SASS the LDS is ordered after the other lanes' STSM by lockstep
+/// alone (E-LOCKSTEP); it used to be a write-read race on the SASS front-end. Without the
+/// `bar.warp.sync` the PTX race between lanes of the converged warp is reported and labelled
+/// latent-needs-divergence; a store inside a lane-dependent branch is not labelled.
+#[test]
+fn e_stsm_warp_lockstep() {
+    both("e_stsm_warp", "good");
+    both("e_stsm_warp", "nosync");
+    // Overlapping stmatrix rows (E-STSM-DUP): same value once, different values a violation.
+    both("e_stsm_warp", "dup");
+    both("e_stsm_warp", "dupdiff");
+    // divst/ptx: a race left in; the stateful explorer reports one order and DPOR also the
+    // reversed one (nondeterministic), as in e_lds_atoms (E-DRF): checked below, not by `both`.
+    check("e_stsm_warp", "divst", "sass");
+    let case = Case::load(root().join("fixtures/e_stsm_warp")).unwrap();
+    let label = |variant: &str| -> Vec<Option<String>> {
+        let k = kernel(&case, variant, "ptx");
+        let launch = build_launch(&case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 10_000);
+        v.findings
+            .iter()
+            .filter(|f| f.kind == "race")
+            .map(|f| f.gb300.as_ref().map(|g| g.class.clone()))
+            .collect()
+    };
+    let l = label("nosync");
+    assert!(
+        !l.is_empty()
+            && l.iter()
+                .all(|c| c.as_deref() == Some(ptxv_sim::twolevel::LATENT_DIV)),
+        "{l:?}"
+    );
+    let l = label("divst");
+    assert!(!l.is_empty() && l.iter().all(|c| c.is_none()), "{l:?}");
 }
 
 /// 64-bit selp (b64 / u64 / s64, register and immediate operands) keeps all 64 bits, on both
@@ -2765,6 +4930,68 @@ fn e_rmsnorm_cluster_drain_remote_arrive_exit_drain() {
     }
 }
 
+/// E-REMOTE-FIFO (opt-in): remote arrivals from one CTA to one CTA land in happens-before
+/// issue order (FA4 2-CTA teardown shape): clean with the option, a violation without it,
+/// and still a violation when no barrier orders the two issues or the first comes after.
+#[test]
+fn e_remote_fifo_orders_hb_ordered_arrivals() {
+    for v in ["good", "nobar", "late"] {
+        both("e_remote_fifo", v);
+    }
+    both("e_remote_fifo_strict", "good");
+}
+
+/// C-POLL-ATOM (E-WELLSYNC): an arrival counter of atomic adds polled to its full count is
+/// certified; a poll that exits on a partial count is refused and races.
+#[test]
+fn e_poll_atom_counter_poll() {
+    for v in ["good", "reset", "ge1"] {
+        both("e_poll_atom", v);
+    }
+}
+
+/// S-SAME-VALUE with the reader's own store (msl DeepEP DeviceSyncer currentCountIdx): two
+/// CTAs store the same value and read it back: clean. A different value, a reader without its
+/// own store, or a different-valued store that happens before the read but is unordered with
+/// the reader's store: race.
+#[test]
+fn s_sv_own_store() {
+    both("s_sv_own", "good");
+    // Racing variants: the stateful explorer's verdict only (DPOR also enumerates the
+    // nondeterministic outputs the race leaves).
+    stateful_classes("s_sv_own", &["diff", "noown", "xhb"]);
+}
+
+/// E-HW-CORW fixture classes at level 1 (the level-2 classification: twolevel_hw_corw).
+#[test]
+fn e_hw_corw_classes() {
+    stateful_classes("e_hw_corw", &["good", "weakpoll", "noread"]);
+}
+
+/// C-TICKET fixture classes (the certificate side: tests/wellsync.rs).
+#[test]
+fn e_ticket_classes() {
+    both("e_ticket", "good");
+    stateful_classes("e_ticket", &["ctaid", "race"]);
+}
+
+/// The stateful explorer's classes of `variants` on both front-ends equal the expected ones.
+fn stateful_classes(case: &str, variants: &[&str]) {
+    let case = Case::load(root().join("fixtures").join(case)).unwrap();
+    for &v in variants {
+        for f in ["ptx", "sass"] {
+            let k = kernel(&case, v, f);
+            let launch = build_launch(&case, &k).unwrap();
+            let r = explore(Machine::new(Arc::new(k), Arc::new(launch)), 100_000);
+            assert_eq!(
+                r.classes(),
+                case.variant(v).unwrap().expect_for(f),
+                "{v} {f}"
+            );
+        }
+    }
+}
+
 /// S-ALIGN: misaligned ld / st / atom of every width are faults on both front-ends (GB300
 /// traps: misaligned address, fixtures/e_misaligned).
 #[test]
@@ -2780,4 +5007,57 @@ fn e_misaligned_accesses_fault() {
 fn e_stasync_wide_widths() {
     both("e_stasync_wide", "good");
     both("e_stasync_wide", "SW1");
+}
+
+/// `MATCH.ANY` / `MATCH.ANY.U64` (full warp and in a divergent branch) and `UBLKPF.L2`
+/// (fixtures/s_match) agree with GB300 bitwise (200 runs, 2026-11-06).
+#[test]
+fn s_match_matches_hardware() {
+    let case = Case::load(root().join("fixtures/s_match")).unwrap();
+    let k = binary_kernel(&case, "good").unwrap();
+    let n = k
+        .code
+        .iter()
+        .filter(|i| matches!(i.op, ptxv_ir::Op::MatchAny { .. }))
+        .count();
+    assert_eq!(n, 3, "MATCH.ANY forms lowered");
+    let launch = build_launch(&case, &k).unwrap();
+    let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 100_000);
+    assert!(v.findings.is_empty(), "{:#?}", v.findings);
+    assert_eq!(v.outputs.len(), 1);
+    let report = case.expect_report(&v.outputs[0]).unwrap();
+    assert!(
+        !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+        "{report:?}"
+    );
+}
+
+/// `HFMA2.BF16_V2` (register and pair-immediate forms), `HADD2.BF16_V2`, `HMUL2.BF16_V2` and
+/// `FHADD.BF16` over normals, subnormals, near-maximum values, zeros, infinities, NaNs and ties
+/// (fixtures/s_hfma2_bf16) agree with GB300 bitwise (20 runs, 2026-11-06).
+#[test]
+fn s_hfma2_bf16_matches_hardware() {
+    let case = Case::load(root().join("fixtures/s_hfma2_bf16")).unwrap();
+    let k = binary_kernel(&case, "good").unwrap();
+    let n = k
+        .code
+        .iter()
+        .filter(|i| matches!(i.op, ptxv_ir::Op::Hfma2Bf16 { .. }))
+        .count();
+    assert_eq!(n, 4, "bf16 forms lowered");
+    let n = k
+        .code
+        .iter()
+        .filter(|i| matches!(i.op, ptxv_ir::Op::FfmaBf16 { .. }))
+        .count();
+    assert_eq!(n, 4, "FHADD.BF16 forms lowered");
+    let launch = build_launch(&case, &k).unwrap();
+    let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 100_000);
+    assert!(v.findings.is_empty(), "{:#?}", v.findings);
+    assert_eq!(v.outputs.len(), 1);
+    let report = case.expect_report(&v.outputs[0]).unwrap();
+    assert!(
+        !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+        "{report:?}"
+    );
 }

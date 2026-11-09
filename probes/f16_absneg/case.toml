@@ -1,0 +1,36 @@
+name = "probe_f16_absneg"
+description = """
+Probe (L-ROSETTA) for abs / neg .f16x2 and .f16 (SASS HADD2 d, |R|, -RZ.H0_H0 / HADD2 d, -R,
+-RZ.H0_H0) on every f16 pattern (kernel.ptx). expected/ is GB300's output (kernel.cubin =
+ptxas -arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "f16_absneg"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [32768]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [131072]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

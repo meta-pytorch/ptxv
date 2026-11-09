@@ -1,0 +1,18 @@
+// Probe for PTX prmt.b32 (default mode) with register and immediate selectors, sign-replicate
+// nibbles included. Thread i: a, b, c = words 3i..3i+2 of in.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry prmt_ptx(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<8>; .reg .b32 %r<20>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mul.wide.u32 %rd3, %r1, 12; add.s64 %rd4, %rd1, %rd3;
+  mul.wide.u32 %rd5, %r1, 16; add.s64 %rd6, %rd2, %rd5;
+  ld.global.u32 %r2, [%rd4]; ld.global.u32 %r3, [%rd4+4]; ld.global.u32 %r4, [%rd4+8];
+  prmt.b32 %r5, %r2, %r3, %r4;
+  prmt.b32 %r6, %r2, %r3, 0x7632U;
+  prmt.b32 %r7, %r2, %r3, 0x8899;
+  prmt.b32 %r8, %r3, 0, 0x3210;
+  st.global.v4.u32 [%rd6], {%r5, %r6, %r7, %r8};
+  ret; }

@@ -1,0 +1,62 @@
+name = "e_ticket"
+description = """
+C-TICKET (E-WELLSYNC): a persistent tile scheduler with an atom.inc ticket counter and an
+arrival counter reset by the last arriver. The certificate enumerates the claim orders
+(dynamic partial-order reduction over the counters' writes); every order leaves the same
+outputs. Outputs that depend on the claimant (ctaid) or tiles that share an output word (race)
+are refused."""
+ptx = "kernel.ptx"
+entry = "e_ticket"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out", "next", "cnt"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "next"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "cnt"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "next"
+
+[[params]]
+kind = "ptr"
+buffer = "cnt"
+
+[[variants]]
+id = "good"
+summary = "out[t] = 10 t + 1: every claim order leaves the same outputs"
+expect = ["clean"]
+
+[[variants]]
+id = "ctaid"
+summary = "out[t] = %ctaid: the outputs depend on the claim order"
+marker = "@VAL"
+find = "mad.lo.u32 %r6, %r5, 10, 1;"
+replace = "mov.u32 %r6, %r2;"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "race"
+summary = "out[t & 1]: two tiles write one word, from two CTAs in some claim orders"
+marker = "@IDX2"
+replace = "<delete>"
+expect = ["race"]

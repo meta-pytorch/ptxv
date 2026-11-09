@@ -1,0 +1,48 @@
+//
+// S-INIT per byte of narrow conversions on the PTX front: every thread converts two f32 to
+// an e4m3x2 pair (`cvt.rn.satfinite.e4m3x2.f32 d, a, b`: a in the high byte) and four e2m1x2
+// pairs packed into one 32-bit register; a (and the e2m1 pairs of bytes 1..3) are undefined
+// in threads 16..31. The low byte is stored with st.b8, after `cvt.u16.u32` for the packed
+// word. Before, a store of a virtual register marked every byte undefined if any bit was,
+// and integer conversions made the whole result undefined (Triton mxfp8 / nvfp4 quantize
+// kernels: PTX undef-insensitive where SASS is clean).
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry uninit_cvt_lanes(
+	.param .u64 in_ptr,
+	.param .u64 out_ptr
+)
+.reqntid 32
+{
+	.reg .pred %p<2>;
+	.reg .b16 %rs<8>;
+	.reg .b32 %r<12>;
+	.reg .b64 %rd<10>;
+
+	ld.param.u64 %rd1, [in_ptr];
+	ld.param.u64 %rd2, [out_ptr];
+	mov.u32 %r1, %tid.x;
+	setp.lt.u32 %p1, %r1, 16;
+	mul.wide.u32 %rd3, %r1, 8;
+	add.s64 %rd4, %rd1, %rd3;
+	ld.global.f32 %r2, [%rd4];
+	@%p1 ld.global.f32 %r3, [%rd4+4];
+	cvt.rn.satfinite.e4m3x2.f32 %rs1, %r3, %r2;
+	{
+	.reg .b8 byte0, byte1, byte2, byte3;
+	cvt.rn.satfinite.e2m1x2.f32 byte0, %r2, %r2;
+	cvt.rn.satfinite.e2m1x2.f32 byte1, %r3, %r3;
+	cvt.rn.satfinite.e2m1x2.f32 byte2, %r3, %r3;
+	cvt.rn.satfinite.e2m1x2.f32 byte3, %r3, %r3;
+	mov.b32 %r4, {byte0, byte1, byte2, byte3};
+	}
+	cvt.u16.u32 %rs2, %r4;
+	mul.wide.u32 %rd7, %r1, 4;
+	add.s64 %rd8, %rd2, %rd7;
+	st.global.b8 [%rd8], %rs1; // @STORE1
+	st.global.b8 [%rd8+1], %rs2; // @STORE2
+	ret;
+}

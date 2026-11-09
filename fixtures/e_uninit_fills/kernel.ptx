@@ -1,0 +1,34 @@
+//
+// S-INIT-FILLS: lanes 16..31 skip a predicated load; every lane stores min(x, -inf) of the
+// loaded register, which is -inf whatever an undefined x holds (min.f32 returns the non-NaN
+// operand). The register-level propagation cannot decide that (the stored data is
+// undefined); the multi-fill rerun finds the outputs equal in every fill. Variant add:
+// x + 1 is stored, which depends on the undefined value.
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry uninit_fills(
+	.param .u64 in_ptr,
+	.param .u64 out_ptr
+)
+.reqntid 32
+{
+	.reg .pred %p<4>;
+	.reg .b32 %r<4>;
+	.reg .f32 %f<4>;
+	.reg .b64 %rd<8>;
+
+	ld.param.u64 %rd1, [in_ptr];
+	ld.param.u64 %rd2, [out_ptr];
+	mov.u32 %r1, %tid.x;
+	setp.lt.u32 %p1, %r1, 16;
+	mul.wide.u32 %rd3, %r1, 4;
+	add.s64 %rd4, %rd1, %rd3;
+	@%p1 ld.global.f32 %f1, [%rd4];
+	min.f32 %f2, %f1, 0fFF800000; // @OP
+	add.s64 %rd5, %rd2, %rd3;
+	st.global.f32 [%rd5], %f2;
+	ret;
+}

@@ -816,7 +816,7 @@ fn check_groups_pre(
                     || (!v.complete && !bounded)
                     || v.findings
                         .iter()
-                        .any(|f| f.kind != "contract" && f.kind != "probe")
+                        .any(|f| f.kind != "contract" && f.kind != "probe" && f.kind != "note")
                 {
                     None
                 } else if !meet.differ.is_empty() {
@@ -928,6 +928,13 @@ pub fn check_spec(
     report: &mut dyn FnMut(usize, &[usize], &Verdict),
 ) -> Verdict {
     let n = full.launch.grids.len();
+    // NIC queue pairs (nic.rs) carry state across launches: the whole launch at once.
+    if full.nic.is_some() {
+        let mut v = crate::explore::explore(full, max_states);
+        v.notes
+            .push("--groups ignored: NIC queue pairs are checked as one launch".into());
+        return v;
+    }
     if spec != "auto" {
         return match parse(spec, n) {
             Ok(groups) => {

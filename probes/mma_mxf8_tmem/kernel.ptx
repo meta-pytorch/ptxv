@@ -1,0 +1,455 @@
+// probes/mma_mxf8_tmem: tcgen05.mma.kind::mxf8f6f4.block_scale (e4m3 x e4m3, ue8m0 scales)
+// with A in TMEM and B MN-major (SWIZZLE_128B) in shared memory -- fa4 fwd_sm100_mxfp8's P*V
+// form, instruction descriptor 0x08a10000 -- against the calibrated path (A and B K-major in
+// shared memory, idesc 0x08a00000) on the same operands. D[128x128] f32 = sum over 4 MMAs
+// (K = 32 each) of A[128xK] * B[128xK]^T; MMA k reads scale factors at TMEM columns 320 + 4k
+// (SFA) and 352 + 4k (SFB), sf_id 0. Outputs: D0 (calibrated path), D1 (TMEM A / MN-major B),
+// D2 (A MN-major SWIZZLE_128B in shared memory, B K-major; idesc 0x08a08000).
+//   smA:  A[m][k] at (k/16)*2048 + m*16 + k%16      (K-major, no swizzle; LBO 2048, SBO 128)
+//   smB:  B[n][k] at (k/16)*2048 + n*16 + k%16      (same)
+//   smBm: B[n][k] at swz((k/8)*1024 + (k%8)*128 + n) (MN-major, SWIZZLE_128B; SBO 1024)
+//   smAm: A[m][k] at swz((k/8)*1024 + (k%8)*128 + m) (MN-major, SWIZZLE_128B; SBO 1024)
+//   TMEM: A row m at lane m, columns 256..287: word c = bytes A[m][4c..4c+3] (low byte first)
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry mma_mxf8_tmem(
+    .param .u64 pa,
+    .param .u64 pb,
+    .param .u64 psfa,
+    .param .u64 psfb,
+    .param .u64 pd0,
+    .param .u64 pd1,
+    .param .u64 pd2
+)
+.maxntid 128, 1, 1
+{
+    .reg .pred  %p<8>;
+    .reg .b32   %r<200>;
+    .reg .b64   %rd<40>;
+    .shared .align 16 .b32 tmem_slot;
+    .shared .align 8 .b64 mma_bar;
+    .shared .align 1024 .b8 smA[16384];
+    .shared .align 1024 .b8 smB[16384];
+    .shared .align 1024 .b8 smBm[16384];
+    .shared .align 1024 .b8 smAm[16384];
+
+    mov.u32         %r0, %tid.x;
+    shr.u32         %r1, %r0, 5;
+    mov.u32         %r2, tmem_slot;
+    mov.u32         %r4, mma_bar;
+    setp.ne.u32     %p0, %r0, 0;
+    setp.ne.u32     %p1, %r1, 0;
+    @%p1 bra        SKIP_ALLOC;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r2], 512;
+    tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+SKIP_ALLOC:
+    @%p0 bra        SKIP_INIT;
+    mbarrier.init.shared::cta.b64 [%r4], 1;
+    fence.mbarrier_init.release.cluster;
+SKIP_INIT:
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    tcgen05.fence::after_thread_sync;
+    ld.shared.b32   %r5, [%r2];
+    shl.b32         %r41, %r1, 21;                  // (32 * warp) << 16
+    add.u32         %r42, %r5, %r41;                // this warp's lanes, column 0
+    // Row t of A: smA (K-major) and TMEM columns 256..287.
+    ld.param.u64    %rd20, [pa];
+    cvta.to.global.u64 %rd20, %rd20;
+    mul.wide.u32    %rd21, %r0, 128;
+    add.u64         %rd22, %rd20, %rd21;
+    ld.global.v4.b32 {%r100, %r101, %r102, %r103}, [%rd22+0];
+    ld.global.v4.b32 {%r104, %r105, %r106, %r107}, [%rd22+16];
+    ld.global.v4.b32 {%r108, %r109, %r110, %r111}, [%rd22+32];
+    ld.global.v4.b32 {%r112, %r113, %r114, %r115}, [%rd22+48];
+    ld.global.v4.b32 {%r116, %r117, %r118, %r119}, [%rd22+64];
+    ld.global.v4.b32 {%r120, %r121, %r122, %r123}, [%rd22+80];
+    ld.global.v4.b32 {%r124, %r125, %r126, %r127}, [%rd22+96];
+    ld.global.v4.b32 {%r128, %r129, %r130, %r131}, [%rd22+112];
+    mov.u32         %r6, smA;
+    mul.lo.u32      %r43, %r0, 16;
+    add.u32         %r44, %r6, %r43;
+    st.shared.v4.b32 [%r44+0], {%r100, %r101, %r102, %r103};
+    st.shared.v4.b32 [%r44+2048], {%r104, %r105, %r106, %r107};
+    st.shared.v4.b32 [%r44+4096], {%r108, %r109, %r110, %r111};
+    st.shared.v4.b32 [%r44+6144], {%r112, %r113, %r114, %r115};
+    st.shared.v4.b32 [%r44+8192], {%r116, %r117, %r118, %r119};
+    st.shared.v4.b32 [%r44+10240], {%r120, %r121, %r122, %r123};
+    st.shared.v4.b32 [%r44+12288], {%r124, %r125, %r126, %r127};
+    st.shared.v4.b32 [%r44+14336], {%r128, %r129, %r130, %r131};
+    add.u32         %r47, %r42, 256;
+    tcgen05.st.sync.aligned.32x32b.x32.b32 [%r47], {%r100, %r101, %r102, %r103, %r104, %r105, %r106, %r107, %r108, %r109, %r110, %r111, %r112, %r113, %r114, %r115, %r116, %r117, %r118, %r119, %r120, %r121, %r122, %r123, %r124, %r125, %r126, %r127, %r128, %r129, %r130, %r131};
+    // Row t of A, MN-major swizzled into smAm (byte stores).
+    mov.u32         %r9, smAm;
+    mov.u32         %r60, 0;
+AMN:
+    shr.u32         %r61, %r60, 3;
+    shl.b32         %r62, %r61, 10;
+    and.b32         %r63, %r60, 7;
+    shl.b32         %r64, %r63, 7;
+    add.u32         %r65, %r62, %r64;
+    add.u32         %r65, %r65, %r0;
+    shr.u32         %r66, %r65, 7;
+    and.b32         %r66, %r66, 7;
+    shl.b32         %r66, %r66, 4;
+    xor.b32         %r65, %r65, %r66;
+    add.u32         %r65, %r65, %r9;
+    cvt.u64.u32     %rd23, %r60;
+    add.u64         %rd24, %rd22, %rd23;
+    ld.global.u8    %r67, [%rd24];
+    st.shared.u8    [%r65], %r67;
+    add.u32         %r60, %r60, 1;
+    setp.lt.u32     %p5, %r60, 128;
+    @%p5 bra        AMN;
+    // Row t of B: smB (K-major) and smBm (MN-major, swizzled; byte stores).
+    ld.param.u64    %rd20, [pb];
+    cvta.to.global.u64 %rd20, %rd20;
+    add.u64         %rd22, %rd20, %rd21;
+    ld.global.v4.b32 {%r100, %r101, %r102, %r103}, [%rd22+0];
+    ld.global.v4.b32 {%r104, %r105, %r106, %r107}, [%rd22+16];
+    ld.global.v4.b32 {%r108, %r109, %r110, %r111}, [%rd22+32];
+    ld.global.v4.b32 {%r112, %r113, %r114, %r115}, [%rd22+48];
+    ld.global.v4.b32 {%r116, %r117, %r118, %r119}, [%rd22+64];
+    ld.global.v4.b32 {%r120, %r121, %r122, %r123}, [%rd22+80];
+    ld.global.v4.b32 {%r124, %r125, %r126, %r127}, [%rd22+96];
+    ld.global.v4.b32 {%r128, %r129, %r130, %r131}, [%rd22+112];
+    mov.u32         %r7, smB;
+    add.u32         %r44, %r7, %r43;
+    st.shared.v4.b32 [%r44+0], {%r100, %r101, %r102, %r103};
+    st.shared.v4.b32 [%r44+2048], {%r104, %r105, %r106, %r107};
+    st.shared.v4.b32 [%r44+4096], {%r108, %r109, %r110, %r111};
+    st.shared.v4.b32 [%r44+6144], {%r112, %r113, %r114, %r115};
+    st.shared.v4.b32 [%r44+8192], {%r116, %r117, %r118, %r119};
+    st.shared.v4.b32 [%r44+10240], {%r120, %r121, %r122, %r123};
+    st.shared.v4.b32 [%r44+12288], {%r124, %r125, %r126, %r127};
+    st.shared.v4.b32 [%r44+14336], {%r128, %r129, %r130, %r131};
+    mov.u32         %r8, smBm;
+    mov.u32         %r60, 0;                        // k
+BMN:
+    // offset = (k/8)*1024 + (k%8)*128 + n, swizzled: ^ ((offset >> 7) & 7) << 4
+    shr.u32         %r61, %r60, 3;
+    shl.b32         %r62, %r61, 10;
+    and.b32         %r63, %r60, 7;
+    shl.b32         %r64, %r63, 7;
+    add.u32         %r65, %r62, %r64;
+    add.u32         %r65, %r65, %r0;
+    shr.u32         %r66, %r65, 7;
+    and.b32         %r66, %r66, 7;
+    shl.b32         %r66, %r66, 4;
+    xor.b32         %r65, %r65, %r66;
+    add.u32         %r65, %r65, %r8;
+    cvt.u64.u32     %rd23, %r60;
+    add.u64         %rd24, %rd22, %rd23;
+    ld.global.u8    %r67, [%rd24];
+    st.shared.u8    [%r65], %r67;
+    add.u32         %r60, %r60, 1;
+    setp.lt.u32     %p5, %r60, 128;
+    @%p5 bra        BMN;
+    // Scale factors: SFA[t][0..16] -> columns 320.., SFB[t][0..16] -> 352..
+    mul.wide.u32    %rd21, %r0, 64;
+    ld.param.u64    %rd20, [psfa];
+    cvta.to.global.u64 %rd20, %rd20;
+    add.u64         %rd22, %rd20, %rd21;
+    ld.global.v4.b32 {%r140, %r141, %r142, %r143}, [%rd22+0];
+    ld.global.v4.b32 {%r144, %r145, %r146, %r147}, [%rd22+16];
+    ld.global.v4.b32 {%r148, %r149, %r150, %r151}, [%rd22+32];
+    ld.global.v4.b32 {%r152, %r153, %r154, %r155}, [%rd22+48];
+    add.u32         %r47, %r42, 320;
+    tcgen05.st.sync.aligned.32x32b.x16.b32 [%r47], {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155};
+    ld.param.u64    %rd20, [psfb];
+    cvta.to.global.u64 %rd20, %rd20;
+    add.u64         %rd22, %rd20, %rd21;
+    ld.global.v4.b32 {%r140, %r141, %r142, %r143}, [%rd22+0];
+    ld.global.v4.b32 {%r144, %r145, %r146, %r147}, [%rd22+16];
+    ld.global.v4.b32 {%r148, %r149, %r150, %r151}, [%rd22+32];
+    ld.global.v4.b32 {%r152, %r153, %r154, %r155}, [%rd22+48];
+    add.u32         %r47, %r42, 352;
+    tcgen05.st.sync.aligned.32x32b.x16.b32 [%r47], {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155};
+    tcgen05.wait::st.sync.aligned;
+    fence.proxy.async.shared::cta;
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    tcgen05.fence::after_thread_sync;
+
+    @%p0 bra        WAIT_MMA;
+    // Descriptors: start>>4 | (LBO>>4)<<16 | (SBO>>4)<<32 | 1<<46 | layout<<61.
+    shr.u32         %r9, %r6, 4;
+    cvt.u64.u32     %rd4, %r9;
+    or.b64          %rd5, %rd4, 0x0000400800800000;  // smA: LBO 2048, SBO 128
+    shr.u32         %r9, %r7, 4;
+    cvt.u64.u32     %rd4, %r9;
+    or.b64          %rd7, %rd4, 0x0000400800800000;  // smB: LBO 2048, SBO 128
+    shr.u32         %r9, %r8, 4;
+    cvt.u64.u32     %rd4, %r9;
+    or.b64          %rd6, %rd4, 0x4000404004000000;  // smBm: SWIZZLE_128B, LBO 16384, SBO 1024
+    mov.u32         %r9, smAm;
+    shr.u32         %r9, %r9, 4;
+    cvt.u64.u32     %rd4, %r9;
+    or.b64          %rd11, %rd4, 0x4000404004000000;  // smAm: SWIZZLE_128B, LBO 16384, SBO 1024
+    mov.u32         %r11, 0x08a00000;                // N 128, M 128, ue8m0, K-major
+    mov.u32         %r12, 0x08a10000;                // ... B MN-major
+    add.u32         %r51, %r5, 128;                  // D1 at column 128
+    add.u32         %r52, %r5, 384;                  // D2 at column 384
+    mov.u32         %r53, 0x08a08000;                // ... A MN-major
+    mov.u32         %r13, 0;
+    setp.ne.u32     %p3, %r13, 0;
+    setp.eq.u32     %p4, %r13, 0;
+    add.u32         %r48, %r5, 320;
+    add.u32         %r49, %r5, 352;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 0;
+    tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale.scale_vec::1X [%r5], %rd8, %rd9, %r11, [%r48], [%r49], %p3;
+    add.u32         %r50, %r5, 256;
+    add.u64         %rd10, %rd6, 0;
+    tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale.scale_vec::1X [%r51], [%r50], %rd10, %r12, [%r48], [%r49], %p3;
+    add.u64         %rd12, %rd11, 0;
+    tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale.scale_vec::1X [%r52], %rd12, %rd9, %r53, [%r48], [%r49], %p3;
+    add.u32         %r48, %r5, 324;
+    add.u32         %r49, %r5, 356;
+    add.u64         %rd8, %rd5, 256;
+    add.u64         %rd9, %rd7, 256;
+    tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale.scale_vec::1X [%r5], %rd8, %rd9, %r11, [%r48], [%r49], %p4;
+    add.u32         %r50, %r5, 264;
+    add.u64         %rd10, %rd6, 256;
+    tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale.scale_vec::1X [%r51], [%r50], %rd10, %r12, [%r48], [%r49], %p4;
+    add.u64         %rd12, %rd11, 256;
+    tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale.scale_vec::1X [%r52], %rd12, %rd9, %r53, [%r48], [%r49], %p4;
+    add.u32         %r48, %r5, 328;
+    add.u32         %r49, %r5, 360;
+    add.u64         %rd8, %rd5, 512;
+    add.u64         %rd9, %rd7, 512;
+    tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale.scale_vec::1X [%r5], %rd8, %rd9, %r11, [%r48], [%r49], %p4;
+    add.u32         %r50, %r5, 272;
+    add.u64         %rd10, %rd6, 512;
+    tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale.scale_vec::1X [%r51], [%r50], %rd10, %r12, [%r48], [%r49], %p4;
+    add.u64         %rd12, %rd11, 512;
+    tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale.scale_vec::1X [%r52], %rd12, %rd9, %r53, [%r48], [%r49], %p4;
+    add.u32         %r48, %r5, 332;
+    add.u32         %r49, %r5, 364;
+    add.u64         %rd8, %rd5, 768;
+    add.u64         %rd9, %rd7, 768;
+    tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale.scale_vec::1X [%r5], %rd8, %rd9, %r11, [%r48], [%r49], %p4;
+    add.u32         %r50, %r5, 280;
+    add.u64         %rd10, %rd6, 768;
+    tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale.scale_vec::1X [%r51], [%r50], %rd10, %r12, [%r48], [%r49], %p4;
+    add.u64         %rd12, %rd11, 768;
+    tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale.scale_vec::1X [%r52], %rd12, %rd9, %r53, [%r48], [%r49], %p4;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r4];
+WAIT_MMA:
+    mbarrier.try_wait.parity.shared::cta.b64 %p6, [%r4], 0;
+    @!%p6 bra       WAIT_MMA;
+    tcgen05.fence::after_thread_sync;
+    mov.u32         %r14, %r42;
+    ld.param.u64    %rd14, [pd0];
+    cvta.to.global.u64 %rd15, %rd14;
+    mul.wide.u32    %rd16, %r0, 512;
+    add.u64         %rd17, %rd15, %rd16;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    ld.param.u64    %rd14, [pd1];
+    cvta.to.global.u64 %rd15, %rd14;
+    add.u64         %rd17, %rd15, %rd16;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    add.u32         %r14, %r42, 384;
+    ld.param.u64    %rd14, [pd2];
+    cvta.to.global.u64 %rd15, %rd14;
+    add.u64         %rd17, %rd15, %rd16;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r140, %r141, %r142, %r143, %r144, %r145, %r146, %r147, %r148, %r149, %r150, %r151, %r152, %r153, %r154, %r155}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r140, %r141, %r142, %r143};
+    st.global.v4.b32 [%rd17+16], {%r144, %r145, %r146, %r147};
+    st.global.v4.b32 [%rd17+32], {%r148, %r149, %r150, %r151};
+    st.global.v4.b32 [%rd17+48], {%r152, %r153, %r154, %r155};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    @%p1 bra        DONE;
+    tcgen05.fence::after_thread_sync;
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r5, 512;
+DONE:
+    ret;
+}

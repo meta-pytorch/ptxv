@@ -93,6 +93,30 @@ def test_argv_shapes(tmp_path):
         JobSpec("nope", [])
 
 
+def test_nonfinite_argv_and_verdict():
+    from ptxv.results import Verdict
+
+    c = str(FIX / "c_nonfinite_exp_f16")
+    a, _ = argv(JobSpec("check", [c]), tmp := Path("/tmp"))
+    assert "--nonfinite" not in a and "--nonfinite-strict" not in a
+    a, _ = argv(JobSpec("check", [c], {"nonfinite": True}), tmp)
+    assert "--nonfinite" in a
+    a, _ = argv(JobSpec("check", [c], {"nonfinite": "strict"}), tmp)
+    assert "--nonfinite-strict" in a
+    nf = {"outputs": [{"buffer": "out", "inf": 114, "nan": 0}], "births": []}
+    doc = {
+        "rows": [
+            {
+                "got": ["nonfinite-output"],
+                "pass": False,
+                "verdict": {"findings": [], "complete": True, "states": 1},
+                "nonfinite": nf,
+            }
+        ]
+    }
+    assert Verdict.from_json(doc).nonfinite == nf
+
+
 def test_verdict_gb300_fields_from_json():
     from ptxv.results import Verdict
 

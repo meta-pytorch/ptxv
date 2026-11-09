@@ -1,0 +1,55 @@
+// probes/fmnmx_xorsign: PTX min / max .xorsign.abs.f32 (SASS FMNMX[.NAN][.FTZ].XORSIGN) against
+// GB300. Thread g (4 CTAs x 256) loads (a, b) = in[g] (gen.py: every pair of 32 edge patterns)
+// and stores out[j][g]:
+//   j = 0: min.xorsign.abs a, b       (FMNMX.XORSIGN |a|, |b|, PT)
+//   j = 1: max.xorsign.abs a, b       (FMNMX.XORSIGN |a|, |b|, !PT)
+//   j = 2: min.NaN.xorsign.abs a, b   (FMNMX.NAN.XORSIGN)
+//   j = 3: max.NaN.xorsign.abs a, b
+//   j = 4: min.ftz.xorsign.abs a, b   (FMNMX.FTZ.XORSIGN)
+//   j = 5: max.ftz.NaN.xorsign.abs a, b
+//   j = 6: min.xorsign.abs a, 448     (immediate: FMNMX.XORSIGN |a|, 448, PT)
+//   j = 7: min.xorsign.abs a, -448    (ptxas: |UR| holding -448)
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry fmnmx_xorsign(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %ctaid.x;
+    mad.lo.u32      %r3, %r2, 256, %r1;
+    mul.wide.u32    %rd3, %r3, 8;
+    add.s64         %rd3, %rd1, %rd3;
+    ld.global.u32   %r4, [%rd3];
+    ld.global.u32   %r5, [%rd3+4];
+    mul.wide.u32    %rd4, %r3, 4;
+    add.s64         %rd4, %rd2, %rd4;
+    min.xorsign.abs.f32     %r10, %r4, %r5;
+    max.xorsign.abs.f32     %r11, %r4, %r5;
+    min.NaN.xorsign.abs.f32 %r12, %r4, %r5;
+    max.NaN.xorsign.abs.f32 %r13, %r4, %r5;
+    min.ftz.xorsign.abs.f32 %r14, %r4, %r5;
+    max.ftz.NaN.xorsign.abs.f32 %r15, %r4, %r5;
+    min.xorsign.abs.f32     %r16, %r4, 0f43E00000;
+    min.xorsign.abs.f32     %r17, %r4, 0fC3E00000;
+    st.global.u32   [%rd4], %r10;
+    st.global.u32   [%rd4+4096], %r11;
+    st.global.u32   [%rd4+8192], %r12;
+    st.global.u32   [%rd4+12288], %r13;
+    st.global.u32   [%rd4+16384], %r14;
+    st.global.u32   [%rd4+20480], %r15;
+    st.global.u32   [%rd4+24576], %r16;
+    st.global.u32   [%rd4+28672], %r17;
+    ret;
+}

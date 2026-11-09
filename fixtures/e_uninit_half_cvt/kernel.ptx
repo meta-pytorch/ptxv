@@ -1,0 +1,39 @@
+//
+// S-INIT through conversions of a 16-bit source: a bf16 that is 0 or a predicated load
+// (threads 16..31 load nothing) is widened with cvt.f64.bf16 and stored. ptxas keeps the
+// 16-bit value in the low half of a 32-bit register: `PRMT R, RZ, 0x7610, R` writes zero
+// into the low half and leaves the high half as it was (never written), the predicated
+// LDG.E.U16 writes the low half, and `F2F.F64.BF16 Rd, R` reads the low half only. Before,
+// the conversion was undefined when any bit of its register was (a violation on a
+// bucket-scoring kernel once its index input was mutated to an out-of-range value).
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry uninit_half_cvt(
+	.param .u64 in_ptr,
+	.param .u64 out_ptr
+)
+.reqntid 32
+{
+	.reg .pred %p<2>;
+	.reg .b16 %rs<4>;
+	.reg .b32 %r<4>;
+	.reg .b64 %rd<10>;
+
+	ld.param.u64 %rd1, [in_ptr];
+	ld.param.u64 %rd2, [out_ptr];
+	mov.u32 %r1, %tid.x;
+	setp.lt.u32 %p1, %r1, 16;
+	mul.wide.u32 %rd3, %r1, 2;
+	add.s64 %rd4, %rd1, %rd3;
+	mov.b16 %rs2, 0;
+	mov.u16 %rs1, %rs2;
+	@%p1 ld.global.b16 %rs1, [%rd4];
+	cvt.f64.bf16 %rd5, %rs1;
+	mul.wide.u32 %rd6, %r1, 8;
+	add.s64 %rd7, %rd2, %rd6;
+	st.global.b64 [%rd7], %rd5;
+	ret;
+}

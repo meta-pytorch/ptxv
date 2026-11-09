@@ -1,0 +1,37 @@
+name = "probe_viadd16x2"
+description = """
+Probe (L-ROSETTA) for VIADD.16x2 on GB300: ptxas lowers add.u16x2 / add.s16x2 to VIADD.16x2
+with a register or a 32-bit immediate b (kernel.ptx, gen.py). Each 16-bit lane adds modulo
+2^16 with no carry into the high lane. expected/ is GB300's output (ptxas cubin,
+`ptxv hw-worker probes/viadd16x2 <cubin> --runs 1 --dump`)."""
+ptx = "kernel.ptx"
+entry = "viadd16"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024, 2]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024, 4]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

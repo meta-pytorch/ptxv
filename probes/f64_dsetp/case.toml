@@ -1,0 +1,36 @@
+name = "probe_f64_dsetp"
+description = """
+Probe (L-OPCLASS) for DSETP in the f64 in-order queue: a DADD with no write scoreboard read
+right after a wait on a later DSETP's scoreboard (kernel.ptx, gen.py). expected/ is GB300's
+output (kernel.cubin = ptxas -arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "f64_dsetp"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [256]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [96]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

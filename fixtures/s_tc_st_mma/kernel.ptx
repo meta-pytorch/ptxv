@@ -1,0 +1,112 @@
+//
+// S-TCGEN05, same-thread tcgen05.st -> tcgen05.wait::st -> tcgen05.mma with no tcgen05.fence
+// in that thread (mslk mx8mx4 grouped GEMM, PTX front): every warp stores C (16 f32 columns
+// of its 32 TMEM lanes) and waits with wait::st; threads other than 0 then execute
+// tcgen05.fence::before_thread_sync, all synchronize (bar.sync), and thread 0 executes
+// fence::after_thread_sync and issues one tcgen05.mma (bf16 M128 N16 K16, A = B = 0 from
+// shared memory, enable_input_d: D = C). Thread 0's own stores (TMEM lane 0) reach its MMA
+// through wait::st alone (PTX ISA 9.7.18.6.1 / 9.7.18.6.4.2); the other threads' through the
+// fences and the barrier. D is loaded back and stored.
+//   early: thread 0 issues the MMA between its tcgen05.st and the wait::st: a race.
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry tc_st_mma(
+	.param .u64 out_ptr
+)
+.reqntid 128
+{
+	.reg .pred %p<4>;
+	.reg .b32 %r<64>;
+	.reg .b64 %rd<16>;
+	.shared .align 1024 .b8 sA[4096];
+	.shared .align 1024 .b8 sB[512];
+	.shared .align 8 .b64 bar;
+	.shared .align 4 .b32 tslot;
+
+	ld.param.u64 %rd1, [out_ptr];
+	cvta.to.global.u64 %rd1, %rd1;
+	mov.u32 %r0, %tid.x;
+	shr.u32 %r1, %r0, 5;
+	setp.eq.u32 %p0, %r0, 0;
+	// Zero A and B (4608 bytes: 9 words per thread).
+	mov.u32 %r2, sA;
+	mov.u32 %r3, sB;
+	shl.b32 %r4, %r0, 5;
+	add.u32 %r5, %r2, %r4;
+	st.shared.v4.u32 [%r5], {0, 0, 0, 0};
+	st.shared.v4.u32 [%r5+16], {0, 0, 0, 0};
+	setp.lt.u32 %p1, %r0, 16;
+	shl.b32 %r6, %r0, 5;
+	add.u32 %r7, %r3, %r6;
+	@%p1 st.shared.v4.u32 [%r7], {0, 0, 0, 0};
+	@%p1 st.shared.v4.u32 [%r7+16], {0, 0, 0, 0};
+	mov.u32 %r8, bar;
+	mov.u32 %r9, tslot;
+	setp.eq.u32 %p2, %r1, 0;
+	@%p2 tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r9], 32;
+	@%p2 tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+	@%p0 mbarrier.init.shared::cta.b64 [%r8], 1;
+	fence.mbarrier_init.release.cluster;
+	fence.proxy.async.shared::cta;
+	tcgen05.fence::before_thread_sync;
+	bar.sync 0;
+	tcgen05.fence::after_thread_sync;
+	ld.shared.b32 %r10, [%r9];
+	shl.b32 %r11, %r1, 21;
+	add.u32 %r12, %r10, %r11;
+	// C: lane value (tid + 1) + column / 16, as f32.
+	add.u32 %r13, %r0, 1;
+	cvt.rn.f32.u32 %r14, %r13;
+	add.f32 %r15, %r14, 0f3D800000;
+	add.f32 %r16, %r15, 0f3D800000;
+	add.f32 %r17, %r16, 0f3D800000;
+	add.f32 %r18, %r17, 0f3D800000;
+	add.f32 %r19, %r18, 0f3D800000;
+	add.f32 %r20, %r19, 0f3D800000;
+	add.f32 %r21, %r20, 0f3D800000;
+	add.f32 %r22, %r21, 0f3D800000;
+	add.f32 %r23, %r22, 0f3D800000;
+	add.f32 %r24, %r23, 0f3D800000;
+	add.f32 %r25, %r24, 0f3D800000;
+	add.f32 %r26, %r25, 0f3D800000;
+	add.f32 %r27, %r26, 0f3D800000;
+	add.f32 %r28, %r27, 0f3D800000;
+	add.f32 %r29, %r28, 0f3D800000;
+	tcgen05.st.sync.aligned.32x32b.x16.b32 [%r12], {%r14, %r15, %r16, %r17, %r18, %r19, %r20, %r21, %r22, %r23, %r24, %r25, %r26, %r27, %r28, %r29};
+	// Descriptors: A 128 x 32 B (LBO 2048, SBO 128), B 16 x 32 B (LBO 256, SBO 128).
+	shr.u32 %r30, %r2, 4;
+	cvt.u64.u32 %rd2, %r30;
+	or.b64 %rd3, %rd2, 0x0000400800800000;
+	shr.u32 %r31, %r3, 4;
+	cvt.u64.u32 %rd4, %r31;
+	or.b64 %rd5, %rd4, 0x0000400800100000;
+	mov.u32 %r32, 0x8040490;
+	setp.ne.u32 %p3, %r32, 0;
+	// @EARLY
+	tcgen05.wait::st.sync.aligned;
+	@!%p0 tcgen05.fence::before_thread_sync;
+	bar.sync 0;
+	@%p0 tcgen05.fence::after_thread_sync;
+	@%p0 tcgen05.mma.cta_group::1.kind::f16 [%r10], %rd3, %rd5, %r32, %p3; // @MMA
+	@%p0 tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r8];
+WAIT:
+	mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r8], 0;
+	@!%p1 bra WAIT;
+	tcgen05.fence::after_thread_sync;
+	tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r40, %r41, %r42, %r43, %r44, %r45, %r46, %r47, %r48, %r49, %r50, %r51, %r52, %r53, %r54, %r55}, [%r12];
+	tcgen05.wait::ld.sync.aligned;
+	mul.wide.u32 %rd6, %r0, 64;
+	add.u64 %rd7, %rd1, %rd6;
+	st.global.v4.u32 [%rd7], {%r40, %r41, %r42, %r43};
+	st.global.v4.u32 [%rd7+16], {%r44, %r45, %r46, %r47};
+	st.global.v4.u32 [%rd7+32], {%r48, %r49, %r50, %r51};
+	st.global.v4.u32 [%rd7+48], {%r52, %r53, %r54, %r55};
+	tcgen05.fence::before_thread_sync;
+	bar.sync 0;
+	tcgen05.fence::after_thread_sync;
+	@%p2 tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r10, 32;
+	ret;
+}

@@ -1,0 +1,21 @@
+// Probe for FLO / POPC ordering: ptxas gives FLO.U32 no write scoreboard and reads its result
+// after a wait on a later POPC's (DeepEP hybrid). bfind / bfind.shiftamt / popc on 2 words.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry flopopc(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<8>; .reg .b32 %r<20>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mov.u32 %r10, %ctaid.x; mov.u32 %r11, %ntid.x;
+  mad.lo.s32 %r1, %r10, %r11, %r1; mul.wide.u32 %rd3, %r1, 8;
+  add.s64 %rd4, %rd1, %rd3; add.s64 %rd5, %rd2, %rd3;
+  ld.global.v2.u32 {%r2,%r3}, [%rd4];
+  bfind.u32 %r4, %r2;
+  popc.b32 %r5, %r3;
+  bfind.shiftamt.u32 %r6, %r3;
+  popc.b32 %r7, %r2;
+  add.s32 %r8, %r4, %r5;
+  mad.lo.s32 %r9, %r6, 33, %r7;
+  st.global.v2.u32 [%rd5], {%r8,%r9};
+  ret; }

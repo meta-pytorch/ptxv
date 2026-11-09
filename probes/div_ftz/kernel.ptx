@@ -1,0 +1,35 @@
+// probes/div_ftz: div.rn.ftz.f32 on every pair of 32 f32 edge patterns (gen.py). ptxas's
+// slow path ($__internal_..._div_rn_ftz_f32_slowpath) leaves its BSSY.RELIABLE region with
+// `@!P6 BREAK.RELIABLE !P5, B1` + `@!P6 BRA !P5, ...` (a BREAK with a predicate operand)
+// for zero / infinite / NaN operands. Thread g (4 CTAs x 256) stores out[g] = a / b.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry div_ftz(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<8>;
+    .reg .f32   %f<4>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %ctaid.x;
+    mad.lo.u32      %r3, %r2, 256, %r1;
+    mul.wide.u32    %rd3, %r3, 8;
+    add.s64         %rd3, %rd1, %rd3;
+    ld.global.f32   %f1, [%rd3];
+    ld.global.f32   %f2, [%rd3+4];
+    div.rn.ftz.f32  %f3, %f1, %f2;
+    mul.wide.u32    %rd4, %r3, 4;
+    add.s64         %rd4, %rd2, %rd4;
+    st.global.f32   [%rd4], %f3;
+    ret;
+}

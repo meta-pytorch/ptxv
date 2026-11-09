@@ -1,0 +1,36 @@
+name = "probe_cvt_i2f"
+description = """
+Probe (L-ROSETTA) for cvt.{rn,rz,rm,rp}.{f32,f64}.{s,u}{16,32,64} (SASS I2F[.F64][.S16|.U16|
+.S64|.U64][.RZ|.RM|.RP]) on edge and random 64-bit inputs (kernel.ptx, gen.py). expected/ is
+GB300's output (ptxas cubin, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "cvt_i2f"
+grid = [1, 1, 1]
+block = [1024, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [2048]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [16384]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

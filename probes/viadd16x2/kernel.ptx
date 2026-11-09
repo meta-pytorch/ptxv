@@ -1,0 +1,22 @@
+// Probe for VIADD.16x2 (add.u16x2 / add.s16x2): two independent 16-bit lanes, register
+// and immediate b. Inputs from gen.py; see case.toml.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry viadd16(.param .u64 pin, .param .u64 pout)
+{
+  .reg .b32 %r<20>; .reg .b64 %rd<8>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mov.u32 %r2, %ctaid.x; mov.u32 %r3, %ntid.x;
+  mad.lo.s32 %r4, %r2, %r3, %r1;
+  mul.wide.u32 %rd3, %r4, 8; add.s64 %rd4, %rd1, %rd3;
+  ld.global.v2.u32 {%r5, %r6}, [%rd4];
+  add.u16x2 %r7, %r5, %r6;
+  mov.b32 %r11, 0x8001ffff; add.s16x2 %r8, %r5, %r11;
+  add.s16x2 %r9, %r6, %r6;
+  mov.b32 %r12, 0x00010001; add.u16x2 %r10, %r5, %r12;
+  mul.wide.u32 %rd5, %r4, 16; add.s64 %rd6, %rd2, %rd5;
+  st.global.v4.u32 [%rd6], {%r7, %r8, %r9, %r10};
+  ret;
+}

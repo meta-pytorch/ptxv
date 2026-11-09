@@ -1,0 +1,49 @@
+name = "hmma_f16"
+description = """
+N-HMMA probe for f16 operands: D[128x128] f32 = A[128x64] f16 * B[128x64]^T through mma.sync
+m16n8k16 .f32.f16.f16.f32 (SASS HMMA.16816.F32), one warp per 16x8 tile, 4 accumulating steps
+(kernel.ptx). `ptxv calib-mma probes/hmma_f16` scores the MmaModel family against GB300 with
+the calibration input sets; expected/ is GB300's output for data/ (gen.py: N(0, 1), no f16
+subnormals)."""
+ptx = "kernel.ptx"
+entry = "hmma_f16"
+grid = [32, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "f16"
+shape = [128, 64]
+init = "file"
+file = "data/A.bin"
+
+[[buffers]]
+name = "B"
+dtype = "f16"
+shape = [128, 64]
+init = "file"
+file = "data/B.bin"
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [128, 128]
+init = "nan"
+expect = "expected/D.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "A"
+
+[[params]]
+kind = "ptr"
+buffer = "B"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

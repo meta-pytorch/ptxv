@@ -1,0 +1,134 @@
+name = "r1h_nvls"
+description = """
+Rung 1h. NVLS multicast all-reduce on 2 GPUs (S-MULTIMEM, S-MC-ALIAS, N-MULTIMEM): stage into the
+unicast buffer, fence.proxy.alias, barrier by multimem.red.release.sys on the multicast flag and
+ld.acquire.sys polls of the local flag, then multimem.ld_reduce of both ranks' values."""
+ptx = "kernel.ptx"
+entry = "nvls"
+grid = [1, 1, 1]
+block = [4, 1, 1]
+outputs = ["out0", "out1"]
+replicas = [["out0", "out1"]]
+
+[[buffers]]
+name = "buf0"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "buf1"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "in0"
+dtype = "f32"
+shape = [4]
+init = "normal"
+seed = 1
+device = 0
+
+[[buffers]]
+name = "in1"
+dtype = "f32"
+shape = [4]
+init = "normal"
+seed = 2
+device = 1
+
+[[buffers]]
+name = "out0"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "out1"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+device = 1
+
+[[multicast]]
+name = "mc"
+size = 128
+binds = [
+    { device = 0, offset = 0, buffer = "buf0", byte_offset = 0, size = 128 },
+    { device = 1, offset = 0, buffer = "buf1", byte_offset = 0, size = 128 },
+]
+
+[[params]]
+kind = "ptr"
+buffer = "in0"
+
+[[params]]
+kind = "ptr"
+buffer = "buf0"
+
+[[params]]
+kind = "ptr"
+buffer = "mc"
+
+[[params]]
+kind = "ptr"
+buffer = "out0"
+
+[[launches]]
+entry = "nvls"
+grid = [1, 1, 1]
+block = [4, 1, 1]
+device = 1
+params = [
+    { kind = "ptr", buffer = "in1" },
+    { kind = "ptr", buffer = "buf1" },
+    { kind = "ptr", buffer = "mc" },
+    { kind = "ptr", buffer = "out1" },
+]
+
+[[variants]]
+id = "good"
+summary = "correct NVLS all-reduce"
+expect = ["clean"]
+
+[[variants]]
+id = "B23"
+summary = "no fence.proxy.alias: the unicast staging stores are not ordered before the peer's multicast ld_reduce (alias proxy)"
+marker = "@ALIAS"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+expect = ["race"]
+
+[[variants]]
+id = "B63"
+summary = "the barrier's multimem.red releases at .gpu scope: the peer GPU's acquire does not synchronize with it"
+marker = "@RED"
+find = "release.sys"
+replace = "release.gpu"
+expect = ["race"]
+
+[[variants]]
+id = "B64"
+summary = "the barrier's multimem.red is relaxed: nothing orders the staging stores before the peer's ld_reduce"
+marker = "@RED"
+find = "release.sys"
+replace = "relaxed.sys"
+expect = ["race"]
+# SASS: the fence.proxy.alias before the red lowers to MEMBAR.SC.SYS (L-ALIAS-FENCE), a
+# full fence: with the relaxed red it still releases the staging stores.
+expect_sass = ["clean"]
+
+[[variants]]
+id = "B65"
+summary = "the staging store goes to the multicast address with a plain st.global (PTX: undefined behavior)"
+marker = "@STAGE"
+find = "add.s64 %rd7, %rd2, %rd5;"
+replace = "add.s64 %rd7, %rd3, %rd5;"
+expect = ["violation"]
+# SASS: a STG to a multicast address is what multimem.st lowers to (S-MULTIMEM): both ranks'
+# stores land in both members, unordered.
+expect_sass = ["race"]

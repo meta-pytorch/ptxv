@@ -1,0 +1,59 @@
+name = "proxy_cpasync"
+description = """
+S-PROXY probe for cp.async writers (kernel.ptx): cp.async (LDGSTS) fills a shared tile,
+cp.async.wait_all, bar.sync, then one thread stores it with a TMA store (async proxy).
+The PTX memory model requires fence.proxy.async between the generic-proxy writes and the
+async-proxy read. `good` has the fence; `none` drops it; `st_none` writes with st.shared and
+no fence. Run `ptxv hw probes/proxy_cpasync --scrub`."""
+ptx = "kernel.ptx"
+entry = "cpasync_bulk"
+grid = [8, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [8, 4096]
+init = "normal"
+seed = 23
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [512, 64]
+init = "nan"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "tensormap"
+buffer = "out"
+box = [64, 64]
+
+[[variants]]
+id = "good"
+summary = "fence.proxy.async.shared::cta after cp.async.wait_all"
+expect = ["clean"]
+
+[[variants]]
+id = "none"
+summary = "no fence: cp.async writes, async-proxy read (a contract finding, E-CPASYNC-PROXY)"
+marker = "@FENCE"
+replace = "<delete>"
+expect = ["contract"]
+
+[[variants]]
+id = "st_none"
+summary = "st.shared writers, no fence"
+marker = "@FENCE"
+replace = "<delete>"
+expect = ["race"]
+edits = [
+  { marker = "@CP0", find = "cp.async.cg.shared.global [%r4], [%rd4], 16;", replace = "ld.global.v4.u32 {%r10,%r11,%r12,%r13}, [%rd4]; st.shared.v4.u32 [%r4], {%r10,%r11,%r12,%r13};" },
+  { marker = "@CP1", find = "cp.async.cg.shared.global [%r5], [%rd5], 16;", replace = "ld.global.v4.u32 {%r10,%r11,%r12,%r13}, [%rd5]; st.shared.v4.u32 [%r5], {%r10,%r11,%r12,%r13};" },
+  { marker = "@CP2", find = "cp.async.cg.shared.global [%r6], [%rd6], 16;", replace = "ld.global.v4.u32 {%r10,%r11,%r12,%r13}, [%rd6]; st.shared.v4.u32 [%r6], {%r10,%r11,%r12,%r13};" },
+  { marker = "@CP3", find = "cp.async.cg.shared.global [%r7], [%rd7], 16;", replace = "ld.global.v4.u32 {%r10,%r11,%r12,%r13}, [%rd7]; st.shared.v4.u32 [%r7], {%r10,%r11,%r12,%r13};" },
+]

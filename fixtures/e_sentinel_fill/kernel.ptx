@@ -1,0 +1,47 @@
+//
+// Input coverage and input mutation (bucket-fill kernel shape): each thread
+// loads its bucket and its validity flag ok; valid = ok != 0; row = valid ? bucket :
+// sentinel; every lane stores its index to flat[row]. Lanes with ok = 0 all store different
+// indices to the sentinel row: a write-write race, but only on inputs with two or more
+// invalid lanes. The captured input is all valid (no race on it): the input-coverage note
+// names `ok != 0` as never false, and --mutate-inputs sets ok = 0 for two lanes of
+// different warps and finds the race.
+//   fixed: only valid lanes store (`@valid st flat[bucket]`, the shape of the later fix):
+//   clean on the mutated input too.
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry sentinel_fill(
+	.param .u64 bucket_ptr,
+	.param .u64 ok_ptr,
+	.param .u64 flat_ptr,
+	.param .u32 sentinel
+)
+.reqntid 64
+{
+	.reg .pred %p<2>;
+	.reg .b32 %r<10>;
+	.reg .b64 %rd<12>;
+
+	ld.param.u64 %rd1, [bucket_ptr];
+	ld.param.u64 %rd2, [ok_ptr];
+	ld.param.u64 %rd3, [flat_ptr];
+	ld.param.u32 %r1, [sentinel];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd2, %rd2;
+	cvta.to.global.u64 %rd3, %rd3;
+	mov.u32 %r2, %tid.x;
+	mul.wide.u32 %rd4, %r2, 4;
+	add.s64 %rd5, %rd1, %rd4;
+	add.s64 %rd6, %rd2, %rd4;
+	ld.global.u32 %r3, [%rd5];
+	ld.global.u32 %r4, [%rd6];
+	setp.ne.s32 %p1, %r4, 0; // @CMP
+	selp.u32 %r5, %r3, %r1, %p1; // @ROW
+	mul.wide.u32 %rd7, %r5, 4;
+	add.s64 %rd8, %rd3, %rd7;
+	st.global.u32 [%rd8], %r2; // @STORE
+	ret;
+}

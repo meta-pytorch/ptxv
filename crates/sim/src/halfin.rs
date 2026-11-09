@@ -348,6 +348,21 @@ impl Machine {
         self.half_set_reg(t, r, Some(b));
     }
 
+    /// LDSM.8.MT1616 (`ldmatrix.m16n16.trans.b8`): byte b of register `r` of thread `t` comes
+    /// from shared memory at `locs[b]`.
+    pub(crate) fn half_ldsm_bytes(&mut self, t: usize, r: Reg, locs: [Option<Loc>; 4]) {
+        if !self.num.as_ref().is_some_and(|n| n.half.is_on()) {
+            return;
+        }
+        let mut b: Bytes = [None; 4];
+        for (i, l) in locs.iter().enumerate() {
+            if let Some(l) = l {
+                b[i] = self.half_mem(*l, 1, None)[0];
+            }
+        }
+        self.half_set_reg(t, r, Some(b));
+    }
+
     /// STSM .trans: half `h` of register `v` of thread `t` goes to shared memory at `loc`.
     pub(crate) fn half_stsm_half(&mut self, t: usize, v: &Val, h: usize, loc: Loc) {
         if !self.num.as_ref().is_some_and(|n| n.half.is_on()) {
@@ -610,6 +625,7 @@ impl Machine {
             from,
             to,
             relu: false,
+            byte,
         } = op
         else {
             return None;
@@ -622,7 +638,10 @@ impl Machine {
             return None;
         }
         let x = *self.num.as_ref()?.half.regs.get(&(t as u32, r.idx))?;
-        let base = if *hi { 2 } else { 0 };
+        let base = if *hi { 2 } else { 0 } + *byte as usize;
+        if *from != Lp::E2m1 && base > 2 {
+            return None;
+        }
         // (source byte, nibble) of the low and high codes.
         let codes = if *from == Lp::E2m1 {
             [(x[base], 0), (x[base], 1)]

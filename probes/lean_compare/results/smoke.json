@@ -1,0 +1,32 @@
+[
+  {
+    "binary": "check_mufu_sm103",
+    "operation": "rcp",
+    "expected_error": null,
+    "passed": true
+  },
+  {
+    "binary": "check_mufu_sm103",
+    "operation": "tanh.bf16",
+    "expected_error": null,
+    "passed": true
+  },
+  {
+    "binary": "check_mufu_sm103",
+    "operation": "rcp",
+    "expected_error": "Mismatch",
+    "passed": true
+  },
+  {
+    "binary": "check_mufu_sm103",
+    "operation": "unknown",
+    "expected_error": "Unsupported",
+    "passed": true
+  },
+  {
+    "binary": "check_mufu_sm103",
+    "operation": "rcp",
+    "expected_error": "Invalid byte lengths",
+    "passed": true
+  }
+]

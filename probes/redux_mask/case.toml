@@ -1,0 +1,48 @@
+name = "probe_redux_mask"
+description = """
+Probe (E-WARPCOLL) for redux.sync with a membermask naming a subset of the warp, executed
+by exactly those lanes: divergent even/odd halves on immediate masks, a register mask
+0x0000ffff with an immediate 0xffff0000 on the other half, a single lane on 0x8, and a
+register full mask (kernel.ptx, gen.py). expected/ is GB300's output (ptxas cubin,
+`ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "redux_mask"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [64]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [256]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "mask_mismatch"
+summary = "all 32 lanes run the redux.sync whose membermask is 0xaaaaaaaa"
+expect = ["violation"]
+expect_sass = ["clean"]
+hw_note = "GB300 completes; every lane gets the full-warp sum (SASS REDUX has no mask; ptxv probe, 2026-11-07)"
+marker = "@MM"
+find = "%p1, %r3, 0"
+replace = "%p1, %r3, 2"

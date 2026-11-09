@@ -1,0 +1,12 @@
+# mm litmus2, job 2412859 (4 GB300, one NVLink domain), 2026-11-06. 4 GPUs (members 0,1,2,3):
+variant 0: runs 200 lanes/run 131072 readers 4: stale lanes 0 in 0 runs, timeouts 0
+variant 1: runs 200 lanes/run 131072 readers 4: stale lanes 0 in 0 runs, timeouts 0
+variant 2: runs 200 lanes/run 131072 readers 4: stale lanes 0 in 0 runs, timeouts 0
+variant 3: runs 200 lanes/run 131072 readers 4: stale lanes 0 in 0 runs, timeouts 0
+variant 4: runs 200 lanes/run 131072 readers 4: stale lanes 0 in 0 runs, timeouts 0
+# 2 GPUs (members 0,1)
+variant 0: runs 200 lanes/run 131072 readers 2: stale lanes 0 in 0 runs, timeouts 0
+variant 1: runs 200 lanes/run 131072 readers 2: stale lanes 0 in 0 runs, timeouts 0
+variant 2: runs 200 lanes/run 131072 readers 2: stale lanes 0 in 0 runs, timeouts 0
+variant 3: runs 200 lanes/run 131072 readers 2: stale lanes 0 in 0 runs, timeouts 0
+variant 4: runs 200 lanes/run 131072 readers 2: stale lanes 0 in 0 runs, timeouts 0

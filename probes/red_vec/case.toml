@@ -1,0 +1,36 @@
+name = "probe_red_vec"
+description = """
+Probe for vector float reductions red.global.add.v4.f32 / .v2.f32 (SASS REDG.E.ADD.F32x4 /
+F32x2.FTZ.RN): 128 threads into 8 four-float and 4 two-float slots, inputs whose sums are exact
+in any order (kernel.ptx, gen.py). expected/ is GB300's output (ptxas cubin, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "red_vec"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [512]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [40]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

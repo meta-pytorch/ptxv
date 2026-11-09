@@ -1,0 +1,54 @@
+// probes/bulk_hint: non-tensor cp.async.bulk with .L2::cache_hint (DeepEP's shape: the policy a
+// mov.b64 constant) global -> shared (mbarrier complete_tx), and shared -> global (bulk_group,
+// the policy from createpolicy). 64 threads; out[t] = in[t] + t.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry bulk_hint(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 64, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<12>;
+    .shared .align 128 .b8 buf[256];
+    .shared .align 8 .b64 bar;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, buf;
+    mov.u32         %r3, bar;
+    setp.eq.u32     %p1, %r1, 0;
+    @%p1 mbarrier.init.shared::cta.b64 [%r3], 1;
+    fence.mbarrier_init.release.cluster;
+    bar.sync        0;
+    @!%p1 bra       $WAIT;
+    mov.b64         %rd3, 1364590687093260288;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r3], 256;
+    cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes.L2::cache_hint [%r2], [%rd1], 256, [%r3], %rd3;
+$WAIT:
+    mov.u32         %r4, 0;
+$LOOP:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r3], %r4;
+    @!%p2 bra       $LOOP;
+    shl.b32         %r5, %r1, 2;
+    add.u32         %r6, %r2, %r5;
+    ld.shared.u32   %r7, [%r6];
+    add.u32         %r7, %r7, %r1;
+    st.shared.u32   [%r6], %r7;
+    fence.proxy.async.shared::cta;
+    bar.sync        0;
+    @!%p1 bra       $DONE;
+    createpolicy.fractional.L2::evict_first.b64 %rd4, 1.0;
+    cp.async.bulk.global.shared::cta.bulk_group.L2::cache_hint [%rd2], [%r2], 256, %rd4;
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+$DONE:
+    ret;
+}

@@ -6,9 +6,9 @@
  */
 
 //! Signed zeros of the MMA models against GB300 (probes/mma_zero): every modeled config of
-//! `probes/mma_zero/expected/configs.json` (tcgen05 kind::f16 bf16 M128 / M64 and kind::f8f6f4
-//! e4m3 / e2m1 with C disabled or C = +-0, mma.sync m16n8k16 bf16 and m16n8k8 tf32 with C from
-//! registers or RZ) through both front-ends (mma.sync: SASS only), bit for bit. The cases: one
+//! `probes/mma_zero/expected/configs.json` (tcgen05 kind::f16 bf16 M128 / M64, kind::f16 f16,
+//! kind::tf32 and kind::f8f6f4 e4m3 / e2m1 with C disabled or C = +-0, mma.sync m16n8k16 bf16 and m16n8k8 tf32 with C from
+//! registers or RZ) through both front-ends, bit for bit. The cases: one
 //! product that underflows f32 (the reported witness among them), products that are all +-0, exact
 //! cancellation, a cancellation residue below 2^-149, subnormal-range results, an underflowing
 //! product next to a nonzero accumulator. GB300 gives +0 for every zero result.
@@ -96,11 +96,10 @@ fn mma_zero_both_fronts_match_gb300() {
                 witness += 1;
             }
         }
-        // mma.sync has no PTX front-end form (probes/hmma and probes/tmma are binary cases).
-        let mut fronts = vec![ptxv_sass::load_cubin(&cubin, &case.m.entry).unwrap()];
-        if case.m.entry.starts_with("tc") {
-            fronts.push(ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap());
-        }
+        let fronts = vec![
+            ptxv_sass::load_cubin(&cubin, &case.m.entry).unwrap(),
+            ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap(),
+        ];
         for k in fronts {
             let front = format!("{:?}", k.front);
             let launch = build_launch(&case, &k).unwrap();
@@ -122,7 +121,7 @@ fn mma_zero_both_fronts_match_gb300() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 24, "14 modeled configs, tcgen05 on both fronts");
+    assert_eq!(checked, 36, "18 modeled configs, both fronts");
     assert!(witness >= 30);
     let _ = std::fs::remove_dir_all(&dir);
 }

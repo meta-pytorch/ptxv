@@ -115,7 +115,9 @@ fn kernel(case: &Case, variant: &str, front: &str) -> ptxv_ir::Kernel {
 
 fn machine(case: &Case, variant: &str, front: &str) -> Machine {
     let k = kernel(case, variant, front);
-    let launch = build_launch(case, &k).unwrap();
+    // The variant's launch-order edits (`Variant::after`) belong to the launch: without them a
+    // stream-order mutant (s_globals `unordered`) certified as the ordered original.
+    let launch = build_launch(&case.for_variant(variant).unwrap(), &k).unwrap();
     Machine::new(Arc::new(k), Arc::new(launch))
 }
 
@@ -127,6 +129,8 @@ const SKIP: &[&str] = &[
     "r4b_moe",
     // r3_grouped_mm's mutants: tma_store_wait_counts_its_own_scoreboard.
     "e_gmm_epilogue_reuse",
+    // A bounded-search fixture (bounded_search_never_reports_clean): too wide to explore.
+    "e_deep_race",
 ];
 
 /// Variants the certificate must keep proving (a regression guard on its strength).
@@ -237,7 +241,8 @@ fn branch_on_unwritten_predicate_is_reported() {
 /// certifies (contract-only: E-BULK-EXIT).
 /// A failed certificate whose own run found a race: when the exploration that replaces it
 /// runs out of budget first, the verdict still reports the race (a feasible execution
-/// reaches it; tools/mutate classifies r3_grouped_mm's miss-3 mutants by it).
+/// reaches it; tools/mutate classifies r3_grouped_mm's miss-3 mutants by it). The deterministic
+/// run that follows a search with no terminal state (explore.rs) may report it first.
 #[test]
 fn certificate_run_race_survives_an_incomplete_exploration() {
     let case = Case::load(root().join("fixtures/r0_tma_sum")).unwrap();
@@ -252,7 +257,8 @@ fn certificate_run_race_survives_an_incomplete_exploration() {
         assert!(
             v.notes
                 .iter()
-                .any(|n| n.contains("found by the certificate's run")),
+                .any(|n| n.contains("found by the certificate's run")
+                    || n.contains("one deterministic run")),
             "{front}: {:?}",
             v.notes
         );
@@ -420,6 +426,8 @@ fn certified_outputs_match_exploration() {
         ("e_ring_warp", "good", "sass"),
         ("e_poll_any", "good", "ptx"),
         ("e_poll_any", "good", "sass"),
+        // A lane exits inside a BSSY region while the others converge (E-BSYNC exit order).
+        ("e_bsync_exit", "good", "sass"),
     ] {
         let case = Case::load(root().join("fixtures").join(c)).unwrap();
         let m = machine(&case, v, f);
@@ -449,10 +457,13 @@ fn poll_that_may_read_a_blocking_write_last_is_refused() {
     for f in ["ptx", "sass"] {
         let o = certify(machine(&case, "dl", f));
         assert!(o.verdict.is_none(), "dl/{f} certified");
+        // Which reason depends on the run's schedule (explore.rs `DetSched`): a run in which
+        // the poll reads 1 and exits is refused by C-POLL; a run in which the store comes
+        // first deadlocks, and the explorer decides it.
         assert!(
-            o.reasons
-                .iter()
-                .any(|r| r.starts_with("C-POLL:") && r.ends_with("never leaves the loop")),
+            o.reasons.iter().any(|r| (r.starts_with("C-POLL:")
+                && r.ends_with("never leaves the loop"))
+                || r.contains("first: deadlock")),
             "dl/{f}: {:#?}",
             o.reasons
         );
@@ -500,7 +511,9 @@ fn ring_mutants_are_refused_with_their_reason() {
         ("e_ring_warp", "R2", "race"),
         ("e_ring_warp", "R4", "C-RING: not chunking-oblivious"),
         ("e_ring_warp", "R7", "C-RING: not chunking-oblivious"),
-        ("e_ring_warp", "W1", "race"),
+        // W1's racing writes store equal values in the certificate's run, but the values come
+        // through polls, so S-SAME-VALUE refuses rather than accepting the note.
+        ("e_ring_warp", "W1", "S-SAME-VALUE"),
     ] {
         let case = Case::load(root().join("fixtures").join(fx)).unwrap();
         for front in ["ptx", "sass"] {
@@ -543,6 +556,53 @@ fn ring_search_runs_every_choice() {
         );
         assert!(note.contains("E-RESIDENCY"), "{note}");
         assert!(v.assumptions.iter().any(|a| a == "E-RESIDENCY"));
+    }
+}
+
+/// C-POLL-ATOM: the poller's reset of the counter after its exit is ordered after the adds
+/// the exit needed (coherence), so the certificate holds; without the poll it would be a
+/// C-ORDER conflict.
+#[test]
+fn poll_atom_reset_certifies() {
+    let case = Case::load(root().join("fixtures/e_poll_atom")).unwrap();
+    for front in ["ptx", "sass"] {
+        let o = certify(machine(&case, "reset", front));
+        assert!(
+            o.verdict.is_some(),
+            "e_poll_atom/reset/{front}: {:#?}",
+            o.reasons
+        );
+    }
+}
+
+/// C-TICKET: a persistent tile scheduler (atom.inc ticket counter, arrival counter reset by
+/// the last arriver) certifies with one run per claim order; outputs that depend on the
+/// claimant, and tiles that share an output word, are refused with their reasons.
+#[test]
+fn ticket_counter_orders_are_enumerated() {
+    let case = Case::load(root().join("fixtures/e_ticket")).unwrap();
+    for front in ["ptx", "sass"] {
+        let v = certify(machine(&case, "good", front))
+            .verdict
+            .unwrap_or_else(|| panic!("e_ticket/good/{front} does not certify"));
+        let note = v
+            .notes
+            .iter()
+            .find(|n| n.starts_with("C-TICKET"))
+            .unwrap_or_else(|| panic!("no C-TICKET note: {:?}", v.notes));
+        assert!(note.contains("2 ticket counter(s)"), "{note}");
+        for (var, want) in [
+            ("ctaid", "C-TICKET: the claim order reaches the outputs"),
+            ("race", "reported findings (race"),
+        ] {
+            let o = certify(machine(&case, var, front));
+            assert!(o.verdict.is_none(), "e_ticket/{var}/{front} certified");
+            assert!(
+                o.reasons.iter().any(|r| r.contains(want)),
+                "e_ticket/{var}/{front}: {:#?}",
+                o.reasons
+            );
+        }
     }
 }
 
@@ -796,8 +856,8 @@ fn fadd_orders_outside_the_outputs_are_refused() {
 
 /// E-DESC-VERSION: Triton 3.5 leaves a tcgen05 shared-memory descriptor's fixed bits 46-48 at
 /// 0. The finding checks a descriptor value, which the certificate makes the same in every
-/// schedule, so it passes through the certificate like a contract finding: the kernel
-/// certifies (one run for all schedules) and the finding is still reported.
+/// schedule, so it passes through the certificate: the kernel certifies (one run for all
+/// schedules) and the finding is still reported, as a `contract` finding.
 #[test]
 fn desc_version_finding_does_not_break_the_certificate() {
     let case = Case::load(root().join("fixtures/c_triton_mm_bf16")).unwrap();
@@ -814,10 +874,15 @@ fn desc_version_finding_does_not_break_the_certificate() {
         "{:?}",
         v.findings.iter().map(|f| &f.sig).collect::<Vec<_>>()
     );
+    // A contract finding (GB300's MMA ignores the bits, probes/desc_version), no violation.
     assert!(
         v.findings
             .iter()
-            .all(|f| f.kind != "violation" || f.sig.starts_with("desc-version:")),
-        "only the descriptor finding"
+            .all(|f| !f.sig.starts_with("desc-version:") || f.kind == "contract"),
+        "descriptor finding is a contract one"
+    );
+    assert!(
+        v.findings.iter().all(|f| f.kind != "violation"),
+        "no violation"
     );
 }

@@ -1,0 +1,38 @@
+name = "probe_div_ftz"
+description = """
+Probe (E-BSYNC, S-BRA-COND) for `BREAK.RELIABLE Pc, Bb` (a BREAK with a predicate operand):
+div.rn.ftz.f32 on every pair of 32 f32 edge patterns runs ptxas's slow path, which leaves its
+BSSY.RELIABLE region through `@!P0 BREAK.RELIABLE !P2, B2` / `@!P0 BRA !P2, ...` for zero,
+infinite and NaN operands (kernel.ptx; in.bin as probes/fmnmx_xorsign). expected/ is GB300's
+output (ptxas cubin, `ptxv hw-worker probes/div_ftz <cubin> --runs 3 --dump`)."""
+ptx = "kernel.ptx"
+entry = "div_ftz"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024, 2]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

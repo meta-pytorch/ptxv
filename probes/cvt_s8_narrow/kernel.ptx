@@ -1,0 +1,48 @@
+// probes/cvt_s8_narrow: integer narrowing cvt into a 16-bit / 32-bit register, then widened
+// (PTX: a narrowed signed result is sign-extended to the destination register). 128 threads;
+// x = in[t] (edge patterns, random); out[k * 128 + t]:
+//   0: cvt.s8.s32 h, x; cvt.rn.f32.s16 (bits)   1: cvt.s8.s32 h, x; cvt.s32.s16
+//   2: cvt.u8.s32 h, x; cvt.u32.u16             3: cvt.s16.s32 r, x (32-bit register)
+//   4: cvt.s8.s32 r, x (32-bit register)        5: cvt.s8.s64 h, sext(x); cvt.s32.s16
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry cvt_s8_narrow(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 128, 1, 1
+{
+    .reg .b16   %h<8>;
+    .reg .b32   %r<16>;
+    .reg .f32   %f<4>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    add.s64         %rd5, %rd2, %rd3;
+    ld.global.b32   %r2, [%rd4];
+    cvt.s8.s32      %h1, %r2;
+    cvt.rn.f32.s16  %f1, %h1;
+    st.global.f32   [%rd5], %f1;
+    cvt.s32.s16     %r3, %h1;
+    st.global.b32   [%rd5+512], %r3;
+    cvt.u8.s32      %h2, %r2;
+    cvt.u32.u16     %r4, %h2;
+    st.global.b32   [%rd5+1024], %r4;
+    cvt.s16.s32     %r5, %r2;
+    st.global.b32   [%rd5+1536], %r5;
+    cvt.s8.s32      %r6, %r2;
+    st.global.b32   [%rd5+2048], %r6;
+    cvt.s64.s32     %rd6, %r2;
+    cvt.s8.s64      %h3, %rd6;
+    cvt.s32.s16     %r7, %h3;
+    st.global.b32   [%rd5+2560], %r7;
+    ret;
+}

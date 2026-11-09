@@ -1,0 +1,47 @@
+name = "probe_atom_inc"
+description = """
+Probe (L-ROSETTA) for atom.global.inc.u32 (SASS ATOMG.E.INC.STRONG.GPU): see kernel.ptx.
+expected/ is the GB300 output."""
+ptx = "kernel.ptx"
+entry = "atom_inc"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["mem", "out"]
+
+[[buffers]]
+name = "mem"
+dtype = "u32"
+shape = [256]
+init = "file"
+file = "mem.bin"
+expect = "expected/mem.bin"
+
+[[buffers]]
+name = "b"
+dtype = "u32"
+shape = [256]
+init = "file"
+file = "b.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "mem"
+
+[[params]]
+kind = "ptr"
+buffer = "b"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

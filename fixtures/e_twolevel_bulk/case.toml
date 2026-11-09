@@ -1,0 +1,40 @@
+name = "e_twolevel_bulk"
+description = """
+Two-level verdict fixture: the strict (PTX contract) check reports a bulk store that may still
+read shared memory when its CTA exits (no cp.async.bulk.wait_group.read; E-BULK-EXIT
+contract), while the SASS front under the GB300 hardware profile certifies (GB300 drains the
+store, probes/tma_store_exit). `nofence` fails at both levels (a proxy race); `waited` is
+clean at both."""
+ptx = "kernel.ptx"
+entry = "twolevel_bulk"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "no wait_group.read before exit: contract at level 1, certified under the gb300 profile"
+expect = ["contract"]
+
+[[variants]]
+id = "waited"
+summary = "wait_group.read before exit: clean"
+edits = [{ marker = "@WAIT", find = "// (wait slot)", replace = "cp.async.bulk.wait_group.read 0;" }]
+expect = ["clean"]
+
+[[variants]]
+id = "nofence"
+summary = "no fence.proxy.async after the st.shared: the bulk copy may read stale bytes at both levels"
+marker = "@FENCE"
+replace = "<delete>"
+expect = ["contract", "race"]

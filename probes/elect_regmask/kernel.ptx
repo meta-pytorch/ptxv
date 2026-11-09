@@ -1,0 +1,46 @@
+// probes/elect_regmask: elect.sync with its membermask in a register (DeepEP's inline asm:
+// `mov.b32 %r, -1; elect.sync %rx|%px, %r;`), once from a mov and once from an `or` with the
+// thread index (-1 in every lane at run time). 2 warps; per warp w and elect e in {0, 1}:
+// out[4e + w] = the number of lanes whose predicate is set (ballot popc), out[4e + 2 + w] =
+// 1 iff the leader's %rx is its own %laneid. Leader-independent.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry elect_regmask(
+    .param .u64 pout
+)
+.maxntid 64, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<24>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32         %r1, %tid.x;
+    shr.u32         %r2, %r1, 5;
+    mov.u32         %r3, %laneid;
+    mul.wide.u32    %rd2, %r2, 4;
+    add.s64         %rd3, %rd1, %rd2;
+
+    mov.b32         %r4, -1; // @MASK
+    elect.sync      %r5|%p1, %r4;
+    vote.sync.ballot.b32 %r6, %p1, -1;
+    popc.b32        %r7, %r6;
+    setp.eq.u32     %p2, %r3, 0;
+    @%p2 st.global.u32 [%rd3], %r7;
+    setp.eq.u32     %p3, %r5, %r3;
+    selp.u32        %r8, 1, 0, %p3;
+    @%p1 st.global.u32 [%rd3+8], %r8;
+
+    or.b32          %r9, %r1, -1;
+    elect.sync      %r10|%p1, %r9;
+    vote.sync.ballot.b32 %r11, %p1, -1;
+    popc.b32        %r12, %r11;
+    @%p2 st.global.u32 [%rd3+16], %r12;
+    setp.eq.u32     %p3, %r10, %r3;
+    selp.u32        %r13, 1, 0, %p3;
+    @%p1 st.global.u32 [%rd3+24], %r13;
+    ret;
+}

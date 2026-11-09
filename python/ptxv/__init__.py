@@ -95,3 +95,19 @@ def _import_hook() -> None:
 
 
 _import_hook()
+
+# PTXV_NVCC_PTX_DIR: keep the PTX of cubins that Python JIT builders compile with `nvcc -cubin`
+# (_ptxsrc.install_nvcc_hook), so captured cases of those kernels get a PTX front-end.
+if _os.environ.get("PTXV_NVCC_PTX_DIR"):
+    from . import _ptxsrc as _px
+
+    _px.install_nvcc_hook(_os.environ["PTXV_NVCC_PTX_DIR"])
+
+# CuTeDSL kept files (CUTE_DSL_KEEP=ptx...): one name per compilation, so same-prefix
+# specializations do not overwrite each other's PTX / cubin.
+if "ptx" in _os.environ.get("CUTE_DSL_KEEP", "").split(",") or _os.environ.get(
+    "CUTE_DSL_KEEP_PTX", "0"
+) not in ("0", ""):
+    from . import _ptxsrc as _px2
+
+    _px2.install_cute_unique_dumps()

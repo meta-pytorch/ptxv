@@ -1,0 +1,55 @@
+name = "e_brk"
+description = """
+Fixture for SASS BREAK lane membership (E-BSYNC, C-WARP). Lanes reach `BREAK.RELIABLE B1` by
+two paths (ptxas's branch chain for 32 predicated shared stores). BREAK only clears each lane's
+own bit of the convergence mask, so the certificate does not require the breaking lanes to have
+arrived together; the mutants put a schedule-dependent outcome inside and after the region."""
+ptx = "kernel.ptx"
+entry = "e_brk"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "inp"
+dtype = "u32"
+shape = [2048]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "inp"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "BRK1"
+summary = "the first store of the branch chain writes the neighbour lane's word: two lanes write it unordered, and the output reads it"
+marker = "@ST0"
+find = "@!%p1 st.shared.u32 [%r9+0], %r20;"
+replace = "@!%p1 st.shared.u32 [%r12+0], %r1;"
+expect = ["race"]
+# SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG): the outcome depends on the order.
+expect_sass = ["nondeterministic"]
+
+[[variants]]
+id = "BRK2"
+summary = "no barrier before the read of the other warp's word"
+marker = "@BAR"
+find = "bar.sync 0;"
+replace = ""
+expect = ["race", "violation"]
+# The neighbour may not have stored its word yet: a read of unwritten shared memory too.
+expect_sass = ["nondeterministic", "violation"]

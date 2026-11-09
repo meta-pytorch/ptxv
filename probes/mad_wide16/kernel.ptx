@@ -1,0 +1,19 @@
+// Probe for mad.wide.{s,u}16 d, a, imm, c (32-bit d = ext16(a) * ext16(imm) + c). Thread i:
+// a = low 16 bits of word 2i, c = word 2i + 1; writes 4 words at 4i.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry mad_wide16(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<8>; .reg .b32 %r<12>; .reg .b16 %rs<4>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mul.wide.u32 %rd3, %r1, 8; add.s64 %rd4, %rd1, %rd3;
+  mul.wide.u32 %rd5, %r1, 16; add.s64 %rd6, %rd2, %rd5;
+  ld.global.v2.u32 {%r2, %r3}, [%rd4];
+  cvt.u16.u32 %rs1, %r2;
+  mad.wide.s16 %r4, %rs1, 64, %r3;
+  mad.wide.s16 %r5, %rs1, -3, %r3;
+  mad.wide.u16 %r6, %rs1, 65535, %r3;
+  mad.wide.s16 %r7, %rs1, 0x8000, %r3;
+  st.global.v4.u32 [%rd6], {%r4, %r5, %r6, %r7};
+  ret; }

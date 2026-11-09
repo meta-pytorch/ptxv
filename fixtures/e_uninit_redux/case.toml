@@ -1,0 +1,32 @@
+name = "e_uninit_redux"
+description = """
+S-INIT through redux.sync (REDUX.SUM). Warp 1 reduces a register only warp 0 loaded; the
+undefined sum is dropped (only thread 0 stores): Triton's cross-warp reduction (corpus pilot
+dash/5819, reported at the REDUX before 2026-11-07). A reduction now carries undefined bits
+to its result, reported where the result is used."""
+ptx = "kernel.ptx"
+entry = "uninit_redux"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "only thread 0 stores the (defined) sum of warp 0"
+expect = ["clean"]
+
+[[variants]]
+id = "store_all"
+summary = "lane 0 of each warp stores its sum: warp 1's undefined sum reaches memory"
+edits = [{ marker = "@STORE", find = "setp.eq.u32 %p2, %r1, 0;", replace = "setp.eq.u32 %p2, %r2, 0;" }]
+expect = ["violation"]

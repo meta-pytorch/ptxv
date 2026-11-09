@@ -67,7 +67,11 @@ class Verdict:
     refuted_opt_in: refuted assumptions the verdict relies on by explicit opt-in.
     gb300: the second level's summary (the hardware-model check: states, observable / latent
     counts, stale reads only it sees), or None when it did not run. `observable` / `latent` /
-    `latent_closed_world` list the classified findings.
+    `latent_closed_world` / `latent_needs_divergence` list the classified findings.
+    nonfinite: with `check(..., nonfinite=True)` (or "strict"), the NaN / Inf scan of the
+    outputs: per output buffer counts and the first element, input buffers holding NaN / Inf,
+    and `births`, the instructions that produced a non-finite value from operands without
+    one. A `nonfinite-output` finding (and class) when every float input element is finite.
     """
 
     classes: list[str]
@@ -83,6 +87,7 @@ class Verdict:
     json: dict
     refuted_opt_in: list[str] = field(default_factory=list)
     gb300: dict | None = None
+    nonfinite: dict | None = None
 
     @classmethod
     def from_json(cls, doc: dict) -> "Verdict":
@@ -106,6 +111,7 @@ class Verdict:
             json=doc,
             refuted_opt_in=list(r.get("refuted_opt_in") or []),
             gb300=r.get("gb300"),
+            nonfinite=r.get("nonfinite"),
         )
 
     @property
@@ -124,6 +130,13 @@ class Verdict:
         """PTX-model findings latent on GB300 only under E-L1-CLOSED: observable when a
         co-resident kernel fills the line (witness `gb300_witness`). Not in `latent`."""
         return [f for f in self.findings if f.gb300 == "latent-closed-world"]
+
+    @property
+    def latent_needs_divergence(self) -> list[Finding]:
+        """Intra-warp PTX-model races between lanes of one warp that stays converged between
+        the accesses (PTX front-end): GB300 orders them unless the warp diverges or the
+        compiler reorders them (E-LOCKSTEP). Not in `latent`."""
+        return [f for f in self.findings if f.gb300 == "latent-needs-divergence"]
 
     @property
     def clean(self) -> bool:

@@ -1,0 +1,61 @@
+// probes/redux_s32: full-warp redux.sync forms and integer global atomics against GB300.
+// 128 threads (4 warps); lane l of warp w loads x = in[32 w + l] (gen.py) and stores
+// out[9 (32 w + l) + j] = redux.sync.<op j> of x over the warp, op j = add.s32 (SASS
+// REDUX.SUM.S32), add.u32 (REDUX.SUM), and.b32, or.b32, xor.b32, min.s32, max.s32, min.u32,
+// max.u32 (CREDUX); then old[g] = atom.global.add.s32 [m + 4g], in[128 + g]
+// (ATOMG.E.ADD.S32) and red.global.add.s32 [m + 512 + 4g], in[128 + g] (REDG), m = in[0..256).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry redux_s32(
+    .param .u64 pin,
+    .param .u64 pm,
+    .param .u64 pout,
+    .param .u64 pold
+)
+.maxntid 128, 1, 1
+{
+    .reg .b32   %r<48>;
+    .reg .b64   %rd<12>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    ld.param.u64    %rd8, [pm];
+    ld.param.u64    %rd9, [pold];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd8, %rd8;
+    cvta.to.global.u64 %rd9, %rd9;
+    mov.u32         %r3, %tid.x;
+    mul.wide.u32    %rd3, %r3, 4;
+    add.s64         %rd5, %rd1, %rd3;
+    ld.global.u32   %r4, [%rd5];
+    ld.global.u32   %r5, [%rd5+512];
+    redux.sync.add.s32 %r30, %r4, 0xffffffff;
+    redux.sync.add.u32 %r31, %r4, 0xffffffff;
+    redux.sync.and.b32 %r32, %r4, 0xffffffff;
+    redux.sync.or.b32  %r33, %r4, 0xffffffff;
+    redux.sync.xor.b32 %r34, %r4, 0xffffffff;
+    redux.sync.min.s32 %r35, %r4, 0xffffffff;
+    redux.sync.max.s32 %r36, %r4, 0xffffffff;
+    redux.sync.min.u32 %r37, %r4, 0xffffffff;
+    redux.sync.max.u32 %r38, %r4, 0xffffffff;
+    mul.wide.u32    %rd4, %r3, 36;
+    add.s64         %rd4, %rd2, %rd4;
+    st.global.u32   [%rd4], %r30;
+    st.global.u32   [%rd4+4], %r31;
+    st.global.u32   [%rd4+8], %r32;
+    st.global.u32   [%rd4+12], %r33;
+    st.global.u32   [%rd4+16], %r34;
+    st.global.u32   [%rd4+20], %r35;
+    st.global.u32   [%rd4+24], %r36;
+    st.global.u32   [%rd4+28], %r37;
+    st.global.u32   [%rd4+32], %r38;
+    add.s64         %rd6, %rd8, %rd3;
+    atom.global.add.s32 %r40, [%rd6], %r5;
+    red.global.add.s32 [%rd6+512], %r5;
+    add.s64         %rd7, %rd9, %rd3;
+    st.global.u32   [%rd7], %r40;
+    ret;
+}

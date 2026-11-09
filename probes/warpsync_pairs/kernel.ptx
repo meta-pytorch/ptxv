@@ -1,0 +1,80 @@
+// probes/warpsync_pairs: bar.warp.sync whose membermask names only the lane's pair
+// (3 << (lane & 30); SASS `WARPSYNC R` on per-lane masks, as CuTeDSL's RouterEpilogue
+// `WARPSYNC R8` before its pair shuffles): each pair is a separate group. 64 threads; lane l of
+// warp w (t = 32 w + l) loads x = in[t] (gen.py); each section stores a value to s[t],
+// synchronizes with its pair and reads the partner's s[t ^ 1]:
+//   out[4 t + 0]: converged;
+//   out[4 t + 1]: after a branch on l < 16 (each half its own bar.warp.sync);
+//   out[4 t + 2]: even and odd lanes on separate paths (the two lanes of a pair at different
+//                 bar.warp.sync instructions);
+//   out[4 t + 3]: x.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry warpsync_pairs(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 64, 1, 1
+{
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<8>;
+    .reg .pred  %p<4>;
+    .shared .align 4 .b32 s[192];
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    and.b32         %r2, %r1, 31;
+    mul.wide.u32    %rd3, %r1, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.u32   %r4, [%rd4];
+    mul.wide.u32    %rd5, %r1, 16;
+    add.s64         %rd6, %rd2, %rd5;
+    and.b32         %r5, %r2, 30;
+    mov.b32         %r6, 3;
+    shl.b32         %r7, %r6, %r5;
+    mov.u32         %r20, s;
+    shl.b32         %r21, %r1, 2;
+    add.u32         %r22, %r20, %r21;               // &s[t]
+    xor.b32         %r23, %r21, 4;
+    add.u32         %r24, %r20, %r23;               // &s[t ^ 1]
+    st.shared.u32   [%r22], %r4;
+    bar.warp.sync   %r7;
+    ld.shared.u32   %r10, [%r24];
+    st.global.u32   [%rd6], %r10;
+    setp.lt.u32     %p1, %r2, 16;
+    @%p1 bra        LO;
+    add.u32         %r8, %r4, 7;
+    st.shared.u32   [%r22+256], %r8;
+    bar.warp.sync   %r7;
+    ld.shared.u32   %r11, [%r24+256];
+    bra.uni         J1;
+LO:
+    xor.b32         %r8, %r4, 0x55;
+    st.shared.u32   [%r22+256], %r8;
+    bar.warp.sync   %r7;
+    ld.shared.u32   %r11, [%r24+256];
+J1:
+    st.global.u32   [%rd6+4], %r11;
+    and.b32         %r9, %r2, 1;
+    setp.ne.u32     %p2, %r9, 0;
+    @%p2 bra        ODD;
+    shl.b32         %r12, %r4, 1;
+    st.shared.u32   [%r22+512], %r12;
+    bar.warp.sync   %r7;
+    ld.shared.u32   %r13, [%r24+512];
+    bra.uni         J2;
+ODD:
+    shr.u32         %r12, %r4, 1;
+    st.shared.u32   [%r22+512], %r12;
+    bar.warp.sync   %r7;
+    ld.shared.u32   %r13, [%r24+512];
+J2:
+    st.global.u32   [%rd6+8], %r13;
+    st.global.u32   [%rd6+12], %r4;
+    ret;
+}

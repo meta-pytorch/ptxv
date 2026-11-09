@@ -1,0 +1,18 @@
+# probes/multimem/c2d8: driver constant words, job 2413637 on a 4-GPU GB300 node and one GPU of a second GB300 host, 2026-11-06
+plain dev 0: k2d0.cubin=0x98 k2d8.cubin=0 k2dc.cubin=0x1000000
+plain dev 1: k2d0.cubin=0x98 k2d8.cubin=0 k2dc.cubin=0x1000000
+plain dev 2: k2d0.cubin=0x98 k2d8.cubin=0 k2dc.cubin=0x1000000
+plain dev 3: k2d0.cubin=0x98 k2d8.cubin=0 k2dc.cubin=0x1000000
+after-mc dev 0: k2d0.cubin=0x98 k2d8.cubin=0 k2dc.cubin=0x1000000
+after-mc dev 1: k2d0.cubin=0x98 k2d8.cubin=0 k2dc.cubin=0x1000000
+after-mc dev 2: k2d0.cubin=0x98 k2d8.cubin=0 k2dc.cubin=0x1000000
+after-mc dev 3: k2d0.cubin=0x98 k2d8.cubin=0 k2dc.cubin=0x1000000
+--- 1 GPU
+plain dev 0: k2d0.cubin=0x98 k2d8.cubin=0 k2dc.cubin=0x1000000
+--- 2 GPUs
+plain dev 0: k2d0.cubin=0x98 k2d8.cubin=0 k2dc.cubin=0x1000000
+plain dev 1: k2d0.cubin=0x98 k2d8.cubin=0 k2dc.cubin=0x1000000
+after-mc dev 0: k2d0.cubin=0x98 k2d8.cubin=0 k2dc.cubin=0x1000000
+after-mc dev 1: k2d0.cubin=0x98 k2d8.cubin=0 k2dc.cubin=0x1000000
+--- second host, one GPU
+plain dev 0: k2d0.cubin=0x98 k2d8.cubin=0 k2dc.cubin=0x1000000

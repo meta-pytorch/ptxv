@@ -125,7 +125,8 @@ memory; PTX scope model (moral strength, release/acquire, scoped fences) and fla
 1000/1000 on GB300 (stale L1), B19 latent (20,000 runs), B56 SASS-safe.*
 *1g ✅ done 2026-10-30 ([docs/rung1g.md](docs/rung1g.md)) on **3 GPUs** (the fourth is busy): one-shot all-reduce
 over symmetric memory, two calls; replica-equality check (N4); both fronts exhaustive (SASS good: 3.3M states), bitwise = GB300; B21/B22/B24
-caught; B24 diverges on GB300 every run. Multicast/NVLS (B23) not done.*
+caught; B24 diverges on GB300 every run. Multicast/NVLS: 1h below.*
+*1h ✅ 2026-11-06 ([docs/nvls.md](docs/nvls.md)): NVLS multicast objects (case `[[multicast]]`, capture), `multimem.ld_reduce` / `.st` / `.red` and SASS `LDGMC` / `STG` / `REDG`, alias proxy (S-MC-ALIAS), GB300 numerics (N-MULTIMEM); `fixtures/r1h_nvls` with B23/B63/B64/B65.*
 1a tcgen05 single-CTA tile (alloc → mma → commit → ld → dealloc) · 1b S-stage TMA↔MMA pipeline,
 persistent over T tiles · 1c 2-CTA cluster (`cta_group::2`, multicast TMA, multicast commit,
 final cluster barrier) · 1d CLC persistent scheduler · 1e PDL pair of kernels · 1f **2-GPU**
@@ -289,6 +290,11 @@ and async engines, and multi-node adds entries to each:
   queue, nondeterministic completion, HB edges only where verbs guarantee them. The SASS lift
   sees the WQE writes and doorbell stores, and the capture records QP/MR registrations.
   NVSHMEM's host-proxy transport becomes a CPU-thread actor.
+* **Built (2026-11-06, docs/nic.md):** the NIC actor for IBGDA queue pairs (mlx5 WQEs as
+  DOCA GPUNetIO posts them: RDMA write, fetch-add / compare-swap, CQEs), NVLink domains,
+  capture hooks in `tools/capture_dist.py`, fixture `r5a_ibgda_putsig`, GB300 + ConnectX-8
+  probes (probes/ibgda). NVSHMEM's host-proxy transport and BlueFlame doorbells are not
+  modeled.
 * **New bug classes** to add then: missing `quiet` before signal across nodes, reusing a send
   buffer before local completion, assuming put ordering on different QPs, CQ overrun.
 * **Validation** needs a real multi-node setup (a Slurm cluster) for the litmus campaign

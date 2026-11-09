@@ -1,0 +1,50 @@
+name = "probe_atom_vec"
+description = """
+Probe (L-ROSETTA) for vector float atomics with a result, atom.global.gpu.acq_rel.add.v4.f32 and
+atom.global.add.v2.f32 (SASS ATOMG.E.ADD.F32x4 / F32x2.FTZ.RN.STRONG.GPU; Triton's tl.atomic_add
+on a vectorized f32 tensor): 64 threads, one slot each, specials and subnormals in the addends and
+starting values (kernel.ptx, gen.py). expected/ is GB300's output (kernel.cubin = ptxas
+-arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "atom_vec"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["acc", "old"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [384]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "acc"
+dtype = "u32"
+shape = [384]
+init = "file"
+file = "acc.bin"
+expect = "expected/acc.bin"
+
+[[buffers]]
+name = "old"
+dtype = "u32"
+shape = [384]
+init = "zeros"
+expect = "expected/old.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "acc"
+
+[[params]]
+kind = "ptr"
+buffer = "old"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

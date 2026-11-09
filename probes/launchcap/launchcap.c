@@ -32,6 +32,10 @@ static void **cur_extra;
 // Whether the launch being recorded carries the programmatic stream serialization attribute
 // (PDL: it may start before the previous kernel on the stream completes).
 static int cur_pdl;
+// The preferred cluster dimension of the launch being recorded (0s without the attribute).
+// With it, the hardware launches each group of CTAs either as one cluster of this shape or as
+// clusters of the regular (fallback) shape (probes/cga_size).
+static unsigned cur_pref[3];
 // The stream of the launch being recorded (multi-process captures order launches per stream).
 static unsigned long long cur_stream;
 // Inside a runtime launch (__cudaLaunchKernel / cudaLaunchKernelExC), which records the launch
@@ -174,14 +178,31 @@ static void dump_k(CUkernel k, CUfunction f, unsigned gx, unsigned gy, unsigned 
         kname_t kn = (kname_t)dlsym(cuda, "cuKernelGetName");
         if (kn) kn(&nm, k);
     }
+    // The launched kernel's module (CUfunction) or library (CUkernel) handle: the process can
+    // look up the module's data globals in it (cuModuleGetGlobal / cuLibraryGetGlobal,
+    // tools/capture_dist.py).
+    unsigned long long hmod = 0, hlib = 0;
+    {
+        typedef CUresult (*fmod_t)(CUmodule *, CUfunction);
+        typedef CUresult (*klib_t)(CUlibrary *, CUkernel);
+        fmod_t fmod = (fmod_t)dlsym(cuda, "cuFuncGetModule");
+        klib_t klib = (klib_t)dlsym(cuda, "cuKernelGetLibrary");
+        CUmodule md = 0;
+        CUlibrary lb = 0;
+        if (k && klib && klib(&lb, k) == CUDA_SUCCESS) hlib = (unsigned long long)lb;
+        else if (f && fmod && fmod(&md, f) == CUDA_SUCCESS) hmod = (unsigned long long)md;
+    }
     snap_on = snap_allowed && snap_match(nm);
     snap_len = 0;
     if (snap_on) fprintf(fp, "{\"snap\": %u, ", snap_seq);
     fprintf(fp, "%s\"name\": \"%s\", \"grid\": [%u, %u, %u], \"block\": [%u, %u, %u], "
                 "\"smem\": %u, \"cluster\": [%u, %u, %u], \"pdl\": %d, \"stream\": %llu, "
-                "\"dev\": %d, \"t\": %llu, \"params\": [",
+                "\"dev\": %d, \"t\": %llu, \"mod\": %llu, \"lib\": %llu, ",
             snap_on ? "" : "{", nm, gx, gy, gz, bx, by, bz, smem, cx, cy, cz, cur_pdl, cur_stream, cur_device(),
-            now_ns());
+            now_ns(), hmod, hlib);
+    if (cur_pref[0])
+        fprintf(fp, "\"preferred_cluster\": [%u, %u, %u], ", cur_pref[0], cur_pref[1], cur_pref[2]);
+    fprintf(fp, "\"params\": [");
     if (!params && cur_extra) {
         const unsigned char *buf = 0;
         size_t bsize = 0;
@@ -257,6 +278,10 @@ CUresult cuLaunchKernelEx(const CUlaunchConfig *c, CUfunction f, void **params, 
             cz = c->attrs[i].value.clusterDim.z;
         } else if (c->attrs[i].id == CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION) {
             cur_pdl = c->attrs[i].value.programmaticStreamSerializationAllowed != 0;
+        } else if (c->attrs[i].id == CU_LAUNCH_ATTRIBUTE_PREFERRED_CLUSTER_DIMENSION) {
+            cur_pref[0] = c->attrs[i].value.preferredClusterDim.x;
+            cur_pref[1] = c->attrs[i].value.preferredClusterDim.y;
+            cur_pref[2] = c->attrs[i].value.preferredClusterDim.z;
         }
     cur_extra = extra;
     cur_stream = (unsigned long long)c->hStream;
@@ -266,6 +291,7 @@ CUresult cuLaunchKernelEx(const CUlaunchConfig *c, CUfunction f, void **params, 
     snap_allowed = 0;
     cur_extra = 0;
     cur_pdl = 0;
+    memset(cur_pref, 0, sizeof cur_pref);
     snap_pre();
     CUresult r = real_launchex(c, f, params, extra);
     snap_post();
@@ -400,6 +426,9 @@ typedef CUresult (*mccreate_t)(CUmemGenericAllocationHandle *, const CUmulticast
 typedef CUresult (*mcadd_t)(CUmemGenericAllocationHandle, CUdevice);
 typedef CUresult (*mcbind_t)(CUmemGenericAllocationHandle, size_t, CUmemGenericAllocationHandle,
                              size_t, size_t, unsigned long long);
+typedef CUresult (*mcbindaddr_t)(CUmemGenericAllocationHandle, size_t, CUdeviceptr, size_t,
+                                 unsigned long long);
+typedef CUresult (*mcunbind_t)(CUmemGenericAllocationHandle, CUdevice, size_t, size_t);
 typedef CUresult (*ipcget_t)(CUipcMemHandle *, CUdeviceptr);
 typedef CUresult (*ipcopen_t)(CUdeviceptr *, CUipcMemHandle, unsigned);
 typedef CUresult (*evrec_t)(CUevent, CUstream);
@@ -418,6 +447,8 @@ static memrelease_t r_memrelease;
 static mccreate_t r_mccreate;
 static mcadd_t r_mcadd;
 static mcbind_t r_mcbind;
+static mcbindaddr_t r_mcbindaddr;
+static mcunbind_t r_mcunbind;
 static ipcget_t r_ipcget;
 static ipcopen_t r_ipcopen;
 static evrec_t r_evrec;
@@ -515,6 +546,23 @@ static CUresult h_mcbind(CUmemGenericAllocationHandle mc, size_t mcoff,
          r, (unsigned long long)mc, mcoff, (unsigned long long)mem, memoff, size);
     return r;
 }
+// cuMulticastBindAddr binds by virtual address (the capture resolves it through the rank's
+// mappings); cuMulticastUnbind ends a bind.
+static CUresult h_mcbindaddr(CUmemGenericAllocationHandle mc, size_t mcoff, CUdeviceptr p,
+                             size_t size, unsigned long long fl) {
+    CUresult r = r_mcbindaddr(mc, mcoff, p, size, fl);
+    vlog("{\"vmm\": \"mc_bind_addr\", \"r\": %d, \"mc\": %llu, \"mc_offset\": %zu, \"ptr\": "
+         "%llu, \"size\": %zu}",
+         r, (unsigned long long)mc, mcoff, (unsigned long long)p, size);
+    return r;
+}
+static CUresult h_mcunbind(CUmemGenericAllocationHandle mc, CUdevice d, size_t mcoff, size_t size) {
+    CUresult r = r_mcunbind(mc, d, mcoff, size);
+    vlog("{\"vmm\": \"mc_unbind\", \"r\": %d, \"mc\": %llu, \"dev\": %d, \"mc_offset\": %zu, "
+         "\"size\": %zu}",
+         r, (unsigned long long)mc, (int)d, mcoff, size);
+    return r;
+}
 static CUresult h_ipcget(CUipcMemHandle *h, CUdeviceptr p) {
     CUresult r = r_ipcget(h, p);
     char hx[2 * 64 + 1] = "";
@@ -605,7 +653,8 @@ static CUresult h_hostdevptr(CUdeviceptr *d, void *p, unsigned fl) {
         real = (__typeof__(real))p;                      \
         return (void *)hook;                             \
     }
-static void *wrap_vmm(const char *sym, void *p) {
+static void *wrap_vmm(const char *sym, void *p);
+static void *wrap_vmm_impl(const char *sym, void *p) {
     VMM_HOOK("cuMemCreate", r_memcreate, h_memcreate)
     VMM_HOOK("cuMemExportToShareableHandle", r_memexport, h_memexport)
     VMM_HOOK("cuMemImportFromShareableHandle", r_memimport, h_memimport)
@@ -616,6 +665,8 @@ static void *wrap_vmm(const char *sym, void *p) {
     VMM_HOOK("cuMulticastCreate", r_mccreate, h_mccreate)
     VMM_HOOK("cuMulticastAddDevice", r_mcadd, h_mcadd)
     VMM_HOOK("cuMulticastBindMem", r_mcbind, h_mcbind)
+    VMM_HOOK("cuMulticastBindAddr", r_mcbindaddr, h_mcbindaddr)
+    VMM_HOOK("cuMulticastUnbind", r_mcunbind, h_mcunbind)
     VMM_HOOK("cuIpcGetMemHandle", r_ipcget, h_ipcget)
     VMM_HOOK("cuIpcOpenMemHandle", r_ipcopen, h_ipcopen)
     VMM_HOOK("cuEventRecord", r_evrec, h_evrec)
@@ -629,6 +680,61 @@ static void *wrap_vmm(const char *sym, void *p) {
     VMM_HOOK("cuMemAllocHost", r_allochost, h_allochost)
     VMM_HOOK("cuMemHostGetDevicePointer", r_hostdevptr, h_hostdevptr)
     return p;
+}
+
+// Libraries that link libcuda's VMM entry points directly (mscclpp's _mscclpp.so: cuMemCreate,
+// cuMemMap, ... through the PLT) bypass dlsym / cuGetProcAddress: interpose the exported names.
+#define VMM_EXPORT(ret_t, name, real, hook, params, args)                         \
+    ret_t name params {                                                          \
+        if (!real) real = (__typeof__(real))dlsym(RTLD_NEXT, #name);             \
+        if (!getenv("LAUNCHCAP_VMM")) return real args;                          \
+        return hook args;                                                        \
+    }
+VMM_EXPORT(CUresult, cuMemCreate, r_memcreate, h_memcreate,
+           (CUmemGenericAllocationHandle *h, size_t size, const CUmemAllocationProp *p,
+            unsigned long long fl),
+           (h, size, p, fl))
+VMM_EXPORT(CUresult, cuMemExportToShareableHandle, r_memexport, h_memexport,
+           (void *sh, CUmemGenericAllocationHandle h, CUmemAllocationHandleType t,
+            unsigned long long fl),
+           (sh, h, t, fl))
+VMM_EXPORT(CUresult, cuMemImportFromShareableHandle, r_memimport, h_memimport,
+           (CUmemGenericAllocationHandle *h, void *os, CUmemAllocationHandleType t), (h, os, t))
+VMM_EXPORT(CUresult, cuMemAddressReserve, r_memreserve, h_memreserve,
+           (CUdeviceptr *p, size_t size, size_t al, CUdeviceptr addr, unsigned long long fl),
+           (p, size, al, addr, fl))
+VMM_EXPORT(CUresult, cuMemMap, r_memmap, h_memmap,
+           (CUdeviceptr p, size_t size, size_t off, CUmemGenericAllocationHandle h,
+            unsigned long long fl),
+           (p, size, off, h, fl))
+VMM_EXPORT(CUresult, cuMemUnmap, r_memunmap, h_memunmap, (CUdeviceptr p, size_t size), (p, size))
+VMM_EXPORT(CUresult, cuMemRelease, r_memrelease, h_memrelease, (CUmemGenericAllocationHandle h),
+           (h))
+VMM_EXPORT(CUresult, cuMulticastCreate, r_mccreate, h_mccreate,
+           (CUmemGenericAllocationHandle *h, const CUmulticastObjectProp *p), (h, p))
+VMM_EXPORT(CUresult, cuMulticastAddDevice, r_mcadd, h_mcadd,
+           (CUmemGenericAllocationHandle h, CUdevice d), (h, d))
+VMM_EXPORT(CUresult, cuMulticastBindMem, r_mcbind, h_mcbind,
+           (CUmemGenericAllocationHandle mc, size_t mcoff, CUmemGenericAllocationHandle mem,
+            size_t memoff, size_t size, unsigned long long fl),
+           (mc, mcoff, mem, memoff, size, fl))
+VMM_EXPORT(CUresult, cuMulticastBindAddr, r_mcbindaddr, h_mcbindaddr,
+           (CUmemGenericAllocationHandle mc, size_t mcoff, CUdeviceptr p, size_t size,
+            unsigned long long fl),
+           (mc, mcoff, p, size, fl))
+VMM_EXPORT(CUresult, cuMulticastUnbind, r_mcunbind, h_mcunbind,
+           (CUmemGenericAllocationHandle mc, CUdevice d, size_t mcoff, size_t size),
+           (mc, d, mcoff, size))
+
+static void *wrap_vmm(const char *sym, void *p) {
+    if (p == (void *)cuMemCreate || p == (void *)cuMemExportToShareableHandle ||
+        p == (void *)cuMemImportFromShareableHandle || p == (void *)cuMemAddressReserve ||
+        p == (void *)cuMemMap || p == (void *)cuMemUnmap || p == (void *)cuMemRelease ||
+        p == (void *)cuMulticastCreate || p == (void *)cuMulticastAddDevice ||
+        p == (void *)cuMulticastBindMem || p == (void *)cuMulticastBindAddr ||
+        p == (void *)cuMulticastUnbind)
+        return p;
+    return wrap_vmm_impl(sym, p);
 }
 
 // Runtimes (cudart, CUDA Python) find driver entry points through cuGetProcAddress, which
@@ -694,6 +800,10 @@ cudaError_t _cudaLaunchKernelEx(const cudaLaunchConfig_t *c, const void *k, void
             cz = c->attrs[i].val.clusterDim.z;
         } else if (c->attrs[i].id == cudaLaunchAttributeProgrammaticStreamSerialization) {
             cur_pdl = c->attrs[i].val.programmaticStreamSerializationAllowed != 0;
+        } else if (c->attrs[i].id == cudaLaunchAttributePreferredClusterDimension) {
+            cur_pref[0] = c->attrs[i].val.preferredClusterDim.x;
+            cur_pref[1] = c->attrs[i].val.preferredClusterDim.y;
+            cur_pref[2] = c->attrs[i].val.preferredClusterDim.z;
         }
     cur_stream = (unsigned long long)c->stream;
     snap_allowed = 1;
@@ -701,6 +811,7 @@ cudaError_t _cudaLaunchKernelEx(const cudaLaunchConfig_t *c, const void *k, void
            c->blockDim.y, c->blockDim.z, (unsigned)c->dynamicSmemBytes, cx, cy, cz, args);
     snap_allowed = 0;
     cur_pdl = 0;
+    memset(cur_pref, 0, sizeof cur_pref);
     snap_pre();
     in_rt++;
     cudaError_t r = real(c, k, args);
@@ -782,6 +893,10 @@ cudaError_t cudaLaunchKernelExC(const cudaLaunchConfig_t *c, const void *k, void
             cz = c->attrs[i].val.clusterDim.z;
         } else if (c->attrs[i].id == cudaLaunchAttributeProgrammaticStreamSerialization) {
             cur_pdl = c->attrs[i].val.programmaticStreamSerializationAllowed != 0;
+        } else if (c->attrs[i].id == cudaLaunchAttributePreferredClusterDimension) {
+            cur_pref[0] = c->attrs[i].val.preferredClusterDim.x;
+            cur_pref[1] = c->attrs[i].val.preferredClusterDim.y;
+            cur_pref[2] = c->attrs[i].val.preferredClusterDim.z;
         }
     in_rt++;
     cudaError_t r = real(c, k, args);
@@ -795,6 +910,7 @@ cudaError_t cudaLaunchKernelExC(const cudaLaunchConfig_t *c, const void *k, void
                    c->blockDim.z, (unsigned)c->dynamicSmemBytes, cx, cy, cz, args);
     }
     cur_pdl = 0;
+    memset(cur_pref, 0, sizeof cur_pref);
     return r;
 }
 

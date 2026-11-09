@@ -104,6 +104,14 @@ pub struct RingCtl {
     /// A forced write index whose bytes differ from the choice's (the counter's history
     /// depends on the choices).
     pub mismatch: Option<String>,
+    /// C-TICKET (ticket.rs): the instructions that write ticket words, which this run gates.
+    pub tick_pcs: BTreeSet<u32>,
+    /// C-TICKET: the ticket words.
+    pub tick_words: BTreeSet<Word>,
+    /// C-TICKET: the forced claimant prefix of each ticket word.
+    pub tick_force: super::ticket::TickForce,
+    /// C-TICKET: the writers so far per word, in order.
+    pub tick_claims: BTreeMap<Word, Vec<u32>>,
 }
 
 impl RingCtl {

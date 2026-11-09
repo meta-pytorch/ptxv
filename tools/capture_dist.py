@@ -29,8 +29,12 @@
 #   identified by its fabric handle (or (rank, handle) when never exported), its owner is the
 #   rank that created it, and a pointer v in rank r resolves to (owner, owner's address) through
 #   r's mappings. POSIX-fd exports are matched by the fd's (st_dev, st_ino), legacy IPC by the
-#   64-byte cudaIpcMemHandle. Multicast objects (NVLS: cuMulticastCreate + BindMem) are
-#   recorded and reported; a pointer into one is a `multicast` reference (not modeled).
+#   64-byte cudaIpcMemHandle.
+# * Multicast (NVLS): cuMulticastCreate / AddDevice / BindMem / BindAddr and cuMemMap of the
+#   multicast handle are recorded. A pointer into a multicast mapping (a kernel parameter or a
+#   table word) becomes a reference to a case `[[multicast]]` object, whose `binds` say which
+#   buffer of which GPU backs which range of it (the bound allocation cut at the case's
+#   buffers; S-MULTIMEM).
 # * Pointer tables. torch passes peer pointers through device arrays (`T** buffer_ptrs_dev`,
 #   `uint32_t** signal_pads_dev`), so every buffer a parameter references is scanned for 8-byte
 #   words that resolve; those become `ptrs` of the buffer (crates/case `Buffer::ptrs`), patched
@@ -48,6 +52,22 @@
 # * cudaMalloc buffers, legacy IPC (cudaIpcGetMemHandle / OpenMemHandle) and mapped host
 #   memory are tracked like VMM allocations; host-to-device uploads between kernels (a
 #   host-computed routing table) are folded into the destination's initial bytes (noted).
+# * GPU-initiated RDMA (IBGDA, docs/nic.md): when the file defines `nic(inputs)` returning
+#   [{"peer": rank, "addr": device address of an mscclpp PortChannelIbgdaDeviceHandle,
+#   "size": its byte size}], each handle's DOCA QP (send ring, CQ, doorbell record, read from
+#   the doca_gpu_dev_verbs_qp struct the handle points to) becomes a `[[nic_qps]]` entry, the
+#   doorbell register a synthetic 8-byte buffer, the handle's remote addresses pointers into
+#   the peer's buffers, and its keys `[[nic_mrs]]` covering the buffer each address falls in.
+#   `DOMAINS` (one NVLink domain per rank) becomes `domains`.
+# * Several hosts (--nnodes N --node-rank i --master-addr --master-port, the script run once
+#   per host with one shared --work): each host's torchrun records its local ranks, node 0
+#   waits for every rank.json and merges. rank.json carries the host name, the GPU's NVLink
+#   fabric state (nvidia-smi) and the process's RC QPs (`rdma res show qp`: local / remote
+#   QPN). POSIX-fd and legacy-IPC keys are per host; launch times are taken relative to a
+#   common barrier per host. Each IBGDA handle's peer is the rank whose QP is its QP's remote
+#   QPN, else the rank whose handle has its rkey as lkey at its remote base, else the nic()
+#   label (capture.json "nic_pairs"). `domains`: one NVLink domain per host, or per fabric
+#   clique when a kernel pointer of one rank resolves into memory owned on another host.
 import argparse
 import glob
 import hashlib
@@ -55,13 +75,21 @@ import json
 import os
 import re
 import shutil
+import socket
 import struct
 import subprocess
 import sys
+import time
+from pathlib import Path
+
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "python")
+)
+from ptxv._cubin import decode_tmap  # noqa: E402
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 LC = os.path.join(ROOT, "probes/launchcap")
-CUDA = "/usr/local/cuda-13.0"
+CUDA = os.environ.get("PTXV_CUDA_HOME", "/usr/local/cuda-13.0")
 ESIZE = {
     "bf16": 2,
     "f16": 2,
@@ -88,6 +116,21 @@ def parse_args():
         "--nproc", type=int, default=3, help="ranks (torchrun --nproc-per-node)"
     )
     ap.add_argument("--name", help="case name (default: the directory name)")
+    ap.add_argument(
+        "--nnodes",
+        type=int,
+        default=1,
+        help="hosts: run this script once per host (--node-rank), same --work on a shared filesystem",
+    )
+    ap.add_argument("--node-rank", type=int, default=0)
+    ap.add_argument("--master-addr", help="node 0's address (--nnodes > 1)")
+    ap.add_argument("--master-port", type=int)
+    ap.add_argument(
+        "--wait",
+        type=int,
+        default=600,
+        help="node 0: seconds to wait for the other hosts' rank.json after its torchrun exits",
+    )
     ap.add_argument(
         "--kernels", help="regex: keep only launches whose kernel name matches"
     )
@@ -120,7 +163,10 @@ def u64(raw, off):
 def build_probes():
     lib = os.path.join(sys.prefix, "lib")
     inc = glob.glob(f"{CUDA}/targets/*/include")[0]
-    so_lc, so_cc = f"{WORK}/launchcap.so", f"{WORK}/cubincap.so"
+    # Per host: the hosts share WORK and may differ in toolchain.
+    d = f"{WORK}/node{A.node_rank}" if A.nnodes > 1 else WORK
+    os.makedirs(d, exist_ok=True)
+    so_lc, so_cc = f"{d}/launchcap.so", f"{d}/cubincap.so"
     subprocess.run(
         ["gcc", "-shared", "-fPIC", "-O2", "-o", so_lc, f"{LC}/launchcap.c", "-ldl"]
         + [f"-I{CUDA}/include"],
@@ -142,10 +188,19 @@ def parent():
         )
     if len(vis.split(",")) < A.nproc:
         sys.exit(f"capture_dist: {A.nproc} ranks but CUDA_VISIBLE_DEVICES={vis}")
-    shutil.rmtree(WORK, ignore_errors=True)
-    for r in range(A.nproc):
+    if A.nnodes == 1:
+        shutil.rmtree(WORK, ignore_errors=True)
+    else:
+        # WORK is shared by the hosts and cleaned by the caller; each host makes its ranks'.
+        if not (A.master_addr and A.master_port and A.work):
+            sys.exit(
+                "capture_dist: --nnodes > 1 needs --master-addr, --master-port, --work"
+            )
+        if glob.glob(f"{WORK}/r*/rank.json"):
+            sys.exit(f"capture_dist: {WORK} holds an earlier recording; clean it first")
+    for r in range(A.node_rank * A.nproc, (A.node_rank + 1) * A.nproc):
         for d in ("cupti", "images"):
-            os.makedirs(f"{WORK}/r{r}/{d}")
+            os.makedirs(f"{WORK}/r{r}/{d}", exist_ok=A.nnodes > 1)
     so_lc, so_cc = build_probes()
     env = dict(
         os.environ,
@@ -157,13 +212,18 @@ def parent():
         CUBINCAP_DIR=f"{WORK}/r%r/cupti",
         PTXV_CAPTURE_DIST_WORK=WORK,
     )
-    port = 29500 + os.getpid() % 2000
+    port = A.master_port or 29500 + os.getpid() % 2000
+    hosts = []
+    if A.nnodes > 1:
+        hosts = ["--nnodes", str(A.nnodes), "--node-rank", str(A.node_rank)]
+        hosts += ["--master-addr", A.master_addr]
     cmd = [
         sys.executable,
         "-m",
         "torch.distributed.run",
         "--nproc-per-node",
         str(A.nproc),
+        *hosts,
         "--master-port",
         str(port),
         os.path.abspath(__file__),
@@ -176,12 +236,138 @@ def parent():
         sys.exit(
             f"capture_dist: torchrun failed ({r.returncode}); recordings in {WORK}"
         )
+    if A.node_rank:
+        return  # node 0 merges
+    want = [f"{WORK}/r{r}/rank.json" for r in range(A.nproc * A.nnodes)]
+    for _ in range(A.wait * 2):
+        if all(os.path.exists(w) for w in want):
+            break
+        time.sleep(0.5)
+    miss = [w for w in want if not os.path.exists(w)]
+    if miss:
+        sys.exit(
+            f"capture_dist: {len(miss)} rank(s) never wrote rank.json, e.g. {miss[0]}"
+        )
     merge()
     if not A.work:
         shutil.rmtree(WORK, ignore_errors=True)
 
 
 # ================================================================ worker: one rank
+
+
+# doca_gpu_dev_verbs_qp (DOCA GPUNetIO common/doca_gpunetio_verbs_dev.h, packed): byte offsets.
+QP_STRUCT = 296
+QP_F = {
+    "sq_rsvd_index": (0, 8),
+    "sq_wqe_pi": (16, 8),
+    "sq_num": (24, 4),
+    "sq_wqe_num": (60, 2),
+    "sq_wqe_daddr": (64, 8),
+    "sq_dbrec": (72, 8),
+    "sq_db": (80, 8),
+    "cqe_daddr": (160, 8),
+    "cqe_num": (172, 4),
+    "cq_dbrec": (176, 8),
+    "cqe_ci": (184, 8),
+    "cqe_rsvd": (200, 8),
+    "nic_handler": (288, 4),
+}
+# The tail of mscclpp's PortChannelIbgdaDeviceHandle (port_channel_ibgda_device.hpp), after
+# the semaphore handle: qp_, rkeyBe_, lkeyBe_, remoteTokenRkeyBe_, sinkLkeyBe_, remoteBase_,
+# localBase_, remoteInboundToken_, sinkAddr_ (56 bytes).
+H_TAIL = 56
+
+
+def nic_describe(mod, inputs, dev_read):
+    """Read each IBGDA handle the target's nic() names and the DOCA QP it points to."""
+    out = []
+    for d in mod.nic(inputs):
+        if "region" in d:
+            # A buffer the handles name that the allocation records miss (mscclpp's window).
+            a, z = d["region"]
+            out.append({"regions": [(a, z)], "extra": True})
+            continue
+        raw = dev_read(d["addr"], d["size"])
+        t = d["size"] - H_TAIL
+        q = {
+            "peer": int(d["peer"]),
+            "addr": d["addr"],
+            "size": d["size"],
+            "tail": t,
+            "qp": u64(raw, t),
+            "rkey": int.from_bytes(raw[t + 8 : t + 12], "big"),
+            "lkey": int.from_bytes(raw[t + 12 : t + 16], "big"),
+            "token_rkey": int.from_bytes(raw[t + 16 : t + 20], "big"),
+            "sink_lkey": int.from_bytes(raw[t + 20 : t + 24], "big"),
+            "remote_base": u64(raw, t + 24),
+            "local_base": u64(raw, t + 32),
+            "remote_token": u64(raw, t + 40),
+            "sink": u64(raw, t + 48),
+        }
+        qs = dev_read(q["qp"], QP_STRUCT)
+        q["qp_fields"] = {
+            k: int.from_bytes(qs[o : o + n], "little") for k, (o, n) in QP_F.items()
+        }
+        f = q["qp_fields"]
+        # The semaphore handle at the front: inboundToken*, expectedInboundToken*,
+        # numInboundTokens (semaphore_device.hpp), this rank's token words.
+        ntok = int.from_bytes(raw[16:20], "little") if t >= 20 else 1
+        # The handle's semaphore: inboundToken (the per-QP words the peer's NIC adds to).
+        ntok = int.from_bytes(raw[16:20], "little") if t >= 20 else 1
+        q["regions"] = [
+            (u64(raw, 0), 8 * max(1, ntok)),
+            (q["qp"], QP_STRUCT),
+            (f["sq_wqe_daddr"], 64 * f["sq_wqe_num"]),
+            (f["cqe_daddr"], 64 * f["cqe_num"]),
+            (f["sq_dbrec"], 4),
+            (u64(raw, 0), 8 * max(1, ntok)),
+            (u64(raw, 8), 8),
+        ] + [tuple(x) for x in d.get("regions", [])]
+        out.append(q)
+    return out
+
+
+def rdma_qps_of(pid):
+    """This process's RC QPs as the kernel lists them (`rdma res show qp`): local and remote QPN
+    per HCA. The remote QPN is what pairs a GPU's QP with its peer's across hosts."""
+    try:
+        out = subprocess.run(
+            ["rdma", "-j", "res", "show", "qp"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout
+        qs = json.loads(out or "[]")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    return [
+        {k: q.get(k) for k in ("ifname", "port", "lqpn", "rqpn", "type", "state")}
+        for q in qs
+        if q.get("pid") == pid and q.get("type") == "RC"
+    ]
+
+
+def gpu_fabric(uuid):
+    """NVLink fabric membership of this rank's GPU (nvidia-smi -q: cluster UUID, clique id)."""
+    idx = uuid if uuid.startswith("GPU-") else f"GPU-{uuid}"
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "-q", "-i", idx], capture_output=True, text=True, timeout=60
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    f, sec = {}, False
+    for ln in out.splitlines():
+        if ln.strip() == "Fabric":
+            sec = True
+        elif sec and ":" in ln:
+            k, v = (x.strip() for x in ln.split(":", 1))
+            if k in ("State", "Status", "CliqueId", "ClusterUUID"):
+                f[k] = v
+        elif sec and ln.strip() and not ln.startswith(" " * 8):
+            sec = False
+    return f
 
 
 def worker():  # noqa: C901 (per-rank capture worker: one linear pass over shared capture state)
@@ -304,6 +490,11 @@ def worker():  # noqa: C901 (per-rank capture worker: one linear pass over share
     dist.barrier()
     torch.cuda.synchronize()
     first = sum(1 for _ in open(CAP)) if os.path.exists(CAP) else 0
+    # Host clock at a point every rank passed together (after the barrier): launch times of
+    # ranks on different hosts are compared relative to it.
+    t_ref = time.monotonic_ns()
+    nic = nic_describe(mod, inputs, _dev_read) if hasattr(mod, "nic") else []
+    rdma_qps = rdma_qps_of(os.getpid()) if nic else []
     vmm = [json.loads(ln) for ln in open(CAP)][:first]
     vmm = [r for r in vmm if "vmm" in r]
     pre_blocks = active_blocks()
@@ -348,6 +539,57 @@ def worker():  # noqa: C901 (per-rank capture worker: one linear pass over share
     for a, (z, _) in plain.items():
         if z <= 16 << 20 and a not in pre:
             pre[a] = _dev_read(a, z)
+    # Module data globals (`__device__` variables, S-GLOBAL-INIT) the launched kernels'
+    # constant banks name: their device contents now, through the module / library handle
+    # launchcap recorded for the warm-up launch (cuModuleGetGlobal / cuLibraryGetGlobal).
+    # String literals ($str) are left to their ELF bytes.
+    globals_pre = []
+    cu = ctypes.CDLL("libcuda.so.1")
+    gfun = {"mod": cu.cuModuleGetGlobal_v2, "lib": cu.cuLibraryGetGlobal}
+    for f in gfun.values():
+        f.argtypes = [
+            ctypes.POINTER(ctypes.c_uint64),
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+        ]
+    cupti = sorted(glob.glob(f"{W}/cupti/*.cubin"), key=os.path.getsize)
+    seen_k = set()
+    for x in [json.loads(ln) for ln in open(CAP)][:first]:
+        if "name" not in x or x["name"] in seen_k:
+            continue
+        if A.kernels and not re.search(A.kernels, x["name"]):
+            continue
+        seen_k.add(x["name"])
+        cub = next((c for c in cupti if elf_defines(c, x["name"])), None)
+        if not cub:
+            continue
+        for sym, size, _init in data_globals(open(cub, "rb").read(), x["name"]):
+            if sym.startswith("$"):
+                continue
+            ptr, n = ctypes.c_uint64(0), ctypes.c_size_t(0)
+            kind = "lib" if x.get("lib") else "mod"
+            h = x.get(kind) or 0
+            err = (
+                gfun[kind](ctypes.byref(ptr), ctypes.byref(n), h, sym.encode())
+                if h
+                else -1
+            )
+            if err:
+                globals_pre.append(
+                    {"kernel": x["name"], "symbol": sym, "size": size, "error": err}
+                )
+                continue
+            if ptr.value not in pre:
+                pre[ptr.value] = _dev_read(ptr.value, n.value)
+            globals_pre.append(
+                {"kernel": x["name"], "symbol": sym, "ptr": ptr.value, "size": n.value}
+            )
+    # IBGDA queue memory (DOCA allocations the caching allocator does not see).
+    for q in nic:
+        for a, z in q["regions"]:
+            if not any(b <= a and a + z <= b + len(pre[b]) for b in pre):
+                pre[a] = _dev_read(a, z)
     named_pre = {n: tinfo(t) for n, t in tensors.items()}
     pre_bytes_of = {
         n: _dev_read(t.data_ptr(), t.numel() * t.element_size())
@@ -392,6 +634,14 @@ def worker():  # noqa: C901 (per-rank capture worker: one linear pass over share
         "world": world,
         "device": torch.cuda.current_device(),
         "uuid": str(getattr(torch.cuda.get_device_properties(local), "uuid", "")),
+        "host": socket.gethostname(),
+        "node": int(os.environ.get("GROUP_RANK", A.node_rank)),
+        "local_rank": local,
+        "t_ref": t_ref,
+        "fabric": gpu_fabric(
+            str(getattr(torch.cuda.get_device_properties(local), "uuid", ""))
+        ),
+        "rdma_qps": rdma_qps,
         "torch": torch.__version__,
         "pre_blocks": pre_blocks,
         "plain": [(a, z, k) for a, (z, k) in plain.items()],
@@ -399,7 +649,10 @@ def worker():  # noqa: C901 (per-rank capture worker: one linear pass over share
         "named": named_pre,
         "outputs": [(n, tinfo(t)) for n, t in outs],
         "symm": symm,
+        "globals": globals_pre,
         "replicas": list(getattr(mod, "REPLICAS", [])),
+        "nic": nic,
+        "domains": list(getattr(mod, "DOMAINS", [])),
         "pre": sorted(pre),
         "records": recs,
         "setup_records": [json.loads(ln) for ln in open(CAP)][:first],
@@ -410,6 +663,22 @@ def worker():  # noqa: C901 (per-rank capture worker: one linear pass over share
 
 
 # ================================================================ merge (parent)
+
+
+def _load_cubin_helpers():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "ptxv_cubin", os.path.join(ROOT, "python/ptxv/_cubin.py")
+    )
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+_cubin = _load_cubin_helpers()
+data_globals = _cubin.data_globals
+decode_tmap = _cubin.decode_tmap
 
 
 def elf_defines(path, name):
@@ -449,10 +718,139 @@ def prune(data, keep):
     return bytes(d)
 
 
+def kparam_layout(cubin, kernel):
+    """[(offset, size)] of `kernel`'s parameters, from the KPARAM_INFO records of its .nv.info."""
+    out = subprocess.run(
+        [f"{CUDA}/bin/cuobjdump", "-elf", cubin], capture_output=True, text=True
+    ).stdout
+    lines = out.splitlines()
+    try:
+        i = next(k for k, ln in enumerate(lines) if ln.strip() == f".nv.info.{kernel}")
+    except StopIteration:
+        return None
+    ps = []
+    for ln in lines[i + 1 :]:
+        if ln.startswith("."):
+            break
+        v = ln.strip()
+        if v.startswith("Value:") and "Ordinal" in v and "Offset" in v:
+            f = dict(re.findall(r"(Ordinal|Offset|Size)\s*:\s*(0x[0-9a-fA-F]+)", v))
+            ps.append((int(f["Ordinal"], 16), int(f["Offset"], 16), int(f["Size"], 16)))
+    return [(o, z) for _, o, z in sorted(ps)] or None
+
+
+_LAYOUTS = {}
+
+
+def split_packed(r, x):
+    """A launch through CU_LAUNCH_PARAM_BUFFER_POINTER (mscclpp / cupy `extra` launches) is
+    recorded as one packed argument block; split it into the kernel's parameters."""
+    ps = x["params"]
+    if len(ps) != 1 or not ps[0].get("packed"):
+        return
+    key = (r, x["name"])
+    if key not in _LAYOUTS:
+        cands = glob.glob(f"{WORK}/r{r}/cupti/*.cubin") + glob.glob(
+            f"{WORK}/r{r}/images/*.bin"
+        )
+        lay = None
+        for c in sorted(cands, key=os.path.getsize):
+            if elf_defines(c, x["name"]):
+                lay = kparam_layout(c, x["name"])
+                if lay:
+                    break
+        _LAYOUTS[key] = lay
+    lay = _LAYOUTS[key]
+    raw = bytes.fromhex(ps[0]["hex"])
+    if not lay:
+        return
+    end = max(o + z for o, z in lay)
+    raw = raw + bytes(max(0, end - len(raw)))
+    x["params"] = [{"offset": o, "hex": raw[o : o + z].hex()} for o, z in lay]
+
+
+def nic_pairing(ranks, warnings, notes):
+    """Peer of each IBGDA handle, (rank, handle index) -> (peer rank, how), from what the
+    hosts recorded rather than the target's nic() label:
+    * "qpn": the kernel's view of the rank's process (`rdma res show qp`) gives the handle's
+      QP (sq_num) a remote QPN; the peer is the one rank owning a handle with that QPN whose
+      own remote QPN is this QP. QPNs are per HCA, so this holds across hosts.
+    * "rkey": else, the one other rank with a handle whose lkey is this handle's rkey and whose
+      local base is this handle's remote base (one registered buffer per direction pair).
+    Disagreement with nic() is a warning; the recorded pairing wins."""
+    qs = {}  # (rank, handle index) -> handle
+    for r, m in enumerate(ranks):
+        for qi, q in enumerate(m.get("nic", [])):
+            if not q.get("extra"):
+                qs[(r, qi)] = q
+    rq = {}  # (rank, lqpn) -> {rqpn}
+    for r, m in enumerate(ranks):
+        for e in m.get("rdma_qps", []):
+            if e.get("rqpn") is not None:
+                rq.setdefault((r, e["lqpn"]), set()).add(e["rqpn"])
+    out, counts, bad = {}, {"qpn": 0, "rkey": 0, "nic()": 0}, 0
+    for (r, qi), q in qs.items():
+        lq = q["qp_fields"]["sq_num"]
+        how, peer = "nic()", q["peer"]
+        rem = rq.get((r, lq), set())
+        if len(rem) == 1:
+            (n,) = rem
+            c = {
+                p
+                for (p, pj), x in qs.items()
+                if p != r and x["qp_fields"]["sq_num"] == n and lq in rq.get((p, n), ())
+            }
+            if len(c) == 1:
+                how, peer = "qpn", c.pop()
+        if how == "nic()":
+            c = {
+                p
+                for (p, pj), x in qs.items()
+                if p != r
+                and x["lkey"] == q["rkey"]
+                and x["local_base"] == q["remote_base"]
+            }
+            if len(c) == 1:
+                how, peer = "rkey", c.pop()
+        if peer != q["peer"]:
+            bad += 1
+            warnings.append(
+                f"rank {r}: IBGDA handle {qi} (QP {lq:#x}): nic() names peer {q['peer']}, "
+                f"the recorded pairing ({how}) gives {peer}; {peer} used"
+            )
+        counts[how] += 1
+        out[(r, qi)] = (peer, how)
+    if qs:
+        notes.append(
+            f"IBGDA pairing of {len(qs)} QP(s): {counts['qpn']} by QPN (rdma res show qp), "
+            f"{counts['rkey']} by rkey + remote base, {counts['nic()']} by nic() alone; "
+            f"{bad} disagree with nic()"
+        )
+    return out
+
+
 def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared capture state)
-    R = A.nproc
+    R = A.nproc * A.nnodes
     ranks = [json.load(open(f"{WORK}/r{r}/rank.json")) for r in range(R)]
     warnings, unresolved, notes = [], [], []
+    # Hosts: POSIX fds and legacy IPC handles name allocations only within one host. Host
+    # clocks (launch "t", CLOCK_MONOTONIC) are made comparable across hosts by subtracting
+    # each host's earliest t_ref (taken by every rank right after a common barrier).
+    host = [m.get("host", "") for m in ranks]
+    hosts = list(dict.fromkeys(host))
+    if len(hosts) > 1:
+        ref = {h: min(m["t_ref"] for m in ranks if m["host"] == h) for h in hosts}
+        for m in ranks:
+            for x in m["setup_records"] + m["records"]:
+                if "t" in x:
+                    x["t"] -= ref[m["host"]]
+
+    def fdk(r, x):
+        return f"fd:{host[r]}:{x['fd_dev']}:{x['fd_ino']}"
+
+    def ipck(r, x):
+        return f"ipc:{host[r]}:{x['ipc']}" if len(hosts) > 1 else f"ipc:{x['ipc']}"
+
     kfilter = re.compile(A.kernels) if A.kernels else None
 
     # ------------------------------------------------ physical allocations across ranks
@@ -460,7 +858,7 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
     phys = {}
     handle_phys = [{} for _ in range(R)]
     maps = [[] for _ in range(R)]  # (start, end, phys, offset in phys)
-    mc_bind = {}  # multicast phys -> [(owner phys, size)]
+    mc_bind = {}  # multicast phys -> [(rank, mem phys, mem offset, mc offset, size)]
     for r, m in enumerate(ranks):
         recs = m["setup_records"] + m["records"]
         vm = [x for x in recs if "vmm" in x]
@@ -476,13 +874,92 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                     "size": x["size"],
                     "ndev": x["ndev"],
                 }
+    # A POSIX-fd export is named by the fd's (device, inode). cuMemExportToShareableHandle
+    # returns anonymous-inode fds that can share one inode; such keys are ambiguous and are
+    # matched export -> import below instead.
+    fd_count = {}
+    for r, m in enumerate(ranks):
+        for x in m["setup_records"] + m["records"]:
+            if (
+                x.get("vmm") == "export"
+                and not x["r"]
+                and not x["fabric"]
+                and x["fd_ino"]
+            ):
+                k = fdk(r, x)
+                fd_count[k] = fd_count.get(k, 0) + 1
+    fd_exports = []  # ambiguous fd exports: [t, rank, phys id, matched]
+    for r, m in enumerate(ranks):
+        vm = [x for x in m["setup_records"] + m["records"] if "vmm" in x]
         for x in vm:  # exports name a physical allocation globally
             if x["vmm"] == "export" and not x["r"]:
-                key = x["fabric"] or (x["fd_ino"] and f"fd:{x['fd_dev']}:{x['fd_ino']}")
+                key = x["fabric"] or (x["fd_ino"] and fdk(r, x))
+                if key and not x["fabric"] and fd_count.get(key, 0) > 1:
+                    continue
                 old = handle_phys[r].get(x["handle"])
                 if old and key:
                     phys[f"g:{key}"] = phys[old]
                     handle_phys[r][x["handle"]] = f"g:{key}"
+        for x in vm:
+            if (
+                x["vmm"] == "export"
+                and not x["r"]
+                and not x["fabric"]
+                and fd_count.get(fdk(r, x), 0) > 1
+                and handle_phys[r].get(x["handle"])
+            ):
+                fd_exports.append(
+                    [x.get("t", 0), r, handle_phys[r][x["handle"]], False]
+                )
+    # Ambiguous fd imports: each export is sent to one importer. Imports in time order take the
+    # earliest unmatched earlier export of another rank whose kind (memory / multicast) and size
+    # fit the importer's later use of the handle.
+    fd_import = {}  # id(import record) -> phys id
+    fd_guess = 0
+    imps = []
+    for r, m in enumerate(ranks):
+        recs = [x for x in m["setup_records"] + m["records"] if "vmm" in x]
+        for i, x in enumerate(recs):
+            if not (
+                x["vmm"] == "import"
+                and not x["r"]
+                and not x["fabric"]
+                and fd_count.get(fdk(r, x), 0) > 1
+            ):
+                continue
+            h, kind, need = x["handle"], "mem", 0
+            for y in recs[i + 1 :]:
+                if y["vmm"] == "release" and y.get("handle") == h:
+                    break
+                if y["vmm"] in ("mc_add_device",) and y.get("handle") == h:
+                    kind = "multicast"
+                if y["vmm"] in ("mc_bind_mem", "mc_bind_addr") and y.get("mc") == h:
+                    kind = "multicast"
+                if y["vmm"] == "map" and y.get("handle") == h:
+                    need = max(need, y["offset"] + y["size"])
+            imps.append((x.get("t", 0), r, id(x), kind, need))
+    for t, r, xid, kind, need in sorted(imps):
+        cand = [
+            e
+            for e in fd_exports
+            if not e[3]
+            and e[1] != r
+            and host[e[1]] == host[r]
+            and e[0] < t
+            and phys.get(e[2], {}).get("kind") == kind
+            and (phys[e[2]].get("size") or 0) >= need
+        ]
+        if not cand:
+            continue
+        e = min(cand, key=lambda e: e[0])
+        e[3] = True
+        fd_import[xid] = e[2]
+        fd_guess += len({c[2] for c in cand}) > 1
+    if imps:
+        warnings.append(
+            f"{len(imps)} POSIX-fd import(s) with a shared fd inode: {len(fd_import)} matched "
+            f"to an export by time order, {fd_guess} of them with several candidates"
+        )
     # Legacy IPC (cudaIpcGetMemHandle on a cudaMalloc allocation; DeepEP's NVLink buffer):
     # the 64-byte handle names the exporter's allocation, sized from its cuMemAlloc.
     for r, m in enumerate(ranks):
@@ -496,14 +973,16 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                     (a for a in allocs if a <= x["ptr"] < a + allocs[a]), default=None
                 )
                 size = allocs[base] - (x["ptr"] - base) if base is not None else 1
-                phys[f"ipc:{x['ipc']}"] = {"owner": r, "kind": "mem", "size": size}
-                maps[r].append((x["ptr"], x["ptr"] + size, f"ipc:{x['ipc']}", 0))
+                phys[ipck(r, x)] = {"owner": r, "kind": "mem", "size": size}
+                maps[r].append((x["ptr"], x["ptr"] + size, ipck(r, x), 0))
     for r, m in enumerate(ranks):
         recs = m["setup_records"] + m["records"]
         live = list(maps[r])
         for x in (x for x in recs if "vmm" in x):
-            if x["vmm"] == "import" and not x["r"]:
-                key = x["fabric"] or f"fd:{x['fd_dev']}:{x['fd_ino']}"
+            if x["vmm"] == "import" and not x["r"] and id(x) in fd_import:
+                handle_phys[r][x["handle"]] = fd_import[id(x)]
+            elif x["vmm"] == "import" and not x["r"]:
+                key = x["fabric"] or fdk(r, x)
                 if f"g:{key}" not in phys:
                     warnings.append(
                         f"rank {r}: imported allocation {key[:24]}... has no exporter"
@@ -517,10 +996,37 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                 live = [ln for ln in live if ln[0] != x["ptr"]]
             elif x["vmm"] == "mc_bind_mem" and not x["r"]:
                 mc_bind.setdefault(handle_phys[r].get(x["mc"]), []).append(
-                    (r, handle_phys[r].get(x["handle"]), x["size"])
+                    (
+                        r,
+                        handle_phys[r].get(x["handle"]),
+                        x.get("offset", 0),
+                        x.get("mc_offset", 0),
+                        x["size"],
+                    )
+                )
+            elif x["vmm"] == "mc_bind_addr" and not x["r"]:
+                hit = [ln for ln in live if ln[0] <= x["ptr"] < ln[1]]
+                if hit:
+                    s_, _e, pid_, off_ = hit[-1]
+                    mc_bind.setdefault(handle_phys[r].get(x["mc"]), []).append(
+                        (
+                            r,
+                            pid_,
+                            off_ + x["ptr"] - s_,
+                            x.get("mc_offset", 0),
+                            x["size"],
+                        )
+                    )
+                else:
+                    warnings.append(
+                        f"rank {r}: cuMulticastBindAddr of {x['ptr']:#x}: no mapping"
+                    )
+            elif x["vmm"] == "mc_unbind" and not x["r"]:
+                warnings.append(
+                    f"rank {r}: cuMulticastUnbind recorded (binds are taken as of the end of the capture: not modeled)"
                 )
             elif x["vmm"] == "ipc_open" and not x["r"]:
-                pid = f"ipc:{x['ipc']}"
+                pid = ipck(r, x)
                 size = phys.get(pid, {}).get("size", 1)
                 live.append((x["ptr"], x["ptr"] + size, pid, 0))
         maps[r] = live
@@ -540,7 +1046,10 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
             {
                 "multicast": mc[:40],
                 "size": phys.get(mc, {}).get("size"),
-                "members": [(r, phys.get(p, {}).get("owner")) for r, p, _ in binds],
+                "members": [
+                    (r, phys.get(p, {}).get("owner"), moff, mcoff, size)
+                    for r, p, moff, mcoff, size in binds
+                ],
                 "mapped_in": [r for r in range(R) if any(m[2] == mc for m in maps[r])],
             }
         )
@@ -687,7 +1196,60 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                     kind="vmm",
                 )
 
+    # Module data globals the launched kernels' banks name, captured by the worker: one region
+    # each (written with `symbol`), scanned for pointers like a parameter's target.
+    for r, m in enumerate(ranks):
+        # Globals of setup launches (outside the captured window) are not the case's.
+        launched = {x["name"] for x in m["records"] if "name" in x}
+        for x in m.get("globals", []):
+            if x["kernel"] not in launched or (
+                kfilter and not kfilter.search(x["kernel"])
+            ):
+                continue
+            if "ptr" not in x:
+                warnings.append(
+                    f"rank {r}: global {x['symbol']} of {x['kernel'][:50]}: not captured (error {x.get('error')}); starts from its ELF value"
+                )
+                continue
+            if any(g["dev"] == r and g["start"] == x["ptr"] for g in regions):
+                continue
+            nm = re.sub(r"[^A-Za-z0-9_]", "_", x["symbol"])
+            add_region(r, x["ptr"], x["ptr"] + x["size"], f"g_{nm}_r{r}", kind="global")
+            regions[-1]["symbol"] = x["symbol"]
+            regions[-1]["kernel"] = x["kernel"]
+    # IBGDA (docs/nic.md): DOCA queue memory not in any region yet, and one synthetic 8-byte
+    # buffer per doorbell register (the UAR page is MMIO; its address only names it).
+    for r, m in enumerate(ranks):
+        for qi, q in enumerate(m.get("nic", [])):
+            for a, z in q["regions"]:
+                if not any(
+                    g["dev"] == r and g["start"] <= a < g["end"] for g in regions
+                ):
+                    add_region(r, a, a + z, f"nicmem{len(regions)}_r{r}", kind="nic")
+            if q.get("extra"):
+                continue
+            db = q["qp_fields"]["sq_db"]
+            if not any(g["dev"] == r and g["start"] <= db < g["end"] for g in regions):
+                add_region(r, db, db + 8, f"uar_r{r}_{qi}", "u64", [1], "uar")
+
+    # Bounding boxes per device (rebuilt when regions are added): most words a pointer-table
+    # scan looks at are data far outside every region.
+    bbox = {}
+
+    # Bounding boxes per device (rebuilt when regions are added): most words a pointer-table
+    # scan looks at are data far outside every region.
+    bbox = {}
+
     def region_at(dev, a):
+        if bbox.get("n") != len(regions):
+            bbox.clear()
+            bbox["n"] = len(regions)
+            for g in regions:
+                lo, hi = bbox.get(g["dev"], (g["start"], g["end"]))
+                bbox[g["dev"]] = (min(lo, g["start"]), max(hi, g["end"]))
+        lo, hi = bbox.get(dev, (1, 0))
+        if not lo <= a <= hi:
+            return None
         for i, g in enumerate(regions):
             if g["dev"] == dev and g["start"] <= a < g["end"]:
                 return i, a - g["start"]
@@ -696,10 +1258,23 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                 return i, a - g["start"]
         return None
 
+    maps_box = {}
+
+    xhost_refs = (
+        set()
+    )  # (rank, owner): a pointer of rank r into memory owned on another host
+
     def resolve(r, v):
         """(region index, offset) | ("multicast", ...) | None, for address v seen by rank r."""
         if not v:
             return None
+        if r not in maps_box:
+            maps_box[r] = (
+                min((m[0] for m in maps[r]), default=1),
+                max((m[1] for m in maps[r]), default=0),
+            )
+        if not maps_box[r][0] <= v < maps_box[r][1]:
+            return region_at(r, v)
         for s, e, pid, off in maps[r]:
             if s <= v < e:
                 p = phys.get(pid)
@@ -709,6 +1284,8 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                     return ("multicast", pid, v - s + off)
                 if pid not in owner_va:
                     return None
+                if host[p["owner"]] != host[r]:
+                    xhost_refs.add((r, p["owner"]))
                 return region_at(p["owner"], owner_va[pid] + off + (v - s))
         return region_at(r, v)
 
@@ -718,6 +1295,8 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
         )
 
     refs = {}
+    mc_used = set()  # multicast phys ids kernels reference
+    tmap_dt = {}  # region index -> element types of the tensor maps over it
 
     def note(ri, off):
         refs.setdefault(ri, set()).add(off)
@@ -763,6 +1342,7 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                         )
                 last = (i, x["stream"])
         for x in recs:
+            split_packed(r, x)
             params = []
             for pi, p in enumerate(x["params"]):
                 raw = bytes.fromhex(p["hex"])
@@ -770,16 +1350,8 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                     v = u64(raw, 0)
                     loc = resolve(r, v)
                     if loc and loc[0] == "multicast":
-                        unresolved.append(
-                            {
-                                "rank": r,
-                                "launch": x["name"][:60],
-                                "param": pi,
-                                "value": hex(v),
-                                "why": "multicast (NVLS) address",
-                            }
-                        )
-                        params.append(("u64", v))
+                        mc_used.add(loc[1])
+                        params.append(("mcptr", loc[1], loc[2]))
                     elif loc:
                         note(*loc)
                         params.append(("ptr",) + loc)
@@ -798,10 +1370,34 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                     params.append(("u32", struct.unpack("<I", raw)[0]))
                 else:
                     fields = []
-                    for off in range(0, len(raw) - 7, 8):
+                    off = 0
+                    while off + 8 <= len(raw):
                         v = u64(raw, off)
                         loc = resolve(r, v)
-                        if loc and loc[0] != "multicast":
+                        # A 128-byte CUtensorMap (64-byte aligned) over a known region
+                        # (CuTeDSL's grid-constant maps), as tools/capture.py.
+                        g_ = (
+                            decode_tmap(raw[off : off + 128])
+                            if loc
+                            and loc[0] != "multicast"
+                            and off % 64 == 0
+                            and off + 128 <= len(raw)
+                            and raw[off + 8 : off + 16] != bytes(8)
+                            else None
+                        )
+                        if g_:
+                            note(*loc)
+                            tmap_dt.setdefault(loc[0], set()).add(g_["dtype"])
+                            n_ = 64 if raw[off + 8] & 2 else 128
+                            fields.append(
+                                (off, loc[0], loc[1], (g_, raw[off : off + n_]))
+                            )
+                            off += n_
+                            continue
+                        if loc and loc[0] == "multicast":
+                            mc_used.add(loc[1])
+                            fields.append((off, ("mc", loc[1]), loc[2]))
+                        elif loc:
                             note(*loc)
                             fields.append((off,) + loc)
                         elif v and near(v):
@@ -814,17 +1410,81 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                                     "value": hex(v),
                                 }
                             )
-                    params.append(("bytes", raw, fields))
+                        off += 8
+                    if (
+                        len(raw) == 128
+                        and len(fields) == 1
+                        and fields[0][0] == 0
+                        and len(fields[0]) == 4
+                    ):
+                        params.append(("tmap",) + fields[0][1:])
+                    else:
+                        params.append(("bytes", raw, fields))
             launches.append((r, x, params))
+    # Vacuous-input guard (as python/ptxv/_casewriter.py): a launch dropped by --kernels that
+    # points into a buffer the case's launches use, before the rank's last kept launch, may
+    # write bytes that the case's initial contents (the snapshot before run()) miss.
+    if kfilter:
+        used = set(refs)
+        for r, m in enumerate(ranks):
+            allrec = [x for x in m["records"] if "name" in x]
+            kept_pos = [i for i, x in enumerate(allrec) if kfilter.search(x["name"])]
+            if not kept_pos:
+                continue
+            for x in allrec[: kept_pos[-1]]:
+                if kfilter.search(x["name"]):
+                    continue
+                hit = set()
+                for p in x.get("params", []):
+                    raw = bytes.fromhex(p["hex"])
+                    for o in range(0, len(raw) - 7, 8):
+                        loc = resolve(r, u64(raw, o))
+                        if loc and isinstance(loc[0], int) and loc[0] in used:
+                            g = regions[loc[0]]
+                            hit.add(f"GPU {g['dev']} {g['start']:#x}")
+                if hit:
+                    warnings.append(
+                        f"rank {r}: launch {x['name'][:60]}, dropped by --kernels, points into "
+                        f"buffer(s) {sorted(hit)} of the case after the snapshot and before a kept "
+                        "launch: bytes it writes are missing from the initial contents"
+                    )
     if not launches:
         sys.exit("capture_dist: no kernel launches recorded")
+    for (
+        i,
+        dts,
+    ) in tmap_dt.items():  # a byte region under a tensor map takes its element type
+        g, td = regions[i], sorted(dts)[0]
+        if len(dts) > 1:
+            warnings.append(
+                f"{g['name']}: tensor maps of several element types {sorted(dts)}"
+            )
+        size = g["end"] - g["start"]
+        if ESIZE.get(g["dtype"], 1) != ESIZE[td]:
+            if g["dtype"] == "u8" and size % ESIZE[td] == 0:
+                g["dtype"], g["shape"] = td, [size // ESIZE[td]]
+            else:
+                warnings.append(
+                    f"{g['name']}: dtype {g['dtype']} but a tensor map reads {td}"
+                )
+    for i, g in enumerate(regions):
+        if g["kind"] == "global":
+            note(i, 0)
 
     # ------------------------------------------------ initial and final bytes
+    # Snapshot extents from the file sizes: only overlapping snapshots are read (a rank can
+    # have over a thousand of them).
+    pre_len = [
+        {a: os.path.getsize(f"{WORK}/r{r}/pre/{a:x}.bin") for a in m["pre"]}
+        for r, m in enumerate(ranks)
+    ]
     for _i, g in enumerate(regions):
         r = g["dev"]
         size = g["end"] - g["start"]
         data, found = bytearray(size), False
         for a in ranks[r]["pre"]:
+            if a >= g["end"] or a + pre_len[r][a] <= g["start"]:
+                continue
             b = open(f"{WORK}/r{r}/pre/{a:x}.bin", "rb").read()
             lo, hi = max(a, g["start"]), min(a + len(b), g["end"])
             if lo < hi:
@@ -888,6 +1548,16 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                 d[off : off + n] = src
             g["data"] = bytes(d)
 
+    # IBGDA handles, QP structs and queues are scanned for pointers like any table.
+    for r, m in enumerate(ranks):
+        for q in m.get("nic", []):
+            if q.get("extra"):
+                continue
+            for a in (q["addr"], q["qp"]):
+                loc = region_at(r, a)
+                if loc:
+                    note(*loc)
+
     # Pointer tables: words inside referenced regions that resolve (peer pointer arrays).
     todo = sorted(refs)
     done = set()
@@ -904,15 +1574,8 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
             v = u64(g["data"], off)
             loc = resolve(g["dev"], v)
             if loc and loc[0] == "multicast":
-                unresolved.append(
-                    {
-                        "rank": g["dev"],
-                        "buffer": g["name"],
-                        "offset": off,
-                        "value": hex(v),
-                        "why": "multicast (NVLS) address in a table",
-                    }
-                )
+                mc_used.add(loc[1])
+                g["ptrs"].append((off, ("mc", loc[1]), loc[2]))
             elif loc:
                 g["ptrs"].append((off,) + loc)
                 note(*loc)
@@ -921,6 +1584,95 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
         if g["ptrs"] and len(g["data"]) % 8 == 0:
             g["dtype"], g["shape"] = "u64", [len(g["data"]) // 8]
 
+    # IBGDA handles: their remote addresses are VAs of the peer rank (they may resolve to an
+    # unrelated buffer of this rank by accident): point them at the peer's buffer.
+    nic_qps, nic_mrs = [], []
+    nic_peer = nic_pairing(ranks, warnings, notes)
+    nic_pairs = []
+    for r, m in enumerate(ranks):
+        for qi, q in enumerate(m.get("nic", [])):
+            if q.get("extra"):
+                continue
+            f = q["qp_fields"]
+            q["peer"], how = nic_peer.get((r, qi), (q["peer"], "nic()"))
+            nic_pairs.append(
+                {
+                    "rank": r,
+                    "host": host[r],
+                    "qpn": f["sq_num"],
+                    "peer": q["peer"],
+                    "peer_host": host[q["peer"]],
+                    "by": how,
+                }
+            )
+            hl = region_at(r, q["addr"])
+            loc = {
+                k: region_at(r, f[k]) for k in ("sq_wqe_daddr", "cqe_daddr", "sq_db")
+            }
+            if not hl or not all(loc.values()):
+                warnings.append(
+                    f"rank {r}: IBGDA handle {qi} or its queues are in no buffer"
+                )
+                continue
+            if f["sq_rsvd_index"] != f["sq_wqe_pi"]:
+                warnings.append(
+                    f"rank {r}: IBGDA QP {f['sq_num']:#x} not quiescent at the snapshot (reserved {f['sq_rsvd_index']}, posted {f['sq_wqe_pi']}): the case starts the NIC at the posted index"
+                )
+            elif f["cqe_ci"] != f["sq_wqe_pi"]:
+                notes.append(
+                    f"rank {r}: IBGDA QP {f['sq_num']:#x}: {f['sq_wqe_pi'] - f['cqe_ci']} posted WQE(s) not polled before the snapshot, taken as completed (their CQEs are in the snapshot)"
+                )
+            hi, hoff = hl
+            g = regions[hi]
+            g.setdefault("ptrs", [])
+            peer = q["peer"]
+            for fo, key in ((24, "remote_base"), (40, "remote_token")):
+                off = hoff + q["tail"] + fo
+                tgt = region_at(peer, q[key])
+                g["ptrs"] = [p for p in g["ptrs"] if p[0] != off]
+                if tgt:
+                    g["ptrs"].append((off,) + tgt)
+                    note(*tgt)
+                else:
+                    unresolved.append(
+                        {
+                            "rank": r,
+                            "buffer": g["name"],
+                            "offset": off,
+                            "value": hex(q[key]),
+                            "why": f"IBGDA {key} of peer {peer} in no buffer",
+                        }
+                    )
+            g["ptrs"].sort()
+            for k, dev, a in (
+                ("rkey", peer, q["remote_base"]),
+                ("token_rkey", peer, q["remote_token"]),
+                ("lkey", r, q["local_base"]),
+                ("sink_lkey", r, q["sink"]),
+            ):
+                tgt = region_at(dev, a)
+                if tgt:
+                    note(*tgt)
+                    nic_mrs.append((q[k], tgt[0]))
+            for k in loc.values():
+                note(*k)
+            nic_qps.append(
+                dict(
+                    name=f"qp_r{r}_{qi}",
+                    device=r,
+                    peer=peer,
+                    qpn=f["sq_num"],
+                    sq=loc["sq_wqe_daddr"],
+                    sq_wqes=f["sq_wqe_num"],
+                    cq=loc["cqe_daddr"],
+                    cq_cqes=f["cqe_num"],
+                    db=loc["sq_db"],
+                    sq_ci=f["sq_wqe_pi"],
+                    cq_pi=f["sq_wqe_pi"] + f["cqe_rsvd"],
+                    handler=f["nic_handler"],
+                )
+            )
+    domains = ranks[0].get("domains", [])
     # Outputs: regions holding an output tensor of their rank.
     out_regions = {}  # output name -> {rank: region index}
     for r, m in enumerate(ranks):
@@ -936,11 +1688,36 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
             g["out_name"] = n
             out_regions.setdefault(n, {})[r] = i
 
-    # Keep only regions something references (plus outputs).
+    # Multicast objects the kernels reference: each bind cut at the regions of its owner.
+    mc_objs = []  # (pid, name, size, [(region index, region offset, mc offset, size)])
+    for k, pid in enumerate(sorted(mc_used)):
+        cuts = []
+        for br, mpid, moff, mcoff, size in mc_bind.get(pid, []):
+            p = phys.get(mpid)
+            if not p or p["owner"] is None or mpid not in owner_va:
+                warnings.append(
+                    f"multicast mc{k}: rank {br}'s bound allocation has no owner mapping: bind dropped"
+                )
+                continue
+            lo_va = owner_va[mpid] + moff
+            for i, g in enumerate(regions):
+                if g["dev"] != p["owner"]:
+                    continue
+                lo, hi = max(lo_va, g["start"]), min(lo_va + size, g["end"])
+                if lo < hi:
+                    cuts.append((i, lo - g["start"], mcoff + (lo - lo_va), hi - lo))
+        if not cuts:
+            warnings.append(f"multicast mc{k}: no bound bytes in any buffer")
+        mc_objs.append((pid, f"mc{k}", phys.get(pid, {}).get("size") or 0, cuts))
+    mc_name = {pid: n for pid, n, _, _ in mc_objs}
+
+    # Keep only regions something references (plus outputs and multicast backing).
     keep = set(refs) | {i for d in out_regions.values() for i in d.values()}
+    keep |= {c[0] for _, _, _, cuts in mc_objs for c in cuts}
     for i in list(keep):
         for p in regions[i].get("ptrs", []):
-            keep.add(p[1])
+            if not isinstance(p[1], tuple):
+                keep.add(p[1])
     kept = sorted(keep)
     names_taken = set()
     for i in kept:
@@ -952,6 +1729,8 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
         names_taken.add(g["name"])
 
     def bname(i):
+        if isinstance(i, tuple):  # ("mc", multicast phys id)
+            return mc_name[i[1]]
         return regions[i]["name"]
 
     # ------------------------------------------------ cubins
@@ -960,18 +1739,31 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
         images += glob.glob(f"{WORK}/r{r}/cupti/*.cubin") + glob.glob(
             f"{WORK}/r{r}/images/*.bin"
         )
+    # Per (rank, kernel): JIT frameworks compile per-rank constants into same-named kernels
+    # (CuTeDSL's rank_id in dist_gemm), so each rank's launch takes its own rank's image.
+    # Keyed by (rank, kernel, parameter count): a JIT framework can also emit same-named
+    # specializations with different signatures (quack GemmDefaultSm100 with 24 and 26
+    # parameters in one run); each launch takes an image whose KPARAM_INFO matches its count.
     knames = []
-    for _, x, _ in launches:
-        if x["name"] not in knames:
-            knames.append(x["name"])
+    for r, x, _ in launches:
+        key = (r, x["name"], len(x["params"]))
+        if key not in knames:
+            knames.append(key)
     cubin_of = {}
-    for n in knames:
-        c = [p for p in images if "/cupti/" in p and elf_defines(p, n)] or [
-            p for p in images if elf_defines(p, n)
-        ]
+    for r, n, np_ in knames:
+        mine = [p for p in images if f"/r{r}/" in p]
+        c = (
+            [p for p in mine if "/cupti/" in p and elf_defines(p, n)]
+            or [p for p in mine if elf_defines(p, n)]
+            or [p for p in images if "/cupti/" in p and elf_defines(p, n)]
+            or [p for p in images if elf_defines(p, n)]
+        )
         if not c:
             sys.exit(f"capture_dist: no captured cubin defines {n}")
-        cubin_of[n] = min(c, key=os.path.getsize)
+        fit = [p for p in c if len(kparam_layout(p, n) or []) == np_]
+        if not fit and len({len(kparam_layout(p, n) or []) for p in c}) > 1:
+            warnings.append(f"rank {r}: no image of {n[:60]} has {np_} parameters")
+        cubin_of[(r, n, np_)] = min(fit or c, key=os.path.getsize)
     out = os.path.abspath(A.out)
     os.makedirs(out, exist_ok=True)
     for sub in ("data", "expected"):
@@ -986,7 +1778,7 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
         if h not in by_hash:
             by_hash[h] = f"k{len(by_hash)}.cubin"
             keepk = {
-                k
+                k[1]
                 for k in knames
                 if hashlib.sha1(open(cubin_of[k], "rb").read()).hexdigest() == h
             }
@@ -1016,6 +1808,18 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
     # ------------------------------------------------ case.toml
     q = json.dumps
 
+    def ck(r, x):
+        return cubin_file[(r, x["name"], len(x["params"]))]
+
+    def toml_tmap(prefix, ri, ro, gr, extra=""):
+        g_, raw_ = gr
+        return (
+            f'{prefix}{extra}kind = "tensormap"\nbuffer = {q(bname(ri))}\nbyte_offset = {ro}\n'
+            f"box = {g_['box']}\ndims = {g_['dims']}\nstrides = {g_['strides']}\n"
+            f'swizzle = "{g_["swizzle"]}"\nraw = "{raw_.hex()}"\n'
+            + ("elem4 = true\n" if g_.get("elem4") else "")
+        )
+
     def toml_params(params, key):
         s = []
         for p in params:
@@ -1023,6 +1827,12 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                 s.append(
                     f'[[{key}]]\nkind = "ptr"\nbuffer = {q(bname(p[1]))}\nbyte_offset = {p[2]}\n'
                 )
+            elif p[0] == "mcptr":
+                s.append(
+                    f'[[{key}]]\nkind = "ptr"\nbuffer = {q(mc_name[p[1]])}\nbyte_offset = {p[2]}\n'
+                )
+            elif p[0] == "tmap":
+                s.append(toml_tmap(f"[[{key}]]\n", p[1], p[2], p[3]))
             elif p[0] == "u32":
                 s.append(f'[[{key}]]\nkind = "u32"\nvalue = {p[1]}\n')
             elif p[0] == "u64":
@@ -1030,7 +1840,18 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
             else:
                 _, raw, fields = p
                 s.append(f'[[{key}]]\nkind = "bytes"\nhex = "{raw.hex()}"\n')
-                for off, bi, bo in fields:
+                for off, bi, bo, *tm in fields:
+                    if tm:
+                        s.append(
+                            toml_tmap(
+                                f"[[{key}.fields]]\n",
+                                bi,
+                                bo,
+                                tm[0],
+                                f"offset = {off}\n",
+                            )
+                        )
+                        continue
                     s.append(
                         f'[[{key}.fields]]\noffset = {off}\nkind = "ptr"\nbuffer = {q(bname(bi))}\nbyte_offset = {bo}\n'
                     )
@@ -1067,18 +1888,77 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
         if a != "--worker" and not a.startswith("--work") and a != WORK
     )
     desc = f"""
-Captured by tools/capture_dist.py (torch {ranks[0]["torch"]}, torchrun --nproc-per-node {R}):
+Captured by tools/capture_dist.py (torch {ranks[0]["torch"]}, torchrun --nproc-per-node {A.nproc}{f" on {len(hosts)} hosts" if len(hosts) > 1 else ""}):
 run() of {os.path.basename(A.file)}. {len(L)} launch(es) on {R} GPUs, binary only:
 {kern_lines}
 Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py {cmdline}"""
     desc = desc.replace("\\", "\\\\").replace('"', '\\"')
     outputs = [bname(i) for i in kept if "expect" in regions[i]]
     toml = [
-        f'name = {q(name)}\ndescription = """{desc}"""\ncubin = "{cubin_file[r0["name"]]}"\n'
+        f'name = {q(name)}\ndescription = """{desc}"""\ncubin = "{ck(L[0][0], r0)}"\n'
         f"entry = {q(r0['name'])}\ngrid = {r0['grid']}\nblock = {r0['block']}\n"
         f"dynamic_smem = {r0['smem']}\noutputs = {q(outputs)}\nreplicas = {q(replicas)}\n"
+        + (f"cluster = {r0['cluster']}\n" if r0["cluster"] != [1, 1, 1] else "")
+        + (
+            f"preferred_cluster = {r0['preferred_cluster']}\n"
+            if r0.get("preferred_cluster")
+            else ""
+        )
         + (f'exit_fence = "{A.exit_fence}"\n' if A.exit_fence else "")
     ]
+    kept_phys = {
+        pid
+        for pid, va in owner_va.items()
+        for i in kept
+        if regions[i]["dev"] == phys[pid]["owner"]
+        and va <= regions[i]["start"] < va + phys[pid]["size"]
+    }
+    if len(hosts) > 1:
+        # Ranks on different hosts: one NVLink domain per host, unless a kernel parameter or
+        # pointer-table word of one rank points through a mapping into memory owned on another
+        # host (a fabric handle: the hosts share an NVLink fabric, e.g. symmetric memory across
+        # GB300 trays); then one domain per fabric clique (nvidia-smi). A mapping no pointer
+        # uses (NCCL's MNNVL buffers) does not count.
+        def fab(r):
+            f = ranks[r].get("fabric") or {}
+            return (
+                (f.get("ClusterUUID"), f.get("CliqueId"))
+                if f.get("ClusterUUID")
+                else host[r]
+            )
+
+        cross = sorted(xhost_refs)
+        if cross:
+            cl = list(dict.fromkeys(fab(r) for r in range(R)))
+            phys_dom = [cl.index(fab(r)) for r in range(R)]
+            notes.append(
+                f"{len(cross)} (rank, owner) pair(s) point into memory across hosts, e.g. {cross[0]}: "
+                f"domains follow the NVLink fabric cliques {phys_dom}"
+            )
+        else:
+            phys_dom = [hosts.index(h) for h in host]
+        if domains and domains != phys_dom:
+            warnings.append(
+                f"the target's DOMAINS {domains} differ from the hosts' {phys_dom}; hosts' used"
+            )
+        domains = phys_dom
+
+    if domains:
+        toml.append(f"domains = {q(domains)}\n")
+    for x in nic_qps:
+        toml.append(
+            f"[[nic_qps]]\nname = {q(x['name'])}\ndevice = {x['device']}\npeer = {x['peer']}\n"
+            f"qpn = {x['qpn']}\nsq = {q(bname(x['sq'][0]))}\nsq_offset = {x['sq'][1]}\n"
+            f"sq_wqes = {x['sq_wqes']}\ncq = {q(bname(x['cq'][0]))}\ncq_offset = {x['cq'][1]}\n"
+            f"cq_cqes = {x['cq_cqes']}\ndb = {q(bname(x['db'][0]))}\ndb_offset = {x['db'][1]}\n"
+            f"sq_ci = {x['sq_ci']}\ncq_pi = {x['cq_pi']}\n"
+        )
+        if x["handler"] not in (2, 10):  # GPU_SM_DB, GPU_SM_NO_DBR
+            warnings.append(
+                f"{x['name']}: DOCA nic_handler {x['handler']} (CPU proxy / BlueFlame: not modeled)"
+            )
+    for key, bi in sorted(set(nic_mrs)):
+        toml.append(f"[[nic_mrs]]\nkey = {key}\nbuffer = {q(bname(bi))}\n")
     for i in kept:
         g = regions[i]
         s = f'[[buffers]]\nname = {q(g["name"])}\ndtype = "{g["dtype"]}"\nshape = {g["shape"]}\ndevice = {g["dev"]}\n'
@@ -1097,6 +1977,25 @@ Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py {cmdli
                 s += 'init = "zeros"\n'
         else:
             s += 'init = "zeros"\n'
+        if g["kind"] == "global":
+            s += f"symbol = {q(g['symbol'])}\n"
+            gk = next(
+                (v for k, v in cubin_file.items() if k[:2] == (g["dev"], g["kernel"])),
+                None,
+            ) or next((v for k, v in cubin_file.items() if k[1] == g["kernel"]), None)
+            if gk is None:
+                # Found through a kernel launched only before the recorded run (setup): the
+                # launched kernel of the same module on this GPU.
+                gk = next(
+                    (
+                        v
+                        for k, v in cubin_file.items()
+                        if k[0] == g["dev"] and elf_defines(cubin_of[k], g["kernel"])
+                    ),
+                    ck(L[0][0], r0),
+                )
+            if gk != ck(L[0][0], r0):
+                s += f'cubin = "{gk}"\n'
         if "expect" in g:
             open(f"{out}/expected/{g['name']}.bin", "wb").write(g["expect"])
             s += f'expect = "expected/{g["name"]}.bin"\n'
@@ -1105,16 +2004,26 @@ Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py {cmdli
         for off, bi, bo in g.get("ptrs", []):
             s += f"[[buffers.ptrs]]\noffset = {off}\nbuffer = {q(bname(bi))}\nbyte_offset = {bo}\n"
         toml.append(s)
+    for _pid, mname, size, cuts in mc_objs:
+        s = f"[[multicast]]\nname = {q(mname)}\nsize = {size}\n"
+        for i, roff, mcoff, n in cuts:
+            s += (
+                f"[[multicast.binds]]\ndevice = {regions[i]['dev']}\noffset = {mcoff}\n"
+                f"buffer = {q(regions[i]['name'])}\nbyte_offset = {roff}\nsize = {n}\n"
+            )
+        toml.append(s)
     toml += toml_params(L[0][2], "params")
     for r, x, params in L[1:]:
         s = f"[[launches]]\nentry = {q(x['name'])}\ngrid = {x['grid']}\nblock = {x['block']}\n"
         if x["cluster"] != [1, 1, 1]:
             s += f"cluster = {x['cluster']}\n"
+        if x.get("preferred_cluster"):
+            s += f"preferred_cluster = {x['preferred_cluster']}\n"
         s += f"dynamic_smem = {x['smem']}\ndevice = {r}\n"
         if x.get("pdl"):
             s += "pdl = true\n"
-        if cubin_file[x["name"]] != cubin_file[r0["name"]]:
-            s += f'cubin = "{cubin_file[x["name"]]}"\n'
+        if ck(r, x) != ck(L[0][0], r0):
+            s += f'cubin = "{ck(r, x)}"\n'
         toml.append(s)
         toml += toml_params(params, "launches.params")
     toml.append(
@@ -1122,13 +2031,6 @@ Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py {cmdli
     )
     open(f"{out}/case.toml", "w").write("\n".join(toml))
 
-    kept_phys = {
-        pid
-        for pid, va in owner_va.items()
-        for i in kept
-        if regions[i]["dev"] == phys[pid]["owner"]
-        and va <= regions[i]["start"] < va + phys[pid]["size"]
-    }
     meta = {
         "argv": [a for a in sys.argv[1:] if a != "--worker"],
         "torch": ranks[0]["torch"],
@@ -1150,7 +2052,7 @@ Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py {cmdli
                 "stream": hex(x["stream"]),
                 "t_ns": x.get("t", 0) - min(y[1].get("t", 0) for y in L),
                 "pdl": x.get("pdl", 0),
-                "cubin": cubin_file[x["name"]],
+                "cubin": ck(r, x),
             }
             for r, x, _ in L
         ],
@@ -1170,6 +2072,16 @@ Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py {cmdli
             if phys.get(pid, {}).get("kind") == "multicast" or pid in kept_phys
         ],
         "multicast": mc_report,
+        "hosts": [
+            {
+                "rank": m["rank"],
+                "host": m.get("host"),
+                "node": m.get("node"),
+                "fabric": m.get("fabric"),
+            }
+            for m in ranks
+        ],
+        "nic_pairs": nic_pairs,
         "symmetric": [
             dict(
                 **{
@@ -1214,6 +2126,22 @@ Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py {cmdli
         ],
     }
     json.dump(meta, open(f"{out}/capture.json", "w"), indent=1)
+    # Uniform inputs (every byte one value: a check on them may be vacuous), as
+    # fb/kernel_db/scan_inputs.py reports them.
+    try:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "scan_inputs", os.path.join(ROOT, "fb/kernel_db/scan_inputs.py")
+        )
+        si = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(si)
+        for n, w in si.uniform_inputs(Path(out)):
+            warnings.append(f"uniform input {n}: {w} (the check may be vacuous)")
+    except Exception as e:  # noqa: BLE001 (diagnostic only)
+        warnings.append(f"uniform-input scan failed: {e}")
+    meta["warnings"] = sorted(set(warnings))
+    json.dump(meta, open(f"{out}/capture.json", "w"), indent=1)
     print(
         f"capture_dist: wrote {out}: {len(L)} launches on {R} GPUs, {len(kept)} buffers, "
         f"outputs {outputs}, replicas {replicas}"
@@ -1224,7 +2152,8 @@ Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py {cmdli
         print("capture_dist: unresolved pointer:", u)
     if mc_report:
         print(
-            f"capture_dist: {len(mc_report)} multicast object(s) mapped (not referenced by kernels unless listed as unresolved)"
+            f"capture_dist: {len(mc_report)} multicast object(s) mapped, {len(mc_objs)} referenced by the kernels: "
+            + ", ".join(f"{n} ({len(c)} binds)" for _, n, _, c in mc_objs)
         )
 
 

@@ -1,0 +1,42 @@
+name = "e_hw_corw"
+description = """
+E-HW-CORW (GB300 hardware model, two-level check): a thread polls a word with a strong load
+until another thread's weak store is seen, then clears the word with a plain store (msl
+DeepEP hybrid dispatch clears NIC-written slots this way, docs/nic.md finding L). Strict PTX
+model: the clear races with the store. Hardware model: the clear is coherence-after the store
+it read, so that write-write race is latent; the store/poll race stays observable."""
+ptx = "kernel.ptx"
+entry = "e_hw_corw"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["slot"]
+
+[[buffers]]
+name = "slot"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "slot"
+
+[[variants]]
+id = "good"
+summary = "strong poll, then a plain clear: write-write race latent on GB300"
+expect = ["race"]
+
+[[variants]]
+id = "weakpoll"
+summary = "the poll is a weak load (may hit L1): the write-write race stays observable"
+marker = "@POLL"
+find = "ld.relaxed.sys.global"
+replace = "ld.global"
+expect = ["race"]
+
+[[variants]]
+id = "noread"
+summary = "the clear without a poll: either order, observable (the final value is either; the stateful explorer stops at the race, so its classes have no nondeterministic)"
+marker = "@SPIN"
+replace = "<delete>"
+expect = ["race"]

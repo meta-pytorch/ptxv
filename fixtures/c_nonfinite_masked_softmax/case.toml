@@ -1,0 +1,61 @@
+name = "c_nonfinite_masked_softmax"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): run() of nf_masked_softmax.py (kernel ^nf_masked_softmax_kernel$). 1 launch(es),
+PTX from the JIT (kernel.ptx; its own cubin kept as jit.cubin):
+  0: nf_masked_softmax_kernel grid [4, 1, 1] block [128, 1, 1]
+Regenerate: CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/capture.py --triton fixtures/c_nonfinite_masked_softmax/nf_masked_softmax.py:nf_masked_softmax_kernel --out fixtures/c_nonfinite_masked_softmax"""
+ptx = "kernel.ptx"
+entry = "nf_masked_softmax_kernel"
+grid = [4, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 16
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [4, 128]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "m"
+dtype = "u8"
+shape = [4, 128]
+init = "file"
+file = "data/m.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [4, 128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "m"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

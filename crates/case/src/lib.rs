@@ -46,6 +46,11 @@ pub struct Manifest {
     /// None: no cluster (`%is_explicit_cluster` = 0).
     #[serde(default)]
     pub cluster: Option<[u32; 3]>,
+    /// Preferred cluster dimension (cudaLaunchAttributePreferredClusterDimension; `cluster` is
+    /// then the fallback shape): each group of CTAs runs as one cluster of this shape or as
+    /// clusters of `cluster` (probes/cga_size). ASSUME(S-CGA-SHAPE)
+    #[serde(default)]
+    pub preferred_cluster: Option<[u32; 3]>,
     pub outputs: Vec<String>,
     /// Groups of output buffers that must hold identical bytes at the end (replicas, e.g. the
     /// ranks of an all-reduce). A difference is a "divergent" finding (N4).
@@ -119,13 +124,94 @@ pub struct Manifest {
     /// the receivers consumed their slots. `PTXV_READ_DONE=0|1` overrides.
     #[serde(default)]
     pub read_done: bool,
+    /// E-REMOTE-FIFO (opt-in, GB300 probe probes/remote_arrive_exit): remote mbarrier
+    /// arrivals from one source CTA to one target CTA land in the order of their issues when
+    /// those are ordered by happens-before (remote stores / st.async excluded).
+    /// `PTXV_REMOTE_FIFO=0|1` overrides.
+    #[serde(default)]
+    pub remote_fifo: bool,
+    /// NVLink domain of each GPU (index = device). GPUs in different domains (different
+    /// nodes) reach each other only through the NIC (`nic_qps`): a direct load or store from
+    /// one domain into another's memory is a fault. Empty: one domain (docs/nic.md).
+    #[serde(default)]
+    pub domains: Vec<u32>,
+    /// GPU-initiated RDMA queue pairs (IBGDA, docs/nic.md): each is executed by a NIC actor.
+    #[serde(default)]
+    pub nic_qps: Vec<NicQp>,
+    /// RDMA memory registrations the NIC checks keys against (docs/nic.md).
+    #[serde(default)]
+    pub nic_mrs: Vec<NicMr>,
     pub buffers: Vec<Buffer>,
+    /// NVLS multicast objects (`cuMulticastCreate` + `cuMulticastBindMem` + `cuMemMap` of the
+    /// multicast handle): an address range that is a multicast view of one bound range per GPU.
+    /// Parameters and pointer words name them like buffers (S-MULTIMEM).
+    #[serde(default)]
+    pub multicast: Vec<Multicast>,
+    /// Alias proxy between the multicast and unicast views of the same bytes (S-MC-ALIAS):
+    /// None / "strict" (default): PTX, an access through one view is ordered after a write
+    /// through the other only with a `fence.proxy.alias` on the happens-before path (or a
+    /// kernel boundary). "hw" (opt-in, E-MC-ALIAS-HW): the views are one location.
+    /// `PTXV_MC_ALIAS=strict|hw` overrides.
+    #[serde(default)]
+    pub mc_alias: Option<String>,
     pub params: Vec<ParamSpec>,
     /// Further kernels launched after the first one on the same stream, in order (same PTX
     /// file, same buffers). Rung 1e: programmatic dependent launch.
     #[serde(default)]
     pub launches: Vec<NextLaunch>,
     pub variants: Vec<Variant>,
+}
+
+/// One reliable-connected queue pair driven by a GPU (IBGDA / DOCA GPUNetIO verbs): its send
+/// queue, completion queue and doorbell live in buffers of the case; the NIC of `device`'s node
+/// executes the WQEs the kernel posts and writes into `peer`'s memory (docs/nic.md).
+#[derive(Debug, Clone, Deserialize)]
+pub struct NicQp {
+    pub name: String,
+    /// GPU that posts WQEs (its node's NIC executes them).
+    pub device: u32,
+    /// GPU whose memory the remote addresses of this QP name.
+    pub peer: u32,
+    /// QP number (what the WQE control segment and the doorbell carry).
+    pub qpn: u32,
+    /// Buffer holding the send-queue ring (64-byte WQE basic blocks).
+    pub sq: String,
+    #[serde(default)]
+    pub sq_offset: u64,
+    /// Number of WQE basic blocks in the ring (a power of two).
+    pub sq_wqes: u32,
+    /// Buffer holding the send completion queue (64-byte CQEs).
+    pub cq: String,
+    #[serde(default)]
+    pub cq_offset: u64,
+    /// Number of CQEs (a power of two).
+    pub cq_cqes: u32,
+    /// Buffer standing for the doorbell register (UAR page) and the register's offset there.
+    pub db: String,
+    #[serde(default)]
+    pub db_offset: u64,
+    /// WQE counter the NIC has consumed up to when the case starts.
+    #[serde(default)]
+    pub sq_ci: u64,
+    /// CQEs the NIC has written when the case starts.
+    #[serde(default)]
+    pub cq_pi: u64,
+    /// Data-placement ordering of the QP: "ibta" (default, in-order). Anything else
+    /// (out-of-order placement) is not modeled.
+    #[serde(default)]
+    pub ordering: Option<String>,
+}
+
+/// A memory registration: `key` (as the WQE's big-endian key field reads) names `buffer`
+/// (+ `offset`, `len` bytes; default: to the end) on the buffer's GPU.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NicMr {
+    pub key: u32,
+    pub buffer: String,
+    #[serde(default)]
+    pub offset: u64,
+    #[serde(default)]
+    pub len: Option<u64>,
 }
 
 /// A kernel launched after the previous one on the same stream.
@@ -136,6 +222,9 @@ pub struct NextLaunch {
     pub block: [u32; 3],
     #[serde(default)]
     pub cluster: Option<[u32; 3]>,
+    /// As `Manifest::preferred_cluster`.
+    #[serde(default)]
+    pub preferred_cluster: Option<[u32; 3]>,
     pub params: Vec<ParamSpec>,
     /// Launched with programmatic stream serialization (cudaLaunchAttribute
     /// ProgrammaticStreamSerialization): it may start before the previous kernel completes.
@@ -165,6 +254,7 @@ pub struct LaunchSpec<'a> {
     pub grid: [u32; 3],
     pub block: [u32; 3],
     pub cluster: Option<[u32; 3]>,
+    pub preferred_cluster: Option<[u32; 3]>,
     pub params: &'a [ParamSpec],
     pub pdl: bool,
     pub device: u32,
@@ -188,6 +278,7 @@ impl Manifest {
             grid: self.grid,
             block: self.block,
             cluster: self.cluster,
+            preferred_cluster: self.preferred_cluster,
             params: &self.params,
             pdl: false,
             device: 0,
@@ -201,6 +292,7 @@ impl Manifest {
                 grid: l.grid,
                 block: l.block,
                 cluster: l.cluster,
+                preferred_cluster: l.preferred_cluster,
                 params: &l.params,
                 pdl: l.pdl,
                 device: l.device,
@@ -250,6 +342,73 @@ pub struct Buffer {
     /// and on hardware (tools/capture_dist.py).
     #[serde(default)]
     pub ptrs: Vec<BufferPtr>,
+    /// The buffer backs a module data global (`__device__` variable) of this name: the
+    /// kernels' relocated constant-bank words naming it hold the buffer's address (simulator)
+    /// and, on hardware, the buffer is the module's own global (`cuModuleGetGlobal`), filled
+    /// with `init` before every run. One buffer per (module, symbol, `device`). A global a
+    /// kernel references without such a buffer starts from its ELF initial value
+    /// (S-GLOBAL-INIT).
+    #[serde(default)]
+    pub symbol: Option<String>,
+    /// The module defining `symbol`: a launch's own `cubin` (default: the case's cubin, or the
+    /// compiled PTX).
+    #[serde(default)]
+    pub cubin: Option<String>,
+    /// Declared input invariant (`[buffers.invariant]`, integer dtypes): every element is
+    /// one of `values` and within [`min`, `max`]. `ptxv check` checks it on the captured bytes
+    /// and never trusts it; input mutation (`--mutate-inputs`) writes only values it admits.
+    #[serde(default)]
+    pub invariant: Option<InputInvariant>,
+}
+
+/// A buffer's declared input invariant (`Buffer::invariant`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct InputInvariant {
+    #[serde(default)]
+    pub values: Option<Vec<i64>>,
+    #[serde(default)]
+    pub min: Option<i64>,
+    #[serde(default)]
+    pub max: Option<i64>,
+}
+
+impl Manifest {
+    /// The case buffer backing global `symbol` of module `cubin` (a launch's `cubin`; None:
+    /// the case's) on GPU `device`, if the case declares one.
+    pub fn global_buffer(&self, cubin: Option<&str>, symbol: &str, device: u32) -> Option<usize> {
+        let main = self.cubin.as_deref();
+        fn norm<'a>(c: Option<&'a str>, main: Option<&str>) -> Option<&'a str> {
+            c.filter(|c| Some(*c) != main)
+        }
+        self.buffers.iter().position(|b| {
+            b.symbol.as_deref() == Some(symbol)
+                && b.device == device
+                && norm(b.cubin.as_deref(), main) == norm(cubin, main)
+        })
+    }
+}
+
+/// An NVLS multicast object: `size` bytes of multicast address space whose range
+/// [`offset`, `offset + size`) of each bind is backed, on GPU `device`, by `buffer` from
+/// `byte_offset` on (`cuMulticastBindMem`). A multicast access reaches the bind of every GPU
+/// that covers it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Multicast {
+    pub name: String,
+    pub size: u64,
+    pub binds: Vec<McBind>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct McBind {
+    pub device: u32,
+    /// Offset in the multicast object.
+    #[serde(default)]
+    pub offset: u64,
+    pub buffer: String,
+    #[serde(default)]
+    pub byte_offset: u64,
+    pub size: u64,
 }
 
 /// An 8-byte pointer to `buffer` + `byte_offset`, stored at byte `offset` of a buffer.
@@ -288,10 +447,12 @@ pub enum ParamSpec {
         /// Shared-memory swizzle: "none" (default), "32B", "64B", "128B".
         #[serde(default)]
         swizzle: Option<String>,
-        /// Hardware runs only: the descriptor bytes as captured (hex, up to 128 bytes; the
-        /// first 8 are replaced by the buffer's address). For frameworks that build
-        /// descriptors with bits `cuTensorMapEncodeTiled` does not set; the model uses the
-        /// geometry above, which the capture matched against these bytes.
+        /// The descriptor bytes as captured (hex, up to 128 bytes; the first 8 are replaced by
+        /// the buffer's address). Hardware runs pass them instead of encoding the geometry
+        /// (for frameworks that set bits `cuTensorMapEncodeTiled` does not); the simulator
+        /// puts them in the parameter bytes for kernels that copy the map out, and models
+        /// TMAs on the parameter itself with the geometry above, which the capture matched
+        /// against these bytes. ASSUME(S-TMAP)
         #[serde(default)]
         raw: Option<String>,
         /// 4-bit elements, two per byte (`CU_TENSOR_MAP_DATA_TYPE_16U4_ALIGN8B`; `raw` required
@@ -415,7 +576,7 @@ impl Buffer {
             "bf16" | "f16" | "u16" | "i16" => 2,
             "f32" | "u32" | "i32" => 4,
             "f64" | "u64" | "i64" => 8,
-            "u8" | "i8" | "e4m3" => 1,
+            "u8" | "i8" | "e4m3" | "e5m2" => 1,
             d => panic!("unknown dtype {d}"),
         }
     }
@@ -479,6 +640,11 @@ impl Buffer {
                 "u8" => out.push(v as u8),
                 "u16" => out.extend_from_slice(&(v as u16).to_le_bytes()),
                 "f16" => out.extend_from_slice(&f64_to_f16_rn(v).to_le_bytes()),
+                "f64" => out.extend_from_slice(&v.to_bits().to_le_bytes()),
+                "i16" => out.extend_from_slice(&(v as i16).to_le_bytes()),
+                "i8" => out.push(v as i8 as u8),
+                // Narrow float codes: only `zeros` (and raw `bits` / `file`) are meaningful.
+                "e4m3" | "e5m2" => out.push(0),
                 d => panic!("init for dtype {d} not implemented"),
             }
         }
@@ -636,6 +802,14 @@ impl Case {
     /// the captured GPU bytes (`expect`). One line per output buffer that has them; empty when
     /// none has.
     pub fn expect_report(&self, output: &[u8]) -> Result<Vec<String>> {
+        self.expect_report_tol(output, false)
+    }
+
+    /// `expect_report`; with `ulp_ok` (the run used a rounding the model only calibrates,
+    /// N-MULTIMEM-ROUND16), an output whose differing elements are all one unit in the last
+    /// place off (adjacent encodings of its dtype) is reported as within one ulp, not as a
+    /// mismatch.
+    pub fn expect_report_tol(&self, output: &[u8], ulp_ok: bool) -> Result<Vec<String>> {
         let mut lines = Vec::new();
         let mut at = 0;
         for o in &self.m.outputs {
@@ -651,6 +825,26 @@ impl Case {
                 .get(off..off + want.len())
                 .ok_or_else(|| anyhow!("{o}: expected bytes run past the buffer"))?;
             let diff: Vec<usize> = (0..want.len()).filter(|&i| got[i] != want[i]).collect();
+            let es = b.elem_bytes();
+            let one_ulp = ulp_ok
+                && matches!(b.dtype.as_str(), "bf16" | "f16" | "f32")
+                && off.is_multiple_of(es)
+                && want.len().is_multiple_of(es)
+                && !diff.is_empty()
+                && diff.iter().all(|&i| {
+                    let e = i / es * es;
+                    let v = |x: &[u8]| x.iter().rev().fold(0u64, |a, &y| a << 8 | y as u64);
+                    v(&got[e..e + es]).abs_diff(v(&want[e..e + es])) == 1
+                });
+            if one_ulp {
+                let n: std::collections::BTreeSet<usize> = diff.iter().map(|i| i / es).collect();
+                lines.push(format!(
+                    "{o}: within one ulp of the captured GPU output: {} of {} elements one unit in the last place off, the rest bitwise equal (multimem.ld_reduce rounding, N-MULTIMEM-ROUND16)",
+                    n.len(),
+                    want.len() / es
+                ));
+                continue;
+            }
             lines.push(match diff.first() {
                 None => format!(
                     "{o}: bitwise equal to the captured GPU output ({} bytes)",
@@ -781,7 +975,10 @@ pub fn skip_missing_vendor_files(fixtures: &Path, needs: &[&str]) -> bool {
             continue;
         };
         for part in t.split("\"../").skip(1) {
-            let name: String = part.chars().take_while(|c| !matches!(c, '/' | '"')).collect();
+            let name: String = part
+                .chars()
+                .take_while(|c| !matches!(c, '/' | '"'))
+                .collect();
             if !name.is_empty() {
                 todo.push(fixtures.join(&name).join("case.toml"));
             }

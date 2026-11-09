@@ -1,0 +1,38 @@
+name = "probe_f32x2_norn"
+description = """
+Probe (L-ROSETTA) for mul / add / sub .f32x2 with no rounding modifier where ptxas cannot
+contract: a mul of a mul whose halves are converted to bf16x2 (Triton RMSNorm), and an add /
+sub of loads (FMUL2 / FADD2, no FFMA2). Random and edge f32 inputs (kernel.ptx, gen.py).
+expected/ is GB300's output (ptxas cubin, `ptxv hw-worker probes/f32x2_norn <cubin> --runs 1
+--dump`)."""
+ptx = "kernel.ptx"
+entry = "f32x2_norn"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024, 8]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024, 8]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

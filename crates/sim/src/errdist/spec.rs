@@ -1458,6 +1458,7 @@ pub fn sample_with(
                     "f32" => Format::F32,
                     "bf16" => Format::Bf16,
                     "f16" => Format::F16,
+                    "e4m3" => Format::E4m3,
                     d => {
                         return Err(format!(
                             "{}: quant round needs a float buffer, not {d}",

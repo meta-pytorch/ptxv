@@ -1,0 +1,63 @@
+// probes/f32x2_sinks: plain mul.f32x2 products that no add / sub.f32x2 reads directly (PTX-FMAD,
+// x2_no_add_readers): ptxas keeps each an FMUL2 (.rn). Per thread t, lanes from in[8 t ..]:
+// x = (in0, in1), y = (in2, in3), c = (in4, in5) cancels x y to +- 1 ulp, s = (in6, in7).
+//   out[8 t + 0,1]: selp of the product (t odd) or of c (t even), then + c (FMUL2, FSEL, FADD2)
+//   out[8 t + 2,3]: fma.rn.f32x2 with the product as addend: s s + p
+//   out[8 t + 4,5]: a copy of the product as a multiplicand: (copy) * s + c
+//   out[8 t + 6,7]: a loop-carried product a = a * y (3 times, the register redefined), halves
+//                   unpacked into scalar adds with c
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry f32x2_sinks(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<24>;
+    .reg .b64   %rd<32>;
+    .reg .pred  %p<4>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 32;
+    add.s64         %rd4, %rd1, %rd3;
+    add.s64         %rd5, %rd2, %rd3;
+    ld.global.v2.b64 {%rd10, %rd11}, [%rd4];
+    ld.global.v2.b64 {%rd12, %rd13}, [%rd4+16];
+    and.b32         %r2, %r1, 1;
+    setp.eq.u32     %p1, %r2, 1;
+    // selp of the product
+    mul.f32x2       %rd14, %rd10, %rd11;
+    selp.b64        %rd15, %rd14, %rd12, %p1;
+    add.f32x2       %rd16, %rd15, %rd12;
+    st.global.b64   [%rd5], %rd16;
+    // the product as an fma addend
+    mul.f32x2       %rd17, %rd10, %rd11;
+    fma.rn.f32x2    %rd18, %rd13, %rd13, %rd17;
+    st.global.b64   [%rd5+8], %rd18;
+    // a copy of the product as a multiplicand
+    mul.f32x2       %rd19, %rd10, %rd11;
+    mov.b64         %rd20, %rd19;
+    fma.rn.f32x2    %rd21, %rd20, %rd13, %rd12;
+    st.global.b64   [%rd5+16], %rd21;
+    // a loop-carried product
+    mov.b64         %rd22, %rd10;
+    mov.u32         %r3, 0;
+LOOP:
+    mul.f32x2       %rd22, %rd22, %rd11;
+    add.u32         %r3, %r3, 1;
+    setp.lt.u32     %p2, %r3, 3;
+    @%p2 bra        LOOP;
+    mov.b64         {%r4, %r5}, %rd22;
+    mov.b64         {%r6, %r7}, %rd12;
+    add.f32         %r8, %r4, %r6;
+    add.f32         %r9, %r5, %r7;
+    st.global.v2.b32 [%rd5+24], {%r8, %r9};
+    ret;
+}

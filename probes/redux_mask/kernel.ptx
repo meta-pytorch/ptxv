@@ -1,0 +1,64 @@
+// probes/redux_mask: redux.sync with membermasks naming a subset of the warp, executed by
+// exactly those lanes (E-WARPCOLL). 64 threads (2 warps); lane l of warp w loads
+// x = in[32 w + l] (gen.py) and stores out[4 t + j], t = 32 w + l:
+//   j=0: even lanes redux.sync.add.u32 over 0x55555555, odd lanes over 0xaaaaaaaa
+//        (divergent halves, immediate masks);
+//   j=1: lanes 0-15 redux.sync.max.u32 over a register mask 0x0000ffff, lanes 16-31
+//        redux.sync.min.u32 over an immediate 0xffff0000;
+//   j=2: lane 3 alone, redux.sync.or.b32 over 0x00000008 (others store 0xdeadbeef);
+//   j=3: all lanes redux.sync.xor.b32 over a register full mask (mov.b32 -1).
+// Variant mask_mismatch (@MM): every lane runs the j=0 odd-lane redux (mask 0xaaaaaaaa).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry redux_mask(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 64, 1, 1
+{
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<8>;
+    .reg .pred  %p<4>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    and.b32         %r2, %r1, 31;
+    mul.wide.u32    %rd3, %r1, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.u32   %r4, [%rd4];
+    mul.wide.u32    %rd5, %r1, 16;
+    add.s64         %rd6, %rd2, %rd5;
+    and.b32         %r3, %r2, 1;
+    setp.ne.u32     %p1, %r3, 0; // @MM
+    @%p1 bra        ODD;
+    redux.sync.add.u32 %r10, %r4, 0x55555555;
+    bra.uni         J0;
+ODD:
+    redux.sync.add.u32 %r10, %r4, 0xaaaaaaaa;
+J0:
+    st.global.u32   [%rd6], %r10;
+    setp.ge.u32     %p2, %r2, 16;
+    @%p2 bra        HI;
+    mov.b32         %r5, 0x0000ffff;
+    redux.sync.max.u32 %r11, %r4, %r5;
+    bra.uni         J1;
+HI:
+    redux.sync.min.u32 %r11, %r4, 0xffff0000;
+J1:
+    st.global.u32   [%rd6+4], %r11;
+    mov.b32         %r12, 0xdeadbeef;
+    setp.ne.u32     %p3, %r2, 3;
+    @%p3 bra        J2;
+    redux.sync.or.b32 %r12, %r4, 0x00000008;
+J2:
+    st.global.u32   [%rd6+8], %r12;
+    mov.b32         %r6, -1;
+    redux.sync.xor.b32 %r13, %r4, %r6;
+    st.global.u32   [%rd6+12], %r13;
+    ret;
+}

@@ -1,0 +1,91 @@
+// probes/mbar_count: mbarrier.arrive with an arrival count (SASS SYNCS.ARRIVE.TRANS64.ART0 and
+// .RED.ART0). One warp; lane 0 alone runs the sequence below on mbarrier m (expected count 5)
+// and stores the test_wait results out[0..8); every lane then stores out[8 + lane] = in[lane]
+// after waiting on phase 0 of mbarrier m2 (count 32), which each lane arrives on with count 1
+// (an immediate count) through its shared::cluster address.
+// Variant over (@OVER): the second arrival counts 3 with 2 pending.
+//   arrive 3 (register) -> test_wait.parity 0 = 0; arrive 2 (immediate) -> 1 (phase 0 done);
+//   arrive 4 (register, shared::cluster) -> parity 1 = 0; arrive 1 (register) -> 1;
+//   arrive 5 (immediate) in one step -> parity 0 = 1 (phase 2 done); parity 1 = 0;
+//   arrive 2 then 3 via .release.cta -> parity 1 = 1; parity 0 = 0.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry mbar_count(
+    .param .u64 pin,
+    .param .u64 pout,
+    .param .u32 pc
+)
+.maxntid 32, 1, 1
+{
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<8>;
+    .reg .pred  %p<16>;
+    .shared .align 8 .b64 m;
+    .shared .align 8 .b64 m2;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    ld.param.u32    %r20, [pc];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, m;
+    mov.u32         %r3, m2;
+    setp.ne.u32     %p1, %r1, 0;
+    @%p1 bra        INIT;
+    mbarrier.init.shared::cta.b64 [%r2], 5;
+    mbarrier.init.shared::cta.b64 [%r3], 32;
+INIT:
+    bar.sync        0;
+    @%p1 bra        WAIT;
+    add.u32         %r21, %r20, 3;
+    mbarrier.arrive.shared::cta.b64 _, [%r2], %r21;
+    mbarrier.test_wait.parity.shared::cta.b64 %p2, [%r2], 0;
+    mbarrier.arrive.shared::cta.b64 _, [%r2], 2; // @OVER
+    mbarrier.test_wait.parity.shared::cta.b64 %p3, [%r2], 0;
+    add.u32         %r22, %r20, 4;
+    mapa.shared::cluster.u32 %r4, %r2, 0;
+    mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%r4], %r22;
+    mbarrier.test_wait.parity.shared::cta.b64 %p4, [%r2], 1;
+    add.u32         %r23, %r20, 1;
+    mbarrier.arrive.shared::cta.b64 _, [%r2], %r23;
+    mbarrier.test_wait.parity.shared::cta.b64 %p5, [%r2], 1;
+    mbarrier.arrive.shared::cta.b64 _, [%r2], 5;
+    mbarrier.test_wait.parity.shared::cta.b64 %p6, [%r2], 0;
+    mbarrier.test_wait.parity.shared::cta.b64 %p7, [%r2], 1;
+    add.u32         %r24, %r20, 2;
+    mbarrier.arrive.release.cta.shared::cta.b64 _, [%r2], %r24;
+    mbarrier.arrive.release.cta.shared::cta.b64 _, [%r2], 3;
+    mbarrier.test_wait.parity.shared::cta.b64 %p8, [%r2], 1;
+    mbarrier.test_wait.parity.shared::cta.b64 %p9, [%r2], 0;
+    selp.u32        %r10, 1, 0, %p2;
+    st.global.u32   [%rd2], %r10;
+    selp.u32        %r10, 1, 0, %p3;
+    st.global.u32   [%rd2+4], %r10;
+    selp.u32        %r10, 1, 0, %p4;
+    st.global.u32   [%rd2+8], %r10;
+    selp.u32        %r10, 1, 0, %p5;
+    st.global.u32   [%rd2+12], %r10;
+    selp.u32        %r10, 1, 0, %p6;
+    st.global.u32   [%rd2+16], %r10;
+    selp.u32        %r10, 1, 0, %p7;
+    st.global.u32   [%rd2+20], %r10;
+    selp.u32        %r10, 1, 0, %p8;
+    st.global.u32   [%rd2+24], %r10;
+    selp.u32        %r10, 1, 0, %p9;
+    st.global.u32   [%rd2+28], %r10;
+WAIT:
+    mapa.shared::cluster.u32 %r5, %r3, 0;
+    mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%r5], 1;
+LOOP:
+    mbarrier.try_wait.parity.shared::cta.b64 %p10, [%r3], 0;
+    @!%p10 bra      LOOP;
+    mul.wide.u32    %rd3, %r1, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.u32   %r6, [%rd4];
+    add.s64         %rd5, %rd2, %rd3;
+    st.global.u32   [%rd5+32], %r6;
+    ret;
+}

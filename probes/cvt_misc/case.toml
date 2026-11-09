@@ -1,0 +1,47 @@
+name = "probe_cvt_misc"
+description = """
+Probe (L-ROSETTA) for cvt.rn.f32.f64 / cvt.f64.f32 (F2F), cvt.sat.f32.f32 (FADD.SAT RZ, a) and
+cvt.r{n,m,p}i[.ftz].{s,u}32.f32 (F2I) on special and random inputs (kernel.ptx, gen.py).
+expected/ is GB300's output (ptxas cubin, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "cvt_misc"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "d"
+dtype = "u32"
+shape = [2048]
+init = "file"
+file = "d.bin"
+
+[[buffers]]
+name = "f"
+dtype = "u32"
+shape = [1024]
+init = "file"
+file = "f.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [12288]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "d"
+
+[[params]]
+kind = "ptr"
+buffer = "f"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

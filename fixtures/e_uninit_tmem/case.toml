@@ -1,0 +1,36 @@
+name = "e_uninit_tmem"
+description = """
+S-INIT for tcgen05.ld of TMEM nothing wrote: Triton's pipelined prologue skips the first MMA
+when the loop runs zero times but still loads its scores (corpus pilot dash/5713, reported as
+a tmem-uninit-ld violation before 2026-11-07; GB300 TMEM-poison runs: 0/20 wrong). The
+loaded registers are now undefined, reported where they are used; the load itself is a note."""
+ptx = "kernel.ptx"
+entry = "uninit_tmem"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 0
+
+[[variants]]
+id = "good"
+summary = "the loaded value is used only when the store that fills TMEM ran"
+expect = ["clean"]
+
+[[variants]]
+id = "use"
+summary = "the loaded value is stored unconditionally"
+edits = [{ marker = "@USE", find = "selp.u32 %r13, %r10, 7, %p1;", replace = "mov.u32 %r13, %r10; setp.eq.u32 %p1, %r9, 0;" }]
+expect = ["violation"]

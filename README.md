@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/ptxv-icon-dark-mode.png">
+    <img src="docs/img/ptxv-icon.png" alt="ptxv" width="128">
+  </picture>
+</p>
+
 # ptxv
 
 A verifier for NVIDIA Blackwell (sm_100a / sm_103a) GPU kernels. It runs on the PTX or SASS of a captured launch and checks a kernel in two steps:

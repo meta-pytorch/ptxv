@@ -191,6 +191,239 @@ pub fn f32_fma(a: u32, b: u32, c: Option<u32>, rnd: ptxv_ir::Rnd, ftz: bool) -> 
     fl(r)
 }
 
+/// Round (-1)^neg * mag * 2^e (mag > 0) to bf16, nearest even: 8-bit significand, the f32
+/// exponent range with gradual underflow (quantum 2^-133), overflow to infinity. The result is
+/// the bf16 pattern (N-BF16X2).
+fn round_bf16(neg: bool, mag: u128, e: i32) -> u16 {
+    let sign = (neg as u16) << 15;
+    let top = e + 127 - mag.leading_zeros() as i32;
+    let mut q = (top - 7).max(-133);
+    let sh = q - e;
+    let (mut keep, guard, rest) = if sh <= 0 {
+        (mag << (-sh) as u32, false, false)
+    } else if sh > 128 {
+        (0, false, true)
+    } else {
+        let sh = sh as u32;
+        let keep = if sh == 128 { 0 } else { mag >> sh };
+        let guard = mag >> (sh - 1) & 1 == 1;
+        let rest = mag & ((1u128 << (sh - 1)) - 1) != 0;
+        (keep, guard, rest)
+    };
+    keep += (guard && (rest || keep & 1 == 1)) as u128;
+    if keep >> 8 != 0 {
+        keep >>= 1;
+        q += 1;
+    }
+    if keep < 1 << 7 {
+        return sign | keep as u16; // subnormal (q = -133) or zero
+    }
+    let be = q + 134;
+    if be >= 255 {
+        return sign | 0x7f80;
+    }
+    sign | (be as u16) << 7 | (keep as u16 & 0x7f)
+}
+
+/// bf16 fused multiply-add `a*b + c` with one rounding to nearest even (SASS
+/// `HFMA2.BF16_V2` per lane; `HMUL2` is c = -0, `HADD2` b = 1.0): subnormal inputs and results
+/// kept, every NaN result 0x7fff, an exact zero sum -0 only for (-0) + (-0). GB300:
+/// probes/bf16x2 (N-BF16X2).
+pub fn bf16_fma(a: u16, b: u16, c: u16) -> u16 {
+    let w = |h: u16| (h as u32) << 16;
+    let (a, b, c) = (w(a), w(b), w(c));
+    if f32_is_nan(a) || f32_is_nan(b) || f32_is_nan(c) {
+        return 0x7fff;
+    }
+    let ps = (a ^ b) >> 31 == 1;
+    let pzero = a & 0x7fff_ffff == 0 || b & 0x7fff_ffff == 0;
+    if f32_is_inf(a) || f32_is_inf(b) {
+        if pzero || f32_is_inf(c) && (c >> 31 == 1) != ps {
+            return 0x7fff; // inf * 0, inf - inf
+        }
+        return (ps as u16) << 15 | 0x7f80;
+    }
+    if f32_is_inf(c) {
+        return (c >> 16) as u16;
+    }
+    let (_, ma, ea) = f32_split(a);
+    let (_, mb, eb) = f32_split(b);
+    let (cs, cm, ce) = f32_split(c);
+    let (pm, pe) = ((ma * mb) as u128, ea + eb);
+    if pm == 0 && cm == 0 {
+        return ((ps && cs) as u16) << 15;
+    }
+    if pm == 0 {
+        return (c >> 16) as u16;
+    }
+    if cm == 0 {
+        return round_bf16(ps, pm, pe);
+    }
+    // The exact sum: both terms are below 2^48 and their exponents within the f32 range, so
+    // aligning to the smaller exponent fits in 128 bits after cutting a far-below term to a
+    // sticky bit (as `add_terms`).
+    let (hi, lo) = if pe >= ce {
+        ((ps, pm, pe), (cs, cm as u128, ce))
+    } else {
+        ((cs, cm as u128, ce), (ps, pm, pe))
+    };
+    let d = (hi.2 - lo.2) as u32;
+    let s = d.min(72);
+    let k = d - s;
+    let ue = hi.2 - s as i32 - 3;
+    let h = hi.1 << (s + 3);
+    let l = if k <= 2 {
+        lo.1 << (3 - k)
+    } else if k - 2 >= 64 {
+        1
+    } else {
+        let sh = k - 2;
+        ((lo.1 >> sh) << 1) | (lo.1 & ((1u128 << sh) - 1) != 0) as u128
+    };
+    let (neg, mag) = if hi.0 == lo.0 {
+        (hi.0, h + l)
+    } else if h >= l {
+        (hi.0, h - l)
+    } else {
+        (lo.0, l - h)
+    };
+    if mag == 0 {
+        return 0;
+    }
+    round_bf16(neg, mag, ue)
+}
+
+/// SASS `HFMA2.BF16_V2[.RELU]` on packed words `v` = [a, b, c] (`ptxv_ir::Op::Hfma2Bf16`).
+pub fn hfma2_bf16(
+    v: [u32; 3],
+    sel: [ptxv_ir::HSel; 3],
+    (neg, abs): ([bool; 3], [bool; 3]),
+    relu: bool,
+) -> u32 {
+    let mut r = 0u32;
+    for lane in 0..2 {
+        let h = |k: usize| {
+            let x = sel[k].lane(v[k], lane);
+            (if abs[k] { x & 0x7fff } else { x }) ^ ((neg[k] as u16) << 15)
+        };
+        let mut x = bf16_fma(h(0), h(1), h(2));
+        if relu && x != 0x7fff && x & 0x8000 != 0 {
+            x = 0;
+        }
+        r |= (x as u32) << (16 * lane);
+    }
+    r
+}
+
+/// SASS `HSETP2[.BF16_V2]` (`ptxv_ir::Op::Hsetp2Bf16`), lane `lane` of words (a, b): the
+/// selected halves widened exactly to f32 (bf16, or f16 when `f16`), |x| then -x as flagged,
+/// compared.
+pub fn hsetp2_lane(
+    (a, b): (u32, u32),
+    sel: [ptxv_ir::HSel; 2],
+    (neg, abs): ([bool; 2], [bool; 2]),
+    f16: bool,
+    cmp: ptxv_ir::FCmp,
+    lane: u32,
+) -> bool {
+    let w = |k: usize, v: u32| {
+        let h = sel[k].lane(v, lane);
+        let h = if abs[k] { h & 0x7fff } else { h } ^ ((neg[k] as u16) << 15);
+        if f16 {
+            (f16_to_f64(h) as f32).to_bits()
+        } else {
+            (h as u32) << 16
+        }
+    };
+    f32_cmp(w(0, a), w(1, b), cmp, false)
+}
+
+/// SASS `FHFMA.BF16` (`ptxv_ir::Op::FfmaBf16`): `v` = [a, b, c] words.
+pub fn ffma_bf16(v: [u32; 3], hi: [bool; 2], neg: [bool; 3], rnd: ptxv_ir::Rnd, sat: bool) -> u32 {
+    let h = |k: usize| {
+        let w = if hi[k] { v[k] >> 16 } else { v[k] & 0xffff };
+        (w << 16) ^ ((neg[k] as u32) << 31)
+    };
+    let r = f32_fma(h(0), h(1), Some(v[2] ^ ((neg[2] as u32) << 31)), rnd, false);
+    if sat { f32_sat(r) } else { r }
+}
+
+/// SASS `HMNMX2.BF16_V2` (`ptxv_ir::Op::Hmnmx2Bf16`) on words `a`, `b`.
+pub fn hmnmx2_bf16(
+    (a, b): (u32, u32),
+    sel: [ptxv_ir::HSel; 2],
+    min: bool,
+    nan: bool,
+    xorsign: bool,
+) -> u32 {
+    let mut r = 0;
+    for lane in 0..2 {
+        let x = (sel[0].lane(a, lane) as u32) << 16;
+        let y = (sel[1].lane(b, lane) as u32) << 16;
+        let m = if xorsign {
+            f32_minmax_xorsign(x, y, min, nan, false)
+        } else {
+            f32_minmax(x, y, min, nan, false)
+        };
+        let h = if f32_is_nan(m) { 0x7fff } else { m >> 16 };
+        r |= h << (16 * lane);
+    }
+    r
+}
+
+/// SASS `VHMNMX[.BF16_V2][.NAN]` (`ptxv_ir::Op::Vhmnmx`) on words `v` = [a, b, c].
+pub fn vhmnmx(
+    v: [u32; 3],
+    sel: [ptxv_ir::HSel; 3],
+    abs: [bool; 3],
+    (min, nan, f16): (bool, bool, bool),
+) -> u32 {
+    let mut r = 0;
+    for lane in 0..2 {
+        let h: Vec<u16> = (0..3)
+            .map(|k| {
+                let x = sel[k].lane(v[k], lane);
+                if abs[k] { x & 0x7fff } else { x }
+            })
+            .collect();
+        let wide = |x: u16| {
+            if f16 {
+                (f16_to_f64(x) as f32).to_bits()
+            } else {
+                (x as u32) << 16
+            }
+        };
+        let m = f32_minmax(
+            f32_minmax(wide(h[0]), wide(h[1]), min, nan, false),
+            wide(h[2]),
+            min,
+            nan,
+            false,
+        );
+        // The result is one of the inputs (or NaN): its half.
+        let out = if f32_is_nan(m) {
+            0x7fff
+        } else {
+            *h.iter().find(|&&x| wide(x) == m).unwrap_or(&0x7fff)
+        };
+        r |= (out as u32) << (16 * lane);
+    }
+    r
+}
+
+/// `min.xorsign.abs.f32` / `max...` (SASS `FMNMX[.NAN][.FTZ].XORSIGN`): `f32_minmax` of |a|
+/// and |b|, then the sign bit sign(a) XOR sign(b) of the operands as given (a NaN operand's
+/// sign counts too); a NaN result is the canonical NaN. GB300: probes/fmnmx_xorsign
+/// (N-XORSIGN).
+pub fn f32_minmax_xorsign(a: u32, b: u32, min: bool, nan: bool, ftz: bool) -> u32 {
+    let r = f32_minmax(a & 0x7fff_ffff, b & 0x7fff_ffff, min, nan, ftz);
+    if f32_is_nan(r) {
+        r
+    } else {
+        r | ((a ^ b) & 0x8000_0000)
+    }
+}
+
 /// Round (-1)^s1 m1 2^e1 + (-1)^s2 m2 2^e2 (m1, m2 nonzero, at most 48 bits) once. The term
 /// with the larger exponent is shifted up by at most 72 bits; the other is aligned to it in
 /// units of 2^ue, with an odd last bit standing for any bits shifted out (a sticky bit that
@@ -287,6 +520,44 @@ pub fn round_f64(neg: bool, mag: u128, e: i32, rnd: ptxv_ir::Rnd) -> u64 {
             };
     }
     sign | (be as u64) << 52 | (keep as u64 & ((1u64 << 52) - 1))
+}
+
+/// PTX `rsqrt.approx.f64` (no .ftz) as ptxas 13.0 expands it (probes/rsqrt_f64): y0 =
+/// MUFU.RSQ64H of the high word (low word 0), e = fma(a, -(y0 y0), 1), y = fma(fma(e, 0.375,
+/// 0.5), y0 e, y0), every step a DMUL / DFMA rounded to nearest. Outside 2^-1022 <= a <
+/// 2^1023 (high word - 0x100000 >= 0x7fe00000, sign included) its slow path: +-0 -> +-Inf, NaN
+/// -> a + a, negative -> 0xfff8000000000000, +Inf -> +0, subnormal -> the same refinement of
+/// a 2^54, times 2^27. ASSUME(N-MUFU)
+pub fn rsqrt_approx_f64(a: u64) -> u64 {
+    use ptxv_ir::Rnd::Rn;
+    let one = 1f64.to_bits();
+    let main = |x: u64| -> u64 {
+        let y0 = (crate::mufu::rsq64h((x >> 32) as u32) as u64) << 32;
+        let y2 = f64_fma(y0, y0, None, Rn);
+        let e = f64_fma(x, y2 ^ 1 << 63, Some(one), Rn);
+        let r8 = f64_fma(e, 0.375f64.to_bits(), Some(0.5f64.to_bits()), Rn);
+        let r6 = f64_fma(y0, e, None, Rn);
+        f64_fma(r8, r6, Some(y0), Rn)
+    };
+    let hi = (a >> 32) as u32;
+    if hi.wrapping_sub(0x10_0000) < 0x7fe0_0000 {
+        return main(a);
+    }
+    let mag = a & !(1 << 63);
+    if mag == 0 {
+        return (a & 1 << 63) | 0x7ff0_0000_0000_0000;
+    }
+    if mag > 0x7ff0_0000_0000_0000 {
+        return f64_fma(a, one, Some(a), Rn);
+    }
+    if a >> 63 == 1 {
+        return 0xfff8_0000_0000_0000;
+    }
+    if mag == 0x7ff0_0000_0000_0000 {
+        return 0;
+    }
+    let xs = f64_fma(a, 2f64.powi(54).to_bits(), None, Rn);
+    f64_fma(main(xs), 2f64.powi(27).to_bits(), None, Rn)
 }
 
 /// f64 fused multiply-add `a*b + c`, one rounding in mode `rnd` (DFMA; DMUL when `c` is None;
@@ -555,6 +826,161 @@ pub fn fchk(a: u32, b: u32) -> bool {
     let ea = ((a >> 23) & 0xff) as i32;
     let eb = ((b >> 23) & 0xff) as i32;
     !((25..=254).contains(&ea) && (2..=251).contains(&eb) && (-124..=126).contains(&(ea - eb)))
+}
+
+/// (significand bits with the hidden one, minimum normal exponent, maximum exponent, exponent
+/// field width) of an IEEE format.
+fn ffmt_params(f: ptxv_ir::FFmt) -> (u32, i32, i32, u32) {
+    use ptxv_ir::FFmt;
+    match f {
+        FFmt::F16 => (11, -14, 15, 5),
+        FFmt::Bf16 => (8, -126, 127, 8),
+        FFmt::F32 => (24, -126, 127, 8),
+        FFmt::F64 => (53, -1022, 1023, 11),
+    }
+}
+
+/// Round (-1)^neg * mag * 2^e to format `f` in mode `rnd` (gradual underflow, IEEE overflow;
+/// mag = 0 gives the signed zero). `int`: round to an integral value instead (the result is
+/// exact in `f`, the magnitude being at most the rounded-up input).
+fn round_ffmt(neg: bool, mag: u128, e: i32, f: ptxv_ir::FFmt, rnd: ptxv_ir::Rnd, int: bool) -> u64 {
+    use ptxv_ir::Rnd;
+    let (p, emin, emax, ew) = ffmt_params(f);
+    let fb = p - 1;
+    let sign = (neg as u64) << (fb + ew);
+    if mag == 0 {
+        return sign;
+    }
+    let top = e + 127 - mag.leading_zeros() as i32;
+    // The quantum: the format's at the value's exponent, or 1 for an integral rounding (the
+    // value itself when it is already integral).
+    let mut q = if int {
+        e.max(0)
+    } else {
+        top.max(emin) - fb as i32
+    };
+    let sh = q - e;
+    let (mut keep, guard, rest) = if sh <= 0 {
+        (mag << (-sh) as u32, false, false)
+    } else if sh > 128 {
+        (0, false, true)
+    } else {
+        let sh = sh as u32;
+        let keep = if sh == 128 { 0 } else { mag >> sh };
+        let guard = mag >> (sh - 1) & 1 == 1;
+        let rest = mag & ((1u128 << (sh - 1)) - 1) != 0;
+        (keep, guard, rest)
+    };
+    let inc = match rnd {
+        Rnd::Rn => guard && (rest || keep & 1 == 1),
+        Rnd::Rz => false,
+        Rnd::Rp => !neg && (guard || rest),
+        Rnd::Rm => neg && (guard || rest),
+    };
+    keep += inc as u128;
+    if keep == 0 {
+        return sign;
+    }
+    // Normalize keep * 2^q into the format: a carry out of the significand (its dropped bit
+    // is 0), or an integral result below 2^(p-1) shifted up (exact).
+    while keep >> p != 0 {
+        keep >>= 1;
+        q += 1;
+    }
+    while keep >> fb == 0 && q > emin - fb as i32 {
+        keep <<= 1;
+        q -= 1;
+    }
+    if keep >> fb == 0 {
+        return sign | keep as u64; // subnormal
+    }
+    let be = q + fb as i32 + emax;
+    if be >= (1 << ew) - 1 {
+        let inf = match rnd {
+            Rnd::Rn => true,
+            Rnd::Rz => false,
+            Rnd::Rp => !neg,
+            Rnd::Rm => neg,
+        };
+        let emask = ((1u64 << ew) - 1) << fb;
+        return sign
+            | if inf {
+                emask
+            } else {
+                (emask - (1 << fb)) | ((1u64 << fb) - 1)
+            };
+    }
+    sign | (be as u64) << fb | (keep as u64 & ((1u64 << fb) - 1))
+}
+
+/// SASS `FRND` / `F2F` between IEEE formats (`Op::FCvt`; N-FCVT, GB300: probes/fcvt): the
+/// source bits `x` (low `from.bits()` bits) converted to `to` in mode `rnd`, or with `int` (from
+/// = to) rounded to an integral value. `ftz`: a subnormal source is a signed zero first. NaN:
+/// an f64 source or result keeps the sign and payload, quieted (the payload's top bits on
+/// narrowing, shifted up on widening); FRND of f32 / f16 / bf16 and the f16 <-> bf16
+/// conversions give the canonical NaN (0x7fffffff, 0x7fff). Infinities pass through.
+pub fn fcvt(
+    x: u64,
+    from: ptxv_ir::FFmt,
+    to: ptxv_ir::FFmt,
+    rnd: ptxv_ir::Rnd,
+    ftz: bool,
+    int: bool,
+) -> u64 {
+    use ptxv_ir::FFmt;
+    let (p, emin, _, ew) = ffmt_params(from);
+    let fb = p - 1;
+    let (pt, _, _, ewt) = ffmt_params(to);
+    let fbt = pt - 1;
+    let x = if from.bits() == 64 {
+        x
+    } else {
+        x & ((1u64 << from.bits()) - 1)
+    };
+    let neg = x >> (fb + ew) & 1 == 1;
+    let ex = (x >> fb & ((1 << ew) - 1)) as i32;
+    let fr = x & ((1u64 << fb) - 1);
+    let emask_t = ((1u64 << ewt) - 1) << fbt;
+    let sign_t = (neg as u64) << (fbt + ewt);
+    if ex == (1 << ew) - 1 {
+        if fr == 0 {
+            return sign_t | emask_t;
+        }
+        if from != FFmt::F64 && to != FFmt::F64 {
+            return if to.bits() == 32 { 0x7fff_ffff } else { 0x7fff };
+        }
+        let pay = if fbt >= fb {
+            fr << (fbt - fb)
+        } else {
+            fr >> (fb - fbt)
+        };
+        return sign_t | emask_t | 1 << (fbt - 1) | pay;
+    }
+    let (mag, e) = if ex == 0 {
+        if ftz && fr != 0 {
+            (0u128, 0)
+        } else {
+            (fr as u128, emin - fb as i32)
+        }
+    } else {
+        ((fr | 1 << fb) as u128, ex + emin - 1 - fb as i32)
+    };
+    round_ffmt(neg, mag, e, to, rnd, int)
+}
+
+/// f16 / bf16 addition as the bulk reductions do it (`UTMAREDG.ND.ADD` on f16 / bf16 tensors;
+/// probes/tma_red): round to nearest even, subnormals kept, the canonical NaN 0x7fff, an exact
+/// zero sum +0 unless both are -0. Computed as the f64 sum (exact or rounded to 53 bits) then
+/// rounded to the format: 53 >= 2p + 2, so the double rounding is innocuous.
+pub fn add16(a: u16, b: u16, f: ptxv_ir::FFmt) -> u16 {
+    use ptxv_ir::FFmt;
+    use ptxv_ir::Rnd;
+    let wide = |h: u16| f64::from_bits(fcvt(h as u64, f, FFmt::F64, Rnd::Rn, false, false));
+    let s = wide(a) + wide(b);
+    if s.is_nan() {
+        return 0x7fff;
+    }
+    fcvt(s.to_bits(), FFmt::F64, f, Rnd::Rn, false, false) as u16
 }
 
 /// Round an f64 to f32 in the given mode (exact for integer inputs below 2^53).
@@ -904,6 +1330,36 @@ pub const TMMA_MODEL: MmaModel = MmaModel {
     exp_from_inputs: true,
 };
 
+/// `cvt.rn / .rz [.relu] [.satfinite] .tf32.f32` (SASS `F2FP [.SATFINITE] [.RELU]
+/// .TF32.F32.PACK_B [.RZ]`) on GB300 (probes/cvt_tf32_rn, all eight forms on every sign and
+/// exponent): the low 13 mantissa bits rounded off (nearest even, or toward zero for `rz`),
+/// subnormals kept; every NaN gives 0x7fffe000 (`.relu` included); `.relu` makes any other
+/// negative input (-0, -Inf included) +0; Inf, and a nearest rounding that overflows, give Inf,
+/// with `.satfinite` the largest finite tf32 of the same sign. ASSUME(N-FCVT)
+pub fn cvt_tf32(x: u32, rz: bool, sat: bool, relu: bool) -> u32 {
+    const MAX: u32 = 0x7f7f_e000;
+    let s = x & 0x8000_0000;
+    if x & 0x7fff_ffff > 0x7f80_0000 {
+        return 0x7fff_e000;
+    }
+    if relu && s != 0 {
+        return 0;
+    }
+    let inf = |s: u32| s | if sat { MAX } else { 0x7f80_0000 };
+    if x & 0x7fff_ffff == 0x7f80_0000 {
+        return inf(s);
+    }
+    let mut r = x & !0x1fff;
+    let low = x & 0x1fff;
+    if !rz && (low > 0x1000 || low == 0x1000 && r & 0x2000 != 0) {
+        r += 0x2000;
+    }
+    if r & 0x7fff_ffff == 0x7f80_0000 {
+        return inf(s);
+    }
+    r
+}
+
 /// How the TF32 MMA reads an f32 register word: the low 13 mantissa bits are dropped
 /// (probes/tmma). ASSUME(N-HMMA)
 pub fn tf32_in(x: u32) -> u32 {
@@ -1028,6 +1484,84 @@ impl MmaModel {
     }
 }
 
+/// One `HMMA.16816.F32.BF16` / `.1688` step of HMMA_MODEL extended to special values as GB300
+/// computes them (probes/hmma_special, 20,480 outputs): subnormal inputs and accumulators are
+/// exact and aligned at exponent -126; a NaN operand, Inf * 0 or Inf - Inf gives 0x7fffffff,
+/// otherwise an Inf operand product or accumulator gives that Inf; a finite sum of 2^128 or
+/// more gives Inf of its sign (round-toward-zero would give FLT_MAX); subnormal results are
+/// kept. `prods` are the (a, b) element pairs. ASSUME(N-HMMA)
+pub fn hmma_bf16_step(acc: f32, prods: &[(f64, f64)]) -> f32 {
+    let m = HMMA_MODEL;
+    debug_assert!(m.acc_in_group && m.exp_from_inputs && m.final_rz && !m.trunc_floor);
+    let nan = f32::from_bits(0x7fff_ffff);
+    let (mut pinf, mut ninf) = (false, false);
+    for &(a, b) in prods {
+        if a.is_nan()
+            || b.is_nan()
+            || (a.is_infinite() && b == 0.0)
+            || (b.is_infinite() && a == 0.0)
+        {
+            return nan;
+        }
+        if a.is_infinite() || b.is_infinite() {
+            if (a * b) > 0.0 {
+                pinf = true
+            } else {
+                ninf = true
+            }
+        }
+    }
+    if acc.is_nan() {
+        return nan;
+    }
+    if acc.is_infinite() {
+        if acc > 0.0 { pinf = true } else { ninf = true }
+    }
+    match (pinf, ninf) {
+        (true, true) => return nan,
+        (true, false) => return f32::INFINITY,
+        (false, true) => return f32::NEG_INFINITY,
+        _ => {}
+    }
+    // Subnormals align at -126 (the exponent field's minimum), as normal values at theirs.
+    let ex = |x: f64| exp_of(x).max(-126);
+    let mut terms: Vec<Term> = prods
+        .iter()
+        .filter(|(a, b)| *a != 0.0 && *b != 0.0)
+        .map(|&(a, b)| Term {
+            v: a * b,
+            e: ex(a) + ex(b),
+        })
+        .collect();
+    if acc != 0.0 {
+        terms.push(Term {
+            v: acc as f64,
+            e: ex(acc as f64),
+        });
+    }
+    if terms.is_empty() {
+        return 0.0;
+    }
+    let f = m.frac_bits.unwrap() as i32;
+    let q_exp = terms.iter().map(|t| t.e).max().unwrap() - f;
+    let mut s: i128 = 0;
+    for t in &terms {
+        s += (t.v * 2f64.powi(-q_exp)).trunc() as i128;
+    }
+    if s == 0 {
+        return 0.0;
+    }
+    let lead = 127 - s.unsigned_abs().leading_zeros() as i32;
+    if lead + q_exp >= 128 {
+        return if s > 0 {
+            f32::INFINITY
+        } else {
+            f32::NEG_INFINITY
+        };
+    }
+    round_int_to_f32(s, q_exp, true, 0)
+}
+
 /// Sum `terms`, optionally truncating each to `frac` bits below the largest alignment
 /// exponent, and round once to f32.
 pub fn sum_round_terms(terms: &[Term], frac: Option<u8>, rz: bool, floor: bool) -> f32 {
@@ -1052,6 +1586,15 @@ pub fn sum_round_terms(terms: &[Term], frac: Option<u8>, rz: bool, floor: bool) 
         } else {
             scaled.trunc()
         } as i128;
+    }
+    // A sum of 2^128 or more is Inf of its sign also under the final round toward zero
+    // (GB300: HMMA probes/hmma_special, tcgen05.mma probes/tc_mma_ovf), not FLT_MAX.
+    if acc != 0 && 127 - acc.unsigned_abs().leading_zeros() as i32 + q_exp >= 128 {
+        return if acc > 0 {
+            f32::INFINITY
+        } else {
+            f32::NEG_INFINITY
+        };
     }
     round_int_to_f32(acc, q_exp, rz, 0)
 }
@@ -1102,6 +1645,7 @@ pub fn sum_round_f32(terms: &[f64], frac: Option<u8>, rz: bool) -> f32 {
 /// Round `v * 2^e` to f32 (24-bit significand, subnormals, overflow); `sticky` breaks ties.
 /// A result that is zero is +0, also when a negative `v` underflows: the tensor cores' rule
 /// (GB300, probes/mma_zero), and every caller is an MMA model. ASSUME(N-MMA)
+/// Overflow is signed infinity even with RZ mantissa rounding (probes/mma_overflow).
 pub fn round_int_to_f32(v: i128, e: i32, rz: bool, sticky: i32) -> f32 {
     if v == 0 {
         return 0.0;
@@ -1137,7 +1681,7 @@ pub fn round_int_to_f32(v: i128, e: i32, rz: bool, sticky: i32) -> f32 {
         qe += 1;
     }
     let val = if qe + 23 > 127 {
-        if rz { f32::MAX as f64 } else { f64::INFINITY }
+        f64::INFINITY
     } else {
         m as f64 * 2f64.powi(qe)
     };
@@ -1148,6 +1692,29 @@ pub fn round_int_to_f32(v: i128, e: i32, rz: bool, sticky: i32) -> f32 {
 #[cfg(test)]
 mod mma_tests {
     use super::*;
+    /// On normal operands without overflow the special-value step is HMMA_MODEL.
+    #[test]
+    fn hmma_bf16_step_is_the_model_on_normals() {
+        let mut s = 0x1234_5678u64;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        for _ in 0..2000 {
+            let bf = |x: u64| f32::from_bits(((x as u32) & 0x8f7f_0000) | 0x3000_0000) as f64;
+            let prods: Vec<(f64, f64)> = (0..16).map(|_| (bf(next()), bf(next()))).collect();
+            let acc = bf(next()) as f32;
+            let terms: Vec<Term> = prods.iter().map(|&(a, b)| Term::prod(a, b, true)).collect();
+            assert_eq!(
+                hmma_bf16_step(acc, &prods).to_bits(),
+                HMMA_MODEL.apply_terms(acc, &terms).to_bits()
+            );
+        }
+        assert!(hmma_bf16_step(0.0, &[(f64::INFINITY, 0.0)]).to_bits() == 0x7fff_ffff);
+        assert!(hmma_bf16_step(0.0, &[(2f64.powi(64), 2f64.powi(64))]) == f32::INFINITY);
+    }
     #[test]
     fn exact_model_is_correct_rounding() {
         let p = [1.0, 2f64.powi(-30), -1.0, 3.0];
@@ -1176,11 +1743,11 @@ mod mma_tests {
         assert_eq!(a * b, -40762.0 * 2f64.powi(-178));
         let p2 = |e: i32| 2f64.powi(e);
         let sets: Vec<Vec<(f64, f64)>> = vec![
-            vec![(a, b)],                                    // negative underflow
-            vec![(a, -b)],                                   // positive underflow
-            vec![(-0.0, 1.0); 16],                           // all products -0
-            vec![(1.0, 1.0), (-1.0, 1.0)],                   // exact cancellation
-            vec![(-p2(-80), p2(-80)), (p2(-81), p2(-80))],   // two tiny, sum -2^-161
+            vec![(a, b)],                                                   // negative underflow
+            vec![(a, -b)],                                                  // positive underflow
+            vec![(-0.0, 1.0); 16],                                          // all products -0
+            vec![(1.0, 1.0), (-1.0, 1.0)],                                  // exact cancellation
+            vec![(-p2(-80), p2(-80)), (p2(-81), p2(-80))],                  // two tiny, sum -2^-161
             vec![(-(1.0 + p2(-7)) * p2(-75), p2(-74)), (p2(-75), p2(-74))], // residue -2^-156
         ];
         for md in [DEFAULT_MMA, HMMA_MODEL, TMMA_MODEL, MmaModel::EXACT_RN] {

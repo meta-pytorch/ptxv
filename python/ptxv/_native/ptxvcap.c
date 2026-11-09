@@ -37,6 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 typedef CUptiResult (*subscribe_t)(CUpti_SubscriberHandle *, CUpti_CallbackFunc, void *);
@@ -56,6 +57,9 @@ typedef CUresult (*fname_t)(const char **, CUfunction);
 typedef CUresult (*kname_t)(const char **, CUkernel);
 typedef CUresult (*iscap_t)(CUstream, CUstreamCaptureStatus *);
 typedef CUresult (*getdev_t)(CUdevice *);
+typedef CUresult (*fmod_t)(CUmodule *, CUfunction);
+typedef CUresult (*klib_t)(CUlibrary *, CUkernel);
+typedef CUresult (*libmod_t)(CUmodule *, CUlibrary);
 static sync_t c_sync;
 static range_t c_range;
 static d2h_t c_d2h;
@@ -65,6 +69,9 @@ static fname_t c_fname;
 static kname_t c_kname;
 static iscap_t c_iscap;
 static getdev_t c_getdev;
+static fmod_t c_fmod;
+static klib_t c_klib;
+static libmod_t c_libmod;
 
 static CUpti_SubscriberHandle sub;
 static int inited;
@@ -111,6 +118,34 @@ static void write_file(const char *path, const void *p, size_t n) {
     fclose(f);
 }
 
+// Which image each module / library handle holds: module and library loads record the
+// handle at API_EXIT with the image the resource callback saw during the call, so a launch
+// names its exact image even when several modules define the same kernel name.
+#define MAXHANDLES 65536
+static void *h_key[MAXHANDLES];
+static unsigned long long h_val[MAXHANDLES];
+static size_t nhandles;
+static __thread unsigned long long t_call_mod;  // image loaded during the current API call
+
+static void handle_put(void *k, unsigned long long v) {
+    if (!k || !v) return;
+    for (size_t i = 0; i < nhandles; i++)
+        if (h_key[i] == k) {
+            h_val[i] = v;
+            return;
+        }
+    if (nhandles < MAXHANDLES) {
+        h_key[nhandles] = k;
+        h_val[nhandles++] = v;
+    }
+}
+
+static unsigned long long handle_get(void *k) {
+    for (size_t i = 0; i < nhandles; i++)
+        if (h_key[i] == k) return h_val[i];
+    return 0;
+}
+
 static void on_module(const CUpti_ResourceData *r) {
     const CUpti_ModuleResourceData *m = (const CUpti_ModuleResourceData *)r->resourceDescriptor;
     if (!m || !m->pCubin || !m->cubinSize) return;
@@ -132,6 +167,7 @@ static void on_module(const CUpti_ResourceData *r) {
         mods = realloc(mods, capmods * sizeof *mods);
     }
     mods[nmods++] = h;
+    t_call_mod = h;
     pthread_mutex_unlock(&mu);
 }
 
@@ -177,12 +213,35 @@ static void snap(const char *which) {
     }
 }
 
+// Pointer tables larger than this are not scanned for indirect targets.
+#define PTR_SCAN_MAX (1u << 20)
+
+// Add the allocation containing device address v to the snapshot targets; returns the bytes
+// added (0 if v is not a device address, already a target, too large or past MAXALLOC).
+static unsigned long long add_target(unsigned long long v) {
+    CUdeviceptr b;
+    size_t z;
+    if (!v || c_range(&b, &z, (CUdeviceptr)v) != CUDA_SUCCESS) return 0;
+    if (z > max_alloc) {
+        skipped_snaps++;
+        return 0;
+    }
+    unsigned i = 0;
+    while (i < t_n && t_base[i] != b) i++;
+    if (i < t_n || t_n == MAXALLOC) return 0;
+    t_base[t_n] = b;
+    t_size[t_n++] = z;
+    return z;
+}
+
 // Record one launch (API_ENTER). Called with mu held.
 static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz, unsigned bx,
                             unsigned by, unsigned bz, unsigned smem, CUstream s,
                             const CUlaunchConfig *cfg, void **params, void **extra,
                             const char *sym, int cbid) {
     unsigned cx = 1, cy = 1, cz = 1;
+    // Preferred cluster dimension (0s without the attribute): S-CGA-SHAPE, probes/cga_size.
+    unsigned px = 0, py = 0, pz = 0;
     int pdl = 0;
     if (cfg) {
         for (unsigned i = 0; i < cfg->numAttrs; i++) {
@@ -190,6 +249,10 @@ static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
                 cx = cfg->attrs[i].value.clusterDim.x;
                 cy = cfg->attrs[i].value.clusterDim.y;
                 cz = cfg->attrs[i].value.clusterDim.z;
+            } else if (cfg->attrs[i].id == CU_LAUNCH_ATTRIBUTE_PREFERRED_CLUSTER_DIMENSION) {
+                px = cfg->attrs[i].value.preferredClusterDim.x;
+                py = cfg->attrs[i].value.preferredClusterDim.y;
+                pz = cfg->attrs[i].value.preferredClusterDim.z;
             } else if (cfg->attrs[i].id == CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION) {
                 pdl = cfg->attrs[i].value.programmaticStreamSerializationAllowed != 0;
             }
@@ -223,6 +286,25 @@ static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
             gx, gy, gz, bx, by, bz, smem, cx, cy, cz, pdl, (unsigned long long)s, (int)dev, cbid,
             cs != CU_STREAM_CAPTURE_STATUS_NONE);
     json_str(fp, tag);
+    {
+        // The launched kernel's module image (0: unknown).
+        unsigned long long img = 0;
+        CUlibrary lib = 0;
+        CUmodule mod = 0;
+        if (k && c_klib && c_klib(&lib, k) == CUDA_SUCCESS) img = handle_get(lib);
+        if (!img && f && !k && c_fmod && c_fmod(&mod, f) == CUDA_SUCCESS) img = handle_get(mod);
+        if (!img && t_call_mod) img = t_call_mod;  // loaded lazily by this very launch
+        if (img) fprintf(fp, ", \"module\": \"%016llx\"", img);
+    }
+    if (px) fprintf(fp, ", \"preferred_cluster\": [%u, %u, %u]", px, py, pz);
+    {
+        // Wall-clock launch time (us), the clock of torch's allocator trace (time_us): the
+        // case writer keeps only allocator blocks live at the launch.
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        fprintf(fp, ", \"t_us\": %llu",
+                (unsigned long long)ts.tv_sec * 1000000ull + (unsigned long long)ts.tv_nsec / 1000ull);
+    }
     fprintf(fp, ", \"params\": [");
     plen = 0;
     if (!params && extra) {
@@ -268,23 +350,40 @@ static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
     t_n = 0;
     if (t_snap) {
         unsigned long long total = 0;
+        // Parameter words that point into device memory (first level of indirection).
+        unsigned long long pv[256];
+        unsigned npv = 0;
         for (size_t o = 0; o + 8 <= plen; o += 8) {
             unsigned long long v;
             memcpy(&v, pbuf + o, 8);
+            unsigned long long z = add_target(v);
+            total += z;
+            if (v >= 0x10000 && !(v >> 52) && npv < 256) pv[npv++] = v;
+        }
+        // One level of indirection: pointer tables (an array of tensor addresses that the
+        // kernel loads, e.g. multi-tensor optimizers) a parameter points to. The window from
+        // the pointer up to PTR_SCAN_MAX bytes (not the whole driver allocation: torch's small
+        // tensors share 2 MiB segments) is scanned; the targets are snapshotted too and the case
+        // writer turns the words into `ptrs`.
+        if (npv) c_sync();
+        unsigned long long *h = npv ? malloc(PTR_SCAN_MAX) : 0;
+        for (unsigned i = 0; h && i < npv; i++) {
             CUdeviceptr b;
             size_t z;
-            if (!v || c_range(&b, &z, (CUdeviceptr)v) != CUDA_SUCCESS) continue;
-            if (z > max_alloc) {
-                skipped_snaps++;
-                continue;
+            if (c_range(&b, &z, (CUdeviceptr)pv[i]) != CUDA_SUCCESS) continue;
+            size_t avail = (size_t)(b + z - pv[i]);
+            size_t n = avail < PTR_SCAN_MAX ? avail : PTR_SCAN_MAX;
+            n &= ~(size_t)7;
+            if (!n || c_d2h(h, (CUdeviceptr)pv[i], n) != CUDA_SUCCESS) continue;
+            unsigned long long last = 0;
+            for (size_t w = 0; w < n / 8; w++) {
+                unsigned long long v = h[w];
+                if (v < 0x10000 || v >> 52 || v == last) continue;
+                last = v;
+                total += add_target(v);
             }
-            unsigned i = 0;
-            while (i < t_n && t_base[i] != b) i++;
-            if (i < t_n || t_n == MAXALLOC) continue;
-            t_base[t_n] = b;
-            t_size[t_n++] = z;
-            total += z;
         }
+        free(h);
         if (2 * total > snap_budget) {
             t_snap = 0;
             t_n = 0;
@@ -310,6 +409,34 @@ static void CUPTIAPI cb(void *u, CUpti_CallbackDomain d, CUpti_CallbackId id, co
     }
     if (d != CUPTI_CB_DOMAIN_DRIVER_API) return;
     const CUpti_CallbackData *c = (const CUpti_CallbackData *)data;
+    if (id == CUPTI_DRIVER_TRACE_CBID_cuModuleLoad || id == CUPTI_DRIVER_TRACE_CBID_cuModuleLoadData ||
+        id == CUPTI_DRIVER_TRACE_CBID_cuModuleLoadDataEx ||
+        id == CUPTI_DRIVER_TRACE_CBID_cuModuleLoadFatBinary ||
+        id == CUPTI_DRIVER_TRACE_CBID_cuLibraryLoadData ||
+        id == CUPTI_DRIVER_TRACE_CBID_cuLibraryLoadFromFile) {
+        if (c->callbackSite == CUPTI_API_ENTER) {
+            t_call_mod = 0;
+        } else if (t_call_mod && c->functionParams) {
+            // Every one of these takes the output handle pointer first.
+            void **hp = *(void ***)c->functionParams;
+            if (hp && *hp) {
+                pthread_mutex_lock(&mu);
+                handle_put(*hp, t_call_mod);
+                pthread_mutex_unlock(&mu);
+                if ((id == CUPTI_DRIVER_TRACE_CBID_cuLibraryLoadData ||
+                     id == CUPTI_DRIVER_TRACE_CBID_cuLibraryLoadFromFile) && c_libmod) {
+                    CUmodule m = 0;
+                    if (c_libmod(&m, (CUlibrary)*hp) == CUDA_SUCCESS && m) {
+                        pthread_mutex_lock(&mu);
+                        handle_put(m, t_call_mod);
+                        pthread_mutex_unlock(&mu);
+                    }
+                }
+            }
+            t_call_mod = 0;
+        }
+        return;
+    }
     if (id == CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch || id == CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch_ptsz) {
         if (c->callbackSite == CUPTI_API_ENTER) {
             pthread_mutex_lock(&mu);
@@ -319,6 +446,7 @@ static void CUPTIAPI cb(void *u, CUpti_CallbackDomain d, CUpti_CallbackId id, co
         return;
     }
     if (c->callbackSite == CUPTI_API_ENTER) {
+        t_call_mod = 0;
         pthread_mutex_lock(&mu);
         if (!active) {
             pthread_mutex_unlock(&mu);
@@ -404,10 +532,20 @@ int ptxvcap_init(const char *cupti_path, const char *module_dir) {
     c_kname = (kname_t)dlsym(cu, "cuKernelGetName");
     c_iscap = (iscap_t)dlsym(cu, "cuStreamIsCapturing");
     c_getdev = (getdev_t)dlsym(cu, "cuCtxGetDevice");
+    c_fmod = (fmod_t)dlsym(cu, "cuFuncGetModule");
+    c_klib = (klib_t)dlsym(cu, "cuKernelGetLibrary");
+    c_libmod = (libmod_t)dlsym(cu, "cuLibraryGetModule");
     if (!p_subscribe || !p_enable || !c_sync || !c_range || !c_d2h) return -1;
     CUptiResult r = p_subscribe(&sub, (CUpti_CallbackFunc)cb, 0);
     if (r != CUPTI_SUCCESS) return (int)r;
     p_enable(1, sub, CUPTI_CB_DOMAIN_RESOURCE, CUPTI_CBID_RESOURCE_MODULE_LOADED);
+    static const CUpti_CallbackId load_ids[] = {
+        CUPTI_DRIVER_TRACE_CBID_cuModuleLoad,          CUPTI_DRIVER_TRACE_CBID_cuModuleLoadData,
+        CUPTI_DRIVER_TRACE_CBID_cuModuleLoadDataEx,    CUPTI_DRIVER_TRACE_CBID_cuModuleLoadFatBinary,
+        CUPTI_DRIVER_TRACE_CBID_cuLibraryLoadData,     CUPTI_DRIVER_TRACE_CBID_cuLibraryLoadFromFile,
+    };
+    for (size_t i = 0; i < sizeof load_ids / sizeof *load_ids; i++)
+        p_enable(1, sub, CUPTI_CB_DOMAIN_DRIVER_API, load_ids[i]);
     inited = 1;
     return 0;
 }
@@ -450,6 +588,17 @@ int ptxvcap_stop(unsigned long long *graph, unsigned long long *skipped) {
     int n = (int)seq;
     pthread_mutex_unlock(&mu);
     return n;
+}
+
+// Suspend (0) or restore snapshots while a CUDA graph is being captured on any stream: the
+// context synchronization a snapshot needs is illegal then and invalidates the capture.
+// Returns the previous mode.
+int ptxvcap_set_snap(int mode) {
+    pthread_mutex_lock(&mu);
+    int old = snap_mode;
+    snap_mode = mode;
+    pthread_mutex_unlock(&mu);
+    return old;
 }
 
 void ptxvcap_set_tag(const char *t) {

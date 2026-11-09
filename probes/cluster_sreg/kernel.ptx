@@ -1,0 +1,54 @@
+// probes/cluster_sreg: the cluster special registers %cluster_ctaid, %cluster_nctaid,
+// %clusterid, %nclusterid (.x/.y/.z), %cluster_ctarank / %cluster_nctarank. Grid 4 x 4 x 2,
+// clusters 2 x 2 x 1, 32 threads; thread 0 of CTA (x, y, z) writes 16 words at
+// out[16 (x + 4 y + 16 z)]: those 14 registers, then %ctaid.x, %ctaid.y.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry cluster_sreg(
+    .param .u64 pout
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<2>;
+    .reg .b32   %r<40>;
+    .reg .b64   %rd<8>;
+
+    mov.u32         %r1, %tid.x;
+    setp.ne.u32     %p1, %r1, 0;
+    @%p1 bra        DONE;
+    ld.param.u64    %rd1, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32         %r2, %ctaid.x;
+    mov.u32         %r3, %ctaid.y;
+    mov.u32         %r4, %ctaid.z;
+    shl.b32         %r5, %r3, 2;
+    add.u32         %r5, %r5, %r2;
+    shl.b32         %r6, %r4, 4;
+    add.u32         %r5, %r5, %r6;
+    mul.wide.u32    %rd2, %r5, 64;
+    add.s64         %rd3, %rd1, %rd2;
+    mov.u32         %r10, %cluster_ctaid.x;
+    mov.u32         %r11, %cluster_ctaid.y;
+    mov.u32         %r12, %cluster_ctaid.z;
+    mov.u32         %r13, %cluster_nctaid.x;
+    mov.u32         %r14, %cluster_nctaid.y;
+    mov.u32         %r15, %cluster_nctaid.z;
+    mov.u32         %r16, %clusterid.x;
+    mov.u32         %r17, %clusterid.y;
+    mov.u32         %r18, %clusterid.z;
+    mov.u32         %r19, %nclusterid.x;
+    mov.u32         %r20, %nclusterid.y;
+    mov.u32         %r21, %nclusterid.z;
+    mov.u32         %r22, %cluster_ctarank;
+    mov.u32         %r23, %cluster_nctarank;
+    mov.u32         %r24, %ctaid.x;
+    mov.u32         %r25, %ctaid.y;
+    st.global.v4.b32 [%rd3+0], {%r10, %r11, %r12, %r13};
+    st.global.v4.b32 [%rd3+16], {%r14, %r15, %r16, %r17};
+    st.global.v4.b32 [%rd3+32], {%r18, %r19, %r20, %r21};
+    st.global.v4.b32 [%rd3+48], {%r22, %r23, %r24, %r25};
+DONE:
+    ret;
+}

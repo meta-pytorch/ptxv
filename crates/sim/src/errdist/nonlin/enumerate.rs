@@ -151,6 +151,19 @@ pub fn sub_prog_cut(p: &Prog, root: u32, stops: &[u32]) -> (Prog, Vec<u32>, Vec<
                     b: m(b),
                     min: *min,
                 },
+                NlOp::Sel {
+                    pred,
+                    args,
+                    neg,
+                    a,
+                    b,
+                } => NlOp::Sel {
+                    pred: pred.clone(),
+                    args: args.iter().map(m).collect(),
+                    neg: *neg,
+                    a: m(a),
+                    b: m(b),
+                },
             }),
         };
         ops.push(op);
@@ -163,6 +176,7 @@ pub fn sub_prog_cut(p: &Prog, root: u32, stops: &[u32]) -> (Prog, Vec<u32>, Vec<
             outputs: vec![Some(map[&root])],
             out_fmt: p.out_fmt,
             bufs: p.bufs.clone(),
+            dep_untracked: vec![],
         },
         leaves,
         stops.iter().map(|x| map.get(x).copied()).collect(),

@@ -1,0 +1,35 @@
+// probes/sqrt_rn: sqrt.rn.f32 (ptxas: MUFU.RSQ, a Newton step, a slow-path call) on 4096 f32
+// patterns (gen.py: +-0, subnormals, normals around every exponent, +-inf, NaNs, negatives,
+// random words); thread t stores out[i] = sqrt.rn(in[i]) for i = t, t + 256, ...
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry sqrt_rn(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<16>;
+    .reg .f32   %f<4>;
+    .reg .b64   %rd<8>;
+    .reg .pred  %p<2>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+LOOP:
+    mul.wide.u32    %rd3, %r1, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.f32   %f1, [%rd4];
+    sqrt.rn.f32     %f2, %f1;
+    add.s64         %rd5, %rd2, %rd3;
+    st.global.f32   [%rd5], %f2;
+    add.u32         %r1, %r1, 256;
+    setp.lt.u32     %p1, %r1, 4096;
+    @%p1 bra        LOOP;
+    ret;
+}

@@ -1,0 +1,8 @@
+{
+  "gpu": "NVIDIA GB300",
+  "sm": 103,
+  "lean_files": 626,
+  "removed_lean_files": 19,
+  "imports_of_removed_modules": [],
+  "ampere_targets": false
+}

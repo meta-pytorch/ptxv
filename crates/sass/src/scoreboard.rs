@@ -227,8 +227,11 @@ const NO_DEF: &[&str] = &[
 /// usual memory/transcendental/shuffle units.)
 // ASSUME(L-OPCLASS): see ASSUMPTIONS.md
 const VAR_LAT: &[&str] = &[
+    // `BMOV.32.CLEAR R2, B11` with wr=SB2, its restore `BMOV.32 B11, R2` waiting on SB2.
+    "BMOV",
     "LD",
     "LDG",
+    "LDGMC",
     "LDS",
     "LDL",
     "LDC",
@@ -263,6 +266,48 @@ const VAR_LAT: &[&str] = &[
     "LDGDEPBAR",
 ];
 
+/// The f64 pipe: completes in issue order (probes/f64_queue). ASSUME(L-OPCLASS)
+const F64_PIPE: &[&str] = &["DADD", "DMUL", "DFMA"];
+
+/// Is `base` variable-latency in a cubin for SM version `sm` (0: unknown, treated as sm_103a)?
+/// The f64 pipe is fixed-latency on sm_100a (full-rate FP64): ptxas 13.0 for sm_100a gives
+/// DADD / DMUL / DFMA no write scoreboard and covers their results with stall counts alone
+/// (`DFMA R4, -R6, R2, 1` st=8, then `DFMA R4, R4, R4, R4`; probes/f64_queue/cubins/sm100a.cubin),
+/// where for sm_103a it pads them with NOPs or scoreboards them. ASSUME(L-OPCLASS)
+fn var_lat(base: &str, sm: u32) -> bool {
+    VAR_LAT.contains(&base) && !(sm == 100 && F64_PIPE.contains(&base))
+}
+
+/// The in-order completion queue of a scoreboard-free write (the cover rule in `check`): the
+/// shared-memory queue, the conversion / transcendental unit, POPC / FLO, the f64 pipe (with the
+/// conversions that have an f64 operand: ptxas covers `I2F.F64.U64.RZ R8` with no scoreboard
+/// by a wait on a later `I2F.F64.RM`'s, not on the `I2F.U16`'s issued between; probes/cvt_i2f
+/// = GB300), or the opcode itself. ASSUME(L-OPCLASS)
+fn inorder_queue(opcode: &str) -> &str {
+    let b = opcode.split('.').next().unwrap_or("");
+    match b {
+        "LDS" | "SHFL" | "LDSM" | "ATOMS" => "shared",
+        "F2I" | "I2F" | "F2F" if opcode.split('.').any(|m| m == "F64") => "f64",
+        "MUFU" | "F2I" | "I2F" | "F2F" | "FRND" => "xu",
+        "POPC" | "FLO" => "bit",
+        "DADD" | "DMUL" | "DFMA" | "DSETP" => "f64",
+        b => b,
+    }
+}
+
+/// The in-order queue of a unit whose operand reads and result writes both follow issue order
+/// (a later op of the same queue cannot write a register before an earlier one read it): the
+/// conversion / transcendental queue and the f64 pipe. ASSUME(L-OPCLASS)
+fn queued_unit(opcode: &str) -> Option<&str> {
+    let q = inorder_queue(opcode);
+    matches!(q, "xu" | "f64").then_some(q)
+}
+
+/// Stall cycles after which an f64-pipe result with no write scoreboard is in its register:
+/// ptxas for sm_103a pads such results with NOPs (`st=15` x 3, `st=4`) and reads them no
+/// sooner than 128 cycles later (Triton layernorm / split-k / pps kernels). ASSUME(L-OPCLASS)
+const F64_LAT: u16 = 128;
+
 /// Instructions that read their register operands asynchronously (memory / async units).
 /// ptxas only gives some of them a read scoreboard: the units read operands in issue order,
 /// so a read scoreboard on a later one covers the earlier ones (validated by the mutation
@@ -271,6 +316,7 @@ const VAR_LAT: &[&str] = &[
 const ASYNC_READ: &[&str] = &[
     "LD",
     "LDG",
+    "LDGMC",
     "LDS",
     "LDL",
     "LDC",
@@ -303,26 +349,52 @@ const ASYNC_READ: &[&str] = &[
 
 /// Vector memory-pipe instructions whose operand reads a later SHFL cannot overtake.
 // ASSUME(L-OPREAD): see ASSUMPTIONS.md
+// LDGMC (multimem.ld_reduce): the same LSU queue as LDG (symm_mem _ReduceScatterKernel:
+// `LDGMC ... R16, [R8.64+URZ]` then `LDGMC ... R8, [R8.64+UR20]` with no read scoreboard;
+// both ranks' outputs = GB300, MN). ASSUME(L-OPREAD)
 const MIO_INORDER: &[&str] = &[
-    "LD", "LDG", "LDS", "ST", "STG", "STS", "STSM", "LDSM", "ATOMS", "SHFL", "LDGSTS", "LDL", "STL",
+    "LD", "LDG", "LDS", "ST", "STG", "STS", "STSM", "LDSM", "ATOMS", "SHFL", "LDGSTS", "LDL",
+    "STL", "LDGMC",
 ];
 
 fn width_of(opcode: &str) -> u16 {
     let mods: Vec<&str> = opcode.split('.').skip(1).collect();
     // LDSM.16.M88.4: four registers; HMMA.16816.F32.*: a 4-register accumulator.
     if opcode.starts_with("LDSM.") {
-        return mods.last().and_then(|n| n.parse().ok()).unwrap_or(1);
+        // LDSM.8.MT1616[.2]: two registers per 16x16 b8 matrix.
+        let per = if mods.contains(&"MT1616") { 2 } else { 1 };
+        return per * mods.last().and_then(|n| n.parse().ok()).unwrap_or(1);
     }
     if opcode.starts_with("HMMA.16816.F32") {
         return 4;
     }
-    // LDTM.16dp256bit[.xN]: 4N registers.
-    if opcode.starts_with("LDTM.16dp256bit") {
+    // LDGMC.E.<op>.<type>: the access width (F32x4 / BF16x8: 16 bytes, 64 / F64: 8).
+    if opcode.starts_with("LDGMC.") {
+        let t = mods.get(2).copied().unwrap_or("");
+        let lanes: u16 = t
+            .rsplit_once('x')
+            .and_then(|(_, n)| n.parse().ok())
+            .unwrap_or(1);
+        let bits: u16 = match t.split('x').next().unwrap_or("") {
+            "64" | "S64" | "F64" => 64,
+            "F16" | "BF16" => 16,
+            "E4M3" | "E5M2" => 8,
+            _ => 32,
+        };
+        return (bits * lanes / 32).max(1);
+    }
+    // {LDTM,STTM}.16dp256bit[.xN]: 4N registers; .16dp128bit[.xN]: 2N.
+    let per = match mods.first() {
+        Some(&"16dp256bit") => 4,
+        Some(&"16dp128bit") => 2,
+        _ => 0,
+    };
+    if per > 0 && (opcode.starts_with("LDTM.") || opcode.starts_with("STTM.")) {
         let n = mods
             .iter()
             .find_map(|m| m.strip_prefix('x').and_then(|n| n.parse::<u16>().ok()))
             .unwrap_or(1);
-        return 4 * n;
+        return per * n;
     }
     if let Some(n) = mods
         .iter()
@@ -375,10 +447,16 @@ pub fn def_use(l: &SassLine) -> (Vec<RegKey>, Vec<RegKey>) {
         operand_regs(&ops[2], 1, &mut uses);
         return (defs, uses);
     }
-    // `LDG.E.ENL2.256 Rhi, Rlo, [..]`: two 4-register destinations.
-    if base == "LDG" && l.opcode.contains(".ENL2.256") && ops.len() == 3 {
-        operand_regs(&ops[0], 4, &mut defs);
-        operand_regs(&ops[1], 4, &mut defs);
+    // `LDG.E.ENL2.256 Rhi, Rlo, [..][, mask]`: two 4-register destinations, or with a mask
+    // as many registers per half as it selects words there.
+    if base == "LDG" && l.opcode.contains(".256") && (ops.len() == 3 || ops.len() == 4) {
+        let mask = ops
+            .get(3)
+            .and_then(|m| m.trim().strip_prefix("0x"))
+            .and_then(|h| u8::from_str_radix(h, 16).ok())
+            .unwrap_or(0xff);
+        operand_regs(&ops[0], (mask >> 4).count_ones() as u16, &mut defs);
+        operand_regs(&ops[1], (mask & 0xf).count_ones() as u16, &mut defs);
         operand_regs(&ops[2], 1, &mut uses);
         return (defs, uses);
     }
@@ -428,6 +506,8 @@ struct Pend {
     cov: BTreeSet<(u8, usize)>,
     /// The producer's guard predicate has not been redefined since (on every path).
     gok: bool,
+    /// Minimum stall cycles issued since the producer (saturating; on every path).
+    cyc: u16,
 }
 
 impl Pend {
@@ -437,6 +517,7 @@ impl Pend {
             newer: 0,
             cov: BTreeSet::new(),
             gok: true,
+            cyc: 0,
         }
     }
 }
@@ -472,6 +553,10 @@ fn join(into: &mut State, from: &State) -> bool {
                     p.gok = false;
                     changed = true;
                 }
+                if f.cyc < p.cyc {
+                    p.cyc = f.cyc;
+                    changed = true;
+                }
             }
         }
     }
@@ -488,7 +573,7 @@ fn reg_name(r: RegKey) -> String {
 }
 
 // ASSUME(L-STALL, L-MEMSB): see ASSUMPTIONS.md
-pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
+pub fn check(lines: &[SassLine], code: &[Inst], sm: u32) -> Result<Vec<StaticFinding>> {
     if lines.iter().any(|l| l.hi.is_none()) {
         bail!("scoreboard check needs `nvdisasm -hex` encodings");
     }
@@ -523,7 +608,7 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
         }
     };
     // `DEPBAR.LE SBk, n`: at most n operations outstanding on SBk; `DEPBAR {5,4,3}`: none on
-    // each listed scoreboard.
+    // each listed scoreboard; `DEPBAR.LE SBk, n, {4,3}`: both.
     let mut depbar: Vec<Vec<(u8, u8)>> = vec![vec![]; lines.len()];
     for (pc, l) in lines.iter().enumerate() {
         if !l.opcode.starts_with("DEPBAR") {
@@ -550,11 +635,21 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
             .operands
             .get(1)
             .and_then(|o| u8::from_str_radix(o.trim_start_matches("0x"), 16).ok());
-        let (true, Some(sb), Some(n), 2) = (l.opcode == "DEPBAR.LE", sb, n, l.operands.len())
+        let (true, Some(sb), Some(n), 2..=3) = (l.opcode == "DEPBAR.LE", sb, n, l.operands.len())
         else {
             bail!("sass {:#06x}: unsupported DEPBAR form `{}`", l.addr, l.text)
         };
         depbar[pc].push((sb, n));
+        if let Some(list) = l.operands.get(2) {
+            let bad = || anyhow::anyhow!("sass {:#06x}: bad DEPBAR `{}`", l.addr, l.text);
+            let list = list
+                .strip_prefix('{')
+                .and_then(|x| x.strip_suffix('}'))
+                .ok_or_else(bad)?;
+            for k in list.split(',') {
+                depbar[pc].push((k.trim().parse::<u8>().map_err(|_| bad())?, 0));
+            }
+        }
     }
     let mut input: Vec<Option<State>> = vec![None; lines.len()];
     input[0] = Some(State::new());
@@ -633,9 +728,27 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
             // A shuffle too: it writes its result after passing the same queue (Inductor's
             // persistent RMSNorm: `@!P0 STG.E.128 [R32.64], R40` with rd=SB0, then
             // `SHFL.BFLY R41, R0, 0x10` with no wait; = GB300, docs/compile-vs-eager.md).
+            // Global atomics read their operands in the same queue ahead of a later load's
+            // write (ptxas: `ATOMG.E.EXCH PT, RZ, [R32], R8` with no read scoreboard, then
+            // `LDG.E R8` with no wait; CUTLASS mx8 grouped GEMM's tensor-map update; ptxas only,
+            // not probed).
+            // The f64 pipe reads and writes in issue order: a later DADD / DMUL / DFMA cannot
+            // overwrite a register an earlier one has not read (ptxas: `DADD R8, -R8, R10` with
+            // rd=SB0, then `DMUL R10, R10, R10` with no wait; probes/f64_queue = GB300).
+            // The conversion / transcendental queue likewise, and the conversions with an f64
+            // operand with the f64 pipe (`inorder_queue`): CuTe top-k, ptxas for sm_103a and
+            // sm_100a, `F2F.F64.F32 R98, R6` with rd=SB1, then `F2F.F64.F32 R6, R19` with no
+            // wait on SB1 (probes/xu_war; ptxas's own schedules give such reads no scoreboard).
+            // TMEM loads likewise write after the earlier TMEM stores and loads of the warp
+            // read their registers (the TMEM queue).
             let queued_war = !write
-                && matches!(base_of(pc), "LDG" | "LDS" | "LD" | "LDL" | "LDSM" | "SHFL")
-                && MIO_INORDER.contains(&base_of(ppc));
+                && (matches!(
+                    base_of(pc),
+                    "LDG" | "LDS" | "LD" | "LDL" | "LDSM" | "SHFL" | "LDGMC"
+                ) && (MIO_INORDER.contains(&base_of(ppc))
+                    || matches!(base_of(ppc), "ATOMG" | "ATOM" | "REDG" | "RED"))
+                    || queued_unit(&lines[pc].opcode) == Some(inorder_queue(&lines[ppc].opcode))
+                    || base_of(pc) == "LDTM" && matches!(base_of(ppc), "STTM" | "LDTM"));
             // `LDTM.16dp32bit_t0_t15` then `_t16_t31` into the same registers: each writes only
             // its own half of the warp's lanes (PTX `.16x32bx2`, split by ptxas).
             let halves = |a: &str, b: &str| {
@@ -746,7 +859,7 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
             }
         }
         let base = l.opcode.split('.').next().unwrap_or("");
-        let var = VAR_LAT.contains(&base);
+        let var = var_lat(base, sm);
         let issue = |st: &mut State, sb: u8, write: bool, regs: BTreeSet<RegKey>| {
             for (k, v) in st.iter_mut() {
                 if k.0 == sb {
@@ -759,6 +872,7 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
             let e = st.entry((sb, write, pc)).or_insert_with(Pend::new);
             e.regs.extend(regs);
             e.newer = 0;
+            e.cyc = 0;
             e.gok &= fresh;
             if !fresh {
                 e.cov.clear();
@@ -792,6 +906,19 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
             // with no scoreboard, read after a wait on a later `F2I.FTZ.U32.TRUNC`'s).
             // And value-returning shared atomics (`ATOMS.MIN R12` with no scoreboard, R12 read
             // after a wait on the next `ATOMS.MAX.S32 R13`'s; fixtures/s_atom_ext).
+            // And `POPC` (ptxas for sm_103a: `POPC R6, R14` with no scoreboard, R6 read after a
+            // wait on a later `POPC R17`'s; probes/int_misc = GB300 500/500 runs, the CuTe
+            // DietGpu decode kernels).
+            // And `FLO` with `POPC` (`FLO.U32 R0` with no scoreboard, R0 read after a wait on a
+            // later `POPC`'s; probes/flo_popc = GB300 500/500 runs, DeepEP hybrid).
+            // `FRND` is in the conversion queue too (Triton's mxint8 KV quantizer: `MUFU.RCP R17`
+            // with no scoreboard, read after a wait on a later `FRND R16`'s; capture = GB300).
+            // And `REDUX` (Triton's MoE `_select_kernel`: 20 `REDUX.SUM.S32 URd` with no write
+            // scoreboard, each read after waits on later REDUXes' scoreboards; the capture's
+            // output = GB300).
+            // And the f64 pipe (`DFMA R2, -R12, R4, 1` with no scoreboard, R2 read after a wait
+            // on a later `DADD R6`'s; probes/f64_queue = GB300, Triton's split-k LSE), DSETP
+            // included (`DADD R6` read after a wait on a later `DSETP`'s; probes/f64_dsetp).
             if matches!(
                 base,
                 "LDTM"
@@ -804,17 +931,19 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
                     | "F2I"
                     | "I2F"
                     | "F2F"
+                    | "FRND"
+                    | "POPC"
+                    | "FLO"
+                    | "REDUX"
+                    | "DADD"
+                    | "DMUL"
+                    | "DFMA"
+                    | "DSETP"
             ) {
-                let shq = |b: &str| matches!(b, "LDS" | "SHFL" | "LDSM" | "ATOMS");
-                let xu = |b: &str| matches!(b, "MUFU" | "F2I" | "I2F" | "F2F");
-                let same = |b: &str| b == base || (shq(b) && shq(base)) || (xu(b) && xu(base));
+                let mine = inorder_queue(&l.opcode);
                 let ldtm: Vec<_> = st
                     .keys()
-                    .filter(|k| {
-                        k.0 == NO_SB
-                            && k.1
-                            && same(lines[k.2].opcode.split('.').next().unwrap_or(""))
-                    })
+                    .filter(|k| k.0 == NO_SB && k.1 && inorder_queue(&lines[k.2].opcode) == mine)
                     .cloned()
                     .collect();
                 for k in ldtm {
@@ -916,8 +1045,33 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
             }
         }
         if let Some(sb) = c.rbar {
-            // In-order operand reads: earlier untracked reads complete no later than this one.
-            let untracked: Vec<_> = st.keys().filter(|k| k.0 == UNTRACKED).cloned().collect();
+            // In-order operand reads: earlier untracked reads of the same unit complete no
+            // later than this one. Only the same unit: `SYNCS.ARRIVE.TRANS64 ..., R2` with no
+            // read scoreboard is covered by a later `SYNCS.ARRIVE ..., R2` with rd=SB1 (ptxas
+            // waits on SB1 before overwriting R2), not by a `UTMALDG` in between with rd=SB0,
+            // which reads only uniform registers (Triton grouped fp8 GEMM). ASSUME(L-OPREAD)
+            fn unit(b: &str) -> &str {
+                if MIO_INORDER.contains(&b) {
+                    "mio"
+                } else if matches!(b, "ATOMG" | "ATOM" | "REDG" | "RED") {
+                    "gatom"
+                } else if matches!(b, "UTCHMMA" | "UTCQMMA" | "UTCOMMA" | "UTCBAR") {
+                    // The tcgen05 issue queue (FA4 forward: `UTCBAR [UR61]` with no read
+                    // scoreboard covered by the next `UTCHMMA`'s rd=SB2, waited on before UR61
+                    // is rewritten; fixtures/c_fa4_causal = GB300).
+                    "utc"
+                } else {
+                    b
+                }
+            }
+            let untracked: Vec<_> = st
+                .keys()
+                .filter(|k| {
+                    k.0 == UNTRACKED
+                        && unit(lines[k.2].opcode.split('.').next().unwrap_or("")) == unit(base)
+                })
+                .cloned()
+                .collect();
             for k in untracked {
                 let p = st.remove(&k).unwrap();
                 let e = st.entry((sb, false, k.2)).or_insert_with(Pend::new);
@@ -931,8 +1085,23 @@ pub fn check(lines: &[SassLine], code: &[Inst]) -> Result<Vec<StaticFinding>> {
             issue(&mut st, UNTRACKED, false, reads);
             own_cov(&mut st, UNTRACKED);
         }
-        // Entries with no registers left only matter through the counts already applied.
-        st.retain(|_, v| !v.regs.is_empty());
+        // Entries with no registers left only matter through the counts already applied, and
+        // writes through their completion: a wait on a write scoreboard also completes its
+        // instruction's operand reads (`ATOMG.E.EXCH PT, RZ, [R32], R6` with wr=SB4 and no
+        // read scoreboard, a wait on SB4, then R32 overwritten; CUTLASS grouped wgrad).
+        // ASSUME(L-OPREAD)
+        st.retain(|k, v| !v.regs.is_empty() || k.1 && k.0 < NO_SB);
+        // f64 results with no scoreboard are complete F64_LAT stall cycles after issue.
+        // ASSUME(L-OPCLASS)
+        for v in st.values_mut() {
+            v.cyc = v.cyc.saturating_add(c.stall as u16);
+        }
+        st.retain(|k, v| {
+            !(k.0 == NO_SB
+                && k.1
+                && v.cyc >= F64_LAT
+                && F64_PIPE.contains(&lines[k.2].opcode.split('.').next().unwrap_or("")))
+        });
         for s in succ(pc) {
             let changed = match &mut input[s] {
                 None => {

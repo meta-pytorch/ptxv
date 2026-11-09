@@ -36,7 +36,12 @@
 //!   reads other bytes of the line does that: on GB300 these are observable with such a
 //!   neighbour (DeepEP notify_dispatch, docs/deepep-coreader.md). The witness is the havoc
 //!   check's `stale-l1-havoc:<pc>`;
-//! - **undecided**: no level-2 match, but level 2 was not exhaustive.
+//! - **undecided**: no level-2 match, but level 2 was not exhaustive; also every alias-proxy
+//!   race (`race:alias:`, S-MC-ALIAS), whose order this model does not represent;
+//! - **latent-needs-divergence** (set when the race is reported, not here; PTX front only):
+//!   two lanes of one warp that stays converged between the accesses, both plain memory
+//!   instructions. GB300 issues them in program order (E-LOCKSTEP, probes/warp_order), so the
+//!   race shows only if the warp diverges between them or the compiler reorders them.
 //!
 //! The havoc check (`l1_cores.rs`, `l1_havoc_check`) runs inside the level-2 run as a probe
 //! (`L1::havoc_probe`): it is predictive (one run covers every schedule with the same
@@ -58,10 +63,15 @@ use crate::machine::Finding;
 use crate::machine::Launch;
 use crate::machine::Machine;
 
+/// Class of an intra-warp PTX race in a converged warp (E-LOCKSTEP), set when the race is
+/// reported (exec.rs), not by the hardware-model run.
+pub const LATENT_DIV: &str = "latent-needs-divergence";
+
 /// The GB300 classification of one PTX-model finding.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Gb300 {
-    /// "observable" | "latent" | "latent-closed-world" | "undecided".
+    /// "observable" | "latent" | "latent-closed-world" | "undecided" |
+    /// "latent-needs-divergence" (`LATENT_DIV`).
     pub class: String,
     pub reason: String,
     /// The level-2 finding that shows it: observable, its signature; latent-closed-world, the
@@ -92,7 +102,7 @@ pub struct Gb300Check {
     pub extra: Vec<Finding>,
 }
 
-pub const MODEL: &str = "E-HW-L1: non-coherent per-SM L1 (CCTL.IVALL and kernel boundaries invalidate) over sequentially consistent memory (a strong read that observes a strong write is ordered after the writer's history, at any scope); closed world (E-L1-CLOSED), with the havoc check (E-L1-HAVOC) as a probe for outside fills; no refuted assumption";
+pub const MODEL: &str = "E-HW-L1: non-coherent per-SM L1 (CCTL.IVALL and kernel boundaries invalidate) over sequentially consistent memory (a strong read that observes a strong write is ordered after the writer's history, at any scope; an aligned weak global store of at most 8 bytes after a sys fence counts as a relaxed sys store releasing the fence's clock, E-HW-WEAK-FLAG; a write after its thread's strong read of the last write is coherence-after it, E-HW-CORW); closed world (E-L1-CLOSED), with the havoc check (E-L1-HAVOC) as a probe for outside fills; no refuted assumption";
 
 /// Does level 1's verdict call for the hardware model? Some(reason) if so.
 pub fn wanted(v: &Verdict, launch: &Launch) -> Option<String> {
@@ -111,8 +121,10 @@ pub fn wanted(v: &Verdict, launch: &Launch) -> Option<String> {
     }
 }
 
+/// Race / stale findings without a label yet (an intra-warp race in a converged warp is
+/// labelled when reported, `LATENT_DIV`).
 fn classifiable(f: &Finding) -> bool {
-    f.kind == "race" || f.kind == "stale"
+    (f.kind == "race" || f.kind == "race-dead" || f.kind == "stale") && f.gb300.is_none()
 }
 
 /// The hardware model's launch for a level-1 launch.
@@ -120,6 +132,8 @@ pub fn hw_launch(l: &Launch) -> Launch {
     let mut h = l.clone();
     h.hw_l1 = true;
     h.hw_order = true;
+    h.tc_fence_implied = true; // E-TC-FENCE-NOP
+    h.mc_alias_hw = true; // E-MC-ALIAS-HW
     h.poll_acquire = false;
     h.refuted_opt_in.clear();
     // Closed world (E-L1-CLOSED): outside fills are probed separately (`hw_machine`), so a
@@ -141,6 +155,68 @@ pub fn hw_machine(m1: &Machine, st: &Arc<L1Stats>) -> Machine {
         l1.havoc_probe = true;
     }
     m
+}
+
+/// ASSUME(E-TC-FENCE-NOP): races of a PTX check that `tcgen05.fence::before_thread_sync` /
+/// `::after_thread_sync` around the synchronization would order are contract deviations: the
+/// kernel omits fences the PTX ISA requires (9.7.18.6.3; 9.7.18.6.4.4 example 2: commit,
+/// mbarrier wait, after_thread_sync, tcgen05.ld), and GB300 executes them as NOPs, so its
+/// order comes from the SASS (the SASS front checks it). `check` runs the machine it is given;
+/// it reruns `m1` with both fences implied around every instruction
+/// (`Launch::tc_fence_implied`) when `v` has races and the kernel uses tcgen05; a race absent
+/// there becomes kind "contract" (only when that rerun is complete).
+pub fn tc_fence_contract(v: &mut Verdict, m1: &Machine, check: &mut dyn FnMut(Machine) -> Verdict) {
+    use ptxv_ir::Op;
+    if m1.k.front != ptxv_ir::Front::Ptx
+        || m1.launch.tc_fence_implied
+        || !v.findings.iter().any(|x| x.kind == "race")
+        || !m1.k.code.iter().any(|i| {
+            matches!(
+                i.op,
+                Op::TmemLd { .. }
+                    | Op::TmemSt { .. }
+                    | Op::Mma { .. }
+                    | Op::TcCp { .. }
+                    | Op::TmemAlloc { .. }
+            )
+        })
+    {
+        return;
+    }
+    let mut l = (*m1.launch).clone();
+    l.tc_fence_implied = true;
+    let vf = check(Machine::new(m1.k.clone(), Arc::new(l)));
+    // A race missing from an incomplete rerun may only be unreached there.
+    if !vf.complete {
+        v.notes.push(
+            "the tcgen05-fence-implied rerun (E-TC-FENCE-NOP) was incomplete: races kept as races"
+                .into(),
+        );
+        return;
+    }
+    let mut n = 0;
+    for x in v.findings.iter_mut().filter(|x| x.kind == "race") {
+        if !vf
+            .findings
+            .iter()
+            .any(|y| y.sig == x.sig && y.kind == "race")
+        {
+            x.kind = "contract".into();
+            x.msg = format!(
+                "{}: ordered once tcgen05.fence::before_thread_sync / ::after_thread_sync surround the synchronization, which the kernel omits (PTX ISA 9.7.18.6.3, 9.7.18.6.4.4); GB300 executes these fences as NOPs and its order comes from the SASS (E-TC-FENCE-NOP: check the SASS front)",
+                x.msg
+            );
+            n += 1;
+        }
+    }
+    if n > 0 {
+        v.notes.push(format!(
+            "{n} race(s) are ordered with the tcgen05 thread-sync fences implied (E-TC-FENCE-NOP): reported as contract"
+        ));
+        if !v.assumptions.iter().any(|a| a == "E-TC-FENCE-NOP") {
+            v.assumptions.push("E-TC-FENCE-NOP".into());
+        }
+    }
 }
 
 /// Level 2 for a check that takes one machine: runs `check` on the hardware-model machine
@@ -226,6 +302,17 @@ pub fn classify(v1: &mut Verdict, v2: &Verdict, st: &L1Stats, m: &Machine) -> Gb
     };
     let d = |pc: u32| m.k.describe(pc as usize);
     for f in v1.findings.iter_mut().filter(|f| classifiable(f)) {
+        // Alias-proxy races (S-MC-ALIAS) are outside this model, which orders memory by
+        // address; E-MC-ALIAS-HW (`mc_alias = "hw"`) is the measured GB300 alternative.
+        if f.sig.starts_with("race:alias:") {
+            f.gb300 = Some(Gb300 {
+                class: "undecided".into(),
+                reason: "alias-proxy order (multicast vs unicast view) is not part of the hardware model; rerun with mc_alias = \"hw\" (E-MC-ALIAS-HW) for the measured GB300 behavior".into(),
+                witness: None,
+            });
+            c.undecided += 1;
+            continue;
+        }
         let (reads, global, ww) = reads_of(f);
         // 1. The same finding under the hardware model.
         if let Some(i) = v2
@@ -269,15 +356,15 @@ pub fn classify(v1: &mut Verdict, v2: &Verdict, st: &L1Stats, m: &Machine) -> Gb
         }
         // 3. Not reachable: why.
         let mut why = Vec::new();
-        if f.kind == "race" {
+        if f.kind == "race" || f.kind == "race-dead" {
             why.push(
                 "with GB300's ordering (sequentially consistent memory behind the L1s: a relaxed poll that observed a signal is ordered after everything its writer did before the signal) the accesses are ordered"
                     .to_string(),
             );
         }
         if ww {
-            why.push("both accesses are writes, and L1 is write-through".into());
-        } else if !global && f.kind == "race" {
+            why.push("both accesses are writes, and L1 is write-through (a write after its thread's strong read of the other write is coherence-after it, E-HW-CORW)".into());
+        } else if !global && (f.kind == "race" || f.kind == "race-dead") {
             why.push("not a global-memory access, so L1 does not apply".into());
         } else {
             for &r in &reads {
@@ -393,7 +480,7 @@ pub fn classify(v1: &mut Verdict, v2: &Verdict, st: &L1Stats, m: &Machine) -> Gb
     let covered: Vec<u32> = v1
         .findings
         .iter()
-        .filter(|f| classifiable(f))
+        .filter(|f| f.kind == "race" || f.kind == "race-dead" || f.kind == "stale")
         .flat_map(|f| reads_of(f).0)
         .chain(v2.findings.iter().filter_map(stale_read))
         .collect();

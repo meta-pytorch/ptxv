@@ -53,7 +53,7 @@ TILE:
 W:
     mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], %r5;      // @B17
     @!%p1 bra       W;                                              // @B17
-    ld.shared.b128  %q0, [%r1];                                     // load after the wait
+    ld.shared.b128  %q0, [%r1];                                     // load after the wait  // @V2PACK
     clusterlaunchcontrol.query_cancel.is_canceled.pred.b128 %p2, %q0;
     mov.u32         %r8, 0xffffffff;
     @%p2 clusterlaunchcontrol.query_cancel.get_first_ctaid::x.b32.b128 %r8, %q0;

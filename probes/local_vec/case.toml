@@ -1,0 +1,36 @@
+name = "probe_local_vec"
+description = """
+Probe (L-ROSETTA) for 64-bit and vector ld / st .local (.v4.b32, .v2.b64, .b64, .f64, .v2.b32)
+on a `.local` array, read back crosswise (kernel.ptx, gen.py). expected/ is GB300's output
+(kernel.cubin = ptxas -arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "local_vec"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [128]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

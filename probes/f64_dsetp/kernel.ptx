@@ -1,0 +1,76 @@
+// probes/f64_dsetp: DSETP in the f64 pipe's in-order queue (L-OPCLASS). ptxas 13.0 gives
+// `DADD R6, R8, R10` no write scoreboard and reads R6 (FSEL) right after a wait on the
+// scoreboard of a later `DSETP.GEU P0` (the predicate the FSEL reads), less than 128 stall
+// cycles after the DADD: the DSETP's completion covers it (CuTe PtgcRecordKernel's pattern).
+// 32 threads; x = in[4 t .. 4 t + 3] (f64, gen.py); out[t] = (max'(x2, x0) < x1) ? x0 + x1 :
+// x2 + x3 with max' = x2 > x0 ? x2 : x0; out_u32[64 + t] = bit i set when setp.<cmp i>.f64 x0,
+// x1 holds (eq ne lt le gt ge equ neu ltu leu gtu geu num nan), bit 14 when x3 < 1.0 (gen.py:
+// signed zeros, Inf, NaN, equal pairs among the inputs).
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry f64_dsetp(.param .u64 pin, .param .u64 pout)
+{
+ .reg .b32 %r<8>; .reg .b64 %rdx<2>; .reg .b64 %rd<8>; .reg .f64 %fd<16>; .reg .pred %p<4>;
+ ld.param.u64 %rd1,[pin]; ld.param.u64 %rd2,[pout];
+ cvta.to.global.u64 %rd1,%rd1; cvta.to.global.u64 %rd2,%rd2;
+ mov.u32 %r1,%tid.x; mul.wide.u32 %rd3,%r1,32; add.s64 %rd4,%rd1,%rd3;
+ ld.global.v2.f64 {%fd1,%fd2},[%rd4]; ld.global.v2.f64 {%fd3,%fd4},[%rd4+16];
+ add.rn.f64 %fd5,%fd1,%fd2;
+ add.rn.f64 %fd6,%fd3,%fd4;
+ setp.gt.f64 %p1,%fd3,%fd1;
+ selp.f64 %fd7,%fd3,%fd1,%p1;
+ setp.lt.f64 %p2,%fd7,%fd2;
+ selp.f64 %fd8,%fd5,%fd6,%p2;
+ mul.wide.u32 %rd5,%r1,8; add.s64 %rd6,%rd2,%rd5;
+ st.global.f64 [%rd6],%fd8;
+ mov.u32 %r3,0;
+ setp.eq.f64 %p3,%fd1,%fd2;
+ selp.u32 %r4,1,0,%p3;
+ or.b32 %r3,%r3,%r4;
+ setp.ne.f64 %p3,%fd1,%fd2;
+ selp.u32 %r4,2,0,%p3;
+ or.b32 %r3,%r3,%r4;
+ setp.lt.f64 %p3,%fd1,%fd2;
+ selp.u32 %r4,4,0,%p3;
+ or.b32 %r3,%r3,%r4;
+ setp.le.f64 %p3,%fd1,%fd2;
+ selp.u32 %r4,8,0,%p3;
+ or.b32 %r3,%r3,%r4;
+ setp.gt.f64 %p3,%fd1,%fd2;
+ selp.u32 %r4,16,0,%p3;
+ or.b32 %r3,%r3,%r4;
+ setp.ge.f64 %p3,%fd1,%fd2;
+ selp.u32 %r4,32,0,%p3;
+ or.b32 %r3,%r3,%r4;
+ setp.equ.f64 %p3,%fd1,%fd2;
+ selp.u32 %r4,64,0,%p3;
+ or.b32 %r3,%r3,%r4;
+ setp.neu.f64 %p3,%fd1,%fd2;
+ selp.u32 %r4,128,0,%p3;
+ or.b32 %r3,%r3,%r4;
+ setp.ltu.f64 %p3,%fd1,%fd2;
+ selp.u32 %r4,256,0,%p3;
+ or.b32 %r3,%r3,%r4;
+ setp.leu.f64 %p3,%fd1,%fd2;
+ selp.u32 %r4,512,0,%p3;
+ or.b32 %r3,%r3,%r4;
+ setp.gtu.f64 %p3,%fd1,%fd2;
+ selp.u32 %r4,1024,0,%p3;
+ or.b32 %r3,%r3,%r4;
+ setp.geu.f64 %p3,%fd1,%fd2;
+ selp.u32 %r4,2048,0,%p3;
+ or.b32 %r3,%r3,%r4;
+ setp.num.f64 %p3,%fd1,%fd2;
+ selp.u32 %r4,4096,0,%p3;
+ or.b32 %r3,%r3,%r4;
+ setp.nan.f64 %p3,%fd1,%fd2;
+ selp.u32 %r4,8192,0,%p3;
+ or.b32 %r3,%r3,%r4;
+ setp.lt.f64 %p3,%fd4,0d3FF0000000000000;
+ selp.u32 %r4,16384,0,%p3;
+ or.b32 %r3,%r3,%r4;
+ mul.wide.u32 %rd7,%r1,4; add.s64 %rd7,%rd2,%rd7;
+ st.global.u32 [%rd7+256],%r3;
+ ret;
+}

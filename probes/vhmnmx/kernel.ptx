@@ -1,0 +1,26 @@
+// Probe (L-ROSETTA) for VHMNMX / VHMNMX.BF16_V2 [.NAN]: chained two-input half max / min that
+// ptxas fuses into one three-input VHMNMX (Triton's row reductions), bf16 and f16, with and
+// without .NaN, on the halves of packed words and |x| inputs.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry vhmnmx(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<8>; .reg .b32 %r<30>; .reg .b16 %h<20>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mov.u32 %r2, %ctaid.x; mov.u32 %r3, %ntid.x; mad.lo.s32 %r1, %r2, %r3, %r1;
+  mul.wide.u32 %rd3, %r1, 8; add.s64 %rd4, %rd1, %rd3;
+  mul.wide.u32 %rd5, %r1, 16; add.s64 %rd6, %rd2, %rd5;
+  ld.global.v2.u32 {%r4, %r5}, [%rd4];
+  mov.b32 {%h1, %h2}, %r4; mov.b32 {%h3, %h4}, %r5;
+  max.bf16 %h5, %h1, %h2; max.bf16 %h6, %h5, %h3;
+  min.NaN.bf16 %h7, %h1, %h2; min.NaN.bf16 %h8, %h7, %h4;
+  max.bf16x2 %r6, %r4, %r5; max.bf16x2 %r7, %r6, %r5;
+  max.f16 %h9, %h1, %h2; max.f16 %h10, %h9, %h3;
+  min.NaN.f16 %h11, %h2, %h3; min.NaN.f16 %h12, %h11, %h4;
+  abs.f16 %h13, %h1; abs.f16 %h14, %h2; abs.f16 %h15, %h3;
+  max.f16 %h16, %h13, %h14; max.f16 %h17, %h16, %h15;
+  mov.b32 %r8, {%h6, %h8}; mov.b32 %r9, {%h10, %h12};
+  cvt.u32.u16 %r10, %h17;
+  st.global.v4.u32 [%rd6], {%r8, %r7, %r9, %r10};
+  ret; }

@@ -1,0 +1,51 @@
+name = "e_vec_regs"
+description = """
+Vector operands of the PTX front (2026-11-08): ld.global.v4 writes four virtual registers;
+element 4 (0 before the load) is compared, addresses a vector store of elements 2 and 3, and
+decides a branch; the `mma` variant adds an mma.sync with an A register never written and
+stores the second accumulator register. `Op::dst_regs` reported the first register
+of a vector destination n times and `src_regs` only the first of a vector source: input
+coverage and the input-data taint saw element 4 as free of input data, the constant-guard
+analysis (E-CONST-BRA) folded the branch on it, and S-INIT poisoned only the first
+accumulator register of mma.sync. PTX and SASS agree on all of it now."""
+ptx = "kernel.ptx"
+entry = "vec_regs"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [128]
+init = "iota"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "element 4 compared, used as an address and as a branch condition"
+expect = ["clean"]
+
+[[variants]]
+id = "mma"
+summary = "mma.sync with an A register never written; its second accumulator register is stored (no constant before the load)"
+edits = [{ marker = "@CONST", find = "mov.u32 %r4, 0;", replace = "" }, { marker = "@MMA", find = "// @MMA", replace = """setp.lt.u32 %p2, %r0, 16;
+    mov.b32 %r10, 0;
+    @%p2 mov.b32 %r10, 1065353216;
+    mov.f32 %f0, 0f00000000;
+    mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%f1, %f2, %f3, %f4}, {%r11, %r11, %r11, %r11}, {%r10, %r10}, {%f0, %f0, %f0, %f0};
+    st.global.f32 [%rd6+4], %f2;""" }]
+expect = ["violation"]

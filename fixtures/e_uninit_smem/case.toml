@@ -1,0 +1,43 @@
+name = "e_uninit_smem"
+description = """
+S-INIT through shared memory (2026-11-06): threads 16..31 skip a predicated load, every thread
+stores its register to shared memory and, after a barrier, loads its neighbour's (tid ^ 1)
+back; a store under the load's predicate discards the undefined values. An STS of undefined
+data marks the bytes undefined (Sh::undef) instead of being reported; an LDS of them gives
+undefined registers. Before, the STS was reported (cute FusedRMSNormCombineFwdParallelTOPKStream)."""
+ptx = "kernel.ptx"
+entry = "uninit_smem"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [32]
+init = "bits"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "the undefined values go through shared memory and are discarded"
+expect = ["clean"]
+
+[[variants]]
+id = "store_all"
+summary = "every thread stores what it loaded back: undefined data reaches global memory"
+edits = [{ marker = "@STORE", find = "@%p1 st", replace = "st" }]
+expect = ["violation"]

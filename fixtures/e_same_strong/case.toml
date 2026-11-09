@@ -1,0 +1,43 @@
+name = "e_same_strong"
+description = """
+Fixture for C-ORDER equal-value writes (wellsync/order.rs `pair`): two warps store one value to
+one shared word without order; the certificate with LDS/STS strong holds (good). SV1: warp 1
+stores a different value, so the word read after the barrier depends on the order."""
+ptx = "kernel.ptx"
+entry = "e_same_strong"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "inp"
+dtype = "u32"
+shape = [1]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "inp"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "SV1"
+summary = "warp 1 stores the value plus 1"
+marker = "@VAL"
+find = "add.u32 %r6, %r6, 0;"
+replace = "add.u32 %r6, %r6, %r2;"
+expect = ["nondeterministic", "race"]
+expect_sass = ["nondeterministic"]

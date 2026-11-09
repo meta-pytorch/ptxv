@@ -1,0 +1,95 @@
+// probes/mbar_expect_tx: mbarrier.expect_tx / complete_tx (SASS SYNCS.ARRIVE.TRANS64.RED.A0TR /
+// .A0TX): tx-count changes with no arrival. Three warps.
+// Thread 0 runs on mbarrier m (count 1) and stores the test_wait results out[0..7):
+//   expect_tx 64 (register) -> parity 0 = 0; arrive -> 0 (64 bytes outstanding);
+//   complete_tx 32 -> 0; complete_tx 32 (immediate, shared::cluster address) -> 1 (phase 0);
+//   complete_tx 16 (tx -16) -> parity 1 = 0; expect_tx.relaxed.cta 16 -> 0; arrive -> 1.
+// Mbarrier m3 (count 1): thread 0 arrives with expect_tx 4; thread 32 stores x = in[0] + 7, runs
+// fence.acq_rel.cta, then complete_tx 4; thread 64 waits for phase 0 of m3 and stores x to
+// out[7]. Variant relaxed (@NOFENCE): without the fence the complete_tx releases nothing (PTX:
+// relaxed), so thread 64's read of x races with thread 32's store.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry mbar_expect_tx(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 96, 1, 1
+{
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<8>;
+    .reg .pred  %p<16>;
+    .shared .align 8 .b64 m;
+    .shared .align 8 .b64 m3;
+    .shared .align 4 .b32 x;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    ld.global.u32   %r20, [%rd1];
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, m;
+    mov.u32         %r3, m3;
+    mov.u32         %r6, x;
+    setp.ne.u32     %p1, %r1, 0;
+    @%p1 bra        INIT;
+    mbarrier.init.shared::cta.b64 [%r2], 1;
+    mbarrier.init.shared::cta.b64 [%r3], 1;
+INIT:
+    bar.sync        0;
+    setp.eq.u32     %p10, %r1, 32;
+    @%p10 bra       PRODUCER;
+    setp.eq.u32     %p11, %r1, 64;
+    @%p11 bra       CONSUMER;
+    @%p1 bra        DONE;
+    add.u32         %r21, %r20, 64;
+    mbarrier.expect_tx.relaxed.cta.shared::cta.b64 [%r2], %r21;
+    mbarrier.test_wait.parity.shared::cta.b64 %p2, [%r2], 0;
+    mbarrier.arrive.shared::cta.b64 _, [%r2];
+    mbarrier.test_wait.parity.shared::cta.b64 %p3, [%r2], 0;
+    add.u32         %r22, %r20, 32;
+    mbarrier.complete_tx.relaxed.cta.shared::cta.b64 [%r2], %r22;
+    mbarrier.test_wait.parity.shared::cta.b64 %p4, [%r2], 0;
+    mapa.shared::cluster.u32 %r4, %r2, 0;
+    mbarrier.complete_tx.relaxed.cluster.shared::cluster.b64 [%r4], 32;
+    mbarrier.test_wait.parity.shared::cta.b64 %p5, [%r2], 0;
+    add.u32         %r23, %r20, 16;
+    mbarrier.complete_tx.shared::cta.b64 [%r2], %r23;
+    mbarrier.test_wait.parity.shared::cta.b64 %p6, [%r2], 1;
+    mbarrier.expect_tx.relaxed.cta.shared::cta.b64 [%r2], 16;
+    mbarrier.test_wait.parity.shared::cta.b64 %p7, [%r2], 1;
+    mbarrier.arrive.shared::cta.b64 _, [%r2];
+    mbarrier.test_wait.parity.shared::cta.b64 %p8, [%r2], 1;
+    selp.u32        %r10, 1, 0, %p2;
+    st.global.u32   [%rd2], %r10;
+    selp.u32        %r10, 1, 0, %p3;
+    st.global.u32   [%rd2+4], %r10;
+    selp.u32        %r10, 1, 0, %p4;
+    st.global.u32   [%rd2+8], %r10;
+    selp.u32        %r10, 1, 0, %p5;
+    st.global.u32   [%rd2+12], %r10;
+    selp.u32        %r10, 1, 0, %p6;
+    st.global.u32   [%rd2+16], %r10;
+    selp.u32        %r10, 1, 0, %p7;
+    st.global.u32   [%rd2+20], %r10;
+    selp.u32        %r10, 1, 0, %p8;
+    st.global.u32   [%rd2+24], %r10;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r3], 4;
+    bra.uni         DONE;
+PRODUCER:
+    add.u32         %r24, %r20, 7;
+    st.shared.u32   [%r6], %r24;
+    fence.acq_rel.cta; // @NOFENCE
+    mbarrier.complete_tx.shared::cta.b64 [%r3], 4;
+    bra.uni         DONE;
+CONSUMER:
+    mbarrier.try_wait.parity.shared::cta.b64 %p12, [%r3], 0;
+    @!%p12 bra      CONSUMER;
+    ld.shared.u32   %r25, [%r6];
+    st.global.u32   [%rd2+28], %r25;
+DONE:
+    ret;
+}

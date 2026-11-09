@@ -1,0 +1,24 @@
+// Probe for cvt from 16 / 32 / 64-bit integers to f32 / f64 (I2F[.F64][.S16|.U16|.S64|.U64]
+// [.RZ|.RM|.RP]). Thread i reads 64-bit word i of in; writes 16 words at 16i.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry cvt_i2f(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<20>; .reg .b32 %r<20>; .reg .b16 %rs<4>; .reg .f64 %fd<8>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mul.wide.u32 %rd3, %r1, 8; add.s64 %rd4, %rd1, %rd3;
+  mul.wide.u32 %rd5, %r1, 64; add.s64 %rd6, %rd2, %rd5;
+  ld.global.u64 %rd7, [%rd4];
+  cvt.u32.u64 %r2, %rd7; cvt.u16.u64 %rs1, %rd7;
+  cvt.rn.f32.s64 %r3, %rd7; cvt.rz.f32.s64 %r4, %rd7;
+  cvt.rm.f32.u64 %r5, %rd7; cvt.rp.f32.u64 %r6, %rd7;
+  cvt.rn.f32.s16 %r7, %rs1; cvt.rz.f32.u16 %r8, %rs1;
+  cvt.rn.f64.s64 %fd1, %rd7; cvt.rz.f64.u64 %fd2, %rd7;
+  cvt.rm.f64.s32 %fd3, %r2; cvt.rn.f64.u32 %fd4, %r2;
+  st.global.v4.u32 [%rd6], {%r3, %r4, %r5, %r6};
+  st.global.v2.u32 [%rd6+16], {%r7, %r8};
+  st.global.f64 [%rd6+24], %fd1; st.global.f64 [%rd6+32], %fd2;
+  st.global.f64 [%rd6+40], %fd3; st.global.f64 [%rd6+48], %fd4;
+  st.global.u64 [%rd6+56], %rd7;
+  ret; }

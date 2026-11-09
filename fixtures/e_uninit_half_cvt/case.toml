@@ -1,0 +1,37 @@
+name = "e_uninit_half_cvt"
+description = """
+S-INIT through conversions of a 16-bit source (2026-11-08): a bf16 that is 0 or a
+predicated load is widened with cvt.f64.bf16 and stored. ptxas zeroes the low half of the
+register with PRMT, leaving the high half unwritten, and F2F.F64.BF16 reads the low half
+only: clean on both fronts. Before, the SASS front made the conversion undefined when any
+bit of its register was."""
+ptx = "kernel.ptx"
+entry = "uninit_half_cvt"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "bf16"
+shape = [32]
+init = "normal"
+
+[[buffers]]
+name = "out"
+dtype = "f64"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "the converted half is defined"
+expect = ["clean"]

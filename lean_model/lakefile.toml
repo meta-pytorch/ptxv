@@ -1,0 +1,291 @@
+name = "gb300_math"
+version = "0.1.0"
+defaultTargets = ["GB300Math", "TextureBounds", "MufuProperties", "SqrtBoundaryProperties", "check"]
+
+[[lean_lib]]
+name = "SharedModels"
+srcDir = "Shared"
+roots = [
+  "GB300Math.Basic",
+  "GB300Math.Fp64Seed",
+  "GB300Math.Mufu",
+  "GB300Math.MufuTables",
+  "GB300Math.MultisampleFetch",
+  "GB300Math.MultisampleFormats",
+  "GB300Math.MultisampleNarrowFormats",
+  "GB300Math.SeedTables",
+  "GB300Math.SparseMetadata",
+  "GB300Math.SpecialCases",
+  "GB300Math.SpecialFma",
+  "GB300Math.SpecialFmaOob",
+  "GB300Math.SurfaceBoundary",
+  "GB300Math.SurfaceBounds",
+  "GB300Math.SurfaceNumeric",
+  "GB300Math.TanhSmall",
+  "GB300Math.TanhTables",
+  "GB300Math.TensorCore",
+  "GB300Math.TextureAnisotropy",
+  "GB300Math.TextureAnisotropyArea",
+  "GB300Math.TextureAnisotropyArithmetic",
+  "GB300Math.TextureAnisotropyArithmeticBounds",
+  "GB300Math.TextureAnisotropyArithmeticWitness",
+  "GB300Math.TextureAnisotropyAxis",
+  "GB300Math.TextureAnisotropyBlend",
+  "GB300Math.TextureAnisotropyGeneral",
+  "GB300Math.TextureAnisotropyGeneralMipmap",
+  "GB300Math.TextureAnisotropyJointMipmap",
+  "GB300Math.TextureAnisotropyLargeMipmap",
+  "GB300Math.TextureAnisotropyMipmap",
+  "GB300Math.TextureAnisotropyMipmapArithmetic",
+  "GB300Math.TextureAnisotropyMipmapCaps",
+  "GB300Math.TextureAnisotropyMipmapCoordinates",
+  "GB300Math.TextureAnisotropyMipmapStep",
+  "GB300Math.TextureAnisotropyMipmapWeights",
+  "GB300Math.TextureAnisotropyOriented",
+  "GB300Math.TextureAnisotropyOrientedBounds",
+  "GB300Math.TextureAnisotropyOrientedMipmap",
+  "GB300Math.TextureAnisotropyRankTwo",
+  "GB300Math.TextureAnisotropyTapBounds",
+  "GB300Math.TextureAnisotropyTaps",
+  "GB300Math.TextureAnisotropyWeightLaws",
+  "GB300Math.TextureBC6",
+  "GB300Math.TextureBC6Tables",
+  "GB300Math.TextureBC7",
+  "GB300Math.TextureBC7Tables",
+  "GB300Math.TextureBCAlpha",
+  "GB300Math.TextureBlockColor",
+  "GB300Math.TextureClampBound",
+  "GB300Math.TextureClampOrder",
+  "GB300Math.TextureCubeGather",
+  "GB300Math.TextureDepth24",
+  "GB300Math.TextureDepth24Bounds",
+  "GB300Math.TextureDepthCompare",
+  "GB300Math.TextureDepthGather",
+  "GB300Math.TextureDepthGeometry",
+  "GB300Math.TextureDepthNormalized",
+  "GB300Math.TextureDepthNormalizedBounds",
+  "GB300Math.TextureDepthPCF",
+  "GB300Math.TextureDepthPCFBounds",
+  "GB300Math.TextureDescriptorRelation",
+  "GB300Math.TextureFormatsCore",
+  "GB300Math.TextureFormatsCoreBridge",
+  "GB300Math.TextureGradient1D",
+  "GB300Math.TextureGradient2D",
+  "GB300Math.TextureGradient3D",
+  "GB300Math.TextureGradientAxis",
+  "GB300Math.TextureGradientBounds",
+  "GB300Math.TextureGradientCoordinateBounds",
+  "GB300Math.TextureGradientCoordinateSymmetry",
+  "GB300Math.TextureGradientCube",
+  "GB300Math.TextureHalfExact",
+  "GB300Math.TextureHalfFloatLib",
+  "GB300Math.TextureMipmap",
+  "GB300Math.TextureOffsets",
+  "GB300Math.TexturePackedViews",
+  "GB300Math.TexturePlanes",
+  "GB300Math.TextureRatio",
+  "GB300Math.TextureReturn",
+  "GB300Math.TextureSeamless",
+  "GB300Math.TextureSeamlessBounds",
+  "GB300Math.TextureSeamlessBridge",
+  "GB300Math.TextureSparse",
+  "GB300Math.TextureSparsePartial",
+  "GB300Math.VulkanDepthFilter",
+  "GB300Math.VulkanDepthOracle",
+  "GB300Math.VulkanHandle",
+  "GB300Math.VulkanMultisample",
+  "GB300Math.WmmaArithmetic",
+  "GB300Math.WmmaFragmentBytes",
+  "GB300Math.WmmaFragmentMap",
+  "GB300Math.WmmaFragmentProperties",
+  "GB300Math.WmmaIntegerBoundaries",
+  "GB300Math.WmmaMovement",
+  "GB300Math.XorSign",
+  "GB300Math.XorSignProperties",
+  "GB300Math.YcbcrShader",
+  "GB300Math.YcbcrShaderNormalization",
+]
+globs = [
+  "GB300Math.Basic",
+  "GB300Math.Fp64Seed",
+  "GB300Math.Mufu",
+  "GB300Math.MufuTables",
+  "GB300Math.SeedTables",
+  "GB300Math.SpecialCases",
+  "GB300Math.TanhSmall",
+  "GB300Math.TanhTables",
+  "GB300Math.TensorCore",
+  "GB300Math.TextureGradient2D",
+  "GB300Math.TextureGradient3D",
+  "GB300Math.TextureGradientAxis",
+  "GB300Math.TextureGradientCube",
+  "GB300Math.TextureMipmap",
+  "GB300Math.TexturePackedViews",
+  "GB300Math.TextureRatio",
+  "GB300Math.TextureSeamless",
+  "GB300Math.XorSign",
+  "GB300Math.XorSignProperties",
+]
+
+[[lean_lib]]
+name = "BlackwellModels"
+srcDir = "Blackwell"
+roots = [
+  "GB300Math.Fswzadd",
+  "GB300Math.FswzaddGeneral",
+  "GB300Math.MatrixLoad",
+  "GB300Math.MatrixStore",
+  "GB300Math.MatrixTranspose",
+  "GB300Math.MufuSm103",
+  "GB300Math.MultisamplePayloadExact",
+  "GB300Math.Stochastic",
+  "GB300Math.StochasticBias",
+  "GB300Math.StochasticBoundaries",
+  "GB300Math.StochasticContract",
+  "GB300Math.StochasticCorrelation",
+  "GB300Math.StochasticFinite",
+  "GB300Math.StochasticFloor",
+  "GB300Math.StochasticMoments",
+  "GB300Math.StochasticNativeAccuracy",
+  "GB300Math.StochasticNativeContract",
+  "GB300Math.StochasticNativeSm103",
+  "GB300Math.StochasticNormal",
+  "GB300Math.StochasticPacked",
+  "GB300Math.StochasticProbability",
+  "GB300Math.StochasticSaturation",
+  "GB300Math.StochasticSigned",
+  "GB300Math.StochasticSm103",
+  "GB300Math.StochasticSubnormal",
+  "GB300Math.StochasticUnderflow",
+  "GB300Math.StochasticValue",
+  "GB300Math.TensorAccumulatorBlackwell",
+  "GB300Math.TensorAlignmentLoss",
+  "GB300Math.TensorAlignmentProperties",
+  "GB300Math.TensorArrayEncodingBounds",
+  "GB300Math.TensorBlackwell",
+  "GB300Math.TensorBlackwellUnderflow",
+  "GB300Math.TensorCancellationBounds",
+  "GB300Math.TensorDecompression",
+  "GB300Math.TensorDoubleShapes",
+  "GB300Math.TensorDyadicAlignment",
+  "GB300Math.TensorEncodingBounds",
+  "GB300Math.TensorError",
+  "GB300Math.TensorGroupError",
+  "GB300Math.TensorLegacyBlackwell",
+  "GB300Math.TensorLegacyFP8",
+  "GB300Math.TensorMixed16",
+  "GB300Math.TensorRelations",
+  "GB300Math.TensorScaledBlackwell",
+  "GB300Math.TensorScaledIdeal",
+  "GB300Math.TensorScaledSelected",
+  "GB300Math.TensorScaledSmall",
+  "GB300Math.TensorShift",
+  "GB300Math.TensorSmallBlackwell",
+  "GB300Math.TensorSmallHalf",
+  "GB300Math.TensorSparseBF16Blackwell",
+  "GB300Math.TensorSparseBlackwell",
+  "GB300Math.TensorSparseCodes",
+  "GB300Math.TensorSparseSelectors",
+  "GB300Math.TensorSparseSmall",
+  "GB300Math.TensorSparseSmallLayout",
+  "GB300Math.TensorSubnormalBounds",
+  "GB300Math.TextureGradient3DBounds",
+  "GB300Math.TextureGradientNormBounds",
+  "GB300Math.TextureRounding",
+  "GB300Math.TextureSeamlessIdeal",
+]
+globs = [
+  "GB300Math.MufuSm103",
+  "GB300Math.TensorBlackwell",
+  "GB300Math.TensorBlackwellUnderflow",
+  "GB300Math.TensorAccumulatorBlackwell",
+  "GB300Math.Stochastic",
+  "GB300Math.StochasticNativeSm103",
+  "GB300Math.StochasticSm103",
+]
+
+[[lean_lib]]
+name = "GB300Math"
+roots = ["GpuMath"]
+globs = ["GpuMath"]
+
+[[lean_lib]]
+name = "TextureBits"
+srcDir = "Shared"
+
+[[lean_lib]]
+name = "TextureBounds"
+srcDir = "Shared"
+
+[[lean_lib]]
+name = "MufuProperties"
+srcDir = "Shared"
+
+[[lean_lib]]
+name = "SqrtBoundaryProperties"
+srcDir = "Shared"
+
+[[lean_exe]]
+name = "check_ptxv"
+root = "PtxvCheck"
+srcDir = "Blackwell"
+
+[[lean_exe]]
+name = "check"
+root = "Check"
+srcDir = "Shared"
+
+[[lean_exe]]
+name = "check_fp64"
+root = "Fp64SeedCheck"
+srcDir = "Shared"
+
+[[lean_exe]]
+name = "check_tanh_small"
+root = "TanhSmallCheck"
+srcDir = "Shared"
+
+[[lean_exe]]
+name = "check_mufu_sm103"
+root = "MufuSm103Check"
+srcDir = "Blackwell"
+
+[[lean_exe]]
+name = "check_tensor_integer_sm103"
+root = "TensorIntegerSm103"
+srcDir = "Blackwell"
+
+[[lean_exe]]
+name = "check_stochastic"
+root = "StochasticCheck"
+srcDir = "Blackwell"
+
+[[lean_exe]]
+name = "check_stochastic_sm103"
+root = "StochasticSm103Check"
+srcDir = "Blackwell"
+
+[[lean_exe]]
+name = "check_xorsign"
+root = "XorSignCheck"
+srcDir = "Shared"
+
+[[lean_exe]]
+name = "check_stochastic_native_sm103"
+root = "StochasticNativeSm103Check"
+srcDir = "Blackwell"
+
+[[lean_exe]]
+name = "check_texture_seamless"
+root = "TextureSeamlessCheck"
+srcDir = "Shared"
+
+[[lean_exe]]
+name = "check_texture_cube_gradient"
+root = "TextureGradientCubeCheck"
+srcDir = "Shared"
+
+[[lean_exe]]
+name = "check_texture_packed_views"
+root = "TexturePackedViewsCheck"
+srcDir = "Shared"

@@ -26,6 +26,9 @@ use crate::num::NumState;
 
 pub const PARAM_BASE: u64 = 0x7e00_0000_0000;
 pub const GLOBAL_BASE: u64 = 0x7000_0000_0000;
+
+/// Racing reads per race signature (`Machine::race_log`).
+pub type RaceLog = Arc<std::sync::Mutex<BTreeMap<String, Option<BTreeSet<(u32, u32)>>>>>;
 /// The generic shared window (4 GB): its low word is a shared::cluster address.
 /// ASSUME(S-SWIN): GB300 puts it elsewhere (high word 0xfffa in fixtures/s_routing_forms);
 /// only its being one 4 GB-aligned window matters.
@@ -208,6 +211,54 @@ pub fn vc_join_all<'a>(vs: impl IntoIterator<Item = &'a VC>) -> VC {
     j
 }
 
+/// `a` joined with every clock of `vs`: each distinct base merged once, then the own
+/// entries the result does not already cover inserted together. Equal to joining them one by
+/// one (the join is associative and commutative); a barrier's arrivals after an earlier
+/// barrier share one base, so this is one merge instead of one per arrival.
+pub fn vc_join_many(a: &mut VC, vs: &[&VC]) {
+    let mut bases: Vec<&Arc<VcBase>> = vs.iter().map(|v| &v.base).collect();
+    bases.sort_unstable_by_key(|b| Arc::as_ptr(b) as usize);
+    bases.dedup_by(|x, y| Arc::ptr_eq(x, y));
+    for b in bases {
+        vc_join(
+            a,
+            &VC {
+                base: b.clone(),
+                own: (0, 0),
+            },
+        );
+    }
+    let mut own: Vec<(u32, u32)> = vs
+        .iter()
+        .map(|v| v.own)
+        .filter(|&(i, c)| c != 0 && vc_get(a, i) < c)
+        .collect();
+    if own.is_empty() {
+        return;
+    }
+    own.sort_unstable();
+    let mut e = a.entries();
+    let mut out = Vec::with_capacity(e.len() + own.len());
+    let mut k = 0;
+    for (i, c) in own {
+        while k < e.len() && e[k].0 < i {
+            out.push(e[k]);
+            k += 1;
+        }
+        match out.last_mut() {
+            Some(l) if l.0 == i => l.1 = l.1.max(c),
+            _ if k < e.len() && e[k].0 == i => {
+                out.push((i, e[k].1.max(c)));
+                k += 1;
+            }
+            _ => out.push((i, c)),
+        }
+    }
+    out.extend(e.drain(k..));
+    a.base = VcBase::from(out);
+    a.own = (0, 0);
+}
+
 pub fn vc_join(a: &mut VC, b: &VC) {
     if b.base.e.is_empty() && b.own.1 == 0 {
         return;
@@ -300,6 +351,38 @@ pub fn rr_new(v: &VC, rr: &VC) -> Option<VC> {
     (!e.is_empty()).then(|| vc_from_sorted(e))
 }
 
+/// `vc_get(vc, ·)` with the last answers kept (direct-mapped by actor): a shadow check asks
+/// the same clock once per byte of an access.
+pub struct VcMemo<'a> {
+    vc: &'a VC,
+    slots: [std::cell::Cell<(u64, u32)>; 32],
+}
+
+impl<'a> VcMemo<'a> {
+    pub fn new(vc: &'a VC) -> Self {
+        VcMemo {
+            vc,
+            slots: Default::default(),
+        }
+    }
+    #[inline]
+    pub fn get(&self, i: u32) -> u32 {
+        let s = &self.slots[i as usize % 32];
+        let (k, c) = s.get();
+        if k == i as u64 + 1 {
+            return c;
+        }
+        let c = vc_get(self.vc, i);
+        s.set((i as u64 + 1, c));
+        c
+    }
+    /// `e.hb(vc)`.
+    #[inline]
+    pub fn hb(&self, e: &Epoch) -> bool {
+        e.clock <= self.get(e.actor)
+    }
+}
+
 #[inline]
 pub fn vc_get(v: &VC, i: u32) -> u32 {
     let b = v.base.get(i);
@@ -346,6 +429,11 @@ pub struct Epoch {
     /// 0: a plain access; otherwise a strong access at scope `strong - 1` (`strong_code`).
     /// Strong accesses that are morally strong do not race with each other (S-SCOPE).
     pub strong: u8,
+    /// On a write: a plain write of the value already there (S-SAME-VALUE): a read sees that
+    /// value in either order, so reads are not checked against it. On a read (`Sh::r`,
+    /// hardware model only, E-HW-CORW): a strong read that returned the bytes of the shadow's
+    /// last write, with no write to the byte since.
+    pub sv: bool,
 }
 
 /// `Epoch::strong` of a TMEM allocation / deallocation (`tmem_mark`): every word is written.
@@ -399,6 +487,15 @@ pub struct Sh {
     /// thread's unordered atomic (FastTrack's single last-write epoch is precise only when
     /// every write covers the earlier ones).
     pub hw: Option<Box<[Epoch]>>,
+    /// The last write `w` went through a multicast (NVLS) view (S-MC-ALIAS); false: unicast.
+    pub mcv: bool,
+    /// S-INIT: the last write stored undefined bits (an `STS` of an undefined register); a
+    /// load reads it as never written.
+    pub undef: bool,
+    /// The writes may have stored different values: strong writes demoted at a launch-group
+    /// boundary (`demote`). Until the next plain write of another value, the same-value
+    /// invariant (every write of the shadow stored the current value) does not hold.
+    pub mixed: bool,
 }
 
 /// The reads since the last write, one per actor, sorted by actor (canonical state: commuting
@@ -432,11 +529,26 @@ impl Sh {
                 e.strong = 0;
             }
         };
+        if self
+            .writes()
+            .any(|e| e.strong != 0 && e.strong != TMEM_MARK)
+        {
+            self.mixed = true;
+        }
         if let Some(w) = self.w.as_mut() {
             d(w);
         }
         if let Some(h) = self.hw.as_mut() {
             h.iter_mut().for_each(d);
+            // ASSUME(S-SAME-VALUE): a plain last write with uncovered earlier writes means
+            // those wrote the same value (the same-value rule in `access_x`); demoted strong
+            // writes need not have, so the last write joins them.
+            if let Some(w) = self.w.take() {
+                let mut v = h.to_vec();
+                v.push(w);
+                v.sort_unstable_by_key(|e| (e.actor, e.strong, e.clock));
+                *h = v.into_boxed_slice();
+            }
         }
         match &mut self.r {
             Readers::Inline(n, a) => a[..*n as usize].iter_mut().for_each(d),
@@ -469,6 +581,14 @@ impl Readers {
     pub fn clear(&mut self) {
         *self = Readers::default();
     }
+    /// A write to the byte: no kept read returned the bytes of the (new) last write
+    /// (E-HW-CORW, `Epoch::sv` on reads).
+    pub fn forget_rf(&mut self) {
+        match self {
+            Readers::Inline(n, a) => a[..*n as usize].iter_mut().for_each(|e| e.sv = false),
+            Readers::Heap(v) => v.iter_mut().for_each(|e| e.sv = false),
+        }
+    }
     /// Keep the reads for which `f` holds (order kept).
     pub fn retain(&mut self, mut f: impl FnMut(&Epoch) -> bool) {
         if self.iter().all(&mut f) {
@@ -494,7 +614,9 @@ impl Readers {
         let s = self.as_slice();
         // Fast path: at most one read of `e.actor`, not plainer than `e` (the common case):
         // exactly the per-actor `insert`.
-        let mut mine = s.iter().filter(|x| x.actor == e.actor);
+        // The list is sorted by actor: `e.actor`'s reads are one run, found by bisection.
+        let lo = s.partition_point(|x| x.actor < e.actor);
+        let mut mine = s[lo..].iter().take_while(|x| x.actor == e.actor);
         let one = mine.next().is_none_or(|x| x.strong >= e.strong) && mine.next().is_none();
         if one {
             self.insert(e);
@@ -547,7 +669,7 @@ impl Epoch {
     fn words(&self) -> (u64, u64) {
         (
             (self.actor as u64) << 32 | self.clock as u64,
-            (self.pc as u64) << 8 | self.strong as u64 | 1 << 63,
+            (self.pc as u64) << 8 | self.strong as u64 | (self.sv as u64) << 62 | 1 << 63,
         )
     }
 }
@@ -568,6 +690,15 @@ impl Hash for Sh {
             let (a, b) = e.words();
             h.write_u64(a);
             h.write_u64(b);
+        }
+        if self.mcv {
+            h.write_u64(1 << 61);
+        }
+        if self.undef {
+            h.write_u64(7 << 60);
+        }
+        if self.mixed {
+            h.write_u64(5 << 60);
         }
         if let Some(hw) = &self.hw {
             h.write_u64(hw.len() as u64 | 1 << 62);
@@ -930,12 +1061,23 @@ pub struct Thread {
     pub tma_count: u32,
     /// Registers written by tcgen05.ld that are undefined until tcgen05.wait::ld.
     pub pending_ld: Vec<(u8, u16)>,
+    /// Clock (of the thread's tcgen05.ld/st actor) of its last tcgen05.st / tcgen05.ld: what
+    /// wait::st / wait::ld orders before its later MMA-pipe operations (S-TCGEN05).
+    pub tc_st: u32,
+    pub tc_ld: u32,
     /// Bitset over `regs`: slot written since launch (S-INIT: reads of unwritten registers
     /// are reported).
     pub written: Vec<u64>,
+    /// S-INIT, PTX virtual registers: the undefined bits of written registers that are partly
+    /// undefined (sorted by index; absent: wholly defined). A 64-bit register packs two f32x2
+    /// lanes that may come from different rows (`mov.b64 %rd, {%r1, %r2}`).
+    pub vund: Vec<(u16, u64)>,
     /// fence.proxy.async executions of this thread (S-PROXY): its clock then (own entry and
     /// what it had observed of every other thread).
     pub fences: Vec<VC>,
+    /// fence.proxy.alias executions of this thread, and its start after a stream-ordered
+    /// previous grid (a kernel boundary orders aliases too), as for `fences` (S-MC-ALIAS).
+    pub alias_fences: Vec<VC>,
     /// Bulk groups committed so far (the open group's id).
     pub bulk_group: u32,
     /// The read scoreboard of each committed bulk group (SASS `UTMACMDFLUSH`'s rbar, by group
@@ -977,6 +1119,13 @@ pub struct Thread {
     /// issue, pc). `cp_group` counts committed groups (the open group's id).
     pub cp_pending: Vec<CpPending>,
     pub cp_group: u32,
+    /// Result of the thread's last completed `bar.red` (E-BAR-RED): the reduction, the number
+    /// of true contributions, and whether every waiter's was true.
+    pub bar_res: Option<(ptxv_ir::BarRedOp, u32, bool)>,
+    /// E-COLLECTIVE: the `WARPSYNC.COLLECTIVE` this lane parked at, while it runs an identical
+    /// region elsewhere with the rest of its mask group (lanes of one mask at different
+    /// collective instructions enter together; GB300: probes/coll_split).
+    pub coll_home: Option<u32>,
     /// E-READ-DONE (case `read_done`): loads whose destination registers no instruction has
     /// used yet: (register file, first register, count, clock of the read).
     pub ld_pend: Vec<(u8, u16, u8, u32)>,
@@ -985,6 +1134,8 @@ pub struct Thread {
 #[derive(Clone, Debug, Hash)]
 pub struct CpPending {
     pub group: u32,
+    /// The warp's LDGDEPBAR count when it was issued (SASS: SB0 counts the warp's commits).
+    pub wgroup: u32,
     pub off: u32,
     /// The global source (allocation, byte offset); None: zero fill.
     pub src: Option<(usize, u64)>,
@@ -1005,6 +1156,9 @@ pub struct Warp {
     pub ur_written: [u64; 4],
     /// Lanes recorded by `BSSY Bb` for each convergence barrier b (E-BSYNC).
     pub bmask: [u32; 16],
+    /// SASS: LDGDEPBAR executions by the warp (any lanes): the cp.async scoreboard counts
+    /// the warp's commits, not each thread's (E-CPASYNC).
+    pub cp_seq: u32,
 }
 
 #[derive(Clone, Debug, Hash, Serialize)]
@@ -1081,6 +1235,9 @@ pub struct Bar {
     pub arrivers: Vec<u32>,
     /// Join of the arrivers' clocks at their arrivals: released to the waiters.
     pub rel: VC,
+    /// Per waiter, sorted: its `bar.red` reduction (None: a plain `bar.sync`) and its
+    /// contribution (E-BAR-RED).
+    pub red: Vec<(u32, Option<ptxv_ir::BarRedOp>, bool)>,
     /// Explicit thread count, or None for "all threads of the CTA", which waits only for
     /// threads that have not exited (GB300 probe, ASSUMPTIONS.md E-BAR-EXIT).
     pub count: Option<u32>,
@@ -1112,6 +1269,8 @@ pub enum AsyncKind {
         kind: ptxv_ir::MmaKind,
         /// Block-scaled kinds: TMEM addresses of the A and B scale factors.
         scale: Option<(u32, u32)>,
+        /// scale-input-d: D = A B + D * 2^-scale_d.
+        scale_d: u8,
     },
     /// tcgen05.cp (32x128b.warpx4): the smem matrix `sdesc` -> TMEM `taddr`, 4 columns; with
     /// `peer` (cta_group::2) the same copy in the peer CTA, from its own shared memory.
@@ -1124,7 +1283,15 @@ pub enum AsyncKind {
     /// tcgen05.commit: arrive on `mbar` once every earlier op in the same pipe completed.
     Commit { cta: u16, mbar: u32 },
     /// clusterlaunchcontrol.try_cancel response: 16 bytes to `resp` + complete_tx(16) on `mbar`.
-    Clc { cta: u16, resp: u32, mbar: u32 },
+    /// `others`: the rest of the issuer's cluster, for a multicast try_cancel
+    /// (UGETNEXTWORKID.BROADCAST): each gets the response and the completion on its own
+    /// mbarrier at the same offsets (probes/clc_mcast).
+    Clc {
+        cta: u16,
+        resp: u32,
+        mbar: u32,
+        others: Vec<u16>,
+    },
     /// `cp.async.mbarrier.arrive` (async half): the issuer's cp.async writes then, on `mbar`,
     /// complete one transaction unit (`tx`) or arrive once.
     CpArrive {
@@ -1146,6 +1313,8 @@ pub enum AsyncKind {
         store: Vec<(u32, u32)>,
         fresh: bool,
     },
+    /// ASSUME(S-NIC-ORDER): QP `qp`'s NIC executes its oldest announced WQE (nic.rs).
+    Nic { qp: u16 },
     /// TMA store (shared::cta -> global) in bulk group `group` of its issuer.
     TmaStore {
         cta: u16,
@@ -1153,13 +1322,16 @@ pub enum AsyncKind {
         tmap: Arc<TmapDesc>,
         coords: Vec<i64>,
         group: u32,
+        /// A bulk f32 add-reduction (`Op::TmaStore { red: true }`).
+        red: bool,
     },
 }
 
 #[derive(Clone, Debug, Hash)]
 pub struct AsyncOp {
-    /// In-order pipe this op belongs to (issuing thread for tcgen05), or None (unordered).
-    pub fifo: Option<u32>,
+    /// In-order pipe this op belongs to, or None (unordered): the issuing thread for tcgen05;
+    /// `remote_pipe` for remote mbarrier operations (S-REMOTE-INFLIGHT).
+    pub fifo: Option<u64>,
     pub actor: u32,
     pub vc: VC,
     pub issuer: u32,
@@ -1188,6 +1360,34 @@ pub struct TmapDesc {
     pub boxd: Vec<u32>,
     /// 4-bit elements (16U4_ALIGN8B): dims / box in bytes, coordinate 0 in elements.
     pub elem4: bool,
+    /// The element type when it is f32 / f16 / bf16 (what a tensor add-reduction adds);
+    /// None for other types (a reduction through them is unmodeled).
+    pub fdtype: Option<ptxv_ir::FFmt>,
+    /// A shared-to-shared bulk copy (`UBLKCP.S.S`): the source is this CTA's shared memory at
+    /// offset `base`, not global memory.
+    pub smem_src: Option<u16>,
+    /// im2col-mode map (`boxd` is then [channels, pixels]; im2col.rs).
+    pub im2col: Option<crate::tmap::Im2col>,
+}
+
+/// An NVLS multicast object: addresses [base, base + size) are a multicast view of one
+/// bound range per GPU (S-MULTIMEM).
+#[derive(Clone, Debug)]
+pub struct McObj {
+    pub name: String,
+    pub base: u64,
+    pub size: u64,
+    pub binds: Vec<McBind>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct McBind {
+    pub device: u32,
+    /// Offset in the multicast object.
+    pub offset: u64,
+    pub alloc: usize,
+    pub alloc_off: u64,
+    pub size: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -1207,6 +1407,13 @@ pub struct Grid {
     pub cluster: [u32; 3],
     /// The launch named a cluster shape (`%is_explicit_cluster`).
     pub explicit_cluster: bool,
+    /// The launch's preferred cluster dimension (cudaLaunchAttributePreferredClusterDimension),
+    /// if any: the hardware launches each group of CTAs either as one cluster of this shape or
+    /// as clusters of the regular one. ASSUME(S-CGA-SHAPE)
+    pub preferred: Option<[u32; 3]>,
+    /// SR_CgaSize of every CTA of this grid: 0 when `cluster` is the regular shape, 1 when it
+    /// is the preferred one (`Launch::preferred_shape`). ASSUME(S-CGA-SHAPE)
+    pub cga_shape: u32,
     pub params: Vec<u8>,
     /// First instruction of this grid's kernel.
     pub entry: u32,
@@ -1224,6 +1431,9 @@ pub struct Grid {
     /// Stream-order override (`NextLaunch::after`): the grid this one waits for instead of
     /// the previous one on its GPU (None inside: nothing).
     pub after: Option<Option<usize>>,
+    /// Constant-bank words (bank, byte offset, value) that hold a module data global's
+    /// address: its buffer's address + addend (S-GLOBAL-INIT). They override the bank bytes.
+    pub cbank_relocs: Vec<(u8, u32, u64)>,
 }
 
 impl Grid {
@@ -1245,8 +1455,15 @@ pub type MmaCache = std::sync::Arc<
 /// Everything about a launch that does not change during execution.
 #[derive(Clone, Debug)]
 pub struct Launch {
+    /// Launch-level notes (sig, message): S-GLOBAL-INIT's zero-initialized module globals.
+    pub notes: Vec<(String, String)>,
     pub grids: Vec<Grid>,
     pub allocs: Vec<Alloc>,
+    /// NVLS multicast objects (case `multicast`, S-MULTIMEM).
+    pub mcast: Vec<McObj>,
+    /// E-MC-ALIAS-HW: multicast and unicast views of the same bytes are one location (case
+    /// `mc_alias = "hw"`); default false: the PTX alias proxy (S-MC-ALIAS).
+    pub mc_alias_hw: bool,
     pub tensormaps: Vec<TmapDesc>,
     pub outputs: Vec<usize>,
     /// Groups of allocations that must end bitwise equal (case `replicas`).
@@ -1270,14 +1487,23 @@ pub struct Launch {
     pub env: crate::residency::Env,
     /// E-READ-DONE: no load buffering through completed reads (case `read_done`).
     pub read_done: bool,
+    /// E-REMOTE-FIFO: remote arrivals from one CTA to one CTA land in happens-before issue order.
+    pub remote_fifo: bool,
     /// The GB300 hardware model's ordering (E-HW-L1, two-level check, twolevel.rs): memory
     /// behind the L1s is sequentially consistent, so every strong write publishes its
     /// writer's clock and every strong read that observes it acquires that clock, at any
     /// scope. Never set from a case; only the second level of `ptxv check` uses it.
     pub hw_order: bool,
+    /// E-TC-FENCE-NOP: every instruction of the PTX front runs as if
+    /// `tcgen05.fence::after_thread_sync` preceded it and `tcgen05.fence::before_thread_sync`
+    /// followed it (GB300's tcgen05 fences are NOPs). Never set from a case: `ptxv check`
+    /// reruns a PTX check with TMEM-related races this way, and the hardware model uses it.
+    pub tc_fence_implied: bool,
     /// Refuted assumptions this launch was explicitly allowed to use (case `assume_refuted`,
     /// `--assume-refuted`, `PTXV_ASSUME_REFUTED`) and does use.
     pub refuted_opt_in: Vec<String>,
+    /// GPU-initiated RDMA queue pairs and NVLink domains (nic.rs, docs/nic.md).
+    pub nic: Option<Arc<crate::nic::NicCfg>>,
 }
 
 impl Launch {
@@ -1316,6 +1542,28 @@ impl Launch {
     }
     pub fn cluster_size(&self, cta: u32) -> u32 {
         self.g(cta).cluster_size()
+    }
+    /// ASSUME(S-CGA-SHAPE): the launch with every cluster of every grid that has a preferred
+    /// cluster dimension in that shape (SR_CgaSize 1), or None when no grid has one.
+    pub fn preferred_shape(&self) -> Option<Launch> {
+        if self.grids.iter().all(|g| g.preferred.is_none()) {
+            return None;
+        }
+        let mut l = self.clone();
+        for g in &mut l.grids {
+            if let Some(p) = g.preferred {
+                g.cluster = p;
+                g.cga_shape = 1;
+            }
+        }
+        Some(l)
+    }
+    /// The global CTAs of cluster `c` (an id of `cluster_of`).
+    pub fn cluster_ctas(&self, c: u32) -> Vec<u32> {
+        let g = &self.grids[(c >> 20) as usize];
+        (g.cta0..g.cta0 + g.ctas())
+            .filter(|&cta| self.cluster_of(cta).0 == c)
+            .collect()
     }
     /// (cluster id, rank in the cluster) of global CTA `cta` (x fastest). Cluster ids are
     /// unique across grids.
@@ -1387,6 +1635,33 @@ pub struct Finding {
     pub gb300: Option<crate::twolevel::Gb300>,
 }
 
+/// The mbarriers, shared between machine copies until one writes (`DerefMut` copies a shared
+/// map). Copies that only read them (the certificate's look-ahead copies, `skip_equiv`) cost
+/// one reference count instead of a copy of every mbarrier and its vector clocks.
+#[derive(Clone, Debug, Default)]
+pub struct MbarMap(Arc<BTreeMap<(u16, u32), Mbar>>);
+
+impl std::ops::Deref for MbarMap {
+    type Target = BTreeMap<(u16, u32), Mbar>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a> IntoIterator for &'a MbarMap {
+    type Item = (&'a (u16, u32), &'a Mbar);
+    type IntoIter = std::collections::btree_map::Iter<'a, (u16, u32), Mbar>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl std::ops::DerefMut for MbarMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
 #[derive(Clone)]
 pub struct Machine {
     pub k: Arc<Kernel>,
@@ -1396,7 +1671,7 @@ pub struct Machine {
     pub smem: CowVec<Mem>,
     pub gmem: Vec<Mem>,
     pub tmem: CowVec<Tmem>,
-    pub mbars: BTreeMap<(u16, u32), Mbar>,
+    pub mbars: MbarMap,
     pub bars: BTreeMap<(u16, u32), Bar>,
     pub pending: Vec<AsyncOp>,
     /// Completed async operations (cta, actor, clock, pc), sorted: checked at exit.
@@ -1406,8 +1681,9 @@ pub struct Machine {
     /// issuer), sorted. At the end, the target must have waited on that phase or a later one
     /// (`mbar_seen`): otherwise nothing kept it from exiting before the delivery. A later
     /// cluster release of the issuer (which would have drained it) moves the entry to
-    /// `remote`, the happens-before check.
-    pub remote_obs: Vec<(u16, u32, u64, u32, u32)>,
+    /// `remote`, the happens-before check. Last field: the issuer's clock at issue
+    /// (E-REMOTE-FIFO moves an entry to a later arrival's mbarrier and phase).
+    pub remote_obs: Vec<(u16, u32, u64, u32, u32, u32)>,
     /// Per mbarrier (cta, offset): the latest phase whose completion a wait observed.
     pub mbar_seen: BTreeMap<(u16, u32), u64>,
     /// Completed generations per named barrier (cta, id).
@@ -1469,6 +1745,19 @@ pub struct Machine {
     /// Not hashed, transient: the current access is an fp32 atomic add with no returned value
     /// (`red.add.f32`): `gfoot` files it as a reduction, not a read and a write.
     pub red_access: bool,
+    /// Not hashed, diagnostic: per global 16-bit word, the last f16 / bf16 bulk reduction into
+    /// it (async actor, its own clock). A later one by another actor that does not happen
+    /// after it is order-dependent (N-BULK-RED), reported rather than explored.
+    pub red16: std::collections::HashMap<(usize, u64), (u32, u32)>,
+    /// Not hashed, transient: the current access goes through a multicast (NVLS) view
+    /// (S-MC-ALIAS).
+    pub mc_view: bool,
+    /// E-HW-WEAK-FLAG: the store being published is a weak flag store (publish the clock at
+    /// the thread's last sys-scope fence, not its whole history).
+    pub weak_pub: bool,
+    /// Not hashed: some multimem.ld_reduce lane of this run returned the nearest-even
+    /// neighbour of a sum whose rounding direction on GB300 is not modeled (N-MULTIMEM).
+    pub mc_inexact: bool,
     /// Not hashed: per global byte, which actor accessed it first, and whether several did /
     /// any wrote (single deterministic runs, `explore_symmetric`).
     pub gown: Option<Box<GOwn>>,
@@ -1486,6 +1775,40 @@ pub struct Machine {
     /// never-written shared memory is recorded here (first byte) instead of reported: the
     /// loaded registers become undefined, and only a use of them is a finding (S-INIT).
     pub stale: Option<Option<u32>>,
+    /// S-INIT: the bytes of the shared / global store running that hold undefined bits (bit i =
+    /// byte i of its data; `Sh::undef` per byte).
+    pub wundef: u64,
+    /// S-INIT: global stores of undefined data (allocation, offset, bytes, pc), checked at
+    /// terminal states (`exit_checks`); an index into `Sh::undef`, not part of the state hash.
+    pub gundef: Arc<Vec<(usize, u64, u32, u32)>>,
+    /// Tensor maps in global memory a TMA used (allocation, offset), for S-TMAP-TAIL.
+    pub tmaps_used: Arc<Vec<(usize, u64)>>,
+    /// S-TMAP-TAIL: while a tensor map is read, undefined bytes from this offset on are not
+    /// a use.
+    pub undef_ok_from: Option<usize>,
+    /// S-INIT-FILLS (fills.rs): the value unwritten state holds in a multi-fill rerun; None:
+    /// 0. Not hashed (constant over a run).
+    pub fill: Option<crate::fills::Fill>,
+    /// Input coverage (coverage.rs): the provenance shadow of a deterministic run. Not hashed.
+    pub prov: Option<Box<crate::coverage::ProvState>>,
+    /// Per thread: own clock when its warp last diverged (`Machine::wdiv`); an access with an own
+    /// clock at least this one ran after it (intra-warp race labels, E-WARP-ORDER). History
+    /// for a label only: not part of the state hash.
+    pub div_clk: Arc<Vec<u32>>,
+    /// Per warp: it may be diverged on hardware (E-WARP-ORDER): set when the lanes of a split
+    /// leave an instruction at different pcs (or a live lane is not in the split), cleared
+    /// when a `BSYNC` / `WARPSYNC` releases every live lane together; false at launch. Used
+    /// for intra-warp race labels only: not part of the state hash.
+    pub wdiv: Arc<Vec<bool>>,
+    /// Not hashed: C-ORDER's dead-read probe (wellsync.rs `dead_reads`). Loads by these
+    /// (thread, pc) leave their destination registers undefined (S-INIT), so a use of the
+    /// loaded value is reported where it reaches a sink.
+    pub dead_probe: Option<Arc<BTreeSet<(u32, u32)>>>,
+    /// Not hashed, shared by every copy of a machine: the racing reads seen so far, per race
+    /// signature (`race_dead.rs`). Some(reads (thread, pc)) while every read of that race is
+    /// a thread's non-acquiring load; None once one is not (a write-write race, an atomic,
+    /// an asynchronous read).
+    pub race_log: Option<RaceLog>,
     /// Not hashed, transient: set while an operation that read partly undefined registers
     /// runs: the undefined bits of its result (slot i in bits 32i..32i+32), S-INIT.
     pub vmask: Option<u64>,
@@ -1514,6 +1837,8 @@ pub struct Machine {
     /// E-HW-L1 (opt-in, `Launch::hw_l1`): per-SM L1 lines and the predictive check's logs
     /// (l1.rs). Hashed (the lines) when present.
     pub l1: Option<Arc<crate::l1::L1>>,
+    /// NIC queue pairs' state (nic.rs); None without `Launch::nic` QPs. Hashed.
+    pub nic: Option<Box<crate::nic::NicState>>,
 }
 
 /// A vector shared copy-on-write in chunks of 64 elements, grouped 64 chunks at a time:
@@ -1962,6 +2287,9 @@ impl Hash for Machine {
         if let Some(l1) = &self.l1 {
             l1.hash(h);
         }
+        if let Some(n) = &self.nic {
+            n.hash(h);
+        }
         if !self.vipr.is_empty() {
             self.vipr.hash(h);
         }
@@ -2021,6 +2349,7 @@ impl Machine {
                     up_def: 0,
                     ur_written: [0; 4],
                     bmask: [0; 16],
+                    cp_seq: 0,
                 }));
             }
             for t in 0..tpc {
@@ -2041,9 +2370,13 @@ impl Machine {
                     pipe_vc: VC::new(),
                     tma_count: 0,
                     pending_ld: vec![],
+                    tc_st: 0,
+                    tc_ld: 0,
                     ld_pend: vec![],
                     written: vec![0; nv.div_ceil(64)],
+                    vund: vec![],
                     fences: vec![],
+                    alias_fences: vec![],
                     bulk_group: 0,
                     bulk_sb: Vec::new(),
                     bulk_done: vec![],
@@ -2060,6 +2393,8 @@ impl Machine {
                     local: Vec::new(),
                     cp_pending: Vec::new(),
                     cp_group: 0,
+                    bar_res: None,
+                    coll_home: None,
                 }));
             }
         }
@@ -2077,12 +2412,14 @@ impl Machine {
         let mut m = Machine {
             k,
             launch,
+            div_clk: Arc::new(vec![0; threads.len()]),
+            wdiv: Arc::new(vec![false; warps.len()]),
             threads: CowVec::new(threads),
             warps: CowVec::new(warps),
             smem: CowVec::new(smem),
             gmem,
             tmem: CowVec::new(tmem),
-            mbars: BTreeMap::new(),
+            mbars: MbarMap::default(),
             bars: BTreeMap::new(),
             pending: Vec::new(),
             completed: Vec::new(),
@@ -2109,12 +2446,24 @@ impl Machine {
             vipr: Default::default(),
             vip_read: 0,
             red_access: false,
+            red16: Default::default(),
+            mc_view: false,
+            weak_pub: false,
+            mc_inexact: false,
             gown: None,
             mma_cache: Default::default(),
             findings: Vec::new(),
             num: None,
             elect_choice: None,
             stale: None,
+            dead_probe: None,
+            wundef: 0,
+            gundef: Arc::new(Vec::new()),
+            tmaps_used: Arc::new(Vec::new()),
+            undef_ok_from: None,
+            race_log: None,
+            fill: None,
+            prov: None,
             vmask: None,
             fp: None,
             live: 0..0,
@@ -2124,8 +2473,12 @@ impl Machine {
             wlog: Default::default(),
             ring: None,
             l1: None,
+            nic: None,
         };
         m.live = 0..m.threads.len();
+        if let Some(cfg) = m.launch.nic.as_ref().filter(|c| !c.qps.is_empty()) {
+            m.nic = Some(Box::new(crate::nic::NicState::new(cfg)));
+        }
         if m.launch.hw_l1 {
             let mut l1 = crate::l1::L1::new();
             // The hardware model (twolevel.rs) keeps states apart by their L1 logs too.
@@ -2173,6 +2526,7 @@ impl Machine {
                             clock: 0,
                             pc: 0,
                             strong: STRONG_SYS,
+                            sv: false,
                         },
                         atomics: vec![],
                     },
@@ -2258,6 +2612,26 @@ impl Machine {
     /// The threads that may still run, with their indices (see `live`).
     pub fn live_threads(&self) -> impl Iterator<Item = (usize, &Cow<Thread>)> {
         self.live.clone().map(move |i| (i, &self.threads[i]))
+    }
+
+    /// This machine, before any step, with the cluster shapes of `launch` (which differs from
+    /// the machine's launch only there: `Launch::preferred_shape`). ASSUME(S-CGA-SHAPE)
+    pub fn with_cluster_shape(mut self, launch: Arc<Launch>) -> Machine {
+        assert_eq!(launch.ctas(), self.launch.ctas());
+        self.launch = launch;
+        // ASSUME(S-RESERVED): the leader's phase word at 0x50 depends on the rank (the
+        // hidden mbarrier at 0x48 marks the CTAs `new` initialized).
+        for cta in 0..self.launch.ctas() {
+            if self.mbars.contains_key(&(cta as u16, 0x48)) {
+                let (_, rank) = self.launch.cluster_of(cta);
+                let w = ((rank % 2 == 0) as u32).to_le_bytes();
+                let mem = &mut self.smem[cta as usize];
+                for (i, b) in w.iter().enumerate() {
+                    *mem.bytes.get_mut(0x50 + i) = *b;
+                }
+            }
+        }
+        self
     }
 
     /// `self` with the static parts (kernel, launch, spin tables, MMA cache) of `like`.
@@ -2362,6 +2736,8 @@ impl Machine {
             format!("{}'s tcgen05.ld/st", self.thread_name(a - n))
         } else if a < 3 * n {
             format!("{}'s tcgen05 pipe", self.thread_name(a - 2 * n))
+        } else if let Some(s) = self.nic_actor_name(a) {
+            s
         } else {
             let r = a - 3 * n;
             format!(

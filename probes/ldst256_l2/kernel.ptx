@@ -1,0 +1,36 @@
+// probes/ldst256_l2: 32-byte global accesses with L2 eviction hints: ld.global.L2::evict_last /
+// ld.global.L2::evict_first .v8.u32 and st.global.L2::evict_last / L2::evict_first .v8.u32
+// (SASS LDG / STG .E.ELL2.256 and .EFL2.256). probes/ldst256 with the hints: each element i
+// gets i+1 added and the two rows are stored swapped.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry ldst256_l2(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<8>; .reg .b32 %r<40>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mov.u32 %r30, %ctaid.x; mov.u32 %r31, %ntid.x;
+  mad.lo.s32 %r1, %r30, %r31, %r1;
+  mul.wide.u32 %rd3, %r1, 64;
+  add.s64 %rd4, %rd1, %rd3; add.s64 %rd5, %rd2, %rd3;
+  ld.global.L2::evict_last.v8.u32 {%r2,%r3,%r4,%r5,%r6,%r7,%r8,%r9}, [%rd4];
+  ld.global.L2::evict_first.v8.u32 {%r10,%r11,%r12,%r13,%r14,%r15,%r16,%r17}, [%rd4+32];
+  add.s32 %r2, %r2, 1;
+  add.s32 %r3, %r3, 2;
+  add.s32 %r4, %r4, 3;
+  add.s32 %r5, %r5, 4;
+  add.s32 %r6, %r6, 5;
+  add.s32 %r7, %r7, 6;
+  add.s32 %r8, %r8, 7;
+  add.s32 %r9, %r9, 8;
+  add.s32 %r10, %r10, 9;
+  add.s32 %r11, %r11, 10;
+  add.s32 %r12, %r12, 11;
+  add.s32 %r13, %r13, 12;
+  add.s32 %r14, %r14, 13;
+  add.s32 %r15, %r15, 14;
+  add.s32 %r16, %r16, 15;
+  add.s32 %r17, %r17, 16;
+  st.global.L2::evict_last.v8.u32 [%rd5], {%r10,%r11,%r12,%r13,%r14,%r15,%r16,%r17};
+  st.global.L2::evict_first.v8.u32 [%rd5+32], {%r2,%r3,%r4,%r5,%r6,%r7,%r8,%r9};
+  ret; }

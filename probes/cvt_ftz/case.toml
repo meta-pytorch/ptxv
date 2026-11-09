@@ -1,0 +1,36 @@
+name = "probe_cvt_ftz"
+description = """
+Probe (L-ROSETTA) for cvt.ftz.sat.f32.f32 and cvt.ftz.f32.f32 on signed zeros, subnormals,
+NaN payloads, infinities and values around 0 and 1 (kernel.ptx, gen.py). expected/ is GB300's
+output (kernel.cubin = ptxas -arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "cvt_ftz"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [64]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

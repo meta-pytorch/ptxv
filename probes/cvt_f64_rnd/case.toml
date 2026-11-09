@@ -1,0 +1,35 @@
+name = "probe_cvt_f64_rnd"
+description = """
+Probe (L-ROSETTA) for cvt.{rn,rz,rm,rp}.f32.f64 (SASS F2F.F32.F64[.RZ|.RM|.RP]) on d.bin of
+probes/cvt_misc (kernel.ptx). expected/ is GB300's output (ptxas cubin, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "cvt_f64_rnd"
+grid = [1, 1, 1]
+block = [1024, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "d"
+dtype = "u32"
+shape = [2048]
+init = "file"
+file = "d.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4096]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "d"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

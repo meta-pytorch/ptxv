@@ -101,6 +101,18 @@ pub struct PairMoments {
     pub corr_rc: f64,
 }
 
+/// P(output NaN / Inf) over the input distribution, from Tier 3's samples.
+#[derive(Clone, Debug, Serialize, Default)]
+pub struct PNonfinite {
+    /// Per tracked output element: [p, lo, hi] (95% Clopper-Pearson).
+    pub element: [f64; 3],
+    /// Per input sample (any output NaN / Inf): [p, lo, hi].
+    pub input: [f64; 3],
+    pub outputs: u64,
+    pub inputs: u64,
+    pub method: String,
+}
+
 /// Mass outside the modeled domain.
 #[derive(Clone, Debug, Serialize, Default)]
 pub struct OutOfDomain {
@@ -175,6 +187,9 @@ pub struct Report {
     pub best: usize,
     pub estimates: Vec<Estimate>,
     pub out_of_domain: OutOfDomain,
+    /// P(output NaN / Inf) from Tier 3 (absent when Tier 3 did not run).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p_nonfinite: Option<PNonfinite>,
     pub validation: Vec<Validation>,
     /// Residue diagnostics: per rounding site, the largest |Fourier coefficient| at the ulp
     /// frequency and the uniform model's TV bound (docs/errdist.md §4).

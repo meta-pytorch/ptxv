@@ -1,0 +1,50 @@
+// probes/cvt_tf32_rn: cvt.rn / .rz [.relu] [.satfinite] .tf32.f32 (SASS F2FP [.SATFINITE]
+// [.RELU] .TF32.F32.PACK_B [.RZ]). 256 threads, 256 iterations; x = in[i], i = 256 j + t
+// (gen.py: every sign and exponent, mantissas at the rounding edges); out[k * 65536 + i] =
+// variant k of x, k in the order rn, rz, rn.satfinite, rz.satfinite, rn.relu, rz.relu,
+// rn.relu.satfinite, rz.relu.satfinite.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry cvt_tf32_rn(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .pred  %p<2>;
+    .reg .b32   %r<24>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r4, %tid.x;
+LOOP:
+    mul.wide.u32    %rd3, %r4, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    add.s64         %rd5, %rd2, %rd3;
+    ld.global.b32   %r1, [%rd4];
+    cvt.rn.tf32.f32 %r10, %r1;
+    st.global.b32 [%rd5+0], %r10;
+    cvt.rz.tf32.f32 %r11, %r1;
+    st.global.b32 [%rd5+262144], %r11;
+    cvt.rn.satfinite.tf32.f32 %r12, %r1;
+    st.global.b32 [%rd5+524288], %r12;
+    cvt.rz.satfinite.tf32.f32 %r13, %r1;
+    st.global.b32 [%rd5+786432], %r13;
+    cvt.rn.relu.tf32.f32 %r14, %r1;
+    st.global.b32 [%rd5+1048576], %r14;
+    cvt.rz.relu.tf32.f32 %r15, %r1;
+    st.global.b32 [%rd5+1310720], %r15;
+    cvt.rn.relu.satfinite.tf32.f32 %r16, %r1;
+    st.global.b32 [%rd5+1572864], %r16;
+    cvt.rz.relu.satfinite.tf32.f32 %r17, %r1;
+    st.global.b32 [%rd5+1835008], %r17;
+    add.u32         %r4, %r4, 256;
+    setp.lt.u32     %p1, %r4, 65536;
+    @%p1 bra        LOOP;
+    ret;
+}

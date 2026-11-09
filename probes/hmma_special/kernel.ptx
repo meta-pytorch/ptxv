@@ -1,0 +1,43 @@
+// probes/hmma_special: mma.sync.m16n8k16.row.col.f32.bf16.bf16.f32 (HMMA.16816.F32.BF16) on
+// special values, one MMA per CTA (one warp). Lane l of CTA c reads its fragments from
+// in[12 (32 c + l) ..]: a0..a3, b0, b1, c0..c3 (gen.py builds them from logical A[16][16],
+// B[16][8], C[16][8] per test: subnormal products alone / beside tiny products / aligned
+// against products 2^-26 below them, results in the f32 subnormal range, subnormal
+// accumulators, Inf / NaN operands and accumulators, finite overflow, subnormal x Inf);
+// out[4 (32 c + l) ..] = d0..d3.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry hmma_special(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 32, 1, 1
+{
+    .reg .b32   %r<24>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %ctaid.x;
+    shl.b32         %r3, %r2, 5;
+    add.u32         %r3, %r3, %r1;
+    mul.wide.u32    %rd3, %r3, 48;
+    add.s64         %rd4, %rd1, %rd3;
+    mul.wide.u32    %rd5, %r3, 16;
+    add.s64         %rd6, %rd2, %rd5;
+    ld.global.v4.b32 {%r4, %r5, %r6, %r7}, [%rd4];
+    ld.global.v4.b32 {%r8, %r9, %r10, %r11}, [%rd4+16];
+    ld.global.v4.b32 {%r12, %r13, %r14, %r15}, [%rd4+32];
+    mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32
+        {%r16, %r17, %r18, %r19},
+        {%r4, %r5, %r6, %r7},
+        {%r8, %r9},
+        {%r10, %r11, %r12, %r13};
+    st.global.v4.b32 [%rd6], {%r16, %r17, %r18, %r19};
+    ret;
+}

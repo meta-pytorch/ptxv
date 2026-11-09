@@ -1,0 +1,25 @@
+name = "probe_tmem_x2"
+description = """
+Probe for tcgen05.st / ld .16x32bx2 with a half split offset (SASS STTM / LDTM
+.16dp32bit_t0_t15 + _t16_t31, FA4 decode): see kernel.ptx. expected/out.bin is the GB300
+output."""
+ptx = "kernel.ptx"
+entry = "probe_tmem_x2"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [17408]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

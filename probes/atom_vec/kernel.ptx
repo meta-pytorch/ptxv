@@ -1,0 +1,44 @@
+// probes/atom_vec: vector float atomics with a result, atom.global.gpu.acq_rel.add.v4.f32 and
+// atom.global.add.v2.f32 (SASS ATOMG.E.ADD.F32x4 / F32x2.FTZ.RN.STRONG.GPU). 64 threads; thread
+// t adds x = in[4 t ..] into acc[4 t ..] (v4) and in[256 + 2 t ..] into acc[256 + 2 t ..] (v2,
+// destinations not consecutive) and stores the returned old values at old[6 t ..]. acc starts
+// from acc.bin (gen.py: specials, subnormals, random).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry atom_vec(
+    .param .u64 pin,
+    .param .u64 pacc,
+    .param .u64 pold
+)
+.maxntid 64, 1, 1
+{
+    .reg .b32   %r<8>;
+    .reg .f32   %f<16>;
+    .reg .b64   %rd<16>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pacc];
+    ld.param.u64    %rd3, [pold];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd4, %r1, 16;
+    add.s64         %rd5, %rd1, %rd4;
+    add.s64         %rd6, %rd2, %rd4;
+    ld.global.v4.f32 {%f1, %f2, %f3, %f4}, [%rd5];
+    atom.global.gpu.acq_rel.add.v4.f32 {%f5, %f6, %f7, %f8}, [%rd6], {%f1, %f2, %f3, %f4};
+    mul.wide.u32    %rd7, %r1, 8;
+    add.s64         %rd8, %rd1, %rd7;
+    add.s64         %rd9, %rd2, %rd7;
+    ld.global.v2.f32 {%f9, %f10}, [%rd8+1024];
+    atom.global.add.v2.f32 {%f12, %f11}, [%rd9+1024], {%f9, %f10};
+    mul.wide.u32    %rd10, %r1, 24;
+    add.s64         %rd11, %rd3, %rd10;
+    st.global.v2.f32 [%rd11], {%f5, %f6};
+    st.global.v2.f32 [%rd11+8], {%f7, %f8};
+    st.global.v2.f32 [%rd11+16], {%f12, %f11};
+    ret;
+}

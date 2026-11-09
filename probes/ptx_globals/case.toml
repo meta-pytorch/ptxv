@@ -1,0 +1,27 @@
+name = "probe_ptx_globals"
+description = """
+Probe (S-GLOBAL-INIT) for module-scope .global variables on the PTX front: initializers (a
+byte table, a scalar), a zero-initialized array (no initializer: noted), and a scratch array
+written and read back in the launch; symbols as `mov.b64 %rd, sym` and `[sym+off]`
+(kernel.ptx). expected/ is GB300's output (kernel.cubin = ptxas -arch=sm_103a kernel.ptx,
+`ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "ptx_globals"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [96]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

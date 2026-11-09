@@ -1,0 +1,32 @@
+// Probe for PTX syntax forms: %lanemask_{lt,le,ge,gt,eq}, an inline-asm scope register
+// declared without `%`, a `[%rd+-N]` address, vector operand lists starting a continuation
+// line (after a comma, or after a bare mnemonic as ptxas prints mma.sync), and a branch to a
+// label past them. Thread i writes words 8i..8i+7.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry ptx_syntax(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<10>; .reg .b32 %r<20>; .reg .pred %p<2>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mul.wide.u32 %rd3, %r1, 4; add.s64 %rd4, %rd1, %rd3;
+  add.s64 %rd4, %rd4, 2097152;
+  ld.global.u32 %r2, [%rd4+-2097152];
+  mul.wide.u32 %rd5, %r1, 32; add.s64 %rd6, %rd2, %rd5;
+  mov.u32 %r3, %lanemask_lt; mov.u32 %r4, %lanemask_le; mov.u32 %r5, %lanemask_ge;
+  mov.u32 %r6, %lanemask_gt; mov.u32 %r7, %lanemask_eq;
+  st.global.v4.u32 [%rd6],
+	{%r3, %r4, %r5, %r6};
+  {.reg .b32 a; .reg .pred q; mov.b32 a, %r2; add.u32 a, a, 7; setp.ne.u32 q, a, 0;
+  selp.u32 a, a, 1, q; mov.b32 %r8, a;}
+  mov.u32 %r9, 0x11;
+  and.b32 %r10, %r2, 1; setp.eq.u32 %p1, %r10, 0;
+  @%p1 bra $L__BB0_9;
+  mov.u32 %r9, 0x22;
+$L__BB0_9:
+  mov.b64 %rd7, {%r2, %r9};
+  mov.b64
+	{%r11, %r12}, %rd7;
+  st.global.v4.u32 [%rd6+16],
+	{%r7, %r8, %r11, %r12};
+  ret; }

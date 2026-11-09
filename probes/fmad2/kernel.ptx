@@ -1,0 +1,65 @@
+// probes/fmad2: ptxas 13.0 contraction of mul.f32x2 into add / sub.f32x2 (PTX-FMAD), with and
+// without rounding modifiers. 32 threads; thread t reads x, y, z, w = in[8 t .. 8 t + 7] as
+// four .b64 pairs (z near -(x y), w near 1, gen.py) and writes out[32 t ..] as 16 pairs:
+//   0 mul.rn + add.rn (FFMA2)          1 mul.rn + sub.rn, product second (FFMA2 -a)
+//   2 mul.rz + add.rz (FFMA2.RZ)       3, 4 plain mul read by two plain adds (2 FFMA2)
+//   5 mul.rn + add.rn, product stored too (FMUL2 + FADD2), 6 = that product
+//   7 mul.rn + add.rz (FMUL2 + FADD2.RZ)
+//   8 x y + z w (two muls: the first operand's folded), 9 z w + x y defined in the other
+//   order, 10 y z + x across a `$L__tmp` debug label (FFMA2), 11..15 zero
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry fmad2(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 32, 1, 1
+{
+    .reg .b32   %r<4>;
+    .reg .b64   %rd<40>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 32;
+    add.s64         %rd4, %rd1, %rd3;
+    mul.wide.u32    %rd5, %r1, 128;
+    add.s64         %rd6, %rd2, %rd5;
+    ld.global.b64   %rd7, [%rd4];
+    ld.global.b64   %rd8, [%rd4+8];
+    ld.global.b64   %rd9, [%rd4+16];
+    ld.global.b64   %rd23, [%rd4+24];
+    mul.rn.f32x2    %rd10, %rd7, %rd8;
+    add.rn.f32x2    %rd11, %rd10, %rd9;
+    mul.rn.f32x2    %rd12, %rd7, %rd8;
+    sub.rn.f32x2    %rd13, %rd9, %rd12;
+    mul.rz.f32x2    %rd14, %rd7, %rd8;
+    add.rz.f32x2    %rd15, %rd14, %rd9;
+    mul.f32x2       %rd16, %rd7, %rd8;
+    add.f32x2       %rd17, %rd16, %rd9;
+    add.f32x2       %rd18, %rd9, %rd16;
+    mul.rn.f32x2    %rd19, %rd7, %rd8;
+    add.rn.f32x2    %rd20, %rd19, %rd9;
+    mul.rn.f32x2    %rd21, %rd7, %rd8;
+    add.rz.f32x2    %rd22, %rd21, %rd9;
+    mul.rn.f32x2    %rd24, %rd7, %rd8;
+    mul.rn.f32x2    %rd25, %rd9, %rd23;
+    add.rn.f32x2    %rd26, %rd24, %rd25;
+    mul.rn.f32x2    %rd27, %rd23, %rd9;
+    mul.rn.f32x2    %rd28, %rd8, %rd7;
+    add.rn.f32x2    %rd29, %rd27, %rd28;
+    mul.rn.f32x2    %rd30, %rd8, %rd9;
+$L__tmp0:
+    add.rn.f32x2    %rd31, %rd30, %rd7;
+    st.global.v2.b64 [%rd6+64], {%rd26, %rd29};
+    st.global.b64   [%rd6+80], %rd31;
+    st.global.v2.b64 [%rd6], {%rd11, %rd13};
+    st.global.v2.b64 [%rd6+16], {%rd15, %rd17};
+    st.global.v2.b64 [%rd6+32], {%rd18, %rd20};
+    st.global.v2.b64 [%rd6+48], {%rd19, %rd22};
+    ret;
+}

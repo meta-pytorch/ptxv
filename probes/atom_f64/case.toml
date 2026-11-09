@@ -1,0 +1,38 @@
+name = "probe_atom_f64"
+description = """
+Probe (L-ROSETTA) for atom.add.f64 / red.add.f64 (SASS ATOMG / REDG .E.ADD.F64.RN): each
+thread atom-adds b[i] to its own acc[i] (special and random pairs; the old value returned) and
+red-adds the integer i % 7 to sum[i % 4] (kernel.ptx, gen.py; mem = acc | old | sum). expected/ is GB300's output
+(ptxas cubin, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "atom_f64"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["mem"]
+
+[[buffers]]
+name = "mem"
+dtype = "u32"
+shape = [1032]
+init = "file"
+file = "mem.bin"
+expect = "expected/mem.bin"
+
+[[buffers]]
+name = "b"
+dtype = "u32"
+shape = [512]
+init = "file"
+file = "b.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "mem"
+
+[[params]]
+kind = "ptr"
+buffer = "b"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

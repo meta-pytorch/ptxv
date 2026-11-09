@@ -3057,6 +3057,7 @@ mod dag_tests {
                 outputs: vec![Some(cur[0])],
                 out_fmt: Format::F32,
                 bufs: vec!["x".into()],
+                dep_untracked: vec![],
             },
             adds,
         )

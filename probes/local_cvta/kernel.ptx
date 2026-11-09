@@ -1,0 +1,49 @@
+// probes/local_cvta: nvcc's stack-buffer shape on the PTX front. The generic address of a
+// local buffer (cvta.local of %SPL, + k) is taken once; a later block converts it back with
+// cvta.to.local and fills the buffer through it with st.local.v2 at a per-thread offset; the
+// words are read back through %SPL directly (ld.local) and stored. out[t] = t + 7, out[64 + t]
+// = t * 3, out[128 + t] = the round trip's offset (low word of generic - generic base).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry local_cvta(
+    .param .u64 pout
+)
+.maxntid 64, 1, 1
+{
+    .local .align 16 .b8 __local_depot0[32];
+    .reg .b64   %SP;
+    .reg .b64   %SPL;
+    .reg .pred  %p<2>;
+    .reg .b32   %r<12>;
+    .reg .b64   %rd<20>;
+
+    mov.u64         %SPL, __local_depot0;
+    cvta.local.u64  %SP, %SPL;
+    ld.param.u64    %rd1, [pout];
+    cvta.to.global.u64 %rd2, %rd1;
+    mov.u32         %r1, %tid.x;
+    add.u64         %rd3, %SP, 8;
+    add.u64         %rd4, %SPL, 8;
+    and.b32         %r2, %r1, 1;
+    setp.eq.u32     %p1, %r2, 0;
+    @%p1 bra        EVEN;
+    add.u64         %rd3, %rd3, 8;
+    add.u64         %rd4, %rd4, 8;
+EVEN:
+    cvta.to.local.u64 %rd5, %rd3;
+    add.u32         %r3, %r1, 7;
+    mul.lo.u32      %r4, %r1, 3;
+    st.local.v2.u32 [%rd5], {%r3, %r4};
+    ld.local.u32    %r5, [%rd4];
+    ld.local.u32    %r6, [%rd4+4];
+    sub.u64         %rd6, %rd5, %SPL;
+    cvt.u32.u64     %r7, %rd6;
+    mul.wide.u32    %rd7, %r1, 4;
+    add.s64         %rd8, %rd2, %rd7;
+    st.global.u32   [%rd8], %r5;
+    st.global.u32   [%rd8+256], %r6;
+    st.global.u32   [%rd8+512], %r7;
+    ret;
+}

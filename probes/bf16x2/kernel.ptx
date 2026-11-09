@@ -1,0 +1,103 @@
+// probes/bf16x2: packed bf16 arithmetic and atomics against GB300. Thread g (16 CTAs x 256)
+// loads (a, b, c) = in[g] (packed bf16x2 words, gen.py) and stores out[j][g]:
+//   j = 0: mul.rn.bf16x2 a, b        (SASS HMUL2.BF16_V2)
+//   j = 1: add.rn.bf16x2 a, b        (HADD2.BF16_V2)
+//   j = 2: fma.rn.bf16x2 a, b, c     (HFMA2.BF16_V2)
+//   j = 3: mul.bf16x2 a, b           (HFMA2.BF16_V2 a, b, -RZ)
+//   j = 4: sub.rn.bf16x2 a, b        (HADD2.BF16_V2 a, -b)
+//   j = 5: add.bf16x2 a, b           (HFMA2.BF16_V2 a, 1, 1, b)
+//   j = 6: neg.bf16x2 b              (HFMA2.BF16_V2 -RZ.H0_H0, RZ.H0_H0, -b)
+//   j = 7: fma.rn.relu.bf16x2 a, b, c (HFMA2.BF16_V2.RELU)
+//   j = 8: {lo: mul.rn.bf16 a.lo, b.hi; hi: add.rn.bf16 a.hi, c.lo}   (.H0_H0 / .H1_H1 lanes)
+//   j = 9: {lo: mul.bf16 a.lo, c.lo; hi: fma.rn.bf16 a.hi, b.lo, c.hi}
+//   j = 10: mul.rn.bf16x2 a, {1.5, -0.75}; j = 11: add.rn.bf16x2 a, {2^-8, -2^-133};
+//   j = 12: fma.rn.bf16x2 a, {2, -3}, c   (immediate pairs)
+//   j = 13: old value of atom.global.add.noftz.bf16x2 [m0 + 4g], b   (ATOMG.E.ADD.BF16x2.RN)
+//   j = 14: old value of atom.global.gpu.relaxed.add.noftz.v2.bf16 [m2 + 4g], {b.lo, b.hi}
+//   j = 15: {lo: old of atom.global.add.noftz.bf16 [m3 + 4g], b.lo; hi: 0}
+// m = 4 x 4096 words, all initially a: m0 / m2 as above, m1: red.global.add.noftz.bf16x2
+// [m1 + 4g], b (REDG.E.ADD.BF16x2.RN); m3: the scalar atom on the low half, then
+// red.global.add.noftz.bf16 [m3 + 4g + 2], b.hi on the high half (ATOMG.E.CAS loops + HADD2).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry bf16x2(
+    .param .u64 pin,
+    .param .u64 pm,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<64>;
+    .reg .b16   %h<32>;
+    .reg .b64   %rd<16>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pm];
+    ld.param.u64    %rd3, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %ctaid.x;
+    mad.lo.u32      %r3, %r2, 256, %r1;
+    mul.wide.u32    %rd4, %r3, 12;
+    add.s64         %rd4, %rd1, %rd4;
+    ld.global.u32   %r4, [%rd4];
+    ld.global.u32   %r5, [%rd4+4];
+    ld.global.u32   %r6, [%rd4+8];
+    mul.wide.u32    %rd5, %r3, 4;
+    add.s64         %rd6, %rd3, %rd5;
+    add.s64         %rd7, %rd2, %rd5;
+
+    mul.rn.bf16x2   %r10, %r4, %r5;
+    add.rn.bf16x2   %r11, %r4, %r5;
+    fma.rn.bf16x2   %r12, %r4, %r5, %r6;
+    mul.bf16x2      %r13, %r4, %r5;    // @nrn1
+    sub.rn.bf16x2   %r14, %r4, %r5;
+    add.bf16x2      %r15, %r4, %r5;    // @nrn2
+    neg.bf16x2      %r16, %r5;
+    fma.rn.relu.bf16x2 %r17, %r4, %r5, %r6;
+    mov.b32         {%h1, %h2}, %r4;
+    mov.b32         {%h3, %h4}, %r5;
+    mov.b32         {%h5, %h6}, %r6;
+    mul.rn.bf16     %h7, %h1, %h4;
+    add.rn.bf16     %h8, %h2, %h5;
+    mov.b32         %r18, {%h7, %h8};
+    mul.bf16        %h9, %h1, %h5;     // @nrn3
+    fma.rn.bf16     %h10, %h2, %h3, %h6;
+    mov.b32         %r19, {%h9, %h10};
+    mov.b32         %r30, 0x3fc0bf40;
+    mul.rn.bf16x2   %r20, %r4, %r30;
+    mov.b32         %r31, 0x3b808001;
+    add.rn.bf16x2   %r21, %r4, %r31;
+    mov.b32         %r32, 0x4000c040;
+    fma.rn.bf16x2   %r22, %r4, %r32, %r6;
+
+    atom.global.add.noftz.bf16x2 %r23, [%rd7], %r5;
+    red.global.add.noftz.bf16x2 [%rd7+16384], %r5;
+    atom.global.gpu.relaxed.add.noftz.v2.bf16 {%h11, %h12}, [%rd7+32768], {%h3, %h4};
+    mov.b32         %r24, {%h11, %h12};
+    atom.global.add.noftz.bf16 %h13, [%rd7+49152], %h3;
+    red.global.add.noftz.bf16 [%rd7+49154], %h4;
+    cvt.u32.u16     %r25, %h13;
+
+    st.global.u32   [%rd6], %r10;
+    st.global.u32   [%rd6+16384], %r11;
+    st.global.u32   [%rd6+32768], %r12;
+    st.global.u32   [%rd6+49152], %r13;
+    st.global.u32   [%rd6+65536], %r14;
+    st.global.u32   [%rd6+81920], %r15;
+    st.global.u32   [%rd6+98304], %r16;
+    st.global.u32   [%rd6+114688], %r17;
+    st.global.u32   [%rd6+131072], %r18;
+    st.global.u32   [%rd6+147456], %r19;
+    st.global.u32   [%rd6+163840], %r20;
+    st.global.u32   [%rd6+180224], %r21;
+    st.global.u32   [%rd6+196608], %r22;
+    st.global.u32   [%rd6+212992], %r23;
+    st.global.u32   [%rd6+229376], %r24;
+    st.global.u32   [%rd6+245760], %r25;
+    ret;
+}

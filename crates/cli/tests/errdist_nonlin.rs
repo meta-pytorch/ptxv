@@ -141,7 +141,8 @@ fn elementwise_pairs() {
 #[test]
 fn multi_launch_pair() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    if ptxv_case::skip_missing_vendor_files(&root.join("fixtures"), &["fixtures/errdist/mm2.toml"]) {
+    if ptxv_case::skip_missing_vendor_files(&root.join("fixtures"), &["fixtures/errdist/mm2.toml"])
+    {
         return;
     }
     let j = errdist(

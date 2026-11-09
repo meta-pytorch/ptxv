@@ -144,6 +144,9 @@ pub(crate) struct Run {
     pub(crate) pre: Vec<String>,
     /// Assumptions beyond the usual ones that the preconditions rely on.
     pub(crate) notes: Vec<String>,
+    /// errdist with non-finite captured inputs replaced (N-ERRDIST-FINCAP): the simulator's
+    /// first output at the unmodified captured input, for the comparison with the GPU's.
+    pub(crate) captured_out: Option<Vec<f32>>,
 }
 
 impl Run {
@@ -158,6 +161,71 @@ pub(crate) fn prepare(
     max_states: usize,
     dir: &Path,
     segments: bool,
+) -> Result<Run> {
+    prepare_with(base, k, max_states, dir, segments, false)
+}
+
+/// Integer buffers (i8 / i16 / i32 / i64 / u32 / u64: lengths, indices, packed integers) are
+/// never errdist leaves: Tier 3 holds them at their captured bytes.
+pub(crate) fn int_buffer(case: &Case, name: &str) -> bool {
+    case.m.buffers.iter().any(|b| {
+        b.name == name
+            && matches!(
+                b.dtype.as_str(),
+                "i8" | "i16" | "i32" | "i64" | "u32" | "u64"
+            )
+    })
+}
+
+/// errdist's extraction run: every non-finite element of an f32 / bf16 / f16 input buffer
+/// becomes +0 (errdist's input distributions are finite, so a captured infinity or NaN would
+/// put the run on a path no sample takes). Returns the number of elements changed.
+// ASSUME(N-ERRDIST-FINCAP): see ASSUMPTIONS.md
+fn finite_inputs(case: &Case, launch: &mut ptxv_sim::machine::Launch) -> usize {
+    let mut n = 0;
+    let outputs = launch.outputs.clone();
+    for (i, a) in launch.allocs.iter_mut().enumerate() {
+        if outputs.contains(&i) && out_only(case, &a.name) {
+            continue;
+        }
+        let Some(b) = case.m.buffers.iter().find(|b| b.name == a.name) else {
+            continue;
+        };
+        match b.dtype.as_str() {
+            "f32" => {
+                for w in a.init.chunks_exact_mut(4) {
+                    let x = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                    if x & 0x7f80_0000 == 0x7f80_0000 {
+                        w.fill(0);
+                        n += 1;
+                    }
+                }
+            }
+            "bf16" | "f16" => {
+                let e = if b.dtype == "bf16" { 0x7f80u16 } else { 0x7c00 };
+                for w in a.init.chunks_exact_mut(2) {
+                    if u16::from_le_bytes([w[0], w[1]]) & e == e {
+                        w.fill(0);
+                        n += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    n
+}
+
+/// `prepare`; `fixed_ints` (errdist): integer input buffers are not taint sources, as errdist
+/// holds them fixed at their captured values (control on a sequence length is then fixed).
+// ASSUME(N-ERRDIST-INTFIX): see ASSUMPTIONS.md
+pub(crate) fn prepare_with(
+    base: &Path,
+    k: &KernelRef,
+    max_states: usize,
+    dir: &Path,
+    segments: bool,
+    fixed_ints: bool,
 ) -> Result<Run> {
     let case = Case::load(base.join(&k.case))?;
     let (kern, cubin) = load_with(&case, &k.variant, &k.front, dir, &[])?;
@@ -176,7 +244,34 @@ pub(crate) fn prepare(
         let make = || machine(&case, kern.clone()).expect("machine");
         ptxv_sim::explore::explore_symmetric(&make, max_states, &mut |_, _| {})
     } else if k.certify {
-        ptxv_sim::wellsync::check_certified(machine(&case, kern.clone())?, max_states)
+        // `ptxv check --certify` may have run this check already (vcache.rs).
+        let key = case
+            .variant(&k.variant)?
+            .after
+            .is_empty()
+            .then(|| crate::vcache::key(&case.dir, &k.variant, &k.front, "certify"))
+            .flatten();
+        match key
+            .as_deref()
+            .and_then(|key| crate::vcache::load(key, max_states))
+        {
+            Some(v) => {
+                notes.push(format!(
+                    "execution check: the verdict of an earlier `ptxv check --certify` of the same case, variant and binary ({} states{})",
+                    v.states,
+                    if v.complete { ", complete" } else { "" }
+                ));
+                v
+            }
+            None => {
+                let v =
+                    ptxv_sim::wellsync::check_certified(machine(&case, kern.clone())?, max_states);
+                if let Some(key) = &key {
+                    crate::vcache::store(key, max_states, &v);
+                }
+                v
+            }
+        }
     } else {
         explore(machine(&case, kern.clone())?, max_states)
     };
@@ -184,29 +279,9 @@ pub(crate) fn prepare(
     // break the preconditions; they are listed as what the verdict relies on.
     notes.extend(v.notes.iter().cloned());
     let mut classes = v.classes();
-    // ASSUME(E-DESC-VERSION): Triton 3.5 leaves the fixed bits 46-48 of its tcgen05
-    // shared-memory descriptors 0; GB300 ignores them (every Triton tcgen05 fixture matches it
-    // bitwise). A PTX-contract deviation the hardware tolerates, listed as relied on.
-    let desc = |f: &&ptxv_sim::machine::Finding| {
-        f.kind == "violation" && f.sig.starts_with("desc-version:")
-    };
-    if v.findings.iter().any(|f| desc(&f)) {
-        notes.push(format!(
-            "relies on: E-DESC-VERSION ({} tcgen05.mma with shared-memory descriptor bits 46-48 = 0; GB300 ignores them)",
-            v.findings.iter().filter(desc).count()
-        ));
-        if !v
-            .findings
-            .iter()
-            .any(|f| f.kind == "violation" && !desc(&f))
-        {
-            classes.retain(|c| c != "violation");
-            if classes.is_empty() {
-                classes.push("clean".into());
-            }
-        }
-    }
     let nondet = classes.iter().any(|c| c == "nondeterministic");
+    // ASSUME(E-DESC-VERSION): a tcgen05.mma descriptor with bits 46-48 = 0 is a `contract`
+    // finding (GB300 ignores the bits, probes/desc_version), listed here as relied on.
     if classes.iter().any(|c| c == "contract") {
         for f in v.findings.iter().filter(|f| f.kind == "contract") {
             notes.push(format!("relies on: {}", f.msg));
@@ -217,7 +292,26 @@ pub(crate) fn prepare(
         }
     }
     // The numerics run, with the taint shadow (precondition 2).
-    let mut m = machine(&case, kern.clone())?;
+    let mut captured_out = None;
+    let mut m = if fixed_ints {
+        let mut launch = ptxv_sim::build_launch(&case, &kern)?;
+        let n = finite_inputs(&case, &mut launch);
+        if n > 0 {
+            let (m0, _, ok) = run_once(machine(&case, kern.clone())?);
+            if ok {
+                captured_out = Some(out_f32(&m0, &case));
+            }
+            notes.push(format!(
+                "relies on: N-ERRDIST-FINCAP ({n} non-finite captured float input elements set to 0 for the extraction run)"
+            ));
+        }
+        Machine::new(
+            std::sync::Arc::new(kern.clone()),
+            std::sync::Arc::new(launch),
+        )
+    } else {
+        machine(&case, kern.clone())?
+    };
     let mut ns = NumState::with_mma_eps(m.launch.mma_model.eps());
     ns.segments = segments;
     for &o in &m.launch.outputs {
@@ -256,7 +350,7 @@ pub(crate) fn prepare(
                 .m
                 .buffers
                 .iter()
-                .any(|b| b.name == a.name && matches!(b.dtype.as_str(), "u8" | "u16"))
+                .any(|b| b.name == a.name && matches!(b.dtype.as_str(), "u8" | "u16" | "e4m3"))
             {
                 ns.half.inputs.insert(i, ptxv_sim::halfin::Half::Byte);
             }
@@ -283,10 +377,21 @@ pub(crate) fn prepare(
             _ => {}
         }
     }
+    let mut fixed = vec![];
     for (i, a) in m.launch.allocs.iter().enumerate() {
+        if fixed_ints && !out_only(&case, &a.name) && int_buffer(&case, &a.name) {
+            fixed.push(a.name.clone());
+            continue;
+        }
         if !out_only(&case, &a.name) {
             ns.taint.taint_alloc(i, a.init.len());
         }
+    }
+    if !fixed.is_empty() {
+        notes.push(format!(
+            "integer input buffers held at their captured values (N-ERRDIST-INTFIX): {}",
+            fixed.join(", ")
+        ));
     }
     m.num = Some(Box::new(ns));
     let (mut m, findings, ok) = run_once(m);
@@ -321,7 +426,20 @@ pub(crate) fn prepare(
         ));
     }
     let mut excused = 0;
+    let mut sel_excused = 0;
     for v in &ns.taint.violations {
+        // ASSUME(N-ERRDIST-SEL): a store under a data-dependent guard is a selection node
+        // (`NodeKind::Sel`, both outcomes), not a different dataflow.
+        if ns.segments
+            && ns
+                .taint
+                .violation_pcs
+                .get(v)
+                .is_some_and(|pc| ns.sel_pcs.contains(pc) && !ns.seg_fails.contains_key(pc))
+        {
+            sel_excused += 1;
+            continue;
+        }
         // ASSUME(N-SEG): a data-dependent guard of an instruction inside a materialized slice
         // is part of the slice's function (both outcomes), not a different dataflow.
         if ns.segments
@@ -338,6 +456,11 @@ pub(crate) fn prepare(
     }
     for v in ptxv_sim::seg::divrn_dead(&m) {
         pre.push(format!("data-dependent: {v}"));
+    }
+    if sel_excused > 0 {
+        notes.push(format!(
+            "relies on: N-ERRDIST-SEL ({sel_excused} stores under a data-dependent guard, modeled as selections)"
+        ));
     }
     if excused > 0 {
         notes.push(format!(
@@ -369,6 +492,7 @@ pub(crate) fn prepare(
         m,
         pre,
         notes,
+        captured_out,
     })
 }
 
@@ -1365,7 +1489,7 @@ fn run_on(
             .filter(|_| !out_only(&run.case, &b.name))
         {
             let p = dir.join(format!("trial{t}.{}.bin", b.name));
-            let bytes: Vec<u8> = if matches!(b.dtype.as_str(), "u8" | "u16") {
+            let bytes: Vec<u8> = if matches!(b.dtype.as_str(), "u8" | "u16" | "e4m3") {
                 // Byte codes (`trial_inputs`).
                 v.iter().map(|x| *x as u8).collect()
             } else if b.dtype == "bf16" {
@@ -1396,6 +1520,11 @@ fn run_on(
     if !ok {
         bail!("trial {t} of {} did not terminate", run.label());
     }
+    Ok(out_f32(&m, &c))
+}
+
+/// The first output buffer of a finished run as f32 values (bf16 / f16 widened).
+pub(crate) fn out_f32(m: &Machine, c: &Case) -> Vec<f32> {
     let oi = m.launch.outputs[0];
     let mem = &m.gmem[oi];
     let dt =
@@ -1404,7 +1533,7 @@ fn run_on(
             .find(|b| b.name == m.launch.allocs[oi].name)
             .map_or("f32", |b| b.dtype.as_str());
     if dt == "bf16" || dt == "f16" {
-        return Ok((0..mem.bytes.len() / 2)
+        return (0..mem.bytes.len() / 2)
             .map(|i| {
                 let h = u16::from_le_bytes([*mem.bytes.get(i * 2), *mem.bytes.get(i * 2 + 1)]);
                 f32::from_bits(if dt == "f16" {
@@ -1413,11 +1542,11 @@ fn run_on(
                     (h as u32) << 16
                 })
             })
-            .collect());
+            .collect();
     }
-    Ok((0..mem.bytes.len() / 4)
+    (0..mem.bytes.len() / 4)
         .map(|i| f32::from_le_bytes([0, 1, 2, 3].map(|j| *mem.bytes.get(i * 4 + j))))
-        .collect())
+        .collect()
 }
 
 /// Empirical check of the proven bounds over `n` random trials.

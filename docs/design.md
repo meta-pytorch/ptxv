@@ -84,7 +84,8 @@ CuTeDSL, DeepGEMM sm100, Triton Blackwell, symmetric-memory collectives) depend 
   arithmetic. The skeleton tracks them concretely, and footprints come from decoding them.
 
 ### 1.2 TMA / bulk async copies
-* `cp.async.bulk.tensor` in tile, im2col and `tile::gather4/scatter4` modes, `.multicast::cluster`,
+* `cp.async.bulk.tensor` in tile and `tile::gather4` modes (the PTX front refuses
+  every im2col form and any other mode modifier rather than lower it as tiled), `.multicast::cluster`,
   `.cta_group::2`, cache hints, `prefetch.tensor`. The footprint is the decoded box of the
   `CUtensorMap`: dims, strides, box, element strides, swizzle, interleave, OOB fill.
 * `cp.async.bulk` (contiguous), `cp.reduce.async.bulk(.tensor)`. A TMA *reduce-add* into
@@ -229,6 +230,10 @@ HB is tracked with **vector clocks over epochs**, not over individual instructio
 
 ### 3.3 Skeleton slicing (what makes exhaustive search feasible)
 
+**Not implemented** (2026-11-08): there is no skeleton slice or ghost memory; exploration runs the full concrete state. The reductions in use are listed in docs/grid-cost.md (representative CTAs, slices, the E-WELLSYNC certificate, partial-order reduction).
+
+**Deferred** (2026-11-08): slicing is not planned. Its main benefit, avoiding interleavings of instructions that touch no shared state, is largely covered by the E-WELLSYNC certificate. It does not address the main source of timeouts: data-dependent control and synchronization (e.g. the multi-GPU MoE dispatch / combine kernels), where the sliced state still includes the data-dependent values. The design below is kept for reference and can be revisited if future workloads need it.
+
 Backward-slice the IR from (a) every sync-visible instruction, (b) every branch condition that
 controls one, and (c) every **address** and descriptor operand of a memory or async op. What
 remains is the skeleton: loop counters, stage indices, phase bits, tile-scheduler state, CLC
@@ -301,6 +306,24 @@ verdict's classes do not change. `--no-gb300` turns the second level off. A refu
 assumption (E-POLL-ACQ) can back a verdict only with an explicit opt-in (case
 `assume_refuted`, `--assume-refuted`), which the verdict names.
 
+**NaN / Inf outputs (opt-in, `crates/sim/src/nonfinite.rs`).** `ptxv check --nonfinite`
+(Python `check(..., nonfinite=True)`) scans the float output buffers of every distinct
+terminal state by dtype (f64, f32, f16, bf16, e4m3 (NaN only), e5m2; fp4 / fp6 have no
+NaN / Inf) and adds a `nonfinite-output` finding per buffer with NaN / Inf when every float
+input element is finite. Inputs that already hold NaN / Inf make it a note
+(`--nonfinite-strict`: a finding). Provenance: during the check, every arithmetic
+instruction (FADD / FFMA / FFMA2 / MUFU / div, the f16 / bf16 / fp8 / fp4 conversions,
+HFMA2, DFMA) whose result is non-finite while its operands were finite (overflow, 0 / 0,
+log / rsqrt of 0 or a negative), or NaN while no operand was NaN (inf - inf, 0 * inf), is a
+*birth*, reported with its operands. Moves, selects, min / max and loads are never births and
+an infinite constant is an operand like any other, so a mask's -inf is not one; the NaN it
+later produces is. A finding names the births of its kind (Inf or NaN). Birth counts are
+executions seen during the check: an explored check repeats them per schedule. The
+simulator's NaN / Inf behavior is GB300's on the probed instructions (fixtures
+c_nonfinite_*: satfinite e4m3 / e5m2 conversions saturate, MUFU.EX2 overflows to +inf,
+`max.f32(NaN, 0)` = 0, f16 conversion overflow; outputs bitwise equal to the captures).
+errdist reports P(output NaN / Inf) from its Tier 3 count (`p_nonfinite`, docs/errdist.md).
+
 User invariants: a small predicate language over skeleton state, e.g. "stage `s` is written
 by TMA at most once per phase", "every tile is claimed exactly once across CLC + atomics", or
 "a rank never reuses buffer `b` before all peers signal done".
@@ -318,7 +341,7 @@ by TMA at most once per phase", "every tile is claimed exactly once across CLC +
 * **Symmetry reduction:** warps, warpgroups, CTAs and ranks that run identical skeleton code
   are canonicalized by sorting their skeleton states. Footprints are *not* symmetric, but they
   are checked separately (§3.3), so this is sound.
-* **Loop cutoffs (toward parameterized proofs):** a pipelined mainloop's skeleton depends on
+* **Loop cutoffs (toward parameterized proofs; not implemented):** a pipelined mainloop's skeleton depends on
   `k mod S`, the phase bits and predicates such as `k == 0` / `k == K-1`. We abstract the
   counter into those predicates and check that the abstraction is exact for the skeleton.
   Exploration then covers *every* K ≥ the cutoff, not just the captured K. When the
@@ -329,7 +352,7 @@ by TMA at most once per phase", "every tile is claimed exactly once across CLC +
   that may be concurrent (anything not ordered by grid-level sync) checks write-footprint
   disjointness across all CTAs and all GPUs. This catches tile-index arithmetic that is only
   wrong at large shapes.
-* **Stochastic mode** for configurations too large to explore exhaustively: PCT (probabilistic
+* **Stochastic mode** (not implemented) for configurations too large to explore exhaustively: PCT (probabilistic
   concurrency testing) gives a stated lower bound on the probability of hitting any bug of
   depth d per run. We report that bound and coverage (skeleton states, epoch pairs, phase
   combinations), never "verified".
@@ -376,7 +399,7 @@ while waiting on a CTA that cannot allocate, and missing `relinquish_alloc_permi
   and a per-instruction pointer into the semantics table.
 * **`sim`:** one interpreter, generic over a **value domain** and a **scheduler**:
   * value domains: `Concrete` (bits), `Skeleton` (concrete only on sliced registers, ghost
-    elsewhere), `Shadow` (bits + exact/interval real + optional linear error form, §5.2);
+    elsewhere; not implemented, deferred, see §3.3), `Shadow` (bits + exact/interval real + optional linear error form, §5.2);
   * schedulers: model-checker-controlled, PCT random, "deterministic fastest" (for numerics);
   * SIMT execution as SoA lanes (`[u32; 32]`) with active masks, so per-warp ops vectorize;
   * memory spaces: registers, smem, DSMEM (via a cluster map), TMEM (lanes × columns),

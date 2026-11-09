@@ -685,6 +685,22 @@ impl Side<'_> {
                 id.put(&polys);
                 poly.insert(vec![(MAX_LEAF, id.done().0)], Term::one());
             }
+            NodeKind::Sel { pred, neg, a, b } => {
+                let mut id = H2::new();
+                id.put(("sel", *neg));
+                for o in &pred.0.ops {
+                    id.put(format!("{:?}", o.kind));
+                }
+                id.put(format!("{:?}", pred.0.out));
+                for &x in pred.0.args.iter().chain([a, b]) {
+                    let (hx, px) = self.node(x, cx, memo);
+                    h.put(hx);
+                    poly_id(&mut id, &px);
+                }
+                let id = id.done().0;
+                h.put(("sel", id));
+                poly.insert(vec![(SEG_LEAF, id)], Term::one());
+            }
             NodeKind::Seg(p) => {
                 let mut id = H2::new();
                 for o in &p.0.ops {

@@ -555,6 +555,30 @@ impl<'a> KModel<'a> {
                     (v, l, rl, law, 0.5)
                 }
                 Op::Nl(nl) => match nl {
+                    // The branch the predicate takes at the nominal values; the tier is refused
+                    // on programs with a selection (N-ERRDIST-SEL), this only keeps values.
+                    NlOp::Sel {
+                        pred,
+                        args,
+                        neg,
+                        a,
+                        b,
+                    } => {
+                        let v: Vec<f32> = args.iter().map(|&j| s.v[j as usize] as f32).collect();
+                        let mut scratch = Vec::new();
+                        let pick = if NlOp::sel_holds(pred, *neg, &v, &mut scratch) {
+                            *a as usize
+                        } else {
+                            *b as usize
+                        };
+                        (
+                            s.v[pick],
+                            s.lat[pick],
+                            s.rlat[pick],
+                            Law::Zero,
+                            s.podd[pick],
+                        )
+                    }
                     NlOp::Max { a, b, min } => {
                         let (x, y) = (*a as usize, *b as usize);
                         let pick = if (s.v[x] >= s.v[y]) != *min || s.v[y].is_nan() {
@@ -898,6 +922,22 @@ impl<'a> KModel<'a> {
                         dm = -dm;
                     }
                     push(*arg, crate::num::mufu_true_deriv(*func, *ptx, z) * dm);
+                }
+                Op::Nl(NlOp::Sel {
+                    pred,
+                    args,
+                    neg,
+                    a,
+                    b,
+                }) => {
+                    let v: Vec<f32> = args.iter().map(|&j| s.v[j as usize] as f32).collect();
+                    let mut scratch = Vec::new();
+                    let k = if NlOp::sel_holds(pred, *neg, &v, &mut scratch) {
+                        *a
+                    } else {
+                        *b
+                    };
+                    push(k, 1.0);
                 }
                 Op::Nl(NlOp::Seg { args, real, .. }) => {
                     if let Some(f) = real {

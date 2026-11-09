@@ -44,3 +44,11 @@ marker = "@B54"
 find = "// (B54 drops the stolen tile here)"
 replace = "@%p2 mov.u32    %r8, 0xffffffff;"
 expect = ["nondeterministic"]
+
+[[variants]]
+id = "v2pack"
+marker = "@V2PACK"
+summary = "the response loaded as .v2.b64 and packed with mov.b128 (unpacked and repacked once more)"
+find = "ld.shared.b128  %q0, [%r1];"
+replace = "ld.shared.v2.b64 {%rd4, %rd5}, [%r1]; mov.b128 %q1, {%rd4, %rd5}; mov.b128 {%rd6, %rd7}, %q1; mov.b128 %q0, {%rd6, %rd7};"
+expect = ["clean"]

@@ -233,6 +233,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ptxv-case",
+ "ptxv-sass",
  "serde",
  "serde_json",
 ]
@@ -258,6 +259,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ptxv-ir",
+ "serde_json",
 ]
 
 [[package]]

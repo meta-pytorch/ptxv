@@ -259,16 +259,20 @@ pub(crate) fn eval_inst(
             }) as u64
         }
         Op::Hsetp2Bf16 {
+            q: qd,
             cmp,
             a,
             b,
-            hi,
+            sel,
+            neg,
+            abs,
             c,
             bop,
+            f16,
             ..
         } => {
-            let lane = |v: u32, h: bool| (if h { v >> 16 } else { v & 0xffff }) << 16;
-            let r = fp::f32_cmp(lane(w(a), hi[0]), lane(w(b), hi[1]), *cmp, false);
+            let lane = (Some(dst) == *qd) as u32;
+            let r = fp::hsetp2_lane((w(a), w(b)), *sel, (*neg, *abs), *f16, *cmp, lane);
             let q = rp(c);
             (match bop {
                 BoolOp::And => r && q,
@@ -299,6 +303,15 @@ pub(crate) fn eval_inst(
         Op::Fmnmx {
             a,
             b,
+            min,
+            ftz,
+            nan,
+            xorsign: true,
+            ..
+        } => fp::f32_minmax_xorsign(w(a), w(b), rp(min), *nan, *ftz) as u64,
+        Op::Fmnmx {
+            a,
+            b,
             c,
             neg,
             abs,
@@ -316,6 +329,46 @@ pub(crate) fn eval_inst(
             }
             r as u64
         }
+        Op::Hfma2Bf16 {
+            a,
+            b,
+            c,
+            sel,
+            neg,
+            abs,
+            relu,
+            ..
+        } => fp::hfma2_bf16([w(a), w(b), w(c)], *sel, (*neg, *abs), *relu) as u64,
+        Op::FfmaBf16 {
+            a,
+            b,
+            c,
+            hi,
+            neg,
+            rnd,
+            sat,
+            ..
+        } => fp::ffma_bf16([w(a), w(b), w(c)], *hi, *neg, *rnd, *sat) as u64,
+        Op::Hmnmx2Bf16 {
+            a,
+            b,
+            sel,
+            min,
+            nan,
+            xorsign,
+            ..
+        } => fp::hmnmx2_bf16((w(a), w(b)), *sel, rp(min), *nan, *xorsign) as u64,
+        Op::Vhmnmx {
+            a,
+            b,
+            c,
+            sel,
+            abs,
+            min,
+            nan,
+            f16,
+            ..
+        } => fp::vhmnmx([w(a), w(b), w(c)], *sel, *abs, (rp(min), *nan, *f16)) as u64,
         Op::Shf {
             lo,
             sh,
@@ -463,13 +516,19 @@ pub(crate) fn eval_inst(
             }) as u64
         }
         // `P2R d, PR, a, mask`: d = (a & !mask) | (bit i = Pi, i in mask).
-        Op::P2r { a, mask, .. } => {
-            let mut pr = 0u64;
+        Op::P2r {
+            a,
+            mask,
+            uniform,
+            shift,
+            ..
+        } => {
+            let mut pr = 1u64 << 7; // PT / UPT
             for i in 0..7u16 {
                 if mask >> i & 1 == 1 {
                     let p = Pred {
                         reg: Some(Reg {
-                            file: File::P,
+                            file: if *uniform { File::UP } else { File::P },
                             idx: i,
                         }),
                         neg: false,
@@ -477,12 +536,20 @@ pub(crate) fn eval_inst(
                     pr |= (rp(&p) as u64) << i;
                 }
             }
-            let m = *mask as u64;
+            let (m, pr) = ((*mask as u64) << shift, pr << shift);
             (rv(a) & !m & 0xffff_ffff) | (pr & m)
         }
         // FFMA2 / FMUL2 / FADD2: the lane `dst` holds (exec.rs: lanes of a 64-bit operand are
         // its two registers; `.F32` broadcasts the low one).
-        Op::Ffma2 { d, a, b, c, neg } => {
+        Op::Ffma2 {
+            d,
+            a,
+            b,
+            c,
+            neg,
+            abs,
+            rnd,
+        } => {
             let lane = dst.idx.wrapping_sub(d.idx);
             if lane > 1 {
                 return Err("FFMA2 lane".into());
@@ -506,11 +573,12 @@ pub(crate) fn eval_inst(
                 }
             };
             let n = |k: usize| if neg[k] { 0x8000_0000 } else { 0 };
+            let m = |k: usize| if abs[k] { 0x7fff_ffff } else { !0 };
             fp::f32_fma(
-                opv(a) ^ n(0),
-                opv(b) ^ n(1),
-                Some(opv(c) ^ n(2)),
-                Rnd::Rn,
+                opv(a) & m(0) ^ n(0),
+                opv(b) & m(1) ^ n(1),
+                Some(opv(c) & m(2) ^ n(2)),
+                *rnd,
                 false,
             ) as u64
         }
@@ -545,7 +613,7 @@ pub(crate) fn eval_inst(
             ftz,
             f64: false,
             ..
-        } if *bits != 64 => {
+        } if *bits == 32 => {
             let u = if *ftz { fp::f32_ftz(w(a)) } else { w(a) };
             let x = f32::from_bits(u);
             let x = match rnd {
@@ -816,7 +884,11 @@ impl Slicer<'_> {
                             })
                             .ok_or("div.rn without its FCHK in the trace")?;
                         let av = self.value(a, f)?;
-                        let bv = self.value(b, f)?;
+                        let bv = match b {
+                            Val::Reg(b, _) => self.value(b, f)?,
+                            Val::Imm(x) => SVal::Const(x as u32 as u64),
+                            _ => return Err("div.rn divisor operand".into()),
+                        };
                         let lo = self.trace[f] & !GUARD_FALSE;
                         self.extra.extend(lo.saturating_sub(4)..=pc);
                         return self.push(pc, SKind::DivRn { a: av, b: bv });
@@ -845,7 +917,7 @@ impl Slicer<'_> {
             // ASSUME(N-FMAX): a float atomic max diamond's two sides write no register and
             // join right after, so every register is the same on both.
             if let (Op::Bra { .. }, Some(g)) = (&inst.op, inst.guard.reg) {
-                if crate::num::fmax_diamond(code, pc as usize).is_none()
+                if crate::num::fmax_branch(code, pc as usize).is_none()
                     && !matches!(self.value(g, j)?, SVal::Const(_))
                 {
                     return Err(format!(
@@ -955,7 +1027,11 @@ impl Slicer<'_> {
     ) -> Result<SVal, String> {
         if matches!(
             inst.op,
-            Op::Shfl { .. } | Op::Ld { .. } | Op::Atom { .. } | Op::TmemLd { .. }
+            Op::Shfl { .. }
+                | Op::Ld { .. }
+                | Op::LdReduce { .. }
+                | Op::Atom { .. }
+                | Op::TmemLd { .. }
         ) {
             return Err(format!(
                 "{} (moves an input-derived value without a node)",
@@ -992,11 +1068,24 @@ impl Slicer<'_> {
     }
 }
 
-/// Is the instruction at `pc` the `BSYNC` closing ptxas's `div.rn.f32` sequence? Shape:
+/// Is the instruction at `pc` the `BSYNC` closing ptxas's `div.rn.f32` sequence? Shapes:
 ///   BSSY; MUFU.RCP r0, b; FCHK P, a, b; FFMA x5 (two Newton steps, the last writing q);
 ///   @!P BRA L; (slow path:) ...; CALL <*div_rn*slowpath*>; MOV q, res; L: BSYNC
-/// Returns (a, b, q).
-pub fn divrn_at(m: &Machine, pc: u32) -> Option<(Reg, Reg, Reg)> {
+/// or, for a divisor known at compile time (`FCHK P, a, 6`; the reciprocal y of b refined from
+/// constants, possibly hoisted out of the sequence):
+///   FCHK P, a, b; FFMA q0, a, y, RZ; FFMA r, q0, -b, a; FFMA q, y, r, q0; @!P BRA L; ...
+/// Returns (a, b, q); b is a register or an immediate.
+pub fn divrn_at(m: &Machine, pc: u32) -> Option<(Reg, Val, Reg)> {
+    divrn_full(m, pc).map(|(a, b, q, _)| (a, b, q))
+}
+
+/// The first instruction of the div.rn sequence closing at `pc` that belongs to the quotient's
+/// computation (the MUFU.RCP of the divisor, or the first quotient FFMA of the constant form).
+pub fn divrn_lo(m: &Machine, pc: u32) -> Option<u32> {
+    divrn_full(m, pc).map(|x| x.3)
+}
+
+fn divrn_full(m: &Machine, pc: u32) -> Option<(Reg, Val, Reg, u32)> {
     let code = &m.k.code;
     if !matches!(code.get(pc as usize)?.op, Op::Bsync { .. }) {
         return None;
@@ -1019,35 +1108,108 @@ pub fn divrn_at(m: &Machine, pc: u32) -> Option<(Reg, Reg, Reg)> {
         return None;
     }
     let p = code[bra as usize].guard.reg?;
-    let lo = bra.saturating_sub(16);
-    let fchk =
-        (lo..bra).find(|&q| matches!(&code[q as usize].op, Op::Fchk { d, .. } if *d == p))?;
+    // ptxas interleaves other work into the sequence (mslk quantize_nvfp4: 28 instructions
+    // from the FCHK to the branch); the FFMA count below still pins the Newton steps.
+    let lo = bra.saturating_sub(40);
+    // The FCHK closest to the branch (an earlier sequence's FCHK may write the same P).
+    let fchk = (lo..bra)
+        .rev()
+        .find(|&q| matches!(&code[q as usize].op, Op::Fchk { d, .. } if *d == p))?;
     let Op::Fchk {
         a: Val::Reg(a, _),
-        b: Val::Reg(b, _),
+        b: bval,
         ..
     } = &code[fchk as usize].op
     else {
         return None;
     };
-    let rcp = (lo..bra).find(|&q| {
-        matches!(&code[q as usize].op, Op::Mufu { func: MufuFunc::Rcp, a: Val::Reg(x, _), neg: false, abs: false, .. } if x == b)
-    })?;
-    let ffmas: Vec<u32> = (rcp + 1..bra)
-        .filter(|&q| matches!(code[q as usize].op, Op::Ffma { .. }))
-        .collect();
-    if ffmas.len() != 5 {
-        return None;
-    }
-    let Op::Ffma { d: q, .. } = code[*ffmas.last()? as usize].op else {
-        return None;
+    let (q, first) = match bval {
+        Val::Reg(b, _) => {
+            let rcp = (lo..bra).rev().find(|&q| {
+                matches!(&code[q as usize].op, Op::Mufu { func: MufuFunc::Rcp, a: Val::Reg(x, _), neg: false, abs: false, .. } if x == b)
+            })?;
+            let ffmas: Vec<u32> = (rcp + 1..bra)
+                .filter(|&q| matches!(code[q as usize].op, Op::Ffma { .. }))
+                .collect();
+            if ffmas.len() != 5 {
+                return None;
+            }
+            let Op::Ffma { d: q, .. } = code[*ffmas.last()? as usize].op else {
+                return None;
+            };
+            (q, rcp)
+        }
+        Val::Imm(bb) => {
+            let (q, first) = divrn_const_tail(code, *a, *bb as u32, fchk, bra)?;
+            (q, first)
+        }
+        _ => return None,
     };
     let mov = (call + 1..pc).any(|x| code[x as usize].op.dst_regs().contains(&q))
         // torch's vectorized kernels: the slow path writes the quotient register itself.
         || (target..code.len())
             .take_while(|&x| !matches!(code[x].op, Op::Ret { .. }))
             .any(|x| code[x].op.dst_regs().contains(&q));
-    mov.then_some((*a, *b, q))
+    mov.then_some((*a, bval.clone(), q, first))
+}
+
+/// The quotient tail of a div.rn by the constant b (f32 bits) between the FCHK and the branch:
+/// `FFMA q0, a, y, RZ; FFMA r, q0, -b, a; FFMA q, y, r, q0`, each the last write of its
+/// destination before the next, all plain round-to-nearest. Returns (q, pc of the q0 FFMA).
+fn divrn_const_tail(code: &[Inst], a: Reg, b: u32, fchk: u32, bra: u32) -> Option<(Reg, u32)> {
+    let plain = |pc: u32| -> Option<(Reg, Val, Val, Val)> {
+        match &code[pc as usize].op {
+            Op::Ffma {
+                d,
+                a,
+                b,
+                c: Some(c),
+                neg: [false, nb, false],
+                abs: [false, false, false],
+                rnd: Rnd::Rn,
+                ftz: false,
+                sat: false,
+            } if code[pc as usize].guard.is_always() => {
+                let b = match (b, nb) {
+                    (Val::Imm(x), true) => Val::Imm(*x ^ 0x8000_0000),
+                    (v, false) => v.clone(),
+                    _ => return None,
+                };
+                Some((*d, a.clone(), b, c.clone()))
+            }
+            _ => None,
+        }
+    };
+    // The last writer of `r` in [lo, hi).
+    let writer = |r: Reg, lo: u32, hi: u32| {
+        (lo..hi)
+            .rev()
+            .find(|&x| code[x as usize].op.dst_regs().contains(&r))
+    };
+    let last = (fchk + 1..bra)
+        .rev()
+        .find(|&x| matches!(code[x as usize].op, Op::Ffma { .. }))?;
+    let (q, y, rr, q0) = plain(last)?;
+    let (Val::Reg(y, _), Val::Reg(rr, _), Val::Reg(q0, _)) = (y, rr, q0) else {
+        return None;
+    };
+    let pr = writer(rr, fchk.saturating_sub(8), last)?;
+    let (_, x0, nb, xa) = plain(pr)?;
+    let is = |v: &Val, r: Reg| matches!(v, Val::Reg(x, _) if *x == r);
+    if !is(&x0, q0) || nb != Val::Imm((b ^ 0x8000_0000) as u64) || !is(&xa, a) {
+        return None;
+    }
+    let pq = writer(q0, fchk.saturating_sub(8), pr)?;
+    let (_, u, v, z) = plain(pq)?;
+    let ok_ay = (is(&u, a) && is(&v, y)) || (is(&u, y) && is(&v, a));
+    if !ok_ay || z != Val::Imm(0) {
+        return None;
+    }
+    // y and a are not rewritten between the quotient's FFMAs.
+    if writer(y, pq + 1, last).is_some() || writer(a, pq + 1, pr).is_some() {
+        return None;
+    }
+    Some((q, pq))
 }
 
 /// Is the instruction at `pc` the `BSYNC` closing ptxas's `rcp.rn.f32` sequence (an IEEE
@@ -1074,6 +1236,11 @@ fn rcprn_full(m: &Machine, pc: u32) -> Option<(Reg, Reg, Vec<u32>)> {
     if p < 8 || !matches!(code.get(p)?.op, Op::Bsync { .. }) {
         return None;
     }
+    // The join label: the BSYNC, or `NOP`s right before it (CuTeDSL).
+    let mut e = p;
+    while e > 8 && matches!(code[e - 1].op, Op::Nop) && code[e - 1].guard.is_always() {
+        e -= 1;
+    }
     let plain = |i: usize| code[i].guard.reg.is_none() && !code[i].guard.neg;
     let Op::Ffma {
         d: q,
@@ -1086,7 +1253,7 @@ fn rcprn_full(m: &Machine, pc: u32) -> Option<(Reg, Reg, Vec<u32>)> {
         ftz: false,
         sat: false,
         ..
-    } = code[p - 1].op
+    } = code[e - 1].op
     else {
         return None;
     };
@@ -1100,7 +1267,7 @@ fn rcprn_full(m: &Machine, pc: u32) -> Option<(Reg, Reg, Vec<u32>)> {
         ftz: true,
         sat: false,
         ..
-    } = code[p - 2].op
+    } = code[e - 2].op
     else {
         return None;
     };
@@ -1115,7 +1282,7 @@ fn rcprn_full(m: &Machine, pc: u32) -> Option<(Reg, Reg, Vec<u32>)> {
         ftz: false,
         sat: false,
         ..
-    } = code[p - 3].op
+    } = code[e - 3].op
     else {
         return None;
     };
@@ -1128,28 +1295,28 @@ fn rcprn_full(m: &Machine, pc: u32) -> Option<(Reg, Reg, Vec<u32>)> {
         abs: false,
         ptx: None,
         ..
-    } = code[p - 4].op
+    } = code[e - 4].op
     else {
         return None;
     };
     // q may be b's or r's register (`FFMA R0, R2, R0, R2`): b is read at the filter.
     if !(r1 == r && r2 == r && r3 == r && t2 == t1 && t1 == t && t0 == t && b2 == b)
-        || !(p - 4..p).all(plain)
+        || !(e - 4..p).all(plain)
     {
         return None;
     }
-    if !matches!(code[p - 5].op, Op::Bra { target, .. } if target == p) || !plain(p - 5) {
+    if !matches!(code[e - 5].op, Op::Bra { target, .. } if target == e) || !plain(e - 5) {
         return None;
     }
     // CALL <slow path>, optionally followed by MOV q, <its result>.
-    let call = (p.saturating_sub(8)..p - 5)
+    let call = (p.saturating_sub(8)..e - 5)
         .rev()
         .find(|&x| matches!(code[x].op, Op::Call { .. }))?;
     let Op::Call { target } = code[call].op else {
         return None;
     };
     // The slow path (up to its return, or the move after the call) writes q.
-    if !(call + 1..p - 5).any(|x| code[x].op.dst_regs().contains(&q))
+    if !(call + 1..e - 5).any(|x| code[x].op.dst_regs().contains(&q))
         && !(target..code.len())
             .take_while(|&x| !matches!(code[x].op, Op::Ret { .. }))
             .any(|x| code[x].op.dst_regs().contains(&q))
@@ -1157,7 +1324,7 @@ fn rcprn_full(m: &Machine, pc: u32) -> Option<(Reg, Reg, Vec<u32>)> {
         return None;
     }
     let bra = (p.saturating_sub(16)..call).rev().find(|&x| {
-        matches!(code[x].op, Op::Bra { target, .. } if target == p - 4)
+        matches!(code[x].op, Op::Bra { target, .. } if target == e - 4)
             && code[x].guard.reg.is_some()
             && !code[x].guard.neg
     })?;
@@ -1221,7 +1388,7 @@ fn rcprn_full(m: &Machine, pc: u32) -> Option<(Reg, Reg, Vec<u32>)> {
         _ => return None,
     };
     // b must not change between the filter and the fast path.
-    if *b3 != b || (add + 1..p - 4).any(|x| code[x].op.dst_regs().contains(&b)) {
+    if *b3 != b || (add + 1..e - 4).any(|x| code[x].op.dst_regs().contains(&b)) {
         return None;
     }
     if ![isetp, lop, add].iter().all(|&i| plain(i)) || !rcp_fast_ok() {
@@ -1535,6 +1702,8 @@ mod tests {
             d: r(9),
             a: Val::Reg(r(1), 1),
             mask: 0x24,
+            uniform: false,
+            shift: 0,
         };
         let f = vals(0xffff_ff00, 0);
         assert_eq!(eval_inst(&p2r, r(9), &f, &preds).unwrap(), 0xffff_ff24);
@@ -1543,6 +1712,8 @@ mod tests {
             d: r(9),
             a: Val::Reg(r(1), 1),
             mask: 0x40,
+            uniform: false,
+            shift: 0,
         };
         assert_eq!(eval_inst(&p2r6, r(9), &f, &preds).unwrap(), 0x24);
         let setp = |cmp, and| Op::Setp {
@@ -1581,5 +1752,60 @@ mod tests {
         };
         let f = vals(0xff00_0000, 0);
         assert_eq!(eval_inst(&viadd, r(3), &f, &preds).unwrap(), 0x0080_0000);
+    }
+}
+
+#[cfg(test)]
+mod divrn_const_tests {
+    use ptxv_ir::*;
+
+    use super::divrn_const_tail;
+
+    fn kernel(body: &str) -> Kernel {
+        let mut text = String::from(".text.k:\n");
+        for l in body.lines() {
+            text.push_str(l);
+            text.push('\n');
+            if l.trim_start().starts_with("/*") {
+                text.push_str("        /* 0x000fc00000000000 */\n");
+            }
+        }
+        ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).expect("lower")
+    }
+
+    /// ptxas's div.rn by the constant 6 (mslk quantize_nvfp4, sass 0x0d70..0x0e00): the
+    /// reciprocal refined from constants, then q0 = a y, r = a - 6 q0, q = y r + q0. A tail
+    /// whose remainder uses another divisor, or whose first product reads another register, is
+    /// not the sequence.
+    #[test]
+    fn constant_divisor_tail() {
+        let good = "
+        /*0000*/                   MOV R0, 0x3e2aaaab ;
+        /*0010*/                   IMAD.MOV.U32 R3, RZ, RZ, 0x40c00000 ;
+        /*0020*/                   FCHK P0, R44, 6 ;
+        /*0030*/                   FFMA R3, R0, -R3, 1 ;
+        /*0040*/                   FFMA R22, R3, R0, 0.16666667163372039795 ;
+        /*0050*/                   FFMA R45, R44, R22, RZ ;
+        /*0060*/                   FFMA R0, R45, -6, R44 ;
+        /*0070*/                   FFMA R45, R22, R0, R45 ;
+        /*0080*/              @!P0 BRA `(.L_x_3) ;
+        /*0090*/                   NOP ;
+.L_x_3:
+        /*00a0*/                   EXIT ;
+";
+        let six = 6f32.to_bits();
+        let r = |i: u16| Reg {
+            file: File::R,
+            idx: i,
+        };
+        let k = kernel(good);
+        assert_eq!(
+            divrn_const_tail(&k.code, r(44), six, 2, 8),
+            Some((r(45), 5))
+        );
+        let k = kernel(&good.replace("FFMA R0, R45, -6, R44", "FFMA R0, R45, -5, R44"));
+        assert_eq!(divrn_const_tail(&k.code, r(44), six, 2, 8), None);
+        let k = kernel(&good.replace("FFMA R45, R44, R22, RZ", "FFMA R45, R43, R22, RZ"));
+        assert_eq!(divrn_const_tail(&k.code, r(44), six, 2, 8), None);
     }
 }

@@ -32,6 +32,9 @@ use serde::Serialize;
 
 use crate::machine::*;
 
+/// `Action::Clc` victim standing for a multicast failure with an all-zero response.
+pub const CLC_FAIL_ZERO: u16 = u16::MAX;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     /// `leader`: for a split that starts at `elect.sync` on the PTX front-end, which active
@@ -201,19 +204,34 @@ impl Machine {
             }
         }
         for (i, op) in self.pending.iter().enumerate() {
-            if let AsyncKind::Clc { .. } = op.kind {
+            if let AsyncKind::Clc { ref others, .. } = op.kind {
                 let issued = self.k.describe(op.pc as usize);
                 out.push((
                     Action::Clc(i, None),
                     format!("try_cancel issued at {issued} fails"),
                 ));
+                // A multicast failure is {2, 0, 0, 0} or all zero (GB300, probes/clc_one_cluster:
+                // 376 and 6 clusters of a 4096-CTA grid). ASSUME(E-CLC)
+                if !others.is_empty() {
+                    out.push((
+                        Action::Clc(i, Some(CLC_FAIL_ZERO)),
+                        format!("try_cancel issued at {issued} fails (all-zero response)"),
+                    ));
+                }
                 let gi = self
                     .launch
                     .grid_index(self.threads[op.issuer as usize].cta as u32);
-                for &c in unlaunched
-                    .iter()
-                    .filter(|&&c| self.launch.grid_index(c as u32) == gi)
-                {
+                // A cluster launch cancels whole clusters: the victim is a cluster's rank-0 CTA
+                // whose cluster is entirely unlaunched (probes/clc_mcast). ASSUME(E-CLC)
+                for &c in unlaunched.iter().filter(|&&c| {
+                    self.launch.grid_index(c as u32) == gi
+                        && self.launch.cluster_of(c as u32).1 == 0
+                        && (0..self.launch.cluster_size(c as u32)).all(|r| {
+                            self.launch
+                                .cta_of_rank(c as u32, r)
+                                .is_some_and(|u| unlaunched.contains(&(u as u16)))
+                        })
+                }) {
                     out.push((
                         Action::Clc(i, Some(c)),
                         format!("try_cancel issued at {issued} cancels {}", self.cta_name(c)),
@@ -253,6 +271,7 @@ impl Machine {
                     self.k.describe(op.pc as usize),
                     self.actor_name(op.issuer)
                 ),
+                AsyncKind::Nic { .. } => format!("{} executes", self.actor_name(op.actor)),
                 AsyncKind::Clc { .. } => unreachable!(),
             };
             out.push((Action::Async(i), what));
@@ -359,11 +378,19 @@ pub struct Verdict {
 impl Verdict {
     pub fn classes(&self) -> Vec<String> {
         // Havoc probes (kind "probe", the two-level check's level 2: l1.rs, twolevel.rs) are
-        // witnesses for classification, not findings of the check.
+        // witnesses for classification, not findings of the check; `unordered` root-cause
+        // pairs (wellsync.rs `add_root_pairs`) explain a race / nondeterminism found anyway;
+        // notes (kind "note", S-SAME-VALUE) are not findings either, nor races whose loaded
+        // values are dead (kind "race-dead", E-RACE-DEAD: kept in the findings).
         let mut c: Vec<String> = self
             .findings
             .iter()
-            .filter(|f| f.kind != "probe")
+            .filter(|f| {
+                !matches!(
+                    f.kind.as_str(),
+                    "probe" | "unordered" | "note" | "race-dead"
+                )
+            })
             .map(|f| f.kind.clone())
             .collect();
         if self.distinct_outputs > 1 {
@@ -371,8 +398,18 @@ impl Verdict {
         }
         c.sort();
         c.dedup();
+        // An incomplete search with nothing found proves nothing: `inconclusive`, never
+        // `clean` (a breadth-heavy search under a state cap can stop before any terminal
+        // state). A certificate is a complete verdict.
         if c.is_empty() {
-            c.push("clean".into());
+            c.push(
+                if self.complete {
+                    "clean"
+                } else {
+                    "inconclusive"
+                }
+                .into(),
+            );
         }
         c
     }
@@ -390,8 +427,35 @@ impl Verdict {
     }
 }
 
-/// Schedule-independent findings of the kernel (SASS scoreboard hazards), as findings.
+/// Schedule-independent findings of the kernel (SASS scoreboard hazards), as findings, plus
+/// notes: each vprintf call site (E-CLOCK: not run; a timeout or print path exists there) and
+/// the launch's (S-GLOBAL-INIT: a module global assumed zero at module load).
 pub(crate) fn static_findings(m: &Machine) -> Vec<Finding> {
+    let mut notes: Vec<Finding> = m
+        .k
+        .code
+        .iter()
+        .enumerate()
+        .filter(|(_, i)| {
+            matches!(&i.op, ptxv_ir::Op::CallAbs { syms, .. }
+                if syms.iter().any(|(_, n)| n == "vprintf"))
+        })
+        .map(|(pc, _)| Finding {
+            kind: "note".into(),
+            sig: format!("printf:{pc}"),
+            msg: format!(
+                "vprintf reachable at {} (not modeled: no memory effect, the result undefined; E-CLOCK)",
+                m.k.describe(pc)
+            ),
+            ..Default::default()
+        })
+        .collect();
+    notes.extend(m.launch.notes.iter().map(|(sig, msg)| Finding {
+        kind: "note".into(),
+        sig: sig.clone(),
+        msg: msg.clone(),
+        ..Default::default()
+    }));
     m.k.static_findings
         .iter()
         .map(|f| Finding {
@@ -406,6 +470,7 @@ pub(crate) fn static_findings(m: &Machine) -> Vec<Finding> {
                 .collect(),
             ..Default::default()
         })
+        .chain(notes)
         .collect()
 }
 
@@ -413,19 +478,24 @@ fn elect_all() -> bool {
     std::env::var("PTXV_ELECT").as_deref() == Ok("all")
 }
 
-/// Worker threads for the stateful explorer: PTXV_THREADS, else every core, but at most one
-/// per 10k states of the cap. Under a small cap many workers search breadth-first in effect
-/// and may stop before any of them reaches a terminal state; a bounded search for bugs wants
-/// depth, as the serial search gives it.
+/// States of the cap per worker thread (`threads`).
+pub const STATES_PER_WORKER: usize = 50_000;
+
+/// Worker threads for the stateful explorer: PTXV_THREADS, else every core, and in both
+/// cases at most one per `STATES_PER_WORKER` states of the cap. The workers share the cap,
+/// and each runs its own depth-first line: a line that reaches a terminal state costs
+/// about (branching) x (depth) states, so W lines under a cap of S states reach the end
+/// only while S / W covers that. NIC ep4s_dispatch under 400k states: 391 terminal states
+/// at 8 workers, 20 at 12, none at 16 to 32 (and from 24 workers on, none of its races).
+/// With the bound the number of workers of a capped search depends on the cap, not on the
+/// cores, from cap / STATES_PER_WORKER cores on.
 pub fn threads(max_states: usize) -> usize {
-    std::env::var("PTXV_THREADS")
+    let want = std::env::var("PTXV_THREADS")
         .ok()
         .and_then(|s| s.parse().ok())
         .filter(|&n: &usize| n > 0)
-        .unwrap_or_else(|| {
-            let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-            cores.min(max_states / 10_000).max(1)
-        })
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
+    want.min(max_states / STATES_PER_WORKER).max(1)
 }
 
 /// Stack size of explorer threads (instruction semantics recurse a little; be generous).
@@ -500,6 +570,7 @@ pub fn ctas_independent(m: &Machine) -> bool {
     use ptxv_ir::Space;
     // ASSUME(E-TMEM-COTENANT): CTAs sharing an SM share its tensor memory allocator.
     if std::env::var("PTXV_NO_CTA_POR").is_ok()
+        || m.nic.is_some()
         || !m.launch.env.tmem_share.is_empty()
         || m.launch.grids.len() != 1
         || m.threads.iter().any(|t| t.st == St::Unlaunched)
@@ -511,10 +582,35 @@ pub fn ctas_independent(m: &Machine) -> bool {
         Op::Ld { space, sync, .. } | Op::St { space, sync, .. } => {
             sync.is_some() && !matches!(space, Space::Shared | Space::SharedCluster)
         }
+        Op::Ld256 { sync, .. } | Op::St256 { sync, .. } => sync.is_some(),
         Op::ClcTryCancel { .. } | Op::ClcQuery { .. } => !m.clc_eager,
         // griddepcontrol is a no-op in a single-grid launch (E-PDL).
         _ => false,
     })
+}
+
+/// `m0` with every CTA launched up front (`clc_eager` without its trial run), when eager
+/// launch applies (one grid, no limited residency, unlaunched CTAs, no PTXV_NO_CLC_EAGER).
+/// Executing a try_cancel on it is a fault naming "E-CLC eager launch".
+pub fn clc_eager_launch(m0: &Machine) -> Option<Machine> {
+    if m0.launch.grids.len() != 1
+        || m0.launch.env.residency.is_some()
+        || std::env::var("PTXV_NO_CLC_EAGER").is_ok()
+        || !m0.threads.iter().any(|t| t.st == St::Unlaunched)
+    {
+        return None;
+    }
+    let mut m = m0.clone();
+    m.clc_eager = true;
+    for c in 0..m.launch.ctas() {
+        if m.cta_threads(c as u16)
+            .any(|t| m.threads[t].st == St::Unlaunched)
+        {
+            m.launch_cta(c as u16);
+        }
+    }
+    m.findings.clear();
+    Some(m)
 }
 
 /// ASSUME(E-CLC): a kernel containing try_cancel starts with every CTA unlaunched, which
@@ -525,38 +621,30 @@ pub fn ctas_independent(m: &Machine) -> bool {
 /// exploration then reports any try_cancel that does execute ("unmodeled"), so a wrong guess
 /// cannot hide schedules.
 pub fn clc_eager(m0: Machine) -> Machine {
-    if m0.launch.grids.len() != 1
-        || m0.launch.env.residency.is_some()
-        || std::env::var("PTXV_NO_CLC_EAGER").is_ok()
-        || !m0.threads.iter().any(|t| t.st == St::Unlaunched)
-    {
+    let Some(m) = clc_eager_launch(&m0) else {
         return m0;
-    }
-    let mut m = m0.clone();
-    m.clc_eager = true;
-    for c in 0..m.launch.ctas() {
-        if m.threads
-            .iter()
-            .any(|t| t.cta == c as u16 && t.st == St::Unlaunched)
-        {
-            m.launch_cta(c as u16);
-        }
-    }
-    m.findings.clear();
+    };
     // The deterministic run of `run_once`, stopped at the first try_cancel (a faulting step
     // may repeat forever) or after a step budget (then: lazy, the safe default).
     let mut probe = m.clone();
     probe.fp = None;
+    let mut sched = DetSched::default();
+    let mut faults = FaultLoop::default();
     for _ in 0..50_000_000u64 {
-        let acts = probe.actions();
-        let pick = acts
-            .iter()
-            .find(|(a, _)| matches!(a, Action::Split { .. }))
-            .or(acts.first());
-        let Some((a, _)) = pick.cloned() else {
-            return m;
+        let Some(a) = sched.pick(&probe) else {
+            // Eager only if the run ended with every thread exited: a deadlock or a stuck run
+            // says nothing about whether a try_cancel can execute (then: lazy).
+            return if probe.threads.iter().all(|t| t.st == St::Exited) {
+                m
+            } else {
+                m0
+            };
         };
         probe.apply(&a);
+        // A step that faults forever: undecided, so lazy (the safe default).
+        if faults.repeats(&probe.findings).is_some() {
+            return m0;
+        }
         if probe
             .findings
             .drain(..)
@@ -760,6 +848,7 @@ fn local_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)
                             addr,
                             tx: None,
                             remote: false,
+                            count,
                             ..
                         } => {
                             let active: Vec<usize> = members()
@@ -770,12 +859,17 @@ fn local_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)
                                 Default::default();
                             let mut ok = true;
                             for &t in &active {
-                                match m
-                                    .addr(t, addr)
-                                    .and_then(|a| m.resolve(t, ptxv_ir::Space::Shared, a, 8))
-                                {
-                                    Ok(crate::exec::Loc::Shared { cta, off }) => {
-                                        *per.entry((cta, off)).or_insert(0) += 1
+                                let n = match count {
+                                    Some(c) => m.rd(t, c).map(|n| n as u32),
+                                    None => Ok(1),
+                                };
+                                match (
+                                    n,
+                                    m.addr(t, addr)
+                                        .and_then(|a| m.resolve(t, ptxv_ir::Space::Shared, a, 8)),
+                                ) {
+                                    (Ok(n), Ok(crate::exec::Loc::Shared { cta, off })) => {
+                                        *per.entry((cta, off)).or_insert(0) += n
                                     }
                                     _ => ok = false,
                                 }
@@ -945,6 +1039,7 @@ fn exit_bound(m: &Machine, warp: u32, pc: u32) -> bool {
                         | Op::Trap { .. }
                         | Op::VoteAll { .. }
                         | Op::VoteAny { .. }
+                        | Op::MatchAny { .. }
                         | Op::Redux { .. }
                 ) =>
             {
@@ -996,7 +1091,9 @@ fn sync_por_ok(m: &Machine) -> bool {
     use ptxv_ir::Op;
     use ptxv_ir::Space;
     // ASSUME(E-TMEM-COTENANT): the footprints do not name an SM partner's allocator.
+    // S-NIC-*: the learned footprints do not cover NIC queue pairs (nic.rs).
     if std::env::var("PTXV_NO_SYNC_POR").is_ok()
+        || m.nic.is_some()
         || !m.launch.env.tmem_share.is_empty()
         || (m.launch.grids.len() != 1 || m.threads.iter().any(|t| t.st == St::Unlaunched))
             && std::env::var("PTXV_NO_GRID_POR").is_ok()
@@ -1610,6 +1707,7 @@ fn reg_only(op: &ptxv_ir::Op) -> bool {
             | Op::Sel { .. }
             | Op::Prmt { .. }
             | Op::Bfe { .. }
+            | Op::Bfi { .. }
             | Op::Pack64 { .. }
             | Op::Unpack64 { .. }
             | Op::Nop
@@ -2166,11 +2264,16 @@ pub(crate) fn peekskip_set(m: &Machine) -> BTreeMap<u32, (BTreeSet<u32>, BTreeSe
                         dm.insert(*sd, (f(val(&dm, *and, 0)), f(val(&dm, *and, 1))));
                         work.push((pc + 1, dm));
                     }
-                    Op::VoteAny { d: vd, a }
+                    Op::VoteAny {
+                        d: vd,
+                        a,
+                        mask: None,
+                    }
                     | Op::VoteAll {
                         d: vd,
                         a,
                         uni: false,
+                        mask: None,
                     } if i.guard.is_always() && !guarded => {
                         dm.insert(*vd, (val(&dm, *a, 0), val(&dm, *a, 1)));
                         work.push((pc + 1, dm));
@@ -2402,13 +2505,17 @@ impl Machine {
     /// function of the code (`bar_cfg`), the pc, `bit` and the values it read, so an earlier
     /// walk from the same pc applies to every thread reading the same values there.
     fn thread_may_arrive(&self, t: usize, bit: u32, reads: &mut Vec<BarRead>) -> bool {
-        type Walks = HashMap<(usize, u32, u32), Vec<(Vec<BarRead>, bool)>>;
+        // Keyed by the address of `bar_cfg`; each entry holds a weak reference to it, so the
+        // address is not reused by another machine's `BarCfg` (another kernel: its walks and
+        // registers differ) while the entry exists.
+        type Walks =
+            HashMap<(usize, u32, u32), (std::sync::Weak<BarCfg>, Vec<(Vec<BarRead>, bool)>)>;
         thread_local! {
             static WALKS: std::cell::RefCell<Walks> = Default::default();
         }
         let key = (Arc::as_ptr(&self.bar_cfg) as usize, self.threads[t].pc, bit);
         let hit = WALKS.with(|w| {
-            w.borrow().get(&key).and_then(|es| {
+            w.borrow().get(&key).and_then(|(_, es)| {
                 es.iter()
                     .find(|(rs, _)| rs.iter().all(|r| self.bar_read(t, &r.0) == Some(r.1)))
                     .cloned()
@@ -2434,7 +2541,9 @@ impl Machine {
             if w.len() > 1 << 16 {
                 w.clear();
             }
-            let es = w.entry(key).or_default();
+            let (_, es) = w
+                .entry(key)
+                .or_insert_with(|| (Arc::downgrade(&self.bar_cfg), Vec::new()));
             if es.len() >= 64 {
                 es.remove(0);
             }
@@ -2634,12 +2743,14 @@ impl Machine {
             }
         }
         type Mw = Arc<MwSets>;
+        type MwCache = HashMap<(usize, usize, u32), (std::sync::Weak<BarCfg>, Mw)>;
         thread_local! {
-            // The dataflow depends only on the code, the start pc and `bit`.
-            static MW: std::cell::RefCell<HashMap<(usize, usize, u32), Mw>> = Default::default();
+            // The dataflow depends only on the code, the start pc and `bit`. Keyed by the
+            // address of `bar_cfg`, pinned by a weak reference (`thread_may_arrive`).
+            static MW: std::cell::RefCell<MwCache> = Default::default();
         }
         let key = (Arc::as_ptr(&self.bar_cfg) as usize, start, bit);
-        let mw: Mw = match MW.with(|c| c.borrow().get(&key).cloned()) {
+        let mw: Mw = match MW.with(|c| c.borrow().get(&key).map(|e| e.1.clone())) {
             Some(m) => m,
             None => {
                 let mut ix: HashMap<Reg, usize> = HashMap::new();
@@ -2683,7 +2794,7 @@ impl Machine {
                     if c.len() > 4096 {
                         c.clear();
                     }
-                    c.insert(key, m.clone());
+                    c.insert(key, (Arc::downgrade(&self.bar_cfg), m.clone()));
                 });
                 m
             }
@@ -3312,13 +3423,22 @@ fn sync_ample(
     };
     let mut pend_bars: HashMap<(u32, u32), Vec<(u32, u64)>> = HashMap::new();
     for o in &m.pending {
+        if let AsyncKind::Clc { others, mbar, .. } = &o.kind {
+            pend_bars
+                .entry((m.threads[o.issuer as usize].warp, o.pc))
+                .or_default()
+                .extend(others.iter().map(|&c| (c as u32, *mbar as u64)));
+        }
         let bar = match &o.kind {
             AsyncKind::Tma { mbar_cta, mbar, .. } => Some((*mbar_cta as u32, *mbar as u64)),
             AsyncKind::Commit { cta, mbar }
             | AsyncKind::Clc { cta, mbar, .. }
             | AsyncKind::Remote { cta, mbar, .. }
             | AsyncKind::CpArrive { cta, mbar, .. } => Some((*cta as u32, *mbar as u64)),
-            AsyncKind::Mma { .. } | AsyncKind::Cp { .. } | AsyncKind::TmaStore { .. } => None,
+            AsyncKind::Mma { .. }
+            | AsyncKind::Cp { .. }
+            | AsyncKind::TmaStore { .. }
+            | AsyncKind::Nic { .. } => None,
         };
         let e = pend_bars
             .entry((m.threads[o.issuer as usize].warp, o.pc))
@@ -3465,13 +3585,19 @@ fn sync_ample(
             if k == skip {
                 continue;
             }
+            if let AsyncKind::Clc { others, mbar, .. } = &o.kind {
+                e.extend(others.iter().map(|&c| (c as u32, *mbar as u64)));
+            }
             match &o.kind {
                 AsyncKind::Tma { mbar_cta, mbar, .. } => e.push((*mbar_cta as u32, *mbar as u64)),
                 AsyncKind::Commit { cta, mbar }
                 | AsyncKind::Clc { cta, mbar, .. }
                 | AsyncKind::Remote { cta, mbar, .. }
                 | AsyncKind::CpArrive { cta, mbar, .. } => e.push((*cta as u32, *mbar as u64)),
-                AsyncKind::Mma { .. } | AsyncKind::Cp { .. } | AsyncKind::TmaStore { .. } => {}
+                AsyncKind::Mma { .. }
+                | AsyncKind::Cp { .. }
+                | AsyncKind::TmaStore { .. }
+                | AsyncKind::Nic { .. } => {}
             }
         }
         let mut completable: HashSet<(u32, u64)> = HashSet::new();
@@ -3867,6 +3993,10 @@ fn sync_ample(
         // entities, and this entity's non-pipe ops, can conflict.
         if let Action::Async(j) = a {
             let op = &m.pending[*j];
+            // Remote operations in their per-mbarrier issue order: not a candidate.
+            if op.fifo.is_some() && matches!(op.kind, AsyncKind::Remote { .. }) {
+                return false;
+            }
             if fps[i].all {
                 return false;
             }
@@ -4101,9 +4231,24 @@ fn sync_ample(
 
 pub fn explore(m0: Machine, max_states: usize) -> Verdict {
     let note = crate::residency::reliance_note(&m0);
+    let base = m0.clone();
     let mut v = crate::smem::two_pass(m0, |m| explore_slice(m, max_states, None));
     v.notes.extend(note);
+    // S-INIT-FILLS: undefined values that reach only output data.
+    crate::fills::check(&base, &mut v);
     v
+}
+
+/// `explore` with an explicit number of worker threads instead of `threads` (PTXV_THREADS):
+/// for tests that compare thread counts.
+pub fn explore_threads(m0: Machine, max_states: usize, workers: usize) -> Verdict {
+    crate::smem::two_pass(m0, |m| {
+        let m = clc_eager(m);
+        let mut v = per_leader_policy(m, workers.max(1), |m, n| explore_one(m, max_states, n));
+        v.findings
+            .sort_by(|a, b| (&a.kind, &a.sig).cmp(&(&b.kind, &b.sig)));
+        v
+    })
 }
 
 /// Clusters (CTAs without clusters) of a single-grid launch, by id.
@@ -4111,6 +4256,8 @@ pub fn clusters(m: &Machine) -> Vec<u32> {
     let mut v: Vec<u32> = (0..m.launch.ctas())
         .map(|c| m.launch.cluster_of(c).0)
         .collect();
+    // Ids repeat out of order when clusters span grid rows (cluster y > 1).
+    v.sort_unstable();
     v.dedup();
     v
 }
@@ -4875,7 +5022,49 @@ fn check_lookahead(
     }
 }
 
-fn explore_one(m0: Machine, max_states: usize, threads: usize) -> Verdict {
+fn explore_one(mut m0: Machine, max_states: usize, threads: usize) -> Verdict {
+    // E-RACE-DEAD: every racing read of every explored transition (race_dead.rs).
+    let log = if m0.dead_probe.is_none() {
+        crate::race_dead::new_log()
+    } else {
+        None
+    };
+    m0.race_log = log.clone();
+    let (mut v, peek, vip) = explore_one_models(m0.clone(), max_states, threads);
+    // A bounded search shares its state cap among its workers: W workers each go about W
+    // times less deep, and a wide state space can use the whole cap without reaching a
+    // terminal state (NIC ep4s_dispatch: 32 workers, 400k states, none terminal; 8 workers
+    // find its races). Then one deterministic run to the end adds depth: its findings are
+    // witnesses of that run (happens-before races, violations), the verdict stays incomplete.
+    if !v.complete && v.terminal_states == 0 && std::env::var("PTXV_NO_DEPTH_RUN").is_err() {
+        let (_, fs, ok) = run_once(m0.clone());
+        let mut added = 0usize;
+        for f in fs {
+            if !v.findings.iter().any(|g| g.sig == f.sig) {
+                v.findings.push(f);
+                added += 1;
+            }
+        }
+        v.notes.push(format!(
+            "the bounded search reached no terminal state; one deterministic run {} added {added} finding(s)",
+            if ok { "to the end" } else { "(not to the end)" }
+        ));
+    }
+    if let Some(log) = log.filter(|_| v.complete && v.distinct_outputs <= 1) {
+        let cands = crate::race_dead::candidates(&log, &v.findings);
+        let dead = crate::race_dead::decide(&cands, |reads| {
+            let m = crate::race_dead::probe_machine(&m0, reads);
+            let w = explore_one_model(m, max_states, threads, peek, vip);
+            w.complete && crate::race_dead::no_new_use(&v.findings, &w.findings)
+        });
+        crate::race_dead::mark(&mut v.findings, &dead);
+    }
+    v
+}
+
+/// `explore_one` before the dead-race check: the verdict and the model it came from (peek
+/// changes, value-insensitive poll level).
+fn explore_one_models(m0: Machine, max_states: usize, threads: usize) -> (Verdict, bool, u8) {
     let v = explore_one_model(m0.clone(), max_states, threads, true, 2);
     // A racy kernel's outcomes depend on orders of plain accesses that the reductions do
     // not keep (E-DRF); the peek changes remove branching that used to expose some of them.
@@ -4893,7 +5082,16 @@ fn explore_one(m0: Machine, max_states: usize, threads: usize) -> Verdict {
     {
         // First without the acquire loads among the value-insensitive polls, which is what
         // usually needed the edge; then without any of the changes.
+        // E-RACE-DEAD: the race log must describe the search whose verdict is returned; a
+        // value-insensitive acquire poll acquires nothing, so the first search logs racing
+        // reads (after the poll) that the plain model orders (fixtures/l1_litmus neg-payld).
+        let clear_log = |m: &Machine| {
+            if let Some(l) = &m.race_log {
+                l.lock().unwrap().clear();
+            }
+        };
         if vip_model {
+            clear_log(&m0);
             let w = explore_one_model(m0.clone(), max_states, threads, true, 1);
             if !w.findings.iter().any(|f| f.kind == "race") {
                 let mut w = w;
@@ -4901,17 +5099,18 @@ fn explore_one(m0: Machine, max_states: usize, threads: usize) -> Verdict {
                     "a race was found: explored again with value-insensitive polls (E-POLL-ANY) on relaxed loads only ({} states with acquire loads too)",
                     v.states
                 ));
-                return w;
+                return (w, true, 1);
             }
         }
+        clear_log(&m0);
         let mut w = explore_one_model(m0, max_states, threads, false, 0);
         w.notes.push(format!(
             "a race was found: explored again without the peek changes (E-SPIN) and value-insensitive polls (E-POLL-ANY) ({} states with them)",
             v.states
         ));
-        return w;
+        return (w, false, 0);
     }
-    v
+    (v, true, 2)
 }
 
 fn explore_one_model(
@@ -5595,7 +5794,8 @@ impl Search<'_> {
             }
             if self.visited.insert(f) {
                 // Multi-node: rank 0 applies the cap to the sum over ranks.
-                if self.states.fetch_add(1, Ordering::Relaxed) + 1 > self.max_states
+                if (self.states.fetch_add(1, Ordering::Relaxed) + 1 > self.max_states
+                    || crate::membudget::exceeded())
                     && self.dist.is_none()
                 {
                     self.stop.store(true, Ordering::Relaxed);
@@ -5763,7 +5963,11 @@ fn explore_round(
     let states = search.states.load(Ordering::Relaxed);
     let found = search.found.into_inner().unwrap();
     let mut v = Verdict {
-        notes: vec![],
+        notes: if complete {
+            vec![]
+        } else {
+            crate::membudget::note().into_iter().collect()
+        },
         states,
         transitions,
         complete,
@@ -5780,9 +5984,198 @@ fn explore_round(
     v
 }
 
-/// One deterministic execution: always run the first enabled warp-split (lowest warp, then
-/// pc); complete async operations only when no thread can move. Returns the final machine
-/// and the findings seen along the way.
+/// The scheduler of the deterministic runs (`run_once`, the certificate's `run_logged`,
+/// `clc_eager`). Any schedule is a valid run; this one is chosen for cost: per step it looks
+/// at one warp, not at every thread of the launch (`Machine::actions`, which also formats a
+/// description of every action, costs O(threads) per step and dominated 128-CTA runs).
+///
+/// Policy (numerics runs: the original order, below): keep running the current warp's first
+/// enabled split (lowest pc) for up to
+/// `DET_STREAK` steps; when it has none, complete the first async operation that can
+/// complete (in issue order, respecting the in-order pipes), else move to the next warp, in
+/// cyclic order, that has an enabled split; when nothing of that kind can move (or CTAs are
+/// unlaunched, a TMEM co-tenant chooses placements, or a cluster launch control response is
+/// pending), the first action of `Machine::actions`.
+#[derive(Default)]
+pub struct DetSched {
+    warp: u32,
+    streak: u32,
+    /// The live warps `lo..hi` (from `Machine::live`), computed on first use.
+    warps: Option<(u32, u32)>,
+    /// The machine has unlaunched CTAs or a TMEM co-tenant: use `actions` throughout.
+    full: Option<bool>,
+}
+
+/// Steps one warp may take in a row before the deterministic scheduler moves on (so that a
+/// warp that never blocks cannot starve the others).
+const DET_STREAK: u32 = 4096;
+
+impl DetSched {
+    pub fn pick(&mut self, m: &Machine) -> Option<Action> {
+        let full = *self.full.get_or_insert_with(|| {
+            m.launch.env.tmem_cotenant || m.live_threads().any(|(_, t)| t.st == St::Unlaunched)
+        });
+        if full {
+            // Unlaunched CTAs may launch at any step: keep the original policy.
+            let acts = m.actions();
+            return acts
+                .iter()
+                .find(|(a, _)| matches!(a, Action::Split { .. }))
+                .or(acts.first())
+                .map(|(a, _)| a.clone());
+        }
+        let (lo, hi) = *self.warps.get_or_insert_with(|| {
+            if m.live.is_empty() {
+                (0, 0)
+            } else {
+                (
+                    m.threads[m.live.start].warp,
+                    m.threads[m.live.end - 1].warp + 1,
+                )
+            }
+        });
+        if hi == lo {
+            return None;
+        }
+        if self.warp < lo || self.warp >= hi {
+            self.warp = lo;
+        }
+        // Numerics runs (`m.num`) keep the original order (lowest enabled warp, async only
+        // when no split can move): the N-FMAX / N-FINITE bookkeeping depends on it
+        // (fixtures/c_equiv_online loses its float atomic max diamond under the cyclic order).
+        // PTXV_DET=lowest forces it everywhere.
+        if m.num.is_some() || std::env::var("PTXV_DET").as_deref() == Ok("lowest") {
+            for w in lo..hi {
+                if let Some(a) = det_split(m, w) {
+                    return Some(a);
+                }
+            }
+            if let Some(i) = det_async(m) {
+                if m.pending[..i]
+                    .iter()
+                    .all(|o| !matches!(o.kind, AsyncKind::Clc { .. }))
+                {
+                    return Some(Action::Async(i));
+                }
+            }
+            return m.actions().first().map(|(a, _)| a.clone());
+        }
+        if self.streak < DET_STREAK {
+            if let Some(a) = det_split(m, self.warp) {
+                self.streak += 1;
+                return Some(a);
+            }
+        }
+        if let Some(i) = det_async(m) {
+            return Some(Action::Async(i));
+        }
+        let n = hi - lo;
+        for d in 1..=n {
+            let w = lo + (self.warp - lo + d) % n;
+            if let Some(a) = det_split(m, w) {
+                self.warp = w;
+                self.streak = 1;
+                return Some(a);
+            }
+        }
+        let acts = m.actions();
+        acts.first().map(|(a, _)| a.clone())
+    }
+}
+
+/// The first enabled split of warp `w` (lowest pc), as `Machine::actions` would offer it
+/// first (PTX elect: the leader of the machine's policy).
+fn det_split(m: &Machine, w: u32) -> Option<Action> {
+    let wt = m.warp_threads(w);
+    let mut pcs: Vec<u32> = wt
+        .clone()
+        .filter(|&i| m.threads[i].st == St::Run)
+        .map(|i| m.threads[i].pc)
+        .collect();
+    pcs.sort_unstable();
+    pcs.dedup();
+    for pc in pcs {
+        let members: Vec<usize> = wt
+            .clone()
+            .filter(|&i| m.threads[i].st == St::Run && m.threads[i].pc == pc)
+            .collect();
+        if !m.split_enabled(&members, pc) {
+            continue;
+        }
+        let inst = &m.k.code[pc as usize];
+        let mut leader = None;
+        // ASSUME(E-ELECT): as in `actions`.
+        if matches!(inst.op, ptxv_ir::Op::Elect { .. }) && m.k.front == ptxv_ir::Front::Ptx {
+            let active: Vec<usize> = members
+                .iter()
+                .copied()
+                .filter(|&t| m.prd(t, inst.guard))
+                .collect();
+            if active.len() > 1 {
+                leader = Some(if m.elect_high && !elect_all() {
+                    *active.last().unwrap()
+                } else {
+                    active[0]
+                });
+            }
+        }
+        return Some(Action::Split {
+            warp: w,
+            pc,
+            leader,
+        });
+    }
+    None
+}
+
+/// The first pending async operation that can complete (not a cluster launch control
+/// response; in-order pipes: only the oldest of each), as `Machine::actions` lists them.
+fn det_async(m: &Machine) -> Option<usize> {
+    for (i, op) in m.pending.iter().enumerate() {
+        if let AsyncKind::Clc { .. } = op.kind {
+            continue;
+        }
+        if let Some(f) = op.fifo {
+            if m.pending[..i].iter().any(|o| o.fifo == Some(f)) {
+                continue;
+            }
+        }
+        return Some(i);
+    }
+    None
+}
+
+/// A deterministic run's guard against a step that faults again and again: a faulting step
+/// leaves its warp where it was, so a scheduler that keeps picking it never ends.
+#[derive(Default)]
+pub struct FaultLoop {
+    last: Option<(String, u32)>,
+}
+
+impl FaultLoop {
+    /// After a step with findings `fs`: Some(why) once the same fault came 64 steps in a row.
+    pub fn repeats(&mut self, fs: &[Finding]) -> Option<String> {
+        match fs.iter().find(|f| f.sig.starts_with("fault:")) {
+            None => self.last = None,
+            Some(f) => match &mut self.last {
+                Some((s, n)) if *s == f.sig => {
+                    *n += 1;
+                    if *n >= 64 {
+                        return Some(format!(
+                            "a step faults again and again ({}); the run stops there",
+                            f.msg.lines().next().unwrap_or("")
+                        ));
+                    }
+                }
+                _ => self.last = Some((f.sig.clone(), 1)),
+            },
+        }
+        None
+    }
+}
+
+/// One deterministic execution (`DetSched`). Returns the final machine and the findings
+/// seen along the way.
 pub fn run_once(mut m: Machine) -> (Machine, Vec<Finding>, bool) {
     let mut fs = Vec::new();
     // Debugging: PTXV_RUN_ONCE_PROGRESS=n prints every n-th action.
@@ -5791,25 +6184,37 @@ pub fn run_once(mut m: Machine) -> (Machine, Vec<Finding>, bool) {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
     let mut n = 0usize;
-    loop {
-        let acts = m.actions();
-        let pick = acts
-            .iter()
-            .find(|(a, _)| matches!(a, Action::Split { .. }))
-            .or(acts.first());
-        let Some((a, d)) = pick.cloned() else { break };
+    let mut sched = DetSched::default();
+    let mut faults = FaultLoop::default();
+    let mut stuck = false;
+    while let Some(a) = sched.pick(&m) {
         n += 1;
         if every > 0 && n.is_multiple_of(every) {
-            eprintln!("run_once step {n}: {d}");
+            let what = match &a {
+                Action::Split { warp, pc, .. } => {
+                    format!("warp {warp} runs from {}", m.k.describe(*pc as usize))
+                }
+                _ => format!("{a:?}"),
+            };
+            eprintln!("run_once step {n}: {what}");
         }
         m.apply(&a);
+        if every > 0 && n.is_multiple_of(every) {
+            for f in &m.findings {
+                eprintln!("  finding: {}", f.msg.lines().next().unwrap_or(""));
+            }
+        }
+        stuck = faults.repeats(&m.findings).is_some();
         fs.append(&mut m.findings);
+        if stuck {
+            break;
+        }
     }
     let ok = m.terminal();
     if ok {
         m.exit_checks();
         fs.append(&mut m.findings);
-    } else {
+    } else if !stuck {
         let (sig, msg) = m.deadlock_report();
         fs.push(Finding {
             kind: "deadlock".into(),
@@ -7247,11 +7652,16 @@ impl LaWarp {
                 if g == Av::K(0) {
                     return LaStep::Next;
                 }
+                // A count the lookahead does not know: any number of arrivals.
                 let n = match count {
                     None => 1,
                     Some(v) => match self.val(m, c, v) {
                         Av::K(x) => x,
-                        _ => 1,
+                        _ => {
+                            unknown_target(res, changed);
+                            *changed = true;
+                            return LaStep::Next;
+                        }
                     },
                 };
                 if n == 0 {
@@ -7363,10 +7773,14 @@ impl LaWarp {
             Op::Bra {
                 target,
                 div: Some(dm),
+                any: conv,
                 ..
             } => {
                 if c.body.is_some() {
                     return wild("BRA.DIV in an elected body");
+                }
+                if *conv {
+                    return LaStep::Fork(vec![Some(*target as u32), Some(pc + 1)]);
                 }
                 let target = *target as u32;
                 let lanes = self
@@ -7473,6 +7887,16 @@ impl LaWarp {
                     }
                 }
             }
+            Op::Brx { base, targets, .. } if m.k.front == ptxv_ir::Front::Ptx => {
+                match self.val(m, c, base) {
+                    Av::K(b) => match targets.get(b as u32 as usize) {
+                        Some(&to) => LaStep::Jump(to as u32),
+                        None => wild("brx.idx index"),
+                    },
+                    Av::U => LaStep::Fork(targets.iter().map(|&q| Some(q as u32)).collect()),
+                    _ => wild("divergent brx.idx"),
+                }
+            }
             Op::Brx { base, off, targets } => match self.val(m, c, base) {
                 Av::K(b) => {
                     let a = (b as i64).wrapping_add(*off);
@@ -7502,19 +7926,19 @@ impl LaWarp {
                     _ => wild("unknown RET"),
                 }
             }
-            Op::Elect { d, lane } => {
+            Op::Elect { d, lane, .. } => {
                 self.guarded(m, c, *d, Av::E, g);
                 if let Some(l) = lane {
                     self.guarded(m, c, *l, Av::U, g);
                 }
                 LaStep::Next
             }
-            Op::R2Ur { d, a, p } => {
+            Op::R2Ur { d, a, p, or } => {
                 let v = match self.val(m, c, a) {
                     Av::K(x) => Av::K(x),
                     _ => Av::U,
                 };
-                let pv = if matches!(v, Av::K(_)) {
+                let pv = if matches!(v, Av::K(_)) && !*or {
                     Av::K(0)
                 } else {
                     Av::N
@@ -7552,12 +7976,17 @@ impl LaWarp {
                         | Op::Sel { .. }
                         | Op::Prmt { .. }
                         | Op::Bfe { .. }
+                        | Op::Bfi { .. }
                         | Op::Pack64 { .. }
                         | Op::Unpack64 { .. }
                         | Op::LdConst { .. }
                         | Op::Mapa { .. }
                         | Op::Cvta { .. }
                         | Op::Hfma2 { .. }
+                        | Op::Hfma2Bf16 { .. }
+                        | Op::FfmaBf16 { .. }
+                        | Op::Hmnmx2Bf16 { .. }
+                        | Op::Vhmnmx { .. }
                 );
                 let vals = op.src_vals();
                 let out: Vec<(ptxv_ir::Reg, Av)> = if pure {
@@ -7815,6 +8244,11 @@ fn lookahead(
     for (k, o) in m.pending.iter().enumerate() {
         if k == skip {
             continue;
+        }
+        if let AsyncKind::Clc { others, mbar, .. } = &o.kind {
+            for &c in others {
+                res.arrive((c as u32, *mbar as u64), 1);
+            }
         }
         if let AsyncKind::Commit { cta, mbar }
         | AsyncKind::Clc { cta, mbar, .. }
@@ -8128,4 +8562,40 @@ fn lookahead(
     res.stopped.sort_unstable();
     res.stopped.dedup();
     res
+}
+
+#[cfg(test)]
+mod walk_cache_tests {
+    use super::*;
+
+    /// E-BAR-OVER / E-BAR-ARRIVE's per-thread walk caches (`thread_may_arrive`, the region
+    /// dataflow) are keyed by the address of a machine's `BarCfg`. Once that machine is
+    /// dropped, a later machine on the same thread (another case, variant or front) could get
+    /// the same address and read walks of another kernel: registers it does not have (an
+    /// index out of bounds in `Machine::rd`) or a wrong arrival bound. The cache entries pin
+    /// the address while they exist.
+    #[test]
+    fn walk_cache_entries_pin_their_key() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let case = ptxv_case::Case::load(&dir).unwrap();
+        let ptx = case.variant_ptx("good").unwrap();
+        let k = ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap();
+        let launch = crate::build_launch(&case, &k).unwrap();
+        let m = Machine::new(Arc::new(k), Arc::new(launch));
+        let pc = (0..m.k.code.len())
+            .find(|&pc| m.bar_cfg.reach[pc] & 2 != 0)
+            .expect("a pc that may reach barrier 1");
+        let mut m = m;
+        m.threads[0].make_mut().pc = pc as u32;
+        let mut reads = Vec::new();
+        let _ = m.thread_may_arrive(0, 2, &mut reads);
+        let key = Arc::as_ptr(&m.bar_cfg) as usize;
+        drop(m);
+        let fresh: Vec<Arc<BarCfg>> = (0..256).map(|_| Arc::new(BarCfg::default())).collect();
+        assert!(
+            fresh.iter().all(|b| Arc::as_ptr(b) as usize != key),
+            "a new BarCfg took the address the walk cache is keyed by"
+        );
+    }
 }

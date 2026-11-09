@@ -61,7 +61,7 @@ name = "W1"
 dtype = "u8"
 shape = [224]
 init = "file"
-file = "data/W1.bin"
+file = "data/W1_tab.bin"
 
 [[buffers]]
 name = "W2"

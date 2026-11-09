@@ -1,0 +1,55 @@
+// probes/imnmx_relu: integer min / max with .relu (SASS VIMNMX.RELU, VIMNMX.S16x2.RELU,
+// VIADDMNMX.RELU) against GB300. Thread g (4 CTAs x 256) loads (a, b, c) = in[g] (gen.py) and
+// stores out[j][g]:
+//   j = 0: min.relu.s32 a, b                 (VIMNMX.RELU .., PT)
+//   j = 1: max.relu.s32 a, b                 (VIMNMX.RELU .., !PT)
+//   j = 2: min.relu.s32 (a + -1), c          (ptxas: VIADDMNMX.RELU d, a, 0xffffffff, c, PT)
+//   j = 3: max.relu.s32 (a + b), c           (VIADDMNMX.RELU .., !PT)
+//   j = 4: min.relu.s16x2 a, b               (VIMNMX.S16x2.RELU .., PT)
+//   j = 5: max.relu.s16x2 a, b               (VIMNMX.S16x2.RELU .., !PT)
+//   j = 6: min.relu.s32 a, 0x7b              (immediate)
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry imnmx_relu(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %ctaid.x;
+    mad.lo.u32      %r3, %r2, 256, %r1;
+    mul.wide.u32    %rd3, %r3, 12;
+    add.s64         %rd3, %rd1, %rd3;
+    ld.global.u32   %r4, [%rd3];
+    ld.global.u32   %r5, [%rd3+4];
+    ld.global.u32   %r6, [%rd3+8];
+    mul.wide.u32    %rd4, %r3, 4;
+    add.s64         %rd4, %rd2, %rd4;
+    min.relu.s32    %r10, %r4, %r5;
+    max.relu.s32    %r11, %r4, %r5;
+    add.s32         %r20, %r4, -1;
+    min.relu.s32    %r12, %r20, %r6;
+    add.s32         %r21, %r4, %r5;
+    max.relu.s32    %r13, %r21, %r6;
+    min.relu.s16x2  %r14, %r4, %r5;
+    max.relu.s16x2  %r15, %r4, %r5;
+    min.relu.s32    %r16, %r4, 123;
+    st.global.u32   [%rd4], %r10;
+    st.global.u32   [%rd4+4096], %r11;
+    st.global.u32   [%rd4+8192], %r12;
+    st.global.u32   [%rd4+12288], %r13;
+    st.global.u32   [%rd4+16384], %r14;
+    st.global.u32   [%rd4+20480], %r15;
+    st.global.u32   [%rd4+24576], %r16;
+    ret;
+}
