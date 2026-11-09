@@ -276,6 +276,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ptxv-targets"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -11,8 +11,10 @@ We actively welcome your pull requests.
 3. If you've changed APIs or behaviour, update the documentation (`README.md`, `docs/`).
 4. If you've added a modelling shortcut, add an `ASSUMPTIONS.md` entry and tag the code with
    `ASSUME(ID)`; `cargo test --test assumptions` checks that the two agree.
-5. Ensure the test suite passes and `cargo clippy` is clean.
-6. If you haven't already, complete the Contributor License Agreement ("CLA").
+5. Specs and assumptions for another hardware target go in `targets/<id>/` (layout and rules:
+   `targets/README.md`); `cargo test -p ptxv-targets` checks them.
+6. Ensure the test suite passes and `cargo clippy` is clean.
+7. If you haven't already, complete the Contributor License Agreement ("CLA").
 
 ## Contributor License Agreement ("CLA")
 

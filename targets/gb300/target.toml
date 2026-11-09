@@ -1,0 +1,11 @@
+# The current target. Its assumption registry is the top-level ASSUMPTIONS.md (checked against
+# the code by crates/sim/tests/assumptions.rs); its model is docs/design.md.
+id = "gb300"
+name = "NVIDIA GB300 (Blackwell Ultra)"
+vendor = "nvidia"
+isa = ["ptx", "sass"]
+arch = ["sm_100", "sm_100f", "sm_103", "sm_103a"]
+id_prefix = ""
+status = "verified"
+assumptions = "../../ASSUMPTIONS.md"
+spec = "../../docs/design.md"

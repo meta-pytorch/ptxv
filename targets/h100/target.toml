@@ -1,0 +1,8 @@
+id = "h100"
+name = "NVIDIA H100 (Hopper)"
+vendor = "nvidia"
+isa = ["ptx", "sass"]
+arch = ["sm_90", "sm_90a"]
+id_prefix = "H100"
+status = "scaffold"
+based_on = "gb300"

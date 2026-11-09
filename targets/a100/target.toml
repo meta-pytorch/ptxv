@@ -1,0 +1,8 @@
+id = "a100"
+name = "NVIDIA A100 (Ampere)"
+vendor = "nvidia"
+isa = ["ptx", "sass"]
+arch = ["sm_80"]
+id_prefix = "A100"
+status = "scaffold"
+based_on = "gb300"

@@ -1,0 +1,9 @@
+# Copy this directory to targets/<id>/ (or fb/targets/<id>/ for internal-only material) and
+# fill in every field. See targets/README.md.
+id = "_template"
+name = "Template target"
+vendor = "none"
+isa = []
+arch = []
+id_prefix = "TEMPLATE"
+status = "scaffold"
