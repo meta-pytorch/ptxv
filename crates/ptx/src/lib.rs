@@ -5513,19 +5513,19 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     if !(ops.len() == en_i + 1 || ops.len() == en_i + 2) {
                         bail!(lw.err("tcgen05.mma: unexpected operand count"));
                     }
-                    if ops.len() == en_i + 2 {
-                        // D = A*B + D * 2^-scale (scale 0..15): only 0 is modeled so far; with
-                        // enable-input-d = 0 the accumulator is not read, so any scale is moot.
+                    // D = A*B + D * 2^-scale_d (0..15; kind::f16 / tf32, the sim refuses other
+                    // kinds and scaled values that are not normal or zero).
+                    let scale_d: u8 = if ops.len() == en_i + 2 {
                         let sc = parse_int(op_n(en_i + 1)?.trim()).ok_or_else(|| {
                             lw.err("tcgen05.mma scale-input-d must be an immediate")
                         })?;
                         if scaled || !(0..=15).contains(&sc) {
                             bail!(lw.err("tcgen05.mma scale-input-d not allowed here"));
                         }
-                        if sc != 0 && op_n(en_i)?.trim() != "0" {
-                            bail!(lw.err("tcgen05.mma scale-input-d != 0 not modeled"));
-                        }
-                    }
+                        sc as u8
+                    } else {
+                        0
+                    };
                     let scale = if scaled {
                         let t = |i: usize| -> Result<Val> {
                             let a = lw.addr(op_n(i)?)?;
@@ -5606,7 +5606,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         a_tmem,
                         kind,
                         scale,
-                        scale_d: 0,
+                        scale_d,
                     }
                 }
                 "cp" => {
@@ -7656,7 +7656,7 @@ mod tests {
     fn tcgen05_mma_operand_order() {
         // [d], a, b, idesc, ({mask},) enable-input-d (, scale-input-d): `..., 0, 1` overwrites D
         // (enable 0; the scale of an unread accumulator is moot); a nonzero scale with a live
-        // enable is refused until modeled; the mask is a braced vector.
+        // enable scales the accumulator; the mask is a braced vector.
         let mma = |tail: &str| {
             ops(&format!(
                 "tcgen05.mma.cta_group::1.kind::f16 [%r1], %rd1, %rd2, %r2, {tail};"
@@ -7664,8 +7664,11 @@ mod tests {
         };
         let en = |v: &[Op]| match v.last().unwrap() {
             Op::Mma {
-                enable_d, disable, ..
-            } => (*enable_d, disable.len()),
+                enable_d,
+                disable,
+                scale_d,
+                ..
+            } => (*enable_d, disable.len(), *scale_d),
             o => panic!("{o:?}"),
         };
         assert_eq!(
@@ -7675,18 +7678,20 @@ mod tests {
                     reg: None,
                     neg: true
                 },
-                0
+                0,
+                1
             )
         );
-        assert_eq!(en(&mma("1, 0").unwrap()), (Pred::TRUE, 0));
-        assert!(mma("%p1, 1").is_err());
-        assert!(mma("1, 3").is_err());
+        assert_eq!(en(&mma("1, 0").unwrap()), (Pred::TRUE, 0, 0));
+        assert_eq!(en(&mma("1, 3").unwrap()), (Pred::TRUE, 0, 3));
+        assert_eq!(en(&mma("%p1, 15").unwrap()).2, 15);
+        assert!(mma("1, 16").is_err());
+        assert!(mma("1, %r9").is_err());
         assert_eq!(
             en(&mma("{%r3, %r4, %r5, %r6}, 1").unwrap()),
-            (Pred::TRUE, 4)
+            (Pred::TRUE, 4, 0)
         );
         assert_eq!(en(&mma("{%r3, %r4, %r5, %r6}, 0, 2").unwrap()).1, 4);
-        assert!(mma("{%r3, %r4, %r5, %r6}, %p1, 2").is_err());
     }
 
     #[test]

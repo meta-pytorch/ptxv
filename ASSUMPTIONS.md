@@ -4431,8 +4431,8 @@ forms seen. Any other form is a hard error.
   (PTX ISA): an optional braced disable-output-lane vector, the enable-input-d predicate,
   then an optional scale-input-d immediate (0..15; D = A*B + D*2^-s, not with
   `.block_scale`). A brace-less second trailing operand is scale-input-d, never a mask:
-  `..., 0, 1` overwrites D (enable 0, the scale of an unread accumulator is moot). A nonzero
-  scale with an enable that may be true is refused until modeled. Kernel DB (2026-11-08):
+  `..., 0, 1` overwrites D (enable 0, the scale of an unread accumulator is moot). The scale
+  is `Op::Mma.scale_d` (scale-input-d bullet of N-MMA). Kernel DB (2026-11-08):
   381 records with tcgen05.mma, 164 with a mask (vector + enable, read as such before),
   none with a scale-input-d operand.
 - `min` / `max.f64`, `neg` / `abs.f64` (2026-11-07, PX: 2 + 2 kernel-DB records), as ptxas
@@ -5652,7 +5652,8 @@ random bf16 lanes and 96.7% of f16 lanes; misses include groups with a NaN lane.
   (toward zero, e.g. 0x807fffff * 2^-1 = 0x803fffff), -0 gives +0, NaN gives 0x7fffffff and Inf
   stays Inf; this was measured on data/C_special inputs (gen.py) but is not modeled. The
   numerics shadow restarts a scaled accumulator cell as a leaf, with a warning when its old
-  node carried rounding error (`num_tmem_rescale`). Other kinds with a scale are refused.
+  node carried rounding error (`num_tmem_rescale`). Other kinds with a scale are refused. Both
+  front-ends lower it (the PTX front since 2026-11-08); `probes/mma_scale_d` is bitwise on both.
 - **f16 and tf32 operands** (2026-11-07): kind::f16 with f16 A / B (instruction descriptor
   format 0) is the same model over 16 products (unique match of 820 candidates, `ptxv
   calib-mma probes/tc_f16`, 6 input sets / 49,152 GB300 outputs; f16 subnormal inputs are

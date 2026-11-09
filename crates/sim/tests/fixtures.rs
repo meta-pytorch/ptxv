@@ -1941,11 +1941,13 @@ fn probe_red_bitops_matches_hardware() {
 }
 
 /// N-MMA: tcgen05.mma scale-input-d (UTCHMMA ..., UPd, s; D = A B + D * 2^-s) for kind::f16
-/// (bf16) and kind::tf32 over 9 scales = GB300 (probes/mma_scale_d). SASS front only: the PTX
-/// front-end does not lower scale-input-d.
+/// (bf16) and kind::tf32 over 9 scales = GB300 (probes/mma_scale_d), on both front-ends; the
+/// PTX statements include `..., 0, 8` (enable-input-d 0: the scale of an unread accumulator is
+/// moot, D is overwritten).
 #[test]
 fn probe_mma_scale_d_matches_hardware() {
     probe_bitwise("probes/mma_scale_d", "good", "sass");
+    probe_bitwise("probes/mma_scale_d", "good", "ptx");
 }
 
 /// S-TMA, S-TMAP: im2col TMA loads (UTMALDG.<n>D.IM2COL) and im2col_no_offs stores
