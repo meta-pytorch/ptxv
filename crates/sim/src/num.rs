@@ -941,18 +941,18 @@ impl NumState {
 
     fn node_of(&self, t: usize, v: &Val) -> Option<u32> {
         match v {
-            Val::Reg(r, _) => self.reg.get(&(t as u32, file_tag(r.file), r.idx)).copied(),
+            Val::Reg(r, _) => self.reg.get(&self.taint.reg_key(t, *r)).copied(),
             _ => None,
         }
     }
     pub(crate) fn node_of_reg(&self, t: usize, r: Reg) -> Option<u32> {
-        self.reg.get(&(t as u32, file_tag(r.file), r.idx)).copied()
+        self.reg.get(&self.taint.reg_key(t, r)).copied()
     }
     pub(crate) fn set_reg_node(&mut self, t: usize, d: Reg, n: Option<u32>) {
         self.set(t, d, n);
     }
     fn set(&mut self, t: usize, d: Reg, n: Option<u32>) {
-        let k = (t as u32, file_tag(d.file), d.idx);
+        let k = self.taint.reg_key(t, d);
         self.touched.push(k);
         match n {
             Some(n) => {
@@ -1294,6 +1294,9 @@ impl Machine {
         if !ns.segments || !ns.taint.reg_t(t, *r) {
             return None;
         }
+        if matches!(r.file, File::UR | File::UP) {
+            return None;
+        }
         let pc =
             ns.trace.get(&(t as u32)).and_then(|v| v.last()).copied()? & !crate::seg::GUARD_FALSE;
         match self.seg_slice(t, *r) {
@@ -1310,7 +1313,7 @@ impl Machine {
                 });
                 let id = (ns.nodes.len() - 1) as u32;
                 // Later reads of the register reuse it.
-                let k = (t as u32, file_tag(r.file), r.idx);
+                let k = ns.taint.reg_key(t, *r);
                 ns.reg.insert(k, id);
                 Some(id)
             }
@@ -4245,6 +4248,7 @@ type LopPre = (usize, [u32; 4], [u32; 4], bool, bool);
 #[derive(Default, Debug, Clone)]
 pub struct Taint {
     reg: BTreeSet<(u32, u8, u16)>,
+    uniform_owners: Vec<u32>,
     mem: std::collections::HashSet<(u8, u64, u64)>,
     /// The current instruction / async completion: a value operand is tainted ...
     cur_src: bool,
@@ -4334,10 +4338,18 @@ impl Taint {
             self.mem.insert((1, alloc as u64, b));
         }
     }
+    fn reg_key(&self, t: usize, r: Reg) -> (u32, u8, u16) {
+        let owner = if matches!(r.file, File::UR | File::UP) {
+            self.uniform_owners.get(t).copied().unwrap_or(t as u32)
+        } else {
+            t as u32
+        };
+        (owner, r.file as u8, r.idx)
+    }
     fn reg_t(&self, t: usize, r: Reg) -> bool {
         // A PTX register's high half (V_HI) has the whole register's taint.
         let idx = if is_v_hi(r) { r.idx & !V_HI } else { r.idx };
-        self.reg.contains(&(t as u32, r.file as u8, idx))
+        self.reg.contains(&self.reg_key(t, Reg { idx, ..r }))
     }
     pub(crate) fn reg_tainted(&self, t: usize, r: Reg) -> bool {
         self.reg_t(t, r)
@@ -4364,14 +4376,14 @@ impl Taint {
     }
     /// The tainted bits of register `r` of thread `t`.
     fn reg_mask(&self, t: usize, r: Reg) -> u32 {
-        let k = (t as u32, r.file as u8, r.idx);
+        let k = self.reg_key(t, r);
         if !self.reg.contains(&k) {
             return 0;
         }
         self.bits.get(&k).copied().unwrap_or(u32::MAX)
     }
     fn set_mask(&mut self, t: usize, r: Reg, m: u32) {
-        let k = (t as u32, r.file as u8, r.idx);
+        let k = self.reg_key(t, r);
         self.bits.remove(&k);
         if m == 0 {
             self.reg.remove(&k);
@@ -4419,6 +4431,16 @@ impl Machine {
     pub(crate) fn taint_pre(&mut self, members: &[usize], active: &[usize], pc: u32) {
         if self.num.is_none() {
             return;
+        }
+        if self.num.as_ref().unwrap().taint.uniform_owners.len() != self.threads.len() {
+            let mut owners = BTreeMap::new();
+            let by_thread = self
+                .threads
+                .iter()
+                .enumerate()
+                .map(|(t, th)| *owners.entry(th.warp).or_insert(t as u32))
+                .collect();
+            self.num.as_mut().unwrap().taint.uniform_owners = by_thread;
         }
         let half_only = self.eff_active(active, pc);
         let active = half_only.as_deref().unwrap_or(active);
@@ -4559,6 +4581,12 @@ impl Machine {
                     .map(|&t| (t, seed || srcs.iter().any(|&r| tn.reg_t(t, r))))
                     .collect(),
             );
+            if matches!(inst.op, Op::R2Ur { .. }) {
+                if let Some(per) = tn.cur_pure.as_mut() {
+                    let first = per.first().is_some_and(|x| x.1);
+                    per.iter_mut().for_each(|x| x.1 = first);
+                }
+            }
             // A reduction across the warp: every lane's result depends on every lane's
             // operand.
             if matches!(inst.op, Op::Redux { .. }) {
@@ -4593,6 +4621,63 @@ impl Machine {
             tn.violations.insert(format!(
                 "an address / control operand of {describe} depends on input data"
             ));
+        }
+    }
+
+    pub(crate) fn num_shuffle_origin(
+        &mut self,
+        t: usize,
+        d: Reg,
+        p: Option<Reg>,
+        tainted: bool,
+        pc: u32,
+        partner: bool,
+    ) {
+        let Some(ns) = self.num.as_mut() else { return };
+        ns.taint.shfl_src.push((t, tainted));
+        if !partner {
+            return;
+        }
+        let inst = &self.k.code[pc as usize];
+        if control_regs(&inst.op).iter().any(|&r| ns.taint.reg_t(t, r))
+            || inst.guard.reg.is_some_and(|r| ns.taint.reg_t(t, r))
+        {
+            ns.taint.violations.insert(format!(
+                "an address / control operand of {} depends on input data",
+                self.k.describe(pc as usize)
+            ));
+        }
+        ns.taint.set_mask(t, d, if tainted { u32::MAX } else { 0 });
+        if let Some(p) = p {
+            ns.taint.set_mask(t, p, 0);
+        }
+        if ns.segments {
+            // Partners advanced at their own instruction, outside the caller's traced split.
+            let trace = ns.trace.entry(t as u32).or_default();
+            let pos = trace.len() as u32;
+            trace.push(pc);
+            for r in self.k.code[pc as usize].op.dst_regs() {
+                let val = if matches!(r.file, File::P | File::UP) {
+                    self.prd(
+                        t,
+                        Pred {
+                            reg: Some(r),
+                            neg: false,
+                        },
+                    ) as u64
+                } else {
+                    self.rd(t, &Val::Reg(r, 1)).unwrap_or(0) & 0xffff_ffff
+                };
+                let ns = self.num.as_mut().unwrap();
+                let def = Def {
+                    val,
+                    tainted: ns.taint.reg_t(t, r),
+                    tmask: ns.taint.reg_mask(t, r),
+                    node: ns.node_of_reg(t, r),
+                };
+                ns.defs
+                    .insert((t as u32, pos, file_tag(r.file), r.idx), def);
+            }
         }
     }
 
@@ -4649,7 +4734,7 @@ impl Machine {
         touched_ts.extend(dg.iter().copied().filter(|t| !active.contains(t)));
         for r in inst.op.dst_regs() {
             for &t in &touched_ts {
-                let k = (t as u32, file_tag(r.file), r.idx);
+                let k = ns.taint.reg_key(t, r);
                 if dg.contains(&t) {
                     ns.half.forget_register(t, r);
                 }
@@ -4669,7 +4754,7 @@ impl Machine {
         let t_any = tn.cur_src || tn.cur_read;
         let mut per = tn.cur_pure.take();
         // ASSUME(N-EQUIV): a shuffle: each destination carries the taint of the lane it read.
-        if per.is_none() && matches!(inst.op, Op::Shfl { .. }) && !tn.shfl_src.is_empty() {
+        if matches!(inst.op, Op::Shfl { .. }) && !tn.shfl_src.is_empty() {
             per = Some(std::mem::take(&mut tn.shfl_src));
         }
         // ASSUME(N-EQUIV): a load: each thread's destination register carries the taint of the bytes it got.
@@ -4680,10 +4765,10 @@ impl Machine {
         };
         for r in inst.op.dst_regs() {
             for &t in &touched_ts {
-                tn.bits.remove(&(t as u32, r.file as u8, r.idx));
+                tn.bits.remove(&tn.reg_key(t, r));
             }
             for &t in active {
-                let k = (t as u32, r.file as u8, r.idx);
+                let k = tn.reg_key(t, r);
                 let tainted = match &per {
                     Some(p) => p.iter().any(|&(u, x)| u == t && x),
                     None => ld_read
@@ -4699,12 +4784,12 @@ impl Machine {
             }
             // Under a data-dependent guard the member's destination depends on input data.
             for &t in &dg {
-                tn.reg.insert((t as u32, r.file as u8, r.idx));
+                tn.reg.insert(tn.reg_key(t, r));
             }
         }
         // ASSUME(N-FINITE): a comparison fixed by finiteness is the same for every input.
         for (t, r) in std::mem::take(&mut tn.fin_clear) {
-            tn.reg.remove(&(t as u32, r.file as u8, r.idx));
+            tn.reg.remove(&tn.reg_key(t, r));
         }
         // Bitwise taint of a LOP3: each result bit is the LUT of the operands' same bits; it is
         // input data where it can take both values as the tainted operand bits (and, under a

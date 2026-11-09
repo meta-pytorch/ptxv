@@ -3570,7 +3570,7 @@ impl Machine {
         // undefined registers and drop the result, dash/5819).
         if matches!(
             inst.op,
-            Op::R2Ur { .. } | Op::Hmma { .. } | Op::Redux { .. }
+            Op::R2Ur { .. } | Op::Hmma { .. } | Op::Redux { .. } | Op::MatchAny { .. }
         ) && undef_in(self, &inst.op.src_regs()).is_some()
         {
             for &t in &active {
@@ -4900,10 +4900,24 @@ impl Machine {
                     let Op::Shfl { a: sa, .. } = op_of(sq) else {
                         unreachable!()
                     };
-                    out.push((t, q, self.rd(st, sa)?, self.val_umask(st, sa), ok));
+                    let node = self.num_node_mat(st, sa);
+                    let half = self.half_val(st, sa);
+                    let tainted = self.num.as_ref().is_some_and(
+                        |ns| matches!(sa, Val::Reg(r, _) if ns.taint.reg_tainted(st, *r)),
+                    );
+                    out.push((
+                        t,
+                        q,
+                        self.rd(st, sa)?,
+                        self.val_umask(st, sa),
+                        ok,
+                        node,
+                        half,
+                        tainted,
+                    ));
                 }
-                for (t, q, v, um, ok) in out {
-                    let Op::Shfl { d, p, a, .. } = op_of(q) else {
+                for (t, q, v, um, ok, node, half, tainted) in out {
+                    let Op::Shfl { d, p, .. } = op_of(q) else {
                         unreachable!()
                     };
                     if let Some(p) = p {
@@ -4912,7 +4926,9 @@ impl Machine {
                     self.vmask = (um != 0).then_some(um);
                     self.wr(t, *d, v, 1);
                     self.vmask = None;
-                    self.num_clobber(t, *d, &[a], q);
+                    self.half_set_reg(t, *d, half);
+                    self.num_put(t, *d, node);
+                    self.num_shuffle_origin(t, *d, *p, tainted, q, partners.contains(&t));
                 }
             }
             Op::VoteAny { .. } => {
@@ -8389,9 +8405,9 @@ impl Machine {
                             idx: i,
                         };
                         self.wp(t, p, x >> i & 1 == 1);
-                        if u >> i & 1 == 1 && !*uniform {
+                        if u >> i & 1 == 1 {
                             // S-INIT-PRED: restored from an undefined bit.
-                            self.threads[t].make_mut().pdef[0] &= !(1 << i);
+                            self.make_undefined(t, p);
                         }
                     }
                 }

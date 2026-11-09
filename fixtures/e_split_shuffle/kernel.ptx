@@ -1,0 +1,26 @@
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 input, .param .u64 output) {
+    .reg .b64 %p<2>;
+    .reg .b32 %r<9>;
+    .reg .pred %odd;
+    ld.param.u64 %p0, [input];
+    ld.param.u64 %p1, [output];
+    ld.volatile.global.u32 %r0, [%p0];
+    mov.u32 %r1, %tid.x;
+    and.b32 %r2, %r1, 1;
+    and.b32 %r3, %r1, 30;
+    mov.u32 %r4, 3;
+    shl.b32 %r5, %r4, %r3;
+    setp.ne.u32 %odd, %r2, 0;
+    @%odd bra ODD;
+    mov.u32 %r6, 0;
+    shfl.sync.bfly.b32 %r7, %r6, 1, 0x1f, %r5;
+    st.global.u32 [%p1], %r7;
+    ret;
+ODD:
+    mov.u32 %r8, %r0; // @RESULT
+    shfl.sync.bfly.b32 %r7, %r8, 1, 0x1f, %r5;
+    ret;
+}

@@ -1,0 +1,28 @@
+{
+  "text_section_offset": 1792,
+  "reference": {
+    "0xc0": {
+      "before": "88730000030000000008000000e24100",
+      "after": "ca7200030000000000000e0000deff03",
+      "meaning": "STS [R0], R3 => R2UR UR0, R3"
+    },
+    "0xe0": {
+      "before": "888900ffff0000000408000800e20f00",
+      "after": "ca8200ff0000000000000e0000deff03",
+      "meaning": "@!P0 STS [UR4], RZ => @!P0 R2UR UR0, RZ"
+    },
+    "0x100": {
+      "before": "849905ff040000000008000800620e00",
+      "after": "029c050000000000000f000800deff03",
+      "meaning": "@!P1 LDS R5, [UR4] => @!P1 MOV R5, UR0"
+    }
+  },
+  "candidate": {
+    "0x100": {
+      "before": "029c050000000000000f000800deff03",
+      "after": "0292050003000000000f000000deff03",
+      "meaning": "@!P1 MOV R5, UR0 => @!P1 MOV R5, R3"
+    }
+  },
+  "control": "original unmodified ptxas cubin"
+}

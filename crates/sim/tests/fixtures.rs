@@ -4647,6 +4647,12 @@ fn undefined_values_through_redux() {
 }
 
 #[test]
+fn undefined_values_through_match() {
+    both("e_uninit_match", "good");
+    both("e_uninit_match", "store_all");
+}
+
+#[test]
 fn asynchronous_memory_rewrites_preserve_execution_semantics() {
     for case in ["e_bulk_load_history", "e_bulk_shared_half", "e_clc_history"] {
         both(case, "reference");
