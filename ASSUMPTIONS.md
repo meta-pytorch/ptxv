@@ -1335,13 +1335,21 @@ launched (each removed a possible outcome).
   (73 terminal states), and at 8192 CTAs GB300 shows the predicted failures (B17 and B53
   launch failures, B54 about 1985 of 8192 tiles lost; `tools/r1d_scale.sh`).
 - If wrong: *false alarm* if the hardware never fails a cancel while CTAs remain (the
-  model allows it; a correct kernel cannot depend on it either way). Multicast responses
-  (`UGETNEXTWORKID.BROADCAST`) are parsed but executing one is "unmodeled".
+  model allows it; a correct kernel cannot depend on it either way).
+- Multicast (`multicast::cluster::all`, `UGETNEXTWORKID.BROADCAST`, probes/clc_mcast): the
+  whole cluster of the victim is cancelled, and every CTA of the issuer's cluster gets the
+  same response. A failure is {2, 0, 0, 0} or all zero; the model allows both (2026-11-08,
+  4096 CTAs: 376 failed clusters got {2, 0, 0, 0}, 6 got zeros; probes/clc_one_cluster: a grid
+  of one cluster always fails, {2, 0, 0, 0} in 50 of 50 runs).
 - **Eager launch** (`explore.rs` `clc_eager`): if a deterministic run with every CTA launched
   up front executes no try_cancel (cuBLAS gates its try_cancel on a launch parameter that is
   0), exploration starts with every CTA launched, and any try_cancel that does execute is
   reported "unmodeled". When none executes, launch times do not matter: a late launch is a
-  schedule in which the CTA's threads have not stepped yet. The certificate (`wellsync.rs`
+  schedule in which the CTA's threads have not stepped yet. Eager is chosen only when that run
+  ends with every thread exited (a deadlocked or stuck run gives lazy launch; before
+  2026-11-08 it gave eager). A try_cancel in a grid of one cluster executes under eager launch:
+  nothing is left to cancel in any schedule, so the response is a failure (the Triton 2-CTA
+  matmul, grid = one cluster of 2). The certificate (`wellsync.rs`
   `certify_inner`, since 2026-11-06) runs on the eagerly launched machine directly instead of a
   separate trial run: a run that executes a try_cancel stops, and the certificate starts over
   with every CTA unlaunched. The decision is the trial's (same deterministic run).

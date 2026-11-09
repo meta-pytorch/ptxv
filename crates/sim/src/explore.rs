@@ -32,6 +32,9 @@ use serde::Serialize;
 
 use crate::machine::*;
 
+/// `Action::Clc` victim standing for a multicast failure with an all-zero response.
+pub const CLC_FAIL_ZERO: u16 = u16::MAX;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     /// `leader`: for a split that starts at `elect.sync` on the PTX front-end, which active
@@ -201,12 +204,20 @@ impl Machine {
             }
         }
         for (i, op) in self.pending.iter().enumerate() {
-            if let AsyncKind::Clc { .. } = op.kind {
+            if let AsyncKind::Clc { ref others, .. } = op.kind {
                 let issued = self.k.describe(op.pc as usize);
                 out.push((
                     Action::Clc(i, None),
                     format!("try_cancel issued at {issued} fails"),
                 ));
+                // A multicast failure is {2, 0, 0, 0} or all zero (GB300, probes/clc_one_cluster:
+                // 376 and 6 clusters of a 4096-CTA grid). ASSUME(E-CLC)
+                if !others.is_empty() {
+                    out.push((
+                        Action::Clc(i, Some(CLC_FAIL_ZERO)),
+                        format!("try_cancel issued at {issued} fails (all-zero response)"),
+                    ));
+                }
                 let gi = self
                     .launch
                     .grid_index(self.threads[op.issuer as usize].cta as u32);
@@ -621,7 +632,13 @@ pub fn clc_eager(m0: Machine) -> Machine {
     let mut faults = FaultLoop::default();
     for _ in 0..50_000_000u64 {
         let Some(a) = sched.pick(&probe) else {
-            return m;
+            // Eager only if the run ended with every thread exited: a deadlock or a stuck run
+            // says nothing about whether a try_cancel can execute (then: lazy).
+            return if probe.threads.iter().all(|t| t.st == St::Exited) {
+                m
+            } else {
+                m0
+            };
         };
         probe.apply(&a);
         // A step that faults forever: undecided, so lazy (the safe default).

@@ -2782,13 +2782,49 @@ fn probe_clc_mcast_follows_hardware() {
                     assert_eq!((cta(x)[0], cta(x + 1)[0]), (0, 0), "{front}: ran: {w:?}");
                 } else {
                     fails += 1;
-                    assert_eq!(a[2..7], [0, 0, 0, 0, 0], "{front}: failure: {w:?}");
+                    // {2, 0, 0, 0} or all zero (probes/clc_one_cluster).
+                    assert!(
+                        a[2..7] == [0, 0, 0, 0, 0] || a[2..7] == [0, 2, 0, 0, 0],
+                        "{front}: failure: {w:?}"
+                    );
                 }
             }
         }
         assert!(
             cancels > 0 && fails > 0,
             "{front}: {cancels} cancels, {fails} failures"
+        );
+    }
+}
+
+/// A multicast try_cancel in a grid of one cluster (probes/clc_one_cluster): nothing to cancel;
+/// the failed response is {2, 0, 0, 0} (GB300's output, one of the model's outcomes) or all
+/// zero, on both fronts, with every CTA launched up front (E-CLC eager launch).
+#[test]
+fn probe_clc_one_cluster_follows_hardware() {
+    let case = Case::load(root().join("probes/clc_one_cluster")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+        assert!(v.complete, "{front}: incomplete");
+        assert_eq!(
+            v.classes(),
+            ["nondeterministic"],
+            "{front}: {:#?}",
+            v.findings
+        );
+        assert_eq!(v.outputs.len(), 2, "{front}");
+        let gpu = v.outputs.iter().filter(|o| {
+            case.expect_report(o)
+                .unwrap()
+                .iter()
+                .all(|l| l.contains("bitwise equal"))
+        });
+        assert_eq!(
+            gpu.count(),
+            1,
+            "{front}: GB300's output is one of the outcomes"
         );
     }
 }

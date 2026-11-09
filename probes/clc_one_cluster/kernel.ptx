@@ -1,0 +1,51 @@
+// probes/clc_one_cluster: probes/clc_mcast with a grid of one cluster (2 one-warp CTAs): both
+// CTAs init their mbarrier and expect 16 bytes, a cluster barrier, then rank 0 issues one
+// clusterlaunchcontrol.try_cancel...multicast::cluster. Each CTA waits on its own mbarrier and
+// writes out[8c..8c+7] = {1 (ran), is_canceled, first_ctaid.x, raw0..raw3, rank}.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry probe_clc_one_cluster(.param .u64 out) .reqnctapercluster 2, 1, 1
+{
+    .reg .pred %p<5>;
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .b128 %q<2>;
+    .shared .align 16 .b8 resp[16];
+    .shared .align 8 .b8 bar[8];
+    mov.u32         %r9, %tid.x;
+    mov.u32         %r11, %cluster_ctarank;
+    setp.ne.u32     %p3, %r9, 0;
+    mov.u32         %r0, resp;
+    mov.u32         %r1, bar;
+    @!%p3 mbarrier.init.shared::cta.b64 [%r1], 1;
+    @!%p3 mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r1], 16;
+    fence.mbarrier_init.release.cluster;
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    @%p3 bra        DONE;
+    setp.eq.u32     %p4, %r11, 0;
+    @%p4 clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.multicast::cluster::all.b128 [%r0], [%r1];
+W:
+    mbarrier.try_wait.parity.shared::cta.b64 %p0, [%r1], 0;
+    @!%p0 bra       W;
+    ld.shared.b128  %q0, [%r0];
+    ld.shared.v4.b32 {%r4, %r5, %r6, %r7}, [%r0];
+    clusterlaunchcontrol.query_cancel.is_canceled.pred.b128 %p1, %q0;
+    selp.u32        %r3, 1, 0, %p1;
+    mov.u32         %r2, 0;
+    @%p1 clusterlaunchcontrol.query_cancel.get_first_ctaid::x.b32.b128 %r2, %q0;
+    mov.u32         %r8, %ctaid.x;
+    ld.param.u64    %rd0, [out];
+    cvta.to.global.u64 %rd1, %rd0;
+    mul.wide.u32    %rd2, %r8, 32;
+    add.u64         %rd3, %rd1, %rd2;
+    mov.u32         %r10, 1;
+    st.global.v4.b32 [%rd3], {%r10, %r3, %r2, %r4};
+    st.global.v4.b32 [%rd3+16], {%r5, %r6, %r7, %r11};
+DONE:
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    ret;
+}

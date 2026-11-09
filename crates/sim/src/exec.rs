@@ -2248,6 +2248,7 @@ impl Machine {
             }
         }
         let words: [u32; 4] = match victim {
+            Some(crate::explore::CLC_FAIL_ZERO) => [0; 4],
             Some(v) => {
                 // The whole cluster of `v` (its rank 0) is cancelled (probes/clc_mcast).
                 let vs: Vec<u16> = (0..self.launch.cluster_size(v as u32))
@@ -2268,9 +2269,8 @@ impl Machine {
                 let [x, y, z] = self.launch.ctaid(v as u32);
                 [x, y | z << 16, 1, 0]
             }
-            // Failure: {2, 0, 0, 0} (probes/clc); a multicast failure is all zero
-            // (probes/clc_mcast).
-            None if !others.is_empty() => [0; 4],
+            // Failure: {2, 0, 0, 0} (probes/clc); a multicast failure is that or all zero
+            // (`CLC_FAIL_ZERO`; probes/clc_one_cluster, probes/clc_mcast).
             None => [2, 0, 0, 0],
         };
         let data: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
@@ -6620,7 +6620,14 @@ impl Machine {
                 mbar,
                 multicast,
             } => {
-                if self.clc_eager {
+                // Under eager launch every CTA has launched: a grid of this one cluster leaves
+                // nothing to cancel, so the response is a failure in every schedule (complete_clc
+                // finds no unlaunched victim) and the run continues. With other clusters a
+                // cancel was possible in some schedule that eager launch does not explore.
+                if self.clc_eager
+                    && self.launch.cluster_size(self.threads[t].cta as u32) as usize
+                        != self.launch.ctas() as usize
+                {
                     return Err("try_cancel executed although every CTA was launched up front (E-CLC eager launch): not modeled on this path".into());
                 }
                 let r = self.rd(t, resp)?;
