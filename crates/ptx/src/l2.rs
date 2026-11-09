@@ -206,8 +206,9 @@ pub(super) fn lower(lw: &Lower, base: &str, mods: &[&str], ops: &[String]) -> Re
                 src_smem: true,
             }
         }
-        // `cp.reduce.async.bulk.tensor.<N>d.global.shared::cta.add.tile.bulk_group
-        // [tmap, {c..}], [src]` (SASS UTMAREDG.<N>D.ADD). ASSUME(N-BULK-RED)
+        // `cp.reduce.async.bulk.tensor.<N>d.global.shared::cta.add[.tile].bulk_group
+        // [.L2::cache_hint] [tmap, {c..}], [src][, policy]` (SASS UTMAREDG.<N>D.ADD).
+        // ASSUME(N-BULK-RED)
         "cp" if mods.get(3) == Some(&"tensor") => {
             let dims: u8 = mods
                 .get(4)
@@ -215,7 +216,18 @@ pub(super) fn lower(lw: &Lower, base: &str, mods: &[&str], ops: &[String]) -> Re
                 .and_then(|n| n.parse().ok())
                 .filter(|n| (1..=5).contains(n))
                 .ok_or_else(|| lw.err("bad tensor dims"))?;
-            if mods[5..] != ["global", "shared::cta", "add", "tile", "bulk_group"] || ops.len() != 2
+            // `.tile` is the default load mode (may be omitted); `.L2::cache_hint` (with its
+            // cache-policy operand) is a performance hint (ASSUME(L-PTX-HINT)).
+            let rest: Vec<&str> = mods[5..].iter().copied().filter(|m| *m != "tile").collect();
+            let hint = rest.last() == Some(&"L2::cache_hint");
+            let core = if hint {
+                &rest[..rest.len() - 1]
+            } else {
+                &rest[..]
+            };
+            if core != ["global", "shared::cta", "add", "bulk_group"]
+                || mods[5..].iter().filter(|m| **m == "tile").count() > 1
+                || ops.len() != 2 + hint as usize
             {
                 bail!(lw.err(format!("cp.{} not modeled", mods.join("."))));
             }
