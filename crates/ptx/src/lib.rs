@@ -7111,6 +7111,27 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 .trim_end_matches('d')
                 .parse()
                 .map_err(|_| lw.err("bad tensor dims"))?;
+            // Fail closed: `.im2col` (and its `::w` forms) gathers through per-pixel offsets
+            // that a tiled load does not compute; it, `.tile::scatter4` and any other modifier
+            // outside the modeled tiled forms are refused, never lowered as a tiled copy.
+            if let Some(m) = mods[4..].iter().find(|m| {
+                !matches!(
+                    **m,
+                    "global"
+                        | "shared::cta"
+                        | "shared::cluster"
+                        | "mbarrier::complete_tx::bytes"
+                        | "tile"
+                        | "tile::gather4"
+                        | "multicast::cluster"
+                        | "cta_group::1"
+                        | "cta_group::2"
+                        | "L2::cache_hint"
+                        | "bulk_group"
+                )
+            }) {
+                bail!(lw.err(format!("cp.async.bulk.tensor: modifier .{m} not modeled")));
+            }
             let store = mods.get(4) == Some(&"global") && has("shared::cta") && has("bulk_group");
             if store {
                 // cp.async.bulk.tensor.Nd.global.shared::cta.bulk_group [tmap, {c..}], [src]

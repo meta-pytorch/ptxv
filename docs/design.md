@@ -84,7 +84,8 @@ CuTeDSL, DeepGEMM sm100, Triton Blackwell, symmetric-memory collectives) depend 
   arithmetic. The skeleton tracks them concretely, and footprints come from decoding them.
 
 ### 1.2 TMA / bulk async copies
-* `cp.async.bulk.tensor` in tile, im2col and `tile::gather4/scatter4` modes, `.multicast::cluster`,
+* `cp.async.bulk.tensor` in tile and `tile::gather4` modes (the PTX front refuses
+  every im2col form and any other mode modifier rather than lower it as tiled), `.multicast::cluster`,
   `.cta_group::2`, cache hints, `prefetch.tensor`. The footprint is the decoded box of the
   `CUtensorMap`: dims, strides, box, element strides, swizzle, interleave, OOB fill.
 * `cp.async.bulk` (contiguous), `cp.reduce.async.bulk(.tensor)`. A TMA *reduce-add* into
