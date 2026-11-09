@@ -5059,6 +5059,12 @@ value commute up to the order of each location's adds.**
 - If wrong: *false proof* (an add that is not one rounding) or a missed conflict (an atomic
   add whose value is read by another cluster during the launch is still a read: caught).
 
+- The nondeterminism waiver is limited to straight-line reduction kernels whose global
+  writes are only non-returning fp32 atomic adds. The structural check rejects conditional
+  branches, other writes, strong loads, shared-memory communication and lane-to-uniform
+  transfers. An unrelated fp32 atomic no longer excuses a nondeterministic output. Other
+  atomic programs retain their execution precondition (`NumState::atomic_order_only`).
+
 ### N-SEG · code
 **Segment mode (`equiv.toml` `segments = true`): instruction slices stand for the values the
 numerics DAG has no node for.** Products (`FFMA`/`FMUL` round-to-nearest, `-x` modifiers),

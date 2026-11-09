@@ -157,3 +157,18 @@ fn warp_poll_stutters_compare_uniform_state_and_wide_stores() {
         }
     }
 }
+
+#[test]
+fn unrelated_atomic_adds_do_not_excuse_nondeterministic_outputs() {
+    for front in ["ptx", "sass"] {
+        let r = compare("e_atomic_nondet_scope", front, true, false, false);
+        assert!(
+            r["pre_reference"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p.as_str().unwrap().contains("nondeterministic")),
+            "{r}"
+        );
+    }
+}

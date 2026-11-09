@@ -946,6 +946,40 @@ impl NumState {
         }
     }
 
+    /// Sufficient structural condition for nondeterminism to consist only of atomic order:
+    /// no shared-memory communication, returned atomic values, other global writes, or
+    /// conditional branches. Unsupported programs keep their nondeterminism precondition.
+    pub fn atomic_order_only(&self, k: &Kernel) -> bool {
+        self.atomic_adds > 0
+            && self.other_atomics == 0
+            && k.code.iter().all(|i| match &i.op {
+                Op::R2Ur { .. } => false,
+                op if pure_op(op) => op.dst_regs().iter().all(|r| {
+                    !matches!(r.file, File::UR | File::UP) || (i.uniform && i.guard.is_always())
+                }),
+                Op::Ld {
+                    space: Space::Global | Space::Param,
+                    sync: None,
+                    ..
+                }
+                | Op::Ld256 { sync: None, .. }
+                | Op::Atom {
+                    space: Space::Global,
+                    op: AtomOp::FAddFtz,
+                    d: None,
+                    ..
+                }
+                | Op::Shfl { .. }
+                | Op::Bssy { .. }
+                | Op::Bsync { .. }
+                | Op::WarpSync { .. }
+                | Op::EndCollective { .. }
+                | Op::Exit => true,
+                Op::Bra { .. } => i.guard.is_always(),
+                _ => false,
+            })
+    }
+
     pub fn with_mma_eps(eps: f64) -> NumState {
         NumState {
             mma_eps: eps,

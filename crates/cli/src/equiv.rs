@@ -430,7 +430,7 @@ pub(crate) fn prepare_with(
     // ASSUME(N-ATOMIC): several outputs from fp32 atomic adds alone (no other atomic, no
     // returned value) differ only in the order of each location's adds, which the bound
     // covers for every order.
-    if nondet && ns.atomic_adds > 0 && ns.other_atomics == 0 {
+    if nondet && ns.atomic_order_only(&m.k) {
         classes.retain(|c| c != "nondeterministic");
         if classes.is_empty() {
             classes.push("clean".into());
