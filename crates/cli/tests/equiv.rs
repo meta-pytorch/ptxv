@@ -530,6 +530,85 @@ expect = "L0"
 }
 
 #[test]
+fn incomplete_numeric_output_elements_are_refused() {
+    let dir = std::env::temp_dir().join(format!("ptxv-output-tail-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("kernel.ptx"),
+        r#"
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 output) {
+    .reg .b64 %p;
+    ld.param.u64 %p, [output];
+    st.global.u8 [%p], 0;
+    ret;
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("equiv.toml"),
+        r#"
+trials = 0
+reference = {case = ".", variant = "good", front = "ptx"}
+candidates = [{case = ".", variant = "good", front = "ptx"}]
+"#,
+    )
+    .unwrap();
+    for bytes in [1, 3, 5, 7] {
+        std::fs::write(
+            dir.join("case.toml"),
+            format!(
+                r#"
+name = "output-tail"
+description = "all output bytes must be covered"
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1,1,1]
+block = [1,1,1]
+outputs = ["out"]
+params = [{{kind = "ptr", buffer = "out"}}]
+[[buffers]]
+name = "out"
+dtype = "u8"
+shape = [{bytes}]
+init = "zeros"
+[[variants]]
+id = "good"
+expect = ["clean"]
+"#
+            ),
+        )
+        .unwrap();
+        let result = std::process::Command::new(env!("CARGO_BIN_EXE_ptxv"))
+            .args([
+                "equiv",
+                dir.join("equiv.toml").to_str().unwrap(),
+                "--no-hw",
+                "--out",
+                dir.join("result").to_str().unwrap(),
+            ])
+            .env("CUDA_VISIBLE_DEVICES", "")
+            .output()
+            .unwrap();
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            !result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stdout)
+        );
+        assert!(
+            error.contains(&format!("cannot cover all {bytes} bytes")),
+            "{error}"
+        );
+        assert!(!error.contains("panicked"), "{error}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn async_memory_rewrites_do_not_reuse_old_histories() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let dir = std::env::temp_dir().join(format!("ptxv-async-history-{}", std::process::id()));

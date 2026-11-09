@@ -385,6 +385,20 @@ pub(crate) fn prepare_with(
             _ => {}
         }
     }
+    let output = m.launch.outputs[0];
+    let stride = if ns.half.bf16_outputs.contains(&output) || ns.half.f16_outputs.contains(&output)
+    {
+        2
+    } else {
+        4
+    };
+    let output_bytes = m.gmem[output].bytes.len();
+    if output_bytes == 0 || output_bytes % stride != 0 {
+        bail!(
+            "equivalence cannot cover all {output_bytes} bytes of output {}: a nonempty buffer of whole {stride}-byte numeric elements is required",
+            m.launch.allocs[output].name
+        );
+    }
     let mut fixed = vec![];
     for (i, a) in m.launch.allocs.iter().enumerate() {
         if fixed_ints && !out_only(&case, &a.name) && int_buffer(&case, &a.name) {
