@@ -2505,13 +2505,17 @@ impl Machine {
     /// function of the code (`bar_cfg`), the pc, `bit` and the values it read, so an earlier
     /// walk from the same pc applies to every thread reading the same values there.
     fn thread_may_arrive(&self, t: usize, bit: u32, reads: &mut Vec<BarRead>) -> bool {
-        type Walks = HashMap<(usize, u32, u32), Vec<(Vec<BarRead>, bool)>>;
+        // Keyed by the address of `bar_cfg`; each entry holds a weak reference to it, so the
+        // address is not reused by another machine's `BarCfg` (another kernel: its walks and
+        // registers differ) while the entry exists.
+        type Walks =
+            HashMap<(usize, u32, u32), (std::sync::Weak<BarCfg>, Vec<(Vec<BarRead>, bool)>)>;
         thread_local! {
             static WALKS: std::cell::RefCell<Walks> = Default::default();
         }
         let key = (Arc::as_ptr(&self.bar_cfg) as usize, self.threads[t].pc, bit);
         let hit = WALKS.with(|w| {
-            w.borrow().get(&key).and_then(|es| {
+            w.borrow().get(&key).and_then(|(_, es)| {
                 es.iter()
                     .find(|(rs, _)| rs.iter().all(|r| self.bar_read(t, &r.0) == Some(r.1)))
                     .cloned()
@@ -2537,7 +2541,9 @@ impl Machine {
             if w.len() > 1 << 16 {
                 w.clear();
             }
-            let es = w.entry(key).or_default();
+            let (_, es) = w
+                .entry(key)
+                .or_insert_with(|| (Arc::downgrade(&self.bar_cfg), Vec::new()));
             if es.len() >= 64 {
                 es.remove(0);
             }
@@ -2737,12 +2743,14 @@ impl Machine {
             }
         }
         type Mw = Arc<MwSets>;
+        type MwCache = HashMap<(usize, usize, u32), (std::sync::Weak<BarCfg>, Mw)>;
         thread_local! {
-            // The dataflow depends only on the code, the start pc and `bit`.
-            static MW: std::cell::RefCell<HashMap<(usize, usize, u32), Mw>> = Default::default();
+            // The dataflow depends only on the code, the start pc and `bit`. Keyed by the
+            // address of `bar_cfg`, pinned by a weak reference (`thread_may_arrive`).
+            static MW: std::cell::RefCell<MwCache> = Default::default();
         }
         let key = (Arc::as_ptr(&self.bar_cfg) as usize, start, bit);
-        let mw: Mw = match MW.with(|c| c.borrow().get(&key).cloned()) {
+        let mw: Mw = match MW.with(|c| c.borrow().get(&key).map(|e| e.1.clone())) {
             Some(m) => m,
             None => {
                 let mut ix: HashMap<Reg, usize> = HashMap::new();
@@ -2786,7 +2794,7 @@ impl Machine {
                     if c.len() > 4096 {
                         c.clear();
                     }
-                    c.insert(key, m.clone());
+                    c.insert(key, (Arc::downgrade(&self.bar_cfg), m.clone()));
                 });
                 m
             }
@@ -8554,4 +8562,40 @@ fn lookahead(
     res.stopped.sort_unstable();
     res.stopped.dedup();
     res
+}
+
+#[cfg(test)]
+mod walk_cache_tests {
+    use super::*;
+
+    /// E-BAR-OVER / E-BAR-ARRIVE's per-thread walk caches (`thread_may_arrive`, the region
+    /// dataflow) are keyed by the address of a machine's `BarCfg`. Once that machine is
+    /// dropped, a later machine on the same thread (another case, variant or front) could get
+    /// the same address and read walks of another kernel: registers it does not have (an
+    /// index out of bounds in `Machine::rd`) or a wrong arrival bound. The cache entries pin
+    /// the address while they exist.
+    #[test]
+    fn walk_cache_entries_pin_their_key() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let case = ptxv_case::Case::load(&dir).unwrap();
+        let ptx = case.variant_ptx("good").unwrap();
+        let k = ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap();
+        let launch = crate::build_launch(&case, &k).unwrap();
+        let m = Machine::new(Arc::new(k), Arc::new(launch));
+        let pc = (0..m.k.code.len())
+            .find(|&pc| m.bar_cfg.reach[pc] & 2 != 0)
+            .expect("a pc that may reach barrier 1");
+        let mut m = m;
+        m.threads[0].make_mut().pc = pc as u32;
+        let mut reads = Vec::new();
+        let _ = m.thread_may_arrive(0, 2, &mut reads);
+        let key = Arc::as_ptr(&m.bar_cfg) as usize;
+        drop(m);
+        let fresh: Vec<Arc<BarCfg>> = (0..256).map(|_| Arc::new(BarCfg::default())).collect();
+        assert!(
+            fresh.iter().all(|b| Arc::as_ptr(b) as usize != key),
+            "a new BarCfg took the address the walk cache is keyed by"
+        );
+    }
 }
