@@ -63,10 +63,10 @@ fn naive_lse_log_slice() {
 }
 
 #[test]
-fn stable_lse_reextracts() {
-    // The default extraction folds the max-shifted exp's argument; segment mode is right.
+fn stable_lse_keeps_max_shift_history() {
+    // Captured-zero max shifts retain their input dependence without a repair retry.
     let (text, j) = run("stable", "fixtures/c_lse_stable");
-    assert!(text.contains("retrying in segment mode"), "{text}");
+    assert!(!text.contains("retrying in segment mode"), "{text}");
     assert!(text.contains(": log("), "{text}");
     for v in j["validation"].as_array().unwrap() {
         assert_eq!(v["dag_mismatch"], 0, "{v}");

@@ -35,8 +35,7 @@ pub type Orig = (usize, u64);
 #[derive(Clone, Debug, Serialize)]
 pub enum NodeKind {
     Leaf,
-    /// Segment mode: an input-derived value without a node or a slice (untracked; `Leaf`s
-    /// are then input-independent constants).
+    /// An input-derived value without a node or a slice (`Leaf`s are constants).
     Opaque,
     /// An element of an input buffer as a load read it (allocation, element index): exact,
     /// the input itself. Moves (registers, shuffles, shared memory) keep the node, so a pure
@@ -1121,18 +1120,23 @@ impl NumState {
         });
         (self.nodes.len() - 1) as u32
     }
-    /// A leaf for operand `v` of thread `t` without a node: in segment mode `Opaque` when it
-    /// is input-derived, else a constant `Leaf`.
-    fn leaf_for(&mut self, t: usize, v: &Val, bits: u32, pc: u32) -> u32 {
+    fn leaf_with_origin(&mut self, bits: u32, pc: u32, input_derived: bool) -> u32 {
         let n = self.leaf(bits, pc);
-        if matches!(v, Val::Reg(r, _) if self.taint.reg_t(t, *r)) {
-            if self.segments {
-                self.nodes[n as usize].kind = NodeKind::Opaque;
-            }
+        self.nodes[n as usize].kind = if input_derived {
+            NodeKind::Opaque
         } else {
+            NodeKind::Leaf
+        };
+        if !input_derived {
             self.const_leaves.insert(n);
         }
         n
+    }
+
+    /// A missing operand history stays opaque when the operand depends on input data.
+    fn leaf_for(&mut self, t: usize, v: &Val, bits: u32, pc: u32) -> u32 {
+        let input_derived = matches!(v, Val::Reg(r, _) if self.taint.reg_t(t, *r));
+        self.leaf_with_origin(bits, pc, input_derived)
     }
 
     /// A leaf of an input-independent constant.
@@ -1768,7 +1772,7 @@ impl Machine {
                 Some(k) if vals[2][i] == 0 && konst(2) && !neg[k] => {
                     let nx = ns
                         .node_of(t, &v[k])
-                        .unwrap_or_else(|| ns.leaf(vals[k][i], pc));
+                        .unwrap_or_else(|| ns.leaf_for(t, &v[k], vals[k][i], pc));
                     *o = Some((nx, vals[k][i]));
                 }
                 _ => lost |= v.iter().any(|s| ns.node_of(t, s).is_some()),
@@ -1960,7 +1964,7 @@ impl Machine {
             return;
         }
         let ns = self.num.as_mut().unwrap();
-        let na = na.unwrap_or_else(|| ns.leaf(raw, pc));
+        let na = na.unwrap_or_else(|| ns.leaf_for(t, a, raw, pc));
         let mut x = raw;
         if abs {
             x &= 0x7fff_ffff;
@@ -2203,6 +2207,7 @@ impl Machine {
         t: usize,
         v: &Val,
         loc: Loc,
+        old_input_derived: bool,
         fadd: Option<(u32, u32, u32)>,
         d: Option<Reg>,
         pc: u32,
@@ -2218,7 +2223,11 @@ impl Machine {
         }
         match fadd {
             Some((o, x, r)) => {
-                let no = ns.mem.get(&k).copied().unwrap_or_else(|| ns.leaf(o, pc));
+                let no = ns
+                    .mem
+                    .get(&k)
+                    .copied()
+                    .unwrap_or_else(|| ns.leaf_with_origin(o, pc, old_input_derived));
                 let nx = ns.node_of(t, v).unwrap_or_else(|| ns.leaf_for(t, v, x, pc));
                 let ex = exact::add(&ns.nodes[no as usize].exact, &ns.nodes[nx as usize].exact);
                 let a_v = exact::add(
@@ -2587,6 +2596,7 @@ impl Machine {
         col: usize,
         enable: bool,
         acc: f32,
+        old_input_derived: bool,
         (prods, ops): (&[f64], &[crate::halfin::HalfOp]),
         r: f32,
         pc: u32,
@@ -2604,7 +2614,7 @@ impl Machine {
                 ns.mem
                     .get(&key)
                     .copied()
-                    .unwrap_or_else(|| ns.leaf(acc.to_bits(), pc)),
+                    .unwrap_or_else(|| ns.leaf_with_origin(acc.to_bits(), pc, old_input_derived)),
             )
         } else {
             None
@@ -3462,20 +3472,31 @@ impl Machine {
             .remove(&(3u8, cta as u64, crate::machine::tmem_idx(lane, col) as u64));
     }
 
-    /// A 4-byte copy between memory locations (TMA store): the value keeps its node.
     /// One word of a bulk f32 add-reduction: global `to` (old bits o) += shared `from` (bits
     /// x), result r. As `num_atom`'s atomic add, with the shared word's node (or a leaf) as the
     /// addend.
-    pub(crate) fn num_bulk_add(&mut self, from: Loc, to: Loc, (o, x, r): (u32, u32, u32), pc: u32) {
+    pub(crate) fn num_bulk_add(
+        &mut self,
+        from: Loc,
+        to: Loc,
+        (o, x, r): (u32, u32, u32),
+        old_input_derived: bool,
+        pc: u32,
+    ) {
         let Some(ns) = self.num.as_mut() else { return };
         let k = mem_key(to);
         ns.note_write(k);
-        let no = ns.mem.get(&k).copied().unwrap_or_else(|| ns.leaf(o, pc));
+        let no = ns
+            .mem
+            .get(&k)
+            .copied()
+            .unwrap_or_else(|| ns.leaf_with_origin(o, pc, old_input_derived));
+        let source_input_derived = ns.taint.mem_has(mem_key(from));
         let nx = ns
             .mem
             .get(&mem_key(from))
             .copied()
-            .unwrap_or_else(|| ns.leaf(x, pc));
+            .unwrap_or_else(|| ns.leaf_with_origin(x, pc, source_input_derived));
         let ex = exact::add(&ns.nodes[no as usize].exact, &ns.nodes[nx as usize].exact);
         let a_v = exact::add(
             &exact::from(f32::from_bits(o) as f64),
@@ -4056,6 +4077,14 @@ pub struct Taint {
 }
 
 impl Taint {
+    pub fn last_read_input_derived(&self) -> bool {
+        self.last_read
+    }
+
+    pub fn memory_unit_input_derived(&self, key: (u8, u64, u64)) -> bool {
+        self.mem_has(key)
+    }
+
     pub fn taint_alloc(&mut self, alloc: usize, bytes: usize) {
         for b in 0..bytes as u64 {
             self.mem.insert((1, alloc as u64, b));
@@ -4304,7 +4333,12 @@ impl Machine {
             return;
         }
         tn.cur_pure = None;
-        tn.cur_src = seed || active.iter().any(|&t| vals.iter().any(|&r| tn.reg_t(t, r)));
+        tn.cur_src = seed
+            || active.iter().any(|&t| {
+                let sources = if position { &vals } else { &srcs };
+                sources.iter().any(|&r| tn.reg_t(t, r))
+                    || inst.guard.reg.is_some_and(|guard| tn.reg_t(t, guard))
+            });
         if free.1
             && active
                 .iter()
@@ -4346,11 +4380,10 @@ impl Machine {
         // A destination no numerics hook set loses its node (as `num_clobber`). Segment mode:
         // under a guard that depends on input data, every member's destinations lose theirs,
         // executed or not (other inputs decide otherwise; slices cover both outcomes).
-        let data_guard = ns.segments
-            && inst
-                .guard
-                .reg
-                .is_some_and(|g| members.iter().any(|&t| ns.taint.reg_t(t, g)));
+        let data_guard = inst
+            .guard
+            .reg
+            .is_some_and(|g| members.iter().any(|&t| ns.taint.reg_t(t, g)));
         // ASSUME(N-EQUIV): the members under a data-dependent guard: for a per-thread register operation, those
         // whose own guard depends on input data (another member's guard is fixed for every
         // input, so its destination is as executed); for warp-collective ones, every member.
@@ -4374,6 +4407,9 @@ impl Machine {
         for r in inst.op.dst_regs() {
             for &t in &touched_ts {
                 let k = (t as u32, file_tag(r.file), r.idx);
+                if dg.contains(&t) {
+                    ns.half.forget_register(t, r);
+                }
                 if dg.contains(&t) || !ns.touched.contains(&k) {
                     ns.reg.remove(&k);
                 }
@@ -4435,14 +4471,17 @@ impl Machine {
             let lop = std::mem::take(&mut tn.lop_pre);
             for (t, vals, masks, gt, qt) in lop {
                 let runs = active.contains(&t);
-                let data_guard = gt && ns.segments;
+                let data_guard = gt;
                 if !runs && !data_guard {
                     // Its own guard is false for every input: the register is unchanged (the
                     // blanket rule above tainted every member's destination).
                     tn.set_mask(t, *d, masks[3]);
                     continue;
                 }
-                let (m, one) = lop3_taint(*lut, vals, masks, data_guard);
+                let (mut m, one) = lop3_taint(*lut, vals, masks, data_guard);
+                if data_guard && d.file == File::V {
+                    m = u32::MAX;
+                }
                 tn.set_mask(t, *d, m);
                 // P = (result != 0): input-independent if an input-independent bit is 1.
                 // A tainted predicate operand (L-LOP3-P) taints P.
@@ -4752,5 +4791,279 @@ mod fmax_seq_tests {
         );
         let k = kernel(&rewritten);
         assert_eq!(fmax_seq(&k.code, 1), None);
+    }
+}
+
+#[cfg(test)]
+mod untracked_producer_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::equiv::Side;
+    use crate::equiv::compare;
+
+    fn run_body_ir(body: &str, input: f64, use_lop3_ir: bool) -> (NumState, (u32, Option<u32>)) {
+        run_body_finish_ir(
+            body,
+            input,
+            use_lop3_ir,
+            "add.rn.f32 %f1, %f0, 0f00000000; st.global.f32 [%p1], %f1;",
+        )
+    }
+
+    pub(super) fn run_body_finish_ir(
+        body: &str,
+        input: f64,
+        use_lop3_ir: bool,
+        finish: &str,
+    ) -> (NumState, (u32, Option<u32>)) {
+        let mut machine = run_machine_body_finish_ir(body, input, use_lop3_ir, finish, false);
+        let word = u32::from_le_bytes(std::array::from_fn(|byte| *machine.gmem[1].bytes.get(byte)));
+        let state = *machine.num.take().unwrap();
+        let node = state.mem.get(&(1, 1, 0)).copied();
+        if let Some(node) = node {
+            assert_eq!(state.nodes[node as usize].hw, word);
+        }
+        (state, (word, node))
+    }
+
+    fn run_machine_body_finish_ir(
+        body: &str,
+        input: f64,
+        use_lop3_ir: bool,
+        finish: &str,
+        half_inputs: bool,
+    ) -> Machine {
+        run_machine_body_transform(body, input, use_lop3_ir, finish, half_inputs, false, None)
+    }
+
+    fn run_machine_body_transform(
+        body: &str,
+        input: f64,
+        use_lop3_ir: bool,
+        finish: &str,
+        half_inputs: bool,
+        segments: bool,
+        transform: Option<fn(&mut ptxv_ir::Kernel)>,
+    ) -> Machine {
+        let ptx = format!(
+            r#"
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 input, .param .u64 output) {{
+  .reg .b64 %p<2>;
+  .reg .b32 %r<2>;
+  .reg .f32 %f<2>;
+  .reg .f64 %fd<2>;
+  .reg .pred %q;
+  .reg .b64 %w;
+  ld.param.u64 %p0, [input];
+  ld.param.u64 %p1, [output];
+  ld.global.u32 %r0, [%p0];
+  {body}
+  {finish}
+  ret;
+}}
+"#
+        );
+        let mut kernel = ptxv_ptx::parse_kernel(&ptx, Some("k")).unwrap();
+        if let Some(transform) = transform {
+            transform(&mut kernel);
+        }
+        if use_lop3_ir {
+            // Exercise the SASS LOP3 path as well as PTX AND.
+            for instruction in &mut kernel.code {
+                if let Op::Int {
+                    op: IntOp::And,
+                    d,
+                    a: Val::Imm(0),
+                    b: Val::Imm(0),
+                    ..
+                } = instruction.op
+                {
+                    instruction.op = Op::Lop3 {
+                        d,
+                        a: Val::Imm(0),
+                        b: Val::Imm(0),
+                        c: Val::Imm(0),
+                        lut: 0,
+                        p: None,
+                        pq: None,
+                    };
+                }
+            }
+        }
+        let kernel = Arc::new(kernel);
+        let manifest = serde_json::from_value(serde_json::json!({
+            "name": "untracked-zero", "description": "missing integer history",
+            "entry": "k", "grid": [1,1,1], "block": [1,1,1], "outputs": ["out"],
+            "buffers": [
+                {"name":"x", "dtype":if half_inputs { "bf16" } else { "f32" }, "shape":[if half_inputs || transform.is_some() { 2 } else { 1 }], "init":"zeros", "values":if transform.is_some() { vec![(0u64,input),(1u64,2.0*input)] } else { vec![(0u64,input)] }},
+                {"name":"out", "dtype":"f32", "shape":[1], "init":"zeros"}
+            ],
+            "params": [{"kind":"ptr","buffer":"x"}, {"kind":"ptr","buffer":"out"}],
+            "variants": []
+        })).unwrap();
+        let case = ptxv_case::Case {
+            dir: std::path::PathBuf::new(),
+            m: manifest,
+        };
+        let launch = Arc::new(crate::build_launch(&case, &kernel).unwrap());
+        let mut machine = Machine::new(kernel, launch);
+        let mut state = NumState {
+            segments,
+            ..Default::default()
+        };
+        state.not_inputs.insert(1);
+        if half_inputs {
+            state.half.inputs.insert(0, crate::halfin::Half::Bf16);
+        } else {
+            state.f32_inputs.insert(0);
+        }
+        state
+            .taint
+            .taint_alloc(0, if transform.is_some() { 8 } else { 4 });
+        machine.num = Some(Box::new(state));
+        let (machine, findings, completed) = crate::explore::run_once(machine);
+        assert!(completed, "{findings:?}");
+        assert!(findings.is_empty(), "{findings:?}");
+        machine
+    }
+
+    fn run_body(body: &str, input: f64) -> (NumState, (u32, Option<u32>)) {
+        run_body_ir(body, input, false)
+    }
+
+    fn shifted_input(shift: u8, input: f64) -> (NumState, (u32, Option<u32>)) {
+        run_body(
+            &format!("shr.u32 %r1, %r0, {shift}; mov.b32 %f0, %r1;"),
+            input,
+        )
+    }
+
+    #[test]
+    fn distinct_input_computations_at_zero_stay_untracked() {
+        let (reference, routput) = shifted_input(1, 0.0);
+        let (candidate, coutput) = shifted_input(2, 0.0);
+        assert_eq!(routput.0, 0);
+        assert_eq!(coutput.0, 0);
+        for state in [&reference, &candidate] {
+            assert!(
+                state
+                    .nodes
+                    .iter()
+                    .any(|node| matches!(node.kind, NodeKind::Opaque))
+            );
+        }
+        let report = compare(
+            &Side {
+                ns: &reference,
+                outs: vec![routput],
+                buf_id: vec![0, 1],
+            },
+            &Side {
+                ns: &candidate,
+                outs: vec![coutput],
+                buf_id: vec![0, 1],
+            },
+            &["x".into(), "out".into()],
+            None,
+        );
+        assert!(!report.levels[0].holds);
+        assert!(!report.levels[1].holds);
+        let (_, rwitness) = shifted_input(1, 1.0);
+        let (_, cwitness) = shifted_input(2, 1.0);
+        assert_ne!(rwitness.0, cwitness.0);
+    }
+
+    #[test]
+    fn initial_output_zero_keeps_a_constant_atomic_base() {
+        let body = "mov.b32 %f0, %r0; red.global.add.f32 [%p1], %f0; ld.global.f32 %f0, [%p1];";
+        let (state, _) = run_body(body, 0.0);
+        let base = state
+            .nodes
+            .iter()
+            .find_map(|node| match node.kind {
+                NodeKind::AtomAdd(base, _) => Some(base),
+                _ => None,
+            })
+            .unwrap();
+        assert!(matches!(state.nodes[base as usize].kind, NodeKind::Leaf));
+        assert_eq!(state.nodes[base as usize].hw, 0);
+        assert!(
+            !state
+                .nodes
+                .iter()
+                .any(|node| matches!(node.kind, NodeKind::Opaque))
+        );
+    }
+
+    #[test]
+    fn input_derived_old_atomic_zero_remains_opaque() {
+        let body = "shr.u32 %r1, %r0, 1; mov.b32 %f0, %r1; st.global.f32 [%p1], %f0; \
+            mov.b32 %f0, %r0; red.global.add.f32 [%p1], %f0; ld.global.f32 %f0, [%p1];";
+        let (state, output) = run_body(body, 0.0);
+        assert_eq!(output.0, 0);
+        let base = state
+            .nodes
+            .iter()
+            .find_map(|node| match node.kind {
+                NodeKind::AtomAdd(base, _) => Some(base),
+                _ => None,
+            })
+            .unwrap();
+        assert!(matches!(state.nodes[base as usize].kind, NodeKind::Opaque));
+    }
+    #[test]
+    fn inactive_input_guard_preserves_possible_old_values() {
+        let body = "mov.b32 %f0, %r0; setp.ne.f32 %q, %f0, 0f00000000; \
+            mov.b32 %r1, 0; @%q mov.b32 %r1, 0x3f800000; mov.b32 %f0, %r1;";
+        let (state, output) = run_body(body, 0.0);
+        assert_eq!(output.0, 0);
+        assert!(
+            state
+                .nodes
+                .iter()
+                .any(|node| matches!(node.kind, NodeKind::Opaque))
+        );
+        assert!(!state.taint.violations.is_empty());
+        let (_, witness) = run_body(body, 1.0);
+        assert_eq!(witness.0, 1.0f32.to_bits());
+    }
+
+    #[test]
+    fn unclassified_float_arithmetic_cannot_clear_input_taint() {
+        let body = "mov.b32 %f0, %r0; add.rn.f32 %f1, %f0, 0f3f800000; div.full.f32 %f0, %f0, %f1;";
+        let (state, output) = run_body(body, 0.0);
+        assert_eq!(output.0, 0);
+        assert!(
+            state
+                .nodes
+                .iter()
+                .any(|node| matches!(node.kind, NodeKind::Opaque))
+        );
+        assert!(!state.taint.violations.is_empty());
+        let (_, witness) = run_body(body, 1.0);
+        assert_eq!(witness.0, 0.5f32.to_bits());
+    }
+
+    #[test]
+    fn guarded_low_word_lop3_cannot_clear_retained_high_word_taint() {
+        let body = "mov.b32 %f0, %r0; setp.ne.f32 %q, %f0, 0f00000000; \
+            mov.b64 %w, 0x100000000; @%q and.b32 %w, 0, 0; \
+            shr.u64 %w, %w, 32; mov.b32 %f0, %w;";
+        for use_lop3_ir in [false, true] {
+            let (state, retained) = run_body_ir(body, 0.0, use_lop3_ir);
+            assert!(
+                state
+                    .nodes
+                    .iter()
+                    .any(|node| matches!(node.kind, NodeKind::Opaque))
+            );
+            assert!(!state.taint.violations.is_empty());
+            let (_, replaced) = run_body_ir(body, 1.0, use_lop3_ir);
+            assert_ne!(retained.0, replaced.0);
+        }
     }
 }

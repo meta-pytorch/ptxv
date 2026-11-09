@@ -141,6 +141,7 @@ pub(crate) struct Run {
     pub(crate) cubin: PathBuf,
     pub(crate) kern: ptxv_ir::Kernel,
     pub(crate) m: Machine,
+    pub(crate) outs: Vec<(u32, Option<u32>)>,
     pub(crate) pre: Vec<String>,
     /// Assumptions beyond the usual ones that the preconditions rely on.
     pub(crate) notes: Vec<String>,
@@ -396,6 +397,7 @@ pub(crate) fn prepare_with(
     m.num = Some(Box::new(ns));
     let (mut m, findings, ok) = run_once(m);
     m.half_out_leaves();
+    let output_nodes = output_nodes(&mut m);
     if !ok {
         bail!(
             "{} {}: the numerics run did not terminate: {findings:?}",
@@ -490,6 +492,7 @@ pub(crate) fn prepare_with(
         cubin,
         kern,
         m,
+        outs: output_nodes,
         pre,
         notes,
         captured_out,
@@ -529,6 +532,41 @@ fn outs(m: &Machine) -> Vec<(u32, Option<u32>)> {
         .collect()
 }
 
+fn output_nodes(m: &mut Machine) -> Vec<(u32, Option<u32>)> {
+    let allocation = m.launch.outputs[0];
+    let state = m.num.as_ref().unwrap();
+    let bytes = if state.half.f16_outputs.contains(&allocation)
+        || state.half.bf16_outputs.contains(&allocation)
+    {
+        2
+    } else {
+        4
+    };
+    let mut outputs = outs(m);
+    for (index, (bits, node)) in outputs.iter_mut().enumerate() {
+        let input_derived = (0..bytes).any(|byte| {
+            m.num.as_ref().unwrap().taint.memory_unit_input_derived((
+                1,
+                allocation as u64,
+                (index * bytes + byte) as u64,
+            ))
+        });
+        if node.is_none() && input_derived {
+            let state = m.num.as_mut().unwrap();
+            let id = state.nodes.len() as u32;
+            state.nodes.push(ptxv_sim::num::Node {
+                kind: ptxv_sim::num::NodeKind::Opaque,
+                hw: *bits,
+                exact: ptxv_sim::exact::from(f32::from_bits(*bits) as f64),
+                err: vec![],
+                pc: 0,
+            });
+            *node = Some(id);
+        }
+    }
+    outputs
+}
+
 /// Nonzero outputs without a numerics node: values the shadow does not express over the
 /// inputs.
 fn untracked_count(m: &Machine) -> usize {
@@ -541,7 +579,7 @@ fn untracked_count(m: &Machine) -> usize {
 pub(crate) fn side<'a>(r: &'a Run, names: &[String]) -> Side<'a> {
     Side {
         ns: r.m.num.as_ref().unwrap(),
-        outs: outs(&r.m),
+        outs: r.outs.clone(),
         buf_id: r
             .m
             .launch
@@ -786,7 +824,7 @@ fn elementwise_pair(
     dir: &Path,
 ) -> std::result::Result<(serde_json::Value, String), String> {
     use ptxv_sim::elementwise::*;
-    let (or, oc) = (outs(&r.m), outs(&c.m));
+    let (or, oc) = (r.outs.clone(), c.outs.clone());
     let out_ty = |run: &Run| -> std::result::Result<EType, String> {
         let o = &run.m.launch.allocs[run.m.launch.outputs[0]].name;
         etype_of(&run.case, o)
@@ -2012,7 +2050,7 @@ pub fn cmd_equiv(
         {
             for (who, run) in [("reference", &r), ("candidate", &cand)] {
                 let ns = run.m.num.as_ref().unwrap();
-                let o = outs(&run.m);
+                let o = &run.outs;
                 if let Some((_, Some(n))) = o.get(i) {
                     println!("    dump {who} out[{i}]: {}", ns.dump(*n, 6));
                 }

@@ -383,3 +383,96 @@ fn online_bookkeeping_taint_is_exact() {
         assert!(part.contains(guard), "{case}: {part}");
     }
 }
+#[test]
+fn captured_zero_without_half_history_is_reported_unproven() {
+    let dir = std::env::temp_dir().join(format!("ptxv-untracked-half-zero-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("kernel.ptx"),
+        r#"
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 input, .param .u64 output) {
+    .reg .b64 %p<2>;
+    .reg .b32 %r<2>;
+    ld.param.u64 %p0, [input];
+    ld.param.u64 %p1, [output];
+    ld.global.u32 %r0, [%p0];
+    shr.u32 %r1, %r0, 1; // @SHIFT
+    st.global.u16 [%p1], %r1;
+    ret;
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("case.toml"),
+        r#"
+name = "untracked-half-zero"
+description = "input-derived zero without a half numeric history"
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [1, 1, 1]
+outputs = ["out"]
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+[[buffers]]
+name = "out"
+dtype = "bf16"
+shape = [1]
+init = "zeros"
+[[params]]
+kind = "ptr"
+buffer = "x"
+[[params]]
+kind = "ptr"
+buffer = "out"
+[[variants]]
+id = "good"
+expect = ["clean"]
+[[variants]]
+id = "mutant"
+expect = ["clean"]
+edits = [{marker = "@SHIFT", find = "%r0, 1", replace = "%r0, 2"}]
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("equiv.toml"),
+        r#"
+max_states = 100
+trials = 0
+reference = {case = ".", variant = "good", front = "ptx"}
+[[candidates]]
+case = "."
+variant = "mutant"
+front = "ptx"
+expect = "L0"
+"#,
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_ptxv"))
+        .args([
+            "equiv",
+            dir.join("equiv.toml").to_str().unwrap(),
+            "--no-hw",
+            "--out",
+            dir.join("result").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(!out.status.success(), "{text}");
+    assert!(
+        text.contains("L0 bitwise") && text.contains("FAILS"),
+        "{text}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!text.contains("PROVEN"), "{text}");
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -6355,6 +6355,10 @@ impl Machine {
                         self.nic_gpu_atomic(t, loc, *bytes as usize, pc); // ASSUME(S-NIC-ATOMIC)
                     }
                     let old = self.access_x(t as u32, &vc, pc, loc, *bytes as usize, None, sc);
+                    let old_input_derived = self
+                        .num
+                        .as_ref()
+                        .is_some_and(|ns| ns.taint.last_read_input_derived());
                     old_undef = self.stale.take().flatten().is_some();
                     self.sync_observe(t, loc, *sync);
                     let mut o = 0u64;
@@ -6433,7 +6437,7 @@ impl Machine {
                     if matches!(op, AtomOp::AddBf16x2 | AtomOp::AddBf16) {
                         self.num_atom_bf16(t, v, loc, *bytes, n as u32, *d, pc);
                     } else if !fmax {
-                        self.num_atom(t, v, loc, fadd, *d, pc);
+                        self.num_atom(t, v, loc, old_input_derived, fadd, *d, pc);
                     }
                 }
                 self.mc_view = false;
@@ -11726,8 +11730,9 @@ impl Machine {
 
     /// Reads (race-checked) D's current words for one CTA in row-major order [row * N + col],
     /// and the OR of `tmem_block`'s state bits (1: never written, 2: unallocated).
-    fn mma_d_read(&mut self, cta: u16, lay: &MmaD, op: &AsyncOp) -> (Vec<u32>, u8) {
+    fn mma_d_read(&mut self, cta: u16, lay: &MmaD, op: &AsyncOp) -> (Vec<u32>, Vec<bool>, u8) {
         let mut out = vec![0u32; lay.rows * lay.n];
+        let mut input_derived = vec![false; lay.rows * lay.n];
         let mut st = 0u8;
         for &(l, nl, c, nc, r0, n0) in &lay.blocks {
             let (w, s) =
@@ -11736,9 +11741,16 @@ impl Machine {
             for i in 0..nl {
                 out[(r0 + i) * lay.n + n0..(r0 + i) * lay.n + n0 + nc]
                     .copy_from_slice(&w[i * nc..i * nc + nc]);
+                for j in 0..nc {
+                    let key = (3, cta as u64, tmem_idx(l + i, c + j) as u64);
+                    input_derived[(r0 + i) * lay.n + n0 + j] = self
+                        .num
+                        .as_ref()
+                        .is_some_and(|ns| ns.taint.memory_unit_input_derived(key));
+                }
             }
         }
-        (out, st)
+        (out, input_derived, st)
     }
 
     /// Writes (race-checked) D for one CTA from row-major words [row * N + col].
@@ -12156,13 +12168,15 @@ impl Machine {
         // Pass 1: read the accumulators (race-checked TMEM reads; pass 3 overwrites them, so
         // no reader epoch is left).
         let mut accs: Vec<Vec<f32>> = Vec::with_capacity(ctas.len());
+        let mut acc_origins: Vec<Vec<bool>> = Vec::with_capacity(ctas.len());
         for &cta in &ctas {
             if !enable {
                 unalloc |= self.mma_d_unalloc(cta, &lay);
                 accs.push(vec![0.0; rows * n as usize]);
+                acc_origins.push(vec![false; rows * n as usize]);
                 continue;
             }
-            let (words, st) = self.mma_d_read(cta, &lay, op);
+            let (words, origins, st) = self.mma_d_read(cta, &lay, op);
             unalloc |= st & 2 != 0;
             uninit |= st & 1 != 0;
             let mut v: Vec<f32> = words.into_iter().map(f32::from_bits).collect();
@@ -12184,6 +12198,7 @@ impl Machine {
                 }
             }
             accs.push(v);
+            acc_origins.push(origins);
         }
         // Pass 2: the arithmetic, memoized on its exact inputs (a pure function of them).
         let results: Vec<u32> = if outside.is_some() {
@@ -12276,6 +12291,7 @@ impl Machine {
                             lay.loc(mi, ni).1,
                             enable,
                             acc,
+                            acc_origins[ci][mi * n as usize + ni],
                             (&prods, &ops),
                             r,
                             op.pc,
@@ -12624,13 +12640,15 @@ impl Machine {
         let mut uninit = false;
         let mut unalloc = false;
         let mut accs: Vec<Vec<u32>> = Vec::with_capacity(ctas.len());
+        let mut acc_origins: Vec<Vec<bool>> = Vec::with_capacity(ctas.len());
         for &cta in &ctas {
             if !enable {
                 unalloc |= self.mma_d_unalloc(cta, &lay);
                 accs.push(vec![0; rows * n as usize]);
+                acc_origins.push(vec![false; rows * n as usize]);
                 continue;
             }
-            let (words, st) = self.mma_d_read(cta, &lay, op);
+            let (words, origins, st) = self.mma_d_read(cta, &lay, op);
             unalloc |= st & 2 != 0;
             uninit |= st & 1 != 0;
             if outside.is_none() {
@@ -12647,6 +12665,7 @@ impl Machine {
                 }
             }
             accs.push(words);
+            acc_origins.push(origins);
         }
         // Scale factors (block-scaled kinds), per D row m in sub-partition w = m / 32 (GB300,
         // probes/mma_bs): A's for row m at TMEM lane m, column [scale_a] + w; B's for row n at
@@ -12940,6 +12959,7 @@ impl Machine {
                             lay.loc(mi, ni).1,
                             enable,
                             acc,
+                            acc_origins[ci][mi * n as usize + ni],
                             (&prods, &ops),
                             f32::from_bits(r),
                             op.pc,
@@ -13306,6 +13326,10 @@ impl Machine {
             // different CTAs gave a "clean" verdict whose output differed from the GPU's).
             self.red_access = f == FFmt::F32;
             let old = self.access_x(op.actor, &op.vc, op.pc, loc, w, None, sc);
+            let old_input_derived = self
+                .num
+                .as_ref()
+                .is_some_and(|ns| ns.taint.last_read_input_derived());
             let mut o = [0u8; 4];
             o[..w].copy_from_slice(&old[..w]);
             let o = u32::from_le_bytes(o);
@@ -13349,7 +13373,7 @@ impl Machine {
                     },
                     l => l,
                 };
-                self.num_bulk_add(src, loc, (o, x, r), op.pc);
+                self.num_bulk_add(src, loc, (o, x, r), old_input_derived, op.pc);
             } else {
                 // 16-bit sums are not tracked by the errdist graph: the word loses its node.
                 self.num_forget(loc);

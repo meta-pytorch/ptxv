@@ -70,16 +70,16 @@ fn nonfinite_outputs_are_out_of_domain() {
     assert_eq!(v["agree"], false, "{v}");
 }
 
-/// Kahan: the default extraction folds the compensation (its graph reproduces the captured
-/// input only); the probe catches it and segment mode tracks every input.
+/// Kahan compensation stays input-dependent even when captured as zero. The extracted DAG
+/// must reproduce sampled simulator outputs without needing to repair a lost dependency.
 #[test]
-fn a_disagreeing_dag_is_reextracted() {
+fn kahan_compensation_keeps_input_history() {
     let (text, j) = run(
         "kahan",
         "fixtures/c_sum_kahan",
         "fixtures/errdist/normal.json",
     );
-    assert!(text.contains("retrying in segment mode"), "{text}");
+    assert!(!text.contains("retrying in segment mode"), "{text}");
     for v in j["validation"].as_array().unwrap() {
         assert_eq!(v["dag_mismatch"], 0, "{v}");
     }

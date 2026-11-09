@@ -106,6 +106,12 @@ pub struct HalfState {
 }
 
 impl HalfState {
+    pub(crate) fn forget_register(&mut self, thread: usize, reg: Reg) {
+        if reg.file == File::R {
+            self.regs.remove(&(thread as u32, reg.idx));
+        }
+    }
+
     pub fn is_on(&self) -> bool {
         self.track || !self.inputs.is_empty()
     }

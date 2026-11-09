@@ -32,4 +32,5 @@ expect = "L1"
 case = "../c_tf32_mm_2x"
 variant = "good"
 front = "sass"
-expect = "L1 (unproven)"
+# The unmatched correction history cannot establish any arithmetic equivalence level.
+expect = "none (unproven)"

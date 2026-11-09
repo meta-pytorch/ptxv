@@ -11,10 +11,12 @@ reference = { case = "../c_tf32_mm_3x", variant = "good", front = "sass" }
 case = "../c_tf32_mm_3x_sign"
 variant = "good"
 front = "sass"
-expect = "L1 (unproven)"
+# Input-dependent guards invalidate the arithmetic histories, so no level is claimed.
+expect = "none (unproven)"
 
 [[candidates]]
 case = "../c_tf32_mm_3x_bits"
 variant = "good"
 front = "sass"
-expect = "L1 (unproven)"
+# Input-dependent guards invalidate the arithmetic histories, so no level is claimed.
+expect = "none (unproven)"
