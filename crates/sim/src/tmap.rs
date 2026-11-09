@@ -11,8 +11,9 @@
 //! the field table and the evidence behind each entry.
 //!
 //! The decoder is strict: any bit it does not understand, any mode it does not model
-//! (im2col, interleaved layouts, sub-byte element types) and any inconsistency in the
-//! derived fields is an error. It never guesses.
+//! (interleaved layouts, sub-byte element types, im2col with element strides) and any
+//! inconsistency in the derived fields is an error. It never guesses. im2col maps
+//! (`cuTensorMapEncodeIm2col`) decode their pixel-box corners and pixels per column (`Im2col`).
 
 /// Element type (hardware code in bits 7..10 of the 32-bit word at byte 8, plus the TF32
 /// flag bit 16). The hardware codes differ from the `CUtensorMapDataType` enum order.
@@ -59,6 +60,18 @@ pub enum SwizzleAtom {
     B64,
 }
 
+/// im2col-mode geometry (`cuTensorMapEncodeIm2col`, word 8 bit 0; probes/tmap_encode,
+/// probes/tma_im2col): signed pixel-box corners of the rank - 2 spatial dimensions in the word
+/// at 0x38 (rank 3: 16-bit fields, rank 4: 8-bit, rank 5: 5-bit; lower corners from bit 0,
+/// upper corners from bit 16), pixels per column - 1 in bits 0..9 of the word at 0x3c, channels
+/// per pixel - 1 in byte 0x37 (`Decoded::boxd` is then [channels, pixels]).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub struct Im2col {
+    pub lower: Vec<i32>,
+    pub upper: Vec<i32>,
+    pub pixels: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Decoded {
     /// Global base address (bits 0..56; 16-byte aligned).
@@ -92,6 +105,8 @@ pub struct Decoded {
     /// descriptors (cuBLAS nvjet, CuTeDSL). Meaning unknown; when set, only bytes 0..63 are
     /// interpreted (cuBLAS packs such descriptors 64 bytes apart).
     pub lib_flag: bool,
+    /// im2col mode (None: tiled).
+    pub im2col: Option<Im2col>,
 }
 
 fn u32_at(b: &[u8], off: usize) -> u32 {
@@ -122,12 +137,10 @@ pub fn decode(b: &[u8]) -> Result<Decoded, String> {
         ));
     }
     let w = u32_at(b, 8);
-    if w & 1 != 0 {
-        return Err("tensor map: im2col mode (bit 0 of word 8) is not modeled".into());
-    }
+    let im2col_mode = w & 1 != 0;
     let lib_flag = w & 2 != 0;
-    // Bits of word 8 this decoder understands: 1, 4..21.
-    let known = 0x2 | 0x003f_fff0;
+    // Bits of word 8 this decoder understands: 0, 1, 4..21.
+    let known = 0x3 | 0x003f_fff0;
     if w & !known != 0 {
         return Err(format!(
             "tensor map: unknown bits {:#x} set in word 8 ({w:#010x})",
@@ -224,8 +237,49 @@ pub fn decode(b: &[u8]) -> Result<Decoded, String> {
         ));
     }
     let estrides: Vec<u32> = (0..rank).map(|i| ((w34 >> (3 * i)) & 7) + 1).collect();
-    let boxd: Vec<u32> = (0..rank).map(|i| b[0x37 + i] as u32 + 1).collect();
-    if u32_at(b, 0x3c) != 0 {
+    let mut boxd: Vec<u32> = (0..rank).map(|i| b[0x37 + i] as u32 + 1).collect();
+    let mut im2col = None;
+    if im2col_mode {
+        if !(3..=5).contains(&rank) {
+            return Err(format!("tensor map: im2col mode with rank {rank}"));
+        }
+        if estrides.iter().any(|&e| e != 1) {
+            return Err(format!(
+                "tensor map: im2col with element strides {estrides:?} is not modeled"
+            ));
+        }
+        let w38 = u32_at(b, 0x38);
+        let bits = match rank {
+            3 => 16,
+            4 => 8,
+            _ => 5,
+        };
+        let k = rank - 2;
+        let field = |v: u32| -> i32 { ((v << (32 - bits)) as i32) >> (32 - bits) };
+        let mask = (1u64 << bits) - 1;
+        let used: u64 = (0..k).map(|i| mask << (bits * i as u32)).sum::<u64>();
+        if (w38 as u64) & !(used | used << 16) & 0xffff_ffff != 0 {
+            return Err(format!(
+                "tensor map: unknown bits in the im2col corner word 0x38 ({w38:#010x})"
+            ));
+        }
+        let corner = |hi: bool, i: usize| -> i32 {
+            field((w38 >> (if hi { 16 } else { 0 } + bits * i as u32)) & mask as u32)
+        };
+        let w3c = u32_at(b, 0x3c);
+        if w3c >> 10 != 0 {
+            return Err(format!(
+                "tensor map: unknown bits in the im2col word 0x3c ({w3c:#010x})"
+            ));
+        }
+        let pixels = (w3c & 0x3ff) + 1;
+        boxd = vec![boxd[0], pixels];
+        im2col = Some(Im2col {
+            lower: (0..k).map(|i| corner(false, i)).collect(),
+            upper: (0..k).map(|i| corner(true, i)).collect(),
+            pixels,
+        });
+    } else if u32_at(b, 0x3c) != 0 {
         return Err(format!(
             "tensor map: bytes 0x3c..0x3f nonzero ({:#010x}); only im2col maps use them",
             u32_at(b, 0x3c)
@@ -282,6 +336,7 @@ pub fn decode(b: &[u8]) -> Result<Decoded, String> {
         l2_promotion,
         large_hint,
         lib_flag,
+        im2col,
     })
 }
 
@@ -299,6 +354,23 @@ mod tests {
     // Samples from probes/tmap_encode (cuTensorMapEncodeTiled, driver 580, GB300). Each
     // comment is the probe input: dtype rank interleave swizzle l2 oob addr dims strides box
     // estrides (CUtensorMapDataType / enum values).
+
+    #[test]
+    fn im2col_5d_u8() {
+        // im2col 0 5 0 3 0 0 0x10000 64 16 16 16 1 64 1024 16384 262144 -2 -3 -4 -5 -6 -7
+        // 128 128 1 1 1 1 1 (cuTensorMapEncodeIm2col)
+        let b = hex(
+            "00000100000000004160200004000000400000000004000000400000000000003f0000000f0000000f0000000f000000000000000000007fbe735b677f00000000400000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        );
+        let d = decode(&b).unwrap();
+        assert_eq!(d.dims, vec![64, 16, 16, 16, 1]);
+        assert_eq!(d.boxd, vec![128, 128]);
+        assert_eq!(d.swizzle, 128);
+        let m = d.im2col.unwrap();
+        assert_eq!(m.lower, vec![-2, -3, -4]);
+        assert_eq!(m.upper, vec![-5, -6, -7]);
+        assert_eq!(m.pixels, 128);
+    }
 
     #[test]
     fn bf16_2d_swizzle128() {
@@ -384,9 +456,11 @@ mod tests {
         // 13 2 0 0 0 0 0x7f0000001000 128 4 64 128 1 1 1   (16U4_ALIGN8B)
         let e = decode(&hex("00100000007f00009005000004000000000000000000000000000000000000007f000000030000000000000000000000000000000000007f000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")).unwrap_err();
         assert!(e.contains("sub-byte"), "{e}");
-        // im2col 9 3 0 0 0 0 0x7f0000001000 64 32 32 128 4096 0 0 64 32 1 1 1
-        let e = decode(&hex("00100000007f00002105200008000000000100000000000000000000000000003f0000001f0000001f00000000000000000000000000003f000000001f00000000100000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")).unwrap_err();
-        assert!(e.contains("im2col"), "{e}");
+        // im2col 9 3 0 0 0 0 0x7f0000001000 64 32 32 128 4096 0 0 64 32 1 1 1 (decoded)
+        let d = decode(&hex("00100000007f00002105200008000000000100000000000000000000000000003f0000001f0000001f00000000000000000000000000003f000000001f00000000100000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")).unwrap();
+        let m = d.im2col.expect("im2col map");
+        assert_eq!((m.lower, m.upper, m.pixels), (vec![0], vec![0], 32));
+        assert_eq!(d.boxd, vec![64, 32]);
         // An unobserved bit (word 8 bit 22) and a stale box-bytes word.
         let mut b = hex(
             "00100000007f00001065240010000000000000000000000000000000000000007f000000ff0100000000000000000000000000000000003f7f0000000000000000400000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",

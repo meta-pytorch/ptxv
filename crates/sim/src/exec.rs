@@ -10509,6 +10509,7 @@ impl Machine {
                         _ => None,
                     },
                     smem_src: None,
+                    im2col: d.im2col,
                 })
             }
         };
@@ -10565,6 +10566,7 @@ impl Machine {
                 // The non-tensor reduction (UBLKRED.G.S.ADD.F32.RN) adds f32 words.
                 fdtype: Some(FFmt::F32),
                 smem_src: None,
+                im2col: None,
             }),
             vec![0],
         ))
@@ -10599,6 +10601,7 @@ impl Machine {
                 elem4: false,
                 fdtype: None,
                 smem_src: None,
+                im2col: None,
             }),
             vec![0],
         ))
@@ -12968,6 +12971,50 @@ impl Machine {
         false
     }
 
+    /// The im2col box walk of a TMA (`im2col`: the access has the im2col form; it must agree
+    /// with the map's mode), or None for a tiled access. Faults and unmodeled cases are
+    /// reported here (Err).
+    fn im2col_walk(
+        &mut self,
+        op: &AsyncOp,
+        m: &TmapDesc,
+        coords: &[i64],
+        im2col: bool,
+        store: bool,
+    ) -> Result<Option<Vec<Option<u64>>>, ()> {
+        match (im2col, &m.im2col) {
+            (false, None) => Ok(None),
+            (true, Some(g)) => {
+                match crate::im2col::walk(g, m.boxd[0], &m.dims, &m.strides, m.esize, coords, store)
+                {
+                    Ok(w) => Ok(Some(w)),
+                    Err(crate::im2col::WalkErr::Fault(e)) => {
+                        let e = format!("{}: {e}", self.actor_name(op.actor));
+                        self.report("fault", format!("tma-im2col:{}", op.pc), e);
+                        Err(())
+                    }
+                    Err(crate::im2col::WalkErr::Unmodeled(e)) => {
+                        self.report("unmodeled", format!("tma-im2col:{}", op.pc), e);
+                        Err(())
+                    }
+                }
+            }
+            (a, _) => {
+                self.report(
+                    "unmodeled",
+                    format!("tma-im2col:{}", op.pc),
+                    format!(
+                        "{} TMA through {} tensor map (buffer {}): not modeled",
+                        if a { "an im2col" } else { "a tiled" },
+                        if a { "a tiled" } else { "an im2col" },
+                        m.buffer
+                    ),
+                );
+                Err(())
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn complete_tma_store(
         &mut self,
@@ -12990,30 +13037,50 @@ impl Machine {
         if !self.tma_swizzle_ok(&op, src, &m) {
             return;
         }
+        let im2col = coords.len() == m.dims.len() + 1;
+        let walked = match self.im2col_walk(&op, &m, &coords, im2col, true) {
+            Ok(w) => w,
+            Err(()) => return,
+        };
+        if walked.is_some() && red {
+            self.report(
+                "unmodeled",
+                format!("tma-im2col:{}", op.pc),
+                "an im2col tensor reduction is not modeled".into(),
+            );
+            return;
+        }
         let total: u64 = m.boxd.iter().map(|&b| b as u64).product();
         let es = m.esize as usize;
         let (alloc, boff) = self.tmap_alloc(&m);
         let mut idx = vec![0u64; m.dims.len()];
         for e in 0..total {
-            let mut rem = e;
-            for (d, b) in m.boxd.iter().enumerate() {
-                idx[d] = rem % *b as u64;
-                rem /= *b as u64;
-            }
             let mut inb = true;
             let mut goff = boff;
-            for d in 0..m.dims.len() {
-                let g = coords[d] + idx[d] as i64;
-                if g < 0 || g as u64 >= m.dims[d] {
-                    inb = false;
+            if let Some(w) = &walked {
+                match w[e as usize] {
+                    Some(r) => goff = boff.wrapping_add(r),
+                    None => inb = false,
                 }
-                // Wraps mod 2^64: trtllm-gen's dynBatch output map has dims 2^31 and a
-                // stride 2^35 - 256 that coordinate 2^30 cancels (docs/rung3b.md). ASSUME(S-TMA)
-                goff = goff.wrapping_add(if d == 0 {
-                    (g.max(0) as u64).wrapping_mul(es as u64)
-                } else {
-                    (g.max(0) as u64).wrapping_mul(m.strides[d - 1])
-                });
+            } else {
+                let mut rem = e;
+                for (d, b) in m.boxd.iter().enumerate() {
+                    idx[d] = rem % *b as u64;
+                    rem /= *b as u64;
+                }
+                for d in 0..m.dims.len() {
+                    let g = coords[d] + idx[d] as i64;
+                    if g < 0 || g as u64 >= m.dims[d] {
+                        inb = false;
+                    }
+                    // Wraps mod 2^64: trtllm-gen's dynBatch output map has dims 2^31 and a
+                    // stride 2^35 - 256 that coordinate 2^30 cancels (docs/rung3b.md). ASSUME(S-TMA)
+                    goff = goff.wrapping_add(if d == 0 {
+                        (g.max(0) as u64).wrapping_mul(es as u64)
+                    } else {
+                        (g.max(0) as u64).wrapping_mul(m.strides[d - 1])
+                    });
+                }
             }
             let soff = swz(
                 src + tma_box_off(e, m.boxd[0], m.esize, m.swizzle),
@@ -13286,6 +13353,12 @@ impl Machine {
             );
             return;
         }
+        // im2col mode: the coordinates end with the packed offsets (im2col.rs).
+        let im2col = coords.len() == m.dims.len() + 1;
+        let walked = match self.im2col_walk(&op, &m, &coords, im2col, false) {
+            Ok(w) => w,
+            Err(()) => return,
+        };
         // Box walk: innermost dimension contiguous in smem, no swizzle.
         let total: u64 = if gather4 {
             4 * m.boxd[0] as u64
@@ -13304,29 +13377,36 @@ impl Machine {
         let mut idx = vec![0u64; m.dims.len()];
         let mut elems: Vec<(u32, Option<u64>)> = Vec::with_capacity(total as usize);
         for e in 0..total {
-            let mut rem = e;
-            for (d, b) in m.boxd.iter().enumerate() {
-                idx[d] = rem % *b as u64;
-                rem /= *b as u64;
-            }
             let mut inb = true;
             let mut goff = boff;
-            for d in 0..m.dims.len() {
-                let g = if gather4 && d == 1 {
-                    coords[1 + (e / m.boxd[0] as u64) as usize]
-                } else {
-                    coords[d] + idx[d] as i64
-                };
-                if g < 0 || g as u64 >= m.dims[d] {
-                    inb = false;
+            if let Some(w) = &walked {
+                match w[e as usize] {
+                    Some(r) => goff = boff.wrapping_add(r),
+                    None => inb = false,
                 }
-                // Wraps mod 2^64: trtllm-gen's dynBatch output map has dims 2^31 and a
-                // stride 2^35 - 256 that coordinate 2^30 cancels (docs/rung3b.md). ASSUME(S-TMA)
-                goff = goff.wrapping_add(if d == 0 {
-                    (g.max(0) as u64).wrapping_mul(es as u64)
-                } else {
-                    (g.max(0) as u64).wrapping_mul(m.strides[d - 1])
-                });
+            } else {
+                let mut rem = e;
+                for (d, b) in m.boxd.iter().enumerate() {
+                    idx[d] = rem % *b as u64;
+                    rem /= *b as u64;
+                }
+                for d in 0..m.dims.len() {
+                    let g = if gather4 && d == 1 {
+                        coords[1 + (e / m.boxd[0] as u64) as usize]
+                    } else {
+                        coords[d] + idx[d] as i64
+                    };
+                    if g < 0 || g as u64 >= m.dims[d] {
+                        inb = false;
+                    }
+                    // Wraps mod 2^64: trtllm-gen's dynBatch output map has dims 2^31 and a
+                    // stride 2^35 - 256 that coordinate 2^30 cancels (docs/rung3b.md). ASSUME(S-TMA)
+                    goff = goff.wrapping_add(if d == 0 {
+                        (g.max(0) as u64).wrapping_mul(es as u64)
+                    } else {
+                        (g.max(0) as u64).wrapping_mul(m.strides[d - 1])
+                    });
+                }
             }
             let soff = swz(
                 dst + tma_box_off(e, m.boxd[0], m.esize, m.swizzle),

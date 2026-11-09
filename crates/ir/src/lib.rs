@@ -1557,7 +1557,9 @@ pub enum Op {
         /// Byte offset added to `mbar`.
         mbar_off: u32,
         tmap: Val,
-        /// `dims` coordinates; `tile::gather4` (dims = 2): 5, the column then four rows.
+        /// `dims` coordinates; `tile::gather4` (dims = 2): 5, the column then four rows;
+        /// im2col (SASS `.IM2COL`, dims 3..5): dims + 1, the last the packed im2col offsets
+        /// (sim `im2col.rs`).
         coords: Vec<Val>,
         /// `.multicast::cluster` ctaMask: the box lands at the same offsets in every CTA rank
         /// in the mask, each completing the transaction on its own mbarrier at `mbar`'s offset.
@@ -1575,6 +1577,8 @@ pub enum Op {
         /// Byte offset added to `src`.
         off: u32,
         tmap: Val,
+        /// `dims` coordinates; im2col_no_offs (SASS `UTMASTG.<n>D.IM2COL`): dims + 1, the
+        /// last 0.
         coords: Vec<Val>,
         /// `cp.reduce.async.bulk...add.f32` (SASS `UBLKRED.G.S.ADD.F32.RN`, `dims = 0` only):
         /// each f32 of the source is added to the global word instead of stored (an atomic

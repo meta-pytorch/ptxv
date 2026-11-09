@@ -17,7 +17,8 @@
 // UREDGR (red.async.global, agent G, 2026-11-08): .E.ADD.NA[.S32 | .64].STRONG.GPU|SYS.
 // F2FP.S2_6 (SATFINITE.BF16.S2_6.UNPACK_B only, every other combination refused by the arm):
 // probes/s2f6_cvt, 2026-11-08. REDG.OR / .AND / .XOR [.64] (red.global.{or,and,xor}.b32 / .b64,
-// every scope): probes/red_bitops, 2026-11-08.
+// every scope): probes/red_bitops, 2026-11-08. UTMALDG / UTMASTG .IM2COL (im2col TMA loads and
+// im2col_no_offs stores): probes/tma_im2col, 2026-11-08.
 // ASSUME(L-ROSETTA)
 
 pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
@@ -356,11 +357,21 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
     ("UTMACMDFLUSH", &[]),
     (
         "UTMALDG",
-        &["1D", "2CTA", "2D", "3D", "4D", "5D", "GATHER4", "MULTICAST"],
+        &[
+            "1D",
+            "2CTA",
+            "2D",
+            "3D",
+            "4D",
+            "5D",
+            "GATHER4",
+            "IM2COL",
+            "MULTICAST",
+        ],
     ),
     ("UTMAPF", &["1D", "2D", "3D", "4D", "5D", "L2"]),
     ("UTMAREDG", &["1D", "2D", "3D", "4D", "5D", "ADD"]),
-    ("UTMASTG", &["2D", "3D", "4D", "5D"]),
+    ("UTMASTG", &["2D", "3D", "4D", "5D", "IM2COL"]),
     ("UVIRTCOUNT", &["DEALLOC", "SMPOOL"]),
     ("VHMNMX", &["BF16_V2", "NAN"]),
     ("VIADD", &["16x2"]),

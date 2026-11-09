@@ -1366,6 +1366,8 @@ pub struct TmapDesc {
     /// A shared-to-shared bulk copy (`UBLKCP.S.S`): the source is this CTA's shared memory at
     /// offset `base`, not global memory.
     pub smem_src: Option<u16>,
+    /// im2col-mode map (`boxd` is then [channels, pixels]; im2col.rs).
+    pub im2col: Option<crate::tmap::Im2col>,
 }
 
 /// An NVLS multicast object: addresses [base, base + size) are a multicast view of one

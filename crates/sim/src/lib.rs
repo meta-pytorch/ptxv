@@ -22,6 +22,7 @@ pub mod fp;
 pub mod groups;
 pub mod halfin;
 pub mod hwprofile;
+pub mod im2col;
 pub mod l1;
 pub mod l1_cores;
 pub mod lowp;
@@ -70,7 +71,7 @@ fn param_tmap_geometry(
     boxd: &[u32],
     raw: &Option<String>,
     elem4: bool,
-) -> (u32, Vec<u64>, Vec<u64>, Vec<u32>) {
+) -> (u32, Vec<u64>, Vec<u64>, Vec<u32>, Option<tmap::Im2col>) {
     let (dims, strides) = ptxv_case::tmap_geometry(b, dims, strides);
     let dec = raw
         .as_ref()
@@ -83,8 +84,8 @@ fn param_tmap_geometry(
         .and_then(|bytes| tmap::decode(&bytes).ok())
         .filter(|d| d.estrides.iter().all(|&e| e == 1) && d.swizzle_atom == tmap::SwizzleAtom::B16);
     match dec {
-        Some(d) => (d.esize, d.dims, d.strides, d.boxd),
-        None => (b.elem_bytes() as u32, dims, strides, boxd.to_vec()),
+        Some(d) => (d.esize, d.dims, d.strides, d.boxd, d.im2col),
+        None => (b.elem_bytes() as u32, dims, strides, boxd.to_vec(), None),
     }
 }
 
@@ -273,7 +274,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
                                     );
                                 }
                                 let b = case.buffer(buffer)?;
-                                let (esize, dims, strides, boxd) =
+                                let (esize, dims, strides, boxd, im2col) =
                                     param_tmap_geometry(b, dims, strides, r#box, raw, *elem4);
                                 tensormaps.push(TmapDesc {
                                     grid: gi,
@@ -288,6 +289,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
                                     elem4: *elem4,
                                     fdtype: fdtype_of(&b.dtype),
                                     smem_src: None,
+                                    im2col,
                                 });
                             }
                             _ => bail!("param {}: only ptr / tensormap fields", p.name),
@@ -325,7 +327,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
                             .copy_from_slice(&(base_of(buffer)? + offset).to_le_bytes());
                     }
                     let b = case.buffer(buffer)?;
-                    let (es, dims, strides, boxd) =
+                    let (es, dims, strides, boxd, im2col) =
                         param_tmap_geometry(b, dims, strides, r#box, raw, *elem4);
                     tensormaps.push(TmapDesc {
                         grid: gi,
@@ -340,6 +342,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
                         elem4: *elem4,
                         fdtype: fdtype_of(&b.dtype),
                         smem_src: None,
+                        im2col,
                     });
                 }
             }

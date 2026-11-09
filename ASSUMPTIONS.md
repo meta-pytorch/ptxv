@@ -2814,6 +2814,24 @@ MXF4, A and B through such maps) equals GB300 bitwise on both front-ends.
 With a swizzle, a box whose inner dimension is narrower than the span has each smem row
 padded to the span: element (row q, column c) sits at q·max(span, inner bytes) + c·esize before
 the address swizzle (`exec.rs` `tma_box_off`); complete_tx still counts the unpadded box bytes.
+**im2col mode** (`cp.async.bulk.tensor.<n>d ... .im2col` loads, SASS `UTMALDG.<n>D.IM2COL`;
+`.im2col_no_offs` stores, `UTMASTG.<n>D.IM2COL`; `sim/im2col.rs`): the box is `pixels` rows of
+`channels` elements, laid out and swizzled as a 2-D tiled box. Pixel q is the start pixel
+(the spatial coordinates and n of the instruction) advanced q steps in row-major order through
+the pixel bounding box [lower_i, dim_i - 1 + upper_i] of each spatial dimension (innermost
+first; past the last one n advances); element (q, c) is the tensor element at channel c0 + c
+and spatial coordinates pixel + offset_i. Offsets are unsigned, packed into 16 bits as ptxas
+passes them in the UR (rank 5: three 5-bit fields, rank 4: two 8-bit, rank 3: 16 bits).
+Out-of-tensor elements read as 0 (loads) or are skipped (stores). An illegal instruction on
+GB300 (reported as a fault): a channel start not on a 16-byte boundary, and a store through a
+map whose pixel box reaches outside the tensor (lower corner < 0 or upper corner > 0). Not
+modeled: a start pixel outside the bounding box or a start n outside the tensor, element
+strides, im2col reductions, Im2colWide maps. Evidence: `probes/tma_im2col` (2026-11-08): 48
+loads through six maps (rank 3 / 4 / 5; u8 / u16 / u32; corners from -3 to 2; channels past
+C; no swizzle / 64B / 128B; the largest offset per rank) and 12 stores through three maps =
+an independent Python model and the simulator, bitwise; the fault conditions were found by
+single-access variants (each faulting case gave an illegal instruction; aligned starts and
+contained boxes did not).
 The swizzle phase comes from the shared-memory address, not from the box: a swizzled box may
 start at any 128-byte-aligned address (not only at a multiple of 8 rows x span), and element
 (q, c) lands at swz(start + q·span + c·esize). A swizzled start that is not 128-byte aligned
@@ -3916,7 +3934,9 @@ copies a tensor-map template to shared memory, then after `BSYNC` all 32 lanes r
 ### S-TMAP · code
 **A TMA operand that is not a declared tensor-map parameter is a 128-byte `CUtensorMap` in
 global memory**, decoded with the layout in docs/tensormap.md (reverse-engineered from
-`cuTensorMapEncodeTiled`, 3097/3097 random encodings, driver 580). The thread issuing the TMA
+`cuTensorMapEncodeTiled`, 3097/3097 random encodings, driver 580). im2col maps (`cuTensorMapEncodeIm2col`) add
+the pixel-box corners (word 0x38) and pixels per column (word 0x3c), from single-field
+encoder sweeps (docs/tensormap.md). The thread issuing the TMA
 must have executed `fence.proxy.tensormap::generic.acquire` (SASS `CCTL.E.C.LDCU.IV.DEEP` +
 `UTMACCTL.IV`) on that address since its contents last changed, or another thread of its CTA
 must have fenced the same bytes and that fence must happen-before the TMA (rung 4b: the

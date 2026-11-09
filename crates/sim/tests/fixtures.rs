@@ -1948,6 +1948,14 @@ fn probe_mma_scale_d_matches_hardware() {
     probe_bitwise("probes/mma_scale_d", "good", "sass");
 }
 
+/// S-TMA, S-TMAP: im2col TMA loads (UTMALDG.<n>D.IM2COL) and im2col_no_offs stores
+/// (UTMASTG.<n>D.IM2COL) through cuTensorMapEncodeIm2col maps = GB300 (probes/tma_im2col).
+/// SASS front only: the PTX front-end does not lower im2col.
+#[test]
+fn probe_tma_im2col_matches_hardware() {
+    probe_bitwise("probes/tma_im2col", "good", "sass");
+}
+
 /// A cubin probe (no PTX source) certifies clean on the SASS front-end and equals `expected/`.
 fn probe_bitwise_cubin(dir: &str, cubin: Option<&str>) {
     let case = Case::load(root().join(dir)).unwrap();

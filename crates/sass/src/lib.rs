@@ -4280,7 +4280,10 @@ fn lower_line(
             multicast: mods == ["BROADCAST"],
         },
         "UTMASTG" => {
-            if mods.len() != 1 {
+            // `UTMASTG.<n>D.IM2COL [URa], [URb]` (cp.async.bulk.tensor...im2col_no_offs): the
+            // coordinates get a trailing 0 for the (absent) im2col offsets (sim im2col.rs).
+            let im2col = mods.len() == 2 && mods[1] == "IM2COL";
+            if mods.len() != 1 && !im2col {
                 bail!(lw.err("UTMASTG variant not modeled"));
             }
             let dims: u8 = mods[0]
@@ -4289,9 +4292,12 @@ fn lower_line(
                 .map_err(|_| lw.err("dims"))?;
             // URa: smem source, then N coordinates; URb: tensor map.
             let t = lw.op(0)?;
-            let coords = (0..dims as u16)
+            let mut coords: Vec<Val> = (0..dims as u16)
                 .map(|k| lw.ureg_at(t, 1 + k, 1))
                 .collect::<Result<_>>()?;
+            if im2col {
+                coords.push(Val::Imm(0));
+            }
             Op::TmaStore {
                 dims,
                 src: lw.ureg_at(t, 0, 1)?,
@@ -4385,6 +4391,15 @@ fn lower_line(
             // `.2D.GATHER4` (cp.async.bulk.tensor.2d...tile::gather4): URa+2 is the column,
             // URa+3..URa+6 the four row coordinates (5 coords; exec.rs `complete_tma`).
             // `.MULTICAST.2CTA`: both (cuBLAS's 2-CTA nvjet kernels, M = N >= 512).
+            // `.<n>D.IM2COL[.2CTA] [URa], [URb], URo[, desc[URp]]` (cp.async.bulk.tensor
+            // ...im2col): URo holds the packed im2col offsets, appended to the coordinates (sim
+            // im2col.rs); the desc[] cache-policy operand is a hint, dropped (L-PTX-HINT).
+            let im2col = mods.get(1) == Some(&"IM2COL");
+            let mods_i: Vec<&str> = mods.iter().copied().filter(|m| *m != "IM2COL").collect();
+            let mods = &mods_i[..];
+            if im2col && !(mods.len() == 1 || mods[1..] == ["2CTA"]) {
+                bail!(lw.err(format!("UTMALDG form not modeled: {}", l.opcode)));
+            }
             let multicast = mods.len() >= 2 && mods[1] == "MULTICAST";
             let pair = mods[1..] == ["2CTA"] || mods[1..] == ["MULTICAST", "2CTA"];
             let gather4 = mods == ["2D", "GATHER4"];
@@ -4401,9 +4416,15 @@ fn lower_line(
                 .parse()
                 .map_err(|_| lw.err("dims"))?;
             let t = lw.op(0)?;
-            let coords = (0..dims as u16 + if gather4 { 3 } else { 0 })
+            let mut coords: Vec<Val> = (0..dims as u16 + if gather4 { 3 } else { 0 })
                 .map(|k| lw.ureg_at(t, 2 + k, 1))
                 .collect::<Result<_>>()?;
+            if im2col {
+                if dims < 3 || !(l.operands.len() == 3 || l.operands.len() == 4 && lw.op(3)?.starts_with("desc[")) {
+                    bail!(lw.err(format!("UTMALDG.IM2COL operand form not modeled: {}", l.text)));
+                }
+                coords.push(lw.val(lw.op(2)?, 4)?);
+            }
             Op::TmaLoad {
                 dims,
                 dst: lw.ureg_at(t, 0, 1)?,
