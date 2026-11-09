@@ -50,6 +50,11 @@ pub const GB300: &[Item] = &[
         discharges: &["bulk-store-at-exit:"],
     },
     Item {
+        id: "E-CPASYNC-EXIT",
+        probe: "probes/cpasync_exit",
+        discharges: &["cp-async-exit:"],
+    },
+    Item {
         id: "E-TC-EXIT",
         probe: "probes/tc_commit_exit",
         discharges: &["tc-commit-at-exit:"],

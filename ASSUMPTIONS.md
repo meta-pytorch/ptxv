@@ -1390,8 +1390,7 @@ that is false (src-size 0) writes zeros and reads nothing.
   Before 2026-11-05 any DEPBAR on such an SBk was a bulk wait, the cp.async never landed,
   and the kernel silently read zeros.
 - A thread that exits with a cp.async it never waited for (no wait_group / mbarrier arrive
-  retired it) is reported (`violation`, `cp-async-exit:<pc>`): its write has no defined
-  completion.
+  retired it): E-CPASYNC-EXIT.
 
 ### E-CPASYNC-MBAR · code
 **`cp.async.mbarrier.arrive.shared.b64 [m]` makes the mbarrier track every `cp.async` the
@@ -1921,6 +1920,29 @@ violation; equivalence accepts `contract` findings as preconditions and names th
   bulk engine reads the source microseconds late); 10 us and later was not. The SM keeps the
   CTA's shared memory until those reads finish.
 - If wrong: *miss* of a store reading freed shared memory after exit.
+- Retire: a statement in NVIDIA documentation either way.
+
+### E-CPASYNC-EXIT · code
+**A cp.async no thread waited for lands before the CTA's shared memory is reused.** A thread
+that exits with a cp.async no `cp.async.wait_group` / `cp.async.mbarrier.arrive` retired is
+reported as a `contract` finding (`cp-async-exit:<pc>`; the PTX ISA defines no completion
+for it), not as a violation. Its writes land at the exit as an actor no thread is ordered
+after: a read or write of those bytes not ordered before the issue is a race, including
+the issuing thread's own read after the issue (unlike E-CPASYNC's waited copies) and any
+access after the exit. A pipelined prologue that loads more stages than the main loop
+consumes and exits without `wait_group 0` (a decode-combine kernel: trailing splits with no
+valid rows; a paged decode kernel's page-index prefetch) has this shape.
+- Where: `exec.rs` `Op::Exit`; `hwprofile.rs` GB300 discharges `cp-async-exit:`.
+- Status: **validated** (`probes/cpasync_exit`, GB300, CUDA 13.0, 2026-11-08): each CTA fills
+  its shared memory with its own pattern, checks it after a spin, then issues 16-byte
+  `cp.async.cg` copies of a marker from a cold 1 GiB buffer and exits without a wait
+  (`LDGSTS.E.BYPASS.128`, then `EXIT`). 32 waves per launch. 0 marker words in a later CTA's
+  shared memory in 500 runs (1, 2 and 6 CTAs per SM; 48, 24 and 8 copies per thread; spins
+  of 2e5, 2e4 and 2e3 cycles). Positive control (the CTA overwrites the slots it copies into
+  without waiting): 113,206,148 marker words over 20 of 20 runs. The decode-combine kernel
+  with trailing empty splits (counts 2, 7, 33): 200 of 200 scrubbed runs each equal to the
+  simulator bitwise.
+- If wrong: *miss* of a cp.async landing in shared memory the next CTA on the SM owns.
 - Retire: a statement in NVIDIA documentation either way.
 
 ### E-TC-EXIT · code

@@ -3075,6 +3075,22 @@ mod vector_reg_tests {
         };
         assert_eq!(or.src_regs(), vec![v(31)]);
         assert_eq!(or.dst_regs(), vec![v(30)]);
+        // tcgen05.ld: d..d+n, or its explicit register list (non-consecutive registers).
+        let tld = |regs: Option<Vec<Reg>>| Op::TmemLd {
+            d: v(40),
+            n: 2,
+            taddr: Val::Imm(0),
+            off: 0,
+            tracked: true,
+            s16x64b: false,
+            half: None,
+            s16x256b: false,
+            s16x128b: false,
+            red: None,
+            regs,
+        };
+        assert_eq!(tld(None).dst_regs(), vec![v(40), v(41)]);
+        assert_eq!(tld(Some(vec![v(7), v(3)])).dst_regs(), vec![v(7), v(3)]);
         let hmma = Op::Hmma {
             d: v(40),
             a: vec![Val::Reg(v(50), 1)],

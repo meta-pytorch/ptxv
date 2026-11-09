@@ -9757,6 +9757,9 @@ impl Machine {
                         pc,
                     });
                 }
+                // The thread's later accesses are after the issue clock: a copy landing at
+                // its exit (E-CPASYNC-EXIT) races with the issuer's own unwaited read.
+                self.tick(t);
             }
             // ASSUME(E-CPASYNC-MBAR): every cp.async the thread issued so far (committed or
             // not) lands with this op; a later wait_group does not wait for them again.
@@ -9797,16 +9800,33 @@ impl Machine {
                 if let Some(sc) = self.launch.exit_fence {
                     self.acquire_pending(t, Some(sc));
                 }
-                // A cp.async the thread never waited for (wait_group / mbarrier arrive) has
-                // no defined completion: its shared-memory write is lost in the model.
-                if let Some(c) = self.threads[t].cp_pending.first() {
+                // ASSUME(E-CPASYNC-EXIT): a cp.async the thread never waited for (wait_group /
+                // mbarrier arrive) has no defined completion in the PTX ISA; GB300 completes
+                // it before the CTA's shared memory is reused (probes/cpasync_exit). A
+                // contract finding; the writes land now, as an actor no thread is ordered
+                // after, so every read of their bytes not ordered before the issue (the
+                // issuer's own after it included, and any after the exit) is a race.
+                let pend = std::mem::take(&mut self.threads[t].make_mut().cp_pending);
+                if let Some(c) = pend.first() {
                     let msg = format!(
-                        "{} exits with the cp.async issued at {} never waited for (cp.async.wait_group / cp.async.mbarrier.arrive)",
+                        "{} exits with the cp.async issued at {} never waited for (cp.async.wait_group / cp.async.mbarrier.arrive): no defined completion in the PTX ISA; GB300 completes it before the shared memory is reused (E-CPASYNC-EXIT)",
                         self.actor_name(t as u32),
                         self.k.describe(c.pc as usize)
                     );
                     let key = format!("cp-async-exit:{}", c.pc);
-                    self.report("violation", key, msg);
+                    self.report("contract", key, msg);
+                    let serial = self.threads[t].tma_count;
+                    self.threads[t].make_mut().tma_count += 1;
+                    let actor = self.tma_actor_id(t, serial);
+                    let cta = self.threads[t].cta;
+                    for c in pend {
+                        let mut vc = c.vc.clone();
+                        vc_tick(&mut vc, actor);
+                        let loc = Loc::Shared { cta, off: c.off };
+                        self.access(actor, &vc, c.pc, loc, c.data.len(), Some(&c.data));
+                        self.sync_clear(loc);
+                        self.num_cp_async(c.src, cta, c.off, &c.data);
+                    }
                 }
                 let th = self.threads[t].make_mut();
                 th.st = St::Exited;

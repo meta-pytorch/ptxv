@@ -447,6 +447,13 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |k| any(k, |o| matches!(o, Op::TmaStore { .. })),
     },
     Assumption {
+        id: "E-CPASYNC-EXIT",
+        kind: "code",
+        status: "validated",
+        title: "a cp.async no thread waited for lands before the CTA's shared memory is reused",
+        applies: |k| any(k, |o| matches!(o, Op::CpAsync { .. })),
+    },
+    Assumption {
         id: "E-TC-EXIT",
         kind: "code",
         status: "validated",

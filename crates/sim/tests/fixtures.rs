@@ -4345,6 +4345,25 @@ fn half_source_conversion_reads_its_half() {
     both("e_uninit_half_cvt", "good");
 }
 
+/// E-CPASYNC-EXIT (fixtures/e_cpasync_exit): an exit with a cp.async never waited for whose
+/// destination nobody reads is a contract finding; reading the destination without a wait
+/// (the issuer itself, or another warp after a bar.sync) is a race; after wait_group 0 both
+/// reads are clean. The GB300 profile discharges the contract.
+#[test]
+fn cpasync_exit_is_contract_unless_read() {
+    for v in ["good", "read", "wait", "other_wait"] {
+        both("e_cpasync_exit", v);
+    }
+    // The race leaves outcomes DPOR also enumerates: the stateful verdict only.
+    check_stateful("e_cpasync_exit", "other", "ptx", 100_000);
+    check_stateful("e_cpasync_exit", "other", "sass", 100_000);
+    let p = ptxv_sim::hwprofile::GB300;
+    assert!(
+        p.iter()
+            .any(|i| i.id == "E-CPASYNC-EXIT" && i.discharges == ["cp-async-exit:"])
+    );
+}
+
 /// S-TCGEN05 (fixtures/s_tc_st_mma): a thread's own tcgen05.st, wait::st, then its
 /// tcgen05.mma with no tcgen05.fence in that thread is ordered; the MMA issued before the
 /// wait::st races with the store.

@@ -4,8 +4,8 @@ Probe (E-CPASYNC) for the cp.async scoreboard's scope: odd and even lanes issue 
 commit on two divergent paths (two LDGDEPBAR on the warp's SB0, one group per thread), the warp
 reconverges at one DEPBAR, bar.warp.sync, and each lane reads its neighbour's shared slot
 (kernel.ptx, gen.py). `good`: wait_group 0; `w1`: wait_group 1 (SASS `DEPBAR.LE SB0, 0x1`): per thread nothing is
-waited for (exit with copies pending: violation); on the SASS front the warp's first group is
-complete and the second is not (nondeterministic reads).
+waited for (exit with copies pending: contract, E-CPASYNC-EXIT; the neighbour's read races
+with its copy); on the SASS front the warp's first group is complete and the second is not.
 expected/ is GB300's output of `good` (ptxas cubin, `ptxv hw-worker`)."""
 ptx = "kernel.ptx"
 entry = "cpasync_warp"
@@ -45,6 +45,6 @@ summary = "wait_group 1 after the two divergent groups"
 marker = "@WAIT"
 find = "wait_group 0;"
 replace = "wait_group 1;"
-expect = ["violation"]
-expect_sass = ["nondeterministic", "violation"]
+expect = ["contract", "race"]
+expect_sass = ["contract", "nondeterministic", "race"]
 hw_note = "GB300 1000/1000 scrubbed runs equal `good`'s output (the later group landed in time)"

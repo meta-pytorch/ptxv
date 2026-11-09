@@ -1,0 +1,9 @@
+GB300, CUDA 13.0, 2026-11-08. nvcc -arch=sm_103a -o cpasync_exit cpasync_exit.cu; ./cpasync_exit mode runs K spin
+./cpasync_exit 1 20 24 20000
+NVIDIA GB300 mode=1 runs=20 grid=9728 (152 SMs x 2 CTAs/SM x 32 waves) threads=256 K=24 smem=98304 spin=20000: smem words not own pattern 0, of them MARK 0; control MARK after own stores 113206148; runs with MARK 20
+./cpasync_exit 0 200 24 20000
+NVIDIA GB300 mode=0 runs=200 grid=9728 (152 SMs x 2 CTAs/SM x 32 waves) threads=256 K=24 smem=98304 spin=20000: smem words not own pattern 0, of them MARK 0; control MARK after own stores 0; runs with MARK 0
+./cpasync_exit 0 200 8 2000
+NVIDIA GB300 mode=0 runs=200 grid=29184 (152 SMs x 6 CTAs/SM x 32 waves) threads=256 K=8 smem=32768 spin=2000: smem words not own pattern 0, of them MARK 0; control MARK after own stores 0; runs with MARK 0
+./cpasync_exit 0 100 48 200000
+NVIDIA GB300 mode=0 runs=100 grid=4864 (152 SMs x 1 CTAs/SM x 32 waves) threads=256 K=48 smem=196608 spin=200000: smem words not own pattern 0, of them MARK 0; control MARK after own stores 0; runs with MARK 0
