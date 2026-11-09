@@ -2778,6 +2778,9 @@ a divergent path.
 - an alloc or dealloc writes every word of its columns: an access of those words that is not
   ordered with it is a race, whichever comes first (`tmem_mark`). Allocs and deallocs do not
   race with each other;
+- a warp-wide `tcgen05.alloc` reached by a warp whose lanes are all guarded off is not
+  executed by it and does not wait on the allocator (Triton's `@p tcgen05.alloc` with
+  p = tid < 32, reached by four warps: before 2026-11-08 the other three warps blocked there);
 - (rung 2) a thread's asynchronous tcgen05 ops are ordered after its own earlier
   instructions (the actor's clock includes the thread's clock at issue);
 - (rung 2) `tcgen05.st` is asynchronous like `ld`; `wait::st` completes the stores only for

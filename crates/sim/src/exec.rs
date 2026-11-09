@@ -1800,6 +1800,11 @@ impl Machine {
             // TMEM allocation blocks while it cannot succeed (ptxas's SASS spins on failure).
             Op::TmemAlloc { ncols, .. } => {
                 let t = members[0];
+                // A warp whose lanes are all guarded off does not allocate (Triton's
+                // `@p tcgen05.alloc` with p = tid < 32, reached by four warps).
+                if !members.iter().any(|&m| self.prd(m, inst.guard)) {
+                    return true;
+                }
                 match self.rd(t, ncols) {
                     Ok(n) if n >= 32 && n.is_power_of_two() && n <= 512 => self
                         .tmem_find(self.threads[t].cta, (n / 32) as u32)
