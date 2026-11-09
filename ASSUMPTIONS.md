@@ -5006,6 +5006,12 @@ paths of rounding nodes v, the computed value is sum_o c_o x_m prod_v (1 + delta
   has the tightness).
 - If wrong: *false proof* of a tolerance (a too small bound).
 
+Coefficient arithmetic used for equality must be exact in f64. An inexact sum or product
+prevents an equality proof from that canonical form. The norm bound
+uses a separate polynomial calculation that charges each coefficient residual to its
+error budget and marks the result approximate; it cannot establish L1 from rounded
+coefficients (`equiv.rs`, `norm.rs`).
+
 ### N-EXACT · code
 **An f32 product of two narrow-format input leaves (FMUL, no addend), or a bf16 / f16 rounding
 of such a product or leaf, is exact for every input when the format holds every value the

@@ -59,6 +59,11 @@ same input leaf: L0 for every input, PROVEN.
 
 ## 2. Reassociated sums (N-REASSOC, N-ATOMIC)
 
+Polynomial coefficients must remain exact during canonicalization. If a coefficient sum or
+product cannot be represented exactly in f64, the polynomial proof is refused with an
+explanation. Opaque instruction slices identify their arguments by their rounding DAGs,
+including signed zero; max/min accuracy comparisons retain their operands' error budgets.
+
 ### The bound
 
 Each output's canonical form is its exact polynomial over input leaves (rung 2e). Two

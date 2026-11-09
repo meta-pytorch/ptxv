@@ -40,8 +40,6 @@ use serde::Serialize;
 use crate::equiv::Leaf;
 use crate::equiv::Mono;
 use crate::equiv::Term;
-use crate::equiv::add_poly_n;
-use crate::equiv::poly_mul;
 use crate::num::NodeKind;
 use crate::num::NumState;
 use crate::num::U32;
@@ -122,19 +120,54 @@ fn as_const(p: &Poly) -> Option<f64> {
 }
 
 fn scaled(p: &Poly, k: f64) -> Poly {
-    p.iter()
-        .map(|(m, t)| {
-            (
-                m.clone(),
-                Term {
-                    coef: t.coef * k,
-                    mult: t.mult * k.abs(),
-                    abs: t.abs * k.abs(),
-                    gam: t.gam * k.abs(),
-                },
-            )
-        })
-        .collect()
+    poly_mul(p, &konst(k))
+}
+
+// The norm bound charges coefficient arithmetic to its error budget. Equality proofs use
+// equiv.rs's exact-coefficient checks instead.
+fn add_poly_n(into: &mut Poly, from: &Poly, eps: f64, times: usize) {
+    for (m, t) in from {
+        let t = t.grown(eps, times);
+        let e = into.entry(m.clone()).or_default();
+        let sum = e.coef + t.coef;
+        let bb = sum - e.coef;
+        let residual = (e.coef - (sum - bb)) + (t.coef - bb);
+        e.coef = sum;
+        e.coef_rounded |= t.coef_rounded || residual != 0.0;
+        e.mult += t.mult;
+        e.abs += t.abs;
+        e.gam += t.gam + residual.abs();
+        if !sum.is_finite() || !residual.is_finite() {
+            e.gam = f64::INFINITY;
+        }
+    }
+}
+
+fn poly_mul(a: &Poly, b: &Poly) -> Poly {
+    let mut out = Poly::new();
+    for (ma, ta) in a {
+        for (mb, tb) in b {
+            let mut m: Mono = ma.iter().chain(mb).copied().collect();
+            m.sort();
+            let coef = ta.coef * tb.coef;
+            let safe = ta.coef == 0.0
+                || tb.coef == 0.0
+                || coef.abs() >= f64::MIN_POSITIVE * 9007199254740992.0;
+            let residual = ta.coef.mul_add(tb.coef, -coef);
+            let mut term = Term {
+                coef,
+                coef_rounded: ta.coef_rounded || tb.coef_rounded || residual != 0.0 || !safe,
+                mult: tb.coef.abs() * ta.mult + ta.coef.abs() * tb.mult,
+                abs: ta.abs * tb.abs,
+                gam: (ta.abs + ta.gam) * (tb.abs + tb.gam) - ta.abs * tb.abs + residual.abs(),
+            };
+            if !safe || !coef.is_finite() || !residual.is_finite() {
+                term.gam = f64::INFINITY;
+            }
+            add_poly_n(&mut out, &[(m, term)].into(), 0.0, 0);
+        }
+    }
+    out
 }
 
 fn sum(a: &Poly, b: &Poly) -> Poly {
@@ -801,6 +834,12 @@ pub fn bound(r: &mut Ctx, rn: u32, c: &mut Ctx, cn: u32) -> Result<NormBound, St
         let tc = ac.arg.get(m).copied().unwrap_or_default();
         let a = weight(m, &ar.arg, &ac.arg)?;
         let dc = (tc.coef - tr.coef).abs();
+        if tr.coef_rounded || tc.coef_rounded {
+            coef_diff = coef_diff.max(f64::MIN_POSITIVE);
+        }
+        if !tr.gam.is_finite() || !tc.gam.is_finite() {
+            return Err("coefficient arithmetic exceeds the norm bound's supported range".into());
+        }
         coef_diff = coef_diff.max(dc / a);
         ka_r = ka_r.max(tr.gam / a * up);
         ka_c = ka_c.max((tc.gam + dc) / a * up);
@@ -849,6 +888,12 @@ pub fn bound(r: &mut Ctx, rn: u32, c: &mut Ctx, cn: u32) -> Result<NormBound, St
         let tc = sc.poly.get(m).copied().unwrap_or_default();
         let a = weight(m, &sr.poly, &sc.poly)?;
         let dc = (tc.coef - tr.coef).abs();
+        if tr.coef_rounded || tc.coef_rounded {
+            coef_diff = coef_diff.max(f64::MIN_POSITIVE);
+        }
+        if !tr.gam.is_finite() || !tc.gam.is_finite() {
+            return Err("coefficient arithmetic exceeds the norm bound's supported range".into());
+        }
         coef_diff = coef_diff.max(dc / a);
         let e = m.iter().filter(|l| l.0 == ATOM_LEAF).count() as u8;
         let hh = if e == 1 { h } else { 1.0 };

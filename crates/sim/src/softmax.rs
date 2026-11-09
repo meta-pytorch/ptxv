@@ -1206,6 +1206,7 @@ impl<'a> Ctx<'a> {
                         mult: t.mult * c,
                         abs: t.abs * c,
                         gam: t.gam * c,
+                        coef_rounded: false,
                     },
                 )
             })

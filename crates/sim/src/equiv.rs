@@ -62,6 +62,7 @@ pub type Mono = Vec<Leaf>;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Term {
     pub coef: f64,
+    pub(crate) coef_rounded: bool,
     /// Sum over occurrences of coef * (unit roundoffs of the rounding nodes on the path).
     pub mult: f64,
     /// Sum over occurrences of |coef|: the scale the rigorous bound is relative to.
@@ -84,6 +85,7 @@ impl Term {
         let g = (1.0 + eps).powi(times as i32);
         Term {
             coef: self.coef,
+            coef_rounded: self.coef_rounded,
             mult: self.mult + self.coef.abs() * eps * times as f64,
             abs: self.abs,
             gam: self.gam * g + self.abs * (g - 1.0),
@@ -108,6 +110,136 @@ pub fn pseudo(l: &Leaf) -> bool {
     l.0 >= SEG_LEAF
 }
 
+/// Shared nonlinear error budgets, evaluated with the original grouping of additions and maxima.
+#[derive(Clone, Debug, Default)]
+pub struct InnerBudget(Option<std::rc::Rc<InnerExpr>>);
+
+#[derive(Debug)]
+struct InnerExpr {
+    op: InnerOp,
+    value: std::cell::OnceCell<std::rc::Rc<BTreeMap<Mono, f64>>>,
+    amplified: bool,
+}
+
+#[derive(Debug)]
+enum InnerOp {
+    Terms(std::rc::Rc<BTreeMap<Mono, f64>>),
+    Add(InnerBudget, InnerBudget),
+    Max(InnerBudget, InnerBudget),
+}
+
+impl InnerBudget {
+    fn terms(terms: BTreeMap<Mono, f64>) -> Self {
+        if terms.is_empty() {
+            return Self::default();
+        }
+        let amplified = terms.values().any(|&v| v > 0.0);
+        Self(Some(std::rc::Rc::new(InnerExpr {
+            op: InnerOp::Terms(std::rc::Rc::new(terms)),
+            value: Default::default(),
+            amplified,
+        })))
+    }
+
+    fn amplified(&self) -> bool {
+        self.0.as_ref().is_some_and(|e| e.amplified)
+    }
+
+    fn merge(&mut self, other: &Self, maximum: bool) {
+        if self.0.is_none() {
+            *self = other.clone();
+        } else if other.0.is_some() {
+            *self = Self(Some(std::rc::Rc::new(InnerExpr {
+                amplified: self.amplified() || other.amplified(),
+                op: if maximum {
+                    InnerOp::Max(self.clone(), other.clone())
+                } else {
+                    InnerOp::Add(self.clone(), other.clone())
+                },
+                value: Default::default(),
+            })));
+        }
+    }
+
+    // Keep shared DAG effects compact until a polynomial L2 comparison needs them.
+    fn values(&self) -> std::rc::Rc<BTreeMap<Mono, f64>> {
+        let Some(root) = &self.0 else {
+            return Default::default();
+        };
+        if let Some(value) = root.value.get() {
+            return value.clone();
+        }
+        let key = |e: &std::rc::Rc<InnerExpr>| std::rc::Rc::as_ptr(e) as usize;
+        let mut uses = BTreeMap::<usize, usize>::new();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut order = Vec::new();
+        let mut values = BTreeMap::new();
+        let mut pending = vec![(root.clone(), false)];
+        while let Some((e, ready)) = pending.pop() {
+            let id = key(&e);
+            if ready {
+                order.push(e);
+                continue;
+            }
+            if !seen.insert(id) {
+                continue;
+            }
+            if let Some(value) = e.value.get() {
+                values.insert(id, value.clone());
+                continue;
+            }
+            if let InnerOp::Terms(terms) = &e.op {
+                values.insert(id, terms.clone());
+                continue;
+            }
+            pending.push((e.clone(), true));
+            if let InnerOp::Add(a, b) | InnerOp::Max(a, b) = &e.op {
+                for child in [b, a] {
+                    if let Some(child) = &child.0 {
+                        *uses.entry(key(child)).or_default() += 1;
+                        pending.push((child.clone(), false));
+                    }
+                }
+            }
+        }
+        for e in order {
+            let (a, b) = match &e.op {
+                InnerOp::Add(a, b) | InnerOp::Max(a, b) => (a, b),
+                InnerOp::Terms(_) => unreachable!(),
+            };
+            let mut take = |x: &InnerBudget| {
+                let Some(x) = &x.0 else {
+                    return std::rc::Rc::default();
+                };
+                let id = key(x);
+                let count = uses.get_mut(&id).expect("budget child has a parent");
+                *count -= 1;
+                if *count == 0 {
+                    values.remove(&id).expect("evaluated budget child")
+                } else {
+                    values.get(&id).expect("evaluated budget child").clone()
+                }
+            };
+            let left = take(a);
+            let right = take(b);
+            let mut into = std::rc::Rc::unwrap_or_clone(left);
+            for (m, v) in right.iter() {
+                let old = into.entry(m.clone()).or_default();
+                *old = if matches!(e.op, InnerOp::Max(..)) {
+                    old.max(*v)
+                } else {
+                    *old + v
+                };
+            }
+            values.insert(key(&e), std::rc::Rc::new(into));
+        }
+        root.value
+            .set(values.remove(&key(root)).expect("evaluated budget root"))
+            .expect("budget evaluated once");
+        root.value.get().expect("evaluated budget root").clone()
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Canon {
     pub l0: (u64, u64),
@@ -117,8 +249,10 @@ pub struct Canon {
     pub poly: BTreeMap<Mono, Term>,
     /// Why the canonical form is not a function of the inputs alone (an untracked leaf).
     pub untracked: Option<String>,
-    /// Per MUFU pseudo-leaf id: the error multipliers of its operand's monomials.
-    pub inner: BTreeMap<u64, BTreeMap<Mono, f64>>,
+    /// Exact polynomial comparison lost coefficient bits; a separate norm bound may cover them.
+    coefficient_loss: Option<String>,
+    /// Per nonlinear operand id: shared error multipliers of its monomials.
+    pub inner: BTreeMap<u64, InnerBudget>,
     /// Some MUFU node has only an absolute error bound.
     pub abs_bound: bool,
     /// Why the rounding order is schedule-dependent (fp32 atomic chains): not L0.
@@ -219,13 +353,20 @@ fn merge_effects(cx: &mut Canon, sub: &Canon) {
     if cx.untracked.is_none() {
         cx.untracked = sub.untracked.clone();
     }
+    if cx.coefficient_loss.is_none() {
+        cx.coefficient_loss = sub.coefficient_loss.clone();
+    }
     if cx.unordered.is_none() {
         cx.unordered = sub.unordered.clone();
     }
     for (id, m) in &sub.inner {
-        let e = cx.inner.entry(*id).or_default();
-        for (mono, v) in m {
-            *e.entry(mono.clone()).or_default() += v;
+        match cx.inner.entry(*id) {
+            std::collections::btree_map::Entry::Vacant(e) => {
+                e.insert(m.clone());
+            }
+            std::collections::btree_map::Entry::Occupied(mut e) => {
+                e.get_mut().merge(m, false);
+            }
         }
     }
     cx.abs_bound |= sub.abs_bound;
@@ -322,6 +463,30 @@ impl ExactSet {
     }
 }
 
+// NaN marks a coefficient whose exact value would be lost by f64 arithmetic.
+fn coefficient_sum(a: f64, b: f64) -> f64 {
+    let sum = a + b;
+    let bb = sum - a;
+    let residual = (a - (sum - bb)) + (b - bb);
+    if sum.is_finite() && residual == 0.0 {
+        sum
+    } else {
+        f64::NAN
+    }
+}
+
+fn coefficient_product(a: f64, b: f64) -> f64 {
+    let product = a * b;
+    // Below this range the residual of a two-product can itself underflow.
+    let residual_safe =
+        a == 0.0 || b == 0.0 || product.abs() >= f64::MIN_POSITIVE * 9007199254740992.0;
+    if product.is_finite() && residual_safe && a.mul_add(b, -product) == 0.0 {
+        product
+    } else {
+        f64::NAN
+    }
+}
+
 /// `into += from`, every term of `from` under `times` more rounding nodes of unit `eps`.
 pub(crate) fn add_poly_n(
     into: &mut BTreeMap<Mono, Term>,
@@ -332,7 +497,7 @@ pub(crate) fn add_poly_n(
     for (m, t) in from {
         let t = t.grown(eps, times);
         let e = into.entry(m.clone()).or_default();
-        e.coef += t.coef;
+        e.coef = coefficient_sum(e.coef, t.coef);
         e.mult += t.mult;
         e.abs += t.abs;
         e.gam += t.gam;
@@ -347,7 +512,7 @@ pub(crate) fn poly_mul(a: &BTreeMap<Mono, Term>, b: &BTreeMap<Mono, Term>) -> BT
             let mut m: Mono = ma.iter().chain(mb).copied().collect();
             m.sort();
             let e = out.entry(m).or_default();
-            e.coef += ta.coef * tb.coef;
+            e.coef = coefficient_sum(e.coef, coefficient_product(ta.coef, tb.coef));
             e.mult += tb.coef.abs() * ta.mult + ta.coef.abs() * tb.mult;
             e.abs += ta.abs * tb.abs;
             e.gam += (ta.abs + ta.gam) * (tb.abs + tb.gam) - ta.abs * tb.abs;
@@ -357,6 +522,7 @@ pub(crate) fn poly_mul(a: &BTreeMap<Mono, Term>, b: &BTreeMap<Mono, Term>) -> BT
 }
 
 fn poly_id(h: &mut H2, p: &BTreeMap<Mono, Term>) {
+    h.put(("polynomial", p.values().filter(|t| t.coef != 0.0).count()));
     for (m, t) in p {
         if t.coef != 0.0 {
             h.put((m, t.coef.to_bits()));
@@ -452,6 +618,14 @@ impl Side<'_> {
         }
         let mut sub = Canon::default();
         let (h, p) = self.node_inner(n, &mut sub, memo);
+        if p.values().any(|t| !t.coef.is_finite()) {
+            sub.coefficient_loss.get_or_insert_with(|| {
+                format!(
+                    "polynomial coefficient cannot be represented exactly in f64 at pc {}",
+                    self.ns.nodes[n as usize].pc
+                )
+            });
+        }
         merge_effects(cx, &sub);
         memo.insert(n, std::rc::Rc::new((h, p.clone(), sub)));
         (h, p)
@@ -676,6 +850,7 @@ impl Side<'_> {
                     .iter()
                     .map(|p| {
                         p.1.iter()
+                            .filter(|(_, t)| t.coef != 0.0)
                             .map(|(m, t)| (m.clone(), t.coef.to_bits()))
                             .collect()
                     })
@@ -683,6 +858,19 @@ impl Side<'_> {
                 polys.sort();
                 polys.dedup();
                 id.put(&polys);
+                for (_, operand) in &parts {
+                    let mut inner_id = H2::new();
+                    inner_id.put(("max-operand", *min));
+                    poly_id(&mut inner_id, operand);
+                    let mut terms = BTreeMap::new();
+                    for (m, term) in operand {
+                        terms.insert(m.clone(), 0.0f64.max(term.mult));
+                    }
+                    cx.inner
+                        .entry(inner_id.done().0)
+                        .or_default()
+                        .merge(&InnerBudget::terms(terms), true);
+                }
                 poly.insert(vec![(MAX_LEAF, id.done().0)], Term::one());
             }
             NodeKind::Sel { pred, neg, a, b } => {
@@ -692,9 +880,11 @@ impl Side<'_> {
                     id.put(format!("{:?}", o.kind));
                 }
                 id.put(format!("{:?}", pred.0.out));
+                id.put(("arguments", pred.0.args.len() + 2));
                 for &x in pred.0.args.iter().chain([a, b]) {
                     let (hx, px) = self.node(x, cx, memo);
                     h.put(hx);
+                    id.put(hx);
                     poly_id(&mut id, &px);
                 }
                 let id = id.done().0;
@@ -707,9 +897,11 @@ impl Side<'_> {
                     id.put(format!("{:?}", o.kind));
                 }
                 id.put(format!("{:?}", p.0.out));
+                id.put(("arguments", p.0.args.len()));
                 for &a in &p.0.args {
                     let (ha, pa) = self.node(a, cx, memo);
                     h.put(ha);
+                    id.put(ha);
                     poly_id(&mut id, &pa);
                 }
                 let id = id.done().0;
@@ -877,10 +1069,14 @@ impl Side<'_> {
                 let b = crate::mufu::error_bound(*func, *ptx, 0.0);
                 cx.abs_bound |= matches!(func, MufuFunc::Lg2 | MufuFunc::Sin | MufuFunc::Cos);
                 let eps = b.rel_ulps * 2f64.powi(-23) + b.abs;
-                let inner = cx.inner.entry(id).or_default();
+                let mut terms = BTreeMap::new();
                 for (m, t) in &pa {
-                    *inner.entry(m.clone()).or_default() += t.mult;
+                    terms.insert(m.clone(), t.mult);
                 }
+                cx.inner
+                    .entry(id)
+                    .or_default()
+                    .merge(&InnerBudget::terms(terms), false);
                 poly.insert(
                     vec![(MUFU_LEAF, id)],
                     Term {
@@ -888,6 +1084,7 @@ impl Side<'_> {
                         mult: eps,
                         abs: 1.0,
                         gam: eps,
+                        coef_rounded: false,
                     },
                 );
             }
@@ -1089,6 +1286,7 @@ impl Side<'_> {
                             let extra = theta + (1.0 + w) * (h - 1.0);
                             *t = Term {
                                 coef: t.coef,
+                                coef_rounded: t.coef_rounded,
                                 mult: t.mult * (1.0 + w) + a_ * extra,
                                 abs: a_,
                                 gam: g + extra * (a_ + g),
@@ -1453,7 +1651,13 @@ fn show_mono(m: &Mono, names: &[String]) -> String {
 // ASSUME(N-REASSOC): see ASSUMPTIONS.md
 #[allow(clippy::type_complexity)]
 fn rigorous(cr: &Canon, cc: &Canon) -> Result<(f64, f64, f64, Vec<(Mono, f64, f64, f64)>), String> {
-    if let Some(reason) = cr.untracked.as_ref().or(cc.untracked.as_ref()) {
+    if let Some(reason) = cr
+        .untracked
+        .as_ref()
+        .or(cc.untracked.as_ref())
+        .or(cr.coefficient_loss.as_ref())
+        .or(cc.coefficient_loss.as_ref())
+    {
         return Err(reason.clone());
     }
 
@@ -1516,7 +1720,7 @@ pub fn own_bound(s: &Side, i: usize) -> Result<(f64, f64, f64, &'static str, Vec
     let (_, poly) = s.node(n, &mut cx, &mut memo);
     cx.poly = poly;
     cx.poly.retain(|_, t| t.coef != 0.0 || t.gam != 0.0);
-    if let Some(u) = &cx.untracked {
+    if let Some(u) = cx.untracked.as_ref().or(cx.coefficient_loss.as_ref()) {
         return Err(u.clone());
     }
     if cx.poly.keys().any(|m| m.iter().any(pseudo)) {
@@ -1594,6 +1798,10 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
             }
         }
         let (cr, cc) = (r.canon_with(i, &mut memo_r), c.canon_with(i, &mut memo_c));
+        let coefficient_loss = cr
+            .coefficient_loss
+            .as_ref()
+            .or(cc.coefficient_loss.as_ref());
         tf32 |= cr.tf32 || cc.tf32;
         if untracked.is_none() {
             untracked = cr.untracked.clone().or(cc.untracked.clone());
@@ -1620,6 +1828,7 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
             l0_zero_sign += 1;
         }
         if z(&cr) != z(&cc)
+            || coefficient_loss.is_some()
             || cr.untracked.is_some()
             || cc.untracked.is_some()
             || cr.unordered.is_some()
@@ -1680,8 +1889,11 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
             round_adjacent: None,
         };
         // Segment mode: the softmax normal form when the polynomials differ.
-        if !diff.is_empty() && r.ns.segments && c.ns.segments {
+        if (!diff.is_empty() || coefficient_loss.is_some()) && r.ns.segments && c.ns.segments {
             let q = (|| -> Result<_, String> {
+                if let Some(reason) = coefficient_loss {
+                    return Err(reason.clone());
+                }
                 let rn = r.outs[i].1.ok_or("reference output without a node")?;
                 let cn = c.outs[i].1.ok_or("candidate output without a node")?;
                 let qr = sm_r.quot(rn)?;
@@ -1753,6 +1965,9 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
             };
             let ub = if out_round.is_some() { BF16_U } else { 0.0 };
             let wq = (|| -> Result<_, String> {
+                if let Some(reason) = coefficient_loss {
+                    return Err(reason.clone());
+                }
                 let (rn, cn) = match out_round {
                     Some(x) => x,
                     None => (
@@ -1957,6 +2172,14 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
                 }
             }
         }
+        if let Some(reason) = coefficient_loss {
+            untracked.get_or_insert_with(|| reason.clone());
+            note!(1, reason.clone());
+            note!(2, reason.clone());
+            if tau_k.is_some() {
+                note!(3, reason.clone());
+            }
+        }
         if !diff.is_empty() {
             let show: Vec<String> = diff
                 .iter()
@@ -2114,9 +2337,10 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
                 ),
             );
         }
-        // L2 inside MUFU operands: the error f' amplifies must not grow either.
+        // L2 inside nonlinear operands: their input error budgets must not grow either.
         if let Some((id, tr, tc)) = cr.inner.iter().find_map(|(id, mr)| {
-            let mc = cc.inner.get(id)?;
+            let mc = cc.inner.get(id)?.values();
+            let mr = mr.values();
             mr.keys()
                 .chain(mc.keys())
                 .map(|m| {
@@ -2131,7 +2355,7 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
             note!(
                 2,
                 format!(
-                    "inside MUFU operand {id:#x}: candidate error multiplier {:.1}u > reference {:.1}u",
+                    "inside nonlinear operand {id:#x}: candidate error multiplier {:.1}u > reference {:.1}u",
                     tc / U32,
                     tr / U32
                 ),
@@ -2148,7 +2372,7 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
         if tau_k.is_some() {
             let amplified = [&cr, &cc]
                 .iter()
-                .any(|c| c.inner.values().any(|m| m.values().any(|&v| v > 0.0)));
+                .any(|c| c.inner.values().any(InnerBudget::amplified));
             if amplified || cr.abs_bound || cc.abs_bound {
                 note!(
                     3,
@@ -2574,5 +2798,262 @@ mod exact_tests {
             }
         }
         assert!(set(Lp::E2m1).mul(set(Lp::Ue4m3)).fits(ExactSet::BF16));
+    }
+}
+
+#[cfg(test)]
+mod soundness_tests {
+    use std::sync::Arc;
+
+    use ptxv_ir::File;
+    use ptxv_ir::IntOp;
+    use ptxv_ir::Op;
+    use ptxv_ir::Reg;
+    use ptxv_ir::Val;
+
+    use super::*;
+    use crate::num::Node;
+    use crate::num::SegRef;
+    use crate::seg::SKind;
+    use crate::seg::SOp;
+    use crate::seg::SProg;
+    use crate::seg::SVal;
+
+    fn push(ns: &mut NumState, kind: NodeKind, hw: f32) -> u32 {
+        let id = ns.nodes.len() as u32;
+        ns.nodes.push(Node {
+            kind,
+            hw: hw.to_bits(),
+            exact: vec![],
+            err: vec![],
+            pc: id,
+        });
+        id
+    }
+
+    fn compare_nodes(ns: &NumState, a: u32, b: u32) -> Report {
+        let side = |n| Side {
+            ns,
+            outs: vec![(ns.nodes[n as usize].hw, Some(n))],
+            buf_id: vec![0],
+        };
+        compare(&side(a), &side(b), &["x".into()], None)
+    }
+
+    fn sign_slice(ns: &mut NumState, arg: u32) -> u32 {
+        let r = |idx| Reg { file: File::R, idx };
+        let prog = SProg {
+            args: vec![arg],
+            ops: vec![SOp {
+                pc: 0,
+                kind: SKind::Inst {
+                    op: Op::Int {
+                        op: IntOp::ShrU,
+                        bits: 32,
+                        d: r(1),
+                        a: Val::Reg(r(0), 1),
+                        b: Val::Imm(31),
+                    },
+                    dst: r(1),
+                    regs: vec![(r(0), SVal::Arg(0))],
+                    cvals: vec![],
+                },
+            }],
+            out: SVal::Op(0),
+            extra_pcs: Default::default(),
+        };
+        push(ns, NodeKind::Seg(SegRef(Arc::new(prog))), 0.0)
+    }
+
+    #[test]
+    fn coefficient_precision_loss_cannot_prove_cancellation() {
+        let mut ns = NumState::default();
+        ns.segments = true;
+        let x = push(&mut ns, NodeKind::Input((0, 0)), 0.0);
+        let one = push(&mut ns, NodeKind::Leaf, 1.0);
+        let tiny = push(&mut ns, NodeKind::Leaf, 2f32.powi(-60));
+        let plus = push(
+            &mut ns,
+            NodeKind::Fma {
+                a: x,
+                b: tiny,
+                c: Some(x),
+                neg_ab: false,
+                neg_c: false,
+            },
+            0.0,
+        );
+        let result = push(
+            &mut ns,
+            NodeKind::Fma {
+                a: plus,
+                b: one,
+                c: Some(x),
+                neg_ab: false,
+                neg_c: true,
+            },
+            0.0,
+        );
+        let zero = push(&mut ns, NodeKind::Leaf, 0.0);
+        let report = compare_nodes(&ns, result, zero);
+        assert!(!report.levels[1].holds, "{report:?}");
+        assert!(!report.levels[2].holds, "{report:?}");
+        assert!(
+            report
+                .untracked
+                .unwrap()
+                .contains("coefficient cannot be represented exactly")
+        );
+        assert!(coefficient_product(1.0 + 2f64.powi(-52), 1.0 + 2f64.powi(-52)).is_nan());
+        assert_eq!(coefficient_sum(1.0, -1.0), 0.0);
+        assert_eq!(coefficient_product(0.5, 2.0), 1.0);
+    }
+
+    #[test]
+    fn polynomial_argument_boundaries_are_unambiguous() {
+        let mut poly = BTreeMap::new();
+        poly.insert(vec![(0, 0)], Term::one());
+        let empty = BTreeMap::new();
+        let mut a = H2::new();
+        let mut b = H2::new();
+        poly_id(&mut a, &poly);
+        poly_id(&mut a, &empty);
+        poly_id(&mut b, &empty);
+        poly_id(&mut b, &poly);
+        assert_ne!(a.done(), b.done());
+    }
+
+    #[test]
+    fn bit_observing_slices_preserve_signed_zero_arguments() {
+        let mut ns = NumState::default();
+        ns.segments = true;
+        let x = push(&mut ns, NodeKind::Input((0, 0)), 1.0);
+        let one = push(&mut ns, NodeKind::Leaf, 1.0);
+        let z = push(
+            &mut ns,
+            NodeKind::Fma {
+                a: x,
+                b: one,
+                c: Some(x),
+                neg_ab: false,
+                neg_c: true,
+            },
+            0.0,
+        );
+        let pos = push(&mut ns, NodeKind::Leaf, 0.0);
+        let neg = push(&mut ns, NodeKind::Leaf, -0.0);
+        let a = push(
+            &mut ns,
+            NodeKind::Fma {
+                a: x,
+                b: z,
+                c: Some(pos),
+                neg_ab: false,
+                neg_c: false,
+            },
+            0.0,
+        );
+        let b = push(
+            &mut ns,
+            NodeKind::Fma {
+                a: x,
+                b: z,
+                c: Some(neg),
+                neg_ab: false,
+                neg_c: false,
+            },
+            0.0,
+        );
+        let sa = sign_slice(&mut ns, a);
+        let sb = sign_slice(&mut ns, b);
+        assert!(!compare_nodes(&ns, sa, sb).levels[1].holds);
+        assert!(compare_nodes(&ns, sa, sa).levels[0].holds);
+    }
+
+    #[test]
+    fn deferred_budgets_preserve_grouping_and_release_intermediates() {
+        let terms = |v| InnerBudget::terms(BTreeMap::from([(vec![(0, 0)], v)]));
+        let big = terms(1e16);
+        let one = terms(1.0);
+        let mut left = big.clone();
+        left.merge(&one, false);
+        let intermediate = left.clone();
+        left.merge(&one, false);
+        let mut two = one.clone();
+        two.merge(&one, false);
+        let mut right = big.clone();
+        right.merge(&two, false);
+        let coefficient = |x: &InnerBudget| x.values()[&vec![(0, 0)]];
+        assert_eq!(coefficient(&left), 1e16);
+        assert!(intermediate.0.as_ref().unwrap().value.get().is_none());
+        assert_eq!(coefficient(&right), 1e16 + 2.0);
+        let mut maximum = left.clone();
+        maximum.merge(&right, true);
+        assert_eq!(coefficient(&maximum), 1e16 + 2.0);
+        let mut shared = maximum.clone();
+        shared.merge(&maximum, false);
+        assert_eq!(coefficient(&shared), 2.0 * (1e16 + 2.0));
+        assert_eq!(coefficient(&intermediate), 1e16);
+    }
+
+    #[test]
+    fn maxima_keep_their_operands_error_budgets() {
+        let mut ns = NumState::default();
+        ns.segments = true;
+        let x = push(&mut ns, NodeKind::Input((0, 0)), 1.0);
+        let y = push(&mut ns, NodeKind::Input((0, 1)), 16777216.0);
+        let zero = push(&mut ns, NodeKind::Leaf, 0.0);
+        let one = push(&mut ns, NodeKind::Leaf, 1.0);
+        let sum = push(&mut ns, NodeKind::Add(x, y, false), 16777216.0);
+        let difference = push(
+            &mut ns,
+            NodeKind::Fma {
+                a: y,
+                b: one,
+                c: Some(sum),
+                neg_ab: true,
+                neg_c: false,
+            },
+            0.0,
+        );
+        let r = push(
+            &mut ns,
+            NodeKind::Max {
+                a: x,
+                b: zero,
+                min: false,
+            },
+            1.0,
+        );
+        let c = push(
+            &mut ns,
+            NodeKind::Max {
+                a: difference,
+                b: zero,
+                min: false,
+            },
+            0.0,
+        );
+        let report = compare_nodes(&ns, r, c);
+        assert!(report.levels[1].holds, "{report:?}");
+        assert!(!report.levels[2].holds, "{report:?}");
+        assert!(compare_nodes(&ns, r, r).levels[2].holds);
+        let rr = push(&mut ns, NodeKind::Add(r, r, false), 2.0);
+        let rc = push(&mut ns, NodeKind::Add(r, c, false), 1.0);
+        let cc = push(&mut ns, NodeKind::Add(c, c, false), 0.0);
+        assert!(compare_nodes(&ns, rr, rc).levels[1].holds);
+        assert!(!compare_nodes(&ns, rr, rc).levels[2].holds);
+        assert!(!compare_nodes(&ns, rc, cc).levels[2].holds);
+        assert!(compare_nodes(&ns, cc, rc).levels[2].holds);
+        let nested = push(
+            &mut ns,
+            NodeKind::Max {
+                a: r,
+                b: c,
+                min: false,
+            },
+            1.0,
+        );
+        assert!(compare_nodes(&ns, c, nested).levels[2].holds);
     }
 }
