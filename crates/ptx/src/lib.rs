@@ -2136,7 +2136,17 @@ fn flatten_scopes(src: &str) -> String {
     type ScopeRenames = (usize, usize, Vec<(String, String)>);
     let mut renames: Vec<ScopeRenames> = Vec::new();
     for (n, &(o, c)) in scopes.iter().enumerate() {
-        let body = &src[o + 1..c];
+        let mut body = b[o + 1..c].to_vec();
+        for &(inner_open, inner_close) in &scopes {
+            if o < inner_open && inner_close < c {
+                for byte in &mut body[inner_open - o - 1..inner_close - o] {
+                    if *byte != b'\n' {
+                        *byte = b' ';
+                    }
+                }
+            }
+        }
+        let body = String::from_utf8(body).unwrap();
         let mut names = Vec::new();
         for st in body.split(';') {
             let t = st.trim();
@@ -2181,45 +2191,34 @@ fn flatten_scopes(src: &str) -> String {
         out[o] = b' ';
         out[c] = b' ';
     }
-    // Pass 2: rename whole identifiers inside each scope (innermost scopes come first in
-    // `scopes`, so outer renames do not touch already-renamed names).
-    let mut text = String::from_utf8(out).unwrap();
-    for (o, c, map) in renames.into_iter().rev() {
-        if map.is_empty() {
-            continue;
-        }
-        let seg = &text[o..=c];
-        let mut res = String::with_capacity(seg.len() + 64);
-        let sb = seg.as_bytes();
-        let mut i = 0;
-        while i < sb.len() {
-            let ch = sb[i] as char;
-            if ch.is_ascii_alphabetic() || ch == '_' || ch == '$' || ch == '%' {
-                let st = i;
-                while i < sb.len()
-                    && ((sb[i] as char).is_ascii_alphanumeric()
-                        || sb[i] == b'_'
-                        || sb[i] == b'$'
-                        || sb[i] == b'%')
-                {
-                    i += 1;
-                }
-                let w = &seg[st..i];
-                // A word right after `.` is a modifier or directive (`mad.lo.u32` next to a
-                // scoped register `lo`), never a name.
-                let modifier = st > 0 && sb[st - 1] == b'.';
-                match map.iter().find(|(a, _)| a == w) {
-                    Some((_, r)) if !modifier => res.push_str(r),
-                    _ => res.push_str(w),
-                }
-            } else {
-                res.push(ch);
+    // Resolve each token against its innermost declaring scope using original offsets.
+    let mut result = Vec::with_capacity(out.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_alphabetic() || matches!(b[i], b'_' | b'$' | b'%') {
+            let start = i;
+            while i < b.len()
+                && (b[i].is_ascii_alphanumeric() || matches!(b[i], b'_' | b'$' | b'%'))
+            {
                 i += 1;
             }
+            let word = &src[start..i];
+            let replacement = if start > 0 && b[start - 1] == b'.' {
+                None
+            } else {
+                renames
+                    .iter()
+                    .filter(|(o, c, _)| *o < start && start < *c)
+                    .find_map(|(_, _, map)| map.iter().find(|(name, _)| name == word))
+            };
+            result
+                .extend_from_slice(replacement.map_or(&out[start..i], |(_, name)| name.as_bytes()));
+        } else {
+            result.push(out[i]);
+            i += 1;
         }
-        text.replace_range(o..=c, &res);
     }
-    text
+    String::from_utf8(result).unwrap()
 }
 
 /// `[.align A] .type name[N]` of a shared declaration: (name, alignment, bytes). `name[]`

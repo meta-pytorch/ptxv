@@ -190,3 +190,17 @@ fn saturating_half_conversion_clamps_before_rounding() {
         assert_eq!(output(&base, bits, 0, 0), want, "{bits:x}");
     }
 }
+
+#[test]
+fn nested_scopes_preserve_shadowed_and_inherited_bindings() {
+    let base = machine(
+        "{ .reg .b64 %local; mov.b64 %local, %x; \
+           { .reg .b64 %local; mov.b64 %local, 0; } \
+           { .reg .b64 %other; mov.b64 %other, %local; \
+             { .reg .b64 %local; mov.b64 %local, 17; } \
+             mov.b64 %d, %other; } }",
+    );
+    for x in [0, 1, u64::MAX, 0x123456789abcdef0] {
+        assert_eq!(output(&base, x, 0, 0), x);
+    }
+}
