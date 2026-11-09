@@ -1142,6 +1142,16 @@ pub enum Op {
         /// source starts at byte 2 * hi + byte.
         byte: u8,
     },
+    /// `cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 d, a, scale` / SASS
+    /// `F2FP.SATFINITE.BF16.S2_6.UNPACK_B Rd, Ra[.H1], Rb.H0 | imm.H0`: two s2f6 codes (the
+    /// 16 bits of `a` at its high half if `hi`, else its low half) times the two ue8m0 scales
+    /// in the low 16 bits of `scale` -> bf16x2 (`lowp::cvt_s2f6x2_scaled`). N-CVT-LP.
+    CvtS2f6x2 {
+        d: Reg,
+        a: Val,
+        hi: bool,
+        scale: Val,
+    },
     /// bf16 -> f32 (exact).
     CvtF32Bf16 {
         d: Reg,
@@ -2107,6 +2117,7 @@ impl Op {
                 x
             }
             Op::CvtPack { a, b, c, .. } => vec![a.clone(), b.clone(), c.clone()],
+            Op::CvtS2f6x2 { a, scale, .. } => vec![a.clone(), scale.clone()],
             Op::CvtRsX4 { src, rbits, .. } => {
                 let mut x = src.to_vec();
                 x.push(rbits.clone());
@@ -2526,6 +2537,7 @@ impl Op {
             | Op::CvtPack { d, .. }
             | Op::CvtRsX4 { d, .. }
             | Op::CvtUnpack { d, .. }
+            | Op::CvtS2f6x2 { d, .. }
             | Op::Shfl { d, p: None, .. }
             | Op::Bfe { d, .. }
             | Op::Bfi { d, .. }

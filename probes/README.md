@@ -12,6 +12,7 @@ verdict, and `cargo test` checks that the model agrees with the recorded hardwar
 
 | probe | assumption | GB300 result (2026-10-30, CUDA 13.0, driver 580) |
 |---|---|---|
+| `s2f6_cvt` | N-CVT-LP, L-NVDISASM | `cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2` (F2FP.SATFINITE.BF16.S2_6.UNPACK_B, ptxas 13.1 cubin): lane i = bf16(RNE, satfinite)(int8(byte i) / 64 * 2^(scale byte i - 127)), scale 0xff -> 0x7fff; all 2^32 (data, scale) pairs, 0 mismatches, SASS bitwise, 2026-11-08 |
 | `elect` | E-ELECT | `elect.sync` picks the lowest active lane for all 8 active sets; exactly one leader each |
 | `elect_regmask` | E-ELECT | `elect.sync` with its membermask in a register (mov of -1, an `or` that is -1 at run time); a half-warp register mask is refused on PTX (ptxas drops it: ELECT ..., PT). GB300 20/20, both fronts bitwise, 2026-11-08 |
 | `cluster_flag` | S-CBANK | `c[0x0][0x36c]` = `%is_explicit_cluster`: 1 with `.reqnctapercluster 2,1,1` (nctarank 2, ranks 0/1), 0 without |

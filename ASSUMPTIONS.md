@@ -4074,6 +4074,14 @@ CCTL.IVALL` with no bracket.
 **`nvdisasm` (CUDA 13.0) prints what the bits encode.**
 - Where: `sass` `load_cubin`, `parse_disasm`.
 - Status: **trusted** (vendor tool). Cross-checked indirectly by every bitwise hardware match.
+- Encodings nvdisasm 13.0 prints nothing for (a cubin from a newer ptxas: CuTe DSL's bundled
+  one) leave a hole in the listing, and the kernel is refused ("instruction addresses are not
+  contiguous 16-byte slots"). `undis.rs` decodes one such encoding from the kernel's `.text`
+  bytes, printed as nvdisasm 13.4 prints it: `F2FP.SATFINITE.BF16.S2_6.UNPACK_B Rd, Ra[.H1],
+  Rb.H0 | imm.H0` (`cvt...bf16x2.s2f6x2`). Every fixed bit must match the observed pattern
+  (any other value stays a hole). Fields checked against nvdisasm 13.4 on all 1,088 instances
+  in the kernel DB (FA4 int4 / fp8 KV attention, token mean pooling) and the 56 of
+  probes/s2f6_cvt (2026-11-08), where the decoded kernel = GB300 bitwise.
 
 ### L-ROSETTA · code
 **Each SASS opcode/modifier lowering means what the Rosetta probe derived,** only for the
@@ -6051,8 +6059,17 @@ Arithmetic:
   For x4, ptxas chains two F2FPs, and the second takes the first's merged result as c. So
   the PTX lanes {a, b, e, f} get rev(r.hi), r.hi, rev(r.lo), r.lo for 8-bit formats.
 - `MERGE_C`: d = c << (2 lanes) | lanes (8-bit lanes: c << 16; e2m1: c << 8).
-- Where: `lowp.rs`; `exec.rs` `Op::CvtPack` / `CvtRsX4` / `CvtUnpack`; PTX `cvt_lp`;
-  SASS `f2fp_lp`.
+- s2f6 (`cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2`, SASS `F2FP.SATFINITE.BF16.S2_6
+  .UNPACK_B`; `lowp::cvt_s2f6x2_scaled`, `Op::CvtS2f6x2`): lane i takes byte i of the 16-bit
+  code pair and byte i of the 16-bit scale pair; the code is a two's-complement 8-bit fixed
+  point with 6 fraction bits (int8 / 64), times 2^(scale - 127); one round to nearest even to
+  bf16, subnormals kept, overflow to +-0x7f7f (only -128/64 * 2^127 overflows); scale 0xff
+  gives 0x7fff for every code. `probes/s2f6_cvt` (GB300, 2026-11-08): every (code, scale)
+  pair of both lanes through register and immediate scales and either data half = the model
+  bitwise (`cargo test`), and `run.sh` checks all 2^32 (data, scale) pairs against a C model
+  on the GPU: 0 mismatches. PTX ISA 9.1: ptxas 13.1 assembles it, ptxas 13.0 does not.
+- Where: `lowp.rs`; `exec.rs` `Op::CvtPack` / `CvtRsX4` / `CvtUnpack` / `CvtS2f6x2`; PTX
+  `cvt_lp`; SASS `f2fp_lp`.
 - Status: **validated.** `ptxv cvt-sweep probes/cvt_lp` covers 51 PTX forms, each over every
   input, and finds 0 mismatches:
   - every 16-bit source value (2^16) in both lanes;

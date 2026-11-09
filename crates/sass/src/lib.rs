@@ -29,8 +29,11 @@ use anyhow::bail;
 use ptxv_ir::*;
 
 pub mod elf;
-mod l2;
 mod modset;
+mod undis;
+/// The disassembly of an encoding nvdisasm 13.0 prints nothing for, if `undis.rs` knows it.
+pub use undis::decode as decode_unprinted;
+mod l2;
 pub mod scoreboard;
 
 pub const RZ: u16 = 255;
@@ -74,6 +77,9 @@ pub struct CubinMeta {
     /// SM version the cubin was compiled for (ELF `e_flags` bits 8..16: 100 for sm_100a, 103
     /// for sm_103a); 0 when unknown. Selects arch-specific opcode latencies (scoreboard.rs).
     pub sm: u32,
+    /// The kernel's code (`.text.<kernel>`), for the slots nvdisasm prints nothing for
+    /// (`undis.rs`); empty when unknown.
+    pub text: Vec<u8>,
 }
 
 fn tool(name: &str) -> String {
@@ -215,6 +221,9 @@ pub fn read_meta(cubin: &Path, kernel: &str) -> Result<CubinMeta> {
     }
     m.params.sort();
     let img = elf::Elf::parse(&std::fs::read(cubin)?)?;
+    if let Some(i) = img.find(&format!(".text.{kernel}")) {
+        m.text = img.sections[i].data.clone();
+    }
     // `cuobjdump -res-usage`: "Function <kernel>:" then "REG:<n> STACK:...".
     if let Ok(ru) = run_tool("cuobjdump", &["-res-usage", cubin.to_str().unwrap()]) {
         let mut it = ru.lines();
@@ -314,29 +323,56 @@ pub fn parse_disasm(text: &str, kernel: &str) -> Result<(Vec<SassLine>, HashMap<
         let lo = halves
             .next()
             .and_then(|w| u64::from_str_radix(w.trim().trim_end_matches("*/").trim(), 16).ok());
-        let body = body.trim().trim_end_matches(';').trim();
-        let (guard, body) = if body.starts_with('@') {
-            let (g, r) = body.split_once(char::is_whitespace).unwrap();
-            (Some(g[1..].to_string()), r.trim())
-        } else {
-            (None, body)
-        };
-        let (opcode, ops) = body.split_once(char::is_whitespace).unwrap_or((body, ""));
-        let operands = split_ops(ops);
-        lines.push(SassLine {
-            addr,
-            guard,
-            opcode: opcode.to_string(),
-            operands,
-            text: body.to_string(),
-            hi: None,
-            lo,
-        });
+        lines.push(sass_line(addr, body, lo, None));
     }
     if lines.is_empty() {
         bail!("kernel {kernel} not found in disassembly");
     }
     Ok((lines, labels))
+}
+
+/// One instruction from its printed text (`[@g] OPCODE operands [;]`).
+fn sass_line(addr: u32, body: &str, lo: Option<u64>, hi: Option<u64>) -> SassLine {
+    let body = body.trim().trim_end_matches(';').trim();
+    let (guard, body) = if body.starts_with('@') {
+        let (g, r) = body.split_once(char::is_whitespace).unwrap();
+        (Some(g[1..].to_string()), r.trim())
+    } else {
+        (None, body)
+    };
+    let (opcode, ops) = body.split_once(char::is_whitespace).unwrap_or((body, ""));
+    SassLine {
+        addr,
+        guard,
+        opcode: opcode.to_string(),
+        operands: split_ops(ops),
+        text: body.to_string(),
+        hi,
+        lo,
+    }
+}
+
+/// Fill the 16-byte slots nvdisasm printed nothing for with the encodings `undis::decode`
+/// knows, read from the kernel's code; other holes stay (the kernel is refused later).
+fn fill_unprinted(lines: &mut Vec<SassLine>, text: &[u8]) {
+    let have: std::collections::HashSet<u32> = lines.iter().map(|l| l.addr).collect();
+    // Scan the whole text, not only up to the last printed line: a trailing slot can be
+    // unprinted too. Padding (zero bytes) does not decode.
+    let mut added = false;
+    for o in (0..text.len() / 16 * 16).step_by(16) {
+        if have.contains(&(o as u32)) {
+            continue;
+        }
+        let w = |i: usize| u64::from_le_bytes(text[o + i..o + i + 8].try_into().unwrap());
+        let (lo, hi) = (w(0), w(8));
+        if let Some(t) = undis::decode(lo, hi) {
+            lines.push(sass_line(o as u32, &t, Some(lo), Some(hi)));
+            added = true;
+        }
+    }
+    if added {
+        lines.sort_by_key(|l| l.addr);
+    }
 }
 
 fn split_ops(s: &str) -> Vec<String> {
@@ -1288,6 +1324,26 @@ fn lower_line(
             a: lw.fval(lw.op(1)?)?,
             bf16: mods[0] == "BF16",
         },
+        // `F2FP.SATFINITE.BF16.S2_6.UNPACK_B Rd, Ra[.H1], Rb.H0 | imm.H0`
+        // (cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2; N-CVT-LP, probes/s2f6_cvt). Only
+        // printed by `undis.rs` (nvdisasm 13.0 skips the encoding). The scale is the low half.
+        "F2FP" if mods == ["SATFINITE", "BF16", "S2_6", "UNPACK_B"] => {
+            let a = lw.op(1)?.replace(".reuse", "");
+            let (a, hi) = match a.strip_suffix(".H1") {
+                Some(r) => (r.to_string(), true),
+                None => (a, false),
+            };
+            let sc = lw.op(2)?.replace(".reuse", "");
+            let Some(sc) = sc.strip_suffix(".H0") else {
+                bail!(lw.err("F2FP.S2_6 scale other than the low half (.H0) not modeled"));
+            };
+            Op::CvtS2f6x2 {
+                d: lw.dst(lw.op(0)?)?,
+                a: lw.val(&a, 4)?,
+                hi,
+                scale: lw.val(sc, 4)?,
+            }
+        }
         // Narrow-format F2FP (N-CVT-LP): PACK_AB[_MERGE_C] from two f32, UNPACK_B_MERGE_C from a
         // packed f16x2 / bf16x2, UNPACK_B decodes.
         "F2FP" if f2fp_lp(mods).is_some() => {
@@ -4897,7 +4953,8 @@ pub struct Unlowered {
 pub fn lift_report(cubin: &Path, kernel: &str) -> Result<Vec<Unlowered>> {
     let dis = run_tool("nvdisasm", &["-c", "-hex", cubin.to_str().unwrap()])?;
     let meta = read_meta(cubin, kernel)?;
-    let (lines, labels) = parse_disasm(&dis, kernel)?;
+    let (mut lines, labels) = parse_disasm(&dis, kernel)?;
+    fill_unprinted(&mut lines, &meta.text);
     let addr_to_idx: HashMap<u32, usize> =
         lines.iter().enumerate().map(|(i, l)| (l.addr, i)).collect();
     let exits = exit_targets(&lines);
@@ -4939,6 +4996,7 @@ fn unlowered_lines(
 
 pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
     let (mut lines, labels) = parse_disasm(dis, kernel)?;
+    fill_unprinted(&mut lines, &meta.text);
     // Relocated 32-bit halves (`32@lo(X)` / `32@hi(X)`): a label's code address
     // (`FN + .L_x_15@srel`, the return address of a `vprintf` call) or a data symbol (printf
     // format strings, `$str$5`), which only the printf paths of failed device assertions use:
@@ -5373,6 +5431,21 @@ pub fn lower_text(text: &str, enc: Option<u64>) -> Result<Op> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An unprinted known encoding in the last slot of the text is decoded too (the scan
+    /// covers the whole text, not only up to the last printed line); zero padding is not.
+    #[test]
+    fn fill_unprinted_reaches_trailing_slots() {
+        let (lo, hi) = (0x0000002c0002763eu64, 0x190fe40002083417u64);
+        let mut text = vec![0u8; 48];
+        text[16..24].copy_from_slice(&lo.to_le_bytes());
+        text[24..32].copy_from_slice(&hi.to_le_bytes());
+        let mut lines = vec![sass_line(0, "EXIT", None, None)];
+        fill_unprinted(&mut lines, &text);
+        let addrs: Vec<u32> = lines.iter().map(|l| l.addr).collect();
+        assert_eq!(addrs, vec![0, 16]);
+        assert!(lines[1].opcode.starts_with("F2FP.SATFINITE.BF16.S2_6"));
+    }
 
     /// The forms lifted for the mslk / msl_ops gaps, and the neighbouring ones the probes do
     /// not cover, which must be refused (fail closed).

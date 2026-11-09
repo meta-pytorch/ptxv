@@ -3878,6 +3878,7 @@ pub(crate) fn pure_op(op: &Op) -> bool {
             | Op::CvtPack { .. }
             | Op::CvtRsX4 { .. }
             | Op::CvtUnpack { .. }
+            | Op::CvtS2f6x2 { .. }
             | Op::Nop
     )
 }

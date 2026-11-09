@@ -1923,6 +1923,15 @@ fn probe_ldst256_matches_hardware() {
     probe_bitwise("probes/ldst256", "good", "sass");
 }
 
+/// N-CVT-LP, L-NVDISASM: cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 (F2FP.SATFINITE
+/// .BF16.S2_6.UNPACK_B, register and immediate scales, either data half; ptxas 13.1 cubin whose
+/// F2FP encodings nvdisasm 13.0 does not print, decoded by undis.rs) on every (code, scale) pair
+/// of both lanes = GB300 (probes/s2f6_cvt).
+#[test]
+fn probe_s2f6_cvt_matches_hardware() {
+    probe_bitwise_cubin("probes/s2f6_cvt", None);
+}
+
 /// A cubin probe (no PTX source) certifies clean on the SASS front-end and equals `expected/`.
 fn probe_bitwise_cubin(dir: &str, cubin: Option<&str>) {
     let case = Case::load(root().join(dir)).unwrap();

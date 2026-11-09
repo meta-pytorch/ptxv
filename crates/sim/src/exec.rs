@@ -5880,6 +5880,16 @@ impl Machine {
                     0
                 }
             }
+            // Lane i reads byte i of the code pair and byte i of the scale pair.
+            Op::CvtS2f6x2 { a, hi, scale, .. } => {
+                let x = if *hi { u32_(a) >> 16 } else { u32_(a) };
+                let s = u32_(scale);
+                (if (x | s) & 0xff00 != 0 {
+                    0xffff_0000u64
+                } else {
+                    0
+                }) | if (x | s) & 0xff != 0 { 0xffff } else { 0 }
+            }
             Op::CvtUnpack { a, hi, from, .. } => {
                 let lb = crate::lowp::lane_bits(*from);
                 let m = (1u32 << lb) - 1;
@@ -8487,6 +8497,13 @@ impl Machine {
                 let r = crate::lowp::unpack(x, *from, *to, *relu);
                 self.wr(t, *d, r as u64, 1);
                 self.num_clobber(t, *d, &[a], pc);
+            }
+            // ASSUME(N-CVT-LP): lowp::cvt_s2f6x2_scaled = GB300 (probes/s2f6_cvt).
+            Op::CvtS2f6x2 { d, a, hi, scale } => {
+                let x = (self.rd(t, a)? >> if *hi { 16 } else { 0 }) as u16;
+                let s = self.rd(t, scale)? as u16;
+                self.wr(t, *d, crate::lowp::cvt_s2f6x2_scaled(x, s) as u64, 1);
+                self.num_clobber(t, *d, &[a, scale], pc);
             }
             Op::Brev { d, a } => {
                 let x = self.rd(t, a)? as u32;
@@ -13764,6 +13781,7 @@ fn propagates_undef(op: &Op) -> bool {
             | Op::CvtPack { .. }
             | Op::CvtRsX4 { .. }
             | Op::CvtUnpack { .. }
+            | Op::CvtS2f6x2 { .. }
             | Op::Dfma { .. }
             | Op::DivSqrt64 { .. }
             | Op::Rsqrt64Approx { .. }

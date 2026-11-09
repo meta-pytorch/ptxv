@@ -1587,7 +1587,10 @@ pub const REGISTRY: &[Assumption] = &[
             any(k, |o| {
                 matches!(
                     o,
-                    Op::CvtPack { .. } | Op::CvtRsX4 { .. } | Op::CvtUnpack { .. }
+                    Op::CvtPack { .. }
+                        | Op::CvtRsX4 { .. }
+                        | Op::CvtUnpack { .. }
+                        | Op::CvtS2f6x2 { .. }
                 )
             })
         },

@@ -395,6 +395,36 @@ pub fn unpack(a: u32, from: Lp, to: Lp, relu: bool) -> u32 {
     hi << 16 | lo
 }
 
+/// One lane of `cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2` (SASS
+/// `F2FP.SATFINITE.BF16.S2_6.UNPACK_B`): the s2f6 code `c` is a two's-complement 8-bit fixed
+/// point with 6 fraction bits (int8(c) / 64), times the ue8m0 scale 2^(s - 127). GB300
+/// (probes/s2f6_cvt; every (data, scale) pair of both lanes, 2^32 in all, 0 mismatches): one
+/// round-to-nearest-even to bf16, subnormals kept, `.satfinite` overflow to +-0x7f7f; scale
+/// 0xff (ue8m0 NaN) gives 0x7fff for every code; code 0 gives +0.
+pub fn s2f6_to_bf16(c: u8, s: u8) -> u16 {
+    if s == 0xff {
+        return 0x7fff;
+    }
+    let i = c as i8 as i32;
+    encode(
+        i < 0,
+        i.unsigned_abs() as u64,
+        s as i32 - 127 - 6,
+        Lp::Bf16,
+        LpRnd::Rn,
+        0,
+        true,
+    ) as u16
+}
+
+/// `cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 d, a, scale` / `F2FP.SATFINITE.BF16.S2_6
+/// .UNPACK_B Rd, Ra, Rb.H0`: lane i (bits 16i..16i+16 of the result) from byte i of the
+/// 16-bit code pair `a` and byte i of the 16-bit scale pair. N-CVT-LP.
+pub fn cvt_s2f6x2_scaled(a: u16, scale: u16) -> u32 {
+    let lane = |i: u32| s2f6_to_bf16((a >> (8 * i)) as u8, (scale >> (8 * i)) as u8) as u32;
+    lane(1) << 16 | lane(0)
+}
+
 /// The ops of the probes/cvt_lp kernel, in output order: the `// j: name` comments that
 /// probes/cvt_lp/gen.py writes into kernel.ptx (`name` = the cvt modifiers).
 pub fn probe_ops(ptx: &str) -> Vec<String> {
@@ -448,6 +478,21 @@ pub fn probe_eval(name: &str, x: u32, y: u32, z: u32, w: u32, r: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn s2f6_spot_values() {
+        // int8(c) / 64 * 2^(s - 127), GB300 (probes/s2f6_cvt).
+        assert_eq!(s2f6_to_bf16(0x40, 0x7f), 0x3f80); // 1.0
+        assert_eq!(s2f6_to_bf16(0x80, 0x7f), 0xc000); // -2.0
+        assert_eq!(s2f6_to_bf16(0xff, 0x7f), 0xbc80); // -1/64
+        assert_eq!(s2f6_to_bf16(0x01, 0x00), 0x0001); // 2^-133: smallest bf16 subnormal
+        assert_eq!(s2f6_to_bf16(0x80, 0x00), 0x8080); // -2^-126
+        assert_eq!(s2f6_to_bf16(0x7f, 0xfe), 0x7f7e);
+        assert_eq!(s2f6_to_bf16(0x80, 0xfe), 0xff7f); // -2^128: satfinite
+        assert_eq!(s2f6_to_bf16(0x00, 0xff), 0x7fff); // NaN scale
+        assert_eq!(s2f6_to_bf16(0x00, 0x00), 0x0000);
+        assert_eq!(cvt_s2f6x2_scaled(0x8040, 0x807f), 0xc080_3f80);
+    }
+
     #[test]
     fn spot_values() {
         let f = |x: f32, t| from_f32(x.to_bits(), t, LpRnd::Rn, 0, true, false);
