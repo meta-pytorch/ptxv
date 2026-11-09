@@ -168,7 +168,7 @@ pub enum ETree {
     /// An input-independent constant (f32 bits).
     K(u32),
     /// Input element k of an output word reading several (resolved by `bind`).
-    L(u8),
+    L(usize),
     /// The low or high 16 bits of a packed word.
     Half(Box<ETree>, bool),
     /// A bf16 (`true`: f16) rounding (N-ROUND) of an f32 value: its 16 bits (a 16-bit output
@@ -429,7 +429,7 @@ fn tree(ns: &NumState, n: u32, leaves: &mut Vec<Orig>, depth: usize) -> Result<E
                 leaves.push(*o);
                 leaves.len() - 1
             });
-            ETree::L(k as u8)
+            ETree::L(k)
         }
         NodeKind::Leaf => ETree::K(node.hw),
         NodeKind::Seg(p) => {
@@ -476,7 +476,7 @@ fn tree(ns: &NumState, n: u32, leaves: &mut Vec<Orig>, depth: usize) -> Result<E
 
 impl ETree {
     /// Leaves this tree reads.
-    fn leaves(&self, out: &mut Vec<u8>) {
+    fn leaves(&self, out: &mut Vec<usize>) {
         match self {
             ETree::L(k) => {
                 if !out.contains(k) {
@@ -502,7 +502,7 @@ impl ETree {
 
     /// Leaf `k` becomes the argument `X`, every other leaf the constant 0 (sound only where
     /// the result does not depend on them).
-    fn bind(&self, k: u8) -> ETree {
+    fn bind(&self, k: usize) -> ETree {
         let b = |t: &ETree| Box::new(t.bind(k));
         match self {
             ETree::L(j) if *j == k => ETree::X,
@@ -589,7 +589,7 @@ fn slice_deps(p: &SProg, v: SVal, memo: &mut HashMap<u32, Vec<u16>>) -> Vec<u16>
 /// The 16-bit half `hi` of a word whose tree is `t`, as a function of one leaf: the word's
 /// last operation packs two f32 values (`F2FP.BF16/F16.F32.PACK_AB d, a, b`: a high, b low);
 /// the half's operand must depend on a single leaf. Returns (leaf, element function).
-fn half_of(t: &ETree, hi: bool) -> Result<(u8, ETree), String> {
+fn half_of(t: &ETree, hi: bool) -> Result<(usize, ETree), String> {
     let ETree::Seg(p, args) = t else {
         return Err("a 16-bit output word not computed by a slice".into());
     };
@@ -629,7 +629,7 @@ fn half_of(t: &ETree, hi: bool) -> Result<(u8, ETree), String> {
 
 /// `t = rn(f * L(k))` (an f32 multiply by input element k, round to nearest, no addend) with
 /// `f` a function of one other input element: (k, f).
-fn product_of(t: &ETree) -> Option<(u8, &ETree)> {
+fn product_of(t: &ETree) -> Option<(usize, &ETree)> {
     let ETree::Fma {
         a,
         b,
@@ -640,7 +640,7 @@ fn product_of(t: &ETree) -> Option<(u8, &ETree)> {
     else {
         return None;
     };
-    let one = |f: &ETree, k: u8| {
+    let one = |f: &ETree, k: usize| {
         let mut l = Vec::new();
         f.leaves(&mut l);
         l.len() == 1 && l[0] != k
@@ -653,7 +653,7 @@ fn product_of(t: &ETree) -> Option<(u8, &ETree)> {
 
 /// The leaves the value of `t` depends on: through a slice, only the arguments its output
 /// reads (`slice_deps`; a slice of a packed word of two elements depends on one of them).
-fn dep_leaves(t: &ETree, out: &mut Vec<u8>) {
+fn dep_leaves(t: &ETree, out: &mut Vec<usize>) {
     match t {
         ETree::Round(x, _) => dep_leaves(x, out),
         ETree::Seg(p, args) => {
@@ -685,7 +685,7 @@ pub fn extract(ns: &NumState, outs: &[(u32, Option<u32>)], half: bool) -> Result
             let mut v = Vec::new();
             for (h, idx) in [(false, 2 * w), (true, 2 * w + 1)] {
                 let (k, f) = half_of(&t, h).map_err(|e| format!("output {idx}: {e}"))?;
-                v.push((idx, leaves[k as usize], f));
+                v.push((idx, leaves[k], f));
             }
             v
         } else {
@@ -695,15 +695,15 @@ pub fn extract(ns: &NumState, outs: &[(u32, Option<u32>)], half: bool) -> Result
                 dep_leaves(&t, &mut dl);
             }
             match (leaves.as_slice(), dl.as_slice()) {
-                (_, [k]) => vec![(w, leaves[*k as usize], t.bind(*k))],
+                (_, [k]) => vec![(w, leaves[*k], t.bind(*k))],
                 ([l], _) => vec![(w, *l, t.bind(0))],
                 ([], _) => return Err(format!("output {w} does not depend on any input")),
                 ([_, _], _) if product_of(&t).is_some() => {
                     let (k, f) = product_of(&t).unwrap();
-                    factors.insert(w, leaves[k as usize]);
+                    factors.insert(w, leaves[k]);
                     let mut fl = Vec::new();
                     f.leaves(&mut fl);
-                    vec![(w, leaves[fl[0] as usize], f.bind(fl[0]))]
+                    vec![(w, leaves[fl[0]], f.bind(fl[0]))]
                 }
                 // bf16(rn(f(x) * y)): a product output rounded to bf16 when stored.
                 ([_, _], _) if matches!(&t, ETree::Round(p, _) if product_of(p).is_some()) => {
@@ -711,11 +711,11 @@ pub fn extract(ns: &NumState, outs: &[(u32, Option<u32>)], half: bool) -> Result
                         unreachable!()
                     };
                     let (k, f) = product_of(p).unwrap();
-                    factors.insert(w, leaves[k as usize]);
+                    factors.insert(w, leaves[k]);
                     rounded.insert(w);
                     let mut fl = Vec::new();
                     f.leaves(&mut fl);
-                    vec![(w, leaves[fl[0] as usize], f.bind(fl[0]))]
+                    vec![(w, leaves[fl[0]], f.bind(fl[0]))]
                 }
                 ([a, b, ..], _) => {
                     return Err(format!(
@@ -1546,6 +1546,29 @@ mod bit_identity_tests {
                     out_bits(&ETree::X, ty, ty, bits, &mut scratch).unwrap(),
                     bits
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn leaves_above_255_remain_distinct() {
+        let mut state = NumState::default();
+        let mut leaves = Vec::new();
+        for index in 0..=256 {
+            state.nodes.push(crate::num::Node {
+                kind: NodeKind::Input((0, index)),
+                hw: 0,
+                exact: vec![],
+                err: vec![],
+                pc: 0,
+            });
+            let extracted = tree(&state, index as u32, &mut leaves, 0).unwrap();
+            let mut dependencies = Vec::new();
+            extracted.leaves(&mut dependencies);
+            assert_eq!(dependencies, vec![index as usize]);
+            assert!(matches!(extracted.bind(index as usize), ETree::X));
+            if index == 256 {
+                assert!(matches!(extracted.bind(0), ETree::K(0)));
             }
         }
     }
