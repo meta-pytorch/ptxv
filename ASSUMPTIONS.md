@@ -403,7 +403,10 @@ commutes with everything:
 - a whole-warp `wait_group`, an exit with no pending async ops, or a visible op guarded off
   in every lane;
 - a whole-warp plain `mbarrier.arrive` that cannot complete the phase (it only decrements
-  the pending count, so it commutes with the other arrivals and no try_wait can tell);
+  the pending count, so it commutes with the other arrivals and no try_wait can tell), in a
+  kernel without counted arrivals: a counted arrival does not commute with it (with three
+  pending, a count-3 arrival completes the phase alone, after a count-1 one it overshoots;
+  `fixtures/mbar_count_order`, whose race the rule hid);
 - the completion of a TMA store or an MMA (data movement; wait_group / commit observe it
   later);
 - barrier.cluster arrive / wait (like `bar.sync` arrivals);
@@ -433,7 +436,12 @@ can still do (`explore.rs` `sync_ample`). Entities are warps, plus each warp's a
   accesses, and mbarrier keys. Plain memory and TMEM data are left out, because their
   conflicts are races (E-DRF).
   - An arrival into phase k reads key (M, k); the arrival that completes phase k also writes
-    (M, k+1). So arrivals into the same phase commute.
+    (M, k+1). So arrivals into the same phase commute. Counted ones need more (space 16,
+    `rec_count`): every arrival into phase k reads the phase's pending-count key, and an
+    arrival of several at once (a count, or a remote operation carrying several lanes) that
+    takes the last pending arrivals writes it, so it conflicts with every arrival into its
+    phase (DPOR found the count-first order of `fixtures/mbar_count_order` on the PTX front
+    only by chance without it).
   - A poll while the current phase is k reads (M, k), and the completion of phase k writes it.
     Init and inval write every key of M. So a consumer's poll is independent of everything
     except the one completion that would change its result.
@@ -3433,7 +3441,7 @@ treated as sufficient.** Since rung 1f:
 - Retire: scopes on mbarrier operations.
 
 ### S-RED-ASYNC · code
-**`red.async.{relaxed,release}.{gpu,sys}.global.add` is a red of that semantics and scope
+**`red.async.release.{gpu,sys}.global.add` is a red of that semantics and scope
 that has completed before the issuing thread's next instruction. SASS
 `UREDGR.E.ADD.NA.STRONG.GPU|SYS` releases the issuing thread's earlier accesses at its
 scope.**
@@ -3447,13 +3455,23 @@ scope.**
 - Refused: other operations (`.min` / `.max` / `.or` / `.and` / `.xor` / `.inc` / `.dec`).
   ptxas 13.0 and 13.1 compile them to `UREDGR.E.ADD`, and GB300 adds: `100 min.s32 6` = 106.
   Also refused: other types, other spaces, `atom.async`, and UREDGR with other modifiers.
+- Refused as well (2026-11-09): `.relaxed` on `.global`. The PTX ISA (9.5, red.async) defines
+  the `.global` form as `red.async{.mmio}.release.{gpu,sys}{.global}.add.{u32,s32,u64,s64}`
+  only; `.relaxed` needs `.cluster` scope, `.shared::cluster` and an mbarrier, and `.mmio`
+  needs `.sys` (not modeled). ptxas 13.1 / 13.2 accept `.relaxed` and the other operations on
+  `.global` without a diagnostic and emit the release's `MEMBAR.ALL.CTA` + `UREDGR.E.ADD`, so
+  the SASS front runs them as the release add; probes/red_async_ops (GB200, sm_100a, ptxas
+  13.1): `.min.s32` 10 with 3 gives 13, `.inc.u32` 7 with 5 gives 12, `.or.b32` 0x11 with 0x10
+  gives 0x21, i.e. every op added. A PTX kernel with one of these forms is refused, so a
+  wrong-result bug behind them is reported as a lift gap, not missed.
 - Status: **probed** (hardware evidence, probes/redasync_litmus, 2026-11-08). The test is message
   passing between CTAs on different SMs: weak payload stores, the form on a flag,
   `ld.acquire.gpu` polls, then weak reads. In the three configurations in which controls were
   stale, `red.async.release.gpu` gave 0 stale reads in 1,689,600,000. MEMBAR.ALL.CTA + REDG
   gave 21,730,362 stale reads; `red.relaxed.gpu` gave 461,790 in 153,600,000. Totals:
   2.72e9 reads under the async form, 0 stale. probes/red_async: GB300 50/50 scrubbed, both
-  front-ends bitwise; its `relaxed` variant is a race on the PTX front.
+  front-ends bitwise; its `relaxed` variant is refused on the PTX front (not an ISA form) and
+  clean on the SASS front (ptxas emits the release).
 
 ### S-SMEM-STRONG · code
 **SASS `LDS`/`STS` of the CTA's own shared memory are relaxed strong accesses at CTA scope;
@@ -4017,7 +4035,11 @@ ordinary load by that thread at the fence and at the TMA (race-checked).
   front-ends bitwise). Block-scaled M = 128 N = 8 (FA4 decode's `UTCQMMA`; `probes/mma_bs`
   `expected/n8`, 2026-11-06: mxf8f6f4 1X, mxf4 2X, mxf4nvf4 4X with ue8m0 / ue4m3, three N = 8
   MMAs accumulating onto an N = 64 one) writes columns 0..7 only, equal bit for bit to the
-  N = 64 result's. Other N % 16 != 0 with A in TMEM or block scaling is rejected (not
+  N = 64 result's. A in TMEM with N % 16 == 8 (the FP8-KV decode's P.V MMA, N = 8), outside
+  the PTX ISA's table (N % 16 == 0 with A in TMEM): probes/tc_mma_ts_n8 (2026-11-08, GB200,
+  N = 8 and 24) writes exactly columns col0..col0+N of all 128 lanes, equal to GB300's N = 16
+  output on the shared columns, both front-ends bitwise; modeled as Layout D and reported as a
+  `contract` finding (`mma-ts-shape`). Block-scaled N % 16 == 8 above 8 is rejected (not
   measured).
   M = 128 with `cta_group::2`: E-PAIR.
   **`tcgen05.ld.16x64b.xN`** (SASS `LDTM.16dp64bit`): lane l of the warp reads TMEM lane
@@ -4044,13 +4066,32 @@ ordinary load by that thread at the fence and at the TMA (race-checked).
   (probes/tmem_ldred and tmem_ldred16 kernel.ptx = GB300 bitwise, 2026-11-07).
   **A in TMEM**
   (`tcgen05.mma [d], [a], ...`): A row i at the lane D's row i uses, relative to A's lane
-  field, two bf16 per 32-bit column, the even K index in the low half. **MN-major** shared
+  field, two bf16 per 32-bit column, the even K index in the low half. Narrow kinds
+  (f8f6f4, block-scaled mxf8f6f4 / mxf4 / mxf4nvf4; the NVFP4x2-KV attention's P.V
+  `UTCQMMA.2CTA tmem[..]`): the row's 32-byte K slice in 8 columns, byte k at column k / 4,
+  byte k % 4 (probes/mma_bs/ts, 2026-11-08: mxf8f6f4 scale_vec::1X, M = 128, four K slices;
+  GB200's output equals the A-from-shared-memory run's bit for bit, both front-ends bitwise).
+  cta_group::2 with a narrow A in TMEM follows E-PAIR (each CTA's rows from its own TMEM):
+  probes/mma_bs/mn `pair_ts_*` (mxf8f6f4, M = 256, N = 128) = GB200 bitwise. **MN-major** shared
   operands (swizzled): CUTLASS's canonical ((T,s/16,m),(8,k)) : ((1,T,LBO),(s/2,SBO)).
   Without swizzle (kind::f16; the mslk decode kernels' A): ((T,1,m),(8,k)) : ((1,T,SBO),(1T,LBO)),
   i.e. element (r, k) at (r/8) SBO + (r%8) 2 + (k/8) LBO + (k%8) 16 bytes: the roles of LBO and
   SBO swap relative to the swizzled forms. `probes/tc_m128` `mma_img` (raw shared-memory images):
   A, B and both MN-major, two LBO / SBO arrangements each, M = 128 / 64, N = 8..32, decode
-  correctly and equal both front-ends bitwise.
+  correctly and equal both front-ends bitwise. The narrow kinds with 8-bit elements (e4m3 /
+  e5m2, kind::f8f6f4 and mxf8f6f4) use the same layouts with T = 16 one-byte elements: swizzled,
+  element (r, k) at (r%s) + (r/s) LBO + (k%8) s + (k/8) SBO bytes, then the address swizzle;
+  without swizzle, (r%16) + (r/16) SBO + (k%8) 16 + (k/8) LBO. The swizzle uses the absolute
+  address: a start 512 B into a 1024-byte SWIZZLE_128B atom (the mxfp8 decode's MN-major A) reads
+  the absolute phase. probes/mma_bs/mn (GB200, 2026-11-08): host-built shared-memory images, one
+  CTA (M = 128, N = 64; A MN-major SWIZZLE_128B, the same at +512 B, SWIZZLE_64B with LBO 512,
+  SWIZZLE_32B with LBO 256, no swizzle; B SWIZZLE_64B / 32B; A and B) and cta_group::2 (M = 256,
+  N = 128, B rows 64r.. per CTA; A in TMEM with B MN-major SWIZZLE_64B / 32B / none, A in shared
+  memory MN-major, both): every D equals the K-major layout's bit for bit (8,192 / 32,768
+  outputs), and both front-ends equal GB200. Controls: the MN image read with bit 15 clear, or
+  written with a start-relative swizzle phase, changes all 8,192 outputs. MN-major FP6 / FP4
+  operands, MN-major A in TMEM and swizzled MN-major starts off a swizzle-row boundary are
+  refused (not probed).
   Validated end to end: Triton's flash attention (S = QK^T read back with `.16x32bx2`, P
   stored to TMEM and used as A, V as an MN-major B) and cuBLAS nvjet (`.16x256b`) match GB300
   bitwise.
@@ -4424,7 +4465,7 @@ forms seen. Any other form is a hard error.
   N = 16: D at column 64 with A in shared memory, D at column 128 with A in TMEM at
   [taddr + 184 + 8]): GB300 50/50 scrubbed, both front-ends bitwise. GB300 also ran N = 8 with
   A in TMEM (the PTX ISA requires N % 16 == 0 there) and gave the A-in-shared-memory result;
-  the model still refuses that shape. An immediate enable-input-d (`..., idesc, 0` / `1`,
+  modeled since 2026-11-08 as a `contract` finding (probes/tc_mma_ts_n8, S-TMEM above). An immediate enable-input-d (`..., idesc, 0` / `1`,
   CuTeDSL; PX: 22 kernel-DB records) is a constant predicate: 0 overwrites D, 1 accumulates
   (ptxas: UTCHMMA ... !UPT / UPT). probes/tc_mma_imm (`0` then `1` on the same D, and `0` with
   A in TMEM): GB300 20/20 scrubbed, both front-ends bitwise. Operand order after idesc
@@ -6000,7 +6041,7 @@ This is the kind::f16 structure (N-MMA) with one group of 32 instead of 16.
   f32 and f16 D, C disabled / ±0).
 - Not modeled, reported as `unmodeled`:
   - NaN / Inf operands or accumulators, subnormal f32 accumulators, f16 overflow;
-  - MN-major or TMEM A operands, sparsity, negate.
+  - MN-major FP6 / FP4 operands (8-bit MN-major and A in TMEM: S-TMEM), sparsity, negate.
 - Numerics (this kind and N-MMA-BS): each step is a `NodeKind::Mma` node with the exact
   dataflow (exact specs such as `gemm_tn_mx` are checked on it). FP8 operands and ue8m0 scales
   are byte leaves (N-HALF-LEAF), and a block-scaled product is a b sa sb. The error contract
@@ -6038,8 +6079,9 @@ Scale-factor placement in TMEM (all measured with `probes/mma_bs`, which writes 
 - Illegal instruction on GB300: invalid sf_id for the vector size, mxf4nvf4 2X with ue4m3
   scales, mxf4 with A/B format code 5. The simulator reports these as faults.
 
-Operand placement beyond K-major shared memory (2026-11-08, probes/mma_mxf8_tmem, 8-bit
-formats, M = 128, one CTA):
+Operand placement beyond K-major shared memory (2026-11-08; probes/mma_mxf8_tmem on GB300,
+one CTA; probes/mma_bs/ts and mma_bs/mn on GB200, one CTA with M = 128 and cta_group::2 with
+M = 256; 8-bit formats):
 - A in TMEM: row m at lane m. Word c of the 8 columns at [a] holds elements 4c..4c+3, low byte
   first.
 - MN-major SWIZZLE_128B, A or B: K-row k (128 M/N elements of a byte each) at
@@ -6048,8 +6090,14 @@ formats, M = 128, one CTA):
   (0x08a08000), D on GB300 equals the K-major shared-memory path on the same e4m3 operands
   and ue8m0 scales bitwise (four K = 32 MMAs). Both front-ends reproduce all three tiles
   bitwise.
-- Refused: these placements with 6- or 4-bit formats, other MN-major layouts, M != 128, and
-  cta_group::2 (a fused kernel's M = 256 A MN-major form).
+- MN-major with the other layouts (S-TMEM, probes/mma_bs/mn): swizzled with span s (128 /
+  64 / 32 B), element (r, k) at (r % s) + (r / s) LBO + (k % 8) s + (k / 8) SBO, then the
+  address swizzle on the absolute address (a start 512 B into a 1024-byte SWIZZLE_128B atom
+  reads the absolute phase); without swizzle, (r % 16) + (r / 16) SBO + (k % 8) 16 + (k / 8)
+  LBO. cta_group::2: each CTA's A rows from its own TMEM or shared memory and the B rows
+  (N/2) i.. (E-PAIR). Every D equals the K-major layout's bit for bit on GB200.
+- Refused: these placements with 6- or 4-bit formats, MN-major A in TMEM, swizzled MN-major
+  starts off a swizzle-row boundary, M = 64, and M = 128 with cta_group::2 (not probed).
 
 Arithmetic:
 - **mxf8f6f4** (scale_vec 1X, ue8m0, K = 32): the N-MMA-F8 model
@@ -6102,8 +6150,8 @@ Arithmetic:
   (`fixtures/c_smm_nvf4`) equals GB300 bitwise on the captured input and on 1,000 random ones
   (through `fixtures/c_equiv_nvf4_cublas`, docs/equiv-mma.md §5).
 - Not modeled, reported as `unmodeled` / outside the model: NaN scales; NaN / Inf operands;
-  subnormal f32 accumulators (D is f32 only for these kinds); MN-major or TMEM A operands;
-  M = 64.
+  subnormal f32 accumulators (D is f32 only for these kinds); MN-major FP6 / FP4 operands
+  (8-bit MN-major and A in TMEM are modeled: S-TMEM, probes/mma_bs/mn and /ts); M = 64.
 - Zero results (also scaled sums that underflow) are +0, N-MMA's rule. Unmeasured for the
   block-scaled kinds themselves: probes/mma_zero covers kind::f8f6f4 and the other kinds,
   which share the rule; the code path is the same.

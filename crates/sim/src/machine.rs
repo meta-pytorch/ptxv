@@ -2155,7 +2155,8 @@ impl SFoot {
 /// | generation: arrivals read theirs, `bar.arrive` writes all; E-BAR-OVER writes, see
 /// `Op::BarSync` and `bar_try_release` in exec.rs), 15 mbarrier (re)initialization: init and
 /// inval write it (id = CTA, index = offset; sync-only, for the explorer's phase-aware
-/// footprints, `sync_ample`).
+/// footprints, `sync_ample`), 16 mbarrier pending counts (`rec_count`: arrivals read the key
+/// of their phase, a counted arrival that takes the last pending arrivals writes it).
 #[derive(Clone, Debug, Default)]
 pub struct Footprint {
     /// Record synchronization only (the stateful explorer's reduction): drop plain memory and

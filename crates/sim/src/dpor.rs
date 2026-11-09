@@ -17,10 +17,12 @@
 //! runs through such a pc while another split of its warp waits there is dependent on it,
 //! since the two would merge. Two transitions are dependent when their recorded
 //! footprints conflict (`Footprint::conflicts`): overlapping memory/TMEM bytes with at least one
-//! write, the same mbarrier object with at least one arrive (polls read it), the TMEM
-//! allocator, CTA exit state vs. async completion, bulk-group state, or a trap. Named-barrier
-//! arrivals commute except at a generation boundary of a barrier that `bar.arrive` or more
-//! threads than its count use (footprint space 14, E-BAR-ARRIVE / E-BAR-OVER).
+//! write, the same mbarrier object with at least one arrive (polls read it; arrivals into one
+//! phase commute unless one completes it or is a counted arrival that takes its last pending
+//! arrivals, `rec_count` in exec.rs), the TMEM allocator, CTA exit state vs. async
+//! completion, bulk-group state, or a trap. Named-barrier arrivals commute except at a
+//! generation boundary of a barrier that `bar.arrive` or more threads than its count use
+//! (footprint space 14, E-BAR-ARRIVE / E-BAR-OVER).
 //!
 //! What is preserved (relative to `explore`): every reachable deadlock, every reachable terminal
 //! output, and every finding a transition can produce, because every Mazurkiewicz trace of
@@ -200,10 +202,13 @@ fn blocked_footprints(m: &Machine, enabled: &BTreeSet<Pid>) -> Vec<(Pid, Footpri
             }
         }
         match &inst.op {
+            // A blocked poll reads the mbarrier and its phase state, which the completion that
+            // unblocks it (or, completing the next phase first, keeps it blocked) writes.
             ptxv_ir::Op::MbarTryWait { addr, .. } => {
                 if let Ok(a) = m.addr(t, addr) {
                     let off = a & 0xff_ffff;
                     f.add(0, m.threads[t].cta as u32, off, off + 8, false);
+                    f.add(6, m.threads[t].cta as u32, off, off + 8, false);
                 }
             }
             ptxv_ir::Op::BulkWait { .. } => {

@@ -551,6 +551,7 @@ pub(crate) fn eval_inst(
             neg,
             abs,
             rnd,
+            ftz,
         } => {
             let lane = dst.idx.wrapping_sub(d.idx);
             if lane > 1 {
@@ -581,7 +582,7 @@ pub(crate) fn eval_inst(
                 opv(b) & m(1) ^ n(1),
                 Some(opv(c) & m(2) ^ n(2)),
                 *rnd,
-                false,
+                *ftz,
             ) as u64
         }
         Op::CvtF32Bf16 { a, .. } => (rv(a) & 0xffff) << 16,

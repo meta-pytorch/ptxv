@@ -1,0 +1,38 @@
+name = "probe_f32x2_ftz"
+description = """
+Probe (L-ROSETTA) for .ftz on packed f32x2 arithmetic: fma.{rn,rz,rm,rp}.ftz, add.{rn,rm,rz}.ftz,
+sub.rn.ftz and mul.{rn,rp}.ftz .f32x2 (SASS FFMA2 / FADD2 / FMUL2 .FTZ with the rounding modes;
+kernel.ptx, gen.py) on products and sums at the normal range's lower edge, subnormal and edge
+operands. expected/ is GB200's output (sm_100a, ptxas 13.1, `ptxv hw` 2026-11-08)."""
+ptx = "kernel.ptx"
+entry = "f32x2_ftz"
+arch = "sm_100a"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024, 8]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024, 20]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

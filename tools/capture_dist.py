@@ -634,6 +634,7 @@ def worker():  # noqa: C901 (per-rank capture worker: one linear pass over share
         "world": world,
         "device": torch.cuda.current_device(),
         "uuid": str(getattr(torch.cuda.get_device_properties(local), "uuid", "")),
+        "arch": "sm_%d%da" % torch.cuda.get_device_capability(local),
         "host": socket.gethostname(),
         "node": int(os.environ.get("GROUP_RANK", A.node_rank)),
         "local_rank": local,
@@ -1894,11 +1895,19 @@ run() of {os.path.basename(A.file)}. {len(L)} launch(es) on {R} GPUs, binary onl
 Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py {cmdline}"""
     desc = desc.replace("\\", "\\\\").replace('"', '\\"')
     outputs = [bname(i) for i in kept if "expect" in regions[i]]
+    # The architecture the ranks ran on (the case default is sm_103a); PTXV_ARCH overrides.
+    arch = os.environ.get("PTXV_ARCH") or ranks[0].get("arch")
     toml = [
         f'name = {q(name)}\ndescription = """{desc}"""\ncubin = "{ck(L[0][0], r0)}"\n'
-        f"entry = {q(r0['name'])}\ngrid = {r0['grid']}\nblock = {r0['block']}\n"
+        + (f'arch = "{arch}"\n' if arch else "")
+        + f"entry = {q(r0['name'])}\ngrid = {r0['grid']}\nblock = {r0['block']}\n"
         f"dynamic_smem = {r0['smem']}\noutputs = {q(outputs)}\nreplicas = {q(replicas)}\n"
-        + (f"cluster = {r0['cluster']}\n" if r0["cluster"] != [1, 1, 1] else "")
+        # S-CGA-SHAPE: a preferred cluster needs the explicit regular one, even 1 x 1 x 1.
+        + (
+            f"cluster = {r0['cluster']}\n"
+            if r0["cluster"] != [1, 1, 1] or r0.get("preferred_cluster")
+            else ""
+        )
         + (
             f"preferred_cluster = {r0['preferred_cluster']}\n"
             if r0.get("preferred_cluster")
@@ -2015,7 +2024,7 @@ Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py {cmdli
     toml += toml_params(L[0][2], "params")
     for r, x, params in L[1:]:
         s = f"[[launches]]\nentry = {q(x['name'])}\ngrid = {x['grid']}\nblock = {x['block']}\n"
-        if x["cluster"] != [1, 1, 1]:
+        if x["cluster"] != [1, 1, 1] or x.get("preferred_cluster"):
             s += f"cluster = {x['cluster']}\n"
         if x.get("preferred_cluster"):
             s += f"preferred_cluster = {x['preferred_cluster']}\n"

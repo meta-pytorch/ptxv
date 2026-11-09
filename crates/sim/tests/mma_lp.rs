@@ -167,10 +167,15 @@ fn mma_bs_configs(sub: &str, count: usize) {
 
 /// E-PAIR, S-TCCP, N-MMA-BS: the cta_group::2 forms (probes/tc_pair_bs): a block-scaled
 /// mxf4nvf4 pair MMA (each CTA's D rows use the scale factors in its own TMEM) and a pair
-/// tcgen05.cp (each CTA's smem to its own TMEM), both front-ends against GB300, bit for bit.
+/// tcgen05.cp (each CTA's smem to its own TMEM), both front-ends against GB300, bit for bit;
+/// sm100/: the MMA built for sm_100a (SASS UTCOMMA.2CTA.4X) against GB200.
 #[test]
 fn pair_block_scaled_mma_and_cp_match_gb300() {
-    for (dir, out) in [("probes/tc_pair_bs", "D"), ("probes/tc_pair_bs/cp", "out")] {
+    for (dir, out) in [
+        ("probes/tc_pair_bs", "D"),
+        ("probes/tc_pair_bs/cp", "out"),
+        ("probes/tc_pair_bs/sm100", "D"),
+    ] {
         let case = Case::load(root().join(dir)).unwrap();
         let tmp = std::env::temp_dir().join(format!("ptxv-test-{}", case.m.name));
         std::fs::create_dir_all(&tmp).unwrap();

@@ -68,7 +68,8 @@ pointer and branches on alpha == 0, a data-dependent branch; it is not captured 
 
 ## Not modeled
 
-- MN-major or TMEM A operands for the narrow kinds; M = 64; sparsity.
+- MN-major FP6 / FP4 operands for the narrow kinds (8-bit MN-major is modeled: probes/mma_bs/mn);
+  M = 64; sparsity.
 - Tensor maps of the sub-byte types other than `16U4_ALIGN8B` (`elem4`), and device-built 4-bit
   maps.
 - NaN / Inf operands or scales, subnormal f32 accumulators, f16 overflow. These are reported

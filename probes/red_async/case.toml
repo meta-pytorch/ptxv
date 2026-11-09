@@ -58,8 +58,8 @@ expect = ["clean"]
 
 [[variants]]
 id = "relaxed"
-summary = "red.async.relaxed.gpu publishes nothing in PTX: the consumer's reads of data race with the producer's stores; ptxas emits the same MEMBAR.ALL.CTA + UREDGR as for .release, which the SASS front runs as a release (clean there)"
-expect = ["race"]
+summary = "red.async.relaxed on .global is not a PTX ISA form (.relaxed needs .cluster scope, .shared::cluster and an mbarrier): the PTX front refuses it; ptxas accepts it silently and emits the same MEMBAR.ALL.CTA + UREDGR as for .release, which the SASS front runs as a release (clean)"
+expect = ["unmodeled"]
 expect_sass = ["clean"]
 marker = "@REL"
 find = "red.async.release.gpu.global.add.u32"

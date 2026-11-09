@@ -1,0 +1,87 @@
+name = "mma_bs_mn_pair_ss_a_sw128"
+description = """
+N-MMA-BS probe (probes/mma_bs/mn, gen.py): block-scaled kind::mxf8f6f4 scale_vec::1X, cta_group::2, M = 256, N = 128 (data/pair_*.bin operands),
+with MN-major A, SWIZZLE_128B, K-major B. The kernel copies the operand images (data/) into shared memory and issues four
+K = 32 MMAs with data/desc.bin's descriptors. GB200's D equals the K-major cases' (expected/pair_D.bin) for every case."""
+arch = "sm_100a"
+ptx = "../pair.ptx"
+entry = "mma_mn_pair_ss"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "Aimg"
+dtype = "u8"
+shape = [2, 17408]
+init = "file"
+file = "data/Aimg.bin"
+
+[[buffers]]
+name = "Bimg"
+dtype = "u8"
+shape = [2, 8192]
+init = "file"
+file = "data/Bimg.bin"
+
+[[buffers]]
+name = "desc"
+dtype = "u64"
+shape = [8]
+init = "file"
+file = "data/desc.bin"
+
+[[buffers]]
+name = "SFA"
+dtype = "u32"
+shape = [2, 128, 16]
+init = "file"
+file = "../data/pair_SFA.bin"
+
+[[buffers]]
+name = "SFB"
+dtype = "u32"
+shape = [2, 128, 16]
+init = "file"
+file = "../data/pair_SFB.bin"
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [256, 128]
+init = "nan"
+expect = "../expected/pair_D.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "Aimg"
+
+[[params]]
+kind = "ptr"
+buffer = "Bimg"
+
+[[params]]
+kind = "ptr"
+buffer = "desc"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+# Instruction descriptor: e4m3 x e4m3, N = 128, ue8m0, M = 256, A MN-major (bit 15)
+[[params]]
+kind = "u32"
+value = 0x10a08000
+
+[[params]]
+kind = "ptr"
+buffer = "SFA"
+
+[[params]]
+kind = "ptr"
+buffer = "SFB"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -2651,9 +2651,16 @@ fn lower_line(
                 sel: [a.1, b.1, c.1],
             }
         }
-        // `.RZ` / `.RM` / `.RP`: one rounding in that mode (probes/bf16_ext = GB300).
-        "FFMA2" | "FMUL2" | "FADD2" if mods.len() <= 1 && mods.iter().all(|m| matches!(*m, "RZ" | "RM" | "RP")) => {
+        // `.RZ` / `.RM` / `.RP`: one rounding in that mode (probes/bf16_ext = GB300). `.FTZ`:
+        // subnormal inputs and results flushed to signed zero per lane (probes/f32x2_ftz =
+        // GB200).
+        "FFMA2" | "FMUL2" | "FADD2"
+            if mods.iter().filter(|m| **m != "FTZ").count() <= 1
+                && mods.iter().filter(|m| **m == "FTZ").count() <= 1
+                && mods.iter().all(|m| matches!(*m, "RZ" | "RM" | "RP" | "FTZ")) =>
+        {
             let rnd = sass_rnd(mods);
+            let ftz = mods.contains(&"FTZ");
             let f2 = |s: &str| -> Result<(Val, F2Lanes)> {
                 let (r, l) = if let Some(r) = s.strip_suffix(".F32x2.HI_LO") {
                     (r, F2Lanes::Pair)
@@ -2708,6 +2715,7 @@ fn lower_line(
                     neg,
                     abs,
                     rnd,
+                    ftz,
                 }
             } else {
                 let (d, a, b) = (lw.dst(lw.op(0)?)?, f2n(0, lw.op(1)?)?, f2n(1, lw.op(2)?)?);
@@ -2727,6 +2735,7 @@ fn lower_line(
                     neg,
                     abs,
                     rnd,
+                    ftz,
                 }
             }
         }
@@ -3473,13 +3482,15 @@ fn lower_line(
         "UVIRTCOUNT" if has("DEALLOC") && has("SMPOOL") => Op::TmemRelinquish,
         // UTCHMMA = kind::f16; UTCQMMA = kind::f8f6f4, or kind::mxf8f6f4 with a sixth operand
         // `tmem[URs]` (URs, URs+1 = the A, B scale-factor addresses); UTCOMMA = kind::mxf4 /
-        // mxf4nvf4 (`.BLOCK16`: scale_vec::4X), always with scale factors.
+        // mxf4nvf4 (`.BLOCK16`: scale_vec::4X), always with scale factors. ptxas 13.1 spells
+        // the same `kind::mxf4nvf4.block_scale.block16` UTCOMMA.4X on sm_100a and
+        // UTCOMMA.BLOCK16 on sm_103a (probes/tc_pair_bs/sm100 = GB200).
         "UTCHMMA" | "UTCQMMA" | "UTCOMMA" => {
             let pair = mods.contains(&"2CTA");
-            let block16 = mods.contains(&"BLOCK16");
-            if mods
-                .iter()
-                .any(|m| !(*m == "2CTA" || *m == "BLOCK16" && base == "UTCOMMA"))
+            let block16 = mods.contains(&"BLOCK16") || mods.contains(&"4X");
+            if mods.iter().any(|m| {
+                !(*m == "2CTA" || matches!(*m, "BLOCK16" | "4X") && base == "UTCOMMA")
+            }) || mods.contains(&"BLOCK16") && mods.contains(&"4X")
             {
                 bail!(lw.err(format!("{base} variant not modeled yet")));
             }
@@ -5479,6 +5490,75 @@ mod tests {
         let addrs: Vec<u32> = lines.iter().map(|l| l.addr).collect();
         assert_eq!(addrs, vec![0, 16]);
         assert!(lines[1].opcode.starts_with("F2FP.SATFINITE.BF16.S2_6"));
+    }
+
+    /// FFMA2 / FMUL2 / FADD2 .FTZ (with an optional rounding mode) set `ftz`; two rounding
+    /// modes or an unknown modifier are refused.
+    #[test]
+    fn packed_f32_ftz_forms() {
+        let f = |l: &str| match lower_text(l, None).unwrap() {
+            Op::Ffma2 { rnd, ftz, neg, .. } => (rnd, ftz, neg),
+            o => panic!("{l}: {o:?}"),
+        };
+        assert_eq!(
+            f("FFMA2.FTZ R4, R4.F32x2.HI_LO, R6.F32x2.HI_LO, R8.F32x2.HI_LO"),
+            (Rnd::Rn, true, [false; 3])
+        );
+        assert_eq!(
+            f("FADD2.FTZ.RM R4, R4.F32x2.HI_LO, R6.F32x2.HI_LO"),
+            (Rnd::Rm, true, [false; 3])
+        );
+        assert_eq!(
+            f("FADD2.FTZ R4, R4.F32x2.HI_LO, -R6.F32x2.HI_LO"),
+            (Rnd::Rn, true, [false, false, true])
+        );
+        assert_eq!(
+            f("FMUL2.FTZ.RZ R4, R4.F32x2.HI_LO, R6.F32x2.HI_LO"),
+            (Rnd::Rz, true, [false; 3])
+        );
+        assert_eq!(
+            f("FFMA2 R4, R4.F32x2.HI_LO, R6.F32x2.HI_LO, R8.F32x2.HI_LO"),
+            (Rnd::Rn, false, [false; 3])
+        );
+        for bad in [
+            "FFMA2.FTZ.RZ.RM R4, R4.F32x2.HI_LO, R6.F32x2.HI_LO, R8.F32x2.HI_LO",
+            "FFMA2.SAT R4, R4.F32x2.HI_LO, R6.F32x2.HI_LO, R8.F32x2.HI_LO",
+            "FADD2.FTZ.FTZ R4, R4.F32x2.HI_LO, R6.F32x2.HI_LO",
+        ] {
+            assert!(lower_text(bad, None).is_err(), "{bad}");
+        }
+    }
+
+    /// UTCOMMA.4X (sm_100a) = UTCOMMA.BLOCK16 (sm_103a): kind::mxf4nvf4 scale_vec::4X.
+    #[test]
+    fn utcomma_4x_is_block16() {
+        let kind = |l: &str| match lower_text(l, None).unwrap() {
+            Op::Mma { kind, pair, .. } => (kind, pair),
+            o => panic!("{l}: {o:?}"),
+        };
+        let x4 = MmaKind::Mxf4nvf4 { x4: true };
+        assert_eq!(
+            kind(
+                "UTCOMMA.2CTA.4X gdesc[UR10], gdesc[UR18], tmem[UR40], tmem[UR42], idesc[UR43], tmem[UR44], UPT"
+            ),
+            (x4, true)
+        );
+        assert_eq!(
+            kind(
+                "UTCOMMA.2CTA.BLOCK16 gdesc[UR10], gdesc[UR18], tmem[UR40], tmem[UR42], idesc[UR43], tmem[UR44], UPT"
+            ),
+            (x4, true)
+        );
+        assert_eq!(
+            kind("UTCOMMA gdesc[UR10], gdesc[UR18], tmem[UR40], tmem[UR42], idesc[UR43], tmem[UR44], UPT").0,
+            MmaKind::Mxf4nvf4 { x4: false }
+        );
+        for bad in [
+            "UTCOMMA.2CTA.4X.BLOCK16 gdesc[UR10], gdesc[UR18], tmem[UR40], tmem[UR42], idesc[UR43], tmem[UR44], UPT",
+            "UTCQMMA.4X gdesc[UR10], gdesc[UR18], tmem[UR40], tmem[UR42], idesc[UR43], tmem[UR44], UPT",
+        ] {
+            assert!(lower_text(bad, None).is_err(), "{bad}");
+        }
     }
 
     /// The forms lifted for the mslk / msl_ops gaps, and the neighbouring ones the probes do

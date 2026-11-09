@@ -1,0 +1,54 @@
+name = "probe_tc_mma_ts_n8"
+description = """
+Probe (S-TMEM, N-MMA) for tcgen05.mma kind::f16 M = 128, N = 8 with A in TMEM (the FP8-KV decode's
+P.V shape): D at [taddr + 64] from shared-memory A (`0`, then `1`) and D at [taddr + 128] with A
+in TMEM (kernel.ptx). The output is the CTA's whole TMEM (128 lanes x 256 columns,
+sentinel-filled before the MMAs); expected/D.bin is GB200's (sm_100a)."""
+arch = "sm_100a"
+ptx = "kernel.ptx"
+entry = "mma_one"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "u16"
+shape = [1, 128, 16]
+init = "file"
+file = "data/A.bin"
+
+[[buffers]]
+name = "B"
+dtype = "u16"
+shape = [1, 256, 16]
+init = "file"
+file = "data/B.bin"
+
+[[buffers]]
+name = "D"
+dtype = "u32"
+shape = [1, 128, 256]
+init = "zeros"
+expect = "expected/D.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "A"
+
+[[params]]
+kind = "ptr"
+buffer = "B"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+# idesc: D f32, A / B bf16, N >> 3 = 1 at bit 17 (N = 8), M >> 4 = 8 at bit 24.
+[[params]]
+kind = "u32"
+value = 0x8020490
+
+[[variants]]
+id = "good"
+expect = ["contract"]

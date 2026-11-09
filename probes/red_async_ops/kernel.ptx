@@ -1,0 +1,32 @@
+// Probe (S-RED-ASYNC, SASS front only): what red.async .global ops other than add do on
+// hardware. ptxas 13.1 encodes red.async.release.gpu.global.{min.s32, inc.u32, or.b32} as
+// UREDGR.E.ADD (byte-identical to add.s32 / add.u32): lane 0 of the one CTA applies
+// min.s32 3 to mem[0] = 10, inc.u32 5 to mem[1] = 7, or.b32 0x10 to mem[2] = 0x11,
+// add.s32 -1 to mem[3] = 1 and add.u64 1 to mem[4..5] = 0xffffffff. ADD gives
+// 13, 12, 0x21, 0, 0x100000000; the PTX ops would give 3, 0, 0x11, 0, 0x100000000.
+.version 9.0
+.target sm_100a
+.address_size 64
+.visible .entry red_async_ops(.param .u64 pmem)
+{
+  .reg .pred %p<2>;
+  .reg .b32 %r<8>;
+  .reg .b64 %rd<4>;
+  ld.param.u64 %rd1, [pmem];
+  cvta.to.global.u64 %rd1, %rd1;
+  mov.u32 %r1, %tid.x;
+  setp.ne.u32 %p1, %r1, 0;
+  @%p1 bra DONE;
+  mov.u32 %r2, 3;
+  red.async.release.gpu.global.min.s32 [%rd1], %r2;
+  mov.u32 %r3, 5;
+  red.async.release.gpu.global.inc.u32 [%rd1+4], %r3;
+  mov.u32 %r4, 16;
+  red.async.release.gpu.global.or.b32 [%rd1+8], %r4;
+  mov.u32 %r5, -1;
+  red.async.relaxed.gpu.global.add.s32 [%rd1+12], %r5;
+  mov.u64 %rd2, 1;
+  red.async.release.sys.global.add.u64 [%rd1+16], %rd2;
+DONE:
+  ret;
+}

@@ -1,0 +1,28 @@
+name = "probe_red_async_ops"
+description = """
+Probe (S-RED-ASYNC), SASS front only: red.async.release.gpu.global min.s32 / inc.u32 / or.b32,
+add.s32 and add.u64 on known words (kernel.ptx). ptxas 13.1 encodes min / inc / or exactly as
+add (UREDGR.E.ADD); expected/mem.bin is GB200's result (13, 12, 0x21, 0, 0x1_00000000: every
+op added). The PTX front refuses the non-add ops."""
+ptx = "kernel.ptx"
+entry = "red_async_ops"
+arch = "sm_100a"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["mem"]
+
+[[buffers]]
+name = "mem"
+dtype = "u32"
+shape = [6]
+init = "file"
+file = "mem.bin"
+expect = "expected/mem.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "mem"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

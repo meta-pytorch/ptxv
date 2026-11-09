@@ -128,6 +128,10 @@ How it works. This generalizes `fixtures/r3_grouped_mm/capture.py` and
   2 x 1 x 1). launchcap and the Python API's `ptxvcap.c` record it as `preferred_cluster`, and
   the case gets `preferred_cluster = [...]` beside `cluster` (S-CGA-SHAPE). Earlier captures
   dropped it.
+- **Architecture (2026-11-07).** `case.toml` gets `arch = "sm_XYa"`, the device the capture
+  ran on (`PTXV_ARCH` overrides; tools/capture_dist.py writes it too). ptxv compiles a PTX
+  case's kernel for that architecture, so a capture made on a GB200 is checked as sm_100a
+  code; without the line it is compiled for the default, sm_103a.
 - **Snapshots (`--kernels`, 2026-11-04).** Filtered-out launches may write the kept ones'
   inputs (a MoE's routing kernel writes the permutation the GEMM reads). Before this change,
   those buffers started as zeros.

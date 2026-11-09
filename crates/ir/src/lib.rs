@@ -1028,6 +1028,10 @@ pub enum Op {
         /// `|R|` operands (SASS only; applied before `neg`).
         abs: [bool; 3],
         rnd: Rnd,
+        /// `.FTZ` / `.ftz`: subnormal inputs and results flushed to signed zero per lane, as
+        /// the scalar FFMA.FTZ (probes/f32x2_ftz).
+        #[serde(default)]
+        ftz: bool,
     },
     /// Packed half2 FMA `d = a*b + c` (per 16-bit half), SASS `HFMA2` (`HMUL2` is c = -0,
     /// `HADD2` is b = 1.0; PTX `fma` / `mul` / `add` / `sub` `.f16[x2]`): `sel` picks which half

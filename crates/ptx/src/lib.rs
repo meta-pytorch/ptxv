@@ -821,6 +821,18 @@ fn fmad2_pairs(
         let why = |w: &str| {
             format!("{op} {d} read by a same-mode add / sub {w}: ptxas may contract it (PTX-FMAD)")
         };
+        // `.ftz` pairs: ptxas 13.1 / 13.2 contract `mul.ftz` + `add.ftz` only without a rounding
+        // modifier (FFMA2.FTZ; with `.rn`: FMUL2.FTZ + FADD2.FTZ), unlike 13.0's non-ftz rule
+        // above, and 13.0's ftz behavior is unprobed: refused.
+        if ftz {
+            for &(j, _) in &q {
+                refuse.insert(
+                    j,
+                    why("with .ftz (contraction depends on the ptxas version)"),
+                );
+            }
+            continue;
+        }
         if unknown {
             for &(j, _) in &q {
                 refuse.insert(j, why("and by an instruction of a kind not probed"));
@@ -3344,10 +3356,17 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         // read only by adds / subs of its rounding mode, modifiers or not (`fmad2_pairs`,
         // PTX-FMAD). Without a rounding mode otherwise: accepted as .rn only for a mul no
         // use of which lets ptxas contract it (`uncontractible_f16_muls`) and for an add / sub
-        // that reads no such mul (probes/f32x2_norn = GB300); .ftz and .sat are refused.
-        // ASSUME(L-ROSETTA)
+        // that reads no such mul (probes/f32x2_norn = GB300). `.ftz`: FFMA2.FTZ etc., inputs
+        // and results flushed per lane (probes/f32x2_ftz = GB200); a `.ftz` mul read by a
+        // same-mode add is refused (`fmad2_pairs`). ptxas rejects `.sat`. ASSUME(L-ROSETTA)
         "add" | "sub" | "mul" | "fma" if mods.last() == Some(&"f32x2") => {
-            let rest = &mods[..mods.len() - 1];
+            let ftz = mods.contains(&"ftz");
+            let rest: Vec<&str> = mods[..mods.len() - 1]
+                .iter()
+                .copied()
+                .filter(|m| *m != "ftz")
+                .collect();
+            let rest = &rest[..];
             // A mul whose readers fmad2_pairs decides (contracted or not, its own value is
             // rounded once), an add / sub it contracts, or one reading no undecided loose mul.
             let plain_ok = rest.is_empty()
@@ -3372,7 +3391,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 ["rm"] => Rnd::Rm,
                 ["rp"] => Rnd::Rp,
                 _ => bail!(lw.err(format!(
-                    "{base}.f32x2 with modifiers {rest:?} not modeled (one of .rn / .rz / .rm / .rp)"
+                    "{base}.f32x2 with modifiers {rest:?} not modeled (one of .rn / .rz / .rm / .rp, optional .ftz)"
                 ))),
             };
             let reg = |s: &str| -> Result<(Val, F2Lanes)> {
@@ -3398,6 +3417,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         neg: [sub && f.slot == 2, false, sub && f.slot == 1],
                         abs: [false; 3],
                         rnd,
+                        ftz,
                     }
                 }
                 // a*1 + b: the rounded sum (as FADD2); sub negates b.
@@ -3409,6 +3429,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     neg: [false, false, base == "sub"],
                     abs: [false; 3],
                     rnd,
+                    ftz,
                 },
                 // a*b + (-0): the rounded product (as FMUL2; +0 under .rm).
                 "mul" => Op::Ffma2 {
@@ -3422,6 +3443,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     neg: [false; 3],
                     abs: [false; 3],
                     rnd,
+                    ftz,
                 },
                 _ => Op::Ffma2 {
                     d,
@@ -3431,6 +3453,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     neg: [false; 3],
                     abs: [false; 3],
                     rnd,
+                    ftz,
                 },
             }
         }
@@ -6519,24 +6542,26 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 .iter()
                 .find_map(|m| space_of(m))
                 .unwrap_or(Space::Generic);
-            // `red.async.{relaxed,release}.{gpu,sys}.global.add.{u32,s32,u64,s64} [a], b`
-            // (ptxas 13.0: a per-lane ELECT loop of MEMBAR.ALL.CTA; UREDGR.E.ADD.NA.STRONG.<scope>;
-            // DEPBAR.LE SB, 0, so the reduction has completed before the next instruction): a
-            // red of that semantics and scope (probes/redasync_litmus: the release orders the
-            // thread's earlier global stores on GB300). ASSUME(S-RED-ASYNC). Other operations
-            // are refused: ptxas 13.0 and 13.1 accept .min / .max / .or / .and / .xor / .inc /
-            // .dec and emit UREDGR.E.ADD (GB300 adds).
+            // `red.async.release.{gpu,sys}.global.add.{u32,s32,u64,s64} [a], b` (ptxas 13.0: a
+            // per-lane ELECT loop of MEMBAR.ALL.CTA; UREDGR.E.ADD.NA.STRONG.<scope>; DEPBAR.LE
+            // SB, 0, so the reduction has completed before the next instruction): a red of that
+            // semantics and scope (probes/redasync_litmus: the release orders the thread's
+            // earlier global stores on GB300). ASSUME(S-RED-ASYNC). The PTX ISA defines no other
+            // `.global` form (`.relaxed` needs `.cluster` scope, `.shared::cluster` and an
+            // mbarrier; the other operations are `.shared::cluster` only), and ptxas 13.0 - 13.2
+            // accept them without a diagnostic and emit the same UREDGR.E.ADD (GB300 and GB200
+            // add; probes/red_async_ops), so they are refused.
             if has("async")
                 && (base != "red"
                     || space != Space::Global
                     || !has("add")
                     || !matches!(tname, "u32" | "s32" | "u64" | "s64")
                     || !(has("gpu") || has("sys"))
-                    || !(has("relaxed") || has("release")))
+                    || !has("release"))
             {
                 bail!(lw.err(
-                    "red.async: only .relaxed / .release .gpu / .sys .global .add .u32 / .s32 / .u64 / .s64 \
-                     is modeled (ptxas 13.0 compiles the other operations to an add)"
+                    "red.async: only .release .gpu / .sys .global .add .u32 / .s32 / .u64 / .s64 \
+                     is defined for .global (ptxas compiles the other forms to the release add)"
                 ));
             }
             let op = if has("add") && tname == "f32" {
@@ -7649,6 +7674,98 @@ mod tests {
         assert!(ops("max.abs.f32 %r1, %r2, %r3;").is_err());
     }
 
+    /// `red.async.release.{gpu|sys}.global.add.{u32|s32|u64|s64}`: an atomic add, a release at
+    /// that scope. Forms the PTX ISA does not define on `.global` (`.relaxed`, ops other than
+    /// add: ptxas silently encodes them as the release's ADD), `.mmio` and other scopes are
+    /// refused.
+    #[test]
+    fn red_async_global_forms() {
+        let first = |l: &str| ops(l).map(|v| v[0].clone());
+        let atom = |l: &str| match first(l).unwrap() {
+            Op::Atom {
+                op: AtomOp::Add,
+                space: Space::Global,
+                bytes,
+                d: None,
+                sync,
+                ..
+            } => (bytes, sync),
+            o => panic!("{l}: {o:?}"),
+        };
+        let ms = |sem, scope| MemSync { sem, scope };
+        assert_eq!(
+            atom("red.async.release.gpu.global.add.s32 [%rd1], %r1;"),
+            (4, ms(Sem::Release, Scope::Gpu))
+        );
+        assert_eq!(
+            atom("red.async.release.gpu.global.add.u32 [%rd1+8], %r1;"),
+            (4, ms(Sem::Release, Scope::Gpu))
+        );
+        assert_eq!(
+            atom("red.async.release.sys.global.add.u64 [%rd1], %rd2;"),
+            (8, ms(Sem::Release, Scope::Sys))
+        );
+        assert_eq!(
+            atom("red.async.release.gpu.global.add.s64 [%rd1], %rd2;"),
+            (8, ms(Sem::Release, Scope::Gpu))
+        );
+        for bad in [
+            "red.async.relaxed.gpu.global.add.u32 [%rd1], %r1;",
+            "red.async.relaxed.sys.global.add.u64 [%rd1], %rd2;",
+            "red.async.release.cluster.global.add.u32 [%rd1], %r1;",
+            "red.async.mmio.release.gpu.global.add.u32 [%rd1], %r1;",
+            "red.async.release.gpu.global.add.f32 [%rd1], %r1;",
+            "red.async.release.gpu.global.min.s32 [%rd1], %r1;",
+            "red.async.release.gpu.global.inc.u32 [%rd1], %r1;",
+            "red.async.release.gpu.global.or.b32 [%rd1], %r1;",
+            "red.async.mmio.release.sys.global.add.u32 [%rd1], %r1;",
+            "red.async.release.cta.global.add.s32 [%rd1], %r1;",
+            "red.async.global.add.s32 [%rd1], %r1;",
+        ] {
+            assert!(first(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// `.ftz` on `fma` / `add` / `sub` / `mul .f32x2` sets `ftz` (FFMA2.FTZ, FADD2.FTZ[.RM],
+    /// FMUL2.FTZ); a `.ftz` mul read by a same-mode add is refused, since whether ptxas
+    /// contracts it depends on its version (13.1: only without a rounding modifier).
+    #[test]
+    fn packed_f32x2_ftz() {
+        let f = |l: &str| match &ops(l).unwrap()[..] {
+            [.., Op::Ffma2 { rnd, ftz, neg, .. }] => (*rnd, *ftz, *neg),
+            o => panic!("{l}: {o:?}"),
+        };
+        assert_eq!(
+            f("fma.rn.ftz.f32x2 %rd1, %rd2, %rd3, %rd4;"),
+            (Rnd::Rn, true, [false; 3])
+        );
+        assert_eq!(
+            f("add.rm.ftz.f32x2 %rd1, %rd2, %rd3;"),
+            (Rnd::Rm, true, [false; 3])
+        );
+        assert_eq!(
+            f("sub.rn.ftz.f32x2 %rd1, %rd2, %rd3;"),
+            (Rnd::Rn, true, [false, false, true])
+        );
+        assert_eq!(
+            f("mul.rz.ftz.f32x2 %rd1, %rd2, %rd3;"),
+            (Rnd::Rz, true, [false; 3])
+        );
+        assert_eq!(
+            f("fma.rn.f32x2 %rd1, %rd2, %rd3, %rd4;"),
+            (Rnd::Rn, false, [false; 3])
+        );
+        // Kept apart by ptxas 13.1 (FMUL2.FTZ + FADD2.FTZ) or contracted (no rounding
+        // modifier): either way refused.
+        assert!(
+            ops("mul.rn.ftz.f32x2 %rd1, %rd2, %rd3;\nadd.rn.ftz.f32x2 %rd4, %rd1, %rd3;").is_err()
+        );
+        assert!(ops("mul.ftz.f32x2 %rd1, %rd2, %rd3;\nadd.ftz.f32x2 %rd4, %rd1, %rd3;").is_err());
+        // Different ftz settings never contract (FMUL2.FTZ + FADD2).
+        assert!(ops("mul.rn.ftz.f32x2 %rd1, %rd2, %rd3;\nadd.rn.f32x2 %rd4, %rd1, %rd3;").is_ok());
+        assert!(ops("fma.rn.ftz.sat.f32x2 %rd1, %rd2, %rd3, %rd4;").is_err());
+    }
+
     #[test]
     fn red_async_and_tensor_reduce_forms() {
         // red.async.release.gpu.global.add = a release red at gpu scope; other operations are
@@ -7670,8 +7787,8 @@ mod tests {
             ),
             "{v:?}"
         );
-        assert!(ops("red.async.relaxed.sys.global.add.u64 [%rd1], %rd2;").is_ok());
         for l in [
+            "red.async.relaxed.sys.global.add.u64 [%rd1], %rd2;",
             "red.async.release.gpu.global.min.s32 [%rd1], %r1;",
             "red.async.release.gpu.global.or.b32 [%rd1], %r1;",
             "atom.async.release.gpu.global.add.s32 %r2, [%rd1], %r1;",
@@ -8025,10 +8142,9 @@ mod tests {
             )
             .is_ok()
         );
-        // Fail closed: other roundings, ftz, sat, immediates.
+        // Fail closed: other roundings, sat, immediates (.ftz: `packed_f32x2_ftz`).
         for l in [
             "fma.f32x2 %rd1, %rd2, %rd3, %rd4;",
-            "add.rn.ftz.f32x2 %rd1, %rd2, %rd3;",
             "mul.rn.sat.f32x2 %rd1, %rd2, %rd3;",
             "add.rn.f32x2 %rd1, %rd2, 0;",
         ] {

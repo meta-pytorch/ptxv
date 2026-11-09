@@ -1,0 +1,32 @@
+name = "mbar_count_order"
+description = """
+Fixture for counted mbarrier arrivals in the reductions (kernel.ptx): an mbarrier expecting 3
+arrivals gets a count-1 arrival after a data write and a count-3 arrival. The count-3 arrival
+first completes the phase alone, so the consumer's read races with the write; second, it
+overshoots (a fault, then the consumer waits forever). The race needs the count-3 arrival
+first: the stateful explorer's local reduction used to commute the count-1 arrival with it,
+and DPOR's footprints did not make them dependent."""
+ptx = "kernel.ptx"
+arch = "sm_100a"
+entry = "mbar_count_order"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+# Which value the consumer reads is an outcome of the race (E-DRF: the race is reported, the
+# second outcome need not be); on the SASS front plain shared accesses are not a race, the
+# two outputs are.
+expect = ["deadlock", "fault", "race"]
+expect_sass = ["deadlock", "fault", "nondeterministic"]

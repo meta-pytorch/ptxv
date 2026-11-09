@@ -1,0 +1,94 @@
+name = "mma_bs_ts"
+description = """
+probes/mma_bs's mma_mxf8 with A in TMEM (kernel.ptx): block-scaled kind::mxf8f6f4 scale_vec::1X,
+M = 128, N = 64, four K slices, A rows written to TMEM columns 128..159 with tcgen05.st. The
+NVFP4x2-KV attention's P.V UTCQMMA has A in TMEM. expected/D.bin is GB200's output (sm_100a);
+it equals mma_mxf8's (A from shared memory) on the same codes."""
+arch = "sm_100a"
+ptx = "kernel.ptx"
+entry = "mma_mxf8_ts"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "u8"
+shape = [128, 128]
+init = "file"
+file = "data/mma_mxf8e4m3xe4m3f32ue8m0.codes.A.bin"
+
+[[buffers]]
+name = "B"
+dtype = "u8"
+shape = [64, 128]
+init = "file"
+file = "data/mma_mxf8e4m3xe4m3f32ue8m0.codes.B.bin"
+
+[[buffers]]
+name = "SFA"
+dtype = "u32"
+shape = [128, 16]
+init = "file"
+file = "data/mma_mxf8e4m3xe4m3f32ue8m0.codes.SFA.bin"
+
+[[buffers]]
+name = "SFB"
+dtype = "u32"
+shape = [128, 16]
+init = "file"
+file = "data/mma_mxf8e4m3xe4m3f32ue8m0.codes.SFB.bin"
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [128, 64]
+init = "nan"
+expect = "expected/D.bin"
+
+# A[m][k] bytes viewed as 3-D (k%16, m, k/16): box (16, 128, 8) lands as 8 K-chunks of 128
+# rows x 16 B (LBO = 2048 B, SBO = 128 B), the layout of fixtures/r1a_tcgen05_tile.
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [16, 128, 8]
+dims = [16, 128, 8]
+strides = [128, 16]
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [16, 64, 8]
+dims = [16, 64, 8]
+strides = [128, 16]
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+# Block-scaled descriptor: A e4m3 (0), B e4m3 (0), N>>3 = 8 at bit 17, ue8m0 scales (bit 23),
+# M>>4 = 8 at bit 24, scale-factor ids 0.
+[[params]]
+kind = "u32"
+value = 0x08900000
+
+# idesc0: the first MMA's descriptor.
+[[params]]
+kind = "u32"
+value = 0x08900000
+
+[[params]]
+kind = "ptr"
+buffer = "SFA"
+
+[[params]]
+kind = "ptr"
+buffer = "SFB"
+
+[[params]]
+kind = "ptr"
+buffer = "A"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

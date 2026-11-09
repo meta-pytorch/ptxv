@@ -1050,6 +1050,10 @@ if use_ptx:
 
 # ---------------------------------------------------------------- case.toml
 
+# The architecture the case was captured on (ptxv compiles a PTX case's kernel for it; the
+# case default is sm_103a). PTXV_ARCH overrides.
+arch = os.environ.get("PTXV_ARCH") or "sm_%d%da" % torch.cuda.get_device_capability()
+
 
 def q(s):
     return json.dumps(s)
@@ -1125,11 +1129,17 @@ toml = [
 description = """{desc}"""
 '''
     + ('ptx = "kernel.ptx"\n' if use_ptx else f'cubin = "{r0["_cubin_file"]}"\n')
+    + f'arch = "{arch}"\n'
     + f"""entry = {q(r0["name"])}
 grid = {r0["grid"]}
 block = {r0["block"]}
 """
-    + (f"cluster = {r0['cluster']}\n" if r0["cluster"] != [1, 1, 1] else "")
+    # S-CGA-SHAPE: a preferred cluster needs the explicit regular one, even 1 x 1 x 1.
+    + (
+        f"cluster = {r0['cluster']}\n"
+        if r0["cluster"] != [1, 1, 1] or r0.get("preferred_cluster")
+        else ""
+    )
     # cudaLaunchAttributePreferredClusterDimension (cuBLAS "2x2f" kernels): each group of
     # CTAs runs as one cluster of this shape or as clusters of `cluster` (S-CGA-SHAPE).
     + (
@@ -1159,7 +1169,7 @@ for b in buffers:
 toml += toml_params(launches[0][1], "params")
 for r, params in launches[1:]:
     s = f"[[launches]]\nentry = {q(r['name'])}\ngrid = {r['grid']}\nblock = {r['block']}\n"
-    if r["cluster"] != [1, 1, 1]:
+    if r["cluster"] != [1, 1, 1] or r.get("preferred_cluster"):
         s += f"cluster = {r['cluster']}\n"
     if r.get("preferred_cluster"):
         s += f"preferred_cluster = {r['preferred_cluster']}\n"

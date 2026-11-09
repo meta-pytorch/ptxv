@@ -671,7 +671,12 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
         f'name = {q(name)}\ndescription = """{desc}"""\n'
         + ('ptx = "kernel.ptx"\n' if use_ptx else f'cubin = "{cubin_files[0]}"\n')
         + f"entry = {q(l0.name)}\ngrid = {list(l0.grid)}\nblock = {list(l0.block)}\n"
-        + (f"cluster = {list(l0.cluster)}\n" if l0.cluster != (1, 1, 1) else "")
+        # S-CGA-SHAPE: a preferred cluster needs the explicit regular one, even 1 x 1 x 1.
+        + (
+            f"cluster = {list(l0.cluster)}\n"
+            if l0.cluster != (1, 1, 1) or l0.record.get("preferred_cluster")
+            else ""
+        )
         # cudaLaunchAttributePreferredClusterDimension (S-CGA-SHAPE).
         + (
             f"preferred_cluster = {l0.record['preferred_cluster']}\n"
@@ -705,7 +710,7 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
     toml += toml_params(plaunches[0][1], "params")
     for i, (la, params) in enumerate(plaunches[1:], 1):
         s = f"[[launches]]\nentry = {q(la.name)}\ngrid = {list(la.grid)}\nblock = {list(la.block)}\n"
-        if la.cluster != (1, 1, 1):
+        if la.cluster != (1, 1, 1) or la.record.get("preferred_cluster"):
             s += f"cluster = {list(la.cluster)}\n"
         if la.record.get("preferred_cluster"):
             s += f"preferred_cluster = {la.record['preferred_cluster']}\n"

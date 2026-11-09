@@ -125,7 +125,7 @@ Model changes the kernels forced:
 | `UTMALDG.2D.GATHER4` (+ PTX `.tile::gather4`) | **fixtures/s_gather4** (6 gathers, 4 swizzles, out-of-bounds rows / columns, unaligned starts), both front-ends = GB300 1000/1000; unaligned columns are illegal instructions (variant `misaligned`, S-TMA-GATHER4) |
 | `SYNCS.ARRIVE.TRANS64.ART0` / `.RED.ART0` (mbarrier.arrive with a count) | probes/mbar_count = GB300, both front-ends (S-MBAR) |
 | `SYNCS.ARRIVE.TRANS64.RED.A0TR` / `.A0TX` (mbarrier.expect_tx / complete_tx, PTX `[.relaxed] [.cta / .cluster]`) | probes/mbar_expect_tx = GB300, both front-ends; relaxed: publishes only what a prior fence released (S-MBAR) |
-| `UREDGR.E.ADD.NA[.S32 / .64].STRONG.GPU / .SYS` (red.async.{relaxed,release}.{gpu,sys}.global.add) | probes/red_async = GB300, both front-ends; release order: probes/redasync_litmus (S-RED-ASYNC). Other red.async operations refused (ptxas compiles them to an add) |
+| `UREDGR.E.ADD.NA[.S32 / .64].STRONG.GPU / .SYS` (red.async.release.{gpu,sys}.global.add) | probes/red_async = GB300, both front-ends; release order: probes/redasync_litmus (S-RED-ASYNC). `.relaxed` on `.global` and the other operations, which the PTX ISA does not define there, are refused on the PTX front (ptxas compiles them to the release add: probes/red_async_ops = GB200) |
 | `SYNCS.ARRIVE.TRANS64.RED.A0T1`, `ARRIVES.LDGSTSBAR.64.TRANSCNT` / `.ARVCNT` (cp.async.mbarrier.arrive [.noinc]) | **fixtures/s_cpasync_mbar** = GB300 1000/1000 (E-CPASYNC-MBAR) |
 | `SYNCS.PHASECHK.TRANS64.TRYWAIT PT, ...` (no-op), peek tokens through `SEL` / `ISETP` (E-SPIN) | fixtures/r3b_trtllm_bmm certified, = GB300 bitwise |
 
@@ -157,7 +157,7 @@ modifier of these opcodes is refused.
 | `CCTL.E.PF1` / `CCTL.E.PF2` (prefetch.global.L1 / .L2): no effect | probes/f2i16 runs both |
 | `BREAK[.RELIABLE] Pc, Bb` | **probes/div_ftz**: div.rn.ftz.f32 slow path on edge pairs (E-BSYNC) |
 | `UTCQMMA` / `tcgen05.mma` block-scaled M = 128 N = 8 (shape check relaxed) | **probes/mma_bs expected/n8**, both front-ends (N-MMA-BS, S-TMEM) |
-| `UTCQMMA` / `tcgen05.mma.kind::mxf8f6f4` with A in TMEM or MN-major A / B (SWIZZLE_128B), 8-bit formats, M = 128 | **probes/mma_mxf8_tmem** = the K-major path on GB300 bitwise, both front-ends (N-MMA-BS, S-TMEM) |
+| `UTCQMMA` / `tcgen05.mma.kind::mxf8f6f4` with A in TMEM or MN-major A / B (SWIZZLE_128B), 8-bit formats, M = 128 | **probes/mma_mxf8_tmem** = the K-major path on GB300 bitwise, both front-ends (N-MMA-BS, S-TMEM); the other swizzles, unswizzled MN-major and cta_group::2: **probes/mma_bs/mn**, **probes/mma_bs/ts** below |
 | `ATOMG.E.INC[.STRONG.GPU]` (+ PTX `atom.inc.u32`) | **probes/atom_inc**, both front-ends (L-ROSETTA) |
 | `BMOV.32[.CLEAR] Rd, Bb`, `BMOV.32 Bb, Ra` | the parallel_attn_bwd_dkv case (E-BSYNC); not probed alone |
 | `[R.U32+UR]` generic addresses, `UTMAREDG ... desc[URZ]`, device-built tensor maps (words 0x40/0x48 = 0) | operand syntax; **probes/tmap_device**, **probes/tmap_param_copy** (S-TMAP; raw tensor-map parameter bytes visible to device code) |
@@ -172,6 +172,10 @@ modifier of these opcodes is refused.
 | `UTMAREDG.<N>D.ADD` (+ PTX `cp.reduce.async.bulk.tensor...add[.tile].bulk_group[.L2::cache_hint]`) on f32 / f16 / bf16 tensors | **probes/tma_red**, edge pairs per type, both front-ends (N-BULK-RED) |
 | `UBLKCP.S.S [URd], [URs], URn` (+ PTX `cp.async.bulk.shared::cluster.shared::cta`) | **probes/bulk_s2s**: 2-CTA cluster, peer and self copies, both front-ends (S-TMA) |
 | `UBLKRED.G.S.ADD.F32.RN [URg], [URs], URn` (+ PTX `cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32`) | **probes/bulk_red**: per-word atomic f32 add (RN, no flush, canonical NaN), four CTAs on the same words, both front-ends (N-BULK-RED) |
+| `UTCOMMA[.2CTA].4X` (sm_100a's spelling of `kind::mxf4nvf4.block_scale.block16`; sm_103a: `.BLOCK16`) | **probes/tc_pair_bs/sm100** = GB200 = GB300's output, both front-ends (N-MMA-BS) |
+| `UTCHMMA tmem[A], ...` with M = 128, N % 16 == 8 (outside the PTX ISA table) | **probes/tc_mma_ts_n8** (N = 8, 24) = GB200, both front-ends; a `contract` finding (S-TMEM) |
+| `UTCQMMA[.2CTA] tmem[A], gdesc[B], ...` (narrow / block-scaled kinds with A in TMEM) | **probes/mma_bs/ts** = GB200 (= A from shared memory), both front-ends (S-TMEM) |
+| `UTCQMMA[.2CTA]` idesc bit 15 / 16 with 8-bit operands (`tcgen05.mma` kind::f8f6f4 / mxf8f6f4 with MN-major A / B: SWIZZLE_128B / 64B / 32B or none, a start inside a swizzle atom) | **probes/mma_bs/mn**: 9 one-CTA and 7 cta_group::2 layouts (A in TMEM or shared memory) = GB200 = the K-major D, both front-ends (S-TMA, N-MMA-BS) |
 
 ## Round 1 (rung 4): instructions added (all through `sass` `lower_line`, semantics in `fp.rs` / `exec.rs`)
 
@@ -310,6 +314,7 @@ any modifier outside the audited set before an arm runs.
 | `REDUX` / `CREDUX` | `redux.sync` with a partial immediate or register membermask | reduction over the lanes the mask names; executing lanes != mask is a violation (PTX) | probes/redux_mask |
 | `SHFL` / `VOTE` | `shfl.sync` / `vote.sync` with a partial immediate or register membermask | per mask group, combined with the group's lanes at another instruction of the same kind; executing lanes != mask is a violation (PTX) | probes/coll_split, probes/shfl_mask (PTX front; SASS `WARPSYNC.EXCLUSIVE` refused) |
 | `FFMA2` / `FMUL2` / `FADD2 .RZ/.RM/.RP` | `.rz/.rm/.rp.f32x2` | one rounding in the mode | probes/bf16_ext |
+| `FFMA2` / `FMUL2` / `FADD2 .FTZ[.RZ/.RM/.RP]` | `.{rn,rz,rm,rp}.ftz.f32x2` (a `.ftz` mul read by a same-mode add: refused) | subnormal inputs and results flushed per lane | probes/f32x2_ftz (GB200) |
 | `IMAD.WIDE R, a, b, -c` | `mul.wide` + `sub.s64` | a*b - c mod 2^64 | probes/int_misc |
 | `POPC` | `popc.b32` | variable latency, in-order queue (scoreboard cover) | probes/int_misc |
 | `POPC` x 2 + `IADD3` | `popc.b64` | popc of each half, summed | probes/popc64 |

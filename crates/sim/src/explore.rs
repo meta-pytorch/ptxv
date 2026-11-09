@@ -709,7 +709,8 @@ fn cta_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)> 
 ///   plain-memory and async-issue operations only, whose conflicts are races found by vector
 ///   clocks in either order. (With other splits of the warp live, moving its pc could change
 ///   which splits merge, so it is not independent of them.)
-/// - a whole-warp plain `mbarrier.arrive` that cannot complete the phase;
+/// - a whole-warp plain `mbarrier.arrive` that cannot complete the phase, in a kernel without
+///   counted arrivals;
 /// - the completion of a TMA store or of an MMA (data movement only).
 ///
 /// One such action alone is an ample set; the state graph is acyclic, so no cycle proviso.
@@ -843,14 +844,19 @@ fn local_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)
                         ptxv_ir::Op::Elect { .. } => false,
                         // A plain arrival that cannot complete the phase only decrements the
                         // pending count: it commutes with the other arrivals and changes nothing
-                        // a try_wait reads.
+                        // a try_wait reads. Not in a kernel with counted arrivals (`mbarrier
+                        // .arrive [a], count`): with two pending, a count-2 arrival completes
+                        // the phase alone, or overshoots after a count-1 one.
                         ptxv_ir::Op::MbarArrive {
                             addr,
                             tx: None,
                             remote: false,
                             count,
                             ..
-                        } => {
+                        } if !m.k.code.iter().any(|i| {
+                            matches!(i.op, ptxv_ir::Op::MbarArrive { count: Some(_), .. })
+                        }) =>
+                        {
                             let active: Vec<usize> = members()
                                 .map(|t| t as usize)
                                 .filter(|&t| m.threads[t].pc == *pc && m.prd(t, guard))

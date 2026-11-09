@@ -1884,6 +1884,31 @@ fn probe_tc_f16_tf32_match_hardware() {
     }
 }
 
+/// Counted arrivals in the reductions (fixtures/mbar_count_order): the count-3 arrival that
+/// completes the phase alone must be explored before the count-1 arrival (the race; on the
+/// SASS front, two outputs) and after it (the fault), by both explorers on both front-ends.
+/// DPOR may also report the race's second outcome on the PTX front (E-DRF).
+#[test]
+fn mbar_count_order_reaches_both_orders() {
+    let case = Case::load(root().join("fixtures/mbar_count_order")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = Arc::new(kernel(&case, "good", front));
+        let launch = Arc::new(build_launch(&case, &k).unwrap());
+        let m0 = Machine::new(k, launch);
+        let want = case.variant("good").unwrap().expect_for(front);
+        let v = ptxv_sim::explore::explore(m0.clone(), 100_000);
+        assert!(v.complete, "{front}: incomplete");
+        assert_eq!(v.classes(), want, "{front}: {:#?}", v.findings);
+        let d = ptxv_sim::dpor::explore_dpor(m0, 100_000);
+        assert!(d.complete, "{front}: DPOR incomplete");
+        let mut dc = d.classes();
+        if front == "ptx" {
+            dc.retain(|c| c != "nondeterministic");
+        }
+        assert_eq!(dc, want, "{front}: DPOR: {:#?}", d.findings);
+    }
+}
+
 /// mbarrier.arrive with an arrival count (SASS SYNCS.ARRIVE.TRANS64.ART0 / .RED.ART0;
 /// probes/mbar_count; `good` = GB300 on both front-ends; `over`: a count above the pending
 /// count, a fault, as on GB300).
@@ -2370,6 +2395,120 @@ fn probe_ffma2_ur_matches_hardware() {
     probe_bitwise("probes/ffma2_ur", "good", "sass");
 }
 
+/// L-ROSETTA: `.ftz` on packed f32x2 fma / add / sub / mul in every rounding mode (FFMA2 /
+/// FADD2 / FMUL2 .FTZ[.RZ|.RM|.RP]) on boundary, subnormal and edge operands = GB200
+/// (probes/f32x2_ftz). Mutant: the same kernel without `.ftz` differs from the hardware.
+#[test]
+fn probe_f32x2_ftz_matches_hardware() {
+    probe_bitwise("probes/f32x2_ftz", "good", "ptx");
+    probe_bitwise("probes/f32x2_ftz", "good", "sass");
+    let case = Case::load(root().join("probes/f32x2_ftz")).unwrap();
+    let ptx = case.variant_ptx("good").unwrap().replace(".ftz", "");
+    let k = ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap();
+    let launch = build_launch(&case, &k).unwrap();
+    let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
+        .verdict
+        .unwrap();
+    let report = case.expect_report(&v.outputs[0]).unwrap();
+    assert!(
+        report.iter().any(|l| !l.contains("bitwise equal")),
+        "{report:?}"
+    );
+}
+
+/// S-TMEM, N-MMA: tcgen05.mma kind::f16 M = 128 with A in TMEM and N = 8 / 24 (N % 16 = 8,
+/// the FP8-KV decode's P.V shape) writes D columns col0..col0 + N of every lane = GB200
+/// (probes/tc_mma_ts_n8, n24/: D equals GB300's N = 16 output on the shared columns). The
+/// PTX ISA requires N % 16 == 0 with A in TMEM: a `contract` finding.
+#[test]
+fn probe_tc_mma_ts_n8_matches_hardware() {
+    for dir in ["probes/tc_mma_ts_n8", "probes/tc_mma_ts_n8/n24"] {
+        for front in ["ptx", "sass"] {
+            let case = Case::load(root().join(dir)).unwrap();
+            let k = kernel(&case, "good", front);
+            let launch = build_launch(&case, &k).unwrap();
+            let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
+                .verdict
+                .unwrap_or_else(|| panic!("{dir} {front} certifies"));
+            assert_eq!(
+                v.classes(),
+                ["contract"],
+                "{dir} {front}: {:#?}",
+                v.findings
+            );
+            assert!(
+                v.findings
+                    .iter()
+                    .all(|f| f.sig.starts_with("mma-ts-shape:")),
+                "{dir} {front}: {:#?}",
+                v.findings
+            );
+            let report = case.expect_report(&v.outputs[0]).unwrap();
+            assert!(
+                report.iter().all(|l| l.contains("bitwise equal")),
+                "{dir} {front}: {report:?}"
+            );
+        }
+    }
+}
+
+/// S-TMEM, N-MMA-BS: block-scaled kind::mxf8f6f4 with A in TMEM (byte k of a row's K slice at
+/// column k / 4, byte k % 4) = GB200, which equals the A-from-shared-memory run
+/// (probes/mma_bs/ts).
+#[test]
+fn probe_mma_bs_tmem_a_matches_hardware() {
+    probe_bitwise("probes/mma_bs/ts", "good", "ptx");
+    probe_bitwise("probes/mma_bs/ts", "good", "sass");
+}
+
+/// S-TMA, N-MMA-BS, E-PAIR: block-scaled kind::mxf8f6f4 with MN-major 8-bit operands
+/// (swizzled 128 / 64 / 32 B and unswizzled; A, B, both; a start 512 B into a swizzle atom),
+/// one CTA and cta_group::2 (A in TMEM or shared memory) = GB200, whose D equals the K-major
+/// layout's for every case (probes/mma_bs/mn).
+#[test]
+fn probe_mma_bs_mn_major_matches_hardware() {
+    let cases = [
+        "kmajor",
+        "a_sw128",
+        "a_sw128_off512",
+        "a_sw64",
+        "a_sw32",
+        "a_none",
+        "b_sw64",
+        "b_sw32",
+        "ab_sw128_sw64",
+        "pair_ts_kmajor",
+        "pair_ts_b_sw64",
+        "pair_ts_b_sw32",
+        "pair_ts_b_none",
+        "pair_ss_kmajor",
+        "pair_ss_a_sw128",
+        "pair_ss_ab",
+    ];
+    for c in cases {
+        for front in ["ptx", "sass"] {
+            probe_bitwise(&format!("probes/mma_bs/mn/{c}"), "good", front);
+        }
+    }
+    // Refused (not measured): an MN-major start inside a swizzle row, MN-major FP4.
+    for v in ["mid_row", "fp4_mn"] {
+        for front in ["ptx", "sass"] {
+            check_dir("probes/mma_bs/mn", "a_sw128", v, front);
+        }
+    }
+}
+
+/// S-RED-ASYNC: ptxas 13.1 encodes red.async.global `min.s32` / `inc.u32` / `or.b32` as
+/// UREDGR.E.ADD; GB200 adds (probes/red_async_ops), as the SASS front does. The PTX front
+/// refuses those ops.
+#[test]
+fn probe_red_async_ops_add() {
+    probe_bitwise("probes/red_async_ops", "good", "sass");
+    let case = Case::load(root().join("probes/red_async_ops")).unwrap();
+    let ptx = case.variant_ptx("good").unwrap();
+    assert!(ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).is_err());
+}
+
 /// cp.async.bulk.prefetch.tensor (SASS UTMAPF.L2.2D) as a cache hint (probes/tma_prefetch)
 /// = GB300.
 #[test]
@@ -2576,7 +2715,7 @@ fn probe_mma_mxf8_tmem_matches_hardware() {
 }
 
 /// red.async.release.gpu.global.add as a release flag (probes/red_async) = GB300 on both
-/// fronts; the .relaxed form publishes nothing in PTX (a race), while ptxas's UREDGR releases.
+/// fronts; the .relaxed form is not a PTX ISA `.global` form (refused), while ptxas's UREDGR releases.
 #[test]
 fn probe_red_async_matches_hardware() {
     // A cross-CTA poll: explored (not certifiable as well-synchronized).
@@ -2595,7 +2734,11 @@ fn probe_red_async_matches_hardware() {
             );
         }
     }
-    check_dir("probes", "red_async", "relaxed", "ptx");
+    // `.relaxed` on `.global` is not a PTX ISA form (`.relaxed` needs `.cluster` scope,
+    // `.shared::cluster` and an mbarrier): the PTX front refuses it; the SASS ptxas emits for it
+    // is the release's, clean.
+    let relaxed = case.variant_ptx("relaxed").unwrap();
+    assert!(ptxv_ptx::parse_kernel(&relaxed, Some(&case.m.entry)).is_err());
     check_dir("probes", "red_async", "relaxed", "sass");
 }
 
