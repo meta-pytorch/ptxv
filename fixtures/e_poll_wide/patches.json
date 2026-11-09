@@ -1,0 +1,54 @@
+{
+  "text_offset": 1664,
+  "reference": [
+    {
+      "offset": 128,
+      "before": "5d730000ff0000000000800300ea0f00",
+      "after": "827b0eff00e20000000a000000240e00",
+      "meaning": "move output address initialization before preheader flag load"
+    },
+    {
+      "offset": 224,
+      "before": "827b0eff00e20000000a000000240e00",
+      "after": "8179000c0400000000f91e0c00a80e00",
+      "meaning": "loop-head LDG flag"
+    },
+    {
+      "offset": 240,
+      "before": "7f79080e040000f80418120f00e81302",
+      "after": "8f7900ff000000000000000200e24f00",
+      "meaning": "CCTL.IVALL"
+    },
+    {
+      "offset": 256,
+      "before": "8179000c0400000000f91e0c00a80e00",
+      "after": "0c780000010000007050f00300da0f00",
+      "meaning": "ISETP.NE flag 1"
+    },
+    {
+      "offset": 272,
+      "before": "8f7900ff000000000000000200e24f00",
+      "after": "47890800000000000000800300ea1f00",
+      "meaning": "@!P0 BRA 0x140"
+    },
+    {
+      "offset": 288,
+      "before": "0c780000010000007050f00300da0f00",
+      "after": "7f79080e040000f80418120f00e81302",
+      "meaning": "STG.256 failed iteration output"
+    },
+    {
+      "offset": 304,
+      "before": "4709ec00fcffffffffff830300ea2f00",
+      "after": "4779e800fcffffffffff830300ea2f00",
+      "meaning": "BRA 0xe0"
+    }
+  ],
+  "candidate": {
+    "offset": 288,
+    "before": "7f79080e040000f80418120f00e81302",
+    "after": "18790000000000000000000000c00f00",
+    "meaning": "loop STG.256 replaced with existing NOP encoding"
+  },
+  "metadata": "unchanged"
+}

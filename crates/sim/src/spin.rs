@@ -1312,7 +1312,6 @@ pub fn wpoll_dry(m0: &Machine, members: &[usize], h: u32, b: u32) -> Option<Vec<
     let k = m.k.clone();
     let mut done = vec![false; members.len()];
     let mut reads = Vec::new();
-    let mut stores = Vec::new();
     for _ in 0..4096 {
         let run: Vec<usize> = (0..members.len())
             .filter(|&i| !done[i] && m.threads[members[i]].st == St::Run)
@@ -1350,24 +1349,11 @@ pub fn wpoll_dry(m0: &Machine, members: &[usize], h: u32, b: u32) -> Option<Vec<
                 }
             }
         }
-        if let Op::St {
-            space, bytes, addr, ..
-        } = &inst.op
-        {
-            for &t in &group {
-                if !m.prd(t, inst.guard) {
-                    continue;
-                }
-                match m
-                    .addr(t, addr)
-                    .and_then(|a| m.resolve(t, *space, a, *bytes as usize))
-                {
-                    Ok(loc) => stores.push((loc, *bytes as usize)),
-                    Err(_) => return None,
-                }
-            }
-        }
+        let stores = store_spans(&m, &group, pc).ok()?;
         if m.exec(&group, pc).is_err() {
+            return None;
+        }
+        if stores.iter().any(|&(loc, n)| !same_bytes(&m, m0, loc, n)) {
             return None;
         }
         for &t in &group {
@@ -1385,27 +1371,58 @@ pub fn wpoll_dry(m0: &Machine, members: &[usize], h: u32, b: u32) -> Option<Vec<
     if done.iter().any(|d| !d) {
         return None;
     }
-    let same_mem = stores.iter().all(|&(loc, n)| {
-        let byte = |mm: &Machine, i: usize| -> Option<u8> {
-            match loc {
-                crate::exec::Loc::Shared { cta, off } => {
-                    Some(*mm.smem[cta as usize].bytes.get(off as usize + i))
-                }
-                crate::exec::Loc::Global { alloc, off } => {
-                    Some(*mm.gmem[alloc].bytes.get(off as usize + i))
-                }
-                _ => None,
-            }
-        };
-        (0..n).all(|i| byte(&m, i).is_some() && byte(&m, i) == byte(m0, i))
-    });
-    (same_mem
-        && members.iter().all(|&t| {
+    members
+        .iter()
+        .all(|&t| {
             m.threads[t].regs == m0.threads[t].regs
                 && m.threads[t].preds == m0.threads[t].preds
                 && m.threads[t].pdef == m0.threads[t].pdef
-        }))
-    .then_some(reads)
+                && m.threads[t].written == m0.threads[t].written
+                && m.threads[t].vund == m0.threads[t].vund
+                && {
+                    let w = m.threads[t].warp as usize;
+                    m.warps[w].ur == m0.warps[w].ur
+                        && m.warps[w].ur_written == m0.warps[w].ur_written
+                        && m.warps[w].up == m0.warps[w].up
+                        && m.warps[w].up_def == m0.warps[w].up_def
+                }
+        })
+        .then_some(reads)
+}
+
+pub(crate) fn same_bytes(a: &Machine, b: &Machine, loc: crate::exec::Loc, n: usize) -> bool {
+    let byte = |m: &Machine, i: usize| -> Option<(u8, bool)> {
+        let (mem, off) = match loc {
+            crate::exec::Loc::Shared { cta, off } => (&m.smem[cta as usize], off as usize),
+            crate::exec::Loc::Global { alloc, off } => (&m.gmem[alloc], off as usize),
+            _ => return None,
+        };
+        Some((*mem.bytes.get(off + i), mem.sh.get(off + i).undef))
+    };
+    (0..n).all(|i| byte(a, i).is_some() && byte(a, i) == byte(b, i))
+}
+
+pub(crate) fn store_spans(
+    m: &Machine,
+    group: &[usize],
+    pc: u32,
+) -> Result<Vec<(crate::exec::Loc, usize)>, String> {
+    let inst = &m.k.code[pc as usize];
+    let (space, addr, n) = match &inst.op {
+        Op::St {
+            space, addr, bytes, ..
+        } => (*space, addr, *bytes as usize),
+        Op::St256 { addr, .. } => (ptxv_ir::Space::Global, addr, 32),
+        _ => return Ok(vec![]),
+    };
+    group
+        .iter()
+        .filter(|&&t| m.prd(t, inst.guard))
+        .map(|&t| {
+            let loc = m.addr(t, addr).and_then(|a| m.resolve(t, space, a, n))?;
+            Ok((loc, n))
+        })
+        .collect()
 }
 
 /// The race-detector reads of a blocked warp-level poll (as `blocked_poll_read`).

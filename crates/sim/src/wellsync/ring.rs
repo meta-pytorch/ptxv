@@ -879,6 +879,8 @@ fn replay(
             m.syncs.remove(&word);
         }
     }
+    let initial = m.clone();
+    let mut changed_memory = false;
     let members = &e.members;
     if !e.warp {
         // Straight: from the load to the back branch (spin::poll_loops shape).
@@ -914,7 +916,11 @@ fn replay(
             .map(|&i| members[i])
             .filter(|&t| m.threads[t].pc == pc)
             .collect();
+        let stores = crate::spin::store_spans(&m, &group, pc)?;
         m.exec(&group, pc)?;
+        changed_memory |= stores
+            .iter()
+            .any(|&(loc, n)| !crate::spin::same_bytes(&m, &initial, loc, n));
         for &t in &group {
             let i = members.iter().position(|&u| u == t).unwrap();
             let th = &m.threads[t];
@@ -933,6 +939,9 @@ fn replay(
     if out.iter().all(|&x| x) {
         Ok(Out::Exit(Box::new(m)))
     } else if back.iter().all(|&x| x) {
+        if changed_memory {
+            return Err("a failed poll iteration changes memory".into());
+        }
         Ok(Out::Fail(Box::new(m)))
     } else {
         Err("its lanes do not all leave the loop or all return to the head".into())
@@ -1223,6 +1232,15 @@ pub(super) fn check(m: &Machine, log: &SyncLog) -> (Vec<String>, Vec<ChoiceRec>,
                     bad = true;
                     keys.push(None);
                     states.push(None);
+                }
+            }
+            for earlier in &e.snaps[..e.snaps.len() - 1] {
+                if let Err(why) = replay(e, &earlier.0, r.word, bytes, cell) {
+                    add(
+                        &mut out,
+                        format!("C-RING: replaying an earlier poll iteration on {what}: {why}"),
+                    );
+                    bad = true;
                 }
             }
             let _ = idx;

@@ -1,0 +1,54 @@
+{
+  "text_offset": 1664,
+  "reference": [
+    {
+      "offset": 0,
+      "before": "827b01ff00df00000008000000f00f00",
+      "after": "827c0000ff0000000000000800cc0f00",
+      "meaning": "UMOV UR0, URZ"
+    },
+    {
+      "offset": 96,
+      "before": "247200ffff000000ff008e0700ce0f00",
+      "after": "127804ff00000000ffc0800700da0f00",
+      "meaning": "LOP3.LUT P0, R4, RZ, 0x0, RZ, 0xc0, !PT"
+    },
+    {
+      "offset": 144,
+      "before": "36780000010000000000000000e20f00",
+      "after": "9078000001000000ffe0ff0f00e20f00",
+      "meaning": "UIADD3 UR0, UPT, UPT, UR0, 0x1, URZ"
+    },
+    {
+      "offset": 160,
+      "before": "0c780004010000007050f00300da0f00",
+      "after": "0c780004010000007020f00300da0f00",
+      "meaning": "ISETP.EQ.U32.AND P0, PT, R4, 0x1, PT"
+    },
+    {
+      "offset": 176,
+      "before": "4709ec00fcffffffffff830300ea0f00",
+      "after": "4789ec00fcffffffffff830300ea0f00",
+      "meaning": "@!P0 BRA"
+    },
+    {
+      "offset": 208,
+      "before": "46780000feffffffff01800700c80f00",
+      "after": "90780000ffffffffffe0ff0f00e20f00",
+      "meaning": "UIADD3 UR0, UPT, UPT, UR0, -0x1, URZ"
+    },
+    {
+      "offset": 224,
+      "before": "45720500000000000014200000ca0f00",
+      "after": "457c0500000000000010200800ca0f00",
+      "meaning": "I2FP.F32.U32 R5, UR0"
+    }
+  ],
+  "candidate": {
+    "offset": 224,
+    "before": "457c0500000000000010200800ca0f00",
+    "after": "02720500ff000000000f000000deff03",
+    "meaning": "MOV R5, RZ"
+  },
+  "metadata": "unchanged"
+}

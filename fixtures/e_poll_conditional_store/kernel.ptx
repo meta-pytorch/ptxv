@@ -1,0 +1,24 @@
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 flag, .param .u64 output, .param .u64 input) {
+ .reg .b64 %p<3>;
+ .reg .b32 %id, %v, %data;
+ .reg .pred %producer, %retry;
+ ld.param.u64 %p0, [flag];
+ ld.param.u64 %p1, [output];
+ ld.param.u64 %p2, [input];
+ mov.u32 %id, %ctaid.x;
+ setp.eq.u32 %producer, %id, 0;
+ @%producer bra PRODUCER;
+ ld.global.b32 %data, [%p2];
+LOOP:
+ ld.acquire.gpu.global.u32 %v, [%p0];
+ setp.ne.u32 %retry, %v, 1;
+ @%retry st.global.b32 [%p1], %data; // @RESULT
+ @%retry bra LOOP;
+ ret;
+PRODUCER:
+ st.release.gpu.global.u32 [%p0], 1;
+ ret;
+}

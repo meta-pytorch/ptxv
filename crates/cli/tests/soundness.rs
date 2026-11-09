@@ -118,3 +118,42 @@ fn failed_polls_cannot_hide_live_register_or_memory_effects() {
         }
     }
 }
+
+#[test]
+fn ring_poll_failures_cannot_hide_memory_effects() {
+    for front in ["ptx", "sass"] {
+        for certify in [false, true] {
+            let r = compare("e_poll_conditional_store", front, true, certify, false);
+            assert!(
+                r["pre_reference"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|p| p.as_str().unwrap().contains("nondeterministic")),
+                "{r}"
+            );
+        }
+    }
+}
+
+#[test]
+fn warp_poll_stutters_compare_uniform_state_and_wide_stores() {
+    for case in ["e_poll_uniform", "e_poll_wide"] {
+        for certify in [false, true] {
+            let r = compare(case, "sass", true, certify, true);
+            let class = if case == "e_poll_uniform" {
+                "inconclusive"
+            } else {
+                "nondeterministic"
+            };
+            assert!(
+                r["pre_reference"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|p| p.as_str().unwrap().contains(class)),
+                "{r}"
+            );
+        }
+    }
+}

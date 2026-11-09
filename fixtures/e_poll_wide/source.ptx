@@ -1,0 +1,37 @@
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 flag, .param .u64 output, .param .u64 zeros) {
+ .reg .b64 %p<3>;
+ .reg .b32 %id, %v, %d<8>;
+ .reg .pred %producer, %done;
+ ld.param.u64 %p0, [flag];
+ ld.param.u64 %p1, [output];
+ ld.param.u64 %p2, [zeros];
+ mov.u32 %id, %ctaid.x;
+ setp.eq.u32 %producer, %id, 0;
+ @%producer bra PRODUCER;
+ ld.global.v8.b32 {%d0,%d1,%d2,%d3,%d4,%d5,%d6,%d7}, [%p2];
+ nanosleep.u32 0;
+LOOP:
+ ld.acquire.gpu.global.u32 %v, [%p0];
+ setp.eq.u32 %done, %v, 1;
+ @%done bra DONE;
+ st.global.v8.b32 [%p1], {%d0,%d1,%d2,%d3,%d4,%d5,%d6,%d7};
+ bra LOOP;
+DONE:
+ ld.global.v8.b32 {%d0,%d1,%d2,%d3,%d4,%d5,%d6,%d7}, [%p1];
+ sub.rn.f32 %d0, %d0, 0f3f800000;
+ sub.rn.f32 %d1, %d1, 0f3f800000;
+ sub.rn.f32 %d2, %d2, 0f3f800000;
+ sub.rn.f32 %d3, %d3, 0f3f800000;
+ sub.rn.f32 %d4, %d4, 0f3f800000;
+ sub.rn.f32 %d5, %d5, 0f3f800000;
+ sub.rn.f32 %d6, %d6, 0f3f800000;
+ sub.rn.f32 %d7, %d7, 0f3f800000;
+ st.global.v8.b32 [%p1], {%d0,%d1,%d2,%d3,%d4,%d5,%d6,%d7};
+ ret;
+PRODUCER:
+ st.release.gpu.global.u32 [%p0], 1;
+ ret;
+}

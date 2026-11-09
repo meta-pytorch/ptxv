@@ -1,0 +1,42 @@
+name = "poll-conditional-store"
+description = "A failed polling iteration writes an input-derived output"
+ptx = "kernel.ptx"
+entry = "k"
+grid = [2,1,1]
+cluster = [2,1,1]
+block = [1,1,1]
+outputs = ["out", "flag"]
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+values = [[0, 1]]
+[[params]]
+kind = "ptr"
+buffer = "flag"
+[[params]]
+kind = "ptr"
+buffer = "out"
+[[params]]
+kind = "ptr"
+buffer = "x"
+[[variants]]
+id = "reference"
+expect = ["nondeterministic"]
+[[variants]]
+id = "candidate"
+expect = ["clean"]
+marker = "@RESULT"
+find = "st.global.b32 [%p1], %data;"
+replace = "st.global.b32 [%p1], 0;"
