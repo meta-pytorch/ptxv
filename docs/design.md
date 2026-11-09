@@ -231,6 +231,8 @@ HB is tracked with **vector clocks over epochs**, not over individual instructio
 
 **Not implemented** (2026-11-08): there is no skeleton slice or ghost memory; exploration runs the full concrete state. The reductions in use are listed in docs/grid-cost.md (representative CTAs, slices, the E-WELLSYNC certificate, partial-order reduction).
 
+**Deferred** (2026-11-08): slicing is not planned. Its main benefit, avoiding interleavings of instructions that touch no shared state, is largely covered by the E-WELLSYNC certificate. It does not address the main source of timeouts: data-dependent control and synchronization (e.g. the multi-GPU MoE dispatch / combine kernels), where the sliced state still includes the data-dependent values. The design below is kept for reference and can be revisited if future workloads need it.
+
 Backward-slice the IR from (a) every sync-visible instruction, (b) every branch condition that
 controls one, and (c) every **address** and descriptor operand of a memory or async op. What
 remains is the skeleton: loop counters, stage indices, phase bits, tile-scheduler state, CLC
@@ -396,7 +398,7 @@ while waiting on a CTA that cannot allocate, and missing `relinquish_alloc_permi
   and a per-instruction pointer into the semantics table.
 * **`sim`:** one interpreter, generic over a **value domain** and a **scheduler**:
   * value domains: `Concrete` (bits), `Skeleton` (concrete only on sliced registers, ghost
-    elsewhere), `Shadow` (bits + exact/interval real + optional linear error form, §5.2);
+    elsewhere; not implemented, deferred, see §3.3), `Shadow` (bits + exact/interval real + optional linear error form, §5.2);
   * schedulers: model-checker-controlled, PCT random, "deterministic fastest" (for numerics);
   * SIMT execution as SoA lanes (`[u32; 32]`) with active masks, so per-warp ops vectorize;
   * memory spaces: registers, smem, DSMEM (via a cluster map), TMEM (lanes × columns),
