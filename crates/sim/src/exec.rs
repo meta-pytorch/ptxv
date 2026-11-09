@@ -12333,8 +12333,8 @@ impl Machine {
                 "instruction descriptor {idesc:#x} (kind::{kind:?}): {what} not modeled yet"
             ))
         };
-        if sparse != 0 || nega != 0 || negb != 0 || amaj != 0 || bmaj != 0 || a_tmem {
-            return bad("sparsity / negate / MN-major / A in TMEM");
+        if sparse != 0 || nega != 0 || negb != 0 {
+            return bad("sparsity / negate");
         }
         // (A format, B format, f16 D, elements per instruction).
         let (fa, fb, f16_d, kn) = match kind {
@@ -12366,6 +12366,20 @@ impl Machine {
         };
         if scaled != !matches!(kind, MmaKind::F8f6f4) {
             return bad("scale-factor operands");
+        }
+        // A in TMEM and MN-major operands: 8-bit formats only (GB300, probes/mma_mxf8_tmem: A
+        // row m at TMEM lane m, word c = elements 4c..4c+3, low byte first; MN-major
+        // SWIZZLE_128B: K-row k of 128 M/N bytes at (k / 8) SBO + (k % 8) 128, M/N atoms LBO
+        // apart, then the address swizzle), M = 128, one CTA. ASSUME(N-MMA-BS, S-TMEM)
+        let w8 = |t: Lp| crate::lowp::width(t) == 8;
+        if (a_tmem || amaj != 0) && !w8(fa) || bmaj != 0 && !w8(fb) {
+            return bad("A in TMEM / MN-major with a 6- or 4-bit format");
+        }
+        if (a_tmem || amaj != 0 || bmaj != 0) && (m != 128 || peer.is_some()) {
+            return bad("A in TMEM / MN-major with M != 128 or cta_group::2");
+        }
+        if a_tmem && amaj != 0 {
+            return bad("A in TMEM with the A MN-major bit");
         }
         // Block scaling: (scale format, elements per scale, the byte of the TMEM word that holds
         // block b's scale). GB300 (probes/mma_bs): 1X reads byte sf_id, 2X bytes sf_id + b
@@ -12399,6 +12413,9 @@ impl Machine {
         let nh = lay.nb as u32;
         // ASSUME(E-DESC-VERSION): see the kind::f16 path.
         for (which, dsc) in [("A", adesc), ("B", bdesc)] {
+            if which == "A" && a_tmem {
+                continue;
+            }
             let v = (dsc >> 46) & 7;
             if v != 1 {
                 let msg = format!(
@@ -12408,13 +12425,35 @@ impl Machine {
                 self.report("contract", format!("desc-version:{}", op.pc), msg);
             }
         }
-        let (sa, lboa, sboa, swa) = Self::smem_desc(adesc)?;
+        let (sa, lboa, sboa, swa) = if a_tmem {
+            (0, 0, 0, 0)
+        } else {
+            Self::smem_desc(adesc)?
+        };
         let (sb, lbob, sbob, swb) = Self::smem_desc(bdesc)?;
         if swa == SW128_B32 || swb == SW128_B32 {
             return Err(
                 "narrow-kind MMA with a SWIZZLE_128B_BASE32B descriptor not modeled".into(),
             );
         }
+        for (name, maj, sw) in [("A", amaj, swa), ("B", bmaj, swb)] {
+            if maj != 0 && sw != 128 {
+                return bad(&format!(
+                    "{name} MN-major with smem layout {sw} (only SWIZZLE_128B)"
+                ));
+            }
+        }
+        // Byte of MN-major element (row r along M / N, k along K), SWIZZLE_128B.
+        let mn_at = |start: u32, lbo: u32, sbo: u32, r: usize, k: usize| {
+            swz(
+                start
+                    + (r % 128) as u32
+                    + (k % 8) as u32 * 128
+                    + (r / 128) as u32 * lbo
+                    + (k / 8) as u32 * sbo,
+                128,
+            )
+        };
         // Byte `kb` (0..32) of row r's K slice: K-major, no swizzle: 16-byte core-matrix rows,
         // 8-row groups SBO apart, the two 16-byte K chunks LBO apart; swizzled: row r at
         // (r/8)*SBO + (r%8)*span, the slice contiguous, then the address swizzle.
@@ -12433,23 +12472,32 @@ impl Machine {
                 )
             }
         };
-        for (start, sw) in [(sa, swa), (sb, swb)] {
-            if sw != 0 && (start % sw) as usize + 32 > sw as usize {
+        for (start, sw, skip) in [(sa, swa, a_tmem || amaj != 0), (sb, swb, bmaj != 0)] {
+            if !skip && sw != 0 && (start % sw) as usize + 32 > sw as usize {
                 return Err(format!(
                     "MMA K slice at smem {start:#x} crosses a {sw}-byte swizzle row: not modeled"
                 ));
             }
         }
-        for &(start, lbo, sbo, sw, nr) in &[
-            (sa, lboa, sboa, swa, rows as u32),
-            (sb, lbob, sbob, swb, nh),
+        for &(start, lbo, sbo, sw, nr, maj, used) in &[
+            (sa, lboa, sboa, swa, rows as u32, amaj, !a_tmem),
+            (sb, lbob, sbob, swb, nh, bmaj, true),
         ] {
+            if !used {
+                continue;
+            }
             let last = (0..nr as usize)
                 .flat_map(|r| {
-                    [
-                        byte_at(start, lbo, sbo, sw, r, 0),
-                        byte_at(start, lbo, sbo, sw, r, 31),
-                    ]
+                    if maj != 0 {
+                        (0..32)
+                            .map(|k| mn_at(start, lbo, sbo, r, k))
+                            .collect::<Vec<_>>()
+                    } else {
+                        vec![
+                            byte_at(start, lbo, sbo, sw, r, 0),
+                            byte_at(start, lbo, sbo, sw, r, 31),
+                        ]
+                    }
                 })
                 .max()
                 .unwrap()
@@ -12493,11 +12541,50 @@ impl Machine {
             }
             out
         };
+        // MN-major (SWIZZLE_128B): one 16-byte access per 16 rows of a K-row (a swizzle granule),
+        // returned row-major (nr x 32 bytes).
+        let rd_mn = |me: &mut Machine, cta: u16, start, lbo, sbo, nr: usize| -> Vec<u8> {
+            let mut v = vec![0u8; nr * 32];
+            for k in 0..32 {
+                for r0 in (0..nr).step_by(16) {
+                    let off = mn_at(start, lbo, sbo, r0, k);
+                    me.proxy_check(cta, off, 16, &op.vc, op.pc, "tcgen05.mma");
+                    let b = me.access(op.actor, &op.vc, op.pc, Loc::Shared { cta, off }, 16, None);
+                    for (i, x) in b.iter().enumerate().take(nr - r0) {
+                        v[(r0 + i) * 32 + k] = *x;
+                    }
+                }
+            }
+            v
+        };
+        let mut a_uninit = false;
         let mut a_bytes = Vec::new();
         let mut b_bytes = Vec::new();
         for &c in &ctas {
-            a_bytes.push(rd(self, c, sa, lboa, sboa, swa, rows));
-            b_bytes.extend(rd(self, c, sb, lbob, sbob, swb, nh as usize));
+            if a_tmem {
+                let (al, ac) = ((adesc >> 16) as usize & 0xffff, (adesc & 0xffff) as usize);
+                if al != 0 || ac + 8 > TMEM_COLS {
+                    return Err(format!("MMA A at TMEM lane {al} column {ac} out of range"));
+                }
+                let mut v = Vec::with_capacity(rows * 32);
+                for r in 0..rows {
+                    for j in 0..8 {
+                        let (w, st) = self.tmem_access(c, r, ac + j, op.actor, &op.vc, op.pc, None);
+                        a_uninit |= st == 0;
+                        v.extend(w.to_le_bytes());
+                    }
+                }
+                a_bytes.push(v);
+            } else if amaj != 0 {
+                a_bytes.push(rd_mn(self, c, sa, lboa, sboa, rows));
+            } else {
+                a_bytes.push(rd(self, c, sa, lboa, sboa, swa, rows));
+            }
+            if bmaj != 0 {
+                b_bytes.extend(rd_mn(self, c, sb, lbob, sbob, nh as usize));
+            } else {
+                b_bytes.extend(rd(self, c, sb, lbob, sbob, swb, nh as usize));
+            }
         }
         let to_ops = |bytes: &[u8], t: Lp| -> Vec<crate::mma_lp::Operand> {
             bytes
@@ -12697,7 +12784,11 @@ impl Machine {
             // nibble j % 2.
             // ASSUME(N-HALF-LEAF): see ASSUMPTIONS.md
             let fp4 = kn == 64 && fa == Lp::E2m1 && fb == Lp::E2m1;
+            // (Not for A in TMEM or MN-major operands: their provenance is unknown.)
             let track = self.num.as_ref().is_some_and(|ns| ns.half.is_on())
+                && !a_tmem
+                && amaj == 0
+                && bmaj == 0
                 && (kn == 32 && crate::lowp::width(fa) == 8 && crate::lowp::width(fb) == 8 || fp4);
             let slot = |j: usize| {
                 if fp4 {
@@ -12856,8 +12947,10 @@ impl Machine {
         if unalloc {
             self.tmem_state_report(2, "tcgen05.mma", op.pc);
         }
-        if uninit || sf_uninit {
-            let what = if sf_uninit {
+        if uninit || sf_uninit || a_uninit {
+            let what = if a_uninit {
+                "its A operand from"
+            } else if sf_uninit {
                 "scale factors from"
             } else {
                 "an accumulator (enable_input_d = 1) in"

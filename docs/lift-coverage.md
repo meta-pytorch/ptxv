@@ -157,6 +157,7 @@ modifier of these opcodes is refused.
 | `CCTL.E.PF1` / `CCTL.E.PF2` (prefetch.global.L1 / .L2): no effect | probes/f2i16 runs both |
 | `BREAK[.RELIABLE] Pc, Bb` | **probes/div_ftz**: div.rn.ftz.f32 slow path on edge pairs (E-BSYNC) |
 | `UTCQMMA` / `tcgen05.mma` block-scaled M = 128 N = 8 (shape check relaxed) | **probes/mma_bs expected/n8**, both front-ends (N-MMA-BS, S-TMEM) |
+| `UTCQMMA` / `tcgen05.mma.kind::mxf8f6f4` with A in TMEM or MN-major A / B (SWIZZLE_128B), 8-bit formats, M = 128 | **probes/mma_mxf8_tmem** = the K-major path on GB300 bitwise, both front-ends (N-MMA-BS, S-TMEM) |
 | `ATOMG.E.INC[.STRONG.GPU]` (+ PTX `atom.inc.u32`) | **probes/atom_inc**, both front-ends (L-ROSETTA) |
 | `BMOV.32[.CLEAR] Rd, Bb`, `BMOV.32 Bb, Ra` | the parallel_attn_bwd_dkv case (E-BSYNC); not probed alone |
 | `[R.U32+UR]` generic addresses, `UTMAREDG ... desc[URZ]`, device-built tensor maps (words 0x40/0x48 = 0) | operand syntax; **probes/tmap_device**, **probes/tmap_param_copy** (S-TMAP; raw tensor-map parameter bytes visible to device code) |

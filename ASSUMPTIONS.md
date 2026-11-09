@@ -5996,6 +5996,19 @@ Scale-factor placement in TMEM (all measured with `probes/mma_bs`, which writes 
 - Illegal instruction on GB300: invalid sf_id for the vector size, mxf4nvf4 2X with ue4m3
   scales, mxf4 with A/B format code 5. The simulator reports these as faults.
 
+Operand placement beyond K-major shared memory (2026-11-08, probes/mma_mxf8_tmem, 8-bit
+formats, M = 128, one CTA):
+- A in TMEM: row m at lane m. Word c of the 8 columns at [a] holds elements 4c..4c+3, low byte
+  first.
+- MN-major SWIZZLE_128B, A or B: K-row k (128 M/N elements of a byte each) at
+  (k / 8) SBO + (k % 8) 128, M/N atoms of 128 LBO apart, then the address swizzle.
+- With A in TMEM / B MN-major (fa4 fwd P*V, idesc 0x08a10000) and with A MN-major
+  (0x08a08000), D on GB300 equals the K-major shared-memory path on the same e4m3 operands
+  and ue8m0 scales bitwise (four K = 32 MMAs). Both front-ends reproduce all three tiles
+  bitwise.
+- Refused: these placements with 6- or 4-bit formats, other MN-major layouts, M != 128, and
+  cta_group::2 (a fused kernel's M = 256 A MN-major form).
+
 Arithmetic:
 - **mxf8f6f4** (scale_vec 1X, ue8m0, K = 32): the N-MMA-F8 model
   `g32-f25-rz-accin-tzero-efields` with terms a·b·sa·sb. The alignment exponent of a product is

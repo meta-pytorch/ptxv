@@ -2551,6 +2551,14 @@ fn probe_fmnmx3_abs_matches_hardware() {
     probe_bitwise("probes/fmnmx3_abs", "good", "sass");
 }
 
+/// kind::mxf8f6f4 with A in TMEM / B MN-major and with A MN-major = the K-major path = GB300 on
+/// both fronts (probes/mma_mxf8_tmem).
+#[test]
+fn probe_mma_mxf8_tmem_matches_hardware() {
+    probe_bitwise("probes/mma_mxf8_tmem", "good", "ptx");
+    probe_bitwise("probes/mma_mxf8_tmem", "good", "sass");
+}
+
 /// red.async.release.gpu.global.add as a release flag (probes/red_async) = GB300 on both
 /// fronts; the .relaxed form publishes nothing in PTX (a race), while ptxas's UREDGR releases.
 #[test]
