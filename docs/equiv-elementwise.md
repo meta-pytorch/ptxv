@@ -29,6 +29,9 @@ proves them. Before this, `compare` reported such pairs as blocked ("no dataflow
   pair takes under a second.
 - **Sweep cache.** The results are cached in `sweeps.elementwise.json` next to the
   `sweep_cache`.
+  Same-format bf16/f16 copies preserve every input encoding, including signaling NaNs.
+  Copy comparisons use a separate cache policy so summaries from the former rounding path
+  cannot establish bitwise equality.
 
 The largest *ulp* distance between the two kernels is meaningless where an output is near
 zero. In these places one kernel cancels to 0 and the other does not:

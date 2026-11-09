@@ -789,9 +789,8 @@ fn elementwise_gpu_check(
         let os = if out_ty == EType::F32 { 4 } else { 2 };
         for o in &ex.outs {
             let p = pats[o.leaf.1 as usize];
-            let want = ex.fns[o.f]
-                .eval(in_ty.to_f32(p), &mut scratch)
-                .map_err(|x| x.to_string())?;
+            let want =
+                ptxv_sim::elementwise::out_bits(&ex.fns[o.f], in_ty, out_ty, p, &mut scratch)?;
             let want = if os == 4 { want } else { want & 0xffff };
             let got = out
                 .get(o.index * os..o.index * os + os)

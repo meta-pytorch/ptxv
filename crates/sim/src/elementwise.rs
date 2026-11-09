@@ -1003,14 +1003,17 @@ pub struct PairSweep {
     pub seconds: f64,
 }
 
-/// Output bits of an element function at input pattern `b`, in the output format.
-fn out_bits(
+/// Output bits of an element function, preserving encodings for a same-format copy.
+pub fn out_bits(
     f: &ETree,
     ty: EType,
     out: EType,
     b: u32,
     scratch: &mut Vec<u64>,
 ) -> Result<u32, String> {
+    if matches!(f, ETree::X) && ty == out {
+        return Ok(b);
+    }
     Ok(match out {
         EType::F32 => f.eval_f32(ty.to_f32(b), scratch)?,
         // A 16-bit output: its element function ends in `Half` or `Round`.
@@ -1187,8 +1190,14 @@ pub fn sweep(
     out: EType,
     func: Option<&str>,
 ) -> Result<PairSweep, String> {
+    let policy =
+        if ty == out && ty != EType::F32 && (matches!(r, ETree::X) || matches!(c, ETree::X)) {
+            "copy-bits-v2-"
+        } else {
+            ""
+        };
     let key = format!(
-        "{:016x}-{:016x}-{}-{}-{}",
+        "{policy}{:016x}-{:016x}-{}-{}-{}",
         r.key(),
         c.key(),
         ty.name(),
@@ -1521,5 +1530,51 @@ mod tests {
         assert_eq!(EType::F32.ulps_between(0x0000_0000, 0x8000_0000), 1);
         assert_eq!(EType::F32.ulps_between(0x0000_0001, 0x8000_0001), 3);
         assert_eq!(EType::Bf16.ulps_between(0x3f80, 0x3f81), 1);
+    }
+}
+
+#[cfg(test)]
+mod bit_identity_tests {
+    use super::*;
+
+    #[test]
+    fn copies_preserve_every_half_encoding() {
+        for ty in [EType::Bf16, EType::F16] {
+            let mut scratch = Vec::new();
+            for bits in 0..=u16::MAX as u32 {
+                assert_eq!(
+                    out_bits(&ETree::X, ty, ty, bits, &mut scratch).unwrap(),
+                    bits
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn copy_sweeps_do_not_reuse_old_rounding_cache_entries() {
+        let reference = ETree::X;
+        let candidate = ETree::Round(Box::new(ETree::X), false);
+        let ty = EType::Bf16;
+        let legacy_key = format!(
+            "{:016x}-{:016x}-bf16-bf16--",
+            reference.key(),
+            candidate.key()
+        );
+        let stale = PairSweep {
+            inputs: ty.count(),
+            bitwise_equal: ty.count(),
+            ..Default::default()
+        };
+        CACHE
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .insert(legacy_key.clone(), stale);
+        let sweep = sweep(&reference, &candidate, ty, ty, None).unwrap();
+        CACHE.lock().unwrap().as_mut().unwrap().remove(&legacy_key);
+        assert!(
+            sweep.bitwise_equal < sweep.inputs,
+            "copies preserve NaN encodings that rounding changes"
+        );
     }
 }
