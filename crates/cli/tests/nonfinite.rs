@@ -223,3 +223,103 @@ fn errdist_p_nonfinite_matches_the_overflow_probability() {
     let (lo, hi) = (p[1].as_f64().unwrap(), p[2].as_f64().unwrap());
     assert!(lo - 0.003 < 0.1015 && 0.1015 < hi + 0.003, "{p}");
 }
+
+#[test]
+fn packed_f32_births_report_the_actual_high_and_low_lanes() {
+    let dir = std::env::temp_dir().join(format!("ptxv-packed-nonfinite-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("kernel.ptx"),
+        r#"
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 input, .param .u64 output) {
+    .reg .b64 %p<2>, %v<3>;
+    .reg .b32 %r;
+    ld.param.u64 %p0, [input];
+    ld.param.u64 %p1, [output];
+    ld.global.b64 %v0, [%p0];
+    mov.b32 %r, 0f40000000;
+    mov.b64 %v1, {%r, %r};
+    mul.rn.f32x2 %v2, %v0, %v1;
+    st.global.b64 [%p1], %v2;
+    ret;
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("case.toml"),
+        r#"
+name = "packed-nonfinite"
+description = "packed nonfinite attribution"
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1,1,1]
+block = [1,1,1]
+outputs = ["out"]
+params = [{kind="ptr", buffer="x"}, {kind="ptr", buffer="out"}]
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [2]
+init = "file"
+file = "input.bin"
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [2]
+init = "zeros"
+[[variants]]
+id = "good"
+expect = ["nonfinite-output"]
+"#,
+    )
+    .unwrap();
+    for (input, want) in [
+        ([0u32, 0x7f7fffff], "0e0, inf"),
+        ([0x7f7fffff, 0], "inf, 0e0"),
+        ([0x3f800000, 0x3f800000], ""),
+    ] {
+        std::fs::write(
+            dir.join("input.bin"),
+            input
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        for front in ["ptx", "sass"] {
+            let result = std::process::Command::new(env!("CARGO_BIN_EXE_ptxv"))
+                .args([
+                    "check",
+                    dir.to_str().unwrap(),
+                    "--front",
+                    front,
+                    "--variant",
+                    "good",
+                    "--nonfinite",
+                    "--json",
+                    "--hw-profile",
+                    "none",
+                    "--no-gb300",
+                    "--out",
+                    dir.join("result").to_str().unwrap(),
+                ])
+                .env("CUDA_VISIBLE_DEVICES", "")
+                .output()
+                .unwrap();
+            let doc: serde_json::Value = serde_json::from_slice(&result.stdout)
+                .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&result.stderr)));
+            let births = doc["rows"][0]["nonfinite"]["births"].as_array().unwrap();
+            if want.is_empty() {
+                assert!(births.is_empty(), "{front}: {births:?}");
+            } else {
+                assert_eq!(births.len(), 1, "{front}: {births:?}");
+                assert_eq!(births[0]["result"], want, "{front}");
+            }
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

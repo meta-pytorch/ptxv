@@ -5457,7 +5457,7 @@ impl Machine {
                         v.push((Fmt::F32, bits >> 32));
                     }
                 }
-                (v, NfOut::Lanes(Fmt::F32, 1))
+                (v, NfOut::Lanes(Fmt::F32, 2))
             }
             Op::Mufu { a, fmt, .. } => match fmt {
                 ptxv_ir::MufuFmt::F32 => (f32s(&[a]), NfOut::Lanes(Fmt::F32, 1)),
@@ -5509,8 +5509,9 @@ impl Machine {
                 let w = f.bits();
                 regs.iter()
                     .flat_map(|&r| {
-                        let x = rd(r, 1) & 0xffff_ffff;
-                        (0..k).map(move |i| (f, (x >> (w * i)) & ((1u64 << w) - 1)))
+                        let x = rd(r, 1);
+                        let lanes = if r.file == File::V { k } else { k.min(32 / w) };
+                        (0..lanes).map(move |i| (f, (x >> (w * i)) & ((1u64 << w) - 1)))
                     })
                     .collect()
             }
