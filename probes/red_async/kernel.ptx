@@ -1,0 +1,70 @@
+// probes/red_async: red.async.release.gpu.global.add (ptxas: per-lane ELECT loop of
+// MEMBAR.ALL.CTA; UREDGR.E.ADD.NA.STRONG.GPU; DEPBAR) as a release flag. CTA 0: each of the 32
+// lanes stores data[lane] = in[lane] + 1, then adds 1 to flag with red.async.release.gpu (and
+// to flag64 with the .u64 form). CTA 1: lane 0 polls flag with ld.acquire.gpu until it is 32;
+// after bar.warp.sync every lane stores out[lane] = data[lane]; lane 0 stores out[32] = flag,
+// out[33] = flag64 (low word).
+// Variant relaxed (@REL): red.async.relaxed.gpu publishes nothing in PTX, so CTA 1's reads of
+// data race with CTA 0's stores (ptxas emits the same SASS for both).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry red_async(
+    .param .u64 pin,
+    .param .u64 pdata,
+    .param .u64 pflag,
+    .param .u64 pout
+)
+.maxntid 32, 1, 1
+{
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<16>;
+    .reg .pred  %p<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pdata];
+    ld.param.u64    %rd3, [pflag];
+    ld.param.u64    %rd4, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    cvta.to.global.u64 %rd4, %rd4;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %ctaid.x;
+    mul.wide.u32    %rd5, %r1, 4;
+    add.s64         %rd6, %rd2, %rd5;
+    add.s64         %rd9, %rd3, 8;
+    setp.ne.u32     %p1, %r2, 0;
+    @%p1 bra        CONSUMER;
+    add.s64         %rd7, %rd1, %rd5;
+    ld.global.u32   %r3, [%rd7];
+    add.u32         %r4, %r3, 1;
+    st.global.u32   [%rd6], %r4;
+    red.async.release.gpu.global.add.u32 [%rd3], 1; // @REL
+    mov.u64         %rd10, 1;
+    red.async.release.gpu.global.add.u64 [%rd9], %rd10;
+    ret;
+CONSUMER:
+    setp.ne.u32     %p2, %r1, 0;
+    @%p2 bra        READ;
+POLL:
+    ld.acquire.gpu.global.u32 %r5, [%rd3];
+    setp.lt.u32     %p3, %r5, 32;
+    @%p3 bra        POLL;
+READ:
+    bar.warp.sync   -1;
+    ld.global.u32   %r6, [%rd6];
+    add.s64         %rd8, %rd4, %rd5;
+    st.global.u32   [%rd8], %r6;
+    @%p2 bra        DONE;
+    st.global.u32   [%rd4+128], %r5;
+POLL64:
+    ld.acquire.gpu.global.u64 %rd11, [%rd9];
+    setp.lt.u64     %p4, %rd11, 32;
+    @%p4 bra        POLL64;
+    cvt.u32.u64     %r7, %rd11;
+    st.global.u32   [%rd4+132], %r7;
+DONE:
+    ret;
+}

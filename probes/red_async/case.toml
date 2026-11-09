@@ -1,0 +1,66 @@
+name = "probe_red_async"
+description = """
+Probe (S-RED-ASYNC) for red.async.release.gpu.global.add .u32 / .u64 (SASS: ELECT loop of
+MEMBAR.ALL.CTA; UREDGR.E.ADD.NA.STRONG.GPU; DEPBAR) used as a release flag between two CTAs:
+32 adds from one warp, a consumer CTA that acquires the flag and reads the data (kernel.ptx).
+expected/ is GB300's output (ptxas -arch=sm_103a kernel.ptx, `ptxv hw`)."""
+ptx = "kernel.ptx"
+entry = "red_async"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [32]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [34]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "relaxed"
+summary = "red.async.relaxed.gpu publishes nothing in PTX: the consumer's reads of data race with the producer's stores; ptxas emits the same MEMBAR.ALL.CTA + UREDGR as for .release, which the SASS front runs as a release (clean there)"
+expect = ["race"]
+expect_sass = ["clean"]
+marker = "@REL"
+find = "red.async.release.gpu.global.add.u32"
+replace = "red.async.relaxed.gpu.global.add.u32"

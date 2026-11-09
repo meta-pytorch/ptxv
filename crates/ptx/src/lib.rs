@@ -6445,6 +6445,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         | "shared"
                         | "shared::cta"
                         | "shared::cluster"
+                        | "async"
                 )
             }) {
                 bail!(lw.err(format!("{base}: modifier .{m} not modeled")));
@@ -6453,6 +6454,26 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 .iter()
                 .find_map(|m| space_of(m))
                 .unwrap_or(Space::Generic);
+            // `red.async.{relaxed,release}.{gpu,sys}.global.add.{u32,s32,u64,s64} [a], b`
+            // (ptxas 13.0: a per-lane ELECT loop of MEMBAR.ALL.CTA; UREDGR.E.ADD.NA.STRONG.<scope>;
+            // DEPBAR.LE SB, 0, so the reduction has completed before the next instruction): a
+            // red of that semantics and scope (probes/redasync_litmus: the release orders the
+            // thread's earlier global stores on GB300). ASSUME(S-RED-ASYNC). Other operations
+            // are refused: ptxas 13.0 and 13.1 accept .min / .max / .or / .and / .xor / .inc /
+            // .dec and emit UREDGR.E.ADD (GB300 adds).
+            if has("async")
+                && (base != "red"
+                    || space != Space::Global
+                    || !has("add")
+                    || !matches!(tname, "u32" | "s32" | "u64" | "s64")
+                    || !(has("gpu") || has("sys"))
+                    || !(has("relaxed") || has("release")))
+            {
+                bail!(lw.err(
+                    "red.async: only .relaxed / .release .gpu / .sys .global .add .u32 / .s32 / .u64 / .s64 \
+                     is modeled (ptxas 13.0 compiles the other operations to an add)"
+                ));
+            }
             let op = if has("add") && tname == "f32" {
                 AtomOp::FAddFtz
             } else if has("add") && tname == "f64" {
@@ -7540,6 +7561,56 @@ mod tests {
             "{v:?}"
         );
         assert!(ops("max.abs.f32 %r1, %r2, %r3;").is_err());
+    }
+
+    #[test]
+    fn red_async_and_tensor_reduce_forms() {
+        // red.async.release.gpu.global.add = a release red at gpu scope; other operations are
+        // refused (ptxas 13.0 compiles them to an add).
+        let v = ops("red.async.release.gpu.global.add.s32 [%rd1], %r1;").unwrap();
+        assert!(
+            matches!(
+                &v[0],
+                Op::Atom {
+                    op: AtomOp::Add,
+                    space: Space::Global,
+                    sync: MemSync {
+                        sem: Sem::Release,
+                        scope: Scope::Gpu
+                    },
+                    d: None,
+                    ..
+                }
+            ),
+            "{v:?}"
+        );
+        assert!(ops("red.async.relaxed.sys.global.add.u64 [%rd1], %rd2;").is_ok());
+        for l in [
+            "red.async.release.gpu.global.min.s32 [%rd1], %r1;",
+            "red.async.release.gpu.global.or.b32 [%rd1], %r1;",
+            "atom.async.release.gpu.global.add.s32 %r2, [%rd1], %r1;",
+            "red.async.release.gpu.global.add.f32 [%rd1], %r1;",
+        ] {
+            assert!(ops(l).is_err(), "{l}");
+        }
+        // Tensor add-reductions without `.tile` and with an L2 cache hint.
+        let a = ops("cp.reduce.async.bulk.tensor.2d.global.shared::cta.add.tile.bulk_group [%rd1, {%r1, %r2}], [%r3];").unwrap();
+        let b = ops("cp.reduce.async.bulk.tensor.2d.global.shared::cta.add.bulk_group [%rd1, {%r1, %r2}], [%r3];").unwrap();
+        let c = ops("cp.reduce.async.bulk.tensor.2d.global.shared::cta.add.tile.bulk_group.L2::cache_hint [%rd1, {%r1, %r2}], [%r3], %rd2;").unwrap();
+        assert!(
+            a == b
+                && b == c
+                && matches!(
+                    a[0],
+                    Op::TmaStore {
+                        red: true,
+                        dims: 2,
+                        ..
+                    }
+                ),
+            "{a:?}"
+        );
+        assert!(ops("cp.reduce.async.bulk.tensor.2d.global.shared::cta.add.tile.bulk_group.L2::cache_hint [%rd1, {%r1, %r2}], [%r3];").is_err());
     }
 
     #[test]

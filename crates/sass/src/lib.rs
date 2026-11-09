@@ -3196,6 +3196,45 @@ fn lower_line(
                 }
             }
         }
+        // `UREDGR.E.ADD.NA[.S32 | .64].STRONG.GPU|SYS [URa], URb` (ptxas 13.0's red.async
+        // .global, issued for one elected lane per BRA.U.ANY loop iteration after MEMBAR.ALL.CTA
+        // and waited for by DEPBAR): a red of that scope that releases the issuing thread's
+        // earlier accesses (probes/redasync_litmus: with UREDGR nothing was stale; MEMBAR.ALL.CTA
+        // + REDG gave stale reads). Executed once per warp (uniform datapath). ASSUME(S-RED-ASYNC)
+        "UREDGR" => {
+            let core: Vec<&str> = mods
+                .iter()
+                .copied()
+                .filter(|m| !matches!(*m, "E" | "NA" | "STRONG" | "GPU" | "SYS"))
+                .collect();
+            let bytes = match core.as_slice() {
+                ["ADD"] | ["ADD", "S32"] | ["ADD", "U32"] => 4,
+                ["ADD", "64"] => 8,
+                _ => bail!(lw.err(format!("UREDGR variant not modeled: .{}", mods.join(".")))),
+            };
+            let scope = match (has("GPU"), has("SYS")) {
+                (true, false) => Scope::Gpu,
+                (false, true) => Scope::Sys,
+                _ => bail!(lw.err("UREDGR without .GPU / .SYS not modeled")),
+            };
+            if !has("STRONG") || !has("E") {
+                bail!(lw.err("UREDGR without .E.STRONG not modeled"));
+            }
+            Op::Atom {
+                op: AtomOp::Add,
+                space: Space::Global,
+                bytes,
+                addr: wide_e_addr(lw.addr(lw.op(0)?)?, true),
+                v: lw.val(lw.op(1)?, bytes)?,
+                d: None,
+                sync: MemSync {
+                    sem: Sem::Release,
+                    scope,
+                },
+                p: None,
+                new: None,
+            }
+        }
         "STS" => {
             let bytes = match mods {
                 ["U8"] => 1,

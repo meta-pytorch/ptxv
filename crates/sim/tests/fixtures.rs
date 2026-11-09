@@ -2518,6 +2518,30 @@ fn probe_fmnmx3_abs_matches_hardware() {
     probe_bitwise("probes/fmnmx3_abs", "good", "sass");
 }
 
+/// red.async.release.gpu.global.add as a release flag (probes/red_async) = GB300 on both
+/// fronts; the .relaxed form publishes nothing in PTX (a race), while ptxas's UREDGR releases.
+#[test]
+fn probe_red_async_matches_hardware() {
+    // A cross-CTA poll: explored (not certifiable as well-synchronized).
+    let case = Case::load(root().join("probes/red_async")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+        assert!(v.complete, "{front}");
+        assert_eq!(v.classes(), ["clean"], "{front}: {:#?}", v.findings);
+        for out in &v.outputs {
+            let report = case.expect_report(out).unwrap();
+            assert!(
+                report.iter().all(|l| l.contains("bitwise equal")),
+                "{front}: {report:?}"
+            );
+        }
+    }
+    check_dir("probes", "red_async", "relaxed", "ptx");
+    check_dir("probes", "red_async", "relaxed", "sass");
+}
+
 /// mbarrier.expect_tx / complete_tx (probes/mbar_expect_tx): tx-count steps = GB300 on both
 /// fronts; without a fence the relaxed complete_tx publishes nothing (a race on the PTX front).
 #[test]

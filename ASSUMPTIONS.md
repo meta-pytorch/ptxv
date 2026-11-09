@@ -3403,6 +3403,29 @@ treated as sufficient.** Since rung 1f:
 - If wrong: *miss* of mbarrier scope bugs (a remote arrive with `.release.cta`).
 - Retire: scopes on mbarrier operations.
 
+### S-RED-ASYNC · code
+**`red.async.{relaxed,release}.{gpu,sys}.global.add` is a red of that semantics and scope
+that has completed before the issuing thread's next instruction. SASS
+`UREDGR.E.ADD.NA.STRONG.GPU|SYS` releases the issuing thread's earlier accesses at its
+scope.**
+- ptxas 13.0's lowering is a per-lane ELECT loop: `MEMBAR.ALL.CTA; UREDGR [UR], UR; DEPBAR.LE
+  SB, 0`. DEPBAR waits for the reduction, hence "completed". On its own, MEMBAR.ALL.CTA does
+  not order global stores before a gpu-scope flag (control below), so the release rests on
+  UREDGR.
+- Where: `ptx` atom / red arm (`async`), `sass` `UREDGR` (executed once per warp, by its first
+  active thread, which releases only that thread's clock; ptxas's loop runs one elected lane
+  per iteration).
+- Refused: other operations (`.min` / `.max` / `.or` / `.and` / `.xor` / `.inc` / `.dec`).
+  ptxas 13.0 and 13.1 compile them to `UREDGR.E.ADD`, and GB300 adds: `100 min.s32 6` = 106.
+  Also refused: other types, other spaces, `atom.async`, and UREDGR with other modifiers.
+- Status: **probed** (hardware evidence, probes/redasync_litmus, 2026-11-08). The test is message
+  passing between CTAs on different SMs: weak payload stores, the form on a flag,
+  `ld.acquire.gpu` polls, then weak reads. In the three configurations in which controls were
+  stale, `red.async.release.gpu` gave 0 stale reads in 1,689,600,000. MEMBAR.ALL.CTA + REDG
+  gave 21,730,362 stale reads; `red.relaxed.gpu` gave 461,790 in 153,600,000. Totals:
+  2.72e9 reads under the async form, 0 stale. probes/red_async: GB300 50/50 scrubbed, both
+  front-ends bitwise; its `relaxed` variant is a race on the PTX front.
+
 ### S-SMEM-STRONG · code
 **SASS `LDS`/`STS` of the CTA's own shared memory are relaxed strong accesses at CTA scope;
 an `LDS` whose scoreboard is waited on before the warp issues any later non-ALU

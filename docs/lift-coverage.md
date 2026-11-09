@@ -125,6 +125,7 @@ Model changes the kernels forced:
 | `UTMALDG.2D.GATHER4` (+ PTX `.tile::gather4`) | **fixtures/s_gather4** (6 gathers, 4 swizzles, out-of-bounds rows / columns, unaligned starts), both front-ends = GB300 1000/1000; unaligned columns are illegal instructions (variant `misaligned`, S-TMA-GATHER4) |
 | `SYNCS.ARRIVE.TRANS64.ART0` / `.RED.ART0` (mbarrier.arrive with a count) | probes/mbar_count = GB300, both front-ends (S-MBAR) |
 | `SYNCS.ARRIVE.TRANS64.RED.A0TR` / `.A0TX` (mbarrier.expect_tx / complete_tx, PTX `[.relaxed] [.cta / .cluster]`) | probes/mbar_expect_tx = GB300, both front-ends; relaxed: publishes only what a prior fence released (S-MBAR) |
+| `UREDGR.E.ADD.NA[.S32 / .64].STRONG.GPU / .SYS` (red.async.{relaxed,release}.{gpu,sys}.global.add) | probes/red_async = GB300, both front-ends; release order: probes/redasync_litmus (S-RED-ASYNC). Other red.async operations refused (ptxas compiles them to an add) |
 | `SYNCS.ARRIVE.TRANS64.RED.A0T1`, `ARRIVES.LDGSTSBAR.64.TRANSCNT` / `.ARVCNT` (cp.async.mbarrier.arrive [.noinc]) | **fixtures/s_cpasync_mbar** = GB300 1000/1000 (E-CPASYNC-MBAR) |
 | `SYNCS.PHASECHK.TRANS64.TRYWAIT PT, ...` (no-op), peek tokens through `SEL` / `ISETP` (E-SPIN) | fixtures/r3b_trtllm_bmm certified, = GB300 bitwise |
 
@@ -167,7 +168,7 @@ modifier of these opcodes is refused.
 | `STTM.16dp256bit[.xN]`, `STTM.16dp128bit[.xN]` (+ PTX `tcgen05.st.16x256b / .16x128b`) | **probes/tmem_st16**, both front-ends (S-TMEM) |
 | `F2FP[.RELU].F16.E2M1.UNPACK_B Rd, Ra.B1 / .B2 / .B3` (+ PTX `cvt.rn[.relu].f16x2.e2m1x2` of a `mov.b32 {..}` byte) | **probes/e2m1_bytes**, both front-ends (N-CVT-LP) |
 | `VIMNMX.RELU`, `VIMNMX.S16x2.RELU`, `VIADDMNMX.RELU` (+ PTX `min / max.relu.s32 / .s16x2`) | **probes/imnmx_relu**, both front-ends (N-INT16X2) |
-| `UTMAREDG.<N>D.ADD` (+ PTX `cp.reduce.async.bulk.tensor...add.tile.bulk_group`) on f32 / f16 / bf16 tensors | **probes/tma_red**, edge pairs per type, both front-ends (N-BULK-RED) |
+| `UTMAREDG.<N>D.ADD` (+ PTX `cp.reduce.async.bulk.tensor...add[.tile].bulk_group[.L2::cache_hint]`) on f32 / f16 / bf16 tensors | **probes/tma_red**, edge pairs per type, both front-ends (N-BULK-RED) |
 | `UBLKCP.S.S [URd], [URs], URn` (+ PTX `cp.async.bulk.shared::cluster.shared::cta`) | **probes/bulk_s2s**: 2-CTA cluster, peer and self copies, both front-ends (S-TMA) |
 | `UBLKRED.G.S.ADD.F32.RN [URg], [URs], URn` (+ PTX `cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32`) | **probes/bulk_red**: per-word atomic f32 add (RN, no flush, canonical NaN), four CTAs on the same words, both front-ends (N-BULK-RED) |
 

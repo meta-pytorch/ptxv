@@ -729,6 +729,17 @@ pub const REGISTRY: &[Assumption] = &[
         },
     },
     Assumption {
+        id: "S-RED-ASYNC",
+        kind: "code",
+        status: "probed",
+        title: "red.async.global.add / UREDGR: a completed red that releases at its scope (probes/redasync_litmus)",
+        applies: |k| {
+            k.code
+                .iter()
+                .any(|i| i.text.contains("red.async") || i.text.contains("UREDGR"))
+        },
+    },
+    Assumption {
         id: "S-SMEM-STRONG",
         kind: "code",
         status: "validated",
