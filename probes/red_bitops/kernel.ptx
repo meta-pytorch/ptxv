@@ -1,0 +1,41 @@
+// probes/red_bitops: red.global.{or,and,xor}.b32 / .b64 at cta, gpu and sys scope (SASS
+// REDG.E.{OR,AND,XOR}[.64].STRONG.{SM,GPU,SYS}). 256 threads; thread t updates word t % 64
+// of each region with a value derived from the input word in[t], so 4 threads (two warps
+// apart) collide on each word. The final contents do not depend on the order.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry red_bitops(.param .u64 pin, .param .u64 pout)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<24>;
+    ld.param.u64 %rd1, [pin];
+    ld.param.u64 %rd2, [pout];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 8;
+    add.u64 %rd4, %rd1, %rd3;
+    ld.global.u64 %rd5, [%rd4];            // in[t] (64-bit)
+    cvt.u32.u64 %r2, %rd5;
+    and.b32 %r3, %r1, 63;
+    mul.wide.u32 %rd6, %r3, 4;              // 32-bit word offset
+    mul.wide.u32 %rd7, %r3, 8;              // 64-bit word offset
+    add.u64 %rd8, %rd2, %rd6;               // region 0: 64 x b32 or  (cta)
+    red.global.cta.or.b32 [%rd8], %r2;
+    red.global.cta.and.b32 [%rd8+256], %r2;  // region 1: and (cta)
+    red.global.cta.xor.b32 [%rd8+512], %r2;  // region 2: xor (cta)
+    red.global.or.b32 [%rd8+768], %r2;       // region 3: or (gpu)
+    red.global.and.b32 [%rd8+1024], %r2;     // region 4: and (gpu)
+    red.global.xor.b32 [%rd8+1280], %r2;     // region 5: xor (gpu)
+    red.global.sys.or.b32 [%rd8+1536], %r2;  // region 6: or (sys)
+    red.global.sys.xor.b32 [%rd8+1792], %r2; // region 7: xor (sys)
+    add.u64 %rd9, %rd2, 2048;
+    add.u64 %rd10, %rd9, %rd7;              // 64-bit regions from byte 2048
+    red.global.cta.or.b64 [%rd10], %rd5;
+    red.global.cta.and.b64 [%rd10+512], %rd5;
+    red.global.cta.xor.b64 [%rd10+1024], %rd5;
+    red.global.or.b64 [%rd10+1536], %rd5;
+    red.global.and.b64 [%rd10+2048], %rd5;
+    red.global.xor.b64 [%rd10+2560], %rd5;
+    ret;
+}

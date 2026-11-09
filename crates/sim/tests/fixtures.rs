@@ -1932,6 +1932,14 @@ fn probe_s2f6_cvt_matches_hardware() {
     probe_bitwise_cubin("probes/s2f6_cvt", None);
 }
 
+/// L-ROSETTA, S-SCOPE: red.global.{or,and,xor}.b32 / .b64 at cta, gpu and sys scope (REDG.E
+/// .{OR,AND,XOR}[.64].STRONG.{SM,GPU,SYS}), four threads per word = GB300 (probes/red_bitops).
+#[test]
+fn probe_red_bitops_matches_hardware() {
+    probe_bitwise("probes/red_bitops", "good", "ptx");
+    probe_bitwise("probes/red_bitops", "good", "sass");
+}
+
 /// A cubin probe (no PTX source) certifies clean on the SASS front-end and equals `expected/`.
 fn probe_bitwise_cubin(dir: &str, cubin: Option<&str>) {
     let case = Case::load(root().join(dir)).unwrap();

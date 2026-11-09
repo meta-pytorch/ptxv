@@ -4095,6 +4095,9 @@ forms seen. Any other form is a hard error.
   EXIT`): the branching lanes reach it directly, so the guard still holds there.
 - `ATOMG.E.INC` (`atom.inc.u32`): old >= v ? 0 : old + 1 (`probes/atom_inc`, 2026-11-06:
   49 edge pairs and random ones, two increments per word, both front-ends = GB300).
+- `REDG.E.{OR,AND,XOR}[.64].STRONG.{SM,GPU,SYS}` (`red.global.{or,and,xor}.b32 / .b64`): one
+  atomic bit operation per thread (`probes/red_bitops`, 2026-11-08: four threads per word at
+  each scope, both front-ends = GB300).
 - `[R.U32+UR]` addresses (`ST.E [RZ.U32+UR6], R2`, CuTe DSL dist kernels): the register
   zero-extended plus the 64-bit uniform pair. Read from the operand syntax, not probed (ptxas
   does not emit it for plain PTX).

@@ -16,7 +16,8 @@
 // (st.mmio.relaxed.sys: strong relaxed .sys), UBLKPF.L2 (an L2 prefetch, no memory effect).
 // UREDGR (red.async.global, agent G, 2026-11-08): .E.ADD.NA[.S32 | .64].STRONG.GPU|SYS.
 // F2FP.S2_6 (SATFINITE.BF16.S2_6.UNPACK_B only, every other combination refused by the arm):
-// probes/s2f6_cvt, 2026-11-08.
+// probes/s2f6_cvt, 2026-11-08. REDG.OR / .AND / .XOR [.64] (red.global.{or,and,xor}.b32 / .b64,
+// every scope): probes/red_bitops, 2026-11-08.
 // ASSUME(L-ROSETTA)
 
 pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
@@ -261,8 +262,8 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
     (
         "REDG",
         &[
-            "64", "ADD", "BF16x2", "E", "F32", "F32x2", "F32x4", "F64", "FTZ", "GPU", "MAX", "MIN",
-            "RN", "S32", "S64", "SM", "STRONG", "SYS",
+            "64", "ADD", "AND", "BF16x2", "E", "F32", "F32x2", "F32x4", "F64", "FTZ", "GPU", "MAX",
+            "MIN", "OR", "RN", "S32", "S64", "SM", "STRONG", "SYS", "XOR",
         ],
     ),
     ("REDUX", &["OR", "S32", "SUM", "XOR"]),
