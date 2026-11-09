@@ -1347,6 +1347,13 @@ fn cmd_check(
                 ptxv_sim::nonfinite::enable();
             }
             let mut verdict = check(&make1, "");
+            // ASSUME(E-TC-FENCE-NOP): races the tcgen05 thread-sync fences would order are
+            // contract deviations (twolevel::tc_fence_contract).
+            if f == "ptx" {
+                ptxv_sim::twolevel::tc_fence_contract(&mut verdict, &m1, &mut |m| {
+                    check(&|| m.clone(), "tcgen05 fences implied: ")
+                });
+            }
             let births = if nonfinite.is_some() {
                 ptxv_sim::nonfinite::take()
             } else {

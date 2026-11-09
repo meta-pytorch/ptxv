@@ -138,7 +138,8 @@ hex = "0100000001000000000035b5"
 [[variants]]
 id = "good"
 summary = "as compiled by CuTeDSL 4.6.1"
-expect = ["race", "violation"]
+# Races the tcgen05 thread-sync fences would order: contract (E-TC-FENCE-NOP).
+expect = ["contract", "violation"]
 expect_sass = ["clean"]
 
 [[variants]]
@@ -147,5 +148,6 @@ summary = "B30: each k-tile's first MMA (K-block 0) uses the scale factors of K-
 marker = "@SF0"
 find = "%r16;"
 replace = "%r19;"
-expect = ["race", "violation"]
+# The race is good's missing-fence race: contract (E-TC-FENCE-NOP).
+expect = ["contract", "violation"]
 expect_sass = ["clean"]

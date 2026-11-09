@@ -507,6 +507,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
             _ => m.remote_fifo,
         },
         hw_order: false,
+        tc_fence_implied: false,
         refuted_opt_in,
         nic,
     })

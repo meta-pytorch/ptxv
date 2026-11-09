@@ -3439,6 +3439,17 @@ impl Machine {
     }
 
     fn exec_inner(&mut self, members: &[usize], pc: u32) -> Result<(), String> {
+        // ASSUME(E-TC-FENCE-NOP): the thread's tcgen05 view and its synchronization history
+        // are one (both tcgen05 fences around every instruction).
+        if self.launch.tc_fence_implied && self.k.front == Front::Ptx {
+            for &t in members {
+                let th = self.threads[t].make_mut();
+                let a = th.tc_vc.clone();
+                vc_join(&mut th.vc, &a);
+                let b = th.vc.clone();
+                vc_join(&mut th.tc_vc, &b);
+            }
+        }
         let poison = self.sinit_pre(members, pc);
         let cov = self.prov.is_some();
         if cov {
@@ -5888,6 +5899,31 @@ impl Machine {
             // PTX `mov.b64 %d, {lo, hi}` / `mov.b64 {lo, hi}, %a`: each half keeps its own
             // undefined bits (the halves of an f32x2 value are separate lanes).
             Op::Pack64 { lo, hi, .. } => u(lo) & 0xffff_ffff | (u(hi) & 0xffff_ffff) << 32,
+            // Integer narrowing / widening (PTX front): the low bits keep their own undefined
+            // bits; a sign extension takes the sign bit's (Triton nvfp4 pack: `cvt.u16.u32 %rs4, %r9`
+            // of four e2m1x2 bytes, then `st.b8` of the defined low byte).
+            // PTX virtual registers only: SASS conversions keep the whole-result rule.
+            Op::CvtInt {
+                d,
+                a,
+                from_bits,
+                to_bits,
+                signed,
+            } if d.file == File::V => {
+                let w = (*from_bits).min(*to_bits).clamp(1, 64) as u32;
+                let lowm = if w >= 64 { !0u64 } else { (1u64 << w) - 1 };
+                let ua = u(a);
+                let mut m = ua & lowm;
+                if *signed && from_bits < to_bits && (ua >> (w - 1)) & 1 == 1 {
+                    let tm = if *to_bits >= 64 {
+                        !0u64
+                    } else {
+                        (1u64 << *to_bits) - 1
+                    };
+                    m |= tm & !lowm;
+                }
+                m
+            }
             Op::Unpack64 { a, .. } => u(a),
             // Register-only operations: carry-outs and other predicate outputs are undefined
             // with the rest (`wp`).
@@ -6037,12 +6073,19 @@ impl Machine {
                 }
             }
             let m = if r.file == File::V {
-                // Virtual registers are defined or not as a whole.
-                if u != 0 {
-                    (1u64 << count.min(63)) - 1
+                // A virtual register's undefined bits (`Thread::vund`), byte by byte of the
+                // store: `st.b8` of a `.b16` holding a converted pair stores only the low,
+                // defined lane (Triton mxfp8 quantize: `cvt.rn.satfinite.e4m3x2.f32 %rs3,
+                // %r20, %r19` with %r20 never written).
+                let th = &self.threads[t];
+                let vm = if th.written[r.idx as usize / 64] >> (r.idx % 64) & 1 == 1 {
+                    vund_of(th, r.idx)
                 } else {
-                    0
-                }
+                    !0
+                };
+                (0..count.min(8))
+                    .filter(|j| (vm >> (8 * j)) & 0xff != 0)
+                    .fold(0u64, |m, j| m | 1 << j)
             } else {
                 byte_umask(u, count)
             };

@@ -132,6 +132,7 @@ pub fn hw_launch(l: &Launch) -> Launch {
     let mut h = l.clone();
     h.hw_l1 = true;
     h.hw_order = true;
+    h.tc_fence_implied = true; // E-TC-FENCE-NOP
     h.mc_alias_hw = true; // E-MC-ALIAS-HW
     h.poll_acquire = false;
     h.refuted_opt_in.clear();
@@ -154,6 +155,68 @@ pub fn hw_machine(m1: &Machine, st: &Arc<L1Stats>) -> Machine {
         l1.havoc_probe = true;
     }
     m
+}
+
+/// ASSUME(E-TC-FENCE-NOP): races of a PTX check that `tcgen05.fence::before_thread_sync` /
+/// `::after_thread_sync` around the synchronization would order are contract deviations: the
+/// kernel omits fences the PTX ISA requires (9.7.18.6.3; 9.7.18.6.4.4 example 2: commit,
+/// mbarrier wait, after_thread_sync, tcgen05.ld), and GB300 executes them as NOPs, so its
+/// order comes from the SASS (the SASS front checks it). `check` runs the machine it is given;
+/// it reruns `m1` with both fences implied around every instruction
+/// (`Launch::tc_fence_implied`) when `v` has races and the kernel uses tcgen05; a race absent
+/// there becomes kind "contract" (only when that rerun is complete).
+pub fn tc_fence_contract(v: &mut Verdict, m1: &Machine, check: &mut dyn FnMut(Machine) -> Verdict) {
+    use ptxv_ir::Op;
+    if m1.k.front != ptxv_ir::Front::Ptx
+        || m1.launch.tc_fence_implied
+        || !v.findings.iter().any(|x| x.kind == "race")
+        || !m1.k.code.iter().any(|i| {
+            matches!(
+                i.op,
+                Op::TmemLd { .. }
+                    | Op::TmemSt { .. }
+                    | Op::Mma { .. }
+                    | Op::TcCp { .. }
+                    | Op::TmemAlloc { .. }
+            )
+        })
+    {
+        return;
+    }
+    let mut l = (*m1.launch).clone();
+    l.tc_fence_implied = true;
+    let vf = check(Machine::new(m1.k.clone(), Arc::new(l)));
+    // A race missing from an incomplete rerun may only be unreached there.
+    if !vf.complete {
+        v.notes.push(
+            "the tcgen05-fence-implied rerun (E-TC-FENCE-NOP) was incomplete: races kept as races"
+                .into(),
+        );
+        return;
+    }
+    let mut n = 0;
+    for x in v.findings.iter_mut().filter(|x| x.kind == "race") {
+        if !vf
+            .findings
+            .iter()
+            .any(|y| y.sig == x.sig && y.kind == "race")
+        {
+            x.kind = "contract".into();
+            x.msg = format!(
+                "{}: ordered once tcgen05.fence::before_thread_sync / ::after_thread_sync surround the synchronization, which the kernel omits (PTX ISA 9.7.18.6.3, 9.7.18.6.4.4); GB300 executes these fences as NOPs and its order comes from the SASS (E-TC-FENCE-NOP: check the SASS front)",
+                x.msg
+            );
+            n += 1;
+        }
+    }
+    if n > 0 {
+        v.notes.push(format!(
+            "{n} race(s) are ordered with the tcgen05 thread-sync fences implied (E-TC-FENCE-NOP): reported as contract"
+        ));
+        if !v.assumptions.iter().any(|a| a == "E-TC-FENCE-NOP") {
+            v.assumptions.push("E-TC-FENCE-NOP".into());
+        }
+    }
 }
 
 /// Level 2 for a check that takes one machine: runs `check` on the hardware-model machine

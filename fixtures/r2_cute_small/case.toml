@@ -99,7 +99,8 @@ hex = "010000000100000000002bae"
 [[variants]]
 id = "good"
 summary = "as compiled by CuTeDSL 4.6.1"
-expect = ["race", "violation"]
+# Races the tcgen05 thread-sync fences would order: contract (E-TC-FENCE-NOP).
+expect = ["contract", "violation"]
 expect_sass = ["clean"]
 
 [[variants]]

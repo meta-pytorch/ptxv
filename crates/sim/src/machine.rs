@@ -1490,6 +1490,11 @@ pub struct Launch {
     /// writer's clock and every strong read that observes it acquires that clock, at any
     /// scope. Never set from a case; only the second level of `ptxv check` uses it.
     pub hw_order: bool,
+    /// E-TC-FENCE-NOP: every instruction of the PTX front runs as if
+    /// `tcgen05.fence::after_thread_sync` preceded it and `tcgen05.fence::before_thread_sync`
+    /// followed it (GB300's tcgen05 fences are NOPs). Never set from a case: `ptxv check`
+    /// reruns a PTX check with TMEM-related races this way, and the hardware model uses it.
+    pub tc_fence_implied: bool,
     /// Refuted assumptions this launch was explicitly allowed to use (case `assume_refuted`,
     /// `--assume-refuted`, `PTXV_ASSUME_REFUTED`) and does use.
     pub refuted_opt_in: Vec<String>,

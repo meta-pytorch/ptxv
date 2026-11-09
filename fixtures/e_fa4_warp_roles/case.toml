@@ -272,7 +272,8 @@ id = "good_nofence"
 summary = "post-fix without the tcgen05 fences around the TMEM-lifetime handoffs (as in the real kernel)"
 marker = "@XTCF"
 replace = "<delete>"
-expect = ["race"]
+# The fences would order every remaining race: contract (E-TC-FENCE-NOP).
+expect = ["contract"]
 expect_sass = ["clean"]
 
 [[variants]]
@@ -280,7 +281,8 @@ id = "prefix_nofence"
 summary = "pre-fix without the tcgen05 fences around the TMEM-lifetime handoffs (as in the real kernel)"
 marker = "@XTCF"
 replace = "<delete>"
-expect = ["race"]
+# As good_nofence: the fences would order every race (E-TC-FENCE-NOP).
+expect = ["contract"]
 expect_sass = ["clean"]
 
 [[variants.edits]]

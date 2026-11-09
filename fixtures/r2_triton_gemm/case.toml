@@ -120,7 +120,8 @@ value = 0
 [[variants]]
 id = "good"
 summary = "as compiled by Triton 3.5"
-expect = ["contract", "race"]
+# Races the tcgen05 thread-sync fences would order: contract (E-TC-FENCE-NOP).
+expect = ["contract"]
 expect_sass = ["contract"]
 
 [[variants]]

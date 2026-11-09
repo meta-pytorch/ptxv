@@ -454,6 +454,24 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |k| any(k, |o| matches!(o, Op::TcCommit { .. })),
     },
     Assumption {
+        id: "E-TC-FENCE-NOP",
+        kind: "code",
+        status: "argued",
+        title: "a PTX race the tcgen05 thread-sync fences would order is a contract deviation: GB300 runs the fences as NOPs",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::TmemLd { .. }
+                        | Op::TmemSt { .. }
+                        | Op::Mma { .. }
+                        | Op::TcCp { .. }
+                        | Op::TmemAlloc { .. }
+                )
+            })
+        },
+    },
+    Assumption {
         id: "E-CPASYNC-MBAR",
         kind: "code",
         status: "validated",

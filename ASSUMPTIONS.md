@@ -1940,6 +1940,32 @@ already finished loader warps never wait for.
 - If wrong: *miss* of a commit arriving on the next CTA's mbarrier.
 - Retire: a statement in NVIDIA documentation either way.
 
+### E-TC-FENCE-NOP · code
+**A race of the PTX front that `tcgen05.fence::before_thread_sync` / `::after_thread_sync`
+around the synchronization would order is a `contract` finding, not a race.** The PTX ISA
+requires the fences (9.7.18.6.3; 9.7.18.6.4.4 example 2: `tcgen05.mma; tcgen05.commit` in one
+thread, `mbarrier.try_wait; tcgen05.fence::after_thread_sync; tcgen05.ld` in another), and
+S-TCGEN05 models them as the only bridge between a thread's synchronization history and its
+tcgen05 view. None of the 219 kernel_db PTX cases that use tcgen05 (Triton, CuTeDSL;
+2026-11-08) contains either fence; the PTX front reported TMEM races in 37 records of the
+parity report, classified observable by the hardware-model level, which kept the PTX fence
+rules. When a PTX check has races and the
+kernel uses tcgen05, `ptxv check` reruns it with both fences implied around every instruction
+(`Launch::tc_fence_implied`); a race that is gone there becomes a contract finding naming the
+missing fences. The hardware-model level (twolevel.rs) also implies them.
+- Where: `twolevel.rs` `tc_fence_contract`, `exec.rs` `exec_inner`, `main.rs` check.
+- Evidence: ptxas 13.0 (sm_103a) lowers both fences to `NOP`: fixtures/e_fa4_warp_roles with
+  its 8 fences removed gives the same SASS apart from 8 fewer NOPs, the placement of a few
+  independent instructions and call return addresses; r1a_tcgen05_tile B06 (no
+  `after_thread_sync` after the wait) is SASS-clean and bitwise correct on GB300 in 1000 of
+  1000 launches (docs/rung1a.md). The SASS front checks the lowered order itself (LDTM / UTCMMA
+  are scoreboarded accesses of the issuing thread), so `sass_gb300` needs no profile item.
+- Status: **argued.** No litmus separates the fence from the schedule ptxas emits; the claim
+  is that the fence has no SASS of its own, not that every schedule without it is ordered.
+- If wrong: a race reported as contract (*miss* at the PTX level only; the SASS front still
+  reports a race in the binary).
+- Retire: a ptxas that lowers the fences to an instruction, or a GB300 litmus.
+
 ### E-REMOTE-FIFO · code
 **Opt-in: remote mbarrier arrivals from one CTA to one CTA land in the order of their
 issues, when the issues are ordered by happens-before** (case `remote_fifo = true`,
@@ -2749,6 +2775,7 @@ a divergent path.
 - Where: `exec.rs` `tc_actor`, `pipe_actor`, `push_async`.
 - Status: **argued, medium confidence.** It follows the PTX ISA's examples. On GB300 the
   fences are NOPs (B06 is invisible), so hardware cannot confirm the rule.
+- Races the fences would order are reported as contract findings (E-TC-FENCE-NOP).
 - If wrong: either direction.
 - Retire: a tcgen05 litmus campaign.
 
@@ -3007,7 +3034,13 @@ stays clean, "relies on E-CPASYNC-PROXY"), not a race.
     defined or undefined as a whole: FlashAttentionBackwardPreprocess 1x1x16384 repacks
     products of two rows into one 64-bit register, the out-of-range row poisoned the in-range
     one, and the PTX front reported undef-insensitive at ptx:647 where SASS is clean (a lowering
-    imprecision, not an uninitialized read; `fixtures/e_uninit_f32x2_lanes`);
+    imprecision, not an uninitialized read; `fixtures/e_uninit_f32x2_lanes`). Also on the
+    PTX front (2026-11-08): a store of a virtual register marks undefined only the bytes
+    whose bits are, and integer conversions of virtual registers (`cvt.u16.u32`,
+    `cvt.s32.s8`, ...) keep the low bits' undefined bits (a sign extension takes the sign
+    bit's). Before, Triton mxfp8 / nvfp4 quantize kernels stored the defined low byte of an
+    `e4m3x2` / `e2m1x2` pack whose other byte came from an unwritten register, and the PTX
+    front reported undef-insensitive where SASS is clean (`fixtures/e_uninit_cvt_lanes`);
   - lane by lane too (2026-11-06): `F2FP` narrow packs (`PACK_AB[_MERGE_C]`, `.RS` random
     bits taint both lanes) and unpacks (`UNPACK_B`), `HADD2.F32 Rd, -RZ, Ra.Hx_Hx` (one
     half), `HSETP2.BF16_V2` (the selected half of each operand); `FSETP` / `DSETP` / `HSETP2`

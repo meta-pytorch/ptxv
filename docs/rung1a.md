@@ -86,7 +86,7 @@ Numerics, good kernel, both front-ends:
 |---|---|---|---|---|
 | good | — | clean (736 states) | clean (4,958 states) | **bitwise = simulator** |
 | B05 | no `tcgen05.wait::ld` before using the registers | **violation**: register read before wait | clean | bitwise correct: PTX UB that this ptxas compiles safely (scoreboards) |
-| B06 | no `tcgen05.fence::after_thread_sync` after the mbarrier wait | **race**: MMA's TMEM write vs. `tcgen05.ld` | clean | bitwise correct: PTX UB; the fence is only a `NOP` |
+| B06 | no `tcgen05.fence::after_thread_sync` after the mbarrier wait | **contract** (2026-11-08; race before): MMA's TMEM write vs. `tcgen05.ld`, ordered once the fence is there (E-TC-FENCE-NOP) | clean | bitwise correct: PTX UB; the fence is only a `NOP` |
 | B07 | no `bar.sync` before warp 0's dealloc | **race** (dealloc vs. other warps' `tcgen05.ld`) + reads of deallocated TMEM | same | bitwise correct: the race never manifests (freed TMEM keeps its data) |
 | B41 | no dealloc (TMEM leak) | **violation**: columns still allocated at exit | same | **driver error "tensor memory not completely freed"** |
 | B42 | first MMA accumulates into uninitialized TMEM | **violation**: accumulate into never-written TMEM | same | **999/1,000 wrong, all different**: each launch adds onto the previous launch's TMEM |

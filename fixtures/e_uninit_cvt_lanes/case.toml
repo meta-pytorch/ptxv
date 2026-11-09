@@ -1,0 +1,50 @@
+name = "e_uninit_cvt_lanes"
+description = """
+S-INIT per byte of narrow conversions (2026-11-08): an e4m3x2 pair whose high input is
+undefined in threads 16..31, and four e2m1x2 bytes packed into one register and narrowed with
+cvt.u16.u32; storing the defined low byte of each with st.b8 is clean, storing the
+16-bit pair is reported. Before, a PTX store marked every byte of its virtual register
+undefined if any bit was, and integer conversions made the whole result undefined (Triton
+mxfp8 / nvfp4 quantize: PTX undef-insensitive where SASS is clean)."""
+ptx = "kernel.ptx"
+entry = "uninit_cvt_lanes"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [64]
+init = "normal"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "the defined low bytes are stored"
+expect = ["clean"]
+
+[[variants]]
+id = "store_pair"
+summary = "the e4m3x2 pair (high byte undefined in threads 16..31) is stored as 16 bits"
+edits = [{ marker = "@STORE1", find = "st.global.b8 [%rd8], %rs1;", replace = "st.global.b16 [%rd8+2], %rs1;" }]
+expect = ["violation"]
+
+[[variants]]
+id = "store_packed"
+summary = "the narrowed word of e2m1 pairs (byte 1 undefined in threads 16..31) is stored as 16 bits"
+edits = [{ marker = "@STORE2", find = "st.global.b8 [%rd8+1], %rs2;", replace = "st.global.b16 [%rd8+2], %rs2;" }]
+expect = ["violation"]

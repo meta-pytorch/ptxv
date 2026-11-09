@@ -102,8 +102,13 @@ fn check_dir(dir: &str, case: &str, variant: &str, front: &str) {
     let k = kernel(&case, variant, front);
     let launch = build_launch(&case, &k).unwrap();
     let m0 = Machine::new(Arc::new(k), Arc::new(launch));
-    let v = explore(m0.clone(), 2_000_000);
+    let mut v = explore(m0.clone(), 2_000_000);
     assert!(v.complete, "{variant}/{front}: exploration incomplete");
+    // E-TC-FENCE-NOP: as `ptxv check` reports them (races the tcgen05 thread-sync fences
+    // would order are contract findings).
+    let raw = v.classes();
+    ptxv_sim::twolevel::tc_fence_contract(&mut v, &m0, &mut |m| explore(m, 2_000_000));
+    let tc_contract = v.classes() != raw;
     assert_eq!(
         v.classes(),
         case.variant(variant).unwrap().expect_for(front),
@@ -118,6 +123,11 @@ fn check_dir(dir: &str, case: &str, variant: &str, front: &str) {
     // on the race, not on the outcomes it leaves.
     let rechecked =
         |v: &ptxv_sim::explore::Verdict| v.notes.iter().any(|n| n.contains("S-SMEM-STRONG"));
+    if tc_contract {
+        // DPOR reaches the same raw verdict (before the fence-implied reclassification).
+        assert_eq!(d.classes(), raw, "{variant}/{front}: DPOR verdict differs");
+        return;
+    }
     if rechecked(&v) && v.classes().iter().any(|c| c == "race") {
         let drop_nd = |c: Vec<String>| -> Vec<String> {
             c.into_iter().filter(|x| x != "nondeterministic").collect()
@@ -686,7 +696,9 @@ fn check_stateful(case: &str, variant: &str, front: &str, max_states: usize) {
     let k = kernel(&case, variant, front);
     let launch = build_launch(&case, &k).unwrap();
     let m0 = Machine::new(Arc::new(k), Arc::new(launch));
-    let v = explore(m0, max_states);
+    let mut v = explore(m0.clone(), max_states);
+    // E-TC-FENCE-NOP, as `ptxv check` reports it.
+    ptxv_sim::twolevel::tc_fence_contract(&mut v, &m0, &mut |m| explore(m, max_states));
     let expect = case.variant(variant).unwrap().expect_for(front);
     assert!(
         v.complete && v.meets(&expect),
@@ -715,7 +727,8 @@ fn check_bounded(case: &str, variant: &str, front: &str, max_states: usize) {
     let k = kernel(&case, variant, front);
     let launch = build_launch(&case, &k).unwrap();
     let m0 = Machine::new(Arc::new(k), Arc::new(launch));
-    let v = explore(m0, max_states);
+    let mut v = explore(m0.clone(), max_states);
+    ptxv_sim::twolevel::tc_fence_contract(&mut v, &m0, &mut |m| explore(m, max_states));
     let expect = case.variant(variant).unwrap().expect_for(front);
     assert!(
         v.meets(&expect),
@@ -4258,6 +4271,16 @@ fn ffma2_lanes_keep_their_own_undefined_bits() {
 fn ptx_f32x2_register_lanes_keep_their_own_undefined_bits() {
     both("e_uninit_f32x2_lanes", "good");
     both("e_uninit_f32x2_lanes", "store_hi");
+}
+
+/// S-INIT per byte of narrow conversions on the PTX front (fixtures/e_uninit_cvt_lanes): the
+/// defined low byte of an e4m3x2 pair and of a narrowed word of e2m1x2 bytes, stored with
+/// st.b8, is clean; storing the 16-bit value with its undefined byte is reported.
+#[test]
+fn cvt_pack_bytes_keep_their_own_undefined_bits() {
+    for v in ["good", "store_pair", "store_packed"] {
+        both("e_uninit_cvt_lanes", v);
+    }
 }
 
 /// S-TCGEN05 (fixtures/s_tc_st_mma): a thread's own tcgen05.st, wait::st, then its

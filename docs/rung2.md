@@ -60,7 +60,8 @@ Triton 3.5 emits neither fence, so three hand-offs are unordered by the PTX cont
 The SASS is clean: ptxas compiles both fences to nothing, `LDTM`/`STTM` are scoreboarded, and
 the mbarrier wait orders the rest. GB300 computes the right answer. It is the same category as
 B05/B06/B56: a contract the binary does not need on this chip and this ptxas. `fenced`
-inserts the fences at all three hand-offs and at the dealloc.
+inserts the fences at all three hand-offs and at the dealloc. Since 2026-11-08 the PTX front
+reports races that the fences would order as `contract` findings (E-TC-FENCE-NOP).
 
 #### T2: the shared-memory descriptor's version field is 0
 
