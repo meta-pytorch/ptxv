@@ -1253,11 +1253,25 @@ impl NumState {
     pub fn orig_at(&self, cta: u16, off: u32) -> Option<Orig> {
         self.orig.get(&(cta, off)).copied()
     }
+    pub(crate) fn note_write_span(&mut self, key: (u8, u64), off: u64, bytes: u64) {
+        if key.0 == 1 {
+            for word in (off & !3..off + bytes).step_by(4) {
+                self.written.insert((key.1, word));
+            }
+        }
+    }
     fn note_write(&mut self, k: (u8, u64, u64)) {
         if k.0 == 1 {
             self.written.insert((k.1, k.2));
         }
     }
+}
+
+pub(crate) struct StoreOrigins {
+    words: [bool; 64],
+    count: usize,
+    guard: bool,
+    coverage: bool,
 }
 
 impl Machine {
@@ -2090,7 +2104,7 @@ impl Machine {
                     .init
                     .get(off as usize..off as usize + 4)?;
                 if sp != 1
-                    || off % 4 != 0
+                    || !off.is_multiple_of(4)
                     || !ns.f32_inputs.contains(&alloc)
                     || ns.written.contains(&(a, off))
                     || init != bits.to_le_bytes()
@@ -2255,8 +2269,97 @@ impl Machine {
         }
     }
 
-    pub(crate) fn num_st(&mut self, t: usize, v: &Val, loc: Loc, bytes: u8) {
-        self.half_on_st(t, v, loc, bytes);
+    pub(crate) fn num_store_origins(
+        &self,
+        t: usize,
+        v: &Val,
+        bytes: u8,
+        guard: Option<Reg>,
+    ) -> StoreOrigins {
+        let Some(ns) = self.num.as_ref() else {
+            return StoreOrigins {
+                words: [false; 64],
+                count: 0,
+                guard: false,
+                coverage: false,
+            };
+        };
+        let guard = guard.is_some_and(|reg| ns.taint.reg_t(t, reg));
+        let count = (bytes as usize).div_ceil(4);
+        let mut words = [false; 64];
+        for i in 0..(bytes as u16).div_ceil(4) {
+            let source = match v {
+                Val::Reg(r, n) if r.file == File::V && bytes / (*n).max(1) >= 8 => Some(Reg {
+                    file: r.file,
+                    idx: r.idx + i / 2,
+                }),
+                Val::Reg(r, n) if bytes > 8 || bytes > 4 && (r.file == File::R || *n >= 2) => {
+                    Some(Reg {
+                        file: r.file,
+                        idx: r.idx + i,
+                    })
+                }
+                Val::Reg(r, _) => Some(*r),
+                _ => None,
+            };
+            words[i as usize] = ns.taint.store_origin(t, source, guard);
+        }
+        StoreOrigins {
+            words,
+            count,
+            guard,
+            coverage: ns.taint.cur_src || ns.taint.cur_read,
+        }
+    }
+
+    pub(crate) fn num_st(
+        &mut self,
+        t: usize,
+        v: &Val,
+        loc: Loc,
+        data: &[u8],
+        origins: &StoreOrigins,
+        pc: u32,
+    ) {
+        let bytes = data.len() as u8;
+        if self.num.is_none() {
+            return;
+        }
+        let (store_space, store_allocation, store_offset) = mem_key(loc);
+        let partial = !store_offset.is_multiple_of(4) || !bytes.is_multiple_of(4);
+        let partial_words = if partial {
+            let memory = match loc {
+                Loc::Global { alloc, .. } => &self.gmem[alloc],
+                Loc::Shared { cta, .. } => &self.smem[cta as usize],
+                Loc::Param { .. } => return,
+            };
+            let first = store_offset & !3;
+            let end = store_offset + bytes as u64;
+            (first..end)
+                .step_by(4)
+                .map(|off| {
+                    let bits = u32::from_le_bytes(std::array::from_fn(|byte| {
+                        let index = off as usize + byte;
+                        if index < memory.bytes.len() {
+                            *memory.bytes.get(index)
+                        } else {
+                            0
+                        }
+                    }));
+                    (off, bits)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        if origins.guard {
+            self.half_mem_set(
+                (store_space, store_allocation, store_offset),
+                &vec![None; data.len()],
+            );
+        } else {
+            self.half_on_st(t, v, loc, bytes);
+        }
         // Registers holding 16-bit values with provenance (packed bf16) are moved as bytes:
         // nothing to materialize.
         let halves = match v {
@@ -2313,25 +2416,31 @@ impl Machine {
             }
         }
         let Some(ns) = self.num.as_mut() else { return };
-        // ASSUME(N-EQUIV): a store of 32-bit registers: word i carries the taint of its own register (the
-        // access was tainted whole if any value register of any thread was).
-        if let (Val::Reg(r, _), false, 0) = (v, ns.taint.position, bytes % 4) {
-            if r.file == File::R {
-                let (sp, a, off) = mem_key(loc);
-                if sp <= 1 {
-                    for i in 0..(bytes / 4) as u16 {
-                        let w = Reg {
-                            file: r.file,
-                            idx: r.idx + i,
-                        };
-                        let tw = ns.taint.reg_t(t, w);
-                        for b in 0..4u64 {
-                            let k = (sp, a, off + 4 * i as u64 + b);
-                            ns.taint.mem_set(k, tw);
-                        }
-                    }
+        if !ns.taint.position && store_space <= 1 {
+            for (i, &input_derived) in origins.words[..origins.count].iter().enumerate() {
+                if input_derived == origins.coverage {
+                    continue;
+                }
+                let off = store_offset + 4 * i as u64;
+                let end = (off + 4).min(store_offset + bytes as u64);
+                ns.taint
+                    .assign_memory(store_space, store_allocation, off, end, input_derived);
+            }
+        }
+        if partial {
+            for (off, bits) in partial_words {
+                let key = (store_space, store_allocation, off);
+                ns.note_write(key);
+                ns.mem.remove(&key);
+                if ns
+                    .taint
+                    .memory_intersects(store_space, store_allocation, off, off + 4)
+                {
+                    let node = ns.leaf_with_origin(bits, pc, true);
+                    ns.mem.insert(key, node);
                 }
             }
+            return;
         }
         // Vector stores (STS.128, st.v2/v4.b32): word i comes from register r + i (consecutive
         // PTX registers after lowering, as in exec).
@@ -2342,7 +2451,7 @@ impl Machine {
         // Every word the store covers loses its old node (a 64-bit PTX register: both).
         let words = (bytes as u16).div_ceil(4);
         for i in 0..words {
-            let n = match v {
+            let mut n = match v {
                 _ if bytes.is_multiple_of(4) && v_pair(i).is_some() => {
                     ns.node_of_reg(t, v_pair(i).unwrap())
                 }
@@ -2359,6 +2468,14 @@ impl Machine {
                 _ if bytes == 4 => ns.node_of(t, v),
                 _ => None,
             };
+            if origins.guard || n.is_none() && origins.words[i as usize] {
+                let bits = u32::from_le_bytes(
+                    data[4 * i as usize..4 * i as usize + 4]
+                        .try_into()
+                        .expect("complete store word"),
+                );
+                n = Some(ns.leaf_with_origin(bits, pc, true));
+            }
             let (sp, a, off) = mem_key(loc);
             let k = (sp, a, off + 4 * i as u64);
             ns.note_write(k);
@@ -3518,8 +3635,10 @@ impl Machine {
     /// A word written with a value the graph does not track: it loses its node.
     pub(crate) fn num_forget(&mut self, loc: Loc) {
         let Some(ns) = self.num.as_mut() else { return };
-        ns.note_write(mem_key(loc));
-        ns.mem.remove(&mem_key(loc));
+        let (space, allocation, off) = mem_key(loc);
+        let key = (space, allocation, off & !3);
+        ns.note_write(key);
+        ns.mem.remove(&key);
     }
 
     pub(crate) fn num_copy(&mut self, from: Loc, to: Loc) {
@@ -3619,8 +3738,10 @@ impl Machine {
     /// (None: out of bounds, zero-filled).
     pub(crate) fn num_tma_elem(&mut self, cta: u16, off: u32, src: Option<(usize, u64)>) {
         let Some(ns) = self.num.as_mut() else { return };
-        ns.mem.remove(&mem_key(Loc::Shared { cta, off }));
-        match src.filter(|(a, _)| !ns.not_inputs.contains(a)) {
+        ns.mem.remove(&mem_key(Loc::Shared { cta, off: off & !3 }));
+        match src.filter(|(a, element)| {
+            !ns.not_inputs.contains(a) && !ns.written.contains(&(*a as u64, (element * 2) & !3))
+        }) {
             Some(o) => {
                 ns.orig.insert((cta, off), o);
             }
@@ -4077,6 +4198,21 @@ pub struct Taint {
 }
 
 impl Taint {
+    fn memory_intersects(&self, space: u8, allocation: u64, start: u64, end: u64) -> bool {
+        (start..end).any(|off| self.mem_has((space, allocation, off)))
+    }
+
+    fn assign_memory(&mut self, space: u8, allocation: u64, start: u64, end: u64, origin: bool) {
+        for off in start..end {
+            let key = (space, allocation, off);
+            self.mem_set(key, origin);
+        }
+    }
+
+    fn store_origin(&self, thread: usize, source: Option<Reg>, guard_input_derived: bool) -> bool {
+        guard_input_derived || source.is_some_and(|source| self.reg_t(thread, source))
+    }
+
     pub fn last_read_input_derived(&self) -> bool {
         self.last_read
     }
@@ -5065,5 +5201,179 @@ mod untracked_producer_tests {
             let (_, replaced) = run_body_ir(body, 1.0, use_lop3_ir);
             assert_ne!(retained.0, replaced.0);
         }
+    }
+
+    #[test]
+    fn direct_untracked_zero_store_has_opaque_history() {
+        let direct = |shift, input| {
+            run_body_finish_ir(
+                &format!("shr.u32 %r1, %r0, {shift}; mov.b32 %f0, %r1;"),
+                input,
+                false,
+                "st.global.f32 [%p1], %f0;",
+            )
+        };
+        let (reference, routput) = direct(1, 0.0);
+        let (candidate, coutput) = direct(2, 0.0);
+        for (state, output) in [(&reference, routput), (&candidate, coutput)] {
+            assert_eq!(output.0, 0);
+            assert!(matches!(
+                state.nodes[output.1.unwrap() as usize].kind,
+                NodeKind::Opaque
+            ));
+        }
+        let report = compare(
+            &Side {
+                ns: &reference,
+                outs: vec![routput],
+                buf_id: vec![0, 1],
+            },
+            &Side {
+                ns: &candidate,
+                outs: vec![coutput],
+                buf_id: vec![0, 1],
+            },
+            &["x".into(), "out".into()],
+            None,
+        );
+        assert!(!report.levels[0].holds && !report.levels[1].holds);
+        assert_ne!(direct(1, 1.0).1.0, direct(2, 1.0).1.0);
+    }
+
+    #[test]
+    fn guarded_direct_store_preserves_guard_origin() {
+        let body = "mov.b32 %f0, %r0; setp.eq.f32 %q, %f0, 0f00000000;             st.global.u32 [%p1], 0x3f800000; @%q st.global.u32 [%p1], 0;";
+        let (state, output) = run_body_finish_ir(body, 0.0, false, "");
+        assert_eq!(output.0, 0);
+        assert!(matches!(
+            state.nodes[output.1.unwrap() as usize].kind,
+            NodeKind::Opaque
+        ));
+        assert!(state.taint.memory_unit_input_derived((1, 1, 0)));
+        assert_eq!(
+            run_body_finish_ir(body, 1.0, false, "").1.0,
+            1.0f32.to_bits()
+        );
+    }
+
+    #[test]
+    fn partial_and_unaligned_stores_invalidate_old_word_history() {
+        for (offset, width) in [(0, "u16"), (1, "u8")] {
+            let body = format!(
+                "mov.b32 %f0, %r0; st.global.f32 [%p1], %f0;                 add.u64 %p1, %p1, {offset}; st.global.{width} [%p1], 0; sub.u64 %p1, %p1, {offset};"
+            );
+            let (state, output) = run_body_finish_ir(&body, 0.0, false, "");
+            assert_eq!(output.0, 0);
+            assert!(matches!(
+                state.nodes[output.1.unwrap() as usize].kind,
+                NodeKind::Opaque
+            ));
+            assert_ne!(run_body_finish_ir(&body, 1.0, false, "").1.0, 0);
+        }
+    }
+
+    #[test]
+    fn tma_does_not_relabel_written_source_as_original_input() {
+        let mut unchanged = run_machine_body_finish_ir("", 0.0, false, "", true);
+        unchanged.num_tma_elem(0, 0, Some((0, 0)));
+        assert!(unchanged.num.as_ref().unwrap().orig_at(0, 0).is_some());
+        let mut written =
+            run_machine_body_finish_ir("st.global.u16 [%p0], 0;", 0.0, false, "", true);
+        written.num_tma_elem(0, 0, Some((0, 0)));
+        assert!(written.num.as_ref().unwrap().orig_at(0, 0).is_none());
+    }
+
+    #[test]
+    fn bare_partial_write_invalidates_float_word_history() {
+        let mut machine = run_machine_body_finish_ir(
+            "mov.b32 %f0, %r0;",
+            1.0,
+            false,
+            "st.global.f32 [%p1], %f0;",
+            false,
+        );
+        let word = Loc::Global { alloc: 1, off: 0 };
+        assert!(machine.num.as_ref().unwrap().mem_node(word).is_some());
+        let partial = Loc::Global { alloc: 1, off: 2 };
+        let vc = machine.threads[0].vc.clone();
+        machine.access(0, &vc, 0, partial, 2, Some(&[0, 0]));
+        machine.num_forget(partial);
+        let value =
+            u32::from_le_bytes(std::array::from_fn(|byte| *machine.gmem[1].bytes.get(byte)));
+        assert_eq!(value, 0);
+        assert!(machine.num.as_ref().unwrap().mem_node(word).is_none());
+    }
+    fn half_data_registers(kernel: &mut ptxv_ir::Kernel) {
+        fn register(reg: &mut Reg) {
+            if reg.file == File::V && reg.idx >= 2 {
+                reg.file = File::R;
+            }
+        }
+        fn value(val: &mut Val) {
+            if let Val::Reg(reg, _) = val {
+                register(reg);
+            }
+        }
+        kernel.nregs[File::R as usize] = kernel.nregs[File::V as usize];
+        for inst in &mut kernel.code {
+            match &mut inst.op {
+                Op::Ld {
+                    d,
+                    space: Space::Global,
+                    ..
+                } => register(d),
+                Op::Mov { d, a } => {
+                    register(d);
+                    value(a);
+                }
+                Op::Int { d, a, b, .. } => {
+                    register(d);
+                    value(a);
+                    value(b);
+                }
+                Op::Fsetp { a, b, .. } => {
+                    value(a);
+                    value(b);
+                }
+                Op::St { v, .. } => value(v),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn input_guard_cannot_leave_half_registers_as_unconditional_copies() {
+        let body = "mov.b32 %r1, %r0; mov.b32 %f0, %r0; shl.b32 %f0, %f0, 16; \
+            setp.ne.f32 %q, %f0, 0f00000000; @%q mov.b32 %r1, 0;";
+        for input in [0.0, 1.0] {
+            let machine = run_machine_body_transform(
+                body,
+                input,
+                false,
+                "st.global.u16 [%p1], %r1;",
+                true,
+                false,
+                Some(half_data_registers),
+            );
+            let origins = machine.half_mem(Loc::Global { alloc: 1, off: 0 }, 2, None);
+            assert!(origins.iter().all(Option::is_none), "{origins:?}");
+        }
+    }
+
+    #[test]
+    fn input_guard_cannot_leave_half_stores_as_unconditional_copies() {
+        let body = "mov.b32 %r1, %r0; mov.b32 %f0, %r0; shl.b32 %f0, %f0, 16; \
+            setp.gt.f32 %q, %f0, 0f00000000;";
+        let machine = run_machine_body_transform(
+            body,
+            1.0,
+            false,
+            "@%q st.global.u16 [%p1], %r1;",
+            true,
+            false,
+            Some(half_data_registers),
+        );
+        let origins = machine.half_mem(Loc::Global { alloc: 1, off: 0 }, 2, None);
+        assert!(origins.iter().all(Option::is_none), "{origins:?}");
     }
 }

@@ -967,7 +967,10 @@ impl Machine {
             };
             if key.0 != 2 {
                 match write {
-                    Some(_) => ns.taint.write(key, off, n as u64),
+                    Some(_) => {
+                        ns.note_write_span(key, off, n as u64);
+                        ns.taint.write(key, off, n as u64);
+                    }
                     None => ns.taint.read(key, off, n as u64),
                 }
             }
@@ -4235,10 +4238,10 @@ impl Machine {
                                 }
                                 wrote.push((loc, w, src));
                                 self.wundef = byte_umask(um, 4);
+                                let origins = self.num_store_origins(src, vi, 4, inst.guard.reg);
                                 self.access(src as u32, &vc, pc, loc, 4, Some(&w.to_le_bytes()));
                                 self.wundef = 0;
-                                // A whole 32-bit word: it keeps its node (N-LEAF).
-                                self.num_st(src, vi, loc, 4);
+                                self.num_st(src, vi, loc, &w.to_le_bytes(), &origins, pc);
                             } else {
                                 // element (j, 2q + h) of the fragment goes to row 2q + h, column j.
                                 for h in 0..2usize {
@@ -4248,8 +4251,11 @@ impl Machine {
                                         self.resolve(tl, Space::Shared, base + 2 * j as u64, 2)?;
                                     let half = ((w >> (16 * h)) as u16).to_le_bytes();
                                     self.wundef = byte_umask(um >> (16 * h), 2);
+                                    let origins =
+                                        self.num_store_origins(src, vi, 2, inst.guard.reg);
                                     self.access(src as u32, &vc, pc, loc, 2, Some(&half));
                                     self.wundef = 0;
+                                    self.num_st(src, vi, loc, &half, &origins, pc);
                                     self.half_stsm_half(src, vi, h, loc);
                                 }
                             }
@@ -9378,6 +9384,7 @@ impl Machine {
                 });
                 let sync = if weak_flag { &wsync } else { sync };
                 let sc = sync.map_or(0, |m| strong_code(m.scope));
+                let origins = self.num_store_origins(t, v, *bytes, inst.guard.reg);
                 self.mc_view = mc;
                 self.weak_pub = weak_flag;
                 for &loc in &locs {
@@ -9406,7 +9413,7 @@ impl Machine {
                     self.tick(t);
                 }
                 for &loc in &locs {
-                    self.num_st(t, v, loc, *bytes);
+                    self.num_st(t, v, loc, &data, &origins, pc);
                 }
             }
             Op::Dp2a {
@@ -9552,6 +9559,10 @@ impl Machine {
                     let w = self.rd(t, &Val::Reg(r, 1))?;
                     data.extend_from_slice(&(w as u32).to_le_bytes());
                 }
+                let origins = [
+                    self.num_store_origins(t, &Val::Reg(*lo, 4), 16, inst.guard.reg),
+                    self.num_store_origins(t, &Val::Reg(*hi, 4), 16, inst.guard.reg),
+                ];
                 let vc = self.threads[t].vc.clone();
                 let sc = sync.map_or(0, |m| strong_code(m.scope));
                 self.access_x(t as u32, &vc, pc, loc, 32, Some(&data), sc);
@@ -9574,7 +9585,14 @@ impl Machine {
                         },
                         other => other,
                     };
-                    self.num_st(t, &Val::Reg(base, 4), l, 16);
+                    self.num_st(
+                        t,
+                        &Val::Reg(base, 4),
+                        l,
+                        &data[16 * h as usize..16 * h as usize + 16],
+                        &origins[h as usize],
+                        pc,
+                    );
                 }
             }
             // Local memory is private to the thread: no races, no other observers.
