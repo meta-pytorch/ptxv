@@ -1973,7 +1973,7 @@ impl Machine {
         d: Reg,
         a: &Val,
         (raw, r): (u32, u32),
-        (func, fmt, ptx): (MufuFunc, MufuFmt, bool),
+        (func, fmt, ptx): (MufuFunc, MufuFmt, Option<bool>),
         (neg, abs): (bool, bool),
         pc: u32,
     ) {
@@ -1989,6 +1989,8 @@ impl Machine {
         }
         let ns = self.num.as_mut().unwrap();
         let na = na.unwrap_or_else(|| ns.leaf_for(t, a, raw, pc));
+        let ftz = ptx == Some(true);
+        let ptx = ptx.is_some();
         let mut x = raw;
         if abs {
             x &= 0x7fff_ffff;
@@ -2012,14 +2014,51 @@ impl Machine {
                 vec![]
             }
         };
-        ns.nodes.push(Node {
-            kind: NodeKind::Mufu {
+        let kind = if ftz {
+            let source = Reg {
+                file: File::R,
+                idx: 0,
+            };
+            let destination = Reg {
+                file: File::R,
+                idx: 1,
+            };
+            // Keep the flushing operation in the slice representation, whose evaluation
+            // and identity include the modifier and its behavior at subnormal inputs.
+            NodeKind::Seg(SegRef(std::sync::Arc::new(crate::seg::SProg {
+                args: vec![na],
+                ops: vec![crate::seg::SOp {
+                    pc,
+                    kind: crate::seg::SKind::Inst {
+                        op: Op::Mufu {
+                            d: destination,
+                            a: Val::Reg(source, 1),
+                            func,
+                            fmt,
+                            hi: false,
+                            neg,
+                            abs,
+                            ptx: Some(true),
+                        },
+                        dst: destination,
+                        regs: vec![(source, crate::seg::SVal::Arg(0))],
+                        cvals: vec![],
+                    },
+                }],
+                out: crate::seg::SVal::Op(0),
+                extra_pcs: Default::default(),
+            })))
+        } else {
+            NodeKind::Mufu {
                 arg: na,
                 func,
                 ptx,
                 neg,
                 abs,
-            },
+            }
+        };
+        ns.nodes.push(Node {
+            kind,
             hw: r,
             exact: fin(ex),
             err: fin(loc),
@@ -5325,6 +5364,43 @@ mod untracked_producer_tests {
                 let node = state.mem.get(&(1, 1, 0)).copied().unwrap();
                 assert_eq!(state.nodes[node as usize].hw, (input as f32).to_bits());
                 assert!(!matches!(state.nodes[node as usize].kind, NodeKind::Leaf));
+            }
+        }
+    }
+
+    #[test]
+    fn flushing_ptx_approx_operations_keep_their_identity_and_evaluation() {
+        for input in [1.0, -127.0] {
+            let (reference, ro) = run_body_finish_ir(
+                "mov.b32 %f0, %r0; ex2.approx.f32 %f0, %f0;",
+                input,
+                false,
+                "st.global.f32 [%p1], %f0;",
+            );
+            let (candidate, co) = run_body_finish_ir(
+                "mov.b32 %f0, %r0; ex2.approx.ftz.f32 %f0, %f0;",
+                input,
+                false,
+                "st.global.f32 [%p1], %f0;",
+            );
+            let side = |ns, out| Side {
+                ns,
+                outs: vec![out],
+                buf_id: vec![0, 1],
+            };
+            let report = compare(
+                &side(&reference, ro),
+                &side(&candidate, co),
+                &["x".into(), "out".into()],
+                None,
+            );
+            assert!(!report.levels[0].holds, "{report:?}");
+            let NodeKind::Seg(prog) = &candidate.nodes[co.1.unwrap() as usize].kind else {
+                panic!("flushing instruction lost its slice");
+            };
+            assert_eq!(prog.0.eval(&[(input as f32).to_bits()]).unwrap(), co.0);
+            if input == -127.0 {
+                assert_ne!(ro.0, co.0);
             }
         }
     }

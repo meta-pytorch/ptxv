@@ -8735,15 +8735,7 @@ impl Machine {
                 } else {
                     self.wr(t, *d, r as u64, 1);
                 }
-                self.num_mufu(
-                    t,
-                    *d,
-                    a,
-                    (raw, r),
-                    (*func, *fmt, ptx.is_some()),
-                    (*neg, *abs),
-                    pc,
-                );
+                self.num_mufu(t, *d, a, (raw, r), (*func, *fmt, *ptx), (*neg, *abs), pc);
             }
             Op::Lea {
                 d,
