@@ -1447,6 +1447,13 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |_| false,
     },
     Assumption {
+        id: "N-ERRDIST-IS",
+        kind: "code",
+        status: "argued",
+        title: "errdist --is: importance-sampled Tier 3 is unbiased (closed-form weights of the drawn values, defensive mixture, gated)",
+        applies: |_| false,
+    },
+    Assumption {
         id: "N-ERRDIST-NL-FTRAJ",
         kind: "code",
         status: "argued",

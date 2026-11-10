@@ -1,0 +1,64 @@
+name = "c_dot_bf16acc"
+description = """
+Captured in process by ptxv.capture (python/ptxv). 1 launch(es), binary only (cubins from CUPTI), PTX in jit.ptx:
+  0: dot_acc_bf16 grid [4, 1, 1] block [128, 1, 1]
+Row dot product with a bf16 running accumulator, Triton, a, b bf16 [4, 256] -> y bf16 [4]:
+  acc (bf16 [16]) = bf16(f32(acc) + f32(a) * f32(b)) over 16 steps of 16; y = bf16(sum(f32(acc))).
+errdist refresh (Tier 2 vs GB300 rows); importance-sampling test row
+(crates/cli/tests/errdist_is.rs)."""
+cubin = "k0.cubin"
+ptxas_toolkit = "13.0"
+entry = "dot_acc_bf16"
+grid = [4, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+outputs = ["y"]
+
+[[buffers]]
+name = "a"
+dtype = "bf16"
+shape = [4, 256]
+init = "file"
+file = "data/a.bin"
+
+[[buffers]]
+name = "b"
+dtype = "bf16"
+shape = [4, 256]
+init = "file"
+file = "data/b.bin"
+
+[[buffers]]
+name = "y"
+dtype = "bf16"
+shape = [4]
+init = "zeros"
+expect = "expected/y.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "b"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

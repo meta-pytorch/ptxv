@@ -175,6 +175,8 @@ pub struct Obs {
     pub seen: u64,
     /// Per output: u-scale moments (when requested).
     pub per_output: Vec<Acc>,
+    /// Importance sampling (`McCfg::proposal`): per input, log w and its contributions.
+    pub is_rec: Vec<super::is::IsRec>,
 }
 
 impl Obs {
@@ -221,6 +223,7 @@ impl Obs {
         self.out_nonfinite += o.out_nonfinite;
         self.out_nonfinite_inputs += o.out_nonfinite_inputs;
         self.seen += o.seen;
+        self.is_rec.extend(o.is_rec);
         if self.per_output.is_empty() {
             self.per_output = o.per_output;
         } else {
@@ -455,6 +458,9 @@ pub struct McCfg {
     /// Outputs per input kept for quantiles.
     pub keep: usize,
     pub per_output: bool,
+    /// Draw inputs from this proposal (importance sampling) and record each input's weight
+    /// and contributions in `Obs::is_rec`.
+    pub proposal: Option<std::sync::Arc<super::is::Proposal>>,
 }
 
 /// A sampling plan for the programs' leaves and each program's leaf positions in it.
@@ -613,7 +619,16 @@ fn one(
     obs: &mut Obs,
     acc: &mut ExpAcc,
 ) -> Result<(), String> {
-    let smp = super::spec::sample_with(spec, layouts, t, Some(&sp.plan))?;
+    let (smp, logw) = match &cfg.proposal {
+        Some(p) => {
+            let (s, lw) = super::is::sample_is(spec, p, layouts, &sp.plan, t)?;
+            (s, Some(lw))
+        }
+        None => (
+            super::spec::sample_with(spec, layouts, t, Some(&sp.plan))?,
+            None,
+        ),
+    };
     let mut causes: Vec<String> = Vec::new();
     if smp.ood.overflow > 0 {
         causes.push("input overflow (saturated or infinite)".into());
@@ -660,6 +675,9 @@ fn one(
     }
     let keep = keep_set(st.tracked.len(), cfg.keep, t);
     let nf0 = obs.nonfinite;
+    // Importance sampling: this input's own counts (its PMF in a fresh map, merged back).
+    let before = (obs.differ, obs.compared, obs.out_nonfinite, obs.seen);
+    let pmf_all = logw.map(|_| std::mem::take(&mut obs.pmf_ulp));
     obs.cur = t;
     observe(
         st,
@@ -673,6 +691,25 @@ fn one(
         cfg.per_output,
         acc,
     );
+    if let (Some(lw), Some(mut all)) = (logw, pmf_all) {
+        let cmp = (obs.compared - before.1).max(1) as f64;
+        let rec = super::is::IsRec {
+            t,
+            logw: lw,
+            differ: (obs.differ - before.0) as f64 / cmp,
+            nonfinite: (obs.out_nonfinite - before.2) as f64 / (obs.seen - before.3).max(1) as f64,
+            pmf: obs
+                .pmf_ulp
+                .iter()
+                .map(|(k, v)| (*k, *v as f64 / cmp))
+                .collect(),
+        };
+        for (k, v) in std::mem::take(&mut obs.pmf_ulp) {
+            *all.entry(k).or_default() += v;
+        }
+        obs.pmf_ulp = all;
+        obs.is_rec.push(rec);
+    }
     // NaN / Inf outputs: out of domain (counted, never dropped silently).
     if obs.nonfinite > nf0 {
         obs.ood_inputs += causes_empty as u64;

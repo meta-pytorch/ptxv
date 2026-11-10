@@ -50,6 +50,8 @@ pub struct Args {
     pub errstate: Option<PathBuf>,
     /// Run Tier 1 too (opt-in).
     pub tier1: bool,
+    /// Importance sampling: a Tier 3 run under this proposal (docs/errdist.md §5.4.1).
+    pub is: Option<PathBuf>,
 }
 
 /// One kernel ready for errdist: its preconditions and its program.
@@ -694,6 +696,7 @@ pub fn cmd(a: &Args) -> Result<()> {
         threads,
         keep: 256,
         per_output: a.per_output || spec.engine.per_output,
+        proposal: None,
     };
     let mut obs =
         ptxv_sim::errdist::mc::run(&st, &spec, &ls, &mc_cfg(n, 0)).map_err(|e| anyhow!(e))?;
@@ -772,6 +775,23 @@ pub fn cmd(a: &Args) -> Result<()> {
         ..Default::default()
     };
     rep.out_of_domain = ood(&obs);
+    if let Some(path) = &a.is {
+        // Its own input indices (independent of the plain run, for the agreement gate);
+        // PTXV_IS_FIRST overrides (tests: 0 with alpha = 1 repeats the plain inputs).
+        let first = std::env::var("PTXV_IS_FIRST")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1u64 << 40);
+        match importance(&st, &spec, &ls, &obs, &mc_cfg(n, first), path) {
+            Ok(e) => rep.is_estimate = Some(e),
+            Err(r) => {
+                rep.notes.push(format!(
+                    "IS refused: {r} (the plain Tier 3 estimate stands)"
+                ));
+                rep.is_refused = Some(r);
+            }
+        }
+    }
     if obs.inputs > 0 {
         // No samples seen: no estimate (the interval at n = 0 is the whole [0, 1]).
         let cp = |k: u64, n: u64| {
@@ -1166,6 +1186,9 @@ pub fn cmd(a: &Args) -> Result<()> {
     }
     if sels > 0 {
         rep.assumptions.push("N-ERRDIST-SEL".into());
+    }
+    if rep.is_estimate.is_some() {
+        rep.assumptions.push("N-ERRDIST-IS".into());
     }
     // Agent AG: a non-chain program's estimates rest on the nonlin assumptions.
     for e in rep.estimates.iter().filter(|_| nonchain) {
@@ -1932,6 +1955,91 @@ fn kid(k: &Kernel) -> ptxv_sim::errdist::report::KernelId {
     }
 }
 
+/// Tier 3 under importance sampling (`--is`): as many inputs as the plain run, from another
+/// index range, gated against it (`is::summarize`). Err: the reason it is refused.
+fn importance(
+    st: &ptxv_sim::errdist::mc::Setup,
+    spec: &Spec,
+    ls: &[Layout],
+    plain: &ptxv_sim::errdist::mc::Obs,
+    cfg: &ptxv_sim::errdist::mc::McCfg,
+    path: &Path,
+) -> std::result::Result<ptxv_sim::errdist::report::IsEstimate, String> {
+    use ptxv_sim::errdist::is;
+    let t0 = std::time::Instant::now();
+    let prop = std::sync::Arc::new(is::Proposal::load(path)?);
+    let cfg = ptxv_sim::errdist::mc::McCfg {
+        proposal: Some(prop.clone()),
+        n: cfg.n,
+        first: cfg.first,
+        threads: cfg.threads,
+        keep: cfg.keep,
+        per_output: false,
+    };
+    let obs =
+        ptxv_sim::errdist::mc::run(st, spec, ls, &cfg).map_err(|e| format!("sample_is: {e}"))?;
+    // Plain references: P(differ) with its interval over inputs, P(non-finite) binomial over
+    // inputs.
+    let pd = (plain.compared > 0).then(|| {
+        let (lo, hi) = ptxv_sim::errdist::mc::p_interval(plain, 0.05);
+        is::PlainRef {
+            p: plain.differ as f64 / plain.compared as f64,
+            se: (hi - lo) / (2.0 * 1.96),
+        }
+    });
+    let pn = (plain.seen > 0).then(|| {
+        let p = plain.out_nonfinite as f64 / plain.seen as f64;
+        is::PlainRef {
+            p,
+            se: (p * (1.0 - p) / plain.inputs.max(1) as f64).sqrt(),
+        }
+    });
+    let s = is::summarize(&obs.is_rec, [pd, pn])?;
+    let mut notes = vec![
+        format!(
+            "importance sampling: unnormalized weighted means sum w f / n over n = {} inputs, ESS {:.0}; 95% normal intervals on their variance",
+            s.n, s.ess
+        ),
+        format!(
+            "gates passed: ESS >= max(200, n / 50), largest input share <= {} for P(differ), P(non-finite) and each reported PMF bin, finite log w, agreement with plain within the combined 99.9% interval where plain resolves the value",
+            is::WMAX_SHARE
+        ),
+    ];
+    if !s.dropped_bins.is_empty() {
+        notes.push(format!(
+            "PMF bins left out (one input holds > {} of their weight): {:?}",
+            is::WMAX_SHARE,
+            s.dropped_bins
+        ));
+    }
+    let estimate = ptxv_sim::errdist::report::Estimate {
+        tier: 3,
+        method: format!(
+            "Monte Carlo through the numerics DAG; importance sampling (proposal {})",
+            prop.describe()
+        ),
+        n: s.n,
+        outputs: obs.outputs_per_input,
+        pmf_ulp: s.pmf,
+        error_bar: ptxv_sim::errdist::report::ErrorBar {
+            kind: "is-normal".into(),
+            notes,
+            ..Default::default()
+        },
+        p_differ: Some(s.p_differ),
+        seconds: t0.elapsed().as_secs_f64(),
+        ..Default::default()
+    };
+    Ok(ptxv_sim::errdist::report::IsEstimate {
+        estimate,
+        sampling: "is".into(),
+        proposal: prop.describe(),
+        ess: s.ess,
+        wmax_share: s.wmax_share,
+        p_nonfinite: s.p_nonfinite,
+    })
+}
+
 fn ood(o: &ptxv_sim::errdist::mc::Obs) -> ptxv_sim::errdist::report::OutOfDomain {
     let n = o.inputs.max(1) as f64;
     ptxv_sim::errdist::report::OutOfDomain {
@@ -2014,6 +2122,27 @@ pub(crate) fn report_text(rep: &ptxv_sim::errdist::report::Report) -> String {
             p.input[2],
             p.inputs
         );
+    }
+    if let Some(e) = &rep.is_estimate {
+        let p = e.estimate.p_differ.unwrap_or_default();
+        let q = e.p_nonfinite;
+        outln!(
+            o,
+            "importance sampling ({}): P(differ) = {:.4e} [{:.4e}, {:.4e}], P(output NaN / Inf) = {:.4e} [{:.4e}, {:.4e}]; {} inputs, ESS {:.0}, max share {:.3}",
+            e.proposal,
+            p.0,
+            p.1,
+            p.2,
+            q.0,
+            q.1,
+            q.2,
+            e.estimate.n,
+            e.ess,
+            e.wmax_share
+        );
+    }
+    if let Some(r) = &rep.is_refused {
+        outln!(o, "importance sampling refused: {r}");
     }
     for v in &rep.validation {
         outln!(

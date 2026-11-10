@@ -7123,6 +7123,21 @@ scale). Element laws are pruned below 1e-16 per atom (the pruned mass is reporte
 - If wrong: the estimates describe another input population; Tier 3 on captured data (an
   `empirical` / `codes` spec) is the check.
 
+### N-ERRDIST-IS · code
+**`ptxv errdist --is`: an importance-sampled Tier 3 estimate is unbiased for the spec's
+law.** Inputs come from the defensive mixture α p + (1 − α) q_tilt. Each carries
+w = p / q, the closed-form density ratio of its tilted real draws (elements, axis scales,
+outlier flags). Untilted draws and the quantization map are the spec's. The estimate is
+Σ w f / n.
+- Where: `errdist/is.rs` (`sample_is`, `summarize`), `errdist/mc.rs` `one`,
+  `cli/src/errdist.rs` `importance`.
+- Status: **argued** (a property of the estimator; no hardware in the loop). With α = 1 the
+  IS path reproduces plain sampling bit for bit. Tilted proposals agree with plain on 3 rows. A tail probability (6.46e-6) comes out within 2% of
+  its closed form. The gates refuse a degenerate proposal. Four mutants each fail a test
+  (`crates/cli/tests/errdist_is.rs`, `is.rs` unit tests).
+- If wrong: a biased tail estimate. The gates (ESS, largest share, agreement with plain where
+  plain resolves the value) fail closed, and the plain estimate stands.
+
 ### N-ERRDIST-TEMPLATE · code
 **Tiers 0 and 1 analyze output 0's accumulation chain** and report it for every output.
 The CLI notes how many distinct chain shapes the program has.

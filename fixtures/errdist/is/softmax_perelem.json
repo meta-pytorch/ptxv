@@ -1,0 +1,7 @@
+{"name": "softmax-perelem", "alpha": 0.2,
+ "description": "row 0, elements 0-3: N(+0.5, 1); elements 4-7: N(-0.5, 1)",
+ "tensors": {"x": {"elems": {"per_elem": [
+   [0, {"loc": 0.5, "scale": 1.0}], [1, {"loc": 0.5, "scale": 1.0}],
+   [2, {"loc": 0.5, "scale": 1.0}], [3, {"loc": 0.5, "scale": 1.0}],
+   [4, {"loc": -0.5, "scale": 1.0}], [5, {"loc": -0.5, "scale": 1.0}],
+   [6, {"loc": -0.5, "scale": 1.0}], [7, {"loc": -0.5, "scale": 1.0}]]}}}}

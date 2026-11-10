@@ -1,0 +1,3 @@
+{"name": "exp80-degenerate", "alpha": 0.001,
+ "description": "x ~ N(t, 0.05): weights explode outside a 0.1-wide window",
+ "tensors": {"x": {"elems": {"loc_scale": {"loc": 88.72284, "scale": 0.05}}}}}

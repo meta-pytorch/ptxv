@@ -1,0 +1,51 @@
+name = "c_sum_naive"
+description = """
+Captured in process by ptxv.capture (python/ptxv). 1 launch(es), binary only (cubins from CUPTI), PTX in jit.ptx:
+  0: sum_naive grid [4, 1, 1] block [32, 1, 1]
+Sequential f32 row sum, Triton, x f32 [4, 512] -> y f32 [4]: s = 0; for i: s += x[r, i].
+errdist refresh (Tier 2 vs GB300 rows); importance-sampling test row
+(crates/cli/tests/errdist_is.rs)."""
+cubin = "k0.cubin"
+ptxas_toolkit = "13.0"
+entry = "sum_naive"
+grid = [4, 1, 1]
+block = [32, 1, 1]
+dynamic_smem = 0
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [4, 512]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+expect = "expected/y.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

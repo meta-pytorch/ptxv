@@ -347,6 +347,11 @@ enum Cmd {
         /// applicability check passes, else tier 3.
         #[arg(long)]
         tier1: bool,
+        /// Importance sampling: also run Tier 3 with inputs from this proposal (JSON,
+        /// docs/errdist.md §5.4.1), reported apart from the plain estimate and only when its
+        /// gates pass.
+        #[arg(long, value_name = "FILE")]
+        is: Option<PathBuf>,
         /// Accepted for compatibility (Tier 1 is opt-in now: --tier1).
         #[arg(long, hide = true)]
         no_tier1: bool,
@@ -3272,6 +3277,7 @@ fn run() -> Result<()> {
             errstate,
             tier1,
             no_tier1,
+            is,
         } => errdist::cmd(&errdist::Args {
             path,
             inputs,
@@ -3291,6 +3297,7 @@ fn run() -> Result<()> {
             uniform,
             errstate,
             tier1: tier1 && !no_tier1,
+            is,
         })?,
         Cmd::Compare {
             reference,
