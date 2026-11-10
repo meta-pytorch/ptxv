@@ -1416,9 +1416,7 @@ pub(crate) fn const_guards(m: &Machine, rets: &[Vec<usize>]) -> Vec<Option<bool>
                 return Some(!p.neg);
             };
             // SASS PT / UPT read true.
-            if r.idx == 7
-                && (r.file == File::UP || m.k.front == ptxv_ir::Front::Sass && r.file == File::P)
-            {
+            if r.is_pt(m.k.front) {
                 return Some(!p.neg);
             }
             env.get(&r).map(|&v| (v != 0) ^ p.neg)
@@ -2015,8 +2013,11 @@ pub(crate) fn peekskip_set(m: &Machine) -> BTreeMap<u32, (BTreeSet<u32>, BTreeSe
             match q.reg {
                 None => Some(!q.neg),
                 Some(r)
-                    if r.idx == 7
-                        && (r.file == ptxv_ir::File::UP || r.file == ptxv_ir::File::P && sass) =>
+                    if r.is_pt(if sass {
+                        ptxv_ir::Front::Sass
+                    } else {
+                        ptxv_ir::Front::Ptx
+                    }) =>
                 {
                     Some(!q.neg)
                 }
@@ -2656,7 +2657,7 @@ impl Machine {
                     let y = val(b, &mut used, reads);
                     let c = pred(*and, &mut used, reads);
                     // (SASS PT / UPT: writes are discarded.)
-                    let pt = self.k.front == ptxv_ir::Front::Sass && d.idx == 7;
+                    let pt = d.is_pt(self.k.front);
                     if let (Some(x), Some(y), Some(c), false) = (x, y, c, pt) {
                         let w = (*bits as u32).clamp(1, 64);
                         let mk = if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
@@ -2943,7 +2944,7 @@ impl Machine {
                     let y = val(b, &mut used, reads);
                     let c = pred(*and, &mut used, reads);
                     // (SASS PT / UPT: writes are discarded.)
-                    let pt = self.k.front == ptxv_ir::Front::Sass && d.idx == 7;
+                    let pt = d.is_pt(self.k.front);
                     if let (Some(x), Some(y), Some(c), false) = (x, y, c, pt) {
                         let w = (*bits as u32).clamp(1, 64);
                         let mk = if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
@@ -7184,9 +7185,7 @@ impl LaWarp {
 
     fn get(&mut self, m: &Machine, c: &LaCfg, r: ptxv_ir::Reg) -> Av {
         use ptxv_ir::File;
-        if r.idx == 7
-            && (r.file == File::UP || r.file == File::P && m.k.front == ptxv_ir::Front::Sass)
-        {
+        if r.is_pt(m.k.front) {
             return Av::K(1);
         }
         if matches!(r.file, File::R | File::UR) && r.idx >= 255 {
@@ -7315,9 +7314,7 @@ impl LaWarp {
                 if let Some(x) = self.lane(a, i) {
                     match rr.file {
                         File::P | File::UP => {
-                            if !(rr.idx == 7
-                                && (rr.file == File::UP || m.k.front == ptxv_ir::Front::Sass))
-                            {
+                            if !rr.is_pt(m.k.front) {
                                 s.wp(t, rr, x != 0)
                             }
                         }

@@ -376,7 +376,7 @@ impl Machine {
             File::V | File::R => !0,
             // ASSUME(S-INIT-PRED): predicates start undefined too (SASS `PT` / `UPT` are
             // constants).
-            File::P if r.idx == 7 && self.k.front == Front::Sass => 0,
+            File::P if r.is_pt(self.k.front) => 0,
             File::P => {
                 if th
                     .pdef
@@ -389,7 +389,7 @@ impl Machine {
                 }
             }
             File::UP => {
-                if r.idx == 7 || self.warps[th.warp as usize].up_def >> r.idx & 1 == 1 {
+                if r.is_pt(self.k.front) || self.warps[th.warp as usize].up_def >> r.idx & 1 == 1 {
                     0
                 } else {
                     !0
@@ -476,7 +476,7 @@ impl Machine {
             None => true,
             Some(r) => match r.file {
                 File::P => {
-                    if r.idx == 7 && self.k.front == Front::Sass {
+                    if r.is_pt(self.k.front) {
                         true
                     } else {
                         let th = &self.threads[t];
@@ -484,7 +484,7 @@ impl Machine {
                     }
                 }
                 File::UP => {
-                    if r.idx == 7 {
+                    if r.is_pt(self.k.front) {
                         true
                     } else {
                         (self.warps[self.threads[t].warp as usize].up >> r.idx) & 1 == 1
@@ -502,7 +502,7 @@ impl Machine {
         let undef = self.stale.is_some() || self.vmask.is_some_and(|m| m != 0);
         match r.file {
             File::P => {
-                if r.idx == 7 && self.k.front == Front::Sass {
+                if r.is_pt(self.k.front) {
                     return;
                 }
                 let th = self.threads[t].make_mut();
@@ -515,7 +515,7 @@ impl Machine {
                 }
             }
             File::UP => {
-                if r.idx == 7 {
+                if r.is_pt(self.k.front) {
                     return;
                 }
                 let w = self.threads[t].warp as usize;
@@ -3697,13 +3697,13 @@ impl Machine {
                         *x &= !(1 << bit);
                     }
                 }
-                File::P if !(r.idx == 7 && sass) => {
+                File::P if !r.is_pt(if sass { Front::Sass } else { Front::Ptx }) => {
                     let th = self.threads[t].make_mut();
                     if let Some(x) = th.pdef.get_mut(w) {
                         *x &= !(1 << bit);
                     }
                 }
-                File::UP if r.idx != 7 => {
+                File::UP if !r.is_pt(Front::Sass) => {
                     let wi = self.threads[t].warp as usize;
                     self.warps[wi].make_mut().up_def &= !(1 << r.idx);
                 }
@@ -6027,7 +6027,7 @@ impl Machine {
                     };
                 let lane_undef =
                     |lane: u32| !decided && (cu || (0..2).any(|k| sel[k].lane(um[k], lane) != 0));
-                let used = |r: &Option<Reg>| r.is_some_and(|r| !(r.file == File::P && r.idx == 7));
+                let used = |r: &Option<Reg>| r.is_some_and(|r| !r.is_pt(self.k.front));
                 if lane_undef(0) && used(&Some(*d)) || lane_undef(1) && used(q) {
                     !0
                 } else {

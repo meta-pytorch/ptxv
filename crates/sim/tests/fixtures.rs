@@ -5202,6 +5202,26 @@ fn input_independence_and_predicate_sites() {
     assert!(c.behind_input > 0 && c.unexecuted.iter().any(|g| g.gate == "input"));
 }
 
+/// Input coverage with the PTX predicate %p7 (fixtures/e_cov_pt): PTX predicates are ordinary
+/// registers (`Reg::is_pt`), so an input-derived `%p7` guard is input-dependent control on both
+/// front-ends (the PTX front called the kernel input-independent before 2026-11-08).
+#[test]
+fn ptx_p7_is_not_pt_for_input_coverage() {
+    let case = Case::load(root().join("fixtures/e_cov_pt")).unwrap();
+    for variant in ["good", "P4"] {
+        for front in ["ptx", "sass"] {
+            let k = kernel(&case, variant, front);
+            let launch = build_launch(&case, &k).unwrap();
+            let c = ptxv_sim::coverage::analyze(&Machine::new(Arc::new(k), Arc::new(launch)));
+            assert!(
+                !c.input_independent && !c.input_dependent.is_empty(),
+                "{variant}/{front}: {c:#?}"
+            );
+        }
+        both("e_cov_pt", variant);
+    }
+}
+
 /// S-INIT lane precision for narrow packs (fixtures/e_uninit_lanes): F2FP pack / unpack and
 /// HADD2.F32 of one half keep undefined bits per lane, so a defined low lane stays defined.
 #[test]

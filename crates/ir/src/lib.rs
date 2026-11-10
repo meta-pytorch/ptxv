@@ -74,6 +74,13 @@ impl Reg {
     pub fn is_uniform(&self) -> bool {
         matches!(self.file, File::UR | File::UP)
     }
+    /// SASS's constant-true predicates PT / UPT (P7 / UP7). The PTX front's predicates are
+    /// ordinary registers named by number, so its P7 (`%p7`) is not one. Every analysis asks
+    /// this; until 2026-11-08 input coverage, the S-INIT `HSETP2` rule and the certificate's
+    /// peek liveness walk tested `idx == 7` alone, and treated a PTX `%p7` as constant.
+    pub fn is_pt(&self, front: Front) -> bool {
+        self.idx == 7 && (self.file == File::UP || self.file == File::P && front == Front::Sass)
+    }
 }
 
 /// `bar.red` reduction (SASS `BAR.RED.POPC` / `.AND` / `.OR`).

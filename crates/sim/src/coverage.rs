@@ -516,7 +516,7 @@ fn loc_key(loc: Loc) -> (u8, u64, u64) {
 
 impl ProvState {
     fn reg(&self, m: &Machine, t: usize, r: Reg) -> Prov {
-        if matches!(r.file, File::P | File::UP) && r.idx == 7 {
+        if r.is_pt(m.k.front) {
             return Prov::Clean;
         }
         let w = match slot(r.file) {
@@ -1584,7 +1584,7 @@ pub(crate) fn post(m: &mut Machine, members: &[usize], pc: u32) {
                                 | Op::MatchAny { .. }
                                 | Op::Hsetp2Bf16 { .. }
                         );
-                        if test && p.mask() != 0 && d.idx != 7 {
+                        if test && p.mask() != 0 && !d.is_pt(m.k.front) {
                             let v = m.prd(
                                 t,
                                 Pred {

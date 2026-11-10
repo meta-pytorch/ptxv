@@ -1351,7 +1351,7 @@ fn walk_dead(
     };
     let real = |r: &Reg| match r.file {
         File::R | File::UR => r.idx != 255,
-        File::P | File::UP => r.idx != 7,
+        File::P | File::UP => !r.is_pt(k.front),
         _ => true,
     };
     let fallback = |at: usize, diff: &[Reg]| -> Result<(), String> {

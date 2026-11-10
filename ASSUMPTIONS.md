@@ -3464,7 +3464,9 @@ scheduler's fast-path `SYNCS.PHASECHK.TRANS64.TRYWAIT P4` in five nvjet kernels
 unwritten P4, every lane took the retry stub (the good kernel), and ptxv certified clean while
 GB300 was wrong or hung in 198/200 runs. On GB300 the unwritten P4 is not false in every lane
 (`tools/mutate/repro/uninit_pred` controls, 200/200 correct each).
-- Defined: SASS `PT` / `UPT` (constants), and every predicate (per thread; uniform ones per
+- Defined: SASS `PT` / `UPT` (constants; `Reg::is_pt`: P7 / UP7 on the SASS front only, the PTX
+  front's `%p7` is an ordinary register; until 2026-11-08 input coverage tested `idx == 7`
+  alone and dropped the provenance of a PTX `%p7`, fixtures/e_cov_pt), and every predicate (per thread; uniform ones per
   warp) once an executed instruction writes it (`Machine::wp`: `ISETP`, `PLOP3`, `R2P`,
   votes, `SYNCS` results, ...).
 - Reads checked: the guard of every instruction (the SASS lifter makes a branch condition
