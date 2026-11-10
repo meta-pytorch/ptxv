@@ -49,7 +49,7 @@ TILE:
     @%p0 bra        NEXT;
     // ---- thread 0: request the next tile ------------------------------------------------
     mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r2], 16;
-    clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128 [%r1], [%r2];
+    clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128 [%r1], [%r2];   // @CLCOFF
 W:
     mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], %r5;      // @B17
     @!%p1 bra       W;                                              // @B17

@@ -52,3 +52,11 @@ summary = "the response loaded as .v2.b64 and packed with mov.b128 (unpacked and
 find = "ld.shared.b128  %q0, [%r1];"
 replace = "ld.shared.v2.b64 {%rd4, %rd5}, [%r1]; mov.b128 %q1, {%rd4, %rd5}; mov.b128 {%rd6, %rd7}, %q1; mov.b128 %q0, {%rd6, %rd7};"
 expect = ["clean"]
+
+[[variants]]
+id = "addroff"
+marker = "@CLCOFF"
+summary = "the try_cancel operands as [reg+imm] (CuTe DSL: [%r23+432]); the PTX front dropped the offsets before 2026-11-09 (MISS 16), so the response landed early and query_cancel read an undefined handle"
+find = "clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128 [%r1], [%r2];"
+replace = "sub.u32 %r22, %r1, 32; sub.u32 %r23, %r2, 8; clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128 [%r22+32], [%r23+8];"
+expect = ["clean"]

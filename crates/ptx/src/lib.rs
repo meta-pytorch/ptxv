@@ -806,12 +806,29 @@ fn fmad2_pairs(
                 _ if base == "st" => other = true,
                 _ if unpack && jo.last().is_some_and(|x| x.trim() == d) => {
                     other = true;
-                    unpacked = true;
+                    // Halves that only scalar ops read (no copy, select, permute, shuffle or
+                    // repack that could carry one back into a vector): ptxas keeps the FMUL2
+                    // apart from them (probes/f32x2_unpack) and from the add / sub.f32x2
+                    // reading the product next to the unpack (probes/f32x2_unpack_add).
+                    let scalar_only = jo[..jo.len() - 1].iter().map(|h| h.trim()).all(|h| {
+                        h == "_"
+                            || occ.get(h).is_some_and(|v| {
+                                v.iter().filter(|&&k| k != j).all(|&k| {
+                                    let (ko, kops) = stmt_parts(&insts[k].text);
+                                    let kb = ko.split('.').next().unwrap_or("");
+                                    let kdef = !matches!(kb, "st" | "red" | "atom")
+                                        && kops.first().is_some_and(|x| reg_tokens(x).contains(&h));
+                                    !kdef && !matches!(kb, "mov" | "selp" | "prmt" | "shfl")
+                                })
+                            })
+                    });
+                    unpacked |= !scalar_only;
                 }
                 _ => unknown = true,
             }
         }
-        // Halves unpacked: whether ptxas contracts through them is `uncontractible_f16_muls`.
+        // Halves unpacked into anything but scalar ops: whether ptxas contracts through them is
+        // `uncontractible_f16_muls`.
         if !unknown && !unpacked {
             decided.insert(d.to_string());
         }
@@ -1556,8 +1573,9 @@ fn needs_vec_scratch(text: &str, regs: &HashMap<String, Reg>) -> bool {
     if t.starts_with("tensormap.") {
         return true;
     }
-    // tcgen05.mma `[taddr + off]` operands add the offset into a scratch register.
-    if t.starts_with("tcgen05.mma") {
+    // tcgen05.mma `[taddr + off]` and try_cancel `[saddr + off]` operands add the offset into
+    // a scratch register.
+    if t.starts_with("tcgen05.mma") || t.starts_with("clusterlaunchcontrol.try_cancel") {
         return t.split('[').skip(1).any(|x| {
             x.split(']').next().is_some_and(|a| {
                 a.contains('+') && !a.trim_end().ends_with("+ 0") && !a.trim_end().ends_with("+0")
@@ -4305,6 +4323,26 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 b8,
             }
         }
+        // `lop3.b32 d, a, b, c, immLut` (PTX ISA: the LUT is indexed as F(0xF0, 0xCC, 0xAA)
+        // of a, b, c, SASS LOP3.LUT's convention). The predicate-output form `d|p` and the
+        // `.or` / `.and` BoolOp forms are refused.
+        "lop3" if mods == ["b32"] => {
+            if ops.len() != 5 || ops_src.contains('|') {
+                bail!(lw.err("only lop3.b32 d, a, b, c, immLut is modeled"));
+            }
+            let lut = parse_int(op_n(4)?.trim())
+                .filter(|&v| v <= 0xff)
+                .ok_or_else(|| lw.err("lop3.b32: immLut must be an immediate 0..255"))?;
+            Op::Lop3 {
+                d: lw.dst(op_n(0)?)?,
+                a: lw.val(op_n(1)?)?,
+                b: lw.val(op_n(2)?)?,
+                c: lw.val(op_n(3)?)?,
+                lut: lut as u8,
+                p: None,
+                pq: None,
+            }
+        }
         "add" | "sub" | "and" | "or" | "xor" | "shl" | "shr" => {
             if has("sat") && (!matches!(base, "add" | "sub") || tname != "s32") {
                 bail!(lw.err("integer saturation is modeled only for add/sub.sat.s32"));
@@ -6676,15 +6714,38 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     lw.err("only try_cancel to shared::cta [.multicast::cluster::all] is modeled")
                 );
             }
+            // `[reg+off]` operands (CuTe DSL: `[%r23+432]`): the offset adds into a vector
+            // scratch register. Before 2026-11-09 the offset was dropped, so the response landed
+            // `off` bytes early and the load after the wait read memory nothing wrote.
+            let mut saddr = |s: &str, slot: u16| -> Result<Val> {
+                let a = lw.addr(s)?;
+                let base = a.base.ok_or_else(|| lw.err("register address"))?;
+                if a.off == 0 {
+                    return Ok(base);
+                }
+                let off = u32::try_from(a.off)
+                    .map_err(|_| lw.err("try_cancel: negative address offset"))?;
+                let v = lw
+                    .vec_v
+                    .ok_or_else(|| lw.err("internal: no vector scratch registers"))?;
+                let tmp = Reg {
+                    file: File::V,
+                    idx: v.idx + slot,
+                };
+                pre.push(Op::Int {
+                    op: IntOp::Add,
+                    bits: 32,
+                    d: tmp,
+                    a: base,
+                    b: Val::Imm(off as u64),
+                });
+                Ok(Val::Reg(tmp, 1))
+            };
+            let resp = saddr(op_n(0)?, 0)?;
+            let mbar = saddr(op_n(1)?, 1)?;
             Op::ClcTryCancel {
-                resp: lw
-                    .addr(op_n(0)?)?
-                    .base
-                    .ok_or_else(|| lw.err("register address"))?,
-                mbar: lw
-                    .addr(op_n(1)?)?
-                    .base
-                    .ok_or_else(|| lw.err("register address"))?,
+                resp,
+                mbar,
                 multicast,
             }
         }

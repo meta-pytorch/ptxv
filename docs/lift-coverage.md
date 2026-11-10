@@ -300,6 +300,7 @@ any modifier outside the audited set before an arm runs.
 | `BRX Ra -off` (BRANCH_TARGETS) | `brx.idx[.uni] i, $L` / `$L: .branchtargets ...` | per-thread jump to target i; an index outside the list is a fault | probes/brx_idx |
 | `REDUX.SUM.S32` | `redux.sync.add.s32` | wrapping sum over the active lanes (partial masks) | probes/redux_s32 |
 | `LOP3.LUT ..., 0x80000000, ..., 0xb8` | `copysign.f32` | b with the sign bit of a (bit operation) | probes/copysign |
+| `LOP3.LUT d, a, b, c, lut` | `lop3.b32 d, a, b, c, immLut` | the LUT on (a, b, c) = (0xF0, 0xCC, 0xAA); register or immediate operands; `d\|p` and BoolOp forms refused | probes/lop3_ptx |
 | `HMMA.16816.F32` | `mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32` | N-HMMA model with f16 elements; f16 subnormal / Inf / NaN refused | probes/hmma_f16 |
 | `F2F.BF16.F16` / `F2F.F16.BF16` | `cvt.bf16.f16` / `cvt.f16.bf16` without a rounding modifier | nearest | probes/cvt_bf16_f16 |
 | `MUFU.RSQ64H` + `DMUL` / `DFMA` + slow-path `CALL` | `rsqrt.approx.f64` | ptxas's refinement and special cases | probes/rsqrt_f64 |
@@ -360,7 +361,7 @@ any modifier outside the audited set before an arm runs.
 | `S2R SR_LTMASK` etc. | `%lanemask_{lt,le,ge,gt,eq}`; `%`-less scope registers; `[%rd+-N]`; `{...}` operands continued after a comma | PTX syntax only | probes/ptx_syntax |
 | `FFMA2[.RZ/.RM/.RP]` | `mul.f32x2` read only by `add` / `sub.f32x2` of its rounding mode (none = `.rn`), explicit modifiers included | contracted into each (PTX-FMAD); any other reader: none | probes/fmad2 |
 | `FMUL2` | plain `mul.f32x2` no `add` / `sub.f32x2` can read (selp, fma addend, copies, multiplicands, stores, unpacked halves not repacked; loop-carried too) | .rn (ptxas cannot contract; PTX-FMAD) | probes/f32x2_sinks |
-| `FMUL2` / `FADD2` | `mul` / `add` / `sub.f32x2` with no rounding modifier | .rn where no use lets ptxas contract (a mul only multiplied, stored, converted, an fma addend, or unpacked into halves read by scalar ops or repacked across lanes; an add / sub of no such mul) | probes/f32x2_norn, probes/f32x2_unpack |
+| `FMUL2` / `FADD2` | `mul` / `add` / `sub.f32x2` with no rounding modifier | .rn where no use lets ptxas contract (a mul only multiplied, stored, converted, an fma addend, or unpacked into halves read by scalar ops or repacked across lanes, also next to a direct add / sub reader; an add / sub of no such mul) | probes/f32x2_norn, probes/f32x2_unpack, probes/f32x2_unpack_add |
 | `HADD2.BF16_V2`, `HFMA2.BF16_V2 d, a, b, -RZ` | `add` / `sub` / `mul` `.bf16[x2]` with no rounding modifier | .rn under the f32x2 rule | probes/bf16_norn |
 | ptxas's div.rn.f32 expansion (MUFU.RCP, FFMA refinement, slow-path CALL) | `rcp.rn.f32` | IEEE 1 / a, NaN canonical | probes/rcp_rn |
 | `F2F.F32.F64.{RZ,RM,RP}` | `cvt.{rz,rm,rp}.f32.f64` | directed rounding | probes/cvt_f64_rnd |

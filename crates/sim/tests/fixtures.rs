@@ -611,6 +611,13 @@ fn r1d_v2pack() {
     check_dpor("r1d_clc", "v2pack", "ptx", 2_000_000);
     check_dpor("r1d_clc", "v2pack", "sass", 2_000_000);
 }
+/// try_cancel with `[reg+imm]` response and mbarrier operands (MISS 16: the PTX front dropped
+/// the offsets, so the response landed early and query_cancel read an undefined handle).
+#[test]
+fn r1d_addroff() {
+    check_dpor("r1d_clc", "addroff", "ptx", 2_000_000);
+    check_dpor("r1d_clc", "addroff", "sass", 2_000_000);
+}
 /// CLC on a 3-D grid: get_first_ctaid::z and .v4 (ctaid.z in the high half of word 1).
 #[test]
 fn r1d_clc3d() {
@@ -2654,12 +2661,29 @@ fn probe_f32x2_norn_matches_hardware() {
     probe_bitwise("probes/f32x2_norn", "good", "sass");
 }
 
+/// L-ROSETTA: PTX lop3.b32 (16 LUTs, immediate operands; ptxas LOP3.LUT) = GB300 on both
+/// fronts (probes/lop3_ptx).
+#[test]
+fn probe_lop3_ptx_matches_hardware() {
+    probe_bitwise("probes/lop3_ptx", "good", "ptx");
+    probe_bitwise("probes/lop3_ptx", "good", "sass");
+}
+
 /// Plain mul.f32x2 read as an fma addend, unpacked into scalar ops, or repacked across lanes
 /// into an add.f32x2 (probes/f32x2_unpack): ptxas keeps FMUL2 apart; = GB300 on both fronts.
 #[test]
 fn probe_f32x2_unpack_matches_hardware() {
     probe_bitwise("probes/f32x2_unpack", "good", "ptx");
     probe_bitwise("probes/f32x2_unpack", "good", "sass");
+}
+
+/// Plain mul.f32x2 read through an unpack whose halves only scalar ops read and directly by a
+/// plain add / sub.f32x2 (probes/f32x2_unpack_add): ptxas keeps FMUL2 + FADD2, and contracts a
+/// second product only the sub reads; = GB300 on both fronts.
+#[test]
+fn probe_f32x2_unpack_add_matches_hardware() {
+    probe_bitwise("probes/f32x2_unpack_add", "good", "ptx");
+    probe_bitwise("probes/f32x2_unpack_add", "good", "sass");
 }
 
 /// The cp.async scoreboard counts the warp's commits: copies issued on two divergent paths,

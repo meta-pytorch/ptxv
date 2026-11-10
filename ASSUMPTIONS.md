@@ -4541,6 +4541,12 @@ forms seen. Any other form is a hard error.
   or second unpack of p in the other lane) stays refused: ptxas 13.0 contracts it into FFMA2.
   probes/f32x2_repack (cancelling addends): FMUL2 + FADD2 in ptxas's output, GB300 50/50
   scrubbed, both front-ends bitwise; 8 PX records then lift.
+  A product read both through such an unpack, with halves that only scalar ops read (no copy,
+  select, permute, shuffle or repack of a half), and directly by a plain `add` / `sub.f32x2`
+  in the same block or after a join (2026-11-09, CuTe RMSNorm backward): ptxas 13.0 keeps
+  FMUL2 + FADD2 (the unpack is another reader, as a store is), and a second product only that
+  sub reads still contracts (FFMA2 -a, b, p). probes/f32x2_unpack_add (cancelling addends):
+  GB300 50/50 scrubbed, both front-ends bitwise; 3 kernel-DB records then lift.
 - A plain `mul.f32x2` whose register no `add` / `sub.f32x2` can read (2026-11-08,
   `x2_no_add_readers`; by register name, so loop-carried and redefined accumulators are
   covered): every statement naming it reads it as a multiplicand or fma operand, stores it,

@@ -1,0 +1,86 @@
+// probes/f32x2_unpack_add: a `mul.f32x2` with no rounding modifier read both through an unpack
+// (halves into fma.rn multiplicands or stores) and directly by a plain add / sub.f32x2.
+// 256 threads; x = in[4 t .. 4 t + 1], y = in[4 t + 2 .. 4 t + 3] as f32x2 (gen.py: products
+// near -y, random words); x' = {x.hi, x.lo}, y' = {y.hi, y.lo}; five distinct products (ptxas
+// merges equal ones): p = x * y (A), x' * y (B), x * y' (C), x' * y' (D), r = y * y' (E).
+// Output words per thread (out[20 t ..]):
+//   0, 1: fma.rn(p.lo, x.lo, 0), fma.rn(p.hi, x.hi, 0)     2, 3: add.f32x2(p, y)   (one block)
+//   4, 5: p.lo, p.hi stored                                 6, 7: add.f32x2(y, p)   (one block)
+//   8, 9: fma.rn(p.lo, y.lo, 0), fma.rn(p.hi, y.hi, 0)    10, 11: sub.f32x2(p, y) after a join
+//  12, 13: fma.rn(p.lo, x.hi, 0), fma.rn(p.hi, x.lo, 0)   14, 15: sub.f32x2(p, q), q = x * x
+//          read only by that sub (the RMSNorm-backward pattern)
+//  16, 17: add.f32(r.lo, x.lo), sub.f32(x.hi, r.hi)        18, 19: add.f32x2(r, x), r = y * y'
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry f32x2_unpack_add(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<64>;
+    .reg .b64   %rd<32>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 16;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.v4.f32 {%r2, %r3, %r4, %r5}, [%rd4];
+    mul.wide.u32    %rd5, %r1, 80;
+    add.s64         %rd6, %rd2, %rd5;
+    mov.b64         %rd7, {%r2, %r3};
+    mov.b64         %rd8, {%r4, %r5};
+    mov.b64         %rd20, {%r3, %r2};
+    mov.b64         %rd21, {%r5, %r4};
+    // A
+    mul.f32x2       %rd9, %rd7, %rd8;
+    mov.b64         {%r6, %r7}, %rd9;
+    fma.rn.f32      %r8, %r6, %r2, 0f00000000;
+    fma.rn.f32      %r9, %r7, %r3, 0f00000000;
+    add.f32x2       %rd10, %rd9, %rd8;
+    st.global.v2.f32 [%rd6], {%r8, %r9};
+    st.global.b64   [%rd6+8], %rd10;
+    // B
+    mul.f32x2       %rd11, %rd20, %rd8;
+    mov.b64         {%r10, %r11}, %rd11;
+    st.global.v2.f32 [%rd6+16], {%r10, %r11};
+    add.f32x2       %rd12, %rd8, %rd11;
+    st.global.b64   [%rd6+24], %rd12;
+    // C
+    mul.f32x2       %rd13, %rd7, %rd21;
+    mov.b64         {%r12, %r13}, %rd13;
+    fma.rn.f32      %r14, %r12, %r4, 0f00000000;
+    fma.rn.f32      %r15, %r13, %r5, 0f00000000;
+    st.global.v2.f32 [%rd6+32], {%r14, %r15};
+    and.b32         %r16, %r1, 1;
+    setp.eq.u32     %p1, %r16, 0;
+    @%p1 bra        $L__BB0_1;
+    st.global.u32   [%rd6+60], %r16;
+$L__BB0_1:
+    sub.f32x2       %rd14, %rd13, %rd8;
+    st.global.b64   [%rd6+40], %rd14;
+    // D
+    mul.f32x2       %rd15, %rd20, %rd21;
+    mov.b64         {%r17, %r18}, %rd15;
+    fma.rn.f32      %r19, %r17, %r3, 0f00000000;
+    fma.rn.f32      %r20, %r18, %r2, 0f00000000;
+    st.global.v2.f32 [%rd6+48], {%r19, %r20};
+    mul.f32x2       %rd16, %rd7, %rd7;
+    sub.f32x2       %rd17, %rd15, %rd16;
+    st.global.b64   [%rd6+56], %rd17;
+    // E
+    mul.f32x2       %rd18, %rd8, %rd21;
+    mov.b64         {%r21, %r22}, %rd18;
+    add.f32         %r23, %r21, %r2;
+    sub.f32         %r24, %r3, %r22;
+    st.global.v2.f32 [%rd6+64], {%r23, %r24};
+    add.f32x2       %rd19, %rd18, %rd7;
+    st.global.b64   [%rd6+72], %rd19;
+    ret;
+}
