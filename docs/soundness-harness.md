@@ -111,6 +111,17 @@ $H report --out RUNS/report.md
   before it explores; a feasible execution, LDS/STS-strong model) makes a run `caught` even
   when the exploration after it runs out of states or time (`cert_run` in check.jsonl).
 
+### Source mutants
+
+`tools/mutate/srcmut.py --out DIR` mutates ptxv itself: each mutant removes one entry of a
+rule table a soundness argument depends on (num.rs `value_fault_operands`: an integer
+divisor, `cvta.to.shared`, a constant-bank base), builds ptxv from a detached copy of the
+tree (with the working tree's changes), and runs the fixture variants the entry exists for
+(`fixtures/e_rep_divzero` DATA / POS / CVTA / LDC under `--certify --rep`). A mutant is caught
+when some run's classes differ from the expectation, and survives otherwise. An entry no
+fixture can reach is listed as a documented exclusion with its reason (`EXCLUDED`: IADD3 with
+one carry-out). `PTXV_JOB_WRAPPER` prefixes the builds (a memory-capped job runner).
+
 ## Reading the results
 
 Per (mutant, front-end, mode), `check.jsonl` holds a status:

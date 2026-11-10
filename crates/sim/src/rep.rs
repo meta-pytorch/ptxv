@@ -48,6 +48,7 @@ use crate::machine::Finding;
 use crate::machine::Machine;
 use crate::num::pos_free_regs;
 use crate::num::pure_op;
+use crate::num::value_fault_operands;
 use crate::num::value_regs;
 
 /// A source operand of a recorded instruction: a position-independent value, or output `Reg`
@@ -117,6 +118,10 @@ struct Rec {
     /// The instruction being executed (between `pre` and `post`).
     cur_pc: Option<u32>,
     refuse: Option<String>,
+    /// Nodes of register instructions with a position-dependent value-fault operand (num.rs
+    /// `value_fault_operands`: a divisor): replayed for every CTA, where a fault makes the
+    /// replay refuse (until 2026-11-08 `div` by `%ctaid - 3` was clean with --rep).
+    fault_roots: Vec<u32>,
 }
 
 thread_local! {
@@ -322,6 +327,13 @@ pub(crate) fn post(m: &Machine, _members: &[usize], active: &[usize], pc: u32) {
                 )),
             };
             let n = rec.nodes.len() as u32;
+            let fault = value_fault_operands(&inst.op);
+            if srcs.as_ref().is_some_and(|ss| {
+                ss.iter()
+                    .any(|(r, s)| fault.contains(r) && matches!(s, Src::Node(..)))
+            }) {
+                rec.fault_roots.push(n);
+            }
             rec.nodes.push(Node {
                 t: t as u32,
                 pc,
@@ -456,6 +468,7 @@ impl Rec {
                 add(s, &mut todo);
             }
         }
+        todo.extend(self.fault_roots.iter().copied());
         while let Some(n) = todo.pop() {
             if need[n as usize] {
                 continue;

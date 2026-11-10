@@ -1,0 +1,80 @@
+name = "e_rep_divzero"
+description = """
+Value faults and the CTA reductions (E-CTA-REP --rep, E-CTA-INDEP --slices) and the data-taint
+precondition (num.rs `value_fault_operands`): an integer division whose divisor is a parameter
+(good), input data that is zero only in CTA 3's slice (DATA), or %ctaid - 3 (POS). A divisor
+is control for the taint runs: the representative CTA 0 does not fault, CTA 3 does. Until
+2026-11-08 DATA and POS were clean with --rep. SASS: ptxas's division sequence does not trap
+(no fault on the hardware); its quotient of a zero divisor is what GB300 computes."""
+ptx = "kernel.ptx"
+entry = "e_rep_divzero"
+grid = [4, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [128]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "u32"
+value = 7
+
+[[params]]
+kind = "bytes"
+hex = "01000000050000000900000003000000"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "DATA"
+summary = "the divisor is the input element minus 96: zero in CTA 3 only"
+marker = "@DIV"
+find = "mov.u32 %r6, %r8;"
+replace = "sub.s32 %r6, %r5, 96;"
+expect = ["fault"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "POS"
+summary = "the divisor is %ctaid - 3: zero in CTA 3 only"
+marker = "@DIV"
+find = "mov.u32 %r6, %r8;"
+replace = "sub.s32 %r6, %r2, 3;"
+expect = ["fault"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "CVTA"
+summary = "cvta.to.shared of an address outside the shared window when the input element is 96"
+marker = "@EXTRA"
+find = "mov.u32 %r10, 0;"
+replace = "setp.eq.u32 %p1, %r5, 96; selp.u64 %rd10, 1099511627776, 0, %p1; cvta.shared.u64 %rd11, S; add.u64 %rd12, %rd11, %rd10; cvta.to.shared.u64 %rd13, %rd12; cvt.u32.u64 %r10, %rd13;"
+expect = ["fault"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "LDC"
+summary = "a table parameter read past the parameters when the input element is 96"
+marker = "@EXTRA"
+find = "mov.u32 %r10, 0;"
+replace = "setp.eq.u32 %p1, %r5, 96; selp.u64 %rd10, 4096, 0, %p1; mov.u64 %rd11, tbl; add.u64 %rd12, %rd11, %rd10; ld.param.u32 %r10, [%rd12];"
+expect = ["fault"]

@@ -280,6 +280,16 @@ default 16).
   (PTX `--slices` clean). Also until then the launch kept one output when a representative's
   exploration had several (both front-ends: `nondeterministic` dropped). fixtures/e_pos_sreg
   (tests/reductions.rs `position_through_other_special_registers`).
+- Value faults (2026-11-09, soundness harness, num.rs `value_fault_operands`). A register
+  instruction can fault on a value: an integer division's divisor (zero), `cvta.to.shared`
+  (outside the window), a constant-bank load's base (past the bank), an `IADD3` with one
+  carry-out (a carry of 2). Those operands are control for the taint runs: a data-derived one
+  refuses in the data run (and N-EQUIV's precondition), and in the position run an
+  instruction with a position-dependent one is a replay root, replayed for every CTA, where a
+  fault makes the replay refuse. Until then they were data: a `div.s32` by input data (or by
+  `%ctaid - 3`) zero only in CTA 3 was clean with --rep. fixtures/e_rep_divzero (good, DATA,
+  POS, CVTA, LDC; tests/reductions.rs `value_faults_keep_their_class_under_cta_reductions`);
+  every pure operation is classified (`every_pure_op_is_classified_for_value_faults`).
 - Where: `rep.rs` (hooks in exec.rs `exec_traced` and `access_x`); CLI `--rep` (PTXV_REP=1).
 - Status: **argued**. It relies on the replay reproducing c's values: every instruction of the
   graph is a per-thread register instruction (num.rs `pure_op`, cross-lane ones excluded) whose

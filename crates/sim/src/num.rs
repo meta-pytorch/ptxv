@@ -4394,6 +4394,136 @@ pub(crate) fn pure_op(op: &Op) -> bool {
     )
 }
 
+/// The register operands whose value alone can make a register instruction (`pure_op`) fault
+/// in exec.rs: an integer division's divisor (zero), the operand of `cvta.to.shared` (outside
+/// the shared window), a constant-bank load's base (past the bank), an `IADD3` with one
+/// carry-out (a carry of 2 is not modeled). ASSUME(E-CTA-REP, N-EQUIV): the taint runs treat
+/// them as control, since the fault depends on the value: a CTA that is not run (E-CTA-REP)
+/// or an input that is not run (N-EQUIV) may fault where the run did not (until 2026-11-08
+/// they were data: `div.s32` by input data that is zero only in CTA 3 was clean with --rep).
+/// Every pure operation is listed (a new one must be classified); `Op::Nop` and the
+/// operations that are not pure have none here (their non-value operands are control already).
+pub(crate) fn value_fault_operands(op: &Op) -> Vec<Reg> {
+    fn regs(v: &Val) -> Vec<Reg> {
+        match v {
+            Val::Reg(r, n) if r.file != File::V => (0..(*n).max(1) as u16)
+                .map(|i| Reg {
+                    file: r.file,
+                    idx: r.idx + i,
+                })
+                .collect(),
+            Val::Reg(r, _) => vec![*r],
+            _ => vec![],
+        }
+    }
+    match op {
+        Op::Int { op, b, .. } => match op {
+            IntOp::DivU | IntOp::DivS | IntOp::RemU | IntOp::RemS => regs(b),
+            IntOp::Add
+            | IntOp::Sub
+            | IntOp::AddSatS
+            | IntOp::SubSatS
+            | IntOp::Mul
+            | IntOp::Shl
+            | IntOp::ShrU
+            | IntOp::ShrS
+            | IntOp::And
+            | IntOp::Or
+            | IntOp::Xor
+            | IntOp::MinU
+            | IntOp::MinS
+            | IntOp::MaxU
+            | IntOp::MaxS
+            | IntOp::Abs
+            | IntOp::MulHiU
+            | IntOp::MulHiS
+            | IntOp::Popc
+            | IntOp::Bmsk
+            | IntOp::BmskWrap
+            | IntOp::Add16x2 => vec![],
+        },
+        Op::Iadd3 {
+            a, b, c, cout, cin, ..
+        } if cout.len() == 1 => {
+            let mut v = regs(a);
+            v.extend(regs(b));
+            v.extend(regs(c));
+            v.extend(cin.iter().filter_map(|p| p.reg));
+            v
+        }
+        Op::Iadd3 { .. } => vec![],
+        Op::Cvta {
+            a,
+            space: Space::Shared | Space::SharedCluster,
+            to_generic: false,
+            ..
+        } => regs(a),
+        Op::Cvta { .. } => vec![],
+        Op::LdConst { base, .. } => regs(base),
+        Op::Mov { .. }
+        | Op::MulWide { .. }
+        | Op::Imad { .. }
+        | Op::CvtInt { .. }
+        | Op::R2Ur { .. }
+        | Op::VoteAny { .. }
+        | Op::MatchAny { .. }
+        | Op::VoteAll { .. }
+        | Op::Redux { .. }
+        | Op::Flo { .. }
+        | Op::Lea { .. }
+        | Op::LeaHi { .. }
+        | Op::Shf { .. }
+        | Op::Lop3 { .. }
+        | Op::Plop3 { .. }
+        | Op::Setp { .. }
+        | Op::Fadd { .. }
+        | Op::Ffma2 { .. }
+        | Op::Hfma2 { .. }
+        | Op::Hfma2Bf16 { .. }
+        | Op::FfmaBf16 { .. }
+        | Op::Hmnmx2Bf16 { .. }
+        | Op::Hmnmx2F16 { .. }
+        | Op::Qmul4 { .. }
+        | Op::Vhmnmx { .. }
+        | Op::CvtF32Bf16 { .. }
+        | Op::Bfe { .. }
+        | Op::Bfi { .. }
+        | Op::I2F { .. }
+        | Op::F2I { .. }
+        | Op::Pack64 { .. }
+        | Op::Unpack64 { .. }
+        | Op::Mufu { .. }
+        | Op::Sel { .. }
+        | Op::Prmt { .. }
+        | Op::Brev { .. }
+        | Op::AddMinMax { .. }
+        | Op::IntMnmx3 { .. }
+        | Op::P2r { .. }
+        | Op::Ffma { .. }
+        | Op::Fmnmx { .. }
+        | Op::Fsetp { .. }
+        | Op::Hsetp2Bf16 { .. }
+        | Op::Fset { .. }
+        | Op::Fchk { .. }
+        | Op::Fsel { .. }
+        | Op::R2p { .. }
+        | Op::F2fpBf16 { .. }
+        | Op::F2fpF16 { .. }
+        | Op::F2fF16 { .. }
+        | Op::CvtTf32 { .. }
+        | Op::CvtF32F16 { .. }
+        | Op::CvtPack { .. }
+        | Op::CvtRsX4 { .. }
+        | Op::CvtUnpack { .. }
+        | Op::CvtS2f6x2 { .. }
+        | Op::Nop => vec![],
+        _ => {
+            debug_assert!(!pure_op(op), "pure op without a value-fault classification");
+            vec![]
+        }
+    }
+}
+
 /// The value operands of a memory / synchronization operation: the data it moves. Every
 /// other register it reads (addresses, coordinates, descriptors, counts, lane indices) decides
 /// where or whether something happens.
@@ -4862,6 +4992,22 @@ impl Machine {
             // `FSEL R, R, -INF, P` leaves the input-independent -inf).
             if let Some(per) = sel_taint {
                 tn.cur_pure = Some(per);
+            }
+            // A value-fault operand from input data (`value_fault_operands`): another input
+            // may fault here. (Position mode: rep.rs replays the instruction for every CTA;
+            // the symmetry check runs every cluster.)
+            if !position {
+                let fault = value_fault_operands(&inst.op);
+                if active
+                    .iter()
+                    .any(|&t| fault.iter().any(|&r| tn.reg_t(t, r)))
+                {
+                    let v = format!(
+                        "a value-fault operand of {describe} (a divisor, a constant-bank or shared-window address, a carry) depends on input data"
+                    );
+                    tn.violation_pcs.insert(v.clone(), pc);
+                    tn.violations.insert(v);
+                }
             }
             return;
         }
@@ -6177,5 +6323,69 @@ mod control_dependency_tests {
         let controls = control_regs(&branch);
         assert!(controls.contains(&predicate));
         assert!(controls.contains(&mask));
+    }
+}
+
+#[cfg(test)]
+mod value_fault_tests {
+    /// The `Op::` names in the body of `fn name` of `src`.
+    fn ops_in(src: &str, name: &str) -> Vec<String> {
+        let i = src.find(&format!("fn {name}(")).unwrap();
+        let body = &src[i..i + src[i..].find("\n}\n").unwrap()];
+        let mut out: Vec<String> = body
+            .split("Op::")
+            .skip(1)
+            .map(|s| s.chars().take_while(|c| c.is_alphanumeric()).collect())
+            .collect();
+        out.dedup();
+        out
+    }
+
+    /// Every pure operation is classified by `value_fault_operands`, and every pure operation
+    /// whose exec.rs arm can fail (`Err`) is one with value-fault operands, or fails only on
+    /// a structural condition (warp-collective operations reaching the per-thread executor,
+    /// lanes of one membermask at different operations).
+    #[test]
+    fn every_pure_op_is_classified_for_value_faults() {
+        let num = include_str!("num.rs");
+        let exec = include_str!("exec.rs");
+        let pure = ops_in(num, "pure_op");
+        let classified = ops_in(num, "value_fault_operands");
+        let faulting = ["Int", "Iadd3", "Cvta", "LdConst"];
+        let structural = ["R2Ur", "VoteAny", "MatchAny", "VoteAll", "Redux"];
+        assert!(pure.len() > 40);
+        let lines: Vec<&str> = exec.lines().collect();
+        for op in &pure {
+            assert!(classified.contains(op), "{op}: not in value_fault_operands");
+            let pat1 = format!("Op::{op} {{");
+            let pat2 = format!("Op::{op} ");
+            for (h, l) in lines.iter().enumerate() {
+                let tl = l.trim_start();
+                if !(tl.starts_with(&pat1) || tl.starts_with(&format!("| {pat2}"))) {
+                    continue;
+                }
+                let ind = l.len() - tl.len();
+                for k in lines.iter().skip(h + 1).take(400) {
+                    let tk = k.trim_start();
+                    if tk.is_empty() {
+                        continue;
+                    }
+                    let ik = k.len() - tk.len();
+                    if ik <= ind
+                        && (tk.starts_with("Op::")
+                            || tk.starts_with("_ =>")
+                            || tk.starts_with('}') && ik < ind)
+                    {
+                        break;
+                    }
+                    if tk.contains("Err(") && !tk.contains("Ok(") {
+                        assert!(
+                            faulting.contains(&op.as_str()) || structural.contains(&op.as_str()),
+                            "{op}: an exec.rs error path ({tk}) without value-fault operands"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

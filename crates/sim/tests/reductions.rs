@@ -374,6 +374,53 @@ fn position_through_other_special_registers() {
     }
 }
 
+/// Value faults under the CTA reductions (fixtures/e_rep_divzero, num.rs
+/// `value_fault_operands`): an integer division whose divisor is zero only in CTA 3, from
+/// input data (DATA) or from %ctaid (POS). E-CTA-REP and the symmetry check keep the fault
+/// (PTX; ptxas's division sequence does not trap on the SASS front), and the data-taint run,
+/// the precondition of E-CTA-REP and N-EQUIV, reports DATA's divisor. Before 2026-11-08 both
+/// were clean with --rep.
+#[test]
+fn value_faults_keep_their_class_under_cta_reductions() {
+    let case = Case::load(root().join("fixtures/e_rep_divzero")).unwrap();
+    for front in ["ptx", "sass"] {
+        for variant in ["good", "DATA", "POS"] {
+            let make = || machine(&case, variant, front);
+            let expect = case.variant(variant).unwrap().expect_for(front);
+            let rep = ptxv_sim::rep::check(&make, 200_000, &mut |_, _| {}, &mut || {
+                ptxv_sim::wellsync::check_certified(make(), 200_000)
+            });
+            assert_eq!(
+                rep.classes(),
+                expect,
+                "rep {front} {variant}: {:#?}",
+                rep.findings
+            );
+            let sym = ptxv_sim::explore::explore_symmetric(&make, 200_000, &mut |_, _| {});
+            assert_eq!(
+                sym.classes(),
+                expect,
+                "symmetry {front} {variant}: {:#?}",
+                sym.findings
+            );
+        }
+        // SASS: ptxas's division sequence has no faulting operation.
+        for (variant, flagged) in [("good", false), ("DATA", front == "ptx"), ("POS", false)] {
+            let mut m = machine(&case, variant, front);
+            let mut ns = ptxv_sim::num::NumState::with_mma_eps(m.launch.mma_model.eps());
+            ns.taint.all_global = true;
+            m.num = Some(Box::new(ns));
+            let (m, _, _) = ptxv_sim::explore::run_once(m);
+            let v = &m.num.as_ref().unwrap().taint.violations;
+            assert_eq!(
+                v.iter().any(|x| x.contains("value-fault operand")),
+                flagged,
+                "data taint {front} {variant}: {v:?}"
+            );
+        }
+    }
+}
+
 /// E-CTA-REP (rep.rs, fixtures/e_cta_rep): with representative CTAs the check keeps the full
 /// certificate's classes. good: two representatives (CTAs 0-6 and the tail CTA 7) for 8 CTAs,
 /// clean. TAIL1 (the tail CTA stores past the end), AND and STRIDE (CTAs write each other's
