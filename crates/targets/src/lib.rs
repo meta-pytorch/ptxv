@@ -28,6 +28,27 @@ pub const KINDS: &[&str] = &["spec", "code", "process"];
 pub const CLASSES: &[&str] = &["E", "S", "L", "N", "H"];
 /// Directories searched for targets, relative to the repository root.
 pub const DIRS: &[&str] = &["targets", "fb/targets"];
+/// Front kinds: `contract` (an ISA's documented semantics, e.g. the PTX memory model),
+/// `hardware` (the binary as the chip runs it, e.g. SASS on GB300), `ir` (a compiler IR).
+pub const FRONT_KINDS: &[&str] = &["contract", "hardware", "ir"];
+/// The exported front definitions (`fronts_json`), relative to the repository root: public
+/// targets only, and every target (`fb/` is not exported).
+pub const FRONTS_JSON: &str = "targets/fronts.json";
+pub const FRONTS_JSON_ALL: &str = "fb/targets/fronts.json";
+
+/// One `[[front]]` of a target.toml: a level at which ptxv gives a verdict on a kernel. Tools
+/// and the dashboard label verdicts with these, never with names of their own.
+#[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Front {
+    /// Short id used in records and findings (`ptx`, `sass`, ...), unique within the target.
+    pub id: String,
+    /// Display label, e.g. "PTX contract".
+    pub label: String,
+    /// One of FRONT_KINDS.
+    pub kind: String,
+    pub description: String,
+}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -47,6 +68,9 @@ pub struct TargetSpec {
     /// Model, relative to the target directory (default `SPEC.md`).
     #[serde(default)]
     pub spec: Option<String>,
+    /// The `[[front]]` tables, in display order.
+    #[serde(default, rename = "front")]
+    pub fronts: Vec<Front>,
 }
 
 #[derive(Clone, Debug)]
@@ -105,6 +129,87 @@ pub fn discover(root: &Path) -> Result<Vec<Target>> {
         }
     }
     Ok(out)
+}
+
+/// Problems with a target's fronts: at least one, ids unique and lower case, labels and
+/// descriptions non-empty, kinds in FRONT_KINDS.
+pub fn check_fronts(name: &str, fronts: &[Front]) -> Vec<String> {
+    let mut errs = Vec::new();
+    if fronts.is_empty() {
+        errs.push(format!("{name}: no [[front]] table"));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for f in fronts {
+        let id_ok = !f.id.is_empty()
+            && f.id
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            && f.id.len() <= 32;
+        if !id_ok {
+            errs.push(format!(
+                "{name}: front id {:?} must be 1-32 of [a-z0-9_]",
+                f.id
+            ));
+        }
+        if !seen.insert(f.id.clone()) {
+            errs.push(format!("{name}: front id {:?} repeated", f.id));
+        }
+        if !FRONT_KINDS.contains(&f.kind.as_str()) {
+            errs.push(format!(
+                "{name}: front {:?} kind {:?} not in {FRONT_KINDS:?}",
+                f.id, f.kind
+            ));
+        }
+        if f.label.trim().is_empty() || f.description.trim().is_empty() {
+            errs.push(format!(
+                "{name}: front {:?} needs a label and a description",
+                f.id
+            ));
+        }
+    }
+    errs
+}
+
+/// The front definitions as JSON for tools and the dashboard: every target except the
+/// template, in `discover` order, internal ones (under `fb/targets/`) only when asked.
+/// Deterministic, so the checked-in copies can be compared byte for byte.
+pub fn fronts_json(root: &Path, include_internal: bool) -> Result<String> {
+    #[derive(serde::Serialize)]
+    struct Out<'a> {
+        schema: u32,
+        generated_by: &'a str,
+        targets: Vec<OutTarget<'a>>,
+    }
+    #[derive(serde::Serialize)]
+    struct OutTarget<'a> {
+        id: &'a str,
+        name: &'a str,
+        vendor: &'a str,
+        status: &'a str,
+        internal: bool,
+        fronts: &'a [Front],
+    }
+    let targets = discover(root)?;
+    let internal_dir = root.join("fb/targets");
+    let out = Out {
+        schema: 1,
+        generated_by: "PTXV_BLESS=1 cargo test -p ptxv-targets",
+        targets: targets
+            .iter()
+            .filter(|t| !t.is_template())
+            .map(|t| (t, t.dir.starts_with(&internal_dir)))
+            .filter(|(_, internal)| include_internal || !internal)
+            .map(|(t, internal)| OutTarget {
+                id: &t.spec.id,
+                name: &t.spec.name,
+                vendor: &t.spec.vendor,
+                status: &t.spec.status,
+                internal,
+                fronts: &t.spec.fronts,
+            })
+            .collect(),
+    };
+    Ok(serde_json::to_string_pretty(&out)? + "\n")
 }
 
 /// The entries of an assumption registry in the top-level format.
@@ -172,6 +277,7 @@ pub fn check(root: &Path, top_ids: &[String]) -> Result<Vec<String>> {
         if !t.spec_path().is_file() {
             errs.push(format!("{name}: missing {}", t.spec_path().display()));
         }
+        errs.extend(check_fronts(&name, &s.fronts));
         if t.is_template() || s.id_prefix.is_empty() {
             // The template, and GB300, whose registry is checked by the sim crate's tests.
             continue;
@@ -261,7 +367,9 @@ mod tests {
         std::fs::write(
             t.join("target.toml"),
             "id = \"x1\"\nname = \"X\"\nvendor = \"v\"\nisa = []\narch = []\n\
-             id_prefix = \"X1\"\nstatus = \"spec\"\nbased_on = \"nope\"\n",
+             id_prefix = \"X1\"\nstatus = \"spec\"\nbased_on = \"nope\"\n\
+             [[front]]\nid = \"hw\"\nlabel = \"X hw\"\nkind = \"silicon\"\ndescription = \"d\"\n\
+             [[front]]\nid = \"hw\"\nlabel = \"\"\nkind = \"ir\"\ndescription = \"d\"\n",
         )
         .unwrap();
         std::fs::write(t.join("SPEC.md"), "# S\n").unwrap();
@@ -282,6 +390,23 @@ mod tests {
         assert!(has("X1-Q-CLASS needs a `- If wrong:`"), "{errs:#?}");
         assert!(has("X1-E-TOP also defined"), "{errs:#?}");
         assert!(has("based_on \"nope\""), "{errs:#?}");
+        assert!(has("kind \"silicon\" not in"), "{errs:#?}");
+        assert!(has("front id \"hw\" repeated"), "{errs:#?}");
+        assert!(has("needs a label and a description"), "{errs:#?}");
         assert!(!has("X1-S-OK"), "{errs:#?}");
+    }
+
+    #[test]
+    fn requires_a_front() {
+        let errs = check_fronts("t", &[]);
+        assert_eq!(errs, vec!["t: no [[front]] table".to_string()]);
+        let f = |id: &str| Front {
+            id: id.into(),
+            label: "L".into(),
+            kind: "hardware".into(),
+            description: "D".into(),
+        };
+        assert!(check_fronts("t", &[f("sass"), f("ptx")]).is_empty());
+        assert!(!check_fronts("t", &[f("SASS")]).is_empty());
     }
 }

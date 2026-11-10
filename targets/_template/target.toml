@@ -7,3 +7,12 @@ isa = []
 arch = []
 id_prefix = "TEMPLATE"
 status = "scaffold"
+
+# Verdict fronts, in display order: one [[front]] per level at which ptxv gives a verdict.
+# kind: contract (an ISA's documented semantics) | hardware (the binary as the chip runs it) |
+# ir (a compiler IR). See targets/README.md, "Fronts".
+[[front]]
+id = "hw"
+label = "Template hardware"
+kind = "hardware"
+description = "What a verdict at this front covers."

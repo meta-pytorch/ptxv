@@ -52,7 +52,23 @@ arch = ["sm_90", "sm_90a"]        # compile targets or chip variants
 id_prefix = "H100"                # assumption ID prefix, upper case
 status = "scaffold"               # see below
 based_on = "gb300"                # optional: the target whose model this one extends
+
+[[front]]                         # one per verdict level, in display order (at least one)
+id = "ptx"                        # [a-z0-9_], unique in the target; records and findings use it
+label = "PTX contract"            # the label tools and the dashboard show
+kind = "contract"                 # contract | hardware | ir
+description = "..."
 ```
+
+## Fronts
+
+A front is a level at which ptxv gives a verdict on a kernel: an ISA's contract (`contract`),
+the binary as the hardware runs it (`hardware`) or a compiler IR (`ir`). Records and forum
+findings name a target and give one verdict per front id; tools and the dashboard take the
+labels from `target.toml`, never from names of their own. `cargo test -p ptxv-targets`
+checks the fronts and that `targets/fronts.json` (public targets) and
+`fb/targets/fronts.json` (all targets) match the target.toml files; regenerate both with
+`PTXV_BLESS=1 cargo test -p ptxv-targets`. A new target needs only its directory.
 
 Status, in order:
 
