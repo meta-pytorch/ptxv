@@ -2079,7 +2079,8 @@ fn lower_line(
             }
             if bf {
                 // `FSET.BF.GT.AND R4, R5, R23, PT` (CUTLASS fmha): 1.0f / 0
-                // (fixtures/s_lift_k = GB300). ASSUME(L-ROSETTA)
+                // (fixtures/s_lift_k = GB300). `FSET.BF.NAN.AND Rd, a, b, Pc`: 1.0f when an
+                // operand is a NaN and Pc holds (probes/fset_nan). ASSUME(L-ROSETTA)
                 let (a, na, aa) = lw.fmodval(lw.op(1)?)?;
                 let (b, nb, ab) = lw.fmodval(lw.op(2)?)?;
                 Op::Fset {

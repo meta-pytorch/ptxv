@@ -4576,6 +4576,27 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         // combining predicate.
         // `set.<cmp>.{u32,f16x2,bf16x2}.{f16x2,bf16x2} d, a, b` (SASS HSET2[.BF16_V2][.BF]):
         // per half 0xffff / 0 (u32) or 1.0 / 0 in the operand format (probes/hset2).
+        // `set.nan[.and].f32.f32 d, a, b[, [!]c]` (SASS `FSET.BF.NAN.AND Rd, a, b, Pc`): 1.0f
+        // when an operand is a NaN and c holds, else +0 (probes/fset_nan). The other f32
+        // comparisons, `.or` / `.xor`, `.ftz` and integer destinations are refused.
+        "set" if mods == ["nan", "f32", "f32"] || mods == ["nan", "and", "f32", "f32"] => {
+            let c = match (mods.len(), ops.len()) {
+                (3, 3) => Pred::TRUE,
+                (4, 4) => lw.pred_src(op_n(3)?)?,
+                _ => bail!(lw.err("set.nan.f32.f32: operand count")),
+            };
+            Op::Fset {
+                d: lw.dst(op_n(0)?)?,
+                cmp: FCmp::Nan,
+                a: lw.val(op_n(1)?)?,
+                b: lw.val(op_n(2)?)?,
+                neg: [false; 2],
+                abs: [false; 2],
+                c,
+                bop: BoolOp::And,
+                ftz: false,
+            }
+        }
         "set" if matches!(ht, "f16x2" | "bf16x2") && mods.len() == 3 && ops.len() == 3 => {
             let cmp = match mods[0] {
                 "eq" => FCmp::Eq,

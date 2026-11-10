@@ -3353,6 +3353,28 @@ fn probe_hset2_matches_hardware() {
     probe_bitwise("probes/hset2", "good", "sass");
 }
 
+/// N-FALU: FSET.BF.NAN.AND Rd, a, b, Pc | !Pc | PT (set.nan[.and].f32.f32, and setp.nan.f32 +
+/// selp.f32 1.0, 0.0), 1.0f when an operand is a NaN and the predicate holds, on every pair
+/// of 22 f32 patterns with the predicate both ways = GB300 (probes/fset_nan): the PTX
+/// front-end, and the SASS front-end on the recorded ptxas 13.1 cubin.
+#[test]
+fn probe_fset_nan_matches_hardware() {
+    probe_bitwise("probes/fset_nan", "good", "ptx");
+    probe_bitwise_cubin("probes/fset_nan", Some("kernel.cubin"));
+    probe_cubin_has(
+        "probes/fset_nan",
+        &[
+            "FSET.BF.NAN.AND R9, R0, R0, PT",
+            "FSET.BF.NAN.AND R15, R0, UR6, PT",
+            "FSET.BF.NAN.AND R17, R0.reuse, 20, PT",
+            "FSET.BF.NAN.AND R19, |R0|.reuse, -R7.reuse, PT",
+            "FSET.BF.NAN.AND R21, R0.reuse, R7, P0",
+            "FSET.BF.NAN.AND R7, R7, R0.reuse, !P0",
+            "FSET.BF.NAN.AND R23, R7, R0, PT",
+        ],
+    );
+}
+
 /// movmatrix.sync.aligned.m8n8.trans.b16 = MOVM.16.MT88 (probes/movm) = GB300.
 #[test]
 fn probe_movm_matches_hardware() {

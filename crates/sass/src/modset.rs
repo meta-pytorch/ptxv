@@ -21,7 +21,9 @@
 // im2col_no_offs stores): probes/tma_im2col, 2026-11-08.
 // DSETP.LE / .LTU (setp.le.f64 / setp.ltu.f64 folded with and.pred / or.pred / xor.pred: each
 // combiner, register / uniform / immediate operands, Pc / !Pc / PT): probes/dsetp_ltu_le,
-// 2026-11-10; DSETP.EQU / .NUM stay refused.
+// 2026-11-10; DSETP.EQU / .NUM stay refused. FSET.NAN (FSET.BF.NAN.AND only: FSET has no .OR,
+// .XOR or .FTZ here; set.nan[.and].f32.f32, setp.nan.f32 + selp.f32 1.0, 0.0):
+// probes/fset_nan, 2026-11-10.
 // ASSUME(L-ROSETTA)
 
 pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
@@ -140,7 +142,7 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
         &["BF16", "CEIL", "F16", "F64", "FLOOR", "FTZ", "TRUNC"],
     ),
     ("FSEL", &[]),
-    ("FSET", &["AND", "BF", "EQ", "GT", "NE", "NEU"]),
+    ("FSET", &["AND", "BF", "EQ", "GT", "NAN", "NE", "NEU"]),
     (
         "FSETP",
         &[
