@@ -5742,3 +5742,55 @@ fn mutated_pass_tells_flipped_from_unchanged() {
         assert_eq!(pass(&hand), Pass::Undecided, "{front}");
     }
 }
+
+/// S-INIT scratch buffers (fixtures/e_scratch_undef, `scratch = true`): a buffer the case's
+/// launches write before reading is produced inside the case, so bytes no launch writes are
+/// undefined. good (the consumer reads only what the producer wrote) is clean; OFS1 (producer
+/// and consumer disagree on the row stride) reports the undefined rows; RDFIRST (warp 1 reads
+/// pd, a CTA barrier, then warp 0 writes) keeps pd as an input. RACEW1 / RACEW0: a read
+/// unordered with the writes (another warp; lanes of the same warp, which the SASS front joins
+/// in whichever order the paths run) makes pd produced whichever access the resolving run
+/// makes first, and the copied never-written bytes are reported, never clean (RACEW0's first
+/// access is the read). Without `scratch`, OFS1 reads the captured bytes and is clean: the
+/// miss this closes. An explicit `init = "undef"` gives the same verdicts as the resolved
+/// scratch buffer.
+#[test]
+fn e_scratch_undef_buffers() {
+    for v in ["good", "OFS1", "RDFIRST", "RACEW1", "RACEW0"] {
+        both("e_scratch_undef", v);
+    }
+    let base = Case::load(root().join("fixtures/e_scratch_undef")).unwrap();
+    let pd = base.m.buffers.iter().position(|b| b.name == "pd").unwrap();
+    let run = |case: &Case, variant: &str, front: &str| {
+        let k = kernel(case, variant, front);
+        let launch = build_launch(case, &k).unwrap();
+        let notes: Vec<String> = launch.notes.iter().map(|n| n.0.clone()).collect();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 100_000);
+        assert!(v.complete);
+        (v.classes(), notes)
+    };
+    for front in ["ptx", "sass"] {
+        let (_, n) = run(&base, "OFS1", front);
+        assert_eq!(n, ["scratch-undef:pd"], "{front}");
+        let (_, n) = run(&base, "RDFIRST", front);
+        assert_eq!(n, ["scratch-input:pd"], "{front}");
+        for v in ["RACEW1", "RACEW0"] {
+            let (c, n) = run(&base, v, front);
+            assert_eq!(n, ["scratch-undef:pd"], "{front} {v}");
+            assert!(!c.iter().any(|x| x == "clean"), "{front} {v}: {c:?}");
+            let mut off = base.clone();
+            off.m.buffers[pd].scratch = false;
+            assert_eq!(run(&off, v, front).0, ["clean"], "{front} {v}");
+        }
+        let mut off = base.clone();
+        off.m.buffers[pd].scratch = false;
+        let (c, n) = run(&off, "OFS1", front);
+        assert_eq!(c, ["clean"], "{front}: captured bytes hide the stride bug");
+        assert!(n.is_empty());
+        let mut ud = base.clone();
+        ud.m.buffers[pd].scratch = false;
+        ud.m.buffers[pd].init = "undef".into();
+        assert_eq!(run(&ud, "good", front).0, ["clean"], "{front}");
+        assert_eq!(run(&ud, "OFS1", front).0, ["violation"], "{front}");
+    }
+}

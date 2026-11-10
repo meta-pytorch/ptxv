@@ -315,8 +315,16 @@ pub struct Buffer {
     pub dtype: String,
     pub shape: Vec<u64>,
     /// "normal" | "uniform" | "zeros" | "nan" | "iota" | "bits" (random bit patterns) |
-    /// "file" (the exact bytes of `file`, e.g. a captured tensor)
+    /// "file" (the exact bytes of `file`, e.g. a captured tensor) | "undef" (undefined until
+    /// written: a scratch buffer whose contents no launch may rely on; zeros as placeholder;
+    /// S-INIT scratch buffers)
     pub init: String,
+    /// Allocated inside the captured region (`torch.empty`, a reused allocator block): when
+    /// the first access of the case's launches to it is a write, its bytes are undefined until
+    /// written, the captured bytes only a placeholder; when it is a read, the captured bytes
+    /// are an input (S-INIT scratch buffers, decided by one deterministic run in `build_launch`).
+    #[serde(default)]
+    pub scratch: bool,
     /// Raw contents for `init = "file"` (relative to the case directory; resolved by
     /// `Case::load`).
     #[serde(default)]
@@ -618,7 +626,7 @@ impl Buffer {
             let v = match self.init.as_str() {
                 "normal" => rng.normal(),
                 "uniform" => rng.unit() * 2.0 - 1.0,
-                "zeros" => 0.0,
+                "zeros" | "undef" => 0.0,
                 "nan" => f64::NAN,
                 "iota" => i as f64,
                 s => panic!("unknown init {s}"),

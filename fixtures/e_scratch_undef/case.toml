@@ -1,0 +1,85 @@
+name = "e_scratch_undef"
+description = """
+Fixture for S-INIT scratch buffers (`scratch = true`, build_launch `resolve_scratch`): `pd` is
+allocated inside the captured region (its captured bytes are what the allocator block held).
+The producer launch writes it first, so its bytes are undefined until written. good: the
+consumer reads only what the producer wrote (clean, output as computed). OFS1: the producer
+writes at unrounded offsets and the consumer reads rows nothing wrote: the undefined values reach
+the output (violation). Before scratch buffers, OFS1 was clean on the captured bytes. RDFIRST: warp 1
+reads pd, then a CTA barrier, then warp 0 writes: the read is ordered before every write, so pd stays
+an input (note `scratch-input`), clean. RACEW1 / RACEW0: a read of pd unordered with the writes (warp
+1, or lanes of warp 0): produced inside the case whichever access the resolving run makes first, and
+the never-written bytes it copies are reported."""
+ptx = "kernel.ptx"
+entry = "producer"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "pd"
+dtype = "f32"
+shape = [64]
+init = "file"
+file = "data/pd.bin"
+scratch = true
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [48]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "pd"
+
+[[launches]]
+entry = "consumer"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+
+[[launches.params]]
+kind = "ptr"
+buffer = "pd"
+
+[[launches.params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "OFS1"
+summary = "the producer writes at unrounded offsets (b * 24 + r); the consumer reads b * 32 + r"
+marker = "@STRIDE"
+find = "%r1, 32"
+replace = "%r1, 24"
+expect = ["violation"]
+
+[[variants]]
+id = "RDFIRST"
+summary = "warp 1 reads pd (volatile, value unused), then a CTA barrier, then warp 0 writes: pd is an input"
+marker = "@PRODTOP"
+find = "mov.u32 %r0, %tid.x;"
+replace = "mov.u32 %r0, %tid.x; setp.lt.u32 %p1, %r0, 32; @%p1 bra NORD; mul.wide.u32 %rd4, %r0, 4; add.u64 %rd5, %rd1, %rd4; ld.volatile.global.f32 %f1, [%rd5+-128]; NORD: barrier.sync 0;"
+expect = ["clean"]
+
+[[variants]]
+id = "RACEW1"
+summary = "thread 32 copies pd[60] (never written) onto itself, unordered with warp 0's writes"
+marker = "@PRODTOP"
+find = "mov.u32 %r0, %tid.x;"
+replace = "mov.u32 %r0, %tid.x; setp.ne.u32 %p1, %r0, 32; @%p1 bra NOCOPY; ld.global.f32 %f1, [%rd1+240]; st.global.f32 [%rd1+240], %f1; NOCOPY:"
+expect = ["undef-insensitive"]
+
+[[variants]]
+id = "RACEW0"
+summary = "lanes 24..31 of warp 0 copy pd[tid+32] (never written) onto itself before warp 0's lanes 0..23 write"
+marker = "@PRODTOP"
+find = "mov.u32 %r0, %tid.x;"
+replace = "mov.u32 %r0, %tid.x; setp.lt.u32 %p1, %r0, 24; @%p1 bra NOCOPY; setp.ge.u32 %p1, %r0, 32; @%p1 bra NOCOPY; mul.wide.u32 %rd4, %r0, 4; add.u64 %rd5, %rd1, %rd4; ld.global.f32 %f1, [%rd5+128]; st.global.f32 [%rd5+128], %f1; NOCOPY:"
+expect = ["undef-insensitive"]

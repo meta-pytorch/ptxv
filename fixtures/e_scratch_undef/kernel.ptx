@@ -1,0 +1,71 @@
+// Fixture (S-INIT, scratch buffers): a producer / consumer pair over a scratch buffer, as in a
+// backward preprocess that writes per-row sums which the main kernel reads. Two sequences of
+// 24 rows; the consumer reads row r of sequence b at b * 32 + r (row count rounded up to 32).
+// good: the producer writes at the same rounded offsets. OFS1: the producer writes at b * 24 + r
+// (unrounded), so the consumer reads rows 16..23 of sequence 1 at bytes no launch wrote; the
+// captured bytes there are whatever the allocator block held. RDFIRST: warp 1 reads pd, then a CTA
+// barrier, then warp 0 writes: the read is ordered before every write, so pd is an input.
+// RACEW1 / RACEW0: a thread of warp 1 / a lane of warp 0 that otherwise exits copies pd[60] /
+// pd[56..63] (nothing writes them) onto itself, unordered with the writes of warp 0: in some order
+// a write comes first, so pd is produced inside the case and the copied bytes are undefined.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry producer(.param .u64 ppd)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .f32 %f<4>;
+    .reg .pred %p<2>;
+    ld.param.u64 %rd1, [ppd];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r0, %tid.x; // @PRODTOP
+    setp.ge.u32 %p0, %r0, 24;
+    @%p0 bra DONE;
+    mov.u32 %r1, 32; // @STRIDE
+    mov.u32 %r2, 0;
+LOOP:
+    mad.lo.u32 %r3, %r2, 100, %r0;
+    cvt.rn.f32.u32 %f0, %r3;
+    mad.lo.u32 %r4, %r2, %r1, %r0;
+    mul.wide.u32 %rd2, %r4, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    st.global.f32 [%rd3], %f0;
+    add.u32 %r2, %r2, 1;
+    setp.lt.u32 %p1, %r2, 2;
+    @%p1 bra LOOP;
+DONE:
+    ret;
+}
+
+.visible .entry consumer(.param .u64 ppd, .param .u64 pout)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .f32 %f<4>;
+    .reg .pred %p<2>;
+    ld.param.u64 %rd1, [ppd];
+    ld.param.u64 %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r0, %tid.x;
+    setp.ge.u32 %p0, %r0, 24;
+    @%p0 bra DONE;
+    mov.u32 %r2, 0;
+LOOP:
+    shl.b32 %r3, %r2, 5;
+    add.u32 %r3, %r3, %r0;
+    mul.wide.u32 %rd3, %r3, 4;
+    add.u64 %rd4, %rd1, %rd3;
+    ld.global.f32 %f0, [%rd4];
+    mad.lo.u32 %r4, %r2, 24, %r0;
+    mul.wide.u32 %rd5, %r4, 4;
+    add.u64 %rd6, %rd2, %rd5;
+    st.global.f32 [%rd6], %f0;
+    add.u32 %r2, %r2, 1;
+    setp.lt.u32 %p1, %r2, 2;
+    @%p1 bra LOOP;
+DONE:
+    ret;
+}

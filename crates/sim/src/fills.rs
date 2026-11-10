@@ -12,8 +12,8 @@
 //! reported as `uninit-reg`), so the undefined values steer nothing: they only feed data.
 //! The launch is then rerun on one deterministic schedule once per fill, with every
 //! unwritten register, uniform register, shared-memory byte outside the reserved prefix,
-//! TMEM word and never-stored local word holding the fill (0, NaN, +Inf, -Inf, two
-//! pseudo-random patterns), and the output buffers are compared bitwise. Equal outputs turn
+//! TMEM word, never-stored local word and unwritten byte of a scratch buffer holding the
+//! fill (0, NaN, +Inf, -Inf, two pseudo-random patterns), and the output buffers are compared bitwise. Equal outputs turn
 //! those reports into kind `undef-insensitive` (empirical, N fills); anything else leaves
 //! them as they are, with a note saying why.
 
@@ -91,6 +91,21 @@ pub fn apply_fill(m: &mut Machine, f: Fill) {
         for b in SMEM_RESERVED..mem.bytes.len() {
             if mem.sh.get(b).w.is_none() {
                 let wd = f.word(2 << 40 | (c as u64) << 24 | (b / 4) as u64);
+                *mem.bytes.get_mut(b) = (wd >> (8 * (b % 4))) as u8;
+            }
+        }
+    }
+    // S-INIT scratch buffers: global bytes undefined from the start (`Alloc::undef`) and not
+    // written yet.
+    for a in 0..m.gmem.len() {
+        if !m.launch.allocs.get(a).is_some_and(|x| x.undef) {
+            continue;
+        }
+        let mem = &mut m.gmem[a];
+        for b in 0..mem.bytes.len() {
+            let sh = mem.sh.get(b);
+            if sh.w.is_none() && sh.undef {
+                let wd = f.word(4 << 40 | (a as u64) << 32 | (b / 4) as u64);
                 *mem.bytes.get_mut(b) = (wd >> (8 * (b % 4))) as u8;
             }
         }

@@ -97,6 +97,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
             name: b.name.clone(),
             base: GLOBAL_BASE + ((i as u64) << 32),
             init: b.init_bytes(),
+            undef: b.init == "undef",
         });
     }
     // NVLS multicast objects get address slots after the buffers; they have no storage of
@@ -473,7 +474,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
     } else {
         vec![]
     };
-    Ok((Launch {
+    let launch = (Launch {
         notes,
         grids,
         replicas,
@@ -514,7 +515,59 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
         refuted_opt_in,
         nic,
     })
-    .with_hw_model_env())
+    .with_hw_model_env();
+    Ok(resolve_scratch(case, k, launch))
+}
+
+/// S-INIT, scratch buffers (`Buffer::scratch`, allocated inside the captured region): one
+/// deterministic run of the launches decides, per buffer, whether it is produced inside the
+/// case (`coverage::first_access`: the first access is a plain write, or some plain write is
+/// not ordered after the first read). Then its captured bytes are only what the allocator
+/// block held, and every byte is undefined until written (`Alloc::undef`): a later read of
+/// bytes nothing wrote gets undefined bits, reported where they are used. Otherwise the first
+/// access is a read that happens-before every plain write, in every order, and the captured
+/// bytes stay an input. Marking a buffer undefined only adds S-INIT reports: a buffer that
+/// is really an input but is classed as produced can give a false report, never hide one.
+fn resolve_scratch(case: &Case, k: &Kernel, mut launch: Launch) -> Launch {
+    let cand: Vec<usize> = case
+        .m
+        .buffers
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.scratch && b.init != "undef")
+        .map(|(i, _)| i)
+        .collect();
+    if cand.is_empty() {
+        return launch;
+    }
+    let m = Machine::new(
+        std::sync::Arc::new(k.clone()),
+        std::sync::Arc::new(launch.clone()),
+    );
+    let first = coverage::first_access(&m, &cand);
+    for i in cand {
+        let name = launch.allocs[i].name.clone();
+        let (sig, msg) = match first.get(&i) {
+            Some((true, by)) => {
+                launch.allocs[i].undef = true;
+                (
+                    format!("scratch-undef:{name}"),
+                    format!(
+                        "scratch buffer {name}: produced inside the case (first access by {by}; no read is ordered before every write): bytes nothing writes are undefined (S-INIT)"
+                    ),
+                )
+            }
+            Some((false, by)) => (
+                format!("scratch-input:{name}"),
+                format!(
+                    "scratch buffer {name}: first accessed by a read ({by}) ordered before every write: its captured bytes are an input"
+                ),
+            ),
+            None => continue,
+        };
+        launch.notes.push((sig, msg));
+    }
+    launch
 }
 
 /// Module data globals (`__device__` variables) the kernels' constant banks name: each
@@ -580,6 +633,7 @@ fn global_buffers(
                                 name,
                                 base: GLOBAL_BASE + ((allocs.len() as u64) << 32),
                                 init: g.init.clone().unwrap_or_else(|| vec![0; g.size as usize]),
+                                undef: false,
                             });
                             auto.push((key, allocs.len() - 1));
                             allocs.len() - 1

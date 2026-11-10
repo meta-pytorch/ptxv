@@ -910,8 +910,15 @@ impl Machine {
         write: Option<&[u8]>,
         strong: u8,
     ) -> Vec<u8> {
-        if let Some(p) = self.prov.as_mut() {
-            p.on_access(actor, loc, n, write.is_some()); // coverage.rs
+        if let Some(mut p) = self.prov.take() {
+            let rmw = write.is_some()
+                && (actor as usize) < self.threads.len()
+                && matches!(
+                    self.k.code.get(pc as usize).map(|i| &i.op),
+                    Some(Op::Atom { .. })
+                );
+            p.on_access(self, actor, loc, n, write.is_some(), rmw, vc); // coverage.rs
+            self.prov = Some(p);
         }
         let atomic = strong != 0;
         // E-POLL-ANY: the read of a value-insensitive poll (`vip_ok`).
@@ -1233,9 +1240,10 @@ impl Machine {
                 } else {
                     // ASSUME(S-INIT): shared memory outside the driver-initialized reserved
                     // prefix holds stale data until written (B02: the previous launch's tile).
-                    // S-INIT: global bytes are undefined only after a store of undefined data;
-                    // a reader that tolerates them (`undef_ok_from`: a tensor map's ignored
-                    // tail) does not see them.
+                    // S-INIT: global bytes are undefined only after a store of undefined data,
+                    // or in a scratch buffer until written (`Alloc::undef`); a reader that
+                    // tolerates them (`undef_ok_from`: a tensor map's ignored tail) does not
+                    // see them.
                     let und = if shared {
                         (s.w.is_none() || s.undef) && a >= SMEM_RESERVED
                     } else {
@@ -1325,7 +1333,7 @@ impl Machine {
                 self.report("violation", format!("uninit-smem:{pc}"), msg);
             } else {
                 let msg = format!(
-                    "{} at {} reads global byte {a:#x} of {}, which holds undefined data a store wrote (S-INIT)",
+                    "{} at {} reads global byte {a:#x} of {}, which holds undefined data (a store of undefined data, or a scratch buffer byte nothing wrote; S-INIT)",
                     self.actor_name(actor),
                     self.k.describe(pc as usize),
                     match loc {

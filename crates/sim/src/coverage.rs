@@ -220,6 +220,38 @@ struct Info {
     local: bool,
 }
 
+/// The first access of one run to a global allocation (`first_access`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FirstAcc {
+    /// It is a thread's plain write.
+    write: bool,
+    actor: u32,
+    /// The first access's epoch (actor, clock), for a first read.
+    rd: (u32, u32),
+    /// A later plain write that the first read does not happen-before.
+    late: bool,
+}
+
+/// Does the read `rd` (actor, own clock) happen-before a write by `w` at clock `vc`, in every
+/// order? Happens-before, and for two lanes of one warp more: the SASS front joins the lanes
+/// of a split instruction by instruction (E-LOCKSTEP), also after a divergence, where the
+/// explorer runs the paths in either order; so lanes of one warp count as ordered only while
+/// the warp is converged at the write and has not diverged since the read (as E-WARP-ORDER's
+/// labels). Conservative: an ordered pair it rejects only makes a scratch buffer produced.
+fn read_orders(m: &Machine, rd: (u32, u32), w: u32, vc: &crate::machine::VC) -> bool {
+    if rd.1 > crate::machine::vc_get(vc, rd.0) {
+        return false;
+    }
+    let (r, wi) = (rd.0 as usize, w as usize);
+    if r == wi || r >= m.threads.len() || wi >= m.threads.len() {
+        return true;
+    }
+    let warp = m.threads[wi].warp;
+    m.threads[r].warp != warp
+        || m.threads[r].cta != m.threads[wi].cta
+        || (!m.warp_div(warp) && rd.1 >= m.div_clk.get(r).copied().unwrap_or(0))
+}
+
 /// Input words by allocation: (first, last) byte offset.
 type Words = BTreeMap<u32, (u64, u64)>;
 
@@ -281,6 +313,9 @@ pub struct ProvState {
     gates: Vec<Option<(u8, u64)>>,
     /// The current branch's condition inputs (`pre` to `post`).
     bra_mask: u64,
+    /// Per global allocation, the run's first access to it (`first_access`, S-INIT scratch
+    /// buffers).
+    first: BTreeMap<u64, FirstAcc>,
     /// Control, address and synchronization operands (and guards of non-arithmetic
     /// instructions) derived from input data: per instruction, what (bit 0: guard, bit 1:
     /// operand), the inputs, and the input words.
@@ -328,6 +363,7 @@ impl Clone for ProvState {
             reached: self.reached.clone(),
             gates: self.gates.clone(),
             bra_mask: self.bra_mask,
+            first: self.first.clone(),
             ctl: self.ctl.clone(),
         }
     }
@@ -752,9 +788,48 @@ impl ProvState {
     }
 
     /// `access_x`: the bytes an actor reads (and, for a write, overwrites) and writes.
-    pub(crate) fn on_access(&mut self, actor: u32, loc: Loc, n: usize, write: bool) {
+    /// `rmw`: the access is an atomic's (it reads the location too). `vc`: the actor's clock.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn on_access(
+        &mut self,
+        m: &Machine,
+        actor: u32,
+        loc: Loc,
+        n: usize,
+        write: bool,
+        rmw: bool,
+        vc: &crate::machine::VC,
+    ) {
+        if self.inert {
+            return;
+        }
         let (s, o, off) = loc_key(loc);
-        if s == 2 {
+        if s == 1 {
+            // An async actor (TMA, bulk copy or reduction) does not say whether it reads: its
+            // accesses count as reads.
+            let plain_write = write && (actor as usize) < self.nth && !rmw;
+            match self.first.get_mut(&o) {
+                None => {
+                    let clock = crate::machine::vc_get(vc, actor);
+                    self.first.insert(
+                        o,
+                        FirstAcc {
+                            write: plain_write,
+                            actor,
+                            rd: (actor, clock),
+                            late: false,
+                        },
+                    );
+                }
+                // A plain write the first read does not happen-before: in some order it
+                // comes first.
+                Some(f) if !f.write && plain_write && !read_orders(m, f.rd, actor, vc) => {
+                    f.late = true;
+                }
+                Some(_) => {}
+            }
+        }
+        if self.detached.is_some() || s == 2 {
             return;
         }
         let a = actor as usize;
@@ -2025,6 +2100,39 @@ pub(crate) fn tap_finish(m: &mut Machine, ok: bool, whole: bool) {
         let t0 = ps.cap.map_or_else(std::time::Instant::now, |c| c.1);
         *t = Tap::Done(Box::new(report(m, *ps, ok, None, t0)));
     });
+}
+
+/// S-INIT scratch buffers (`build_launch`): for each allocation of `want`, whether one
+/// deterministic run shows it produced inside the case (true) or read as an input (false),
+/// and the first accessor. Produced: the first access is a thread's plain write (not an
+/// atomic, not an async actor), or a plain write later in the run is not ordered after the
+/// first read (some other order runs it first). Input: the first access is a read that
+/// happens-before every plain write of the run, so it comes first in every order. Only the
+/// accesses are recorded (the shadow starts detached: no provenance); the run stops once
+/// every allocation of `want` is decided as produced. An allocation the run never reaches is
+/// absent.
+pub fn first_access(m0: &Machine, want: &[usize]) -> BTreeMap<usize, (bool, String)> {
+    let mut m = m0.clone();
+    m.prov = Some(Box::new(ProvState {
+        nth: m.threads.len(),
+        detached: Some("first-access"),
+        ..Default::default()
+    }));
+    let decided = |m: &Machine| {
+        m.prov.as_ref().is_some_and(|p| {
+            want.iter()
+                .all(|&a| p.first.get(&(a as u64)).is_some_and(|f| f.write || f.late))
+        })
+    };
+    let (mut m, _, _, _) = crate::explore::run_once_until(m, &mut |m| decided(m));
+    let first = m.prov.take().map(|p| p.first).unwrap_or_default();
+    want.iter()
+        .filter_map(|&a| {
+            first
+                .get(&(a as u64))
+                .map(|f| (a, (f.write || f.late, m.actor_name(f.actor))))
+        })
+        .collect()
 }
 
 /// Successors of instruction `pc` in the code (for the unexecuted-code walk).

@@ -3254,6 +3254,50 @@ stays clean, "relies on E-CPASYNC-PROXY"), not a race.
   and the write is race-checked. probes/discard_l2: write, discard, rewrite, read = GB300 50/50
   bitwise; `read_after` (no rewrite) is a violation, while GB300 returned the pre-discard
   values in all runs (the PTX contract allows either). SASS `CCTL.E.RML2` stays refused.
+- **Scratch buffers** (2026-11-09, `fixtures/e_scratch_undef`). A global buffer declared
+  `init = "undef"` starts with every byte undefined (`Sh::undef`; the simulated value is the
+  file's or zero). A buffer declared `scratch = true` (capture writes it for buffers
+  allocated inside the capture region) is resolved in `build_launch` (`resolve_scratch`): one
+  run (`coverage::first_access`) records the first global access to it by any launch of the
+  case. The buffer is produced inside the case, and becomes `init = "undef"` (note
+  `scratch-undef:<name>`), when that access is a thread's plain write (not an atomic), or when
+  it is a read and some plain write of the run is not ordered after it: not happens-before,
+  or (`read_orders`) by another lane of the read's warp while the warp is diverged or has
+  diverged since the read. The SASS front joins lanes of a split in whichever order the
+  explorer runs the paths (E-LOCKSTEP), so that order is not one every schedule keeps.
+  Otherwise the first access is a read (or an atomic, or an async actor's access: TMA, bulk
+  copy or reduction, which may read) that comes before every plain write in every order, and
+  the captured bytes stay an input (note `scratch-input:<name>`). The run stops once every
+  scratch buffer is decided produced.
+  Before, every buffer started defined with its captured bytes, so a consumer launch reading
+  bytes no producer launch wrote read allocator garbage unreported (a backward chain's
+  preprocess writes per-row sums at rounded offsets, the main kernel reads them at others).
+  - Soundness: undefined bytes only add S-INIT reports (a read of them propagates and is
+    reported at a sink); they never remove a finding or make a run clean. So a mis-declared
+    buffer (a real input marked scratch or `undef`) cannot hide a read of captured input: if
+    such a read happens after the first write in some schedule, it reads undefined bytes and
+    is reported (a false report, never a miss). The classification does not depend on the
+    resolving run's order: input means a read ordered before every write of the run, hence
+    first in every order; anything else is produced. If the resolving run ends early (fault,
+    step limit) without touching the buffer, it stays defined (the old behaviour). An input
+    read of a buffer allocated in the region whose bytes nothing initialized (a kernel
+    reading garbage before writing) stays unreported, as before.
+  - Bytes of a scratch output no launch writes keep the captured values for the comparison
+    with the GPU output (bitwise equal, as before); only reads of them are reported.
+  - S-INIT-FILLS refills unwritten bytes of undefined buffers too (`fills.rs`), so an
+    `undef-insensitive` verdict covers them.
+  - Evidence: `tests/fixtures.rs` `e_scratch_undef_buffers`: good (the consumer reads only
+    written rows) clean on both fronts; OFS1 (producer stride 24, consumer stride 32)
+    reports the undefined rows reaching the output, and is clean with `scratch = false`
+    (the miss); RDFIRST (warp 1 reads, CTA barrier, warp 0 writes) keeps the buffer as
+    input; RACEW1 / RACEW0 (a copy of never-written bytes unordered with the writes, from
+    warp 1 / from lanes of the writers' warp; RACEW0's first access is the read) are
+    reported (`undef-insensitive`), never clean, and clean with `scratch = false`. Mutants:
+    dropping the not-ordered-after check, or counting lanes of one warp as always ordered,
+    make RACEW0 clean (both fronts / SASS) and fail the test.
+  - If wrong: *false alarm* only, for an input written by something other than a case
+    launch (a memset or copy inside the region) and then partly overwritten by a launch
+    before the rest is read.
 ### S-INIT-FILLS · code
 **Multi-fill rerun (an evidence class, not a certificate).** When every S-INIT report of a
 verdict is undefined data left in global memory at the end of the launch

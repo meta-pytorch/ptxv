@@ -1034,6 +1034,21 @@ impl Mem {
             sh: Pages::uniform(n, Sh::default()),
         }
     }
+
+    /// Memory whose every byte holds undefined data until written (S-INIT scratch buffers).
+    pub fn new_undef(init: Vec<u8>) -> Mem {
+        let n = init.len();
+        Mem {
+            bytes: Pages::from_vec(init, 0),
+            sh: Pages::uniform(
+                n,
+                Sh {
+                    undef: true,
+                    ..Sh::default()
+                },
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -1416,6 +1431,9 @@ pub struct Alloc {
     pub name: String,
     pub base: u64,
     pub init: Vec<u8>,
+    /// S-INIT (scratch buffers): every byte is undefined until written (`init` is a placeholder); a
+    /// load of an unwritten byte gives undefined bits, reported where they are used.
+    pub undef: bool,
 }
 
 /// One grid of a launch. A multi-kernel launch (rung 1e: PDL) runs several grids of one
@@ -2455,7 +2473,13 @@ impl Machine {
         let gmem = launch
             .allocs
             .iter()
-            .map(|a| Mem::new(a.init.clone()))
+            .map(|a| {
+                if a.undef {
+                    Mem::new_undef(a.init.clone())
+                } else {
+                    Mem::new(a.init.clone())
+                }
+            })
             .collect();
         let tmem: Vec<Tmem> = (0..launch.ctas()).map(|_| Tmem::new()).collect();
         let launch_ctas = launch.ctas();
