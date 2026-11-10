@@ -5,10 +5,11 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! E-BAR-OVER walk values differential: the stateful explorer with and without the walk's
-//! values (`ptxv_sim::explore::set_bar_values`) on every named-barrier fixture, both fronts;
-//! and fixtures/r2_cute_small CM1 on PTX, bounded, without them. A separate test binary with
-//! one test, because the setting is process-wide.
+//! E-BAR-CUT and E-BAR-OVER walk values differential: the stateful explorer with and without
+//! the all-thread barrier cut (`ptxv_sim::explore::set_bar_cut`) and the walk's values
+//! (`set_bar_values`) on every named-barrier fixture, both fronts; and fixtures/r2_cute_small
+//! CM1 on PTX, bounded, without them. A separate test binary with one test, because the
+//! settings are process-wide.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,12 +18,13 @@ use ptxv_case::Case;
 use ptxv_sim::build_launch;
 use ptxv_sim::explore::Verdict;
 use ptxv_sim::explore::explore;
+use ptxv_sim::explore::set_bar_cut;
 use ptxv_sim::explore::set_bar_values;
 use ptxv_sim::machine::Machine;
 
 fn kernel(case: &Case, variant: &str, front: &str) -> ptxv_ir::Kernel {
     let dir = std::env::temp_dir().join(format!(
-        "ptxv-test-barvalues-{}-{}-{variant}",
+        "ptxv-test-barcut-{}-{}-{variant}",
         std::process::id(),
         case.m.name
     ));
@@ -45,6 +47,7 @@ fn kernel(case: &Case, variant: &str, front: &str) -> ptxv_ir::Kernel {
 }
 
 fn run(case: &Case, variant: &str, front: &str, on: bool) -> Verdict {
+    set_bar_cut(Some(on));
     set_bar_values(Some(on));
     let k = kernel(case, variant, front);
     let launch = build_launch(case, &k).unwrap();
@@ -59,10 +62,11 @@ fn outputs(v: &Verdict) -> Vec<Vec<u8>> {
 }
 
 #[test]
-fn bar_values_keep_every_verdict() {
+fn bar_cut_and_values_keep_every_verdict() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
     let mut fewer = 0;
     for name in [
+        "e_barcut",
         "e_barwalk",
         "e_barover",
         "e_bararv",
@@ -86,20 +90,29 @@ fn bar_values_keep_every_verdict() {
                 assert!(on.complete && off.complete, "{tag}: incomplete");
                 assert_eq!(on.classes(), off.classes(), "{tag}: classes");
                 assert_eq!(outputs(&on), outputs(&off), "{tag}: outputs");
-                if name == "e_barwalk" {
+                if name == "e_barcut" || name == "e_barwalk" {
                     let expect = case.variant(&var).unwrap().expect_for(front);
                     assert!(
                         on.meets(&expect),
                         "{tag}: got {:?}, want {expect:?}",
                         on.classes()
                     );
+                    if name == "e_barcut" && var == "good" {
+                        assert!(
+                            on.states < off.states,
+                            "{tag}: {} vs {} states",
+                            on.states,
+                            off.states
+                        );
+                    }
                 }
                 fewer += (on.states < off.states) as usize;
             }
         }
     }
+    set_bar_cut(None);
     set_bar_values(None);
-    eprintln!("fewer states with the walk values: {fewer} runs");
+    eprintln!("fewer states with the cut and values: {fewer} runs");
     // fixtures/r2_cute_small CM1 on PTX, bounded (moved from fixtures.rs `r2_cute_small`, as the
     // setting is process-wide): its deadlock needs the MMA warp to run ahead. The walk values
     // change which barrier arrivals the reduction commutes, and so the depth-first order: the
@@ -109,6 +122,7 @@ fn bar_values_keep_every_verdict() {
     if ptxv_case::skip_missing_vendor_files(&root, &["r2_cute_small"]) {
         return;
     }
+    set_bar_cut(Some(false));
     set_bar_values(Some(false));
     let case = Case::load(root.join("r2_cute_small")).unwrap();
     let k = kernel(&case, "CM1", "ptx");
@@ -122,5 +136,6 @@ fn bar_values_keep_every_verdict() {
         "r2_cute_small/CM1/ptx: got {:?}, want {expect:?}",
         v.classes()
     );
+    set_bar_cut(None);
     set_bar_values(None);
 }

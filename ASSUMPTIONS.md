@@ -1226,7 +1226,7 @@ FA4's fix for its warp-role barrier bug): `UMOV UR, -1; BRA.DIV UR, slow; BAR.SY
     with values off, past 2.5M with them on; every later arrival on that deadlock's trace is
     one the walk with values predicts at each earlier state). Complete explorations are
     unaffected. An incomplete clean run with values on bounds nothing beyond the states it
-    explored; tests/bar_values.rs runs the CM1 bounded check with values off.
+    explored; tests/bar_cut.rs runs the CM1 bounded check with values (and E-BAR-CUT) off.
   - *Uniform registers* (both walks, 2026-11-09). UR and UP hold one copy per warp, and the
     write analyses above cover the thread's own paths only: a lane group of the warp that
     has diverged from the thread can write a uniform register the thread then reads. The
@@ -1263,6 +1263,50 @@ FA4's fix for its warp-role barrier bug): `UMOV UR, -1; BRA.DIV UR, slow; BAR.SY
 - If wrong: *cost* only (more interleavings of arrivals; the reachability count is
   conservative).
 
+### E-BAR-CUT · code
+**A thread that reaches a counted barrier only through an all-thread barrier does not arrive
+in the generation that is open now.**
+- Refines E-BAR-OVER's *who may still arrive* for the local reduction's question: does the
+  `bar.sync id, count` arrival of thread h (guard on) land in the same generation in every
+  order? Thread u is not counted when every walked path from u's pc to a `bar.sync` /
+  `bar.arrive` on `id` first reaches a `bar.sync` A on another id with u's guard on there
+  (decided as E-BAR-OVER's walk decides guards), where A is an all-thread wait barrier at
+  every site of its id (`BarCfg::cut`: immediate id, no thread count, never `bar.arrive`, no
+  barrier named by register in the kernel). Threads parked at A are such threads.
+- Premise (a), on h's warp: every live lane of h's warp arrives at the counted barrier with
+  h (same pc, guard on) or is parked in its current generation; otherwise the cut is not
+  applied. No lane of h's warp can then arrive at A before the generation completes, so the
+  argument below holds whether A counts threads or warps (a warp arrival at A by another lane
+  of h's warp would count h there under warp counting).
+- Why: an all-thread barrier counts threads, not warps (E-BAR-EXIT), and completes only when
+  every live thread of the CTA has arrived. h is live and stays parked in the counted barrier
+  until the current generation completes; it is not counted at A's current generation
+  (bar.sync waits, and no `bar.arrive` names A). So A cannot complete, and u cannot reach the
+  counted barrier, before the current generation completes. If the other threads that may
+  arrive, h's warp included (E-BAR-EXIT rounding), are at most `count`, the generation
+  completes exactly when they have all arrived, in any order, and the arrival is local-ample.
+- Later generations are not covered: the generation-completion footprint (exec.rs, space 14
+  write) and `arv_current` keep E-BAR-OVER's count.
+- Shape: Triton warp specialization with a worker loop (TLX). Worker warps loop through a hub
+  (`BAR.SYNC 0x1`, a role byte from shared memory, `BRX` into the partition), and every
+  partition ends with `BAR.SYNC 0x1`. The walk cannot know the role byte, so every warp may
+  reach every partition's named barriers, but only through the hub's all-thread barrier.
+- `PTXV_NO_BAR_CUT` (or `explore::set_bar_cut(Some(false))`) turns it off.
+- Where: `explore.rs` `bar_cfg` (`BarCfg::cut`), `bar_spills`, `Machine::bar_oversub_x`,
+  `thread_may_arrive` (the `cut` argument; walks stop there).
+- Tests: `fixtures/e_barcut` (good: 37 -> 29 states on PTX, 46 -> 41 on SASS, the same
+  verdict). The mutants each break one premise: BC1 has a path around the all-thread barrier,
+  BC2 guards it off for half-warps (`barrier.sync`), BC3 uses `bar.arrive` on it, BC4 gives
+  it the counted barrier's id, BC5 splits the producer warp between the two barriers
+  (lanes 16-31 skip the counted barrier and wait at the all-thread one: a deadlock under
+  thread counting; the unit test fails without premise (a)). Each keeps its bug class with
+  the cut. The unit test
+  `bar_cut_applies_only_when_its_premises_hold` checks that the arrival is ample in good and
+  in no mutant. `tests/bar_cut.rs` compares classes and outputs with and without the cut on
+  every named-barrier fixture, both fronts.
+- Status: **argued** (from the barrier semantics validated for E-BAR-OVER and E-BAR-EXIT;
+  no separate hardware probe).
+- If wrong: *miss* (an order of arrivals at the counted barrier not explored).
 
 ### E-BAR-RED · code
 **Barrier reductions (`bar.red`, SASS `BAR.RED` + `B2R.RESULT`).**

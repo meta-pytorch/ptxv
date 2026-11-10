@@ -388,6 +388,25 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |k| any(k, |o| matches!(o, Op::BarSync { count: Some(_), .. })),
     },
     Assumption {
+        id: "E-BAR-CUT",
+        kind: "code",
+        status: "argued",
+        title: "a thread that reaches a counted barrier only through an all-thread barrier does not arrive in its open generation",
+        applies: |k| {
+            any(k, |o| matches!(o, Op::BarSync { count: Some(_), .. }))
+                && any(k, |o| {
+                    matches!(
+                        o,
+                        Op::BarSync {
+                            count: None,
+                            arrive: false,
+                            ..
+                        }
+                    )
+                })
+        },
+    },
+    Assumption {
         id: "E-BAR-RED",
         kind: "code",
         status: "validated",

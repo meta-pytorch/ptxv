@@ -418,6 +418,30 @@ fn e_barover_oversubscribed_named_barrier() {
         }
     }
 }
+/// E-BAR-CUT: a counted barrier reached by its other users only through an all-thread
+/// barrier (clean), and mutants breaking each premise of the cut (each keeps its bug class).
+#[test]
+fn e_barcut_all_thread_barrier_cut() {
+    both("e_barcut", "good");
+    // As for e_barover: the stateful explorer reports each race in one order (E-DRF); DPOR
+    // also reverses it. Both must find every expected class.
+    for v in ["BC1", "BC2", "BC3", "BC4"] {
+        for front in ["ptx", "sass"] {
+            check_stateful("e_barcut", v, front, 100_000);
+            let case = Case::load(root().join("fixtures").join("e_barcut")).unwrap();
+            let k = kernel(&case, v, front);
+            let launch = build_launch(&case, &k).unwrap();
+            let d =
+                ptxv_sim::dpor::explore_dpor(Machine::new(Arc::new(k), Arc::new(launch)), 100_000);
+            let expect = case.variant(v).unwrap().expect_for(front);
+            assert!(
+                d.complete && expect.iter().all(|e| d.classes().contains(e)),
+                "{v}/{front}: DPOR got {:?}, want at least {expect:?}",
+                d.classes()
+            );
+        }
+    }
+}
 /// E-BAR-OVER walk values: producers that leave through a role test recomputed on the path
 /// (clean), and BW1, where warp 5 arrives at the consumers' counted barrier.
 #[test]
@@ -883,7 +907,7 @@ fn r2_cute_small() {
     for v in ["good", "fenced", "CM2", "CM3"] {
         check_stateful("r2_cute_small", v, "ptx", 2_000_000);
     }
-    // CM1 on PTX (bounded, its deadlock needs the MMA warp to run ahead): tests/bar_values.rs.
+    // CM1 on PTX (bounded, its deadlock needs the MMA warp to run ahead): tests/bar_cut.rs.
     check_bounded("r2_cute_small", "CM4", "ptx", 50_000);
 }
 

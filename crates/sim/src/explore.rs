@@ -765,7 +765,8 @@ fn local_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)
             // the next generation, so arrival order decides who is released by whom; with
             // any bar.arrive in the kernel, bar.sync arrivals are not commuted here either.
             // Nor at a barrier more threads than its count may still arrive at (E-BAR-OVER):
-            // which threads share a generation then depends on arrival order.
+            // which threads share a generation then depends on arrival order. Threads that
+            // reach it only through an all-thread barrier do not count (E-BAR-CUT).
             if matches!(
                 op,
                 ptxv_ir::Op::ClusterArrive { .. } | ptxv_ir::Op::ClusterWait
@@ -1323,6 +1324,10 @@ pub struct BarCfg {
     /// Some `bar.sync` / `bar.arrive` names its barrier with a register (E-BAR-OVER's
     /// value-tracking walk is needed only then).
     pub regid: bool,
+    /// Named barriers (bit = id) that are all-thread wait barriers at every site: each
+    /// `bar.sync` / `bar.arrive` naming the id is an immediate-id `bar.sync` / `bar.red`
+    /// without a thread count, and no site names a barrier by register (ASSUME(E-BAR-CUT)).
+    pub cut: u32,
 }
 
 /// Where each return may land (ASSUME(E-RET)), per pc (empty for other instructions): right
@@ -1687,6 +1692,30 @@ pub(crate) fn bar_cfg(m: &Machine) -> BarCfg {
             }
         }
     }
+    // E-BAR-CUT: ids every site of which is an all-thread wait (no count, no bar.arrive).
+    let mut cut = 0u32;
+    let mut not_cut = 0u32;
+    let mut any_reg = false;
+    for i in code {
+        match &i.op {
+            Op::BarSync {
+                id: Val::Imm(v),
+                count,
+                arrive,
+                packed: false,
+                ..
+            } if *v < 32 => {
+                if count.is_none() && !arrive {
+                    cut |= 1 << v;
+                } else {
+                    not_cut |= 1 << v;
+                }
+            }
+            Op::BarSync { .. } | Op::CallAbs { .. } => any_reg = true,
+            _ => {}
+        }
+    }
+    let cut = if any_reg { 0 } else { cut & !not_cut };
     BarCfg {
         reach: r,
         succ,
@@ -1700,6 +1729,7 @@ pub(crate) fn bar_cfg(m: &Machine) -> BarCfg {
         regid: code.iter().any(|i| {
             matches!(&i.op, ptxv_ir::Op::BarSync { id, .. } if !matches!(id, ptxv_ir::Val::Imm(_)))
         }),
+        cut,
     }
 }
 
@@ -2419,6 +2449,33 @@ pub fn set_bar_values(on: Option<bool>) {
     );
 }
 
+/// `set_bar_cut`: 0 = the environment decides, 1 = on, 2 = off.
+static BAR_CUT: AtomicU8 = AtomicU8::new(0);
+
+/// Whether E-BAR-CUT is on (`Machine::bar_oversub_x`): yes unless `PTXV_NO_BAR_CUT` is set
+/// or `set_bar_cut(Some(false))` was called.
+pub fn bar_cut() -> bool {
+    static ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    match BAR_CUT.load(Ordering::Relaxed) {
+        1 => true,
+        2 => false,
+        _ => *ENV.get_or_init(|| std::env::var("PTXV_NO_BAR_CUT").is_err()),
+    }
+}
+
+/// Overrides `bar_cut` for the whole process (`None`: the environment decides). For tests
+/// comparing the explorer with and without the reduction.
+pub fn set_bar_cut(on: Option<bool>) {
+    BAR_CUT.store(
+        match on {
+            None => 0,
+            Some(true) => 1,
+            Some(false) => 2,
+        },
+        Ordering::Relaxed,
+    );
+}
+
 /// Is the bar.sync at `pc` an arrival at a barrier that may receive more arrivals than its
 /// count (`Machine::bar_oversub`), for any of warp `w`'s threads there? Operands that cannot
 /// be read: conservatively yes.
@@ -2432,12 +2489,29 @@ fn bar_spills(m: &Machine, w: u32, pc: u32) -> bool {
     let Some(count) = count else {
         return false;
     };
+    let guard = m.k.code[pc as usize].guard;
+    let cut_on = bar_cut();
     m.warp_threads(w)
         .filter(|&t| m.threads[t].pc == pc && m.threads[t].st == St::Run)
         .any(|t| match (m.rd(t, id).ok(), m.rd(t, count).ok()) {
             (Some(i), Some(c)) => {
                 let (i, c) = ptxv_ir::bar_args(i, Some(c), *packed);
-                m.bar_oversub(m.threads[t].cta, i, c)
+                // E-BAR-CUT: a thread that arrives here holds the generation open, provided
+                // no lane of its warp can arrive at an all-thread barrier meanwhile (`held`
+                // premise (a)): every live lane arrives here now or is parked in the barrier.
+                let held = cut_on && m.prd(t, guard) && {
+                    let cta = m.threads[t].cta;
+                    let parked = m.bars.get(&(cta, i));
+                    m.warp_threads(w).all(|u| {
+                        let th = &m.threads[u];
+                        th.st == St::Exited
+                            || th.pc == pc && th.st == St::Run && m.prd(u, guard)
+                            || th.st == St::Bar
+                                && parked
+                                    .is_some_and(|b| b.arrived.binary_search(&(u as u32)).is_ok())
+                    })
+                };
+                m.bar_oversub_x(m.threads[t].cta, i, c, held)
             }
             _ => true,
         })
@@ -2511,7 +2585,7 @@ impl Machine {
                 .map(|e| e.2);
             let may = hit.unwrap_or_else(|| {
                 let mut reads = Vec::new();
-                let may = self.thread_may_arrive_c(u, bit, &mut reads, &wc);
+                let may = self.thread_may_arrive_c(u, bit, 0, &mut reads, &wc);
                 memo.push((th.pc, reads, may));
                 may
             });
@@ -2535,10 +2609,29 @@ impl Machine {
     }
 
     pub fn bar_oversub(&self, cta: u16, id: u32, count: Option<u32>) -> bool {
+        self.bar_oversub_x(cta, id, count, false)
+    }
+
+    /// `bar_oversub`, for the current generation of a barrier that some thread holds open
+    /// (`held`: a thread of `cta` arrives at it now, or is parked in it, and stays parked
+    /// until the generation completes). ASSUME(E-BAR-CUT): a thread that can reach the
+    /// barrier only through an all-thread wait barrier `A` of another id (`BarCfg::cut`,
+    /// guard on for it) cannot arrive in this generation: `A` completes only once every
+    /// live thread of the CTA arrived at it, the holder included (an all-thread barrier
+    /// counts threads, not warps; no `bar.arrive` names `A`, so the holder has not arrived
+    /// at `A`'s current generation), and the holder stays parked until this generation
+    /// completes. Such threads (those parked at `A` included) are not counted. The caller
+    /// (`bar_spills`) sets `held` only when every live lane of the holder's warp arrives with
+    /// it or is parked in the barrier (premise (a): no lane of that warp arrives at `A`, so the
+    /// argument holds also if `A` counted warps). Not used for
+    /// the generation-completion footprint (exec.rs), which concerns later generations.
+    /// `bar_cut` (`PTXV_NO_BAR_CUT`) turns it off.
+    pub(crate) fn bar_oversub_x(&self, cta: u16, id: u32, count: Option<u32>, held: bool) -> bool {
         let Some(c) = count else {
             return false;
         };
         let bit = if id < 32 { 1u32 << id } else { u32::MAX };
+        let cut = if held { self.bar_cfg.cut & !bit } else { 0 };
         let mut n = 0;
         let mut per_warp: HashMap<u32, usize> = HashMap::new();
         // The walk is a function of the pc and the values it read: threads that agree on
@@ -2561,7 +2654,7 @@ impl Machine {
                 .map(|e| e.2);
             let may = hit.unwrap_or_else(|| {
                 let mut reads = Vec::new();
-                let may = self.thread_may_arrive_c(t, bit, &mut reads, &wc);
+                let may = self.thread_may_arrive_c(t, bit, cut, &mut reads, &wc);
                 memo.push((th.pc, reads, may));
                 may
             });
@@ -2695,25 +2788,30 @@ impl Machine {
     }
 
     #[cfg(test)]
-    fn thread_may_arrive(&self, t: usize, bit: u32, reads: &mut Vec<BarRead>) -> bool {
-        self.thread_may_arrive_c(t, bit, reads, &WarpReads::default())
+    fn thread_may_arrive(&self, t: usize, bit: u32, cut: u32, reads: &mut Vec<BarRead>) -> bool {
+        self.thread_may_arrive_c(t, bit, cut, reads, &WarpReads::default())
     }
 
     /// `thread_may_arrive_walk`, memoized per worker thread across states: the walk is a
     /// function of the code (`bar_cfg`), the pc, `bit` and the values it read, so an earlier
     /// walk from the same pc applies to every thread reading the same values there.
+    /// `cut`: all-thread barriers (`BarCfg::cut`) at which a walked path stops when the thread
+    /// arrives there (E-BAR-CUT; 0: none).
     fn thread_may_arrive_c(
         &self,
         t: usize,
         bit: u32,
+        cut: u32,
         reads: &mut Vec<BarRead>,
         wc: &WarpReads,
     ) -> bool {
         // Keyed by the address of `bar_cfg`; each entry holds a weak reference to it, so the
         // address is not reused by another machine's `BarCfg` (another kernel: its walks and
         // registers differ) while the entry exists.
-        type Walks =
-            HashMap<(usize, u32, u32, bool), (std::sync::Weak<BarCfg>, Vec<(Vec<BarRead>, bool)>)>;
+        type Walks = HashMap<
+            (usize, u32, u32, u32, bool),
+            (std::sync::Weak<BarCfg>, Vec<(Vec<BarRead>, bool)>),
+        >;
         thread_local! {
             static WALKS: std::cell::RefCell<Walks> = Default::default();
         }
@@ -2721,6 +2819,7 @@ impl Machine {
             Arc::as_ptr(&self.bar_cfg) as usize,
             self.threads[t].pc,
             bit,
+            cut,
             bar_values(),
         );
         let hit = WALKS.with(|w| {
@@ -2734,7 +2833,7 @@ impl Machine {
             *reads = rs;
             return may;
         }
-        let may = self.thread_may_arrive_walk(t, bit, bar_values(), reads);
+        let may = self.thread_may_arrive_walk(t, bit, cut, bar_values(), reads);
         // One entry per value read (a walk reads the same register on many paths).
         let mut seen_k: Vec<BarKey> = Vec::new();
         reads.retain(|(k, _)| {
@@ -2765,6 +2864,7 @@ impl Machine {
         &self,
         t: usize,
         bit: u32,
+        cut: u32,
         values: bool,
         reads: &mut Vec<BarRead>,
     ) -> bool {
@@ -2777,9 +2877,9 @@ impl Machine {
             reads.push((BarKey::Conv, c));
         }
         if regid {
-            self.thread_may_arrive_walk_regs(t, bit, reads)
+            self.thread_may_arrive_walk_regs(t, bit, cut, reads)
         } else {
-            self.thread_may_arrive_walk_plain(t, bit, values, reads)
+            self.thread_may_arrive_walk_plain(t, bit, cut, values, reads)
         }
     }
 
@@ -2849,6 +2949,7 @@ impl Machine {
         &self,
         t: usize,
         bit: u32,
+        cut: u32,
         values: bool,
         reads: &mut Vec<BarRead>,
     ) -> bool {
@@ -2962,6 +3063,13 @@ impl Machine {
                             _ => None,
                         }
                     };
+                // E-BAR-CUT: the thread arrives at an all-thread barrier it cannot pass
+                // before the held generation completes.
+                if guard == Some(true)
+                    && matches!(&i.op, Op::BarSync { id: Val::Imm(v), .. } if *v < 32 && cut >> v & 1 == 1)
+                {
+                    continue;
+                }
                 let mut next = env.clone();
                 next.retain(|e| !cfg.dsts[pc].contains(&e.0));
                 let mut vnext = venv.clone();
@@ -3185,7 +3293,13 @@ impl Machine {
         }
     }
 
-    fn thread_may_arrive_walk_regs(&self, t: usize, bit: u32, reads: &mut Vec<BarRead>) -> bool {
+    fn thread_may_arrive_walk_regs(
+        &self,
+        t: usize,
+        bit: u32,
+        cut: u32,
+        reads: &mut Vec<BarRead>,
+    ) -> bool {
         use ptxv_ir::Cmp;
         use ptxv_ir::Op;
         use ptxv_ir::Pred;
@@ -3288,6 +3402,13 @@ impl Machine {
                         v.map(|v| (v != 0) ^ p.neg)
                     };
                 let guard = pred(i.guard, &mut used, reads);
+                // E-BAR-CUT: the thread arrives at an all-thread barrier it cannot pass
+                // before the held generation completes.
+                if guard == Some(true)
+                    && matches!(&i.op, Op::BarSync { id: Val::Imm(v), .. } if *v < 32 && cut >> v & 1 == 1)
+                {
+                    continue;
+                }
                 let mut next = env.clone();
                 next.retain(|e| !cfg.dsts[pc].contains(&e.0));
                 let mut rnext = renv.clone();
@@ -9147,7 +9268,7 @@ mod bar_values_tests {
                 for (t, may) in [(128usize, w4), (160, w5)] {
                     let walk = |values: bool| {
                         let mut reads = Vec::new();
-                        m.thread_may_arrive_walk(t, 2, values, &mut reads)
+                        m.thread_may_arrive_walk(t, 2, 0, values, &mut reads)
                     };
                     assert_eq!(walk(true), may, "{v}/{front}: t{t} with values");
                     assert!(walk(false), "{v}/{front}: t{t} without values");
@@ -9190,7 +9311,7 @@ mod bar_values_tests {
         m.wr(128, up0, 0, 1);
         let walk = |m: &Machine, values: bool| {
             let mut reads = Vec::new();
-            m.thread_may_arrive_walk(128, 2, values, &mut reads)
+            m.thread_may_arrive_walk(128, 2, 0, values, &mut reads)
         };
         // (Without values a `BAR.SYNC` guarded off still counts as an arrival.)
         assert!(!walk(&m, true), "converged");
@@ -9201,6 +9322,92 @@ mod bar_values_tests {
         for values in [true, false] {
             assert!(walk(&m, values), "split, values {values}");
         }
+    }
+}
+
+#[cfg(test)]
+mod bar_cut_tests {
+    use super::*;
+
+    fn machine(variant: &str) -> Machine {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_barcut");
+        let case = ptxv_case::Case::load(&dir).unwrap();
+        let ptx = case.variant_ptx(variant).unwrap();
+        let k = ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap();
+        let launch = crate::build_launch(&case, &k).unwrap();
+        Machine::new(Arc::new(k), Arc::new(launch))
+    }
+
+    /// Steps only `warps` (first enabled action each time) until `stop` or none is enabled.
+    fn drive(m: &mut Machine, warps: &[u32], stop: impl Fn(&Machine) -> bool) {
+        for _ in 0..100_000 {
+            if stop(m) {
+                return;
+            }
+            let acts = m.actions();
+            let Some((a, _)) = acts
+                .iter()
+                .find(|(a, _)| matches!(a, Action::Split { warp, .. } if warps.contains(warp)))
+            else {
+                return;
+            };
+            let a = a.clone();
+            m.apply(&a);
+        }
+        panic!("no end");
+    }
+
+    /// E-BAR-CUT, fixtures/e_barcut round 0: warps 2 and 3 run until they are about to arrive
+    /// at the all-thread barrier (barrier 1) or at barrier 2, then warp 0 comes to
+    /// `bar.sync 2, 64`. Its arrival is
+    /// order-independent only in good: in every mutant some thread can arrive at barrier 2
+    /// in this generation (around the all-thread barrier, or through a premise the cut
+    /// relies on that the mutant breaks). Without a holder (`held` false) every variant
+    /// counts warps 2 and 3.
+    #[test]
+    fn bar_cut_applies_only_when_its_premises_hold() {
+        for (v, spills) in [
+            ("good", false),
+            ("BC1", true),
+            ("BC2", true),
+            ("BC3", true),
+            ("BC4", true),
+            ("BC5", true),
+        ] {
+            let mut m = machine(v);
+            // Some thread of warp `w` is about to arrive at barrier `id` (`bar.sync` or
+            // `barrier.sync`).
+            let at = |m: &Machine, w: u32, id: u64| {
+                m.threads.iter().any(|t| {
+                    t.warp == w
+                        && t.st == St::Run
+                        && matches!(
+                            m.k.code[t.pc as usize].op,
+                            ptxv_ir::Op::BarSync { id: ptxv_ir::Val::Imm(i), arrive: false, .. } if i == id
+                        )
+                })
+            };
+            let at_b = |m: &Machine, w: u32| at(m, w, 2);
+            // Warps 2 and 3 stop before the all-thread barrier (BC2: with the guard still to
+            // decide for each lane), or before barrier 2 when they get around it.
+            for w in [2, 3] {
+                drive(&mut m, &[w], |m| at_b(m, w) || at(m, w, 1));
+            }
+            drive(&mut m, &[0], |m| at_b(m, 0));
+            assert!(at_b(&m, 0), "{v}: warp 0 did not reach bar.sync 2, 64");
+            let pc = m.threads[0].pc;
+            assert_eq!(bar_spills(&m, 0, pc), spills, "{v}: bar_spills");
+            assert!(
+                m.bar_oversub_x(0, 2, Some(64), false),
+                "{v}: without a holder"
+            );
+        }
+        // The cut ids: barrier 1 in good; none once a bar.arrive names it (BC3) or the
+        // counted barrier's id is used without a count (BC4).
+        assert_eq!(machine("good").bar_cfg.cut, 0b10);
+        assert_eq!(machine("BC3").bar_cfg.cut, 0);
+        assert_eq!(machine("BC4").bar_cfg.cut & 0b110, 0);
     }
 }
 
@@ -9229,7 +9436,7 @@ mod walk_cache_tests {
         let mut m = m;
         m.threads[0].make_mut().pc = pc as u32;
         let mut reads = Vec::new();
-        let _ = m.thread_may_arrive(0, 2, &mut reads);
+        let _ = m.thread_may_arrive(0, 2, 0, &mut reads);
         let key = Arc::as_ptr(&m.bar_cfg) as usize;
         drop(m);
         let fresh: Vec<Arc<BarCfg>> = (0..256).map(|_| Arc::new(BarCfg::default())).collect();
