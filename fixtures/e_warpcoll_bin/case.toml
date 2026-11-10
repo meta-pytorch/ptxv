@@ -1,0 +1,65 @@
+name = "e_warpcoll_bin"
+description = """
+E-WARPCOLL / E-COLLECTIVE: the two half-warps run different shfl.sync instructions with a full
+member mask (kernel.ptx). ptxas guards each SHFL with `BRA.DIV`; the divergent warp takes the
+slow paths, whose `WARPSYNC.COLLECTIVE` / `ENDCOLLECTIVE` regions exchange across the halves
+(good: expected/out.bin is GB300's output). Binary mutants drop the BRA.DIV (each half then
+shuffles alone and reads lanes that do not execute the SHFL), shrink or misname the
+collective member mask, or drop ENDCOLLECTIVE. Binary-only: kernel.cubin is kernel.ptx through
+ptxas 13.0 (-arch=sm_103a)."""
+cubin = "kernel.cubin"
+arch = "sm_103a"
+entry = "k"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "NODIV"
+summary = "both BRA.DIV NOPed: each half runs its own fast SHFL with half the warp"
+patch = [{ at = "@0xb0", nop = true }, { at = "@0xf0", nop = true }]
+expect = ["fault"]
+
+[[variants]]
+id = "NODIVLO"
+summary = "only the low half's BRA.DIV NOPed"
+patch = [{ at = "@0xf0", nop = true }]
+expect = ["deadlock", "fault"]
+
+[[variants]]
+id = "HISKIP"
+summary = "high half skips its SHFL (NOP at 0xc0, BRA.DIV at 0xb0 NOPed) and parks at BSYNC; low half runs fast SHFL"
+patch = [{ at = "@0xb0", nop = true }, { at = "@0xc0", nop = true }, { at = "@0xf0", nop = true }]
+expect = ["deadlock", "fault"]
+
+[[variants]]
+id = "COLLMASK"
+summary = "high half's WARPSYNC.COLLECTIVE mask 0xffff0000: its SHFL reads low lanes outside the group"
+patch = [{ at = "@0x180", bits = [[32, 32, 0xffff0000]], expect = "MOV R2, 0xffff0000" }]
+expect = ["deadlock", "fault"]
+
+[[variants]]
+id = "COLLSELF"
+summary = "high half's WARPSYNC.COLLECTIVE mask 0x0000ffff does not contain the executing lanes"
+patch = [{ at = "@0x180", bits = [[32, 32, 0x0000ffff]], expect = "MOV R2, 0xffff" }]
+expect = ["deadlock", "fault"]
+
+[[variants]]
+id = "NOENDCOLL"
+summary = "high half's ENDCOLLECTIVE NOPed"
+patch = [{ at = "@0x1b0", nop = true }]
+expect = ["deadlock"]

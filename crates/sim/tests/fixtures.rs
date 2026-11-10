@@ -6520,3 +6520,38 @@ fn binary_classes(name: &str) {
         assert_eq!(d.classes(), r.classes(), "{name}/{v}: DPOR verdict differs");
     }
 }
+
+/// E-COLLECTIVE / E-WARPCOLL binary mutants of a divergent full-mask shfl.sync (each half
+/// runs its own SHFL; ptxas's BRA.DIV slow paths): dropped BRA.DIVs, a collective member mask
+/// that excludes the other half or the executing lanes, a dropped ENDCOLLECTIVE.
+#[test]
+fn collective_shfl_mutants() {
+    binary_classes("e_warpcoll_bin");
+}
+
+/// E-WARPCOLL: register member masks of shfl.sync (exited lanes named, a source lane outside
+/// the mask, masks that disagree), both front-ends.
+#[test]
+fn shfl_member_masks() {
+    for v in ["good", "EXITED", "XSRC", "OVERLAP"] {
+        both("e_warpcoll_mask", v);
+    }
+}
+
+/// E-ALLOC / E-TC-EXIT mutants: unobserved tcgen05.cp at dealloc / exit, a trailing commit
+/// alone (contract), a leaked or wrongly sized allocation, allocations that never succeed.
+#[test]
+fn tmem_alloc_and_exit_mutants() {
+    for v in [
+        "good",
+        "CPNOWAIT",
+        "TRAILCOMMIT",
+        "CP2",
+        "NODEALLOC",
+        "REALLOC",
+        "DEALLOCSZ",
+        "W1ALLOC",
+    ] {
+        both("e_tc_alloc_exit", v);
+    }
+}
