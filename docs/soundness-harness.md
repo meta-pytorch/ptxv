@@ -130,10 +130,33 @@ one carry-out). `tok-merge` gives every member of an instruction one C-WARP toke
 (wellsync.rs `post_inst`): `fixtures/e_lockstep_nobsync` NOBSYNC must then certify (MISS 30).
 `shfl-wait` makes a SASS SHFL wait for the rest of the warp again (exec.rs `split_enabled`):
 `fixtures/e_warpcoll_split` NOBSYNC is then clean instead of a fault (MISS 39).
-A mutant may also name cargo tests (`tests`: package, test binary, test name); it is
-caught when one of them runs and fails (claims checked against recorded GPU outputs, such as
-num's error bounds); a test that does not run counts as not caught.
-`PTXV_JOB_WRAPPER` prefixes the builds and test runs (a memory-capped job runner).
+A mutant may also name cargo tests (`tests`: package, test binary, name filter), run in the
+mutant's tree; it is caught when a test that ran fails (claims checked against recorded GPU
+outputs, such as num's error bounds; adversarial tests). A build error, a missing test target or
+a filter that matches no test is an `error`, not a catch. `PTXV_JOB_WRAPPER` prefixes the builds
+and test runs (a memory-capped job runner). The mutant's tree holds the working
+tree's tracked changes and its untracked files (new fixtures and tests). `--only` takes a
+comma-separated list.
+
+### Adversarial tests of proof rules
+
+`crates/sim/tests/adversarial.rs`, one test per rule: the rule's premise and conclusion, a
+kernel that violates the premise while looking like the good case (`fixtures/e_*`, PTX and
+SASS where both fronts apply; binary-only with a `patch` where only SASS has the shape), and
+the source mutant in `srcmut.py` that weakens the rule's implementation and fails the test.
+The helper `adv` checks each variant's expected classes on both fronts and that a
+certificate, when one holds, reports exactly the exploration's classes. A kernel that comes
+out clean or certified although it is bad is a soundness miss; its test pins the current
+verdict with the miss named in the doc comment, so a fix shows up as a test change.
+
+| rule | fixture | mutant |
+|---|---|---|
+| E-CONST-BRA | e_const_bra, e_const_bra2 (+ an injected wrong fold) | cbra-nocheck |
+| E-RET | e_ret (binary-only; + an injected wrong return table) | ret-nocheck |
+| E-ELECT | e_elect_mid (PTX gap: a middle-lane leader), e_elect_lane | elect-lowonly, elect-high-sass |
+| E-CLOCK | e_clock_timeout (miss: a timeout path, GB300 wrong 20/20) | (none: the rule is the shortcut) |
+| E-NANOSLEEP | e_nanosleep | (none: a no-op has nothing to weaken) |
+| S-BRA-COND | (r4_sum_torch, probes/div_ftz) | bracond-ignore |
 
 ## Reading the results
 

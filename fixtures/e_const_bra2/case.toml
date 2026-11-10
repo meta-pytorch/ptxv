@@ -1,0 +1,46 @@
+name = "e_const_bra2"
+description = """
+E-CONST-BRA across grids (fixtures/e_const_bra's kernel): the entry launched with flag = 1,
+then with flag = 0. The launch-constant guard has a different value in each grid, so the branch
+must not be folded (folding needs every grid that reaches it to agree); the second grid's
+unbarriered read races with its own store. A fold taken from the first grid alone would report
+the second grid's branch as unmodeled (const-bra) besides the race."""
+ptx = "../e_const_bra/kernel.ptx"
+entry = "e_const_bra"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out", "out2"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+
+[[buffers]]
+name = "out2"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 1
+
+[[launches]]
+entry = "e_const_bra"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+params = [
+    { kind = "ptr", buffer = "out2" },
+    { kind = "u32", value = 0 },
+]
+
+[[variants]]
+id = "good"
+summary = "flag = 1 then flag = 0: the second grid races"
+expect = ["race"]

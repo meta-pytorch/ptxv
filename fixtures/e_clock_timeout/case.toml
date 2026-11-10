@@ -1,0 +1,34 @@
+name = "e_clock_timeout"
+description = """
+E-CLOCK: a poll with a clock64 timeout whose timeout path reads the data without the flag.
+The model reads the clock as 0, so the timeout never fires and good is clean; on GB300 the
+producer sleeps 200 us, longer than the 2000-cycle bound, and the reader takes the timeout path
+(out[0] = 0 where the model's only outcome is 7). A documented limit of E-CLOCK (results that
+depend on elapsed time). NOTIMEOUT: no timeout branch, correct."""
+ptx = "kernel.ptx"
+entry = "e_clock_timeout"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "timeout path reads without the flag"
+expect = ["clean"]
+
+[[variants]]
+id = "NOTIMEOUT"
+summary = "timeout branch deleted"
+marker = "@TIMEOUT"
+replace = "<delete>"
+expect = ["clean"]

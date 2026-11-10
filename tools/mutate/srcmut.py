@@ -19,6 +19,7 @@ silent survival.
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -36,8 +37,10 @@ class SrcMutant:
     replace: str
     # (fixture, variant, front, extra check flags)
     runs: list
-    # (cargo package, test binary, test name): the mutant is caught when the test fails
-    # (claims checked against recorded GPU outputs, e.g. num's error bounds).
+    # (package, test binary, name filter): `cargo test --release -p PKG --test BIN FILTER` in
+    # the mutant's tree; the mutant is caught when the test fails (adversarial tests that build
+    # their machines by hand, crates/sim/tests/adversarial.rs; claims checked against recorded
+    # GPU outputs, e.g. num's error bounds).
     tests: list = field(default_factory=list)
 
 
@@ -85,8 +88,67 @@ MUTANTS = [
     ),
 ]
 
+# Adversarial tests (crates/sim/tests/adversarial.rs): each mutant weakens one proof rule.
+ADV = "adversarial"
+MUTANTS += [
+    # E-CONST-BRA: the execution check of folded branches is what the rule rests on.
+    SrcMutant(
+        "cbra-nocheck",
+        "crates/sim/src/exec.rs",
+        "if members.iter().any(|t| active.contains(t) != v) {",
+        "if false && members.iter().any(|t| active.contains(t) != v) {",
+        [],
+        [("ptxv-sim", ADV, "e_const_bra")],
+    ),
+    # E-RET: the execution check of return targets.
+    SrcMutant(
+        "ret-nocheck",
+        "crates/sim/src/exec.rs",
+        '                if !site {\n                    let msg = format!(\n                        "RET at',
+        '                if false && !site {\n                    let msg = format!(\n                        "RET at',
+        [],
+        [("ptxv-sim", ADV, "e_ret")],
+    ),
+    # E-ELECT (PTX): only the lowest leader explored.
+    SrcMutant(
+        "elect-lowonly",
+        "crates/sim/src/explore.rs",
+        "    let mut hi = m0.clone();\n    hi.elect_high = true;",
+        "    let mut hi = m0.clone();\n    hi.elect_high = false;",
+        [("e_elect", "B46", "ptx", [])],
+    ),
+    # E-ELECT (SASS): the highest active lane instead of GB300's lowest.
+    SrcMutant(
+        "elect-high-sass",
+        "crates/sim/src/exec.rs",
+        "let lowest = active.iter().copied().min_by_key(|&t| self.threads[t].lane);",
+        "let lowest = active.iter().copied().max_by_key(|&t| self.threads[t].lane);",
+        [],
+        [("ptxv-sim", ADV, "e_elect_lane")],
+    ),
+    # S-BRA-COND: `@P0 BRA P1` / `@P0 EXIT P1` taken where the guard holds, ignoring P1.
+    SrcMutant(
+        "bracond-ignore",
+        "crates/sim/src/exec.rs",
+        "                            && cond.is_none_or(|c| self.prd(t, c)));",
+        "                            && true);",
+        [],
+        [
+            ("ptxv-sim", "fixtures", "probe_div_ftz_matches_hardware"),
+            ("ptxv-sim", "fixtures", "r4_kernel_classes"),
+        ],
+    ),
+]
+
 # Entries no fixture reaches, with the reason.
 EXCLUDED = {
+    "cbra-agree": (
+        "E-CONST-BRA's fold across grids (a pc reached by several grids is folded only where they "
+        "agree): grids share code only within one launch (a preferred cluster shape), with equal "
+        "parameters; ptxas reads the shape-dependent table through a register offset "
+        "(c[0x0][x - 0xa0 * SR_CgaSize], S-CGA-SHAPE), which is never a folded constant. A "
+        "multi-kernel launch concatenates one code copy per launch (fixtures/e_const_bra2)"
+    ),
     "vfo-iadd3": (
         "IADD3 with one carry-out: ptxas emits a single carry-out only where the operands bound "
         "the carry to 1 (a zero or carry-in third operand), so no PTX reaches a carry of 2, and "
@@ -144,6 +206,17 @@ def run_mutant(m: SrcMutant, out: Path) -> dict:
         subprocess.run(
             ["git", "-C", str(tree), "apply"], input=diff, text=True, check=True
         )
+    # Untracked files too (new fixtures and tests are not in `git diff`).
+    new = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "--others", "--exclude-standard", "-z"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split("\0")
+    for rel in filter(None, new):
+        dst = tree / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / rel, dst)
     f = tree / m.file
     src = f.read_text()
     if src.count(m.find) != 1:
@@ -153,6 +226,30 @@ def run_mutant(m: SrcMutant, out: Path) -> dict:
         return {"name": m.name, "status": "error", "why": "build failed"}
     runs = []
     caught = False
+    for pkg, binary, filt in m.tests:
+        env = dict(os.environ, CARGO_TARGET_DIR=str(target), CUDA_VISIBLE_DEVICES="")
+        wrap = os.environ.get("PTXV_JOB_WRAPPER", "").split()
+        cmd = [*wrap, "cargo", "test", "--release", "-p", pkg, "--test", binary, filt]
+        r = subprocess.run(
+            cmd, cwd=tree, env=env, capture_output=True, text=True, timeout=3600
+        )
+        # Caught only by a test that ran and failed: a build error, a missing test target or a
+        # filter matching nothing is an error of the harness.
+        ran = any(
+            ln.startswith("running ") and not ln.startswith("running 0 ")
+            for ln in r.stdout.splitlines()
+        )
+        if "could not compile" in r.stderr or not ran:
+            return {
+                "name": m.name,
+                "status": "error",
+                "why": f"test did not run: {binary} {filt}",
+            }
+        hit = r.returncode != 0
+        caught |= hit
+        runs.append(
+            {"test": f"{pkg}/{binary}/{filt}", "rc": r.returncode, "caught": hit}
+        )
     for case, variant, front, flags in m.runs:
         cdir = ROOT / "fixtures" / case
         cmd = [
@@ -235,13 +332,13 @@ def main(argv=None):
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--out", required=True, type=Path)
-    ap.add_argument("--only")
+    ap.add_argument("--only", help="comma-separated mutant names")
     a = ap.parse_args(argv)
     a.out = a.out.resolve()
     a.out.mkdir(parents=True, exist_ok=True)
     res = []
     for m in MUTANTS:
-        if a.only and m.name != a.only:
+        if a.only and m.name not in a.only.split(","):
             continue
         r = run_mutant(m, a.out)
         print(f"{r['name']:14} {r['status']}", flush=True)

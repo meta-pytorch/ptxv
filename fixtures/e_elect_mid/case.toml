@@ -1,0 +1,34 @@
+name = "e_elect_mid"
+description = """
+E-ELECT, the PTX front's leader policy (lowest and highest active lane explored): a kernel
+correct for the two end lanes and racy for any middle-lane leader. GB300 elects the lowest lane
+(probes/elect), so the SASS verdict clean is right for the hardware; under the PTX ISA (any
+fixed lane) good is racy, and the PTX front reports it clean (documented gap of E-ELECT). ENDS:
+no late store, correct for every leader."""
+ptx = "kernel.ptx"
+entry = "e_elect_mid"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "racy for middle-lane leaders"
+expect = ["clean"]
+
+[[variants]]
+id = "ENDS"
+summary = "the late store removed"
+marker = "@LATE"
+replace = "<delete>"
+expect = ["clean"]
