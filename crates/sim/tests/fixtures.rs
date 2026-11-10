@@ -5528,6 +5528,21 @@ fn e_remote_fifo_orders_hb_ordered_arrivals() {
     both("e_remote_fifo_strict", "good");
 }
 
+/// C-ORDER dead reads of strong loads: a relaxed load whose value is unused certifies; an
+/// acquiring load that orders a later plain read (ACQ: PTX certified it before) and a 256-bit
+/// strong load whose value is stored (V8: SASS certified it before) are refused.
+#[test]
+fn e_dead_read_strong_loads() {
+    for v in ["good", "V8"] {
+        both("e_dead_read_strong", v);
+    }
+    // ACQ races (DPOR's reductions are exact for race-free kernels only): the stateful
+    // explorer's verdict.
+    for front in ["ptx", "sass"] {
+        check_stateful("e_dead_read_strong", "ACQ", front, 1_000_000);
+    }
+}
+
 /// C-POLL-ATOM (E-WELLSYNC): an arrival counter of atomic adds polled to its full count is
 /// certified; a poll that exits on a partial count is refused and races, also when the
 /// partial count includes the poller's own add made after another CTA's add in the

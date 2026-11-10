@@ -1,0 +1,43 @@
+// C-ORDER dead reads of strong loads (wellsync.rs `dead_reads`). Two CTAs, thread 0 of each.
+// CTA 0 stores data[0] = 7 (relaxed, gpu scope) and then flag = 1 (release). CTA 1 loads the
+// flag (relaxed) and never uses the value: the load is unordered with the store, but its value
+// reaches nothing, so the certificate holds.
+//   ACQ: CTA 1's flag load acquires (value still unused) and CTA 1 then reads data[0] plainly
+//        and stores it: in the run the acquire read 1 and ordered the data read, in the
+//        other order the data read races. Until 2026-11-08 the probe kept the acquire's
+//        synchronization and the certificate called it clean (PTX); GB300 wrong 200/200 with
+//        CTA 0 delayed
+//   V8:  CTA 1 loads data[0..8] with one relaxed 256-bit load (SASS LDG.E.ENL2.256.STRONG)
+//        and stores the words: the value depends on the order. Until 2026-11-08 the probe
+//        did not undefine that load's registers and the certificate called it clean (SASS);
+//        GB300 wrong 200/200 with CTA 0 delayed
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_dead_read_strong(.param .u64 out_p, .param .u64 data_p, .param .u64 flag_p)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [data_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    ld.param.u64 %rd3, [flag_p];
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra DONE;
+    mov.u32 %r2, %ctaid.x;
+    setp.ne.u32 %p2, %r2, 0;
+    @%p2 bra READER;
+    mov.u32 %r3, 7;
+    st.relaxed.gpu.global.u32 [%rd2], %r3;
+    st.release.gpu.global.u32 [%rd3], 1;
+    bra DONE;
+READER:
+    ld.relaxed.gpu.global.u32 %r5, [%rd3];   // @READ
+DONE:
+    ret;
+}

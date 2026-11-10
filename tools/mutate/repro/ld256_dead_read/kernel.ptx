@@ -1,0 +1,29 @@
+// A relaxed 256-bit load (LDG.E.ENL2.256.STRONG) racing a relaxed store; the value is stored.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry k(.param .u64 out_p, .param .u64 data_p)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [data_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra DONE;
+    mov.u32 %r2, %ctaid.x;
+    setp.ne.u32 %p2, %r2, 0;
+    @%p2 bra READER;
+    mov.u32 %r3, 7;                       // @SLOWW
+    st.relaxed.gpu.global.u32 [%rd2], %r3;
+    bra DONE;
+READER:
+    ld.relaxed.gpu.global.v8.u32 {%r10, %r11, %r12, %r13, %r14, %r15, %r16, %r17}, [%rd2];  // @LD
+    st.global.v8.u32 [%rd1], {%r10, %r11, %r12, %r13, %r14, %r15, %r16, %r17};
+DONE:
+    ret;
+}

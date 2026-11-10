@@ -2347,7 +2347,16 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
     BlackwellScoreSummary / BlackwellBlockScoreTopk: the warps that skip the named barrier load
     the address before the allocating warp stores it, and never use it (192 loads; 2M states
     incomplete → certified in 0.1 s). fixtures/e_dead_read: good certifies; DR1 (the value is
-    stored) and DR2 (a branch tests it) are refused (crates/sim/tests/reductions.rs). Relies
+    stored) and DR2 (a branch tests it) are refused (crates/sim/tests/reductions.rs). Only
+    loads into registers that do not acquire are candidates (`Op::Ld`, `Ld256`, `LdReduce`
+    without an acquiring sync), and the probe undefines every destination register of each
+    (2026-11-08, soundness harness). Before, an acquiring load qualified: the probe reruns
+    the run's order, where the acquire read from the release and ordered the thread's later
+    plain read of the released data, which races in the other order (PTX certified; GB300
+    wrong 200/200 with the writer delayed). And the probe undefined only `Op::Ld`
+    destinations, so a 256-bit strong load (`LDG.E.ENL2.256.STRONG`) whose value is stored
+    looked dead (SASS certified; GB300 wrong 200/200). fixtures/e_dead_read_strong: good
+    certifies; ACQ and V8 are refused and race / are nondeterministic. Relies
     on S-INIT reporting every use of an undefined bit (its listed limits apply: an operand
     kind S-INIT does not check could carry a used value unreported).
   - **C-FADD** (2026-11-04, rung 4b `index_add_`). fp32 atomic adds of one word

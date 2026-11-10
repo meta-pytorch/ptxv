@@ -3372,8 +3372,20 @@ fn strong_conflicts(
             describe_ev(m, &x.ev),
             describe_ev(m, &y.ev)
         );
+        // Only loads into registers that do not acquire (as E-RACE-DEAD). The probe reruns
+        // the run's order, so an acquire that read from a release keeps that synchronization
+        // there, while in the other order the accesses it orders may race (until 2026-11-08
+        // an `ld.acquire` whose value is unused, followed by a plain read of the released
+        // data, certified). Reads whose data lands elsewhere (shared memory, TMEM) have no
+        // registers for the probe to undefine: refused.
         let read = |a: &SAcc| {
-            (!a.write && a.rmw.is_none() && (a.ev.actor as usize) < m.threads.len())
+            let plain_load = match &m.k.code[a.ev.pc as usize].op {
+                Op::Ld { sync, .. } | Op::Ld256 { sync, .. } | Op::LdReduce { sync, .. } => {
+                    !sync.is_some_and(|s| s.acquires())
+                }
+                _ => false,
+            };
+            (!a.write && a.rmw.is_none() && plain_load && (a.ev.actor as usize) < m.threads.len())
                 .then_some((a.ev.actor, a.ev.pc))
         };
         match (cand.as_mut(), read(x).xor(read(y))) {

@@ -5557,13 +5557,15 @@ impl Machine {
         }
         self.stale = None;
         self.vmask = None;
-        // C-ORDER dead-read probe (wellsync.rs `dead_reads`): the load's registers hold no
-        // defined bit, so any use of them is reported (S-INIT).
-        if matches!(inst.op, Op::Ld { .. } | Op::TmapFence { .. })
-            && self
-                .dead_probe
-                .as_ref()
-                .is_some_and(|p| p.contains(&(t as u32, pc)))
+        // Dead-read probe (C-ORDER `dead_reads` in wellsync.rs, E-RACE-DEAD): the reading
+        // instruction's registers hold no defined bit, so any use of them is reported
+        // (S-INIT). Every instruction the probe names, not only `Op::Ld`: until 2026-11-08 a
+        // 256-bit strong load (`LDG.E.ENL2.256.STRONG`) kept its values in the probe, which
+        // then trivially showed no use, and C-ORDER certified a load whose value is stored.
+        if self
+            .dead_probe
+            .as_ref()
+            .is_some_and(|p| p.contains(&(t as u32, pc)))
         {
             for d in inst.op.dst_regs() {
                 self.make_undefined(t, d);

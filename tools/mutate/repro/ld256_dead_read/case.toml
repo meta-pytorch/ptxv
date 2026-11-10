@@ -1,0 +1,40 @@
+name = "ld256_dead_read"
+description = "relaxed v8 load racing a relaxed store, value stored"
+ptx = "kernel.ptx"
+entry = "k"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[variants]]
+id = "good"
+summary = "nondeterministic output"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "slow"
+summary = "writer sleeps 100 us first"
+marker = "@SLOWW"
+find = "mov.u32 %r3, 7;"
+replace = "nanosleep.u32 50000; nanosleep.u32 50000; mov.u32 %r3, 7;"
+expect = ["nondeterministic"]
