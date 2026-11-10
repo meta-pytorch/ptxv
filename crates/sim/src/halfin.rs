@@ -83,7 +83,8 @@ pub struct HalfState {
     /// Track 16-bit provenance even without half-precision inputs (bf16 outputs, rounded
     /// operands of tensor-core steps).
     pub track: bool,
-    /// Per (thread, register) of the R file: provenance of its 4 bytes.
+    /// Per (thread, register) of the R file (SASS) or the V file (PTX; a kernel has one of
+    /// the two): provenance of its 4 bytes.
     regs: HashMap<(u32, u16), Bytes>,
     /// Registers given provenance by the current instruction (loads, moves, conversions).
     set_now: Vec<(u32, u16)>,
@@ -119,7 +120,7 @@ impl HalfState {
     }
 
     pub(crate) fn forget_register(&mut self, thread: usize, reg: Reg) {
-        if reg.file == File::R {
+        if matches!(reg.file, File::R | File::V) {
             self.regs.remove(&(thread as u32, reg.idx));
         }
     }
@@ -213,7 +214,9 @@ impl Machine {
         let ns = self.num.as_ref()?;
         match v {
             Val::Imm(c) => Some(imm_bytes(*c as u32)),
-            Val::Reg(r, _) if r.file == File::R => ns.half.regs.get(&(t as u32, r.idx)).copied(),
+            Val::Reg(r, _) if matches!(r.file, File::R | File::V) => {
+                ns.half.regs.get(&(t as u32, r.idx)).copied()
+            }
             _ => None,
         }
     }
@@ -221,7 +224,7 @@ impl Machine {
     /// Register `r` of thread `t` now holds bytes `b` (marked as set by this instruction).
     pub(crate) fn half_set_reg(&mut self, t: usize, r: Reg, b: Option<Bytes>) {
         let Some(ns) = self.num.as_mut() else { return };
-        if !ns.half.is_on() || r.file != File::R {
+        if !ns.half.is_on() || !matches!(r.file, File::R | File::V) {
             return;
         }
         match b {
@@ -246,10 +249,15 @@ impl Machine {
         data: &[u8],
     ) {
         let Some(ns) = self.num.as_ref() else { return };
-        if !ns.half.is_on() || d.file != File::R {
+        if !ns.half.is_on() || !matches!(d.file, File::R | File::V) {
             return;
         }
         let n = bytes as usize;
+        // PTX registers are not consecutive: one scalar register of at most 4 bytes only (the
+        // destination loses its provenance otherwise, in `half_post`).
+        if d.file == File::V && (nv > 1 || n > 4) {
+            return;
+        }
         let src = self.half_mem(loc, n, Some(data));
         let reg = |i: usize| Reg {
             file: d.file,
@@ -715,7 +723,7 @@ impl Machine {
             let get = |v: &Val| -> Option<Bytes> {
                 match v {
                     Val::Imm(c) => Some(imm_bytes(*c as u32)),
-                    Val::Reg(r, 1) if r.file == File::R => {
+                    Val::Reg(r, 1) if matches!(r.file, File::R | File::V) => {
                         ns.half.regs.get(&(t as u32, r.idx)).copied()
                     }
                     _ => None,
@@ -723,6 +731,10 @@ impl Machine {
             };
             let out: Option<(Reg, Bytes)> = match &inst.op {
                 Op::Mov { d, a } => get(a).map(|b| (*d, b)),
+                // PTX cvt.f32.bf16: the 16-bit value in the high half (exact widening).
+                Op::CvtF32Bf16 { d, a } => {
+                    get(a).map(|b| (*d, [Some(Src::Zero), Some(Src::Zero), b[0], b[1]]))
+                }
                 Op::Prmt { d, a, sel, b } => match (get(a), get(b), sel) {
                     (Some(x), Some(y), Val::Imm(s)) => {
                         let src = [x[0], x[1], x[2], x[3], y[0], y[1], y[2], y[3]];
@@ -919,12 +931,14 @@ impl Machine {
             // Every R destination loses its provenance unless computed above (or set by a load
             // in this instruction).
             for r in inst.op.dst_regs() {
-                if r.file == File::R && !ns.half.set_now.contains(&(t as u32, r.idx)) {
+                if matches!(r.file, File::R | File::V)
+                    && !ns.half.set_now.contains(&(t as u32, r.idx))
+                {
                     ns.half.regs.remove(&(t as u32, r.idx));
                 }
             }
             if let Some((d, o)) = out {
-                if d.file == File::R {
+                if matches!(d.file, File::R | File::V) {
                     if o.iter().all(|b| b.is_none()) {
                         continue;
                     }

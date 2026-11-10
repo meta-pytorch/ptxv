@@ -136,3 +136,20 @@ fn bf16_round_trip_is_not_claimed_exact() {
     let fp64: Vec<f64> = (0..x.len()).map(|i| x[i] + y[i] + z[i]).collect();
     check("c_num_bf16rt_f32", &fp64);
 }
+
+/// PTX `ld.shared.b16` + `cvt.f32.bf16` of a bf16 input element is the input itself: num's
+/// claim on r0_tma_sum (FADD chain of widened bf16 inputs) matches the spec on both fronts.
+#[test]
+fn ptx_bf16_input_widening_is_tracked() {
+    let (text, _) = num("r0_tma_sum");
+    for f in ["ptx ", "sass"] {
+        let line = text
+            .lines()
+            .find(|l| l.starts_with(&format!("num good {f}:")))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(
+            !line.contains("NOT ANALYZED") && line.contains("spec_match=Some(true)"),
+            "{text}"
+        );
+    }
+}
