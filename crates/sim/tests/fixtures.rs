@@ -2583,6 +2583,38 @@ fn probe_f64_dsetp_matches_hardware() {
     probe_bitwise("probes/f64_dsetp", "good", "sass");
 }
 
+/// The recorded cubin of a probe holds each of `forms` (the SASS its test is about).
+fn probe_cubin_has(dir: &str, forms: &[&str]) {
+    let case = Case::load(root().join(dir)).unwrap();
+    let k = ptxv_sass::load_cubin(&case.dir.join("kernel.cubin"), &case.m.entry).unwrap();
+    for f in forms {
+        assert!(k.code.iter().any(|i| i.text.contains(f)), "{dir}: no {f}");
+    }
+}
+
+/// N-FALU: DSETP.{LE,LTU}.{AND,OR,XOR} Pd, PT, a, b, Pc | !Pc | PT (setp.le.f64 / setp.ltu.f64
+/// folded with and.pred / or.pred / xor.pred; b a register pair, a uniform pair, an immediate
+/// or RZ) on every pair of 30 f64 patterns, NaNs of both kinds and signs among them, with the
+/// predicate both ways = GB300 (probes/dsetp_ltu_le). The SASS front-end runs the recorded
+/// ptxas 13.1 cubin: which forms ptxas picks is its choice, and these are the captured ones.
+#[test]
+fn probe_dsetp_ltu_le_matches_hardware() {
+    probe_bitwise("probes/dsetp_ltu_le", "good", "ptx");
+    probe_bitwise_cubin("probes/dsetp_ltu_le", Some("kernel.cubin"));
+    probe_cubin_has(
+        "probes/dsetp_ltu_le",
+        &[
+            "DSETP.LTU.OR P0, PT, R4, UR6, P0",
+            "DSETP.LE.AND P1, PT, R4, 1, PT",
+            "DSETP.LTU.AND P1, PT, R4, UR6, PT",
+            "DSETP.LE.OR P3, PT, R4, R6, !P1",
+            "DSETP.LE.XOR P6, PT, -|R4|, UR6, !P1",
+            "DSETP.LTU.XOR P0, PT, R4, 1, P1",
+            "DSETP.LTU.OR P6, PT, R4, RZ, P1",
+        ],
+    );
+}
+
 /// The f64 / conversion queue reads operands in issue order: a later `F2F.F64.F32` overwrites
 /// the source of an earlier one that has a read scoreboard, with no wait on it (variant
 /// `rd_sb`; the form ptxas emits in CuTe top-k for sm_103a and sm_100a) = GB300

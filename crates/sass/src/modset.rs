@@ -19,6 +19,9 @@
 // probes/s2f6_cvt, 2026-11-08. REDG.OR / .AND / .XOR [.64] (red.global.{or,and,xor}.b32 / .b64,
 // every scope): probes/red_bitops, 2026-11-08. UTMALDG / UTMASTG .IM2COL (im2col TMA loads and
 // im2col_no_offs stores): probes/tma_im2col, 2026-11-08.
+// DSETP.LE / .LTU (setp.le.f64 / setp.ltu.f64 folded with and.pred / or.pred / xor.pred: each
+// combiner, register / uniform / immediate operands, Pc / !Pc / PT): probes/dsetp_ltu_le,
+// 2026-11-10; DSETP.EQU / .NUM stay refused.
 // ASSUME(L-ROSETTA)
 
 pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
@@ -78,8 +81,8 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
     (
         "DSETP",
         &[
-            "AND", "EQ", "GE", "GEU", "GT", "GTU", "LEU", "LT", "MAX", "MIN", "NAN", "NE", "NEU",
-            "OR", "XOR",
+            "AND", "EQ", "GE", "GEU", "GT", "GTU", "LE", "LEU", "LT", "LTU", "MAX", "MIN", "NAN",
+            "NE", "NEU", "OR", "XOR",
         ],
     ),
     ("ELECT", &[]),

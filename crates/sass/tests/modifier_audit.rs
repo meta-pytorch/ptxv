@@ -39,6 +39,31 @@ fn audited_set_is_sorted_and_refuses_the_rest() {
     // 32-byte accesses (probes/ldst256).
     assert!(ptxv_sass::lower_text("STG.E.ENL2.256 desc[UR46][R22.64], R24, R28", None).is_ok());
     assert!(ptxv_sass::lower_text("LDG.E.ENL2.256 R12, R4, desc[UR4][R2.64]", None).is_ok());
+    // f64 "less or equal" / "less than or unordered" with each combiner (probes/dsetp_ltu_le).
+    for l in [
+        "DSETP.LTU.OR P0, PT, R44, UR4, P0",
+        "DSETP.LE.AND P0, PT, R26, 1, PT",
+        "DSETP.LE.XOR P6, PT, -|R4|, UR6, !P1",
+        "DSETP.LTU.AND P3, PT, R4, +INF , P1",
+    ] {
+        assert!(ptxv_sass::lower_text(l, None).is_ok(), "{l} must lift");
+    }
+    // The acceptance is narrow: the unprobed comparisons, a second predicate output and a
+    // missing, doubled or foreign combiner are refused.
+    for l in [
+        "DSETP.EQU.AND P0, PT, R2, R4, PT",
+        "DSETP.NUM.OR P0, PT, R2, R4, P1",
+        "DSETP.LE.AND P0, P1, R2, R4, PT",
+        "DSETP.LTU P0, PT, R2, R4, PT",
+        "DSETP.LTU.OR.AND P0, PT, R2, R4, P1",
+        "DSETP.LE.AND.FTZ P0, PT, R2, R4, PT",
+        "DSETP.LE.MIN P0, PT, R2, R4, PT",
+    ] {
+        assert!(
+            ptxv_sass::lower_text(l, None).is_err(),
+            "{l} must be refused"
+        );
+    }
 }
 
 #[test]

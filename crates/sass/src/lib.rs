@@ -1844,6 +1844,9 @@ fn lower_line(
                 max: mods[0] == "MAX",
             }
         }
+        // `DSETP.<cmp>.<AND|OR|XOR> Pd, PT, a, b, Pc`: Pd = (a cmp b) op Pc on f64 pairs
+        // (fixtures/s_f64; `.LE` / `.LTU` with each combiner: probes/dsetp_ltu_le). The gate
+        // admits no `.EQU` / `.NUM` / `.F` / `.T`. ASSUME(N-FALU)
         "DSETP" if lw.op(1)? == "PT" => {
             let cmp = match mods.first().copied() {
                 Some("F") => FCmp::F,

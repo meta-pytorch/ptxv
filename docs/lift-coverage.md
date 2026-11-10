@@ -387,6 +387,7 @@ any modifier outside the audited set before an arm runs.
 | SASS `SHFL` in a lane-subset BSSY region | (warp-aggregated atomics) | runs over the lanes present; lanes parked at a BSYNC are not waited for | DeepEP hybrid, Triton MoE |
 | f64 pipe scoreboards | - | DADD / DMUL / DFMA / DSETP complete in order (L-OPCLASS) | probes/f64_queue, probes/f64_dsetp |
 | `DSETP.<cmp>.AND` | `setp.<cmp>.f64` (all 14 compares; no p\|q, no combining predicate) | as SASS DSETP | probes/f64_dsetp |
+| `DSETP.{LE,LTU}.{AND,OR,XOR} Pd, PT, a, b, Pc` (b: register pair, uniform pair, immediate, RZ; `Pc`, `!Pc`, `PT`) | `setp.le.f64` / `setp.ltu.f64` with `and.pred` / `or.pred` / `xor.pred` (ptxas folds the pair; a lone one becomes `GTU` / `GE` with the use inverted) | IEEE f64 compare, `LE` false and `LTU` true on a NaN, combined with `Pc` (N-FALU); `.EQU` / `.NUM` stay refused | **probes/dsetp_ltu_le**: 58 shapes and 3 branches x 2048 records (every pair of 30 edge patterns, the predicate both ways), = an IEEE model, PTX and the recorded cubin bitwise |
 | `STTM` then `LDTM` on the same registers | - | the TMEM queue reads the store's registers first (L-OPREAD) | probes/sttm_ldtm |
 | `FENCE.VIEW.ASYNC.S` / `.G` / `.T` | `fence.proxy.async[.shared::*]` / `.global` / `tcgen05.wait::st` | each orders only its state space; `.G` covers no shared-memory check, `.T` is `tcgen05.wait::st` (S-PROXY) | probes/proxy_fence `global` |
 
