@@ -621,7 +621,17 @@ fn membership(m: &Machine, pc: u32) -> (bool, bool) {
         // the step does not change its effect or its violation check (E-WARPCOLL).
         _ if op.member_mask().is_some() => (false, false),
         // PTX `.sync.aligned`: the explorer runs it only with every live lane (split_enabled).
-        _ if op.is_warp_aligned() => (false, true),
+        // So does a full-mask `redux.sync` / `vote.sync` / `match.any.sync` (split_enabled waits
+        // for every live lane of the warp): the lanes need not arrive in one event, only no
+        // other group of the warp may run that pc unordered with them.
+        _ if op.is_warp_aligned()
+            || matches!(
+                op,
+                Op::Redux { .. } | Op::VoteAny { .. } | Op::VoteAll { .. } | Op::MatchAny { .. }
+            ) =>
+        {
+            (false, true)
+        }
         Op::Elect { .. }
         | Op::VoteAny { .. }
         | Op::MatchAny { .. }

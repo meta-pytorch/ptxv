@@ -2986,7 +2986,12 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
     with it (they cannot meet there in another schedule). SASS per-lane memory and
     synchronization instructions need only the first part (more lanes only add E-LOCKSTEP
     happens-before); SASS lane-local arithmetic, branches and EXIT need neither. PTX
-    `.aligned` ops skip the first part (the explorer waits for all live lanes). BSYNC parks
+    `.aligned` ops skip the first part (the explorer waits for all live lanes), and so do
+    PTX `redux.sync` / `vote.sync` / `match.sync` whose membermask names the whole warp
+    (2026-11-09: the explorer waits for every live lane there too; before, a full-mask
+    `redux.sync.max.f32` reached through an if / else failed the certificate.
+    probes/redux_f32_paths: 16 warps, 8 min / max [.abs] [.NaN] forms over lanes from both
+    sides of a branch, GB300 = both fronts bitwise). BSYNC parks
     only lanes BSSY recorded. A WARPSYNC/BSYNC release need not wait for the order of an
     exited lane's exit: an exit after the arrivals re-checks the release
     (`exit_warpsync_release`, E-BSYNC) and frees the same lanes with the same joined clock

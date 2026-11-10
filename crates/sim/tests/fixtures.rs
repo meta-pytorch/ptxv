@@ -2846,6 +2846,15 @@ fn probe_f32x2_unpack_add_matches_hardware() {
     probe_bitwise("probes/f32x2_unpack_add", "good", "sass");
 }
 
+/// redux.sync min / max [.abs] [.NaN] .f32 with full mask reached through divergent paths,
+/// over NaN / signed-zero / inf / subnormal lanes (probes/redux_f32_paths): the collective
+/// waits for every lane, the case certifies (C-WARP) and = GB300 on both fronts.
+#[test]
+fn probe_redux_f32_paths_matches_hardware() {
+    probe_bitwise("probes/redux_f32_paths", "good", "ptx");
+    probe_bitwise("probes/redux_f32_paths", "good", "sass");
+}
+
 /// The cp.async scoreboard counts the warp's commits: copies issued on two divergent paths,
 /// one converged DEPBAR, each lane reads its neighbour's slot (probes/cpasync_warp; `good` =
 /// GB300; `w1`: the warp's second group is still pending).
