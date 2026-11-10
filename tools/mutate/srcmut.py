@@ -53,6 +53,15 @@ MUTANTS = [
         "            let nt = match remap.first() {",
         [("e_lockstep_nobsync", "NOBSYNC", "sass", ["--certify"])],
     ),
+    # exec.rs `split_enabled`: a SASS SHFL waits for the rest of the warp again (MISS 39;
+    # GB300 runs it with the arriving split only).
+    SrcMutant(
+        "shfl-wait",
+        "crates/sim/src/exec.rs",
+        "        if self.k.front == Front::Ptx\n            && (inst.op.is_warp_aligned()",
+        "        if (self.k.front == Front::Ptx || matches!(inst.op, Op::Shfl { .. }))\n            && (inst.op.is_warp_aligned()",
+        [("e_warpcoll_split", "NOBSYNC", "sass", [])],
+    ),
     SrcMutant(
         "vfo-div",
         "crates/sim/src/num.rs",

@@ -1837,47 +1837,24 @@ impl Machine {
             }
             return true;
         }
-        if inst.op.is_warp_aligned()
-            && (self.k.front == Front::Ptx || matches!(inst.op, Op::Shfl { .. }))
-            || self.k.front == Front::Ptx
-                && matches!(
+        // ASSUME(E-WARPCOLL): a PTX warp-collective waits for the warp's other live lanes.
+        // A SASS SHFL does not (GB300, fixtures/e_warpcoll_split: a split that reaches it
+        // early shuffles alone and reads 0 from the lanes not executing it); it runs with its
+        // own split, and reading a lane outside it is a fault.
+        if self.k.front == Front::Ptx
+            && (inst.op.is_warp_aligned()
+                || matches!(
                     inst.op,
                     Op::VoteAll { .. }
                         | Op::VoteAny { .. }
                         | Op::Redux { .. }
                         | Op::MatchAny { .. }
-                )
+                ))
         {
             let w = self.threads[members[0]].warp;
-            // A SASS SHFL does not wait for lanes parked at a BSYNC: they rendezvous there
-            // with the lanes the BSSY recorded, these included, so they do not come here
-            // first (ptxas's warp-aggregated atomic: `VOTEU.ANY / FLO / POPC / @leader ATOMG
-            // / SHFL.IDX` in a branch one lane takes, the others at the BSYNC; Triton MoE
-            // `_verify_kernel`).
-            let sass_shfl = self.k.front == Front::Sass && matches!(inst.op, Op::Shfl { .. });
             let live = self
                 .warp_threads(w)
-                .filter(|&u| {
-                    let th = &self.threads[u];
-                    th.st != St::Exited
-                        && !(sass_shfl
-                            && !members.contains(&u)
-                            && (matches!(
-                                self.k.code.get(th.pc as usize).map(|i| &i.op),
-                                Some(Op::Bsync { .. })
-                            )
-                                // Lanes at another SHFL (the other side of a branch, each
-                                // side shuffling within its own lanes; probes/coll_split)
-                                // do not come here first.
-                                || th.pc != pc
-                                    && matches!(
-                                        self.k.code.get(th.pc as usize).map(|i| &i.op),
-                                        Some(Op::Shfl { .. })
-                                    )
-                                // Lanes parked at a WARPSYNC wait for their own group (a
-                                // WARPSYNC.COLLECTIVE region runs one mask group at a time).
-                                || th.st == St::WarpSync))
-                })
+                .filter(|&u| self.threads[u].st != St::Exited)
                 .count();
             if members.len() < live {
                 return false;

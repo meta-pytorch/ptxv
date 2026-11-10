@@ -1,0 +1,48 @@
+name = "e_warpcoll_split"
+description = """
+E-WARPCOLL (MISS 39): lanes 16-31 run a loop, then the whole warp shuffles (SHFL.IDX from lane
+^ 16). ptxas reconverges the loop with BSSY.RECONVERGENT / BSYNC.RECONVERGENT before the SHFL
+(good; expected/out.bin is GB300's output). NOBSYNC: the BSYNC NOPed: the low half reaches the
+SHFL while the high half still loops and shuffles alone. GB300 (1000 of 1000 runs, also with
+100000 iterations) returns 0 for the inactive source lanes in both halves; a SASS SHFL does
+not wait for the rest of the warp. Until the fix the simulator let the early half wait and
+reported the joined exchange as clean. NOBSSY: the BSSY NOPed (same outcome on GB300).
+Binary-only: kernel.cubin is kernel.ptx through ptxas 13.0 (-arch=sm_103a)."""
+cubin = "kernel.cubin"
+arch = "sm_103a"
+entry = "k"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 5
+
+[[variants]]
+id = "good"
+summary = "BSYNC reconverges the warp before the SHFL"
+expect = ["clean"]
+
+[[variants]]
+id = "NOBSYNC"
+summary = "BSYNC.RECONVERGENT at 0x280 NOPed: the low half shuffles before the high half arrives"
+patch = [{ at = "@0x280", nop = true }]
+expect = ["fault", "nondeterministic"]
+
+[[variants]]
+id = "NOBSSY"
+summary = "BSSY.RECONVERGENT at 0x40 NOPed"
+patch = [{ at = "@0x40", nop = true }]
+expect = ["fault", "nondeterministic"]

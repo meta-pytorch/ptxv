@@ -128,6 +128,8 @@ when some run's classes differ from the expectation, and survives otherwise. An 
 fixture can reach is listed as a documented exclusion with its reason (`EXCLUDED`: IADD3 with
 one carry-out). `tok-merge` gives every member of an instruction one C-WARP token again
 (wellsync.rs `post_inst`): `fixtures/e_lockstep_nobsync` NOBSYNC must then certify (MISS 30).
+`shfl-wait` makes a SASS SHFL wait for the rest of the warp again (exec.rs `split_enabled`):
+`fixtures/e_warpcoll_split` NOBSYNC is then clean instead of a fault (MISS 39).
 A mutant may also name cargo tests (`tests`: package, test binary, test name); it is
 caught when one of them runs and fails (claims checked against recorded GPU outputs, such as
 num's error bounds); a test that does not run counts as not caught.

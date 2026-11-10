@@ -6490,3 +6490,33 @@ fn e_cluster_life_remote_store() {
         );
     }
 }
+
+/// MISS 39 (E-WARPCOLL): a SASS SHFL runs with the split that reaches it. With the BSYNC
+/// before it removed, GB300 runs the early half-warp's SHFL alone (inactive source lanes read
+/// 0, 1000 of 1000 runs); the model let that half wait for the other and called the joined
+/// exchange clean. NOBSYNC / NOBSSY must fault; good matches GB300's output.
+#[test]
+fn shfl_does_not_wait_for_the_rest_of_the_warp() {
+    binary_classes("e_warpcoll_split");
+}
+
+/// Every variant of a binary-only fixture gets its expected classes (stateful explorer and
+/// DPOR agree).
+fn binary_classes(name: &str) {
+    let case = Case::load(root().join("fixtures").join(name)).unwrap();
+    for v in case.m.variants.iter().map(|v| v.id.clone()) {
+        let k = binary_kernel(&case, &v).unwrap();
+        let launch = build_launch(&case, &k).unwrap();
+        let m0 = Machine::new(Arc::new(k), Arc::new(launch));
+        let r = explore(m0.clone(), 1_000_000);
+        assert!(r.complete, "{name}/{v}: exploration incomplete");
+        assert_eq!(
+            r.classes(),
+            case.variant(&v).unwrap().expect_for("sass"),
+            "{name}/{v}: {:#?}",
+            r.findings
+        );
+        let d = ptxv_sim::dpor::explore_dpor(m0, 1_000_000);
+        assert_eq!(d.classes(), r.classes(), "{name}/{v}: DPOR verdict differs");
+    }
+}

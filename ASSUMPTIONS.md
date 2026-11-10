@@ -993,12 +993,16 @@ warp in one step**: every lane's source registers are read, then every destinati
 - Status: **argued.** Both are `.sync.aligned` in PTX (E-ALIGNED), so the whole warp executes
   them together. A partial warp gives an error, not a verdict. Rung 2's Triton epilogue stages
   its tile through `stmatrix`, and its output matches GB300 bitwise.
-- SASS `SHFL` (no member mask) waits for the warp's other live lanes, except lanes parked at
-  a `BSYNC` (2026-11-06): those rendezvous there with the lanes their `BSSY` recorded, so they
-  do not reach the SHFL first. ptxas's warp-aggregated atomic (`VOTEU.ANY / FLO / POPC /
-  @leader ATOMG / SHFL.IDX` in a branch a subset of lanes takes; DeepEP hybrid dispatch,
-  Triton MoE `_verify_kernel`) then shuffles among the lanes in the region, as the hardware
-  does, instead of deadlocking.
+- SASS `SHFL` (no member mask) does not wait for the rest of the warp (MISS 39, 2026-11-10):
+  it runs with the split that reaches it, and reading a lane outside that split is a fault.
+  Validated on GB300 (`fixtures/e_warpcoll_split`, `fixtures/e_warpcoll_bin`;
+  CUDA 13.0): with the BSYNC before the SHFL removed, the half-warp that arrives first
+  shuffles alone and reads 0 from the inactive lanes, 1000 of 1000 runs (also with the other
+  half 100000 loop iterations behind); each half running its own fast-path SHFL reads 0 the
+  same way. Until 2026-11-10 the SHFL waited for every other live lane not parked at a
+  `BSYNC`, another `SHFL` or a `WARPSYNC`, which merged the early split with the late one and
+  reported the joined exchange as clean. The convergence ptxas relies on comes from
+  `BSYNC` / `WARPSYNC` / `BRA.DIV`, which the simulator models (E-BSYNC, E-COLLECTIVE).
 - PTX `redux.sync` with a membermask naming a subset of the warp (an immediate other than
   0xffffffff, or a register; 2026-11-07): the lanes the mask names (live ones) execute it
   together and it reduces over them. A mismatch between the executing lanes and the mask, or
