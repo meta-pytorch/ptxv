@@ -3895,11 +3895,17 @@ impl Machine {
                         | Op::LdMatrix { .. }
                 )
             {
-                let j = vc_join_all(members.iter().map(|&t| &self.threads[t].vc));
-                for &t in &members {
-                    let th = self.threads[t].make_mut();
-                    th.vc = j.clone();
-                    vc_tick(&mut th.vc, t as u32);
+                // In a certificate run, only lanes that became ready together are joined
+                // (wellsync.rs `lockstep_groups`, MISS 30).
+                let groups = crate::wellsync::lockstep_groups(self, &members)
+                    .unwrap_or_else(|| vec![members.clone()]);
+                for g in groups {
+                    let j = vc_join_all(g.iter().map(|&t| &self.threads[t].vc));
+                    for &t in &g {
+                        let th = self.threads[t].make_mut();
+                        th.vc = j.clone();
+                        vc_tick(&mut th.vc, t as u32);
+                    }
                 }
                 self.join_lanes_sh(&members);
             }
@@ -5828,19 +5834,30 @@ impl Machine {
             .iter()
             .all(|&i| self.threads[i].st == St::WarpSync && same(i))
         {
-            if self.wlog.is_on() {
-                crate::wellsync::warpsync_released(self, warp, mask, &lanes); // wellsync.rs
+            // In a certificate run, a BSYNC joins only lanes whose BSSY ran in one step with
+            // one token: lanes that ran it merged at the pc may run it apart in another order,
+            // and a part released alone joins nothing of the rest (wellsync.rs
+            // `bsync_groups`, MISS 30).
+            let groups = match self.k.code[pc as usize].op {
+                Op::Bsync { b } => crate::wellsync::bsync_groups(self, b, &lanes),
+                _ => None,
             }
-            let mut j = VC::new();
-            for &i in &lanes {
-                vc_join(&mut j, &self.threads[i].vc);
-            }
-            for &i in &lanes {
-                let th = self.threads[i].make_mut();
-                th.vc = j.clone();
-                vc_tick(&mut th.vc, i as u32);
-                th.st = St::Run;
-                th.pc += 1;
+            .unwrap_or_else(|| vec![lanes.clone()]);
+            for g in &groups {
+                if self.wlog.is_on() {
+                    crate::wellsync::warpsync_released(self, warp, mask, g); // wellsync.rs
+                }
+                let mut j = VC::new();
+                for &i in g {
+                    vc_join(&mut j, &self.threads[i].vc);
+                }
+                for &i in g {
+                    let th = self.threads[i].make_mut();
+                    th.vc = j.clone();
+                    vc_tick(&mut th.vc, i as u32);
+                    th.st = St::Run;
+                    th.pc += 1;
+                }
             }
             self.join_lanes_sh(&lanes);
             self.note_convergence(warp, &lanes);

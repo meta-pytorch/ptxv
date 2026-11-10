@@ -126,7 +126,9 @@ tree (with the working tree's changes), and runs the fixture variants the entry 
 (`fixtures/e_rep_divzero` DATA / POS / CVTA / LDC under `--certify --rep`). A mutant is caught
 when some run's classes differ from the expectation, and survives otherwise. An entry no
 fixture can reach is listed as a documented exclusion with its reason (`EXCLUDED`: IADD3 with
-one carry-out). `PTXV_JOB_WRAPPER` prefixes the builds (a memory-capped job runner).
+one carry-out). `tok-merge` gives every member of an instruction one C-WARP token again
+(wellsync.rs `post_inst`): `fixtures/e_lockstep_nobsync` NOBSYNC must then certify (MISS 30).
+`PTXV_JOB_WRAPPER` prefixes the builds (a memory-capped job runner).
 
 ## Reading the results
 

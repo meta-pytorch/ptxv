@@ -2880,8 +2880,18 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
       as not chunking-oblivious (it was C-POLL's refusal).
     - r4b in group mode: dispatch certifies (docs/rung4.md).
   - **C-WARP.** Lane membership: an instruction whose effect depends on which lanes run it
-    together runs with lanes that became ready at that pc in one event (an instruction or a
-    barrier release: then they meet there in every schedule). Where more lanes joining
+    together runs with lanes that became ready at that pc in one event (an instruction run
+    by lanes that were already together, or a barrier / BSYNC / WARPSYNC release: then they
+    meet there in every schedule). Lanes the model merged only because they stood at the
+    same pc (they arrived by different paths) stay apart until such a release (until
+    2026-11-09 any instruction a merged split ran joined them: MISS 30,
+    fixtures/e_lockstep_nobsync NOBSYNC certified while GB300 differs). In the certificate's
+    run the E-LOCKSTEP join of a SASS load, store or atomic joins only lanes that share a
+    token (`lockstep_groups`; the lanes of one atomic step are in lane order only within
+    one token), and a BSYNC joins only lanes its BSSY recorded in one step with one token
+    (`bsync_groups`): lanes merged at the BSSY may run it apart in another order, and
+    E-BSYNC then releases a part alone. So the run's clocks stay below every order's, and
+    loads, stores, atomics and BSSY by merged lanes need no membership condition. Where more lanes joining
     would change it too (SASS lane collectives, `BRA.U.ANY`, TMEM collectives and uniform
     operations, which run once per lane group; PTX elect / vote / redux / R2UR / BSSY /
     tcgen05.alloc), runs of the same pc by other lane groups of the warp must be HB-ordered

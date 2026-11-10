@@ -41,6 +41,15 @@ class SrcMutant:
 # num.rs `value_fault_operands`: each entry removed, under the CTA reductions.
 REP = ["--certify", "--rep"]
 MUTANTS = [
+    # wellsync.rs `post_inst`: one token for every member again (merged splits count as
+    # one convergence event; MISS 30).
+    SrcMutant(
+        "tok-merge",
+        "crates/sim/src/wellsync.rs",
+        "            let nt = match remap.iter().find(|x| x.0 == old) {",
+        "            let nt = match remap.first() {",
+        [("e_lockstep_nobsync", "NOBSYNC", "sass", ["--certify"])],
+    ),
     SrcMutant(
         "vfo-div",
         "crates/sim/src/num.rs",

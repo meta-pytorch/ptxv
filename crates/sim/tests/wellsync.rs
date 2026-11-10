@@ -904,3 +904,30 @@ fn desc_version_finding_does_not_break_the_certificate() {
         "no violation"
     );
 }
+
+/// MISS 30 (C-WARP, found by the adversarial harness; GB300: 16 words differ in run 0 of
+/// every process): lanes that leave a loop after lane-dependent trip counts and are never
+/// reconverged (the BSYNC NOPed) were merged by the model at the next pc in the certificate's
+/// run; the merged split's lane-local instruction gave them one token, so the following STS /
+/// LDS exchange looked joined in every schedule. The certificate must refuse NOBSYNC and
+/// NOBSSY, which the explorer finds nondeterministic; good (ptxas's BSSY / BSYNC) certifies.
+#[test]
+fn merged_splits_are_not_converged() {
+    let case = Case::load(root().join("fixtures/e_lockstep_nobsync")).unwrap();
+    for v in ["good", "NOBSYNC", "NOBSSY"] {
+        let o = certify(machine(&case, v, "sass"));
+        match (v, o.verdict) {
+            ("good", Some(r)) => assert_eq!(r.classes(), ["clean"]),
+            ("good", None) => panic!("good does not certify: {:?}", o.reasons),
+            (_, Some(r)) => panic!("{v} certified: {:?}", r.classes()),
+            (_, None) => assert!(
+                o.reasons.iter().any(|r| r.contains("C-WARP")),
+                "{v}: {:?}",
+                o.reasons
+            ),
+        }
+        let e = ptxv_sim::explore::explore(machine(&case, v, "sass"), 1_000_000);
+        let want: Vec<String> = case.variant(v).unwrap().expect.clone();
+        assert!(e.complete && e.classes() == want, "{v}: {:?}", e.classes());
+    }
+}
