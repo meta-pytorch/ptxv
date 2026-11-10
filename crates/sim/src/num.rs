@@ -47,6 +47,12 @@ pub enum NodeKind {
     /// into a location holding the first child. The chain of them on one location adds its
     /// values in a schedule-dependent order (`equiv` bounds every order).
     AtomAdd(u32, u32),
+    /// A 16-bit bulk-reduction add (`UTMAREDG.ADD` on a bf16 / f16 tensor): the value (second
+    /// child) added into a location holding the first child, rounded to nearest even to bf16
+    /// (`f16`: f16), subnormals kept; the node's value is the 16-bit result widened to f32.
+    /// As `AtomAdd`, the chain on one location is order-dependent and `equiv` / `out_rec`
+    /// bound every order (N-RED16).
+    AtomAdd16(u32, u32, bool),
     /// One tensor-core step (tcgen05.mma K-slice or HMMA): accumulator child (None = 0) plus
     /// exact product terms, each with the nodes of its two bf16 factors when they are known
     /// (`ops[i]` for `terms[i]`; input elements are `Input` leaves, rounded values `Round`
@@ -909,6 +915,14 @@ impl NumState {
             NodeKind::Input((a, i)) => format!("in{a}[{i}]"),
             NodeKind::Add(a, b, _) => format!("({} + {})", d(*a), d(*b)),
             NodeKind::AtomAdd(a, b) => format!("atom({} + {})", d(*a), d(*b)),
+            NodeKind::AtomAdd16(a, b, f16) => {
+                format!(
+                    "atom{}({} + {})",
+                    if *f16 { "16" } else { "bf16" },
+                    d(*a),
+                    d(*b)
+                )
+            }
             NodeKind::Fma { a, b, c, .. } => format!(
                 "fma({} * {}{})",
                 d(*a),
@@ -1221,7 +1235,9 @@ impl NumState {
                 NodeKind::Sel { pred, a, b, .. } => {
                     pred.0.args.iter().copied().chain([*a, *b]).collect()
                 }
-                NodeKind::Add(a, b, _) | NodeKind::AtomAdd(a, b) => vec![*a, *b],
+                NodeKind::Add(a, b, _) | NodeKind::AtomAdd(a, b) | NodeKind::AtomAdd16(a, b, _) => {
+                    vec![*a, *b]
+                }
                 NodeKind::Fma { a, b, c, .. } => {
                     [Some(*a), Some(*b), *c].into_iter().flatten().collect()
                 }
@@ -3729,6 +3745,118 @@ impl Machine {
         ns.mem.insert(k, id);
     }
 
+    /// The node of the 16-bit value whose bytes are `b` (a node of that format, or an input
+    /// element's leaf), else a leaf of `bits` (the value widened to f32).
+    fn half_value_node(
+        &mut self,
+        b: &[Option<crate::halfin::Src>],
+        f16: bool,
+        bits: u32,
+        input_derived: bool,
+        pc: u32,
+    ) -> u32 {
+        use crate::halfin::Src;
+        let found = match (b[0], b[1]) {
+            (Some(Src::N { node, b: 0 }), Some(Src::N { node: n2, b: 1 })) if node == n2 => {
+                let ns = self.num.as_ref().unwrap();
+                (ns.half.f16_nodes.contains(&node) == f16 && ns.nodes[node as usize].hw == bits)
+                    .then_some(node)
+            }
+            (
+                Some(Src::E { alloc, elem, b: 0 }),
+                Some(Src::E {
+                    alloc: a2,
+                    elem: e2,
+                    b: 1,
+                }),
+            ) if alloc == a2 && elem == e2 => {
+                let want = if f16 {
+                    crate::halfin::Half::F16
+                } else {
+                    crate::halfin::Half::Bf16
+                };
+                if self.num.as_ref().unwrap().half.inputs.get(&alloc) == Some(&want) {
+                    self.half_input_node(alloc, elem)
+                        .filter(|&n| self.num.as_ref().unwrap().nodes[n as usize].hw == bits)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let ns = self.num.as_mut().unwrap();
+        found.unwrap_or_else(|| {
+            // No history: a constant, or opaque when the value depends on input data.
+            let n = ns.leaf_with_origin(bits, pc, input_derived);
+            if f16 {
+                ns.half.f16_nodes.insert(n);
+            }
+            n
+        })
+    }
+
+    /// A 16-bit bulk-reduction add (`UTMAREDG.ADD`, bf16 or `f16`) wrote `r` = `o` + `x` (16-bit
+    /// encodings) into the global element at `to`, `x` read from `from`: an `AtomAdd16` node of
+    /// the element's and the value's nodes, which the element's bytes then hold. `bo`: the
+    /// element's byte provenance read before the add's write (which ends it); `old_input_derived`:
+    /// the old value depends on input data (a missing history is then opaque, not a constant).
+    /// ASSUME(N-RED16): see ASSUMPTIONS.md
+    pub(crate) fn num_bulk_add16(
+        &mut self,
+        from: Loc,
+        to: Loc,
+        (o, x, r): (u16, u16, u16),
+        (bo, old_input_derived): (Vec<Option<crate::halfin::Src>>, bool),
+        f16: bool,
+        pc: u32,
+    ) {
+        let Some(ns) = self.num.as_ref() else { return };
+        if !ns.half.is_on() || bo.len() != 2 {
+            self.num_forget(to);
+            return;
+        }
+        let wide = |h: u16| {
+            if f16 {
+                crate::elementwise::f16_to_f32_bits(h)
+            } else {
+                (h as u32) << 16
+            }
+        };
+        let bx = self.half_mem(from, 2, Some(&x.to_le_bytes()));
+        let source_input_derived = ns.taint.mem_has(mem_key(from));
+        let no = self.half_value_node(&bo, f16, wide(o), old_input_derived, pc);
+        let nx = self.half_value_node(&bx, f16, wide(x), source_input_derived, pc);
+        let ns = self.num.as_mut().unwrap();
+        ns.note_write(mem_key(to));
+        ns.mem.remove(&mem_key(to));
+        let ex = exact::add(&ns.nodes[no as usize].exact, &ns.nodes[nx as usize].exact);
+        let a_v = exact::add(
+            &exact::from(f32::from_bits(wide(o)) as f64),
+            &exact::from(f32::from_bits(wide(x)) as f64),
+        );
+        let err = exact::sub(&exact::from(f32::from_bits(wide(r)) as f64), &a_v);
+        ns.nodes.push(Node {
+            kind: NodeKind::AtomAdd16(no, nx, f16),
+            hw: wide(r),
+            exact: ex,
+            err,
+            pc,
+        });
+        ns.atomic_adds += 1;
+        let id = (ns.nodes.len() - 1) as u32;
+        if f16 {
+            ns.half.f16_nodes.insert(id);
+        }
+        let k = crate::halfin::hkey(to);
+        self.half_mem_set(
+            k,
+            &[
+                Some(crate::halfin::Src::N { node: id, b: 0 }),
+                Some(crate::halfin::Src::N { node: id, b: 1 }),
+            ],
+        );
+    }
+
     /// A word written with a value the graph does not track: it loses its node.
     pub(crate) fn num_forget(&mut self, loc: Loc) {
         let Some(ns) = self.num.as_mut() else { return };
@@ -3998,6 +4126,8 @@ impl NumState {
         let mut leaf_terms: Vec<(f64, f64)> = Vec::new();
         let mut mufu: Vec<(u32, f64)> = Vec::new();
         let mut nonlin = 0usize;
+        // Absolute error terms (16-bit bulk sums below the normal range), grown to the root.
+        let mut abs16 = 0.0f64;
         let hwabs = |n: u32| (f32::from_bits(self.nodes[n as usize].hw) as f64).abs();
         while let Some((n, g)) = stack.pop() {
             match &self.nodes[n as usize].kind {
@@ -4014,6 +4144,33 @@ impl NumState {
                     rnodes.push(n);
                     stack.push((*a, g * (1.0 + U32)));
                     stack.push((*b, g * (1.0 + U32)));
+                }
+                NodeKind::AtomAdd16(_, _, f16) => {
+                    // ASSUME(N-RED16): the whole chain on the location; every value under the
+                    // worst case of any order, d roundings (d = S, S - 1 from +0), so the bound
+                    // holds for every order the hardware may pick, not only this run's.
+                    let (u, a) = crate::equiv::round_unit(*f16);
+                    let mut vals = Vec::new();
+                    let mut cur = n;
+                    while let NodeKind::AtomAdd16(o, x, k) = self.nodes[cur as usize].kind {
+                        if k != *f16 {
+                            break;
+                        }
+                        rnodes.push(cur);
+                        vals.push(x);
+                        cur = o;
+                    }
+                    let base_zero = matches!(self.nodes[cur as usize].kind, NodeKind::Leaf)
+                        && self.nodes[cur as usize].hw == 0;
+                    let d = vals.len() - usize::from(base_zero);
+                    let grow = (1.0 + u).powi(d as i32);
+                    for x in vals {
+                        stack.push((x, g * grow));
+                    }
+                    if !base_zero {
+                        stack.push((cur, g * grow));
+                    }
+                    abs16 += g * d as f64 * a * grow;
                 }
                 NodeKind::Mma {
                     acc,
@@ -4106,7 +4263,8 @@ impl NumState {
             mufu_extra.0 += (own + fp * sub.bound_cor1a) * grow;
             mufu_extra.1 += (own + fp * sub.bound_running) * grow;
         }
-        let cor1a: f64 = leaf_terms.iter().map(|&(m, g)| m * (g - 1.0)).sum::<f64>() + mufu_extra.0;
+        let cor1a: f64 =
+            leaf_terms.iter().map(|&(m, g)| m * (g - 1.0)).sum::<f64>() + mufu_extra.0 + abs16;
         let running: f64 = rnodes
             .iter()
             .map(|&n| {
@@ -4123,6 +4281,10 @@ impl NumState {
                     NodeKind::Round { arg, f16 } => {
                         let (u16_, a16) = crate::equiv::round_unit(*f16);
                         u16_ * hwabs(*arg) + a16
+                    }
+                    NodeKind::AtomAdd16(_, _, f16) => {
+                        let (u16_, a16) = crate::equiv::round_unit(*f16);
+                        u16_ * hwabs(n) + a16
                     }
                     NodeKind::Mufu { .. } => 0.0, // in mufu_extra
                     _ => U32 * (f32::from_bits(nd.hw) as f64).abs(),

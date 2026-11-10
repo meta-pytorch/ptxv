@@ -105,7 +105,12 @@ returning false and letting the thread do something else).
   (rung 3b) The walk also follows the result through a token register: trtllm-gen keeps it
   as `SEL R4, RZ, 0x1, !P1` and later decides with `ISETP.NE.AND P1, PT, R4, 0x1` whether to
   wait (known predicates and registers from SEL with constant operands and integer EQ/NE
-  compares). A try_wait whose result goes to `PT` (trtllm-gen polls the next stage ahead of
+  compares). A warp vote into a predicate (`VOTEU.ANY UP0, P1`, then `USEL` of the token;
+  trtllm-gen bmm `schedS ... lbW2`) of a known predicate is that predicate: under the walk's
+  assumption every lane's test fails, and every known value is lane-uniform (built from
+  failed results and immediates); a vote is not a side effect (fixtures/e_peek_loop VOTE,
+  clean; VOTESPIN, whose loop repeats while the vote is false, stays `unmodeled`). A try_wait
+  whose result goes to `PT` (trtllm-gen polls the next stage ahead of
   time) is lowered as a no-op: it does not block, writes nothing, and dropping its acquire only
   removes happens-before edges (it may add a race report, never hide one).
 
@@ -2865,7 +2870,10 @@ a divergent path.
 shared-memory swizzle (none / 32B / 64B / 128B: XOR of address bits [4,4+B) with [7,7+B));
 SWIZZLE_* MMA descriptors address the same layout (row r at (r/8)·SBO + (r%8)·span).
 Loads zero-fill out-of-bounds elements and complete_tx = box bytes; stores skip
-out-of-bounds elements.
+out-of-bounds elements, and their shared-memory source bytes reach nothing, so the model does
+not read them (an unwritten clipped row is no S-INIT use; fixtures/e_tma_store_clip: GB300 500
+runs plain and 500 with scrubbed memory = the simulator; an unwritten in-bounds row is still
+reported).
 4-bit maps (`16U4_ALIGN8B`, case `elem4`) are modeled as byte maps (dims and box in bytes) whose
 coordinate 0 counts elements, two per byte (an odd one is reported as not modeled). The global
 and shared layouts are packed, so the copy is the byte copy. Evidence: r3_cute_mxf4 (CuTeDSL
@@ -5797,16 +5805,57 @@ summation order of FA4's dQ accumulation).
   f16 / bf16 round to nearest even, subnormals kept, NaN 0x7fff (`fp.rs` `add16`); other
   element types are unmodeled at run time. **Validated** by `probes/tma_red` (bf16, f16 and
   f32 tensors, every pair of 64 edge patterns each, both front-ends bitwise,
-  `probe_tma_red_matches_hardware`), 2026-11-06. 16-bit sums leave the errdist graph. Two
-  16-bit bulk reductions of one word by different asynchronous operations, neither
-  happening before the other, are reported `unmodeled` (`bulk-red16-order`): the sum depends
-  on their order and the explorer does not branch on it; a single-order "clean" verdict
-  once disagreed with the GPU (moe.scatter_add_along_first_dim, duplicate rows; GB300 gives
-  92 distinct outputs in 200 runs). They are also not commuting reductions for the
-  per-cluster decomposition (only f32 bulk sums are, as N-ATOMIC's).
+  `probe_tma_red_matches_hardware`), 2026-11-06. 16-bit sums are `AtomAdd16` nodes of the
+  errdist graph, and two 16-bit bulk reductions of one element by different asynchronous
+  operations, neither happening before the other, follow N-RED16 (until 2026-11-09 they were
+  reported `unmodeled`: a single-order "clean" verdict once disagreed with the GPU,
+  moe.scatter_add_along_first_dim with duplicate rows, where GB300 gives 92 distinct outputs in
+  200 runs).
 - If wrong: *miss* (a real race between bulk reductions and other writes is still
   reported; a lost-update hazard between two bulk reductions would not be) or a wrong
   errdist ordering.
+
+### N-RED16 · code
+**Two or more f16 / bf16 bulk reductions (`cp.reduce.async.bulk.tensor...add`, SASS
+`UTMAREDG.<N>D.ADD`) of one element from asynchronous operations that do not happen before one
+another leave the element at the result of some sequential order of the adds, each add one
+round-to-nearest-even 16-bit rounding (N-BULK-RED's per-element rule). Which order is not
+promised, per element.** Reductions from one thread in one bulk group were applied in issue
+order on GB300, but no rule relies on that: unordered means any order.
+- Verdict: the launch is `nondeterministic` (a `red16-order` finding for every such pair the
+  exploration meets, whether or not the explored orders give different outputs, and the
+  cross-cluster note as for N-ATOMIC), never "deterministic" or "clean". Within a box the
+  explorer runs whole operations in either order; GB300 mixes orders per 128-byte chunk,
+  which the bound covers (every element is some order of its own adds).
+- Bound: each element's chain of S adds (start value plus S values) is an `AtomAdd16`
+  chain. `equiv` and `out_rec` put every value under d roundings (d = S, or S - 1 when the start
+  is +0: adding to +0 is exact), relative u = 2^-8 (bf16) / 2^-11 (f16) each, plus d absolute
+  errors of 2^-134 / 2^-25 where a partial sum is subnormal. That is the worst case of any
+  order, so the bound holds for every order and every per-chunk mixture. If (|start| + sum
+  |values|) grown by d roundings could reach the format's overflow threshold, the form is
+  untracked (no bound). errdist's Tier 3 DAG adds in the simulator's order (N-ERRDIST-DAG),
+  each add an f32 add then a 16-bit rounding (the same value: double rounding through 24
+  bits is innocuous for a p <= 11-bit sum).
+- Refused (`unmodeled`): unordered bulk reductions of different element types into
+  overlapping bytes (f32 with 16-bit, or bf16 with f16), in one cluster or across clusters.
+  Any other access of a reduced element by an unordered actor is a race as before.
+- Where: `exec.rs` `bulk_red` (`red16`, `red_kind`), `num.rs` `num_bulk_add16` /
+  `NodeKind::AtomAdd16` / `out_rec`, `equiv.rs`, `errdist/chain.rs`, `machine.rs` `GFoot`
+  (per-kind reduction bitsets), `explore.rs` `explore_sliced`.
+- Status: **validated** on GB300 by `probes/tma_red_order` (2026-11-09; per element (g, a0,
+  a1) with the a0-first, a1-first and single-rounding sums three different bf16 words). In 300
+  launches of two CTAs adding a 64 x 64 box each at once (after a cluster barrier), every
+  element was one of the two orders, never the single rounding or anything else. Orders
+  switched at 128-byte row boundaries, and every element was seen in both orders. One thread
+  issuing both reductions back to back: issue order in 300 of 300 launches.
+  `red16_order_bound_covers_gb300` checks the following, on both front-ends:
+  - the verdict is `nondeterministic`;
+  - every explored output element is one of the two GB300 values;
+  - every observed value is inside the element's bound. The largest observed error is 0.82
+    of the bound, against 1.0 for the worst element of the worst-case model;
+  - a fused single rounding would put no element among the observed values;
+  - a bound for the simulated order only is exceeded by observed values (10 elements).
+- If wrong: *false proof* (an order or a rounding outside the bound) or a missed refusal.
 
 ### N-MUFU · code
 **`MUFU.EX2/RCP/RSQ/LG2/SIN/COS/SQRT/TANH/RCP64H/RSQ64H` (f32, `.F16`, `.BF16`, `.F16x2`, `.BF16x2`) and

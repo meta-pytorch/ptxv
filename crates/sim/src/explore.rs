@@ -4339,7 +4339,7 @@ pub fn explore_sliced(
         seconds: 0.0,
         outputs: vec![],
     };
-    type Bits = Vec<(Vec<u64>, Vec<u64>, Vec<u64>)>;
+    type Bits = Vec<(Vec<u64>, Vec<u64>, Vec<u64>, [Vec<u64>; 3])>;
     // Multi-node: slices are independent searches, so rank r explores slices r, r + N, ...
     // on its own (`dist::set_local`), and rank 0 gathers verdicts and footprints.
     let net = crate::dist::get();
@@ -4363,7 +4363,13 @@ pub fn explore_sliced(
         m.gfoot = Some(g.clone());
         let v = explore_slice(m, max_states, Some(c));
         per_slice(c, &v);
-        done.push((c, v, g.snapshot()));
+        let bits: Bits = g
+            .snapshot()
+            .into_iter()
+            .zip(g.snapshot_kinds())
+            .map(|((r, w, x), k)| (r, w, x, k))
+            .collect();
+        done.push((c, v, bits));
     }
     crate::dist::set_local(false);
     const GATHER: u64 = u64::MAX;
@@ -4455,7 +4461,7 @@ pub fn explore_sliced(
             if gi != gj && (ordered(gi, gj) || ordered(gj, gi)) {
                 continue;
             }
-            for (alloc, ((ri, wi, xi), (rj, wj, xj))) in fi.iter().zip(fj).enumerate() {
+            for (alloc, ((ri, wi, xi, ki), (rj, wj, xj, kj))) in fi.iter().zip(fj).enumerate() {
                 let hit = |w: &Vec<u64>, o1: &Vec<u64>, o2: &Vec<u64>, o3: &Vec<u64>| {
                     w.iter().enumerate().find_map(|(k, &x)| {
                         let g = |o: &Vec<u64>| o.get(k).copied().unwrap_or(0);
@@ -4466,6 +4472,23 @@ pub fn explore_sliced(
                 let none = Vec::new();
                 if red_shared.is_none() {
                     red_shared = hit(xi, xj, &none, &none).map(|b| (alloc, b));
+                }
+                // ASSUME(N-RED16): reductions of different kinds (f32, bf16, f16) into one
+                // byte do not commute.
+                let mixed = (0..3).find_map(|a| {
+                    let o: Vec<&Vec<u64>> = (0..3).filter(|&b| b != a).map(|b| &kj[b]).collect();
+                    hit(&ki[a], o[0], o[1], &none)
+                });
+                if let Some(b) = mixed {
+                    all.findings.push(Finding {
+                        kind: "unmodeled".into(),
+                        sig: format!("cross-cluster-red-kinds:{alloc}"),
+                        msg: format!(
+                            "clusters {ci} and {cj} reduce global byte {b:#x} of allocation {alloc} with different element types: not modeled"
+                        ),
+                        trace: vec![],
+                        ..Default::default()
+                    });
                 }
                 if let Some(b) = hit(wi, rj, wj, xj)
                     .or_else(|| hit(wj, ri, wi, xi))
@@ -4489,7 +4512,7 @@ pub fn explore_sliced(
         // Several clusters' reduction orders: more than one output in general.
         all.distinct_outputs = all.distinct_outputs.max(2);
         all.notes.push(format!(
-            "global byte {b:#x} of allocation {a} receives fp32 atomic adds from several clusters: its final value depends on their order (N-ATOMIC)"
+            "global byte {b:#x} of allocation {a} receives atomic or bulk-reduction adds from several clusters: its final value depends on their order (N-ATOMIC, N-RED16)"
         ));
     }
     all.findings

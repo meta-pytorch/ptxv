@@ -1764,12 +1764,14 @@ pub struct Machine {
     /// poll (it skips the observation of the location's release).
     pub vip_read: u8,
     /// Not hashed, transient: the current access is an fp32 atomic add with no returned value
-    /// (`red.add.f32`): `gfoot` files it as a reduction, not a read and a write.
+    /// (`red.add.f32`) or a bulk-reduction add: `gfoot` files it as a reduction of kind
+    /// `red_kind` (`RED_F32` / `RED_BF16` / `RED_F16`), not a read and a write.
     pub red_access: bool,
-    /// Not hashed, diagnostic: per global 16-bit word, the last f16 / bf16 bulk reduction into
-    /// it (async actor, its own clock). A later one by another actor that does not happen
-    /// after it is order-dependent (N-BULK-RED), reported rather than explored.
-    pub red16: std::collections::HashMap<(usize, u64), (u32, u32)>,
+    pub red_kind: u8,
+    /// Not hashed, diagnostic: per global 2-byte granule, the last bulk reduction into it
+    /// (async actor, its own clock, kind). A later one of another kind by another actor that
+    /// does not happen after it is reported unmodeled (N-RED16).
+    pub red16: std::collections::HashMap<(usize, u64), (u32, u32, u8)>,
     /// Not hashed, transient: the current access goes through a multicast (NVLS) view
     /// (S-MC-ALIAS).
     pub mc_view: bool,
@@ -1976,12 +1978,21 @@ impl GOwn {
 
 /// Global-memory bytes touched, per allocation: (read bits, write bits). Lock-free: every
 /// search thread ORs into the same bitsets.
+/// Reduction kinds of `GFoot::red_kind` / `Machine::red_kind`.
+pub const RED_F32: u8 = 0;
+pub const RED_BF16: u8 = 1;
+pub const RED_F16: u8 = 2;
+
 #[derive(Debug)]
 pub struct GFoot {
     pub by: Vec<(Vec<AtomicU64>, Vec<AtomicU64>)>,
-    /// Bytes updated only by fp32 atomic adds without a returned value (ASSUME(N-ATOMIC)):
-    /// two clusters' reductions into one byte commute up to the order the bound covers.
+    /// Bytes updated only by fp32 atomic adds without a returned value (ASSUME(N-ATOMIC)) or
+    /// 16-bit bulk-reduction adds (ASSUME(N-RED16)): two clusters' reductions into one byte
+    /// commute up to the order the bound covers.
     pub red: Vec<Vec<AtomicU64>>,
+    /// The same bytes per reduction kind (`RED_F32`, `RED_BF16`, `RED_F16`): two clusters'
+    /// reductions of different kinds into one byte do not commute.
+    pub red_kind: Vec<[Vec<AtomicU64>; 3]>,
     /// Record only the accesses of this cluster's actors (a slice of a later grid also runs
     /// the earlier grids, whose accesses the grid boundary orders).
     pub cluster: Option<u32>,
@@ -1994,6 +2005,7 @@ impl GFoot {
         GFoot {
             by: sizes.iter().map(|&n| (bits(n), bits(n))).collect(),
             red: sizes.iter().map(|&n| bits(n)).collect(),
+            red_kind: sizes.iter().map(|&n| [bits(n), bits(n), bits(n)]).collect(),
             cluster: None,
         }
     }
@@ -2002,11 +2014,26 @@ impl GFoot {
         let v = if write { &e.1 } else { &e.0 };
         Self::mark(v, off, n);
     }
-    /// An fp32 atomic add without a returned value.
-    pub fn add_red(&self, alloc: usize, off: u64, n: usize) {
+    /// A commuting reduction of kind `kind` (`RED_F32` / `RED_BF16` / `RED_F16`).
+    pub fn add_red(&self, alloc: usize, off: u64, n: usize, kind: u8) {
         if let Some(v) = self.red.get(alloc) {
             Self::mark(v, off, n);
         }
+        if let Some(v) = self.red_kind.get(alloc) {
+            Self::mark(&v[kind as usize], off, n);
+        }
+    }
+    /// Plain copies of the per-kind reduction bitsets.
+    pub fn snapshot_kinds(&self) -> Vec<[Vec<u64>; 3]> {
+        let ld = |v: &Vec<AtomicU64>| -> Vec<u64> {
+            v.iter()
+                .map(|x| x.load(std::sync::atomic::Ordering::Relaxed))
+                .collect()
+        };
+        self.red_kind
+            .iter()
+            .map(|[a, b, c]| [ld(a), ld(b), ld(c)])
+            .collect()
     }
     pub fn mark(v: &[AtomicU64], off: u64, n: usize) {
         let (lo, hi) = (off as usize, off as usize + n);
@@ -2470,6 +2497,7 @@ impl Machine {
             vipr: Default::default(),
             vip_read: 0,
             red_access: false,
+            red_kind: RED_F32,
             red16: Default::default(),
             mc_view: false,
             weak_pub: false,

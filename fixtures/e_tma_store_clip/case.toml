@@ -1,0 +1,48 @@
+name = "e_tma_store_clip"
+description = """
+S-TMA / S-INIT: a TMA store (cp.async.bulk.tensor.2d.global.shared::cta) whose box is half outside
+the tensor map (rows 16..31 clipped) from a staging tile whose rows 16..31 were never written. Out-of-
+bounds box elements are not written to global memory, so their unwritten shared-memory bytes reach
+nothing: clean, D rows 16..31 keep their NaN. GB300 (500 runs plain and 500 with scrubbed
+memory) equals the simulator bitwise. Before: an S-INIT violation for the clipped rows. Variant
+hole writes only rows 0..7, so in-bounds rows 8..15 of the box read unwritten shared memory: still
+reported."""
+ptx = "kernel.ptx"
+entry = "e_tma_store_clip"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [32, 32]
+init = "nan"
+
+[[params]]
+kind = "tensormap"
+buffer = "D"
+box = [32, 32]
+dims = [32, 16]
+strides = [128]
+
+[[variants]]
+id = "good"
+summary = "clipped half of the staging tile never written"
+expect = ["clean"]
+
+[[variants]]
+id = "fill"
+summary = "control: the whole staging tile is written; same outputs"
+marker = "@FILL"
+find = "mov.u32         %r5, 512;"
+replace = "mov.u32         %r5, 1024;"
+expect = ["clean"]
+
+[[variants]]
+id = "hole"
+summary = "rows 8..15 of the in-bounds half never written: the store reads unwritten shared memory"
+marker = "@FILL"
+find = "mov.u32         %r5, 512;"
+replace = "mov.u32         %r5, 256;"
+expect = ["violation"]

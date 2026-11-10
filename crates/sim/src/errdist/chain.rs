@@ -200,7 +200,9 @@ impl Prog {
                     k
                 }
                 NodeKind::Round { arg, .. } => vec![*arg],
-                NodeKind::Add(a, b, _) | NodeKind::AtomAdd(a, b) => vec![*a, *b],
+                NodeKind::Add(a, b, _) | NodeKind::AtomAdd(a, b) | NodeKind::AtomAdd16(a, b, _) => {
+                    vec![*a, *b]
+                }
                 NodeKind::Tf32 { arg, .. } => vec![*arg],
                 NodeKind::Fma { a, b, c, .. } => {
                     [Some(*a), Some(*b), *c].into_iter().flatten().collect()
@@ -305,6 +307,25 @@ impl Prog {
                     b: g(b),
                     rz: false,
                 },
+                // A 16-bit add as an f32 add then a rounding to 16 bits: the f32 sum of two
+                // bf16 (f16) values rounds once more to the correctly rounded 16-bit sum (24
+                // >= 2p + 2 significand bits; subnormal sums are exact in f32), so the pair is
+                // the hardware's single rounding. In the simulator's order (N-ERRDIST-DAG,
+                // N-RED16).
+                NodeKind::AtomAdd16(a, b, f16) => {
+                    let sum = f32::from_bits(ns.nodes[*a as usize].hw)
+                        + f32::from_bits(ns.nodes[*b as usize].hw);
+                    self.ops.push(Op::Add {
+                        a: g(a),
+                        b: g(b),
+                        rz: false,
+                    });
+                    self.hw.push(sum.to_bits());
+                    Op::Round {
+                        arg: (self.ops.len() - 1) as u32,
+                        f16: *f16,
+                    }
+                }
                 NodeKind::Tf32 { arg, part } => Op::Tf32 {
                     arg: g(arg),
                     part: *part,
@@ -607,6 +628,7 @@ fn kind_name(k: &NodeKind) -> &'static str {
         NodeKind::Input(_) => "Input",
         NodeKind::Add(..) => "Add",
         NodeKind::AtomAdd(..) => "AtomAdd",
+        NodeKind::AtomAdd16(..) => "AtomAdd16",
         NodeKind::Mma { .. } => "Mma",
         NodeKind::Round { .. } => "Round",
         NodeKind::Mufu { .. } => "Mufu",

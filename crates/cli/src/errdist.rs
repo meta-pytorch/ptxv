@@ -268,9 +268,12 @@ fn kernel(
     // Atomics: the DAG follows the simulator's order of the atomic adds, the GPU ran its own
     // (N-ERRDIST-DAG), so the outputs need not match bit for bit; the check is skipped.
     let atomics = run.m.num.as_ref().is_some_and(|ns| {
-        ns.nodes
-            .iter()
-            .any(|n| matches!(n.kind, ptxv_sim::num::NodeKind::AtomAdd(..)))
+        ns.nodes.iter().any(|n| {
+            matches!(
+                n.kind,
+                ptxv_sim::num::NodeKind::AtomAdd(..) | ptxv_sim::num::NodeKind::AtomAdd16(..)
+            )
+        })
     });
     if atomics {
         run.notes.push(

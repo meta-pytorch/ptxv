@@ -926,7 +926,7 @@ impl Machine {
             });
             if mine {
                 if self.red_access {
-                    g.add_red(alloc, off, n);
+                    g.add_red(alloc, off, n, self.red_kind);
                 } else {
                     g.add(alloc, off, n, write.is_some());
                 }
@@ -13480,6 +13480,12 @@ impl Machine {
                 );
                 return;
             }
+            // Out-of-bounds box elements are not written, so their shared-memory bytes reach
+            // nothing: not read (an unwritten clipped row is no S-INIT use; GB300:
+            // fixtures/e_tma_store_clip). ASSUME(S-TMA)
+            if !inb {
+                continue;
+            }
             self.proxy_check(cta, soff, es, &op.vc, op.pc, "the TMA store");
             let data = self.access(
                 op.actor,
@@ -13489,7 +13495,7 @@ impl Machine {
                 es,
                 None,
             );
-            if inb && goff as usize + es > self.launch.allocs[alloc].init.len() {
+            if goff as usize + es > self.launch.allocs[alloc].init.len() {
                 self.report(
                     "fault",
                     format!("tma-gmem-oob:{}", op.pc),
@@ -13576,12 +13582,15 @@ impl Machine {
             let mut x = [0u8; 4];
             x[..w].copy_from_slice(&data[w * k..w * k + w]);
             let x = u32::from_le_bytes(x);
-            // Only f32 sums count as commuting reductions across clusters (N-ATOMIC: their
-            // order is covered by the numerics bound). A 16-bit add is order-dependent and its
-            // sum is not tracked, so overlapping 16-bit reductions of two clusters stay a
-            // conflict (moe.scatter_add_along_first_dim: duplicate rows reduced in bf16 by
-            // different CTAs gave a "clean" verdict whose output differed from the GPU's).
-            self.red_access = f == FFmt::F32;
+            // Reductions commute across clusters, per kind: f32 sums (N-ATOMIC) and 16-bit
+            // sums (N-RED16), each order covered by the numerics bound. Different kinds into
+            // one byte do not commute (a conflict for the cluster decomposition).
+            self.red_access = true;
+            self.red_kind = match f {
+                FFmt::F32 => crate::machine::RED_F32,
+                FFmt::Bf16 => crate::machine::RED_BF16,
+                _ => crate::machine::RED_F16,
+            };
             let old = self.access_x(op.actor, &op.vc, op.pc, loc, w, None, sc);
             let old_input_derived = self
                 .num
@@ -13595,6 +13604,9 @@ impl Machine {
             } else {
                 fp::add16(o as u16, x as u16, f) as u32
             };
+            // The element's 16-bit history, taken before the write below ends it (a write
+            // invalidates the bytes' half provenance).
+            let old16 = (f != FFmt::F32).then(|| self.half_mem(loc, 2, Some(&old[..2])));
             self.access_x(
                 op.actor,
                 &op.vc,
@@ -13605,35 +13617,59 @@ impl Machine {
                 sc,
             );
             self.red_access = false;
-            if f != FFmt::F32 {
-                // Two unordered 16-bit reductions of one word: the result depends on their
-                // order, which the explorer does not branch on (N-BULK-RED).
-                let me = (op.actor, vc_get(&op.vc, op.actor));
-                if let Some((a, c)) = self.red16.insert((alloc, goff + (w * k) as u64), me) {
-                    if a != op.actor && vc_get(&op.vc, a) < c {
+            let kind = self.red_kind;
+            self.red_kind = crate::machine::RED_F32;
+            // Two unordered bulk reductions of one 2-byte granule must be of one kind: an f32
+            // sum and a 16-bit sum, or bf16 and f16 sums, of overlapping bytes are not modeled.
+            // ASSUME(N-RED16)
+            let me = (op.actor, vc_get(&op.vc, op.actor), kind);
+            for g in (0..w as u64).step_by(2) {
+                let key = (alloc, goff + (w * k) as u64 + g);
+                if let Some((a, c, kd)) = self.red16.insert(key, me) {
+                    if a == op.actor || vc_get(&op.vc, a) >= c {
+                        continue;
+                    }
+                    if kd != kind {
                         self.report(
                             "unmodeled",
-                            format!("bulk-red16-order:{}", op.pc),
+                            format!("bulk-red-kinds:{}", op.pc),
                             format!(
-                                "f16 / bf16 bulk reductions from two unordered asynchronous operations into one global word (at {}): the sum depends on their order, which is not explored",
+                                "bulk reductions of different element types into one global word, not ordered (at {}): not modeled",
+                                self.k.describe(op.pc as usize)
+                            ),
+                        );
+                    } else if kind != crate::machine::RED_F32 {
+                        // The sum depends on the order (GB300 mixes it per 128-byte chunk of
+                        // a box); every order is inside the N-RED16 bound, none is promised.
+                        self.report(
+                            "nondeterministic",
+                            format!("red16-order:{}", op.pc),
+                            format!(
+                                "f16 / bf16 bulk reductions from two unordered asynchronous operations into one global word (at {}): the sum depends on their order (each element is some sequential order of the adds; the numerics bound covers every order, N-RED16)",
                                 self.k.describe(op.pc as usize)
                             ),
                         );
                     }
                 }
             }
+            let src = match from {
+                Loc::Shared { cta, off } => Loc::Shared {
+                    cta,
+                    off: off + (w * k) as u32,
+                },
+                l => l,
+            };
             if f == FFmt::F32 {
-                let src = match from {
-                    Loc::Shared { cta, off } => Loc::Shared {
-                        cta,
-                        off: off + (w * k) as u32,
-                    },
-                    l => l,
-                };
                 self.num_bulk_add(src, loc, (o, x, r), old_input_derived, op.pc);
             } else {
-                // 16-bit sums are not tracked by the errdist graph: the word loses its node.
-                self.num_forget(loc);
+                self.num_bulk_add16(
+                    src,
+                    loc,
+                    (o as u16, x as u16, r as u16),
+                    (old16.unwrap_or_default(), old_input_derived),
+                    f == FFmt::F16,
+                    op.pc,
+                );
             }
         }
         Ok(())

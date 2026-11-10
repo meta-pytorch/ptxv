@@ -33,7 +33,7 @@ OUTER:
     mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r3], 0;
     setp.eq.u32 %p2, %r10, 0;
     @%p2 bra NEXT;
-    @%p1 bra GOT;
+    @%p1 bra GOT;                        // @USE
 WAIT:
     mbarrier.try_wait.parity.shared::cta.b64 %p4, [%r3], 0;
     @!%p4 bra WAIT;

@@ -735,6 +735,73 @@ impl Side<'_> {
                 cx.abs_extra = cx.abs_extra * (1.0 + U32).powi(d as i32)
                     + s as f64 * 3.0 * FTZ_MIN * (1.0 + U32).powi(s as i32);
             }
+            NodeKind::AtomAdd16(_, _, f16) => {
+                // ASSUME(N-RED16): every value of the location is some sequential order of
+                // its adds, one 16-bit rounding (relative u, absolute a below the normal
+                // range) per add; in any order a value sits under at most S roundings, S - 1
+                // when the start is +0 (adding to +0 is exact). The chain in this run's
+                // order is walked; the bound uses that worst case for every value.
+                let f16 = *f16;
+                let (u, a) = round_unit(f16);
+                let mut vals = Vec::new();
+                let mut cur = n;
+                while let NodeKind::AtomAdd16(o, x, g) = self.ns.nodes[cur as usize].kind {
+                    if g != f16 {
+                        break;
+                    }
+                    vals.push(x);
+                    cur = o;
+                }
+                let base = &self.ns.nodes[cur as usize];
+                let base_zero = matches!(base.kind, NodeKind::Leaf) && base.hw == 0;
+                let s = vals.len();
+                let d = if base_zero { s - 1 } else { s };
+                // No order may overflow: every partial sum is at most (|start| + sum |x|)
+                // grown by d roundings, plus d absolute errors.
+                let mag = |k: u32| (f32::from_bits(self.ns.nodes[k as usize].hw) as f64).abs();
+                let total = vals.iter().map(|&x| mag(x)).sum::<f64>()
+                    + if base_zero { 0.0 } else { mag(cur) };
+                let lim = if f16 { 65520.0 } else { 3.3961775292304433e38 };
+                let grown = total * (1.0 + u).powi(d as i32) + d as f64 * a;
+                if grown.is_nan() || grown >= lim {
+                    cx.untracked.get_or_insert_with(|| {
+                        format!(
+                            "{s} 16-bit bulk-reduction adds into one location at pc {} may overflow in some order (or hold a non-finite value)",
+                            nd.pc
+                        )
+                    });
+                }
+                let mut hs = Vec::with_capacity(s);
+                for &x in &vals {
+                    let (hx, px) = self.node(x, cx, memo);
+                    hs.push(hx);
+                    add_poly_n(&mut poly, &px, u, d);
+                }
+                let hb = if base_zero {
+                    (0, 0)
+                } else {
+                    let (hb, pb) = self.node(cur, cx, memo);
+                    add_poly_n(&mut poly, &pb, u, d);
+                    hb
+                };
+                hs.sort();
+                h.put(("atom16", f16, hb, hs));
+                if s > if base_zero { 2 } else { 1 } {
+                    cx.unordered.get_or_insert_with(|| {
+                        format!(
+                            "{s} {} bulk-reduction adds into one location at pc {} (their order depends on the schedule)",
+                            if f16 { "f16" } else { "bf16" },
+                            nd.pc
+                        )
+                    });
+                }
+                // The children's absolute errors pass through d roundings; each rounding adds
+                // at most a (where its result is subnormal), carried through the later ones.
+                cx.abs_extra = (cx.abs_extra + d as f64 * a) * (1.0 + u).powi(d as i32);
+                if d > 0 {
+                    cx.round_abs = true;
+                }
+            }
             NodeKind::Add(a, b, rz) => {
                 let (ha, pa) = self.node(*a, cx, memo);
                 let (hb, pb) = self.node(*b, cx, memo);

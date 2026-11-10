@@ -105,6 +105,11 @@ fn model_nop(op: &Op) -> bool {
     )
 }
 
+/// A vote's destination is a predicate (`VOTE.ANY` / `VOTE.ALL` into P / UP, not a ballot).
+fn vote_pred(d: &Reg) -> bool {
+    matches!(d.file, ptxv_ir::File::P | ptxv_ir::File::UP)
+}
+
 fn reads_pred(op: &Op, d: Reg) -> bool {
     op.src_regs().contains(&d)
 }
@@ -148,50 +153,6 @@ pub fn retry_branch(code: &[Inst], w: usize) -> Option<usize> {
         }
     }
     None
-}
-
-#[cfg(test)]
-mod retry_tests {
-    use std::sync::Arc;
-
-    #[test]
-    fn retry_counters_are_carried_only_when_the_prefix_is_revisited() {
-        let mut case = ptxv_case::Case::load(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../fixtures/e_mbar_retry_counter"),
-        )
-        .unwrap();
-        case.m.params.clear();
-        for (target, accepted) in [(".L_stub", true), (".L_first", false)] {
-            let text = format!(
-                r#".text.k:
-.L_first:
-/*0000*/ SYNCS.PHASECHK.TRANS64.TRYWAIT P0, [R2], R4 ;
-/*0010*/ IADD3 R5, R5, 0x1, RZ ;
-/*0020*/ @!P0 BRA `({target}) ;
-.L_cont:
-/*0030*/ STG.E [R6.64], R5 ;
-/*0040*/ EXIT ;
-.L_stub:
-/*0050*/ SYNCS.PHASECHK.TRANS64.TRYWAIT P0, [R2], R4 ;
-/*0060*/ @!P0 BRA `(.L_stub) ;
-/*0070*/ BRA `(.L_cont) ;
-"#
-            );
-            let mut dis = String::new();
-            for line in text.lines() {
-                dis.push_str(line);
-                dis.push('\n');
-                if line.starts_with("/*") {
-                    dis.push_str("/* 0x000fc00000000000 */\n");
-                }
-            }
-            let k = ptxv_sass::lower(&dis, "k", &ptxv_sass::CubinMeta::default()).unwrap();
-            let launch = crate::build_launch(&case, &k).unwrap();
-            let m = crate::machine::Machine::new(Arc::new(k), Arc::new(launch));
-            assert_eq!(super::retry_shape(&m, 0).is_ok(), accepted, "{target}");
-        }
-    }
 }
 
 /// Why try_wait at `w` violates the retry shape (Err), or Ok(None) if it has it. Ok(Some((s,
@@ -528,7 +489,8 @@ pub(crate) fn live_after(code: &[Inst], from: usize, regs: &BTreeSet<Reg>) -> Op
 /// the mbarrier moves). The walk tracks the failed results: predicates known from them (the
 /// result itself, a `mov.pred d, -1`, an integer compare of a known register with an
 /// immediate) and registers known from them (trtllm-gen keeps the result as a token:
-/// `SEL R4, RZ, 0x1, !P1`, later `ISETP.NE.AND P1, PT, R4, 0x1` decides whether to wait). A
+/// `SEL R4, RZ, 0x1, !P1`, later `ISETP.NE.AND P1, PT, R4, 0x1` decides whether to wait;
+/// a warp vote into a predicate, `VOTEU.ANY UP0, P1`, passes the value on). A
 /// branch on a known predicate follows that value. Running a peek as a non-blocking test is
 /// then exact and cannot spin without progress. Calls (other than to a trap routine) and
 /// returns end the walk with "no".
@@ -643,6 +605,22 @@ pub fn is_peek(m: &Machine, w: usize) -> bool {
                         *r,
                         pval(&env, p).and_then(|c| konst(&env, if c { a } else { b })),
                     )),
+                    // A warp vote into a predicate (trtllm-gen: `VOTEU.ANY UP0, P1` of the
+                    // test's result, then `USEL` of the token): under the walk's assumption
+                    // every lane's test fails, and every known value is the same in every
+                    // lane (built from failed results and immediates), so the vote of a
+                    // known predicate is that predicate.
+                    Op::VoteAny {
+                        d: q,
+                        a,
+                        mask: None,
+                    }
+                    | Op::VoteAll {
+                        d: q,
+                        a,
+                        mask: None,
+                        ..
+                    } if vote_pred(q) => Some((*q, pval(&env, a).map(|b| b as u64))),
                     Op::Setp {
                         d: q,
                         cmp,
@@ -675,7 +653,9 @@ pub fn is_peek(m: &Machine, w: usize) -> bool {
                 }
                 // A side effect that depends on a failed result may steer later control
                 // through memory.
-                if reads_failed && pure_dst(op).is_none() && !model_nop(op) {
+                // (A vote into a predicate only moves values between the warp's lanes.)
+                let vote = matches!(op, Op::VoteAny { d: q, .. } | Op::VoteAll { d: q, .. } if vote_pred(q));
+                if reads_failed && pure_dst(op).is_none() && !model_nop(op) && !vote {
                     nv.3 = true;
                 }
                 if let (Some((r, Some(v))), Some(true)) = (known, runs) {
@@ -1434,5 +1414,49 @@ pub fn blocked_wpoll_read(m: &mut Machine, reads: &[PollRead]) {
         let vc = m.threads[t].vc.clone();
         m.access_x(t as u32, &vc, pc, loc, bytes, None, sc);
         m.stale = saved;
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use std::sync::Arc;
+
+    #[test]
+    fn retry_counters_are_carried_only_when_the_prefix_is_revisited() {
+        let mut case = ptxv_case::Case::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/e_mbar_retry_counter"),
+        )
+        .unwrap();
+        case.m.params.clear();
+        for (target, accepted) in [(".L_stub", true), (".L_first", false)] {
+            let text = format!(
+                r#".text.k:
+.L_first:
+/*0000*/ SYNCS.PHASECHK.TRANS64.TRYWAIT P0, [R2], R4 ;
+/*0010*/ IADD3 R5, R5, 0x1, RZ ;
+/*0020*/ @!P0 BRA `({target}) ;
+.L_cont:
+/*0030*/ STG.E [R6.64], R5 ;
+/*0040*/ EXIT ;
+.L_stub:
+/*0050*/ SYNCS.PHASECHK.TRANS64.TRYWAIT P0, [R2], R4 ;
+/*0060*/ @!P0 BRA `(.L_stub) ;
+/*0070*/ BRA `(.L_cont) ;
+"#
+            );
+            let mut dis = String::new();
+            for line in text.lines() {
+                dis.push_str(line);
+                dis.push('\n');
+                if line.starts_with("/*") {
+                    dis.push_str("/* 0x000fc00000000000 */\n");
+                }
+            }
+            let k = ptxv_sass::lower(&dis, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+            let launch = crate::build_launch(&case, &k).unwrap();
+            let m = crate::machine::Machine::new(Arc::new(k), Arc::new(launch));
+            assert_eq!(super::retry_shape(&m, 0).is_ok(), accepted, "{target}");
+        }
     }
 }

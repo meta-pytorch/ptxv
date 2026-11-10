@@ -1,0 +1,53 @@
+// e_tma_store_clip: a TMA store whose box is clipped by the tensor map, from a staging tile whose
+// clipped part was never written.
+//
+//   Tensor map over D (f32 [32 rows, 32 cols]) with dims [32 cols, 16 rows]: rows 16..31 of D
+//   lie outside the map. Box [32, 32]. 128 threads write rows 0..15 of the smem tile
+//   (tile[e] = e for e < 512) and leave rows 16..31 unwritten; thread 0 stores the whole box at
+//   {0, 0}. The out-of-bounds half of the box is clipped (never read for a global write), so
+//   D rows 0..15 = 0..511 and D rows 16..31 keep their initial NaN.
+//   The shape of an attention output store through a ragged map, where rows past the sequence
+//   length are never written to shared memory.
+//
+// Variants (case.toml): fill writes the whole tile (rows 16..31 too), outputs unchanged; hole
+// writes rows 0..7 only, so in-bounds rows 8..15 read unwritten shared memory (S-INIT).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_tma_store_clip(
+    .param .align 64 .b8 tmap[128]
+)
+.maxntid 128, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<4>;
+    .reg .f32   %f<2>;
+    .shared .align 1024 .b8 tile[4096];
+
+    mov.u32         %r0, %tid.x;
+    mov.u32         %r1, tile;
+    mov.u32         %r2, %r0;
+    mov.u32         %r5, 512;                                   // @FILL
+LOOP:
+    cvt.rn.f32.u32  %f0, %r2;
+    shl.b32         %r3, %r2, 2;
+    add.u32         %r4, %r1, %r3;
+    st.shared.f32   [%r4], %f0;
+    add.u32         %r2, %r2, 128;
+    setp.lt.u32     %p1, %r2, %r5;
+    @%p1 bra        LOOP;
+    fence.proxy.async.shared::cta;
+    bar.sync        0;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        DONE;
+    mov.b64         %rd0, tmap;
+    cvta.param.u64  %rd1, %rd0;
+    mov.u32         %r6, 0;
+    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r6}], [%r1];
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+DONE:
+    ret;
+}

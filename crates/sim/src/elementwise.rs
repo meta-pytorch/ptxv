@@ -466,7 +466,7 @@ fn tree(ns: &NumState, n: u32, leaves: &mut Vec<Orig>, depth: usize) -> Result<E
                     NodeKind::Max { .. } => "max",
                     NodeKind::Mufu { .. } => "MUFU",
                     NodeKind::Mma { .. } => "tensor-core",
-                    NodeKind::AtomAdd(..) => "atomic add",
+                    NodeKind::AtomAdd(..) | NodeKind::AtomAdd16(..) => "atomic add",
                     _ => "other",
                 }
             ));

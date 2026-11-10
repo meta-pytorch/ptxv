@@ -195,6 +195,16 @@ fn both(case: &str, variant: &str) {
     check(case, variant, "sass");
 }
 
+/// S-TMA: a TMA store's clipped (out-of-bounds) box rows are not read from shared memory, so
+/// never-written staging rows there are no S-INIT use; unwritten in-bounds rows still are
+/// (fixtures/e_tma_store_clip, variant hole).
+#[test]
+fn tma_store_skips_clipped_rows() {
+    for v in ["good", "fill", "hole"] {
+        both("e_tma_store_clip", v);
+    }
+}
+
 /// L-OPREAD: shared loads of a warp write back in issue order, so `LDS.128 R4` then `LDS R6`
 /// with no wait is no WAW (fixtures/e_lds_waw, both front-ends; probes/lds_waw's ptxas
 /// schedules). An ALU write in place of the second load is still a WAW (probes/lds_waw
@@ -2325,6 +2335,132 @@ fn probe_cbank_neg_matches_hardware() {
 #[test]
 fn probe_qmul4_matches_hardware() {
     probe_bitwise_cubin("probes/qmul4", None);
+}
+
+/// N-RED16: two unordered bf16 tensor bulk reductions into one box (probes/tma_red_order,
+/// mode 0). The verdict is `nondeterministic` (never deterministic); every explored output is,
+/// per element, one of the two values GB300 produced over 300 launches (each element was seen
+/// in both orders); and each element's numerics bound (`out_rec`, every order: two roundings
+/// per value) holds both observed values, at a meaningful fraction of it. Mutants the checks
+/// must catch: a model fusing the two adds into one rounding (its sums are not among the
+/// observed values), and a bound for the simulated order only (an observed value exceeds it).
+#[test]
+fn red16_order_bound_covers_gb300() {
+    use ptxv_sim::halfin::Half;
+    let case = Case::load(root().join("probes/tma_red_order")).unwrap();
+    let rd16 = |f: &str| -> Vec<u16> {
+        std::fs::read(case.dir.join(f))
+            .unwrap()
+            .chunks(2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .collect()
+    };
+    let (g, a, obs) = (rd16("g.bin"), rd16("a.bin"), rd16("observed.bin"));
+    let bf = |h: u16| f32::from_bits((h as u32) << 16) as f64;
+    // Round to nearest even to bf16 (normal results only, as gen.py's triples give).
+    let rn = |x: f64| -> u16 {
+        let b = x.to_bits();
+        let e = (b >> 52 & 0x7ff) as i64 - 1023;
+        assert!((-126..128).contains(&e), "{x}");
+        let m = b & ((1u64 << 52) - 1);
+        let (keep, rest) = (m >> 45, m & ((1u64 << 45) - 1));
+        let half = 1u64 << 44;
+        let mut k = (1u64 << 7) | keep;
+        if rest > half || rest == half && k & 1 == 1 {
+            k += 1;
+        }
+        let v = (k as f64) * 2f64.powi(e as i32 - 7) * x.signum();
+        ((v as f32).to_bits() >> 16) as u16
+    };
+    let (ia, ig) = (0usize, 1usize);
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let m0 = Machine::new(Arc::new(k), Arc::new(launch));
+        let v = explore(m0.clone(), 2_000_000);
+        assert!(v.complete, "{front}: incomplete");
+        assert_eq!(
+            v.classes(),
+            ["nondeterministic"],
+            "{front}: {:#?}",
+            v.findings
+        );
+        let seen = |i: usize, h: u16| h == obs[i] || h == obs[4096 + i];
+        for o in &v.outputs {
+            for i in 0..4096 {
+                let h = u16::from_le_bytes([o[2 * i], o[2 * i + 1]]);
+                assert!(
+                    seen(i, h),
+                    "{front}: element {i} = {h:#06x} not observed on GB300"
+                );
+            }
+        }
+        let mut m = m0.clone();
+        let mut ns = ptxv_sim::num::NumState::with_mma_eps(m.launch.mma_model.eps());
+        ns.half.track = true;
+        ns.half.inputs.insert(ia, Half::Bf16);
+        ns.half.inputs.insert(ig, Half::Bf16);
+        m.num = Some(Box::new(ns));
+        let (m, _, ok) = ptxv_sim::explore::run_once(m);
+        assert!(ok);
+        let ns = m.num.as_ref().unwrap();
+        let (u, ab) = ptxv_sim::equiv::round_unit(false);
+        let (mut worst, mut fused_seen, mut order_only_broken) = (0f64, 0, 0);
+        for i in 0..4096 {
+            let n = m.half_out_node(ig, i as u64, false).expect("output node");
+            let r = ns.out_rec(i, ns.nodes[n as usize].hw, Some(n));
+            let e = bf(g[i]) + bf(a[i]) + bf(a[4096 + i]);
+            assert_eq!(r.exact, e, "{front}: element {i}");
+            for h in [obs[i], obs[4096 + i]] {
+                let d = (bf(h) - e).abs();
+                assert!(
+                    d <= r.bound_cor1a,
+                    "{front}: element {i}: |{} - {e}| > {}",
+                    bf(h),
+                    r.bound_cor1a
+                );
+                worst = worst.max(d / r.bound_cor1a);
+            }
+            // Mutant: one rounding of g + a0 + a1.
+            fused_seen += usize::from(seen(i, rn(e)));
+            // Mutant: the bound of the simulated order only (the first value added under two
+            // roundings, the second under one).
+            let ptxv_sim::num::NodeKind::AtomAdd16(o, x2, _) = ns.nodes[n as usize].kind else {
+                panic!("{front}: element {i} is not a 16-bit sum")
+            };
+            let ptxv_sim::num::NodeKind::AtomAdd16(b0, x1, _) = ns.nodes[o as usize].kind else {
+                panic!("{front}: element {i}: one add")
+            };
+            // The chain keeps the element's history across each add's own write: it starts at
+            // the input element's leaf, not at a fresh leaf of an earlier rounded sum.
+            assert!(
+                matches!(
+                    ns.nodes[b0 as usize].kind,
+                    ptxv_sim::num::NodeKind::Input(_)
+                ),
+                "{front}: element {i}: chain start is {:?} ({})",
+                ns.nodes[b0 as usize].kind,
+                f32::from_bits(ns.nodes[b0 as usize].hw)
+            );
+            let mag = |k: u32| (f32::from_bits(ns.nodes[k as usize].hw) as f64).abs();
+            let g2 = (1.0 + u) * (1.0 + u) - 1.0;
+            let order_only =
+                (mag(b0) + mag(x1)) * g2 + mag(x2) * u + 2.0 * ab * (1.0 + u) * (1.0 + u);
+            order_only_broken += [obs[i], obs[4096 + i]]
+                .iter()
+                .filter(|&&h| (bf(h) - e).abs() > order_only)
+                .count();
+        }
+        assert!(
+            worst > 0.5,
+            "{front}: bound too loose (worst ratio {worst})"
+        );
+        assert_eq!(fused_seen, 0, "{front}: a fused model would pass");
+        assert!(
+            order_only_broken > 0,
+            "{front}: an order-only bound would pass"
+        );
+    }
 }
 
 /// N-F2FP-RZ: F2FP.F16.F32.PACK_AB.RZ (cvt.rz.f16x2.f32) on edge and random pairs = GB300 on

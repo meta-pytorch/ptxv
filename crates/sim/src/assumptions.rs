@@ -1256,6 +1256,18 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |k| any(k, |o| matches!(o, Op::TmaStore { red: true, .. })),
     },
     Assumption {
+        id: "N-RED16",
+        kind: "code",
+        status: "validated",
+        title: "unordered f16 / bf16 bulk reductions into one element: some sequential order, one 16-bit rounding per add; nondeterministic, bounded over every order (probes/tma_red_order)",
+        applies: |k| {
+            any(
+                k,
+                |o| matches!(o, Op::TmaStore { red: true, dims, .. } if *dims > 0),
+            )
+        },
+    },
+    Assumption {
         id: "N-MUFU",
         kind: "code",
         status: "validated",

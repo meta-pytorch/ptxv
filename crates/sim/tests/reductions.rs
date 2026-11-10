@@ -92,6 +92,26 @@ fn break_reached_by_two_paths_keeps_verdicts() {
     }
 }
 
+/// E-SPIN peeks (spin.rs `is_peek`) through a warp vote: the test's result reaches its branch
+/// through `vote.any` (trtllm-gen's `VOTEU.ANY UP0, P1`); the test is still a peek (VOTE,
+/// clean, no E-SPIN finding). A loop that repeats while the vote is false is a spin
+/// (VOTESPIN, unmodeled), as without the vote (SPIN).
+#[test]
+fn peek_through_a_warp_vote() {
+    let case = Case::load(root().join("fixtures/e_peek_loop")).unwrap();
+    for v in ["good", "SPIN", "VOTE", "VOTESPIN"] {
+        for front in ["ptx", "sass"] {
+            let ev = explore(machine(&case, v, front), 200_000);
+            assert_eq!(
+                ev.classes(),
+                case.variant(v).unwrap().expect_for(front),
+                "{v}/{front}: {:#?}",
+                ev.findings
+            );
+        }
+    }
+}
+
 /// E-SPIN recognition (spin.rs `poll_loops`): a counted loop with a volatile load and an
 /// unconditional back branch is explored as ordinary steps when no exit depends on the load
 /// (e_vol_loop good, like the dispatch kernel's pipelined main loop); a loop whose exit tests

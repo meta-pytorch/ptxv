@@ -1898,7 +1898,7 @@ fn kind_name(k: &NodeKind) -> &'static str {
         NodeKind::Sel { .. } => "data-dependent selection",
         NodeKind::Input(_) => "input",
         NodeKind::Add(..) => "add",
-        NodeKind::AtomAdd(..) => "atomic add",
+        NodeKind::AtomAdd(..) | NodeKind::AtomAdd16(..) => "atomic add",
         NodeKind::Mma { .. } => "mma",
         NodeKind::Round { .. } => "16-bit rounding",
         NodeKind::Mufu { .. } => "mufu",
