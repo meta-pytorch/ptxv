@@ -1872,7 +1872,7 @@ fn cmd_check(
                 if cov.input_independent {
                     let raced = verdict.findings.iter().any(|x| x.kind == "race");
                     println!(
-                        "    input-independent: holds for all inputs of this shape and these parameters (no branch, guard, address or synchronization operand derived from input data in one run; value-dependent parts, such as same-value writes, output determinism and the comparison with the GPU output, hold for this input){}",
+                        "    input-independent: in one run no branch, guard, address or synchronization operand derives from input data through the modeled provenance (registers; shared, global and local memory; TMEM; asynchronous copies), so control path, accesses and synchronization are the same for every input of this shape and these parameters as far as that provenance is complete (value-dependent parts, such as same-value writes, output determinism and the comparison with the GPU output, hold for this input){}",
                         if raced {
                             "; the verdict has a race, under which another schedule can move data differently"
                         } else {

@@ -1,0 +1,42 @@
+name = "e_cov_tccp"
+description = """
+Input coverage through TMEM: input words reach TMEM by tcgen05.cp (good) or tcgen05.st (ST),
+come back by tcgen05.ld, and a branch tests them: the kernel's control depends on the input
+(input_dependent non-empty, never input-independent), on both front-ends."""
+ptx = "kernel.ptx"
+entry = "e_cov_tccp"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [256]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [128]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "ST"
+marker = "@CP"
+find = "tcgen05.cp.cta_group::1.32x128b.warpx4 [%r6], %rd5;"
+replace = "mov.u32 %r20, 0;"
+edits = [{ marker = "@STW", find = "mov.u32 %r20, 0;", replace = "shl.b32 %r21, %r2, 21; add.u32 %r22, %r6, %r21; tcgen05.st.sync.aligned.32x32b.x1.b32 [%r22], {%r3}; tcgen05.wait::st.sync.aligned;" }]
+expect = ["clean"]

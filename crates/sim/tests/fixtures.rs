@@ -5222,6 +5222,32 @@ fn ptx_p7_is_not_pt_for_input_coverage() {
     }
 }
 
+/// Input coverage through TMEM: every TMEM writer carries the provenance of what it wrote.
+/// fixtures/e_cov_tccp (input words to TMEM by tcgen05.cp, good, or tcgen05.st, ST) and
+/// r1a_tcgen05_tile COV1 (an MMA accumulator), each read back by tcgen05.ld into a guard:
+/// input-dependent on both front-ends. Before 2026-11-08 the tcgen05.cp words had no
+/// provenance and e_cov_tccp was called input-independent.
+#[test]
+fn tmem_writers_carry_input_provenance() {
+    for (name, variant) in [
+        ("e_cov_tccp", "good"),
+        ("e_cov_tccp", "ST"),
+        ("r1a_tcgen05_tile", "COV1"),
+    ] {
+        let case = Case::load(root().join("fixtures").join(name)).unwrap();
+        for front in ["ptx", "sass"] {
+            let k = kernel(&case, variant, front);
+            let launch = build_launch(&case, &k).unwrap();
+            let c = ptxv_sim::coverage::analyze(&Machine::new(Arc::new(k), Arc::new(launch)));
+            assert!(
+                !c.input_independent && !c.input_dependent.is_empty(),
+                "{name}/{variant}/{front}: {c:#?}"
+            );
+        }
+        both(name, variant);
+    }
+}
+
 /// S-INIT lane precision for narrow packs (fixtures/e_uninit_lanes): F2FP pack / unpack and
 /// HADD2.F32 of one half keep undefined bits per lane, so a defined low lane stays defined.
 #[test]

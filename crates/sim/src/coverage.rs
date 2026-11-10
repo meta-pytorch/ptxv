@@ -791,6 +791,30 @@ impl ProvState {
         self.reached.get(pc as usize).copied().unwrap_or(false)
     }
 
+    /// `tmem_block`: `actor` writes TMEM words. Every TMEM writer joins what it read into the
+    /// TMEM shadow (one mask for all of TMEM): a thread's `tcgen05.st` its registers (at issue),
+    /// an asynchronous unit (the MMA, `tcgen05.cp`) the bytes it read since its last write, and
+    /// all input-derived shared memory when it read none that the shadow knows (never clean).
+    /// Until 2026-11-08 only `tcgen05.st` and the MMA joined: `tcgen05.cp` of input data left
+    /// the words clean and a branch on a `tcgen05.ld` of them was input-independent.
+    pub(crate) fn on_tmem_write(&mut self, actor: u32) {
+        if (actor as usize) < self.nth {
+            return;
+        }
+        let read = self.aacc.get(&actor).copied().unwrap_or(0);
+        let m = if read != 0 {
+            read
+        } else {
+            self.mem
+                .iter()
+                .filter(|(k, _)| k.0 == 0)
+                .flat_map(|(_, page)| page.iter())
+                .filter(|&&w| w != 0)
+                .fold(0, |x, &w| x | self.packed.unbyte(w).mask())
+        };
+        self.tmem |= m;
+    }
+
     /// `access_x`: the bytes an actor reads (and, for a write, overwrites) and writes.
     /// `rmw`: the access is an atomic's (it reads the location too). `vc`: the actor's clock.
     #[allow(clippy::too_many_arguments)]
@@ -1219,6 +1243,12 @@ pub(crate) fn pre(m: &mut Machine, members: &[usize], pc: u32) {
                 Plan::All(Prov::Clean)
             }
             Op::TmemLd { .. } => Plan::All(Prov::of_mask(ps.tmem | guard)),
+            // The copy's shared-memory reads join at its completion (`on_tmem_write`); its
+            // operands (TMEM address, descriptor) at issue.
+            Op::TcCp { .. } => {
+                ps.tmem |= srcs;
+                Plan::All(Prov::Clean)
+            }
             Op::Mma { .. } => {
                 // The MMA reads shared memory and TMEM: input-derived if any of either is.
                 let sm = ps.mem_mask();

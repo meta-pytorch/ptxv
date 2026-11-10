@@ -2662,6 +2662,10 @@ impl Machine {
                     _ => 0,
                 };
             }
+            if let (Some(_), Some(p)) = (write, self.prov.as_mut()) {
+                p.on_tmem_write(actor); // coverage.rs
+            }
+            let tm = &mut self.tmem[cta as usize];
             if let Some(ws) = write {
                 let words = &mut tm.words.run_mut(lo)[..nl];
                 for (l, w) in words.iter_mut().enumerate() {

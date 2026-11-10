@@ -140,3 +140,11 @@ patch = [{ at = "LDTM.x16 R36, tmem[UR4]", wbar = 7 }]
 expect = ["clean"]
 expect_sass = ["violation"]
 hw_note = "nothing orders the stores after the TMEM load"
+
+[[variants]]
+id = "COV1"
+summary = "input coverage through the MMA: a guard on an accumulator word read back from TMEM (the store it guards is overwritten by the row's last store, outputs unchanged): input-dependent control"
+marker = "@B05"
+find = "tcgen05.wait::ld.sync.aligned;"
+replace = "tcgen05.wait::ld.sync.aligned; setp.ne.b32 %p7, %r16, 0; @%p7 st.global.b32 [%rd17+60], %r16;"
+expect = ["clean"]
