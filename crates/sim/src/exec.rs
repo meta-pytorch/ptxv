@@ -1987,6 +1987,10 @@ impl Machine {
                 th.st = St::Run;
                 if let Some(d) = &done {
                     vc_join(&mut th.vc, d);
+                    // ASSUME(S-GPROXY): a kernel boundary orders the async proxy too (PTX ISA
+                    // 8.9.4, API synchronization).
+                    let v = th.vc.clone();
+                    th.gfences.push(v);
                     // ASSUME(S-MC-ALIAS): a kernel boundary is on the proxy-preserved path.
                     if mc {
                         let v = th.vc.clone();
@@ -7991,18 +7995,38 @@ impl Machine {
                 self.tick(t);
             }
             Op::Fence {
-                kind: FenceKind::ProxyAsync,
+                kind: k @ (FenceKind::ProxyAsync | FenceKind::ProxyAsyncAll),
             } => {
+                // ASSUME(S-GPROXY): ptxas lowers `fence.proxy.async` (every state space) to
+                // `MEMBAR.ALL.GPU; FENCE.VIEW.ASYNC.S`, the shared-memory forms to
+                // `MEMBAR.ALL.<CTA|GPU>; FENCE.VIEW.ASYNC.S`: on the SASS front the pair with
+                // MEMBAR.ALL.GPU (or wider) also orders global memory.
+                let global = matches!(k, FenceKind::ProxyAsyncAll)
+                    || (self.k.front == Front::Sass
+                        && pc > 0
+                        && matches!(
+                            self.k.code[pc as usize - 1].op,
+                            Op::Fence {
+                                kind: FenceKind::Release(Scope::Gpu | Scope::Sys)
+                                    | FenceKind::Membar(Scope::Gpu | Scope::Sys)
+                            }
+                        ));
                 let v = self.threads[t].vc.clone();
-                self.threads[t].make_mut().fences.push(v);
-
+                let th = self.threads[t].make_mut();
+                if global {
+                    th.gfences.push(v.clone());
+                }
+                th.fences.push(v);
                 self.tick(t);
             }
-            // ASSUME(S-PROXY): global-memory proxy ordering is not checked; the fence orders
-            // nothing the model tracks (in particular no shared-memory async read).
+            // ASSUME(S-GPROXY): orders global memory only (no shared-memory proxy check).
             Op::Fence {
                 kind: FenceKind::ProxyAsyncGlobal,
-            } => self.tick(t),
+            } => {
+                let v = self.threads[t].vc.clone();
+                self.threads[t].make_mut().gfences.push(v);
+                self.tick(t);
+            }
             Op::BulkCommit => {
                 let sb = self
                     .k
@@ -14178,6 +14202,103 @@ impl Machine {
         }
     }
 
+    /// The thread that issued asynchronous actor `a` (a TMA / bulk op or remote operation),
+    /// or None for a thread, a tcgen05 actor or a NIC.
+    fn async_issuer(&self, a: u32) -> Option<usize> {
+        let n = self.nthreads();
+        if a < 3 * n || self.nic_actor_name(a).is_some() {
+            return None;
+        }
+        let t = ((a - 3 * n) / 4096) as usize;
+        (t < self.threads.len()).then_some(t)
+    }
+
+    /// S-GPROXY: an async-proxy access of global memory by `op` (a TMA / bulk load, store or
+    /// add-reduction) is ordered after an earlier conflicting access only along PTX ISA 8.9.5's
+    /// proxy-preserved base causality order: an access by an async op of the same CTA, or
+    /// any access with a global-memory proxy fence on the happens-before path after it (by
+    /// its thread, or by a thread that observed it) that happens-before `op`. A generic
+    /// access, or an async access issued in another CTA (8.9.5: "same proxy, and by the same
+    /// thread block"; its completion's implicit proxy fence, 9.7.10.28.2, makes it a generic
+    /// one), needs that fence. Accesses unordered by happens-before are left to the race
+    /// detector (two add-reductions: a schedule choice, N-BULK-RED). Ordered but not
+    /// proxy-preserved: a `contract` finding (the PTX ISA requires the fence; GB300 showed
+    /// no failure, probes/gproxy).
+    // ASSUME(S-GPROXY): see ASSUMPTIONS.md
+    #[allow(clippy::too_many_arguments)]
+    fn gproxy_check(
+        &mut self,
+        alloc: usize,
+        off: u64,
+        n: usize,
+        op: &AsyncOp,
+        write: bool,
+        red: bool,
+        what: &str,
+    ) {
+        let nth = self.threads.len() as u32;
+        let cta = self.threads[op.issuer as usize].cta;
+        for i in 0..n as u64 {
+            let s = self.gmem[alloc].sh.get((off + i) as usize);
+            let mut prior: Vec<Epoch> = s.w.into_iter().collect();
+            if let Some(hw) = &s.hw {
+                prior.extend(hw.iter().copied());
+            }
+            if write {
+                prior.extend(s.r.iter().copied());
+            }
+            for e in prior {
+                if e.actor == op.actor || vc_get(&op.vc, e.actor) < e.clock {
+                    continue;
+                }
+                if e.actor >= nth {
+                    match self.async_issuer(e.actor) {
+                        Some(t) if self.threads[t].cta != cta => {}
+                        _ => continue,
+                    }
+                }
+                let covered = self.threads.iter().enumerate().any(|(f, th)| {
+                    let seen = vc_get(&op.vc, f as u32);
+                    th.gfences
+                        .iter()
+                        .any(|fv| e.clock <= vc_get(fv, e.actor) && vc_get(fv, f as u32) <= seen)
+                });
+                if covered {
+                    continue;
+                }
+                let prev = format!(
+                    "{} by {} at {}",
+                    if e.actor < nth {
+                        "generic-proxy access"
+                    } else {
+                        "async-proxy access (another CTA's)"
+                    },
+                    self.actor_name(e.actor),
+                    self.k.describe(e.pc as usize)
+                );
+                let fix = "no fence.proxy.async.global (or fence.proxy.async) on the happens-before path between them";
+                if red && e.strong != 0 && s.w == Some(e) {
+                    let msg = format!(
+                        "gmem byte {:#x} of {}: {prev} is ordered before {what} at {} by generic-proxy synchronization only; the PTX memory model does not order the two reductions (proxy-preserved base causality, 8.9.5): {fix}; not observed on GB300 (S-GPROXY)",
+                        off + i,
+                        self.launch.allocs[alloc].name,
+                        self.k.describe(op.pc as usize)
+                    );
+                    self.report("contract", format!("gproxy-order:{}:{}", e.pc, op.pc), msg);
+                } else {
+                    let msg = format!(
+                        "gmem byte {:#x} of {}: {prev} is not ordered before {what} at {} in the async proxy ({fix}; PTX ISA 8.9.5); not observed on GB300 (S-GPROXY)",
+                        off + i,
+                        self.launch.allocs[alloc].name,
+                        self.k.describe(op.pc as usize)
+                    );
+                    self.report("contract", format!("gproxy:{}:{}", e.pc, op.pc), msg);
+                }
+                return;
+            }
+        }
+    }
+
     // ASSUME(E-ASYNC-STEP, S-TMA): see ASSUMPTIONS.md
     /// Swizzled TMA: the shared-memory start must be 128-byte aligned (GB300 faults with
     /// "misaligned address" otherwise, any span) and the inner box at most the span. The start
@@ -14346,6 +14467,19 @@ impl Machine {
                 );
                 return;
             }
+            self.gproxy_check(
+                alloc,
+                goff,
+                es,
+                &op,
+                true,
+                red,
+                if red {
+                    "the bulk add-reduction"
+                } else {
+                    "the TMA store"
+                },
+            );
             if inb && red {
                 if let Err(e) = self.bulk_red(
                     &op,
@@ -14738,7 +14872,10 @@ impl Machine {
                         off: off as u32,
                     }
                 }
-                None => Loc::Global { alloc, off },
+                None => {
+                    self.gproxy_check(alloc, off, n, &op, false, false, "the TMA load");
+                    Loc::Global { alloc, off }
+                }
             };
             let d = self.access(op.actor, &op.vc, op.pc, loc, n, None);
             src.insert(off, d);

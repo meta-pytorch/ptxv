@@ -648,6 +648,10 @@ pub enum FenceKind {
     /// accesses to global memory only. It does not order shared memory, so it never covers a
     /// shared-memory proxy check (S-PROXY).
     ProxyAsyncGlobal,
+    /// `fence.proxy.async` with no state space: orders generic and async-proxy accesses to
+    /// every state space (PTX ISA 9.7.13.4; ptxas: `MEMBAR.ALL.GPU; FENCE.VIEW.ASYNC.S`, which
+    /// the SASS front reads as this when the two are adjacent). S-PROXY, S-GPROXY.
+    ProxyAsyncAll,
     /// `fence.proxy.alias` (S-MC-ALIAS): orders accesses through virtual aliases (the
     /// multicast and unicast views of NVLS memory). ptxas: `MEMBAR.SC.GPU; MEMBAR.SC.SYS;
     /// CCTL.IVALL`; the PTX front lowers it to this plus `Membar(Sys)`.

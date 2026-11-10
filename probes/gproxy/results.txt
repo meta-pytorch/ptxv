@@ -1,0 +1,19 @@
+GB300, CUDA 13.0 (driver 580), 2026-11-09. g2s.cu, 608 CTAs (4 per SM) per launch, 10
+launches, 2000 rounds per CTA. Thread 0 stores k into W words of its own global slot
+(STG.E), runs the variant's fence, bulk-copies the slot into shared memory
+(cp.async.bulk.shared::cta.global = UBLKCP.S.G, mbarrier completion) and counts words != k.
+
+  v=0 NOF (no fence)                         W=4, 64, 1024: 0 stale of 4.9e7, 7.8e8, 1.2e10 words
+  v=3 SH  (fence.proxy.async.shared::cta)    W=4, 64, 1024: 0 stale (same counts)
+  v=4 MB  (fence.acq_rel.gpu, no proxy fence) W=4, 64, 1024: 0 stale
+  v=1 GLB (fence.proxy.async.global)         W=4, 64, 1024: 0 stale
+  v=2 ALL (fence.proxy.async)                W=4, 64, 1024: 0 stale
+
+SASS: fence.proxy.async.global = FENCE.VIEW.ASYNC.G; fence.proxy.async = MEMBAR.ALL.GPU;
+FENCE.VIEW.ASYNC.S; fence.proxy.async.shared::cta = MEMBAR.ALL.CTA; FENCE.VIEW.ASYNC.S.
+
+GB300 did not show a stale async-proxy read of the issuing thread's own generic global
+stores in this shape, with or without a fence. The PTX ISA requires the fence (8.6, 8.9.5);
+the necessity is not measured. The cross-CTA reduction chain (fixtures/e_gproxy) is not
+probed: its failure (a reduction performed out of semaphore order) has no observable
+window once the previous reduction's completion was waited for.

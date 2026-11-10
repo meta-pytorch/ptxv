@@ -652,6 +652,13 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |k| any(k, |o| matches!(o, Op::TmaStore { .. } | Op::Mma { .. })),
     },
     Assumption {
+        id: "S-GPROXY",
+        kind: "code",
+        status: "argued",
+        title: "an async-proxy (TMA / bulk) access of global memory is ordered after a generic access, or another CTA's async access, only through a global proxy fence (fence.proxy.async[.global]) on the happens-before path",
+        applies: |k| any(k, |o| matches!(o, Op::TmaLoad { .. } | Op::TmaStore { .. })),
+    },
+    Assumption {
         id: "S-MULTIMEM",
         kind: "code",
         status: "argued",

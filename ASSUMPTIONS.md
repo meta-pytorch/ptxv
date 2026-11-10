@@ -3298,8 +3298,47 @@ that fence happens-before the async operation's issue. Otherwise the result is a
   place of the epilogue's fence (SASS `FENCE.VIEW.ASYNC.G`, no `MEMBAR`): with shared memory
   scrubbed, GB300 writes a wrong output in 1000/1000 runs (528 distinct outputs), and both
   front-ends report the proxy race.
-- Not modeled: generic-proxy writes to global memory read by an async-proxy op (TMA load from
-  global) are not checked for a `.global` fence, so a missing one is a *miss*.
+- Global memory: S-GPROXY (since 2026-11-09; before, a missing `.global` fence was a *miss*).
+
+### S-GPROXY · code
+**Async-proxy accesses of global memory.** A TMA / bulk load, store or add-reduction
+(`cp.async.bulk{.tensor}`, `cp.reduce.async.bulk{.tensor}`) accesses global memory in the async
+proxy. It is ordered after an earlier conflicting access (a write; for a store or reduction
+also a read) only along proxy-preserved base causality order (PTX ISA 8.9.5): the earlier
+access is by an async op issued in the same CTA ("same proxy, and by the same thread
+block"), or a global proxy fence lies on the happens-before path between them, executed
+after the access by its thread or by a thread that observed it, and happening before the
+op's issue (as S-PROXY). A generic access needs the fence; so does another CTA's async
+access, which after its completion (implicit generic-async proxy fence, 9.7.10.28.2) counts
+as generic. The other direction (an async write, then a generic access that observed its
+completion) needs nothing.
+- Fences that order global memory: `fence.proxy.async.global` (SASS `FENCE.VIEW.ASYNC.G`),
+  `fence.proxy.async` with no state space (every state space; ptxas: `MEMBAR.ALL.GPU;
+  FENCE.VIEW.ASYNC.S`), a kernel boundary (8.9.4, API synchronization). Not:
+  `fence.proxy.async.shared::cta` / `.shared::cluster` on the PTX front. The SASS front
+  cannot tell `fence.proxy.async` from `.shared::cluster` (both `MEMBAR.ALL.GPU;
+  FENCE.VIEW.ASYNC.S`) and credits the pair for global memory (`MEMBAR.ALL.CTA;
+  FENCE.VIEW.ASYNC.S`, the `.shared::cta` form, it does not).
+- Findings: HB-ordered but not proxy-preserved is a `contract` finding (`gproxy`; for two
+  add-reductions, atomic per 9.7.10.28.4.2, `gproxy-order`: the order the kernel's
+  synchronization means to impose is not guaranteed, e.g. the deterministic accumulation
+  shape, a semaphore handed on with st.release / ld.acquire between CTAs whose reductions go
+  to one buffer). Contract, not race: the ISA requires the fence, but GB300 showed no failure
+  (probes/gproxy), as for E-CPASYNC-PROXY. Accesses not ordered by happens-before are left to
+  the race detector; two such reductions are a schedule choice as before (N-BULK-RED).
+- Where: `exec.rs` `gproxy_check` (from `complete_tma`, `complete_tma_store`),
+  `Thread::gfences`; PTX `fence.proxy.async*`; SASS `FENCE.VIEW.ASYNC.{G,S}`.
+- Fixture: e_gproxy (good, NOF, ALL, SH, ST, STF).
+- Status: **argued** (PTX ISA 9.5 text; ptxas lowering). GB300 (probes/gproxy, 2026-11-09):
+  a thread's generic global stores read back by its own bulk copy were never stale (0 of up
+  to 1.2e10 words per variant), fence or not: the necessity is not measured, so the findings
+  are contract findings, on both fronts.
+- If wrong: a contract finding the ISA would not require if hardware and the ISA order
+  async-proxy global accesses by generic synchronization alone; *miss* if
+  `MEMBAR.ALL.GPU; FENCE.VIEW.ASYNC.S` does not order global memory (ptxas's lowering of
+  `fence.proxy.async` says it does).
+- Not modeled: `cp.async` (non-bulk, generic proxy per the ISA), tensor-map reads (S-TMAP),
+  multimem bulk forms.
 
 ### S-MULTIMEM · code
 **NVLS multicast memory.** A case's `[[multicast]]` objects (capture: `cuMulticastCreate`,

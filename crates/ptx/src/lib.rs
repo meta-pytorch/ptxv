@@ -6969,10 +6969,14 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 }
             } else if mods.first() == Some(&"proxy") && has("async") {
                 // `fence.proxy.async` with no state space orders all of them (ptxas: MEMBAR.ALL.GPU
-                // + FENCE.VIEW.ASYNC.S); `.global` orders global memory only, which no proxy
-                // check models, so it never covers a shared-memory check. ASSUME(S-PROXY)
+                // + FENCE.VIEW.ASYNC.S); `.global` orders global memory only, so it never covers
+                // a shared-memory check, and a shared-memory form never covers a global one.
+                // ASSUME(S-PROXY, S-GPROXY)
                 match &mods[1..] {
-                    ["async"] | ["async", "shared::cta" | "shared::cluster"] => Op::Fence {
+                    ["async"] => Op::Fence {
+                        kind: FenceKind::ProxyAsyncAll,
+                    },
+                    ["async", "shared::cta" | "shared::cluster"] => Op::Fence {
                         kind: FenceKind::ProxyAsync,
                     },
                     ["async", "global"] => Op::Fence {

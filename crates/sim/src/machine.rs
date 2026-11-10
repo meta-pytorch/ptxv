@@ -1125,6 +1125,11 @@ pub struct Thread {
     /// This thread has executed a fence.proxy.alias (S-MC-ALIAS: covers its strong accesses
     /// that observe another thread's strong write through the other view).
     pub alias_fenced: bool,
+    /// Proxy fences of this thread that order global memory (`fence.proxy.async.global` or
+    /// `fence.proxy.async`; SASS `FENCE.VIEW.ASYNC.G`, or `FENCE.VIEW.ASYNC.S` right after
+    /// `MEMBAR.ALL.GPU`), and its start after a stream-ordered previous grid, as for `fences`
+    /// (S-GPROXY).
+    pub gfences: Vec<VC>,
     /// Bulk groups committed so far (the open group's id).
     pub bulk_group: u32,
     /// The read scoreboard of each committed bulk group (SASS `UTMACMDFLUSH`'s rbar, by group
@@ -2585,6 +2590,7 @@ impl Machine {
                     alias_fences: vec![],
                     alias_pending: vec![],
                     alias_fenced: false,
+                    gfences: vec![],
                     bulk_group: 0,
                     bulk_sb: Vec::new(),
                     bulk_done: vec![],

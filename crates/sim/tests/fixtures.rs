@@ -6275,3 +6275,14 @@ fn e_ticket_addr_fence_acquired_claims_refused() {
         }
     }
 }
+
+/// S-GPROXY: a semaphore-ordered chain of bulk add-reductions from two CTAs into one global
+/// accumulator needs a global proxy fence after the acquire (`NOF`, `SH`: the order is not
+/// guaranteed); so does a generic store followed by another CTA's reduction (`ST`). Contract
+/// findings (the PTX ISA requires the fence; GB300 showed no failure).
+#[test]
+fn e_gproxy_verdicts() {
+    for v in ["good", "NOF", "ALL", "SH", "ST", "STF"] {
+        both("e_gproxy", v);
+    }
+}
