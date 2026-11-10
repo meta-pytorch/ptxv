@@ -5142,6 +5142,14 @@ forms seen. Any other form is a hard error.
   so their uses resolve (they were "unknown register": 33 kernel-DB records) and a scoped
   `%p0` no longer refers to the body's `%p0` (an alias that clobbered it); a word right after
   `.` is never renamed (`mad.lo.u32` next to a scoped register `lo` became `mad.lo__sN.u32`).
+- `setp.<cmp>.<bop>.f32` / `.f64` `p[|q], a, b, [!]c` (2026-11-09, `bop` = and / or / xor):
+  p = cmp(a, b) bop c, q = !cmp(a, b) bop c (FSETP / DSETP with a combining predicate); `.ftz`
+  on f32. A fourth operand without `bop`, or a fifth, is refused. probes/setp_bop (ordered and
+  unordered compares on NaN / signed-zero / subnormal operands, negated and plain c, one
+  `.ftz` form): GB300 = both fronts bitwise; the `.f64` form (DSETP) is not probed.
+- `mad.lo.s16` / `.u16` (2026-11-09): the low 16 bits of a * b + c (a 16-bit product into a
+  scratch register, then a 16-bit add; d may alias c). probes/mad_lo16 (register and
+  immediate operands, d = c): GB300 = both fronts bitwise.
 - SASS `FFMA2` / `FMUL2` / `FADD2` with a negated uniform register (`-UR6.F32`,
   `-UR6.F32x2.HI_LO`: ptxas folds `neg.f32` of kernel parameters) and `|R|` operands (abs.f32
   of both halves folded; applied before a negation) (2026-11-07, SCALE pilot).
@@ -5212,6 +5220,10 @@ is rejected (fail closed).
   `.ELL2` = PTX `.L2::evict_last`, `.EFL2` = `.L2::evict_first`) is likewise dropped
   (2026-11-07; 4 SCALE corpus records refused ELL2): probes/ldst256_l2 = GB300 on both
   front-ends, bitwise equal to probes/ldst256's output.
+- `cp.async.bulk.prefetch.L2.global [a], size[, policy]` with or without `.L2::cache_hint`
+  (2026-11-09) is a no-op once its operands are valid (the operand count for the form, an
+  address, a size and a policy register or immediate); ptxas's `UBLKPF.L2` is already a no-op
+  on the SASS front. A prefetch moves no data the program observes.
 - If wrong: *miss* only if a hint changed the data or the completion order.
 - Retire: never needed for verdicts; listed so that dropped modifiers are visible.
 

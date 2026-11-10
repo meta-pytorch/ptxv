@@ -2846,6 +2846,23 @@ fn probe_f32x2_unpack_add_matches_hardware() {
     probe_bitwise("probes/f32x2_unpack_add", "good", "sass");
 }
 
+/// mad.lo.s16 / .u16 (low 16 bits of a * b + c; register and immediate operands, d aliasing
+/// c) on random operands (probes/mad_lo16) = GB300 on both fronts.
+#[test]
+fn probe_mad_lo16_matches_hardware() {
+    probe_bitwise("probes/mad_lo16", "good", "ptx");
+    probe_bitwise("probes/mad_lo16", "good", "sass");
+}
+
+/// setp.<cmp>.<bop>.f32 with a plain or negated combining predicate, ordered and unordered
+/// compares on NaN / signed-zero / subnormal operands, one .ftz form (probes/setp_bop) =
+/// GB300 on both fronts.
+#[test]
+fn probe_setp_bop_matches_hardware() {
+    probe_bitwise("probes/setp_bop", "good", "ptx");
+    probe_bitwise("probes/setp_bop", "good", "sass");
+}
+
 /// redux.sync min / max [.abs] [.NaN] .f32 with full mask reached through divergent paths,
 /// over NaN / signed-zero / inf / subnormal lanes (probes/redux_f32_paths): the collective
 /// waits for every lane, the case certifies (C-WARP) and = GB300 on both fronts.

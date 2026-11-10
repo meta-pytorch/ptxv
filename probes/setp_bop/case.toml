@@ -1,0 +1,36 @@
+name = "probe_setp_bop"
+description = """
+Probe (L-ROSETTA) for setp.<cmp>.<bop>[.ftz].f32 p, a, b, [!]c: p = cmp(a, b) <bop> c, as SASS
+FSETP.<cmp>.<bop>, over ordered and unordered compares, NaN / signed-zero / subnormal operands
+and a negated combining predicate (kernel.ptx, gen.py). expected/ is GB300's output (`ptxv hw`)."""
+ptx = "kernel.ptx"
+entry = "setp_bop"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [512]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [256]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

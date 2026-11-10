@@ -1623,6 +1623,8 @@ fn needs_scratch(text: &str) -> bool {
                 .next()
                 .is_some_and(|o| o.ends_with(".f64"))
         || t.starts_with("mad.lo.u64")
+        || t.starts_with("mad.lo.s16")
+        || t.starts_with("mad.lo.u16")
         || t.starts_with("mad.wide.s16")
         || t.starts_with("mad.wide.u16")
         || t.starts_with("popc.b64")
@@ -4488,6 +4490,28 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 b: lw.val(op_n(2)?)?,
             }
         }
+        // `mad.lo.{s,u}16 d, a, b, c`: the low 16 bits of a*b + c (signedness does not affect
+        // them), through a scratch register (d may alias c).
+        "mad" if has("lo") && bits == 16 => {
+            if !matches!(mods, ["lo", "s16" | "u16"]) {
+                bail!(lw.err("mad: only mad.lo.{s16,u16} is modeled in 16 bits"));
+            }
+            let tmp = lw.scratch_v()?;
+            extra.push(Op::Int {
+                op: IntOp::Add,
+                bits: 16,
+                d: lw.dst(op_n(0)?)?,
+                a: Val::Reg(tmp, 1),
+                b: lw.val(op_n(3)?)?,
+            });
+            Op::Int {
+                op: IntOp::Mul,
+                bits: 16,
+                d: tmp,
+                a: lw.val(op_n(1)?)?,
+                b: lw.val(op_n(2)?)?,
+            }
+        }
         // `mad.wide.{s,u}16 d, a, imm, c`: d = ext16(a) * ext16(imm) + c in 32 bits (the 16x16
         // product is exact), a extended into the scratch register (probes/mad_wide16). A
         // register b is refused.
@@ -4690,16 +4714,29 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 "nan" => FCmp::Nan,
                 c => bail!(lw.err(format!("unsupported setp compare {c}"))),
             };
-            if !matches!(mods.len(), 2 | 3)
-                || mods.len() == 3 && (mods[1] != "ftz" || tname == "f64")
+            // `setp.<cmp>.<bop>[.ftz].f32 p, a, b, [!]c`: p = cmp(a, b) <bop> c (PTX ISA), as
+            // SASS `FSETP.<cmp>.<bop> p, PT, a, b, [!]c`. The `p|q` form stays refused.
+            let bop = match mods.get(1) {
+                Some(&"and") => Some(BoolOp::And),
+                Some(&"or") => Some(BoolOp::Or),
+                Some(&"xor") => Some(BoolOp::Xor),
+                _ => None,
+            };
+            let rest = &mods[1 + bop.is_some() as usize..mods.len() - 1];
+            if !(rest.is_empty() || rest == ["ftz"] && tname == "f32")
+                || mods.last() != Some(&tname)
             {
                 bail!(lw.err(format!("setp.{tname} modifiers not modeled")));
             }
-            if op_n(0)?.contains('|') || op_n(3).is_ok() {
+            if op_n(0)?.contains('|') || op_n(3).is_ok() != bop.is_some() || op_n(4).is_ok() {
                 bail!(lw.err(format!(
-                    "setp.{tname} with p|q or a combining predicate not modeled"
+                    "setp.{tname} with p|q, or a combining predicate without its boolean op, not modeled"
                 )));
             }
+            let (c, bop) = match bop {
+                Some(bop) => (lw.pred_src(op_n(3)?)?, bop),
+                None => (Pred::TRUE, BoolOp::And),
+            };
             let (d, a, b) = (lw.pred_dst(op_n(0)?)?, lw.val(op_n(1)?)?, lw.val(op_n(2)?)?);
             if tname == "f64" {
                 Op::Dsetp {
@@ -4709,8 +4746,8 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     b,
                     neg: [false; 2],
                     abs: [false; 2],
-                    c: Pred::TRUE,
-                    bop: BoolOp::And,
+                    c,
+                    bop,
                 }
             } else {
                 Op::Fsetp {
@@ -4720,8 +4757,8 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     b,
                     neg: [false; 2],
                     abs: [false; 2],
-                    c: Pred::TRUE,
-                    bop: BoolOp::And,
+                    c,
+                    bop,
                     ftz: has("ftz"),
                 }
             }
@@ -7245,9 +7282,23 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         // size, [mbar]` and `cp.async.bulk.global.shared::cta.bulk_group [dst], [src], size`.
         // Lowered as TMA ops with `dims = 0`; `tmap` carries the byte count (exec.rs
         // `bulk_map`), `coords[0]` the global address.
-        // `cp.async.bulk.prefetch.L2.global [a], size` (SASS UBLKPF.L2): a cache hint
-        // (probes/memhints).
-        "cp" if mods == ["async", "bulk", "prefetch", "L2", "global"] => Op::Nop,
+        // `cp.async.bulk.prefetch.L2.global[.L2::cache_hint] [a], size[, policy]` (SASS
+        // UBLKPF.L2): a cache hint, no memory effect (probes/memhints). The operands are
+        // checked first: an address, a size and (with the hint) a 64-bit policy operand.
+        "cp" if mods[..mods.len().min(5)] == ["async", "bulk", "prefetch", "L2", "global"]
+            && (mods.len() == 5 || mods[5..] == ["L2::cache_hint"]) =>
+        {
+            let hint = mods.len() == 6;
+            if ops.len() != 2 + hint as usize {
+                bail!(lw.err("cp.async.bulk.prefetch.L2: unexpected operand count"));
+            }
+            lw.addr(op_n(0)?)?;
+            lw.val(op_n(1)?)?;
+            if hint {
+                lw.val(op_n(2)?)?;
+            }
+            Op::Nop
+        }
         // `cp.async.bulk.prefetch.tensor.<n>d.L2.global[.tile][.L2::cache_hint] [tmap,
         // {coords}][, policy]` (SASS UTMAPF.L2.<n>D): a cache hint (probes/tma_prefetch).
         "cp" if mods.len() >= 6
@@ -7610,7 +7661,8 @@ mod tests {
             }
         ));
         assert!(one("setp.lt.f32 %p1|%p2, %r1, %r2;").is_err());
-        assert!(one("setp.lt.and.f32 %p1, %r1, %r2, %p3;").is_err());
+        // The combining-predicate form: `setp_f32_combining_predicate`.
+        assert!(one("setp.lt.and.f32 %p1|%p2, %r1, %r2, %p3;").is_err());
     }
 
     /// Every op one statement lowers to (64-bit registers %rd0..7 declared too).
@@ -8017,6 +8069,58 @@ mod tests {
             (Pred::TRUE, 4, 0)
         );
         assert_eq!(en(&mma("{%r3, %r4, %r5, %r6}, 0, 2").unwrap()).1, 4);
+    }
+
+    #[test]
+    fn setp_f32_combining_predicate() {
+        let f = |l: &str| -> Result<(FCmp, Pred, BoolOp, bool)> {
+            match ops(l)?.last() {
+                Some(Op::Fsetp {
+                    cmp, c, bop, ftz, ..
+                }) => Ok((*cmp, *c, *bop, *ftz)),
+                o => panic!("{o:?}"),
+            }
+        };
+        let (cmp, c, bop, ftz) = f("setp.equ.and.f32 %p1, %r1, %r2, %p2;").unwrap();
+        assert!(matches!(cmp, FCmp::Equ) && matches!(bop, BoolOp::And) && !ftz);
+        assert!(c.reg.is_some() && !c.neg);
+        let (_, c, bop, ftz) = f("setp.lt.xor.ftz.f32 %p1, %r1, %r2, !%p2;").unwrap();
+        assert!(matches!(bop, BoolOp::Xor) && ftz && c.neg);
+        assert!(ops("setp.equ.and.f32 %p1|%p3, %r1, %r2, %p2;").is_err());
+        assert!(ops("setp.equ.f32 %p1, %r1, %r2, %p2;").is_err());
+        assert!(ops("setp.equ.and.f32 %p1, %r1, %r2;").is_err());
+    }
+
+    #[test]
+    fn mad_lo_16_and_bulk_prefetch_hint() {
+        let src = ".reg .b16 %h<4>;\nmad.lo.s16 %h1, %h2, %h3, %h1;";
+        let v = ops(src).unwrap();
+        assert!(
+            matches!(
+                v[..],
+                [
+                    Op::Int {
+                        op: IntOp::Mul,
+                        bits: 16,
+                        ..
+                    },
+                    Op::Int {
+                        op: IntOp::Add,
+                        bits: 16,
+                        ..
+                    }
+                ]
+            ),
+            "{v:?}"
+        );
+        assert!(ops(".reg .b16 %h<4>;\nmad.hi.s16 %h1, %h2, %h3, %h1;").is_err());
+        assert!(matches!(
+            ops("cp.async.bulk.prefetch.L2.global.L2::cache_hint [%rd1], 256, %rd2;").unwrap()[..],
+            [Op::Nop]
+        ));
+        assert!(ops("cp.async.bulk.prefetch.L2.global.L2::cache_hint [%rd1], 256;").is_err());
+        assert!(ops("cp.async.bulk.prefetch.L2.global [%rd1], %r1;").is_ok());
+        assert!(ops("cp.async.bulk.prefetch.L2.global.L2::evict_last [%rd1], 256;").is_err());
     }
 
     #[test]
