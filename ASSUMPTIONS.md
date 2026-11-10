@@ -2511,6 +2511,86 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
     of the ticket value" does not hold in general; the enumeration needs no such property.
     Fixture `e_ticket` (good: 95 runs, certified; ctaid: refused, nondeterministic; race:
     refused, race).
+  - **C-TICKET-ADDR** (2026-11-09, `wellsync/perm.rs`): slot assignment by fetch-add (a MoE
+    dispatch's `slot = atomicAdd(&cnt[expert], 1)`, row = prefix + slot). Which claimant gets
+    which row depends on the order of the adds, so the outputs are determined only up to a
+    permutation of rows within each counter's segment. The verdict class is
+    `clean-up-to-permutation`, never `clean`. The case names the counter buffer and the row
+    buffers (`[[permuted]] counter = ..., buffers = [...]`). The declaration is a hint only:
+    every condition below is checked, and a declaration that fails one refuses the
+    certificate with the reason (`C-TICKET-ADDR: ...`), never a weaker verdict.
+    On the certificate's run C-ORDER leaves relaxed, non-acquiring adds of a declared counter
+    word unordered (words whose adds' results are all unused stay C-ORDER's commutative
+    atomics). In the certificate's runs and C-TICKET-ADDR's reruns a claim synchronizes with
+    nothing: an acquire fence after it (`fence.acq_rel`, SASS `CCTL.IVALL`) does not acquire
+    from the release before the add it read from. That edge exists only in the orders where
+    the claim reads from that claimant, and every order only adds such edges to the run's, so
+    race freedom and the values certified without them hold in every order (pre-land review
+    finding: fixtures/e_ticket_addr_fence, a writer that fences before its claim and a reader
+    that fences after its own: the run, without the edge, has the race, and the certificate
+    refuses; with the edge kept, it certified). The explorer keeps the real semantics. Then:
+    1. Counter: every strong access to the word is such an add of one nonzero constant `c`,
+       by threads (lanes of one SASS step allowed). The run's returned values are
+       `v0, v0 + c, ...`, `V_w` with `n_w` claims. Every execution makes the same claims:
+       by 2, no claim's result reaches a branch, a guard or a synchronization operand, and
+       every other value is the run's by the certificate. So `n_w` and `v0` are the same in
+       every schedule, and any coherence order of the `n_w` adds hands the claims a bijection
+       onto `V_w`. The word's initialization is checked too: plain writes to it unordered
+       with the adds are races, and strong ones are refused by the first sentence.
+    2. Taint, one rerun per claim with its result register undefined (`Machine::perm`,
+       S-INIT propagation through register-only operations). The only allowed use is an
+       address operand of the claimant thread's own store into a declared row buffer.
+       Anything else refuses:
+       - a branch, guard or predicate;
+       - a load or atomic address, or a synchronization operand;
+       - store data, including stores S-INIT would only mark undefined;
+       - another thread's instruction (a SHFL carried the value);
+       - an S-INIT report (an operation it does not propagate through).
+       The rerun must end as the run did.
+    3. Replays: for each claim and each `t` in `V_w`, a rerun with the result forced to `t`,
+       recording the claimant's row-buffer stores after the claim, `A_i(t)`.
+       - Every claim of a word must give the same `A(t)`: the rows depend on the ticket alone.
+       - The sets must be disjoint across tickets and words.
+       - This covers every value of `V_w`, not only the run's assignment, so a row that lands
+         on another claim's row only in another order is refused. That race is invisible in
+         the run.
+    4. Order: in an observing rerun, every other access to a segment byte happens-before
+       every claim store (race-detector epochs). No access may be after them or unordered,
+       and no later launch may read the rows: they are outputs only.
+    Argument:
+    - By 1, every execution assigns `V_w` bijectively.
+    - By 2, its events, happens-before and values are the run's, except the claim stores'
+      addresses.
+    - By 3, the claim holding ticket `t` stores its ticket-independent data at `A(t)`. The
+      final memory is the run's up to a permutation of the per-ticket rows within each
+      word's segment, and no two claims share a byte.
+    - By 4, no other access sees the difference, and no new race appears.
+    Comparison with the GPU output: per word, the tickets' rows (the bytes of `A(t)`) are
+    compared as multisets, and every other byte bitwise (`Case::expect_report_perm`). Cost:
+    claims probes plus `sum n_w^2` replays (`PTXV_PERM_MAX_RUNS`, default 20000).
+    The certificate also refuses, instead of skipping, claims in a run that did not end or
+    that was forced (C-RING / C-TICKET runs).
+    Limits:
+    - happens-before (the counter's initialization, condition 4) is the race detector's, so
+      every gap in it applies here too: until mbarrier scope is modeled (MISS 18), a hand-off
+      through a CTA-scope arrive / wait across CTAs counts as an order it is not;
+    - not combined with C-RING or C-TICKET runs (refused);
+    - S-INIT's taint is the dependence analysis, so its limits apply: an operand kind it
+      does not check could carry the value unreported.
+    Fixture `e_ticket_addr` (`tests/fixtures.rs` `e_ticket_addr_permutation_certificate`):
+    - good certifies `clean-up-to-permutation`, and every explored output equals it up to the
+      permutation;
+    - without the declaration, refused (C-ORDER);
+    - BRANCH, VALUE and GUARD (a ticket-dependent branch, stored value, and guard of a second
+      claim) are refused by the taint probes;
+    - SHIFT (thread 5's row moved by 4: a race only in another order) by the replays;
+    - READ (a later launch reads a row) by the order condition;
+    - OVERLAP and NOHB by the race detector and the counter check.
+    Mutants dropping the taint's forbidden uses, the same-row check, or the order check make
+    BRANCH, SHIFT or READ certify and fail the test.
+    dm_decode_w2 (`_triton_decode_dispatch_routing`, `ATOMG.E.ADD.STRONG.GPU` at 0x0870, several
+    lanes per step) certifies with 4 counter words and 1123 reruns in 18 s. Its rows hold
+    device pointers, so the GPU comparison differs by the allocation bases.
   - **C-CAS.** Compare-and-swap semaphores (E-SPIN poll loops whose poll operation is a
     CAS: torch symmetric memory's put `while (cas(&w, 0, 1) != 0);` and wait `while
     (cas(&w, 1, 0) != 1);`, `MEMBAR.SYS` / `ATOM.E.CAS.STRONG.SYS` / `CCTL.IVALL`). A put and

@@ -2068,8 +2068,18 @@ fn cmd_check(
             let mut expect_report = Vec::new();
             // N-MULTIMEM-ROUND16: multimem reductions whose rounding the model only calibrates.
             let ulp_ok = !case.m.multicast.is_empty();
+            // C-TICKET-ADDR: outputs compared up to the certified permutation of rows.
+            let perm_rows = verdict
+                .findings
+                .iter()
+                .find(|f| f.kind == "clean-up-to-permutation")
+                .map(|f| f.perm_rows.clone());
             for (i, o) in verdict.outputs.iter().enumerate() {
-                for line in case.expect_report_tol(o, ulp_ok)? {
+                let lines = match &perm_rows {
+                    Some(r) => case.expect_report_perm(o, r)?,
+                    None => case.expect_report_tol(o, ulp_ok)?,
+                };
+                for line in lines {
                     println!("    expect (output {i}): {line}");
                     expect_report.push(format!("output {i}: {line}"));
                 }

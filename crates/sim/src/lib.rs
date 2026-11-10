@@ -477,8 +477,25 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
     } else {
         vec![]
     };
+    // C-TICKET-ADDR declarations: buffer names to allocation indices.
+    let buf_ix = |n: &str| -> Result<usize> {
+        m.buffers
+            .iter()
+            .position(|b| b.name == n)
+            .ok_or_else(|| anyhow::anyhow!("permuted: no buffer named {n}"))
+    };
+    let mut perm = Vec::new();
+    for p in &m.permuted {
+        let rows = p
+            .buffers
+            .iter()
+            .map(|b| buf_ix(b))
+            .collect::<Result<Vec<_>>>()?;
+        perm.push((buf_ix(&p.counter)?, rows));
+    }
     let launch = (Launch {
         notes,
+        perm,
         grids,
         replicas,
         allocs,

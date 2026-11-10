@@ -1,0 +1,79 @@
+// Fixture (C-TICKET-ADDR): slot assignment by fetch-add, as in a MoE dispatch. Two CTAs, three
+// claiming threads each; thread g claims a slot in its expert's counter (slot = atomicAdd(&cnt[e],
+// 1)) and stores its row at prefix[e] + slot: val[row] = 10 g + 7, src[row] = g. Which thread gets
+// which row depends on the order of the adds; the outputs are determined up to a permutation of
+// rows within each expert's segment.
+// BRANCH: rows past slot 1 are dropped (a ticket-dependent branch). VALUE: the stored value is the
+// slot. OVERLAP: the prefix is left out, so both experts' rows overlap. NOHB: CTA 1's thread 0
+// zeroes cnt[0] unordered with the other CTA's adds. GUARD: a second claim (cnt[2]) only when the
+// first slot is 0 (a claim behind a ticket-dependent guard). READ: thread 0 of each CTA reads row 0
+// back after a barrier and stores it (a row read inside the launch).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry k(.param .u64 pids, .param .u64 ppre, .param .u64 pcnt, .param .u64 pval,
+                  .param .u64 psrc, .param .u64 pback)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<24>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [pids];
+    ld.param.u64 %rd2, [ppre];
+    ld.param.u64 %rd3, [pcnt];
+    ld.param.u64 %rd4, [pval];
+    ld.param.u64 %rd5, [psrc];
+    ld.param.u64 %rd6, [pback];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    cvta.to.global.u64 %rd4, %rd4;
+    cvta.to.global.u64 %rd5, %rd5;
+    cvta.to.global.u64 %rd6, %rd6;
+    mov.u32 %r0, %tid.x;
+    mov.u32 %r1, %ctaid.x;
+    mad.lo.u32 %r2, %r1, 3, %r0;
+    setp.ge.u32 %p0, %r0, 3;
+    @%p0 bra DONE;
+    mul.wide.u32 %rd7, %r2, 4;
+    add.u64 %rd8, %rd1, %rd7;
+    ld.global.u32 %r3, [%rd8];
+    mul.wide.u32 %rd9, %r3, 4;
+    add.u64 %rd10, %rd2, %rd9;
+    ld.global.u32 %r4, [%rd10];
+    add.u64 %rd11, %rd3, %rd9;
+    mov.u32 %r5, 0; // @NOHB
+    atom.global.add.u32 %r6, [%rd11], 1;
+    add.u32 %r7, %r4, %r6; // @ROW
+    mov.u32 %r8, 0; // @GUARD
+    mov.u32 %r11, 0; // @SHIFT
+    mad.lo.u32 %r9, %r2, 10, 7; // @VAL
+    add.u32 %r7, %r7, %r11;
+    mul.wide.u32 %rd12, %r7, 4;
+    add.u64 %rd13, %rd4, %rd12;
+    st.global.u32 [%rd13], %r9;
+    add.u64 %rd14, %rd5, %rd12;
+    st.global.u32 [%rd14], %r2;
+DONE:
+    ret;
+}
+
+// A second launch: thread 0 copies back[1] to back[0] (READ: reads row 0 of val instead, ordered
+// after the row stores by the kernel boundary).
+.visible .entry k2(.param .u64 pval, .param .u64 pback)
+{
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<4>;
+    .reg .pred %p<2>;
+    ld.param.u64 %rd1, [pval];
+    ld.param.u64 %rd2, [pback];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r0, %tid.x;
+    setp.ne.u32 %p0, %r0, 0;
+    @%p0 bra DONE2;
+    ld.global.u32 %r1, [%rd2+4]; // @READ
+    st.global.u32 [%rd2], %r1;
+DONE2:
+    ret;
+}

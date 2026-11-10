@@ -105,6 +105,18 @@ pub(super) fn pair(x: &SAcc, y: &SAcc, cas_ok: &HashSet<CasWord>, same_ok: SameO
     {
         return Pair::Fine;
     }
+    // C-TICKET-ADDR: relaxed fetch-adds of a declared counter word, whose results only place
+    // rows (perm.rs checks it after the run, or the certificate refuses). A claim observes no
+    // synchronization in the certificate's runs (exec.rs), so no fence after it acquires
+    // through it: a fence-acquired-read test on these pairs would never fire and is not needed.
+    if (x.lo, x.hi) == (y.lo, y.hi)
+        && x.key.0 == 1
+        && matches!(x.rmw, Some((AtomOp::Add, _, false, _)))
+        && matches!(y.rmw, Some((AtomOp::Add, _, false, _)))
+        && super::PERM_OK.with(|p| p.borrow().contains(&(x.key.1 as usize)))
+    {
+        return Pair::Fine;
+    }
     // Commutative atomics with unused results that do not acquire.
     if let (Some((ox, ux, qx, kx)), Some((oy, uy, qy, ky))) = (x.rmw, y.rmw) {
         let comm = !matches!(

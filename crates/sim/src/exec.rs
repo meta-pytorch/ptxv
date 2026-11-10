@@ -31,7 +31,7 @@ thread_local! {
 /// `inst.op.src_regs()` for `inst` = `k.code[pc]`, kept for the last (kernel, pc): the lanes
 /// of a warp run one instruction in turn, so this is one computation per warp instruction
 /// instead of one allocation per lane. Any other `inst` is computed afresh.
-fn src_regs_at(k: &Arc<Kernel>, inst: &Inst, pc: u32) -> std::rc::Rc<[Reg]> {
+pub(crate) fn src_regs_at(k: &Arc<Kernel>, inst: &Inst, pc: u32) -> std::rc::Rc<[Reg]> {
     if !k
         .code
         .get(pc as usize)
@@ -910,6 +910,9 @@ impl Machine {
         write: Option<&[u8]>,
         strong: u8,
     ) -> Vec<u8> {
+        if self.perm.is_some() {
+            self.perm_access(actor, vc, pc, loc, n, write.is_some());
+        }
         if let Some(mut p) = self.prov.take() {
             let rmw = write.is_some()
                 && (actor as usize) < self.threads.len()
@@ -3553,6 +3556,14 @@ impl Machine {
                 vc_join(&mut th.tc_vc, &b);
             }
         }
+        if self
+            .perm
+            .as_ref()
+            .is_some_and(|p| p.mode == crate::wellsync::perm::Mode::Undef)
+        {
+            let ro = reg_only(&self.k.code[pc as usize].op);
+            self.perm_taint_pre(members, pc, ro);
+        }
         let poison = self.sinit_pre(members, pc);
         let cov = self.prov.is_some();
         if cov {
@@ -5498,6 +5509,13 @@ impl Machine {
             self.k.describe(pc as usize)
         );
         self.report("violation", format!("uninit-reg:{pc}"), msg);
+        if self
+            .perm
+            .as_ref()
+            .is_some_and(|p| p.mode == crate::wellsync::perm::Mode::Undef)
+        {
+            self.perm_report(t, r, pc);
+        }
     }
 
     fn exec_thread(&mut self, t: usize, inst: &Inst, pc: u32) -> Result<Flow, String> {
@@ -5511,7 +5529,17 @@ impl Machine {
         } else {
             None
         };
+        // C-TICKET-ADDR reruns (wellsync/perm.rs): the counter word, before the atomic runs.
+        let pw = self
+            .perm
+            .as_ref()
+            .and_then(|p| p.claim)
+            .filter(|c| c.0 == t as u32 && c.1 == pc)
+            .and_then(|_| self.perm_word(t, &inst.op));
         let r = self.exec_thread_inner(t, inst, pc);
+        if let (Some(w), true) = (pw, r.is_ok()) {
+            self.perm_claim(t, pc, w, &inst.op);
+        }
         if let (Some((ops, out)), true) = (nf, r.is_ok()) {
             let res = self.nf_result(t, &inst.op, out);
             crate::nonfinite::record(pc, t, &ops, &res);
@@ -5671,7 +5699,7 @@ impl Machine {
     }
 
     /// Register `r` of thread `t` (its warp's, for a uniform register) holds no defined bit.
-    fn make_undefined(&mut self, t: usize, r: Reg) {
+    pub(crate) fn make_undefined(&mut self, t: usize, r: Reg) {
         let i = r.idx as usize;
         match r.file {
             File::V | File::R if r.file == File::V || i < 255 => {
@@ -6536,7 +6564,18 @@ impl Machine {
                         .as_ref()
                         .is_some_and(|ns| ns.taint.last_read_input_derived());
                     old_undef = self.stale.take().flatten().is_some();
-                    self.sync_observe(t, loc, *sync);
+                    // C-TICKET-ADDR (wellsync/perm.rs): in the certificate's runs and reruns,
+                    // a claim on a declared counter synchronizes with nothing (a later acquire
+                    // fence must not acquire from the claimant it read from): every claim order
+                    // only adds such edges, so a run certified without them holds for all.
+                    let claim = *op == AtomOp::Add
+                        && !sync.acquires()
+                        && (self.wlog.is_on() || self.perm.is_some())
+                        && matches!(loc, Loc::Global { alloc, .. }
+                            if self.launch.perm.iter().any(|p| p.0 == alloc));
+                    if !claim {
+                        self.sync_observe(t, loc, *sync);
+                    }
                     let mut o = 0u64;
                     for (i, b) in old.iter().enumerate() {
                         o |= (*b as u64) << (8 * i);

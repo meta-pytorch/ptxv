@@ -14,6 +14,8 @@
 //! Variants are textual edits on lines carrying a `// @<marker>` comment, so the good kernel
 //! and each mutant differ by exactly one visible line.
 
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -168,7 +170,23 @@ pub struct Manifest {
     /// file, same buffers). Rung 1e: programmatic dependent launch.
     #[serde(default)]
     pub launches: Vec<NextLaunch>,
+    /// C-TICKET-ADDR (ASSUMPTIONS.md E-WELLSYNC): counters whose fetch-add results only place
+    /// rows of `buffers` (a slot assignment). A hint: the certificate checks every condition and
+    /// refuses with the reason when one fails.
+    #[serde(default)]
+    pub permuted: Vec<Permuted>,
     pub variants: Vec<Variant>,
+}
+
+/// Byte ranges (buffer index, first byte, end) of one ticket's rows (C-TICKET-ADDR).
+pub type RowRanges = Vec<(usize, u64, u64)>;
+
+/// One C-TICKET-ADDR declaration: the buffer holding the counter words and the buffers whose
+/// rows the claims' results address.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Permuted {
+    pub counter: String,
+    pub buffers: Vec<String>,
 }
 
 /// One reliable-connected queue pair driven by a GPU (IBGDA / DOCA GPUNetIO verbs): its send
@@ -920,6 +938,95 @@ impl Case {
                     got[i],
                     want[i]
                 ),
+            });
+        }
+        Ok(lines)
+    }
+
+    /// `expect_report` for a verdict certified up to a permutation of rows (C-TICKET-ADDR):
+    /// `rows`, per counter word, per ticket, the row byte ranges (buffer index, first byte,
+    /// end). For each word the tickets' rows (the bytes of all their ranges, in order) are
+    /// compared as multisets between the simulated and the captured output; every byte outside
+    /// the rows is compared bitwise.
+    pub fn expect_report_perm(
+        &self,
+        output: &[u8],
+        rows: &[Vec<RowRanges>],
+    ) -> Result<Vec<String>> {
+        // Per buffer index: (simulated bytes, captured bytes, offset of the captured bytes).
+        let mut img: BTreeMap<usize, (&[u8], Vec<u8>, usize)> = BTreeMap::new();
+        let mut at = 0;
+        for o in &self.m.outputs {
+            let i = self
+                .m
+                .buffers
+                .iter()
+                .position(|b| &b.name == o)
+                .ok_or_else(|| anyhow!("no buffer {o}"))?;
+            let b = &self.m.buffers[i];
+            let got = output
+                .get(at..at + b.bytes())
+                .ok_or_else(|| anyhow!("output shorter than the output buffers"))?;
+            at += b.bytes();
+            let Some(p) = &b.expect else { continue };
+            let want = std::fs::read(p).with_context(|| p.clone())?;
+            img.insert(i, (got, want, b.expect_offset as usize));
+        }
+        let mut in_rows: BTreeSet<(usize, u64)> = BTreeSet::new();
+        let mut lines = Vec::new();
+        for (wi, word) in rows.iter().enumerate() {
+            let mut sim: Vec<Vec<u8>> = Vec::new();
+            let mut gpu: Vec<Vec<u8>> = Vec::new();
+            let mut covered = true;
+            for ticket in word {
+                let (mut s, mut g) = (Vec::new(), Vec::new());
+                for &(a, lo, hi) in ticket {
+                    let Some((got, want, off)) = img.get(&a) else {
+                        covered = false;
+                        continue;
+                    };
+                    for x in lo..hi {
+                        in_rows.insert((a, x));
+                        let x = x as usize;
+                        s.push(got.get(x).copied().unwrap_or(0));
+                        g.push(
+                            x.checked_sub(*off)
+                                .and_then(|y| want.get(y))
+                                .copied()
+                                .unwrap_or(0),
+                        );
+                    }
+                }
+                sim.push(s);
+                gpu.push(g);
+            }
+            sim.sort();
+            gpu.sort();
+            lines.push(if !covered {
+                format!("counter word {wi}: some rows are in buffers without a captured output; not compared")
+            } else if sim == gpu {
+                format!(
+                    "counter word {wi}: its {} rows equal the captured GPU output's as a multiset (up to the permutation, C-TICKET-ADDR)",
+                    word.len()
+                )
+            } else {
+                let n = sim.iter().zip(&gpu).filter(|(a, b)| a != b).count();
+                format!(
+                    "counter word {wi}: MISMATCH vs the captured GPU output up to the permutation: {n} of {} sorted rows differ",
+                    word.len()
+                )
+            });
+        }
+        for (&i, (got, want, off)) in &img {
+            let name = &self.m.buffers[i].name;
+            let diff = (0..want.len())
+                .filter(|&y| !in_rows.contains(&(i, (y + off) as u64)))
+                .filter(|&y| got.get(y + off) != Some(&want[y]))
+                .count();
+            lines.push(if diff == 0 {
+                format!("{name}: bitwise equal to the captured GPU output outside the permuted rows")
+            } else {
+                format!("{name}: MISMATCH vs the captured GPU output outside the permuted rows: {diff} bytes differ")
             });
         }
         Ok(lines)

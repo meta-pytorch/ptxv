@@ -349,8 +349,25 @@ fn certified_verdicts_match_the_fixture_suite() {
                         break;
                     };
                     let o = certify(machine(case, v, front));
+                    // C-TICKET-ADDR: `clean-up-to-permutation` stands for the explorer's
+                    // `nondeterministic` (the outputs differ by a certified permutation of rows;
+                    // tests/fixtures.rs `e_ticket_addr_permutation_certificate` compares them).
+                    let same = |c: Vec<String>| {
+                        let mut c: Vec<String> = c
+                            .into_iter()
+                            .map(|x| {
+                                if x == "clean-up-to-permutation" {
+                                    "nondeterministic".into()
+                                } else {
+                                    x
+                                }
+                            })
+                            .collect();
+                        c.sort();
+                        c == *expect
+                    };
                     match o.verdict {
-                        Some(verdict) if !verdict.complete || verdict.classes() != *expect => {
+                        Some(verdict) if !verdict.complete || !same(verdict.classes()) => {
                             errors.lock().unwrap().push(format!(
                                 "{}/{v}/{front}: certified verdict {:?} (complete: {}) differs \
                                  from the exhaustive one {expect:?}: {:#?}",

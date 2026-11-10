@@ -5826,3 +5826,151 @@ fn e_scratch_undef_buffers() {
         assert_eq!(run(&ud, "OFS1", front).0, ["violation"], "{front}");
     }
 }
+
+/// C-TICKET-ADDR (fixtures/e_ticket_addr, wellsync/perm.rs): slot assignment by fetch-add.
+/// good certifies `clean-up-to-permutation` (never `clean`), and every output the explorer
+/// reaches equals the certified one up to the permutation of each counter's rows. Without the
+/// `[[permuted]]` declaration the certificate refuses (C-ORDER). Each mutant is refused:
+/// BRANCH (a ticket-dependent branch), VALUE (a ticket-dependent stored value) and GUARD (a
+/// claim behind a ticket-dependent guard) by the taint probes, SHIFT (a row that depends on
+/// the claimant: a race in another order, not in the run) by the replays, READ (a later launch
+/// reads a row) by the order condition, OVERLAP and NOHB by the race detector and the counter
+/// check.
+#[test]
+fn e_ticket_addr_permutation_certificate() {
+    for v in ["good", "BRANCH", "VALUE", "GUARD", "READ"] {
+        both("e_ticket_addr", v);
+    }
+    let base = Case::load(root().join("fixtures/e_ticket_addr")).unwrap();
+    let machine = |case: &Case, v: &str, front: &str| {
+        let k = kernel(case, v, front);
+        let launch = build_launch(case, &k).unwrap();
+        Machine::new(Arc::new(k), Arc::new(launch))
+    };
+    // Racy variants: the explorer's classes (partial-order reduction is exact for race-free
+    // kernels only, E-DRF).
+    for v in ["OVERLAP", "NOHB", "SHIFT"] {
+        for front in ["ptx", "sass"] {
+            let ex = explore(machine(&base, v, front), 100_000);
+            assert!(ex.complete);
+            assert_eq!(
+                ex.classes(),
+                base.variant(v).unwrap().expect_for(front),
+                "{front} {v}"
+            );
+        }
+    }
+    // Output byte offset of each allocation (outputs: val, src, cnt, back; buffers: ids, pre,
+    // cnt, val, src, back).
+    let off: std::collections::BTreeMap<usize, usize> =
+        [(3usize, 0usize), (4, 32), (2, 64), (5, 80)]
+            .into_iter()
+            .collect();
+    let canon = |o: &[u8], rows: &[Vec<ptxv_case::RowRanges>]| -> Vec<Vec<Vec<u8>>> {
+        rows.iter()
+            .map(|w| {
+                let mut t: Vec<Vec<u8>> = w
+                    .iter()
+                    .map(|r| {
+                        r.iter()
+                            .flat_map(|&(a, lo, hi)| {
+                                o[off[&a] + lo as usize..off[&a] + hi as usize].to_vec()
+                            })
+                            .collect()
+                    })
+                    .collect();
+                t.sort();
+                t
+            })
+            .collect()
+    };
+    for front in ["ptx", "sass"] {
+        let o = ptxv_sim::wellsync::certify(machine(&base, "good", front));
+        let v = o
+            .verdict
+            .unwrap_or_else(|| panic!("{front}: good not certified: {:?}", o.reasons));
+        assert_eq!(v.classes(), ["clean-up-to-permutation"], "{front}");
+        let f = v
+            .findings
+            .iter()
+            .find(|f| f.kind == "clean-up-to-permutation")
+            .unwrap();
+        assert_eq!(f.perm_rows.len(), 2, "{front}: two counter words");
+        assert!(f.perm_rows.iter().all(|w| w.len() == 3), "{front}");
+        let ex = explore(machine(&base, "good", front), 100_000);
+        assert!(ex.complete && ex.outputs.len() >= 2, "{front}");
+        let want = canon(&v.outputs[0], &f.perm_rows);
+        for x in &ex.outputs {
+            assert_eq!(canon(x, &f.perm_rows), want, "{front}");
+            // Bytes outside the rows are equal.
+            let rowb: std::collections::BTreeSet<usize> = f
+                .perm_rows
+                .iter()
+                .flatten()
+                .flatten()
+                .flat_map(|&(a, lo, hi)| {
+                    let base = off[&a];
+                    (lo..hi).map(move |b| base + b as usize)
+                })
+                .collect();
+            for (i, (a, b)) in x.iter().zip(&v.outputs[0]).enumerate() {
+                assert!(rowb.contains(&i) || a == b, "{front}: output byte {i}");
+            }
+        }
+        let mut undeclared = base.clone();
+        undeclared.m.permuted.clear();
+        let o = ptxv_sim::wellsync::certify(machine(&undeclared, "good", front));
+        assert!(
+            o.verdict.is_none(),
+            "{front}: certified without the declaration"
+        );
+        for (v, why) in [
+            ("BRANCH", "reaches more than its own row stores"),
+            ("VALUE", "reaches more than its own row stores"),
+            ("GUARD", "reaches more than its own row stores"),
+            ("SHIFT", "depends on more than the ticket"),
+            ("READ", "rows must be outputs only"),
+            ("OVERLAP", "race"),
+            ("NOHB", "C-TICKET-ADDR"),
+        ] {
+            let o = ptxv_sim::wellsync::certify(machine(&base, v, front));
+            assert!(o.verdict.is_none(), "{front} {v}: certified");
+            assert!(
+                o.reasons.iter().any(|r| r.contains(why)),
+                "{front} {v}: {:?}",
+                o.reasons
+            );
+        }
+    }
+}
+
+/// C-TICKET-ADDR, fence-acquired claims (fixtures/e_ticket_addr_fence, a pre-land review
+/// finding): thread 0 stores x, fences and claims; thread 32 claims, fences and reads x into its
+/// row. The reader synchronizes with the writer only when its add reads from the writer's, so
+/// happens-before depends on the claim order. The certificate's runs give claims no
+/// synchronization, so its run has the race and it refuses; the explorer finds the race too.
+#[test]
+fn e_ticket_addr_fence_acquired_claims_refused() {
+    let case = Case::load(root().join("fixtures/e_ticket_addr_fence")).unwrap();
+    for v in ["good", "SWAP"] {
+        for front in ["ptx", "sass"] {
+            let k = kernel(&case, v, front);
+            let launch = build_launch(&case, &k).unwrap();
+            let m = Machine::new(Arc::new(k), Arc::new(launch));
+            let o = ptxv_sim::wellsync::certify(m.clone());
+            assert!(o.verdict.is_none(), "{front} {v}: certified");
+            assert!(
+                o.reasons.iter().any(|r| r.contains("race")),
+                "{front} {v}: {:?}",
+                o.reasons
+            );
+            let ex = explore(m, 100_000);
+            assert!(ex.complete);
+            assert_eq!(
+                ex.classes(),
+                case.variant(v).unwrap().expect_for(front),
+                "{front} {v}"
+            );
+        }
+    }
+}

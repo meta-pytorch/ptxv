@@ -1496,6 +1496,8 @@ pub type MmaCache = std::sync::Arc<
 pub struct Launch {
     /// Launch-level notes (sig, message): S-GLOBAL-INIT's zero-initialized module globals.
     pub notes: Vec<(String, String)>,
+    /// C-TICKET-ADDR declarations (case `permuted`): (counter allocation, row allocations).
+    pub perm: Vec<(usize, Vec<usize>)>,
     pub grids: Vec<Grid>,
     pub allocs: Vec<Alloc>,
     /// NVLS multicast objects (case `multicast`, S-MULTIMEM).
@@ -1672,6 +1674,11 @@ pub struct Finding {
     /// under the hardware model (E-HW-L1) or latent. Extra information: the finding stands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gb300: Option<crate::twolevel::Gb300>,
+    /// C-TICKET-ADDR (`clean-up-to-permutation`, wellsync/perm.rs): per counter word, per
+    /// ticket, the row byte ranges (allocation, first byte, end); outputs compare up to a
+    /// permutation of the tickets' rows within each word.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub perm_rows: Vec<Vec<crate::wellsync::perm::Ranges>>,
 }
 
 /// The mbarriers, shared between machine copies until one writes (`DerefMut` copies a shared
@@ -1845,6 +1852,9 @@ pub struct Machine {
     /// (thread, pc) leave their destination registers undefined (S-INIT), so a use of the
     /// loaded value is reported where it reaches a sink.
     pub dead_probe: Option<Arc<BTreeSet<(u32, u32)>>>,
+    /// C-TICKET-ADDR reruns (wellsync/perm.rs): an undefined or forced claim result, and
+    /// what the rerun records. Not hashed.
+    pub perm: Option<Box<crate::wellsync::perm::PermRun>>,
     /// Not hashed, shared by every copy of a machine: the racing reads seen so far, per race
     /// signature (`race_dead.rs`). Some(reads (thread, pc)) while every read of that race is
     /// a thread's non-acquiring load; None once one is not (a write-write race, an atomic,
@@ -2533,6 +2543,7 @@ impl Machine {
             elect_choice: None,
             stale: None,
             dead_probe: None,
+            perm: None,
             wundef: 0,
             gundef: Arc::new(Vec::new()),
             tmaps_used: Arc::new(Vec::new()),
@@ -2842,6 +2853,7 @@ impl Machine {
             trace: vec![],
             pcs,
             gb300: None,
+            perm_rows: vec![],
         });
     }
 

@@ -96,6 +96,10 @@
 //!   C-ORDER leaves its writes unordered and the certificate runs once per order of them
 //!   (forced writer prefixes, dynamic partial-order reduction); every run must certify and all
 //!   must leave the same outputs. See `ticket.rs`.
+//! * **C-TICKET-ADDR** (slot assignment: a declared counter's fetch-add results only place
+//!   rows of declared buffers): C-ORDER leaves the adds unordered; taint probes, replays over
+//!   every ticket value and an order check establish that the outputs are the run's up to a
+//!   permutation of each counter's rows (class `clean-up-to-permutation`). See `perm.rs`.
 //! * **C-WARP** (lane membership): an instruction whose effect depends on which lanes run it
 //!   together is run by lanes that became ready at that pc in one event (one instruction or
 //!   one barrier release), and, if more lanes joining would change it (SASS lane collectives
@@ -149,6 +153,7 @@ use crate::explore::Verdict;
 use crate::machine::*;
 
 mod order;
+pub mod perm;
 pub mod ring;
 pub mod ticket;
 
@@ -3413,6 +3418,7 @@ fn add_root_pairs(v: &mut Verdict, pairs: Vec<(u32, u32, String)>) {
             trace: vec![],
             pcs: vec![a, b],
             gb300: None,
+            perm_rows: vec![],
         });
     }
     if !roots.is_empty() {
@@ -3749,6 +3755,9 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
                 .map(|r| (r.tick_force.clone(), r.tick_claims.clone()))
                 .unwrap_or_default();
             TICKET_OUT.with(|t| *t.borrow_mut() = ticket::analyze(&m, &log, &force, &claims));
+            if !m.launch.perm.is_empty() {
+                PERM_OUT.with(|p| *p.borrow_mut() = perm::claims(&m, &log));
+            }
         }
         None => why.push("no log (PTXV_WS_NOLOG)".into()),
     }
@@ -3808,6 +3817,7 @@ fn probe_run(m0: &Machine, reads: &BTreeSet<(u32, u32)>, fs: &[Finding], ok: boo
     let carry = CARRY.with(|p| p.borrow().clone());
     let ring_out = RING_OUT.with(|r| std::mem::take(&mut *r.borrow_mut()));
     let tick_out = TICKET_OUT.with(|r| std::mem::take(&mut *r.borrow_mut()));
+    let perm_out = PERM_OUT.with(|r| std::mem::replace(&mut *r.borrow_mut(), Ok(BTreeMap::new())));
     let pruned = RING_PRUNED.with(|p| p.borrow_mut().take());
     let eager = EAGER_FAILED.with(|e| e.get());
     let corder = CORDER_SMEM.with(|c| c.borrow().clone());
@@ -3816,6 +3826,7 @@ fn probe_run(m0: &Machine, reads: &BTreeSet<(u32, u32)>, fs: &[Finding], ok: boo
     CARRY.with(|p| *p.borrow_mut() = carry);
     RING_OUT.with(|r| *r.borrow_mut() = ring_out);
     TICKET_OUT.with(|r| *r.borrow_mut() = tick_out);
+    PERM_OUT.with(|r| *r.borrow_mut() = perm_out);
     RING_PRUNED.with(|p| *p.borrow_mut() = pruned);
     EAGER_FAILED.with(|e| e.set(eager));
     ok1 == ok && crate::race_dead::no_new_use(fs, &fs1)
@@ -3862,6 +3873,13 @@ thread_local! {
     /// leaves their claims unordered, order.rs).
     static TICKET_OK: std::cell::RefCell<BTreeSet<ring::Word>> =
         const { std::cell::RefCell::new(BTreeSet::new()) };
+    /// C-TICKET-ADDR: the declared counter allocations (C-ORDER leaves their fetch-adds
+    /// unordered, order.rs; perm.rs checks them).
+    static PERM_OK: std::cell::RefCell<BTreeSet<usize>> =
+        const { std::cell::RefCell::new(BTreeSet::new()) };
+    /// C-TICKET-ADDR: the last logged run's claims on declared counters (perm.rs).
+    static PERM_OUT: std::cell::RefCell<Result<perm::Words, String>> =
+        const { std::cell::RefCell::new(Ok(BTreeMap::new())) };
 }
 
 /// `Carry` of a certificate run.
@@ -3993,6 +4011,10 @@ fn certify_runs(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Out
     let tick_pcs: BTreeSet<u32> = TICKET_PCS.with(|t| t.borrow().clone());
     let tick_ok: BTreeSet<ring::Word> = TICKET_OK.with(|t| t.borrow().clone());
     let tick_mode = !tick_pcs.is_empty();
+    // C-TICKET-ADDR: the declared counters (perm.rs).
+    let perm_allocs: BTreeSet<usize> = m0.launch.perm.iter().map(|p| p.0).collect();
+    PERM_OK.with(|p| *p.borrow_mut() = perm_allocs);
+    let mut perm_words: Vec<(Machine, perm::Words)> = Vec::new();
     let m_in = (!tick_mode).then(|| m0.clone());
     let m0 = crate::explore::clc_eager(m0);
     let elects =
@@ -4086,6 +4108,20 @@ fn certify_runs(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Out
         let pruned = RING_PRUNED.with(|p| p.borrow_mut().take());
         let (choices, counters) = RING_OUT.with(|r| std::mem::take(&mut *r.borrow_mut()));
         let tout = TICKET_OUT.with(|r| std::mem::take(&mut *r.borrow_mut()));
+        match PERM_OUT.with(|r| std::mem::replace(&mut *r.borrow_mut(), Ok(BTreeMap::new()))) {
+            Err(why) => reasons.push(why),
+            Ok(w) if !w.is_empty() && ok && forced_desc == 0 && tforced == 0 => {
+                let mut start = m0.clone();
+                start.elect_high = hi;
+                perm_words.push((start, w));
+            }
+            // C-ORDER let these claims through: never drop them.
+            Ok(w) if !w.is_empty() => reasons.push(
+                "C-TICKET-ADDR: claims on declared counters in a run that did not end or was forced (C-RING / C-TICKET); not combined"
+                    .into(),
+            ),
+            Ok(_) => {}
+        }
         // C-TICKET: the first run found ticket words: restart in ticket mode, which gates
         // their atomics and enumerates their claim orders.
         if !tick_mode && ring_runs == 1 && !tout.words.is_empty() {
@@ -4299,6 +4335,68 @@ fn certify_runs(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Out
             break;
         }
     }
+    // C-TICKET-ADDR: conditions 2-4 for the claims of each run (perm.rs).
+    let mut perm_note = None;
+    if reasons.is_empty() && !perm_words.is_empty() {
+        if ring_runs > 1 {
+            reasons.push(
+                "C-TICKET-ADDR: declared counters in a certificate with C-RING or C-TICKET runs (not combined)".into(),
+            );
+        }
+        for (start, w) in &perm_words {
+            if !reasons.is_empty() {
+                break;
+            }
+            match perm::check(start, w) {
+                Err(why) => reasons.push(why),
+                Ok(out) => {
+                    let segs: Vec<String> = out
+                        .words
+                        .iter()
+                        .map(|(wk, (n, ranges))| {
+                            format!(
+                                "counter at {} byte {:#x}: {n} claim(s), rows {}",
+                                m0.launch.allocs[wk.0].name,
+                                wk.1,
+                                ranges
+                                    .iter()
+                                    .map(|(a, lo, hi)| format!(
+                                        "{}[{lo:#x}..{hi:#x})",
+                                        m0.launch.allocs[*a].name
+                                    ))
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            )
+                        })
+                        .collect();
+                    findings.push(Finding {
+                        kind: "clean-up-to-permutation".into(),
+                        sig: "perm:".to_string()
+                            + &out
+                                .words
+                                .keys()
+                                .map(|w| format!("{}:{:#x}", w.0, w.1))
+                                .collect::<Vec<_>>()
+                                .join(","),
+                        msg: format!(
+                            "C-TICKET-ADDR: the outputs are determined up to a permutation of rows within each counter's segment (which claim gets which ticket depends on the schedule; {} rerun(s)): {}",
+                            out.runs,
+                            segs.join("; ")
+                        ),
+                        trace: vec![],
+                        perm_rows: out.tickets.clone(),
+                        ..Default::default()
+                    });
+                    perm_note = Some(format!(
+                        "C-TICKET-ADDR: {} counter word(s) certified up to a permutation of their rows ({} reruns)",
+                        out.words.len(),
+                        out.runs
+                    ));
+                }
+            }
+        }
+    }
+    PERM_OK.with(|p| p.borrow_mut().clear());
     let seconds = t0.elapsed().as_secs_f64();
     if !reasons.is_empty() {
         return Outcome {
@@ -4351,6 +4449,7 @@ fn certify_runs(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Out
         .map(|mut v| {
             v.notes.extend(fadd_note);
             v.notes.extend(keep_note);
+            v.notes.extend(perm_note);
             if tick_mode {
                 v.notes.push(format!(
                     "C-TICKET: {} ticket counter(s) whose claim results steer the program; {} claim order(s) run ({} dropped as infeasible), every one certified with the same outputs; counters: {}",

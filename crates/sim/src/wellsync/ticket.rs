@@ -93,7 +93,10 @@ pub(super) fn analyze(
     let mut cand: BTreeMap<Word, (u64, Vec<&SAcc>)> = BTreeMap::new();
     for a in &log.strong {
         if let Some((op, used, _, _)) = a.rmw {
-            if a.write && used && is_ticket_op(op) && a.ev.actor < nthreads {
+            // Declared C-TICKET-ADDR counters are perm.rs's.
+            let perm =
+                a.key.0 == 1 && super::PERM_OK.with(|p| p.borrow().contains(&(a.key.1 as usize)));
+            if a.write && used && is_ticket_op(op) && a.ev.actor < nthreads && !perm {
                 cand.entry(word_of(a)).or_insert((a.hi, Vec::new()));
             }
         }
