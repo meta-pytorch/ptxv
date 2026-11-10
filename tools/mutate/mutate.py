@@ -552,6 +552,7 @@ def write_mutant(
 ) -> Path:
     """Write mutant `m` of the case at `case_dir` to `out_dir` (created / replaced)."""
     case_dir = case_dir.resolve()
+    out_dir = out_dir.resolve()
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
@@ -561,7 +562,9 @@ def write_mutant(
     for f in case_dir.iterdir():
         if f.name in ("case.toml", ptx_name, "mutant.json") or f.name.startswith("out"):
             continue
-        os.symlink(f, out_dir / f.name)
+        # Relative, so that a copy of the runs directory next to a copy of the case tree
+        # (a batch runner's mirror) still resolves.
+        os.symlink(os.path.relpath(f, out_dir), out_dir / f.name)
     body = strip_variants(text)
     if arch:
         if re.search(r"(?m)^arch\s*=", body):

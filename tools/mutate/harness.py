@@ -425,6 +425,61 @@ def cmd_check(a):
                 jobs.append((key, d, f, mode))
     print(f"{len(jobs)} check runs", flush=True)
 
+    def record(key, d, f, mode, r):
+        mj = json.loads((d / "mutant.json").read_text())
+        r.update(
+            {"case": key, "mutant": d.name, "op": mj["op"], "summary": mj["summary"]}
+        )
+        append_jsonl(path, r)
+        print(
+            f"check {key:28} {d.name:28} {f:4} {mode:7} {r['status']:9} {r.get('got')} "
+            f"{r.get('why', '')[:80]}",
+            flush=True,
+        )
+
+    if a.emit_jobs or a.ingest:
+        # An external batch runner instead of local runs: --emit-jobs writes one task per
+        # line (`id case_dir VAR=value... ptxv check {case} ...`, `{case}` standing for the
+        # case directory where the runner puts it), --ingest reads the runner's results
+        # (`<id>.json` stdout, `<id>.log` stderr, `<id>.exit` exit code, optional
+        # `<id>.run.json` with `seconds` / `timeout`) and records the finished ones.
+        lines = []
+        for key, d, f, mode in jobs:
+            tid = f"{a.job_prefix}/{key}/{d.name}/{f}-{mode}"
+            if a.emit_jobs:
+                cmd = (
+                    f"{tid} {d} PTXV_THREADS={a.threads} ptxv check {{case}} --variant mut "
+                    f"--front {f} --json --max-states {a.max_states}"
+                    + (" --certify" if mode == "cert" else "")
+                    + (" --slices" if a.slices else "")
+                )
+                lines.append(cmd)
+                continue
+            base = Path(a.ingest) / tid
+            ex = base.with_name(base.name + ".exit")
+            if not ex.exists():
+                continue
+            rc = int(ex.read_text().strip() or "1")
+            out = base.with_name(base.name + ".json")
+            err = base.with_name(base.name + ".log")
+            meta = base.with_name(base.name + ".run.json")
+            info = json.loads(meta.read_text()) if meta.exists() else {}
+            secs = float(info.get("seconds") or 0)
+            r = classify_check(
+                rc,
+                out.read_text() if out.exists() else "",
+                err.read_text() if err.exists() else "",
+                bool(info.get("timeout")) or secs >= a.timeout,
+            )
+            r.update({"front": f, "mode": mode, "wall": round(secs, 2), "runner": True})
+            if a.slices:
+                r["slices"] = True
+            record(key, d, f, mode, r)
+        if a.emit_jobs:
+            Path(a.emit_jobs).write_text("".join(x + "\n" for x in lines))
+            print(f"wrote {len(lines)} tasks to {a.emit_jobs}")
+        return
+
     def job(j):
         key, d, f, mode = j
         r = run_check(
@@ -1249,6 +1304,19 @@ def main(argv=None):
         action="store_true",
         help="check: rerun the selected (--only) mutants even if they have a record; the "
         "new record replaces the old one",
+    )
+    ap.add_argument(
+        "--emit-jobs",
+        help="check: write the pending runs as batch-runner tasks to this file instead of running them",
+    )
+    ap.add_argument(
+        "--ingest",
+        help="check: record the pending runs a batch runner finished (its results directory)",
+    )
+    ap.add_argument(
+        "--job-prefix",
+        default="mutate",
+        help="check: task id prefix for --emit-jobs / --ingest",
     )
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--threads", type=int, default=2, help="PTXV_THREADS per check")

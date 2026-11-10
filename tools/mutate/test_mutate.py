@@ -9,6 +9,7 @@ $PTXV_PYTHON -m pytest -q tools/mutate
 """
 
 import json
+import os
 import sys
 import tomllib
 from pathlib import Path
@@ -153,6 +154,9 @@ def test_write_mutant_roundtrip(tmp_path):
         assert man["arch"] == "sm_103a"
         assert [v["id"] for v in man["variants"]] == ["good", "mut"]
         assert (d / "data").is_symlink()
+        # Relative links: a copy of the runs and case trees side by side still resolves.
+        assert not os.path.isabs(os.readlink(d / "data"))
+        assert (d / "data").resolve() == (case / "data").resolve()
         src = (d / "kernel.ptx").read_text()
         assert ".target sm_103a" in src
         good = mutate.apply_variant_ptx(src, man["variants"][0])
@@ -303,3 +307,73 @@ def test_mutant_of_materialized_base_has_own_files(tmp_path):
     p = mutate.write_probe(ds[0], tmp_path / "probe")
     man = tomllib.loads((p / "case.toml").read_text())
     assert man["variants"][1]["replace"].endswith("trap;")
+
+
+def test_emit_and_ingest_runner_tasks(tmp_path):
+    """check --emit-jobs writes one task per pending run; --ingest records finished ones."""
+    runs = tmp_path / "runs"
+    d = runs / "mutants" / "c" / "m1"
+    d.mkdir(parents=True)
+    (d / "mutant.json").write_text(json.dumps({"op": "del-bar", "summary": "s"}))
+    (runs / "baseline.jsonl").write_text(
+        json.dumps(
+            {
+                "mode": "cert",
+                "status": "clean",
+                "case": "c",
+                "path": str(tmp_path),
+                "src": str(tmp_path),
+                "base": "good",
+                "front": "ptx",
+                "got": ["clean"],
+            }
+        )
+        + "\n"
+    )
+    jobs = tmp_path / "jobs.txt"
+    harness.main(
+        [
+            "check",
+            "--runs",
+            str(runs),
+            "--modes",
+            "cert",
+            "--emit-jobs",
+            str(jobs),
+            "--job-prefix",
+            "P",
+        ]
+    )
+    line = jobs.read_text().strip()
+    assert line.startswith(f"P/c/m1/ptx-cert {d} ")
+    assert "--certify" in line and "{case}" in line
+    res = tmp_path / "res" / "P" / "c" / "m1"
+    res.mkdir(parents=True)
+    doc = {
+        "rows": [
+            {
+                "got": ["race"],
+                "verdict": {"complete": True, "findings": [], "assumptions": []},
+            }
+        ]
+    }
+    (res / "ptx-cert.json").write_text(json.dumps(doc) + "\n")
+    (res / "ptx-cert.log").write_text("")
+    (res / "ptx-cert.exit").write_text("1\n")
+    harness.main(
+        [
+            "check",
+            "--runs",
+            str(runs),
+            "--modes",
+            "cert",
+            "--ingest",
+            str(tmp_path / "res"),
+            "--job-prefix",
+            "P",
+        ]
+    )
+    recs = [json.loads(x) for x in (runs / "check.jsonl").read_text().splitlines()]
+    assert [(r["mutant"], r["status"], r["runner"]) for r in recs] == [
+        ("m1", "caught", True)
+    ]

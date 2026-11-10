@@ -90,6 +90,20 @@ $H report --out RUNS/report.md
 - `--slices` (check) passes `--slices` to ptxv: one cluster at a time (E-CTA-INDEP), for
   cases whose whole launch is too large to certify or explore within the limits (e.g.
   `r3_grouped_mm`, 152 CTAs): `--only r3_grouped_mm --slices`.
+- **Batch runner.** `check --emit-jobs FILE [--job-prefix P]` writes the pending runs as tasks
+  (`id case_dir VAR=value... ptxv check {case} ...`, one per line) instead of running them;
+  a batch runner executes them and leaves `<id>.json` (stdout), `<id>.log` (stderr),
+  `<id>.exit` and optionally `<id>.run.json` (`seconds`, `timeout`) in a results directory;
+  `check --ingest DIR` records the finished ones (`runner: true`). Mutants link the case's
+  files with relative symlinks, so the runs directory can be mirrored next to the case tree.
+  The explore pass depends on the cert results: emit, run and ingest cert first.
+- **Synchronization fuzzer** (`tools/mutate/fuzz_sync.py`): random small kernels (1-3 CTAs,
+  one actor per warp: plain / relaxed / release stores, plain / relaxed / acquire loads,
+  atomic adds with used or unused results, polls of a counter, fences, counter resets,
+  ticket-guarded accesses; half of them shaped as arrival counters or ticket dispensers),
+  each checked with `--certify` and by plain exploration. A certified verdict whose classes
+  or output count differ from a complete exploration's is a certificate soundness bug; such
+  cases are kept under `OUT/disagree/`. It found the C-POLL-ATOM base miss (2026-11-08).
 - A race found by a failed certificate's own run (ptxv prints `certificate run race (...)`
   before it explores; a feasible execution, LDS/STS-strong model) makes a run `caught` even
   when the exploration after it runs out of states or time (`cert_run` in check.jsonl).
