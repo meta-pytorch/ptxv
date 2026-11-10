@@ -295,6 +295,19 @@ e_stasync SA2), and the rerun must report no failing finding at all.
   machine; the decision needs a complete exploration (or the certificate's run, which covers
   every schedule). A race with another kind of read side (write-write, an atomic, an
   acquiring load, which synchronizes with what it reads, an asynchronous unit) stays `race`.
+- Tensormap proxy fences (2026-11-09): the read of `fence.proxy.tensormap::generic.acquire`
+  (SASS `UTMACCTL.IV`, `Op::TmapFence`) counts as a racing read too. Its only value is the
+  snapshot of the 128 map bytes that later TMA ops compare against (`tmap_at`: the thread's own
+  snapshot, or one of a thread of the CTA that happens-before the use); the fence has no
+  register destination and its ordering effect does not depend on what it read. The probe run
+  leaves that snapshot undefined (no bytes), so every TMA op that relies on it reports a stale
+  map (`tmap-fence`), a failing finding, and the race stays `race`; when no TMA op relies on
+  it, both values of the read leave the same events. A CuTe distributed grouped GEMM's
+  dispatch kernel: every epilogue warp runs `fence_tensormap_update` on the C map while
+  only warp 0 publishes and uses it, so warps 1..3's fences race with warp 0's
+  `tensormap.cp_fenceproxy` (`ATOMG.E.EXCH`) and are value-dead. Fixture
+  `e_race_dead_tmap` (good: race-dead, clean, explored and certified; TF1: thread 32 also
+  TMA-loads with the map it fenced, the race stays).
 - The racing reads come from the search whose verdict is returned. When a race makes
   the explorer search again (without the value-insensitive polls or the peek changes), the
   race log is cleared first (2026-11-07). The first search's value-insensitive acquire polls

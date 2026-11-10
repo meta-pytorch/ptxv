@@ -270,6 +270,56 @@ fn dead_racy_loads_are_race_dead_and_used_ones_stay_races() {
     }
 }
 
+/// E-RACE-DEAD on a tensormap proxy fence (exec.rs `Op::TmapFence`): in e_race_dead_tmap warp
+/// 1 acquire-fences a tensor map that warp 0 publishes concurrently and never uses it (a CuTe
+/// grouped GEMM's epilogue warps 1..3). The fence's read races with the publication, but its
+/// snapshot reaches no TMA op: explored and certified, on both front-ends, the race is
+/// `race-dead` and the verdict is clean. TF1 (thread 32 TMA-loads with the map after its fence)
+/// keeps the race. TF2 (warp 1 fences after a relaxed wait for the publication, so its snapshot
+/// is current in every interleaving, and thread 32 then TMA-loads relying on it after an acquire)
+/// has the fence race as its only finding: it stays `race` only because the probe leaves the
+/// snapshot undefined (the killing variant for a probe that does not).
+#[test]
+fn unused_tensormap_fence_snapshots_are_race_dead() {
+    let case = Case::load(root().join("fixtures/e_race_dead_tmap")).unwrap();
+    for front in ["ptx", "sass"] {
+        let m = machine(&case, "good", front);
+        let ev = explore(m.clone(), 200_000);
+        assert!(ev.complete);
+        assert_eq!(ev.classes(), ["clean"], "{front}: {:#?}", ev.findings);
+        assert!(
+            ev.findings.iter().any(|f| f.kind == "race-dead"),
+            "{front}: {:#?}",
+            ev.findings
+        );
+        let o = certify(m);
+        let cv = o
+            .verdict
+            .unwrap_or_else(|| panic!("{front}: good does not certify: {:#?}", o.reasons));
+        assert_eq!(cv.classes(), ["clean"]);
+        assert!(cv.findings.iter().any(|f| f.kind == "race-dead"));
+        let m = machine(&case, "TF1", front);
+        let ev = explore(m.clone(), 200_000);
+        assert!(
+            ev.classes().iter().any(|c| c == "race"),
+            "{front}: {:#?}",
+            ev.findings
+        );
+        assert!(!ev.findings.iter().any(|f| f.kind == "race-dead"));
+        let o = certify(m);
+        assert!(o.verdict.is_none(), "{front}: TF1 certified");
+        let m = machine(&case, "TF2", front);
+        let ev = explore(m.clone(), 200_000);
+        assert!(ev.complete);
+        assert_eq!(ev.classes(), ["race"], "{front}: {:#?}", ev.findings);
+        let o = certify(m);
+        assert!(
+            o.verdict.as_ref().is_none_or(|v| v.classes() != ["clean"]),
+            "{front}: TF2 certified clean"
+        );
+    }
+}
+
 /// E-CTA-REP (rep.rs, fixtures/e_cta_rep): with representative CTAs the check keeps the full
 /// certificate's classes. good: two representatives (CTAs 0-6 and the tail CTA 7) for 8 CTAs,
 /// clean. TAIL1 (the tail CTA stores past the end), AND and STRIDE (CTAs write each other's

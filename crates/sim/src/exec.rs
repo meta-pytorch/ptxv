@@ -1446,10 +1446,14 @@ impl Machine {
                     "read-write" => Some((other.actor, other.pc)),
                     _ => None,
                 };
+                // A tensormap proxy fence's read counts too: its only value is the snapshot
+                // the thread's later TMA ops compare against (`tmap_at`); the probe leaves it
+                // undefined.
                 let ok = read.filter(|&(t, at)| {
                     (t as usize) < self.threads.len()
-                        && matches!(&self.k.code[at as usize].op,
+                        && (matches!(&self.k.code[at as usize].op,
                             Op::Ld { sync, .. } if !sync.is_some_and(|s| s.acquires()))
+                            || matches!(&self.k.code[at as usize].op, Op::TmapFence { .. }))
                 });
                 let mut g = log.lock().unwrap();
                 let e = g
@@ -5467,7 +5471,7 @@ impl Machine {
         self.vmask = None;
         // C-ORDER dead-read probe (wellsync.rs `dead_reads`): the load's registers hold no
         // defined bit, so any use of them is reported (S-INIT).
-        if matches!(inst.op, Op::Ld { .. })
+        if matches!(inst.op, Op::Ld { .. } | Op::TmapFence { .. })
             && self
                 .dead_probe
                 .as_ref()
@@ -5475,6 +5479,17 @@ impl Machine {
         {
             for d in inst.op.dst_regs() {
                 self.make_undefined(t, d);
+            }
+            // E-RACE-DEAD for a tensormap proxy fence (`Op::TmapFence`): the snapshot it took
+            // is left undefined (no bytes), so a TMA op that relies on it reports a stale map
+            // (`tmap_at`); one that relies on none reports nothing new.
+            if let Op::TmapFence { addr } = &inst.op {
+                if let Ok(a) = self.addr(t, addr) {
+                    let th = self.threads[t].make_mut();
+                    for e in th.tmap_fence.iter_mut().filter(|e| e.0 == a) {
+                        e.1.clear();
+                    }
+                }
             }
         }
         self.wundef = 0;

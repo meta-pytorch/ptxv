@@ -1,0 +1,111 @@
+name = "e_race_dead_tmap"
+description = """
+Fixture for E-RACE-DEAD on a tensormap proxy fence (race_dead.rs, exec.rs Op::TmapFence):
+warp 0 builds, publishes, fences and uses a tensor map (probes/tmap_device); warp 1 runs the
+acquire fence on the same map without ordering and never uses it. The fence's read races with
+the publication, but its snapshot reaches no TMA op (good: race-dead, clean). TF1: thread 32
+also TMA-loads with the map after its fence, so the race stays (positive control). TF2: thread 32
+fences, then acquires the flag thread 0 raises after the publication, then TMA-loads: the TMA is
+ordered but the snapshot may predate the publication (stale map; the probe must keep the race).
+expected/out.bin is probes/tmap_device's GB300 output (warp 0 computes the same)."""
+ptx = "kernel.ptx"
+entry = "tmap_device"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [32, 64]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [544]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "map"
+dtype = "u8"
+shape = [128]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "map"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "TF1"
+summary = "thread 32 TMA-loads with the map it fenced"
+marker = "@W1END"
+find = "ret;"
+replace = """setp.ne.u32 %p3, %r0, 32;
+    @%p3 ret;
+    mov.u32 %r21, mbar2;
+    mov.u32 %r22, tile2;
+    mbarrier.init.shared::cta.b64 [%r21], 1;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r21], 2048;
+    mov.u32 %r10, 16;
+    mov.u32 %r11, 8;
+    cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%r22], [%rd3, {%r10, %r11}], [%r21];
+W1WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r21], 0;
+    @!%p2 bra W1WAIT;
+    ret;"""
+expect = ["fault", "race", "violation"]
+
+[[variants]]
+id = "TF2"
+summary = "warp 1 fences after a relaxed wait for the publication, thread 32 then TMA-loads with its own snapshot"
+marker = "@W1FENCE"
+find = "fence.proxy"
+replace = """// warp 1 waits for flag[0] (relaxed)
+W1SEEN:
+    ld.relaxed.gpu.global.u32 %r24, [%rd9];
+    setp.eq.u32 %p2, %r24, 0;
+    @%p2 bra W1SEEN;
+    fence.proxy"""
+edits = [{ marker = "@W1END", find = "ret;", replace = """setp.ne.u32 %p3, %r0, 32;
+    @%p3 ret;
+W1FLAG:
+    ld.acquire.gpu.global.u32 %r23, [%rd9+4];
+    setp.eq.u32 %p2, %r23, 0;
+    @%p2 bra W1FLAG;
+    mov.u32 %r21, mbar2;
+    mov.u32 %r22, tile2;
+    mbarrier.init.shared::cta.b64 [%r21], 1;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r21], 2048;
+    mov.u32 %r10, 16;
+    mov.u32 %r11, 8;
+    cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%r22], [%rd3, {%r10, %r11}], [%r21];
+W1WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r21], 0;
+    @!%p2 bra W1WAIT;
+    ret;""" }]
+expect = ["race"]
