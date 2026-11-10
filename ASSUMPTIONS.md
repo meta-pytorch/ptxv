@@ -4942,15 +4942,42 @@ complete.**
   R147, R33`; and without the read scoreboard in its own schedules). probes/xu_war: variant
   `rd_sb` puts a never-waited read scoreboard on the first of such a pair; GB300 = model, 200
   runs per variant (before: a false SCOREBOARD WAR violation).
-- The f64 pipe is fixed-latency on sm_100a (2026-11-07): ptxas 13.0 for sm_100a gives `DADD` /
-  `DMUL` / `DFMA` no write scoreboard and reads their results after stall counts alone
-  (`DFMA R4, -R6, R2, 1` with st=8, then `DFMA R4, R4, R4, R4`), where for sm_103a it pads them
-  with NOPs or scoreboards them. The check keys on the cubin's SM version (ELF `e_flags`): for
-  sm_100 these three are not in `VAR_LAT` (a write scoreboard, if present, is still honoured);
-  every other SM keeps the sm_103a sets. probes/f64_queue/cubins/sm100a.cubin (the probe's PTX
-  built for sm_100a) certifies with GB300's IEEE-exact outputs; before, a false SCOREBOARD
-  violation (also reported on fp64 Triton RMSNorm cubins from a GB200 sweep). `POPC` is not
-  changed: ptxas 13.0 still scoreboards it for sm_100a in the int_misc / flo_popc probes.
+- The f64 pipe is fixed-latency in sm_100 modules (2026-11-07; GB300 2026-11-08): ptxas 13.0
+  for sm_100 / sm_100a / sm_100f gives `DADD` / `DMUL` / `DFMA` / `DSETP` no write scoreboard
+  and reads their results after stall counts alone (`DFMA R4, -R6, R2, 1` with st=8, then
+  `DFMA R4, R4, R4, R4`), where for sm_103a it pads them with NOPs or scoreboards them. The
+  check keys on the module's SM version (ELF `e_flags`): for sm_100 these are not in `VAR_LAT`
+  (a write scoreboard, if present, is still honoured); every other SM keeps the sm_103a sets.
+  This models a native sm_100 GPU only. GB300 never runs an sm_100 module's code as such: it
+  does not load sm_100a modules at all ("no kernel image"), and it may reschedule sm_100 /
+  sm_100f modules at load (control words and NOP padding). The module image the driver loads (CUPTI's module-loaded
+  callback) of probes/f64_arch's sm_100f build is an sm_103 image
+  (`cubins/sm100f.loaded.cubin`, ELF flags 0x5006704): the `.nv.capmerc` / `.nv.merc` sections
+  dropped and `.text` rescheduled (896 -> 2304 bytes) with a write scoreboard and NOP padding on
+  every f64 op, as ptxas schedules sm_103a. The build with every f64 op at st=1 loads to the
+  byte-identical image (so its 0/1000 mismatches on GB300, against 1000/1000 for the sm_103a
+  build with its scoreboards removed, whose image loads unchanged), and the toolkit note does
+  not matter. Instructions come from `.text` (NOPs over the sm_100f DFMA chain change the
+  output). probes/mma_bs's sm_100f build, by contrast, loads with its sections unchanged
+  (only `e_flags` relabelled to sm_103a): which modules are rescheduled is not known from the
+  cubin. Over a whole torch module (380 kernels) the loaded image keeps every instruction: 285
+  kernels byte-identical, 71 with other control words, 24 with NOPs inserted (up to 1.48x).
+  Over 2,935 shipped sm_100f trtllm-gen / DeepGEMM / mslk kernels loaded on GB300 the driver
+  also rewrites instructions in 1,218, in one way: `S2UR ..., SR_CgaSize` becomes `CS2R.32` /
+  `IMAD` / `R2UR` (sometimes with `RPCMOV.32`); `UTCOMMA.4X` loads as `UTCOMMA.BLOCK16`, the
+  same encoding printed under sm_103 (sm_100f modules print scale_vec::4X as `.4X`). So an
+  sm_100 cubin's lift semantics carry over to GB300 up to that rewrite, but its control bits
+  and timing are not the executed ones, and a hazard verdict on it is not a GB300 verdict: the kernel carries
+  `static_image`, the verdict line says `NOT A GB300 VERDICT`, and the check JSON has
+  `executed_image: false`; analyze the captured image (sm_103, the sm_103a rules) instead.
+  The loaded f64_arch image certifies clean and equals GB300 bitwise. Rules keyed on the SM,
+  all checked: this is the only one (`var_lat`; no opclass table, modifier set or exec branch
+  reads the SM). The units ptxas schedules differently for sm_100f and sm_103a: one kernel
+  with MUFU (EX2 / LG2 / RCP / RSQ / SIN / RCP64H / RSQ64H), SHFL, MATCH, REDUX, POPC, FLO,
+  BREV, I2F / F2I / F2F / FRND (with f64 operands too), S2R / S2UR / CS2R, LDC / LDCU / LDG and
+  the f64 ops built for both: only `DADD` / `DMUL` / `DFMA` / `DSETP` lose their write
+  scoreboards in the sm_100f build. Before: a false SCOREBOARD violation on sm_100 f64 code
+  (also reported on fp64 Triton RMSNorm cubins from a GB200 sweep).
 - `FLO` shares `POPC`'s queue (2026-11-06): ptxas gives `FLO.U32` no write scoreboard and
   reads its result after a wait on a later `POPC`'s (DeepEP hybrid; probes/flo_popc, GB300
   500/500 scrubbed runs = model, both front-ends bitwise). `BREV` is not merged: no evidence.

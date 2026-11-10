@@ -2842,6 +2842,7 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
             })
             .collect(),
         globals,
+        static_image: None,
     })
 }
 

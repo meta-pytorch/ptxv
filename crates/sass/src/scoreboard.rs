@@ -269,11 +269,15 @@ const VAR_LAT: &[&str] = &[
 /// The f64 pipe: completes in issue order (probes/f64_queue). ASSUME(L-OPCLASS)
 const F64_PIPE: &[&str] = &["DADD", "DMUL", "DFMA"];
 
-/// Is `base` variable-latency in a cubin for SM version `sm` (0: unknown, treated as sm_103a)?
-/// The f64 pipe is fixed-latency on sm_100a (full-rate FP64): ptxas 13.0 for sm_100a gives
-/// DADD / DMUL / DFMA no write scoreboard and covers their results with stall counts alone
-/// (`DFMA R4, -R6, R2, 1` st=8, then `DFMA R4, R4, R4, R4`; probes/f64_queue/cubins/sm100a.cubin),
-/// where for sm_103a it pads them with NOPs or scoreboards them. ASSUME(L-OPCLASS)
+/// Is `base` variable-latency in a module for SM version `sm` (ELF `e_flags`; 0: unknown,
+/// treated as sm_103a)? ptxas 13.0 for sm_100 / sm_100a / sm_100f gives DADD / DMUL / DFMA no
+/// write scoreboard and covers their results with stall counts alone (`DFMA R4, -R6, R2, 1`
+/// st=8, then `DFMA R4, R4, R4, R4`), where for sm_103a it pads them with NOPs or scoreboards
+/// them. This models a native sm_100 GPU: GB300 reschedules such modules at load when it must
+/// (probes/f64_arch: the loaded image scoreboards every f64 op, whatever the cubin's stalls),
+/// so a verdict on an sm_100 cubin is marked as not a GB300 verdict (`Kernel::static_image`).
+/// The rule follows the module's SM, not the toolkit note's `-arch` (`CubinMeta::target`).
+/// This is the only rule keyed on the SM. ASSUME(L-OPCLASS)
 fn var_lat(base: &str, sm: u32) -> bool {
     VAR_LAT.contains(&base) && !(sm == 100 && F64_PIPE.contains(&base))
 }

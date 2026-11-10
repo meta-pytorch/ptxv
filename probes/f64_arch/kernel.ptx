@@ -1,0 +1,45 @@
+// Probe (L-OPCLASS) for the f64 hazard rule by module SM on GB300: a 16-step dependent DFMA
+// chain, DADD -> DMUL -> DADD -> DMUL, DSETP -> FSEL, and f64 results read by STG. ptxas 13.0
+// for sm_100f covers them with stall counts alone (st=8, no scoreboards); for sm_103a with
+// write scoreboards and NOP padding. cubins/ holds both builds and the control-bit mutants
+// of mutants.py; see case.toml.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry f64h(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<8>; .reg .f64 %x<64>; .reg .f64 %a<4>; .reg .b32 %r<4>; .reg .pred %p<4>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mov.u32 %r2, %ctaid.x; mov.u32 %r3, %ntid.x; mad.lo.s32 %r1, %r2, %r3, %r1;
+  mul.wide.u32 %rd3, %r1, 32; add.s64 %rd4, %rd1, %rd3;
+  ld.global.v2.f64 {%a1, %a2}, [%rd4];
+  ld.global.v2.f64 {%a3, %a0}, [%rd4+16];
+  fma.rn.f64 %x1, %a1, %a2, %a3;
+  fma.rn.f64 %x2, %x1, %a2, %a3;
+  fma.rn.f64 %x3, %x2, %a2, %a3;
+  fma.rn.f64 %x4, %x3, %a2, %a3;
+  fma.rn.f64 %x5, %x4, %a2, %a3;
+  fma.rn.f64 %x6, %x5, %a2, %a3;
+  fma.rn.f64 %x7, %x6, %a2, %a3;
+  fma.rn.f64 %x8, %x7, %a2, %a3;
+  fma.rn.f64 %x9, %x8, %a2, %a3;
+  fma.rn.f64 %x10, %x9, %a2, %a3;
+  fma.rn.f64 %x11, %x10, %a2, %a3;
+  fma.rn.f64 %x12, %x11, %a2, %a3;
+  fma.rn.f64 %x13, %x12, %a2, %a3;
+  fma.rn.f64 %x14, %x13, %a2, %a3;
+  fma.rn.f64 %x15, %x14, %a2, %a3;
+  fma.rn.f64 %x16, %x15, %a2, %a3;
+  add.rn.f64 %x20, %a1, %a3;
+  mul.rn.f64 %x21, %x20, %a2;
+  add.rn.f64 %x22, %x21, %a1;
+  mul.rn.f64 %x23, %x22, %x22;
+  add.rn.f64 %x24, %x23, %x20;
+  mul.rn.f64 %x25, %x24, %a3;
+  add.rn.f64 %x30, %x25, %a0;
+  setp.lt.f64 %p1, %x30, %a1;
+  selp.f64 %x31, %x16, %x25, %p1;
+  mul.wide.u32 %rd5, %r1, 32; add.s64 %rd6, %rd2, %rd5;
+  st.global.v2.f64 [%rd6], {%x16, %x25};
+  st.global.v2.f64 [%rd6+16], {%x30, %x31};
+  ret; }

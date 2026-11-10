@@ -918,6 +918,12 @@ struct CheckRow {
     /// Refuted assumptions the verdict relies on, each explicitly opted into (case
     /// `assume_refuted`, `--assume-refuted`).
     refuted_opt_in: Vec<String>,
+    /// False when the analyzed control bits are not known to be the ones GB300 executes (an
+    /// sm_100 / sm_100f cubin, which the driver may reschedule at load: `Kernel::static_image`):
+    /// not a GB300 verdict.
+    executed_image: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_note: Option<String>,
     verdict: Verdict,
     /// The second level (ptxv_sim::twolevel): the hardware-model check that classified the
     /// verdict's race / stale findings (each finding's `gb300`). None: not needed or disabled.
@@ -952,18 +958,22 @@ fn print_verdict(
     expect: &[String],
     refuted: &[String],
     gb: Option<&ptxv_sim::twolevel::Gb300Check>,
+    image: Option<&str>,
 ) {
     let got = v.classes();
     let pass = v.meets(expect);
     println!(
-        "{} {variant:<6} {front:<4} {:<26} states={:<7} terminal={:<5} outputs={} {}{:.2}s",
+        "{} {variant:<6} {front:<4} {:<26} states={:<7} terminal={:<5} outputs={} {}{:.2}s{}",
         if pass { "PASS" } else { "FAIL" },
         format!("[{}]", got.join(",")),
         v.states,
         v.terminal_states,
         v.distinct_outputs,
         if v.complete { "" } else { "INCOMPLETE " },
-        v.seconds
+        v.seconds,
+        image
+            .map(|n| format!("  NOT A GB300 VERDICT: {n}"))
+            .unwrap_or_default()
     );
     println!("    assumes: {}", v.assumptions.join(" "));
     for a in &v.assumptions {
@@ -1133,6 +1143,7 @@ fn cmd_coresidency(
                         &expect,
                         &[],
                         None,
+                        None,
                     );
                 }
             }
@@ -1194,6 +1205,8 @@ fn cmd_check(
                     expect,
                     got: vec!["coverage-only".into()],
                     refuted_opt_in: refuted,
+                    executed_image: k.static_image.is_none(),
+                    image_note: k.static_image.clone(),
                     verdict: Verdict {
                         states: 1,
                         transitions: 0,
@@ -1550,7 +1563,15 @@ fn cmd_check(
             }
             let nf =
                 nonfinite.map(|strict| nonfinite::analyze(case, &m1, &mut verdict, births, strict));
-            print_verdict(&v, f, &verdict, &expect, &refuted, gbc.as_ref());
+            print_verdict(
+                &v,
+                f,
+                &verdict,
+                &expect,
+                &refuted,
+                gbc.as_ref(),
+                k.static_image.as_deref(),
+            );
             // The two-level verdict: anything undefined under the strict model -> the SASS
             // front under the hardware profile. Both levels are reported.
             let mut two_level = None;
@@ -1943,9 +1964,15 @@ fn cmd_check(
                 }
             }
             let got = verdict.classes();
+            // `executed_image: false`: an sm_100 / sm_100f cubin, not what GB300 runs.
+            let mut cj = serde_json::to_value(&verdict)?;
+            cj["executed_image"] = k.static_image.is_none().into();
+            if let Some(n) = &k.static_image {
+                cj["image_note"] = n.clone().into();
+            }
             std::fs::write(
                 dir.join(format!("{v}.{f}.check.json")),
-                serde_json::to_string_pretty(&verdict)?,
+                serde_json::to_string_pretty(&cj)?,
             )?;
             rows.push(CheckRow {
                 variant: v.clone(),
@@ -1955,6 +1982,8 @@ fn cmd_check(
                 expect,
                 got,
                 refuted_opt_in: refuted,
+                executed_image: k.static_image.is_none(),
+                image_note: k.static_image.clone(),
                 verdict,
                 gb300: gbc,
                 two_level,

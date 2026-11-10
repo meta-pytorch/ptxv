@@ -69,14 +69,22 @@ pub struct CubinMeta {
     pub syms: Vec<(u64, String)>,
     /// EIATTR_REQNTID / EIATTR_MAX_THREADS of the kernel.
     pub ntid: Option<Ntid>,
-    /// The kernel's register count (`cuobjdump -res-usage`); 0 if unknown.
+    /// The kernel's register count (EIATTR_REGCOUNT in `.nv.info`); 0 if unknown.
     pub regcount: u16,
     /// Data globals whose addresses those banks hold, and the words holding them.
     pub globals: Vec<ptxv_ir::GlobalSym>,
     pub global_relocs: Vec<ptxv_ir::GlobalReloc>,
-    /// SM version the cubin was compiled for (ELF `e_flags` bits 8..16: 100 for sm_100a, 103
-    /// for sm_103a); 0 when unknown. Selects arch-specific opcode latencies (scoreboard.rs).
+    /// SM version of the module (ELF `e_flags` bits 8..16: 100 for sm_100 / sm_100a / sm_100f,
+    /// 103 for sm_103a); 0 when unknown. Selects arch-specific opcode latencies (scoreboard.rs).
+    /// This, not `target`, selects the hazard rules, and marks an sm_100 module's verdict as
+    /// not a GB300 verdict: GB300 may reschedule such a module at load (probes/f64_arch).
+    /// ASSUME(L-OPCLASS)
     pub sm: u32,
+    /// The compile target as given to ptxas (`-arch sm_100f`), from the toolkit note
+    /// (`.note.nv.tkinfo`): the only place a cubin records the arch-specific (`a`) or family
+    /// (`f`) suffix, since `e_flags` is the same for sm_100, sm_100a and sm_100f. Empty when
+    /// the note is absent.
+    pub target: String,
     /// The kernel's code (`.text.<kernel>`), for the slots nvdisasm prints nothing for
     /// (`undis.rs`); empty when unknown.
     pub text: Vec<u8>,
@@ -162,80 +170,118 @@ pub fn elf_sm(b: &[u8]) -> u32 {
     (u32::from_le_bytes([b[0x30], b[0x31], b[0x32], b[0x33]]) >> 8) & 0xff
 }
 
-pub fn read_meta(cubin: &Path, kernel: &str) -> Result<CubinMeta> {
-    let elf = run_tool("cuobjdump", &["-elf", cubin.to_str().unwrap()])?;
-    let mut m = CubinMeta {
-        sm: std::fs::read(cubin).map(|b| elf_sm(&b)).unwrap_or(0),
-        ..Default::default()
-    };
-    for line in elf.lines() {
-        let cols: Vec<&str> = line.split_whitespace().collect();
-        if let Some(name) = cols.last() {
-            if cols.len() >= 4 {
-                // Only the section header table (first occurrence); the symbol table
-                // later lists the same names with other columns.
-                if *name == format!(".nv.constant0.{kernel}") && m.const0_size == 0 {
-                    m.const0_size = hex(cols[2]).unwrap_or(0);
-                } else if *name == format!(".nv.shared.{kernel}") && m.smem_size == 0 {
-                    m.smem_size = hex(cols[2]).unwrap_or(0);
+/// The compile target in a cubin's toolkit note (`.note.nv.tkinfo`): the `sm_*` operand of
+/// the recorded `-arch` / `--gpu-name` option (`"sm_100f"`, `"sm_103a"`).
+pub fn tk_target(img: &elf::Elf) -> Option<String> {
+    let note = &img.sections[img.find(".note.nv.tkinfo")?].data;
+    let text = String::from_utf8_lossy(note);
+    let mut words = text.split(|c: char| c == '\0' || c == '=' || c.is_whitespace());
+    while let Some(w) = words.next() {
+        if matches!(w, "-arch" | "--gpu-name") {
+            if let Some(t) = words.find(|t| !t.is_empty()) {
+                if t.starts_with("sm_") {
+                    return Some(t.to_string());
                 }
             }
         }
     }
-    // KPARAM_INFO blocks inside the kernel's .nv.info section.
-    let sect = format!(".nv.info.{kernel}");
-    let start = elf.lines().position(|l| l.trim() == sect);
-    if let Some(start) = start {
-        let mut attr = String::new();
-        for line in elf.lines().skip(start + 1) {
-            if line.starts_with('.') {
-                break;
-            }
-            if let Some(a) = line.trim().strip_prefix("Attribute:") {
-                attr = a.trim().to_string();
-            }
-            if let Some(v) = line.trim().strip_prefix("Value:") {
-                if attr == "EIATTR_REQNTID" || attr == "EIATTR_MAX_THREADS" {
-                    let d: Vec<u32> = v.split_whitespace().filter_map(hex).collect();
-                    if let [x, y, z] = d[..] {
-                        m.ntid = Some(Ntid {
-                            req: attr == "EIATTR_REQNTID",
-                            dims: [x, y, z],
-                        });
-                    }
-                }
-                if v.contains("Ordinal") && v.contains("Offset") {
-                    let field = |k: &str| -> Option<u32> {
-                        let i = v.find(k)? + k.len();
-                        let rest = v[i..].trim_start().trim_start_matches(':').trim_start();
-                        hex(rest.split_whitespace().next()?)
+    None
+}
+
+/// The records of a `.nv.info[.<kernel>]` section: (attribute, value bytes). Each record is a
+/// format byte, an attribute byte, then for EIFMT_SVAL (4) a 16-bit size and that many bytes,
+/// otherwise a 16-bit value.
+pub fn nv_info(data: &[u8]) -> Vec<(u8, &[u8])> {
+    let mut out = Vec::new();
+    let mut o = 0;
+    while o + 4 <= data.len() {
+        let (fmt, attr) = (data[o], data[o + 1]);
+        let (val, next) = if fmt == 4 {
+            let n = u16::from_le_bytes([data[o + 2], data[o + 3]]) as usize;
+            (data.get(o + 4..o + 4 + n), o + 4 + n)
+        } else {
+            (data.get(o + 2..o + 4), o + 4)
+        };
+        match val {
+            Some(v) => out.push((attr, v)),
+            None => break,
+        }
+        o = next;
+    }
+    out
+}
+
+const EIATTR_MAX_THREADS: u8 = 0x05;
+const EIATTR_REQNTID: u8 = 0x10;
+const EIATTR_KPARAM_INFO: u8 = 0x17;
+const EIATTR_KPARAM_INFO_V2: u8 = 0x45;
+const EIATTR_REGCOUNT: u8 = 0x2f;
+
+/// The kernel's metadata, read from the cubin's ELF directly (sections, `.nv.info` records,
+/// symbol table), so post-processed cubins that `cuobjdump` rejects ("Invalid ELF") load too.
+/// Checked against `cuobjdump -elf` / `-res-usage` on every probe and fixture cubin
+/// (`read_meta_matches_cuobjdump`).
+pub fn read_meta(cubin: &Path, kernel: &str) -> Result<CubinMeta> {
+    let bytes = std::fs::read(cubin)?;
+    let img = elf::Elf::parse(&bytes)?;
+    let mut m = CubinMeta {
+        sm: elf_sm(&bytes),
+        target: tk_target(&img).unwrap_or_default(),
+        ..Default::default()
+    };
+    let size = |name: String| img.find(&name).map(|i| img.sections[i].size as u32);
+    m.const0_size = size(format!(".nv.constant0.{kernel}")).unwrap_or(0);
+    m.smem_size = size(format!(".nv.shared.{kernel}")).unwrap_or(0);
+    let w = |v: &[u8], i: usize| -> u32 {
+        v.get(4 * i..4 * i + 4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+            .unwrap_or(0)
+    };
+    if let Some(i) = img.find(&format!(".nv.info.{kernel}")) {
+        for (attr, v) in nv_info(&img.sections[i].data) {
+            match attr {
+                // index u32, ordinal u16, offset u16, then the size in bits 18..32 (V1), or
+                // in bits 0..16 (V2: parameters over 16 KiB, trtllm-gen's 17 KiB struct; the
+                // other bits were 0 in every cubin seen, anything else is refused).
+                EIATTR_KPARAM_INFO | EIATTR_KPARAM_INFO_V2 if v.len() >= 12 => {
+                    let size = if attr == EIATTR_KPARAM_INFO {
+                        (w(v, 2) >> 18) & 0x3fff
+                    } else if w(v, 2) >> 16 == 0 {
+                        w(v, 2)
+                    } else {
+                        bail!(
+                            "{kernel}: EIATTR_KPARAM_INFO_V2 word {:#x} not modeled",
+                            w(v, 2)
+                        );
                     };
                     m.params.push((
-                        field("Ordinal").unwrap(),
-                        field("Offset").unwrap(),
-                        field("Size").unwrap(),
-                    ));
+                        u16::from_le_bytes([v[4], v[5]]) as u32,
+                        u16::from_le_bytes([v[6], v[7]]) as u32,
+                        size,
+                    ))
                 }
+                EIATTR_REQNTID | EIATTR_MAX_THREADS if v.len() >= 12 => {
+                    m.ntid = Some(Ntid {
+                        req: attr == EIATTR_REQNTID,
+                        dims: [w(v, 0), w(v, 1), w(v, 2)],
+                    })
+                }
+                _ => {}
             }
         }
     }
     m.params.sort();
-    let img = elf::Elf::parse(&std::fs::read(cubin)?)?;
     if let Some(i) = img.find(&format!(".text.{kernel}")) {
         m.text = img.sections[i].data.clone();
     }
-    // `cuobjdump -res-usage`: "Function <kernel>:" then "REG:<n> STACK:...".
-    if let Ok(ru) = run_tool("cuobjdump", &["-res-usage", cubin.to_str().unwrap()]) {
-        let mut it = ru.lines();
-        while let Some(l) = it.next() {
-            if l.trim() == format!("Function {kernel}:") {
-                m.regcount = it
-                    .next()
-                    .and_then(|n| n.trim().strip_prefix("REG:"))
-                    .and_then(|n| n.split_whitespace().next())
-                    .and_then(|n| n.parse().ok())
-                    .unwrap_or(0);
-                break;
+    // EIATTR_REGCOUNT in `.nv.info`: (symbol index, register count) per function.
+    if let Some(i) = img.find(".nv.info") {
+        for (attr, v) in nv_info(&img.sections[i].data) {
+            if attr == EIATTR_REGCOUNT
+                && v.len() >= 8
+                && img.symbol(w(v, 0) as usize).is_ok_and(|s| s.name == kernel)
+            {
+                m.regcount = w(v, 1) as u16;
             }
         }
     }
@@ -5271,6 +5317,17 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
         ntid: meta.ntid,
         globals: meta.globals.clone(),
         global_relocs: meta.global_relocs.clone(),
+        // On GB300 the driver may rewrite an sm_100 / sm_100f module into an sm_103 image at
+        // load: the same instructions, with its own control words and NOP padding
+        // (probes/f64_arch's sm100f build: the same image for any input control bits;
+        // probes/mma_bs's: the cubin as built). The lift's semantics carry over; hazard and
+        // scoreboard verdicts do not. ASSUME(L-OPCLASS)
+        static_image: (meta.sm == 100).then(|| {
+            format!(
+                "static sm_100 image ({}); control bits and timing not the executed ones (the GB300 driver may reschedule sm_100 modules at load: take hazard verdicts from the captured image)",
+                if meta.target.is_empty() { "sm_100" } else { &meta.target }
+            )
+        }),
     })
 }
 

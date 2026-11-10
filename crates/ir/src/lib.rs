@@ -2800,6 +2800,12 @@ pub struct Kernel {
     pub globals: Vec<GlobalSym>,
     #[serde(default)]
     pub global_relocs: Vec<GlobalReloc>,
+    /// Why this kernel's control bits and timing are not known to be the ones GB300 executes:
+    /// an sm_100 / sm_100f module, whose instructions the driver may reschedule (control words,
+    /// NOP padding) into an sm_103 image at load (L-OPCLASS, probes/f64_arch). Its semantics
+    /// carry over, its hazard verdicts do not: not a GB300 verdict (`executed_image: false`).
+    #[serde(default)]
+    pub static_image: Option<String>,
 }
 
 /// A kernel's declared block shape.
@@ -2971,6 +2977,7 @@ impl Kernel {
             .map(|k| k.name.as_str())
             .collect::<Vec<_>>()
             .join("+");
+        out.static_image = ks.iter().find_map(|k| k.static_image.clone());
         for k in &ks {
             assert!(k.front == out.front && k.parts.is_empty());
             let base = out.code.len();

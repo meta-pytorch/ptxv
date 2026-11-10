@@ -2175,6 +2175,57 @@ fn probe_f64_queue_matches_hardware() {
     probe_bitwise_cubin("probes/f64_queue", Some("cubins/sm100a.cubin"));
 }
 
+/// L-OPCLASS by module SM (probes/f64_arch): the sm_100f build's stall-count-only schedule (and
+/// the same with every f64 op at st=1) = GB300, because GB300 runs the image the driver reschedules
+/// at load (cubins/sm100f.loaded.cubin: an sm_103 image with f64 scoreboards), which certifies
+/// clean and equals GB300 too; the sm_103a build with its f64 scoreboards removed mismatches on
+/// GB300 and is a SCOREBOARD violation here. Verdicts on the sm_100 cubins are marked as not
+/// GB300 verdicts (`static_image`); the toolkit note's `-arch` is read but selects nothing.
+#[test]
+fn probe_f64_arch_matches_hardware() {
+    let dir = "probes/f64_arch";
+    probe_bitwise(dir, "good", "ptx");
+    probe_bitwise(dir, "good", "sass");
+    for c in [
+        "cubins/sm100f.cubin",
+        "cubins/sm100f_st1.cubin",
+        "cubins/sm100f_st1_tk103a.cubin",
+        "cubins/sm100f.loaded.cubin",
+        "cubins/sm103a.cubin",
+    ] {
+        probe_bitwise_cubin(dir, Some(c));
+        let k = ptxv_sass::load_cubin(&root().join(dir).join(c), "f64h").unwrap();
+        assert_eq!(
+            k.static_image.is_some(),
+            c.contains("sm100f") && !c.contains("loaded"),
+            "{c}"
+        );
+    }
+    for c in [
+        "cubins/sm103a_nosb.cubin",
+        "cubins/sm103a_nosb_tk100f.cubin",
+    ] {
+        let k = ptxv_sass::load_cubin(&root().join(dir).join(c), "f64h").unwrap();
+        assert!(
+            k.static_findings
+                .iter()
+                .any(|f| f.msg.starts_with("SCOREBOARD: ") && f.msg.contains("`DFMA ")),
+            "{c}: {:#?}",
+            k.static_findings
+        );
+        assert!(k.static_image.is_none());
+    }
+    let meta = |c: &str| ptxv_sass::read_meta(&root().join(dir).join(c), "f64h").unwrap();
+    let (a, b) = (
+        meta("cubins/sm100f.cubin"),
+        meta("cubins/sm103a_nosb_tk100f.cubin"),
+    );
+    assert_eq!((a.sm, a.target.as_str()), (100, "sm_100f"));
+    assert_eq!((b.sm, b.target.as_str()), (103, "sm_100f"));
+    assert_eq!(meta("cubins/sm103a.cubin").target, "sm_103a");
+    assert_eq!(meta("cubins/sm100f.loaded.cubin").sm, 103);
+}
+
 /// L-OPCLASS: DSETP in the f64 queue (a DADD with no write scoreboard read after a wait on a
 /// later DSETP's), PTX setp.<cmp>.f64 (probes/f64_dsetp) = GB300 on both front-ends.
 #[test]
