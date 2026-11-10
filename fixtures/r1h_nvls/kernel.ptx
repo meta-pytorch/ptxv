@@ -36,6 +36,7 @@
     @%p1 bra WAITED;
     fence.proxy.alias; // @ALIAS
     multimem.red.release.sys.global.add.u32 [%rd3+64], 1; // @RED
+    fence.proxy.alias; // @POSTFENCE
 POLL:
     ld.acquire.sys.global.u32 %r2, [%rd2+64]; // @POLL
     setp.lt.u32 %p2, %r2, 2;

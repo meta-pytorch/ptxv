@@ -3002,10 +3002,26 @@ if a `fence.proxy.alias`, executed by the writer after the write or by a thread 
 the write first, happens before the access; a kernel boundary on the same GPU (stream order)
 counts as such a fence (PTX: CUDA API synchronization participates in proxy-preserved order).
 Otherwise: `race:alias`.
-- Pairs of strong accesses are not checked, and release / acquire through aliased flags
-  synchronizes as through one address: NVLS barriers write a flag with `multimem.red` and poll
-  it through the unicast address. PTX defines moral strength per memory location and does not
-  say how it treats aliases; GB300 orders the probed shape (E-MC-ALIAS-HW).
+- Strong accesses get no exemption. PTX ISA 8.7: two operations are morally strong only if
+  "both are performed via the same proxy"; 8.6: distinct virtual addresses of one location
+  act as distinct proxies and "require a proxy fence to establish memory ordering". A
+  `multimem.red.release` on the multicast address and an `ld.acquire` of the unicast alias
+  are therefore not morally strong. The CUDA programming guide's multicast example (VMM, "Use
+  Multicast Mappings" / "Virtual Aliasing Support") places a `fence.proxy.alias` between the
+  `multimem.red` arrival and the unicast acquire poll of the same counter.
+  - Same thread (`alias_self`): a strong access through one view after the thread's own
+    strong access through the other view of overlapping bytes needs a `fence.proxy.alias`
+    between them (`fixtures/r1h_nvls` B66).
+  - Other threads (`alias_check`): a strong access observing another thread's strong write
+    through the other view needs the observer's own earlier `fence.proxy.alias` (the guide's
+    placement: red; fence; poll), or one on the happens-before path from the write
+    (`fixtures/r1h_nvls_mp` B67). The observer's fence may be any earlier one of its
+    thread (lenient: the model does not tie it to the write).
+  - When covered, release / acquire through aliased flags synchronizes as through one
+    address.
+  - Why the old rule was wrong: until 2026-11-09 every strong-strong pair was exempt ("they
+    synchronize as usual"), which assumed moral strength across views. That certified the
+    fence-less NVLS barrier (multicast red, unicast acquire poll) clean.
 - The shadow of every global byte records the view of its last write (`Sh::mcv`).
 - Not modeled: unicast mappings of one buffer at different virtual addresses on different
   GPUs (peer memory) are also aliases under the PTX definition; they are treated as one
@@ -3014,8 +3030,10 @@ Otherwise: `race:alias`.
 - SASS: L-ALIAS-FENCE identifies the fence.
 - Status: **argued** (PTX ISA text). GB300 does not need the fence in the probed shape
   (E-MC-ALIAS-HW).
-- Where: `exec.rs` `alias_check`, `alias_mark`, `launch_cta`, `Op::Fence { ProxyAlias }`.
-- If wrong: *false alarm* where hardware orders the views (see E-MC-ALIAS-HW).
+- Where: `exec.rs` `alias_check`, `alias_self`, `alias_mark`, `launch_cta`,
+  `Op::Fence { ProxyAlias }`.
+- If wrong: *false alarm* where hardware orders the views (see E-MC-ALIAS-HW); *miss* of a
+  strong pair from two threads whose observer never accessed the other view itself.
 
 ### E-CPASYNC-PROXY · code
 **cp.async writes and async-proxy reads.** The PTX ISA performs cp.async in the generic

@@ -74,8 +74,12 @@ multicast range; the simulator decides by address.
   other than `LDGMC` / `STG` / `REDG` is `unmodeled`.
 - Alias proxy (S-MC-ALIAS): an access through one view (multicast / unicast) of a byte last
   written through the other is a `race:alias` unless a `fence.proxy.alias` or a kernel
-  boundary lies on the happens-before path from the write. Pairs of strong accesses (flags)
-  are not checked.
+  boundary lies on the happens-before path from the write. Strong accesses (flags) are not
+  exempt (PTX ISA 8.7: moral strength needs the same proxy): a strong access through one view
+  after the same thread's strong access through the other view needs a `fence.proxy.alias`
+  between them, and a strong access observing another thread's strong write through the
+  other view needs the observer's own earlier `fence.proxy.alias` or one on the
+  happens-before path from the write. GB300 hardware level (`mc_alias_hw`): `undecided`.
 
 ## GB300 measurements (`probes/multimem`, 4 GPUs in one NVLink domain, 2026-11-06)
 

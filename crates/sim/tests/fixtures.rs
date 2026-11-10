@@ -633,7 +633,7 @@ fn r1f_pingpong() {
 // S-MULTIMEM, S-MC-ALIAS), both explorers.
 #[test]
 fn r1h_nvls() {
-    for v in ["good", "B23", "B63", "B64", "B65"] {
+    for v in ["good", "B23", "B63", "B64", "B65", "B66"] {
         for f in ["ptx", "sass"] {
             // B65 is PTX undefined behavior; in SASS its STG is a multimem store whose two
             // ranks' bytes collide (race + nondeterministic: the explorers disagree on the
@@ -659,6 +659,17 @@ fn r5a_ibgda_putsig() {
     }
 }
 
+/// S-MC-ALIAS across threads: a pure observer's unicast acquire poll of a flag another rank
+/// wrote with multimem.red needs its own fence.proxy.alias (B67 has none).
+#[test]
+fn r1h_nvls_mp() {
+    for v in ["good", "B67"] {
+        for f in ["ptx", "sass"] {
+            check_dir("fixtures", "r1h_nvls_mp", v, f);
+        }
+    }
+}
+
 /// E-MC-ALIAS-HW (opt-in): without the alias-proxy check the missing fence.proxy.alias (B23)
 /// is clean; the scope / ordering mutants still race (B64 in SASS: the alias fence's
 /// MEMBAR.SC.SYS releases, see the case).
@@ -669,6 +680,8 @@ fn r1h_nvls_alias_hw() {
         ("good", "sass", "clean"),
         ("B23", "ptx", "clean"),
         ("B23", "sass", "clean"),
+        ("B66", "ptx", "clean"),
+        ("B66", "sass", "clean"),
         ("B63", "ptx", "race"),
         ("B63", "sass", "race"),
         ("B64", "ptx", "race"),

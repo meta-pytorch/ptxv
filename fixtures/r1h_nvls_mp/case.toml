@@ -1,0 +1,109 @@
+name = "r1h_nvls_mp"
+description = """
+Rung 1h, NVLS message passing on 2 GPUs (S-MC-ALIAS cross-thread strong pair): rank 0 stages
+unicast data and signals with multimem.red.release.sys on the multicast flag; rank 1 polls its
+unicast copy of the flag with ld.acquire.sys (no multicast access of its own) and reads the data
+as a multimem.ld_reduce sum."""
+ptx = "kernel.ptx"
+entry = "nvls_mp"
+grid = [1, 1, 1]
+block = [4, 1, 1]
+outputs = ["out1"]
+
+[[buffers]]
+name = "buf0"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "buf1"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "in0"
+dtype = "f32"
+shape = [4]
+init = "normal"
+seed = 1
+device = 0
+
+[[buffers]]
+name = "in1"
+dtype = "f32"
+shape = [4]
+init = "normal"
+seed = 2
+device = 1
+
+[[buffers]]
+name = "out0"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "out1"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+device = 1
+
+[[multicast]]
+name = "mc"
+size = 128
+binds = [
+    { device = 0, offset = 0, buffer = "buf0", byte_offset = 0, size = 128 },
+    { device = 1, offset = 0, buffer = "buf1", byte_offset = 0, size = 128 },
+]
+
+[[params]]
+kind = "ptr"
+buffer = "in0"
+
+[[params]]
+kind = "ptr"
+buffer = "buf0"
+
+[[params]]
+kind = "ptr"
+buffer = "mc"
+
+[[params]]
+kind = "ptr"
+buffer = "out0"
+
+[[params]]
+kind = "u32"
+value = 0
+
+[[launches]]
+entry = "nvls_mp"
+grid = [1, 1, 1]
+block = [4, 1, 1]
+device = 1
+params = [
+    { kind = "ptr", buffer = "in1" },
+    { kind = "ptr", buffer = "buf1" },
+    { kind = "ptr", buffer = "mc" },
+    { kind = "ptr", buffer = "out1" },
+    { kind = "u32", value = 1 },
+]
+
+[[variants]]
+id = "good"
+summary = "consumer fences the alias proxy before its unicast poll of the multicast-written flag"
+expect = ["clean"]
+
+[[variants]]
+id = "B67"
+summary = "no fence.proxy.alias anywhere on the consumer: its unicast ld.acquire poll observes the producer's multicast red (a strong pair across views, not morally strong: PTX ISA 8.7)"
+marker = "@CFENCE"
+find = "fence.proxy.alias;"
+replace = "// (no consumer alias fence)"
+expect = ["race"]

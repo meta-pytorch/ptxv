@@ -1078,6 +1078,13 @@ pub struct Thread {
     /// fence.proxy.alias executions of this thread, and its start after a stream-ordered
     /// previous grid (a kernel boundary orders aliases too), as for `fences` (S-MC-ALIAS).
     pub alias_fences: Vec<VC>,
+    /// Strong global accesses of this thread to multicast-bound bytes since its last
+    /// fence.proxy.alias: (alloc, offset, bytes, through the multicast view, pc). A strong
+    /// access through the other view of an overlapping range is an alias race (S-MC-ALIAS).
+    pub alias_pending: Vec<(u32, u64, u32, bool, u32)>,
+    /// This thread has executed a fence.proxy.alias (S-MC-ALIAS: covers its strong accesses
+    /// that observe another thread's strong write through the other view).
+    pub alias_fenced: bool,
     /// Bulk groups committed so far (the open group's id).
     pub bulk_group: u32,
     /// The read scoreboard of each committed bulk group (SASS `UTMACMDFLUSH`'s rbar, by group
@@ -2379,6 +2386,8 @@ impl Machine {
                     vund: vec![],
                     fences: vec![],
                     alias_fences: vec![],
+                    alias_pending: vec![],
+                    alias_fenced: false,
                     bulk_group: 0,
                     bulk_sb: Vec::new(),
                     bulk_done: vec![],

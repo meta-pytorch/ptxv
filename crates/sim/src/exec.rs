@@ -753,8 +753,10 @@ impl Machine {
     /// the fence, with the fence happening before the access (PTX proxy-preserved base
     /// causality order). Writes then take the access's view.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn alias_check(
         &mut self,
+        actor: u32,
         loc: Loc,
         n: usize,
         vc: &VC,
@@ -773,17 +775,26 @@ impl Machine {
         for i in 0..n as u64 {
             let s = self.gmem[alloc].sh.get((off + i) as usize);
             let Some(w) = s.w else { continue };
-            // Two strong accesses (a flag written by multimem.red, polled through the unicast
-            // address) are not checked: they synchronize as usual.
-            if s.mcv == mc || bad.is_some() || (strong != 0 && w.strong != 0) {
+            if s.mcv == mc || bad.is_some() {
                 continue;
             }
-            let covered = self.threads.iter().enumerate().any(|(f, th)| {
-                let seen = vc_get(vc, f as u32);
-                th.alias_fences
-                    .iter()
-                    .any(|fv| w.clock <= vc_get(fv, w.actor) && vc_get(fv, f as u32) <= seen)
-            });
+            // Two strong accesses (a flag written by multimem.red, polled through the unicast
+            // address) are not morally strong across views (PTX ISA 8.7: same proxy; 8.6:
+            // virtual aliases act as distinct proxies). Same thread: `alias_self`. Other
+            // threads: the observer's own fence.proxy.alias before the access (the CUDA guide's
+            // red; fence.proxy.alias; poll) or one on the happens-before path from the write.
+            let both_strong = strong != 0 && w.strong != 0;
+            let me = self.actor_thread(actor);
+            if both_strong && self.actor_thread(w.actor) == me {
+                continue;
+            }
+            let covered = (both_strong && actor < self.nthreads() && self.threads[me].alias_fenced)
+                || self.threads.iter().enumerate().any(|(f, th)| {
+                    let seen = vc_get(vc, f as u32);
+                    th.alias_fences
+                        .iter()
+                        .any(|fv| w.clock <= vc_get(fv, w.actor) && vc_get(fv, f as u32) <= seen)
+                });
             if !covered {
                 bad = Some((off + i, w));
             }
@@ -805,6 +816,50 @@ impl Machine {
             );
             self.report("race", sig, msg);
         }
+    }
+
+    /// ASSUME(S-MC-ALIAS): strong accesses of one thread through both views of the same bytes
+    /// need a fence.proxy.alias between them (CUDA programming guide, virtual aliasing: the
+    /// NVLS barrier's `multimem.red` arrival and its unicast acquire poll of the same counter).
+    /// `alias_check` exempts strong pairs (they synchronize as one location); this is the
+    /// program-order part it would miss.
+    fn alias_self(&mut self, t: usize, loc: Loc, n: usize, mc: bool, pc: u32) {
+        let Loc::Global { alloc, off } = loc else {
+            return;
+        };
+        if self.launch.mc_alias_hw || !self.mc_backed(alloc) {
+            return;
+        }
+        let (a, n) = (alloc as u32, n as u32);
+        let hit = self.threads[t]
+            .alias_pending
+            .iter()
+            .find(|e| e.0 == a && e.3 != mc && e.1 < off + n as u64 && off < e.1 + e.2 as u64)
+            .copied();
+        if let Some(e) = hit {
+            let (vw, va) = if mc {
+                ("unicast", "multicast")
+            } else {
+                ("multicast", "unicast")
+            };
+            let sig = format!("race:alias:{}:{pc}", e.4);
+            let msg = format!(
+                "alias-proxy race on gmem byte {:#x} of {}: {vw} access by {} at {} and its {va} access at {} with no fence.proxy.alias between them",
+                off.max(e.1),
+                self.launch.allocs[alloc].name,
+                self.actor_name(t as u32),
+                self.k.describe(e.4 as usize),
+                self.k.describe(pc as usize)
+            );
+            self.report("race", sig, msg);
+        }
+        let th = self.threads[t].make_mut();
+        th.alias_pending
+            .retain(|e| !(e.0 == a && e.1 == off && e.2 == n && e.3 == mc));
+        if th.alias_pending.len() >= 16 {
+            th.alias_pending.remove(0);
+        }
+        th.alias_pending.push((a, off, n, mc, pc));
     }
 
     /// Record the view of a write (after `access_x` set the new last write).
@@ -882,7 +937,10 @@ impl Machine {
         }
         if !self.launch.mcast.is_empty() {
             let mcv = self.mc_view;
-            self.alias_check(loc, n, vc, pc, mcv, write.is_some(), strong);
+            self.alias_check(actor, loc, n, vc, pc, mcv, write.is_some(), strong);
+            if strong != 0 && actor < self.nthreads() {
+                self.alias_self(actor as usize, loc, n, mcv, pc);
+            }
         }
         let mut out = Vec::with_capacity(n);
         if let Loc::Param { grid, off } = loc {
@@ -4161,7 +4219,8 @@ impl Machine {
                 if !taken && !active.is_empty() {
                     if self.wlog.is_on() {
                         let w = self.threads[members[0]].warp;
-                        crate::wellsync::warpsync_released(self, w, lanes, members); // wellsync.rs
+                        crate::wellsync::warpsync_released(self, w, lanes, members);
+                        // wellsync.rs
                     }
                     let mut j = VC::new();
                     for &t in members {
@@ -7285,7 +7344,10 @@ impl Machine {
                 kind: FenceKind::ProxyAlias,
             } => {
                 let v = self.threads[t].vc.clone();
-                self.threads[t].make_mut().alias_fences.push(v);
+                let th = self.threads[t].make_mut();
+                th.alias_fences.push(v);
+                th.alias_pending.clear();
+                th.alias_fenced = true;
                 self.tick(t);
             }
             Op::Fence {
@@ -7410,6 +7472,8 @@ impl Machine {
                 if alias {
                     let v = th.vc.clone();
                     th.alias_fences.push(v);
+                    th.alias_pending.clear();
+                    th.alias_fenced = true;
                 }
                 self.tick(t);
             }

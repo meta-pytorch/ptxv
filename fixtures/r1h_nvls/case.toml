@@ -132,3 +132,11 @@ expect = ["violation"]
 # SASS: a STG to a multicast address is what multimem.st lowers to (S-MULTIMEM): both ranks'
 # stores land in both members, unordered.
 expect_sass = ["race"]
+
+[[variants]]
+id = "B66"
+summary = "no fence.proxy.alias between the multimem.red arrival (multicast view) and the acquire poll of the same counter (unicast view)"
+marker = "@POSTFENCE"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence after the arrival)"
+expect = ["race"]

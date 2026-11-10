@@ -1,0 +1,61 @@
+//
+// Rung 1h, message passing through NVLS multicast memory on 2 GPUs (S-MC-ALIAS, cross-thread
+// strong pair). Rank 0 (role 0) stages 4 floats into its unicast buffer, fences the alias
+// proxy and signals with multimem.red.release.sys on the flag through the multicast address.
+// Rank 1 (role 1) never touches the multicast view of the flag itself: it fences the alias
+// proxy, polls its own unicast copy of the flag with ld.acquire.sys, then reads rank 0's data
+// as the multicast sum (rank 1's own staging buffer holds zeros).
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry nvls_mp(
+    .param .u64 inp,
+    .param .u64 buf,
+    .param .u64 mc,
+    .param .u64 out,
+    .param .u32 role
+)
+{
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<12>;
+    .reg .f32 %f<4>;
+    .reg .pred %p<4>;
+
+    ld.param.u64 %rd1, [inp];
+    ld.param.u64 %rd2, [buf];
+    ld.param.u64 %rd3, [mc];
+    ld.param.u64 %rd4, [out];
+    ld.param.u32 %r3, [role];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd5, %r1, 4;
+    setp.ne.u32 %p3, %r3, 0;
+    @%p3 bra CONSUMER;
+    add.s64 %rd6, %rd1, %rd5;
+    ld.global.f32 %f1, [%rd6];
+    add.s64 %rd7, %rd2, %rd5;
+    st.global.f32 [%rd7], %f1;
+    bar.sync 0;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra DONE;
+    fence.proxy.alias;
+    multimem.red.release.sys.global.add.u32 [%rd3+64], 1;
+    bra DONE;
+CONSUMER:
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra WAITED;
+    fence.proxy.alias; // @CFENCE
+POLL:
+    ld.acquire.sys.global.u32 %r2, [%rd2+64];
+    setp.lt.u32 %p2, %r2, 1;
+    @%p2 bra POLL;
+WAITED:
+    bar.sync 0;
+    add.s64 %rd8, %rd3, %rd5;
+    multimem.ld_reduce.relaxed.sys.global.add.f32 %f2, [%rd8];
+    add.s64 %rd9, %rd4, %rd5;
+    st.global.f32 [%rd9], %f2;
+DONE:
+    ret;
+}
