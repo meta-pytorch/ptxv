@@ -958,6 +958,19 @@ impl Machine {
             for i in 0..n {
                 out.push(*params.get(off as usize + i).unwrap_or(&0));
             }
+            // Past the parameters: ptxas reads them from constant bank 0 (LDC), and the SASS
+            // front faults there (`cbank`, "cbank read past params"); so does this read.
+            // Until 2026-11-08 the bytes past the end read as 0 here (an `ld.param` through a
+            // register address, e.g. a table parameter indexed by input data).
+            if off as usize + n > params.len() {
+                let msg = format!(
+                    "read past the kernel parameters ({} bytes at offset {off:#x} of {}) at {}",
+                    n,
+                    params.len(),
+                    self.k.describe(pc as usize)
+                );
+                self.report("fault", format!("param-past-end:{pc}"), msg);
+            }
             if write.is_some() {
                 self.report(
                     "violation",

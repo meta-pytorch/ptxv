@@ -4118,7 +4118,12 @@ the launch names a cluster shape; `probes/cluster_flag` on GB300; ptxas skips
   (2026-11-08); a local access whose address is not below 2^32 (a converted generic address
   outside the local window, undefined in PTX) is a fault. probes/local_cvta: GB300 50/50
   scrubbed, both fronts bitwise.
-- Where: `exec.rs` `Machine::cbank`, `Machine::local_addr`; `ptx` the `cvta` arms.
+- Reads past the parameters fault on both fronts: SASS `LDC` through `cbank` ("cbank read
+  past params"), and the PTX front's `ld.param` through a register address (2026-11-09; until
+  then the bytes past the end read as 0 there, while ptxas compiles the load to an `LDC` of
+  bank 0). fixtures/e_rep_divzero LDC.
+- Where: `exec.rs` `Machine::cbank`, `Machine::local_addr`, `access_x` (`Loc::Param`); `ptx`
+  the `cvta` arms.
 - Status: **validated** by bitwise agreement. Only param offset 0 has been exercised.
 
 ### S-CGA-SHAPE · code
