@@ -2364,6 +2364,11 @@ enum BarKey {
 }
 type BarRead = (BarKey, u64);
 
+/// `Machine::bar_read_c`: warp-level reads (`BarKey::Uni`, `BarKey::Conv`) already made in one
+/// query of an unchanged machine, per (warp, pc, key). Every lane of a warp at one pc reads the
+/// same value of either: 1 only when all its live lanes are at that pc, in one state, agreeing.
+type WarpReads = std::cell::RefCell<Vec<((u32, u32, BarKey), Option<u64>)>>;
+
 /// `Machine::bar_uw`: the uniform registers (UR / UP) some instruction reachable from a pc
 /// writes; `None` when an indirect call is reachable (any).
 type UwSet = Option<HashSet<ptxv_ir::Reg>>;
@@ -2484,6 +2489,7 @@ impl Machine {
             *per_warp.entry(self.threads[a as usize].warp).or_default() += 1;
         }
         let mut memo: Vec<(u32, Vec<BarRead>, bool)> = Vec::new();
+        let wc = WarpReads::default();
         for (u, th) in self.live_threads() {
             if u == t
                 || th.cta != cta
@@ -2497,12 +2503,15 @@ impl Machine {
             let hit = memo
                 .iter()
                 .find(|(pc, reads, _)| {
-                    *pc == th.pc && reads.iter().all(|r| self.bar_read(u, &r.0) == Some(r.1))
+                    *pc == th.pc
+                        && reads
+                            .iter()
+                            .all(|r| self.bar_read_c(u, &r.0, &wc) == Some(r.1))
                 })
                 .map(|e| e.2);
             let may = hit.unwrap_or_else(|| {
                 let mut reads = Vec::new();
-                let may = self.thread_may_arrive(u, bit, &mut reads);
+                let may = self.thread_may_arrive_c(u, bit, &mut reads, &wc);
                 memo.push((th.pc, reads, may));
                 may
             });
@@ -2535,6 +2544,7 @@ impl Machine {
         // The walk is a function of the pc and the values it read: threads that agree on
         // them (typically the lanes of a warp) share one walk.
         let mut memo: Vec<(u32, Vec<BarRead>, bool)> = Vec::new();
+        let wc = WarpReads::default();
         for (t, th) in self.live_threads() {
             if th.cta != cta || th.st == St::Exited || self.bar_cfg.reach[th.pc as usize] & bit == 0
             {
@@ -2543,12 +2553,15 @@ impl Machine {
             let hit = memo
                 .iter()
                 .find(|(pc, reads, _)| {
-                    *pc == th.pc && reads.iter().all(|r| self.bar_read(t, &r.0) == Some(r.1))
+                    *pc == th.pc
+                        && reads
+                            .iter()
+                            .all(|r| self.bar_read_c(t, &r.0, &wc) == Some(r.1))
                 })
                 .map(|e| e.2);
             let may = hit.unwrap_or_else(|| {
                 let mut reads = Vec::new();
-                let may = self.thread_may_arrive(t, bit, &mut reads);
+                let may = self.thread_may_arrive_c(t, bit, &mut reads, &wc);
                 memo.push((th.pc, reads, may));
                 may
             });
@@ -2666,10 +2679,36 @@ impl Machine {
         m
     }
 
+    /// `bar_read`, with warp-level reads shared through `wc` (the memo checks re-read every
+    /// recorded value for each thread and entry; a warp-level read scans the warp).
+    fn bar_read_c(&self, t: usize, k: &BarKey, wc: &WarpReads) -> Option<u64> {
+        if !matches!(k, BarKey::Uni(_) | BarKey::Conv) {
+            return self.bar_read(t, k);
+        }
+        let key = (self.threads[t].warp, self.threads[t].pc, k.clone());
+        if let Some(e) = wc.borrow().iter().find(|e| e.0 == key) {
+            return e.1;
+        }
+        let v = self.bar_read(t, k);
+        wc.borrow_mut().push((key, v));
+        v
+    }
+
+    #[cfg(test)]
+    fn thread_may_arrive(&self, t: usize, bit: u32, reads: &mut Vec<BarRead>) -> bool {
+        self.thread_may_arrive_c(t, bit, reads, &WarpReads::default())
+    }
+
     /// `thread_may_arrive_walk`, memoized per worker thread across states: the walk is a
     /// function of the code (`bar_cfg`), the pc, `bit` and the values it read, so an earlier
     /// walk from the same pc applies to every thread reading the same values there.
-    fn thread_may_arrive(&self, t: usize, bit: u32, reads: &mut Vec<BarRead>) -> bool {
+    fn thread_may_arrive_c(
+        &self,
+        t: usize,
+        bit: u32,
+        reads: &mut Vec<BarRead>,
+        wc: &WarpReads,
+    ) -> bool {
         // Keyed by the address of `bar_cfg`; each entry holds a weak reference to it, so the
         // address is not reused by another machine's `BarCfg` (another kernel: its walks and
         // registers differ) while the entry exists.
@@ -2687,7 +2726,7 @@ impl Machine {
         let hit = WALKS.with(|w| {
             w.borrow().get(&key).and_then(|(_, es)| {
                 es.iter()
-                    .find(|(rs, _)| rs.iter().all(|r| self.bar_read(t, &r.0) == Some(r.1)))
+                    .find(|(rs, _)| rs.iter().all(|r| self.bar_read_c(t, &r.0, wc) == Some(r.1)))
                     .cloned()
             })
         });
