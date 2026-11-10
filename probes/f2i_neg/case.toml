@@ -1,0 +1,40 @@
+name = "probe_f2i_neg"
+description = """
+Probe (L-ROSETTA) for a negated register source on f32 -> 32-bit integer conversions, SASS
+F2I[.FTZ][.U32][.TRUNC|.FLOOR|.CEIL].NTZ Rd, -Ra (neg.f32 folded by ptxas into
+cvt.r{n,z,m,p}i[.ftz].{s32,u32}.f32): all 16 forms on signed zeros, subnormals, ties, both
+signs of the values around 2^31 and 2^32, infinities, NaN payloads and random patterns
+(kernel.ptx from gen_ptx.py, gen.py; check.py is an independent reference). expected/ is
+GB300's output (kernel.cubin = ptxas 13.1 -arch=sm_103a kernel.ptx, `ptxv hw-worker
+probes/f2i_neg probes/f2i_neg/kernel.cubin --runs 20 --dump`)."""
+ptx = "kernel.ptx"
+entry = "f2i_neg"
+grid = [8, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [2048]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [16, 2048]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

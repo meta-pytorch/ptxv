@@ -98,6 +98,7 @@ pub(super) fn lower(lw: &Lower, base: &str, mods: &[&str], ops: &[String]) -> Re
                 rnd: rnd.unwrap(),
                 ftz: mods.contains(&"ftz"),
                 f64: false,
+                neg: false,
             }
         }
         // ASSUME(N-FCVT): GB300 probes/fcvt (both front-ends).

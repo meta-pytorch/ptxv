@@ -4516,6 +4516,16 @@ forms seen. Any other form is a hard error.
   i's row r (0..7) goes to the address held by lane 8i + r; its byte c (0..15) is byte
   r % 2 + 2 (c / 8) of register i of lane 4 (c % 8) + r / 2 (`probes/stsm_b8`, 2026-11-08:
   every byte traced to its lane, register and byte, x1 / x2 / x4 = GB300, both front-ends).
+- `F2I[.FTZ][.U32][.TRUNC|.FLOOR|.CEIL].NTZ Rd, -Ra` (ptxas folds `neg.f32` into
+  `cvt.r{n,z,m,p}i[.ftz].{s32,u32}.f32`; kernel-DB records: `F2I.TRUNC.NTZ R0, -R0`,
+  `F2I.U32.TRUNC.NTZ R38, -R38`): the source's sign bit is flipped, then the unchanged
+  conversion. Rounding and saturation act on -a (`.FLOOR` gives floor(-a), `.U32` gives 0 for
+  a > 0 and 2^32 - 1 for a <= -2^32), +-0 and a NaN of either sign give 0 (`probes/f2i_neg`,
+  2026-11-10: the 16 forms on 2048 patterns, GB300 20/20 runs = exact arithmetic on all 32,768
+  words; with the modifier ignored 26,423 words would differ, with the integer negated
+  instead 22,999; both front-ends and the ptxas 13.1 cubin bitwise). Only a data register on
+  the 32-bit `.NTZ` forms: `|Ra|`, `-|Ra|`, a negated RZ / uniform register / constant, and
+  the 64-bit, 16-bit and f64-source forms with a negated source are refused.
 - Status: **validated** per form by differential runs (r0, r1a and r1b bitwise: PTX model =
   SASS model = GB300). Rung 1b added `UTMASTG`, `UTMACMDFLUSH` (bulk commit), `DEPBAR.LE` on
   the flush's read scoreboard (bulk wait), `SYNCS.ARRIVE.TRANS64.A1T0` (plain arrive),

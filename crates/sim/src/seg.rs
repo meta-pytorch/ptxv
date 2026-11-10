@@ -627,9 +627,11 @@ pub(crate) fn eval_inst(
             rnd,
             ftz,
             f64: false,
+            neg,
             ..
         } if *bits == 32 => {
-            let u = if *ftz { fp::f32_ftz(w(a)) } else { w(a) };
+            let u = if *neg { w(a) ^ 0x8000_0000 } else { w(a) };
+            let u = if *ftz { fp::f32_ftz(u) } else { u };
             let x = f32::from_bits(u);
             let x = match rnd {
                 Rnd::Rz => x,

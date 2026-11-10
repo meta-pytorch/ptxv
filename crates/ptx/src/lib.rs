@@ -5508,6 +5508,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     },
                     ftz: has("ftz"),
                     f64: false,
+                    neg: false,
                 }
             } else if matches!(mods, [_, "f32", "f64"] if matches!(mods[0], "rn" | "rz" | "rm" | "rp"))
                 || mods == ["f64", "f32"]
@@ -5571,6 +5572,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     },
                     ftz: false,
                     f64: true,
+                    neg: false,
                 }
             } else if let Some(op) = cvt_lp(lw, mods, &ops)? {
                 op

@@ -12,6 +12,7 @@ verdict, and `cargo test` checks that the model agrees with the recorded hardwar
 
 | probe | assumption | GB300 result (2026-10-30, CUDA 13.0, driver 580) |
 |---|---|---|
+| `f2i_neg` | L-ROSETTA | `neg.f32` folded into `cvt.r{n,z,m,p}i[.ftz].{s32,u32}.f32` (F2I[.FTZ][.U32][.TRUNC / .FLOOR / .CEIL].NTZ Rd, -Ra, ptxas 13.1 cubin), 16 forms x 2048 patterns (signed zeros, subnormals, ties, +-2^31, +-2^32, Inf, NaN payloads): GB300 20/20 = the conversion of the sign-flipped source (check.py, 0 of 32,768 words differ; modifier ignored: 26,423 differ; integer negated: 22,999); both fronts bitwise, 2026-11-10 |
 | `s2f6_cvt` | N-CVT-LP, L-NVDISASM | `cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2` (F2FP.SATFINITE.BF16.S2_6.UNPACK_B, ptxas 13.1 cubin): lane i = bf16(RNE, satfinite)(int8(byte i) / 64 * 2^(scale byte i - 127)), scale 0xff -> 0x7fff; all 2^32 (data, scale) pairs, 0 mismatches, SASS bitwise, 2026-11-08 |
 | `red_bitops` | L-ROSETTA, S-SCOPE | red.global.{or,and,xor}.b32 / .b64 at .cta / .gpu / .sys (REDG.E.{OR,AND,XOR}[.64].STRONG.{SM,GPU,SYS}): four threads per word, final words = the order-free result, GB300 5/5 runs; both fronts bitwise, 2026-11-08 |
 | `mma_scale_d` | N-MMA | tcgen05.mma scale-input-d (UTCHMMA ..., UPd, s): D = A B + D * 2^-s = the calibrated step with D scaled exactly (bf16 / tf32, s = 1..15); scaled values below 2^-126 truncate toward zero (not modeled: `unmodeled`); SASS bitwise, 9 input sets, 2026-11-08 |

@@ -75,6 +75,21 @@ fn audited_set_is_sorted_and_refuses_the_rest() {
             "{l} must be refused"
         );
     }
+    // A negated register source of F2I (probes/f2i_neg): only `-R` on the 32-bit .NTZ forms.
+    assert!(ptxv_sass::lower_text("F2I.U32.TRUNC.NTZ R38, -R38", None).is_ok());
+    for l in [
+        "F2I.TRUNC.NTZ R0, |R0|",
+        "F2I.TRUNC.NTZ R0, -|R0|",
+        "F2I.TRUNC.NTZ R0, -UR4",
+        "F2I.U64.TRUNC R0, -R2",
+        "F2I.F64.TRUNC R0, -R2",
+        "F2I.S16.TRUNC.NTZ R0, -R2",
+    ] {
+        assert!(
+            ptxv_sass::lower_text(l, None).is_err(),
+            "{l} must be refused"
+        );
+    }
 }
 
 #[test]

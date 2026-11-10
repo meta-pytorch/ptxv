@@ -2204,6 +2204,28 @@ fn probe_f2i16_matches_hardware() {
     probe_bitwise("probes/f2i16", "good", "sass");
 }
 
+/// L-ROSETTA: a negated register source on f32 -> 32-bit integer conversions, F2I[.FTZ][.U32]
+/// [.TRUNC|.FLOOR|.CEIL].NTZ Rd, -Ra (neg.f32 folded into cvt.r{n,z,m,p}i[.ftz].{s32,u32}.f32)
+/// = GB300 (probes/f2i_neg): the PTX front, the local ptxas's SASS, and the checked-in ptxas
+/// 13.1 cubin, which holds all 16 forms.
+#[test]
+fn probe_f2i_neg_matches_hardware() {
+    probe_bitwise("probes/f2i_neg", "good", "ptx");
+    probe_bitwise("probes/f2i_neg", "good", "sass");
+    probe_bitwise_cubin("probes/f2i_neg", Some("kernel.cubin"));
+    let case = Case::load(root().join("probes/f2i_neg")).unwrap();
+    let k = ptxv_sass::load_cubin(&case.dir.join("kernel.cubin"), &case.m.entry).unwrap();
+    let forms = k
+        .code
+        .iter()
+        .filter(|i| matches!(i.op, ptxv_ir::Op::F2I { neg: true, .. }))
+        .count();
+    assert_eq!(
+        forms, 16,
+        "F2I ... Rd, -Ra: four roundings x s32 / u32 x [.FTZ]"
+    );
+}
+
 /// E-BSYNC: `BREAK.RELIABLE Pc, Bb` in ptxas's div.rn.ftz.f32 slow path (probes/div_ftz, every
 /// pair of 32 edge patterns) = GB300 (SASS; the BREAK exists only there).
 #[test]

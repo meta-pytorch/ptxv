@@ -8320,7 +8320,11 @@ impl Machine {
                 rnd,
                 ftz,
                 f64: true,
+                neg,
             } => {
+                if *neg {
+                    return Err("F2I.F64 with a negated source is not modeled".into());
+                }
                 // ASSUME(N-F2I-F64): round to an integral f64 (exact), then Rust's saturating
                 // `as`; NaN gives 2^31 / 2^63 (fixtures/s_f2i_f64 = GB300).
                 let x = f64::from_bits(self.rd(t, a)?);
@@ -8350,10 +8354,12 @@ impl Machine {
                 rnd,
                 ftz,
                 f64: false,
+                neg,
             } => {
                 // Rust's float->int `as` truncates, saturates, and maps NaN to 0, as F2I does;
-                // other roundings first round to an integral f32 (exact).
-                let mut u = self.rd(t, a)? as u32;
+                // other roundings first round to an integral f32 (exact). `-Ra`: the source's
+                // sign bit flipped first (probes/f2i_neg = GB300).
+                let mut u = fmod(self.rd(t, a)? as u32, *neg, false);
                 if *ftz {
                     u = fp::f32_ftz(u);
                 }

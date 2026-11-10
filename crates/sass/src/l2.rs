@@ -523,6 +523,7 @@ pub(super) fn lower(lw: &Lw, base: &str, mods: &[&str], meta: &CubinMeta) -> Res
                 rnd,
                 ftz: has("FTZ"),
                 f64: false,
+                neg: false,
             }
         }
         _ => unreachable!("l2::claims"),
