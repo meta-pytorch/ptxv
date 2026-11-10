@@ -10870,13 +10870,16 @@ impl Machine {
     }
 
     fn tmap_alloc(&self, m: &TmapDesc) -> (usize, u64) {
+        // The map's own buffer when it names one: a ragged `ptr_shift` map's base lies before
+        // its buffer (negative byte_offset), and element offsets wrap back into it.
         let i = self
             .launch
             .allocs
             .iter()
-            .rposition(|a| a.base <= m.base)
+            .position(|a| a.name == m.buffer && a.base.wrapping_sub(m.base) < (1u64 << 40))
+            .or_else(|| self.launch.allocs.iter().rposition(|a| a.base <= m.base))
             .expect("tensor map base");
-        (i, m.base - self.launch.allocs[i].base)
+        (i, m.base.wrapping_sub(self.launch.allocs[i].base))
     }
 
     /// Release barrier `id` of `cta` if enough threads arrived: its explicit count, or every

@@ -336,6 +336,12 @@ pub struct Buffer {
     /// Byte offset in the buffer where `expect` starts (a tensor inside a larger allocation).
     #[serde(default)]
     pub expect_offset: u64,
+    /// Byte ranges `[offset, len]` of the buffer left out of the `expect` comparison: device
+    /// addresses the kernel wrote (a CUtensorMap built with `tl.make_tensor_descriptor` in a
+    /// global scratch buffer, a pointer table), which hold the capture's address space on the
+    /// GPU and the simulator's own addresses in a run. Written by the case writer.
+    #[serde(default)]
+    pub expect_ignore: Vec<[u64; 2]>,
     #[serde(default)]
     pub seed: u64,
     /// GPU whose memory holds it (the others reach it as peer memory over NVLink).
@@ -428,6 +434,15 @@ pub struct BufferPtr {
     pub byte_offset: u64,
 }
 
+/// A byte offset given as a non-negative or a negative integer (TOML integers are i64);
+/// negative values are stored two's-complement, so `base.wrapping_add(offset)` is the address.
+fn de_wrapping_offset<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<u64, D::Error> {
+    let v = i64::deserialize(d)?;
+    Ok(v as u64)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ParamSpec {
@@ -449,8 +464,14 @@ pub enum ParamSpec {
         #[serde(default)]
         strides: Option<Vec<u64>>,
         /// Bytes from the buffer's start to the tensor's (a map over a tensor inside a larger
-        /// allocation).
-        #[serde(default, rename = "byte_offset")]
+        /// allocation). May be negative (stored wrapping): a ragged `ptr_shift` map (CuTe
+        /// `create_ragged_tensor_for_tma`) has its base 2^30 rows before the tensor, and its
+        /// coordinates add the rows back. ASSUME(S-TMA)
+        #[serde(
+            default,
+            rename = "byte_offset",
+            deserialize_with = "de_wrapping_offset"
+        )]
         offset: u64,
         /// Shared-memory swizzle: "none" (default), "32B", "64B", "128B".
         #[serde(default)]
@@ -832,7 +853,23 @@ impl Case {
             let got = got
                 .get(off..off + want.len())
                 .ok_or_else(|| anyhow!("{o}: expected bytes run past the buffer"))?;
-            let diff: Vec<usize> = (0..want.len()).filter(|&i| got[i] != want[i]).collect();
+            let ignored = |i: usize| {
+                let at = (off + i) as u64;
+                b.expect_ignore.iter().any(|&[s, n]| s <= at && at < s + n)
+            };
+            let n_ign = (0..want.len())
+                .filter(|&i| ignored(i) && got[i] != want[i])
+                .count();
+            let diff: Vec<usize> = (0..want.len())
+                .filter(|&i| got[i] != want[i] && !ignored(i))
+                .collect();
+            let ign_note = if n_ign > 0 {
+                format!(
+                    "; {n_ign} differing bytes in device-address words excluded (expect_ignore)"
+                )
+            } else {
+                String::new()
+            };
             let es = b.elem_bytes();
             let one_ulp = ulp_ok
                 && matches!(b.dtype.as_str(), "bf16" | "f16" | "f32")
@@ -855,11 +892,11 @@ impl Case {
             }
             lines.push(match diff.first() {
                 None => format!(
-                    "{o}: bitwise equal to the captured GPU output ({} bytes)",
+                    "{o}: bitwise equal to the captured GPU output ({} bytes{ign_note})",
                     want.len()
                 ),
                 Some(&i) => format!(
-                    "{o}: MISMATCH vs the captured GPU output: {} of {} bytes differ, first at byte {} (sim {:#04x}, gpu {:#04x})",
+                    "{o}: MISMATCH vs the captured GPU output: {} of {} bytes differ, first at byte {} (sim {:#04x}, gpu {:#04x}){ign_note}",
                     diff.len(),
                     want.len(),
                     off + i,

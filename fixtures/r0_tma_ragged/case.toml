@@ -1,0 +1,61 @@
+name = "r0_tma_ragged"
+description = """
+r0_tma_sum with a ragged `ptr_shift` tensor map (CuTe create_ragged_tensor_for_tma, as
+mslk_flash_attn's tree / varlen O store): the map's base is 2^30 rows (2^37 bytes) before A
+(negative byte_offset), dims [64, 2^31 - 1], and the TMA loads at row coordinate 2^30, which
+lands on A's row 0. Outputs equal r0_tma_sum's (spec half_row_sum)."""
+ptx = "kernel.ptx"
+entry = "r0_tma_ragged"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+spec = "half_row_sum"
+
+[[buffers]]
+name = "A"
+dtype = "bf16"
+shape = [64, 64]
+init = "normal"
+seed = 1
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [128]
+init = "nan"
+
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [64, 64]
+dims = [64, 2147483647]
+strides = [128]
+byte_offset = -137438953472
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "correct kernel"
+expect = ["clean"]
+hw_note = "GB300 2026-11-09 (ptxv hw, 200 runs): matches the simulator bitwise"
+
+[[variants]]
+id = "B01"
+summary = "expect_tx(16384) but the TMA delivers 8192 bytes: the tx-count never reaches 0"
+marker = "@B01"
+find = "8192"
+replace = "16384"
+expect = ["deadlock"]
+hw_note = "hangs every time"
+
+[[variants]]
+id = "row0"
+summary = "TMA at row coordinate 0 instead of 2^30: the box lies 2^37 bytes before A, outside every buffer"
+marker = "@ROW"
+find = "1073741824"
+replace = "0"
+expect = ["deadlock", "fault"]
+hw_note = "GB300 2026-11-09: cuCtxSynchronize illegal memory access, as the simulator's fault"

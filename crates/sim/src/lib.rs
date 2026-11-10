@@ -221,7 +221,8 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
                     if p.size != 8 {
                         bail!("param {} is {} bytes, expected a pointer", p.name, p.size);
                     }
-                    params[o..o + 8].copy_from_slice(&(base_of(buffer)? + offset).to_le_bytes());
+                    params[o..o + 8]
+                        .copy_from_slice(&base_of(buffer)?.wrapping_add(*offset).to_le_bytes());
                 }
                 ptxv_case::ParamSpec::U32 { value } => {
                     params[o..o + 4].copy_from_slice(&value.to_le_bytes())
@@ -244,7 +245,9 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
                         let fo = o + f.offset as usize;
                         match &f.spec {
                             ptxv_case::ParamSpec::Ptr { buffer, offset } => params[fo..fo + 8]
-                                .copy_from_slice(&(base_of(buffer)? + offset).to_le_bytes()),
+                                .copy_from_slice(
+                                    &base_of(buffer)?.wrapping_add(*offset).to_le_bytes(),
+                                ),
                             ptxv_case::ParamSpec::Tensormap {
                                 buffer,
                                 r#box,
@@ -271,7 +274,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
                                     }
                                     params[fo..fo + rb.len()].copy_from_slice(&rb);
                                     params[fo..fo + 8].copy_from_slice(
-                                        &(base_of(buffer)? + offset).to_le_bytes(),
+                                        &base_of(buffer)?.wrapping_add(*offset).to_le_bytes(),
                                     );
                                 }
                                 let b = case.buffer(buffer)?;
@@ -281,7 +284,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
                                     grid: gi,
                                     param_off: fo as u32,
                                     buffer: buffer.clone(),
-                                    base: base_of(buffer)? + offset,
+                                    base: base_of(buffer)?.wrapping_add(*offset),
                                     esize,
                                     dims,
                                     strides,
@@ -325,7 +328,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
                         }
                         params[o..o + rb.len()].copy_from_slice(&rb);
                         params[o..o + 8]
-                            .copy_from_slice(&(base_of(buffer)? + offset).to_le_bytes());
+                            .copy_from_slice(&base_of(buffer)?.wrapping_add(*offset).to_le_bytes());
                     }
                     let b = case.buffer(buffer)?;
                     let (es, dims, strides, boxd, im2col) =
@@ -334,7 +337,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
                         grid: gi,
                         param_off: p.offset,
                         buffer: buffer.clone(),
-                        base: base_of(buffer)? + offset,
+                        base: base_of(buffer)?.wrapping_add(*offset),
                         esize: es,
                         dims,
                         strides,

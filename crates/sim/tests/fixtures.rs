@@ -170,6 +170,14 @@ fn r0_good() {
     check("r0_tma_sum", "good", "ptx");
     check("r0_tma_sum", "good", "sass");
 }
+/// Ragged `ptr_shift` tensor map: negative byte_offset, coordinates wrap back into the buffer.
+#[test]
+fn r0_ragged_tmap() {
+    check("r0_tma_ragged", "good", "ptx");
+    check("r0_tma_ragged", "good", "sass");
+    check("r0_tma_ragged", "row0", "ptx");
+    check("r0_tma_ragged", "row0", "sass");
+}
 #[test]
 fn r0_b01_expect_tx_deadlock() {
     check("r0_tma_sum", "B01", "ptx");

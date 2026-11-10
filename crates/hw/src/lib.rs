@@ -473,7 +473,7 @@ pub fn run_with(
             for spec in l.params {
                 match spec {
                     ParamSpec::Ptr { buffer, offset } => {
-                        let b = Box::new(dptr[buffer].0 + offset);
+                        let b = Box::new(dptr[buffer].0.wrapping_add(*offset));
                         args.push(&*b as *const u64 as *mut c_void);
                         storage.push(b);
                     }
@@ -493,8 +493,9 @@ pub fn run_with(
                         for f in fields {
                             let o = f.offset as usize;
                             match &f.spec {
-                                ParamSpec::Ptr { buffer, offset } => raw[o..o + 8]
-                                    .copy_from_slice(&(dptr[buffer].0 + offset).to_le_bytes()),
+                                ParamSpec::Ptr { buffer, offset } => raw[o..o + 8].copy_from_slice(
+                                    &(dptr[buffer].0.wrapping_add(*offset)).to_le_bytes(),
+                                ),
                                 ParamSpec::Tensormap {
                                     buffer,
                                     raw: Some(r),
@@ -503,8 +504,9 @@ pub fn run_with(
                                 } => {
                                     let b = ptxv_case::param_bytes(r)?;
                                     raw[o..o + b.len()].copy_from_slice(&b);
-                                    raw[o..o + 8]
-                                        .copy_from_slice(&(dptr[buffer].0 + offset).to_le_bytes());
+                                    raw[o..o + 8].copy_from_slice(
+                                        &(dptr[buffer].0.wrapping_add(*offset)).to_le_bytes(),
+                                    );
                                 }
                                 _ => bail!("bytes fields: ptr, or tensormap with raw bytes"),
                             }
@@ -542,7 +544,7 @@ pub fn run_with(
                             for (i, x) in b.iter().enumerate() {
                                 tm.0[i / 8] |= (*x as u64) << (8 * (i % 8));
                             }
-                            tm.0[0] = dptr[buffer].0 + offset;
+                            tm.0[0] = dptr[buffer].0.wrapping_add(*offset);
                             args.push(&*tm as *const CUtensorMap as *mut c_void);
                             storage.push(tm);
                             continue;
@@ -552,7 +554,7 @@ pub fn run_with(
                                 &mut *tm,
                                 tmap_dtype(&buf.dtype)?,
                                 dims.len() as u32,
-                                (dptr[buffer].0 + offset) as *mut c_void,
+                                (dptr[buffer].0.wrapping_add(*offset)) as *mut c_void,
                                 dims.as_ptr(),
                                 strides.as_ptr(),
                                 r#box.as_ptr(),
