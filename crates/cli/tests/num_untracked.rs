@@ -16,6 +16,7 @@
 //! - c_num_max_f32: row maxima of x + y (exact `Max` nodes: tracked, checked against fp64).
 //! - c_num_amax_f32: row maxima of |x + y| (FMNMX of |x| operands, untracked).
 //! - c_num_bf16rt_f32: f32(bf16(x + y)) + z (the bf16 round trip dominates the error).
+//! - c_num_sum_bf16: row sums stored as bf16 (read per 16-bit element, tracked).
 //!
 //! The invariant catches a taint drop at FFMA, FMNMX (c_num_amax_f32) or the PTX
 //! cvt.f32.bf16 (MISS 36 mutants): the dropped value would become an exact constant and the claimed error too small.
@@ -70,9 +71,14 @@ fn buf(case: &str, name: &str) -> Vec<f64> {
     f32s(&root().join("fixtures").join(case).join(name))
 }
 
-/// Checks the invariant; returns the number of analyzed (front, element) pairs.
+/// Checks the invariant on an f32 output; returns the number of analyzed (front, element)
+/// pairs.
 fn check(case: &str, fp64: &[f64]) -> usize {
-    let hw = buf(case, "expected/out.bin");
+    check_hw(case, &buf(case, "expected/out.bin"), fp64)
+}
+
+/// The invariant against GB300 output values `hw`.
+fn check_hw(case: &str, hw: &[f64], fp64: &[f64]) -> usize {
     assert_eq!(hw.len(), fp64.len());
     // The GB300 output carries rounding error in every element.
     assert!(hw.iter().zip(fp64).all(|(h, e)| h != e), "{case}");
@@ -139,6 +145,19 @@ fn fmnmx_of_abs_is_not_claimed_exact() {
     let s: Vec<f64> = x.iter().zip(&y).map(|(a, b)| (a + b).abs()).collect();
     let fp64 = rows(&s, 64, |r| r.iter().copied().fold(0.0, f64::max));
     check("c_num_amax_f32", &fp64);
+}
+
+/// A bf16 output is read per 16-bit element; the error includes the final rounding.
+#[test]
+fn bf16_output_error_matches_gb300_minus_fp64() {
+    let x = buf("c_num_sum_bf16", "data/x.bin");
+    let fp64 = rows(&x, 64, |r| r.iter().sum());
+    let hw: Vec<f64> = std::fs::read(root().join("fixtures/c_num_sum_bf16/expected/out.bin"))
+        .unwrap()
+        .chunks_exact(2)
+        .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16) as f64)
+        .collect();
+    assert_eq!(check_hw("c_num_sum_bf16", &hw, &fp64), 2 * 256);
 }
 
 #[test]

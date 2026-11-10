@@ -6749,7 +6749,8 @@ result. Input buffers are tainted, so such a result becomes an
 `Opaque` leaf when a tracked node reads it, and an output word written from it is
 input-derived without a node. Either makes the element `untracked`. num reports these
 elements as not analyzed, and computes Thm 1, the bounds and max_err over the other elements
-only. Outputs that are not f32 buffers, and every output of a run that reported a fault or an
+only. bf16 / f16 outputs are read per 16-bit element (the node from the 16-bit provenance,
+N-HALF-LEAF; errors in that format's ulps). Outputs of other dtypes, and every output of a run that reported a fault or an
 `unmodeled` finding (its threads stop early), are not analyzed.
 - Where: `num.rs` `out_rec` (`untracked`), `main.rs` `cmd_num`.
 - Status: **enforced**. Before this check, `exact` took the simulated value of the untracked

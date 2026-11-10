@@ -2167,6 +2167,24 @@ fn cmd_check(
     Ok(rows)
 }
 
+/// The spacing of the bf16 (`f16`: f16) grid just above |x| (x: the 16-bit value widened to
+/// f32 bits); the smallest subnormal at 0.
+fn ulp16(bits: u32, f16: bool) -> f64 {
+    let x = (f32::from_bits(bits) as f64).abs();
+    if f16 {
+        // 10 fraction bits; subnormal spacing 2^-24 below 2^-14.
+        let e = if x < 2f64.powi(-14) {
+            -14
+        } else {
+            x.log2().floor() as i32
+        };
+        2f64.powi(e - 10)
+    } else {
+        // bf16: f32's exponent range, 7 fraction bits.
+        ptxv_sim::num::ulp_f32(f32::from_bits(bits)) * 65536.0
+    }
+}
+
 #[derive(Serialize)]
 struct NumSummary {
     front: String,
@@ -2244,6 +2262,26 @@ fn cmd_num_with(
             if equiv::out_only(case, &m.launch.allocs[o].name) {
                 ns.not_inputs.insert(o);
             }
+            // bf16 / f16 outputs: one value per 16-bit element, its node from the 16-bit
+            // provenance (ASSUME(N-HALF-LEAF, N-ROUND)), as equiv reads them.
+            let name = &m.launch.allocs[o].name;
+            match case
+                .m
+                .buffers
+                .iter()
+                .find(|b| &b.name == name)
+                .map(|b| b.dtype.as_str())
+            {
+                Some("bf16") => {
+                    ns.half.bf16_outputs.insert(o);
+                    ns.half.track = true;
+                }
+                Some("f16") => {
+                    ns.half.f16_outputs.insert(o);
+                    ns.half.track = true;
+                }
+                _ => {}
+            }
         }
         for (i, a) in m.launch.allocs.iter().enumerate() {
             if equiv::out_only(case, &a.name) {
@@ -2273,10 +2311,11 @@ fn cmd_num_with(
             }
         }
         m.num = Some(Box::new(ns));
-        let (m, findings, ok) = run_once(m);
+        let (mut m, findings, ok) = run_once(m);
         if !ok {
             bail!("numerics run of {variant} ({f}) did not terminate cleanly: {findings:?}");
         }
+        m.half_out_leaves();
         note_ref_faults(&format!("numerics run of {variant} ({f})"), &findings);
         // A run that faulted or hit a model limit did not execute the kernel as the hardware
         // does (a faulting thread stops): its outputs carry no numerics claim (N-NUM-TRACK).
@@ -2307,10 +2346,17 @@ fn cmd_num_with(
                 .find(|b| b.name == oname)
                 .map(|b| b.dtype.clone())
                 .unwrap_or_default();
+            // Element size: f32, or bf16 / f16 (values widened to f32, errors in that format's
+            // ulps).
+            let es = match dtype.as_str() {
+                "f32" => 4,
+                "bf16" | "f16" => 2,
+                _ => 0,
+            };
             let refusal = broken.clone().or_else(|| {
-                (dtype != "f32" || mem.bytes.len() % 4 != 0).then(|| {
+                (es == 0 || mem.bytes.len() % es != 0).then(|| {
                     format!(
-                        "output {oname} is a {dtype} buffer of {} bytes; num analyzes f32 elements only",
+                        "output {oname} is a {dtype} buffer of {} bytes; num analyzes f32, bf16 and f16 elements only",
                         mem.bytes.len()
                     )
                 })
@@ -2336,26 +2382,42 @@ fn cmd_num_with(
                 });
                 continue;
             }
-            let n = mem.bytes.len() / 4;
+            let n = mem.bytes.len() / es;
             let mut recs = Vec::new();
             let mut spec_ok = true;
+            let half = es == 2;
+            let f16 = dtype == "f16";
             for i in 0..n {
-                let bits = u32::from_le_bytes([0, 1, 2, 3].map(|j| *mem.bytes.get(i * 4 + j)));
-                let node = ns.mem_node(ptxv_sim::exec::Loc::Global {
-                    alloc: oi,
-                    off: (i * 4) as u64,
-                });
+                let (bits, node) = if half {
+                    let h = u16::from_le_bytes([0, 1].map(|j| *mem.bytes.get(i * 2 + j)));
+                    let bits = if f16 {
+                        ptxv_sim::elementwise::f16_to_f32_bits(h)
+                    } else {
+                        (h as u32) << 16
+                    };
+                    (bits, m.half_out_node(oi, i as u64, f16))
+                } else {
+                    let bits = u32::from_le_bytes([0, 1, 2, 3].map(|j| *mem.bytes.get(i * 4 + j)));
+                    let node = ns.mem_node(ptxv_sim::exec::Loc::Global {
+                        alloc: oi,
+                        off: (i * 4) as u64,
+                    });
+                    (bits, node)
+                };
                 let mut r = ns.out_rec(i, bits, node);
+                if half {
+                    r.err_ulps = r.abs_err / ulp16(bits, f16);
+                }
                 if node.is_none()
-                    && (0..4).any(|b| {
+                    && (0..es).any(|b| {
                         ns.taint
-                            .memory_unit_input_derived((1, oi as u64, (i * 4 + b) as u64))
+                            .memory_unit_input_derived((1, oi as u64, (i * es + b) as u64))
                     })
                 {
                     r.untracked = true;
                     r.thm1_exact = false;
                 }
-                if oslot == 0 {
+                if oslot == 0 && !half {
                     if let Some(s) = &spec {
                         let ex = node
                             .map(|nd| ns.nodes[nd as usize].exact.clone())
@@ -2401,7 +2463,7 @@ fn cmd_num_with(
                 untracked: n - ok.len(),
                 refused: None,
                 thm1_all_exact: !ok.is_empty() && ok.iter().all(|r| r.thm1_exact),
-                spec_all_match: (oslot == 0)
+                spec_all_match: (oslot == 0 && !half)
                     .then_some(())
                     .and(spec.as_ref())
                     .map(|_| spec_ok),

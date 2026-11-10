@@ -334,6 +334,11 @@ impl Machine {
                     srcs.extend_from_slice(&b[..(n - 4 * w).min(4)]);
                 }
             }
+            // A PTX register: one scalar of at most 4 bytes.
+            Val::Reg(r, _) if r.file == File::V && n <= 4 => {
+                let b = self.half_val(t, v).unwrap_or([None; 4]);
+                srcs.extend_from_slice(&b[..n]);
+            }
             Val::Imm(c) => {
                 for i in 0..n {
                     srcs.push(((*c >> (8 * (i % 8))) & 0xff == 0).then_some(Src::Zero));
