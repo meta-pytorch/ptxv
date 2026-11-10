@@ -300,6 +300,93 @@ candidate c_triton_cat good sass
   an equiv.toml at `../c_cumsum` and it. L1 should hold, and L0 should fail, because the
   scan orders differ.
 
+## Any process: CUDA_INJECTION64_PATH (2026-11-08)
+
+`python/ptxv/_native/ptxvcap.c`, the library behind `ptxv.capture()`, is also a CUDA
+injection library: with `CUDA_INJECTION64_PATH` pointing at it, the driver calls its
+`InitializeInjection` at `cuInit`, and it records launches of any process with no Python in
+it: C++ gtests and benchmarks, bundled Python executables, Python without `import ptxv`.
+Same CUPTI callbacks, same `launches.jsonl` + `snap/` + module images, same case writer.
+
+```sh
+# build the library (what ptxv.capture builds on first use), then run any program under it
+gcc -shared -fPIC -O2 -o ptxvcap.so python/ptxv/_native/ptxvcap.c -I$CUDA_HOME/include \
+    -I$CUDA_HOME/targets/*/include -ldl -lpthread
+PTXV_CAPTURE_DIR=$W/cap PTXV_CAPTURE_FILTER=rms_norm CUDA_INJECTION64_PATH=$PWD/ptxvcap.so \
+    ./rms_norm_test --gtest_filter=RmsNorm.BFloat16Numerics
+# one case per snapshotted launch (the internal wrappers ptxvcap-run / ptxvcap_cases.py do both)
+```
+
+| variable | default | |
+|---|---|---|
+| `PTXV_CAPTURE_DIR` | required | output dir; `%r` becomes `$RANK` (else `p<pid>`), so ranks and child processes write separate dirs |
+| `PTXV_CAPTURE_FILTER` | all | POSIX ERE on the (mangled) kernel name |
+| `PTXV_CAPTURE_SKIP` | none | names to leave out |
+| `PTXV_CAPTURE_INDEX` | `0` | invocation indices to snapshot, counted per kernel name over matching launches: `3`, `0,5-7`, `all` |
+| `PTXV_CAPTURE_MAX` | 16 | snapshotted launches in total |
+| `PTXV_CAPTURE_RECORD` | `selected` | `matching`: also write unselected matching launches (no snapshot) |
+| `PTXV_CAPTURE_MAX_ALLOC`, `PTXV_CAPTURE_BUDGET` | 2G, 32G | largest allocation copied; total snapshot bytes |
+| `PTXV_CAPTURE_FATBIN` | 1 | write the fatbin image of a selected launch's library / module (`modules/<fnv>.fatbin`, the launch's `"fatbin"`) |
+| `PTXV_CUPTI` | `libcupti.so.13`, then the CUDA 13 toolkit's | |
+
+A capture directory holds `launches.jsonl` (ptxv.capture's format plus `inv`, the invocation
+index), `snap/s<N>_{pre,post}_<base>.bin` (every driver allocation that a parameter word, a
+struct field or one level of pointer table points into, before and after the launch, with the
+context synchronized around it), `modules/<fnv>.cubin` (every image the driver loaded,
+exact), `modules/<fnv>.json` (provenance, below), `modules/<fnv>.fatbin`, `process.json`
+(argv, pid, rank env) and `summary.json` (written at exit: recorded, snapshotted, matched,
+seen, graph launches, skipped snapshots).
+
+A capture directory converts to cases with the same case writer as ptxv.capture
+(`ptxv._casewriter.write_case`), given a capture object whose launches come from
+`launches.jsonl`, whose `dir` is the capture directory and whose module directory is
+`modules/`; no tensor names and no allocator blocks.
+
+- Buffer extents. Without torch's allocator trace, only driver allocations are known
+  (`cuMemGetAddressRange`). `--size alloc` takes the whole allocation (exact for one
+  `cudaMalloc` per tensor, the usual C++ test). `span` (default) runs from the lowest pointer
+  the launch passes into an allocation to its end, which drops the unrelated head of a
+  caching-allocator segment. `split` makes one buffer per distinct pointer, up to the next
+  one. It approximates the tensors of a segment, but a kernel reading across that boundary
+  then faults in the simulator, so rule that out with `alloc` before calling a fault a bug.
+- TMA descriptors (`CUtensorMap`, at the top level or inside a parameter struct) are decoded
+  by the case writer, as for ptxv.capture. Descriptors stored in global memory stay raw bytes.
+- Provenance. When the driver loads a module, ptxvcap writes `<hash>.json` with the shared
+  objects on the load's stack and the first one outside the driver, runtime and CUPTI:
+  `libcublasLt.so.13.2.2.2`, `libcudnn_engines_runtime_compiled.so.9.17.1`, `libtorch_cuda.so`,
+  or the program itself. That names the library a kernel ships in and its version (written
+  by ptxv.capture too).
+- PTX. A selected launch's fatbin is kept. `ptxvcap_cases.py` extracts its PTX and pairs it
+  with two cubins: the one the driver's JIT makes from it (`cuLink*`, on a GPU host) and
+  ptxas's. `_ptxsrc` can then match the PTX by machine code. On GB300 that match fails for a
+  CUDA 13 build with sm_80, sm_90a, sm_100a and sm_100 SASS + sm_100f PTX and no sm_103: the
+  driver loads the **sm_100 cubin** and runs an sm_103 image it derives from it (ELF flags
+  0x5006704). Loading the sm_100 cubin alone reproduces the captured image bit for bit.
+  Per kernel, in a 380-kernel module: 285 byte-identical to the sm_100 SASS, 71 with the same
+  instructions and different scheduling control words, 24 with NOPs inserted (up to 1.48x the
+  code; no other instruction changes). JIT-compiling the sm_100f PTX gives different code, and
+  sm_100a does not load on sm_103 (CUDA_ERROR_NO_BINARY_FOR_GPU). Such kernels are
+  binary-only cases: the captured image is what runs.
+- Launches of lazily loaded modules carry no `"module"`, because the image arrives inside
+  the launch call. Their module is then the smallest captured image that defines the name.
+- One CUPTI subscriber per process: do not combine this with `import ptxv` (ptxv.capture) in
+  the same process. If the process already subscribes (a profiler, Kineto tracing), init fails
+  with 39; the library then prints a line and the process runs uncaptured.
+- Graph launches are counted, not captured (as with ptxv.capture).
+- A program whose own dynamic loader does not search the system library path needs the
+  driver's libcuda on `LD_LIBRARY_PATH`; a statically linked cudart reports "CUDA driver
+  version is insufficient" without it.
+- Without names, buffers are `u8` (dtype unknown to a C++ process). For Python processes,
+  in-process `ptxv.capture` gives tensor names, dtypes and exact extents from the caching
+  allocator; prefer it when the process can import ptxv.
+
+Validation (2026-11-08, GB300): a C++ gtest of hand-written CUDA RMSNorm kernels (8
+snapshotted launches of 260 matching: forward, backward, weight-gradient kernels; 7 cases
+`clean` with outputs bitwise equal to the GPU, the eighth changed no buffer), a torch script
+without `import ptxv` (cuDNN SDPA and a cuBLASLt nvjet GEMM with cluster 8x1x1 and PDL: clean,
+bitwise equal), and an embedding-bag workload in a bundled Python executable (CUDA and Triton
+table-batched-embedding forward and backward kernels).
+
 ## Limits
 
 - One stream. Work on other streams, and events, are not recorded.

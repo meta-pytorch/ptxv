@@ -93,7 +93,9 @@ def find_ptx(cubins: dict[str, bytes]) -> dict[str, str]:
     root = os.environ.get("TRITON_CACHE_DIR") or os.path.expanduser("~/.triton/cache")
     if os.path.isdir(root):
         for n, k in want.items():
-            for c in glob.glob(os.path.join(root, "*", f"{n}.cubin")):
+            # `{n}*`: triton_kernels.specialize names the cache files after the specialization
+            # (`<fn>_1_weight_ptrs.cubin`) while the entry keeps the launched name.
+            for c in sorted(glob.glob(os.path.join(root, "*", f"{n}*.cubin")), key=len):
                 p = c[: -len(".cubin")] + ".ptx"
                 try:
                     if os.path.exists(p) and text_keys(_read(c)).get(n) == k:

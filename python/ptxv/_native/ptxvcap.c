@@ -32,7 +32,10 @@
 #include <cuda.h>
 #include <cupti.h>  // includes generated_cuda_meta.h (the launch parameter structs)
 #include <dlfcn.h>
+#include <execinfo.h>
+#include <limits.h>
 #include <pthread.h>
+#include <regex.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -146,6 +149,52 @@ static unsigned long long handle_get(void *k) {
     return 0;
 }
 
+static void json_str(FILE *f, const char *s);
+
+// <hash>.json next to a module image: the shared objects on the stack of the load (the first
+// one outside the CUDA driver, runtime, CUPTI and this library is the loader: libcublasLt,
+// libcudnn_engines_*, libnccl, libtorch_cuda, a Python extension, the main program). This is
+// the module's provenance (library and version from its path) for vendor kernels.
+static void write_loader(const char *path) {
+    void *fr[64];
+    int n = backtrace(fr, 64);
+    char tmp[4300];
+    snprintf(tmp, sizeof tmp, "%s.%d.tmp", path, (int)getpid());
+    FILE *f = fopen(tmp, "w");
+    if (!f) return;
+    const char *seen[64];
+    int ns = 0, loader = 0;
+    fputs("{\"objects\": [", f);
+    for (int i = 0; i < n; i++) {
+        Dl_info di;
+        if (!dladdr(fr[i], &di) || !di.dli_fname) continue;
+        int dup = 0;
+        for (int j = 0; j < ns; j++)
+            if (!strcmp(seen[j], di.dli_fname)) dup = 1;
+        if (dup || ns == 64) continue;
+        seen[ns++] = di.dli_fname;
+        fputs(ns > 1 ? ", " : "", f);
+        json_str(f, di.dli_fname);
+    }
+    fputs("], \"loader\": ", f);
+    for (int j = 0; j < ns && !loader; j++) {
+        const char *b = strrchr(seen[j], '/');
+        b = b ? b + 1 : seen[j];
+        if (strstr(b, "libcuda.so") || strstr(b, "libcupti") || strstr(b, "ptxvcap") ||
+            strstr(b, "libcudart") || strstr(b, "libc.so") || strstr(b, "libpthread"))
+            continue;
+        char rp[PATH_MAX];
+        json_str(f, seen[j]);
+        fputs(", \"loader_real\": ", f);
+        json_str(f, realpath(seen[j], rp) ? rp : seen[j]);
+        loader = 1;
+    }
+    if (!loader) fputs("null", f);
+    fputs("}\n", f);
+    fclose(f);
+    rename(tmp, path);
+}
+
 static void on_module(const CUpti_ResourceData *r) {
     const CUpti_ModuleResourceData *m = (const CUpti_ModuleResourceData *)r->resourceDescriptor;
     if (!m || !m->pCubin || !m->cubinSize) return;
@@ -161,6 +210,8 @@ static void on_module(const CUpti_ResourceData *r) {
             write_file(tmp, m->pCubin, m->cubinSize);
             rename(tmp, path);
         }
+        snprintf(path, sizeof path, "%s/%016llx.json", mod_dir, h);
+        if (stat(path, &st) != 0) write_loader(path);
     }
     if (nmods == capmods) {
         capmods = capmods ? 2 * capmods : 64;
@@ -234,11 +285,119 @@ static unsigned long long add_target(unsigned long long v) {
     return z;
 }
 
+// ---------------------------------------------------------------- injection mode
+// CUDA_INJECTION64_PATH=<this library> (InitializeInjection at the end): records launches of
+// any process from cuInit on, selected by kernel-name regex and invocation index, with no
+// Python in the process (docs/capture.md "Any process"). State below is guarded by mu.
+static int inj;                    // injection mode active
+static regex_t inj_re, inj_skip;   // PTXV_CAPTURE_FILTER / PTXV_CAPTURE_SKIP
+static int inj_has_re, inj_has_skip;
+#define INJ_MAXR 64
+static unsigned inj_lo[INJ_MAXR], inj_hi[INJ_MAXR];  // PTXV_CAPTURE_INDEX ranges (inclusive)
+static int inj_nr;
+static unsigned inj_max = 16;      // PTXV_CAPTURE_MAX: snapshotted launches in total
+static unsigned inj_snapped;
+static int inj_record_all;         // PTXV_CAPTURE_RECORD=matching: also unselected matches
+static unsigned long long inj_matched, inj_seen;
+// Per kernel name: invocations of matching launches so far (the invocation index).
+static unsigned long long *inv_key;
+static unsigned *inv_cnt;
+static size_t ninv, capinv;
+// Fatbin images handed to module / library loads (PTXV_CAPTURE_FATBIN, default on): load
+// handle -> image pointer. When a selected launch's library / module handle has a fatbin
+// image, the fatbin is written to <mod_dir>/<fnv of its bytes>.fatbin and the launch record
+// names it ("fatbin"); the fatbin may embed the kernels' PTX. Fatbins registered by the CUDA
+// runtime live in the binary's .nv_fatbin section, so the pointer stays valid; with lazy
+// loading the module image itself only arrives inside the first launch.
+#define MAXFAT 65536
+static void *fat_h[MAXFAT];
+static const void *fat_ptr[MAXFAT];
+static size_t nfat;
+static int inj_fatbin = 1;
+static __thread const void *t_call_img;
+
+static unsigned inv_next(const char *nm) {
+    unsigned long long k = fnv(nm, strlen(nm), 0xcbf29ce484222325ull);
+    for (size_t i = 0; i < ninv; i++)
+        if (inv_key[i] == k) return inv_cnt[i]++;
+    if (ninv == capinv) {
+        capinv = capinv ? 2 * capinv : 256;
+        inv_key = realloc(inv_key, capinv * sizeof *inv_key);
+        inv_cnt = realloc(inv_cnt, capinv * sizeof *inv_cnt);
+    }
+    inv_key[ninv] = k;
+    inv_cnt[ninv++] = 1;
+    return 0;
+}
+
+static int inj_index_selected(unsigned i) {
+    if (!inj_nr) return i == 0;
+    for (int r = 0; r < inj_nr; r++)
+        if (inj_lo[r] <= i && i <= inj_hi[r]) return 1;
+    return 0;
+}
+
+// Start and size of a fatbin image (a __fatBinC_Wrapper_t or a bare fatbin), or 0.
+static size_t fatbin_extent(const void *p, const void **start) {
+    if (!p) return 0;
+    unsigned w0;
+    memcpy(&w0, p, 4);
+    if (w0 == 0x466243b1u) p = *(const void *const *)((const char *)p + 8);  // wrapper
+    if (!p) return 0;
+    const unsigned char *b = p;
+    unsigned magic;
+    unsigned short hsz;
+    unsigned long long fsz;
+    memcpy(&magic, b, 4);
+    if (magic != 0xba55ed50u) return 0;
+    memcpy(&hsz, b + 6, 2);
+    memcpy(&fsz, b + 8, 8);
+    if (hsz < 16 || fsz > (1ull << 32)) return 0;
+    *start = p;
+    return hsz + fsz;
+}
+
+static void fat_note(void *h, const void *img) {
+    const void *st;
+    if (!inj || !inj_fatbin || !h || !fatbin_extent(img, &st)) return;
+    for (size_t i = 0; i < nfat; i++)
+        if (fat_h[i] == h) {
+            fat_ptr[i] = img;
+            return;
+        }
+    if (nfat < MAXFAT) {
+        fat_h[nfat] = h;
+        fat_ptr[nfat++] = img;
+    }
+}
+
+// Writes the fatbin of load handle h (once, content-addressed); returns its hash or 0.
+static unsigned long long fat_dump(void *h) {
+    for (size_t i = 0; i < nfat; i++) {
+        if (fat_h[i] != h) continue;
+        const void *st;
+        size_t n = fatbin_extent(fat_ptr[i], &st);
+        if (!n) return 0;
+        unsigned long long fh = fnv(st, n, 0xcbf29ce484222325ull);
+        char path[4200], tmp[4300];
+        snprintf(path, sizeof path, "%s/%016llx.fatbin", mod_dir, fh);
+        struct stat sb;
+        if (stat(path, &sb) != 0) {
+            snprintf(tmp, sizeof tmp, "%s.%d.tmp", path, (int)getpid());
+            write_file(tmp, st, n);
+            rename(tmp, path);
+        }
+        return fh;
+    }
+    return 0;
+}
+
 // Record one launch (API_ENTER). Called with mu held.
 static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz, unsigned bx,
                             unsigned by, unsigned bz, unsigned smem, CUstream s,
                             const CUlaunchConfig *cfg, void **params, void **extra,
                             const char *sym, int cbid) {
+    t_snap = 0;
     unsigned cx = 1, cy = 1, cz = 1;
     // Preferred cluster dimension (0s without the attribute): S-CGA-SHAPE, probes/cga_size.
     unsigned px = 0, py = 0, pz = 0;
@@ -269,6 +428,19 @@ static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
     if (k && c_kname) c_kname(&nm, k);
     else if (f && c_fname && c_fname(&nm, f) != CUDA_SUCCESS) nm = sym;
     if (!nm) nm = "?";
+    // Injection mode: kernel-name filter, then the invocation index among the matching
+    // launches of this name.
+    int inj_sel = 0;
+    long inv = -1;
+    if (inj) {
+        inj_seen++;
+        if (inj_has_re && regexec(&inj_re, nm, 0, 0, 0)) return;
+        if (inj_has_skip && !regexec(&inj_skip, nm, 0, 0, 0)) return;
+        inj_matched++;
+        inv = inv_next(nm);
+        inj_sel = inj_index_selected((unsigned)inv) && inj_snapped < inj_max;
+        if (!inj_sel && !inj_record_all) return;
+    }
     char path[4200];
     snprintf(path, sizeof path, "%s/launches.jsonl", cap_dir);
     FILE *fp = fopen(path, "a");
@@ -295,7 +467,15 @@ static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
         if (!img && f && !k && c_fmod && c_fmod(&mod, f) == CUDA_SUCCESS) img = handle_get(mod);
         if (!img && t_call_mod) img = t_call_mod;  // loaded lazily by this very launch
         if (img) fprintf(fp, ", \"module\": \"%016llx\"", img);
+        if (inj_sel && nfat) {
+            unsigned long long fh = 0;
+            if (k && lib) fh = fat_dump(lib);
+            if (!fh && mod) fh = fat_dump(mod);
+            if (!fh && f && !k && c_fmod && c_fmod(&mod, f) == CUDA_SUCCESS) fh = fat_dump(mod);
+            if (fh) fprintf(fp, ", \"fatbin\": \"%016llx\"", fh);
+        }
     }
+    if (inj) fprintf(fp, ", \"inv\": %ld", inv);
     if (px) fprintf(fp, ", \"preferred_cluster\": [%u, %u, %u]", px, py, pz);
     {
         // Wall-clock launch time (us), the clock of torch's allocator trace (time_us): the
@@ -334,7 +514,10 @@ static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
     fprintf(fp, "]");
     // Snapshot decision.
     t_snap = snap_mode && cs == CU_STREAM_CAPTURE_STATUS_NONE;
-    if (t_snap && snap_mode == 2) {
+    if (inj) {
+        t_snap = t_snap && inj_sel;
+        if (t_snap) inj_snapped++;
+    } else if (t_snap && snap_mode == 2) {
         unsigned dims[9] = {gx, gy, gz, bx, by, bz, smem, cx, cy};
         unsigned long long key = fnv(dims, sizeof dims, fnv(nm, strlen(nm), 0xcbf29ce484222325ull));
         for (size_t i = 0; i < nkeys && t_snap; i++)
@@ -359,6 +542,25 @@ static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
             unsigned long long z = add_target(v);
             total += z;
             if (v >= 0x10000 && !(v >> 52) && npv < 256) pv[npv++] = v;
+            // A ragged `ptr_shift` tensor map (CuTe create_ragged_tensor_for_tma) has its base
+            // 2^30 rows before its tensor: snapshot the allocation 2^30 * stride[d] on, for
+            // each dim d of extent 2^30 (the case writer gives it a negative byte_offset).
+            if (!z && v && o % 64 == 0 && o + 128 <= plen) {
+                unsigned w2, hi;
+                memcpy(&w2, pbuf + o + 8, 4);
+                memcpy(&hi, pbuf + o + 0x1C, 4);
+                unsigned rank = ((w2 >> 4) & 7) + 1;
+                if (!(w2 & 0xD) && !((w2 >> 11) & 3) && !(w2 >> 22) && rank <= 5)
+                    for (unsigned d = 1; d < rank; d++) {
+                        unsigned dim, lo;
+                        memcpy(&dim, pbuf + o + 0x20 + 4 * d, 4);
+                        if (dim + 1ull != (1ull << 30)) continue;
+                        memcpy(&lo, pbuf + o + 8 + 4 * d, 4);
+                        unsigned long long st = ((unsigned long long)lo << 4) |
+                                                ((unsigned long long)((hi >> (4 * (d - 1))) & 15) << 36);
+                        total += add_target(v + (st << 30));
+                    }
+            }
         }
         // One level of indirection: pointer tables (an array of tensor addresses that the
         // kernel loads, e.g. multi-tensor optimizers) a parameter points to. The window from
@@ -416,7 +618,23 @@ static void CUPTIAPI cb(void *u, CUpti_CallbackDomain d, CUpti_CallbackId id, co
         id == CUPTI_DRIVER_TRACE_CBID_cuLibraryLoadFromFile) {
         if (c->callbackSite == CUPTI_API_ENTER) {
             t_call_mod = 0;
-        } else if (t_call_mod && c->functionParams) {
+            t_call_img = 0;
+            // The image argument (second member of each of these parameter structs, except
+            // the file-name loads).
+            if (inj && c->functionParams && id != CUPTI_DRIVER_TRACE_CBID_cuModuleLoad &&
+                id != CUPTI_DRIVER_TRACE_CBID_cuLibraryLoadFromFile)
+                t_call_img = ((const void *const *)c->functionParams)[1];
+        } else if (c->functionParams && t_call_img) {
+            // Every one of these takes the output handle pointer first.
+            void **hp0 = *(void ***)c->functionParams;
+            if (hp0 && *hp0) {
+                pthread_mutex_lock(&mu);
+                fat_note(*hp0, t_call_img);
+                pthread_mutex_unlock(&mu);
+            }
+            t_call_img = 0;
+        }
+        if (c->callbackSite == CUPTI_API_EXIT && t_call_mod && c->functionParams) {
             // Every one of these takes the output handle pointer first.
             void **hp = *(void ***)c->functionParams;
             if (hp && *hp) {
@@ -619,4 +837,213 @@ size_t ptxvcap_modules(char *buf, size_t cap) {
     }
     pthread_mutex_unlock(&mu);
     return need;
+}
+
+// ---------------------------------------------------------------- CUDA_INJECTION64_PATH
+// Environment (read once, at cuInit):
+//   PTXV_CAPTURE_DIR     output directory (required); "%r" -> $RANK, else p<pid>. Holds
+//                        launches.jsonl, snap/, modules/ (<hash>.cubin, <hash>.fatbin),
+//                        process.json, summary.json (written at exit).
+//   PTXV_CAPTURE_FILTER  POSIX extended regex on the kernel name (mangled); default: all.
+//   PTXV_CAPTURE_SKIP    regex of names to leave out.
+//   PTXV_CAPTURE_INDEX   invocation indices to snapshot, per kernel name, among matching
+//                        launches: "0" (default), "3", "0,5-7", "all".
+//   PTXV_CAPTURE_MAX     snapshotted launches in total (default 16).
+//   PTXV_CAPTURE_RECORD  "selected" (default: only snapshotted launches are written) or
+//                        "matching" (every matching launch, unselected ones without snapshot).
+//   PTXV_CAPTURE_MAX_ALLOC, PTXV_CAPTURE_BUDGET   bytes (k/M/G suffix): largest allocation
+//                        copied (default 2G) and total snapshot bytes (default 32G).
+//   PTXV_CAPTURE_FATBIN  0: do not write fatbins (embedded PTX) of the used modules.
+//   PTXV_CUPTI           libcupti to load (default libcupti.so.13, then the CUDA 13 toolkit).
+static char inj_dir[4096];
+
+static unsigned long long env_size(const char *name, unsigned long long dflt) {
+    const char *v = getenv(name);
+    if (!v || !*v) return dflt;
+    char *end;
+    double x = strtod(v, &end);
+    switch (*end) {
+    case 'k': case 'K': x *= 1024.0; break;
+    case 'm': case 'M': x *= 1024.0 * 1024; break;
+    case 'g': case 'G': x *= 1024.0 * 1024 * 1024; break;
+    case 't': case 'T': x *= 1024.0 * 1024 * 1024 * 1024; break;
+    }
+    return (unsigned long long)x;
+}
+
+/* toolchain.json: the CUDA-related shared objects mapped at exit (CUDA runtime, cutlass-dsl
+ * flavor, NVRTC / nvJitLink, torch, Triton, vendor libraries), from which the converter derives
+ * the toolchain provenance (cutlass-dsl backend cu12 / cu13, cudart major, ...). */
+static void inj_toolchain(void) {
+    static const char *pats[] = {"libcudart.so", "libcute_dsl_runtime", "_cutlass_ir.cu", "libnvrtc",
+                                 "libnvJitLink", "libtorch_cuda", "libtriton", "libcublas", "libcudnn",
+                                 "libnccl", "libcuda.so"};
+    char path[4200];
+    snprintf(path, sizeof path, "%s/toolchain.json", inj_dir);
+    FILE *m = fopen("/proc/self/maps", "r");
+    if (!m) return;
+    FILE *f = fopen(path, "w");
+    if (!f) { fclose(m); return; }
+    fputs("{\"libs\": [", f);
+    char line[8192], seen[64][1024];
+    int ns = 0;
+    while (fgets(line, sizeof line, m)) {
+        char *p = strchr(line, '/');
+        if (!p) continue;
+        p[strcspn(p, "\n")] = 0;
+        int hit = 0;
+        for (size_t i = 0; i < sizeof pats / sizeof *pats && !hit; i++) hit = strstr(p, pats[i]) != NULL;
+        if (!hit) continue;
+        int dup = 0;
+        for (int i = 0; i < ns && !dup; i++) dup = strcmp(seen[i], p) == 0;
+        if (dup || ns >= 64) continue;
+        snprintf(seen[ns], sizeof seen[ns], "%s", p);
+        if (ns) fputs(", ", f);
+        json_str(f, p);
+        ns++;
+    }
+    fputs("]}\n", f);
+    fclose(f);
+    fclose(m);
+}
+
+static void inj_summary(void) {
+    inj_toolchain();
+    char path[4200];
+    unsigned long long g = 0, sk = 0;
+    int n = ptxvcap_stop(&g, &sk);
+    snprintf(path, sizeof path, "%s/summary.json", inj_dir);
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "{\"recorded\": %d, \"snapshotted\": %u, \"matched\": %llu, \"seen\": %llu, "
+               "\"graph_launches\": %llu, \"skipped_snapshots\": %llu, \"modules\": %zu}\n",
+            n, inj_snapped, inj_matched, inj_seen, g, sk, nmods);
+    fclose(f);
+}
+
+static void inj_process_json(void) {
+    char path[4200];
+    snprintf(path, sizeof path, "%s/process.json", inj_dir);
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "{\"pid\": %d, \"argv\": [", (int)getpid());
+    FILE *c = fopen("/proc/self/cmdline", "rb");
+    if (c) {
+        char buf[8192];
+        size_t n = fread(buf, 1, sizeof buf - 1, c);
+        fclose(c);
+        buf[n] = 0;
+        size_t i = 0;
+        int first = 1;
+        while (i < n) {
+            if (!first) fputs(", ", f);
+            json_str(f, buf + i);
+            first = 0;
+            i += strlen(buf + i) + 1;
+        }
+    }
+    fputs("], \"env\": {", f);
+    static const char *keys[] = {"RANK", "LOCAL_RANK", "WORLD_SIZE", "CUDA_VISIBLE_DEVICES",
+                                 "PTXV_CAPTURE_FILTER", "PTXV_CAPTURE_SKIP", "PTXV_CAPTURE_INDEX",
+                                 "PTXV_CAPTURE_MAX", "PTXV_CAPTURE_RECORD", "CUDA_MODULE_LOADING"};
+    int first = 1;
+    for (size_t i = 0; i < sizeof keys / sizeof *keys; i++) {
+        const char *v = getenv(keys[i]);
+        if (!v) continue;
+        fprintf(f, "%s\"%s\": ", first ? "" : ", ", keys[i]);
+        json_str(f, v);
+        first = 0;
+    }
+    char cwd[4096];
+    fputs("}, \"cwd\": ", f);
+    json_str(f, getcwd(cwd, sizeof cwd) ? cwd : "");
+    fputs("}\n", f);
+    fclose(f);
+}
+
+int InitializeInjection(void) {
+    const char *d = getenv("PTXV_CAPTURE_DIR");
+    if (!d || !*d) {
+        fprintf(stderr, "ptxvcap: CUDA_INJECTION64_PATH set but PTXV_CAPTURE_DIR is not; not capturing\n");
+        return 1;
+    }
+    const char *at = strstr(d, "%r");
+    if (at) {
+        char rk[64];
+        const char *r = getenv("RANK");
+        if (r) snprintf(rk, sizeof rk, "%s", r);
+        else snprintf(rk, sizeof rk, "p%d", (int)getpid());
+        snprintf(inj_dir, sizeof inj_dir, "%.*s%s%s", (int)(at - d), d, rk, at + 2);
+    } else {
+        snprintf(inj_dir, sizeof inj_dir, "%s", d);
+    }
+    mkdir(inj_dir, 0755);
+    char mdir[4200];
+    snprintf(mdir, sizeof mdir, "%s/modules", inj_dir);
+    mkdir(mdir, 0755);
+    const char *re = getenv("PTXV_CAPTURE_FILTER");
+    if (re && *re) {
+        if (regcomp(&inj_re, re, REG_EXTENDED | REG_NOSUB)) {
+            fprintf(stderr, "ptxvcap: bad PTXV_CAPTURE_FILTER regex %s\n", re);
+            return 1;
+        }
+        inj_has_re = 1;
+    }
+    const char *sk = getenv("PTXV_CAPTURE_SKIP");
+    if (sk && *sk) {
+        if (regcomp(&inj_skip, sk, REG_EXTENDED | REG_NOSUB)) {
+            fprintf(stderr, "ptxvcap: bad PTXV_CAPTURE_SKIP regex %s\n", sk);
+            return 1;
+        }
+        inj_has_skip = 1;
+    }
+    const char *ix = getenv("PTXV_CAPTURE_INDEX");
+    if (ix && !strcmp(ix, "all")) {
+        inj_lo[0] = 0;
+        inj_hi[0] = ~0u;
+        inj_nr = 1;
+    } else if (ix && *ix) {
+        const char *p = ix;
+        while (*p && inj_nr < INJ_MAXR) {
+            char *e;
+            unsigned lo = (unsigned)strtoul(p, &e, 10), hi = lo;
+            if (e == p) break;
+            if (*e == '-') {
+                p = e + 1;
+                hi = (unsigned)strtoul(p, &e, 10);
+            }
+            inj_lo[inj_nr] = lo;
+            inj_hi[inj_nr++] = hi;
+            p = *e == ',' ? e + 1 : e;
+            if (*e && *e != ',') break;
+        }
+    }
+    inj_max = (unsigned)env_size("PTXV_CAPTURE_MAX", 16);
+    const char *rec = getenv("PTXV_CAPTURE_RECORD");
+    inj_record_all = rec && !strcmp(rec, "matching");
+    const char *fb = getenv("PTXV_CAPTURE_FATBIN");
+    inj_fatbin = !(fb && !strcmp(fb, "0"));
+    const char *cp = getenv("PTXV_CUPTI");
+    int rc = -1;
+    const char *cands[] = {cp, "libcupti.so.13", "/usr/local/cuda-13.0/targets/sbsa-linux/lib/libcupti.so.13",
+                           "/usr/local/cuda-13.0/targets/x86_64-linux/lib/libcupti.so.13",
+                           "/usr/local/cuda-13.0/extras/CUPTI/lib64/libcupti.so.13",
+                           "/usr/local/cuda/extras/CUPTI/lib64/libcupti.so"};
+    for (size_t i = 0; i < sizeof cands / sizeof *cands && rc == -1; i++)
+        if (cands[i]) rc = ptxvcap_init(cands[i], mdir);
+    if (rc != 0) {
+        fprintf(stderr, "ptxvcap: CUPTI init failed (%d); not capturing\n", rc);
+        return 1;
+    }
+    inj = 1;
+    inj_process_json();
+    if (ptxvcap_start(inj_dir, 1, env_size("PTXV_CAPTURE_MAX_ALLOC", 2ull << 30),
+                      env_size("PTXV_CAPTURE_BUDGET", 32ull << 30)) != 0) {
+        fprintf(stderr, "ptxvcap: start failed; not capturing\n");
+        return 1;
+    }
+    atexit(inj_summary);
+    if (getenv("PTXV_CAPTURE_VERBOSE"))
+        fprintf(stderr, "ptxvcap: capturing to %s\n", inj_dir);
+    return 1;
 }

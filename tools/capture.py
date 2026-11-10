@@ -1038,15 +1038,14 @@ if not use_ptx and len(names) == 1 and next(iter(names)) in ptx_of:
     open(f"{out}/jit.ptx", "w").write(
         ptx_of[next(iter(names))][1]
     )  # for reference (--binary)
+ptxas_toolkit = None
 if use_ptx:
-    src = ptx_of[next(iter(names))][1]
-    # Newer JIT compilers stamp a PTX ISA version CUDA 13.0's ptxas (ptxv's) does not take;
-    # the kernels use nothing past 9.0 (fixtures/r2_cute_gemm).
-    m = re.search(r"^\.version (\d+)\.(\d+)", src, re.M)
-    if m and (int(m.group(1)), int(m.group(2))) > (9, 0):
-        src = src.replace(m.group(0), ".version 9.0", 1)
-        warnings.append(f"PTX .version {m.group(1)}.{m.group(2)} rewritten to 9.0")
-    open(f"{out}/kernel.ptx", "w").write(src)
+    # The PTX as the JIT compiler produced it (its `.version` included): ptxv compiles it with
+    # the ptxas of the toolkit that built the executed cubin (`ptxas_toolkit`, PTXV_TOOLKITS)
+    # and compares the result with `executed_cubin` (ptx_rebuild).
+    open(f"{out}/kernel.ptx", "w").write(ptx_of[next(iter(names))][1])
+    tk = re.search(rb"release (\d+)\.(\d+),", open(f"{out}/jit.cubin", "rb").read())
+    ptxas_toolkit = f"{int(tk.group(1))}.{int(tk.group(2))}" if tk else None
 
 # ---------------------------------------------------------------- case.toml
 
@@ -1128,7 +1127,12 @@ toml = [
     f'''name = {q(name)}
 description = """{desc}"""
 '''
-    + ('ptx = "kernel.ptx"\n' if use_ptx else f'cubin = "{r0["_cubin_file"]}"\n')
+    + (
+        'ptx = "kernel.ptx"\nexecuted_cubin = "jit.cubin"\n'
+        if use_ptx
+        else f'cubin = "{r0["_cubin_file"]}"\n'
+    )
+    + (f"ptxas_toolkit = {q(ptxas_toolkit)}\n" if ptxas_toolkit else "")
     + f'arch = "{arch}"\n'
     + f"""entry = {q(r0["name"])}
 grid = {r0["grid"]}

@@ -53,6 +53,35 @@ class CaseError(RuntimeError):
     pass
 
 
+RAGGED_BIG = 1 << 30  # quack copy_utils BIG_INT
+
+
+def _ragged_shift(raw: bytes, off: int, v: int, comp_of):
+    """(geometry, comp, offset, shift) when the 128 bytes at `off` are a tensor map whose base
+    `v` lies outside every allocation but `v + 2^30 * stride[d]` (a dim of extent 2^30) lies in
+    one: the ragged `ptr_shift` layout. `offset` (negative) is relative to that component."""
+    if not v or off % 64 or off + 128 > len(raw):
+        return None
+    g = decode_tmap(raw[off : off + 128])
+    if not g or raw[off + 8 : off + 16] == bytes(8):
+        return None
+    for d in range(1, len(g["dims"])):
+        if g["dims"][d] != RAGGED_BIG:
+            continue
+        shift = RAGGED_BIG * g["strides"][d - 1]
+        loc = comp_of((v + shift) & ((1 << 64) - 1))
+        if loc:
+            return g, loc[0], loc[1] - shift, shift
+    # A map whose base sits a little before an allocation (a box offset folded into the
+    # base, e.g. the cascade WGRAD scale-tail boxes): name the next allocation with a negative
+    # byte_offset; the simulator then reports any element the kernel reads before it.
+    for gap in (1 << k for k in range(4, 21)):
+        loc = comp_of(v + gap)
+        if loc and loc[1] < gap:
+            return g, loc[0], loc[1] - gap, gap
+    return None
+
+
 def _read(path: Path) -> bytes:
     with open(path, "rb") as f:
         return f.read()
@@ -147,13 +176,29 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
 
     # ---------------------------------------------------------------- intervals
     ivs = []  # (start, end, kind, name)
-    for n, t in cap.names.items():
-        ivs.append((t.ptr, t.ptr + t.nbytes, "named", n))
     # Allocator blocks of the region overlap when one was freed and its memory reused; merging
     # them would join unrelated tensors into one buffer. Keep the blocks live at some launch of
     # this group (allocator trace time_us vs. the launch record's t_us, both wall clock).
     t_l = [la.record.get("t_us") for la in launches]
     life = getattr(cap, "block_life", {})
+    # A named tensor whose storage is an allocator block allocated after the group's last
+    # launch is not what the launches saw: its memory was freed and reused (a scalar result of
+    # a later op at the address of a kernel's freed workspace / LSE output). Its name, dtype
+    # and extent would be stale; the launch-time block stands instead.
+    late = []
+    if all(t_l) and t_l:
+        tmax = max(t_l)
+        for bi, (a, z, kind) in enumerate(cap.blocks):
+            lt = life.get(bi)
+            if kind == "during" and lt and lt[0] is not None and lt[0] > tmax:
+                late.append((a, a + z))
+    for n, t in cap.names.items():
+        if any(a <= t.ptr and t.ptr + t.nbytes <= e for a, e in late):
+            warnings.append(
+                f"{n}: allocated after the launch (memory reused); name not used"
+            )
+            continue
+        ivs.append((t.ptr, t.ptr + t.nbytes, "named", n))
     for bi, (a, z, kind) in enumerate(cap.blocks):
         lt = life.get(bi)
         if lt and lt[0] is not None and all(t_l):
@@ -229,6 +274,17 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
             if loc:
                 note_ref(*loc)
                 fields.append((off, ("ptr",) + loc))
+            elif (r := _ragged_shift(raw, off, v, comp_of)) is not None:
+                # A ragged `ptr_shift` tensor map (CuTe create_ragged_tensor_for_tma): its base
+                # sits 2^30 rows before its tensor, so the map names the tensor's buffer with a
+                # negative byte_offset. ASSUME(S-TMA)
+                g, ci, o, shift = r
+                note_ref(ci, o + shift, 1)
+                tmap_refs.setdefault(ci, set()).add(g["dtype"])
+                n = 64 if raw[off + 8] & 2 else 128
+                fields.append((off, ("tmap", ci, o, g, raw[off : off + n])))
+                off += n
+                continue
             elif v and near_alloc(v):
                 unresolved.append(
                     {"launch": li, "param": pi, "offset": off, "value": hex(v)}
@@ -445,6 +501,15 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
             if b["changed"] or (b["fresh"] and b["final"] is not None)
         ]
         outs.sort(key=lambda b: (not b["changed"], not b["named"], -b["first_ref"]))
+    if not outs and getattr(cap, "unchanged_outputs", False):
+        # A launch that changed nothing on this input (a bounds check that found every index
+        # in range, a backward pass with no long segments): every snapshotted buffer is an
+        # output expected unchanged, so the check still covers its races, faults and writes.
+        outs = [b for b in buffers if b["final"] is not None]
+        if outs:
+            warnings.append(
+                "no buffer changed: every buffer is an output expected to stay unchanged"
+            )
     if not outs:
         raise CaseError(
             "no output: no buffer changed and none was allocated in the capture region"
@@ -499,6 +564,32 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
                     f"points into it after its snapshot and before launch {reader} of the case: "
                     "bytes it writes are missing from the initial contents"
                 )
+
+    # Device addresses a kernel wrote into an output (a CUtensorMap built on the device in a
+    # global scratch buffer, a pointer table): the GPU's bytes are capture-space addresses, a
+    # simulator run writes its own. Such words (8-byte aligned, pointing into a captured
+    # allocation, changed by the launches) are left out of the comparison (`expect_ignore`).
+    for b in outs:
+        fin, ini = b["final"], b["init"]
+        if fin is None or b["dtype"] in FLOAT_DT:
+            continue
+        rng = []
+        for o in range(0, len(fin) - 7, 8):
+            v = u64(fin, o)
+            if v < 0x10000 or v >> 52 or comp_of(v) is None:
+                continue
+            if ini is not None and ini[o : o + 8] == fin[o : o + 8]:
+                continue
+            if rng and rng[-1][0] + rng[-1][1] == o:
+                rng[-1][1] += 8
+            else:
+                rng.append([o, 8])
+        if rng:
+            b["expect_ignore"] = rng
+            warnings.append(
+                f"{b['name']}: {sum(n for _, n in rng)} bytes of device addresses the launches wrote "
+                "are excluded from the output comparison (expect_ignore)"
+            )
 
     def buf_ref(ci: int, off: int):
         bi, delta = comp_buf[ci]
@@ -602,11 +693,13 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
             )
         cubin_files.append(by_hash[h])
     if ptx_src is not None:
-        src = ptx_src
-        m = re.search(r"^\.version (\d+)\.(\d+)", src, re.M)
-        if m and (int(m.group(1)), int(m.group(2))) > (9, 0):
-            src = src.replace(m.group(0), ".version 9.0", 1)
-        (out / ("kernel.ptx" if use_ptx else "jit.ptx")).write_text(src)
+        # The PTX as the toolchain produced it (its `.version` included): ptxv compiles it with
+        # the ptxas of the toolkit that built the executed cubin (`ptxas_toolkit`, PTXV_TOOLKITS)
+        # and compares the result with `executed_cubin`.
+        (out / ("kernel.ptx" if use_ptx else "jit.ptx")).write_text(ptx_src)
+    # The CUDA toolkit whose ptxas built the executed cubin (its .note.nv.tkinfo).
+    tk = re.search(rb"release (\d+)\.(\d+),", (out / cubin_files[0]).read_bytes())
+    ptxas_toolkit = f"{int(tk.group(1))}.{int(tk.group(2))}" if tk else None
 
     # ---------------------------------------------------------------- case.toml
     q = json.dumps
@@ -669,7 +762,12 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
     out_names = [b["name"] for b in outs]
     toml = [
         f'name = {q(name)}\ndescription = """{desc}"""\n'
-        + ('ptx = "kernel.ptx"\n' if use_ptx else f'cubin = "{cubin_files[0]}"\n')
+        + (
+            f'ptx = "kernel.ptx"\nexecuted_cubin = "{cubin_files[0]}"\n'
+            if use_ptx
+            else f'cubin = "{cubin_files[0]}"\n'
+        )
+        + (f"ptxas_toolkit = {q(ptxas_toolkit)}\n" if ptxas_toolkit else "")
         + f"entry = {q(l0.name)}\ngrid = {list(l0.grid)}\nblock = {list(l0.block)}\n"
         # S-CGA-SHAPE: a preferred cluster needs the explicit regular one, even 1 x 1 x 1.
         + (
@@ -694,9 +792,15 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
             s += f'init = "file"\nfile = "data/{b["name"]}.bin"\n'
         else:
             s += 'init = "zeros"\n'
+        if b["fresh"]:
+            # Allocated inside the capture region: when the case's launches write it before
+            # reading it, its captured bytes are allocator garbage (S-INIT scratch buffers).
+            s += "scratch = true\n"
         if b.get("is_out"):
             (out / "expected" / f"{b['name']}.bin").write_bytes(b["final"])
             s += f'expect = "expected/{b["name"]}.bin"\n'
+            if b.get("expect_ignore"):
+                s += f"expect_ignore = {b['expect_ignore']}\n"
         if b.get("ptrs"):
             s += (
                 "ptrs = ["
