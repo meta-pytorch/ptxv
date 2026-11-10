@@ -2358,8 +2358,15 @@ enum BarKey {
     /// holds the thread's value of this operand, else 0 (an `R2UR` of a register no walked
     /// path writes before it reads that value in every lane).
     Uni(ptxv_ir::Val),
+    /// 1 if every live lane of the thread's warp is at the thread's pc in its state, else 0
+    /// (the premise for reading a uniform register's current value, `Machine::bar_uw`).
+    Conv,
 }
 type BarRead = (BarKey, u64);
+
+/// `Machine::bar_uw`: the uniform registers (UR / UP) some instruction reachable from a pc
+/// writes; `None` when an indirect call is reachable (any).
+type UwSet = Option<HashSet<ptxv_ir::Reg>>;
 
 /// `Machine::bar_mw`: per pc, a bitset over the registers the region writes (`ix`).
 struct MwSets {
@@ -2586,7 +2593,77 @@ impl Machine {
                     });
                 Some(same as u64)
             }
+            BarKey::Conv => {
+                let me = &self.threads[t];
+                let conv = self.warp_threads(me.warp).all(|u| {
+                    let th = &self.threads[u];
+                    th.warp != me.warp || th.st == St::Exited || th.pc == me.pc && th.st == me.st
+                });
+                Some(conv as u64)
+            }
         }
+    }
+
+    /// Uniform registers (UR / UP) hold one copy per warp, so a lane group of the warp that
+    /// has diverged from the thread may write one while the thread walks: the walk's
+    /// write analysis covers the thread's own paths only. The current value of a uniform
+    /// register is used only when every live lane of the warp is at the thread's pc in its
+    /// state (`BarKey::Conv`: every lane's paths are then paths from that pc) and no
+    /// instruction reachable from there, on any path, writes it (`bar_uw`). Zero registers
+    /// (URZ, UPT) are constants. Returns whether `r`'s current value may be used.
+    fn bar_ucur(&self, r: &ptxv_ir::Reg, conv: bool, uw: &UwSet) -> bool {
+        use ptxv_ir::File;
+        match r.file {
+            File::UR | File::UP => {
+                let zero = self.k.front == ptxv_ir::Front::Sass
+                    && (r.file == File::UR && r.idx == 255 || r.file == File::UP && r.idx == 7);
+                zero || conv && uw.as_ref().is_some_and(|w| !w.contains(r))
+            }
+            _ => true,
+        }
+    }
+
+    /// The uniform registers written by an instruction reachable from `start` on any path
+    /// (no barrier filter, no branch decided): `bar_ucur`. Memoized per worker thread as in
+    /// `bar_mw`.
+    fn bar_uw(&self, start: usize) -> Arc<UwSet> {
+        use ptxv_ir::File;
+        use ptxv_ir::Op;
+        type UwCache = HashMap<(usize, usize), (std::sync::Weak<BarCfg>, Arc<UwSet>)>;
+        thread_local! {
+            static UW: std::cell::RefCell<UwCache> = Default::default();
+        }
+        let cfg = &self.bar_cfg;
+        let key = (Arc::as_ptr(&self.bar_cfg) as usize, start);
+        if let Some(m) = UW.with(|c| c.borrow().get(&key).map(|e| e.1.clone())) {
+            return m;
+        }
+        let mut seen = vec![false; cfg.succ.len()];
+        let mut work = vec![start];
+        let mut w: HashSet<ptxv_ir::Reg> = HashSet::new();
+        let mut any = false;
+        while let Some(pc) = work.pop() {
+            if pc >= seen.len() || seen[pc] {
+                continue;
+            }
+            seen[pc] = true;
+            any |= matches!(self.k.code[pc].op, Op::CallAbs { .. });
+            w.extend(
+                cfg.dsts[pc]
+                    .iter()
+                    .filter(|d| matches!(d.file, File::UR | File::UP)),
+            );
+            work.extend(cfg.succ[pc].iter().copied());
+        }
+        let m = Arc::new((!any).then_some(w));
+        UW.with(|c| {
+            let mut c = c.borrow_mut();
+            if c.len() > 4096 {
+                c.clear();
+            }
+            c.insert(key, (Arc::downgrade(&self.bar_cfg), m.clone()));
+        });
+        m
     }
 
     /// `thread_may_arrive_walk`, memoized per worker thread across states: the walk is a
@@ -2655,6 +2732,11 @@ impl Machine {
         // Barrier ids in registers need the value-tracking walk; kernels whose `bar.sync`
         // ids are all immediates keep the plain walk (same answers there, cheaper memo).
         let regid = self.bar_cfg.regid;
+        // (`bar_ucur`'s premise, read once per walk.)
+        if self.k.front == ptxv_ir::Front::Sass {
+            let c = self.bar_read(t, &BarKey::Conv).unwrap_or(0);
+            reads.push((BarKey::Conv, c));
+        }
         if regid {
             self.thread_may_arrive_walk_regs(t, bit, reads)
         } else {
@@ -2754,6 +2836,9 @@ impl Machine {
         // there (`bar_mw`), whatever the rest of the region writes.
         let mw = values.then(|| self.bar_mw(self.threads[t].pc as usize, bit));
         let clean = |pc: usize, r: &Reg| mw.as_ref().is_some_and(|m| !m.may(pc, r));
+        let conv = self.bar_read(t, &BarKey::Conv) == Some(1);
+        let uw = self.bar_uw(self.threads[t].pc as usize);
+        let ucur = |r: &Reg| self.bar_ucur(r, conv, &uw);
         loop {
             let mut seen: HashSet<(usize, Env, VEnv), BuildHasherDefault<WalkHasher>> =
                 HashSet::default();
@@ -2781,6 +2866,9 @@ impl Machine {
                         };
                         if let Some(&(_, v)) = env.iter().find(|e| e.0 == r) {
                             return Some(v ^ p.neg);
+                        }
+                        if !ucur(&r) {
+                            return None;
                         }
                         if !clean(pc, &r) {
                             if unknown.contains(&r) {
@@ -2817,6 +2905,9 @@ impl Machine {
                             Val::Reg(r, n) if *n == 1 || r.file == ptxv_ir::File::V => {
                                 if let Some(&(_, x, n)) = venv.iter().find(|e| e.0 == *r) {
                                     return Some((x, n));
+                                }
+                                if !ucur(r) {
+                                    return None;
                                 }
                                 if !clean(pc, r) {
                                     if unknown.contains(r) {
@@ -2974,6 +3065,9 @@ impl Machine {
                             if let Some(&(_, x, _)) = venv.iter().find(|e| e.0 == *r) {
                                 return Some(x);
                             }
+                            if !ucur(r) {
+                                return None;
+                            }
                             if !clean(pc, r) {
                                 if unknown.contains(r) {
                                     return None;
@@ -3074,6 +3168,9 @@ impl Machine {
         // current value.
         let start = self.threads[t].pc as usize;
         let mw = self.bar_mw(start, bit);
+        let conv = self.bar_read(t, &BarKey::Conv) == Some(1);
+        let uw = self.bar_uw(start);
+        let ucur = |r: &Reg| self.bar_ucur(r, conv, &uw);
         let mut unknown: Vec<Reg> = Vec::new();
         loop {
             let mut seen: HashSet<(usize, Env, REnv)> = HashSet::new();
@@ -3105,7 +3202,7 @@ impl Machine {
                                     reads.push((k, x.unwrap_or(0)));
                                     return x;
                                 }
-                                if mw.may(pc, r) {
+                                if mw.may(pc, r) || !ucur(r) {
                                     return None;
                                 }
                                 let _ = &used;
@@ -3142,7 +3239,7 @@ impl Machine {
                         if let Some(&(_, v)) = env.iter().find(|e| e.0 == r) {
                             return Some(v ^ p.neg);
                         }
-                        if unknown.contains(&r) {
+                        if unknown.contains(&r) || !ucur(&r) {
                             return None;
                         }
                         used.push(r);
@@ -3162,7 +3259,7 @@ impl Machine {
                         match v {
                             Val::Reg(r, _) => match renv.iter().find(|e| e.0 == *r) {
                                 Some((_, s)) => Some(s.clone()),
-                                None if mw.may(pc, r) => None,
+                                None if mw.may(pc, r) || !ucur(r) => None,
                                 None => Some(v.clone()),
                             },
                             Val::SReg(ptxv_ir::SReg::SharedAddr(_)) => None,
@@ -9017,6 +9114,53 @@ mod bar_values_tests {
                     assert!(walk(false), "{v}/{front}: t{t} without values");
                 }
             }
+        }
+    }
+
+    /// `bar_ucur`: a uniform predicate written by a lane group of the warp that has diverged
+    /// from the thread. fixtures/e_barwalk good on SASS, edited so that the producers' exit
+    /// test writes UP0 (`ISETP.GT.U32.AND UP0, PT, R0, 0x1`) and `BAR.SYNC 0x1, 0x80` is
+    /// guarded by it. Warp 4 with UP0 = 0: every lane at the barrier, nothing reachable from
+    /// there writes UP0, the walk with values decides the guard off (no arrival); lanes 16-31
+    /// still at the ISETP (they write UP0 = 1, then lanes 0-15 arrive), the walk must not use
+    /// UP0's current value.
+    #[test]
+    fn walk_uniform_register_written_by_another_lane_group() {
+        let m0 = machine("good", "sass");
+        let mut k = (*m0.k).clone();
+        let up0 = ptxv_ir::Reg {
+            file: ptxv_ir::File::UP,
+            idx: 0,
+        };
+        let bar = (0..k.code.len())
+            .find(|&pc| {
+                matches!(k.code[pc].op, ptxv_ir::Op::BarSync { .. })
+                    && !k.code[pc].guard.is_always()
+            })
+            .expect("the guarded BAR.SYNC");
+        let set = bar - 1;
+        let ptxv_ir::Op::Setp { d, .. } = &mut k.code[set].op else {
+            panic!("ISETP before the guarded BAR.SYNC")
+        };
+        *d = up0;
+        k.code[bar].guard.reg = Some(up0);
+        let mut m = Machine::new(Arc::new(k), m0.launch.clone());
+        for t in 128..160 {
+            m.threads[t].make_mut().pc = bar as u32;
+        }
+        m.wr(128, up0, 0, 1);
+        let walk = |m: &Machine, values: bool| {
+            let mut reads = Vec::new();
+            m.thread_may_arrive_walk(128, 2, values, &mut reads)
+        };
+        // (Without values a `BAR.SYNC` guarded off still counts as an arrival.)
+        assert!(!walk(&m, true), "converged");
+        for t in 144..160 {
+            m.threads[t].make_mut().pc = set as u32;
+        }
+        assert_eq!(m.bar_read(128, &BarKey::Conv), Some(0));
+        for values in [true, false] {
+            assert!(walk(&m, values), "split, values {values}");
         }
     }
 }

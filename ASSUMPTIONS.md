@@ -1227,6 +1227,18 @@ FA4's fix for its warp-role barrier bug): `UMOV UR, -1; BRA.DIV UR, slow; BAR.SY
     one the walk with values predicts at each earlier state). Complete explorations are
     unaffected. An incomplete clean run with values on bounds nothing beyond the states it
     explored; tests/bar_values.rs runs the CM1 bounded check with values off.
+  - *Uniform registers* (both walks, 2026-11-09). UR and UP hold one copy per warp, and the
+    write analyses above cover the thread's own paths only: a lane group of the warp that
+    has diverged from the thread can write a uniform register the thread then reads. The
+    current value of a uniform register is used only when every live lane of the warp is at
+    the thread's pc in its state (`BarKey::Conv`, recorded with the walk's memo key: every
+    lane's paths are then paths from that pc) and no instruction reachable from there on any
+    path (no barrier filter, no branch decided; any, past an indirect call) writes it
+    (`Machine::bar_uw`); otherwise it is unknown. URZ and UPT are constants. Values a walk
+    computes into a uniform register on its path are unaffected. Unit test
+    `walk_uniform_register_written_by_another_lane_group` (fixtures/e_barwalk good on SASS,
+    the exit test edited to write UP0 and guard the `BAR.SYNC`) fails when the current value
+    is used with lanes 16-31 still before the write.
   - Local reduction: a counted `bar.sync` arrival is local-ample only when at most `count`
     threads may still arrive (`local_ample`); otherwise the synchronization reduction and
     DPOR decide from footprints.
