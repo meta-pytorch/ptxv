@@ -1297,9 +1297,9 @@ add 19%, the exp2 slice before its last rounding 16%).
 **Float trajectory (opt-in, N-ERRDIST-NL-FTRAJ).** `PTXV_ERRDIST_LIN_TRAJ=float` linearizes
 around the computed trajectory instead of the real one. At each nominal input every non-output
 op takes its bit-exact value (`Prog::eval`). Its local law is the rounding of the exact result
-of its computed arguments, and the adjoints are taken there. `both` reports both estimates, the
-real one first; the float one's method ends in "expanded around the float trajectory". Pairs
-always use the real trajectory. This matters where a value exists only because of rounding.
+of its computed arguments, and the adjoints are taken there. The method ends in "expanded
+around the float trajectory". `both` selects per site (below); `all` reports the real, float
+and per-site estimates, in that order. Pairs always use the real trajectory. This matters where a value exists only because of rounding.
 Kahan's compensation c = (t − s) − v is identically 0 in real arithmetic, so the real
 trajectory never sees the roundings of x − c.
 
@@ -1311,6 +1311,33 @@ trajectory never sees the roundings of x − c.
 Under U[0, 1) the per-class local laws match the bit-exact errors (`PTXV_NL_DIAG`: f32 FMA rms
 0.106 observed vs 0.106 modelled; 0.022 modelled on the real trajectory). The remaining 25% is
 in the propagation, not in the local laws.
+
+**Per-site trajectory (`PTXV_ERRDIST_LIN_TRAJ=both`).** Every site takes its local law from the
+float trajectory. Its sensitivity is the float adjoint where that agrees with the real-trajectory
+adjoint (|g_float − g_real| ≤ 2^-10 (|g_float| + |g_real|)). At the other (flagged) sites the
+float adjoint carries the site's own rounding through the values above it, so it is replaced:
+by default with the adjoint of a float evaluation that keeps the site and every op above it
+unrounded (v_k := its exact value, `KModel::state_keep`); with `PTXV_ERRDIST_BOTH_FLAGGED=real`
+with the real-trajectory adjoint. The method ends in "per-site trajectory". Single kernels only.
+
+The float trajectory regresses one sweep point: var_twopass with mean 300 and std 0.1 (P(differ):
+Tier 3 0.358, GB300 0.355, real 0.367, float 0.458). The mean's float adjoint carries all the
+sum's roundings (Σ d_i = −E, E the mean's computed error). The default per-site rule gives 0.419
+there and the `real` rule 0.367. Scorecard (`tools/errdist_scorecard.py`, 22 rows, 148 sweep
+points; aligned = |P_T2 − P_GPU| ≤ max(5%, half the GB300 95% interval) and TV ≤ 0.05 on signed
+log2-ulp buckets):
+
+| trajectory | rows aligned | sweep points aligned |
+|---|---|---|
+| real | 14 | 94 |
+| float | 15 | 103 |
+| per-site (default rule) | 15 | 105 |
+| per-site (`real` rule) | 15 | 103 |
+
+Both per-site rules keep the float trajectory's Kahan results (N(0, 1) 0.399, U[0, 1) 6.5e-3).
+The default rule gains softmax_naive N(10, 3) and softmax_stable N(50, 3) over float. The `real`
+rule gains var_twopass N(300, 0.1) and softmax_naive N(10, 3), and loses softmax_stable N(30, 3)
+and N(70, 3). The four softmax points lie within 0.005 of the TV threshold.
 
 ### 9.4 Pairs
 

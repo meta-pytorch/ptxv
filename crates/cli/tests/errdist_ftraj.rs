@@ -51,35 +51,51 @@ fn run(name: &str, spec: &str, traj: Option<&str>) -> serde_json::Value {
     j
 }
 
-/// (P(differ) of Tier 3, of the real-trajectory linearized Tier 2, of the float one).
-fn ps(j: &serde_json::Value) -> (f64, Option<f64>, Option<f64>) {
+/// Which linearization trajectory an estimate's method names.
+fn traj(m: &str) -> &'static str {
+    if m.contains("per-site trajectory") {
+        "both"
+    } else if m.contains("float trajectory") {
+        "float"
+    } else {
+        "real"
+    }
+}
+
+/// (P(differ) of Tier 3, of the real-trajectory linearized Tier 2, of the float one, of the
+/// per-site one).
+fn ps(j: &serde_json::Value) -> (f64, Option<f64>, Option<f64>, Option<f64>) {
     let est = j["estimates"].as_array().unwrap();
     let p = |e: &serde_json::Value| e["p_differ"][0].as_f64().unwrap();
     let t3 = est.iter().find(|e| e["tier"] == 3).map(p).unwrap();
-    let lin = |float: bool| {
+    let lin = |t: &str| {
         est.iter()
             .find(|e| {
                 let m = e["method"].as_str().unwrap();
-                e["tier"] == 2
-                    && m.starts_with("linearized")
-                    && m.contains("float trajectory") == float
+                e["tier"] == 2 && m.starts_with("linearized") && traj(m) == t
             })
             .map(p)
     };
-    (t3, lin(false), lin(true))
+    (t3, lin("real"), lin("float"), lin("both"))
 }
 
 #[test]
 fn kahan_normal_float_trajectory_matches_tier3() {
-    let j = run("normal", "fixtures/errdist/normal.json", Some("both"));
-    let (t3, real, float) = ps(&j);
-    let (real, float) = (real.unwrap(), float.unwrap());
+    let j = run("normal", "fixtures/errdist/normal.json", Some("all"));
+    let (t3, real, float, both) = ps(&j);
+    let (real, float, both) = (real.unwrap(), float.unwrap(), both.unwrap());
     // Tier 3 ~ 0.40; real trajectory ~ 0.21; float trajectory ~ 0.40.
     assert!(t3 > 0.35 && t3 < 0.45, "{t3}");
     assert!(real < 0.6 * t3, "real trajectory {real} vs tier 3 {t3}");
     assert!(
         (float - t3).abs() < 0.05 * t3,
         "float trajectory {float} vs tier 3 {t3}"
+    );
+    // Per-site selection keeps the float trajectory's gain (Kahan's sites agree, or their
+    // own-rounding-free sensitivities do).
+    assert!(
+        (both - t3).abs() < 0.05 * t3,
+        "per-site trajectory {both} vs tier 3 {t3}"
     );
     assert!(
         j["assumptions"]
@@ -94,9 +110,9 @@ fn kahan_normal_float_trajectory_matches_tier3() {
 
 #[test]
 fn kahan_uniform01_float_trajectory_sees_the_compensation() {
-    let j = run("u01", "fixtures/errdist/uniform01.json", Some("both"));
-    let (t3, real, float) = ps(&j);
-    let (real, float) = (real.unwrap(), float.unwrap());
+    let j = run("u01", "fixtures/errdist/uniform01.json", Some("all"));
+    let (t3, real, float, both) = ps(&j);
+    let (real, float, both) = (real.unwrap(), float.unwrap(), both.unwrap());
     // Tier 3 ~ 8.4e-3; real trajectory ~ 1.5e-6 (the compensation is 0 in real arithmetic);
     // float trajectory ~ 6.5e-3 (25% low: the local laws match bit-exact errors per class,
     // the remainder is in the propagation).
@@ -106,14 +122,21 @@ fn kahan_uniform01_float_trajectory_sees_the_compensation() {
         float > 0.5 * t3 && float < 1.5 * t3,
         "float trajectory {float} vs tier 3 {t3}"
     );
+    assert!(
+        both > 0.5 * t3 && both < 1.5 * t3,
+        "per-site trajectory {both} vs tier 3 {t3}"
+    );
 }
 
 #[test]
 fn default_is_the_real_trajectory_only() {
     let j = run("default", "fixtures/errdist/normal.json", None);
-    let (_, real, float) = ps(&j);
-    assert!(real.is_some() && float.is_none());
+    let (_, real, float, both) = ps(&j);
+    assert!(real.is_some() && float.is_none() && both.is_none());
     let j = run("float", "fixtures/errdist/normal.json", Some("float"));
-    let (_, real, float) = ps(&j);
-    assert!(real.is_none() && float.is_some());
+    let (_, real, float, both) = ps(&j);
+    assert!(real.is_none() && float.is_some() && both.is_none());
+    let j = run("both", "fixtures/errdist/normal.json", Some("both"));
+    let (_, real, float, both) = ps(&j);
+    assert!(real.is_none() && float.is_none() && both.is_some());
 }

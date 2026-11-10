@@ -7304,15 +7304,20 @@ residue for exact sums, the table offsets for final slices.
   3 (within max(5%, CI)).
 
 ### N-ERRDIST-NL-FTRAJ · code
-**Opt-in (`PTXV_ERRDIST_LIN_TRAJ=float` or `both`): the non-chain Tiers 1 and 2 linearize
-around the computed float trajectory.** At each nominal input every op except the outputs
+**Opt-in (`PTXV_ERRDIST_LIN_TRAJ=float`, `both` or `all`): the non-chain Tiers 1 and 2
+linearize around the computed float trajectory.** At each nominal input every op except the outputs
 takes its bit-exact computed value (`Prog::eval`) instead of its real value. Each op's local
 error law is then that of rounding the exact result of its computed arguments, and the
 adjoints are taken at the computed values. An output keeps the exact result of its computed
 arguments, which positions its own last rounding. Values that exist only because of
 rounding, such as a Kahan compensation c = (t − s) − v (identically 0 in real arithmetic),
-carry their computed magnitude, so the roundings they feed (x − c) become sites.
-- Where: `errdist/nonlin/lin.rs` `Trajectory`, `KModel::state`; `errdist/nonlin/mod.rs`
+carry their computed magnitude, so the roundings they feed (x − c) become sites. `both` keeps
+the float local laws and takes each site's sensitivity from the float trajectory where it agrees
+with the real one within 2^-10 relative. Elsewhere it uses the adjoint of a float evaluation
+that leaves the site and everything above it unrounded (`PTXV_ERRDIST_BOTH_FLAGGED=real`: the
+real-trajectory adjoint).
+- Where: `errdist/nonlin/lin.rs` `Trajectory`, `KModel::state`, `KModel::state_keep`;
+  `errdist/nonlin/agg.rs` `collect` (the per-site choice); `errdist/nonlin/mod.rs`
   `analytic` (single kernels only: a pair's matched roundings are found by equal real values,
   N-ERRDIST-NL-JOINT).
 - Status: **argued.** First-order propagation (N-ERRDIST-NL-LIN) still applies. The local

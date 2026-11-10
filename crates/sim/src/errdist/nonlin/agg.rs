@@ -379,6 +379,9 @@ struct Ctx<'a> {
     cfg: &'a Cfg,
     r: &'a KModel<'a>,
     sr: &'a State,
+    /// `Trajectory::Both` (single kernels): the nominal leaves and the real-trajectory state,
+    /// for the per-site sensitivity selection.
+    both: Option<(&'a [crate::mma_lp::Operand], &'a State)>,
     c: Option<(&'a KModel<'a>, &'a State)>,
     m: &'a Matches,
     /// Slice tables computing the same function of their index value.
@@ -397,6 +400,13 @@ struct Ctx<'a> {
     depth: usize,
     /// The measured tie rate of 16-bit final roundings (single kernels).
     tie: f64,
+}
+
+/// `Trajectory::Both`, flagged sites: `PTXV_ERRDIST_BOTH_FLAGGED=real` takes the real
+/// trajectory's sensitivity; the default (`loo`) the float one without the site's own rounding.
+fn both_flagged_real() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PTXV_ERRDIST_BOTH_FLAGGED").as_deref() == Ok("real"))
 }
 
 fn site_of(
@@ -480,10 +490,38 @@ impl<'a> Ctx<'a> {
         let (sr_list, cr_list) = r.adjoints_cut(self.sr, &cone_r, &mut adj, &|i| {
             cut_r.contains_key(&r.canon[i as usize])
         });
+        // Trajectory::Both: the real trajectory's sensitivities, to flag the sites whose float
+        // sensitivity differs.
+        let real_g: Option<HashMap<u32, f64>> = match (self.both, self.c) {
+            (Some((_, sreal)), None) => {
+                let mut a2 = Vec::new();
+                Some(r.adjoints(sreal, &cone_r, &mut a2).into_iter().collect())
+            }
+            _ => None,
+        };
         for (i, g) in sr_list {
             if i == root_r {
                 continue;
             }
+            let g = match (&real_g, self.both) {
+                (Some(rg), Some((wr, _))) if !matches!(self.sr.law[i as usize], Law::Zero) => {
+                    let gr = rg.get(&i).copied().unwrap_or(0.0);
+                    if (g - gr).abs() <= 2f64.powi(-10) * (g.abs() + gr.abs()) {
+                        g
+                    } else if both_flagged_real() {
+                        gr
+                    } else {
+                        // Flagged: the adjoint with op i's own rounding left out.
+                        let sk = r.state_keep(wr, i);
+                        let mut a2 = Vec::new();
+                        r.adjoints(&sk, &cone_r, &mut a2)
+                            .into_iter()
+                            .find(|x| x.0 == i)
+                            .map_or(0.0, |x| x.1)
+                    }
+                }
+                _ => g,
+            };
             if let Some(x) = site_of(r, self.sr, i, g, sign_r, unit)? {
                 sites.push(x);
             }
@@ -1229,6 +1267,8 @@ pub fn estimate(
         // The nominal (error-free) values; input errors are the leaves' local laws.
         let wr = r.p.leaves(&smp.clean_bytes())?;
         let sr = r.state(&wr);
+        let sreal =
+            (r.traj == super::lin::Trajectory::Both && c.is_none()).then(|| r.state_real(&wr));
         if !r.in_err.is_empty() && t < 16 {
             let (a, b) = curvature(r, &sr, &wr, &pick, t);
             curv.0 += a;
@@ -1243,6 +1283,7 @@ pub fn estimate(
             cfg,
             r,
             sr: &sr,
+            both: sreal.as_ref().map(|s| (wr.as_slice(), s)),
             c: match (c, &sc) {
                 (Some(ck), Some(s)) => Some((ck, s)),
                 _ => None,

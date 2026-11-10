@@ -248,7 +248,9 @@ pub fn analytic(
     };
     // The float trajectory is for single kernels: a pair's matched roundings are found by
     // equal real values (N-ERRDIST-NL-JOINT).
-    let trajs: Vec<lin::Trajectory> = if c.is_some() && trajs.contains(&lin::Trajectory::Float) {
+    let trajs: Vec<lin::Trajectory> = if c.is_some()
+        && trajs.iter().any(|t| *t != lin::Trajectory::Real)
+    {
         notes.push("float-trajectory linearization: single kernels only; this pair uses the real trajectory".into());
         vec![lin::Trajectory::Real]
     } else {
@@ -284,17 +286,23 @@ pub fn analytic(
                     if tier == 1 {
                         notes.extend(n);
                     }
-                    if traj == lin::Trajectory::Float {
-                        e.method.push_str("; expanded around the float trajectory");
+                    match traj {
+                        lin::Trajectory::Float => {
+                            e.method.push_str("; expanded around the float trajectory")
+                        }
+                        lin::Trajectory::Both => e.method.push_str(
+                            "; per-site trajectory (float laws; flagged sites' sensitivities without their own rounding)",
+                        ),
+                        lin::Trajectory::Real => {}
                     }
                     out.push(e);
                 }
                 Err(e) => notes.push(format!(
                     "non-chain tier {tier}{} not run: {e}",
-                    if traj == lin::Trajectory::Float {
-                        " (float trajectory)"
-                    } else {
-                        ""
+                    match traj {
+                        lin::Trajectory::Float => " (float trajectory)",
+                        lin::Trajectory::Both => " (per-site trajectory)",
+                        lin::Trajectory::Real => "",
                     }
                 )),
             }

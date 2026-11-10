@@ -1177,7 +1177,7 @@ pub fn cmd(a: &Args) -> Result<()> {
             ids.push("N-ERRDIST-NL-ELEM");
         } else if e.method.starts_with("linearized") {
             ids.extend(["N-ERRDIST-NL-LIN", "N-ERRDIST-NL-INDEP"]);
-            if e.method.contains("float trajectory") {
+            if e.method.contains("float trajectory") || e.method.contains("per-site trajectory") {
                 ids.push("N-ERRDIST-NL-FTRAJ");
             }
             if pair {
