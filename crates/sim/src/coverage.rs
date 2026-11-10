@@ -1814,6 +1814,9 @@ pub struct Coverage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stopped: Option<String>,
     pub seconds: f64,
+    /// `--concolic` (solve.rs): the outcome per untaken side and the per-solver counts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concolic: Option<crate::solve::Report>,
     #[serde(skip)]
     examples: BTreeMap<u32, [Vec<Example>; 2]>,
     /// Instructions reached, by pc (`mutated_pass`).
@@ -1880,7 +1883,7 @@ pub fn analyze(m0: &Machine) -> Coverage {
 
 /// `analyze` within `b`: the run stops (`Coverage::stopped`) when it passes either cap.
 pub fn analyze_budget(m0: &Machine, b: Budget) -> Coverage {
-    analyze_full(m0, b, None).0
+    analyze_sym(m0, b, None).0
 }
 
 /// A, with the concolic expressions when `sym` is given (symb.rs): the coverage, the
@@ -1889,10 +1892,11 @@ pub fn analyze_with(
     m0: &Machine,
     sym: Option<crate::symb::Config>,
 ) -> (Coverage, Option<(Box<crate::symb::SymState>, Machine)>) {
-    analyze_full(m0, Budget::default(), sym)
+    analyze_sym(m0, Budget::default(), sym)
 }
 
-fn analyze_full(
+/// `analyze_with` within `b`.
+pub fn analyze_sym(
     m0: &Machine,
     b: Budget,
     sym: Option<crate::symb::Config>,
@@ -2587,7 +2591,8 @@ impl Domain {
         Some(inv.holds(inv.decode(&el)))
     }
 
-    fn cands(&self, a: usize) -> Vec<u64> {
+    /// Candidate words for allocation `a` from its declared invariant (values, bounds).
+    pub fn cands(&self, a: usize) -> Vec<u64> {
         self.by_alloc.get(&a).map(|i| i.cands()).unwrap_or_default()
     }
 

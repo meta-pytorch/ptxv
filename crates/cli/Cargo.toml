@@ -20,3 +20,7 @@ ptxv-case = { path = "../case" }
 ptxv-sim = { path = "../sim" }
 ptxv-hw = { path = "../hw" }
 mimalloc = { version = "0.1", default-features = false }
+
+[features]
+# --concolic: the external SMT solver (ptxv-sim feature smt).
+smt = ["ptxv-sim/smt"]

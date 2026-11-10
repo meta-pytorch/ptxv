@@ -44,6 +44,7 @@ pub mod seg;
 pub mod slices;
 pub mod smem;
 pub mod softmax;
+pub mod solve;
 pub mod spin;
 pub mod symb;
 pub mod tenant;

@@ -29,6 +29,7 @@ use serde::Serialize;
 mod calib;
 mod calib_lp;
 mod compare;
+mod concolic;
 mod cvt_sweep;
 mod equiv;
 mod errdist;
@@ -206,6 +207,12 @@ enum Cmd {
         /// exploration and no verdict (rows[].got = ["coverage-only"]).
         #[arg(long)]
         coverage_only: bool,
+        /// Concolic input exploration (ptxv_sim::symb / solve): expressions over the input for
+        /// every input-dependent condition, solvers for the untaken sides, every witness
+        /// replayed; flips go in rows[].input_coverage.concolic and (up to
+        /// PTXV_CONCOLIC_CHECKS) are checked as mutated inputs. Off by default.
+        #[arg(long)]
+        concolic: bool,
         /// Check again on mutated inputs: for up to N untaken input-dependent comparison
         /// sides that compare one input word against a constant, write a value that flips
         /// the comparison into --mutate-elements elements and run the check on that input.
@@ -952,6 +959,9 @@ fn release_freed_memory() {
 /// One check on a mutated input (`--mutate-inputs`): its own evidence, never the verdict.
 #[derive(Serialize)]
 struct MutatedRow {
+    /// Where the mutation comes from: `B` (--mutate-inputs), `concolic` (a replayed
+    /// --concolic witness) or `given` (--mutate-input).
+    source: &'static str,
     /// `buffer[element]=value, ...`.
     mutation: String,
     /// The comparison it flips and the side it makes taken (null: given with --mutate-input).
@@ -971,6 +981,41 @@ struct MutatedRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     skipped: Option<String>,
     seconds: f64,
+}
+
+/// The case's declared input invariants (`buffers[].invariant`), checked on the captured bytes
+/// of `m` (coverage.rs `Domain::new`), with their notes.
+fn input_domain(case: &Case, m: &Machine) -> Result<(ptxv_sim::coverage::Domain, Vec<String>)> {
+    let invs: Vec<ptxv_sim::coverage::Invariant> = case
+        .m
+        .buffers
+        .iter()
+        .filter_map(|b| {
+            let i = b.invariant.as_ref()?;
+            Some(ptxv_sim::coverage::Invariant {
+                buffer: b.name.clone(),
+                values: i.values.clone(),
+                min: i.min,
+                max: i.max,
+                elem: b.elem_bytes() as u8,
+                signed: b.dtype.starts_with('i'),
+            })
+        })
+        .collect();
+    let float_inv: Vec<&str> = case
+        .m
+        .buffers
+        .iter()
+        .filter(|b| b.invariant.is_some() && !b.dtype.starts_with('i') && !b.dtype.starts_with('u'))
+        .map(|b| b.name.as_str())
+        .collect();
+    if !float_inv.is_empty() {
+        anyhow::bail!(
+            "input invariants are for integer buffers: {}",
+            float_inv.join(", ")
+        );
+    }
+    Ok(ptxv_sim::coverage::Domain::new(m, invs))
 }
 
 /// `--hw-profile` (`PTXV_HW_PROFILE`, default "gb300").
@@ -1294,7 +1339,7 @@ fn cmd_check(
             let m = machine(case, k.clone())?;
             let refuted = m.launch.refuted_opt_in.clone();
             if COVERAGE_ONLY.get().copied().unwrap_or(false) {
-                let cov = ptxv_sim::coverage::analyze(&m);
+                let (mut cov, sym) = concolic::analyze(&m, coverage_budget(true));
                 println!(
                     "COVERAGE {v} {f}: {} input-dependent comparison(s), {} side(s) not taken, input-independent={}, {} unexecuted instruction(s) ({} behind input-dependent conditions, {} behind parameter conditions), terminal={} {:.1}s",
                     cov.sites,
@@ -1309,6 +1354,8 @@ fn cmd_check(
                 for u in cov.untaken.iter().take(20) {
                     println!("    note: {}", u.note);
                 }
+                let k_mut = INPUT_COV.get().map_or(2, |x| x.2);
+                concolic::search(&m, &mut cov, sym, &input_domain(case, &m)?.0, k_mut);
                 rows.push(CheckRow {
                     variant: v.clone(),
                     front: f.into(),
@@ -1573,8 +1620,9 @@ fn cmd_check(
             // On the plain certificate path, A rides on the certificate's own run instead
             // (coverage.rs `Tap`): that run is the same deterministic run, and comes before
             // any exploration. PTXV_COVERAGE_SEPARATE=1 runs it apart.
-            let want_cov = cov_on || n_mut > 0 || !specs.is_empty();
+            let want_cov = cov_on || n_mut > 0 || !specs.is_empty() || concolic::on();
             let ride = want_cov
+                && !concolic::on()
                 && certify
                 && !slices
                 && groups.is_none()
@@ -1584,8 +1632,10 @@ fn cmd_check(
                 && m1.launch.env.residency.is_none()
                 && !m1.launch.env.tmem_cotenant
                 && m1.nic.is_none();
+            let mut early_sym = None;
             let mut early_cov = (want_cov && !ride).then(|| {
-                let c = ptxv_sim::coverage::analyze_budget(&m1, coverage_budget(false));
+                let (c, s) = concolic::analyze(&m1, coverage_budget(false));
+                early_sym = s;
                 release_freed_memory();
                 c
             });
@@ -1801,7 +1851,8 @@ fn cmd_check(
             let mut mutated_inputs = Vec::new();
             let mut mutation_refusals = Vec::new();
             let mut mutation_budget = None;
-            if let Some(cov) = early_cov {
+            if let Some(mut cov) = early_cov {
+                let sym = early_sym.take();
                 println!(
                     "    input coverage: {} input-dependent comparison(s), {} side(s) not taken on this input ({:.1}s)",
                     cov.sites,
@@ -1851,49 +1902,19 @@ fn cmd_check(
                     );
                 }
                 // Declared input invariants, checked on the captured bytes.
-                let invs: Vec<ptxv_sim::coverage::Invariant> = case
-                    .m
-                    .buffers
-                    .iter()
-                    .filter_map(|b| {
-                        let i = b.invariant.as_ref()?;
-                        Some(ptxv_sim::coverage::Invariant {
-                            buffer: b.name.clone(),
-                            values: i.values.clone(),
-                            min: i.min,
-                            max: i.max,
-                            elem: b.elem_bytes() as u8,
-                            signed: b.dtype.starts_with('i'),
-                        })
-                    })
-                    .collect();
-                let float_inv: Vec<&str> = case
-                    .m
-                    .buffers
-                    .iter()
-                    .filter(|b| {
-                        b.invariant.is_some()
-                            && !b.dtype.starts_with('i')
-                            && !b.dtype.starts_with('u')
-                    })
-                    .map(|b| b.name.as_str())
-                    .collect();
-                if !float_inv.is_empty() {
-                    anyhow::bail!(
-                        "input invariants are for integer buffers: {}",
-                        float_inv.join(", ")
-                    );
-                }
-                let (dom, inv_notes) = ptxv_sim::coverage::Domain::new(&m1, invs);
+                let (dom, inv_notes) = input_domain(case, &m1)?;
                 for n in &inv_notes {
                     println!("    {n}");
                 }
-                if n_mut > 0 || !specs.is_empty() {
+                let cc_muts = concolic::search(&m1, &mut cov, sym, &dom, k_mut);
+                if n_mut > 0 || !specs.is_empty() || !cc_muts.is_empty() {
                     let (mut muts, refused) = if n_mut > 0 {
                         ptxv_sim::coverage::plan(&m1, &cov, n_mut, k_mut, &dom)
                     } else {
                         (vec![], vec![])
                     };
+                    let n_b = muts.len();
+                    muts.extend(cc_muts);
                     let elem = |name: &str| {
                         case.m
                             .buffers
@@ -1943,6 +1964,13 @@ fn cmd_check(
                             break;
                         }
                         let t0 = Instant::now();
+                        let source = if mu.pc == u32::MAX {
+                            "given"
+                        } else if checked >= n_b {
+                            "concolic"
+                        } else {
+                            "B"
+                        };
                         let mm = ptxv_sim::coverage::apply(&m1, &mu);
                         // A mutation that opens no code on its deterministic pass (the side it
                         // was to make taken stays untaken, the same instructions are reached)
@@ -1964,6 +1992,7 @@ fn cmd_check(
                         if pass == ptxv_sim::coverage::Pass::Unchanged {
                             let at = m1.k.describe(mu.pc as usize);
                             let row = MutatedRow {
+                                source,
                                 mutation: mu.label.clone(),
                                 pc: Some(mu.pc),
                                 within_invariants: mu.within_invariants,
@@ -2000,6 +2029,7 @@ fn cmd_check(
                             m1.k.describe(mu.pc as usize)
                         };
                         let row = MutatedRow {
+                            source,
                             mutation: mu.label.clone(),
                             pc: (mu.pc != u32::MAX).then_some(mu.pc),
                             within_invariants: mu.within_invariants,
@@ -2813,6 +2843,7 @@ fn run() -> Result<()> {
             nonfinite_strict,
             no_input_coverage,
             coverage_only,
+            concolic,
             mutate_inputs,
             mutate_elements,
             mutate_input,
@@ -2820,6 +2851,7 @@ fn run() -> Result<()> {
             mutate_budget_seconds,
             mutate_budget_states,
         } => {
+            let _ = concolic::ON.set(concolic);
             let _ = MUTATE_SPECS.set(mutate_input);
             let _ = COVERAGE_ONLY.set(coverage_only);
             let _ = COV_BUDGETS.set(CovBudgets {
