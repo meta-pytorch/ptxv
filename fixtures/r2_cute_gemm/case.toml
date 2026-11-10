@@ -140,7 +140,10 @@ edits = [
 ]
 expect = ["race"]
 # Complete since the phase-aware reduction (273k states); before, a capped run saw a subset.
-expect_sass = ["deadlock", "nondeterministic", "race", "violation"]
+# `contract` (strict model): with the accumulator-full wait deleted, no thread waits for the
+# MMA warp's trailing tcgen05.commit (`UTCBAR`), which may arrive after the CTA exited
+# (E-TC-EXIT; discharged under the gb300 profile), as in r2_cute_small CM1.
+expect_sass = ["contract", "deadlock", "nondeterministic", "race", "violation"]
 
 [[variants]]
 id = "CM2"

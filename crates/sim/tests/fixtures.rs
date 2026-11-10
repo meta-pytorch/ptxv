@@ -929,6 +929,15 @@ fn r2_cute_small() {
     check_bounded("r2_cute_small", "CM4", "ptx", 50_000);
 }
 
+/// fixtures/r2_cute_gemm CM1 on SASS (exhaustive): its expectation had no test and went stale.
+#[test]
+fn r2_cute_gemm_cm1_sass() {
+    if vendor_missing(&["r2_cute_gemm"]) {
+        return;
+    }
+    check_stateful("r2_cute_gemm", "CM1", "sass", 2_000_000);
+}
+
 // Rung 3b (CuTeDSL half): MXF8 block-scaled GEMM (TMA, tcgen05.cp of the scale factors,
 // tcgen05.mma.kind::mxf8f6f4.block_scale). Exhaustive verdicts; both front-ends bitwise equal
 // to the recorded GB300 outputs (good and B30); B30 (scale factors of the wrong K-block)
