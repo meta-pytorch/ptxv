@@ -794,6 +794,10 @@ impl<'a> Lw<'a> {
                 "GTMASK" => SReg::LaneMaskGt,
                 "EQMASK" => SReg::LaneMaskEq,
                 "SWINHI" => SReg::SharedWindowHi,
+                // `%warpid` (ptxas extracts it from SR_VIRTID): the warp's SM slot, whose value
+                // the simulator leaves undefined, so the exact field layout does not matter.
+                // ASSUME(E-WARPID): see ASSUMPTIONS.md
+                "VIRTID" => SReg::WarpId,
                 _ => bail!(self.err(format!("special register {s} not modeled"))),
             };
             return Ok(Val::SReg(v));

@@ -3496,6 +3496,24 @@ GB300 was wrong or hung in 198/200 runs. On GB300 the unwritten P4 is not false 
   unmodelled instruction's predicate output); *miss* only for predicates the lifter writes
   that hardware does not.
 
+### E-WARPID · code
+**`%warpid` is the warp's slot on its SM: fixed for the warp's lifetime, not determined by the
+program.** The PTX ISA calls it volatile (a warp may be rescheduled) and points to `%tid` for a
+logical warp index. Until 2026-11-08 the PTX front read it as the warp's index in its CTA
+(`tid / 32`), so a kernel that used it as a warp index was clean while GB300 gave other values.
+A register-only instruction that reads `%warpid` leaves its destinations undefined (every
+bit, every lane); S-INIT reports any use of them that reaches a sink, and any other reader is a
+`violation` itself (`warpid-use:<pc>`). S-INIT reports in a kernel that reads it say it may be
+the source, and S-INIT-FILLS is not applied (the fills do not range over the slots).
+- Where: `exec.rs` `exec_thread`, `report_uninit`; `fills.rs` `check`; `ptxv_ir::reads_warpid`.
+  SASS: `S2R SR_VIRTID` (from which ptxas extracts `%warpid`) is the same register; its
+  value is undefined, so the field layout does not matter.
+- Status: **validated**: probe (1024 CTAs x 64 threads, `%warpid` read twice 200 us apart, GB300,
+  CUDA 13.0, 2026-11-08): `%warpid != tid / 32` for 55808 of 65536 threads, 14 distinct values
+  (0..13: several CTAs per SM), no warp's value changed between the reads, all lanes of a warp
+  agree; `%laneid == tid % 32` in every thread. fixtures/e_warpid.
+- If wrong: *false alarm* only (an undefined value stands for every slot).
+
 ### S-TMAP-TAIL · code
 **GB300's TMA ignores bytes 0x40..0x7f of a 128-byte tensor map in global memory.** A store
 that leaves undefined data there is a `contract` finding (`tmap-tail-undef:<pc>`), not an

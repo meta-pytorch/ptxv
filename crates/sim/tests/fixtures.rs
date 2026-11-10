@@ -5543,6 +5543,15 @@ fn e_dead_read_strong_loads() {
     }
 }
 
+/// E-WARPID: %warpid is the warp's SM slot (GB300: not tid / 32), so storing it or branching
+/// on it is reported on both front-ends; the warp index from %tid is clean.
+#[test]
+fn e_warpid_is_not_the_warp_index() {
+    for v in ["good", "WARPID", "BRANCH"] {
+        both("e_warpid", v);
+    }
+}
+
 /// C-POLL-ATOM (E-WELLSYNC): an arrival counter of atomic adds polled to its full count is
 /// certified; a poll that exits on a partial count is refused and races, also when the
 /// partial count includes the poller's own add made after another CTA's add in the

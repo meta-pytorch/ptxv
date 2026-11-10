@@ -5514,11 +5514,16 @@ impl Machine {
         } else {
             format!("{:?}{}", r.file, r.idx)
         };
-        let msg = format!(
+        let mut msg = format!(
             "{} reads register {name}, whose value is undefined (nothing has written it, it was loaded from shared memory nothing wrote, or it was computed from such a value), where it reaches memory, an address, control flow or synchronization, at {}",
             self.actor_name(t as u32),
             self.k.describe(pc as usize)
         );
+        if self.k.code.iter().any(|i| ptxv_ir::reads_warpid(&i.op)) {
+            msg.push_str(
+                " (the kernel reads %warpid, whose value is left undefined: it may come from there, E-WARPID)",
+            );
+        }
         self.report("violation", format!("uninit-reg:{pc}"), msg);
         if self
             .perm
@@ -5557,6 +5562,25 @@ impl Machine {
         }
         self.stale = None;
         self.vmask = None;
+        // ASSUME(E-WARPID): %warpid is the warp's slot on its SM, fixed for the warp's
+        // lifetime but not determined by the program (GB300: 0..13 for 2-warp CTAs, not
+        // tid / 32). A register-only instruction that reads it leaves its destinations
+        // undefined (S-INIT reports any use that reaches a sink); any other reader is itself
+        // a use.
+        if ptxv_ir::reads_warpid(&inst.op) && r.is_ok() {
+            if reg_only(&inst.op) {
+                for d in inst.op.dst_regs() {
+                    self.make_undefined(t, d);
+                }
+            } else {
+                let msg = format!(
+                    "{} uses %warpid at {}: its value is the warp's slot on the SM, which the program does not determine (E-WARPID; GB300 gives values other than the warp's index in its CTA)",
+                    self.actor_name(t as u32),
+                    self.k.describe(pc as usize)
+                );
+                self.report("violation", format!("warpid-use:{pc}"), msg);
+            }
+        }
         // Dead-read probe (C-ORDER `dead_reads` in wellsync.rs, E-RACE-DEAD): the reading
         // instruction's registers hold no defined bit, so any use of them is reported
         // (S-INIT). Every instruction the probe names, not only `Op::Ld`: until 2026-11-08 a

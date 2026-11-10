@@ -684,6 +684,13 @@ pub const REGISTRY: &[Assumption] = &[
         applies: always,
     },
     Assumption {
+        id: "E-WARPID",
+        kind: "code",
+        status: "validated",
+        title: "%warpid is the warp's SM slot, not determined by the program: its value is undefined (S-INIT reports uses at sinks)",
+        applies: |k| any(k, ptxv_ir::reads_warpid),
+    },
+    Assumption {
         id: "S-DSMEM",
         kind: "code",
         status: "validated",

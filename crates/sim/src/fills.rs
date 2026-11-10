@@ -168,6 +168,14 @@ pub fn check(m0: &Machine, v: &mut Verdict) {
     }
     // Undefined data that comes from an ordering bug (a read before the write in some
     // schedule) depends on the schedule: one deterministic schedule says nothing about it.
+    // ASSUME(E-WARPID): the fills are arbitrary words, not the slots %warpid can hold; a
+    // kernel that reads it keeps its reports.
+    if m0.k.code.iter().any(|i| ptxv_ir::reads_warpid(&i.op)) {
+        v.notes.push(format!(
+            "{NOTE} not run (the kernel reads %warpid, E-WARPID: its undefined values stand for the warp's SM slot, which the fills do not range over)"
+        ));
+        return;
+    }
     let classes = v.classes();
     if classes
         .iter()

@@ -156,6 +156,13 @@ pub enum SReg {
     GlobalAddr(u32),
 }
 
+/// Does `op` read `%warpid` (E-WARPID)?
+pub fn reads_warpid(op: &Op) -> bool {
+    op.src_vals()
+        .iter()
+        .any(|v| matches!(v, Val::SReg(SReg::WarpId)))
+}
+
 impl SReg {
     /// Can this register read differently in two CTAs of one launch? The one classification
     /// of position dependence (num.rs position mode: the E-CTA-REP position run and E-CTA-INDEP

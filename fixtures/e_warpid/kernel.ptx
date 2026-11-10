@@ -1,0 +1,31 @@
+// E-WARPID: %warpid is the warp's SM slot, not its index in the CTA. 4 CTAs of 64 threads; lane
+// 0 of each warp stores its warp index into out[2 c + w].
+//   good: w = tid / 32
+//   WARPID: w = %warpid (GB300: other values for most warps; until 2026-11-08 the PTX front
+//        read it as tid / 32 and called this clean)
+//   BRANCH: a branch tests %warpid
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_warpid(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    and.b32 %r2, %r1, 31;
+    setp.ne.u32 %p1, %r2, 0;
+    @%p1 bra DONE;
+    shr.u32 %r3, %r1, 5;                  // @W
+    shr.u32 %r4, %r1, 5;                  // @A
+    mov.u32 %r9, %ctaid.x;
+    mad.lo.u32 %r5, %r9, 2, %r4;
+    mul.wide.u32 %rd2, %r5, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r3;
+DONE:
+    ret;
+}
