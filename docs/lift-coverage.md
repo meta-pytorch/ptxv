@@ -355,6 +355,7 @@ any modifier outside the audited set before an arm runs.
 | `LDSM.16.M88.N` / `.MT88.N` | `ldmatrix.sync.aligned.m8n8.x{1,2,4}[.trans].shared.b16` | (PTX front added) | probes/ldmatrix_ptx |
 | `LDG.E.NA[...]`, `ST.E.EF.128`, `LD` / `ST` / `ATOM` `.STRONG.SM` | `.L1::no_allocate`, `.L1::evict_first`, `.cta` scope | cache hints dropped; `.SM` = CTA scope | probes/memhints |
 | `STG.E.64.MMIO.SYS` | `st.mmio.relaxed.sys` | strong relaxed `.sys` store; other `.MMIO` forms refused | probes/memhints |
+| `STG.E.NA` (any width) | `st.global.L1::no_allocate` | as `STG.E` (no-allocate hint dropped; the store keeps its SM's L1 copy current, E-HW-L1) | probes/stg_na |
 | `UBLKPF.L2`, `R2UR.OR P, UR, R` | `cp.async.bulk.prefetch.L2` | no-op; `.OR` ORs the lane's "differs" bit into P | probes/memhints |
 | `FLO` scoreboards | - | FLO shares POPC's in-order queue (L-OPCLASS) | probes/flo_popc |
 | `F2F.F32.F64` / `F2F.F64.F32`, `FADD.SAT d, RZ, a`, `F2I...NTZ` | `cvt.rn.f32.f64` / `cvt.f64.f32`, `cvt.sat.f32.f32`, `cvt.r{n,m,p,z}i[.ftz].{s,u}{32,64}.f32` (PTX front added) | as the SASS ops | probes/cvt_misc |

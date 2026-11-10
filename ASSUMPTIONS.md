@@ -1693,6 +1693,14 @@ GPU.
   producers are never stale (docs/poll-acq-litmus.md). Kernel boundaries invalidate:
   probes/l1_kbound (0 stale in 1.56e10 reads after a boundary, 100% of 6.2e9 without one). Not probed:
   whether strong loads fill L1, whether atomics update or drop the line.
+- **`.NA` stores (2026-11-10, probes/stg_na).** `STG.E.NA` (no-allocate cache hint) lifts
+  with the same memory semantics as `STG.E`: the hint is dropped and the store updates the
+  storing SM's L1 copy like any other store. GB300: each CTA fills a line with a weak load,
+  overwrites it with `STG.E.NA.128` and reloads it weakly; 0 stale reloads in 200 launches
+  (13.1M reloads), same as the plain `STG.E` variant. Sensitivity control (a remote CTA
+  writes the line instead): 51,200 of 51,200 reloads stale, so the line was resident and the
+  probe could see a missed update. Whether `.NA` skips allocating a line on an L1 miss is not
+  observable by this model: a store never fills a line here.
 - **Known gap (probed 2026-11-04, probes/notify_coreader): concurrent kernels do share L1
   lines.** The rule "a line from another grid never hits" is right for consecutive kernels
   but not for grids running at the same time on one SM. A co-reader kernel's fill was hit by

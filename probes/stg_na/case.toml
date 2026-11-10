@@ -1,0 +1,46 @@
+name = "probe_stg_na"
+description = """
+Probe (E-HW-L1) for st.global.L1::no_allocate (SASS STG.E.NA) against the SM's own L1 copy.
+kernel.ptx: each thread loads x[g] (weak LDG.E, fills L1), stores x[g] + 0x1000 with .NA through
+an aliasing pointer, and loads x[g] again (weak). plain.ptx: the same with a plain STG.E.
+remote.ptx (sensitivity control): CTA 0 fills, CTA 1 writes x after a flag, CTA 0 polls a
+second flag with no fence and reloads. GB300 (`ptxv hw-worker`, 200 launches each, grid 256 x
+256 for kernel / plain, analyze.py): .NA and plain reloads all return the stored value (0
+stale of 13.1M each); the remote control returns the stale first value in all 51,200 reloads.
+So a .NA store keeps its own SM's L1 copy current, as a plain store does. expected/ is the
+first 1024 threads of a GB300 .NA launch (this case: grid 4, hardware L1 model on)."""
+ptx = "kernel.ptx"
+entry = "stg_na"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+hw_l1 = true
+
+[[buffers]]
+name = "x"
+dtype = "u32"
+shape = [1024]
+init = "iota"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2048]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

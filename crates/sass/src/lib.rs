@@ -6089,6 +6089,7 @@ mod tests {
             "VHMNMX.BF16_V2 R0, R0, RZ.H0_H0, R12, !PT",
             "R2UR.OR P0, UR9, R13",
             "STG.E.64.MMIO.SYS [R28+0x50], R4",
+            "STG.E.NA.128 desc[UR4][R4.64], R8",
             "LDG.E.NA.U8.STRONG.SYS R26, desc[UR4][R12.64]",
             "ST.E.EF.128 desc[UR4][R28.64+0x40], R16",
             "ATOM.E.MAX.64.STRONG.SM P0, R4, desc[UR4][R28.64], R6",

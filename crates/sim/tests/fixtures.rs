@@ -231,6 +231,18 @@ fn lds_write_back_in_issue_order() {
     }
 }
 
+/// E-HW-L1: STG.E.NA (st.global.L1::no_allocate) keeps the storing SM's L1 copy current like a
+/// plain store; with the hardware L1 model on, the reload after it returns the stored value as
+/// on GB300 (probes/stg_na), on both front-ends.
+#[test]
+fn probe_stg_na_matches_hardware() {
+    probe_bitwise("probes/stg_na", "good", "ptx");
+    probe_bitwise("probes/stg_na", "good", "sass");
+    let case = Case::load(root().join("probes/stg_na")).unwrap();
+    let k = kernel(&case, "good", "sass");
+    assert!(k.code.iter().any(|i| i.text.contains("STG.E.NA")));
+}
+
 /// E-CLOCK: 32-bit clock and global-timer reads (S2UR / CS2R.32 of SR_GLOBALTIMERLO / HI,
 /// SR_CLOCKLO / HI) read as 0; a timeout-shaped delta test gives GB300's outputs on both
 /// front-ends (probes/clock32).

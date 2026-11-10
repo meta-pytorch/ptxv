@@ -287,7 +287,7 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
     (
         "STG",
         &[
-            "128", "256", "64", "E", "EF", "EFL2", "EL", "ELL2", "ENL2", "GPU", "MMIO", "SM",
+            "128", "256", "64", "E", "EF", "EFL2", "EL", "ELL2", "ENL2", "GPU", "MMIO", "NA", "SM",
             "STRONG", "SYS", "U16", "U8",
         ],
     ),
