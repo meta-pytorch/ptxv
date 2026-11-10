@@ -1453,6 +1453,15 @@ GB300 (`--gpu-trials 32`, GPU 0, normal spec):
 | rmsnorm pair | 0.136 | 0.156 (rejected) |
 
 
+**Scorecard against GB300.** `tools/errdist_scorecard.py` scores Tier 2 against
+stored GB300 histograms: 24 rows (softmax, variance, dot, sum and log-sum-exp pairs) plus
+152 sweep points (mean × std grids; dot scale × distribution). The GB300 data were measured once
+with `--gpu-trials` on the same cubins (`gpu-ref`). A scorecard reruns only Tier 3 and the
+analytic tiers (`--gpu-trials 0`) and compares with a stored baseline:
+`errdist_scorecard.py run --name NAME --mode float --sweeps --baseline real-...`.
+Rule: |P_T2 − P_GPU| ≤ max(5%, half the GB300 95% interval) and TV ≤ 0.05 on signed log2 ulp
+buckets. Data directory: `$PTXV_SCORECARD_DATA` (cases, specs, gpu_ref.json, scorecards/).
+
 ### 9.8 What falls back to Tier 3, and why
 
 - **Pairs of reductions in different orders** (RMSNorm, layer norm, softmax vs online
