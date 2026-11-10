@@ -477,6 +477,10 @@ SASS_OPS = [
     (r"^UTC\w*BAR", "del-commit"),
     (r"^ACQBULK", "del-wait"),
     (r"^CCTL", "del-fence"),
+    # The drain of the thread's remote shared::cluster operations that ptxas emits before a
+    # cluster-scope release (`MEMBAR.ALL.GPU; ERRBAR; CGAERRBAR`): without it a weak remote
+    # store can land after the release.
+    (r"^(CGA)?ERRBAR", "del-fence"),
 ]
 
 _SASS_LINE = re.compile(

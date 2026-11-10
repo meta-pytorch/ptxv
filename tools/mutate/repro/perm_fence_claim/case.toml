@@ -1,0 +1,64 @@
+name = "perm_fence_claim"
+description = """
+C-TICKET-ADDR pre-land review finding (2026-11-09): a fence-acquired claim. Thread 0 stores x,
+fences, and claims a slot; thread 32 claims a slot, fences, reads x and stores it as its row. The
+reader synchronizes with the writer only when its add reads from the writer's add, so the
+happens-before relation depends on the claim order. The certificate must not accept the adds as
+unordered: in the other order the read races with the write and the rows' multiset changes
+({1, 42} vs {1, 0}). good runs the writer's claim first in the run, SWAP the reader's."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["val", "cnt"]
+
+[[buffers]]
+name = "cnt"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "val"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[buffers]]
+name = "x"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "cnt"
+
+[[params]]
+kind = "ptr"
+buffer = "val"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[permuted]]
+counter = "cnt"
+buffers = ["val"]
+
+[[variants]]
+id = "good"
+expect = ["nondeterministic", "race"]
+
+[[variants]]
+id = "SWAP"
+summary = "the reader is thread 0 and the writer thread 32"
+marker = "@W"
+find = "setp.eq.u32 %p0, %r0, 0; // @W"
+replace = "setp.eq.u32 %p0, %r0, 32;"
+expect = ["nondeterministic", "race"]
+
+[[variants.edits]]
+marker = "@R"
+find = "setp.eq.u32 %p1, %r0, 32; // @R"
+replace = "setp.eq.u32 %p1, %r0, 0;"

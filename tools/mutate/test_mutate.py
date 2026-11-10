@@ -214,7 +214,9 @@ def test_sass_mutants():
         /*0020*/              @!P0 SYNCS.PHASECHK.TRANS64.TRYWAIT P1, [UR4], R3 ;
         /*0030*/                   MEMBAR.ALL.GPU ;
         /*0040*/                   FENCE.VIEW.ASYNC.S ;
-        /*0050*/                   EXIT ;
+        /*0050*/                   ERRBAR ;
+        /*0060*/                   CGAERRBAR ;
+        /*0070*/                   EXIT ;
 """
     ks = mutate.cubin_kernels(dis)
     ms = mutate.sass_mutants(ks["k"])
@@ -223,7 +225,10 @@ def test_sass_mutants():
         "@0x0020",
         "@0x0030",
         "@0x0040",
+        "@0x0050",
+        "@0x0060",
     ]
+    assert [m.op for m in ms[4:]] == ["sass-del-fence", "sass-del-fence"]
     assert all(m.patch[0]["nop"] for m in ms)
     assert (
         mutate._toml_patch(ms[0].patch)

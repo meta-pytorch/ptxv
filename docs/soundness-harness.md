@@ -49,9 +49,15 @@ PTX operators (`ptx_mutants`):
 | `acq-fence` | insert `fence.acq_rel.gpu` after a relaxed (or semantics-less) global `ld` / `atom` / `red`: the access becomes fence-acquired (`Machine::fence_acq`); a stronger kernel, so a clean verdict is expected unless the access was exempted as non-acquiring |
 | `atom-plain` | `atom.add.u32/s32 d, [a], v` with its result used → `ld` / `add` / `st` (relaxed): the read-modify-write is no longer atomic |
 
+Scope mutants on mbarriers (`.release.cluster` → `.release.cta` on a remote arrive,
+`.acquire.cluster` → `.acquire.cta` on a wait) and the SASS `ERRBAR` / `CGAERRBAR` deletions
+survive while the mbarrier model ignores arrive / wait scope and delivers weak remote
+`shared::cluster` stores at once (soundness miss of 2026-11-09, a 2-CTA hand-off whose stale
+read was measured on hardware); a survivor of this kind is a miss, not noise.
+
 Binary-only cases (`cubin = ...`) get SASS mutants instead (`sass_mutants`). Each one NOPs
 one `BAR.*`, `WARPSYNC`, `UCGABAR_*`, `SYNCS.ARRIVE*`, `SYNCS.PHASECHK*`, `MEMBAR`,
-`FENCE*`, `DEPBAR`, `LDGDEPBAR`, `UTC*BAR`, `ACQBULK` or `CCTL` of the entry kernel. It does
+`FENCE*`, `DEPBAR`, `LDGDEPBAR`, `UTC*BAR`, `ACQBULK`, `CCTL`, `ERRBAR` or `CGAERRBAR` of the entry kernel. It does
 this with a `patch = [{at, nop = true}]` variant (crates/sass/src/scoreboard.rs). These
 mutants are SASS-only, and `ptxv hw` cannot add delays to them (no PTX).
 
