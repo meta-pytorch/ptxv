@@ -117,8 +117,12 @@ pub(super) fn pair(x: &SAcc, y: &SAcc, cas_ok: &HashSet<CasWord>, same_ok: SameO
     {
         return Pair::Fine;
     }
-    // Commutative atomics with unused results that do not acquire.
+    // Commutative atomics with unused results that do not acquire, by themselves or through
+    // a later acquire fence of their thread (`SAcc::facq`): either makes the order decide
+    // which releases the thread synchronizes with (until 2026-11-08 `red.relaxed` followed by
+    // `fence.acq_rel` certified with the edge of the run's order only).
     if let (Some((ox, ux, qx, kx)), Some((oy, uy, qy, ky))) = (x.rmw, y.rmw) {
+        let (qx, qy) = (qx || x.facq, qy || y.facq);
         let comm = !matches!(
             ox,
             AtomOp::Exch
@@ -375,6 +379,7 @@ mod tests {
                 prev_w: vec![],
                 at: None,
                 step: None,
+                facq: false,
             });
             if write && rmw.is_none() {
                 amb[a as usize] = true;

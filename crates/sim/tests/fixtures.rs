@@ -5639,6 +5639,30 @@ fn e_peek_multi_outstanding_peeks() {
     }
 }
 
+/// Fence-acquired relaxed reads and read-modify-writes (fixtures/e_relaxed_fence_acq,
+/// `Machine::fence_acq`): the last-block reduction certifies (C-TICKET with fence-acquired
+/// claims); without its release fence (TICKET) it races in some claim order; RMW (C-ORDER
+/// commutative atomics), DEAD (C-ORDER dead read) and ATOM (C-POLL-ATOM) are refused by the
+/// certificate and race (certified clean before 2026-11-08; RMW wrong on GB300 200/200).
+#[test]
+fn e_relaxed_fence_acq_reads() {
+    let case = Case::load(root().join("fixtures/e_relaxed_fence_acq")).unwrap();
+    for front in ["ptx", "sass"] {
+        for v in ["good", "TICKET", "RMW", "DEAD", "ATOM", "CHAIN"] {
+            let k = kernel(&case, v, front);
+            let launch = build_launch(&case, &k).unwrap();
+            let c = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)));
+            match (v, c.verdict) {
+                ("good", Some(cv)) => assert_eq!(cv.classes(), ["clean"], "{front}"),
+                ("good", None) => panic!("{front}: good does not certify: {:?}", c.reasons),
+                (_, Some(cv)) => panic!("{front}: {v} certified: {:?}", cv.classes()),
+                (_, None) => {}
+            }
+            check_stateful("e_relaxed_fence_acq", v, front, 1_000_000);
+        }
+    }
+}
+
 /// C-POLL-ATOM (E-WELLSYNC): an arrival counter of atomic adds polled to its full count is
 /// certified; a poll that exits on a partial count is refused and races, also when the
 /// partial count includes the poller's own add made after another CTA's add in the

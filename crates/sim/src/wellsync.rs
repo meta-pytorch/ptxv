@@ -334,6 +334,11 @@ struct SAcc {
     /// SASS atomics: the instruction step (`inst_tok`). Lanes of one step are performed in
     /// lane order (E-LOCKSTEP), and C-WARP keeps them together in every schedule.
     step: Option<u64>,
+    /// A read (or read-modify-write) that does not acquire by itself, but whose observed
+    /// release a later acquire fence of its thread joined (`Machine::fence_acq`, set before
+    /// `analyze`): it synchronized as an acquire would, and its place in the order decides
+    /// edges of the run's happens-before.
+    facq: bool,
 }
 
 /// A machine copy kept by the log (not printed).
@@ -2028,6 +2033,7 @@ pub fn strong_access(
         prev_w,
         at,
         step: (m.k.front == Front::Sass && rmw.is_some()).then_some(log.inst_tok),
+        facq: false,
     });
     m.wlog.0 = Some(log);
 }
@@ -2742,7 +2748,7 @@ fn poll_atomic_counter(log: &SyncLog, r: &PollRec) -> Result<Vec<(u32, u32, u32)
         }
         match a.rmw {
             Some((AtomOp::Add, false, false, _))
-                if a.fadd.is_none() && a.lo == r.lo && a.hi == r.hi =>
+                if a.fadd.is_none() && !a.facq && a.lo == r.lo && a.hi == r.hi =>
             {
                 adds.push(a)
             }
@@ -3520,21 +3526,25 @@ fn strong_conflicts(
             describe_ev(m, &x.ev),
             describe_ev(m, &y.ev)
         );
-        // Only loads into registers that do not acquire (as E-RACE-DEAD). The probe reruns
-        // the run's order, so an acquire that read from a release keeps that synchronization
-        // there, while in the other order the accesses it orders may race (until 2026-11-08
-        // an `ld.acquire` whose value is unused, followed by a plain read of the released
-        // data, certified). Reads whose data lands elsewhere (shared memory, TMEM) have no
-        // registers for the probe to undefine: refused.
+        // Only loads into registers whose read synchronized with nothing in the run: not
+        // acquiring, or acquiring a release they already knew (`SAcc::facq`: an acquire, or a
+        // later acquire fence, that joined new clock values). The probe reruns the run's order,
+        // so a read that synchronized keeps that edge there, while in the other order the
+        // accesses it orders may race (until 2026-11-08 an `ld.acquire` whose value is unused,
+        // followed by a plain read of the released data, certified; and a relaxed load
+        // followed by `fence.acq_rel`). Reads whose data lands elsewhere (shared memory, TMEM)
+        // have no registers for the probe to undefine: refused.
         let read = |a: &SAcc| {
-            let plain_load = match &m.k.code[a.ev.pc as usize].op {
-                Op::Ld { sync, .. } | Op::Ld256 { sync, .. } | Op::LdReduce { sync, .. } => {
-                    !sync.is_some_and(|s| s.acquires())
-                }
-                _ => false,
-            };
-            (!a.write && a.rmw.is_none() && plain_load && (a.ev.actor as usize) < m.threads.len())
-                .then_some((a.ev.actor, a.ev.pc))
+            let plain_load = matches!(
+                &m.k.code[a.ev.pc as usize].op,
+                Op::Ld { .. } | Op::Ld256 { .. } | Op::LdReduce { .. }
+            );
+            (!a.write
+                && a.rmw.is_none()
+                && plain_load
+                && !a.facq
+                && (a.ev.actor as usize) < m.threads.len())
+            .then_some((a.ev.actor, a.ev.pc))
         };
         match (cand.as_mut(), read(x).xor(read(y))) {
             (Some(c), Some(r)) => {
@@ -3654,6 +3664,7 @@ fn fadd_word(m: &Machine, acc: &[SAcc], w: ((u8, u32), u64, u64)) -> Result<(), 
                 && (a.lo, a.hi) == (lo, hi)
                 && a.fadd.is_some()
                 && matches!(a.rmw, Some((AtomOp::FAddFtz, false, false, _)))
+                && !a.facq
         })
         .collect();
     ws.sort_by_key(|a| a.ev.seq);
@@ -3836,6 +3847,15 @@ fn merge_run_races(v: &mut Verdict, races: Vec<Finding>) {
     }
 }
 
+/// The (thread, pc) of the reads a later acquire fence of their thread made acquiring in
+/// the machine's run (`Machine::fence_acq`).
+pub(crate) fn fence_acquired(m: &Machine) -> BTreeSet<(u32, u32)> {
+    m.fence_acq
+        .as_ref()
+        .map(|f| f.lock().unwrap().acquired.clone())
+        .unwrap_or_default()
+}
+
 /// One logged run under one leader policy: (final machine, findings, terminal, steps,
 /// reasons the certificate fails).
 fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String>) {
@@ -3845,6 +3865,7 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
     // E-RACE-DEAD: the run's racing reads (race_dead.rs).
     let race_log = m0.as_ref().and_then(|_| crate::race_dead::new_log());
     m.race_log = race_log.clone();
+    m.fence_acq = Some(Default::default());
     m.wlog = LogSlot(Some(Box::new(SyncLog::new(&m))));
     if std::env::var("PTXV_WS_NOLOG").is_ok() {
         m.wlog = LogSlot(None);
@@ -3930,8 +3951,12 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
         });
     }
     let mut why = extra;
+    let facq = fence_acquired(&m);
     match m.wlog.0.take() {
-        Some(log) => {
+        Some(mut log) => {
+            for a in log.strong.iter_mut() {
+                a.facq = facq.contains(&(a.ev.actor, a.ev.pc));
+            }
             // ASSUME(S-SAME-VALUE): the run's written values stand for every schedule's only
             // when every read is determined: no strong accesses (atomics, flags, C-RING
             // counters) and no polls, whose values may differ in another schedule
@@ -3963,7 +3988,7 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
         // values reach nothing (one rerun with the loads undefined decides; `probe_run`).
         let corder = DEAD_CAND.with(|d| d.borrow_mut().take());
         let races = race_log
-            .map(|l| crate::race_dead::candidates(&l, &fs))
+            .map(|l| crate::race_dead::candidates(&l, &fs, &facq))
             .unwrap_or_default();
         let probe = |reads: &BTreeSet<(u32, u32)>| probe_run(&m0, reads, &fs, ok);
         let (corder_dead, dead_races) = match &corder {

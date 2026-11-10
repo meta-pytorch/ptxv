@@ -2346,6 +2346,36 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
     (E-LOCKSTEP; C-WARP keeps them together in every schedule: flashinfer's routing assigns
     token slots with `ATOMS.ADD`); TMEM allocator operations of a CTA are
     totally ordered; no try_cancel / CLC response.
+    **Fence-acquired reads** (2026-11-08, `Machine::fence_acq`, exec.rs `acquire_pending`).
+    A relaxed read or read-modify-write whose observed release a later acquire of its thread
+    joins (`fence.acq_rel` / `fence.acquire` / `fence.sc` / `membar`, SASS `MEMBAR` /
+    `CCTL.IVALL`, a warp poll's exit) synchronized as an acquiring access would, when that
+    release adds to what the thread knows at the acquire; so does an acquiring read whose
+    release adds to the thread's clock, and, under the hardware ordering of the two-level
+    check (E-HW-L1, `hw_order`), every strong read that brings new clock values. Such an
+    access counts as acquiring for every exemption that requires a non-acquiring one:
+    commutative atomics and C-FADD here, C-POLL-ATOM's concurrent adds, the dead reads below
+    and E-RACE-DEAD; its place in the order decides which releases the thread synchronizes
+    with. A read whose join adds nothing (the release already known through a barrier after
+    it: TRT-LLM's amax, `ATOMS.MAX`, `BAR.SYNC`, `CCTL.IVALL`) makes no edge of the run's
+    order, and the kernel-exit fence orders nothing after it in the thread: neither marks.
+    Every other order of the accesses is not run; there the reads may synchronize where they
+    did not here, which only orders accesses this run found unordered (reported here).
+    Why an unmarked read is safe: the mark is decided against the thread's clock at the
+    acquire, which holds only edges already joined (program order, barriers, mbarrier phases,
+    acquiring reads that were themselves marked); pending relaxed observations are not in it.
+    A release the clock already covers came through such a path. A barrier's or a phase's
+    edge does not depend on the order of the relaxed accesses (every participant arrives
+    before any leaves, in every schedule), and an acquiring read on the path is marked when it
+    added the edge, so its own order is checked by the exemptions. So the edge is present in
+    every order, and the read's join changes nothing in any of them. When the release reaches
+    the thread only through other relaxed reads, those are pending too: the clock does not
+    cover it and every one of them is marked (fixtures/e_relaxed_fence_acq CHAIN: refused). Barriers and mbarrier
+    waits do not drain pending relaxed observations in the model, so they create no such
+    edge. C-TICKET keeps accepting fence-acquired claims (argument under C-TICKET). Before,
+    `red.relaxed` then `fence.acq_rel` in one CTA against `fence.acq_rel` then `red.relaxed`
+    in another certified with the run's order only (GB300: the other order 200/200);
+    fixtures/e_relaxed_fence_acq (RMW, DEAD, ATOM refused; good certified).
     **Equal-value writes** (2026-11-06, wellsync/order.rs `pair`). Two plain (non-atomic)
     writes that store the same bytes where they overlap need no order: either order leaves
     those bytes. The values are the run's in every schedule, by induction along
@@ -2372,11 +2402,12 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
     the address before the allocating warp stores it, and never use it (192 loads; 2M states
     incomplete → certified in 0.1 s). fixtures/e_dead_read: good certifies; DR1 (the value is
     stored) and DR2 (a branch tests it) are refused (crates/sim/tests/reductions.rs). Only
-    loads into registers that do not acquire are candidates (`Op::Ld`, `Ld256`, `LdReduce`
-    without an acquiring sync), and the probe undefines every destination register of each
-    (2026-11-08, soundness harness). Before, an acquiring load qualified: the probe reruns
-    the run's order, where the acquire read from the release and ordered the thread's later
-    plain read of the released data, which races in the other order (PTX certified; GB300
+    loads into registers whose read synchronized with nothing in the run are candidates
+    (`Op::Ld`, `Ld256`, `LdReduce`, not fence-acquired: an acquiring one only when the release
+    it read added nothing to its clock), and the probe undefines every destination register
+    of each (2026-11-08, soundness harness). Before, an acquiring load qualified: the probe
+    reruns the run's order, where the acquire read from the release and ordered the thread's
+    later plain read of the released data, which races in the other order (PTX certified; GB300
     wrong 200/200 with the writer delayed). And the probe undefined only `Op::Ld`
     destinations, so a 256-bit strong load (`LDG.E.ENL2.256.STRONG`) whose value is stored
     looked dead (SASS certified; GB300 wrong 200/200). fixtures/e_dead_read_strong: good
@@ -2554,9 +2585,20 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
       if c_j happens-after none of c_i .. c_{j-1}, a run forces the prefix up to c_i with u in
       place of c_i's writer. These are a superset of Flanagan-Godefroid's backtracking points
       (which reverse only the last such pair); a write that happens-after one of them is
-      reached by reversing an earlier pair. The writes do not synchronize with each other
-      (relaxed, not acquiring), so the run's happens-before has no edge that only this order
-      created. Each forced prefix runs once;
+      reached by reversing an earlier pair. Each forced prefix runs once;
+    - order-created edges: a claim followed by an acquire fence of its thread (a last-block
+      reduction: ticket `atom.add`, then `fence.acq_rel` before reading the partials) does
+      synchronize with the claims before it in the coherence order, so the run's
+      happens-before has edges that this order created. The enumeration stays complete: the
+      happens-before it consults is a subset of Flanagan-Godefroid's (program order plus every
+      dependent pair in trace order), because each memory-model edge follows a pair of
+      conflicting accesses in trace order (an order-created one: a claim that read the value an
+      earlier claim left), and fewer edges only add backtracking points. Precondition: every
+      forced run computes its own happens-before from its own execution, and its branches and
+      its certificate use only that run's clocks and log, never a base run's (C-POLL-ATOM's
+      2026-11-07 miss reconstructed a value from one run's adds). An `atom` that acquires by
+      its own .sem is still refused. Fixture `e_relaxed_fence_acq` (good: certified; TICKET,
+      without the release fence: race);
     - every run must certify on its own and all must leave the same outputs. Results that
       depend on which thread processed which ticket are refused (`C-TICKET: the claim order
       reaches the outputs`), as are more than 256 runs (`PTXV_RING_MAX_RUNS`, shared with

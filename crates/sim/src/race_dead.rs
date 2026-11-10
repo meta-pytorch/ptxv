@@ -48,8 +48,14 @@ fn failing(f: &Finding) -> bool {
 }
 
 /// The races of `fs` whose every racing read is a thread's non-acquiring load, with those
-/// reads (thread, pc). None when `fs` has a failing finding other than a race.
-pub fn candidates(log: &RaceLog, fs: &[Finding]) -> Vec<(String, BTreeSet<(u32, u32)>)> {
+/// reads (thread, pc). None when `fs` has a failing finding other than a race. `facq`: reads
+/// a later acquire fence of their thread made acquiring (`Machine::fence_acq`); a race with
+/// one of them stays `race` (the value read decided a synchronization, dead or not).
+pub fn candidates(
+    log: &RaceLog,
+    fs: &[Finding],
+    facq: &BTreeSet<(u32, u32)>,
+) -> Vec<(String, BTreeSet<(u32, u32)>)> {
     if fs.iter().any(failing) {
         return Vec::new();
     }
@@ -57,7 +63,9 @@ pub fn candidates(log: &RaceLog, fs: &[Finding]) -> Vec<(String, BTreeSet<(u32, 
     fs.iter()
         .filter(|f| f.kind == "race")
         .filter_map(|f| match g.get(&f.sig) {
-            Some(Some(r)) if !r.is_empty() => Some((f.sig.clone(), r.clone())),
+            Some(Some(r)) if !r.is_empty() && r.is_disjoint(facq) => {
+                Some((f.sig.clone(), r.clone()))
+            }
             _ => None,
         })
         .collect()
@@ -117,5 +125,6 @@ pub fn probe_machine(m0: &Machine, reads: &BTreeSet<(u32, u32)>) -> Machine {
     set.extend(reads.iter().copied());
     m.dead_probe = Some(Arc::new(set));
     m.race_log = None;
+    m.fence_acq = None;
     m
 }

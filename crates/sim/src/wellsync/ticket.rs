@@ -32,9 +32,21 @@
 //!   u's first later write: if c_j happens-after none of c_i .. c_{j-1}, a run forces the
 //!   prefix up to c_i with u in place of c_i's writer. This is a superset of the backtracking
 //!   points of Flanagan-Godefroid DPOR (which reverses only the last such pair); a write
-//!   that happens-after one of them is reached by reversing an earlier pair. The writes do not
-//!   synchronize with each other (relaxed), so the run's happens-before has no edge that only
-//!   this order created. Each forced prefix runs once.
+//!   that happens-after one of them is reached by reversing an earlier pair. Each forced
+//!   prefix runs once.
+//! * **Order-created edges.** A claim followed by an acquire fence of its thread (a last-block
+//!   reduction: `atom.add` ticket, then `fence.acq_rel` before reading the partials;
+//!   `SAcc::facq`) synchronizes with the claims before it in the coherence order, so the
+//!   run's happens-before does have edges that this order created. The enumeration stays
+//!   complete: the happens-before it consults is a subset of Flanagan-Godefroid's (program
+//!   order plus every dependent pair in trace order), since each memory-model edge comes from
+//!   a pair of conflicting accesses whose order in the trace it follows (an order-created one:
+//!   a claim reading the value an earlier claim of the word left), and fewer edges only add
+//!   backtracking points. Precondition: every forced run computes its own happens-before
+//!   from its own execution, and its branches and its certificate use only that run's clocks;
+//!   no run reuses another run's (a base run's) clocks or log. (C-POLL-ATOM did: until
+//!   2026-11-07 it reconstructed a poll's base from the adds of the one run.) An acquiring
+//!   `atom` (by its own .sem) is still refused below.
 //! * **Equivalence** is checked semantically: every run must certify on its own (every other
 //!   condition as usual) and all runs must leave the same outputs. A kernel whose results
 //!   depend on which CTA processed which ticket is refused.

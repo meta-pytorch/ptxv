@@ -5060,6 +5060,7 @@ fn explore_one(mut m0: Machine, max_states: usize, threads: usize) -> Verdict {
         None
     };
     m0.race_log = log.clone();
+    m0.fence_acq = log.as_ref().map(|_| Default::default());
     let (mut v, peek, vip) = explore_one_models(m0.clone(), max_states, threads);
     // A bounded search shares its state cap among its workers: W workers each go about W
     // times less deep, and a wide state space can use the whole cap without reaching a
@@ -5081,7 +5082,8 @@ fn explore_one(mut m0: Machine, max_states: usize, threads: usize) -> Verdict {
         ));
     }
     if let Some(log) = log.filter(|_| v.complete && v.distinct_outputs <= 1) {
-        let cands = crate::race_dead::candidates(&log, &v.findings);
+        let facq = crate::wellsync::fence_acquired(&m0);
+        let cands = crate::race_dead::candidates(&log, &v.findings, &facq);
         let dead = crate::race_dead::decide(&cands, |reads| {
             let m = crate::race_dead::probe_machine(&m0, reads);
             let w = explore_one_model(m, max_states, threads, peek, vip);

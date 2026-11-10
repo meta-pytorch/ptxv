@@ -2250,6 +2250,9 @@ impl Machine {
                 vc_join(&mut v, &c.rel);
                 if v != self.threads[t].vc {
                     self.threads[t].make_mut().vc = v;
+                    if hw && !m.acquires() {
+                        self.mark_fence_acq(t);
+                    }
                 }
             }
             return;
@@ -2274,12 +2277,31 @@ impl Machine {
                 return;
             }
             vc_join(&mut self.threads[t].make_mut().vc, &c.rel);
+            // Every strong read synchronizes under the hardware ordering: for the
+            // certificate's exemptions it acquired (`Machine::fence_acq`), whatever its .sem.
+            self.mark_fence_acq(t);
             return;
+        }
+        if !m.acquires() {
+            if let Some(f) = &self.fence_acq {
+                let pc = self.threads[t].pc;
+                f.lock()
+                    .unwrap()
+                    .origins
+                    .entry((t as u32, c.writer))
+                    .or_default()
+                    .insert(pc);
+            }
         }
         let th = self.threads[t].make_mut();
         if m.acquires() {
+            let gains = !crate::machine::vc_covers(&th.vc, &c.rel);
             vc_join(&mut th.vc, &c.rel);
             vc_join(&mut th.acq_view, &c.rel);
+            // An acquiring read that synchronized (`Machine::fence_acq`).
+            if gains {
+                self.mark_fence_acq(t);
+            }
         } else {
             match th.acq_pending.iter_mut().find(|p| p.0 == c.writer) {
                 Some(p) => {
@@ -2291,6 +2313,15 @@ impl Machine {
         }
     }
 
+    /// The current instruction of thread `t` is a non-acquiring read that synchronized
+    /// (`Machine::fence_acq`).
+    fn mark_fence_acq(&mut self, t: usize) {
+        if let Some(f) = &self.fence_acq {
+            let pc = self.threads[t].pc;
+            f.lock().unwrap().acquired.insert((t as u32, pc));
+        }
+    }
+
     /// Acquire fence of scope `s` (None: SASS CCTL.IVALL, scoped by the loads): earlier
     /// relaxed observations of releases whose writer `s` includes synchronize.
     fn acquire_pending(&mut self, t: usize, s: Option<Scope>) {
@@ -2299,11 +2330,27 @@ impl Machine {
         }
         let pending = std::mem::take(&mut self.threads[t].make_mut().acq_pending);
         let mut j = VC::new();
+        let mut g = self.fence_acq.as_ref().map(|f| f.lock().unwrap());
         for (w, rel, _) in &pending {
+            // The relaxed reads that observed this writer's release (`Machine::fence_acq`):
+            // they synchronize now when the fence's scope includes the writer.
+            let pcs = g
+                .as_mut()
+                .and_then(|g| g.origins.remove(&(t as u32, *w)))
+                .unwrap_or_default();
             if s.is_none_or(|s| self.scope_includes(s, t as u32, *w)) {
                 vc_join(&mut j, rel);
+                // Only when the release adds to what the thread knows here: a release it
+                // already has (through a barrier after the read, say) makes no edge of this
+                // order (TRT-LLM's amax: ATOMS.MAX, BAR.SYNC, then CCTL.IVALL).
+                if let Some(g) = g.as_mut() {
+                    if !crate::machine::vc_covers(&self.threads[t].vc, rel) {
+                        g.acquired.extend(pcs.into_iter().map(|pc| (t as u32, pc)));
+                    }
+                }
             }
         }
+        drop(g);
         let th = self.threads[t].make_mut();
         vc_join(&mut th.vc, &j);
         vc_join(&mut th.acq_view, &j);
@@ -10158,6 +10205,12 @@ impl Machine {
                 // ASSUME(E-EXIT-FENCE): kernel completion acquires the thread's relaxed
                 // observations (case `exit_fence`); the exit releases its history anyway.
                 if let Some(sc) = self.launch.exit_fence {
+                    // Nothing of the thread follows its exit: the reads this acquire joins
+                    // order nothing in the kernel, so they are not fence-acquired
+                    // (`Machine::fence_acq`).
+                    if let Some(f) = &self.fence_acq {
+                        f.lock().unwrap().origins.retain(|k, _| k.0 != t as u32);
+                    }
                     self.acquire_pending(t, Some(sc));
                 }
                 // ASSUME(E-CPASYNC-EXIT): a cp.async the thread never waited for (wait_group /

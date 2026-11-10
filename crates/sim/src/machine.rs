@@ -27,6 +27,18 @@ use crate::num::NumState;
 pub const PARAM_BASE: u64 = 0x7e00_0000_0000;
 pub const GLOBAL_BASE: u64 = 0x7000_0000_0000;
 
+/// Strong reads made acquiring by a later acquire of the same thread (`Machine::fence_acq`).
+#[derive(Default, Debug)]
+pub struct FenceAcqState {
+    /// (thread, writer) -> pcs of the thread's relaxed reads that observed a release of that
+    /// writer (an entry of `Thread::acq_pending`).
+    pub origins: std::collections::HashMap<(u32, u32), BTreeSet<u32>>,
+    /// (thread, pc) of every such read whose pending release a later acquire (fence, exit
+    /// fence, warp poll) joined.
+    pub acquired: BTreeSet<(u32, u32)>,
+}
+/// Shared by every copy of a machine (`Machine::fence_acq`).
+pub type FenceAcq = Arc<std::sync::Mutex<FenceAcqState>>;
 /// Racing reads per race signature (`Machine::race_log`).
 pub type RaceLog = Arc<std::sync::Mutex<BTreeMap<String, Option<BTreeSet<(u32, u32)>>>>>;
 /// The generic shared window (4 GB): its low word is a shared::cluster address.
@@ -1860,6 +1872,12 @@ pub struct Machine {
     /// a thread's non-acquiring load; None once one is not (a write-write race, an atomic,
     /// an asynchronous read).
     pub race_log: Option<RaceLog>,
+    /// Not hashed, shared by every copy: relaxed strong reads (and RMWs) whose observed release
+    /// a later acquire of the same thread joined, so they synchronized as an acquire would
+    /// (a relaxed read or RMW followed by fence.acq_rel / fence.acquire / MEMBAR / CCTL.IVALL).
+    /// The certificate's exemptions for non-acquiring accesses (C-ORDER's commutative atomics
+    /// and dead reads, C-TICKET, C-POLL-ATOM) and E-RACE-DEAD treat these as acquiring.
+    pub fence_acq: Option<FenceAcq>,
     /// Not hashed, transient: set while an operation that read partly undefined registers
     /// runs: the undefined bits of its result (slot i in bits 32i..32i+32), S-INIT.
     pub vmask: Option<u64>,
@@ -2549,6 +2567,7 @@ impl Machine {
             tmaps_used: Arc::new(Vec::new()),
             undef_ok_from: None,
             race_log: None,
+            fence_acq: None,
             fill: None,
             prov: None,
             vmask: None,
