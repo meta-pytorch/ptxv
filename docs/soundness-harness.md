@@ -45,6 +45,9 @@ PTX operators (`ptx_mutants`):
 | `del-commit` | delete `cp.async.bulk.commit_group`, `cp.async.commit_group`, `tcgen05.commit*` |
 | `relax` | `.release` / `.acquire` / `.acq_rel` → `.relaxed` on ld/st/atom/red, mbarrier arrive/try_wait, `barrier.cluster.arrive` |
 | `scope` | `.cluster`→`.cta`, `.gpu`→`.cta`, `.sys`→`.gpu` on the same ops and on `fence.acq_rel/sc` (not `fence.proxy`, not `mbarrier_init`); `membar.sys→gl→cta` |
+| `move-fence` | swap an unguarded `fence.*` (not proxy / mbarrier_init) or `membar.*` with the memory access next to it (after the next one, before the previous one; no label in between) |
+| `acq-fence` | insert `fence.acq_rel.gpu` after a relaxed (or semantics-less) global `ld` / `atom` / `red`: the access becomes fence-acquired (`Machine::fence_acq`); a stronger kernel, so a clean verdict is expected unless the access was exempted as non-acquiring |
+| `atom-plain` | `atom.add.u32/s32 d, [a], v` with its result used → `ld` / `add` / `st` (relaxed): the read-modify-write is no longer atomic |
 
 Binary-only cases (`cubin = ...`) get SASS mutants instead (`sass_mutants`). Each one NOPs
 one `BAR.*`, `WARPSYNC`, `UCGABAR_*`, `SYNCS.ARRIVE*`, `SYNCS.PHASECHK*`, `MEMBAR`,

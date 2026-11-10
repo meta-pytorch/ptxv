@@ -364,6 +364,91 @@ def ptx_mutants(src: str) -> list[Mutant]:
                             f"`{op}`: .{s} -> .{t} (line {L})",
                             [_rescope(ins.text, op, s, t)],
                         )
+
+    # --- order and atomicity ---------------------------------------------------------------
+    def no_label_between(a: Inst, b: Inst) -> bool:
+        if a.label or b.label:
+            return False
+        return not any(
+            re.match(r"^\s*[A-Za-z_$][\w$]*\s*:", strip_comment(lines[i]))
+            for i in range(a.idx + 1, b.idx)
+        )
+
+    def is_mem(i: Inst) -> bool:
+        return i.opcode.split(".")[0] in ("ld", "st", "atom", "red")
+
+    def is_order_fence(i: Inst) -> bool:
+        b = i.opcode.split(".")[0]
+        return (
+            b == "fence"
+            and not i.opcode.startswith("fence.proxy")
+            and "mbarrier_init" not in i.opcode
+        ) or b == "membar"
+
+    for k, ins in enumerate(insts):
+        L = ins.idx + 1
+        # A fence moved past its neighbouring memory access (after the next one, before the
+        # previous one): the access leaves the fence's protection.
+        if is_order_fence(ins) and not ins.guard:
+            if (
+                k + 1 < len(insts)
+                and is_mem(insts[k + 1])
+                and no_label_between(ins, insts[k + 1])
+            ):
+                nxt = insts[k + 1]
+                add(
+                    "move-fence",
+                    [ins, nxt],
+                    f"`{ins.opcode}` moved after `{nxt.opcode}` (line {L})",
+                    [nxt.text, ins.text],
+                )
+            if k > 0 and is_mem(insts[k - 1]) and no_label_between(insts[k - 1], ins):
+                prv = insts[k - 1]
+                add(
+                    "move-fence",
+                    [prv, ins],
+                    f"`{ins.opcode}` moved before `{prv.opcode}` (line {L})",
+                    [ins.text, prv.text],
+                )
+        base = ins.opcode.split(".")[0]
+        op = ins.opcode
+        acquiring = any(f".{s}" in op for s in ("acquire", "acq_rel", "sc"))
+        # An acquire fence inserted after a relaxed read or read-modify-write: the access
+        # synchronizes with whatever release it observed (fence-acquired), which the
+        # exemptions for non-acquiring accesses must not keep.
+        if (
+            base in ("ld", "atom", "red")
+            and not acquiring
+            and (".relaxed" in op or ".volatile" in op or base in ("atom", "red"))
+            and ".shared" not in op
+            and ".param" not in op
+            and ".const" not in op
+        ):
+            add(
+                "acq-fence",
+                ins,
+                f"`fence.acq_rel.gpu` inserted after `{op}` (line {L})",
+                [ins.text + " fence.acq_rel.gpu;"],
+            )
+        # An atomic add whose result is used, split into a load, an add and a store: the
+        # read-modify-write is no longer atomic (two claimants can get the same ticket).
+        m = re.match(r"^atom((?:\.\w+)*)\.add\.(u32|s32)$", op)
+        if m and not ins.guard:
+            ops = operand_list(ins.operands)
+            mods = [x for x in m.group(1).split(".") if x]
+            space = next((x for x in mods if x in ("global", "shared")), None)
+            if len(ops) == 3 and ops[0].startswith("%") and space:
+                d, a, v = ops
+                ty = m.group(2)
+                add(
+                    "atom-plain",
+                    ins,
+                    f"`{op}` split into ld / add / st (line {L}): not atomic",
+                    [
+                        f"{{ .reg .b32 %ptxv_mut_t; ld.relaxed.gpu.{space}.{ty} {d}, {a}; "
+                        f"add.{ty} %ptxv_mut_t, {d}, {v}; st.relaxed.gpu.{space}.{ty} {a}, %ptxv_mut_t; }}"
+                    ],
+                )
     return muts
 
 

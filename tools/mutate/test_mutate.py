@@ -124,6 +124,42 @@ def test_operators():
     assert len(ms) == len(mutate.ptx_mutants(PTX))
 
 
+def test_order_and_atomicity_operators():
+    src = """\
+.visible .entry k(.param .u64 p)
+{
+    st.global.u32 [%rd2], %r3;
+    fence.acq_rel.gpu;
+    atom.relaxed.gpu.global.add.u32 %r4, [%rd3], 1;
+    red.relaxed.gpu.global.add.u32 [%rd3], 1;
+    ld.acquire.gpu.global.u32 %r5, [%rd3];
+L1: fence.acq_rel.gpu;
+    ret;
+}
+"""
+    ms = by_id(mutate.ptx_mutants(src))
+    # the fence after the next access, and before the previous one
+    after = ms["move-fence-L4"]
+    assert [e.replace for e in after.edits] == [
+        "atom.relaxed.gpu.global.add.u32 %r4, [%rd3], 1;",
+        "fence.acq_rel.gpu;",
+    ]
+    before = ms["move-fence-L3"]
+    assert [e.line for e in before.edits] == [2, 3]
+    assert before.edits[0].replace == "fence.acq_rel.gpu;"
+    # a labelled fence is not moved
+    assert not any(m.op == "move-fence" and 8 in m.lines for m in ms.values())
+    # acquire fences after relaxed RMWs, not after an acquiring load
+    acq = {m.lines[0] for m in ms.values() if m.op == "acq-fence"}
+    assert acq == {5, 6}
+    assert ms["acq-fence-L5"].edits[0].replace.endswith("1; fence.acq_rel.gpu;")
+    # the used atomic add split into ld / add / st
+    sp = ms["atom-plain-L5"].edits[0].replace
+    assert "ld.relaxed.gpu.global.u32 %r4, [%rd3];" in sp
+    assert "add.u32 %ptxv_mut_t, %r4, 1;" in sp
+    assert "st.relaxed.gpu.global.u32 [%rd3], %ptxv_mut_t;" in sp
+
+
 def test_strip_variants_keeps_rest():
     t = (ROOT / "fixtures/e_bararv/case.toml").read_text()
     s = mutate.strip_variants(t)
