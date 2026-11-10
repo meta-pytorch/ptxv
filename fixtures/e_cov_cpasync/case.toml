@@ -1,0 +1,35 @@
+name = "e_cov_cpasync"
+description = """
+Input coverage through cp.async: input words reach shared memory by cp.async (landing at
+wait_group), come back by ld.shared, a branch tests them and a store uses them as its index:
+the kernel's control and addresses depend on the input (input_dependent non-empty, never
+input-independent), on both front-ends. Until 2026-11-08 the landed bytes were clean."""
+ptx = "kernel.ptx"
+entry = "e_cov_cpasync"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [128]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

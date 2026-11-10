@@ -297,6 +297,11 @@ pub struct ProvState {
     local: HashSet<usize>,
     /// Some TMEM word holds input-derived data.
     tmem: u64,
+    /// cp.async copies in flight: per shared destination (CTA, byte offset), the bytes the
+    /// issue read from global memory. The copy lands at a wait (wait_group, the warp's
+    /// DEPBAR, or an asynchronous unit after cp.async.mbarrier.arrive), which reads nothing
+    /// itself: its write takes these bytes (`on_access`).
+    cp: HashMap<(u64, u64), Vec<MByte>>,
     pending: Vec<(usize, Plan)>,
     sites: BTreeMap<u32, Site>,
     nth: usize,
@@ -353,6 +358,7 @@ impl Clone for ProvState {
             packed: self.packed.clone(),
             acc: self.acc.clone(),
             aacc: self.aacc.clone(),
+            cp: self.cp.clone(),
             wd: self.wd.clone(),
             gen: self.gen,
             info: self.info.clone(),
@@ -900,6 +906,23 @@ impl ProvState {
                 vec![if m == 0 { MByte::Clean } else { MByte::Mask(m) }; n]
             }
         };
+        // A cp.async copy landing (`cp`): until 2026-11-08 its write had no data and no read
+        // of its own, so the copied input bytes came out clean.
+        let landed = if s == 0 {
+            self.cp.remove(&(o, off)).filter(|c| c.len() == n)
+        } else {
+            None
+        };
+        let data: Vec<MByte> = data
+            .into_iter()
+            .enumerate()
+            .take(n)
+            .map(|(i, b)| match landed.as_ref().map(|c| c[i]) {
+                Some(c) if b.mask() == 0 => c,
+                Some(c) if c.mask() != 0 => MByte::Mask(b.mask() | c.mask()),
+                _ => b,
+            })
+            .collect();
         self.mem_write((s, o, off), &data[..n.min(data.len())]);
         if actor as usize >= self.nth {
             self.aacc.remove(&actor);
@@ -1582,6 +1605,33 @@ pub(crate) fn post(m: &mut Machine, members: &[usize], pc: u32) {
             g.1 |= bm;
         }
     }
+    // cp.async: the bytes the issue read, for the write that lands them (`ProvState::cp`).
+    if let Op::CpAsync { .. } = inst.op {
+        for &t in members.iter().filter(|&&t| m.prd(t, inst.guard)) {
+            let th = &m.threads[t];
+            if let Some(c) = th
+                .cp_pending
+                .iter()
+                .rev()
+                .find(|c| c.pc == pc && c.src.is_some())
+            {
+                let read = ps.acc.get(t).cloned().unwrap_or_default();
+                if read.len() == c.data.len() {
+                    ps.cp.insert((th.cta as u64, c.off as u64), read);
+                } else {
+                    // Not one read per copied byte: every byte gets all of it.
+                    let mk = read.iter().fold(0, |x, b| x | b.mask());
+                    let b = if mk == 0 {
+                        MByte::Clean
+                    } else {
+                        MByte::Mask(mk)
+                    };
+                    ps.cp
+                        .insert((th.cta as u64, c.off as u64), vec![b; c.data.len()]);
+                }
+            }
+        }
+    }
     let dsts = inst.op.dst_regs();
     // (Its buffer goes back after: `pre` refills it for every instruction.)
     let mut pending = std::mem::take(&mut ps.pending);
@@ -1651,10 +1701,14 @@ pub(crate) fn post(m: &mut Machine, members: &[usize], pc: u32) {
                 // Each destination register gets its share of the bytes.
                 let w = (bytes as usize / n).max(1);
                 // An input-dependent address still reads one input word: B mutates that word and
-                // leaves the address's inputs alone.
-                let _ = addr;
+                // leaves the address's inputs alone. A load of bytes the shadow does not track
+                // (constant / parameter space: a lookup table) carries its address's inputs;
+                // until 2026-11-08 it came out clean.
+                let untracked = acc.is_empty() && addr != 0;
                 for (i, &d) in dsts.iter().enumerate() {
-                    let p = if atomic {
+                    let p = if untracked {
+                        Prov::of_mask(addr)
+                    } else if atomic {
                         Prov::of_mask(all | extra)
                     } else {
                         let part = acc.get(i * w..(i + 1) * w).unwrap_or(&[]);
