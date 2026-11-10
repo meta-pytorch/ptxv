@@ -421,6 +421,58 @@ fn fill_unprinted(lines: &mut Vec<SassLine>, text: &[u8]) {
     }
 }
 
+/// A relative `BRA`'s target from its encoding (opcode 0x947): the signed word offset is bits
+/// [16, 24) and [34, 64) of the low word, counted from the next instruction. Fitted on the
+/// 243 `BRA` of ssa2's MXINT8 G32 decode kernel that nvdisasm 13.3 labels (all agree); `None`
+/// when bits [24, 34) are not zero (a form not seen).
+fn bra_target(addr: u32, lo: u64) -> Option<u32> {
+    if lo & 0xfff != 0x947 || (lo >> 24) & 0x3ff != 0 {
+        return None;
+    }
+    let v = ((lo >> 16) & 0xff) | ((lo >> 34) << 8);
+    let off = ((v << 26) as i64 >> 26) * 4;
+    u32::try_from(addr as i64 + 16 + off).ok()
+}
+
+/// Labels of branch targets nvdisasm did not print: nvdisasm 13.0 prints neither an
+/// instruction it cannot decode (ptxas 13.3's `F2FP.SATFINITE.BF16.S2_6`, filled from its
+/// encoding by `fill_unprinted`) nor a label on it, so a `BRA` there names an unknown label.
+/// Each such label gets the target decoded from the branch's encoding, provided the decoding
+/// agrees with every label nvdisasm did print and the target is an instruction; otherwise
+/// nothing is added (the kernel is refused as before).
+fn recover_branch_labels(lines: &[SassLine], labels: &mut HashMap<String, u32>) {
+    let have: std::collections::HashSet<u32> = lines.iter().map(|l| l.addr).collect();
+    let lbl_of = |l: &SassLine| -> Option<String> {
+        if l.opcode != "BRA" && !l.opcode.starts_with("BRA.") {
+            return None;
+        }
+        let t = l.operands.last()?;
+        let t = t.strip_prefix("`(")?.strip_suffix(')')?;
+        Some(t.to_string())
+    };
+    let mut add = Vec::new();
+    for l in lines {
+        let (Some(lbl), Some(lo)) = (lbl_of(l), l.lo) else {
+            continue;
+        };
+        // Forms the decoder does not know (`BRA.DIV`, `BRA.U` with a uniform predicate, ...)
+        // give no evidence either way: a known label is left alone, an unknown one stays
+        // unknown (and the kernel is refused there as before).
+        let t = bra_target(l.addr, lo);
+        match (labels.get(&lbl), t) {
+            (Some(&a), Some(t)) if t != a => return,
+            (None, Some(t)) if have.contains(&t) => add.push((lbl, t)),
+            _ => {}
+        }
+    }
+    for (lbl, t) in add {
+        if labels.get(&lbl).is_some_and(|&a| a != t) {
+            return;
+        }
+        labels.insert(lbl, t);
+    }
+}
+
 fn split_ops(s: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut depth = 0;
@@ -5188,8 +5240,9 @@ pub struct Unlowered {
 pub fn lift_report(cubin: &Path, kernel: &str) -> Result<Vec<Unlowered>> {
     let dis = run_tool("nvdisasm", &["-c", "-hex", cubin.to_str().unwrap()])?;
     let meta = read_meta(cubin, kernel)?;
-    let (mut lines, labels) = parse_disasm(&dis, kernel)?;
+    let (mut lines, mut labels) = parse_disasm(&dis, kernel)?;
     fill_unprinted(&mut lines, &meta.text);
+    recover_branch_labels(&lines, &mut labels);
     let addr_to_idx: HashMap<u32, usize> =
         lines.iter().enumerate().map(|(i, l)| (l.addr, i)).collect();
     let exits = exit_targets(&lines);
@@ -5230,8 +5283,9 @@ fn unlowered_lines(
 }
 
 pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
-    let (mut lines, labels) = parse_disasm(dis, kernel)?;
+    let (mut lines, mut labels) = parse_disasm(dis, kernel)?;
     fill_unprinted(&mut lines, &meta.text);
+    recover_branch_labels(&lines, &mut labels);
     // Relocated 32-bit halves (`32@lo(X)` / `32@hi(X)`): a label's code address
     // (`FN + .L_x_15@srel`, the return address of a `vprintf` call) or a data symbol (printf
     // format strings, `$str$5`), which only the printf paths of failed device assertions use:
@@ -5691,6 +5745,49 @@ mod tests {
         let addrs: Vec<u32> = lines.iter().map(|l| l.addr).collect();
         assert_eq!(addrs, vec![0, 16]);
         assert!(lines[1].opcode.starts_with("F2FP.SATFINITE.BF16.S2_6"));
+    }
+
+    /// A `BRA` whose target nvdisasm 13.0 did not print (an S2_6 conversion) gets its label from
+    /// the encoding; encodings from ssa2's MXINT8 G32 decode kernel (nvdisasm 13.3 labels).
+    #[test]
+    fn recover_branch_labels_from_encoding() {
+        assert_eq!(bra_target(0x7830, 0x0000000000081947), Some(0x7860));
+        assert_eq!(bra_target(0xd250, 0xffffffa400807947), Some(0x7860));
+        assert_eq!(
+            bra_target(0xd830, 0xffffffe000447947),
+            Some(0xd830 + 16 - 7920)
+        );
+        assert_eq!(bra_target(0xda00, 0xfffffffc00fc7947), Some(0xda00));
+        assert_eq!(bra_target(0x0, 0x0000000001000947), None);
+        let (lo, hi) = (0x0000002c0002763eu64, 0x190fe40002083417u64);
+        let mut text = vec![0u8; 64];
+        text[32..40].copy_from_slice(&lo.to_le_bytes());
+        text[40..48].copy_from_slice(&hi.to_le_bytes());
+        let mut lines = vec![
+            sass_line(0, "@P1 BRA `(.L_x_1)", Some(0x0000000000041947), None),
+            sass_line(16, "BRA `(.L_x_0)", Some(0xfffffffc00fc7947), None),
+            sass_line(48, "EXIT", None, None),
+        ];
+        let mut labels = HashMap::from([(".L_x_0".to_string(), 16u32)]);
+        fill_unprinted(&mut lines, &text);
+        recover_branch_labels(&lines, &mut labels);
+        assert_eq!(labels.get(".L_x_1"), Some(&32));
+        // A form the decoder does not know (nonzero bits [24, 34)) next to a known label
+        // changes nothing.
+        let mut lines2 = lines.clone();
+        lines2.push(sass_line(
+            64,
+            "BRA.DIV UR4, `(.L_x_0)",
+            Some(0x0000000001000947),
+            None,
+        ));
+        let mut labels = HashMap::from([(".L_x_0".to_string(), 16u32)]);
+        recover_branch_labels(&lines2, &mut labels);
+        assert_eq!(labels.get(".L_x_1"), Some(&32));
+        // A printed label the encoding contradicts: nothing is recovered (fail closed).
+        let mut labels = HashMap::from([(".L_x_0".to_string(), 48u32)]);
+        recover_branch_labels(&lines, &mut labels);
+        assert_eq!(labels.get(".L_x_1"), None);
     }
 
     /// FFMA2 / FMUL2 / FADD2 .FTZ (with an optional rounding mode) set `ftz`; two rounding
