@@ -1575,15 +1575,31 @@ impl Machine {
 
     // ---------------------------------------------------------------- scheduling queries
 
-    /// Group runnable threads into warp-splits: (warp, pc) -> members.
+    /// Group runnable threads into warp-splits: (warp, pc) -> members, ordered by warp, then
+    /// pc. Threads are laid out warp by warp (`warp_threads`), so a warp's splits are
+    /// gathered in one pass over its threads (a warp has few).
     pub fn splits(&self) -> Vec<(u32, u32, Vec<usize>)> {
-        let mut m: std::collections::BTreeMap<(u32, u32), Vec<usize>> = Default::default();
+        let mut out: Vec<(u32, u32, Vec<usize>)> = Vec::new();
+        let (mut warp, mut first) = (u32::MAX, 0);
         for (i, t) in self.live_threads() {
-            if t.st == St::Run {
-                m.entry((t.warp, t.pc)).or_default().push(i);
+            if t.st != St::Run {
+                continue;
+            }
+            if t.warp != warp {
+                debug_assert!(
+                    warp == u32::MAX || t.warp > warp,
+                    "threads not in warp order"
+                );
+                out[first..].sort_unstable_by_key(|e| e.1);
+                (warp, first) = (t.warp, out.len());
+            }
+            match out[first..].iter_mut().find(|e| e.1 == t.pc) {
+                Some(e) => e.2.push(i),
+                None => out.push((t.warp, t.pc, vec![i])),
             }
         }
-        m.into_iter().map(|((w, pc), v)| (w, pc, v)).collect()
+        out[first..].sort_unstable_by_key(|e| e.1);
+        out
     }
 
     /// An mbarrier that was initialized with a plain 8-byte store of the encoded state word

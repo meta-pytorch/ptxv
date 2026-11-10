@@ -1200,6 +1200,33 @@ FA4's fix for its warp-role barrier bug): `UMOV UR, -1; BRA.DIV UR, slow; BAR.SY
     walk is reused only by threads that agree on them. Kernels whose barrier ids are all
     immediates keep the earlier region-wide walk (`BarCfg::regid`): the same
     over-approximation, without the per-lane memo cost.
+  - *Walk values* (immediate-id kernels, `PTXV_NO_BAR_VALUES` turns it off). The walk
+    computes integer values on the walked path through MOV, R2UR, IADD3, 32-bit add / sub /
+    and / or / xor / shifts and PLOP3, from immediates and current register values, at most
+    two steps deep; values do not cross a backward branch (a loop counter does not make each
+    iteration a new walk state), and a walk past 2^14 states gives up (the thread may
+    arrive). A
+    register no walked path from the thread's pc writes before a pc (forward may-write
+    dataflow over the region, every successor taken, `Machine::bar_mw`) holds its current
+    value there; others keep the region-wide rule. R2UR takes the first active lane's value:
+    the thread's own value stands for it only when every live lane of its warp is at its pc,
+    in its state, with the same value of the source (`BarKey::Uni`, recorded with the walk's
+    memo key), and the source is not written before the R2UR on any path from there. With
+    values a `bar.sync` whose guard the path decides false is not an arrival. FA4 bwd's role
+    dispatch (`R2UR UR4, R0; UIADD3 UR4, UR4, -0x4; UISETP.GT.U32 UP0, UR4, 0x7`, then
+    `PLOP3` and `@P0 EXIT` at the epilogue) is then followed, so the MMA and load warps no
+    longer count at the compute warps' `BAR.SYNC 0x3, 0x100`. fixtures/e_barwalk (the
+    producers' exit test reads `w - 4`, computed on the path; ptxas computes it in place,
+    `VIADD R0, R0, -0x4`) and unit test `walk_values_decide_the_recomputed_role`, which fails
+    when every register counts as unwritten, when R2UR skips its uniformity check, or when an
+    arrival with an undecided guard is dropped.
+    Bounded checks: the values change which arrivals the reduction commutes, and with it
+    the depth-first order, so a state-capped run can miss a finding it would reach within the
+    cap without them (fixtures/r2_cute_small CM1 on PTX: its deadlock lies within 1M states
+    with values off, past 2.5M with them on; every later arrival on that deadlock's trace is
+    one the walk with values predicts at each earlier state). Complete explorations are
+    unaffected. An incomplete clean run with values on bounds nothing beyond the states it
+    explored; tests/bar_values.rs runs the CM1 bounded check with values off.
   - Local reduction: a counted `bar.sync` arrival is local-ample only when at most `count`
     threads may still arrive (`local_ample`); otherwise the synchronization reduction and
     DPOR decide from footprints.

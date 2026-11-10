@@ -1,0 +1,72 @@
+// E-BAR-OVER walk values fixture: warp-role dispatch recomputed from the warp index after
+// the roles' work. 192 threads, 6 warps; the warp index is made warp-uniform with
+// shfl.sync (CuTe's warp_idx). Warps 0-3 (consumers) exchange values through shared memory
+// around `bar.sync 1, 128` twice; warps 4 and 5 (producers) write their lanes to out, then
+// meet the consumers' code: `w - 4 <= 1` sends them to the exit, the consumers write out.
+// The test of `w - 4` reads a register written on the walked path (the subtraction), so a
+// walk that only uses unwritten registers cannot decide it and counts the producers at
+// barrier 1 (192 threads for a count of 128). The producers store a progress counter twice
+// (volatile) before the join, so they are inside that region while the consumers arrive.
+//   good: as above
+//   BW1 : the exit test is `w - 4 <= 0`: warp 5 goes on to `bar.sync 1, 128` and can meet
+//         the consumers in their exchange (five warps on a count of 128).
+//   BW2 : the exit test reads the producer's last store (1) from memory: it still exits, but
+//         the walk cannot know, so the producers may arrive.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_barwalk(.param .u64 out_p)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<6>;
+    .reg .pred %p<6>;
+    .shared .align 4 .b32 buf[128];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    and.b32 %r2, %r1, 31;                // lane
+    shr.u32 %r3, %r1, 5;
+    shfl.sync.idx.b32 %r8, %r3, 0, 31, -1;   // warp (uniform)
+    mul.wide.u32 %rd2, %r1, 4;
+    add.u64 %rd3, %rd1, %rd2;            // &out[tid]
+    setp.ge.u32 %p1, %r8, 4;
+    @%p1 bra PRODUCER;
+    // consumers: two rounds of exchange through buf
+    mov.u32 %r4, buf;
+    shl.b32 %r5, %r1, 2;
+    add.u32 %r6, %r4, %r5;               // &buf[tid]
+    xor.b32 %r9, %r1, 32;
+    shl.b32 %r9, %r9, 2;
+    add.u32 %r9, %r4, %r9;               // &buf[tid ^ 32]
+    mov.u32 %r10, 0;
+    mov.u32 %r11, %r1;
+ROUND:
+    st.shared.u32 [%r6], %r11;
+    bar.sync 1, 128;
+    ld.shared.u32 %r12, [%r9];
+    bar.sync 1, 128;
+    add.u32 %r11, %r11, %r12;
+    add.u32 %r10, %r10, 1;
+    setp.lt.u32 %p2, %r10, 2;
+    @%p2 bra ROUND;
+    bra JOIN;
+PRODUCER:
+    add.u32 %r11, %r1, 1000;
+    mov.u32 %r10, 0;
+PLOOP:
+    st.volatile.global.u32 [%rd3], %r10;
+    add.u32 %r10, %r10, 1;
+    setp.lt.u32 %p2, %r10, 2;
+    @%p2 bra PLOOP;
+JOIN:
+    sub.u32 %r13, %r8, 4;                // @ROLE
+    setp.le.u32 %p3, %r13, 1;            // @EXIT
+    @%p3 bra PDONE;
+    bar.sync 1, 128;
+    st.global.u32 [%rd3], %r11;
+    ret;
+PDONE:
+    st.global.u32 [%rd3], %r11;
+    ret;
+}

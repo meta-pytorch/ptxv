@@ -1,0 +1,45 @@
+name = "e_barwalk"
+description = """
+Fixture for E-BAR-OVER's walk values: the producers' exit test recomputes the role from the
+warp index after their work (`w - 4 <= 1`), so deciding it needs the value of a register
+written on the walked path. With it, only the four consumer warps may arrive at
+`bar.sync 1, 128`, and their arrivals commute. BW1 (`w - 4 <= 0`) lets warp 5 arrive too.
+BW2 reads the role from memory (the producer's own last store, 1: it still exits), which the
+walk cannot know: the producers may arrive."""
+ptx = "kernel.ptx"
+entry = "e_barwalk"
+grid = [1, 1, 1]
+block = [192, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [192]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "BW1"
+summary = "warp 5 does not exit and arrives at bar.sync 1, 128 with the consumers"
+marker = "@EXIT"
+find = "setp.le.u32 %p3, %r13, 1;"
+replace = "setp.le.u32 %p3, %r13, 0;"
+expect = ["deadlock", "race"]
+# SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG): no race on the hardware.
+expect_sass = ["deadlock"]
+
+[[variants]]
+id = "BW2"
+summary = "the exit test reads the producer's own last store (1) instead of w - 4"
+marker = "@ROLE"
+find = "sub.u32 %r13, %r8, 4;"
+replace = "ld.volatile.global.u32 %r13, [%rd3];"
+expect = ["clean"]

@@ -418,6 +418,15 @@ fn e_barover_oversubscribed_named_barrier() {
         }
     }
 }
+/// E-BAR-OVER walk values: producers that leave through a role test recomputed on the path
+/// (clean), and BW1, where warp 5 arrives at the consumers' counted barrier.
+#[test]
+fn e_barwalk_recomputed_role() {
+    both("e_barwalk", "good");
+    for front in ["ptx", "sass"] {
+        check_stateful("e_barwalk", "BW1", front, 100_000);
+    }
+}
 /// The model agrees with GB300 on every probe variant (probes/bar_exit, run 2026-10-30).
 #[test]
 fn probe_bar_exit_matches_hardware() {
@@ -874,8 +883,7 @@ fn r2_cute_small() {
     for v in ["good", "fenced", "CM2", "CM3"] {
         check_stateful("r2_cute_small", v, "ptx", 2_000_000);
     }
-    // CM1's deadlock needs the MMA warp to run ahead: ~1M states (a few seconds in parallel).
-    check_bounded("r2_cute_small", "CM1", "ptx", 1_000_000);
+    // CM1 on PTX (bounded, its deadlock needs the MMA warp to run ahead): tests/bar_values.rs.
     check_bounded("r2_cute_small", "CM4", "ptx", 50_000);
 }
 
