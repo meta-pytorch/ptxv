@@ -75,6 +75,20 @@ fn audited_set_is_sorted_and_refuses_the_rest() {
             "{l} must be refused"
         );
     }
+    // `LEA.HI.X Rd, Ra, ~Rb, RZ, s, P` (probes/lea_hi_not): data registers, RZ as the upper
+    // word, a thread predicate.
+    assert!(ptxv_sass::lower_text("LEA.HI.X R54, R52, ~R55, RZ, 0x7, P0", None).is_ok());
+    for l in [
+        "LEA.HI.X R54, R52, ~UR5, RZ, 0x7, P0",
+        "LEA.HI.X R54, R52, ~R55, R53, 0x7, P0",
+        "LEA.HI.X R54, R52, ~R55, RZ, 0x7, !P0",
+        "LEA.HI.X R54, R52, ~R55, RZ, 0x7, PT",
+    ] {
+        assert!(
+            ptxv_sass::lower_text(l, None).is_err(),
+            "{l} must be refused"
+        );
+    }
     // A negated register source of F2I (probes/f2i_neg): only `-R` on the 32-bit .NTZ forms.
     assert!(ptxv_sass::lower_text("F2I.U32.TRUNC.NTZ R38, -R38", None).is_ok());
     for l in [

@@ -6385,6 +6385,55 @@ mod tests {
         assert!(lower1("F2I.S64.U32.F64.TRUNC R28, R4").is_err());
     }
 
+    /// `LEA.HI.X Rd, Ra, ~Rb, RZ, s, P` (probes/lea_hi_not): exactly that shape; the operand
+    /// kinds the probe does not cover stay refused.
+    #[test]
+    fn lea_hi_x_complemented() {
+        for (l, s) in [
+            ("LEA.HI.X R54, R52, ~R55, RZ, 0x7, P0", 7),
+            ("LEA.HI.X R11, R0.reuse, ~R3.reuse, RZ, 0x1, P1", 1),
+            ("LEA.HI.X R25, R0, ~R3, RZ, 0x1e, P6", 30),
+        ] {
+            match lower1(l).unwrap_or_else(|e| panic!("{l}: {e}")) {
+                Op::LeaHi {
+                    a: Val::Reg(_, 1),
+                    b: Val::Reg(_, 1),
+                    c: Val::Imm(0),
+                    shift,
+                    sx32: false,
+                    neg_b: false,
+                    not_b: true,
+                    cin: Some(Pred { neg: false, .. }),
+                    cout: None,
+                    ..
+                } => assert_eq!(shift, s, "{l}"),
+                o => panic!("{l}: {o:?}"),
+            }
+        }
+        for l in [
+            "LEA.HI.X R54, R52, ~R55, R53, 0x7, P0",
+            "LEA.HI.X R54, R52, ~R55, RZ, 0x0, P0",
+            "LEA.HI.X R54, R52, ~R55, RZ, 0x1f, P0",
+            "LEA.HI.X R54, R52, ~R55, RZ, 0x7, !P0",
+            "LEA.HI.X R54, R52, ~R55, RZ, 0x7, PT",
+            "LEA.HI.X R54, R52, ~R55, RZ, 0x7, UP0",
+            "LEA.HI.X R54, R52, ~R55, RZ, 0x7",
+            "LEA.HI.X R54, R52, ~UR5, RZ, 0x7, P0",
+            "LEA.HI.X R54, R52, ~RZ, RZ, 0x7, P0",
+            "LEA.HI.X R54, R52, ~0x5, RZ, 0x7, P0",
+            "LEA.HI.X R54, UR4, ~R55, RZ, 0x7, P0",
+            "LEA.HI.X R54, RZ, ~R55, RZ, 0x7, P0",
+            "LEA.HI.X R54, 0x4, ~R55, RZ, 0x7, P0",
+            "LEA.HI.X R54, ~R52, R55, RZ, 0x7, P0",
+            "LEA.HI.X R54, ~R52, ~R55, RZ, 0x7, P0",
+            "LEA.HI.X R54, P1, R52, ~R55, RZ, 0x7, P0",
+            "LEA.HI R54, R52, ~R55, RZ, 0x7",
+            "ULEA.HI.X UR4, UR5, ~UR6, URZ, 0x7, UP0",
+        ] {
+            assert!(lower1(l).is_err(), "{l} must be refused");
+        }
+    }
+
     /// `F2I ... Rd, -Ra` (probes/f2i_neg): a negated data register on the 32-bit `.NTZ` forms
     /// only; every other modified source stays refused.
     #[test]

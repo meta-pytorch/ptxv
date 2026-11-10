@@ -1406,10 +1406,18 @@ mod tests {
             def_use(&line("VOTE.ANY R5, PT, P0")),
             (vec![r(b'R', 5)], vec![r(b'P', 0)])
         );
-        // A modified register operand is read like a plain one (probes/f2i_neg).
+        // Modified register operands are read like plain ones (probes/f2i_neg,
+        // probes/lea_hi_not).
         assert_eq!(
             def_use(&line("F2I.U32.TRUNC.NTZ R38, -R38")),
             (vec![r(b'R', 38)], vec![r(b'R', 38)])
+        );
+        assert_eq!(
+            def_use(&line("LEA.HI.X R54, R52, ~R55, RZ, 0x7, P0")),
+            (
+                vec![r(b'R', 54)],
+                vec![r(b'R', 52), r(b'R', 55), r(b'P', 0)]
+            )
         );
     }
 }

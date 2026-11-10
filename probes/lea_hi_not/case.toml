@@ -1,0 +1,52 @@
+name = "probe_lea_hi_not"
+description = """
+Probe (L-ROSETTA) for SASS `LEA.HI.X Rd, Ra, ~Rb, RZ, s, P`: the high word of a zero-extended
+32-bit value shifted left by s = 1..30 minus a 64-bit value, d = (a >> (32 - s)) + ~b + P with
+P the low word's carry. Two shapes whose low words ptxas computes with `LEA Rlo, P, Ra, -Rb, s`
+and with `LEA Rlo, P, -Ra, Rb, s` (30 instances each), on edge values, borrow boundaries and
+random words
+(kernel.ptx from gen_ptx.py, gen.py; check.py compares with 64-bit arithmetic). expected/ is
+GB300's output (kernel.cubin = ptxas 13.1 -arch=sm_103a kernel.ptx, `ptxv hw-worker
+probes/lea_hi_not probes/lea_hi_not/kernel.cubin --runs 20 --dump`)."""
+ptx = "kernel.ptx"
+entry = "lea_hi_not"
+grid = [8, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "ar"
+dtype = "u32"
+shape = [2048, 4]
+init = "file"
+file = "ar.bin"
+
+[[buffers]]
+name = "x"
+dtype = "u64"
+shape = [2048]
+init = "file"
+file = "x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u64"
+shape = [60, 2048]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "ar"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

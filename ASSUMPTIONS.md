@@ -4526,6 +4526,15 @@ forms seen. Any other form is a hard error.
   instead 22,999; both front-ends and the ptxas 13.1 cubin bitwise). Only a data register on
   the 32-bit `.NTZ` forms: `|Ra|`, `-|Ra|`, a negated RZ / uniform register / constant, and
   the 64-bit, 16-bit and f64-source forms with a negated source are refused.
+- `LEA.HI.X Rd, Ra, ~Rb, RZ, s, P` (the high word of `(zext(a) << s) - y`, a 64-bit shift of a
+  zero-extended word minus a 64-bit value; kernel-DB records: `LEA.HI.X R54, R52,
+  ~R55, RZ, 0x7, P0`): d = (a >> (32 - s)) + ~b + P mod 2^32, b the subtrahend's high word and
+  P the carry of the low word (`probes/lea_hi_not`, 2026-11-10: s = 1..30 after `LEA Rlo, P,
+  Ra, -Rb, s` and after `LEA Rlo, P, -Ra, Rb, s`, 60 instances on 2048 edge, borrow-boundary
+  and random rows, GB300 20/20 runs = 64-bit arithmetic on all 122,880 words, 46,376 of them
+  with a low-word borrow; both front-ends and the ptxas 13.1 cubin bitwise). Only that shape:
+  data registers d, a and b, RZ as the upper word, s = 1..30, a thread predicate; the `.SX32`
+  form is the bullet on `probes/int16x2`.
 - Status: **validated** per form by differential runs (r0, r1a and r1b bitwise: PTX model =
   SASS model = GB300). Rung 1b added `UTMASTG`, `UTMACMDFLUSH` (bulk commit), `DEPBAR.LE` on
   the flush's read scoreboard (bulk wait), `SYNCS.ARRIVE.TRANS64.A1T0` (plain arrive),

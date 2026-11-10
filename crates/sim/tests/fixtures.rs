@@ -2173,6 +2173,37 @@ fn probe_int16x2_matches_hardware() {
     probe_bitwise_cubin("probes/int16x2", Some("cubins/lea.cubin"));
 }
 
+/// L-ROSETTA: `LEA.HI.X Rd, Ra, ~Rb, RZ, s, P` (the high word of a zero-extended word shifted
+/// left by s = 1..30 minus a 64-bit value, after either low-word LEA) = GB300
+/// (probes/lea_hi_not): the PTX front, the local ptxas's SASS, and the checked-in ptxas 13.1
+/// cubin, which holds the form 60 times.
+#[test]
+fn probe_lea_hi_not_matches_hardware() {
+    probe_bitwise("probes/lea_hi_not", "good", "ptx");
+    probe_bitwise("probes/lea_hi_not", "good", "sass");
+    probe_bitwise_cubin("probes/lea_hi_not", Some("kernel.cubin"));
+    let case = Case::load(root().join("probes/lea_hi_not")).unwrap();
+    let k = ptxv_sass::load_cubin(&case.dir.join("kernel.cubin"), &case.m.entry).unwrap();
+    let forms = k
+        .code
+        .iter()
+        .filter(|i| {
+            matches!(
+                i.op,
+                ptxv_ir::Op::LeaHi {
+                    not_b: true,
+                    sx32: false,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        forms, 60,
+        "LEA.HI.X Rd, Ra, ~Rb, RZ, s, P for s = 1..30, twice"
+    );
+}
+
 /// N-BULK-RED: cp.reduce.async.bulk ... .add.f32 (UBLKRED.G.S.ADD.F32.RN) on edge pairs, and
 /// four CTAs' concurrent bulk adds into the same words (atomic per word: no race, one result)
 /// = GB300 (probes/bulk_red), both front-ends.
