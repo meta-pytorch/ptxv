@@ -1,0 +1,49 @@
+name = "e_cluster_life"
+description = """
+S-CLUSTER-LIFE: CTA 1 stores into CTA 0's shared memory (mapa + st.shared::cluster) after one
+cluster barrier. With a final barrier.cluster the store happens before CTA 0's exit (good,
+clean); without it CTA 0 can exit first (NOFINAL, violation). Before 2026-11-09 --certify
+certified NOFINAL clean: the end-of-run S-CLUSTER-LIFE check covered remote arrivals, multicast
+TMA and commits, not a thread's own shared::cluster accesses, which only a schedule in which
+CTA 0 exits first reported."""
+ptx = "kernel.ptx"
+entry = "e_cluster_life"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+cluster = [2, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "final cluster barrier"
+expect = ["clean"]
+
+[[variants]]
+id = "NOFINAL"
+summary = "no final cluster barrier"
+edits = [
+    { marker = "@FIN_A", find = "barrier.cluster.arrive.release;", replace = "" },
+    { marker = "@FIN_B", find = "barrier.cluster.wait.acquire;", replace = "" },
+]
+expect = ["violation"]
+
+[[variants]]
+id = "NOBAR"
+summary = "no barrier.cluster at all: the target CTA's only action is its exit"
+edits = [
+    { marker = "@SYNC_A", find = "barrier.cluster.arrive.release;", replace = "" },
+    { marker = "@SYNC_B", find = "barrier.cluster.wait.acquire;", replace = "" },
+    { marker = "@FIN_A", find = "barrier.cluster.arrive.release;", replace = "" },
+    { marker = "@FIN_B", find = "barrier.cluster.wait.acquire;", replace = "" },
+]
+expect = ["violation"]

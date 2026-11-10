@@ -923,6 +923,18 @@ impl Machine {
             p.on_access(self, actor, loc, n, write.is_some(), rmw, vc); // coverage.rs
             self.prov = Some(p);
         }
+        // ASSUME(S-CLUSTER-LIFE): a thread's own access to another CTA's shared memory
+        // (ld / st / atom / red through shared::cluster) must happen before an exit of that CTA,
+        // checked at the end of the run as for remote arrivals and multicast TMA.
+        // (Not a delivery the thread issued earlier: that was noted at issue.)
+        if let Loc::Shared { cta: c, .. } = loc {
+            if (actor as usize) < self.threads.len()
+                && self.threads[actor as usize].cta != c
+                && vc_get(vc, actor) == vc_get(&self.threads[actor as usize].vc, actor)
+            {
+                self.note_remote(c, actor, pc);
+            }
+        }
         // ASSUME(S-MBAR-SCOPE): shared-memory-only happens-before of the accessing thread.
         let aug;
         let vc = match loc {
@@ -11768,9 +11780,16 @@ impl Machine {
 
     fn note_remote(&mut self, target: u16, t: u32, pc: u32) {
         let clock = vc_get(&self.threads[t as usize].vc, t);
-        let e = (target, t, clock, pc);
-        if let Err(k) = self.remote.binary_search(&e) {
-            self.remote.insert(k, e);
+        // One entry per (target, thread): the thread's later accesses come after its earlier
+        // ones in program order, so the latest one happening before an exit covers them all.
+        let i = self.remote.partition_point(|x| (x.0, x.1) < (target, t));
+        match self.remote.get_mut(i) {
+            Some(x) if (x.0, x.1) == (target, t) => {
+                if clock > x.2 {
+                    *x = (target, t, clock, pc);
+                }
+            }
+            _ => self.remote.insert(i, (target, t, clock, pc)),
         }
     }
 

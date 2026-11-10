@@ -3990,6 +3990,12 @@ counts too, though the wait need not synchronize with it (S-MBAR-SCOPE, `Thread:
   (`cudaErrorLaunchFailure`). Successor CTAs already resident on the exited CTA's SM were
   never written. A violation of this rule is therefore a crash on GB300, not a silent
   corruption.
+- A thread's own access to another CTA's shared memory (ld / st / atom / red through
+  shared::cluster) is checked at the end of the run like remote arrivals, multicast TMA and
+  commits (`note_remote` from `access_x`; one entry per target CTA and thread, its latest
+  access). Before 2026-11-09 only the exit-time check saw them, in schedules where the
+  target exited first, so the certificate's run certified a missing final barrier.cluster
+  (fixtures/e_cluster_life NOFINAL).
 
 ### S-REMOTE-INFLIGHT · code
 **A remote mbarrier arrival (`mbarrier.arrive[.expect_tx] .shared::cluster` to another CTA,

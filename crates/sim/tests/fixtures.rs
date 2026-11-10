@@ -6286,3 +6286,34 @@ fn e_gproxy_verdicts() {
         both("e_gproxy", v);
     }
 }
+
+/// S-CLUSTER-LIFE: a thread's plain st.shared::cluster into the peer CTA must happen before an
+/// exit of that CTA. NOFINAL (no final barrier.cluster) and NOBAR (no barrier at all: the
+/// target's only action is its exit, which the explorers' local reductions treat as commuting)
+/// are violations on both fronts under the stateful explorer, DPOR and the certificate's
+/// single run (before, the end-of-run check saw only remote arrivals, multicast TMA and
+/// commits, and the exit-time check depended on the explored order).
+#[test]
+fn e_cluster_life_remote_store() {
+    // `both`: stateful explorer with its reductions, then DPOR on the same verdict.
+    for v in ["good", "NOFINAL", "NOBAR"] {
+        both("e_cluster_life", v);
+    }
+    let case = Case::load(root().join("fixtures/e_cluster_life")).unwrap();
+    for (v, front) in [
+        ("NOFINAL", "ptx"),
+        ("NOFINAL", "sass"),
+        ("NOBAR", "ptx"),
+        ("NOBAR", "sass"),
+    ] {
+        let k = kernel(&case, v, front);
+        let launch = build_launch(&case, &k).unwrap();
+        let c = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)));
+        assert!(
+            c.verdict
+                .as_ref()
+                .is_none_or(|v| v.classes().iter().any(|x| x == "violation")),
+            "{v}/{front}: certified without the violation"
+        );
+    }
+}
