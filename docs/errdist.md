@@ -1294,6 +1294,24 @@ headline is never worse than Tier 3.
 Each report notes the variance budget by site class (e.g. softmax torch: f32 fma 64%, f32
 add 19%, the exp2 slice before its last rounding 16%).
 
+**Float trajectory (opt-in, N-ERRDIST-NL-FTRAJ).** `PTXV_ERRDIST_LIN_TRAJ=float` linearizes
+around the computed trajectory instead of the real one. At each nominal input every non-output
+op takes its bit-exact value (`Prog::eval`). Its local law is the rounding of the exact result
+of its computed arguments, and the adjoints are taken there. `both` reports both estimates, the
+real one first; the float one's method ends in "expanded around the float trajectory". Pairs
+always use the real trajectory. This matters where a value exists only because of rounding.
+Kahan's compensation c = (t − s) − v is identically 0 in real arithmetic, so the real
+trajectory never sees the roundings of x − c.
+
+| c_sum_kahan (Triton, 4 × 512) | Tier 3 | real trajectory | float trajectory | GB300 |
+|---|---|---|---|---|
+| N(0, 1) | 0.406 | 0.207 | 0.398 | 0.403 [0.398, 0.408] |
+| U[0, 1) | 8.4e-3 | 1.5e-6 | 6.5e-3 | 8.6e-3 [8.3e-3, 8.9e-3] |
+
+Under U[0, 1) the per-class local laws match the bit-exact errors (`PTXV_NL_DIAG`: f32 FMA rms
+0.106 observed vs 0.106 modelled; 0.022 modelled on the real trajectory). The remaining 25% is
+in the propagation, not in the local laws.
+
 ### 9.4 Pairs
 
 `agg.rs` `Ctx::joint`, N-ERRDIST-NL-JOINT.

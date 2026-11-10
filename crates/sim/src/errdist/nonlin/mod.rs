@@ -239,36 +239,65 @@ pub fn analytic(
         );
         return (out, notes);
     }
-    let kr = lin::KModel::new(r, &ts, op_tables(r, tabs)).with_input_errors(spec);
-    let kc = c.map(|c| lin::KModel::new(c, &ts, op_tables(c, tabs)).with_input_errors(spec));
-    if std::env::var("PTXV_NL_DIAG").is_ok() {
-        eprintln!("reference:\n{}", diagnose(&kr, spec, layouts, 8));
-        if let Some(k) = &kc {
-            eprintln!("candidate:\n{}", diagnose(k, spec, layouts, 8));
+    let trajs = match lin::Trajectory::from_env() {
+        Ok(t) => t,
+        Err(e) => {
+            notes.push(format!("linearized tiers not run: {e}"));
+            return (out, notes);
         }
-    }
-    for tier in [2u8, 1] {
-        let cfg = agg::Cfg {
-            tier,
-            ..Default::default()
-        };
-        match agg::estimate(
-            &cfg,
-            &kr,
-            kc.as_ref(),
-            spec,
-            layouts,
-            fmt,
-            &tabs.same,
-            &pairs,
-        ) {
-            Ok((e, n)) => {
-                if tier == 1 {
-                    notes.extend(n);
-                }
-                out.push(e);
+    };
+    // The float trajectory is for single kernels: a pair's matched roundings are found by
+    // equal real values (N-ERRDIST-NL-JOINT).
+    let trajs: Vec<lin::Trajectory> = if c.is_some() && trajs.contains(&lin::Trajectory::Float) {
+        notes.push("float-trajectory linearization: single kernels only; this pair uses the real trajectory".into());
+        vec![lin::Trajectory::Real]
+    } else {
+        trajs
+    };
+    for traj in trajs {
+        let kr = lin::KModel::new(r, &ts, op_tables(r, tabs))
+            .with_input_errors(spec)
+            .with_trajectory(traj);
+        let kc = c.map(|c| lin::KModel::new(c, &ts, op_tables(c, tabs)).with_input_errors(spec));
+        if std::env::var("PTXV_NL_DIAG").is_ok() {
+            eprintln!("reference:\n{}", diagnose(&kr, spec, layouts, 8));
+            if let Some(k) = &kc {
+                eprintln!("candidate:\n{}", diagnose(k, spec, layouts, 8));
             }
-            Err(e) => notes.push(format!("non-chain tier {tier} not run: {e}")),
+        }
+        for tier in [2u8, 1] {
+            let cfg = agg::Cfg {
+                tier,
+                ..Default::default()
+            };
+            match agg::estimate(
+                &cfg,
+                &kr,
+                kc.as_ref(),
+                spec,
+                layouts,
+                fmt,
+                &tabs.same,
+                &pairs,
+            ) {
+                Ok((mut e, n)) => {
+                    if tier == 1 {
+                        notes.extend(n);
+                    }
+                    if traj == lin::Trajectory::Float {
+                        e.method.push_str("; expanded around the float trajectory");
+                    }
+                    out.push(e);
+                }
+                Err(e) => notes.push(format!(
+                    "non-chain tier {tier}{} not run: {e}",
+                    if traj == lin::Trajectory::Float {
+                        " (float trajectory)"
+                    } else {
+                        ""
+                    }
+                )),
+            }
         }
     }
     (out, notes)

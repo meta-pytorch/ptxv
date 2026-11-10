@@ -7303,6 +7303,24 @@ residue for exact sums, the table offsets for final slices.
 - If wrong: biased estimates. `best` uses an analytic estimate only when it agrees with Tier
   3 (within max(5%, CI)).
 
+### N-ERRDIST-NL-FTRAJ · code
+**Opt-in (`PTXV_ERRDIST_LIN_TRAJ=float` or `both`): the non-chain Tiers 1 and 2 linearize
+around the computed float trajectory.** At each nominal input every op except the outputs
+takes its bit-exact computed value (`Prog::eval`) instead of its real value. Each op's local
+error law is then that of rounding the exact result of its computed arguments, and the
+adjoints are taken at the computed values. An output keeps the exact result of its computed
+arguments, which positions its own last rounding. Values that exist only because of
+rounding, such as a Kahan compensation c = (t − s) − v (identically 0 in real arithmetic),
+carry their computed magnitude, so the roundings they feed (x − c) become sites.
+- Where: `errdist/nonlin/lin.rs` `Trajectory`, `KModel::state`; `errdist/nonlin/mod.rs`
+  `analytic` (single kernels only: a pair's matched roundings are found by equal real values,
+  N-ERRDIST-NL-JOINT).
+- Status: **argued.** First-order propagation (N-ERRDIST-NL-LIN) still applies. The local
+  errors are still modelled as random residues on their lattices, so the computed values only
+  move the operating point. Validation: `crates/cli/tests/errdist_ftraj.rs` (Kahan) and the
+  scorecard (tools/errdist_scorecard).
+- If wrong: biased estimates. The Tier 3 cross-check still gates `best`.
+
 ### N-ERRDIST-NL-INDEP · code
 **Distinct rounding sites have independent local errors given their cells.** A slice's or
 MUFU unit's local error law in a cell (sign, binade, 1/8 binade of its index variable) is

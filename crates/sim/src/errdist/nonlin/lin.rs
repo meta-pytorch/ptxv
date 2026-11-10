@@ -318,6 +318,35 @@ pub struct State {
     pub podd: Vec<f64>,
 }
 
+/// The operating point of the linearization (N-ERRDIST-NL-FTRAJ).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Trajectory {
+    /// Every op at its real value on real arguments (the original model).
+    #[default]
+    Real,
+    /// Every op that is not an output at its computed (bit-exact, `Prog::eval`) value: an
+    /// op's local error law is that of rounding the exact result of its *computed*
+    /// arguments, and the adjoints are taken there. Values that are rounding artefacts (a
+    /// Kahan compensation, zero in real arithmetic) then carry their computed magnitude, so
+    /// the roundings they feed become sites.
+    Float,
+}
+
+impl Trajectory {
+    /// From `PTXV_ERRDIST_LIN_TRAJ`: `real` (default), `float`, or `both` (both modes, the
+    /// real one first). Unknown values are an error.
+    pub fn from_env() -> Result<Vec<Trajectory>, String> {
+        match std::env::var("PTXV_ERRDIST_LIN_TRAJ").as_deref() {
+            Err(_) | Ok("") | Ok("real") => Ok(vec![Trajectory::Real]),
+            Ok("float") => Ok(vec![Trajectory::Float]),
+            Ok("both") => Ok(vec![Trajectory::Real, Trajectory::Float]),
+            Ok(o) => Err(format!(
+                "PTXV_ERRDIST_LIN_TRAJ={o}: expected real, float or both"
+            )),
+        }
+    }
+}
+
 /// A kernel prepared for linearization: its program, the tables of its slices and MUFU ops,
 /// and per op the table it uses and its canonical hash (shared sub-computations of pairs).
 // ASSUME(N-ERRDIST-NL-LIN): first-order propagation of local errors at nominal inputs.
@@ -329,6 +358,8 @@ pub struct KModel<'a> {
     /// Per leaf buffer (`Prog::bufs` index): the input's error model (docs/errdist.md §2.1),
     /// a local error of the leaf.
     pub in_err: Vec<Option<super::super::spec::InputError>>,
+    /// The linearization's operating point.
+    pub traj: Trajectory,
 }
 
 fn low_bit(v: f64) -> i32 {
@@ -372,7 +403,14 @@ impl<'a> KModel<'a> {
             op_tab,
             canon,
             in_err: vec![],
+            traj: Trajectory::Real,
         }
+    }
+
+    /// The linearization's operating point (N-ERRDIST-NL-FTRAJ).
+    pub fn with_trajectory(mut self, t: Trajectory) -> KModel<'a> {
+        self.traj = t;
+        self
     }
 
     /// The inputs' error models from the spec (N-ERRDIST-INERR).
@@ -399,6 +437,17 @@ impl<'a> KModel<'a> {
         };
         let ul32 = |v: f64| ulp_out(v, Format::F32);
         let xor = |a: f64, b: f64| a * (1.0 - b) + b * (1.0 - a);
+        // ASSUME(N-ERRDIST-NL-FTRAJ): float-trajectory operating point (opt-in).
+        // Float trajectory: the computed value of every op, and which ops are outputs (an
+        // output keeps the exact result of its computed arguments: its own rounding is the
+        // last site, positioned by that value).
+        let fp: Option<(Vec<f32>, Vec<bool>)> = (self.traj == Trajectory::Float).then(|| {
+            let mut is_out = vec![false; n];
+            for &o in p.outputs.iter().flatten() {
+                is_out[o as usize] = true;
+            }
+            (p.eval(&w.to_vec()), is_out)
+        });
         for (i, op) in p.ops.iter().enumerate() {
             // The bit of operand x at lattice exponent l.
             let bit = |s: &State, x: usize, l: i32| if s.lat[x] == l { s.podd[x] } else { 0.0 };
@@ -632,6 +681,16 @@ impl<'a> KModel<'a> {
                         }
                     },
                 },
+            };
+            let v = match &fp {
+                Some((fv, is_out))
+                    if !is_out[i]
+                        && !matches!(op, Op::Leaf { .. } | Op::Const(_))
+                        && fv[i].is_finite() =>
+                {
+                    fv[i] as f64
+                }
+                _ => v,
             };
             s.v[i] = v;
             s.lat[i] = lat;

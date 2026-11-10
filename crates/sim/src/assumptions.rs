@@ -1447,6 +1447,13 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |_| false,
     },
     Assumption {
+        id: "N-ERRDIST-NL-FTRAJ",
+        kind: "code",
+        status: "argued",
+        title: "errdist non-chain tiers 1-2 (opt-in): linearize around the computed float trajectory",
+        applies: |_| false,
+    },
+    Assumption {
         id: "N-ERRDIST-NL-INDEP",
         kind: "code",
         status: "argued",
