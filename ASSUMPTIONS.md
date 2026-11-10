@@ -1079,7 +1079,8 @@ slow path = `WARPSYNC.COLLECTIVE Rm, end; op...; ENDCOLLECTIVE; end:`.
 ### E-COLLECTIVE-ALL · code
 **ptxas's divergent path of a non-aligned `barrier.sync`** (CuTeDSL `barrier(aligned=False)`;
 FA4's fix for its warp-role barrier bug): `UMOV UR, -1; BRA.DIV UR, slow; BAR.SYNC id, n` with the slow path
-`WARPSYNC.COLLECTIVE.ALL end; BAR.SYNC R, R; ENDCOLLECTIVE; end:` (R = n << 16 | id).
+`WARPSYNC.COLLECTIVE.ALL end; BAR.SYNC R, R; ENDCOLLECTIVE; end:` (R = n << 16 | id; n = 0
+for an all-thread `barrier.sync id`: all threads).
 - `WARPSYNC.COLLECTIVE.ALL` parks the arriving lanes until every live lane of the warp is parked
   at such an instruction, at any pc (two branches each with their own barrier.sync have two);
   then all of them go on, their histories joined, each into its own region. An exiting lane
@@ -1304,8 +1305,12 @@ in the generation that is open now.**
   `bar_cut_applies_only_when_its_premises_hold` checks that the arrival is ample in good and
   in no mutant. `tests/bar_cut.rs` compares classes and outputs with and without the cut on
   every named-barrier fixture, both fronts.
-- Status: **argued** (from the barrier semantics validated for E-BAR-OVER and E-BAR-EXIT;
-  no separate hardware probe).
+- Status: **argued** (from the barrier semantics validated for E-BAR-OVER and E-BAR-EXIT).
+  Premise (a) probed on GB300 (probes/bar_cut_warp, 2026-11-09): a warp whose lanes wait at
+  two barrier ids at once (an all-thread and a counted one, or two counted ones) is an
+  illegal instruction, not a warp count at either; two sites of one id complete. The state
+  premise (a) excludes is thus a failure on the hardware too; the model reports it as a
+  deadlock.
 - If wrong: *miss* (an order of arrivals at the counted barrier not explored).
 
 ### E-BAR-RED · code
@@ -4948,7 +4953,11 @@ forms seen. Any other form is a hard error.
     back) = GB300 on both front-ends, 50/50 scrubbed.
   - `BAR.SYNC Ra, Ra` / `BAR.ARV Ra, Ra` (ptxas's register form): id = Ra bits 0..3, thread
     count = Ra >> 16 (ptxas builds `count << 16 | id & 0xf`; validated through
-    fixtures/s_bardiv, E-COLLECTIVE-ALL). Two different registers are not lowered.
+    fixtures/s_bardiv, E-COLLECTIVE-ALL). A count of 0 is an all-thread barrier: ptxas's
+    slow path of `barrier.sync 0` (no count) builds R = 0, and GB300 completes it together
+    with the fast path's `BAR.SYNC 0x0` (probes/bar_cut_warp same_all, 2026-11-09; before,
+    reported as `bar.sync 0 used with thread counts all and 0`). Two different registers
+    are not lowered.
   - `F2I[.FTZ][.U32|.S64|.U64][.TRUNC|.FLOOR|.CEIL][.NTZ]` (cvt.r{z,n,m,p}i: libdevice
     sinf / cosf use `F2I.FTZ.NTZ`): `.FTZ` flushes a subnormal source first, the f32 is
     rounded to an integer, then converted with saturation (NaN: 0, or 2^63 for 64-bit);

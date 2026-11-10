@@ -64,7 +64,12 @@ pub struct Reg {
 /// register form `BAR.SYNC Ra, Ra`).
 pub fn bar_args(id: u64, count: Option<u64>, packed: bool) -> (u32, Option<u32>) {
     if packed {
-        (id as u32 & 0xf, count.map(|c| (c as u32) >> 16))
+        // A thread count of 0: all threads (ptxas's slow path of an all-thread
+        // `barrier.sync id`; GB300: probes/bar_cut_warp same_all).
+        (
+            id as u32 & 0xf,
+            count.map(|c| (c as u32) >> 16).filter(|&c| c != 0),
+        )
     } else {
         (id as u32, count.map(|c| c as u32))
     }
@@ -1395,7 +1400,7 @@ pub enum Op {
         arrive: bool,
         /// SASS `BAR.SYNC Ra, Ra` (ptxas's register form; `id` and `count` are the same
         /// register): the id is bits 0..3, the thread count bits 16.. (ptxas builds
-        /// `count << 16 | id & 0xf`). Read with `Op::bar_args`.
+        /// `count << 16 | id & 0xf`; count 0: all threads). Read with `Op::bar_args`.
         packed: bool,
         /// `.aligned` (PTX `bar.*`, `barrier.*.aligned`; SASS `BAR` outside a
         /// `WARPSYNC.COLLECTIVE` region): every live lane of a warp executes the same barrier

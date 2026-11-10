@@ -508,6 +508,24 @@ fn probe_bar_exit_warp_matches_hardware() {
     check_dir("probes", "bar_exit_warp/partial", "full", "ptx");
     check_dir("probes", "bar_exit_warp/partial", "full", "sass");
 }
+/// probes/bar_cut_warp (GB300, 2026-11-09): one warp's lanes at two sites of one barrier id
+/// complete with the other warp (same_id, same_all; on SASS same_all's slow path is
+/// `BAR.SYNC R2, R2` with thread count 0: all threads). One warp waiting at two barrier ids
+/// traps on GB300 (illegal instruction); the model reports a deadlock there.
+#[test]
+fn probe_bar_cut_warp_matches_hardware() {
+    for v in [
+        "split",
+        "control",
+        "w1_first",
+        "two_counted",
+        "same_id",
+        "same_all",
+    ] {
+        check_dir("probes", "bar_cut_warp", v, "ptx");
+        check_dir("probes", "bar_cut_warp", v, "sass");
+    }
+}
 /// The model agrees with GB300 on every probe variant (probes/bar_arrive, run 2026-11-02;
 /// `mismatch` traps on hardware, reported as a violation).
 #[test]
