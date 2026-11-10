@@ -22,7 +22,7 @@ import os
 import subprocess
 import sys
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -36,6 +36,9 @@ class SrcMutant:
     replace: str
     # (fixture, variant, front, extra check flags)
     runs: list
+    # (cargo package, test binary, test name): the mutant is caught when the test fails
+    # (claims checked against recorded GPU outputs, e.g. num's error bounds).
+    tests: list = field(default_factory=list)
 
 
 # num.rs `value_fault_operands`: each entry removed, under the CTA reductions.
@@ -174,6 +177,40 @@ def run_mutant(m: SrcMutant, out: Path) -> dict:
                 "front": front,
                 "got": got,
                 "want": want,
+                "caught": hit,
+            }
+        )
+    wrap = os.environ.get("PTXV_JOB_WRAPPER", "").split()
+    for pkg, binary, name in m.tests:
+        cmd = [
+            *wrap,
+            "cargo",
+            "test",
+            "--release",
+            "-p",
+            pkg,
+            "--test",
+            binary,
+            "--",
+            "--exact",
+            name,
+        ]
+        r = subprocess.run(
+            cmd,
+            cwd=tree,
+            capture_output=True,
+            text=True,
+            timeout=3600,
+            env=dict(os.environ, CARGO_TARGET_DIR=str(target), CUDA_VISIBLE_DEVICES=""),
+        )
+        ran = f"test {name} ..." in r.stdout
+        hit = ran and r.returncode != 0
+        caught |= hit
+        runs.append(
+            {
+                "test": f"{pkg}/{binary}/{name}",
+                "ran": ran,
+                "rc": r.returncode,
                 "caught": hit,
             }
         )
