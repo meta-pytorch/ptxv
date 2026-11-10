@@ -1,0 +1,153 @@
+// [Enable stack traces via -xla_jf_collect_llo_stack_trace or -xla_jf_debug_level=2]
+$region0: #{hbm_dma.1}
+  #allocation0 [shape = 'u32[]', space=smem, size = 0x4, offset = 0x4, fixed_abs, tag = 'smem constant byte address 0x4 - core index']
+  #allocation1 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for hbm_dma.1']
+  #allocation2 [shape = 'u32[144,128]{1,0:T(1,128)}', space=vmem, size = 0x12000, scoped, tag = 'internal scratch']
+  #allocation3 [shape = 'f32[2,256,128]{2,1,0:T(8,128)}', space=vmem, size = 0x40000, scoped, tag = 'scratch operand']
+  #allocation4 [shape = 's32[2]{0}', space=sflag, size = 0x8, scoped, tag = 'scratch operand']
+  #allocation7 [shape = 's32[]', space=sflag, size = 0x4, offset = 0, fixed_abs, tag = 'sflag constant byte address 0x0 - dummy sync flag']
+  #allocation8 [shape = 's32[]', space=sflag, size = 0x4, offset = 0, fixed_abs, tag = 'sflag constant byte address 0x0 - dummy sync flag']
+  #allocation9 [shape = 'u32[]', space=smem, size = 0x4, offset = 0x48, fixed_abs, tag = 'smem constant byte address 0x48 - assertion arg 0']
+  #allocation10 [shape = 'u32[]', space=smem, size = 0x4, offset = 0x4c, fixed_abs, tag = 'smem constant byte address 0x4c - assertion arg 1']
+  #allocation11 [shape = 's32[]', space=sflag, size = 0x4, offset = 0, fixed_abs, tag = 'sflag constant byte address 0x0 - dummy sync flag']
+  #allocation12 [shape = 's32[]', space=sflag, size = 0x4, offset = 0, fixed_abs, tag = 'sflag constant byte address 0x0 - dummy sync flag']
+  #allocation13 [shape = 's32[]', space=sflag, size = 0x4, offset = 0, fixed_abs, tag = 'sflag constant byte address 0x0 - dummy sync flag']
+  #allocation14 [shape = 's32[]', space=sflag, size = 0x4, offset = 0, fixed_abs, tag = 'sflag constant byte address 0x0 - dummy sync flag']
+  #allocation15 [shape = 's32[]', space=sflag, size = 0x4, offset = 0, fixed_abs, tag = 'sflag constant byte address 0x0 - dummy sync flag']
+  #allocation16 [shape = 's32[]', space=sflag, size = 0x4, offset = 0, fixed_abs, tag = 'sflag constant byte address 0x0 - dummy sync flag']
+  %s0 = inlined_call_operand.hbm [shape: f32[131072,128], index: 0, kind: input, shape index: {}] /* operand 0 */
+  %s1 = inlined_call_operand.hbm [shape: f32[8,128], index: 1, kind: output, shape index: {}] /* output window allocation for operator output 0. The window shape is f32[8,128], while the full shape is f32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s2 = sld [smem:[#allocation0]] /* core id */
+  $region26: #{hbm_dma.1} parent=0
+    _
+  %s4 = ssub.s32 1, %s2
+  %s5 = scalar_select /*predicate=*/0, /*on_true=*/%s4, /*on_false=*/%s2 /* megacore core id */
+  $region1: #{hbm_dma.1} parent=0
+    #allocation5 [shape = 'u8[4096]{0}', space=vmem, size = 0x1000, scoped, tag = 'output window allocation for operator output 0. The window shape is f32[8,128], while the full shape is f32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM. This allocation is single buffered.']
+    #allocation6 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for hbm_dma.1']
+    %6 = vsyncpa [#allocation6], 0
+    %s7 = smul.u32 256, 512
+    %s8 = sadd.s32 %s7, 31
+    %s9 = sshrl.u32 %s8, 5
+    // Predicated region
+    $region2: #{hbm_dma.1} parent=1 // pred_check
+      _
+    $region3: #{hbm_dma.1} parent=1 // pred_check_branch
+      %11 = sbr.rel target = $region5
+    $region4: #{hbm_dma.1} parent=1 // pred_region
+      %12 = sst [smem:[#allocation9]] [#allocation8]
+      %13 = sst [smem:[#allocation10]] [#allocation7]
+    $region5: #{hbm_dma.1} parent=1 // pred_fallthru
+      _
+    %15 = shalt.err (0) /* scheckeq: Src sync flag is not dummy sync flag. */
+    %s17 = sshll.u32 [#allocation3], 4
+    %s18 = int_to_ptr.vmem [resolvable:$true] %s17
+    %20 = dma.hbm_to_vmem [thread:$0]  /*hbm=*/%s0, /*size_in_granules=*/4096, /*vmem=*/%s18, /*dst_syncflagno=*/[#allocation4]
+    %s21 = scalar_lea.sflag [#allocation4], 1
+    %s22 = scalar_lea.vmem [#allocation3], 256
+    %s23 = scalar_lea.hbm %s0, 65536
+    %s24 = sadd.s32 %s7, 31
+    %s25 = sshrl.u32 %s24, 5
+    // Predicated region
+    $region6: #{hbm_dma.1} parent=1 // pred_check
+      _
+    $region7: #{hbm_dma.1} parent=1 // pred_check_branch
+      %27 = sbr.rel target = $region9
+    $region8: #{hbm_dma.1} parent=1 // pred_region
+      %28 = sst [smem:[#allocation9]] [#allocation12]
+      %29 = sst [smem:[#allocation10]] [#allocation11]
+    $region9: #{hbm_dma.1} parent=1 // pred_fallthru
+      _
+    %31 = shalt.err (0) /* scheckeq: Src sync flag is not dummy sync flag. */
+    %s33 = sshll.u32 %s22, 4
+    %s34 = int_to_ptr.vmem [resolvable:$true] %s33
+    %36 = dma.hbm_to_vmem [thread:$0]  /*hbm=*/%s23, /*size_in_granules=*/4096, /*vmem=*/%s34, /*dst_syncflagno=*/%s21
+    %38 = dma.done [#allocation4], 4096
+    %v39 = vld [vmem:[#allocation3] sm:$0xff]
+    %v40 = vadd.f32 %v39, 0.0
+    %s41 = scalar_lea.hbm %s0, 131072
+    %s42 = sadd.s32 %s7, 31
+    %s43 = sshrl.u32 %s42, 5
+    // Predicated region
+    $region10: #{hbm_dma.1} parent=1 // pred_check
+      _
+    $region11: #{hbm_dma.1} parent=1 // pred_check_branch
+      %45 = sbr.rel target = $region13
+    $region12: #{hbm_dma.1} parent=1 // pred_region
+      %46 = sst [smem:[#allocation9]] [#allocation14]
+      %47 = sst [smem:[#allocation10]] [#allocation13]
+    $region13: #{hbm_dma.1} parent=1 // pred_fallthru
+      _
+    %49 = shalt.err (0) /* scheckeq: Src sync flag is not dummy sync flag. */
+    %s51 = sshll.u32 [#allocation3], 4
+    %s52 = int_to_ptr.vmem [resolvable:$true] %s51
+    %54 = dma.hbm_to_vmem [thread:$0]  /*hbm=*/%s41, /*size_in_granules=*/4096, /*vmem=*/%s52, /*dst_syncflagno=*/[#allocation4]
+    %56 = dma.done %s21, 4096
+    %v57 = vld [vmem:[%s22 + $0x8] sm:$0xff]
+    %v58 = vadd.f32 %v40, %v57
+    %s59 = scalar_lea.hbm %s0, 196608
+    %s60 = sadd.s32 %s7, 31
+    %s61 = sshrl.u32 %s60, 5
+    // Predicated region
+    $region14: #{hbm_dma.1} parent=1 // pred_check
+      _
+    $region15: #{hbm_dma.1} parent=1 // pred_check_branch
+      %63 = sbr.rel target = $region17
+    $region16: #{hbm_dma.1} parent=1 // pred_region
+      %64 = sst [smem:[#allocation9]] [#allocation16]
+      %65 = sst [smem:[#allocation10]] [#allocation15]
+    $region17: #{hbm_dma.1} parent=1 // pred_fallthru
+      _
+    %67 = shalt.err (0) /* scheckeq: Src sync flag is not dummy sync flag. */
+    %s69 = sshll.u32 %s22, 4
+    %s70 = int_to_ptr.vmem [resolvable:$true] %s69
+    %72 = dma.hbm_to_vmem [thread:$0]  /*hbm=*/%s59, /*size_in_granules=*/4096, /*vmem=*/%s70, /*dst_syncflagno=*/%s21
+    %74 = dma.done [#allocation4], 4096
+    %v75 = vld [vmem:[#allocation3 + $0x10] sm:$0xff]
+    %v76 = vadd.f32 %v58, %v75
+    %78 = dma.done %s21, 4096
+    %v79 = vld [vmem:[%s22 + $0x18] sm:$0xff]
+    %v80 = vadd.f32 %v76, %v79
+    %81 = vst [vmem:[#allocation5] sm:$0xff] /*vst_source=*/%v80
+    // Predicated region
+    $region18: #{hbm_dma.1} parent=1 // pred_check
+      _
+    $region19: #{hbm_dma.1} parent=1 // pred_check_branch
+      %83 = sbr.rel (0) target = $region21
+    $region20: #{hbm_dma.1} parent=1 // pred_region
+      %84 = vsyncadd [#allocation6], 0
+      %s86 = sshll.u32 [#allocation5], 4
+      %s87 = int_to_ptr.vmem [resolvable:$true] %s86
+      %89 = dma.vmem_to_hbm [thread:$0]  /*vmem=*/%s87, /*size_in_granules=*/128, /*hbm=*/%s1, /*dst_syncflagno=*/[#allocation6] /*
+base_bounds: (1, 1)
+dynamic_base_bounds: (1, 1)
+window_bounds: (1, 1)
+iteration_bounds: (1)
+strides: (1, 1)
+pad_low: (0, 0)
+pad_high: (0, 0)
+element_size_in_bytes: 4096
+second_minor_factor: 1 */
+    $region21: #{hbm_dma.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region22: #{hbm_dma.1} parent=1 // pred_check
+      _
+    $region23: #{hbm_dma.1} parent=1 // pred_check_branch
+      %91 = sbr.rel (0) target = $region25
+    $region24: #{hbm_dma.1} parent=1 // pred_region
+      %92 = dma.done [#allocation6], 128 /* pipeline-emitter-dma-wait */
+    $region25: #{hbm_dma.1} parent=1 // pred_fallthru
+      _
+    %93 = vsyncpa [#allocation6], 1
+  %94 = vsyncmov [#allocation4]
+  %s95 = vpop.sfrf %94
+  %p96 = scmp.eq.s32.totalorder %s95, 0
+  %p97 = pneg %p96
+  %99 = shalt.err (%p97) /* Semaphore (scratch argument 1) has a nonzero value upon exit from a Mosaic kernel. Make sure every DMA is awaited, and every semaphore signal is paired with a wait. */
+  %s100 = scalar_lea.sflag [#allocation4], 1
+  %101 = vsyncmov %s100
+  %s102 = vpop.sfrf %101
+  %p103 = scmp.eq.s32.totalorder %s102, 0
+  %p104 = pneg %p103
+  %106 = shalt.err (%p104) /* Semaphore (scratch argument 1) has a nonzero value upon exit from a Mosaic kernel. Make sure every DMA is awaited, and every semaphore signal is paired with a wait. */

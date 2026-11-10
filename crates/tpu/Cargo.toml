@@ -1,0 +1,11 @@
+[package]
+name = "ptxv-tpu"
+edition = "2024"
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ptxv-tpu-ir = { path = "../tpu-ir" }
+ptxv-sim = { path = "../sim" }

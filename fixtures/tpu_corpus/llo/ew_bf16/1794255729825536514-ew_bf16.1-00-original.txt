@@ -1,0 +1,157 @@
+// [Enable stack traces via -xla_jf_collect_llo_stack_trace or -xla_jf_debug_level=2]
+$region0: #{ew_bf16.1}
+  #allocation0 [shape = 'u32[]', space=smem, size = 0x4, offset = 0x4, fixed_abs, tag = 'smem constant byte address 0x4 - core index']
+  #allocation1 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for ew_bf16.1']
+  #allocation2 [shape = 'u32[144,128]{1,0:T(1,128)}', space=vmem, size = 0x12000, scoped, tag = 'internal scratch']
+  %s0 = inlined_call_operand.vmem [shape: bf16[16,128], index: 0, kind: input, shape index: {}] /* input window allocation for operator input 0. The window shape is bf16[16,128], while the full shape is bf16[16,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s1 = inlined_call_operand.vmem [shape: bf16[16,128], index: 1, kind: input, shape index: {}] /* input window allocation for operator input 1. The window shape is bf16[16,128], while the full shape is bf16[16,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s2 = inlined_call_operand.hbm [shape: bf16[16,128], index: 2, kind: output, shape index: {0}] /* output window allocation for operator output 0. The window shape is bf16[16,128], while the full shape is bf16[16,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s3 = inlined_call_operand.hbm [shape: bf16[16,128], index: 3, kind: output, shape index: {1}] /* output window allocation for operator output 1. The window shape is bf16[16,128], while the full shape is bf16[16,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s4 = inlined_call_operand.hbm [shape: bf16[16,128], index: 4, kind: output, shape index: {2}] /* output window allocation for operator output 2. The window shape is bf16[16,128], while the full shape is bf16[16,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %5 = xla_tuple %s2, %s3, %s4
+  %s6 = sld [smem:[#allocation0]] /* core id */
+  $region34: #{ew_bf16.1} parent=0
+    _
+  %s8 = ssub.s32 1, %s6
+  %s9 = scalar_select /*predicate=*/0, /*on_true=*/%s8, /*on_false=*/%s6 /* megacore core id */
+  $region1: #{ew_bf16.1} parent=0
+    #allocation3 [shape = 'u8[4096]{0}', space=vmem, size = 0x1000, scoped, tag = 'output window allocation for operator output 0. The window shape is bf16[16,128], while the full shape is bf16[16,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM. This allocation is single buffered.']
+    #allocation4 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for ew_bf16.1']
+    #allocation5 [shape = 'u8[4096]{0}', space=vmem, size = 0x1000, scoped, tag = 'output window allocation for operator output 1. The window shape is bf16[16,128], while the full shape is bf16[16,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM. This allocation is single buffered.']
+    #allocation6 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for ew_bf16.1']
+    #allocation7 [shape = 'u8[4096]{0}', space=vmem, size = 0x1000, scoped, tag = 'output window allocation for operator output 2. The window shape is bf16[16,128], while the full shape is bf16[16,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM. This allocation is single buffered.']
+    %10 = vsyncpa [#allocation4], 0
+    %11 = vsyncpa [#allocation6], 0
+    // Predicated region
+    $region2: #{ew_bf16.1} parent=1 // pred_check
+      _
+    $region3: #{ew_bf16.1} parent=1 // pred_check_branch
+      %13 = sbr.rel (0) target = $region5
+    $region4: #{ew_bf16.1} parent=1 // pred_region
+      _
+    $region5: #{ew_bf16.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region6: #{ew_bf16.1} parent=1 // pred_check
+      _
+    $region7: #{ew_bf16.1} parent=1 // pred_check_branch
+      %15 = sbr.rel (0) target = $region9
+    $region8: #{ew_bf16.1} parent=1 // pred_region
+      _
+    $region9: #{ew_bf16.1} parent=1 // pred_fallthru
+      _
+    %v16 = vld [vmem:[%s0] sm:$0xf]
+    %v17 = vld [vmem:[%s0 + $0x4] sm:$0xf]
+    %v18 = vld [vmem:[%s1] sm:$0xf]
+    %v19 = vld [vmem:[%s1 + $0x4] sm:$0xf]
+    %v20 = vadd.bf16 %v16, %v18
+    %v21 = vadd.bf16 %v17, %v19
+    %22 = vst [vmem:[#allocation3] sm:$0xf] /*vst_source=*/%v20
+    %23 = vst [vmem:[#allocation3 + $0x4] sm:$0xf] /*vst_source=*/%v21
+    %v24 = vmul.bf16 %v16, %v18
+    %v25 = vmul.bf16 %v17, %v19
+    %26 = vst [vmem:[#allocation5] sm:$0xf] /*vst_source=*/%v24
+    %27 = vst [vmem:[#allocation5 + $0x4] sm:$0xf] /*vst_source=*/%v25
+    %v28 = vunpack.c.l.bf16.f32 %v16
+    %v29 = vunpack.c.l.bf16.f32 %v17
+    %v30 = vmul.f32 %v28, 3.0
+    %v31 = vmul.f32 %v29, 3.0
+    %v32 = vpack.c.f32.bf16 %v31, %v30
+    %v34 = vunpack.c.l.s16.s32 %v32
+    %v35 = vunpack.c.u.s16.s32 %v32
+    %v36 = vpack.c.b32.b16 %v34, %v34
+    %v37 = vpack.c.b32.b16 %v35, %v35
+    %40 = vst [vmem:[#allocation7] sm:$0xf] /*vst_source=*/%v36
+    %41 = vst [vmem:[#allocation7 + $0x4] sm:$0xf] /*vst_source=*/%v37
+    // Predicated region
+    $region10: #{ew_bf16.1} parent=1 // pred_check
+      _
+    $region11: #{ew_bf16.1} parent=1 // pred_check_branch
+      %43 = sbr.rel (0) target = $region13
+    $region12: #{ew_bf16.1} parent=1 // pred_region
+      %44 = vsyncadd [#allocation4], 0
+      %s45 = sshll.u32 [#allocation3], 4
+      %s46 = int_to_ptr.vmem [resolvable:$true] %s45
+      %51 = dma.vmem_to_hbm [thread:$0]  /*vmem=*/%s46, /*size_in_granules=*/128, /*hbm=*/%s2, /*dst_syncflagno=*/[#allocation4], /*src_stride=*/64, /*dst_stride=*/64, /*steps_per_stride=*/4 /*
+base_bounds: (2, 1)
+dynamic_base_bounds: (2, 1)
+window_bounds: (2, 1)
+iteration_bounds: (1)
+strides: (1, 1)
+pad_low: (0, 0)
+pad_high: (0, 0)
+element_size_in_bytes: 2048
+second_minor_factor: 1 */
+    $region13: #{ew_bf16.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region14: #{ew_bf16.1} parent=1 // pred_check
+      _
+    $region15: #{ew_bf16.1} parent=1 // pred_check_branch
+      %53 = sbr.rel (0) target = $region17
+    $region16: #{ew_bf16.1} parent=1 // pred_region
+      %54 = vsyncadd [#allocation6], 0
+      %s55 = sshll.u32 [#allocation5], 4
+      %s56 = int_to_ptr.vmem [resolvable:$true] %s55
+      %61 = dma.vmem_to_hbm [thread:$0]  /*vmem=*/%s56, /*size_in_granules=*/128, /*hbm=*/%s3, /*dst_syncflagno=*/[#allocation6], /*src_stride=*/64, /*dst_stride=*/64, /*steps_per_stride=*/4 /*
+base_bounds: (2, 1)
+dynamic_base_bounds: (2, 1)
+window_bounds: (2, 1)
+iteration_bounds: (1)
+strides: (1, 1)
+pad_low: (0, 0)
+pad_high: (0, 0)
+element_size_in_bytes: 2048
+second_minor_factor: 1 */
+    $region17: #{ew_bf16.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region18: #{ew_bf16.1} parent=1 // pred_check
+      _
+    $region19: #{ew_bf16.1} parent=1 // pred_check_branch
+      %63 = sbr.rel (0) target = $region21
+    $region20: #{ew_bf16.1} parent=1 // pred_region
+      %64 = vsyncadd [#allocation6], 0
+      %s65 = sshll.u32 [#allocation7], 4
+      %s66 = int_to_ptr.vmem [resolvable:$true] %s65
+      %71 = dma.vmem_to_hbm [thread:$0]  /*vmem=*/%s66, /*size_in_granules=*/128, /*hbm=*/%s4, /*dst_syncflagno=*/[#allocation6], /*src_stride=*/64, /*dst_stride=*/64, /*steps_per_stride=*/4 /*
+base_bounds: (2, 1)
+dynamic_base_bounds: (2, 1)
+window_bounds: (2, 1)
+iteration_bounds: (1)
+strides: (1, 1)
+pad_low: (0, 0)
+pad_high: (0, 0)
+element_size_in_bytes: 2048
+second_minor_factor: 1 */
+    $region21: #{ew_bf16.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region22: #{ew_bf16.1} parent=1 // pred_check
+      _
+    $region23: #{ew_bf16.1} parent=1 // pred_check_branch
+      %73 = sbr.rel (0) target = $region25
+    $region24: #{ew_bf16.1} parent=1 // pred_region
+      %74 = dma.done [#allocation4], 128 /* pipeline-emitter-dma-wait */
+    $region25: #{ew_bf16.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region26: #{ew_bf16.1} parent=1 // pred_check
+      _
+    $region27: #{ew_bf16.1} parent=1 // pred_check_branch
+      %76 = sbr.rel (0) target = $region29
+    $region28: #{ew_bf16.1} parent=1 // pred_region
+      %77 = dma.done [#allocation6], 128 /* pipeline-emitter-dma-wait */
+    $region29: #{ew_bf16.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region30: #{ew_bf16.1} parent=1 // pred_check
+      _
+    $region31: #{ew_bf16.1} parent=1 // pred_check_branch
+      %79 = sbr.rel (0) target = $region33
+    $region32: #{ew_bf16.1} parent=1 // pred_region
+      %80 = dma.done [#allocation6], 128 /* pipeline-emitter-dma-wait */
+    $region33: #{ew_bf16.1} parent=1 // pred_fallthru
+      _
+    %81 = vsyncpa [#allocation4], 1
+    %82 = vsyncpa [#allocation6], 1

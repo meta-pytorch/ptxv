@@ -1,0 +1,26 @@
+{
+ "kernel": "remote_ring",
+ "inputs": [
+  {
+   "shape": [
+    64,
+    128
+   ],
+   "dtype": "float32"
+  }
+ ],
+ "outputs": [
+  {
+   "shape": [
+    64,
+    128
+   ],
+   "dtype": "float32"
+  }
+ ],
+ "devices": [
+  "TPU_0(process=0,(0,0,0,0))",
+  "TPU_1(process=0,(0,0,0,1))"
+ ],
+ "device_kind": "TPU7x"
+}

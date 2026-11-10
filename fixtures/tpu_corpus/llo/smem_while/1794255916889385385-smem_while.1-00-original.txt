@@ -1,0 +1,505 @@
+// [Enable stack traces via -xla_jf_collect_llo_stack_trace or -xla_jf_debug_level=2]
+$region0: #{smem_while.1}
+  #allocation0 [shape = 'u32[]', space=smem, size = 0x4, offset = 0x4, fixed_abs, tag = 'smem constant byte address 0x4 - core index']
+  #allocation1 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for smem_while.1']
+  #allocation2 [shape = 'u32[144,128]{1,0:T(1,128)}', space=vmem, size = 0x12000, scoped, tag = 'internal scratch']
+  %s0 = inlined_call_operand.vmem [shape: s32[8], index: 0, kind: input, shape index: {}] /* input window allocation for operator input 0. The window shape is s32[8], while the full shape is s32[8]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s1 = inlined_call_operand.hbm [shape: s32[8], index: 1, kind: output, shape index: {}] /* output window allocation for operator output 0. The window shape is s32[8], while the full shape is s32[8]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s2 = sld [smem:[#allocation0]] /* core id */
+  $region74: #{smem_while.1} parent=0
+    _
+  %s4 = ssub.s32 1, %s2
+  %s5 = scalar_select /*predicate=*/0, /*on_true=*/%s4, /*on_false=*/%s2 /* megacore core id */
+  $region1: #{smem_while.1} parent=0
+    #allocation3 [shape = 'u8[512]{0}', space=smem, size = 0x200, scoped, tag = 'input window allocation for operator input 0. The window shape is s32[8], while the full shape is s32[8]. The u8 shape/size shown above represents the raw byte size of this window in VMEM. This allocation is single buffered.']
+    #allocation4 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for smem_while.1']
+    #allocation5 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for smem_while.1']
+    #allocation6 [shape = 'u8[512]{0}', space=smem, size = 0x200, scoped, tag = 'output window allocation for operator output 0. The window shape is s32[8], while the full shape is s32[8]. The u8 shape/size shown above represents the raw byte size of this window in VMEM. This allocation is single buffered.']
+    %6 = vsyncpa [#allocation5], 0
+    %7 = vsyncpa [#allocation4], 0
+    // Predicated region
+    $region2: #{smem_while.1} parent=1 // pred_check
+      _
+    $region3: #{smem_while.1} parent=1 // pred_check_branch
+      %9 = sbr.rel (0) target = $region5
+    $region4: #{smem_while.1} parent=1 // pred_region
+      %10 = vsyncadd [#allocation5], 0
+      %s12 = sshll.u32 %s0, 4
+      %s13 = int_to_ptr.vmem [resolvable:$true] %s12
+      %15 = dma.vmem_to_smem /*vmem=*/%s13, /*size_in_granules=*/16, /*smem=*/[#allocation3], /*dst_syncflagno=*/[#allocation5] /*
+base_bounds: (1)
+dynamic_base_bounds: (1)
+window_bounds: (1)
+iteration_bounds: (1)
+strides: (1)
+pad_low: (0)
+pad_high: (0)
+element_size_in_bytes: 512
+second_minor_factor: 1 */
+    $region5: #{smem_while.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region6: #{smem_while.1} parent=1 // pred_check
+      _
+    $region7: #{smem_while.1} parent=1 // pred_check_branch
+      %17 = sbr.rel (0) target = $region9
+    $region8: #{smem_while.1} parent=1 // pred_region
+      %18 = dma.done [#allocation5], 16 /* pipeline-emitter-dma-wait */
+    $region9: #{smem_while.1} parent=1 // pred_fallthru
+      _
+    %19 = sfence
+    %s20 = sld [smem:[#allocation3]]
+    // While loop
+    $region10: #{smem_while.1} parent=1 // loop_pre_header
+      _
+    $region11: #{smem_while.1} parent=1 // loop_header
+      %s22 = sphi %s20, %s59
+      %s23 = sphi 0, %s60
+      %p24 = scmp.ne.s32.totalorder %s22, 1
+      %p25 = pneg %p24
+    $region12: #{smem_while.1} parent=1 // loop_header_branch
+      %27 = sbr.rel (%p25) target = $region16
+    $region13: #{smem_while.1} parent=1 // loop_body
+      %p28 = scmp.lt.s32.totalorder %s22, 0
+      %s29 = ssub.s32 0, %s22
+      %s30 = scalar_select /*predicate=*/%p28, /*on_true=*/%s29, /*on_false=*/%s22
+      %s31 = sand.u32 %s30, 1 /* smod.u32 w/div 2 */
+      %s32 = ssub.s32 0, %s31
+      %s33 = scalar_select /*predicate=*/%p28, /*on_true=*/%s32, /*on_false=*/%s31
+      %p34 = scmp.ne.s32.totalorder %s33, 0
+      %p35 = scmp.lt.s32.totalorder %s33, 0
+      %p36 = pnand %p35, %p34
+      %p37 = pneg %p36
+      %s38 = sadd.s32 %s33, 2
+      %s39 = scalar_select /*predicate=*/%p37, /*on_true=*/%s38, /*on_false=*/%s33
+      %p40 = scmp.eq.s32.totalorder %s39, 0
+      %p41 = scmp.lt.s32.totalorder %s22, 0
+      %s42 = ssub.s32 0, %s22
+      %s43 = scalar_select /*predicate=*/%p41, /*on_true=*/%s42, /*on_false=*/%s22
+      %s44 = sshrl.u32 %s43, 1
+      %s45 = ssub.s32 0, %s44
+      %s46 = scalar_select /*predicate=*/%p41, /*on_true=*/%s45, /*on_false=*/%s44
+      %p47 = scmp.gt.s32.totalorder %s22, 0
+      %s48 = scalar_select /*predicate=*/%p47, /*on_true=*/1, /*on_false=*/0
+      %p49 = scmp.lt.s32.totalorder %s22, 0
+      %s50 = scalar_select /*predicate=*/%p49, /*on_true=*/1, /*on_false=*/0
+      %s51 = ssub.s32 %s48, %s50
+      %p52 = scmp.ne.s32.totalorder %s51, 1
+      %p53 = pnand %p52, %p34
+      %p54 = pneg %p53
+      %s55 = ssub.s32 %s46, 1
+      %s56 = scalar_select /*predicate=*/%p54, /*on_true=*/%s55, /*on_false=*/%s46
+      %s57 = smul.u32 %s22, 3
+      %s58 = sadd.s32 %s57, 1
+      %s59 = scalar_select /*predicate=*/%p40, /*on_true=*/%s56, /*on_false=*/%s58
+      %s60 = sadd.s32 %s23, 1
+    $region14: #{smem_while.1} parent=1 // loop_footer
+      _
+    $region15: #{smem_while.1} parent=1 // loop_footer_branch
+      %21 = sbr.rel target = $region11
+    $region16: #{smem_while.1} parent=1 // loop_exit
+      _
+    %s61 = scalar_lea.smem [#allocation6], 0
+    %62 = sst [smem:[%s61]] %s23
+    %s63 = sld [smem:[#allocation3 + $0x1]]
+    // While loop
+    $region17: #{smem_while.1} parent=1 // loop_pre_header
+      _
+    $region18: #{smem_while.1} parent=1 // loop_header
+      %s65 = sphi %s63, %s102
+      %s66 = sphi 0, %s103
+      %p67 = scmp.ne.s32.totalorder %s65, 1
+      %p68 = pneg %p67
+    $region19: #{smem_while.1} parent=1 // loop_header_branch
+      %70 = sbr.rel (%p68) target = $region23
+    $region20: #{smem_while.1} parent=1 // loop_body
+      %p71 = scmp.lt.s32.totalorder %s65, 0
+      %s72 = ssub.s32 0, %s65
+      %s73 = scalar_select /*predicate=*/%p71, /*on_true=*/%s72, /*on_false=*/%s65
+      %s74 = sand.u32 %s73, 1 /* smod.u32 w/div 2 */
+      %s75 = ssub.s32 0, %s74
+      %s76 = scalar_select /*predicate=*/%p71, /*on_true=*/%s75, /*on_false=*/%s74
+      %p77 = scmp.ne.s32.totalorder %s76, 0
+      %p78 = scmp.lt.s32.totalorder %s76, 0
+      %p79 = pnand %p78, %p77
+      %p80 = pneg %p79
+      %s81 = sadd.s32 %s76, 2
+      %s82 = scalar_select /*predicate=*/%p80, /*on_true=*/%s81, /*on_false=*/%s76
+      %p83 = scmp.eq.s32.totalorder %s82, 0
+      %p84 = scmp.lt.s32.totalorder %s65, 0
+      %s85 = ssub.s32 0, %s65
+      %s86 = scalar_select /*predicate=*/%p84, /*on_true=*/%s85, /*on_false=*/%s65
+      %s87 = sshrl.u32 %s86, 1
+      %s88 = ssub.s32 0, %s87
+      %s89 = scalar_select /*predicate=*/%p84, /*on_true=*/%s88, /*on_false=*/%s87
+      %p90 = scmp.gt.s32.totalorder %s65, 0
+      %s91 = scalar_select /*predicate=*/%p90, /*on_true=*/1, /*on_false=*/0
+      %p92 = scmp.lt.s32.totalorder %s65, 0
+      %s93 = scalar_select /*predicate=*/%p92, /*on_true=*/1, /*on_false=*/0
+      %s94 = ssub.s32 %s91, %s93
+      %p95 = scmp.ne.s32.totalorder %s94, 1
+      %p96 = pnand %p95, %p77
+      %p97 = pneg %p96
+      %s98 = ssub.s32 %s89, 1
+      %s99 = scalar_select /*predicate=*/%p97, /*on_true=*/%s98, /*on_false=*/%s89
+      %s100 = smul.u32 %s65, 3
+      %s101 = sadd.s32 %s100, 1
+      %s102 = scalar_select /*predicate=*/%p83, /*on_true=*/%s99, /*on_false=*/%s101
+      %s103 = sadd.s32 %s66, 1
+    $region21: #{smem_while.1} parent=1 // loop_footer
+      _
+    $region22: #{smem_while.1} parent=1 // loop_footer_branch
+      %64 = sbr.rel target = $region18
+    $region23: #{smem_while.1} parent=1 // loop_exit
+      _
+    %s104 = scalar_lea.smem [#allocation6], 1
+    %105 = sst [smem:[%s104]] %s66
+    %s106 = sld [smem:[#allocation3 + $0x2]]
+    // While loop
+    $region24: #{smem_while.1} parent=1 // loop_pre_header
+      _
+    $region25: #{smem_while.1} parent=1 // loop_header
+      %s108 = sphi %s106, %s145
+      %s109 = sphi 0, %s146
+      %p110 = scmp.ne.s32.totalorder %s108, 1
+      %p111 = pneg %p110
+    $region26: #{smem_while.1} parent=1 // loop_header_branch
+      %113 = sbr.rel (%p111) target = $region30
+    $region27: #{smem_while.1} parent=1 // loop_body
+      %p114 = scmp.lt.s32.totalorder %s108, 0
+      %s115 = ssub.s32 0, %s108
+      %s116 = scalar_select /*predicate=*/%p114, /*on_true=*/%s115, /*on_false=*/%s108
+      %s117 = sand.u32 %s116, 1 /* smod.u32 w/div 2 */
+      %s118 = ssub.s32 0, %s117
+      %s119 = scalar_select /*predicate=*/%p114, /*on_true=*/%s118, /*on_false=*/%s117
+      %p120 = scmp.ne.s32.totalorder %s119, 0
+      %p121 = scmp.lt.s32.totalorder %s119, 0
+      %p122 = pnand %p121, %p120
+      %p123 = pneg %p122
+      %s124 = sadd.s32 %s119, 2
+      %s125 = scalar_select /*predicate=*/%p123, /*on_true=*/%s124, /*on_false=*/%s119
+      %p126 = scmp.eq.s32.totalorder %s125, 0
+      %p127 = scmp.lt.s32.totalorder %s108, 0
+      %s128 = ssub.s32 0, %s108
+      %s129 = scalar_select /*predicate=*/%p127, /*on_true=*/%s128, /*on_false=*/%s108
+      %s130 = sshrl.u32 %s129, 1
+      %s131 = ssub.s32 0, %s130
+      %s132 = scalar_select /*predicate=*/%p127, /*on_true=*/%s131, /*on_false=*/%s130
+      %p133 = scmp.gt.s32.totalorder %s108, 0
+      %s134 = scalar_select /*predicate=*/%p133, /*on_true=*/1, /*on_false=*/0
+      %p135 = scmp.lt.s32.totalorder %s108, 0
+      %s136 = scalar_select /*predicate=*/%p135, /*on_true=*/1, /*on_false=*/0
+      %s137 = ssub.s32 %s134, %s136
+      %p138 = scmp.ne.s32.totalorder %s137, 1
+      %p139 = pnand %p138, %p120
+      %p140 = pneg %p139
+      %s141 = ssub.s32 %s132, 1
+      %s142 = scalar_select /*predicate=*/%p140, /*on_true=*/%s141, /*on_false=*/%s132
+      %s143 = smul.u32 %s108, 3
+      %s144 = sadd.s32 %s143, 1
+      %s145 = scalar_select /*predicate=*/%p126, /*on_true=*/%s142, /*on_false=*/%s144
+      %s146 = sadd.s32 %s109, 1
+    $region28: #{smem_while.1} parent=1 // loop_footer
+      _
+    $region29: #{smem_while.1} parent=1 // loop_footer_branch
+      %107 = sbr.rel target = $region25
+    $region30: #{smem_while.1} parent=1 // loop_exit
+      _
+    %s147 = scalar_lea.smem [#allocation6], 2
+    %148 = sst [smem:[%s147]] %s109
+    %s149 = sld [smem:[#allocation3 + $0x3]]
+    // While loop
+    $region31: #{smem_while.1} parent=1 // loop_pre_header
+      _
+    $region32: #{smem_while.1} parent=1 // loop_header
+      %s151 = sphi %s149, %s188
+      %s152 = sphi 0, %s189
+      %p153 = scmp.ne.s32.totalorder %s151, 1
+      %p154 = pneg %p153
+    $region33: #{smem_while.1} parent=1 // loop_header_branch
+      %156 = sbr.rel (%p154) target = $region37
+    $region34: #{smem_while.1} parent=1 // loop_body
+      %p157 = scmp.lt.s32.totalorder %s151, 0
+      %s158 = ssub.s32 0, %s151
+      %s159 = scalar_select /*predicate=*/%p157, /*on_true=*/%s158, /*on_false=*/%s151
+      %s160 = sand.u32 %s159, 1 /* smod.u32 w/div 2 */
+      %s161 = ssub.s32 0, %s160
+      %s162 = scalar_select /*predicate=*/%p157, /*on_true=*/%s161, /*on_false=*/%s160
+      %p163 = scmp.ne.s32.totalorder %s162, 0
+      %p164 = scmp.lt.s32.totalorder %s162, 0
+      %p165 = pnand %p164, %p163
+      %p166 = pneg %p165
+      %s167 = sadd.s32 %s162, 2
+      %s168 = scalar_select /*predicate=*/%p166, /*on_true=*/%s167, /*on_false=*/%s162
+      %p169 = scmp.eq.s32.totalorder %s168, 0
+      %p170 = scmp.lt.s32.totalorder %s151, 0
+      %s171 = ssub.s32 0, %s151
+      %s172 = scalar_select /*predicate=*/%p170, /*on_true=*/%s171, /*on_false=*/%s151
+      %s173 = sshrl.u32 %s172, 1
+      %s174 = ssub.s32 0, %s173
+      %s175 = scalar_select /*predicate=*/%p170, /*on_true=*/%s174, /*on_false=*/%s173
+      %p176 = scmp.gt.s32.totalorder %s151, 0
+      %s177 = scalar_select /*predicate=*/%p176, /*on_true=*/1, /*on_false=*/0
+      %p178 = scmp.lt.s32.totalorder %s151, 0
+      %s179 = scalar_select /*predicate=*/%p178, /*on_true=*/1, /*on_false=*/0
+      %s180 = ssub.s32 %s177, %s179
+      %p181 = scmp.ne.s32.totalorder %s180, 1
+      %p182 = pnand %p181, %p163
+      %p183 = pneg %p182
+      %s184 = ssub.s32 %s175, 1
+      %s185 = scalar_select /*predicate=*/%p183, /*on_true=*/%s184, /*on_false=*/%s175
+      %s186 = smul.u32 %s151, 3
+      %s187 = sadd.s32 %s186, 1
+      %s188 = scalar_select /*predicate=*/%p169, /*on_true=*/%s185, /*on_false=*/%s187
+      %s189 = sadd.s32 %s152, 1
+    $region35: #{smem_while.1} parent=1 // loop_footer
+      _
+    $region36: #{smem_while.1} parent=1 // loop_footer_branch
+      %150 = sbr.rel target = $region32
+    $region37: #{smem_while.1} parent=1 // loop_exit
+      _
+    %s190 = scalar_lea.smem [#allocation6], 3
+    %191 = sst [smem:[%s190]] %s152
+    %s192 = sld [smem:[#allocation3 + $0x4]]
+    // While loop
+    $region38: #{smem_while.1} parent=1 // loop_pre_header
+      _
+    $region39: #{smem_while.1} parent=1 // loop_header
+      %s194 = sphi %s192, %s231
+      %s195 = sphi 0, %s232
+      %p196 = scmp.ne.s32.totalorder %s194, 1
+      %p197 = pneg %p196
+    $region40: #{smem_while.1} parent=1 // loop_header_branch
+      %199 = sbr.rel (%p197) target = $region44
+    $region41: #{smem_while.1} parent=1 // loop_body
+      %p200 = scmp.lt.s32.totalorder %s194, 0
+      %s201 = ssub.s32 0, %s194
+      %s202 = scalar_select /*predicate=*/%p200, /*on_true=*/%s201, /*on_false=*/%s194
+      %s203 = sand.u32 %s202, 1 /* smod.u32 w/div 2 */
+      %s204 = ssub.s32 0, %s203
+      %s205 = scalar_select /*predicate=*/%p200, /*on_true=*/%s204, /*on_false=*/%s203
+      %p206 = scmp.ne.s32.totalorder %s205, 0
+      %p207 = scmp.lt.s32.totalorder %s205, 0
+      %p208 = pnand %p207, %p206
+      %p209 = pneg %p208
+      %s210 = sadd.s32 %s205, 2
+      %s211 = scalar_select /*predicate=*/%p209, /*on_true=*/%s210, /*on_false=*/%s205
+      %p212 = scmp.eq.s32.totalorder %s211, 0
+      %p213 = scmp.lt.s32.totalorder %s194, 0
+      %s214 = ssub.s32 0, %s194
+      %s215 = scalar_select /*predicate=*/%p213, /*on_true=*/%s214, /*on_false=*/%s194
+      %s216 = sshrl.u32 %s215, 1
+      %s217 = ssub.s32 0, %s216
+      %s218 = scalar_select /*predicate=*/%p213, /*on_true=*/%s217, /*on_false=*/%s216
+      %p219 = scmp.gt.s32.totalorder %s194, 0
+      %s220 = scalar_select /*predicate=*/%p219, /*on_true=*/1, /*on_false=*/0
+      %p221 = scmp.lt.s32.totalorder %s194, 0
+      %s222 = scalar_select /*predicate=*/%p221, /*on_true=*/1, /*on_false=*/0
+      %s223 = ssub.s32 %s220, %s222
+      %p224 = scmp.ne.s32.totalorder %s223, 1
+      %p225 = pnand %p224, %p206
+      %p226 = pneg %p225
+      %s227 = ssub.s32 %s218, 1
+      %s228 = scalar_select /*predicate=*/%p226, /*on_true=*/%s227, /*on_false=*/%s218
+      %s229 = smul.u32 %s194, 3
+      %s230 = sadd.s32 %s229, 1
+      %s231 = scalar_select /*predicate=*/%p212, /*on_true=*/%s228, /*on_false=*/%s230
+      %s232 = sadd.s32 %s195, 1
+    $region42: #{smem_while.1} parent=1 // loop_footer
+      _
+    $region43: #{smem_while.1} parent=1 // loop_footer_branch
+      %193 = sbr.rel target = $region39
+    $region44: #{smem_while.1} parent=1 // loop_exit
+      _
+    %s233 = scalar_lea.smem [#allocation6], 4
+    %234 = sst [smem:[%s233]] %s195
+    %s235 = sld [smem:[#allocation3 + $0x5]]
+    // While loop
+    $region45: #{smem_while.1} parent=1 // loop_pre_header
+      _
+    $region46: #{smem_while.1} parent=1 // loop_header
+      %s237 = sphi %s235, %s274
+      %s238 = sphi 0, %s275
+      %p239 = scmp.ne.s32.totalorder %s237, 1
+      %p240 = pneg %p239
+    $region47: #{smem_while.1} parent=1 // loop_header_branch
+      %242 = sbr.rel (%p240) target = $region51
+    $region48: #{smem_while.1} parent=1 // loop_body
+      %p243 = scmp.lt.s32.totalorder %s237, 0
+      %s244 = ssub.s32 0, %s237
+      %s245 = scalar_select /*predicate=*/%p243, /*on_true=*/%s244, /*on_false=*/%s237
+      %s246 = sand.u32 %s245, 1 /* smod.u32 w/div 2 */
+      %s247 = ssub.s32 0, %s246
+      %s248 = scalar_select /*predicate=*/%p243, /*on_true=*/%s247, /*on_false=*/%s246
+      %p249 = scmp.ne.s32.totalorder %s248, 0
+      %p250 = scmp.lt.s32.totalorder %s248, 0
+      %p251 = pnand %p250, %p249
+      %p252 = pneg %p251
+      %s253 = sadd.s32 %s248, 2
+      %s254 = scalar_select /*predicate=*/%p252, /*on_true=*/%s253, /*on_false=*/%s248
+      %p255 = scmp.eq.s32.totalorder %s254, 0
+      %p256 = scmp.lt.s32.totalorder %s237, 0
+      %s257 = ssub.s32 0, %s237
+      %s258 = scalar_select /*predicate=*/%p256, /*on_true=*/%s257, /*on_false=*/%s237
+      %s259 = sshrl.u32 %s258, 1
+      %s260 = ssub.s32 0, %s259
+      %s261 = scalar_select /*predicate=*/%p256, /*on_true=*/%s260, /*on_false=*/%s259
+      %p262 = scmp.gt.s32.totalorder %s237, 0
+      %s263 = scalar_select /*predicate=*/%p262, /*on_true=*/1, /*on_false=*/0
+      %p264 = scmp.lt.s32.totalorder %s237, 0
+      %s265 = scalar_select /*predicate=*/%p264, /*on_true=*/1, /*on_false=*/0
+      %s266 = ssub.s32 %s263, %s265
+      %p267 = scmp.ne.s32.totalorder %s266, 1
+      %p268 = pnand %p267, %p249
+      %p269 = pneg %p268
+      %s270 = ssub.s32 %s261, 1
+      %s271 = scalar_select /*predicate=*/%p269, /*on_true=*/%s270, /*on_false=*/%s261
+      %s272 = smul.u32 %s237, 3
+      %s273 = sadd.s32 %s272, 1
+      %s274 = scalar_select /*predicate=*/%p255, /*on_true=*/%s271, /*on_false=*/%s273
+      %s275 = sadd.s32 %s238, 1
+    $region49: #{smem_while.1} parent=1 // loop_footer
+      _
+    $region50: #{smem_while.1} parent=1 // loop_footer_branch
+      %236 = sbr.rel target = $region46
+    $region51: #{smem_while.1} parent=1 // loop_exit
+      _
+    %s276 = scalar_lea.smem [#allocation6], 5
+    %277 = sst [smem:[%s276]] %s238
+    %s278 = sld [smem:[#allocation3 + $0x6]]
+    // While loop
+    $region52: #{smem_while.1} parent=1 // loop_pre_header
+      _
+    $region53: #{smem_while.1} parent=1 // loop_header
+      %s280 = sphi %s278, %s317
+      %s281 = sphi 0, %s318
+      %p282 = scmp.ne.s32.totalorder %s280, 1
+      %p283 = pneg %p282
+    $region54: #{smem_while.1} parent=1 // loop_header_branch
+      %285 = sbr.rel (%p283) target = $region58
+    $region55: #{smem_while.1} parent=1 // loop_body
+      %p286 = scmp.lt.s32.totalorder %s280, 0
+      %s287 = ssub.s32 0, %s280
+      %s288 = scalar_select /*predicate=*/%p286, /*on_true=*/%s287, /*on_false=*/%s280
+      %s289 = sand.u32 %s288, 1 /* smod.u32 w/div 2 */
+      %s290 = ssub.s32 0, %s289
+      %s291 = scalar_select /*predicate=*/%p286, /*on_true=*/%s290, /*on_false=*/%s289
+      %p292 = scmp.ne.s32.totalorder %s291, 0
+      %p293 = scmp.lt.s32.totalorder %s291, 0
+      %p294 = pnand %p293, %p292
+      %p295 = pneg %p294
+      %s296 = sadd.s32 %s291, 2
+      %s297 = scalar_select /*predicate=*/%p295, /*on_true=*/%s296, /*on_false=*/%s291
+      %p298 = scmp.eq.s32.totalorder %s297, 0
+      %p299 = scmp.lt.s32.totalorder %s280, 0
+      %s300 = ssub.s32 0, %s280
+      %s301 = scalar_select /*predicate=*/%p299, /*on_true=*/%s300, /*on_false=*/%s280
+      %s302 = sshrl.u32 %s301, 1
+      %s303 = ssub.s32 0, %s302
+      %s304 = scalar_select /*predicate=*/%p299, /*on_true=*/%s303, /*on_false=*/%s302
+      %p305 = scmp.gt.s32.totalorder %s280, 0
+      %s306 = scalar_select /*predicate=*/%p305, /*on_true=*/1, /*on_false=*/0
+      %p307 = scmp.lt.s32.totalorder %s280, 0
+      %s308 = scalar_select /*predicate=*/%p307, /*on_true=*/1, /*on_false=*/0
+      %s309 = ssub.s32 %s306, %s308
+      %p310 = scmp.ne.s32.totalorder %s309, 1
+      %p311 = pnand %p310, %p292
+      %p312 = pneg %p311
+      %s313 = ssub.s32 %s304, 1
+      %s314 = scalar_select /*predicate=*/%p312, /*on_true=*/%s313, /*on_false=*/%s304
+      %s315 = smul.u32 %s280, 3
+      %s316 = sadd.s32 %s315, 1
+      %s317 = scalar_select /*predicate=*/%p298, /*on_true=*/%s314, /*on_false=*/%s316
+      %s318 = sadd.s32 %s281, 1
+    $region56: #{smem_while.1} parent=1 // loop_footer
+      _
+    $region57: #{smem_while.1} parent=1 // loop_footer_branch
+      %279 = sbr.rel target = $region53
+    $region58: #{smem_while.1} parent=1 // loop_exit
+      _
+    %s319 = scalar_lea.smem [#allocation6], 6
+    %320 = sst [smem:[%s319]] %s281
+    %s321 = sld [smem:[#allocation3 + $0x7]]
+    // While loop
+    $region59: #{smem_while.1} parent=1 // loop_pre_header
+      _
+    $region60: #{smem_while.1} parent=1 // loop_header
+      %s323 = sphi %s321, %s360
+      %s324 = sphi 0, %s361
+      %p325 = scmp.ne.s32.totalorder %s323, 1
+      %p326 = pneg %p325
+    $region61: #{smem_while.1} parent=1 // loop_header_branch
+      %328 = sbr.rel (%p326) target = $region65
+    $region62: #{smem_while.1} parent=1 // loop_body
+      %p329 = scmp.lt.s32.totalorder %s323, 0
+      %s330 = ssub.s32 0, %s323
+      %s331 = scalar_select /*predicate=*/%p329, /*on_true=*/%s330, /*on_false=*/%s323
+      %s332 = sand.u32 %s331, 1 /* smod.u32 w/div 2 */
+      %s333 = ssub.s32 0, %s332
+      %s334 = scalar_select /*predicate=*/%p329, /*on_true=*/%s333, /*on_false=*/%s332
+      %p335 = scmp.ne.s32.totalorder %s334, 0
+      %p336 = scmp.lt.s32.totalorder %s334, 0
+      %p337 = pnand %p336, %p335
+      %p338 = pneg %p337
+      %s339 = sadd.s32 %s334, 2
+      %s340 = scalar_select /*predicate=*/%p338, /*on_true=*/%s339, /*on_false=*/%s334
+      %p341 = scmp.eq.s32.totalorder %s340, 0
+      %p342 = scmp.lt.s32.totalorder %s323, 0
+      %s343 = ssub.s32 0, %s323
+      %s344 = scalar_select /*predicate=*/%p342, /*on_true=*/%s343, /*on_false=*/%s323
+      %s345 = sshrl.u32 %s344, 1
+      %s346 = ssub.s32 0, %s345
+      %s347 = scalar_select /*predicate=*/%p342, /*on_true=*/%s346, /*on_false=*/%s345
+      %p348 = scmp.gt.s32.totalorder %s323, 0
+      %s349 = scalar_select /*predicate=*/%p348, /*on_true=*/1, /*on_false=*/0
+      %p350 = scmp.lt.s32.totalorder %s323, 0
+      %s351 = scalar_select /*predicate=*/%p350, /*on_true=*/1, /*on_false=*/0
+      %s352 = ssub.s32 %s349, %s351
+      %p353 = scmp.ne.s32.totalorder %s352, 1
+      %p354 = pnand %p353, %p335
+      %p355 = pneg %p354
+      %s356 = ssub.s32 %s347, 1
+      %s357 = scalar_select /*predicate=*/%p355, /*on_true=*/%s356, /*on_false=*/%s347
+      %s358 = smul.u32 %s323, 3
+      %s359 = sadd.s32 %s358, 1
+      %s360 = scalar_select /*predicate=*/%p341, /*on_true=*/%s357, /*on_false=*/%s359
+      %s361 = sadd.s32 %s324, 1
+    $region63: #{smem_while.1} parent=1 // loop_footer
+      _
+    $region64: #{smem_while.1} parent=1 // loop_footer_branch
+      %322 = sbr.rel target = $region60
+    $region65: #{smem_while.1} parent=1 // loop_exit
+      _
+    %s362 = scalar_lea.smem [#allocation6], 7
+    %363 = sst [smem:[%s362]] %s324
+    // Predicated region
+    $region66: #{smem_while.1} parent=1 // pred_check
+      _
+    $region67: #{smem_while.1} parent=1 // pred_check_branch
+      %365 = sbr.rel (0) target = $region69
+    $region68: #{smem_while.1} parent=1 // pred_region
+      %366 = vsyncadd [#allocation4], 0
+      %369 = dma.smem_to_hbm /*smem=*/[#allocation6], /*size_in_granules=*/16, /*hbm=*/%s1, /*dst_syncflagno=*/[#allocation4] /*
+base_bounds: (1)
+dynamic_base_bounds: (1)
+window_bounds: (1)
+iteration_bounds: (1)
+strides: (1)
+pad_low: (0)
+pad_high: (0)
+element_size_in_bytes: 512
+second_minor_factor: 1 */
+    $region69: #{smem_while.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region70: #{smem_while.1} parent=1 // pred_check
+      _
+    $region71: #{smem_while.1} parent=1 // pred_check_branch
+      %371 = sbr.rel (0) target = $region73
+    $region72: #{smem_while.1} parent=1 // pred_region
+      %372 = dma.done [#allocation4], 16 /* pipeline-emitter-dma-wait */
+    $region73: #{smem_while.1} parent=1 // pred_fallthru
+      _
+    %373 = sfence
+    %374 = vsyncpa [#allocation4], 1
+    %375 = vsyncpa [#allocation5], 1

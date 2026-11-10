@@ -1,0 +1,24 @@
+HloModule jit_wrapped, is_scheduled=true, entry_computation_layout={(f32[8,128]{1,0:T(8,128)})->(f32[8,128]{1,0:T(8,128)}, f32[8,128]{1,0:T(8,128)})}, allow_spmd_sharding_propagation_to_parameters={true}, allow_spmd_sharding_propagation_to_output={true,true}, frontend_attributes={arg_layout_modes="default",arg_memory_spaces="0",out_layout_modes="default;default",out_memory_spaces="0;0"}
+
+FileNames
+1 "/tmp/tpuv/corpus/probe.py"
+
+FunctionNames
+1 "<module>"
+2 "save_run"
+
+FileLocations
+1 {file_name_id=1 function_name_id=1 line=204 end_line=204 column=4 end_column=18}
+2 {file_name_id=1 function_name_id=2 line=93 end_line=93 column=32 end_column=41}
+
+StackFrames
+1 {file_location_id=1 parent_frame_id=1}
+2 {file_location_id=2 parent_frame_id=2}
+
+
+ENTRY %main.1 (args_0_.1: f32[8,128]) -> (f32[8,128], f32[8,128]) {
+  %args_0_.1 = f32[8,128]{1,0:T(8,128)} parameter(0), metadata={op_name="args[0]"}, backend_config={"flag_configs":[],"scoped_memory_configs":[{"memory_space":"1","offset":"0","size":"0"}],"used_scoped_memory_configs":[]}
+  %copy-start = (f32[8,128]{1,0:T(8,128)S(1)}, f32[8,128]{1,0:T(8,128)}, u32[]{:S(2)}) copy-start(%args_0_.1), backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"dma_priority":5}
+  %copy-done = f32[8,128]{1,0:T(8,128)S(1)} copy-done(%copy-start), backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"dma_priority":5}
+  ROOT %red_lane.1 = (f32[8,128]{1,0:T(8,128)}, f32[8,128]{1,0:T(8,128)}) custom-call(%copy-done), custom_call_target="tpu_custom_call", operand_layout_constraints={f32[8,128]{1,0}}, frontend_attributes={kernel_metadata={}}, metadata={op_name="jit(wrapped)/red_lane/pallas_call" stack_frame_id=2}, backend_config={"flag_configs":[],"scoped_memory_configs":[{"memory_space":"1","offset":"0","size":"33554432"}],"custom_call_config":{"body":"TUzvUgFNTElSMjMuMC4wZ2l0AAElCQEDBQcBAwkDEQsNDxETFRcZA9+3FQGvCwsHEwsLDw8LDw8PDw8PDw8PCwszDwsLIw8PEwsPOwsLCwuFCwsLCwsPCw8LDx8THwsPCx8bDw8PDx8PDx8LDwtTCxMTHwsPCw8fGw8PDw8PDx8PDw8fBQVhTQcFSV0BFQcjExsHFw8PGwsCZgcFGwUdHwMDEVMFHwUhHS13HS2nBSMdVVcdAWkdAXUdAXsdAZURDQEdAV0dY2UVFRUFJQUnIw0DEQEAAAAAAAAAHQlxBSkFKwMHfX+Bg4WHHY2PHQmfAwM5OwUtEQ09Aw0/QUNFSR1LHU1PUbEFLwEBBTENEWFmZmluZV9tYXA8KGQwLCBkMSkgLT4gKGQwLCBkMSk+AAUzBTUFNwU5BTsRAQEFPR1ZWwU/FR8fLQMHIgMZJQMDEWElBQkAAAAABUEdZyMFQy0DByYDR4kDBSWzJykdCW8dCyMdC3MVFxctAwcmAyWfHS95FRkZLQMHJgMRHwVFERMABUcjDwkhAQAAAAEAAAACAAAAAAAAAAVJIw8BAQMDEYslBQkAAID/BUsdkZMFTRUbGy0DByoDR4kDBSW1JykdCZsdC50VFRsdC6EVF6MdAaUtAwcqAyWfHS+pFRmrHQGtLQMHKgMRHyN0cHUubWVtb3J5X3NwYWNlPHZtZW0+ACN0cHUuY29yZV90eXBlPHRjPgAjdmVjdG9yLmtpbmQ8YWRkPgAjdmVjdG9yLmtpbmQ8bWF4aW11bWY+AAMXrwUhAgQJRycDIQknBSECBAkLJwUhBQkBAgQBAgIFBwMDAwEBCQTSAgUBEQU3BwMBBQ8RBT0HAy1bBwMFAwUDBQMDEwcDAQMDEwcDAQcGEwMHBwEHCQMDIV8DBQkHIWsDBQULDQUGbQMLAw8FBisDCwMRCwYrAwcDEwMDDQcDAQMDDQcDAQcGDQMHBwMXGQ0FDTEJFQMXGQMDM4kDBQkHM5cDBQULHQUGmQMLAx8FBjUDCwMhCwY1AwcDIwMDDwcDAQMDDwcDAQcGDwMHBwUnKQ0FDzEJJQUnKREABQYDAQUBAMIITy0ZESkJLRkRCx0TEyMhHSktFQ0fCw1FJTUFGRUjIy8ZJR8PDwkdEWJ1aWx0aW4Ac3RhYmxlX21vc2FpYwB0cHUAdmVjdG9yAG1vZHVsZQBhcml0aC5jb25zdGFudAB2ZWN0b3Iuc2hhcGVfY2FzdAB2ZWN0b3IubG9hZAB2ZWN0b3IubXVsdGlfcmVkdWN0aW9uAHZlY3Rvci5icm9hZGNhc3QAdHB1LnZlY3Rvcl9zdG9yZQBmdW5jLmZ1bmMAZnVuYy5yZXR1cm4AawAvdG1wL3RwdXYvY29ycHVzL3Byb2JlLnB5AGJyb2FkY2FzdF9pbl9kaW06AGJyb2FkY2FzdF9pbl9kaW0vYnJvYWRjYXN0X2luX2RpbQB2YWx1ZQBraW5kAHJlZHVjdGlvbl9kaW1zAHN3YXA6AHN3YXAvc3dhcABzdGFibGVfbW9zYWljLnZlcnNpb24AZGltZW5zaW9uX3NlbWFudGljcwBmdW5jdGlvbl90eXBlAHNjYWxhcl9wcmVmZXRjaABzY3JhdGNoX29wZXJhbmRzAHN5bV9uYW1lAHJlZF9sYW5lAHRwdS5jb3JlX3R5cGUAZ2V0OgBnZXQvZ2V0AHJlZHVjZV9zdW06AHJlZHVjZV9zdW0vcmVkdWNlX3N1bQBhZGQAb3BlcmFuZFNlZ21lbnRTaXplcwBzdHJpZGVzAHJlZHVjZV9tYXg6AHJlZHVjZV9tYXgvcmVkdWNlX21heAA=","needs_layout_passes":true,"allow_input_fusion":[],"serialization_format":"1","output_memory_colors":[],"output_memory_space_colors":[{"color":"0","shape_index":["0"]},{"color":"0","shape_index":["1"]}],"input_memory_space_colors":[{"operand_index":"0","color":"1","shape_index":[]}],"operand_to_metadata":[]},"used_scoped_memory_configs":[],"aliasing_operands":{"lists":[]}}
+}

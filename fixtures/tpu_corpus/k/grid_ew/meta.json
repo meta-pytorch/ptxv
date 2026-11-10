@@ -1,0 +1,22 @@
+{
+ "kernel": "grid_ew",
+ "inputs": [
+  {
+   "shape": [
+    1024,
+    128
+   ],
+   "dtype": "float32"
+  }
+ ],
+ "outputs": [
+  {
+   "shape": [
+    1024,
+    128
+   ],
+   "dtype": "float32"
+  }
+ ],
+ "device_kind": "TPU7x"
+}

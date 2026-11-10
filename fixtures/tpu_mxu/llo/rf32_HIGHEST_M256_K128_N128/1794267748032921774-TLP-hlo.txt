@@ -1,0 +1,24 @@
+HloModule jit_wrapped, is_scheduled=true, entry_computation_layout={(f32[256,128]{1,0:T(8,128)}, f32[128,128]{1,0:T(8,128)})->f32[256,128]{1,0:T(8,128)}}, allow_spmd_sharding_propagation_to_parameters={true,true}, allow_spmd_sharding_propagation_to_output={true}, frontend_attributes={arg_layout_modes="default;default",arg_memory_spaces="0;0",out_layout_modes="default",out_memory_spaces="0"}
+
+FileNames
+1 "/tmp/tpuv/review_mxu_f32/probe.py"
+
+FunctionNames
+1 "<module>"
+
+FileLocations
+1 {file_name_id=1 function_name_id=1 line=82 end_line=82 column=39 end_column=106}
+
+StackFrames
+1 {file_location_id=1 parent_frame_id=1}
+
+
+ENTRY %main.1 (args_0_.1: f32[256,128], args_1_.1: f32[128,128]) -> f32[256,128] {
+  %args_1_.1 = f32[128,128]{1,0:T(8,128)} parameter(1), metadata={op_name="args[1]"}, backend_config={"flag_configs":[],"scoped_memory_configs":[{"memory_space":"1","offset":"0","size":"0"}],"used_scoped_memory_configs":[]}
+  %args_0_.1 = f32[256,128]{1,0:T(8,128)} parameter(0), metadata={op_name="args[0]"}, backend_config={"flag_configs":[],"scoped_memory_configs":[{"memory_space":"1","offset":"0","size":"0"}],"used_scoped_memory_configs":[]}
+  %copy-start = (f32[256,128]{1,0:T(8,128)S(1)}, f32[256,128]{1,0:T(8,128)}, u32[]{:S(2)}) copy-start(%args_0_.1), backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"dma_priority":5}
+  %copy-done = f32[256,128]{1,0:T(8,128)S(1)} copy-done(%copy-start), backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"dma_priority":5}
+  %copy-start.1 = (f32[128,128]{1,0:T(8,128)S(1)}, f32[128,128]{1,0:T(8,128)}, u32[]{:S(2)}) copy-start(%args_1_.1), backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"dma_priority":5}
+  %copy-done.1 = f32[128,128]{1,0:T(8,128)S(1)} copy-done(%copy-start.1), backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"dma_priority":5}
+  ROOT %rf32_HIGHEST_M256_K128_N128.1 = f32[256,128]{1,0:T(8,128)} custom-call(%copy-done, %copy-done.1), custom_call_target="tpu_custom_call", operand_layout_constraints={f32[256,128]{1,0}, f32[128,128]{1,0}}, frontend_attributes={kernel_metadata={}}, metadata={op_name="jit(wrapped)/rf32_HIGHEST_M256_K128_N128/pallas_call" stack_frame_id=1}, backend_config={"flag_configs":[],"scoped_memory_configs":[{"memory_space":"1","offset":"0","size":"33554432"}],"custom_call_config":{"body":"TUzvUgFNTElSMjMuMC4wZ2l0AAEfBwEDBQEDBwMNCQsNDxETA6uFFQF9BxMLCw8PDw+FDwsLCw8PDw8PEwsPOwsLCwsLCwsLCw8PDxsPDxsTHwsPCw8bMwsLCwsLCw8LDxsjCwtTCxMFCWFNKgJ5ARUHHycHDycPGx8LAt4GHwMDFT8FFQUXERMAHWdpHRdBHRdHYWZmaW5lX21hcDwoZDAsIGQxKSAtPiAoZDAsIGQxKT4AEQkBBRkFGwUdHQVFHQVLHVFTHQVZHQVvAwMnKQUfEQk9Aw0tLzEzNRM3Ezk7PX8FIQEBBSMNDwUlBScFKQUrBS0RAQEdGUMVGxstBwd/Mz8dGUkVHR0tBwd/Q08DAxVPJQMJAAAAAAUvHVVXBTEVISEtBwd/I9EDC12BX4NhCWMJZQkFMwU1BTcFOQU7BT0da20FPxUjIy0HB38RHQMHcwl1d3l7BUEFQyMNCSEBAAAAAQAAAAIAAAAAAAAABUUjDQEBI3RwdS5tZW1vcnlfc3BhY2U8dm1lbT4AI3RwdS5jb3JlX3R5cGU8dGM+ACN0cHUuZG90X2RpbWVuc2lvbl9udW1iZXJzPFsxXSwgWzBdLCBbMF0sIFsxXSwgWzAsIDAsIDEsIDFdLCBbXSwgW10+ACN0cHUuY29udHJhY3RfcHJlY2lzaW9uPGZwMzI+AAMnBQIIAgQHF30FAggCBAcRCwECBBd9BQIEAgQHEQECAgUHBQsFAScFAgQCBAcBCQTnBQERASUHAwEFBxEBKwcDHTcHBQELAQUBAwMNAwMBAwMNAwMBBQYNAwMHAQcJAwMPAwMBAwMPAwMBBQYPAxEHAw0PAwMfTQMDCQcfWwMDBwsREwMDCwMDAQMDCwMDAQUGCwMDBwUXGQsFC3EJFQUXGQ0AAQYDAQUBABIIRxEpCRUNHScdFSUxGx05EyMhHSktEQsNRSMZIxcVGR8PCR0RYnVpbHRpbgBzdGFibGVfbW9zYWljAHRwdQBtb2R1bGUAYXJpdGguY29uc3RhbnQAdmVjdG9yLmxvYWQAZnVuYy5mdW5jAHRwdS5tYXRtdWwAdHB1LnZlY3Rvcl9zdG9yZQBmdW5jLnJldHVybgBtay48bG9jYWxzPi5rZXJuAC90bXAvdHB1di9yZXZpZXdfbXh1X2YzMi9wcm9iZS5weQB2YWx1ZQBnZXQ6AGdldC9nZXQAc3RhYmxlX21vc2FpYy52ZXJzaW9uAGRpbWVuc2lvbl9zZW1hbnRpY3MAZnVuY3Rpb25fdHlwZQBzY2FsYXJfcHJlZmV0Y2gAc2NyYXRjaF9vcGVyYW5kcwBzeW1fbmFtZQByZjMyX0hJR0hFU1RfTTI1Nl9LMTI4X04xMjgAdHB1LmNvcmVfdHlwZQBkb3RfZ2VuZXJhbDoAZG90X2dlbmVyYWwvZG90X2dlbmVyYWwAZGltZW5zaW9uX251bWJlcnMAcHJlY2lzaW9uAHRyYW5zcG9zZV9saHMAdHJhbnNwb3NlX2xoc19oaW50AHRyYW5zcG9zZV9yaHMAc3dhcDoAc3dhcC9zd2FwAGFkZABvcGVyYW5kU2VnbWVudFNpemVzAHN0cmlkZXMA","needs_layout_passes":true,"allow_input_fusion":[],"serialization_format":"1","output_memory_colors":[],"output_memory_space_colors":[{"color":"0","shape_index":[]}],"input_memory_space_colors":[{"operand_index":"0","color":"1","shape_index":[]},{"operand_index":"1","color":"1","shape_index":[]}],"operand_to_metadata":[]},"used_scoped_memory_configs":[],"aliasing_operands":{"lists":[]}}
+}

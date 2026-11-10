@@ -1,0 +1,24 @@
+HloModule jit_wrapped, is_scheduled=true, entry_computation_layout={(f32[128,128]{1,0:T(8,128)})->f32[128,128]{1,0:T(8,128)}}, allow_spmd_sharding_propagation_to_parameters={true}, allow_spmd_sharding_propagation_to_output={true}, frontend_attributes={arg_layout_modes="default",arg_memory_spaces="0",out_layout_modes="default",out_memory_spaces="0"}
+
+FileNames
+1 "/tmp/tpuv/corpus/probe.py"
+
+FunctionNames
+1 "<module>"
+2 "save_run"
+
+FileLocations
+1 {file_name_id=1 function_name_id=1 line=232 end_line=232 column=4 end_column=18}
+2 {file_name_id=1 function_name_id=2 line=93 end_line=93 column=32 end_column=41}
+
+StackFrames
+1 {file_location_id=1 parent_frame_id=1}
+2 {file_location_id=2 parent_frame_id=2}
+
+
+ENTRY %main.1 (args_0_.1: f32[128,128]) -> f32[128,128] {
+  %args_0_.1 = f32[128,128]{1,0:T(8,128)} parameter(0), metadata={op_name="args[0]"}, backend_config={"flag_configs":[],"scoped_memory_configs":[{"memory_space":"1","offset":"0","size":"0"}],"used_scoped_memory_configs":[]}
+  %copy-start = (f32[128,128]{1,0:T(8,128)S(1)}, f32[128,128]{1,0:T(8,128)}, u32[]{:S(2)}) copy-start(%args_0_.1), backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"dma_priority":5}
+  %copy-done = f32[128,128]{1,0:T(8,128)S(1)} copy-done(%copy-start), backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"dma_priority":5}
+  ROOT %transpose.1 = f32[128,128]{1,0:T(8,128)} custom-call(%copy-done), custom_call_target="tpu_custom_call", operand_layout_constraints={f32[128,128]{1,0}}, frontend_attributes={kernel_metadata={}}, metadata={op_name="jit(wrapped)/transpose/pallas_call" stack_frame_id=2}, backend_config={"flag_configs":[],"scoped_memory_configs":[{"memory_space":"1","offset":"0","size":"33554432"}],"custom_call_config":{"body":"TUzvUgFNTElSMjMuMC4wZ2l0AAEfBwEDBQEDBwMNCQsNDxETA41tEQFpBxMPDwsLDw8PDxMLDzsLCwsLhQsLCwsLCw8LDwsPHxMLUw8LDwsPHwsPCw8fIwsPC1MLEwUFYU0BEQcnDx8HDxcLArYEHwMDMTMdUVMdNTcFFQUXEQUBHQk9HQlPHQlZAwMXGQUZEQU9Aw0dHyEjJw0pDSstL2sFGwEBBR0NDWFmZmluZV9tYXA8KGQwLCBkMSkgLT4gKGQwLCBkMSk+AAUfBSEFIwUlBScFKREBAQUrHTk7BS0VDw8tCweaAyMvAwNBQwUvIwUFIQEAAAAAAAAAAAAAAAAAAAAdR0kFMR1LTQUzFRERLQsHmgMjMwU1HVVXBTcVExMtCweaAxEdAwddX2FjZWcFOREPAAU7IwsJIQEAAAABAAAAAgAAAAAAAAAFPSMLAQEjdHB1Lm1lbW9yeV9zcGFjZTx2bWVtPgAjdHB1LmNvcmVfdHlwZTx0Yz4AAxdpBQIEAgQJJQECBCcFAgQCBAkLAQICBQUDAwEBCQSpBQERARUHAwEFBxEBGwcDEycFAwEDAQMDBwMDAQMDBwMDAQUGBwMHBwEFBwkHRT8DBwMJAwMFAwMBAwMFAwMBBQYFAwcHAw0PCwUFWwkLAw0PDQABBgMBBQEAVgY/ESkJFQ0pFxkRCw0dFRMjIR0pLTUFGSMdFRkfDwkdEWJ1aWx0aW4Ac3RhYmxlX21vc2FpYwB0cHUAbW9kdWxlAGFyaXRoLmNvbnN0YW50AHZlY3Rvci5sb2FkAGZ1bmMuZnVuYwB0cHUudHJhbnNwb3NlAHRwdS52ZWN0b3Jfc3RvcmUAZnVuYy5yZXR1cm4AawAvdG1wL3RwdXYvY29ycHVzL3Byb2JlLnB5AHN0YWJsZV9tb3NhaWMudmVyc2lvbgBkaW1lbnNpb25fc2VtYW50aWNzAGZ1bmN0aW9uX3R5cGUAc2NhbGFyX3ByZWZldGNoAHNjcmF0Y2hfb3BlcmFuZHMAc3ltX25hbWUAdHJhbnNwb3NlAHRwdS5jb3JlX3R5cGUAdmFsdWUAZ2V0OgBnZXQvZ2V0AHBlcm11dGF0aW9uAHRyYW5zcG9zZToAdHJhbnNwb3NlL3RyYW5zcG9zZQBzd2FwOgBzd2FwL3N3YXAAYWRkAG9wZXJhbmRTZWdtZW50U2l6ZXMAc3RyaWRlcwA=","needs_layout_passes":true,"allow_input_fusion":[],"serialization_format":"1","output_memory_colors":[],"output_memory_space_colors":[{"color":"0","shape_index":[]}],"input_memory_space_colors":[{"operand_index":"0","color":"1","shape_index":[]}],"operand_to_metadata":[]},"used_scoped_memory_configs":[],"aliasing_operands":{"lists":[]}}
+}

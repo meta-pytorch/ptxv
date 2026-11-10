@@ -1,0 +1,120 @@
+// [Enable stack traces via -xla_jf_collect_llo_stack_trace or -xla_jf_debug_level=2]
+$region0: #{transpose.1}
+  #allocation0 [shape = 'u32[]', space=smem, size = 0x4, offset = 0x4, fixed_abs, tag = 'smem constant byte address 0x4 - core index']
+  #allocation1 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for transpose.1']
+  #allocation2 [shape = 'u32[144,128]{1,0:T(1,128)}', space=vmem, size = 0x12000, scoped, tag = 'internal scratch']
+  %s0 = inlined_call_operand.vmem [shape: f32[128,128], index: 0, kind: input, shape index: {}] /* input window allocation for operator input 0. The window shape is f32[128,128], while the full shape is f32[128,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s1 = inlined_call_operand.hbm [shape: f32[128,128], index: 1, kind: output, shape index: {}] /* output window allocation for operator output 0. The window shape is f32[128,128], while the full shape is f32[128,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s2 = sld [smem:[#allocation0]] /* core id */
+  $region14: #{transpose.1} parent=0
+    _
+  %s4 = ssub.s32 1, %s2
+  %s5 = scalar_select /*predicate=*/0, /*on_true=*/%s4, /*on_false=*/%s2 /* megacore core id */
+  $region1: #{transpose.1} parent=0
+    #allocation3 [shape = 'u8[65536]{0}', space=vmem, size = 0x10000, scoped, tag = 'output window allocation for operator output 0. The window shape is f32[128,128], while the full shape is f32[128,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM. This allocation is single buffered.']
+    #allocation4 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for transpose.1']
+    %6 = vsyncpa [#allocation4], 0
+    // Predicated region
+    $region2: #{transpose.1} parent=1 // pred_check
+      _
+    $region3: #{transpose.1} parent=1 // pred_check_branch
+      %8 = sbr.rel (0) target = $region5
+    $region4: #{transpose.1} parent=1 // pred_region
+      _
+    $region5: #{transpose.1} parent=1 // pred_fallthru
+      _
+    %v9 = vld [vmem:[%s0] sm:$0xff]
+    %v10 = vld [vmem:[%s0 + $0x8] sm:$0xff]
+    %v11 = vld [vmem:[%s0 + $0x10] sm:$0xff]
+    %v12 = vld [vmem:[%s0 + $0x18] sm:$0xff]
+    %v13 = vld [vmem:[%s0 + $0x20] sm:$0xff]
+    %v14 = vld [vmem:[%s0 + $0x28] sm:$0xff]
+    %v15 = vld [vmem:[%s0 + $0x30] sm:$0xff]
+    %v16 = vld [vmem:[%s0 + $0x38] sm:$0xff]
+    %v17 = vld [vmem:[%s0 + $0x40] sm:$0xff]
+    %v18 = vld [vmem:[%s0 + $0x48] sm:$0xff]
+    %v19 = vld [vmem:[%s0 + $0x50] sm:$0xff]
+    %v20 = vld [vmem:[%s0 + $0x58] sm:$0xff]
+    %v21 = vld [vmem:[%s0 + $0x60] sm:$0xff]
+    %v22 = vld [vmem:[%s0 + $0x68] sm:$0xff]
+    %v23 = vld [vmem:[%s0 + $0x70] sm:$0xff]
+    %v24 = vld [vmem:[%s0 + $0x78] sm:$0xff]
+    %25 = vxpose.xlu0.b32.start [1/16] /*vx=*/%v9, /*width=*/128
+    %26 = vxpose.xlu0.b32.cont [2/16] /*vx=*/%v10, /*width=*/128
+    %27 = vxpose.xlu0.b32.cont [3/16] /*vx=*/%v11, /*width=*/128
+    %28 = vxpose.xlu0.b32.cont [4/16] /*vx=*/%v12, /*width=*/128
+    %29 = vxpose.xlu0.b32.cont [5/16] /*vx=*/%v13, /*width=*/128
+    %30 = vxpose.xlu0.b32.cont [6/16] /*vx=*/%v14, /*width=*/128
+    %31 = vxpose.xlu0.b32.cont [7/16] /*vx=*/%v15, /*width=*/128
+    %32 = vxpose.xlu0.b32.cont [8/16] /*vx=*/%v16, /*width=*/128
+    %33 = vxpose.xlu0.b32.cont [9/16] /*vx=*/%v17, /*width=*/128
+    %34 = vxpose.xlu0.b32.cont [10/16] /*vx=*/%v18, /*width=*/128
+    %35 = vxpose.xlu0.b32.cont [11/16] /*vx=*/%v19, /*width=*/128
+    %36 = vxpose.xlu0.b32.cont [12/16] /*vx=*/%v20, /*width=*/128
+    %37 = vxpose.xlu0.b32.cont [13/16] /*vx=*/%v21, /*width=*/128
+    %38 = vxpose.xlu0.b32.cont [14/16] /*vx=*/%v22, /*width=*/128
+    %39 = vxpose.xlu0.b32.cont [15/16] /*vx=*/%v23, /*width=*/128
+    %40 = vxpose.xlu0.b32.end [16/16] /*vx=*/%v24, /*width=*/128
+    %v41 = vpop.trf.xlu0
+    %v42 = vpop.trf.xlu0
+    %v43 = vpop.trf.xlu0
+    %v44 = vpop.trf.xlu0
+    %v45 = vpop.trf.xlu0
+    %v46 = vpop.trf.xlu0
+    %v47 = vpop.trf.xlu0
+    %v48 = vpop.trf.xlu0
+    %v49 = vpop.trf.xlu0
+    %v50 = vpop.trf.xlu0
+    %v51 = vpop.trf.xlu0
+    %v52 = vpop.trf.xlu0
+    %v53 = vpop.trf.xlu0
+    %v54 = vpop.trf.xlu0
+    %v55 = vpop.trf.xlu0
+    %v56 = vpop.trf.xlu0
+    %57 = vst [vmem:[#allocation3] sm:$0xff] /*vst_source=*/%v41
+    %58 = vst [vmem:[#allocation3 + $0x8] sm:$0xff] /*vst_source=*/%v42
+    %59 = vst [vmem:[#allocation3 + $0x10] sm:$0xff] /*vst_source=*/%v43
+    %60 = vst [vmem:[#allocation3 + $0x18] sm:$0xff] /*vst_source=*/%v44
+    %61 = vst [vmem:[#allocation3 + $0x20] sm:$0xff] /*vst_source=*/%v45
+    %62 = vst [vmem:[#allocation3 + $0x28] sm:$0xff] /*vst_source=*/%v46
+    %63 = vst [vmem:[#allocation3 + $0x30] sm:$0xff] /*vst_source=*/%v47
+    %64 = vst [vmem:[#allocation3 + $0x38] sm:$0xff] /*vst_source=*/%v48
+    %65 = vst [vmem:[#allocation3 + $0x40] sm:$0xff] /*vst_source=*/%v49
+    %66 = vst [vmem:[#allocation3 + $0x48] sm:$0xff] /*vst_source=*/%v50
+    %67 = vst [vmem:[#allocation3 + $0x50] sm:$0xff] /*vst_source=*/%v51
+    %68 = vst [vmem:[#allocation3 + $0x58] sm:$0xff] /*vst_source=*/%v52
+    %69 = vst [vmem:[#allocation3 + $0x60] sm:$0xff] /*vst_source=*/%v53
+    %70 = vst [vmem:[#allocation3 + $0x68] sm:$0xff] /*vst_source=*/%v54
+    %71 = vst [vmem:[#allocation3 + $0x70] sm:$0xff] /*vst_source=*/%v55
+    %72 = vst [vmem:[#allocation3 + $0x78] sm:$0xff] /*vst_source=*/%v56
+    // Predicated region
+    $region6: #{transpose.1} parent=1 // pred_check
+      _
+    $region7: #{transpose.1} parent=1 // pred_check_branch
+      %74 = sbr.rel (0) target = $region9
+    $region8: #{transpose.1} parent=1 // pred_region
+      %75 = vsyncadd [#allocation4], 0
+      %s76 = sshll.u32 [#allocation3], 4
+      %s77 = int_to_ptr.vmem [resolvable:$true] %s76
+      %82 = dma.vmem_to_hbm [thread:$0]  /*vmem=*/%s77, /*size_in_granules=*/2048, /*hbm=*/%s1, /*dst_syncflagno=*/[#allocation4], /*src_stride=*/128, /*dst_stride=*/128, /*steps_per_stride=*/8 /*
+base_bounds: (16, 1)
+dynamic_base_bounds: (16, 1)
+window_bounds: (16, 1)
+iteration_bounds: (1)
+strides: (1, 1)
+pad_low: (0, 0)
+pad_high: (0, 0)
+element_size_in_bytes: 4096
+second_minor_factor: 1 */
+    $region9: #{transpose.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region10: #{transpose.1} parent=1 // pred_check
+      _
+    $region11: #{transpose.1} parent=1 // pred_check_branch
+      %84 = sbr.rel (0) target = $region13
+    $region12: #{transpose.1} parent=1 // pred_region
+      %85 = dma.done [#allocation4], 2048 /* pipeline-emitter-dma-wait */
+    $region13: #{transpose.1} parent=1 // pred_fallthru
+      _
+    %86 = vsyncpa [#allocation4], 1

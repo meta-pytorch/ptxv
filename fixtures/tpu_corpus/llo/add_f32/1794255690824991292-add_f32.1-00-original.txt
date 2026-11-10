@@ -1,0 +1,70 @@
+// [Enable stack traces via -xla_jf_collect_llo_stack_trace or -xla_jf_debug_level=2]
+$region0: #{add_f32.1}
+  #allocation0 [shape = 'u32[]', space=smem, size = 0x4, offset = 0x4, fixed_abs, tag = 'smem constant byte address 0x4 - core index']
+  #allocation1 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for add_f32.1']
+  #allocation2 [shape = 'u32[144,128]{1,0:T(1,128)}', space=vmem, size = 0x12000, scoped, tag = 'internal scratch']
+  %s0 = inlined_call_operand.vmem [shape: f32[8,128], index: 0, kind: input, shape index: {}] /* input window allocation for operator input 0. The window shape is f32[8,128], while the full shape is f32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s1 = inlined_call_operand.vmem [shape: f32[8,128], index: 1, kind: input, shape index: {}] /* input window allocation for operator input 1. The window shape is f32[8,128], while the full shape is f32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s2 = inlined_call_operand.hbm [shape: f32[8,128], index: 2, kind: output, shape index: {}] /* output window allocation for operator output 0. The window shape is f32[8,128], while the full shape is f32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s3 = sld [smem:[#allocation0]] /* core id */
+  $region18: #{add_f32.1} parent=0
+    _
+  %s5 = ssub.s32 1, %s3
+  %s6 = scalar_select /*predicate=*/0, /*on_true=*/%s5, /*on_false=*/%s3 /* megacore core id */
+  $region1: #{add_f32.1} parent=0
+    #allocation3 [shape = 'u8[4096]{0}', space=vmem, size = 0x1000, scoped, tag = 'output window allocation for operator output 0. The window shape is f32[8,128], while the full shape is f32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM. This allocation is single buffered.']
+    #allocation4 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for add_f32.1']
+    %7 = vsyncpa [#allocation4], 0
+    // Predicated region
+    $region2: #{add_f32.1} parent=1 // pred_check
+      _
+    $region3: #{add_f32.1} parent=1 // pred_check_branch
+      %9 = sbr.rel (0) target = $region5
+    $region4: #{add_f32.1} parent=1 // pred_region
+      _
+    $region5: #{add_f32.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region6: #{add_f32.1} parent=1 // pred_check
+      _
+    $region7: #{add_f32.1} parent=1 // pred_check_branch
+      %11 = sbr.rel (0) target = $region9
+    $region8: #{add_f32.1} parent=1 // pred_region
+      _
+    $region9: #{add_f32.1} parent=1 // pred_fallthru
+      _
+    %v12 = vld [vmem:[%s0] sm:$0xff]
+    %v13 = vld [vmem:[%s1] sm:$0xff]
+    %v14 = vadd.f32 %v12, %v13
+    %15 = vst [vmem:[#allocation3] sm:$0xff] /*vst_source=*/%v14
+    // Predicated region
+    $region10: #{add_f32.1} parent=1 // pred_check
+      _
+    $region11: #{add_f32.1} parent=1 // pred_check_branch
+      %17 = sbr.rel (0) target = $region13
+    $region12: #{add_f32.1} parent=1 // pred_region
+      %18 = vsyncadd [#allocation4], 0
+      %s20 = sshll.u32 [#allocation3], 4
+      %s21 = int_to_ptr.vmem [resolvable:$true] %s20
+      %23 = dma.vmem_to_hbm [thread:$0]  /*vmem=*/%s21, /*size_in_granules=*/128, /*hbm=*/%s2, /*dst_syncflagno=*/[#allocation4] /*
+base_bounds: (1, 1)
+dynamic_base_bounds: (1, 1)
+window_bounds: (1, 1)
+iteration_bounds: (1)
+strides: (1, 1)
+pad_low: (0, 0)
+pad_high: (0, 0)
+element_size_in_bytes: 4096
+second_minor_factor: 1 */
+    $region13: #{add_f32.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region14: #{add_f32.1} parent=1 // pred_check
+      _
+    $region15: #{add_f32.1} parent=1 // pred_check_branch
+      %25 = sbr.rel (0) target = $region17
+    $region16: #{add_f32.1} parent=1 // pred_region
+      %26 = dma.done [#allocation4], 128 /* pipeline-emitter-dma-wait */
+    $region17: #{add_f32.1} parent=1 // pred_fallthru
+      _
+    %27 = vsyncpa [#allocation4], 1

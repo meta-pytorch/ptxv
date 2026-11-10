@@ -1,0 +1,1472 @@
+// [Enable stack traces via -xla_jf_collect_llo_stack_trace or -xla_jf_debug_level=2]
+$region0: #{rmo3_lay.1}
+  #allocation0 [shape = 'u32[]', space=smem, size = 0x4, offset = 0x4, fixed_abs, tag = 'smem constant byte address 0x4 - core index']
+  #allocation1 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for rmo3_lay.1']
+  #allocation2 [shape = 'u32[144,128]{1,0:T(1,128)}', space=vmem, size = 0x12000, scoped, tag = 'internal scratch']
+  #allocation3 [shape = 'f32[128,200]{1,0:T(8,128)}', space=vmem, size = 0x20000, scoped, tag = 'scratch operand']
+  %s0 = inlined_call_operand.vmem [shape: bf16[128,512], index: 0, kind: input, shape index: {}] /* input window allocation for operator input 0. The window shape is bf16[128,128], while the full shape is bf16[128,512]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s1 = inlined_call_operand.vmem [shape: bf16[512,200], index: 1, kind: input, shape index: {}] /* input window allocation for operator input 1. The window shape is bf16[128,200], while the full shape is bf16[512,200]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s2 = inlined_call_operand.vmem [shape: f32[2,200], index: 2, kind: input, shape index: {}] /* input window allocation for operator input 2. The window shape is f32[2,200], while the full shape is f32[2,200]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s3 = inlined_call_operand.vmem [shape: f32[3,200], index: 3, kind: input, shape index: {}] /* input window allocation for operator input 3. The window shape is f32[3,200], while the full shape is f32[3,200]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s4 = inlined_call_operand.vmem [shape: f32[5,200], index: 4, kind: input, shape index: {}] /* input window allocation for operator input 4. The window shape is f32[5,200], while the full shape is f32[5,200]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s5 = inlined_call_operand.vmem [shape: f32[6,200], index: 5, kind: input, shape index: {}] /* input window allocation for operator input 5. The window shape is f32[6,200], while the full shape is f32[6,200]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s6 = inlined_call_operand.vmem [shape: f32[7,200], index: 6, kind: input, shape index: {}] /* input window allocation for operator input 6. The window shape is f32[7,200], while the full shape is f32[7,200]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s7 = inlined_call_operand.vmem [shape: bf16[3,200], index: 7, kind: input, shape index: {}] /* input window allocation for operator input 7. The window shape is bf16[3,200], while the full shape is bf16[3,200]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s8 = inlined_call_operand.vmem [shape: s8[1,200], index: 8, kind: input, shape index: {}] /* input window allocation for operator input 8. The window shape is s8[1,200], while the full shape is s8[1,200]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s9 = inlined_call_operand.vmem [shape: f32[2,4,200], index: 9, kind: input, shape index: {}] /* input window allocation for operator input 9. The window shape is f32[2,4,200], while the full shape is f32[2,4,200]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s10 = inlined_call_operand.vmem [shape: f32[1,2,3,200], index: 10, kind: input, shape index: {}] /* input window allocation for operator input 10. The window shape is f32[1,2,3,200], while the full shape is f32[1,2,3,200]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s11 = inlined_call_operand.vmem [shape: f32[128,200], index: 11, kind: output, shape index: {}] /* output window allocation for operator output 0. The window shape is f32[128,200], while the full shape is f32[128,200]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s12 = sld [smem:[#allocation0]] /* core id */
+  $region126: #{rmo3_lay.1} parent=0
+    _
+  %s14 = ssub.s32 1, %s12
+  %s15 = scalar_select /*predicate=*/0, /*on_true=*/%s14, /*on_false=*/%s12 /* megacore core id */
+  $region1: #{rmo3_lay.1} parent=0
+    #allocation4 [shape = 'u8[65536]{0}', space=vmem, size = 0x10000, scoped, tag = 'input window allocation for operator input 0. The window shape is bf16[128,128], while the full shape is bf16[128,512]. The u8 shape/size shown above represents the raw byte size of this window in VMEM. This allocation has 2 buffering levels.']
+    loop: start=0, step=1, limit=6
+    $region2: #{rmo3_lay.1} parent=1 // loop_pre_header
+      _
+    $region3: #{rmo3_lay.1} parent=1 // loop_header
+      %s17 = sphi 0, %s21 /* iteration index, stage = 0 */
+      %p18 = scmp.ge.s32.totalorder %s17, 6 /* loop exit test */
+      %s27 = sphi 0, %s29
+      %s30 = sphi 0, %s27
+      %s31 = sphi 0, %s30
+      %s47 = sphi 0, %s31
+      %s53 = sphi 0, %s55
+      %s56 = sphi 0, %s53
+      %s57 = sphi 0, %s56
+      %s73 = sphi 0, %s57
+      %s77 = sphi 0, %s77
+      %s79 = sphi 0, %s77
+      %s80 = sphi 0, %s79
+      %s94 = sphi 0, %s80
+      %s98 = sphi 0, %s98
+      %s100 = sphi 0, %s98
+      %s101 = sphi 0, %s100
+      %s115 = sphi 0, %s101
+      %s119 = sphi 0, %s119
+      %s121 = sphi 0, %s119
+      %s122 = sphi 0, %s121
+      %s136 = sphi 0, %s122
+      %s140 = sphi 0, %s140
+      %s142 = sphi 0, %s140
+      %s143 = sphi 0, %s142
+      %s157 = sphi 0, %s143
+      %s161 = sphi 0, %s161
+      %s163 = sphi 0, %s161
+      %s164 = sphi 0, %s163
+      %s178 = sphi 0, %s164
+      %s182 = sphi 0, %s182
+      %s184 = sphi 0, %s182
+      %s185 = sphi 0, %s184
+      %s199 = sphi 0, %s185
+      %s203 = sphi 0, %s203
+      %s205 = sphi 0, %s203
+      %s206 = sphi 0, %s205
+      %s220 = sphi 0, %s206
+      %s224 = sphi 0, %s224
+      %s226 = sphi 0, %s224
+      %s227 = sphi 0, %s226
+      %s241 = sphi 0, %s227
+      %s245 = sphi 0, %s245
+      %s247 = sphi 0, %s245
+      %s248 = sphi 0, %s247
+      %s262 = sphi 0, %s248
+      %s266 = sphi 0, %s266
+      %s268 = sphi 0, %s266
+      %s269 = sphi 0, %s268
+      %s283 = sphi 0, %s269
+    $region4: #{rmo3_lay.1} parent=1 // loop_header_branch
+      %20 = sbr.rel (%p18) target = $region8
+    $region5: #{rmo3_lay.1} parent=1 // loop_body
+      %s22 = ssub.s32 %s17, 1 /* iteration index, stage = 1 */
+      %s23 = ssub.s32 %s17, 2 /* iteration index, stage = 2 */
+      %s24 = sadd.s32 %s17, 1
+      %s25 = ssub.s32 %s17, %s24
+      %p26 = scmp.eq.s32.totalorder %s25, 0
+      %s28 = sadd.s32 %s27, 1
+      %s29 = scalar_select /*predicate=*/%p26, /*on_true=*/%s27, /*on_false=*/%s28
+      %p32 = pneg %p26
+      %p33 = scmp.eq.s32.totalorder %s17, 3
+      %p34 = por %p32, %p33
+      %p35 = scmp.ne.s32.totalorder %s27, %s30
+      %p36 = scmp.eq.s32.totalorder %s17, 0
+      %p37 = por %p35, %p36
+      %p38 = scmp.ne.s32.totalorder %s27, %s30
+      %p39 = scmp.eq.s32.totalorder %s22, 3
+      %p40 = por %p38, %p39
+      %p41 = scmp.ne.s32.totalorder %s30, %s31
+      %p42 = scmp.eq.s32.totalorder %s22, 0
+      %p43 = por %p41, %p42
+      %p44 = scmp.ne.s32.totalorder %s30, %s31
+      %p45 = scmp.eq.s32.totalorder %s23, 3
+      %p46 = por %p44, %p45
+      %p48 = scmp.ne.s32.totalorder %s31, %s47
+      %p49 = scmp.eq.s32.totalorder %s23, 0
+      %p50 = por %p48, %p49
+      %s51 = ssub.s32 %s17, %s24
+      %p52 = scmp.eq.s32.totalorder %s51, 0
+      %s54 = sadd.s32 %s53, 1
+      %s55 = scalar_select /*predicate=*/%p52, /*on_true=*/%s53, /*on_false=*/%s54
+      %p58 = pneg %p52
+      %p59 = scmp.eq.s32.totalorder %s17, 3
+      %p60 = por %p58, %p59
+      %p61 = scmp.ne.s32.totalorder %s53, %s56
+      %p62 = scmp.eq.s32.totalorder %s17, 0
+      %p63 = por %p61, %p62
+      %p64 = scmp.ne.s32.totalorder %s53, %s56
+      %p65 = scmp.eq.s32.totalorder %s22, 3
+      %p66 = por %p64, %p65
+      %p67 = scmp.ne.s32.totalorder %s56, %s57
+      %p68 = scmp.eq.s32.totalorder %s22, 0
+      %p69 = por %p67, %p68
+      %p70 = scmp.ne.s32.totalorder %s56, %s57
+      %p71 = scmp.eq.s32.totalorder %s23, 3
+      %p72 = por %p70, %p71
+      %p74 = scmp.ne.s32.totalorder %s57, %s73
+      %p75 = scmp.eq.s32.totalorder %s23, 0
+      %p76 = por %p74, %p75
+      %s78 = sadd.s32 %s77, 1
+      %p81 = scmp.eq.s32.totalorder %s17, 3
+      %p82 = scmp.ne.s32.totalorder %s77, %s79
+      %p83 = scmp.eq.s32.totalorder %s17, 0
+      %p84 = por %p82, %p83
+      %p85 = scmp.ne.s32.totalorder %s77, %s79
+      %p86 = scmp.eq.s32.totalorder %s22, 3
+      %p87 = por %p85, %p86
+      %p88 = scmp.ne.s32.totalorder %s79, %s80
+      %p89 = scmp.eq.s32.totalorder %s22, 0
+      %p90 = por %p88, %p89
+      %p91 = scmp.ne.s32.totalorder %s79, %s80
+      %p92 = scmp.eq.s32.totalorder %s23, 3
+      %p93 = por %p91, %p92
+      %p95 = scmp.ne.s32.totalorder %s80, %s94
+      %p96 = scmp.eq.s32.totalorder %s23, 0
+      %p97 = por %p95, %p96
+      %s99 = sadd.s32 %s98, 1
+      %p102 = scmp.eq.s32.totalorder %s17, 3
+      %p103 = scmp.ne.s32.totalorder %s98, %s100
+      %p104 = scmp.eq.s32.totalorder %s17, 0
+      %p105 = por %p103, %p104
+      %p106 = scmp.ne.s32.totalorder %s98, %s100
+      %p107 = scmp.eq.s32.totalorder %s22, 3
+      %p108 = por %p106, %p107
+      %p109 = scmp.ne.s32.totalorder %s100, %s101
+      %p110 = scmp.eq.s32.totalorder %s22, 0
+      %p111 = por %p109, %p110
+      %p112 = scmp.ne.s32.totalorder %s100, %s101
+      %p113 = scmp.eq.s32.totalorder %s23, 3
+      %p114 = por %p112, %p113
+      %p116 = scmp.ne.s32.totalorder %s101, %s115
+      %p117 = scmp.eq.s32.totalorder %s23, 0
+      %p118 = por %p116, %p117
+      %s120 = sadd.s32 %s119, 1
+      %p123 = scmp.eq.s32.totalorder %s17, 3
+      %p124 = scmp.ne.s32.totalorder %s119, %s121
+      %p125 = scmp.eq.s32.totalorder %s17, 0
+      %p126 = por %p124, %p125
+      %p127 = scmp.ne.s32.totalorder %s119, %s121
+      %p128 = scmp.eq.s32.totalorder %s22, 3
+      %p129 = por %p127, %p128
+      %p130 = scmp.ne.s32.totalorder %s121, %s122
+      %p131 = scmp.eq.s32.totalorder %s22, 0
+      %p132 = por %p130, %p131
+      %p133 = scmp.ne.s32.totalorder %s121, %s122
+      %p134 = scmp.eq.s32.totalorder %s23, 3
+      %p135 = por %p133, %p134
+      %p137 = scmp.ne.s32.totalorder %s122, %s136
+      %p138 = scmp.eq.s32.totalorder %s23, 0
+      %p139 = por %p137, %p138
+      %s141 = sadd.s32 %s140, 1
+      %p144 = scmp.eq.s32.totalorder %s17, 3
+      %p145 = scmp.ne.s32.totalorder %s140, %s142
+      %p146 = scmp.eq.s32.totalorder %s17, 0
+      %p147 = por %p145, %p146
+      %p148 = scmp.ne.s32.totalorder %s140, %s142
+      %p149 = scmp.eq.s32.totalorder %s22, 3
+      %p150 = por %p148, %p149
+      %p151 = scmp.ne.s32.totalorder %s142, %s143
+      %p152 = scmp.eq.s32.totalorder %s22, 0
+      %p153 = por %p151, %p152
+      %p154 = scmp.ne.s32.totalorder %s142, %s143
+      %p155 = scmp.eq.s32.totalorder %s23, 3
+      %p156 = por %p154, %p155
+      %p158 = scmp.ne.s32.totalorder %s143, %s157
+      %p159 = scmp.eq.s32.totalorder %s23, 0
+      %p160 = por %p158, %p159
+      %s162 = sadd.s32 %s161, 1
+      %p165 = scmp.eq.s32.totalorder %s17, 3
+      %p166 = scmp.ne.s32.totalorder %s161, %s163
+      %p167 = scmp.eq.s32.totalorder %s17, 0
+      %p168 = por %p166, %p167
+      %p169 = scmp.ne.s32.totalorder %s161, %s163
+      %p170 = scmp.eq.s32.totalorder %s22, 3
+      %p171 = por %p169, %p170
+      %p172 = scmp.ne.s32.totalorder %s163, %s164
+      %p173 = scmp.eq.s32.totalorder %s22, 0
+      %p174 = por %p172, %p173
+      %p175 = scmp.ne.s32.totalorder %s163, %s164
+      %p176 = scmp.eq.s32.totalorder %s23, 3
+      %p177 = por %p175, %p176
+      %p179 = scmp.ne.s32.totalorder %s164, %s178
+      %p180 = scmp.eq.s32.totalorder %s23, 0
+      %p181 = por %p179, %p180
+      %s183 = sadd.s32 %s182, 1
+      %p186 = scmp.eq.s32.totalorder %s17, 3
+      %p187 = scmp.ne.s32.totalorder %s182, %s184
+      %p188 = scmp.eq.s32.totalorder %s17, 0
+      %p189 = por %p187, %p188
+      %p190 = scmp.ne.s32.totalorder %s182, %s184
+      %p191 = scmp.eq.s32.totalorder %s22, 3
+      %p192 = por %p190, %p191
+      %p193 = scmp.ne.s32.totalorder %s184, %s185
+      %p194 = scmp.eq.s32.totalorder %s22, 0
+      %p195 = por %p193, %p194
+      %p196 = scmp.ne.s32.totalorder %s184, %s185
+      %p197 = scmp.eq.s32.totalorder %s23, 3
+      %p198 = por %p196, %p197
+      %p200 = scmp.ne.s32.totalorder %s185, %s199
+      %p201 = scmp.eq.s32.totalorder %s23, 0
+      %p202 = por %p200, %p201
+      %s204 = sadd.s32 %s203, 1
+      %p207 = scmp.eq.s32.totalorder %s17, 3
+      %p208 = scmp.ne.s32.totalorder %s203, %s205
+      %p209 = scmp.eq.s32.totalorder %s17, 0
+      %p210 = por %p208, %p209
+      %p211 = scmp.ne.s32.totalorder %s203, %s205
+      %p212 = scmp.eq.s32.totalorder %s22, 3
+      %p213 = por %p211, %p212
+      %p214 = scmp.ne.s32.totalorder %s205, %s206
+      %p215 = scmp.eq.s32.totalorder %s22, 0
+      %p216 = por %p214, %p215
+      %p217 = scmp.ne.s32.totalorder %s205, %s206
+      %p218 = scmp.eq.s32.totalorder %s23, 3
+      %p219 = por %p217, %p218
+      %p221 = scmp.ne.s32.totalorder %s206, %s220
+      %p222 = scmp.eq.s32.totalorder %s23, 0
+      %p223 = por %p221, %p222
+      %s225 = sadd.s32 %s224, 1
+      %p228 = scmp.eq.s32.totalorder %s17, 3
+      %p229 = scmp.ne.s32.totalorder %s224, %s226
+      %p230 = scmp.eq.s32.totalorder %s17, 0
+      %p231 = por %p229, %p230
+      %p232 = scmp.ne.s32.totalorder %s224, %s226
+      %p233 = scmp.eq.s32.totalorder %s22, 3
+      %p234 = por %p232, %p233
+      %p235 = scmp.ne.s32.totalorder %s226, %s227
+      %p236 = scmp.eq.s32.totalorder %s22, 0
+      %p237 = por %p235, %p236
+      %p238 = scmp.ne.s32.totalorder %s226, %s227
+      %p239 = scmp.eq.s32.totalorder %s23, 3
+      %p240 = por %p238, %p239
+      %p242 = scmp.ne.s32.totalorder %s227, %s241
+      %p243 = scmp.eq.s32.totalorder %s23, 0
+      %p244 = por %p242, %p243
+      %s246 = sadd.s32 %s245, 1
+      %p249 = scmp.eq.s32.totalorder %s17, 3
+      %p250 = scmp.ne.s32.totalorder %s245, %s247
+      %p251 = scmp.eq.s32.totalorder %s17, 0
+      %p252 = por %p250, %p251
+      %p253 = scmp.ne.s32.totalorder %s245, %s247
+      %p254 = scmp.eq.s32.totalorder %s22, 3
+      %p255 = por %p253, %p254
+      %p256 = scmp.ne.s32.totalorder %s247, %s248
+      %p257 = scmp.eq.s32.totalorder %s22, 0
+      %p258 = por %p256, %p257
+      %p259 = scmp.ne.s32.totalorder %s247, %s248
+      %p260 = scmp.eq.s32.totalorder %s23, 3
+      %p261 = por %p259, %p260
+      %p263 = scmp.ne.s32.totalorder %s248, %s262
+      %p264 = scmp.eq.s32.totalorder %s23, 0
+      %p265 = por %p263, %p264
+      %s267 = sadd.s32 %s266, 1
+      %p270 = scmp.eq.s32.totalorder %s17, 3
+      %p271 = scmp.ne.s32.totalorder %s266, %s268
+      %p272 = scmp.eq.s32.totalorder %s17, 0
+      %p273 = por %p271, %p272
+      %p274 = scmp.ne.s32.totalorder %s266, %s268
+      %p275 = scmp.eq.s32.totalorder %s22, 3
+      %p276 = por %p274, %p275
+      %p277 = scmp.ne.s32.totalorder %s268, %s269
+      %p278 = scmp.eq.s32.totalorder %s22, 0
+      %p279 = por %p277, %p278
+      %p280 = scmp.ne.s32.totalorder %s268, %s269
+      %p281 = scmp.eq.s32.totalorder %s23, 3
+      %p282 = por %p280, %p281
+      %p284 = scmp.ne.s32.totalorder %s269, %s283
+      %p285 = scmp.eq.s32.totalorder %s23, 0
+      %p286 = por %p284, %p285
+      %p287 = scmp.le.s32.totalorder 1, %s17
+      %p288 = scmp.lt.s32.totalorder %s17, 5
+      %p289 = pnand %p287, %p288
+      %p290 = pneg %p289
+      // Predicated region
+      $region9: #{rmo3_lay.1} parent=5 // pred_check
+        _
+      $region10: #{rmo3_lay.1} parent=5 // pred_check_branch
+        %292 = sbr.rel (%p289) target = $region12
+      $region11: #{rmo3_lay.1} parent=5 // pred_region
+        %s293 = ssub.s32 %s17, 1
+        // Predicated region
+        $region13: #{rmo3_lay.1} parent=11 // pred_check
+          %p294 = pneg %p90
+        $region14: #{rmo3_lay.1} parent=11 // pred_check_branch
+          %296 = sbr.rel (%p294) target = $region16
+        $region15: #{rmo3_lay.1} parent=11 // pred_region
+          _
+        $region16: #{rmo3_lay.1} parent=11 // pred_fallthru
+          _
+        // Predicated region
+        $region17: #{rmo3_lay.1} parent=11 // pred_check
+          %p297 = pneg %p111
+        $region18: #{rmo3_lay.1} parent=11 // pred_check_branch
+          %299 = sbr.rel (%p297) target = $region20
+        $region19: #{rmo3_lay.1} parent=11 // pred_region
+          _
+        $region20: #{rmo3_lay.1} parent=11 // pred_fallthru
+          _
+        // Predicated region
+        $region21: #{rmo3_lay.1} parent=11 // pred_check
+          %p300 = pneg %p132
+        $region22: #{rmo3_lay.1} parent=11 // pred_check_branch
+          %302 = sbr.rel (%p300) target = $region24
+        $region23: #{rmo3_lay.1} parent=11 // pred_region
+          _
+        $region24: #{rmo3_lay.1} parent=11 // pred_fallthru
+          _
+        // Predicated region
+        $region25: #{rmo3_lay.1} parent=11 // pred_check
+          %p303 = pneg %p153
+        $region26: #{rmo3_lay.1} parent=11 // pred_check_branch
+          %305 = sbr.rel (%p303) target = $region28
+        $region27: #{rmo3_lay.1} parent=11 // pred_region
+          _
+        $region28: #{rmo3_lay.1} parent=11 // pred_fallthru
+          _
+        // Predicated region
+        $region29: #{rmo3_lay.1} parent=11 // pred_check
+          %p306 = pneg %p174
+        $region30: #{rmo3_lay.1} parent=11 // pred_check_branch
+          %308 = sbr.rel (%p306) target = $region32
+        $region31: #{rmo3_lay.1} parent=11 // pred_region
+          _
+        $region32: #{rmo3_lay.1} parent=11 // pred_fallthru
+          _
+        // Predicated region
+        $region33: #{rmo3_lay.1} parent=11 // pred_check
+          %p309 = pneg %p195
+        $region34: #{rmo3_lay.1} parent=11 // pred_check_branch
+          %311 = sbr.rel (%p309) target = $region36
+        $region35: #{rmo3_lay.1} parent=11 // pred_region
+          _
+        $region36: #{rmo3_lay.1} parent=11 // pred_fallthru
+          _
+        // Predicated region
+        $region37: #{rmo3_lay.1} parent=11 // pred_check
+          %p312 = pneg %p216
+        $region38: #{rmo3_lay.1} parent=11 // pred_check_branch
+          %314 = sbr.rel (%p312) target = $region40
+        $region39: #{rmo3_lay.1} parent=11 // pred_region
+          _
+        $region40: #{rmo3_lay.1} parent=11 // pred_fallthru
+          _
+        // Predicated region
+        $region41: #{rmo3_lay.1} parent=11 // pred_check
+          %p315 = pneg %p237
+        $region42: #{rmo3_lay.1} parent=11 // pred_check_branch
+          %317 = sbr.rel (%p315) target = $region44
+        $region43: #{rmo3_lay.1} parent=11 // pred_region
+          _
+        $region44: #{rmo3_lay.1} parent=11 // pred_fallthru
+          _
+        // Predicated region
+        $region45: #{rmo3_lay.1} parent=11 // pred_check
+          %p318 = pneg %p258
+        $region46: #{rmo3_lay.1} parent=11 // pred_check_branch
+          %320 = sbr.rel (%p318) target = $region48
+        $region47: #{rmo3_lay.1} parent=11 // pred_region
+          _
+        $region48: #{rmo3_lay.1} parent=11 // pred_fallthru
+          _
+      $region12: #{rmo3_lay.1} parent=5 // pred_fallthru
+        _
+      %p321 = scmp.lt.s32.totalorder %s17, 4
+      // Predicated region
+      $region49: #{rmo3_lay.1} parent=5 // pred_check
+        %p322 = pneg %p321
+      $region50: #{rmo3_lay.1} parent=5 // pred_check_branch
+        %324 = sbr.rel (%p322) target = $region52
+      $region51: #{rmo3_lay.1} parent=5 // pred_region
+        // Predicated region
+        $region53: #{rmo3_lay.1} parent=51 // pred_check
+          %p325 = pneg %p37
+        $region54: #{rmo3_lay.1} parent=51 // pred_check_branch
+          %327 = sbr.rel (%p325) target = $region56
+        $region55: #{rmo3_lay.1} parent=51 // pred_region
+          %s328 = sand.u32 %s27, 1 /* smod.u32 w/div 2 */
+          %s329 = sand.u32 %s27, 1 /* smod.u32 w/div 2 */
+          %s330 = smul.addr %s329, 64
+          %s331 = scalar_lea.vmem [#allocation4], %s330
+          %s332 = smul.addr %s17, 4
+          %s333 = scalar_lea.vmem %s0, %s332
+          // Predicated region
+          $region57: #{rmo3_lay.1} parent=55 // pred_check
+            _
+          $region58: #{rmo3_lay.1} parent=55 // pred_check_branch
+            %335 = sbr.rel (0) target = $region60
+          $region59: #{rmo3_lay.1} parent=55 // pred_region
+            // Predicated region
+            $region61: #{rmo3_lay.1} parent=59 // pred_check
+              _
+            $region62: #{rmo3_lay.1} parent=59 // pred_check_branch
+              %337 = sbr.rel target = $region64
+            $region63: #{rmo3_lay.1} parent=59 // pred_region
+              // Predicated region
+              $region76: #{rmo3_lay.1} parent=63 // pred_check
+                _
+              $region77: #{rmo3_lay.1} parent=63 // pred_check_branch
+                %382 = sbr.rel (0) target = $region79
+              $region78: #{rmo3_lay.1} parent=63 // pred_region
+                loop: start=0, step=1, limit=1
+                $region80: #{rmo3_lay.1} parent=78 // loop_pre_header
+                  _
+                $region81: #{rmo3_lay.1} parent=78 // loop_header
+                  %s384 = sphi 0, %s388
+                  %p385 = scmp.ge.s32.totalorder %s384, 1 /* loop exit test */
+                  %s389 = sphi %s333, %s333
+                  %s390 = sphi %s331, %s331
+                $region82: #{rmo3_lay.1} parent=78 // loop_header_branch
+                  %387 = sbr.rel (%p385) target = $region86
+                $region83: #{rmo3_lay.1} parent=78 // loop_body
+                  _
+                $region84: #{rmo3_lay.1} parent=78 // loop_footer
+                  %s388 = sadd.s32 1, %s384
+                $region85: #{rmo3_lay.1} parent=78 // loop_footer_branch
+                  %383 = sbr.rel target = $region81
+                $region86: #{rmo3_lay.1} parent=78 // loop_exit
+                  _
+                loop: start=0, step=1, limit=1
+                $region87: #{rmo3_lay.1} parent=78 // loop_pre_header
+                  _
+                $region88: #{rmo3_lay.1} parent=78 // loop_header
+                  %s393 = sphi 0, %s397
+                  %p394 = scmp.ge.s32.totalorder %s393, 1 /* loop exit test */
+                  %s398 = sphi %s333, %s333
+                  %s399 = sphi %s331, %s331
+                $region89: #{rmo3_lay.1} parent=78 // loop_header_branch
+                  %396 = sbr.rel (%p394) target = $region93
+                $region90: #{rmo3_lay.1} parent=78 // loop_body
+                  %v400 = vld [vmem:[%s398] sm:$0xf]
+                  %401 = vst [vmem:[%s399] sm:$0xf] /*vst_source=*/%v400
+                  %v402 = vld [vmem:[%s398 + $0x10] sm:$0xf]
+                  %403 = vst [vmem:[%s399 + $0x4] sm:$0xf] /*vst_source=*/%v402
+                  %v404 = vld [vmem:[%s398 + $0x20] sm:$0xf]
+                  %405 = vst [vmem:[%s399 + $0x8] sm:$0xf] /*vst_source=*/%v404
+                  %v406 = vld [vmem:[%s398 + $0x30] sm:$0xf]
+                  %407 = vst [vmem:[%s399 + $0xc] sm:$0xf] /*vst_source=*/%v406
+                  %v408 = vld [vmem:[%s398 + $0x40] sm:$0xf]
+                  %409 = vst [vmem:[%s399 + $0x10] sm:$0xf] /*vst_source=*/%v408
+                  %v410 = vld [vmem:[%s398 + $0x50] sm:$0xf]
+                  %411 = vst [vmem:[%s399 + $0x14] sm:$0xf] /*vst_source=*/%v410
+                  %v412 = vld [vmem:[%s398 + $0x60] sm:$0xf]
+                  %413 = vst [vmem:[%s399 + $0x18] sm:$0xf] /*vst_source=*/%v412
+                  %v414 = vld [vmem:[%s398 + $0x70] sm:$0xf]
+                  %415 = vst [vmem:[%s399 + $0x1c] sm:$0xf] /*vst_source=*/%v414
+                  %v416 = vld [vmem:[%s398 + $0x80] sm:$0xf]
+                  %417 = vst [vmem:[%s399 + $0x20] sm:$0xf] /*vst_source=*/%v416
+                  %v418 = vld [vmem:[%s398 + $0x90] sm:$0xf]
+                  %419 = vst [vmem:[%s399 + $0x24] sm:$0xf] /*vst_source=*/%v418
+                  %v420 = vld [vmem:[%s398 + $0xa0] sm:$0xf]
+                  %421 = vst [vmem:[%s399 + $0x28] sm:$0xf] /*vst_source=*/%v420
+                  %v422 = vld [vmem:[%s398 + $0xb0] sm:$0xf]
+                  %423 = vst [vmem:[%s399 + $0x2c] sm:$0xf] /*vst_source=*/%v422
+                  %v424 = vld [vmem:[%s398 + $0xc0] sm:$0xf]
+                  %425 = vst [vmem:[%s399 + $0x30] sm:$0xf] /*vst_source=*/%v424
+                  %v426 = vld [vmem:[%s398 + $0xd0] sm:$0xf]
+                  %427 = vst [vmem:[%s399 + $0x34] sm:$0xf] /*vst_source=*/%v426
+                  %v428 = vld [vmem:[%s398 + $0xe0] sm:$0xf]
+                  %429 = vst [vmem:[%s399 + $0x38] sm:$0xf] /*vst_source=*/%v428
+                  %v430 = vld [vmem:[%s398 + $0xf0] sm:$0xf]
+                  %431 = vst [vmem:[%s399 + $0x3c] sm:$0xf] /*vst_source=*/%v430
+                $region91: #{rmo3_lay.1} parent=78 // loop_footer
+                  %s397 = sadd.s32 1, %s393
+                $region92: #{rmo3_lay.1} parent=78 // loop_footer_branch
+                  %392 = sbr.rel target = $region88
+                $region93: #{rmo3_lay.1} parent=78 // loop_exit
+                  _
+              $region79: #{rmo3_lay.1} parent=63 // pred_fallthru
+                _
+            $region64: #{rmo3_lay.1} parent=59 // pred_fallthru
+              _
+            // Predicated region
+            $region65: #{rmo3_lay.1} parent=59 // pred_check
+              _
+            $region66: #{rmo3_lay.1} parent=59 // pred_check_branch
+              %339 = sbr.rel (0) target = $region68
+            $region67: #{rmo3_lay.1} parent=59 // pred_region
+              loop: start=0, step=1, limit=1
+              $region69: #{rmo3_lay.1} parent=67 // loop_pre_header
+                _
+              $region70: #{rmo3_lay.1} parent=67 // loop_header
+                %s342 = sphi 0, %s346
+                %p343 = scmp.ge.s32.totalorder %s342, 1 /* loop exit test */
+                %s347 = sphi %s333, %s333
+                %s348 = sphi %s331, %s331
+              $region71: #{rmo3_lay.1} parent=67 // loop_header_branch
+                %345 = sbr.rel (%p343) target = $region75
+              $region72: #{rmo3_lay.1} parent=67 // loop_body
+                %v349 = vld [vmem:[%s347] sm:$0xf]
+                %350 = vst [vmem:[%s348] sm:$0xf] /*vst_source=*/%v349
+                %v351 = vld [vmem:[%s347 + $0x10] sm:$0xf]
+                %352 = vst [vmem:[%s348 + $0x4] sm:$0xf] /*vst_source=*/%v351
+                %v353 = vld [vmem:[%s347 + $0x20] sm:$0xf]
+                %354 = vst [vmem:[%s348 + $0x8] sm:$0xf] /*vst_source=*/%v353
+                %v355 = vld [vmem:[%s347 + $0x30] sm:$0xf]
+                %356 = vst [vmem:[%s348 + $0xc] sm:$0xf] /*vst_source=*/%v355
+                %v357 = vld [vmem:[%s347 + $0x40] sm:$0xf]
+                %358 = vst [vmem:[%s348 + $0x10] sm:$0xf] /*vst_source=*/%v357
+                %v359 = vld [vmem:[%s347 + $0x50] sm:$0xf]
+                %360 = vst [vmem:[%s348 + $0x14] sm:$0xf] /*vst_source=*/%v359
+                %v361 = vld [vmem:[%s347 + $0x60] sm:$0xf]
+                %362 = vst [vmem:[%s348 + $0x18] sm:$0xf] /*vst_source=*/%v361
+                %v363 = vld [vmem:[%s347 + $0x70] sm:$0xf]
+                %364 = vst [vmem:[%s348 + $0x1c] sm:$0xf] /*vst_source=*/%v363
+                %v365 = vld [vmem:[%s347 + $0x80] sm:$0xf]
+                %366 = vst [vmem:[%s348 + $0x20] sm:$0xf] /*vst_source=*/%v365
+                %v367 = vld [vmem:[%s347 + $0x90] sm:$0xf]
+                %368 = vst [vmem:[%s348 + $0x24] sm:$0xf] /*vst_source=*/%v367
+                %v369 = vld [vmem:[%s347 + $0xa0] sm:$0xf]
+                %370 = vst [vmem:[%s348 + $0x28] sm:$0xf] /*vst_source=*/%v369
+                %v371 = vld [vmem:[%s347 + $0xb0] sm:$0xf]
+                %372 = vst [vmem:[%s348 + $0x2c] sm:$0xf] /*vst_source=*/%v371
+                %v373 = vld [vmem:[%s347 + $0xc0] sm:$0xf]
+                %374 = vst [vmem:[%s348 + $0x30] sm:$0xf] /*vst_source=*/%v373
+                %v375 = vld [vmem:[%s347 + $0xd0] sm:$0xf]
+                %376 = vst [vmem:[%s348 + $0x34] sm:$0xf] /*vst_source=*/%v375
+                %v377 = vld [vmem:[%s347 + $0xe0] sm:$0xf]
+                %378 = vst [vmem:[%s348 + $0x38] sm:$0xf] /*vst_source=*/%v377
+                %v379 = vld [vmem:[%s347 + $0xf0] sm:$0xf]
+                %380 = vst [vmem:[%s348 + $0x3c] sm:$0xf] /*vst_source=*/%v379
+              $region73: #{rmo3_lay.1} parent=67 // loop_footer
+                %s346 = sadd.s32 1, %s342
+              $region74: #{rmo3_lay.1} parent=67 // loop_footer_branch
+                %341 = sbr.rel target = $region70
+              $region75: #{rmo3_lay.1} parent=67 // loop_exit
+                _
+            $region68: #{rmo3_lay.1} parent=59 // pred_fallthru
+              _
+          $region60: #{rmo3_lay.1} parent=55 // pred_fallthru
+            _
+          %432 = vnop
+        $region56: #{rmo3_lay.1} parent=51 // pred_fallthru
+          _
+        // Predicated region
+        $region94: #{rmo3_lay.1} parent=51 // pred_check
+          %p433 = pneg %p63
+        $region95: #{rmo3_lay.1} parent=51 // pred_check_branch
+          %435 = sbr.rel (%p433) target = $region97
+        $region96: #{rmo3_lay.1} parent=51 // pred_region
+          %s436 = smul.u32 16, %s17
+          %p437 = scmp.lt.s32.totalorder %s436, 63
+          %s438 = scalar_select /*predicate=*/%p437, /*on_true=*/%s436, /*on_false=*/63
+          %s439 = smul.addr %s438, 2
+          %s440 = smul.addr %s439, 4
+          %s441 = scalar_lea.vmem %s1, %s440
+        $region97: #{rmo3_lay.1} parent=51 // pred_fallthru
+          _
+      $region52: #{rmo3_lay.1} parent=5 // pred_fallthru
+        _
+      %p442 = scmp.le.s32.totalorder 1, %s17
+      %p443 = scmp.lt.s32.totalorder %s17, 5
+      %p444 = pnand %p442, %p443
+      %p445 = pneg %p444
+      // Predicated region
+      $region98: #{rmo3_lay.1} parent=5 // pred_check
+        _
+      $region99: #{rmo3_lay.1} parent=5 // pred_check_branch
+        %447 = sbr.rel (%p444) target = $region101
+      $region100: #{rmo3_lay.1} parent=5 // pred_region
+        %s448 = ssub.s32 %s17, 1
+        %s449 = sand.u32 %s30, 1 /* smod.u32 w/div 2 */
+        %s450 = sand.u32 %s30, 1 /* smod.u32 w/div 2 */
+        %s451 = smul.addr %s450, 64
+        %s452 = scalar_lea.vmem [#allocation4], %s451
+        // Predicated region
+        $region102: #{rmo3_lay.1} parent=100 // pred_check
+          %p453 = pneg %p43
+        $region103: #{rmo3_lay.1} parent=100 // pred_check_branch
+          %455 = sbr.rel (%p453) target = $region105
+        $region104: #{rmo3_lay.1} parent=100 // pred_region
+          _
+        $region105: #{rmo3_lay.1} parent=100 // pred_fallthru
+          _
+        %s456 = sand.u32 %s30, 1 /* smod.u32 w/div 2 */
+        %s457 = sand.u32 %s30, 1 /* smod.u32 w/div 2 */
+        %s458 = smul.addr %s457, 64
+        %s459 = scalar_lea.vmem [#allocation4], %s458
+        %p460 = pneg %p43
+        %p461 = pneg %p40
+        %s462 = smul.u32 16, %s22
+        %p463 = scmp.lt.s32.totalorder %s462, 63
+        %s464 = scalar_select /*predicate=*/%p463, /*on_true=*/%s462, /*on_false=*/63
+        %s465 = smul.addr %s464, 2
+        %s466 = smul.addr %s465, 4
+        %s467 = scalar_lea.vmem %s1, %s466
+        %p468 = pneg %p69
+        %p469 = pneg %p66
+        %p470 = pneg %p90
+        %p471 = pneg %p87
+        %p472 = pneg %p111
+        %p473 = pneg %p108
+        %p474 = pneg %p132
+        %p475 = pneg %p129
+        %p476 = pneg %p153
+        %p477 = pneg %p150
+        %p478 = pneg %p174
+        %p479 = pneg %p171
+        %p480 = pneg %p195
+        %p481 = pneg %p192
+        %p482 = pneg %p216
+        %p483 = pneg %p213
+        %p484 = pneg %p237
+        %p485 = pneg %p234
+        %p486 = pneg %p258
+        %p487 = pneg %p255
+        %p488 = pneg %p279
+        %p489 = pneg %p276
+        %s490 = smul.u32 16, %s22
+        %p491 = scmp.lt.s32.totalorder %s490, 63
+        %s492 = scalar_select /*predicate=*/%p491, /*on_true=*/%s490, /*on_false=*/63
+        %s493 = smul.addr %s492, 2
+        %s494 = smul.addr %s493, 4
+        %s495 = scalar_lea.vmem %s1, %s494
+        %s496 = smul.u32 16, %s22
+        %p498 = scmp.eq.s32.totalorder %s22, 0
+        // Predicated region
+        $region106: #{rmo3_lay.1} parent=100 // pred_check
+          %p499 = pneg %p498
+        $region107: #{rmo3_lay.1} parent=100 // pred_check_branch
+          %501 = sbr.rel (%p499) target = $region109
+        $region108: #{rmo3_lay.1} parent=100 // pred_region
+          %502 = vst [vmem:[#allocation3] sm:$0xff] /*vst_source=*/0.0
+          %vm503 = vcmask 588800 /* [0:7,0:71] */
+          %504 = vst.msk [vmem:[#allocation3 + $0x8] sm:$0xff] /*vm=*/%vm503, /*vst_source=*/0.0
+          %505 = vst [vmem:[#allocation3 + $0x10] sm:$0xff] /*vst_source=*/0.0
+          %506 = vst.msk [vmem:[#allocation3 + $0x18] sm:$0xff] /*vm=*/%vm503, /*vst_source=*/0.0
+          %507 = vst [vmem:[#allocation3 + $0x20] sm:$0xff] /*vst_source=*/0.0
+          %508 = vst.msk [vmem:[#allocation3 + $0x28] sm:$0xff] /*vm=*/%vm503, /*vst_source=*/0.0
+          %509 = vst [vmem:[#allocation3 + $0x30] sm:$0xff] /*vst_source=*/0.0
+          %510 = vst.msk [vmem:[#allocation3 + $0x38] sm:$0xff] /*vm=*/%vm503, /*vst_source=*/0.0
+          %511 = vst [vmem:[#allocation3 + $0x40] sm:$0xff] /*vst_source=*/0.0
+          %512 = vst.msk [vmem:[#allocation3 + $0x48] sm:$0xff] /*vm=*/%vm503, /*vst_source=*/0.0
+          %513 = vst [vmem:[#allocation3 + $0x50] sm:$0xff] /*vst_source=*/0.0
+          %514 = vst.msk [vmem:[#allocation3 + $0x58] sm:$0xff] /*vm=*/%vm503, /*vst_source=*/0.0
+          %515 = vst [vmem:[#allocation3 + $0x60] sm:$0xff] /*vst_source=*/0.0
+          %516 = vst.msk [vmem:[#allocation3 + $0x68] sm:$0xff] /*vm=*/%vm503, /*vst_source=*/0.0
+          %517 = vst [vmem:[#allocation3 + $0x70] sm:$0xff] /*vst_source=*/0.0
+          %518 = vst.msk [vmem:[#allocation3 + $0x78] sm:$0xff] /*vm=*/%vm503, /*vst_source=*/0.0
+          %519 = vst [vmem:[#allocation3 + $0x80] sm:$0xff] /*vst_source=*/0.0
+          %520 = vst.msk [vmem:[#allocation3 + $0x88] sm:$0xff] /*vm=*/%vm503, /*vst_source=*/0.0
+          %521 = vst [vmem:[#allocation3 + $0x90] sm:$0xff] /*vst_source=*/0.0
+          %522 = vst.msk [vmem:[#allocation3 + $0x98] sm:$0xff] /*vm=*/%vm503, /*vst_source=*/0.0
+          %523 = vst [vmem:[#allocation3 + $0xa0] sm:$0xff] /*vst_source=*/0.0
+          %524 = vst.msk [vmem:[#allocation3 + $0xa8] sm:$0xff] /*vm=*/%vm503, /*vst_source=*/0.0
+          %525 = vst [vmem:[#allocation3 + $0xb0] sm:$0xff] /*vst_source=*/0.0
+          %526 = vst.msk [vmem:[#allocation3 + $0xb8] sm:$0xff] /*vm=*/%vm503, /*vst_source=*/0.0
+          %527 = vst [vmem:[#allocation3 + $0xc0] sm:$0xff] /*vst_source=*/0.0
+          %528 = vst.msk [vmem:[#allocation3 + $0xc8] sm:$0xff] /*vm=*/%vm503, /*vst_source=*/0.0
+          %529 = vst [vmem:[#allocation3 + $0xd0] sm:$0xff] /*vst_source=*/0.0
+          %530 = vst.msk [vmem:[#allocation3 + $0xd8] sm:$0xff] /*vm=*/%vm503, /*vst_source=*/0.0
+          %531 = vst [vmem:[#allocation3 + $0xe0] sm:$0xff] /*vst_source=*/0.0
+          %532 = vst.msk [vmem:[#allocation3 + $0xe8] sm:$0xff] /*vm=*/%vm503, /*vst_source=*/0.0
+          %533 = vst [vmem:[#allocation3 + $0xf0] sm:$0xff] /*vst_source=*/0.0
+          %534 = vst.msk [vmem:[#allocation3 + $0xf8] sm:$0xff] /*vm=*/%vm503, /*vst_source=*/0.0
+        $region109: #{rmo3_lay.1} parent=100 // pred_fallthru
+          _
+        %v535 = vld [vmem:[#allocation3] sm:$0xff]
+        %v536 = vld [vmem:[#allocation3 + $0x8] sm:$0xff]
+        %v537 = vld [vmem:[#allocation3 + $0x10] sm:$0xff]
+        %v538 = vld [vmem:[#allocation3 + $0x18] sm:$0xff]
+        %v539 = vld [vmem:[#allocation3 + $0x20] sm:$0xff]
+        %v540 = vld [vmem:[#allocation3 + $0x28] sm:$0xff]
+        %v541 = vld [vmem:[#allocation3 + $0x30] sm:$0xff]
+        %v542 = vld [vmem:[#allocation3 + $0x38] sm:$0xff]
+        %v543 = vld [vmem:[#allocation3 + $0x40] sm:$0xff]
+        %v544 = vld [vmem:[#allocation3 + $0x48] sm:$0xff]
+        %v545 = vld [vmem:[#allocation3 + $0x50] sm:$0xff]
+        %v546 = vld [vmem:[#allocation3 + $0x58] sm:$0xff]
+        %v547 = vld [vmem:[#allocation3 + $0x60] sm:$0xff]
+        %v548 = vld [vmem:[#allocation3 + $0x68] sm:$0xff]
+        %v549 = vld [vmem:[#allocation3 + $0x70] sm:$0xff]
+        %v550 = vld [vmem:[#allocation3 + $0x78] sm:$0xff]
+        %v551 = vld [vmem:[#allocation3 + $0x80] sm:$0xff]
+        %v552 = vld [vmem:[#allocation3 + $0x88] sm:$0xff]
+        %v553 = vld [vmem:[#allocation3 + $0x90] sm:$0xff]
+        %v554 = vld [vmem:[#allocation3 + $0x98] sm:$0xff]
+        %v555 = vld [vmem:[#allocation3 + $0xa0] sm:$0xff]
+        %v556 = vld [vmem:[#allocation3 + $0xa8] sm:$0xff]
+        %v557 = vld [vmem:[#allocation3 + $0xb0] sm:$0xff]
+        %v558 = vld [vmem:[#allocation3 + $0xb8] sm:$0xff]
+        %v559 = vld [vmem:[#allocation3 + $0xc0] sm:$0xff]
+        %v560 = vld [vmem:[#allocation3 + $0xc8] sm:$0xff]
+        %v561 = vld [vmem:[#allocation3 + $0xd0] sm:$0xff]
+        %v562 = vld [vmem:[#allocation3 + $0xd8] sm:$0xff]
+        %v563 = vld [vmem:[#allocation3 + $0xe0] sm:$0xff]
+        %v564 = vld [vmem:[#allocation3 + $0xe8] sm:$0xff]
+        %v565 = vld [vmem:[#allocation3 + $0xf0] sm:$0xff]
+        %v566 = vld [vmem:[#allocation3 + $0xf8] sm:$0xff]
+        %v567 = vld [vmem:[%s452] sm:$0xf]
+        %v568 = vld [vmem:[%s452 + $0x4] sm:$0xf]
+        %v569 = vld [vmem:[%s452 + $0x8] sm:$0xf]
+        %v570 = vld [vmem:[%s452 + $0xc] sm:$0xf]
+        %v571 = vld [vmem:[%s452 + $0x10] sm:$0xf]
+        %v572 = vld [vmem:[%s452 + $0x14] sm:$0xf]
+        %v573 = vld [vmem:[%s452 + $0x18] sm:$0xf]
+        %v574 = vld [vmem:[%s452 + $0x1c] sm:$0xf]
+        %v575 = vld [vmem:[%s452 + $0x20] sm:$0xf]
+        %v576 = vld [vmem:[%s452 + $0x24] sm:$0xf]
+        %v577 = vld [vmem:[%s452 + $0x28] sm:$0xf]
+        %v578 = vld [vmem:[%s452 + $0x2c] sm:$0xf]
+        %v579 = vld [vmem:[%s452 + $0x30] sm:$0xf]
+        %v580 = vld [vmem:[%s452 + $0x34] sm:$0xf]
+        %v581 = vld [vmem:[%s452 + $0x38] sm:$0xf]
+        %v582 = vld [vmem:[%s452 + $0x3c] sm:$0xf]
+        %v583 = vld [vmem:[%s495] sm:$0xff]
+        %v584 = vld [vmem:[%s495 + $0x8] sm:$0xff]
+        %v585 = vld [vmem:[%s495 + $0x10] sm:$0xff]
+        %v586 = vld [vmem:[%s495 + $0x18] sm:$0xff]
+        %v587 = vld [vmem:[%s495 + $0x20] sm:$0xff]
+        %v588 = vld [vmem:[%s495 + $0x28] sm:$0xff]
+        %v589 = vld [vmem:[%s495 + $0x30] sm:$0xff]
+        %v590 = vld [vmem:[%s495 + $0x38] sm:$0xff]
+        %v591 = vld [vmem:[%s495 + $0x40] sm:$0xff]
+        %v592 = vld [vmem:[%s495 + $0x48] sm:$0xff]
+        %v593 = vld [vmem:[%s495 + $0x50] sm:$0xff]
+        %v594 = vld [vmem:[%s495 + $0x58] sm:$0xff]
+        %v595 = vld [vmem:[%s495 + $0x60] sm:$0xff]
+        %v596 = vld [vmem:[%s495 + $0x68] sm:$0xff]
+        %v597 = vld [vmem:[%s495 + $0x70] sm:$0xff]
+        %v598 = vld [vmem:[%s495 + $0x78] sm:$0xff]
+        %v615 = vunpack.c.l.s16.s32 %v567
+        %v616 = vunpack.c.l.s16.s32 %v568
+        %v617 = vunpack.c.l.s16.s32 %v569
+        %v618 = vunpack.c.l.s16.s32 %v570
+        %v619 = vunpack.c.l.s16.s32 %v571
+        %v620 = vunpack.c.l.s16.s32 %v572
+        %v621 = vunpack.c.l.s16.s32 %v573
+        %v622 = vunpack.c.l.s16.s32 %v574
+        %v623 = vunpack.c.l.s16.s32 %v575
+        %v624 = vunpack.c.l.s16.s32 %v576
+        %v625 = vunpack.c.l.s16.s32 %v577
+        %v626 = vunpack.c.l.s16.s32 %v578
+        %v627 = vunpack.c.l.s16.s32 %v579
+        %v628 = vunpack.c.l.s16.s32 %v580
+        %v629 = vunpack.c.l.s16.s32 %v581
+        %v630 = vunpack.c.l.s16.s32 %v582
+        %v631 = vpack.c.b32.b16 %v616, %v615
+        %v632 = vpack.c.b32.b16 %v618, %v617
+        %v633 = vpack.c.b32.b16 %v620, %v619
+        %v634 = vpack.c.b32.b16 %v622, %v621
+        %v635 = vpack.c.b32.b16 %v624, %v623
+        %v636 = vpack.c.b32.b16 %v626, %v625
+        %v637 = vpack.c.b32.b16 %v628, %v627
+        %v638 = vpack.c.b32.b16 %v630, %v629
+        %v663 = vunpack.c.l.s16.s32 %v583
+        %v664 = vunpack.c.u.s16.s32 %v583
+        %v665 = vunpack.c.l.s16.s32 %v584
+        %v666 = vunpack.c.u.s16.s32 %v584
+        %v667 = vunpack.c.l.s16.s32 %v585
+        %v668 = vunpack.c.u.s16.s32 %v585
+        %v669 = vunpack.c.l.s16.s32 %v586
+        %v670 = vunpack.c.u.s16.s32 %v586
+        %v671 = vunpack.c.l.s16.s32 %v587
+        %v672 = vunpack.c.u.s16.s32 %v587
+        %v673 = vunpack.c.l.s16.s32 %v588
+        %v674 = vunpack.c.u.s16.s32 %v588
+        %v675 = vunpack.c.l.s16.s32 %v589
+        %v676 = vunpack.c.u.s16.s32 %v589
+        %v677 = vunpack.c.l.s16.s32 %v590
+        %v678 = vunpack.c.u.s16.s32 %v590
+        %v679 = vunpack.c.l.s16.s32 %v591
+        %v680 = vunpack.c.u.s16.s32 %v591
+        %v681 = vunpack.c.l.s16.s32 %v592
+        %v682 = vunpack.c.u.s16.s32 %v592
+        %v683 = vunpack.c.l.s16.s32 %v593
+        %v684 = vunpack.c.u.s16.s32 %v593
+        %v685 = vunpack.c.l.s16.s32 %v594
+        %v686 = vunpack.c.u.s16.s32 %v594
+        %v687 = vunpack.c.l.s16.s32 %v595
+        %v688 = vunpack.c.u.s16.s32 %v595
+        %v689 = vunpack.c.l.s16.s32 %v596
+        %v690 = vunpack.c.u.s16.s32 %v596
+        %v691 = vunpack.c.l.s16.s32 %v597
+        %v692 = vunpack.c.u.s16.s32 %v597
+        %v693 = vunpack.c.l.s16.s32 %v598
+        %v694 = vunpack.c.u.s16.s32 %v598
+        %v695 = vpack.c.b32.b16 %v665, %v663
+        %v696 = vpack.c.b32.b16 %v666, %v664
+        %v697 = vpack.c.b32.b16 %v669, %v667
+        %v698 = vpack.c.b32.b16 %v670, %v668
+        %v699 = vpack.c.b32.b16 %v673, %v671
+        %v700 = vpack.c.b32.b16 %v674, %v672
+        %v701 = vpack.c.b32.b16 %v677, %v675
+        %v702 = vpack.c.b32.b16 %v678, %v676
+        %v703 = vpack.c.b32.b16 %v681, %v679
+        %v704 = vpack.c.b32.b16 %v682, %v680
+        %v705 = vpack.c.b32.b16 %v685, %v683
+        %v706 = vpack.c.b32.b16 %v686, %v684
+        %v707 = vpack.c.b32.b16 %v689, %v687
+        %v708 = vpack.c.b32.b16 %v690, %v688
+        %v709 = vpack.c.b32.b16 %v693, %v691
+        %v710 = vpack.c.b32.b16 %v694, %v692
+        %727 = vmatprep.subr.bf16.mxu0 %v696
+        %728 = vmatpush1.bf16.msra.mxu0 %v695
+        %729 = vmatprep.subr.bf16.mxu0 %v698
+        %730 = vmatpush1.bf16.msra.mxu0 %v697
+        %731 = vmatprep.subr.bf16.mxu0 %v700
+        %732 = vmatpush1.bf16.msra.mxu0 %v699
+        %733 = vmatprep.subr.bf16.mxu0 %v702
+        %734 = vmatpush1.bf16.msra.mxu0 %v701
+        %735 = vmatprep.subr.bf16.mxu0 %v704
+        %736 = vmatpush1.bf16.msra.mxu0 %v703
+        %737 = vmatprep.subr.bf16.mxu0 %v706
+        %738 = vmatpush1.bf16.msra.mxu0 %v705
+        %739 = vmatprep.subr.bf16.mxu0 %v708
+        %740 = vmatpush1.bf16.msra.mxu0 %v707
+        %741 = vmatprep.subr.bf16.mxu0 %v710
+        %742 = vmatpush1.bf16.msra.mxu0 %v709
+        %743 = vmatprep.subr.bf16.mxu0 0
+        %744 = vmatpush1.bf16.msra.mxu0 0
+        %745 = vmatprep.subr.bf16.mxu0 0
+        %746 = vmatpush1.bf16.msra.mxu0 0
+        %747 = vmatprep.subr.bf16.mxu0 0
+        %748 = vmatpush1.bf16.msra.mxu0 0
+        %749 = vmatprep.subr.bf16.mxu0 0
+        %750 = vmatpush1.bf16.msra.mxu0 0
+        %751 = vmatprep.subr.bf16.mxu0 0
+        %752 = vmatpush1.bf16.msra.mxu0 0
+        %753 = vmatprep.subr.bf16.mxu0 0
+        %754 = vmatpush1.bf16.msra.mxu0 0
+        %755 = vmatprep.subr.bf16.mxu0 0
+        %756 = vmatpush1.bf16.msra.mxu0 0
+        %757 = vmatprep.subr.bf16.mxu0 0
+        %758 = vmatpush1.bf16.msra.mxu0 0
+        %759 = vmatprep.mubr.bf16.mxu0 0
+        %760 = vmatmul.mubr.bf16.gmra.mrb[0].mxu0 %v631
+        %v761 = vpop.f32.mrb[0].mxu0
+        %v762 = vadd.f32 0.0, %v761
+        %v763 = vpop.f32.mrb[0].mxu0
+        %v764 = vadd.f32 0.0, %v763
+        %v765 = vpop.f32.mrb[0].mxu0
+        %v766 = vadd.f32 0.0, %v765
+        %v767 = vpop.f32.mrb[0].mxu0
+        %v768 = vadd.f32 0.0, %v767
+        %769 = vmatprep.mubr.bf16.mxu0 0
+        %770 = vmatmul.mubr.bf16.gmra.mrb[0].mxu0 %v632
+        %v771 = vpop.f32.mrb[0].mxu0
+        %v772 = vadd.f32 0.0, %v771
+        %v773 = vpop.f32.mrb[0].mxu0
+        %v774 = vadd.f32 0.0, %v773
+        %v775 = vpop.f32.mrb[0].mxu0
+        %v776 = vadd.f32 0.0, %v775
+        %v777 = vpop.f32.mrb[0].mxu0
+        %v778 = vadd.f32 0.0, %v777
+        %779 = vmatprep.mubr.bf16.mxu0 0
+        %780 = vmatmul.mubr.bf16.gmra.mrb[0].mxu0 %v633
+        %v781 = vpop.f32.mrb[0].mxu0
+        %v782 = vadd.f32 0.0, %v781
+        %v783 = vpop.f32.mrb[0].mxu0
+        %v784 = vadd.f32 0.0, %v783
+        %v785 = vpop.f32.mrb[0].mxu0
+        %v786 = vadd.f32 0.0, %v785
+        %v787 = vpop.f32.mrb[0].mxu0
+        %v788 = vadd.f32 0.0, %v787
+        %789 = vmatprep.mubr.bf16.mxu0 0
+        %790 = vmatmul.mubr.bf16.gmra.mrb[0].mxu0 %v634
+        %v791 = vpop.f32.mrb[0].mxu0
+        %v792 = vadd.f32 0.0, %v791
+        %v793 = vpop.f32.mrb[0].mxu0
+        %v794 = vadd.f32 0.0, %v793
+        %v795 = vpop.f32.mrb[0].mxu0
+        %v796 = vadd.f32 0.0, %v795
+        %v797 = vpop.f32.mrb[0].mxu0
+        %v798 = vadd.f32 0.0, %v797
+        %799 = vmatprep.mubr.bf16.mxu0 0
+        %800 = vmatmul.mubr.bf16.gmra.mrb[0].mxu0 %v635
+        %v801 = vpop.f32.mrb[0].mxu0
+        %v802 = vadd.f32 0.0, %v801
+        %v803 = vpop.f32.mrb[0].mxu0
+        %v804 = vadd.f32 0.0, %v803
+        %v805 = vpop.f32.mrb[0].mxu0
+        %v806 = vadd.f32 0.0, %v805
+        %v807 = vpop.f32.mrb[0].mxu0
+        %v808 = vadd.f32 0.0, %v807
+        %809 = vmatprep.mubr.bf16.mxu0 0
+        %810 = vmatmul.mubr.bf16.gmra.mrb[0].mxu0 %v636
+        %v811 = vpop.f32.mrb[0].mxu0
+        %v812 = vadd.f32 0.0, %v811
+        %v813 = vpop.f32.mrb[0].mxu0
+        %v814 = vadd.f32 0.0, %v813
+        %v815 = vpop.f32.mrb[0].mxu0
+        %v816 = vadd.f32 0.0, %v815
+        %v817 = vpop.f32.mrb[0].mxu0
+        %v818 = vadd.f32 0.0, %v817
+        %819 = vmatprep.mubr.bf16.mxu0 0
+        %820 = vmatmul.mubr.bf16.gmra.mrb[0].mxu0 %v637
+        %v821 = vpop.f32.mrb[0].mxu0
+        %v822 = vadd.f32 0.0, %v821
+        %v823 = vpop.f32.mrb[0].mxu0
+        %v824 = vadd.f32 0.0, %v823
+        %v825 = vpop.f32.mrb[0].mxu0
+        %v826 = vadd.f32 0.0, %v825
+        %v827 = vpop.f32.mrb[0].mxu0
+        %v828 = vadd.f32 0.0, %v827
+        %829 = vmatprep.mubr.bf16.mxu0 0
+        %830 = vmatmul.mubr.bf16.gmra.mrb[0].mxu0 %v638
+        %v831 = vpop.f32.mrb[0].mxu0
+        %v832 = vadd.f32 0.0, %v831
+        %v833 = vpop.f32.mrb[0].mxu0
+        %v834 = vadd.f32 0.0, %v833
+        %v835 = vpop.f32.mrb[0].mxu0
+        %v836 = vadd.f32 0.0, %v835
+        %v837 = vpop.f32.mrb[0].mxu0
+        %v838 = vadd.f32 0.0, %v837
+        %839 = vdwg.mxu0
+        %v840 = vadd.f32 %v535, %v762
+        %v841 = vadd.f32 %v536, %v764
+        %v842 = vadd.f32 %v537, %v766
+        %v843 = vadd.f32 %v538, %v768
+        %v844 = vadd.f32 %v539, %v772
+        %v845 = vadd.f32 %v540, %v774
+        %v846 = vadd.f32 %v541, %v776
+        %v847 = vadd.f32 %v542, %v778
+        %v848 = vadd.f32 %v543, %v782
+        %v849 = vadd.f32 %v544, %v784
+        %v850 = vadd.f32 %v545, %v786
+        %v851 = vadd.f32 %v546, %v788
+        %v852 = vadd.f32 %v547, %v792
+        %v853 = vadd.f32 %v548, %v794
+        %v854 = vadd.f32 %v549, %v796
+        %v855 = vadd.f32 %v550, %v798
+        %v856 = vadd.f32 %v551, %v802
+        %v857 = vadd.f32 %v552, %v804
+        %v858 = vadd.f32 %v553, %v806
+        %v859 = vadd.f32 %v554, %v808
+        %v860 = vadd.f32 %v555, %v812
+        %v861 = vadd.f32 %v556, %v814
+        %v862 = vadd.f32 %v557, %v816
+        %v863 = vadd.f32 %v558, %v818
+        %v864 = vadd.f32 %v559, %v822
+        %v865 = vadd.f32 %v560, %v824
+        %v866 = vadd.f32 %v561, %v826
+        %v867 = vadd.f32 %v562, %v828
+        %v868 = vadd.f32 %v563, %v832
+        %v869 = vadd.f32 %v564, %v834
+        %v870 = vadd.f32 %v565, %v836
+        %v871 = vadd.f32 %v566, %v838
+        %872 = vst [vmem:[#allocation3] sm:$0xff] /*vst_source=*/%v840
+        %vm873 = vcmask 588800 /* [0:7,0:71] */
+        %874 = vst.msk [vmem:[#allocation3 + $0x8] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v841
+        %875 = vst [vmem:[#allocation3 + $0x10] sm:$0xff] /*vst_source=*/%v842
+        %876 = vst.msk [vmem:[#allocation3 + $0x18] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v843
+        %877 = vst [vmem:[#allocation3 + $0x20] sm:$0xff] /*vst_source=*/%v844
+        %878 = vst.msk [vmem:[#allocation3 + $0x28] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v845
+        %879 = vst [vmem:[#allocation3 + $0x30] sm:$0xff] /*vst_source=*/%v846
+        %880 = vst.msk [vmem:[#allocation3 + $0x38] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v847
+        %881 = vst [vmem:[#allocation3 + $0x40] sm:$0xff] /*vst_source=*/%v848
+        %882 = vst.msk [vmem:[#allocation3 + $0x48] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v849
+        %883 = vst [vmem:[#allocation3 + $0x50] sm:$0xff] /*vst_source=*/%v850
+        %884 = vst.msk [vmem:[#allocation3 + $0x58] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v851
+        %885 = vst [vmem:[#allocation3 + $0x60] sm:$0xff] /*vst_source=*/%v852
+        %886 = vst.msk [vmem:[#allocation3 + $0x68] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v853
+        %887 = vst [vmem:[#allocation3 + $0x70] sm:$0xff] /*vst_source=*/%v854
+        %888 = vst.msk [vmem:[#allocation3 + $0x78] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v855
+        %889 = vst [vmem:[#allocation3 + $0x80] sm:$0xff] /*vst_source=*/%v856
+        %890 = vst.msk [vmem:[#allocation3 + $0x88] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v857
+        %891 = vst [vmem:[#allocation3 + $0x90] sm:$0xff] /*vst_source=*/%v858
+        %892 = vst.msk [vmem:[#allocation3 + $0x98] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v859
+        %893 = vst [vmem:[#allocation3 + $0xa0] sm:$0xff] /*vst_source=*/%v860
+        %894 = vst.msk [vmem:[#allocation3 + $0xa8] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v861
+        %895 = vst [vmem:[#allocation3 + $0xb0] sm:$0xff] /*vst_source=*/%v862
+        %896 = vst.msk [vmem:[#allocation3 + $0xb8] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v863
+        %897 = vst [vmem:[#allocation3 + $0xc0] sm:$0xff] /*vst_source=*/%v864
+        %898 = vst.msk [vmem:[#allocation3 + $0xc8] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v865
+        %899 = vst [vmem:[#allocation3 + $0xd0] sm:$0xff] /*vst_source=*/%v866
+        %900 = vst.msk [vmem:[#allocation3 + $0xd8] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v867
+        %901 = vst [vmem:[#allocation3 + $0xe0] sm:$0xff] /*vst_source=*/%v868
+        %902 = vst.msk [vmem:[#allocation3 + $0xe8] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v869
+        %903 = vst [vmem:[#allocation3 + $0xf0] sm:$0xff] /*vst_source=*/%v870
+        %904 = vst.msk [vmem:[#allocation3 + $0xf8] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v871
+        %p905 = scmp.eq.s32.totalorder %s22, 3
+        // Predicated region
+        $region110: #{rmo3_lay.1} parent=100 // pred_check
+          %p906 = pneg %p905
+        $region111: #{rmo3_lay.1} parent=100 // pred_check_branch
+          %908 = sbr.rel (%p906) target = $region113
+        $region112: #{rmo3_lay.1} parent=100 // pred_region
+          %v909 = vld [vmem:[#allocation3] sm:$0xff]
+          %v910 = vld [vmem:[#allocation3 + $0x8] sm:$0xff]
+          %v911 = vld [vmem:[#allocation3 + $0x10] sm:$0xff]
+          %v912 = vld [vmem:[#allocation3 + $0x18] sm:$0xff]
+          %v913 = vld [vmem:[#allocation3 + $0x20] sm:$0xff]
+          %v914 = vld [vmem:[#allocation3 + $0x28] sm:$0xff]
+          %v915 = vld [vmem:[#allocation3 + $0x30] sm:$0xff]
+          %v916 = vld [vmem:[#allocation3 + $0x38] sm:$0xff]
+          %v917 = vld [vmem:[#allocation3 + $0x40] sm:$0xff]
+          %v918 = vld [vmem:[#allocation3 + $0x48] sm:$0xff]
+          %v919 = vld [vmem:[#allocation3 + $0x50] sm:$0xff]
+          %v920 = vld [vmem:[#allocation3 + $0x58] sm:$0xff]
+          %v921 = vld [vmem:[#allocation3 + $0x60] sm:$0xff]
+          %v922 = vld [vmem:[#allocation3 + $0x68] sm:$0xff]
+          %v923 = vld [vmem:[#allocation3 + $0x70] sm:$0xff]
+          %v924 = vld [vmem:[#allocation3 + $0x78] sm:$0xff]
+          %v925 = vld [vmem:[#allocation3 + $0x80] sm:$0xff]
+          %v926 = vld [vmem:[#allocation3 + $0x88] sm:$0xff]
+          %v927 = vld [vmem:[#allocation3 + $0x90] sm:$0xff]
+          %v928 = vld [vmem:[#allocation3 + $0x98] sm:$0xff]
+          %v929 = vld [vmem:[#allocation3 + $0xa0] sm:$0xff]
+          %v930 = vld [vmem:[#allocation3 + $0xa8] sm:$0xff]
+          %v931 = vld [vmem:[#allocation3 + $0xb0] sm:$0xff]
+          %v932 = vld [vmem:[#allocation3 + $0xb8] sm:$0xff]
+          %v933 = vld [vmem:[#allocation3 + $0xc0] sm:$0xff]
+          %v934 = vld [vmem:[#allocation3 + $0xc8] sm:$0xff]
+          %v935 = vld [vmem:[#allocation3 + $0xd0] sm:$0xff]
+          %v936 = vld [vmem:[#allocation3 + $0xd8] sm:$0xff]
+          %v937 = vld [vmem:[#allocation3 + $0xe0] sm:$0xff]
+          %v938 = vld [vmem:[#allocation3 + $0xe8] sm:$0xff]
+          %v939 = vld [vmem:[#allocation3 + $0xf0] sm:$0xff]
+          %v940 = vld [vmem:[#allocation3 + $0xf8] sm:$0xff]
+          %s941 = scalar_lea.vmem %s2, 1
+          %v942 = vld [vmem:[%s941] ss:$2 sm:$0x3]
+          %v944 = vperm.slane %v942, 403703808
+          %v945 = vperm.slane %v942, 420546817
+          %v948 = vmul.f32 %v909, %v944
+          %v949 = vmul.f32 %v910, %v945
+          %v950 = vmul.f32 %v911, %v944
+          %v951 = vmul.f32 %v912, %v945
+          %v952 = vmul.f32 %v913, %v944
+          %v953 = vmul.f32 %v914, %v945
+          %v954 = vmul.f32 %v915, %v944
+          %v955 = vmul.f32 %v916, %v945
+          %v956 = vmul.f32 %v917, %v944
+          %v957 = vmul.f32 %v918, %v945
+          %v958 = vmul.f32 %v919, %v944
+          %v959 = vmul.f32 %v920, %v945
+          %v960 = vmul.f32 %v921, %v944
+          %v961 = vmul.f32 %v922, %v945
+          %v962 = vmul.f32 %v923, %v944
+          %v963 = vmul.f32 %v924, %v945
+          %v964 = vmul.f32 %v925, %v944
+          %v965 = vmul.f32 %v926, %v945
+          %v966 = vmul.f32 %v927, %v944
+          %v967 = vmul.f32 %v928, %v945
+          %v968 = vmul.f32 %v929, %v944
+          %v969 = vmul.f32 %v930, %v945
+          %v970 = vmul.f32 %v931, %v944
+          %v971 = vmul.f32 %v932, %v945
+          %v972 = vmul.f32 %v933, %v944
+          %v973 = vmul.f32 %v934, %v945
+          %v974 = vmul.f32 %v935, %v944
+          %v975 = vmul.f32 %v936, %v945
+          %v976 = vmul.f32 %v937, %v944
+          %v977 = vmul.f32 %v938, %v945
+          %v978 = vmul.f32 %v939, %v944
+          %v979 = vmul.f32 %v940, %v945
+          %s980 = scalar_lea.vmem %s3, 2
+          %v981 = vld [vmem:[%s980] ss:$4 sm:$0x3]
+          %v983 = vperm.slane %v981, 403703808
+          %v984 = vperm.slane %v981, 420546817
+          %v987 = vadd.f32 %v948, %v983
+          %v988 = vadd.f32 %v949, %v984
+          %v989 = vadd.f32 %v950, %v983
+          %v990 = vadd.f32 %v951, %v984
+          %v991 = vadd.f32 %v952, %v983
+          %v992 = vadd.f32 %v953, %v984
+          %v993 = vadd.f32 %v954, %v983
+          %v994 = vadd.f32 %v955, %v984
+          %v995 = vadd.f32 %v956, %v983
+          %v996 = vadd.f32 %v957, %v984
+          %v997 = vadd.f32 %v958, %v983
+          %v998 = vadd.f32 %v959, %v984
+          %v999 = vadd.f32 %v960, %v983
+          %v1000 = vadd.f32 %v961, %v984
+          %v1001 = vadd.f32 %v962, %v983
+          %v1002 = vadd.f32 %v963, %v984
+          %v1003 = vadd.f32 %v964, %v983
+          %v1004 = vadd.f32 %v965, %v984
+          %v1005 = vadd.f32 %v966, %v983
+          %v1006 = vadd.f32 %v967, %v984
+          %v1007 = vadd.f32 %v968, %v983
+          %v1008 = vadd.f32 %v969, %v984
+          %v1009 = vadd.f32 %v970, %v983
+          %v1010 = vadd.f32 %v971, %v984
+          %v1011 = vadd.f32 %v972, %v983
+          %v1012 = vadd.f32 %v973, %v984
+          %v1013 = vadd.f32 %v974, %v983
+          %v1014 = vadd.f32 %v975, %v984
+          %v1015 = vadd.f32 %v976, %v983
+          %v1016 = vadd.f32 %v977, %v984
+          %v1017 = vadd.f32 %v978, %v983
+          %v1018 = vadd.f32 %v979, %v984
+          %s1019 = scalar_lea.vmem %s4, 4
+          %v1020 = vld [vmem:[%s1019] ss:$8 sm:$0x3]
+          %v1022 = vperm.slane %v1020, 403703808
+          %v1023 = vperm.slane %v1020, 420546817
+          %v1026 = vadd.f32 %v987, %v1022
+          %v1027 = vadd.f32 %v988, %v1023
+          %v1028 = vadd.f32 %v989, %v1022
+          %v1029 = vadd.f32 %v990, %v1023
+          %v1030 = vadd.f32 %v991, %v1022
+          %v1031 = vadd.f32 %v992, %v1023
+          %v1032 = vadd.f32 %v993, %v1022
+          %v1033 = vadd.f32 %v994, %v1023
+          %v1034 = vadd.f32 %v995, %v1022
+          %v1035 = vadd.f32 %v996, %v1023
+          %v1036 = vadd.f32 %v997, %v1022
+          %v1037 = vadd.f32 %v998, %v1023
+          %v1038 = vadd.f32 %v999, %v1022
+          %v1039 = vadd.f32 %v1000, %v1023
+          %v1040 = vadd.f32 %v1001, %v1022
+          %v1041 = vadd.f32 %v1002, %v1023
+          %v1042 = vadd.f32 %v1003, %v1022
+          %v1043 = vadd.f32 %v1004, %v1023
+          %v1044 = vadd.f32 %v1005, %v1022
+          %v1045 = vadd.f32 %v1006, %v1023
+          %v1046 = vadd.f32 %v1007, %v1022
+          %v1047 = vadd.f32 %v1008, %v1023
+          %v1048 = vadd.f32 %v1009, %v1022
+          %v1049 = vadd.f32 %v1010, %v1023
+          %v1050 = vadd.f32 %v1011, %v1022
+          %v1051 = vadd.f32 %v1012, %v1023
+          %v1052 = vadd.f32 %v1013, %v1022
+          %v1053 = vadd.f32 %v1014, %v1023
+          %v1054 = vadd.f32 %v1015, %v1022
+          %v1055 = vadd.f32 %v1016, %v1023
+          %v1056 = vadd.f32 %v1017, %v1022
+          %v1057 = vadd.f32 %v1018, %v1023
+          %s1058 = scalar_lea.vmem %s5, 5
+          %v1059 = vld [vmem:[%s1058] ss:$8 sm:$0x3]
+          %v1061 = vperm.slane %v1059, 403703808
+          %v1062 = vperm.slane %v1059, 420546817
+          %v1065 = vsub.f32 %v1026, %v1061
+          %v1066 = vsub.f32 %v1027, %v1062
+          %v1067 = vsub.f32 %v1028, %v1061
+          %v1068 = vsub.f32 %v1029, %v1062
+          %v1069 = vsub.f32 %v1030, %v1061
+          %v1070 = vsub.f32 %v1031, %v1062
+          %v1071 = vsub.f32 %v1032, %v1061
+          %v1072 = vsub.f32 %v1033, %v1062
+          %v1073 = vsub.f32 %v1034, %v1061
+          %v1074 = vsub.f32 %v1035, %v1062
+          %v1075 = vsub.f32 %v1036, %v1061
+          %v1076 = vsub.f32 %v1037, %v1062
+          %v1077 = vsub.f32 %v1038, %v1061
+          %v1078 = vsub.f32 %v1039, %v1062
+          %v1079 = vsub.f32 %v1040, %v1061
+          %v1080 = vsub.f32 %v1041, %v1062
+          %v1081 = vsub.f32 %v1042, %v1061
+          %v1082 = vsub.f32 %v1043, %v1062
+          %v1083 = vsub.f32 %v1044, %v1061
+          %v1084 = vsub.f32 %v1045, %v1062
+          %v1085 = vsub.f32 %v1046, %v1061
+          %v1086 = vsub.f32 %v1047, %v1062
+          %v1087 = vsub.f32 %v1048, %v1061
+          %v1088 = vsub.f32 %v1049, %v1062
+          %v1089 = vsub.f32 %v1050, %v1061
+          %v1090 = vsub.f32 %v1051, %v1062
+          %v1091 = vsub.f32 %v1052, %v1061
+          %v1092 = vsub.f32 %v1053, %v1062
+          %v1093 = vsub.f32 %v1054, %v1061
+          %v1094 = vsub.f32 %v1055, %v1062
+          %v1095 = vsub.f32 %v1056, %v1061
+          %v1096 = vsub.f32 %v1057, %v1062
+          %s1097 = scalar_lea.vmem %s6, 6
+          %v1098 = vld [vmem:[%s1097] ss:$8 sm:$0x3]
+          %v1100 = vperm.slane %v1098, 403703808
+          %v1101 = vperm.slane %v1098, 420546817
+          %v1104 = vadd.f32 %v1065, %v1100
+          %v1105 = vadd.f32 %v1066, %v1101
+          %v1106 = vadd.f32 %v1067, %v1100
+          %v1107 = vadd.f32 %v1068, %v1101
+          %v1108 = vadd.f32 %v1069, %v1100
+          %v1109 = vadd.f32 %v1070, %v1101
+          %v1110 = vadd.f32 %v1071, %v1100
+          %v1111 = vadd.f32 %v1072, %v1101
+          %v1112 = vadd.f32 %v1073, %v1100
+          %v1113 = vadd.f32 %v1074, %v1101
+          %v1114 = vadd.f32 %v1075, %v1100
+          %v1115 = vadd.f32 %v1076, %v1101
+          %v1116 = vadd.f32 %v1077, %v1100
+          %v1117 = vadd.f32 %v1078, %v1101
+          %v1118 = vadd.f32 %v1079, %v1100
+          %v1119 = vadd.f32 %v1080, %v1101
+          %v1120 = vadd.f32 %v1081, %v1100
+          %v1121 = vadd.f32 %v1082, %v1101
+          %v1122 = vadd.f32 %v1083, %v1100
+          %v1123 = vadd.f32 %v1084, %v1101
+          %v1124 = vadd.f32 %v1085, %v1100
+          %v1125 = vadd.f32 %v1086, %v1101
+          %v1126 = vadd.f32 %v1087, %v1100
+          %v1127 = vadd.f32 %v1088, %v1101
+          %v1128 = vadd.f32 %v1089, %v1100
+          %v1129 = vadd.f32 %v1090, %v1101
+          %v1130 = vadd.f32 %v1091, %v1100
+          %v1131 = vadd.f32 %v1092, %v1101
+          %v1132 = vadd.f32 %v1093, %v1100
+          %v1133 = vadd.f32 %v1094, %v1101
+          %v1134 = vadd.f32 %v1095, %v1100
+          %v1135 = vadd.f32 %v1096, %v1101
+          %v1136 = vld [vmem:[%s7] sm:$0xa]
+          %v1137 = vunpack.c.l.bf16.f32 %v1136
+          %v1139 = vperm.slane %v1137, 437389826
+          %v1140 = vperm.slane %v1137, 504761862
+          %v1143 = vperm.slane %v1139, 437389826
+          %v1144 = vperm.slane %v1140, 437389826
+          %v1145 = vadd.f32 %v1104, %v1143
+          %v1146 = vadd.f32 %v1105, %v1144
+          %v1147 = vadd.f32 %v1106, %v1143
+          %v1148 = vadd.f32 %v1107, %v1144
+          %v1149 = vadd.f32 %v1108, %v1143
+          %v1150 = vadd.f32 %v1109, %v1144
+          %v1151 = vadd.f32 %v1110, %v1143
+          %v1152 = vadd.f32 %v1111, %v1144
+          %v1153 = vadd.f32 %v1112, %v1143
+          %v1154 = vadd.f32 %v1113, %v1144
+          %v1155 = vadd.f32 %v1114, %v1143
+          %v1156 = vadd.f32 %v1115, %v1144
+          %v1157 = vadd.f32 %v1116, %v1143
+          %v1158 = vadd.f32 %v1117, %v1144
+          %v1159 = vadd.f32 %v1118, %v1143
+          %v1160 = vadd.f32 %v1119, %v1144
+          %v1161 = vadd.f32 %v1120, %v1143
+          %v1162 = vadd.f32 %v1121, %v1144
+          %v1163 = vadd.f32 %v1122, %v1143
+          %v1164 = vadd.f32 %v1123, %v1144
+          %v1165 = vadd.f32 %v1124, %v1143
+          %v1166 = vadd.f32 %v1125, %v1144
+          %v1167 = vadd.f32 %v1126, %v1143
+          %v1168 = vadd.f32 %v1127, %v1144
+          %v1169 = vadd.f32 %v1128, %v1143
+          %v1170 = vadd.f32 %v1129, %v1144
+          %v1171 = vadd.f32 %v1130, %v1143
+          %v1172 = vadd.f32 %v1131, %v1144
+          %v1173 = vadd.f32 %v1132, %v1143
+          %v1174 = vadd.f32 %v1133, %v1144
+          %v1175 = vadd.f32 %v1134, %v1143
+          %v1176 = vadd.f32 %v1135, %v1144
+          %v1177 = vld [vmem:[%s8] sm:$0x3]
+          %v1178 = vunpack.c.0.s8.s32 %v1177
+          %v1179 = vcvt.s32.f32 %v1178
+          %v1181 = vperm.slane %v1179, 403703808
+          %v1182 = vperm.slane %v1179, 471075844
+          %v1185 = vperm.slane %v1181, 403703808
+          %v1186 = vperm.slane %v1182, 403703808
+          %v1187 = vadd.f32 %v1145, %v1185
+          %v1188 = vadd.f32 %v1146, %v1186
+          %v1189 = vadd.f32 %v1147, %v1185
+          %v1190 = vadd.f32 %v1148, %v1186
+          %v1191 = vadd.f32 %v1149, %v1185
+          %v1192 = vadd.f32 %v1150, %v1186
+          %v1193 = vadd.f32 %v1151, %v1185
+          %v1194 = vadd.f32 %v1152, %v1186
+          %v1195 = vadd.f32 %v1153, %v1185
+          %v1196 = vadd.f32 %v1154, %v1186
+          %v1197 = vadd.f32 %v1155, %v1185
+          %v1198 = vadd.f32 %v1156, %v1186
+          %v1199 = vadd.f32 %v1157, %v1185
+          %v1200 = vadd.f32 %v1158, %v1186
+          %v1201 = vadd.f32 %v1159, %v1185
+          %v1202 = vadd.f32 %v1160, %v1186
+          %v1203 = vadd.f32 %v1161, %v1185
+          %v1204 = vadd.f32 %v1162, %v1186
+          %v1205 = vadd.f32 %v1163, %v1185
+          %v1206 = vadd.f32 %v1164, %v1186
+          %v1207 = vadd.f32 %v1165, %v1185
+          %v1208 = vadd.f32 %v1166, %v1186
+          %v1209 = vadd.f32 %v1167, %v1185
+          %v1210 = vadd.f32 %v1168, %v1186
+          %v1211 = vadd.f32 %v1169, %v1185
+          %v1212 = vadd.f32 %v1170, %v1186
+          %v1213 = vadd.f32 %v1171, %v1185
+          %v1214 = vadd.f32 %v1172, %v1186
+          %v1215 = vadd.f32 %v1173, %v1185
+          %v1216 = vadd.f32 %v1174, %v1186
+          %v1217 = vadd.f32 %v1175, %v1185
+          %v1218 = vadd.f32 %v1176, %v1186
+          %s1219 = scalar_lea.vmem %s9, 8
+          %s1220 = scalar_lea.vmem %s1219, 3
+          %v1221 = vld [vmem:[%s1220] ss:$4 sm:$0x3]
+          %v1223 = vperm.slane %v1221, 403703808
+          %v1224 = vperm.slane %v1221, 420546817
+          %v1227 = vadd.f32 %v1187, %v1223
+          %v1228 = vadd.f32 %v1188, %v1224
+          %v1229 = vadd.f32 %v1189, %v1223
+          %v1230 = vadd.f32 %v1190, %v1224
+          %v1231 = vadd.f32 %v1191, %v1223
+          %v1232 = vadd.f32 %v1192, %v1224
+          %v1233 = vadd.f32 %v1193, %v1223
+          %v1234 = vadd.f32 %v1194, %v1224
+          %v1235 = vadd.f32 %v1195, %v1223
+          %v1236 = vadd.f32 %v1196, %v1224
+          %v1237 = vadd.f32 %v1197, %v1223
+          %v1238 = vadd.f32 %v1198, %v1224
+          %v1239 = vadd.f32 %v1199, %v1223
+          %v1240 = vadd.f32 %v1200, %v1224
+          %v1241 = vadd.f32 %v1201, %v1223
+          %v1242 = vadd.f32 %v1202, %v1224
+          %v1243 = vadd.f32 %v1203, %v1223
+          %v1244 = vadd.f32 %v1204, %v1224
+          %v1245 = vadd.f32 %v1205, %v1223
+          %v1246 = vadd.f32 %v1206, %v1224
+          %v1247 = vadd.f32 %v1207, %v1223
+          %v1248 = vadd.f32 %v1208, %v1224
+          %v1249 = vadd.f32 %v1209, %v1223
+          %v1250 = vadd.f32 %v1210, %v1224
+          %v1251 = vadd.f32 %v1211, %v1223
+          %v1252 = vadd.f32 %v1212, %v1224
+          %v1253 = vadd.f32 %v1213, %v1223
+          %v1254 = vadd.f32 %v1214, %v1224
+          %v1255 = vadd.f32 %v1215, %v1223
+          %v1256 = vadd.f32 %v1216, %v1224
+          %v1257 = vadd.f32 %v1217, %v1223
+          %v1258 = vadd.f32 %v1218, %v1224
+          %s1259 = scalar_lea.vmem %s10, 8
+          %s1260 = scalar_lea.vmem %s1259, 2
+          %v1261 = vld [vmem:[%s1260] ss:$4 sm:$0x3]
+          %v1263 = vperm.slane %v1261, 403703808
+          %v1264 = vperm.slane %v1261, 420546817
+          %v1267 = vadd.f32 %v1227, %v1263
+          %v1268 = vadd.f32 %v1228, %v1264
+          %v1269 = vadd.f32 %v1229, %v1263
+          %v1270 = vadd.f32 %v1230, %v1264
+          %v1271 = vadd.f32 %v1231, %v1263
+          %v1272 = vadd.f32 %v1232, %v1264
+          %v1273 = vadd.f32 %v1233, %v1263
+          %v1274 = vadd.f32 %v1234, %v1264
+          %v1275 = vadd.f32 %v1235, %v1263
+          %v1276 = vadd.f32 %v1236, %v1264
+          %v1277 = vadd.f32 %v1237, %v1263
+          %v1278 = vadd.f32 %v1238, %v1264
+          %v1279 = vadd.f32 %v1239, %v1263
+          %v1280 = vadd.f32 %v1240, %v1264
+          %v1281 = vadd.f32 %v1241, %v1263
+          %v1282 = vadd.f32 %v1242, %v1264
+          %v1283 = vadd.f32 %v1243, %v1263
+          %v1284 = vadd.f32 %v1244, %v1264
+          %v1285 = vadd.f32 %v1245, %v1263
+          %v1286 = vadd.f32 %v1246, %v1264
+          %v1287 = vadd.f32 %v1247, %v1263
+          %v1288 = vadd.f32 %v1248, %v1264
+          %v1289 = vadd.f32 %v1249, %v1263
+          %v1290 = vadd.f32 %v1250, %v1264
+          %v1291 = vadd.f32 %v1251, %v1263
+          %v1292 = vadd.f32 %v1252, %v1264
+          %v1293 = vadd.f32 %v1253, %v1263
+          %v1294 = vadd.f32 %v1254, %v1264
+          %v1295 = vadd.f32 %v1255, %v1263
+          %v1296 = vadd.f32 %v1256, %v1264
+          %v1297 = vadd.f32 %v1257, %v1263
+          %v1298 = vadd.f32 %v1258, %v1264
+          %v1299 = vmax.f32 %v1267, 0.0
+          %v1300 = vmax.f32 %v1268, 0.0
+          %v1301 = vmax.f32 %v1269, 0.0
+          %v1302 = vmax.f32 %v1270, 0.0
+          %v1303 = vmax.f32 %v1271, 0.0
+          %v1304 = vmax.f32 %v1272, 0.0
+          %v1305 = vmax.f32 %v1273, 0.0
+          %v1306 = vmax.f32 %v1274, 0.0
+          %v1307 = vmax.f32 %v1275, 0.0
+          %v1308 = vmax.f32 %v1276, 0.0
+          %v1309 = vmax.f32 %v1277, 0.0
+          %v1310 = vmax.f32 %v1278, 0.0
+          %v1311 = vmax.f32 %v1279, 0.0
+          %v1312 = vmax.f32 %v1280, 0.0
+          %v1313 = vmax.f32 %v1281, 0.0
+          %v1314 = vmax.f32 %v1282, 0.0
+          %v1315 = vmax.f32 %v1283, 0.0
+          %v1316 = vmax.f32 %v1284, 0.0
+          %v1317 = vmax.f32 %v1285, 0.0
+          %v1318 = vmax.f32 %v1286, 0.0
+          %v1319 = vmax.f32 %v1287, 0.0
+          %v1320 = vmax.f32 %v1288, 0.0
+          %v1321 = vmax.f32 %v1289, 0.0
+          %v1322 = vmax.f32 %v1290, 0.0
+          %v1323 = vmax.f32 %v1291, 0.0
+          %v1324 = vmax.f32 %v1292, 0.0
+          %v1325 = vmax.f32 %v1293, 0.0
+          %v1326 = vmax.f32 %v1294, 0.0
+          %v1327 = vmax.f32 %v1295, 0.0
+          %v1328 = vmax.f32 %v1296, 0.0
+          %v1329 = vmax.f32 %v1297, 0.0
+          %v1330 = vmax.f32 %v1298, 0.0
+          %1331 = vst [vmem:[%s11] sm:$0xff] /*vst_source=*/%v1299
+          %1332 = vst.msk [vmem:[%s11 + $0x8] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v1300
+          %1333 = vst [vmem:[%s11 + $0x10] sm:$0xff] /*vst_source=*/%v1301
+          %1334 = vst.msk [vmem:[%s11 + $0x18] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v1302
+          %1335 = vst [vmem:[%s11 + $0x20] sm:$0xff] /*vst_source=*/%v1303
+          %1336 = vst.msk [vmem:[%s11 + $0x28] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v1304
+          %1337 = vst [vmem:[%s11 + $0x30] sm:$0xff] /*vst_source=*/%v1305
+          %1338 = vst.msk [vmem:[%s11 + $0x38] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v1306
+          %1339 = vst [vmem:[%s11 + $0x40] sm:$0xff] /*vst_source=*/%v1307
+          %1340 = vst.msk [vmem:[%s11 + $0x48] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v1308
+          %1341 = vst [vmem:[%s11 + $0x50] sm:$0xff] /*vst_source=*/%v1309
+          %1342 = vst.msk [vmem:[%s11 + $0x58] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v1310
+          %1343 = vst [vmem:[%s11 + $0x60] sm:$0xff] /*vst_source=*/%v1311
+          %1344 = vst.msk [vmem:[%s11 + $0x68] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v1312
+          %1345 = vst [vmem:[%s11 + $0x70] sm:$0xff] /*vst_source=*/%v1313
+          %1346 = vst.msk [vmem:[%s11 + $0x78] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v1314
+          %1347 = vst [vmem:[%s11 + $0x80] sm:$0xff] /*vst_source=*/%v1315
+          %1348 = vst.msk [vmem:[%s11 + $0x88] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v1316
+          %1349 = vst [vmem:[%s11 + $0x90] sm:$0xff] /*vst_source=*/%v1317
+          %1350 = vst.msk [vmem:[%s11 + $0x98] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v1318
+          %1351 = vst [vmem:[%s11 + $0xa0] sm:$0xff] /*vst_source=*/%v1319
+          %1352 = vst.msk [vmem:[%s11 + $0xa8] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v1320
+          %1353 = vst [vmem:[%s11 + $0xb0] sm:$0xff] /*vst_source=*/%v1321
+          %1354 = vst.msk [vmem:[%s11 + $0xb8] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v1322
+          %1355 = vst [vmem:[%s11 + $0xc0] sm:$0xff] /*vst_source=*/%v1323
+          %1356 = vst.msk [vmem:[%s11 + $0xc8] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v1324
+          %1357 = vst [vmem:[%s11 + $0xd0] sm:$0xff] /*vst_source=*/%v1325
+          %1358 = vst.msk [vmem:[%s11 + $0xd8] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v1326
+          %1359 = vst [vmem:[%s11 + $0xe0] sm:$0xff] /*vst_source=*/%v1327
+          %1360 = vst.msk [vmem:[%s11 + $0xe8] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v1328
+          %1361 = vst [vmem:[%s11 + $0xf0] sm:$0xff] /*vst_source=*/%v1329
+          %1362 = vst.msk [vmem:[%s11 + $0xf8] sm:$0xff] /*vm=*/%vm873, /*vst_source=*/%v1330
+        $region113: #{rmo3_lay.1} parent=100 // pred_fallthru
+          _
+        // Predicated region
+        $region114: #{rmo3_lay.1} parent=100 // pred_check
+          %p1363 = pneg %p276
+        $region115: #{rmo3_lay.1} parent=100 // pred_check_branch
+          %1365 = sbr.rel (%p1363) target = $region117
+        $region116: #{rmo3_lay.1} parent=100 // pred_region
+          _
+        $region117: #{rmo3_lay.1} parent=100 // pred_fallthru
+          _
+        // Predicated region
+        $region118: #{rmo3_lay.1} parent=100 // pred_check
+          %p1366 = pneg %p276
+        $region119: #{rmo3_lay.1} parent=100 // pred_check_branch
+          %1368 = sbr.rel (%p1366) target = $region121
+        $region120: #{rmo3_lay.1} parent=100 // pred_region
+          _
+        $region121: #{rmo3_lay.1} parent=100 // pred_fallthru
+          _
+      $region101: #{rmo3_lay.1} parent=5 // pred_fallthru
+        _
+      %p1369 = scmp.le.s32.totalorder 2, %s17
+      // Predicated region
+      $region122: #{rmo3_lay.1} parent=5 // pred_check
+        %p1370 = pneg %p1369
+      $region123: #{rmo3_lay.1} parent=5 // pred_check_branch
+        %1372 = sbr.rel (%p1370) target = $region125
+      $region124: #{rmo3_lay.1} parent=5 // pred_region
+        %s1373 = ssub.s32 %s17, 2
+      $region125: #{rmo3_lay.1} parent=5 // pred_fallthru
+        _
+    $region6: #{rmo3_lay.1} parent=1 // loop_footer
+      %s21 = sadd.s32 1, %s17
+    $region7: #{rmo3_lay.1} parent=1 // loop_footer_branch
+      %16 = sbr.rel target = $region3
+    $region8: #{rmo3_lay.1} parent=1 // loop_exit
+      _

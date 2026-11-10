@@ -38,6 +38,7 @@ mod jsonout;
 mod mufu_sweep;
 mod nonfinite;
 mod sweep;
+mod tpu;
 mod trace_dump;
 mod vcache;
 
@@ -484,6 +485,11 @@ enum Cmd {
         timeout: f64,
         #[arg(long)]
         out: Option<PathBuf>,
+    },
+    /// Google TPU7x TensorCore kernels (LLO listings): check, sim, lift.
+    Tpu {
+        #[command(subcommand)]
+        cmd: tpu::TpuCmd,
     },
     /// errdist's GPU validation: run one binary over a directory of trial inputs.
     #[command(hide = true)]
@@ -3170,6 +3176,7 @@ fn run() -> Result<()> {
             timeout,
             out,
         } => cmd_probe(&Case::load(&case)?, &variant, timeout, &out)?,
+        Cmd::Tpu { cmd } => tpu::run(cmd)?,
         Cmd::SbSweep {
             case,
             runs,

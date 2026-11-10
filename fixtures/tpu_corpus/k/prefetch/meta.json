@@ -1,0 +1,28 @@
+{
+ "kernel": "prefetch",
+ "inputs": [
+  {
+   "shape": [
+    6
+   ],
+   "dtype": "int32"
+  },
+  {
+   "shape": [
+    64,
+    128
+   ],
+   "dtype": "float32"
+  }
+ ],
+ "outputs": [
+  {
+   "shape": [
+    48,
+    128
+   ],
+   "dtype": "float32"
+  }
+ ],
+ "device_kind": "TPU7x"
+}

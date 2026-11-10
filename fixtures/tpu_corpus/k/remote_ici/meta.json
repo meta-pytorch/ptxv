@@ -1,0 +1,26 @@
+{
+ "kernel": "remote_ici",
+ "inputs": [
+  {
+   "shape": [
+    64,
+    128
+   ],
+   "dtype": "float32"
+  }
+ ],
+ "outputs": [
+  {
+   "shape": [
+    64,
+    128
+   ],
+   "dtype": "float32"
+  }
+ ],
+ "devices": [
+  "TPU_0(process=0,(0,0,0,0))",
+  "TPU_2(process=0,(1,0,0,0))"
+ ],
+ "device_kind": "TPU7x"
+}

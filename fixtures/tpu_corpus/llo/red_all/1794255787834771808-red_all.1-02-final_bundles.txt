@@ -1,0 +1,57 @@
+= control target key start
+LH: loop header
+LB: loop body
+LE: loop exit
+PB: predicated region body
+PF: predicated region fallthrough
+CT: control target
+= control target key end
+
+     0   :  { %s137_s0 = inlined_call_operand.vmem [shape: f32[64,128], index: 0, kind: input, shape index: {}] /* input window allocation for operator input 0. The window shape is f32[64,128], while the full shape is f32[64,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */  ;;  %s138_s1 = inlined_call_operand.hbm [shape: f32[2], index: 1, kind: output, shape index: {}] /* output window allocation for operator output 0. The window shape is f32[2], while the full shape is f32[2]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */ } /* entry bundle: %red_all.1 = custom-call(%copy-done) */
+   0x1   :  { %v9_v0 = vld [vmem:[%s137_s0] sm:$0xff]  ;;  %v10_v1 = vld [vmem:[%s137_s0 + $0x8] sm:$0xff]  ;;  %v11_v2 = vld [vmem:[%s137_s0 + $0x10] sm:$0xff] }
+   0x2   :  { %v17_v3 = vadd.f32 %v10_v1, %v9_v0  ;;  %v12_v4 = vld [vmem:[%s137_s0 + $0x18] sm:$0xff] }
+   0x3   :  { %6 = vsyncpa [#allocation4], 0  ;;  %v13_v6 = vld [vmem:[%s137_s0 + $0x20] sm:$0xff]  ;;  %v16_v7 = vld [vmem:[%s137_s0 + $0x38] sm:$0xff]  ;;  %s78_s25 = scalar_lea.hbm %s138_s1, 16 }
+   0x4   :  { %v18_v5 = vadd.f32 %v17_v3, %v11_v2  ;;  %v14_v9 = vld [vmem:[%s137_s0 + $0x28] sm:$0xff]  ;;  %v15_v10 = vld [vmem:[%s137_s0 + $0x30] sm:$0xff]  ;;  %v44_v11 = vmax.f32 %v9_v0, %v13_v6  ;;  %v47_v15 = vmax.f32 %v12_v4, %v16_v7  ;;  %p79_p0 = scmp.ne.s32.totalorder %s138_s1, %s78_s25  ;;  %p82_p1 = scmp.lt.u32.totalorder %s78_s25, %s138_s1 }
+   0x5   :  { %v45_v13 = vmax.f32 %v10_v1, %v14_v9  ;;  %v46_v14 = vmax.f32 %v11_v2, %v15_v10 }
+   0x6   :  { %v19_v8 = vadd.f32 %v18_v5, %v12_v4  ;;  %p84_p2 = pnand %p82_p1, %p79_p0 }
+   0x7   :  { %v48_v18 = vmax.f32 %v44_v11, %v45_v13  ;;  %v49_v19 = vmax.f32 %v46_v14, %v47_v15 }
+   0x8   :  { %v20_v12 = vadd.f32 %v19_v8, %v13_v6 }
+   0x9   :  { %v50_v21 = vmax.f32 %v48_v18, %v49_v19 }
+   0xa   :  { %v21_v16 = vadd.f32 %v20_v12, %v14_v9 }
+   0xb   :  { %v22_v17 = vadd.f32 %v21_v16, %v15_v10 }
+   0xc   :  { %v23_v20 = vadd.f32 %v22_v17, %v16_v7 }
+   0xd   :  { %24 = vadd.xlane.f32.xlu0 %v23_v20 }
+   0xe   :  { %51 = vmax.xlane.f32.xlu0 %v50_v21 }
+   0xf   :  { %v25_v22 = vpop.xlane.xlu0 %24 }
+  0x10   :  { %v26_v23 = vrot.slane %v25_v22, 4 }
+  0x11   :  { %v27_v24 = vadd.f32 %v26_v23, %v25_v22 }
+  0x12   :  { %v52_v25 = vpop.xlane.xlu0 %51 }
+  0x13   :  { %v28_v26 = vrot.slane %v27_v24, 2  ;;  %v53_v27 = vrot.slane %v52_v25, 4 }
+  0x14   :  { %v54_v28 = vmax.f32 %v52_v25, %v53_v27  ;;  %v29_v29 = vadd.f32 %v28_v26, %v27_v24 }
+  0x15   :  { %v55_v30 = vrot.slane %v54_v28, 2  ;;  %v30_v31 = vrot.slane %v29_v29, 1 }
+  0x16   :  { %v56_v32 = vmax.f32 %v54_v28, %v55_v30  ;;  %v31_v33 = vadd.f32 %v30_v31, %v29_v29 }
+  0x17   :  { %73 = vpush %v31_v33  ;;  %v57_v34 = vrot.slane %v56_v32, 1 }
+  0x18   :  { %v58_v35 = vmax.f32 %v56_v32, %v57_v34 }
+  0x19   :  { %75 = vpush %v58_v35 }
+  0x1a   :  { %s74_s0 = spop %73 }
+  0x1b   :  { %35 = sst [smem:[#allocation3]] %s74_s0 }
+  0x1c   :  { %s76_s22 = spop %75 }
+  0x1d   :  { %61 = sst [smem:[#allocation3 + $0x1]] %s76_s22 }
+  0x1e   :  { %87 = shalt.err (!%p84_p2) /* BoundsCheck 8 [deref of opnd#2] for dma.smem_to_hbm
+hlo: red_all.1
+ */ }
+  0x1f   :  { %s90_s30 = smov [#allocation3] /* materialized constant */ }
+  0x20   :  { %67 = dma.smem_to_hbm /*smem=*/%s90_s30, /*size_in_granules=*/16, /*hbm=*/%s138_s1, /*dst_syncflagno=*/[#allocation4] /*
+base_bounds: (1)
+dynamic_base_bounds: (1)
+window_bounds: (1)
+iteration_bounds: (1)
+strides: (1)
+pad_low: (0)
+pad_high: (0)
+element_size_in_bytes: 512
+second_minor_factor: 1 */ }
+  0x21   :  { %88 = dma.done.wait [#allocation4], 16 /* pipeline-emitter-dma-wait */ }
+  0x22   :  { %89 = vsyncadd [#allocation4], 4294967280 }
+  0x23   :  { %71 = sfence }
+  0x24   :  { %72 = vsyncpa [#allocation4], 1 } /* exit bundle: %red_all.1 = custom-call(%copy-done) */

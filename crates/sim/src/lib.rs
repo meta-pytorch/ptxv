@@ -29,6 +29,7 @@ pub mod lowp;
 pub mod machine;
 pub mod membudget;
 pub mod mma_lp;
+pub mod model;
 pub mod mufu;
 pub mod mufu_sample;
 mod mufu_tables;

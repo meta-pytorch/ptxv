@@ -1,0 +1,21 @@
+HloModule jit_wrapped, is_scheduled=true, entry_computation_layout={()->(s32[16,128]{1,0:T(8,128)}, f32[16,128]{1,0:T(8,128)})}, allow_spmd_sharding_propagation_to_output={true,true}, frontend_attributes={arg_layout_modes="",arg_memory_spaces="",out_layout_modes="default;default",out_memory_spaces="0;0"}
+
+FileNames
+1 "/tmp/tpuv/corpus/probe.py"
+
+FunctionNames
+1 "<module>"
+2 "save_run"
+
+FileLocations
+1 {file_name_id=1 function_name_id=1 line=226 end_line=226 column=4 end_column=18}
+2 {file_name_id=1 function_name_id=2 line=93 end_line=93 column=32 end_column=41}
+
+StackFrames
+1 {file_location_id=1 parent_frame_id=1}
+2 {file_location_id=2 parent_frame_id=2}
+
+
+ENTRY %main.1 () -> (s32[16,128], f32[16,128]) {
+  ROOT %iota.1 = (s32[16,128]{1,0:T(8,128)}, f32[16,128]{1,0:T(8,128)}) custom-call(), custom_call_target="tpu_custom_call", operand_layout_constraints={}, frontend_attributes={kernel_metadata={}}, metadata={op_name="jit(wrapped)/iota/pallas_call" stack_frame_id=2}, backend_config={"flag_configs":[],"scoped_memory_configs":[{"memory_space":"1","offset":"0","size":"33554432"}],"custom_call_config":{"body":"TUzvUgFNTElSMjMuMC4wZ2l0AAErCQEDBQcBAwkDFwsNDxETFRcZGx0fA+3FFQG9CwsHEw8PCw8TDw+FDwsLCw8PCwsLCwsLDyMPDxMLDzsLCwsLCwsLCwsTIw8PDx8TIw8PDx8TEw8PHwsPDw8fDw8PHwsPC1MLEw8PDw8fDwsPCw8fEx8PDx8TCw8PHwUFYU0HBVlZARUPGwcHGw8jIxcLAuIHBSEFIx8DAw1/HS2BHS23BSUdJW8DA3XBHQF9HSWtYWZmaW5lX21hcDwoZDAsIGQxKSAtPiAoZDAsIGQxKT4AEQsBBScFKQUrHQFdHQFpBS0FLwUxBTMFNQU3HQGFAweHiYuNj5EdAacdAbsDAzs9BTkRCz0DDUFDRUdJGUsZTU9RvwU7AQEFPQ0RBT8FQQVDBUUFRwMDG1UjAQMJAAAAAB0dWR0fWxUhIS0DB3YDGXsDAxthIwEDCQEAAAAdHWUdH2cVIyMtAwd6Axl7AwMNbREBQh8dJ3EdAXMtAwd+AyU1BUkdKXkdK3sVExMtAwd+AyU9EQUBHS+DFTExLQMHfgMRHwVLERMABU0jAQkhAQAAAAEAAAACAAAAAAAAAAVPIwEBAR0plR0rlxUTmR0Bmy0DB4IDJzEdn6EFUR2jpQVTFTU1LQMHggMlWwMDDasTBxAAAMAPHSevHQGxLQMHggMlZwMDtcMFVR0vuRU3Ny0DB4IDER8jdHB1Lm1lbW9yeV9zcGFjZTx2bWVtPgAjdHB1LmNvcmVfdHlwZTx0Yz4AI2FyaXRoLm92ZXJmbG93PG5vbmU+ACNhcml0aC5mYXN0bWF0aDxub25lPgABAgInBUECBAEDCycFQQIEBwECBBe9BUECBAEXF70FQQIEBxcFBQ0PAQEJBJoCBQERBTkHAwEFDxEFPwcDJ1MFDQUPBQUDV1MDAwUDY18DAwMDD2sDAQcGDwMDAwkRBw8RAwMFBQsJB3cRAwMFDQcDAwkHAwUDAwkHAwULBgkDAwcBERMNBQkzCQ8BERMJB5MRAwMFBQcTBp0DCQMXAwMVqQMHBwYVAwkDGxUHFbMDCQUZHQMDCwcDBQMDCwcDBQsGCwMJBwMhIw0FCzMJHwMhIxcABQYDAQUBALIIVxNVLREpCR0dCxMjIR0pLRUNEQsJCxUNFw01BRkXGxcVIxkXIxMfDw0JHRFidWlsdGluAHN0YWJsZV9tb3NhaWMAdHB1AGFyaXRoAG1vZHVsZQBhcml0aC5jb25zdGFudAB0cHUuaW90YQB2ZWN0b3IuYnJvYWRjYXN0AGFyaXRoLmFkZGkAdmVjdG9yLmxvYWQAdHB1LnZlY3Rvcl9zdG9yZQBmdW5jLmZ1bmMAYXJpdGgubXVsaQBhcml0aC5zaXRvZnAAYXJpdGgubXVsZgBmdW5jLnJldHVybgBrAC90bXAvdHB1di9jb3JwdXMvcHJvYmUucHkAdmFsdWUAZGltZW5zaW9ucwBpb3RhOgBpb3RhL2lvdGEAbXVsOgBtdWwAYWRkOgBhZGQvYWRkAHN3YXA6AHN3YXAvc3dhcABzdGFibGVfbW9zYWljLnZlcnNpb24AZGltZW5zaW9uX3NlbWFudGljcwBmdW5jdGlvbl90eXBlAHNjYWxhcl9wcmVmZXRjaABzY3JhdGNoX29wZXJhbmRzAHN5bV9uYW1lAGlvdGEAdHB1LmNvcmVfdHlwZQBvdmVyZmxvd0ZsYWdzAGFkZABvcGVyYW5kU2VnbWVudFNpemVzAHN0cmlkZXMAY29udmVydF9lbGVtZW50X3R5cGU6AGNvbnZlcnRfZWxlbWVudF90eXBlL2NvbnZlcnRfZWxlbWVudF90eXBlAGZhc3RtYXRoAA==","needs_layout_passes":true,"allow_input_fusion":[],"serialization_format":"1","output_memory_colors":[],"output_memory_space_colors":[{"color":"0","shape_index":["0"]},{"color":"0","shape_index":["1"]}],"input_memory_space_colors":[],"operand_to_metadata":[]},"used_scoped_memory_configs":[],"aliasing_operands":{"lists":[]}}
+}

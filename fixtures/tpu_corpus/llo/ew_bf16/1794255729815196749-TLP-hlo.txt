@@ -1,0 +1,27 @@
+HloModule jit_wrapped, is_scheduled=true, entry_computation_layout={(bf16[16,128]{1,0:T(8,128)(2,1)}, bf16[16,128]{1,0:T(8,128)(2,1)})->(bf16[16,128]{1,0:T(8,128)(2,1)}, bf16[16,128]{1,0:T(8,128)(2,1)}, bf16[16,128]{1,0:T(8,128)(2,1)})}, allow_spmd_sharding_propagation_to_parameters={true,true}, allow_spmd_sharding_propagation_to_output={true,true,true}, frontend_attributes={arg_layout_modes="default;default",arg_memory_spaces="0;0",out_layout_modes="default;default;default",out_memory_spaces="0;0;0"}
+
+FileNames
+1 "/tmp/tpuv/corpus/probe.py"
+
+FunctionNames
+1 "<module>"
+2 "save_run"
+
+FileLocations
+1 {file_name_id=1 function_name_id=1 line=160 end_line=160 column=4 end_column=18}
+2 {file_name_id=1 function_name_id=2 line=93 end_line=93 column=32 end_column=41}
+
+StackFrames
+1 {file_location_id=1 parent_frame_id=1}
+2 {file_location_id=2 parent_frame_id=2}
+
+
+ENTRY %main.1 (args_0_.1: bf16[16,128], args_1_.1: bf16[16,128]) -> (bf16[16,128], bf16[16,128], bf16[16,128]) {
+  %args_1_.1 = bf16[16,128]{1,0:T(8,128)(2,1)} parameter(1), metadata={op_name="args[1]"}, backend_config={"flag_configs":[],"scoped_memory_configs":[{"memory_space":"1","offset":"0","size":"0"}],"used_scoped_memory_configs":[]}
+  %args_0_.1 = bf16[16,128]{1,0:T(8,128)(2,1)} parameter(0), metadata={op_name="args[0]"}, backend_config={"flag_configs":[],"scoped_memory_configs":[{"memory_space":"1","offset":"0","size":"0"}],"used_scoped_memory_configs":[]}
+  %copy-start = (bf16[16,128]{1,0:T(8,128)(2,1)S(1)}, bf16[16,128]{1,0:T(8,128)(2,1)}, u32[]{:S(2)}) copy-start(%args_0_.1), backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"dma_priority":5}
+  %copy-done = bf16[16,128]{1,0:T(8,128)(2,1)S(1)} copy-done(%copy-start), backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"dma_priority":5}
+  %copy-start.1 = (bf16[16,128]{1,0:T(8,128)(2,1)S(1)}, bf16[16,128]{1,0:T(8,128)(2,1)}, u32[]{:S(2)}) copy-start(%args_1_.1), backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"dma_priority":5}
+  %copy-done.1 = bf16[16,128]{1,0:T(8,128)(2,1)S(1)} copy-done(%copy-start.1), backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"dma_priority":5}
+  ROOT %ew_bf16.1 = (bf16[16,128]{1,0:T(8,128)(2,1)}, bf16[16,128]{1,0:T(8,128)(2,1)}, bf16[16,128]{1,0:T(8,128)(2,1)}) custom-call(%copy-done, %copy-done.1), custom_call_target="tpu_custom_call", operand_layout_constraints={bf16[16,128]{1,0}, bf16[16,128]{1,0}}, frontend_attributes={kernel_metadata={}}, metadata={op_name="jit(wrapped)/ew_bf16/pallas_call" stack_frame_id=2}, backend_config={"flag_configs":[],"scoped_memory_configs":[{"memory_space":"1","offset":"0","size":"33554432"}],"custom_call_config":{"body":"TUzvUgFNTElSMjMuMC4wZ2l0AAEpCQEDBQcBAwkDFQsNDxETFRcZGx0D578VAbkTCwsHDw8PDw8PDxMLCyMPDwsLCw8LDwsLDw8TCw87CwsLC4ULCwsLCw8PDx8PDw8fCw8LDwsPHw8PHwsPC1MLEw8PCw8fDw8PHw8PDx8THw8LDx8PDw8fDw8PHwUFYU0HA1kBFQcjGxsHDwcPIwsCOgcDAyNTBR8FIR8dGXEdA3UdGY0dGbEdJVUdA1kdJVsDA2O9BSMFJQMHd3l7fX+BHSuhEQsBBScFKQUrHQNvBS0dA4sFLwUxHQObHQOvAwM5OwUzEQs9Aw0/QUNFSSFLIU1PUbsFNQEBBTcNEWFmZmluZV9tYXA8KGQwLCBkMSkgLT4gKGQwLCBkMSk+AAU5BTsFPQU/BUERAQEdJ1cVExMtBQdmAh8rHSddFRNfHQNhLQUHZgIvOwVDHWdpBUUda20FRxUpKS0FB2oCJS8dG3MVCwstBQdqAhEfBUkREwAFSyMPCSEBAAAAAQAAAAIAAAAAAAAABU0jDwEBHSuFHYeJBU8VLS0tBQduAiUvHRuPFQuRHQOTLQUHbgIRHx0vlx0xmRUzMy0FB3ICJ1EDAyOfEwkQAAAQEB2jpQVRHQOnLQUHcgInXR0vqx0xrRU1NS0FB3ICJYkdG7MVC7UdA7ctBQdyAhEfI3RwdS5tZW1vcnlfc3BhY2U8dm1lbT4AI3RwdS5jb3JlX3R5cGU8dGM+ACNhcml0aC5mYXN0bWF0aDxub25lPgADF7kFQQIEDUcnBUECBA0nBUECBAkLAQIEBwECAgULAwMDAwMBAQkEZgMFAREHNwcDAQULEQc9BwM3awsDBwMHAwcDBwMHAwMRAQMBAwMRAQMBBQYRAwUHAQsNAwMVAQMBAwMVAQMBBQYVAwUHAxETDQdlFwMFBQ8VAwMJAQMBAwMJAQMBBQYJAwUHBRkbBwUJHQkXBRkbCQeDFwMFBQ8VAwMNAQMBAwMNAQMBBQYNAwUHByEjBwUNHQkfByEjDwaVAwcDDwMDH50DCREGHwMHAykJBx8XAwcFJysTBqkDBQMtAwMPAQMBAwMPAQMBBQYPAwUHCTEzBwUPHQkvCTEzFQAHBgMBBQEAQghTCRERKQkRCxMdERMjIR0pLVUtCxELDRUNNQUZGyMXFxUXIxkfDw0JHRFidWlsdGluAHN0YWJsZV9tb3NhaWMAdHB1AGFyaXRoAG1vZHVsZQBhcml0aC5jb25zdGFudAB2ZWN0b3IubG9hZAB0cHUudmVjdG9yX3N0b3JlAGFyaXRoLm11bGYAZnVuYy5mdW5jAGFyaXRoLmFkZGYAYXJpdGguZXh0ZgB2ZWN0b3IuYnJvYWRjYXN0AGFyaXRoLnRydW5jZgBmdW5jLnJldHVybgBrAC90bXAvdHB1di9jb3JwdXMvcHJvYmUucHkAc3dhcDoAc3dhcC9zd2FwAHZhbHVlAGdldDoAZ2V0L2dldABtdWw6AGNvbnZlcnRfZWxlbWVudF90eXBlOgBjb252ZXJ0X2VsZW1lbnRfdHlwZS9jb252ZXJ0X2VsZW1lbnRfdHlwZQBzdGFibGVfbW9zYWljLnZlcnNpb24AZGltZW5zaW9uX3NlbWFudGljcwBmdW5jdGlvbl90eXBlAHNjYWxhcl9wcmVmZXRjaABzY3JhdGNoX29wZXJhbmRzAHN5bV9uYW1lAGV3X2JmMTYAdHB1LmNvcmVfdHlwZQBmYXN0bWF0aABhZGQ6AGFkZC9hZGQAYWRkAG9wZXJhbmRTZWdtZW50U2l6ZXMAc3RyaWRlcwBtdWwvbXVsAG11bAA=","needs_layout_passes":true,"allow_input_fusion":[],"serialization_format":"1","output_memory_colors":[],"output_memory_space_colors":[{"color":"0","shape_index":["0"]},{"color":"0","shape_index":["1"]},{"color":"0","shape_index":["2"]}],"input_memory_space_colors":[{"operand_index":"0","color":"1","shape_index":[]},{"operand_index":"1","color":"1","shape_index":[]}],"operand_to_metadata":[]},"used_scoped_memory_configs":[],"aliasing_operands":{"lists":[]}}
+}

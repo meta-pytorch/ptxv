@@ -1,0 +1,20 @@
+{
+ "kernel": "smem_loop",
+ "inputs": [
+  {
+   "shape": [
+    64
+   ],
+   "dtype": "int32"
+  }
+ ],
+ "outputs": [
+  {
+   "shape": [
+    64
+   ],
+   "dtype": "int32"
+  }
+ ],
+ "device_kind": "TPU7x"
+}

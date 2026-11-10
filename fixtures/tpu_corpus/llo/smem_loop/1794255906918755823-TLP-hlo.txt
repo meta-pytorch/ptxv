@@ -1,0 +1,24 @@
+HloModule jit_wrapped, is_scheduled=true, entry_computation_layout={(s32[64]{0:T(128)})->s32[64]{0:T(128)}}, allow_spmd_sharding_propagation_to_parameters={true}, allow_spmd_sharding_propagation_to_output={true}, frontend_attributes={arg_layout_modes="default",arg_memory_spaces="0",out_layout_modes="default",out_memory_spaces="0"}
+
+FileNames
+1 "/tmp/tpuv/corpus/probe.py"
+
+FunctionNames
+1 "<module>"
+2 "save_run"
+
+FileLocations
+1 {file_name_id=1 function_name_id=1 line=338 end_line=338 column=4 end_column=18}
+2 {file_name_id=1 function_name_id=2 line=93 end_line=93 column=32 end_column=41}
+
+StackFrames
+1 {file_location_id=1 parent_frame_id=1}
+2 {file_location_id=2 parent_frame_id=2}
+
+
+ENTRY %main.1 (args_0_.1: s32[64]) -> s32[64] {
+  %args_0_.1 = s32[64]{0:T(128)} parameter(0), metadata={op_name="args[0]"}, backend_config={"flag_configs":[],"scoped_memory_configs":[{"memory_space":"1","offset":"0","size":"0"}],"used_scoped_memory_configs":[]}
+  %copy-start = (s32[64]{0:T(128)S(1)}, s32[64]{0:T(128)}, u32[]{:S(2)}) copy-start(%args_0_.1), backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"dma_priority":5}
+  %copy-done = s32[64]{0:T(128)S(1)} copy-done(%copy-start), backend_config={"flag_configs":[],"scoped_memory_configs":[],"used_scoped_memory_configs":[],"dma_priority":5}
+  ROOT %smem_loop.1 = s32[64]{0:T(128)} custom-call(%copy-done), custom_call_target="tpu_custom_call", operand_layout_constraints={s32[64]{0}}, frontend_attributes={kernel_metadata={}}, metadata={op_name="jit(wrapped)/smem_loop/pallas_call" stack_frame_id=2}, backend_config={"flag_configs":[],"scoped_memory_configs":[{"memory_space":"1","offset":"0","size":"33554432"}],"custom_call_config":{"body":"TUzvUgFNTElSMjMuMC4wZ2l0AAE1CQEDBQcBAwkDIQsNDxETFRcZGx0fISMlJykDXgISAg0B+wcPCwsTCxMLDxMLDwsTEw8PCwsLEwsPCxMPCwsPDw8TEwsPOwsLCwtlCwsLCwsPCw8LDwsfEwsPCw8LDx8TDw8PDx8PDw8PDw8LDwsPCw8LDw8LEw8PDwsPCw8PCw8PCw8LDwsPDw8PHw8PEw8LDwsPHw8PDx8PCw8LDx8LBQVhTQcDWQEJFwsPHwENDwsPHwcXAuYHHx1fYQUrBS0DAwtdBS8DA23/BTERBQEDAwtvBTMdk5UFNR35AgIDAwtrHXFzHQd5BTcFOQU7AwMVEQU9HS+xBT8DAxW1HS+3BUEFQx0H0R3b3R0H9x0HDgIDA0NFBUURBT0DDUlLTU9TEVURV1lb/QVHAQEFSQ0LYWZmaW5lX21hcDwoZDApIC0+IChkMCk+AAVLBU0FTwVRBVMRAQEFVR1jZQVXHWdpBVktBQc+BRFpEQECAgVbEQEFBV0ddXcFXxUhIS0FBy4FIysDAwt9EQEJHSOBHSWDHQeFLQUHMgU1QR0PiR0nAR0PjR0rAR0jkR0lAQVhHZcBBWMdm50FZR2fAQVnHRmjHaUBBWkDAxWpEQUFHRmtHa8BBWsdswEFbREFCR25AQVvHRm9Hb8BBXEdw8UFcx3HAQV1HTXLHTcBHQ/PHSc5LQUHMgU1Sx0P1R0rOQMDC9kRAQ0Fdx3f4QV5HQfjLQUHMgVXYx015x036R0H6y0FBzIFT2Md7/EFex3z9QV9FT09LQUHMgVncwV/I3RwdS5tZW1vcnlfc3BhY2U8c21lbT4AI3RwdS5jb3JlX3R5cGU8dGM+ACNhcml0aC5vdmVyZmxvdzxub25lPgAdBgIKAgWBFT8/LQUHNgUZIQECAgEJAQIEF/sDAgIBUQMFBQcHAQTGBAUBEQFBBwMBBQ8RAUcHAxMjBQcBBwEDAwMJAwEDAwMJAwEDAwMdAwEHBwMNAwEFBwkDAwMTAwERFgMDAQkHCw0FBQM7dwUBAwEDCwYfAwkDEw0GHwMBBQEXAwN/ewMBAwOHCQMBBQeLKQMDBRsdAwOPEwMBCQYXAwEHHyEbFQaZAwEFGSMDA6EJAwEFB6unAwMFJScDAy0JAwEFBzMxAwMFJSsDAy0JAwEFBzMxAwMFIy8XBrsDAwUtMRkGwQMDBTMpBwfJDQMBBSUjCQYXAwEHNTclAwPNEwMBBQfTKQMDBTk7AwM71wMBGwc7DQMBBRk/BwflDQMBBRVBHQftDQMBBRUZCQYXAwEHPUNFCwYbAwkDEw0GGwMBBQNJHwQbB0cDSSEEAwNHAwMDHQMBEwABBgMBBQEAlgqDFQ0RCwkLEQsXDQcNBxELJRURCx0FCw0dFRMjIR0pLRELCQ0HCQsJFQkNITUVGxcXFxcZGREVGSMbFxcfDw0JHRFidWlsdGluAHN0YWJsZV9tb3NhaWMAdHB1AGFyaXRoAG1vZHVsZQBhcml0aC5jb25zdGFudABhcml0aC5jbXBpAGFyaXRoLmFkZGkAYXJpdGguc2VsZWN0AGFyaXRoLmluZGV4X2Nhc3QAbWVtcmVmLmxvYWQAZnVuYy5mdW5jAHNjZi5mb3IAZnVuYy5yZXR1cm4AYXJpdGgucmVtc2kAYXJpdGgueG9yaQBhcml0aC5hbmRpAGFyaXRoLm11bGkAYXJpdGguc3ViaQBtZW1yZWYuc3RvcmUAc2NmLnlpZWxkAC90bXAvdHB1di9jb3JwdXMvcHJvYmUucHkAay48bG9jYWxzPi5ib2R5AHZhbHVlAGVxOgBwcmVkaWNhdGUAbmU6AGppdDoAaml0AGVxAGVxL2VxAGx0OgBhZGQ6AGFkZC9hZGQAc3RhYmxlX21vc2FpYy52ZXJzaW9uAGRpbWVuc2lvbl9zZW1hbnRpY3MAZnVuY3Rpb25fdHlwZQBzY2FsYXJfcHJlZmV0Y2gAc2NyYXRjaF9vcGVyYW5kcwBzeW1fbmFtZQBzbWVtX2xvb3AAdHB1LmNvcmVfdHlwZQBzY2FuOgBzY2FuAGsAb3ZlcmZsb3dGbGFncwBnZXQ6AGdldC9nZXQAc2VsZWN0X246AHNlbGVjdF9uL3NlbGVjdF9uAHJlbToAcmVtL3JlbQBuZQBuZS9uZQBsdABsdC9sdABuZS94b3IveG9yAGFuZDoAYW5kL2FuZABtdWw6AG11bABzdWI6AHN1Yi9zdWIAc3dhcDoAc3dhcC9zd2FwAA==","needs_layout_passes":true,"allow_input_fusion":[],"serialization_format":"1","output_memory_colors":[],"output_memory_space_colors":[{"color":"0","shape_index":[]}],"input_memory_space_colors":[{"operand_index":"0","color":"1","shape_index":[]}],"operand_to_metadata":[]},"used_scoped_memory_configs":[],"aliasing_operands":{"lists":[]}}
+}

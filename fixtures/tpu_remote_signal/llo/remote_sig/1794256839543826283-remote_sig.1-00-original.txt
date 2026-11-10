@@ -1,0 +1,171 @@
+// [Enable stack traces via -xla_jf_collect_llo_stack_trace or -xla_jf_debug_level=2]
+$region0: #{remote_sig.1}
+  #allocation0 [shape = 'u32[]', space=smem, size = 0x4, offset = 0x4, fixed_abs, tag = 'smem constant byte address 0x4 - core index']
+  #allocation1 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for remote_sig.1']
+  #allocation2 [shape = 'u32[144,128]{1,0:T(1,128)}', space=vmem, size = 0x12000, scoped, tag = 'internal scratch']
+  #allocation3 [shape = 'f32[128,128]{1,0:T(8,128)}', space=vmem, size = 0x10000, scoped, tag = 'scratch operand']
+  #allocation4 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scratch operand']
+  #allocation5 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scratch operand']
+  #allocation6 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scratch operand']
+  #allocation7 [shape = 'u8[32]{0}', space=smem, size = 0x20, scoped, tag = 'scoped memory for remote_sig.1']
+  #allocation8 [shape = 's32[]', space=sflag, size = 0x4, offset = 0x20, fixed_abs, tag = 'sflag constant byte address 0x20 - barrier sync flag number']
+  #allocation9 [shape = 'u32[]', space=smem, size = 0x4, offset = 0xfff88, fixed_abs, tag = 'smem constant byte address 0xfff88 - partition id location']
+  #allocation10 [shape = 'u32[]', space=smem, size = 0x4, offset = 0xfff8c, fixed_abs, tag = 'smem constant byte address 0xfff8c - replica id location']
+  #allocation11 [shape = 's32[]', space=sflag, size = 0x4, offset = 0, fixed_abs, tag = 'sflag constant byte address 0x0 - dummy sync flag']
+  #allocation12 [shape = 'u32[0]{0}', space=smem, size = 0, offset = 0, fixed_abs, tag = 'smem constant byte address 0x0 - null']
+  #allocation13 [shape = 's32[]', space=sflag, size = 0x4, offset = 0, fixed_abs, tag = 'sflag constant byte address 0x0 - dummy sync flag']
+  %s0 = inlined_call_operand.vmem [shape: f32[128,128], index: 0, kind: input, shape index: {}] /* input window allocation for operator input 0. The window shape is f32[128,128], while the full shape is f32[128,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s1 = inlined_call_operand.vmem [shape: f32[8,128], index: 1, kind: output, shape index: {0}] /* output window allocation for operator output 0. The window shape is f32[8,128], while the full shape is f32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s2 = inlined_call_operand.vmem [shape: f32[8,128], index: 2, kind: output, shape index: {1}] /* output window allocation for operator output 1. The window shape is f32[8,128], while the full shape is f32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %3 = xla_tuple %s1, %s2
+  %s4 = sld [smem:[#allocation0]] /* core id */
+  $region30: #{remote_sig.1} parent=0
+    _
+  %s6 = ssub.s32 1, %s4
+  %s7 = scalar_select /*predicate=*/0, /*on_true=*/%s6, /*on_false=*/%s4 /* megacore core id */
+  %8 = sst [smem:[#allocation7]] 0
+  %s9 = scalar_lea.smem [#allocation7], 1
+  %10 = sst [smem:[%s9]] 1
+  // Predicated region
+  $region2: #{remote_sig.1} parent=0 // pred_check
+    _
+  $region3: #{remote_sig.1} parent=0 // pred_check_branch
+    %12 = sbr.rel (0) target = $region5
+  $region4: #{remote_sig.1} parent=0 // pred_region
+    _
+  $region5: #{remote_sig.1} parent=0 // pred_fallthru
+    _
+  %s13 = sld [smem:[#allocation9]]
+  %s14 = sld [smem:[#allocation10]]
+  %s15 = smul.u32 %s14, 2
+  %s16 = sadd.s32 %s15, %s13
+  %p17 = scmp.lt.s32.totalorder %s16, 0
+  %s18 = ssub.s32 0, %s16
+  %s19 = scalar_select /*predicate=*/%p17, /*on_true=*/%s18, /*on_false=*/%s16
+  %s20 = sand.u32 %s19, 1 /* smod.u32 w/div 2 */
+  %s21 = ssub.s32 0, %s20
+  %s22 = scalar_select /*predicate=*/%p17, /*on_true=*/%s21, /*on_false=*/%s20
+  %s23 = ssub.s32 1, %s22
+  %24 = vst [vmem:[#allocation3 + $0x78] sm:$0xff] /*vst_source=*/-1.0
+  %s25 = sld [smem:[#allocation0]] /* core id */
+  %s26 = sand.u32 %s23, 1 /* smod.u32 w/div 2 */
+  %s27 = sadd.s32 0, %s26
+  %s28 = sshrl.u32 %s23, 1
+  %s29 = sand.u32 %s28, 16383
+  %s30 = sshll.u32 %s29, 17
+  %s31 = sshll.u32 %s27, 16
+  %s32 = sadd.s32 131072, %s31
+  %s33 = sshrl.u32 %s32, 2
+  %s34 = sor.u32 %s33, [#allocation8]
+  %s35 = sor.u32 %s30, %s34
+  %36 = vsyncadd.remote %s35, 1
+  %s37 = ssub.s32 0, 1
+  %38 = vsyncadd [#allocation8], %s37
+  %39 = vwait.ge [#allocation8], 0
+  %p40 = scmp.eq.s32.totalorder %s22, 0
+  // Predicated region
+  $region6: #{remote_sig.1} parent=0 // pred_check
+    %p41 = pneg %p40
+  $region7: #{remote_sig.1} parent=0 // pred_check_branch
+    %43 = sbr.rel (%p41) target = $region9
+  $region8: #{remote_sig.1} parent=0 // pred_region
+    %s44 = sld [smem:[#allocation0]] /* core id */
+    %s45 = smul.u32 128, 512
+    %s46 = sadd.s32 %s45, 31
+    %s47 = sshrl.u32 %s46, 5
+    %s49 = sshll.u32 1, 14
+    %s50 = sxor.u32 4294967295, %s49
+    %s53 = sshll.u32 7, 18
+    %s54 = sxor.u32 4294967295, %s53
+    %s55 = sand.u32 16384, %s54
+    %s57 = sor.u32 %s55, 0
+    %s59 = sshll.u32 7, 26
+    %s60 = sxor.u32 4294967295, %s59
+    %s61 = sand.u32 %s57, %s60
+    %s63 = sor.u32 %s61, 201326592
+    %s66 = sxor.u32 4294967295, 16383
+    %s67 = sand.u32 %s63, %s66
+    %s69 = sor.u32 %s67, 0
+    %s71 = sshll.u32 %s0, 4
+    %s72 = int_to_ptr.vmem [resolvable:$true] %s71
+    %s73 = sshll.u32 [#allocation3], 4
+    %s74 = int_to_ptr.vmem [resolvable:$true] %s73
+    %s76 = sor.u32 24576, [#allocation6]
+    %78 = dma.general /*src=*/%s72, /*size_in_granules=*/2048, /*dst=*/%s74, /*dst_syncflagno=*/%s76, /*src_syncflagno=*/[#allocation5], /*stridedescaddr=*/[#allocation12], /*overrides=*/%s69, /*dst_syncflagno_1=*/0 /* vmem-to-vmem */
+    %s81 = sadd.s32 131072, 65536
+    %s82 = sshrl.u32 %s81, 2
+    %s83 = sor.u32 %s82, [#allocation4]
+    %s84 = sor.u32 0, %s83
+    %85 = vsyncadd.remote %s84, 1
+    %87 = dma.done [#allocation5], 2048
+    %88 = vst [vmem:[%s1] sm:$0xff] /*vst_source=*/0.0
+    %89 = vst [vmem:[%s2] sm:$0xff] /*vst_source=*/0.0
+  $region9: #{remote_sig.1} parent=0 // pred_fallthru
+    _
+  %p90 = scmp.eq.s32.totalorder %s22, 1
+  // Predicated region
+  $region10: #{remote_sig.1} parent=0 // pred_check
+    %p91 = pneg %p90
+  $region11: #{remote_sig.1} parent=0 // pred_check_branch
+    %93 = sbr.rel (%p91) target = $region13
+  $region12: #{remote_sig.1} parent=0 // pred_region
+    %94 = vsyncadd [#allocation4], %s37
+    %95 = vwait.ge [#allocation4], 0
+    %v96 = vld [vmem:[#allocation3 + $0x78] sm:$0xff]
+    %97 = vst [vmem:[%s1] sm:$0xff] /*vst_source=*/%v96
+    %99 = dma.done [#allocation6], 2048
+    %v100 = vld [vmem:[#allocation3 + $0x78] sm:$0xff]
+    %101 = vst [vmem:[%s2] sm:$0xff] /*vst_source=*/%v100
+  $region13: #{remote_sig.1} parent=0 // pred_fallthru
+    _
+  // Predicated region
+  $region14: #{remote_sig.1} parent=0 // pred_check
+    _
+  $region15: #{remote_sig.1} parent=0 // pred_check_branch
+    %103 = sbr.rel (0) target = $region17
+  $region16: #{remote_sig.1} parent=0 // pred_region
+    _
+  $region17: #{remote_sig.1} parent=0 // pred_fallthru
+    _
+  // Predicated region
+  $region18: #{remote_sig.1} parent=0 // pred_check
+    _
+  $region19: #{remote_sig.1} parent=0 // pred_check_branch
+    %105 = sbr.rel (0) target = $region21
+  $region20: #{remote_sig.1} parent=0 // pred_region
+    _
+  $region21: #{remote_sig.1} parent=0 // pred_fallthru
+    _
+  // Predicated region
+  $region22: #{remote_sig.1} parent=0 // pred_check
+    _
+  $region23: #{remote_sig.1} parent=0 // pred_check_branch
+    %107 = sbr.rel (0) target = $region25
+  $region24: #{remote_sig.1} parent=0 // pred_region
+    _
+  $region25: #{remote_sig.1} parent=0 // pred_fallthru
+    _
+  // Predicated region
+  $region26: #{remote_sig.1} parent=0 // pred_check
+    _
+  $region27: #{remote_sig.1} parent=0 // pred_check_branch
+    %109 = sbr.rel (0) target = $region29
+  $region28: #{remote_sig.1} parent=0 // pred_region
+    _
+  $region29: #{remote_sig.1} parent=0 // pred_fallthru
+    _
+  %110 = vsyncmov [#allocation4]
+  %s111 = vpop.sfrf %110
+  %p112 = scmp.eq.s32.totalorder %s111, 0
+  %p113 = pneg %p112
+  %115 = shalt.err (%p113) /* Semaphore (scratch argument 1) has a nonzero value upon exit from a Mosaic kernel. Make sure every DMA is awaited, and every semaphore signal is paired with a wait. */
+  %116 = vsyncmov [#allocation5]
+  %s117 = vpop.sfrf %116
+  %p118 = scmp.eq.s32.totalorder %s117, 0
+  %p119 = pneg %p118
+  %121 = shalt.err (%p119) /* Semaphore (scratch argument 2) has a nonzero value upon exit from a Mosaic kernel. Make sure every DMA is awaited, and every semaphore signal is paired with a wait. */
+  %122 = vsyncmov [#allocation6]
+  %s123 = vpop.sfrf %122
+  %p124 = scmp.eq.s32.totalorder %s123, 0
+  %p125 = pneg %p124
+  %127 = shalt.err (%p125) /* Semaphore (scratch argument 3) has a nonzero value upon exit from a Mosaic kernel. Make sure every DMA is awaited, and every semaphore signal is paired with a wait. */

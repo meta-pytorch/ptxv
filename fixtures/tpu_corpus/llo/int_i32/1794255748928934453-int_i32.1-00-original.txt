@@ -1,0 +1,253 @@
+// [Enable stack traces via -xla_jf_collect_llo_stack_trace or -xla_jf_debug_level=2]
+$region0: #{int_i32.1}
+  #allocation0 [shape = 'u32[]', space=smem, size = 0x4, offset = 0x4, fixed_abs, tag = 'smem constant byte address 0x4 - core index']
+  #allocation1 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for int_i32.1']
+  #allocation2 [shape = 'u32[144,128]{1,0:T(1,128)}', space=vmem, size = 0x12000, scoped, tag = 'internal scratch']
+  %s0 = inlined_call_operand.vmem [shape: s32[8,128], index: 0, kind: input, shape index: {}] /* input window allocation for operator input 0. The window shape is s32[8,128], while the full shape is s32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s1 = inlined_call_operand.vmem [shape: s32[8,128], index: 1, kind: input, shape index: {}] /* input window allocation for operator input 1. The window shape is s32[8,128], while the full shape is s32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s2 = inlined_call_operand.hbm [shape: s32[8,128], index: 2, kind: output, shape index: {0}] /* output window allocation for operator output 0. The window shape is s32[8,128], while the full shape is s32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s3 = inlined_call_operand.hbm [shape: s32[8,128], index: 3, kind: output, shape index: {1}] /* output window allocation for operator output 1. The window shape is s32[8,128], while the full shape is s32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s4 = inlined_call_operand.hbm [shape: s32[8,128], index: 4, kind: output, shape index: {2}] /* output window allocation for operator output 2. The window shape is s32[8,128], while the full shape is s32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s5 = inlined_call_operand.hbm [shape: s32[8,128], index: 5, kind: output, shape index: {3}] /* output window allocation for operator output 3. The window shape is s32[8,128], while the full shape is s32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s6 = inlined_call_operand.hbm [shape: s32[8,128], index: 6, kind: output, shape index: {4}] /* output window allocation for operator output 4. The window shape is s32[8,128], while the full shape is s32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s7 = inlined_call_operand.hbm [shape: s32[8,128], index: 7, kind: output, shape index: {5}] /* output window allocation for operator output 5. The window shape is s32[8,128], while the full shape is s32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %8 = xla_tuple %s2, %s3, %s4, %s5, %s6, %s7
+  %s9 = sld [smem:[#allocation0]] /* core id */
+  $region58: #{int_i32.1} parent=0
+    _
+  %s11 = ssub.s32 1, %s9
+  %s12 = scalar_select /*predicate=*/0, /*on_true=*/%s11, /*on_false=*/%s9 /* megacore core id */
+  $region1: #{int_i32.1} parent=0
+    #allocation3 [shape = 'u8[4096]{0}', space=vmem, size = 0x1000, scoped, tag = 'output window allocation for operator output 0. The window shape is s32[8,128], while the full shape is s32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM. This allocation is single buffered.']
+    #allocation4 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for int_i32.1']
+    #allocation5 [shape = 'u8[4096]{0}', space=vmem, size = 0x1000, scoped, tag = 'output window allocation for operator output 1. The window shape is s32[8,128], while the full shape is s32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM. This allocation is single buffered.']
+    #allocation6 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for int_i32.1']
+    #allocation7 [shape = 'u8[4096]{0}', space=vmem, size = 0x1000, scoped, tag = 'output window allocation for operator output 2. The window shape is s32[8,128], while the full shape is s32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM. This allocation is single buffered.']
+    #allocation8 [shape = 'u8[4096]{0}', space=vmem, size = 0x1000, scoped, tag = 'output window allocation for operator output 3. The window shape is s32[8,128], while the full shape is s32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM. This allocation is single buffered.']
+    #allocation9 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for int_i32.1']
+    #allocation10 [shape = 'u8[4096]{0}', space=vmem, size = 0x1000, scoped, tag = 'output window allocation for operator output 4. The window shape is s32[8,128], while the full shape is s32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM. This allocation is single buffered.']
+    #allocation11 [shape = 'u8[4096]{0}', space=vmem, size = 0x1000, scoped, tag = 'output window allocation for operator output 5. The window shape is s32[8,128], while the full shape is s32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM. This allocation is single buffered.']
+    #allocation12 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for int_i32.1']
+    %13 = vsyncpa [#allocation4], 0
+    %14 = vsyncpa [#allocation6], 0
+    %15 = vsyncpa [#allocation9], 0
+    %16 = vsyncpa [#allocation12], 0
+    // Predicated region
+    $region2: #{int_i32.1} parent=1 // pred_check
+      _
+    $region3: #{int_i32.1} parent=1 // pred_check_branch
+      %18 = sbr.rel (0) target = $region5
+    $region4: #{int_i32.1} parent=1 // pred_region
+      _
+    $region5: #{int_i32.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region6: #{int_i32.1} parent=1 // pred_check
+      _
+    $region7: #{int_i32.1} parent=1 // pred_check_branch
+      %20 = sbr.rel (0) target = $region9
+    $region8: #{int_i32.1} parent=1 // pred_region
+      _
+    $region9: #{int_i32.1} parent=1 // pred_fallthru
+      _
+    %v21 = vld [vmem:[%s0] sm:$0xff]
+    %v22 = vld [vmem:[%s1] sm:$0xff]
+    %v23 = vmul.u32 %v22, 3
+    %v24 = vadd.s32 %v21, %v23
+    %25 = vst [vmem:[#allocation3] sm:$0xff] /*vst_source=*/%v24
+    %v26 = vsub.s32 %v21, %v22
+    %27 = vst [vmem:[#allocation5] sm:$0xff] /*vst_source=*/%v26
+    %v28 = vand.u32 %v21, %v22
+    %v29 = vxor.u32 %v21, 23130
+    %v30 = vor.u32 %v28, %v29
+    %31 = vst [vmem:[#allocation7] sm:$0xff] /*vst_source=*/%v30
+    %v32 = vshll.u32 %v21, 3
+    %33 = vst [vmem:[#allocation8] sm:$0xff] /*vst_source=*/%v32
+    %v34 = vshra.s32 %v21, 2
+    %35 = vst [vmem:[#allocation10] sm:$0xff] /*vst_source=*/%v34
+    %v36 = vshrl.u32 %v21, 5
+    %37 = vst [vmem:[#allocation11] sm:$0xff] /*vst_source=*/%v36
+    // Predicated region
+    $region10: #{int_i32.1} parent=1 // pred_check
+      _
+    $region11: #{int_i32.1} parent=1 // pred_check_branch
+      %39 = sbr.rel (0) target = $region13
+    $region12: #{int_i32.1} parent=1 // pred_region
+      %40 = vsyncadd [#allocation4], 0
+      %s42 = sshll.u32 [#allocation3], 4
+      %s43 = int_to_ptr.vmem [resolvable:$true] %s42
+      %45 = dma.vmem_to_hbm [thread:$0]  /*vmem=*/%s43, /*size_in_granules=*/128, /*hbm=*/%s2, /*dst_syncflagno=*/[#allocation4] /*
+base_bounds: (1, 1)
+dynamic_base_bounds: (1, 1)
+window_bounds: (1, 1)
+iteration_bounds: (1)
+strides: (1, 1)
+pad_low: (0, 0)
+pad_high: (0, 0)
+element_size_in_bytes: 4096
+second_minor_factor: 1 */
+    $region13: #{int_i32.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region14: #{int_i32.1} parent=1 // pred_check
+      _
+    $region15: #{int_i32.1} parent=1 // pred_check_branch
+      %47 = sbr.rel (0) target = $region17
+    $region16: #{int_i32.1} parent=1 // pred_region
+      %48 = vsyncadd [#allocation6], 0
+      %s50 = sshll.u32 [#allocation5], 4
+      %s51 = int_to_ptr.vmem [resolvable:$true] %s50
+      %53 = dma.vmem_to_hbm [thread:$0]  /*vmem=*/%s51, /*size_in_granules=*/128, /*hbm=*/%s3, /*dst_syncflagno=*/[#allocation6] /*
+base_bounds: (1, 1)
+dynamic_base_bounds: (1, 1)
+window_bounds: (1, 1)
+iteration_bounds: (1)
+strides: (1, 1)
+pad_low: (0, 0)
+pad_high: (0, 0)
+element_size_in_bytes: 4096
+second_minor_factor: 1 */
+    $region17: #{int_i32.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region18: #{int_i32.1} parent=1 // pred_check
+      _
+    $region19: #{int_i32.1} parent=1 // pred_check_branch
+      %55 = sbr.rel (0) target = $region21
+    $region20: #{int_i32.1} parent=1 // pred_region
+      %56 = vsyncadd [#allocation6], 0
+      %s58 = sshll.u32 [#allocation7], 4
+      %s59 = int_to_ptr.vmem [resolvable:$true] %s58
+      %61 = dma.vmem_to_hbm [thread:$0]  /*vmem=*/%s59, /*size_in_granules=*/128, /*hbm=*/%s4, /*dst_syncflagno=*/[#allocation6] /*
+base_bounds: (1, 1)
+dynamic_base_bounds: (1, 1)
+window_bounds: (1, 1)
+iteration_bounds: (1)
+strides: (1, 1)
+pad_low: (0, 0)
+pad_high: (0, 0)
+element_size_in_bytes: 4096
+second_minor_factor: 1 */
+    $region21: #{int_i32.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region22: #{int_i32.1} parent=1 // pred_check
+      _
+    $region23: #{int_i32.1} parent=1 // pred_check_branch
+      %63 = sbr.rel (0) target = $region25
+    $region24: #{int_i32.1} parent=1 // pred_region
+      %64 = vsyncadd [#allocation9], 0
+      %s66 = sshll.u32 [#allocation8], 4
+      %s67 = int_to_ptr.vmem [resolvable:$true] %s66
+      %69 = dma.vmem_to_hbm [thread:$0]  /*vmem=*/%s67, /*size_in_granules=*/128, /*hbm=*/%s5, /*dst_syncflagno=*/[#allocation9] /*
+base_bounds: (1, 1)
+dynamic_base_bounds: (1, 1)
+window_bounds: (1, 1)
+iteration_bounds: (1)
+strides: (1, 1)
+pad_low: (0, 0)
+pad_high: (0, 0)
+element_size_in_bytes: 4096
+second_minor_factor: 1 */
+    $region25: #{int_i32.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region26: #{int_i32.1} parent=1 // pred_check
+      _
+    $region27: #{int_i32.1} parent=1 // pred_check_branch
+      %71 = sbr.rel (0) target = $region29
+    $region28: #{int_i32.1} parent=1 // pred_region
+      %72 = vsyncadd [#allocation9], 0
+      %s74 = sshll.u32 [#allocation10], 4
+      %s75 = int_to_ptr.vmem [resolvable:$true] %s74
+      %77 = dma.vmem_to_hbm [thread:$0]  /*vmem=*/%s75, /*size_in_granules=*/128, /*hbm=*/%s6, /*dst_syncflagno=*/[#allocation9] /*
+base_bounds: (1, 1)
+dynamic_base_bounds: (1, 1)
+window_bounds: (1, 1)
+iteration_bounds: (1)
+strides: (1, 1)
+pad_low: (0, 0)
+pad_high: (0, 0)
+element_size_in_bytes: 4096
+second_minor_factor: 1 */
+    $region29: #{int_i32.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region30: #{int_i32.1} parent=1 // pred_check
+      _
+    $region31: #{int_i32.1} parent=1 // pred_check_branch
+      %79 = sbr.rel (0) target = $region33
+    $region32: #{int_i32.1} parent=1 // pred_region
+      %80 = vsyncadd [#allocation12], 0
+      %s82 = sshll.u32 [#allocation11], 4
+      %s83 = int_to_ptr.vmem [resolvable:$true] %s82
+      %85 = dma.vmem_to_hbm [thread:$0]  /*vmem=*/%s83, /*size_in_granules=*/128, /*hbm=*/%s7, /*dst_syncflagno=*/[#allocation12] /*
+base_bounds: (1, 1)
+dynamic_base_bounds: (1, 1)
+window_bounds: (1, 1)
+iteration_bounds: (1)
+strides: (1, 1)
+pad_low: (0, 0)
+pad_high: (0, 0)
+element_size_in_bytes: 4096
+second_minor_factor: 1 */
+    $region33: #{int_i32.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region34: #{int_i32.1} parent=1 // pred_check
+      _
+    $region35: #{int_i32.1} parent=1 // pred_check_branch
+      %87 = sbr.rel (0) target = $region37
+    $region36: #{int_i32.1} parent=1 // pred_region
+      %88 = dma.done [#allocation4], 128 /* pipeline-emitter-dma-wait */
+    $region37: #{int_i32.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region38: #{int_i32.1} parent=1 // pred_check
+      _
+    $region39: #{int_i32.1} parent=1 // pred_check_branch
+      %90 = sbr.rel (0) target = $region41
+    $region40: #{int_i32.1} parent=1 // pred_region
+      %91 = dma.done [#allocation6], 128 /* pipeline-emitter-dma-wait */
+    $region41: #{int_i32.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region42: #{int_i32.1} parent=1 // pred_check
+      _
+    $region43: #{int_i32.1} parent=1 // pred_check_branch
+      %93 = sbr.rel (0) target = $region45
+    $region44: #{int_i32.1} parent=1 // pred_region
+      %94 = dma.done [#allocation6], 128 /* pipeline-emitter-dma-wait */
+    $region45: #{int_i32.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region46: #{int_i32.1} parent=1 // pred_check
+      _
+    $region47: #{int_i32.1} parent=1 // pred_check_branch
+      %96 = sbr.rel (0) target = $region49
+    $region48: #{int_i32.1} parent=1 // pred_region
+      %97 = dma.done [#allocation9], 128 /* pipeline-emitter-dma-wait */
+    $region49: #{int_i32.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region50: #{int_i32.1} parent=1 // pred_check
+      _
+    $region51: #{int_i32.1} parent=1 // pred_check_branch
+      %99 = sbr.rel (0) target = $region53
+    $region52: #{int_i32.1} parent=1 // pred_region
+      %100 = dma.done [#allocation9], 128 /* pipeline-emitter-dma-wait */
+    $region53: #{int_i32.1} parent=1 // pred_fallthru
+      _
+    // Predicated region
+    $region54: #{int_i32.1} parent=1 // pred_check
+      _
+    $region55: #{int_i32.1} parent=1 // pred_check_branch
+      %102 = sbr.rel (0) target = $region57
+    $region56: #{int_i32.1} parent=1 // pred_region
+      %103 = dma.done [#allocation12], 128 /* pipeline-emitter-dma-wait */
+    $region57: #{int_i32.1} parent=1 // pred_fallthru
+      _
+    %104 = vsyncpa [#allocation4], 1
+    %105 = vsyncpa [#allocation6], 1
+    %106 = vsyncpa [#allocation9], 1
+    %107 = vsyncpa [#allocation12], 1

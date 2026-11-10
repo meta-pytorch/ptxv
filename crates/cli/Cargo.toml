@@ -19,6 +19,8 @@ ptxv-sass = { path = "../sass" }
 ptxv-case = { path = "../case" }
 ptxv-sim = { path = "../sim" }
 ptxv-hw = { path = "../hw" }
+ptxv-tpu = { path = "../tpu" }
+ptxv-tpu-ir = { path = "../tpu-ir" }
 mimalloc = { version = "0.1", default-features = false }
 
 [features]

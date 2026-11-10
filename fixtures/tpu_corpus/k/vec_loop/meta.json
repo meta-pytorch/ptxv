@@ -1,0 +1,22 @@
+{
+ "kernel": "vec_loop",
+ "inputs": [
+  {
+   "shape": [
+    128,
+    128
+   ],
+   "dtype": "float32"
+  }
+ ],
+ "outputs": [
+  {
+   "shape": [
+    8,
+    128
+   ],
+   "dtype": "float32"
+  }
+ ],
+ "device_kind": "TPU7x"
+}

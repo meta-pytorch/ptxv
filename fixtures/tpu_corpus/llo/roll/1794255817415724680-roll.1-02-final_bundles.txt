@@ -1,0 +1,74 @@
+= control target key start
+LH: loop header
+LB: loop body
+LE: loop exit
+PB: predicated region body
+PF: predicated region fallthrough
+CT: control target
+= control target key end
+
+     0   :  { %8 = vsyncpa [#allocation4], 0  ;;  %s168_s0 = inlined_call_operand.vmem [shape: f32[16,128], index: 0, kind: input, shape index: {}] /* input window allocation for operator input 0. The window shape is f32[16,128], while the full shape is f32[16,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */  ;;  %s169_s1 = inlined_call_operand.hbm [shape: f32[16,128], index: 1, kind: output, shape index: {0}] /* output window allocation for operator output 0. The window shape is f32[16,128], while the full shape is f32[16,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */  ;;  %s170_s2 = inlined_call_operand.hbm [shape: f32[16,128], index: 2, kind: output, shape index: {1}] /* output window allocation for operator output 1. The window shape is f32[16,128], while the full shape is f32[16,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */ } /* entry bundle: %roll.1 = custom-call(%copy-done) */
+   0x1   :  { %v12_v0 = vld [vmem:[%s168_s0] sm:$0xff] }
+   0x2   :  { %9 = vsyncpa [#allocation6], 0  ;;  %s118_s11 = smov 3 /* materialized constant */  ;;  %v13_v1 = vld [vmem:[%s168_s0 + $0x8] sm:$0xff]  ;;  %v28_v2 = vrot.slane %v12_v0, 3  ;;  %vm30_vm0 = vcmask 1044480 /* [0:4,0:127] */ }
+   0x3   :  { %16 = vrot.lane.b32.xlu0 %v12_v0, %s118_s11  ;;  %v29_v3 = vrot.slane %v13_v1, 3  ;;  %s119_s14 = smov [#allocation5] /* materialized constant */ }
+   0x4   :  { %s50_s15 = sshll.u32 %s119_s14, 4  ;;  %s51_s15 = int_to_ptr.vmem [resolvable:$true] %s50_s15 }
+   0x5   :  { %v31_v4 = vsel /*vm=*/%vm30_vm0, /*on_true_vy=*/%v28_v2, /*on_false_vx=*/%v29_v3  ;;  %v32_v5 = vsel /*vm=*/%vm30_vm0, /*on_true_vy=*/%v29_v3, /*on_false_vx=*/%v28_v2  ;;  %s70_s16 = scalar_lea.vmem %s51_s15, 256  ;;  %p75_p1 = scmp.lt.s32.totalorder %s51_s15, %s51_s15 }
+   0x6   :  { %35 = vst [vmem:[#allocation5] sm:$0xff] /*vst_source=*/%v32_v5  ;;  %36 = vst [vmem:[#allocation5 + $0x8] sm:$0xff] /*vst_source=*/%v31_v4  ;;  %p71_p0 = scmp.ne.s32.totalorder %s51_s15, %s70_s16  ;;  %p76_p2 = scmp.lt.s32.totalorder %s70_s16, %s70_s16 }
+   0x7   :  { %18 = vrot.lane.b32.xlu0 %v13_v1, %s118_s11 }
+   0x8   :  { %p77_p3 = por %p76_p2, %p75_p1 }
+   0x9   :  { %p78_p4 = pnand %p77_p3, %p71_p0 }
+   0xa   :  { %81 = shalt.err (!%p78_p4) /* BoundsCheck 4 [deref of opnd#0] for dma.vmem_to_hbm
+hlo: roll.1
+ */ }
+   0xb   :  { %s82_s18 = scalar_lea.hbm %s170_s2, 256 }
+   0xc   :  { %p83_p5 = scmp.ne.s32.totalorder %s170_s2, %s82_s18  ;;  %p86_p6 = scmp.lt.u32.totalorder %s82_s18, %s170_s2 }
+   0xd   :  { %p88_p7 = pnand %p86_p6, %p83_p5 }
+   0xe   :  { %91 = shalt.err (!%p88_p7) /* BoundsCheck 4 [deref of opnd#2] for dma.vmem_to_hbm
+hlo: roll.1
+ */ }
+   0xf   :  { %s120_s23 = smov 128 /* materialized constant */  ;;  %s121_s24 = smov 8 /* materialized constant */ }
+  0x10   :  { %56 = dma.vmem_to_hbm [thread:$0]  /*vmem=*/%s51_s15, /*size_in_granules=*/256, /*hbm=*/%s170_s2, /*dst_syncflagno=*/[#allocation6], /*src_stride=*/%s120_s23, /*dst_stride=*/%s120_s23, /*steps_per_stride=*/%s121_s24 /*
+base_bounds: (2, 1)
+dynamic_base_bounds: (2, 1)
+window_bounds: (2, 1)
+iteration_bounds: (1)
+strides: (1, 1)
+pad_low: (0, 0)
+pad_high: (0, 0)
+element_size_in_bytes: 4096
+second_minor_factor: 1 */ }
+  0x11   :  { %s122_s27 = smov [#allocation3] /* materialized constant */ }
+  0x12   :  { %s40_s28 = sshll.u32 %s122_s27, 4  ;;  %s41_s28 = int_to_ptr.vmem [resolvable:$true] %s40_s28 }
+  0x13   :  { %s92_s29 = scalar_lea.vmem %s41_s28, 256  ;;  %p97_p9 = scmp.lt.s32.totalorder %s41_s28, %s41_s28 }
+  0x14   :  { %p93_p8 = scmp.ne.s32.totalorder %s41_s28, %s92_s29  ;;  %p98_p10 = scmp.lt.s32.totalorder %s92_s29, %s92_s29 }
+  0x15   :  { %p99_p11 = por %p98_p10, %p97_p9 }
+  0x16   :  { %p100_p12 = pnand %p99_p11, %p93_p8 }
+  0x17   :  { %v17_v6 = vpop.permute.xlu0 %16 }
+  0x18   :  { %22 = vst [vmem:[#allocation3] sm:$0xff] /*vst_source=*/%v17_v6 }
+  0x19   :  { %v19_v7 = vpop.permute.xlu0 %18 }
+  0x1a   :  { %23 = vst [vmem:[#allocation3 + $0x8] sm:$0xff] /*vst_source=*/%v19_v7 }
+  0x1b   :  { %103 = shalt.err (!%p100_p12) /* BoundsCheck 7 [deref of opnd#0] for dma.vmem_to_hbm
+hlo: roll.1
+ */ }
+  0x1c   :  { %s104_s4 = scalar_lea.hbm %s169_s1, 256 }
+  0x1d   :  { %p105_p13 = scmp.ne.s32.totalorder %s169_s1, %s104_s4  ;;  %p108_p0 = scmp.lt.u32.totalorder %s104_s4, %s169_s1 }
+  0x1e   :  { %p110_p1 = pnand %p108_p0, %p105_p13 }
+  0x1f   :  { %113 = shalt.err (!%p110_p1) /* BoundsCheck 7 [deref of opnd#2] for dma.vmem_to_hbm
+hlo: roll.1
+ */ }
+  0x20   :  { %46 = dma.vmem_to_hbm [thread:$0]  /*vmem=*/%s41_s28, /*size_in_granules=*/256, /*hbm=*/%s169_s1, /*dst_syncflagno=*/[#allocation4], /*src_stride=*/%s120_s23, /*dst_stride=*/%s120_s23, /*steps_per_stride=*/%s121_s24 /*
+base_bounds: (2, 1)
+dynamic_base_bounds: (2, 1)
+window_bounds: (2, 1)
+iteration_bounds: (1)
+strides: (1, 1)
+pad_low: (0, 0)
+pad_high: (0, 0)
+element_size_in_bytes: 4096
+second_minor_factor: 1 */ }
+  0x21   :  { %114 = dma.done.wait [#allocation4], 256 /* pipeline-emitter-dma-wait */ }
+  0x22   :  { %115 = vsyncadd [#allocation4], 4294967040 }
+  0x23   :  { %116 = dma.done.wait [#allocation6], 256 /* pipeline-emitter-dma-wait */ }
+  0x24   :  { %117 = vsyncadd [#allocation6], 4294967040 }
+  0x25   :  { %63 = vsyncpa [#allocation4], 1 }
+  0x26   :  { %64 = vsyncpa [#allocation6], 1 } /* exit bundle: %roll.1 = custom-call(%copy-done) */

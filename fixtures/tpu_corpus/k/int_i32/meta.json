@@ -1,0 +1,64 @@
+{
+ "kernel": "int_i32",
+ "inputs": [
+  {
+   "shape": [
+    8,
+    128
+   ],
+   "dtype": "int32"
+  },
+  {
+   "shape": [
+    8,
+    128
+   ],
+   "dtype": "int32"
+  }
+ ],
+ "outputs": [
+  {
+   "shape": [
+    8,
+    128
+   ],
+   "dtype": "int32"
+  },
+  {
+   "shape": [
+    8,
+    128
+   ],
+   "dtype": "int32"
+  },
+  {
+   "shape": [
+    8,
+    128
+   ],
+   "dtype": "int32"
+  },
+  {
+   "shape": [
+    8,
+    128
+   ],
+   "dtype": "int32"
+  },
+  {
+   "shape": [
+    8,
+    128
+   ],
+   "dtype": "int32"
+  },
+  {
+   "shape": [
+    8,
+    128
+   ],
+   "dtype": "int32"
+  }
+ ],
+ "device_kind": "TPU7x"
+}

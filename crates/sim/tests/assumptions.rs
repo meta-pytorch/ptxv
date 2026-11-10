@@ -30,8 +30,31 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// `(id, kind)` of every entry in the per-target registries (targets/*/ASSUMPTIONS.md and
+/// fb/targets/*/ASSUMPTIONS.md, checked for format by the ptxv-targets crate).
+fn target_entries() -> BTreeSet<(String, String)> {
+    let mut out = BTreeSet::new();
+    for base in ["targets", "fb/targets"] {
+        let Ok(rd) = std::fs::read_dir(root().join(base)) else {
+            continue;
+        };
+        for e in rd {
+            let Ok(text) = std::fs::read_to_string(e.unwrap().path().join("ASSUMPTIONS.md")) else {
+                continue;
+            };
+            for h in text.lines().filter_map(|l| l.strip_prefix("### ")) {
+                if let Some((id, kind)) = h.split_once(" · ") {
+                    out.insert((id.trim().to_string(), kind.trim().to_string()));
+                }
+            }
+        }
+    }
+    out
+}
+
 #[test]
 fn registry_doc_and_code_agree() {
+    let targets = target_entries();
     let doc = std::fs::read_to_string(root().join("ASSUMPTIONS.md")).unwrap();
     // Headings: `### ID · kind`
     let documented: BTreeSet<(String, String)> = doc
@@ -65,13 +88,19 @@ fn registry_doc_and_code_agree() {
             for id in ids.split(',') {
                 let id = id.trim().to_string();
                 assert!(
-                    REGISTRY.iter().any(|a| a.id == id),
-                    "{}: ASSUME({id}) is not in the registry",
+                    REGISTRY.iter().any(|a| a.id == id) || targets.iter().any(|t| t.0 == id),
+                    "{}: ASSUME({id}) is not in the registry or a target's ASSUMPTIONS.md",
                     f.display()
                 );
                 tagged.insert(id);
             }
         }
+    }
+    for (id, _) in targets.iter().filter(|t| t.1 == "code") {
+        assert!(
+            tagged.contains(id),
+            "target code assumption {id} is not tagged ASSUME({id}) anywhere in crates/"
+        );
     }
     for a in REGISTRY.iter().filter(|a| a.kind == "code") {
         assert!(

@@ -1,0 +1,230 @@
+// [Enable stack traces via -xla_jf_collect_llo_stack_trace or -xla_jf_debug_level=2]
+$region0: #{pred_when.1}
+  #allocation0 [shape = 'u32[]', space=smem, size = 0x4, offset = 0x4, fixed_abs, tag = 'smem constant byte address 0x4 - core index']
+  #allocation1 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for pred_when.1']
+  #allocation2 [shape = 'u32[144,128]{1,0:T(1,128)}', space=vmem, size = 0x12000, scoped, tag = 'internal scratch']
+  %s0 = inlined_call_operand.vmem [shape: f32[40,128], index: 0, kind: input, shape index: {}] /* input window allocation for operator input 0. The window shape is f32[8,128], while the full shape is f32[40,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s1 = inlined_call_operand.hbm [shape: f32[8,128], index: 1, kind: output, shape index: {}] /* output window allocation for operator output 0. The window shape is f32[8,128], while the full shape is f32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */
+  %s2 = sld [smem:[#allocation0]] /* core id */
+  $region49: #{pred_when.1} parent=0
+    _
+  %s4 = ssub.s32 1, %s2
+  %s5 = scalar_select /*predicate=*/0, /*on_true=*/%s4, /*on_false=*/%s2 /* megacore core id */
+  $region1: #{pred_when.1} parent=0
+    #allocation3 [shape = 'u8[4096]{0}', space=vmem, size = 0x1000, scoped, tag = 'output window allocation for operator output 0. The window shape is f32[8,128], while the full shape is f32[8,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM. This allocation is single buffered.']
+    #allocation4 [shape = 's32[1]{0}', space=sflag, size = 0x4, scoped, tag = 'scoped memory for pred_when.1']
+    %6 = vsyncpa [#allocation4], 0
+    loop: start=0, step=1, limit=7
+    $region2: #{pred_when.1} parent=1 // loop_pre_header
+      _
+    $region3: #{pred_when.1} parent=1 // loop_header
+      %s8 = sphi 0, %s12 /* iteration index, stage = 0 */
+      %p9 = scmp.ge.s32.totalorder %s8, 7 /* loop exit test */
+      %s18 = sphi 0, %s20
+      %s21 = sphi 0, %s18
+      %s22 = sphi 0, %s21
+      %s38 = sphi 0, %s22
+      %s42 = sphi 0, %s42
+      %s44 = sphi 0, %s42
+      %s45 = sphi 0, %s44
+      %s59 = sphi 0, %s45
+    $region4: #{pred_when.1} parent=1 // loop_header_branch
+      %11 = sbr.rel (%p9) target = $region8
+    $region5: #{pred_when.1} parent=1 // loop_body
+      %s13 = ssub.s32 %s8, 1 /* iteration index, stage = 1 */
+      %s14 = ssub.s32 %s8, 2 /* iteration index, stage = 2 */
+      %s15 = sadd.s32 %s8, 1
+      %s16 = ssub.s32 %s8, %s15
+      %p17 = scmp.eq.s32.totalorder %s16, 0
+      %s19 = sadd.s32 %s18, 1
+      %s20 = scalar_select /*predicate=*/%p17, /*on_true=*/%s18, /*on_false=*/%s19
+      %p23 = pneg %p17
+      %p24 = scmp.eq.s32.totalorder %s8, 4
+      %p25 = por %p23, %p24
+      %p26 = scmp.ne.s32.totalorder %s18, %s21
+      %p27 = scmp.eq.s32.totalorder %s8, 0
+      %p28 = por %p26, %p27
+      %p29 = scmp.ne.s32.totalorder %s18, %s21
+      %p30 = scmp.eq.s32.totalorder %s13, 4
+      %p31 = por %p29, %p30
+      %p32 = scmp.ne.s32.totalorder %s21, %s22
+      %p33 = scmp.eq.s32.totalorder %s13, 0
+      %p34 = por %p32, %p33
+      %p35 = scmp.ne.s32.totalorder %s21, %s22
+      %p36 = scmp.eq.s32.totalorder %s14, 4
+      %p37 = por %p35, %p36
+      %p39 = scmp.ne.s32.totalorder %s22, %s38
+      %p40 = scmp.eq.s32.totalorder %s14, 0
+      %p41 = por %p39, %p40
+      %s43 = sadd.s32 %s42, 1
+      %p46 = scmp.eq.s32.totalorder %s8, 4
+      %p47 = scmp.ne.s32.totalorder %s42, %s44
+      %p48 = scmp.eq.s32.totalorder %s8, 0
+      %p49 = por %p47, %p48
+      %p50 = scmp.ne.s32.totalorder %s42, %s44
+      %p51 = scmp.eq.s32.totalorder %s13, 4
+      %p52 = por %p50, %p51
+      %p53 = scmp.ne.s32.totalorder %s44, %s45
+      %p54 = scmp.eq.s32.totalorder %s13, 0
+      %p55 = por %p53, %p54
+      %p56 = scmp.ne.s32.totalorder %s44, %s45
+      %p57 = scmp.eq.s32.totalorder %s14, 4
+      %p58 = por %p56, %p57
+      %p60 = scmp.ne.s32.totalorder %s45, %s59
+      %p61 = scmp.eq.s32.totalorder %s14, 0
+      %p62 = por %p60, %p61
+      %p63 = scmp.le.s32.totalorder 1, %s8
+      %p64 = scmp.lt.s32.totalorder %s8, 6
+      %p65 = pnand %p63, %p64
+      %p66 = pneg %p65
+      // Predicated region
+      $region9: #{pred_when.1} parent=5 // pred_check
+        _
+      $region10: #{pred_when.1} parent=5 // pred_check_branch
+        %68 = sbr.rel (%p65) target = $region12
+      $region11: #{pred_when.1} parent=5 // pred_region
+        %s69 = ssub.s32 %s8, 1
+      $region12: #{pred_when.1} parent=5 // pred_fallthru
+        _
+      %p70 = scmp.lt.s32.totalorder %s8, 5
+      // Predicated region
+      $region13: #{pred_when.1} parent=5 // pred_check
+        %p71 = pneg %p70
+      $region14: #{pred_when.1} parent=5 // pred_check_branch
+        %73 = sbr.rel (%p71) target = $region16
+      $region15: #{pred_when.1} parent=5 // pred_region
+        // Predicated region
+        $region17: #{pred_when.1} parent=15 // pred_check
+          %p74 = pneg %p28
+        $region18: #{pred_when.1} parent=15 // pred_check_branch
+          %76 = sbr.rel (%p74) target = $region20
+        $region19: #{pred_when.1} parent=15 // pred_region
+          %p77 = scmp.lt.s32.totalorder %s8, 4
+          %s78 = scalar_select /*predicate=*/%p77, /*on_true=*/%s8, /*on_false=*/4
+          %s79 = smul.addr %s78, 8
+          %s80 = scalar_lea.vmem %s0, %s79
+        $region20: #{pred_when.1} parent=15 // pred_fallthru
+          _
+      $region16: #{pred_when.1} parent=5 // pred_fallthru
+        _
+      %p81 = scmp.le.s32.totalorder 1, %s8
+      %p82 = scmp.lt.s32.totalorder %s8, 6
+      %p83 = pnand %p81, %p82
+      %p84 = pneg %p83
+      // Predicated region
+      $region21: #{pred_when.1} parent=5 // pred_check
+        _
+      $region22: #{pred_when.1} parent=5 // pred_check_branch
+        %86 = sbr.rel (%p83) target = $region24
+      $region23: #{pred_when.1} parent=5 // pred_region
+        %s87 = ssub.s32 %s8, 1
+        %p88 = scmp.lt.s32.totalorder %s13, 4
+        %s89 = scalar_select /*predicate=*/%p88, /*on_true=*/%s13, /*on_false=*/4
+        %s90 = smul.addr %s89, 8
+        %s91 = scalar_lea.vmem %s0, %s90
+        %p92 = pneg %p34
+        %p93 = pneg %p31
+        %p94 = pneg %p55
+        %p95 = pneg %p52
+        %p96 = scmp.lt.s32.totalorder %s13, 4
+        %s97 = scalar_select /*predicate=*/%p96, /*on_true=*/%s13, /*on_false=*/4
+        %s98 = smul.addr %s97, 8
+        %s99 = scalar_lea.vmem %s0, %s98
+        %p100 = scmp.eq.s32.totalorder %s13, 0
+        // Predicated region
+        $region25: #{pred_when.1} parent=23 // pred_check
+          %p101 = pneg %p100
+        $region26: #{pred_when.1} parent=23 // pred_check_branch
+          %103 = sbr.rel (%p101) target = $region28
+        $region27: #{pred_when.1} parent=23 // pred_region
+          %104 = vst [vmem:[#allocation3] sm:$0xff] /*vst_source=*/0.0
+        $region28: #{pred_when.1} parent=23 // pred_fallthru
+          _
+        %p105 = scmp.lt.s32.totalorder %s13, 0
+        %s106 = ssub.s32 0, %s13
+        %s107 = scalar_select /*predicate=*/%p105, /*on_true=*/%s106, /*on_false=*/%s13
+        %s108 = sand.u32 %s107, 1 /* smod.u32 w/div 2 */
+        %s109 = ssub.s32 0, %s108
+        %s110 = scalar_select /*predicate=*/%p105, /*on_true=*/%s109, /*on_false=*/%s108
+        %p111 = scmp.ne.s32.totalorder %s110, 0
+        %p112 = scmp.lt.s32.totalorder %s110, 0
+        %p113 = pnand %p112, %p111
+        %p114 = pneg %p113
+        %s115 = sadd.s32 %s110, 2
+        %s116 = scalar_select /*predicate=*/%p114, /*on_true=*/%s115, /*on_false=*/%s110
+        %p117 = scmp.eq.s32.totalorder %s116, 1
+        // Predicated region
+        $region29: #{pred_when.1} parent=23 // pred_check
+          %p118 = pneg %p117
+        $region30: #{pred_when.1} parent=23 // pred_check_branch
+          %120 = sbr.rel (%p118) target = $region32
+        $region31: #{pred_when.1} parent=23 // pred_region
+          %v121 = vld [vmem:[#allocation3] sm:$0xff]
+          %v122 = vld [vmem:[%s99] sm:$0xff]
+          %v123 = vmul.f32 %v122, 2.0
+          %v124 = vadd.f32 %v121, %v123
+          %125 = vst [vmem:[#allocation3] sm:$0xff] /*vst_source=*/%v124
+        $region32: #{pred_when.1} parent=23 // pred_fallthru
+          _
+        %p126 = scmp.eq.s32.totalorder %s116, 0
+        // Predicated region
+        $region33: #{pred_when.1} parent=23 // pred_check
+          %p127 = pneg %p126
+        $region34: #{pred_when.1} parent=23 // pred_check_branch
+          %129 = sbr.rel (%p127) target = $region36
+        $region35: #{pred_when.1} parent=23 // pred_region
+          %v130 = vld [vmem:[#allocation3] sm:$0xff]
+          %v131 = vld [vmem:[%s99] sm:$0xff]
+          %v132 = vsub.f32 %v130, %v131
+          %133 = vst [vmem:[#allocation3] sm:$0xff] /*vst_source=*/%v132
+        $region36: #{pred_when.1} parent=23 // pred_fallthru
+          _
+        // Predicated region
+        $region37: #{pred_when.1} parent=23 // pred_check
+          %p134 = pneg %p52
+        $region38: #{pred_when.1} parent=23 // pred_check_branch
+          %136 = sbr.rel (%p134) target = $region40
+        $region39: #{pred_when.1} parent=23 // pred_region
+          %137 = vsyncadd [#allocation4], 0
+          %s139 = sshll.u32 [#allocation3], 4
+          %s140 = int_to_ptr.vmem [resolvable:$true] %s139
+          %142 = dma.vmem_to_hbm [thread:$0]  /*vmem=*/%s140, /*size_in_granules=*/128, /*hbm=*/%s1, /*dst_syncflagno=*/[#allocation4] /*
+base_bounds: (1, 1)
+dynamic_base_bounds: (1, 1)
+window_bounds: (1, 1)
+iteration_bounds: (5)
+strides: (1, 1)
+pad_low: (0, 0)
+pad_high: (0, 0)
+element_size_in_bytes: 4096
+second_minor_factor: 1 */
+        $region40: #{pred_when.1} parent=23 // pred_fallthru
+          _
+        // Predicated region
+        $region41: #{pred_when.1} parent=23 // pred_check
+          %p143 = pneg %p52
+        $region42: #{pred_when.1} parent=23 // pred_check_branch
+          %145 = sbr.rel (%p143) target = $region44
+        $region43: #{pred_when.1} parent=23 // pred_region
+          %146 = dma.done [#allocation4], 128 /* pipeline-emitter-dma-wait */
+        $region44: #{pred_when.1} parent=23 // pred_fallthru
+          _
+      $region24: #{pred_when.1} parent=5 // pred_fallthru
+        _
+      %p147 = scmp.le.s32.totalorder 2, %s8
+      // Predicated region
+      $region45: #{pred_when.1} parent=5 // pred_check
+        %p148 = pneg %p147
+      $region46: #{pred_when.1} parent=5 // pred_check_branch
+        %150 = sbr.rel (%p148) target = $region48
+      $region47: #{pred_when.1} parent=5 // pred_region
+        %s151 = ssub.s32 %s8, 2
+      $region48: #{pred_when.1} parent=5 // pred_fallthru
+        _
+    $region6: #{pred_when.1} parent=1 // loop_footer
+      %s12 = sadd.s32 1, %s8
+    $region7: #{pred_when.1} parent=1 // loop_footer_branch
+      %7 = sbr.rel target = $region3
+    $region8: #{pred_when.1} parent=1 // loop_exit
+      _
+    %152 = vsyncpa [#allocation4], 1

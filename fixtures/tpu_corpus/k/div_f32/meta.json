@@ -1,0 +1,36 @@
+{
+ "kernel": "div_f32",
+ "inputs": [
+  {
+   "shape": [
+    8,
+    128
+   ],
+   "dtype": "float32"
+  },
+  {
+   "shape": [
+    8,
+    128
+   ],
+   "dtype": "float32"
+  }
+ ],
+ "outputs": [
+  {
+   "shape": [
+    8,
+    128
+   ],
+   "dtype": "float32"
+  },
+  {
+   "shape": [
+    8,
+    128
+   ],
+   "dtype": "float32"
+  }
+ ],
+ "device_kind": "TPU7x"
+}

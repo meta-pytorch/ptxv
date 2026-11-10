@@ -1,0 +1,54 @@
+= control target key start
+LH: loop header
+LB: loop body
+LE: loop exit
+PB: predicated region body
+PF: predicated region fallthrough
+CT: control target
+= control target key end
+
+     0   :  { %s11_s6 = sld [smem:[#allocation8]]  ;;  %s12_s7 = sld [smem:[#allocation9]]  ;;  %s216_s0 = inlined_call_operand.vmem [shape: f32[64,128], index: 0, kind: input, shape index: {}] /* input window allocation for operator input 0. The window shape is f32[64,128], while the full shape is f32[64,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */  ;;  %s217_s1 = inlined_call_operand.vmem [shape: f32[64,128], index: 1, kind: output, shape index: {}] /* output window allocation for operator output 0. The window shape is f32[64,128], while the full shape is f32[64,128]. The u8 shape/size shown above represents the raw byte size of this window in VMEM.  */ } /* entry bundle: %remote_ring.1 = custom-call(%copy-done) */
+   0x1   :  { %s133_s8 = sshll.u32 %s12_s7, 1 }
+   0x2   :  { %s14_s9 = sadd.s32 %s133_s8, %s11_s6 }
+   0x3   :  { %p15_p0 = scmp.lt.s32.totalorder %s14_s9, 0  ;;  %s16_s10 = ssub.s32 0, %s14_s9 }
+   0x4   :  { %s134_s11 = smin.u32 %s16_s10, %s14_s9 }
+   0x5   :  { %s18_s12 = sand.u32 1, %s134_s11 /* smod.u32 w/div 2 */ }
+   0x6   :  { %s19_s13 = ssub.s32 0, %s18_s12 }
+   0x7   :  { %s219_s13 = smov (!%p15_p0, %s19_s13), %s18_s12 }
+   0x8   :  { %s21_s14 = ssub.s32 1, %s219_s13 }
+   0x9   :  { %s23_s15 = sand.u32 1, %s21_s14 /* smod.u32 w/div 2 */  ;;  %s161_s16 = sshrl.u32 %s21_s14, 1 }
+   0xa   :  { %s135_s17 = sshll.u32 %s161_s16, 17  ;;  %s28_s18 = sshll.u32 %s23_s15, 16 }
+   0xb   :  { %s136_s19 = sand.u32 2147352576, %s135_s17  ;;  %s29_s20 = sadd.s32 131072, %s28_s18 }
+   0xc   :  { %s30_s21 = sshrl.u32 %s29_s20, 2 }
+   0xd   :  { %s31_s22 = sor.u32 [#allocation7], %s30_s21 }
+   0xe   :  { %s32_s23 = sor.u32 %s136_s19, %s31_s22 }
+   0xf   :  { %33 = vsyncadd.remote %s32_s23, 1 }
+  0x10   :  { %35 = vsyncadd [#allocation7], 4294967295 }
+  0x11   :  { %36 = vwait.ge [#allocation7], 0  ;;  %s137_s24 = sshll.u32 %s23_s15, 26  ;;  %s64_s27 = sshll.u32 %s216_s0, 4  ;;  %s65_s27 = int_to_ptr.vmem [resolvable:$true] %s64_s27 }
+  0x12   :  { %s138_s28 = sadd.s32 134217728, %s137_s24  ;;  %s149_s2 = smov [#allocation3] /* materialized constant */ }
+  0x13   :  { %s56_s29 = sor.u32 16384, %s138_s28  ;;  %s66_s3 = sshll.u32 %s149_s2, 4  ;;  %s67_s3 = int_to_ptr.vmem [resolvable:$true] %s66_s3 }
+  0x14   :  { %s60_s30 = sand.u32 4294950912, %s56_s29  ;;  %s139_s5 = sshll.u32 %s23_s15, 13 }
+  0x15   :  { %s62_s4 = sor.u32 %s60_s30, %s161_s16  ;;  %s140_s6 = sadd.s32 16384, %s139_s5 }
+  0x16   :  { %s70_s7 = sor.u32 [#allocation5], %s140_s6  ;;  %s150_s8 = smov [#allocation4] /* materialized constant */ }
+  0x17   :  { %72 = dma.general /*src=*/%s65_s27, /*size_in_granules=*/1024, /*dst=*/%s67_s3, /*dst_syncflagno=*/%s70_s7, /*src_syncflagno=*/%s150_s8, /*stridedescaddr=*/[#allocation11], /*overrides=*/%s62_s4, /*dst_syncflagno_1=*/0 /* vmem-to-vmem */ }
+  0x18   :  { %145 = dma.done.wait [#allocation4], 1024 }
+  0x19   :  { %146 = vsyncadd [#allocation4], 4294966272 }
+  0x1a   :  { %147 = dma.done.wait [#allocation5], 1024 }
+  0x1b   :  { %148 = vsyncadd [#allocation5], 4294966272  ;;  %v77_v0 = vld [vmem:[#allocation3] sm:$0xff]  ;;  %v78_v2 = vld [vmem:[#allocation3 + $0x8] sm:$0xff] }
+  0x1c   :  { %v93_v1 = vld [vmem:[%s216_s0] sm:$0xff]  ;;  %v85_v3 = vmul.f32 2.0, %v77_v0  ;;  %v86_v4 = vmul.f32 2.0, %v78_v2  ;;  %v94_v5 = vld [vmem:[%s216_s0 + $0x8] sm:$0xff]  ;;  %v79_v6 = vld [vmem:[#allocation3 + $0x10] sm:$0xff] }
+  0x1d   :  { %v95_v7 = vld [vmem:[%s216_s0 + $0x10] sm:$0xff]  ;;  %v87_v8 = vmul.f32 2.0, %v79_v6  ;;  %v80_v9 = vld [vmem:[#allocation3 + $0x18] sm:$0xff]  ;;  %v81_v11 = vld [vmem:[#allocation3 + $0x20] sm:$0xff] }
+  0x1e   :  { %v96_v10 = vld [vmem:[%s216_s0 + $0x18] sm:$0xff]  ;;  %v101_v12 = vadd.f32 %v93_v1, %v85_v3  ;;  %v102_v13 = vadd.f32 %v94_v5, %v86_v4  ;;  %v88_v14 = vmul.f32 2.0, %v80_v9  ;;  %v89_v15 = vmul.f32 2.0, %v81_v11  ;;  %v97_v16 = vld [vmem:[%s216_s0 + $0x20] sm:$0xff]  ;;  %v82_v17 = vld [vmem:[#allocation3 + $0x28] sm:$0xff] }
+  0x1f   :  { %v98_v18 = vld [vmem:[%s216_s0 + $0x28] sm:$0xff]  ;;  %v103_v19 = vadd.f32 %v95_v7, %v87_v8  ;;  %v90_v20 = vmul.f32 2.0, %v82_v17  ;;  %v83_v21 = vld [vmem:[#allocation3 + $0x30] sm:$0xff]  ;;  %v84_v23 = vld [vmem:[#allocation3 + $0x38] sm:$0xff] }
+  0x20   :  { %v99_v22 = vld [vmem:[%s216_s0 + $0x30] sm:$0xff]  ;;  %109 = vst [vmem:[%s217_s1] sm:$0xff] /*vst_source=*/%v101_v12  ;;  %110 = vst [vmem:[%s217_s1 + $0x8] sm:$0xff] /*vst_source=*/%v102_v13  ;;  %v104_v24 = vadd.f32 %v96_v10, %v88_v14  ;;  %v105_v25 = vadd.f32 %v97_v16, %v89_v15  ;;  %v91_v26 = vmul.f32 2.0, %v83_v21  ;;  %v92_v27 = vmul.f32 2.0, %v84_v23  ;;  %v100_v28 = vld [vmem:[%s216_s0 + $0x38] sm:$0xff] }
+  0x21   :  { %111 = vst [vmem:[%s217_s1 + $0x10] sm:$0xff] /*vst_source=*/%v103_v19  ;;  %v106_v29 = vadd.f32 %v98_v18, %v90_v20 }
+  0x22   :  { %112 = vst [vmem:[%s217_s1 + $0x18] sm:$0xff] /*vst_source=*/%v104_v24  ;;  %113 = vst [vmem:[%s217_s1 + $0x20] sm:$0xff] /*vst_source=*/%v105_v25  ;;  %v107_v30 = vadd.f32 %v99_v22, %v91_v26  ;;  %v108_v31 = vadd.f32 %v100_v28, %v92_v27 }
+  0x23   :  { %114 = vst [vmem:[%s217_s1 + $0x28] sm:$0xff] /*vst_source=*/%v106_v29 }
+  0x24   :  { %115 = vst [vmem:[%s217_s1 + $0x30] sm:$0xff] /*vst_source=*/%v107_v30  ;;  %116 = vst [vmem:[%s217_s1 + $0x38] sm:$0xff] /*vst_source=*/%v108_v31 }
+  0x25   :  { %121 = vsyncmov [#allocation4] }
+  0x26   :  { %s122_s11 = vpop.sfrf %121 }
+  0x27   :  { %p141_p1 = scmp.ne.s32.totalorder %s122_s11, 0 }
+  0x28   :  { %126 = shalt.err (%p141_p1) /* Semaphore (scratch argument 1) has a nonzero value upon exit from a Mosaic kernel. Make sure every DMA is awaited, and every semaphore signal is paired with a wait. */ }
+  0x29   :  { %127 = vsyncmov [#allocation5] }
+  0x2a   :  { %s128_s12 = vpop.sfrf %127 }
+  0x2b   :  { %p142_p2 = scmp.ne.s32.totalorder %s128_s12, 0 }
+  0x2c   :  { %132 = shalt.err (%p142_p2) /* Semaphore (scratch argument 2) has a nonzero value upon exit from a Mosaic kernel. Make sure every DMA is awaited, and every semaphore signal is paired with a wait. */ } /* exit bundle: %remote_ring.1 = custom-call(%copy-done) */

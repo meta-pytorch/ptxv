@@ -1,0 +1,1 @@
+{"kernel": "rmo3_bat", "inputs": [{"shape": [3, 16, 256]}, {"shape": [3, 256, 136]}, {"shape": [3, 1, 136]}]}

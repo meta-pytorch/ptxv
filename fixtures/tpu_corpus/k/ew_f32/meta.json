@@ -1,0 +1,64 @@
+{
+ "kernel": "ew_f32",
+ "inputs": [
+  {
+   "shape": [
+    16,
+    128
+   ],
+   "dtype": "float32"
+  },
+  {
+   "shape": [
+    16,
+    128
+   ],
+   "dtype": "float32"
+  }
+ ],
+ "outputs": [
+  {
+   "shape": [
+    16,
+    128
+   ],
+   "dtype": "float32"
+  },
+  {
+   "shape": [
+    16,
+    128
+   ],
+   "dtype": "float32"
+  },
+  {
+   "shape": [
+    16,
+    128
+   ],
+   "dtype": "float32"
+  },
+  {
+   "shape": [
+    16,
+    128
+   ],
+   "dtype": "float32"
+  },
+  {
+   "shape": [
+    16,
+    128
+   ],
+   "dtype": "float32"
+  },
+  {
+   "shape": [
+    16,
+    128
+   ],
+   "dtype": "float32"
+  }
+ ],
+ "device_kind": "TPU7x"
+}

@@ -1,0 +1,36 @@
+{
+ "kernel": "remote_sig",
+ "inputs": [
+  {
+   "shape": [
+    128,
+    128
+   ],
+   "dtype": "float32"
+  }
+ ],
+ "outputs": [
+  {
+   "shape": [
+    8,
+    128
+   ],
+   "dtype": "float32"
+  },
+  {
+   "shape": [
+    8,
+    128
+   ],
+   "dtype": "float32"
+  }
+ ],
+ "devices": [
+  "TPU_0(process=0,(0,0,0,0))",
+  "TPU_1(process=0,(0,0,0,1))"
+ ],
+ "nondeterministic_outputs": [
+  "d1_out0"
+ ],
+ "device_kind": "TPU7x"
+}
