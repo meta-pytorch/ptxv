@@ -1,0 +1,97 @@
+name = "e_concolic"
+description = """
+Concolic input exploration (2026-11-08): one input-dependent condition per predicated store,
+each with a side no thread takes on the iota input: a float compare, arithmetic on inputs, a
+float difference, two input words, an input-derived combining predicate, a byte taken with
+PRMT, a 64-bit compare, a modular-arithmetic equality (T0's modular inverse) and an equality
+with no solution (solver-unsat). --concolic flips every side but the last and replays each
+witness; B flips only the single-word ones."""
+ptx = "kernel.ptx"
+entry = "concolic_conds"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "iota"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "iota"
+
+[[buffers]]
+name = "a"
+dtype = "u32"
+shape = [65]
+init = "iota"
+
+[[buffers]]
+name = "off"
+dtype = "u32"
+shape = [65]
+init = "iota"
+
+[[buffers]]
+name = "w"
+dtype = "u32"
+shape = [64]
+init = "iota"
+
+[[buffers]]
+name = "q"
+dtype = "u64"
+shape = [64]
+init = "iota"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [768]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+
+[[params]]
+kind = "ptr"
+buffer = "off"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "q"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "nine conditions, each with an untaken side on the captured input"
+expect = ["clean"]
+
+[[variants]]
+id = "smt"
+summary = "plus two conditions for the SMT step: a product of three input words and an exact float equality"
+expect = ["clean"]
+[[variants.edits]]
+marker = "@EXTRA"
+find = "mov.u32 %r12, 0;"
+replace = "xor.b32 %r12, %r3, %r6; mul.lo.u32 %r13, %r12, %r8; setp.eq.u32 %p11, %r13, 0x13579bdf; @%p11 st.global.u32 [%rd13+36], 1; fma.rn.f32 %f4, %f1, %f2, 0f3F800000; setp.eq.f32 %p12, %f4, 0f449A5000; @%p12 st.global.u32 [%rd13+40], 1;"

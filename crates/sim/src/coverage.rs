@@ -320,6 +320,9 @@ pub struct ProvState {
     /// instructions) derived from input data: per instruction, what (bit 0: guard, bit 1:
     /// operand), the inputs, and the input words.
     ctl: BTreeMap<u32, (u8, u64, Words)>,
+    /// The concolic expressions (symb.rs, `--concolic`); None: off. Not copied into clones
+    /// (trial executions on scratch machines).
+    pub(crate) sym: crate::symb::SymSlot,
 }
 
 /// A copy of a machine carrying the shadow (a look-ahead: `Machine::scratch`, the
@@ -365,6 +368,7 @@ impl Clone for ProvState {
             bra_mask: self.bra_mask,
             first: self.first.clone(),
             ctl: self.ctl.clone(),
+            sym: self.sym.clone(),
         }
     }
 }
@@ -803,6 +807,9 @@ impl ProvState {
         if self.inert {
             return;
         }
+        if let Some(sy) = self.sym.0.as_mut() {
+            crate::symb::on_access(sy, actor, loc, n, write);
+        }
         let (s, o, off) = loc_key(loc);
         if s == 1 {
             // An async actor (TMA, bulk copy or reduction) does not say whether it reads: its
@@ -1009,6 +1016,9 @@ pub(crate) fn pre(m: &mut Machine, members: &[usize], pc: u32) {
         .filter(|&t| m.prd(t, inst.guard))
         .collect();
     ps.reach(pc);
+    if let Some(sy) = ps.sym.0.as_mut() {
+        crate::symb::pre(sy, m, members, &active, pc);
+    }
     let info = ps.info(&k, pc);
     let pure = info.pure;
     // Conditional control: a guarded instruction (or a branch with a second condition).
@@ -1677,6 +1687,10 @@ pub(crate) fn post(m: &mut Machine, members: &[usize], pc: u32) {
         }
     }
     ps.pending = pending;
+    if let Some(mut sy) = ps.sym.0.take() {
+        crate::symb::post(&mut sy, m, pc, &|t, r| ps.reg(m, t, r).mask() == 0);
+        ps.sym.0 = Some(sy);
+    }
     // Threads that exited: their registers are never read again (a warp-collective operation
     // reads its active lanes only); their shadow goes.
     if matches!(inst.op, Op::Exit | Op::Ret { .. }) {
@@ -1866,10 +1880,29 @@ pub fn analyze(m0: &Machine) -> Coverage {
 
 /// `analyze` within `b`: the run stops (`Coverage::stopped`) when it passes either cap.
 pub fn analyze_budget(m0: &Machine, b: Budget) -> Coverage {
+    analyze_full(m0, b, None).0
+}
+
+/// A, with the concolic expressions when `sym` is given (symb.rs): the coverage, the
+/// expressions and the run's final machine (for `symb::Evaluator`).
+pub fn analyze_with(
+    m0: &Machine,
+    sym: Option<crate::symb::Config>,
+) -> (Coverage, Option<(Box<crate::symb::SymState>, Machine)>) {
+    analyze_full(m0, Budget::default(), sym)
+}
+
+fn analyze_full(
+    m0: &Machine,
+    b: Budget,
+    sym: Option<crate::symb::Config>,
+) -> (Coverage, Option<(Box<crate::symb::SymState>, Machine)>) {
     let t0 = std::time::Instant::now();
     let mut m = m0.clone();
+    let nth = m.threads.len();
     m.prov = Some(Box::new(ProvState {
-        nth: m.threads.len(),
+        nth,
+        sym: crate::symb::SymSlot(sym.map(|c| Box::new(crate::symb::SymState::new(c, nth)))),
         ..Default::default()
     }));
     let mut why: Option<&'static str> = None;
@@ -1892,14 +1925,16 @@ pub fn analyze_budget(m0: &Machine, b: Budget) -> Coverage {
         }
         false
     });
-    let ps = *m.prov.take().expect("provenance shadow");
-    report(
+    let mut ps = *m.prov.take().expect("provenance shadow");
+    let sym_out = ps.sym.0.take();
+    let c = report(
         &m,
         ps,
         ok,
         stopped.then(|| why.unwrap_or("time").to_string()),
         t0,
-    )
+    );
+    (c, sym_out.map(|s| (s, m)))
 }
 
 /// The coverage report of a finished (or stopped) provenance run: `m` is its final machine.

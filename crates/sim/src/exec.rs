@@ -5466,6 +5466,17 @@ impl Machine {
         )
     }
 
+    /// Run register-only instruction `pc` for thread `t` alone, without the per-run hooks
+    /// (--nonfinite records): symb.rs evaluates `Inst` expressions with it on a scratch copy.
+    pub(crate) fn exec_value(&mut self, t: usize, pc: u32) -> bool {
+        let k = self.k.clone();
+        self.threads[t].make_mut().pending_ld.clear();
+        matches!(
+            self.exec_thread_inner(t, &k.code[pc as usize], pc),
+            Ok(Flow::Next)
+        )
+    }
+
     /// Undefined bits of operand `v` (slot i in bits 32i..; a V register: all or none).
     fn val_umask(&self, t: usize, v: &Val) -> u64 {
         match v {

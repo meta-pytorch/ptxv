@@ -45,6 +45,7 @@ pub mod slices;
 pub mod smem;
 pub mod softmax;
 pub mod spin;
+pub mod symb;
 pub mod tenant;
 pub mod tmap;
 pub mod twolevel;

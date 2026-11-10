@@ -1,0 +1,106 @@
+//
+// Concolic input exploration (symb.rs, solve.rs): one input-dependent condition per store,
+// each with one side no thread takes on the captured (iota) input:
+//   c0  x[i] > 100.0                       float compare            (B refuses)
+//   c1  a[i+1] - a[i] > 0                  arithmetic on inputs     (B refuses)
+//   c2  y[i] - x[i] < 88.0                 float arithmetic         (B refuses)
+//   c3  off[i] < off[i+1]                  two input words          (B refuses)
+//   c4  a[i] < 1000 ; off[i] < 500 && c4a  input-derived combining predicate (B: the first only)
+//   c5  byte 2 of w[i] == 0x55 (PRMT)      a byte of a packed word  (B flips)
+//   c6  q[i] > 2^32 (u64)                  64-bit compare           (SASS ISETP.EX: B refuses)
+//   c7  a[i] * 0x9e3779b1 + 7 == 0x12345678  modular arithmetic: T0's modular inverse
+//   c8  a[i] * 6 == 9                      no solution: solver-unsat (unverified)
+//   smt variant: c9  (a[i] ^ off[i]) * w[i] == 0x13579bdf, three input words multiplied (an
+//   SMT solver's case), and c10 x[i] * y[i] + 1.0 == 1234.5 (an exact float equality).
+// Every store writes its own word of out: clean on every input.
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry concolic_conds(
+	.param .u64 px,
+	.param .u64 py,
+	.param .u64 pa,
+	.param .u64 poff,
+	.param .u64 pw,
+	.param .u64 pq,
+	.param .u64 pout
+)
+.reqntid 64
+{
+	.reg .pred %p<20>;
+	.reg .b32 %r<40>;
+	.reg .f32 %f<10>;
+	.reg .b64 %rd<30>;
+
+	ld.param.u64 %rd1, [px];
+	ld.param.u64 %rd2, [py];
+	ld.param.u64 %rd3, [pa];
+	ld.param.u64 %rd4, [poff];
+	ld.param.u64 %rd5, [pw];
+	ld.param.u64 %rd6, [pq];
+	ld.param.u64 %rd7, [pout];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd2, %rd2;
+	cvta.to.global.u64 %rd3, %rd3;
+	cvta.to.global.u64 %rd4, %rd4;
+	cvta.to.global.u64 %rd5, %rd5;
+	cvta.to.global.u64 %rd6, %rd6;
+	cvta.to.global.u64 %rd7, %rd7;
+	mov.u32 %r1, %tid.x;
+	mul.wide.u32 %rd10, %r1, 4;
+	mul.wide.u32 %rd11, %r1, 8;
+	mul.lo.u32 %r2, %r1, 12;
+	mul.wide.u32 %rd12, %r2, 4;
+	add.s64 %rd13, %rd7, %rd12;
+	// c0
+	add.s64 %rd14, %rd1, %rd10;
+	ld.global.f32 %f1, [%rd14];
+	setp.gt.f32 %p1, %f1, 0f42C80000;
+	@%p1 st.global.u32 [%rd13], 1;
+	// c1
+	add.s64 %rd15, %rd3, %rd10;
+	ld.global.u32 %r3, [%rd15];
+	ld.global.u32 %r4, [%rd15+4];
+	sub.s32 %r5, %r4, %r3;
+	setp.gt.s32 %p2, %r5, 0;
+	@!%p2 st.global.u32 [%rd13+4], 1;
+	// c2
+	add.s64 %rd16, %rd2, %rd10;
+	ld.global.f32 %f2, [%rd16];
+	sub.f32 %f3, %f2, %f1;
+	setp.lt.f32 %p3, %f3, 0f42B00000;
+	@!%p3 st.global.u32 [%rd13+8], 1;
+	// c3
+	add.s64 %rd17, %rd4, %rd10;
+	ld.global.u32 %r6, [%rd17];
+	ld.global.u32 %r7, [%rd17+4];
+	setp.lt.u32 %p4, %r6, %r7;
+	@!%p4 st.global.u32 [%rd13+12], 1;
+	// c4
+	setp.lt.u32 %p5, %r3, 1000;
+	setp.lt.and.u32 %p6, %r6, 500, %p5;
+	@!%p6 st.global.u32 [%rd13+16], 1;
+	// c5
+	add.s64 %rd18, %rd5, %rd10;
+	ld.global.u32 %r8, [%rd18];
+	prmt.b32 %r9, %r8, 0, 0x7772;
+	setp.eq.u32 %p7, %r9, 0x55;
+	@%p7 st.global.u32 [%rd13+20], 1;
+	// c6
+	add.s64 %rd19, %rd6, %rd11;
+	ld.global.u64 %rd20, [%rd19];
+	setp.gt.u64 %p8, %rd20, 0x100000000;
+	@%p8 st.global.u32 [%rd13+24], 1;
+	// c7
+	mad.lo.u32 %r10, %r3, 0x9E3779B1, 7;
+	setp.eq.u32 %p9, %r10, 0x12345678;
+	@%p9 st.global.u32 [%rd13+28], 1;
+	// c8
+	mul.lo.u32 %r11, %r3, 6;
+	setp.eq.u32 %p10, %r11, 9;
+	@%p10 st.global.u32 [%rd13+32], 1;
+	mov.u32 %r12, 0; // @EXTRA
+	ret;
+}
