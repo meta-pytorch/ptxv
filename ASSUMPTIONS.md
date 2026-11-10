@@ -2343,7 +2343,8 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
   - **C-GEN.** Every `bar.sync`/`bar.arrive` arrival in generation g is HB-after every
     arrival of generation g-1 (subsumes E-BAR-OVER ambiguity); the lanes of one instruction
     land in one generation. `barrier.cluster`: an arrival in g by a thread that waited on
-    g-1 itself is fine, any other must be HB-after every arrival of g-1.
+    g-1 itself is fine, any other must be HB-after every arrival of g-1. Arrival clocks
+    include Order edges (real-time observation order, S-MBAR-SCOPE `Cover::Order`).
   - **C-ORDER.** Conflicting strong accesses (scoped ld/st, atomics) are HB-ordered, except
     two atomics of the same commutative operation (add/or/and/xor/min/max) with unused
     results that do not acquire (final value order-independent), and likewise any two
@@ -2355,7 +2356,7 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
     atomic step (one instruction instance of one warp) are ordered by lane order
     (E-LOCKSTEP; C-WARP keeps them together in every schedule: flashinfer's routing assigns
     token slots with `ATOMS.ADD`); TMEM allocator operations of a CTA are
-    totally ordered; no try_cancel / CLC response.
+    totally ordered (event order, Order edges included: S-MBAR-SCOPE `Cover::Order`); no try_cancel / CLC response.
     **Fence-acquired reads** (2026-11-08, `Machine::fence_acq`, exec.rs `acquire_pending`).
     A relaxed read or read-modify-write whose observed release a later acquire of its thread
     joins (`fence.acq_rel` / `fence.acquire` / `fence.sc` / `membar`, SASS `MEMBAR` /
@@ -3062,11 +3063,24 @@ has none), so a 2-CTA hand-off through a `.cta`-scoped remote arrive was certifi
 - Cluster lifetime: a waiter that observed a phase saw its updates land (`Thread::landed`),
   even when it did not synchronize with them; S-CLUSTER-LIFE and async-after-exit count that
   as ordered before its exit, as the joined clock did before.
-- Observed, not synchronized: a dropped update still enters the waiter's `Cover::Order`
-  clock (`Thread::vc_sh`). The race detector never reads it; the wellsync certificate
-  (E-WELLSYNC, C-WAIT / C-PHASE: which phase a wait can observe, `Machine::order_vc`) and
-  the lifetime checks do, so a scope-insufficient hand-off is a race, not a refused
-  certificate.
+- Observed, not synchronized (`Cover::Order`): a dropped update still enters the waiter's
+  `Cover::Order` clock (`Thread::vc_sh`), and the update's landing enters `Thread::landed`.
+  An Order edge carries real-time observation order and no memory visibility: it covers
+  no location, so the race detector, C-ORDER, the fence-acquire replays and E-RACE-DEAD
+  never see it. The argument: a wait that observed a phase completion returns after the
+  completing arrive was performed; that arrive was performed after the arriving thread's
+  earlier instructions issued (in-order issue, E-WARP-ORDER); every instruction the waiter
+  issues after the wait issues after the wait returned. So an event at the head of an
+  Order edge happens later in real time than every event at its tail, which is all that
+  event-order arguments use. Readers: `Machine::order_vc` in the wellsync certificate
+  (E-WELLSYNC: C-WAIT / C-PHASE, which phase a wait can observe; C-GEN, the `bar.sync` /
+  `bar.arrive` and `barrier.cluster` arrival order; the TMEM allocator event order in
+  C-ORDER), and `landed` in `observed_by` (S-CLUSTER-LIFE, async-after-exit). A
+  scope-insufficient hand-off is therefore a race, not a refused certificate.
+  `bar.arrive` does not block: its arrival is counted at issue (PTX ISA, `bar.arrive`:
+  the arriving thread does not wait), so its clock holds only what the thread observed
+  before issuing it, and an arrive the thread performs later in program order cannot be
+  in it.
 - Not modeled (possible miss): 8.9.1.1 orders an async copy's complete-tx only with that
   copy, not with the issuer's earlier instructions; the model releases the issuer's clock at
   issue with it (as before 2026-11-09).
@@ -3984,7 +3998,9 @@ access is dropped. Independently of the schedule explored, every remote arrive /
 commit into CTA X must happen-before the exit of *some* thread of X (checked at terminal
 states, like async-after-exit), since otherwise a schedule exists in which X exits first. A
 thread of X that observed the mbarrier phase the operation completed into (a successful wait)
-counts too, though the wait need not synchronize with it (S-MBAR-SCOPE, `Thread::landed`).
+counts too, though the wait need not synchronize with it (`Thread::landed`: a real-time
+observation order, argued at S-MBAR-SCOPE `Cover::Order`). The same holds for
+async-after-exit.
 - Where: `exec.rs` `check_alive`, `dead_target`, `note_remote`, `exit_checks`.
 - Status: **argued** (PTX ISA: a CTA's shared memory must not be accessed after it exits;
   CUTLASS ends cluster kernels with a cluster barrier for this reason). A multicast delivery
