@@ -162,6 +162,7 @@ verdict with the miss named in the doc comment, so a fix shows up as a test chan
 | E-DRF (TMEM) | e_drf_tmem | tmem-norace |
 | E-BAR-EXIT | (probes/bar_exit, bar_exit_warp) | barexit-phantom |
 | E-ALIGNED | (e_aligned_bar AB1 / AB3) | aligned-noviol |
+| E-ALIGNED, part of the warp exited | e_aligned_exit, e_aligned_exit2 (PTX contract violation; SASS clean, as GB300) | aligned-sass-guarded, aligned-ptx-exit |
 | S-ALIGN | (e_misaligned) | align-4 |
 | S-DSMEM | e_dsmem_rank (a foreign rank through shared::cta faults; GB300 traps) | dsmem-rank |
 | S-SMEM-ADDR32 | (probes/smem_addr_wrap) | addr32-nowrap |

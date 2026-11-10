@@ -412,6 +412,20 @@ fn e_sb_mufu_raw_reported() {
     adv("e_sb_mufu", &["good", "NOWAIT", "NOSB"]);
 }
 
+/// E-ALIGNED / E-BAR-EXIT with part of a warp exited before an aligned barrier
+/// (fixtures/e_aligned_exit, e_aligned_exit2; soundness-lane cross-front case). PTX contract:
+/// the warp does not reach the barrier in uniform control: a violation (MISS 37, PTX contract
+/// only), as e_aligned_bar AB3. SASS: ptxas predicates the `BAR` (lanes guarded off at it, still
+/// live): a BAR arrives per warp, so they count as arrived: clean, as GB300 (completes 400/400;
+/// the two-warp counted control 200/200). e_aligned_bar AB1 (halves at two barriers) still
+/// deadlocks with a violation on both fronts. Mutants aligned-sass-guarded, aligned-ptx-exit.
+#[test]
+fn e_aligned_exit_fronts() {
+    adv("e_aligned_exit", &["good"]);
+    adv("e_aligned_exit2", &["good"]);
+    adv("e_aligned_bar", &["good", "AB1", "AB2", "AB3"]);
+}
+
 /// N-FADD (fixtures/e_fadd_nan). Premise: FADD / `add.rn.f32` returns the canonical NaN
 /// 0x7fffffff for every NaN operand and IEEE sums otherwise. GB300 (`ptxv probe`, 2026-11-09):
 /// out = [0x7fffffff x 5, 2.0, 0.0, +inf] for in = [0x7fc00001, 0xffc00002, 0x7f800001,

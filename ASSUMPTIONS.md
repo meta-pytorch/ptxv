@@ -979,6 +979,17 @@ same mbarriers.
   rule is modeled: different warps reaching one barrier from different pcs (what
   compute-sanitizer synccheck also flags, the FA4 warp-role bug's pre-fix) is clean (GB200 completes).
   `IR Op::BarSync::aligned`, `exec.rs` `aligned_bar_others`, `sass` `aligned_bars`.
+- **Part of the warp exited** (2026-11-09, fixtures/e_aligned_exit, e_aligned_exit2): on the
+  PTX front an aligned barrier executed after some lanes of the warp exited is a `violation`
+  (`aligned-bar-exit`): the warp does not reach it in uniform control, which the PTX ISA
+  requires of aligned barriers (the PTX contract, as for a lane guarded off, AB3; MISS 37).
+  The SASS front, the hardware model, does not report it: GB300 counts the warp's arrival
+  (E-BAR-EXIT) and completes (e_aligned_exit 400/400, the two-warp counted control 200/200,
+  probes/bar_exit, bar_exit_warp). ptxas often predicates such a barrier (`@P0 BAR.SYNC 0x0;
+  @P0 EXIT`), so the other lanes are live and guarded off at the same `BAR`: on SASS they count
+  as arrived in that generation, neither waiting nor releasing (`Machine::bar_skip_lanes`,
+  `Bar::skipped`); before, this was reported as a divergent aligned barrier, a false alarm.
+  Lanes at a *different* aligned barrier or `WARPSYNC` are still a violation (AB1).
 - Where: `exec.rs` `split_enabled`, `exec`.
 - Status: **validated.** The PTX ISA requires it, and B16 (partial-warp alloc) hangs GB300.
   Named barriers: two halves of a warp at two `bar.sync 1, 64` hang GB300, at two
@@ -1109,6 +1120,8 @@ for an all-thread `barrier.sync id`: all threads).
   its exited or nonexistent lanes arriving with its live ones (BAR is executed per warp). A
   warp none of whose lanes arrives (all exited) adds nothing. The explorer's barrier
   reductions (`arv_current`, `bar_oversub`) bound each warp that may arrive by 32.
+- A warp with lanes already exited at an *aligned* barrier is a PTX-contract violation
+  (E-ALIGNED, 2026-11-09); the counting below is the SASS / GB300 behavior.
 - Where: `exec.rs` `bar_try_release`, `Op::Exit`.
 - Status: **validated** (2026-10-30, `probes/bar_exit` on GB300):
   - whole warp exited: completes;

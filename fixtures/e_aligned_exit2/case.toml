@@ -1,0 +1,28 @@
+name = "e_aligned_exit2"
+description = """
+E-ALIGNED / E-BAR-EXIT control for e_aligned_exit: two warps, lanes 0-15 of warp 0 exit early,
+the rest run a counted bar.sync 1, 64 (the half-exited warp counts 32) and read across warps.
+PTX contract: violation (aligned barrier after part of the warp exited); SASS: clean; GB300
+200/200 bitwise (2026-11-09)."""
+ptx = "kernel.ptx"
+entry = "e_aligned_exit2"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "half of warp 0 exits before the counted aligned barrier"
+expect = ["violation"]
+expect_sass = ["clean"]
+hw_note = "GB300 200/200 bitwise"

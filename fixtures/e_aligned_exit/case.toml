@@ -1,0 +1,30 @@
+name = "e_aligned_exit"
+description = """
+E-ALIGNED / E-BAR-EXIT: half the warp exits, the other half executes bar.sync 0 (aligned) in
+non-uniform control. PTX contract: a violation (the PTX ISA requires every thread of the warp to
+execute the same aligned barrier; consistent with e_aligned_bar AB3; MISS 37, PTX contract only).
+SASS (ptxas predicates the BAR, lanes 0-15 guarded off at it; a BAR arrives per warp): clean, as
+GB300, which completes 400/400 (2026-11-09). Before 2026-11-09 the PTX front was
+clean and the SASS front reported a guarded-off divergent barrier."""
+ptx = "kernel.ptx"
+entry = "e_aligned_exit"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "half the warp exits before the aligned barrier"
+expect = ["violation"]
+expect_sass = ["clean"]
+hw_note = "GB300 completes, bitwise = simulator, 200/200 plain and 200/200 scrubbed"

@@ -338,6 +338,25 @@ MUTANTS += [
         '    "UTCATOMSWS",\n',
         [("e_sb_mufu", v, "sass", []) for v in ("NOWAIT", "NOSB")],
     ),
+    # E-ALIGNED (SASS): guarded-off lanes at the warp's BAR are again a divergent-barrier
+    # violation and do not count as arrived.
+    SrcMutant(
+        "aligned-sass-guarded",
+        "crates/sim/src/exec.rs",
+        "let sass_guarded = k.front == Front::Sass && elsewhere.is_empty();",
+        "let sass_guarded = false;",
+        [("e_aligned_exit", "good", "sass", [])],
+        [("ptxv-sim", ADV, "e_aligned_exit")],
+    ),
+    # E-ALIGNED (PTX contract): an aligned barrier after part of the warp exited is no
+    # violation (MISS 37).
+    SrcMutant(
+        "aligned-ptx-exit",
+        "crates/sim/src/exec.rs",
+        "            if k.front == Front::Ptx {\n                let gone: Vec<usize> = self",
+        "            if false {\n                let gone: Vec<usize> = self",
+        [("e_aligned_exit", "good", "ptx", []), ("e_aligned_exit2", "good", "ptx", [])],
+    ),
 ]
 
 # Numerics and lowering rules: each mutant changes one hardware-measured rule; the replay test

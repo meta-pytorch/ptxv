@@ -1375,6 +1375,10 @@ pub struct Bar {
     /// Threads that arrived without waiting (`bar.arrive`) in the current generation, sorted;
     /// a repeated arrival is kept (counted twice, E-BAR-ARRIVE) and reported.
     pub arrivers: Vec<u32>,
+    /// SASS lanes guarded off at a `BAR` the rest of their warp executed (ASSUME(E-ALIGNED),
+    /// E-BAR-EXIT: a BAR arrives per warp), sorted: counted as arrived, neither waiting nor
+    /// releasing.
+    pub skipped: Vec<u32>,
     /// Join of the arrivers' clocks at their arrivals: released to the waiters.
     pub rel: VC,
     /// Their shared-memory-only happens-before (`Thread::vc_sh`, S-MBAR-SCOPE).

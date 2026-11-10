@@ -4273,12 +4273,41 @@ impl Machine {
                 .warp_threads(w)
                 .filter(|&u| self.threads[u].st != St::Exited)
                 .collect();
+            // PTX contract: lanes of the warp exited before it, so the warp does not reach the
+            // aligned barrier in uniform control (PTX ISA: every thread of the warp executes
+            // the same aligned barrier instruction). GB300 counts the warp's arrival and
+            // completes (probes/bar_exit, probes/bar_exit_warp, fixtures/e_aligned_exit); the
+            // SASS front, the hardware model, does not report it.
+            if k.front == Front::Ptx {
+                let gone: Vec<usize> = self
+                    .warp_threads(w)
+                    .filter(|&u| self.threads[u].st == St::Exited)
+                    .collect();
+                if let Some(&u) = gone.first() {
+                    let msg = format!(
+                        "aligned barrier {} executed by {} lanes of a warp {} of whose lanes exited before it ({} first): the warp does not reach it in uniform control (PTX ISA: every thread of the warp must execute the same aligned barrier instruction; GB300 counts the warp's arrival and completes)",
+                        k.describe(pc as usize),
+                        active.len(),
+                        gone.len(),
+                        self.actor_name(u as u32),
+                    );
+                    self.report("violation", format!("aligned-bar-exit:{pc}"), msg);
+                }
+            }
             if active.len() < live.len() {
                 let elsewhere: Vec<usize> = live
                     .iter()
                     .copied()
                     .filter(|u| !members.contains(u))
                     .collect();
+                // SASS: every live lane of the warp is at this BAR, some guarded off (ptxas's
+                // predicated form of a barrier in divergent code: `@P0 BAR.SYNC 0x0; @P0
+                // EXIT`). A BAR arrives per warp (E-BAR-EXIT): the guarded-off lanes count as
+                // arrived without waiting or releasing. GB300 completes (fixtures/e_aligned_exit).
+                let sass_guarded = k.front == Front::Sass && elsewhere.is_empty();
+                if sass_guarded {
+                    self.bar_skip_lanes(members, &active, inst)?;
+                }
                 let why = match elsewhere.first() {
                     Some(&u) => format!(
                         "{} is at a different aligned barrier or WARPSYNC, {}",
@@ -4294,7 +4323,9 @@ impl Machine {
                     live.len(),
                     self.actor_name(members[0] as u32),
                 );
-                self.report("violation", format!("aligned-bar:{pc}"), msg);
+                if !sass_guarded {
+                    self.report("violation", format!("aligned-bar:{pc}"), msg);
+                }
             }
         }
         // A warp-collective matrix op whose guard is false in every lane does nothing
@@ -10957,6 +10988,7 @@ impl Machine {
                 let bar = self.bars.entry((cta, id)).or_insert(Bar {
                     arrived: vec![],
                     arrivers: vec![],
+                    skipped: vec![],
                     rel: VC::new(),
                     rel_sh: vec![],
                     red: vec![],
@@ -10970,6 +11002,12 @@ impl Machine {
                         f(count)
                     );
                     self.report("violation", format!("barcount:{id}"), msg);
+                }
+                // A lane counted as arrived while guarded off at this barrier (SASS,
+                // `bar_skip_lanes`) that arrives itself is counted once.
+                let bar = self.bars.get_mut(&(cta, id)).unwrap();
+                if let Ok(k) = bar.skipped.binary_search(&(t as u32)) {
+                    bar.skipped.remove(k);
                 }
                 // A thread arriving twice in one generation (bar.arrive, then bar.arrive or
                 // bar.sync again before the barrier completed): the PTX ISA gives no meaning
@@ -11968,15 +12006,56 @@ impl Machine {
     /// a warp's arrival counts the warp size, its exited (or nonexistent) lanes arriving with
     /// its live ones (GB300: probes/bar_exit_warp). An all-threads barrier counts threads
     /// against the live ones (E-BAR-EXIT).
+    /// ASSUME(E-ALIGNED): SASS lanes of `members` guarded off at the aligned `BAR` the rest
+    /// (`active`) execute count as arrived in the barrier's current generation (a BAR arrives
+    /// per warp).
+    fn bar_skip_lanes(
+        &mut self,
+        members: &[usize],
+        active: &[usize],
+        inst: &ptxv_ir::Inst,
+    ) -> Result<(), String> {
+        let Op::BarSync {
+            id, count, packed, ..
+        } = &inst.op
+        else {
+            return Ok(());
+        };
+        let t = active[0];
+        let count = match count {
+            Some(c) => Some(self.rd(t, c)?),
+            None => None,
+        };
+        let (id, count) = ptxv_ir::bar_args(self.rd(t, id)?, count, *packed);
+        let cta = self.threads[t].cta;
+        let bar = self.bars.entry((cta, id)).or_insert(Bar {
+            arrived: vec![],
+            arrivers: vec![],
+            skipped: vec![],
+            rel: VC::new(),
+            rel_sh: vec![],
+            red: vec![],
+            count,
+        });
+        for &u in members.iter().filter(|u| !active.contains(u)) {
+            if let Err(k) = bar.skipped.binary_search(&(u as u32)) {
+                bar.skipped.insert(k, u as u32);
+            }
+        }
+        Ok(())
+    }
+
     pub fn bar_arrivals(&self, bar: &Bar) -> usize {
-        let n = bar.arrived.len() + bar.arrivers.len();
+        let n = bar.arrived.len() + bar.arrivers.len() + bar.skipped.len();
         if bar.count.is_none() {
             return n;
         }
         // ASSUME(E-BAR-EXIT): lanes of an arriving warp that exited without arriving in this
         // generation, or do not exist, count as arrived.
         let arrived = |u: u32| {
-            bar.arrived.binary_search(&u).is_ok() || bar.arrivers.binary_search(&u).is_ok()
+            bar.arrived.binary_search(&u).is_ok()
+                || bar.arrivers.binary_search(&u).is_ok()
+                || bar.skipped.binary_search(&u).is_ok()
         };
         let mut warps: Vec<u32> = bar
             .arrived
