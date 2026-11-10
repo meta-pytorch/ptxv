@@ -241,7 +241,8 @@ and of the bytes it loads. For a representative CTA r three runs of r's slice de
 - a data run (num.rs taint with every global byte a source, `Taint::all_global`): no guard,
   control operand or address depends on loaded data; a comparison excused by N-FMAX or
   N-FINITE refuses;
-- a position run (num.rs taint, `%ctaid` the source, as E-CTA-INDEP's symmetry check): every
+- a position run (num.rs taint, every special register that can differ between CTAs the
+  source: `SReg::position_dependent`, as E-CTA-INDEP's symmetry check): every
   position-dependent guard, control operand (`Taint::trace`'s points) and global address
   operand (`pos_free_regs`, and a cp.async source) is recorded with the dataflow graph of the
   per-thread register instructions that computed it from `%ctaid`, every other operand a
@@ -267,6 +268,18 @@ default 16).
   after its instruction; S-SAME-VALUE in a representative; a non-certified representative that
   stands for other CTAs; more than `PTXV_REP_MAX` regimes.
 - Outputs: only representatives run, so the launch's outputs are not assembled or compared.
+  A representative explored alone with several outputs makes the launch `nondeterministic`
+  (the counts multiply).
+- Position sources (2026-11-08, soundness harness): `SReg::position_dependent` (ir) is the
+  one classification, an exhaustive match: `%ctaid`, `%clusterid`, the cluster shape
+  (`SR_CgaSize`) and `%warpid` (the warp's SM slot on hardware) always; the cluster rank,
+  `%cluster_ctaid` and shared-window addresses when a cluster has more than one CTA. Until
+  then only `%ctaid` seeded: `%clusterid` (equal to `%ctaid` in 1-CTA clusters) could decide a
+  fault in one CTA that the representative did not show (PTX certified clean), and the
+  symmetry check let cluster 0 stand for a cluster whose output depends on the schedule
+  (PTX `--slices` clean). Also until then the launch kept one output when a representative's
+  exploration had several (both front-ends: `nondeterministic` dropped). fixtures/e_pos_sreg
+  (tests/reductions.rs `position_through_other_special_registers`).
 - Where: `rep.rs` (hooks in exec.rs `exec_traced` and `access_x`); CLI `--rep` (PTXV_REP=1).
 - Status: **argued**. It relies on the replay reproducing c's values: every instruction of the
   graph is a per-thread register instruction (num.rs `pure_op`, cross-lane ones excluded) whose
@@ -402,7 +415,7 @@ the issuer's cluster; `griddepcontrol` is a no-op in a single grid.
   clusters of 4 CTAs). Slices of warps across CTAs and GPUs, with a check over every
   footprint space: E-SLICE.
 - **Symmetry** (`explore_symmetric`, what `--slices` tries first): one deterministic run of the
-  whole launch with the taint shadow in *position mode* (source `%ctaid`; global addresses and
+  whole launch with the taint shadow in *position mode* (sources: `SReg::position_dependent`, `%ctaid`, `%clusterid`, ...; global addresses and
   TMA coordinates may depend on it). Every guard outcome and control operand value (shared /
   TMEM / mbarrier addresses, masks, counts) that depends on the position is recorded per
   thread; corresponding threads (CTA rank, thread index) of every cluster must have recorded

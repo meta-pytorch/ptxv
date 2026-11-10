@@ -835,6 +835,12 @@ fn check_one(
         all.transitions += v.transitions;
         all.complete &= v.complete;
         all.terminal_states = all.terminal_states.max(v.terminal_states);
+        // A representative explored alone may end with several outputs (its CTA's result
+        // depends on the schedule): the launch then has at least that many. Until 2026-11-08
+        // the launch kept one output and the class `nondeterministic` was dropped.
+        if v.distinct_outputs > 1 {
+            all.distinct_outputs = all.distinct_outputs.saturating_mul(v.distinct_outputs);
+        }
         for f in v.findings {
             if !all.findings.iter().any(|x| x.sig == f.sig) {
                 all.findings.push(f);

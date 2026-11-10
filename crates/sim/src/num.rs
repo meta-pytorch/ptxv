@@ -4809,13 +4809,20 @@ impl Machine {
         tn.ld_read.clear();
         tn.shfl_src.clear();
         tn.cur_gen_addr = false;
-        // Position mode: reading %ctaid is the source.
-        let seed = position
-            && inst
-                .op
+        // Position mode: reading a register that differs between CTAs is the source
+        // (`SReg::position_dependent`: %ctaid, %clusterid, ...).
+        let seed = position && {
+            let cl = members.first().map_or(1, |&t| {
+                let g = self.launch.g(self.threads[t].cta as u32);
+                g.preferred
+                    .map_or(1, |p| p.iter().product())
+                    .max(g.cluster_size())
+            });
+            inst.op
                 .src_vals()
                 .iter()
-                .any(|v| matches!(v, Val::SReg(SReg::CtaId(_))));
+                .any(|v| matches!(v, Val::SReg(s) if s.position_dependent(cl)))
+        };
         if let Some(g) = inst.guard.reg {
             if !position && members.iter().any(|&t| tn.reg_t(t, g)) {
                 // ASSUME(N-FMAX): both sides of a float atomic max diamond compute the same

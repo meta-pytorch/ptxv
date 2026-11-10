@@ -341,6 +341,40 @@ fn unused_tensormap_fence_snapshots_are_race_dead() {
     }
 }
 
+/// Position dependence through special registers other than %ctaid (fixtures/e_pos_sreg):
+/// E-CTA-REP and the E-CTA-INDEP symmetry check keep the full classes when %clusterid decides
+/// one CTA's fault (CLUSTERID) or schedule-dependent output (CTICKET), and E-CTA-REP keeps a
+/// representative's several outputs (NONDET). Before 2026-11-08 position mode seeded only
+/// %ctaid and the launch verdict kept one output: PTX CLUSTERID / CTICKET and NONDET on both
+/// front-ends were clean.
+#[test]
+fn position_through_other_special_registers() {
+    let case = Case::load(root().join("fixtures/e_pos_sreg")).unwrap();
+    for front in ["ptx", "sass"] {
+        for variant in ["good", "CLUSTERID", "CTICKET", "NONDET"] {
+            let make = || machine(&case, variant, front);
+            let expect = case.variant(variant).unwrap().expect_for(front);
+            let rep = ptxv_sim::rep::check(&make, 200_000, &mut |_, _| {}, &mut || {
+                ptxv_sim::wellsync::check_certified(make(), 200_000)
+            });
+            assert_eq!(
+                rep.classes(),
+                expect,
+                "rep {front} {variant}: {:#?}",
+                rep.findings
+            );
+            let sym = ptxv_sim::explore::explore_symmetric(&make, 200_000, &mut |_, _| {});
+            assert!(sym.complete, "symmetry {front} {variant}: incomplete");
+            assert_eq!(
+                sym.classes(),
+                expect,
+                "symmetry {front} {variant}: {:#?}",
+                sym.findings
+            );
+        }
+    }
+}
+
 /// E-CTA-REP (rep.rs, fixtures/e_cta_rep): with representative CTAs the check keeps the full
 /// certificate's classes. good: two representatives (CTAs 0-6 and the tail CTA 7) for 8 CTAs,
 /// clean. TAIL1 (the tail CTA stores past the end), AND and STRIDE (CTAs write each other's

@@ -1,0 +1,41 @@
+// Position dependence for E-CTA-REP (representative CTAs) and E-CTA-INDEP symmetry: 8 CTAs of
+// 64 threads (1-CTA clusters, so %clusterid.x = %ctaid.x). Thread t of CTA c stores t into
+// out[64 c + t] after a shared-memory word is reset by thread 0 behind a barrier.
+//   CLUSTERID: CTA 7, chosen by %clusterid.x, stores 64 KiB past its element: fault. Until
+//        2026-11-08 position mode seeded only %ctaid, so E-CTA-REP's representative CTA 0
+//        stood for CTA 7 and the launch was certified clean (PTX)
+//   CTICKET: CTA 3, chosen by %clusterid.x, stores a ticket from an atomic add on the shared
+//        word instead of t: the output depends on the schedule there only. The symmetry
+//        check let CTA 0 stand for all CTAs (PTX --slices clean)
+//   NONDET: the same with CTA 3 chosen by %ctaid.x: E-CTA-REP gives CTA 3 its own
+//        representative, whose exploration is nondeterministic; until 2026-11-08 the launch
+//        verdict kept one output (clean)
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_pos_sreg(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<4>;
+    .shared .align 4 .b32 s[1];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, %clusterid.x;
+    mov.u32 %r9, %ctaid.x;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra SKIPW;
+    st.shared.u32 [s], 0;
+SKIPW:
+    bar.sync 0;
+    mov.u32 %r5, %r1;
+    mad.lo.u32 %r3, %r9, 64, %r1;
+    mul.wide.u32 %rd2, %r3, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    mov.u32 %r6, 0;                       // @POS
+STORE:
+    st.global.u32 [%rd3], %r5;
+    ret;
+}

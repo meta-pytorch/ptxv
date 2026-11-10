@@ -156,6 +156,39 @@ pub enum SReg {
     GlobalAddr(u32),
 }
 
+impl SReg {
+    /// Can this register read differently in two CTAs of one launch? The one classification
+    /// of position dependence (num.rs position mode: the E-CTA-REP position run and E-CTA-INDEP
+    /// symmetry seed every register this says yes to). `cluster`: the largest cluster any CTA
+    /// of the launch may be in (rank-bearing registers are constant in 1-CTA clusters).
+    /// Exhaustive on purpose: a new register must be classified here. Until 2026-11-08 only
+    /// `%ctaid` seeded, so a kernel deciding control by `%clusterid` was certified by E-CTA-REP
+    /// and explored for one cluster only by the symmetry check while another misbehaved.
+    pub fn position_dependent(self, cluster: u32) -> bool {
+        match self {
+            SReg::CtaId(_) | SReg::ClusterId(_) | SReg::CgaShape => true,
+            // %warpid is the warp's slot on its SM on hardware (PTX: volatile), modeled as the
+            // warp's index in its CTA: position-dependent, conservatively.
+            SReg::WarpId => true,
+            SReg::ClusterCtaRank | SReg::ClusterCtaId(_) | SReg::SharedAddr(_) => cluster > 1,
+            SReg::Tid(_)
+            | SReg::NTid(_)
+            | SReg::NCtaId(_)
+            | SReg::LaneId
+            | SReg::ClusterNCtaRank
+            | SReg::ClusterNCtaId(_)
+            | SReg::NClusterId(_)
+            | SReg::LaneMaskLt
+            | SReg::LaneMaskLe
+            | SReg::LaneMaskGe
+            | SReg::LaneMaskGt
+            | SReg::LaneMaskEq
+            | SReg::SharedWindowHi
+            | SReg::GlobalAddr(_) => false,
+        }
+    }
+}
+
 /// A value operand.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Val {
