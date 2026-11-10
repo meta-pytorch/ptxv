@@ -1,0 +1,38 @@
+name = "probe_f32x2_bare"
+description = """
+Probe (PTX-FMAD, L-ROSETTA) for f32x2 products in registers named without `%` (CuTe DSL
+inline asm), at kernel scope and inside an inline-asm scope: a plain mul.f32x2 read only by an
+add.f32x2 contracts (FFMA2), one also stored does not (FMUL2 + FADD2), under ptxas 13.0 and
+13.3 alike; before 2026-11-09 the PTX front panicked on these names (kernel.ptx; in.bin =
+probes/f32x2_unpack's). expected/ is GB300's output (kernel.cubin = ptxas -arch=sm_103a kernel.ptx, `ptxv hw`)."""
+ptx = "kernel.ptx"
+entry = "f32x2_bare"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [3072]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

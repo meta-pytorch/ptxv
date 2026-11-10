@@ -246,6 +246,13 @@ pub fn select_ptxas(isa: Option<(u32, u32)>, want: Option<&str>) -> (String, Opt
     }
 }
 
+/// The registry toolkit (PTXV_TOOLKITS) `select_ptxas` picks for a module, None when it picks
+/// the default ptxas (whose version is ambient, not a property of the case).
+pub fn registry_toolkit(ptx_text: &str, want: Option<&str>) -> Option<(u32, u32)> {
+    let (path, v) = select_ptxas(ptx_isa(ptx_text), want);
+    (path != tool("ptxas")).then_some(v).flatten()
+}
+
 /// Compile PTX to a cubin with the ptxas `select_ptxas` picks for it (`want`: the toolkit that
 /// built the executed cubin). Returns the toolkit version used ("13.3"), when known.
 pub fn ptxas_with(

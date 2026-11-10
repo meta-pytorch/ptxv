@@ -836,6 +836,14 @@ fn load_with(
         format!("{variant}.delayed")
     };
     let mut ks = Vec::new();
+    // The ptxas whose lowering the PTX front models (PTX-FMAD-X2-VERSION): the case's
+    // ptxas_toolkit, else the registry toolkit that rebuilds it; never the ambient default.
+    let toolkit = case
+        .m
+        .ptxas_toolkit
+        .as_deref()
+        .and_then(ptxv_ptx::toolkit_version)
+        .or_else(|| ptxv_sass::registry_toolkit(&ptx, None));
     for l in case.m.all_launches() {
         if l.cubin.is_some() {
             bail!(
@@ -844,7 +852,7 @@ fn load_with(
             );
         }
         ks.push(match front {
-            "ptx" => ptxv_ptx::parse_kernel(&ptx, Some(l.entry))?,
+            "ptx" => ptxv_ptx::parse_kernel_for(&ptx, Some(l.entry), toolkit)?,
             "sass" => ptxv_sass::load_cubin(&cubin, l.entry)?,
             f => bail!("unknown front {f}"),
         });

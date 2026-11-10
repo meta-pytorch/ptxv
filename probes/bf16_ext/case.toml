@@ -6,6 +6,7 @@ Probe (N-BF16X2, N-FALU) for mixed bf16 / f32 arithmetic and bf16 min / max on G
 .bf16 (HMNMX2.BF16_V2), and fma / mul / add / sub .{rz,rm,rp}.f32x2 (FFMA2 / FMUL2 / FADD2 with a
 rounding mode). expected/ is GB300's output (ptxas cubin, `ptxv hw-worker probes/bf16_ext
 <cubin> --runs 1 --dump`)."""
+ptxas_toolkit = "13.0"
 ptx = "kernel.ptx"
 entry = "bf16_ext"
 grid = [16, 1, 1]

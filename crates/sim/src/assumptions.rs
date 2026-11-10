@@ -1097,6 +1097,20 @@ pub const REGISTRY: &[Assumption] = &[
         },
     },
     Assumption {
+        id: "PTX-FMAD-X2-VERSION",
+        kind: "code",
+        status: "validated",
+        title: "PTX .f32x2 contraction follows the case's ptxas version: 13.0 any equal modes, 13.1 / 13.3 plain pairs only; unknown versions refuse where they differ (probes/fmad2_v133)",
+        applies: |k| {
+            k.front == Front::Ptx
+                && k.code.iter().any(|i| {
+                    let t = i.text.trim_start();
+                    matches!(&i.op, Op::Ffma2 { b, .. } if b.0 != ptxv_ir::Val::Imm(0x3f80_0000))
+                        && (t.starts_with("add.") || t.starts_with("sub."))
+                })
+        },
+    },
+    Assumption {
         id: "L-LOP3-P",
         kind: "code",
         status: "validated",

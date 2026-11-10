@@ -254,18 +254,76 @@ struct Fmad {
 
 /// `%name` tokens of an operand string.
 fn reg_tokens(s: &str) -> Vec<&str> {
+    reg_tokens_ex(s, &HashSet::new())
+}
+
+/// `reg_tokens`, and also the bare identifiers in `bare` (registers named without `%`: CuTe
+/// DSL inline asm's `mul.rn.f32x2 Z, G, NALPHA`, and inline-asm scopes renamed by
+/// `flatten_scopes`, `d__s3`).
+fn reg_tokens_ex<'s>(s: &'s str, bare: &HashSet<&str>) -> Vec<&'s str> {
     let mut out = Vec::new();
     let b = s.as_bytes();
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' {
-            let j = (i + 1..b.len())
-                .find(|&j| !(b[j].is_ascii_alphanumeric() || b[j] == b'_' || b[j] == b'$'))
-                .unwrap_or(b.len());
-            out.push(&s[i..j]);
+        let word = ident(b[i]) && (i == 0 || !(ident(b[i - 1]) || b[i - 1] == b'.'));
+        if b[i] == b'%' || word && !bare.is_empty() {
+            let j = (i + 1..b.len()).find(|&j| !ident(b[j])).unwrap_or(b.len());
+            let t = &s[i..j];
+            if b[i] == b'%' || bare.contains(t) {
+                out.push(t);
+            }
             i = j;
         } else {
             i += 1;
+        }
+    }
+    out
+}
+
+/// The registers an instruction list names without `%`: bare identifiers written as an
+/// instruction's destination (`mov.b32 Z, ...`) or declared by a `.reg` statement.
+fn bare_regs<'s>(insts: &[&'s Stmt]) -> HashSet<&'s str> {
+    let ok = |t: &str| {
+        !t.is_empty()
+            && t != "_"
+            && !t.starts_with('%')
+            && t.as_bytes()[0].is_ascii_alphabetic() | t.starts_with('_')
+            && t.bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'$')
+    };
+    let mut out = HashSet::new();
+    for st in insts {
+        let (op, ops) = stmt_parts(&st.text);
+        if op.starts_with(".reg") {
+            let decl = st.text.trim().trim_end_matches(';');
+            for tok in decl.split([' ', '\t', ',']).skip(1) {
+                let t = tok.split('<').next().unwrap_or("").trim();
+                if ok(t) {
+                    out.insert(t);
+                }
+            }
+            continue;
+        }
+        let base = op.split('.').next().unwrap_or("");
+        if matches!(
+            base,
+            "st" | "red" | "bra" | "brx" | "call" | "bar" | "barrier"
+        ) {
+            continue;
+        }
+        if let Some(d) = ops.first() {
+            for h in d
+                .trim()
+                .trim_start_matches('{')
+                .trim_end_matches('}')
+                .split(',')
+            {
+                let h = h.trim();
+                if ok(h) {
+                    out.insert(h);
+                }
+            }
         }
     }
     out
@@ -722,6 +780,7 @@ fn fmad_pairs(
 fn fmad2_pairs(
     insts: &[&Stmt],
     brx_tables: &HashMap<String, Vec<String>>,
+    toolkit: Option<(u32, u32)>,
 ) -> (
     HashMap<usize, Fmad>,
     HashMap<usize, String>,
@@ -730,6 +789,25 @@ fn fmad2_pairs(
     let mut pairs: HashMap<usize, Fmad> = HashMap::new();
     let mut refuse: HashMap<usize, String> = HashMap::new();
     let mut decided: HashSet<String> = HashSet::new();
+    let bare = bare_regs(insts);
+    // Whether ptxas contracts a mul of rounding `rm` (None: no modifier) into an add / sub of
+    // rounding `ra` (same `.ftz`), by the ptxas that builds the PTX (PTX-FMAD-X2-VERSION,
+    // probes/fmad2, probes/fmad2_v133): 13.0 contracts any two of the same mode (none = `.rn`);
+    // 13.1 and 13.3 only a mul and an add both without a modifier. Other versions are not
+    // measured and count as unknown. None: the version is unknown and the measured rules
+    // disagree (fail closed).
+    // ASSUME(PTX-FMAD-X2-VERSION)
+    let modern = toolkit.is_some_and(|v| matches!(v, (13, 1) | (13, 3)));
+    let pair_rule = |rm: Option<&str>, ra: Option<&str>| -> Option<bool> {
+        let same = rm.unwrap_or("rn") == ra.unwrap_or("rn");
+        let plain = rm.is_none() && ra.is_none();
+        match toolkit {
+            Some((13, 0)) => Some(same),
+            _ if modern => Some(plain),
+            _ if plain || !same => Some(plain),
+            _ => None,
+        }
+    };
     // (base, rounding, ftz) of an f32x2 op.
     fn x2(op: &str) -> Option<(&str, &str, bool)> {
         let mut it = op.split('.');
@@ -746,6 +824,28 @@ fn fmad2_pairs(
         Some((base, rnd, mods.contains(&"ftz")))
     }
     let guarded = |t: &str| t.trim().starts_with('@');
+    // Muls of the same two operands (by name, either order): ptxas 13.1+ merges them into one
+    // FMUL2 whatever their rounding modifiers, so the merged product has every reader of both
+    // and is contracted into at most some of them (probes/fmad2 built by 13.3). Only 13.0's
+    // rule (every same-mode pair contracts) is known to survive the merge.
+    let mut same_ops: HashMap<(String, String), usize> = HashMap::new();
+    for st in insts {
+        let (op, ops) = stmt_parts(&st.text);
+        if matches!(x2(op), Some(("mul", _, _))) && ops.len() == 3 {
+            let (a, b) = (ops[1].trim().to_string(), ops[2].trim().to_string());
+            *same_ops
+                .entry(if a <= b { (a, b) } else { (b, a) })
+                .or_default() += 1;
+        }
+    }
+    let merged = |ops: &[&str]| {
+        ops.len() == 3 && toolkit != Some((13, 0)) && {
+            let (a, b) = (ops[1].trim().to_string(), ops[2].trim().to_string());
+            same_ops
+                .get(&if a <= b { (a, b) } else { (b, a) })
+                .is_some_and(|&n| n > 1)
+        }
+    };
     // Labels no instruction or `.branchtargets` list names (Triton's `$L__tmp` debug labels)
     // do not start a block.
     let mut named: HashSet<&str> = brx_tables.values().flatten().map(|s| s.as_str()).collect();
@@ -759,7 +859,7 @@ fn fmad2_pairs(
     let target = |s: &Stmt| s.labels.iter().any(|l| named.contains(l.as_str()));
     let mut occ: HashMap<&str, Vec<usize>> = HashMap::new();
     for (i, st) in insts.iter().enumerate() {
-        for r in reg_tokens(&st.text) {
+        for r in reg_tokens_ex(&st.text, &bare) {
             let v = occ.entry(r).or_default();
             if v.last() != Some(&i) {
                 v.push(i);
@@ -770,13 +870,22 @@ fn fmad2_pairs(
     let mut cands: HashMap<usize, Vec<(Fmad, bool)>> = HashMap::new();
     for (i, st) in insts.iter().enumerate() {
         let (op, ops) = stmt_parts(&st.text);
-        let Some(("mul", rnd, ftz)) = x2(op) else {
+        let Some(("mul", _, ftz)) = x2(op) else {
             continue;
         };
         let Some(&d) = ops.first() else { continue };
         let mut q: Vec<(usize, usize)> = Vec::new();
         let (mut other, mut unknown, mut unpacked) = (false, false, false);
-        for &j in occ[d].iter().filter(|&&j| j != i) {
+        // Same-mode readers on which 13.0 and 13.1+ disagree (version unknown); a 13.1+ plain
+        // product read by an add with a rounding modifier.
+        let (mut amb, mut mixed): (Vec<usize>, bool) = (Vec::new(), false);
+        // A destination that is not a `%` register token (a name declared inside an inline-asm
+        // block): its readers are not tracked, so nothing is decided about it (fail closed).
+        let Some(uses) = occ.get(d) else {
+            refuse.insert(i, format!("{op} {d}: readers of a register that is not a `%` name are not tracked (PTX-FMAD)"));
+            continue;
+        };
+        for &j in uses.iter().filter(|&&j| j != i) {
             let (o, jo) = stmt_parts(&insts[j].text);
             let base = o.split('.').next().unwrap_or("");
             let unpack = base == "mov" && is_unpack(insts[j], o);
@@ -787,12 +896,41 @@ fn fmad2_pairs(
             } else {
                 &jo[..jo.len().min(1)]
             };
-            if defs.iter().any(|x| reg_tokens(x).contains(&d)) {
+            if defs.iter().any(|x| reg_tokens_ex(x, &bare).contains(&d)) {
                 unknown = true;
                 continue;
             }
+            let explicit = |o: &str| {
+                o.split('.')
+                    .find(|m| matches!(*m, "rn" | "rz" | "rm" | "rp"))
+                    .map(str::to_owned)
+            };
+            let rule = match x2(o) {
+                Some(("add" | "sub", _, f2)) if f2 == ftz => {
+                    pair_rule(explicit(op).as_deref(), explicit(o).as_deref())
+                }
+                _ => Some(false),
+            };
+            let rule = match rule {
+                Some(true) if merged(&ops) => None,
+                r => r,
+            };
+            match rule {
+                None => amb.push(j),
+                // 13.1+: whether an add with a rounding modifier reading a plain product stops
+                // the contraction into the plain adds next to it is not probed.
+                Some(false)
+                    if modern
+                        && explicit(op).is_none()
+                        && explicit(o).is_some()
+                        && matches!(x2(o), Some(("add" | "sub", _, _))) =>
+                {
+                    mixed = true
+                }
+                _ => {}
+            }
             match x2(o) {
-                Some(("add" | "sub", r2, f2)) if r2 == rnd && f2 == ftz => {
+                Some(("add" | "sub", _, f2)) if f2 == ftz && rule == Some(true) => {
                     let slots: Vec<usize> = (1..=2)
                         .filter(|&k| jo.get(k).is_some_and(|x| x.trim() == d))
                         .collect();
@@ -817,7 +955,9 @@ fn fmad2_pairs(
                                     let (ko, kops) = stmt_parts(&insts[k].text);
                                     let kb = ko.split('.').next().unwrap_or("");
                                     let kdef = !matches!(kb, "st" | "red" | "atom")
-                                        && kops.first().is_some_and(|x| reg_tokens(x).contains(&h));
+                                        && kops
+                                            .first()
+                                            .is_some_and(|x| reg_tokens_ex(x, &bare).contains(&h));
                                     !kdef && !matches!(kb, "mov" | "selp" | "prmt" | "shfl")
                                 })
                             })
@@ -826,6 +966,22 @@ fn fmad2_pairs(
                 }
                 _ => unknown = true,
             }
+        }
+        if !amb.is_empty() {
+            for &j in amb.iter().chain(q.iter().map(|(j, _)| j)) {
+                refuse.insert(
+                    j,
+                    if merged(&ops) {
+                        format!("{op} {d} read by an add / sub, and another mul.f32x2 has the same operands: ptxas 13.1+ merges the two products and contracts only some of their adds (PTX-FMAD-X2-VERSION)")
+                    } else {
+                        format!("{op} {d} read by a same-mode add / sub: whether ptxas contracts it depends on its version (13.0 does, 13.1 and 13.3 do not), and the case names no measured ptxas_toolkit (PTX-FMAD)")
+                    },
+                );
+            }
+            continue;
+        }
+        if mixed && !q.is_empty() {
+            unknown = true;
         }
         // Halves unpacked into anything but scalar ops: whether ptxas contracts through them is
         // `uncontractible_f16_muls`.
@@ -856,7 +1012,10 @@ fn fmad2_pairs(
             }
             continue;
         }
-        let srcs: Vec<&str> = ops[1..].iter().flat_map(|o| reg_tokens(o)).collect();
+        let srcs: Vec<&str> = ops[1..]
+            .iter()
+            .flat_map(|o| reg_tokens_ex(o, &bare))
+            .collect();
         let ok = |j: usize| -> bool {
             if j <= i || guarded(&st.text) || guarded(&insts[j].text) {
                 return false;
@@ -876,7 +1035,7 @@ fn fmad2_pairs(
                 } else {
                     so.first().map(|x| x.to_string()).unwrap_or_default()
                 };
-                reg_tokens(&def).iter().any(|r| srcs.contains(r))
+                reg_tokens_ex(&def, &bare).iter().any(|r| srcs.contains(r))
             });
             !crosses && !redef
         };
@@ -2286,7 +2445,25 @@ fn shared_decl(rest: &str) -> Result<(String, u32, u32)> {
 }
 
 /// Parse a PTX module and lower the named entry (or the only entry).
+/// `parse_kernel_for` with the ptxas version not known: where ptxas versions lower the PTX
+/// differently (PTX-FMAD-X2-VERSION), the statement is refused.
 pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
+    parse_kernel_for(src, entry, None)
+}
+
+/// The ptxas toolkit version (`major.minor`, a case's `ptxas_toolkit`) as a pair.
+pub fn toolkit_version(s: &str) -> Option<(u32, u32)> {
+    let (a, b) = s.trim().split_once('.')?;
+    Some((a.parse().ok()?, b.split('.').next()?.parse().ok()?))
+}
+
+/// Lower one entry of a PTX module as the ptxas of `toolkit` (`(major, minor)`, None: not
+/// known) builds it.
+pub fn parse_kernel_for(
+    src: &str,
+    entry: Option<&str>,
+    toolkit: Option<(u32, u32)>,
+) -> Result<Kernel> {
     // `.loc` / `.file` debug directives end at the newline, not at a `;`: drop them (keeping
     // the newline) so they do not swallow the next statement.
     let src: String = strip_comments(src)
@@ -2681,7 +2858,7 @@ pub fn parse_kernel(src: &str, entry: Option<&str>) -> Result<Kernel> {
     let f16_mul_ok = uncontractible_f16_muls(&insts_src);
     let loose_muls = loose_mul_dsts(&insts_src);
     let (mut fmad, mut fmad_refuse) = fmad_pairs(&insts_src, &brx_tables);
-    let (fmad2, fmad2_refuse, mut x2_decided) = fmad2_pairs(&insts_src, &brx_tables);
+    let (fmad2, fmad2_refuse, mut x2_decided) = fmad2_pairs(&insts_src, &brx_tables, toolkit);
     x2_decided.extend(x2_no_add_readers(&insts_src));
     fmad.extend(fmad2);
     fmad_refuse.extend(fmad2_refuse);
@@ -7667,11 +7844,16 @@ mod tests {
 
     /// Every op one statement lowers to (64-bit registers %rd0..7 declared too).
     fn ops(line: &str) -> Result<Vec<Op>> {
+        ops_tk(line, None)
+    }
+
+    /// `ops` as the ptxas of `toolkit` builds it (PTX-FMAD-X2-VERSION).
+    fn ops_tk(line: &str, toolkit: Option<(u32, u32)>) -> Result<Vec<Op>> {
         let src = format!(
             ".version 9.0\n.target sm_103a\n.address_size 64\n.visible .entry k()\n{{\n\
              .reg .pred %p<4>;\n.reg .b32 %r<8>;\n.reg .b64 %rd<8>;\n{line}\nret;\n}}\n"
         );
-        let k = parse_kernel(&src, None)?;
+        let k = parse_kernel_for(&src, None, toolkit)?;
         Ok(k.code[..k.code.len() - 1]
             .iter()
             .map(|i| i.op.clone())
@@ -8124,6 +8306,30 @@ mod tests {
     }
 
     #[test]
+    fn fmad2_bare_register_names() {
+        // CuTe DSL inline asm names registers without `%`; the f32x2 contraction analysis
+        // tracks them (it used to panic) and contracts a product only an add reads.
+        let src = ".reg .b64 Y, W;\nmul.f32x2 Y, %rd1, %rd2;\nadd.f32x2 %rd3, Y, %rd2;\n\
+                   { .reg .b64 Z; mul.f32x2 Z, %rd1, %rd5; add.f32x2 %rd4, Z, %rd2; }";
+        let v = ops(src).unwrap();
+        // Each mul lowers as FFMA2 with a -0 addend; each contracted add as FFMA2 with the
+        // add's other operand as the addend.
+        let fused = v
+            .iter()
+            .filter(|o| {
+                matches!(
+                    o,
+                    Op::Ffma2 {
+                        c: (Val::Reg(..), _),
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(fused, 2, "{v:?}");
+    }
+
+    #[test]
     fn tma_im2col_refused() {
         assert!(ops("cp.async.bulk.tensor.4d.shared::cluster.global.im2col.mbarrier::complete_tx::bytes [%r1], [%rd1, {%r2, %r3, %r4, %r5}], [%r6], {%rs1, %rs2};").is_err());
         assert!(ops("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%r1], [%rd1, {%r2, %r3}], [%r6];").is_ok());
@@ -8213,6 +8419,32 @@ mod tests {
 
     #[test]
     fn packed_f32x2_forms() {
+        // PTX-FMAD-X2-VERSION: a moded same-mode pair contracts under 13.0, stays apart under
+        // 13.1 / 13.3 and is refused when the version is unknown (or not measured); a plain
+        // pair contracts under all three.
+        let rn = "mul.rn.f32x2 %rd1, %rd2, %rd3;\nadd.rn.f32x2 %rd4, %rd1, %rd3;";
+        let plain = "mul.f32x2 %rd1, %rd2, %rd3;\nadd.f32x2 %rd4, %rd1, %rd3;";
+        let n_ffma2 = |l: &str, tk| {
+            ops_tk(l, tk)
+                .unwrap()
+                .iter()
+                .filter(|o| {
+                    matches!(o, Op::Ffma2 { b, c, .. }
+                        if b.0 != Val::Imm(0x3f80_0000) && matches!(c.0, Val::Reg(..)))
+                })
+                .count()
+        };
+        assert_eq!(n_ffma2(rn, Some((13, 0))), 1);
+        for tk in [Some((13, 1)), Some((13, 3))] {
+            assert_eq!(n_ffma2(rn, tk), 0);
+            assert_eq!(n_ffma2(plain, tk), 1);
+        }
+        for tk in [None, Some((13, 2)), Some((13, 4))] {
+            assert!(ops_tk(rn, tk).is_err());
+            assert_eq!(n_ffma2(plain, tk), 1);
+        }
+        // The rest: the 13.0 rule.
+        let ops = |l: &str| ops_tk(l, Some((13, 0)));
         let f2 = |l: &str| match &ops(l).unwrap()[..] {
             [Op::Ffma2 { a, b, c, neg, .. }] => (a.1, b.clone(), c.clone(), *neg),
             o => panic!("{l}: {o:?}"),

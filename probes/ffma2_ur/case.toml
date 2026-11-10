@@ -3,6 +3,7 @@ description = """
 Probe (L-ROSETTA) for FFMA2 with negated uniform-register operands (`-URn.F32`,
 `-URn.F32x2.HI_LO`: neg.f32 of kernel parameters folded by ptxas) and FMUL2 with `|R|` (abs.f32
 of both halves folded) on special and random inputs (kernel.ptx, gen.py). expected/ is GB300's output (ptxas cubin, `ptxv hw-worker`)."""
+ptxas_toolkit = "13.0"
 ptx = "kernel.ptx"
 entry = "ffma2_ur"
 grid = [1, 1, 1]

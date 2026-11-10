@@ -5142,6 +5142,12 @@ forms seen. Any other form is a hard error.
   so their uses resolve (they were "unknown register": 33 kernel-DB records) and a scoped
   `%p0` no longer refers to the body's `%p0` (an alias that clobbered it); a word right after
   `.` is never renamed (`mad.lo.u32` next to a scoped register `lo` became `mad.lo__sN.u32`).
+- Registers named without `%` (2026-11-09, CuTe DSL inline asm: `.reg .b64 Z;` then
+  `mul.rn.f32x2 Z, G, NALPHA;`): the PTX-FMAD analyses (`fmad2_pairs`) track a bare name as
+  a register when the kernel declares it (`.reg`) or writes it, so its readers count; before,
+  such a product's reader lookup panicked. A product whose register is still not tracked is
+  refused, never a panic. probes/f32x2_bare (plain mul / add.f32x2 on bare names at kernel
+  scope and in a nested scope): GB300 = both fronts bitwise.
 - `setp.<cmp>.<bop>.f32` / `.f64` `p[|q], a, b, [!]c` (2026-11-09, `bop` = and / or / xor):
   p = cmp(a, b) bop c, q = !cmp(a, b) bop c (FSETP / DSETP with a combining predicate); `.ftz`
   on f32. A fourth operand without `bop`, or a fifth, is refused. probes/setp_bop (ordered and
@@ -5296,7 +5302,7 @@ produces. The SASS front-end is exact (it executes the FFMA / FMUL + FADD ptxas 
   by a plain add / sub: 554 (list kept outside the repo).
 - `.f32x2` (2026-11-07, PX: 4 kernel-DB records whose PTX-front output was 1 ulp off GB300,
   e.g. a Triton gated product sum; 127 records refused on plain `mul` / `add.f32x2`): ptxas
-  13.0 contracts a `mul.f32x2` into every `add` / `sub.f32x2` reading it when all its readers
+  13.0 (other versions: PTX-FMAD-X2-VERSION) contracts a `mul.f32x2` into every `add` / `sub.f32x2` reading it when all its readers
   are such adds with the same rounding mode and `.ftz` setting, **explicit `.rn` / `.rz` /
   `.rm` / `.rp` included** (FFMA2, FFMA2.RZ, FFMA2.RM; none = `.rn`, so `mul.f32x2` +
   `add.rn.f32x2` contracts too), the mul then disappearing; with any other reader (a store, an
@@ -5315,6 +5321,42 @@ produces. The SASS front-end is exact (it executes the FFMA / FMUL + FADD ptxas 
   `.rn` pair.
 - If wrong: *false alarm* on bitwise / equivalence / error-distribution results of the PTX
   front only; other toolchains or `--fmad=false` may contract differently.
+
+### PTX-FMAD-X2-VERSION · code
+**The `.f32x2` contraction rule is that of the ptxas version that builds the case: 13.0
+contracts a `mul.f32x2` into same-mode `add` / `sub.f32x2` readers whatever the rounding
+modifier (PTX-FMAD); 13.1 and 13.3 contract only a mul and an add both without a modifier.**
+The version is the case's `ptxas_toolkit` field, else the `PTXV_TOOLKITS` registry entry
+`ptx_rebuild` selects for the PTX (when it is not the default ptxas), never the ambient
+`CUDA_HOME`. Any other version (no `ptxas_toolkit`, 13.2, a later release) is unknown.
+- Where: `ptx` `fmad2_pairs` (`pair_rule`, `merged`), `parse_kernel_for` (`toolkit`);
+  `cli` resolves the version per case (`toolkit_version`, `sass::registry_toolkit`).
+- Unknown version: the pairs on which the measured rules agree are lowered (a plain pair
+  contracts, a pair of different modes stays apart); a mul with a rounding modifier (or
+  none) read by an add / sub of the same mode with a modifier, i.e. where 13.0 and 13.1+
+  disagree, is refused.
+- 13.1+ merges muls with the same two operands into one FMUL2 whatever their rounding
+  modifiers, and then contracts the merged product into only some of its adds (probes/fmad2
+  built by 13.3: 1 FFMA2 where 13.0 gives 5); a contractible reader of such a mul is refused
+  unless the version is 13.0. Under 13.1 / 13.3, a plain product read by both a plain add and
+  an add with a modifier is refused (not probed).
+- Status: **validated** (2026-11-09). probes/fmad2_v133 (5 independent pairs: plain / plain,
+  `.rn` / `.rn`, `.rz` / `.rz`, `.rn` / plain, plain / `.rn`; addends cancel the product to
+  +- 1 ulp) built by 13.3: 1 FFMA2 + 4 FMUL2 / FADD2 pairs; by 13.0: 5 FFMA2; 13.1 = 13.3.
+  GB300 runs the 13.3 cubin (`ptxv hw`, 50 runs scrubbed); the PTX front under the 13.3 rule
+  and the SASS front of that cubin both equal it bitwise. The fixture
+  `probe_fmad2_v133_version_rule` also applies the 13.0 rule to the same PTX: the outputs
+  differ from GB300 (the mutant is killed), and with no version the front refuses. Scalar
+  forms do not drift: probes/fmad, fmad_multi and fmad_f16 compile to the same FFMA / FMUL +
+  FADD / DFMA / HFMA2 mix under 13.0, 13.1 and 13.3 (plain pairs contract, `.rn` or mixed
+  modes stay apart). No 13.2 toolkit is available, so 13.2 is unknown.
+- Records: the f32x2 probes compiled by the default 13.0 ptxas (probes/fmad2, f32x2_ftz,
+  ffma2_ur, bf16_ext; fixtures/e_uninit_f32x2_lanes, s_ptx_packed) name `ptxas_toolkit =
+  "13.0"`. Before 2026-11-09 the PTX front applied the 13.0 rule to every case, so a case
+  built by 13.1+ with `.rn` f32x2 pairs got contracted PTX-front values that its cubin and
+  GPU do not produce.
+- If wrong: *false alarm* or *missed difference* on PTX-front numerics of `.f32x2` code
+  built by another ptxas version.
 
 ### L-LOP3-P · code
 **`LOP3.LUT Pd, Rd, a, b, c, lut, Pq` sets Pd = (result != 0) OR Pq; `LOP3.LUT.PAND` sets

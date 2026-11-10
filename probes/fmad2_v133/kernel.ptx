@@ -1,0 +1,59 @@
+// probes/fmad2_v133: ptxas version dependence of mul.f32x2 + add.f32x2 contraction
+// (PTX-FMAD-X2-VERSION). 128 threads; triple k (k < 5) of thread t: x, y = .b64 pairs at
+// in[32 t + 4 k ..], z at in[32 t + 20 + 2 k ..] (gen.py: z = -(x y) +- 1 ulp, so a
+// contraction changes the result).
+// out[10 t + 2 k ..] = mul then add of triple k:
+//   0: plain mul, plain add: FFMA2 (13.0, 13.1, 13.3)
+//   1: mul.rn, add.rn: FFMA2 by 13.0, FMUL2 + FADD2 by 13.1 / 13.3
+//   2: mul.rz, add.rz: FFMA2.RZ by 13.0, apart by 13.1 / 13.3
+//   3: mul.rn, plain add: FFMA2 by 13.0, apart by 13.1 / 13.3
+//   4: plain mul, add.rn: FFMA2 by 13.0, apart by 13.1 / 13.3
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry fmad2_v133(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 128, 1, 1
+{
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<64>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 128;
+    add.s64         %rd4, %rd1, %rd3;
+    mul.wide.u32    %rd5, %r1, 40;
+    add.s64         %rd6, %rd2, %rd5;
+    ld.global.v2.b64 {%rd10, %rd11}, [%rd4+0];
+    ld.global.b64   %rd12, [%rd4+80];
+    mul.f32x2       %rd13, %rd10, %rd11;
+    add.f32x2       %rd14, %rd13, %rd12;
+    st.global.b64   [%rd6+0], %rd14;
+    ld.global.v2.b64 {%rd16, %rd17}, [%rd4+16];
+    ld.global.b64   %rd18, [%rd4+88];
+    mul.rn.f32x2    %rd19, %rd16, %rd17;
+    add.rn.f32x2    %rd20, %rd19, %rd18;
+    st.global.b64   [%rd6+8], %rd20;
+    ld.global.v2.b64 {%rd22, %rd23}, [%rd4+32];
+    ld.global.b64   %rd24, [%rd4+96];
+    mul.rz.f32x2    %rd25, %rd22, %rd23;
+    add.rz.f32x2    %rd26, %rd25, %rd24;
+    st.global.b64   [%rd6+16], %rd26;
+    ld.global.v2.b64 {%rd28, %rd29}, [%rd4+48];
+    ld.global.b64   %rd30, [%rd4+104];
+    mul.rn.f32x2    %rd31, %rd28, %rd29;
+    add.f32x2       %rd32, %rd31, %rd30;
+    st.global.b64   [%rd6+24], %rd32;
+    ld.global.v2.b64 {%rd34, %rd35}, [%rd4+64];
+    ld.global.b64   %rd36, [%rd4+112];
+    mul.f32x2       %rd37, %rd34, %rd35;
+    add.rn.f32x2    %rd38, %rd37, %rd36;
+    st.global.b64   [%rd6+32], %rd38;
+    ret;
+}

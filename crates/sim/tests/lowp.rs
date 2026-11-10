@@ -96,7 +96,15 @@ fn cvt_lp_both_fronts_match_gb300() {
     ptxv_sass::ptxas(&p, &cubin, &case.m.arch).unwrap();
     let w = |x: &[u8], i: usize| u32::from_le_bytes(x[4 * i..4 * i + 4].try_into().unwrap());
     for k in [
-        ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap(),
+        ptxv_ptx::parse_kernel_for(
+            &ptx,
+            Some(&case.m.entry),
+            case.m
+                .ptxas_toolkit
+                .as_deref()
+                .and_then(ptxv_ptx::toolkit_version),
+        )
+        .unwrap(),
         ptxv_sass::load_cubin(&cubin, &case.m.entry).unwrap(),
     ] {
         let front = format!("{:?}", k.front);

@@ -35,7 +35,15 @@ fn kernel(case: &Case, variant: &str, front: &str) -> ptxv_ir::Kernel {
             .all_launches()
             .iter()
             .map(|l| match front {
-                "ptx" => ptxv_ptx::parse_kernel(&ptx, Some(l.entry)).unwrap(),
+                "ptx" => ptxv_ptx::parse_kernel_for(
+                    &ptx,
+                    Some(l.entry),
+                    case.m
+                        .ptxas_toolkit
+                        .as_deref()
+                        .and_then(ptxv_ptx::toolkit_version),
+                )
+                .unwrap(),
                 _ => {
                     let dir = scratch_dir(&case.m.name, variant);
                     std::fs::create_dir_all(&dir).unwrap();
@@ -50,7 +58,15 @@ fn kernel(case: &Case, variant: &str, front: &str) -> ptxv_ir::Kernel {
         return ptxv_ir::Kernel::concat(ks);
     }
     match front {
-        "ptx" => ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap(),
+        "ptx" => ptxv_ptx::parse_kernel_for(
+            &ptx,
+            Some(&case.m.entry),
+            case.m
+                .ptxas_toolkit
+                .as_deref()
+                .and_then(ptxv_ptx::toolkit_version),
+        )
+        .unwrap(),
         _ => {
             let dir = scratch_dir(&case.m.name, variant);
             std::fs::create_dir_all(&dir).unwrap();
@@ -2207,7 +2223,15 @@ fn probe_s2f6_cvt_matches_hardware() {
     // The PTX front on the cubin's source (the case is binary-only: ptxas 13.0 rejects it).
     let case = Case::load(root().join("probes/s2f6_cvt")).unwrap();
     let ptx = std::fs::read_to_string(case.dir.join("kernel.ptx")).unwrap();
-    let k = ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap();
+    let k = ptxv_ptx::parse_kernel_for(
+        &ptx,
+        Some(&case.m.entry),
+        case.m
+            .ptxas_toolkit
+            .as_deref()
+            .and_then(ptxv_ptx::toolkit_version),
+    )
+    .unwrap();
     let launch = build_launch(&case, &k).unwrap();
     let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
         .verdict
@@ -2846,6 +2870,39 @@ fn probe_f32x2_unpack_add_matches_hardware() {
     probe_bitwise("probes/f32x2_unpack_add", "good", "sass");
 }
 
+/// Registers named without `%` (declared by `.reg`, at kernel scope and in a nested scope) on
+/// plain mul.f32x2 + add.f32x2 (probes/f32x2_bare): their readers are tracked like `%` names
+/// (FFMA2 where only the add reads the product); = GB300 on both fronts.
+#[test]
+fn probe_f32x2_bare_matches_hardware() {
+    probe_bitwise("probes/f32x2_bare", "good", "ptx");
+    probe_bitwise("probes/f32x2_bare", "good", "sass");
+}
+
+/// PTX-FMAD-X2-VERSION: a case built by ptxas 13.3 (probes/fmad2_v133, `ptxas_toolkit`), in
+/// which only the plain pair contracts. The PTX front under the 13.3 rule and the SASS front
+/// on the 13.3 cubin = GB300. The 13.0 rule (every same-mode pair contracts) applied to the
+/// same PTX gives different bits (mutant killed); with no known version the front refuses.
+#[test]
+fn probe_fmad2_v133_version_rule() {
+    probe_bitwise("probes/fmad2_v133", "good", "ptx");
+    probe_bitwise_cubin("probes/fmad2_v133", Some("kernel.cubin"));
+    let case = Case::load(root().join("probes/fmad2_v133")).unwrap();
+    let ptx = case.variant_ptx("good").unwrap();
+    let k = ptxv_ptx::parse_kernel_for(&ptx, Some(&case.m.entry), Some((13, 0))).unwrap();
+    let launch = build_launch(&case, &k).unwrap();
+    let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
+        .verdict
+        .expect("13.0-rule mutant certifies");
+    let report = case.expect_report(&v.outputs[0]).unwrap();
+    assert!(
+        report.iter().any(|l| !l.contains("bitwise equal")),
+        "the 13.0 rule on a 13.3 case must differ from GB300: {report:?}"
+    );
+    let e = ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap_err();
+    assert!(format!("{e:#}").contains("PTX-FMAD"), "{e:#}");
+}
+
 /// mad.lo.s16 / .u16 (low 16 bits of a * b + c; register and immediate operands, d aliasing
 /// c) on random operands (probes/mad_lo16) = GB300 on both fronts.
 #[test]
@@ -2983,7 +3040,15 @@ fn probe_f32x2_ftz_matches_hardware() {
     probe_bitwise("probes/f32x2_ftz", "good", "sass");
     let case = Case::load(root().join("probes/f32x2_ftz")).unwrap();
     let ptx = case.variant_ptx("good").unwrap().replace(".ftz", "");
-    let k = ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap();
+    let k = ptxv_ptx::parse_kernel_for(
+        &ptx,
+        Some(&case.m.entry),
+        case.m
+            .ptxas_toolkit
+            .as_deref()
+            .and_then(ptxv_ptx::toolkit_version),
+    )
+    .unwrap();
     let launch = build_launch(&case, &k).unwrap();
     let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
         .verdict
@@ -3091,7 +3156,17 @@ fn probe_red_async_ops_add() {
     probe_bitwise("probes/red_async_ops", "good", "sass");
     let case = Case::load(root().join("probes/red_async_ops")).unwrap();
     let ptx = case.variant_ptx("good").unwrap();
-    assert!(ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).is_err());
+    assert!(
+        ptxv_ptx::parse_kernel_for(
+            &ptx,
+            Some(&case.m.entry),
+            case.m
+                .ptxas_toolkit
+                .as_deref()
+                .and_then(ptxv_ptx::toolkit_version)
+        )
+        .is_err()
+    );
 }
 
 /// cp.async.bulk.prefetch.tensor (SASS UTMAPF.L2.2D) as a cache hint (probes/tma_prefetch)
