@@ -1,0 +1,37 @@
+name = "probe_qmul4"
+description = """
+Probe (N-QMUL4) for SASS QMUL4.E4M3x4.E2M1x4.E4M3x4 d, a.N3210 / .N7654, b.B0 (k.cubin: see
+kernel.ptx, patch.py). in.bin (gen.py): every e2m1 code times every e4m3 scale at every
+nibble position, bytes 1..3 of b varied. expected/ is GB300's output (`ptxv hw-worker
+probes/qmul4 k.cubin --runs 20 --dump`, all runs alike), equal to model.py in every byte."""
+cubin = "k.cubin"
+entry = "qmul4"
+grid = [16, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [4096, 2]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4096, 2]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

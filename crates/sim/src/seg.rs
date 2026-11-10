@@ -349,8 +349,9 @@ pub(crate) fn eval_inst(
             neg,
             rnd,
             sat,
+            f16,
             ..
-        } => fp::ffma_bf16([w(a), w(b), w(c)], *hi, *neg, *rnd, *sat) as u64,
+        } => fp::ffma_bf16([w(a), w(b), w(c)], *hi, *neg, *rnd, *sat, *f16) as u64,
         Op::Hmnmx2Bf16 {
             a,
             b,
@@ -360,6 +361,7 @@ pub(crate) fn eval_inst(
             xorsign,
             ..
         } => fp::hmnmx2_bf16((w(a), w(b)), *sel, rp(min), *nan, *xorsign) as u64,
+        Op::Qmul4 { a, b, hi, bsel, .. } => crate::lowp::qmul4(w(a), w(b), *hi, *bsel) as u64,
         Op::Hmnmx2F16 {
             a,
             b,
@@ -640,8 +642,13 @@ pub(crate) fn eval_inst(
         Op::F2fpBf16 { a, b, .. } => {
             ((fp::f32_to_bf16_rn_gpu(w(a)) as u64) << 16) | fp::f32_to_bf16_rn_gpu(w(b)) as u64
         }
-        Op::F2fpF16 { a, b, .. } => {
-            ((fp::f32_to_f16_rn(w(a)) as u64) << 16) | fp::f32_to_f16_rn(w(b)) as u64
+        Op::F2fpF16 { a, b, rz, .. } => {
+            let c = if *rz {
+                fp::f32_to_f16_rz
+            } else {
+                fp::f32_to_f16_rn
+            };
+            ((c(w(a)) as u64) << 16) | c(w(b)) as u64
         }
         Op::Prmt { a, sel, b, .. } => {
             let x = (rv(a) & 0xffff_ffff) | ((rv(b) & 0xffff_ffff) << 32);

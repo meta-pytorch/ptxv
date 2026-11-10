@@ -8641,12 +8641,19 @@ impl Machine {
                 self.wr(t, *d, fp::cvt_tf32(x, *rz, *sat, *relu) as u64, 1);
                 self.num_clobber(t, *d, &[a], pc);
             }
-            Op::F2fpF16 { d, a, b } => {
+            Op::F2fpF16 { d, a, b, rz } => {
                 let (x, y) = (self.rd(t, a)? as u32, self.rd(t, b)? as u32);
-                let r = (fp::f32_to_f16_rn(x) as u64) << 16 | fp::f32_to_f16_rn(y) as u64;
-                // Rounding nodes for both halves (read before d, which may be a or b).
-                self.num_f2fp16(t, *d, (a, b), (x, y), pc, true);
-                self.wr(t, *d, r, 1);
+                if *rz {
+                    // ASSUME(N-F2FP-RZ): no rounding node for the truncation.
+                    let r = (fp::f32_to_f16_rz(x) as u64) << 16 | fp::f32_to_f16_rz(y) as u64;
+                    self.num_clobber(t, *d, &[a, b], pc);
+                    self.wr(t, *d, r, 1);
+                } else {
+                    let r = (fp::f32_to_f16_rn(x) as u64) << 16 | fp::f32_to_f16_rn(y) as u64;
+                    // Rounding nodes for both halves (read before d, which may be a or b).
+                    self.num_f2fp16(t, *d, (a, b), (x, y), pc, true);
+                    self.wr(t, *d, r, 1);
+                }
             }
             Op::F2fpBf16 { d, a, b } => {
                 let (x, y) = (self.rd(t, a)? as u32, self.rd(t, b)? as u32);
@@ -9165,15 +9172,21 @@ impl Machine {
                 neg,
                 rnd,
                 sat,
+                f16,
             } => {
                 let v = [
                     self.rd(t, a)? as u32,
                     self.rd(t, b)? as u32,
                     self.rd(t, c)? as u32,
                 ];
-                let r = fp::ffma_bf16(v, *hi, *neg, *rnd, *sat);
+                let r = fp::ffma_bf16(v, *hi, *neg, *rnd, *sat, *f16);
                 self.wr(t, *d, r as u64, 1);
-                self.num_ffma_bf16(t, *d, [a, b, c], v, (*hi, *neg, *rnd, *sat), r, pc);
+                if *f16 {
+                    // ASSUME(N-FHADD): f16 halves are not tracked as error nodes.
+                    self.num_clobber(t, *d, &[a, b, c], pc);
+                } else {
+                    self.num_ffma_bf16(t, *d, [a, b, c], v, (*hi, *neg, *rnd, *sat), r, pc);
+                }
             }
             // ASSUME(N-BF16X2): see ASSUMPTIONS.md
             Op::Hmnmx2Bf16 {
@@ -9187,6 +9200,12 @@ impl Machine {
             } => {
                 let (x, y) = (self.rd(t, a)? as u32, self.rd(t, b)? as u32);
                 let r = fp::hmnmx2_bf16((x, y), *sel, self.prd(t, *min), *nan, *xorsign);
+                self.wr(t, *d, r as u64, 1);
+                self.num_clobber(t, *d, &[a, b], pc);
+            }
+            Op::Qmul4 { d, a, b, hi, bsel } => {
+                let (x, y) = (self.rd(t, a)? as u32, self.rd(t, b)? as u32);
+                let r = crate::lowp::qmul4(x, y, *hi, *bsel);
                 self.wr(t, *d, r as u64, 1);
                 self.num_clobber(t, *d, &[a, b], pc);
             }
@@ -14260,6 +14279,7 @@ fn propagates_undef(op: &Op) -> bool {
             | Op::FfmaBf16 { .. }
             | Op::Hmnmx2Bf16 { .. }
             | Op::Hmnmx2F16 { .. }
+            | Op::Qmul4 { .. }
             | Op::Vhmnmx { .. }
             | Op::CvtF32Bf16 { .. }
             | Op::F2fpBf16 { .. }

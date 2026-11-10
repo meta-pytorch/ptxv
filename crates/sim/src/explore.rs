@@ -8020,6 +8020,7 @@ impl LaWarp {
                         | Op::FfmaBf16 { .. }
                         | Op::Hmnmx2Bf16 { .. }
                         | Op::Hmnmx2F16 { .. }
+                        | Op::Qmul4 { .. }
                         | Op::Vhmnmx { .. }
                 );
                 let vals = op.src_vals();

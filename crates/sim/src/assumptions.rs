@@ -1163,7 +1163,7 @@ pub const REGISTRY: &[Assumption] = &[
                 matches!(
                     o,
                     Op::Hfma2Bf16 { .. }
-                        | Op::FfmaBf16 { .. }
+                        | Op::FfmaBf16 { f16: false, .. }
                         | Op::Hmnmx2Bf16 { .. }
                         | Op::Vhmnmx { .. }
                         | Op::Atom {
@@ -1173,6 +1173,27 @@ pub const REGISTRY: &[Assumption] = &[
                 )
             })
         },
+    },
+    Assumption {
+        id: "N-QMUL4",
+        kind: "code",
+        status: "validated",
+        title: "QMUL4.E4M3x4.E2M1x4.E4M3x4: e2m1 x e4m3 per byte, rounded to e4m3 (nearest even), overflow / NaN 0x7f (probes/qmul4)",
+        applies: |k| any(k, |o| matches!(o, Op::Qmul4 { .. })),
+    },
+    Assumption {
+        id: "N-F2FP-RZ",
+        kind: "code",
+        status: "validated",
+        title: "F2FP.F16.F32.PACK_AB.RZ: f32 -> f16 toward zero, overflow to 0x7bff, NaN 0x7fff (probes/f2fp_rz, every f32 per lane)",
+        applies: |k| any(k, |o| matches!(o, Op::F2fpF16 { rz: true, .. })),
+    },
+    Assumption {
+        id: "N-FHADD",
+        kind: "code",
+        status: "validated",
+        title: "FHADD / FHFMA without .BF16 (add / sub / fma .f32.f16): f16 halves widened exactly, one f32 rounding in the mode (probes/fhadd)",
+        applies: |k| any(k, |o| matches!(o, Op::FfmaBf16 { f16: true, .. })),
     },
     Assumption {
         id: "N-HMNMX2",

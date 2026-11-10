@@ -159,6 +159,7 @@ modifier of these opcodes is refused.
 | `BREAK[.RELIABLE] Pc, Bb` | **probes/div_ftz**: div.rn.ftz.f32 slow path on edge pairs (E-BSYNC) |
 | `UTCQMMA` / `tcgen05.mma` block-scaled M = 128 N = 8 (shape check relaxed) | **probes/mma_bs expected/n8**, both front-ends (N-MMA-BS, S-TMEM) |
 | `UTCQMMA` / `tcgen05.mma.kind::mxf8f6f4` with A in TMEM or MN-major A / B (SWIZZLE_128B), 8-bit formats, M = 128 | **probes/mma_mxf8_tmem** = the K-major path on GB300 bitwise, both front-ends (N-MMA-BS, S-TMEM); the other swizzles, unswizzled MN-major and cta_group::2: **probes/mma_bs/mn**, **probes/mma_bs/ts** below |
+| `LDC.U16` (zero-extending 16-bit constant load, odd halfwords of a word) | **probes/ldc_u16**, both front-ends = GB300 |
 | `LDC` / `LDCU` `c[0x0][R+-off]` (register-indexed, negative offset) | **probes/cbank_neg**, both front-ends = GB300 |
 | `ATOMG.E.INC[.STRONG.GPU]` (+ PTX `atom.inc.u32`) | **probes/atom_inc**, both front-ends (L-ROSETTA) |
 | `BMOV.32[.CLEAR] Rd, Bb`, `BMOV.32 Bb, Ra` | the parallel_attn_bwd_dkv case (E-BSYNC); not probed alone |
@@ -286,6 +287,9 @@ any modifier outside the audited set before an arm runs.
 | `FMNMX3 \|a\|, \|b\|, \|c\|` `[.FTZ/.NAN]` | `min` / `max [.ftz] [.NaN] .abs.f32` with three sources | min / max of the absolute values (FMNMX3 NaN rules) | probes/fmnmx3_abs |
 | `HFMA2` / `HMUL2` / `HADD2.BF16_V2[.RELU]` | `fma` / `mul` / `add` / `sub.rn.bf16x2`, `neg.bf16x2` | per lane: one rounding to bf16 (RNE), subnormals kept, every NaN result 0x7fff (neg of a NaN too); `-RZ` addend keeps -0 | probes/bf16x2 |
 | `FHFMA` / `FHADD.BF16`, `HMNMX2.BF16_V2[.NAN][.XORSIGN]` | `fma` / `add.f32.bf16`, `min` / `max.bf16x2` | f32 FMA of the widened halves, one rounding in the instruction's mode; min/max as FMNMX on the widenings, NaN 0x7fff | probes/bf16_ext |
+| `QMUL4.E4M3x4.E2M1x4.E4M3x4` (`.N3210` / `.N7654`, `.B0`) | (no PTX form found) | e2m1 x e4m3 per byte, nearest even, overflow / NaN scale 0x7f | probes/qmul4 (exhaustive, patched-in encoding) |
+| `F2FP.F16.F32.PACK_AB.RZ` | `cvt.rz.f16x2.f32` | f32 -> f16 toward zero, \|x\| >= 65536 to 0x7bff, NaN 0x7fff | probes/f2fp_rz (every f32 per lane, on the GPU) |
+| `FHFMA` / `FHADD` (f16, no `.BF16`; `.RZ/.RM/.RP/.SAT`, `.H1`, `-c`) | `fma` / `add` / `sub .f32.f16` | f32 FMA of the exactly widened f16 halves, one rounding in the instruction's mode, NaN 0x7fffffff, `.SAT` to [0, 1] | probes/fhadd (exhaustive per half) |
 | `HMNMX2[.NAN][.XORSIGN]` (f16; `\|R\|`, `.Hx_Hx`, immediate pairs) | `min` / `max` [.NaN] [.xorsign.abs] `.f16x2` / `.f16` | FMNMX's rules per f16 lane, `\|R\|` without `.XORSIGN` clears the sign, NaN 0x7fff | probes/hmnmx2 (exhaustive lane 0) |
 | `REDG.E.ADD.BF16x2.RN`, `ATOMG.E.ADD.BF16x2.RN` | `red` / `atom.add.noftz.bf16x2` | per lane bf16 add, RNE, NaN 0x7fff; not commutative-exact (excluded from C-ORDER) | probes/bf16x2 |
 | `MUFU.RSQ` + Newton step + slow-path `CALL` (ptxas) | `sqrt.rn.f32` | IEEE square root, round to nearest even; negative / NaN inputs give 0x7fffffff | probes/sqrt_rn |

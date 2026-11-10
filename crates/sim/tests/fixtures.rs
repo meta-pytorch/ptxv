@@ -2250,6 +2250,37 @@ fn probe_cbank_neg_matches_hardware() {
     probe_bitwise("probes/cbank_neg", "good", "sass");
 }
 
+/// N-QMUL4: QMUL4.E4M3x4.E2M1x4.E4M3x4 (.N3210 / .N7654, .B0) on every e2m1 code x e4m3 scale
+/// x nibble position = GB300 (probes/qmul4; SASS only, the instruction is patched in).
+#[test]
+fn probe_qmul4_matches_hardware() {
+    probe_bitwise_cubin("probes/qmul4", None);
+}
+
+/// N-F2FP-RZ: F2FP.F16.F32.PACK_AB.RZ (cvt.rz.f16x2.f32) on edge and random pairs = GB300 on
+/// both front-ends (probes/f2fp_rz; its sweep.ptx checks every f32 per lane on the GPU).
+#[test]
+fn probe_f2fp_rz_matches_hardware() {
+    probe_bitwise("probes/f2fp_rz", "good", "ptx");
+    probe_bitwise("probes/f2fp_rz", "good", "sass");
+}
+
+/// LDC.U16 / LDCU.U16 (ld.param.u16 at 2-byte offsets, odd halfwords included; values with bit
+/// 15 set zero-extended) = GB300 on both front-ends (probes/ldc_u16).
+#[test]
+fn probe_ldc_u16_matches_hardware() {
+    probe_bitwise("probes/ldc_u16", "good", "ptx");
+    probe_bitwise("probes/ldc_u16", "good", "sass");
+}
+
+/// N-FHADD: FHADD / FHFMA without .BF16 (f16 halves, .RZ / .RM / .RP / .SAT, .H1, -c) = GB300
+/// on both front-ends (probes/fhadd; the exhaustive run is checked against model.py).
+#[test]
+fn probe_fhadd_matches_hardware() {
+    probe_bitwise("probes/fhadd", "good", "ptx");
+    probe_bitwise("probes/fhadd", "good", "sass");
+}
+
 /// N-HMNMX2: f16 HMNMX2[.NAN][.XORSIGN] (|b|, immediate pairs, scalar halves) = GB300
 /// (probes/hmnmx2; the exhaustive lane-0 run is checked against model.py, see case.toml).
 #[test]

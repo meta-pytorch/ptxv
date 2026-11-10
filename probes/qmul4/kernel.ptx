@@ -1,0 +1,21 @@
+// Probe (N-QMUL4) for SASS QMUL4.E4M3x4.E2M1x4.E4M3x4 (trtllm-gen FMHA's e2m1 KV
+// dequantization; no PTX form found). ptxas builds this kernel (base.cubin) with two LOP3
+// placeholders; patch.py rewrites them into QMUL4 R6, R2.N3210, R3.B0 and QMUL4 R7, R2.N7654,
+// R3.B0 (encoding from a trtllm-gen sm_103a cubin, register fields set) = k.cubin. Thread g
+// loads (a, b) = in[g] (gen.py) and stores the two results to out[g].
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry qmul4(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<8>; .reg .b32 %r<20>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mov.u32 %r2, %ctaid.x; mov.u32 %r3, %ntid.x; mad.lo.s32 %r1, %r2, %r3, %r1;
+  mul.wide.u32 %rd3, %r1, 8; add.s64 %rd4, %rd1, %rd3;
+  ld.global.v2.u32 {%r4, %r5}, [%rd4];
+  // placeholders, patched into QMUL4.E4M3x4.E2M1x4.E4M3x4 Rd, Ra.N3210 / .N7654, Rb.B0
+  xor.b32 %r6, %r4, %r5;
+  and.b32 %r7, %r4, %r5;
+  add.s64 %rd5, %rd2, %rd3;
+  st.global.v2.u32 [%rd5], {%r6, %r7};
+  ret; }

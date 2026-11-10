@@ -254,6 +254,27 @@ fn ue8m0(u: u32, rnd: LpRnd, sat: bool) -> u32 {
     }
 }
 
+/// SASS `QMUL4.E4M3x4.E2M1x4.E4M3x4 d, a.N3210 / .N7654, b.B<bsel>` (`ptxv_ir::Op::Qmul4`):
+/// byte k of the result is e2m1 nibble k (`hi`: k + 4) of `a` times e4m3 byte `bsel` of `b`
+/// (exact), rounded to e4m3 to nearest even; a result past 448 (rounding) and a NaN scale give
+/// 0x7f, with no sign. GB300: probes/qmul4, every nibble x scale x position. ASSUME(N-QMUL4)
+pub fn qmul4(a: u32, b: u32, hi: bool, bsel: u8) -> u32 {
+    let s = value((b >> (8 * (bsel as u32 & 3))) & 0xff, Lp::E4m3);
+    let mut r = 0;
+    for k in 0..4u32 {
+        let nib = (a >> (4 * (k + if hi { 4 } else { 0 }))) & 15;
+        let p = value(nib, Lp::E2m1) * s;
+        let c = if p.is_nan() {
+            0x7f
+        } else {
+            from_f32((p as f32).to_bits(), Lp::E4m3, LpRnd::Rn, 0, false, false)
+        };
+        let c = if c & 0x7f == 0x7f { 0x7f } else { c };
+        r |= c << (8 * k);
+    }
+    r
+}
+
 /// f16 bits -> f32 bits (exact; NaN stays NaN).
 pub fn f16_to_f32(h: u16) -> u32 {
     let s = (h as u32 & 0x8000) << 16;

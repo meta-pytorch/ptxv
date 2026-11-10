@@ -1,0 +1,58 @@
+name = "probe_ldc_u16"
+description = """
+Probe for LDC.U16 / LDCU.U16 (ld.param.u16 / .s16 of 16-bit parameters, kernel.ptx): 2-byte
+aligned offsets including the odd halfword of a word (c[0x0][0x392], 0x38a, 0x38e, 0x394, 0x396),
+values with bit 15 set, a u8 neighbour on each side. expected/ is GB300's output (ptxas cubin,
+`ptxv hw-worker probes/ldc_u16 <cubin> --runs 3 --dump`)."""
+ptx = "kernel.ptx"
+entry = "ldc_u16"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [12]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "bytes"
+hex = "a5"
+
+[[params]]
+kind = "bytes"
+hex = "0180"
+
+[[params]]
+kind = "bytes"
+hex = "feff"
+
+[[params]]
+kind = "bytes"
+hex = "3412"
+
+[[params]]
+kind = "bytes"
+hex = "c3"
+
+[[params]]
+kind = "bytes"
+hex = "ff7f"
+
+[[params]]
+kind = "bytes"
+hex = "0080"
+
+[[params]]
+kind = "bytes"
+hex = "cdab"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

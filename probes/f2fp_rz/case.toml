@@ -1,0 +1,39 @@
+name = "probe_f2fp_rz"
+description = """
+Probe (N-F2FP-RZ) for cvt.rz.f16x2.f32 (SASS F2FP.F16.F32.PACK_AB.RZ): every pair of 36 edge
+f32 patterns (zeros, f32 subnormals, f16 subnormal / normal / overflow boundaries, 65504 /
+65520 / 65536, infinities, NaNs) then random words, 8192 threads (gen.py). expected/ is GB300's
+output (ptxas cubin, `ptxv hw-worker probes/f2fp_rz <cubin> --runs 3 --dump`). sweep.ptx
+(grid 65536 x 256, one u32 buffer of 12292 words) checks every f32 pattern in each lane on the
+GPU against the model: 0 mismatches on GB300 (2026-11-09)."""
+ptx = "kernel.ptx"
+entry = "f2fp_rz"
+grid = [32, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [8192, 2]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [8192]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

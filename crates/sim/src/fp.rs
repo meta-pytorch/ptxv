@@ -339,10 +339,23 @@ pub fn hsetp2_lane(
 }
 
 /// SASS `FHFMA.BF16` (`ptxv_ir::Op::FfmaBf16`): `v` = [a, b, c] words.
-pub fn ffma_bf16(v: [u32; 3], hi: [bool; 2], neg: [bool; 3], rnd: ptxv_ir::Rnd, sat: bool) -> u32 {
+/// `f16`: the halves are f16 (FHFMA / FHADD without `.BF16`), widened exactly as well.
+pub fn ffma_bf16(
+    v: [u32; 3],
+    hi: [bool; 2],
+    neg: [bool; 3],
+    rnd: ptxv_ir::Rnd,
+    sat: bool,
+    f16: bool,
+) -> u32 {
     let h = |k: usize| {
         let w = if hi[k] { v[k] >> 16 } else { v[k] & 0xffff };
-        (w << 16) ^ ((neg[k] as u32) << 31)
+        let x = if f16 {
+            crate::lowp::f16_to_f32(w as u16)
+        } else {
+            w << 16
+        };
+        x ^ ((neg[k] as u32) << 31)
     };
     let r = f32_fma(h(0), h(1), Some(v[2] ^ ((neg[2] as u32) << 31)), rnd, false);
     if sat { f32_sat(r) } else { r }
@@ -1113,6 +1126,31 @@ pub fn f32_to_bf16_rn(u: u32) -> u16 {
     ((u as u64 + 0x7fff + ((u as u64 >> 16) & 1)) >> 16) as u16
 }
 
+/// f32 -> f16 toward zero, as F2FP.F16.F32.PACK_AB.RZ (`cvt.rz.f16x2.f32`): the magnitude
+/// truncated to f16 (subnormal results kept, f32 subnormals to a signed zero), |x| >= 65536
+/// to the largest finite 0x7bff, infinities kept, NaN -> 0x7fff. GB300: every f32 in each lane
+/// (probes/f2fp_rz). ASSUME(N-F2FP-RZ)
+pub fn f32_to_f16_rz(x: u32) -> u16 {
+    let s = (x >> 16 & 0x8000) as u16;
+    let e = x >> 23 & 0xff;
+    let m = x & 0x7f_ffff;
+    match e {
+        255 if m != 0 => 0x7fff,
+        255 => s | 0x7c00,
+        143.. => s | 0x7bff,
+        113.. => s | ((e - 112) << 10 | m >> 13) as u16,
+        0 => s,
+        _ => {
+            let sh = 126 - e;
+            s | if sh >= 32 {
+                0
+            } else {
+                ((m | 0x80_0000) >> sh) as u16
+            }
+        }
+    }
+}
+
 /// f32 -> f16, round to nearest even (subnormals kept, overflow to infinity, NaN -> 0x7fff).
 pub fn f32_to_f16_rn(x: u32) -> u16 {
     let s = (x >> 16 & 0x8000) as u16;
@@ -1248,6 +1286,30 @@ fn round_scaled_to_f16(v: i128, scale: i32) -> u16 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn f32_to_f16_rz_edges() {
+        for (x, h) in [
+            (0x0000_0000u32, 0x0000u16),
+            (0x8000_0001, 0x8000),
+            (0x3380_0000, 0x0001), // 2^-24
+            (0x337f_ffff, 0x0000),
+            (0x387f_ffff, 0x03ff),
+            (0x3880_0000, 0x0400), // 2^-14
+            (0x3f80_1fff, 0x3c00),
+            (0x3f80_2000, 0x3c01),
+            (0x477f_e000, 0x7bff), // 65504
+            (0x477f_ffff, 0x7bff),
+            (0x4780_0000, 0x7bff), // 65536
+            (0xff7f_ffff, 0xfbff),
+            (0x7f80_0000, 0x7c00),
+            (0xff80_0000, 0xfc00),
+            (0xffc0_0000, 0x7fff),
+            (0x7f80_0001, 0x7fff),
+        ] {
+            assert_eq!(f32_to_f16_rz(x), h, "{x:#x}");
+        }
+    }
+
     use super::*;
     #[test]
     fn hfma2_constant_idiom() {

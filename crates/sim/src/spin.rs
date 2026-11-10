@@ -66,6 +66,7 @@ fn pure_dst(op: &Op) -> Option<Option<Reg>> {
         | Op::FfmaBf16 { d, .. }
         | Op::Hmnmx2Bf16 { d, .. }
         | Op::Hmnmx2F16 { d, .. }
+        | Op::Qmul4 { d, .. }
         | Op::Vhmnmx { d, .. }
         | Op::CvtF32Bf16 { d, .. }
         | Op::Prmt { d, .. }

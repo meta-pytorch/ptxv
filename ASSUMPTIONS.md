@@ -5603,6 +5603,21 @@ division path.
 - Retire: nothing to retire; extend the probe for new modifiers (`.FTZ`, `.SAT`, `.FMZ`,
   `.OOB` on the packed forms are refused).
 
+### N-QMUL4 · code
+**`QMUL4.E4M3x4.E2M1x4.E4M3x4 d, Ra.N3210 | Ra.N7654, Rb.B0` multiplies four e2m1 values by
+one e4m3 scale and rounds each product to e4m3**: byte k of d is e2m1 nibble k (`.N7654`:
+k + 4) of Ra times e4m3 byte 0 of Rb, exact, rounded to nearest even; a product that rounds
+past 448 and a NaN scale give 0x7f (no sign: not saturation, and not a signed NaN); zeros keep
+the XOR sign; subnormal results round as IEEE.
+- Where: `lowp.rs` `qmul4`; `exec.rs` / `seg.rs` `Op::Qmul4`; `sass` QMUL4 lowering (only
+  `.B0` and the two nibble groups; other byte selectors are refused, untested).
+- Status: **validated** on GB300 by `probes/qmul4` (2026-11-08): no PTX form was found, so two
+  ptxas placeholders are patched into QMUL4 with the encoding of a trtllm-gen sm_103a cubin;
+  every e2m1 code times every e4m3 scale at every nibble position (4096 threads, 32768 bytes,
+  bytes 1..3 of Rb varied) = `model.py` (the saturating alternative misses 2016 bytes) and the
+  simulator bitwise (`probe_qmul4_matches_hardware`).
+- If wrong: *miss* or *false alarm* in numerics (trtllm-gen FMHA with e2m1 KV cache).
+
 ### N-HMNMX2 · code
 **`HMNMX2[.NAN][.XORSIGN] d, a, b, p` on f16 lanes (`min` / `max` [.NaN] [.xorsign.abs]
 `.f16x2` / `.f16`) is FMNMX per lane on the exact f32 widenings**: `p` true the minimum, -0
@@ -5618,6 +5633,38 @@ the encoding's halves (non-negative under `.XORSIGN`, the only form seen).
   (`probe_hmnmx2_matches_hardware`).
 - If wrong: *miss* or *false alarm* in numerics (trtllm-gen FMHA's saturating clamp
   `HMNMX2.XORSIGN R, |R|, 65504, 65504` before an FP8 conversion).
+
+### N-F2FP-RZ · code
+**`F2FP.F16.F32.PACK_AB.RZ d, a, b` (`cvt.rz.f16x2.f32`) is d = f16rz(a) << 16 | f16rz(b)**,
+where f16rz truncates the magnitude to f16: f16 subnormal results are kept (multiples of
+2^-24), f32 subnormals give a signed zero, |x| >= 65536 gives the largest finite 0x7bff with
+the sign (round toward zero never overflows), infinities stay infinite, and a NaN in either
+lane gives 0x7fff (no sign, no payload).
+- Where: `fp.rs` `f32_to_f16_rz`; `exec.rs` / `seg.rs` `Op::F2fpF16 { rz: true }`; `sass`
+  F2FP lowering; `ptx` `cvt.rz.f16x2.f32`. The numerics layer clobbers the destination (no
+  rounding node for the truncation).
+- Status: **validated** on GB300 (2026-11-09). probes/f2fp_rz/sweep.ptx converts every f32
+  pattern in each lane (2^32 pairs) and compares on the GPU with an integer form of the rule
+  above: 0 mismatches. The fixture's 8192 edge / random pairs match bitwise on both
+  front-ends (`probe_f2fp_rz_matches_hardware`).
+- If wrong: *miss* or *false alarm* in numerics (fbgemm's TBE backward stochastic-rounding
+  path, `F2FP.F16.F32.PACK_AB.RZ R20, R15, R20`).
+
+### N-FHADD · code
+**`FHFMA[.RZ|.RM|.RP][.SAT] d, a[.H1], b[.H1], [-]c` / `FHADD[...] d, a[.H1], [-]c` without
+`.BF16` (`fma` / `add` / `sub .{rn,rz,rm,rp}[.sat].f32.f16`) is N-BF16X2's FHFMA.BF16 with f16
+halves**: the selected f16 half (`.H1` the high one) widened exactly (subnormals kept), times b
+(FHADD: 1.0) plus the f32 c, one rounding to f32 in the instruction's mode with gradual
+underflow; a NaN result is 0x7fffffff; `.SAT` clamps to [+0, 1] with NaN to +0; `-c` flips c's
+sign (`sub`).
+- Where: `fp.rs` `ffma_bf16` (`f16`); `exec.rs` / `seg.rs` `Op::FfmaBf16 { f16: true }`; `sass`
+  FHFMA / FHADD lowering; `ptx` `.f32.f16` lowering. The numerics layer does not track error
+  through the f16 form (its destination is clobbered, not given a node).
+- Status: **validated** on GB300 by `probes/fhadd` (2026-11-09): 8 forms (every rounding mode,
+  `.SAT`, `.H1`, `-c`, FHFMA); every f16 pattern in each half against 24 f32 edge values of c
+  (1,572,864 threads x 8 words) = `model.py` with no mismatch; the fixture's 2048 threads
+  bitwise on both front-ends (`probe_fhadd_matches_hardware`).
+- If wrong: *miss* or *false alarm* in numerics (Triton TBE backward's `FHADD R8, R3, -R6`).
 
 ### N-XORSIGN · code
 **`FMNMX[.NAN][.FTZ].XORSIGN d, |a|, |b|, p` (`min` / `max` [.NaN] [.ftz] `.xorsign.abs.f32`)

@@ -600,7 +600,10 @@ fn half_of(t: &ETree, hi: bool) -> Result<(usize, ETree), String> {
         return Err("a 16-bit output word not packed by F2FP".into());
     };
     let operand = match op {
-        Op::F2fpBf16 { a, b, .. } | Op::F2fpF16 { a, b, .. } => {
+        Op::F2fpBf16 { a, b, .. }
+        | Op::F2fpF16 {
+            a, b, rz: false, ..
+        } => {
             if hi {
                 a
             } else {

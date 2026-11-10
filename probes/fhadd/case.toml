@@ -1,0 +1,43 @@
+name = "probe_fhadd"
+description = """
+Probe (N-FHADD) for mixed f16 / f32 arithmetic on GB300: add / sub / fma .{rn,rz,rm,rp}[.sat]
+.f32.f16 (SASS FHADD / FHFMA without .BF16: .RZ / .RM / .RP / .SAT, .H1 half selection, negated
+c). Inputs gen.py (`gen.py in.bin small`: f16 edges x f32 edges, then random words). expected/ is
+GB300's output (ptxas cubin, `ptxv hw-worker probes/fhadd <cubin> --runs 20 --dump`). An
+exhaustive run (every f16 in each half against 24 f32 edge values of c, 1.57M threads x 8 forms)
+matched model.py with no mismatch; model.py IN OUT checks a dump."""
+ptx = "kernel.ptx"
+entry = "fhadd"
+grid = [8, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [2048, 2]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2048, 8]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 2048
+
+[[variants]]
+id = "good"
+expect = ["clean"]

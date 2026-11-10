@@ -1,0 +1,61 @@
+// Exhaustive check of cvt.rz.f16x2.f32 (SASS F2FP.F16.F32.PACK_AB.RZ) against an integer model:
+// thread g (2^24 threads) takes x = g + 2^24 k for k < 256, lane a (high half) = x, lane b (low
+// half) = ~x, so each lane sees every f32 pattern. Model: NaN -> 0x7fff | sign? (see ref);
+// inf -> inf; |x| >= 65536 -> max finite 0x7bff; normal f16 range truncated; subnormal range
+// truncated to a multiple of 2^-24; sign kept on zero. Mismatches: atomic count in m[0], the
+// first 4096 as (x, lane, hw half) in m[4..].
+.version 9.0
+.target sm_103a
+.address_size 64
+.func (.reg .b32 h) ref(.reg .b32 x)
+{
+  .reg .b32 %s, %e, %m, %t, %sh; .reg .pred %p;
+  shr.u32 %s, x, 16; and.b32 %s, %s, 0x8000;
+  bfe.u32 %e, x, 23, 8; and.b32 %m, x, 0x7fffff;
+  setp.eq.u32 %p, %e, 255; @!%p bra FIN;
+  setp.ne.u32 %p, %m, 0; @%p bra NAN;
+  or.b32 h, %s, 0x7c00; ret;
+NAN:
+  mov.b32 h, 0x7fff; ret;
+FIN:
+  setp.ge.u32 %p, %e, 143; @!%p bra NRM;
+  or.b32 h, %s, 0x7bff; ret;
+NRM:
+  setp.lt.u32 %p, %e, 113; @%p bra SUB;
+  sub.u32 %t, %e, 112; shl.b32 %t, %t, 10; shr.u32 %m, %m, 13; or.b32 %t, %t, %m; or.b32 h, %t, %s; ret;
+SUB:
+  setp.eq.u32 %p, %e, 0; @%p bra ZERO;
+  or.b32 %m, %m, 0x800000; sub.u32 %sh, 126, %e;
+  setp.ge.u32 %p, %sh, 32; @%p bra ZERO;
+  shr.u32 %m, %m, %sh; or.b32 h, %m, %s; ret;
+ZERO:
+  mov.b32 h, %s; ret;
+}
+.visible .entry sweep(.param .u64 pm)
+{
+  .reg .b32 %r<24>; .reg .b64 %rd<8>; .reg .pred %p<4>; .reg .f32 %f<4>;
+  ld.param.u64 %rd1, [pm]; cvta.to.global.u64 %rd1, %rd1;
+  mov.u32 %r1, %ctaid.x; mov.u32 %r2, %tid.x; mad.lo.u32 %r3, %r1, 256, %r2;
+  mov.u32 %r4, 0;
+L:
+  shl.b32 %r5, %r4, 24; add.u32 %r6, %r3, %r5; not.b32 %r7, %r6;
+  mov.b32 %f1, %r6; mov.b32 %f2, %r7;
+  cvt.rz.f16x2.f32 %r8, %f1, %f2;
+  shr.u32 %r9, %r8, 16; and.b32 %r10, %r8, 0xffff;
+  call (%r11), ref, (%r6);
+  call (%r12), ref, (%r7);
+  setp.ne.u32 %p1, %r9, %r11; @!%p1 bra B;
+  atom.global.add.u32 %r13, [%rd1], 1;
+  setp.lt.u32 %p2, %r13, 4096; @!%p2 bra B;
+  mul.wide.u32 %rd2, %r13, 12; add.u64 %rd3, %rd1, %rd2;
+  st.global.u32 [%rd3+16], %r6; st.global.u32 [%rd3+20], 1; st.global.u32 [%rd3+24], %r9;
+B:
+  setp.ne.u32 %p1, %r10, %r12; @!%p1 bra C;
+  atom.global.add.u32 %r13, [%rd1], 1;
+  setp.lt.u32 %p2, %r13, 4096; @!%p2 bra C;
+  mul.wide.u32 %rd2, %r13, 12; add.u64 %rd3, %rd1, %rd2;
+  st.global.u32 [%rd3+16], %r7; st.global.u32 [%rd3+20], 0; st.global.u32 [%rd3+24], %r10;
+C:
+  add.u32 %r4, %r4, 1; setp.lt.u32 %p3, %r4, 256; @%p3 bra L;
+  ret;
+}

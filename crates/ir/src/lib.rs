@@ -1069,7 +1069,9 @@ pub enum Op {
     /// (`fma.<rnd>[.sat].f32.bf16`; `FHADD.BF16 d, a, c` is b = 1.0, `add` / `sub .f32.bf16`):
     /// d = a*b + c with a, b the bf16 halves `hi` selects (widened exactly) and c an f32, one
     /// rounding to f32 in mode `rnd` (subnormals kept, canonical NaN; `sat` clamps to [+0, 1]
-    /// as FFMA.SAT). `neg`: sign flips of a / b / c (N-BF16X2, probes/bf16_ext).
+    /// as FFMA.SAT). `neg`: sign flips of a / b / c (N-BF16X2, probes/bf16_ext). `f16`: the
+    /// halves are f16 instead (`FHFMA` / `FHADD` without `.BF16`, `.f32.f16`; N-FHADD,
+    /// probes/fhadd).
     FfmaBf16 {
         d: Reg,
         a: Val,
@@ -1079,6 +1081,8 @@ pub enum Op {
         neg: [bool; 3],
         rnd: Rnd,
         sat: bool,
+        #[serde(default)]
+        f16: bool,
     },
     /// SASS `HMNMX2.BF16_V2[.NAN][.XORSIGN] d, a, b, p` (`min` / `max` [.NaN] [.xorsign.abs]
     /// `.bf16x2` / `.bf16`): per lane, `p` true the minimum, false the maximum, of the bf16
@@ -1093,6 +1097,16 @@ pub enum Op {
         min: Pred,
         nan: bool,
         xorsign: bool,
+    },
+    /// SASS `QMUL4.E4M3x4.E2M1x4.E4M3x4 d, a.N3210 | a.N7654, b.B<bsel>`: byte k of d is the
+    /// e4m3 rounding (nearest even) of e2m1 nibble k (`hi`: k + 4) of a times e4m3 byte `bsel`
+    /// of b; overflow and a NaN scale give 0x7f (N-QMUL4, probes/qmul4).
+    Qmul4 {
+        d: Reg,
+        a: Val,
+        b: Val,
+        hi: bool,
+        bsel: u8,
     },
     /// SASS `HMNMX2[.NAN][.XORSIGN] d, a, b, p` (`min` / `max` [.NaN] [.xorsign.abs] `.f16x2` /
     /// `.f16`): as Hmnmx2Bf16 on f16 lanes, `abs` clearing an operand's sign bit first (`|Rb|`
@@ -1850,11 +1864,14 @@ pub enum Op {
         sat: bool,
         relu: bool,
     },
-    /// SASS `F2FP.F16.F32.PACK_AB Rd, Ra, Rb`: d = f16(a) << 16 | f16(b), round to nearest.
+    /// SASS `F2FP.F16.F32.PACK_AB Rd, Ra, Rb`: d = f16(a) << 16 | f16(b), round to nearest
+    /// (`rz`: `.RZ`, toward zero, |x| >= 65536 to the largest finite; N-F2FP-RZ).
     F2fpF16 {
         d: Reg,
         a: Val,
         b: Val,
+        #[serde(default)]
+        rz: bool,
     },
     /// PTX `div.full.f32 d, a, b`, as ptxas expands it: if |b| > 2^126 both operands are
     /// scaled by 1/4, if |b| < 2^-126 by 2^24 (FMUL, nearest), then d = MUFU.RCP(b) * a.
@@ -2170,6 +2187,7 @@ impl Op {
                 x.push(pr(min));
                 x
             }
+            Op::Qmul4 { a, b, .. } => vec![a.clone(), b.clone()],
             Op::Hmnmx2Bf16 { a, b, min, .. } | Op::Hmnmx2F16 { a, b, min, .. } => {
                 vec![a.clone(), b.clone(), pr(min)]
             }
@@ -2579,6 +2597,7 @@ impl Op {
             | Op::FfmaBf16 { d, .. }
             | Op::Hmnmx2Bf16 { d, .. }
             | Op::Hmnmx2F16 { d, .. }
+            | Op::Qmul4 { d, .. }
             | Op::Vhmnmx { d, .. }
             | Op::CvtF32Bf16 { d, .. }
             | Op::CvtPack { d, .. }

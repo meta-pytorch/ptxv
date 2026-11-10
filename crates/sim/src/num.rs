@@ -4193,6 +4193,7 @@ pub(crate) fn pure_op(op: &Op) -> bool {
             | Op::FfmaBf16 { .. }
             | Op::Hmnmx2Bf16 { .. }
             | Op::Hmnmx2F16 { .. }
+            | Op::Qmul4 { .. }
             | Op::Vhmnmx { .. }
             | Op::CvtF32Bf16 { .. }
             | Op::Cvta { .. }

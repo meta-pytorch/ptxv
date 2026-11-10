@@ -1470,11 +1470,15 @@ fn lower_line(
                 relu,
             }
         }
-        "F2FP" if mods == ["F16", "F32", "PACK_AB"] => Op::F2fpF16 {
-            d: lw.dst(lw.op(0)?)?,
-            a: lw.fval(lw.op(1)?)?,
-            b: lw.fval(lw.op(2)?)?,
-        },
+        // `.RZ`: toward zero (cvt.rz.f16x2.f32, probes/f2fp_rz). ASSUME(N-F2FP-RZ)
+        "F2FP" if mods == ["F16", "F32", "PACK_AB"] || mods == ["F16", "F32", "PACK_AB", "RZ"] => {
+            Op::F2fpF16 {
+                d: lw.dst(lw.op(0)?)?,
+                a: lw.fval(lw.op(1)?)?,
+                b: lw.fval(lw.op(2)?)?,
+                rz: mods.len() == 4,
+            }
+        }
         // FFMA / FMUL [.RZ|.RM|.RP] [.FTZ] [.SAT]. ASSUME(N-FALU)
         "FFMA" | "FMUL"
             if mods
@@ -2480,11 +2484,16 @@ fn lower_line(
         // `FHFMA.BF16[.RZ|.RM|.RP][.SAT] d, a[.H1], b[.H1], [-]c` / `FHADD.BF16[...] d, a[.H1],
         // [-]c` (fma / add / sub `.f32.bf16`): bf16 halves times / plus an f32. Only the forms
         // probes/bf16_ext covers: register operands, a sign flip on c only. ASSUME(N-BF16X2)
+        // Without `.BF16` the halves are f16 (`.f32.f16`, probes/fhadd). ASSUME(N-FHADD)
         "FHFMA" | "FHADD"
-            if mods.first() == Some(&"BF16")
-                && mods[1..].iter().all(|m| matches!(*m, "RZ" | "RM" | "RP" | "SAT"))
-                && mods[1..].iter().filter(|m| **m != "SAT").count() <= 1 =>
+            if mods
+                .iter()
+                .skip(usize::from(mods.first() == Some(&"BF16")))
+                .all(|m| matches!(*m, "RZ" | "RM" | "RP" | "SAT"))
+                && mods.iter().filter(|m| matches!(**m, "RZ" | "RM" | "RP")).count() <= 1
+                && mods.iter().filter(|m| **m == "SAT").count() <= 1 =>
         {
+            let f16 = mods.first() != Some(&"BF16");
             let n = if base == "FHFMA" { 3 } else { 2 };
             if l.operands.len() != n + 1 {
                 bail!(lw.err("operand count"));
@@ -2505,7 +2514,7 @@ fn lower_line(
             let (b, bhi) = if n == 3 {
                 half(2)?
             } else {
-                (Val::Imm(0x3f80), false)
+                (Val::Imm(if f16 { 0x3c00 } else { 0x3f80 }), false)
             };
             let ct = lw.op(n)?.replace(".reuse", "");
             let (negc, cr) = match ct.strip_prefix('-') {
@@ -2525,6 +2534,7 @@ fn lower_line(
                 neg: [false, false, negc],
                 rnd: sass_rnd(mods),
                 sat: has("SAT"),
+                f16,
             }
         }
         // `HMNMX2.BF16_V2[.NAN][.XORSIGN] d, a[.Hx_Hx], b[.Hx_Hx], p` (min / max .bf16x2 /
@@ -2583,6 +2593,34 @@ fn lower_line(
                 min: lw.pred(lw.op(if imm { 4 } else { 3 })?)?,
                 nan: has("NAN"),
                 xorsign,
+            }
+        }
+        // `QMUL4.E4M3x4.E2M1x4.E4M3x4 d, Ra.N3210 | Ra.N7654, Rb.B0` (trtllm-gen FMHA's e2m1 KV
+        // dequantization): four e2m1 nibbles of a times the e4m3 byte 0 of b, rounded to e4m3.
+        // Only the byte-0 scale is probed (probes/qmul4 = GB300). ASSUME(N-QMUL4)
+        "QMUL4" if mods == ["E4M3x4", "E2M1x4", "E4M3x4"] => {
+            if l.operands.len() != 3 {
+                bail!(lw.err("operand count"));
+            }
+            let a = lw.op(1)?.replace(".reuse", "");
+            let b = lw.op(2)?.replace(".reuse", "");
+            let (ra, hi) = match (a.strip_suffix(".N3210"), a.strip_suffix(".N7654")) {
+                (Some(r), _) => (r.to_string(), false),
+                (_, Some(r)) => (r.to_string(), true),
+                _ => bail!(lw.err(format!("QMUL4 operand {a} not modeled"))),
+            };
+            let Some(rb) = b.strip_suffix(".B0") else {
+                bail!(lw.err(format!("QMUL4 operand {b} not modeled")));
+            };
+            if Lw::reg_name(&ra).is_none() || Lw::reg_name(rb).is_none() {
+                bail!(lw.err("QMUL4 with a non-register operand not modeled"));
+            }
+            Op::Qmul4 {
+                d: lw.dst(lw.op(0)?)?,
+                a: lw.val(&ra, 4)?,
+                b: lw.val(rb, 4)?,
+                hi,
+                bsel: 0,
             }
         }
         // `HMNMX2[.NAN][.XORSIGN] d, a[.Hx_Hx], b[.Hx_Hx], p` (min / max [.NaN] [.xorsign.abs]
@@ -5737,6 +5775,9 @@ mod tests {
             "FHFMA.BF16.RZ R19, R4.reuse.H1, R5.reuse.H1, R6.reuse",
             "FHFMA.BF16.SAT R25, R4.reuse, R5, R7.reuse",
             "FHADD.BF16.RZ R24, R4.H1, -R7",
+            "FHADD R8, R3, -R6.reuse",
+            "FHADD.RZ.SAT R15, R2, -R3",
+            "FHFMA R14, R2.reuse, R2.H1, R3.reuse",
             "HMNMX2.BF16_V2 R18, R4.reuse.H0_H0, R5.reuse.H1_H1, PT",
             "HMNMX2.BF16_V2.NAN.XORSIGN R16, |R4|, |R5|, PT",
             "HMNMX2.XORSIGN R0, |R2|.reuse.H0_H0, |R3|.reuse.H1_H1, !PT",
@@ -5746,6 +5787,8 @@ mod tests {
             "HMNMX2 R18, R2.H1_H1, R3.H0_H0, PT",
             "STSM.8.MT168.4 [R17+0x25400], R12",
             "STSM.8.MT168 [R3], R16",
+            "QMUL4.E4M3x4.E2M1x4.E4M3x4 R8, R2.reuse.N3210, R11.reuse.B0",
+            "QMUL4.E4M3x4.E2M1x4.E4M3x4 R9, R2.N7654, R11.B0",
             "VIADDMNMX.RELU R135, R0, -R135, 0x80, PT",
             "VIADDMNMX.RELU R9, R11.reuse, -R9, R0, PT",
             "FFMA2.RM R10, R6.reuse.F32x2.HI_LO, R4.reuse.F32x2.HI_LO, R6.reuse.F32x2.LO_HI",
@@ -5793,6 +5836,9 @@ mod tests {
             "ATOMG.E.ADD.F16x4.GPU.RN.STRONG PT, R1, desc[UR6][R4.64], R10",
             "FHFMA.BF16 R1, -R2, R3, R4",
             "FHFMA.BF16.RZ.RM R1, R2, R3, R4",
+            "FHADD.RZ.RP R1, R2, R3",
+            "FHADD.SAT.SAT R1, R2, R3",
+            "FHFMA.BF16.BF16 R1, R2, R3, R4",
             "HMNMX2.BF16_V2 R1, |R2|, |R3|, PT",
             "HMNMX2.BF16_V2.XORSIGN R1, R2, R3, PT",
             "HMNMX2.XORSIGN R1, R2, |R3|, PT",
@@ -5801,6 +5847,9 @@ mod tests {
             "HMNMX2 R1, R2.H1_H0, R3, PT",
             "STSM.8.MT168.8 [R3], R16",
             "STSM.8.MT168.4.T [R3], R16",
+            "QMUL4.E4M3x4.E2M1x4.E4M3x4 R8, R2.N3210, R11.B1",
+            "QMUL4.E4M3x4.E2M1x4.E4M3x4 R8, R2.N5432, R11.B0",
+            "QMUL4.E4M3x4.E2M1x4.E2M1x4 R8, R2.N3210, R11.B0",
             "VIADDMNMX.RELU R1, R0, ~R2, 0x80, PT",
             "VIADDMNMX.RELU R1, -R0, R2, 0x80, PT",
             "FFMA2.RZ.RM R10, R6.F32x2.HI_LO, R4.F32x2.HI_LO, R6.F32x2.HI_LO",

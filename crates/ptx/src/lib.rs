@@ -2908,27 +2908,29 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         // Without `.rn` ptxas may contract a mul and an add into one HFMA2: refused, as are
         // immediates, `.ftz` / `.sat` / `.oob` and f16 arithmetic. ASSUME(N-BF16X2)
         // Mixed precision `fma` / `add` / `sub` `.{rn,rz,rm,rp}[.sat].f32.bf16`: SASS FHFMA.BF16 /
-        // FHADD.BF16 (probes/bf16_ext, both front-ends). ASSUME(N-BF16X2)
+        // FHADD.BF16 (probes/bf16_ext, both front-ends). ASSUME(N-BF16X2) `.f32.f16`: FHFMA /
+        // FHADD without .BF16 (probes/fhadd). ASSUME(N-FHADD)
         "add" | "sub" | "fma"
-            if ht == "bf16" && mods.len() >= 2 && mods[mods.len() - 2] == "f32" =>
+            if matches!(ht, "bf16" | "f16") && mods.len() >= 2 && mods[mods.len() - 2] == "f32" =>
         {
+            let f16 = ht == "f16";
             let rest = &mods[..mods.len() - 2];
             let rnd = match rest.iter().find(|m| **m != "sat") {
                 Some(&"rn") => Rnd::Rn,
                 Some(&"rz") => Rnd::Rz,
                 Some(&"rm") => Rnd::Rm,
                 Some(&"rp") => Rnd::Rp,
-                _ => bail!(lw.err(format!("{base}.f32.bf16 needs a rounding mode"))),
+                _ => bail!(lw.err(format!("{base}.f32.{ht} needs a rounding mode"))),
             };
             if rest.len() > 2 || rest.len() == 2 && !rest.contains(&"sat") {
                 bail!(lw.err(format!(
-                    "{base}.f32.bf16 with modifiers {rest:?} not modeled"
+                    "{base}.f32.{ht} with modifiers {rest:?} not modeled"
                 )));
             }
             let reg = |i: usize| -> Result<Val> {
                 let v = lw.val(op_n(i)?)?;
                 if !matches!(v, Val::Reg(..)) {
-                    bail!(lw.err(format!("{base}.f32.bf16 immediate operand not modeled")));
+                    bail!(lw.err(format!("{base}.f32.{ht} immediate operand not modeled")));
                 }
                 Ok(v)
             };
@@ -2936,7 +2938,11 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             let (a, b, c) = if base == "fma" {
                 (reg(1)?, reg(2)?, reg(3)?)
             } else {
-                (reg(1)?, Val::Imm(0x3f80), reg(2)?)
+                (
+                    reg(1)?,
+                    Val::Imm(if f16 { 0x3c00 } else { 0x3f80 }),
+                    reg(2)?,
+                )
             };
             Op::FfmaBf16 {
                 d,
@@ -2947,6 +2953,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 neg: [false, false, base == "sub"],
                 rnd,
                 sat: has("sat"),
+                f16,
             }
         }
         // `min` / `max` [.NaN] [.xorsign.abs] `.bf16x2` / `.bf16`: SASS HMNMX2.BF16_V2
@@ -5365,17 +5372,27 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     d: lw.dst(op_n(0)?)?,
                     a: Val::Imm(0),
                     b: value,
+                    rz: false,
                 }
-            } else if mods == ["rn", "bf16x2", "f32"] || mods == ["rn", "f16x2", "f32"] {
+            } else if mods == ["rn", "bf16x2", "f32"]
+                || mods == ["rn", "f16x2", "f32"]
+                || mods == ["rz", "f16x2", "f32"]
+            {
                 // cvt.rn.{bf16x2,f16x2}.f32 d, a, b: d = {a (high half), b}, each rounded to
                 // nearest even; ptxas emits F2FP.{BF16,F16}.F32.PACK_AB d, a, b
-                // (fixtures/s_ptx_packed = GB300). .relu / .satfinite / other roundings are
-                // the narrow-format path (cvt_lp) or refused. ASSUME(L-ROSETTA)
+                // (fixtures/s_ptx_packed = GB300). cvt.rz.f16x2.f32: F2FP...PACK_AB.RZ
+                // (probes/f2fp_rz, N-F2FP-RZ). .relu / .satfinite / other roundings are the
+                // narrow-format path (cvt_lp) or refused. ASSUME(L-ROSETTA)
                 let (d, a, b) = (lw.dst(op_n(0)?)?, lw.val(op_n(1)?)?, lw.val(op_n(2)?)?);
                 if to == "bf16x2" {
                     Op::F2fpBf16 { d, a, b }
                 } else {
-                    Op::F2fpF16 { d, a, b }
+                    Op::F2fpF16 {
+                        d,
+                        a,
+                        b,
+                        rz: has("rz"),
+                    }
                 }
             } else if to == "bf16" && from == "f32" && has("rn") {
                 if mods != ["rn", "bf16", "f32"] {
@@ -8168,6 +8185,10 @@ mod tests {
         assert!(matches!(
             &ops("cvt.rn.f16x2.f32 %r1, %r2, %r3;").unwrap()[..],
             [Op::F2fpF16 { .. }]
+        ));
+        assert!(matches!(
+            &ops("cvt.rz.f16x2.f32 %r1, %r2, %r3;").unwrap()[..],
+            [Op::F2fpF16 { rz: true, .. }]
         ));
         assert!(ops("cvt.rz.bf16x2.f32 %r1, %r2, %r3;").is_err());
         assert!(ops("cvt.rn.relu.bf16x2.f32 %r1, %r2, %r3;").is_err());
