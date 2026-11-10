@@ -1192,7 +1192,7 @@ impl Machine {
                     }
                     // S-INIT: a defined store of the same bytes makes them defined, unless an
                     // unordered store of undefined data may land after it.
-                    let und = (a - base as usize) < 64 && wundef >> (a - base as usize) & 1 == 1;
+                    let und = (a - base as usize) < 128 && wundef >> (a - base as usize) & 1 == 1;
                     s.undef = und || unordered.is_some() && s.undef;
                     // Unordered writes stay for every later access; an ordered write that is
                     // not itself same-value stays for later reads, which skip this one.
@@ -1275,7 +1275,7 @@ impl Machine {
                     }
                     s.w = Some(me);
                     // Per byte (`wundef` bit i = byte i of the store's data).
-                    s.undef = (a - base as usize) < 64 && wundef >> (a - base as usize) & 1 == 1;
+                    s.undef = (a - base as usize) < 128 && wundef >> (a - base as usize) & 1 == 1;
                 } else if vip {
                 } else {
                     // ASSUME(S-INIT): shared memory outside the driver-initialized reserved
@@ -4851,7 +4851,7 @@ impl Machine {
                                     continue;
                                 }
                                 wrote.push((loc, byte, src));
-                                self.wundef = byte_umask(um >> (8 * k), 1);
+                                self.wundef = byte_umask(um >> (8 * k), 1) as u128;
                                 self.access(src as u32, &vc, pc, loc, 1, Some(&[byte as u8]));
                                 self.wundef = 0;
                                 self.half_stsm_byte(src, vi, k, loc);
@@ -4892,7 +4892,7 @@ impl Machine {
                                     continue;
                                 }
                                 wrote.push((loc, w, src));
-                                self.wundef = byte_umask(um, 4);
+                                self.wundef = byte_umask(um, 4) as u128;
                                 let origins = self.num_store_origins(src, vi, 4, inst.guard.reg);
                                 self.access(src as u32, &vc, pc, loc, 4, Some(&w.to_le_bytes()));
                                 self.wundef = 0;
@@ -4905,7 +4905,7 @@ impl Machine {
                                     let loc =
                                         self.resolve(tl, Space::Shared, base + 2 * j as u64, 2)?;
                                     let half = ((w >> (16 * h)) as u16).to_le_bytes();
-                                    self.wundef = byte_umask(um >> (16 * h), 2);
+                                    self.wundef = byte_umask(um >> (16 * h), 2) as u128;
                                     let origins =
                                         self.num_store_origins(src, vi, 2, inst.guard.reg);
                                     self.access(src as u32, &vc, pc, loc, 2, Some(&half));
@@ -6817,7 +6817,7 @@ impl Machine {
                 bytes,
                 v: Val::Reg(vr, n),
                 ..
-            } if vr.file != File::V || self.k.front == Front::Ptx => {
+            } => {
                 let (bytes, n) = (*bytes as u32, (*n).max(1) as u32);
                 if vr.file == File::V && n >= 2 {
                     let w = bytes / n;
@@ -6857,7 +6857,7 @@ impl Machine {
         // S-INIT: which bytes of the store are undefined, per byte (a vector store with one
         // undefined register marks only that register's bytes). A narrow store (`low_only`)
         // writes only the low bytes of its register.
-        let mut wundef = 0u64;
+        let mut wundef = 0u128;
         for &(r, first, count) in &sts_data {
             let mut u = self.reg_umask(t, r);
             if let Some((v, lo)) = low_only {
@@ -6876,13 +6876,18 @@ impl Machine {
                 } else {
                     !0
                 };
-                (0..count.min(8))
-                    .filter(|j| (vm >> (8 * j)) & 0xff != 0)
-                    .fold(0u64, |m, j| m | 1 << j)
+                if vm == !0 {
+                    // Wholly undefined: every byte it supplies (a CCTL.E.RML2 line: 128).
+                    (0..count.min(128)).fold(0u128, |m, j| m | 1 << j)
+                } else {
+                    (0..count.min(8))
+                        .filter(|j| (vm >> (8 * j)) & 0xff != 0)
+                        .fold(0u128, |m, j| m | 1 << j)
+                }
             } else {
-                byte_umask(u, count)
+                byte_umask(u, count) as u128
             };
-            if first < 64 {
+            if first < 128 {
                 wundef |= m << first;
             }
         }
@@ -10295,6 +10300,12 @@ impl Machine {
                         d.extend_from_slice(&x.to_le_bytes()[..w]);
                     }
                     d
+                } else if let (true, Val::Reg(r @ Reg { file: File::V, .. }, 1)) = (*bytes > 8, v) {
+                    // One virtual register for a store wider than 8 bytes: the SASS front's
+                    // `CCTL.E.RML2` (discard.global.L2) stores a never-written register over the
+                    // whole 128-byte line; its 8 bytes repeat (the data is undefined anyway).
+                    let x = self.rd(t, &Val::Reg(*r, 1))?.to_le_bytes();
+                    (0..*bytes as usize).map(|i| x[i % 8]).collect()
                 } else if *bytes > 8 && matches!(v, Val::Imm(0)) {
                     // `STS.128 [R8], RZ`: every word is RZ (cuBLAS gemmSN_NN_kernel).
                     vec![0; *bytes as usize]

@@ -1953,7 +1953,7 @@ pub struct Machine {
     pub stale: Option<Option<u32>>,
     /// S-INIT: the bytes of the shared / global store running that hold undefined bits (bit i =
     /// byte i of its data; `Sh::undef` per byte).
-    pub wundef: u64,
+    pub wundef: u128,
     /// S-INIT: global stores of undefined data (allocation, offset, bytes, pc), checked at
     /// terminal states (`exit_checks`); an index into `Sh::undef`, not part of the state hash.
     pub gundef: Arc<Vec<(usize, u64, u32, u32)>>,

@@ -1970,11 +1970,15 @@ fn probe_cvt_tf32_matches_hardware() {
 }
 
 /// S-INIT: discard.global.L2 makes the line indeterminate (probes/discard_l2): rewritten
-/// before the read = GB300 on the PTX front; read after the discard: a violation.
+/// before the read = GB300 on both front-ends (SASS CCTL.E.RML2); read after the discard: a
+/// violation; the rewrite unordered with the discard: a race.
 #[test]
 fn probe_discard_l2_verdicts() {
-    probe_bitwise("probes/discard_l2", "good", "ptx");
-    check_dir("probes", "discard_l2", "read_after", "ptx");
+    for front in ["ptx", "sass"] {
+        probe_bitwise("probes/discard_l2", "good", front);
+        check_dir("probes", "discard_l2", "read_after", front);
+        check_dir("probes", "discard_l2", "race", front);
+    }
 }
 
 /// tcgen05.mma cta_group::2 M = 128 with A in TMEM (probes/tc_pair_atmem) = GB300 on both

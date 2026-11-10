@@ -317,7 +317,7 @@ any modifier outside the audited set before an arm runs.
 | immediates | decimal float literals (`20.`, `1.0`, `.5e1`) and `0d` in `.f32` / `.f64` instructions | f64 value rounded to nearest even for .f32; `0f` raw, zero-extended in .f64 | probes/float_lit |
 | `FSETP.GEU \|a\|, +INF` + `IADD 0x1000` + `LOP3 & 0xffffe000` | `cvt.rna.tf32.f32` | ties-away round to 19 bits; Inf / NaN only masked | probes/cvt_tf32 |
 | `F2FP [.SATFINITE] [.RELU] .TF32.F32.PACK_B [.RZ]` | `cvt.rn` / `.rz [.relu] [.satfinite] .tf32.f32` | round off 13 bits (RN even / RZ); NaN -> 0x7fffe000; relu: negative -> +0; satfinite: Inf / overflow -> +-0x7f7fe000 | probes/cvt_tf32_rn |
-| (`CCTL.E.RML2`, refused) | `discard.global.L2 [a], 128` | weak stores of undefined data over the line (S-INIT) | probes/discard_l2 (PTX front) |
+| `CCTL.E.RML2 [Ra]` | `discard.global.L2 [a], 128` | weak stores of undefined data over the line (S-INIT): one 128-byte store of a never-written register on the SASS front | probes/discard_l2 (both fronts, race variant) |
 | `IMMA.16832.S8.S8.SAT` | `mma.sync.aligned.m16n8k32.row.col.satfinite.s32.s8.s8.s32` | exact integer sum, saturated to s32 (N-IMMA) | probes/imma_s8 |
 | `HMUL2.BF16_V2` | plain `mul.bf16` / `.bf16x2` reaching only stores, conversions, mma operands, multiplicands through packs / unpacks / prmt / shfl | .rn (ptxas cannot contract) | probes/bf16_sink |
 | `FMUL2` + `FADD2` apart | plain `mul.f32x2` halves repacked next to values not from the product (own lane or other); integer reads of the product (`shr`, `xor`, ...) | .rn (ptxas cannot contract; `{p.lo, p.hi}` refused) | probes/f32x2_repack |

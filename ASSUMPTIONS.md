@@ -3692,7 +3692,12 @@ stays clean, "relies on E-CPASYNC-PROXY"), not a race.
   modeled as weak stores of a register nothing writes, so a later load gives undefined data
   and the write is race-checked. probes/discard_l2: write, discard, rewrite, read = GB300 50/50
   bitwise; `read_after` (no rewrite) is a violation, while GB300 returned the pre-discard
-  values in all runs (the PTX contract allows either). SASS `CCTL.E.RML2` stays refused.
+  values in all runs (the PTX contract allows either). SASS `CCTL.E.RML2 [Ra]` (2026-11-09,
+  a CuTe combine-decode kernel): the same, as one 128-byte weak store of a register nothing
+  writes (V255; the sim's undefined-store mask covers 128 bytes), so footprints, race checks
+  and S-INIT treat it as any store. probes/discard_l2 (two warps: warp 0 writes, thread 0
+  discards, warp 1 rewrites, warp 0 reads): GB300 50/50 scrubbed, both front-ends bitwise;
+  `read_after` a violation and `race` (no barrier after the discard) a race on both fronts.
 - **Scratch buffers** (2026-11-09, `fixtures/e_scratch_undef`). A global buffer declared
   `init = "undef"` starts with every byte undefined (`Sh::undef`; the simulated value is the
   file's or zero). A buffer declared `scratch = true` (capture writes it for buffers

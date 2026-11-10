@@ -1,13 +1,15 @@
 name = "probe_discard_l2"
 description = """
-Probe (S-INIT) for discard.global.L2: a line written, discarded, rewritten and read back
-(good: clean, bitwise); read_after skips the rewrite, so the read sees the discarded line
-(indeterminate: an S-INIT finding). kernel.ptx; expected/ is GB300's output for good
+Probe (S-INIT) for discard.global.L2: a line written by warp 0, discarded by thread 0,
+rewritten by warp 1 and read back by warp 0 (good: clean, bitwise); read_after skips the
+rewrite, so the read sees the discarded line (indeterminate: an S-INIT finding); race drops
+the barrier after the discard, so warp 1's rewrite races with it. Both front-ends (SASS:
+CCTL.E.RML2). kernel.ptx; expected/ is GB300's output for good
 (kernel.cubin = ptxas -arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
 ptx = "kernel.ptx"
 entry = "discard_l2"
 grid = [1, 1, 1]
-block = [32, 1, 1]
+block = [64, 1, 1]
 outputs = ["buf"]
 
 [[buffers]]
@@ -32,3 +34,11 @@ expect = ["violation"]
 marker = "@RA"
 find = "mov.pred        %p2, 0;"
 replace = "mov.pred        %p2, 1;"
+
+[[variants]]
+id = "race"
+summary = "no barrier between thread 0's discard and warp 1's rewrite of the line (the read may also see the discarded data)"
+expect = ["race", "violation"]
+marker = "@RC"
+find = "bar.sync        0; // @RC"
+replace = "// barrier removed"

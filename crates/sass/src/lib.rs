@@ -1182,6 +1182,23 @@ fn lower_line(
             Op::TmapFence { addr }
         }
         "CCTL" if mods == ["E", "C", "LDCU", "IV", "DEEP"] => Op::Nop,
+        // `CCTL.E.RML2 [Ra]` (discard.global.L2 [a], 128): the 128-byte line's contents become
+        // indeterminate, a weak store of undefined data over the line, as on the PTX front:
+        // one 128-byte store of a register nothing writes (V255, outside the R file's RZ
+        // alias), so race checks, footprints and S-INIT see it as any store. ASSUME(S-INIT)
+        "CCTL" if mods == ["E", "RML2"] && l.operands.len() == 1 => Op::St {
+            space: Space::Global,
+            bytes: 128,
+            addr: wide_e_addr(lw.addr(lw.op(0)?)?, true),
+            v: Val::Reg(
+                Reg {
+                    file: File::V,
+                    idx: 255,
+                },
+                1,
+            ),
+            sync: None,
+        },
         // NANOSLEEP(.SYNCS) is a timing hint (try_wait suspend); no semantic effect.
         // ASSUME(E-NANOSLEEP): see ASSUMPTIONS.md
         "NANOSLEEP" => Op::Nop,
