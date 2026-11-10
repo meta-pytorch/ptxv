@@ -157,6 +157,11 @@ verdict with the miss named in the doc comment, so a fix shows up as a test chan
 | E-CLOCK | e_clock_timeout (miss: a timeout path, GB300 wrong 20/20) | (none: the rule is the shortcut) |
 | E-NANOSLEEP | e_nanosleep | (none: a no-op has nothing to weaken) |
 | S-BRA-COND | (r4_sum_torch, probes/div_ftz) | bracond-ignore |
+| E-BSYNC / E-LOCKSTEP | e_lockstep_nobsync (binary-only; certificate miss on NOBSYNC, GB300 wrong) | bsync-own |
+| E-WARP-ORDER | e_warp_order_div (PTX-contract miss on CONV) | (E-LOCKSTEP join: none yet) |
+| E-DRF (TMEM) | e_drf_tmem | tmem-norace |
+| E-BAR-EXIT | (probes/bar_exit, bar_exit_warp) | barexit-phantom |
+| E-ALIGNED | (e_aligned_bar AB1 / AB3) | aligned-noviol |
 
 ## Reading the results
 

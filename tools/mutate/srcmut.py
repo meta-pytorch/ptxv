@@ -138,6 +138,42 @@ MUTANTS += [
             ("ptxv-sim", "fixtures", "r4_kernel_classes"),
         ],
     ),
+    # E-BSYNC: a BSYNC waits only for the lanes that reached it (not for its BSSY's mask).
+    SrcMutant(
+        "bsync-own",
+        "crates/sim/src/exec.rs",
+        "w.bmask[*b as usize] | own | parked",
+        "own | parked",
+        [("e_lockstep_nobsync", "good", "sass", [])],
+        [("ptxv-sim", ADV, "e_bsync")],
+    ),
+    # E-BAR-EXIT: a counted barrier credits one warp's arrivals that never come (as if a
+    # wholly exited warp arrived); probes/bar_exit `bar.sync 0, 64` with a warp exited and
+    # probes/bar_exit_warp `bar.sync 1, 96` with the third warp exited hang GB300.
+    SrcMutant(
+        "barexit-phantom",
+        "crates/sim/src/exec.rs",
+        "                32usize.saturating_sub(lanes.len()) + gone",
+        "                32usize.saturating_sub(lanes.len()) + gone + 16",
+        [],
+        [("ptxv-sim", "fixtures", "probe_bar_exit")],
+    ),
+    # E-ALIGNED: no violation for an aligned barrier executed by part of the warp.
+    SrcMutant(
+        "aligned-noviol",
+        "crates/sim/src/exec.rs",
+        "            if active.len() < live.len() {",
+        "            if false && active.len() < live.len() {",
+        [("e_aligned_bar", "AB3", "ptx", []), ("e_aligned_bar", "AB1", "ptx", [])],
+    ),
+    # E-DRF (TMEM): a TMEM read or write after an unordered TMEM write is no race.
+    SrcMutant(
+        "tmem-norace",
+        "crates/sim/src/exec.rs",
+        "            let sh = tm.sh.get(i);\n            if let Some(w) = sh.w {\n                if w.actor != actor && !w.hb(vc) {",
+        "            let sh = tm.sh.get(i);\n            if let Some(w) = sh.w {\n                if false && w.actor != actor && !w.hb(vc) {",
+        [("e_drf_tmem", "NOBAR", "ptx", []), ("e_drf_tmem", "NOBAR", "sass", [])],
+    ),
 ]
 
 # Entries no fixture reaches, with the reason.

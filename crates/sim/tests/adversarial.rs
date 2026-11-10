@@ -258,8 +258,13 @@ fn e_nanosleep_orders_nothing() {
 /// so the hardware does not reconverge the warp without the barrier either.
 /// Mutant bsync-own: a `BSYNC` waits only for the lanes that reached it, not for the lanes its
 /// `BSSY` recorded (good then runs the early lanes ahead).
-/// Certificate miss (2026-11-09): `--certify` certifies NOBSYNC clean in one run (its splits
-/// meet at one pc and the E-LOCKSTEP join orders them; whether diverged splits merge is a
+/// Certificate miss (2026-11-09, MISS 30, fixed): `--certify` certified NOBSYNC clean in one
+/// run; the certificate must now report exploration's classes for every variant.
+#[test]
+fn e_bsync_reconverges_divergent_loop() {
+    adv("e_lockstep_nobsync", &["good", "NOBSYNC", "NOBSSY"]);
+}
+
 /// E-WARP-ORDER (fixtures/e_warp_order_div). Premise: program order orders the lanes of a
 /// warp only while it is converged. good is probes/warp_order's `diverge` control (writer and
 /// reader lanes on the two sides of a branch; GB300 wrong in 99.98% of checks): nondeterministic
@@ -267,10 +272,30 @@ fn e_nanosleep_orders_nothing() {
 /// instructions of the converged warp: SASS clean is the hardware's (probes/warp_order modes
 /// 0-6, 0 wrong of 4.5e11). The PTX front also reports CONV clean, although PTX gives the lanes
 /// no order without `bar.warp.sync` (a PTX-contract miss, reported 2026-11-09; with plain
+/// accesses the shape is a race, checked here too).
+#[test]
+fn e_warp_order_needs_convergence() {
+    adv("e_warp_order_div", &["good", "CONV"]);
+    let mut c = load("e_warp_order_div");
+    // Plain accesses in CONV's shape: the PTX front reports the intra-warp race.
+    let v = c.m.variants.iter_mut().find(|v| v.id == "CONV").unwrap();
+    v.replace = Some(v.replace.clone().unwrap().replace(".volatile", ""));
+    assert_eq!(
+        classes(machine(&c, "CONV", "ptx"), "plain CONV ptx"),
+        ["race"]
+    );
+}
+
 /// E-DRF for tensor memory (fixtures/e_drf_tmem). Premise: races among non-scheduling-point
 /// accesses are found by the vector clocks. TMEM accesses are not scheduling points; warp 0's
 /// `tcgen05.st` and warp 4's `tcgen05.ld` of one column with no barrier (NOBAR) must be a race
 /// on both fronts. NOWAIT (no `wait::st`) is clean by S-TCGEN05's reading (GB300 200/200
+/// bitwise for all three variants). Mutant tmem-norace: TMEM write-read races unreported.
+#[test]
+fn e_drf_tmem_race_found() {
+    adv("e_drf_tmem", &["good", "NOBAR", "NOWAIT"]);
+}
+
 /// E-ELECT on SASS (fixtures/e_elect_lane): the leader writes its lane id. GB300 elects the
 /// lowest active lane (probes/elect; this fixture: `ptxv hw` 20/20 out = 0), so the SASS front's
 /// one outcome must be 0; the PTX front has two (lowest and highest leader). Mutant
