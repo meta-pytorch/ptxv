@@ -1,0 +1,38 @@
+name = "probe_clock32"
+description = """
+Probe (E-CLOCK) for 32-bit clock and global-timer reads: S2UR / CS2R.32 of SR_GLOBALTIMERLO,
+SR_GLOBALTIMERHI, SR_CLOCKLO, SR_CLOCKHI (kernel.ptx: %globaltimer_lo / _hi, %clock / %clock_hi
+read twice around a load; out[4t + k] = (delta k < 2^31)). expected/ is GB300's output
+(ptxas cubin, `ptxv hw-worker probes/clock32 <cubin> --runs 20 --dump`): every delta is small;
+the model reads every clock as 0 (delta 0), the same outputs."""
+ptx = "kernel.ptx"
+entry = "clock32"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

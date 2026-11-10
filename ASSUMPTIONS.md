@@ -840,7 +840,13 @@ warp-level polls). The `vprintf` before a trap is skipped; the `BPT.TRAP` after 
   probes/assertfail: not taken, GB300 20/20 and both fronts bitwise; taken, both fronts report
   the trap and GB300 fails the launch with "device-side assert triggered", printing the
   message from the module `.global` initializers.
-- Where: `crates/sass/src/lib.rs` (`CS2R ... SR_CLOCKLO`), `exec.rs` `CallAbs`; `ptx`
+- 32-bit halves (2026-11-10): `S2UR` / `S2R` / `CS2R.32` of `SR_CLOCKLO`, `SR_CLOCKHI`,
+  `SR_GLOBALTIMERLO`, `SR_GLOBALTIMERHI` (`%clock`, `%clock_hi`, `%globaltimer_lo` / `_hi`;
+  ptxas puts uniform reads in `S2UR`) read 0 as well. The value is never an ordering witness:
+  no rule of the model reads time. probes/clock32 (each read twice around a load, the deltas
+  compared with 2^31) = GB300 20/20 on both front-ends.
+- Where: `crates/sass/src/lib.rs` (`CS2R ... SR_CLOCKLO`, `Lw::val` for the 32-bit `SR_`
+  forms), `exec.rs` `CallAbs`; `ptx`
   `vprintf_calls`, `Lower::val`, the `cvta` arm; `explore.rs` `static_findings` (notes).
 - Status: **argued.** The timeouts guard against hangs of seconds; a hang the model sees is a
   deadlock finding instead of a trap.

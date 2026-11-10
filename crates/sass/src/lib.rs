@@ -769,6 +769,15 @@ impl<'a> Lw<'a> {
             return Ok(Val::Const(off, bytes));
         }
         if let Some(sr) = s.strip_prefix("SR_") {
+            // 32-bit clock and global-timer halves (`S2UR` / `S2R` / `CS2R.32`; %clock,
+            // %clock_hi, %globaltimer_lo / _hi): read as 0 like the 64-bit forms, a value the
+            // model never uses to order anything, so timeouts never fire. ASSUME(E-CLOCK)
+            if matches!(
+                sr,
+                "CLOCKLO" | "CLOCKHI" | "GLOBALTIMERLO" | "GLOBALTIMERHI"
+            ) {
+                return Ok(Val::Imm(0));
+            }
             let v = match sr {
                 "TID.X" => SReg::Tid(0),
                 "TID.Y" => SReg::Tid(1),

@@ -231,6 +231,23 @@ fn lds_write_back_in_issue_order() {
     }
 }
 
+/// E-CLOCK: 32-bit clock and global-timer reads (S2UR / CS2R.32 of SR_GLOBALTIMERLO / HI,
+/// SR_CLOCKLO / HI) read as 0; a timeout-shaped delta test gives GB300's outputs on both
+/// front-ends (probes/clock32).
+#[test]
+fn probe_clock32_matches_hardware() {
+    probe_bitwise("probes/clock32", "good", "ptx");
+    probe_bitwise("probes/clock32", "good", "sass");
+    let case = Case::load(root().join("probes/clock32")).unwrap();
+    let k = kernel(&case, "good", "sass");
+    let reads = k
+        .code
+        .iter()
+        .filter(|i| i.text.contains("SR_GLOBALTIMER") || i.text.contains("SR_CLOCK"))
+        .count();
+    assert_eq!(reads, 8, "S2UR / CS2R.32 of the four registers, twice each");
+}
+
 #[test]
 fn r1a_good() {
     both("r1a_tcgen05_tile", "good");

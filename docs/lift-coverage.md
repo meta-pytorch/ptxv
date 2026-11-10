@@ -334,6 +334,7 @@ any modifier outside the audited set before an arm runs.
 | `LDG.E.ENL2.256 Rhi, Rlo` / `STG.E.ENL2.256 [a], Rlo, Rhi` | `ld` / `st.global.v8.b32` | 32-byte access, 32-byte aligned; bytes 0..16 in the `lo` quad (second operand of the load, first data operand of the store) | probes/ldst256 |
 | `LDG.E.ENL2.256 Rhi, Rlo, [a], mask` | `ld.global.v8.b32` / `.v4.b64` with some elements unused | each half's selected words compacted from its base register (RZ: none); others untouched | probes/ldg256_mask |
 | `LDG` / `STG .E.ELL2.256`, `.E.EFL2.256` | `ld` / `st.global.L2::evict_last` / `L2::evict_first .v8.b32` | as ENL2 (eviction hint dropped, L-PTX-HINT) | probes/ldst256_l2 |
+| `S2UR` / `S2R` / `CS2R.32` of `SR_CLOCKLO` / `SR_CLOCKHI` / `SR_GLOBALTIMERLO` / `SR_GLOBALTIMERHI` | `%clock`, `%clock_hi`, `%globaltimer_lo` / `_hi` | 0, never an ordering witness (E-CLOCK) | probes/clock32 |
 | `CS2R Rd, SR_CLOCKLO` / `SR_GLOBALTIMERLO`, `CALL.ABS.NOINC` vprintf, `c[0x0][0x2f8]` | `%clock64` / `%globaltimer`, `call.uni vprintf`, `cvta.local.u64` | clocks 0, vprintf a no-op (note per site), unmapped generic local base (E-CLOCK, S-CBANK) | probes/printf_clock |
 | `IADD3` / `IMAD.IADD` with the window base (folded) | `cvta.to.local.u64` | generic minus the local generic base; outside the window, ld / st `.local` fault (S-CBANK) | probes/local_cvta |
 | (moves) | `mov.b128 q, {lo, hi}` / `mov.b128 {lo, hi}, q` | a .b128 register is two 64-bit slots (a cluster-launch-control response for `query_cancel`) | fixtures/r1d_clc v2pack |
