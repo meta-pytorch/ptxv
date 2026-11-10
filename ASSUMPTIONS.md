@@ -3052,6 +3052,13 @@ has none), so a 2-CTA hand-off through a `.cta`-scoped remote arrive was certifi
   is bare (no release fence before it). A fence.acq_rel.cluster before a `.cta` arrive, or a
   `.release.cluster` arrive with a `.acquire.cta` wait, is the SASS of a PTX-correct
   hand-off (shared-memory data): clean on SASS, race on PTX.
+- 2-CTA pipelines that hand a stage (shared memory or tensor memory) back to the other CTA
+  with a bare `.release.cta` remote arrive (`tcgen05.fence::before_thread_sync`, then
+  `mbarrier.arrive.shared::cluster`) give the stage's readers no order before the other
+  CTA's next writes: a race on the PTX front, and on the SASS front unless a release fence
+  (`MEMBAR.ALL.GPU` / `CGAERRBAR`, or `MEMBAR.ALL.CTA` for shared memory) precedes the arrive.
+  The reads have completed by then (`tcgen05.wait::ld`, register dependences), so these are
+  load-buffering shapes; no hardware rule relaxes them yet (as E-READ-DONE, opt-in).
 - Cluster lifetime: a waiter that observed a phase saw its updates land (`Thread::landed`),
   even when it did not synchronize with them; S-CLUSTER-LIFE and async-after-exit count that
   as ordered before its exit, as the joined clock did before.

@@ -8023,7 +8023,23 @@ impl Machine {
                                     | FenceKind::Membar(Scope::Gpu | Scope::Sys)
                             }
                         ));
-                let v = self.threads[t].vc.clone();
+                // ASSUME(S-MBAR-SCOPE): on the SASS front `MEMBAR.ALL.<CTA|GPU>;
+                // FENCE.VIEW.ASYNC.S` is one PTX proxy fence: it counts at the MEMBAR, whose
+                // snapshot is what a later relaxed cluster-scope arrive releases (`srel_vc`,
+                // `membar_vc`); otherwise the release would not cover its own proxy fence.
+                let after_membar = self.k.front == Front::Sass
+                    && pc > 0
+                    && matches!(
+                        self.k.code[pc as usize - 1].op,
+                        Op::Fence {
+                            kind: FenceKind::Release(_) | FenceKind::Membar(_)
+                        }
+                    );
+                let v = if after_membar {
+                    self.threads[t].membar_vc.clone()
+                } else {
+                    self.threads[t].vc.clone()
+                };
                 let th = self.threads[t].make_mut();
                 if global {
                     th.gfences.push(v.clone());
