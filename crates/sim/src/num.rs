@@ -2879,8 +2879,12 @@ impl Machine {
                 ));
             }
         }
+        let had_history = ns
+            .mem
+            .get(&key)
+            .is_some_and(|n| !ns.const_leaves.contains(n));
         let leaf = ns.leaf(scaled.to_bits(), pc);
-        if ns.segments {
+        if ns.segments || had_history {
             ns.nodes[leaf as usize].kind = NodeKind::Opaque;
         }
         ns.mem.insert(key, leaf);
@@ -4068,8 +4072,16 @@ pub struct OutRec {
     /// Running (a-posteriori) bound: sum over rounding nodes of u * |hw_v|.
     pub bound_running: f64,
     /// fp_noise Thm 1, checked exactly: hw - exact == sum of local errors. False when the
-    /// tree contains MUFU nodes (`n_mufu`), where the identity is only first-order.
+    /// tree contains MUFU nodes (`n_mufu`), where the identity is only first-order, and when
+    /// `untracked`.
     pub thm1_exact: bool,
+    /// An input-derived value reaches the output without a tracked derivation: an `Opaque`
+    /// leaf in the tree, or (set by the caller) an input-derived output word without a node.
+    /// `exact` then takes that value's simulated result as exact, so the error, Thm 1 and both
+    /// bounds are not claims about the output (N-NUM-TRACK).
+    pub untracked: bool,
+    /// Where the first such value entered the tree (the instruction that read it untracked).
+    pub untracked_pc: Option<u32>,
     /// MUFU / approx nodes in the tree: each contributes its own error bound (N-MUFU) plus
     /// its operand's bound times |f'| (first order).
     pub n_mufu: usize,
@@ -4111,6 +4123,8 @@ impl NumState {
                 bound_cor1a: 0.0,
                 bound_running: 0.0,
                 thm1_exact: true,
+                untracked: false,
+                untracked_pc: None,
                 n_mufu: 0,
                 n_leaves: 0,
                 n_roundings: 0,
@@ -4129,9 +4143,18 @@ impl NumState {
         // Absolute error terms (16-bit bulk sums below the normal range), grown to the root.
         let mut abs16 = 0.0f64;
         let hwabs = |n: u32| (f32::from_bits(self.nodes[n as usize].hw) as f64).abs();
+        let mut untracked = false;
+        let mut untracked_pc: Option<u32> = None;
         while let Some((n, g)) = stack.pop() {
             match &self.nodes[n as usize].kind {
-                NodeKind::Leaf | NodeKind::Opaque | NodeKind::Input(_) => {
+                NodeKind::Opaque => {
+                    // ASSUME(N-NUM-TRACK): an input-derived value whose derivation was dropped.
+                    untracked = true;
+                    let pc = self.nodes[n as usize].pc;
+                    untracked_pc = Some(untracked_pc.map_or(pc, |p| p.min(pc)));
+                    leaf_terms.push((hwabs(n), g));
+                }
+                NodeKind::Leaf | NodeKind::Input(_) => {
                     leaf_terms.push((hwabs(n), g));
                 }
                 NodeKind::Add(a, b, rz) => {
@@ -4231,7 +4254,10 @@ impl NumState {
         for &n in &rnodes {
             sum_e = exact::add(&sum_e, &self.nodes[n as usize].err);
         }
-        let thm1 = mufu.is_empty() && nonlin == 0 && exact::is_zero(&exact::sub(&diff, &sum_e));
+        let thm1 = mufu.is_empty()
+            && nonlin == 0
+            && !untracked
+            && exact::is_zero(&exact::sub(&diff, &sum_e));
         let abs_err = exact::approx(&diff).abs();
         // ASSUME(N-MUFU): a MUFU node adds its own a-priori error bound and, to first order,
         // |f'(x)| times its operand's bounds; both are carried through the rounding nodes
@@ -4258,6 +4284,8 @@ impl NumState {
                 x = -x;
             }
             let sub = self.out_rec(index, child.hw, Some(arg));
+            untracked |= sub.untracked;
+            untracked_pc = untracked_pc.or(sub.untracked_pc);
             let fp = mufu_true_deriv(func, ptx, x).abs();
             let own = mufu_local_bound(func, ptx, x as f32, f32::from_bits(nd.hw));
             mufu_extra.0 += (own + fp * sub.bound_cor1a) * grow;
@@ -4307,6 +4335,8 @@ impl NumState {
             bound_cor1a: cor1a,
             bound_running: running,
             thm1_exact: thm1,
+            untracked,
+            untracked_pc,
             n_mufu: mufu.len(),
             n_leaves: leaf_terms.len(),
             abs_sum: leaf_terms.iter().map(|t| t.0).sum(),

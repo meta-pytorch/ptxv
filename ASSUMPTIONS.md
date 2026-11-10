@@ -6738,6 +6738,23 @@ and is first-order.
 - Status: **argued** (fp_noise THEORY). Thm 1 itself is checked exactly, not assumed. The
   bound has never been violated, but it is not a proof for inputs outside the run.
 
+### N-NUM-TRACK · code
+**`ptxv num` makes no error claim for an element whose value depends on an input-derived
+value without a tracked derivation.** num's DAG (non-segment mode) has nodes for plain FADD,
+fp32 atomic adds, MMA steps, conversions, MUFU and FFMA2 of the form x*1 + 0. Every other
+instruction (FFMA / FMUL, a negated or FTZ FADD, other FFMA2 / FMUL2 / FADD2, bit operations)
+drops the history of its result. Input buffers are tainted, so such a result becomes an
+`Opaque` leaf when a tracked node reads it, and an output word written from it is
+input-derived without a node. Either makes the element `untracked`. num reports these
+elements as not analyzed, and computes Thm 1, the bounds and max_err over the other elements
+only. Outputs that are not f32 buffers, and every output of a run that reported a fault or an
+`unmodeled` finding (its threads stop early), are not analyzed.
+- Where: `num.rs` `out_rec` (`untracked`), `main.rs` `cmd_num`.
+- Status: **enforced**. Before this check, `exact` took the simulated value of the untracked
+  value as exact. A row sum of squares (FFMA chain) reported max_err = 0, Thm 1 exact, with
+  no warning, while GB300 differs from the fp64 sum by up to 4.1 ulp
+  (`fixtures/c_num_sumsq_f32`).
+
 ### N-ERRDIST-IID · code
 **`ptxv errdist` models the inputs exactly as the spec describes them.** Elements are
 independent given their hierarchical scales; a block's quantization scale is a function of

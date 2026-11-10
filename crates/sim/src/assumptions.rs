@@ -1660,6 +1660,13 @@ pub const REGISTRY: &[Assumption] = &[
         applies: never,
     },
     Assumption {
+        id: "N-NUM-TRACK",
+        kind: "code",
+        status: "enforced",
+        title: "num: an element whose tree holds an input-derived value without a tracked derivation is reported untracked, with no error claim",
+        applies: never,
+    },
+    Assumption {
         id: "H-PROFILE",
         kind: "process",
         status: "argued",
