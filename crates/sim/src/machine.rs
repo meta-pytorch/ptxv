@@ -54,6 +54,19 @@ thread_local! {
     /// The VC bases copied so far by `Machine::unshared`, by address (sharing is kept).
     static VC_COPIES: std::cell::RefCell<std::collections::HashMap<usize, Arc<VcBase>>> =
         Default::default();
+    /// `set_scratch_copies_shadow`.
+    static PROV_CLONE_FULL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Differential tests: copies of a machine copy the provenance shadow too (as before copies
+/// got a placeholder, coverage.rs `ProvState::clone`), on this thread.
+pub fn set_scratch_copies_shadow(on: bool) {
+    PROV_CLONE_FULL.set(on);
+}
+
+/// `set_scratch_copies_shadow` is on.
+pub(crate) fn prov_clone_full() -> bool {
+    PROV_CLONE_FULL.get()
 }
 
 impl Clone for VC {

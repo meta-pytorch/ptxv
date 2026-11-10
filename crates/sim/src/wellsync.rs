@@ -3644,6 +3644,8 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
     if std::env::var("PTXV_WS_NOLOG").is_ok() {
         m.wlog = LogSlot(None);
     }
+    // Input coverage rides on the first certificate run when asked (coverage.rs `Tap`).
+    crate::coverage::tap_attach(&mut m);
     let mut fs = Vec::new();
     let mut steps = 0usize;
     // PTXV_CERT_PROGRESS=N: print the step count every N steps (stderr), for timing runs that
@@ -3664,6 +3666,10 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
             break;
         }
         m.apply(&a);
+        debug_assert!(
+            crate::coverage::live_shadow(&m),
+            "the run continues on a copy of its machine"
+        );
         steps += 1;
         if progress.is_some_and(|n| steps.is_multiple_of(n)) {
             eprintln!(
@@ -3690,6 +3696,13 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
         fs.append(&mut m.findings);
     }
     let ok = m.terminal();
+    // The run went where `explore::run_once` goes: to its end (or the same fault loop),
+    // not stopped at a cluster launch control choice or the eager-launch failure.
+    let whole = !EAGER_FAILED.with(|f| f.get())
+        && extra
+            .iter()
+            .all(|w| !w.starts_with("C-ORDER: a cluster launch control"));
+    crate::coverage::tap_finish(&mut m, ok, whole);
     RING_PRUNED.with(|p| *p.borrow_mut() = None);
     if ok {
         m.exit_checks();

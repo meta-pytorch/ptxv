@@ -122,6 +122,14 @@ pub const REGISTRY: &[Assumption] = &[
         applies: never,
     },
     Assumption {
+        id: "E-INPUT-INDEP",
+        kind: "code",
+        status: "argued",
+        title: "input coverage's provenance covers every flow of input bytes into guards, branch conditions, addresses and synchronization operands of its run",
+        // Added to a verdict only when a reduction relies on it.
+        applies: never,
+    },
+    Assumption {
         id: "E-DRF",
         kind: "code",
         status: "argued",

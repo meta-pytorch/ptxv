@@ -219,6 +219,21 @@ enum Cmd {
         /// element writes, comma-separated (e.g. 'ok[0]=0,ok[432]=0'). Repeatable.
         #[arg(long)]
         mutate_input: Vec<String>,
+        /// Input coverage's own wall-clock cap in seconds (also PTXV_COVERAGE_SECONDS; default
+        /// 1800, none with --coverage-only). It comes before any exploration (on the plain
+        /// --certify path it rides on the certificate's run); past the cap (or its memory
+        /// cap, PTXV_COVERAGE_MAX_RSS, default 75% of the process's memory budget) it stops
+        /// recording with a note and the verdict is unaffected.
+        #[arg(long)]
+        coverage_seconds: Option<f64>,
+        /// Total wall-clock budget of the --mutate-inputs checks in seconds (default 1800):
+        /// no mutated check starts after it, and a running one stops there, incomplete.
+        #[arg(long, default_value_t = 1800.0)]
+        mutate_budget_seconds: f64,
+        /// Total state budget of the --mutate-inputs checks (default 2 x --max-states): each
+        /// mutated check gets what is left, at most --max-states.
+        #[arg(long)]
+        mutate_budget_states: Option<usize>,
     },
     /// Numerics of one deterministic run: exact error per output, bounds, Thm 1 check.
     Num {
@@ -766,6 +781,65 @@ static COVERAGE_ONLY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 /// Input coverage (coverage.rs): (notes on, --mutate-inputs, --mutate-elements).
 static INPUT_COV: std::sync::OnceLock<(bool, usize, usize)> = std::sync::OnceLock::new();
 
+/// Budgets of input coverage and mutation (`--coverage-seconds`, `--mutate-budget-*`).
+#[derive(Clone, Copy, Default)]
+struct CovBudgets {
+    coverage_seconds: Option<f64>,
+    mutate_seconds: f64,
+    mutate_states: Option<usize>,
+}
+
+static COV_BUDGETS: std::sync::OnceLock<CovBudgets> = std::sync::OnceLock::new();
+
+/// A's caps for a check (`coverage_only`: the coverage run is the whole job, no time cap
+/// unless one is given).
+fn coverage_budget(coverage_only: bool) -> ptxv_sim::coverage::Budget {
+    let b = COV_BUDGETS.get().copied().unwrap_or_default();
+    let env_secs = std::env::var("PTXV_COVERAGE_SECONDS")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok());
+    let seconds = b
+        .coverage_seconds
+        .or(env_secs)
+        .or((!coverage_only).then_some(1800.0))
+        .filter(|&s| s > 0.0);
+    let rss = match std::env::var("PTXV_COVERAGE_MAX_RSS") {
+        Ok(v) => parse_rss(&v),
+        Err(_) => ptxv_sim::membudget::rss_limit().map(|l| l / 4 * 3),
+    };
+    ptxv_sim::coverage::Budget { seconds, rss }
+}
+
+/// `"96G"` / `"512M"` / bytes; 0: none.
+fn parse_rss(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let (n, mul) = match s.chars().last()?.to_ascii_uppercase() {
+        'K' => (&s[..s.len() - 1], 1u64 << 10),
+        'M' => (&s[..s.len() - 1], 1 << 20),
+        'G' => (&s[..s.len() - 1], 1 << 30),
+        'T' => (&s[..s.len() - 1], 1 << 40),
+        _ => (s, 1),
+    };
+    let v: f64 = n.trim().parse().ok()?;
+    let b = (v * mul as f64) as u64;
+    (b > 0).then_some(b)
+}
+
+unsafe extern "C" {
+    /// mimalloc: return freed memory to the OS (`force`: all of it).
+    fn mi_collect(force: bool);
+}
+
+/// Hands the memory freed after input coverage back to the OS, so the exploration's memory
+/// budget (on the resident set) starts where it would have without it.
+fn release_freed_memory() {
+    if std::env::var_os("PTXV_SYSTEM_ALLOC").is_none() {
+        // SAFETY: mimalloc is the global allocator (PTXV_SYSTEM_ALLOC unset); mi_collect
+        // only returns free pages.
+        unsafe { mi_collect(true) };
+    }
+}
+
 /// One check on a mutated input (`--mutate-inputs`): its own evidence, never the verdict.
 #[derive(Serialize)]
 struct MutatedRow {
@@ -784,6 +858,9 @@ struct MutatedRow {
     states: usize,
     findings: Vec<ptxv_sim::machine::Finding>,
     notes: Vec<String>,
+    /// Not checked, and why (`coverage::Pass::Unchanged`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    skipped: Option<String>,
     seconds: f64,
 }
 
@@ -863,6 +940,9 @@ struct CheckRow {
     /// `--mutate-inputs`: untaken sides not mutated, and why.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     mutation_refusals: Vec<ptxv_sim::coverage::Refusal>,
+    /// The --mutate-inputs budget stopped the mutated checks: how many were left.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mutation_budget: Option<String>,
 }
 
 fn print_verdict(
@@ -1132,6 +1212,7 @@ fn cmd_check(
                     input_coverage: Some(cov),
                     mutated_inputs: vec![],
                     mutation_refusals: vec![],
+                    mutation_budget: None,
                 });
                 continue;
             }
@@ -1230,6 +1311,9 @@ fn cmd_check(
             let group_log: std::cell::RefCell<Vec<(usize, bool)>> = Default::default();
             // One check of the case (level 1: the machine as configured; level 2: the
             // hardware model, `make` building its machines).
+            // The state cap of the next `check` (--max-states; less for a mutated input when
+            // the --mutate-inputs budget has less left).
+            let state_cap = std::cell::Cell::new(max_states);
             let check = |make: &dyn Fn() -> Machine, label: &str| -> Verdict {
                 let m = make();
                 // PTXV_EXPLORER=dpor selects partial-order reduction (crates/sim/src/dpor.rs);
@@ -1237,7 +1321,7 @@ fn cmd_check(
                 match std::env::var("PTXV_EXPLORER").as_deref() {
                     // E-L1-CORES: one run per SM placement when `l1_coresident` (else one run).
                     Ok("dpor") => ptxv_sim::l1_cores::explore_placements(m, &mut |m| {
-                        ptxv_sim::dpor::explore_dpor(m, max_states)
+                        ptxv_sim::dpor::explore_dpor(m, state_cap.get())
                     }),
                     _ if groups.is_some() => ptxv_sim::l1_cores::explore_placements(m, &mut |m| {
                         if slices {
@@ -1247,7 +1331,7 @@ fn cmd_check(
                         ptxv_sim::groups::check_spec(
                             m,
                             groups.as_deref().unwrap(),
-                            max_states,
+                            state_cap.get(),
                             &mut |i, g, v| {
                                 group_log.borrow_mut().push((
                                     i,
@@ -1277,7 +1361,7 @@ fn cmd_check(
                         && !std::env::var("PTXV_REP").is_ok_and(|v| v == "1") =>
                     {
                         drop(m);
-                        ptxv_sim::wellsync::check_sliced(&make, max_states, &mut |c, v| {
+                        ptxv_sim::wellsync::check_sliced(&make, state_cap.get(), &mut |c, v| {
                             println!(
                                 "  {label}slice cluster {c}: {:?} states={} terminal={} outputs={}{}{} {:.1}s",
                                 v.classes(),
@@ -1298,7 +1382,7 @@ fn cmd_check(
                         drop(m);
                         ptxv_sim::rep::check(
                             &make,
-                            max_states,
+                            state_cap.get(),
                             &mut |c, v| {
                                 println!(
                                     "  {label}representative CTA {c}: {:?} states={} {:.1}s",
@@ -1311,19 +1395,19 @@ fn cmd_check(
                                 if slices {
                                     ptxv_sim::wellsync::check_sliced(
                                         &make,
-                                        max_states,
+                                        state_cap.get(),
                                         &mut |_, _| {},
                                     )
                                 } else {
-                                    ptxv_sim::wellsync::check_certified(make(), max_states)
+                                    ptxv_sim::wellsync::check_certified(make(), state_cap.get())
                                 }
                             },
                         )
                     }
-                    _ if certify => ptxv_sim::wellsync::check_certified(m, max_states),
+                    _ if certify => ptxv_sim::wellsync::check_certified(m, state_cap.get()),
                     _ if slices => {
                         drop(m);
-                        ptxv_sim::explore::explore_symmetric(&make, max_states, &mut |c, v| {
+                        ptxv_sim::explore::explore_symmetric(&make, state_cap.get(), &mut |c, v| {
                             println!(
                                 "  {label}slice cluster {c}: {:?} states={} terminal={} outputs={}{} {:.1}s",
                                 v.classes(),
@@ -1335,7 +1419,9 @@ fn cmd_check(
                             )
                         })
                     }
-                    _ => ptxv_sim::l1_cores::explore_placements(m, &mut |m| explore(m, max_states)),
+                    _ => ptxv_sim::l1_cores::explore_placements(m, &mut |m| {
+                        explore(m, state_cap.get())
+                    }),
                 }
             };
             let make1 = || machine(case, k.clone()).expect("machine");
@@ -1350,10 +1436,46 @@ fn cmd_check(
             let vkey = plain
                 .then(|| vcache::key(&case.dir, &v, f, "certify"))
                 .flatten();
+            // Input coverage (A) runs first, within its own caps: it reports even when the
+            // exploration does not finish, and its memory is freed before the exploration.
+            let (cov_on, n_mut, k_mut) = INPUT_COV.get().copied().unwrap_or((true, 0, 2));
+            let specs = MUTATE_SPECS.get().cloned().unwrap_or_default();
+            // On the plain certificate path, A rides on the certificate's own run instead
+            // (coverage.rs `Tap`): that run is the same deterministic run, and comes before
+            // any exploration. PTXV_COVERAGE_SEPARATE=1 runs it apart.
+            let want_cov = cov_on || n_mut > 0 || !specs.is_empty();
+            let ride = want_cov
+                && certify
+                && !slices
+                && groups.is_none()
+                && std::env::var("PTXV_EXPLORER").as_deref() != Ok("dpor")
+                && !std::env::var("PTXV_REP").is_ok_and(|v| v == "1")
+                && std::env::var_os("PTXV_COVERAGE_SEPARATE").is_none()
+                && m1.launch.env.residency.is_none()
+                && !m1.launch.env.tmem_cotenant
+                && m1.nic.is_none();
+            let mut early_cov = (want_cov && !ride).then(|| {
+                let c = ptxv_sim::coverage::analyze_budget(&m1, coverage_budget(false));
+                release_freed_memory();
+                c
+            });
+            if ride {
+                ptxv_sim::coverage::tap_request(coverage_budget(false));
+            }
             if nonfinite.is_some() {
                 ptxv_sim::nonfinite::enable();
             }
             let mut verdict = check(&make1, "");
+            if ride {
+                early_cov = ptxv_sim::coverage::tap_take().or_else(|| {
+                    // No certificate run carried it (a launch the certificate does not run
+                    // the plain way): the run of its own.
+                    Some(ptxv_sim::coverage::analyze_budget(
+                        &m1,
+                        coverage_budget(false),
+                    ))
+                });
+            }
             // ASSUME(E-TC-FENCE-NOP): races the tcgen05 thread-sync fences would order are
             // contract deviations (twolevel::tc_fence_contract).
             if f == "ptx" {
@@ -1537,22 +1659,27 @@ fn cmd_check(
                 }
             }
             // Input coverage (A) and checks on mutated inputs (B), apart from the verdict.
-            let (cov_on, n_mut, k_mut) = INPUT_COV.get().copied().unwrap_or((true, 0, 2));
             let mut input_coverage = None;
             let mut mutated_inputs = Vec::new();
             let mut mutation_refusals = Vec::new();
-            let specs = MUTATE_SPECS.get().cloned().unwrap_or_default();
-            if cov_on || n_mut > 0 || !specs.is_empty() {
-                let cov = ptxv_sim::coverage::analyze(&m1);
+            let mut mutation_budget = None;
+            if let Some(cov) = early_cov {
                 println!(
                     "    input coverage: {} input-dependent comparison(s), {} side(s) not taken on this input ({:.1}s)",
                     cov.sites,
                     cov.untaken.len(),
                     cov.seconds
                 );
+                if let Some(why) = &cov.stopped {
+                    println!(
+                        "    input coverage: the run stopped at its {why} cap (--coverage-seconds / PTXV_COVERAGE_MAX_RSS): partial, no side claimed untaken, not input-independent"
+                    );
+                }
                 for u in cov.untaken.iter().take(20) {
                     println!("    note: {}", u.note);
                 }
+                // ASSUME(E-INPUT-INDEP): the provenance run saw every flow of input bytes into
+                // control, addresses and synchronization.
                 if cov.input_independent {
                     let raced = verdict.findings.iter().any(|x| x.kind == "race");
                     println!(
@@ -1649,11 +1776,86 @@ fn cmd_check(
                             r.reason
                         );
                     }
-                    for mu in muts {
+                    // The total budget of the mutated checks (wall and states).
+                    let bud = COV_BUDGETS.get().copied().unwrap_or_default();
+                    let b_t0 = Instant::now();
+                    let b_end = b_t0 + Duration::from_secs_f64(bud.mutate_seconds.max(0.0));
+                    let mut states_left = bud.mutate_states.unwrap_or(max_states.saturating_mul(2));
+                    let n_muts = muts.len();
+                    ptxv_sim::membudget::set_deadline(Some(b_end));
+                    for (checked, mu) in muts.into_iter().enumerate() {
+                        let now = Instant::now();
+                        if now >= b_end || states_left == 0 {
+                            let why = if now >= b_end {
+                                format!(
+                                    "the total wall budget ({:.0} s, --mutate-budget-seconds) is spent",
+                                    bud.mutate_seconds
+                                )
+                            } else {
+                                "the total state budget (--mutate-budget-states) is spent"
+                                    .to_string()
+                            };
+                            let note = format!(
+                                "budget: {} of {} mutated input(s) not checked: {why}",
+                                n_muts - checked,
+                                n_muts
+                            );
+                            println!("    mutate-inputs: {note}");
+                            mutation_budget = Some(note);
+                            break;
+                        }
                         let t0 = Instant::now();
                         let mm = ptxv_sim::coverage::apply(&m1, &mu);
+                        // A mutation that opens no code on its deterministic pass (the side it
+                        // was to make taken stays untaken, the same instructions are reached)
+                        // is not checked again: B checks paths, and that pass has none new.
+                        let left = (b_end - Instant::now()).as_secs_f64();
+                        let pass = if std::env::var_os("PTXV_MUTATE_NO_SKIP").is_some() {
+                            ptxv_sim::coverage::Pass::Undecided
+                        } else {
+                            ptxv_sim::coverage::mutated_pass(
+                                &mm,
+                                &cov,
+                                &mu,
+                                ptxv_sim::coverage::Budget {
+                                    seconds: Some(left),
+                                    rss: None,
+                                },
+                            )
+                        };
+                        if pass == ptxv_sim::coverage::Pass::Unchanged {
+                            let at = m1.k.describe(mu.pc as usize);
+                            let row = MutatedRow {
+                                mutation: mu.label.clone(),
+                                pc: Some(mu.pc),
+                                within_invariants: mu.within_invariants,
+                                at: at.clone(),
+                                makes: mu.never,
+                                classes: vec![],
+                                complete: false,
+                                certified: false,
+                                states: 0,
+                                findings: vec![],
+                                notes: vec![],
+                                skipped: Some(format!(
+                                    "the {} side of {at} is not taken on the mutated input's deterministic run, which reaches the same instructions as the captured input's: no new code, not checked again",
+                                    if mu.never { "true" } else { "false" }
+                                )),
+                                seconds: t0.elapsed().as_secs_f64(),
+                            };
+                            println!(
+                                "    on-mutated-input: {}: not checked: {}",
+                                row.mutation,
+                                row.skipped.as_deref().unwrap_or("")
+                            );
+                            mutated_inputs.push(row);
+                            continue;
+                        }
                         let make_m = || mm.clone();
+                        state_cap.set(states_left.min(max_states));
                         let vm = check(&make_m, "mutated input: ");
+                        state_cap.set(max_states);
+                        states_left = states_left.saturating_sub(vm.states);
                         let at = if mu.pc == u32::MAX {
                             "given with --mutate-input".to_string()
                         } else {
@@ -1671,6 +1873,7 @@ fn cmd_check(
                             states: vm.states,
                             findings: vm.findings.clone(),
                             notes: vm.notes.clone(),
+                            skipped: None,
                             seconds: t0.elapsed().as_secs_f64(),
                         };
                         println!(
@@ -1713,6 +1916,7 @@ fn cmd_check(
                         }
                         mutated_inputs.push(row);
                     }
+                    ptxv_sim::membudget::set_deadline(None);
                     mutation_refusals = refused;
                 }
                 input_coverage = Some(cov);
@@ -1758,6 +1962,7 @@ fn cmd_check(
                 input_coverage,
                 mutated_inputs,
                 mutation_refusals,
+                mutation_budget,
             });
         }
     }
@@ -2443,9 +2648,17 @@ fn run() -> Result<()> {
             mutate_inputs,
             mutate_elements,
             mutate_input,
+            coverage_seconds,
+            mutate_budget_seconds,
+            mutate_budget_states,
         } => {
             let _ = MUTATE_SPECS.set(mutate_input);
             let _ = COVERAGE_ONLY.set(coverage_only);
+            let _ = COV_BUDGETS.set(CovBudgets {
+                coverage_seconds,
+                mutate_seconds: mutate_budget_seconds,
+                mutate_states: mutate_budget_states,
+            });
             let j = json.then(|| jsonout::begin("check"));
             let _ = INPUT_COV.set((
                 !no_input_coverage && std::env::var("PTXV_NO_INPUT_COVERAGE").is_err(),

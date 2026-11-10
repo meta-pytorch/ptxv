@@ -5231,3 +5231,158 @@ fn s_hfma2_bf16_matches_hardware() {
         "{report:?}"
     );
 }
+
+/// Input coverage: copies of a machine get a placeholder instead of the provenance shadow,
+/// and on the certificate path the shadow rides on the certificate's first run
+/// (`coverage::tap_request`). On every fixture (every variant and front that loads), A's
+/// whole report is the same in all three ways (copies copying the shadow, as before; the run
+/// of its own; the certificate's run, `wellsync::certify`, without the exploration a refused
+/// certificate falls back to). A's runs over 20 s are skipped; the other two ways run where
+/// A's run took under 5 s (counted; `PTXV_COV_DIFF_FULL=1`: 120 s, all).
+#[test]
+fn coverage_same_without_shadow_in_look_ahead_copies() {
+    let dir = root().join("fixtures");
+    let mut names: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().join("case.toml").exists())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    names.sort();
+    let full = std::env::var_os("PTXV_COV_DIFF_FULL").is_some();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let counts = std::sync::Mutex::new([0usize; 4]);
+    std::thread::scope(|sc| {
+        for _ in 0..6 {
+            sc.spawn(|| {
+                // A run that ends on a copy of its machine panics instead of reporting nothing.
+                ptxv_sim::coverage::set_strict(true);
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(name) = names.get(i) else { break };
+                    let c = coverage_three_ways(&dir.join(name), name, full);
+                    let mut t = counts.lock().unwrap();
+                    for k in 0..4 {
+                        t[k] += c[k];
+                    }
+                }
+            });
+        }
+    });
+    let [same, skipped, rode, not_rode] = *counts.lock().unwrap();
+    eprintln!(
+        "coverage with and without the shadow in copies: {same} identical, {skipped} skipped (long); on the certificate's run: {rode} identical, {not_rode} not compared or not carried"
+    );
+    assert!(same > 100, "{same}");
+    assert!(rode > 100, "{rode}");
+}
+
+/// `coverage_same_without_shadow_in_look_ahead_copies` for one fixture: [identical, skipped,
+/// identical on the certificate's run, not compared there].
+fn coverage_three_ways(dir: &std::path::Path, name: &str, full: bool) -> [usize; 4] {
+    let mut out = [0usize; 4];
+    let Ok(case) = Case::load(dir) else {
+        return out;
+    };
+    let b = ptxv_sim::coverage::Budget {
+        seconds: Some(if full { 120.0 } else { 20.0 }),
+        rss: None,
+    };
+    let j = |x: &ptxv_sim::coverage::Coverage| {
+        let mut v = serde_json::to_value(x).unwrap();
+        v.as_object_mut().unwrap().remove("seconds");
+        v
+    };
+    for v in case.m.variants.iter().map(|x| x.id.clone()) {
+        for front in ["ptx", "sass"] {
+            let k = match &case.m.cubin {
+                Some(_) if front == "ptx" => continue,
+                Some(c) => match ptxv_sass::load_cubin(&case.dir.join(c), &case.m.entry) {
+                    Ok(k) => k,
+                    Err(_) => continue,
+                },
+                None => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    kernel(&case, &v, front)
+                })) {
+                    Ok(k) => k,
+                    Err(_) => continue,
+                },
+            };
+            let Ok(vc) = case.for_variant(&v) else {
+                continue;
+            };
+            let Ok(launch) = build_launch(&vc, &k) else {
+                continue;
+            };
+            let m = Machine::new(Arc::new(k), Arc::new(launch));
+            let a = ptxv_sim::coverage::analyze_budget(&m, b);
+            if a.stopped.is_some() {
+                out[1] += 1;
+                continue;
+            }
+            if !full && a.seconds > 5.0 {
+                out[3] += 1;
+                continue;
+            }
+            ptxv_sim::machine::set_scratch_copies_shadow(true);
+            let c = ptxv_sim::coverage::analyze_budget(&m, b);
+            ptxv_sim::machine::set_scratch_copies_shadow(false);
+            if c.stopped.is_some() {
+                out[1] += 1;
+                continue;
+            }
+            assert_eq!(j(&a), j(&c), "{name} {v} {front}");
+            out[0] += 1;
+            ptxv_sim::coverage::tap_request(b);
+            let _ = ptxv_sim::wellsync::certify(m.clone());
+            match ptxv_sim::coverage::tap_take() {
+                Some(f) if f.stopped.is_none() => {
+                    assert_eq!(
+                        j(&a),
+                        j(&f),
+                        "riding on the certificate: {name} {v} {front}"
+                    );
+                    out[2] += 1;
+                }
+                _ => out[3] += 1,
+            }
+        }
+    }
+    out
+}
+
+/// B's pre-pass (`coverage::mutated_pass`, fixtures/e_sentinel_fill): the planned mutation
+/// (ok = 0 in two lanes) takes the untaken side; writing the value the capture already holds
+/// opens nothing, and the pass says so; a hand mutation (no planned side) is undecided.
+#[test]
+fn mutated_pass_tells_flipped_from_unchanged() {
+    use ptxv_sim::coverage::Budget;
+    use ptxv_sim::coverage::Pass;
+    let case = Case::load(root().join("fixtures/e_sentinel_fill")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let m = Machine::new(Arc::new(k), Arc::new(launch));
+        let c = ptxv_sim::coverage::analyze(&m);
+        let (muts, _) = ptxv_sim::coverage::plan(&m, &c, 4, 2, &Default::default());
+        let mu = &muts[0];
+        let pass = |mu: &ptxv_sim::coverage::Mutation| {
+            ptxv_sim::coverage::mutated_pass(
+                &ptxv_sim::coverage::apply(&m, mu),
+                &c,
+                mu,
+                Budget::default(),
+            )
+        };
+        assert_eq!(pass(mu), Pass::Flipped, "{front}");
+        // The same elements, written with the values they hold (ok = 1): nothing changes.
+        let mut same = mu.clone();
+        for w in &mut same.writes {
+            w.3 = 1;
+        }
+        assert_eq!(pass(&same), Pass::Unchanged, "{front}");
+        let mut hand = mu.clone();
+        hand.pc = u32::MAX;
+        assert_eq!(pass(&hand), Pass::Undecided, "{front}");
+    }
+}

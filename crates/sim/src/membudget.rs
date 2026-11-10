@@ -147,6 +147,61 @@ pub fn exceeded() -> bool {
     true
 }
 
+/// Time budget of the current exploration (`set_deadline`): milliseconds since `T_BASE`, 0 for
+/// none.
+static DEADLINE_MS: AtomicU64 = AtomicU64::new(0);
+static DEADLINE_HIT: AtomicBool = AtomicBool::new(false);
+static T_BASE: OnceLock<Instant> = OnceLock::new();
+
+/// Sets (or clears) a wall-clock deadline for the explorations that follow (the total budget
+/// of `--mutate-inputs`): they stop, incomplete, when it passes. Clearing it also clears the
+/// note.
+pub fn set_deadline(d: Option<Instant>) {
+    let base = *T_BASE.get_or_init(Instant::now);
+    DEADLINE_HIT.store(false, Ordering::Relaxed);
+    DEADLINE_MS.store(
+        d.map_or(0, |d| {
+            d.saturating_duration_since(base).as_millis() as u64 + 1
+        }),
+        Ordering::Relaxed,
+    );
+}
+
+/// Has the deadline set by `set_deadline` passed? Once it has, it stays passed (until the
+/// next `set_deadline`).
+pub fn past_deadline() -> bool {
+    let d = DEADLINE_MS.load(Ordering::Relaxed);
+    if d == 0 {
+        return false;
+    }
+    if DEADLINE_HIT.load(Ordering::Relaxed) {
+        return true;
+    }
+    let now = T_BASE.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1;
+    if now >= d {
+        DEADLINE_HIT.store(true, Ordering::Relaxed);
+        return true;
+    }
+    false
+}
+
+/// The note an incomplete verdict carries when the deadline stopped it.
+pub fn deadline_note() -> Option<String> {
+    DEADLINE_HIT.load(Ordering::Relaxed).then(|| {
+        "exploration stopped at the time budget (--mutate-budget-seconds): incomplete".to_string()
+    })
+}
+
+/// The resident set of this process in bytes.
+pub fn rss() -> u64 {
+    usage().1
+}
+
+/// The resident-set limit the budget uses (`PTXV_MAX_RSS`, else 90% of the cgroup limit).
+pub fn rss_limit() -> Option<u64> {
+    limits().rss
+}
+
 /// The note an incomplete verdict carries when the budget stopped it.
 pub fn note() -> Option<String> {
     HIT.load(Ordering::Relaxed).then(|| {

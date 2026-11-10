@@ -5801,7 +5801,8 @@ impl Search<'_> {
             if self.visited.insert(f) {
                 // Multi-node: rank 0 applies the cap to the sum over ranks.
                 if (self.states.fetch_add(1, Ordering::Relaxed) + 1 > self.max_states
-                    || crate::membudget::exceeded())
+                    || crate::membudget::exceeded()
+                    || crate::membudget::past_deadline())
                     && self.dist.is_none()
                 {
                     self.stop.store(true, Ordering::Relaxed);
@@ -5972,7 +5973,10 @@ fn explore_round(
         notes: if complete {
             vec![]
         } else {
-            crate::membudget::note().into_iter().collect()
+            crate::membudget::note()
+                .into_iter()
+                .chain(crate::membudget::deadline_note())
+                .collect()
         },
         states,
         transitions,
@@ -6182,7 +6186,18 @@ impl FaultLoop {
 
 /// One deterministic execution (`DetSched`). Returns the final machine and the findings
 /// seen along the way.
-pub fn run_once(mut m: Machine) -> (Machine, Vec<Finding>, bool) {
+pub fn run_once(m: Machine) -> (Machine, Vec<Finding>, bool) {
+    let (m, fs, ok, _) = run_once_until(m, &mut |_| false);
+    (m, fs, ok)
+}
+
+/// `run_once`, stopped before a step when `stop` says so (input coverage's own time and memory
+/// caps): (machine, findings, terminal, stopped). A stopped run is not terminal and reports
+/// no deadlock.
+pub fn run_once_until(
+    mut m: Machine,
+    stop: &mut dyn FnMut(&Machine) -> bool,
+) -> (Machine, Vec<Finding>, bool, bool) {
     let mut fs = Vec::new();
     // Debugging: PTXV_RUN_ONCE_PROGRESS=n prints every n-th action.
     let every: usize = std::env::var("PTXV_RUN_ONCE_PROGRESS")
@@ -6193,7 +6208,12 @@ pub fn run_once(mut m: Machine) -> (Machine, Vec<Finding>, bool) {
     let mut sched = DetSched::default();
     let mut faults = FaultLoop::default();
     let mut stuck = false;
+    let mut stopped = false;
     while let Some(a) = sched.pick(&m) {
+        if stop(&m) {
+            stopped = true;
+            break;
+        }
         n += 1;
         if every > 0 && n.is_multiple_of(every) {
             let what = match &a {
@@ -6205,6 +6225,10 @@ pub fn run_once(mut m: Machine) -> (Machine, Vec<Finding>, bool) {
             eprintln!("run_once step {n}: {what}");
         }
         m.apply(&a);
+        debug_assert!(
+            crate::coverage::live_shadow(&m),
+            "the run continues on a copy of its machine"
+        );
         if every > 0 && n.is_multiple_of(every) {
             for f in &m.findings {
                 eprintln!("  finding: {}", f.msg.lines().next().unwrap_or(""));
@@ -6215,6 +6239,9 @@ pub fn run_once(mut m: Machine) -> (Machine, Vec<Finding>, bool) {
         if stuck {
             break;
         }
+    }
+    if stopped {
+        return (m, fs, false, true);
     }
     let ok = m.terminal();
     if ok {
@@ -6230,7 +6257,7 @@ pub fn run_once(mut m: Machine) -> (Machine, Vec<Finding>, bool) {
             ..Default::default()
         });
     }
-    (m, fs, ok)
+    (m, fs, ok, false)
 }
 
 // ---------------------------------------------------------------- multi-node (dist.rs)

@@ -275,6 +275,33 @@ default 16).
   Measured: triton `_finish_block_lanes` (5000 CTAs) and quack rmsnorm 4096x8192 (4096 CTAs)
   each certify with one representative.
 
+### E-INPUT-INDEP · code
+**Input coverage's provenance covers every flow of input bytes into the guards, branch
+conditions, addresses and synchronization operands of the run it records** (coverage.rs;
+2026-11-09). Input coverage (`ptxv check`, on by default) runs the launch once with a
+provenance shadow: every global byte the launch starts with is input, and values carry the
+input allocations they derive from through registers, shared, global and local memory, TMEM,
+warp-collective operations (every lane's operands) and guards of register arithmetic (the
+destination carries the guard's provenance). `input_independent`: the run finished and no
+guard of a non-arithmetic instruction, branch condition, address or synchronization operand
+derived from input data. Then the control path, the accesses and the synchronization of that
+run are the same for every input of the same kernel binary, launch shape and parameters.
+- Used by: the printed "input-independent: holds for all inputs of this shape and these
+  parameters".
+- Scope: one schedule's provenance. In a certified run (E-WELLSYNC) every schedule reads the
+  same values, so the per-thread data flow is the run's. Value-dependent parts of a verdict
+  (same-value writes, output determinism, the comparison with the GPU output, the numerics'
+  value-range findings such as an MMA operand outside the calibrated range) hold for the
+  captured input only.
+- Coarse places, over-approximating (never dropping provenance): an MMA reads every written
+  byte's provenance; TMEM is one set; a spilled input-derived value makes every local load
+  input-derived; a CTA-wide barrier reduction carries every input-derived predicate.
+- Where: coverage.rs (`pre`, `post`, `ProvState::on_access`); main.rs (the printed claim).
+- Status: **argued**. Evidence: the soundness harness's dead mutants (of 242, none lies behind
+  an input-dependent condition); the differentials of docs/input-coverage-cost.md.
+- If wrong: *miss* (input-dependent control reported as fixed).
+- Retire: a static data-flow proof of input independence over the whole program.
+
 ### E-RACE-DEAD · code
 **A race whose racing loads' values reach nothing has no effect on the outcome** (class
 `race-dead`: kept as a finding with its GB300 label, no verdict class; 2026-11-07). A

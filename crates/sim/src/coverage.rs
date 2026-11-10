@@ -64,7 +64,7 @@ use crate::exec::Loc;
 use crate::machine::Machine;
 
 /// Where a register value comes from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Prov {
     /// No input byte.
     Clean,
@@ -98,7 +98,7 @@ impl Prov {
 }
 
 /// Where a memory byte comes from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum MByte {
     Clean,
     /// Input byte `off` of allocation `alloc` (also a copy of it).
@@ -154,6 +154,17 @@ struct Site {
     refuse: Option<String>,
 }
 
+/// A comparison's plan: its predicate destination, the provenance of its result, and the
+/// observation (`CmpObs`).
+type CmpPlan = (
+    Reg,
+    Prov,
+    Option<Example>,
+    Option<String>,
+    BTreeMap<u32, (u64, u64)>,
+    u64,
+);
+
 /// What `post` does for one thread.
 #[derive(Clone, Debug)]
 enum Plan {
@@ -169,32 +180,87 @@ enum Plan {
         extra: u64,
     },
     /// A comparison: record the predicate's value (destination `d`), then `All(p)`.
-    Cmp(
-        Reg,
-        Prov,
-        Option<Example>,
-        Option<String>,
-        BTreeMap<u32, (u64, u64)>,
-        u64,
-    ),
+    Cmp(Box<CmpPlan>),
+}
+
+/// The data a thread's stores of the current instruction write: one value for every byte, or
+/// one per byte.
+#[derive(Clone, Debug, Default)]
+enum WData {
+    #[default]
+    Unset,
+    One(MByte),
+    Bytes(Vec<MByte>),
+}
+
+impl WData {
+    fn mask(&self) -> u64 {
+        match self {
+            WData::Unset => 0,
+            WData::One(b) => b.mask(),
+            WData::Bytes(v) => v.iter().fold(0, |x, b| x | b.mask()),
+        }
+    }
+}
+
+/// What `pre` needs of an instruction, computed once per pc.
+#[derive(Debug)]
+struct Info {
+    /// Register-only arithmetic (`data_only`).
+    pure: bool,
+    /// Source registers other than stored / exchanged values (for a non-arithmetic
+    /// instruction): control, address and synchronization operands.
+    ctl: Vec<Reg>,
+    /// `Op::src_vals`.
+    srcv: Vec<Val>,
+    /// `Op::src_regs`.
+    srcr: Vec<Reg>,
+    /// Register arithmetic whose results come from its own lane's operands only (`pure`,
+    /// and not a warp-collective operation).
+    local: bool,
 }
 
 /// Input words by allocation: (first, last) byte offset.
 type Words = BTreeMap<u32, (u64, u64)>;
 
 /// The provenance shadow of one run (`Machine::prov`). Not part of the state hash.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct ProvState {
-    regs: HashMap<(u32, u8, u16), Prov>,
-    mem: HashMap<(u8, u64, u64), MByte>,
-    /// Bytes read by each actor during the current instruction (async actors: since their
-    /// last write).
-    acc: HashMap<u32, Vec<MByte>>,
-    /// The data each actor's stores of the current instruction write (per byte, or one for
-    /// every byte).
-    wdata: HashMap<u32, Vec<MByte>>,
-    /// Actors whose access of the current instruction is a read-modify-write (atomics).
-    rmw: HashSet<u32>,
+    /// The placeholder a look-ahead copy (`Machine::scratch`) carries instead of the shadow:
+    /// its instructions record nothing.
+    inert: bool,
+    /// A shadow riding on another run (`tap_attach`) that passed its own cap ("time" /
+    /// "memory") stops recording; the run goes on.
+    detached: Option<&'static str>,
+    /// That cap, and when the run started.
+    cap: Option<(Budget, std::time::Instant)>,
+    /// Instructions recorded (for checking the cap now and then).
+    steps: u64,
+    /// Registers: per thread (V, R, P) and per warp (UR, UP), packed `Prov`s (`Packed`).
+    regs: Vec<[Vec<u64>; 3]>,
+    uregs: Vec<[Vec<u64>; 2]>,
+    /// Per thread / per warp: how many of those registers are not clean.
+    dirty: Vec<u32>,
+    wdirty: Vec<u32>,
+    /// Memory bytes written during the run, packed `MByte`s in pages (`Packed`); a byte never
+    /// written is its own input byte (global) or clean (shared).
+    mem: FxMap<(u8, u64, u64), Box<[u64]>>,
+    /// Per allocation bit: the written bytes whose provenance has it (`MByte::mask`).
+    mem_bits: Vec<u64>,
+    packed: Packed,
+    /// Bytes read by each thread during the current instruction (by thread).
+    acc: Vec<Vec<MByte>>,
+    /// Asynchronous actors (TMA, bulk copies): the inputs of the bytes read since their last
+    /// write.
+    aacc: FxMap<u32, u64>,
+    /// Per thread: the data its stores of the current instruction write (`WData`), valid
+    /// when its generation is `gen` (the thread runs the current instruction), and whether its
+    /// access is a read-modify-write (atomics).
+    wd: Vec<(u32, bool, WData)>,
+    /// The current instruction's generation (`wd`).
+    gen: u32,
+    /// Per instruction (by pc), what `pre` needs of it (`Info`).
+    info: Vec<Option<Arc<Info>>>,
     /// Threads that spilled an input-derived value to local memory.
     local: HashSet<usize>,
     /// Some TMEM word holds input-derived data.
@@ -204,15 +270,15 @@ pub struct ProvState {
     nth: usize,
     /// Bytes each actor read (not overwrote) during the current instruction: the data of
     /// stores whose value registers do not say it (cp.async, bulk copies).
-    racc: HashMap<u32, u64>,
+    racc: Vec<u64>,
     /// Inputs any predicate register was derived from (a CTA-wide barrier reduction's result).
     pred_any: u64,
-    /// Instructions some thread reached (guard true or false).
-    reached: HashSet<u32>,
+    /// Instructions some thread reached (guard true or false), by pc.
+    reached: Vec<bool>,
     /// Conditional control: per branch / predicated instruction, the outcomes seen (bit 0:
     /// not taken / guard false, bit 1: taken / guard true) and the inputs the condition
     /// derives from.
-    gates: BTreeMap<u32, (u8, u64)>,
+    gates: Vec<Option<(u8, u64)>>,
     /// The current branch's condition inputs (`pre` to `post`).
     bra_mask: u64,
     /// Control, address and synchronization operands (and guards of non-arithmetic
@@ -221,12 +287,183 @@ pub struct ProvState {
     ctl: BTreeMap<u32, (u8, u64, Words)>,
 }
 
-fn reg_key(m: &Machine, t: usize, r: Reg) -> (u32, u8, u16) {
-    let owner = match r.file {
-        File::UR | File::UP => 1u32 << 31 | m.threads[t].warp,
-        _ => t as u32,
-    };
-    (owner, r.file as u8, r.idx)
+/// A copy of a machine carrying the shadow (a look-ahead: `Machine::scratch`, the
+/// certificate's peek walks, the poll-loop trials) gets an inert placeholder: those copies run
+/// instructions that are not part of the recorded run, and copying the shadow made each of
+/// them cost its size. The run's own machine is never a copy (`explore::run_once_until` and
+/// the certificate's run check that it keeps a live shadow; a run that ends with a placeholder
+/// reports nothing: `report`).
+impl Clone for ProvState {
+    fn clone(&self) -> Self {
+        if !crate::machine::prov_clone_full() {
+            return ProvState {
+                inert: true,
+                ..Default::default()
+            };
+        }
+        ProvState {
+            inert: self.inert,
+            detached: self.detached,
+            cap: self.cap,
+            steps: self.steps,
+            regs: self.regs.clone(),
+            uregs: self.uregs.clone(),
+            dirty: self.dirty.clone(),
+            wdirty: self.wdirty.clone(),
+            mem: self.mem.clone(),
+            mem_bits: self.mem_bits.clone(),
+            packed: self.packed.clone(),
+            acc: self.acc.clone(),
+            aacc: self.aacc.clone(),
+            wd: self.wd.clone(),
+            gen: self.gen,
+            info: self.info.clone(),
+            local: self.local.clone(),
+            tmem: self.tmem,
+            pending: self.pending.clone(),
+            sites: self.sites.clone(),
+            nth: self.nth,
+            racc: self.racc.clone(),
+            pred_any: self.pred_any,
+            reached: self.reached.clone(),
+            gates: self.gates.clone(),
+            bra_mask: self.bra_mask,
+            ctl: self.ctl.clone(),
+        }
+    }
+}
+
+/// FxHash (the shadow's maps are keyed by small integers; SipHash dominated A's profile).
+#[derive(Default, Clone, Copy)]
+struct Fx(u64);
+
+impl std::hash::Hasher for Fx {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(b as u64);
+        }
+    }
+    fn write_u8(&mut self, i: u8) {
+        self.write_u64(i as u64);
+    }
+    fn write_u16(&mut self, i: u16) {
+        self.write_u64(i as u64);
+    }
+    fn write_u32(&mut self, i: u32) {
+        self.write_u64(i as u64);
+    }
+    fn write_usize(&mut self, i: usize) {
+        self.write_u64(i as u64);
+    }
+    fn write_u64(&mut self, i: u64) {
+        self.0 = (self.0.rotate_left(5) ^ i).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
+type FxMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<Fx>>;
+
+/// A register file's place in `ProvState::regs` (false) or `uregs` (true, per warp).
+fn slot(f: File) -> (bool, usize) {
+    match f {
+        File::V => (false, 0),
+        File::R => (false, 1),
+        File::P => (false, 2),
+        File::UR => (true, 0),
+        File::UP => (true, 1),
+    }
+}
+
+/// Bytes per memory page of the shadow.
+const PAGE: u64 = 1024;
+
+/// Provenance values packed into one word: 0 is `Prov::Clean` (registers) or "never written"
+/// (memory); tag 1 (bits 62-63) a `Word` / `In` whose fields fit; tag 2 a mask of allocations
+/// 0..61 (`Prov::Mixed`; `MByte`: mask + 1, 0 for `MByte::Clean`); tag 3 an index into the
+/// table of the other values (masks naming allocation 62 or above, words with fields too
+/// wide). Exact: every value unpacks to the one packed.
+#[derive(Clone, Debug, Default)]
+struct Packed {
+    provs: Vec<Prov>,
+    prov_ix: FxMap<Prov, u64>,
+    bytes: Vec<MByte>,
+    byte_ix: FxMap<MByte, u64>,
+}
+
+const TAG1: u64 = 1 << 62;
+const TAG2: u64 = 2 << 62;
+const TAG3: u64 = 3 << 62;
+const LOW62: u64 = (1 << 62) - 1;
+
+impl Packed {
+    fn prov(&mut self, p: Prov) -> u64 {
+        match p {
+            Prov::Clean => 0,
+            // alloc 14 bits, off 42, bytes 4, sext, atom.
+            Prov::Word {
+                alloc,
+                off,
+                bytes,
+                sext,
+                atom,
+            } if alloc < 1 << 14 && off < 1 << 42 && bytes < 16 => {
+                TAG1 | (alloc as u64) << 48
+                    | off << 6
+                    | (bytes as u64) << 2
+                    | (sext as u64) << 1
+                    | atom as u64
+            }
+            Prov::Mixed(m) if m <= LOW62 => TAG2 | m,
+            p => {
+                let n = self.provs.len() as u64;
+                let i = *self.prov_ix.entry(p).or_insert(n);
+                if i == n {
+                    self.provs.push(p);
+                }
+                TAG3 | i
+            }
+        }
+    }
+    fn unprov(&self, w: u64) -> Prov {
+        match w >> 62 {
+            0 => Prov::Clean,
+            1 => Prov::Word {
+                alloc: ((w >> 48) & 0x3fff) as u32,
+                off: (w >> 6) & ((1 << 42) - 1),
+                bytes: ((w >> 2) & 0xf) as u8,
+                sext: (w >> 1) & 1 != 0,
+                atom: w & 1 != 0,
+            },
+            2 => Prov::Mixed(w & LOW62),
+            _ => self.provs[(w & LOW62) as usize],
+        }
+    }
+    fn byte(&mut self, b: MByte) -> u64 {
+        match b {
+            // alloc 18 bits, off 44.
+            MByte::In(a, o) if a < 1 << 18 && o < 1 << 44 => TAG1 | (a as u64) << 44 | o,
+            MByte::Clean => TAG2,
+            MByte::Mask(m) if m < LOW62 => TAG2 | (m + 1),
+            b => {
+                let n = self.bytes.len() as u64;
+                let i = *self.byte_ix.entry(b).or_insert(n);
+                if i == n {
+                    self.bytes.push(b);
+                }
+                TAG3 | i
+            }
+        }
+    }
+    fn unbyte(&self, w: u64) -> MByte {
+        match w >> 62 {
+            1 => MByte::In(((w >> 44) & 0x3ffff) as u32, w & ((1 << 44) - 1)),
+            2 if w & LOW62 == 0 => MByte::Clean,
+            2 => MByte::Mask((w & LOW62) - 1),
+            _ => self.bytes[(w & LOW62) as usize],
+        }
+    }
 }
 
 fn loc_key(loc: Loc) -> (u8, u64, u64) {
@@ -242,10 +479,47 @@ impl ProvState {
         if matches!(r.file, File::P | File::UP) && r.idx == 7 {
             return Prov::Clean;
         }
-        self.regs
-            .get(&reg_key(m, t, r))
-            .copied()
-            .unwrap_or(Prov::Clean)
+        let w = match slot(r.file) {
+            (false, i) => self.regs.get(t).map(|f| &f[i]),
+            (true, i) => self.uregs.get(m.threads[t].warp as usize).map(|f| &f[i]),
+        }
+        .and_then(|v| v.get(r.idx as usize).copied())
+        .unwrap_or(0);
+        self.packed.unprov(w)
+    }
+
+    fn set_reg(&mut self, m: &Machine, t: usize, r: Reg, p: Prov) {
+        let w = self.packed.prov(p);
+        let (v, n) = match slot(r.file) {
+            (false, i) => {
+                if self.regs.len() <= t {
+                    self.regs.resize_with(t + 1, Default::default);
+                    self.dirty.resize(t + 1, 0);
+                }
+                (&mut self.regs[t][i], &mut self.dirty[t])
+            }
+            (true, i) => {
+                let wi = m.threads[t].warp as usize;
+                if self.uregs.len() <= wi {
+                    self.uregs.resize_with(wi + 1, Default::default);
+                    self.wdirty.resize(wi + 1, 0);
+                }
+                (&mut self.uregs[wi][i], &mut self.wdirty[wi])
+            }
+        };
+        let i = r.idx as usize;
+        if v.len() <= i {
+            if w == 0 {
+                return;
+            }
+            v.resize(i + 1, 0);
+        }
+        match (v[i] != 0, w != 0) {
+            (false, true) => *n += 1,
+            (true, false) => *n -= 1,
+            _ => {}
+        }
+        v[i] = w;
     }
 
     /// The provenance of operand `v` of thread `t` (a register pair: the union).
@@ -273,16 +547,208 @@ impl ProvState {
         }
     }
 
+    /// `reg(..).mask()` without unpacking.
+    fn reg_mask(&self, m: &Machine, t: usize, r: Reg) -> u64 {
+        if matches!(r.file, File::P | File::UP) && r.idx == 7 {
+            return 0;
+        }
+        let w = match slot(r.file) {
+            (false, i) => self.regs.get(t).map(|f| &f[i]),
+            (true, i) => self.uregs.get(m.threads[t].warp as usize).map(|f| &f[i]),
+        }
+        .and_then(|v| v.get(r.idx as usize).copied())
+        .unwrap_or(0);
+        match w >> 62 {
+            0 => 0,
+            1 => 1u64 << ((w >> 48) & 0x3fff).min(63),
+            2 => w & LOW62,
+            _ => self.packed.unprov(w).mask(),
+        }
+    }
+
+    /// `val(..).mask()` without unpacking.
+    fn val_mask(&self, m: &Machine, t: usize, v: &Val) -> u64 {
+        match v {
+            Val::Reg(r, n) if r.file != File::V && *n > 1 => (0..*n as u16).fold(0, |x, i| {
+                x | self.reg_mask(
+                    m,
+                    t,
+                    Reg {
+                        file: r.file,
+                        idx: r.idx + i,
+                    },
+                )
+            }),
+            Val::Reg(r, _) => self.reg_mask(m, t, *r),
+            _ => 0,
+        }
+    }
+
     fn pred(&self, m: &Machine, t: usize, p: Pred) -> Prov {
         p.reg.map_or(Prov::Clean, |r| self.reg(m, t, r))
     }
 
-    fn mem_byte(&self, k: (u8, u64, u64)) -> MByte {
-        match self.mem.get(&k) {
-            Some(b) => *b,
-            None if k.0 == 1 => MByte::In(k.1 as u32, k.2),
-            None => MByte::Clean,
+    /// Bytes `off..off + n` of memory (space, id).
+    fn mem_read(&self, (s, o, off): (u8, u64, u64), n: usize, out: &mut Vec<MByte>) {
+        let end = off + n as u64;
+        let mut a = off;
+        while a < end {
+            let pg = a / PAGE;
+            let b = end.min((pg + 1) * PAGE);
+            match self.mem.get(&(s, o, pg)) {
+                Some(page) => out.extend((a..b).map(|x| match page[(x % PAGE) as usize] {
+                    0 if s == 1 => MByte::In(o as u32, x),
+                    0 => MByte::Clean,
+                    w => self.packed.unbyte(w),
+                })),
+                None if s == 1 => out.extend((a..b).map(|x| MByte::In(o as u32, x))),
+                None => out.extend((a..b).map(|_| MByte::Clean)),
+            }
+            a = b;
         }
+    }
+
+    /// Writes `data` at `off` of memory (space, id).
+    fn mem_write(&mut self, (s, o, off): (u8, u64, u64), data: &[MByte]) {
+        if self.mem_bits.is_empty() {
+            self.mem_bits = vec![0; 64];
+        }
+        let mut i = 0usize;
+        while i < data.len() {
+            let a = off + i as u64;
+            let pg = a / PAGE;
+            let n = ((pg + 1) * PAGE - a).min((data.len() - i) as u64) as usize;
+            let page = self
+                .mem
+                .entry((s, o, pg))
+                .or_insert_with(|| vec![0u64; PAGE as usize].into_boxed_slice());
+            for (j, &b) in data[i..i + n].iter().enumerate() {
+                let x = ((a % PAGE) as usize) + j;
+                let old = page[x];
+                if old != 0 {
+                    let mut k = self.packed.unbyte(old).mask();
+                    while k != 0 {
+                        self.mem_bits[k.trailing_zeros() as usize] -= 1;
+                        k &= k - 1;
+                    }
+                }
+                let mut k = b.mask();
+                while k != 0 {
+                    self.mem_bits[k.trailing_zeros() as usize] += 1;
+                    k &= k - 1;
+                }
+                page[x] = self.packed.byte(b);
+            }
+            i += n;
+        }
+    }
+
+    /// The inputs of every byte written during the run.
+    fn mem_mask(&self) -> u64 {
+        (0..self.mem_bits.len())
+            .filter(|&i| self.mem_bits[i] != 0)
+            .fold(0, |x, i| x | 1 << i)
+    }
+
+    /// A riding shadow's cap (`tap_attach`), checked every 4096 instructions (the resident
+    /// set every 65536): past it, the shadow detaches.
+    fn over_cap(&mut self) -> bool {
+        let Some((b, t0)) = self.cap else {
+            return false;
+        };
+        self.steps += 1;
+        if !self.steps.is_multiple_of(4096) {
+            return false;
+        }
+        if b.seconds.is_some_and(|s| t0.elapsed().as_secs_f64() > s) {
+            self.detached = Some("time");
+        } else if self.steps.is_multiple_of(65536)
+            && b.rss.is_some_and(|r| crate::membudget::rss() > r)
+        {
+            self.detached = Some("memory");
+        }
+        if self.detached.is_some() {
+            // What it holds is no longer needed (the report uses only the sites and
+            // control records gathered so far).
+            self.regs = Vec::new();
+            self.uregs = Vec::new();
+            self.mem = Default::default();
+            self.acc = Vec::new();
+            self.wd = Vec::new();
+        }
+        self.detached.is_some()
+    }
+
+    /// Per-thread vectors for `n` threads.
+    fn grow(&mut self, n: usize) {
+        if self.acc.len() < n {
+            self.acc.resize_with(n, Vec::new);
+            self.racc.resize(n, 0);
+            self.wd.resize_with(n, Default::default);
+        }
+    }
+
+    /// `Info` of instruction `pc`.
+    fn info(&mut self, k: &ptxv_ir::Kernel, pc: u32) -> Arc<Info> {
+        let i = pc as usize;
+        if self.info.len() <= i {
+            self.info.resize(k.code.len().max(i + 1), None);
+        }
+        self.info[i]
+            .get_or_insert_with(|| {
+                let op = &k.code[i].op;
+                let pure = data_only(op);
+                let ctl = if pure {
+                    vec![]
+                } else {
+                    let vals = crate::num::value_regs(op);
+                    op.src_regs()
+                        .into_iter()
+                        .filter(|r| !vals.contains(r))
+                        .collect()
+                };
+                let collective = matches!(
+                    op,
+                    Op::Shfl { .. }
+                        | Op::VoteAny { .. }
+                        | Op::VoteAll { .. }
+                        | Op::MatchAny { .. }
+                        | Op::Redux { .. }
+                        | Op::MovMatrix { .. }
+                        | Op::Hmma { .. }
+                        | Op::BarResult { .. }
+                );
+                Arc::new(Info {
+                    pure,
+                    ctl,
+                    srcv: op.src_vals(),
+                    srcr: op.src_regs(),
+                    local: pure && !collective,
+                })
+            })
+            .clone()
+    }
+
+    /// The outcomes seen at conditional control `pc` (`gates`).
+    fn gate(&mut self, pc: u32) -> &mut (u8, u64) {
+        let i = pc as usize;
+        if self.gates.len() <= i {
+            self.gates.resize(i + 1, None);
+        }
+        self.gates[i].get_or_insert((0, 0))
+    }
+
+    /// Instruction `pc` was reached.
+    fn reach(&mut self, pc: u32) {
+        let i = pc as usize;
+        if self.reached.len() <= i {
+            self.reached.resize(i + 1, false);
+        }
+        self.reached[i] = true;
+    }
+
+    fn is_reached(&self, pc: u32) -> bool {
+        self.reached.get(pc as usize).copied().unwrap_or(false)
     }
 
     /// `access_x`: the bytes an actor reads (and, for a write, overwrites) and writes.
@@ -291,23 +757,31 @@ impl ProvState {
         if s == 2 {
             return;
         }
-        let read: Vec<MByte> = (0..n as u64)
-            .map(|i| self.mem_byte((s, o, off + i)))
-            .collect();
-        let acc = self.acc.entry(actor).or_default();
-        acc.extend(read.iter().copied());
+        let a = actor as usize;
+        let mut read: Vec<MByte> = Vec::with_capacity(n);
+        self.mem_read((s, o, off), n, &mut read);
+        if a < self.nth {
+            self.grow(a + 1);
+            self.acc[a].extend(read.iter().copied());
+        } else {
+            *self.aacc.entry(actor).or_default() |= read.iter().fold(0, |x, b| x | b.mask());
+        }
         if !write {
-            *self.racc.entry(actor).or_default() |= read.iter().fold(0, |x, b| x | b.mask());
+            if a < self.nth {
+                self.racc[a] |= read.iter().fold(0, |x, b| x | b.mask());
+            }
             return;
         }
-        let data: Vec<MByte> = match self.wdata.get(&actor) {
-            Some(d) if d.len() == n => d.clone(),
-            Some(d) => {
-                let mut m = d.iter().fold(0, |x, b| x | b.mask());
-                if self.rmw.contains(&actor) {
+        let live = a < self.nth && self.wd[a].0 == self.gen;
+        let data: Vec<MByte> = match live.then(|| &self.wd[a]) {
+            Some((_, _, WData::Bytes(d))) if d.len() == n => d.clone(),
+            Some((_, _, WData::One(b))) if n == 1 => vec![*b],
+            Some((_, rmw, d)) => {
+                let mut m = d.mask();
+                if *rmw {
                     m |= read.iter().fold(0, |x, b| x | b.mask());
                 }
-                m |= self.racc.get(&actor).copied().unwrap_or(0);
+                m |= self.racc[a];
                 vec![if m == 0 { MByte::Clean } else { MByte::Mask(m) }; n]
             }
             None => {
@@ -315,18 +789,14 @@ impl ProvState {
                 let m = if (actor as usize) < self.nth {
                     0
                 } else {
-                    self.acc
-                        .get(&actor)
-                        .map_or(0, |a| a.iter().fold(0, |x, b| x | b.mask()))
+                    self.aacc.get(&actor).copied().unwrap_or(0)
                 };
                 vec![if m == 0 { MByte::Clean } else { MByte::Mask(m) }; n]
             }
         };
-        for (i, b) in data.into_iter().enumerate().take(n) {
-            self.mem.insert((s, o, off + i as u64), b);
-        }
+        self.mem_write((s, o, off), &data[..n.min(data.len())]);
         if actor as usize >= self.nth {
-            self.acc.remove(&actor);
+            self.aacc.remove(&actor);
         }
     }
 }
@@ -437,19 +907,35 @@ pub(crate) fn pre(m: &mut Machine, members: &[usize], pc: u32) {
     let Some(mut ps) = m.prov.take() else {
         return;
     };
+    if ps.inert {
+        m.prov = Some(ps);
+        return;
+    }
+    if ps.detached.is_some() || ps.over_cap() {
+        m.prov = Some(ps);
+        return;
+    }
     let k = m.k.clone();
     let inst = &k.code[pc as usize];
     ps.nth = m.threads.len();
+    ps.grow(ps.nth);
     ps.pending.clear();
-    ps.wdata.clear();
-    ps.rmw.clear();
+    // A new generation: no thread's store data of the last instruction is current.
+    ps.gen = ps.gen.wrapping_add(1);
+    if ps.gen == 0 {
+        for w in &mut ps.wd {
+            w.0 = 0;
+        }
+        ps.gen = 1;
+    }
     let active: Vec<usize> = members
         .iter()
         .copied()
         .filter(|&t| m.prd(t, inst.guard))
         .collect();
-    ps.reached.insert(pc);
-    let pure = data_only(&inst.op);
+    ps.reach(pc);
+    let info = ps.info(&k, pc);
+    let pure = info.pure;
     // Conditional control: a guarded instruction (or a branch with a second condition).
     let cond = match &inst.op {
         Op::Bra { cond, .. } => *cond,
@@ -470,13 +956,13 @@ pub(crate) fn pre(m: &mut Machine, members: &[usize], pc: u32) {
             sides |= 1 << taken as u8;
             mask |= ps.pred(m, t, inst.guard).mask() | cond.map_or(0, |c| ps.pred(m, t, c).mask());
         }
-        let g = ps.gates.entry(pc).or_default();
+        let g = ps.gate(pc);
         g.0 |= sides;
         g.1 |= mask;
     }
     if let Op::Brx { base, .. } = &inst.op {
         let mask = active.iter().fold(0, |x, &t| x | ps.val(m, t, base).mask());
-        let g = ps.gates.entry(pc).or_default();
+        let g = ps.gate(pc);
         g.0 |= 2;
         g.1 |= mask;
     }
@@ -485,13 +971,7 @@ pub(crate) fn pre(m: &mut Machine, members: &[usize], pc: u32) {
     // of those instructions: input-derived ones make the run's accesses or synchronization
     // depend on the input.
     if !pure {
-        let vals = crate::num::value_regs(&inst.op);
-        let ctl: Vec<Reg> = inst
-            .op
-            .src_regs()
-            .into_iter()
-            .filter(|r| !vals.contains(r))
-            .collect();
+        let ctl = &info.ctl;
         for &t in members {
             let g = ps.pred(m, t, inst.guard);
             let c = cond.map_or(Prov::Clean, |c| ps.pred(m, t, c));
@@ -516,7 +996,7 @@ pub(crate) fn pre(m: &mut Machine, members: &[usize], pc: u32) {
             add(g, 1);
             add(c, 1);
             if m.prd(t, inst.guard) {
-                for &r in &ctl {
+                for &r in ctl {
                     add(ps.reg(m, t, r), 2);
                 }
             }
@@ -532,19 +1012,31 @@ pub(crate) fn pre(m: &mut Machine, members: &[usize], pc: u32) {
             }
         }
     }
+    let mut coll: Option<u64> = None;
     for &t in &active {
-        ps.acc.remove(&(t as u32));
-        ps.racc.remove(&(t as u32));
+        // Register arithmetic of a thread none of whose registers (nor its warp's uniform
+        // ones) holds input-derived data leaves every destination clean, as it found it:
+        // nothing to record.
+        if info.local
+            && ps.dirty.get(t).is_none_or(|&n| n == 0)
+            && ps
+                .wdirty
+                .get(m.threads[t].warp as usize)
+                .is_none_or(|&n| n == 0)
+        {
+            continue;
+        }
+        ps.acc[t].clear();
+        ps.racc[t] = 0;
         let guard = ps.pred(m, t, inst.guard).mask();
         // Every register read, each element of a PTX vector operand included (`src_regs`).
-        let srcs = inst
-            .op
-            .src_regs()
+        let srcs = info
+            .srcr
             .iter()
-            .fold(guard, |x, &r| x | ps.reg(m, t, r).mask());
+            .fold(guard, |x, &r| x | ps.reg_mask(m, t, r));
         // Memory written by an instruction other than st / atom (stmatrix, st.v256, cp.async,
         // bulk copies issued by the thread): its registers, plus what it read (`racc`).
-        ps.wdata.insert(t as u32, vec![MByte::Mask(srcs)]);
+        ps.wd[t] = (ps.gen, false, WData::One(MByte::Mask(srcs)));
         let plan = match &inst.op {
             Op::Ld {
                 addr, sext, bytes, ..
@@ -562,8 +1054,7 @@ pub(crate) fn pre(m: &mut Machine, members: &[usize], pc: u32) {
                 }
             }
             Op::Atom { op, bytes, v, .. } => {
-                ps.rmw.insert(t as u32);
-                ps.wdata.insert(t as u32, vec![MByte::Mask(srcs)]);
+                ps.wd[t] = (ps.gen, true, WData::One(MByte::Mask(srcs)));
                 // atom.add of a non-negative constant: the old value is at least the word's
                 // initial value (`Prov::Word::atom`).
                 let x = m.rd(t, v).unwrap_or(u64::MAX);
@@ -620,7 +1111,11 @@ pub(crate) fn pre(m: &mut Machine, members: &[usize], pc: u32) {
                         }]
                     }
                 };
-                ps.wdata.insert(t as u32, d);
+                ps.wd[t].2 = if d.len() == 1 {
+                    WData::One(d[0])
+                } else {
+                    WData::Bytes(d)
+                };
                 Plan::All(Prov::Clean)
             }
             Op::StLocal { .. } => {
@@ -641,7 +1136,7 @@ pub(crate) fn pre(m: &mut Machine, members: &[usize], pc: u32) {
             Op::TmemLd { .. } => Plan::All(Prov::of_mask(ps.tmem | guard)),
             Op::Mma { .. } => {
                 // The MMA reads shared memory and TMEM: input-derived if any of either is.
-                let sm = ps.mem.values().fold(0, |x, b| x | b.mask());
+                let sm = ps.mem_mask();
                 ps.tmem |= sm | srcs;
                 Plan::All(Prov::Clean)
             }
@@ -780,19 +1275,18 @@ pub(crate) fn pre(m: &mut Machine, members: &[usize], pc: u32) {
             | Op::Redux { .. }
             | Op::MovMatrix { .. }
             | Op::Hmma { .. } => {
-                // Warp-collective: every lane's result depends on every lane's operands.
-                let all = active.iter().fold(0, |x, &u| {
-                    x | inst
-                        .op
-                        .src_vals()
-                        .iter()
-                        .fold(0, |y, v| y | ps.val(m, u, v).mask())
+                // Warp-collective: every lane's result depends on every lane's operands
+                // (the same union for every lane: computed once).
+                let all = *coll.get_or_insert_with(|| {
+                    active.iter().fold(0, |x, &u| {
+                        x | info.srcv.iter().fold(0, |y, v| y | ps.val_mask(m, u, v))
+                    })
                 });
                 Plan::All(Prov::of_mask(all | guard))
             }
             Op::Setp { d, .. } | Op::Fsetp { d, .. } | Op::Dsetp { d, .. } => {
                 let (ex, why, words, allocs) = simple_cmp(&ps, m, t, &inst.op);
-                Plan::Cmp(*d, Prov::of_mask(srcs), ex, why, words, allocs)
+                Plan::Cmp(Box::new((*d, Prov::of_mask(srcs), ex, why, words, allocs)))
             }
             // A CTA-wide barrier reduction of predicates.
             Op::BarResult { .. } => Plan::All(Prov::of_mask(srcs | ps.pred_any)),
@@ -942,6 +1436,14 @@ pub(crate) fn post(m: &mut Machine, members: &[usize], pc: u32) {
     let Some(mut ps) = m.prov.take() else {
         return;
     };
+    if ps.inert {
+        m.prov = Some(ps);
+        return;
+    }
+    if ps.detached.is_some() {
+        m.prov = Some(ps);
+        return;
+    }
     let k = m.k.clone();
     let inst = &k.code[pc as usize];
     // A branch's sides: where its threads went. Unconditional ones are not gates.
@@ -959,19 +1461,21 @@ pub(crate) fn post(m: &mut Machine, members: &[usize], pc: u32) {
                 let taken = m.threads[t].pc as usize == *target && *target != pc as usize + 1;
                 sides |= 1 << taken as u8;
             }
-            let g = ps.gates.entry(pc).or_default();
+            let bm = ps.bra_mask;
+            let g = ps.gate(pc);
             g.0 |= sides;
-            g.1 |= ps.bra_mask;
+            g.1 |= bm;
         }
     }
     let dsts = inst.op.dst_regs();
-    let pending = std::mem::take(&mut ps.pending);
-    for (t, plan) in pending {
+    // (Its buffer goes back after: `pre` refills it for every instruction.)
+    let mut pending = std::mem::take(&mut ps.pending);
+    for (t, plan) in pending.drain(..) {
         match plan {
             Plan::All(p) => {
                 // Registers loaded from memory by an instruction not handled above (ldmatrix,
                 // ld.v256, multimem ld_reduce): what it read.
-                let r = ps.racc.get(&(t as u32)).copied().unwrap_or(0);
+                let r = ps.racc.get(t).copied().unwrap_or(0);
                 let p = if r == 0 {
                     p
                 } else {
@@ -1015,7 +1519,7 @@ pub(crate) fn post(m: &mut Machine, members: &[usize], pc: u32) {
                             }
                         }
                     }
-                    ps.regs.insert(reg_key(m, t, d), p);
+                    ps.set_reg(m, t, d, p);
                 }
             }
             Plan::Load {
@@ -1025,7 +1529,8 @@ pub(crate) fn post(m: &mut Machine, members: &[usize], pc: u32) {
                 atomic,
                 extra,
             } => {
-                let acc = ps.acc.get(&(t as u32)).cloned().unwrap_or_default();
+                // (The next instruction of `t` starts its list anew: `pre`.)
+                let acc = std::mem::take(&mut ps.acc[t]);
                 let all = acc.iter().fold(0, |x, b| x | b.mask());
                 let n = dsts.len().max(1);
                 // Each destination register gets its share of the bytes.
@@ -1056,12 +1561,14 @@ pub(crate) fn post(m: &mut Machine, members: &[usize], pc: u32) {
                             None => Prov::of_mask(part.iter().fold(0, |x, b| x | b.mask())),
                         }
                     };
-                    ps.regs.insert(reg_key(m, t, d), p);
+                    ps.set_reg(m, t, d, p);
                 }
+                ps.acc[t] = acc;
             }
-            Plan::Cmp(d, p, ex, why, words, allocs) => {
+            Plan::Cmp(c) => {
+                let (d, p, ex, why, words, allocs) = *c;
                 for &dd in &dsts {
-                    ps.regs.insert(reg_key(m, t, dd), p);
+                    ps.set_reg(m, t, dd, p);
                 }
                 ps.pred_any |= p.mask();
                 if allocs == 0 {
@@ -1090,6 +1597,22 @@ pub(crate) fn post(m: &mut Machine, members: &[usize], pc: u32) {
                     if s.examples[v as usize].len() < 4096 {
                         s.examples[v as usize].push(e);
                     }
+                }
+            }
+        }
+    }
+    ps.pending = pending;
+    // Threads that exited: their registers are never read again (a warp-collective operation
+    // reads its active lanes only); their shadow goes.
+    if matches!(inst.op, Op::Exit | Op::Ret { .. }) {
+        for &t in members {
+            if m.threads[t].st == crate::machine::St::Exited {
+                if let Some(f) = ps.regs.get_mut(t) {
+                    *f = Default::default();
+                    ps.dirty[t] = 0;
+                }
+                if let Some(a) = ps.acc.get_mut(t) {
+                    *a = Vec::new();
                 }
             }
         }
@@ -1196,9 +1719,17 @@ pub struct Coverage {
     pub behind_parameter: usize,
     /// The run reached a terminal state.
     pub terminal: bool,
+    /// The run stopped at A's own budget (`Budget`): "time" or "memory". Then only
+    /// `input_dependent` and the sites seen are reported (each holds for the part that ran);
+    /// no side is claimed untaken, no code unexecuted, and the run is not input-independent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<String>,
     pub seconds: f64,
     #[serde(skip)]
     examples: BTreeMap<u32, [Vec<Example>; 2]>,
+    /// Instructions reached, by pc (`mutated_pass`).
+    #[serde(skip)]
+    reached: Vec<bool>,
 }
 
 fn inputs(m: &Machine, s: &Site) -> Vec<InputRef> {
@@ -1245,30 +1776,118 @@ fn sources(v: &[InputRef]) -> String {
         .join(", ")
 }
 
+/// A's own caps (`analyze_budget`): wall seconds, and the process's resident set in bytes.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Budget {
+    pub seconds: Option<f64>,
+    pub rss: Option<u64>,
+}
+
 /// A: one deterministic run of `m0` with the provenance shadow; the input-dependent
 /// comparison sides it never took.
 pub fn analyze(m0: &Machine) -> Coverage {
+    analyze_budget(m0, Budget::default())
+}
+
+/// `analyze` within `b`: the run stops (`Coverage::stopped`) when it passes either cap.
+pub fn analyze_budget(m0: &Machine, b: Budget) -> Coverage {
     let t0 = std::time::Instant::now();
     let mut m = m0.clone();
     m.prov = Some(Box::new(ProvState {
         nth: m.threads.len(),
         ..Default::default()
     }));
-    let (m, _, ok) = crate::explore::run_once(m);
-    let ps = m.prov.clone().unwrap_or_default();
+    let mut why: Option<&'static str> = None;
+    let mut last_rss = t0;
+    let (mut m, _, ok, stopped) = crate::explore::run_once_until(m, &mut |_| {
+        let now = std::time::Instant::now();
+        if b.seconds.is_some_and(|s| (now - t0).as_secs_f64() > s) {
+            why = Some("time");
+            return true;
+        }
+        // The resident set at most every 100 ms (a /proc read).
+        if let Some(r) = b.rss {
+            if (now - last_rss).as_millis() >= 100 {
+                last_rss = now;
+                if crate::membudget::rss() > r {
+                    why = Some("memory");
+                    return true;
+                }
+            }
+        }
+        false
+    });
+    let ps = *m.prov.take().expect("provenance shadow");
+    report(
+        &m,
+        ps,
+        ok,
+        stopped.then(|| why.unwrap_or("time").to_string()),
+        t0,
+    )
+}
+
+/// The coverage report of a finished (or stopped) provenance run: `m` is its final machine.
+fn report(
+    m: &Machine,
+    ps: ProvState,
+    ok: bool,
+    stopped: Option<String>,
+    t0: std::time::Instant,
+) -> Coverage {
+    // A copy adopted as the run's state records nothing from there on: no claims at all.
+    if ps.inert {
+        eprintln!(
+            "input coverage: the run ended on a copy of its machine (placeholder shadow); nothing reported"
+        );
+        // Tests: a run must never continue on a copy (`live_shadow`).
+        if cfg!(debug_assertions) || STRICT.get() {
+            panic!("input coverage: the run ended on a copy of its machine");
+        }
+    }
+    if std::env::var_os("PTXV_COVERAGE_STATS").is_some() {
+        let regs: usize = ps
+            .regs
+            .iter()
+            .map(|f| f.iter().map(|v| v.capacity()).sum::<usize>())
+            .sum();
+        let peak_len: usize = ps
+            .regs
+            .iter()
+            .map(|f| f.iter().map(|v| v.len()).max().unwrap_or(0))
+            .max()
+            .unwrap_or(0);
+        eprintln!(
+            "coverage stats: {} threads, {} register words (longest file {}), {} memory pages, {} acc bytes, {} interned provs, {} interned bytes",
+            ps.regs.len(),
+            regs,
+            peak_len,
+            ps.mem.len(),
+            ps.acc.iter().map(|a| a.capacity()).sum::<usize>(),
+            ps.packed.provs.len(),
+            ps.packed.bytes.len()
+        );
+    }
+    let stopped = stopped
+        .or_else(|| ps.detached.map(String::from))
+        .or_else(|| ps.inert.then(|| "copy".to_string()));
+    let ok = ok && stopped.is_none();
     let mut c = Coverage {
         sites: ps.sites.len(),
         terminal: ok,
+        stopped: stopped.clone(),
         ..Default::default()
     };
+    let stopped = stopped.is_some();
     for (&pc, s) in &ps.sites {
-        if s.seen == 3 {
+        // A stopped run claims no side untaken: the rest of the run may take it.
+        if s.seen == 3 || stopped {
             continue;
         }
         let never = s.seen == 1; // only false seen: true never
         let flippable = !s.examples[!never as usize].is_empty();
         let at = m.k.describe(pc as usize);
-        let inp = inputs(&m, s);
+        let inp = inputs(m, s);
         let src = sources(&inp);
         c.untaken.push(Untaken {
             pc,
@@ -1290,7 +1909,7 @@ pub fn analyze(m0: &Machine) -> Coverage {
             at: m.k.describe(pc as usize),
             n_true: s.n[1],
             n_false: s.n[0],
-            inputs: inputs(&m, s),
+            inputs: inputs(m, s),
         });
     }
     for (&pc, (what, mask, words)) in &ps.ctl {
@@ -1303,13 +1922,109 @@ pub fn analyze(m0: &Machine) -> Coverage {
                 _ => "guard, operand",
             }
             .to_string(),
-            inputs: inputs_of(&m, words, *mask),
+            inputs: inputs_of(m, words, *mask),
         });
     }
     c.input_independent = ok && ps.ctl.is_empty();
-    gaps(&m, &ps, &mut c);
+    if !stopped {
+        gaps(m, &ps, &mut c);
+    }
+    c.reached = ps.reached;
     c.seconds = t0.elapsed().as_secs_f64();
     c
+}
+
+/// Input coverage riding on the certificate's run (`ptxv check --certify`): the run the
+/// certificate makes anyway gets the provenance shadow, instead of a second run of the same
+/// launch. Requested before the check (`tap_request`), attached to the first certificate run
+/// (`tap_attach`, wellsync.rs), reported at its end (`tap_finish`), taken after the check
+/// (`tap_take`).
+enum Tap {
+    Off,
+    Want(Budget),
+    Running,
+    Done(Box<Coverage>),
+}
+
+thread_local! {
+    static TAP: std::cell::RefCell<Tap> = const { std::cell::RefCell::new(Tap::Off) };
+    /// `set_strict`.
+    static STRICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Tests: a run that ends on a copy of its machine (a placeholder shadow) panics instead of
+/// reporting nothing, on this thread.
+pub fn set_strict(on: bool) {
+    STRICT.set(on);
+}
+
+/// Asks for input coverage from the next certificate run on this thread, within `b`.
+pub fn tap_request(b: Budget) {
+    TAP.with_borrow_mut(|t| *t = Tap::Want(b));
+}
+
+/// The coverage of the run the request rode on (None: no certificate run made one, or that
+/// run was not the plain deterministic run: the caller runs `analyze` instead). Clears the
+/// request.
+pub fn tap_take() -> Option<Coverage> {
+    TAP.with_borrow_mut(|t| match std::mem::replace(t, Tap::Off) {
+        Tap::Done(c) => Some(*c),
+        _ => None,
+    })
+}
+
+/// The machine of a recorded run must carry a live shadow, never a copy's placeholder (debug
+/// builds check it after every step of `explore::run_once_until` and the certificate's run).
+pub(crate) fn live_shadow(m: &Machine) -> bool {
+    m.prov.as_ref().is_none_or(|p| !p.inert)
+}
+
+/// A certificate run starts on `m` (wellsync.rs `run_logged`): the requested shadow rides
+/// on it. Not on a launch whose CTAs a cluster launch control assigns (the certificate's run
+/// launches them differently from `explore::run_once`).
+pub(crate) fn tap_attach(m: &mut Machine) {
+    TAP.with_borrow_mut(|t| {
+        let Tap::Want(b) = *t else {
+            return;
+        };
+        if m.prov.is_some()
+            || m.k
+                .code
+                .iter()
+                .any(|i| matches!(i.op, Op::ClcTryCancel { .. } | Op::ClcQuery { .. }))
+        {
+            *t = Tap::Off;
+            return;
+        }
+        m.prov = Some(Box::new(ProvState {
+            nth: m.threads.len(),
+            cap: Some((b, std::time::Instant::now())),
+            ..Default::default()
+        }));
+        *t = Tap::Running;
+    });
+}
+
+/// The certificate run on `m` ended (`ok`: terminal; `whole`: it ran to its end, as
+/// `explore::run_once` would have, not stopped by a certificate-only condition).
+pub(crate) fn tap_finish(m: &mut Machine, ok: bool, whole: bool) {
+    let Some(ps) = m.prov.take() else {
+        return;
+    };
+    TAP.with_borrow_mut(|t| {
+        if !matches!(t, Tap::Running) {
+            return;
+        }
+        if ps.inert && (cfg!(debug_assertions) || STRICT.get()) {
+            panic!("input coverage: the certificate's run ended on a copy of its machine");
+        }
+        if !whole || ps.inert {
+            *t = Tap::Off;
+            return;
+        }
+        let t0 = ps.cap.map_or_else(std::time::Instant::now, |c| c.1);
+        *t = Tap::Done(Box::new(report(m, *ps, ok, None, t0)));
+    });
 }
 
 /// Successors of instruction `pc` in the code (for the unexecuted-code walk).
@@ -1344,7 +2059,12 @@ fn gaps(m: &Machine, ps: &ProvState, c: &mut Coverage) {
     // Per unreached instruction: the gate (pc, input-derived) that leads to it; an input
     // gate wins over a parameter gate.
     let mut by: HashMap<usize, (u32, bool)> = HashMap::new();
-    for (&g, &(sides, mask)) in &ps.gates {
+    for (g, &(sides, mask)) in ps
+        .gates
+        .iter()
+        .enumerate()
+        .filter_map(|(i, x)| Some((i as u32, x.as_ref()?)))
+    {
         if sides == 3 {
             continue;
         }
@@ -1358,7 +2078,7 @@ fn gaps(m: &Machine, ps: &ProvState, c: &mut Coverage) {
         };
         let mut stack: Vec<usize> = starts
             .into_iter()
-            .filter(|&x| x < n && (x == gi || !ps.reached.contains(&(x as u32))))
+            .filter(|&x| x < n && (x == gi || !ps.is_reached(x as u32)))
             .collect();
         let mut seen = HashSet::new();
         while let Some(x) = stack.pop() {
@@ -1370,15 +2090,14 @@ fn gaps(m: &Machine, ps: &ProvState, c: &mut Coverage) {
                 *e = (g, true);
             }
             for y in succs(m, x) {
-                if y < n && !ps.reached.contains(&(y as u32)) {
+                if y < n && !ps.is_reached(y as u32) {
                     stack.push(y);
                 }
             }
         }
     }
-    let unreached = |x: usize| {
-        !ps.reached.contains(&(x as u32)) || by.get(&x).is_some_and(|b| b.0 as usize == x)
-    };
+    let unreached =
+        |x: usize| !ps.is_reached(x as u32) || by.get(&x).is_some_and(|b| b.0 as usize == x);
     let mut x = 0;
     while x < n {
         if !unreached(x) {
@@ -1443,6 +2162,61 @@ pub struct Mutation {
     /// capture) admits the new value: evidence class `on-mutated-input (within declared
     /// invariants)`.
     pub within_invariants: bool,
+}
+
+/// The deterministic pass on a mutated input before its check (`mutated_pass`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pass {
+    /// The mutation's comparison took the side it was to make taken.
+    Flipped,
+    /// The pass finished without taking that side and reached exactly the instructions the
+    /// captured input's run reached: the mutation opens no code on that pass.
+    Unchanged,
+    /// Neither shown (a mutation given by hand, a run that did not finish, a budget).
+    Undecided,
+}
+
+/// B's pre-pass: the provenance run on the mutated input `mm`, stopped as soon as the
+/// mutation's comparison takes the side it was planned to make taken (usually early).
+pub fn mutated_pass(mm: &Machine, base: &Coverage, mu: &Mutation, b: Budget) -> Pass {
+    if mu.pc == u32::MAX || !base.terminal || base.stopped.is_some() {
+        return Pass::Undecided;
+    }
+    let t0 = std::time::Instant::now();
+    let want: u8 = if mu.never { 2 } else { 1 };
+    let flipped = |m: &Machine| {
+        m.prov
+            .as_ref()
+            .and_then(|p| p.sites.get(&mu.pc))
+            .is_some_and(|s| s.seen & want != 0)
+    };
+    let mut m = mm.clone();
+    m.prov = Some(Box::new(ProvState {
+        nth: m.threads.len(),
+        ..Default::default()
+    }));
+    let mut over = false;
+    let (m, _, ok, stopped) = crate::explore::run_once_until(m, &mut |m| {
+        if b.seconds.is_some_and(|s| t0.elapsed().as_secs_f64() > s) {
+            over = true;
+            return true;
+        }
+        flipped(m)
+    });
+    if flipped(&m) {
+        return Pass::Flipped;
+    }
+    if over || stopped || !ok {
+        return Pass::Undecided;
+    }
+    let r = &m.prov.as_ref().expect("provenance shadow").reached;
+    let n = r.len().max(base.reached.len());
+    let at = |v: &Vec<bool>, i: usize| v.get(i).copied().unwrap_or(false);
+    if (0..n).all(|i| at(r, i) == at(&base.reached, i)) {
+        Pass::Unchanged
+    } else {
+        Pass::Undecided
+    }
 }
 
 /// A side B does not flip, and why.
