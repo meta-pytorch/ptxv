@@ -5,6 +5,12 @@
 // C-POLL-ATOM accepts it: the poll exits only on 3, which only all three adds produce.
 //   reset: after the poll, CTA 0's thread 0 resets cnt to 0 (st.relaxed): coherence-after
 //        the three adds its exit read needed (CoRW), certified
+//   own2: the poller is CTA 2, whose own add comes after CTA 0's and CTA 1's in the
+//        certificate's run, and it exits at 2 (its own add and one other): refused, races.
+//        The certificate used to start the partial counts from the value before the run's
+//        first concurrent add, leaving the poller's own add out, and certified it (GB300
+//        wrong 200/200 with CTA 1 delayed: tools/mutate/repro/poll_atom_base)
+//   own3: the same poller exits at 3: certified
 //   ge1: the poll exits once cnt >= 1 (a partial count) and then writes data[2] instead of
 //        reading it: refused, and the explorer finds the write-write race on data[2]
 .version 9.0
@@ -31,7 +37,7 @@
     add.u64 %rd5, %rd2, %rd4;
     st.global.u32 [%rd5], %r3;
     red.release.gpu.global.add.u32 [%rd3], 1;
-    setp.ne.u32 %p2, %r2, 0;
+    setp.ne.u32 %p2, %r2, 0;              // @POLLER
     @%p2 bra DONE;
 SPIN:
     ld.acquire.gpu.global.u32 %r5, [%rd3];

@@ -1,0 +1,58 @@
+name = "poll_atom_base"
+description = "C-POLL-ATOM base value: poller exits on own add plus one of two concurrent adds"
+ptx = "kernel.ptx"
+entry = "k"
+grid = [3, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [3]
+init = "zeros"
+
+[[buffers]]
+name = "cnt"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[params]]
+kind = "ptr"
+buffer = "cnt"
+
+[[variants]]
+id = "good"
+summary = "exits at 2 of 3: a partial count"
+expect = ["race"]
+
+[[variants]]
+id = "full"
+summary = "exits at 3"
+marker = "@COND"
+find = "setp.lt.u32 %p3, %r5, 2;"
+replace = "setp.lt.u32 %p3, %r5, 3;"
+expect = ["clean"]
+
+[[variants]]
+id = "slow1"
+summary = "CTA 1 sleeps 50 us before its store and add"
+marker = "@SLOW"
+find = "setp.eq.u32 %p2, %r2, 1;"
+replace = "setp.eq.u32 %p2, %r2, 1; @%p2 nanosleep.u32 50000; @%p2 nanosleep.u32 50000;"
+expect = ["race"]

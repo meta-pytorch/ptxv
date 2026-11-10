@@ -2460,8 +2460,16 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
       acquire (`red`, SASS `REDG` / `RED`);
     - each adds a positive amount (as a signed value of the width), and the base plus all
       of them does not wrap. So a proper subset of the adds sums to less than all of them.
-      The base is the value before the first concurrent add the run made, or the value the
-      run read if none came before it;
+      The base is the value every execution's poll starts from: after every write that
+      happens-before the poll and before every concurrent add, computed as the value the run's
+      read returned minus the concurrent adds the run made before it. A write that
+      happens-before the poll other than an add must also happen-before every concurrent add
+      (else a concurrent add may precede it in coherence and be overwritten). Until 2026-11-08
+      the base was the value before the first concurrent add in run order, which leaves out an
+      add that happens-before the poll but that the run made later (the poller's own add):
+      every replayed partial count was too low by it, and a poll that exits on its own add
+      plus all but one of the others was certified (soundness harness; GB300 wrong 200/200,
+      `tools/mutate/repro/poll_atom_base`, fixture `e_poll_atom` own2);
     - an exiting iteration in the run read after every concurrent add (it saw the full
       sum), and replayed on the base plus every other subset sum it fails;
     - an iteration that failed in the run fails on every subset sum, the full one included
@@ -2489,8 +2497,8 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
     value left is the store's in every execution); adds the exit did not need (a later round)
     still need happens-before. Index L2's multimem kernel resets its cross-GPU flag word this
     way after polling it.
-    Fixture `e_poll_atom` (good and reset: certified; ge1, an exit on a partial count: refused
-    and races).
+    Fixture `e_poll_atom` (good, reset and own3: certified; ge1, an exit on a partial count,
+    and own2, an exit on the poller's own add and one other: refused and race).
   - **C-TICKET** (2026-11-07, index L2's tile scheduler and arrival counters,
     `wellsync/ticket.rs`). C-ORDER refuses unordered atomics whose results are used. A
     *ticket word* is one where some atomic's result is used and every strong access in the

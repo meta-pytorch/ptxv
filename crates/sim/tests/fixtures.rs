@@ -5529,11 +5529,18 @@ fn e_remote_fifo_orders_hb_ordered_arrivals() {
 }
 
 /// C-POLL-ATOM (E-WELLSYNC): an arrival counter of atomic adds polled to its full count is
-/// certified; a poll that exits on a partial count is refused and races.
+/// certified; a poll that exits on a partial count is refused and races, also when the
+/// partial count includes the poller's own add made after another CTA's add in the
+/// certificate's run (own2; certified before the base included that add).
 #[test]
 fn e_poll_atom_counter_poll() {
-    for v in ["good", "reset", "ge1"] {
+    for v in ["good", "reset", "ge1", "own3"] {
         both("e_poll_atom", v);
+    }
+    // own2 races (DPOR's reductions are exact for race-free kernels only): the stateful
+    // explorer's verdict.
+    for front in ["ptx", "sass"] {
+        check_stateful("e_poll_atom", "own2", front, 1_000_000);
     }
 }
 

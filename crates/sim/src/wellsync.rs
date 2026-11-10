@@ -2575,11 +2575,21 @@ fn poll_atomic_counter(log: &SyncLog, r: &PollRec) -> Result<Vec<(u32, u32, u32)
         return Err(None);
     }
     let mut adds: Vec<&SAcc> = Vec::new();
+    // Strong writes of the polled bytes that happen-before the poll other than adds: every
+    // execution performs them before the poll, but the base below holds only if each is also
+    // coherence-before every concurrent add (checked after the loop).
+    let mut before: Vec<&SAcc> = Vec::new();
     for a in log.strong.iter() {
         if !a.write || a.key != r.key || a.hi <= r.lo || r.hi <= a.lo {
             continue;
         }
-        if a.ev.hb(r.t as u32, r.ev.seq, &r.vc) || r.ev.hb(a.ev.actor, a.ev.seq, &a.vc) {
+        if a.ev.hb(r.t as u32, r.ev.seq, &r.vc) {
+            if !matches!(a.rmw, Some((AtomOp::Add, false, _, _))) || a.lo != r.lo || a.hi != r.hi {
+                before.push(a);
+            }
+            continue;
+        }
+        if r.ev.hb(a.ev.actor, a.ev.seq, &a.vc) {
             continue;
         }
         match a.rmw {
@@ -2619,22 +2629,49 @@ fn poll_atomic_counter(log: &SyncLog, r: &PollRec) -> Result<Vec<(u32, u32, u32)
         Ok(x) => x.is_some(),
         Err(e) => return Err(Some(format!("replaying the poll: {e}"))),
     };
-    // The base: the value before the first concurrent add the run made (else the value the
-    // run's read saw: no concurrent add came before it).
-    let first = adds.iter().min_by_key(|a| a.ev.seq).unwrap();
-    let base = if first.ev.seq < r.ev.seq {
-        word(&first.old)
-    } else {
-        word(&mem_bytes(&r.at, loc_of(r.key, r.lo), n))
-    };
+    // Value reconstruction (the invariant every certificate form that replays a poll on
+    // values rebuilt from the run must keep): the base is the value every execution's poll
+    // starts from, i.e. after every write that happens-before the poll and before every
+    // concurrent add. It is the value the run's read returned minus the concurrent adds the
+    // run made before that read. Not the value before the first concurrent add in run
+    // order: a write that happens-before the poll (the poller's own add) may come after that
+    // add in the run, and leaving it out shifts every replayed partial count down by it, so
+    // the one the poll can exit on early is never replayed (soundness harness,
+    // tools/mutate/repro/poll_atom_base). Adds commute, so adds that happen-before the poll
+    // need no order with the concurrent ones; any other write that happens-before the poll
+    // must happen-before every concurrent add (then it is coherence-before them; else a
+    // concurrent add may come before it in coherence and be overwritten).
+    for b in &before {
+        if let Some(a) = adds.iter().find(|a| !b.ev.hb(a.ev.actor, a.ev.seq, &a.vc)) {
+            return Err(Some(format!(
+                "the write at {} happens-before the poll but not before the concurrent add at {}",
+                b.ev.pc, a.ev.pc
+            )));
+        }
+    }
     let half = mask >> 1;
-    let mut full = base as u128;
     for &i in &incs {
         if i == 0 || i > half {
             return Err(Some(
                 "a concurrent add of zero or of a negative amount".into(),
             ));
         }
+    }
+    let read = word(&mem_bytes(&r.at, loc_of(r.key, r.lo), n)) as u128;
+    let seen: u128 = adds
+        .iter()
+        .zip(&incs)
+        .filter(|(a, _)| a.ev.seq < r.ev.seq)
+        .map(|(_, &i)| i as u128)
+        .sum();
+    if seen > read {
+        return Err(Some(
+            "the adds before the run's read exceed the value it read".into(),
+        ));
+    }
+    let base = (read - seen) as u64;
+    let mut full = base as u128;
+    for &i in &incs {
         full += i as u128;
     }
     if full > mask as u128 {

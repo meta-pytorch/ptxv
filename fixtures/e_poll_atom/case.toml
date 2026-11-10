@@ -60,3 +60,21 @@ find = "setp.ne.u32 %p3, %r5, 3;"
 replace = "setp.eq.u32 %p3, %r5, 0;"
 edits = [{ marker = "@USE", find = "ld.global.u32 %r8, [%rd2+8];", replace = "mov.u32 %r8, 0; st.global.u32 [%rd2+8], %r8;" }]
 expect = ["race"]
+
+[[variants]]
+id = "own2"
+summary = "CTA 2 polls after its own add until the count is 2: exits on its add and one other, races on data (the base of the partial counts must include the poller's own add)"
+marker = "@POLLER"
+find = "setp.ne.u32 %p2, %r2, 0;"
+replace = "setp.ne.u32 %p2, %r2, 2;"
+edits = [{ marker = "@COND", find = "setp.ne.u32 %p3, %r5, 3;", replace = "setp.lt.u32 %p3, %r5, 2;" }, { marker = "@USE", find = "ld.global.u32 %r8, [%rd2+8];", replace = "ld.global.u32 %r8, [%rd2+4];" }]
+expect = ["race"]
+
+[[variants]]
+id = "own3"
+summary = "CTA 2 polls after its own add until the count is 3 (every add landed)"
+marker = "@POLLER"
+find = "setp.ne.u32 %p2, %r2, 0;"
+replace = "setp.ne.u32 %p2, %r2, 2;"
+edits = [{ marker = "@USE", find = "ld.global.u32 %r8, [%rd2+8];", replace = "ld.global.u32 %r8, [%rd2+4];" }]
+expect = ["clean"]
