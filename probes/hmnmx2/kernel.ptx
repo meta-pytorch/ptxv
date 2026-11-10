@@ -1,0 +1,40 @@
+// Probe (N-HMNMX2) for f16 min / max on GB300: min / max [.NaN] [.xorsign.abs] .f16x2, with
+// |b| (abs.f16x2 folded into HMNMX2), immediate pairs (65504, 1, -INF), scalar .f16 halves
+// (H0_H0 / H1_H1 selectors). Built with `ptxas -arch=sm_103a -O3` (hmnmx2.cubin).
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry hmnmx2(.param .u64 pin, .param .u64 pout, .param .u32 n)
+{ .reg .b64 %rd<8>; .reg .b32 %r<40>; .reg .pred %p<2>; .reg .b16 %h<8>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout]; ld.param.u32 %r30, [n];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mov.u32 %r2, %ctaid.x; mov.u32 %r3, %ntid.x; mad.lo.s32 %r1, %r2, %r3, %r1;
+  setp.ge.u32 %p1, %r1, %r30; @%p1 bra DONE;
+  mul.wide.u32 %rd3, %r1, 8; add.s64 %rd4, %rd1, %rd3;
+  ld.global.v2.u32 {%r4, %r5}, [%rd4];
+  min.f16x2 %r10, %r4, %r5;
+  max.f16x2 %r11, %r4, %r5;
+  min.NaN.f16x2 %r12, %r4, %r5;
+  max.NaN.f16x2 %r13, %r4, %r5;
+  min.xorsign.abs.f16x2 %r14, %r4, %r5;
+  max.xorsign.abs.f16x2 %r15, %r4, %r5;
+  min.NaN.xorsign.abs.f16x2 %r16, %r4, %r5;
+  max.NaN.xorsign.abs.f16x2 %r17, %r4, %r5;
+  abs.f16x2 %r6, %r5;
+  min.f16x2 %r18, %r4, %r6;
+  max.NaN.f16x2 %r19, %r4, %r6;
+  mov.b32 %r25, 0x7BFF7BFF; mov.b32 %r26, 0x3C003C00; mov.b32 %r27, 0xFC00FC00;
+  min.xorsign.abs.f16x2 %r20, %r4, %r25;
+  max.xorsign.abs.f16x2 %r21, %r4, %r26;
+  min.f16x2 %r22, %r4, %r25;
+  max.NaN.f16x2 %r23, %r4, %r27;
+  mov.b32 {%h1, %h2}, %r4; mov.b32 {%h3, %h4}, %r5;
+  min.f16 %h5, %h2, %h3; max.xorsign.abs.f16 %h6, %h1, %h4;
+  mov.b32 %r24, {%h5, %h6};
+  mul.wide.u32 %rd5, %r1, 64; add.s64 %rd6, %rd2, %rd5;
+  st.global.v4.u32 [%rd6], {%r10, %r11, %r12, %r13};
+  st.global.v4.u32 [%rd6+16], {%r14, %r15, %r16, %r17};
+  st.global.v4.u32 [%rd6+32], {%r18, %r19, %r20, %r21};
+  st.global.v4.u32 [%rd6+48], {%r22, %r23, %r24, %r4};
+DONE:
+  ret; }

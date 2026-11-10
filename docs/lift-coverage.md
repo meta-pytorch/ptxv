@@ -123,6 +123,7 @@ Model changes the kernels forced:
 | form | validation |
 |---|---|
 | `UTMALDG.2D.GATHER4` (+ PTX `.tile::gather4`) | **fixtures/s_gather4** (6 gathers, 4 swizzles, out-of-bounds rows / columns, unaligned starts), both front-ends = GB300 1000/1000; unaligned columns are illegal instructions (variant `misaligned`, S-TMA-GATHER4) |
+| `UTMALDG.2D.GATHER4.MULTICAST[.2CTA]` (+ PTX `.tile::gather4 ... .multicast::cluster[.cta_group::2]`) | **probes/tma_g4_mcast** (56 configs of ctaMask, mbarrier and destination rank, cluster of 4), both front-ends = GB300 (S-TMA-2CTA-MCAST) |
 | `SYNCS.ARRIVE.TRANS64.ART0` / `.RED.ART0` (mbarrier.arrive with a count) | probes/mbar_count = GB300, both front-ends (S-MBAR) |
 | `SYNCS.ARRIVE.TRANS64.RED.A0TR` / `.A0TX` (mbarrier.expect_tx / complete_tx, PTX `[.relaxed] [.cta / .cluster]`) | probes/mbar_expect_tx = GB300, both front-ends; relaxed: publishes only what a prior fence released (S-MBAR) |
 | `UREDGR.E.ADD.NA[.S32 / .64].STRONG.GPU / .SYS` (red.async.release.{gpu,sys}.global.add) | probes/red_async = GB300, both front-ends; release order: probes/redasync_litmus (S-RED-ASYNC). `.relaxed` on `.global` and the other operations, which the PTX ISA does not define there, are refused on the PTX front (ptxas compiles them to the release add: probes/red_async_ops = GB200) |
@@ -158,17 +159,20 @@ modifier of these opcodes is refused.
 | `BREAK[.RELIABLE] Pc, Bb` | **probes/div_ftz**: div.rn.ftz.f32 slow path on edge pairs (E-BSYNC) |
 | `UTCQMMA` / `tcgen05.mma` block-scaled M = 128 N = 8 (shape check relaxed) | **probes/mma_bs expected/n8**, both front-ends (N-MMA-BS, S-TMEM) |
 | `UTCQMMA` / `tcgen05.mma.kind::mxf8f6f4` with A in TMEM or MN-major A / B (SWIZZLE_128B), 8-bit formats, M = 128 | **probes/mma_mxf8_tmem** = the K-major path on GB300 bitwise, both front-ends (N-MMA-BS, S-TMEM); the other swizzles, unswizzled MN-major and cta_group::2: **probes/mma_bs/mn**, **probes/mma_bs/ts** below |
+| `LDC` / `LDCU` `c[0x0][R+-off]` (register-indexed, negative offset) | **probes/cbank_neg**, both front-ends = GB300 |
 | `ATOMG.E.INC[.STRONG.GPU]` (+ PTX `atom.inc.u32`) | **probes/atom_inc**, both front-ends (L-ROSETTA) |
 | `BMOV.32[.CLEAR] Rd, Bb`, `BMOV.32 Bb, Ra` | the parallel_attn_bwd_dkv case (E-BSYNC); not probed alone |
 | `[R.U32+UR]` generic addresses, `UTMAREDG ... desc[URZ]`, device-built tensor maps (words 0x40/0x48 = 0) | operand syntax; **probes/tmap_device**, **probes/tmap_param_copy** (S-TMAP; raw tensor-map parameter bytes visible to device code) |
 | PTX `tensormap.replace.tile.*.shared::cta.b1024`, `tensormap.cp_fenceproxy`, `fence.proxy.tensormap::generic.acquire` | ptxas's LDS / LOP3 / STS read-modify-write per field, per-lane release copy, TmapFence; **probes/tmap_replace** (every field / ordinal / value), tmap_device and tmap_param_copy on the PTX front (S-TMAP) |
 | `LDSM.8.MT1616[.2]` (ldmatrix.m16n16.x1 / .x2.trans.b8) | **probes/ldsm_b8**, SASS and PTX fronts (L-ROSETTA) |
+| `STSM.8.MT168[.2\|.4]` (stmatrix.m16n8.x1 / .x2 / .x4.trans.b8) | **probes/stsm_b8**, SASS and PTX fronts (L-ROSETTA) |
 | PTX `tcgen05.st / ld .16x32bx2 [a], split` | **probes/tmem_x2**, both front-ends (S-TMEM) |
 | `LDTM.STAT.16dp32bit_t0_t15 / _t16_t31 .xN.MIN/MAX[ABS].F32[.NAN]` | **probes/tmem_ldred16**, both fronts (S-TMEM) |
 | `LDTM.STAT.xN.MIN/MAX[ABS].F32[.NAN]` (`tcgen05.ld.red.32x32b`) | **probes/tmem_ldred**, both fronts (S-TMEM) |
 | `STTM.16dp256bit[.xN]`, `STTM.16dp128bit[.xN]` (+ PTX `tcgen05.st.16x256b / .16x128b`) | **probes/tmem_st16**, both front-ends (S-TMEM) |
 | `F2FP[.RELU].F16.E2M1.UNPACK_B Rd, Ra.B1 / .B2 / .B3` (+ PTX `cvt.rn[.relu].f16x2.e2m1x2` of a `mov.b32 {..}` byte) | **probes/e2m1_bytes**, both front-ends (N-CVT-LP) |
 | `VIMNMX.RELU`, `VIMNMX.S16x2.RELU`, `VIADDMNMX.RELU` (+ PTX `min / max.relu.s32 / .s16x2`) | **probes/imnmx_relu**, both front-ends (N-INT16X2) |
+| `VIADDMNMX.RELU d, a, -Rb, c, sel` (ptxas's fusion of `sub.s32` with `min / max.relu.s32`) | **probes/iaddmnmx_relu** (4 forms), both front-ends |
 | `UTMAREDG.<N>D.ADD` (+ PTX `cp.reduce.async.bulk.tensor...add[.tile].bulk_group[.L2::cache_hint]`) on f32 / f16 / bf16 tensors | **probes/tma_red**, edge pairs per type, both front-ends (N-BULK-RED) |
 | `UBLKCP.S.S [URd], [URs], URn` (+ PTX `cp.async.bulk.shared::cluster.shared::cta`) | **probes/bulk_s2s**: 2-CTA cluster, peer and self copies, both front-ends (S-TMA) |
 | `UBLKRED.G.S.ADD.F32.RN [URg], [URs], URn` (+ PTX `cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32`) | **probes/bulk_red**: per-word atomic f32 add (RN, no flush, canonical NaN), four CTAs on the same words, both front-ends (N-BULK-RED) |
@@ -282,6 +286,7 @@ any modifier outside the audited set before an arm runs.
 | `FMNMX3 \|a\|, \|b\|, \|c\|` `[.FTZ/.NAN]` | `min` / `max [.ftz] [.NaN] .abs.f32` with three sources | min / max of the absolute values (FMNMX3 NaN rules) | probes/fmnmx3_abs |
 | `HFMA2` / `HMUL2` / `HADD2.BF16_V2[.RELU]` | `fma` / `mul` / `add` / `sub.rn.bf16x2`, `neg.bf16x2` | per lane: one rounding to bf16 (RNE), subnormals kept, every NaN result 0x7fff (neg of a NaN too); `-RZ` addend keeps -0 | probes/bf16x2 |
 | `FHFMA` / `FHADD.BF16`, `HMNMX2.BF16_V2[.NAN][.XORSIGN]` | `fma` / `add.f32.bf16`, `min` / `max.bf16x2` | f32 FMA of the widened halves, one rounding in the instruction's mode; min/max as FMNMX on the widenings, NaN 0x7fff | probes/bf16_ext |
+| `HMNMX2[.NAN][.XORSIGN]` (f16; `\|R\|`, `.Hx_Hx`, immediate pairs) | `min` / `max` [.NaN] [.xorsign.abs] `.f16x2` / `.f16` | FMNMX's rules per f16 lane, `\|R\|` without `.XORSIGN` clears the sign, NaN 0x7fff | probes/hmnmx2 (exhaustive lane 0) |
 | `REDG.E.ADD.BF16x2.RN`, `ATOMG.E.ADD.BF16x2.RN` | `red` / `atom.add.noftz.bf16x2` | per lane bf16 add, RNE, NaN 0x7fff; not commutative-exact (excluded from C-ORDER) | probes/bf16x2 |
 | `MUFU.RSQ` + Newton step + slow-path `CALL` (ptxas) | `sqrt.rn.f32` | IEEE square root, round to nearest even; negative / NaN inputs give 0x7fffffff | probes/sqrt_rn |
 | `LD.E.U8` / `LD.E.S8` / `ST.E.U8`; `ATOMG` / `REDG .E.ADD.STRONG.SM` | `ld` / `st.u8`, `ld.s8` (generic); `atom` / `red.global.cta` | byte accesses (S8 sign-extended); `.SM` = CTA scope | probes/generic8 |

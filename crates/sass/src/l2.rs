@@ -371,16 +371,22 @@ pub(super) fn lower(lw: &Lw, base: &str, mods: &[&str], meta: &CubinMeta) -> Res
             }
         }
         // `VIADDMNMX.RELU d, a, b, c, sel` (an add fused with min / max.relu.s32): signed
-        // min / max of (a + b) mod 2^32 and c, clamped at 0. GB300: probes/imnmx_relu.
-        // ASSUME(L-ROSETTA)
+        // min / max of (a + b) mod 2^32 and c, clamped at 0; `-Rb` (a subtraction fused):
+        // a - b. GB300: probes/imnmx_relu, probes/iaddmnmx_relu. ASSUME(L-ROSETTA)
         "VIADDMNMX" => {
-            if mods != ["RELU"] || lw.l.operands.len() != 5 || lw.op(2)?.starts_with(['-', '~']) {
-                bail!(lw.err(format!("VIADDMNMX.{} not modeled", mods.join("."))));
+            let bt = lw.op(2)?.replace(".reuse", "");
+            let neg_b = bt.starts_with("-R");
+            if mods != ["RELU"]
+                || lw.l.operands.len() != 5
+                || bt.starts_with('~')
+                || bt.starts_with('-') && !neg_b
+            {
+                bail!(lw.err(format!("VIADDMNMX.{} form not modeled", mods.join("."))));
             }
             Op::AddMinMax {
                 d: lw.dst(lw.op(0)?)?,
                 a: lw.val(lw.op(1)?, 4)?,
-                b: lw.val(lw.op(2)?, 4)?,
+                b: lw.val(bt.trim_start_matches('-'), 4)?,
                 c: lw.val(lw.op(3)?, 4)?,
                 signed: true,
                 max: match lw.op(4)? {
@@ -388,7 +394,7 @@ pub(super) fn lower(lw: &Lw, base: &str, mods: &[&str], meta: &CubinMeta) -> Res
                     "!PT" => true,
                     _ => bail!(lw.err("VIADDMNMX with a predicate selector not modeled")),
                 },
-                neg_b: false,
+                neg_b,
                 relu: true,
             }
         }

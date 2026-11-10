@@ -360,6 +360,16 @@ pub(crate) fn eval_inst(
             xorsign,
             ..
         } => fp::hmnmx2_bf16((w(a), w(b)), *sel, rp(min), *nan, *xorsign) as u64,
+        Op::Hmnmx2F16 {
+            a,
+            b,
+            sel,
+            abs,
+            min,
+            nan,
+            xorsign,
+            ..
+        } => fp::hmnmx2_f16((w(a), w(b)), *sel, *abs, (rp(min), *nan, *xorsign)) as u64,
         Op::Vhmnmx {
             a,
             b,

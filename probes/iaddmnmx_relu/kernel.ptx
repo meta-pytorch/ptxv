@@ -1,0 +1,49 @@
+// probes/iaddmnmx_relu: VIADDMNMX.RELU with a negated second operand (ptxas's fusion of a
+// subtraction with min / max.relu.s32; trtllm-gen FMHA's `VIADDMNMX.RELU R, R0, -R, 0x80, PT`)
+// against GB300. Thread g (4 CTAs x 256) loads (a, b, c) = in[g] (probes/imnmx_relu's in.bin)
+// and stores out[j][g]:
+//   j = 0: min.relu.s32 (a - b), 0x80
+//   j = 1: max.relu.s32 (b - a), c
+//   j = 2: min.relu.s32 (c - b), a
+//   j = 3: max.relu.s32 (c - a), 0x7fffffff
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry iaddmnmx_relu(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %ctaid.x;
+    mad.lo.u32      %r3, %r2, 256, %r1;
+    mul.wide.u32    %rd3, %r3, 12;
+    add.s64         %rd3, %rd1, %rd3;
+    ld.global.u32   %r4, [%rd3];
+    ld.global.u32   %r5, [%rd3+4];
+    ld.global.u32   %r6, [%rd3+8];
+    mul.wide.u32    %rd4, %r3, 4;
+    add.s64         %rd4, %rd2, %rd4;
+    sub.s32         %r20, %r4, %r5;
+    min.relu.s32    %r10, %r20, 128;
+    sub.s32         %r21, %r5, %r4;
+    max.relu.s32    %r11, %r21, %r6;
+    sub.s32         %r22, %r6, %r5;
+    min.relu.s32    %r12, %r22, %r4;
+    sub.s32         %r23, %r6, %r4;
+    max.relu.s32    %r13, %r23, 2147483647;
+    st.global.u32   [%rd4], %r10;
+    st.global.u32   [%rd4+4096], %r11;
+    st.global.u32   [%rd4+8192], %r12;
+    st.global.u32   [%rd4+12288], %r13;
+    ret;
+}

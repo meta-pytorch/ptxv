@@ -2948,6 +2948,11 @@ bit: the pair leader's mbarrier).
   configs where every mbarrier expects exactly the model's bytes equal both front-ends bitwise
   (`crates/sim/tests/tma_2cta_mcast.rs`). End to end: the cuBLAS 2-CTA nvjet kernels above
   (E-PAIR) use `UTMALDG.3D.MULTICAST.2CTA` and equal GPU bitwise.
+  The same holds for a gather4 box (`UTMALDG.2D.GATHER4.MULTICAST[.2CTA]`, trtllm-gen routed
+  GEMM; 2026-11-08): `probes/tma_g4_mcast` gathers rows 5, 30, 7, 5 (256 bytes) with the
+  same masks (and 5), mbarrier and destination ranks, with and without `.cta_group::2`, each
+  mbarrier expecting the model's bytes (56 configs); GB300 = both front-ends bitwise
+  (`crates/sim/tests/tma_g4_mcast.rs`).
 - If wrong: *false alarm* (deadlock / tx mismatch on the wrong mbarrier) or *miss* if a
   transaction completes an mbarrier that should still wait.
 
@@ -4235,6 +4240,10 @@ forms seen. Any other form is a hard error.
   register 2m + h of lane l is matrix m's row 4(l%4) + b (the row address of lane 16m + that
   row), column l/4 + 8h (`probes/ldsm_b8`, 2026-11-06: every byte traced to its source, x1
   and x2 = GB300, SASS front-end; the PTX front-end does not lower `ldmatrix`).
+- `STSM.8.MT168[.2|.4]` (`stmatrix.m16n8.x1 / .x2 / .x4.trans.b8`, trtllm-gen FMHA): matrix
+  i's row r (0..7) goes to the address held by lane 8i + r; its byte c (0..15) is byte
+  r % 2 + 2 (c / 8) of register i of lane 4 (c % 8) + r / 2 (`probes/stsm_b8`, 2026-11-08:
+  every byte traced to its lane, register and byte, x1 / x2 / x4 = GB300, both front-ends).
 - Status: **validated** per form by differential runs (r0, r1a and r1b bitwise: PTX model =
   SASS model = GB300). Rung 1b added `UTMASTG`, `UTMACMDFLUSH` (bulk commit), `DEPBAR.LE` on
   the flush's read scoreboard (bulk wait), `SYNCS.ARRIVE.TRANS64.A1T0` (plain arrive),
@@ -5593,6 +5602,22 @@ division path.
 - If wrong: *miss* or *false alarm* in numerics and in value-dependent control flow.
 - Retire: nothing to retire; extend the probe for new modifiers (`.FTZ`, `.SAT`, `.FMZ`,
   `.OOB` on the packed forms are refused).
+
+### N-HMNMX2 · code
+**`HMNMX2[.NAN][.XORSIGN] d, a, b, p` on f16 lanes (`min` / `max` [.NaN] [.xorsign.abs]
+`.f16x2` / `.f16`) is FMNMX per lane on the exact f32 widenings**: `p` true the minimum, -0
+below +0, one NaN operand ignored (both NaN, or any NaN with `.NAN`, give 0x7fff, no sign or
+payload); `.XORSIGN` as N-XORSIGN (|a|, |b| compared, the sign sign(a) XOR sign(b) of the
+stored operands, a NaN result unsigned); `|Rb|` without `.XORSIGN` (ptxas's fold of
+`abs.f16x2`) clears the sign first; `.H0_H0` / `.H1_H1` broadcast a half; an immediate pair is
+the encoding's halves (non-negative under `.XORSIGN`, the only form seen).
+- Where: `fp.rs` `hmnmx2_f16`; `exec.rs` / `seg.rs` `Op::Hmnmx2F16`; `sass` HMNMX2 lowering.
+- Status: **validated** on GB300 by `probes/hmnmx2` (2026-11-08): 15 forms; every f16 pattern
+  against 40 edge patterns in lane 0 and a bijection of the patterns in lane 1 (2,621,440
+  threads) = `model.py` in every word; the fixture's 2048 threads bitwise
+  (`probe_hmnmx2_matches_hardware`).
+- If wrong: *miss* or *false alarm* in numerics (trtllm-gen FMHA's saturating clamp
+  `HMNMX2.XORSIGN R, |R|, 65504, 65504` before an FP8 conversion).
 
 ### N-XORSIGN · code
 **`FMNMX[.NAN][.FTZ].XORSIGN d, |a|, |b|, p` (`min` / `max` [.NaN] [.ftz] `.xorsign.abs.f32`)

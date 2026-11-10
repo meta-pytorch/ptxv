@@ -1,0 +1,44 @@
+name = "probe_hmnmx2"
+description = """
+Probe (N-HMNMX2) for SASS HMNMX2[.NAN][.XORSIGN] on f16 lanes: kernel.ptx's 15 forms (min /
+max [.NaN] [.xorsign.abs] .f16x2, with |b|, with immediate pairs, scalar .f16 halves) built
+for sm_103a (hmnmx2.cubin). in.bin: every pair of 40 f16 edge patterns, then random pairs
+(gen.py small); expected/ is GB300's output (`ptxv hw-worker probes/hmnmx2 hmnmx2.cubin --runs 1
+--dump`, 20 runs alike). The exhaustive run (gen.py: every f16 pattern against each edge in
+lane 0, a bijection of them in lane 1; 2,621,440 threads x 16 words) equals model.py on GB300
+in every word."""
+cubin = "hmnmx2.cubin"
+entry = "hmnmx2"
+grid = [8, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [2048, 2]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2048, 16]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 2048
+
+[[variants]]
+id = "good"
+expect = ["clean"]

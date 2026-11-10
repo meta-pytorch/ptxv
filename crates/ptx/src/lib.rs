@@ -4272,8 +4272,10 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             }
         }
         "stmatrix" => {
-            if !(has("m8n8") && has("b16")) {
-                bail!(lw.err("only stmatrix.m8n8.b16 is modeled"));
+            // `.m16n8.trans.b8` as SASS STSM.8.MT168 (probes/stsm_b8).
+            let b8 = has("m16n8") && has("b8") && has("trans");
+            if !(has("m8n8") && has("b16")) && !b8 {
+                bail!(lw.err("only stmatrix.m8n8.b16 and .m16n8.trans.b8 are modeled"));
             }
             let num: usize = mods
                 .iter()
@@ -4293,6 +4295,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 addr: lw.addr(op_n(0)?)?,
                 v,
                 trans: has("trans"),
+                b8,
             }
         }
         "add" | "sub" | "and" | "or" | "xor" | "shl" | "shr" => {

@@ -2226,6 +2226,37 @@ fn probe_f64_arch_matches_hardware() {
     assert_eq!(meta("cubins/sm100f.loaded.cubin").sm, 103);
 }
 
+/// L-ROSETTA: stmatrix.m16n8.x{1,2,4}.trans.b8 (SASS STSM.8.MT168[.N]) = GB300 on both
+/// front-ends (probes/stsm_b8).
+#[test]
+fn probe_stsm_b8_matches_hardware() {
+    probe_bitwise("probes/stsm_b8", "good", "ptx");
+    probe_bitwise("probes/stsm_b8", "good", "sass");
+}
+
+/// L-ROSETTA: VIADDMNMX.RELU with a negated second operand (`-Rb`, a fused subtraction) =
+/// GB300 (probes/iaddmnmx_relu), both front-ends.
+#[test]
+fn probe_iaddmnmx_relu_matches_hardware() {
+    probe_bitwise("probes/iaddmnmx_relu", "good", "ptx");
+    probe_bitwise("probes/iaddmnmx_relu", "good", "sass");
+}
+
+/// L-ROSETTA: a register-indexed constant-bank load with a negative offset
+/// (`LDC R4, c[0x0][R0+-0x18f4]`, added mod 2^32) = GB300 (probes/cbank_neg), both front-ends.
+#[test]
+fn probe_cbank_neg_matches_hardware() {
+    probe_bitwise("probes/cbank_neg", "good", "ptx");
+    probe_bitwise("probes/cbank_neg", "good", "sass");
+}
+
+/// N-HMNMX2: f16 HMNMX2[.NAN][.XORSIGN] (|b|, immediate pairs, scalar halves) = GB300
+/// (probes/hmnmx2; the exhaustive lane-0 run is checked against model.py, see case.toml).
+#[test]
+fn probe_hmnmx2_matches_hardware() {
+    probe_bitwise_cubin("probes/hmnmx2", None);
+}
+
 /// L-OPCLASS: DSETP in the f64 queue (a DADD with no write scoreboard read after a wait on a
 /// later DSETP's), PTX setp.<cmp>.f64 (probes/f64_dsetp) = GB300 on both front-ends.
 #[test]

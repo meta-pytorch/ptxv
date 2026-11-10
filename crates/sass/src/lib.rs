@@ -1023,8 +1023,13 @@ fn lower_line(
                     a: lw.val(src, bytes)?,
                 }
             } else {
+                // `c[0x0][UR5+-0x1c80]`: a negative offset, added mod 2^32 (probes/cbank_neg).
+                let soff = |o: &str| match o.strip_prefix('-') {
+                    Some(h) => hex(h).map(u32::wrapping_neg),
+                    None => hex(o),
+                };
                 let (base, off) = match idx.split_once('+') {
-                    Some((r, o)) => (lw.val(r, 4)?, hex(o).ok_or_else(|| lw.err("bad cbank"))?),
+                    Some((r, o)) => (lw.val(r, 4)?, soff(o).ok_or_else(|| lw.err("bad cbank"))?),
                     None if hex(idx).is_some() => (Val::Imm(0), hex(idx).unwrap()),
                     None => (lw.val(idx, 4)?, 0),
                 };
@@ -2107,6 +2112,35 @@ fn lower_line(
                     })
                     .collect(),
                 trans: has("T") || has("MT88"),
+                b8: false,
+            }
+        }
+        // STSM.8.MT168[.N] [Ra], Rb: stmatrix.m16n8.xN.trans.b8, registers Rb..Rb+N-1.
+        // probes/stsm_b8 = GB300. ASSUME(L-ROSETTA)
+        "STSM" if mods.first() == Some(&"8") && has("MT168") => {
+            uniform = false;
+            let n: u16 = match mods {
+                ["8", "MT168"] => 1,
+                ["8", "MT168", "2"] => 2,
+                ["8", "MT168", "4"] => 4,
+                _ => bail!(lw.err(format!("{} not modeled", l.opcode))),
+            };
+            let r = lw.dst(lw.op(1)?)?;
+            Op::StMatrix {
+                addr: lw.addr(lw.op(0)?)?,
+                v: (0..n)
+                    .map(|i| {
+                        Val::Reg(
+                            Reg {
+                                file: r.file,
+                                idx: r.idx + i,
+                            },
+                            1,
+                        )
+                    })
+                    .collect(),
+                trans: true,
+                b8: true,
             }
         }
         "LEA" | "ULEA" => {
@@ -2546,6 +2580,60 @@ fn lower_line(
                 a,
                 b,
                 sel: [sa, sb],
+                min: lw.pred(lw.op(if imm { 4 } else { 3 })?)?,
+                nan: has("NAN"),
+                xorsign,
+            }
+        }
+        // `HMNMX2[.NAN][.XORSIGN] d, a[.Hx_Hx], b[.Hx_Hx], p` (min / max [.NaN] [.xorsign.abs]
+        // .f16x2 / .f16). Register operands `[|]R[|]`: under `.XORSIGN` both are `|R|` (the
+        // signs still from the stored values, as FMNMX.XORSIGN); otherwise `|R|` clears the
+        // sign (ptxas's fold of abs.f16x2). b may be an f16 immediate pair (`65504, 65504`),
+        // non-negative under `.XORSIGN`. probes/hmnmx2 = GB300. ASSUME(N-HMNMX2)
+        "HMNMX2" if mods.iter().all(|m| matches!(*m, "NAN" | "XORSIGN")) => {
+            let imm = l.operands.len() == 5;
+            if l.operands.len() != 4 && !imm {
+                bail!(lw.err("operand count"));
+            }
+            let xorsign = has("XORSIGN");
+            let src = |k: usize| -> Result<(Val, HSel, bool)> {
+                let t = lw.op(k)?.replace(".reuse", "");
+                let (abs, r) = match t.strip_prefix('|') {
+                    Some(x) => match x.split_once('|') {
+                        Some((r, rest)) => (true, format!("{r}{rest}")),
+                        None => bail!(lw.err(format!("HMNMX2 operand {t} not modeled"))),
+                    },
+                    None => (false, t.clone()),
+                };
+                let (r, sel) = if let Some(r) = r.strip_suffix(".H0_H0") {
+                    (r.to_string(), HSel::H0)
+                } else if let Some(r) = r.strip_suffix(".H1_H1") {
+                    (r.to_string(), HSel::H1)
+                } else {
+                    (r, HSel::Pair)
+                };
+                if (xorsign && !abs) || r.contains(['-', '.']) || Lw::reg_name(&r).is_none() {
+                    bail!(lw.err(format!("HMNMX2 operand {t} not modeled")));
+                }
+                Ok((lw.val(&r, 4)?, sel, abs && !xorsign))
+            };
+            let (a, sa, aa) = src(1)?;
+            let (b, sb, ab) = if imm {
+                let bits = half_imm_pair(l.lo, [lw.op(2)?, lw.op(3)?], false)
+                    .map_err(|e| lw.err(e))?;
+                if xorsign && bits & 0x8000_8000 != 0 {
+                    bail!(lw.err("HMNMX2.XORSIGN with a negative immediate not modeled"));
+                }
+                (Val::Imm(bits as u64), HSel::Pair, false)
+            } else {
+                src(2)?
+            };
+            Op::Hmnmx2F16 {
+                d: lw.dst(lw.op(0)?)?,
+                a,
+                b,
+                sel: [sa, sb],
+                abs: [aa, ab],
                 min: lw.pred(lw.op(if imm { 4 } else { 3 })?)?,
                 nan: has("NAN"),
                 xorsign,
@@ -4449,6 +4537,7 @@ fn lower_line(
             // `.2D.GATHER4` (cp.async.bulk.tensor.2d...tile::gather4): URa+2 is the column,
             // URa+3..URa+6 the four row coordinates (5 coords; exec.rs `complete_tma`).
             // `.MULTICAST.2CTA`: both (cuBLAS's 2-CTA nvjet kernels, M = N >= 512).
+            // `.2D.GATHER4.MULTICAST[.2CTA]`: a multicast gather4 (trtllm-gen routed GEMM).
             // `.<n>D.IM2COL[.2CTA] [URa], [URb], URo[, desc[URp]]` (cp.async.bulk.tensor
             // ...im2col): URo holds the packed im2col offsets, appended to the coordinates (sim
             // im2col.rs); the desc[] cache-policy operand is a hint, dropped (L-PTX-HINT).
@@ -4458,15 +4547,20 @@ fn lower_line(
             if im2col && !(mods.len() == 1 || mods[1..] == ["2CTA"]) {
                 bail!(lw.err(format!("UTMALDG form not modeled: {}", l.opcode)));
             }
-            let multicast = mods.len() >= 2 && mods[1] == "MULTICAST";
-            let pair = mods[1..] == ["2CTA"] || mods[1..] == ["MULTICAST", "2CTA"];
-            let gather4 = mods == ["2D", "GATHER4"];
-            let known = mods.len() == 1
-                || mods[1..] == ["MULTICAST"]
-                || mods[1..] == ["2CTA"]
-                || mods[1..] == ["MULTICAST", "2CTA"]
-                || gather4;
-            if !known || !mods[0].ends_with('D') {
+            // `.2D.GATHER4` combines with `.MULTICAST` / `.2CTA` as a tile load does
+            // (probes/tma_g4_mcast = GB300).
+            if mods.is_empty() {
+                bail!(lw.err(format!("UTMALDG form not modeled: {}", l.opcode)));
+            }
+            let gather4 = mods.len() >= 2 && mods[..2] == ["2D", "GATHER4"];
+            let rest = &mods[if gather4 { 2 } else { 1 }..];
+            let multicast = rest.first() == Some(&"MULTICAST");
+            let pair = rest == ["2CTA"] || rest == ["MULTICAST", "2CTA"];
+            let known = rest.is_empty()
+                || rest == ["MULTICAST"]
+                || rest == ["2CTA"]
+                || rest == ["MULTICAST", "2CTA"];
+            if !known || !mods[0].ends_with('D') || im2col && gather4 {
                 bail!(lw.err(format!("UTMALDG form not modeled: {}", l.opcode)));
             }
             let dims: u8 = mods[0]
@@ -5645,6 +5739,15 @@ mod tests {
             "FHADD.BF16.RZ R24, R4.H1, -R7",
             "HMNMX2.BF16_V2 R18, R4.reuse.H0_H0, R5.reuse.H1_H1, PT",
             "HMNMX2.BF16_V2.NAN.XORSIGN R16, |R4|, |R5|, PT",
+            "HMNMX2.XORSIGN R0, |R2|.reuse.H0_H0, |R3|.reuse.H1_H1, !PT",
+            "HMNMX2.NAN.XORSIGN R10, |R2|.reuse, |R3|.reuse, PT",
+            "HMNMX2 R8, R8, |R7|, !PT",
+            "HMNMX2.NAN R6, R2.reuse, R3.reuse, PT",
+            "HMNMX2 R18, R2.H1_H1, R3.H0_H0, PT",
+            "STSM.8.MT168.4 [R17+0x25400], R12",
+            "STSM.8.MT168 [R3], R16",
+            "VIADDMNMX.RELU R135, R0, -R135, 0x80, PT",
+            "VIADDMNMX.RELU R9, R11.reuse, -R9, R0, PT",
             "FFMA2.RM R10, R6.reuse.F32x2.HI_LO, R4.reuse.F32x2.HI_LO, R6.reuse.F32x2.LO_HI",
             "FADD2.RP R12, R6.F32x2.HI_LO, -R4.F32x2.HI_LO",
             "IMAD.WIDE R28, R21, 0x2, -R26",
@@ -5692,6 +5795,14 @@ mod tests {
             "FHFMA.BF16.RZ.RM R1, R2, R3, R4",
             "HMNMX2.BF16_V2 R1, |R2|, |R3|, PT",
             "HMNMX2.BF16_V2.XORSIGN R1, R2, R3, PT",
+            "HMNMX2.XORSIGN R1, R2, |R3|, PT",
+            "HMNMX2 R1, -R2, R3, PT",
+            "HMNMX2.FTZ R1, R2, R3, PT",
+            "HMNMX2 R1, R2.H1_H0, R3, PT",
+            "STSM.8.MT168.8 [R3], R16",
+            "STSM.8.MT168.4.T [R3], R16",
+            "VIADDMNMX.RELU R1, R0, ~R2, 0x80, PT",
+            "VIADDMNMX.RELU R1, -R0, R2, 0x80, PT",
             "FFMA2.RZ.RM R10, R6.F32x2.HI_LO, R4.F32x2.HI_LO, R6.F32x2.HI_LO",
             "IMAD.WIDE R28, R21, 0x2, ~R26",
             "IMAD.WIDE.U32.X R10, R13, 0x6, -R2, P0",
@@ -5984,6 +6095,28 @@ mod tests {
                 ..
             }
         ));
+        assert!(matches!(
+            lower1("UTMALDG.2D.GATHER4.MULTICAST.2CTA [UR32], [UR58], UR66").unwrap(),
+            Op::TmaLoad {
+                mask: Some(_),
+                pair: true,
+                dims: 2,
+                ref coords,
+                ..
+            } if coords.len() == 5
+        ));
+        assert!(lower1("UTMALDG.2D.GATHER4.2CTA.MULTICAST [UR32], [UR58], UR66").is_err());
+        assert!(lower1("UTMALDG.3D.GATHER4 [UR32], [UR58]").is_err());
+        assert!(matches!(
+            lower1("LDCU UR8, c[0x0][UR5+-0x1c80]").unwrap(),
+            Op::LdConst {
+                bank: 0,
+                off: 0xffff_e380,
+                bytes: 4,
+                ..
+            }
+        ));
+        assert!(lower1("LDCU UR8, c[0x0][UR5+-0xzz]").is_err());
         assert!(lower1("UTMALDG.3D.IM2COL [UR8], [UR10]").is_err());
         assert!(matches!(
             lower1("UISETP.EQ.U32.XOR UP0, UPT, UR4, 0xc, !UP1").unwrap(),

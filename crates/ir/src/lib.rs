@@ -1094,6 +1094,20 @@ pub enum Op {
         nan: bool,
         xorsign: bool,
     },
+    /// SASS `HMNMX2[.NAN][.XORSIGN] d, a, b, p` (`min` / `max` [.NaN] [.xorsign.abs] `.f16x2` /
+    /// `.f16`): as Hmnmx2Bf16 on f16 lanes, `abs` clearing an operand's sign bit first (`|Rb|`
+    /// without `.XORSIGN`, ptxas's fold of `abs.f16x2`); every NaN result 0x7fff
+    /// (N-HMNMX2, probes/hmnmx2).
+    Hmnmx2F16 {
+        d: Reg,
+        a: Val,
+        b: Val,
+        sel: [HSel; 2],
+        abs: [bool; 2],
+        min: Pred,
+        nan: bool,
+        xorsign: bool,
+    },
     /// SASS `VHMNMX[.BF16_V2][.NAN] d, a, b, c, p` (ptxas fuses two half min / max): per lane,
     /// `p` true the minimum, false the maximum, of the three halves `sel` picks (f16, or bf16
     /// unless `f16`), `abs` clearing their sign bits first, with FMNMX's rules (-0 below +0,
@@ -1375,11 +1389,14 @@ pub enum Op {
     /// `stmatrix.sync.aligned.m8n8.xN[.trans].shared.b16 [addr], {v0..vN-1}` (warp-collective):
     /// matrix i's row j goes to the address held by lane 8i + j; its 8 b16 elements come from
     /// lanes 4j..4j+3, register v_i (two elements each, low half first). `.trans` stores the
-    /// transpose.
+    /// transpose. `b8` (`stmatrix.sync.aligned.m16n8.xN.trans.shared.b8`, SASS `STSM.8.MT168.N`):
+    /// matrix i's row r (0..8) goes to the address held by lane 8i + r; its byte c (0..16) is
+    /// byte r % 2 + 2 (c / 8) of register v_i of lane 4 (c % 8) + r / 2 (probes/stsm_b8).
     StMatrix {
         addr: Addr,
         v: Vec<Val>,
         trans: bool,
+        b8: bool,
     },
     /// `shfl.sync.idx.b32 d, a, lane, clamp, 0xffffffff` (warp-collective): d = a of lane
     /// `lane` within the lane's segment (`clamp` = 0x1f: the whole warp).
@@ -2153,7 +2170,9 @@ impl Op {
                 x.push(pr(min));
                 x
             }
-            Op::Hmnmx2Bf16 { a, b, min, .. } => vec![a.clone(), b.clone(), pr(min)],
+            Op::Hmnmx2Bf16 { a, b, min, .. } | Op::Hmnmx2F16 { a, b, min, .. } => {
+                vec![a.clone(), b.clone(), pr(min)]
+            }
             Op::Vhmnmx { a, b, c, min, .. } => vec![a.clone(), b.clone(), c.clone(), pr(min)],
             Op::Fsetp { a, b, c, .. }
             | Op::Fset { a, b, c, .. }
@@ -2559,6 +2578,7 @@ impl Op {
             | Op::Hfma2Bf16 { d, .. }
             | Op::FfmaBf16 { d, .. }
             | Op::Hmnmx2Bf16 { d, .. }
+            | Op::Hmnmx2F16 { d, .. }
             | Op::Vhmnmx { d, .. }
             | Op::CvtF32Bf16 { d, .. }
             | Op::CvtPack { d, .. }

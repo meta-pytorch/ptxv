@@ -376,6 +376,15 @@ impl Machine {
         self.half_mem_set(hkey(loc), &b[2 * h..2 * h + 2]);
     }
 
+    /// STSM.8 (b8): byte `k` of register `v` of thread `t` goes to shared memory at `loc`.
+    pub(crate) fn half_stsm_byte(&mut self, t: usize, v: &Val, k: usize, loc: Loc) {
+        if !self.num.as_ref().is_some_and(|n| n.half.is_on()) {
+            return;
+        }
+        let b = self.half_val(t, v).unwrap_or([None; 4]);
+        self.half_mem_set(hkey(loc), &b[k..k + 1]);
+    }
+
     /// Local memory word `addr` of thread `t`: (store) bytes of `v`.
     pub(crate) fn half_local_st(&mut self, t: usize, v: &Val, addr: u32) {
         if !self.num.as_ref().is_some_and(|n| n.half.is_on()) {

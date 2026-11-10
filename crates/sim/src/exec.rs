@@ -4277,7 +4277,7 @@ impl Machine {
             }
             // ASSUME(E-WARPCOLL): stmatrix / shfl move data between the lanes of one
             // converged warp in a single step.
-            Op::StMatrix { addr, v, trans } => {
+            Op::StMatrix { addr, v, trans, b8 } => {
                 if active.len() != 32 {
                     return Err(format!(
                         "stmatrix executed by {} lanes (needs the full warp)",
@@ -4292,7 +4292,48 @@ impl Machine {
                 // address for replicated rows) write a byte once when they write the same value;
                 // different values are a violation (the order is not specified or probed).
                 let mut wrote: Vec<(Loc, u32, usize)> = Vec::new();
-                for (i, vi) in v.iter().enumerate() {
+                if *b8 {
+                    // ASSUME(L-ROSETTA): m16n8 .trans .b8 (probes/stsm_b8).
+                    for (i, vi) in v.iter().enumerate() {
+                        for r in 0..8usize {
+                            let row_lane = by_lane[8 * i + r];
+                            let row = self.addr(row_lane, addr)?;
+                            for c in 0..16usize {
+                                let src = by_lane[4 * (c % 8) + r / 2];
+                                let k = r % 2 + 2 * (c / 8);
+                                let w = self.rd(src, vi)? as u32;
+                                let byte = (w >> (8 * k)) & 0xff;
+                                let um = match vi {
+                                    Val::Reg(rg, _) => self.reg_umask(src, *rg),
+                                    _ => 0,
+                                };
+                                let vc = self.threads[src].vc.clone();
+                                let loc =
+                                    self.resolve(row_lane, Space::Shared, row + c as u64, 1)?;
+                                if let Some(&(_, b0, s0)) = wrote.iter().find(|x| x.0 == loc) {
+                                    if b0 != byte {
+                                        let msg = format!(
+                                            "{} at {}: {} and {} write different values to the same shared byte {:?} in one stmatrix (which lane wins is not specified)",
+                                            self.actor_name(src as u32),
+                                            self.k.describe(pc as usize),
+                                            self.actor_name(s0 as u32),
+                                            self.actor_name(src as u32),
+                                            loc
+                                        );
+                                        self.report("violation", format!("stsm-dup:{pc}"), msg);
+                                    }
+                                    continue;
+                                }
+                                wrote.push((loc, byte, src));
+                                self.wundef = byte_umask(um >> (8 * k), 1);
+                                self.access(src as u32, &vc, pc, loc, 1, Some(&[byte as u8]));
+                                self.wundef = 0;
+                                self.half_stsm_byte(src, vi, k, loc);
+                            }
+                        }
+                    }
+                }
+                for (i, vi) in v.iter().enumerate().filter(|_| !*b8) {
                     for j in 0..8usize {
                         let row_lane = by_lane[8 * i + j];
                         let row = self.addr(row_lane, addr)?;
@@ -9146,6 +9187,21 @@ impl Machine {
             } => {
                 let (x, y) = (self.rd(t, a)? as u32, self.rd(t, b)? as u32);
                 let r = fp::hmnmx2_bf16((x, y), *sel, self.prd(t, *min), *nan, *xorsign);
+                self.wr(t, *d, r as u64, 1);
+                self.num_clobber(t, *d, &[a, b], pc);
+            }
+            Op::Hmnmx2F16 {
+                d,
+                a,
+                b,
+                sel,
+                abs,
+                min,
+                nan,
+                xorsign,
+            } => {
+                let (x, y) = (self.rd(t, a)? as u32, self.rd(t, b)? as u32);
+                let r = fp::hmnmx2_f16((x, y), *sel, *abs, (self.prd(t, *min), *nan, *xorsign));
                 self.wr(t, *d, r as u64, 1);
                 self.num_clobber(t, *d, &[a, b], pc);
             }
@@ -14203,6 +14259,7 @@ fn propagates_undef(op: &Op) -> bool {
             | Op::Hfma2Bf16 { .. }
             | Op::FfmaBf16 { .. }
             | Op::Hmnmx2Bf16 { .. }
+            | Op::Hmnmx2F16 { .. }
             | Op::Vhmnmx { .. }
             | Op::CvtF32Bf16 { .. }
             | Op::F2fpBf16 { .. }

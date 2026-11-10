@@ -371,6 +371,43 @@ pub fn hmnmx2_bf16(
     r
 }
 
+/// SASS `HMNMX2[.NAN][.XORSIGN]` (`ptxv_ir::Op::Hmnmx2F16`) on words `a`, `b`: per f16 lane,
+/// FMNMX's rules on the exact f32 widenings (-0 below +0, one NaN ignored unless `nan`),
+/// `.XORSIGN` as `f32_minmax_xorsign` (the sign from the operands as stored), `abs` clearing
+/// an operand's sign first; every NaN result 0x7fff. The result is one of the (|.|) operand
+/// halves, with the XOR sign under `.XORSIGN`. ASSUME(N-HMNMX2)
+pub fn hmnmx2_f16(
+    (a, b): (u32, u32),
+    sel: [ptxv_ir::HSel; 2],
+    abs: [bool; 2],
+    (min, nan, xorsign): (bool, bool, bool),
+) -> u32 {
+    let wide = |x: u16| (f16_to_f64(x) as f32).to_bits();
+    let mut r = 0;
+    for lane in 0..2 {
+        let x = sel[0].lane(a, lane) & if abs[0] { 0x7fff } else { 0xffff };
+        let y = sel[1].lane(b, lane) & if abs[1] { 0x7fff } else { 0xffff };
+        let (cx, cy) = if xorsign {
+            (x & 0x7fff, y & 0x7fff)
+        } else {
+            (x, y)
+        };
+        let m = f32_minmax(wide(cx), wide(cy), min, nan, false);
+        let h = if f32_is_nan(m) {
+            0x7fff
+        } else {
+            let pick = if m == wide(cx) { cx } else { cy };
+            if xorsign {
+                pick | ((x ^ y) & 0x8000)
+            } else {
+                pick
+            }
+        };
+        r |= (h as u32) << (16 * lane);
+    }
+    r
+}
+
 /// SASS `VHMNMX[.BF16_V2][.NAN]` (`ptxv_ir::Op::Vhmnmx`) on words `v` = [a, b, c].
 pub fn vhmnmx(
     v: [u32; 3],

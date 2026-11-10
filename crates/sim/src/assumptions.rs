@@ -1175,6 +1175,13 @@ pub const REGISTRY: &[Assumption] = &[
         },
     },
     Assumption {
+        id: "N-HMNMX2",
+        kind: "code",
+        status: "validated",
+        title: "HMNMX2 (f16x2 / f16 min / max [.NaN] [.xorsign.abs]): FMNMX's rules per f16 lane, NaN 0x7fff (probes/hmnmx2)",
+        applies: |k| any(k, |o| matches!(o, Op::Hmnmx2F16 { .. })),
+    },
+    Assumption {
         id: "N-XORSIGN",
         kind: "code",
         status: "validated",
@@ -1183,7 +1190,9 @@ pub const REGISTRY: &[Assumption] = &[
             any(k, |o| {
                 matches!(
                     o,
-                    Op::Fmnmx { xorsign: true, .. } | Op::Hmnmx2Bf16 { xorsign: true, .. }
+                    Op::Fmnmx { xorsign: true, .. }
+                        | Op::Hmnmx2Bf16 { xorsign: true, .. }
+                        | Op::Hmnmx2F16 { xorsign: true, .. }
                 )
             })
         },
