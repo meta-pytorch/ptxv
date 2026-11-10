@@ -2982,17 +2982,111 @@ parity p has completed (so parity 1 succeeds immediately after init).
   is delivered as `count` single arrivals.
 - `mbarrier.expect_tx` / `complete_tx` (2026-11-08; SASS `SYNCS.ARRIVE.TRANS64.RED.A0TR` /
   `.A0TX`, `.A0T1`): no arrival, the tx-count raised / lowered (it may go negative), the phase
-  completing when pending and tx are both 0. They are relaxed (PTX ISA): on the thread's own
-  CTA's mbarrier they publish only what the thread's last fence released (`membar_vc`),
-  unlike an arrival. Before, the model joined the issuer's whole clock, so a store published
-  by a bare complete_tx was not a race. On another CTA's mbarrier (SASS `.RED.A0TX` in
-  CUTLASS / cuBLAS kernels) the issuer's whole clock is still joined, stronger than relaxed:
-  the target's waiter must be ordered after the op landed for the cluster-lifetime check
-  (S-CLUSTER-LIFE), and the clock is what carries that. The PTX front refuses that case at
-  run time (unmodeled) instead of over-synchronizing. probes/mbar_expect_tx (register / immediate tx,
+  completing when pending and tx are both 0. They are relaxed (PTX ISA): they publish only
+  what the thread's last fence released (`membar_vc`), unlike an arrival. Before, the model
+  joined the issuer's whole clock, so a store published by a bare complete_tx was not a race.
+  On another CTA's mbarrier (SASS `.RED.A0TX` in CUTLASS / cuBLAS kernels) the issuer's whole
+  clock was joined until 2026-11-09 (for the cluster-lifetime check); that check now counts
+  the observed landing (S-MBAR-SCOPE), and the update is relaxed there too. The PTX front
+  refuses that case at run time (unmodeled). probes/mbar_expect_tx (register / immediate tx,
   shared::cta and shared::cluster addresses, tx below 0, test_wait per step; a fence then
   complete_tx publishing a shared store): GB300 50/50 scrubbed, both front-ends bitwise; its
   `relaxed` variant (no fence) is a race on the PTX front (clean on SASS: S-SMEM-STRONG).
+
+### S-MBAR-SCOPE · code
+**An mbarrier wait synchronizes only with the updates of the observed phase it is morally
+strong with.** Each update of a phase (arrive, expect_tx / complete_tx, an async unit's
+complete-tx or arrive-on) is a strong read-modify-write of the mbarrier with a scope; the wait
+is a strong read with a scope. A successful wait acquires an update's release only when the
+two are morally strong (same CTA, or both at `.cluster` scope; PTX ISA 8.7) and the
+release's scope includes the waiter (8.8, 8.9.4). Any other update still counts toward the
+phase, so the wait returns, but it orders nothing. Before 2026-11-09 every update of the
+phase was joined into every waiter (the PTX front ignored the wait's scope; the SASS front
+has none), so a 2-CTA hand-off through a `.cta`-scoped remote arrive was certified.
+- PTX: `mbarrier.arrive` defaults to `.release.cta`, `try_wait` / `test_wait` to
+  `.acquire.cta` (9.7.15.16.16, .19); `.relaxed` updates release only what the thread's last
+  release fence released, at the narrower scope (release pattern, 8.8), and a relaxed wait
+  acquires at the next acquire fence. expect_tx / complete_tx are relaxed.
+- Async units: the complete-tx of cp.async.bulk{.tensor} / cp.reduce.async.bulk{.tensor} is a
+  `.release` at `.cluster` scope (9.7.10.28.4.1-2, 9.7.10.28.5.3-4); tcgen05.commit's arrive-on is at
+  cluster scope (9.7.18.12.1); st.async's complete-tx (9.7.10.12, which states no semantics for it) is modeled the same way. Which thread
+  performs it is not stated (9.7.15.16.9: the completion "of the asynchronous instruction
+  ... initiated by the executing thread"). The model attributes it to the issuing thread
+  (R-ISSUER), so a `.cta` wait in another CTA does not pair with it. `ptxv check` reruns a
+  PTX check with races as if it were performed in the mbarrier's CTA
+  (`Launch::async_mb_dest`); a race that is gone there is a `contract` finding
+  (`twolevel::mbar_async_contract`).
+- `fence.release.sync_restrict::shared::cta.cluster` releases, at cluster scope, the thread's
+  operations on its own CTA's shared memory only; `fence.acquire.sync_restrict::shared::cluster
+  .cluster` acquires for shared-memory operations only (9.7.15.4). Restricted
+  happens-before is a separate per-thread clock (`Thread::vc_sh`, `Cover`) that orders only
+  shared-memory accesses (of one CTA, or of all), carried by mbarrier updates, `bar.sync`,
+  `barrier.cluster` and async operations issued after it; strong stores / atomics do not
+  carry it (a possible false alarm, never a miss). Other `sync_restrict` forms are refused.
+- Observation order (8.9.2) runs through the mbarrier's read-modify-writes only along morally
+  strong pairs: a `.cta` update by the waiter's CTA coherence-after a cluster-scope update of
+  another CTA cuts the latter's release from the wait. The model joins per update, whatever
+  the order of the updates in the phase (the explorers' reductions commute arrivals of one
+  phase); a phase that holds both is reported as a `contract` finding (`mbar-chain:<pc>`).
+  Not reported: a release of the waiter's CTA cut by a later `.cta` update of another CTA.
+- SASS (ptxas 13.0, sm_103a, `-arch=sm_103a`; every PTX form compiled and disassembled):
+  - `SYNCS.ARRIVE.TRANS64[.RED].A1T0` is emitted, with nothing before it, for
+    `.release.cta`, `.relaxed.cta`, `.relaxed.cluster` and the default arrive, local or
+    remote. It is therefore a cluster-scope update that releases at CTA scope.
+  - `.release.cluster` adds `MEMBAR.ALL.CTA; MEMBAR.ALL.GPU; ERRBAR; CGAERRBAR` before it:
+    a relaxed cluster-scope update after a release fence (8.8).
+  - `fence.release.sync_restrict::shared::cta.cluster` is `MEMBAR.ALL.CTA;
+    FENCE.VIEW.ASYNC.S`: before an arrive, `MEMBAR.ALL.CTA` releases the CTA's shared
+    memory at cluster scope.
+  - `SYNCS.PHASECHK.TRANS64[.TRYWAIT]` is emitted for `.acquire.cta`, `.relaxed.cta`,
+    `.relaxed.cluster` and the default; `.acquire.cluster` adds `CCTL.IVALL` after a
+    successful wait; `fence.acquire.sync_restrict::shared::cluster.cluster` is nothing. A
+    bare PHASECHK is therefore a cluster-scope wait that acquires the CTA's own updates
+    fully and another CTA's for shared memory only; `CCTL.IVALL` acquires the rest.
+  - `.A0TR` / `.A0TX` (expect_tx / complete_tx) release nothing of their own, local or
+    remote (until 2026-11-09, a remote one joined its issuer's whole clock).
+- Consequences: the PTX ISA's fixed forms (cluster-scope arrive and wait; st.async with an
+  expect_tx arm at cluster scope; sync_restrict release + relaxed cluster arrive; relaxed
+  cluster wait + sync_restrict acquire) are clean on both fronts. A `.cta`-scoped arrive or
+  wait across CTAs is a race on the PTX front. On the SASS front it is a race when the arrive
+  is bare (no release fence before it). A fence.acq_rel.cluster before a `.cta` arrive, or a
+  `.release.cluster` arrive with a `.acquire.cta` wait, is the SASS of a PTX-correct
+  hand-off (shared-memory data): clean on SASS, race on PTX.
+- Cluster lifetime: a waiter that observed a phase saw its updates land (`Thread::landed`),
+  even when it did not synchronize with them; S-CLUSTER-LIFE and async-after-exit count that
+  as ordered before its exit, as the joined clock did before.
+- Observed, not synchronized: a dropped update still enters the waiter's `Cover::Order`
+  clock (`Thread::vc_sh`). The race detector never reads it; the wellsync certificate
+  (E-WELLSYNC, C-WAIT / C-PHASE: which phase a wait can observe, `Machine::order_vc`) and
+  the lifetime checks do, so a scope-insufficient hand-off is a race, not a refused
+  certificate.
+- Not modeled (possible miss): 8.9.1.1 orders an async copy's complete-tx only with that
+  copy, not with the issuer's earlier instructions; the model releases the issuer's clock at
+  issue with it (as before 2026-11-09).
+- Audit `PTXV_MBAR_SCOPE_LOG=1`: every update a successful wait drops for want of scope is
+  logged to stderr (kernel, wait pc, CTAs, scopes).
+- Fixtures: e_mbar_scope (hand-off: good, PFC, PFCW, PFCA, FEN, FRC, STA, STAC), e_mbar_mailbox
+  (good, MB, MBNF, MBCA), e_mbar_restrict (good, NOF, RLX, GM, GMF).
+- Where: `exec.rs` `mbar_rels`, `mbar_async_rel`, `mbar_note`, `mbar_acquire`,
+  `acquire_pending_mb`, `sh_vc`; `twolevel.rs` `mbar_async_contract`; PTX `mbarrier.*`,
+  `fence.*sync_restrict*`; SASS `SYNCS.*`, `MEMBAR`, `CGAERRBAR`.
+- Status: **argued** (PTX ISA 9.5 text; ptxas lowering). Hardware: a stale read of the
+  `.cta`-scoped hand-off (weak remote store, `fence.proxy.async.shared::cluster`,
+  `.release.cta` remote arrive, `.acquire.cta` wait) was measured on GB200 by others
+  (reported, not reproduced here). GB300 (probes/mbar_scope, CUDA 13.0, 2026-11-09): the
+  same hand-off without the proxy fence, or with `fence.proxy.async.shared::cta`, read the
+  stale slot (15-40 of 3.04e6 hand-offs per configuration without DSMEM noise, each in a
+  cluster's first round); with `fence.proxy.async.shared::cluster` (SASS `MEMBAR.ALL.GPU`
+  before the arrive) 0 of 1.9e8; with `fence.acq_rel.cluster` 0 of 1.9e8; cluster-scope
+  arrive and wait, and st.async, 0 of 6.7e7 each. GB300 did not show the GB200 failure of
+  the exact sequence; the PTX front reports it (8.7), and the SASS front too, since no
+  measured rule says `MEMBAR.ALL.GPU` drains remote stores (S-REMOTE-INFLIGHT).
+- If wrong: *false alarm* if hardware orders a bare remote `SYNCS.ARRIVE` for the issuer's
+  own shared-memory accesses (a GB300 rule could then relax the SASS front), or if the PTX
+  ISA meant an async complete-tx to be performed in the mbarrier's CTA (the contract
+  findings would go away); *miss* if `MEMBAR.ALL.CTA` before an arrive does not release the
+  CTA's shared memory at cluster scope, or if a bare PHASECHK does not acquire another CTA's
+  shared-memory writes (the ptxas lowering of the sync_restrict fences says both do).
 
 ### S-MBAR-MEM · code
 **An mbarrier can be initialized by a plain `STS.64` of the encoded state word:**
@@ -3697,8 +3791,8 @@ the peer's 0x48 barrier, and the peer arrives back on the leader's.
   unknown and read as written-by-launch values.
 
 ### S-SCOPE · code
-**Strong memory operations follow the PTX memory model's scope rules; mbarrier scopes are
-treated as sufficient.** Since rung 1f:
+**Strong memory operations follow the PTX memory model's scope rules.** mbarrier scopes:
+S-MBAR-SCOPE (until 2026-11-09 they were treated as sufficient). Since rung 1f:
 - `ld/st.relaxed|acquire|release.<scope>`, `.volatile` (= relaxed.sys) and `atom` / `red`
   (default relaxed.gpu) are strong accesses. Two strong accesses are **morally strong** when
   each one's scope includes the other's thread (`.cta`: same CTA, `.cluster`, `.gpu`: same
@@ -3842,7 +3936,9 @@ CTA's shared memory (remote mbarrier arrive, multicast TMA delivery, `tcgen05.co
 peer, `shared::cluster` load/store) after the whole target exited is a violation, and the
 access is dropped. Independently of the schedule explored, every remote arrive / TMA issue /
 commit into CTA X must happen-before the exit of *some* thread of X (checked at terminal
-states, like async-after-exit), since otherwise a schedule exists in which X exits first.
+states, like async-after-exit), since otherwise a schedule exists in which X exits first. A
+thread of X that observed the mbarrier phase the operation completed into (a successful wait)
+counts too, though the wait need not synchronize with it (S-MBAR-SCOPE, `Thread::landed`).
 - Where: `exec.rs` `check_alive`, `dead_target`, `note_remote`, `exit_checks`.
 - Status: **argued** (PTX ISA: a CTA's shared memory must not be accessed after it exits;
   CUTLASS ends cluster kernels with a cluster barrier for this reason). A multicast delivery
@@ -3863,7 +3959,19 @@ in flight from issue until delivered.** Deliveries are separate steps the explor
 at any time, in any order among the issuer's remote operations (also to different
 mbarriers), except that a release of the issuer at cluster scope or wider delivers all of
 them first: `barrier.cluster.arrive` (not `.relaxed`), `fence.acq_rel` / `fence.sc` at cluster
-/ gpu / sys scope, `mbarrier.arrive.release.cluster`, SASS `MEMBAR.ALL.GPU` / `.SYS`.
+/ gpu / sys scope, `mbarrier.arrive.release.cluster`; SASS: `CGAERRBAR`, which ptxas emits
+after `MEMBAR.ALL.GPU` for each of those (until 2026-11-09, `MEMBAR.ALL.GPU` / `.SYS`
+itself). `MEMBAR.ALL.GPU` alone (`fence.proxy.async[.shared::cluster]` lowers to
+`MEMBAR.ALL.GPU; FENCE.VIEW.ASYNC.S`) drains nothing: a stale read of a weak remote store
+followed by `fence.proxy.async.shared::cluster` and a remote arrive was measured on GB200
+(reported by others; SASS `ST.E; MEMBAR.ALL.CTA; MEMBAR.ALL.GPU; FENCE.VIEW.ASYNC.S;
+SYNCS.ARRIVE.TRANS64.RED.A1T0`). A `CGAERRBAR` right after `MEMBAR.ALL.GPU` (and `ERRBAR`)
+extends that fence's release to the drain point. SASS weak stores into another CTA's shared
+memory (`ST.E` to a shared::cluster address, 4-byte aligned, at least 4 bytes, not
+multicast) are in flight too, as their own async actor whose clock the issuer gets only at
+the drain, so the race with a reader is found whatever lands first; PTX
+`st.shared::cluster` still lands at issue (its ordering is decided by S-MBAR-SCOPE). A
+thread reading back its own in-flight remote store is not modeled (a false race).
 `.release.cta` and `.relaxed` arrivals deliver nothing. The issuer's exit delivers nothing
 either. Arrivals and st.async to the issuer's own CTA land at issue, as before.
 - Violations (S-CLUSTER-LIFE): the target CTA's last thread exits while one is in flight to

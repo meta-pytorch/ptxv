@@ -1662,6 +1662,11 @@ fn cmd_check(
                 ptxv_sim::twolevel::tc_fence_contract(&mut verdict, &m1, &mut |m| {
                     check(&|| m.clone(), "tcgen05 fences implied: ")
                 });
+                // ASSUME(S-MBAR-SCOPE): races ordered once async mbarrier completions count as
+                // the mbarrier CTA's are contract deviations.
+                ptxv_sim::twolevel::mbar_async_contract(&mut verdict, &m1, &mut |m| {
+                    check(&|| m.clone(), "async completions at the mbarrier's CTA: ")
+                });
             }
             let births = if nonfinite.is_some() {
                 ptxv_sim::nonfinite::take()

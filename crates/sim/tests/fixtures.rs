@@ -108,6 +108,9 @@ fn check_dir(dir: &str, case: &str, variant: &str, front: &str) {
     // would order are contract findings).
     let raw = v.classes();
     ptxv_sim::twolevel::tc_fence_contract(&mut v, &m0, &mut |m| explore(m, 2_000_000));
+    // S-MBAR-SCOPE: races ordered once async mbarrier completions count as the mbarrier
+    // CTA's are contract findings.
+    ptxv_sim::twolevel::mbar_async_contract(&mut v, &m0, &mut |m| explore(m, 2_000_000));
     let tc_contract = v.classes() != raw;
     assert_eq!(
         v.classes(),
@@ -517,7 +520,11 @@ fn check_dpor(case: &str, variant: &str, front: &str, max_states: usize) {
     let k = kernel(&case, variant, front);
     let launch = build_launch(&case, &k).unwrap();
     let m0 = Machine::new(Arc::new(k), Arc::new(launch));
-    let d = ptxv_sim::dpor::explore_dpor(m0, max_states);
+    let mut d = ptxv_sim::dpor::explore_dpor(m0.clone(), max_states);
+    // S-MBAR-SCOPE, as `ptxv check` reports it.
+    ptxv_sim::twolevel::mbar_async_contract(&mut d, &m0, &mut |m| {
+        ptxv_sim::dpor::explore_dpor(m, max_states)
+    });
     let expect = case.variant(variant).unwrap().expect_for(front);
     assert!(
         d.meets(&expect),
@@ -616,9 +623,15 @@ fn e_ptx_redux_verdicts() {
 }
 #[test]
 fn e_mma_m128_shapes_match_hardware() {
+    // PTX e_mma_pair_m128: the leader's multicast commit waited at .cta scope in the peer is an
+    // S-MBAR-SCOPE contract finding; every schedule still matches GB300.
+    probe_bitwise_mbar_contract("fixtures/e_mma_pair_m128", "good");
     for case in ["e_mma_pair_m128", "e_mma_m128_n8", "e_ptx_redux"] {
         let case = Case::load(root().join("fixtures").join(case)).unwrap();
         for front in ["ptx", "sass"] {
+            if front == "ptx" && case.m.name == "e_mma_pair_m128" {
+                continue;
+            }
             let k = kernel(&case, "good", front);
             let launch = build_launch(&case, &k).unwrap();
             let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
@@ -784,6 +797,7 @@ fn check_stateful(case: &str, variant: &str, front: &str, max_states: usize) {
     let mut v = explore(m0.clone(), max_states);
     // E-TC-FENCE-NOP, as `ptxv check` reports it.
     ptxv_sim::twolevel::tc_fence_contract(&mut v, &m0, &mut |m| explore(m, max_states));
+    ptxv_sim::twolevel::mbar_async_contract(&mut v, &m0, &mut |m| explore(m, max_states));
     let expect = case.variant(variant).unwrap().expect_for(front);
     assert!(
         v.complete && v.meets(&expect),
@@ -814,6 +828,7 @@ fn check_bounded(case: &str, variant: &str, front: &str, max_states: usize) {
     let m0 = Machine::new(Arc::new(k), Arc::new(launch));
     let mut v = explore(m0.clone(), max_states);
     ptxv_sim::twolevel::tc_fence_contract(&mut v, &m0, &mut |m| explore(m, max_states));
+    ptxv_sim::twolevel::mbar_async_contract(&mut v, &m0, &mut |m| explore(m, max_states));
     let expect = case.variant(variant).unwrap().expect_for(front);
     assert!(
         v.meets(&expect),
@@ -1164,11 +1179,23 @@ fn captured_outputs_match_the_gpu() {
             // Launches too large to explore whole (cuBLAS, 8 CTAs in clusters of 4) are decided
             // by the certificate (E-WELLSYNC), which must hold.
             let v = if CERTIFY_ONLY.contains(&name.as_str()) {
-                ptxv_sim::wellsync::certify(m)
-                    .verdict
-                    .unwrap_or_else(|| panic!("{name}: certificate does not hold"))
+                match ptxv_sim::wellsync::certify(m.clone()).verdict {
+                    Some(v) => v,
+                    // An S-MBAR-SCOPE contract finding (PTX) is a race the certificate
+                    // refuses: explore and reclassify, as `ptxv check` does.
+                    None if front == "ptx" => {
+                        let mut v = explore(m.clone(), 200_000);
+                        ptxv_sim::twolevel::mbar_async_contract(&mut v, &m, &mut |m| {
+                            explore(m, 200_000)
+                        });
+                        v
+                    }
+                    None => panic!("{name}: certificate does not hold"),
+                }
             } else {
-                explore(m, 200_000)
+                let mut v = explore(m.clone(), 200_000);
+                ptxv_sim::twolevel::mbar_async_contract(&mut v, &m, &mut |m| explore(m, 200_000));
+                v
             };
             assert_eq!(v.classes(), expect, "{name}/{front}: {:#?}", v.findings);
             // Runs that stop early (unmodeled) or have several outputs are not compared; the
@@ -1723,6 +1750,28 @@ fn probe_bitwise(dir: &str, variant: &str, front: &str) {
     );
 }
 
+/// A probe's PTX variant whose only findings are S-MBAR-SCOPE contract ones (an async unit's
+/// complete-tx from the peer CTA waited at .cta scope): every schedule's output equals the
+/// GB300 bytes in its `expected/`.
+fn probe_bitwise_mbar_contract(dir: &str, variant: &str) {
+    let case = Case::load(root().join(dir)).unwrap();
+    let k = kernel(&case, variant, "ptx");
+    let launch = build_launch(&case, &k).unwrap();
+    let m0 = Machine::new(Arc::new(k), Arc::new(launch));
+    let mut v = explore(m0.clone(), 2_000_000);
+    assert!(v.complete, "{dir} {variant}: incomplete");
+    ptxv_sim::twolevel::mbar_async_contract(&mut v, &m0, &mut |m| explore(m, 2_000_000));
+    assert_eq!(v.classes(), ["contract"], "{dir}: {:#?}", v.findings);
+    assert!(!v.outputs.is_empty());
+    for o in &v.outputs {
+        let report = case.expect_report(o).unwrap();
+        assert!(
+            !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+            "{dir} {variant}: {report:?}"
+        );
+    }
+}
+
 /// N-BF16X2: packed bf16 arithmetic (HMUL2 / HADD2 / HFMA2 .BF16_V2: lane selectors, -RZ
 /// addend, immediate pairs, .RELU) and bf16 atomics (ATOMG / REDG .ADD.BF16x2.RN, the scalar
 /// form's CAS loop) on edge / tie / random operands = GB300 (probes/bf16x2). The PTX replay
@@ -1870,10 +1919,10 @@ fn probe_discard_l2_verdicts() {
 }
 
 /// tcgen05.mma cta_group::2 M = 128 with A in TMEM (probes/tc_pair_atmem) = GB300 on both
-/// front-ends.
+/// front-ends (PTX: the peer's commit waited at .cta scope is an S-MBAR-SCOPE contract finding).
 #[test]
 fn probe_tc_pair_atmem_matches_hardware() {
-    probe_bitwise("probes/tc_pair_atmem", "good", "ptx");
+    probe_bitwise_mbar_contract("probes/tc_pair_atmem", "good");
     probe_bitwise("probes/tc_pair_atmem", "good", "sass");
 }
 
@@ -2254,9 +2303,20 @@ fn probe_bulk_s2s_matches_hardware() {
     for front in ["ptx", "sass"] {
         let k = Arc::new(kernel(&case, "good", front));
         let launch = Arc::new(build_launch(&case, &k).unwrap());
-        let v = ptxv_sim::explore::explore(Machine::new(k, launch), 500_000);
+        let m0 = Machine::new(k, launch);
+        let mut v = ptxv_sim::explore::explore(m0.clone(), 500_000);
         assert!(v.complete, "{front}: incomplete");
-        assert_eq!(v.classes(), ["clean"], "{front}: {:#?}", v.findings);
+        ptxv_sim::twolevel::mbar_async_contract(&mut v, &m0, &mut |m| {
+            ptxv_sim::explore::explore(m, 500_000)
+        });
+        // PTX: the bulk copy's complete-tx from the peer CTA, waited at .cta scope, orders the
+        // data only if it counts as the mbarrier CTA's (S-MBAR-SCOPE contract).
+        let want: &[&str] = if front == "ptx" {
+            &["contract"]
+        } else {
+            &["clean"]
+        };
+        assert_eq!(v.classes(), want, "{front}: {:#?}", v.findings);
         let report = case.expect_report(&v.outputs[0]).unwrap();
         assert!(
             !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
@@ -2916,9 +2976,15 @@ fn probe_mma_bs_mn_major_matches_hardware() {
         "pair_ss_ab",
     ];
     for c in cases {
-        for front in ["ptx", "sass"] {
-            probe_bitwise(&format!("probes/mma_bs/mn/{c}"), "good", front);
+        let dir = format!("probes/mma_bs/mn/{c}");
+        // PTX cta_group::2: the leader's commit waited at .cta scope in the peer is an
+        // S-MBAR-SCOPE contract finding; every schedule still matches GB300.
+        if c.starts_with("pair_") {
+            probe_bitwise_mbar_contract(&dir, "good");
+        } else {
+            probe_bitwise(&dir, "good", "ptx");
         }
+        probe_bitwise(&dir, "good", "sass");
     }
     // Refused (not measured): an MN-major start inside a swizzle row, MN-major FP4.
     for v in ["mid_row", "fp4_mn"] {
@@ -3336,14 +3402,17 @@ fn probe_clc_mcast_follows_hardware() {
     for front in ["ptx", "sass"] {
         let k = kernel(&case, "good", front);
         let launch = build_launch(&case, &k).unwrap();
-        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+        let m0 = Machine::new(Arc::new(k), Arc::new(launch));
+        let mut v = explore(m0.clone(), 2_000_000);
         assert!(v.complete, "{front}: incomplete");
-        assert_eq!(
-            v.classes(),
-            ["nondeterministic"],
-            "{front}: {:#?}",
-            v.findings
-        );
+        // PTX: the multicast response's complete-tx waited at .cta scope (S-MBAR-SCOPE).
+        ptxv_sim::twolevel::mbar_async_contract(&mut v, &m0, &mut |m| explore(m, 2_000_000));
+        let want: &[&str] = if front == "ptx" {
+            &["contract", "nondeterministic"]
+        } else {
+            &["nondeterministic"]
+        };
+        assert_eq!(v.classes(), want, "{front}: {:#?}", v.findings);
         let (mut cancels, mut fails) = (0, 0);
         for o in &v.outputs {
             let w: Vec<u32> = o
@@ -3395,14 +3464,17 @@ fn probe_clc_one_cluster_follows_hardware() {
     for front in ["ptx", "sass"] {
         let k = kernel(&case, "good", front);
         let launch = build_launch(&case, &k).unwrap();
-        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+        let m0 = Machine::new(Arc::new(k), Arc::new(launch));
+        let mut v = explore(m0.clone(), 2_000_000);
         assert!(v.complete, "{front}: incomplete");
-        assert_eq!(
-            v.classes(),
-            ["nondeterministic"],
-            "{front}: {:#?}",
-            v.findings
-        );
+        // PTX: the multicast response's complete-tx waited at .cta scope (S-MBAR-SCOPE).
+        ptxv_sim::twolevel::mbar_async_contract(&mut v, &m0, &mut |m| explore(m, 2_000_000));
+        let want: &[&str] = if front == "ptx" {
+            &["contract", "nondeterministic"]
+        } else {
+            &["nondeterministic"]
+        };
+        assert_eq!(v.classes(), want, "{front}: {:#?}", v.findings);
         assert_eq!(v.outputs.len(), 2, "{front}");
         let gpu = v.outputs.iter().filter(|o| {
             case.expect_report(o)
@@ -4945,6 +5017,37 @@ fn e_stasync_complete_tx() {
     }
 }
 
+/// S-MBAR-SCOPE (fixtures/e_mbar_scope): a 2-CTA hand-off through a remote mbarrier arrive
+/// synchronizes only when the arrive and the wait are morally strong (both at cluster scope).
+/// A .cta-scoped arrive or wait across CTAs completes the phase but orders nothing; so does a
+/// fence.acq_rel.cluster before a .cta arrive (PTX front). These variants were clean before.
+#[test]
+fn e_mbar_scope_handoff() {
+    for v in ["good", "PFC", "PFCW", "PFCA", "FEN", "FRC", "STA", "STAC"] {
+        both("e_mbar_scope", v);
+    }
+}
+
+/// S-MBAR-SCOPE (fixtures/e_mbar_mailbox): a peer's st.async complete-tx pairs only with a
+/// cluster-scope acquire in the owner (wait at .cluster with .acquire, or a relaxed wait and
+/// fence.acquire.sync_restrict::shared::cluster.cluster).
+#[test]
+fn e_mbar_mailbox_scopes() {
+    for v in ["good", "MB", "MBNF", "MBCA"] {
+        both("e_mbar_mailbox", v);
+    }
+}
+
+/// S-MBAR-SCOPE (fixtures/e_mbar_restrict): fence.release.sync_restrict::shared::cta.cluster +
+/// a relaxed cluster arrive releases the peer's shared-memory accesses at cluster scope, and
+/// nothing else.
+#[test]
+fn e_mbar_restrict_slot_reuse() {
+    for v in ["good", "NOF", "RLX", "GM", "GMF"] {
+        both("e_mbar_restrict", v);
+    }
+}
+
 /// S-INIT through FFMA2 (fixtures/e_uninit_f32x2): each lane of a packed f32x2 FMA reads only
 /// the same lane of its operands, so an undefined lane 1 leaves lane 0 defined (SASS clean;
 /// storing the undefined lane is reported).
@@ -5559,7 +5662,34 @@ fn e_fa4_warp_roles_fa4_aligned_barriers() {
 #[test]
 fn e_rmsnorm_cluster_drain_remote_arrive_exit_drain() {
     for v in ["good", "bug", "good_k3", "bug_k3", "nodrain"] {
-        both("e_rmsnorm_cluster_drain", v);
+        check("e_rmsnorm_cluster_drain", v, "sass");
+    }
+    // PTX: the S-MBAR-SCOPE races (the peer's st.async complete-tx waited at .cta scope; with
+    // K = 3 also stage 0 reused after a .release.cta give-back) blow up the state space:
+    // bounded.
+    for v in ["good_k3", "bug_k3"] {
+        check_bounded("e_rmsnorm_cluster_drain", v, "ptx", 200_000);
+    }
+    // K = 2: a race within a bounded search; with async complete-tx counted as the mbarrier
+    // CTA's (the contract rerun) the search completes and leaves only the SASS verdict.
+    let case = Case::load(root().join("fixtures/e_rmsnorm_cluster_drain")).unwrap();
+    for (v, want) in [
+        ("good", "clean"),
+        ("bug", "violation"),
+        ("nodrain", "violation"),
+    ] {
+        let k = Arc::new(kernel(&case, v, "ptx"));
+        let mut launch = build_launch(&case, &k).unwrap();
+        let r = explore(Machine::new(k.clone(), Arc::new(launch.clone())), 200_000);
+        assert!(
+            r.classes().iter().any(|c| c == "race"),
+            "{v}: {:?}",
+            r.classes()
+        );
+        launch.async_mb_dest = true;
+        let r = explore(Machine::new(k, Arc::new(launch)), 2_000_000);
+        assert!(r.complete, "{v}: contract rerun incomplete");
+        assert_eq!(r.classes(), [want], "{v}: {:#?}", r.findings);
     }
 }
 

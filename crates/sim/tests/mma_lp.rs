@@ -22,7 +22,11 @@ fn root() -> PathBuf {
 }
 
 fn run(case: &Case, k: ptxv_ir::Kernel) -> (Vec<u8>, Vec<String>) {
-    let launch = build_launch(case, &k).unwrap();
+    let mut launch = build_launch(case, &k).unwrap();
+    // S-MBAR-SCOPE: on the PTX front a peer CTA's completion (commit / TMA complete-tx)
+    // waited at .cta scope is a contract finding (`ptxv check` reruns with it at the
+    // mbarrier's CTA); outputs are compared under that rerun's model.
+    launch.async_mb_dest = k.front == ptxv_ir::Front::Ptx;
     let m = Machine::new(Arc::new(k), Arc::new(launch));
     let (m, findings, _) = ptxv_sim::explore::run_once(m);
     (

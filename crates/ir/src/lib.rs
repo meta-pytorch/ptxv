@@ -630,6 +630,17 @@ pub enum FenceKind {
     /// nothing for `.cta`): earlier strong loads' observations of writers the scope includes
     /// take effect (no wider; S-SCOPE).
     AcquireAt(Scope),
+    /// `fence.release.sync_restrict::shared::cta.cluster` (ptxas: `MEMBAR.ALL.CTA;
+    /// FENCE.VIEW.ASYNC.S`): a release at cluster scope of the thread's operations on its own
+    /// CTA's shared memory only (PTX ISA 9.7.15.4; S-MBAR-SCOPE).
+    ReleaseSmemCta,
+    /// `fence.acquire.sync_restrict::shared::cluster.cluster` (ptxas: nothing): an acquire at
+    /// cluster scope for operations on shared memory only (PTX ISA 9.7.15.4; S-MBAR-SCOPE).
+    AcquireSmemCluster,
+    /// SASS `CGAERRBAR`, which ptxas emits after `MEMBAR.ALL.GPU` for every cluster-scope
+    /// release: waits for the thread's outstanding remote (DSMEM) operations
+    /// (S-REMOTE-INFLIGHT). `MEMBAR.ALL.GPU` alone does not.
+    CgaErrBar,
     /// `fence.proxy.async[.shared::cta|.shared::cluster]`, SASS `FENCE.VIEW.ASYNC.S`: orders
     /// generic and async-proxy accesses to shared memory (S-PROXY).
     ProxyAsync,
@@ -1417,10 +1428,18 @@ pub enum Op {
         count: Option<Val>,
         /// `tx` completes transaction bytes instead of expecting them (`mbarrier.complete_tx`).
         complete: bool,
-        /// PTX `.release.cluster`: a release at cluster scope, which orders the thread's
-        /// earlier remote arrivals / st.async before it (S-REMOTE-INFLIGHT). SASS has no such
-        /// arrive: ptxas emits `MEMBAR.ALL.GPU; ERRBAR; CGAERRBAR` before it (a Fence).
-        cluster: bool,
+        /// Scope of the update as a strong operation (PTX `.cta`, the default, or `.cluster`).
+        /// SASS `SYNCS.ARRIVE` carries no scope: ptxas emits the same instruction for
+        /// `.release.cta`, `.relaxed.cta` and `.relaxed.cluster`, so the SASS front gives it
+        /// `.cluster` (S-MBAR-SCOPE).
+        scope: Scope,
+        /// PTX `.release` (the default of `mbarrier.arrive`); false for `.relaxed` and for
+        /// `mbarrier.expect_tx` / `complete_tx` (relaxed only). A release at cluster scope
+        /// orders the thread's earlier remote arrivals / st.async before it
+        /// (S-REMOTE-INFLIGHT). SASS: false; `SYNCS.ARRIVE` releases at CTA scope by itself,
+        /// and ptxas emits `MEMBAR.ALL.CTA; MEMBAR.ALL.GPU; ERRBAR; CGAERRBAR` before it for
+        /// `.release.cluster` (S-MBAR-SCOPE).
+        release: bool,
     },
     /// `clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128
     /// [resp], [mbar]` (SASS `UGETNEXTWORKID.SELFCAST [resp], [mbar]`): ask to cancel a CTA that
@@ -1629,6 +1648,12 @@ pub enum Op {
         addr: Addr,
         parity: Val,
         bit31: bool,
+        /// Scope (PTX `.cta`, the default, or `.cluster`): the wait synchronizes only with
+        /// updates of the phase it is morally strong with (S-MBAR-SCOPE). SASS
+        /// `SYNCS.PHASECHK` carries no scope (ptxas emits it for every PTX scope): `.cluster`.
+        scope: Scope,
+        /// PTX `.acquire` (the default) vs `.relaxed` (a later acquire fence acquires).
+        acquire: bool,
     },
     Fence {
         kind: FenceKind,

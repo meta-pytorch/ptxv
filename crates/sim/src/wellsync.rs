@@ -745,7 +745,7 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
                 let idv = ptxv_ir::bar_args(idv, None, *packed).0 as u64;
                 let cta = m.threads[t].cta;
                 let g = m.bar_gen.get(&(cta, idv as u32)).copied().unwrap_or(0);
-                let vc = m.threads[t].vc.clone();
+                let vc = m.order_vc(t); // S-MBAR-SCOPE: the order of events
                 let ev = log.ev(t as u32, &vc, pc);
                 log.bars
                     .entry((cta, idv as u32))
@@ -772,7 +772,7 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
                     Some((pg, waited)) => waited && pg + 1 == g,
                 };
                 log.cl_last[t] = Some((g, false));
-                let vc = m.threads[t].vc.clone();
+                let vc = m.order_vc(t); // S-MBAR-SCOPE: the order of events
                 let ev = log.ev(t as u32, &vc, pc);
                 log.clusters
                     .entry(cid)
@@ -797,6 +797,7 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
             addr,
             parity,
             bit31,
+            ..
         } => {
             for &t in &active {
                 let Ok(a) = m.addr(t, addr) else { continue };
@@ -812,7 +813,7 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
                         None => continue, // reported by the machine
                     },
                 };
-                let vc = m.threads[t].vc.clone();
+                let vc = m.order_vc(t); // S-MBAR-SCOPE: the order of events
                 let ev = log.ev(t as u32, &vc, pc);
                 log.pre_waits.push(WaitPre {
                     t,
@@ -832,7 +833,7 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
         }
         Op::TmemAlloc { .. } | Op::TmemDealloc { .. } | Op::TmemRelinquish => {
             if let Some(&t) = active.first() {
-                let vc = m.threads[t].vc.clone();
+                let vc = m.order_vc(t); // S-MBAR-SCOPE: the order of events
                 let ev = log.ev(t as u32, &vc, pc);
                 log.tmem.entry(m.threads[t].cta).or_default().push((ev, vc));
             }
@@ -840,7 +841,7 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
         // The lanes of one instruction run in one atomic step, in a fixed order: one event.
         Op::TmemAllocRaw { pair, .. } => {
             if let Some(&t) = active.first() {
-                let vc = m.threads[t].vc.clone();
+                let vc = m.order_vc(t); // S-MBAR-SCOPE: the order of events
                 let ev = log.ev(t as u32, &vc, pc);
                 for c in m.alloc_group(m.threads[t].cta, *pair).unwrap_or_default() {
                     log.tmem.entry(c).or_default().push((ev, vc.clone()));
@@ -849,7 +850,7 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
         }
         Op::TmemFreeRaw { .. } => {
             if let Some(&t) = active.first() {
-                let vc = m.threads[t].vc.clone();
+                let vc = m.order_vc(t); // S-MBAR-SCOPE: the order of events
                 let ev = log.ev(t as u32, &vc, pc);
                 log.tmem.entry(m.threads[t].cta).or_default().push((ev, vc));
             }
@@ -1157,6 +1158,7 @@ fn look_step(
         addr,
         parity: pv,
         bit31,
+        ..
     } = &inst.op
     {
         let ours = members.iter().all(|&t| {
@@ -1877,6 +1879,10 @@ pub fn mbar_op(m: &mut Machine, actor: u32, vc: &VC, pc: u32, cta: u16, off: u32
     let thread_op = (actor as usize) < m.threads.len();
     let k = m.k.clone();
     let kind = &k.code[pc as usize].op;
+    // S-MBAR-SCOPE: the order of events (with the updates its thread observed without
+    // synchronizing with them), not of memory.
+    let ovc = m.order_vc_of(actor, vc);
+    let vc = &ovc;
     let mut log = take(m);
     let ev = log.ev(actor, vc, pc);
     match kind {

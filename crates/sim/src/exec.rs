@@ -923,6 +923,18 @@ impl Machine {
             p.on_access(self, actor, loc, n, write.is_some(), rmw, vc); // coverage.rs
             self.prov = Some(p);
         }
+        // ASSUME(S-MBAR-SCOPE): shared-memory-only happens-before of the accessing thread.
+        let aug;
+        let vc = match loc {
+            Loc::Shared { cta: c, .. } => match self.sh_vc(actor, vc, c) {
+                Some(v) => {
+                    aug = v;
+                    &aug
+                }
+                None => vc,
+            },
+            _ => vc,
+        };
         let atomic = strong != 0;
         // E-POLL-ANY: the read of a value-insensitive poll (`vip_ok`).
         let vip = self.vip_read == 1 && write.is_none() && atomic && vip_where(loc).is_some();
@@ -1588,17 +1600,27 @@ impl Machine {
         for _ in 1..init.clock {
             vc_tick(&mut v, init.actor);
         }
+        let ini = MbRel {
+            cta,
+            scope: Scope::Cta,
+            rel: v,
+            rel_scope: Scope::Cta,
+            cover: Cover::All,
+            asyncx: false,
+        };
         Some(Mbar {
             expected: n,
             pending: n,
             tx: 0,
             phase,
-            cur: VC::new(),
+            cur: vec![],
             done: if phase == 1 {
-                [v, VC::new()]
+                [vec![ini], vec![]]
             } else {
-                [VC::new(), v]
+                [vec![], vec![ini]]
             },
+            cur_land: VC::new(),
+            done_land: [VC::new(), VC::new()],
             init,
             atomics: vec![],
         })
@@ -1614,7 +1636,7 @@ impl Machine {
 
     /// Would this thread's try_wait at its pc succeed? Ok(None) = would block.
     // ASSUME(E-SPIN, S-MBAR): see ASSUMPTIONS.md (E-SPIN is checked statically in spin.rs)
-    pub fn try_wait_result(&self, t: usize) -> Result<Option<VC>, String> {
+    pub fn try_wait_result(&self, t: usize) -> Result<Option<(Vec<MbRel>, VC)>, String> {
         let k = self.k.clone();
         let inst = &k.code[self.threads[t].pc as usize];
         let Op::MbarTryWait {
@@ -1624,10 +1646,10 @@ impl Machine {
             ..
         } = &inst.op
         else {
-            return Ok(Some(VC::new()));
+            return Ok(Some((vec![], VC::new())));
         };
         if !self.prd(t, inst.guard) {
-            return Ok(Some(VC::new()));
+            return Ok(Some((vec![], VC::new())));
         }
         let a = self.addr(t, addr)?;
         let Loc::Shared { cta, off } = self.resolve(t, Space::Shared, a, 8)? else {
@@ -1649,7 +1671,10 @@ impl Machine {
             )),
             Some(mb) => {
                 if mb.phase % 2 != p {
-                    Ok(Some(mb.done[p as usize].clone()))
+                    Ok(Some((
+                        mb.done[p as usize].clone(),
+                        mb.done_land[p as usize].clone(),
+                    )))
                 } else {
                     Ok(None)
                 }
@@ -2369,6 +2394,370 @@ impl Machine {
         vc_join(&mut th.acq_view, &j);
     }
 
+    // ---------------------------------------------------- mbarrier scopes (S-MBAR-SCOPE)
+
+    /// ASSUME(S-MBAR-SCOPE): what thread `t`'s update of an mbarrier releases (`scope`: the
+    /// update's scope as a strong operation; `release`: PTX `.release`).
+    /// - PTX, `.release`: the thread's clock at `scope`.
+    /// - PTX, `.relaxed` (and expect_tx / complete_tx): what its last release fence released,
+    ///   at the narrower of the two scopes (a release pattern, PTX ISA 8.8), and what its last
+    ///   `fence.release.sync_restrict::shared::cta.cluster` released (this CTA's shared
+    ///   memory, at cluster scope).
+    /// - SASS `SYNCS.ARRIVE` (no scope bits; ptxas emits it bare for `.release.cta`,
+    ///   `.relaxed.cta` and `.relaxed.cluster`): a release at CTA scope, plus a relaxed
+    ///   cluster-scope update after the last `MEMBAR` (`MEMBAR.ALL.GPU` is ptxas's
+    ///   `.release.cluster`; `MEMBAR.ALL.CTA` its `fence.release.sync_restrict::shared::cta
+    ///   .cluster`, which releases this CTA's shared memory only). `arrival`: the update
+    ///   counts an arrival.
+    pub fn mbar_rels(&self, t: usize, scope: Scope, release: bool, arrival: bool) -> Vec<MbRel> {
+        let th = &self.threads[t];
+        let base = MbRel {
+            cta: th.cta,
+            scope,
+            rel: VC::new(),
+            rel_scope: Scope::Cta,
+            cover: Cover::All,
+            asyncx: false,
+        };
+        let mut v = vec![];
+        // A release of `rel` (and of the shared-memory-only `sh`) at `rs`, covering `cover`.
+        let mut put = |rel: &VC, sh: &[(Cover, VC)], rs: Scope, cover: Cover| {
+            v.push(MbRel {
+                rel: rel.clone(),
+                rel_scope: rs,
+                cover,
+                ..base.clone()
+            });
+            for (c, x) in sh {
+                if let Some(c) = c.and(cover) {
+                    v.push(MbRel {
+                        rel: x.clone(),
+                        rel_scope: rs,
+                        cover: c,
+                        ..base.clone()
+                    });
+                }
+            }
+        };
+        if release {
+            put(&th.vc, &th.vc_sh, scope, Cover::All);
+            return v;
+        }
+        // (`.A0TR` / `.A0TX`, SASS expect_tx / complete_tx, are relaxed: no release of their
+        // own.)
+        if self.k.front == Front::Sass && arrival {
+            put(&th.vc, &th.vc_sh, Scope::Cta, Cover::All);
+        }
+        if th.membar_vc != VC::new() {
+            put(
+                &th.membar_vc,
+                &th.membar_sh,
+                scope.min(th.membar_scope),
+                Cover::All,
+            );
+        }
+        if th.srel_vc != VC::new() && scope >= Scope::Cluster {
+            put(
+                &th.srel_vc,
+                &th.srel_sh,
+                Scope::Cluster,
+                Cover::SmemOf(th.cta),
+            );
+        }
+        if v.is_empty() {
+            v.push(base);
+        }
+        v
+    }
+
+    /// ASSUME(S-MBAR-SCOPE): the release of an async unit's mbarrier completion: `.release`
+    /// at cluster scope (PTX ISA: the complete-tx of cp.async.bulk{.tensor} and
+    /// cp.reduce.async.bulk{.tensor}; tcgen05.commit's arrive-on is at cluster scope;
+    /// st.async), performed by its issuing thread (R-ISSUER), or by a thread of the
+    /// mbarrier's CTA under `Launch::async_mb_dest`.
+    pub fn mbar_async_rel(&self, issuer: u32, mb_cta: u16, rel: VC) -> MbRel {
+        MbRel {
+            cta: if self.launch.async_mb_dest {
+                mb_cta
+            } else {
+                self.threads[issuer as usize].cta
+            },
+            scope: Scope::Cluster,
+            rel,
+            rel_scope: Scope::Cluster,
+            cover: Cover::All,
+            asyncx: true,
+        }
+    }
+
+    /// Add updates to the current phase of mbarrier (cta, off); `wr` / `wclock`: the thread
+    /// behind them and its clock then (cluster lifetime, `Thread::landed`).
+    pub fn mbar_note(&mut self, cta: u16, off: u32, rels: Vec<MbRel>, wr: u32, wclock: u32) {
+        self.mbar_note_land(cta, off, rels, &vc_single(wr, wclock));
+    }
+
+    /// `mbar_note` with the landed clocks as a clock (several issuing lanes).
+    pub fn mbar_note_land(&mut self, cta: u16, off: u32, rels: Vec<MbRel>, land: &VC) {
+        let Some(mb) = self.mbars.get_mut(&(cta, off)) else {
+            return;
+        };
+        for r in rels {
+            match mb.cur.iter_mut().find(|x| {
+                (x.cta, x.scope, x.rel_scope, x.cover, x.asyncx)
+                    == (r.cta, r.scope, r.rel_scope, r.cover, r.asyncx)
+            }) {
+                Some(x) => vc_join(&mut x.rel, &r.rel),
+                None => mb.cur.push(r),
+            }
+        }
+        vc_join(&mut mb.cur_land, land);
+    }
+
+    /// An async unit's update of mbarrier (cta, off): its release (`mbar_async_rel`), and
+    /// both its issuer's clock at issue and its own clock as landed when the phase is
+    /// observed (S-CLUSTER-LIFE, async-after-exit).
+    pub fn mbar_note_async(&mut self, cta: u16, off: u32, op_issuer: u32, op_actor: u32, vc: &VC) {
+        let r = self.mbar_async_rel(op_issuer, cta, vc.clone());
+        // With what its issuer held for SM-local memories only (`AsyncOp::sh`, current).
+        let mut rels = vec![r.clone()];
+        for (c, x) in &self.cur_sh {
+            rels.push(MbRel {
+                rel: x.clone(),
+                cover: *c,
+                ..r.clone()
+            });
+        }
+        self.mbar_note(cta, off, rels, op_issuer, vc_get(vc, op_issuer));
+        if op_actor != op_issuer {
+            self.mbar_note(cta, off, vec![], op_actor, vc_get(vc, op_actor));
+        }
+    }
+
+    /// S-CLUSTER-LIFE: does some thread of `cta` know that `actor`'s step at `clock` happened
+    /// (happens-before, or it observed the mbarrier phase that step completed into)?
+    fn observed_by(&self, cta: u16, actor: u32, clock: u32) -> bool {
+        self.cta_threads(cta).any(|u| {
+            let t = &self.threads[u];
+            vc_get(&t.vc, actor) >= clock
+                || vc_get(&t.landed, actor) >= clock
+                || t.vc_sh.iter().any(|(_, v)| vc_get(v, actor) >= clock)
+        })
+    }
+
+    /// ASSUME(S-MBAR-SCOPE): a successful wait by thread `t` (`scope`, `acquire`) on a
+    /// completed phase whose updates are `rels`. It synchronizes with an update only when
+    /// the two are morally strong (same CTA, or both at cluster scope) and the release's
+    /// scope includes `t`; any other update still completed the phase (the wait returns)
+    /// but orders nothing. A relaxed wait leaves what it observed to the next acquire fence.
+    /// SASS `SYNCS.PHASECHK` acquires an update of another CTA for shared memory only
+    /// (ptxas lowers `fence.acquire.sync_restrict::shared::cluster.cluster` after a
+    /// cluster-scope wait to nothing); a later `CCTL.IVALL` acquires the rest.
+    fn mbar_acquire(
+        &mut self,
+        t: usize,
+        rels: &[MbRel],
+        land: &VC,
+        scope: Scope,
+        acquire: bool,
+        pc: u32,
+    ) {
+        let w = self.threads[t].cta;
+        let sass = self.k.front == Front::Sass;
+        let mut full = VC::new();
+        let mut sh: Vec<(Cover, VC)> = vec![];
+        let mut pend: Vec<(u32, VC, Scope, Cover)> = vec![];
+        let mut dropped = false;
+        let mut cross_joined = false;
+        for r in rels {
+            let ms = r.cta == w || (r.scope >= Scope::Cluster && scope >= Scope::Cluster);
+            let inc = r.cta == w || r.rel_scope >= Scope::Cluster;
+            if !(ms && inc) {
+                if r.rel != VC::new() {
+                    dropped = true;
+                    // Observed, not synchronized with: it still orders events (phase
+                    // determinism, cluster lifetime), never memory.
+                    sh_add(&mut sh, Cover::Order, &r.rel);
+                    if mbar_scope_log() {
+                        eprintln!(
+                            "PTXV_MBAR_SCOPE_LOG scope-drop kernel={} wait_pc={pc} ({}) waiter_cta={w} wait_scope={scope:?} update_cta={} update_scope={:?} release_scope={:?} async={}",
+                            self.k.name,
+                            self.k.describe(pc as usize),
+                            r.cta,
+                            r.scope,
+                            r.rel_scope,
+                            r.asyncx
+                        );
+                    }
+                }
+                continue;
+            }
+            if r.rel == VC::new() {
+                continue;
+            }
+            let wr = self.cta_lo(r.cta) as u32;
+            let cover = if sass && r.cta != w {
+                pend.push((wr, r.rel.clone(), r.rel_scope, r.cover));
+                r.cover.and(Cover::OnSm)
+            } else {
+                Some(r.cover)
+            };
+            if r.cta != w {
+                cross_joined = true;
+            }
+            if !acquire {
+                pend.push((wr, r.rel.clone(), r.rel_scope, r.cover));
+                continue;
+            }
+            match cover {
+                Some(Cover::All) => vc_join(&mut full, &r.rel),
+                Some(c) => sh_add(&mut sh, c, &r.rel),
+                None => {}
+            }
+        }
+        let _ = dropped;
+        // ASSUME(S-MBAR-SCOPE): the PTX memory model orders a release through the mbarrier's
+        // read-modify-writes only along morally strong pairs (observation order, PTX ISA
+        // 8.9.2): a .cta-scoped update by this CTA coherence-after a cluster-scope update of
+        // another CTA breaks the chain to the wait. The model joins per update (order-free);
+        // a phase that mixes the two is a contract finding.
+        if cross_joined {
+            if let Some(u) = rels.iter().find(|u| u.cta == w && u.scope == Scope::Cta) {
+                let _ = u;
+                let msg = format!(
+                    "the phase {} waits for at {} mixes a .cta-scoped update by this CTA with a cluster-scope update by another CTA; when the .cta update is the phase's last, the PTX memory model's observation order (8.9.2) does not reach the other CTA's release (make every update of the phase cluster-scoped, e.g. arrive.expect_tx.relaxed.cluster; S-MBAR-SCOPE)",
+                    self.actor_name(t as u32),
+                    self.k.describe(pc as usize)
+                );
+                self.report("contract", format!("mbar-chain:{pc}"), msg);
+            }
+        }
+        let th = self.threads[t].make_mut();
+        if full != VC::new() {
+            vc_join(&mut th.vc, &full);
+            vc_join(&mut th.acq_view, &full);
+        }
+        for (c, v) in sh {
+            sh_add(&mut th.vc_sh, c, &v);
+        }
+        for p in pend {
+            th.acq_pending_mb.push(p);
+        }
+        if *land != VC::new() {
+            vc_join(&mut th.landed, land);
+        }
+    }
+
+    /// Acquire fence of scope `s` (None: all) over the mbarrier observations of relaxed waits
+    /// (`Thread::acq_pending_mb`); `smem_only`: `fence.acquire.sync_restrict::shared::cluster`
+    /// (keeps them for a later full acquire).
+    fn acquire_pending_mb(&mut self, t: usize, s: Option<Scope>, smem_only: bool) {
+        if self.threads[t].acq_pending_mb.is_empty()
+            && !(smem_only && !self.threads[t].acq_pending.is_empty())
+        {
+            return;
+        }
+        let pending = if smem_only {
+            self.threads[t].acq_pending_mb.clone()
+        } else {
+            std::mem::take(&mut self.threads[t].make_mut().acq_pending_mb)
+        };
+        let mut full = VC::new();
+        let mut sh: Vec<(Cover, VC)> = vec![];
+        for (w, rel, _, cover) in &pending {
+            if !s.is_none_or(|s| self.scope_includes(s, t as u32, *w)) {
+                continue;
+            }
+            let c = if smem_only {
+                cover.and(Cover::Smem)
+            } else {
+                Some(*cover)
+            };
+            match c {
+                Some(Cover::All) => vc_join(&mut full, rel),
+                Some(c) => sh_add(&mut sh, c, rel),
+                None => {}
+            }
+        }
+        if smem_only {
+            // Relaxed strong loads' observations too, for shared memory only.
+            for (w, rel, _) in &self.threads[t].acq_pending {
+                if self.scope_includes(Scope::Cluster, t as u32, *w) {
+                    sh_add(&mut sh, Cover::Smem, rel);
+                }
+            }
+        }
+        let th = self.threads[t].make_mut();
+        vc_join(&mut th.vc, &full);
+        vc_join(&mut th.acq_view, &full);
+        for (c, v) in sh {
+            sh_add(&mut th.vc_sh, c, &v);
+        }
+    }
+
+    /// S-MBAR-SCOPE: thread `t`'s clock with every restricted happens-before it holds
+    /// (`Thread::vc_sh`, `Cover::Order` included): the order of events, not of memory (the
+    /// certificate's synchronization checks).
+    pub fn order_vc(&self, t: usize) -> VC {
+        let th = &self.threads[t];
+        let mut v = th.vc.clone();
+        for (_, x) in &th.vc_sh {
+            vc_join(&mut v, x);
+        }
+        v
+    }
+
+    /// `order_vc` for an event at clock `vc` of `actor` (a thread at its current clock, or
+    /// the async operation completing now).
+    pub fn order_vc_of(&self, actor: u32, vc: &VC) -> VC {
+        let sh = if (actor as usize) < self.threads.len()
+            && vc_get(vc, actor) == vc_get(&self.threads[actor as usize].vc, actor)
+        {
+            &self.threads[actor as usize].vc_sh
+        } else {
+            &self.cur_sh
+        };
+        let mut v = vc.clone();
+        for (_, x) in sh {
+            vc_join(&mut v, x);
+        }
+        v
+    }
+
+    /// S-MBAR-SCOPE: thread `actor`'s clock for an access to shared memory of CTA `c`, when
+    /// `vc` is its current clock and it holds shared-memory-only happens-before
+    /// (`Thread::vc_sh`).
+    fn sh_vc(&self, actor: u32, vc: &VC, c: u16) -> Option<VC> {
+        self.local_vc(actor, vc, Some(c))
+    }
+
+    /// `sh_vc` for an access to shared memory of CTA `c`, or (None) to tensor memory.
+    fn local_vc(&self, actor: u32, vc: &VC, c: Option<u16>) -> Option<VC> {
+        let sh = if actor as usize >= self.threads.len() {
+            // An async unit (or tcgen05 actor) completing now: its issuer's at issue.
+            &self.cur_sh
+        } else {
+            let th = &self.threads[actor as usize];
+            if vc_get(vc, actor) != vc_get(&th.vc, actor) {
+                // An operation of the thread issued earlier (a remote delivery).
+                &self.cur_sh
+            } else {
+                &th.vc_sh
+            }
+        };
+        if sh.is_empty() {
+            return None;
+        }
+        let mut v = vc.clone();
+        let mut any = false;
+        for (cv, x) in sh {
+            if cv.covers(c) {
+                vc_join(&mut v, x);
+                any = true;
+            }
+        }
+        any.then_some(v)
+    }
+
     /// DPOR: read the trigger / exit / completion state of every CTA of grid `gi`.
     pub fn rec_grid_reads(&mut self, gi: usize) {
         if self.fp.is_none() {
@@ -2459,7 +2848,7 @@ impl Machine {
                 let _ = self.mbar_atomic(op.actor, &op.vc, &op.vis, op.pc, c, mbar);
                 let mb = self.mbars.get_mut(&(c, mbar)).unwrap();
                 mb.tx -= 16;
-                vc_join(&mut mb.cur, &op.vc);
+                self.mbar_note_async(c, mbar, op.issuer, op.actor, &op.vc);
                 self.mbar_maybe_complete(c, mbar);
             } else {
                 let msg = format!(
@@ -2532,6 +2921,15 @@ impl Machine {
         pc: u32,
         state: u8,
     ) {
+        // ASSUME(S-MBAR-SCOPE): SM-local-memory-only happens-before of the actor.
+        let aug;
+        let vc = match self.local_vc(actor, vc, None) {
+            Some(v) => {
+                aug = v;
+                &aug
+            }
+            None => vc,
+        };
         let e = Epoch {
             actor,
             clock: vc_get(vc, actor),
@@ -2603,6 +3001,15 @@ impl Machine {
         pc: u32,
         write: Option<u32>,
     ) -> (u32, u8) {
+        // ASSUME(S-MBAR-SCOPE): SM-local-memory-only happens-before of the accessing actor.
+        let aug;
+        let vc = match self.local_vc(actor, vc, None) {
+            Some(v) => {
+                aug = v;
+                &aug
+            }
+            None => vc,
+        };
         let me = Epoch {
             actor,
             clock: vc_get(vc, actor),
@@ -2884,7 +3291,12 @@ impl Machine {
 
     /// Keep pending async ops in a canonical order (by actor, then issue clock), so that
     /// commuting issues produce identical states. Per-pipe FIFO order is preserved.
-    fn push_async(&mut self, op: AsyncOp) {
+    fn push_async(&mut self, mut op: AsyncOp) {
+        // S-MBAR-SCOPE: its shared-memory accesses follow what its issuer acquired for shared
+        // memory only.
+        if op.sh.is_empty() && (op.issuer as usize) < self.threads.len() {
+            op.sh = self.threads[op.issuer as usize].vc_sh.clone();
+        }
         self.pending.push(op);
         self.pending
             .sort_by_key(|o| (o.actor, vc_get(&o.vc, o.actor)));
@@ -2939,10 +3351,7 @@ impl Machine {
         }
         let completed = std::mem::take(&mut self.completed);
         for &(cta, actor, clock, pc) in &completed {
-            let observed = self
-                .threads
-                .iter()
-                .any(|t| t.cta == cta && vc_get(&t.vc, actor) >= clock);
+            let observed = self.observed_by(cta, actor, clock);
             if !observed {
                 // ASSUME(E-BULK-EXIT): a bulk (TMA) store only reads the CTA's shared memory,
                 // and GB300 keeps that memory until the read is done (probes/tma_store_exit).
@@ -2964,10 +3373,7 @@ impl Machine {
                         && a == actor
                         && k < clock
                         && !matches!(self.k.code[q as usize].op, Op::TcCommit { .. })
-                        && !self
-                            .threads
-                            .iter()
-                            .any(|t| t.cta == c && vc_get(&t.vc, a) >= k)
+                        && !self.observed_by(c, a, k)
                 };
                 if matches!(self.k.code[pc as usize].op, Op::TcCommit { .. })
                     && !completed.iter().any(unobserved)
@@ -3022,10 +3428,7 @@ impl Machine {
         // otherwise a schedule exists in which the whole target CTA exited first.
         let remote = std::mem::take(&mut self.remote);
         for &(target, actor, clock, pc) in &remote {
-            let alive = self
-                .threads
-                .iter()
-                .any(|t| t.cta == target && vc_get(&t.vc, actor) >= clock);
+            let alive = self.observed_by(target, actor, clock);
             if !alive {
                 let msg = format!(
                     "{} at {} accesses the shared memory of CTA {target}, but is not ordered before the exit of any of its threads: CTA {target} can exit first (cluster lifetime; a final barrier.cluster is missing)",
@@ -3482,6 +3885,7 @@ impl Machine {
                     th.vc = j.clone();
                     vc_tick(&mut th.vc, t as u32);
                 }
+                self.join_lanes_sh(&members);
             }
             // E-WARP-ORDER: lanes leaving an instruction at different pcs diverge the warp.
             self.note_divergence(warp, &members);
@@ -4318,6 +4722,7 @@ impl Machine {
                         th.vc = j.clone();
                         vc_tick(&mut th.vc, t as u32);
                     }
+                    self.join_lanes_sh(members);
                 }
                 return Ok(());
             }
@@ -5267,6 +5672,7 @@ impl Machine {
             th.st = St::Run;
             th.pc += 1;
         }
+        self.join_lanes_sh(&lanes);
     }
 
     /// cp.async.wait_group n: the thread's cp.async groups older than its newest n land.
@@ -5420,6 +5826,7 @@ impl Machine {
                 th.st = St::Run;
                 th.pc += 1;
             }
+            self.join_lanes_sh(&lanes);
             self.note_convergence(warp, &lanes);
             // The released lanes have passed this convergence barrier.
             if let Op::Bsync { b } = self.k.code[pc as usize].op {
@@ -6969,6 +7376,7 @@ impl Machine {
                 let mut vc = self.threads[t].vc.clone();
                 vc_tick(&mut vc, actor);
                 self.push_async(AsyncOp {
+                    sh: vec![],
                     fifo: None,
                     actor,
                     vc,
@@ -7094,7 +7502,20 @@ impl Machine {
                     if mc != cta {
                         return Err("st.async with its mbarrier in another CTA than the data is not modeled".into());
                     }
-                    self.push_remote(t, pc, cta, mo, -(n as i64), 0, words, vc, vis);
+                    let r = self.mbar_async_rel(t as u32, cta, vc.clone());
+                    self.push_remote(
+                        t,
+                        t as u32,
+                        pc,
+                        cta,
+                        mo,
+                        -(n as i64),
+                        0,
+                        words,
+                        vc,
+                        vis,
+                        vec![r],
+                    );
                     self.tick(t);
                     return Ok(Flow::Next);
                 }
@@ -7108,7 +7529,8 @@ impl Machine {
                 self.mbar_atomic(t as u32, &vc, &vis, pc, mc, off)?;
                 let mb = self.mbars.get_mut(&(mc, off)).unwrap();
                 mb.tx -= n as i64;
-                vc_join(&mut mb.cur, &vc);
+                let r = self.mbar_async_rel(t as u32, mc, vc.clone());
+                self.mbar_note(mc, off, vec![r], t as u32, vc_get(&vc, t as u32));
                 self.mbar_maybe_complete(mc, off);
                 self.tick(t);
             }
@@ -7220,6 +7642,7 @@ impl Machine {
                 };
                 let (actor, vc) = self.pipe_issue(t);
                 self.push_async(AsyncOp {
+                    sh: vec![],
                     fifo: Some(t as u64),
                     actor,
                     vc,
@@ -7271,6 +7694,7 @@ impl Machine {
                 };
                 let (actor, vc) = self.pipe_issue(t);
                 self.push_async(AsyncOp {
+                    sh: vec![],
                     fifo: Some(t as u64),
                     actor,
                     vc,
@@ -7311,6 +7735,7 @@ impl Machine {
                     }
                     let (actor, vc) = self.pipe_issue(t);
                     self.push_async(AsyncOp {
+                        sh: vec![],
                         fifo: Some(t as u64),
                         actor,
                         vc,
@@ -7528,6 +7953,17 @@ impl Machine {
                 let th = self.threads[t].make_mut();
                 let v = th.vc.clone();
                 vc_join(&mut th.tc_vc, &v);
+                // ASSUME(S-MBAR-SCOPE): the thread's tensor-memory-only happens-before (a peer
+                // CTA's commit observed by a SASS PHASECHK) reaches its tcgen05.ld / st too.
+                let sh: Vec<VC> = th
+                    .vc_sh
+                    .iter()
+                    .filter(|(c, _)| c.covers(None))
+                    .map(|(_, v)| v.clone())
+                    .collect();
+                for v in &sh {
+                    vc_join(&mut th.tc_vc, v);
+                }
             }
             Op::R2Ur { .. }
             | Op::VoteAny { .. }
@@ -7619,6 +8055,7 @@ impl Machine {
                 let cta = self.threads[t].cta;
                 let group = self.threads[t].bulk_group;
                 self.push_async(AsyncOp {
+                    sh: vec![],
                     fifo: None,
                     actor,
                     vc,
@@ -7648,14 +8085,18 @@ impl Machine {
             Op::Fence {
                 kind: k @ (FenceKind::Membar(sc) | FenceKind::Release(sc)),
             } => {
-                // ASSUME(S-REMOTE-INFLIGHT): a release at cluster scope or wider (SASS
-                // MEMBAR.ALL.GPU, which ptxas follows with ERRBAR; CGAERRBAR) delivers the
-                // thread's remote operations first.
-                if !matches!(sc, Scope::Cta) {
+                // ASSUME(S-REMOTE-INFLIGHT): a release at cluster scope or wider delivers the
+                // thread's remote operations first (PTX). SASS: `CGAERRBAR` does, which
+                // ptxas emits after MEMBAR.ALL.GPU for those; MEMBAR.ALL.GPU alone does not
+                // (a weak remote store before `fence.proxy.async.shared::cluster`, lowered to
+                // MEMBAR.ALL.GPU; FENCE.VIEW.ASYNC.S, and a remote arrive was read stale on
+                // GB200).
+                if !matches!(sc, Scope::Cta) && self.k.front != Front::Sass {
                     self.drain_remote(t);
                 }
                 if let FenceKind::Membar(_) = k {
                     self.acquire_pending(t, Some(*sc));
+                    self.acquire_pending_mb(t, Some(*sc), false);
                     // ASSUME(E-HW-L1): PTX fence.acq_rel / fence.sc at gpu / sys scope ends
                     // with CCTL.IVALL.
                     if self.l1.is_some() && matches!(sc, Scope::Gpu | Scope::Sys) {
@@ -7670,9 +8111,18 @@ impl Machine {
                     && !self.launch.mcast.is_empty()
                     && self.k.code[pc as usize].text.contains("MEMBAR.SC.")
                     && alias_bracket(&self.k.code, pc as usize);
+                let sass = self.k.front == Front::Sass;
                 let th = self.threads[t].make_mut();
                 th.membar_vc = th.vc.clone();
+                th.membar_sh = th.vc_sh.clone();
                 th.membar_scope = *sc;
+                // ASSUME(S-MBAR-SCOPE): ptxas lowers fence.release.sync_restrict::shared::cta
+                // .cluster to MEMBAR.ALL.CTA (+ FENCE.VIEW.ASYNC.S): before a cluster-scope
+                // mbarrier update it releases this CTA's shared memory at cluster scope.
+                if sass {
+                    th.srel_vc = th.vc.clone();
+                    th.srel_sh = th.vc_sh.clone();
+                }
                 if alias {
                     let v = th.vc.clone();
                     th.alias_fences.push(v);
@@ -7681,10 +8131,58 @@ impl Machine {
                 }
                 self.tick(t);
             }
+            // ASSUME(S-MBAR-SCOPE): fence.release.sync_restrict::shared::cta.cluster.
+            Op::Fence {
+                kind: FenceKind::ReleaseSmemCta,
+            } => {
+                let th = self.threads[t].make_mut();
+                th.srel_vc = th.vc.clone();
+                th.srel_sh = th.vc_sh.clone();
+                self.tick(t);
+            }
+            // ASSUME(S-MBAR-SCOPE): fence.acquire.sync_restrict::shared::cluster.cluster.
+            Op::Fence {
+                kind: FenceKind::AcquireSmemCluster,
+            } => {
+                self.acquire_pending_mb(t, Some(Scope::Cluster), true);
+            }
+            // ASSUME(S-REMOTE-INFLIGHT): SASS CGAERRBAR delivers the thread's remote operations.
+            Op::Fence {
+                kind: FenceKind::CgaErrBar,
+            } => {
+                self.drain_remote(t);
+                // ptxas's cluster-scope release is `MEMBAR.ALL.GPU; ERRBAR; CGAERRBAR`: the
+                // release (what a later relaxed cluster arrive or barrier.cluster.arrive
+                // releases) includes the drained operations, as when MEMBAR drained them.
+                let opc = |i: usize| {
+                    self.k.code[i]
+                        .text
+                        .split_whitespace()
+                        .find(|w| !w.starts_with('@'))
+                        .unwrap_or("")
+                        .to_string()
+                };
+                let p = pc as usize;
+                let after_membar = (1..=2).any(|d| {
+                    p >= d
+                        && opc(p - d).starts_with("MEMBAR")
+                        && (1..d).all(|e| opc(p - e).starts_with("ERRBAR"))
+                });
+                if after_membar && self.threads[t].membar_scope >= Scope::Gpu {
+                    let th = self.threads[t].make_mut();
+                    th.membar_vc = th.vc.clone();
+                    th.membar_sh = th.vc_sh.clone();
+                }
+                // As for MEMBAR: the thread's later accesses must come after the clock the
+                // release recorded (without the tick, a store after the release counted as
+                // released by it: fixtures/e_ring R1 on the SASS front).
+                self.tick(t);
+            }
             Op::Fence {
                 kind: FenceKind::Acquire,
             } => {
                 self.acquire_pending(t, None);
+                self.acquire_pending_mb(t, None, false);
                 if self.l1.is_some() {
                     self.l1_inval(t, pc); // ASSUME(E-HW-L1): CCTL.IVALL
                 }
@@ -7694,6 +8192,7 @@ impl Machine {
                 kind: FenceKind::AcquireAt(sc),
             } => {
                 self.acquire_pending(t, Some(*sc));
+                self.acquire_pending_mb(t, Some(*sc), false);
                 if self.l1.is_some() && !matches!(sc, Scope::Cta) {
                     self.l1_inval(t, pc); // ASSUME(E-HW-L1): ptxas's CCTL.IVALL
                 }
@@ -7804,10 +8303,19 @@ impl Machine {
                     vc_join(&mut v, &th.membar_vc);
                     (th.membar_vc.clone(), v)
                 };
+                // S-MBAR-SCOPE: shared-memory-only happens-before, as the clock.
+                let sh = if *release {
+                    th.vc_sh.clone()
+                } else {
+                    th.membar_sh.clone()
+                };
                 let cb = self.clusters.entry(cid).or_default();
                 let g = cb.gen;
                 vc_join(&mut cb.rel, &rel);
                 vc_join(&mut cb.vis, &vis);
+                for (c, v) in &sh {
+                    sh_add(&mut cb.rel_sh, *c, v);
+                }
                 if let Err(k) = cb.arrived.binary_search(&(t as u32)) {
                     cb.arrived.insert(k, t as u32);
                 }
@@ -7836,7 +8344,14 @@ impl Machine {
                 match done {
                     Some((_, rel, vis)) => {
                         self.rec_acq(sync_key(4, cid as u64, g as u64, 0));
+                        // Before `cluster_acquire`, which may forget generation g.
+                        let sh = self.clusters.get(&cid).and_then(|cb| {
+                            cb.done_sh.iter().find(|d| d.0 == g).map(|d| d.1.clone())
+                        });
                         self.cluster_acquire(t, cid, &rel, &vis, true);
+                        for (c, v) in sh.unwrap_or_default() {
+                            sh_add(&mut self.threads[t].make_mut().vc_sh, c, &v);
+                        }
                     }
                     None => {
                         self.threads[t].make_mut().st = St::ClusterWait;
@@ -9742,6 +10257,46 @@ impl Machine {
                 });
                 let sync = if weak_flag { &wsync } else { sync };
                 let sc = sync.map_or(0, |m| strong_code(m.scope));
+                // ASSUME(S-REMOTE-INFLIGHT): SASS, a weak store into another CTA's shared memory
+                // (`ST.E` to a shared::cluster address) is in flight until delivered, in any
+                // order with the issuer's remote arrivals, until a CGAERRBAR drains it: on
+                // GB200 a peer read a stale value after `ST.E; MEMBAR.ALL.GPU;
+                // FENCE.VIEW.ASYNC.S; SYNCS.ARRIVE.TRANS64.RED.A1T0` and its wait (reported).
+                if let [Loc::Shared { cta: rc, off: ro }] = locs[..] {
+                    if self.k.front == Front::Sass
+                        && rc != self.threads[t].cta
+                        && sync.is_none()
+                        && !mc
+                        && *bytes >= 4
+                        && ro % 4 == 0
+                        && self.num.is_none()
+                        && remote_inflight()
+                    {
+                        let words: Vec<(u32, u32)> = data
+                            .chunks(4)
+                            .enumerate()
+                            .map(|(i, c)| {
+                                (
+                                    ro + 4 * i as u32,
+                                    u32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+                                )
+                            })
+                            .collect();
+                        self.note_remote(rc, t as u32, pc);
+                        // Its own async actor: the issuer's later releases do not cover the
+                        // write until a CGAERRBAR delivered it (`drain_remote`), so the race
+                        // with a reader is found whichever lands first.
+                        let serial = self.threads[t].tma_count;
+                        self.threads[t].make_mut().tma_count += 1;
+                        let actor = self.tma_actor_id(t, serial);
+                        let mut vc = vc;
+                        vc_tick(&mut vc, actor);
+                        let vis = self.threads[t].vis.clone();
+                        self.push_remote(t, actor, pc, rc, NO_MBAR, 0, 0, words, vc, vis, vec![]);
+                        self.tick(t);
+                        return Ok(Flow::Next);
+                    }
+                }
                 let origins = self.num_store_origins(t, v, *bytes, inst.guard.reg);
                 self.mc_view = mc;
                 self.weak_pub = weak_flag;
@@ -10196,6 +10751,7 @@ impl Machine {
                 vc_tick(&mut vc, actor);
                 let vis = self.threads[t].vis.clone();
                 self.push_async(AsyncOp {
+                    sh: vec![],
                     fifo: None,
                     actor,
                     vc,
@@ -10329,6 +10885,7 @@ impl Machine {
                     arrived: vec![],
                     arrivers: vec![],
                     rel: VC::new(),
+                    rel_sh: vec![],
                     red: vec![],
                     count,
                 });
@@ -10394,6 +10951,10 @@ impl Machine {
                     };
                     bar.arrivers.insert(k, t as u32);
                     vc_join(&mut bar.rel, &vc);
+                    // S-MBAR-SCOPE: and what it holds for shared memory only.
+                    for (c, v) in &self.threads[t].vc_sh {
+                        sh_add(&mut bar.rel_sh, *c, v);
+                    }
                     // Later accesses of the arriving thread are not released.
                     self.tick(t);
                     self.bar_try_release(cta, id);
@@ -10465,10 +11026,20 @@ impl Machine {
                 if phase == 1 {
                     self.rec_rel(sync_key(2, cta as u64, off as u64, 0));
                 }
+                // The init counts as a release at CTA scope by the initializing thread
+                // (the phase a wait on the "previous" parity observes; S-MBAR-SCOPE).
+                let ini = MbRel {
+                    cta,
+                    scope: Scope::Cta,
+                    rel: vc.clone(),
+                    rel_scope: Scope::Cta,
+                    cover: Cover::All,
+                    asyncx: false,
+                };
                 let done = if phase == 1 {
-                    [vc.clone(), VC::new()]
+                    [vec![ini], vec![]]
                 } else {
-                    [VC::new(), vc.clone()]
+                    [vec![], vec![ini]]
                 };
                 self.mbars.insert(
                     (cta, off),
@@ -10477,8 +11048,10 @@ impl Machine {
                         pending: n,
                         tx: 0,
                         phase,
-                        cur: VC::new(),
+                        cur: vec![],
                         done,
+                        cur_land: VC::new(),
+                        done_land: [VC::new(), VC::new()],
                         init: me,
                         atomics: vec![],
                     },
@@ -10491,10 +11064,11 @@ impl Machine {
                 remote,
                 count,
                 complete,
-                cluster,
+                scope,
+                release,
             } => {
                 // A release at cluster scope orders the thread's earlier remote operations.
-                if *cluster {
+                if *release && *scope >= Scope::Cluster {
                     self.drain_remote(t);
                 }
                 // A count (PTX `mbarrier.arrive [a], count`, SASS `.ART0` with the count in a
@@ -10531,12 +11105,26 @@ impl Machine {
                 };
                 let vc = self.threads[t].vc.clone();
                 let vis = self.threads[t].vis.clone();
+                // ASSUME(S-MBAR-SCOPE): what the update releases, and to whom.
+                let rels = self.mbar_rels(t, *scope, *release, arrivals > 0);
                 // ASSUME(S-REMOTE-INFLIGHT): an arrival on another CTA's mbarrier is in flight
                 // until delivered (`complete_async`), in any order with the issuer's other
                 // remote operations.
                 if cta != self.threads[t].cta && remote_inflight() {
                     let tx = if *complete { -txv } else { txv };
-                    self.push_remote(t, pc, cta, off, tx, arrivals, vec![], vc, vis);
+                    self.push_remote(
+                        t,
+                        t as u32,
+                        pc,
+                        cta,
+                        off,
+                        tx,
+                        arrivals,
+                        vec![],
+                        vc,
+                        vis,
+                        rels,
+                    );
                     self.tick(t);
                     return Ok(Flow::Next);
                 }
@@ -10554,18 +11142,12 @@ impl Machine {
                         ));
                     }
                     mb.pending -= arrivals;
-                    vc_join(&mut mb.cur, &vc);
-                } else if cta == self.threads[t].cta {
-                    // ASSUME(S-MBAR): an arrival releases; `mbarrier.expect_tx` /
-                    // `complete_tx` (count 0, SASS `.A0TR` / `.A0TX` / `.A0T1`) on the thread's
-                    // own CTA's mbarrier are relaxed (PTX ISA): they release only what the
-                    // thread's last fence did. On another CTA's (SASS only): its whole clock.
-                    let mv = self.threads[t].membar_vc.clone();
-                    let mb = self.mbars.get_mut(&(cta, off)).unwrap();
-                    vc_join(&mut mb.cur, &mv);
-                } else {
-                    vc_join(&mut mb.cur, &vc);
                 }
+                // ASSUME(S-MBAR): `mbarrier.expect_tx` / `complete_tx` (count 0, SASS `.A0TR` /
+                // `.A0TX` / `.A0T1`) are relaxed (PTX ISA): they release only what the
+                // thread's last fence did (`mbar_rels`).
+                let wclock = vc_get(&vc, t as u32);
+                self.mbar_note(cta, off, rels, t as u32, wclock);
                 self.mbar_maybe_complete(cta, off);
                 self.tick(t);
             }
@@ -10575,6 +11157,7 @@ impl Machine {
                 addr,
                 parity,
                 bit31,
+                ..
             } if self.bar_cfg.peekskip.contains_key(&pc) && self.peekskip_here(t, pc) => {
                 let a = self.addr(t, addr)?;
                 let Loc::Shared { cta, off } = self.resolve(t, Space::Shared, a, 8)? else {
@@ -10595,8 +11178,10 @@ impl Machine {
                 th.peekwin.retain(|w| w.3 != pc);
                 th.peekwin.push((cta, off, p, pc));
             }
-            Op::MbarTryWait { d, .. } => match self.try_wait_result(t) {
-                Ok(Some(done)) => {
+            Op::MbarTryWait {
+                d, scope, acquire, ..
+            } => match self.try_wait_result(t) {
+                Ok(Some((rels, land))) => {
                     let a = self.addr(
                         t,
                         match &inst.op {
@@ -10635,8 +11220,7 @@ impl Machine {
                     }
                     let vis = self.threads[t].vis.clone();
                     self.mbar_atomic(t as u32, &vc, &vis, pc, cta, off)?;
-                    let th = self.threads[t].make_mut();
-                    vc_join(&mut th.vc, &done);
+                    self.mbar_acquire(t, &rels, &land, *scope, *acquire, pc);
                     self.wp(t, *d, true);
                     self.tick(t);
                 }
@@ -10789,6 +11373,7 @@ impl Machine {
                     vc_tick(&mut vc, actor);
                     let vis = self.threads[t].vis.clone();
                     self.push_async(AsyncOp {
+                        sh: vec![],
                         fifo: None,
                         actor,
                         vc,
@@ -11165,6 +11750,31 @@ impl Machine {
         }
     }
 
+    /// Lanes joined by a warp convergence (or E-LOCKSTEP) also share their shared-memory-only
+    /// happens-before and their observed landings (S-MBAR-SCOPE, S-CLUSTER-LIFE).
+    fn join_lanes_sh(&mut self, lanes: &[usize]) {
+        if lanes.len() < 2
+            || lanes
+                .iter()
+                .all(|&t| self.threads[t].vc_sh.is_empty() && self.threads[t].landed == VC::new())
+        {
+            return;
+        }
+        let mut sh: Vec<(Cover, VC)> = vec![];
+        let mut land = VC::new();
+        for &t in lanes {
+            for (c, v) in &self.threads[t].vc_sh {
+                sh_add(&mut sh, *c, v);
+            }
+            vc_join(&mut land, &self.threads[t].landed);
+        }
+        for &t in lanes {
+            let th = self.threads[t].make_mut();
+            th.vc_sh = sh.clone();
+            th.landed = land.clone();
+        }
+    }
+
     /// Complete the cluster barrier generation of `cta`'s cluster once every live thread of
     /// the cluster arrived (exited threads are not waited for, as for bar.sync).
     fn cluster_try_complete(&mut self, cta: u16) {
@@ -11188,9 +11798,13 @@ impl Machine {
         let g = cb.gen;
         let rel = std::mem::take(&mut cb.rel);
         let vis = std::mem::take(&mut cb.vis);
+        let rsh = std::mem::take(&mut cb.rel_sh);
         cb.arrived.clear();
         cb.gen += 1;
         cb.done.push((g, rel.clone(), vis.clone()));
+        if !rsh.is_empty() {
+            cb.done_sh.push((g, rsh.clone()));
+        }
         // Wake this cluster's waiters of generation g (other clusters count generations too).
         let waiters: Vec<usize> = ids
             .iter()
@@ -11205,6 +11819,9 @@ impl Machine {
         }
         for &u in &waiters {
             self.cluster_acquire(u, cid, &rel, &vis, false);
+            for (c, v) in &rsh {
+                sh_add(&mut self.threads[u].make_mut().vc_sh, *c, v);
+            }
             let th = self.threads[u].make_mut();
             th.st = St::Run;
             th.pc += 1;
@@ -11250,6 +11867,7 @@ impl Machine {
             .collect();
         if let Some(cb) = self.clusters.get_mut(&cid) {
             cb.done.retain(|d| pending.contains(&d.0));
+            cb.done_sh.retain(|d| pending.contains(&d.0));
         }
     }
 
@@ -11325,10 +11943,18 @@ impl Machine {
         let Bar {
             arrived,
             rel,
+            rel_sh,
             count,
             red,
             ..
         } = self.bars.remove(&(cta, id)).unwrap();
+        // S-MBAR-SCOPE: shared-memory-only happens-before passes through the barrier too.
+        let mut jsh = rel_sh;
+        for &a in &arrived {
+            for (c, v) in &self.threads[a as usize].vc_sh {
+                sh_add(&mut jsh, *c, v);
+            }
+        }
         // E-BAR-RED: the waiters' reduction, written to each bar.red waiter's barrier result.
         // Waiters of one generation with different reductions (or bar.red with bar.sync) are
         // reported: no result is modeled for them.
@@ -11384,6 +12010,9 @@ impl Machine {
         for &a in &arrived {
             let th = self.threads[a as usize].make_mut();
             th.vc = j.clone();
+            if !jsh.is_empty() {
+                th.vc_sh = jsh.clone();
+            }
             vc_tick(&mut th.vc, a);
             th.st = St::Run;
             th.pc += 1;
@@ -11503,6 +12132,7 @@ impl Machine {
         if mb.pending == 0 && mb.tx == 0 {
             let p = (mb.phase % 2) as usize;
             mb.done[p] = std::mem::take(&mut mb.cur);
+            mb.done_land[p] = std::mem::take(&mut mb.cur_land);
             mb.phase += 1;
             mb.pending = mb.expected;
         }
@@ -11514,6 +12144,14 @@ impl Machine {
             ns.taint.begin_async();
         }
         let op = self.pending.remove(i);
+        // S-MBAR-SCOPE: its shared-memory accesses see its issuer's shared-memory-only
+        // happens-before at issue (restored when the completion returns).
+        let saved = std::mem::replace(&mut self.cur_sh, op.sh.clone());
+        self.complete_async_op(op);
+        self.cur_sh = saved;
+    }
+
+    fn complete_async_op(&mut self, op: AsyncOp) {
         let cta = match &op.kind {
             AsyncKind::Tma { cta, .. }
             | AsyncKind::Mma { cta, .. }
@@ -11655,7 +12293,7 @@ impl Machine {
                             return;
                         }
                         mb.pending -= 1;
-                        vc_join(&mut mb.cur, &op.vc);
+                        self.mbar_note_async(cta, mbar, op.issuer, op.actor, &op.vc);
                         self.mbar_maybe_complete(cta, mbar);
                     }
                 }
@@ -11670,6 +12308,7 @@ impl Machine {
     fn push_remote(
         &mut self,
         t: usize,
+        actor: u32,
         pc: u32,
         cta: u16,
         mbar: u32,
@@ -11678,6 +12317,7 @@ impl Machine {
         store: Vec<(u32, u32)>,
         vc: VC,
         vis: VC,
+        rels: Vec<MbRel>,
     ) {
         let w = self.threads[t].warp;
         let threads = &self.threads;
@@ -11687,16 +12327,29 @@ impl Machine {
                 && matches!(o.kind, AsyncKind::Remote { cta: c, mbar: b, fresh: true, .. }
                     if c == cta && b == mbar)
         }) {
+            let me = vc_single(t as u32, vc_get(&vc, t as u32));
             if let AsyncKind::Remote {
                 tx: ot,
                 n: on,
                 store: os,
+                rels: or,
+                land: ol,
                 ..
             } = &mut o.kind
             {
                 *ot += tx;
                 *on += n;
                 os.extend(store);
+                vc_join(ol, &me);
+                for r in rels {
+                    match or.iter_mut().find(|x| {
+                        (x.cta, x.scope, x.rel_scope, x.cover, x.asyncx)
+                            == (r.cta, r.scope, r.rel_scope, r.cover, r.asyncx)
+                    }) {
+                        Some(x) => vc_join(&mut x.rel, &r.rel),
+                        None => or.push(r),
+                    }
+                }
             }
             vc_join(&mut o.vc, &vc);
             vc_join(&mut o.vis, &vis);
@@ -11704,9 +12357,11 @@ impl Machine {
         }
         // ASSUME(S-REMOTE-INFLIGHT): one warp's remote operations on one mbarrier land in
         // issue order (PTX coherence: program-ordered morally strong RMWs on one location).
+        let land = vc_single(t as u32, vc_get(&vc, t as u32));
         self.push_async(AsyncOp {
+            sh: vec![],
             fifo: Some(remote_pipe(w, cta, mbar)),
-            actor: t as u32,
+            actor,
             vc,
             issuer: t as u32,
             pc,
@@ -11717,6 +12372,8 @@ impl Machine {
                 n,
                 store,
                 fresh: true,
+                rels,
+                land,
             },
             vis,
         });
@@ -11727,12 +12384,20 @@ impl Machine {
     /// CTA's last thread writes: the explorer orders deliveries against the target's exit,
     /// and deliveries to one CTA stay independent of each other.
     fn complete_remote(&mut self, op: &AsyncOp, drained: bool) {
+        let saved = std::mem::replace(&mut self.cur_sh, op.sh.clone());
+        self.complete_remote_op(op, drained);
+        self.cur_sh = saved;
+    }
+
+    fn complete_remote_op(&mut self, op: &AsyncOp, drained: bool) {
         let AsyncKind::Remote {
             cta,
             mbar,
             tx,
             n,
             ref store,
+            ref rels,
+            ref land,
             ..
         } = op.kind
         else {
@@ -11761,6 +12426,10 @@ impl Machine {
                 4,
                 Some(&x.to_le_bytes()),
             );
+        }
+        // A plain remote store (SASS `ST.E` into another CTA): no mbarrier.
+        if mbar == NO_MBAR {
+            return;
         }
         self.rec(0, cta as u32, mbar as u64, mbar as u64 + 8, false);
         if let Err(e) = self.mbar_atomic(op.actor, &op.vc, &op.vis, op.pc, cta, mbar) {
@@ -11791,13 +12460,12 @@ impl Machine {
         if self.launch.remote_fifo && store.is_empty() {
             self.fifo_transfer(op, cta, mbar, phase, drained);
         }
+        // ASSUME(S-MBAR-SCOPE): what it releases was fixed at issue (st.async: a cluster-scope
+        // release by its issuer; a SASS expect_tx / complete_tx (.A0TR / .A0TX) on another
+        // CTA's mbarrier: relaxed, as in the PTX ISA). A waiter that observes the phase sees
+        // it landed (S-CLUSTER-LIFE, `Thread::landed`).
+        self.mbar_note_land(cta, mbar, rels.clone(), land);
         if n == 0 {
-            // st.async's complete_tx releases. ASSUME(S-MBAR): so does a SASS expect_tx /
-            // complete_tx (.A0TR / .A0TX) on another CTA's mbarrier, stronger than the PTX ISA's
-            // relaxed: the waiter must see it landed (S-CLUSTER-LIFE), which the clock carries.
-            // The PTX front refuses that case (MbarArrive).
-            let mb = self.mbars.get_mut(&(cta, mbar)).unwrap();
-            vc_join(&mut mb.cur, &op.vc);
             self.mbar_maybe_complete(cta, mbar);
         }
         for i in 0..n {
@@ -11821,7 +12489,9 @@ impl Machine {
                 return;
             }
             mb.pending -= 1;
-            vc_join(&mut mb.cur, &op.vc);
+            if i > 0 {
+                self.mbar_note_land(cta, mbar, rels.clone(), land);
+            }
             self.mbar_maybe_complete(cta, mbar);
         }
     }
@@ -11838,6 +12508,15 @@ impl Machine {
         {
             let op = self.pending.remove(i);
             self.complete_remote(&op, true);
+            // A plain remote store's own actor (SASS): delivered now, so ordered before the
+            // thread's later steps and releases.
+            if op.actor != t as u32 {
+                let c = vc_get(&op.vc, op.actor);
+                let th = self.threads[t].make_mut();
+                if vc_get(&th.vc, op.actor) < c {
+                    vc_join(&mut th.vc, &vc_single(op.actor, c));
+                }
+            }
         }
         // Delivered earlier as async steps: this release would have drained them, so they
         // are ordered before it; the target must exit after it (`remote`, S-CLUSTER-LIFE).
@@ -13417,6 +14096,10 @@ impl Machine {
     /// fence.proxy.async after the store and the fence happens-before the async operation.
     // ASSUME(S-PROXY): see ASSUMPTIONS.md
     pub fn proxy_check(&mut self, cta: u16, off: u32, n: usize, vc: &VC, pc: u32, what: &str) {
+        // ASSUME(S-MBAR-SCOPE): the async op's issuer's shared-memory-only happens-before
+        // (`cur_sh`) orders the fences too.
+        let aug = self.local_vc(u32::MAX, vc, Some(cta));
+        let vc = aug.as_ref().unwrap_or(vc);
         for i in 0..n {
             let Some(w) = self.smem[cta as usize].sh.get(off as usize + i).w else {
                 continue;
@@ -13884,7 +14567,7 @@ impl Machine {
         } else {
             mb.pending -= 1;
         }
-        vc_join(&mut mb.cur, &op.vc);
+        self.mbar_note_async(cta, mbar, op.issuer, op.actor, &op.vc);
         self.mbar_maybe_complete(cta, mbar);
     }
 
@@ -14143,7 +14826,7 @@ impl Machine {
             }
             Some(mb) => {
                 mb.tx -= bytes;
-                vc_join(&mut mb.cur, &op.vc);
+                self.mbar_note_async(cta, mbar, op.issuer, op.actor, &op.vc);
                 self.mbar_maybe_complete(cta, mbar);
             }
         }
@@ -14511,6 +15194,24 @@ pub fn vip_where(loc: Loc) -> Option<(u32, u64)> {
 
 /// ASSUME(S-REMOTE-INFLIGHT): remote arrivals / st.async are in flight until delivered
 /// (`PTXV_REMOTE_ATOMIC=1`: they land at issue, as before).
+/// S-MBAR-SCOPE: `PTXV_MBAR_SCOPE_LOG=1` logs every mbarrier update a successful wait does
+/// not synchronize with for want of scope (stderr), for corpus audits.
+fn mbar_scope_log() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PTXV_MBAR_SCOPE_LOG").is_ok_and(|v| v == "1"))
+}
+
+/// Join `v` into the entry of `c` (S-MBAR-SCOPE shared-memory-only happens-before).
+fn sh_add(sh: &mut Vec<(Cover, VC)>, c: Cover, v: &VC) {
+    match sh.iter_mut().find(|x| x.0 == c) {
+        Some(x) => vc_join(&mut x.1, v),
+        None => {
+            sh.push((c, v.clone()));
+            sh.sort_by_key(|x| x.0);
+        }
+    }
+}
+
 fn remote_inflight() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("PTXV_REMOTE_ATOMIC").is_err())
@@ -14596,6 +15297,9 @@ fn alias_bracket(code: &[ptxv_ir::Inst], pc: usize) -> bool {
 
 /// The in-order pipe (`AsyncOp::fifo`) of warp `w`'s remote operations on CTA `cta`'s
 /// mbarrier at `mbar`; disjoint from the tcgen05 pipes (thread ids).
+/// The `mbar` of an `AsyncKind::Remote` that is a plain remote store (S-REMOTE-INFLIGHT).
+pub const NO_MBAR: u32 = u32::MAX;
+
 pub fn remote_pipe(w: u32, cta: u16, mbar: u32) -> u64 {
     1 << 63 | (w as u64) << 48 | (cta as u64) << 32 | mbar as u64
 }

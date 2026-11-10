@@ -50,7 +50,8 @@ buffer = "D"
 [[variants]]
 id = "good"
 summary = "correct kernel"
-expect = ["clean"]
+expect = ["contract"]
+expect_sass = ["clean"]
 
 [[variants]]
 id = "B12"
@@ -58,4 +59,5 @@ summary = "the multicast commit omits the peer CTA (ctaMask 0b01): the peer neve
 marker = "@B12"
 find = "mov.b16         %rs0, 3"
 replace = "mov.b16         %rs0, 1"
-expect = ["deadlock"]
+expect = ["contract", "deadlock"]
+expect_sass = ["deadlock"]

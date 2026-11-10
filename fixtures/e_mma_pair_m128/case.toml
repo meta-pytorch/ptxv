@@ -55,7 +55,8 @@ value = 0x8080490
 
 [[variants]]
 id = "good"
-expect = ["clean"]
+expect = ["contract"]
+expect_sass = ["clean"]
 
 [[variants]]
 id = "B12"

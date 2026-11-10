@@ -84,4 +84,5 @@ buffer = "SFB"
 
 [[variants]]
 id = "good"
-expect = ["clean"]
+expect = ["contract"]
+expect_sass = ["clean"]

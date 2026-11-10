@@ -144,7 +144,8 @@ const MUST_CERTIFY: &[(&str, &str, &str)] = &[
     ("r1c_cluster", "good", "sass"),
     ("r1c_2sm", "good", "sass"),
     // cta_group::2 M = 128 (Layout B) and M = 128 N = 8 (probes/tc_m128).
-    ("e_mma_pair_m128", "good", "ptx"),
+    // PTX e_mma_pair_m128: an S-MBAR-SCOPE contract finding (the leader's commit waited at
+    // .cta scope in the peer), which the certificate refuses.
     ("e_mma_pair_m128", "good", "sass"),
     ("e_mma_m128_n8", "good", "ptx"),
     ("e_mma_m128_n8", "good", "sass"),
@@ -428,7 +429,7 @@ fn certified_outputs_match_exploration() {
         ("e_elect", "good", "ptx"),
         ("e_sym", "good", "sass"),
         ("r1e_pdl", "good", "ptx"),
-        ("r1c_cluster", "good", "ptx"),
+        // (r1c_cluster PTX: now an S-MBAR-SCOPE contract finding, refused by the certificate.)
         ("s_alu", "good", "sass"),
         ("e_spin_smem", "good", "ptx"),
         ("r1f_pingpong", "good", "sass"),

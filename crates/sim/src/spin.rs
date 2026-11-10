@@ -165,12 +165,13 @@ pub fn retry_shape(m: &Machine, w: usize) -> Result<Option<(usize, usize)>, Stri
         addr,
         parity,
         bit31,
+        ..
     } = &code[w].op
     else {
         return Ok(None);
     };
     let poll_regs = operand_regs(addr, parity);
-    let same_poll = |op: &Op| matches!(op, Op::MbarTryWait { d: d2, addr: a2, parity: p2, bit31: b2 } if d2 == d && a2 == addr && p2 == parity && b2 == bit31);
+    let same_poll = |op: &Op| matches!(op, Op::MbarTryWait { d: d2, addr: a2, parity: p2, bit31: b2, .. } if d2 == d && a2 == addr && p2 == parity && b2 == bit31);
     // 1. Up to the deciding branch: pure, does not read d, keeps the poll operands.
     let mut pc = w + 1;
     let (stub, cont) = loop {

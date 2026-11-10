@@ -408,6 +408,7 @@ impl Machine {
         vc_join(&mut vc, &self.nic.as_ref().unwrap().qps[q].last);
         vc_tick(&mut vc, w.actor);
         self.pending.push(AsyncOp {
+            sh: vec![],
             fifo: None,
             actor: w.actor,
             vc,

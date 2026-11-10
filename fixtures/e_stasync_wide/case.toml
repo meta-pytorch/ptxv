@@ -21,7 +21,8 @@ buffer = "out"
 
 [[variants]]
 id = "good"
-expect = ["clean"]
+expect = ["contract"]
+expect_sass = ["clean"]
 hw_note = "GB300 matches the simulator bitwise, 200/200 (2026-11-05)"
 
 [[variants]]

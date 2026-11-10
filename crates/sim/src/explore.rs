@@ -1795,6 +1795,7 @@ pub(crate) fn peekwait_set(m: &Machine) -> BTreeSet<u32> {
             addr,
             parity,
             bit31,
+            ..
         } = &inst.op
         else {
             continue;
@@ -1856,6 +1857,7 @@ pub(crate) fn peekwait_set(m: &Machine) -> BTreeSet<u32> {
                 addr: a2,
                 parity: p2,
                 bit31: b2,
+                ..
             } = &i.op
             {
                 if d2 == d
@@ -3438,6 +3440,7 @@ fn sync_ample(
         }
         let bar = match &o.kind {
             AsyncKind::Tma { mbar_cta, mbar, .. } => Some((*mbar_cta as u32, *mbar as u64)),
+            AsyncKind::Remote { mbar, .. } if *mbar == crate::exec::NO_MBAR => None,
             AsyncKind::Commit { cta, mbar }
             | AsyncKind::Clc { cta, mbar, .. }
             | AsyncKind::Remote { cta, mbar, .. }
@@ -3597,6 +3600,7 @@ fn sync_ample(
             }
             match &o.kind {
                 AsyncKind::Tma { mbar_cta, mbar, .. } => e.push((*mbar_cta as u32, *mbar as u64)),
+                AsyncKind::Remote { mbar, .. } if *mbar == crate::exec::NO_MBAR => {}
                 AsyncKind::Commit { cta, mbar }
                 | AsyncKind::Clc { cta, mbar, .. }
                 | AsyncKind::Remote { cta, mbar, .. }
@@ -7604,6 +7608,7 @@ impl LaWarp {
                 addr,
                 parity,
                 bit31,
+                ..
             } => {
                 if g == Av::K(0) {
                     self.mark(pc);

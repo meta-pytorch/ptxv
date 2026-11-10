@@ -535,6 +535,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
         },
         hw_order: false,
         tc_fence_implied: false,
+        async_mb_dest: false,
         refuted_opt_in,
         nic,
     })

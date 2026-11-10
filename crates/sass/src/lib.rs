@@ -4609,7 +4609,8 @@ fn lower_line(
                     remote: false,
                     count: None,
                     complete: false,
-                    cluster: false,
+                    scope: Scope::Cluster,
+                    release: false,
                 },
                 // `.RED`: arrive.expect_tx on another CTA's mbarrier (shared::cluster address).
                 ["ARRIVE", "TRANS64", "RED"] => Op::MbarArrive {
@@ -4618,7 +4619,8 @@ fn lower_line(
                     remote: true,
                     count: None,
                     complete: false,
-                    cluster: false,
+                    scope: Scope::Cluster,
+                    release: false,
                 },
                 // `.RED.A1T0`: a plain arrival there.
                 ["ARRIVE", "TRANS64", "RED", "A1T0"] if lw.op(2)? == "RZ" => Op::MbarArrive {
@@ -4627,7 +4629,8 @@ fn lower_line(
                     remote: true,
                     count: None,
                     complete: false,
-                    cluster: false,
+                    scope: Scope::Cluster,
+                    release: false,
                 },
                 // `A1T0`: one arrival, no transaction bytes (plain mbarrier.arrive).
                 ["ARRIVE", "TRANS64", "A1T0"] if lw.op(2)? == "RZ" => Op::MbarArrive {
@@ -4636,7 +4639,8 @@ fn lower_line(
                     remote: false,
                     count: None,
                     complete: false,
-                    cluster: false,
+                    scope: Scope::Cluster,
+                    release: false,
                 },
                 // `.ART0` / `.RED.ART0`: the arrival count in the third operand, no transaction
                 // bytes (`mbarrier.arrive [a], count` on a shared::cta / shared::cluster
@@ -4648,7 +4652,8 @@ fn lower_line(
                         remote: mods.len() == 4,
                         count: Some(lw.val(lw.op(2)?, 4)?),
                         complete: false,
-                        cluster: false,
+                        scope: Scope::Cluster,
+                        release: false,
                     }
                 }
                 // `.A0TR` / `.A0TX`: no arrival; expect / complete the transaction bytes
@@ -4659,7 +4664,8 @@ fn lower_line(
                     remote: true,
                     count: Some(Val::Imm(0)),
                     complete: *z == "A0TX",
-                    cluster: false,
+                    scope: Scope::Cluster,
+                    release: false,
                 },
                 // `.RED.A0T1`: no arrival, expect one transaction unit; ptxas emits it before
                 // `ARRIVES.LDGSTSBAR.64.TRANSCNT` for `cp.async.mbarrier.arrive` (no .noinc),
@@ -4670,7 +4676,8 @@ fn lower_line(
                     remote: true,
                     count: Some(Val::Imm(0)),
                     complete: false,
-                    cluster: false,
+                    scope: Scope::Cluster,
+                    release: false,
                 },
                 _ => bail!(lw.err("SYNCS.ARRIVE variant not modeled")),
             }
@@ -4686,6 +4693,9 @@ fn lower_line(
             addr: lw.addr(lw.op(1)?)?,
             parity: lw.val(lw.op(2)?, 4)?,
             bit31: true,
+            // ASSUME(S-MBAR-SCOPE): no scope bits; ptxas emits PHASECHK for every scope.
+            scope: Scope::Cluster,
+            acquire: true,
         },
         // Proxy fences by state space (ptxas, sm_103a): `fence.proxy.async[.shared::cta|
         // .shared::cluster]` is MEMBAR.ALL.<CTA|GPU> + `FENCE.VIEW.ASYNC.S`,
@@ -4886,7 +4896,12 @@ fn lower_line(
         }
         // Error barriers (drain outstanding memory errors before a cluster arrive): no effect
         // on the memory model.
-        "ERRBAR" | "CGAERRBAR" => Op::Nop,
+        "ERRBAR" => Op::Nop,
+        // ASSUME(S-REMOTE-INFLIGHT): waits for the thread's outstanding remote (DSMEM)
+        // operations; ptxas emits it after MEMBAR.ALL.GPU for cluster-scope releases.
+        "CGAERRBAR" => Op::Fence {
+            kind: FenceKind::CgaErrBar,
+        },
         "SEL" | "USEL" => Op::Sel {
             d: lw.dst(lw.op(0)?)?,
             a: lw.val(lw.op(1)?, 4)?,

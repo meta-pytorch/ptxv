@@ -39,14 +39,17 @@ buffer = "out"
 [[variants]]
 id = "good"
 summary = "fix: producer_tail drains every stage's empty barrier before exit (K=2 rows)"
-expect = ["clean"]
+expect = ["contract"]
+expect_sass = ["clean"]
+# PTX: S-MBAR-SCOPE: the peer's st.async complete-tx waited at .cta scope (contract)
 
 [[variants]]
 id = "bug"
 summary = "pre-fix: drain only the last-used stage's empty barrier (K=2 rows)"
 marker = "@EARLIER"
 replace = "<delete>"
-expect = ["violation"]
+expect = ["contract", "violation"]
+expect_sass = ["violation"]
 hw_note = "cluster-lifetime UB if an earlier-stage remote arrive is still in flight at exit (S-REMOTE-INFLIGHT); GB300 output correct 1000/1000 (a late arrive into an exited CTA leaves no visible trace)"
 
 [[variants]]
@@ -55,7 +58,9 @@ summary = "fix, K=3 rows (stage 0 reused)"
 marker = "@K"
 find = "%r14, 2;"
 replace = "%r14, 3;"
-expect = ["clean"]
+expect = ["race"]
+expect_sass = ["clean"]
+# PTX: S-MBAR-SCOPE: stage 0's give-back is a .release.cta remote arrive, waited at .acquire.cta in the other CTA: the reader's ld.shared and the producer's next st.async into the slot race (PTX ISA 8.7); SASS: the bare remote SYNCS.ARRIVE orders the peer's own shared-memory reads
 
 [[variants]]
 id = "bug_k3"
@@ -64,7 +69,8 @@ marker = "@K"
 find = "%r14, 2;"
 replace = "%r14, 3;"
 edits = [{ marker = "@EARLIER", replace = "<delete>" }]
-expect = ["violation"]
+expect = ["race", "violation"]
+expect_sass = ["violation"]
 
 [[variants]]
 id = "nodrain"
@@ -72,4 +78,5 @@ summary = "control: no exit drain at all (peers' last remote arrives unordered w
 marker = "@EARLIER"
 replace = "<delete>"
 edits = [{ marker = "@LAST", replace = "<delete>" }]
-expect = ["violation"]
+expect = ["contract", "violation"]
+expect_sass = ["violation"]

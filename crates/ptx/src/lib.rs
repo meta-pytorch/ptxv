@@ -6926,10 +6926,31 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         scope_of(mods).ok_or_else(|| lw.err("fence without a scope"))?,
                     ),
                 }
+            } else if mods == ["release", "sync_restrict::shared::cta", "cluster"] {
+                // ASSUME(S-MBAR-SCOPE): releases only the thread's operations on its own
+                // CTA's shared memory (ptxas: MEMBAR.ALL.CTA; FENCE.VIEW.ASYNC.S).
+                Op::Fence {
+                    kind: FenceKind::ReleaseSmemCta,
+                }
+            } else if mods == ["acquire", "sync_restrict::shared::cluster", "cluster"] {
+                // ASSUME(S-MBAR-SCOPE): acquires for shared-memory operations only (ptxas:
+                // nothing).
+                Op::Fence {
+                    kind: FenceKind::AcquireSmemCluster,
+                }
+            } else if mods.iter().any(|m| m.starts_with("sync_restrict")) {
+                bail!(lw.err("this fence.sync_restrict form is not modeled"))
             } else if mods.first() == Some(&"release") {
                 // fence.release.<scope> (PTX 8.6; ptxas: MEMBAR at the scope, as SASS lifts it).
+                // The scope is required (`fence{.sem}.scope`); any other qualifier is refused
+                // rather than read as an unrestricted release.
+                if mods.len() != 2 {
+                    bail!(lw.err("this fence.release form is not modeled"));
+                }
                 Op::Fence {
-                    kind: FenceKind::Release(scope_of(mods).unwrap_or(Scope::Sys)),
+                    kind: FenceKind::Release(
+                        scope_of(mods).ok_or_else(|| lw.err("fence.release without a scope"))?,
+                    ),
                 }
             } else if mods.first() == Some(&"acquire") {
                 // fence.acquire.sys (ptxas: CCTL.IVALL): FenceKind::Acquire. `.cta` / `.cluster`
@@ -6991,7 +7012,25 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 encoded: false,
             },
             Some("arrive") => {
-                // ASSUME(S-SCOPE): .release.cta / .release.cluster are not distinguished.
+                // `.sem` defaults to `.release`, `.scope` to `.cta` (PTX ISA 9.7.15.16.16);
+                // ASSUME(S-MBAR-SCOPE): the wait synchronizes only with updates it is
+                // morally strong with.
+                if let Some(x) = mods[1..].iter().find(|x| {
+                    !matches!(
+                        **x,
+                        "release"
+                            | "relaxed"
+                            | "cta"
+                            | "cluster"
+                            | "expect_tx"
+                            | "shared"
+                            | "shared::cta"
+                            | "shared::cluster"
+                            | "b64"
+                    )
+                }) {
+                    bail!(lw.err(format!("mbarrier.arrive: modifier .{x} not modeled")));
+                }
                 let remote = has("shared::cluster");
                 let tx = if has("expect_tx") {
                     Some(lw.val(op_n(2)?)?)
@@ -7009,7 +7048,12 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     remote,
                     count,
                     complete: false,
-                    cluster: has("release") && has("cluster"),
+                    scope: if has("cluster") {
+                        Scope::Cluster
+                    } else {
+                        Scope::Cta
+                    },
+                    release: !has("relaxed"),
                 }
             }
             // `mbarrier.expect_tx` / `complete_tx [.relaxed] [.cta | .cluster] .shared{::cta,
@@ -7036,17 +7080,47 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     remote: has("shared::cluster"),
                     count: Some(Val::Imm(0)),
                     complete: m == "complete_tx",
-                    cluster: false,
+                    scope: if has("cluster") {
+                        Scope::Cluster
+                    } else {
+                        Scope::Cta
+                    },
+                    release: false,
                 }
             }
             // test_wait: the non-suspending form, alike for the model (as SASS PHASECHK without
             // .TRYWAIT; E-SPIN).
-            Some("try_wait" | "test_wait") if has("parity") => Op::MbarTryWait {
-                d: lw.pred_dst(op_n(0)?)?,
-                addr: lw.addr(op_n(1)?)?,
-                parity: lw.val(op_n(2)?)?,
-                bit31: false,
-            },
+            // `.sem` defaults to `.acquire`, `.scope` to `.cta` (PTX ISA 9.7.15.16.19).
+            // ASSUME(S-MBAR-SCOPE)
+            Some("try_wait" | "test_wait") if has("parity") => {
+                if let Some(x) = mods[1..].iter().find(|x| {
+                    !matches!(
+                        **x,
+                        "parity"
+                            | "acquire"
+                            | "relaxed"
+                            | "cta"
+                            | "cluster"
+                            | "shared"
+                            | "shared::cta"
+                            | "b64"
+                    )
+                }) {
+                    bail!(lw.err(format!("mbarrier.{}: modifier .{x} not modeled", mods[0])));
+                }
+                Op::MbarTryWait {
+                    d: lw.pred_dst(op_n(0)?)?,
+                    addr: lw.addr(op_n(1)?)?,
+                    parity: lw.val(op_n(2)?)?,
+                    bit31: false,
+                    scope: if has("cluster") {
+                        Scope::Cluster
+                    } else {
+                        Scope::Cta
+                    },
+                    acquire: !has("relaxed"),
+                }
+            }
             _ => bail!(lw.err("this mbarrier op is not modeled yet")),
         },
         // Non-bulk cp.async (SASS LDGSTS / LDGDEPBAR / DEPBAR / ARRIVES.LDGSTSBAR):
@@ -7157,7 +7231,8 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     remote: false,
                     count: Some(Val::Imm(0)),
                     complete: false,
-                    cluster: false,
+                    scope: Scope::Cta,
+                    release: false,
                 }
             }
         }
@@ -8305,5 +8380,74 @@ mod tests {
                 "{l}"
             );
         }
+    }
+
+    /// S-MBAR-SCOPE: mbarrier arrive / wait scopes and the sync_restrict fences are parsed
+    /// exactly; a fence.release without its scope, or with a qualifier the model does not
+    /// know, is refused (no default stronger than what the kernel asked for).
+    #[test]
+    fn mbarrier_scopes_and_sync_restrict_fences() {
+        let arrive = |l: &str| match &ops(l).unwrap()[..] {
+            [Op::MbarArrive { scope, release, .. }] => (*scope, *release),
+            o => panic!("{l}: {o:?}"),
+        };
+        assert_eq!(
+            arrive("mbarrier.arrive.shared::cluster.b64 _, [%r1];"),
+            (Scope::Cta, true)
+        );
+        assert_eq!(
+            arrive("mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%r1];"),
+            (Scope::Cluster, true)
+        );
+        assert_eq!(
+            arrive("mbarrier.arrive.relaxed.cluster.shared::cluster.b64 _, [%r1];"),
+            (Scope::Cluster, false)
+        );
+        assert_eq!(
+            arrive("mbarrier.arrive.expect_tx.relaxed.cluster.shared::cta.b64 _, [%r1], 4;"),
+            (Scope::Cluster, false)
+        );
+        assert_eq!(
+            arrive("mbarrier.complete_tx.relaxed.cluster.shared::cta.b64 [%r1], 4;"),
+            (Scope::Cluster, false)
+        );
+        assert!(ops("mbarrier.arrive.noComplete.shared::cta.b64 %rd1, [%r1], 2;").is_err());
+        let wait = |l: &str| match &ops(l).unwrap()[..] {
+            [Op::MbarTryWait { scope, acquire, .. }] => (*scope, *acquire),
+            o => panic!("{l}: {o:?}"),
+        };
+        assert_eq!(
+            wait("mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r1], 0;"),
+            (Scope::Cta, true)
+        );
+        assert_eq!(
+            wait("mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p1, [%r1], 0;"),
+            (Scope::Cluster, true)
+        );
+        assert_eq!(
+            wait("mbarrier.test_wait.parity.relaxed.cluster.shared::cta.b64 %p1, [%r1], 0;"),
+            (Scope::Cluster, false)
+        );
+        let fence = |l: &str| match &ops(l).unwrap()[..] {
+            [Op::Fence { kind }] => *kind,
+            o => panic!("{l}: {o:?}"),
+        };
+        assert_eq!(
+            fence("fence.release.sync_restrict::shared::cta.cluster;"),
+            FenceKind::ReleaseSmemCta
+        );
+        assert_eq!(
+            fence("fence.acquire.sync_restrict::shared::cluster.cluster;"),
+            FenceKind::AcquireSmemCluster
+        );
+        assert_eq!(
+            fence("fence.release.cluster;"),
+            FenceKind::Release(Scope::Cluster)
+        );
+        assert!(ops("fence.release;").is_err());
+        assert!(ops("fence.release.sync_restrict::shared::cluster.cluster;").is_err());
+        assert!(
+            ops("fence.proxy.async::generic.release.sync_restrict::shared::cta.cluster;").is_err()
+        );
     }
 }

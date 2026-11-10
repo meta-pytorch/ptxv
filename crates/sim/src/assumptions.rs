@@ -599,6 +599,13 @@ pub const REGISTRY: &[Assumption] = &[
         applies: mbar,
     },
     Assumption {
+        id: "S-MBAR-SCOPE",
+        kind: "code",
+        status: "argued",
+        title: "an mbarrier wait synchronizes only with the phase's updates it is morally strong with; SASS SYNCS / PHASECHK scopes from ptxas's lowering",
+        applies: |k| cluster(k) && mbar(k),
+    },
+    Assumption {
         id: "S-MBAR-MEM",
         kind: "code",
         status: "validated",
@@ -779,7 +786,7 @@ pub const REGISTRY: &[Assumption] = &[
         id: "S-SCOPE",
         kind: "code",
         status: "validated",
-        title: "strong accesses and fences synchronize by PTX scope rules; mbarrier scopes treated as sufficient",
+        title: "strong accesses and fences synchronize by PTX scope rules",
         applies: |k| {
             cluster(k)
                 || any(k, |o| {
@@ -804,7 +811,7 @@ pub const REGISTRY: &[Assumption] = &[
         id: "S-CLUSTER-LIFE",
         kind: "code",
         status: "argued",
-        title: "remote smem accesses must happen-before some exit of the target CTA",
+        title: "remote smem accesses must happen-before some exit of the target CTA, or land on an mbarrier phase it waited on",
         applies: cluster,
     },
     Assumption {
