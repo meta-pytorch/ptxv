@@ -34,68 +34,112 @@ from pathlib import Path
 NCNT, NDATA, NOUT = 2, 4, 8
 
 
-def gen_actor(rng: random.Random, a: int, nact: int) -> list[tuple]:
+def gen_actor(rng: random.Random, a: int, nact: int, shared: bool) -> list[tuple]:
+    """A random program for actor `a`. Memory operands name a space: "g" (global, gpu scope)
+    or "s" (shared, cta scope; only when the actor's CTA has several warps)."""
     ops = []
     last_atom = False
+    setc = 0
+    sp = lambda: "s" if shared and rng.random() < 0.5 else "g"  # noqa: E731
     for _ in range(rng.randint(1, 6)):
         kind = rng.choices(
-            ["std", "ldd", "add", "poll", "fence", "if", "reset"],
-            [4, 3, 5, 3, 2, 3 if last_atom else 0, 0.3],
+            [
+                "std",
+                "ldd",
+                "add",
+                "poll",
+                "fence",
+                "if",
+                "reset",
+                "setc",
+                "arrive",
+                "mwait",
+                "peek",
+            ],
+            [4, 3, 5, 3, 2, 3 if last_atom else 0, 0.3, 0.7, 1.5, 1, 1],
         )[0]
         if kind == "std":
             ops.append(
                 (
                     "std",
+                    sp(),
                     rng.randrange(NDATA),
-                    rng.randint(1, 9),
-                    rng.choice(["", ".relaxed.gpu", ".release.gpu"]),
+                    rng.randint(1, 3),
+                    rng.choice(["", "", ".relaxed", ".release"]),
                 )
             )
         elif kind == "ldd":
             ops.append(
                 (
                     "ldd",
+                    sp(),
                     rng.randrange(NDATA),
-                    rng.choice(["", ".relaxed.gpu", ".acquire.gpu"]),
+                    rng.choice(["", ".relaxed", ".acquire"]),
+                    rng.random() < 0.8,
                 )
             )
         elif kind == "add":
             used = rng.random() < 0.6
             sem = rng.choice(
-                [".relaxed.gpu", ".release.gpu"]
-                + ([".acq_rel.gpu", ".acquire.gpu"] if used else [])
+                [".relaxed", ".release"] + ([".acq_rel", ".acquire"] if used else [])
             )
             ops.append(
-                ("add", rng.randrange(NCNT), rng.choice([1, 1, 1, 2]), used, sem)
+                ("add", sp(), rng.randrange(NCNT), rng.choice([1, 1, 1, 2]), used, sem)
             )
             last_atom = last_atom or used
         elif kind == "poll":
             ops.append(
                 (
                     "poll",
+                    sp(),
                     rng.randrange(NCNT),
                     rng.choice(["ge", "ge", "eq"]),
                     rng.randint(1, nact + 1),
-                    rng.choice([".acquire.gpu", ".acquire.gpu", ".relaxed.gpu"]),
+                    rng.choice([".acquire", ".acquire", ".relaxed"]),
                 )
             )
         elif kind == "fence":
-            ops.append(("fence",))
+            ops.append(("fence", rng.choice(["gpu", "cta"]) if shared else "gpu"))
         elif kind == "if":
             sub = rng.choice(
                 [
                     (
                         "std",
+                        sp(),
                         rng.randrange(NDATA),
-                        rng.randint(1, 9),
-                        rng.choice(["", ".release.gpu"]),
+                        rng.randint(1, 3),
+                        rng.choice(["", ".release"]),
                     ),
-                    ("ldd", rng.randrange(NDATA), rng.choice(["", ".acquire.gpu"])),
+                    (
+                        "ldd",
+                        sp(),
+                        rng.randrange(NDATA),
+                        rng.choice(["", ".acquire"]),
+                        True,
+                    ),
                 ]
             )
             ops.append(("if", rng.randint(0, nact), sub))
         elif kind == "reset":
-            ops.append(("reset", rng.randrange(NCNT)))
+            ops.append(("reset", sp(), rng.randrange(NCNT)))
+        elif kind == "arrive":
+            ops.append(("arrive", rng.choice(["", ".release"])))
+        elif kind == "mwait":
+            ops.append(("mwait",))
+        elif kind == "peek":
+            ops.append(("peek", rng.choice(["store", "skip", "unused"])))
+        elif kind == "setc":
+            # A strong store of an increasing value (a ring counter when one actor owns it).
+            setc += rng.randint(1, 2)
+            ops.append(
+                (
+                    "setc",
+                    sp(),
+                    rng.randrange(NCNT),
+                    setc,
+                    rng.choice([".release", ".relaxed"]),
+                )
+            )
     return ops
 
 
@@ -110,37 +154,63 @@ class Emit:
         return f"L{self.lbl}"
 
 
+def addr(space: str, base: str, i: int) -> str:
+    return f"[{'%rs' if space == 's' else '%r'}{base}+{4 * i}]"
+
+
 def emit_op(e: Emit, a: int, op: tuple):
     k = op[0]
     out_addr = lambda: f"[%rdo+{4 * (a * NOUT + e.slot)}]"  # noqa: E731
+
+    def mem(space, which, i):
+        if space == "s":
+            return f"[{'%rsd' if which == 'd' else '%rsc'}+{4 * i}]"
+        return f"[{'%rdd' if which == 'd' else '%rdc'}+{4 * i}]"
+
+    def sem(space, s):
+        return f"{s}.{'cta' if space == 's' else 'gpu'}" if s else ""
+
+    def st(space):
+        return "shared" if space == "s" else "global"
+
     if k == "std":
-        _, i, v, sem = op
+        _, space, i, v, sm = op
         e.lines.append(f"    mov.u32 %rv, {v};")
-        e.lines.append(f"    st{sem}.global.u32 [%rdd+{4 * i}], %rv;")
+        e.lines.append(
+            f"    st{sem(space, sm)}.{st(space)}.u32 {mem(space, 'd', i)}, %rv;"
+        )
     elif k == "ldd":
-        _, i, sem = op
-        e.lines.append(f"    ld{sem}.global.u32 %rv, [%rdd+{4 * i}];")
-        if e.slot < NOUT:
+        _, space, i, sm, keep = op
+        e.lines.append(
+            f"    ld{sem(space, sm)}.{st(space)}.u32 %rv, {mem(space, 'd', i)};"
+        )
+        if keep and e.slot < NOUT:
             e.lines.append(f"    st.global.u32 {out_addr()}, %rv;")
             e.slot += 1
     elif k == "add":
-        _, c, v, used, sem = op
+        _, space, c, v, used, sm = op
         if used:
-            e.lines.append(f"    atom{sem}.global.add.u32 %rt, [%rdc+{4 * c}], {v};")
+            e.lines.append(
+                f"    atom{sem(space, sm)}.{st(space)}.add.u32 %rt, {mem(space, 'c', c)}, {v};"
+            )
             if e.slot < NOUT:
                 e.lines.append(f"    st.global.u32 {out_addr()}, %rt;")
                 e.slot += 1
         else:
-            e.lines.append(f"    red{sem}.global.add.u32 [%rdc+{4 * c}], {v};")
+            e.lines.append(
+                f"    red{sem(space, sm)}.{st(space)}.add.u32 {mem(space, 'c', c)}, {v};"
+            )
     elif k == "poll":
-        _, c, cond, v, sem = op
+        _, space, c, cond, v, sm = op
         lp = e.label()
         e.lines.append(f"{lp}:")
-        e.lines.append(f"    ld{sem}.global.u32 %rv, [%rdc+{4 * c}];")
+        e.lines.append(
+            f"    ld{sem(space, sm)}.{st(space)}.u32 %rv, {mem(space, 'c', c)};"
+        )
         e.lines.append(f"    setp.{'lt' if cond == 'ge' else 'ne'}.u32 %pp, %rv, {v};")
         e.lines.append(f"    @%pp bra {lp};")
     elif k == "fence":
-        e.lines.append("    fence.acq_rel.gpu;")
+        e.lines.append(f"    fence.acq_rel.{op[1]};")
     elif k == "if":
         _, v, sub = op
         sk = e.label()
@@ -149,9 +219,38 @@ def emit_op(e: Emit, a: int, op: tuple):
         emit_op(e, a, sub)
         e.lines.append(f"{sk}:")
     elif k == "reset":
-        _, c = op
+        _, space, c = op
         e.lines.append("    mov.u32 %rv, 0;")
-        e.lines.append(f"    st.relaxed.gpu.global.u32 [%rdc+{4 * c}], %rv;")
+        e.lines.append(
+            f"    st{sem(space, '.relaxed')}.{st(space)}.u32 {mem(space, 'c', c)}, %rv;"
+        )
+    elif k == "arrive":
+        e.lines.append(f"    mbarrier.arrive{op[1]}.shared::cta.b64 %rdx, [%rmb];")
+    elif k in ("mwait", "peek"):
+        if k == "peek":
+            e.lines.append(
+                "    mbarrier.try_wait.parity.shared::cta.b64 %pq, [%rmb], 0;"
+            )
+            if op[1] == "store" and e.slot < NOUT:
+                e.lines.append("    selp.u32 %rv, 1, 0, %pq;")
+                e.lines.append(f"    st.global.u32 {out_addr()}, %rv;")
+                e.slot += 1
+            if op[1] != "skip":
+                return
+            sk = e.label()
+            e.lines.append(f"    @%pq bra {sk};")
+        lp = e.label()
+        e.lines.append(f"{lp}:")
+        e.lines.append("    mbarrier.try_wait.parity.shared::cta.b64 %pw, [%rmb], 0;")
+        e.lines.append(f"    @!%pw bra {lp};")
+        if k == "peek":
+            e.lines.append(f"{sk}:")
+    elif k == "setc":
+        _, space, c, v, sm = op
+        e.lines.append(f"    mov.u32 %rv, {v};")
+        e.lines.append(
+            f"    st{sem(space, sm)}.{st(space)}.u32 {mem(space, 'c', c)}, %rv;"
+        )
 
 
 def gen_case(seed: int, d: Path) -> dict:
@@ -159,22 +258,25 @@ def gen_case(seed: int, d: Path) -> dict:
     g = rng.randint(1, 3)
     w = rng.choice([1, 1, 2])
     nact = g * w
-    progs = [gen_actor(rng, a, nact) for a in range(nact)]
-    if rng.random() < 0.6:
+    shared = w > 1
+    progs = [gen_actor(rng, a, nact, shared) for a in range(nact)]
+    if rng.random() < 0.5:
         # Structured skeleton: arrival counter or ticket dispenser, with random noise.
+        spc = "s" if shared and rng.random() < 0.4 else "g"
         for a, p in enumerate(progs):
-            sk = [("std", a % NDATA, a + 1, rng.choice(["", "", ".relaxed.gpu"]))]
+            sk = [("std", spc, a % NDATA, a + 1, rng.choice(["", "", ".relaxed"]))]
             used = rng.random() < 0.5
             sk.append(
                 (
                     "add",
+                    spc,
                     0,
                     rng.choice([1, 1, 2]),
                     used,
                     rng.choice(
-                        [".release.gpu", ".release.gpu", ".relaxed.gpu", ".acq_rel.gpu"]
+                        [".release", ".release", ".relaxed", ".acq_rel"]
                         if used
-                        else [".release.gpu", ".relaxed.gpu"]
+                        else [".release", ".relaxed"]
                     ),
                 )
             )
@@ -187,10 +289,12 @@ def gen_case(seed: int, d: Path) -> dict:
                             [
                                 (
                                     "ldd",
+                                    spc,
                                     rng.randrange(NDATA),
-                                    rng.choice(["", ".acquire.gpu"]),
+                                    rng.choice(["", ".acquire"]),
+                                    True,
                                 ),
-                                ("std", rng.randrange(NDATA), 7, ""),
+                                ("std", spc, rng.randrange(NDATA), 7, ""),
                             ]
                         ),
                     )
@@ -199,50 +303,102 @@ def gen_case(seed: int, d: Path) -> dict:
                 sk.append(
                     (
                         "poll",
+                        spc,
                         0,
                         rng.choice(["ge", "eq"]),
                         0,
-                        rng.choice([".acquire.gpu", ".relaxed.gpu"]),
+                        rng.choice([".acquire", ".relaxed"]),
                     )
                 )
                 sk.append(
-                    ("ldd", rng.randrange(NDATA), rng.choice(["", "", ".acquire.gpu"]))
+                    (
+                        "ldd",
+                        spc,
+                        rng.randrange(NDATA),
+                        rng.choice(["", "", ".acquire"]),
+                        True,
+                    )
                 )
             if rng.random() < 0.3:
-                sk.insert(rng.randint(0, len(sk)), ("fence",))
-            noise = p[: rng.randint(0, 2)]
-            for op in noise:
+                sk.insert(rng.randint(0, len(sk)), ("fence", "gpu"))
+            for op in p[: rng.randint(0, 2)]:
                 sk.insert(rng.randint(0, len(sk)), op)
             progs[a] = sk
     # Poll thresholds within the total each counter can reach (fewer trivial deadlocks).
-    tot = [0] * NCNT
+    tot: dict = {}
     for p in progs:
         for op in p:
             for o in (op, op[2] if op[0] == "if" else ()):
                 if o and o[0] == "add":
-                    tot[o[1]] += o[2]
+                    tot[(o[1], o[2])] = tot.get((o[1], o[2]), 0) + o[3]
+                if o and o[0] == "setc":
+                    tot[(o[1], o[2])] = max(tot.get((o[1], o[2]), 0), o[3])
     for p in progs:
         for i, op in enumerate(p):
             if op[0] == "poll":
-                if tot[op[1]] == 0:
-                    p[i] = ("fence",)
-                else:
-                    p[i] = ("poll", op[1], op[2], rng.randint(1, tot[op[1]]), op[4])
+                t = tot.get((op[1], op[2]), 0)
+                p[i] = (
+                    ("fence", "gpu")
+                    if t == 0
+                    else ("poll", op[1], op[2], op[3], rng.randint(1, t), op[5])
+                )
+    # One mbarrier per CTA, expecting every arrive of the CTA's actors (one phase).
+    narr = [0] * g
+    for a, p in enumerate(progs):
+        narr[a // w] += sum(1 for op in p if op[0] == "arrive")
+    for a, p in enumerate(progs):
+        if narr[a // w] == 0:
+            progs[a] = [
+                ("fence", "gpu") if op[0] in ("mwait", "peek") else op for op in p
+            ]
+    # Barriers: per CTA, every actor's program split into the same number of segments.
+    nbar = rng.choice([0, 0, 1, 2]) if w > 1 else 0
+    cuts = [sorted(rng.randint(0, len(p)) for _ in range(nbar)) for p in progs]
     e = Emit()
     body = []
-    for a, p in enumerate(progs):
-        e.slot = 0
-        e.lines = []
-        sk = f"SKIP{a}"
-        body.append(f"    setp.ne.u32 %pa, %ra, {a};")
-        body.append(f"    @%pa bra {sk};")
-        body.append("    mov.u32 %rt, 0;")
-        for op in p:
-            emit_op(e, a, op)
-        body += e.lines
-        body.append(f"{sk}:")
-    ptx = f"""// fuzz_sync seed {seed}: {g} CTAs x {w} warps, actors = lane 0 of each warp
+    body.append("    setp.ne.u32 %pl, %r1, 0;")
+    body.append("    @%pl bra MB_DONE;")
+    for c in range(g):
+        body.append(f"    setp.eq.u32 %pa, %r4, {c};")
+        body.append(
+            f"    @%pa mbarrier.init.shared::cta.b64 [%rmb], {max(1, narr[c])};"
+        )
+    body.append("MB_DONE:")
+    body.append("    bar.sync 0;")
+    if shared:
+        body.append("    setp.ne.u32 %pl, %r1, 0;")
+        body.append("    @%pl bra INIT_DONE;")
+        for i in range(NDATA):
+            body.append(f"    st.shared.u32 [%rsd+{4 * i}], 0;")
+        for i in range(NCNT):
+            body.append(f"    st.shared.u32 [%rsc+{4 * i}], 0;")
+        body.append("INIT_DONE:")
+        body.append("    bar.sync 0;")
+    body.append("    setp.ne.u32 %pl, %r2, 0;")
+    slots = [0] * nact
+    for seg in range(nbar + 1):
+        for a, p in enumerate(progs):
+            lo = 0 if seg == 0 else cuts[a][seg - 1]
+            hi = len(p) if seg == nbar else cuts[a][seg]
+            if lo >= hi:
+                continue
+            e.slot = slots[a]
+            e.lines = []
+            sk = f"SKIP{a}_{seg}"
+            body.append(f"    setp.ne.or.u32 %pa, %ra, {a}, %pl;")
+            body.append(f"    @%pa bra {sk};")
+            if seg == 0:
+                body.append("    mov.u32 %rt, 0;")
+            for op in p[lo:hi]:
+                emit_op(e, a, op)
+            body += e.lines
+            body.append(f"{sk}:")
+            slots[a] = e.slot
+        if seg < nbar:
+            body.append("    bar.sync 0;")
+    ptx = f"""// fuzz_sync seed {seed}: {g} CTAs x {w} warps, actors = lane 0 of each warp, {nbar} barriers
 // programs: {json.dumps(progs)}
+// cuts: {json.dumps(cuts)}
 .version 9.0
 .target sm_103a
 .address_size 64
@@ -250,19 +406,25 @@ def gen_case(seed: int, d: Path) -> dict:
 .visible .entry k(.param .u64 out_p, .param .u64 data_p, .param .u64 cnt_p)
 {{
     .reg .b32 %r<8>;
-    .reg .b32 %ra, %rv, %rt;
+    .reg .b32 %ra, %rv, %rt, %rsd, %rsc;
     .reg .b64 %rdo, %rdd, %rdc;
-    .reg .pred %pa, %pp, %pl;
+    .reg .pred %pa, %pp, %pl, %pq, %pw;
+    .reg .b32 %rmb;
+    .reg .b64 %rdx;
+    .shared .align 8 .b64 mb;
+    .shared .align 4 .b32 sd[{NDATA}];
+    .shared .align 4 .b32 sc[{NCNT}];
     ld.param.u64 %rdo, [out_p];
     cvta.to.global.u64 %rdo, %rdo;
     ld.param.u64 %rdd, [data_p];
     cvta.to.global.u64 %rdd, %rdd;
     ld.param.u64 %rdc, [cnt_p];
     cvta.to.global.u64 %rdc, %rdc;
+    mov.u32 %rsd, sd;
+    mov.u32 %rsc, sc;
+    mov.u32 %rmb, mb;
     mov.u32 %r1, %tid.x;
     and.b32 %r2, %r1, 31;
-    setp.ne.u32 %pl, %r2, 0;
-    @%pl bra DONE;
     shr.u32 %r3, %r1, 5;
     mov.u32 %r4, %ctaid.x;
     mad.lo.u32 %ra, %r4, {w}, %r3;
