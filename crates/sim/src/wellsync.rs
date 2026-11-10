@@ -32,7 +32,9 @@
 //!   wait on the same mbarrier and parity (CUTLASS "peek, work, then wait": `skip_equiv`
 //!   runs both sides on copies; they must meet with no other effect, and every register they
 //!   leave different must be dead there, by a static liveness walk); such a peek is that wait
-//!   placed at the branch. A failed peek that is never read is harmless.
+//!   placed at the branch. A failed peek that is never read is harmless, and so is a
+//!   successful one when nothing reads it and the thread's next effect is a blocking wait on
+//!   the same mbarrier and parity (`peek_then_wait`: nvjet's try-wait before its retry stub).
 //! * **C-GEN** (bar.sync / bar.arrive generations, barrier.cluster generations): every
 //!   arrival in generation g is HB-after every arrival of generation g-1 (for barrier.cluster
 //!   it suffices that the thread waited on g-1 itself).
@@ -408,15 +410,17 @@ pub struct SyncLog {
     /// Per thread: the peek whose result it holds, and the registers that hold it or a value
     /// derived from it (predicates, or a GPR token `SEL Rd, RZ, 0x1, !P`), each with its
     /// value had the peek returned the other result.
-    ptaint: Vec<Option<PeekTaint>>,
+    /// Several peeks may be outstanding (TRT-LLM's mainloop: four TRYWAIT peeks, then a skip
+    /// branch on each result).
+    ptaint: Vec<Vec<PeekTaint>>,
     /// Per peek: (mbarrier, parity, how it was used, instruction instance).
     peeks: Vec<((u16, u32), u32, PeekUse, u64)>,
-    /// Threads whose peek taint the current instruction ends.
-    pre_clear: Vec<usize>,
+    /// (thread, peek) taints the current instruction ends.
+    pre_clear: Vec<(usize, usize)>,
     /// Tainted registers the current instruction overwrites / derives: (thread, register,
     /// value in the other world).
     pre_kill: Vec<(usize, Reg)>,
-    pre_add: Vec<(usize, Reg, u64)>,
+    pre_add: Vec<(usize, usize, Reg, u64)>,
     /// Named barrier arrivals: (cta, id) -> generation -> arrivals.
     bars: HashMap<(u16, u32), BTreeMap<u32, Vec<Arr>>>,
     /// Bar arrivals of the current instruction: (thread, cta, id, generation).
@@ -460,7 +464,7 @@ impl SyncLog {
             next_tok: 1,
             last_nt: vec![u32::MAX; n],
             cl_last: vec![None; n],
-            ptaint: vec![None; n],
+            ptaint: vec![Vec::new(); n],
             ..Default::default()
         }
     }
@@ -887,18 +891,23 @@ fn peek_uses(m: &Machine, log: &mut SyncLog, members: &[usize], active: &[usize]
         regs.iter()
             .any(|(r, _)| inst.guard.reg == Some(*r) || srcs.contains(r))
     };
-    let readers: Vec<usize> = members
+    // Per thread, the outstanding peeks this instruction reads.
+    let read: Vec<(usize, Vec<usize>)> = members
         .iter()
-        .copied()
-        .filter(|&t| {
-            log.ptaint[t]
-                .as_ref()
-                .is_some_and(|(_, regs)| reads_of(regs))
+        .map(|&t| {
+            let pids: Vec<usize> = log.ptaint[t]
+                .iter()
+                .filter(|(_, regs)| reads_of(regs))
+                .map(|x| x.0)
+                .collect();
+            (t, pids)
         })
+        .filter(|x| !x.1.is_empty())
         .collect();
+    let readers: Vec<usize> = read.iter().map(|x| x.0).collect();
     // Overwritten tainted registers.
     for &t in active {
-        if let Some((_, regs)) = &log.ptaint[t] {
+        for (_, regs) in &log.ptaint[t] {
             for (r, _) in regs {
                 // A try_wait overwrites it too: a blocking one with its own (always true)
                 // result, a peek with a fresh taint set after the instruction.
@@ -911,7 +920,28 @@ fn peek_uses(m: &Machine, log: &mut SyncLog, members: &[usize], active: &[usize]
     if readers.is_empty() {
         return;
     }
-    let pid_of = |log: &SyncLog, t: usize| log.ptaint[t].as_ref().unwrap().0;
+    // One instruction reading the results of two peeks of a thread: neither is a skip.
+    if read.iter().any(|x| x.1.len() > 1) {
+        for (t, pids) in &read {
+            for &pid in pids {
+                log.peeks[pid].2 = PeekUse::Bad(format!(
+                    "{} reads the results of several peeks",
+                    k.describe(pc as usize)
+                ));
+                log.pre_clear.push((*t, pid));
+            }
+        }
+        return;
+    }
+    let pid_of = |_: &SyncLog, t: usize| read.iter().find(|x| x.0 == t).unwrap().1[0];
+    let regs_of = |log: &SyncLog, t: usize| -> Vec<(Reg, u64)> {
+        let pid = pid_of(log, t);
+        log.ptaint[t]
+            .iter()
+            .find(|x| x.0 == pid)
+            .map(|x| x.1.clone())
+            .unwrap_or_default()
+    };
     let p0 = pid_of(log, readers[0]);
     let (obj, parity, inst0) = (log.peeks[p0].0, log.peeks[p0].1, log.peeks[p0].3);
     // The readers' peeks: one mbarrier and parity, unread so far, and (SASS, or more than
@@ -927,7 +957,7 @@ fn peek_uses(m: &Machine, log: &mut SyncLog, members: &[usize], active: &[usize]
         for &t in &readers {
             let pid = pid_of(log, t);
             log.peeks[pid].2 = PeekUse::Bad(why.clone());
-            log.pre_clear.push(t);
+            log.pre_clear.push((t, pid));
         }
     };
     let derives = (matches!(
@@ -957,7 +987,7 @@ fn peek_uses(m: &Machine, log: &mut SyncLog, members: &[usize], active: &[usize]
         c.gfoot = None;
         c.gown = None;
         for &t in &readers {
-            for &(r, v) in &log.ptaint[t].as_ref().unwrap().1 {
+            for (r, v) in regs_of(log, t) {
                 set_taint(&mut c, t, r, v);
             }
         }
@@ -981,7 +1011,8 @@ fn peek_uses(m: &Machine, log: &mut SyncLog, members: &[usize], active: &[usize]
                 } else {
                     c.rd(t, &Val::Reg(r, 1)).unwrap_or(0) & 0xffff_ffff
                 };
-                log.pre_add.push((t, r, v));
+                let pid = pid_of(log, t);
+                log.pre_add.push((t, pid, r, v));
             }
         }
         return;
@@ -1010,10 +1041,8 @@ fn peek_uses(m: &Machine, log: &mut SyncLog, members: &[usize], active: &[usize]
         );
         return;
     }
-    let flips: Vec<(usize, Vec<(Reg, u64)>)> = readers
-        .iter()
-        .map(|&t| (t, log.ptaint[t].as_ref().unwrap().1.clone()))
-        .collect();
+    let flips: Vec<(usize, Vec<(Reg, u64)>)> =
+        readers.iter().map(|&t| (t, regs_of(log, t))).collect();
     let r = if m.k.front == Front::Ptx {
         // PTX lanes are independent threads: each side of the branch, lane by lane.
         flips
@@ -1040,7 +1069,7 @@ fn peek_uses(m: &Machine, log: &mut SyncLog, members: &[usize], active: &[usize]
             },
             Err(e) => PeekUse::Bad(e.clone()),
         };
-        log.pre_clear.push(t);
+        log.pre_clear.push((t, pid));
     }
 }
 
@@ -1144,6 +1173,19 @@ fn look_step(
             for &t in members {
                 if c.prd(t, inst.guard) {
                     c.wp(t, *d, true);
+                }
+                c.threads[t].make_mut().pc = pc + 1;
+            }
+            return Ok(());
+        }
+        // Another peek of the same mbarrier and parity (TRT-LLM / CUTLASS: peek, then on
+        // failure peek again and enter an out-of-line retry stub): it fails here, which a
+        // try_wait may always do; the walk follows its failure path (into the stub, whose
+        // blocking wait passes above).
+        if ours && c.peeks.contains(&pc) {
+            for &t in members {
+                if c.prd(t, inst.guard) {
+                    c.wp(t, *d, false);
                 }
                 c.threads[t].make_mut().pc = pc + 1;
             }
@@ -1660,24 +1702,22 @@ pub fn post_inst(m: &mut Machine, members: &[usize], pc: u32, _ok: bool) {
     // Only the threads edited here can have been emptied (O(edits), not O(threads)).
     let mut touched = Vec::new();
     for (t, r) in std::mem::take(&mut log.pre_kill) {
-        if let Some((_, regs)) = log.ptaint[t].as_mut() {
+        for (_, regs) in log.ptaint[t].iter_mut() {
             regs.retain(|x| x.0 != r);
-            touched.push(t);
         }
+        touched.push(t);
     }
-    for (t, r, v) in std::mem::take(&mut log.pre_add) {
-        if let Some((_, regs)) = log.ptaint[t].as_mut() {
+    for (t, pid, r, v) in std::mem::take(&mut log.pre_add) {
+        if let Some((_, regs)) = log.ptaint[t].iter_mut().find(|x| x.0 == pid) {
             regs.retain(|x| x.0 != r);
             regs.push((r, v));
         }
     }
-    for t in std::mem::take(&mut log.pre_clear) {
-        log.ptaint[t] = None;
+    for (t, pid) in std::mem::take(&mut log.pre_clear) {
+        log.ptaint[t].retain(|x| x.0 != pid);
     }
     for t in touched {
-        if log.ptaint[t].as_ref().is_some_and(|x| x.1.is_empty()) {
-            log.ptaint[t] = None;
-        }
+        log.ptaint[t].retain(|x| !x.1.is_empty());
     }
     let inst_id = log.seq;
     let from = log.inst_seq;
@@ -1720,7 +1760,7 @@ pub fn post_inst(m: &mut Machine, members: &[usize], pc: u32, _ok: bool) {
         let pid = w.peek.then(|| {
             log.peeks
                 .push(((w.cta, w.off), w.parity, PeekUse::Unused, inst_id));
-            log.ptaint[w.t] = Some((log.peeks.len() - 1, vec![(w.d, !success as u64)]));
+            log.ptaint[w.t].push((log.peeks.len() - 1, vec![(w.d, !success as u64)]));
             log.peeks.len() - 1
         });
         let obj = log.mbobj(w.cta, w.off, w.init, w.phase0, w.expected);
@@ -1750,6 +1790,75 @@ pub fn post_inst(m: &mut Machine, members: &[usize], pc: u32, _ok: bool) {
         }
     }
     m.wlog.0 = Some(log);
+}
+
+/// A peek (try_wait without the retry shape) after which the thread reaches, through
+/// register-only instructions that leave the address and parity registers alone and
+/// unconditional branches, an unguarded blocking wait on the same mbarrier address and parity
+/// (nvjet / CUTLASS: `TRYWAIT P4, [UR12], R4`, then the retry stub's blocking wait). If
+/// nothing reads its result, the peek has no effect in any schedule: the thread does nothing
+/// observable before the wait, which observes the same phase completion or a later one of
+/// the same parity and acquires at least what the peek did.
+fn peek_then_wait(m: &Machine, pc: u32) -> bool {
+    let code = &m.k.code;
+    let Some(Op::MbarTryWait {
+        addr,
+        parity,
+        bit31,
+        ..
+    }) = code.get(pc as usize).map(|i| &i.op)
+    else {
+        return false;
+    };
+    let mut watch: Vec<Reg> = Vec::new();
+    for v in [addr.base.as_ref(), addr.base2.as_ref(), Some(parity)]
+        .into_iter()
+        .flatten()
+    {
+        if let Val::Reg(r, _) = v {
+            watch.push(*r);
+        }
+    }
+    let mut q = pc as usize + 1;
+    for _ in 0..64 {
+        let Some(i) = code.get(q) else {
+            return false;
+        };
+        match &i.op {
+            Op::MbarTryWait {
+                addr: a2,
+                parity: p2,
+                bit31: b2,
+                ..
+            } => {
+                return a2 == addr
+                    && p2 == parity
+                    && b2 == bit31
+                    && i.guard.reg.is_none()
+                    && !m.peeks.contains(&(q as u32));
+            }
+            Op::Bra {
+                target,
+                any: false,
+                tid0_falls: false,
+                cond: None,
+                div: None,
+                ..
+            } if i.guard.reg.is_none() => q = *target,
+            op if crate::spin::model_nop(op) || crate::spin::pure_dst(op).is_some() => {
+                if op
+                    .dst_regs()
+                    .iter()
+                    .any(|r| watch.iter().any(|w| w.file == r.file && w.idx == r.idx))
+                {
+                    return false;
+                }
+                q += 1;
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// Hook (exec.rs `mbar_atomic`): an operation on the mbarrier at (cta, off) by `actor` at
@@ -2092,6 +2201,43 @@ fn analyze(m: &Machine, log: &SyncLog) -> Vec<String> {
                         )),
                     }
                 }
+                // A successful peek whose result is read other than by the branch that skips a
+                // blocking wait (or not at all: it still acquires) must succeed in every
+                // schedule: every operation of the phase it saw complete happens-before it
+                // (a blocking wait needs no such check: it waits). Until 2026-11-08 only the
+                // bounds below were checked, and a peek that ran after the last arrival in
+                // the run, with no order between them, was certified while GB300 shows both
+                // results (tools/mutate/repro/peek_success).
+                let skip = matches!(w.pid.map(|i| &log.peeks[i].2), Some(PeekUse::Skip { .. }));
+                // A peek nothing reads, followed by the blocking wait on the same mbarrier and
+                // parity before any effect (`peek_then_wait`), has no effect either way.
+                let redundant = w.peek
+                    && matches!(w.pid.map(|i| &log.peeks[i].2), Some(PeekUse::Unused))
+                    && peek_then_wait(m, w.ev.pc);
+                if w.peek && w.success && !skip && !redundant {
+                    match reqs.get(&k) {
+                        Some(r) if completed(k) => {
+                            if let Some(e) = r.missing(w.ev.actor, w.ev.seq, &w.vc) {
+                                let how = match w.pid.map(|i| &log.peeks[i].2) {
+                                    Some(PeekUse::Bad(why)) => {
+                                        format!("its result is not only a skip: {why}")
+                                    }
+                                    _ => "its result is unused, and it acquires".into(),
+                                };
+                                add(format!(
+                                    "C-WAIT: {name}: successful peek by {} (phase {k}) is not ordered after {} (phase {k}): in another schedule it fails ({how})",
+                                    describe_ev(m, &w.ev),
+                                    describe_ev(m, &e)
+                                ));
+                            }
+                        }
+                        _ if k > o.phase0 => add(format!(
+                            "C-WAIT: {name}: successful peek by {} relies on phase {k}, which did not complete in the log",
+                            describe_ev(m, &w.ev)
+                        )),
+                        _ => {}
+                    }
+                }
                 // Upper bound. The wait may arrive while the current phase is any c up to h,
                 // the first phase from `first` on that cannot complete without it (an
                 // operation HB-after it) or does not complete at all. A blocking wait arriving
@@ -2109,7 +2255,9 @@ fn analyze(m: &Machine, log: &SyncLog) -> Vec<String> {
                 let (check, as_wait, wit) = match (w.peek, usage) {
                     (false, _) => (true, true, &w.wit),
                     (true, Some(PeekUse::Skip { wit })) => (w.success, true, wit),
-                    (true, Some(PeekUse::Unused)) if !w.success => (false, false, &w.wit),
+                    (true, Some(PeekUse::Unused)) if !w.success || redundant => {
+                        (false, false, &w.wit)
+                    }
                     _ => (true, false, if w.success { &w.wit } else { &failed_wit }),
                 };
                 if !check {

@@ -1,0 +1,52 @@
+name = "e_peek_multi"
+description = """
+C-WAIT with several outstanding peeks per thread (TRT-LLM's mainloop: four TRYWAIT peeks, then
+a skip branch on each result). good: each peek decides only the skip of its own wait,
+certified. READ: a result is also stored; SWAP: the skips are crossed; ACQ: a peek unused and
+its wait gone: refused, and the exploration finds the failure. Until 2026-11-08 the log kept
+one peek per thread: an earlier peek was replaced, left unused, and its skip was not checked."""
+ptx = "kernel.ptx"
+entry = "e_peek_multi"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "READ"
+marker = "@USE"
+find = "mov.u32 %r9, 0;"
+replace = "selp.u32 %r9, 1, 0, %p6; st.global.u32 [%rd1+4], %r9;"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "SWAP"
+marker = "@SKIP0"
+find = "@%p5 bra S0;"
+replace = "@%p6 bra S0;"
+edits = [{ marker = "@SKIP1", find = "@%p6 bra S1;", replace = "@%p5 bra S1;" }]
+# The exploration's peek skip (E-SPIN) does not model a wait after another mbarrier's peek.
+expect = ["unmodeled"]
+
+[[variants]]
+id = "ACQ"
+marker = "@SKIP1"
+find = "@%p6 bra S1;"
+replace = "bra S1;"
+expect = ["race"]
+# SASS: LDS / STS are strong (S-SMEM-STRONG): the early read is no race; it reads the
+# never-written word (violation) or 9 (two outputs).
+expect_sass = ["nondeterministic", "violation"]

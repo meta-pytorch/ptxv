@@ -5598,6 +5598,47 @@ fn e_warpid_is_not_the_warp_index() {
     }
 }
 
+/// C-WAIT for successful peeks (fixtures/e_peek_result): a peek used only to skip a blocking
+/// wait certifies; one whose result is stored (READ) or that alone orders a read (ACQ) can fail
+/// in another schedule (certified clean before 2026-11-08; GB300 shows both results).
+#[test]
+fn e_peek_result_successful_peeks() {
+    for v in ["good", "READ"] {
+        both("e_peek_result", v);
+    }
+    // ACQ races (DPOR's reductions are exact for race-free kernels only): the stateful
+    // explorer's verdict.
+    for front in ["ptx", "sass"] {
+        check_stateful("e_peek_result", "ACQ", front, 1_000_000);
+    }
+}
+
+/// C-WAIT with several outstanding peeks per thread (fixtures/e_peek_multi): two peeks, then a
+/// skip branch on each result, certify; a stored result (READ), crossed skips (SWAP) and an
+/// unused peek without its wait (ACQ) are refused by the certificate, and the exploration
+/// reports them. Before 2026-11-08 the log kept one peek per thread (TRT-LLM's four peeks
+/// in a row were refused once a successful unused peek had to be ordered).
+#[test]
+fn e_peek_multi_outstanding_peeks() {
+    let case = Case::load(root().join("fixtures/e_peek_multi")).unwrap();
+    for front in ["ptx", "sass"] {
+        for v in ["good", "READ", "SWAP", "ACQ"] {
+            let k = kernel(&case, v, front);
+            let launch = build_launch(&case, &k).unwrap();
+            let c = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)));
+            match (v, c.verdict) {
+                ("good", Some(cv)) => assert_eq!(cv.classes(), ["clean"], "{front}"),
+                ("good", None) => panic!("{front}: good does not certify: {:?}", c.reasons),
+                (_, Some(cv)) => panic!("{front}: {v} certified: {:?}", cv.classes()),
+                (_, None) => {}
+            }
+        }
+        for v in ["good", "READ", "SWAP", "ACQ"] {
+            check_stateful("e_peek_multi", v, front, 1_000_000);
+        }
+    }
+}
+
 /// C-POLL-ATOM (E-WELLSYNC): an arrival counter of atomic adds polled to its full count is
 /// certified; a poll that exits on a partial count is refused and races, also when the
 /// partial count includes the poller's own add made after another CTA's add in the

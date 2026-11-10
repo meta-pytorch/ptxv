@@ -2288,7 +2288,13 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
     the next phase, the pipeline's empty/full handshake). Failed blocking polls are invisible
     (E-SPIN).
   - **Peeks** (try_wait without the retry shape, spin.rs) return the same value in every
-    schedule (h = k+1 for a success, h = k for a failure), unless its predicate is used
+    schedule (h = k+1 for a success, h = k for a failure), unless nothing reads it and the
+    thread reaches, through register-only instructions that leave the address and parity
+    registers alone and unconditional branches, an unguarded blocking wait on the same
+    mbarrier address and parity (`peek_then_wait`; nvjet's `TRYWAIT P4` before its retry stub,
+    fixtures/e_uninit_pred stub): the thread does nothing observable before that wait, which
+    observes the same completion or a later one of the same parity, so the peek has no effect
+    in any schedule; or unless its predicate is used
     only by one branch that skips a blocking wait on the same mbarrier and parity (CUTLASS /
     cuBLAS "peek, work, then wait"), possibly through predicates derived from it by
     `PLOP3` / `ISETP` / `VOTE`, or kept as a GPR token (`SEL R4, RZ, 0x1, !P1`, read by the
@@ -2318,7 +2324,12 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
     a successful one gets the blocking-wait upper bound measured at the branch; a failed one
     needs nothing more (in a schedule where it succeeds, the skip is the run's wait done
     early, with more HB). A failed peek that is never read changes nothing; a successful
-    one acquires, so it must be determined.
+    one acquires, so it must be determined: every operation of the phase it saw complete
+    happens-before it (a blocking wait waits; a peek does not). Until 2026-11-08 only the
+    bounds were checked, so a successful peek whose result was stored, or that alone ordered a
+    later read, was certified although in another schedule it runs before the last arrival
+    and fails (soundness harness; GB300 1000/1000 the other result,
+    `tools/mutate/repro/peek_success`, fixtures/e_peek_result READ / ACQ).
   - **C-GEN.** Every `bar.sync`/`bar.arrive` arrival in generation g is HB-after every
     arrival of generation g-1 (subsumes E-BAR-OVER ambiguity); the lanes of one instruction
     land in one generation. `barrier.cluster`: an arrival in g by a thread that waited on

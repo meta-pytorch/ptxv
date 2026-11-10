@@ -39,7 +39,7 @@ use crate::machine::Machine;
 
 /// Register-only operations: no memory, synchronization, or control effects. Returns the
 /// main destination; callers that track writes use `dst_regs` (carry-outs, pairs).
-fn pure_dst(op: &Op) -> Option<Option<Reg>> {
+pub(crate) fn pure_dst(op: &Op) -> Option<Option<Reg>> {
     Some(match op {
         Op::Mov { d, .. }
         | Op::Int { d, .. }
@@ -95,7 +95,7 @@ fn pure_dst(op: &Op) -> Option<Option<Reg>> {
 
 /// Operations the model executes as no-ops for control purposes: `NOP`/`NANOSLEEP`, and the
 /// acquire half of a fence (`CCTL.IVALL`), which changes no register or control flow.
-fn model_nop(op: &Op) -> bool {
+pub(crate) fn model_nop(op: &Op) -> bool {
     matches!(
         op,
         Op::Nop
