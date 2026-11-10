@@ -7476,6 +7476,21 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             }
             Op::Nop
         }
+        // `applypriority[.global].L2::evict_normal [a], 128` (SASS CCTL.E.DML2): demotes the
+        // L2 line's eviction priority, a cache hint with no memory effect (L-PTX-HINT). The ISA
+        // allows only this priority and a size of 128.
+        "applypriority"
+            if matches!(
+                mods[..],
+                ["global", "L2::evict_normal"] | ["L2::evict_normal"]
+            ) =>
+        {
+            if ops.len() != 2 || parse_int(op_n(1)?.trim()) != Some(128) {
+                bail!(lw.err("applypriority: expected [a], 128"));
+            }
+            lw.addr(op_n(0)?)?;
+            Op::Nop
+        }
         // `cp.async.bulk.prefetch.tensor.<n>d.L2.global[.tile][.L2::cache_hint] [tmap,
         // {coords}][, policy]` (SASS UTMAPF.L2.<n>D): a cache hint (probes/tma_prefetch).
         "cp" if mods.len() >= 6
@@ -8303,6 +8318,13 @@ mod tests {
         assert!(ops("cp.async.bulk.prefetch.L2.global.L2::cache_hint [%rd1], 256;").is_err());
         assert!(ops("cp.async.bulk.prefetch.L2.global [%rd1], %r1;").is_ok());
         assert!(ops("cp.async.bulk.prefetch.L2.global.L2::evict_last [%rd1], 256;").is_err());
+        assert!(matches!(
+            ops("applypriority.global.L2::evict_normal [%rd1], 128;").unwrap()[..],
+            [Op::Nop]
+        ));
+        assert!(ops("applypriority.L2::evict_normal [%rd1+128], 128;").is_ok());
+        assert!(ops("applypriority.global.L2::evict_normal [%rd1], 64;").is_err());
+        assert!(ops("applypriority.global.L2::evict_last [%rd1], 128;").is_err());
     }
 
     #[test]

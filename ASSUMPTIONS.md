@@ -5230,6 +5230,18 @@ is rejected (fail closed).
   (2026-11-09) is a no-op once its operands are valid (the operand count for the form, an
   address, a size and a policy register or immediate); ptxas's `UBLKPF.L2` is already a no-op
   on the SASS front. A prefetch moves no data the program observes.
+- The SASS `CCTL.E.<op> [Ra]` line operations, one treatment by data effect (2026-11-09):
+  `.RML2` (discard.global.L2) is the only one that changes what a load may return, and it is
+  a 128-byte store of undefined data (S-INIT). `.PF1` / `.PF2` (prefetch.global.L1 / .L2
+  [::evict_normal]), `.PML2` (prefetch.global.L2::evict_last) and `.DML2`
+  (applypriority[.global].L2::evict_normal [a], 128) only fetch or re-prioritize the line: each
+  is a no-op once its address is checked (PTX: and the size, which the ISA fixes at 128). None
+  invalidates L1, and a no-op keeps every stale-read schedule of the L1 model (E-HW-L1), the
+  weaker reading. Other CCTL forms are refused. probes/applypriority (stores, DML2 through a
+  global and a generic address, PML2 on the other warp's line, cross-warp reads after a
+  barrier): GB300 = both fronts bitwise. With these forms lifted, the row-walk pool backward
+  (DML2) and the fused QK-norm / RoPE forward (PML2) certify clean on the SASS front, equal to
+  their captured GPU outputs, and so does the pool backward's PTX front.
 - If wrong: *miss* only if a hint changed the data or the completion order.
 - Retire: never needed for verdicts; listed so that dropped modifiers are visible.
 

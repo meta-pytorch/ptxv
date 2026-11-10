@@ -64,7 +64,7 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
     (
         "CCTL",
         &[
-            "C", "DEEP", "E", "IV", "IVALL", "LDCU", "PF1", "PF2", "RML2",
+            "C", "DEEP", "DML2", "E", "IV", "IVALL", "LDCU", "PF1", "PF2", "PML2", "RML2",
         ],
     ),
     ("CGAERRBAR", &[]),

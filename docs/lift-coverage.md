@@ -390,6 +390,8 @@ any modifier outside the audited set before an arm runs.
 | `FSETP.<cmp>.<bop>` / `DSETP.<cmp>.<bop>` with a source predicate | `setp.<cmp>.<bop>.f32` / `.f64` `p[\|q], a, b, [!]c` | p = cmp bop c, q = !cmp bop c (f64 not probed) | probes/setp_bop |
 | `IMAD` (32-bit, the low half kept by `PRMT` / `LOP3`) | `mad.lo.s16` / `.u16` | low 16 bits of a * b + c | probes/mad_lo16 |
 | `UBLKPF.L2` | `cp.async.bulk.prefetch.L2.global.L2::cache_hint` | no-op after operand checks | - |
+| `CCTL.E.DML2 [Ra]` | `applypriority[.global].L2::evict_normal [a], 128` | no-op (L2 eviction priority) after operand checks | probes/applypriority |
+| `CCTL.E.PML2 [Ra]` | `prefetch.global.L2::evict_last [a]` | no-op (prefetch) after the address check | probes/applypriority |
 | `STTM` then `LDTM` on the same registers | - | the TMEM queue reads the store's registers first (L-OPREAD) | probes/sttm_ldtm |
 | `FENCE.VIEW.ASYNC.S` / `.G` / `.T` | `fence.proxy.async[.shared::*]` / `.global` / `tcgen05.wait::st` | each orders only its state space; `.G` covers no shared-memory check, `.T` is `tcgen05.wait::st` (S-PROXY) | probes/proxy_fence `global` |
 

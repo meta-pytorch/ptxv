@@ -53,7 +53,9 @@ pub(super) fn claims(lw: &Lw, base: &str, mods: &[&str]) -> bool {
         }
         "FCHK" => op(1).starts_with(['-', '|']) || op(2).starts_with('|'),
         "BREAK" => lw.l.operands.len() == 2,
-        "CCTL" => mods.iter().any(|m| m.starts_with("PF")),
+        "CCTL" => mods
+            .iter()
+            .any(|m| matches!(*m, "PF1" | "PF2" | "PML2" | "DML2")),
         "F2I" => mods.iter().any(|m| matches!(*m, "S16" | "U16")),
         _ => false,
     }
@@ -489,12 +491,22 @@ pub(super) fn lower(lw: &Lw, base: &str, mods: &[&str], meta: &CubinMeta) -> Res
                 cond: Some(lw.pred(lw.op(0)?)?),
             }
         }
-        // `CCTL.E.PF1 [Ra]` / `CCTL.E.PF2 [Ra]` (prefetch.global.L1 / .L2): a cache hint, no
-        // architectural effect (probes/f2i16 runs both). Other prefetch forms are refused.
+        // The CCTL line operations on one global address: only `.RML2` (discard.global.L2) has
+        // a data effect, lowered in `lower_line` as a store of undefined data (S-INIT). The
+        // rest move or re-prioritize the line without changing what any load returns, so each
+        // is a no-op once its address is checked (L-PTX-HINT); none invalidates L1, and a
+        // no-op keeps every stale-read schedule of the L1 model (E-HW-L1):
+        // - `.PF1` / `.PF2`: prefetch.global.L1 / .L2[::evict_normal] (probes/f2i16);
+        // - `.PML2`: prefetch.global.L2::evict_last (probes/applypriority);
+        // - `.DML2`: applypriority[.global].L2::evict_normal (probes/applypriority).
+        // Other forms are refused. ASSUME(L-PTX-HINT)
         "CCTL" => {
-            if !(mods == ["E", "PF1"] || mods == ["E", "PF2"]) || lw.l.operands.len() != 1 {
+            if !matches!(mods[..], ["E", "PF1" | "PF2" | "PML2" | "DML2"])
+                || lw.l.operands.len() != 1
+            {
                 bail!(lw.err(format!("CCTL.{} not modeled", mods.join("."))));
             }
+            lw.addr(lw.op(0)?)?;
             Op::Nop
         }
         // `F2I[.FTZ].{S16,U16}[.TRUNC|.FLOOR|.CEIL].NTZ Rd, Ra` (cvt.r*i[.ftz].{s16,u16}.f32):

@@ -2920,6 +2920,15 @@ fn probe_setp_bop_matches_hardware() {
     probe_bitwise("probes/setp_bop", "good", "sass");
 }
 
+/// applypriority[.global].L2::evict_normal (SASS CCTL.E.DML2) and
+/// prefetch.global.L2::evict_last (CCTL.E.PML2) are no-ops: stores, the hints on each warp's
+/// line, cross-warp reads after a barrier (probes/applypriority) = GB300 on both fronts.
+#[test]
+fn probe_applypriority_matches_hardware() {
+    probe_bitwise("probes/applypriority", "good", "ptx");
+    probe_bitwise("probes/applypriority", "good", "sass");
+}
+
 /// redux.sync min / max [.abs] [.NaN] .f32 with full mask reached through divergent paths,
 /// over NaN / signed-zero / inf / subnormal lanes (probes/redux_f32_paths): the collective
 /// waits for every lane, the case certifies (C-WARP) and = GB300 on both fronts.
