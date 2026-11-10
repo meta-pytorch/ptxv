@@ -1,0 +1,37 @@
+// E-CLUSTER-BAR: barrier.cluster waits for the live threads of the cluster only (exited
+// threads are not waited for, as for bar.sync). A 2-CTA cluster of 64-thread CTAs: threads that
+// do not exit early arrive (.release) and wait on the cluster barrier, then store 1 + rank.
+//   good: nobody exits early.
+//   EXITW: warp 1 of CTA 1 exits before the barrier.
+//   EXITH: lanes 16-31 of warp 1 of CTA 1 exit before the barrier.
+//   EXITC: all of CTA 1 exits before the barrier.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_cluster_exit(.param .u64 out_p)
+.reqnctapercluster 2, 1, 1
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, %cluster_ctarank;
+    mov.u32 %r9, 1000;                   // @EXITSET
+    setp.eq.u32 %p1, %r2, 1;
+    setp.ge.u32 %p2, %r1, %r9;
+    and.pred %p3, %p1, %p2;
+    @%p3 bra DONE;
+    barrier.cluster.arrive.release;
+    barrier.cluster.wait.acquire;
+    add.u32 %r3, %r2, 1;
+    shl.b32 %r4, %r2, 6;
+    add.u32 %r4, %r4, %r1;
+    mul.wide.u32 %rd2, %r4, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r3;
+DONE:
+    ret;
+}

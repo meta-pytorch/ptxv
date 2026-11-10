@@ -1,0 +1,25 @@
+// N-FADD: FADD's NaN result is the canonical 0x7fffffff, whatever the operand payloads. Thread t
+// adds 1.0 to in[t] (NaNs with payloads, both signs, quiet and signalling, and finite controls)
+// and stores the bits.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_fadd_nan(.param .u64 out_p, .param .u64 in_p)
+{
+    .reg .b32 %r<8>;
+    .reg .f32 %f<8>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [in_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.u64 %rd4, %rd2, %rd3;
+    ld.global.f32 %f1, [%rd4];
+    add.rn.f32 %f2, %f1, 0f3F800000;
+    add.u64 %rd5, %rd1, %rd3;
+    st.global.f32 [%rd5], %f2;
+    ret;
+}

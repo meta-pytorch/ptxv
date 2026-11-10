@@ -1483,6 +1483,9 @@ so B14 is caught without hiding data races.
   before its later relaxed arrive; the SASS model releases every earlier init there.
 - Where: `exec.rs` `ClusterArrive` / `ClusterWait` / `cluster_try_complete`.
 - Status: **argued** (PTX ISA; ptxas codegen). Rung 1c good kernel bitwise = GB300.
+- Exited threads: **hardware measured** (fixtures/e_cluster_exit, `ptxv hw --runs 50`,
+  2026-11-09): with a warp, half a warp or a whole CTA of a 2-CTA cluster exited before
+  `barrier.cluster.arrive.release` / `wait.acquire`, GB300 completes every run, as the model.
 - If wrong: *miss* if exited threads should block the barrier (hang) or if SYNCS inits need
   the fence after them in hardware; *false alarm* if relaxed arrives release more.
 - Retire: a probe with a thread exiting before the cluster barrier (like E-BAR-EXIT), and a
@@ -5680,7 +5683,9 @@ complete.**
 ### N-FADD · code
 **`FADD` / `add.f32` is IEEE binary32 round-to-nearest-even, no FTZ, canonical NaN
 0x7fffffff.**
-- Where: `fp.rs` `f32_add_rn`.
+- Where: `fp.rs` `f32_fma` (`exec.rs` executes FADD as a * 1 + b, one rounding);
+  `f32_add_rn` for the other users. fixtures/e_fadd_nan: NaN operands (payloads, signs, quiet
+  and signalling) = GB300 bits.
 - Status: **validated** (r0 bitwise on 10,000 launches). FTZ/directed modes give `unmodeled`.
 
 ### N-EQUIV · code

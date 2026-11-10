@@ -1,0 +1,40 @@
+name = "e_tmem_alloc_block"
+description = """
+E-ALLOC: two warps each allocate all 512 TMEM columns. Without a barrier between alloc and
+dealloc the second alloc waits for the first dealloc (good, clean); with a bar.sync between them
+(HOLD) the second allocator never gets its columns and the holder never reaches its dealloc:
+deadlock (GB300 hangs). False alarm, pinned: on the SASS front good traps in ptxas's tcgen05
+guardrail code (`..._guardrail_trap_col_being_dealloced_not_returned_by_alloc`) and leaks, while
+GB300 completes 50/50."""
+ptx = "kernel.ptx"
+entry = "e_tmem_alloc_block"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "alloc then dealloc in each warp"
+expect = ["clean"]
+expect_sass = ["trap", "violation"]
+hw_note = "GB300 50/50 completes (2026-11-09): the SASS verdict (a tcgen05 guardrail trap and a TMEM leak) is a false alarm"
+
+[[variants]]
+id = "HOLD"
+summary = "bar.sync between alloc and dealloc"
+marker = "@HOLD"
+find = "// @HOLD"
+replace = "bar.sync 0;"
+expect = ["deadlock", "race"]
+expect_sass = ["deadlock"]
+hw_note = "GB300 hangs (watchdog, 2026-11-09)"

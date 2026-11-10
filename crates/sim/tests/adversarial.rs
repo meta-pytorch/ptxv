@@ -87,6 +87,11 @@ fn load(name: &str) -> Case {
     Case::load(root().join("fixtures").join(name)).unwrap()
 }
 
+/// A case outside fixtures/ (`probes/<name>`).
+fn load_at(dir: &str) -> Case {
+    Case::load(root().join(dir)).unwrap()
+}
+
 /// Exploration classes of a machine (the search must complete).
 fn classes(m: Machine, what: &str) -> Vec<String> {
     let v = explore(m, 2_000_000);
@@ -307,4 +312,130 @@ fn e_elect_lane_is_lowest() {
     let c = load("e_elect_lane");
     let v = explore(machine(&c, "good", "sass"), 10_000);
     assert_eq!(v.outputs, vec![vec![0u8; 4]], "SASS leader lane");
+}
+
+/// S-DSMEM (fixtures/e_dsmem_rank, a 2-CTA cluster). Premise: a shared address is
+/// `(cluster rank << 24) | offset`, and a `shared::cta` access names the CTA's own rank.
+/// PEER stores through `shared::cta` with the peer's rank byte: a fault on both fronts (GB300:
+/// illegal instruction, `ptxv hw` 2026-11-09). CLUSTER stores to the same address through
+/// `shared::cluster`: a store into a CTA that may have exited (S-CLUSTER-LIFE) and an unwritten
+/// own word (S-INIT): violation. Mutant dsmem-rank: the rank byte of a `shared::cta` address
+/// ignored (PEER then stores into the CTA's own word and is clean).
+#[test]
+fn e_dsmem_foreign_rank_faults() {
+    adv("e_dsmem_rank", &["good", "PEER", "CLUSTER"]);
+}
+
+/// E-CLUSTER-BAR with exited threads (fixtures/e_cluster_exit, the probe the rule's Retire
+/// line asks for). Premise: `barrier.cluster` waits for the cluster's live threads only. A warp,
+/// half a warp, or all of CTA 1 exits before `barrier.cluster.arrive.release` / `wait.acquire`;
+/// the model completes every variant, and so does GB300 (`ptxv hw --runs 50`, 2026-11-09: no
+/// hang; the words that differ from good's output are the exited threads' own stores). Mutant
+/// clbar-relaxed-inits (a relaxed PTX arrive releases the thread's inits without
+/// `fence.mbarrier_init`) is caught by fixtures/r1c_cluster B14.
+#[test]
+fn e_cluster_barrier_skips_exited_threads() {
+    adv("e_cluster_exit", &["good", "EXITW", "EXITH", "EXITC"]);
+}
+
+/// S-MBAR-MEM (fixtures/e_mbar_sts64). Premise: an mbarrier initialized by ptxas's `STS.64` of
+/// the encoded state word (a per-lane `mbarrier.init`, followed by `SYNCS.CCTL.IVALL`) has the
+/// count and phase the word encodes. Count 2 with two arrivals per barrier is clean; count 3
+/// deadlocks on both fronts, and GB300 hangs (`ptxv hw`, 2026-11-09: good 20/20 bitwise, COUNT3
+/// killed by the watchdog). Mutant mbarmem-count: the decoded count one short.
+#[test]
+fn e_mbar_sts64_count_decoded() {
+    adv("e_mbar_sts64", &["good", "COUNT3"]);
+}
+
+/// E-SETMAXNREG (probes/setmaxnreg_pool, a recorded miss). Premise: every `setmaxnreg.inc`
+/// completes (the model has no register pool). inc96 asks for 4,096 registers when warpgroup 0
+/// released 3,072: GB300 hangs (results.txt), the model reports clean on both fronts. Pinned:
+/// a register-pool model turns inc96 into a deadlock here.
+#[test]
+fn e_setmaxnreg_pool_overflow_completes_in_the_model() {
+    let c = load_at("probes/setmaxnreg_pool");
+    for front in fronts(&c) {
+        let ex = classes(machine(&c, "inc96", front), front);
+        assert_eq!(ex, ["clean"], "{front}: the E-SETMAXNREG miss is fixed");
+    }
+}
+
+/// E-POLL-ANY (fixtures/e_poll_any_live). Premise: a strong load commutes with the writes of
+/// its location only when its step ends alike for every value, registers differing only where
+/// dead. Thread 32's relaxed flag load is stored after a later strong load (live at the end of
+/// the step): both outcomes must be reached (nondeterministic). DEAD (the value unused) is
+/// clean, and the reduction applies there (fewer states). Mutant vip-nolive (liveness check
+/// skipped) loses good's second outcome.
+#[test]
+fn e_poll_any_keeps_live_values() {
+    adv("e_poll_any_live", &["good", "DEAD"]);
+}
+
+/// S-SCOPE (fixtures/e_scope_cta). Premise: a release / acquire pair synchronizes only when
+/// each one's scope includes the other thread. Message passing between two CTAs is clean with
+/// `.gpu` release and acquire and races with a `.cta` release or a `.cta` acquire, on both
+/// fronts. Mutant scope-cta-all (`.cta` includes every thread).
+#[test]
+fn e_scope_cta_excludes_other_ctas() {
+    adv("e_scope_cta", &["good", "CTAREL", "CTAACQ"]);
+}
+
+/// S-CLUSTER-LIFE (fixtures/e_cluster_life). Premise: a remote shared-memory access happens
+/// before some exit of the target CTA. CTA 1's `st.shared::cluster` into CTA 0 with no final
+/// cluster barrier (NOFINAL, NOBAR) is a violation on both fronts. Certificate miss
+/// (2026-11-09, fixed): `certify` reported NOFINAL clean (plain remote stores were not in the
+/// end-of-run check); it must now agree with exploration.
+#[test]
+fn e_cluster_life_remote_store() {
+    adv("e_cluster_life", &["good", "NOFINAL", "NOBAR"]);
+}
+
+/// E-ALLOC (fixtures/e_tmem_alloc_block). Premise: a TMEM alloc that cannot succeed blocks
+/// until columns are freed. Two warps each allocating all 512 columns complete when neither
+/// holds its columns across a barrier the other reaches only after allocating; HOLD deadlocks
+/// on both fronts and hangs GB300. (good's SASS verdict is a pinned false alarm in ptxas's
+/// tcgen05 guardrail code; GB300 completes 50/50.) Mutant alloc-noblock.
+#[test]
+fn e_tmem_alloc_blocks() {
+    adv("e_tmem_alloc_block", &["good", "HOLD"]);
+}
+
+/// L-OPCLASS (fixtures/e_sb_mufu, binary-only). Premise: every variable-latency opcode is in
+/// the scoreboard check's set, so a read of its result without a wait on its write scoreboard is
+/// reported. NOWAIT clears the wait mask of the `STG` that stores `MUFU.EX2`'s result: a
+/// SCOREBOARD RAW violation (GB300: 16/50 runs wrong); NOSB removes MUFU's write scoreboard: a
+/// variable-latency producer without one. Mutant opclass-nomufu (MUFU dropped from the set; the
+/// RAW of NOWAIT is still found through the scoreboard bits, NOSB is not).
+#[test]
+fn e_sb_mufu_raw_reported() {
+    adv("e_sb_mufu", &["good", "NOWAIT", "NOSB"]);
+}
+
+/// N-FADD (fixtures/e_fadd_nan). Premise: FADD / `add.rn.f32` returns the canonical NaN
+/// 0x7fffffff for every NaN operand and IEEE sums otherwise. GB300 (`ptxv probe`, 2026-11-09):
+/// out = [0x7fffffff x 5, 2.0, 0.0, +inf] for in = [0x7fc00001, 0xffc00002, 0x7f800001,
+/// 0xff800003, 0x7fffffff, 1.0, -1.0, +inf] + 1.0; both fronts must give these bits. Mutant
+/// nfadd-nan (the operand's payload kept), which no earlier test caught.
+#[test]
+fn e_fadd_nan_is_canonical() {
+    adv("e_fadd_nan", &["good"]);
+    let c = load("e_fadd_nan");
+    let want: Vec<u8> = [
+        0x7fff_ffffu32,
+        0x7fff_ffff,
+        0x7fff_ffff,
+        0x7fff_ffff,
+        0x7fff_ffff,
+        0x4000_0000,
+        0,
+        0x7f80_0000,
+    ]
+    .iter()
+    .flat_map(|w| w.to_le_bytes())
+    .collect();
+    for front in ["ptx", "sass"] {
+        let v = explore(machine(&c, "good", front), 10_000);
+        assert_eq!(v.outputs, vec![want.clone()], "{front}");
+    }
 }

@@ -1,0 +1,36 @@
+name = "e_fadd_nan"
+description = """
+N-FADD: FADD / add.rn.f32 returns the canonical NaN 0x7fffffff for every NaN operand (payloads,
+signs, quiet and signalling), and IEEE sums otherwise. in.bin: 0x7fc00001, 0xffc00002,
+0x7f800001, 0xff800003, 0x7fffffff, 1.0, -1.0, +inf; out = in + 1.0."""
+ptx = "kernel.ptx"
+entry = "e_fadd_nan"
+grid = [1, 1, 1]
+block = [8, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [8]
+init = "file"
+file = "in.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[variants]]
+id = "good"
+summary = "NaN operands of FADD"
+expect = ["clean"]

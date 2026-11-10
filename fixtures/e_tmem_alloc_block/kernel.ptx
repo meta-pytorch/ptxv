@@ -1,0 +1,27 @@
+// E-ALLOC: a tcgen05.alloc that cannot succeed blocks until columns are freed. Warp 0 and warp 1
+// each allocate all 512 columns of the CTA's TMEM.
+//   good: each warp allocates, then deallocates, with no barrier in between: warp 1's alloc
+//         waits for warp 0's dealloc (or the other way round): clean.
+//   HOLD: warp 0 holds its columns across a bar.sync that warp 1 reaches only after its own
+//         alloc: whichever warp allocates second blocks forever: deadlock.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_tmem_alloc_block(.param .u64 out_p)
+{
+    .shared .align 4 .b32 slot[2];
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    mov.u32 %r0, %tid.x;
+    shr.u32 %r1, %r0, 5;
+    shl.b32 %r2, %r1, 2;
+    mov.u32 %r3, slot;
+    add.u32 %r3, %r3, %r2;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 512;
+    ld.shared.u32 %r4, [%r3];
+    // @HOLD
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r4, 512;
+    ret;
+}

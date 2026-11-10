@@ -157,11 +157,37 @@ verdict with the miss named in the doc comment, so a fix shows up as a test chan
 | E-CLOCK | e_clock_timeout (miss: a timeout path, GB300 wrong 20/20) | (none: the rule is the shortcut) |
 | E-NANOSLEEP | e_nanosleep | (none: a no-op has nothing to weaken) |
 | S-BRA-COND | (r4_sum_torch, probes/div_ftz) | bracond-ignore |
-| E-BSYNC / E-LOCKSTEP | e_lockstep_nobsync (binary-only; certificate miss on NOBSYNC, GB300 wrong) | bsync-own |
+| E-BSYNC / E-LOCKSTEP | e_lockstep_nobsync (binary-only; GB300 wrong without the BSYNC; certificate miss fixed, MISS 30) | bsync-own, tok-merge |
 | E-WARP-ORDER | e_warp_order_div (PTX-contract miss on CONV) | (E-LOCKSTEP join: none yet) |
 | E-DRF (TMEM) | e_drf_tmem | tmem-norace |
 | E-BAR-EXIT | (probes/bar_exit, bar_exit_warp) | barexit-phantom |
 | E-ALIGNED | (e_aligned_bar AB1 / AB3) | aligned-noviol |
+| S-ALIGN | (e_misaligned) | align-4 |
+| S-DSMEM | e_dsmem_rank (a foreign rank through shared::cta faults; GB300 traps) | dsmem-rank |
+| S-SMEM-ADDR32 | (probes/smem_addr_wrap) | addr32-nowrap |
+| S-GLOBAL-INIT | (s_globals, probes/ptx_globals) | ginit-zero |
+| E-STSM-DUP | (e_stsm_warp dupdiff) | stsm-dup-nocheck |
+| S-CLUSTER-LIFE | e_cluster_life (certificate miss on NOFINAL, fixed) | (none yet) |
+| S-SCOPE | e_scope_cta | scope-cta-all |
+| E-CLUSTER-BAR | e_cluster_exit (exited threads; GB300 completes) | clbar-relaxed-inits |
+| E-BAR-RED | (probes/bar_red) | barred-and-or |
+| E-BAR-ARRIVE | (e_bararv) | bararv-notick, bararv-gen |
+| E-BAR-OVER | (e_barover) | barover-2x |
+| S-MBAR | (r0_tma_sum B01) | mbar-tx-ignore |
+| S-MBAR-MEM | e_mbar_sts64 (ptxas's STS.64 init; COUNT3 hangs GB300) | mbarmem-count |
+| E-SETMAXNREG | (probes/setmaxnreg_pool inc96, a recorded miss; pinned) | (none: the rule is the shortcut) |
+| E-POLL-ANY | e_poll_any_live | vip-nolive |
+| E-ASYNC-STEP | (e_gmm_epilogue_reuse) | bulk-anysb |
+| E-ALLOC | e_tmem_alloc_block (HOLD hangs GB300) | alloc-noblock |
+| L-OPCLASS | e_sb_mufu (binary-only; NOWAIT wrong on GB300 16/50) | opclass-nomufu |
+| N-FADD | e_fadd_nan (GB300 bits) | fma-nan-payload |
+| N-FCHK, N-XORSIGN, N-F2I16, N-F2FP-RZ, N-QMUL4, N-IMMA, L-SHF, L-LOP3-P | (their GB300 replay probes) | fchk-swap, xorsign-minmax, f2i16-zext, f2fprz-inf, qmul4-nan, imma-wrap, shf-wrap, lop3p-and |
+
+`tools/mutate/certsweep.py` checks every fixture variant on each front-end with and without
+`--certify`; a certified verdict whose classes differ from a complete exploration's is a
+certificate miss. On 2026-11-09 it found the S-CLUSTER-LIFE and E-BSYNC certificate misses above
+among 1,126 runs (the other differences were explorations over budget, and e_ticket_addr's
+clean-up-to-permutation).
 
 ## Reading the results
 

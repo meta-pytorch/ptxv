@@ -1,0 +1,33 @@
+name = "e_mbar_sts64"
+description = """
+S-MBAR-MEM: an mbarrier initialized by ptxas's STS.64 of the encoded state (per-lane
+mbarrier.init). The SASS front decodes the expected count from the word: count 2 with two
+arrivals completes (good), count 3 never does (COUNT3, deadlock)."""
+ptx = "kernel.ptx"
+entry = "e_mbar_sts64"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "count 2, two arrivals"
+expect = ["clean"]
+
+[[variants]]
+id = "COUNT3"
+summary = "count 3, two arrivals"
+marker = "@COUNT"
+find = "], 2;"
+replace = "], 3;"
+expect = ["deadlock"]

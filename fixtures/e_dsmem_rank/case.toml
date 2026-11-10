@@ -1,0 +1,49 @@
+name = "e_dsmem_rank"
+description = """
+S-DSMEM: shared addresses carry the cluster rank in bits 24+; a shared::cta access naming the
+peer's rank faults (GB300: illegal instruction, probes/reserved_smem), the same address through
+shared::cluster is a DSMEM access of the peer. good: own rank, clean. PEER: shared::cta store to
+the peer's rank: fault. CLUSTER: st.shared::cluster to the peer: a store into a CTA that may have exited
+(S-CLUSTER-LIFE: no cluster barrier) and an unwritten own word read (S-INIT): violation."""
+ptx = "kernel.ptx"
+entry = "e_dsmem_rank"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+cluster = [2, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "own rank"
+expect = ["clean"]
+
+[[variants]]
+id = "PEER"
+summary = "shared::cta store with the peer's rank byte"
+marker = "@FLIP"
+find = "mov.u32 %r3, 0;"
+replace = "mov.u32 %r3, 0x1000000;"
+expect = ["fault"]
+
+[[variants]]
+id = "CLUSTER"
+summary = "the peer's address through st.shared::cluster"
+edits = [
+    { marker = "@FLIP", find = "mov.u32 %r3, 0;", replace = "mov.u32 %r3, 0x1000000;" },
+    { marker = "@SPACE", find = "st.shared.u32", replace = "st.shared::cluster.u32" },
+]
+expect = ["violation"]
+# SASS: the remote store is in flight (S-REMOTE-INFLIGHT); it also races with the peer's read
+# of its own word (on the PTX front the schedules reaching that read end at the lifetime
+# violation first).
+expect_sass = ["race", "violation"]

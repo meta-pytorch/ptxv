@@ -1,0 +1,50 @@
+name = "e_sb_mufu"
+description = """
+L-OPCLASS: MUFU.EX2's result is covered only by its write scoreboard. good: the STG at 0x90
+waits on it, clean. NOWAIT: the STG's wait mask cleared: it may read R7 before MUFU writes it,
+which the static scoreboard check must report. NOSB: MUFU sets no write scoreboard at all: a
+variable-latency result without one is reported (the opcode set of L-OPCLASS). Binary-only (kernel.cubin from kernel.ptx,
+ptxas 13.0)."""
+cubin = "kernel.cubin"
+arch = "sm_103a"
+entry = "e_sb_mufu"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [32]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[variants]]
+id = "good"
+summary = "as compiled"
+expect = ["clean"]
+
+[[variants]]
+id = "NOWAIT"
+summary = "STG at 0x90 does not wait on MUFU's scoreboard"
+patch = [{ at = "@0x90", wait = 0 }]
+expect = ["violation"]
+
+[[variants]]
+id = "NOSB"
+summary = "MUFU at 0x80 sets no write scoreboard (its consumer still waits on the old one)"
+patch = [{ at = "@0x80", wbar = 7 }]
+expect = ["violation"]
