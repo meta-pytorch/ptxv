@@ -1919,11 +1919,23 @@ fn lower_line(
             d: lw.dst(lw.op(0)?)?,
             a: lw.val(lw.op(1)?, 4)?,
         },
+        // `-Rb` / `-URb`: a subtraction fused (a - b). A negated operand of any other kind
+        // (`-c[..]`) is refused; a negative immediate is parsed as such. Before LM's fix the
+        // `-URb` form lost its sign (q_split_seqlens_kernel: max(c0 - rows, 0) simulated as
+        // c0 + rows; PTX front and GB300 agree on c0 - rows). ASSUME(L-ROSETTA)
         "VIADDMNMX" if mods.iter().all(|m| *m == "U32") => Op::AddMinMax {
             d: lw.dst(lw.op(0)?)?,
             a: lw.val(lw.op(1)?, 4)?,
-            b: lw.val(lw.op(2)?.trim_start_matches('-'), 4)?,
-            neg_b: lw.op(2)?.starts_with("-R"),
+            b: {
+                let bt = lw.op(2)?.replace(".reuse", "");
+                match bt.strip_prefix('-') {
+                    Some(r) if r.starts_with('R') || r.starts_with("UR") => lw.val(r, 4)?,
+                    Some(r) if r.starts_with(|c: char| c.is_ascii_digit()) => lw.val(&bt, 4)?,
+                    Some(_) => bail!(lw.err("VIADDMNMX negated operand form not modeled")),
+                    None => lw.val(&bt, 4)?,
+                }
+            },
+            neg_b: lw.op(2)?.starts_with("-R") || lw.op(2)?.starts_with("-UR"),
             c: lw.val(lw.op(3)?, 4)?,
             signed: !has("U32"),
             max: match lw.op(4)? {
@@ -5882,6 +5894,22 @@ mod tests {
     }
 
     #[test]
+    fn viaddmnmx_negated_uniform() {
+        // q_split_seqlens_kernel: `VIADDMNMX R13, R3, -UR8, RZ, !PT` = max(R3 - UR8, 0).
+        for (l, neg) in [
+            ("VIADDMNMX R13, R3, -UR8, RZ, !PT", true),
+            ("VIADDMNMX R13, R3, -R8, RZ, !PT", true),
+            ("VIADDMNMX R13, R3, UR8, RZ, !PT", false),
+        ] {
+            match lower1(l).unwrap() {
+                Op::AddMinMax { neg_b, .. } => assert_eq!(neg_b, neg, "{l}"),
+                o => panic!("{l}: {o:?}"),
+            }
+        }
+        assert!(lower1("VIADDMNMX R13, R3, -c[0x0][0x10], RZ, !PT").is_err());
+    }
+
+    #[test]
     fn half_imm() {
         assert_eq!(parse_half("5.9604644775390625e-08"), Some(1));
         assert_eq!(parse_half("1.875"), Some(0x3f80));
@@ -5889,6 +5917,38 @@ mod tests {
     }
 
     /// Lower one disassembled instruction (no labels, no encoding).
+    /// UTMAREDG with an L2 cache-policy descriptor (`.L2::cache_hint`, the cascade WGRAD's
+    /// evict-first fp32 reduce-add) lowers like the hint-free form: a reducing TmaStore with the
+    /// same source, map and coordinates. Other third operands stay refused.
+    #[test]
+    fn utmaredg_cache_policy_desc() {
+        let plain = lower1("UTMAREDG.3D.ADD [UR20], [UR24]").unwrap();
+        for l in [
+            "UTMAREDG.3D.ADD [UR20], [UR24], desc[URZ]",
+            "UTMAREDG.3D.ADD [UR20], [UR24], desc[UR26]",
+        ] {
+            let op = lower1(l).unwrap_or_else(|e| panic!("{l}: {e}"));
+            assert_eq!(format!("{op:?}"), format!("{plain:?}"), "{l}");
+            assert!(
+                matches!(
+                    op,
+                    Op::TmaStore {
+                        red: true,
+                        dims: 3,
+                        ..
+                    }
+                ),
+                "{l}"
+            );
+        }
+        for l in [
+            "UTMAREDG.3D.ADD [UR20], [UR24], UR26",
+            "UTMAREDG.3D.ADD [UR20], [UR24], desc[UR26], UR4",
+        ] {
+            assert!(lower1(l).is_err(), "{l} must be refused");
+        }
+    }
+
     fn lower1(text: &str) -> Result<Op> {
         let body = text.trim();
         let (guard, body) = match body.strip_prefix('@') {

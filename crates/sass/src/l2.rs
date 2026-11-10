@@ -288,11 +288,12 @@ pub(super) fn lower(lw: &Lw, base: &str, mods: &[&str], meta: &CubinMeta) -> Res
                     .ok_or_else(|| lw.err(format!("UTMAREDG.{} not modeled", mods.join("."))))?,
                 _ => bail!(lw.err(format!("UTMAREDG.{} not modeled", mods.join(".")))),
             };
-            // A third operand `desc[URZ]`: no L2 cache-policy descriptor (the bf16x6 FA4
-            // backward); any other descriptor is refused.
+            // A third operand `desc[URx]`: the L2 cache-policy descriptor (`.L2::cache_hint`,
+            // URZ for none). A cache hint does not change the result; it is ignored as for
+            // UTMASTG (the cascade WGRAD's evict-first fp32 reduce-add stores).
             let ok = match lw.l.operands.len() {
                 2 => true,
-                3 => lw.op(2)?.replace(' ', "") == "desc[URZ]",
+                3 => lw.op(2)?.replace(' ', "").starts_with("desc[UR"),
                 _ => false,
             };
             if !ok {
@@ -375,7 +376,7 @@ pub(super) fn lower(lw: &Lw, base: &str, mods: &[&str], meta: &CubinMeta) -> Res
         // a - b. GB300: probes/imnmx_relu, probes/iaddmnmx_relu. ASSUME(L-ROSETTA)
         "VIADDMNMX" => {
             let bt = lw.op(2)?.replace(".reuse", "");
-            let neg_b = bt.starts_with("-R");
+            let neg_b = bt.starts_with("-R") || bt.starts_with("-UR");
             if mods != ["RELU"]
                 || lw.l.operands.len() != 5
                 || bt.starts_with('~')
