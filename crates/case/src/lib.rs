@@ -34,6 +34,15 @@ pub struct Manifest {
     /// front-end only.
     #[serde(default)]
     pub cubin: Option<String>,
+    /// PTX case captured from a running process: the cubin the GPU executed (`jit.cubin`).
+    /// ptxv rebuilds the cubin from `ptx`; when the rebuilt kernel code differs from this one,
+    /// the verdicts check a binary the GPU did not run (`ptx_rebuild: mismatch`).
+    #[serde(default)]
+    pub executed_cubin: Option<String>,
+    /// The CUDA toolkit whose ptxas built the executed cubin ("13.3", from its toolkit note):
+    /// ptxv compiles `ptx` with that ptxas when it is installed (PTXV_TOOLKITS).
+    #[serde(default)]
+    pub ptxas_toolkit: Option<String>,
     pub entry: String,
     #[serde(default = "default_arch")]
     pub arch: String,
@@ -240,6 +249,14 @@ pub struct NextLaunch {
     /// (`tools/capture.py`: one op's kernels may come from torch, cuBLAS and cuDNN modules).
     #[serde(default)]
     pub cubin: Option<String>,
+    /// PTX case whose launches ran from more than one module: the executed cubin holding this
+    /// kernel when it is not the manifest's `executed_cubin`.
+    #[serde(default)]
+    pub executed_cubin: Option<String>,
+    /// The kernel's name in its executed cubin when the PTX renames it (two modules defining
+    /// the same name: the later one's entry is `<name>__m<k>` in the merged PTX).
+    #[serde(default)]
+    pub executed_entry: Option<String>,
     /// Stream order override (rung 4b): the index (in `all_launches` order) of the launch
     /// this one waits for instead of the previous launch on its GPU; -1: none (a dropped
     /// event wait between streams). Set by a variant's `after`.

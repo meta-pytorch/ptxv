@@ -636,8 +636,23 @@ fn ptx_cubin(
     let ptx_path = dir.join(format!("{variant}.ptx"));
     std::fs::write(&ptx_path, &ptx)?;
     let cubin = dir.join(format!("{variant}.cubin"));
-    ptxv_sass::ptxas(&ptx_path, &cubin, &case.m.arch)
-        .with_context(|| format!("ptxas on variant {variant}"))?;
+    let used = ptxv_sass::ptxas_with(
+        &ptx_path,
+        &cubin,
+        &case.m.arch,
+        case.m.ptxas_toolkit.as_deref(),
+    )
+    .with_context(|| format!("ptxas on variant {variant}"))?;
+    // The rebuilt code vs the executed cubin, for a variant whose PTX is the captured one.
+    let captured = std::fs::read_to_string(case.dir.join(&case.m.ptx)).unwrap_or_default();
+    if delays.is_empty() && ptx == captured {
+        if let Some(r) = ptx_rebuild(case, &cubin, used.as_deref()) {
+            PTX_REBUILD
+                .lock()
+                .unwrap()
+                .insert(rebuild_key(case, variant), r);
+        }
+    }
     let patch = &case.variant(variant.trim_end_matches(".delayed"))?.patch;
     if !patch.is_empty() {
         let log = ptxv_sass::scoreboard::patch_file(&cubin, &case.m.entry, patch)?;
@@ -647,6 +662,96 @@ fn ptx_cubin(
         )?;
     }
     Ok((ptx, cubin))
+}
+
+/// Rebuild status of a PTX case variant's cubin, keyed by `rebuild_key`.
+static PTX_REBUILD: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, PtxRebuild>>,
+> = std::sync::LazyLock::new(Default::default);
+
+fn rebuild_key(case: &Case, variant: &str) -> String {
+    format!("{}#{variant}", case.dir.display())
+}
+
+/// How the cubin ptxv compiled from a captured case's PTX compares with the cubin the GPU
+/// executed (`executed_cubin`): `status` is "match" (every launched kernel's `.text` equal) or
+/// "mismatch" (the verdicts then check a binary the GPU did not run).
+#[derive(Clone, Debug, serde::Serialize)]
+struct PtxRebuild {
+    status: &'static str,
+    /// Toolkit of the ptxas that built the executed cubin, and of the one ptxv used.
+    executed_toolkit: Option<String>,
+    rebuilt_toolkit: Option<String>,
+    /// Launched kernels whose code differs.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    differing: Vec<String>,
+}
+
+fn ptx_rebuild(case: &Case, rebuilt: &Path, used: Option<&str>) -> Option<PtxRebuild> {
+    // (entry in the rebuilt cubin, executed cubin, entry in it) per launch: a launch's own
+    // `executed_cubin` / `executed_entry` (launches from several modules), else the case's.
+    let top = case.m.executed_cubin.as_deref();
+    let launches: Vec<(&str, Option<&str>, &str)> =
+        std::iter::once((case.m.entry.as_str(), top, case.m.entry.as_str()))
+            .chain(case.m.launches.iter().map(|l| {
+                (
+                    l.entry.as_str(),
+                    l.executed_cubin.as_deref().or(top),
+                    l.executed_entry.as_deref().unwrap_or(&l.entry),
+                )
+            }))
+            .collect();
+    if launches.iter().all(|(_, c, _)| c.is_none()) {
+        return None;
+    }
+    let new = std::fs::read(rebuilt).ok()?;
+    let mut exes: std::collections::BTreeMap<&str, Option<Vec<u8>>> = Default::default();
+    let mut differing = Vec::new();
+    let mut toolkit = None;
+    for (entry, cubin, exe_entry) in launches {
+        let a = cubin.and_then(|c| {
+            exes.entry(c)
+                .or_insert_with(|| std::fs::read(case.dir.join(c)).ok())
+                .as_deref()
+                .and_then(|exe| {
+                    toolkit = toolkit.take().or_else(|| ptxv_sass::cubin_toolkit(exe));
+                    ptxv_sass::kernel_text(exe, exe_entry)
+                })
+        });
+        if a.is_none() || a != ptxv_sass::kernel_text(&new, entry) {
+            differing.push(entry.to_string());
+        }
+    }
+    differing.sort();
+    differing.dedup();
+    Some(PtxRebuild {
+        status: if differing.is_empty() {
+            "match"
+        } else {
+            "mismatch"
+        },
+        executed_toolkit: toolkit.or_else(|| case.m.ptxas_toolkit.clone()),
+        rebuilt_toolkit: used.map(String::from),
+        differing,
+    })
+}
+
+/// The image note of a PTX case variant whose rebuilt cubin differs from the executed one.
+fn rebuild_note(case: &Case, variant: &str) -> Option<String> {
+    let r = PTX_REBUILD
+        .lock()
+        .unwrap()
+        .get(&rebuild_key(case, variant))
+        .cloned()?;
+    (r.status == "mismatch").then(|| {
+        format!(
+            "ptx_rebuild: mismatch: the cubin ptxv built from the PTX (ptxas {}) differs from the \
+             executed one (ptxas {}) in {}: verdicts check a binary the GPU did not run",
+            r.rebuilt_toolkit.as_deref().unwrap_or("?"),
+            r.executed_toolkit.as_deref().unwrap_or("?"),
+            r.differing.join(", ")
+        )
+    })
 }
 
 fn load_with(
@@ -744,11 +849,15 @@ fn load_with(
         )?;
     }
     // A multi-kernel launch (rung 1e) is one combined kernel (Kernel::concat).
-    let k = if ks.len() == 1 {
+    let mut k = if ks.len() == 1 {
         ks.pop().unwrap()
     } else {
         Kernel::concat(ks)
     };
+    // A rebuilt cubin that differs from the executed one: not a verdict on what the GPU ran.
+    if let Some(n) = rebuild_note(case, variant) {
+        k.static_image.get_or_insert(n);
+    }
     Ok((k, cubin))
 }
 
@@ -924,6 +1033,9 @@ struct CheckRow {
     executed_image: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     image_note: Option<String>,
+    /// PTX case with an executed cubin: whether the cubin ptxv rebuilt matches it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ptx_rebuild: Option<PtxRebuild>,
     verdict: Verdict,
     /// The second level (ptxv_sim::twolevel): the hardware-model check that classified the
     /// verdict's race / stale findings (each finding's `gb300`). None: not needed or disabled.
@@ -1207,6 +1319,11 @@ fn cmd_check(
                     refuted_opt_in: refuted,
                     executed_image: k.static_image.is_none(),
                     image_note: k.static_image.clone(),
+                    ptx_rebuild: PTX_REBUILD
+                        .lock()
+                        .unwrap()
+                        .get(&rebuild_key(case, v.as_str()))
+                        .cloned(),
                     verdict: Verdict {
                         states: 1,
                         transitions: 0,
@@ -1970,6 +2087,13 @@ fn cmd_check(
             if let Some(n) = &k.static_image {
                 cj["image_note"] = n.clone().into();
             }
+            if let Some(r) = PTX_REBUILD
+                .lock()
+                .unwrap()
+                .get(&rebuild_key(case, v.as_str()))
+            {
+                cj["ptx_rebuild"] = serde_json::to_value(r)?;
+            }
             std::fs::write(
                 dir.join(format!("{v}.{f}.check.json")),
                 serde_json::to_string_pretty(&cj)?,
@@ -1984,6 +2108,11 @@ fn cmd_check(
                 refuted_opt_in: refuted,
                 executed_image: k.static_image.is_none(),
                 image_note: k.static_image.clone(),
+                ptx_rebuild: PTX_REBUILD
+                    .lock()
+                    .unwrap()
+                    .get(&rebuild_key(case, v.as_str()))
+                    .cloned(),
                 verdict,
                 gb300: gbc,
                 two_level,

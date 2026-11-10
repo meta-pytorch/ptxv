@@ -144,18 +144,182 @@ fn run_tool_uncached(name: &str, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8(out.stdout)?)
 }
 
-/// Compile PTX to a cubin with ptxas.
+/// Compile PTX to a cubin with ptxas (the toolkit `ptxas_with` picks for the module).
 pub fn ptxas(ptx: &Path, cubin: &Path, arch: &str) -> Result<()> {
-    run_tool(
-        "ptxas",
-        &[
+    ptxas_with(ptx, cubin, arch, None).map(|_| ())
+}
+
+/// `major.minor` of a version string ("13.3", "13.3.73", "V13.3.73").
+fn major_minor(s: &str) -> Option<(u32, u32)> {
+    let mut it = s.trim().trim_start_matches(['V', 'v']).split('.');
+    Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+}
+
+/// The CUDA toolkit version of a ptxas binary (`--version`: "release 13.3, V13.3.73"), memoized.
+pub fn ptxas_version(path: &str) -> Option<(u32, u32)> {
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+    type Memo = Mutex<HashMap<String, Option<(u32, u32)>>>;
+    static MEMO: OnceLock<Memo> = OnceLock::new();
+    let memo = MEMO.get_or_init(Default::default);
+    if let Some(v) = memo.lock().unwrap().get(path) {
+        return *v;
+    }
+    let v = Command::new(path)
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout).to_string();
+            let i = s.find("release ")?;
+            major_minor(s[i + 8..].split(',').next()?)
+        });
+    memo.lock().unwrap().insert(path.to_string(), v);
+    v
+}
+
+/// The PTX ISA of a module (its `.version`).
+pub fn ptx_isa(ptx: &str) -> Option<(u32, u32)> {
+    let l = ptx
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with(".version "))?;
+    major_minor(
+        l.trim_start_matches(".version ")
+            .split_whitespace()
+            .next()?,
+    )
+}
+
+/// The first CUDA toolkit whose ptxas accepts PTX ISA `isa`: ISA 9.x came with CUDA 13.x and
+/// 8.x with 12.x (8.8 and later: 12.8 and later).
+pub fn toolkit_for_isa(isa: (u32, u32)) -> (u32, u32) {
+    match isa {
+        (9, m) => (13, m),
+        (8, m) => (12, m.min(9)),
+        (a, b) if a > 9 => (a + 4, b),
+        _ => (0, 0),
+    }
+}
+
+/// Installed toolkits: PTXV_TOOLKITS is a directory of `<major.minor>/bin/ptxas` trees (the
+/// toolkit registry; a version directory may be a symlink to a CUDA install). Sorted by version.
+pub fn toolkits() -> Vec<((u32, u32), String)> {
+    let Ok(root) = std::env::var("PTXV_TOOLKITS") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let ptxas = e.path().join("bin/ptxas");
+        if let (Some(v), true) = (major_minor(&name), ptxas.exists()) {
+            out.push((v, ptxas.to_string_lossy().to_string()));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The ptxas for a module: the registry toolkit equal to `want` (the toolkit that built the
+/// executed cubin, `major.minor`) if installed; else the default ptxas (`$CUDA_HOME/bin`) when
+/// it accepts the module's PTX ISA, else the oldest registry toolkit that does. Returns the path
+/// and the chosen toolkit version.
+pub fn select_ptxas(isa: Option<(u32, u32)>, want: Option<&str>) -> (String, Option<(u32, u32)>) {
+    let default = tool("ptxas");
+    let dv = ptxas_version(&default);
+    let reg = toolkits();
+    if let Some(w) = want.and_then(major_minor) {
+        if dv == Some(w) {
+            return (default, dv);
+        }
+        if let Some((v, p)) = reg.iter().find(|(v, _)| *v == w) {
+            return (p.clone(), Some(*v));
+        }
+    }
+    let need = isa.map(toolkit_for_isa).unwrap_or((0, 0));
+    if dv.is_none_or(|d| d >= need) {
+        return (default, dv);
+    }
+    match reg.iter().find(|(v, _)| *v >= need) {
+        Some((v, p)) => (p.clone(), Some(*v)),
+        None => (default, dv),
+    }
+}
+
+/// Compile PTX to a cubin with the ptxas `select_ptxas` picks for it (`want`: the toolkit that
+/// built the executed cubin). Returns the toolkit version used ("13.3"), when known.
+pub fn ptxas_with(
+    ptx: &Path,
+    cubin: &Path,
+    arch: &str,
+    want: Option<&str>,
+) -> Result<Option<String>> {
+    let text = std::fs::read_to_string(ptx).unwrap_or_default();
+    let (path, v) = select_ptxas(ptx_isa(&text), want);
+    let out = Command::new(&path)
+        .args([
             &format!("-arch={arch}"),
             ptx.to_str().unwrap(),
             "-o",
             cubin.to_str().unwrap(),
-        ],
-    )?;
-    Ok(())
+        ])
+        .output()
+        .with_context(|| format!("running {path}"))?;
+    if !out.status.success() {
+        bail!(
+            "ptxas ({path}) failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    Ok(v.map(|(a, b)| format!("{a}.{b}")))
+}
+
+#[cfg(test)]
+mod toolkit_tests {
+    use super::*;
+
+    #[test]
+    fn ptx_isa_maps_to_the_first_toolkit_that_accepts_it() {
+        assert_eq!(ptx_isa(".version 9.3\n.target sm_103a\n"), Some((9, 3)));
+        assert_eq!(ptx_isa("// x\n  .version 8.8\n"), Some((8, 8)));
+        assert_eq!(toolkit_for_isa((9, 0)), (13, 0));
+        assert_eq!(toolkit_for_isa((9, 3)), (13, 3));
+        assert_eq!(toolkit_for_isa((8, 8)), (12, 8));
+        assert_eq!(major_minor("V13.3.73"), Some((13, 3)));
+        assert_eq!(major_minor("13.1"), Some((13, 1)));
+    }
+
+    #[test]
+    fn registry_lists_version_dirs_with_a_ptxas() {
+        let d = std::env::temp_dir().join(format!("ptxv-toolkits-{}", std::process::id()));
+        for v in ["13.3", "13.1", "notaversion"] {
+            std::fs::create_dir_all(d.join(v).join("bin")).unwrap();
+            std::fs::write(d.join(v).join("bin/ptxas"), "").unwrap();
+        }
+        std::fs::create_dir_all(d.join("13.2")).unwrap(); // no bin/ptxas: not a toolkit
+        // SAFETY: tests of this module do not read PTXV_TOOLKITS concurrently.
+        unsafe { std::env::set_var("PTXV_TOOLKITS", &d) };
+        let vs: Vec<_> = toolkits().into_iter().map(|(v, _)| v).collect();
+        unsafe { std::env::remove_var("PTXV_TOOLKITS") };
+        assert_eq!(vs, vec![(13, 1), (13, 3)]);
+    }
+}
+
+/// The bytes of `.text.<kernel>` of a cubin (its machine code), if present.
+pub fn kernel_text(cubin: &[u8], kernel: &str) -> Option<Vec<u8>> {
+    let e = elf::Elf::parse(cubin).ok()?;
+    let i = e.find(&format!(".text.{kernel}"))?;
+    Some(e.sections[i].data.clone())
+}
+
+/// The CUDA toolkit that built a cubin ("13.3"), from its toolkit note (`.note.nv.tkinfo`:
+/// "Cuda compilation tools, release 13.3, V13.3.73").
+pub fn cubin_toolkit(cubin: &[u8]) -> Option<String> {
+    let e = elf::Elf::parse(cubin).ok()?;
+    let note = String::from_utf8_lossy(&e.sections[e.find(".note.nv.tkinfo")?].data).to_string();
+    let i = note.find("release ")?;
+    let (a, b) = major_minor(note[i + 8..].split(',').next()?)?;
+    Some(format!("{a}.{b}"))
 }
 
 fn hex(s: &str) -> Option<u32> {
