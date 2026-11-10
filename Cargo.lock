@@ -209,11 +209,10 @@ dependencies = [
  "ptxv-case",
  "ptxv-hw",
  "ptxv-ir",
+ "ptxv-jsonout",
  "ptxv-ptx",
  "ptxv-sass",
  "ptxv-sim",
- "ptxv-tpu",
- "ptxv-tpu-ir",
  "serde",
  "serde_json",
  "toml",
@@ -245,6 +244,13 @@ name = "ptxv-ir"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "ptxv-jsonout"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -285,24 +291,6 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
-]
-
-[[package]]
-name = "ptxv-tpu"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ptxv-sim",
- "ptxv-tpu-ir",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "ptxv-tpu-ir"
-version = "0.1.0"
-dependencies = [
- "serde",
 ]
 
 [[package]]

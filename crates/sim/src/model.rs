@@ -7,11 +7,11 @@
 
 //! A target-independent model interface and a stateful explorer over it.
 //!
-//! The GB300 explorer (`explore.rs`) is specialised to `Machine`; other targets (the TPU
-//! machine of `ptxv-tpu`) implement `Model` and reuse this search: states cached by a 128-bit
-//! fingerprint, depth-first with an explicit stack, a shared visited set for parallel workers,
-//! findings deduplicated by signature with the schedule that reached them, and the `Verdict`
-//! and `Finding` types of the GB300 path so reports look the same.
+//! The GB300 explorer (`explore.rs`) is specialised to `Machine`; other targets implement `Model`
+//! and reuse this search: states cached by a 128-bit fingerprint, depth-first with an explicit
+//! stack, a shared visited set for parallel workers, findings deduplicated by signature with the
+//! schedule that reached them, and the `Verdict` and `Finding` types of the GB300 path so reports
+//! look the same.
 
 use std::collections::HashSet;
 use std::fmt::Debug;

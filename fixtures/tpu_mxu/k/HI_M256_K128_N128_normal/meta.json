@@ -1,1 +1,0 @@
-{"kernel": "rf32_HIGHEST_M256_K128_N128", "inputs": [{"shape": [256, 128]}, {"shape": [128, 128]}]}

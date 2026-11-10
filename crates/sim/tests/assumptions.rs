@@ -76,6 +76,16 @@ fn registry_doc_and_code_agree() {
 
     let mut files = Vec::new();
     rust_files(&root().join("crates"), &mut files);
+    // The internal-only crates (fb/<name>/crates) carry the tags of the internal targets' code
+    // assumptions; fb/ is absent outside the internal tree.
+    if let Ok(rd) = std::fs::read_dir(root().join("fb")) {
+        for e in rd {
+            let crates = e.unwrap().path().join("crates");
+            if crates.is_dir() {
+                rust_files(&crates, &mut files);
+            }
+        }
+    }
     let mut tagged = BTreeSet::new();
     for f in &files {
         if f.ends_with("tests/assumptions.rs") || f.ends_with("src/assumptions.rs") {
@@ -99,7 +109,7 @@ fn registry_doc_and_code_agree() {
     for (id, _) in targets.iter().filter(|t| t.1 == "code") {
         assert!(
             tagged.contains(id),
-            "target code assumption {id} is not tagged ASSUME({id}) anywhere in crates/"
+            "target code assumption {id} has no ASSUME({id}) tag in crates/ or fb/*/crates/"
         );
     }
     for a in REGISTRY.iter().filter(|a| a.kind == "code") {
