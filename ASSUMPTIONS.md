@@ -4801,6 +4801,36 @@ reuse[17:21); 7 = no scoreboard; waits take effect before issue.
 - uniform-unit instructions read URs late, but predicate operands at issue (rung 2:
   ptxas overwrites the `UP1` operand of a `UTCHMMA` that has `rd=SB2` with no wait, and
   places the SB2 wait right before it overwrites the instruction's `UR48`);
+- the tcgen05 issue queue (`UTCHMMA` / `UTCQMMA` / `UTCOMMA` / `UTCBAR` / `UTCCP`) reads its
+  URs in issue order, so a later one's read scoreboard covers an earlier untracked one. For
+  `UTCCP` (2026-11-08): the GB300 driver's own sm_103 image of a DeepGEMM sm_100 fp8 GEMM
+  issues `UTCCP.T.S.4x32dp128bit tmem[0xa4], gdesc[UR12]` with no read scoreboard and
+  rewrites UR13 after waiting only on a later `UTCQMMA`'s; fixtures/r3_cute_mxf8 with its
+  UTCCPs' read scoreboards removed equals GB300 in 1000 of 1000 runs
+  (`utccp_in_mma_issue_order`; before: a false SCOREBOARD WAR);
+- `UGETNEXTWORKID` (`clusterlaunchcontrol.try_cancel`) is the exception among uniform-unit
+  instructions: it reads its URs (response address, mbarrier) at issue (2026-11-09).
+  probes/clc_war rewrites the response-address register in the instruction right after
+  `UGETNEXTWORKID.BROADCAST [UR6], [UR7]` (stall 1), moving it 16 bytes for 15 cycles before
+  restoring it. On GB300 every one of 2 x 102,400 CTAs got the response at the original address
+  and none at +16, with and without a never-waited read scoreboard on UGETNEXTWORKID (grid 512,
+  200 launches each). The same rewrite of the mbarrier register never hung and delivered every
+  response (100 launches, 51,200 CTAs). ptxas relies on this in TLX CLC kernels
+  (`UGETNEXTWORKID.BROADCAST [UR8], [UR9]` with rd=SB2, then `UMOV UR8, URZ` and `R2UR UR9`
+  with no wait on SB2). `clc_war_operands_read_at_issue`; before: a false SCOREBOARD WAR;
+- `STG` reads its address and data registers late, not at issue: probes/stg_guard_war
+  rewrites them one instruction after the store with no wait, and GB300 stores the rewritten
+  values. A wait on a later guarded-off `STG`'s read scoreboard covers it (L-SB-ORDER);
+- shared loads of a warp write back in issue order: a later `LDS` may overwrite a register an
+  earlier `LDS` has not written yet, with no wait, and keeps its own value (2026-11-09). ptxas
+  13.0 / 13.3 emit `LDS.128 R4, [R0]` then `LDS R6, [R0+0x10]` with no wait on the first
+  load's write scoreboard (fixtures/e_lds_waw). probes/lds_waw schedules that pair with the
+  `LDS.128` 32-way bank-conflicted (slow) and the `LDS` broadcast (fast), and the other
+  combinations. On GB300, 200 launches of 131,072 threads per schedule, every thread kept the
+  second load's value. Replacing the second load with an ALU write of the same register
+  (sensitivity control) leaves the late `LDS.128`'s word there in every thread, which is
+  still reported as a WAW. Applied only where the later `LDS` runs whenever the earlier one
+  did (`lds_write_back_in_issue_order`; before: a false SCOREBOARD WAW);
 - TMEM loads (`LDTM`) complete in issue order, so a write scoreboard on a later one covers an
   earlier untracked one (rung 2e: ptxas gives only the last of two back-to-back `LDTM`s a
   write scoreboard and uses both results after waiting on it); likewise shuffles (rung 3a:
@@ -4881,7 +4911,17 @@ LDGSTS / LDL / STL / LDSM / STSM), tracked by an earlier read scoreboard or not:
 released (a wait on it), they have read their registers. Applied only where the covering
 instruction executes whenever the earlier one did: it is unguarded, or it has the same guard,
 not redefined in between (a guarded-off instruction may release its scoreboard at once; not
-probed, kept conservative).
+probed in general, kept conservative). Between global stores the guard does not matter: a
+guarded-off `STG`'s read scoreboard is still released in queue order (below).
+- Guarded-off `STG` (2026-11-09): probes/stg_guard_war. A global store A (`STG.E.64 [R2.64],
+  R14`, no read scoreboard) sits behind 16 stores. Then `@P0 STG` B carries rd=SB0, and the
+  next instruction rewrites A's data register (R14) or address register (R2) after a wait on
+  SB0 only. On GB300, 20 launches of 262,144 threads per cubin, with P0 false and with P0
+  true: every thread's A is intact. Without the wait, A stores the rewritten registers in all
+  but at most 150 threads per launch, so STG reads its registers late and the wait is what
+  orders them. ptxas relies on this in Triton's TBE forward (`@P5 STG.E.64 [R12.64], RZ`,
+  ... `@P4 STG.E.64 [R12.64+0x8], RZ` rd=SB0, then `IADD3 R12` waiting on SB0 only; before: a
+  false SCOREBOARD WAR). `stg_guarded_off_releases_in_order`.
 - Where: `scoreboard.rs` `check` (the `rbar` of a memory-queue instruction adds `RCOV`
   covers to the pending reads before it; a wait on that read scoreboard retires them).
 - Status: **validated** by `probes/sb_mio_order` (GB300, 2026-11-05, `results.txt`): an

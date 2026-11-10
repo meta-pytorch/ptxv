@@ -1,0 +1,35 @@
+// probes/stg_guard_war: does a wait on the read scoreboard of a guarded-off STG cover an earlier
+// STG's operand reads? Each thread floods the memory queue with 16 stores, then store A writes
+// {v, ~v} to out[t] (a 64-bit store through R_a), then store B, guarded by a predicate that is
+// false at run time (param off = 0), then the address and data registers of A are rewritten and
+// used by store C (to out2[t]). patch.py removes A's read scoreboard and makes the rewrite wait
+// on B's only. out[t] != {v, ~v} would mean A read its operands after the rewrite.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry stg_war(.param .u64 out, .param .u64 out2, .param .u64 junk, .param .u32 on)
+{
+  .reg .b32 %r<24>; .reg .b64 %rd<16>; .reg .pred %p<4>;
+  ld.param.u64 %rd1, [out]; cvta.to.global.u64 %rd1, %rd1;
+  ld.param.u64 %rd2, [out2]; cvta.to.global.u64 %rd2, %rd2;
+  ld.param.u64 %rd3, [junk]; cvta.to.global.u64 %rd3, %rd3;
+  ld.param.u32 %r20, [on]; setp.ne.u32 %p1, %r20, 0;
+  mov.u32 %r1, %ctaid.x; mov.u32 %r2, %tid.x; mad.lo.u32 %r3, %r1, 256, %r2;
+  mul.wide.u32 %rd4, %r3, 8; add.u64 %rd5, %rd1, %rd4; add.u64 %rd6, %rd2, %rd4;
+  mul.wide.u32 %rd7, %r3, 4; add.u64 %rd8, %rd3, %rd7;
+  xor.b32 %r4, %r3, 0x5a5a5a5a; not.b32 %r5, %r4;
+  st.global.u32 [%rd8], %r3; st.global.u32 [%rd8+0x100000], %r3;
+  st.global.u32 [%rd8+0x200000], %r3; st.global.u32 [%rd8+0x300000], %r3;
+  st.global.u32 [%rd8+0x400000], %r3; st.global.u32 [%rd8+0x500000], %r3;
+  st.global.u32 [%rd8+0x600000], %r3; st.global.u32 [%rd8+0x700000], %r3;
+  st.global.u32 [%rd8+0x800000], %r3; st.global.u32 [%rd8+0x900000], %r3;
+  st.global.u32 [%rd8+0xa00000], %r3; st.global.u32 [%rd8+0xb00000], %r3;
+  st.global.u32 [%rd8+0xc00000], %r3; st.global.u32 [%rd8+0xd00000], %r3;
+  st.global.u32 [%rd8+0xe00000], %r3; st.global.u32 [%rd8+0xf00000], %r3;
+  st.global.v2.u32 [%rd5], {%r4, %r5};
+  @%p1 st.global.u32 [%rd6+4], %r3;
+  add.u64 %rd5, %rd5, 0x1000000; add.u32 %r4, %r4, 1; add.u32 %r5, %r5, 1;
+  st.global.v2.u32 [%rd6], {%r4, %r5};
+  st.global.u32 [%rd5], %r3;
+  ret;
+}

@@ -1,0 +1,88 @@
+// e_lds_waw: a 128-bit shared load whose last words are dead, followed by a 32-bit shared load
+// that ptxas 13.0 / 13.3 writes into one of those registers without waiting on the first load's
+// scoreboard: `LDS.128 R4, [R0]` then `LDS R6, [R0+0x10]` (the shape of a CLC response read
+// then a flag read in a production kernel: `LDS.128 R4, [UR21+0x180]` ... `LDS R7, [UR21+0x190]`).
+//
+//   smem w[i] = 0x1000 * warp + i for i < 64 (per warp, then bar.warp.sync). Each lane loads 17
+//   words w[8..24] (register pressure, .maxnreg 24), then w[0..3] as one volatile 128-bit load
+//   (keeps w[0], w[1]), then w[4] as a volatile 32-bit load:
+//   out[3 * gtid + {0, 1, 2}] = {w[0], w[1] + sum(w[8..24]), w[4]}.
+//   In-order LDS writeback: the second load's value always wins in the shared register.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_lds_waw(.param .u64 out)
+.maxntid 128, 1, 1
+.maxnreg 24
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<24>;
+    .reg .b32   %x<17>;
+    .reg .b64   %rd<8>;
+    .shared .align 16 .b8 w[1024];
+
+    mov.u32         %r0, %tid.x;
+    shr.u32         %r1, %r0, 5;                // warp
+    and.b32         %r2, %r0, 31;               // lane
+    mov.u32         %r3, w;
+    shl.b32         %r9, %r1, 8;
+    add.u32         %r10, %r3, %r9;             // this warp's 64 words
+    shl.b32         %r11, %r1, 12;
+    add.u32         %r12, %r11, %r2;
+    shl.b32         %r13, %r2, 2;
+    add.u32         %r14, %r10, %r13;
+    st.shared.u32   [%r14], %r12;
+    add.u32         %r12, %r12, 32;
+    st.shared.u32   [%r14+128], %r12;
+    bar.warp.sync   0xffffffff;
+    ld.volatile.shared.u32 %x0, [%r10+32];
+    ld.volatile.shared.u32 %x1, [%r10+36];
+    ld.volatile.shared.u32 %x2, [%r10+40];
+    ld.volatile.shared.u32 %x3, [%r10+44];
+    ld.volatile.shared.u32 %x4, [%r10+48];
+    ld.volatile.shared.u32 %x5, [%r10+52];
+    ld.volatile.shared.u32 %x6, [%r10+56];
+    ld.volatile.shared.u32 %x7, [%r10+60];
+    ld.volatile.shared.u32 %x8, [%r10+64];
+    ld.volatile.shared.u32 %x9, [%r10+68];
+    ld.volatile.shared.u32 %x10, [%r10+72];
+    ld.volatile.shared.u32 %x11, [%r10+76];
+    ld.volatile.shared.u32 %x12, [%r10+80];
+    ld.volatile.shared.u32 %x13, [%r10+84];
+    ld.volatile.shared.u32 %x14, [%r10+88];
+    ld.volatile.shared.u32 %x15, [%r10+92];
+    ld.volatile.shared.u32 %x16, [%r10+96];
+    ld.volatile.shared.v4.u32 {%r4, %r5, %r6, %r7}, [%r10];
+    ld.volatile.shared.u32 %r8, [%r10+16];
+    mov.u32 %r20, %r5;
+    add.u32 %r20, %r20, %x0;
+    add.u32 %r20, %r20, %x1;
+    add.u32 %r20, %r20, %x2;
+    add.u32 %r20, %r20, %x3;
+    add.u32 %r20, %r20, %x4;
+    add.u32 %r20, %r20, %x5;
+    add.u32 %r20, %r20, %x6;
+    add.u32 %r20, %r20, %x7;
+    add.u32 %r20, %r20, %x8;
+    add.u32 %r20, %r20, %x9;
+    add.u32 %r20, %r20, %x10;
+    add.u32 %r20, %r20, %x11;
+    add.u32 %r20, %r20, %x12;
+    add.u32 %r20, %r20, %x13;
+    add.u32 %r20, %r20, %x14;
+    add.u32 %r20, %r20, %x15;
+    add.u32 %r20, %r20, %x16;
+    ld.param.u64    %rd0, [out];
+    cvta.to.global.u64 %rd1, %rd0;
+    mov.u32         %r15, %ctaid.x;
+    mad.lo.u32      %r16, %r15, 128, %r0;
+    mul.lo.u32      %r16, %r16, 3;
+    mul.wide.u32    %rd2, %r16, 4;
+    add.u64         %rd3, %rd1, %rd2;
+    st.global.u32   [%rd3], %r4;
+    st.global.u32   [%rd3+4], %r20;
+    st.global.u32   [%rd3+8], %r8;
+    ret;
+}
+

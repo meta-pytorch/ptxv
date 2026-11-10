@@ -195,6 +195,24 @@ fn both(case: &str, variant: &str) {
     check(case, variant, "sass");
 }
 
+/// L-OPREAD: shared loads of a warp write back in issue order, so `LDS.128 R4` then `LDS R6`
+/// with no wait is no WAW (fixtures/e_lds_waw, both front-ends; probes/lds_waw's ptxas
+/// schedules). An ALU write in place of the second load is still a WAW (probes/lds_waw
+/// cb_alu: GB300 keeps the late LDS.128's value there).
+#[test]
+fn lds_write_back_in_issue_order() {
+    both("e_lds_waw", "good");
+    let dir = root().join("probes/lds_waw");
+    for c in ["bb", "cb", "cc", "cb_alu"] {
+        let k = ptxv_sass::load_cubin(&dir.join(format!("{c}.cubin")), "lds_waw").unwrap();
+        let waw = k
+            .static_findings
+            .iter()
+            .any(|f| f.msg.starts_with("SCOREBOARD WAW"));
+        assert_eq!(waw, c == "cb_alu", "{c}: {:#?}", k.static_findings);
+    }
+}
+
 #[test]
 fn r1a_good() {
     both("r1a_tcgen05_tile", "good");
@@ -826,6 +844,58 @@ fn r3_cute_mxf8() {
             );
         }
     }
+}
+
+/// L-OPREAD: UTCCP reads its operands in the tcgen05 issue order. fixtures/r3_cute_mxf8 built
+/// by ptxas with both UTCCPs' read scoreboards removed (the operands then covered only by the
+/// following UTCQMMA's rd=SB2, as in the GB300 driver's image of a DeepGEMM sm_100 GEMM): no
+/// static finding, output = GB300 (1000 of 1000 runs of this mutant equal gb300_C.bin). With
+/// the UTCQMMAs' read scoreboards removed too, nothing covers the UTCCP reads: a WAR finding.
+#[test]
+fn utccp_in_mma_issue_order() {
+    if vendor_missing(&["r3_cute_mxf8"]) {
+        return;
+    }
+    let case = Case::load(root().join("fixtures/r3_cute_mxf8")).unwrap();
+    let dir = scratch_dir(&case.m.name, "utccp_nord");
+    std::fs::create_dir_all(&dir).unwrap();
+    let base = dir.join("base.cubin");
+    ptxv_sass::ptxas(&case.dir.join("kernel.ptx"), &base, "sm_103a").unwrap();
+    let mutant = |name: &str, ops: &[&str]| {
+        let c = dir.join(name);
+        std::fs::copy(&base, &c).unwrap();
+        let lines = ptxv_sass::run_tool("nvdisasm", &["-c", c.to_str().unwrap()]).unwrap();
+        let patch: Vec<ptxv_ir::CtrlPatch> = lines
+            .lines()
+            .filter_map(|l| {
+                let (a, rest) = l.trim().strip_prefix("/*")?.split_once("*/")?;
+                let op = rest.trim();
+                ops.iter()
+                    .any(|o| op.starts_with(o))
+                    .then(|| ptxv_ir::CtrlPatch {
+                        at: format!("@0x{a}"),
+                        rbar: Some(7),
+                        ..Default::default()
+                    })
+            })
+            .collect();
+        assert!(patch.len() >= 2, "{name}: {patch:?}");
+        ptxv_sass::scoreboard::patch_file(&c, &case.m.entry, &patch).unwrap();
+        ptxv_sass::load_cubin(&c, &case.m.entry).unwrap()
+    };
+    let k = mutant("utccp.cubin", &["UTCCP"]);
+    assert!(k.static_findings.is_empty(), "{:#?}", k.static_findings);
+    let launch = build_launch(&case, &k).unwrap();
+    let (m, _, _) = ptxv_sim::explore::run_once(Machine::new(Arc::new(k), Arc::new(launch)));
+    assert!(m.outputs() == std::fs::read(case.dir.join("gb300_C.bin")).unwrap());
+    let k = mutant("utccp_mma.cubin", &["UTCCP", "UTCQMMA", "UTCBAR"]);
+    assert!(
+        k.static_findings
+            .iter()
+            .any(|f| f.msg.starts_with("SCOREBOARD WAR") && f.msg.contains("UTCCP")),
+        "{:#?}",
+        k.static_findings
+    );
 }
 
 // The same CuTeDSL GEMM for MXF4 (e2m1 codes through 4-bit tensor maps, kind::mxf4nvf4
@@ -2271,6 +2341,43 @@ fn probe_f2fp_rz_matches_hardware() {
 fn probe_ldc_u16_matches_hardware() {
     probe_bitwise("probes/ldc_u16", "good", "ptx");
     probe_bitwise("probes/ldc_u16", "good", "sass");
+}
+
+/// L-SB-ORDER: a guarded-off STG's read scoreboard is released in queue order, so a wait on it
+/// covers an earlier untracked STG's operand reads (probes/stg_guard_war: GB300 stores every
+/// A intact with the wait, P0 false or true; without it A stores the rewritten registers).
+/// Before: a false SCOREBOARD WAR on Triton's TBE forward (`@P5 STG.E.64 [R12.64]`, then R12
+/// rewritten after a wait on a later `@P4 STG`'s read scoreboard).
+#[test]
+fn stg_guarded_off_releases_in_order() {
+    let dir = root().join("probes/stg_guard_war");
+    for c in ["base", "data_w0", "addr_w0", "data_nw", "addr_nw"] {
+        let k = ptxv_sass::load_cubin(&dir.join(format!("{c}.cubin")), "stg_war").unwrap();
+        let war = k
+            .static_findings
+            .iter()
+            .any(|f| f.msg.starts_with("SCOREBOARD WAR"));
+        assert_eq!(war, c.ends_with("_nw"), "{c}: {:#?}", k.static_findings);
+    }
+}
+
+/// L-OPREAD: UGETNEXTWORKID consumes its address URs at issue (probes/clc_war: the response
+/// address or mbarrier register rewritten by the next instruction, with or without a read
+/// scoreboard, does not change where GB300 delivers the response). Before: a false SCOREBOARD
+/// WAR on ptxas's TLX CLC kernels (`UMOV UR8, URZ` after `UGETNEXTWORKID.BROADCAST [UR8], [UR9]`
+/// with rd=SB2 never waited on).
+#[test]
+fn clc_war_operands_read_at_issue() {
+    let dir = root().join("probes/clc_war");
+    for c in ["base", "st1", "st1_rb", "st1_bar"] {
+        let k = ptxv_sass::load_cubin(&dir.join(format!("{c}.cubin")), "probe_clc_war").unwrap();
+        assert!(
+            k.code.iter().any(|i| i.text.contains("UGETNEXTWORKID"))
+                && k.static_findings.is_empty(),
+            "{c}: {:#?}",
+            k.static_findings
+        );
+    }
 }
 
 /// N-FHADD: FHADD / FHFMA without .BF16 (f16 halves, .RZ / .RM / .RP / .SAT, .H1, -c) = GB300

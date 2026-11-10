@@ -763,6 +763,18 @@ pub fn check(lines: &[SassLine], code: &[Inst], sm: u32) -> Result<Vec<StaticFin
                 h(a) != 0 && h(b) != 0 && h(a) != h(b)
             };
             let other_half = write && halves(&lines[ppc].opcode, &l.opcode);
+            // Shared loads of a warp write back in issue order: a later `LDS` may overwrite a
+            // register an earlier one has not written yet, and its value is the one left
+            // (ptxas 13.0 / 13.3: `LDS.128 R4, [R0]` then `LDS R6, [R0+0x10]` with no wait;
+            // GB300: probes/lds_waw, a 32-way bank-conflicted `LDS.128` then a broadcast `LDS`
+            // into its third register, 0 of 26.2M threads keep the earlier value, while an ALU
+            // write in its place is overwritten by the late `LDS.128` in every thread).
+            // Only where the later load runs whenever the earlier did (unguarded, or the same
+            // guard unchanged): a guarded-off LDS writes nothing. ASSUME(L-OPREAD)
+            let lds_waw = write
+                && base_of(pc) == "LDS"
+                && base_of(ppc) == "LDS"
+                && (cguard.is_none() || pend.gok && lines[ppc].guard.as_deref() == cguard);
             for &r in &pend.regs {
                 // The pending access is a read: the queued load may read the register too
                 // (torch's one-shot all-reduce: `LDG.E.64 R8, [R6.64]` .. `LDG.E.64 R6,
@@ -771,6 +783,9 @@ pub fn check(lines: &[SassLine], code: &[Inst], sm: u32) -> Result<Vec<StaticFin
                     continue;
                 }
                 if other_half && defs.contains(&r) && !uses.contains(&r) {
+                    continue;
+                }
+                if lds_waw && defs.contains(&r) && !uses.contains(&r) {
                     continue;
                 }
                 let kind = if write && uses.contains(&r) && !queued {
@@ -1019,8 +1034,12 @@ pub fn check(lines: &[SassLine], code: &[Inst], sm: u32) -> Result<Vec<StaticFin
         // wait); uniform-unit instructions (UTMA*, UTC*) read their URs late but predicate
         // operands at issue (ptxas, CuTeDSL GEMM: `UTCHMMA ..., UP1` with rd=SB2, then
         // `UISETP UP1` with no wait, and the wait on SB2 placed right before `ULEA UR48`).
-        // ASSUME(L-OPREAD): see ASSUMPTIONS.md
-        let uniform_unit = base.starts_with('U');
+        // UGETNEXTWORKID (clusterlaunchcontrol.try_cancel) is the exception: it consumes its
+        // address URs at issue (GB300, probes/clc_war: the response address register rewritten
+        // by the next instruction, with or without a read scoreboard on UGETNEXTWORKID, never
+        // moves the response; ptxas rewrites UR8 / UR9 after it with no wait on its rd
+        // scoreboard in TLX CLC kernels). ASSUME(L-OPREAD): see ASSUMPTIONS.md
+        let uniform_unit = base.starts_with('U') && base != "UGETNEXTWORKID";
         let reads: BTreeSet<RegKey> = reads
             .into_iter()
             .filter(|r| r.0 == b'R' || uniform_unit && r.0 == b'U')
@@ -1033,13 +1052,19 @@ pub fn check(lines: &[SassLine], code: &[Inst], sm: u32) -> Result<Vec<StaticFin
             // the first STS instead, every run loses the second STS's address; quack
             // rmsnorm_bwd N=256). Only where this instruction executes whenever the earlier
             // one did: unguarded, or the same guard not redefined since (a guarded-off
-            // instruction may release its scoreboard at once). ASSUME(L-SB-ORDER)
+            // instruction may release its scoreboard at once), except between global stores:
+            // a guarded-off `STG`'s read scoreboard is released in queue order too (GB300:
+            // probes/stg_guard_war, `STG.E.64 [R2.64], R14` with no read scoreboard, then
+            // `@P0 STG` with rd=SB0 and P0 false, then R2 or R14 rewritten after a wait on SB0
+            // only: 0 of 5.2M threads wrong; without the wait every thread stores the rewritten
+            // value; Triton TBE forward). ASSUME(L-SB-ORDER)
+            let stg = |b: &str| b.split('.').next() == Some("STG");
             for (k, v) in st.iter_mut() {
                 let same_guard = match (l.guard.as_deref(), lines[k.2].guard.as_deref()) {
                     (None, _) => true,
                     (Some(a), Some(b)) => a == b && v.gok,
                     _ => false,
-                };
+                } || stg(base) && stg(&lines[k.2].opcode);
                 if !k.1
                     && same_guard
                     && MIO_INORDER.contains(&lines[k.2].opcode.split('.').next().unwrap_or(""))
@@ -1059,10 +1084,15 @@ pub fn check(lines: &[SassLine], code: &[Inst], sm: u32) -> Result<Vec<StaticFin
                     "mio"
                 } else if matches!(b, "ATOMG" | "ATOM" | "REDG" | "RED") {
                     "gatom"
-                } else if matches!(b, "UTCHMMA" | "UTCQMMA" | "UTCOMMA" | "UTCBAR") {
+                } else if matches!(b, "UTCHMMA" | "UTCQMMA" | "UTCOMMA" | "UTCBAR" | "UTCCP") {
                     // The tcgen05 issue queue (FA4 forward: `UTCBAR [UR61]` with no read
                     // scoreboard covered by the next `UTCHMMA`'s rd=SB2, waited on before UR61
-                    // is rewritten; fixtures/c_fa4_causal = GB300).
+                    // is rewritten; fixtures/c_fa4_causal = GB300). `UTCCP` too: the GB300
+                    // driver's own sm_103 image of a DeepGEMM sm_100 GEMM issues
+                    // `UTCCP.T.S.4x32dp128bit ..., gdesc[UR12]` with no read scoreboard and
+                    // rewrites UR13 after waiting only on a later `UTCQMMA`'s rd scoreboard;
+                    // fixtures/r3_cute_mxf8 with its UTCCPs' read scoreboards removed = GB300
+                    // 1000/1000 (`utccp_in_mma_issue_order`).
                     "utc"
                 } else {
                     b
