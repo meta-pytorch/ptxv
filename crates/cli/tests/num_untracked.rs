@@ -13,11 +13,12 @@
 //! - c_num_sumsq_f32: row sums of squares (FFMA chain; once max_err = 0, Thm 1 exact, no
 //!   warning).
 //! - c_num_sum_f32: row sums (FADD chain, tracked: the error is checked against fp64).
-//! - c_num_max_f32: row maxima of x + y (FMNMX, untracked).
+//! - c_num_max_f32: row maxima of x + y (exact `Max` nodes: tracked, checked against fp64).
+//! - c_num_amax_f32: row maxima of |x + y| (FMNMX of |x| operands, untracked).
 //! - c_num_bf16rt_f32: f32(bf16(x + y)) + z (the bf16 round trip dominates the error).
 //!
-//! The invariant catches a taint drop at FFMA, FMNMX or the PTX cvt.f32.bf16 (MISS 36
-//! mutants): the dropped value would become an exact constant and the claimed error too small.
+//! The invariant catches a taint drop at FFMA, FMNMX (c_num_amax_f32) or the PTX
+//! cvt.f32.bf16 (MISS 36 mutants): the dropped value would become an exact constant and the claimed error too small.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -120,14 +121,24 @@ fn fadd_chain_error_matches_gb300_minus_fp64() {
 }
 
 #[test]
-fn fmnmx_of_rounded_sums_is_not_claimed_exact() {
+fn fmnmx_of_rounded_sums_matches_gb300_minus_fp64() {
     let x = buf("c_num_max_f32", "data/x.bin");
     let y = buf("c_num_max_f32", "data/y.bin");
     let s: Vec<f64> = x.iter().zip(&y).map(|(a, b)| a + b).collect();
     let fp64 = rows(&s, 64, |r| {
         r.iter().copied().fold(f64::NEG_INFINITY, f64::max)
     });
-    check("c_num_max_f32", &fp64);
+    // Max nodes: every element is a claim on both fronts, and each matches.
+    assert_eq!(check("c_num_max_f32", &fp64), 2 * 256);
+}
+
+#[test]
+fn fmnmx_of_abs_is_not_claimed_exact() {
+    let x = buf("c_num_amax_f32", "data/x.bin");
+    let y = buf("c_num_amax_f32", "data/y.bin");
+    let s: Vec<f64> = x.iter().zip(&y).map(|(a, b)| (a + b).abs()).collect();
+    let fp64 = rows(&s, 64, |r| r.iter().copied().fold(0.0, f64::max));
+    check("c_num_amax_f32", &fp64);
 }
 
 #[test]

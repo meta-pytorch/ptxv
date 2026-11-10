@@ -6741,9 +6741,11 @@ and is first-order.
 ### N-NUM-TRACK · code
 **`ptxv num` makes no error claim for an element whose value depends on an input-derived
 value without a tracked derivation.** num's DAG (non-segment mode) has nodes for plain FADD,
-fp32 atomic adds, MMA steps, conversions, MUFU and FFMA2 of the form x*1 + 0. Every other
-instruction (FFMA / FMUL, a negated or FTZ FADD, other FFMA2 / FMUL2 / FADD2, bit operations)
-drops the history of its result. Input buffers are tainted, so such a result becomes an
+fp32 atomic adds, MMA steps, conversions, MUFU, FFMA2 of the form x*1 + 0, and FMNMX without
+modifiers or FTZ on non-NaN operands (exact `Max` nodes: Thm 1 does not hold through them, and
+both children's terms bound their error). Every other instruction (FFMA / FMUL, a negated or
+FTZ FADD, FMNMX of |x|, other FFMA2 / FMUL2 / FADD2, bit operations) drops the history of its
+result. Input buffers are tainted, so such a result becomes an
 `Opaque` leaf when a tracked node reads it, and an output word written from it is
 input-derived without a node. Either makes the element `untracked`. num reports these
 elements as not analyzed, and computes Thm 1, the bounds and max_err over the other elements

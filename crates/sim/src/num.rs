@@ -1068,7 +1068,14 @@ impl NumState {
     /// An exact max / min node of two nodes.
     fn max_node(&mut self, a: u32, b: u32, min: bool, pc: u32) -> u32 {
         let (ea, eb) = (&self.nodes[a as usize].exact, &self.nodes[b as usize].exact);
-        let a_big = exact::approx(&exact::sub(ea, eb)) >= 0.0;
+        // An infinite operand (Triton's running maximum starts at -inf) is not an expansion
+        // the exact difference handles (inf - inf components): compare the values themselves.
+        let (fa, fb) = (exact::approx(ea), exact::approx(eb));
+        let a_big = if fa.is_finite() && fb.is_finite() {
+            exact::approx(&exact::sub(ea, eb)) >= 0.0
+        } else {
+            fa >= fb
+        };
         let pick_a = a_big != min;
         let (ha, hb) = (
             f32::from_bits(self.nodes[a as usize].hw),
@@ -1581,10 +1588,11 @@ impl Machine {
         );
     }
 
-    /// Segment mode: FMNMX `d = min/max(a, b[, c])` of tracked values (no modifiers, FTZ or
-    /// NaN propagation; an input-independent min/max predicate): exact `Max` nodes.
-    /// `nan` (`FMNMX.NAN`): NaN-propagating, the same maximum where no operand is NaN; a node
-    /// only when every operand is non-NaN for every admissible input (N-FINITE).
+    /// FMNMX `d = min/max(a, b[, c])` of tracked values (no modifiers or FTZ; an
+    /// input-independent min/max predicate): exact `Max` nodes.
+    /// `nan` (`FMNMX.NAN`): NaN-propagating, the same maximum where no operand is NaN. Segment
+    /// mode: a node only when every operand is non-NaN for every admissible input (N-FINITE).
+    /// `ptxv num` (one run): a node only when no operand is NaN in this run, either form.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn num_fmnmx(
         &mut self,
@@ -1597,10 +1605,11 @@ impl Machine {
         pc: u32,
     ) {
         let Some(ns) = self.num.as_ref() else { return };
-        if !ns.segments || min.is_none() {
+        if min.is_none() || !ns.segments && bits.iter().any(|&b| f32::from_bits(b).is_nan()) {
             self.num_clobber(t, d, ops, pc);
             return;
         }
+        let segments = ns.segments;
         let mut nodes = Vec::new();
         for (v, &b) in ops.iter().zip(bits) {
             match self.num_node_mat(t, v) {
@@ -1631,7 +1640,7 @@ impl Machine {
             ns.set(t, d, None);
             return;
         }
-        if nan && !nodes.clone().into_iter().all(|n| ns.non_nan(n)) {
+        if segments && nan && !nodes.clone().into_iter().all(|n| ns.non_nan(n)) {
             self.num_clobber(t, d, ops, pc);
             return;
         }
@@ -4234,8 +4243,14 @@ impl NumState {
                     mufu.push((n, g));
                     leaf_terms.push((hwabs(n), g));
                 }
+                NodeKind::Max { a, b, .. } => {
+                    // Exact, and |max(a', b') - max(a, b)| <= max(|a' - a|, |b' - b|): both
+                    // children's terms bound it (their sum). Thm 1 is not an identity through it.
+                    nonlin += 1;
+                    stack.push((*a, g));
+                    stack.push((*b, g));
+                }
                 NodeKind::Fma { .. }
-                | NodeKind::Max { .. }
                 | NodeKind::Seg(_)
                 | NodeKind::Sel { .. }
                 | NodeKind::Tf32 { .. } => {
@@ -4291,8 +4306,13 @@ impl NumState {
             mufu_extra.0 += (own + fp * sub.bound_cor1a) * grow;
             mufu_extra.1 += (own + fp * sub.bound_running) * grow;
         }
-        let cor1a: f64 =
-            leaf_terms.iter().map(|&(m, g)| m * (g - 1.0)).sum::<f64>() + mufu_extra.0 + abs16;
+        let cor1a: f64 = leaf_terms
+            .iter()
+            // A term under no rounding adds nothing (also an infinite constant: max(-inf, x)).
+            .map(|&(m, g)| if g == 1.0 { 0.0 } else { m * (g - 1.0) })
+            .sum::<f64>()
+            + mufu_extra.0
+            + abs16;
         let running: f64 = rnodes
             .iter()
             .map(|&n| {
