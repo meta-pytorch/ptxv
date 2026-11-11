@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # in.bin: 512 words of 16-bit halves: random bits (1/4), specials (bf16 and f16 zeros, infs,
 # NaNs, 1.6875), copies of the other operand's half (1/4, so eq / ne hold), small integers
 # as bf16 / f16 (rest), seed 15.

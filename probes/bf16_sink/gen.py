@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/bf16_sink input: 256 words of bf16 pairs (x), then 128 words of bf16 pairs (A),
 # random finite bf16 values in [-4, 4] (deterministic).
 import random

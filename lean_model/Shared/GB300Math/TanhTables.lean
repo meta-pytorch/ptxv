@@ -1,3 +1,10 @@
+/-
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the BSD-style license found in the
+LICENSE file in the root directory of this source tree.
+-/
+
 -- Generated from probes/tanh_tables.json by probes/import_tanh_tables.py.
 namespace GB300Math.TanhTables
 def binades : Array (Nat × Array (Int × Int × Int)) := #[

@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """Inputs of probes/f2fp_rz: (x, y) f32 pairs, every pair of the edge patterns E, then random
 words; 8192 threads. usage: gen.py OUT"""
 

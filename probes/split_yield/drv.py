@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """Split-interleaving stress driver (CUDA driver API via ctypes) for kernel.ptx
 (ptxas -arch=sm_103a kernel.ptx -o kernel.cubin).
    drv.py --dev D --n N --mode M --grid G --block B --hi M2 --runs R --tag T

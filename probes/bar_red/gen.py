@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # in.bin: 256 words; bits 0..2 random with P(1) = 1/2, 1/64 and 63/64 (so and / or / popc see
 # both outcomes), seed 8.
 import random

@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # Row maxima of |x + y| (an amax, as quantization scales use), one thread per row: FMNMX of an
 # |x| operand has no node in `ptxv num`'s DAG, so num must not claim an error here
 # (N-NUM-TRACK); the winning sum's rounding error reaches the output.

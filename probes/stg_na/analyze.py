@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """probes/stg_na: per variant, launches and threads whose second load returned the first value
 (a stale L1 line) or anything other than first + 0x1000. usage: analyze.py DIR"""
 

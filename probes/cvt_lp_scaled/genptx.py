@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """kernel.ptx for probes/cvt_lp_scaled: cvt.rn[.relu].scaled::n2::ue8m0.bf16x2.<f8/f6/f4>x2 d, a, s
 (ptxas 13.3, PTX 9.3; SASS F2FP[.RELU].BF16.<fmt>.UNPACK_B d, a, s.H0). in[2i] = a (codes),
 in[2i + 1] = s (two ue8m0 scales). out[k * 65536 + i] = plane k."""

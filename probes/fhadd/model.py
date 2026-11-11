@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """Model of FHADD / FHFMA without .BF16 (f16 half widened exactly, f32 add / fma, one rounding in
 the instruction's mode, gradual underflow, canonical NaN 0x7fffffff, .SAT clamps to [0, 1] with
 NaN -> 0), compared with GB300. usage: model.py IN OUT"""

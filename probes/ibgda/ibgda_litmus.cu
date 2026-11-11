@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 // IBGDA ordering litmus probes (GB300 + ConnectX, DOCA GPUNetIO device verbs via mscclpp's
 // PortChannelIbgdaDeviceHandle). One CTA per side: rank 0 = sender, rank 1 = receiver.
 // Every iteration uses fresh tags: word w of iteration it in config cfg is

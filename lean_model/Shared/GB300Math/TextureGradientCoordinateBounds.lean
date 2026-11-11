@@ -1,3 +1,10 @@
+/-
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the BSD-style license found in the
+LICENSE file in the root directory of this source tree.
+-/
+
 import GB300Math.TextureGradient3D
 set_option maxRecDepth 40000
 set_option maxHeartbeats 20000000

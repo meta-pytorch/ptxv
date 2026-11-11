@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """probes/lds_waw: per variant, launches and threads whose second-load word (out[3g+2]) or first
 word (out[3g]) differ from the expected value. usage: analyze.py DIR"""
 

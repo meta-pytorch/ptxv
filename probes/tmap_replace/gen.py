@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/tmap_replace input: 32 maps x 32 random words, then 32 x 16 random operand words.
 import random
 import struct

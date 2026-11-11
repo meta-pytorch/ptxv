@@ -27,7 +27,8 @@ python3 tests/smoke.py
 
 The default build and six-theorem audit require no GPU, FloatLib, Mathlib, Buck,
 or captured data. They do not compile every standalone certificate in this tree.
-`source-manifest.json` identifies the imported source snapshot and file hashes.
+`source-manifest.json` identifies the imported source snapshot and file hashes; the hashes
+are of the files as imported, before the license header was added to each `.lean` file.
 
 ## Compare with Rust and hardware
 

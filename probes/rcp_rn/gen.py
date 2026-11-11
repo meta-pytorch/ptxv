@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # in.bin: 4096 f32 words: specials (+-0, +-inf, NaNs, smallest / largest subnormal and
 # normal, 2^126, 2^127, max finite) first, then random bits (1/2), random subnormals (1/8),
 # magnitudes near 2^+-126..127 (1/8), random normals (rest), seed 7.

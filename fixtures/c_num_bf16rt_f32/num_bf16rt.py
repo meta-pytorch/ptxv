@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # out = f32(bf16(x + y)) + z, elementwise in f32: the bf16 rounding of the sum is the dominant
 # error. `ptxv num` must either track the bf16 round trip or make no claim (N-NUM-TRACK); a
 # claim that drops it is caught against the fp64 value of x + y + z.

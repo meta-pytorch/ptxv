@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """check.py [OUT.bin]: per shape, how many of GB300's 1024 results differ from the IEEE
 round-to-nearest quotient composed with the shape's other operations (float64 then f32,
 subnormals kept): div.approx.ftz is not the IEEE division, so this counts the inputs on which

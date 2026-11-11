@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/redux_f32_paths input: 16 warps x 32 lanes of f32 words (deterministic), one mix per
 # warp: random words, one NaN among finite values, all NaN, zeros of both signs, +-inf with
 # finite values, subnormals, payload NaNs of both signs, equal magnitudes of both signs, ...

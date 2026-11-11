@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/fmad input: 256 x (a, b, c) f32 words (deterministic). Mixed: random words over all
 # exponents, products near -c (cancellation exposes the extra rounding), subnormals, signed
 # zeros, Inf / NaN, values near 1 for the .sat forms.

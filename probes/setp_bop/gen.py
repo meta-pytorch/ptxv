@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/setp_bop input: 256 x (a, b) f32 words (deterministic): equal pairs, NaNs, signed
 # zeros, subnormals and random words.
 import random

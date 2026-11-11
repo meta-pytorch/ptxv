@@ -1,3 +1,10 @@
+/-
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the BSD-style license found in the
+LICENSE file in the root directory of this source tree.
+-/
+
 import AlternateFloatPairBounds
 namespace GB300Math.AlternateFloat
 def tripleBound (dst : String) (a b c : Nat) : Bool :=

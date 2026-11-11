@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/tma_im2col generator: tensor maps (cuTensorMapEncodeIm2col through
 # probes/tmap_encode/tmap_encode), tensors, coordinate tables, kernel.ptx and case.toml.
 #   python3 gen.py <tmap_encode binary>        (needs a GPU context for the encoder)

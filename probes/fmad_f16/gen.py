@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/fmad_f16 input: 256 threads x 5 groups x (a, b, c, d) f16, deterministic. c and d cancel
 # a b to +- 1 ulp in 3 of 4 groups; random halves in the 4th.
 import random

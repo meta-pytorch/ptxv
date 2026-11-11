@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/fmad_multi: kernel.ptx and in.bin. Each shape reads a, b, c, d, e, f = in[8 t ..] and
 # writes its results to out[128 t + k] (SHAPES: name, body, outputs; %fA.. are the inputs,
 # %fO<k> the k-th output). Inputs: in 3 of 4 threads c and d are -(a b) +- 1 ulp, e a random

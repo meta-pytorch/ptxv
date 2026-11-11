@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/fmad2 input: 32 threads x 4 f32 pairs x, y, z, w (deterministic): x, y random in
 # [1, 2) with random signs, z = -(x y rounded to f32) nudged by -1..1 ulp, so a fused
 # x y + z (the rounding error of the product) differs from the unfused sum; w = 1 + k ulp,

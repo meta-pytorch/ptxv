@@ -1,3 +1,10 @@
+/-
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the BSD-style license found in the
+LICENSE file in the root directory of this source tree.
+-/
+
 -- FP32 interpolator coefficients from Bram Wasti, ptxv revision 6e51c271debb39a1d943c875bfdb21a6150bd990.
 import Std
 

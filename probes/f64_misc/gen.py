@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/f64_misc input: 256 (a, b) f64 pairs (deterministic): all pairs of 15 specials
 # (signed zeros, infinities, quiet / signaling / negative NaNs with payloads, subnormals,
 # +-1, a large normal), then random words and random finite values.

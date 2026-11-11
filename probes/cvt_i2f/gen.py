@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # in.bin: 1024 u64: edge values (0, +-1, 2^24+1, 2^53+1, int64 / uint64 limits, f32 ties) then
 # random 64-bit words with a random number of leading zeros / ones, seed 10.
 import random

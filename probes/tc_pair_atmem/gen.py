@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/tc_pair_atmem pattern inputs (bf16, K = 16, per CTA rank c): A[c][i] = (i + 128 c,
 # 1, 1, 0...) for i < 128, B[c][j] = (1, 512 (j + 1), 2^20 c, 0...) for j < 256.
 import os

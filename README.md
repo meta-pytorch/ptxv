@@ -120,4 +120,6 @@ Details: [docs/design.md](docs/design.md) (§0, §3) and [docs/errdist.md](docs/
 
 ## License
 
-BSD-3-Clause (proposed, subject to Meta open source review); see [LICENSE](LICENSE). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
+ptxv is BSD licensed, as found in the [LICENSE](LICENSE) file.
+
+Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Changes: [CHANGELOG.md](CHANGELOG.md).

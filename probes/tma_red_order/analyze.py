@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """Classify each element of each run of probes/tma_red_order: a0 first, a1 first, single
 rounding, or other. usage: analyze.py DIR (g.bin, a.bin, out/m{0,1}_*.bin)"""
 

@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """m.bin for probes/atom_bf16x4: m[k][g] (k = 0, 1; 2048 8-byte slots each) = the a lanes of
 probes/bf16x2's triples 2g and 2g + 1 (the case reads ../bf16x2/in.bin)."""
 

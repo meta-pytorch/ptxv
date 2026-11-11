@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # in.bin: 1024 threads x 8 f32: random normals scaled by 2^k (k in -20..20), with edge values
 # (0, -0, inf, nan, subnormals, max) mixed in. Seed 5.
 import random

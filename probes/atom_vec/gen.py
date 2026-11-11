@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/atom_vec inputs: in.bin = 384 f32 addends, acc.bin = 384 f32 starting values (64 threads
 # x (4 + 2)); specials (signed zeros, infinities, NaNs with payloads, subnormals, FLT_MAX) and
 # random values over a wide exponent range.

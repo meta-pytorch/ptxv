@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # d.bin: 1024 f64 words, f.bin: 1024 f32 words: special patterns (zeros, subnormals, f32 range
 # edges, ties, NaN, inf) then random values scaled by 2^k. Seed 9.
 import random

@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # IBGDA ordering litmus driver. One process per node (srun -N2 -n2), GPU 0 on each node:
 # rank 0 = sender, rank 1 = receiver. Channel setup copies the mscclpp IBGDA benchmark
 # comms/mscclpp/bench/bench_ibgda.py: build_p2p_channels(..., ibgda=True), one IBGDA QP per

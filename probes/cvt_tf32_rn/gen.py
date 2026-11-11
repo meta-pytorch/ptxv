@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/cvt_tf32_rn input: 65,536 f32 words, every sign and exponent (NaN / Inf / subnormal /
 # zero included) with 128 mantissas each: the low 13 bits at the rounding edges (0, 1, 0x0fff,
 # 0x1000, 0x1001, 0x1fff, random) under the extreme and random upper 10 bits.

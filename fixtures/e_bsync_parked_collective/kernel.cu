@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 // E-HW-BSYNC-COLLECTIVE fixture (probe B2 with values instead of timestamps; lanes 1-15 exit
 // before the store): lanes 0-15 do
 // MUFU work while lanes 16-31 block at a full-warp __syncwarp in the else branch; lanes 0-15

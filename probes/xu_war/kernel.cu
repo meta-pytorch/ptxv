@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 extern "C" __global__ void xuwar(const float4* f, double* o){
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   float4 a=f[4*i],b=f[4*i+1],c=f[4*i+2],d=f[4*i+3];

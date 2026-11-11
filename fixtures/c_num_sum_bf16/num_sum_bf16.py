@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # Row sums in f32, one thread per row, sequential over K (an FADD chain per row), stored as
 # bf16: `ptxv num` reads the output per 16-bit element and tracks the final rounding.
 import torch

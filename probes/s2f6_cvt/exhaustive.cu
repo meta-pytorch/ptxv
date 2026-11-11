@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 // probes/s2f6_cvt/exhaustive: every (data16, scale16) pair, 2^32 in all, of
 // cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 against a per-lane model table
 // M[scale byte << 8 | code byte] computed on the host (exhaustive_host.c). See run.sh.

@@ -1,3 +1,10 @@
+/-
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the BSD-style license found in the
+LICENSE file in the root directory of this source tree.
+-/
+
 import FabricF16Decode
 set_option exponentiation.threshold 1024
 namespace FabricF16StochasticBounds

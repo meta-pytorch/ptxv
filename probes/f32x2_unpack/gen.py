@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/f32x2_unpack input: 256 x (x.lo, x.hi, y.lo, y.hi) f32 words (deterministic):
 # products near -y (cancellation exposes a contraction) and random words.
 import random

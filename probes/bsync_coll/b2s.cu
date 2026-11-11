@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 // Probe B2, per warp (stress): o[0] lane 0 done with its work, o[1] lane 0 past the join's
 // BSYNC, o[2] lane 16 past its __syncwarp, o[3] lane 16 arriving at its __syncwarp.
 extern "C" __global__ void b2s(const int* c, unsigned long long* t, int work) {

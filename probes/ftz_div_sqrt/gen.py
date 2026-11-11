@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/ftz_div_sqrt input: 256 (a, b) f32 pairs (deterministic): specials (signed zeros,
 # infinities, NaNs, subnormals, smallest normals), quotients landing just above / below
 # 2^-126 (flushed or not), and random words.

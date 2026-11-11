@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # a.bin / b.bin: 1024 f32 pairs. Specials (NaN, inf, 0 signs, inf * 0), products that
 # overflow before the scale and not after (D2 / D4 / D8), products below 2^-126 (subnormal
 # results: the scale's rounding, ties at the last subnormal bit, FTZ), products near 1 for

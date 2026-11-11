@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/fmad2_v133 input: 128 threads x 32 words: five triples x, y, z of f32 pairs
 # (x, y at word 4 k for 16-byte alignment, z at word 20 + 2 k), z = -(x y) rounded, +- 1 ulp,
 # so a fused x y + z keeps the low bits a separate rounding loses.

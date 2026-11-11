@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/f32x2_repack input: 256 x 16 f32 words (deterministic): x, y, u, w, c, e, k, pad.
 # c, e cancel the product lanes they are added to (+- 1 ulp) in 3 of 4 threads; the 4th is
 # random words.

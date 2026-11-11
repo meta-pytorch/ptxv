@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/div_const input: 256 f32 words (a = in[t], b = in[128 + t]): specials (signed zeros,
 # infinities, NaNs, subnormals, FLT_MAX) and random values over a wide exponent range.
 import random

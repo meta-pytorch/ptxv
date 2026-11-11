@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/float_lit input: 32 f32 values (deterministic): 0, +-20 and its neighbors, 1e-300's
 # tiny f32 neighbors, random values in [-40, 40].
 import random

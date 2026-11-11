@@ -1,4 +1,9 @@
 #!/bin/bash
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # The configurations in which the controls give stale reads (L2 thrash, a payload line per
 # word): the form under test and the MEMBAR.ALL.CTA + REDG control, R rounds.
 # Usage: sweep_stress.sh <binary> <dev> <out> [rounds]

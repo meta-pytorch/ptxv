@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/sqrt_rn input: 4096 f32 bit patterns (deterministic): +-0, subnormals, normals at
 # every exponent, +-inf, NaNs (quiet / signalling, both signs), negatives, random words.
 import random

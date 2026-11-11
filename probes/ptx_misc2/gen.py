@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # in.bin: 1024 u64: f64 specials (+-0, +-inf, NaNs, subnormals, near the overflow /
 # underflow edges of 1 / x, int64 min / max) then random bits (1/2) and random f64 of
 # magnitude 2^-1030..2^1030, seed 11.

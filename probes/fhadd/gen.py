@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """Inputs of probes/fhadd: (a, c) per thread. Full: every f16 pattern in a.lo (a.hi a bijection
 of it) against each f32 edge value of C. small: every pair of 32 f16 edges x the 24 C values,
 then random words, 2048 threads. usage: gen.py OUT [small]"""

@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/hmma_special input: 160 tests (deterministic), each a logical A[16][16] bf16,
 # B[16][8] bf16, C[16][8] f32 -> per lane 12 words: a0..a3, b0, b1, c0..c3, pad, pad.
 # Writes in.bin (and tests.json with the logical matrices when given a second argument).

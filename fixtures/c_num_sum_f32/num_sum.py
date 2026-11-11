@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # Row sums in f32, one thread per row, sequential over K (an FADD chain per row). Control for
 # c_num_sumsq_f32: `ptxv num` tracks every FADD here.
 import torch

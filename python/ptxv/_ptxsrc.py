@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """PTX source of captured kernels.
 
 A captured module image is SASS only (CUPTI hands over the cubin the driver loaded). The PTX it

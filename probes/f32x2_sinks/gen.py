@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/f32x2_sinks input: 256 x 8 f32 words (deterministic): x0 x1 y0 y1 c0 c1 s0 s1; c cancels
 # x y to +- 1 ulp in 3 of 4 threads, random words in the 4th.
 import random

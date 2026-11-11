@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # in.bin: 1024 x 2 u32 of random.getrandbits(32) (seed 11) with every 8th word 0 (bfind -> -1).
 import random
 import struct

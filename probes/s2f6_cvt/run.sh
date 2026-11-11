@@ -1,4 +1,9 @@
 #!/bin/bash
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/s2f6_cvt. PTX ISA 9.1 needs ptxas >= 13.1 (PTXAS13_1=<path>); nvdisasm 13.0 prints
 # nothing for the F2FP encodings, so kernel.cubin is checked in and the case is binary-only.
 #   1. kernel.cubin:    $PTXAS13_1 -arch=sm_103a kernel.ptx -o kernel.cubin

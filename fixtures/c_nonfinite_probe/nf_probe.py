@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # GB300 probe for `ptxv check --nonfinite` provenance: fp8 conversions (e4m3 satfinite, e5m2),
 # MUFU.EX2 overflow, inf - inf, and min / max with a NaN operand.
 import torch

@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/mma_scale_d inputs (data/): A (128 x 16 bf16), B (256 x 16 bf16), C (128 lanes x 256
 # columns f32, TMEM's initial contents) and C_special (hardware-only exploration).
 # A rows 0..63 are zero (D = C * 2^-s exactly when the scaled value is a normal f32); rows

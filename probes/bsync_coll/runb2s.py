@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """Probe B2 under load (probes/bsync_coll/b2s.cu): runb2s.py WORK GRID BLOCK RUNS; per warp, did lane 0 pass
 the join's BSYNC while lanes 16-31 waited at their WARPSYNC.COLLECTIVE? Build: nvcc -arch=sm_103a -cubin
 -O3 b2s.cu -o b2s.cubin."""

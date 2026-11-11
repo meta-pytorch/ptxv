@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/bfe64 input: 256 x (a: u64, pos: u32, len: u32) (deterministic): random a (half of
 # them with the top bit set), edge (pos, len) pairs around 32 and 64 and above 255 (taken
 # mod 256), and random pairs.

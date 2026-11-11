@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # in.bin: 512 f32 words: specials then random normals of magnitude 2^-20..2^20, seed 12.
 import random
 import struct

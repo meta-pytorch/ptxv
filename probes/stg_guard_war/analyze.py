@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """Per cubin / on: runs and threads whose out[t] != {v, ~v} (v = t ^ 0x5a5a5a5a) for
 probes/stg_guard_war. usage: analyze.py DIR"""
 

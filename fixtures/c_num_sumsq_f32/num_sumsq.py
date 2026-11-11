@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # Row sums of squares in f32, one thread per row, sequential over K (an FFMA chain per row).
 # `ptxv num` once reported max_err = 0 on this kernel although every FFMA rounds: the FFMA
 # results were untracked and the output was compared with its own simulated value.

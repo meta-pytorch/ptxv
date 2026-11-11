@@ -1,3 +1,10 @@
+/-
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the BSD-style license found in the
+LICENSE file in the root directory of this source tree.
+-/
+
 import GB300Math.TensorSubnormalBounds
 namespace GB300Math.TensorArrayEncodingBounds
 open GB300Math.Tensor GB300Math.TensorAlignmentProperties

@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # in.bin: 1024 threads x 8 u32 (a pair, b pair, c pair, 2 unused) for probes/f32x2_ftz: products
 # and sums landing on both sides of the f32 normal range's lower edge, subnormal and edge
 # operands, and ordinary random values. Seed 11.

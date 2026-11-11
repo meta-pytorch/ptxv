@@ -1,4 +1,9 @@
 #!/bin/bash
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # Sweep for redlit (README.md): every form under each configuration, several seeds.
 # Usage: sweep.sh <binary> <dev> <out> [rounds]
 B=$1; D=$2; OUT=$3; R=${4:-4}

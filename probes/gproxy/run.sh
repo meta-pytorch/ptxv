@@ -1,4 +1,9 @@
 #!/bin/bash
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 set -u
 cd "${PROBE_DIR:-$(dirname "$0")}"
 export PATH=/usr/local/cuda-13.0/bin:$PATH

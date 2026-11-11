@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 // HFMA2.BF16_V2 forms against GB300 (see case.toml; kernel.cubin patches the first fma2 into
 // the immediate form `HFMA2.BF16_V2 R17, R0, 2, 0.25, R15`): out[4t+0] = fma(a, (2, 0.25), c);
 // out[4t+1] = out[4t+3] = a + c (HADD2.BF16_V2); out[4t+2] = fma(a, (1.0, 1.0), -0) (HMUL2);

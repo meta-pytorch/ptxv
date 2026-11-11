@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/imma_s8 input: 32 threads x 32 words (deterministic). C: random s32, a quarter of
 # the lanes within 2^19 of INT32_MAX / INT32_MIN; step 0 random bytes, step 1 A all -128
 # and B mostly 127, step 2 all -128 x -128 on A and B (+524288 per output), step 3 bytes

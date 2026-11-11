@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # Row maxima of rounded f32 sums, one thread per row, sequential over K: acc = max(acc, x + y).
 # FMNMX has no node in `ptxv num`'s DAG, so num must not claim an error here (N-NUM-TRACK); the
 # winning sum's rounding error reaches the output (GB300 differs from the fp64 maxima).

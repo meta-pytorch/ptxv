@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """Inputs of probes/tma_red_order: per element (g, a0, a1) bf16 with a0-first, a1-first and the
 single rounding of g + a0 + a1 three different bf16 words (random search, seed 7).
 Writes g.bin (4096 bf16) and a.bin (2 x 4096 bf16). usage: gen.py OUTDIR"""

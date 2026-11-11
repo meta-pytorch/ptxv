@@ -1,0 +1,104 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  PTXV_CUDA_HOME: /usr/local/cuda-13.0
+
+jobs:
+  rust:
+    name: Rust build, clippy, unit tests and Python tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nvdisasm and cuobjdump (CUDA 13.0)
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cuda-nvdisasm-13-0 cuda-cuobjdump-13-0
+          echo "$PTXV_CUDA_HOME/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked
+      - name: Clippy
+        run: cargo clippy --release --locked --all-targets
+      - name: Unit tests
+        run: cargo test --release --locked --workspace --lib --bins
+      - name: Assumptions and targets
+        run: |
+          cargo test --release --locked -p ptxv-sim --test assumptions
+          cargo test --release --locked -p ptxv-targets
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python tests
+        env:
+          PTXV_BIN: ${{ github.workspace }}/target/release/ptxv
+          PYTHONPATH: python
+        run: |
+          python -m pip install numpy pytest
+          python -m pytest -q python/tests
+
+  rust-full:
+    name: Full Rust test suite
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nvdisasm and cuobjdump (CUDA 13.0)
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cuda-nvdisasm-13-0 cuda-cuobjdump-13-0
+          echo "$PTXV_CUDA_HOME/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --release --locked --no-fail-fast
+
+  lean:
+    name: Lean models
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: lean_model
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install elan
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Build and audit
+        run: |
+          lake build
+          lake env lean Audit.lean
+          lake build check_mufu_sm103 check_ptxv
+          python3 tests/smoke.py

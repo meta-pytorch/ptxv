@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 // Uniform-register windows (urwin.rs) over a list of (cubin, kernel) lines on stdin.
 use std::io::BufRead;
 fn main() {

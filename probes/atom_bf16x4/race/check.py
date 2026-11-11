@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """check.py RUN.bin...: per run, the reader observations torn within a 4-byte half and across
 the two halves of a slot and the reads taken mid-sequence (out = {torn half, torn slot, mid, 256} per slot)."""
 

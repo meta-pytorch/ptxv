@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 // Host side of probes/s2f6_cvt/exhaustive (CUDA driver API): builds the model table
 // M[s << 8 | c] = bf16(RNE, subnormals kept, satfinite)(int8(c) / 64 * 2^(s - 127)), s = 0xff ->
 // 0x7fff, runs the kernel over all 2^32 pairs and prints the mismatch count.

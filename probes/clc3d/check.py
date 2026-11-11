@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/clc3d: check.py OUT.bin (a GB300 output, `PTXV_HW_DUMP`): every cancel names a CTA in
 # the grid that never ran, at (raw0, raw1 & 0xffff, raw1 >> 16), and get_first_ctaid::y / ::z
 # agree with that decoding.

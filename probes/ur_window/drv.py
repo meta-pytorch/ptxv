@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """Driver for probes/ur_window (CUDA driver API via ctypes; kernel.cubin from
 `ptxas -arch=sm_103a kernel.ptx -o kernel.cubin`).
    drv.py --dev D --n N --grid G --block B --runs R

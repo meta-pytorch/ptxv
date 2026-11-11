@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/fset_nan: writes kernel.ptx and in.bin. `gen.py --check out.bin` compares a recorded
 # output with a bit-level model written here, independent of ptxv.
 #

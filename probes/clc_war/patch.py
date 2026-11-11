@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """Mutants of base.cubin (probes/clc_war): `st1`: UGETNEXTWORKID with stall 1, then
 `UIADD3 UR6, UPT, UPT, UR6, 0x10, URZ` (the response address register moved 16 bytes, for 15
 cycles), `UIADD3 UR6, UPT, UPT, UR6, -0x10, URZ` (restored for the later LDS), then the loop's

@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """in.bin for probes/cvt_lp_scaled: (a, s) pairs; a = i (every code pair), s = scale pair: lane bytes from a
 mix (0x7f = 1.0, 0, 0xfe, 0xff = NaN scale, 0x80, 0x7e, random)."""
 

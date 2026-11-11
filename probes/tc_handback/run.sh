@@ -1,4 +1,9 @@
 #!/bin/bash
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # GB300 runs of the tc_handback probe: 74 pairs (148 CTAs), ROUNDS rounds per launch, RUNS
 # launches per variant, through `ptxv hw` (bitwise against all-zero counts).
 #   PTXV=<ptxv binary> ./run.sh [RUNS] [ROUNDS]

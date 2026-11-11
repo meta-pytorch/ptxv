@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """Mutants of base.cubin (probes/stg_guard_war). Store A `STG.E.64 [R2.64], R14` keeps no read
 scoreboard; store B `@P0 STG.E [R4.64+0x4], R13` gets read scoreboard SB0; the next instruction
 rewrites one of A's operands: `data`: `LOP3.LUT R14, RZ, R14, RZ, 0x33, !PT` (R14 = ~R14);

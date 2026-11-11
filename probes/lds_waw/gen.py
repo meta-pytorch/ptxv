@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """Variants of the LDS write-back-order litmus (probes/lds_waw). Each lane's region is 128
 bytes at base + lane * s1 (first, 128-bit load) / base + lane * s2 (second, 32-bit load);
 s = 0 broadcasts, s = 128 puts all 32 lanes on the same banks (32-way conflict). usage:

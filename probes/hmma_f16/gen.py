@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/hmma_f16 inputs: A, B [128 x 64] f16 from N(0, 1) (deterministic), magnitudes below
 # 2^-14 (f16 subnormals, refused by the model) redrawn.
 import os

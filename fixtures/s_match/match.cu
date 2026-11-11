@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 // match.any.sync (SASS MATCH.ANY / MATCH.ANY.U64) and cp.async.bulk.prefetch.L2 (UBLKPF.L2).
 // out[tid*4 + 0]: 32-bit match of key % 5; +1: 64-bit match of (key % 3) << 32 | (key & 1);
 // +2: match.any among the lanes of a divergent branch (tid % 4 != 0); +3: 0xdead (not run).

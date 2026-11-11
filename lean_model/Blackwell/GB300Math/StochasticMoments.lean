@@ -1,3 +1,10 @@
+/-
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the BSD-style license found in the
+LICENSE file in the root directory of this source tree.
+-/
+
 import GB300Math.StochasticCorrelation
 namespace GB300Math.StochasticMoments
 open StochasticSm103 StochasticValue StochasticPacked StochasticProbability StochasticCorrelation

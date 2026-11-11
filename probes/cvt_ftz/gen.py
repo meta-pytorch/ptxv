@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/cvt_ftz input: 64 f32 words (deterministic): signed zeros, smallest / largest
 # subnormals, smallest normals, NaN payloads (quiet, signaling, negative), infinities, 1 and
 # its neighbors, values in (0, 1), above 1, below 0.

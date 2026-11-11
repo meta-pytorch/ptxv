@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """gen.py: a.bin / b.bin / c.bin, 1024 f32 triples for kernel.ptx. Specials (NaN, +-inf,
 signed zeros), subnormal numerators and divisors (flushed), divisors near 2^126 / 2^127 /
 FLT_MAX (reciprocals below 2^-126), quotients that overflow or fall below 2^-126, ties for

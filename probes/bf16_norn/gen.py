@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # in.bin: 512 words. Each bf16 half is random bits (1/4), a special value (1/8: +-0, +-inf,
 # NaN, smallest subnormal, largest finite) or a random normal near 1 (rest), seed 6.
 import random

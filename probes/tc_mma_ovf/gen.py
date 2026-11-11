@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/tc_mma_ovf inputs: A [128 x 16] and B [256 x 16] bf16 (deterministic), A mostly and
 # B all of magnitude 2^[58, 65): many dot products reach 2^128 (finite overflow).
 import os

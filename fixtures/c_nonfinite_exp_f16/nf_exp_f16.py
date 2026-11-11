@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # exp of f16 inputs computed in f32 and stored as f16: e^x > 65504 overflows the conversion to
 # +inf (ptxv check --nonfinite: Inf outputs from finite inputs, produced by the cvt).
 import torch

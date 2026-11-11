@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # mem.bin: acc (256 f64) then zeros for old (256) and sum (4); b.bin: 256 f64. Pairs: special pairs (NaN, inf - inf, subnormal sums, ties at the
 # last bit, overflow) then random values of nearby and distant magnitudes, seed 13.
 import random

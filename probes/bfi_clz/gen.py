@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # probes/bfi_clz input: 64 x (a, b, pos, len) words (deterministic). pos / len from edge
 # values (0, 1, 31, 32, 33, 255, 256, 257, 0x100001f) or random; a includes 0, 1, 0x80000000,
 # all ones and random words with varying leading zeros.
