@@ -1532,6 +1532,9 @@ pub struct SymState {
     pub path: HashMap<u32, Vec<Atom>>,
     /// Threads whose path reached `max_atoms`.
     pub truncated: HashSet<u32>,
+    /// Threads whose path holds only part of the conditions before its atoms (a target's
+    /// per-element threads seeded with a bounded tail of their core's path).
+    pub partial: HashSet<u32>,
     /// Observations per site pc and outcome.
     pub sites: BTreeMap<u32, [Vec<Obs>; 2]>,
     /// Input-dependent floating-point operations per pc (`record_fp`).
@@ -3914,11 +3917,25 @@ fn model(
     }
 }
 
+/// How `Inst` nodes are evaluated: by the machine whose run built them (GB300: `run_inst` on
+/// a scratch copy of the run's final machine; other targets bring their own machine).
+pub trait InstEval {
+    /// Destination `out` of instruction `pc` run by thread `t` on `args` (the node's
+    /// arguments, in the target's order); None when it has no value there.
+    fn run_inst(&mut self, pc: u32, t: u32, out: u8, args: &[u64]) -> Option<u64>;
+}
+
+impl InstEval for Machine {
+    fn run_inst(&mut self, pc: u32, t: u32, out: u8, args: &[u64]) -> Option<u64> {
+        run_inst(self, pc, t as usize, out as usize, args)
+    }
+}
+
 /// Evaluation of expressions at other leaf values (solve.rs). `Inst` nodes run their
-/// instruction on a scratch copy of the run's final machine.
+/// instruction on a scratch copy of the run's final machine (`InstEval`).
 pub struct Evaluator<'a> {
     pub ar: &'a Arena,
-    scratch: Machine,
+    scratch: Box<dyn InstEval + 'a>,
 }
 
 impl<'a> Evaluator<'a> {
@@ -3926,6 +3943,14 @@ impl<'a> Evaluator<'a> {
         let mut scratch = m.clone();
         scratch.prov = None;
         scratch.num = None;
+        Evaluator {
+            ar,
+            scratch: Box::new(scratch),
+        }
+    }
+
+    /// An evaluator whose `Inst` nodes run on `scratch` (a target other than GB300).
+    pub fn with(ar: &'a Arena, scratch: Box<dyn InstEval + 'a>) -> Self {
         Evaluator { ar, scratch }
     }
 
@@ -3955,7 +3980,7 @@ impl<'a> Evaluator<'a> {
                     w,
                 } => {
                     let a: Vec<u64> = args.iter().map(|k| val[k]).collect();
-                    run_inst(&mut self.scratch, *pc, *t as usize, *out as usize, &a)? & mask(*w)
+                    self.scratch.run_inst(*pc, *t, *out, &a)? & mask(*w)
                 }
                 _ => {
                     let ar = self.ar;

@@ -26,6 +26,11 @@
 //! (`coverage::apply`, `coverage::analyze`): the side is reported flipped only when that run
 //! takes it. A solver's "no solution" is `solver-unsat (<solver>, unverified)`, never a proof:
 //! it covers the expressions of the observed path, with unmodelled values fixed.
+//!
+//! The search is target-neutral (`Target`): it needs the input allocations' names and bytes,
+//! the evaluation of `Inst` nodes and the replay of a mutated input with the coverage shadow.
+//! GB300 (`run`) and other machine models (`run_on` with their own `Target`) share the
+//! solvers and the replay discipline.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -40,6 +45,7 @@ use crate::machine::Machine;
 use crate::symb::Bin;
 use crate::symb::E;
 use crate::symb::Evaluator;
+use crate::symb::InstEval;
 use crate::symb::Node;
 use crate::symb::SymState;
 use crate::symb::Un;
@@ -144,6 +150,10 @@ pub struct Side {
     /// B's refusal reason (differential).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub b_refusal: Option<String>,
+    /// Caveats: path conditions truncated or partial for the observations tried, findings
+    /// of the replay that took the side.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
     #[serde(skip)]
     pub writes: Vec<(usize, u64, u8, u64)>,
 }
@@ -164,6 +174,11 @@ pub struct Report {
     /// Nodes that disagreed with the simulator on the captured input (each replaced).
     pub mismatches: usize,
     pub path_atoms: usize,
+    /// Threads whose path condition reached `Config::max_atoms` (later atoms and
+    /// observations not recorded), and threads whose path holds only part of the conditions
+    /// before its atoms (`SymState::partial`).
+    pub truncated_paths: usize,
+    pub partial_paths: usize,
     pub replays: usize,
     /// Seconds of the coverage run with expressions, and of the search with its replays.
     pub seconds_run: f64,
@@ -172,6 +187,61 @@ pub struct Report {
 
 /// Input writes: (allocation, byte offset, bytes, value).
 type Writes = Vec<(usize, u64, u8, u64)>;
+
+/// What the search needs of a machine model. Allocation indices and byte offsets are those
+/// of the `Input` leaves its coverage run built.
+pub trait Target {
+    /// Name of input allocation `a` (witness labels, conditions).
+    fn alloc_name(&self, a: u32) -> String;
+    /// The captured bytes of input allocation `a` (declared invariants), if known.
+    fn init(&self, a: usize) -> Option<&[u8]>;
+    /// The evaluator of the run's `Inst` nodes.
+    fn inst_eval(&self) -> Box<dyn InstEval + '_>;
+    /// Did the coverage run of the captured input with `writes` take side `want` at `pc`?
+    /// With caveats of that run (findings, an early end) for the report.
+    fn replay(&self, pc: u32, want: bool, writes: &[(usize, u64, u8, u64)]) -> (bool, Vec<String>);
+}
+
+/// GB300: `m0` the launch's initial machine, `mfin` the coverage run's final machine.
+pub struct GpuTarget<'a> {
+    pub m0: &'a Machine,
+    pub mfin: &'a Machine,
+}
+
+impl Target for GpuTarget<'_> {
+    fn alloc_name(&self, a: u32) -> String {
+        self.m0
+            .launch
+            .allocs
+            .get(a as usize)
+            .map_or("?".to_string(), |x| x.name.clone())
+    }
+    fn init(&self, a: usize) -> Option<&[u8]> {
+        self.m0.launch.allocs.get(a).map(|x| &x.init[..])
+    }
+    fn inst_eval(&self) -> Box<dyn InstEval + '_> {
+        let mut scratch = self.mfin.clone();
+        scratch.prov = None;
+        scratch.num = None;
+        Box::new(scratch)
+    }
+    fn replay(&self, pc: u32, want: bool, writes: &[(usize, u64, u8, u64)]) -> (bool, Vec<String>) {
+        (replay(self.m0, pc, want, writes), vec![])
+    }
+}
+
+/// `Domain::admits` for target `t`.
+fn admits_t(t: &dyn Target, dom: &Domain, a: usize, off: u64, b: u8, v: u64) -> Option<bool> {
+    dom.admits_in(t.init(a), a, off, b, v)
+}
+
+/// `Domain::within` for target `t`.
+fn within_t(t: &dyn Target, dom: &Domain, writes: &[(usize, u64, u8, u64)]) -> bool {
+    !writes.is_empty()
+        && writes
+            .iter()
+            .all(|&(a, off, b, v)| admits_t(t, dom, a, off, b, v) == Some(true))
+}
 
 /// `replay_b`'s result: per (pc, never) (replayed flip, label); refusals by pc.
 pub type BDiff = (BTreeMap<(u32, bool), (bool, String)>, BTreeMap<u32, String>);
@@ -203,7 +273,7 @@ fn leaf_of(sym: &SymState, e: E) -> Option<(u32, u64, u8)> {
 struct Ctx<'a> {
     sym: &'a SymState,
     ev: Evaluator<'a>,
-    m0: &'a Machine,
+    tgt: &'a dyn Target,
     dom: &'a Domain,
     opts: &'a Options,
     cones: HashMap<E, Vec<E>>,
@@ -261,7 +331,7 @@ impl<'a> Ctx<'a> {
     /// Does the declared invariant admit `v` for leaf `e`?
     fn admits(&self, e: E, v: u64) -> bool {
         match leaf_of(self.sym, e) {
-            Some((a, off, b)) => self.dom.admits(self.m0, a as usize, off, b, v) != Some(false),
+            Some((a, off, b)) => admits_t(self.tgt, self.dom, a as usize, off, b, v) != Some(false),
             None => false,
         }
     }
@@ -1612,15 +1682,11 @@ fn writes_of(sym: &SymState, env: &HashMap<E, u64>, fault: Fault) -> Vec<(usize,
     w
 }
 
-fn label_of(m: &Machine, writes: &[(usize, u64, u8, u64)]) -> String {
+fn label_of(t: &dyn Target, writes: &[(usize, u64, u8, u64)]) -> String {
     writes
         .iter()
         .map(|&(a, off, b, v)| {
-            let name = m
-                .launch
-                .allocs
-                .get(a)
-                .map_or("?".to_string(), |x| x.name.clone());
+            let name = t.alloc_name(a as u32);
             let vs = if v < 1 << 16 {
                 format!("{v}")
             } else {
@@ -1738,6 +1804,18 @@ pub fn run(
     dom: &Domain,
     opts: &Options,
 ) -> Report {
+    run_on(&GpuTarget { m0, mfin }, cov, sym, dom, opts)
+}
+
+/// The concolic search over `cov`'s untaken sides on target `tgt` (`sym` from its coverage
+/// run with expressions).
+pub fn run_on(
+    tgt: &dyn Target,
+    cov: &Coverage,
+    sym: &SymState,
+    dom: &Domain,
+    opts: &Options,
+) -> Report {
     let start = std::time::Instant::now();
     let mut rep = Report {
         nodes: sym.ar.len(),
@@ -1745,24 +1823,21 @@ pub fn run(
         opaque: sym.n_opaque.clone(),
         mismatches: sym.n_mismatch,
         path_atoms: sym.path.values().map(|p| p.len()).sum(),
+        truncated_paths: sym.truncated.len(),
+        partial_paths: sym.partial.len(),
         ..Default::default()
     };
     let mut cx = Ctx {
         sym,
-        ev: Evaluator::new(&sym.ar, mfin),
-        m0,
+        ev: Evaluator::with(&sym.ar, tgt.inst_eval()),
+        tgt,
         dom,
         opts,
         cones: HashMap::new(),
         leaves: HashMap::new(),
         evals: 0,
     };
-    let names = |a: u32| {
-        m0.launch
-            .allocs
-            .get(a as usize)
-            .map_or("?".to_string(), |x| x.name.clone())
-    };
+    let names = |a: u32| tgt.alloc_name(a);
     let mut solvers: Vec<&str> = vec!["T0", "search", "T3"];
     if opts.smt && cfg!(feature = "smt") {
         solvers.push("smt");
@@ -1784,6 +1859,7 @@ pub fn run(
             reason: None,
             b_flip: None,
             b_refusal: None,
+            notes: vec![],
             writes: vec![],
         };
         let obs: Vec<crate::symb::Obs> = sym
@@ -1792,9 +1868,15 @@ pub fn run(
             .map(|s| s[!want as usize].clone())
             .unwrap_or_default();
         if obs.is_empty() {
-            side.reason = Some(
-                "no thread's predicate has an expression (operands opaque or not followed)".into(),
-            );
+            side.reason = Some(if sym.truncated.is_empty() {
+                "no thread's predicate has an expression (operands opaque or not followed)".into()
+            } else {
+                format!(
+                    "no thread's predicate has an expression (operands opaque or not followed, or observed after the path condition of {} thread(s) reached {} atoms)",
+                    sym.truncated.len(),
+                    sym.cfg.max_atoms
+                )
+            });
             rep.unknown += 1;
             rep.sides.push(side);
             continue;
@@ -1819,6 +1901,22 @@ pub fn run(
                 }
                 order.push(*o);
             }
+        }
+        let ntrunc = order
+            .iter()
+            .filter(|o| sym.truncated.contains(&o.t))
+            .count();
+        if ntrunc > 0 {
+            side.notes.push(format!(
+                "the path condition of {ntrunc} observing thread(s) reached {} atoms: later conditions not recorded",
+                sym.cfg.max_atoms
+            ));
+        }
+        let npart = order.iter().filter(|o| sym.partial.contains(&o.t)).count();
+        if npart > 0 {
+            side.notes.push(format!(
+                "the path condition of {npart} observing thread(s) holds only part of the earlier conditions (bounded prefix): the solvers may break an unrecorded one, the replay decides"
+            ));
         }
         // Solutions: (assignment, keeps prefix, solver, warp).
         let mut sols: Vec<(HashMap<E, u64>, bool, String, u32)> = Vec::new();
@@ -1974,19 +2072,21 @@ pub fn run(
                 break;
             }
             rep.replays += 1;
-            if replay(m0, u.pc, want, &writes) {
+            let (took, rnotes) = tgt.replay(u.pc, want, &writes);
+            if took {
+                side.notes.extend(rnotes);
                 let outside = writes
                     .iter()
-                    .any(|&(a, off, b, v)| dom.admits(m0, a, off, b, v) == Some(false));
+                    .any(|&(a, off, b, v)| admits_t(tgt, dom, a, off, b, v) == Some(false));
                 side.outcome = if outside {
                     "outside-invariants"
                 } else {
                     "flipped"
                 }
                 .into();
-                side.within_invariants = dom.within(m0, &writes);
+                side.within_invariants = within_t(tgt, dom, &writes);
                 side.solver = Some(sv.clone());
-                side.witness = Some(label_of(m0, &writes));
+                side.witness = Some(label_of(tgt, &writes));
                 side.writes = writes;
                 rep.solvers.entry(sv).or_default().confirmed += 1;
                 if outside {
@@ -2034,6 +2134,7 @@ pub fn attach_b(rep: &mut Report, b: &BDiff) {
 
 /// The confirmed witnesses as mutations for `ptxv check` (evidence class on-mutated-input).
 pub fn mutations(m0: &Machine, rep: &Report, dom: &Domain) -> Vec<Mutation> {
+    let t = GpuTarget { m0, mfin: m0 };
     rep.sides
         .iter()
         .filter(|s| !s.writes.is_empty())
@@ -2041,8 +2142,8 @@ pub fn mutations(m0: &Machine, rep: &Report, dom: &Domain) -> Vec<Mutation> {
             pc: s.pc,
             never: s.never,
             writes: s.writes.clone(),
-            label: label_of(m0, &s.writes),
-            within_invariants: dom.within(m0, &s.writes),
+            label: label_of(&t, &s.writes),
+            within_invariants: within_t(&t, dom, &s.writes),
         })
         .collect()
 }

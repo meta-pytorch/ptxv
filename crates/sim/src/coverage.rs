@@ -2657,10 +2657,28 @@ impl Domain {
     /// Whether writing `v` into `bytes` bytes at `off` of allocation `a` keeps its element in
     /// the declared invariant (None: no invariant for `a`).
     pub fn admits(&self, m: &Machine, a: usize, off: u64, bytes: u8, v: u64) -> Option<bool> {
+        self.admits_in(
+            m.launch.allocs.get(a).map(|x| &x.init[..]),
+            a,
+            off,
+            bytes,
+            v,
+        )
+    }
+
+    /// `admits` for allocation `a` whose captured bytes are `init` (targets other than GB300).
+    pub fn admits_in(
+        &self,
+        init: Option<&[u8]>,
+        a: usize,
+        off: u64,
+        bytes: u8,
+        v: u64,
+    ) -> Option<bool> {
         let inv = self.by_alloc.get(&a)?;
         let eb = inv.elem.max(1) as u64;
         let start = off - off % eb;
-        let init = &m.launch.allocs.get(a)?.init;
+        let init = init?;
         let mut el: Vec<u8> = (start..start + eb)
             .map(|i| init.get(i as usize).copied().unwrap_or(0))
             .collect();

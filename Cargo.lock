@@ -207,6 +207,7 @@ dependencies = [
  "clap",
  "mimalloc",
  "ptxv-case",
+ "ptxv-concolic",
  "ptxv-hw",
  "ptxv-ir",
  "ptxv-jsonout",
@@ -226,6 +227,13 @@ dependencies = [
  "ptxv-ir",
  "serde",
  "toml",
+]
+
+[[package]]
+name = "ptxv-concolic"
+version = "0.1.0"
+dependencies = [
+ "ptxv-sim",
 ]
 
 [[package]]
