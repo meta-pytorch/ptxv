@@ -39,6 +39,71 @@ fn audited_set_is_sorted_and_refuses_the_rest() {
     // 32-byte accesses (probes/ldst256).
     assert!(ptxv_sass::lower_text("STG.E.ENL2.256 desc[UR46][R22.64], R24, R28", None).is_ok());
     assert!(ptxv_sass::lower_text("LDG.E.ENL2.256 R12, R4, desc[UR4][R2.64]", None).is_ok());
+    // f64 "less or equal" / "less than or unordered" with each combiner (probes/dsetp_ltu_le)
+    // and the unordered f32 compare as 1.0f / 0 (probes/fset_nan).
+    for l in [
+        "DSETP.LTU.OR P0, PT, R44, UR4, P0",
+        "DSETP.LE.AND P0, PT, R26, 1, PT",
+        "DSETP.LE.XOR P6, PT, -|R4|, UR6, !P1",
+        "DSETP.LTU.AND P3, PT, R4, +INF , P1",
+        "FSET.BF.NAN.AND R51, R26, R26, PT",
+        "FSET.BF.NAN.AND R7, |R0|, -R7, !P0",
+    ] {
+        assert!(ptxv_sass::lower_text(l, None).is_ok(), "{l} must lift");
+    }
+    // The acceptance is narrow: the unprobed comparisons, a second predicate output, a
+    // missing, doubled or foreign combiner, and FSET without .BF or with .OR / .XOR / .FTZ
+    // are refused.
+    for l in [
+        "DSETP.EQU.AND P0, PT, R2, R4, PT",
+        "DSETP.NUM.OR P0, PT, R2, R4, P1",
+        "DSETP.LE.AND P0, P1, R2, R4, PT",
+        "DSETP.LTU P0, PT, R2, R4, PT",
+        "DSETP.LTU.OR.AND P0, PT, R2, R4, P1",
+        "DSETP.LE.AND.FTZ P0, PT, R2, R4, PT",
+        "DSETP.LE.MIN P0, PT, R2, R4, PT",
+        "FSET.NAN.AND R1, R2, R3, PT",
+        "FSET.BF.NAN R1, R2, R3, PT",
+        "FSET.BF.NAN.OR R1, R2, R3, P0",
+        "FSET.BF.NAN.XOR R1, R2, R3, P0",
+        "FSET.BF.NAN.AND.FTZ R1, R2, R3, PT",
+        "FSET.BF.NUM.AND R1, R2, R3, PT",
+        "FSET.BF.LE.AND R1, R2, R3, PT",
+    ] {
+        assert!(
+            ptxv_sass::lower_text(l, None).is_err(),
+            "{l} must be refused"
+        );
+    }
+    // `LEA.HI.X Rd, Ra, ~Rb, RZ, s, P` (probes/lea_hi_not): data registers, RZ as the upper
+    // word, a thread predicate.
+    assert!(ptxv_sass::lower_text("LEA.HI.X R54, R52, ~R55, RZ, 0x7, P0", None).is_ok());
+    for l in [
+        "LEA.HI.X R54, R52, ~UR5, RZ, 0x7, P0",
+        "LEA.HI.X R54, R52, ~R55, R53, 0x7, P0",
+        "LEA.HI.X R54, R52, ~R55, RZ, 0x7, !P0",
+        "LEA.HI.X R54, R52, ~R55, RZ, 0x7, PT",
+    ] {
+        assert!(
+            ptxv_sass::lower_text(l, None).is_err(),
+            "{l} must be refused"
+        );
+    }
+    // A negated register source of F2I (probes/f2i_neg): only `-R` on the 32-bit .NTZ forms.
+    assert!(ptxv_sass::lower_text("F2I.U32.TRUNC.NTZ R38, -R38", None).is_ok());
+    for l in [
+        "F2I.TRUNC.NTZ R0, |R0|",
+        "F2I.TRUNC.NTZ R0, -|R0|",
+        "F2I.TRUNC.NTZ R0, -UR4",
+        "F2I.U64.TRUNC R0, -R2",
+        "F2I.F64.TRUNC R0, -R2",
+        "F2I.S16.TRUNC.NTZ R0, -R2",
+    ] {
+        assert!(
+            ptxv_sass::lower_text(l, None).is_err(),
+            "{l} must be refused"
+        );
+    }
 }
 
 #[test]

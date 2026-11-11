@@ -1534,14 +1534,40 @@ fn lower_line(
                 (false, false, false) => Rnd::Rn,
                 _ => bail!(lw.err("F2I with two roundings")),
             };
+            // `F2I[.FTZ][.U32][.TRUNC|.FLOOR|.CEIL].NTZ Rd, -Ra` (ptxas folds `neg.f32` into
+            // the conversion): the source's sign bit is flipped first, so the rounding and the
+            // saturation act on -a (`F2I.FLOOR` gives floor(-a), `F2I.U32` 0 for a > 0) and a
+            // NaN of either sign still gives 0. Only a data register on the 32-bit `.NTZ` forms;
+            // `|Ra|`, `-|Ra|` and a negated source of any other kind stay refused.
+            // GB300: probes/f2i_neg (all 16 forms). ASSUME(L-ROSETTA)
+            let src = lw.op(1)?;
+            let (src, neg) = match src.strip_prefix('-').filter(|r| !r.starts_with("0x")) {
+                Some(r) => {
+                    let data = matches!(Lw::reg_name(r), Some((File::R, i)) if i != RZ);
+                    if !data
+                        || !has("NTZ")
+                        || has("S32")
+                        || has("S64")
+                        || has("U64")
+                        || l.operands.len() != 2
+                    {
+                        bail!(lw.err(format!(
+                            "F2I with the source {src} not modeled (only -R on the 32-bit .NTZ forms)"
+                        )));
+                    }
+                    (r, true)
+                }
+                None => (src, false),
+            };
             Op::F2I {
                 d: lw.dst(lw.op(0)?)?,
-                a: lw.val(lw.op(1)?, 4)?,
+                a: lw.val(src, 4)?,
                 signed: !has("U32") && !has("U64"),
                 bits: if has("U64") || has("S64") { 64 } else { 32 },
                 rnd,
                 ftz: has("FTZ"),
                 f64: false,
+                neg,
             }
         }
         // F2I[.S64|.U64|.U32].F64[.TRUNC|.FLOOR|.CEIL] Rd, Ra (cvt.r{z,n,m,p}i.{s,u}{32,64}.f64,
@@ -1584,6 +1610,7 @@ fn lower_line(
                 rnd,
                 ftz: false,
                 f64: true,
+                neg: false,
             }
         }
         // F2F.F32.F64[.RZ|.RM|.RP] (cvt.r{n,z,m,p}.f32.f64; probes/cvt_misc), F2F.F64.F32.
@@ -1868,6 +1895,9 @@ fn lower_line(
                 max: mods[0] == "MAX",
             }
         }
+        // `DSETP.<cmp>.<AND|OR|XOR> Pd, PT, a, b, Pc`: Pd = (a cmp b) op Pc on f64 pairs
+        // (fixtures/s_f64; `.LE` / `.LTU` with each combiner: probes/dsetp_ltu_le). The gate
+        // admits no `.EQU` / `.NUM` / `.F` / `.T`. ASSUME(N-FALU)
         "DSETP" if lw.op(1)? == "PT" => {
             let cmp = match mods.first().copied() {
                 Some("F") => FCmp::F,
@@ -2100,7 +2130,8 @@ fn lower_line(
             }
             if bf {
                 // `FSET.BF.GT.AND R4, R5, R23, PT` (CUTLASS fmha): 1.0f / 0
-                // (fixtures/s_lift_k = GB300). ASSUME(L-ROSETTA)
+                // (fixtures/s_lift_k = GB300). `FSET.BF.NAN.AND Rd, a, b, Pc`: 1.0f when an
+                // operand is a NaN and Pc holds (probes/fset_nan). ASSUME(L-ROSETTA)
                 let (a, na, aa) = lw.fmodval(lw.op(1)?)?;
                 let (b, nb, ab) = lw.fmodval(lw.op(2)?)?;
                 Op::Fset {
@@ -6391,6 +6422,108 @@ mod tests {
         assert!(lower1("F2I.FTZ.S64.F64.TRUNC R28, R4").is_err());
         assert!(lower1("F2I.S64.F64.TRUNC.NTZ R28, R4").is_err());
         assert!(lower1("F2I.S64.U32.F64.TRUNC R28, R4").is_err());
+    }
+
+    /// `LEA.HI.X Rd, Ra, ~Rb, RZ, s, P` (probes/lea_hi_not): exactly that shape; the operand
+    /// kinds the probe does not cover stay refused.
+    #[test]
+    fn lea_hi_x_complemented() {
+        for (l, s) in [
+            ("LEA.HI.X R54, R52, ~R55, RZ, 0x7, P0", 7),
+            ("LEA.HI.X R11, R0.reuse, ~R3.reuse, RZ, 0x1, P1", 1),
+            ("LEA.HI.X R25, R0, ~R3, RZ, 0x1e, P6", 30),
+        ] {
+            match lower1(l).unwrap_or_else(|e| panic!("{l}: {e}")) {
+                Op::LeaHi {
+                    a: Val::Reg(_, 1),
+                    b: Val::Reg(_, 1),
+                    c: Val::Imm(0),
+                    shift,
+                    sx32: false,
+                    neg_b: false,
+                    not_b: true,
+                    cin: Some(Pred { neg: false, .. }),
+                    cout: None,
+                    ..
+                } => assert_eq!(shift, s, "{l}"),
+                o => panic!("{l}: {o:?}"),
+            }
+        }
+        for l in [
+            "LEA.HI.X R54, R52, ~R55, R53, 0x7, P0",
+            "LEA.HI.X R54, R52, ~R55, RZ, 0x0, P0",
+            "LEA.HI.X R54, R52, ~R55, RZ, 0x1f, P0",
+            "LEA.HI.X R54, R52, ~R55, RZ, 0x7, !P0",
+            "LEA.HI.X R54, R52, ~R55, RZ, 0x7, PT",
+            "LEA.HI.X R54, R52, ~R55, RZ, 0x7, UP0",
+            "LEA.HI.X R54, R52, ~R55, RZ, 0x7",
+            "LEA.HI.X R54, R52, ~UR5, RZ, 0x7, P0",
+            "LEA.HI.X R54, R52, ~RZ, RZ, 0x7, P0",
+            "LEA.HI.X R54, R52, ~0x5, RZ, 0x7, P0",
+            "LEA.HI.X R54, UR4, ~R55, RZ, 0x7, P0",
+            "LEA.HI.X R54, RZ, ~R55, RZ, 0x7, P0",
+            "LEA.HI.X R54, 0x4, ~R55, RZ, 0x7, P0",
+            "LEA.HI.X R54, ~R52, R55, RZ, 0x7, P0",
+            "LEA.HI.X R54, ~R52, ~R55, RZ, 0x7, P0",
+            "LEA.HI.X R54, P1, R52, ~R55, RZ, 0x7, P0",
+            "LEA.HI R54, R52, ~R55, RZ, 0x7",
+            "ULEA.HI.X UR4, UR5, ~UR6, URZ, 0x7, UP0",
+        ] {
+            assert!(lower1(l).is_err(), "{l} must be refused");
+        }
+    }
+
+    /// `F2I ... Rd, -Ra` (probes/f2i_neg): a negated data register on the 32-bit `.NTZ` forms
+    /// only; every other modified source stays refused.
+    #[test]
+    fn f2i_negated_source() {
+        for (l, signed, rnd, ftz) in [
+            ("F2I.TRUNC.NTZ R0, -R0", true, Rnd::Rz, false),
+            ("F2I.U32.TRUNC.NTZ R38, -R38", false, Rnd::Rz, false),
+            ("F2I.NTZ R9, -R4", true, Rnd::Rn, false),
+            ("F2I.U32.FLOOR.NTZ R21, -R4.reuse", false, Rnd::Rm, false),
+            ("F2I.FTZ.CEIL.NTZ R29, -R4", true, Rnd::Rp, true),
+            ("F2I.FTZ.U32.NTZ R0, -R4", false, Rnd::Rn, true),
+        ] {
+            match lower1(l).unwrap_or_else(|e| panic!("{l}: {e}")) {
+                Op::F2I {
+                    a: Val::Reg(_, 1),
+                    neg: true,
+                    bits: 32,
+                    f64: false,
+                    signed: s,
+                    rnd: r,
+                    ftz: f,
+                    ..
+                } => assert_eq!((s, r, f), (signed, rnd, ftz), "{l}"),
+                o => panic!("{l}: {o:?}"),
+            }
+        }
+        assert!(matches!(
+            lower1("F2I.TRUNC.NTZ R0, R0").unwrap(),
+            Op::F2I { neg: false, .. }
+        ));
+        for l in [
+            "F2I.TRUNC.NTZ R0, |R0|",
+            "F2I.TRUNC.NTZ R0, -|R0|",
+            "F2I.TRUNC.NTZ R0, ~R0",
+            "F2I.TRUNC.NTZ R0, -RZ",
+            "F2I.TRUNC.NTZ R0, -UR4",
+            "F2I.TRUNC.NTZ R0, -c[0x0][0x380]",
+            "F2I.TRUNC.NTZ R0, -R0.H1",
+            "F2I.TRUNC.NTZ R0, -R0, R1",
+            "F2I.TRUNC R0, -R0",
+            "F2I.S32.TRUNC.NTZ R0, -R0",
+            "F2I.S64.TRUNC R0, -R2",
+            "F2I.U64.TRUNC R0, -R2",
+            "F2I.S64.TRUNC.NTZ R0, -R2",
+            "F2I.F64.TRUNC R0, -R2",
+            "F2I.U32.F64.TRUNC R0, -R2",
+            "F2I.S16.TRUNC.NTZ R0, -R2",
+            "F2I.U16.TRUNC.NTZ R0, -R2",
+        ] {
+            assert!(lower1(l).is_err(), "{l} must be refused");
+        }
     }
 
     #[test]

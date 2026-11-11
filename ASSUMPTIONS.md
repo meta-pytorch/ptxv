@@ -4801,6 +4801,14 @@ forms seen. Any other form is a hard error.
 - `REDG.E.{OR,AND,XOR}[.64].STRONG.{SM,GPU,SYS}` (`red.global.{or,and,xor}.b32 / .b64`): one
   atomic bit operation per thread (`probes/red_bitops`, 2026-11-08: four threads per word at
   each scope, both front-ends = GB300).
+- `DSETP.{LE,LTU}.{AND,OR,XOR}` (`setp.le.f64` / `setp.ltu.f64` folded with `and.pred` /
+  `or.pred` / `xor.pred`; in kernel-DB records the range check of libdevice's f64
+  `log`, `DSETP.GTU.AND P, PT, R, UR, PT` then `DSETP.LTU.OR P, PT, R, UR, P`, and `DSETP.LE.AND
+  P, PT, R, 1, PT` feeding a two-predicate branch): N-FALU's f64 comparison
+  (`probes/dsetp_ltu_le`, 2026-11-10: those shapes among 61, both front-ends = GB300).
+- `FSET.BF.NAN.AND Rd, Ra, Ra, PT` (a NaN flag kept as 1.0f / 0 in a kernel-DB record;
+  `setp.nan` of a value with itself, then `selp.f32 1.0, 0.0`): N-FALU
+  (`probes/fset_nan`, 2026-11-10, both front-ends = GB300).
 - `[R.U32+UR]` addresses (`ST.E [RZ.U32+UR6], R2`, CuTe DSL dist kernels): the register
   zero-extended plus the 64-bit uniform pair. Read from the operand syntax, not probed (ptxas
   does not emit it for plain PTX).
@@ -4812,6 +4820,25 @@ forms seen. Any other form is a hard error.
   i's row r (0..7) goes to the address held by lane 8i + r; its byte c (0..15) is byte
   r % 2 + 2 (c / 8) of register i of lane 4 (c % 8) + r / 2 (`probes/stsm_b8`, 2026-11-08:
   every byte traced to its lane, register and byte, x1 / x2 / x4 = GB300, both front-ends).
+- `F2I[.FTZ][.U32][.TRUNC|.FLOOR|.CEIL].NTZ Rd, -Ra` (ptxas folds `neg.f32` into
+  `cvt.r{n,z,m,p}i[.ftz].{s32,u32}.f32`; kernel-DB records: `F2I.TRUNC.NTZ R0, -R0`,
+  `F2I.U32.TRUNC.NTZ R38, -R38`): the source's sign bit is flipped, then the unchanged
+  conversion. Rounding and saturation act on -a (`.FLOOR` gives floor(-a), `.U32` gives 0 for
+  a > 0 and 2^32 - 1 for a <= -2^32), +-0 and a NaN of either sign give 0 (`probes/f2i_neg`,
+  2026-11-10: the 16 forms on 2048 patterns, GB300 20/20 runs = exact arithmetic on all 32,768
+  words; with the modifier ignored 26,423 words would differ, with the integer negated
+  instead 22,999; both front-ends and the ptxas 13.1 cubin bitwise). Only a data register on
+  the 32-bit `.NTZ` forms: `|Ra|`, `-|Ra|`, a negated RZ / uniform register / constant, and
+  the 64-bit, 16-bit and f64-source forms with a negated source are refused.
+- `LEA.HI.X Rd, Ra, ~Rb, RZ, s, P` (the high word of `(zext(a) << s) - y`, a 64-bit shift of a
+  zero-extended word minus a 64-bit value; kernel-DB records: `LEA.HI.X R54, R52,
+  ~R55, RZ, 0x7, P0`): d = (a >> (32 - s)) + ~b + P mod 2^32, b the subtrahend's high word and
+  P the carry of the low word (`probes/lea_hi_not`, 2026-11-10: s = 1..30 after `LEA Rlo, P,
+  Ra, -Rb, s` and after `LEA Rlo, P, -Ra, Rb, s`, 60 instances on 2048 edge, borrow-boundary
+  and random rows, GB300 20/20 runs = 64-bit arithmetic on all 122,880 words, 46,376 of them
+  with a low-word borrow; both front-ends and the ptxas 13.1 cubin bitwise). Only that shape:
+  data registers d, a and b, RZ as the upper word, s = 1..30, a thread predicate; the `.SX32`
+  form is the bullet on `probes/int16x2`.
 - Status: **validated** per form by differential runs (r0, r1a and r1b bitwise: PTX model =
   SASS model = GB300). Rung 1b added `UTMASTG`, `UTMACMDFLUSH` (bulk commit), `DEPBAR.LE` on
   the flush's read scoreboard (bulk wait), `SYNCS.ARRIVE.TRANS64.A1T0` (plain arrive),
@@ -6185,6 +6212,25 @@ N-SOFTMAX (x_j an input or a computed score) and v_j input leaves:
   edge patterns, GB300 50/50 scrubbed, 2026-11-08).
 - `FSETP.<cmp>[.FTZ].<AND|OR|XOR>`: the 16 PTX comparisons (ordered ones false on NaN,
   `U` forms true), combined with the predicate operand.
+- `DSETP.<cmp>.<AND|OR|XOR> Pd, PT, a, b, Pc`: the same comparisons on f64 pairs, Pd = (a cmp
+  b) op Pc. `.LE` (false when an operand is a NaN) and `.LTU` (true then) are measured with
+  each combiner by `probes/dsetp_ltu_le` (2026-11-10): b a register pair, a uniform pair, an
+  immediate or RZ; `|x|` / `-x` operands; `Pc`, `!Pc` and `PT`. Every pair of 30 f64 patterns
+  (signed zeros, subnormals, the one-ulp neighbours of each constant, the largest finite
+  values, infinities, quiet and signalling NaNs of either sign) with the incoming predicate
+  false and true, plus random, equal and one-ulp pairs: 2048 records x 58 shapes and 3
+  branches. GB300 20/20 plain and 20/20 scrubbed runs are identical and equal an IEEE model
+  written apart from the simulator (`gen.py --check`); both front-ends bitwise. `.EQU` and
+  `.NUM` are not probed and stay refused by the modifier gate.
+- `FSET.BF.NAN.AND Rd, a, b, Pc` (`set.nan[.and].f32.f32`, and ptxas's fold of `setp.nan.f32`
+  with `selp.f32 1.0, 0.0`; `a, a` is isnan): 0x3f800000 when an operand is a NaN and `Pc`
+  holds, else 0. Quiet and signalling NaNs of either sign count; infinities and subnormals do
+  not. `probes/fset_nan` (2026-11-10): b a register, a uniform register, an immediate or RZ;
+  `|x|` / `-x` operands; `Pc`, `!Pc` and `PT`; one instance under a guard. Every pair of 22
+  f32 patterns with the incoming predicate false and true, plus random words: 1024 records x
+  12 shapes, GB300 20/20 plain and 20/20 scrubbed runs identical and equal to a bit-level
+  model (`gen.py --check`); both front-ends bitwise. FSET without `.BF`, and with `.OR`,
+  `.XOR` or `.FTZ`, stays refused.
 - Conversions (rung 5, `fixtures/s_cvt`): `F2F.F64.F32` / `.F32.F64` keep a NaN's sign and
   payload (shifted, quiet bit set); `F2F.F32.F64` rounds to nearest; `F2I.S64/.U64.TRUNC`
   saturate and give 2^63 for NaN; `HADD2.F32` (f16 -> f32) gives the canonical NaN;

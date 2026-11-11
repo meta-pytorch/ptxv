@@ -422,6 +422,44 @@ pub(super) fn lower(lw: &Lw, base: &str, mods: &[&str], meta: &CubinMeta) -> Res
                 neg_b: true,
             }
         }
+        // `LEA.HI.X Rd, Ra, ~Rb, RZ, s, P` (the high word of `(zext(a) << s) - y`, a 64-bit
+        // `shl.b64` of a zero-extended word minus a 64-bit value): d = (a >> (32 - s)) + ~b + P
+        // mod 2^32, b the subtrahend's high word and P the carry of the low word, which ptxas
+        // computes with `LEA Rlo, P, Ra, -Rylo, s` or `LEA Rlo, P, -Rylo, Rb, s`. Only this
+        // shape: data registers d, a, b, RZ as the upper word, s = 1..30, a thread predicate.
+        // GB300: probes/lea_hi_not (both low-word forms, every s). ASSUME(L-ROSETTA)
+        "LEA" if mods == ["HI", "X"] => {
+            let data = |s: &str| matches!(Lw::reg_name(s), Some((File::R, i)) if i != super::RZ);
+            let sh = lw.l.operands.get(4).and_then(|s| super::hex(s));
+            let cin = lw.l.operands.get(5).map(|p| p.as_str()).unwrap_or("");
+            let b = lw.op(2)?.strip_prefix('~').unwrap_or("");
+            if lw.l.operands.len() != 6
+                || !data(lw.op(0)?)
+                || !data(lw.op(1)?)
+                || !data(b)
+                || lw.op(3)? != "RZ"
+                || !sh.is_some_and(|s| (1..=30).contains(&s))
+                || !cin
+                    .strip_prefix('P')
+                    .is_some_and(|n| n.parse::<u8>().is_ok_and(|n| n < 7))
+            {
+                bail!(lw.err(
+                    "LEA.HI.X with ~Rb not modeled (only `LEA.HI.X Rd, Ra, ~Rb, RZ, s, P`, s = 1..30)"
+                ));
+            }
+            Op::LeaHi {
+                d: lw.dst(lw.op(0)?)?,
+                a: lw.val(lw.op(1)?, 4)?,
+                b: lw.val(b, 4)?,
+                neg_b: false,
+                not_b: true,
+                c: Val::Imm(0),
+                shift: sh.unwrap() as u8,
+                sx32: false,
+                cin: Some(lw.pred(cin)?),
+                cout: None,
+            }
+        }
         "LEA" | "ULEA" => {
             if mods != ["HI", "X", "SX32"] || lw.l.operands.len() != 5 {
                 bail!(lw.err(format!("LEA.{} with ~Rb not modeled", mods.join("."))));
@@ -535,6 +573,7 @@ pub(super) fn lower(lw: &Lw, base: &str, mods: &[&str], meta: &CubinMeta) -> Res
                 rnd,
                 ftz: has("FTZ"),
                 f64: false,
+                neg: false,
             }
         }
         _ => unreachable!("l2::claims"),

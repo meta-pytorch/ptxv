@@ -3877,9 +3877,19 @@ fn model(
             rnd,
             ftz,
             f64,
+            neg,
         } => {
+            // (A negated source is lifted only for an f32 source.)
+            if *neg && *f64 {
+                return vec![];
+            }
             let xa = o!(a);
-            let x = if *f64 { xa } else { lo32(s, xa) };
+            let x = if *f64 {
+                xa
+            } else {
+                let x = lo32(s, xa);
+                fmod(s, x, *neg, false)
+            };
             let w = if *bits == 64 { 64 } else { 32 };
             let r = s.ar.mk_pub(
                 Node::F2I {

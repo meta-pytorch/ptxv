@@ -2309,6 +2309,37 @@ fn probe_int16x2_matches_hardware() {
     probe_bitwise_cubin("probes/int16x2", Some("cubins/lea.cubin"));
 }
 
+/// L-ROSETTA: `LEA.HI.X Rd, Ra, ~Rb, RZ, s, P` (the high word of a zero-extended word shifted
+/// left by s = 1..30 minus a 64-bit value, after either low-word LEA) = GB300
+/// (probes/lea_hi_not): the PTX front, the local ptxas's SASS, and the checked-in ptxas 13.1
+/// cubin, which holds the form 60 times.
+#[test]
+fn probe_lea_hi_not_matches_hardware() {
+    probe_bitwise("probes/lea_hi_not", "good", "ptx");
+    probe_bitwise("probes/lea_hi_not", "good", "sass");
+    probe_bitwise_cubin("probes/lea_hi_not", Some("kernel.cubin"));
+    let case = Case::load(root().join("probes/lea_hi_not")).unwrap();
+    let k = ptxv_sass::load_cubin(&case.dir.join("kernel.cubin"), &case.m.entry).unwrap();
+    let forms = k
+        .code
+        .iter()
+        .filter(|i| {
+            matches!(
+                i.op,
+                ptxv_ir::Op::LeaHi {
+                    not_b: true,
+                    sx32: false,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        forms, 60,
+        "LEA.HI.X Rd, Ra, ~Rb, RZ, s, P for s = 1..30, twice"
+    );
+}
+
 /// N-BULK-RED: cp.reduce.async.bulk ... .add.f32 (UBLKRED.G.S.ADD.F32.RN) on edge pairs, and
 /// four CTAs' concurrent bulk adds into the same words (atomic per word: no race, one result)
 /// = GB300 (probes/bulk_red), both front-ends.
@@ -2338,6 +2369,28 @@ fn probe_bulk_red_matches_hardware() {
 fn probe_f2i16_matches_hardware() {
     probe_bitwise("probes/f2i16", "good", "ptx");
     probe_bitwise("probes/f2i16", "good", "sass");
+}
+
+/// L-ROSETTA: a negated register source on f32 -> 32-bit integer conversions, F2I[.FTZ][.U32]
+/// [.TRUNC|.FLOOR|.CEIL].NTZ Rd, -Ra (neg.f32 folded into cvt.r{n,z,m,p}i[.ftz].{s32,u32}.f32)
+/// = GB300 (probes/f2i_neg): the PTX front, the local ptxas's SASS, and the checked-in ptxas
+/// 13.1 cubin, which holds all 16 forms.
+#[test]
+fn probe_f2i_neg_matches_hardware() {
+    probe_bitwise("probes/f2i_neg", "good", "ptx");
+    probe_bitwise("probes/f2i_neg", "good", "sass");
+    probe_bitwise_cubin("probes/f2i_neg", Some("kernel.cubin"));
+    let case = Case::load(root().join("probes/f2i_neg")).unwrap();
+    let k = ptxv_sass::load_cubin(&case.dir.join("kernel.cubin"), &case.m.entry).unwrap();
+    let forms = k
+        .code
+        .iter()
+        .filter(|i| matches!(i.op, ptxv_ir::Op::F2I { neg: true, .. }))
+        .count();
+    assert_eq!(
+        forms, 16,
+        "F2I ... Rd, -Ra: four roundings x s32 / u32 x [.FTZ]"
+    );
 }
 
 /// E-BSYNC: `BREAK.RELIABLE Pc, Bb` in ptxas's div.rn.ftz.f32 slow path (probes/div_ftz, every
@@ -2728,6 +2781,38 @@ fn probe_hmnmx2_matches_hardware() {
 fn probe_f64_dsetp_matches_hardware() {
     probe_bitwise("probes/f64_dsetp", "good", "ptx");
     probe_bitwise("probes/f64_dsetp", "good", "sass");
+}
+
+/// The recorded cubin of a probe holds each of `forms` (the SASS its test is about).
+fn probe_cubin_has(dir: &str, forms: &[&str]) {
+    let case = Case::load(root().join(dir)).unwrap();
+    let k = ptxv_sass::load_cubin(&case.dir.join("kernel.cubin"), &case.m.entry).unwrap();
+    for f in forms {
+        assert!(k.code.iter().any(|i| i.text.contains(f)), "{dir}: no {f}");
+    }
+}
+
+/// N-FALU: DSETP.{LE,LTU}.{AND,OR,XOR} Pd, PT, a, b, Pc | !Pc | PT (setp.le.f64 / setp.ltu.f64
+/// folded with and.pred / or.pred / xor.pred; b a register pair, a uniform pair, an immediate
+/// or RZ) on every pair of 30 f64 patterns, NaNs of both kinds and signs among them, with the
+/// predicate both ways = GB300 (probes/dsetp_ltu_le). The SASS front-end runs the recorded
+/// ptxas 13.1 cubin: which forms ptxas picks is its choice, and these are the captured ones.
+#[test]
+fn probe_dsetp_ltu_le_matches_hardware() {
+    probe_bitwise("probes/dsetp_ltu_le", "good", "ptx");
+    probe_bitwise_cubin("probes/dsetp_ltu_le", Some("kernel.cubin"));
+    probe_cubin_has(
+        "probes/dsetp_ltu_le",
+        &[
+            "DSETP.LTU.OR P0, PT, R4, UR6, P0",
+            "DSETP.LE.AND P1, PT, R4, 1, PT",
+            "DSETP.LTU.AND P1, PT, R4, UR6, PT",
+            "DSETP.LE.OR P3, PT, R4, R6, !P1",
+            "DSETP.LE.XOR P6, PT, -|R4|, UR6, !P1",
+            "DSETP.LTU.XOR P0, PT, R4, 1, P1",
+            "DSETP.LTU.OR P6, PT, R4, RZ, P1",
+        ],
+    );
 }
 
 /// The f64 / conversion queue reads operands in issue order: a later `F2F.F64.F32` overwrites
@@ -3558,6 +3643,28 @@ fn probe_mad_wide16_matches_hardware() {
 fn probe_hset2_matches_hardware() {
     probe_bitwise("probes/hset2", "good", "ptx");
     probe_bitwise("probes/hset2", "good", "sass");
+}
+
+/// N-FALU: FSET.BF.NAN.AND Rd, a, b, Pc | !Pc | PT (set.nan[.and].f32.f32, and setp.nan.f32 +
+/// selp.f32 1.0, 0.0), 1.0f when an operand is a NaN and the predicate holds, on every pair
+/// of 22 f32 patterns with the predicate both ways = GB300 (probes/fset_nan): the PTX
+/// front-end, and the SASS front-end on the recorded ptxas 13.1 cubin.
+#[test]
+fn probe_fset_nan_matches_hardware() {
+    probe_bitwise("probes/fset_nan", "good", "ptx");
+    probe_bitwise_cubin("probes/fset_nan", Some("kernel.cubin"));
+    probe_cubin_has(
+        "probes/fset_nan",
+        &[
+            "FSET.BF.NAN.AND R9, R0, R0, PT",
+            "FSET.BF.NAN.AND R15, R0, UR6, PT",
+            "FSET.BF.NAN.AND R17, R0.reuse, 20, PT",
+            "FSET.BF.NAN.AND R19, |R0|.reuse, -R7.reuse, PT",
+            "FSET.BF.NAN.AND R21, R0.reuse, R7, P0",
+            "FSET.BF.NAN.AND R7, R7, R0.reuse, !P0",
+            "FSET.BF.NAN.AND R23, R7, R0, PT",
+        ],
+    );
 }
 
 /// movmatrix.sync.aligned.m8n8.trans.b16 = MOVM.16.MT88 (probes/movm) = GB300.

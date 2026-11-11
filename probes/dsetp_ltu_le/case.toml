@@ -1,0 +1,46 @@
+name = "probe_dsetp_ltu_le"
+description = """
+Probe (N-FALU, L-ROSETTA) for the f64 compares "less or equal" and "less than or unordered"
+with a combining predicate: SASS DSETP.{LE,LTU}.{AND,OR,XOR} Pd, PT, a, b, Pc | !Pc | PT, b a
+register pair, a uniform pair, an immediate or RZ, a = R, |R|, -R, -|R| (PTX setp.le.f64 /
+setp.ltu.f64 with and.pred / or.pred / xor.pred; kernel.ptx and in.bin are written by gen.py).
+2048 records: every pair of 30 f64 patterns (signed zeros, subnormals, the neighbours of each
+constant, the largest finite values, infinities, quiet and signalling NaNs of either sign) with
+the incoming predicate false and true, then random, equal and one-ulp pairs. expected/ is
+GB300's output (kernel.cubin = ptxas 13.1 -arch=sm_103a kernel.ptx, `ptxv hw-worker`);
+`gen.py --check expected/out.bin` compares it with an IEEE model."""
+ptx = "kernel.ptx"
+entry = "dsetp_ltu_le"
+grid = [2, 1, 1]
+block = [1024, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [12288]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [12288]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u64"
+value = 0x3FB999999999999A
+
+[[variants]]
+id = "good"
+expect = ["clean"]

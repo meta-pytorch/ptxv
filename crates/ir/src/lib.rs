@@ -1584,6 +1584,10 @@ pub enum Op {
         /// `.F64`: an f64 source (a register pair; `cvt.r*i.*.f64`). NaN gives 2^31 (32-bit)
         /// or 2^63 (64-bit). GB300: fixtures/s_f2i_f64. ASSUME(N-F2I-F64)
         f64: bool,
+        /// SASS `F2I ... Rd, -Ra` (an f32 source, 32-bit result): the source's sign bit is
+        /// flipped before the conversion (ptxas folds `neg.f32` into it). GB300:
+        /// probes/f2i_neg. ASSUME(L-ROSETTA)
+        neg: bool,
     },
     /// PTX `mov.b64 %d, {lo, hi}`: d = hi << 32 | lo.
     Pack64 {
