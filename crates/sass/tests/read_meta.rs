@@ -118,6 +118,7 @@ fn cubins(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 #[test]
+#[ignore = "heavy: about 18.7k cuobjdump runs; 166 s"]
 fn read_meta_matches_cuobjdump() {
     let mut all = vec![];
     cubins(&root().join("probes"), &mut all);

@@ -66,6 +66,15 @@ pip install -e python/
 
 Requires a Rust toolchain and the CUDA 13 toolkit (`nvdisasm`, `cuobjdump`). Checking a kernel needs no GPU; capturing kernels and validating against hardware need a Blackwell GPU.
 
+## Testing
+
+```
+cargo test --release                        # quick tier
+cargo test --release -- --include-ignored   # full tier
+```
+
+The quick tier is the default: tests that take more than 30 s are marked `#[ignore = "heavy: <reason>"]` and skipped. It ran in about 6 minutes (342 s, after the build) on a 144-core machine. The full tier also runs the heavy tests (about 6 hours of test time, so run it on many cores), and the few tests ignored for other reasons. See [CONTRIBUTING.md](CONTRIBUTING.md#testing).
+
 ## Trust
 
 Every verdict lists the modeling assumptions it relies on ([ASSUMPTIONS.md](ASSUMPTIONS.md)). The semantics of instructions, the memory model and the arithmetic units are encoded by hand and validated against GB300 hardware; they are not a formal specification. Unsupported instructions are rejected; an audit so that unsupported modifiers are also rejected, rather than ignored, is in progress.

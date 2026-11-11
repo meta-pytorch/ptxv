@@ -190,6 +190,7 @@ fn bf16_gemm_is_bounded() {
 /// HMMA, P rounded to bf16) vs the Triton tcgen05 flash kernel, L1 in the attention normal
 /// form with computed scores for all 8192 outputs, and no random trial above the bound.
 #[test]
+#[ignore = "heavy: 87 s"]
 fn bf16_attention_is_bounded() {
     if vendor_missing("fixtures/c_equiv_sdpa/equiv.toml") {
         return;
@@ -206,6 +207,7 @@ fn bf16_attention_is_bounded() {
 /// (8 K = 32 steps; was eps >= 2 per step), no random-input trial (random e4m3 codes with
 /// subnormals, random ue8m0 scales) above it; the B30 mutant is not L1.
 #[test]
+#[ignore = "heavy: 89 s"]
 fn mxf8_gemm_is_bounded() {
     if vendor_missing("fixtures/c_equiv_mxf8/equiv.toml") {
         return;
@@ -227,6 +229,7 @@ fn mxf8_gemm_is_bounded() {
 /// torch._scaled_mm is L0 up to the sign of zero (cuBLAS adds +0 in its alpha / beta epilogue;
 /// its BAR.SYNC waits on the bulk read scoreboard in the control word).
 #[test]
+#[ignore = "heavy: 60 s"]
 fn mxf8_cublas_is_bitwise() {
     if vendor_missing("fixtures/c_equiv_mxf8_cublas/equiv.toml") {
         return;
@@ -245,6 +248,7 @@ fn mxf8_cublas_is_bitwise() {
 /// L0 up to the sign of zero; each kernel's own bound is 9.88u x sum |a b sa sb| (ue4m3 scales
 /// nonzero), no random trial above it.
 #[test]
+#[ignore = "heavy: 109 s"]
 fn nvf4_cublas_is_bitwise() {
     if vendor_missing("fixtures/c_equiv_nvf4_cublas/equiv.toml") {
         return;
@@ -265,6 +269,7 @@ fn nvf4_cublas_is_bitwise() {
 /// (N-EXACT), so it is the same function (L1) with only the two kernels' MMA contracts in the
 /// bound, 169.38u x sum |a b sa sb|, no random trial above it.
 #[test]
+#[ignore = "heavy: 54 s"]
 fn nvf4_dequant_bf16_is_bounded() {
     if vendor_missing("fixtures/c_equiv_nvf4_dq/equiv.toml") {
         return;
@@ -279,6 +284,7 @@ fn nvf4_dequant_bf16_is_bounded() {
 /// ... and against Triton tl.dot_scaled: L0 in K order; K blocks of 32 reversed is L1 with
 /// 306u x sum |a b sa sb| (Thm 4 over both kernels' per-monomial bounds), no trial above it.
 #[test]
+#[ignore = "heavy: equiv subprocess, 3 certified sides; 114 s"]
 fn mxf8_triton_is_bounded() {
     if vendor_missing("fixtures/c_equiv_mxf8_triton/equiv.toml") {
         return;
@@ -295,6 +301,7 @@ fn mxf8_triton_is_bounded() {
 /// L0 in K order; K blocks of 64 reversed is L1 with 10.04u x sum |a b sa sb| (each kernel's
 /// own bound 8.03u), no trial above it.
 #[test]
+#[ignore = "heavy: 86 s"]
 fn mxf4_triton_is_bounded() {
     if vendor_missing("fixtures/c_equiv_mxf4_triton/equiv.toml") {
         return;
@@ -372,6 +379,7 @@ fn float_atomic_max_is_the_maximum() {
 /// online-softmax branch m_prime < mi, the ex2 range guards kept in a flag word, the rcp.rn
 /// variants and P through shared memory to the P·V MMAs all have nodes or slices.
 #[test]
+#[ignore = "heavy: 96 s"]
 fn sdpa_f32_is_bitwise() {
     if vendor_missing("fixtures/c_cve_sdpa_f32/equiv.toml") {
         return;

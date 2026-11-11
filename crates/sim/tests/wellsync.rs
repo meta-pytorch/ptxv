@@ -283,6 +283,7 @@ fn certificate_run_race_survives_an_incomplete_exploration() {
 }
 
 #[test]
+#[ignore = "heavy: 43 s"]
 fn tma_store_wait_counts_its_own_scoreboard() {
     if vendor_missing(&["r3_grouped_mm"]) {
         return;
@@ -317,6 +318,7 @@ fn tma_store_wait_counts_its_own_scoreboard() {
 }
 
 #[test]
+#[ignore = "heavy: 1308 certify jobs; 371 s"]
 fn certified_verdicts_match_the_fixture_suite() {
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(root().join("fixtures"))
         .unwrap()
@@ -710,6 +712,7 @@ fn r4a_cas_signals_certify() {
 /// One call explores to completion: the certified verdict and output are the explorer's, with
 /// and without E-EXIT-FENCE (the strict model is clean for one call).
 #[test]
+#[ignore = "heavy: 4 certify + 4M-state explores; 193 s"]
 fn r4a_certified_first_call_matches_exploration() {
     if std::env::var("PTXV_EXIT_FENCE").is_ok() {
         return;
@@ -755,6 +758,7 @@ fn r4a_strict_model_does_not_certify_the_reuse_race() {
 
 /// The rung-4a mutants (B57-B62), one and two calls: refused, or certified with their bug.
 #[test]
+#[ignore = "heavy: 38 s"]
 fn r4a_mutants_are_not_certified_clean() {
     for (what, case, _) in r4a_cases() {
         let vs: &[&str] = if case.m.name == "r4a_oneshot" {

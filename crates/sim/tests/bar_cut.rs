@@ -62,6 +62,7 @@ fn outputs(v: &Verdict) -> Vec<Vec<u8>> {
 }
 
 #[test]
+#[ignore = "heavy: 64 configs explored twice at 200k, plus r2_cute_small CM1 at 1M; 3223 s"]
 fn bar_cut_and_values_keep_every_verdict() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
     let mut fewer = 0;

@@ -143,6 +143,7 @@ fn compare_inductor_add_rmsnorm_vs_eager_is_l1() {
 /// every output is rn(f(a) * b) on both sides, so elementwise mode sweeps f over all 2^32 f32
 /// values (the committed sweep is reused) and bounds |C - R| for every a and b.
 #[test]
+#[ignore = "heavy: ptxv compare subprocess, three modes; 247 s"]
 fn compare_inductor_silu_mul_vs_eager_is_elementwise_product() {
     let (text, j, _) = compare(
         "fixtures/c_cve_silumul_eager",
@@ -212,6 +213,7 @@ fn compare_bf16_clone_is_l0() {
 /// Every output is bf16(rn(f(x) * y)); both kernels are evaluated at every (x, y) pair of bf16
 /// values: at most 1 bf16 ulp apart where f and the outputs are normal.
 #[test]
+#[ignore = "heavy: 39 s"]
 fn compare_bf16_silu_mul_is_exhaustive() {
     let (text, j, _) = compare(
         "fixtures/c_cve_silumul_bf16_eager",

@@ -331,6 +331,7 @@ fn claims(case: &Case, m: &Machine) -> [usize; 6] {
 /// epilogue warps 0-3 only), the output equals GB300's bitwise, and the routing and gemm1
 /// intermediates equal the GPU's snapshots (fixtures/r3b_trtllm_bmm, the same inputs).
 #[test]
+#[ignore = "heavy: 32 s"]
 fn r3b_moe_good_races_in_gemm2_and_matches_the_gpu() {
     if vendor_missing(&["r3b_trtllm_moe", "r3b_trtllm_bmm"]) {
         return;
@@ -385,6 +386,7 @@ fn r3b_moe_good_races_in_gemm2_and_matches_the_gpu() {
 /// launches (E-WELLSYNC), contracts only, output = GB300's bitwise, and every numerics claim
 /// holds for all outputs.
 #[test]
+#[ignore = "heavy: 74 s"]
 fn r3b_moe_fixed_certified_and_claims_hold() {
     if vendor_missing(&["r3b_trtllm_moe"]) {
         return;
@@ -411,6 +413,7 @@ fn r3b_moe_fixed_certified_and_claims_hold() {
 /// (finalize: the second expert gets the first one's weight / row) execute like `fixed`
 /// (contracts only); the finalize claim fails for most outputs, every earlier stage holds.
 #[test]
+#[ignore = "heavy: 78 s"]
 fn r3b_moe_mutants() {
     if vendor_missing(&["r3b_trtllm_moe"]) {
         return;
@@ -464,6 +467,7 @@ fn run_with(case: &Case, name: &str, bytes: &[u8], tag: &str) -> Vec<u8> {
 /// Perturbing expert e's weights (both GEMMs) changes exactly the rows of the tokens routed to
 /// e; perturbing one token's activations changes exactly its row.
 #[test]
+#[ignore = "heavy: 97 s"]
 fn r3b_moe_token_depends_exactly_on_its_experts() {
     if vendor_missing(&["r3b_trtllm_moe"]) {
         return;
@@ -519,6 +523,7 @@ fn r3b_moe_token_depends_exactly_on_its_experts() {
 /// order, E-LOCKSTEP). Routing assigns each (token, k) its slot within an expert with
 /// `ATOMS.ADD`; in reverse lane order the permutation changes, the MoE output does not.
 #[test]
+#[ignore = "heavy: 64 s"]
 fn r3b_moe_output_does_not_depend_on_atomic_lane_order() {
     if vendor_missing(&["r3b_trtllm_moe"]) {
         return;

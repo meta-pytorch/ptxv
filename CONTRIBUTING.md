@@ -40,13 +40,23 @@ cargo build --release      # -> target/release/ptxv
 ## Testing
 
 ```
-cargo test --release --no-fail-fast
+cargo test --release --no-fail-fast                           # quick tier
+cargo test --release --no-fail-fast -- --include-ignored      # full tier
 cargo clippy --release --all-targets
 PYTHONPATH=python python3 -m pytest -q python/tests
 ```
 
-- The full Rust suite takes about 20-25 minutes; `tests/fixtures.rs` explores real kernels.
-  Run a subset with `cargo test --release -p ptxv-sim --test fixtures <name_substring>`.
+- **Quick tier (default).** Plain `cargo test --release` skips the tests marked
+  `#[ignore = "heavy: <reason>; <seconds> s"]`. It ran in 342 s (after the build) on a
+  144-core machine.
+- **Full tier.** `-- --include-ignored` also runs the heavy tests (together about 6 hours of
+  test time; run it on many cores) and the few tests ignored for other reasons
+  (`#[ignore = "slow ..."]` or a plain `#[ignore]`).
+- **New tests.** A test that takes more than 30 s must carry `#[ignore = "heavy: <reason>"]`.
+  First try to shrink it, for example a smaller launch shape that keeps the verdict class;
+  mark it heavy only if that fails.
+- `tests/fixtures.rs` explores real kernels. Run a subset with
+  `cargo test --release -p ptxv-sim --test fixtures <name_substring>`.
 - Exhaustive explorations can use a lot of memory. On a shared machine, run them under a cap,
   e.g. `systemd-run --user --scope -p MemoryMax=48G -p MemorySwapMax=0 <cmd>`.
 - **GPU tests are optional.** Hardware-dependent Rust tests skip when no idle Blackwell GPU

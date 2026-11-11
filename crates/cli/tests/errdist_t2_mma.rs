@@ -15,6 +15,7 @@ fn root() -> std::path::PathBuf {
 }
 
 #[test]
+#[ignore = "heavy: 78 s"]
 fn correlated_rounding_means_on_a_long_mma_pair() {
     let js = std::env::temp_dir().join(format!("ptxv-test-t2mma-{}.json", std::process::id()));
     let scratch = js.with_extension("d");

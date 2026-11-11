@@ -618,6 +618,7 @@ fn r1b_ptx_mutants() {
 /// Bugs whose consequences blow up the state space: the expected classes must show up within
 /// a bounded search (`Verdict::meets`).
 #[test]
+#[ignore = "heavy: 36 s"]
 fn r1b_b09_ptx() {
     check_dpor("r1b_pipeline", "B09", "ptx", 20_000);
 }
@@ -626,10 +627,12 @@ fn r1b_b09_sass() {
     check_dpor("r1b_pipeline", "B09", "sass", 20_000);
 }
 #[test]
+#[ignore = "heavy: 47 s"]
 fn r1b_b10_ptx() {
     check_dpor("r1b_pipeline", "B10", "ptx", 20_000);
 }
 #[test]
+#[ignore = "heavy: 49 s"]
 fn r1b_b10_sass() {
     check_dpor("r1b_pipeline", "B10", "sass", 20_000);
 }
@@ -668,6 +671,7 @@ fn r1c_2sm_b12_commit_mask() {
 // with N = 8. Verdicts on both front-ends (explorer and DPOR), then the certified output against
 // GB300's TMEM dump, bit for bit (sentinel cells included).
 #[test]
+#[ignore = "heavy: 47 s"]
 fn e_mma_pair_m128_verdicts() {
     for v in ["good", "B12", "n8"] {
         both("e_mma_pair_m128", v);
@@ -749,6 +753,7 @@ fn r1d_b17_unwaited_response() {
     check_dpor("r1d_clc", "B17", "sass", 2_000_000);
 }
 #[test]
+#[ignore = "heavy: 22 s"]
 fn r1d_b53_parity() {
     // Unbounded (the CTA keeps re-requesting): bounded search, Verdict::meets.
     check_dpor("r1d_clc", "B53", "ptx", 20_000);
@@ -877,6 +882,7 @@ fn check_stateful(case: &str, variant: &str, front: &str, max_states: usize) {
 // Rung 1g: 3-GPU all-reduce, two calls. PTX is exhaustive; the SASS good kernel needs tens of
 // millions of states (docs/rung1g.md), so SASS checks the mutants only.
 #[test]
+#[ignore = "heavy: 49 s"]
 fn r1g_allreduce() {
     for v in ["good", "B21", "B22", "B24"] {
         check_stateful("r1g_allreduce", v, "ptx", 2_000_000);
@@ -908,6 +914,7 @@ fn check_bounded(case: &str, variant: &str, front: &str, max_states: usize) {
 // Rung 2: Triton 3.5 persistent tcgen05 GEMM (docs/rung2.md). SASS is exhaustive for the good
 // kernel, the fixed kernel and M3/M4; M1/M2 (missing mbarrier waits) explode and are bounded.
 #[test]
+#[ignore = "heavy: 4 exhaustive SASS explores at 2M; 111 s"]
 fn r2_triton_sass() {
     for v in ["good", "fenced", "M3", "M4"] {
         check_stateful("r2_triton_gemm", v, "sass", 2_000_000);
@@ -931,6 +938,7 @@ fn r2_triton_ptx() {
 // Rung 2: CuTeDSL GEMM at one tile per CTA (6 warps, warp-specialized). Exhaustive except the
 // PTX of CM1 / CM4, whose bug lets the pipeline run off into millions of states.
 #[test]
+#[ignore = "heavy: 10 exhaustive explores at 2M (6 SASS, 4 PTX variants); 3109 s"]
 fn r2_cute_small() {
     if vendor_missing(&["r2_cute_small"]) {
         return;
@@ -947,6 +955,7 @@ fn r2_cute_small() {
 
 /// fixtures/r2_cute_gemm CM1 on SASS (exhaustive): its expectation had no test and went stale.
 #[test]
+#[ignore = "heavy: 46 s"]
 fn r2_cute_gemm_cm1_sass() {
     if vendor_missing(&["r2_cute_gemm"]) {
         return;
@@ -959,6 +968,7 @@ fn r2_cute_gemm_cm1_sass() {
 // to the recorded GB300 outputs (good and B30); B30 (scale factors of the wrong K-block)
 // fails the exact MXF8 spec while the good kernel's dataflow equals it.
 #[test]
+#[ignore = "heavy: explores at 2M plus 2 rebuilds and runs per variant; 211 s"]
 fn r3_cute_mxf8() {
     if vendor_missing(&["r3_cute_mxf8"]) {
         return;
@@ -1045,6 +1055,7 @@ fn utccp_in_mma_issue_order() {
 // The same CuTeDSL GEMM for MXF4 (e2m1 codes through 4-bit tensor maps, kind::mxf4nvf4
 // block32): exhaustive verdicts; both front-ends bitwise equal to the recorded GB300 output.
 #[test]
+#[ignore = "heavy: 85 s"]
 fn r3_cute_mxf4() {
     if vendor_missing(&["r3_cute_mxf4"]) {
         return;
@@ -1066,6 +1077,7 @@ fn r3_cute_mxf4() {
 // The same CuTeDSL GEMM for NVFP4 (e2m1 codes, ue4m3 scales per 16, kind::mxf4nvf4 block16):
 // exhaustive verdicts; both front-ends bitwise equal to the recorded GB300 output.
 #[test]
+#[ignore = "heavy: 83 s"]
 fn r3_cute_nvf4() {
     if vendor_missing(&["r3_cute_nvf4"]) {
         return;
@@ -1187,6 +1199,7 @@ const CERTIFY_ONLY: &[&str] = &[
 /// its one output equals the bytes the GPU produced when the case was captured (PTX cases:
 /// from both front-ends).
 #[test]
+#[ignore = "heavy: 159 explores over 131 captured fixtures; 273 s"]
 fn captured_outputs_match_the_gpu() {
     let mut n = 0;
     for e in std::fs::read_dir(root().join("fixtures")).unwrap() {
@@ -1771,6 +1784,7 @@ fn s_lift_k_matches_hardware() {
 /// barrier, by all threads or by the issuer only; 1000/1000 wrong without). `global`: a
 /// fence.proxy.async.global (FENCE.VIEW.ASYNC.G) orders global memory only: a proxy race.
 #[test]
+#[ignore = "heavy: 77 s"]
 fn probe_proxy_fence_matches_hardware() {
     for v in ["good", "after_all", "issuer", "none", "global"] {
         check_dir("probes", "proxy_fence", v, "ptx");
@@ -1782,6 +1796,7 @@ fn probe_proxy_fence_matches_hardware() {
 /// finding, st.shared writers a proxy race (probes/proxy_cpasync; GB300 1000/1000 correct in
 /// every variant).
 #[test]
+#[ignore = "heavy: 6 stateful + DPOR checks at 2M; 1114 s"]
 fn probe_proxy_cpasync_verdicts() {
     for v in ["good", "none", "st_none"] {
         check_dir("probes", "proxy_cpasync", v, "ptx");
@@ -3275,6 +3290,7 @@ fn probe_tma_prefetch_matches_hardware() {
 /// red adds to shared words do not commute for the reductions (f64 order changes bits), so the
 /// stateful explorer checks every order: one output, GB300's.
 #[test]
+#[ignore = "heavy: 37 s"]
 fn probe_atom_f64_matches_hardware() {
     for front in ["ptx", "sass"] {
         let case = Case::load(root().join("probes/atom_f64")).unwrap();
@@ -3858,6 +3874,7 @@ fn r4a_machine(case: &Case, variant: &str) -> Machine {
 /// captured by tools/capture_dist.py, explored exhaustively; the one-shot outputs equal every
 /// rank's GPU bytes. The strict PTX model (no E-EXIT-FENCE) is clean too for one call.
 #[test]
+#[ignore = "heavy: 3 exhaustive 4M-state explores; 160 s"]
 fn r4a_first_call_exhaustive() {
     if std::env::var("PTXV_EXIT_FENCE").is_ok() {
         return; // the case's own exit_fence is what is tested
@@ -3895,6 +3912,7 @@ fn r4a_first_call_exhaustive() {
 /// not order a peer's reads of call 1 before this rank's restaging in call 2: the waiting side
 /// of torch's closing barrier has no acquire (`sync_remote_blocks<memory_order_release>`).
 #[test]
+#[ignore = "heavy: bounded 3M-state explore; 342 s"]
 fn r4a_oneshot_strict_model_reports_the_reuse_race() {
     if std::env::var("PTXV_EXIT_FENCE").is_ok() {
         return;
@@ -3920,6 +3938,7 @@ fn r4a_oneshot_strict_model_reports_the_reuse_race() {
 /// full two-call case (the good kernels' two-call verdicts are in docs/rung4.md: exhaustive,
 /// hundreds of millions of states).
 #[test]
+#[ignore = "heavy: 6 bounded 3M-state explores of the 2-call case; 1568 s"]
 fn r4a_mutants() {
     for (c, vs) in [
         ("r4a_oneshot", &["B57", "B58", "B59", "B60", "B61"][..]),
@@ -3994,6 +4013,7 @@ fn r4b_run(case: &Case, variant: &str) -> (Machine, Vec<ptxv_sim::machine::Findi
 /// E-POLL-ACQ): the E-BULK-EXIT contracts and barrier_block's T4b races, and both ranks'
 /// outputs equal the GPU's. With the old opt-in, explicitly allowed, only the contracts.
 #[test]
+#[ignore = "heavy: 91 s"]
 fn r4b_moe_run_matches_the_gpu() {
     if vendor_missing(&["r4b_moe"]) {
         return;
@@ -4029,6 +4049,7 @@ fn r4b_moe_run_matches_the_gpu() {
 /// B32-B40: each mutant's expected class shows up in the deterministic run (races are
 /// happens-before facts, so one schedule that reaches both accesses reports them).
 #[test]
+#[ignore = "heavy: 9 runs of the 28-launch MoE layer; 397 s"]
 fn r4b_moe_mutants() {
     if vendor_missing(&["r4b_moe"]) {
         return;
@@ -4052,6 +4073,7 @@ fn r4b_moe_mutants() {
 /// Perturbing expert e's weights changes exactly the rows of the tokens routed to e, on
 /// every rank (and the outputs stay a deterministic function of the inputs).
 #[test]
+#[ignore = "heavy: 3 runs of the MoE layer; 225 s"]
 fn r4b_moe_token_depends_exactly_on_its_experts() {
     if vendor_missing(&["r4b_moe"]) {
         return;
@@ -4107,6 +4129,7 @@ fn r4b_moe_token_depends_exactly_on_its_experts() {
 /// T4b: without the opt-ins (strict PTX model), DeepEP's relaxed barrier polls and its
 /// shared-memory tail relay are races; the outputs still equal the GPU's.
 #[test]
+#[ignore = "heavy: 39 s"]
 fn r4b_moe_strict_model_reports_deepep_races() {
     if vendor_missing(&["r4b_moe"]) {
         return;
@@ -4214,6 +4237,7 @@ fn r4b_check_groups(
 /// under the GB300 hardware model (two-level check) it is clean with one final memory, so each
 /// race is latent.
 #[test]
+#[ignore = "heavy: two exhaustive group checks at 1M; 374 s"]
 fn r4b_notify_group_is_exhaustive() {
     if vendor_missing(&["r4b_moe"]) {
         return;
@@ -4311,6 +4335,7 @@ fn r4b_notify_group_is_exhaustive() {
 /// casts) certifies as one group, from the end state of one deterministic run of the DeepEP
 /// kernels before it (the test's shortcut for groups 1-3).
 #[test]
+#[ignore = "heavy: 32 s"]
 fn r4b_torch_group_certifies() {
     if vendor_missing(&["r4b_moe"]) {
         return;
@@ -4349,6 +4374,7 @@ fn r4b_torch_group_certifies() {
 /// group reads what dispatch, an earlier group, wrote, with nothing ordering the two. The
 /// demoted race shadow at the group boundary reports it.
 #[test]
+#[ignore = "heavy: group check on the 28-launch r4b layer; 2540 s"]
 fn r4b_groups_catch_b32_at_the_boundary() {
     if vendor_missing(&["r4b_moe"]) {
         return;
@@ -4627,6 +4653,7 @@ fn l1_model_r1f_pingpong() {
 /// With the L1 but the strict PTX ordering the predictive check flags notify_dispatch's
 /// post-barrier reads, because nothing orders the peer's writes before them.
 #[test]
+#[ignore = "heavy: 81 s"]
 fn r4b_moe_l1_model() {
     if vendor_missing(&["r4b_moe"]) {
         return;
@@ -4691,6 +4718,7 @@ fn r4b_moe_l1_model() {
 /// 0x1600, 0x16f0; rank 1: 0x15f0, 0x16d0, 0x1900), the latter only in the placements that
 /// put a reader next to that rank's CTA 0.
 #[test]
+#[ignore = "heavy: 73 s"]
 fn r4b_coreader_notify() {
     if vendor_missing(&["r4b_coreader"]) {
         return;
@@ -4798,6 +4826,7 @@ fn r4c_run(m: Machine) -> (Vec<String>, bool) {
 /// sender warps of one rank for one destination with the receiver warps of the other rank
 /// for that source (one deterministic run of layout and notify first).
 #[test]
+#[ignore = "heavy: 10-launch machine built twice, one run; 169 s"]
 fn r4c_dispatch_splits_into_flows() {
     if vendor_missing(&["r4c_nowrap"]) {
         return;
@@ -5123,6 +5152,7 @@ fn clean_and_bitwise(case: &str, variant: &str, front: &str, certified: bool) {
 /// addresses, and CuTeDSL's smem_fmax: GB300's bytes on both front-ends (SASS ATOMS.MIN/MAX,
 /// ATOMS.CAS[.64], ATOMS.CAST.SPIN.64, ATOMG/REDG MIN/MAX, ATOMG/ATOM CAS[.64]).
 #[test]
+#[ignore = "heavy: 40 s"]
 fn s_atom_ext_bitwise() {
     for certified in [false, true] {
         clean_and_bitwise("s_atom_ext", "good", "ptx", certified);
@@ -5143,6 +5173,7 @@ fn s_ptx_cute_ops_bitwise() {
 /// The FA4 decode running-max fold bug with the exact smem_fmax asm (red.min.u32 / red.max.s32): the pre-fix read of
 /// the shared running max races with the next tile's fold; the fix is clean.
 #[test]
+#[ignore = "heavy: explores at 2M with DPOR, bounded SASS at 200k; 218 s"]
 fn e_fmax_fold() {
     // The racy pre-fix: the explorers agree only up to the race (E-DRF), so stateful only.
     both("e_fmax_fold", "good");
@@ -5181,6 +5212,7 @@ fn e_rs_chan_ws2() {
     }
 }
 #[test]
+#[ignore = "heavy: 38 s"]
 fn e_rs_chan_ws3() {
     for v in ["good", "prefix"] {
         check_stateful("e_rs_chan_ws3", v, "ptx", 2_000_000);
@@ -5726,6 +5758,7 @@ fn contract_only_kernel_certifies_under_the_gb300_profile() {
 /// state); the race-free variant is `inconclusive`. Before, 8+ workers spent the cap
 /// breadth-first and reported `clean` with no terminal state.
 #[test]
+#[ignore = "heavy: 106 s"]
 fn bounded_search_never_reports_clean() {
     let case = Case::load(root().join("fixtures/e_deep_race")).unwrap();
     for front in ["ptx", "sass"] {
@@ -5905,6 +5938,7 @@ fn e_aligned_bar_divergence() {
 /// The FA4 forward warp-role barrier case: the per-warp divergence probe
 /// is a violation, the cross-warp pre-fix protocol and the fix are clean.
 #[test]
+#[ignore = "heavy: 92 s"]
 fn e_fa4_warp_roles_fa4_aligned_barriers() {
     for v in [
         "good",
@@ -5940,6 +5974,7 @@ fn e_fa4_warp_roles_fa4_aligned_barriers() {
 /// `.release.cta` remote arrive on the other stage can land after the exit. It used to be
 /// clean (remote arrivals landed at issue); the fix and the no-drain control are as before.
 #[test]
+#[ignore = "heavy: 10 explores up to 2M, with DPOR; 317 s"]
 fn e_rmsnorm_cluster_drain_remote_arrive_exit_drain() {
     for v in ["good", "bug", "good_k3", "bug_k3", "nodrain"] {
         check("e_rmsnorm_cluster_drain", v, "sass");
@@ -6209,6 +6244,7 @@ fn s_hfma2_bf16_matches_hardware() {
 /// certificate falls back to). A's runs over 20 s are skipped; the other two ways run where
 /// A's run took under 5 s (counted; `PTXV_COV_DIFF_FULL=1`: 120 s, all).
 #[test]
+#[ignore = "heavy: about 1300 analyses over all fixtures; 117 s"]
 fn coverage_same_without_shadow_in_look_ahead_copies() {
     let dir = root().join("fixtures");
     let mut names: Vec<_> = std::fs::read_dir(&dir)

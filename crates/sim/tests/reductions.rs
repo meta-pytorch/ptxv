@@ -612,6 +612,7 @@ fn sweep_one(case: &Case, v: &str, front: &str, cap: usize) -> Option<(Vec<Strin
 }
 
 #[test]
+#[ignore = "heavy: 412 jobs over every multi-CTA fixture; 1357 s"]
 fn every_fixture_keeps_classes_under_cta_reductions() {
     // Variants whose unreduced exploration finishes within CAP states (the others are the
     // dedicated tests' business; this sweep must stay cheap).
@@ -676,6 +677,7 @@ fn every_fixture_keeps_classes_under_cta_reductions() {
 /// barrier fixtures, every variant on both front-ends, are checked in sequence on one thread
 /// and each again on a fresh thread: the verdicts (classes, states, outputs) must agree.
 #[test]
+#[ignore = "heavy: 294 jobs run 3 times each; 905 s"]
 fn verdicts_do_not_depend_on_earlier_checks_in_the_thread() {
     let names = [
         "e_barover",

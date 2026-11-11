@@ -109,6 +109,7 @@ fn softmax_single_linearized() {
 /// Elementwise pairs: exact enumeration on bf16 codes (Tier 0), stratified quadrature on f32
 /// (Tier 1), and a Latin hypercube for silu(a) * b in bf16, each agreeing with Tier 3.
 #[test]
+#[ignore = "heavy: 3 errdist subprocesses at --mc 2000; 213 s"]
 fn elementwise_pairs() {
     let j = errdist(
         "fixtures/c_equiv_elementwise/gelu_bf16.toml",
@@ -170,6 +171,7 @@ fn missing_memcpy_is_refused() {
 /// Compile once, query many: a model written with --compile is loaded by --model for another
 /// input distribution (and extended to its binades).
 #[test]
+#[ignore = "heavy: 33 s"]
 fn model_compile_and_query() {
     let m = std::env::temp_dir().join(format!("ptxv-test-nl-model-{}.json", std::process::id()));
     let _ = std::fs::remove_file(&m);

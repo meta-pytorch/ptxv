@@ -62,6 +62,7 @@ fn p(e: &serde_json::Value) -> f64 {
 }
 
 #[test]
+#[ignore = "heavy: 40 s"]
 fn mxf8_normal_is_applicable() {
     if vendor_missing(&["r3_cute_mxf8"]) {
         return;
@@ -95,6 +96,7 @@ fn mxf8_normal_is_applicable() {
 }
 
 #[test]
+#[ignore = "heavy: errdist Tier 3 subprocess; 251 s"]
 fn mxf8_outliers_are_refused_by_the_gate() {
     if vendor_missing(&["r3_cute_mxf8"]) {
         return;
@@ -120,6 +122,7 @@ fn mxf8_outliers_are_refused_by_the_gate() {
 }
 
 #[test]
+#[ignore = "heavy: 66 s"]
 fn mxf8_pairs_are_not_run() {
     if vendor_missing(&["r3_cute_mxf8"]) {
         return;

@@ -78,6 +78,7 @@ fn best_tier(j: &serde_json::Value) -> u64 {
 }
 
 #[test]
+#[ignore = "heavy: 53 s"]
 fn small_input_errors_carried_by_tier2() {
     for (name, err) in [
         ("rel", serde_json::json!({"kind": "relative", "std": 1e-6})),
@@ -109,6 +110,7 @@ fn small_input_errors_carried_by_tier2() {
 }
 
 #[test]
+#[ignore = "heavy: 71 s"]
 fn large_input_error_through_exp_refused() {
     // Softmax of N(0, 4^2) logits with an absolute error of 0.5: exp is far from linear at
     // that scale (curvature ratio ~0.25).
@@ -130,6 +132,7 @@ fn large_input_error_through_exp_refused() {
 }
 
 #[test]
+#[ignore = "heavy: 138 s"]
 fn errstate_feeds_the_next_kernel() {
     let s = spec(
         "up",
