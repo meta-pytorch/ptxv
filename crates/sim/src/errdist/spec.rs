@@ -1154,7 +1154,7 @@ impl Layout {
             Some(_) => self.shape.iter().product::<u64>() as usize,
         }
     }
-    fn logical_shape(&self, t: &TensorSpec) -> Vec<u64> {
+    pub(crate) fn logical_shape(&self, t: &TensorSpec) -> Vec<u64> {
         if let Some(s) = &t.shape {
             return s.clone();
         }
@@ -1338,14 +1338,14 @@ fn compact_bytes(f: Format, dtype: &str, m: usize) -> usize {
 }
 
 /// The base of one tensor's per-element streams for one sample.
-fn stream_base(seed: u64, sample: u64, name: &str) -> u64 {
+pub(crate) fn stream_base(seed: u64, sample: u64, name: &str) -> u64 {
     let mut x =
         seed ^ sample.wrapping_mul(0xd1b5_4a32_d192_ed03) ^ special::hash_str(name).rotate_left(17);
     special::splitmix(&mut x)
 }
 
 /// The stream of element (or axis index) `i` under `base`.
-fn keyed(base: u64, i: u64) -> Rng {
+pub(crate) fn keyed(base: u64, i: u64) -> Rng {
     let mut x = base ^ i.wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(29);
     Rng::new(special::splitmix(&mut x))
 }
@@ -1380,6 +1380,18 @@ pub fn sample_with(
     layouts: &[Layout],
     idx: u64,
     plan: Option<&Plan>,
+) -> Result<Sample, String> {
+    sample_core(spec, layouts, idx, plan, None)
+}
+
+/// `sample_with`, with the real values (before quantization, compact order) of some buffers
+/// given instead of drawn (importance sampling, `is::sample_is`).
+pub(crate) fn sample_core(
+    spec: &Spec,
+    layouts: &[Layout],
+    idx: u64,
+    plan: Option<&Plan>,
+    over: Option<&BTreeMap<String, Vec<f64>>>,
 ) -> Result<Sample, String> {
     let mut out = BTreeMap::new();
     let mut clean = BTreeMap::new();
@@ -1425,12 +1437,22 @@ pub fn sample_with(
                     Some(k.iter().map(|&j| pairs[j][1]).collect::<Vec<f64>>()),
                 )
             }
-            _ => (
-                (0..m)
-                    .map(|j| real_value(t, elem(j), &shape, &strides, &bases))
-                    .collect::<Vec<f64>>(),
-                None,
-            ),
+            _ => match over.and_then(|o| o.get(&l.name)) {
+                Some(v) if v.len() == m => (v.clone(), None),
+                Some(v) => {
+                    return Err(format!(
+                        "{}: {} given real values for {m} drawn elements",
+                        l.name,
+                        v.len()
+                    ));
+                }
+                None => (
+                    (0..m)
+                        .map(|j| real_value(t, elem(j), &shape, &strides, &bases))
+                        .collect::<Vec<f64>>(),
+                    None,
+                ),
+            },
         };
         let bytes = if sparse.is_some() {
             compact_bytes(l.fmt, &l.dtype, m)

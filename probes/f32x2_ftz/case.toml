@@ -4,6 +4,7 @@ Probe (L-ROSETTA) for .ftz on packed f32x2 arithmetic: fma.{rn,rz,rm,rp}.ftz, ad
 sub.rn.ftz and mul.{rn,rp}.ftz .f32x2 (SASS FFMA2 / FADD2 / FMUL2 .FTZ with the rounding modes;
 kernel.ptx, gen.py) on products and sums at the normal range's lower edge, subnormal and edge
 operands. expected/ is GB200's output (sm_100a, ptxas 13.1, `ptxv hw` 2026-11-08)."""
+ptxas_toolkit = "13.0"
 ptx = "kernel.ptx"
 entry = "f32x2_ftz"
 arch = "sm_100a"

@@ -1,0 +1,53 @@
+name = "e_warpcoll_mask"
+description = """
+E-WARPCOLL: shfl.sync with a register member mask; each half-warp names its own half (lanes
+30-31 skip the shuffle and exit). shfl.sync waits only for non-exited lanes of its mask, so
+naming the exiting lanes is fine (EXITED). Reading a lane outside the mask is a fault (XSRC);
+masks of lanes executing together that disagree are a violation (OVERLAP; on the SASS front,
+where the mask is dropped, the half-warp reads a lane that does not execute the SHFL)."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "lanes 30-31 skip; masks name live lanes only"
+expect = ["clean"]
+marker = "@MASK"
+find = "0xffff0000"
+replace = "0x3fff0000"
+
+[[variants]]
+id = "EXITED"
+summary = "the high mask names lanes 30-31, which skip the shfl and exit (shfl.sync waits only for non-exited lanes)"
+expect = ["clean"]
+
+[[variants]]
+id = "XSRC"
+summary = "lane 15 reads lane 16, outside its mask"
+expect = ["fault"]
+marker = "@MASK"
+find = "0xffff0000"
+replace = "0x3fff0000"
+edits = [{ marker = "@SRC", find = "xor.b32 %r4, %r1, 1;", replace = "add.u32 %r4, %r1, 1;" }]
+
+[[variants]]
+id = "OVERLAP"
+summary = "the low mask also names lane 16: masks of executing lanes disagree"
+expect = ["violation"]
+expect_sass = ["deadlock", "fault"]
+marker = "@MASK"
+find = "0x0000ffff, 0xffff0000"
+replace = "0x0001ffff, 0x3fff0000"

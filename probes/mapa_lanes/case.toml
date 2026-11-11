@@ -35,4 +35,4 @@ marker = "@OOB"
 find = "setp.lt.u32     %p1, %r1, 2;"
 replace = "setp.lt.u32     %p1, %r1, 3;"
 expect = ["fault", "violation"]
-expect_sass = ["fault"]
+expect_sass = ["fault", "violation"]

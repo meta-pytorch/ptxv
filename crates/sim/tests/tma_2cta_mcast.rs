@@ -89,10 +89,22 @@ fn tma_2cta_mcast_both_fronts_match_gb300() {
         let case = config_case(&dir, c);
         for k in [
             ptxv_sass::load_cubin(&cubin, &case.m.entry).unwrap(),
-            ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap(),
+            ptxv_ptx::parse_kernel_for(
+                &ptx,
+                Some(&case.m.entry),
+                case.m
+                    .ptxas_toolkit
+                    .as_deref()
+                    .and_then(ptxv_ptx::toolkit_version),
+            )
+            .unwrap(),
         ] {
             let front = format!("{:?}", k.front);
-            let launch = build_launch(&case, &k).unwrap();
+            let mut launch = build_launch(&case, &k).unwrap();
+            // S-MBAR-SCOPE: on the PTX front the peer CTA's completion (commit / TMA
+            // complete-tx) waited at .cta scope is a contract finding (`ptxv check` reruns with
+            // it at the mbarrier's CTA); the output is checked under that rerun's model.
+            launch.async_mb_dest = k.front == ptxv_ir::Front::Ptx;
             let (m, findings, _) =
                 ptxv_sim::explore::run_once(Machine::new(Arc::new(k), Arc::new(launch)));
             assert!(findings.is_empty(), "{name} {front}: {findings:?}");

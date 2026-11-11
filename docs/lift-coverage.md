@@ -317,7 +317,7 @@ any modifier outside the audited set before an arm runs.
 | immediates | decimal float literals (`20.`, `1.0`, `.5e1`) and `0d` in `.f32` / `.f64` instructions | f64 value rounded to nearest even for .f32; `0f` raw, zero-extended in .f64 | probes/float_lit |
 | `FSETP.GEU \|a\|, +INF` + `IADD 0x1000` + `LOP3 & 0xffffe000` | `cvt.rna.tf32.f32` | ties-away round to 19 bits; Inf / NaN only masked | probes/cvt_tf32 |
 | `F2FP [.SATFINITE] [.RELU] .TF32.F32.PACK_B [.RZ]` | `cvt.rn` / `.rz [.relu] [.satfinite] .tf32.f32` | round off 13 bits (RN even / RZ); NaN -> 0x7fffe000; relu: negative -> +0; satfinite: Inf / overflow -> +-0x7f7fe000 | probes/cvt_tf32_rn |
-| (`CCTL.E.RML2`, refused) | `discard.global.L2 [a], 128` | weak stores of undefined data over the line (S-INIT) | probes/discard_l2 (PTX front) |
+| `CCTL.E.RML2 [Ra]` | `discard.global.L2 [a], 128` | weak stores of undefined data over the line (S-INIT): one 128-byte store of a never-written register on the SASS front | probes/discard_l2 (both fronts, race variant) |
 | `IMMA.16832.S8.S8.SAT` | `mma.sync.aligned.m16n8k32.row.col.satfinite.s32.s8.s8.s32` | exact integer sum, saturated to s32 (N-IMMA) | probes/imma_s8 |
 | `HMUL2.BF16_V2` | plain `mul.bf16` / `.bf16x2` reaching only stores, conversions, mma operands, multiplicands through packs / unpacks / prmt / shfl | .rn (ptxas cannot contract) | probes/bf16_sink |
 | `FMUL2` + `FADD2` apart | plain `mul.f32x2` halves repacked next to values not from the product (own lane or other); integer reads of the product (`shr`, `xor`, ...) | .rn (ptxas cannot contract; `{p.lo, p.hi}` refused) | probes/f32x2_repack |
@@ -389,6 +389,11 @@ any modifier outside the audited set before an arm runs.
 | `DSETP.<cmp>.AND` | `setp.<cmp>.f64` (all 14 compares; no p\|q, no combining predicate) | as SASS DSETP | probes/f64_dsetp |
 | `DSETP.{LE,LTU}.{AND,OR,XOR} Pd, PT, a, b, Pc` (b: register pair, uniform pair, immediate, RZ; `Pc`, `!Pc`, `PT`) | `setp.le.f64` / `setp.ltu.f64` with `and.pred` / `or.pred` / `xor.pred` (ptxas folds the pair; a lone one becomes `GTU` / `GE` with the use inverted) | IEEE f64 compare, `LE` false and `LTU` true on a NaN, combined with `Pc` (N-FALU); `.EQU` / `.NUM` stay refused | **probes/dsetp_ltu_le**: 58 shapes and 3 branches x 2048 records (every pair of 30 edge patterns, the predicate both ways), = an IEEE model, PTX and the recorded cubin bitwise |
 | `FSET.BF.NAN.AND Rd, a, b, Pc` (b: register, uniform register, immediate, RZ; `Pc`, `!Pc`, `PT`) | `set.nan[.and].f32.f32`; `setp.nan.f32` + `selp.f32 1.0, 0.0` | 1.0f when an operand is a NaN and `Pc` holds, else +0 (N-FALU); `.OR` / `.XOR` / `.FTZ` and FSET without `.BF` stay refused | **probes/fset_nan**: 12 shapes x 1024 records (every pair of 22 edge patterns, the predicate both ways), = a bit-level model, PTX and the recorded cubin bitwise |
+| `FSETP.<cmp>.<bop>` / `DSETP.<cmp>.<bop>` with a source predicate | `setp.<cmp>.<bop>.f32` / `.f64` `p[\|q], a, b, [!]c` | p = cmp bop c, q = !cmp bop c (f64 not probed) | probes/setp_bop |
+| `IMAD` (32-bit, the low half kept by `PRMT` / `LOP3`) | `mad.lo.s16` / `.u16` | low 16 bits of a * b + c | probes/mad_lo16 |
+| `UBLKPF.L2` | `cp.async.bulk.prefetch.L2.global.L2::cache_hint` | no-op after operand checks | - |
+| `CCTL.E.DML2 [Ra]` | `applypriority[.global].L2::evict_normal [a], 128` | no-op (L2 eviction priority) after operand checks | probes/applypriority |
+| `CCTL.E.PML2 [Ra]` | `prefetch.global.L2::evict_last [a]` | no-op (prefetch) after the address check | probes/applypriority |
 | `STTM` then `LDTM` on the same registers | - | the TMEM queue reads the store's registers first (L-OPREAD) | probes/sttm_ldtm |
 | `FENCE.VIEW.ASYNC.S` / `.G` / `.T` | `fence.proxy.async[.shared::*]` / `.global` / `tcgen05.wait::st` | each orders only its state space; `.G` covers no shared-memory check, `.T` is `tcgen05.wait::st` (S-PROXY) | probes/proxy_fence `global` |
 

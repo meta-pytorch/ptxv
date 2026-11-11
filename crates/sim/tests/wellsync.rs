@@ -92,14 +92,30 @@ fn kernel(case: &Case, variant: &str, front: &str) -> ptxv_ir::Kernel {
             .all_launches()
             .iter()
             .map(|l| match &c {
-                None => ptxv_ptx::parse_kernel(&ptx, Some(l.entry)).unwrap(),
+                None => ptxv_ptx::parse_kernel_for(
+                    &ptx,
+                    Some(l.entry),
+                    case.m
+                        .ptxas_toolkit
+                        .as_deref()
+                        .and_then(ptxv_ptx::toolkit_version),
+                )
+                .unwrap(),
                 Some(c) => ptxv_sass::load_cubin(c, l.entry).unwrap(),
             })
             .collect();
         return ptxv_ir::Kernel::concat(ks);
     }
     match front {
-        "ptx" => ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap(),
+        "ptx" => ptxv_ptx::parse_kernel_for(
+            &ptx,
+            Some(&case.m.entry),
+            case.m
+                .ptxas_toolkit
+                .as_deref()
+                .and_then(ptxv_ptx::toolkit_version),
+        )
+        .unwrap(),
         _ => {
             let c = cubin();
             ptxv_sass::scoreboard::patch_file(
@@ -144,7 +160,8 @@ const MUST_CERTIFY: &[(&str, &str, &str)] = &[
     ("r1c_cluster", "good", "sass"),
     ("r1c_2sm", "good", "sass"),
     // cta_group::2 M = 128 (Layout B) and M = 128 N = 8 (probes/tc_m128).
-    ("e_mma_pair_m128", "good", "ptx"),
+    // PTX e_mma_pair_m128: an S-MBAR-SCOPE contract finding (the leader's commit waited at
+    // .cta scope in the peer), which the certificate refuses.
     ("e_mma_pair_m128", "good", "sass"),
     ("e_mma_m128_n8", "good", "ptx"),
     ("e_mma_m128_n8", "good", "sass"),
@@ -428,7 +445,7 @@ fn certified_outputs_match_exploration() {
         ("e_elect", "good", "ptx"),
         ("e_sym", "good", "sass"),
         ("r1e_pdl", "good", "ptx"),
-        ("r1c_cluster", "good", "ptx"),
+        // (r1c_cluster PTX: now an S-MBAR-SCOPE contract finding, refused by the certificate.)
         ("s_alu", "good", "sass"),
         ("e_spin_smem", "good", "ptx"),
         ("r1f_pingpong", "good", "sass"),
@@ -902,4 +919,31 @@ fn desc_version_finding_does_not_break_the_certificate() {
         v.findings.iter().all(|f| f.kind != "violation"),
         "no violation"
     );
+}
+
+/// MISS 30 (C-WARP, found by the adversarial harness; GB300: 16 words differ in run 0 of
+/// every process): lanes that leave a loop after lane-dependent trip counts and are never
+/// reconverged (the BSYNC NOPed) were merged by the model at the next pc in the certificate's
+/// run; the merged split's lane-local instruction gave them one token, so the following STS /
+/// LDS exchange looked joined in every schedule. The certificate must refuse NOBSYNC and
+/// NOBSSY, which the explorer finds nondeterministic; good (ptxas's BSSY / BSYNC) certifies.
+#[test]
+fn merged_splits_are_not_converged() {
+    let case = Case::load(root().join("fixtures/e_lockstep_nobsync")).unwrap();
+    for v in ["good", "NOBSYNC", "NOBSSY"] {
+        let o = certify(machine(&case, v, "sass"));
+        match (v, o.verdict) {
+            ("good", Some(r)) => assert_eq!(r.classes(), ["clean"]),
+            ("good", None) => panic!("good does not certify: {:?}", o.reasons),
+            (_, Some(r)) => panic!("{v} certified: {:?}", r.classes()),
+            (_, None) => assert!(
+                o.reasons.iter().any(|r| r.contains("C-WARP")),
+                "{v}: {:?}",
+                o.reasons
+            ),
+        }
+        let e = ptxv_sim::explore::explore(machine(&case, v, "sass"), 1_000_000);
+        let want: Vec<String> = case.variant(v).unwrap().expect.clone();
+        assert!(e.complete && e.classes() == want, "{v}: {:?}", e.classes());
+    }
 }

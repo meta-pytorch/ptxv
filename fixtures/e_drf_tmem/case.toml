@@ -1,0 +1,43 @@
+name = "e_drf_tmem"
+description = """
+E-DRF for tensor memory (TMEM accesses are not scheduling points; races are found by vector
+clocks): warp 0 tcgen05.st's a column of lane quadrant 0, warp 4 tcgen05.ld's it after a
+barrier. good: clean. NOBAR (no barrier): the load races with the store. NOWAIT (no
+tcgen05.wait::st before the fence and barrier): clean, by S-TCGEN05's reading of the ISA (another
+thread sees a tcgen05.st through fence::before_thread_sync, a synchronization and
+fence::after_thread_sync; wait::st orders it for the storing thread's own later tcgen05 ops)."""
+ptx = "kernel.ptx"
+entry = "e_drf_tmem"
+grid = [1, 1, 1]
+block = [160, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "store, wait, barrier, load"
+expect = ["clean"]
+
+[[variants]]
+id = "NOBAR"
+summary = "barrier deleted"
+marker = "@BAR"
+replace = "<delete>"
+expect = ["race"]
+
+[[variants]]
+id = "NOWAIT"
+summary = "tcgen05.wait::st deleted: clean under S-TCGEN05 (the fences and the barrier publish the store)"
+marker = "@WAIT"
+replace = "<delete>"
+expect = ["clean"]
+hw_note = "GB300 200/200 bitwise, as good and NOBAR (ptxv hw, 2026-11-09)"

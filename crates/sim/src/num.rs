@@ -1068,7 +1068,14 @@ impl NumState {
     /// An exact max / min node of two nodes.
     fn max_node(&mut self, a: u32, b: u32, min: bool, pc: u32) -> u32 {
         let (ea, eb) = (&self.nodes[a as usize].exact, &self.nodes[b as usize].exact);
-        let a_big = exact::approx(&exact::sub(ea, eb)) >= 0.0;
+        // An infinite operand (Triton's running maximum starts at -inf) is not an expansion
+        // the exact difference handles (inf - inf components): compare the values themselves.
+        let (fa, fb) = (exact::approx(ea), exact::approx(eb));
+        let a_big = if fa.is_finite() && fb.is_finite() {
+            exact::approx(&exact::sub(ea, eb)) >= 0.0
+        } else {
+            fa >= fb
+        };
         let pick_a = a_big != min;
         let (ha, hb) = (
             f32::from_bits(self.nodes[a as usize].hw),
@@ -1581,10 +1588,11 @@ impl Machine {
         );
     }
 
-    /// Segment mode: FMNMX `d = min/max(a, b[, c])` of tracked values (no modifiers, FTZ or
-    /// NaN propagation; an input-independent min/max predicate): exact `Max` nodes.
-    /// `nan` (`FMNMX.NAN`): NaN-propagating, the same maximum where no operand is NaN; a node
-    /// only when every operand is non-NaN for every admissible input (N-FINITE).
+    /// FMNMX `d = min/max(a, b[, c])` of tracked values (no modifiers or FTZ; an
+    /// input-independent min/max predicate): exact `Max` nodes.
+    /// `nan` (`FMNMX.NAN`): NaN-propagating, the same maximum where no operand is NaN. Segment
+    /// mode: a node only when every operand is non-NaN for every admissible input (N-FINITE).
+    /// `ptxv num` (one run): a node only when no operand is NaN in this run, either form.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn num_fmnmx(
         &mut self,
@@ -1597,10 +1605,11 @@ impl Machine {
         pc: u32,
     ) {
         let Some(ns) = self.num.as_ref() else { return };
-        if !ns.segments || min.is_none() {
+        if min.is_none() || !ns.segments && bits.iter().any(|&b| f32::from_bits(b).is_nan()) {
             self.num_clobber(t, d, ops, pc);
             return;
         }
+        let segments = ns.segments;
         let mut nodes = Vec::new();
         for (v, &b) in ops.iter().zip(bits) {
             match self.num_node_mat(t, v) {
@@ -1631,7 +1640,7 @@ impl Machine {
             ns.set(t, d, None);
             return;
         }
-        if nan && !nodes.clone().into_iter().all(|n| ns.non_nan(n)) {
+        if segments && nan && !nodes.clone().into_iter().all(|n| ns.non_nan(n)) {
             self.num_clobber(t, d, ops, pc);
             return;
         }
@@ -2879,8 +2888,12 @@ impl Machine {
                 ));
             }
         }
+        let had_history = ns
+            .mem
+            .get(&key)
+            .is_some_and(|n| !ns.const_leaves.contains(n));
         let leaf = ns.leaf(scaled.to_bits(), pc);
-        if ns.segments {
+        if ns.segments || had_history {
             ns.nodes[leaf as usize].kind = NodeKind::Opaque;
         }
         ns.mem.insert(key, leaf);
@@ -4068,8 +4081,16 @@ pub struct OutRec {
     /// Running (a-posteriori) bound: sum over rounding nodes of u * |hw_v|.
     pub bound_running: f64,
     /// fp_noise Thm 1, checked exactly: hw - exact == sum of local errors. False when the
-    /// tree contains MUFU nodes (`n_mufu`), where the identity is only first-order.
+    /// tree contains MUFU nodes (`n_mufu`), where the identity is only first-order, and when
+    /// `untracked`.
     pub thm1_exact: bool,
+    /// An input-derived value reaches the output without a tracked derivation: an `Opaque`
+    /// leaf in the tree, or (set by the caller) an input-derived output word without a node.
+    /// `exact` then takes that value's simulated result as exact, so the error, Thm 1 and both
+    /// bounds are not claims about the output (N-NUM-TRACK).
+    pub untracked: bool,
+    /// Where the first such value entered the tree (the instruction that read it untracked).
+    pub untracked_pc: Option<u32>,
     /// MUFU / approx nodes in the tree: each contributes its own error bound (N-MUFU) plus
     /// its operand's bound times |f'| (first order).
     pub n_mufu: usize,
@@ -4111,6 +4132,8 @@ impl NumState {
                 bound_cor1a: 0.0,
                 bound_running: 0.0,
                 thm1_exact: true,
+                untracked: false,
+                untracked_pc: None,
                 n_mufu: 0,
                 n_leaves: 0,
                 n_roundings: 0,
@@ -4129,9 +4152,18 @@ impl NumState {
         // Absolute error terms (16-bit bulk sums below the normal range), grown to the root.
         let mut abs16 = 0.0f64;
         let hwabs = |n: u32| (f32::from_bits(self.nodes[n as usize].hw) as f64).abs();
+        let mut untracked = false;
+        let mut untracked_pc: Option<u32> = None;
         while let Some((n, g)) = stack.pop() {
             match &self.nodes[n as usize].kind {
-                NodeKind::Leaf | NodeKind::Opaque | NodeKind::Input(_) => {
+                NodeKind::Opaque => {
+                    // ASSUME(N-NUM-TRACK): an input-derived value whose derivation was dropped.
+                    untracked = true;
+                    let pc = self.nodes[n as usize].pc;
+                    untracked_pc = Some(untracked_pc.map_or(pc, |p| p.min(pc)));
+                    leaf_terms.push((hwabs(n), g));
+                }
+                NodeKind::Leaf | NodeKind::Input(_) => {
                     leaf_terms.push((hwabs(n), g));
                 }
                 NodeKind::Add(a, b, rz) => {
@@ -4211,8 +4243,14 @@ impl NumState {
                     mufu.push((n, g));
                     leaf_terms.push((hwabs(n), g));
                 }
+                NodeKind::Max { a, b, .. } => {
+                    // Exact, and |max(a', b') - max(a, b)| <= max(|a' - a|, |b' - b|): both
+                    // children's terms bound it (their sum). Thm 1 is not an identity through it.
+                    nonlin += 1;
+                    stack.push((*a, g));
+                    stack.push((*b, g));
+                }
                 NodeKind::Fma { .. }
-                | NodeKind::Max { .. }
                 | NodeKind::Seg(_)
                 | NodeKind::Sel { .. }
                 | NodeKind::Tf32 { .. } => {
@@ -4231,7 +4269,10 @@ impl NumState {
         for &n in &rnodes {
             sum_e = exact::add(&sum_e, &self.nodes[n as usize].err);
         }
-        let thm1 = mufu.is_empty() && nonlin == 0 && exact::is_zero(&exact::sub(&diff, &sum_e));
+        let thm1 = mufu.is_empty()
+            && nonlin == 0
+            && !untracked
+            && exact::is_zero(&exact::sub(&diff, &sum_e));
         let abs_err = exact::approx(&diff).abs();
         // ASSUME(N-MUFU): a MUFU node adds its own a-priori error bound and, to first order,
         // |f'(x)| times its operand's bounds; both are carried through the rounding nodes
@@ -4258,13 +4299,20 @@ impl NumState {
                 x = -x;
             }
             let sub = self.out_rec(index, child.hw, Some(arg));
+            untracked |= sub.untracked;
+            untracked_pc = untracked_pc.or(sub.untracked_pc);
             let fp = mufu_true_deriv(func, ptx, x).abs();
             let own = mufu_local_bound(func, ptx, x as f32, f32::from_bits(nd.hw));
             mufu_extra.0 += (own + fp * sub.bound_cor1a) * grow;
             mufu_extra.1 += (own + fp * sub.bound_running) * grow;
         }
-        let cor1a: f64 =
-            leaf_terms.iter().map(|&(m, g)| m * (g - 1.0)).sum::<f64>() + mufu_extra.0 + abs16;
+        let cor1a: f64 = leaf_terms
+            .iter()
+            // A term under no rounding adds nothing (also an infinite constant: max(-inf, x)).
+            .map(|&(m, g)| if g == 1.0 { 0.0 } else { m * (g - 1.0) })
+            .sum::<f64>()
+            + mufu_extra.0
+            + abs16;
         let running: f64 = rnodes
             .iter()
             .map(|&n| {
@@ -4307,6 +4355,8 @@ impl NumState {
             bound_cor1a: cor1a,
             bound_running: running,
             thm1_exact: thm1,
+            untracked,
+            untracked_pc,
             n_mufu: mufu.len(),
             n_leaves: leaf_terms.len(),
             abs_sum: leaf_terms.iter().map(|t| t.0).sum(),

@@ -1,0 +1,52 @@
+name = "c_exp_one"
+description = """
+Captured in process by ptxv.capture (python/ptxv). 1 launch(es), binary only (cubins from CUPTI), PTX in jit.ptx:
+  0: exp_one grid [1, 1, 1] block [32, 1, 1]
+One-element exp, Triton tl.exp on f32 (PTX: mul.f32 by 0f3FB8AA3B = log2(e), then
+ex2.approx.f32), x f32 [1] -> y f32 [1], 32 lanes with mask lane < 1; captured at x = 80 on a
+GB300. Importance-sampling known-answer test (crates/cli/tests/errdist_is.rs):
+x ~ N(80, 2), P(y non-finite) = 1 - Phi((t - 80) / 2) with t ~ 88.72."""
+cubin = "k0.cubin"
+ptxas_toolkit = "13.0"
+entry = "exp_one"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+dynamic_smem = 0
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [1]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+expect = "expected/y.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

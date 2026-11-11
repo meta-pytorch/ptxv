@@ -1,0 +1,25 @@
+// E-ALIGNED / E-BAR-EXIT control: two warps; lanes 0-15 of warp 0 exit early, the other 48
+// threads run bar.sync 1, 64 and then read warp 1 lane 0's store. GB300 200/200 bitwise.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry e_aligned_exit2(.param .u64 out)
+{
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd2, %r1, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    setp.lt.u32 %p1, %r1, 16;
+    @%p1 bra EARLY;
+    st.global.u32 [%rd3], 2;
+    bar.sync 1, 64;
+    ld.global.u32 %r2, [%rd1+128];
+    st.global.u32 [%rd3+256], %r2;
+    ret;
+EARLY:
+    st.global.u32 [%rd3], 1;
+    ret;
+}

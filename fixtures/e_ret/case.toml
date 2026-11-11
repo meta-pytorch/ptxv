@@ -1,0 +1,33 @@
+name = "e_ret"
+description = """
+E-RET: a non-inlined device function called from two sites (SASS CALL.REL.NOINC /
+RET.REL.NODEC). Binary-only: kernel.cubin is kernel.ptx through ptxas 13.0 (the PTX front has
+no `call`). Returns land right after their calls.
+good: clean. NOBAR: the barrier between thread 0's store and thread 32's read deleted: race."""
+cubin = "kernel.cubin"
+arch = "sm_103a"
+entry = "e_ret"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "the barrier orders the store and the read"
+expect = ["clean"]
+
+[[variants]]
+id = "NOBAR"
+summary = "BAR.SYNC at 0x90 NOPed"
+patch = [{ at = "@0x90", nop = true }]
+expect = ["race"]

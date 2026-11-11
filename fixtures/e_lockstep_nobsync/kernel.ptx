@@ -1,0 +1,37 @@
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry lockgap(.param .u64 out_p, .param .u32 n)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    .shared .align 4 .b32 s[32];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u32 %r20, [n];
+    mov.u32 %r1, %tid.x;
+    and.b32 %r2, %r1, 31;
+    shl.b32 %r3, %r2, 2;
+    mov.u32 %r4, s;
+    add.u32 %r5, %r4, %r3;
+    // lane-dependent trip count: odd lanes loop n times, even lanes once
+    and.b32 %r12, %r2, 1;
+    mul.lo.u32 %r13, %r12, %r20;
+    add.u32 %r13, %r13, 1;
+    mov.u32 %r6, 0;
+    mov.u32 %r7, %r2;
+LOOP:
+    mad.lo.u32 %r7, %r7, 1664525, 1013904223;
+    add.u32 %r6, %r6, 1;
+    setp.lt.u32 %p2, %r6, %r13;
+    @%p2 bra LOOP;
+    st.shared.u32 [%r5], %r7;
+    xor.b32 %r9, %r3, 4;
+    add.u32 %r10, %r4, %r9;
+    ld.shared.u32 %r11, [%r10];
+    mul.wide.u32 %rd2, %r2, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r11;
+    ret;
+}

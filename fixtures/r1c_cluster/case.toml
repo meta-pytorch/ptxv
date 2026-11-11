@@ -51,14 +51,16 @@ buffer = "D"
 [[variants]]
 id = "good"
 summary = "correct kernel"
-expect = ["clean"]
+expect = ["contract"]
+expect_sass = ["clean"]
 
 [[variants]]
 id = "B13"
 summary = "no final barrier.cluster: rank 1's last remote arrive can reach rank 0 after it exited"
 marker = "@B13"
 replace = "<delete>"
-expect = ["violation"]
+expect = ["contract", "violation"]
+expect_sass = ["violation"]
 hw_note = "cluster-lifetime UB: the late arrive lands in a CTA that has exited"
 
 [[variants]]
@@ -66,6 +68,6 @@ id = "B14"
 summary = "no fence.mbarrier_init.release.cluster before the relaxed cluster arrive"
 marker = "@B14"
 replace = "<delete>"
-expect = ["race"]
+expect = ["contract", "race"]
 expect_sass = ["clean"]
 hw_note = "PTX-level UB only: ptxas emits the same FENCE.VIEW.ASYNC.S ahead of the inits with or without the PTX fence (the binaries differ by one NOP)"

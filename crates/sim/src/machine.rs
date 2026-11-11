@@ -1125,6 +1125,11 @@ pub struct Thread {
     /// This thread has executed a fence.proxy.alias (S-MC-ALIAS: covers its strong accesses
     /// that observe another thread's strong write through the other view).
     pub alias_fenced: bool,
+    /// Proxy fences of this thread that order global memory (`fence.proxy.async.global` or
+    /// `fence.proxy.async`; SASS `FENCE.VIEW.ASYNC.G`, or `FENCE.VIEW.ASYNC.S` right after
+    /// `MEMBAR.ALL.GPU`), and its start after a stream-ordered previous grid, as for `fences`
+    /// (S-GPROXY).
+    pub gfences: Vec<VC>,
     /// Bulk groups committed so far (the open group's id).
     pub bulk_group: u32,
     /// The read scoreboard of each committed bulk group (SASS `UTMACMDFLUSH`'s rbar, by group
@@ -1144,6 +1149,25 @@ pub struct Thread {
     pub minit_vc: VC,
     /// Scope of the last release fence (with `membar_vc`).
     pub membar_scope: Scope,
+    /// Own clock at the last `fence.release.sync_restrict::shared::cta.cluster` (SASS: also
+    /// `MEMBAR.ALL.CTA`, its lowering): what a later relaxed cluster-scope mbarrier update
+    /// releases, for this CTA's shared memory only (S-MBAR-SCOPE).
+    pub srel_vc: VC,
+    /// `vc_sh` at the last release fence (with `membar_vc`) and at the last
+    /// `srel_vc` fence: what those release of shared-memory-only happens-before.
+    pub membar_sh: Vec<(Cover, VC)>,
+    pub srel_sh: Vec<(Cover, VC)>,
+    /// Happens-before that holds for shared-memory accesses only (`Cover::Smem` /
+    /// `SmemOf`): acquired through `fence.acquire.sync_restrict::shared::cluster`, a SASS
+    /// `SYNCS.PHASECHK`'s cluster-scope acquire, or a restricted release (S-MBAR-SCOPE).
+    pub vc_sh: Vec<(Cover, VC)>,
+    /// mbarrier phase updates observed by relaxed waits, not yet acquired: (writer, release
+    /// clock, release scope, cover) (S-MBAR-SCOPE).
+    pub acq_pending_mb: Vec<(u32, VC, Scope, Cover)>,
+    /// mbarrier updates of other CTAs this thread observed landing (a completed phase it
+    /// waited on), as clocks of their threads: S-CLUSTER-LIFE counts them as ordered before
+    /// this thread's exit even when the wait did not synchronize with them (S-MBAR-SCOPE).
+    pub landed: VC,
     /// Releases observed by relaxed strong loads, not yet acquired (a later acquire fence
     /// does): (writer, release clock, release scope).
     pub acq_pending: Vec<(u32, VC, Scope)>,
@@ -1209,6 +1233,69 @@ pub struct Warp {
     pub cp_seq: u32,
 }
 
+/// The memory a release or acquire covers (S-MBAR-SCOPE): everything; the SM-local memories
+/// (shared and tensor memory: what a SASS `SYNCS.PHASECHK` acquires from another CTA without
+/// the `CCTL.IVALL` that invalidates the L1 for global memory); shared memory only
+/// (`fence.acquire.sync_restrict::shared::cluster`); or one CTA's shared memory only
+/// (`fence.release.sync_restrict::shared::cta`, SASS `MEMBAR.ALL.CTA` before an arrive).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Cover {
+    All,
+    OnSm,
+    Smem,
+    SmemOf(u16),
+    /// Orders events but covers no memory: an mbarrier update a wait observed without
+    /// synchronizing with it (the certificate's phase determinism and the cluster lifetime
+    /// use it; the race detector does not).
+    Order,
+}
+
+impl Cover {
+    /// What both cover (None: nothing).
+    pub fn and(self, o: Cover) -> Option<Cover> {
+        match (self, o) {
+            (Cover::Order, _) | (_, Cover::Order) => Some(Cover::Order),
+            (Cover::All, x) | (x, Cover::All) => Some(x),
+            (Cover::OnSm, x) | (x, Cover::OnSm) => Some(x),
+            (Cover::Smem, x) | (x, Cover::Smem) => Some(x),
+            (Cover::SmemOf(a), Cover::SmemOf(b)) => (a == b).then_some(Cover::SmemOf(a)),
+        }
+    }
+
+    /// Does it cover an access to shared memory of CTA `c` (`None`: tensor memory)?
+    pub fn covers(self, c: Option<u16>) -> bool {
+        match (self, c) {
+            (Cover::Order, _) => false,
+            (Cover::All | Cover::OnSm, _) => true,
+            (Cover::Smem, Some(_)) => true,
+            (Cover::SmemOf(a), Some(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+/// One update of an mbarrier phase (arrive, expect_tx / complete_tx, an async unit's
+/// complete-tx or arrive) as a strong read-modify-write of the mbarrier, with what it
+/// releases. ASSUME(S-MBAR-SCOPE): a wait synchronizes with it only when the two are morally
+/// strong (each one's scope includes the other's thread) and the release's scope includes
+/// the waiter.
+#[derive(Clone, Debug, Hash)]
+pub struct MbRel {
+    /// CTA of the thread the update counts as performed by (scope inclusion).
+    pub cta: u16,
+    /// Scope of the update as a strong operation.
+    pub scope: Scope,
+    /// What it releases (empty for a relaxed update with no earlier release fence), at
+    /// which scope, covering which memory.
+    pub rel: VC,
+    pub rel_scope: Scope,
+    pub cover: Cover,
+    /// An async unit's completion (TMA, cp.async.bulk, st.async, tcgen05.commit, CLC),
+    /// attributed to its issuing thread (S-MBAR-SCOPE R-ISSUER; `Launch::async_mb_dest`
+    /// attributes it to the mbarrier's CTA instead).
+    pub asyncx: bool,
+}
+
 #[derive(Clone, Debug, Hash, Serialize)]
 pub struct Mbar {
     pub expected: u32,
@@ -1216,12 +1303,19 @@ pub struct Mbar {
     pub tx: i64,
     /// Index of the current (incomplete) phase.
     pub phase: u32,
+    /// Updates of the current phase (S-MBAR-SCOPE).
     #[serde(skip)]
-    pub cur: VC,
-    /// Clock of the most recent completion of a phase with parity 0 / 1. Parity 1 starts
-    /// as the init clock: `try_wait.parity 1` on phase 0 succeeds immediately.
+    pub cur: Vec<MbRel>,
+    /// Updates of the most recent completed phase with parity 0 / 1. Parity 1 starts as the
+    /// init: `try_wait.parity 1` on phase 0 succeeds immediately.
     #[serde(skip)]
-    pub done: [VC; 2],
+    pub done: [Vec<MbRel>; 2],
+    /// Clocks of the threads behind the current / completed phase's updates (a waiter that
+    /// observed the phase saw them land: cluster lifetime, `Thread::landed`).
+    #[serde(skip)]
+    pub cur_land: VC,
+    #[serde(skip)]
+    pub done_land: [VC; 2],
     #[serde(skip)]
     pub init: Epoch,
     #[serde(skip)]
@@ -1281,8 +1375,14 @@ pub struct Bar {
     /// Threads that arrived without waiting (`bar.arrive`) in the current generation, sorted;
     /// a repeated arrival is kept (counted twice, E-BAR-ARRIVE) and reported.
     pub arrivers: Vec<u32>,
+    /// SASS lanes guarded off at a `BAR` the rest of their warp executed (ASSUME(E-ALIGNED),
+    /// E-BAR-EXIT: a BAR arrives per warp), sorted: counted as arrived, neither waiting nor
+    /// releasing.
+    pub skipped: Vec<u32>,
     /// Join of the arrivers' clocks at their arrivals: released to the waiters.
     pub rel: VC,
+    /// Their shared-memory-only happens-before (`Thread::vc_sh`, S-MBAR-SCOPE).
+    pub rel_sh: Vec<(Cover, VC)>,
     /// Per waiter, sorted: its `bar.red` reduction (None: a plain `bar.sync`) and its
     /// contribution (E-BAR-RED).
     pub red: Vec<(u32, Option<ptxv_ir::BarRedOp>, bool)>,
@@ -1360,6 +1460,10 @@ pub enum AsyncKind {
         n: u32,
         store: Vec<(u32, u32)>,
         fresh: bool,
+        /// What the update releases (S-MBAR-SCOPE), fixed at issue.
+        rels: Vec<MbRel>,
+        /// The issuing lanes' own clocks at issue (S-CLUSTER-LIFE: landed when observed).
+        land: VC,
     },
     /// ASSUME(S-NIC-ORDER): QP `qp`'s NIC executes its oldest announced WQE (nic.rs).
     Nic { qp: u16 },
@@ -1387,6 +1491,9 @@ pub struct AsyncOp {
     pub kind: AsyncKind,
     /// The issuer's mbarrier-init visibility at issue (`Thread::vis`).
     pub vis: VC,
+    /// The issuer's shared-memory-only happens-before at issue (`Thread::vc_sh`): what the
+    /// operation's own shared-memory accesses are ordered after (S-MBAR-SCOPE).
+    pub sh: Vec<(Cover, VC)>,
 }
 
 /// A 2-D/N-D tiled tensor map (what cuTensorMapEncodeTiled was given). `base` may point
@@ -1552,6 +1659,12 @@ pub struct Launch {
     /// followed it (GB300's tcgen05 fences are NOPs). Never set from a case: `ptxv check`
     /// reruns a PTX check with TMEM-related races this way, and the hardware model uses it.
     pub tc_fence_implied: bool,
+    /// S-MBAR-SCOPE: an async unit's mbarrier completion (TMA, cp.async.bulk, st.async,
+    /// tcgen05.commit, CLC) counts as performed by a thread of the mbarrier's CTA instead of
+    /// its issuing thread. Never set from a case: `ptxv check` reruns a PTX check with races
+    /// this way, and a race that is gone becomes a contract finding (the PTX ISA does not say
+    /// which thread performs the complete-tx).
+    pub async_mb_dest: bool,
     /// Refuted assumptions this launch was explicitly allowed to use (case `assume_refuted`,
     /// `--assume-refuted`, `PTXV_ASSUME_REFUTED`) and does use.
     pub refuted_opt_in: Vec<String>,
@@ -1665,8 +1778,12 @@ pub struct ClusterBar {
     /// relaxed ones), and what they made visible of mbarrier inits.
     pub rel: VC,
     pub vis: VC,
+    /// Shared-memory-only happens-before the arrivals released (S-MBAR-SCOPE).
+    pub rel_sh: Vec<(Cover, VC)>,
     /// Completed generations still awaited by someone: (gen, rel, vis).
     pub done: Vec<(u32, VC, VC)>,
+    /// Their `rel_sh`, by generation.
+    pub done_sh: Vec<(u32, Vec<(Cover, VC)>)>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, serde::Deserialize)]
@@ -1815,6 +1932,9 @@ pub struct Machine {
     /// E-HW-WEAK-FLAG: the store being published is a weak flag store (publish the clock at
     /// the thread's last sys-scope fence, not its whole history).
     pub weak_pub: bool,
+    /// Not hashed, transient: the `AsyncOp::sh` of the async operation completing now
+    /// (S-MBAR-SCOPE).
+    pub cur_sh: Vec<(Cover, VC)>,
     /// Not hashed: some multimem.ld_reduce lane of this run returned the nearest-even
     /// neighbour of a sum whose rounding direction on GB300 is not modeled (N-MULTIMEM).
     pub mc_inexact: bool,
@@ -1837,7 +1957,7 @@ pub struct Machine {
     pub stale: Option<Option<u32>>,
     /// S-INIT: the bytes of the shared / global store running that hold undefined bits (bit i =
     /// byte i of its data; `Sh::undef` per byte).
-    pub wundef: u64,
+    pub wundef: u128,
     /// S-INIT: global stores of undefined data (allocation, offset, bytes, pc), checked at
     /// terminal states (`exit_checks`); an index into `Sh::undef`, not part of the state hash.
     pub gundef: Arc<Vec<(usize, u64, u32, u32)>>,
@@ -2474,6 +2594,7 @@ impl Machine {
                     alias_fences: vec![],
                     alias_pending: vec![],
                     alias_fenced: false,
+                    gfences: vec![],
                     bulk_group: 0,
                     bulk_sb: Vec::new(),
                     bulk_done: vec![],
@@ -2482,6 +2603,12 @@ impl Machine {
                     membar_vc: VC::new(),
                     minit_vc: VC::new(),
                     membar_scope: Scope::Sys,
+                    srel_vc: VC::new(),
+                    membar_sh: vec![],
+                    srel_sh: vec![],
+                    vc_sh: vec![],
+                    acq_pending_mb: vec![],
+                    landed: VC::new(),
                     acq_pending: vec![],
                     acq_view: VC::new(),
                     cl_arrived: None,
@@ -2553,6 +2680,7 @@ impl Machine {
             red16: Default::default(),
             mc_view: false,
             weak_pub: false,
+            cur_sh: vec![],
             mc_inexact: false,
             gown: None,
             mma_cache: Default::default(),
@@ -2625,8 +2753,10 @@ impl Machine {
                         pending: 1,
                         tx: 0,
                         phase: 0,
-                        cur: VC::new(),
-                        done: [VC::new(), VC::new()],
+                        cur: vec![],
+                        done: [vec![], vec![]],
+                        cur_land: VC::new(),
+                        done_land: [VC::new(), VC::new()],
                         init: Epoch {
                             actor: 0,
                             clock: 0,

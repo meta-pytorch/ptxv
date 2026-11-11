@@ -1,0 +1,30 @@
+GB300, CUDA 13.0 (driver 580), 152 SMs, 2026-11-09. handoff.cu, 76 test clusters of 2 per launch,
+2000 rounds per cluster unless noted. "stale": the consumer read the slot's initial value
+(0xffffffff) after its wait returned; "future" never occurred. P = weak remote stores to scratch
+before the slot store; S = consumer spin after the wait; noise = all other warps of both CTAs
+store into the peer's scratch for the whole run.
+
+Run 1 (20 launches = 3,040,000 hand-offs per line; P in {0,16,64}, S in {0,200}, noise in {0,1}):
+  v=0 PFC  (st; fence.proxy.async.shared::cluster; arrive.release.cta; acquire.cta): 0 stale in all 12
+  v=1 NOF  (st; arrive.release.cta; acquire.cta):
+      P=0  S=0 noise=0: 38   P=0  S=200 noise=0: 15   P=16 S=0 noise=0: 35   other 9 configs: 0
+  v=2 PCTA (st; fence.proxy.async.shared::cta; arrive.release.cta; acquire.cta):
+      P=0  S=0 noise=0: 38   P=0  S=200 noise=0: 17   P=16 S=0 noise=0: 26   other 9 configs: 0
+  v=5 FEN  (st; fence.acq_rel.cluster; arrive.release.cta; acquire.cta): 0 in all 12
+  v=3 CLU  (st; arrive.release.cluster; acquire.cluster): 0 in all 12
+  v=4 STA  (expect_tx.relaxed.cluster + st.async complete_tx; acquire.cluster): 0 in all 12
+
+Run 2 (first bad round logged):
+  v=1 P=0 S=0, 20 launches: 40 stale, 40 clusters, every one at round 0
+  v=2 P=0 S=0, 20 launches: 40 stale, 40 clusters, every one at round 0
+  v=0 P=0/4/16, 200 launches each (30,400,000 hand-offs each): 0;  20000 rounds x 40 launches
+      (60,800,000): 0
+  v=5 same four configurations: 0
+  v=3, v=4 P=0, 200 launches each: 0
+
+Totals with 0 stale: v=0 about 1.9e8 hand-offs, v=5 about 1.9e8, v=3 and v=4 about 6.7e7 each.
+
+SASS (ptxas 13.0 lowering of each form, S-MBAR-SCOPE): v=0 is ST.E; MEMBAR.ALL.GPU; FENCE.VIEW.ASYNC.S;
+SYNCS.ARRIVE.TRANS64.RED.A1T0; v=2 has MEMBAR.ALL.CTA in place of MEMBAR.ALL.GPU; v=1 has no
+fence. The stale read on GB200 of the v=0 sequence was reported by others and is not
+reproduced here.

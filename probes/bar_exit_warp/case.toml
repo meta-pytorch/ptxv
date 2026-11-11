@@ -24,13 +24,19 @@ buffer = "out"
 [[variants]]
 id = "half"
 summary = "lanes 16-31 of warp 0 exit; 16 + 32 survivors run bar.sync 1, 64 (AB3)"
-expect = ["clean"]
+# PTX contract: an aligned barrier after part of the warp exited (non-uniform control;
+# 2026-11-09, MISS 37). SASS and GB300: the half-exited warp arrives as a whole warp.
+expect = ["violation"]
+expect_sass = ["clean"]
 hw_note = "GB300 completes (ptxv probe, 2026-11-05)"
 
 [[variants]]
 id = "both_half"
 summary = "lanes 16-31 of warps 0 and 1 exit; 16 + 16 survivors run bar.sync 1, 64"
-expect = ["clean"]
+# PTX contract: an aligned barrier after part of the warp exited (non-uniform control;
+# 2026-11-09, MISS 37). SASS and GB300: the half-exited warp arrives as a whole warp.
+expect = ["violation"]
+expect_sass = ["clean"]
 hw_note = "GB300 completes (ptxv probe, 2026-11-05)"
 marker = "@KEEP1"
 find = "%r4, 32"
@@ -39,7 +45,10 @@ replace = "%r4, 16"
 [[variants]]
 id = "one_lane"
 summary = "lanes 1-31 of warp 0 exit; 1 + 32 survivors run bar.sync 1, 64"
-expect = ["clean"]
+# PTX contract: an aligned barrier after part of the warp exited (non-uniform control;
+# 2026-11-09, MISS 37). SASS and GB300: the half-exited warp arrives as a whole warp.
+expect = ["violation"]
+expect_sass = ["clean"]
 hw_note = "GB300 completes (ptxv probe, 2026-11-05)"
 marker = "@KEEP0"
 find = "%r4, 16"
@@ -48,7 +57,10 @@ replace = "%r4, 1"
 [[variants]]
 id = "half_alone"
 summary = "lanes 16-31 of warp 0 and all of warp 1 exit; 16 survivors run bar.sync 1, 32"
-expect = ["clean"]
+# PTX contract: an aligned barrier after part of the warp exited (non-uniform control;
+# 2026-11-09, MISS 37). SASS and GB300: the half-exited warp arrives as a whole warp.
+expect = ["violation"]
+expect_sass = ["clean"]
 hw_note = "GB300 completes (ptxv probe, 2026-11-05)"
 edits = [
   { marker = "@KEEP1", find = "%r4, 32", replace = "%r4, 0" },
@@ -59,7 +71,10 @@ edits = [
 [[variants]]
 id = "half_short"
 summary = "lanes 16-31 of warp 0 and all of warp 2 exit; 16 + 32 survivors run bar.sync 1, 96"
-expect = ["deadlock"]
+# PTX contract: an aligned barrier after part of the warp exited (non-uniform control;
+# 2026-11-09, MISS 37). SASS and GB300: the half-exited warp arrives as a whole warp.
+expect = ["deadlock", "violation"]
+expect_sass = ["deadlock"]
 hw_note = "GB300 hangs (ptxv probe, 2026-11-05)"
 edits = [
   { marker = "@BARW0", find = "1, 64", replace = "1, 96" },
@@ -69,7 +84,10 @@ edits = [
 [[variants]]
 id = "half_full96"
 summary = "lanes 16-31 of warp 0 exit; 16 + 32 + 32 survivors run bar.sync 1, 96"
-expect = ["clean"]
+# PTX contract: an aligned barrier after part of the warp exited (non-uniform control;
+# 2026-11-09, MISS 37). SASS and GB300: the half-exited warp arrives as a whole warp.
+expect = ["violation"]
+expect_sass = ["clean"]
 hw_note = "GB300 completes (ptxv probe, 2026-11-05)"
 edits = [
   { marker = "@KEEP2", find = "%r4, 0", replace = "%r4, 32" },
@@ -80,7 +98,10 @@ edits = [
 [[variants]]
 id = "half_arrive"
 summary = "lanes 16-31 of warp 0 exit; the 16 survivors bar.arrive 1, 64, warp 1 bar.sync 1, 64"
-expect = ["clean"]
+# PTX contract: an aligned barrier after part of the warp exited (non-uniform control;
+# 2026-11-09, MISS 37). SASS and GB300: the half-exited warp arrives as a whole warp.
+expect = ["violation"]
+expect_sass = ["clean"]
 hw_note = "GB300 completes (ptxv probe, 2026-11-05)"
 marker = "@BARW0"
 find = "bar.sync"

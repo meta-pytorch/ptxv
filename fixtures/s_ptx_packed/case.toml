@@ -8,6 +8,7 @@ operands whose registers are not consecutive, setmaxnreg.{inc,dec}. 256 threads 
 div.s32 of INT_MIN / -1, no zero divisor: that is a fault on the PTX front-end). expected/out.bin
 is the output GB300 wrote (run 2026-11-06, GPU 3, 50/50 runs); tests/fixtures.rs also checks its
 FNV-1a hash."""
+ptxas_toolkit = "13.0"
 ptx = "kernel.ptx"
 entry = "s_ptx_packed"
 grid = [1, 1, 1]

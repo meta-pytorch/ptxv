@@ -1,0 +1,45 @@
+name = "e_lockstep_nobsync"
+description = """
+E-LOCKSTEP / E-BSYNC: lanes leave a loop after lane-dependent trip counts (odd lanes n
+iterations, even lanes one), then each lane stores s[lane] and reads s[lane ^ 1] with no
+__syncwarp. ptxas reconverges the loop with BSSY.RECONVERGENT / BSYNC.RECONVERGENT, so the
+exchange runs converged (good). NOBSYNC: the BSYNC NOPed: nothing reconverges the warp, so the
+early lanes may run ahead and read their neighbour's slot before it is written. Binary-only:
+kernel.cubin is kernel.ptx through ptxas 13.0 (-arch=sm_103a)."""
+cubin = "kernel.cubin"
+arch = "sm_103a"
+entry = "lockgap"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 2000
+
+[[variants]]
+id = "good"
+summary = "BSYNC reconverges the warp before the exchange"
+expect = ["clean"]
+
+[[variants]]
+id = "NOBSYNC"
+summary = "BSYNC.RECONVERGENT at 0x1e0 NOPed"
+patch = [{ at = "@0x1e0", nop = true }]
+expect = ["nondeterministic", "violation"]
+
+[[variants]]
+id = "NOBSSY"
+summary = "BSSY.RECONVERGENT at 0x40 NOPed (the BSYNC waits for an empty mask)"
+patch = [{ at = "@0x40", nop = true }]
+expect = ["nondeterministic", "violation"]

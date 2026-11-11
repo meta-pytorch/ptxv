@@ -5,6 +5,7 @@ for threads 16..31, add.rn.f32x2, unpack; storing lane 0 is clean, lane 1 is rep
 PTX virtual registers were defined or undefined as a whole (CuTeDSL
 FlashAttentionBackwardPreprocess 1x1x16384, PTX front: undef-insensitive where SASS is
 clean)."""
+ptxas_toolkit = "13.0"
 ptx = "kernel.ptx"
 entry = "uninit_f32x2_lanes"
 grid = [1, 1, 1]

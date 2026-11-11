@@ -347,6 +347,11 @@ enum Cmd {
         /// applicability check passes, else tier 3.
         #[arg(long)]
         tier1: bool,
+        /// Importance sampling: also run Tier 3 with inputs from this proposal (JSON,
+        /// docs/errdist.md §5.4.1), reported apart from the plain estimate and only when its
+        /// gates pass.
+        #[arg(long, value_name = "FILE")]
+        is: Option<PathBuf>,
         /// Accepted for compatibility (Tier 1 is opt-in now: --tier1).
         #[arg(long, hide = true)]
         no_tier1: bool,
@@ -836,6 +841,14 @@ fn load_with(
         format!("{variant}.delayed")
     };
     let mut ks = Vec::new();
+    // The ptxas whose lowering the PTX front models (PTX-FMAD-X2-VERSION): the case's
+    // ptxas_toolkit, else the registry toolkit that rebuilds it; never the ambient default.
+    let toolkit = case
+        .m
+        .ptxas_toolkit
+        .as_deref()
+        .and_then(ptxv_ptx::toolkit_version)
+        .or_else(|| ptxv_sass::registry_toolkit(&ptx, None));
     for l in case.m.all_launches() {
         if l.cubin.is_some() {
             bail!(
@@ -844,7 +857,7 @@ fn load_with(
             );
         }
         ks.push(match front {
-            "ptx" => ptxv_ptx::parse_kernel(&ptx, Some(l.entry))?,
+            "ptx" => ptxv_ptx::parse_kernel_for(&ptx, Some(l.entry), toolkit)?,
             "sass" => ptxv_sass::load_cubin(&cubin, l.entry)?,
             f => bail!("unknown front {f}"),
         });
@@ -1662,6 +1675,11 @@ fn cmd_check(
                 ptxv_sim::twolevel::tc_fence_contract(&mut verdict, &m1, &mut |m| {
                     check(&|| m.clone(), "tcgen05 fences implied: ")
                 });
+                // ASSUME(S-MBAR-SCOPE): races ordered once async mbarrier completions count as
+                // the mbarrier CTA's are contract deviations.
+                ptxv_sim::twolevel::mbar_async_contract(&mut verdict, &m1, &mut |m| {
+                    check(&|| m.clone(), "async completions at the mbarrier's CTA: ")
+                });
             }
             let births = if nonfinite.is_some() {
                 ptxv_sim::nonfinite::take()
@@ -2167,10 +2185,36 @@ fn cmd_check(
     Ok(rows)
 }
 
+/// The spacing of the bf16 (`f16`: f16) grid just above |x| (x: the 16-bit value widened to
+/// f32 bits); the smallest subnormal at 0.
+fn ulp16(bits: u32, f16: bool) -> f64 {
+    let x = (f32::from_bits(bits) as f64).abs();
+    if f16 {
+        // 10 fraction bits; subnormal spacing 2^-24 below 2^-14.
+        let e = if x < 2f64.powi(-14) {
+            -14
+        } else {
+            x.log2().floor() as i32
+        };
+        2f64.powi(e - 10)
+    } else {
+        // bf16: f32's exponent range, 7 fraction bits.
+        ptxv_sim::num::ulp_f32(f32::from_bits(bits)) * 65536.0
+    }
+}
+
 #[derive(Serialize)]
 struct NumSummary {
     front: String,
+    /// The output buffer this summary covers (every output gets one).
+    output: String,
     outputs: usize,
+    /// Elements whose error is a claim. The others (`untracked`) have an input-derived value
+    /// without a tracked derivation in their tree: the fields below cover the analyzed ones.
+    analyzed: usize,
+    untracked: usize,
+    /// Why no element of this output was analyzed (e.g. not an f32 buffer).
+    refused: Option<String>,
     thm1_all_exact: bool,
     spec_all_match: Option<bool>,
     cor1a_never_violated: bool,
@@ -2227,91 +2271,274 @@ fn cmd_num_with(
             Err(e) => return Err(e),
         };
         let mut m = machine(case, k)?;
-        m.num = Some(Box::new(ptxv_sim::num::NumState::with_mma_eps(
-            m.launch.mma_model.eps(),
-        )));
-        let (m, findings, ok) = run_once(m);
+        let mut ns = ptxv_sim::num::NumState::with_mma_eps(m.launch.mma_model.eps());
+        // ASSUME(N-NUM-TRACK): input-derived values are tainted, so a value whose rounding
+        // history is dropped becomes an `Opaque` leaf (or an untracked output word), never an
+        // exact constant.
+        // Input elements stay exact `Input` leaves (as in equiv, ASSUME(N-HALF-LEAF)).
+        for &o in &m.launch.outputs {
+            if equiv::out_only(case, &m.launch.allocs[o].name) {
+                ns.not_inputs.insert(o);
+            }
+            // bf16 / f16 outputs: one value per 16-bit element, its node from the 16-bit
+            // provenance (ASSUME(N-HALF-LEAF, N-ROUND)), as equiv reads them.
+            let name = &m.launch.allocs[o].name;
+            match case
+                .m
+                .buffers
+                .iter()
+                .find(|b| &b.name == name)
+                .map(|b| b.dtype.as_str())
+            {
+                Some("bf16") => {
+                    ns.half.bf16_outputs.insert(o);
+                    ns.half.track = true;
+                }
+                Some("f16") => {
+                    ns.half.f16_outputs.insert(o);
+                    ns.half.track = true;
+                }
+                _ => {}
+            }
+        }
+        for (i, a) in m.launch.allocs.iter().enumerate() {
+            if equiv::out_only(case, &a.name) {
+                continue;
+            }
+            ns.taint.taint_alloc(i, a.init.len());
+            match case
+                .m
+                .buffers
+                .iter()
+                .find(|b| b.name == a.name)
+                .map(|b| b.dtype.as_str())
+            {
+                Some("f32") => {
+                    ns.f32_inputs.insert(i);
+                }
+                Some("bf16") => {
+                    ns.half.inputs.insert(i, ptxv_sim::halfin::Half::Bf16);
+                }
+                Some("f16") => {
+                    ns.half.inputs.insert(i, ptxv_sim::halfin::Half::F16);
+                }
+                Some("u8" | "u16" | "e4m3") => {
+                    ns.half.inputs.insert(i, ptxv_sim::halfin::Half::Byte);
+                }
+                _ => {}
+            }
+        }
+        m.num = Some(Box::new(ns));
+        let (mut m, findings, ok) = run_once(m);
         if !ok {
             bail!("numerics run of {variant} ({f}) did not terminate cleanly: {findings:?}");
         }
+        m.half_out_leaves();
         note_ref_faults(&format!("numerics run of {variant} ({f})"), &findings);
-        let ns = m.num.as_ref().unwrap();
-        let oi = m.launch.outputs[0];
-        let mem = &m.gmem[oi];
-        let n = mem.bytes.len() / 4;
-        std::fs::write(dir.join(format!("{variant}.{f}.num.out.bin")), m.outputs())?;
-        let mut recs = Vec::new();
-        let mut spec_ok = true;
-        for i in 0..n {
-            let bits = u32::from_le_bytes([0, 1, 2, 3].map(|j| *mem.bytes.get(i * 4 + j)));
-            let node = ns.mem_node(ptxv_sim::exec::Loc::Global {
-                alloc: oi,
-                off: (i * 4) as u64,
+        // A run that faulted or hit a model limit did not execute the kernel as the hardware
+        // does (a faulting thread stops): its outputs carry no numerics claim (N-NUM-TRACK).
+        let broken = findings
+            .iter()
+            .find(|x| x.kind == "fault" || x.kind == "unmodeled")
+            .map(|x| {
+                let msg = x.msg.lines().next().unwrap_or("");
+                format!("the numerics run reported {}: {msg}", x.kind)
             });
-            let r = ns.out_rec(i, bits, node);
-            if let Some(s) = &spec {
-                let ex = node
-                    .map(|nd| ns.nodes[nd as usize].exact.clone())
-                    .unwrap_or_else(|| ptxv_sim::exact::from(f32::from_bits(bits) as f64));
-                spec_ok &= ptxv_sim::exact::is_zero(&ptxv_sim::exact::sub(&ex, &s[i]));
-            }
-            recs.push(r);
-        }
-        let mut csv = String::from(
-            "index,hw,exact,abs_err,rel_err,err_ulps,bound_cor1a,bound_running,thm1_exact,n_leaves,n_roundings\n",
-        );
-        for r in &recs {
-            csv += &format!(
-                "{},{:e},{:e},{:e},{:e},{},{:e},{:e},{},{},{}\n",
-                r.index,
-                r.hw,
-                r.exact,
-                r.abs_err,
-                r.rel_err,
-                r.err_ulps,
-                r.bound_cor1a,
-                r.bound_running,
-                r.thm1_exact,
-                r.n_leaves,
-                r.n_roundings
-            );
-        }
-        std::fs::write(dir.join(format!("{variant}.{f}.num{suffix}.csv")), csv)?;
-        std::fs::write(
-            dir.join(format!("{variant}.{f}.num{suffix}.json")),
-            serde_json::to_string(&recs)?,
-        )?;
-        let nz: Vec<&_> = recs.iter().filter(|r| r.abs_err > 0.0).collect();
-        let s = NumSummary {
-            front: f.into(),
-            outputs: n,
-            thm1_all_exact: recs.iter().all(|r| r.thm1_exact),
-            spec_all_match: spec.as_ref().map(|_| spec_ok),
-            cor1a_never_violated: recs.iter().all(|r| r.abs_err <= r.bound_cor1a),
-            running_never_violated: recs.iter().all(|r| r.abs_err <= r.bound_running),
-            max_abs_err: recs.iter().map(|r| r.abs_err).fold(0.0, f64::max),
-            max_err_ulps: recs.iter().map(|r| r.err_ulps).fold(0.0, f64::max),
-            mean_cor1a_over_err: if nz.is_empty() {
-                0.0
+        let ns = m.num.as_ref().unwrap();
+        std::fs::write(dir.join(format!("{variant}.{f}.num.out.bin")), m.outputs())?;
+        let warnings: Vec<String> = ns.warnings.iter().cloned().collect();
+        let output_hash = format!("{:016x}", fnv(&m.outputs()));
+        for (oslot, &oi) in m.launch.outputs.iter().enumerate() {
+            let oname = m.launch.allocs[oi].name.clone();
+            // Per-output file names; the first output keeps the historical names.
+            let osfx = if oslot == 0 {
+                suffix.clone()
             } else {
-                nz.iter().map(|r| r.bound_cor1a / r.abs_err).sum::<f64>() / nz.len() as f64
-            },
-            warnings: ns.warnings.iter().cloned().collect(),
-            output_hash: format!("{:016x}", fnv(&m.outputs())),
-        };
-        println!(
-            "num {variant} {f:<4}: outputs={} thm1_exact={} spec_match={:?} cor1a_ok={} running_ok={} max_err={:.3e} ({:.2} ulp) bound/err(mean)={:.1} out={}",
-            s.outputs,
-            s.thm1_all_exact,
-            s.spec_all_match,
-            s.cor1a_never_violated,
-            s.running_never_violated,
-            s.max_abs_err,
-            s.max_err_ulps,
-            s.mean_cor1a_over_err,
-            s.output_hash
-        );
-        for w in &s.warnings {
+                format!("{suffix}.{oname}")
+            };
+            let mem = &m.gmem[oi];
+            let dtype = case
+                .m
+                .buffers
+                .iter()
+                .find(|b| b.name == oname)
+                .map(|b| b.dtype.clone())
+                .unwrap_or_default();
+            // Element size: f32, or bf16 / f16 (values widened to f32, errors in that format's
+            // ulps).
+            let es = match dtype.as_str() {
+                "f32" => 4,
+                "bf16" | "f16" => 2,
+                _ => 0,
+            };
+            let refusal = broken.clone().or_else(|| {
+                (es == 0 || mem.bytes.len() % es != 0).then(|| {
+                    format!(
+                        "output {oname} is a {dtype} buffer of {} bytes; num analyzes f32, bf16 and f16 elements only",
+                        mem.bytes.len()
+                    )
+                })
+            });
+            if let Some(why) = refusal {
+                println!("num {variant} {f:<4}: output={oname} NOT ANALYZED: {why}");
+                sums.push(NumSummary {
+                    front: f.into(),
+                    output: oname,
+                    outputs: 0,
+                    analyzed: 0,
+                    untracked: 0,
+                    refused: Some(why),
+                    thm1_all_exact: false,
+                    spec_all_match: None,
+                    cor1a_never_violated: false,
+                    running_never_violated: false,
+                    max_abs_err: f64::NAN,
+                    max_err_ulps: f64::NAN,
+                    mean_cor1a_over_err: f64::NAN,
+                    warnings: warnings.clone(),
+                    output_hash: output_hash.clone(),
+                });
+                continue;
+            }
+            let n = mem.bytes.len() / es;
+            let mut recs = Vec::new();
+            let mut spec_ok = true;
+            let half = es == 2;
+            let f16 = dtype == "f16";
+            for i in 0..n {
+                let (bits, node) = if half {
+                    let h = u16::from_le_bytes([0, 1].map(|j| *mem.bytes.get(i * 2 + j)));
+                    let bits = if f16 {
+                        ptxv_sim::elementwise::f16_to_f32_bits(h)
+                    } else {
+                        (h as u32) << 16
+                    };
+                    (bits, m.half_out_node(oi, i as u64, f16))
+                } else {
+                    let bits = u32::from_le_bytes([0, 1, 2, 3].map(|j| *mem.bytes.get(i * 4 + j)));
+                    let node = ns.mem_node(ptxv_sim::exec::Loc::Global {
+                        alloc: oi,
+                        off: (i * 4) as u64,
+                    });
+                    (bits, node)
+                };
+                let mut r = ns.out_rec(i, bits, node);
+                if half {
+                    r.err_ulps = r.abs_err / ulp16(bits, f16);
+                }
+                if node.is_none()
+                    && (0..es).any(|b| {
+                        ns.taint
+                            .memory_unit_input_derived((1, oi as u64, (i * es + b) as u64))
+                    })
+                {
+                    r.untracked = true;
+                    r.thm1_exact = false;
+                }
+                if oslot == 0 && !half {
+                    if let Some(s) = &spec {
+                        let ex = node
+                            .map(|nd| ns.nodes[nd as usize].exact.clone())
+                            .unwrap_or_else(|| ptxv_sim::exact::from(f32::from_bits(bits) as f64));
+                        spec_ok &= !r.untracked
+                            && ptxv_sim::exact::is_zero(&ptxv_sim::exact::sub(&ex, &s[i]));
+                    }
+                }
+                recs.push(r);
+            }
+            let mut csv = String::from(
+                "index,hw,exact,abs_err,rel_err,err_ulps,bound_cor1a,bound_running,thm1_exact,n_leaves,n_roundings,untracked\n",
+            );
+            for r in &recs {
+                csv += &format!(
+                    "{},{:e},{:e},{:e},{:e},{},{:e},{:e},{},{},{},{}\n",
+                    r.index,
+                    r.hw,
+                    r.exact,
+                    r.abs_err,
+                    r.rel_err,
+                    r.err_ulps,
+                    r.bound_cor1a,
+                    r.bound_running,
+                    r.thm1_exact,
+                    r.n_leaves,
+                    r.n_roundings,
+                    r.untracked
+                );
+            }
+            std::fs::write(dir.join(format!("{variant}.{f}.num{osfx}.csv")), csv)?;
+            std::fs::write(
+                dir.join(format!("{variant}.{f}.num{osfx}.json")),
+                serde_json::to_string(&recs)?,
+            )?;
+            let ok: Vec<&_> = recs.iter().filter(|r| !r.untracked).collect();
+            let nz: Vec<&_> = ok.iter().filter(|r| r.abs_err > 0.0).copied().collect();
+            let s = NumSummary {
+                front: f.into(),
+                output: oname.clone(),
+                outputs: n,
+                analyzed: ok.len(),
+                untracked: n - ok.len(),
+                refused: None,
+                thm1_all_exact: !ok.is_empty() && ok.iter().all(|r| r.thm1_exact),
+                spec_all_match: (oslot == 0 && !half)
+                    .then_some(())
+                    .and(spec.as_ref())
+                    .map(|_| spec_ok),
+                cor1a_never_violated: ok.iter().all(|r| r.abs_err <= r.bound_cor1a),
+                running_never_violated: ok.iter().all(|r| r.abs_err <= r.bound_running),
+                max_abs_err: ok.iter().map(|r| r.abs_err).fold(0.0, f64::max),
+                max_err_ulps: ok.iter().map(|r| r.err_ulps).fold(0.0, f64::max),
+                mean_cor1a_over_err: if nz.is_empty() {
+                    0.0
+                } else {
+                    nz.iter().map(|r| r.bound_cor1a / r.abs_err).sum::<f64>() / nz.len() as f64
+                },
+                warnings: warnings.clone(),
+                output_hash: output_hash.clone(),
+            };
+            let oname_note = if m.launch.outputs.len() > 1 {
+                format!("output={oname} ")
+            } else {
+                String::new()
+            };
+            // The earliest instruction that read an untracked input-derived value (none: the
+            // output words themselves were written untracked).
+            let first = recs
+                .iter()
+                .filter_map(|r| r.untracked_pc)
+                .min()
+                .map(|pc| format!("; first read untracked at {}", m.k.describe(pc as usize)))
+                .unwrap_or_default();
+            if s.untracked == n {
+                println!(
+                    "num {variant} {f:<4}: {oname_note}outputs={n} NOT ANALYZED: every element depends on an input-derived value whose rounding history was dropped (no error claim{first})"
+                );
+            } else {
+                let partial = if s.untracked > 0 {
+                    format!(
+                        " NOT ANALYZED for {} of {n} (rounding history dropped{first}); over the {} analyzed:",
+                        s.untracked, s.analyzed
+                    )
+                } else {
+                    String::new()
+                };
+                println!(
+                    "num {variant} {f:<4}: {oname_note}outputs={}{partial} thm1_exact={} spec_match={:?} cor1a_ok={} running_ok={} max_err={:.3e} ({:.2} ulp) bound/err(mean)={:.1} out={}",
+                    s.outputs,
+                    s.thm1_all_exact,
+                    s.spec_all_match,
+                    s.cor1a_never_violated,
+                    s.running_never_violated,
+                    s.max_abs_err,
+                    s.max_err_ulps,
+                    s.mean_cor1a_over_err,
+                    s.output_hash
+                );
+            }
+            sums.push(s);
+        }
+        for w in &warnings {
             println!("    warning: {w}");
         }
         std::fs::write(
@@ -2319,7 +2546,6 @@ fn cmd_num_with(
             m.outputs(),
         )?;
         outs.push(m.outputs());
-        sums.push(s);
     }
     if outs.len() == 2 {
         if outs[0] != outs[1] {
@@ -2710,12 +2936,17 @@ fn cmd_suite(case: &Case, runs: usize, out: &Option<PathBuf>) -> Result<()> {
             hs.map(|h| h.outcome.clone()).unwrap_or_default()
         );
     }
-    md += "\n## Numerics (good variant)\n\n| front | outputs | Thm 1 exact | matches spec | Cor 1a never violated | running bound never violated | max error | max ulp | mean Cor1a/err |\n|---|---|---|---|---|---|---|---|---|\n";
+    md += "\n## Numerics (good variant)\n\nRows cover the analyzed elements only; untracked elements have no error claim.\n\n| front | output | elements | analyzed | Thm 1 exact | matches spec | Cor 1a never violated | running bound never violated | max error | max ulp | mean Cor1a/err |\n|---|---|---|---|---|---|---|---|---|---|---|\n";
     for n in &nums {
         md += &format!(
-            "| {} | {} | {} | {:?} | {} | {} | {:.3e} | {:.2} | {:.1} |\n",
+            "| {} | {} | {} | {} | {} | {:?} | {} | {} | {:.3e} | {:.2} | {:.1} |\n",
             n.front,
+            n.output,
             n.outputs,
+            match &n.refused {
+                Some(why) => format!("none: {why}"),
+                None => n.analyzed.to_string(),
+            },
             n.thm1_all_exact,
             n.spec_all_match,
             n.cor1a_never_violated,
@@ -3046,6 +3277,7 @@ fn run() -> Result<()> {
             errstate,
             tier1,
             no_tier1,
+            is,
         } => errdist::cmd(&errdist::Args {
             path,
             inputs,
@@ -3065,6 +3297,7 @@ fn run() -> Result<()> {
             uniform,
             errstate,
             tier1: tier1 && !no_tier1,
+            is,
         })?,
         Cmd::Compare {
             reference,

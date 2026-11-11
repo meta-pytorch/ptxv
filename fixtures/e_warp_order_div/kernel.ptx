@@ -1,0 +1,49 @@
+// E-WARP-ORDER: program order between lanes holds only while the warp is converged. As the
+// diverge control of probes/warp_order: lane 0 (writer) and lane 1 (reader) run their loops on
+// the two sides of a lane-dependent branch, so the warp is diverged for both loops and the
+// reader may see any of the writer's values (GB300: 99.98% of checks see another iteration's
+// value). The reader records what it saw.
+//   good: diverged loops, no synchronization: race (PTX) / nondeterministic (SASS).
+//   CONV: the writer's stores and the reader's loads issued by the converged warp on
+//         consecutive instructions (no branch): program order, deterministic on SASS.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_warp_order_div(.param .u64 out_p)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    .shared .align 4 .b32 x;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, x;
+    mov.u32 %r3, 0;
+    st.shared.u32 [%r2], %r3;
+    bar.warp.sync -1;
+    setp.eq.u32 %p1, %r1, 0;
+    setp.eq.u32 %p2, %r1, 1;
+    mov.u32 %r10, 1;
+    mov.u32 %r11, 2;
+    mov.u32 %r12, 0;
+    mov.u32 %r13, 0;
+    @%p1 bra WRITER;                     // @DIV1
+    @%p2 bra READER;                     // @DIV2
+    bra JOIN;
+WRITER:
+    st.volatile.shared.u32 [%r2], %r10;
+    st.volatile.shared.u32 [%r2], %r11;
+    bra JOIN;
+READER:
+    ld.volatile.shared.u32 %r12, [%r2];
+    ld.volatile.shared.u32 %r13, [%r2];
+JOIN:
+    bar.warp.sync -1;
+    @!%p2 bra DONE;
+    st.global.u32 [%rd1], %r12;
+    st.global.u32 [%rd1+4], %r13;
+DONE:
+    ret;
+}

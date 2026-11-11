@@ -1,0 +1,26 @@
+// E-ALIGNED / E-BAR-EXIT: lanes 0-15 of the warp store and exit; lanes 16-31 store, then execute
+// bar.sync 0 (barrier.sync.aligned) in non-uniform control. ptxas predicates the barrier
+// (`@P0 BAR.SYNC 0x0; @P0 EXIT`): the whole warp reaches the BAR, lanes 0-15 guarded off.
+// GB300 completes (ptxv hw 200/200 plain and 200/200 scrubbed, 2026-11-09).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_aligned_exit(.param .u64 out)
+{
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd2, %r1, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    setp.lt.u32 %p1, %r1, 16;
+    @%p1 bra EARLY;
+    st.global.u32 [%rd3], 2;
+    bar.sync 0;
+    ret;
+EARLY:
+    st.global.u32 [%rd3], 1;
+    ret;
+}

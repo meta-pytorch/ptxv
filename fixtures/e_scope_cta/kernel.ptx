@@ -1,0 +1,38 @@
+// S-SCOPE: a release / acquire pair synchronizes only when each one's scope includes the other
+// thread. CTA 0 stores data and releases a flag; CTA 1 polls the flag with acquire loads and then
+// reads the data.
+//   good: .gpu scope on both: clean.
+//   CTAREL: the release at .cta scope (CTA 1 is outside it): the data read races.
+//   CTAACQ: the acquire at .cta scope: the data read races.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_scope_cta(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, %ctaid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra DONE;
+    setp.ne.u32 %p2, %r2, 0;
+    @%p2 bra READER;
+    mov.u32 %r3, 7;
+    st.global.u32 [%rd1+4], %r3;
+    mov.u32 %r4, 1;
+    st.release.gpu.global.u32 [%rd1+8], %r4;        // @REL
+    bra DONE;
+READER:
+POLL:
+    ld.acquire.gpu.global.u32 %r5, [%rd1+8];        // @ACQ
+    setp.eq.u32 %p3, %r5, 0;
+    @%p3 bra POLL;
+    ld.global.u32 %r6, [%rd1+4];
+    st.global.u32 [%rd1], %r6;
+DONE:
+    ret;
+}

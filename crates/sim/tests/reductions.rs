@@ -35,7 +35,15 @@ fn machine(case: &Case, variant: &str, front: &str) -> Machine {
     std::fs::create_dir_all(&dir).unwrap();
     let ptx = case.variant_ptx(variant).unwrap();
     let k = match front {
-        "ptx" => ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap(),
+        "ptx" => ptxv_ptx::parse_kernel_for(
+            &ptx,
+            Some(&case.m.entry),
+            case.m
+                .ptxas_toolkit
+                .as_deref()
+                .and_then(ptxv_ptx::toolkit_version),
+        )
+        .unwrap(),
         _ => {
             let p = dir.join("k.ptx");
             std::fs::write(&p, &ptx).unwrap();

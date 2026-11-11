@@ -1,0 +1,4 @@
+{"name": "dot-hist", "alpha": 0.2,
+ "description": "a and b: histogram tilt toward the upper half, 0.49 / 0.51",
+ "tensors": {"a": {"elems": {"histogram": {"edges": [0.0, 0.5, 1.0], "probs": [0.49, 0.51]}}},
+             "b": {"elems": {"histogram": {"edges": [0.0, 0.5, 1.0], "probs": [0.49, 0.51]}}}}}

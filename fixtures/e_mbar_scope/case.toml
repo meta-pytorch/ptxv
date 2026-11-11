@@ -1,0 +1,100 @@
+name = "e_mbar_scope"
+description = """
+S-MBAR-SCOPE: a 2-CTA tile-id hand-off through a remote mbarrier arrive. Rank 0 stores the id
+into rank 1's shared memory and arrives on rank 1's mbarrier; rank 1 waits and reads the id.
+The arrive and the wait synchronize only when they are morally strong (both at cluster scope);
+a .cta-scoped arrive or wait across CTAs completes the phase but orders nothing."""
+ptx = "kernel.ptx"
+entry = "e_mbar_scope"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "weak remote store, .release.cluster remote arrive, .acquire.cluster wait"
+expect = ["clean"]
+
+[[variants]]
+id = "PFC"
+summary = "weak remote store, fence.proxy.async.shared::cluster, .release.cta remote arrive, .acquire.cta wait (a stale read of this sequence was reported on GB200)"
+marker = "@ARRIVE"
+find = "mbarrier.arrive.release.cluster"
+replace = "fence.proxy.async.shared::cluster; mbarrier.arrive.release.cta"
+expect = ["race"]
+# SASS: ST.E; MEMBAR.ALL.CTA; MEMBAR.ALL.GPU; FENCE.VIEW.ASYNC.S; SYNCS.ARRIVE.TRANS64.RED.A1T0:
+# no CGAERRBAR before the arrive, so the remote store can land after it (S-REMOTE-INFLIGHT).
+expect_sass = ["race"]
+edits = [{ marker = "@WAIT", find = "acquire.cluster", replace = "acquire.cta" }]
+
+[[variants]]
+id = "PFCW"
+summary = ".release.cta remote arrive, .acquire.cluster wait"
+marker = "@ARRIVE"
+find = "release.cluster"
+replace = "release.cta"
+expect = ["race"]
+expect_sass = ["race"]
+
+[[variants]]
+id = "PFCA"
+summary = ".release.cluster remote arrive, .acquire.cta wait"
+marker = "@WAIT"
+find = "acquire.cluster"
+replace = "acquire.cta"
+expect = ["race"]
+expect_sass = ["clean"]
+# SASS: ptxas: MEMBAR.ALL.CTA; MEMBAR.ALL.GPU; ERRBAR; CGAERRBAR before the arrive; the .acquire.cta wait is a bare SYNCS.PHASECHK, which is also ptxas's lowering of try_wait.relaxed.cluster + fence.acquire.sync_restrict::shared::cluster.cluster (a cluster-scope acquire of shared memory): the SASS is that of a PTX-correct hand-off
+
+[[variants]]
+id = "FEN"
+summary = "fence.acq_rel.cluster, then a .release.cta remote arrive; .acquire.cta wait"
+marker = "@ARRIVE"
+find = "mbarrier.arrive.release.cluster"
+replace = "fence.acq_rel.cluster; mbarrier.arrive.release.cta"
+expect = ["race"]
+expect_sass = ["clean"]
+# SASS: ptxas: MEMBAR.ALL.CTA; MEMBAR.ALL.GPU; ERRBAR; CGAERRBAR; CCTL.IVALL; SYNCS.ARRIVE.TRANS64.RED.A1T0 and a bare SYNCS.PHASECHK: the release is the SASS of a .release.cluster arrive, the wait that of a relaxed cluster wait + fence.acquire.sync_restrict::shared::cluster
+edits = [{ marker = "@WAIT", find = "acquire.cluster", replace = "acquire.cta" }]
+
+[[variants]]
+id = "FRC"
+summary = "fence.acq_rel.cluster, then a .relaxed.cta remote arrive; .acquire.cluster wait"
+marker = "@ARRIVE"
+find = "mbarrier.arrive.release.cluster"
+replace = "fence.acq_rel.cluster; mbarrier.arrive.relaxed.cta"
+# PTX: the release pattern's strong write (the .cta-scoped arrive) is not morally strong with
+# the other CTA's wait (8.7, 8.8). SASS: the arrive is a bare SYNCS.ARRIVE (a cluster-scope
+# update) after MEMBAR.ALL.GPU; ERRBAR; CGAERRBAR: the SASS of a PTX-correct release pattern.
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "STA"
+summary = "arrive.expect_tx.relaxed.cluster + st.async complete_tx, .acquire.cluster wait"
+marker = "@STORE"
+find = "st.shared::cluster.u32 [%r6], %r8;"
+replace = "mbarrier.arrive.expect_tx.relaxed.cluster.shared::cluster.b64 _, [%r7], 4; st.async.shared::cluster.mbarrier::complete_tx::bytes.b32 [%r6], %r8, [%r7];"
+expect = ["clean"]
+edits = [{ marker = "@ARRIVE", replace = "<delete>" }]
+
+[[variants]]
+id = "STAC"
+summary = "as STA with an .acquire.cta wait: the complete-tx is the issuing thread's"
+marker = "@STORE"
+find = "st.shared::cluster.u32 [%r6], %r8;"
+replace = "mbarrier.arrive.expect_tx.relaxed.cluster.shared::cluster.b64 _, [%r7], 4; st.async.shared::cluster.mbarrier::complete_tx::bytes.b32 [%r6], %r8, [%r7];"
+expect = ["contract"]
+expect_sass = ["clean"]
+edits = [{ marker = "@ARRIVE", replace = "<delete>" }, { marker = "@WAIT", find = "acquire.cluster", replace = "acquire.cta" }]

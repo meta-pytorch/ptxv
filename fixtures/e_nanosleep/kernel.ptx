@@ -1,0 +1,31 @@
+// E-NANOSLEEP: nanosleep is a timing hint, not synchronization. Thread 32 sleeps 1 ms and then
+// reads what thread 0 stores right away: GB300 reads 7 in practice, but nothing orders the two
+// accesses, so it is a race (the model, where the sleep is a no-op, explores both orders).
+//   good: sleep, no barrier: race.  BAR: a bar.sync between the store and the read: clean.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_nanosleep(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra SLEEP;
+    mov.u32 %r2, 7;
+    st.global.u32 [%rd1+4], %r2;
+SLEEP:
+    setp.eq.u32 %p2, %r1, 32;
+    @%p2 nanosleep.u32 1000000;
+    // @BAR
+    setp.ne.u32 %p3, %r1, 32;
+    @%p3 bra DONE;
+    ld.global.u32 %r3, [%rd1+4];
+    st.global.u32 [%rd1], %r3;
+DONE:
+    ret;
+}

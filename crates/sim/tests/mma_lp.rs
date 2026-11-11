@@ -22,7 +22,11 @@ fn root() -> PathBuf {
 }
 
 fn run(case: &Case, k: ptxv_ir::Kernel) -> (Vec<u8>, Vec<String>) {
-    let launch = build_launch(case, &k).unwrap();
+    let mut launch = build_launch(case, &k).unwrap();
+    // S-MBAR-SCOPE: on the PTX front a peer CTA's completion (commit / TMA complete-tx)
+    // waited at .cta scope is a contract finding (`ptxv check` reruns with it at the
+    // mbarrier's CTA); outputs are compared under that rerun's model.
+    launch.async_mb_dest = k.front == ptxv_ir::Front::Ptx;
     let m = Machine::new(Arc::new(k), Arc::new(launch));
     let (m, findings, _) = ptxv_sim::explore::run_once(m);
     (
@@ -65,7 +69,15 @@ fn mma_f8_both_fronts_match_gb300() {
         }
         let hw = std::fs::read(exp.join(format!("{name}.D.bin"))).unwrap();
         for k in [
-            ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap(),
+            ptxv_ptx::parse_kernel_for(
+                &ptx,
+                Some(&case.m.entry),
+                case.m
+                    .ptxas_toolkit
+                    .as_deref()
+                    .and_then(ptxv_ptx::toolkit_version),
+            )
+            .unwrap(),
             ptxv_sass::load_cubin(&cubin, &case.m.entry).unwrap(),
         ] {
             let front = format!("{:?}", k.front);
@@ -141,7 +153,15 @@ fn mma_bs_configs(sub: &str, count: usize) {
         }
         let hw = std::fs::read(exp.join(sub).join(format!("{name}.D.bin"))).unwrap();
         for k in [
-            ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap(),
+            ptxv_ptx::parse_kernel_for(
+                &ptx,
+                Some(&case.m.entry),
+                case.m
+                    .ptxas_toolkit
+                    .as_deref()
+                    .and_then(ptxv_ptx::toolkit_version),
+            )
+            .unwrap(),
             ptxv_sass::load_cubin(&cubin, &case.m.entry).unwrap(),
         ] {
             let front = format!("{:?}", k.front);
@@ -185,7 +205,15 @@ fn pair_block_scaled_mma_and_cp_match_gb300() {
         ptxv_sass::ptxas(&p, &cubin, &case.m.arch).unwrap();
         let hw = std::fs::read(case.dir.join(format!("expected/{out}.bin"))).unwrap();
         for k in [
-            ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap(),
+            ptxv_ptx::parse_kernel_for(
+                &ptx,
+                Some(&case.m.entry),
+                case.m
+                    .ptxas_toolkit
+                    .as_deref()
+                    .and_then(ptxv_ptx::toolkit_version),
+            )
+            .unwrap(),
             ptxv_sass::load_cubin(&cubin, &case.m.entry).unwrap(),
         ] {
             let front = format!("{:?}", k.front);

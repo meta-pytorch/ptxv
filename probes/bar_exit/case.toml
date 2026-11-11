@@ -30,7 +30,10 @@ summary = "lanes 16-31 of warp 1 exit; warp 0 and lanes 0-15 of warp 1 run bar.s
 marker = "@EXIT"
 find = "%r1, 32"
 replace = "%r1, 48"
-expect = ["clean"]
+# PTX contract: an aligned barrier after part of the warp exited (non-uniform control;
+# 2026-11-09, MISS 37). SASS and GB300: the half-exited warp arrives as a whole warp.
+expect = ["violation"]
+expect_sass = ["clean"]
 hw_note = "GB300 completes (probe 2026-10-30)"
 
 [[variants]]

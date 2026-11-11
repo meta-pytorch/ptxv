@@ -22,7 +22,11 @@ buffer = "out"
 
 [[variants]]
 id = "good"
-expect = ["clean"]
+# PTX: the .release.cta arm and the peer's cluster-scope complete-tx share a phase; when the
+# arm is the phase's last update, the release chain to the .acquire.cluster wait breaks
+# (S-MBAR-SCOPE, contract). SASS: the arm is SYNCS.ARRIVE, a cluster-scope update.
+expect = ["contract"]
+expect_sass = ["clean"]
 hw_note = "GB300 matches the simulator bitwise, 200/200 (2026-11-05)"
 
 [[variants]]

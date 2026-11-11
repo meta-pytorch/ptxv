@@ -1,0 +1,46 @@
+// E-CLOCK: clock reads return 0 in the model, so a timeout never fires. Thread 32 polls a flag
+// with a clock64 timeout and, when the timeout fires, reads the data without the flag: a
+// read that races with thread 0's store, and on GB300 reads the old value whenever thread 0 is
+// slower than the bound (thread 0 sleeps 200 us first; E-NANOSLEEP makes that a no-op in the
+// model).
+//   good: timeout 2000 cycles: GB300 takes the timeout path (out[0] = 0, not 7).
+//   NOTIMEOUT: the timeout branch deleted: correct (out[0] = 7).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_clock_timeout(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra READER;
+    nanosleep.u32 200000;
+    mov.u32 %r2, 7;
+    st.global.u32 [%rd1+4], %r2;
+    mov.u32 %r3, 1;
+    st.release.gpu.global.u32 [%rd1+8], %r3;
+    bra DONE;
+READER:
+    setp.ne.u32 %p2, %r1, 32;
+    @%p2 bra DONE;
+    mov.u64 %rd2, %clock64;
+POLL:
+    ld.acquire.gpu.global.u32 %r4, [%rd1+8];
+    setp.ne.u32 %p3, %r4, 0;
+    @%p3 bra READ;
+    mov.u64 %rd3, %clock64;
+    sub.s64 %rd4, %rd3, %rd2;
+    setp.gt.s64 %p4, %rd4, 2000;
+    @%p4 bra READ;                       // @TIMEOUT
+    bra POLL;
+READ:
+    ld.global.u32 %r5, [%rd1+4];
+    st.global.u32 [%rd1], %r5;
+DONE:
+    ret;
+}

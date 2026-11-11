@@ -1,0 +1,66 @@
+// probes/setp_bop: setp.<cmp>.<bop>.f32 p, a, b, [!]c (p = cmp(a, b) <bop> c; SASS FSETP.<cmp>.<bop>)
+// for ordered and unordered compares (NaN operands included), with and without a negated
+// combining predicate, and one .ftz form on subnormals. 256 threads; a, b = in[2 t .. 2 t + 1]
+// (gen.py: equal pairs, NaNs, signed zeros, subnormals, random words); c = bit 0 of t.
+// out[t] bit i: form i of kernel.ptx's list, in order.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry setp_bop(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .pred  %p<16>;
+    .reg .b32   %r<32>;
+    .reg .f32   %f<4>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 8;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.v2.f32 {%f1, %f2}, [%rd4];
+    and.b32         %r2, %r1, 1;
+    setp.ne.u32     %p1, %r2, 0;
+    mov.u32         %r10, 0;
+    setp.equ.and.f32 %p2, %f1, %f2, %p1;
+    selp.u32        %r3, 1, 0, %p2;
+    or.b32          %r10, %r10, %r3;
+    setp.equ.and.f32 %p2, %f1, %f2, !%p1;
+    selp.u32        %r3, 2, 0, %p2;
+    or.b32          %r10, %r10, %r3;
+    setp.eq.or.f32 %p2, %f1, %f2, %p1;
+    selp.u32        %r3, 4, 0, %p2;
+    or.b32          %r10, %r10, %r3;
+    setp.ltu.xor.f32 %p2, %f1, %f2, %p1;
+    selp.u32        %r3, 8, 0, %p2;
+    or.b32          %r10, %r10, %r3;
+    setp.neu.and.f32 %p2, %f1, %f2, %p1;
+    selp.u32        %r3, 16, 0, %p2;
+    or.b32          %r10, %r10, %r3;
+    setp.gtu.or.f32 %p2, %f1, %f2, !%p1;
+    selp.u32        %r3, 32, 0, %p2;
+    or.b32          %r10, %r10, %r3;
+    setp.num.and.f32 %p2, %f1, %f2, %p1;
+    selp.u32        %r3, 64, 0, %p2;
+    or.b32          %r10, %r10, %r3;
+    setp.nan.xor.f32 %p2, %f1, %f2, !%p1;
+    selp.u32        %r3, 128, 0, %p2;
+    or.b32          %r10, %r10, %r3;
+    setp.lt.and.f32 %p2, %f1, %f2, %p1;
+    selp.u32        %r3, 256, 0, %p2;
+    or.b32          %r10, %r10, %r3;
+    setp.equ.and.ftz.f32 %p2, %f1, %f2, %p1;
+    selp.u32        %r3, 512, 0, %p2;
+    or.b32          %r10, %r10, %r3;
+    mul.wide.u32    %rd5, %r1, 4;
+    add.s64         %rd6, %rd2, %rd5;
+    st.global.u32   [%rd6], %r10;
+    ret;
+}

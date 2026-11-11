@@ -1,0 +1,52 @@
+// probes/f32x2_bare: f32x2 products in registers named without `%` (CuTe DSL inline asm:
+// `mul.rn.f32x2 Z, G, NALPHA`), at kernel scope (Y, W) and inside an inline-asm scope (Z).
+// 256 threads; x = in[4 t .. 4 t + 1], y = in[4 t + 2 .. 4 t + 3] as f32x2 (in.bin =
+// probes/f32x2_unpack's: products near -y, random words). Plain mul / add.f32x2 (no rounding
+// modifier: ptxas 13.0 and 13.3 contract them alike). out[12 t ..]: 0, 1: x * y + y with the
+// product in Y (read only by the add: FFMA2); 2, 3: the same inside a scope, product Z; 4, 5:
+// W = {x.lo, x.lo} * y, stored (so FMUL2 + FADD2); 6, 7: W + y; 8..11: y, x.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry f32x2_bare(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<16>;
+    .reg .b64   Y, W, V;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 16;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.v4.f32 {%r2, %r3, %r4, %r5}, [%rd4];
+    mul.wide.u32    %rd5, %r1, 48;
+    add.s64         %rd6, %rd2, %rd5;
+    mov.b64         %rd7, {%r2, %r3};
+    mov.b64         %rd8, {%r4, %r5};
+    mul.f32x2       Y, %rd7, %rd8;
+    add.f32x2       %rd9, Y, %rd8;
+    st.global.b64   [%rd6], %rd9;
+    {
+    .reg .b64 Z;
+    mov.b64         %rd12, {%r3, %r2};
+    mul.f32x2       Z, %rd12, %rd8;
+    add.f32x2       %rd10, Z, %rd8;
+    }
+    st.global.b64   [%rd6+8], %rd10;
+    mov.b64         %rd13, {%r2, %r2};
+    mul.f32x2       W, %rd13, %rd8;
+    add.f32x2       V, W, %rd8;
+    st.global.b64   [%rd6+16], W;
+    st.global.b64   [%rd6+24], V;
+    st.global.b64   [%rd6+32], %rd8;
+    st.global.b64   [%rd6+40], %rd7;
+    ret;
+}

@@ -5,6 +5,7 @@ both, with .rz on both, without modifiers into two adds; not with the product al
 with different rounding modes; an add of two muls; a debug label between (kernel.ptx,
 gen.py). expected/ is GB300's output (kernel.cubin
 = ptxas -arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptxas_toolkit = "13.0"
 ptx = "kernel.ptx"
 entry = "fmad2"
 grid = [1, 1, 1]

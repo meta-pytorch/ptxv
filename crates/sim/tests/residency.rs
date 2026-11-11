@@ -25,7 +25,15 @@ fn root() -> PathBuf {
 fn machine(case: &Case, variant: &str, front: &str) -> Machine {
     let ptx = case.variant_ptx(variant).unwrap();
     let k = match front {
-        "ptx" => ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap(),
+        "ptx" => ptxv_ptx::parse_kernel_for(
+            &ptx,
+            Some(&case.m.entry),
+            case.m
+                .ptxas_toolkit
+                .as_deref()
+                .and_then(ptxv_ptx::toolkit_version),
+        )
+        .unwrap(),
         _ => {
             // Tests run in parallel and may build the same (case, variant): a counter keeps
             // each build's directory distinct.

@@ -1,0 +1,37 @@
+// S-MBAR-MEM: ptxas lowers a per-lane mbarrier.init (a register address) to a plain STS.64 of
+// the encoded state word plus SYNCS.CCTL.IVALL; the SASS front decodes the word (expected
+// count, initial phase) at the barrier's first use. Lanes of warp 0 each init bar[lane] with
+// count 2; thread t and t + 32 arrive on bar[t % 32] and wait for phase 0.
+//   good: count 2: clean.
+//   COUNT3: count 3: phase 0 never completes: deadlock.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry e_mbar_sts64(.param .u64 out_p)
+{
+    .shared .align 8 .b64 bar[32];
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, bar;
+    and.b32 %r5, %r1, 31;
+    shl.b32 %r5, %r5, 3;
+    add.u32 %r2, %r2, %r5;
+    setp.ge.u32 %p1, %r1, 32;
+    @%p1 bra SKIP;
+    mbarrier.init.shared::cta.b64 [%r2], 2;     // @COUNT
+SKIP:
+    bar.sync 0;
+    mbarrier.arrive.shared::cta.b64 %rd2, [%r2];
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r2], 0;
+    @!%p2 bra WAIT;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.u64 %rd4, %rd1, %rd3;
+    st.global.u32 [%rd4], %r1;
+    ret;
+}

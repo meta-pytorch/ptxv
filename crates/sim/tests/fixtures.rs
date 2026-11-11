@@ -35,7 +35,15 @@ fn kernel(case: &Case, variant: &str, front: &str) -> ptxv_ir::Kernel {
             .all_launches()
             .iter()
             .map(|l| match front {
-                "ptx" => ptxv_ptx::parse_kernel(&ptx, Some(l.entry)).unwrap(),
+                "ptx" => ptxv_ptx::parse_kernel_for(
+                    &ptx,
+                    Some(l.entry),
+                    case.m
+                        .ptxas_toolkit
+                        .as_deref()
+                        .and_then(ptxv_ptx::toolkit_version),
+                )
+                .unwrap(),
                 _ => {
                     let dir = scratch_dir(&case.m.name, variant);
                     std::fs::create_dir_all(&dir).unwrap();
@@ -50,7 +58,15 @@ fn kernel(case: &Case, variant: &str, front: &str) -> ptxv_ir::Kernel {
         return ptxv_ir::Kernel::concat(ks);
     }
     match front {
-        "ptx" => ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap(),
+        "ptx" => ptxv_ptx::parse_kernel_for(
+            &ptx,
+            Some(&case.m.entry),
+            case.m
+                .ptxas_toolkit
+                .as_deref()
+                .and_then(ptxv_ptx::toolkit_version),
+        )
+        .unwrap(),
         _ => {
             let dir = scratch_dir(&case.m.name, variant);
             std::fs::create_dir_all(&dir).unwrap();
@@ -108,6 +124,9 @@ fn check_dir(dir: &str, case: &str, variant: &str, front: &str) {
     // would order are contract findings).
     let raw = v.classes();
     ptxv_sim::twolevel::tc_fence_contract(&mut v, &m0, &mut |m| explore(m, 2_000_000));
+    // S-MBAR-SCOPE: races ordered once async mbarrier completions count as the mbarrier
+    // CTA's are contract findings.
+    ptxv_sim::twolevel::mbar_async_contract(&mut v, &m0, &mut |m| explore(m, 2_000_000));
     let tc_contract = v.classes() != raw;
     assert_eq!(
         v.classes(),
@@ -415,6 +434,39 @@ fn e_barover_oversubscribed_named_barrier() {
         }
     }
 }
+/// E-BAR-CUT: a counted barrier reached by its other users only through an all-thread
+/// barrier (clean), and mutants breaking each premise of the cut (each keeps its bug class).
+#[test]
+fn e_barcut_all_thread_barrier_cut() {
+    both("e_barcut", "good");
+    // As for e_barover: the stateful explorer reports each race in one order (E-DRF); DPOR
+    // also reverses it. Both must find every expected class.
+    for v in ["BC1", "BC2", "BC3", "BC4"] {
+        for front in ["ptx", "sass"] {
+            check_stateful("e_barcut", v, front, 100_000);
+            let case = Case::load(root().join("fixtures").join("e_barcut")).unwrap();
+            let k = kernel(&case, v, front);
+            let launch = build_launch(&case, &k).unwrap();
+            let d =
+                ptxv_sim::dpor::explore_dpor(Machine::new(Arc::new(k), Arc::new(launch)), 100_000);
+            let expect = case.variant(v).unwrap().expect_for(front);
+            assert!(
+                d.complete && expect.iter().all(|e| d.classes().contains(e)),
+                "{v}/{front}: DPOR got {:?}, want at least {expect:?}",
+                d.classes()
+            );
+        }
+    }
+}
+/// E-BAR-OVER walk values: producers that leave through a role test recomputed on the path
+/// (clean), and BW1, where warp 5 arrives at the consumers' counted barrier.
+#[test]
+fn e_barwalk_recomputed_role() {
+    both("e_barwalk", "good");
+    for front in ["ptx", "sass"] {
+        check_stateful("e_barwalk", "BW1", front, 100_000);
+    }
+}
 /// The model agrees with GB300 on every probe variant (probes/bar_exit, run 2026-10-30).
 #[test]
 fn probe_bar_exit_matches_hardware() {
@@ -472,6 +524,24 @@ fn probe_bar_exit_warp_matches_hardware() {
     check_dir("probes", "bar_exit_warp/partial", "full", "ptx");
     check_dir("probes", "bar_exit_warp/partial", "full", "sass");
 }
+/// probes/bar_cut_warp (GB300, 2026-11-09): one warp's lanes at two sites of one barrier id
+/// complete with the other warp (same_id, same_all; on SASS same_all's slow path is
+/// `BAR.SYNC R2, R2` with thread count 0: all threads). One warp waiting at two barrier ids
+/// traps on GB300 (illegal instruction); the model reports a deadlock there.
+#[test]
+fn probe_bar_cut_warp_matches_hardware() {
+    for v in [
+        "split",
+        "control",
+        "w1_first",
+        "two_counted",
+        "same_id",
+        "same_all",
+    ] {
+        check_dir("probes", "bar_cut_warp", v, "ptx");
+        check_dir("probes", "bar_cut_warp", v, "sass");
+    }
+}
 /// The model agrees with GB300 on every probe variant (probes/bar_arrive, run 2026-11-02;
 /// `mismatch` traps on hardware, reported as a violation).
 #[test]
@@ -517,7 +587,11 @@ fn check_dpor(case: &str, variant: &str, front: &str, max_states: usize) {
     let k = kernel(&case, variant, front);
     let launch = build_launch(&case, &k).unwrap();
     let m0 = Machine::new(Arc::new(k), Arc::new(launch));
-    let d = ptxv_sim::dpor::explore_dpor(m0, max_states);
+    let mut d = ptxv_sim::dpor::explore_dpor(m0.clone(), max_states);
+    // S-MBAR-SCOPE, as `ptxv check` reports it.
+    ptxv_sim::twolevel::mbar_async_contract(&mut d, &m0, &mut |m| {
+        ptxv_sim::dpor::explore_dpor(m, max_states)
+    });
     let expect = case.variant(variant).unwrap().expect_for(front);
     assert!(
         d.meets(&expect),
@@ -616,9 +690,15 @@ fn e_ptx_redux_verdicts() {
 }
 #[test]
 fn e_mma_m128_shapes_match_hardware() {
+    // PTX e_mma_pair_m128: the leader's multicast commit waited at .cta scope in the peer is an
+    // S-MBAR-SCOPE contract finding; every schedule still matches GB300.
+    probe_bitwise_mbar_contract("fixtures/e_mma_pair_m128", "good");
     for case in ["e_mma_pair_m128", "e_mma_m128_n8", "e_ptx_redux"] {
         let case = Case::load(root().join("fixtures").join(case)).unwrap();
         for front in ["ptx", "sass"] {
+            if front == "ptx" && case.m.name == "e_mma_pair_m128" {
+                continue;
+            }
             let k = kernel(&case, "good", front);
             let launch = build_launch(&case, &k).unwrap();
             let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
@@ -784,6 +864,7 @@ fn check_stateful(case: &str, variant: &str, front: &str, max_states: usize) {
     let mut v = explore(m0.clone(), max_states);
     // E-TC-FENCE-NOP, as `ptxv check` reports it.
     ptxv_sim::twolevel::tc_fence_contract(&mut v, &m0, &mut |m| explore(m, max_states));
+    ptxv_sim::twolevel::mbar_async_contract(&mut v, &m0, &mut |m| explore(m, max_states));
     let expect = case.variant(variant).unwrap().expect_for(front);
     assert!(
         v.complete && v.meets(&expect),
@@ -814,6 +895,7 @@ fn check_bounded(case: &str, variant: &str, front: &str, max_states: usize) {
     let m0 = Machine::new(Arc::new(k), Arc::new(launch));
     let mut v = explore(m0.clone(), max_states);
     ptxv_sim::twolevel::tc_fence_contract(&mut v, &m0, &mut |m| explore(m, max_states));
+    ptxv_sim::twolevel::mbar_async_contract(&mut v, &m0, &mut |m| explore(m, max_states));
     let expect = case.variant(variant).unwrap().expect_for(front);
     assert!(
         v.meets(&expect),
@@ -859,9 +941,17 @@ fn r2_cute_small() {
     for v in ["good", "fenced", "CM2", "CM3"] {
         check_stateful("r2_cute_small", v, "ptx", 2_000_000);
     }
-    // CM1's deadlock needs the MMA warp to run ahead: ~1M states (a few seconds in parallel).
-    check_bounded("r2_cute_small", "CM1", "ptx", 1_000_000);
+    // CM1 on PTX (bounded, its deadlock needs the MMA warp to run ahead): tests/bar_cut.rs.
     check_bounded("r2_cute_small", "CM4", "ptx", 50_000);
+}
+
+/// fixtures/r2_cute_gemm CM1 on SASS (exhaustive): its expectation had no test and went stale.
+#[test]
+fn r2_cute_gemm_cm1_sass() {
+    if vendor_missing(&["r2_cute_gemm"]) {
+        return;
+    }
+    check_stateful("r2_cute_gemm", "CM1", "sass", 2_000_000);
 }
 
 // Rung 3b (CuTeDSL half): MXF8 block-scaled GEMM (TMA, tcgen05.cp of the scale factors,
@@ -1164,11 +1254,23 @@ fn captured_outputs_match_the_gpu() {
             // Launches too large to explore whole (cuBLAS, 8 CTAs in clusters of 4) are decided
             // by the certificate (E-WELLSYNC), which must hold.
             let v = if CERTIFY_ONLY.contains(&name.as_str()) {
-                ptxv_sim::wellsync::certify(m)
-                    .verdict
-                    .unwrap_or_else(|| panic!("{name}: certificate does not hold"))
+                match ptxv_sim::wellsync::certify(m.clone()).verdict {
+                    Some(v) => v,
+                    // An S-MBAR-SCOPE contract finding (PTX) is a race the certificate
+                    // refuses: explore and reclassify, as `ptxv check` does.
+                    None if front == "ptx" => {
+                        let mut v = explore(m.clone(), 200_000);
+                        ptxv_sim::twolevel::mbar_async_contract(&mut v, &m, &mut |m| {
+                            explore(m, 200_000)
+                        });
+                        v
+                    }
+                    None => panic!("{name}: certificate does not hold"),
+                }
             } else {
-                explore(m, 200_000)
+                let mut v = explore(m.clone(), 200_000);
+                ptxv_sim::twolevel::mbar_async_contract(&mut v, &m, &mut |m| explore(m, 200_000));
+                v
             };
             assert_eq!(v.classes(), expect, "{name}/{front}: {:#?}", v.findings);
             // Runs that stop early (unmodeled) or have several outputs are not compared; the
@@ -1723,6 +1825,28 @@ fn probe_bitwise(dir: &str, variant: &str, front: &str) {
     );
 }
 
+/// A probe's PTX variant whose only findings are S-MBAR-SCOPE contract ones (an async unit's
+/// complete-tx from the peer CTA waited at .cta scope): every schedule's output equals the
+/// GB300 bytes in its `expected/`.
+fn probe_bitwise_mbar_contract(dir: &str, variant: &str) {
+    let case = Case::load(root().join(dir)).unwrap();
+    let k = kernel(&case, variant, "ptx");
+    let launch = build_launch(&case, &k).unwrap();
+    let m0 = Machine::new(Arc::new(k), Arc::new(launch));
+    let mut v = explore(m0.clone(), 2_000_000);
+    assert!(v.complete, "{dir} {variant}: incomplete");
+    ptxv_sim::twolevel::mbar_async_contract(&mut v, &m0, &mut |m| explore(m, 2_000_000));
+    assert_eq!(v.classes(), ["contract"], "{dir}: {:#?}", v.findings);
+    assert!(!v.outputs.is_empty());
+    for o in &v.outputs {
+        let report = case.expect_report(o).unwrap();
+        assert!(
+            !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+            "{dir} {variant}: {report:?}"
+        );
+    }
+}
+
 /// N-BF16X2: packed bf16 arithmetic (HMUL2 / HADD2 / HFMA2 .BF16_V2: lane selectors, -RZ
 /// addend, immediate pairs, .RELU) and bf16 atomics (ATOMG / REDG .ADD.BF16x2.RN, the scalar
 /// form's CAS loop) on edge / tie / random operands = GB300 (probes/bf16x2). The PTX replay
@@ -1862,18 +1986,22 @@ fn probe_cvt_tf32_matches_hardware() {
 }
 
 /// S-INIT: discard.global.L2 makes the line indeterminate (probes/discard_l2): rewritten
-/// before the read = GB300 on the PTX front; read after the discard: a violation.
+/// before the read = GB300 on both front-ends (SASS CCTL.E.RML2); read after the discard: a
+/// violation; the rewrite unordered with the discard: a race.
 #[test]
 fn probe_discard_l2_verdicts() {
-    probe_bitwise("probes/discard_l2", "good", "ptx");
-    check_dir("probes", "discard_l2", "read_after", "ptx");
+    for front in ["ptx", "sass"] {
+        probe_bitwise("probes/discard_l2", "good", front);
+        check_dir("probes", "discard_l2", "read_after", front);
+        check_dir("probes", "discard_l2", "race", front);
+    }
 }
 
 /// tcgen05.mma cta_group::2 M = 128 with A in TMEM (probes/tc_pair_atmem) = GB300 on both
-/// front-ends.
+/// front-ends (PTX: the peer's commit waited at .cta scope is an S-MBAR-SCOPE contract finding).
 #[test]
 fn probe_tc_pair_atmem_matches_hardware() {
-    probe_bitwise("probes/tc_pair_atmem", "good", "ptx");
+    probe_bitwise_mbar_contract("probes/tc_pair_atmem", "good");
     probe_bitwise("probes/tc_pair_atmem", "good", "sass");
 }
 
@@ -2095,7 +2223,15 @@ fn probe_s2f6_cvt_matches_hardware() {
     // The PTX front on the cubin's source (the case is binary-only: ptxas 13.0 rejects it).
     let case = Case::load(root().join("probes/s2f6_cvt")).unwrap();
     let ptx = std::fs::read_to_string(case.dir.join("kernel.ptx")).unwrap();
-    let k = ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap();
+    let k = ptxv_ptx::parse_kernel_for(
+        &ptx,
+        Some(&case.m.entry),
+        case.m
+            .ptxas_toolkit
+            .as_deref()
+            .and_then(ptxv_ptx::toolkit_version),
+    )
+    .unwrap();
     let launch = build_launch(&case, &k).unwrap();
     let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
         .verdict
@@ -2307,9 +2443,20 @@ fn probe_bulk_s2s_matches_hardware() {
     for front in ["ptx", "sass"] {
         let k = Arc::new(kernel(&case, "good", front));
         let launch = Arc::new(build_launch(&case, &k).unwrap());
-        let v = ptxv_sim::explore::explore(Machine::new(k, launch), 500_000);
+        let m0 = Machine::new(k, launch);
+        let mut v = ptxv_sim::explore::explore(m0.clone(), 500_000);
         assert!(v.complete, "{front}: incomplete");
-        assert_eq!(v.classes(), ["clean"], "{front}: {:#?}", v.findings);
+        ptxv_sim::twolevel::mbar_async_contract(&mut v, &m0, &mut |m| {
+            ptxv_sim::explore::explore(m, 500_000)
+        });
+        // PTX: the bulk copy's complete-tx from the peer CTA, waited at .cta scope, orders the
+        // data only if it counts as the mbarrier CTA's (S-MBAR-SCOPE contract).
+        let want: &[&str] = if front == "ptx" {
+            &["contract"]
+        } else {
+            &["clean"]
+        };
+        assert_eq!(v.classes(), want, "{front}: {:#?}", v.findings);
         let report = case.expect_report(&v.outputs[0]).unwrap();
         assert!(
             !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
@@ -2808,6 +2955,74 @@ fn probe_f32x2_unpack_add_matches_hardware() {
     probe_bitwise("probes/f32x2_unpack_add", "good", "sass");
 }
 
+/// Registers named without `%` (declared by `.reg`, at kernel scope and in a nested scope) on
+/// plain mul.f32x2 + add.f32x2 (probes/f32x2_bare): their readers are tracked like `%` names
+/// (FFMA2 where only the add reads the product); = GB300 on both fronts.
+#[test]
+fn probe_f32x2_bare_matches_hardware() {
+    probe_bitwise("probes/f32x2_bare", "good", "ptx");
+    probe_bitwise("probes/f32x2_bare", "good", "sass");
+}
+
+/// PTX-FMAD-X2-VERSION: a case built by ptxas 13.3 (probes/fmad2_v133, `ptxas_toolkit`), in
+/// which only the plain pair contracts. The PTX front under the 13.3 rule and the SASS front
+/// on the 13.3 cubin = GB300. The 13.0 rule (every same-mode pair contracts) applied to the
+/// same PTX gives different bits (mutant killed); with no known version the front refuses.
+#[test]
+fn probe_fmad2_v133_version_rule() {
+    probe_bitwise("probes/fmad2_v133", "good", "ptx");
+    probe_bitwise_cubin("probes/fmad2_v133", Some("kernel.cubin"));
+    let case = Case::load(root().join("probes/fmad2_v133")).unwrap();
+    let ptx = case.variant_ptx("good").unwrap();
+    let k = ptxv_ptx::parse_kernel_for(&ptx, Some(&case.m.entry), Some((13, 0))).unwrap();
+    let launch = build_launch(&case, &k).unwrap();
+    let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
+        .verdict
+        .expect("13.0-rule mutant certifies");
+    let report = case.expect_report(&v.outputs[0]).unwrap();
+    assert!(
+        report.iter().any(|l| !l.contains("bitwise equal")),
+        "the 13.0 rule on a 13.3 case must differ from GB300: {report:?}"
+    );
+    let e = ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap_err();
+    assert!(format!("{e:#}").contains("PTX-FMAD"), "{e:#}");
+}
+
+/// mad.lo.s16 / .u16 (low 16 bits of a * b + c; register and immediate operands, d aliasing
+/// c) on random operands (probes/mad_lo16) = GB300 on both fronts.
+#[test]
+fn probe_mad_lo16_matches_hardware() {
+    probe_bitwise("probes/mad_lo16", "good", "ptx");
+    probe_bitwise("probes/mad_lo16", "good", "sass");
+}
+
+/// setp.<cmp>.<bop>.f32 with a plain or negated combining predicate, ordered and unordered
+/// compares on NaN / signed-zero / subnormal operands, one .ftz form (probes/setp_bop) =
+/// GB300 on both fronts.
+#[test]
+fn probe_setp_bop_matches_hardware() {
+    probe_bitwise("probes/setp_bop", "good", "ptx");
+    probe_bitwise("probes/setp_bop", "good", "sass");
+}
+
+/// applypriority[.global].L2::evict_normal (SASS CCTL.E.DML2) and
+/// prefetch.global.L2::evict_last (CCTL.E.PML2) are no-ops: stores, the hints on each warp's
+/// line, cross-warp reads after a barrier (probes/applypriority) = GB300 on both fronts.
+#[test]
+fn probe_applypriority_matches_hardware() {
+    probe_bitwise("probes/applypriority", "good", "ptx");
+    probe_bitwise("probes/applypriority", "good", "sass");
+}
+
+/// redux.sync min / max [.abs] [.NaN] .f32 with full mask reached through divergent paths,
+/// over NaN / signed-zero / inf / subnormal lanes (probes/redux_f32_paths): the collective
+/// waits for every lane, the case certifies (C-WARP) and = GB300 on both fronts.
+#[test]
+fn probe_redux_f32_paths_matches_hardware() {
+    probe_bitwise("probes/redux_f32_paths", "good", "ptx");
+    probe_bitwise("probes/redux_f32_paths", "good", "sass");
+}
+
 /// The cp.async scoreboard counts the warp's commits: copies issued on two divergent paths,
 /// one converged DEPBAR, each lane reads its neighbour's slot (probes/cpasync_warp; `good` =
 /// GB300; `w1`: the warp's second group is still pending).
@@ -2919,7 +3134,15 @@ fn probe_f32x2_ftz_matches_hardware() {
     probe_bitwise("probes/f32x2_ftz", "good", "sass");
     let case = Case::load(root().join("probes/f32x2_ftz")).unwrap();
     let ptx = case.variant_ptx("good").unwrap().replace(".ftz", "");
-    let k = ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap();
+    let k = ptxv_ptx::parse_kernel_for(
+        &ptx,
+        Some(&case.m.entry),
+        case.m
+            .ptxas_toolkit
+            .as_deref()
+            .and_then(ptxv_ptx::toolkit_version),
+    )
+    .unwrap();
     let launch = build_launch(&case, &k).unwrap();
     let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
         .verdict
@@ -3001,9 +3224,15 @@ fn probe_mma_bs_mn_major_matches_hardware() {
         "pair_ss_ab",
     ];
     for c in cases {
-        for front in ["ptx", "sass"] {
-            probe_bitwise(&format!("probes/mma_bs/mn/{c}"), "good", front);
+        let dir = format!("probes/mma_bs/mn/{c}");
+        // PTX cta_group::2: the leader's commit waited at .cta scope in the peer is an
+        // S-MBAR-SCOPE contract finding; every schedule still matches GB300.
+        if c.starts_with("pair_") {
+            probe_bitwise_mbar_contract(&dir, "good");
+        } else {
+            probe_bitwise(&dir, "good", "ptx");
         }
+        probe_bitwise(&dir, "good", "sass");
     }
     // Refused (not measured): an MN-major start inside a swizzle row, MN-major FP4.
     for v in ["mid_row", "fp4_mn"] {
@@ -3021,7 +3250,17 @@ fn probe_red_async_ops_add() {
     probe_bitwise("probes/red_async_ops", "good", "sass");
     let case = Case::load(root().join("probes/red_async_ops")).unwrap();
     let ptx = case.variant_ptx("good").unwrap();
-    assert!(ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).is_err());
+    assert!(
+        ptxv_ptx::parse_kernel_for(
+            &ptx,
+            Some(&case.m.entry),
+            case.m
+                .ptxas_toolkit
+                .as_deref()
+                .and_then(ptxv_ptx::toolkit_version)
+        )
+        .is_err()
+    );
 }
 
 /// cp.async.bulk.prefetch.tensor (SASS UTMAPF.L2.2D) as a cache hint (probes/tma_prefetch)
@@ -3443,14 +3682,17 @@ fn probe_clc_mcast_follows_hardware() {
     for front in ["ptx", "sass"] {
         let k = kernel(&case, "good", front);
         let launch = build_launch(&case, &k).unwrap();
-        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+        let m0 = Machine::new(Arc::new(k), Arc::new(launch));
+        let mut v = explore(m0.clone(), 2_000_000);
         assert!(v.complete, "{front}: incomplete");
-        assert_eq!(
-            v.classes(),
-            ["nondeterministic"],
-            "{front}: {:#?}",
-            v.findings
-        );
+        // PTX: the multicast response's complete-tx waited at .cta scope (S-MBAR-SCOPE).
+        ptxv_sim::twolevel::mbar_async_contract(&mut v, &m0, &mut |m| explore(m, 2_000_000));
+        let want: &[&str] = if front == "ptx" {
+            &["contract", "nondeterministic"]
+        } else {
+            &["nondeterministic"]
+        };
+        assert_eq!(v.classes(), want, "{front}: {:#?}", v.findings);
         let (mut cancels, mut fails) = (0, 0);
         for o in &v.outputs {
             let w: Vec<u32> = o
@@ -3502,14 +3744,17 @@ fn probe_clc_one_cluster_follows_hardware() {
     for front in ["ptx", "sass"] {
         let k = kernel(&case, "good", front);
         let launch = build_launch(&case, &k).unwrap();
-        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+        let m0 = Machine::new(Arc::new(k), Arc::new(launch));
+        let mut v = explore(m0.clone(), 2_000_000);
         assert!(v.complete, "{front}: incomplete");
-        assert_eq!(
-            v.classes(),
-            ["nondeterministic"],
-            "{front}: {:#?}",
-            v.findings
-        );
+        // PTX: the multicast response's complete-tx waited at .cta scope (S-MBAR-SCOPE).
+        ptxv_sim::twolevel::mbar_async_contract(&mut v, &m0, &mut |m| explore(m, 2_000_000));
+        let want: &[&str] = if front == "ptx" {
+            &["contract", "nondeterministic"]
+        } else {
+            &["nondeterministic"]
+        };
+        assert_eq!(v.classes(), want, "{front}: {:#?}", v.findings);
         assert_eq!(v.outputs.len(), 2, "{front}");
         let gpu = v.outputs.iter().filter(|o| {
             case.expect_report(o)
@@ -5052,6 +5297,37 @@ fn e_stasync_complete_tx() {
     }
 }
 
+/// S-MBAR-SCOPE (fixtures/e_mbar_scope): a 2-CTA hand-off through a remote mbarrier arrive
+/// synchronizes only when the arrive and the wait are morally strong (both at cluster scope).
+/// A .cta-scoped arrive or wait across CTAs completes the phase but orders nothing; so does a
+/// fence.acq_rel.cluster before a .cta arrive (PTX front). These variants were clean before.
+#[test]
+fn e_mbar_scope_handoff() {
+    for v in ["good", "PFC", "PFCW", "PFCA", "FEN", "FRC", "STA", "STAC"] {
+        both("e_mbar_scope", v);
+    }
+}
+
+/// S-MBAR-SCOPE (fixtures/e_mbar_mailbox): a peer's st.async complete-tx pairs only with a
+/// cluster-scope acquire in the owner (wait at .cluster with .acquire, or a relaxed wait and
+/// fence.acquire.sync_restrict::shared::cluster.cluster).
+#[test]
+fn e_mbar_mailbox_scopes() {
+    for v in ["good", "MB", "MBNF", "MBCA"] {
+        both("e_mbar_mailbox", v);
+    }
+}
+
+/// S-MBAR-SCOPE (fixtures/e_mbar_restrict): fence.release.sync_restrict::shared::cta.cluster +
+/// a relaxed cluster arrive releases the peer's shared-memory accesses at cluster scope, and
+/// nothing else.
+#[test]
+fn e_mbar_restrict_slot_reuse() {
+    for v in ["good", "NOF", "RLX", "GM", "GMF"] {
+        both("e_mbar_restrict", v);
+    }
+}
+
 /// S-INIT through FFMA2 (fixtures/e_uninit_f32x2): each lane of a packed f32x2 FMA reads only
 /// the same lane of its operands, so an undefined lane 1 leaves lane 0 defined (SASS clean;
 /// storing the undefined lane is reported).
@@ -5666,7 +5942,34 @@ fn e_fa4_warp_roles_fa4_aligned_barriers() {
 #[test]
 fn e_rmsnorm_cluster_drain_remote_arrive_exit_drain() {
     for v in ["good", "bug", "good_k3", "bug_k3", "nodrain"] {
-        both("e_rmsnorm_cluster_drain", v);
+        check("e_rmsnorm_cluster_drain", v, "sass");
+    }
+    // PTX: the S-MBAR-SCOPE races (the peer's st.async complete-tx waited at .cta scope; with
+    // K = 3 also stage 0 reused after a .release.cta give-back) blow up the state space:
+    // bounded.
+    for v in ["good_k3", "bug_k3"] {
+        check_bounded("e_rmsnorm_cluster_drain", v, "ptx", 200_000);
+    }
+    // K = 2: a race within a bounded search; with async complete-tx counted as the mbarrier
+    // CTA's (the contract rerun) the search completes and leaves only the SASS verdict.
+    let case = Case::load(root().join("fixtures/e_rmsnorm_cluster_drain")).unwrap();
+    for (v, want) in [
+        ("good", "clean"),
+        ("bug", "violation"),
+        ("nodrain", "violation"),
+    ] {
+        let k = Arc::new(kernel(&case, v, "ptx"));
+        let mut launch = build_launch(&case, &k).unwrap();
+        let r = explore(Machine::new(k.clone(), Arc::new(launch.clone())), 200_000);
+        assert!(
+            r.classes().iter().any(|c| c == "race"),
+            "{v}: {:?}",
+            r.classes()
+        );
+        launch.async_mb_dest = true;
+        let r = explore(Machine::new(k, Arc::new(launch)), 2_000_000);
+        assert!(r.complete, "{v}: contract rerun incomplete");
+        assert_eq!(r.classes(), [want], "{v}: {:#?}", r.findings);
     }
 }
 
@@ -6250,5 +6553,112 @@ fn e_ticket_addr_fence_acquired_claims_refused() {
                 "{front} {v}"
             );
         }
+    }
+}
+
+/// S-GPROXY: a semaphore-ordered chain of bulk add-reductions from two CTAs into one global
+/// accumulator needs a global proxy fence after the acquire (`NOF`, `SH`: the order is not
+/// guaranteed); so does a generic store followed by another CTA's reduction (`ST`). Contract
+/// findings (the PTX ISA requires the fence; GB300 showed no failure).
+#[test]
+fn e_gproxy_verdicts() {
+    for v in ["good", "NOF", "ALL", "SH", "ST", "STF"] {
+        both("e_gproxy", v);
+    }
+}
+
+/// S-CLUSTER-LIFE: a thread's plain st.shared::cluster into the peer CTA must happen before an
+/// exit of that CTA. NOFINAL (no final barrier.cluster) and NOBAR (no barrier at all: the
+/// target's only action is its exit, which the explorers' local reductions treat as commuting)
+/// are violations on both fronts under the stateful explorer, DPOR and the certificate's
+/// single run (before, the end-of-run check saw only remote arrivals, multicast TMA and
+/// commits, and the exit-time check depended on the explored order).
+#[test]
+fn e_cluster_life_remote_store() {
+    // `both`: stateful explorer with its reductions, then DPOR on the same verdict.
+    for v in ["good", "NOFINAL", "NOBAR"] {
+        both("e_cluster_life", v);
+    }
+    let case = Case::load(root().join("fixtures/e_cluster_life")).unwrap();
+    for (v, front) in [
+        ("NOFINAL", "ptx"),
+        ("NOFINAL", "sass"),
+        ("NOBAR", "ptx"),
+        ("NOBAR", "sass"),
+    ] {
+        let k = kernel(&case, v, front);
+        let launch = build_launch(&case, &k).unwrap();
+        let c = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)));
+        assert!(
+            c.verdict
+                .as_ref()
+                .is_none_or(|v| v.classes().iter().any(|x| x == "violation")),
+            "{v}/{front}: certified without the violation"
+        );
+    }
+}
+
+/// MISS 39 (E-WARPCOLL): a SASS SHFL runs with the split that reaches it. With the BSYNC
+/// before it removed, GB300 runs the early half-warp's SHFL alone (inactive source lanes read
+/// 0, 1000 of 1000 runs); the model let that half wait for the other and called the joined
+/// exchange clean. NOBSYNC / NOBSSY must fault; good matches GB300's output.
+#[test]
+fn shfl_does_not_wait_for_the_rest_of_the_warp() {
+    binary_classes("e_warpcoll_split");
+}
+
+/// Every variant of a binary-only fixture gets its expected classes (stateful explorer and
+/// DPOR agree).
+fn binary_classes(name: &str) {
+    let case = Case::load(root().join("fixtures").join(name)).unwrap();
+    for v in case.m.variants.iter().map(|v| v.id.clone()) {
+        let k = binary_kernel(&case, &v).unwrap();
+        let launch = build_launch(&case, &k).unwrap();
+        let m0 = Machine::new(Arc::new(k), Arc::new(launch));
+        let r = explore(m0.clone(), 1_000_000);
+        assert!(r.complete, "{name}/{v}: exploration incomplete");
+        assert_eq!(
+            r.classes(),
+            case.variant(&v).unwrap().expect_for("sass"),
+            "{name}/{v}: {:#?}",
+            r.findings
+        );
+        let d = ptxv_sim::dpor::explore_dpor(m0, 1_000_000);
+        assert_eq!(d.classes(), r.classes(), "{name}/{v}: DPOR verdict differs");
+    }
+}
+
+/// E-COLLECTIVE / E-WARPCOLL binary mutants of a divergent full-mask shfl.sync (each half
+/// runs its own SHFL; ptxas's BRA.DIV slow paths): dropped BRA.DIVs, a collective member mask
+/// that excludes the other half or the executing lanes, a dropped ENDCOLLECTIVE.
+#[test]
+fn collective_shfl_mutants() {
+    binary_classes("e_warpcoll_bin");
+}
+
+/// E-WARPCOLL: register member masks of shfl.sync (exited lanes named, a source lane outside
+/// the mask, masks that disagree), both front-ends.
+#[test]
+fn shfl_member_masks() {
+    for v in ["good", "EXITED", "XSRC", "OVERLAP"] {
+        both("e_warpcoll_mask", v);
+    }
+}
+
+/// E-ALLOC / E-TC-EXIT mutants: unobserved tcgen05.cp at dealloc / exit, a trailing commit
+/// alone (contract), a leaked or wrongly sized allocation, allocations that never succeed.
+#[test]
+fn tmem_alloc_and_exit_mutants() {
+    for v in [
+        "good",
+        "CPNOWAIT",
+        "TRAILCOMMIT",
+        "CP2",
+        "NODEALLOC",
+        "REALLOC",
+        "DEALLOCSZ",
+        "W1ALLOC",
+    ] {
+        both("e_tc_alloc_exit", v);
     }
 }

@@ -103,8 +103,9 @@
 //!   every ticket value and an order check establish that the outputs are the run's up to a
 //!   permutation of each counter's rows (class `clean-up-to-permutation`). See `perm.rs`.
 //! * **C-WARP** (lane membership): an instruction whose effect depends on which lanes run it
-//!   together is run by lanes that became ready at that pc in one event (one instruction or
-//!   one barrier release), and, if more lanes joining would change it (SASS lane collectives
+//!   together is run by lanes that became ready at that pc in one event (one instruction run
+//!   by lanes already together, or one barrier / BSYNC / WARPSYNC release; lanes merged only
+//!   because they stood at the same pc stay apart, `post_inst`), and, if more lanes joining would change it (SASS lane collectives
 //!   and uniform operations, which run once per lane group; PTX elect / vote / redux /
 //!   tcgen05.alloc), lanes of the same warp that run that pc in another group are HB-ordered
 //!   with them. SASS per-lane memory / sync instructions only need the first part (the
@@ -175,6 +176,45 @@ impl LogSlot {
     pub fn is_on(&self) -> bool {
         self.0.is_some()
     }
+}
+
+/// The E-LOCKSTEP join groups of `members` in a certificate run: lanes that share a C-WARP
+/// token (they became ready together, so they run the instruction together in every
+/// schedule). Lanes the model merged only because they stood at the same pc are joined only
+/// within their own group: in another schedule they run apart, and the run's clocks must stay
+/// below every schedule's (MISS 30). None outside a certificate run (one group).
+pub fn lockstep_groups(m: &Machine, members: &[usize]) -> Option<Vec<Vec<usize>>> {
+    let log = m.wlog.0.as_ref()?;
+    let mut groups: Vec<(u64, Vec<usize>)> = Vec::new();
+    for &t in members {
+        let k = log.tok[t];
+        match groups.iter_mut().find(|g| g.0 == k) {
+            Some(g) => g.1.push(t),
+            None => groups.push((k, vec![t])),
+        }
+    }
+    Some(groups.into_iter().map(|g| g.1).collect())
+}
+
+/// The groups of `lanes` a BSYNC on barrier `b` joins in a certificate run: lanes whose BSSY
+/// ran in one step with one C-WARP token. Lanes that ran the BSSY merged at the pc may run it
+/// apart in another order, and then E-BSYNC can release one part before the other has
+/// recorded its lanes, joining nothing of it (MISS 30). None outside a certificate run.
+pub fn bsync_groups(m: &Machine, b: u8, lanes: &[usize]) -> Option<Vec<Vec<usize>>> {
+    let log = m.wlog.0.as_ref()?;
+    let mut groups: Vec<(u64, Vec<usize>)> = Vec::new();
+    for &t in lanes {
+        let k = log
+            .bssy
+            .get(&(t, b))
+            .copied()
+            .unwrap_or(u64::MAX - t as u64);
+        match groups.iter_mut().find(|g| g.0 == k) {
+            Some(g) => g.1.push(t),
+            None => groups.push((k, vec![t])),
+        }
+    }
+    Some(groups.into_iter().map(|g| g.1).collect())
 }
 
 /// One event: who, at which own clock, and its position in the run (program order for one
@@ -331,9 +371,10 @@ struct SAcc {
     /// The successful compare-and-swap of a CAS poll (C-CAS): the machine before its
     /// instruction, to replay the loop on other values of the word.
     at: Option<Snap>,
-    /// SASS atomics: the instruction step (`inst_tok`). Lanes of one step are performed in
-    /// lane order (E-LOCKSTEP), and C-WARP keeps them together in every schedule.
-    step: Option<u64>,
+    /// SASS atomics: the instruction step (`inst_tok`) and the lane's C-WARP token. Lanes of
+    /// one step with one token are performed in lane order (E-LOCKSTEP) in every schedule;
+    /// lanes merged only because they stood at the pc may run apart (MISS 30).
+    step: Option<(u64, u64)>,
     /// A read (or read-modify-write) that does not acquire by itself, but whose observed
     /// release a later acquire fence of its thread joined (`Machine::fence_acq`, set before
     /// `analyze`): it synchronized as an acquire would, and its place in the order decides
@@ -418,6 +459,9 @@ pub struct SyncLog {
     /// Several peeks may be outstanding (TRT-LLM's mainloop: four TRYWAIT peeks, then a skip
     /// branch on each result).
     ptaint: Vec<Vec<PeekTaint>>,
+    /// SASS BSSY: per (thread, barrier), the group it recorded the thread in (one per step and
+    /// C-WARP token; `bsync_groups`).
+    bssy: HashMap<(usize, u8), u64>,
     /// Per peek: (mbarrier, parity, how it was used, instruction instance).
     peeks: Vec<((u16, u32), u32, PeekUse, u64)>,
     /// (thread, peek) taints the current instruction ends.
@@ -526,6 +570,10 @@ fn membership(m: &Machine, pc: u32) -> (bool, bool) {
         // complete, joining only the parked lanes' clocks: the mask, the release point and
         // its clocks are the same however the breaking lanes are grouped (E-BSYNC).
         Op::Break { .. } if m.k.front == Front::Sass => (false, false),
+        // SASS BSSY adds the executing lanes to the barrier's mask; a later BSYNC joins only
+        // lanes recorded in one step with one token (`bsync_groups`), so who ran it together
+        // in the run gives no happens-before another order lacks.
+        Op::Bssy { .. } if m.k.front == Front::Sass => (false, false),
         // SASS per-lane instructions without effects: who runs them together is irrelevant.
         _ if m.k.front == Front::Sass && !inst_uniform(m, pc) && sass_lane_local(op) => {
             (false, false)
@@ -540,7 +588,6 @@ fn membership(m: &Machine, pc: u32) -> (bool, bool) {
         | Op::R2Ur { .. }
         | Op::Shfl { .. }
         | Op::StMatrix { .. }
-        | Op::Bssy { .. }
         | Op::Break { .. }
         | Op::BMov { .. }
         | Op::Bra { any: true, .. }
@@ -558,9 +605,15 @@ fn membership(m: &Machine, pc: u32) -> (bool, bool) {
             (true, true)
         }
         _ if m.k.front == Front::Sass && inst_uniform(m, pc) => (true, true),
-        // Per-lane memory and synchronization: the run's lanes must stay together (the
-        // E-LOCKSTEP join of a memory access; a try_wait's lanes witness each other, C-WAIT);
-        // more lanes joining only adds happens-before.
+        // Per-lane loads, stores and atomics: the certificate run joins only lanes that share
+        // a token (`lockstep_groups`), so lanes merged at the pc need not have met there.
+        Op::Ld { .. } | Op::LdReduce { .. } | Op::St { .. } | Op::Atom { .. }
+            if m.k.front == Front::Sass =>
+        {
+            (false, false)
+        }
+        // Other per-lane synchronization: the run's lanes must stay together (a try_wait's
+        // lanes witness each other, C-WAIT); more lanes joining only adds happens-before.
         _ if m.k.front == Front::Sass => (true, false),
         // PTX `redux.sync` / `shfl.sync` / `vote.sync` with a subset membermask: each mask
         // group runs on its own once every live lane of its mask has arrived (split_enabled,
@@ -568,7 +621,17 @@ fn membership(m: &Machine, pc: u32) -> (bool, bool) {
         // the step does not change its effect or its violation check (E-WARPCOLL).
         _ if op.member_mask().is_some() => (false, false),
         // PTX `.sync.aligned`: the explorer runs it only with every live lane (split_enabled).
-        _ if op.is_warp_aligned() => (false, true),
+        // So does a full-mask `redux.sync` / `vote.sync` / `match.any.sync` (split_enabled waits
+        // for every live lane of the warp): the lanes need not arrive in one event, only no
+        // other group of the warp may run that pc unordered with them.
+        _ if op.is_warp_aligned()
+            || matches!(
+                op,
+                Op::Redux { .. } | Op::VoteAny { .. } | Op::VoteAll { .. } | Op::MatchAny { .. }
+            ) =>
+        {
+            (false, true)
+        }
         Op::Elect { .. }
         | Op::VoteAny { .. }
         | Op::MatchAny { .. }
@@ -599,6 +662,8 @@ fn sass_lane_local(op: &Op) -> bool {
             ..
         } | Op::Exit
             | Op::Nop
+            | Op::Call { .. }
+            | Op::Ret { .. }
             | Op::Mov { .. }
             | Op::Int { .. }
             | Op::MulWide { .. }
@@ -695,6 +760,22 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
             ),
         );
     }
+    if let (Op::Bssy { b }, Front::Sass) = (&inst.op, m.k.front) {
+        let mut ids: Vec<(u64, u64)> = Vec::new();
+        for &t in &active {
+            let k = log.tok[t];
+            let id = match ids.iter().find(|x| x.0 == k) {
+                Some(x) => x.1,
+                None => {
+                    let id = log.next_tok;
+                    log.next_tok += 1;
+                    ids.push((k, id));
+                    id
+                }
+            };
+            log.bssy.insert((t, *b), id);
+        }
+    }
     if pairc && !members.is_empty() {
         let w = m.threads[members[0]].warp;
         let base = m.warp_threads(w).start;
@@ -745,7 +826,7 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
                 let idv = ptxv_ir::bar_args(idv, None, *packed).0 as u64;
                 let cta = m.threads[t].cta;
                 let g = m.bar_gen.get(&(cta, idv as u32)).copied().unwrap_or(0);
-                let vc = m.threads[t].vc.clone();
+                let vc = m.order_vc(t); // S-MBAR-SCOPE: the order of events
                 let ev = log.ev(t as u32, &vc, pc);
                 log.bars
                     .entry((cta, idv as u32))
@@ -772,7 +853,7 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
                     Some((pg, waited)) => waited && pg + 1 == g,
                 };
                 log.cl_last[t] = Some((g, false));
-                let vc = m.threads[t].vc.clone();
+                let vc = m.order_vc(t); // S-MBAR-SCOPE: the order of events
                 let ev = log.ev(t as u32, &vc, pc);
                 log.clusters
                     .entry(cid)
@@ -797,6 +878,7 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
             addr,
             parity,
             bit31,
+            ..
         } => {
             for &t in &active {
                 let Ok(a) = m.addr(t, addr) else { continue };
@@ -812,7 +894,7 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
                         None => continue, // reported by the machine
                     },
                 };
-                let vc = m.threads[t].vc.clone();
+                let vc = m.order_vc(t); // S-MBAR-SCOPE: the order of events
                 let ev = log.ev(t as u32, &vc, pc);
                 log.pre_waits.push(WaitPre {
                     t,
@@ -832,7 +914,7 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
         }
         Op::TmemAlloc { .. } | Op::TmemDealloc { .. } | Op::TmemRelinquish => {
             if let Some(&t) = active.first() {
-                let vc = m.threads[t].vc.clone();
+                let vc = m.order_vc(t); // S-MBAR-SCOPE: the order of events
                 let ev = log.ev(t as u32, &vc, pc);
                 log.tmem.entry(m.threads[t].cta).or_default().push((ev, vc));
             }
@@ -840,7 +922,7 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
         // The lanes of one instruction run in one atomic step, in a fixed order: one event.
         Op::TmemAllocRaw { pair, .. } => {
             if let Some(&t) = active.first() {
-                let vc = m.threads[t].vc.clone();
+                let vc = m.order_vc(t); // S-MBAR-SCOPE: the order of events
                 let ev = log.ev(t as u32, &vc, pc);
                 for c in m.alloc_group(m.threads[t].cta, *pair).unwrap_or_default() {
                     log.tmem.entry(c).or_default().push((ev, vc.clone()));
@@ -849,7 +931,7 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
         }
         Op::TmemFreeRaw { .. } => {
             if let Some(&t) = active.first() {
-                let vc = m.threads[t].vc.clone();
+                let vc = m.order_vc(t); // S-MBAR-SCOPE: the order of events
                 let ev = log.ev(t as u32, &vc, pc);
                 log.tmem.entry(m.threads[t].cta).or_default().push((ev, vc));
             }
@@ -1157,6 +1239,7 @@ fn look_step(
         addr,
         parity: pv,
         bit31,
+        ..
     } = &inst.op
     {
         let ours = members.iter().all(|&t| {
@@ -1696,11 +1779,27 @@ fn after_wit(wit: &[(u32, u32)], me: u32, seq: u64, actor: u32, oseq: u64, vc: &
 /// Hook: after the instruction at `pc` ran (`ok`: no fault).
 pub fn post_inst(m: &mut Machine, members: &[usize], pc: u32, _ok: bool) {
     let mut log = take(m);
-    let nt = log.next_tok;
-    log.next_tok += 1;
+    // A new token per group of members that already shared one: lanes that became ready
+    // apart (they reached the pc by different paths, and the model only merged them because
+    // they stood at the same pc) stay apart until a convergence point releases them together
+    // (BSYNC / WARPSYNC / a barrier: `released`, `warpsync_released`). Until 2026-11-09 every
+    // member got one token, so a lane-local instruction run by a merged split (a NOPed BSYNC)
+    // made the next memory instruction's E-LOCKSTEP join look schedule-independent
+    // (fixtures/e_lockstep_nobsync NOBSYNC: certified, GB300 differs).
+    let mut remap: Vec<(u64, u64)> = Vec::new();
     for &t in members {
         // Lanes a barrier released during this instruction keep the release's token.
         if log.tok[t] < log.inst_tok {
+            let old = log.tok[t];
+            let nt = match remap.iter().find(|x| x.0 == old) {
+                Some(x) => x.1,
+                None => {
+                    let nt = log.next_tok;
+                    log.next_tok += 1;
+                    remap.push((old, nt));
+                    nt
+                }
+            };
             log.tok[t] = nt;
         }
     }
@@ -1877,6 +1976,10 @@ pub fn mbar_op(m: &mut Machine, actor: u32, vc: &VC, pc: u32, cta: u16, off: u32
     let thread_op = (actor as usize) < m.threads.len();
     let k = m.k.clone();
     let kind = &k.code[pc as usize].op;
+    // S-MBAR-SCOPE: the order of events (with the updates its thread observed without
+    // synchronizing with them), not of memory.
+    let ovc = m.order_vc_of(actor, vc);
+    let vc = &ovc;
     let mut log = take(m);
     let ev = log.ev(actor, vc, pc);
     match kind {
@@ -2032,7 +2135,10 @@ pub fn strong_access(
         cell: None,
         prev_w,
         at,
-        step: (m.k.front == Front::Sass && rmw.is_some()).then_some(log.inst_tok),
+        step: (m.k.front == Front::Sass && rmw.is_some()).then(|| {
+            let tok = log.tok.get(actor as usize).copied().unwrap_or(u64::MAX);
+            (log.inst_tok, tok)
+        }),
         facq: false,
     });
     m.wlog.0 = Some(log);

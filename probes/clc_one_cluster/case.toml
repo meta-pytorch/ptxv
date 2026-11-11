@@ -26,4 +26,5 @@ buffer = "out"
 
 [[variants]]
 id = "good"
-expect = ["nondeterministic"]
+expect = ["contract", "nondeterministic"]
+expect_sass = ["nondeterministic"]

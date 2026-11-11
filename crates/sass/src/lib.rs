@@ -246,6 +246,13 @@ pub fn select_ptxas(isa: Option<(u32, u32)>, want: Option<&str>) -> (String, Opt
     }
 }
 
+/// The registry toolkit (PTXV_TOOLKITS) `select_ptxas` picks for a module, None when it picks
+/// the default ptxas (whose version is ambient, not a property of the case).
+pub fn registry_toolkit(ptx_text: &str, want: Option<&str>) -> Option<(u32, u32)> {
+    let (path, v) = select_ptxas(ptx_isa(ptx_text), want);
+    (path != tool("ptxas")).then_some(v).flatten()
+}
+
 /// Compile PTX to a cubin with the ptxas `select_ptxas` picks for it (`want`: the toolkit that
 /// built the executed cubin). Returns the toolkit version used ("13.3"), when known.
 pub fn ptxas_with(
@@ -1182,6 +1189,23 @@ fn lower_line(
             Op::TmapFence { addr }
         }
         "CCTL" if mods == ["E", "C", "LDCU", "IV", "DEEP"] => Op::Nop,
+        // `CCTL.E.RML2 [Ra]` (discard.global.L2 [a], 128): the 128-byte line's contents become
+        // indeterminate, a weak store of undefined data over the line, as on the PTX front:
+        // one 128-byte store of a register nothing writes (V255, outside the R file's RZ
+        // alias), so race checks, footprints and S-INIT see it as any store. ASSUME(S-INIT)
+        "CCTL" if mods == ["E", "RML2"] && l.operands.len() == 1 => Op::St {
+            space: Space::Global,
+            bytes: 128,
+            addr: wide_e_addr(lw.addr(lw.op(0)?)?, true),
+            v: Val::Reg(
+                Reg {
+                    file: File::V,
+                    idx: 255,
+                },
+                1,
+            ),
+            sync: None,
+        },
         // NANOSLEEP(.SYNCS) is a timing hint (try_wait suspend); no semantic effect.
         // ASSUME(E-NANOSLEEP): see ASSUMPTIONS.md
         "NANOSLEEP" => Op::Nop,
@@ -4640,7 +4664,8 @@ fn lower_line(
                     remote: false,
                     count: None,
                     complete: false,
-                    cluster: false,
+                    scope: Scope::Cluster,
+                    release: false,
                 },
                 // `.RED`: arrive.expect_tx on another CTA's mbarrier (shared::cluster address).
                 ["ARRIVE", "TRANS64", "RED"] => Op::MbarArrive {
@@ -4649,7 +4674,8 @@ fn lower_line(
                     remote: true,
                     count: None,
                     complete: false,
-                    cluster: false,
+                    scope: Scope::Cluster,
+                    release: false,
                 },
                 // `.RED.A1T0`: a plain arrival there.
                 ["ARRIVE", "TRANS64", "RED", "A1T0"] if lw.op(2)? == "RZ" => Op::MbarArrive {
@@ -4658,7 +4684,8 @@ fn lower_line(
                     remote: true,
                     count: None,
                     complete: false,
-                    cluster: false,
+                    scope: Scope::Cluster,
+                    release: false,
                 },
                 // `A1T0`: one arrival, no transaction bytes (plain mbarrier.arrive).
                 ["ARRIVE", "TRANS64", "A1T0"] if lw.op(2)? == "RZ" => Op::MbarArrive {
@@ -4667,7 +4694,8 @@ fn lower_line(
                     remote: false,
                     count: None,
                     complete: false,
-                    cluster: false,
+                    scope: Scope::Cluster,
+                    release: false,
                 },
                 // `.ART0` / `.RED.ART0`: the arrival count in the third operand, no transaction
                 // bytes (`mbarrier.arrive [a], count` on a shared::cta / shared::cluster
@@ -4679,7 +4707,8 @@ fn lower_line(
                         remote: mods.len() == 4,
                         count: Some(lw.val(lw.op(2)?, 4)?),
                         complete: false,
-                        cluster: false,
+                        scope: Scope::Cluster,
+                        release: false,
                     }
                 }
                 // `.A0TR` / `.A0TX`: no arrival; expect / complete the transaction bytes
@@ -4690,7 +4719,8 @@ fn lower_line(
                     remote: true,
                     count: Some(Val::Imm(0)),
                     complete: *z == "A0TX",
-                    cluster: false,
+                    scope: Scope::Cluster,
+                    release: false,
                 },
                 // `.RED.A0T1`: no arrival, expect one transaction unit; ptxas emits it before
                 // `ARRIVES.LDGSTSBAR.64.TRANSCNT` for `cp.async.mbarrier.arrive` (no .noinc),
@@ -4701,7 +4731,8 @@ fn lower_line(
                     remote: true,
                     count: Some(Val::Imm(0)),
                     complete: false,
-                    cluster: false,
+                    scope: Scope::Cluster,
+                    release: false,
                 },
                 _ => bail!(lw.err("SYNCS.ARRIVE variant not modeled")),
             }
@@ -4717,6 +4748,9 @@ fn lower_line(
             addr: lw.addr(lw.op(1)?)?,
             parity: lw.val(lw.op(2)?, 4)?,
             bit31: true,
+            // ASSUME(S-MBAR-SCOPE): no scope bits; ptxas emits PHASECHK for every scope.
+            scope: Scope::Cluster,
+            acquire: true,
         },
         // Proxy fences by state space (ptxas, sm_103a): `fence.proxy.async[.shared::cta|
         // .shared::cluster]` is MEMBAR.ALL.<CTA|GPU> + `FENCE.VIEW.ASYNC.S`,
@@ -4917,7 +4951,12 @@ fn lower_line(
         }
         // Error barriers (drain outstanding memory errors before a cluster arrive): no effect
         // on the memory model.
-        "ERRBAR" | "CGAERRBAR" => Op::Nop,
+        "ERRBAR" => Op::Nop,
+        // ASSUME(S-REMOTE-INFLIGHT): waits for the thread's outstanding remote (DSMEM)
+        // operations; ptxas emits it after MEMBAR.ALL.GPU for cluster-scope releases.
+        "CGAERRBAR" => Op::Fence {
+            kind: FenceKind::CgaErrBar,
+        },
         "SEL" | "USEL" => Op::Sel {
             d: lw.dst(lw.op(0)?)?,
             a: lw.val(lw.op(1)?, 4)?,

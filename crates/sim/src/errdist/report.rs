@@ -91,6 +91,24 @@ pub struct Estimate {
     pub applicability: Vec<String>,
 }
 
+/// A Tier 3 estimate under importance sampling (docs/errdist.md §5.4.1): the estimate, and how
+/// its inputs were drawn.
+#[derive(Clone, Debug, Serialize, Default)]
+pub struct IsEstimate {
+    #[serde(flatten)]
+    pub estimate: Estimate,
+    /// "is" (plain estimates in `Report::estimates` carry no field: plain sampling).
+    pub sampling: String,
+    /// The proposal: name, alpha, description.
+    pub proposal: String,
+    /// Effective sample size sum(w)^2 / sum(w^2).
+    pub ess: f64,
+    /// The largest single input's share of the weighted P(differ).
+    pub wmax_share: f64,
+    /// P(output NaN / Inf) per output, with a 95% interval.
+    pub p_nonfinite: (f64, f64, f64),
+}
+
 #[derive(Clone, Debug, Serialize, Default)]
 pub struct PairMoments {
     pub mean_r: f64,
@@ -208,6 +226,12 @@ pub struct Report {
     /// The output's errstate file (--errstate), the next kernel's input (docs/errdist.md §10).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub errstate: Option<String>,
+    /// Tier 3 under importance sampling (--is), kept apart from `estimates` (never the
+    /// headline, not cross-checked), or why it was refused (the plain estimate stands).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_estimate: Option<IsEstimate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_refused: Option<String>,
 }
 
 /// An analytic estimate against Tier 3: agreement means |p - p3| <= max(5% of p3, half Tier

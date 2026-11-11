@@ -1,0 +1,38 @@
+name = "probe_redux_f32_paths"
+description = """
+Probe (C-WARP, L-ROSETTA) for redux.sync.{min,max}[.abs][.NaN].f32 with the full mask reached
+by the lanes of a warp through different paths (if / else on lane parity, joined before the
+redux), over NaNs (payloads of both signs), signed zeros, infinities, subnormals and random
+words, one mix per warp (kernel.ptx, gen.py). A full-mask redux.sync waits for every live lane,
+so the certificate holds. expected/ is GB300's output (`ptxv hw`)."""
+ptx = "kernel.ptx"
+entry = "redux_f32_paths"
+grid = [1, 1, 1]
+block = [512, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [512]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

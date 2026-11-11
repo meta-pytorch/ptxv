@@ -219,6 +219,61 @@ pub fn tc_fence_contract(v: &mut Verdict, m1: &Machine, check: &mut dyn FnMut(Ma
     }
 }
 
+/// ASSUME(S-MBAR-SCOPE): races of a PTX check that are gone when an async unit's mbarrier
+/// completion (TMA, cp.async.bulk, st.async, tcgen05.commit, CLC) counts as performed by a
+/// thread of the mbarrier's CTA instead of its issuing thread (`Launch::async_mb_dest`)
+/// become contract findings. The PTX ISA gives the complete-tx `.release` semantics at
+/// cluster scope but does not say which thread performs it (9.7.15.16.9: the completion of
+/// "the asynchronous instruction ... initiated by the executing thread"); attributed to the
+/// issuer, a `.cta` wait in another CTA does not pair with it. `check` reruns `m1` that way
+/// when `v` has races and the launch has clusters (only when that rerun is complete).
+pub fn mbar_async_contract(
+    v: &mut Verdict,
+    m1: &Machine,
+    check: &mut dyn FnMut(Machine) -> Verdict,
+) {
+    if m1.k.front != ptxv_ir::Front::Ptx
+        || m1.launch.async_mb_dest
+        || !v.findings.iter().any(|x| x.kind == "race")
+        || m1.launch.grids.iter().all(|g| g.cluster_size() <= 1)
+    {
+        return;
+    }
+    let mut l = (*m1.launch).clone();
+    l.async_mb_dest = true;
+    let vf = check(Machine::new(m1.k.clone(), Arc::new(l)));
+    if !vf.complete {
+        v.notes.push(
+            "the rerun with async mbarrier completions at the mbarrier's CTA (S-MBAR-SCOPE) was incomplete: races kept as races"
+                .into(),
+        );
+        return;
+    }
+    let mut n = 0;
+    for x in v.findings.iter_mut().filter(|x| x.kind == "race") {
+        if !vf
+            .findings
+            .iter()
+            .any(|y| y.sig == x.sig && y.kind == "race")
+        {
+            x.kind = "contract".into();
+            x.msg = format!(
+                "{}: ordered only if an async unit's mbarrier complete-tx (TMA, cp.async.bulk, st.async, tcgen05.commit) counts as performed in the mbarrier's CTA; the PTX ISA attributes it to the issuing thread's instruction, whose CTA a .cta-scoped wait does not include (S-MBAR-SCOPE: wait at .cluster scope)",
+                x.msg
+            );
+            n += 1;
+        }
+    }
+    if n > 0 {
+        v.notes.push(format!(
+            "{n} race(s) are ordered when async mbarrier completions count as the mbarrier CTA's (S-MBAR-SCOPE): reported as contract"
+        ));
+        if !v.assumptions.iter().any(|a| a == "S-MBAR-SCOPE") {
+            v.assumptions.push("S-MBAR-SCOPE".into());
+        }
+    }
+}
+
 /// Level 2 for a check that takes one machine: runs `check` on the hardware-model machine
 /// of `m1` and classifies `v1`'s findings in place.
 pub fn run(

@@ -650,6 +650,80 @@ The ulp-scale mean, std and mean |.| leave out outputs whose exact value is 0 or
 the output format, where e / ulp(y) is unbounded. A note gives the count; P(differ) and the
 PMF keep those outputs.
 
+#### 5.4.1 Importance sampling
+
+`is.rs`; `ptxv errdist --is PROPOSAL.json`. A second Tier 3 run draws its inputs from a
+proposal q instead of the spec p. The report keeps it apart from the plain estimate
+(`is_estimate`, or `is_refused` with the reason). It is never the headline and never
+cross-checked against the analytic tiers.
+
+```json
+{"name": "exp80-tail", "alpha": 0.1, "description": "...",
+ "tensors": {"x": {"elems": {"loc_scale": {"loc": 89.12284, "scale": 0.7}},
+                   "scales": [null], "outlier_prob": null}}}
+```
+
+- **What is tilted.** The real draws, never the codes: per tensor the read elements (`spec`,
+  `loc_scale`, `per_elem` [[index, {loc, scale}], ...], `histogram` {edges, probs}), each
+  `scales` entry, and the outlier probability. Quantization stays the spec's deterministic
+  map. `loc_scale` keeps the family (normal: mean and std; laplace, student_t: mean and scale;
+  log_normal: mu and sigma). `histogram` takes bounded laws (uniform, histogram) and must
+  cover the spec's support. Input errors, pair-drawn values and recipe-filled scale buffers
+  are not tilted. `per_elem` may name only elements the program reads.
+- **Weights.** log w = log p − log q over the tilted factors, with q the defensive mixture
+  α p + (1 − α) q_tilt. One stream per input picks the component, so every weight is at most
+  1 / α. Every density is closed form at the drawn point. A law without one (discrete laws),
+  or q = 0 where p > 0, is an error, and the run is refused; the weight is never set to 1.
+  The mixture choice and the tilted draws use streams disjoint from the spec's. With α = 1
+  the inputs are the plain inputs bit for bit.
+- **Estimates.** Per input, f = its fraction of outputs that differ, its fraction of
+  non-finite outputs, and its fraction per output-ulp bin. The estimate is Σ w f / n,
+  unnormalized: p and q are normalized densities, so it is unbiased. The variance is
+  (Σ (w f)² / n − (Σ w f / n)²) / (n − 1), the interval is normal at 95%, and the effective
+  sample size is ESS = (Σ w)² / Σ w².
+- **Gates (fail closed).**
+  - ESS ≥ max(200, n / 50).
+  - No single input holds more than 5% of the weighted P(differ) or P(non-finite). A PMF bin
+    over 5% is left out and listed.
+  - No log w is NaN or +∞, and `sample_is` returned no error.
+  - Where plain sampling resolves the value (95% half-width ≤ 50%), IS and plain agree within
+    their combined 99.9% interval. The IS run uses its own input indices (from 2^40;
+    `PTXV_IS_FIRST` overrides).
+
+With a defensive mixture the ESS is about α n whenever the tilt is strong, so the ESS gate
+bites only for small α. A whole-tensor shift of 0.5 sd over 256 to 2048 elements gives a
+log-likelihood ratio with sd 8 to 23. Its q-branch weights then vanish and the estimate rests
+on the α share of plain draws. Useful tilts move a few elements (`per_elem`) or many elements
+slightly (a `histogram` at 0.49 / 0.51).
+
+Tests (`crates/cli/tests/errdist_is.rs`, `is.rs` unit tests):
+
+| test | row | result |
+|---|---|---|
+| α = 1 | c_sum_naive U[0, 1), 3,000 inputs | P(differ) and the PMF bins bitwise equal to plain |
+| vs plain (α 0.2) | c_softmax_stable N(0, 1), `per_elem` ±0.5 sd on 8 elements | 0.689 vs 0.684 plain, ESS 9,313 / 20,000 |
+| vs plain (α 0.2) | c_dot_bf16acc U[0, 1), `histogram` 0.49 / 0.51 | 0.160 vs 0.159, ESS 13,366 |
+| vs plain (α 0.2) | c_sum_naive U[0, 1), `histogram` 0.49 / 0.51 | 0.881 vs 0.884, ESS 13,303 |
+| known answer | c_exp_one, x ~ N(80, 2), q = N(88.72 + 0.4, 0.7), α 0.1, 20,000 inputs | P(non-finite) 6.408e-6 vs 6.461e-6 exact (−0.8%) |
+| degenerate | c_exp_one, q = N(88.72, 0.05), α 0.001 | refused: ESS 9 < 400 |
+
+c_exp_one is `ex2.approx.f32(x · log2 e)` (Triton tl.exp, captured on GB300). Its output is
++∞ exactly when RN_f32(x) ≥ t = 88.72284, the smallest f32 with RN(t · log2 e) ≥ 128, so
+P = 1 − Φ((m − 80) / 2) with m the midpoint below t. Plain sampling expects 0.13 events in
+20,000 inputs. Over 11 spec seeds the 20,000-input IS estimate falls within −1.3% to +1.1%
+(predicted sd 0.9%). At 400,000 inputs it gives +0.29% and −0.09% (95% half-width 0.38%).
+
+Each of four mutants fails at least one test:
+- the weight without the defensive term (known answer, vs plain, the log w unit test);
+- the per-element density read at index + 1 (vs plain, the log w unit test);
+- the self-normalized estimate Σ w f / Σ w (only the estimator unit test: at these sizes
+  Σ w / n is within the integration tests' tolerances);
+- the ESS gate disabled (degenerate: the share gate still refuses, but with a different
+  reason).
+
+Not yet: Tier 2 under IS (per-input conditional laws), quantiles from the weighted CDF,
+GB300 runs on proposal inputs, and the proposal search.
+
 ## 6. Pairs
 
 Both kernels end in the same final rounding of y + δ_K to the f32 grid of y's binade, with
@@ -1294,6 +1368,51 @@ headline is never worse than Tier 3.
 Each report notes the variance budget by site class (e.g. softmax torch: f32 fma 64%, f32
 add 19%, the exp2 slice before its last rounding 16%).
 
+**Float trajectory (opt-in, N-ERRDIST-NL-FTRAJ).** `PTXV_ERRDIST_LIN_TRAJ=float` linearizes
+around the computed trajectory instead of the real one. At each nominal input every non-output
+op takes its bit-exact value (`Prog::eval`). Its local law is the rounding of the exact result
+of its computed arguments, and the adjoints are taken there. The method ends in "expanded
+around the float trajectory". `both` selects per site (below); `all` reports the real, float
+and per-site estimates, in that order. Pairs always use the real trajectory. This matters where a value exists only because of rounding.
+Kahan's compensation c = (t − s) − v is identically 0 in real arithmetic, so the real
+trajectory never sees the roundings of x − c.
+
+| c_sum_kahan (Triton, 4 × 512) | Tier 3 | real trajectory | float trajectory | GB300 |
+|---|---|---|---|---|
+| N(0, 1) | 0.406 | 0.207 | 0.398 | 0.403 [0.398, 0.408] |
+| U[0, 1) | 8.4e-3 | 1.5e-6 | 6.5e-3 | 8.6e-3 [8.3e-3, 8.9e-3] |
+
+Under U[0, 1) the per-class local laws match the bit-exact errors (`PTXV_NL_DIAG`: f32 FMA rms
+0.106 observed vs 0.106 modelled; 0.022 modelled on the real trajectory). The remaining 25% is
+in the propagation, not in the local laws.
+
+**Per-site trajectory (`PTXV_ERRDIST_LIN_TRAJ=both`).** Every site takes its local law from the
+float trajectory. Its sensitivity is the float adjoint where that agrees with the real-trajectory
+adjoint (|g_float − g_real| ≤ 2^-10 (|g_float| + |g_real|)). At the other (flagged) sites the
+float adjoint carries the site's own rounding through the values above it, so it is replaced:
+by default with the adjoint of a float evaluation that keeps the site and every op above it
+unrounded (v_k := its exact value, `KModel::state_keep`); with `PTXV_ERRDIST_BOTH_FLAGGED=real`
+with the real-trajectory adjoint. The method ends in "per-site trajectory". Single kernels only.
+
+The float trajectory regresses one sweep point: var_twopass with mean 300 and std 0.1 (P(differ):
+Tier 3 0.358, GB300 0.355, real 0.367, float 0.458). The mean's float adjoint carries all the
+sum's roundings (Σ d_i = −E, E the mean's computed error). The default per-site rule gives 0.419
+there and the `real` rule 0.367. Scorecard (`tools/errdist_scorecard.py`, 22 rows, 148 sweep
+points; aligned = |P_T2 − P_GPU| ≤ max(5%, half the GB300 95% interval) and TV ≤ 0.05 on signed
+log2-ulp buckets):
+
+| trajectory | rows aligned | sweep points aligned |
+|---|---|---|
+| real | 14 | 94 |
+| float | 15 | 103 |
+| per-site (default rule) | 15 | 105 |
+| per-site (`real` rule) | 15 | 103 |
+
+Both per-site rules keep the float trajectory's Kahan results (N(0, 1) 0.399, U[0, 1) 6.5e-3).
+The default rule gains softmax_naive N(10, 3) and softmax_stable N(50, 3) over float. The `real`
+rule gains var_twopass N(300, 0.1) and softmax_naive N(10, 3), and loses softmax_stable N(30, 3)
+and N(70, 3). The four softmax points lie within 0.005 of the TV threshold.
+
 ### 9.4 Pairs
 
 `agg.rs` `Ctx::joint`, N-ERRDIST-NL-JOINT.
@@ -1434,6 +1553,15 @@ GB300 (`--gpu-trials 32`, GPU 0, normal spec):
 | softmax pair | 0.660 | 0.712 (L1 rejected, best = Tier 3) |
 | rmsnorm pair | 0.136 | 0.156 (rejected) |
 
+
+**Scorecard against GB300.** `tools/errdist_scorecard.py` scores Tier 2 against
+stored GB300 histograms: 24 rows (softmax, variance, dot, sum and log-sum-exp pairs) plus
+152 sweep points (mean × std grids; dot scale × distribution). The GB300 data were measured once
+with `--gpu-trials` on the same cubins (`gpu-ref`). A scorecard reruns only Tier 3 and the
+analytic tiers (`--gpu-trials 0`) and compares with a stored baseline:
+`errdist_scorecard.py run --name NAME --mode float --sweeps --baseline real-...`.
+Rule: |P_T2 − P_GPU| ≤ max(5%, half the GB300 95% interval) and TV ≤ 0.05 on signed log2 ulp
+buckets. Data directory: `$PTXV_SCORECARD_DATA` (cases, specs, gpu_ref.json, scorecards/).
 
 ### 9.8 What falls back to Tier 3, and why
 

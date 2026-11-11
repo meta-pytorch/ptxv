@@ -25,4 +25,7 @@ value = 5
 
 [[variants]]
 id = "good"
-expect = ["clean"]
+# PTX: the exited lane leaves the warp short at `bar.sync` (E-ALIGNED, part of the warp
+# exited: a contract violation); GB300 counts the warp's arrival and completes, bitwise.
+expect = ["violation"]
+expect_sass = ["clean"]

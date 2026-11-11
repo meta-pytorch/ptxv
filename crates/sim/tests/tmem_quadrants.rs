@@ -25,7 +25,15 @@ fn tmem_quadrants_follow_linear_thread_rank() {
     std::fs::write(&source, &ptx).unwrap();
     ptxv_sass::ptxas(&source, &cubin, &case.m.arch).unwrap();
     for k in [
-        ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap(),
+        ptxv_ptx::parse_kernel_for(
+            &ptx,
+            Some(&case.m.entry),
+            case.m
+                .ptxas_toolkit
+                .as_deref()
+                .and_then(ptxv_ptx::toolkit_version),
+        )
+        .unwrap(),
         ptxv_sass::load_cubin(&cubin, &case.m.entry).unwrap(),
     ] {
         for block in [[128, 1, 1], [32, 4, 1], [32, 1, 4], [16, 2, 4]] {

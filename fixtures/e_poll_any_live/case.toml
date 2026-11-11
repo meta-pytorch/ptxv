@@ -1,0 +1,43 @@
+name = "e_poll_any_live"
+description = """
+E-POLL-ANY's liveness condition: a relaxed load whose value is stored after a later strong
+load (a live register at the end of its step) does not commute with the flag store; both
+outcomes are reached (good, nondeterministic). DEAD: the value unused: clean."""
+ptx = "kernel.ptx"
+entry = "e_poll_any_live"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[variants]]
+id = "good"
+summary = "the loaded flag is stored later"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "DEAD"
+summary = "the loaded flag is not used"
+marker = "@USE"
+find = "add.u32 %r5, %r3, %r4;"
+replace = "add.u32 %r5, %r4, 3;"
+expect = ["clean"]

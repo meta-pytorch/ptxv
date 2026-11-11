@@ -318,6 +318,44 @@ pub struct State {
     pub podd: Vec<f64>,
 }
 
+/// The operating point of the linearization (N-ERRDIST-NL-FTRAJ).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Trajectory {
+    /// Every op at its real value on real arguments (the original model).
+    #[default]
+    Real,
+    /// Every op that is not an output at its computed (bit-exact, `Prog::eval`) value: an
+    /// op's local error law is that of rounding the exact result of its *computed*
+    /// arguments, and the adjoints are taken there. Values that are rounding artefacts (a
+    /// Kahan compensation, zero in real arithmetic) then carry their computed magnitude, so
+    /// the roundings they feed become sites.
+    Float,
+    /// Laws as in `Float`; each site's sensitivity is the float one where it agrees with the
+    /// real one, else (flagged sites) the adjoint at the float trajectory with the site's own
+    /// rounding left out: the op keeps the exact result of its computed arguments and every op
+    /// above it its exact result (`KModel::state_keep`). The two-pass mean is the canonical
+    /// flagged site: on the float trajectory sum(x - m) = -n eps_m, so its sensitivity there
+    /// is its own rounding error (the per-op recipe).
+    Both,
+}
+
+impl Trajectory {
+    /// From `PTXV_ERRDIST_LIN_TRAJ`: `real` (default), `float`, `both` (the per-site
+    /// selection), or `all` (the three estimates, for comparison). Unknown values are an
+    /// error.
+    pub fn from_env() -> Result<Vec<Trajectory>, String> {
+        match std::env::var("PTXV_ERRDIST_LIN_TRAJ").as_deref() {
+            Err(_) | Ok("") | Ok("real") => Ok(vec![Trajectory::Real]),
+            Ok("float") => Ok(vec![Trajectory::Float]),
+            Ok("both") => Ok(vec![Trajectory::Both]),
+            Ok("all") => Ok(vec![Trajectory::Real, Trajectory::Float, Trajectory::Both]),
+            Ok(o) => Err(format!(
+                "PTXV_ERRDIST_LIN_TRAJ={o}: expected real, float, both or all"
+            )),
+        }
+    }
+}
+
 /// A kernel prepared for linearization: its program, the tables of its slices and MUFU ops,
 /// and per op the table it uses and its canonical hash (shared sub-computations of pairs).
 // ASSUME(N-ERRDIST-NL-LIN): first-order propagation of local errors at nominal inputs.
@@ -329,6 +367,8 @@ pub struct KModel<'a> {
     /// Per leaf buffer (`Prog::bufs` index): the input's error model (docs/errdist.md §2.1),
     /// a local error of the leaf.
     pub in_err: Vec<Option<super::super::spec::InputError>>,
+    /// The linearization's operating point.
+    pub traj: Trajectory,
 }
 
 fn low_bit(v: f64) -> i32 {
@@ -372,7 +412,14 @@ impl<'a> KModel<'a> {
             op_tab,
             canon,
             in_err: vec![],
+            traj: Trajectory::Real,
         }
+    }
+
+    /// The linearization's operating point (N-ERRDIST-NL-FTRAJ).
+    pub fn with_trajectory(mut self, t: Trajectory) -> KModel<'a> {
+        self.traj = t;
+        self
     }
 
     /// The inputs' error models from the spec (N-ERRDIST-INERR).
@@ -388,6 +435,27 @@ impl<'a> KModel<'a> {
 
     /// Real values, lattices and local laws at the given leaf values.
     pub fn state(&self, w: &[crate::mma_lp::Operand]) -> State {
+        self.state_impl(w, self.traj, None)
+    }
+
+    /// The state on the real trajectory, whatever this model's mode.
+    pub fn state_real(&self, w: &[crate::mma_lp::Operand]) -> State {
+        self.state_impl(w, Trajectory::Real, None)
+    }
+
+    /// The float trajectory with op `k`'s own rounding left out: `k` keeps the exact result
+    /// of its computed arguments and every op above it its exact result on its (modified)
+    /// arguments (`Trajectory::Both`, flagged sites).
+    pub fn state_keep(&self, w: &[crate::mma_lp::Operand], k: u32) -> State {
+        self.state_impl(w, Trajectory::Float, Some(k))
+    }
+
+    fn state_impl(
+        &self,
+        w: &[crate::mma_lp::Operand],
+        traj: Trajectory,
+        keep: Option<u32>,
+    ) -> State {
         let p = self.p;
         let n = p.ops.len();
         let mut s = State {
@@ -399,6 +467,28 @@ impl<'a> KModel<'a> {
         };
         let ul32 = |v: f64| ulp_out(v, Format::F32);
         let xor = |a: f64, b: f64| a * (1.0 - b) + b * (1.0 - a);
+        // ASSUME(N-ERRDIST-NL-FTRAJ): float-trajectory operating point (opt-in).
+        // Float trajectory: the computed value of every op, and which ops keep the exact
+        // result of their computed arguments instead (the outputs: their own rounding is the
+        // last site, positioned by that value; with `keep`, op k and the ops above it).
+        let fp: Option<(Vec<f32>, Vec<bool>)> = (traj != Trajectory::Real).then(|| {
+            let mut is_out = vec![false; n];
+            for &o in p.outputs.iter().flatten() {
+                is_out[o as usize] = true;
+            }
+            // `keep`: op k and the ops above it are not taken at their computed values.
+            if let Some(k) = keep {
+                let mut above = vec![false; n];
+                above[k as usize] = true;
+                for i in (k as usize + 1)..n {
+                    above[i] = op_args(&p.ops[i]).iter().any(|&a| above[a as usize]);
+                }
+                for (o, a) in is_out.iter_mut().zip(above) {
+                    *o |= a;
+                }
+            }
+            (p.eval(&w.to_vec()), is_out)
+        });
         for (i, op) in p.ops.iter().enumerate() {
             // The bit of operand x at lattice exponent l.
             let bit = |s: &State, x: usize, l: i32| if s.lat[x] == l { s.podd[x] } else { 0.0 };
@@ -632,6 +722,16 @@ impl<'a> KModel<'a> {
                         }
                     },
                 },
+            };
+            let v = match &fp {
+                Some((fv, is_out))
+                    if !is_out[i]
+                        && !matches!(op, Op::Leaf { .. } | Op::Const(_))
+                        && fv[i].is_finite() =>
+                {
+                    fv[i] as f64
+                }
+                _ => v,
             };
             s.v[i] = v;
             s.lat[i] = lat;

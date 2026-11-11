@@ -1,0 +1,40 @@
+name = "e_warp_order_div"
+description = """
+E-WARP-ORDER's divergence condition (probes/warp_order mode 8, `diverge`): a writer lane and a
+reader lane on the two sides of a lane-dependent branch are not ordered by program order; the
+reader's two loads may see 0, 1 or 2. good must not be clean on either front (the accesses are
+volatile: relaxed, so nondeterministic rather than a race). CONV: the same accesses by the
+converged warp on consecutive instructions: program order on SASS (E-WARP-ORDER, validated by
+probes/warp_order modes 0-6), deterministic. Under the PTX model the lanes are threads with no
+bar.warp.sync between them, so the reader may see any coherent pair (0, 0) .. (2, 2); the PTX
+front reports CONV clean (a PTX-contract miss: it runs each instruction of a converged split for
+all lanes in one step, and strong accesses are not races, so only the program-order outcome
+appears; with plain accesses the same shape is a race labelled latent-needs-divergence)."""
+ptx = "kernel.ptx"
+entry = "e_warp_order_div"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "writer and reader on two sides of a branch"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "CONV"
+summary = "the same stores and loads predicated per lane on consecutive instructions of the converged warp"
+marker = "@DIV1"
+find = "@%p1 bra WRITER;"
+replace = "@%p1 st.volatile.shared.u32 [%r2], %r10; @%p2 ld.volatile.shared.u32 %r12, [%r2]; @%p1 st.volatile.shared.u32 [%r2], %r11; @%p2 ld.volatile.shared.u32 %r13, [%r2]; bra JOIN;"
+expect = ["clean"]

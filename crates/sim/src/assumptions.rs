@@ -388,6 +388,25 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |k| any(k, |o| matches!(o, Op::BarSync { count: Some(_), .. })),
     },
     Assumption {
+        id: "E-BAR-CUT",
+        kind: "code",
+        status: "argued",
+        title: "a thread that reaches a counted barrier only through an all-thread barrier does not arrive in its open generation",
+        applies: |k| {
+            any(k, |o| matches!(o, Op::BarSync { count: Some(_), .. }))
+                && any(k, |o| {
+                    matches!(
+                        o,
+                        Op::BarSync {
+                            count: None,
+                            arrive: false,
+                            ..
+                        }
+                    )
+                })
+        },
+    },
+    Assumption {
         id: "E-BAR-RED",
         kind: "code",
         status: "validated",
@@ -599,6 +618,13 @@ pub const REGISTRY: &[Assumption] = &[
         applies: mbar,
     },
     Assumption {
+        id: "S-MBAR-SCOPE",
+        kind: "code",
+        status: "argued",
+        title: "an mbarrier wait synchronizes only with the phase's updates it is morally strong with; SASS SYNCS / PHASECHK scopes from ptxas's lowering",
+        applies: |k| cluster(k) && mbar(k),
+    },
+    Assumption {
         id: "S-MBAR-MEM",
         kind: "code",
         status: "validated",
@@ -643,6 +669,13 @@ pub const REGISTRY: &[Assumption] = &[
         status: "validated",
         title: "generic smem writes reach the async proxy only via a fence.proxy.async that the write HB and that HB the async op (any thread's: probes/proxy_fence)",
         applies: |k| any(k, |o| matches!(o, Op::TmaStore { .. } | Op::Mma { .. })),
+    },
+    Assumption {
+        id: "S-GPROXY",
+        kind: "code",
+        status: "argued",
+        title: "an async-proxy (TMA / bulk) access of global memory is ordered after a generic access, or another CTA's async access, only through a global proxy fence (fence.proxy.async[.global]) on the happens-before path",
+        applies: |k| any(k, |o| matches!(o, Op::TmaLoad { .. } | Op::TmaStore { .. })),
     },
     Assumption {
         id: "S-MULTIMEM",
@@ -779,7 +812,7 @@ pub const REGISTRY: &[Assumption] = &[
         id: "S-SCOPE",
         kind: "code",
         status: "validated",
-        title: "strong accesses and fences synchronize by PTX scope rules; mbarrier scopes treated as sufficient",
+        title: "strong accesses and fences synchronize by PTX scope rules",
         applies: |k| {
             cluster(k)
                 || any(k, |o| {
@@ -804,7 +837,7 @@ pub const REGISTRY: &[Assumption] = &[
         id: "S-CLUSTER-LIFE",
         kind: "code",
         status: "argued",
-        title: "remote smem accesses must happen-before some exit of the target CTA",
+        title: "remote smem accesses must happen-before some exit of the target CTA, or land on an mbarrier phase it waited on",
         applies: cluster,
     },
     Assumption {
@@ -1059,6 +1092,20 @@ pub const REGISTRY: &[Assumption] = &[
                         // add / sub.f32x2 alone is FFMA2 a * 1.0 + b; contracted: FFMA2 a * b + c.
                         || matches!(&i.op, Op::Ffma2 { b, .. }
                             if b.0 != ptxv_ir::Val::Imm(0x3f80_0000)))
+                        && (t.starts_with("add.") || t.starts_with("sub."))
+                })
+        },
+    },
+    Assumption {
+        id: "PTX-FMAD-X2-VERSION",
+        kind: "code",
+        status: "validated",
+        title: "PTX .f32x2 contraction follows the case's ptxas version: 13.0 any equal modes, 13.1 / 13.3 plain pairs only; unknown versions refuse where they differ (probes/fmad2_v133)",
+        applies: |k| {
+            k.front == Front::Ptx
+                && k.code.iter().any(|i| {
+                    let t = i.text.trim_start();
+                    matches!(&i.op, Op::Ffma2 { b, .. } if b.0 != ptxv_ir::Val::Imm(0x3f80_0000))
                         && (t.starts_with("add.") || t.starts_with("sub."))
                 })
         },
@@ -1400,6 +1447,20 @@ pub const REGISTRY: &[Assumption] = &[
         applies: |_| false,
     },
     Assumption {
+        id: "N-ERRDIST-IS",
+        kind: "code",
+        status: "argued",
+        title: "errdist --is: importance-sampled Tier 3 is unbiased (closed-form weights of the drawn values, defensive mixture, gated)",
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-NL-FTRAJ",
+        kind: "code",
+        status: "argued",
+        title: "errdist non-chain tiers 1-2 (opt-in): linearize around the computed float trajectory",
+        applies: |_| false,
+    },
+    Assumption {
         id: "N-ERRDIST-NL-INDEP",
         kind: "code",
         status: "argued",
@@ -1657,6 +1718,13 @@ pub const REGISTRY: &[Assumption] = &[
         kind: "code",
         status: "argued",
         title: "Cor 1a bound: first-order, per-node epsilon",
+        applies: never,
+    },
+    Assumption {
+        id: "N-NUM-TRACK",
+        kind: "code",
+        status: "enforced",
+        title: "num: an element whose tree holds an input-derived value without a tracked derivation is reported untracked, with no error claim",
         applies: never,
     },
     Assumption {

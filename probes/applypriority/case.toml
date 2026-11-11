@@ -1,0 +1,37 @@
+name = "probe_applypriority"
+description = """
+Probe (L-PTX-HINT) for applypriority[.global].L2::evict_normal [a], 128 (SASS CCTL.E.DML2)
+and prefetch.global.L2::evict_last (CCTL.E.PML2): stores, the hints on each warp's line
+(global and generic address), a barrier, then reads of the other warp's line (kernel.ptx,
+gen.py). The data is unchanged. expected/ is GB300's output (`ptxv hw`)."""
+ptx = "kernel.ptx"
+entry = "applypriority"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [64]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

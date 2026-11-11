@@ -1,0 +1,36 @@
+// E-POLL-ANY: a strong load commutes with its location's writes only when its step ends alike
+// for every value (registers may differ only where dead). Here thread 32's relaxed load of the
+// flag is followed, in a later step (after another strong load), by a store of the loaded
+// value: the register is live, so the load must not commute with thread 0's flag store, and
+// both outcomes (0 and 1) must be reached.
+//   good: nondeterministic (out[0] is 0 or 1).
+//   DEAD: the stored value is a constant (the loaded register dead): one outcome, clean.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_poll_any_live(.param .u64 out_p, .param .u64 flag_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [flag_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra READER;
+    mov.u32 %r2, 1;
+    st.relaxed.gpu.global.u32 [%rd2], %r2;
+    bra DONE;
+READER:
+    setp.ne.u32 %p2, %r1, 32;
+    @%p2 bra DONE;
+    ld.relaxed.gpu.global.u32 %r3, [%rd2];
+    ld.relaxed.gpu.global.u32 %r4, [%rd2+4];
+    add.u32 %r5, %r3, %r4;               // @USE
+    st.global.u32 [%rd1], %r5;
+DONE:
+    ret;
+}

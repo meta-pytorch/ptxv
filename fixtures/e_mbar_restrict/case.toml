@@ -1,0 +1,60 @@
+name = "e_mbar_restrict"
+description = """
+S-MBAR-SCOPE: slot reuse across CTAs. The peer gives the slot back with
+fence.release.sync_restrict::shared::cta.cluster + mbarrier.arrive.relaxed.cluster, which
+releases its shared-memory accesses (not its global ones) at cluster scope."""
+ptx = "kernel.ptx"
+entry = "e_mbar_restrict"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "sync_restrict release fence + relaxed cluster arrive gives the slot back"
+marker = "@GREAD"
+replace = "<delete>"
+expect = ["clean"]
+
+[[variants]]
+id = "NOF"
+summary = "the slot is given back with a .release.cta remote arrive"
+marker = "@REL"
+replace = "<delete>"
+expect = ["race"]
+edits = [
+  { marker = "@ARRIVE", find = "relaxed.cluster", replace = "release.cta" },
+  { marker = "@GREAD", replace = "<delete>" },
+]
+
+[[variants]]
+id = "RLX"
+summary = "the slot is given back with a relaxed cluster arrive and no fence"
+marker = "@REL"
+replace = "<delete>"
+expect = ["race"]
+edits = [{ marker = "@GREAD", replace = "<delete>" }]
+
+[[variants]]
+id = "GM"
+summary = "rank 0 also reads the global word rank 1 wrote before the give-back"
+expect = ["race"]
+
+[[variants]]
+id = "GMF"
+summary = "as GM with fence.acq_rel.cluster before the relaxed cluster arrive"
+marker = "@REL"
+find = "fence.release.sync_restrict::shared::cta.cluster"
+replace = "fence.acq_rel.cluster"
+expect = ["clean"]

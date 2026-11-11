@@ -1,0 +1,3 @@
+{"name": "sum-hist", "alpha": 0.2,
+ "description": "x: histogram tilt toward the upper half, 0.49 / 0.51",
+ "tensors": {"x": {"elems": {"histogram": {"edges": [0.0, 0.5, 1.0], "probs": [0.49, 0.51]}}}}}

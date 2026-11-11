@@ -979,6 +979,17 @@ same mbarriers.
   rule is modeled: different warps reaching one barrier from different pcs (what
   compute-sanitizer synccheck also flags, the FA4 warp-role bug's pre-fix) is clean (GB200 completes).
   `IR Op::BarSync::aligned`, `exec.rs` `aligned_bar_others`, `sass` `aligned_bars`.
+- **Part of the warp exited** (2026-11-09, fixtures/e_aligned_exit, e_aligned_exit2): on the
+  PTX front an aligned barrier executed after some lanes of the warp exited is a `violation`
+  (`aligned-bar-exit`): the warp does not reach it in uniform control, which the PTX ISA
+  requires of aligned barriers (the PTX contract, as for a lane guarded off, AB3; MISS 37).
+  The SASS front, the hardware model, does not report it: GB300 counts the warp's arrival
+  (E-BAR-EXIT) and completes (e_aligned_exit 400/400, the two-warp counted control 200/200,
+  probes/bar_exit, bar_exit_warp). ptxas often predicates such a barrier (`@P0 BAR.SYNC 0x0;
+  @P0 EXIT`), so the other lanes are live and guarded off at the same `BAR`: on SASS they count
+  as arrived in that generation, neither waiting nor releasing (`Machine::bar_skip_lanes`,
+  `Bar::skipped`); before, this was reported as a divergent aligned barrier, a false alarm.
+  Lanes at a *different* aligned barrier or `WARPSYNC` are still a violation (AB1).
 - Where: `exec.rs` `split_enabled`, `exec`.
 - Status: **validated.** The PTX ISA requires it, and B16 (partial-warp alloc) hangs GB300.
   Named barriers: two halves of a warp at two `bar.sync 1, 64` hang GB300, at two
@@ -993,12 +1004,16 @@ warp in one step**: every lane's source registers are read, then every destinati
 - Status: **argued.** Both are `.sync.aligned` in PTX (E-ALIGNED), so the whole warp executes
   them together. A partial warp gives an error, not a verdict. Rung 2's Triton epilogue stages
   its tile through `stmatrix`, and its output matches GB300 bitwise.
-- SASS `SHFL` (no member mask) waits for the warp's other live lanes, except lanes parked at
-  a `BSYNC` (2026-11-06): those rendezvous there with the lanes their `BSSY` recorded, so they
-  do not reach the SHFL first. ptxas's warp-aggregated atomic (`VOTEU.ANY / FLO / POPC /
-  @leader ATOMG / SHFL.IDX` in a branch a subset of lanes takes; DeepEP hybrid dispatch,
-  Triton MoE `_verify_kernel`) then shuffles among the lanes in the region, as the hardware
-  does, instead of deadlocking.
+- SASS `SHFL` (no member mask) does not wait for the rest of the warp (MISS 39, 2026-11-10):
+  it runs with the split that reaches it, and reading a lane outside that split is a fault.
+  Validated on GB300 (`fixtures/e_warpcoll_split`, `fixtures/e_warpcoll_bin`;
+  CUDA 13.0): with the BSYNC before the SHFL removed, the half-warp that arrives first
+  shuffles alone and reads 0 from the inactive lanes, 1000 of 1000 runs (also with the other
+  half 100000 loop iterations behind); each half running its own fast-path SHFL reads 0 the
+  same way. Until 2026-11-10 the SHFL waited for every other live lane not parked at a
+  `BSYNC`, another `SHFL` or a `WARPSYNC`, which merged the early split with the late one and
+  reported the joined exchange as clean. The convergence ptxas relies on comes from
+  `BSYNC` / `WARPSYNC` / `BRA.DIV`, which the simulator models (E-BSYNC, E-COLLECTIVE).
 - PTX `redux.sync` with a membermask naming a subset of the warp (an immediate other than
   0xffffffff, or a register; 2026-11-07): the lanes the mask names (live ones) execute it
   together and it reduces over them. A mismatch between the executing lanes and the mask, or
@@ -1079,7 +1094,8 @@ slow path = `WARPSYNC.COLLECTIVE Rm, end; op...; ENDCOLLECTIVE; end:`.
 ### E-COLLECTIVE-ALL · code
 **ptxas's divergent path of a non-aligned `barrier.sync`** (CuTeDSL `barrier(aligned=False)`;
 FA4's fix for its warp-role barrier bug): `UMOV UR, -1; BRA.DIV UR, slow; BAR.SYNC id, n` with the slow path
-`WARPSYNC.COLLECTIVE.ALL end; BAR.SYNC R, R; ENDCOLLECTIVE; end:` (R = n << 16 | id).
+`WARPSYNC.COLLECTIVE.ALL end; BAR.SYNC R, R; ENDCOLLECTIVE; end:` (R = n << 16 | id; n = 0
+for an all-thread `barrier.sync id`: all threads).
 - `WARPSYNC.COLLECTIVE.ALL` parks the arriving lanes until every live lane of the warp is parked
   at such an instruction, at any pc (two branches each with their own barrier.sync have two);
   then all of them go on, their histories joined, each into its own region. An exiting lane
@@ -1104,6 +1120,8 @@ FA4's fix for its warp-role barrier bug): `UMOV UR, -1; BRA.DIV UR, slow; BAR.SY
   its exited or nonexistent lanes arriving with its live ones (BAR is executed per warp). A
   warp none of whose lanes arrives (all exited) adds nothing. The explorer's barrier
   reductions (`arv_current`, `bar_oversub`) bound each warp that may arrive by 32.
+- A warp with lanes already exited at an *aligned* barrier is a PTX-contract violation
+  (E-ALIGNED, 2026-11-09); the counting below is the SASS / GB300 behavior.
 - Where: `exec.rs` `bar_try_release`, `Op::Exit`.
 - Status: **validated** (2026-10-30, `probes/bar_exit` on GB300):
   - whole warp exited: completes;
@@ -1200,6 +1218,45 @@ FA4's fix for its warp-role barrier bug): `UMOV UR, -1; BRA.DIV UR, slow; BAR.SY
     walk is reused only by threads that agree on them. Kernels whose barrier ids are all
     immediates keep the earlier region-wide walk (`BarCfg::regid`): the same
     over-approximation, without the per-lane memo cost.
+  - *Walk values* (immediate-id kernels, `PTXV_NO_BAR_VALUES` turns it off). The walk
+    computes integer values on the walked path through MOV, R2UR, IADD3, 32-bit add / sub /
+    and / or / xor / shifts and PLOP3, from immediates and current register values, at most
+    two steps deep; values do not cross a backward branch (a loop counter does not make each
+    iteration a new walk state), and a walk past 2^14 states gives up (the thread may
+    arrive). A
+    register no walked path from the thread's pc writes before a pc (forward may-write
+    dataflow over the region, every successor taken, `Machine::bar_mw`) holds its current
+    value there; others keep the region-wide rule. R2UR takes the first active lane's value:
+    the thread's own value stands for it only when every live lane of its warp is at its pc,
+    in its state, with the same value of the source (`BarKey::Uni`, recorded with the walk's
+    memo key), and the source is not written before the R2UR on any path from there. With
+    values a `bar.sync` whose guard the path decides false is not an arrival. FA4 bwd's role
+    dispatch (`R2UR UR4, R0; UIADD3 UR4, UR4, -0x4; UISETP.GT.U32 UP0, UR4, 0x7`, then
+    `PLOP3` and `@P0 EXIT` at the epilogue) is then followed, so the MMA and load warps no
+    longer count at the compute warps' `BAR.SYNC 0x3, 0x100`. fixtures/e_barwalk (the
+    producers' exit test reads `w - 4`, computed on the path; ptxas computes it in place,
+    `VIADD R0, R0, -0x4`) and unit test `walk_values_decide_the_recomputed_role`, which fails
+    when every register counts as unwritten, when R2UR skips its uniformity check, or when an
+    arrival with an undecided guard is dropped.
+    Bounded checks: the values change which arrivals the reduction commutes, and with it
+    the depth-first order, so a state-capped run can miss a finding it would reach within the
+    cap without them (fixtures/r2_cute_small CM1 on PTX: its deadlock lies within 1M states
+    with values off, past 2.5M with them on; every later arrival on that deadlock's trace is
+    one the walk with values predicts at each earlier state). Complete explorations are
+    unaffected. An incomplete clean run with values on bounds nothing beyond the states it
+    explored; tests/bar_cut.rs runs the CM1 bounded check with values (and E-BAR-CUT) off.
+  - *Uniform registers* (both walks, 2026-11-09). UR and UP hold one copy per warp, and the
+    write analyses above cover the thread's own paths only: a lane group of the warp that
+    has diverged from the thread can write a uniform register the thread then reads. The
+    current value of a uniform register is used only when every live lane of the warp is at
+    the thread's pc in its state (`BarKey::Conv`, recorded with the walk's memo key: every
+    lane's paths are then paths from that pc) and no instruction reachable from there on any
+    path (no barrier filter, no branch decided; any, past an indirect call) writes it
+    (`Machine::bar_uw`); otherwise it is unknown. URZ and UPT are constants. Values a walk
+    computes into a uniform register on its path are unaffected. Unit test
+    `walk_uniform_register_written_by_another_lane_group` (fixtures/e_barwalk good on SASS,
+    the exit test edited to write UP0 and guard the `BAR.SYNC`) fails when the current value
+    is used with lanes 16-31 still before the write.
   - Local reduction: a counted `bar.sync` arrival is local-ample only when at most `count`
     threads may still arrive (`local_ample`); otherwise the synchronization reduction and
     DPOR decide from footprints.
@@ -1224,6 +1281,54 @@ FA4's fix for its warp-role barrier bug): `UMOV UR, -1; BRA.DIV UR, slow; BAR.SY
 - If wrong: *cost* only (more interleavings of arrivals; the reachability count is
   conservative).
 
+### E-BAR-CUT · code
+**A thread that reaches a counted barrier only through an all-thread barrier does not arrive
+in the generation that is open now.**
+- Refines E-BAR-OVER's *who may still arrive* for the local reduction's question: does the
+  `bar.sync id, count` arrival of thread h (guard on) land in the same generation in every
+  order? Thread u is not counted when every walked path from u's pc to a `bar.sync` /
+  `bar.arrive` on `id` first reaches a `bar.sync` A on another id with u's guard on there
+  (decided as E-BAR-OVER's walk decides guards), where A is an all-thread wait barrier at
+  every site of its id (`BarCfg::cut`: immediate id, no thread count, never `bar.arrive`, no
+  barrier named by register in the kernel). Threads parked at A are such threads.
+- Premise (a), on h's warp: every live lane of h's warp arrives at the counted barrier with
+  h (same pc, guard on) or is parked in its current generation; otherwise the cut is not
+  applied. No lane of h's warp can then arrive at A before the generation completes, so the
+  argument below holds whether A counts threads or warps (a warp arrival at A by another lane
+  of h's warp would count h there under warp counting).
+- Why: an all-thread barrier counts threads, not warps (E-BAR-EXIT), and completes only when
+  every live thread of the CTA has arrived. h is live and stays parked in the counted barrier
+  until the current generation completes; it is not counted at A's current generation
+  (bar.sync waits, and no `bar.arrive` names A). So A cannot complete, and u cannot reach the
+  counted barrier, before the current generation completes. If the other threads that may
+  arrive, h's warp included (E-BAR-EXIT rounding), are at most `count`, the generation
+  completes exactly when they have all arrived, in any order, and the arrival is local-ample.
+- Later generations are not covered: the generation-completion footprint (exec.rs, space 14
+  write) and `arv_current` keep E-BAR-OVER's count.
+- Shape: Triton warp specialization with a worker loop (TLX). Worker warps loop through a hub
+  (`BAR.SYNC 0x1`, a role byte from shared memory, `BRX` into the partition), and every
+  partition ends with `BAR.SYNC 0x1`. The walk cannot know the role byte, so every warp may
+  reach every partition's named barriers, but only through the hub's all-thread barrier.
+- `PTXV_NO_BAR_CUT` (or `explore::set_bar_cut(Some(false))`) turns it off.
+- Where: `explore.rs` `bar_cfg` (`BarCfg::cut`), `bar_spills`, `Machine::bar_oversub_x`,
+  `thread_may_arrive` (the `cut` argument; walks stop there).
+- Tests: `fixtures/e_barcut` (good: 37 -> 29 states on PTX, 46 -> 41 on SASS, the same
+  verdict). The mutants each break one premise: BC1 has a path around the all-thread barrier,
+  BC2 guards it off for half-warps (`barrier.sync`), BC3 uses `bar.arrive` on it, BC4 gives
+  it the counted barrier's id, BC5 splits the producer warp between the two barriers
+  (lanes 16-31 skip the counted barrier and wait at the all-thread one: a deadlock under
+  thread counting; the unit test fails without premise (a)). Each keeps its bug class with
+  the cut. The unit test
+  `bar_cut_applies_only_when_its_premises_hold` checks that the arrival is ample in good and
+  in no mutant. `tests/bar_cut.rs` compares classes and outputs with and without the cut on
+  every named-barrier fixture, both fronts.
+- Status: **argued** (from the barrier semantics validated for E-BAR-OVER and E-BAR-EXIT).
+  Premise (a) probed on GB300 (probes/bar_cut_warp, 2026-11-09): a warp whose lanes wait at
+  two barrier ids at once (an all-thread and a counted one, or two counted ones) is an
+  illegal instruction, not a warp count at either; two sites of one id complete. The state
+  premise (a) excludes is thus a failure on the hardware too; the model reports it as a
+  deadlock.
+- If wrong: *miss* (an order of arrivals at the counted barrier not explored).
 
 ### E-BAR-RED · code
 **Barrier reductions (`bar.red`, SASS `BAR.RED` + `B2R.RESULT`).**
@@ -1391,6 +1496,9 @@ so B14 is caught without hiding data races.
   before its later relaxed arrive; the SASS model releases every earlier init there.
 - Where: `exec.rs` `ClusterArrive` / `ClusterWait` / `cluster_try_complete`.
 - Status: **argued** (PTX ISA; ptxas codegen). Rung 1c good kernel bitwise = GB300.
+- Exited threads: **hardware measured** (fixtures/e_cluster_exit, `ptxv hw --runs 50`,
+  2026-11-09): with a warp, half a warp or a whole CTA of a 2-CTA cluster exited before
+  `barrier.cluster.arrive.release` / `wait.acquire`, GB300 completes every run, as the model.
 - If wrong: *miss* if exited threads should block the barrier (hang) or if SYNCS inits need
   the fence after them in hardware; *false alarm* if relaxed arrives release more.
 - Retire: a probe with a thread exiting before the cluster barrier (like E-BAR-EXIT), and a
@@ -2343,7 +2451,8 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
   - **C-GEN.** Every `bar.sync`/`bar.arrive` arrival in generation g is HB-after every
     arrival of generation g-1 (subsumes E-BAR-OVER ambiguity); the lanes of one instruction
     land in one generation. `barrier.cluster`: an arrival in g by a thread that waited on
-    g-1 itself is fine, any other must be HB-after every arrival of g-1.
+    g-1 itself is fine, any other must be HB-after every arrival of g-1. Arrival clocks
+    include Order edges (real-time observation order, S-MBAR-SCOPE `Cover::Order`).
   - **C-ORDER.** Conflicting strong accesses (scoped ld/st, atomics) are HB-ordered, except
     two atomics of the same commutative operation (add/or/and/xor/min/max) with unused
     results that do not acquire (final value order-independent), and likewise any two
@@ -2355,7 +2464,7 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
     atomic step (one instruction instance of one warp) are ordered by lane order
     (E-LOCKSTEP; C-WARP keeps them together in every schedule: flashinfer's routing assigns
     token slots with `ATOMS.ADD`); TMEM allocator operations of a CTA are
-    totally ordered; no try_cancel / CLC response.
+    totally ordered (event order, Order edges included: S-MBAR-SCOPE `Cover::Order`); no try_cancel / CLC response.
     **Fence-acquired reads** (2026-11-08, `Machine::fence_acq`, exec.rs `acquire_pending`).
     A relaxed read or read-modify-write whose observed release a later acquire of its thread
     joins (`fence.acq_rel` / `fence.acquire` / `fence.sc` / `membar`, SASS `MEMBAR` /
@@ -2879,15 +2988,30 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
       as not chunking-oblivious (it was C-POLL's refusal).
     - r4b in group mode: dispatch certifies (docs/rung4.md).
   - **C-WARP.** Lane membership: an instruction whose effect depends on which lanes run it
-    together runs with lanes that became ready at that pc in one event (an instruction or a
-    barrier release: then they meet there in every schedule). Where more lanes joining
+    together runs with lanes that became ready at that pc in one event (an instruction run
+    by lanes that were already together, or a barrier / BSYNC / WARPSYNC release: then they
+    meet there in every schedule). Lanes the model merged only because they stood at the
+    same pc (they arrived by different paths) stay apart until such a release (until
+    2026-11-09 any instruction a merged split ran joined them: MISS 30,
+    fixtures/e_lockstep_nobsync NOBSYNC certified while GB300 differs). In the certificate's
+    run the E-LOCKSTEP join of a SASS load, store or atomic joins only lanes that share a
+    token (`lockstep_groups`; the lanes of one atomic step are in lane order only within
+    one token), and a BSYNC joins only lanes its BSSY recorded in one step with one token
+    (`bsync_groups`): lanes merged at the BSSY may run it apart in another order, and
+    E-BSYNC then releases a part alone. So the run's clocks stay below every order's, and
+    loads, stores, atomics and BSSY by merged lanes need no membership condition. Where more lanes joining
     would change it too (SASS lane collectives, `BRA.U.ANY`, TMEM collectives and uniform
     operations, which run once per lane group; PTX elect / vote / redux / R2UR / BSSY /
     tcgen05.alloc), runs of the same pc by other lane groups of the warp must be HB-ordered
     with it (they cannot meet there in another schedule). SASS per-lane memory and
     synchronization instructions need only the first part (more lanes only add E-LOCKSTEP
     happens-before); SASS lane-local arithmetic, branches and EXIT need neither. PTX
-    `.aligned` ops skip the first part (the explorer waits for all live lanes). BSYNC parks
+    `.aligned` ops skip the first part (the explorer waits for all live lanes), and so do
+    PTX `redux.sync` / `vote.sync` / `match.sync` whose membermask names the whole warp
+    (2026-11-09: the explorer waits for every live lane there too; before, a full-mask
+    `redux.sync.max.f32` reached through an if / else failed the certificate.
+    probes/redux_f32_paths: 16 warps, 8 min / max [.abs] [.NaN] forms over lanes from both
+    sides of a branch, GB300 = both fronts bitwise). BSYNC parks
     only lanes BSSY recorded. A WARPSYNC/BSYNC release need not wait for the order of an
     exited lane's exit: an exit after the arrivals re-checks the release
     (`exit_warpsync_release`, E-BSYNC) and frees the same lanes with the same joined clock
@@ -2982,17 +3106,131 @@ parity p has completed (so parity 1 succeeds immediately after init).
   is delivered as `count` single arrivals.
 - `mbarrier.expect_tx` / `complete_tx` (2026-11-08; SASS `SYNCS.ARRIVE.TRANS64.RED.A0TR` /
   `.A0TX`, `.A0T1`): no arrival, the tx-count raised / lowered (it may go negative), the phase
-  completing when pending and tx are both 0. They are relaxed (PTX ISA): on the thread's own
-  CTA's mbarrier they publish only what the thread's last fence released (`membar_vc`),
-  unlike an arrival. Before, the model joined the issuer's whole clock, so a store published
-  by a bare complete_tx was not a race. On another CTA's mbarrier (SASS `.RED.A0TX` in
-  CUTLASS / cuBLAS kernels) the issuer's whole clock is still joined, stronger than relaxed:
-  the target's waiter must be ordered after the op landed for the cluster-lifetime check
-  (S-CLUSTER-LIFE), and the clock is what carries that. The PTX front refuses that case at
-  run time (unmodeled) instead of over-synchronizing. probes/mbar_expect_tx (register / immediate tx,
+  completing when pending and tx are both 0. They are relaxed (PTX ISA): they publish only
+  what the thread's last fence released (`membar_vc`), unlike an arrival. Before, the model
+  joined the issuer's whole clock, so a store published by a bare complete_tx was not a race.
+  On another CTA's mbarrier (SASS `.RED.A0TX` in CUTLASS / cuBLAS kernels) the issuer's whole
+  clock was joined until 2026-11-09 (for the cluster-lifetime check); that check now counts
+  the observed landing (S-MBAR-SCOPE), and the update is relaxed there too. The PTX front
+  refuses that case at run time (unmodeled). probes/mbar_expect_tx (register / immediate tx,
   shared::cta and shared::cluster addresses, tx below 0, test_wait per step; a fence then
   complete_tx publishing a shared store): GB300 50/50 scrubbed, both front-ends bitwise; its
   `relaxed` variant (no fence) is a race on the PTX front (clean on SASS: S-SMEM-STRONG).
+
+### S-MBAR-SCOPE · code
+**An mbarrier wait synchronizes only with the updates of the observed phase it is morally
+strong with.** Each update of a phase (arrive, expect_tx / complete_tx, an async unit's
+complete-tx or arrive-on) is a strong read-modify-write of the mbarrier with a scope; the wait
+is a strong read with a scope. A successful wait acquires an update's release only when the
+two are morally strong (same CTA, or both at `.cluster` scope; PTX ISA 8.7) and the
+release's scope includes the waiter (8.8, 8.9.4). Any other update still counts toward the
+phase, so the wait returns, but it orders nothing. Before 2026-11-09 every update of the
+phase was joined into every waiter (the PTX front ignored the wait's scope; the SASS front
+has none), so a 2-CTA hand-off through a `.cta`-scoped remote arrive was certified.
+- PTX: `mbarrier.arrive` defaults to `.release.cta`, `try_wait` / `test_wait` to
+  `.acquire.cta` (9.7.15.16.16, .19); `.relaxed` updates release only what the thread's last
+  release fence released, at the narrower scope (release pattern, 8.8), and a relaxed wait
+  acquires at the next acquire fence. expect_tx / complete_tx are relaxed.
+- Async units: the complete-tx of cp.async.bulk{.tensor} / cp.reduce.async.bulk{.tensor} is a
+  `.release` at `.cluster` scope (9.7.10.28.4.1-2, 9.7.10.28.5.3-4); tcgen05.commit's arrive-on is at
+  cluster scope (9.7.18.12.1); st.async's complete-tx (9.7.10.12, which states no semantics for it) is modeled the same way. Which thread
+  performs it is not stated (9.7.15.16.9: the completion "of the asynchronous instruction
+  ... initiated by the executing thread"). The model attributes it to the issuing thread
+  (R-ISSUER), so a `.cta` wait in another CTA does not pair with it. `ptxv check` reruns a
+  PTX check with races as if it were performed in the mbarrier's CTA
+  (`Launch::async_mb_dest`); a race that is gone there is a `contract` finding
+  (`twolevel::mbar_async_contract`).
+- `fence.release.sync_restrict::shared::cta.cluster` releases, at cluster scope, the thread's
+  operations on its own CTA's shared memory only; `fence.acquire.sync_restrict::shared::cluster
+  .cluster` acquires for shared-memory operations only (9.7.15.4). Restricted
+  happens-before is a separate per-thread clock (`Thread::vc_sh`, `Cover`) that orders only
+  shared-memory accesses (of one CTA, or of all), carried by mbarrier updates, `bar.sync`,
+  `barrier.cluster` and async operations issued after it; strong stores / atomics do not
+  carry it (a possible false alarm, never a miss). Other `sync_restrict` forms are refused.
+- Observation order (8.9.2) runs through the mbarrier's read-modify-writes only along morally
+  strong pairs: a `.cta` update by the waiter's CTA coherence-after a cluster-scope update of
+  another CTA cuts the latter's release from the wait. The model joins per update, whatever
+  the order of the updates in the phase (the explorers' reductions commute arrivals of one
+  phase); a phase that holds both is reported as a `contract` finding (`mbar-chain:<pc>`).
+  Not reported: a release of the waiter's CTA cut by a later `.cta` update of another CTA.
+- SASS (ptxas 13.0, sm_103a, `-arch=sm_103a`; every PTX form compiled and disassembled):
+  - `SYNCS.ARRIVE.TRANS64[.RED].A1T0` is emitted, with nothing before it, for
+    `.release.cta`, `.relaxed.cta`, `.relaxed.cluster` and the default arrive, local or
+    remote. It is therefore a cluster-scope update that releases at CTA scope.
+  - `.release.cluster` adds `MEMBAR.ALL.CTA; MEMBAR.ALL.GPU; ERRBAR; CGAERRBAR` before it:
+    a relaxed cluster-scope update after a release fence (8.8).
+  - `fence.release.sync_restrict::shared::cta.cluster` is `MEMBAR.ALL.CTA;
+    FENCE.VIEW.ASYNC.S`: before an arrive, `MEMBAR.ALL.CTA` releases the CTA's shared
+    memory at cluster scope.
+  - `SYNCS.PHASECHK.TRANS64[.TRYWAIT]` is emitted for `.acquire.cta`, `.relaxed.cta`,
+    `.relaxed.cluster` and the default; `.acquire.cluster` adds `CCTL.IVALL` after a
+    successful wait; `fence.acquire.sync_restrict::shared::cluster.cluster` is nothing. A
+    bare PHASECHK is therefore a cluster-scope wait that acquires the CTA's own updates
+    fully and another CTA's for shared memory only; `CCTL.IVALL` acquires the rest.
+  - `.A0TR` / `.A0TX` (expect_tx / complete_tx) release nothing of their own, local or
+    remote (until 2026-11-09, a remote one joined its issuer's whole clock).
+- Consequences: the PTX ISA's fixed forms (cluster-scope arrive and wait; st.async with an
+  expect_tx arm at cluster scope; sync_restrict release + relaxed cluster arrive; relaxed
+  cluster wait + sync_restrict acquire) are clean on both fronts. A `.cta`-scoped arrive or
+  wait across CTAs is a race on the PTX front. On the SASS front it is a race when the arrive
+  is bare (no release fence before it). A fence.acq_rel.cluster before a `.cta` arrive, or a
+  `.release.cluster` arrive with a `.acquire.cta` wait, is the SASS of a PTX-correct
+  hand-off (shared-memory data): clean on SASS, race on PTX.
+- 2-CTA pipelines that hand a stage (shared memory or tensor memory) back to the other CTA
+  with a bare `.release.cta` remote arrive (`tcgen05.fence::before_thread_sync`, then
+  `mbarrier.arrive.shared::cluster`) give the stage's readers no order before the other
+  CTA's next writes: a race on the PTX front, and on the SASS front unless a release fence
+  (`MEMBAR.ALL.GPU` / `CGAERRBAR`, or `MEMBAR.ALL.CTA` for shared memory) precedes the arrive.
+  The reads have completed by then (`tcgen05.wait::ld`, register dependences), so these are
+  load-buffering shapes; no hardware rule relaxes them yet (as E-READ-DONE, opt-in).
+- Cluster lifetime: a waiter that observed a phase saw its updates land (`Thread::landed`),
+  even when it did not synchronize with them; S-CLUSTER-LIFE and async-after-exit count that
+  as ordered before its exit, as the joined clock did before.
+- Observed, not synchronized (`Cover::Order`): a dropped update still enters the waiter's
+  `Cover::Order` clock (`Thread::vc_sh`), and the update's landing enters `Thread::landed`.
+  An Order edge carries real-time observation order and no memory visibility: it covers
+  no location, so the race detector, C-ORDER, the fence-acquire replays and E-RACE-DEAD
+  never see it. The argument: a wait that observed a phase completion returns after the
+  completing arrive was performed; that arrive was performed after the arriving thread's
+  earlier instructions issued (in-order issue, E-WARP-ORDER); every instruction the waiter
+  issues after the wait issues after the wait returned. So an event at the head of an
+  Order edge happens later in real time than every event at its tail, which is all that
+  event-order arguments use. Readers: `Machine::order_vc` in the wellsync certificate
+  (E-WELLSYNC: C-WAIT / C-PHASE, which phase a wait can observe; C-GEN, the `bar.sync` /
+  `bar.arrive` and `barrier.cluster` arrival order; the TMEM allocator event order in
+  C-ORDER), and `landed` in `observed_by` (S-CLUSTER-LIFE, async-after-exit). A
+  scope-insufficient hand-off is therefore a race, not a refused certificate.
+  `bar.arrive` does not block: its arrival is counted at issue (PTX ISA, `bar.arrive`:
+  the arriving thread does not wait), so its clock holds only what the thread observed
+  before issuing it, and an arrive the thread performs later in program order cannot be
+  in it.
+- Not modeled (possible miss): 8.9.1.1 orders an async copy's complete-tx only with that
+  copy, not with the issuer's earlier instructions; the model releases the issuer's clock at
+  issue with it (as before 2026-11-09).
+- Audit `PTXV_MBAR_SCOPE_LOG=1`: every update a successful wait drops for want of scope is
+  logged to stderr (kernel, wait pc, CTAs, scopes).
+- Fixtures: e_mbar_scope (hand-off: good, PFC, PFCW, PFCA, FEN, FRC, STA, STAC), e_mbar_mailbox
+  (good, MB, MBNF, MBCA), e_mbar_restrict (good, NOF, RLX, GM, GMF).
+- Where: `exec.rs` `mbar_rels`, `mbar_async_rel`, `mbar_note`, `mbar_acquire`,
+  `acquire_pending_mb`, `sh_vc`; `twolevel.rs` `mbar_async_contract`; PTX `mbarrier.*`,
+  `fence.*sync_restrict*`; SASS `SYNCS.*`, `MEMBAR`, `CGAERRBAR`.
+- Status: **argued** (PTX ISA 9.5 text; ptxas lowering). Hardware: a stale read of the
+  `.cta`-scoped hand-off (weak remote store, `fence.proxy.async.shared::cluster`,
+  `.release.cta` remote arrive, `.acquire.cta` wait) was measured on GB200 by others
+  (reported, not reproduced here). GB300 (probes/mbar_scope, CUDA 13.0, 2026-11-09): the
+  same hand-off without the proxy fence, or with `fence.proxy.async.shared::cta`, read the
+  stale slot (15-40 of 3.04e6 hand-offs per configuration without DSMEM noise, each in a
+  cluster's first round); with `fence.proxy.async.shared::cluster` (SASS `MEMBAR.ALL.GPU`
+  before the arrive) 0 of 1.9e8; with `fence.acq_rel.cluster` 0 of 1.9e8; cluster-scope
+  arrive and wait, and st.async, 0 of 6.7e7 each. GB300 did not show the GB200 failure of
+  the exact sequence; the PTX front reports it (8.7), and the SASS front too, since no
+  measured rule says `MEMBAR.ALL.GPU` drains remote stores (S-REMOTE-INFLIGHT).
+- If wrong: *false alarm* if hardware orders a bare remote `SYNCS.ARRIVE` for the issuer's
+  own shared-memory accesses (a GB300 rule could then relax the SASS front), or if the PTX
+  ISA meant an async complete-tx to be performed in the mbarrier's CTA (the contract
+  findings would go away); *miss* if `MEMBAR.ALL.CTA` before an arrive does not release the
+  CTA's shared memory at cluster scope, or if a bare PHASECHK does not acquire another CTA's
+  shared-memory writes (the ptxas lowering of the sync_restrict fences says both do).
 
 ### S-MBAR-MEM · code
 **An mbarrier can be initialized by a plain `STS.64` of the encoded state word:**
@@ -3204,8 +3442,47 @@ that fence happens-before the async operation's issue. Otherwise the result is a
   place of the epilogue's fence (SASS `FENCE.VIEW.ASYNC.G`, no `MEMBAR`): with shared memory
   scrubbed, GB300 writes a wrong output in 1000/1000 runs (528 distinct outputs), and both
   front-ends report the proxy race.
-- Not modeled: generic-proxy writes to global memory read by an async-proxy op (TMA load from
-  global) are not checked for a `.global` fence, so a missing one is a *miss*.
+- Global memory: S-GPROXY (since 2026-11-09; before, a missing `.global` fence was a *miss*).
+
+### S-GPROXY · code
+**Async-proxy accesses of global memory.** A TMA / bulk load, store or add-reduction
+(`cp.async.bulk{.tensor}`, `cp.reduce.async.bulk{.tensor}`) accesses global memory in the async
+proxy. It is ordered after an earlier conflicting access (a write; for a store or reduction
+also a read) only along proxy-preserved base causality order (PTX ISA 8.9.5): the earlier
+access is by an async op issued in the same CTA ("same proxy, and by the same thread
+block"), or a global proxy fence lies on the happens-before path between them, executed
+after the access by its thread or by a thread that observed it, and happening before the
+op's issue (as S-PROXY). A generic access needs the fence; so does another CTA's async
+access, which after its completion (implicit generic-async proxy fence, 9.7.10.28.2) counts
+as generic. The other direction (an async write, then a generic access that observed its
+completion) needs nothing.
+- Fences that order global memory: `fence.proxy.async.global` (SASS `FENCE.VIEW.ASYNC.G`),
+  `fence.proxy.async` with no state space (every state space; ptxas: `MEMBAR.ALL.GPU;
+  FENCE.VIEW.ASYNC.S`), a kernel boundary (8.9.4, API synchronization). Not:
+  `fence.proxy.async.shared::cta` / `.shared::cluster` on the PTX front. The SASS front
+  cannot tell `fence.proxy.async` from `.shared::cluster` (both `MEMBAR.ALL.GPU;
+  FENCE.VIEW.ASYNC.S`) and credits the pair for global memory (`MEMBAR.ALL.CTA;
+  FENCE.VIEW.ASYNC.S`, the `.shared::cta` form, it does not).
+- Findings: HB-ordered but not proxy-preserved is a `contract` finding (`gproxy`; for two
+  add-reductions, atomic per 9.7.10.28.4.2, `gproxy-order`: the order the kernel's
+  synchronization means to impose is not guaranteed, e.g. the deterministic accumulation
+  shape, a semaphore handed on with st.release / ld.acquire between CTAs whose reductions go
+  to one buffer). Contract, not race: the ISA requires the fence, but GB300 showed no failure
+  (probes/gproxy), as for E-CPASYNC-PROXY. Accesses not ordered by happens-before are left to
+  the race detector; two such reductions are a schedule choice as before (N-BULK-RED).
+- Where: `exec.rs` `gproxy_check` (from `complete_tma`, `complete_tma_store`),
+  `Thread::gfences`; PTX `fence.proxy.async*`; SASS `FENCE.VIEW.ASYNC.{G,S}`.
+- Fixture: e_gproxy (good, NOF, ALL, SH, ST, STF).
+- Status: **argued** (PTX ISA 9.5 text; ptxas lowering). GB300 (probes/gproxy, 2026-11-09):
+  a thread's generic global stores read back by its own bulk copy were never stale (0 of up
+  to 1.2e10 words per variant), fence or not: the necessity is not measured, so the findings
+  are contract findings, on both fronts.
+- If wrong: a contract finding the ISA would not require if hardware and the ISA order
+  async-proxy global accesses by generic synchronization alone; *miss* if
+  `MEMBAR.ALL.GPU; FENCE.VIEW.ASYNC.S` does not order global memory (ptxas's lowering of
+  `fence.proxy.async` says it does).
+- Not modeled: `cp.async` (non-bulk, generic proxy per the ISA), tensor-map reads (S-TMAP),
+  multimem bulk forms.
 
 ### S-MULTIMEM · code
 **NVLS multicast memory.** A case's `[[multicast]]` objects (capture: `cuMulticastCreate`,
@@ -3440,7 +3717,12 @@ stays clean, "relies on E-CPASYNC-PROXY"), not a race.
   modeled as weak stores of a register nothing writes, so a later load gives undefined data
   and the write is race-checked. probes/discard_l2: write, discard, rewrite, read = GB300 50/50
   bitwise; `read_after` (no rewrite) is a violation, while GB300 returned the pre-discard
-  values in all runs (the PTX contract allows either). SASS `CCTL.E.RML2` stays refused.
+  values in all runs (the PTX contract allows either). SASS `CCTL.E.RML2 [Ra]` (2026-11-09,
+  a CuTe combine-decode kernel): the same, as one 128-byte weak store of a register nothing
+  writes (V255; the sim's undefined-store mask covers 128 bytes), so footprints, race checks
+  and S-INIT treat it as any store. probes/discard_l2 (two warps: warp 0 writes, thread 0
+  discards, warp 1 rewrites, warp 0 reads): GB300 50/50 scrubbed, both front-ends bitwise;
+  `read_after` a violation and `race` (no barrier after the discard) a race on both fronts.
 - **Scratch buffers** (2026-11-09, `fixtures/e_scratch_undef`). A global buffer declared
   `init = "undef"` starts with every byte undefined (`Sh::undef`; the simulated value is the
   file's or zero). A buffer declared `scratch = true` (capture writes it for buffers
@@ -3697,8 +3979,8 @@ the peer's 0x48 barrier, and the peer arrives back on the leader's.
   unknown and read as written-by-launch values.
 
 ### S-SCOPE · code
-**Strong memory operations follow the PTX memory model's scope rules; mbarrier scopes are
-treated as sufficient.** Since rung 1f:
+**Strong memory operations follow the PTX memory model's scope rules.** mbarrier scopes:
+S-MBAR-SCOPE (until 2026-11-09 they were treated as sufficient). Since rung 1f:
 - `ld/st.relaxed|acquire|release.<scope>`, `.volatile` (= relaxed.sys) and `atom` / `red`
   (default relaxed.gpu) are strong accesses. Two strong accesses are **morally strong** when
   each one's scope includes the other's thread (`.cta`: same CTA, `.cluster`, `.gpu`: same
@@ -3842,7 +4124,11 @@ CTA's shared memory (remote mbarrier arrive, multicast TMA delivery, `tcgen05.co
 peer, `shared::cluster` load/store) after the whole target exited is a violation, and the
 access is dropped. Independently of the schedule explored, every remote arrive / TMA issue /
 commit into CTA X must happen-before the exit of *some* thread of X (checked at terminal
-states, like async-after-exit), since otherwise a schedule exists in which X exits first.
+states, like async-after-exit), since otherwise a schedule exists in which X exits first. A
+thread of X that observed the mbarrier phase the operation completed into (a successful wait)
+counts too, though the wait need not synchronize with it (`Thread::landed`: a real-time
+observation order, argued at S-MBAR-SCOPE `Cover::Order`). The same holds for
+async-after-exit.
 - Where: `exec.rs` `check_alive`, `dead_target`, `note_remote`, `exit_checks`.
 - Status: **argued** (PTX ISA: a CTA's shared memory must not be accessed after it exits;
   CUTLASS ends cluster kernels with a cluster barrier for this reason). A multicast delivery
@@ -3855,6 +4141,12 @@ states, like async-after-exit), since otherwise a schedule exists in which X exi
   (`cudaErrorLaunchFailure`). Successor CTAs already resident on the exited CTA's SM were
   never written. A violation of this rule is therefore a crash on GB300, not a silent
   corruption.
+- A thread's own access to another CTA's shared memory (ld / st / atom / red through
+  shared::cluster) is checked at the end of the run like remote arrivals, multicast TMA and
+  commits (`note_remote` from `access_x`; one entry per target CTA and thread, its latest
+  access). Before 2026-11-09 only the exit-time check saw them, in schedules where the
+  target exited first, so the certificate's run certified a missing final barrier.cluster
+  (fixtures/e_cluster_life NOFINAL).
 
 ### S-REMOTE-INFLIGHT · code
 **A remote mbarrier arrival (`mbarrier.arrive[.expect_tx] .shared::cluster` to another CTA,
@@ -3863,7 +4155,19 @@ in flight from issue until delivered.** Deliveries are separate steps the explor
 at any time, in any order among the issuer's remote operations (also to different
 mbarriers), except that a release of the issuer at cluster scope or wider delivers all of
 them first: `barrier.cluster.arrive` (not `.relaxed`), `fence.acq_rel` / `fence.sc` at cluster
-/ gpu / sys scope, `mbarrier.arrive.release.cluster`, SASS `MEMBAR.ALL.GPU` / `.SYS`.
+/ gpu / sys scope, `mbarrier.arrive.release.cluster`; SASS: `CGAERRBAR`, which ptxas emits
+after `MEMBAR.ALL.GPU` for each of those (until 2026-11-09, `MEMBAR.ALL.GPU` / `.SYS`
+itself). `MEMBAR.ALL.GPU` alone (`fence.proxy.async[.shared::cluster]` lowers to
+`MEMBAR.ALL.GPU; FENCE.VIEW.ASYNC.S`) drains nothing: a stale read of a weak remote store
+followed by `fence.proxy.async.shared::cluster` and a remote arrive was measured on GB200
+(reported by others; SASS `ST.E; MEMBAR.ALL.CTA; MEMBAR.ALL.GPU; FENCE.VIEW.ASYNC.S;
+SYNCS.ARRIVE.TRANS64.RED.A1T0`). A `CGAERRBAR` right after `MEMBAR.ALL.GPU` (and `ERRBAR`)
+extends that fence's release to the drain point. SASS weak stores into another CTA's shared
+memory (`ST.E` to a shared::cluster address, 4-byte aligned, at least 4 bytes, not
+multicast) are in flight too, as their own async actor whose clock the issuer gets only at
+the drain, so the race with a reader is found whatever lands first; PTX
+`st.shared::cluster` still lands at issue (its ordering is decided by S-MBAR-SCOPE). A
+thread reading back its own in-flight remote store is not modeled (a false race).
 `.release.cta` and `.relaxed` arrivals deliver nothing. The issuer's exit delivers nothing
 either. Arrivals and st.async to the issuer's own CTA land at issue, as before.
 - Violations (S-CLUSTER-LIFE): the target CTA's last thread exits while one is in flight to
@@ -4706,7 +5010,11 @@ forms seen. Any other form is a hard error.
     back) = GB300 on both front-ends, 50/50 scrubbed.
   - `BAR.SYNC Ra, Ra` / `BAR.ARV Ra, Ra` (ptxas's register form): id = Ra bits 0..3, thread
     count = Ra >> 16 (ptxas builds `count << 16 | id & 0xf`; validated through
-    fixtures/s_bardiv, E-COLLECTIVE-ALL). Two different registers are not lowered.
+    fixtures/s_bardiv, E-COLLECTIVE-ALL). A count of 0 is an all-thread barrier: ptxas's
+    slow path of `barrier.sync 0` (no count) builds R = 0, and GB300 completes it together
+    with the fast path's `BAR.SYNC 0x0` (probes/bar_cut_warp same_all, 2026-11-09; before,
+    reported as `bar.sync 0 used with thread counts all and 0`). Two different registers
+    are not lowered.
   - `F2I[.FTZ][.U32|.S64|.U64][.TRUNC|.FLOOR|.CEIL][.NTZ]` (cvt.r{z,n,m,p}i: libdevice
     sinf / cosf use `F2I.FTZ.NTZ`): `.FTZ` flushes a subnormal source first, the f32 is
     rounded to an integer, then converted with saturation (NaN: 0, or 2^63 for 64-bit);
@@ -4881,6 +5189,20 @@ forms seen. Any other form is a hard error.
   so their uses resolve (they were "unknown register": 33 kernel-DB records) and a scoped
   `%p0` no longer refers to the body's `%p0` (an alias that clobbered it); a word right after
   `.` is never renamed (`mad.lo.u32` next to a scoped register `lo` became `mad.lo__sN.u32`).
+- Registers named without `%` (2026-11-09, CuTe DSL inline asm: `.reg .b64 Z;` then
+  `mul.rn.f32x2 Z, G, NALPHA;`): the PTX-FMAD analyses (`fmad2_pairs`) track a bare name as
+  a register when the kernel declares it (`.reg`) or writes it, so its readers count; before,
+  such a product's reader lookup panicked. A product whose register is still not tracked is
+  refused, never a panic. probes/f32x2_bare (plain mul / add.f32x2 on bare names at kernel
+  scope and in a nested scope): GB300 = both fronts bitwise.
+- `setp.<cmp>.<bop>.f32` / `.f64` `p[|q], a, b, [!]c` (2026-11-09, `bop` = and / or / xor):
+  p = cmp(a, b) bop c, q = !cmp(a, b) bop c (FSETP / DSETP with a combining predicate); `.ftz`
+  on f32. A fourth operand without `bop`, or a fifth, is refused. probes/setp_bop (ordered and
+  unordered compares on NaN / signed-zero / subnormal operands, negated and plain c, one
+  `.ftz` form): GB300 = both fronts bitwise; the `.f64` form (DSETP) is not probed.
+- `mad.lo.s16` / `.u16` (2026-11-09): the low 16 bits of a * b + c (a 16-bit product into a
+  scratch register, then a 16-bit add; d may alias c). probes/mad_lo16 (register and
+  immediate operands, d = c): GB300 = both fronts bitwise.
 - SASS `FFMA2` / `FMUL2` / `FADD2` with a negated uniform register (`-UR6.F32`,
   `-UR6.F32x2.HI_LO`: ptxas folds `neg.f32` of kernel parameters) and `|R|` operands (abs.f32
   of both halves folded; applied before a negation) (2026-11-07, SCALE pilot).
@@ -4951,6 +5273,22 @@ is rejected (fail closed).
   `.ELL2` = PTX `.L2::evict_last`, `.EFL2` = `.L2::evict_first`) is likewise dropped
   (2026-11-07; 4 SCALE corpus records refused ELL2): probes/ldst256_l2 = GB300 on both
   front-ends, bitwise equal to probes/ldst256's output.
+- `cp.async.bulk.prefetch.L2.global [a], size[, policy]` with or without `.L2::cache_hint`
+  (2026-11-09) is a no-op once its operands are valid (the operand count for the form, an
+  address, a size and a policy register or immediate); ptxas's `UBLKPF.L2` is already a no-op
+  on the SASS front. A prefetch moves no data the program observes.
+- The SASS `CCTL.E.<op> [Ra]` line operations, one treatment by data effect (2026-11-09):
+  `.RML2` (discard.global.L2) is the only one that changes what a load may return, and it is
+  a 128-byte store of undefined data (S-INIT). `.PF1` / `.PF2` (prefetch.global.L1 / .L2
+  [::evict_normal]), `.PML2` (prefetch.global.L2::evict_last) and `.DML2`
+  (applypriority[.global].L2::evict_normal [a], 128) only fetch or re-prioritize the line: each
+  is a no-op once its address is checked (PTX: and the size, which the ISA fixes at 128). None
+  invalidates L1, and a no-op keeps every stale-read schedule of the L1 model (E-HW-L1), the
+  weaker reading. Other CCTL forms are refused. probes/applypriority (stores, DML2 through a
+  global and a generic address, PML2 on the other warp's line, cross-warp reads after a
+  barrier): GB300 = both fronts bitwise. With these forms lifted, the row-walk pool backward
+  (DML2) and the fused QK-norm / RoPE forward (PML2) certify clean on the SASS front, equal to
+  their captured GPU outputs, and so does the pool backward's PTX front.
 - If wrong: *miss* only if a hint changed the data or the completion order.
 - Retire: never needed for verdicts; listed so that dropped modifiers are visible.
 
@@ -5023,7 +5361,7 @@ produces. The SASS front-end is exact (it executes the FFMA / FMUL + FADD ptxas 
   by a plain add / sub: 554 (list kept outside the repo).
 - `.f32x2` (2026-11-07, PX: 4 kernel-DB records whose PTX-front output was 1 ulp off GB300,
   e.g. a Triton gated product sum; 127 records refused on plain `mul` / `add.f32x2`): ptxas
-  13.0 contracts a `mul.f32x2` into every `add` / `sub.f32x2` reading it when all its readers
+  13.0 (other versions: PTX-FMAD-X2-VERSION) contracts a `mul.f32x2` into every `add` / `sub.f32x2` reading it when all its readers
   are such adds with the same rounding mode and `.ftz` setting, **explicit `.rn` / `.rz` /
   `.rm` / `.rp` included** (FFMA2, FFMA2.RZ, FFMA2.RM; none = `.rn`, so `mul.f32x2` +
   `add.rn.f32x2` contracts too), the mul then disappearing; with any other reader (a store, an
@@ -5042,6 +5380,42 @@ produces. The SASS front-end is exact (it executes the FFMA / FMUL + FADD ptxas 
   `.rn` pair.
 - If wrong: *false alarm* on bitwise / equivalence / error-distribution results of the PTX
   front only; other toolchains or `--fmad=false` may contract differently.
+
+### PTX-FMAD-X2-VERSION · code
+**The `.f32x2` contraction rule is that of the ptxas version that builds the case: 13.0
+contracts a `mul.f32x2` into same-mode `add` / `sub.f32x2` readers whatever the rounding
+modifier (PTX-FMAD); 13.1 and 13.3 contract only a mul and an add both without a modifier.**
+The version is the case's `ptxas_toolkit` field, else the `PTXV_TOOLKITS` registry entry
+`ptx_rebuild` selects for the PTX (when it is not the default ptxas), never the ambient
+`CUDA_HOME`. Any other version (no `ptxas_toolkit`, 13.2, a later release) is unknown.
+- Where: `ptx` `fmad2_pairs` (`pair_rule`, `merged`), `parse_kernel_for` (`toolkit`);
+  `cli` resolves the version per case (`toolkit_version`, `sass::registry_toolkit`).
+- Unknown version: the pairs on which the measured rules agree are lowered (a plain pair
+  contracts, a pair of different modes stays apart); a mul with a rounding modifier (or
+  none) read by an add / sub of the same mode with a modifier, i.e. where 13.0 and 13.1+
+  disagree, is refused.
+- 13.1+ merges muls with the same two operands into one FMUL2 whatever their rounding
+  modifiers, and then contracts the merged product into only some of its adds (probes/fmad2
+  built by 13.3: 1 FFMA2 where 13.0 gives 5); a contractible reader of such a mul is refused
+  unless the version is 13.0. Under 13.1 / 13.3, a plain product read by both a plain add and
+  an add with a modifier is refused (not probed).
+- Status: **validated** (2026-11-09). probes/fmad2_v133 (5 independent pairs: plain / plain,
+  `.rn` / `.rn`, `.rz` / `.rz`, `.rn` / plain, plain / `.rn`; addends cancel the product to
+  +- 1 ulp) built by 13.3: 1 FFMA2 + 4 FMUL2 / FADD2 pairs; by 13.0: 5 FFMA2; 13.1 = 13.3.
+  GB300 runs the 13.3 cubin (`ptxv hw`, 50 runs scrubbed); the PTX front under the 13.3 rule
+  and the SASS front of that cubin both equal it bitwise. The fixture
+  `probe_fmad2_v133_version_rule` also applies the 13.0 rule to the same PTX: the outputs
+  differ from GB300 (the mutant is killed), and with no version the front refuses. Scalar
+  forms do not drift: probes/fmad, fmad_multi and fmad_f16 compile to the same FFMA / FMUL +
+  FADD / DFMA / HFMA2 mix under 13.0, 13.1 and 13.3 (plain pairs contract, `.rn` or mixed
+  modes stay apart). No 13.2 toolkit is available, so 13.2 is unknown.
+- Records: the f32x2 probes compiled by the default 13.0 ptxas (probes/fmad2, f32x2_ftz,
+  ffma2_ur, bf16_ext; fixtures/e_uninit_f32x2_lanes, s_ptx_packed) name `ptxas_toolkit =
+  "13.0"`. Before 2026-11-09 the PTX front applied the 13.0 rule to every case, so a case
+  built by 13.1+ with `.rn` f32x2 pairs got contracted PTX-front values that its cubin and
+  GPU do not produce.
+- If wrong: *false alarm* or *missed difference* on PTX-front numerics of `.f32x2` code
+  built by another ptxas version.
 
 ### L-LOP3-P · code
 **`LOP3.LUT Pd, Rd, a, b, c, lut, Pq` sets Pd = (result != 0) OR Pq; `LOP3.LUT.PAND` sets
@@ -5349,7 +5723,9 @@ complete.**
 ### N-FADD · code
 **`FADD` / `add.f32` is IEEE binary32 round-to-nearest-even, no FTZ, canonical NaN
 0x7fffffff.**
-- Where: `fp.rs` `f32_add_rn`.
+- Where: `fp.rs` `f32_fma` (`exec.rs` executes FADD as a * 1 + b, one rounding);
+  `f32_add_rn` for the other users. fixtures/e_fadd_nan: NaN operands (payloads, signs, quiet
+  and signalling) = GB300 bits.
 - Status: **validated** (r0 bitwise on 10,000 launches). FTZ/directed modes give `unmodeled`.
 
 ### N-EQUIV · code
@@ -6784,6 +7160,26 @@ and is first-order.
 - Status: **argued** (fp_noise THEORY). Thm 1 itself is checked exactly, not assumed. The
   bound has never been violated, but it is not a proof for inputs outside the run.
 
+### N-NUM-TRACK · code
+**`ptxv num` makes no error claim for an element whose value depends on an input-derived
+value without a tracked derivation.** num's DAG (non-segment mode) has nodes for plain FADD,
+fp32 atomic adds, MMA steps, conversions, MUFU, FFMA2 of the form x*1 + 0, and FMNMX without
+modifiers or FTZ on non-NaN operands (exact `Max` nodes: Thm 1 does not hold through them, and
+both children's terms bound their error). Every other instruction (FFMA / FMUL, a negated or
+FTZ FADD, FMNMX of |x|, other FFMA2 / FMUL2 / FADD2, bit operations) drops the history of its
+result. Input buffers are tainted, so such a result becomes an
+`Opaque` leaf when a tracked node reads it, and an output word written from it is
+input-derived without a node. Either makes the element `untracked`. num reports these
+elements as not analyzed, and computes Thm 1, the bounds and max_err over the other elements
+only. bf16 / f16 outputs are read per 16-bit element (the node from the 16-bit provenance,
+N-HALF-LEAF; errors in that format's ulps). Outputs of other dtypes, and every output of a run that reported a fault or an
+`unmodeled` finding (its threads stop early), are not analyzed.
+- Where: `num.rs` `out_rec` (`untracked`), `main.rs` `cmd_num`.
+- Status: **enforced**. Before this check, `exact` took the simulated value of the untracked
+  value as exact. A row sum of squares (FFMA chain) reported max_err = 0, Thm 1 exact, with
+  no warning, while GB300 differs from the fp64 sum by up to 4.1 ulp
+  (`fixtures/c_num_sumsq_f32`).
+
 ### N-ERRDIST-IID · code
 **`ptxv errdist` models the inputs exactly as the spec describes them.** Elements are
 independent given their hierarchical scales; a block's quantization scale is a function of
@@ -6794,6 +7190,21 @@ scale). Element laws are pruned below 1e-16 per atom (the pruned mass is reporte
   conditional on the spec. The block laws match sampling (`laws.rs` tests).
 - If wrong: the estimates describe another input population; Tier 3 on captured data (an
   `empirical` / `codes` spec) is the check.
+
+### N-ERRDIST-IS · code
+**`ptxv errdist --is`: an importance-sampled Tier 3 estimate is unbiased for the spec's
+law.** Inputs come from the defensive mixture α p + (1 − α) q_tilt. Each carries
+w = p / q, the closed-form density ratio of its tilted real draws (elements, axis scales,
+outlier flags). Untilted draws and the quantization map are the spec's. The estimate is
+Σ w f / n.
+- Where: `errdist/is.rs` (`sample_is`, `summarize`), `errdist/mc.rs` `one`,
+  `cli/src/errdist.rs` `importance`.
+- Status: **argued** (a property of the estimator; no hardware in the loop). With α = 1 the
+  IS path reproduces plain sampling bit for bit. Tilted proposals agree with plain on 3 rows. A tail probability (6.46e-6) comes out within 2% of
+  its closed form. The gates refuse a degenerate proposal. Four mutants each fail a test
+  (`crates/cli/tests/errdist_is.rs`, `is.rs` unit tests).
+- If wrong: a biased tail estimate. The gates (ESS, largest share, agreement with plain where
+  plain resolves the value) fail closed, and the plain estimate stands.
 
 ### N-ERRDIST-TEMPLATE · code
 **Tiers 0 and 1 analyze output 0's accumulation chain** and report it for every output.
@@ -6974,6 +7385,29 @@ residue for exact sums, the table offsets for final slices.
   poorly linearized; there the elementwise law is used (N-ERRDIST-NL-ELEM).
 - If wrong: biased estimates. `best` uses an analytic estimate only when it agrees with Tier
   3 (within max(5%, CI)).
+
+### N-ERRDIST-NL-FTRAJ · code
+**Opt-in (`PTXV_ERRDIST_LIN_TRAJ=float`, `both` or `all`): the non-chain Tiers 1 and 2
+linearize around the computed float trajectory.** At each nominal input every op except the outputs
+takes its bit-exact computed value (`Prog::eval`) instead of its real value. Each op's local
+error law is then that of rounding the exact result of its computed arguments, and the
+adjoints are taken at the computed values. An output keeps the exact result of its computed
+arguments, which positions its own last rounding. Values that exist only because of
+rounding, such as a Kahan compensation c = (t − s) − v (identically 0 in real arithmetic),
+carry their computed magnitude, so the roundings they feed (x − c) become sites. `both` keeps
+the float local laws and takes each site's sensitivity from the float trajectory where it agrees
+with the real one within 2^-10 relative. Elsewhere it uses the adjoint of a float evaluation
+that leaves the site and everything above it unrounded (`PTXV_ERRDIST_BOTH_FLAGGED=real`: the
+real-trajectory adjoint).
+- Where: `errdist/nonlin/lin.rs` `Trajectory`, `KModel::state`, `KModel::state_keep`;
+  `errdist/nonlin/agg.rs` `collect` (the per-site choice); `errdist/nonlin/mod.rs`
+  `analytic` (single kernels only: a pair's matched roundings are found by equal real values,
+  N-ERRDIST-NL-JOINT).
+- Status: **argued.** First-order propagation (N-ERRDIST-NL-LIN) still applies. The local
+  errors are still modelled as random residues on their lattices, so the computed values only
+  move the operating point. Validation: `crates/cli/tests/errdist_ftraj.rs` (Kahan) and the
+  scorecard (tools/errdist_scorecard).
+- If wrong: biased estimates. The Tier 3 cross-check still gates `best`.
 
 ### N-ERRDIST-NL-INDEP · code
 **Distinct rounding sites have independent local errors given their cells.** A slice's or
