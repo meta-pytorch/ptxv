@@ -46,6 +46,12 @@ pub trait Model: Clone + Send + Sync + 'static {
     fn assumptions(&self) -> Vec<String> {
         Vec::new()
     }
+    /// Report livelocks: keep the explored state graph and, at the end of a complete search,
+    /// report the states from which no end state (terminal, or stuck with or without a finding)
+    /// is reachable: every schedule from them loops forever.
+    fn detect_livelock(&self) -> bool {
+        false
+    }
 }
 
 struct Path {
@@ -76,7 +82,17 @@ fn trace(p: &Option<Arc<Path>>) -> Vec<String> {
     v
 }
 
+/// The explored graph for livelock detection: successors per state, end states, and one path
+/// to each state.
+#[derive(Default)]
+struct Graph {
+    succ: std::collections::HashMap<u128, Vec<u128>>,
+    ends: HashSet<u128>,
+    path: std::collections::HashMap<u128, Option<Arc<Path>>>,
+}
+
 struct Shared<M: Model> {
+    graph: Option<Mutex<Graph>>,
     stack: Mutex<Vec<(M, Option<Arc<Path>>)>>,
     visited: Mutex<HashSet<u128>>,
     findings: Mutex<Vec<Finding>>,
@@ -118,7 +134,13 @@ pub fn explore_until<M: Model>(
 ) -> Verdict {
     let t0 = Instant::now();
     let assumptions = m0.assumptions();
+    let fp0 = m0.fingerprint();
     let sh = Arc::new(Shared {
+        graph: m0.detect_livelock().then(|| {
+            let mut g = Graph::default();
+            g.path.insert(fp0, None);
+            Mutex::new(g)
+        }),
         stack: Mutex::new(Vec::new()),
         visited: Mutex::new(HashSet::new()),
         findings: Mutex::new(Vec::new()),
@@ -139,6 +161,13 @@ pub fn explore_until<M: Model>(
             s.spawn(move || worker(&sh, max_states, t0, deadline));
         }
     });
+    let complete = !sh.truncated.load(Ordering::Relaxed);
+    if let (Some(g), true) = (&sh.graph, complete) {
+        let g = g.lock().expect("graph");
+        if let Some(f) = livelock(&g) {
+            sh.findings.lock().expect("findings").push(f);
+        }
+    }
     let findings = std::mem::take(&mut *sh.findings.lock().expect("findings"));
     let outs: Vec<Vec<u8>> = sh
         .outputs
@@ -188,7 +217,11 @@ fn worker<M: Model>(
             continue;
         };
         let acts = m.enabled();
+        let fp_m = sh.graph.as_ref().map(|_| m.fingerprint());
         if acts.is_empty() {
+            if let (Some(g), Some(f)) = (&sh.graph, fp_m) {
+                g.lock().expect("graph").ends.insert(f);
+            }
             if m.is_terminal() {
                 sh.terminal.fetch_add(1, Ordering::Relaxed);
                 sh.outputs.lock().expect("outputs").insert(m.outputs());
@@ -208,6 +241,11 @@ fn worker<M: Model>(
             }));
             add_findings(&sh.findings, f, &p);
             let fp = m2.fingerprint();
+            if let (Some(g), Some(from)) = (&sh.graph, fp_m) {
+                let mut g = g.lock().expect("graph");
+                g.succ.entry(from).or_default().push(fp);
+                g.path.entry(fp).or_insert_with(|| p.clone());
+            }
             if !sh.visited.lock().expect("visited").insert(fp) {
                 continue;
             }
@@ -220,6 +258,40 @@ fn worker<M: Model>(
         sh.stack.lock().expect("stack").extend(next);
         sh.busy.fetch_sub(1, Ordering::SeqCst);
     }
+}
+
+/// States from which no end state is reachable (reverse reachability over the explored graph).
+fn livelock(g: &Graph) -> Option<Finding> {
+    let mut pred: std::collections::HashMap<u128, Vec<u128>> = std::collections::HashMap::new();
+    for (a, bs) in &g.succ {
+        for b in bs {
+            pred.entry(*b).or_default().push(*a);
+        }
+    }
+    let mut live: HashSet<u128> = g.ends.clone();
+    let mut todo: Vec<u128> = g.ends.iter().copied().collect();
+    while let Some(x) = todo.pop() {
+        for y in pred.get(&x).into_iter().flatten() {
+            if live.insert(*y) {
+                todo.push(*y);
+            }
+        }
+    }
+    let stuck: Vec<&u128> = g.path.keys().filter(|s| !live.contains(s)).collect();
+    let first = stuck
+        .iter()
+        .min_by_key(|s| trace(&g.path[s]).len())
+        .map(|s| trace(&g.path[s]))?;
+    Some(Finding {
+        kind: "deadlock".into(),
+        sig: "livelock".into(),
+        msg: format!(
+            "livelock: {} reachable state(s) cannot reach termination or a deadlock: every schedule from them loops forever (a poll or spin that nothing will satisfy)",
+            stuck.len()
+        ),
+        trace: first,
+        ..Default::default()
+    })
 }
 
 #[cfg(test)]
