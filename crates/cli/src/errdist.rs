@@ -1422,7 +1422,12 @@ pub fn cmd(a: &Args) -> Result<()> {
     let text = report_text(&rep);
     print!("{text}");
     if let Some(p) = &a.json {
-        std::fs::write(p, serde_json::to_string_pretty(&rep)?)?;
+        // The build's commit beside the report (null when the binary has no stamp).
+        let mut v = serde_json::to_value(&rep)?;
+        if let Some(o) = v.as_object_mut() {
+            o.insert("ptxv_rev".into(), ptxv_jsonout::rev().into());
+        }
+        std::fs::write(p, serde_json::to_string_pretty(&v)?)?;
         println!("wrote {}", p.display());
     }
     if let Some(p) = &a.html {

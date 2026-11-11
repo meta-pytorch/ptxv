@@ -23,6 +23,16 @@ extern "C" {
 /// Version of the JSON documents (bumped on incompatible changes; additions keep it).
 pub const SCHEMA: u32 = 1;
 
+/// The ptxv commit this binary was built from (build.rs: `PTXV_REV`, git HEAD of the workspace
+/// with "+dirty" for uncommitted source changes, or a `REV` file); None when unknown.
+pub fn rev() -> Option<&'static str> {
+    let r = env!("PTXV_REV");
+    (!r.is_empty()).then_some(r)
+}
+
+/// "<crate version> (rev <rev>)" / "<crate version> (rev unknown)", for `--version`.
+pub const VERSION: &str = env!("PTXV_VERSION");
+
 pub struct JsonOut {
     saved: i32,
 }
@@ -49,8 +59,9 @@ pub fn fail(err: &str) {
 }
 
 impl JsonOut {
-    /// Write the document (with `ptxv` version and schema stamped in) to the original stdout.
-    /// The version is this crate's, i.e. the workspace version every ptxv crate shares.
+    /// Write the document (with `ptxv` version, `ptxv_rev` and schema stamped in) to the
+    /// original stdout. The version is this crate's, i.e. the workspace version every ptxv
+    /// crate shares; `ptxv_rev` the build's commit ([`rev`], null when unknown).
     pub fn emit(self, command: &str, v: serde_json::Value) {
         PENDING.lock().unwrap().take();
         self.write(command, v);
@@ -62,6 +73,7 @@ impl JsonOut {
             o.insert("command".into(), command.into());
             o.insert("schema".into(), SCHEMA.into());
             o.insert("ptxv".into(), env!("CARGO_PKG_VERSION").into());
+            o.insert("ptxv_rev".into(), rev().into());
         }
         let mut f = unsafe { std::fs::File::from_raw_fd(self.saved) };
         let _ = writeln!(f, "{}", serde_json::to_string(&v).unwrap_or_default());

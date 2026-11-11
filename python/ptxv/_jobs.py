@@ -270,7 +270,9 @@ def run_job(  # noqa: C901 (spawn/pump/timeout/kill/parse kept together for canc
     if doc is None:
         tail = "\n".join(err_lines[-15:])
         raise PtxvError(f"ptxv {spec.kind} failed (exit {proc.returncode}):\n{tail}")
-    if "error" in doc and len(doc) <= 5:  # {"error", "command", "schema", "ptxv"}
+    if (
+        "error" in doc and len(doc) <= 5
+    ):  # {"error", "command", "schema", "ptxv", "ptxv_rev"}
         raise PtxvError(f"ptxv {spec.kind}: {doc['error']}")
     doc["exit_code"] = proc.returncode
     if "bound" in files and files["bound"].exists():

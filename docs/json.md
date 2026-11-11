@@ -18,6 +18,7 @@ Every document has:
 | `command` | `"check"`, `"equiv"` or `"compare"` |
 | `schema` | 1. Bumped on an incompatible change; added fields keep it |
 | `ptxv` | the crate version |
+| `ptxv_rev` | the commit the binary was built from (12 hex digits, `+dirty` for uncommitted changes under `crates/`, `Cargo.toml`, `Cargo.lock`), from `PTXV_REV` at build time, else the workspace's git HEAD, else a `REV` file at the workspace root (`crates/jsonout/build.rs`); null when unknown. `ptxv --version` prints it too. `ptxv errdist --json FILE` writes it at the top level of its report |
 
 ### `ptxv check CASE --json`
 

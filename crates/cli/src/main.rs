@@ -118,7 +118,7 @@ unsafe impl std::alloc::GlobalAlloc for Alloc {
 
 #[derive(Parser)]
 #[command(
-    version,
+    version = jsonout::VERSION,
     about = "Verify execution (all schedules) and numerics of Blackwell PTX/SASS kernels"
 )]
 struct Cli {
