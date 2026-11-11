@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/tc_collector: tcgen05.mma .collector::a::{fill,use,lastuse} (S-TC-COLLECTOR); gen.py
 // writes kernel.ptx from this template (the MMA sequence per mode at @BODY@).
 .version 9.0

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // f64 -> integer conversions against GB300 bitwise, both front-ends: cvt.{rzi,rni,rmi,rpi}
 // .{s64,u64,s32,u32}.f64 (SASS F2I[.S64|.U64|.U32].F64[.TRUNC|.FLOOR|.CEIL]; torch's cross
 // entropy uses F2I.S64.F64.TRUNC). 256 threads; thread t converts in[t] (an f64: special values

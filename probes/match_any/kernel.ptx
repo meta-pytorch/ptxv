@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (L-ROSETTA) for MATCH.ANY[.U64] (match.any.sync.b32 / .b64): full membermask, converged warps: b32 on the raw words, b64, and b32 on 2-bit keys (large groups).
 .version 8.8
 .target sm_103a

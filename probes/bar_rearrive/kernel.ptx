@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for E-BAR-ARRIVE, FA4 backward's epilogue shape: one warp arrives on a named barrier
 // with bar.arrive and then joins the same generation with bar.sync (two arrivals of one warp
 // in one generation), the barrier id in a register, the count 160 = 4 warps + the second

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/smid (E-SMID): what %smid / %nsmid read on GB300. Each CTA's thread 0 stores
 // out[cta] = {%smid, %smid again after ~20 us of %globaltimer spin, %nsmid, %ctaid.x}.
 .version 9.0

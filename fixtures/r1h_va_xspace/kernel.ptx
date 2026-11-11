@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 //
 // Rung 1h, peer mappings in different address spaces (S-VA-ALIAS): GPU 0 owns `buf`; GPU 1
 // (another process) reaches it through its own mapping (an imported handle). GPU 1 (role 1)

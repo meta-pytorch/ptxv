@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/atom_bf16x4/race: atomicity of ATOMG / REDG .E.ADD.BF16x4.RN under contention. Each
 // 8-byte slot (4 bf16 lanes, 0 initially) is shared by two threads of one CTA: thread t < 128
 // red-adds +1.0 to all four lanes 256 times; thread t + 128 atom-adds +0 to it 256 times and

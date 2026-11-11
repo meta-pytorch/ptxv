@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-PDL: griddepcontrol.wait blocks until the previous grid has completed.
 //
 //   produce (2 CTAs x 32, primary): buf[i] = i + 7, then griddepcontrol.launch_dependents;

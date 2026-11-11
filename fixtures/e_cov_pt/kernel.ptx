@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Input coverage with the PTX predicate %p7 (coverage.rs): each thread loads an input word,
 // stores it, and stores it again under `@%p7` where %p7 = (word != 0). The guard derives
 // from the input, so the kernel is input-dependent. SASS's P7 is the constant PT, but the PTX

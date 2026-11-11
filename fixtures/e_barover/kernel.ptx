@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-BAR-OVER fixture: a named barrier used by more threads than its count. 128 threads.
 // Warp 0 (producer) writes buf[lane] = lane + 1 in shared memory, then `bar.sync 1, 64`.
 // Warp 1 (consumer) runs `bar.sync 1, 64`, then copies buf[lane] to out[lane]. Warps 2 and 3

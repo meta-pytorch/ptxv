@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (L-ROSETTA) for f16 arithmetic: fma / mul / add / sub .rn .f16x2 and .f16 on the halves of
 // packed words (HFMA2 / HMUL2 / HADD2 with .H0_H0 / .H1_H1 operands), and mul.f16 without .rn
 // by 32768 that only feeds an fma multiplicand and a store (HMUL2 with an immediate pair;

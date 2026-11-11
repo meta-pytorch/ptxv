@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-SETMAXNREG probe: the CTA's register pool. 256 threads with .maxnreg 64 (16,384 registers);
 // warpgroup 0 gives 24 registers per thread back (setmaxnreg.dec 40: 3,072 registers), then
 // warpgroup 1 asks for more (setmaxnreg.inc N). Every thread then writes tid + 1 to out[tid].

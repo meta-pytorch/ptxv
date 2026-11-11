@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/cvt_bf16_f16: cvt.bf16.f16 and cvt.f16.bf16 without a rounding modifier (ptxas:
 // F2F.BF16.F16 / F2F.F16.BF16, nearest), on every 16-bit pattern. 256 threads x 256
 // patterns: out[i] = cvt.bf16.f16(i) | cvt.f16.bf16(i) << 16, i = 256 t + k.

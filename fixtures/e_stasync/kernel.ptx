@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // st.async fixture: rank 1 of a 2-CTA cluster stores one word into rank 0's shared memory with
 // st.async ... mbarrier::complete_tx::bytes; rank 0 arms its mbarrier with expect_tx(4), waits
 // for the transaction bytes, then reads the word and writes it out.

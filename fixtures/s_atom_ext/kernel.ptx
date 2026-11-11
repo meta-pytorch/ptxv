@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Integer min / max and compare-and-swap atomics against GB300 bitwise, both front-ends:
 // red/atom .min/.max .u32/.s32/.u64/.s64 and atom.cas .b32/.b64 on shared, global and generic
 // (global) addresses, plus CuTeDSL's smem_fmax (setp.lt.s32; red.min.u32 / red.max.s32).

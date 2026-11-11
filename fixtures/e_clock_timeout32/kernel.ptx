@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-CLOCK: fixtures/e_clock_timeout with a 32-bit %globaltimer_lo timeout (SASS: a 32-bit
 // SR_GLOBALTIMERLO read). Thread 32 polls a flag and, after 2000 ns, reads the data without the
 // flag: a read that races with thread 0's store (thread 0 sleeps 200 us first). The timeout

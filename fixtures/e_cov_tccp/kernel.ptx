@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Input coverage through TMEM (coverage.rs): 128 threads copy one input word each to shared
 // memory, thread 0 copies the 512 bytes to TMEM with tcgen05.cp (32x128b.warpx4), every warp
 // reads its 32 lanes back with tcgen05.ld, and a branch on the value decides whether a second

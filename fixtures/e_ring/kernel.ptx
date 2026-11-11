@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Fixture for C-RING (E-WELLSYNC): a single-producer single-consumer ring buffer with
 // monotone head and tail counters, one GPU. CTA 0 thread 0 is the producer, CTA 1 thread 0
 // the consumer.

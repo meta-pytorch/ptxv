@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // S-CLUSTER-LIFE: an access to another CTA's shared memory must happen before some exit of that
 // CTA. A 2-CTA cluster synchronizes once (barrier.cluster), then CTA 1 stores into CTA 0's
 // shared word through shared::cluster (mapa) and exits; CTA 0 exits.

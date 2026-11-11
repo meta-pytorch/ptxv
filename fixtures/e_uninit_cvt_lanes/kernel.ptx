@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 //
 // S-INIT per byte of narrow conversions on the PTX front: every thread converts two f32 to
 // an e4m3x2 pair (`cvt.rn.satfinite.e4m3x2.f32 d, a, b`: a in the high byte) and four e2m1x2

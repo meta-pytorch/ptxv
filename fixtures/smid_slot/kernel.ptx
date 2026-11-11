@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // fixtures/smid_slot (E-SMID): thread 0 of each CTA stores its %ctaid.x to out[%smid % 4],
 // and CTA 0 stores %nsmid to out[4]. Distinct slots when the two CTAs sit on different SMs
 // (mod 4); a write-write race when they share one (placement `same`).

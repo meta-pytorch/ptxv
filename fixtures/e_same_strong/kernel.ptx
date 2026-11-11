@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Fixture for C-ORDER equal-value writes (wellsync/order.rs `pair`): lane 0 of each of two
 // warps stores the same value, computed from a relaxed (strong) global load, to one shared
 // word with no order between them; after a barrier thread 0 reads the word. The strong load

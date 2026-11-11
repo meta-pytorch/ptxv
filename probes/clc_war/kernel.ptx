@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/clc_war: when UGETNEXTWORKID reads its address operands. As probes/clc_mcast (clusters
 // of 2 one-warp CTAs, rank 0 issues one multicast try_cancel), but the response buffer is 32
 // bytes: the request names resp[0..16) and each CTA stores out[16c..16c+15] = {1 (ran),

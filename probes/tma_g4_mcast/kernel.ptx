@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (S-TMA-2CTA-MCAST with tile::gather4): a multicast gather4 TMA load
 // (cp.async.bulk.tensor.2d ... .tile::gather4 ... .multicast::cluster[.cta_group::2], SASS
 // UTMALDG.2D.GATHER4.MULTICAST[.2CTA], trtllm-gen routed GEMM) on a cluster of 4 (two CTA

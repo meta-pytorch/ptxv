@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // fixtures/mbar_count_order: counted mbarrier arrivals whose order matters. The barrier expects 3 arrivals. Warp 0 lane 0
 // writes data then arrives (count 1), warp 2 arrives with count 3, warp 3 waits for phase 0
 // and reads data. If warp 2 arrives first it completes phase 0 alone: the consumer may read

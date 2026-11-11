@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Rung 5a fixture: put-with-signal over GPU-initiated RDMA (IBGDA, docs/nic.md).
 //
 //   Rank 0 (GPU 0, node 0) and rank 1 (GPU 1, node 1) run the same kernel; they are in

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-DRF for tensor memory: TMEM accesses are not scheduling points, so a TMEM race must be found
 // by the vector clocks alone. Warp 0 and warp 4 share TMEM lane quadrant 0. Warp 0 stores its
 // lane id + 100 to column 0 (tcgen05.st), waits, and warp 4 loads the column (tcgen05.ld) and

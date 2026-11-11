@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (L-LOP3-P): base kernel for patch.py. out[i] = (a & ~b != 0) + 2 (c < 0) over the
 // (a, b, c) triples in `in`; ptxas emits `ISETP.GE.AND P1, PT, c, RZ, PT` then
 // `LOP3.LUT P0, RZ, a, b, RZ, 0x30, !PT`, whose predicate operand patch.py rewrites.

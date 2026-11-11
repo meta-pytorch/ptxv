@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-ELECT (PTX contract): the leader of elect.sync is "deterministic" for a membermask, but
 // the ISA does not say which lane. This kernel is correct when the leader is lane 0 or lane 31
 // and racy for every other leader: an end-lane leader stores out[1] before bar.sync 0, a

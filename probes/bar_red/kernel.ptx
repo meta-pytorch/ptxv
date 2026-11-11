@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for bar.red.{popc.u32, and.pred, or.pred} over the CTA (256 threads): per thread,
 // predicates from the input word (bits 0..2), a negated source, and a named barrier with a
 // thread count (64: warps 0-1 only). Thread i writes words 8i..8i+7.

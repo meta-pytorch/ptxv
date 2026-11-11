@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (L-ROSETTA) for HSETP2 / HSETP2.BF16_V2: setp.<cmp>.f16x2 / .bf16x2 p|q (both predicate
 // outputs) for every comparison, scalar setp.f16 / .bf16 (halves), a |x| != INF test and a
 // compare against a constant pair with distinct halves (immediate-pair forms). Each compare

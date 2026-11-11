@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/tmem_stneg: tcgen05.st at a TMEM address with a negative offset folded in (SASS
 // `STTM.x8 tmem[UR+-0x10], R`, as `STTM.x32 tmem[UR7+-0x60]` in a SCALE corpus kernel).
 // Thread t (warp w = TMEM lanes 32w..) stores in[64 t + c] to columns c = 0..31 (x32), then

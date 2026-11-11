@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for rcp.rn.f32 (IEEE 1 / a, subnormals kept) on random bits, specials, subnormals and
 // large magnitudes. Thread i: a = words 4i..4i+3 of in; writes 1 / a for each.
 .version 8.8

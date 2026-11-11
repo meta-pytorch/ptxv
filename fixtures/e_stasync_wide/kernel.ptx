@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // st.async of every width (SASS STAS / STAS.64 / STAS.128): rank 1 of a 2-CTA cluster stores
 // 40 bytes into rank 0's shared memory with .b64, .b32, .v4.b32 and .v2.b32 st.async, each
 // completing its bytes on rank 0's mbarrier; rank 0 expects 40 bytes, waits, and copies the

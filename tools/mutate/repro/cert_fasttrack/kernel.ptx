@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Reproducer: a plain shared store whose only conflicting accesses are another thread's
 // atomics, with the storing thread's own atomic to the same word after it.
 //   warp 0 initializes m[lane] = 0 (plain st.shared), then every warp adds 1 with red.shared.add.

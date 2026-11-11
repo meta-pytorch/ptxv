@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/warpsync_pairs: bar.warp.sync whose membermask names only the lane's pair
 // (3 << (lane & 30); SASS `WARPSYNC R` on per-lane masks, as CuTeDSL's RouterEpilogue
 // `WARPSYNC R8` before its pair shuffles): each pair is a separate group. 64 threads; lane l of

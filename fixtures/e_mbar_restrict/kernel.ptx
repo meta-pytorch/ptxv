@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // S-MBAR-SCOPE: slot reuse across a 2-CTA hand-off. Rank 0 stores a value into rank 1's slot
 // and arrives on rank 1's `full` barrier at cluster scope; rank 1 reads the slot and gives it
 // back by arriving on rank 0's `empty` barrier; rank 0 waits for that, then overwrites the

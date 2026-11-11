@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // C-TICKET: a persistent tile scheduler. Thread 0 of each of two CTAs claims tiles with
 // atom.inc on `next` (limit 5: the six claims return 0..5 and leave 0) until it gets a ticket
 // >= 4, writes 10 t + 1 to out[t] for each tile t, then adds 1 to the arrival counter `cnt`;

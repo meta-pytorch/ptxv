@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for multicast try_cancel (UGETNEXTWORKID.BROADCAST): clusters of 2 one-warp CTAs; both
 // CTAs init their mbarrier and expect 16 bytes, a cluster barrier, then rank 0 issues one
 // clusterlaunchcontrol.try_cancel...multicast::cluster. Each CTA waits on its own mbarrier and

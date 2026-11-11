@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/local_vec: 64-bit and vector ld / st .local on a `.local` array (ptxas: STL.64 /
 // STL.128 / LDL.64 / LDL.128 or per-element accesses). 32 threads; x = in[4 t .. 4 t + 3];
 // stores st.local.v4.b32 {x0..x3} at 0, st.local.v2.b64 {x0 | x1 << 32, x2 | x3 << 32} at 16,

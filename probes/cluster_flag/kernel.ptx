@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for ASSUMPTIONS.md S-CBANK: c[0x0][0x36c] is %is_explicit_cluster (ptxas lowers the
 // special register to that constant, and guards barrier.cluster with it). Two CTAs write
 // out[c] = %is_explicit_cluster, out[2+c] = %cluster_nctarank, out[4+c] = %cluster_ctarank.

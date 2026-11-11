@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (N-MMA): finite overflow (probes/tc_mma_off's kernel, inputs from gen.py). Originally
 // probes/tc_mma_off: tcgen05.mma `[taddr + off]` operands. fixtures/e_mma_m128_n8's
 // kernel (kind::f16, M = 128, bf16 -> f32, here N = 16; TMEM lanes 0..127 x columns 0..255

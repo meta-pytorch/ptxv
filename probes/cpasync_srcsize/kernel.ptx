@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for cp.async with a register src-size: Triton's masked load (src-size = 16 or 0 from
 // selp) and arbitrary sizes 0..15 (tid & 15) and 0..16 (min(tid, 16)), plus an immediate
 // partial size 4, and 8- / 4-byte copies with src-size tid & 7 / tid & 3. Each thread copies 16 bytes of in into its own shared slot (pre-filled with

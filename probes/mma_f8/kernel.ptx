@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // N-MMA-F8 probe: D[128x64] = A[128x128] * B[64x128]^T through 4 tcgen05.mma.kind::f8f6f4 (K = 32
 // each, one byte per element: FP8, or FP6 / FP4 in 8-bit containers). The instruction
 // descriptor is a kernel parameter, so one binary serves every format pair and D type; the

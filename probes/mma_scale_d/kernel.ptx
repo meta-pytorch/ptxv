@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/mma_scale_d: tcgen05.mma.kind::f16 (bf16 A / B, f32 D) and kind::tf32 with
 // scale-input-d: D = A B + D * 2^-s (SASS `UTCHMMA ..., UPT, s`). TMEM is loaded from `C`
 // (128 lanes x 256 columns of f32 patterns, gen.py), then 14 MMAs (M = 128, N = 16) each

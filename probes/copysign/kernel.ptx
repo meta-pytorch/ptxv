@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/copysign: PTX copysign.f32 d, a, b = b with the sign bit of a (a pure bit
 // operation). 256 threads; a, b = in[2 t], in[2 t + 1] (gen.py: random words, NaN payloads,
 // signed zeros, Inf, subnormals); out[3 t] = copysign(a, b), out[3 t + 1] = copysign(b, a),

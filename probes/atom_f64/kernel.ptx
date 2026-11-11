@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for atom.add.f64 / red.add.f64 (SASS ATOMG / REDG .E.ADD.F64.RN). Thread i adds b[i]
 // to acc[i] (its own word: deterministic, every rounding case) with atom, returning the old
 // value, and red-adds the integer i % 7 to sum[i % 4] (exact, so the order does not matter).

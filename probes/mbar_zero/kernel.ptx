@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for ASSUMPTIONS.md S-MBAR-MEM: what an all-zero mbarrier word means to the sync unit.
 // ptxas's cta_group::2 allocation handshake waits on a hidden mbarrier in reserved shared
 // memory (0x48) that nothing initializes (it starts as 0, probes/reserved_smem). One thread:

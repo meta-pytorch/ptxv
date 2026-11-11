@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (S-TMA-2CTA-MCAST): which CTAs a multicast TMA load (cp.async.bulk.tensor ...
 // .multicast::cluster[.cta_group::2], SASS UTMALDG.2D.MULTICAST[.2CTA]) writes and which
 // mbarriers it completes. Cluster of 4 (two CTA pairs), 64 threads per CTA; run.py drives the

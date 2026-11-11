@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/fmnmx_xorsign: PTX min / max .xorsign.abs.f32 (SASS FMNMX[.NAN][.FTZ].XORSIGN) against
 // GB300. Thread g (4 CTAs x 256) loads (a, b) = in[g] (gen.py: every pair of 32 edge patterns)
 // and stores out[j][g]:

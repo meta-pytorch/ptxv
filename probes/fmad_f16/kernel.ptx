@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/fmad_f16: PTX-FMAD for plain mul.f16 / add.f16 / sub.f16 (ptxas: HFMA2 where
 // contracted, HMUL2 + HADD2 elsewhere). Per thread t, group k: a, b, c, d = in[20 t + 4 k ..]
 // (f16; gen.py: c, d cancel a b to +- 1 ulp in 3 of 4 groups). Each group has its own operands

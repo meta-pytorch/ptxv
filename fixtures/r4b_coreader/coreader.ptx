@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Co-resident reader for fixtures/r4b_coreader (docs/deepep-coreader.md). Thread 0 weak-loads
 // one word of line 0 of DeepEP's local NVLink buffer at byte offset OFF (the `coreader`
 // kernel: 0x60 = bytes 96..99; `coreader_racy`: 0x0 = the per-rank token count of rank 0)

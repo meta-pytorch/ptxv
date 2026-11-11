@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for movmatrix.sync.aligned.m8n8.trans.b16 (SASS MOVM.16.MT88): each warp transposes
 // its 8x8 matrix of 16-bit elements twice (the second transpose gives the input back) and
 // once more after a per-lane change. Thread i: a = word i of in; writes 3 words at 4i.

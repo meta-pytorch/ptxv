@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // S-INIT-DEAD: a declared dead workspace (init = "undef", scratch = true, not an output).
 //
 // One thread. ws[0] = 3 * in[0]; out[0] = ws[0] (a workspace round trip). It also copies the

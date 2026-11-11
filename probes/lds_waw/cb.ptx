@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/lds_waw variant cb: `LDS.128 Rn, [a]` then `LDS Rn+2|3, [b]` with no wait
 // between them (ptxas's own schedule under .maxnreg 24). First load lane stride 128 bytes,
 // second 0 (128: 32-way bank conflict, 0: broadcast). w[k] of lane l's region = 0x100000 *

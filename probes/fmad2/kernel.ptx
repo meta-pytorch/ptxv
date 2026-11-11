@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/fmad2: ptxas 13.0 contraction of mul.f32x2 into add / sub.f32x2 (PTX-FMAD), with and
 // without rounding modifiers. 32 threads; thread t reads x, y, z, w = in[8 t .. 8 t + 7] as
 // four .b64 pairs (z near -(x y), w near 1, gen.py) and writes out[32 t ..] as 16 pairs:

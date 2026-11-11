@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/red_vec: vector float reductions red.global.add.v4.f32 / .v2.f32 (SASS
 // REDG.E.ADD.F32x4.FTZ.RN.STRONG.GPU / F32x2). 128 threads; thread t loads four f32 x = in[4 t
 // .. 4 t + 3] (gen.py: small integers and halves, so every sum is exact in any order) and adds

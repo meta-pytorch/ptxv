@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Rung 1b fixture: a persistent, warp-specialized tcgen05 GEMM pipeline (one CTA, 6 warps).
 //
 //   D[256x16] (f32) = A[256x128] (bf16) * B[16x128]^T, as T = 2 output tiles of 128x16;

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // S-PROXY probe for cp.async writers: 256 threads cp.async (LDGSTS) a 16 KiB tile into shared
 // memory, cp.async.wait_all, [fence.proxy.async.shared::cta,] bar.sync, then thread 0 stores the
 // tile to global with a TMA store (cp.async.bulk.tensor, UTMASTG, async proxy). Variants (case.toml): `none`

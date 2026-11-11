@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/f32x2_repack: plain mul.f32x2 products unpacked and repacked (PTX-FMAD). 256 threads;
 // per thread 16 words: x, y, u, w, c, e (f32x2 each), k, then pad (gen.py: c, e near minus the
 // product lanes they meet, so a contraction changes the result). p = x * y, q = u * w.

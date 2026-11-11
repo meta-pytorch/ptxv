@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (L-OPCLASS) for the f64 hazard rule by module SM on GB300: a 16-step dependent DFMA
 // chain, DADD -> DMUL -> DADD -> DMUL, DSETP -> FSEL, and f64 results read by STG. ptxas 13.0
 // for sm_100f covers them with stall counts alone (st=8, no scoreboards); for sm_103a with

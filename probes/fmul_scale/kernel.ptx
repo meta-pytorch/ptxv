@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // FMUL scale modifiers (SASS FMUL.D2 / .D4 / .D8 / .M2 / .M4 / .M8, FMUL.FTZ.D2,
 // FMUL.D2.SAT; MISS 55): ptxas 13.0 / 13.1 / 13.3 fold a mul.f32 without a rounding modifier
 // whose only reader multiplies it by 0.125 .. 8 into one FMUL with a scale modifier (also when

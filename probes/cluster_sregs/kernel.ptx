@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // S-CBANK: the driver's per-cluster-size constant table. ptxas reads cluster special registers
 // from c[0x0][off - 0xa0 * %cluster_nctarank] (SR_CgaSize): +0x2a0.. %cluster_nctaid,
 // +0x2b0.. f32 1/%cluster_nctaid (clusterid = trunc(ctaid * that)), +0x2c0.. %nclusterid,

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/mbar_count: mbarrier.arrive with an arrival count (SASS SYNCS.ARRIVE.TRANS64.ART0 and
 // .RED.ART0). One warp; lane 0 alone runs the sequence below on mbarrier m (expected count 5)
 // and stores the test_wait results out[0..8); every lane then stores out[8 + lane] = in[lane]

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (S-TMEM, N-MMA): tcgen05.mma kind::f16, M = 128, N = 8 (n24/: N = 24, the idesc
 // parameter) with A in TMEM, the shape of the FP8-KV decode's P.V MMA (UTCHMMA tmem[..],
 // gdesc[..], ...). probes/tc_mma_imm's kernel (bf16 -> f32; TMEM lanes 0..127 x columns 0..255

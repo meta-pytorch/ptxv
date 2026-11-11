@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-BAR-OVER walk values fixture: warp-role dispatch recomputed from the warp index after
 // the roles' work. 192 threads, 6 warps; the warp index is made warp-uniform with
 // shfl.sync (CuTe's warp_idx). Warps 0-3 (consumers) exchange values through shared memory

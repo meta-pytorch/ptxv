@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // S-ALIGN: one thread stores, loads and adds through addresses whose offset is a variant knob
 // (%r9 = 0 in good). A misaligned access traps on GB300 ("misaligned address").
 //   good: st.global.u64 / ld.shared.v4.u32 / atom.global.add.u64 at aligned addresses

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 //
 // Rung 1h, NVLS multicast write-after-write in one thread (S-VA-ALIAS; the same-thread shape of
 // probes/va_alias/xpwaw.cu). One thread on GPU 0; `u` is GPU 0's unicast buffer, `m` the

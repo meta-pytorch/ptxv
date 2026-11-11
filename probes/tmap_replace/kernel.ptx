@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/tmap_replace: tensormap.replace.tile.<field>.shared::cta.b1024 on maps whose 128
 // bytes start as random words (S-TMAP), then tensormap.cp_fenceproxy of map 0 to global.
 // 32 threads; thread t owns map t in shared memory (in[32 t .. 32 t + 31]) and r = in[1024 +

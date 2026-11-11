@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for ASSUMPTIONS.md S-RESERVED: the initial contents of the system-reserved shared
 // memory 0x0..0x3ff, which ptxas's tcgen05 code uses for hidden bookkeeping (0x40..0x5f:
 // alloc bitmaps, relinquish flag, and for cta_group::2 a hidden mbarrier at 0x48 with a phase

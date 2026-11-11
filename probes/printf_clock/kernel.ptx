@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/printf_clock: DeepEP's timeout shape on the PTX front. Each thread reads %clock64
 // and %globaltimer, spins once on a flag loaded from memory (already set), and calls vprintf
 // with a stack-built argument buffer (cvta.local of %SPL) only if more than 2^40 cycles or

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // N-MMA-BS / E-PAIR probe, MN-major operands across a CTA pair (probes/mma_bs/mn, gen.py):
 // D[256x128] f32 = sum over 4 tcgen05.mma.cta_group::2.kind::mxf8f6f4.block_scale.scale_vec::1X
 // (K = 32 each) of A[256xK] * B[128xK]^T, e4m3 x e4m3, ue8m0 scales; cluster 2 x 128 threads.

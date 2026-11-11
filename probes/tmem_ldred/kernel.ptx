@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe: tcgen05.ld.red (SASS LDTM.STAT.xN.MIN|MAX[ABS].F32[.NAN] Rred, Rd, tmem[..]; FA4's row
 // max) and a negative TMEM address offset (SASS `LDTM.x8 R, tmem[UR+-0x10]`, the mslk decode
 // kernel). Thread t (warp w = TMEM lanes 32w..) stores in[64 t + c] to column c, c = 0..63

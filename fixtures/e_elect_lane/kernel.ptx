@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-ELECT: the elected lane's id is the output. GB300 elects the lowest active lane
 // (probes/elect): out[0] = 0. The PTX ISA fixes no lane, so the PTX front runs the lowest and
 // the highest leader: two outcomes (nondeterministic); the SASS front must give GB300's.

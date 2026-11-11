@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/cvt_tf32: cvt.rna.tf32.f32 (round to 19 bits, ties away from zero; ptxas adds 0x1000
 // to a finite operand and masks with 0xffffe000, Inf / NaN only masked). 256 threads x 4
 // words: in = random words, ties (low 13 bits 0x1000), near-overflow values, NaN payloads,

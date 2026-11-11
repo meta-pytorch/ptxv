@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/fmad2_v133: ptxas version dependence of mul.f32x2 + add.f32x2 contraction
 // (PTX-FMAD-X2-VERSION). 128 threads; triple k (k < 5) of thread t: x, y = .b64 pairs at
 // in[32 t + 4 k ..], z at in[32 t + 20 + 2 k ..] (gen.py: z = -(x y) +- 1 ulp, so a

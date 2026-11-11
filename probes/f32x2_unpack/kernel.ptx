@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/f32x2_unpack: `mul.f32x2` with no rounding modifier whose product ptxas 13.0 keeps
 // apart from the ops reading it (FMUL2, no FFMA / FFMA2): halves unpacked into scalar ops, the
 // product as an fma addend, and a half repacked into the other lane of a vector that an

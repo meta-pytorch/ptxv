@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/f16_absneg: abs / neg .f16x2 and .f16 (SASS HADD2 d, |R|, -RZ.H0_H0 and HADD2 d,
 // -R, -RZ.H0_H0) on every f16 pattern: in[i] = (2i + 1) << 16 | 2i, i < 32768. 256 threads, 128
 // iterations; out[i] = abs.f16x2, out[32768 + i] = neg.f16x2, out[65536 + i] = abs.f16 of the

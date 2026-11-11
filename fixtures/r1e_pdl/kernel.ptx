@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Rung 1e fixture: a pair of kernels with programmatic dependent launch (PDL).
 //
 //   produce (2 CTAs x 32): buf[i] = 3 * in[i] + 1. The "mainloop" reads in[i]; then the CTA

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 //
 // A race that needs depth: lane 0 of each of 4 warps adds to one shared counter 16 times
 // (atom.shared.add: every interleaving of the adds is a distinct state), then lane 0 of

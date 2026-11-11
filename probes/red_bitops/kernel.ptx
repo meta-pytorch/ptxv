@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/red_bitops: red.global.{or,and,xor}.b32 / .b64 at cta, gpu and sys scope (SASS
 // REDG.E.{OR,AND,XOR}[.64].STRONG.{SM,GPU,SYS}). 256 threads; thread t updates word t % 64
 // of each region with a value derived from the input word in[t], so 4 threads (two warps

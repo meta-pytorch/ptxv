@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (N-QMUL4) for SASS QMUL4.E4M3x4.E2M1x4.E4M3x4 (trtllm-gen FMHA's e2m1 KV
 // dequantization; no PTX form found). ptxas builds this kernel (base.cubin) with two LOP3
 // placeholders; patch.py rewrites them into QMUL4 R6, R2.N3210, R3.B0 and QMUL4 R7, R2.N7654,

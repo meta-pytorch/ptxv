@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Double-buffered TMA-store epilogue (the CUTLASS sm100 epilogue shape): 4 subtiles through 2
 // staging buffers. Per subtile j: every thread writes its word of buffer j%2, fence.proxy.async,
 // bar.sync 1, 128; thread 0 issues the TMA store of the buffer, commits, and waits until at most

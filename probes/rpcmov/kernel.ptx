@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/rpcmov: thread g (2 CTAs x 128) loads a = in[g], b = in[256 + g] and stores
 // out[0][g] = b + 0x5678, out[1][g] = b, out[2][g] = a ^ b, out[3][g] = x = a + 0x1234.
 // patch.py inserts `RPCMOV.32 Rpc.LO, Ra` (save a) right after the loads and

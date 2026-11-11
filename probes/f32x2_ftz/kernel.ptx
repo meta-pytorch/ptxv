@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (L-ROSETTA) for packed f32x2 arithmetic with .ftz: fma.{rn,rz,rm,rp}.ftz (FFMA2.FTZ
 // [.RZ|.RM|.RP]), add.{rn,rm,rz}.ftz (FADD2.FTZ[...]), sub.rn.ftz (FADD2.FTZ, -b), and
 // mul.{rn,rp}.ftz (FMUL2.FTZ[.RP]), each on loads (nothing to contract). Thread i reads

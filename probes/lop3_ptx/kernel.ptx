@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/lop3_ptx: lop3.b32 d, a, b, c, immLut with register and immediate operands (the
 // window fp8 dequant helper's `lop3.b32 c, y, 0x000F000F, 0x64086408, 0x6A`). 256 threads;
 // a, b, c = in[3 t .. 3 t + 2] (gen.py: random words). out[18 t + i], i < 16: LUT i of

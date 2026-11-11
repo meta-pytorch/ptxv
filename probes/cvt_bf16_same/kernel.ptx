@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // cvt.bf16.bf16 (no modifier) on every 16-bit code. 256 threads x 256 iterations; i = 256 j + t;
 // out[i] = cvt.bf16.bf16(i) zero-extended. ptxas 13.0 / 13.3: HFMA2.BF16_V2 d, -RZ, RZ, a.
 .version 9.0

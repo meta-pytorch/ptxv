@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Fixture (S-INIT, scratch buffers): a producer / consumer pair over a scratch buffer, as in a
 // backward preprocess that writes per-row sums which the main kernel reads. Two sequences of
 // 24 rows; the consumer reads row r of sequence b at b * 32 + r (row count rounded up to 32).

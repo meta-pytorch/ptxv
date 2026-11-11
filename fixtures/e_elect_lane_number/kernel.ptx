@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-ELECT (MISS 49): the leader's lane number (elect.sync's first output) decides the leader's
 // work through a function equal at the two end lanes: f(l) = min(l, (l + 1) & 31) is 0 for
 // leaders 0 and 31 and nonzero for every other leader. An end-lane leader stores out[1] before

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (S-TMEM): tcgen05.st / ld .16x32bx2 (SASS STTM / LDTM .16dp32bit_t0_t15 + _t16_t31,
 // FA4 decode). Each warp zeroes its 32 lanes x 128 columns, stores (s << 24 | t << 8 | j):
 //   s1 16x32bx2.x4 at (lane 0, col 0), split 8;  s2 .x16 at (lane 16, col 16), split 64;

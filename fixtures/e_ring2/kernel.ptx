@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Fixture for C-RING (E-WELLSYNC): the ring of e_ring across two GPUs, laid out as DeepEP
 // lays out its channels: the ring's slots and both counters live in the consumer's memory
 // (GPU 1). The producer (GPU 0) writes payload and tail through peer pointers and polls the

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/sub16x2: sub.u16x2 / sub.s16x2 (two 16-bit lanes, each a - b modulo 2^16, no borrow
 // between them; ptxas 13.3 accepts them, 13.0 does not: VIADD.16x2 d, a, -b). 24 CTAs x 256
 // threads; i = 256 ctaid + tid; a, b = in[2 i], in[2 i + 1] (gen.py); out[4 i] = sub.u16x2(a, b),

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Fixture for cluster symmetry (E-CTA-INDEP): 4 CTAs of 64 threads. Warp 1 of each CTA
 // arrives on an mbarrier that warp 0 waits for, then warp 0 stores ctaid-dependent data to
 // its own slice of `out`. Position-dependent control (the `skip` branch) is taken the same way

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Fixture for S-MBAR-SCOPE / S-TCGEN05 (2-CTA tensor-memory hand-back): r1c_2sm's pair MMA run
 // twice over the same TMEM accumulator. Between the rounds every thread of both CTAs reads D
 // (tcgen05.ld; wait::ld), the CTA syncs (tcgen05.fence::before_thread_sync; bar.sync), and

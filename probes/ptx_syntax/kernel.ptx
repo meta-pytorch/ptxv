@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for PTX syntax forms: %lanemask_{lt,le,ge,gt,eq}, an inline-asm scope register
 // declared without `%`, a `[%rd+-N]` address, vector operand lists starting a continuation
 // line (after a comma, or after a bare mnemonic as ptxas prints mma.sync), and a branch to a

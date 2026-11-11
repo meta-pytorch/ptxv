@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/dsetp_ltu_le (written by gen.py, which documents the records): setp.le.f64 and
 // setp.ltu.f64 folded by ptxas with and.pred / or.pred / xor.pred into
 // DSETP.{LE,LTU}.{AND,OR,XOR} Pd, PT, a, b, Pc | !Pc | PT, with b a register pair, a

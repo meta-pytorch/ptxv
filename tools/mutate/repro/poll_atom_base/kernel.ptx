@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // C-POLL-ATOM base: the poller's own add is HB-before its poll but comes after another
 // CTA's concurrent add in the run.
 .version 9.0

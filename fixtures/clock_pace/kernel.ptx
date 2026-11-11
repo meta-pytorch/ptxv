@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // fixtures/clock_pace (E-CLOCK, PTXV_CLOCK_STEP): store pacing. Thread 0 stores out[0], waits
 // until %clock64 has advanced by 1000 cycles, then stores out[1]. With the clock reading 0
 // (default) the wait never ends; with a clock step it ends after 1000 / step reads.

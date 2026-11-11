@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // fixtures/e_ptx_redux: the PTX forms lifted for the mslk decode kernels, on one warp, against
 // GB300. Lane l loads x = in[l] (f32 bit patterns: normals of both signs, +-0, +-inf, a NaN in
 // lane 7 of the second set) and stores, at out[16 l + j]:

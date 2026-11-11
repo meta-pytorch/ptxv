@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for mad.wide.{s,u}16 d, a, imm, c (32-bit d = ext16(a) * ext16(imm) + c). Thread i:
 // a = low 16 bits of word 2i, c = word 2i + 1; writes 4 words at 4i.
 .version 8.8

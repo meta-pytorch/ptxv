@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Rung 2e equivalence demo: the rung 1a tile GEMM (D[128x64] = A[128x64] * B[64x64]^T, four
 // K = 16 tcgen05.mma steps) and three "generated" candidates (case.toml variants):
 //   E1 reorders the reduction (the K chunk 3 MMA first, chunk 0 last),

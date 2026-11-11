@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/tc_pair_atmem: tcgen05.mma.cta_group::2.kind::f16 at M = 128 (PTX ISA "Layout B")
 // with A in TMEM (FlashAttention Bf16x6 forward / backward). probes/tc_m128's mma_pair entry
 // with each thread's A row (A[rank][t], 32 bytes) stored to TMEM lane t, columns 192..199

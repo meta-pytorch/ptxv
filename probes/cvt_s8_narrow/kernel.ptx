@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/cvt_s8_narrow: integer narrowing cvt into a 16-bit / 32-bit register, then widened
 // (PTX: a narrowed signed result is sign-extended to the destination register). 128 threads;
 // x = in[t] (edge patterns, random); out[k * 128 + t]:

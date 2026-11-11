@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // PTX front: div.full.f32 and cvt.{rn,rz,rm,rp}.f32.{s32,u32} against GB300 bitwise, on every
 // pair of the s_alu2 operands (64 special bit patterns + 64 random). Thread i, operand x = v[i]:
 // out[i*136 + j] = div.full.f32(x, v[j]) for j < 128; out[i*136 + 128 + 4s + r] = cvt with

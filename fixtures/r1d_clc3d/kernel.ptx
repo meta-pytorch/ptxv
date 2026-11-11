@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // r1d_clc on a 3-D grid: 2 x 1 x 2 one-warp CTAs over 4 tiles, tile = ctaid.x + 2 ctaid.z;
 // out[32 * tile + lane] = 1000 * tile + lane. After each tile, thread 0 tries to cancel a CTA
 // that has not launched and takes over its tile, decoding the response with

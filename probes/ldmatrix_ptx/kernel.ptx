@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (L-ROSETTA) for PTX ldmatrix: m8n8.x1 / .x2 / .x4 / .x4.trans .shared.b16 (SASS LDSM.16.M88.N
 // / .MT88.4), one warp, a 32x32 b16 tile in shared memory (row r at 64 r bytes); lane l gives
 // the address of row l (x4: matrices 0-3 from rows 0-7, 8-15, ...), x1 / x2 lanes 0-7 / 0-15.

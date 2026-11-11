@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (S-TMAP): a tensor map copied out of the kernel parameters and patched on the device,
 // as CuTe grouped GEMMs do. The parameter is a driver-encoded map (cuTensorMapEncodeTiled: f32,
 // rank 2, dims 64 x 32, row stride 256 B, box 32 x 16, no swizzle) of `in`. Thread 0 copies

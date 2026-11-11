@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/applypriority: applypriority.L2::evict_normal (SASS CCTL.E.DML2) and
 // prefetch.global.L2::evict_last (CCTL.E.PML2) are cache hints with no memory effect.
 // 64 threads; thread t stores in[t] ^ 0x5a5a5a5a to out[t]; after a barrier, lane 0 of warp 0

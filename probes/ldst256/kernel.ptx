@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for 32-byte global accesses: ld.global.v8.u32 / ld.global.nc.v8.u32 / st.global.v8.u32
 // (SASS LDG.E.ENL2.256 Rhi, Rlo / LDG.E.ENL2.256.CONSTANT / STG.E.ENL2.256 [a], Rlo, Rhi).
 // Each element i gets i+1 added so a swapped register quad changes the output.

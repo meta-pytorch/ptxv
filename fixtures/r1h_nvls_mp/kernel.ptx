@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 //
 // Rung 1h, message passing through NVLS multicast memory on 2 GPUs (S-MC-ALIAS, cross-thread
 // strong pair). Rank 0 (role 0) stages 4 floats into its unicast buffer, fences the alias

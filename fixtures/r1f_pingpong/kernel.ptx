@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Rung 1f fixture: two GPUs play ping-pong over NVLink peer memory.
 //
 //   The same kernel runs on GPU 0 (rank 0) and GPU 1 (rank 1), launched independently. Each

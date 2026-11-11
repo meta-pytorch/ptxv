@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/bulk_hint: non-tensor cp.async.bulk with .L2::cache_hint (DeepEP's shape: the policy a
 // mov.b64 constant) global -> shared (mbarrier complete_tx), and shared -> global (bulk_group,
 // the policy from createpolicy). 64 threads; out[t] = in[t] + t.

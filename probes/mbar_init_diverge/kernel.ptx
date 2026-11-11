@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe: an mbarrier initialized by the elected lane on a divergent path, waited on by the
 // other lanes of the same warp at the join with no warp synchronization (the shape of a Triton
 // warp-specialized attention kernel: `@!P0 BRA` past `SYNCS.EXCH.64` (mbarrier.init), then

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // N-MUFU probe: `rcp.approx.ftz.f64` / `rsqrt.approx.ftz.f64`, which ptxas emits as the bare
 // MUFU.RCP64H / MUFU.RSQ64H on the input's high word (result low word 0). 128 threads, each
 // on 4 random words: d1, d3 = raw bits; d2 = d1's mantissa with the exponent forced into

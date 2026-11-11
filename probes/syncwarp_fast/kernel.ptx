@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/syncwarp_fast: ptxas's fast path of `__syncwarp()` (bar.warp.sync -1) merged with the
 // following elect.sync: `BRA.DIV 0xffffffff, slow` falls through with no WARPSYNC when the warp
 // is converged, the slow path being WARPSYNC.COLLECTIVE (DeepEP hybrid dispatch's

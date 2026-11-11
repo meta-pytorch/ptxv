@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-POLL-ANY: a strong load commutes with its location's writes only when its step ends alike
 // for every value (registers may differ only where dead). Here thread 32's relaxed load of the
 // flag is followed, in a later step (after another strong load), by a store of the loaded

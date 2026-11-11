@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/tc_tf32_mn: tcgen05.mma.kind::tf32 with MN-major operands (idesc bits 15 / 16), which
 // GB300 reads only through smem descriptor layout 1 (SWIZZLE_128B_BASE32B; the other layouts
 // give zeros). The CTA copies a host-built 18,432-byte shared-memory image (gen.py), then

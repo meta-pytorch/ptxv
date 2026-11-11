@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // tile::gather4 TMA loads (cp.async.bulk.tensor.2d...tile::gather4; SASS UTMALDG.2D.GATHER4)
 // against GB300. One CTA of 128 threads: smem (12 KiB) is filled with 0xffff, then thread 0
 // arms one mbarrier with the total bytes and issues six gathers of four rows each from a

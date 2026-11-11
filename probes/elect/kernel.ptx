@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for E-ELECT: which lane does elect.sync pick on GB300?
 // Warp w (8 warps) runs elect.sync with membermask = active set masks[w]; lanes outside the
 // set branch around it. The leader writes its laneid to out[w]; out[8 + w] counts leaders

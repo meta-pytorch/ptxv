@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/stg_na remote control: the L1 staleness the test above would see. CTA 0 thread t loads
 // x[t] (weak, fills its SM's L1), sets f1[t] (volatile); CTA 1 thread t spins on f1[t]
 // (volatile), stores x[t] + 0x1000 to x[t], fence.acq_rel.gpu, sets f2[t]; CTA 0 spins on f2[t]

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for set.<cmp>.{u32,bf16x2,f16x2}.{bf16x2,f16x2} (SASS HSET2[.BF16_V2][.BF]): register
 // operands and a constant pair (ptxas: an immediate). Thread i: a, b = words 2i, 2i+1 of in;
 // writes 10 words at 16i.

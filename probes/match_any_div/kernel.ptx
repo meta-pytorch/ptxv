@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (L-ROSETTA) for MATCH.ANY[.U64] (match.any.sync.b32 / .b64): divergent lanes with partial membermasks (even / odd lanes, half warps); SASS front only (WARPSYNC Rmask + MATCH.ANY).
 .version 8.8
 .target sm_103a

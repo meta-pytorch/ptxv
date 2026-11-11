@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for E-BAR-EXIT: does bar.sync wait for threads that have exited?
 // 64 threads. Threads with tid >= EXIT_FROM exit immediately; the rest run bar.sync and
 // thread 0 writes out[0] = 1 afterwards. A hang means exited threads are waited for.

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/hmma_f16: probes/hmma's kernel (nvcc -O3 -ptx of hmma.cu) with the mma.sync lines
 // switched to f16 operands: D[128x128] f32 = A[128x64] f16 * B[128x64]^T through
 // mma.sync.m16n8k16.row.col.f32.f16.f16.f32 (SASS HMMA.16816.F32), one warp per 16x8 tile,

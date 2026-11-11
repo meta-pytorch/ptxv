@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for PTX prmt.b32 (default mode) with register and immediate selectors, sign-replicate
 // nibbles included. Thread i: a, b, c = words 3i..3i+2 of in.
 .version 8.8

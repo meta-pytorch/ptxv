@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/int16x2: packed 16-bit integer min / max (SASS VIMNMX / VIMNMX3 .U16x2 / .S16x2) and
 // a 64-bit `(sext(a) << s) - y` (SASS IADD3 -R / LEA + LEA.HI.X.SX32 with a ~R operand)
 // against GB300. Thread g (4 CTAs x 256) loads (a, b, c) = in[g] (gen.py) and y = in64[g], and

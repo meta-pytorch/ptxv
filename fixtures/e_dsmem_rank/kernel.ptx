@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // S-DSMEM: a shared address is (cluster rank << 24) | offset, and in a cluster launch a
 // shared::cta access must name the CTA's own rank (GB300 traps with an illegal instruction
 // otherwise, probes/reserved_smem). Each CTA of a 2-CTA cluster stores to its own shared word

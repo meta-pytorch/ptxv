@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/f32x2_sinks: plain mul.f32x2 products that no add / sub.f32x2 reads directly (PTX-FMAD,
 // x2_no_add_readers): ptxas keeps each an FMUL2 (.rn). Per thread t, lanes from in[8 t ..]:
 // x = (in0, in1), y = (in2, in3), c = (in4, in5) cancels x y to +- 1 ulp, s = (in6, in7).

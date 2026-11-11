@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // fixtures/e_clock_mem (E-CLOCK): a clock value crosses threads through memory. Thread 0 stores
 // %clock64 to out[2..3] and releases a flag; thread 32 acquires it, loads the timestamp, and
 // stores 1 to out[0] if it is above 1000, else 2. With the clock read as 0 the timestamp is 0

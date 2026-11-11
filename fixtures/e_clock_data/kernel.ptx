@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // fixtures/e_clock_data (E-CLOCK): thread 0 stores selp(%clock64 - t0 > 1000, 1, 2) to out[0]
 // with a load between the two clock reads. The stored value depends on timing through data
 // only (a select, not explored both ways): the verdict must not claim one output for every

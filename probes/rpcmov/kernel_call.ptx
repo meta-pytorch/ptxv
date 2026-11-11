@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/rpcmov (call variant): as kernel.ptx, with a non-inlined device function called between
 // the save and the restore (`CALL.REL.NOINC`, return address in a register). patch_call.py
 // inserts `RPCMOV.32 Rpc.LO, Ra` after the loads and `RPCMOV.32 Rx, Rpc.LO` after the add

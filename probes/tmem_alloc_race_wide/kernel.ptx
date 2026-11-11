@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (hardware only) for the tcgen05 guardrail code ptxas emits around tcgen05.alloc /
 // tcgen05.dealloc. Each warp of each CTA allocates all 512 TMEM columns and deallocates them,
 // n times in a loop, so the warps of a CTA contend for the columns. The guardrail code frees the

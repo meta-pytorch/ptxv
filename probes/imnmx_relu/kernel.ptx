@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/imnmx_relu: integer min / max with .relu (SASS VIMNMX.RELU, VIMNMX.S16x2.RELU,
 // VIADDMNMX.RELU) against GB300. Thread g (4 CTAs x 256) loads (a, b, c) = in[g] (gen.py) and
 // stores out[j][g]:

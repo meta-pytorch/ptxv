@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for the CLC response encoding on a 3-D grid (16 x 4 x 128 one-warp CTAs): thread 0 of
 // each CTA issues one try_cancel and writes out[8c..8c+7] = {1 (ran), is_canceled, raw0..raw3,
 // get_first_ctaid::y, ::z}, c = x + 16 (y + 4 z). check.py: a cancelled CTA never ran and is (raw0, raw1 & 0xffff, raw1 >> 16).

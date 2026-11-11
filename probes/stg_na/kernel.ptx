@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/stg_na: st.global.L1::no_allocate (SASS STG.E.NA) and the SM's own L1 copy. Thread g
 // loads x[g] through p with ld.global (weak, fills L1), stores v = x[g] + 0x1000 through q
 // (the same buffer, unknown to ptxas) with .L1::no_allocate (variant na) or a plain store

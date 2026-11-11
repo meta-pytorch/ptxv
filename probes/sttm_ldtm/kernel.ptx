@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (L-OPREAD) for a TMEM load overwriting the registers of an earlier TMEM store with no
 // wait between them: .maxnreg 40 makes ptxas emit `STTM.x16 tmem[UR6], R20` then
 // `LDTM.x16 R20, tmem[UR7+0x10]` (no read scoreboard on the STTM). Column 0 must receive the

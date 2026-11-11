@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe: thread/register <-> (TMEM lane, column) mapping of tcgen05.ld.16x64b.x4, and which
 // lanes a warp reads when the address's lane field is 0 / 16 (not its own quadrant).
 .version 9.0

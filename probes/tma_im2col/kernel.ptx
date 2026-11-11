@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/tma_im2col (gen.py): im2col TMA through cuTensorMapEncodeIm2col maps.
 // Loads: cp.async.bulk.tensor.{3,4,5}d.shared::cluster.global.im2col (SASS UTMALDG.<n>D.IM2COL),
 // K per map with coordinates and offsets from `coords`, each box copied out to `out` in turn.

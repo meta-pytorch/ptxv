@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-WARPID: %warpid is the warp's SM slot, not its index in the CTA. 4 CTAs of 64 threads; lane
 // 0 of each warp stores its warp index into out[2 c + w].
 //   good: w = tid / 32

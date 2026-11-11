@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Position dependence for E-CTA-REP (representative CTAs) and E-CTA-INDEP symmetry: 8 CTAs of
 // 64 threads (1-CTA clusters, so %clusterid.x = %ctaid.x). Thread t of CTA c stores t into
 // out[64 c + t] after a shared-memory word is reset by thread 0 behind a barrier.

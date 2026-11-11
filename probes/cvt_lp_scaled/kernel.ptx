@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/cvt_lp_scaled (genptx.py). 256 threads x 256 iterations, i = 256 j + t.
 //    0: cvt.rn.scaled::n2::ue8m0.bf16x2.e4m3x2
 //    1: cvt.rn.relu.scaled::n2::ue8m0.bf16x2.e4m3x2

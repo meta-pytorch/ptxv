@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 //
 // S-INIT lane precision for narrow packs (SASS F2FP.E4M3.F32.PACK_AB, F2FP.F16.E4M3.UNPACK_B,
 // HADD2.F32 of one half): the high e4m3 lane comes from a register only threads 0..15 load;

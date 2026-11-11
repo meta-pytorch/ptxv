@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for ASSUMPTIONS.md S-RESERVED: the hidden mbarrier at reserved smem 0x48 of a
 // cta_group::2 kernel (driver-initialized to 0), under the operations the paired-alloc handshake
 // applies to it. (Same steps as probes/mbar_zero, which zeroes an ordinary word instead.)

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // S-SAME-VALUE probe: every warp of every CTA stores the same 32-bit value (the parameter v,
 // or v + warp in the `differ` variant) to one shared-memory word and to one global word, with
 // no synchronization between the stores; after bar.sync thread 0 copies the shared word to

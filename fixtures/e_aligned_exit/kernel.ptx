@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-ALIGNED / E-BAR-EXIT: lanes 0-15 of the warp store and exit; lanes 16-31 store, then execute
 // bar.sync 0 (barrier.sync.aligned) in non-uniform control. ptxas predicates the barrier
 // (`@P0 BAR.SYNC 0x0; @P0 EXIT`): the whole warp reaches the BAR, lanes 0-15 guarded off.

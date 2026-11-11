@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (L-OPCLASS) for the f64 pipe's scoreboards: ptxas for sm_103a gives some DADD / DFMA /
 // DMUL no write scoreboard and reads their result after a wait on a later f64 op's (here
 // DFMA R2 at 0x200, read at 0x2b0 after a wait on DADD R6's SB0).

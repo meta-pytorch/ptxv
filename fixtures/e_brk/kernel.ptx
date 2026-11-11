@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Fixture for SASS BREAK lane membership (E-BSYNC, C-WARP): 64 threads. Lanes with
 // tid % 4 != 3 store 32 words to shared memory under one predicate; ptxas threads the predicated
 // stores into a chain of branches inside a BSSY.RELIABLE B1 region, and the lanes that skip

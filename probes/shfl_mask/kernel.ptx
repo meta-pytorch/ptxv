@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/shfl_mask: PTX shfl.sync / vote.sync / redux.sync with partial member masks on the
 // PTX front-end (E-WARPCOLL). 64 threads; x = in[t] (gen.py); l = lane; out[8 t + i]:
 //   0: shfl.sync.idx(x, 3, 0x101f, mask = l < 16 ? 0xffff : 0xffff0000), in a branch on l < 16

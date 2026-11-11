@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 //
 // S-INIT through a warp reduction (the shape of Triton's cross-warp reduction, dash/5819):
 // warp 0 writes 32 partials to shared memory; after bar.sync only threads tid < 32 load them,

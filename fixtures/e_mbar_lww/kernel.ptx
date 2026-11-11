@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // S-MBAR-SCOPE with an async-proxy consumer: a 2-CTA write-write hand-off. Rank 0 stores
 // 16 bytes into its own shared memory and arrives on rank 1's mbarrier; rank 1 waits, then
 // bulk-copies its own 16 bytes over rank 0's (cp.async.bulk shared::cluster, complete_tx on

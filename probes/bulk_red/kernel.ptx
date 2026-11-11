@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/bulk_red: cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32 (SASS
 // UBLKRED.G.S.ADD.F32.RN) against GB300. 5 CTAs x 128 threads.
 // - CTA 0: its threads copy a[0..4096) into shared memory, fence.proxy.async, and one elected

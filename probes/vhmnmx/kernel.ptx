@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (L-ROSETTA) for VHMNMX / VHMNMX.BF16_V2 [.NAN]: chained two-input half max / min that
 // ptxas fuses into one three-input VHMNMX (Triton's row reductions), bf16 and f16, with and
 // without .NaN, on the halves of packed words and |x| inputs.

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for div.approx.ftz.f32 on the PTX front (L-ROSETTA, N-MUFU, PTX-FMAD,
 // PTX-FMUL-SCALE). ptxas lowers it to MUFU.RCP r, b; FMUL.FTZ d, a, r; the product then
 // contracts / folds as a mul.ftz.f32 without a rounding modifier. Thread i (1024) reads

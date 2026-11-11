@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/cluster_sreg: the cluster special registers %cluster_ctaid, %cluster_nctaid,
 // %clusterid, %nclusterid (.x/.y/.z), %cluster_ctarank / %cluster_nctarank. Grid 4 x 4 x 2,
 // clusters 2 x 2 x 1, 32 threads; thread 0 of CTA (x, y, z) writes 16 words at

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Fixture for E-POLL-ANY (value-insensitive polls): one CTA of two warps. Thread 0 sets a
 // global flag to 1, all threads meet at bar.sync, then thread 0 polls the flag with a
 // relaxed load until it is nonzero and writes out[0], while thread 32 stores the flag with a

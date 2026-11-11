@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-ALLOC: a tcgen05.alloc that cannot succeed blocks until columns are freed. Warp 0 and warp 1
 // each allocate all 512 columns of the CTA's TMEM.
 //   good: each warp allocates, then deallocates, with no barrier in between: warp 1's alloc

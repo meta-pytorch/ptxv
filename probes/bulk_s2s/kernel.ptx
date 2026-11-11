@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/bulk_s2s: cp.async.bulk.shared::cluster.shared::cta.mbarrier::complete_tx::bytes (SASS
 // UBLKCP.S.S) in a 2-CTA cluster against GB300. Each CTA copies in[rank][0..2048) words into
 // its shared src (4096 words), then thread 0 bulk-copies src[0..1024) words to the peer's dst

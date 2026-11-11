@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-NANOSLEEP: nanosleep is a timing hint, not synchronization. Thread 32 sleeps 1 ms and then
 // reads what thread 0 stores right away: GB300 reads 7 in practice, but nothing orders the two
 // accesses, so it is a race (the model, where the sleep is a no-op, explores both orders).

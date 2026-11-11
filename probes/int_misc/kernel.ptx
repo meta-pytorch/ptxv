@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/int_misc: integer forms against GB300. Thread g (4 CTAs x 256) loads
 // (a, b, c_lo, c_hi) = in[g] (gen.py), c = c_hi:c_lo, and stores out[8 g + j]:
 //   j = 0, 1: a * 2 (signed, 64-bit) - c     (SASS IMAD.WIDE d, a, 0x2, -c)

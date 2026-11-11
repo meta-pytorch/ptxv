@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (L-ROSETTA): tcgen05.mma with an immediate enable-input-d (CuTeDSL emits `..., idesc,
 // 0`). probes/tc_mma_off's kernel (kind::f16, M = 128, N = 16, bf16 -> f32; TMEM lanes 0..127 x
 // columns 0..255 sentinel-filled, then dumped) with three MMAs: D at [taddr + 64] with `0`

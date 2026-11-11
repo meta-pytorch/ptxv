@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (L-ROSETTA): cp.async.bulk.prefetch.tensor.2d.L2.global[.tile] (SASS UTMAPF.L2.2D)
 // before the TMA load of fixtures/r0_tma_sum's kernel (thread t sums half-row t of a 64x64
 // bf16 tile). The prefetch is a cache hint: the output is the plain kernel's.

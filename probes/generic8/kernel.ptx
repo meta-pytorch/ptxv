@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/generic8: generic byte accesses and CTA-scope global atomics (SASS LD.E.U8, LD.E.S8,
 // ST.E.U8, ATOMG / REDG .E.ADD.STRONG.SM). 128 threads; thread t: a = in8[t] (ld.u8), b =
 // in8[128 + t] (ld.s8, sign-extended), out8[t] = a + b (st.u8, generic); outw[64 + t] = b

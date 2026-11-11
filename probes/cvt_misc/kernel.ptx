@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for cvt.rn.f32.f64, cvt.f64.f32, cvt.sat.f32.f32 and cvt.r{n,m,p,z}i[.ftz].s32.f32 /
 // .u32.f32 on special and random inputs. Thread i reads f64 word i and f32 word i.
 .version 8.8

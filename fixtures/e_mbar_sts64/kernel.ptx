@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // S-MBAR-MEM: ptxas lowers a per-lane mbarrier.init (a register address) to a plain STS.64 of
 // the encoded state word plus SYNCS.CCTL.IVALL; the SASS front decodes the word (expected
 // count, initial phase) at the barrier's first use. Lanes of warp 0 each init bar[lane] with

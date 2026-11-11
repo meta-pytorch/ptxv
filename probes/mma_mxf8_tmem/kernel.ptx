@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/mma_mxf8_tmem: tcgen05.mma.kind::mxf8f6f4.block_scale (e4m3 x e4m3, ue8m0 scales)
 // with A in TMEM and B MN-major (SWIZZLE_128B) in shared memory -- fa4 fwd_sm100_mxfp8's P*V
 // form, instruction descriptor 0x08a10000 -- against the calibrated path (A and B K-major in

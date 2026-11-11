@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/discard_l2: discard.global.L2 [a], 128 makes the line's contents indeterminate
 // (S-INIT). 64 threads (two warps); buf[0..32) (one 128-byte line) is written by warp 0
 // (buf[t] = 0x1000 + t), discarded by thread 0, rewritten by warp 1 (buf[t - 32] = 0x2000 +

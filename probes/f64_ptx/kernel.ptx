@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // PTX f64 front-end ops against GB300 bitwise: div.{rn,rz,rm,rp}.f64, sqrt.{rn,rz,rm,rp}.f64
 // (ptxas: MUFU.RCP64H / RSQ64H + DFMA expansions), add / sub / mul / fma.f64 in several
 // rounding modes, on every pair of the s_f64 operands: thread i, x = v[i]; for each j, y = v[j],

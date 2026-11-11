@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for abs.s64, brev.b32 and rcp.{rn,rz,rm,rp}.f64 on edge and random inputs. Thread i
 // reads 64-bit word i of in (an integer and, as bits, an f64); writes 8 words at 8i.
 .version 8.8

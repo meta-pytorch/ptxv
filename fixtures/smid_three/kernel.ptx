@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // fixtures/smid_three (E-SMID): each SM owns two slots, out[2 %smid] and out[2 %smid + 1]; a
 // CTA takes the next one with an atomic on cnt[%smid] and stores its %ctaid.x there. A third
 // CTA on one SM writes the next SM's first slot: a race with a CTA on that SM. No enumerated

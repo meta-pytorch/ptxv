@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 //
 // Two-level verdict (hardware profile gb300): every thread writes a word of a shared tile,
 // fences the generic proxy against the async proxy, and after bar.sync thread 0 stores the

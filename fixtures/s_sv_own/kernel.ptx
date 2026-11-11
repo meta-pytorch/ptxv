@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // S-SAME-VALUE, own write: thread 0 of each of two CTAs stores 1 to x (plain), then reads x
 // back (msl DeepEP DeviceSyncer: every CTA stores the next currentCountIdx, then reads it).
 // Each reader's own store wrote 1 and every unordered store of x wrote 1, so the read returns

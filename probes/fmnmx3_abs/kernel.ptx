@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/fmnmx3_abs: PTX min / max [.NaN] [.ftz] .abs.f32 with three sources (SASS FMNMX3
 // [.NAN] [.FTZ] |a|, |b|, |c|) against GB300. Thread g (16 CTAs x 256) loads (a, b, c) =
 // in[g] (gen.py: every triple of 16 edge patterns) and stores out[j][g]:

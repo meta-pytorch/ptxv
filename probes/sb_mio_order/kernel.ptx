@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Skeleton for the MIO operand-read order probe (see patch.py, case.toml). 256 threads per
 // CTA; thread t's slots: region 0 = smem[4t], region 1 = smem[0x400 + 4t], region 2 =
 // smem[0x800 + 4t]. Eight ld.shared.v4 (thread t: smem 0x8000 + 16t + 4096i) keep the memory pipe busy and their results live; the

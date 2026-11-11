@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 //
 // PTX vector operands are consecutive virtual registers, one per element. Every analysis that
 // asks an instruction for the registers it writes or reads (`Op::dst_regs` / `src_regs`) must

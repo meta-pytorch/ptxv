@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/rsqrt_f64: rsqrt.approx.f64 (no .ftz; ptxas: MUFU.RSQ64H, a DFMA refinement and a
 // slow path). 256 threads x 16 f64 inputs: out[i] = rsqrt.approx.f64(in[i]), i = 16 t + k
 // (gen.py: signed zeros, infinities, NaN payloads, negatives, subnormals, the 2^-1022 and

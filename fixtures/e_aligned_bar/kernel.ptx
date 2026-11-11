@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-ALIGNED for named barriers: warp 0 and warp 1 meet at named barrier 1 (64 threads).
 // Warp 0 branches on lane < 16 first.
 //   good: both halves of warp 0 rejoin and run one bar.sync (one pc): clean

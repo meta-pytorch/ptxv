@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // N-MUFU probe: the PTX .approx ops, through the PTX front-end, against GB300 running the
 // ptxas expansion (non-ftz forms scale denormals / huge inputs, sin/cos reduce by 1/(2 pi)).
 // 128 threads, each on 4 random words shaped into: raw bits (%r1), +-[32, 128) (%r6: ex2

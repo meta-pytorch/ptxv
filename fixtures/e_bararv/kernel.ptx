@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-BAR-ARRIVE fixture: producer / consumer over a named barrier, 64 threads.
 // Warp 0 (producer) fills buf[lane] = 3 * lane + 1 in shared memory, then `bar.arrive 1, 64`
 // (does not wait). Warp 1 (consumer) runs `bar.sync 1, 64`, then reads buf[lane] and writes

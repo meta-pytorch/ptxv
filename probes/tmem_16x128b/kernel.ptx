@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (S-TMEM): thread/register <-> (TMEM lane, column) mapping of tcgen05.ld.16x128b.xN
 // (SASS LDTM.16dp128bit.xN, cuBLAS nvjet NVFP4 2-CTA epilogue). Warp w stores
 // lane * 256 + column to TMEM lanes 32w.., columns 0..31 (32x32b), then loads 16x128b .x1, .x2

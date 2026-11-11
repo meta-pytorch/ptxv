@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // LDS vs ATOMS (S-SMEM-STRONG): warp 0's lane 0 folds 2 into a shared word with
 // red.relaxed.shared::cta.or (SASS ATOMS.OR), warp 1's lane 0 reads the word with a plain
 // ld.shared (SASS LDS) and writes it out. The word starts at 1 (set before a bar.sync).

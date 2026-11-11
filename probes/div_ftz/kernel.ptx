@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/div_ftz: div.rn.ftz.f32 on every pair of 32 f32 edge patterns (gen.py). ptxas's
 // slow path ($__internal_..._div_rn_ftz_f32_slowpath) leaves its BSSY.RELIABLE region with
 // `@!P6 BREAK.RELIABLE !P5, B1` + `@!P6 BRA !P5, ...` (a BREAK with a predicate operand)

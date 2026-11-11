@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Fixture for E-SPIN on shared-memory flags: one CTA of two warps. Thread 0 zeroes a flag,
 // all threads meet at bar.sync, then thread 32 (warp 1) writes a data word and sets the flag
 // with a release store, while thread 0 (variant `warp`: all of warp 0) spins on the flag

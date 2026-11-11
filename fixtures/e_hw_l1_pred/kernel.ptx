@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-HW-L1 predictive check (fixture e_hw_l1_pred). Until 2026-11-10 the check kept the first and
 // last two loads per thread and line, which hid the witness here: reduced exploration and the
 // certificate were clean while unreduced exploration found the stale read. Cluster of 2 CTAs (2 SMs), one thread each.

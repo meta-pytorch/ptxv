@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/bf16_selp: plain mul.bf16 whose products reach only uses ptxas cannot contract into
 // (L-ROSETTA), through Triton's NaN override (selp.b16 of 0x7FC0 or the product), a pack, and
 // stmatrix or tcgen05.st (Triton's MX GEMM epilogues). 32 threads; w = in[2 t], v = in[2 t + 1]

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/fmad_sat (genptx.py): a mul.sat.f32 read by plain add / sub. ptxas 13.0 and 13.3 keep
 // the FMUL.SAT and emit FADD (no contraction: the clamp sits between the product and the sum),
 // while a plain mul read by an add.sat / sub.sat is one FFMA.SAT. 32 CTAs x 256 threads;

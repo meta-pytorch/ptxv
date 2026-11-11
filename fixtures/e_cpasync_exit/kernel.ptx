@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 //
 // E-CPASYNC-EXIT: each thread zeroes its 16-byte shared slot, copies 16 bytes of src into
 // it with cp.async.cg, commits, and exits without cp.async.wait_group (the shape of a

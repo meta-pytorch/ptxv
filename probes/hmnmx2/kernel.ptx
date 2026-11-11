@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (N-HMNMX2) for f16 min / max on GB300: min / max [.NaN] [.xorsign.abs] .f16x2, with
 // |b| (abs.f16x2 folded into HMNMX2), immediate pairs (65504, 1, -INF), scalar .f16 halves
 // (H0_H0 / H1_H1 selectors). Built with `ptxas -arch=sm_103a -O3` (hmnmx2.cubin).

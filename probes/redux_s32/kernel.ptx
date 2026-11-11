@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/redux_s32: full-warp redux.sync forms and integer global atomics against GB300.
 // 128 threads (4 warps); lane l of warp w loads x = in[32 w + l] (gen.py) and stores
 // out[9 (32 w + l) + j] = redux.sync.<op j> of x over the warp, op j = add.s32 (SASS

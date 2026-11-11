@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (N-BF16X2) for bf16 abs: abs.bf16x2 / abs.bf16 (SASS HFMA2.BF16_V2 d, -RZ.H0_H0,
 // RZ.H0_H0, |R|) on every 16-bit pattern class: signed zeros, subnormals, Inf, NaNs.
 .version 8.8

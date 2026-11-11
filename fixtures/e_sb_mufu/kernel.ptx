@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // L-OPCLASS: MUFU is a variable-latency unit; its register result needs a write scoreboard
 // that the consumer waits on. Each thread loads x, computes ex2.approx.f32(x) (MUFU.EX2) and
 // stores it.

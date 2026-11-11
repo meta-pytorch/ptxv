@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/clock32: 32-bit clock and global-timer reads (SASS S2UR / S2R / CS2R.32 of
 // SR_CLOCKLO / SR_CLOCKHI / SR_GLOBALTIMERLO / SR_GLOBALTIMERHI). Each thread reads
 // %globaltimer_lo, %globaltimer_hi, %clock, %clock_hi twice around a load and stores

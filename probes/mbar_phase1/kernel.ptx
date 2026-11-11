@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for S-MBAR-MEM: mbarrier state word bit 63 (cuBLAS nvjet initializes some mbarriers
 // with SYNCS.EXCH.64 of the mbarrier.init word with bit 63 set). The two mbarrier.init below
 // are patched in the cubin (patch.py) to set bit 63. One thread:

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Split-interleaving probe: in every warp, lanes 0-5 run a long path P (mode 0: dependent
 // uncached loads, 1: dependent atomics, 2: integer divides + MUFU) between two
 // %globaltimer reads; lanes 6-31 run M iterations of a %globaltimer loop. Per warp:

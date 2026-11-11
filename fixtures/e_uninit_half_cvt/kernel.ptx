@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 //
 // S-INIT through conversions of a 16-bit source: a bf16 that is 0 or a predicated load
 // (threads 16..31 load nothing) is widened with cvt.f64.bf16 and stored. ptxas keeps the

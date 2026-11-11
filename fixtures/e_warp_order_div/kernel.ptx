@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-WARP-ORDER: program order between lanes holds only while the warp is converged. As the
 // diverge control of probes/warp_order: lane 0 (writer) and lane 1 (reader) run their loops on
 // the two sides of a lane-dependent branch, so the warp is diverged for both loops and the

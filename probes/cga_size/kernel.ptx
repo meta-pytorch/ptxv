@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // SR_CgaSize probe. Each CTA's thread 0 writes 16 words at out[16 * ctaid.x]:
 //   0 raw SR_CgaSize * -0xa0 (patch.py: the %cluster_nctaid.z read with its LDC made a NOP)
 //   4 %cluster_nctarank   5 %cluster_ctarank   6 %cluster_nctaid.x   7 %cluster_nctaid.y

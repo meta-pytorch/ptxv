@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for E-BAR-CUT premise (a): one warp's lanes waiting at two named barriers at once.
 // 64 threads. Lanes 0-15 of warp 0 run `barrier.sync 1, 64` (B); lanes 16-31 of warp 0 run
 // `barrier.sync 0` (A, all threads); warp 1 runs `barrier.sync 0`, then `barrier.sync 1, 64`.

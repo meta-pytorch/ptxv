@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // S-INIT fixture: one warp. Producers fill buf[0 .. N) in shared memory, bar.sync, then every
 // thread t reads buf[t]. good: N = 32. B48: N = 16 (a partial-tile producer), so threads
 // 16..31 read shared memory nothing wrote. There is no race (the barrier orders everything);

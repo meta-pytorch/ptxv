@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Rung 3b routing-kernel forms (docs/rung3b.md): F2FP.SATFINITE.BF16.F32.PACK_AB,
 // HSETP2.BF16_V2.<cmp>.AND (register and immediate operands), ATOMS.POPC.INC.32, and generic
 // addresses of the distributed shared memory window (S2R SR_SWINHI).

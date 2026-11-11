@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for abs.f32, abs.ftz.f32 (FADD[.FTZ] |a|, -RZ) and abs.s32 (IABS) on every special
 // pattern: zeros, subnormals, infinities, NaN payloads of both signs, INT_MIN.
 .version 8.8

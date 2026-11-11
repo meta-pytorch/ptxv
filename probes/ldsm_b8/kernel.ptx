@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (L-ROSETTA): ldmatrix.sync.aligned.m16n16.x1 / .x2.trans.shared.b8 (SASS
 // LDSM.8.MT1616[.2], FA4 fp8 decode). Thread l supplies the address of row l%16 of matrix l/16:
 // 32 * ((7 l + 3) mod 32) in a 1024-byte shared buffer. The buffer holds byte o = o & 0xff for

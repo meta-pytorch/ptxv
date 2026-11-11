@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Fixture for C-ORDER dead reads (wellsync.rs `dead_reads`): 64 threads. Thread 0 stores a
 // word to shared memory and warp 0 synchronizes on named barrier 1 (32 threads); then every
 // thread loads the word. Warp 1 skips the barrier, so its load is unordered with the store

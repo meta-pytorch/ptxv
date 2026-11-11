@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/f64_dsetp: DSETP in the f64 pipe's in-order queue (L-OPCLASS). ptxas 13.0 gives
 // `DADD R6, R8, R10` no write scoreboard and reads R6 (FSEL) right after a wait on the
 // scoreboard of a later `DSETP.GEU P0` (the predicate the FSEL reads), less than 128 stall

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/ldst256_l2: 32-byte global accesses with L2 eviction hints: ld.global.L2::evict_last /
 // ld.global.L2::evict_first .v8.u32 and st.global.L2::evict_last / L2::evict_first .v8.u32
 // (SASS LDG / STG .E.ELL2.256 and .EFL2.256). probes/ldst256 with the hints: each element i

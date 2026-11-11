@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Several outstanding peeks (C-WAIT, `SyncLog::ptaint`), as in TRT-LLM's mainloop: thread 32
 // writes w0, arrives on mb0, writes w1, arrives on mb1; thread 0 peeks mb0 and mb1 (try_wait
 // without the retry shape), then skips each blocking wait when its own peek succeeded, and

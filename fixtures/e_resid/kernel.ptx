@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Fixture for E-RESIDENCY (limited residency): 4 CTAs of one warp; thread 0 of each CTA runs
 // one cross-CTA protocol, picked by the @MODE line (case.toml variants):
 //

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/assertfail: Triton's device-assert shape on the PTX front: `call.uni __assertfail,
 // (param0, .., param4)` with string arguments from module .global arrays (cvta.global), then
 // trap. 32 threads; out[t] = in[t] * 2; the assert fires iff some in[t] > 1000 (never in good).

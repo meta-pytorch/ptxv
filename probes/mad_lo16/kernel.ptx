@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/mad_lo16: mad.lo.{s16,u16} d, a, b, c (the low 16 bits of a*b + c), register and
 // immediate operands, d aliasing c. 256 threads; a, b, c = halves of in[2 t], in[2 t + 1]
 // (gen.py: random words). out[4 t ..]: s16 regs, u16 regs, s16 with b = -3, s16 with d = c.

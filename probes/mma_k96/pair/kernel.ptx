@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/mma_k96/pair (N-MMA-K96, E-PAIR): tcgen05.mma.cta_group::2.kind::mxf4nvf4.block_scale
 // .block16 with K = 96 (idesc bit 31), M = 256, N = 256, ue4m3: the shape of the CuTe DSL
 // cascade grouped GEMM (idesc 0x90400480). Cluster 2, 128 threads per CTA; every operand and

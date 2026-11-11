@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-ALIGNED / E-BAR-EXIT control: two warps; lanes 0-15 of warp 0 exit early, the other 48
 // threads run bar.sync 1, 64 and then read warp 1 lane 0's store. GB300 200/200 bitwise.
 .version 9.0

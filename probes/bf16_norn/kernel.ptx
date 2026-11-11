@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for bf16 add / sub / mul with no rounding modifier where ptxas cannot contract:
 // sub / add .bf16x2 and .bf16 of loaded values, mul.bf16x2 whose only use is a store, and
 // two mul.bf16 packed (mov.b32 {lo, hi}) then stored. Thread i: a, b = words 2i, 2i+1 of in;

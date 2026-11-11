@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // An integer division per thread: 1000 / d. good: d is a parameter (7); DATA: d is the input
 // element minus 96 (zero only in CTA 3's slice); POS: d is %ctaid - 3 (zero only in CTA 3).
 // CVTA: cvta.to.shared of an address that leaves the shared window when the input element is

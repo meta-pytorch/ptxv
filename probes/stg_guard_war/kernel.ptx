@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/stg_guard_war: does a wait on the read scoreboard of a guarded-off STG cover an earlier
 // STG's operand reads? Each thread floods the memory queue with 16 stores, then store A writes
 // {v, ~v} to out[t] (a 64-bit store through R_a), then store B, guarded by a predicate that is

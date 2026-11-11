@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/cvt_tf32_rn: cvt.rn / .rz [.relu] [.satfinite] .tf32.f32 (SASS F2FP [.SATFINITE]
 // [.RELU] .TF32.F32.PACK_B [.RZ]). 256 threads, 256 iterations; x = in[i], i = 256 j + t
 // (gen.py: every sign and exponent, mantissas at the rounding edges); out[k * 65536 + i] =

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // C-POLL-ATOM (E-WELLSYNC): an arrival counter of atomic adds. Three CTAs of one warp: each
 // CTA's thread 0 stores data[cta] (plain), then `red.release.gpu.global.add.u32 [cnt], 1`.
 // CTA 0's thread 0 then polls cnt with ld.acquire until it is 3 and copies data[2] to out.

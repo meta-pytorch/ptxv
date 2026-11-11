@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // cvt.rn[.relu].satfinite.bf16x2.e5m2x2 (ptxas 13.3, PTX ISA 9.2+) on every e5m2 code pair,
 // plus the form without .satfinite. 256 threads x 256 iterations, i = 256 j + t, a = i (low 16
 // bits: two e5m2 codes); out[k * 65536 + i]: k = 0 cvt.rn.bf16x2, 1 cvt.rn.satfinite.bf16x2,

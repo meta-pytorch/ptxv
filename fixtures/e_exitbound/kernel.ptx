@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Fixture for the partial-warp exit reduction (local_ample, `exit_bound`): one CTA of two
 // warps. Lane 0 of warp 1 writes a slot and arrives on an mbarrier; lanes 0-15 of warp 0 wait
 // for it, read the slot and store out[tid]; lanes 16-31 of warp 0 leave at once, storing

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/hmma_special: mma.sync.m16n8k16.row.col.f32.bf16.bf16.f32 (HMMA.16816.F32.BF16) on
 // special values, one MMA per CTA (one warp). Lane l of CTA c reads its fragments from
 // in[12 (32 c + l) ..]: a0..a3, b0, b1, c0..c3 (gen.py builds them from logical A[16][16],

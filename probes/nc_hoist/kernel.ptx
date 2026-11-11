@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/nc_hoist (S-NC): fixtures/e_ld_nc variant `written` as one kernel. ptxas 13.0 and 13.3
 // hoist the ld.global.nc of buf[t ^ 1] above the store buf[t] = t and the bar.sync (SASS:
 // LDG.E.CONSTANT, STG, BAR.SYNC, STG), so out[t] is buf's old value (0), not t ^ 1 as a

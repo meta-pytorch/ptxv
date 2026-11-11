@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 //
 // Rung 1h: one-shot all-reduce through NVLS multicast memory on 2 GPUs.
 // Each rank stages its 4 floats into its own (unicast) buffer, fences the alias proxy, joins

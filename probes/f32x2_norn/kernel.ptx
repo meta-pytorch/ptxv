@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for packed f32x2 arithmetic with no rounding modifier where ptxas cannot contract:
 // Triton's RMSNorm shape (mul.f32x2 of mul.f32x2, unpacked and converted to bf16x2) and an
 // add / sub of loads. Each thread reads 4 f32 pairs and writes 2 bf16x2 words and 2 f32 pairs.

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/mulwide16: mul.wide.u16 / mul.wide.s16 (16 x 16 -> 32 bits, operands zero / sign
 // extended from 16 bits) on 16-bit registers made in different ways: sign-extending and
 // zero-extending 16-bit loads, cvt.u16.u32 (low half), add.s16 (a 16-bit result), and an

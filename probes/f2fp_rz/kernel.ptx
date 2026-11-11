@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/f2fp_rz: cvt.rz.f16x2.f32 (SASS F2FP.F16.F32.PACK_AB.RZ). Thread g loads (x, y) =
 // in[g] and stores out[g] = cvt.rz.f16x2.f32(x, y) (x in the high half). gen.py: edge patterns (zeros, subnormals, the f16 boundaries 65504 / 65520 /
 // 65536, 2^-14 / 2^-24 neighbours, inf, NaNs) paired with each other, then random words.

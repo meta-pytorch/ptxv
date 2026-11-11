@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // S-MBAR-SCOPE: a 2-CTA hand-off. Rank 0 stores a tile id into rank 1's shared memory and
 // arrives on rank 1's mbarrier; rank 1 waits on it, reads the id and writes it out. The arrive
 // and the wait are in different CTAs, so they synchronize only when both are at cluster scope

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-ELECT fixture: one warp. A leader publishes a value in shared memory and lane 0 reads it
 // back with no synchronization. Correct only if the leader IS lane 0.
 //   good: the leader is chosen with %laneid == 0 (same thread writes and reads)

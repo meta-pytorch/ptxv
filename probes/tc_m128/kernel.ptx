@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (E-PAIR, S-TMEM, N-MMA, N-MMA-F8): where tcgen05.mma.kind::f16 (bf16 -> f32; entries
 // mma_pair / mma_one) and kind::f8f6f4 (entries mma_pair_f8 / mma_one_f8: same 32-byte rows,
 // 32 one-byte K elements) write D in TMEM, and

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for FFMA2 with negated uniform-register operands: ptxas folds `neg.f32` of kernel
 // parameters into `-URn.F32` (broadcast) and `-URn.F32x2.HI_LO` (pair). Thread i: x = words
 // 2i, 2i+1 of in; d1 = {-u, -u} * x + {0, 0}, d2 = {x0, x0} * {-u, -v} + x, d3 = |x| *

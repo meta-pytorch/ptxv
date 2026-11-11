@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (L-ROSETTA) for stmatrix.sync.aligned.m16n8.x{1,2,4}.trans.shared.b8 (SASS
 // STSM.8.MT168[.2|.4], trtllm-gen FMHA): byte k of each lane's register is lane * 4 + k, the
 // second register of a pair has bit 7 set (two x4 stores with the bit on registers 1, 3 and

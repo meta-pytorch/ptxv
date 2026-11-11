@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/iaddmnmx_relu: VIADDMNMX.RELU with a negated second operand (ptxas's fusion of a
 // subtraction with min / max.relu.s32; trtllm-gen FMHA's `VIADDMNMX.RELU R, R0, -R, 0x80, PT`)
 // against GB300. Thread g (4 CTAs x 256) loads (a, b, c) = in[g] (probes/imnmx_relu's in.bin)

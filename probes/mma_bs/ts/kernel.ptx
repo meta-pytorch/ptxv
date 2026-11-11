@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // N-MMA-BS / S-TMEM probe: probes/mma_bs's mma_mxf8 (D[128x64] f32 = sum over 4 block-scaled
 // kind::mxf8f6f4 scale_vec::1X MMAs of A[128xK] * B[64xK]^T, e4m3 x e4m3, ue8m0 scales in TMEM)
 // with A in TMEM: thread t writes A row t to TMEM lane t, columns 128..159 (byte k at column

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-ELECT (MISS 50): %r1 holds %tid.x, then %tid.x + 3, then %tid.x + 31. (%tid.x + 3) >> 5
 // is 1 for lanes 29-31 of warp 0 and (%tid.x + 31) >> 5 is 0 for lane 0 only: lane-varying,
 // not warp-uniform. Warp 0's leader stores out[1] after bar.sync 0 when it is lane 1..28 (where

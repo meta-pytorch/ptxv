@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/atom_bf16x4: atom / red .add.noftz.v4.bf16 (SASS ATOMG / REDG .E.ADD.BF16x4.RN)
 // against GB300. Thread g (8 CTAs x 256) adds B = {b[2g].lo, b[2g].hi, b[2g+1].lo, b[2g+1].hi}
 // (the b lanes of probes/bf16x2's in.bin, edge values and rounding ties) to its own 8 bytes:

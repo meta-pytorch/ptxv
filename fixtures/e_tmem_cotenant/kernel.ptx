@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Fixture for E-TMEM-COTENANT / E-TMEM-PERMIT (crates/sim/src/tenant.rs): 2 CTAs of one
 // warp. Each warp allocates 256 TMEM columns and relinquishes its allocation permit; CTA 1's
 // thread 0 then sets a global flag (st.release) and CTA 0's thread 0 waits for it

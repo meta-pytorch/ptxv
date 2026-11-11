@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for E-BAR-ARRIVE: does bar.arrive (BAR.ARV) return without waiting, and does it count
 // toward a bar.sync on the same barrier? 64 threads, no spinning.
 //   warp 0: bar.arrive 1, 64;  bar.sync 2, 64;  thread 0 writes out[1] = 2

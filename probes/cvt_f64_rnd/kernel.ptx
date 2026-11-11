@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for cvt.{rn,rz,rm,rp}.f32.f64 on the f64 inputs of probes/cvt_misc (d.bin: zeros,
 // subnormals, f32 range edges, ties, NaN, inf, random values scaled by 2^-140..2^140).
 // Thread i converts f64 word i four ways; writes words 4i..4i+3.

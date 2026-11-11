@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-BAR-CUT fixture: a counted named barrier whose other users can reach it only through an
 // all-thread barrier. 128 threads, two rounds. In round r the active pair is warps 2r and
 // 2r+1: the even warp writes buf[lane] = (lane + r + 1) * 0x01010101 in shared memory and runs

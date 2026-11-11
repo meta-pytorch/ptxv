@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/mapa_lanes: CuTe's per-lane peer address. Every lane of warp 0 computes
 // mapa.shared::cluster(sm, %laneid) in a cluster of 2 CTAs, ranks 2..31 included; only lanes
 // below the cluster size store through it (into the peer CTA's sm[rank of the storer]).

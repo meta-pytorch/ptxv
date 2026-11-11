@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // S-MBAR-SCOPE: a split-KV style mailbox. Rank 1 of a 2-CTA cluster pushes a partial result
 // into rank 0's shared memory with st.async ... mbarrier::complete_tx; rank 0 arms its own
 // mbarrier for the 4 bytes, waits, and reads the mailbox.

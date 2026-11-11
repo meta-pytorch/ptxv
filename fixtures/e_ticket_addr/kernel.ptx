@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Fixture (C-TICKET-ADDR): slot assignment by fetch-add, as in a MoE dispatch. Two CTAs, three
 // claiming threads each; thread g claims a slot in its expert's counter (slot = atomicAdd(&cnt[e],
 // 1)) and stores its row at prefix[e] + slot: val[row] = 10 g + 7, src[row] = g. Which thread gets

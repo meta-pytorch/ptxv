@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/ld_sext64: signed loads narrower than 64 bits into 64-bit registers sign-extend to 64
 // bits; unsigned ones zero-extend (Triton: `ld.param.s32 %rd11` of an ignore index compared
 // with an int64 label). 64 threads; w = in[t] (edge patterns, random); out[k * 64 + t] (64-bit):

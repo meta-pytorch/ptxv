@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-HW-WEAK-FLAG: message passing with a weak flag store after a sys fence (msl DeepEP
 // nvlink_barrier_wo_local_sync, index L5; probes/weak_flag). Two CTAs of one warp: CTA 1's
 // thread 0 stores data (weak), fence.sc.sys, then stores the flag with a weak st.global; CTA

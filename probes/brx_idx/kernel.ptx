@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/brx_idx: brx.idx (PTX indirect branch through a .branchtargets list; Triton's
 // warp-specialized kernels dispatch on the warp's role this way). 128 threads; thread t loads
 // x = in[t] (gen.py), branches on i = (t + t / 32) % 5 (lanes of a warp diverge to all five

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // `.uni` and barrier.cluster `.aligned` contracts. A cluster of 2 CTAs of 64 threads.
 //   good: `@%p1 bra.uni` with %p1 = (warp id == 0), uniform in each warp; every thread runs
 //         barrier.cluster.arrive.release.aligned / wait.acquire.aligned together.

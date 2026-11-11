@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // C-TICKET-ADDR with a fence-acquired claim. Thread 0 writes x = 42, then fence, then claims a slot.
 // Thread 32 claims a slot, then fence, then reads x and stores it as its row. The reader
 // synchronizes with the writer only when its add reads from the writer's add (the writer claimed

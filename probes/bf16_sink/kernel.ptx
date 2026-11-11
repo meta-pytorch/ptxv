@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/bf16_sink: plain mul.bf16 / mul.bf16x2 whose products reach only uses ptxas cannot
 // contract into (L-ROSETTA): (1) four mul.bf16 packed into .b32, then .b64, unpacked into the
 // B operand of mma.sync.m16n8k16.bf16 (Triton's dequant); (2) a mul.bf16x2 through prmt,

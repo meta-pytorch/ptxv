@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // bmsk.{clamp,wrap}.b32 (SASS BMSK / BMSK.W) and shfl.sync.{up,down,idx}.b32 d|p (SASS SHFL
 // with a predicate result) against GB300 bitwise. Thread i: a = v[i] & 63 (the s_alu2
 // operands); for each j, b = v[j] & 63: out[i*136 + 2j] = bmsk.clamp(a, b), +1 = bmsk.wrap(a, b);

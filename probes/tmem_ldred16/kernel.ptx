@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (S-TMEM): tcgen05.ld.red.16x32bx2 (SASS LDTM.STAT.16dp32bit_t0_t15 / _t16_t31
 // .xN.MIN|MAX[ABS].F32[.NAN]; FA4 decode's row max). Thread t stores in[128 t + c] to its TMEM
 // lane, column c = 0..127 (32x32b), then (lanes relative to the warp's quadrant):

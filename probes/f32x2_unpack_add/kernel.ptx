@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/f32x2_unpack_add: a `mul.f32x2` with no rounding modifier read both through an unpack
 // (halves into fma.rn multiplicands or stores) and directly by a plain add / sub.f32x2.
 // 256 threads; x = in[4 t .. 4 t + 1], y = in[4 t + 2 .. 4 t + 3] as f32x2 (gen.py: products

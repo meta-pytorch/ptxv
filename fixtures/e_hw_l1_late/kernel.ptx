@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-HW-L1 predictive check, filler after the read in the explored order. Cluster of 2 CTAs,
 // 2 warps each. CTA 0 thread 0 (writer): weak store W of word 0 of line L, then a release
 // store of the flag at cluster scope. CTA 1 warp 0 (reader): acquire poll of the flag at

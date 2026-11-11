@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/mov_pack: byte packing / unpacking moves in an inline-asm scope with .b8 registers
 // (CUTLASS / CuTeDSL): mov.b32 {b0, b1, b2, b3}, r and mov.b32 r, {b3, b2, b1, b0} (byte
 // reverse), mov.b16 {lo, hi}, h and mov.b16 h, {hi, lo} (byte swap), and a 4-byte pack of

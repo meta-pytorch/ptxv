@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/fmad: ptxas 13.0's default contraction (--fmad=true) of a mul without a rounding
 // modifier into the add / sub without one that reads it (PTX-FMAD). 256 threads; a, b, c =
 // in[3 t .. 3 t + 2] (gen.py: random words, subnormals, signed zeros, Inf / NaN, products

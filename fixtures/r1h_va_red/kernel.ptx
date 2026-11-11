@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 //
 // Rung 1h, virtual aliases within one address space (S-VA-ALIAS), unordered strong writes
 // through two mappings: `a` and `b` are two mappings of one buffer. Thread 0 adds to a

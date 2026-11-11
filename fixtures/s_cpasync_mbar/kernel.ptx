@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // cp.async completion through an mbarrier (as trtllm-gen's scale loader warp,
 // fixtures/r3b_trtllm_bmm): warp 0's lanes each cp.async 4 bytes into buf1 and 8 bytes into
 // buf2. buf1 is tracked by `cp.async.mbarrier.arrive.shared.b64` on mbarrier A (count 32;

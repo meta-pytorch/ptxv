@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/e2m1_bytes: cvt.rn[.relu].f16x2.e2m1x2 of each byte of a 32-bit register (SASS
 // F2FP[.RELU].F16.E2M1.UNPACK_B Rd, Ra[.B1|.B2|.B3]). Thread g (one CTA of 256) loads
 // w = in[g] (byte k of w = (g + 85k) mod 256: every byte value in every position) and stores

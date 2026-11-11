@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/fence_scopes: message passing with membar.{cta,gl,sys} (= fence.sc.<scope>) and
 // fence.acquire.{cta,cluster,gpu,sys}. Two CTAs of 64 threads (no cluster). Across CTAs: CTA 0
 // thread 0 writes data[0..3], `membar.gl` (@RELG), then flag[0] = 1 (relaxed.gpu); CTA 1 thread

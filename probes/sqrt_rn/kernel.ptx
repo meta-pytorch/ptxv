@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/sqrt_rn: sqrt.rn.f32 (ptxas: MUFU.RSQ, a Newton step, a slow-path call) on 4096 f32
 // patterns (gen.py: +-0, subnormals, normals around every exponent, +-inf, NaNs, negatives,
 // random words); thread t stores out[i] = sqrt.rn(in[i]) for i = t, t + 256, ...

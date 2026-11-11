@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 //
 // S-INIT through shared memory: threads 16..31 skip a predicated load, every thread stores
 // its register to shared memory, a barrier, then every thread loads it back; a store under

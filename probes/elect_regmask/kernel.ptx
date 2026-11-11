@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/elect_regmask: elect.sync with its membermask in a register (DeepEP's inline asm:
 // `mov.b32 %r, -1; elect.sync %rx|%px, %r;`), once from a mov and once from an `or` with the
 // thread index (-1 in every lane at run time). 2 warps; per warp w and elect e in {0, 1}:

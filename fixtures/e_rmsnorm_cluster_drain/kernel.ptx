@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Minimal case: the persistent RMSNorm-bwd cluster row-reduction exchange
 // (quack PipelineStasAsync shape, as captured from FusedRMSNormBwd at D=8448, cluster_n=2).
 //

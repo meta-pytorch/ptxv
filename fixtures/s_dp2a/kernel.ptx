@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // dp2a.{lo,hi}.{u32,s32}.{u32,s32} (SASS IDP.2A.{LO,HI}.{U16,S16}.{U8,S8}) against GB300
 // bitwise on every pair of the s_alu2 operands: thread i, x = v[i]; for each j,
 // out[(i*128 + j)*8 + k] = dp2a form k (x, v[j], v[(i+j)%128]).

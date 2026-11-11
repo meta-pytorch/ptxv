@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/redux_f32_paths: redux.sync.{min,max}[.abs][.NaN].f32 d, a, -1 reached by the lanes
 // of a warp through different paths (an if / else on lane parity, joined before the redux:
 // a full-mask redux.sync waits for every lane), over lanes holding NaNs, signed zeros,

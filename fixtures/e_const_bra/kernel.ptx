@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-CONST-BRA: a branch on a launch constant (the parameter `flag`) is folded: the explorer's
 // control-flow graph keeps only the side constant propagation chose, and exec.rs checks the
 // guard on every execution.

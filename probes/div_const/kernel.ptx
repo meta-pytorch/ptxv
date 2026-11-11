@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/div_const: div.full / div.approx [.ftz] .f32 by a constant, which ptxas folds into
 // FMUL [.FTZ] by RN(1/C) (contracted into a following add / sub as a plain mul), FADD for C =
 // +-1. 128 threads; a = in[t], b = in[128 + t] (gen.py); out[k * 128 + t] per form below.

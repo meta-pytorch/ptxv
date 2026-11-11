@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // fixtures/e_mma_m128_n8: tcgen05.mma.cta_group::1.kind::f16, M = 128, N = 8, bf16 -> f32 (entry
 // mma_one of probes/tc_m128/kernel.ptx; the PTX ISA allows N = 8..256 in steps of 8 at M = 128).
 // The CTA copies 128 A rows and 256 B rows into shared memory (K-major, no swizzle), fills TMEM

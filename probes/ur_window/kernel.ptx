@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/ur_window (E-SPLIT-UR): do a warp's splits switch inside a uniform-register window?
 // Even and odd lanes of every warp run separate paths. Each path chases n dependent uncached
 // pointers, then four more whose last value it stores, then bar.warp.sync on its own lanes

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/tc_tf32: tcgen05.mma.cta_group::1.kind::tf32 (instruction descriptor A / B format 2),
 // f32 D in TMEM: one CTA computes D[128x64] = A[128x64] * B[64x64]^T (raw f32 words) in 8 MMAs
 // of K = 8 from the no-swizzle K-major core-matrix layout (16-byte rows of 4 elements; two 3-D

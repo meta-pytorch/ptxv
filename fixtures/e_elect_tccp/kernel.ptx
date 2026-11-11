@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-ELECT (MISS 51): warp 0's leader fills a 512-byte shared buffer with the ballot of
 // elect.sync's predicate (1 << leader), a leader copies it to tensor memory with tcgen05.cp,
 // and every warp reads its lanes' rows back with tcgen05.ld. Warp 0's lanes test their own bit

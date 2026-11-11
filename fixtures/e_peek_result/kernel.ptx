@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // C-WAIT for successful peeks (E-WELLSYNC). Warp 1 writes a shared word and arrives on an
 // mbarrier; warp 0 peeks it (try_wait without the retry shape), skips its blocking wait when the
 // peek succeeds, and reads the word. In the certificate's run warp 1 arrives first and the

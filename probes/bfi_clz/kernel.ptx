@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/bfi_clz: bfi.b32 with register and immediate pos / len, and clz.b32. 64 threads;
 // a, b, pos, len = in[4 t .. 4 t + 3] (gen.py: pos / len around 0, 31, 32, 255, 256 and
 // random); out[4 t] = bfi(a, b, pos, len), out[4 t + 1] = bfi(a, b, 8, 4), out[4 t + 2] =

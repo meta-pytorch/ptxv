@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (S-TMEM): thread/register <-> (TMEM lane, column) mapping of tcgen05.st.16x256b.xN and
 // .16x128b.xN (SASS STTM.16dp256bit / STTM.16dp128bit, FA4 / KDA epilogues). Each warp zeroes
 // its 32 lanes x 128 columns (32x32b), then stores value (s << 24 | t << 8 | j) for store s,

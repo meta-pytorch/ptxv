@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Signal-pad channel shared by the cute ring RS flags and the triton RS CAS barrier.
 // Faithful form: the barrier's CAS spin loops are atom.cas, as torch and Triton compile them.
 //

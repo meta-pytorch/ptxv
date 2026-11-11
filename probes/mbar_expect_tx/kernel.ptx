@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/mbar_expect_tx: mbarrier.expect_tx / complete_tx (SASS SYNCS.ARRIVE.TRANS64.RED.A0TR /
 // .A0TX): tx-count changes with no arrival. Three warps.
 // Thread 0 runs on mbarrier m (count 1) and stores the test_wait results out[0..7):

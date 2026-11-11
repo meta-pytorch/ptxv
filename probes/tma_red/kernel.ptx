@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/tma_red: cp.reduce.async.bulk.tensor.2d.global.shared::cta.add.tile.bulk_group (SASS
 // UTMAREDG.2D.ADD) on bf16, f16 and f32 tensors against GB300. One CTA of 128 threads copies
 // a16 (4096 x 16 bits) and a32 (4096 f32) into shared memory (8 KB bf16, 8 KB f16 from the same

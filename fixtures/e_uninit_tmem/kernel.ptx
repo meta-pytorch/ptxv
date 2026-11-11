@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 //
 // S-INIT for a load of never-written TMEM (the shape of Triton's peeled-loop prologue,
 // dash/5713): the tcgen05.st that would fill the columns runs only when the trip count `n`

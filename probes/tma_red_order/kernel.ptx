@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/tma_red_order: the order of two bf16 tensor bulk reductions (UTMAREDG.2D.ADD) into
 // one 64 x 64 box. A cluster of two CTAs (128 threads each); CTA r copies a[r] (4096 bf16)
 // into shared memory and fences the async proxy; after a cluster barrier, mode 0: thread 0 of

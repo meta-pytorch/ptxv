@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // E-CLOCK: clock reads return 0 in the model, so a timeout never fires. Thread 32 polls a flag
 // with a clock64 timeout and, when the timeout fires, reads the data without the flag: a
 // read that races with thread 0's store, and on GB300 reads the old value whenever thread 0 is

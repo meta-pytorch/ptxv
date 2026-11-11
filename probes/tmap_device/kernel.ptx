@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (S-TMAP): a tensor map built on the device. Thread 0 zeroes 128 bytes of shared memory,
 // fills every field with tensormap.replace (f32, rank 2, dims 64 x 32, row stride 256 B, box
 // 32 x 16, element strides 1, no interleave, no swizzle, zero fill), publishes it to global

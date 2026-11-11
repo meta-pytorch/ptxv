@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // PTX front-end forms of the mslk decode kernels against GB300 bitwise: fma / mul / add / sub
 // .rn.f32x2 (SASS FFMA2 / FMUL2 / FADD2), cvt.rn.{bf16x2,f16x2}.f32 (F2FP.*.F32.PACK_AB),
 // div.s32, cp.async.ca / .cg, ld / st .v2.b64, vector operands whose registers are not

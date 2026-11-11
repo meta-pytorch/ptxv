@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/cvt_ftz: cvt.ftz.sat.f32.f32 and cvt.ftz.f32.f32 (ptxas: FADD.FTZ.SAT d, RZ, a and
 // FADD.FTZ d, a, -RZ). 64 threads; x = in[t] (gen.py: signed zeros, subnormals, NaN payloads,
 // infinities, values around 0 and 1); out[2 t] = cvt.ftz.sat, out[2 t + 1] = cvt.ftz.

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/cvt_f16: cvt between f32 and f16 / bf16 (MISS 22; N-CVT-F16). 256 threads, 128
 // iterations, i = 256 j + t: x = in[i], y = in[i ^ 0x4000] (gen.py: every sign and exponent,
 // mantissas at the f16 and bf16 rounding edges), h = the 16-bit codes i and i + 32768;

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/float_lit: decimal float literals and cross-width hex literals as operands (ptxas
 // converts them to the instruction type; PTX evaluates decimal literals as f64). 32 threads;
 // x = in[t] (f32, gen.py). out[16 t ..]: 0 mov 0.1, 1 mov 1.00000017881393432617 (a tie),

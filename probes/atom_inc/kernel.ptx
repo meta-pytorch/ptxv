@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe (L-ROSETTA): atom.global.inc.u32 (SASS ATOMG.E.INC.STRONG.GPU). Thread t (256) owns
 // word mem[t] (initial value from mem.bin) and bound b[t]: two increments, the old values to
 // out[t] / out[256 + t]; mem[t] holds the final value. Edge pairs: old = b, old > b, b = 0,

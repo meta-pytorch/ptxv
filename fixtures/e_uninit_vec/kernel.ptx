@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 //
 // S-INIT per byte for vector stores: every thread loads four words, the fourth under a
 // predicate that threads 16..31 fail, and stores the four as one vector to shared memory and

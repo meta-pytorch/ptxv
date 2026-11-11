@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 //
 // S-INIT through a packed f32x2 FMA (SASS FFMA2): lane 0 of the pair is loaded by every
 // thread, lane 1 only by threads 0..15; every thread stores lane 0 of the result, threads 0..15 also lane 1. Lane 0 of

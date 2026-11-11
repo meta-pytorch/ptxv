@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // selp.b64 / selp.u64 / selp.s64: 64-bit selects must keep all 64 bits (register and
 // immediate operands). Thread t writes out[3t..3t+2] (u64):
 //   selp.b64 (x + t, y, odd t), selp.u64 (imm, x, odd t), selp.s64 (y, imm, odd t)

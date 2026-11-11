@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // S-GPROXY: a semaphore-ordered chain of bulk add-reductions into global memory (the
 // deterministic accumulation shape). CTA k waits until sem == k (generic-proxy ld.acquire),
 // adds its 4-float tile with cp.reduce.async.bulk (async proxy), waits for the completion

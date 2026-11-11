@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/setp_bop: setp.<cmp>.<bop>.f32 p, a, b, [!]c (p = cmp(a, b) <bop> c; SASS FSETP.<cmp>.<bop>)
 // for ordered and unordered compares (NaN operands included), with and without a negated
 // combining predicate, and one .ftz form on subnormals. 256 threads; a, b = in[2 t .. 2 t + 1]

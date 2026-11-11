@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // Probe for FLO / POPC ordering: ptxas gives FLO.U32 no write scoreboard and reads its result
 // after a wait on a later POPC's (DeepEP hybrid). bfind / bfind.shiftamt / popc on 2 words.
 .version 8.8

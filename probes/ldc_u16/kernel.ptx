@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
 // probes/ldc_u16: LDC.U16 (ld.param.u16 / .s16 of 16-bit parameters at 2-byte-aligned offsets,
 // odd halfwords of a word included). Parameters: out, then u8 p0, u16 p1, u16 p2, u16 p3, u8 p4,
 // u16 p5, s16 p6, u16 p7; thread 0 stores each 16-bit value zero- (u16) or sign- (s16)
