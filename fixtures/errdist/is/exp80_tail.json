@@ -1,0 +1,3 @@
+{"name": "exp80-tail", "alpha": 0.1,
+ "description": "x ~ N(t + 0.4, 0.7), t = 88.72284 the overflow threshold",
+ "tensors": {"x": {"elems": {"loc_scale": {"loc": 89.12284, "scale": 0.7}}}}}

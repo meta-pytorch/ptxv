@@ -1,0 +1,35 @@
+name = "probe_mad_lo16"
+description = """
+Probe (L-ROSETTA) for mad.lo.{s16,u16} d, a, b, c: the low 16 bits of a*b + c, register and
+immediate operands, d aliasing c (kernel.ptx, gen.py). expected/ is GB300's output (`ptxv hw`)."""
+ptx = "kernel.ptx"
+entry = "mad_lo16"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [512]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

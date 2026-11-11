@@ -1,0 +1,25 @@
+name = "e_elect_lane"
+description = """
+E-ELECT: the elected lane's id is written to out (full warp). GB300: out = [0]
+(the lowest active lane, probes/elect). PTX front: lowest and highest leader, two outcomes."""
+ptx = "kernel.ptx"
+entry = "e_elect_lane"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "leader lane ids"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]

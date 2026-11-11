@@ -1,0 +1,62 @@
+// probes/s2f6_cvt: cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 (SASS
+// F2FP.SATFINITE.BF16.S2_6.UNPACK_B, which nvdisasm 13.0 does not print). PTX ISA 9.1:
+// assembled by ptxas 13.1 (kernel.cubin); ptxas 13.0 rejects it.
+// Thread t, iteration j (0..255): data lane 0 = t, lane 1 = (t + j) & 0xff; scale lane 0 = j,
+// lane 1 = 255 - j: every (code, scale) pair in both lanes. out[(j * 256 + t) * 8 + k]:
+//   k = 0: register data (low half), register scale       (Ra, Rb.H0)
+//   k = 1: data in the high half of a register             (Ra.H1)
+//   k = 2..5: immediate scales 0x8181, 0x7f7f, 0x00ff, 0xfe01
+//   k = 6: k = 0 under a predicate (odd t), else 0x12345678 (@P F2FP)
+//   k = 7: data from the high half with the immediate scale 0x8181 (Ra.H1, imm)
+.version 9.1
+.target sm_103a
+.address_size 64
+
+.visible .entry s2f6_cvt(.param .u64 pout)
+{
+    .reg .b32 %r<32>;
+    .reg .b16 %h<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [pout];
+    mov.u32 %r1, %tid.x;
+    and.b32 %r2, %r1, 1;
+    setp.ne.u32 %p1, %r2, 0;
+    mov.u32 %r3, 0;
+$Lloop:
+    add.u32 %r4, %r1, %r3;
+    and.b32 %r4, %r4, 0xff;
+    shl.b32 %r5, %r4, 8;
+    or.b32 %r6, %r5, %r1;              // data16
+    sub.u32 %r7, 255, %r3;
+    shl.b32 %r7, %r7, 8;
+    or.b32 %r8, %r7, %r3;              // scale16
+    cvt.u16.u32 %h1, %r6;
+    cvt.u16.u32 %h2, %r8;
+    cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 %r10, %h1, %h2;
+    shl.b32 %r11, %r6, 16;
+    xor.b32 %r11, %r11, %r3;           // data16 << 16 | junk
+    mov.b32 {%h3, %h4}, %r11;
+    cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 %r12, %h4, %h2;
+    mov.b16 %h5, 0x8181;
+    cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 %r13, %h1, %h5;
+    mov.b16 %h6, 0x7f7f;
+    cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 %r14, %h1, %h6;
+    mov.b16 %h7, 0x00ff;
+    cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 %r15, %h1, %h7;
+    mov.b16 %h8, 0xfe01;
+    cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 %r16, %h1, %h8;
+    mov.u32 %r17, 0x12345678;
+    @%p1 cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 %r17, %h1, %h2;
+    cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 %r18, %h4, %h5;
+    shl.b32 %r20, %r3, 8;
+    add.u32 %r20, %r20, %r1;
+    mul.wide.u32 %rd2, %r20, 32;
+    add.u64 %rd3, %rd1, %rd2;
+    st.global.v4.u32 [%rd3], {%r10, %r12, %r13, %r14};
+    st.global.v4.u32 [%rd3+16], {%r15, %r16, %r17, %r18};
+    add.u32 %r3, %r3, 1;
+    setp.lt.u32 %p2, %r3, 256;
+    @%p2 bra $Lloop;
+    ret;
+}

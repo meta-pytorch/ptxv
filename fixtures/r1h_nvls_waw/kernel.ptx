@@ -1,0 +1,29 @@
+//
+// Rung 1h, NVLS multicast write-after-write in one thread (S-VA-ALIAS; the same-thread shape of
+// probes/va_alias/xpwaw.cu). One thread on GPU 0; `u` is GPU 0's unicast buffer, `m` the
+// multicast address bound to it (and to GPU 1's buffer): multimem.red.add 1 through m,
+// fence.proxy.alias, atom.exch 256 of the same word through u. The exchange returns 1 when the
+// red landed first, 0 when it lands after.
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry nvls_waw(
+    .param .u64 u,
+    .param .u64 m,
+    .param .u64 out
+)
+{
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<4>;
+
+    ld.param.u64 %rd1, [u];
+    ld.param.u64 %rd2, [m];
+    ld.param.u64 %rd3, [out];
+    multimem.red.relaxed.gpu.global.add.u32 [%rd2], 1; // @RED
+    fence.proxy.alias; // @FENCE
+    atom.relaxed.gpu.global.exch.b32 %r1, [%rd1], 256; // @OP
+    st.global.u32 [%rd3], %r1;
+    ret;
+}

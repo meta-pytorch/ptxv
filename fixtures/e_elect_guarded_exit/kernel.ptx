@@ -1,0 +1,25 @@
+// E-ELECT repro: lanes 0 and 31 branch past a guarded exit; the leader's store of out[1]
+// after it runs only for a middle-lane leader, and thread 32 reads out[1] unsynchronized.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry e_elect_guarded_exit(.param .u64 out)
+{
+    .reg .b32 %r<32>; .reg .b64 %rd<8>; .reg .pred %p<16>;
+    ld.param.u64 %rd1, [out]; cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x; and.b32 %r2, %r1, 31;
+    shr.u32 %r3, %r1, 5; setp.ne.u32 %p3, %r3, 0; @%p3 bra READER;   // warp 1 (warp-uniform)
+    elect.sync %r8|%p1, -1;
+    setp.eq.u32 %p5, %r2, 0; setp.eq.u32 %p6, %r2, 31; or.pred %p2, %p5, %p6;
+    @%p2 bra DONE;
+    ld.param.u64 %rd4, [out]; setp.eq.u64 %p7, %rd4, 0;
+    @%p7 exit;
+    mov.u32 %r9, 1;
+    @%p1 st.global.u32 [%rd1+4], %r9;
+    bra DONE;
+READER:
+    setp.ne.u32 %p4, %r1, 32; @%p4 bra DONE;
+    ld.global.u32 %r10, [%rd1+4]; st.global.u32 [%rd1+16], %r10;
+DONE:
+    ret;
+}

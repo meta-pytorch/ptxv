@@ -1,0 +1,49 @@
+name = "c_sum_kahan"
+description = """
+Captured in process by ptxv.capture (python/ptxv). 1 launch(es), binary only (cubins from CUPTI):
+  0: sum_kahan grid [4, 1, 1] block [32, 1, 1]
+Agent AN's errdist demo (Kahan row sum, N(0,1) x[4, 512] f32). Source:
+tools/capture_examples/triton_sum_kahan.py."""
+cubin = "k0.cubin"
+entry = "sum_kahan"
+grid = [4, 1, 1]
+block = [32, 1, 1]
+dynamic_smem = 0
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [4, 512]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+expect = "expected/y.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

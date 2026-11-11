@@ -1,0 +1,75 @@
+name = "exh_div0"
+description = """
+Exhaustive concolic expansion review (2026-11-09): an input-dependent divisor on a path with
+no decision. The captured input (m = 3) is clean; m = 0 divides by zero (ptxv: fault). The
+expansion must not certify "no fault for every input": the divisor is a value-fault operand
+(C-EXH-TRANSFER), and a data guard of a faulting operation (div0g) is a decision. clock: two
+clock reads in one CTA must not be one leaf (blocked today by the provenance cross-check)."""
+ptx = "kernel.ptx"
+entry = "exh"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "cfg"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+values = [[0, 7], [1, 3], [2, 0], [3, 0]]
+
+[[buffers]]
+name = "xs"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+values = [[0, 0.25]]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "cfg"
+
+[[params]]
+kind = "ptr"
+buffer = "xs"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "div0"
+summary = "out[t] = 1000 / m: m == 0 divides by zero on the same path"
+expect = ["clean"]
+[[variants.edits]]
+marker = "@MUT"
+find = "mov.u32 %r30, 0;"
+replace = "div.u32 %r31, 1000, %r3; st.global.u32 [%rd5], %r31;"
+
+[[variants]]
+id = "div0g"
+summary = "a data-guarded division: @(n == 9) r = 1000 / m"
+expect = ["clean"]
+[[variants.edits]]
+marker = "@MUT"
+find = "mov.u32 %r30, 0;"
+replace = "mov.u32 %r31, 5; setp.eq.u32 %p4, %r2, 9; @%p4 div.u32 %r31, 1000, %r3; st.global.u32 [%rd5], %r31;"
+
+[[variants]]
+id = "clock"
+summary = "race on out[0] when n == 0x12345 and two clock reads differ"
+expect = ["clean"]
+[[variants.edits]]
+marker = "@MUT"
+find = "mov.u32 %r30, 0;"
+replace = "mov.u32 %r31, %clock; add.u32 %r35, %r31, %r2; mov.u32 %r32, %clock; sub.u32 %r33, %r32, %r31; setp.ne.u32 %p4, %r33, 0; setp.eq.u32 %p5, %r35, 0x12345; and.pred %p6, %p4, %p5; @%p6 st.global.u32 [%rd3], %r1;"

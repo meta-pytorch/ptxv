@@ -1,0 +1,88 @@
+name = "r4_rmsnorm_torch"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): `F.rms_norm(x, (128,), w, 1e-6)` with x = randn(4,128,bf16), w = randn(128,bf16). 1 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: _ZN2at6native53_GLOBAL__N__03ac1a2e_20_layer_norm_kernel_cu_9c5ada8a28vectorized_layer_norm_kernelIN3c108BFloa grid [4, 1, 1] block [32, 4, 1]
+Regenerate: CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/capture.py --op 'F.rms_norm(x, (128,), w, 1e-6)' --inputs 'x=randn(4,128,bf16),w=randn(128,bf16)' --out fixtures/r4_rmsnorm_torch"""
+cubin = "k0.cubin"
+entry = "_ZN2at6native53_GLOBAL__N__03ac1a2e_20_layer_norm_kernel_cu_9c5ada8a28vectorized_layer_norm_kernelIN3c108BFloat16EfLb1EEEviT0_PKT_S8_S8_PS5_S9_PS6_"
+grid = [4, 1, 1]
+block = [32, 4, 1]
+dynamic_smem = 24
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "bf16"
+shape = [4, 128]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "w"
+dtype = "bf16"
+shape = [128]
+init = "file"
+file = "data/w.bin"
+
+[[buffers]]
+name = "out"
+dtype = "bf16"
+shape = [4, 128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "W0"
+dtype = "u8"
+shape = [16]
+init = "zeros"
+
+[[params]]
+kind = "u32"
+value = 128
+
+[[params]]
+kind = "u32"
+value = 897988541
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "ptr"
+buffer = "W0"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]
+hw_note = "the SASS run (MUFU per N-MUFU) equals expected/ (GB300) bitwise (tests/fixtures.rs captured_outputs_match_the_gpu)"
+
+[[variants]]
+id = "nosb"
+summary = "SASS: SHFL.DOWN R2 (the sum of squares' warp reduction) at 0x950 gets no write scoreboard (wr SBn -> none)"
+patch = [{ at = "@0x950", wbar = 7 }]
+expect = ["violation"]
+hw_note = "the consumer's wait no longer covers the variable-latency result: it reads the register before it is written"

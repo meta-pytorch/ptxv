@@ -1,0 +1,38 @@
+name = "e_elect_mid"
+description = """
+E-ELECT on the PTX front: the leader of elect.sync is a fixed function of the active set,
+but the ISA does not say which lane. good is correct when the leader is lane 0 or lane 31
+and racy for every middle-lane leader; the PTX front explores every leader function and
+reports the race (it used to run the lowest and the highest lane only, and reported clean).
+GB300 elects the lowest lane (probes/elect), so the SASS verdict clean is right for the
+hardware. ENDS: no late store, race-free for every leader, but thread 32 reads 7 for an
+end-lane leader and 0 for a middle one: nondeterministic under the ISA."""
+ptx = "kernel.ptx"
+entry = "e_elect_mid"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "racy for middle-lane leaders"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "ENDS"
+summary = "the late store removed"
+marker = "@LATE"
+replace = "<delete>"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]

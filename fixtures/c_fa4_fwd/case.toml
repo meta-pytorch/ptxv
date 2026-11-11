@@ -1,0 +1,132 @@
+name = "c_fa4_fwd"
+description = """
+FlashAttention-4 forward (flash_attn.cute 4.0.0b24, CuTeDSL; FlashAttentionForwardSm100), bf16
+q, k, v 1 x 128 x 1 x 64, one CTA of 512 threads, captured by tools/capture.py --file
+tools/capture_examples/fa4_fwd.py on GB300. Binary case: the JIT's own cubin (jit.cubin; its PTX
+uses tcgen05.ld.red, which the PTX front-end does not parse). Lifts with LDTM.STAT
+(tcgen05.ld.red row max) and R2P PR, Rx.Bk (mask bit tests); certified clean (E-WELLSYNC) once
+STTM is ordered like the other lockstep memory instructions (E-LOCKSTEP); bitwise equal to the
+GPU output, `ptxv hw` 100/100."""
+cubin = "jit.cubin"
+entry = "kernel_cutlass_kernel_flash_attncuteflash_fwd_sm100FlashAttentionForwardSm100_object_at__tensor0000o11101213_tensor0000o11101213_tensor0000o10111213_tensor0000o11101213_None_None_None_Non_0"
+grid = [1, 1, 1]
+block = [512, 1, 1]
+dynamic_smem = 231424
+outputs = ["out0"]
+
+[[buffers]]
+name = "q"
+dtype = "bf16"
+shape = [1, 128, 1, 64]
+init = "file"
+file = "data/q.bin"
+
+[[buffers]]
+name = "k"
+dtype = "bf16"
+shape = [1, 128, 1, 64]
+init = "file"
+file = "data/k.bin"
+
+[[buffers]]
+name = "v"
+dtype = "bf16"
+shape = [1, 128, 1, 64]
+init = "file"
+file = "data/v.bin"
+
+[[buffers]]
+name = "out0"
+dtype = "bf16"
+shape = [1, 128, 1, 64]
+init = "zeros"
+expect = "expected/out0.bin"
+
+[[params]]
+kind = "bytes"
+hex = "80000000400000000100000001000000"
+
+[[params]]
+kind = "bytes"
+hex = "80000000400000000100000001000000"
+
+[[params]]
+kind = "bytes"
+hex = "40000000800000000100000001000000"
+
+[[params]]
+kind = "bytes"
+hex = "80000000400000000100000001000000"
+
+[[params]]
+kind = "tensormap"
+buffer = "q"
+byte_offset = 0
+box = [64, 128, 1, 1]
+dims = [64, 128, 1, 1]
+strides = [128, 128, 16384]
+swizzle = "128B"
+raw = "0000c07df7ff00003265040008000000080000000004000000000000000000003f0000007f0000000000000000000000000000000000003f7f00000000000000"
+
+[[params]]
+kind = "tensormap"
+buffer = "k"
+byte_offset = 0
+box = [64, 128, 1, 1]
+dims = [64, 128, 1, 1]
+strides = [128, 128, 16384]
+swizzle = "128B"
+raw = "0040c07df7ff00003265040008000000080000000004000000000000000000003f0000007f0000000000000000000000000000000000003f7f00000000000000"
+
+[[params]]
+kind = "tensormap"
+buffer = "v"
+byte_offset = 0
+box = [64, 128, 1, 1]
+dims = [64, 128, 1, 1]
+strides = [128, 128, 16384]
+swizzle = "128B"
+raw = "0080c07df7ff00003265040008000000080000000004000000000000000000003f0000007f0000000000000000000000000000000000003f7f00000000000000"
+
+[[params]]
+kind = "tensormap"
+buffer = "out0"
+byte_offset = 0
+box = [64, 128, 1, 1]
+dims = [64, 128, 1, 1]
+strides = [128, 128, 16384]
+swizzle = "128B"
+raw = "00c0c07df7ff00003265040008000000080000000004000000000000000000003f0000007f0000000000000000000000000000000000003f7f00000000000000"
+
+[[params]]
+kind = "u32"
+value = 1043900987
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "010000000100000000004895"
+
+[[params]]
+kind = "bytes"
+hex = "010000000100000000000100"
+
+[[params]]
+kind = "u32"
+value = 1
+
+[[params]]
+kind = "u32"
+value = 1
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

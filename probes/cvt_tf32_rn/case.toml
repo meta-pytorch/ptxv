@@ -1,0 +1,37 @@
+name = "probe_cvt_tf32_rn"
+description = """
+Probe (N-FCVT) for cvt.rn / .rz [.relu] [.satfinite] .tf32.f32 (SASS F2FP [.SATFINITE] [.RELU]
+.TF32.F32.PACK_B [.RZ]) on 65,536 f32 words: every sign and exponent, mantissas at the rounding
+edges (kernel.ptx, gen.py). expected/ is GB300's output (kernel.cubin = ptxas -arch=sm_103a
+kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "cvt_tf32_rn"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [65536]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [524288]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

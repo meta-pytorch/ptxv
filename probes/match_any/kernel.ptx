@@ -1,0 +1,19 @@
+// Probe (L-ROSETTA) for MATCH.ANY[.U64] (match.any.sync.b32 / .b64): full membermask, converged warps: b32 on the raw words, b64, and b32 on 2-bit keys (large groups).
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry m(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<8>; .reg .b32 %r<20>; .reg .pred %p<3>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mov.u32 %r10, %ctaid.x; mov.u32 %r11, %ntid.x; mad.lo.s32 %r12, %r10, %r11, %r1;
+  mul.wide.u32 %rd3, %r12, 16; add.s64 %rd4, %rd1, %rd3;
+  add.s64 %rd6, %rd2, %rd3;
+  ld.global.u32 %r2, [%rd4]; ld.global.u64 %rd7, [%rd4+8];
+  match.any.sync.b32 %r3, %r2, 0xffffffff;
+  match.any.sync.b64 %r4, %rd7, 0xffffffff;
+  and.b32 %r8, %r2, 3;
+  match.any.sync.b32 %r5, %r8, 0xffffffff;
+  mov.u32 %r7, 0;
+  st.global.v4.u32 [%rd6], {%r3, %r4, %r5, %r7};
+  ret; }

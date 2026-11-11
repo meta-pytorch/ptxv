@@ -1,0 +1,151 @@
+name = "e_ticket_addr"
+description = """
+Fixture for C-TICKET-ADDR (wellsync/perm.rs): slot assignment by fetch-add. Six threads (two CTAs)
+claim slots in their expert's counter and store their rows at prefix[e] + slot. The certificate
+(`--certify`) gives `clean-up-to-permutation` for good and refuses every mutant (BRANCH, VALUE,
+OVERLAP, NOHB, GUARD, SHIFT, READ: see kernel.ptx); exploration finds the outputs nondeterministic.
+A second launch (k2) copies back[1] to back[0] (READ: reads a row instead)."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["val", "src", "cnt", "back"]
+
+[[buffers]]
+name = "ids"
+dtype = "u32"
+shape = [6]
+init = "file"
+file = "data/ids.bin"
+
+[[buffers]]
+name = "pre"
+dtype = "u32"
+shape = [2]
+init = "file"
+file = "data/pre.bin"
+
+[[buffers]]
+name = "cnt"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "val"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+
+[[buffers]]
+name = "back"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "ids"
+
+[[params]]
+kind = "ptr"
+buffer = "pre"
+
+[[params]]
+kind = "ptr"
+buffer = "cnt"
+
+[[params]]
+kind = "ptr"
+buffer = "val"
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[params]]
+kind = "ptr"
+buffer = "back"
+
+[[launches]]
+entry = "k2"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+
+[[launches.params]]
+kind = "ptr"
+buffer = "val"
+
+[[launches.params]]
+kind = "ptr"
+buffer = "back"
+
+[[permuted]]
+counter = "cnt"
+buffers = ["val", "src"]
+
+[[variants]]
+id = "good"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "BRANCH"
+summary = "rows past slot 1 are dropped: a ticket-dependent branch"
+marker = "@ROW"
+find = "add.u32 %r7, %r4, %r6;"
+replace = "add.u32 %r7, %r4, %r6; setp.gt.u32 %p1, %r6, 1; @%p1 bra DONE;"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "VALUE"
+summary = "the stored value is the slot"
+marker = "@VAL"
+find = "mad.lo.u32 %r9, %r2, 10, 7;"
+replace = "mov.u32 %r9, %r6;"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "OVERLAP"
+summary = "row = slot (the prefix left out): both experts' rows overlap"
+marker = "@ROW"
+find = "add.u32 %r7, %r4, %r6;"
+replace = "mov.u32 %r7, %r6;"
+expect = ["nondeterministic", "race"]
+
+[[variants]]
+id = "NOHB"
+summary = "CTA 1's thread 0 zeroes cnt[0] before its claim, unordered with CTA 0's adds"
+marker = "@NOHB"
+find = "mov.u32 %r5, 0;"
+replace = "mov.u32 %r5, 0; setp.ne.u32 %p2, %r2, 3; @%p2 bra NOZ; st.global.u32 [%rd3], %r5; NOZ:"
+expect = ["nondeterministic", "race"]
+
+[[variants]]
+id = "GUARD"
+summary = "a second claim on cnt[2] only when the first slot is 0"
+marker = "@GUARD"
+find = "mov.u32 %r8, 0;"
+replace = "mov.u32 %r8, 0; setp.ne.u32 %p3, %r6, 0; @%p3 bra NOG; atom.global.add.u32 %r8, [%rd3+8], 1; NOG:"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "SHIFT"
+summary = "thread 5's row is 4 further on: the row depends on the claimant"
+marker = "@SHIFT"
+find = "mov.u32 %r11, 0;"
+replace = "setp.eq.u32 %p3, %r2, 5; selp.u32 %r11, 4, 0, %p3;"
+expect = ["nondeterministic", "race"]
+
+[[variants]]
+id = "READ"
+summary = "the second launch reads row 0 of val"
+marker = "@READ"
+find = "ld.global.u32 %r1, [%rd2+4];"
+replace = "ld.global.u32 %r1, [%rd1];"
+expect = ["nondeterministic"]

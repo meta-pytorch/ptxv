@@ -1,0 +1,69 @@
+{
+ "what": "run() of triton_mm_tiled.py (kernel ^mm_tiled_kernel$)",
+ "argv": [
+  "--triton",
+  "src/triton_mm_tiled.py:mm_tiled_kernel",
+  "--binary",
+  "--out",
+  "fixtures/mm64_k960_triton_fwd",
+  "--work",
+  "/tmp/ptxv_capture_3883622"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "mm_tiled_kernel",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 16392,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "a",
+   "dtype": "bf16",
+   "shape": [
+    64,
+    960
+   ],
+   "size": 122880
+  },
+  {
+   "name": "b",
+   "dtype": "bf16",
+   "shape": [
+    960,
+    64
+   ],
+   "size": 122880
+  },
+  {
+   "name": "out",
+   "dtype": "bf16",
+   "shape": [
+    64,
+    64
+   ],
+   "size": 8192
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

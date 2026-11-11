@@ -1,0 +1,71 @@
+{
+ "what": "`(b.t() @ a.t()).t()` with a = randn(64,64,bf16), b = randn(64,64,bf16)",
+ "argv": [
+  "--op",
+  "(b.t() @ a.t()).t()",
+  "--out",
+  "/tmp/agentE/demo/mm_bf16/cand",
+  "--seed",
+  "0",
+  "--inputs",
+  "a=randn(64,64,bf16),b=randn(64,64,bf16)",
+  "--work",
+  "/tmp/ptxv_capture_3215691"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "nvjet_sm103_tst_8x64_64x16_4x1_v_bz_TTN",
+   "grid": [
+    8,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "cluster": [
+    4,
+    1,
+    1
+   ],
+   "smem": 156184,
+   "pdl": 1,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "a",
+   "dtype": "bf16",
+   "shape": [
+    64,
+    64
+   ],
+   "size": 8192
+  },
+  {
+   "name": "b",
+   "dtype": "bf16",
+   "shape": [
+    64,
+    64
+   ],
+   "size": 8192
+  },
+  {
+   "name": "out",
+   "dtype": "bf16",
+   "shape": [
+    4096
+   ],
+   "size": 8192
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

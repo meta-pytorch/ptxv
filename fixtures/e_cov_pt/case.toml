@@ -1,0 +1,41 @@
+name = "e_cov_pt"
+description = """
+Input coverage with the PTX predicate %p7: an input-derived guard on a store makes the kernel
+input-dependent on both front-ends (PTX %p7 is a register, not SASS's constant PT)."""
+ptx = "kernel.ptx"
+entry = "e_cov_pt"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [32]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "P4"
+marker = "@SET"
+find = "setp.ne.b32 %p7, %r3, 0;"
+replace = "setp.ne.b32 %p4, %r3, 0;"
+edits = [{ marker = "@USE", find = "@%p7 st.global.b32 [%rd5+128], %r3;", replace = "@%p4 st.global.b32 [%rd5+128], %r3;" }]
+expect = ["clean"]

@@ -1,0 +1,41 @@
+name = "e_elect_tid_redef"
+description = """
+E-ELECT (MISS 50): a register assigned %tid.x is redefined as %tid.x + 3 (and later
+%tid.x + 31) and shifted right by 5: lane-varying within warp 0 (lanes 29-31, lane 0), but the
+leader-sensitivity taint, flow-insensitive, took a shift by 5 of any register ever assigned
+%tid.x as warp-uniform. Warp 0's leader stores out[1] after bar.sync 0 when it is lane 1..28,
+where thread 32 reads it: a race for those leaders only, missed (PTX clean) with the two
+end-lane policies. A register counts as %tid.x only when its single definition is the
+unguarded mov from %tid.x now: every leader function is explored. GB300 elects the lowest
+lane (probes/elect): SASS clean. FRESH: %tid.x + 3 computed in a fresh register first: the
+same race."""
+ptx = "kernel.ptx"
+entry = "e_elect_tid_redef"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "racy for leaders 1..28"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "FRESH"
+summary = "%tid.x + 3 through a fresh register"
+marker = "@ADD3"
+find = "add.u32 %r1, %r1, 3;"
+replace = "add.u32 %r10, %r1, 3; mov.u32 %r1, %r10;"
+expect = ["race"]
+expect_sass = ["clean"]

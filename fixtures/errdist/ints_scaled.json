@@ -1,0 +1,7 @@
+{"version": 1, "seed": 1, "name": "integers -8..8 times a random power of two 2^-6..2^6 per element (coarse lattices with scales)",
+ "default": {"dist": {"kind": "mixture", "components": [
+   {"weight": 0.2, "dist": {"kind": "affine", "a": 0.015625, "b": 0.0, "dist": {"kind": "integers", "lo": -8, "hi": 8}}},
+   {"weight": 0.2, "dist": {"kind": "affine", "a": 0.125, "b": 0.0, "dist": {"kind": "integers", "lo": -8, "hi": 8}}},
+   {"weight": 0.2, "dist": {"kind": "affine", "a": 1.0, "b": 0.0, "dist": {"kind": "integers", "lo": -8, "hi": 8}}},
+   {"weight": 0.2, "dist": {"kind": "affine", "a": 8.0, "b": 0.0, "dist": {"kind": "integers", "lo": -8, "hi": 8}}},
+   {"weight": 0.2, "dist": {"kind": "affine", "a": 64.0, "b": 0.0, "dist": {"kind": "integers", "lo": -8, "hi": 8}}}]}}}

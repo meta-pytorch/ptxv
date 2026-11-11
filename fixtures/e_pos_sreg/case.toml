@@ -1,0 +1,45 @@
+name = "e_pos_sreg"
+description = """
+Position dependence through special registers other than %ctaid (E-CTA-REP, E-CTA-INDEP
+symmetry): %clusterid decides a fault (CLUSTERID) or a schedule-dependent output (CTICKET) in
+one CTA; NONDET: a representative CTA whose exploration has several outputs."""
+ptx = "kernel.ptx"
+entry = "e_pos_sreg"
+grid = [8, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "CLUSTERID"
+marker = "@POS"
+find = "mov.u32 %r6, 0;"
+replace = "setp.eq.u32 %p1, %r2, 7; @%p1 add.u64 %rd3, %rd3, 65536;"
+expect = ["fault"]
+
+[[variants]]
+id = "CTICKET"
+marker = "@POS"
+find = "mov.u32 %r6, 0;"
+replace = "setp.ne.u32 %p1, %r2, 3; @%p1 bra STORE; atom.shared.add.u32 %r5, [s], 1;"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "NONDET"
+marker = "@POS"
+find = "mov.u32 %r6, 0;"
+replace = "setp.ne.u32 %p1, %r9, 3; @%p1 bra STORE; atom.shared.add.u32 %r5, [s], 1;"
+expect = ["nondeterministic"]

@@ -1,0 +1,42 @@
+name = "s_ptx_packed"
+description = """
+PTX front-end forms of the mslk decode kernels against GB300 bitwise, both front-ends: fma / mul
+/ add / sub .rn.f32x2 (ptxas: FFMA2 / FMUL2 / FADD2), cvt.rn.{f16x2,bf16x2}.f32 (F2FP.*.F32
+.PACK_AB), div.s32, cp.async.ca 4 / 8 bytes and .cg 16 bytes, ld / st .v2.b64, ld / st vector
+operands whose registers are not consecutive, setmaxnreg.{inc,dec}. 256 threads x 8 operand words
+(gen.py: special values, subnormal and overflowing products, exact cancellation, random bits;
+div.s32 of INT_MIN / -1, no zero divisor: that is a fault on the PTX front-end). expected/out.bin
+is the output GB300 wrote (run 2026-11-06, GPU 3, 50/50 runs); tests/fixtures.rs also checks its
+FNV-1a hash."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+entry = "s_ptx_packed"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [2048]
+init = "file"
+file = "data/in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [6144]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

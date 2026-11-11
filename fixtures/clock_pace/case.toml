@@ -1,0 +1,23 @@
+name = "clock_pace"
+description = """
+E-CLOCK: a wait-until-deadline loop between two stores (store pacing). With PTXV_CLOCK_STEP
+unset the clock reads 0 and the wait never ends; with a step it ends."""
+ptx = "kernel.ptx"
+entry = "clock_pace"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

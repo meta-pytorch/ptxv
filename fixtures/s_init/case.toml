@@ -1,0 +1,32 @@
+name = "s_init"
+description = """
+Assumption fixture for S-INIT: a consumer reads shared memory that the producer never wrote
+(no race involved). out[t] = buf[t]."""
+ptx = "kernel.ptx"
+entry = "s_init"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "B48"
+summary = "producer writes only buf[0..16); threads 16..31 read unwritten shared memory"
+marker = "@B48"
+find = "%r1, 32;"
+replace = "%r1, 16;"
+expect = ["violation"]
+hw_note = "with smem scrubbed, out[16..32) is the poison pattern"

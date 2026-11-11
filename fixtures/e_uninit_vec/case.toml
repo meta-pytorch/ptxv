@@ -1,0 +1,60 @@
+name = "e_uninit_vec"
+description = """
+S-INIT per byte for vector stores (2026-11-07): a v4 store (SASS STS.128 / STG.E.128) whose
+fourth register is undefined for threads 16..31 marks only that register's 4 bytes undefined.
+A reader of lanes 0..2 is clean, and so is a global vector whose undefined lane is overwritten
+before exit. Before, one undefined register marked all 16 bytes (msl HistogramSelect: rank 0
+read defined entry 56 of a vector store whose entry 59 was undefined; GB300 with 21 adversarial
+shared-memory fills gave outputs equal to the clean run)."""
+ptx = "kernel.ptx"
+entry = "uninit_vec"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out", "scratch"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [128]
+init = "bits"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "scratch"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "scratch"
+
+[[variants]]
+id = "good"
+summary = "only the defined lanes are read; the undefined global lane is overwritten"
+expect = ["clean"]
+
+[[variants]]
+id = "read_undef"
+summary = "the reader adds lane 3 of its neighbour's vector: undefined for threads 0..15's sums"
+edits = [{ marker = "@READ", find = "[%r9+8]", replace = "[%r9+12]" }]
+expect = ["violation"]
+
+[[variants]]
+id = "keep_undef"
+summary = "the undefined global lane is not overwritten: undefined bytes at exit"
+edits = [{ marker = "@FIX", replace = "<delete>" }]
+expect = ["violation"]

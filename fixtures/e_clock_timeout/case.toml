@@ -1,0 +1,35 @@
+name = "e_clock_timeout"
+description = """
+E-CLOCK: a poll with a clock64 timeout whose timeout path reads the data without the flag.
+On GB300 the producer sleeps 200 us, longer than the 2000-cycle bound, and the reader takes the
+timeout path (out[0] = 0 in 20 / 20 runs). The timeout branch depends on the clock and its
+sides differ in effects (clock.rs `clock_branches`): both are explored, so good is the race
+and nondeterministic (outputs 0 and 7). Before, the clock read 0, the timeout never fired and
+good was clean (the PTX front even certified it). NOTIMEOUT: no timeout branch, correct."""
+ptx = "kernel.ptx"
+entry = "e_clock_timeout"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "timeout path reads without the flag"
+expect = ["nondeterministic", "race"]
+
+[[variants]]
+id = "NOTIMEOUT"
+summary = "timeout branch deleted"
+marker = "@TIMEOUT"
+replace = "<delete>"
+expect = ["clean"]

@@ -1,0 +1,38 @@
+name = "probe_fmul_scale_shapes"
+description = """
+Which mul pairs ptxas folds into FMUL.D2 .. .M8 (PTX-FMUL-SCALE, MISS 55): one shape per
+statement group of kernel.ptx (names.json). Thread 0 multiplies 2^127 by 2 (the product
+overflows: a folded down-scale stays finite), thread 1 2^-75 by 1.5 * 2^-75 (a subnormal
+product: a folded up-scale keeps the bits). results.txt: GB300 with ptxas 13.0, 13.1 and 13.3
+(same output)."""
+ptx = "kernel.ptx"
+entry = "t"
+ptxas_toolkit = "13.0"
+grid = [1, 1, 1]
+block = [2, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [8192]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [8192]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

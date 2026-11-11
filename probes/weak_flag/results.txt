@@ -1,0 +1,8 @@
+GB300, GPUs 0 (writer) and 1 (reader), CUDA 13.0, 2026-11-07. ./weak_flag runs var.
+The 'nvnoise:' lines ran alongside a separate NVLink-traffic process without MPS (time-sliced, not concurrent): weak evidence.
+var 0: runs 500 x 4096 slots x 256 words: stale words 0 in 0 runs, timeouts 0
+var 1: runs 500 x 4096 slots x 256 words: stale words 0 in 0 runs, timeouts 0
+var 2: runs 500 x 4096 slots x 256 words: stale words 26688 in 343 runs, timeouts 0
+nvnoise: var 0: runs 300 x 4096 slots x 256 words: stale words 0 in 0 runs, timeouts 0
+nvnoise: var 2: runs 300 x 4096 slots x 256 words: stale words 384 in 6 runs, timeouts 0
+Smoke run, 20 runs: var 3 (reader fence removed, L1 warmed) 20971520 stale words in 20/20 runs; var 2 960 in 12/20.

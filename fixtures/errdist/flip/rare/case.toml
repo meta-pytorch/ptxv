@@ -1,0 +1,68 @@
+name = "flip_rare"
+description = """
+errdist branch flips (N-ERRDIST-SEL): y = t1 > 0.5 ? t1 : t2, t1 and t2 as in ../max: the
+selection flips only where t1 and its exact value lie on either side of 0.5, which no sample
+hits. The linearized tiers stand once Tier 3's 95% upper bound on the flip rate is within 10%
+of P, with their P(differ) interval widened by it. The output's grid position is that of the
+selected child (until 2026-11-10 it was taken as a rounding at the selection: 0.345 against
+Tier 3's 0.258)."""
+ptx = "../kernel.ptx"
+entry = "flip_rare"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "z"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

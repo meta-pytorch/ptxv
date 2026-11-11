@@ -1,0 +1,59 @@
+// S-MBAR-SCOPE: a split-KV style mailbox. Rank 1 of a 2-CTA cluster pushes a partial result
+// into rank 0's shared memory with st.async ... mbarrier::complete_tx; rank 0 arms its own
+// mbarrier for the 4 bytes, waits, and reads the mailbox.
+//   good : arm arrive.expect_tx.relaxed.cluster, wait try_wait.relaxed.cluster, then
+//          fence.acquire.sync_restrict::shared::cluster.cluster (the PTX ISA's own example for
+//          acquiring local shared memory at cluster scope): clean
+//   MB   : arm with the default (.release.cta) arrive.expect_tx, wait .acquire.cta: the
+//          complete-tx is a cluster-scope release of the pushing thread (rank 1), which a .cta
+//          wait does not pair with (contract; ptxas emits the same SASS as for good)
+//   MBNF : as good without the acquire fence: a relaxed wait acquires nothing (race)
+//   MBCA : .release.cta arm, .acquire.cluster wait: the wait pairs with the complete-tx, but
+//          when the .cta arm is the phase's last update the release chain breaks (contract)
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_mbar_mailbox(.param .u64 out_p)
+.maxntid 32, 1, 1
+.reqnctapercluster 2, 1, 1
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<4>;
+    .reg .pred %p<4>;
+    .shared .align 8 .b8 bar[8];
+    .shared .align 4 .b32 box;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r0, %tid.x;
+    mov.u32 %r1, %cluster_ctarank;
+    mov.u32 %r2, bar;
+    mov.u32 %r3, box;
+    setp.ne.u32 %p0, %r0, 0;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p0 bra SYNC;
+    mbarrier.init.shared::cta.b64 [%r2], 1;
+    fence.mbarrier_init.release.cluster;
+SYNC:
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    @%p0 bra END;
+    @%p1 bra PUSH;
+    mbarrier.arrive.expect_tx.relaxed.cluster.shared::cta.b64 _, [%r2], 4;    // @ARM
+WAIT:
+    mbarrier.try_wait.parity.relaxed.cluster.shared::cta.b64 %p2, [%r2], 0;   // @WAIT
+    @!%p2 bra WAIT;
+    fence.acquire.sync_restrict::shared::cluster.cluster;                     // @FENCE
+    ld.shared.u32 %r5, [%r3];
+    st.global.u32 [%rd1], %r5;
+    bra END;
+PUSH:
+    mapa.shared::cluster.u32 %r6, %r3, 0;
+    mapa.shared::cluster.u32 %r7, %r2, 0;
+    mov.u32 %r8, 0x1234;
+    st.async.shared::cluster.mbarrier::complete_tx::bytes.b32 [%r6], %r8, [%r7];
+END:
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    ret;
+}

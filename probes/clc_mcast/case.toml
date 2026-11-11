@@ -1,0 +1,33 @@
+name = "probe_clc_mcast"
+description = """
+Probe for multicast try_cancel (UGETNEXTWORKID.BROADCAST): one-warp CTAs in clusters of 2; rank
+0 issues one multicast try_cancel, both CTAs wait on their own mbarrier; per CTA {ran,
+is_canceled, first_ctaid.x, raw response, rank}. GB300 with grid 4096 (`ptxv hw-worker`,
+2026-11-06): both CTAs of a cluster get the same response; 832 clusters were cancelled whole
+(first_ctaid = rank 0's ctaid.x, raw {x, 0, 1, 0}) and exactly their CTAs did not run; a
+failed request returned all zeros there. Rerun 2026-11-08 (4096 CTAs): 376 failed clusters
+got {2, 0, 0, 0} and 6 got all zeros, so both are allowed (probes/clc_one_cluster). The committed grid
+(4: two clusters) keeps the model's exploration complete; which cluster is cancelled is a
+scheduler choice, so the outputs are nondeterministic (tests/fixtures.rs checks every one
+against the GB300 rules)."""
+ptx = "kernel.ptx"
+entry = "probe_clc_mcast"
+grid = [4, 1, 1]
+block = [32, 1, 1]
+cluster = [2, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["contract", "nondeterministic"]
+expect_sass = ["nondeterministic"]

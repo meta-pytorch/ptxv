@@ -1,0 +1,55 @@
+name = "probe_tc_tf32"
+description = """
+Probe (N-MMA) for tcgen05.mma.kind::tf32 (idesc format 2), f32 D: D[128x64] =
+A[128x64] * B[64x64]^T on raw f32 words in 8 MMAs of K = 8 (kernel.ptx). expected/ is GB300's
+output; `ptxv calib-mma probes/tc_tf32` scores the model family and the tf32 input conversion."""
+ptx = "kernel.ptx"
+entry = "tc_tf32"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "f32"
+shape = [128, 64]
+init = "normal"
+seed = 11
+
+[[buffers]]
+name = "B"
+dtype = "f32"
+shape = [64, 64]
+init = "normal"
+seed = 12
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [128, 64]
+init = "nan"
+expect = "expected/D.bin"
+
+# A[m][k] row-major viewed as 3-D (k%4, m, k/4): box (4, 128, 16) lands in shared memory as
+# 16 K-chunks of 128 rows x 16 B (LBO = 2048 B, SBO = 128 B).
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [4, 128, 16]
+dims = [4, 128, 16]
+strides = [256, 16]
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [4, 64, 16]
+dims = [4, 64, 16]
+strides = [256, 16]
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

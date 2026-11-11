@@ -1,0 +1,63 @@
+// Several outstanding peeks (C-WAIT, `SyncLog::ptaint`), as in TRT-LLM's mainloop: thread 32
+// writes w0, arrives on mb0, writes w1, arrives on mb1; thread 0 peeks mb0 and mb1 (try_wait
+// without the retry shape), then skips each blocking wait when its own peek succeeded, and
+// reads both words.
+//   good: each peek's result only decides the skip of its own wait: certified
+//   READ: the second peek's result is also stored: in another schedule it fails
+//   SWAP: the skips are crossed (mb1's peek skips mb0's wait, mb0's skips mb1's): w1 races
+//   ACQ:  the second peek is unused and mb1 has no wait: w1 races
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_peek_multi(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<10>;
+    .shared .align 8 .b64 mb0;
+    .shared .align 8 .b64 mb1;
+    .shared .align 4 .b32 w0;
+    .shared .align 4 .b32 w1;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, mb0;
+    mov.u32 %r3, mb1;
+    mov.u32 %r4, w0;
+    mov.u32 %r7, w1;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra INITD;
+    mbarrier.init.shared::cta.b64 [%r2], 1;
+    mbarrier.init.shared::cta.b64 [%r3], 1;
+INITD:
+    bar.sync 0;
+    setp.ne.u32 %p2, %r1, 32;
+    @%p2 bra W0;
+    st.shared.u32 [%r4], 7;
+    mbarrier.arrive.shared::cta.b64 %rd5, [%r2];
+    st.shared.u32 [%r7], 9;
+    mbarrier.arrive.shared::cta.b64 %rd6, [%r3];
+    bra DONE;
+W0:
+    @%p1 bra DONE;
+    mbarrier.try_wait.parity.shared::cta.b64 %p5, [%r2], 0;
+    mbarrier.try_wait.parity.shared::cta.b64 %p6, [%r3], 0;
+    @%p5 bra S0;                   // @SKIP0
+WAIT0:
+    mbarrier.try_wait.parity.shared::cta.b64 %p7, [%r2], 0;
+    @!%p7 bra WAIT0;
+S0:
+    @%p6 bra S1;                   // @SKIP1
+WAIT1:
+    mbarrier.try_wait.parity.shared::cta.b64 %p8, [%r3], 0;
+    @!%p8 bra WAIT1;               // @WAIT1
+S1:
+    ld.shared.u32 %r5, [%r4];
+    ld.shared.u32 %r6, [%r7];
+    add.u32 %r8, %r5, %r6;
+    st.global.u32 [%rd1], %r8;
+    mov.u32 %r9, 0;                // @USE
+DONE:
+    ret;
+}

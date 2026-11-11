@@ -1,0 +1,69 @@
+// probes/lop3_ptx: lop3.b32 d, a, b, c, immLut with register and immediate operands (the
+// window fp8 dequant helper's `lop3.b32 c, y, 0x000F000F, 0x64086408, 0x6A`). 256 threads;
+// a, b, c = in[3 t .. 3 t + 2] (gen.py: random words). out[18 t + i], i < 16: LUT i of
+// (0x00, 0x01, 0x6A, 0x80, 0x96, 0xCA, 0xE8, 0xF0, 0xCC, 0xAA, 0xFE, 0xFF, 0x1B, 0x5C, 0x3D,
+// 0xB4) on (a, b, c); 16: lop3(a, 0x000F000F, 0x64086408, 0x6A); 17: lop3(0x00F000F0, b, c,
+// 0xE4).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry lop3_ptx(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<64>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 12;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.u32   %r2, [%rd4];
+    ld.global.u32   %r3, [%rd4+4];
+    ld.global.u32   %r4, [%rd4+8];
+    mul.wide.u32    %rd5, %r1, 72;
+    add.s64         %rd6, %rd2, %rd5;
+    lop3.b32        %r10, %r2, %r3, %r4, 0x00;
+    st.global.u32   [%rd6+0], %r10;
+    lop3.b32        %r11, %r2, %r3, %r4, 0x01;
+    st.global.u32   [%rd6+4], %r11;
+    lop3.b32        %r12, %r2, %r3, %r4, 0x6A;
+    st.global.u32   [%rd6+8], %r12;
+    lop3.b32        %r13, %r2, %r3, %r4, 0x80;
+    st.global.u32   [%rd6+12], %r13;
+    lop3.b32        %r14, %r2, %r3, %r4, 0x96;
+    st.global.u32   [%rd6+16], %r14;
+    lop3.b32        %r15, %r2, %r3, %r4, 0xCA;
+    st.global.u32   [%rd6+20], %r15;
+    lop3.b32        %r16, %r2, %r3, %r4, 0xE8;
+    st.global.u32   [%rd6+24], %r16;
+    lop3.b32        %r17, %r2, %r3, %r4, 0xF0;
+    st.global.u32   [%rd6+28], %r17;
+    lop3.b32        %r18, %r2, %r3, %r4, 0xCC;
+    st.global.u32   [%rd6+32], %r18;
+    lop3.b32        %r19, %r2, %r3, %r4, 0xAA;
+    st.global.u32   [%rd6+36], %r19;
+    lop3.b32        %r20, %r2, %r3, %r4, 0xFE;
+    st.global.u32   [%rd6+40], %r20;
+    lop3.b32        %r21, %r2, %r3, %r4, 0xFF;
+    st.global.u32   [%rd6+44], %r21;
+    lop3.b32        %r22, %r2, %r3, %r4, 0x1B;
+    st.global.u32   [%rd6+48], %r22;
+    lop3.b32        %r23, %r2, %r3, %r4, 0x5C;
+    st.global.u32   [%rd6+52], %r23;
+    lop3.b32        %r24, %r2, %r3, %r4, 0x3D;
+    st.global.u32   [%rd6+56], %r24;
+    lop3.b32        %r25, %r2, %r3, %r4, 0xB4;
+    st.global.u32   [%rd6+60], %r25;
+    lop3.b32        %r30, %r2, 0x000F000F, 0x64086408, 0x6A;
+    st.global.u32   [%rd6+64], %r30;
+    lop3.b32        %r31, 0x00F000F0, %r3, %r4, 0xE4;
+    st.global.u32   [%rd6+68], %r31;
+    ret;
+}

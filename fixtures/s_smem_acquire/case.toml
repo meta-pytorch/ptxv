@@ -1,0 +1,71 @@
+name = "s_smem_acquire"
+description = """
+S-SMEM-STRONG: message passing through a shared-memory flag (st.release.cta.shared /
+ld.acquire.cta.shared) guarding global data in one CTA. The SASS front reads the flag's LDS,
+waited on before the next memory access, as ld.acquire.cta; RELAX spins with
+ld.relaxed.cta.shared, which ptxas compiles to the same LDS + wait (PTX: race, SASS: clean);
+NOREL publishes without release (race on both fronts)."""
+ptx = "kernel.ptx"
+entry = "smem_acquire"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [4]
+init = "iota"
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "release store, acquire spin"
+expect = ["clean"]
+
+[[variants]]
+id = "RELAX"
+summary = "the reader spins with ld.relaxed.cta.shared"
+marker = "@R"
+find = "ld.acquire.cta.shared.u32"
+replace = "ld.relaxed.cta.shared.u32"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "NOREL"
+summary = "the writer publishes with st.relaxed.cta.shared"
+marker = "@W"
+find = "st.release.cta.shared.u32"
+replace = "st.relaxed.cta.shared.u32"
+expect = ["race"]
+
+[[variants]]
+id = "NOINIT"
+summary = "the flag is never zeroed: the spin reads garbage"
+marker = "@I"
+replace = "<delete>"
+expect = ["violation"]

@@ -1,0 +1,39 @@
+name = "probe_f32x2_unpack_add"
+description = """
+Probe (L-ROSETTA, PTX-FMAD) for a mul.f32x2 with no rounding modifier read both through an
+unpack whose halves only scalar ops read (fma.rn multiplicands, stores, add / sub.f32) and
+directly by a plain add / sub.f32x2, in one block or after a join; and a sub.f32x2 of such a
+product and a second product only it reads (kernel.ptx, gen.py; in.bin = probes/f32x2_unpack's).
+ptxas 13.0 keeps FMUL2 + FADD2 for the first and contracts only the second product (FFMA2 -a, b,
+p). expected/ is GB300's output (kernel.cubin = ptxas -arch=sm_103a kernel.ptx, `ptxv hw`)."""
+ptx = "kernel.ptx"
+entry = "f32x2_unpack_add"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [5120]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

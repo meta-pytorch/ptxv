@@ -1,0 +1,30 @@
+name = "e_elect_ldmatrix"
+description = """
+E-ELECT: ldmatrix from one row address gives lane l word l % 4 of the row (a lane-distributing
+load, lane-varying whatever its address); warp 0's leader writes out[that word] and thread 32
+reads out[1] without synchronization: a race for the leaders with lane % 4 == 1 (lanes 1, 5,
+..., 29), neither end lane. The leader-sensitivity taint used to take the ldmatrix result as
+warp-uniform, so the two end-lane policies were explored and the race was missed (verdict
+nondeterministic, qualified E-ELECT-2POL); every leader function is explored now. GB300
+elects the lowest lane (probes/elect): SASS clean."""
+ptx = "kernel.ptx"
+entry = "e_elect_ldmatrix"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "racy for leaders with lane % 4 == 1"
+expect = ["nondeterministic", "race"]
+expect_sass = ["clean"]

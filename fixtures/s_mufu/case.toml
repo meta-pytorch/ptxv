@@ -1,0 +1,37 @@
+name = "s_mufu"
+description = """
+MUFU semantics (N-MUFU): MUFU.EX2 / RCP / RSQ in a softmax row and an RMSNorm row (one warp per
+row, SHFL.BFLY + FADD reductions), and MUFU.EX2 / RCP / RSQ / LG2 / SQRT / EX2.F16 / EX2.F16x2 /
+EX2.BF16 / EX2.BF16x2 on raw random bits (NaN, denormal, negative, overflow and underflow
+inputs). 128 threads; `ptxv hw` compares every output word with the SASS front-end's run.
+Built from mufu.cu (see its header)."""
+cubin = "kernel.cubin"
+entry = "mufu"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [512]
+init = "bits"
+seed = 11
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2560]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

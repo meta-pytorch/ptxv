@@ -1,0 +1,68 @@
+name = "mma_f8"
+description = """
+N-MMA-F8 probe: D[128x64] f32 = A[128x128] x B[64x128]^T through 4 tcgen05.mma.kind::f8f6f4 (K =
+32 each), 16 elements per 16-byte core-matrix row (FP8 bytes; FP6 / FP4 packed, the rest of
+the row unused), operands TMA-loaded into the no-swizzle K-major layout. idesc
+and idesc0 (the first MMA's) are parameters: here e4m3 x e4m3 -> f32 on uniformly random codes.
+`ptxv calib-mma probes/mma_f8` scores the LpMmaModel family per format pair against GB300.
+expected/configs.json lists 9 recorded GB300 runs (inputs and D) that crates/sim/tests/mma_lp.rs
+replays through both front-ends."""
+ptx = "kernel.ptx"
+entry = "mma_f8"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "u8"
+shape = [128, 128]
+init = "file"
+file = "expected/e4m3xe4m3f32.codes.A.bin"
+
+[[buffers]]
+name = "B"
+dtype = "u8"
+shape = [64, 128]
+init = "file"
+file = "expected/e4m3xe4m3f32.codes.B.bin"
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [128, 64]
+init = "nan"
+
+# A[m][k] bytes viewed as 3-D (k%16, m, k/16): box (16, 128, 8) lands as 8 K-chunks of 128
+# rows x 16 B (LBO = 2048 B, SBO = 128 B), the layout of fixtures/r1a_tcgen05_tile.
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [16, 128, 8]
+dims = [16, 128, 8]
+strides = [128, 16]
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [16, 64, 8]
+dims = [16, 64, 8]
+strides = [128, 16]
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+# D f32 (bit 4), A e4m3 (0), B e4m3 (0), N>>3 = 8 at bit 17, M>>4 = 8 at bit 24.
+[[params]]
+kind = "u32"
+value = 0x08100010
+
+# idesc0: the first MMA's descriptor.
+[[params]]
+kind = "u32"
+value = 0x08100010
+
+[[variants]]
+id = "good"
+expect = ["clean"]

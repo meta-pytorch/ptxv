@@ -1,0 +1,84 @@
+name = "probe_fcvt"
+description = """
+Probe (N-FCVT) for float round-to-integer and the f64 / f16 / bf16 conversions on GB300
+(kernel.ptx from gen_ptx.py, inputs from gen.py): cvt.r{n,z,m,p}i[.ftz] .f32 / .f64 / .f16 /
+.bf16 (SASS FRND[.F64|.F16|.BF16][.FTZ][.TRUNC|.FLOOR|.CEIL]), cvt.r{n,z,m,p}.{bf16,f16}.f64
+(F2F.{BF16,F16}.F64[.RZ|.RM|.RP]), cvt.f64.{bf16,f16} (F2F.F64.{BF16,F16}, also `.H1`),
+cvt.r{n,z,m,p}.bf16.f16 / .f16.bf16 (F2F.BF16.F16 / F2F.F16.BF16), on edge, tie and random
+inputs. expected/ is GB300's output (ptxas cubin, `ptxv hw-worker probes/fcvt <cubin> --runs 1
+--dump`)."""
+ptx = "kernel.ptx"
+entry = "fcvt"
+grid = [32, 1, 1]
+block = [256, 1, 1]
+outputs = ["out16", "out32", "out64"]
+
+[[buffers]]
+name = "in16"
+dtype = "u16"
+shape = [8192]
+init = "file"
+file = "in16.bin"
+
+[[buffers]]
+name = "in32"
+dtype = "u32"
+shape = [8192]
+init = "file"
+file = "in32.bin"
+
+[[buffers]]
+name = "in64"
+dtype = "u64"
+shape = [8192]
+init = "file"
+file = "in64.bin"
+
+[[buffers]]
+name = "out16"
+dtype = "u16"
+shape = [26, 8192]
+init = "zeros"
+expect = "expected/out16.bin"
+
+[[buffers]]
+name = "out32"
+dtype = "u32"
+shape = [8, 8192]
+init = "zeros"
+expect = "expected/out32.bin"
+
+[[buffers]]
+name = "out64"
+dtype = "u64"
+shape = [8, 8192]
+init = "zeros"
+expect = "expected/out64.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in16"
+
+[[params]]
+kind = "ptr"
+buffer = "in32"
+
+[[params]]
+kind = "ptr"
+buffer = "in64"
+
+[[params]]
+kind = "ptr"
+buffer = "out16"
+
+[[params]]
+kind = "ptr"
+buffer = "out32"
+
+[[params]]
+kind = "ptr"
+buffer = "out64"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

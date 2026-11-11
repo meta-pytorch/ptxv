@@ -1,0 +1,41 @@
+// probes/mad_lo16: mad.lo.{s16,u16} d, a, b, c (the low 16 bits of a*b + c), register and
+// immediate operands, d aliasing c. 256 threads; a, b, c = halves of in[2 t], in[2 t + 1]
+// (gen.py: random words). out[4 t ..]: s16 regs, u16 regs, s16 with b = -3, s16 with d = c.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry mad_lo16(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b16   %h<16>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 8;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.v2.u32 {%r2, %r3}, [%rd4];
+    mov.b32         {%h1, %h2}, %r2;
+    mov.b32         {%h3, %h4}, %r3;
+    mad.lo.s16      %h5, %h1, %h2, %h3;
+    mad.lo.u16      %h6, %h1, %h2, %h4;
+    mad.lo.s16      %h7, %h1, -3, %h4;
+    mov.b16         %h8, %h3;
+    mad.lo.s16      %h8, %h2, %h4, %h8;
+    cvt.u32.u16     %r4, %h5;
+    cvt.u32.u16     %r5, %h6;
+    cvt.u32.u16     %r6, %h7;
+    cvt.u32.u16     %r7, %h8;
+    mul.wide.u32    %rd5, %r1, 16;
+    add.s64         %rd6, %rd2, %rd5;
+    st.global.v4.u32 [%rd6], {%r4, %r5, %r6, %r7};
+    ret;
+}

@@ -1,0 +1,52 @@
+name = "c_softmax_stable"
+description = """
+Captured in process by ptxv.capture (python/ptxv). 1 launch(es), binary only (cubins from CUPTI), PTX in jit.ptx:
+  0: softmax_stable grid [4, 1, 1] block [128, 1, 1]
+Row softmax exp(x - max) / sum, Triton, x f32 [4, 64] -> y f32 [4, 64]:
+  r = program_id(0); x = load(x + r*64 + arange(64)); e = exp(x - max(x)); y = e / sum(e).
+errdist refresh (Tier 2 vs GB300 rows); importance-sampling test row
+(crates/cli/tests/errdist_is.rs)."""
+cubin = "k0.cubin"
+ptxas_toolkit = "13.0"
+entry = "softmax_stable"
+grid = [4, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 8
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [4, 64]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [4, 64]
+init = "zeros"
+expect = "expected/y.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

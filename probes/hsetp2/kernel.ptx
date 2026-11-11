@@ -1,0 +1,100 @@
+// Probe (L-ROSETTA) for HSETP2 / HSETP2.BF16_V2: setp.<cmp>.f16x2 / .bf16x2 p|q (both predicate
+// outputs) for every comparison, scalar setp.f16 / .bf16 (halves), a |x| != INF test and a
+// compare against a constant pair with distinct halves (immediate-pair forms). Each compare
+// sets two bits of the result words.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry hsetp2(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<8>; .reg .b32 %r<30>; .reg .b16 %h<6>; .reg .pred %p<3>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mov.u32 %r2, %ctaid.x; mov.u32 %r3, %ntid.x; mad.lo.s32 %r1, %r2, %r3, %r1;
+  mul.wide.u32 %rd3, %r1, 8; add.s64 %rd4, %rd1, %rd3;
+  mul.wide.u32 %rd5, %r1, 16; add.s64 %rd6, %rd2, %rd5;
+  ld.global.v2.u32 {%r4, %r5}, [%rd4];
+  mov.b32 {%h1, %h2}, %r4; mov.b32 {%h3, %h4}, %r5;
+  mov.u32 %r20, 0;
+  mov.u32 %r21, 0;
+  mov.u32 %r22, 0;
+  mov.u32 %r23, 0;
+  setp.eq.f16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 0; or.b32 %r20, %r20, %r12;
+  setp.ne.f16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 2; or.b32 %r20, %r20, %r12;
+  setp.lt.f16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 4; or.b32 %r20, %r20, %r12;
+  setp.le.f16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 6; or.b32 %r20, %r20, %r12;
+  setp.gt.f16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 8; or.b32 %r20, %r20, %r12;
+  setp.ge.f16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 10; or.b32 %r20, %r20, %r12;
+  setp.equ.f16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 12; or.b32 %r20, %r20, %r12;
+  setp.neu.f16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 14; or.b32 %r20, %r20, %r12;
+  setp.ltu.f16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 16; or.b32 %r20, %r20, %r12;
+  setp.leu.f16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 18; or.b32 %r20, %r20, %r12;
+  setp.gtu.f16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 20; or.b32 %r20, %r20, %r12;
+  setp.geu.f16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 22; or.b32 %r20, %r20, %r12;
+  setp.num.f16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 24; or.b32 %r20, %r20, %r12;
+  setp.nan.f16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 26; or.b32 %r20, %r20, %r12;
+  setp.eq.bf16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 28; or.b32 %r20, %r20, %r12;
+  setp.ne.bf16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 30; or.b32 %r20, %r20, %r12;
+  setp.lt.bf16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 0; or.b32 %r21, %r21, %r12;
+  setp.le.bf16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 2; or.b32 %r21, %r21, %r12;
+  setp.gt.bf16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 4; or.b32 %r21, %r21, %r12;
+  setp.ge.bf16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 6; or.b32 %r21, %r21, %r12;
+  setp.equ.bf16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 8; or.b32 %r21, %r21, %r12;
+  setp.neu.bf16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 10; or.b32 %r21, %r21, %r12;
+  setp.ltu.bf16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 12; or.b32 %r21, %r21, %r12;
+  setp.leu.bf16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 14; or.b32 %r21, %r21, %r12;
+  setp.gtu.bf16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 16; or.b32 %r21, %r21, %r12;
+  setp.geu.bf16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 18; or.b32 %r21, %r21, %r12;
+  setp.num.bf16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 20; or.b32 %r21, %r21, %r12;
+  setp.nan.bf16x2 %p1|%p2, %r4, %r5;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 22; or.b32 %r21, %r21, %r12;
+  setp.lt.f16 %p1, %h1, %h3;
+  selp.u32 %r10, 1, 0, %p1; shl.b32 %r10, %r10, 24; or.b32 %r21, %r21, %r10;
+  setp.gtu.f16 %p1, %h1, %h3;
+  selp.u32 %r10, 1, 0, %p1; shl.b32 %r10, %r10, 26; or.b32 %r21, %r21, %r10;
+  setp.nan.f16 %p1, %h1, %h3;
+  selp.u32 %r10, 1, 0, %p1; shl.b32 %r10, %r10, 28; or.b32 %r21, %r21, %r10;
+  setp.ne.f16 %p1, %h1, %h3;
+  selp.u32 %r10, 1, 0, %p1; shl.b32 %r10, %r10, 30; or.b32 %r21, %r21, %r10;
+  setp.lt.bf16 %p1, %h1, %h3;
+  selp.u32 %r10, 1, 0, %p1; shl.b32 %r10, %r10, 0; or.b32 %r22, %r22, %r10;
+  setp.gtu.bf16 %p1, %h1, %h3;
+  selp.u32 %r10, 1, 0, %p1; shl.b32 %r10, %r10, 2; or.b32 %r22, %r22, %r10;
+  setp.nan.bf16 %p1, %h1, %h3;
+  selp.u32 %r10, 1, 0, %p1; shl.b32 %r10, %r10, 4; or.b32 %r22, %r22, %r10;
+  setp.ne.bf16 %p1, %h1, %h3;
+  selp.u32 %r10, 1, 0, %p1; shl.b32 %r10, %r10, 6; or.b32 %r22, %r22, %r10;
+  and.b32 %r13, %r4, 0x7fff7fff; mov.b32 %r14, 0x7c007c00;
+  setp.ne.f16x2 %p1|%p2, %r13, %r14;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 8; or.b32 %r22, %r22, %r12;
+  mov.b32 %r15, 0x48004c00;
+  setp.gt.f16x2 %p1|%p2, %r4, %r15;
+  selp.u32 %r10, 1, 0, %p1; selp.u32 %r11, 2, 0, %p2; or.b32 %r12, %r10, %r11; shl.b32 %r12, %r12, 10; or.b32 %r22, %r22, %r12;
+  st.global.v4.u32 [%rd6], {%r20, %r21, %r22, %r23};
+  ret; }

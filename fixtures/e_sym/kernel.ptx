@@ -1,0 +1,52 @@
+// Fixture for cluster symmetry (E-CTA-INDEP): 4 CTAs of 64 threads. Warp 1 of each CTA
+// arrives on an mbarrier that warp 0 waits for, then warp 0 stores ctaid-dependent data to
+// its own slice of `out`. Position-dependent control (the `skip` branch) is taken the same way
+// by every CTA in the good kernel; the bug variants make one CTA behave differently, which a
+// one-CTA exploration would miss.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_sym(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    .shared .align 8 .b64 bar;
+    .shared .align 4 .b32 slot;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, %ctaid.x;
+    mov.u32 %r3, bar;
+    mov.u32 %r9, slot;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra INITED;
+    mbarrier.init.shared::cta.b64 [%r3], 1;
+INITED:
+    bar.sync 0;
+    shr.u32 %r4, %r1, 5;                 // warp
+    // Position-dependent control, the same decision in every CTA: ctaid < 4.
+    setp.ge.u32 %p2, %r2, 4;             // @SKIP
+    @%p2 bra DONE;
+    setp.eq.u32 %p3, %r4, 1;
+    @%p3 bra PRODUCER;
+    // warp 0: wait, then write out[ctaid * 64 + tid]
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r3], 0;
+    @!%p1 bra WAIT;
+    ld.shared.u32 %r6, [%r9];
+    add.u32 %r7, %r6, %r1;
+    mad.lo.u32 %r5, %r2, 64, %r1;
+    mul.wide.u32 %rd2, %r5, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r7;
+    bra DONE;
+PRODUCER:
+    setp.ne.u32 %p1, %r1, 32;
+    @%p1 bra DONE;
+    st.shared.u32 [%r9], %r2;            // @SLOT
+    mbarrier.arrive.release.cta.shared::cta.b64 _, [%r3];  // @ARRIVE
+DONE:
+    ret;
+}

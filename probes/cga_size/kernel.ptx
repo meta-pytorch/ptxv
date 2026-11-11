@@ -1,0 +1,41 @@
+// SR_CgaSize probe. Each CTA's thread 0 writes 16 words at out[16 * ctaid.x]:
+//   0 raw SR_CgaSize * -0xa0 (patch.py: the %cluster_nctaid.z read with its LDC made a NOP)
+//   4 %cluster_nctarank   5 %cluster_ctarank   6 %cluster_nctaid.x   7 %cluster_nctaid.y
+//   8 0                   9 %clusterid.x      10 %nclusterid.x      11 %cluster_ctaid.x
+//  12 %cluster_ctaid.y   13 %ctaid.x          14 0                  15 1 (written marker)
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 out_p)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<4>;
+    .reg .pred %p<2>;
+    mov.u32 %r20, %tid.x;
+    setp.ne.u32 %p1, %r20, 0;
+    @%p1 bra DONE;
+    mov.u32 %r1, %cluster_nctaid.z;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r13, %ctaid.x;
+    mul.lo.u32 %r16, %r13, 64;
+    cvt.u64.u32 %rd2, %r16;
+    add.u64 %rd1, %rd1, %rd2;
+    st.volatile.global.u32 [%rd1], %r1;
+    mov.u32 %r2, %cluster_nctarank;
+    mov.u32 %r3, %cluster_ctarank;
+    mov.u32 %r4, %cluster_nctaid.x;
+    mov.u32 %r5, %cluster_nctaid.y;
+    mov.u32 %r6, 0;
+    mov.u32 %r7, %clusterid.x;
+    mov.u32 %r8, %nclusterid.x;
+    mov.u32 %r9, %cluster_ctaid.x;
+    mov.u32 %r10, %cluster_ctaid.y;
+    mov.u32 %r11, 0;
+    mov.u32 %r12, 1;
+    st.global.v4.u32 [%rd1+16], {%r2, %r3, %r4, %r5};
+    st.global.v4.u32 [%rd1+32], {%r6, %r7, %r8, %r9};
+    st.global.v4.u32 [%rd1+48], {%r10, %r13, %r11, %r12};
+DONE:
+    ret;
+}

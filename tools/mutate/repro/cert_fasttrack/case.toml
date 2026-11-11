@@ -1,0 +1,32 @@
+name = "cert_fasttrack"
+description = """
+Soundness-harness reproducer (docs/soundness-harness.md): the certificate (E-WELLSYNC) calls
+the `nosync` variant clean, exploration finds the race. Warp 0's plain init store is followed
+by its own strong red.add to the same word; the race shadow keeps only that later strong write,
+so the other warps' adds look morally strong against it."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "nosync"
+summary = "no bar.sync between warp 0's init and the adds"
+marker = "@SYNC"
+replace = "<delete>"
+expect = ["race"]

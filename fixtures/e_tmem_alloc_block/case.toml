@@ -1,0 +1,45 @@
+name = "e_tmem_alloc_block"
+description = """
+E-ALLOC: two warps each allocate all 512 TMEM columns. Without a barrier between alloc and
+dealloc the second alloc waits for the first dealloc (good, clean); with a bar.sync between them
+(HOLD) the second allocator never gets its columns and the holder never reaches its dealloc:
+deadlock (GB300 hangs). SASS: ptxas's tcgen05 guardrail code frees the columns
+(`UTCATOMSWS.AND`) before it clears its bitmap (`ATOMS.AND`); a schedule in which the other warp
+allocates in between traps in `..._guardrail_trap_col_being_dealloced_not_returned_by_alloc`
+and leaks. Not a false alarm: a race in ptxas's emitted code, reported on both SASS levels.
+GB300 never showed it on the unmodified code (50/50 here; no trap in 1.18e9 contended pairs,
+probes/tmem_alloc_race), but traps on every launch once the window is widened by 32-64 ns
+(probes/tmem_alloc_race_wide), so the free is visible to the other warp at once and only
+timing hides the race."""
+ptx = "kernel.ptx"
+entry = "e_tmem_alloc_block"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "alloc then dealloc in each warp"
+expect = ["clean"]
+expect_sass = ["trap", "violation"]
+hw_note = "GB300 50/50 completes (2026-11-09); the SASS trap is a timing-hidden race in ptxas guardrail code (probes/tmem_alloc_race_wide traps)"
+
+[[variants]]
+id = "HOLD"
+summary = "bar.sync between alloc and dealloc"
+marker = "@HOLD"
+find = "// @HOLD"
+replace = "bar.sync 0;"
+expect = ["deadlock", "race"]
+expect_sass = ["deadlock"]
+hw_note = "GB300 hangs (watchdog, 2026-11-09)"

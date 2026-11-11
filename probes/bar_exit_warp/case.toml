@@ -1,0 +1,117 @@
+name = "probe_bar_exit_warp"
+description = """
+Probe for ASSUMPTIONS.md E-BAR-EXIT on partly exited warps (e_aligned_bar AB3 on the SASS
+front-end). Lane l of warp w exits if l >= keep[w]; the survivors run a counted named barrier
+(warp 0 at its own copy of the instruction) and write out[tid] = 1. A hang means the barrier
+never completed. Default: 96 threads, keep = (16, 32, 0), bar.sync 1, 64.
+probes/bar_exit_warp/partial: 48 threads (a partial last warp)."""
+ptx = "kernel.ptx"
+entry = "probe_bar_exit_warp"
+grid = [1, 1, 1]
+block = [96, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [96]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "half"
+summary = "lanes 16-31 of warp 0 exit; 16 + 32 survivors run bar.sync 1, 64 (AB3)"
+# PTX contract: an aligned barrier after part of the warp exited (non-uniform control;
+# 2026-11-09, MISS 37). SASS and GB300: the half-exited warp arrives as a whole warp.
+expect = ["violation"]
+expect_sass = ["clean"]
+hw_note = "GB300 completes (ptxv probe, 2026-11-05)"
+
+[[variants]]
+id = "both_half"
+summary = "lanes 16-31 of warps 0 and 1 exit; 16 + 16 survivors run bar.sync 1, 64"
+# PTX contract: an aligned barrier after part of the warp exited (non-uniform control;
+# 2026-11-09, MISS 37). SASS and GB300: the half-exited warp arrives as a whole warp.
+expect = ["violation"]
+expect_sass = ["clean"]
+hw_note = "GB300 completes (ptxv probe, 2026-11-05)"
+marker = "@KEEP1"
+find = "%r4, 32"
+replace = "%r4, 16"
+
+[[variants]]
+id = "one_lane"
+summary = "lanes 1-31 of warp 0 exit; 1 + 32 survivors run bar.sync 1, 64"
+# PTX contract: an aligned barrier after part of the warp exited (non-uniform control;
+# 2026-11-09, MISS 37). SASS and GB300: the half-exited warp arrives as a whole warp.
+expect = ["violation"]
+expect_sass = ["clean"]
+hw_note = "GB300 completes (ptxv probe, 2026-11-05)"
+marker = "@KEEP0"
+find = "%r4, 16"
+replace = "%r4, 1"
+
+[[variants]]
+id = "half_alone"
+summary = "lanes 16-31 of warp 0 and all of warp 1 exit; 16 survivors run bar.sync 1, 32"
+# PTX contract: an aligned barrier after part of the warp exited (non-uniform control;
+# 2026-11-09, MISS 37). SASS and GB300: the half-exited warp arrives as a whole warp.
+expect = ["violation"]
+expect_sass = ["clean"]
+hw_note = "GB300 completes (ptxv probe, 2026-11-05)"
+edits = [
+  { marker = "@KEEP1", find = "%r4, 32", replace = "%r4, 0" },
+  { marker = "@BARW0", find = "1, 64", replace = "1, 32" },
+  { marker = "@BARW1", find = "1, 64", replace = "1, 32" },
+]
+
+[[variants]]
+id = "half_short"
+summary = "lanes 16-31 of warp 0 and all of warp 2 exit; 16 + 32 survivors run bar.sync 1, 96"
+# PTX contract: an aligned barrier after part of the warp exited (non-uniform control;
+# 2026-11-09, MISS 37). SASS and GB300: the half-exited warp arrives as a whole warp.
+expect = ["deadlock", "violation"]
+expect_sass = ["deadlock"]
+hw_note = "GB300 hangs (ptxv probe, 2026-11-05)"
+edits = [
+  { marker = "@BARW0", find = "1, 64", replace = "1, 96" },
+  { marker = "@BARW1", find = "1, 64", replace = "1, 96" },
+]
+
+[[variants]]
+id = "half_full96"
+summary = "lanes 16-31 of warp 0 exit; 16 + 32 + 32 survivors run bar.sync 1, 96"
+# PTX contract: an aligned barrier after part of the warp exited (non-uniform control;
+# 2026-11-09, MISS 37). SASS and GB300: the half-exited warp arrives as a whole warp.
+expect = ["violation"]
+expect_sass = ["clean"]
+hw_note = "GB300 completes (ptxv probe, 2026-11-05)"
+edits = [
+  { marker = "@KEEP2", find = "%r4, 0", replace = "%r4, 32" },
+  { marker = "@BARW0", find = "1, 64", replace = "1, 96" },
+  { marker = "@BARW1", find = "1, 64", replace = "1, 96" },
+]
+
+[[variants]]
+id = "half_arrive"
+summary = "lanes 16-31 of warp 0 exit; the 16 survivors bar.arrive 1, 64, warp 1 bar.sync 1, 64"
+# PTX contract: an aligned barrier after part of the warp exited (non-uniform control;
+# 2026-11-09, MISS 37). SASS and GB300: the half-exited warp arrives as a whole warp.
+expect = ["violation"]
+expect_sass = ["clean"]
+hw_note = "GB300 completes (ptxv probe, 2026-11-05)"
+marker = "@BARW0"
+find = "bar.sync"
+replace = "bar.arrive"
+
+[[variants]]
+id = "control"
+summary = "nobody exits: 32 + 32 run bar.sync 1, 64"
+expect = ["clean"]
+hw_note = "GB300 completes (ptxv probe, 2026-11-05)"
+marker = "@KEEP0"
+find = "%r4, 16"
+replace = "%r4, 32"

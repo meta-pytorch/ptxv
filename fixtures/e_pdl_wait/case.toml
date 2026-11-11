@@ -1,0 +1,60 @@
+name = "e_pdl_wait"
+description = """
+E-PDL: griddepcontrol.wait blocks until the previous grid has completed. produce triggers its
+dependent, then thread 0 of each CTA spins until consume's CTA sets a flag; consume sets the
+flag before its griddepcontrol.wait (good: clean) or after it (AFTER: deadlock; GB300 hangs)."""
+ptx = "kernel.ptx"
+entry = "produce"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["buf", "out"]
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[buffers]]
+name = "buf"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[params]]
+kind = "ptr"
+buffer = "buf"
+
+[[launches]]
+entry = "consume"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+pdl = true
+params = [
+    { kind = "ptr", buffer = "flag" },
+    { kind = "ptr", buffer = "buf" },
+    { kind = "ptr", buffer = "out" },
+]
+
+[[variants]]
+id = "good"
+summary = "consume sets the flag in its prologue, before griddepcontrol.wait"
+expect = ["clean"]
+
+[[variants]]
+id = "AFTER"
+summary = "consume sets the flag after griddepcontrol.wait: produce never completes, the wait never passes"
+marker = "@W"
+find = "@%p1 st.release.gpu.global.u32 [%rd7], %r6; griddepcontrol.wait;"
+replace = "griddepcontrol.wait; @%p1 st.release.gpu.global.u32 [%rd7], %r6;"
+expect = ["deadlock"]

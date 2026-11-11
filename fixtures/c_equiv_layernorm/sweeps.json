@@ -1,0 +1,38 @@
+[
+  [
+    "rsqrt (8388608, 2139095039) Fsetp { d: dst, cmp: Geu, a: Reg(Arg(0), 1), b: Imm(8388608), neg: [false, false], abs: [true, false], c: Pred { reg: None, neg: false }, bop: And, ftz: false };Ffma { d: dst, a: Reg(Arg(0), 1), b: Imm(1266679808), c: None, neg: [false, false, false], abs: [false, false, false], rnd: Rn, ftz: false, sat: false };Guard { pred: Op(0), neg: true, new: Op(1), old: Arg(0) };Mufu { d: dst, a: Reg(Op(2), 1), func: Rsq, fmt: F32, hi: false, neg: false, abs: false, ptx: None };Ffma { d: dst, a: Reg(Op(3), 1), b: Imm(1166016512), c: None, neg: [false, false, false], abs: [false, false, false], rnd: Rn, ftz: false, sat: false };Guard { pred: Op(0), neg: true, new: Op(4), old: Op(3) };Op(5)",
+    {
+      "func": "rsqrt",
+      "r0": 1.246685082949959e-7,
+      "r1": 0.0,
+      "a": 0.0,
+      "gmin": 5.421010862427522e-20,
+      "gmax": 9.223372036854776e+18,
+      "values": 2130706432
+    }
+  ],
+  [
+    "rsqrt (8388608, 2139095039) Fsetp { d: dst, cmp: Geu, a: Reg(Arg(0), 1), b: Imm(8388608), neg: [false, false], abs: [true, false], c: Pred { reg: None, neg: false }, bop: And, ftz: false };Ffma { d: dst, a: Reg(Arg(0), 1), b: Imm(1266679808), c: None, neg: [false, false, false], abs: [false, false, false], rnd: Rn, ftz: false, sat: false };Mufu { d: dst, a: Reg(Op(1), 1), func: Rsq, fmt: F32, hi: false, neg: false, abs: false, ptx: None };Ffma { d: dst, a: Reg(Op(2), 1), b: Imm(1166016512), c: None, neg: [false, false, false], abs: [false, false, false], rnd: Rn, ftz: false, sat: false };Mufu { d: dst, a: Reg(Arg(0), 1), func: Rsq, fmt: F32, hi: false, neg: false, abs: false, ptx: None };Guard { pred: Op(0), neg: true, new: Op(3), old: Op(4) };Op(5)",
+    {
+      "func": "rsqrt",
+      "r0": 1.2466850829499543e-7,
+      "r1": 0.0,
+      "a": 0.0,
+      "gmin": 5.421010862427522e-20,
+      "gmax": 9.223372036854776e+18,
+      "values": 2130706432
+    }
+  ],
+  [
+    "rsqrt (8388608, 2139095039) Mufu { d: dst, a: Reg(Arg(0), 1), func: Sqrt, fmt: F32, hi: false, neg: false, abs: false, ptx: None };Fsetp { d: dst, cmp: Geu, a: Reg(Op(0), 1), b: Imm(8388608), neg: [false, false], abs: [true, false], c: Pred { reg: None, neg: false }, bop: And, ftz: false };Fsetp { d: dst, cmp: Gt, a: Reg(Op(0), 1), b: Imm(2122317824), neg: [false, false], abs: [true, false], c: Pred { reg: None, neg: false }, bop: And, ftz: false };Ffma { d: dst, a: Reg(Op(0), 1), b: Imm(1048576000), c: None, neg: [false, false, false], abs: [false, false, false], rnd: Rn, ftz: false, sat: false };Guard { pred: Op(2), neg: false, new: Op(3), old: Op(0) };Ffma { d: dst, a: Reg(Op(4), 1), b: Imm(1266679808), c: None, neg: [false, false, false], abs: [false, false, false], rnd: Rn, ftz: false, sat: false };Guard { pred: Op(1), neg: true, new: Op(5), old: Op(4) };Mufu { d: dst, a: Reg(Op(6), 1), func: Rcp, fmt: F32, hi: false, neg: false, abs: false, ptx: None };Sel { d: dst, a: Reg(Const(1048576000), 1), b: Imm(1065353216), p: Pred { reg: Some(Op(2)), neg: false } };Ffma { d: dst, a: Reg(Op(8), 1), b: Imm(1266679808), c: None, neg: [false, false, false], abs: [false, false, false], rnd: Rn, ftz: false, sat: false };Guard { pred: Op(1), neg: true, new: Op(9), old: Op(8) };Ffma { d: dst, a: Reg(Op(7), 1), b: Reg(Op(10), 1), c: None, neg: [false, false, false], abs: [false, false, false], rnd: Rn, ftz: false, sat: false };Op(11)",
+    {
+      "func": "rsqrt",
+      "r0": 1.5406307033564105e-7,
+      "r1": 0.0,
+      "a": 0.0,
+      "gmin": 5.421011508662376e-20,
+      "gmax": 9.223372036854776e+18,
+      "values": 2130706432
+    }
+  ]
+]

@@ -1,0 +1,17 @@
+# f32 SDPA, torch.compile vs eager (docs/compile-vs-eager.md): both sides launch CUTLASS's
+# fmha_cutlassF_f32_aligned_64x64_rf_sm80 (3xTF32 on tensor cores) with the same shape; the two
+# captured cases differ only in buffer addresses, so the case is compared with itself. Segment
+# mode: CUTLASS's online softmax (atomicMaxFloat row maximum, the m_prime < mi branch, ex2 range
+# guards kept as bits of a flag word, rcp.rn of the row sum) through instruction slices.
+#   ptxv equiv fixtures/c_cve_sdpa_f32/equiv.toml        (~2 minutes, ~10 GB)
+max_states = 200000
+trials = 0
+segments = true
+reference = { case = ".", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "."
+variant = "good"
+front = "sass"
+certify = true
+expect = "L0"

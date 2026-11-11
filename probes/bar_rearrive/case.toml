@@ -1,0 +1,64 @@
+name = "probe_bar_rearrive"
+description = """
+Probe for ASSUMPTIONS.md E-BAR-ARRIVE in FA4 backward's epilogue shape (kernel.ptx): one warp
+bar.arrive's a register-id named barrier (count 160) and then bar.sync's it in the same
+generation; the other three warps bar.sync. out = per thread {stale A, stale B}: A written
+before the arrive, B after it (and after a varying delay) but before the bar.sync. check.py
+sums them; results.txt, GB300."""
+ptx = "kernel.ptx"
+entry = "rearrive"
+ptxas_toolkit = "13.0"
+grid = [264, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [67584]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 4096
+
+[[variants]]
+id = "reg"
+summary = "FA4 shape: register barrier id, warp 0 bar.arrive R, 160 then bar.sync R, 160"
+expect = ["violation"]
+hw_note = "GB300 completes, 0 stale A / B in 1.04e9 reader reads (10 runs x 264 CTAs x 4096 rounds; probe 2026-11-11)"
+
+[[variants]]
+id = "imm"
+summary = "as reg with the immediate barrier id 1"
+marker = "@ARRIVE"
+find = "bar.arrive %r4, 160;"
+replace = "bar.arrive 1, 160;"
+expect = ["violation"]
+hw_note = "GB300 completes, 0 stale A / B in 1.04e9 reader reads (probe 2026-11-11)"
+
+[[variants.edits]]
+marker = "@SYNC0"
+find = "bar.sync %r4, 160;"
+replace = "bar.sync 1, 160;"
+
+[[variants.edits]]
+marker = "@WAIT"
+find = "bar.sync %r4, 160;"
+replace = "bar.sync 1, 160;"
+
+[[variants]]
+id = "late"
+summary = "positive control: warp 0 writes B after its bar.sync (unordered with the other warps' reads)"
+marker = "@B"
+replace = "<delete>"
+hw_note = "GB300 completes, 13,120-32,000 stale B per run (10 runs), 0 stale A (probe 2026-11-11)"
+
+[[variants.edits]]
+marker = "@SYNC0"
+find = "bar.sync %r4, 160;"
+replace = "bar.sync %r4, 160;\n    st.shared.u32 [%r5+4], %r13;"

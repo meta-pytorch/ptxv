@@ -1,0 +1,319 @@
+// probes/tc_collector: tcgen05.mma .collector::a::{fill,use,lastuse} (S-TC-COLLECTOR); gen.py
+// writes kernel.ptx from this template (the MMA sequence per mode at @BODY@).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry tc_collector(
+    .param .align 64 .b8 tmap_a[128],
+    .param .align 64 .b8 tmap_b[128],
+    .param .u64 out
+)
+.maxntid 128, 1, 1
+{
+    .reg .pred  %p<8>;
+    .reg .b32   %r<48>;
+    .reg .b64   %rd<24>;
+    .shared .align 16 .b32 tmem_slot;
+    .shared .align 8 .b64 tma_bar;
+    .shared .align 8 .b64 mma_bar;
+    .shared .align 8 .b64 done_bar;
+    .shared .align 1024 .b8 smA[16384];
+    .shared .align 1024 .b8 smB[8192];
+
+    mov.u32         %r40, 0;                        // MODE
+    mov.u32         %r0, %tid.x;
+    shr.u32         %r1, %r0, 5;                    // warp id
+    mov.u32         %r2, tmem_slot;
+    mov.u32         %r3, tma_bar;
+    mov.u32         %r4, mma_bar;
+    mov.u32         %r39, done_bar;
+    setp.ne.u32     %p0, %r0, 0;                    // p0: not thread 0
+    setp.ne.u32     %p1, %r1, 0;                    // p1: not warp 0
+
+    @%p1 bra        SKIP_ALLOC;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r2], 256;
+    tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+SKIP_ALLOC:
+    @%p0 bra        SKIP_INIT;
+    mbarrier.init.shared::cta.b64 [%r3], 1;
+    mbarrier.init.shared::cta.b64 [%r4], 1;
+    // done_bar: the last commit of thread 0, and in mode 6 also thread 32's.
+    setp.eq.u32     %p4, %r40, 6;
+    selp.u32        %r41, 2, 1, %p4;
+    mbarrier.init.shared::cta.b64 [%r39], %r41;
+    fence.mbarrier_init.release.cluster;
+SKIP_INIT:
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    tcgen05.fence::after_thread_sync;
+    ld.shared.b32   %r5, [%r2];                     // TMEM base address (lane 0, column c0)
+
+    // Mode 6: thread 32 issues MMA 3 (use A0 B3), unordered with thread 0's MMAs.
+    setp.ne.u32     %p4, %r0, 32;
+    setp.ne.or.u32  %p4, %r40, 6, %p4;
+    @%p4 bra        NOT32;
+WAIT_TMA32:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r3], 0;
+    @!%p2 bra       WAIT_TMA32;
+    mov.u32         %r6, smA;
+    mov.u32         %r7, smB;
+    shr.u32         %r9, %r6, 4;
+    cvt.u64.u32     %rd4, %r9;
+    or.b64          %rd5, %rd4, 0x0000400800800000;
+    shr.u32         %r10, %r7, 4;
+    cvt.u64.u32     %rd6, %r10;
+    or.b64          %rd7, %rd6, 0x0000400800400000;
+    mov.u32         %r11, 0x08100010;
+    mov.u32         %r12, 0;
+    setp.ne.u32     %p3, %r12, 0;
+    add.u32         %r20, %r5, 192;
+    add.u64         %rd9, %rd7, 384;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::use [%r20], %rd5, %rd9, %r11, %p3;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r39];
+NOT32:
+    @%p0 bra        WAIT0;
+    // ---- thread 0: loads and MMAs ------------------------------------------------
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r3], 24576;
+    mov.b64         %rd0, tmap_a;
+    cvta.param.u64  %rd1, %rd0;
+    mov.b64         %rd2, tmap_b;
+    cvta.param.u64  %rd3, %rd2;
+    mov.u32         %r6, smA;
+    mov.u32         %r7, smB;
+    mov.u32         %r8, 0;
+    cp.async.bulk.tensor.3d.shared::cluster.global.mbarrier::complete_tx::bytes [%r6], [%rd1, {%r8, %r8, %r8}], [%r3];
+    cp.async.bulk.tensor.3d.shared::cluster.global.mbarrier::complete_tx::bytes [%r7], [%rd3, {%r8, %r8, %r8}], [%r3];
+WAIT_TMA:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r3], 0;
+    @!%p2 bra       WAIT_TMA;
+
+    // Shared memory descriptors: start>>4 | (LBO>>4)<<16 | (SBO>>4)<<32 | version 1 << 46.
+    shr.u32         %r9, %r6, 4;
+    cvt.u64.u32     %rd4, %r9;
+    or.b64          %rd5, %rd4, 0x0000400800800000; // A: LBO 2048, SBO 128
+    shr.u32         %r10, %r7, 4;
+    cvt.u64.u32     %rd6, %r10;
+    or.b64          %rd7, %rd6, 0x0000400800400000; // B: LBO 1024, SBO 128
+    // Instruction descriptor: D f32, A and B f16, K-major, N = 64, M = 128.
+    mov.u32         %r11, 0x08100010;
+    mov.u32         %r12, 0;
+    setp.ne.u32     %p3, %r12, 0;                   // false: overwrite D
+MODE0:
+    setp.ne.u32     %p6, %r40, 0;
+    @%p6 bra        MODE1;
+    add.u32         %r20, %r5, 0;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 0;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::fill [%r20], %rd8, %rd9, %r11, %p3;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r4];
+W0:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r4], 0;
+    @!%p2 bra       W0;
+    tcgen05.fence::after_thread_sync;
+    add.u32         %r20, %r5, 64;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 128;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::use [%r20], %rd8, %rd9, %r11, %p3;
+    add.u32         %r20, %r5, 128;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 256;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::lastuse [%r20], %rd8, %rd9, %r11, %p3;
+    add.u32         %r20, %r5, 192;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 384;
+    tcgen05.mma.cta_group::1.kind::f16 [%r20], %rd8, %rd9, %r11, %p3;
+    bra.uni         ISSUED;
+MODE1:
+    setp.ne.u32     %p6, %r40, 1;
+    @%p6 bra        MODE2;
+    add.u32         %r20, %r5, 0;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 0;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::fill [%r20], %rd8, %rd9, %r11, %p3;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r4];
+W1:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r4], 0;
+    @!%p2 bra       W1;
+    tcgen05.fence::after_thread_sync;
+    // A0 <- chunk 1 (16 bytes at a time), then make it visible to the async proxy.
+    mov.u32         %r21, 0;
+CPY:
+    add.u32         %r22, %r6, %r21;
+    ld.shared.v4.b32 {%r24, %r25, %r26, %r27}, [%r22+4096];
+    st.shared.v4.b32 [%r22], {%r24, %r25, %r26, %r27};
+    add.u32         %r21, %r21, 16;
+    setp.lt.u32     %p7, %r21, 4096;
+    @%p7 bra        CPY;
+    fence.proxy.async.shared::cta;
+    add.u32         %r20, %r5, 64;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 128;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::use [%r20], %rd8, %rd9, %r11, %p3;
+    add.u32         %r20, %r5, 128;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 256;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::lastuse [%r20], %rd8, %rd9, %r11, %p3;
+    add.u32         %r20, %r5, 192;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 384;
+    tcgen05.mma.cta_group::1.kind::f16 [%r20], %rd8, %rd9, %r11, %p3;
+    bra.uni         ISSUED;
+MODE2:
+    setp.ne.u32     %p6, %r40, 2;
+    @%p6 bra        MODE3;
+    add.u32         %r20, %r5, 0;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 0;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::fill [%r20], %rd8, %rd9, %r11, %p3;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r4];
+W2:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r4], 0;
+    @!%p2 bra       W2;
+    tcgen05.fence::after_thread_sync;
+    add.u32         %r20, %r5, 64;
+    add.u64         %rd8, %rd5, 256;
+    add.u64         %rd9, %rd7, 128;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::use [%r20], %rd8, %rd9, %r11, %p3;
+    add.u32         %r20, %r5, 128;
+    add.u64         %rd8, %rd5, 256;
+    add.u64         %rd9, %rd7, 256;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::lastuse [%r20], %rd8, %rd9, %r11, %p3;
+    add.u32         %r20, %r5, 192;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 384;
+    tcgen05.mma.cta_group::1.kind::f16 [%r20], %rd8, %rd9, %r11, %p3;
+    bra.uni         ISSUED;
+MODE3:
+    setp.ne.u32     %p6, %r40, 3;
+    @%p6 bra        MODE4;
+    add.u32         %r20, %r5, 0;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 0;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::use [%r20], %rd8, %rd9, %r11, %p3;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r4];
+W3:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r4], 0;
+    @!%p2 bra       W3;
+    tcgen05.fence::after_thread_sync;
+    add.u32         %r20, %r5, 64;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 128;
+    tcgen05.mma.cta_group::1.kind::f16 [%r20], %rd8, %rd9, %r11, %p3;
+    add.u32         %r20, %r5, 128;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 256;
+    tcgen05.mma.cta_group::1.kind::f16 [%r20], %rd8, %rd9, %r11, %p3;
+    add.u32         %r20, %r5, 192;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 384;
+    tcgen05.mma.cta_group::1.kind::f16 [%r20], %rd8, %rd9, %r11, %p3;
+    bra.uni         ISSUED;
+MODE4:
+    setp.ne.u32     %p6, %r40, 4;
+    @%p6 bra        MODE5;
+    add.u32         %r20, %r5, 0;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 0;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::fill [%r20], %rd8, %rd9, %r11, %p3;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r4];
+W4:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r4], 0;
+    @!%p2 bra       W4;
+    tcgen05.fence::after_thread_sync;
+    add.u32         %r20, %r5, 64;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 128;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::lastuse [%r20], %rd8, %rd9, %r11, %p3;
+    add.u32         %r20, %r5, 128;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 256;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::use [%r20], %rd8, %rd9, %r11, %p3;
+    add.u32         %r20, %r5, 192;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 384;
+    tcgen05.mma.cta_group::1.kind::f16 [%r20], %rd8, %rd9, %r11, %p3;
+    bra.uni         ISSUED;
+MODE5:
+    setp.ne.u32     %p6, %r40, 5;
+    @%p6 bra        MODE6;
+    add.u32         %r20, %r5, 0;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 0;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::fill [%r20], %rd8, %rd9, %r11, %p3;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r4];
+W5:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r4], 0;
+    @!%p2 bra       W5;
+    tcgen05.fence::after_thread_sync;
+    add.u32         %r20, %r5, 64;
+    add.u64         %rd8, %rd5, 256;
+    add.u64         %rd9, %rd7, 128;
+    tcgen05.mma.cta_group::1.kind::f16 [%r20], %rd8, %rd9, %r11, %p3;
+    add.u32         %r20, %r5, 128;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 256;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::use [%r20], %rd8, %rd9, %r11, %p3;
+    add.u32         %r20, %r5, 192;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 384;
+    tcgen05.mma.cta_group::1.kind::f16 [%r20], %rd8, %rd9, %r11, %p3;
+    bra.uni         ISSUED;
+MODE6:
+    setp.ne.u32     %p6, %r40, 6;
+    @%p6 bra        MODE7;
+    add.u32         %r20, %r5, 0;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 0;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::fill [%r20], %rd8, %rd9, %r11, %p3;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r4];
+W6:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r4], 0;
+    @!%p2 bra       W6;
+    tcgen05.fence::after_thread_sync;
+    add.u32         %r20, %r5, 64;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 128;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::use [%r20], %rd8, %rd9, %r11, %p3;
+    add.u32         %r20, %r5, 128;
+    add.u64         %rd8, %rd5, 0;
+    add.u64         %rd9, %rd7, 256;
+    tcgen05.mma.cta_group::1.kind::f16.collector::a::lastuse [%r20], %rd8, %rd9, %r11, %p3;
+    bra.uni         ISSUED;
+MODE7:
+ISSUED:
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r39];
+
+    // ---- everyone: wait for the last MMAs, read TMEM, store ---------------------
+WAIT0:
+    mbarrier.try_wait.parity.shared::cta.b64 %p5, [%r39], 0;
+    @!%p5 bra       WAIT0;
+    tcgen05.fence::after_thread_sync;
+    shl.b32         %r13, %r1, 21;                  // (32 * warp) << 16: TMEM lane field
+    add.u32         %r14, %r5, %r13;                // taddr for this warp, column 0
+    ld.param.u64    %rd14, [out];
+    cvta.to.global.u64 %rd15, %rd14;
+    mul.wide.u32    %rd16, %r0, 1024;               // row t: 256 floats
+    add.u64         %rd17, %rd15, %rd16;
+    mov.u32         %r15, 0;
+CHUNK:
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r16, %r17, %r18, %r19, %r20, %r21, %r22, %r23, %r24, %r25, %r26, %r27, %r28, %r29, %r30, %r31}, [%r14];
+    tcgen05.wait::ld.sync.aligned;
+    st.global.v4.b32 [%rd17], {%r16, %r17, %r18, %r19};
+    st.global.v4.b32 [%rd17+16], {%r20, %r21, %r22, %r23};
+    st.global.v4.b32 [%rd17+32], {%r24, %r25, %r26, %r27};
+    st.global.v4.b32 [%rd17+48], {%r28, %r29, %r30, %r31};
+    add.u32         %r14, %r14, 16;
+    add.u64         %rd17, %rd17, 64;
+    add.u32         %r15, %r15, 1;
+    setp.lt.u32     %p7, %r15, 16;
+    @%p7 bra        CHUNK;
+
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    @%p1 bra        DONE;
+    tcgen05.fence::after_thread_sync;
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r5, 256;
+DONE:
+    ret;
+}

@@ -1,0 +1,57 @@
+name = "e_vol_loop"
+description = """
+Fixture for E-SPIN poll recognition (spin.rs `poll_loops`): a counted loop with a volatile load
+and an unconditional back branch is not a poll loop when no exit depends on the loaded value
+(good); with the exit on the loaded value (SPIN, or CARRY through the loop counter) it is
+one, and its shape is not modeled."""
+ptx = "kernel.ptx"
+entry = "e_vol_loop"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "inp"
+dtype = "u32"
+shape = [4]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "inp"
+
+[[params]]
+kind = "u32"
+value = 2
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "SPIN"
+summary = "the loop leaves when the volatile word is non-zero: a poll whose SASS shape (unconditional back branch) E-SPIN does not model"
+marker = "@EXIT"
+find = "setp.ge.u32 %p1, %r2, %r9;"
+replace = "setp.ne.u32 %p1, %r3, 0;"
+expect = ["clean"]
+expect_sass = ["unmodeled"]
+
+[[variants]]
+id = "CARRY"
+summary = "the counter advances by the volatile word: the exit depends on it through the value carried around the loop, a poll E-SPIN does not model"
+marker = "@STEP"
+find = "add.u32 %r2, %r2, 1;"
+replace = "add.u32 %r2, %r2, %r3;"
+expect = ["clean"]
+expect_sass = ["unmodeled"]

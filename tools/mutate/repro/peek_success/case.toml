@@ -1,0 +1,45 @@
+name = "peek_success"
+description = "peek predicate read after the skip"
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "p5"
+marker = "@PEEK"
+find = "mbarrier.try_wait.parity.shared::cta.b64 %p7, [%r2], 0;"
+replace = "mbarrier.try_wait.parity.shared::cta.b64 %p5, [%r2], 0;"
+edits = [{ marker = "@BR", find = "@%p7 bra SKIP;", replace = "@%p5 bra SKIP;" }, { marker = "@USE", find = "selp.u32 %r5, 1, 0, %p7;", replace = "selp.u32 %r5, 1, 0, %p5;" }]
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "slowarr"
+summary = "warp 1 sleeps before it arrives"
+marker = "@ARR"
+find = "mbarrier.arrive.shared::cta.b64 %rd5, [%r2];"
+replace = "nanosleep.u32 20000; mbarrier.arrive.shared::cta.b64 %rd5, [%r2];"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "slowpeek"
+summary = "warp 0 sleeps before it peeks"
+marker = "@PEEK"
+find = "mbarrier.try_wait.parity.shared::cta.b64 %p7, [%r2], 0;"
+replace = "nanosleep.u32 20000; mbarrier.try_wait.parity.shared::cta.b64 %p7, [%r2], 0;"
+expect = ["nondeterministic"]

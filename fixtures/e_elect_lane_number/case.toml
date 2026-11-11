@@ -1,0 +1,41 @@
+name = "e_elect_lane_number"
+description = """
+E-ELECT (MISS 49): warp 0's leader computes f(l) = min(l, (l + 1) & 31) of its lane number l
+(elect.sync's first output), 0 for the two end lanes and nonzero for the others, and stores
+out[1] before bar.sync 0 when f(l) = 0, after it otherwise, where thread 32 reads out[1]: a
+race for middle-lane leaders only. The leader-sensitivity taint
+took the lane number as leader-dependent but never lane-varying, so nothing met a lane-varying
+value, the two end-lane policies were explored, and the PTX verdict was clean. The lane number
+is lane-varying too now: every leader function is explored. GB300 elects the lowest lane
+(probes/elect): SASS clean. OUT: a middle-lane leader stores f(l) to out[2] instead of out[1]:
+race-free, leader-dependent outputs for middle-lane leaders only."""
+ptx = "kernel.ptx"
+entry = "e_elect_lane_number"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "racy for middle-lane leaders"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "OUT"
+summary = "a middle-lane leader stores f(l) to out[2] instead"
+marker = "@LATE"
+find = "@%p6 st.global.u32 [%rd1+4], %r7;"
+replace = "@%p6 st.global.u32 [%rd1+8], %r4;"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]

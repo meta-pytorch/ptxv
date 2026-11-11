@@ -1,0 +1,76 @@
+name = "mma_k96_pair"
+description = """
+N-MMA-K96 / E-PAIR probe: one cta_group::2 kind::mxf4nvf4 block16 MMA with K = 96, M = 256,
+N = 256, ue4m3 scales (idesc 0x90400480, the CuTe DSL cascade GEMM's), every operand and scale
+word different between the two CTAs (kernel.ptx; data from ../gen.py). expected/D.bin is
+GB300's output."""
+ptx = "kernel.ptx"
+entry = "mma_pair96"
+grid = [2, 1, 1]
+block = [128, 1, 1]
+cluster = [2, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "u8"
+shape = [256, 48]
+init = "file"
+file = "A.bin"
+
+[[buffers]]
+name = "B"
+dtype = "u8"
+shape = [256, 48]
+init = "file"
+file = "B.bin"
+
+[[buffers]]
+name = "SFA"
+dtype = "u32"
+shape = [2, 128, 8]
+init = "file"
+file = "SFA.bin"
+
+[[buffers]]
+name = "SFB"
+dtype = "u32"
+shape = [2, 128, 16]
+init = "file"
+file = "SFB.bin"
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [256, 256]
+init = "nan"
+expect = "expected/D.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "A"
+
+[[params]]
+kind = "ptr"
+buffer = "B"
+
+[[params]]
+kind = "ptr"
+buffer = "SFA"
+
+[[params]]
+kind = "ptr"
+buffer = "SFB"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+# idesc: K = 96 (bit 31), M >> 4 = 16 at bit 24, N >> 3 = 32 at bit 17, ue4m3, A / B E2M1.
+[[params]]
+kind = "u32"
+value = 0x90400480
+
+[[variants]]
+id = "good"
+expect = ["clean"]

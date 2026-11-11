@@ -1,0 +1,8 @@
+--hidden 7168 --tokens 1-4096 --num-sms 20 --cached --worst
+--hidden 2048,2880,4096,5120,7168 --tokens 1-2048 --num-sms 2,4,8,24 --cached
+--hidden 7168,4096 --tokens 1-4096 --num-sms 20 --overlap 4 --async --cached
+--hidden 2064,2880 --tokens 1-2048 --num-sms 2,8,20 --dcfg 6,30 --ccfg 4,30 --worst
+--hidden 7168 --tokens 1024-8192 --num-sms 20 --fp8 --overlap 2
+--hidden 4096 --tokens 1-4096 --num-sms 4,20 --skew 0.8 --drop 0.3 --async --overlap 8
+--hidden 128,256,2064 --tokens 1-512 --num-sms 2,4 --dcfg 1,8 --ccfg 1,8 --experts 8 --topk 2 --cached --worst
+--hidden 7168 --tokens 1-4096 --num-sms 24,48 --dcfg 24,256 --ccfg 10,256 --overlap 4 --gemm 8192

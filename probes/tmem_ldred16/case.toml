@@ -1,0 +1,37 @@
+name = "probe_tmem_ldred16"
+description = """
+Probe for tcgen05.ld.red.16x32bx2 (SASS LDTM.STAT.16dp32bit_t0_t15 / _t16_t31
+.xN.MIN|MAX[ABS].F32[.NAN], FA4 decode's row max): see kernel.ptx. in.bin: random words with
+12% special f32 patterns, thread 5's row all NaNs (distinct payloads), threads 6 and 22
+alternating +0 / -0. expected/out.bin is the GB300 output."""
+cubin = "kernel.cubin"
+entry = "probe_tmem_ldred16"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [12288]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [16384]
+init = "file"
+file = "in.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1,0 +1,62 @@
+name = "s_ptx_cute_ops"
+description = """
+PTX front-end forms seen in CuTeDSL output, against GB300 bitwise, both front-ends
+(kernel.ptx): cp.async.{ca,cg} (4 / 8 / 16 bytes, src-size 0 zero fill, ignore-src predicate,
+.L2 prefetch hint), commit_group / wait_group / wait_all, cp.async.mbarrier.arrive[.noinc],
+non-tensor cp.async.bulk load (complete_tx) and store (bulk_group), mad.lo.{s,u}64,
+vote.sync.{any,all,uni}.pred / ballot.b32, bar.warp.sync, div.rn.f32 and cvt.rn.bf16.f32 /
+cvt.rzi.{u32,s32}.f32 on the s_ptxdiv special values and random bits, mov.b32 {h0, h1}
+unpack / pack, and a cvt.rn.bf16.f32 pair fused into F2FP.BF16.F32.PACK_AB (NaN -> 0x7fff). expected/ is GB300's output (ptxv hw-worker)."""
+ptx = "kernel.ptx"
+entry = "s_ptx_cute_ops"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [1024]
+init = "bits"
+seed = 11
+
+[[buffers]]
+name = "sp"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+values = [[0, 0], [1, 2147483648], [2, 1], [3, 2147483649], [4, 8388607], [5, 2155872255], [6, 4194304], [7, 3], [8, 8388608], [9, 2155872256], [10, 8388609], [11, 16777215], [12, 1065353216], [13, 3212836864], [14, 1065353217], [15, 1065353215], [16, 1056964608], [17, 1073741824], [18, 1069547520], [19, 1077936128], [20, 2139095039], [21, 4286578687], [22, 2139095038], [23, 2130706432], [24, 2139095040], [25, 4286578688], [26, 2143289344], [27, 4290772992], [28, 2139095041], [29, 2143289343], [30, 2147483647], [31, 4286578979], [32, 864026624], [33, 855638016], [34, 1266679808], [35, 1266679809], [36, 1266679807], [37, 1051372203], [38, 1069066811], [39, 1036831949], [40, 3184315597], [41, 228737632], [42, 1900671690], [43, 4048155338], [44, 201326592], [45, 872415232], [46, 3011510272], [47, 864026625], [48, 1061158912], [49, 3204448256], [50, 12582912], [51, 4194304], [52, 226492416], [53, 1904214016], [54, 2122317824], [55, 16777216], [56, 3225419776], [57, 1067450368], [58, 1065353214], [59, 1065353218], [60, 7136238], [61, 2137108966], [62, 2], [63, 1078530011]]
+
+[[buffers]]
+name = "rnd"
+dtype = "u32"
+shape = [128]
+init = "bits"
+seed = 12
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2176]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[params]]
+kind = "ptr"
+buffer = "sp"
+
+[[params]]
+kind = "ptr"
+buffer = "rnd"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

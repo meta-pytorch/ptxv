@@ -1,0 +1,36 @@
+name = "probe_lop3_ptx"
+description = """
+Probe (L-ROSETTA) for PTX lop3.b32 d, a, b, c, immLut: 16 LUTs on random register triples, and
+immediate b / c or a (the window fp8 dequant helper's form); ptxas emits LOP3.LUT (kernel.ptx,
+gen.py). expected/ is GB300's output (`ptxv hw`)."""
+ptx = "kernel.ptx"
+entry = "lop3_ptx"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [768]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4608]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

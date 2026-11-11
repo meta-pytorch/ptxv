@@ -1,0 +1,84 @@
+// FMUL scale modifiers (SASS FMUL.D2 / .D4 / .D8 / .M2 / .M4 / .M8, FMUL.FTZ.D2,
+// FMUL.D2.SAT; MISS 55): ptxas 13.0 / 13.1 / 13.3 fold a mul.f32 without a rounding modifier
+// whose only reader multiplies it by 0.125 .. 8 into one FMUL with a scale modifier (also when
+// the scale mul is .rn or .sat, and with the constant first). Each thread i reads a[i], b[i]
+// and stores, per op k, out[k * 1024 + i] (gen.py). REF2 = two separate .rn multiplies (FMUL,
+// then FMUL by 0.5): the double-rounding reference measured on the GPU.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry fmul_scale(.param .u64 a_ptr, .param .u64 b_ptr, .param .u64 out_ptr)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<8>;
+    .reg .f32   %f<32>;
+    .reg .b64   %rd<24>;
+
+    mov.u32         %r1, %ctaid.x;
+    mov.u32         %r2, %tid.x;
+    mad.lo.u32      %r3, %r1, 256, %r2;
+    mul.wide.u32    %rd1, %r3, 4;
+    ld.param.u64    %rd2, [a_ptr];
+    cvta.to.global.u64 %rd2, %rd2;
+    add.s64         %rd2, %rd2, %rd1;
+    ld.param.u64    %rd3, [b_ptr];
+    cvta.to.global.u64 %rd3, %rd3;
+    add.s64         %rd3, %rd3, %rd1;
+    ld.param.u64    %rd4, [out_ptr];
+    cvta.to.global.u64 %rd5, %rd4;
+    add.s64         %rd6, %rd5, %rd1;
+    add.s64         %rd10, %rd6, 0;
+    add.s64         %rd11, %rd6, 4096;
+    add.s64         %rd12, %rd6, 8192;
+    add.s64         %rd13, %rd6, 12288;
+    add.s64         %rd14, %rd6, 16384;
+    add.s64         %rd15, %rd6, 20480;
+    add.s64         %rd16, %rd6, 24576;
+    add.s64         %rd17, %rd6, 28672;
+    add.s64         %rd18, %rd6, 32768;
+    add.s64         %rd19, %rd6, 36864;
+    ld.global.f32   %f1, [%rd2];
+    ld.global.f32   %f2, [%rd3];
+    // D2
+    mul.f32         %f3, %f1, %f2;
+    mul.f32         %f4, %f3, 0f3F000000;
+    st.global.f32   [%rd10], %f4;
+    // D4
+    mul.f32         %f5, %f1, %f2;
+    mul.f32         %f6, %f5, 0f3E800000;
+    st.global.f32   [%rd11], %f6;
+    // D8
+    mul.f32         %f7, %f1, %f2;
+    mul.f32         %f8, %f7, 0f3E000000;
+    st.global.f32   [%rd12], %f8;
+    // M2
+    mul.f32         %f9, %f1, %f2;
+    mul.f32         %f10, %f9, 0f40000000;
+    st.global.f32   [%rd13], %f10;
+    // M4
+    mul.f32         %f11, %f1, %f2;
+    mul.f32         %f12, %f11, 0f40800000;
+    st.global.f32   [%rd14], %f12;
+    // FTZ.D2
+    mul.ftz.f32     %f13, %f1, %f2;
+    mul.ftz.f32     %f14, %f13, 0f3F000000;
+    st.global.f32   [%rd15], %f14;
+    // D2.SAT
+    mul.f32         %f15, %f1, %f2;
+    mul.sat.f32     %f16, %f15, 0f3F000000;
+    st.global.f32   [%rd16], %f16;
+    // REF2
+    mul.rn.f32      %f17, %f1, %f2;
+    mul.rn.f32      %f18, %f17, 0f3F000000;
+    st.global.f32   [%rd17], %f18;
+    // M8
+    mul.f32         %f19, %f1, %f2;
+    mul.f32         %f20, %f19, 0f41000000;
+    st.global.f32   [%rd18], %f20;
+    // D2 (C first, .rn scale)
+    mul.f32         %f21, %f1, %f2;
+    mul.rn.f32      %f22, 0f3F000000, %f21;
+    st.global.f32   [%rd19], %f22;
+    ret;
+}

@@ -1,0 +1,4 @@
+{"version": 1, "seed": 1, "name": "laplace, NVFP4 (e2m1, ue4m3 per 16, global scale)",
+ "tensors": {
+  "A": {"dist": {"kind": "laplace", "mean": 0.0, "scale": 1.0}, "quant": {"kind": "nvfp4", "scales": "SFA", "global_scale": true}},
+  "B": {"dist": {"kind": "laplace", "mean": 0.0, "scale": 1.0}, "quant": {"kind": "nvfp4", "scales": "SFB", "global_scale": true}}}}

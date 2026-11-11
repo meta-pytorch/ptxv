@@ -1,0 +1,12 @@
+# errdist branch flips in a pair (N-ERRDIST-SEL): R = rare (a selection that flips nowhere)
+# against C = max (a maximum of two products equal in exact arithmetic, which flips on most
+# elements). Tier 3 counts the flips of both programs.
+#   ptxv errdist fixtures/errdist/flip/pair.toml --inputs fixtures/errdist/normal.json
+max_states = 200000
+segments = true
+reference = { case = "rare", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "max"
+variant = "good"
+front = "sass"

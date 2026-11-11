@@ -1,0 +1,76 @@
+// Probe for E-BAR-ARRIVE, FA4 backward's epilogue shape: one warp arrives on a named barrier
+// with bar.arrive and then joins the same generation with bar.sync (two arrivals of one warp
+// in one generation), the barrier id in a register, the count 160 = 4 warps + the second
+// arrival, after a 128-count generation on the same id. 128 threads, `iters` rounds:
+//   all:    bar.sync R, 128
+//   warp 0: A = round; bar.arrive R, 160; spin a varying delay; B = round; bar.sync R, 160
+//   others: bar.sync R, 160
+//   all:    count A != round and B != round
+// out[2 t] / out[2 t + 1] = thread t's stale A / stale B reads. If the generation completed
+// without warp 0's second arrival, the other warps would pass while warp 0 spins and read a
+// stale B. Control `late` (warp 0 writes B after its bar.sync): stale B expected.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry rearrive(.param .u64 out_p, .param .u32 iters_p)
+{
+    .reg .pred %p<8>;
+    .reg .b32 %r<40>;
+    .reg .b64 %rd<8>;
+    .shared .align 8 .b32 flag[2];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u32 %r30, [iters_p];
+    mov.u32 %r1, %tid.x;
+    shr.u32 %r2, %r1, 5;
+    // The barrier id in a register: ((tid >> 7) & 1) + 1 = 1, as FA4's VIADD R50, R4, 0x1.
+    shr.u32 %r3, %r1, 7;
+    and.b32 %r3, %r3, 1;
+    add.u32 %r4, %r3, 1;                 // @ID
+    mov.u32 %r5, flag;
+    setp.eq.u32 %p1, %r2, 0;
+    mov.u32 %r10, 0;
+    mov.u32 %r11, 0;
+    mov.u32 %r12, 0;
+LOOP:
+    add.u32 %r13, %r10, 1;
+    bar.sync %r4, 128;
+    @!%p1 bra WAIT;
+    st.shared.u32 [%r5], %r13;
+    bar.arrive %r4, 160;                 // @ARRIVE
+    // Delay: (round * 2654435761) >> 21 & 4095 clock cycles.
+    mul.lo.u32 %r14, %r10, -1640531535;
+    shr.u32 %r14, %r14, 21;
+    and.b32 %r14, %r14, 4095;
+    mov.u32 %r15, %clock;
+SPIN:
+    mov.u32 %r16, %clock;
+    sub.u32 %r17, %r16, %r15;
+    setp.lt.u32 %p2, %r17, %r14;
+    @%p2 bra SPIN;
+    st.shared.u32 [%r5+4], %r13;         // @B
+    bar.sync %r4, 160;                   // @SYNC0
+    bra.uni READ;
+WAIT:
+    bar.sync %r4, 160;                   // @WAIT
+READ:
+    ld.volatile.shared.u32 %r18, [%r5];
+    setp.ne.u32 %p3, %r18, %r13;
+    selp.u32 %r19, 1, 0, %p3;
+    add.u32 %r11, %r11, %r19;
+    ld.volatile.shared.u32 %r18, [%r5+4];
+    setp.ne.u32 %p3, %r18, %r13;
+    selp.u32 %r19, 1, 0, %p3;
+    add.u32 %r12, %r12, %r19;
+    add.u32 %r10, %r10, 1;
+    setp.lt.u32 %p4, %r10, %r30;
+    @%p4 bra LOOP;
+    mov.u32 %r20, %ctaid.x;
+    mov.u32 %r21, %ntid.x;
+    mad.lo.u32 %r22, %r20, %r21, %r1;
+    mul.wide.u32 %rd2, %r22, 8;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.v2.u32 [%rd3], {%r11, %r12};
+    ret;
+}

@@ -1,0 +1,16 @@
+# NVFP4 GEMM against a dequantize-then-bf16 GEMM (docs/equiv-mma.md §5): the CuTeDSL
+# block-scaled GEMM (fixtures/r3_cute_nvf4) against a Triton kernel that converts each e2m1
+# code and ue4m3 scale with cvt (exact), multiplies them in f32, rounds to bf16 and runs a bf16
+# tl.dot (tcgen05 kind::f16, A in TMEM) accumulating in f32 (fixtures/c_triton_nvf4_dq).
+#   ptxv equiv fixtures/c_equiv_nvf4_dq/equiv.toml
+max_states = 200000
+trials = 20
+segments = true
+reference = { case = "../r3_cute_nvf4", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "../c_triton_nvf4_dq"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L1"

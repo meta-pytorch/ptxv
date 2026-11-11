@@ -1,0 +1,62 @@
+name = "r1d_clc"
+description = """
+Rung 1d. A persistent kernel driven by cluster launch control: 4 one-warp CTAs over 4 tiles;
+after each tile, thread 0 tries to cancel a CTA that has not launched and takes over its tile."""
+ptx = "kernel.ptx"
+entry = "r1d_clc"
+grid = [4, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "correct kernel"
+expect = ["clean"]
+
+[[variants]]
+id = "B17"
+summary = "the try_cancel response is used without waiting for its mbarrier"
+marker = "@B17"
+replace = "<delete>"
+expect = ["nondeterministic", "race", "violation"]
+
+[[variants]]
+id = "B53"
+summary = "the wait parity is not flipped: the second request reads the first response"
+marker = "@B53"
+replace = "<delete>"
+expect = ["fault"]
+
+[[variants]]
+id = "B54"
+summary = "a CTA exits after a successful cancel without doing the stolen tile"
+marker = "@B54"
+find = "// (B54 drops the stolen tile here)"
+replace = "@%p2 mov.u32    %r8, 0xffffffff;"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "v2pack"
+marker = "@V2PACK"
+summary = "the response loaded as .v2.b64 and packed with mov.b128 (unpacked and repacked once more)"
+find = "ld.shared.b128  %q0, [%r1];"
+replace = "ld.shared.v2.b64 {%rd4, %rd5}, [%r1]; mov.b128 %q1, {%rd4, %rd5}; mov.b128 {%rd6, %rd7}, %q1; mov.b128 %q0, {%rd6, %rd7};"
+expect = ["clean"]
+
+[[variants]]
+id = "addroff"
+marker = "@CLCOFF"
+summary = "the try_cancel operands as [reg+imm] (CuTe DSL: [%r23+432]); the PTX front dropped the offsets before 2026-11-09 (MISS 16), so the response landed early and query_cancel read an undefined handle"
+find = "clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128 [%r1], [%r2];"
+replace = "sub.u32 %r22, %r1, 32; sub.u32 %r23, %r2, 8; clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128 [%r22+32], [%r23+8];"
+expect = ["clean"]

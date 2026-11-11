@@ -1,0 +1,23 @@
+name = "smid_data"
+description = """
+E-SMID: two CTAs store %smid to out[%ctaid.x]. %smid reaches only data, so the verdict is
+complete; the output depends on the placement (nondeterministic)."""
+ptx = "kernel.ptx"
+entry = "smid_data"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["nondeterministic"]

@@ -1,0 +1,39 @@
+name = "s_cpasync_mbar"
+description = """
+cp.async (LDGSTS) completion tracked by an mbarrier, both forms: cp.async.mbarrier.arrive
+(SYNCS.ARRIVE.TRANS64.RED.A0T1 + ARRIVES.LDGSTSBAR.64.TRANSCNT, then a plain arrive) and
+.noinc (ARRIVES.LDGSTSBAR.64.ARVCNT), as in trtllm-gen's scale loader (fixtures/r3b_trtllm_bmm).
+One CTA: warp 0 copies 128 + 256 bytes of src into shared memory, warp 1 waits on both
+mbarriers and writes them to out. kernel.cubin = ptxas -arch=sm_103a kernel.ptx."""
+cubin = "kernel.cubin"
+entry = "s_cpasync_mbar"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [256]
+init = "bits"
+seed = 3
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [96]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "both mbarrier forms"
+expect = ["clean"]

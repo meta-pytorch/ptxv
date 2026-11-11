@@ -1,0 +1,26 @@
+name = "clock_pace_live"
+description = """
+E-CLOCK: clock_pace, not a pure delay loop (see kernel.ptx). Its branch depends on the clock:
+the explorer takes both sides (clock.rs `clock_branches`), and since iterations are not
+equivalent (an effect or a loop-carried value), the loop ends after MAX_CLOCK_ITERS extra
+iterations with an unmodeled "clock-paced loop" finding. Before, the check never ended. With
+PTXV_CLOCK_STEP the stepped clock decides and the loop ends."""
+ptx = "kernel.ptx"
+entry = "clock_pace_live"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["unmodeled"]

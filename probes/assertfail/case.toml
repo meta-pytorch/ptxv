@@ -1,0 +1,46 @@
+name = "probe_assertfail"
+description = """
+Probe (E-CLOCK, S-GLOBAL-INIT) for Triton's device-assert shape on the PTX front: call.uni
+__assertfail with string arguments from module .global arrays, then trap. Never taken in good
+(GB300 output in expected/: kernel.cubin = ptxas -arch=sm_103a kernel.ptx, `ptxv hw-worker`);
+taken in the variant, where both fronts report the trap."""
+ptx = "kernel.ptx"
+entry = "assertfail"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [32]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "the assert is not taken"
+expect = ["clean"]
+
+[[variants]]
+id = "taken"
+summary = "the assert fires in lanes whose input exceeds 5"
+marker = "@COND"
+find = "1000;"
+replace = "5;"
+expect = ["trap"]

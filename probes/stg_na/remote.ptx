@@ -1,0 +1,39 @@
+// probes/stg_na remote control: the L1 staleness the test above would see. CTA 0 thread t loads
+// x[t] (weak, fills its SM's L1), sets f1[t] (volatile); CTA 1 thread t spins on f1[t]
+// (volatile), stores x[t] + 0x1000 to x[t], fence.acq_rel.gpu, sets f2[t]; CTA 0 spins on f2[t]
+// (volatile, no fence: no L1 invalidation) and loads x[t] again (weak). out[2t] = first,
+// out[2t + 1] = second: the first value again means a stale L1 hit.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry remote(.param .u64 px, .param .u64 pf, .param .u64 pout)
+{
+  .reg .b32 %r<12>; .reg .b64 %rd<16>; .reg .pred %p<4>;
+  ld.param.u64 %rd1, [px]; cvta.to.global.u64 %rd1, %rd1;
+  ld.param.u64 %rd2, [pf]; cvta.to.global.u64 %rd2, %rd2;
+  ld.param.u64 %rd3, [pout]; cvta.to.global.u64 %rd3, %rd3;
+  mov.u32 %r1, %ctaid.x; mov.u32 %r2, %tid.x;
+  mul.wide.u32 %rd4, %r2, 4; add.u64 %rd5, %rd1, %rd4;
+  add.u64 %rd6, %rd2, %rd4;              // f1[t]
+  add.u64 %rd7, %rd6, 1024;              // f2[t]
+  setp.ne.u32 %p1, %r1, 0; @%p1 bra B;
+  ld.global.u32 %r3, [%rd5];
+  st.volatile.global.u32 [%rd6], 1;
+W2:
+  ld.volatile.global.u32 %r4, [%rd7];
+  setp.eq.u32 %p2, %r4, 0; @%p2 bra W2;
+  ld.global.u32 %r5, [%rd5];
+  mul.wide.u32 %rd8, %r2, 8; add.u64 %rd9, %rd3, %rd8;
+  st.global.v2.u32 [%rd9], {%r3, %r5};
+  ret;
+B:
+W1:
+  ld.volatile.global.u32 %r4, [%rd6];
+  setp.eq.u32 %p2, %r4, 0; @%p2 bra W1;
+  ld.volatile.global.u32 %r6, [%rd5];
+  add.u32 %r6, %r6, 0x1000;
+  st.volatile.global.u32 [%rd5], %r6;
+  fence.acq_rel.gpu;
+  st.volatile.global.u32 [%rd7], 1;
+  ret;
+}

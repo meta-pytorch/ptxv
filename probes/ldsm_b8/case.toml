@@ -1,0 +1,24 @@
+name = "probe_ldsm_b8"
+description = """
+Probe (L-ROSETTA) for ldmatrix.m16n16.x1 / .x2.trans.b8 (SASS LDSM.8.MT1616[.2], FA4 fp8
+decode): see kernel.ptx. expected/out.bin is the GB300 output."""
+ptx = "kernel.ptx"
+entry = "ldsm_b8"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

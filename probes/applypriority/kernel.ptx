@@ -1,0 +1,54 @@
+// probes/applypriority: applypriority.L2::evict_normal (SASS CCTL.E.DML2) and
+// prefetch.global.L2::evict_last (CCTL.E.PML2) are cache hints with no memory effect.
+// 64 threads; thread t stores in[t] ^ 0x5a5a5a5a to out[t]; after a barrier, lane 0 of warp 0
+// applies the priority to its line through a global address (applypriority.global) and
+// prefetches warp 1's line with evict_last, and lane 0 of warp 1 applies the priority through a
+// generic address; after a second barrier thread t copies out[(t + 32) % 64] (the other warp's
+// line) to out[64 + t].
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry applypriority(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 64, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<16>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd3, %rd1;
+    cvta.to.global.u64 %rd4, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd5, %r1, 4;
+    add.s64         %rd6, %rd3, %rd5;
+    ld.global.u32   %r2, [%rd6];
+    xor.b32         %r3, %r2, 0x5a5a5a5a;
+    add.s64         %rd7, %rd4, %rd5;
+    st.global.u32   [%rd7], %r3;
+    bar.sync        0;
+    and.b32         %r4, %r1, 31;
+    setp.ne.u32     %p1, %r4, 0;
+    @%p1 bra        $L_skip;
+    setp.ne.u32     %p2, %r1, 0;
+    @%p2 bra        $L_generic;
+    applypriority.global.L2::evict_normal [%rd4], 128;
+    prefetch.global.L2::evict_last [%rd4+128];
+    bra.uni         $L_skip;
+$L_generic:
+    add.s64         %rd8, %rd2, 128;
+    applypriority.L2::evict_normal [%rd8], 128;
+$L_skip:
+    bar.sync        0;
+    add.u32         %r5, %r1, 32;
+    and.b32         %r6, %r5, 63;
+    mul.wide.u32    %rd9, %r6, 4;
+    add.s64         %rd10, %rd4, %rd9;
+    ld.global.u32   %r7, [%rd10];
+    st.global.u32   [%rd7+256], %r7;
+    ret;
+}

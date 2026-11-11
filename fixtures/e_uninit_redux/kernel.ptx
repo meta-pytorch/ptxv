@@ -1,0 +1,39 @@
+//
+// S-INIT through a warp reduction (the shape of Triton's cross-warp reduction, dash/5819):
+// warp 0 writes 32 partials to shared memory; after bar.sync only threads tid < 32 load them,
+// every warp runs redux.sync.add on the loaded register (undefined in warp 1), and only thread
+// 0 stores the sum. Variant store_all: lane 0 of each warp stores its warp's sum.
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry uninit_redux(
+	.param .u64 out_ptr
+)
+.reqntid 64
+{
+	.reg .pred %p<4>;
+	.reg .b32 %r<12>;
+	.reg .b64 %rd<8>;
+	.shared .align 4 .b32 part[32];
+
+	ld.param.u64 %rd1, [out_ptr];
+	mov.u32 %r1, %tid.x;
+	and.b32 %r2, %r1, 31;
+	shr.u32 %r3, %r1, 5;
+	mov.u32 %r4, part;
+	shl.b32 %r5, %r2, 2;
+	add.u32 %r6, %r4, %r5;
+	setp.lt.u32 %p1, %r1, 32;
+	add.u32 %r7, %r1, 1;
+	@%p1 st.shared.u32 [%r6], %r7;
+	bar.sync 0;
+	@%p1 ld.shared.u32 %r8, [%r6];
+	redux.sync.add.s32 %r9, %r8, -1;
+	setp.eq.u32 %p2, %r1, 0; // @STORE
+	mul.wide.u32 %rd2, %r3, 4;
+	add.s64 %rd3, %rd1, %rd2;
+	@%p2 st.global.u32 [%rd3], %r9;
+	ret;
+}

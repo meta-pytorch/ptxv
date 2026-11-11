@@ -1,0 +1,32 @@
+// Probe (L-ROSETTA) for f16 arithmetic: fma / mul / add / sub .rn .f16x2 and .f16 on the halves of
+// packed words (HFMA2 / HMUL2 / HADD2 with .H0_H0 / .H1_H1 operands), and mul.f16 without .rn
+// by 32768 that only feeds an fma multiplicand and a store (HMUL2 with an immediate pair;
+// Triton's int4 KV dequant).
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry f16a(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<8>; .reg .b32 %r<20>; .reg .b16 %h<20>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mov.u32 %r2, %ctaid.x; mov.u32 %r3, %ntid.x; mad.lo.s32 %r1, %r2, %r3, %r1;
+  mul.wide.u32 %rd3, %r1, 12; add.s64 %rd4, %rd1, %rd3;
+  mul.wide.u32 %rd5, %r1, 32; add.s64 %rd6, %rd2, %rd5;
+  ld.global.u32 %r4, [%rd4]; ld.global.u32 %r5, [%rd4+4]; ld.global.u32 %r6, [%rd4+8];
+  fma.rn.f16x2 %r7, %r4, %r5, %r6;
+  mul.rn.f16x2 %r8, %r4, %r5;
+  add.rn.f16x2 %r9, %r4, %r6;
+  sub.rn.f16x2 %r10, %r5, %r6;
+  mov.b32 {%h1, %h2}, %r4; mov.b32 {%h3, %h4}, %r5; mov.b32 {%h5, %h6}, %r6;
+  fma.rn.f16 %h7, %h2, %h3, %h5;
+  fma.rn.f16 %h8, %h1, %h4, %h6;
+  mov.b16 %h9, 0x7800;
+  mul.f16 %h10, %h2, %h9;
+  mul.f16 %h11, %h1, %h9;
+  fma.rn.f16 %h12, %h10, %h3, %h6;
+  mov.b32 %r11, {%h7, %h8};
+  mov.b32 %r12, {%h12, %h11};
+  mov.b32 %r13, {%h10, %h10};
+  st.global.v4.u32 [%rd6], {%r7, %r8, %r9, %r10};
+  st.global.v4.u32 [%rd6+16], {%r11, %r12, %r13, %r4};
+  ret; }

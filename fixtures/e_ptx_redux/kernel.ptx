@@ -1,0 +1,58 @@
+// fixtures/e_ptx_redux: the PTX forms lifted for the mslk decode kernels, on one warp, against
+// GB300. Lane l loads x = in[l] (f32 bit patterns: normals of both signs, +-0, +-inf, a NaN in
+// lane 7 of the second set) and stores, at out[16 l + j]:
+//   j = 0..3: redux.sync.max.NaN.f32 / max.f32 / min.abs.f32 / max.abs.NaN.f32 of in[0..32)
+//   j = 4..7: the same over in[32..64) (lane 7's value is a NaN there)
+//   j = 8..11: redux.sync.add.u32 / min.s32 / max.u32 / xor.b32 of the bit patterns of in[0..32)
+//   j = 12: neg.f32 of in[32 + l]; j = 13: setp.le.f32 in[l] <= -3e30 (0fF21C3D9C) as 0 / 1;
+//   j = 14: setp.leu.f32 in[32 + l] <= 0 as 0 / 1; j = 15: setp.ne.f32 in[32 + l] != in[l].
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_ptx_redux(
+    .param .u64 in,
+    .param .u64 out
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<40>;
+    .reg .b64   %rd<8>;
+
+    mov.u32         %r0, %tid.x;
+    ld.param.u64    %rd0, [in];
+    cvta.to.global.u64 %rd0, %rd0;
+    mul.wide.u32    %rd1, %r0, 4;
+    add.u64         %rd2, %rd0, %rd1;
+    ld.global.u32   %r1, [%rd2];
+    ld.global.u32   %r2, [%rd2+128];
+    redux.sync.max.NaN.f32 %r10, %r1, 0xffffffff;
+    redux.sync.max.f32 %r11, %r1, 0xffffffff;
+    redux.sync.min.abs.f32 %r12, %r1, 0xffffffff;
+    redux.sync.max.abs.NaN.f32 %r13, %r1, 0xffffffff;
+    redux.sync.max.NaN.f32 %r14, %r2, 0xffffffff;
+    redux.sync.max.f32 %r15, %r2, 0xffffffff;
+    redux.sync.min.abs.f32 %r16, %r2, 0xffffffff;
+    redux.sync.max.abs.NaN.f32 %r17, %r2, 0xffffffff;
+    redux.sync.add.u32 %r18, %r1, 0xffffffff;
+    redux.sync.min.s32 %r19, %r1, 0xffffffff;
+    redux.sync.max.u32 %r20, %r1, 0xffffffff;
+    redux.sync.xor.b32 %r21, %r1, 0xffffffff;
+    neg.f32         %r22, %r2;
+    setp.le.f32     %p0, %r1, 0fF21C3D9C;
+    selp.u32        %r23, 1, 0, %p0;
+    setp.leu.f32    %p1, %r2, 0f00000000;
+    selp.u32        %r24, 1, 0, %p1;
+    setp.ne.f32     %p2, %r2, %r1;
+    selp.u32        %r25, 1, 0, %p2;
+    ld.param.u64    %rd3, [out];
+    cvta.to.global.u64 %rd3, %rd3;
+    mul.wide.u32    %rd4, %r0, 64;
+    add.u64         %rd5, %rd3, %rd4;
+    st.global.v4.u32 [%rd5], {%r10, %r11, %r12, %r13};
+    st.global.v4.u32 [%rd5+16], {%r14, %r15, %r16, %r17};
+    st.global.v4.u32 [%rd5+32], {%r18, %r19, %r20, %r21};
+    st.global.v4.u32 [%rd5+48], {%r22, %r23, %r24, %r25};
+    ret;
+}

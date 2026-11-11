@@ -1,0 +1,79 @@
+// probes/coll_split: how GB300 matches the lanes of a collective whose member mask names a
+// lane pair (3 << (lane & 30)) when the two lanes reach it at different instructions. ptxas
+// 13.0 lowers each shfl.sync / vote.sync with a run-time mask to `BRA.DIV` + an out-of-line
+// `WARPSYNC.COLLECTIVE Rm; op; ENDCOLLECTIVE` per call site. 64 threads; x = in[t] (gen.py):
+//   out[4 t + 0] = shfl.sync.bfly(x, 1, 0x1e1f, pair mask), converged;
+//   out[4 t + 1] = the same in both sides of a branch on lane < 16 (pairs on one side);
+//   out[4 t + 2] = even lanes shfl.sync.bfly(x + 1, 1), odd lanes shfl.sync.bfly(3 x, 1) in
+//                  separate branches (each pair split across two instructions; source =
+//                  destination register);
+//   out[4 t + 3] = even lanes vote.sync.ballot(x & 1), odd lanes ballot(x & 2), split alike.
+// GB300 (50/50): every lane gets its partner's value and the pair's ballot, as if both lanes
+// ran one instruction: lanes of a mask at different collective instructions combine.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry coll_split(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 64, 1, 1
+{
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<8>;
+    .reg .pred  %p<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    and.b32         %r2, %r1, 31;
+    mul.wide.u32    %rd3, %r1, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.u32   %r4, [%rd4];
+    mul.wide.u32    %rd5, %r1, 16;
+    add.s64         %rd6, %rd2, %rd5;
+    and.b32         %r5, %r2, 30;
+    mov.b32         %r6, 3;
+    shl.b32         %r7, %r6, %r5;
+    shfl.sync.bfly.b32 %r10, %r4, 1, 0x1e1f, %r7;
+    st.global.u32   [%rd6], %r10;
+    setp.lt.u32     %p1, %r2, 16;
+    @%p1 bra        LO;
+    add.u32         %r8, %r4, 7;
+    shfl.sync.bfly.b32 %r11, %r8, 1, 0x1e1f, %r7;
+    bra.uni         J1;
+LO:
+    xor.b32         %r8, %r4, 0x55;
+    shfl.sync.bfly.b32 %r11, %r8, 1, 0x1e1f, %r7;
+J1:
+    st.global.u32   [%rd6+4], %r11;
+    and.b32         %r9, %r2, 1;
+    xor.b32         %r12, %r2, 1;
+    setp.ne.u32     %p2, %r9, 0;
+    @%p2 bra        ODD;
+    add.u32         %r20, %r4, 1;
+    shfl.sync.bfly.b32 %r20, %r20, 1, 0x1f, %r7;
+    mov.b32         %r13, %r20;
+    bra.uni         J2;
+ODD:
+    mul.lo.u32      %r21, %r4, 3;
+    shfl.sync.bfly.b32 %r21, %r21, 1, 0x1f, %r7;
+    mov.b32         %r13, %r21;
+J2:
+    st.global.u32   [%rd6+8], %r13;
+    @%p2 bra        ODD2;
+    and.b32         %r14, %r4, 1;
+    setp.ne.u32     %p3, %r14, 0;
+    vote.sync.ballot.b32 %r15, %p3, %r7;
+    bra.uni         J3;
+ODD2:
+    and.b32         %r16, %r4, 2;
+    setp.ne.u32     %p4, %r16, 0;
+    vote.sync.ballot.b32 %r15, %p4, %r7;
+J3:
+    st.global.u32   [%rd6+12], %r15;
+    ret;
+}

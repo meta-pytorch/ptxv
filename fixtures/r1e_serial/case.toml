@@ -1,0 +1,66 @@
+name = "r1e_serial"
+description = """
+Rung 1e control: the r1e_pdl kernels launched WITHOUT programmatic stream serialization. consume
+starts only after produce completed, so griddepcontrol.wait is a no-op and B18 is correct."""
+ptx = "../r1e_pdl/kernel.ptx"
+entry = "produce"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["buf", "out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [64]
+init = "iota"
+
+[[buffers]]
+name = "buf"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "buf"
+
+[[launches]]
+entry = "consume"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+pdl = false
+params = [
+    { kind = "ptr", buffer = "in" },
+    { kind = "ptr", buffer = "buf" },
+    { kind = "ptr", buffer = "out" },
+]
+
+[[variants]]
+id = "good"
+summary = "correct pair"
+expect = ["clean"]
+
+[[variants]]
+id = "B18"
+summary = "consume has no griddepcontrol.wait: correct here, the launch itself orders the kernels"
+marker = "@B18"
+replace = "<delete>"
+expect = ["clean"]
+
+[[variants]]
+id = "B55"
+summary = "consume resets in[] before griddepcontrol.wait: correct here, as for B18"
+marker = "@B18"
+find = "griddepcontrol.wait;"
+replace = "st.global.u32   [%rd3], %r4; griddepcontrol.wait;"
+expect = ["clean"]

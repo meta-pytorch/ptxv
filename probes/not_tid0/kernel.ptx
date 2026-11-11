@@ -1,0 +1,44 @@
+// Probe: which threads fall through SASS `BRA.U.NOT_TID0` (cuBLAS nvjet: it guards the TMEM
+// free at the end of the kernel). ptxas never emits it, so patch.py turns the `@P0 BRA SKIP`
+// below into `BRA.U.NOT_TID0 SKIP` in the cubin. Threads that fall through store 1 to
+// out[tid]; out[256 + tid] = 1 for every thread that reached the end (out[512..] is scratch). 8 warps; warp w has
+// lanes 0..(31 - w) active at the branch (the rest exited), so "lowest active lane" and
+// "lane 0" / "thread 0 of the CTA" can be told apart.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry probe_not_tid0(.param .u64 out_p, .param .u32 never)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u32 %r9, [never];
+    mov.u32 %r1, %tid.x;
+    shr.u32 %r2, %r1, 5;
+    and.b32 %r3, %r1, 31;
+    // lane l of warp w exits if l < w (so the lowest active lane is w)
+    setp.lt.u32 %p2, %r3, %r2;
+    @%p2 bra DONE;
+    mul.wide.u32 %rd2, %r1, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    mov.u32 %r4, 1;
+    setp.ne.u32 %p1, %r9, 0;
+    @%p1 bra SKIP;
+    st.global.u32 [%rd3], %r4;
+    st.volatile.global.u32 [%rd3+2048], %r4;
+    st.volatile.global.u32 [%rd3+2048], %r3;
+    st.volatile.global.u32 [%rd3+2048], %r2;
+    st.volatile.global.u32 [%rd3+2048], %r1;
+    st.volatile.global.u32 [%rd3+2048], %r4;
+    st.volatile.global.u32 [%rd3+2048], %r3;
+    st.volatile.global.u32 [%rd3+2048], %r2;
+    st.volatile.global.u32 [%rd3+2048], %r1;
+    st.volatile.global.u32 [%rd3+2048], %r4;
+SKIP:
+    st.global.u32 [%rd3+1024], %r4;
+DONE:
+    ret;
+}

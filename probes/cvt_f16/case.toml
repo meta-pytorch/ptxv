@@ -1,0 +1,57 @@
+name = "probe_cvt_f16"
+description = """
+Probe (MISS 22; N-CVT-F16, N-CVT-LP) for cvt between f32 and f16 / bf16: the packed and scalar
+.rn / .rz encodes with .relu / .satfinite / .sat / .ftz that either front-end models, on 32,768
+f32 words at the f16 and bf16 rounding edges (gen.py), and the widening forms (plain, .ftz, .sat)
+on every 16-bit code. kernel.ptx (genptx.py) lists the forms with the front-ends that model them;
+variant `ptx` keeps those of the PTX front, `sass` those of the SASS front. expected/ is GB300's
+output of the full kernel (kernel.cubin = ptxas 13.0 -arch=sm_103a kernel.ptx, `ptxv
+hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "cvt_f16"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [32768]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [753664]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "every form (the GB300 run; neither front models all of them)"
+expect = ["clean"]
+
+[[variants]]
+id = "ptx"
+summary = "the forms the PTX front models"
+marker = "@PTXNO"
+replace = "<delete>"
+edits = [{ marker = "@NONE", replace = "<delete>" }]
+expect = ["clean"]
+
+[[variants]]
+id = "sass"
+summary = "the forms the SASS front models"
+marker = "@SASSNO"
+replace = "<delete>"
+edits = [{ marker = "@NONE", replace = "<delete>" }]
+expect = ["clean"]

@@ -1,0 +1,12 @@
+one-process multicast red.relaxed.gpu n=32,768,000 stale=32,768,000 CI95=[1.00e+00,1.00e+00] other=0
+one-process multicast red.relaxed.sys n=32,768,000 stale=32,768,000 CI95=[1.00e+00,1.00e+00] other=0
+one-process multicast red.release.gpu n=32,768,000 stale=32,767,969 CI95=[1.00e+00,1.00e+00] other=0
+one-process multicast red.release.sys n=32,768,000 stale=0 CI95=[0.00e+00,1.17e-07] other=0
+one-process private   red.relaxed.gpu n=32,768,000 stale=0 CI95=[0.00e+00,1.17e-07] other=0
+one-process private   red.relaxed.sys n=32,768,000 stale=0 CI95=[0.00e+00,1.17e-07] other=0
+one-process private   red.release.gpu n=32,768,000 stale=0 CI95=[0.00e+00,1.17e-07] other=0
+one-process private   red.release.sys n=32,768,000 stale=0 CI95=[0.00e+00,1.17e-07] other=0
+two-process multicast red.relaxed.gpu n=32,768,000 stale=32,768,000 CI95=[1.00e+00,1.00e+00] other=0
+two-process multicast red.relaxed.sys n=32,768,000 stale=32,768,000 CI95=[1.00e+00,1.00e+00] other=0
+two-process multicast red.release.gpu n=32,768,000 stale=32,767,968 CI95=[1.00e+00,1.00e+00] other=0
+two-process multicast red.release.sys n=32,768,000 stale=0 CI95=[0.00e+00,1.17e-07] other=0

@@ -1,0 +1,46 @@
+//
+// E-CPASYNC-EXIT: each thread zeroes its 16-byte shared slot, copies 16 bytes of src into
+// it with cp.async.cg, commits, and exits without cp.async.wait_group (the shape of a
+// pipelined prologue whose trailing stages are never consumed). Variants read the slot:
+// the thread's own without a wait, the other warp's after a bar.sync without a wait, and
+// both again after cp.async.wait_group 0.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry cpasync_exit(
+    .param .u64 src,
+    .param .u64 out
+)
+.maxntid 64, 1, 1
+{
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<8>;
+    .shared .align 16 .b8 buf[1024];
+
+    mov.u32         %r0, %tid.x;
+    ld.param.u64    %rd0, [src];
+    cvta.to.global.u64 %rd1, %rd0;
+    ld.param.u64    %rd2, [out];
+    cvta.to.global.u64 %rd3, %rd2;
+    mov.u32         %r1, buf;
+    shl.b32         %r2, %r0, 4;
+    add.u32         %r3, %r1, %r2;
+    mov.u32         %r4, 0;
+    st.shared.u32   [%r3], %r4;
+    cvt.u64.u32     %rd4, %r2;
+    add.u64         %rd5, %rd1, %rd4;
+    cp.async.cg.shared.global [%r3], [%rd5], 16;
+    cp.async.commit_group;
+    // @WAIT
+    // @BAR
+    mov.u32         %r5, %r3;
+    // @OTHER
+    mov.u32         %r6, %r0;
+    // @READ
+    shl.b32         %r7, %r0, 2;
+    cvt.u64.u32     %rd6, %r7;
+    add.u64         %rd7, %rd3, %rd6;
+    st.global.u32   [%rd7], %r6;
+    ret;
+}

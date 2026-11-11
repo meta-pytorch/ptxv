@@ -1,0 +1,53 @@
+name = "c_cve_clone_bf16_eager"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): run() of ref.py. 1 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: _ZN2at6native18elementwise_kernelILi128ELi4EZNS0_22gpu_kernel_impl_nocastIZZZNS0_23direct_copy_kernel_cudaERNS grid [16, 1, 1] block [128, 1, 1]
+Regenerate (docs/compile-vs-eager.md): CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/compile_vs_eager.py record
+--dtype bf16 --out DIR, then tools/capture.py --file DIR/pairs/05_*/ref.py --binary, then
+tools/cubin_slim.py on each cubin."""
+cubin = "k0.cubin"
+entry = "_ZN2at6native18elementwise_kernelILi128ELi4EZNS0_22gpu_kernel_impl_nocastIZZZNS0_23direct_copy_kernel_cudaERNS_18TensorIteratorBaseEENKUlvE1_clEvENKUlvE10_clEvEUlN3c108BFloat16EE_EEvS4_RKT_EUliE_EEviT1_"
+grid = [16, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+outputs = ["out"]
+
+[[buffers]]
+name = "_scaled_dot_product_cudnn_attention_39"
+dtype = "bf16"
+shape = [8192]
+init = "file"
+file = "data/_scaled_dot_product_cudnn_attention_39.bin"
+
+[[buffers]]
+name = "out"
+dtype = "bf16"
+shape = [8192]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "u32"
+value = 8192
+
+[[params]]
+kind = "bytes"
+hex = "0300000040000000010000000600000002000000010000000100000040000000010000000600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000020000008000000000200000000100008000000030baab29aeaa00000f00000000000000a065f9dbffff0000cd57fc6836bee41800400000000000000000000000000000b059a6274ff202002d58fc6836bee418d059a6274ff202004d58fc6836bee418a85cf9dbffff00008d58fc6836bee41800f0e7f5feff0000cd58fc6836bee418705aa6274ff20200705df9dbffff0000905aa6274ff202000d59fc6836bee418d05aa6274ff202004d59fc6836bee418f05aa6274ff202008d59fc6836bee4180080c0fdfaff00000000c0fdfaff00005063f9dbffff000020fbb729aeaa0000"
+
+[[params.fields]]
+offset = 504
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[params.fields]]
+offset = 512
+kind = "ptr"
+buffer = "_scaled_dot_product_cudnn_attention_39"
+byte_offset = 0
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

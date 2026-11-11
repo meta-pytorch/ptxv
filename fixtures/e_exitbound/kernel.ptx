@@ -1,0 +1,54 @@
+// Fixture for the partial-warp exit reduction (local_ample, `exit_bound`): one CTA of two
+// warps. Lane 0 of warp 1 writes a slot and arrives on an mbarrier; lanes 0-15 of warp 0 wait
+// for it, read the slot and store out[tid]; lanes 16-31 of warp 0 leave at once, storing
+// out[tid] on the way. The leaving lanes run only invisible instructions up to their exit, so
+// the explorer runs them in one fixed order; the bug variants put races on that path, which
+// must still be found.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_exitbound(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    .shared .align 8 .b64 bar;
+    .shared .align 4 .b32 slot;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r3, bar;
+    mov.u32 %r9, slot;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra INITED;
+    mbarrier.init.shared::cta.b64 [%r3], 1;
+INITED:
+    bar.sync 0;
+    setp.ge.u32 %p2, %r1, 32;
+    @%p2 bra PRODUCER;
+    setp.ge.u32 %p3, %r1, 16;
+    @%p3 bra LEAVE;
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r3], 0;
+    @!%p1 bra WAIT;
+    ld.shared.u32 %r6, [%r9];
+    add.u32 %r7, %r6, %r1;
+    mul.wide.u32 %rd2, %r1, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r7;
+    bra DONE;
+LEAVE:
+    mov.u32 %r5, %r1;                    // @LEAVE
+    mul.wide.u32 %rd2, %r5, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r1;
+    bra DONE;
+PRODUCER:
+    setp.ne.u32 %p1, %r1, 32;
+    @%p1 bra DONE;
+    st.shared.u32 [%r9], 7;
+    mbarrier.arrive.release.cta.shared::cta.b64 _, [%r3];
+DONE:
+    ret;
+}

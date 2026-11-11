@@ -1,0 +1,21 @@
+# GB300, 2026-11-11: ptxv probe probes/div_approx_ftz (16 shapes x 1024 inputs, out[s * 1024 + i]).
+# ptxas 13.0 cubin: 5/5 runs md5 5ab7d74164dce0e0c737c56cfdd63579 = expected/out.bin.
+# ptxas 13.1 cubin: 3/3 runs, the same md5; ptxas 13.3 cubin: 3/3 runs, the same md5 (13.0 / 13.1 / 13.3 emit the same operations: MUFU.RCP x2, FMUL.FTZ x7, FMUL.FTZ.D2, FMUL.FTZ.M2, FFMA.FTZ x4, FADD.FTZ x2, FADD, FSETP + FSEL).
+# PTX front (ptxas_toolkit 13.0, 13.1, 13.3) and SASS front (13.0): bitwise equal to expected/out.bin.
+# check.py (results differing from the IEEE-quotient composition, per shape):
+shape  0:  404 of 1024 differ from the IEEE-quotient composition
+shape  1:  285 of 1024 differ from the IEEE-quotient composition
+shape  2:  285 of 1024 differ from the IEEE-quotient composition
+shape  3:  411 of 1024 differ from the IEEE-quotient composition
+shape  4:  394 of 1024 differ from the IEEE-quotient composition
+shape  5:  267 of 1024 differ from the IEEE-quotient composition
+shape  6:  419 of 1024 differ from the IEEE-quotient composition
+shape  7:  404 of 1024 differ from the IEEE-quotient composition
+shape  8:  404 of 1024 differ from the IEEE-quotient composition
+shape  9:  596 of 1024 differ from the IEEE-quotient composition
+shape 10:  244 of 1024 differ from the IEEE-quotient composition
+shape 11:  176 of 1024 differ from the IEEE-quotient composition
+shape 12:  374 of 1024 differ from the IEEE-quotient composition
+shape 13:  392 of 1024 differ from the IEEE-quotient composition
+shape 14:  323 of 1024 differ from the IEEE-quotient composition
+shape 15:  217 of 1024 differ from the IEEE-quotient composition

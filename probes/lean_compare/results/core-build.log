@@ -1,0 +1,140 @@
+✔ [2/62] Built GB300Math.Basic (629ms)
+✔ [3/62] Built GB300Math.TanhTables (632ms)
+✔ [4/62] Built GB300Math.TensorCore (624ms)
+✔ [5/62] Built GB300Math.TextureRatio (777ms)
+ℹ [6/62] Built GB300Math.Stochastic (805ms)
+info: Blackwell/GB300Math/Stochastic.lean:50:0: 'GB300Math.Stochastic.fp16_exact_grid' depends on axioms: [propext, Quot.sound]
+info: Blackwell/GB300Math/Stochastic.lean:51:0: 'GB300Math.Stochastic.bf16_exact_grid' depends on axioms: [propext, Quot.sound]
+info: Blackwell/GB300Math/Stochastic.lean:52:0: 'GB300Math.Stochastic.normal_rounding_error' depends on axioms: [propext, Classical.choice, Quot.sound]
+ℹ [7/62] Built GB300Math.TextureMipmap (803ms)
+info: Shared/GB300Math/TextureMipmap.lean:37:0: 'GB300Math.TextureMipmap.sample_one_level' depends on axioms: [propext]
+info: Shared/GB300Math/TextureMipmap.lean:38:0: 'GB300Math.TextureMipmap.subnormal_lod_zero' depends on axioms: [propext]
+info: Shared/GB300Math/TextureMipmap.lean:39:0: 'GB300Math.TextureMipmap.nan_lod_zero' depends on axioms: [propext]
+info: Shared/GB300Math/TextureMipmap.lean:40:0: 'GB300Math.TextureMipmap.position_bounded' depends on axioms: [propext]
+ℹ [8/62] Built GB300Math.XorSign (944ms)
+info: Shared/GB300Math/XorSign.lean:57:0: 'GB300Math.XorSign.negative_zero_preserved' does not depend on any axioms
+info: Shared/GB300Math/XorSign.lean:58:0: 'GB300Math.XorSign.two_negative_inputs_positive' does not depend on any axioms
+info: Shared/GB300Math/XorSign.lean:59:0: 'GB300Math.XorSign.discarded_nan_sign_participates' does not depend on any axioms
+info: Shared/GB300Math/XorSign.lean:60:0: 'GB300Math.XorSign.nan_output_ignores_xor_sign' does not depend on any axioms
+info: Shared/GB300Math/XorSign.lean:61:0: 'GB300Math.XorSign.packed_signs_are_separate' does not depend on any axioms
+✔ [9/62] Built GB300Math.TextureRatio:c.o (193ms)
+✔ [10/62] Built TextureBits (1.0s)
+✔ [11/62] Built GB300Math.Basic:c.o (400ms)
+✔ [12/62] Built GB300Math.Stochastic:c.o (242ms)
+✔ [13/62] Built GB300Math.TextureMipmap:c.o (199ms)
+✔ [14/62] Built GB300Math.SpecialCases (485ms)
+ℹ [15/62] Built GB300Math.StochasticSm103 (1.1s)
+info: Blackwell/GB300Math/StochasticSm103.lean:114:0: 'GB300Math.StochasticSm103.exact_grid' depends on axioms: [propext, Quot.sound]
+info: Blackwell/GB300Math/StochasticSm103.lean:115:0: 'GB300Math.StochasticSm103.strict_one_step_error' depends on axioms: [propext, Classical.choice, Quot.sound]
+info: Blackwell/GB300Math/StochasticSm103.lean:116:0: 'GB300Math.StochasticSm103.reverseBits_bound' depends on axioms: [propext, Quot.sound]
+info: Blackwell/GB300Math/StochasticSm103.lean:117:0: 'GB300Math.StochasticSm103.rectified_negative_zero' depends on axioms: [propext]
+info: Blackwell/GB300Math/StochasticSm103.lean:118:0: 'GB300Math.StochasticSm103.unbounded_positive_infinity' depends on axioms: [propext]
+info: Blackwell/GB300Math/StochasticSm103.lean:119:0: 'GB300Math.StochasticSm103.saturation_preserves_nan' depends on axioms: [propext]
+info: Blackwell/GB300Math/StochasticSm103.lean:120:0: 'GB300Math.StochasticSm103.shared_entropy_witness' depends on axioms: [propext]
+✔ [16/62] Built GB300Math.TensorCore:c.o (537ms)
+✔ [17/62] Built GB300Math.SpecialCases:c.o (179ms)
+✔ [18/62] Built GB300Math.XorSign:c.o (268ms)
+ℹ [19/62] Built GB300Math.TensorAccumulatorBlackwell (755ms)
+info: Blackwell/GB300Math/TensorAccumulatorBlackwell.lean:64:0: 'GB300Math.TensorAccumulatorBlackwell.clamp_order_discriminator' depends on axioms: [propext, Quot.sound]
+info: Blackwell/GB300Math/TensorAccumulatorBlackwell.lean:65:0: 'GB300Math.TensorAccumulatorBlackwell.intermediate_rounding_discriminator' depends on axioms: [propext, Quot.sound]
+ℹ [20/62] Built GB300Math.TextureSeamless (1.3s)
+info: Shared/GB300Math/TextureSeamless.lean:161:0: 'GB300Math.TextureSeamless.corner_weights_sum' does not depend on any axioms
+info: Shared/GB300Math/TextureSeamless.lean:162:0: 'GB300Math.TextureSeamless.corner_differs_from_thirds' depends on axioms: [propext]
+info: Shared/GB300Math/TextureSeamless.lean:163:0: 'GB300Math.TextureSeamless.negative_subnormal_flush' does not depend on any axioms
+info: Shared/GB300Math/TextureSeamless.lean:164:0: 'GB300Math.TextureSeamless.corner_nan' depends on axioms: [propext]
+✔ [21/62] Built GB300Math.TanhTables:c.o (730ms)
+ℹ [22/62] Built GB300Math.TexturePackedViews (846ms)
+info: Shared/GB300Math/TexturePackedViews.lean:21:0: 'GB300Math.TexturePackedViews.raw_preserves' does not depend on any axioms
+info: Shared/GB300Math/TexturePackedViews.lean:22:0: 'GB300Math.TexturePackedViews.normalized_zero' depends on axioms: [propext]
+info: Shared/GB300Math/TexturePackedViews.lean:23:0: 'GB300Math.TexturePackedViews.normalized_u8_max' does not depend on any axioms
+info: Shared/GB300Math/TexturePackedViews.lean:24:0: 'GB300Math.TexturePackedViews.normalized_u16_max' does not depend on any axioms
+info: Shared/GB300Math/TexturePackedViews.lean:38:0: 'GB300Math.TexturePackedViews.index_bound' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/TexturePackedViews.lean:39:0: 'GB300Math.TexturePackedViews.masked_periodic' depends on axioms: [propext]
+✔ [23/62] Built GB300Math.StochasticSm103:c.o (519ms)
+ℹ [24/62] Built GB300Math.TextureGradientAxis (975ms)
+info: Shared/GB300Math/TextureGradientAxis.lean:28:0: 'GB300Math.TextureGradientAxis.position_bounded' depends on axioms: [propext]
+info: Shared/GB300Math/TextureGradientAxis.lean:29:0: 'GB300Math.TextureGradientAxis.nan_zero_lod' depends on axioms: [propext]
+info: Shared/GB300Math/TextureGradientAxis.lean:30:0: 'GB300Math.TextureGradientAxis.subnormal_zero_lod' depends on axioms: [propext]
+✔ [25/62] Built GB300Math.TexturePackedViews:c.o (174ms)
+✔ [26/62] Built GB300Math.TensorAccumulatorBlackwell:c.o (576ms)
+✔ [27/62] Built GB300Math.TextureGradientAxis:c.o (142ms)
+ℹ [28/62] Built GB300Math.StochasticNativeSm103 (902ms)
+info: Blackwell/GB300Math/StochasticNativeSm103.lean:45:0: 'GB300Math.StochasticNativeSm103.e4_nan_ignores_sign' depends on axioms: [propext]
+info: Blackwell/GB300Math/StochasticNativeSm103.lean:46:0: 'GB300Math.StochasticNativeSm103.fp8_entropy_partition' does not depend on any axioms
+info: Blackwell/GB300Math/StochasticNativeSm103.lean:47:0: 'GB300Math.StochasticNativeSm103.fp4_entropy_partition' does not depend on any axioms
+info: Blackwell/GB300Math/StochasticNativeSm103.lean:48:0: 'GB300Math.StochasticNativeSm103.merge_witness' depends on axioms: [propext]
+ℹ [29/62] Built TextureBounds (1.1s)
+info: Shared/TextureBounds.lean:67:0: 'GB300Math.TextureBits.roundWeight_error' depends on axioms: [propext, Classical.choice, Quot.sound]
+info: Shared/TextureBounds.lean:68:0: 'GB300Math.TextureBits.complement_weight_error' depends on axioms: [propext, Classical.choice, Quot.sound]
+info: Shared/TextureBounds.lean:69:0: 'GB300Math.TextureBits.plane_error' depends on axioms: [propext, Classical.choice, Quot.sound]
+✔ [31/62] Built GB300Math.StochasticNativeSm103:c.o (310ms)
+ℹ [32/62] Built GB300Math.XorSignProperties (1.5s)
+info: Shared/GB300Math/XorSignProperties.lean:145:0: 'GB300Math.XorSign.magnitude_lt_sign' does not depend on any axioms
+info: Shared/GB300Math/XorSignProperties.lean:146:0: 'GB300Math.XorSign.lane_non_nan' depends on axioms: [propext]
+info: Shared/GB300Math/XorSignProperties.lean:147:0: 'GB300Math.XorSign.selected_magnitude_lt' depends on axioms: [propext]
+info: Shared/GB300Math/XorSignProperties.lean:148:0: 'GB300Math.XorSign.non_nan_lane_sign' depends on axioms: [propext]
+info: Shared/GB300Math/XorSignProperties.lean:149:0: 'GB300Math.XorSign.non_nan_lane_magnitude' depends on axioms: [propext]
+info: Shared/GB300Math/XorSignProperties.lean:151:0: 'GB300Math.XorSign.one_nan_left' depends on axioms: [propext]
+info: Shared/GB300Math/XorSignProperties.lean:152:0: 'GB300Math.XorSign.one_nan_right' depends on axioms: [propext]
+info: Shared/GB300Math/XorSignProperties.lean:153:0: 'GB300Math.XorSign.both_nan' depends on axioms: [propext]
+info: Shared/GB300Math/XorSignProperties.lean:154:0: 'GB300Math.XorSign.propagate_nan' depends on axioms: [propext]
+info: Shared/GB300Math/XorSignProperties.lean:155:0: 'GB300Math.XorSign.magnitude16_mod' depends on axioms: [propext]
+info: Shared/GB300Math/XorSignProperties.lean:156:0: 'GB300Math.XorSign.lane16_mod' depends on axioms: [propext, Classical.choice, Quot.sound]
+info: Shared/GB300Math/XorSignProperties.lean:158:0: 'GB300Math.XorSign.lane16_lt' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/XorSignProperties.lean:160:0: 'GB300Math.XorSign.packed_f16x2' depends on axioms: [propext, Classical.choice, Quot.sound]
+info: Shared/GB300Math/XorSignProperties.lean:161:0: 'GB300Math.XorSign.packed_bf16x2' depends on axioms: [propext, Classical.choice, Quot.sound]
+info: Shared/GB300Math/XorSignProperties.lean:162:0: 'GB300Math.XorSign.packed_low_projection' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/XorSignProperties.lean:163:0: 'GB300Math.XorSign.packed_high_projection' depends on axioms: [propext, Quot.sound]
+✔ [33/62] Built GB300Math.TextureSeamless:c.o (1.2s)
+✔ [34/62] Built GB300Math.XorSignProperties:c.o (136ms)
+ℹ [35/62] Built GB300Math.TextureGradient2D (980ms)
+info: Shared/GB300Math/TextureGradient2D.lean:93:0: 'GB300Math.TextureGradient2D.position_bounded' depends on axioms: [propext]
+✔ [36/62] Built GB300Math.TextureGradient2D:c.o (440ms)
+ℹ [37/62] Built GB300Math.TextureGradient3D (908ms)
+info: Shared/GB300Math/TextureGradient3D.lean:72:0: 'GB300Math.TextureGradient3D.position_bounded' depends on axioms: [propext]
+✔ [38/62] Built GB300Math.TextureGradient3D:c.o (333ms)
+✔ [39/62] Built GB300Math.SeedTables (7.2s)
+ℹ [40/62] Built GB300Math.Fp64Seed (1.2s)
+info: Shared/GB300Math/Fp64Seed.lean:60:0: 'GB300Math.Fp64Seed.ignores_low_word' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/Fp64Seed.lean:61:0: 'GB300Math.Fp64Seed.zero_low_output' depends on axioms: [propext, Quot.sound]
+✔ [41/62] Built GB300Math.Fp64Seed:c.o (342ms)
+ℹ [42/62] Built GB300Math.TanhSmall (1.3s)
+info: Shared/GB300Math/TanhSmall.lean:33:0: 'GB300Math.TanhSmall.quantization' depends on axioms: [propext, Classical.choice, Quot.sound]
+info: Shared/GB300Math/TanhSmall.lean:35:0: 'GB300Math.TanhSmall.lower_endpoint' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/TanhSmall.lean:36:0: 'GB300Math.TanhSmall.first_input_plateau' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/TanhSmall.lean:37:0: 'GB300Math.TanhSmall.upper_endpoint' depends on axioms: [propext, Quot.sound]
+✔ [43/62] Built GB300Math.TanhSmall:c.o (115ms)
+✔ [44/62] Built GB300Math.SeedTables:c.o (2.8s)
+✔ [45/62] Built GB300Math.MufuTables (11s)
+ℹ [46/62] Built GB300Math.Mufu (2.5s)
+info: Shared/GB300Math/Mufu.lean:189:0: 'GB300Math.Mufu.ex2_zero' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/Mufu.lean:190:0: 'GB300Math.Mufu.lg2_one' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/Mufu.lean:191:0: 'GB300Math.Mufu.rsq_negative_zero' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/Mufu.lean:192:0: 'GB300Math.Mufu.sqrt_negative_zero' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/Mufu.lean:193:0: 'GB300Math.Mufu.tanh_downward_step' depends on axioms: [propext, Quot.sound]
+info: Shared/GB300Math/Mufu.lean:194:0: 'GB300Math.Mufu.tanh16_truncates' depends on axioms: [propext, Quot.sound]
+ℹ [47/62] Built MufuProperties (757ms)
+info: Shared/MufuProperties.lean:29:0: 'GB300Math.MufuProperties.sqrt_drop_left' depends on axioms: [propext, Quot.sound]
+info: Shared/MufuProperties.lean:30:0: 'GB300Math.MufuProperties.sqrt_drop_right' depends on axioms: [propext, Quot.sound]
+info: Shared/MufuProperties.lean:31:0: 'GB300Math.MufuProperties.sqrt_adjacent_input_drop' depends on axioms: [propext, Quot.sound]
+info: Shared/MufuProperties.lean:32:0: 'GB300Math.MufuProperties.sqrt_not_monotone_on_positive_normals' depends on axioms: [propext, Quot.sound]
+info: Shared/MufuProperties.lean:33:0: 'GB300Math.MufuProperties.tanh_adjacent_input_drop' depends on axioms: [propext, Quot.sound]
+ℹ [49/62] Built GB300Math.MufuSm103 (931ms)
+info: Blackwell/GB300Math/MufuSm103.lean:42:0: 'GB300Math.MufuSm103.bf16_upper_bits_ignored' depends on axioms: [propext, Quot.sound]
+info: Blackwell/GB300Math/MufuSm103.lean:43:0: 'GB300Math.MufuSm103.tanh_bf16_truncates' depends on axioms: [propext, Classical.choice, Quot.sound]
+info: Blackwell/GB300Math/MufuSm103.lean:44:0: 'GB300Math.MufuSm103.unsupported_operation' depends on axioms: [propext, Classical.choice, Quot.sound]
+✔ [50/62] Built GB300Math.Mufu:c.o (999ms)
+ℹ [51/62] Built GB300Math.TextureGradientCube (1.1s)
+info: Shared/GB300Math/TextureGradientCube.lean:96:0: 'GB300Math.TextureGradientCube.position_bounded' depends on axioms: [propext, Quot.sound]
+✔ [52/62] Built GB300Math.MufuSm103:c.o (158ms)
+✔ [53/62] Built GB300Math.TextureGradientCube:c.o (546ms)
+✔ [54/62] Built GpuMath (664ms)
+✔ [56/62] Built GpuMath:c.o (96ms)
+✔ [57/62] Built Check (858ms)
+✔ [58/62] Built Check:c.o (356ms)
+✔ [59/62] Built GB300Math.MufuTables:c.o (6.1s)
+✔ [60/62] Built check:exe (516ms)
+ℹ [61/62] Built SqrtBoundaryProperties (16s)
+info: Shared/SqrtBoundaryProperties.lean:20:0: 'GB300Math.MufuProperties.sqrt_normalized_segment_boundaries' depends on axioms: [propext, Quot.sound]
+info: Shared/SqrtBoundaryProperties.lean:21:0: 'GB300Math.MufuProperties.sqrt_scaled_boundary_drops' depends on axioms: [propext, Quot.sound]
+Build completed successfully (62 jobs).

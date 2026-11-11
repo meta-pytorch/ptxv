@@ -1,0 +1,34 @@
+name = "c_fmax_seq"
+description = """
+Row maxima, one thread per row, fmaxf in order (the reference). Y[r] = max_j X[r][j], X[32 x 128] f32 (fixtures/c_equiv_fmax/fmax.cu)."""
+cubin = "kernel.cubin"
+entry = "rowmax_seq"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["Y"]
+
+[[buffers]]
+name = "X"
+dtype = "f32"
+shape = [32, 128]
+init = "normal"
+seed = 41
+
+[[buffers]]
+name = "Y"
+dtype = "f32"
+shape = [32]
+init = "nan"
+expect = "expected/Y.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "X"
+
+[[params]]
+kind = "ptr"
+buffer = "Y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

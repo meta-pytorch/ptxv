@@ -1,0 +1,38 @@
+name = "probe_vhmnmx"
+description = """
+Probe (L-ROSETTA) for VHMNMX / VHMNMX.BF16_V2 [.NAN] on GB300: chained half max / min that
+ptxas fuses into a three-input VHMNMX (bf16 and f16, .NaN, packed and halves, |x| operands),
+over half patterns special in either format (gen.py). SASS front only: the PTX front has no
+f16 min / max. expected/ is GB300's output (ptxas cubin,
+`ptxv hw-worker probes/vhmnmx <cubin> --runs 1 --dump`)."""
+ptx = "kernel.ptx"
+entry = "vhmnmx"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024, 2]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024, 4]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1,0 +1,60 @@
+name = "e_misaligned"
+description = """
+S-ALIGN: misaligned global / shared / atomic accesses of every width are faults (GB300 traps
+with "misaligned address"); the simulator used to accept them."""
+ptx = "kernel.ptx"
+entry = "e_misaligned"
+grid = [1, 1, 1]
+block = [1, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [16]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+hw_note = "GB300 completes (ptxv probe, 2026-11-05)"
+
+[[variants]]
+id = "MA1"
+summary = "st.global.u64 at +4"
+marker = "@OFF64"
+find = "0;"
+replace = "4;"
+expect = ["fault"]
+hw_note = "GB300: cuCtxSynchronize: misaligned address (ptxv probe, 2026-11-05)"
+
+[[variants]]
+id = "MA2"
+summary = "ld.shared.v4.u32 at +8"
+marker = "@OFFV4"
+find = "0;"
+replace = "8;"
+expect = ["fault"]
+hw_note = "GB300: cuCtxSynchronize: misaligned address (ptxv probe, 2026-11-05)"
+
+[[variants]]
+id = "MA3"
+summary = "atom.global.add.u64 at +4 (offset 28)"
+marker = "@OFFATOM"
+find = "24;"
+replace = "28;"
+expect = ["fault"]
+hw_note = "GB300: cuCtxSynchronize: misaligned address (ptxv probe, 2026-11-05)"
+
+[[variants]]
+id = "MA4"
+summary = "st.global.u32 at +2 (offset 42)"
+marker = "@OFF32"
+find = "40;"
+replace = "42;"
+expect = ["fault"]
+hw_note = "GB300: cuCtxSynchronize: misaligned address (ptxv probe, 2026-11-05)"

@@ -1,0 +1,57 @@
+name = "e_hw_l1_pred"
+description = """
+E-HW-L1, the predictive stale check. Cluster of 2 CTAs (2 SMs), one thread each. CTA 0 stores
+word 0 of a line, then barrier.cluster. CTA 1 loads two other words of the line, invalidates
+its L1 (fence.acq_rel.gpu), loads three more other words (a refill that holds the old word 0
+if it happens before the store), barrier.cluster, loads two other words (hits, after the
+store), then word 0: stale in the schedules where the refill came first."""
+ptx = "kernel.ptx"
+entry = "l1pred"
+grid = [2, 1, 1]
+block = [1, 1, 1]
+cluster = [2, 1, 1]
+outputs = ["out"]
+hw_l1 = true
+
+[[buffers]]
+name = "buf"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "buf"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written: the last load of word 0 may hit the line refilled before the store"
+expect = ["stale"]
+# ptxas (13.0) lowers barrier.cluster.wait to UCGABAR_WAIT; CCTL.IVALL: the invalidation drops
+# the refilled line before the last load, so the SASS front is clean. The PTX front models no
+# L1 invalidation at barrier.cluster.wait (only at gpu / sys acquire), so it reports the
+# stale read.
+expect_sass = ["clean"]
+
+[[variants]]
+id = "cap"
+summary = "the reader's loads at seven clocks of its own (release stores to another line between them): three before the invalidation, the refill, three after the barrier; a log that keeps at most three clocks per thread at either end drops the refill, the only witness"
+marker = "@PRE"
+find = "ld.global.u32 %r3, [%rd1+36];"
+replace = "st.release.cta.global.u32 [%rd1+128], 1; ld.global.u32 %r3, [%rd1+36]; st.release.cta.global.u32 [%rd1+132], 1; ld.global.u32 %r10, [%rd1+56];"
+edits = [
+    { marker = "@POST", find = "ld.global.u32 %r8, [%rd1+68];", replace = "st.release.cta.global.u32 [%rd1+136], 1; ld.global.u32 %r8, [%rd1+68]; st.release.cta.global.u32 [%rd1+140], 1; ld.global.u32 %r11, [%rd1+72];" },
+    { marker = "@SUM", find = "add.u32 %r2, %r2, %r8;", replace = "add.u32 %r2, %r2, %r8; add.u32 %r2, %r2, %r10; add.u32 %r2, %r2, %r11;" },
+]
+expect = ["stale"]
+expect_sass = ["clean"]

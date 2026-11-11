@@ -1,0 +1,188 @@
+// Rung 1c(i) fixture: a 2-CTA cluster sharing a multicast operand (cta_group::1 MMA per CTA).
+//
+//   D[256x16] (f32) = A[256x128] (bf16) * B[16x128]^T. CTA rank r computes rows 128r..128r+127;
+//   K = 128 in 2 k-blocks of 64 through ONE shared-memory stage (128B swizzle).
+//
+//   both CTAs : warp 0 allocates 32 TMEM columns; t0 initializes the barriers, then
+//               fence.mbarrier_init.release.cluster + barrier.cluster.arrive.relaxed / wait
+//               (the CUTLASS pattern: the relaxed arrive releases only the inits).
+//   t0        : per k-block: arm full with expect_tx(16 KB A + 2 KB B), TMA its own A rows;
+//               rank 0 also loads B ONCE with .multicast::cluster into both CTAs (ctaMask 0b11);
+//               wait full, 4 x tcgen05.mma, commit -> empty.
+//               Before reusing the stage: wait empty (own MMA done). Rank 1 then releases the
+//               B stage to rank 0 with a REMOTE mbarrier.arrive.release.cluster on rank 0's
+//               peer_empty; rank 0 waits peer_empty before multicasting the next B.
+//   all       : wait done, tcgen05.ld 32x32b.x16, store the row; dealloc; final barrier.cluster
+//               (rank 1's last remote arrive may still be in flight to rank 0).
+//
+// Barriers (bars + offset): full +0, empty +8, peer_empty +16 (rank 0: rank 1's releases),
+// done +24.
+//
+// Mutants (case.toml): B13 no final barrier.cluster; B14 no fence.mbarrier_init.release.cluster.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry r1c_cluster(
+    .param .align 64 .b8 tmap_a[128],
+    .param .align 64 .b8 tmap_b[128],
+    .param .u64 d_ptr
+)
+.maxntid 128, 1, 1
+.reqnctapercluster 2, 1, 1
+{
+    .reg .pred  %p<16>;
+    .reg .b16   %rs<4>;
+    .reg .b32   %r<64>;
+    .reg .b64   %rd<32>;
+    .shared .align 16 .b32 tmem_slot;
+    .shared .align 8 .b8 bars[32];
+    .shared .align 1024 .b8 smA[16384];
+    .shared .align 1024 .b8 smB[2048];
+
+    mov.u32         %r0, %tid.x;
+    shr.u32         %r1, %r0, 5;                    // warp
+    mov.u32         %r2, %cluster_ctarank;
+    mov.u32         %r3, bars;
+    mov.u32         %r4, tmem_slot;
+    mov.u32         %r5, smA;
+    mov.u32         %r6, smB;
+    setp.ne.u32     %p0, %r1, 0;
+    @%p0 bra        SKIP_ALLOC;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r4], 32;
+    tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+SKIP_ALLOC:
+    setp.ne.u32     %p1, %r0, 0;
+    @%p1 bra        SKIP_INIT;
+    mbarrier.init.shared::cta.b64 [%r3], 1;          // full
+    add.u32         %r8, %r3, 8;
+    mbarrier.init.shared::cta.b64 [%r8], 1;          // empty
+    add.u32         %r8, %r3, 16;
+    mbarrier.init.shared::cta.b64 [%r8], 1;          // peer_empty
+    add.u32         %r8, %r3, 24;
+    mbarrier.init.shared::cta.b64 [%r8], 1;          // done
+    fence.mbarrier_init.release.cluster;                            // @B14
+SKIP_INIT:
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    tcgen05.fence::after_thread_sync;
+    barrier.cluster.arrive.relaxed.aligned;
+    barrier.cluster.wait.aligned;
+    ld.shared.b32   %r9, [%r4];                     // TMEM accumulator address
+    @%p1 bra        EPILOGUE;
+
+    // ---- t0: loads + MMA ---------------------------------------------------------------
+    mov.b64         %rd0, tmap_a;
+    cvta.param.u64  %rd1, %rd0;
+    mov.b64         %rd2, tmap_b;
+    cvta.param.u64  %rd3, %rd2;
+    add.u32         %r10, %r3, 8;                   // empty
+    add.u32         %r11, %r3, 16;                  // peer_empty (local)
+    mapa.shared::cluster.u32 %r12, %r11, 0;         // rank 0's peer_empty
+    add.u32         %r13, %r3, 24;                  // done
+    setp.eq.u32     %p2, %r2, 0;                    // rank 0: loads B for both CTAs
+    shl.b32         %r14, %r2, 7;                   // A row base = 128 * rank
+    mov.b16         %rs0, 3;                        // ctaMask: both CTAs
+    mov.u32         %r26, 0x08040490;               // idesc: f32 <- bf16 x bf16, N = 16, M = 128
+    mov.u32         %r15, 0;                        // k-block
+K_LOOP:
+    setp.eq.u32     %p3, %r15, 0;
+    @%p3 bra        LOAD;
+    // release the stage used by k-block kb-1
+    sub.u32         %r16, %r15, 1;
+    and.b32         %r16, %r16, 1;
+E_WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p4, [%r10], %r16;
+    @!%p4 bra       E_WAIT;
+    @%p2 bra        P_WAIT;
+    mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%r12];
+    bra             LOAD;
+P_WAIT:
+    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p5, [%r11], %r16;
+    @!%p5 bra       P_WAIT;
+LOAD:
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r3], 18432;
+    shl.b32         %r17, %r15, 6;                  // k * 64
+    cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes [%r5], [%rd1, {%r17, %r14}], [%r3];
+    @!%p2 bra       F_WAIT_PRE;
+    mov.u32         %r18, 0;
+    cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes.multicast::cluster [%r6], [%rd3, {%r17, %r18}], [%r3], %rs0;
+F_WAIT_PRE:
+    and.b32         %r19, %r15, 1;
+F_WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p6, [%r3], %r19;
+    @!%p6 bra       F_WAIT;
+    shr.u32         %r20, %r5, 4;
+    cvt.u64.u32     %rd4, %r20;
+    or.b64          %rd5, %rd4, 0x4000404000010000;
+    shr.u32         %r21, %r6, 4;
+    cvt.u64.u32     %rd6, %r21;
+    or.b64          %rd7, %rd6, 0x4000404000010000;
+    setp.ne.u32     %p7, %r15, 0;                   // first MMA overwrites D
+    setp.eq.u32     %p8, %r0, %r0;                  // true
+    tcgen05.mma.cta_group::1.kind::f16 [%r9], %rd5, %rd7, %r26, %p7;
+    add.u64         %rd8, %rd5, 2;
+    add.u64         %rd9, %rd7, 2;
+    tcgen05.mma.cta_group::1.kind::f16 [%r9], %rd8, %rd9, %r26, %p8;
+    add.u64         %rd10, %rd5, 4;
+    add.u64         %rd11, %rd7, 4;
+    tcgen05.mma.cta_group::1.kind::f16 [%r9], %rd10, %rd11, %r26, %p8;
+    add.u64         %rd12, %rd5, 6;
+    add.u64         %rd13, %rd7, 6;
+    tcgen05.mma.cta_group::1.kind::f16 [%r9], %rd12, %rd13, %r26, %p8;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r10];
+    add.u32         %r15, %r15, 1;
+    setp.lt.u32     %p9, %r15, 2;
+    @%p9 bra        K_LOOP;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r13];
+    // release the last stage too (uniform pipeline code): rank 1's final remote arrive
+L_WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p4, [%r10], 1;
+    @!%p4 bra       L_WAIT;
+    @%p2 bra        EPILOGUE;
+    mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%r12];
+
+    // ---- all: epilogue -----------------------------------------------------------------
+EPILOGUE:
+    add.u32         %r13, %r3, 24;
+D_WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p10, [%r13], 0;
+    @!%p10 bra      D_WAIT;
+    tcgen05.fence::after_thread_sync;
+    shl.b32         %r30, %r1, 21;                  // (32 * warp) << 16: TMEM lane field
+    add.u32         %r31, %r9, %r30;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r40, %r41, %r42, %r43, %r44, %r45, %r46, %r47, %r48, %r49, %r50, %r51, %r52, %r53, %r54, %r55}, [%r31];
+    tcgen05.wait::ld.sync.aligned;
+    ld.param.u64    %rd20, [d_ptr];
+    cvta.to.global.u64 %rd21, %rd20;
+    shl.b32         %r32, %r2, 7;
+    add.u32         %r33, %r32, %r0;                // row = 128 * rank + tid
+    mul.wide.u32    %rd22, %r33, 64;
+    add.u64         %rd23, %rd21, %rd22;
+    st.global.b32   [%rd23+0], %r40;
+    st.global.b32   [%rd23+4], %r41;
+    st.global.b32   [%rd23+8], %r42;
+    st.global.b32   [%rd23+12], %r43;
+    st.global.b32   [%rd23+16], %r44;
+    st.global.b32   [%rd23+20], %r45;
+    st.global.b32   [%rd23+24], %r46;
+    st.global.b32   [%rd23+28], %r47;
+    st.global.b32   [%rd23+32], %r48;
+    st.global.b32   [%rd23+36], %r49;
+    st.global.b32   [%rd23+40], %r50;
+    st.global.b32   [%rd23+44], %r51;
+    st.global.b32   [%rd23+48], %r52;
+    st.global.b32   [%rd23+52], %r53;
+    st.global.b32   [%rd23+56], %r54;
+    st.global.b32   [%rd23+60], %r55;
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    setp.ne.u32     %p11, %r1, 0;
+    @%p11 bra       FINAL;
+    tcgen05.fence::after_thread_sync;
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r9, 32;
+FINAL:
+    barrier.cluster.arrive.aligned;                                 // @B13
+    barrier.cluster.wait.aligned;                                   // @B13
+    ret;
+}

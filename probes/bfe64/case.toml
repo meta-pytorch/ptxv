@@ -1,0 +1,37 @@
+name = "probe_bfe64"
+description = """
+Probe (L-ROSETTA) for PTX bfe.u64 / bfe.s64 (pos and len mod 256, the field clamped to bit 63,
+zero / sign extended) on edge (pos, len) pairs around 32 and 64, above 255, random pairs and
+immediates (kernel.ptx, gen.py). expected/ is GB300's output (kernel.cubin = ptxas 13.0
+-arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "bfe64"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u64"
+shape = [1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

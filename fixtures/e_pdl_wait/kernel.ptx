@@ -1,0 +1,78 @@
+// E-PDL: griddepcontrol.wait blocks until the previous grid has completed.
+//
+//   produce (2 CTAs x 32, primary): buf[i] = i + 7, then griddepcontrol.launch_dependents;
+//     thread 0 of each CTA then spins (ld.acquire.gpu) until consume's CTA of the same index
+//     sets flag[cta].
+//   consume (2 CTAs x 32, PDL): thread 0 sets flag[cta] (st.release.gpu) in the prologue,
+//     before griddepcontrol.wait; after the wait out[i] = 2 * buf[i].
+//
+// Variant AFTER (case.toml) sets the flag after the wait: produce cannot complete before
+// consume's flag and consume's wait cannot pass before produce completes, a deadlock (GB300
+// hangs). A wait that does not block would let consume set the flag and read buf unordered
+// with produce's store.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry produce(.param .u64 flag_ptr, .param .u64 buf_ptr)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<16>;
+
+    mov.u32         %r0, %tid.x;
+    mov.u32         %r1, %ctaid.x;
+    shl.b32         %r2, %r1, 5;
+    add.u32         %r3, %r2, %r0;                  // i
+    mul.wide.u32    %rd0, %r3, 4;
+    ld.param.u64    %rd1, [buf_ptr];
+    cvta.to.global.u64 %rd2, %rd1;
+    add.u64         %rd3, %rd2, %rd0;
+    add.u32         %r4, %r3, 7;
+    st.global.u32   [%rd3], %r4;
+    griddepcontrol.launch_dependents;
+    setp.ne.u32     %p1, %r0, 0;
+    @%p1 bra        $L_done;
+    ld.param.u64    %rd4, [flag_ptr];
+    cvta.to.global.u64 %rd5, %rd4;
+    mul.wide.u32    %rd6, %r1, 4;
+    add.u64         %rd7, %rd5, %rd6;
+$L_spin:
+    ld.acquire.gpu.global.u32 %r5, [%rd7];
+    setp.eq.u32     %p2, %r5, 0;
+    @%p2 bra        $L_spin;
+$L_done:
+    ret;
+}
+
+.visible .entry consume(.param .u64 flag_ptr, .param .u64 buf_ptr, .param .u64 out_ptr)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<16>;
+
+    mov.u32         %r0, %tid.x;
+    mov.u32         %r1, %ctaid.x;
+    shl.b32         %r2, %r1, 5;
+    add.u32         %r3, %r2, %r0;                  // i
+    mul.wide.u32    %rd0, %r3, 4;
+    ld.param.u64    %rd4, [flag_ptr];
+    cvta.to.global.u64 %rd5, %rd4;
+    mul.wide.u32    %rd6, %r1, 4;
+    add.u64         %rd7, %rd5, %rd6;
+    setp.eq.u32     %p1, %r0, 0;
+    mov.u32         %r6, 1;
+    @%p1 st.release.gpu.global.u32 [%rd7], %r6; griddepcontrol.wait;    // @W
+    ld.param.u64    %rd1, [buf_ptr];
+    cvta.to.global.u64 %rd2, %rd1;
+    add.u64         %rd3, %rd2, %rd0;
+    ld.global.u32   %r4, [%rd3];
+    shl.b32         %r5, %r4, 1;
+    ld.param.u64    %rd8, [out_ptr];
+    cvta.to.global.u64 %rd9, %rd8;
+    add.u64         %rd10, %rd9, %rd0;
+    st.global.u32   [%rd10], %r5;
+    ret;
+}

@@ -1,0 +1,50 @@
+name = "probe_atom_bf16x4"
+description = """
+Probe (N-BF16X2, L-ROSETTA) for atom / red .add.noftz.v4.bf16 (SASS ATOMG / REDG
+.E.ADD.BF16x4.RN): each thread adds four bf16 lanes (probes/bf16x2's b lanes: edge values,
+rounding ties, NaN payloads) to its own 8 bytes (atom: old value returned; red). expected/ is
+GB300's output (`ptxv probe`, ptxas 13.0)."""
+ptx = "kernel.ptx"
+entry = "atom_bf16x4"
+ptxas_toolkit = "13.0"
+grid = [8, 1, 1]
+block = [256, 1, 1]
+outputs = ["m", "out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [4096, 3]
+init = "file"
+file = "../bf16x2/in.bin"
+
+[[buffers]]
+name = "m"
+dtype = "u32"
+shape = [2, 4096]
+init = "file"
+file = "m.bin"
+expect = "expected/m.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4096]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "m"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

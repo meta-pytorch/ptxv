@@ -1,0 +1,40 @@
+name = "probe_fmad_ftz_neg"
+description = """
+Probe (MISS 62; PTX-FMAD) for a mul.ftz.f32 read only by neg.f32 whose result add.ftz / sub.ftz
+[.sat] reads: ptxas 13.0 and 13.3 contract it into one FFMA.FTZ [.SAT] (-a or a). Forms 4, 5 are
+controls (mul + neg + add; mul.ftz + mov + add.ftz). 16384 inputs per form, its own a, b, c
+planes (random magnitudes, subnormals, specials; c cancelling the product to a few ulps in half
+the lanes). kernel.ptx and in.bin from gen.py. expected/ is GB300's output (kernel.cubin = ptxas
+13.0 -arch=sm_103a kernel.ptx)."""
+ptx = "kernel.ptx"
+entry = "fmad_ftz_neg"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [294912]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [98304]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "every form"
+expect = ["clean"]

@@ -1,0 +1,26 @@
+name = "probe_tmem_st16"
+description = """
+Probe for the tcgen05.st.16x256b / 16x128b layouts (SASS STTM.16dp256bit / STTM.16dp128bit,
+FA4 and KDA epilogues). Each warp zeroes its TMEM lanes x 128 columns, stores six 16x256b /
+16x128b shapes (.x1 .. .x16, lane field 0 and 16) of (store << 24 | thread << 8 | register),
+then reads every column back with 32x32b: out[128 t + c] = (lane t, column c). expected/out.bin
+is the GB300 output."""
+ptx = "kernel.ptx"
+entry = "probe_tmem_st16"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [16384]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

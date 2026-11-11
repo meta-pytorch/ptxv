@@ -1,0 +1,77 @@
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry fold_race(.param .u64 out_p)
+{
+    .reg .b32 %r<64>;
+    .reg .f32 %f<4>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    .shared .align 16 .b32 smax[32];
+
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    and.b32 %r2, %r1, 31;                // lane = column of the shared running max
+    shr.u32 %r3, %r1, 5;                 // softmax warp 0..3
+    mov.u32 %r4, smax;
+    shl.b32 %r5, %r2, 2;
+    add.u32 %r6, %r4, %r5;               // &smax[lane]
+    add.u32 %r16, %r3, 3;                // per-warp named barrier id (sync_warp stand-in, @WARPSYNC)
+    setp.eq.u32 %p1, %r3, 0;
+    mov.b32 %r7, 0xff800000;
+    @%p1 st.shared.u32 [%r6], %r7;       // warp 0 seeds the running max
+    bar.sync 2, 128;                     // Softmax barrier after the seed
+    mul.wide.u32 %rd2, %r1, 128;
+    add.u64 %rd3, %rd1, %rd2;            // out + tid * 32 words
+    mov.u32 %r8, 0;                      // KV tile s
+LOOP:
+    // this warp's column max for tile s: k = 1 + 8*s + ((warp + lane) & 3), grows with s
+    add.u32 %r9, %r3, %r2;
+    and.b32 %r9, %r9, 3;
+    shl.b32 %r10, %r8, 3;
+    add.u32 %r9, %r9, %r10;
+    add.u32 %r9, %r9, 1;
+    // m = -2^(8-k) for k <= 8 (tile 0: negative maxima), else 2^(k-8): increasing in k
+    setp.le.u32 %p3, %r9, 8;
+    mov.u32 %r14, 135;
+    sub.u32 %r13, %r14, %r9;
+    shl.b32 %r13, %r13, 23;
+    or.b32 %r13, %r13, 0x80000000;
+    add.u32 %r15, %r9, 119;
+    shl.b32 %r15, %r15, 23;
+    selp.b32 %r11, %r13, %r15, %p3;      // float bits of m
+    bar.sync 2, 128;                     // @LEAD (the fix: every warp read tile s-1's max)
+    {
+    .reg .pred p;
+    setp.lt.s32 p, %r11, 0x0;
+    @p  red.relaxed.shared::cta.min.u32 [%r6], %r11;
+    @!p red.relaxed.shared::cta.max.s32 [%r6], %r11;
+    }
+    bar.sync 2, 128;                     // the one Softmax barrier after the fold
+    // @DELAY
+    ld.shared.v4.u32 {%r20, %r21, %r22, %r23}, [%r4+0];
+    ld.shared.v4.u32 {%r24, %r25, %r26, %r27}, [%r4+16];
+    ld.shared.v4.u32 {%r28, %r29, %r30, %r31}, [%r4+32];
+    ld.shared.v4.u32 {%r32, %r33, %r34, %r35}, [%r4+48];
+    ld.shared.v4.u32 {%r36, %r37, %r38, %r39}, [%r4+64];
+    ld.shared.v4.u32 {%r40, %r41, %r42, %r43}, [%r4+80];
+    ld.shared.v4.u32 {%r44, %r45, %r46, %r47}, [%r4+96];
+    ld.shared.v4.u32 {%r48, %r49, %r50, %r51}, [%r4+112];
+    mul.wide.u32 %rd4, %r8, 16384;       // out[s][tid][0..31]
+    add.u64 %rd5, %rd3, %rd4;
+    st.global.v4.u32 [%rd5+0], {%r20, %r21, %r22, %r23};
+    st.global.v4.u32 [%rd5+16], {%r24, %r25, %r26, %r27};
+    st.global.v4.u32 [%rd5+32], {%r28, %r29, %r30, %r31};
+    st.global.v4.u32 [%rd5+48], {%r32, %r33, %r34, %r35};
+    st.global.v4.u32 [%rd5+64], {%r36, %r37, %r38, %r39};
+    st.global.v4.u32 [%rd5+80], {%r40, %r41, %r42, %r43};
+    st.global.v4.u32 [%rd5+96], {%r44, %r45, %r46, %r47};
+    st.global.v4.u32 [%rd5+112], {%r48, %r49, %r50, %r51};
+    // @WARPSYNC
+    add.u32 %r8, %r8, 1;
+    setp.lt.u32 %p2, %r8, 2;             // @NT
+    @%p2 bra LOOP;
+    ret;
+}

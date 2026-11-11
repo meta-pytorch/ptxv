@@ -1,0 +1,20 @@
+// probes/f2fp_rz: cvt.rz.f16x2.f32 (SASS F2FP.F16.F32.PACK_AB.RZ). Thread g loads (x, y) =
+// in[g] and stores out[g] = cvt.rz.f16x2.f32(x, y) (x in the high half). gen.py: edge patterns (zeros, subnormals, the f16 boundaries 65504 / 65520 /
+// 65536, 2^-14 / 2^-24 neighbours, inf, NaNs) paired with each other, then random words.
+// sweep.ptx checks every f32 in each lane on the GPU against the model (see case.toml).
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry f2fp_rz(.param .u64 pin, .param .u64 pout)
+{
+  .reg .b64 %rd<8>; .reg .b32 %r<8>; .reg .f32 %f<4>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %ctaid.x; mov.u32 %r2, %tid.x; mad.lo.u32 %r3, %r1, 256, %r2;
+  mul.wide.u32 %rd3, %r3, 8; add.u64 %rd4, %rd1, %rd3;
+  mul.wide.u32 %rd6, %r3, 4; add.u64 %rd5, %rd2, %rd6;
+  ld.global.v2.f32 {%f1, %f2}, [%rd4];
+  cvt.rz.f16x2.f32 %r4, %f1, %f2;
+  st.global.u32 [%rd5], %r4;
+  ret;
+}

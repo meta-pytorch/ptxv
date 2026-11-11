@@ -1,0 +1,77 @@
+// Probe for ASSUMPTIONS.md S-MBAR-MEM: what an all-zero mbarrier word means to the sync unit.
+// ptxas's cta_group::2 allocation handshake waits on a hidden mbarrier in reserved shared
+// memory (0x48) that nothing initializes (it starts as 0, probes/reserved_smem). One thread:
+//   step 0: store 0 to the word;                  record try_wait parity 0 / 1 and the word
+//   step 1: mbarrier.arrive.expect_tx 4;          record again
+//   step 2: mbarrier.complete_tx 4;               record again
+//   step 3: mbarrier.arrive.expect_tx 4;          record again   (the second handshake)
+//   step 4: mbarrier.complete_tx 4;               record again
+// out[4s + 0] = try_wait.parity 0, out[4s + 1] = parity 1, out[4s + 2/3] = word lo / hi.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry probe_mbar_zero(.param .u64 out)
+{
+    .reg .pred %p<4>;
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .shared .align 8 .b8 bar[8];
+    mov.u32         %r0, %tid.x;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        DONE;
+    mov.u32         %r1, bar;
+    ld.param.u64    %rd0, [out];
+    cvta.to.global.u64 %rd1, %rd0;
+    mov.u32         %r2, 0;
+    st.shared.v2.b32 [%r1], {%r2, %r2};
+    fence.proxy.async.shared::cta;
+    mov.u64         %rd2, %rd1;
+    mov.u32         %r9, 9;                                         // @STEPS
+    // step 0
+    mbarrier.test_wait.parity.shared::cta.b64 %p1, [%r1], 0;
+    mbarrier.test_wait.parity.shared::cta.b64 %p2, [%r1], 1;
+    selp.u32 %r3, 1, 0, %p1;  selp.u32 %r4, 1, 0, %p2;
+    ld.volatile.shared.v2.b32 {%r5, %r6}, [%r1];
+    st.global.v4.b32 [%rd2], {%r3, %r4, %r5, %r6};
+    setp.eq.u32     %p3, %r9, 0;
+    @%p3 bra        DONE;
+    // step 1
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r1], 4;
+    mbarrier.test_wait.parity.shared::cta.b64 %p1, [%r1], 0;
+    mbarrier.test_wait.parity.shared::cta.b64 %p2, [%r1], 1;
+    selp.u32 %r3, 1, 0, %p1;  selp.u32 %r4, 1, 0, %p2;
+    ld.volatile.shared.v2.b32 {%r5, %r6}, [%r1];
+    st.global.v4.b32 [%rd2+16], {%r3, %r4, %r5, %r6};
+    setp.eq.u32     %p3, %r9, 1;
+    @%p3 bra        DONE;
+    // step 2
+    mbarrier.complete_tx.shared::cta.b64 [%r1], 4;
+    mbarrier.test_wait.parity.shared::cta.b64 %p1, [%r1], 0;
+    mbarrier.test_wait.parity.shared::cta.b64 %p2, [%r1], 1;
+    selp.u32 %r3, 1, 0, %p1;  selp.u32 %r4, 1, 0, %p2;
+    ld.volatile.shared.v2.b32 {%r5, %r6}, [%r1];
+    st.global.v4.b32 [%rd2+32], {%r3, %r4, %r5, %r6};
+    setp.eq.u32     %p3, %r9, 2;
+    @%p3 bra        DONE;
+    // step 3
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r1], 4;
+    mbarrier.test_wait.parity.shared::cta.b64 %p1, [%r1], 0;
+    mbarrier.test_wait.parity.shared::cta.b64 %p2, [%r1], 1;
+    selp.u32 %r3, 1, 0, %p1;  selp.u32 %r4, 1, 0, %p2;
+    ld.volatile.shared.v2.b32 {%r5, %r6}, [%r1];
+    st.global.v4.b32 [%rd2+48], {%r3, %r4, %r5, %r6};
+    setp.eq.u32     %p3, %r9, 3;
+    @%p3 bra        DONE;
+    // step 4
+    mbarrier.complete_tx.shared::cta.b64 [%r1], 4;
+    mbarrier.test_wait.parity.shared::cta.b64 %p1, [%r1], 0;
+    mbarrier.test_wait.parity.shared::cta.b64 %p2, [%r1], 1;
+    selp.u32 %r3, 1, 0, %p1;  selp.u32 %r4, 1, 0, %p2;
+    ld.volatile.shared.v2.b32 {%r5, %r6}, [%r1];
+    st.global.v4.b32 [%rd2+64], {%r3, %r4, %r5, %r6};
+    setp.eq.u32     %p3, %r9, 4;
+    @%p3 bra        DONE;
+DONE:
+    ret;
+}

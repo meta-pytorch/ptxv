@@ -1,0 +1,75 @@
+name = "e_mma_pair_m128"
+description = """
+tcgen05.mma.cta_group::2.kind::f16 with M = 128 (64 rows per CTA: PTX ISA Layout B) and N = 32,
+bf16 x bf16 -> f32, random normal operands (probes/tc_m128 config pair_m128_n32_rand). Every
+operand row differs between the two CTAs; D's 64 x 32 per CTA lands in lanes 0..63 (columns
+0..15, B rows 0..15 of CTA 0) and 64..127 (columns 16..31, B rows 0..15 of CTA 1). The output is
+each CTA's whole TMEM (128 lanes x 256 columns, sentinel-filled before the MMA);
+expected/D.bin is GB300's (2026-11-05). The cuBLAS 2-CTA nvjet kernels with tile M 64 per CTA
+(nvjet_sm103_tst_64x32_64x16_2x2_2cta_h_bz_NNT, ..._128x64_64x10_2x2_2cta_...) issue this
+shape (UTCHMMA.2CTA, idesc M = 128)."""
+ptx = "kernel.ptx"
+entry = "mma_pair"
+grid = [2, 1, 1]
+block = [128, 1, 1]
+cluster = [2, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "u16"
+shape = [2, 128, 16]
+init = "file"
+file = "data/A.bin"
+
+[[buffers]]
+name = "B"
+dtype = "u16"
+shape = [2, 256, 16]
+init = "file"
+file = "data/B.bin"
+
+[[buffers]]
+name = "D"
+dtype = "u32"
+shape = [2, 128, 256]
+init = "zeros"
+expect = "expected/D.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "A"
+
+[[params]]
+kind = "ptr"
+buffer = "B"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+# idesc: D f32, A / B bf16, N >> 3 = 4 at bit 17, M >> 4 = 8 at bit 24.
+[[params]]
+kind = "u32"
+value = 0x8080490
+
+[[variants]]
+id = "good"
+expect = ["contract"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "B12"
+summary = "the commit signals only rank 0's mbarrier (ctaMask 1): rank 1 waits forever"
+marker = "@B12"
+find = "3;"
+replace = "1;"
+expect = ["deadlock"]
+
+[[variants]]
+id = "n8"
+summary = "N = 8 with cta_group::2: not a valid shape (PTX ISA: N = 16..256 in steps of 16), reported as not modeled"
+marker = "@SHAPE"
+find = "ld.param.u32    %r42, [idesc];"
+replace = "mov.u32         %r42, 0x8020490;"
+expect = ["unmodeled"]

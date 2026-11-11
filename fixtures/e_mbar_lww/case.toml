@@ -1,0 +1,110 @@
+name = "e_mbar_lww"
+description = """
+S-MBAR-SCOPE with an async-proxy consumer: rank 0 stores 16 bytes into its own shared memory
+and arrives on rank 1's mbarrier; rank 1 waits and bulk-copies its own 16 bytes over them
+(cp.async.bulk shared::cluster). The final word is rank 1's only if rank 0's store is ordered
+before the copy: a cluster-scope release / acquire pair and a generic-to-async proxy fence
+(S-PROXY for async-proxy writes, MISS 54). Launch: grid [2,1,1], cluster [2,1,1], block
+[32,1,1], no dynamic shared memory; thread 0 of each CTA does the work. GB300 counterpart:
+probes/handoff_window v=10-13 (38 clusters of 2, 256 threads, with a DSMEM co-tenant). WAR /
+WARF: a generic read in place of the store (S-PROXY-WAR; GB300 counterpart v=15-17)."""
+ptx = "kernel.ptx"
+entry = "e_mbar_lww"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "fence.proxy.async.shared::cta, .release.cluster remote arrive, .acquire.cluster wait"
+expect = ["clean"]
+
+[[variants]]
+id = "LWW"
+summary = "no fence, .release.cta remote arrive, .acquire.cta wait (GB300: the store lands after the copy, up to 1.25e-5 of hand-offs)"
+marker = "@FENCE"
+find = "fence.proxy.async.shared::cta;"
+replace = ""
+expect = ["race"]
+edits = [{ marker = "@ARRIVE", find = "release.cluster", replace = "release.cta" }, { marker = "@WAIT", find = "acquire.cluster", replace = "acquire.cta" }]
+
+[[variants]]
+id = "LWWC"
+summary = "fence.acq_rel.cta (MEMBAR.ALL.CTA), .release.cta arrive, .acquire.cta wait (GB300: 21 of 9.88e9; MISS 54)"
+marker = "@FENCE"
+find = "fence.proxy.async.shared::cta;"
+replace = "fence.acq_rel.cta;"
+expect = ["race"]
+# SASS: STS.128; MEMBAR.ALL.CTA; NOP; SYNCS.ARRIVE.TRANS64.RED.A1T0. MEMBAR.ALL.CTA releases the
+# CTA's shared memory at cluster scope (as fence.release.sync_restrict::shared::cta.cluster), so
+# the peer's bulk copy happens after the store, but no shared-memory proxy fence follows the
+# store: a proxy race (S-PROXY, async-proxy write). Before MISS 54 the SASS front called it clean.
+expect_sass = ["race"]
+edits = [{ marker = "@ARRIVE", find = "release.cluster", replace = "release.cta" }, { marker = "@WAIT", find = "acquire.cluster", replace = "acquire.cta" }]
+
+[[variants]]
+id = "LWWP"
+summary = "fence.proxy.async.shared::cta, .release.cta arrive, .acquire.cta wait (GB300: 0 of 4.86e9)"
+marker = "@ARRIVE"
+find = "release.cluster"
+replace = "release.cta"
+expect = ["race"]
+# PTX: the .cta arrive is not morally strong with the peer's wait (S-MBAR-SCOPE): race. SASS:
+# MEMBAR.ALL.CTA; FENCE.VIEW.ASYNC.S; bare arrive: the MEMBAR.ALL.CTA release of the CTA's
+# shared memory at cluster scope orders the store and the proxy fence before the copy: clean.
+expect_sass = ["clean"]
+edits = [{ marker = "@WAIT", find = "acquire.cluster", replace = "acquire.cta" }]
+
+[[variants]]
+id = "LWWK"
+summary = "no proxy fence, .release.cluster arrive, .acquire.cluster wait (GB300: 0 of 4.86e9)"
+marker = "@FENCE"
+find = "fence.proxy.async.shared::cta;"
+replace = ""
+# Happens-before holds; no shared-memory proxy fence follows the store: a proxy race on both
+# fronts (S-PROXY, async-proxy write). GB300 showed no failure with MEMBAR.ALL.GPU; CGAERRBAR in
+# its place (0 of 4.86e9, a bound): the model follows the PTX ISA here.
+expect = ["race"]
+
+[[variants]]
+id = "WAR"
+summary = "rank 0 reads the slot (ld.shared.v4) instead of storing, no proxy fence, .release.cluster arrive: contract at the strict level (S-PROXY-WAR), discharged under the GB300 profile (E-HW-PROXY-WAR; probes/handoff_window v=16: 0 of 6.08e9)"
+marker = "@STORE"
+find = "st.shared.v4.u32 [%r4], {%r8, %r8, %r8, %r8};"
+replace = "ld.shared.v4.u32 {%r13, %r14, %r15, %r16}, [%r4];"
+# Happens-before holds (cluster release / acquire); no shared-memory proxy fence follows the
+# generic read before the peer's bulk copy overwrites the bytes: the PTX ISA's proxy-preserved
+# causality order wants one. A contract finding (proxy-war) on both fronts, not a race.
+expect = ["contract"]
+edits = [{ marker = "@FENCE", find = "fence.proxy.async.shared::cta;", replace = "" }, { marker = "@USE", find = "// (use slot)", replace = "add.u32 %r9, %r9, %r13;" }]
+
+[[variants]]
+id = "WARF"
+summary = "WAR with fence.proxy.async.shared::cta after the read: clean"
+marker = "@STORE"
+find = "st.shared.v4.u32 [%r4], {%r8, %r8, %r8, %r8};"
+replace = "ld.shared.v4.u32 {%r13, %r14, %r15, %r16}, [%r4];"
+expect = ["clean"]
+edits = [{ marker = "@USE", find = "// (use slot)", replace = "add.u32 %r9, %r9, %r13;" }]
+
+[[variants]]
+id = "WAR2"
+summary = "rank 0 reads slot bytes 4-7, fence.proxy.async, then bytes 12-15 and 8-11 (one clock), no fence after: contract; the finding names the read of bytes 8-11, the first uncovered read in byte order"
+marker = "@STORE"
+find = "st.shared.v4.u32 [%r4], {%r8, %r8, %r8, %r8};"
+replace = "ld.shared.u32 %r13, [%r4+4]; fence.proxy.async.shared::cta; ld.shared.u32 %r14, [%r4+12]; ld.shared.u32 %r15, [%r4+8];"
+# The reads of bytes 12-15 and 8-11 have the same (actor, clock) (no tick between them), so the
+# S-PROXY-WAR check decides them once; the read of bytes 4-7 precedes the fence (covered).
+expect = ["contract"]
+edits = [{ marker = "@FENCE", find = "fence.proxy.async.shared::cta;", replace = "" }, { marker = "@USE", find = "// (use slot)", replace = "add.u32 %r9, %r9, %r13; add.u32 %r9, %r9, %r14; add.u32 %r9, %r9, %r15;" }]

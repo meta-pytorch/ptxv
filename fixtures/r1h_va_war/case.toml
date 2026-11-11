@@ -1,0 +1,104 @@
+name = "r1h_va_war"
+description = """
+Rung 1h, virtual aliases within one address space (S-VA-ALIAS), accesses before a write
+through another mapping: parameters a and b are two mappings of one buffer (a second cuMemMap
+of the same handle). Same-thread and cross-thread write-after-read pairs, a fence that must
+cover every earlier strong access of its thread, and a read-read pair (no conflict)."""
+ptx = "kernel.ptx"
+entry = "va_war"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "buf"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [5]
+init = "zeros"
+
+[[views]]
+name = "buf_b"
+buffer = "buf"
+
+[[params]]
+kind = "ptr"
+buffer = "buf"
+
+[[params]]
+kind = "ptr"
+buffer = "buf_b"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "every write after an access through the other mapping is behind a fence.proxy.alias"
+expect = ["clean"]
+
+[[variants]]
+id = "rar"
+summary = "two strong reads of one word through a and b with no fence between them: no conflict, so no race"
+marker = "@RAR"
+find = "mov.u32 %r4, 0;"
+replace = """ld.relaxed.sys.global.u32 %r4, [%rd1+8];
+    ld.relaxed.sys.global.u32 %r8, [%rd2+8];
+    add.u32 %r4, %r4, %r8;"""
+expect = ["clean"]
+
+[[variants]]
+id = "B76"
+summary = "same thread, weak write-after-read: ld.global through b, st.global of the same word through a, no fence.proxy.alias"
+marker = "@WAR1"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+expect = ["race"]
+
+[[variants]]
+id = "B77"
+summary = "same thread: ld.relaxed.sys through b, then a weak st.global of the same word through a, no fence.proxy.alias"
+marker = "@WAR2"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+expect = ["race"]
+
+[[variants]]
+id = "B78"
+summary = "17 strong writes through a to disjoint words (17 pending ranges), then a strong read of the first one through b, no fence.proxy.alias (the earliest write must still be pending)"
+marker = "@OVF"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+edits = [{ marker = "@LAST", find = "[%rd2+384]", replace = "[%rd2+260]" }]
+expect = ["race"]
+
+[[variants]]
+id = "B85"
+summary = "as B78, reading the last of the 17 words instead (the latest write must still be pending)"
+marker = "@OVF"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+edits = [{ marker = "@FIRST", find = "[%rd2+256]", replace = "[%rd2+260]" }]
+expect = ["race"]
+
+[[variants]]
+id = "B79"
+summary = "cross-thread write-after-read: thread 0 reads a word through b and releases a flag; thread 32 acquires it and writes the word through a; no fence.proxy.alias on the path"
+marker = "@WAR3"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+expect = ["race"]
+
+[[variants]]
+id = "B84"
+summary = "cross-thread write-after-read: thread 0 reads the word through b, then again through a, then releases the flag; thread 32 writes the word through a; the later read through a does not stand in for the read through b"
+marker = "@WAR3"
+find = "fence.proxy.alias;"
+replace = "ld.global.u32 %r9, [%rd1+64];"
+expect = ["race"]

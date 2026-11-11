@@ -1,0 +1,1122 @@
+[
+{
+"name": "p1_mf_b0_d0",
+"pair": 1,
+"mask": 15,
+"mbar_rank": 0,
+"dst_rank": 0,
+"exp": 262148,
+"expect": [
+512,
+0,
+512,
+0
+],
+"delivered": [
+512,
+0,
+512,
+0
+]
+},
+{
+"name": "p1_mf_b0_d1",
+"pair": 1,
+"mask": 15,
+"mbar_rank": 0,
+"dst_rank": 1,
+"exp": 262148,
+"expect": [
+512,
+0,
+512,
+0
+],
+"delivered": [
+512,
+0,
+512,
+0
+]
+},
+{
+"name": "p1_mf_b1_d0",
+"pair": 1,
+"mask": 15,
+"mbar_rank": 1,
+"dst_rank": 0,
+"exp": 67109888,
+"expect": [
+0,
+512,
+0,
+512
+],
+"delivered": [
+0,
+512,
+0,
+512
+]
+},
+{
+"name": "p1_mf_b1_d1",
+"pair": 1,
+"mask": 15,
+"mbar_rank": 1,
+"dst_rank": 1,
+"exp": 67109888,
+"expect": [
+0,
+512,
+0,
+512
+],
+"delivered": [
+0,
+512,
+0,
+512
+]
+},
+{
+"name": "p1_m1_b0_d0",
+"pair": 1,
+"mask": 1,
+"mbar_rank": 0,
+"dst_rank": 0,
+"exp": 2,
+"expect": [
+256,
+0,
+0,
+0
+],
+"delivered": [
+256,
+0,
+0,
+0
+]
+},
+{
+"name": "p1_m1_b0_d1",
+"pair": 1,
+"mask": 1,
+"mbar_rank": 0,
+"dst_rank": 1,
+"exp": 2,
+"expect": [
+256,
+0,
+0,
+0
+],
+"delivered": [
+256,
+0,
+0,
+0
+]
+},
+{
+"name": "p1_m1_b1_d0",
+"pair": 1,
+"mask": 1,
+"mbar_rank": 1,
+"dst_rank": 0,
+"exp": 512,
+"expect": [
+0,
+256,
+0,
+0
+],
+"delivered": [
+0,
+256,
+0,
+0
+]
+},
+{
+"name": "p1_m1_b1_d1",
+"pair": 1,
+"mask": 1,
+"mbar_rank": 1,
+"dst_rank": 1,
+"exp": 512,
+"expect": [
+0,
+256,
+0,
+0
+],
+"delivered": [
+0,
+256,
+0,
+0
+]
+},
+{
+"name": "p1_m2_b0_d0",
+"pair": 1,
+"mask": 2,
+"mbar_rank": 0,
+"dst_rank": 0,
+"exp": 2,
+"expect": [
+256,
+0,
+0,
+0
+],
+"delivered": [
+256,
+0,
+0,
+0
+]
+},
+{
+"name": "p1_m2_b0_d1",
+"pair": 1,
+"mask": 2,
+"mbar_rank": 0,
+"dst_rank": 1,
+"exp": 2,
+"expect": [
+256,
+0,
+0,
+0
+],
+"delivered": [
+256,
+0,
+0,
+0
+]
+},
+{
+"name": "p1_m2_b1_d0",
+"pair": 1,
+"mask": 2,
+"mbar_rank": 1,
+"dst_rank": 0,
+"exp": 512,
+"expect": [
+0,
+256,
+0,
+0
+],
+"delivered": [
+0,
+256,
+0,
+0
+]
+},
+{
+"name": "p1_m2_b1_d1",
+"pair": 1,
+"mask": 2,
+"mbar_rank": 1,
+"dst_rank": 1,
+"exp": 512,
+"expect": [
+0,
+256,
+0,
+0
+],
+"delivered": [
+0,
+256,
+0,
+0
+]
+},
+{
+"name": "p1_m8_b0_d0",
+"pair": 1,
+"mask": 8,
+"mbar_rank": 0,
+"dst_rank": 0,
+"exp": 131072,
+"expect": [
+0,
+0,
+256,
+0
+],
+"delivered": [
+0,
+0,
+256,
+0
+]
+},
+{
+"name": "p1_m8_b0_d1",
+"pair": 1,
+"mask": 8,
+"mbar_rank": 0,
+"dst_rank": 1,
+"exp": 131072,
+"expect": [
+0,
+0,
+256,
+0
+],
+"delivered": [
+0,
+0,
+256,
+0
+]
+},
+{
+"name": "p1_m8_b1_d0",
+"pair": 1,
+"mask": 8,
+"mbar_rank": 1,
+"dst_rank": 0,
+"exp": 33554432,
+"expect": [
+0,
+0,
+0,
+256
+],
+"delivered": [
+0,
+0,
+0,
+256
+]
+},
+{
+"name": "p1_m8_b1_d1",
+"pair": 1,
+"mask": 8,
+"mbar_rank": 1,
+"dst_rank": 1,
+"exp": 33554432,
+"expect": [
+0,
+0,
+0,
+256
+],
+"delivered": [
+0,
+0,
+0,
+256
+]
+},
+{
+"name": "p1_m3_b0_d0",
+"pair": 1,
+"mask": 3,
+"mbar_rank": 0,
+"dst_rank": 0,
+"exp": 4,
+"expect": [
+512,
+0,
+0,
+0
+],
+"delivered": [
+512,
+0,
+0,
+0
+]
+},
+{
+"name": "p1_m3_b0_d1",
+"pair": 1,
+"mask": 3,
+"mbar_rank": 0,
+"dst_rank": 1,
+"exp": 4,
+"expect": [
+512,
+0,
+0,
+0
+],
+"delivered": [
+512,
+0,
+0,
+0
+]
+},
+{
+"name": "p1_m3_b1_d0",
+"pair": 1,
+"mask": 3,
+"mbar_rank": 1,
+"dst_rank": 0,
+"exp": 1024,
+"expect": [
+0,
+512,
+0,
+0
+],
+"delivered": [
+0,
+512,
+0,
+0
+]
+},
+{
+"name": "p1_m3_b1_d1",
+"pair": 1,
+"mask": 3,
+"mbar_rank": 1,
+"dst_rank": 1,
+"exp": 1024,
+"expect": [
+0,
+512,
+0,
+0
+],
+"delivered": [
+0,
+512,
+0,
+0
+]
+},
+{
+"name": "p1_m6_b0_d0",
+"pair": 1,
+"mask": 6,
+"mbar_rank": 0,
+"dst_rank": 0,
+"exp": 131074,
+"expect": [
+256,
+0,
+256,
+0
+],
+"delivered": [
+256,
+0,
+256,
+0
+]
+},
+{
+"name": "p1_m6_b0_d1",
+"pair": 1,
+"mask": 6,
+"mbar_rank": 0,
+"dst_rank": 1,
+"exp": 131074,
+"expect": [
+256,
+0,
+256,
+0
+],
+"delivered": [
+256,
+0,
+256,
+0
+]
+},
+{
+"name": "p1_m6_b1_d0",
+"pair": 1,
+"mask": 6,
+"mbar_rank": 1,
+"dst_rank": 0,
+"exp": 33554944,
+"expect": [
+0,
+256,
+0,
+256
+],
+"delivered": [
+0,
+256,
+0,
+256
+]
+},
+{
+"name": "p1_m6_b1_d1",
+"pair": 1,
+"mask": 6,
+"mbar_rank": 1,
+"dst_rank": 1,
+"exp": 33554944,
+"expect": [
+0,
+256,
+0,
+256
+],
+"delivered": [
+0,
+256,
+0,
+256
+]
+},
+{
+"name": "p1_m5_b0_d0",
+"pair": 1,
+"mask": 5,
+"mbar_rank": 0,
+"dst_rank": 0,
+"exp": 131074,
+"expect": [
+256,
+0,
+256,
+0
+],
+"delivered": [
+256,
+0,
+256,
+0
+]
+},
+{
+"name": "p1_m5_b0_d1",
+"pair": 1,
+"mask": 5,
+"mbar_rank": 0,
+"dst_rank": 1,
+"exp": 131074,
+"expect": [
+256,
+0,
+256,
+0
+],
+"delivered": [
+256,
+0,
+256,
+0
+]
+},
+{
+"name": "p1_m5_b1_d0",
+"pair": 1,
+"mask": 5,
+"mbar_rank": 1,
+"dst_rank": 0,
+"exp": 33554944,
+"expect": [
+0,
+256,
+0,
+256
+],
+"delivered": [
+0,
+256,
+0,
+256
+]
+},
+{
+"name": "p1_m5_b1_d1",
+"pair": 1,
+"mask": 5,
+"mbar_rank": 1,
+"dst_rank": 1,
+"exp": 33554944,
+"expect": [
+0,
+256,
+0,
+256
+],
+"delivered": [
+0,
+256,
+0,
+256
+]
+},
+{
+"name": "p0_mf_b0_d0",
+"pair": 0,
+"mask": 15,
+"mbar_rank": 0,
+"dst_rank": 0,
+"exp": 33686018,
+"expect": [
+256,
+256,
+256,
+256
+],
+"delivered": [
+256,
+256,
+256,
+256
+]
+},
+{
+"name": "p0_mf_b0_d1",
+"pair": 0,
+"mask": 15,
+"mbar_rank": 0,
+"dst_rank": 1,
+"exp": 33686018,
+"expect": [
+256,
+256,
+256,
+256
+],
+"delivered": [
+256,
+256,
+256,
+256
+]
+},
+{
+"name": "p0_mf_b1_d0",
+"pair": 0,
+"mask": 15,
+"mbar_rank": 1,
+"dst_rank": 0,
+"exp": 33686018,
+"expect": [
+256,
+256,
+256,
+256
+],
+"delivered": [
+256,
+256,
+256,
+256
+]
+},
+{
+"name": "p0_mf_b1_d1",
+"pair": 0,
+"mask": 15,
+"mbar_rank": 1,
+"dst_rank": 1,
+"exp": 33686018,
+"expect": [
+256,
+256,
+256,
+256
+],
+"delivered": [
+256,
+256,
+256,
+256
+]
+},
+{
+"name": "p0_m1_b0_d0",
+"pair": 0,
+"mask": 1,
+"mbar_rank": 0,
+"dst_rank": 0,
+"exp": 2,
+"expect": [
+256,
+0,
+0,
+0
+],
+"delivered": [
+256,
+0,
+0,
+0
+]
+},
+{
+"name": "p0_m1_b0_d1",
+"pair": 0,
+"mask": 1,
+"mbar_rank": 0,
+"dst_rank": 1,
+"exp": 2,
+"expect": [
+256,
+0,
+0,
+0
+],
+"delivered": [
+256,
+0,
+0,
+0
+]
+},
+{
+"name": "p0_m1_b1_d0",
+"pair": 0,
+"mask": 1,
+"mbar_rank": 1,
+"dst_rank": 0,
+"exp": 2,
+"expect": [
+256,
+0,
+0,
+0
+],
+"delivered": [
+256,
+0,
+0,
+0
+]
+},
+{
+"name": "p0_m1_b1_d1",
+"pair": 0,
+"mask": 1,
+"mbar_rank": 1,
+"dst_rank": 1,
+"exp": 2,
+"expect": [
+256,
+0,
+0,
+0
+],
+"delivered": [
+256,
+0,
+0,
+0
+]
+},
+{
+"name": "p0_m2_b0_d0",
+"pair": 0,
+"mask": 2,
+"mbar_rank": 0,
+"dst_rank": 0,
+"exp": 512,
+"expect": [
+0,
+256,
+0,
+0
+],
+"delivered": [
+0,
+256,
+0,
+0
+]
+},
+{
+"name": "p0_m2_b0_d1",
+"pair": 0,
+"mask": 2,
+"mbar_rank": 0,
+"dst_rank": 1,
+"exp": 512,
+"expect": [
+0,
+256,
+0,
+0
+],
+"delivered": [
+0,
+256,
+0,
+0
+]
+},
+{
+"name": "p0_m2_b1_d0",
+"pair": 0,
+"mask": 2,
+"mbar_rank": 1,
+"dst_rank": 0,
+"exp": 512,
+"expect": [
+0,
+256,
+0,
+0
+],
+"delivered": [
+0,
+256,
+0,
+0
+]
+},
+{
+"name": "p0_m2_b1_d1",
+"pair": 0,
+"mask": 2,
+"mbar_rank": 1,
+"dst_rank": 1,
+"exp": 512,
+"expect": [
+0,
+256,
+0,
+0
+],
+"delivered": [
+0,
+256,
+0,
+0
+]
+},
+{
+"name": "p0_m8_b0_d0",
+"pair": 0,
+"mask": 8,
+"mbar_rank": 0,
+"dst_rank": 0,
+"exp": 33554432,
+"expect": [
+0,
+0,
+0,
+256
+],
+"delivered": [
+0,
+0,
+0,
+256
+]
+},
+{
+"name": "p0_m8_b0_d1",
+"pair": 0,
+"mask": 8,
+"mbar_rank": 0,
+"dst_rank": 1,
+"exp": 33554432,
+"expect": [
+0,
+0,
+0,
+256
+],
+"delivered": [
+0,
+0,
+0,
+256
+]
+},
+{
+"name": "p0_m8_b1_d0",
+"pair": 0,
+"mask": 8,
+"mbar_rank": 1,
+"dst_rank": 0,
+"exp": 33554432,
+"expect": [
+0,
+0,
+0,
+256
+],
+"delivered": [
+0,
+0,
+0,
+256
+]
+},
+{
+"name": "p0_m8_b1_d1",
+"pair": 0,
+"mask": 8,
+"mbar_rank": 1,
+"dst_rank": 1,
+"exp": 33554432,
+"expect": [
+0,
+0,
+0,
+256
+],
+"delivered": [
+0,
+0,
+0,
+256
+]
+},
+{
+"name": "p0_m3_b0_d0",
+"pair": 0,
+"mask": 3,
+"mbar_rank": 0,
+"dst_rank": 0,
+"exp": 514,
+"expect": [
+256,
+256,
+0,
+0
+],
+"delivered": [
+256,
+256,
+0,
+0
+]
+},
+{
+"name": "p0_m3_b0_d1",
+"pair": 0,
+"mask": 3,
+"mbar_rank": 0,
+"dst_rank": 1,
+"exp": 514,
+"expect": [
+256,
+256,
+0,
+0
+],
+"delivered": [
+256,
+256,
+0,
+0
+]
+},
+{
+"name": "p0_m3_b1_d0",
+"pair": 0,
+"mask": 3,
+"mbar_rank": 1,
+"dst_rank": 0,
+"exp": 514,
+"expect": [
+256,
+256,
+0,
+0
+],
+"delivered": [
+256,
+256,
+0,
+0
+]
+},
+{
+"name": "p0_m3_b1_d1",
+"pair": 0,
+"mask": 3,
+"mbar_rank": 1,
+"dst_rank": 1,
+"exp": 514,
+"expect": [
+256,
+256,
+0,
+0
+],
+"delivered": [
+256,
+256,
+0,
+0
+]
+},
+{
+"name": "p0_m6_b0_d0",
+"pair": 0,
+"mask": 6,
+"mbar_rank": 0,
+"dst_rank": 0,
+"exp": 131584,
+"expect": [
+0,
+256,
+256,
+0
+],
+"delivered": [
+0,
+256,
+256,
+0
+]
+},
+{
+"name": "p0_m6_b0_d1",
+"pair": 0,
+"mask": 6,
+"mbar_rank": 0,
+"dst_rank": 1,
+"exp": 131584,
+"expect": [
+0,
+256,
+256,
+0
+],
+"delivered": [
+0,
+256,
+256,
+0
+]
+},
+{
+"name": "p0_m6_b1_d0",
+"pair": 0,
+"mask": 6,
+"mbar_rank": 1,
+"dst_rank": 0,
+"exp": 131584,
+"expect": [
+0,
+256,
+256,
+0
+],
+"delivered": [
+0,
+256,
+256,
+0
+]
+},
+{
+"name": "p0_m6_b1_d1",
+"pair": 0,
+"mask": 6,
+"mbar_rank": 1,
+"dst_rank": 1,
+"exp": 131584,
+"expect": [
+0,
+256,
+256,
+0
+],
+"delivered": [
+0,
+256,
+256,
+0
+]
+},
+{
+"name": "p0_m5_b0_d0",
+"pair": 0,
+"mask": 5,
+"mbar_rank": 0,
+"dst_rank": 0,
+"exp": 131074,
+"expect": [
+256,
+0,
+256,
+0
+],
+"delivered": [
+256,
+0,
+256,
+0
+]
+},
+{
+"name": "p0_m5_b0_d1",
+"pair": 0,
+"mask": 5,
+"mbar_rank": 0,
+"dst_rank": 1,
+"exp": 131074,
+"expect": [
+256,
+0,
+256,
+0
+],
+"delivered": [
+256,
+0,
+256,
+0
+]
+},
+{
+"name": "p0_m5_b1_d0",
+"pair": 0,
+"mask": 5,
+"mbar_rank": 1,
+"dst_rank": 0,
+"exp": 131074,
+"expect": [
+256,
+0,
+256,
+0
+],
+"delivered": [
+256,
+0,
+256,
+0
+]
+},
+{
+"name": "p0_m5_b1_d1",
+"pair": 0,
+"mask": 5,
+"mbar_rank": 1,
+"dst_rank": 1,
+"exp": 131074,
+"expect": [
+256,
+0,
+256,
+0
+],
+"delivered": [
+256,
+0,
+256,
+0
+]
+}
+]

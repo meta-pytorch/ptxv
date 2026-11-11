@@ -1,0 +1,166 @@
+// Minimal case: the persistent RMSNorm-bwd cluster row-reduction exchange
+// (quack PipelineStasAsync shape, as captured from FusedRMSNormBwd at D=8448, cluster_n=2).
+//
+//   Cluster of 2 CTAs, 1 warp each (num_warps = 1), 2 reduction stages, K rows per CTA.
+//   Barriers (bars + off): full[0] +0, full[1] +8 (count 1: the STAS issuer's
+//   arrive.expect_tx), empty[0] +16, empty[1] +24 (count num_warps * cluster_n = 2).
+//   rbuf[stage][cluster_n] f32: CTA r writes slot r of every CTA's buffer.
+//
+//   start      : warp 0 / elected lane inits the barriers; fence.mbarrier_init.release.cluster;
+//                barrier.cluster.arrive.relaxed; barrier.cluster.wait          (create(defer_sync))
+//   per row k  : producer_acquire  = all threads try_wait empty[s], producer phase
+//                cluster_reduce    = elected lane of warp 0: arrive.expect_tx(full[s], 8);
+//                                    lanes < 2: st.async the partial into lane's CTA, slot rank,
+//                                    complete_tx on that CTA's full[s]; try_wait full[s]
+//                                    (consumer phase); lanes < 2 read slot lane; shfl reduce
+//                consumer_release  = fence.proxy.async.shared::cta; lanes < 2: REMOTE
+//                                    mbarrier.arrive.shared::cluster (default .release.cta) on
+//                                    lane's CTA's empty[s]
+//                advance (s, phases) once per row
+//   exit       : producer_tail = wait empty[] on ALL stages starting at the next stage (fix);
+//                the old epilogue waited only on the last-used stage (variant "bug": the
+//                @EARLIER wait is deleted, leaving exactly `stage ^= 1; if stage == 0:
+//                producer_phase ^= 1; mbarrier_wait(empty[stage], producer_phase)`).
+//                No final barrier.cluster (as in the real kernel); ret.
+//
+// The real kernel also has `bar.warp.sync -1` between the fence and the arrive (consumer_release's
+// sync_warp); the PTX front does not parse it, and with one warp where lane j reads slot j and
+// releases to CTA j it orders nothing the arrive does not already cover, so it is omitted.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry stas_drain(
+    .param .u64 x_ptr,
+    .param .u64 out_ptr
+)
+.maxntid 32, 1, 1
+.reqnctapercluster 2, 1, 1
+{
+    .reg .pred  %p<16>;
+    .reg .b32   %r<64>;
+    .reg .b64   %rd<16>;
+    .shared .align 8 .b8 bars[32];
+    .shared .align 16 .b8 rbuf[16];
+
+    mov.u32         %r0, %tid.x;
+    mov.u32         %r1, %laneid;
+    shr.u32         %r7, %r0, 5;
+    shfl.sync.idx.b32 %r2, %r7, 0, 31, -1;          // warp (warp-uniform, as CuTeDSL's warp_idx)
+    mov.u32         %r3, %cluster_ctarank;
+    mov.u32         %r4, bars;
+    mov.u32         %r5, rbuf;
+    setp.ne.u32     %p0, %r2, 0;                    // not warp 0
+    @%p0 bra        INIT_DONE;
+    elect.sync      %r6|%p1, -1;
+    @!%p1 bra       INIT_DONE;
+    mbarrier.init.shared.b64 [%r4], 1;              // full[0]
+    mbarrier.init.shared.b64 [%r4+8], 1;            // full[1]
+    mbarrier.init.shared.b64 [%r4+16], 2;           // empty[0]
+    mbarrier.init.shared.b64 [%r4+24], 2;           // empty[1]
+INIT_DONE:
+    fence.mbarrier_init.release.cluster;
+    barrier.cluster.arrive.relaxed;
+    barrier.cluster.wait;
+
+    ld.param.u64    %rd0, [x_ptr];
+    cvta.to.global.u64 %rd1, %rd0;
+    ld.param.u64    %rd2, [out_ptr];
+    cvta.to.global.u64 %rd3, %rd2;
+    setp.gt.u32     %p4, %r1, 1;                    // lane >= cluster_n
+    mov.u32         %r10, 0;                        // k
+    mov.u32         %r11, 0;                        // stage index (prod/cons state index)
+    mov.u32         %r12, 1;                        // producer phase
+    mov.u32         %r13, 0;                        // consumer phase
+    mov.u32         %r14, 2;                        // K rows per CTA  // @K
+ROW:
+    shl.b32         %r15, %r11, 3;
+    add.u32         %r16, %r4, %r15;                // full[s]
+    add.u32         %r17, %r16, 16;                 // empty[s]
+    add.u32         %r18, %r5, %r15;                // rbuf[s]
+    // producer_acquire
+PA_WAIT:
+    mbarrier.try_wait.parity.shared.b64 %p2, [%r16+16], %r12, 10000000;
+    @%p2 bra.uni PA_WAIT_DONE;
+    bra.uni PA_WAIT;
+PA_WAIT_DONE:
+    // this CTA's partial for row k: x[rank][k]
+    shl.b32         %r19, %r3, 2;
+    add.u32         %r19, %r19, %r10;
+    mul.wide.u32    %rd4, %r19, 4;
+    add.u64         %rd5, %rd1, %rd4;
+    ld.global.f32   %r20, [%rd5];
+    // cluster_reduce: arm full[s]
+    @%p0 bra        ARMED;
+    elect.sync      %r21|%p3, -1;
+    @!%p3 bra       ARMED;
+    mbarrier.arrive.expect_tx.shared.b64 _, [%r16], 8;
+ARMED:
+    @%p4 bra        STORED;
+    shl.b32         %r22, %r3, 2;
+    add.u32         %r23, %r18, %r22;               // rbuf[s][rank]
+    mapa.shared::cluster.u32 %r24, %r23, %r1;
+    mapa.shared::cluster.u32 %r25, %r16, %r1;
+    st.async.shared::cluster.mbarrier::complete_tx::bytes.f32 [%r24], %r20, [%r25];
+STORED:
+FULL_WAIT:
+    mbarrier.try_wait.parity.shared.b64 %p5, [%r16], %r13, 10000000;
+    @%p5 bra.uni FULL_WAIT_DONE;
+    bra.uni FULL_WAIT;
+FULL_WAIT_DONE:
+    mov.b32         %r26, 0f00000000;
+    @%p4 bra        READ_DONE;
+    shl.b32         %r27, %r1, 2;
+    add.u32         %r28, %r18, %r27;
+    ld.shared.f32   %r29, [%r28];
+    add.f32         %r26, %r29, 0f00000000;
+READ_DONE:
+    shfl.sync.bfly.b32 %r30, %r26, 1, 31, -1;
+    add.f32         %r31, %r26, %r30;
+    // consumer_release
+    fence.proxy.async.shared::cta;
+    @%p4 bra        RELEASED;
+    mapa.shared::cluster.u32 %r32, %r17, %r1;
+    mov.b32         %r33, 1;
+    mbarrier.arrive.shared::cluster.b64 _, [%r32], %r33;
+RELEASED:
+    setp.ne.u32     %p6, %r0, 0;
+    @%p6 bra        OUT_DONE;
+    add.u64         %rd6, %rd3, %rd4;
+    st.global.f32   [%rd6], %r31;
+OUT_DONE:
+    // prod_state_reduce.advance(); cons_state_reduce.advance()
+    add.u32         %r11, %r11, 1;
+    setp.eq.u32     %p7, %r11, 2;
+    @!%p7 bra       NO_WRAP;
+    mov.u32         %r11, 0;
+    xor.b32         %r12, %r12, 1;
+    xor.b32         %r13, %r13, 1;
+NO_WRAP:
+    add.u32         %r10, %r10, 1;
+    setp.lt.u32     %p8, %r10, %r14;
+    @%p8 bra        ROW;
+
+    // exit drain. (stage %r11, producer phase %r12) = the next useful stage.
+    shl.b32         %r40, %r11, 3;                  // @EARLIER
+    add.u32         %r41, %r4, %r40;                // @EARLIER
+TAIL_EARLIER:                                       // @EARLIER
+    mbarrier.try_wait.parity.shared.b64 %p9, [%r41+16], %r12, 10000000;   // @EARLIER
+    @%p9 bra.uni TAIL_EARLIER_DONE; // @EARLIER
+    bra.uni TAIL_EARLIER; // @EARLIER
+TAIL_EARLIER_DONE: // @EARLIER
+    // advance == old `stage ^= 1; if stage == 0: producer_phase ^= 1`
+    xor.b32         %r11, %r11, 1;
+    setp.eq.u32     %p10, %r11, 0;
+    @!%p10 bra      TAIL_NOFLIP;
+    xor.b32         %r12, %r12, 1;
+TAIL_NOFLIP:
+    shl.b32         %r42, %r11, 3;                  // @LAST
+    add.u32         %r43, %r4, %r42;                // @LAST
+TAIL_LAST:                                          // @LAST
+    mbarrier.try_wait.parity.shared.b64 %p11, [%r43+16], %r12, 10000000;  // @LAST
+    @%p11 bra.uni TAIL_LAST_DONE; // @LAST
+    bra.uni TAIL_LAST; // @LAST
+TAIL_LAST_DONE: // @LAST
+    ret;
+}

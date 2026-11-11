@@ -1,0 +1,45 @@
+name = "e_uninit_f32x2"
+description = """
+S-INIT through a packed f32x2 FMA (SASS FFMA2, 2026-11-06): lane 1 of the pair is undefined in
+threads 16..31, every thread stores lane 0 of the result (threads 0..15 also lane 1). SASS: clean (each FFMA2 lane reads
+only the same lane of its operands; before, an undefined lane made both undefined: a false
+alarm on CuTeDSL FlashAttentionBackwardPreprocess, whose FADD2 / FMUL2 pack two rows). PTX: a
+64-bit register is defined or not as a whole, so the PTX front reports the store."""
+ptx = "kernel.ptx"
+entry = "uninit_f32x2"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [64]
+init = "normal"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "lane 1 is stored only by the threads that loaded it"
+# PTX: lane-coarse propagation reports the store; the outputs are equal in every fill
+# (S-INIT-FILLS).
+expect = ["clean"]
+
+[[variants]]
+id = "hi"
+summary = "every thread stores lane 1: undefined in threads 16..31"
+edits = [{ marker = "@STORE", find = "@%p1 st", replace = "st" }]
+expect = ["violation"]

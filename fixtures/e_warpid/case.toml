@@ -1,0 +1,38 @@
+name = "e_warpid"
+description = """
+E-WARPID: %warpid is the warp's SM slot, fixed for the warp but not determined by the program
+(GB300 probe: not tid / 32 for most warps). Storing it (WARPID) or branching on it (BRANCH) is
+reported; the warp index from %tid (good) is clean."""
+ptx = "kernel.ptx"
+entry = "e_warpid"
+grid = [4, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "WARPID"
+marker = "@W"
+find = "shr.u32 %r3, %r1, 5;"
+replace = "mov.u32 %r3, %warpid;"
+expect = ["violation"]
+
+[[variants]]
+id = "BRANCH"
+marker = "@A"
+find = "shr.u32 %r4, %r1, 5;"
+replace = "mov.u32 %r6, %warpid; setp.eq.u32 %p2, %r6, 99; @%p2 bra DONE; shr.u32 %r4, %r1, 5;"
+expect = ["violation"]

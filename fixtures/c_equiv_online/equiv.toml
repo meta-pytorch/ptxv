@@ -1,0 +1,44 @@
+# Online-softmax bookkeeping and exact taint (docs/equiv-mma.md §7, fixtures online.cu): the
+# kernel against itself is L0 (the -inf start's rescaling, masked exponentials, constants
+# through a shuffle and a vector store decide nothing); each bad variant keeps a data-dependent
+# branch or guard.
+#   ptxv equiv fixtures/c_equiv_online/equiv.toml
+max_states = 200000
+trials = 0
+segments = true
+reference = { case = "../c_online_ok", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "../c_online_ok"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L0"
+
+[[candidates]]
+case = "../c_online_bad_mp"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (unproven)"
+
+[[candidates]]
+case = "../c_online_bad_sel"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (unproven)"
+
+[[candidates]]
+case = "../c_online_bad_shfl"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L0 (unproven)"
+
+[[candidates]]
+case = "../c_online_bad_word"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L0 (unproven)"

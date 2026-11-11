@@ -1,0 +1,35 @@
+name = "e_stasync_wide"
+description = """
+st.async of every width (.b32, .b64, .v4.b32, .v2.b32; SASS STAS, STAS.64, STAS.128): each
+completes its byte count on the target's mbarrier."""
+ptx = "kernel.ptx"
+entry = "e_stasync_wide"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [10]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["contract"]
+expect_sass = ["clean"]
+hw_note = "GB300 matches the simulator bitwise, 200/200 (2026-11-05)"
+
+[[variants]]
+id = "SW1"
+summary = "rank 0 expects 48 bytes; the st.async complete 40"
+marker = "@EXPECT"
+find = "40;"
+replace = "48;"
+expect = ["deadlock"]
+hw_note = "GB300 hangs (watchdog, 2026-11-05)"

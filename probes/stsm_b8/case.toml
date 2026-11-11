@@ -1,0 +1,26 @@
+name = "probe_stsm_b8"
+description = """
+Probe (L-ROSETTA) for stmatrix.m16n8.x1 / .x2 / .x4.trans.b8 (SASS STSM.8.MT168[.2|.4],
+trtllm-gen FMHA): see kernel.ptx. Matrix i's row r goes to lane 8i + r's address; its byte c is
+byte r % 2 + 2 (c / 8) of register i of lane 4 (c % 8) + r / 2. expected/out.bin is the GB300
+output (`ptxv hw-worker probes/stsm_b8 <ptxas cubin> --runs 20 --dump`, all runs alike)."""
+ptx = "kernel.ptx"
+entry = "stsm8"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1280]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

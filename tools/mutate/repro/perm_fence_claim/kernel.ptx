@@ -1,0 +1,45 @@
+// C-TICKET-ADDR with a fence-acquired claim. Thread 0 writes x = 42, then fence, then claims a slot.
+// Thread 32 claims a slot, then fence, then reads x and stores it as its row. The reader
+// synchronizes with the writer only when its add reads from the writer's add (the writer claimed
+// first); in the other order the read races with the write and can see 0.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry k(.param .u64 pcnt, .param .u64 pval, .param .u64 px)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [pcnt];
+    ld.param.u64 %rd2, [pval];
+    ld.param.u64 %rd3, [px];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32 %r0, %tid.x;
+    setp.eq.u32 %p0, %r0, 0; // @W
+    @%p0 bra W;
+    setp.eq.u32 %p1, %r0, 32; // @R
+    @%p1 bra R;
+    bra DONE;
+W:
+    mov.u32 %r1, 42;
+    st.global.u32 [%rd3], %r1;
+    fence.acq_rel.gpu;
+    atom.global.add.u32 %r2, [%rd1], 1;
+    mov.u32 %r3, 1;
+    mul.wide.u32 %rd4, %r2, 4;
+    add.u64 %rd5, %rd2, %rd4;
+    st.global.u32 [%rd5], %r3;
+    bra DONE;
+R:
+    atom.global.add.u32 %r2, [%rd1], 1;
+    fence.acq_rel.gpu;
+    ld.global.u32 %r3, [%rd3];
+    mul.wide.u32 %rd4, %r2, 4;
+    add.u64 %rd5, %rd2, %rd4;
+    st.global.u32 [%rd5], %r3;
+DONE:
+    ret;
+}

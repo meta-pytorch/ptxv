@@ -1,0 +1,18 @@
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 input,.param .u64 output) {
+.reg .b64 %p<4>;
+.reg .b32 %x,%y,%t;
+ld.param.u64 %p0,[input];
+ld.param.u64 %p1,[output];
+mov.u32 %t,%tid.x;
+mul.wide.u32 %p2,%t,4;
+add.u64 %p0,%p0,%p2;
+add.u64 %p1,%p1,%p2;
+ld.global.f32 %x,[%p0];
+rcp.rn.f32 %y,%x;
+bar.sync 0;
+st.global.f32 [%p1],%y;
+ret;
+}

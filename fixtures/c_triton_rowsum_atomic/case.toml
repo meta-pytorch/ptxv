@@ -1,0 +1,53 @@
+name = "c_triton_rowsum_atomic"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): run() of triton_rowsum_atomic.py (kernel ^rowsum_atomic_kernel$). 1 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: rowsum_atomic_kernel grid [4, 4, 1] block [32, 1, 1]
+Regenerate: CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/capture.py --triton tools/capture_examples/triton_rowsum_atomic.py:rowsum_atomic_kernel --binary --out fixtures/c_triton_rowsum_atomic"""
+cubin = "k0.cubin"
+entry = "rowsum_atomic_kernel"
+grid = [4, 4, 1]
+block = [32, 1, 1]
+dynamic_smem = 0
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [4, 128]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[params]]
+kind = "u32"
+value = 128
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[variants]]
+id = "good"
+summary = "as captured: 4 programs per row combine with REDG.E.ADD.F32.FTZ.RN, so the output bits depend on the order of the atomics (bounded by ptxv equiv, N-ATOMIC); expected/ is one GPU order"
+expect = ["nondeterministic"]

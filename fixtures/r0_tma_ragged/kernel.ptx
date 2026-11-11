@@ -1,0 +1,71 @@
+// Rung 0 fixture: one TMA load, one mbarrier, 128 threads.
+//
+// Thread 0 initializes an mbarrier (arrival count 1), then arms it with
+// expect_tx(8192) and issues a 2-D TMA load of a 64x64 bf16 tile into smem.
+// All 128 threads wait for phase 0 of the mbarrier, then thread t sums the
+// 32 bf16 values of half-row t (row t/2, cols (t%2)*32 .. +32) sequentially
+// in fp32 and writes the sum to out[t].
+//
+// Mutants (see case.toml): B01 expect_tx too large (deadlock),
+// B02 wrong wait parity (smem read races the TMA write),
+// B03 no barrier between mbarrier.init and its use (race on the mbarrier).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry r0_tma_ragged(
+    .param .align 64 .b8 tmap[128],
+    .param .u64 out
+)
+.maxntid 128, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<8>;
+    .reg .f32   %f<4>;
+    .reg .b16   %h<2>;
+    .shared .align 1024 .b8 tile[8192];
+    .shared .align 8 .b64 mbar;
+
+    mov.u32         %r0, %tid.x;
+    mov.u32         %r1, mbar;
+    mov.u32         %r2, tile;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        SKIP_INIT;
+    mbarrier.init.shared::cta.b64 [%r1], 1;
+    fence.mbarrier_init.release.cluster;
+SKIP_INIT:
+    bar.sync        0;                                          // @B03
+    @%p0 bra        WAIT;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r1], 8192;   // @B01
+    mov.b64         %rd0, tmap;
+    cvta.param.u64  %rd1, %rd0;
+    mov.u32         %r3, 0;
+    mov.u32         %r12, 1073741824;                           // @ROW
+    cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes [%r2], [%rd1, {%r3, %r12}], [%r1];
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r1], 0;     // @B02
+    @!%p1 bra       WAIT;                                       // @B49
+    shr.u32         %r4, %r0, 1;
+    and.b32         %r5, %r0, 1;
+    shl.b32         %r6, %r4, 7;
+    shl.b32         %r7, %r5, 6;
+    add.u32         %r8, %r6, %r7;
+    add.u32         %r9, %r2, %r8;
+    mov.f32         %f0, 0f00000000;                            // @B47
+    mov.u32         %r10, 0;
+LOOP:
+    ld.shared.b16   %h0, [%r9];
+    cvt.f32.bf16    %f1, %h0;
+    add.rn.f32      %f0, %f0, %f1;
+    add.u32         %r9, %r9, 2;
+    add.u32         %r10, %r10, 1;
+    setp.lt.u32     %p2, %r10, 32;
+    @%p2 bra        LOOP;
+    ld.param.u64    %rd2, [out];
+    cvta.to.global.u64 %rd3, %rd2;
+    mul.wide.u32    %rd4, %r0, 4;
+    add.u64         %rd5, %rd3, %rd4;
+    st.global.f32   [%rd5], %f0;
+    ret;
+}

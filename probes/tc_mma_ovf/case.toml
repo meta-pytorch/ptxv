@@ -1,0 +1,54 @@
+name = "probe_tc_mma_ovf"
+description = """
+Probe (N-MMA) for finite overflow in tcgen05.mma kind::f16 (bf16 -> f32): probes/tc_mma_off's
+kernel on inputs of magnitude 2^[58, 65) (gen.py), 1,647 of the dumped TMEM words are Inf on
+GB300 (round toward zero would give FLT_MAX). The output is the CTA's whole TMEM (128 lanes x
+256 columns, sentinel-filled before the MMAs); expected/D.bin is GB300's."""
+ptx = "kernel.ptx"
+entry = "mma_one"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "u16"
+shape = [1, 128, 16]
+init = "file"
+file = "data/A.bin"
+
+[[buffers]]
+name = "B"
+dtype = "u16"
+shape = [1, 256, 16]
+init = "file"
+file = "data/B.bin"
+
+[[buffers]]
+name = "D"
+dtype = "u32"
+shape = [1, 128, 256]
+init = "zeros"
+expect = "expected/D.bin"
+
+
+[[params]]
+kind = "ptr"
+buffer = "A"
+
+[[params]]
+kind = "ptr"
+buffer = "B"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+# idesc: D f32, A / B bf16, N >> 3 = 2 at bit 17 (N = 16: A in TMEM needs N % 16 == 0), M >> 4 = 8 at bit 24.
+[[params]]
+kind = "u32"
+value = 0x8040490
+
+[[variants]]
+id = "good"
+expect = ["clean"]

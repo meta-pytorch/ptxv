@@ -1,0 +1,41 @@
+=== --hidden 7168 --tokens 1-4096 --num-sms 20 --cached --worst
+RESULT args=--secs 90 --hidden 7168 --tokens 1-4096 --num-sms 20 --cached --worst iters=160 tokens_sent=631669 rows_received=1258379 mismatches=0 secs=91
+rc=0
+=== --hidden 2048,2880,4096,5120,7168 --tokens 1-2048 --num-sms 2,4,8,24 --cached
+RESULT args=--secs 90 --hidden 2048,2880,4096,5120,7168 --tokens 1-2048 --num-sms 2,4,8,24 --cached iters=590 tokens_sent=1209096 rows_received=2408901 mismatches=0 secs=90
+rc=0
+=== --hidden 7168,4096 --tokens 1-4096 --num-sms 20 --overlap 4 --async --cached
+RESULT args=--secs 90 --hidden 7168,4096 --tokens 1-4096 --num-sms 20 --overlap 4 --async --cached iters=231 tokens_sent=925782 rows_received=1844325 mismatches=0 secs=90
+rc=0
+=== --hidden 2064,2880 --tokens 1-2048 --num-sms 2,8,20 --dcfg 6,30 --ccfg 4,30 --worst
+RESULT args=--secs 90 --hidden 2064,2880 --tokens 1-2048 --num-sms 2,8,20 --dcfg 6,30 --ccfg 4,30 --worst iters=1076 tokens_sent=2185621 rows_received=4354317 mismatches=0 secs=90
+rc=0
+=== --hidden 7168 --tokens 1024-8192 --num-sms 20 --fp8 --overlap 2
+RESULT args=--secs 90 --hidden 7168 --tokens 1024-8192 --num-sms 20 --fp8 --overlap 2 iters=121 tokens_sent=1130999 rows_received=2253230 mismatches=0 secs=90
+rc=0
+=== --hidden 4096 --tokens 1-4096 --num-sms 4,20 --skew 0.8 --drop 0.3 --async --overlap 8
+RESULT args=--secs 90 --hidden 4096 --tokens 1-4096 --num-sms 4,20 --skew 0.8 --drop 0.3 --async --overlap 8 iters=474 tokens_sent=1939592 rows_received=2306152 mismatches=0 secs=90
+rc=0
+=== --hidden 128,256,2064 --tokens 1-512 --num-sms 2,4 --dcfg 1,8 --ccfg 1,8 --experts 8 --topk 2 --cached --worst
+[rank1]: Traceback (most recent call last):
+[rank1]: torch.AcceleratorError: CUDA error: unspecified launch failure
+[rank1]: Search for `cudaErrorLaunchFailure' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+[rank1]: CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+[rank1]: Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+  what():  Failed: CUDA error /src/csrc/deep_ep.cpp:283 'unspecified launch failure'
+[rank0]: Traceback (most recent call last):
+[rank0]: torch.AcceleratorError: CUDA error: unspecified launch failure
+[rank0]: Search for `cudaErrorLaunchFailure' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+[rank0]: CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+[rank0]: Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+  what():  Failed: CUDA error /src/csrc/deep_ep.cpp:283 'unspecified launch failure'
+Traceback (most recent call last):
+  File "/opt/conda/envs/torch/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 367, in wrapper
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+  error_file: <N/A>
+  error_file: <N/A>
+rc=1
+=== --hidden 7168 --tokens 1-4096 --num-sms 24,48 --dcfg 24,256 --ccfg 10,256 --overlap 4 --gemm 8192
+RESULT args=--secs 90 --hidden 7168 --tokens 1-4096 --num-sms 24,48 --dcfg 24,256 --ccfg 10,256 --overlap 4 --gemm 8192 iters=209 tokens_sent=842172 rows_received=1677696 mismatches=0 secs=90
+rc=0

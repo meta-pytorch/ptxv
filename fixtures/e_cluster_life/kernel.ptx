@@ -1,0 +1,37 @@
+// S-CLUSTER-LIFE: an access to another CTA's shared memory must happen before some exit of that
+// CTA. A 2-CTA cluster synchronizes once (barrier.cluster), then CTA 1 stores into CTA 0's
+// shared word through shared::cluster (mapa) and exits; CTA 0 exits.
+//   good: a final barrier.cluster after the remote store: clean.
+//   NOFINAL: no final barrier: CTA 0 may exit before the remote store lands: violation.
+//   NOBAR: no barrier.cluster at all: CTA 0 runs nothing visible before its exit, which the
+//          explorers' local reductions must not commute past the remote store: violation.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_cluster_life(.param .u64 out_p)
+.reqnctapercluster 2, 1, 1
+{
+    .shared .align 4 .b32 w;
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, %cluster_ctarank;
+    mov.u32 %r3, w;
+    barrier.cluster.arrive.release;      // @SYNC_A
+    barrier.cluster.wait.acquire;        // @SYNC_B
+    setp.ne.u32 %p1, %r2, 1;
+    setp.ne.u32 %p2, %r1, 0;
+    or.pred %p3, %p1, %p2;
+    @%p3 bra STORED;
+    mapa.shared::cluster.u32 %r4, %r3, 0;
+    mov.u32 %r5, 9;
+    st.shared::cluster.u32 [%r4], %r5;
+STORED:
+    barrier.cluster.arrive.release;      // @FIN_A
+    barrier.cluster.wait.acquire;        // @FIN_B
+    ret;
+}

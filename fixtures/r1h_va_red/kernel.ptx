@@ -1,0 +1,60 @@
+//
+// Rung 1h, virtual aliases within one address space (S-VA-ALIAS), unordered strong writes
+// through two mappings: `a` and `b` are two mappings of one buffer. Thread 0 adds to a
+// counter through a, thread 32 through b (each fenced before: the two reductions commute, are
+// unordered, and the lenient strong rule covers their pair); each then releases its own flag
+// through b. Thread 64 acquires both flags through b, then reads the counter through b.
+// The read is ordered after both additions, and the one through a needs a fence.proxy.alias
+// on the path. The shadow keeps the unordered strong write besides the last one (`Sh::hw`):
+// until 2026-11-10 the alias check compared only the last, so a run that ended with thread
+// 32's addition (the certificate's) missed thread 0's.
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry va_red(
+    .param .u64 a,
+    .param .u64 b,
+    .param .u64 out
+)
+{
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [a];
+    ld.param.u64 %rd2, [b];
+    ld.param.u64 %rd3, [out];
+    mov.u32 %r1, %tid.x;
+    setp.eq.u32 %p1, %r1, 0;
+    @%p1 bra T0;
+    setp.eq.u32 %p1, %r1, 32;
+    @%p1 bra T32;
+    setp.eq.u32 %p1, %r1, 64;
+    @%p1 bra T64;
+    bra DONE;
+T0:
+    fence.proxy.alias;
+    red.relaxed.sys.global.add.u32 [%rd1], 1;
+    fence.proxy.alias; // @AFENCE
+    st.release.sys.global.u32 [%rd2+64], 1;
+    bra DONE;
+T32:
+    fence.proxy.alias;
+    red.relaxed.sys.global.add.u32 [%rd2], 1;
+    st.release.sys.global.u32 [%rd2+128], 1;
+    bra DONE;
+T64:
+POLLA:
+    ld.acquire.sys.global.u32 %r2, [%rd2+64];
+    setp.eq.u32 %p2, %r2, 0;
+    @%p2 bra POLLA;
+POLLB:
+    ld.acquire.sys.global.u32 %r3, [%rd2+128];
+    setp.eq.u32 %p2, %r3, 0;
+    @%p2 bra POLLB;
+    ld.relaxed.sys.global.u32 %r4, [%rd2];
+    st.global.u32 [%rd3], %r4;
+DONE:
+    ret;
+}

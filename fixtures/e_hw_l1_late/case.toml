@@ -1,0 +1,61 @@
+name = "e_hw_l1_late"
+description = """
+E-HW-L1, the predictive stale check with the fill after the read. Cluster of 2 CTAs (2 SMs).
+CTA 0 stores word 0 of a line, then releases a flag (cluster scope). CTA 1 warp 0 polls the flag
+with a cluster-scope acquire (no L1 invalidation in the PTX model), then loads word 0 (R); CTA 1
+warp 1 loads word 1 of the same line (F), unordered with both. F before the store lands, then R:
+R hits F's line, stale. The check must look back from F at the earlier reads of the line."""
+ptx = "kernel.ptx"
+entry = "l1late"
+grid = [2, 1, 1]
+block = [64, 1, 1]
+cluster = [2, 1, 1]
+outputs = ["out"]
+hw_l1 = true
+
+[[buffers]]
+name = "buf"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "buf"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written: R may hit the line F filled before the store landed"
+expect = ["stale"]
+# ptxas (13.0) lowers ld.acquire.cluster to LDG.E.STRONG.GPU; CCTL.IVALL: the invalidation
+# drops F's line before R, so the SASS front is clean.
+expect_sass = ["clean"]
+
+[[variants]]
+id = "vpoll"
+summary = "DeepEP-style signal: writer fence.acq_rel.sys and a relaxed sys atomic flag; reader ld.volatile poll (no acquire, no invalidation): the read races, and F's early fill makes it stale"
+marker = "@POLL"
+find = "ld.acquire.cluster.global.u32"
+replace = "ld.volatile.global.u32"
+edits = [{ marker = "@REL", find = "st.release.cluster.global.u32 [%rd2], 1;", replace = "fence.acq_rel.sys; atom.relaxed.sys.global.add.u32 %r6, [%rd2], 1;" }]
+expect = ["race", "stale"]

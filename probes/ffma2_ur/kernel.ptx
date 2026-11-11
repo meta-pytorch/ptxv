@@ -1,0 +1,28 @@
+// Probe for FFMA2 with negated uniform-register operands: ptxas folds `neg.f32` of kernel
+// parameters into `-URn.F32` (broadcast) and `-URn.F32x2.HI_LO` (pair). Thread i: x = words
+// 2i, 2i+1 of in; d1 = {-u, -u} * x + {0, 0}, d2 = {x0, x0} * {-u, -v} + x, d3 = |x| *
+// -1.4427 (ptxas: `FMUL2 R, |R|.F32x2.HI_LO, imm`).
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry ffma2_ur(.param .u64 pin, .param .u64 pout, .param .f32 pu, .param .f32 pv)
+{ .reg .b64 %rd<20>; .reg .b32 %r<20>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  ld.param.b32 %r10, [pu]; ld.param.b32 %r11, [pv];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mul.wide.u32 %rd3, %r1, 8; add.s64 %rd4, %rd1, %rd3;
+  mul.wide.u32 %rd5, %r1, 32; add.s64 %rd6, %rd2, %rd5;
+  ld.global.v2.u32 {%r2, %r3}, [%rd4];
+  mov.b64 %rd7, {%r2, %r3};
+  mov.b32 %r4, 0f00000000; mov.b64 %rd8, {%r4, %r4};
+  neg.f32 %r5, %r10; mov.b64 %rd9, {%r5, %r5};
+  fma.rn.f32x2 %rd10, %rd9, %rd7, %rd8;
+  neg.f32 %r6, %r11; mov.b64 %rd11, {%r5, %r6};
+  mov.b64 %rd12, {%r2, %r2};
+  fma.rn.f32x2 %rd13, %rd12, %rd11, %rd7;
+  st.global.v2.u64 [%rd6], {%rd10, %rd13};
+  abs.f32 %r7, %r2; abs.f32 %r8, %r3; mov.b64 %rd14, {%r7, %r8};
+  mov.b32 %r9, 0fBFB8AA3B; mov.b64 %rd15, {%r9, %r9};
+  mul.rn.f32x2 %rd16, %rd14, %rd15;
+  st.global.u64 [%rd6+16], %rd16;
+  ret; }

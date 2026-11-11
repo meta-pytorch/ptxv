@@ -1,0 +1,50 @@
+name = "tmma"
+description = """
+N-HMMA TF32 probe: D[128x128] f32 = A[128x64] * B[128x64]^T through mma.sync m16n8k8 tf32
+(SASS HMMA.1688.F32.TF32), one warp per 16x8 tile, 8 accumulating steps, raw f32 words as
+operands (tmma.cu). `ptxv calib-mma probes/tmma` scores the MmaModel family and the tf32 input
+conversions against GB300; the default inputs (normal) are compared with expected/ (GB300) in
+cargo test."""
+ptx = "kernel.ptx"
+cubin = "kernel.cubin"
+entry = "tmma"
+grid = [32, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "f32"
+shape = [128, 64]
+init = "normal"
+seed = 21
+
+[[buffers]]
+name = "B"
+dtype = "f32"
+shape = [128, 64]
+init = "normal"
+seed = 22
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [128, 128]
+init = "nan"
+expect = "expected/D.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "A"
+
+[[params]]
+kind = "ptr"
+buffer = "B"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

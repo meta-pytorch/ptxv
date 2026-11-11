@@ -1,0 +1,73 @@
+{
+ "what": "run() of num_bf16rt.py (kernel ^num_bf16rt_kernel$)",
+ "argv": [
+  "--triton",
+  "fixtures/c_num_bf16rt_f32/num_bf16rt.py:num_bf16rt_kernel",
+  "--out",
+  "fixtures/c_num_bf16rt_f32",
+  "--work",
+  "/tmp/ptxv_capture_4145933"
+ ],
+ "torch": "2.15.0a0+gite0b6c79",
+ "launches": [
+  {
+   "name": "num_bf16rt_kernel",
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "jit.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": true,
+ "buffers": [
+  {
+   "name": "x",
+   "dtype": "f32",
+   "shape": [
+    1024
+   ],
+   "size": 4096
+  },
+  {
+   "name": "y",
+   "dtype": "f32",
+   "shape": [
+    1024
+   ],
+   "size": 4096
+  },
+  {
+   "name": "z",
+   "dtype": "f32",
+   "shape": [
+    1024
+   ],
+   "size": 4096
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    1024
+   ],
+   "size": 4096
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

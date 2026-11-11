@@ -1,0 +1,42 @@
+name = "probe_cvt_lp_scaled"
+description = """
+Probe (MISS 61; N-CVT-LP) for the scaled bf16x2 decodes of ptxas 13.3 (PTX ISA 9.3):
+cvt.rn [.relu] .scaled::n2::ue8m0 .bf16x2.<e4m3 / e5m2 / e2m3 / e3m2 / e2m1>x2 d, a, scale, SASS
+F2FP [.RELU] .BF16.<fmt>.UNPACK_B d, a, s.H0. in[2i] = every code pair, in[2i + 1] = a scale pair
+(gen.py: 1.0, 0, the extremes, the NaN scale 0xff, random); out[k * 65536 + i] for form k
+(genptx.py). Neither front models the scale: the SASS front refuses a register scale, the PTX
+front the .scaled forms. expected/ is GB300's output (kernel.cubin = ptxas 13.3 -arch=sm_103a
+kernel.ptx)."""
+ptx = "kernel.ptx"
+entry = "cvt_lp_scaled"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+ptxas_toolkit = "13.3"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [131072]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [655360]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "every form (the GB300 run; neither front models them)"
+expect = ["clean"]

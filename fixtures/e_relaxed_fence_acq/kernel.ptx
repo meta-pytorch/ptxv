@@ -1,0 +1,131 @@
+// Relaxed reads and read-modify-writes that a later acquire fence of their thread makes
+// acquiring (fence.acq_rel after red / atom / ld.relaxed). Lane 0 of each CTA runs the section
+// the first branch selects (one per variant).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_relaxed_fence_acq(.param .u64 out_p, .param .u64 part_p, .param .u64 cnt_p, .param .u64 flag_p)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [part_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    ld.param.u64 %rd3, [cnt_p];
+    cvta.to.global.u64 %rd3, %rd3;
+    ld.param.u64 %rd4, [flag_p];
+    cvta.to.global.u64 %rd4, %rd4;
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra DONE;
+    mov.u32 %r2, %ctaid.x;
+    setp.eq.u32 %p2, %r2, 0;
+    setp.eq.u32 %p3, %r2, 1;
+    bra.uni GOOD;                                   // @MODE
+
+// Last-block reduction (CTAs 0 and 1): publish a partial, release fence, claim a ticket; the
+// last claimant acquires (fence) and sums the partials.
+GOOD:
+    setp.gt.u32 %p4, %r2, 1;
+    @%p4 bra DONE;
+    mul.wide.u32 %rd5, %r2, 4;
+    add.s64 %rd6, %rd2, %rd5;
+    add.u32 %r3, %r2, 10;
+    st.global.u32 [%rd6], %r3;
+    fence.acq_rel.gpu;                              // @REL
+    atom.relaxed.gpu.global.add.u32 %r4, [%rd3], 1;
+    setp.ne.u32 %p5, %r4, 1;
+    @%p5 bra DONE;
+    fence.acq_rel.gpu;
+    ld.global.u32 %r5, [%rd2];
+    ld.global.u32 %r6, [%rd2+4];
+    add.u32 %r7, %r5, %r6;
+    st.global.u32 [%rd1], %r7;
+    bra.uni DONE;
+
+// CTA 0 writes out[0] then (fence, red) adds; CTA 1 adds, fences, writes out[0]: ordered only
+// when CTA 0's add comes first (write-write race otherwise).
+RMW:
+    @%p2 bra RMW0;
+    @%p3 bra RMW1;
+    bra.uni DONE;
+RMW0:
+    mov.u32 %r3, 1;
+    st.global.u32 [%rd1], %r3;
+    fence.acq_rel.gpu;
+    red.relaxed.gpu.global.add.u32 [%rd3], 1;
+    bra.uni DONE;
+RMW1:
+    red.relaxed.gpu.global.add.u32 [%rd3], 2;
+    fence.acq_rel.gpu;
+    mov.u32 %r3, 2;
+    st.global.u32 [%rd1], %r3;
+    bra.uni DONE;
+
+// CTA 0 publishes part[0] with a release store of the flag; CTA 1 reads the flag relaxed
+// (value unused), fences, and reads part[0] without testing the flag: a race.
+DEAD:
+    @%p2 bra DEAD0;
+    @%p3 bra DEAD1;
+    bra.uni DONE;
+DEAD0:
+    mov.u32 %r3, 7;
+    st.global.u32 [%rd2], %r3;
+    st.release.gpu.global.u32 [%rd4], 1;
+    bra.uni DONE;
+DEAD1:
+    ld.relaxed.gpu.global.u32 %r5, [%rd4];
+    fence.acq_rel.gpu;
+    ld.global.u32 %r6, [%rd2];
+    st.global.u32 [%rd1], %r6;
+    bra.uni DONE;
+
+// CTA 0 polls the counter of CTA 1's and CTA 2's adds (C-POLL-ATOM); CTA 1 publishes part[0]
+// before its add, CTA 2 adds, fences and reads part[0]: ordered only when CTA 1's add comes
+// first.
+ATOM:
+    @%p2 bra ATOM0;
+    @%p3 bra ATOM1;
+    red.relaxed.gpu.global.add.u32 [%rd3], 2;
+    fence.acq_rel.gpu;
+    ld.global.u32 %r6, [%rd2];
+    st.global.u32 [%rd1+4], %r6;
+    bra.uni DONE;
+ATOM0:
+    ld.acquire.gpu.global.u32 %r5, [%rd3];
+    setp.ne.u32 %p6, %r5, 3;
+    @%p6 bra ATOM0;
+    bra.uni DONE;
+ATOM1:
+    mov.u32 %r3, 5;
+    st.global.u32 [%rd2], %r3;
+    fence.acq_rel.gpu;
+    red.relaxed.gpu.global.add.u32 [%rd3], 1;
+    bra.uni DONE;
+// CTA 0 writes out[0], fences, adds to cnt and to flag; CTA 1 adds to cnt, reads flag
+// relaxed (value unused), fences, writes out[0]. The release reaches CTA 1 only through these
+// two relaxed reads, both order-dependent: ordered only when CTA 0's adds come first.
+CHAIN:
+    @%p2 bra CHAIN0;
+    @%p3 bra CHAIN1;
+    bra.uni DONE;
+CHAIN0:
+    mov.u32 %r3, 1;
+    st.global.u32 [%rd1], %r3;
+    fence.acq_rel.gpu;
+    red.relaxed.gpu.global.add.u32 [%rd3], 1;
+    red.relaxed.gpu.global.add.u32 [%rd4], 1;
+    bra.uni DONE;
+CHAIN1:
+    red.relaxed.gpu.global.add.u32 [%rd3], 2;
+    ld.relaxed.gpu.global.u32 %r5, [%rd4];
+    fence.acq_rel.gpu;
+    mov.u32 %r3, 2;
+    st.global.u32 [%rd1], %r3;
+    bra.uni DONE;
+DONE:
+    ret;
+}

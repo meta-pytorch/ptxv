@@ -1,0 +1,53 @@
+name = "e_uninit_discard"
+description = """
+S-INIT poison propagation (2026-11-06). Lanes 16..31 skip a predicated load, then every lane
+adds the load's destination to a parameter (64-bit add: SASS IADD3 with a carry-out
+predicate, IADD3.X), and a store under the same predicate discards the undefined sums: the
+shape of Triton's _philox_checksum_kernel (msl_ops kernel database), which was reported at
+the add. Undefined values are now reported only where they reach a sink."""
+ptx = "kernel.ptx"
+entry = "uninit_discard"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [64]
+init = "bits"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "bytes"
+hex = "ffffffff00000000"
+
+[[variants]]
+id = "good"
+summary = "the predicated store discards the undefined sums"
+expect = ["clean"]
+
+[[variants]]
+id = "store_all"
+summary = "the store is not predicated: undefined data reaches memory"
+edits = [{ marker = "@STORE", find = "@%p1 st", replace = "st" }]
+expect = ["violation"]
+
+[[variants]]
+id = "branch"
+summary = "a branch on a compare of the undefined sum: undefined control flow"
+edits = [{ marker = "@BRA", find = "// (branch slot)", replace = "setp.lt.u64 %p2, %rd6, %rd9; @%p2 bra DONE;" }]
+expect = ["violation"]

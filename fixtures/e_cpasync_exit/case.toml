@@ -1,0 +1,76 @@
+name = "e_cpasync_exit"
+description = """
+E-CPASYNC-EXIT (2026-11-08): threads exit with a cp.async (LDGSTS) never waited for, whose
+destination no thread reads: a contract finding (the PTX ISA defines no completion for it;
+GB300 completes it before the shared memory is reused, probes/cpasync_exit). Before, a
+violation (the write was dropped). A read of the destination without a wait is a race,
+whether by the issuing thread or by another thread after a bar.sync; after
+cp.async.wait_group 0 both reads are clean."""
+ptx = "kernel.ptx"
+entry = "cpasync_exit"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [256]
+init = "iota"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "exit with the copy in flight; the slot is never read"
+expect = ["contract"]
+
+[[variants]]
+id = "read"
+summary = "the issuing thread reads its slot without a wait"
+marker = "@READ"
+find = "// @READ"
+replace = "ld.shared.u32 %r6, [%r5];"
+expect = ["contract", "race"]
+
+[[variants]]
+id = "other"
+summary = "after a bar.sync, a thread reads the other warp's slot without a wait"
+edits = [
+    { marker = "@BAR", find = "// @BAR", replace = "bar.sync 0;" },
+    { marker = "@OTHER", find = "// @OTHER", replace = "xor.b32 %r8, %r2, 512; add.u32 %r5, %r1, %r8;" },
+    { marker = "@READ", find = "// @READ", replace = "ld.shared.u32 %r6, [%r5];" },
+]
+expect = ["contract", "race"]
+
+[[variants]]
+id = "wait"
+summary = "cp.async.wait_group 0, then the own slot is read"
+edits = [
+    { marker = "@WAIT", find = "// @WAIT", replace = "cp.async.wait_group 0;" },
+    { marker = "@READ", find = "// @READ", replace = "ld.shared.u32 %r6, [%r5];" },
+]
+expect = ["clean"]
+
+[[variants]]
+id = "other_wait"
+summary = "cp.async.wait_group 0 and a bar.sync, then the other warp's slot is read"
+edits = [
+    { marker = "@WAIT", find = "// @WAIT", replace = "cp.async.wait_group 0;" },
+    { marker = "@BAR", find = "// @BAR", replace = "bar.sync 0;" },
+    { marker = "@OTHER", find = "// @OTHER", replace = "xor.b32 %r8, %r2, 512; add.u32 %r5, %r1, %r8;" },
+    { marker = "@READ", find = "// @READ", replace = "ld.shared.u32 %r6, [%r5];" },
+]
+expect = ["clean"]

@@ -1,0 +1,31 @@
+// probes/fhadd: SASS FHADD / FHFMA without .BF16 (add / sub / fma .f32.f16: an f16 half widened,
+// plus / times an f32), rounding modes, .SAT, .H1, negated c. Thread g loads (a, c) = in[g]
+// (a: two f16 halves, c: f32 bits) and stores out[g][0..8]:
+//   0: add.rn.f32.f16 a.lo, c      1: sub.rn.f32.f16 a.hi, c      2: add.rz a.lo, c
+//   3: add.rm a.hi, c               4: add.rp a.lo, c              5: add.rn.sat a.hi, c
+//   6: fma.rn.f32.f16 a.lo, a.hi, c 7: sub.rz.sat a.lo, c
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry fhadd(.param .u64 pin, .param .u64 pout, .param .u32 n)
+{ .reg .b64 %rd<8>; .reg .b32 %r<8>; .reg .f32 %f<12>; .reg .b16 %h<4>; .reg .pred %p<2>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout]; ld.param.u32 %r6, [n];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mov.u32 %r2, %ctaid.x; mov.u32 %r3, %ntid.x; mad.lo.s32 %r1, %r2, %r3, %r1;
+  setp.ge.u32 %p1, %r1, %r6; @%p1 bra DONE;
+  mul.wide.u32 %rd3, %r1, 8; add.s64 %rd4, %rd1, %rd3;
+  ld.global.v2.u32 {%r4, %r5}, [%rd4];
+  mov.b32 {%h1, %h2}, %r4; mov.b32 %f1, %r5;
+  add.rn.f32.f16 %f2, %h1, %f1;
+  sub.rn.f32.f16 %f3, %h2, %f1;
+  add.rz.f32.f16 %f4, %h1, %f1;
+  add.rm.f32.f16 %f5, %h2, %f1;
+  add.rp.f32.f16 %f6, %h1, %f1;
+  add.rn.sat.f32.f16 %f7, %h2, %f1;
+  fma.rn.f32.f16 %f8, %h1, %h2, %f1;
+  sub.rz.sat.f32.f16 %f9, %h1, %f1;
+  mul.wide.u32 %rd5, %r1, 32; add.s64 %rd6, %rd2, %rd5;
+  st.global.v4.f32 [%rd6], {%f2, %f3, %f4, %f5};
+  st.global.v4.f32 [%rd6+16], {%f6, %f7, %f8, %f9};
+DONE:
+  ret; }

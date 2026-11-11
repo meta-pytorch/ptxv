@@ -1,0 +1,36 @@
+// probes/smid (E-SMID): what %smid / %nsmid read on GB300. Each CTA's thread 0 stores
+// out[cta] = {%smid, %smid again after ~20 us of %globaltimer spin, %nsmid, %ctaid.x}.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry smid(
+    .param .u64 out
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<16>;
+
+    mov.u32         %r0, %tid.x;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        DONE;
+    mov.u32         %r1, %smid;
+    mov.u64         %rd1, %globaltimer;
+SPIN:
+    mov.u64         %rd2, %globaltimer;
+    sub.u64         %rd3, %rd2, %rd1;
+    setp.lt.u64     %p1, %rd3, 20000;
+    @%p1 bra        SPIN;
+    mov.u32         %r2, %smid;
+    mov.u32         %r3, %nsmid;
+    mov.u32         %r4, %ctaid.x;
+    ld.param.u64    %rd4, [out];
+    cvta.to.global.u64 %rd4, %rd4;
+    mul.wide.u32    %rd5, %r4, 16;
+    add.u64         %rd6, %rd4, %rd5;
+    st.global.v4.b32 [%rd6], {%r1, %r2, %r3, %r4};
+DONE:
+    ret;
+}

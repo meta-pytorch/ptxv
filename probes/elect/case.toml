@@ -1,0 +1,23 @@
+name = "probe_elect"
+description = """
+Probe (hardware only) for ASSUMPTIONS.md E-ELECT: the lane elect.sync picks for 8 different
+active sets. out[w] = leader lane of warp w, out[8+w] = number of leaders."""
+ptx = "kernel.ptx"
+entry = "probe_elect"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [16]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

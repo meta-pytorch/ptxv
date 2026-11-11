@@ -1,0 +1,61 @@
+name = "e_dead_read_strong"
+description = """
+C-ORDER dead reads of strong loads (wellsync.rs `dead_reads`): a relaxed flag load whose value
+is unused certifies; an acquiring one that orders a later plain read (ACQ) and a 256-bit load
+whose value is stored (V8) are refused."""
+ptx = "kernel.ptx"
+entry = "e_dead_read_strong"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[variants]]
+id = "good"
+summary = "relaxed flag load, value unused"
+expect = ["clean"]
+
+[[variants]]
+id = "ACQ"
+summary = "acquiring flag load, value unused, then a plain read of data[0]: race"
+marker = "@READ"
+find = "ld.relaxed.gpu.global.u32 %r5, [%rd3];"
+replace = "ld.acquire.gpu.global.u32 %r5, [%rd3]; ld.global.u32 %r8, [%rd2]; st.global.u32 [%rd1], %r8;"
+expect = ["race"]
+
+[[variants]]
+id = "V8"
+summary = "a relaxed 256-bit load of data[0..8], stored: the output depends on the order"
+marker = "@READ"
+find = "ld.relaxed.gpu.global.u32 %r5, [%rd3];"
+replace = "ld.relaxed.gpu.global.v8.u32 {%r10, %r11, %r12, %r13, %r14, %r15, %r16, %r17}, [%rd2]; st.global.v8.u32 [%rd1], {%r10, %r11, %r12, %r13, %r14, %r15, %r16, %r17};"
+expect = ["nondeterministic"]

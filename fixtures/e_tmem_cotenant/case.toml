@@ -1,0 +1,73 @@
+name = "e_tmem_cotenant"
+description = """
+Fixture for the TMEM co-tenant (E-TMEM-COTENANT, E-TMEM-PERMIT; crates/sim/src/tenant.rs):
+two CTAs allocate tensor memory and CTA 0 waits for a flag CTA 1 sets after allocating.
+Clean in the default model; `expect_cotenant` is the verdict when the two CTAs share an SM
+and allocations may land at any free columns."""
+ptx = "kernel.ptx"
+entry = "e_tmem_cotenant"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[variants]]
+id = "good"
+summary = "256 columns each, permit relinquished at once: fine on a shared SM"
+expect = ["clean"]
+expect_cotenant = ["clean"]
+
+[[variants]]
+id = "norelinq"
+summary = "no relinquish: CTA 0 keeps the permit while waiting for CTA 1, which cannot allocate"
+marker = "@RELINQ"
+replace = "<delete>"
+expect = ["clean"]
+expect_cotenant = ["contract", "deadlock"]
+
+[[variants]]
+id = "big"
+summary = "512 columns each: CTA 0 holds all columns while waiting for CTA 1's allocation"
+marker = "@ALLOC"
+find = "256;"
+replace = "512;"
+edits = [{ marker = "@DEALLOC", find = "256;", replace = "512;" }]
+expect = ["clean"]
+expect_cotenant = ["deadlock"]
+
+[[variants]]
+id = "indep"
+summary = "no relinquish and no cross-CTA wait: only the missing relinquish is reported"
+marker = "@RELINQ"
+replace = "<delete>"
+edits = [{ marker = "@WAIT", find = "ld.acquire.gpu.global.u32 %r3, [%rd2];", replace = "mov.u32 %r3, 1;" }]
+expect = ["clean"]
+expect_cotenant = ["contract"]
+
+[[variants]]
+id = "fixed0"
+summary = "uses column 0 instead of the allocated address"
+marker = "@BASE"
+find = "ld.shared.b32   %r5, [%r2];"
+replace = "mov.u32         %r5, 0;"
+expect = ["clean"]
+expect_cotenant = ["violation"]

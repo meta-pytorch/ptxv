@@ -1,0 +1,80 @@
+name = "probe_bar_cut_warp"
+description = """
+Probe for ASSUMPTIONS.md E-BAR-CUT premise (a) and the packed BAR.SYNC count: the lanes of one
+warp waiting at two named barriers at once. 64 threads. split: lanes 0-15 of warp 0 at
+`barrier.sync 1, 64`, lanes 16-31 at `barrier.sync 0`; warp 1 runs `barrier.sync 0`, then
+`barrier.sync 1, 64`. An all-thread barrier counting warps would complete (every word 1);
+counting threads, a hang. GB300 does neither: an illegal instruction, as soon as one warp
+waits at two barrier ids (split, w1_first, two_counted). Two sites of one id are fine
+(same_id, same_all). The model reports a deadlock where GB300 traps (both are failures).
+same_all on SASS runs ptxas's slow path, `BAR.SYNC R2, R2` with R2 = 0: thread count 0 is
+all threads."""
+ptx = "kernel.ptx"
+entry = "probe_bar_cut_warp"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "split"
+summary = "warp 0 split: lanes 0-15 at barrier.sync 1, 64, lanes 16-31 at barrier.sync 0"
+expect = ["deadlock"]
+hw_note = "GB300: illegal instruction (ptxv probe, 2026-11-09, 5/5)"
+
+[[variants]]
+id = "control"
+summary = "warp 0 whole at barrier.sync 1, 64 (warp 1 there after barrier.sync 0): a hang"
+expect = ["deadlock"]
+hw_note = "GB300: hang (ptxv probe, 2026-11-09, 5/5)"
+marker = "@SPLIT"
+find = "setp.lt.u32 %p2, %r2, 16;"
+replace = "setp.lt.u32 %p2, %r2, 32;"
+
+[[variants]]
+id = "w1_first"
+summary = "warp 1 runs barrier.sync 1, 64 before barrier.sync 0; warp 0 split as in split"
+expect = ["deadlock"]
+hw_note = "GB300: illegal instruction (ptxv probe, 2026-11-09, 2/2)"
+edits = [
+  { marker = "@W1A", find = "barrier.sync 0;", replace = "barrier.sync 1, 64;" },
+  { marker = "@W1B", find = "barrier.sync 1, 64;", replace = "barrier.sync 0;" },
+]
+
+[[variants]]
+id = "two_counted"
+summary = "lanes 16-31 of warp 0 at barrier.sync 2, 32 instead of barrier.sync 0"
+expect = ["deadlock"]
+hw_note = "GB300: illegal instruction (ptxv probe, 2026-11-09, 2/2)"
+marker = "@W0HI"
+find = "barrier.sync 0;"
+replace = "barrier.sync 2, 32;"
+
+[[variants]]
+id = "same_id"
+summary = "lanes 16-31 of warp 0 at another barrier.sync 1, 64 (same barrier, other pc)"
+expect = ["clean"]
+hw_note = "GB300 completes (ptxv probe, 2026-11-09, 2/2)"
+edits = [
+  { marker = "@W0HI", find = "barrier.sync 0;", replace = "barrier.sync 1, 64;" },
+  { marker = "@W1A", find = "barrier.sync 0;", replace = "" },
+]
+
+[[variants]]
+id = "same_all"
+summary = "lanes 0-15 and 16-31 of warp 0 at two barrier.sync 0 sites; warp 1 at barrier.sync 0"
+expect = ["clean"]
+hw_note = "GB300 completes (ptxv probe, 2026-11-09, 2/2)"
+edits = [
+  { marker = "@W1B", find = "barrier.sync 1, 64;", replace = "" },
+  { marker = "@W0B", find = "barrier.sync 1, 64;", replace = "barrier.sync 0;" },
+]

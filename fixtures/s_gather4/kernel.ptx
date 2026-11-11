@@ -1,0 +1,124 @@
+// tile::gather4 TMA loads (cp.async.bulk.tensor.2d...tile::gather4; SASS UTMALDG.2D.GATHER4)
+// against GB300. One CTA of 128 threads: smem (12 KiB) is filled with 0xffff, then thread 0
+// arms one mbarrier with the total bytes and issues six gathers of four rows each from a
+// 64 x 256 u16 tensor (G[r][c] = 256r + c) through five maps: 128B swizzle (box 64 x 1, and a
+// narrow 16 x 1 one), 64B (32 x 1), 32B (16 x 1), none (24 x 1). Rows include out-of-bounds
+// (64, 1000, -1) and repeated ones; columns run past either edge; destinations start at
+// 128-byte offsets that are not multiples of 8 rows x span. Every thread then copies smem
+// to out. Variant `misaligned`: a column not 16-byte aligned. ASSUME(S-TMA-GATHER4)
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry s_gather4(
+    .param .align 64 .b8 tm0[128],
+    .param .align 64 .b8 tm1[128],
+    .param .align 64 .b8 tm2[128],
+    .param .align 64 .b8 tm3[128],
+    .param .align 64 .b8 tm4[128],
+    .param .u64 out
+)
+.maxntid 128, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<16>;
+    .reg .b16   %h<2>;
+    .shared .align 1024 .b8 sm[12288];
+    .shared .align 8 .b64 mbar;
+
+    mov.u32         %r0, %tid.x;
+    mov.u32         %r1, mbar;
+    mov.u32         %r2, sm;
+    // fill
+    shl.b32         %r3, %r0, 2;
+    mov.u32         %r4, 0;
+    mov.u32         %r5, -1;
+FILL:
+    add.u32         %r6, %r3, %r4;
+    add.u32         %r7, %r2, %r6;
+    st.shared.b32   [%r7], %r5;
+    add.u32         %r4, %r4, 512;
+    setp.lt.u32     %p0, %r4, 12288;
+    @%p0 bra        FILL;
+    setp.ne.u32     %p1, %r0, 0;
+    @%p1 bra        SKIP_INIT;
+    mbarrier.init.shared::cta.b64 [%r1], 1;
+    fence.mbarrier_init.release.cluster;
+SKIP_INIT:
+    fence.proxy.async.shared::cta;
+    bar.sync        0;
+    @%p1 bra        WAIT;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r1], 1728;
+    mov.b64         %rd0, tm0;
+    cvta.param.u64  %rd8, %rd0;
+    add.u32         %r10, %r2, 0;
+    mov.u32         %r11, 8;
+    mov.u32         %r12, 5;
+    mov.u32         %r13, 0;
+    mov.u32         %r14, 63;
+    mov.u32         %r15, 17;
+    cp.async.bulk.tensor.2d.shared::cta.global.tile::gather4.mbarrier::complete_tx::bytes [%r10], [%rd8, {%r11, %r12, %r13, %r14, %r15}], [%r1];
+    mov.b64         %rd1, tm0;
+    cvta.param.u64  %rd9, %rd1;
+    add.u32         %r10, %r2, 2560;
+    mov.u32         %r11, 200;
+    mov.u32         %r12, 64;
+    mov.u32         %r13, -1;
+    mov.u32         %r14, 3;
+    mov.u32         %r15, 3;
+    cp.async.bulk.tensor.2d.shared::cta.global.tile::gather4.mbarrier::complete_tx::bytes [%r10], [%rd9, {%r11, %r12, %r13, %r14, %r15}], [%r1];
+    mov.b64         %rd2, tm1;
+    cvta.param.u64  %rd10, %rd2;
+    add.u32         %r10, %r2, 4224;
+    mov.u32         %r11, -8;
+    mov.u32         %r12, 1;
+    mov.u32         %r13, 2;
+    mov.u32         %r14, 40;
+    mov.u32         %r15, 9;
+    cp.async.bulk.tensor.2d.shared::cta.global.tile::gather4.mbarrier::complete_tx::bytes [%r10], [%rd10, {%r11, %r12, %r13, %r14, %r15}], [%r1];
+    mov.b64         %rd3, tm2;
+    cvta.param.u64  %rd11, %rd3;
+    add.u32         %r10, %r2, 6528;
+    mov.u32         %r11, 248;
+    mov.u32         %r12, 7;
+    mov.u32         %r13, 6;
+    mov.u32         %r14, 5;
+    mov.u32         %r15, 4;
+    cp.async.bulk.tensor.2d.shared::cta.global.tile::gather4.mbarrier::complete_tx::bytes [%r10], [%rd11, {%r11, %r12, %r13, %r14, %r15}], [%r1];
+    mov.b64         %rd4, tm3;
+    cvta.param.u64  %rd12, %rd4;
+    add.u32         %r10, %r2, 8320;
+    mov.u32         %r11, -8;              // @ALIGN
+    mov.u32         %r12, 10;
+    mov.u32         %r13, 11;
+    mov.u32         %r14, 1000;
+    mov.u32         %r15, 12;
+    cp.async.bulk.tensor.2d.shared::cta.global.tile::gather4.mbarrier::complete_tx::bytes [%r10], [%rd12, {%r11, %r12, %r13, %r14, %r15}], [%r1];
+    mov.b64         %rd5, tm4;
+    cvta.param.u64  %rd13, %rd5;
+    add.u32         %r10, %r2, 10496;
+    mov.u32         %r11, 32;
+    mov.u32         %r12, 2;
+    mov.u32         %r13, 30;
+    mov.u32         %r14, 31;
+    mov.u32         %r15, 0;
+    cp.async.bulk.tensor.2d.shared::cta.global.tile::gather4.mbarrier::complete_tx::bytes [%r10], [%rd13, {%r11, %r12, %r13, %r14, %r15}], [%r1];
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r1], 0;
+    @!%p2 bra       WAIT;
+    ld.param.u64    %rd14, [out];
+    cvta.to.global.u64 %rd15, %rd14;
+    mov.u32         %r4, 0;
+COPY:
+    add.u32         %r6, %r3, %r4;
+    add.u32         %r7, %r2, %r6;
+    ld.shared.b32   %r8, [%r7];
+    cvt.u64.u32     %rd1, %r6;
+    add.u64         %rd2, %rd15, %rd1;
+    st.global.b32   [%rd2], %r8;
+    add.u32         %r4, %r4, 512;
+    setp.lt.u32     %p0, %r4, 12288;
+    @%p0 bra        COPY;
+    ret;
+}

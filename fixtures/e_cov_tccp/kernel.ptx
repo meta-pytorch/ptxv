@@ -1,0 +1,85 @@
+// Input coverage through TMEM (coverage.rs): 128 threads copy one input word each to shared
+// memory, thread 0 copies the 512 bytes to TMEM with tcgen05.cp (32x128b.warpx4), every warp
+// reads its 32 lanes back with tcgen05.ld, and a branch on the value decides whether a second
+// word is stored. Until 2026-11-08 the TMEM words a tcgen05.cp wrote had no input provenance:
+// no input-dependent comparison was found and the kernel was called input-independent on
+// both front-ends, while its control depends on the input (good: input iota, every value
+// <= 1000, so the extra stores never happen).
+//   ST: the TMEM words come from tcgen05.st of the loaded register instead (a TMEM writer
+//       coverage already followed)
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_cov_tccp(.param .u64 out_p, .param .u64 in_p)
+{
+    .reg .b32 %r<40>;
+    .reg .b64 %rd<20>;
+    .reg .pred %p<8>;
+    .shared .align 1024 .b8 buf[512];
+    .shared .align 8 .b64 mbar;
+    .shared .align 4 .b32 tslot;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [in_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    shr.u32 %r2, %r1, 5;
+    mov.u32 %r30, buf;
+    mov.u32 %r31, mbar;
+    mov.u32 %r32, tslot;
+    setp.ne.u32 %p1, %r2, 0;
+    @%p1 bra ALLOC_DONE;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r32], 32;
+    tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+ALLOC_DONE:
+    // every thread copies one input word to buf (128 words = 512 bytes)
+    mul.wide.u32 %rd3, %r1, 4;
+    add.u64 %rd4, %rd2, %rd3;
+    ld.global.u32 %r3, [%rd4];
+    shl.b32 %r4, %r1, 2;
+    add.u32 %r5, %r30, %r4;
+    st.shared.u32 [%r5], %r3;
+    fence.proxy.async.shared::cta;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r31], 1;
+    fence.mbarrier_init.release.cluster;
+INIT_DONE:
+    tcgen05.fence::before_thread_sync;
+    bar.sync 0;
+    tcgen05.fence::after_thread_sync;
+    ld.shared.u32 %r6, [%r32];
+    @%p2 bra CP_DONE;
+    // descriptor: start = buf >> 4, LBO = 0, SBO = 128 B (8 << 32), version bits 46-48 = 1
+    cvt.u64.u32 %rd5, %r30;
+    shr.u64 %rd5, %rd5, 4;
+    and.b64 %rd5, %rd5, 16383;
+    or.b64 %rd5, %rd5, 34359738368;
+    or.b64 %rd5, %rd5, 70368744177664;
+    tcgen05.cp.cta_group::1.32x128b.warpx4 [%r6], %rd5;   // @CP
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r31];
+CP_DONE:
+    mov.u32 %r20, 0;               // @STW
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p3, [%r31], 0;
+    @!%p3 bra WAIT;
+    tcgen05.fence::after_thread_sync;
+    shl.b32 %r7, %r2, 21;          // lane base 32 w in bits 16+
+    add.u32 %r8, %r6, %r7;
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 {%r9}, [%r8];
+    tcgen05.wait::ld.sync.aligned;
+    add.u64 %rd6, %rd1, %rd3;
+    st.global.u32 [%rd6], %r9;
+    setp.le.u32 %p4, %r9, 1000;
+    @%p4 bra SKIP;
+    st.global.u32 [%rd6+512], %r9;
+SKIP:
+    tcgen05.fence::before_thread_sync;
+    bar.sync 0;
+    tcgen05.fence::after_thread_sync;
+    @%p1 bra DONE;
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r6, 32;
+DONE:
+    ret;
+}

@@ -1,0 +1,63 @@
+name = "s_init_dead"
+description = """
+S-INIT-DEAD: undefined data left in a buffer declared dead workspace (init = "undef",
+scratch = true, not an output) is a note, not the uninit-gmem-exit violation. Undefined data
+that leaves through an output (LEAK) or a branch on the unwritten workspace (READ) is still a
+violation. See fixtures/s_init_dead_out for the same kernel with the workspace an output."""
+ptx = "kernel.ptx"
+entry = "init_dead"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [4]
+init = "iota"
+
+[[buffers]]
+name = "ws"
+dtype = "u32"
+shape = [4]
+init = "undef"
+scratch = true
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "ws"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "the undefined ws[1] is copied into ws[2] (dead workspace)"
+expect = ["clean"]
+
+[[variants]]
+id = "LEAK"
+summary = "the undefined ws[1] is stored to out[1]"
+marker = "@L"
+find = "[%rd4+8]"
+replace = "[%rd6+4]"
+expect = ["violation"]
+
+[[variants]]
+id = "READ"
+summary = "the kernel branches on the unwritten ws[1]"
+marker = "@R"
+find = "%r0, 7"
+replace = "%r2, 7"
+expect = ["violation"]

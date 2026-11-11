@@ -1,0 +1,38 @@
+name = "probe_ldst256"
+description = """
+Probe (L-ROSETTA) for 32-byte global accesses on GB300: ld.global.v8.u32, ld.global.nc.v8.u32
+and st.global.v8.u32 (SASS LDG.E.ENL2.256 Rhi, Rlo; LDG.E.ENL2.256.CONSTANT; STG.E.ENL2.256
+[a], Rlo, Rhi). Each thread loads two 32-byte rows, adds i+1 to element i and stores them
+swapped (kernel.ptx, gen.py). expected/ is GB300's output (ptxas cubin,
+`ptxv hw-worker probes/ldst256 <cubin> --runs 1 --dump`)."""
+ptx = "kernel.ptx"
+entry = "ldst256"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024, 16]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024, 16]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

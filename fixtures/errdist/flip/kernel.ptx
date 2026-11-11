@@ -1,0 +1,146 @@
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// One thread per element i of x, w, v [64]: t1 = RN(RN(x w) v) and t2 = RN(x RN(w v)), two
+// products in each order. In exact arithmetic t1 = t2 = x w v; the kernel's differ by its
+// roundings on most elements.
+//   flip_max:  y = max(t1, t2): ties in exact arithmetic, so the kernel's maximum passes on the
+//              other operand on most elements.
+//   flip_sel:  y = t1 > t2 ? x : w: the same comparison as a selection between inputs.
+//   flip_rare: y = t1 > 0.5 ? t1 : t2: a selection that flips only where t1 and its exact
+//              value lie on either side of 0.5.
+//   flip_wide: a selection between RN(RN(x w) + v) and fma(x, w, v) over 4096 elements (below).
+// The selections are guarded stores followed by a store of t1 to z, so that ptxas keeps the
+// predicated stores (without one it branches to EXIT on the guard).
+
+.visible .entry flip_max(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py, .param .u64 pz)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<2>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    ld.param.u64 %rd5, [pz];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    add.s64 %rd11, %rd5, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    mul.rn.f32 %f5, %f4, %f3;
+    mul.rn.f32 %f6, %f2, %f3;
+    mul.rn.f32 %f7, %f1, %f6;
+    max.f32 %f8, %f5, %f7;
+    st.global.f32 [%rd10], %f8;
+    ret;
+}
+
+.visible .entry flip_sel(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py, .param .u64 pz)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<2>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    ld.param.u64 %rd5, [pz];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    add.s64 %rd11, %rd5, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    mul.rn.f32 %f5, %f4, %f3;
+    mul.rn.f32 %f6, %f2, %f3;
+    mul.rn.f32 %f7, %f1, %f6;
+    setp.gt.f32 %p1, %f5, %f7;
+    @%p1 st.global.f32 [%rd10], %f1;
+    @!%p1 st.global.f32 [%rd10], %f2;
+    st.global.f32 [%rd11], %f5;
+    ret;
+}
+
+.visible .entry flip_rare(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py, .param .u64 pz)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<2>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    ld.param.u64 %rd5, [pz];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    add.s64 %rd11, %rd5, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    mul.rn.f32 %f5, %f4, %f3;
+    mul.rn.f32 %f6, %f2, %f3;
+    mul.rn.f32 %f7, %f1, %f6;
+    st.global.f32 [%rd10], %f7;
+    setp.gt.f32 %p1, %f5, 0f3F000000;
+    @%p1 st.global.f32 [%rd10], %f5;
+    st.global.f32 [%rd11], %f5;
+    ret;
+}
+
+// flip_wide: over 4096 elements (64 CTAs), y = t1 > 0.5 ? t1 : t2 with t1 = RN(RN(x w) + v)
+// and t2 = fma(x, w, v), equal in exact arithmetic: P(differ) about 0.057 on N(0, 1) inputs, and
+// the selection flips only where t1 and its exact value lie on either side of 0.5.
+.visible .entry flip_wide(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py, .param .u64 pz)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<2>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    ld.param.u64 %rd5, [pz];
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, %ctaid.x;
+    mov.u32 %r3, %ntid.x;
+    mad.lo.u32 %r4, %r2, %r3, %r1;
+    mul.wide.u32 %rd6, %r4, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    add.s64 %rd11, %rd5, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    add.rn.f32 %f5, %f4, %f3;
+    fma.rn.f32 %f7, %f1, %f2, %f3;
+    st.global.f32 [%rd10], %f7;
+    setp.gt.f32 %p1, %f5, 0f3F000000;
+    @%p1 st.global.f32 [%rd10], %f5;
+    st.global.f32 [%rd11], %f5;
+    ret;
+}

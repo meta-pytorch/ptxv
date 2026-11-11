@@ -1,0 +1,8 @@
+ptxv probe probes/setmaxnreg_pool --timeout 10   (2026-11-06, GB300 GPU 3, CUDA 13.0)
+ptxas: warpgroup 1 runs USETMAXREG.TRY_ALLOC.CTAPOOL in a loop, warpgroup 0 USETMAXREG.DEALLOC.CTAPOOL 0x28.
+
+inc80   completed, out[t] = t + 1 for all 256 threads   (2,048 registers requested, 3,072 released)
+inc88   completed, out[t] = t + 1 for all 256 threads   (3,072 requested, 3,072 released)
+inc96   HANG (killed by the watchdog after 10 s)        (4,096 requested, 3,072 released)
+
+The model (E-SETMAXNREG: setmaxnreg is a no-op) completes all three: inc96 is a miss.

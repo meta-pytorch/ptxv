@@ -1,0 +1,31 @@
+# GB300 (sm_103a, CUDA 13.0), 2026-11-06: nvcc -O3 -gencode arch=compute_103a,code=sm_103a -o tmap_tail tmap_tail.cu -lcuda; CUDA_VISIBLE_DEVICES=1 ./tmap_tail
+cfg  0 swizzle 0 fill 0 box 32x16 at (0,3): 512 words loaded
+cfg  1 swizzle 0 fill 0 box 32x16 at (40,3): 512 words loaded
+cfg  2 swizzle 0 fill 0 box 32x16 at (184,66): 512 words loaded
+cfg  3 swizzle 0 fill 1 box 32x16 at (0,3): 512 words loaded
+cfg  4 swizzle 0 fill 1 box 32x16 at (40,3): 512 words loaded
+cfg  5 swizzle 0 fill 1 box 32x16 at (184,66): 512 words loaded
+cfg  6 swizzle 1 fill 0 box 8x16 at (0,3): 128 words loaded
+cfg  7 swizzle 1 fill 0 box 8x16 at (40,3): 128 words loaded
+cfg  8 swizzle 1 fill 0 box 8x16 at (196,66): 128 words loaded
+cfg  9 swizzle 1 fill 1 box 8x16 at (0,3): 128 words loaded
+cfg 10 swizzle 1 fill 1 box 8x16 at (40,3): 128 words loaded
+cfg 11 swizzle 1 fill 1 box 8x16 at (196,66): 128 words loaded
+cfg 12 swizzle 2 fill 0 box 16x16 at (0,3): 256 words loaded
+cfg 13 swizzle 2 fill 0 box 16x16 at (40,3): 256 words loaded
+cfg 14 swizzle 2 fill 0 box 16x16 at (192,66): 256 words loaded
+cfg 15 swizzle 2 fill 1 box 16x16 at (0,3): 256 words loaded
+cfg 16 swizzle 2 fill 1 box 16x16 at (40,3): 256 words loaded
+cfg 17 swizzle 2 fill 1 box 16x16 at (192,66): 256 words loaded
+cfg 18 swizzle 3 fill 0 box 32x16 at (0,3): 512 words loaded
+cfg 19 swizzle 3 fill 0 box 32x16 at (40,3): 512 words loaded
+cfg 20 swizzle 3 fill 0 box 32x16 at (184,66): 512 words loaded
+cfg 21 swizzle 3 fill 1 box 32x16 at (0,3): 512 words loaded
+cfg 22 swizzle 3 fill 1 box 32x16 at (40,3): 512 words loaded
+cfg 23 swizzle 3 fill 1 box 32x16 at (184,66): 512 words loaded
+encoded maps: 48 nonzero bytes in 0x40..0x7f over 24 maps
+encoded  tail: 0 of 48 loads differ from the encoded map's
+zero     tail: 0 of 72 loads differ from the encoded map's
+ones     tail: 0 of 72 loads differ from the encoded map's
+random   tail: 0 of 72 loads differ from the encoded map's
+288 loads

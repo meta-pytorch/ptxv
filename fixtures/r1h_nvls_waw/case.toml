@@ -1,0 +1,189 @@
+name = "r1h_nvls_waw"
+description = """
+Rung 1h. NVLS multicast write-after-write in one thread on GPU 0 (S-VA-ALIAS, E-MC-ALIAS-HW):
+multimem.red.add through the multicast address, then atom.exch of the same word through the
+unicast address. GB300 (probes/va_alias/xpwaw.cu, 2 GPUs, 32,768,000 checks per cell): without
+fence.proxy.alias the red lands after the exchange in every check for relaxed (gpu and sys)
+operations and in all but 32 for release.gpu; 0 with the fence, 0 for release.sys (the exchange
+is then atom.release.sys as well), 0 on one mapping (the same code with a plain red)."""
+ptx = "kernel.ptx"
+entry = "nvls_waw"
+grid = [1, 1, 1]
+block = [1, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "buf0"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "buf1"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[multicast]]
+name = "mc"
+size = 128
+binds = [
+    { device = 0, offset = 0, buffer = "buf0", byte_offset = 0, size = 128 },
+    { device = 1, offset = 0, buffer = "buf1", byte_offset = 0, size = 128 },
+]
+
+[[params]]
+kind = "ptr"
+buffer = "buf0"
+
+[[params]]
+kind = "ptr"
+buffer = "mc"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "fence.proxy.alias between the multicast red and the unicast exchange"
+expect = ["clean"]
+
+[[variants]]
+id = "same"
+summary = "control: a plain red.add through the unicast address in place of the multicast red (one mapping, no fence)"
+marker = "@RED"
+find = "multimem.red.relaxed.gpu.global.add.u32 [%rd2], 1;"
+replace = "red.relaxed.gpu.global.add.u32 [%rd1], 1;"
+edits = [{ marker = "@FENCE", find = "fence.proxy.alias;", replace = "// (no alias fence)" }]
+expect = ["clean"]
+
+[[variants]]
+id = "good-relaxed-sys"
+summary = "as good with relaxed.sys operations"
+marker = "@RED"
+find = "relaxed.gpu"
+replace = "relaxed.sys"
+edits = [{ marker = "@OP", find = "relaxed.gpu", replace = "relaxed.sys" }]
+expect = ["clean"]
+
+[[variants]]
+id = "good-release-gpu"
+summary = "as good with release.gpu operations"
+marker = "@RED"
+find = "relaxed.gpu"
+replace = "release.gpu"
+edits = [{ marker = "@OP", find = "relaxed.gpu", replace = "release.gpu" }]
+expect = ["clean"]
+
+[[variants]]
+id = "good-release-sys"
+summary = "as good with release.sys operations"
+marker = "@RED"
+find = "relaxed.gpu"
+replace = "release.sys"
+edits = [{ marker = "@OP", find = "relaxed.gpu", replace = "release.sys" }]
+expect = ["clean"]
+
+[[variants]]
+id = "same-relaxed-sys"
+summary = "as same with relaxed.sys operations"
+marker = "@RED"
+find = "multimem.red.relaxed.gpu.global.add.u32 [%rd2], 1;"
+replace = "red.relaxed.sys.global.add.u32 [%rd1], 1;"
+edits = [
+    { marker = "@FENCE", find = "fence.proxy.alias;", replace = "// (no alias fence)" },
+    { marker = "@OP", find = "relaxed.gpu", replace = "relaxed.sys" },
+]
+expect = ["clean"]
+
+[[variants]]
+id = "same-release-gpu"
+summary = "as same with release.gpu operations"
+marker = "@RED"
+find = "multimem.red.relaxed.gpu.global.add.u32 [%rd2], 1;"
+replace = "red.release.gpu.global.add.u32 [%rd1], 1;"
+edits = [
+    { marker = "@FENCE", find = "fence.proxy.alias;", replace = "// (no alias fence)" },
+    { marker = "@OP", find = "relaxed.gpu", replace = "release.gpu" },
+]
+expect = ["clean"]
+
+[[variants]]
+id = "same-release-sys"
+summary = "as same with release.sys operations"
+marker = "@RED"
+find = "multimem.red.relaxed.gpu.global.add.u32 [%rd2], 1;"
+replace = "red.release.sys.global.add.u32 [%rd1], 1;"
+edits = [
+    { marker = "@FENCE", find = "fence.proxy.alias;", replace = "// (no alias fence)" },
+    { marker = "@OP", find = "relaxed.gpu", replace = "release.sys" },
+]
+expect = ["clean"]
+
+[[variants]]
+id = "B87"
+summary = "no fence.proxy.alias between multimem.red.relaxed.gpu and atom.relaxed.gpu.exch of the same word"
+marker = "@FENCE"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+expect = ["race"]
+hw_note = "GB300: the red lands after the exchange in 32,768,000 of 32,768,000 checks"
+
+[[variants]]
+id = "B88"
+summary = "as B87 at .sys scope (multimem.red.relaxed.sys, atom.relaxed.sys.exch)"
+marker = "@FENCE"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+edits = [
+    { marker = "@RED", find = "relaxed.gpu", replace = "relaxed.sys" },
+    { marker = "@OP", find = "relaxed.gpu", replace = "relaxed.sys" },
+]
+expect = ["race"]
+hw_note = "GB300: the red lands after the exchange in 32,768,000 of 32,768,000 checks"
+
+[[variants]]
+id = "B89"
+summary = "as B87 with release.gpu operations (multimem.red.release.gpu, atom.release.gpu.exch)"
+marker = "@FENCE"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+edits = [
+    { marker = "@RED", find = "relaxed.gpu", replace = "release.gpu" },
+    { marker = "@OP", find = "relaxed.gpu", replace = "release.gpu" },
+]
+expect = ["race"]
+hw_note = "GB300: the red lands after the exchange in all but 31-32 of 32,768,000 checks"
+
+[[variants]]
+id = "B90"
+summary = "as B87 with release.sys operations (multimem.red.release.sys, atom.release.sys.exch)"
+marker = "@FENCE"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+edits = [
+    { marker = "@RED", find = "relaxed.gpu", replace = "release.sys" },
+    { marker = "@OP", find = "relaxed.gpu", replace = "release.sys" },
+]
+expect = ["race"]
+hw_note = "GB300: 0 of 32,768,000 out of order (CI95 [0, 1.2e-7]): a bound, not an ordering rule; the PTX ISA still requires the alias fence"
+
+[[variants]]
+id = "B91"
+summary = "as B87 with red.relaxed.gpu.add 256 through the unicast address in place of the exchange"
+marker = "@FENCE"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+edits = [{ marker = "@OP", find = "atom.relaxed.gpu.global.exch.b32 %r1, [%rd1], 256;", replace = "red.relaxed.gpu.global.add.u32 [%rd1], 256; mov.u32 %r1, 0;" }]
+expect = ["race"]
+hw_note = "GB300: no lost update in 32,768,000 checks (both additions land; their order is not observable)"

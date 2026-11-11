@@ -1,0 +1,4 @@
+{"version": 1, "seed": 1, "name": "768 (90%) or 1 (10%): a lattice of 2^0 with partial sums up to 2^25.2 (tier 0's 24-bit window)",
+ "default": {"dist": {"kind": "mixture", "components": [
+   {"weight": 0.9, "dist": {"kind": "integers", "lo": 768, "hi": 768}},
+   {"weight": 0.1, "dist": {"kind": "integers", "lo": 1, "hi": 1}}]}}}

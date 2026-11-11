@@ -1,0 +1,66 @@
+name = "flip_max"
+description = """
+errdist branch flips (N-ERRDIST-SEL): y = max(t1, t2) with t1 = RN(RN(x w) v), t2 = RN(x RN(w v))
+(../kernel.ptx): equal in exact arithmetic, apart by the kernel's roundings, so the maximum
+passes on the other operand in the kernel than in the exact computation on most elements. The
+linearized tiers, which follow one branch, must be refused on Tier 3's count."""
+ptx = "../kernel.ptx"
+entry = "flip_max"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "z"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

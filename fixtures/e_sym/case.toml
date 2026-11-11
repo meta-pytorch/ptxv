@@ -1,0 +1,49 @@
+name = "e_sym"
+description = """
+Fixture for cluster symmetry (E-CTA-INDEP, `check --slices`): 4 identical-looking CTAs. The
+good kernel takes its position-dependent branch the same way in every CTA, so exploring CTA 0
+stands for all; each bug only shows in CTA 3, which the symmetry check must notice (it falls
+back to exploring every CTA)."""
+ptx = "kernel.ptx"
+entry = "e_sym"
+grid = [4, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [256]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "SYM1"
+summary = "CTA 3 skips the arrival: its consumer waits forever"
+marker = "@ARRIVE"
+find = "mbarrier.arrive.release.cta.shared::cta.b64 _, [%r3];"
+replace = "setp.eq.u32 %p1, %r2, 3;\n    @!%p1 mbarrier.arrive.release.cta.shared::cta.b64 _, [%r3];"
+expect = ["deadlock"]
+
+[[variants]]
+id = "SYM2"
+summary = "CTA 3 writes its payload after the arrival: a race in that CTA only"
+marker = "@SLOT"
+find = "st.shared.u32 [%r9], %r2;"
+replace = "setp.eq.u32 %p1, %r2, 3;\n    @!%p1 st.shared.u32 [%r9], %r2;"
+expect = ["race"]
+# SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG): the shared-memory race is no race
+# on the hardware; what it leaves is the schedule-dependent outcome.
+expect_sass = ["nondeterministic", "violation"]
+
+[[variants.edits]]
+marker = "@ARRIVE"
+find = "mbarrier.arrive.release.cta.shared::cta.b64 _, [%r3];"
+replace = "mbarrier.arrive.release.cta.shared::cta.b64 _, [%r3];\n    @%p1 st.shared.u32 [%r9], %r2;"

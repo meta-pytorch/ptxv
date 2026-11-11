@@ -1,0 +1,36 @@
+// probes/bfe64: bfe.u64 / bfe.s64 d, a, pos, len (PTX ISA: pos and len taken mod 256; the
+// field a[pos .. pos + len - 1] clamped to bit 63, zero- / sign-extended from its last bit,
+// 0 for len 0). 256 threads; a = in[t].a (64 bits), pos, len = in[t].pos, in[t].len (gen.py:
+// edges around 32 and 64, above 255, random); out[2 t] = bfe.u64, out[2 t + 1] = bfe.s64;
+// out[512 + 2 t] = bfe.u64 a, 30, 40, out[512 + 2 t + 1] = bfe.s64 a, 33, 31 (immediates).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry bfe64(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<16>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 16;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.u64   %rd5, [%rd4];
+    ld.global.v2.u32 {%r2, %r3}, [%rd4+8];
+    add.s64         %rd6, %rd2, %rd3;
+    bfe.u64         %rd7, %rd5, %r2, %r3;
+    bfe.s64         %rd8, %rd5, %r2, %r3;
+    st.global.v2.u64 [%rd6], {%rd7, %rd8};
+    bfe.u64         %rd9, %rd5, 30, 40;
+    bfe.s64         %rd10, %rd5, 33, 31;
+    st.global.v2.u64 [%rd6+4096], {%rd9, %rd10};
+    ret;
+}

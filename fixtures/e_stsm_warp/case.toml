@@ -1,0 +1,68 @@
+name = "e_stsm_warp"
+description = """
+One warp (.reqntid 32): stmatrix.sync.aligned.m8n8.x4 by every lane, bar.warp.sync -1, then
+ld.shared.v4 of another lane's row. ptxas compiles the bar.warp.sync to nothing, so in SASS the
+LDS is ordered after the other lanes' STSM only by the converged warp (E-LOCKSTEP; before
+2026-11-06 STSM was not part of the lockstep join and the SASS front reported a write-read race,
+as on a captured Triton kernel with the same exchange). expected/out.bin: GB300 output
+(ptxv hw, GPU 1, 2026-11-06: 1000/1000 runs equal the simulator's output, c340b99460a07f7e)."""
+ptx = "kernel.ptx"
+entry = "stsm_warp"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+dynamic_smem = 512
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [128]
+init = "bits"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]
+
+[[variants]]
+id = "nosync"
+summary = "no bar.warp.sync between the stmatrix and the ld.shared: a PTX-model race between lanes of one converged warp, labelled latent-needs-divergence (E-LOCKSTEP); SASS orders the LDS after the STSM (in-order issue, probes/warp_order)"
+edits = [{ marker = "@WSYNC", replace = "<delete>" }]
+expect = ["race"]
+expect_sass = ["clean"]
+hw_note = "GB300 (ptxv hw, GPU 1, 2026-11-06): 1000/1000 runs equal the simulator's output (= expected/out.bin)"
+
+[[variants]]
+id = "divst"
+summary = "lane 1 stores into lane 0's row inside a lane-dependent branch, then every lane loads with no bar.warp.sync: the warp is diverged between the accesses, so the PTX race is not labelled latent-needs-divergence; on SASS ptxas predicates the store (`@!P0 STS`), so the warp stays converged and the LDS is ordered after it"
+edits = [{ marker = "@DIV", find = "// (divergent store slot)", replace = "setp.ne.u32 %p1, %r1, 1; @%p1 bra SKIP; st.shared.u32 [%r6+16], %r2; SKIP:" }]
+expect = ["race"]
+expect_sass = ["clean"]
+hw_note = "GB300 (ptxv hw, GPU 1, 2026-11-06): 1000/1000 runs equal the simulator's output (out=aa57f155072a4713: lane 0 reads lane 1's store; expected/out.bin is the good variant's and differs in word 0)"
+
+[[variants]]
+id = "dup"
+summary = "rows j and j + 4 of each matrix get one address (address lane bit 2 cleared) and the same data (lanes 16..31 hold lanes 0..15's registers): two lanes of one stmatrix write each byte with the same value, which is one write (E-STSM-DUP), not a race"
+edits = [{ marker = "@ROW", find = "shl.b32 %r7, %r1, 4;", replace = "and.b32 %r7, %r1, 27; shl.b32 %r7, %r7, 4;" }, { marker = "@DATA", find = "add.s64 %rd4, %rd1, %rd3;", replace = "and.b32 %r0, %r1, 15; mul.wide.u32 %rd6, %r0, 16; add.s64 %rd4, %rd1, %rd6;" }, { marker = "@READ", find = "shl.b32 %r10, %r9, 4;", replace = "and.b32 %r9, %r9, 27; shl.b32 %r10, %r9, 4;" }]
+expect = ["clean"]
+
+[[variants]]
+id = "dupdiff"
+summary = "rows j and j + 4 get one address but different data: two lanes of one stmatrix write different values to one word (violation stsm-dup: the winner is not specified)"
+edits = [{ marker = "@ROW", find = "shl.b32 %r7, %r1, 4;", replace = "and.b32 %r7, %r1, 27; shl.b32 %r7, %r7, 4;" }, { marker = "@READ", find = "shl.b32 %r10, %r9, 4;", replace = "and.b32 %r9, %r9, 27; shl.b32 %r10, %r9, 4;" }]
+expect = ["violation"]

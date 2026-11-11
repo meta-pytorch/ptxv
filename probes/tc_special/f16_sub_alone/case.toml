@@ -1,0 +1,54 @@
+name = "probe_tc_special_f16_sub_alone"
+description = """
+probes/tc_special set f16_sub_alone (f16): tcgen05.mma.kind::f16 on special values (gen.py). expected/
+is GB300's output."""
+ptx = "../kernel.ptx"
+entry = "tcs_f16"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "u16"
+shape = [128, 64]
+init = "file"
+file = "A.bin"
+
+[[buffers]]
+name = "B"
+dtype = "u16"
+shape = [64, 64]
+init = "file"
+file = "B.bin"
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [128, 64]
+init = "nan"
+expect = "expected/D.bin"
+
+# A[m][k] row-major viewed as 3-D (k%8, m, k/8): box (8, 128, 8) lands in shared memory as
+# 8 K-chunks of 128 rows x 16 B (LBO = 2048 B, SBO = 128 B).
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [8, 128, 8]
+dims = [8, 128, 8]
+strides = [128, 16]
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [8, 64, 8]
+dims = [8, 64, 8]
+strides = [128, 16]
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

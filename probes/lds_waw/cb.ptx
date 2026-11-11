@@ -1,0 +1,98 @@
+// probes/lds_waw variant cb: `LDS.128 Rn, [a]` then `LDS Rn+2|3, [b]` with no wait
+// between them (ptxas's own schedule under .maxnreg 24). First load lane stride 128 bytes,
+// second 0 (128: 32-way bank conflict, 0: broadcast). w[k] of lane l's region = 0x100000 *
+// warp + 0x1000 * l + k. out[3 * gtid + {0, 1, 2}] = {first.x, first.y + sum, second}.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry lds_waw(.param .u64 out)
+.maxntid 128, 1, 1
+.maxnreg 24
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<32>;
+    .reg .b32   %x<17>;
+    .reg .b64   %rd<8>;
+    .shared .align 16 .b8 w[16384];
+    mov.u32         %r0, %tid.x;
+    shr.u32         %r1, %r0, 5;
+    and.b32         %r2, %r0, 31;
+    mov.u32         %r3, w;
+    shl.b32         %r9, %r1, 12;
+    add.u32         %r10, %r3, %r9;
+    // fill this warp's 4 KB: word k of lane l's 128-byte region
+    mov.u32         %r21, 0;
+FILL:
+    shl.b32         %r22, %r21, 5;
+    add.u32         %r22, %r22, %r2;
+    shl.b32         %r23, %r22, 2;
+    add.u32         %r23, %r10, %r23;
+    shr.u32         %r24, %r22, 5;
+    and.b32         %r25, %r24, 31;
+    shr.u32         %r26, %r22, 10;
+    shl.b32         %r27, %r1, 20;
+    shr.u32         %r28, %r22, 5;
+    shl.b32         %r28, %r28, 0;
+    // word index g = 32 * r21 + lane; region l = g / 32, k = g % 32
+    and.b32         %r29, %r22, 31;
+    shl.b32         %r30, %r28, 12;
+    add.u32         %r30, %r30, %r27;
+    add.u32         %r30, %r30, %r29;
+    st.shared.u32   [%r23], %r30;
+    add.u32         %r21, %r21, 1;
+    setp.lt.u32     %p1, %r21, 32;
+    @%p1 bra        FILL;
+    bar.warp.sync   0xffffffff;
+    ld.volatile.shared.u32 %x0, [%r10+32];
+    ld.volatile.shared.u32 %x1, [%r10+36];
+    ld.volatile.shared.u32 %x2, [%r10+40];
+    ld.volatile.shared.u32 %x3, [%r10+44];
+    ld.volatile.shared.u32 %x4, [%r10+48];
+    ld.volatile.shared.u32 %x5, [%r10+52];
+    ld.volatile.shared.u32 %x6, [%r10+56];
+    ld.volatile.shared.u32 %x7, [%r10+60];
+    ld.volatile.shared.u32 %x8, [%r10+64];
+    ld.volatile.shared.u32 %x9, [%r10+68];
+    ld.volatile.shared.u32 %x10, [%r10+72];
+    ld.volatile.shared.u32 %x11, [%r10+76];
+    ld.volatile.shared.u32 %x12, [%r10+80];
+    ld.volatile.shared.u32 %x13, [%r10+84];
+    ld.volatile.shared.u32 %x14, [%r10+88];
+    ld.volatile.shared.u32 %x15, [%r10+92];
+    ld.volatile.shared.u32 %x16, [%r10+96];
+    mul.lo.u32      %r12, %r2, 128;
+    add.u32         %r12, %r10, %r12;
+    mul.lo.u32      %r13, %r2, 0;
+    add.u32         %r13, %r10, %r13;
+    ld.volatile.shared.v4.u32 {%r4, %r5, %r6, %r7}, [%r12];
+    ld.volatile.shared.u32 %r8, [%r13+16];
+    mov.u32 %r20, %r5;
+    add.u32 %r20, %r20, %x0;
+    add.u32 %r20, %r20, %x1;
+    add.u32 %r20, %r20, %x2;
+    add.u32 %r20, %r20, %x3;
+    add.u32 %r20, %r20, %x4;
+    add.u32 %r20, %r20, %x5;
+    add.u32 %r20, %r20, %x6;
+    add.u32 %r20, %r20, %x7;
+    add.u32 %r20, %r20, %x8;
+    add.u32 %r20, %r20, %x9;
+    add.u32 %r20, %r20, %x10;
+    add.u32 %r20, %r20, %x11;
+    add.u32 %r20, %r20, %x12;
+    add.u32 %r20, %r20, %x13;
+    add.u32 %r20, %r20, %x14;
+    add.u32 %r20, %r20, %x15;
+    add.u32 %r20, %r20, %x16;
+    ld.param.u64    %rd0, [out];
+    cvta.to.global.u64 %rd1, %rd0;
+    mov.u32         %r15, %ctaid.x;
+    mad.lo.u32      %r16, %r15, 128, %r0;
+    mul.lo.u32      %r16, %r16, 3;
+    mul.wide.u32    %rd2, %r16, 4;
+    add.u64         %rd3, %rd1, %rd2;
+    st.global.u32   [%rd3], %r4;
+    st.global.u32   [%rd3+4], %r20;
+    st.global.u32   [%rd3+8], %r8;
+    ret;
+}

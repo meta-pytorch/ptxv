@@ -1,0 +1,83 @@
+// Split-interleaving probe: in every warp, lanes 0-5 run a long path P (mode 0: dependent
+// uncached loads, 1: dependent atomics, 2: integer divides + MUFU) between two
+// %globaltimer reads; lanes 6-31 run M iterations of a %globaltimer loop. Per warp:
+// out[4w..4w+3] = t0, t1 (path P), h0, h1 (first / last stamp of the other path).
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 pout, .param .u64 pchain, .param .u32 n, .param .u32 mode,
+                  .param .u32 m, .param .u32 mask)
+{
+    .reg .b32 %r<30>;
+    .reg .b64 %rd<30>;
+    .reg .pred %p<6>;
+    .reg .f32 %f<4>;
+    ld.param.u64 %rd1, [pout];
+    ld.param.u64 %rd2, [pchain];
+    ld.param.u32 %r10, [n];
+    ld.param.u32 %r11, [mode];
+    ld.param.u32 %r12, [m];
+    ld.param.u32 %r13, [mask];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    and.b32 %r20, %r1, 31;
+    mov.u32 %r21, %ctaid.x;
+    mov.u32 %r22, %ntid.x;
+    mad.lo.u32 %r23, %r21, %r22, %r1;
+    shr.u32 %r23, %r23, 5;            // global warp id
+    mul.wide.u32 %rd20, %r23, 32;
+    add.s64 %rd21, %rd1, %rd20;       // this warp's 4 slots
+    setp.lt.u32 %p1, %r20, 6;
+    @!%p1 bra HI;
+    mov.u64 %rd10, %globaltimer;
+    and.b32 %r24, %r23, %r13;
+    mul.wide.u32 %rd22, %r24, 4096;
+    mov.u64 %rd5, %rd22;
+    mov.u32 %r2, 0;
+    mov.u32 %r5, 12345;
+    setp.eq.u32 %p3, %r11, 1;
+    setp.eq.u32 %p4, %r11, 2;
+CH:
+    @%p4 bra DIV;
+    add.s64 %rd6, %rd2, %rd5;
+    @%p3 bra ATM;
+    ld.global.cv.u64 %rd5, [%rd6];
+    bra.uni NX;
+ATM:
+    atom.global.add.u64 %rd7, [%rd6], 0;
+    mov.u64 %rd5, %rd7;
+    bra.uni NX;
+DIV:
+    div.u32 %r5, %r5, 7;
+    add.u32 %r5, %r5, 1000003;
+    cvt.rn.f32.u32 %f1, %r5;
+    sin.approx.f32 %f2, %f1;
+    cvt.rzi.u32.f32 %r6, %f2;
+    add.u32 %r5, %r5, %r6;
+NX:
+    add.u32 %r2, %r2, 1;
+    setp.lt.u32 %p2, %r2, %r10;
+    @%p2 bra CH;
+    mov.u64 %rd11, %globaltimer;
+    setp.eq.u32 %p5, %r20, 0;
+    @%p5 st.global.v2.u64 [%rd21], {%rd10, %rd11};
+    cvt.u64.u32 %rd8, %r5;
+    add.s64 %rd8, %rd8, %rd5;
+    setp.eq.u64 %p5, %rd8, 1;      // never: keeps the chain live
+    @%p5 st.global.u64 [%rd1], %rd8;
+    bra.uni J;
+HI:
+    mov.u64 %rd12, %globaltimer;
+    mov.u32 %r3, 0;
+HL:
+    mov.u64 %rd13, %globaltimer;
+    add.u32 %r3, %r3, 1;
+    setp.lt.u32 %p2, %r3, %r12;
+    @%p2 bra HL;
+    setp.eq.u32 %p5, %r20, 6;
+    @%p5 st.global.v2.u64 [%rd21+16], {%rd12, %rd13};
+J:
+    bar.warp.sync -1;
+    ret;
+}

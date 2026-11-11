@@ -1,0 +1,56 @@
+name = "s_atom_ext"
+description = """
+Integer min / max and compare-and-swap atomics against GB300 bitwise, both front-ends
+(kernel.ptx): red/atom .min/.max .u32/.s32/.u64/.s64 and atom.cas .b32/.b64 on shared,
+global and generic addresses, plus CuTeDSL's smem_fmax sequence. Reductions over all 64
+threads land in schedule-independent words; value-returning atomics act on the thread's own
+words; CAS compares succeed on even threads and fail on odd ones. SASS: ATOMS.MIN/MAX,
+ATOMS.CAS[.64], ATOMS.CAST.SPIN.64, ATOMG/REDG.E.MIN/MAX[.S32|.64|.S64], ATOMG.E.CAS[.64],
+ATOM.E.CAS[.64], ATOM.E.MIN.S32 / MAX.64. expected/ is GB300's output (ptxv hw)."""
+ptx = "kernel.ptx"
+entry = "s_atom_ext"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out", "gm"]
+
+[[buffers]]
+name = "rnd"
+dtype = "u32"
+shape = [256]
+init = "bits"
+seed = 7
+
+[[buffers]]
+name = "gm"
+dtype = "u32"
+shape = [800]
+init = "bits"
+seed = 8
+expect = "expected/gm.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1800]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "rnd"
+
+[[params]]
+kind = "ptr"
+buffer = "gm"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+# PTX: red.min and red.max of one shared word by lanes of the converged warp, no
+# bar.warp.sync between them: either order under the PTX model (E-WARP-ORDER), GB300 runs
+# them in program order, the explored outcome (bitwise = GB300).
+expect = ["nondeterministic"]
+expect_sass = ["clean"]

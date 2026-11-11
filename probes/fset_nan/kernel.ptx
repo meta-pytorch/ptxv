@@ -1,0 +1,47 @@
+// probes/fset_nan (written by gen.py, which documents the records): the unordered float
+// compare as a 1.0f / 0 value, SASS `FSET.BF.NAN.AND Rd, a, b, Pc | !Pc | PT` with b a
+// register (also a itself: isnan), a uniform register, an immediate or RZ, |R| / -R
+// operands and a guard, from set.nan[.and].f32.f32 and from setp.nan.f32 + selp.f32.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry fset_nan(.param .u64 pin, .param .u64 pout, .param .f32 pu)
+{
+ .reg .b32 %r<4>; .reg .b64 %rd<8>; .reg .f32 %f<12>; .reg .pred %p<4>;
+ ld.param.u64 %rd1,[pin]; ld.param.u64 %rd2,[pout]; ld.param.f32 %f3,[pu];
+ cvta.to.global.u64 %rd1,%rd1; cvta.to.global.u64 %rd2,%rd2;
+ mov.u32 %r1,%tid.x; mul.wide.u32 %rd3,%r1,16; add.s64 %rd4,%rd1,%rd3;
+ mul.wide.u32 %rd5,%r1,48; add.s64 %rd6,%rd2,%rd5;
+ ld.global.f32 %f1,[%rd4]; ld.global.f32 %f2,[%rd4+4]; ld.global.u32 %r2,[%rd4+8];
+ setp.ne.u32 %p1,%r2,0;
+ abs.f32 %f4,%f1; neg.f32 %f5,%f2;
+ set.nan.f32.f32 %f6,%f1,%f1;
+ st.global.f32 [%rd6+0],%f6;
+ setp.nan.f32 %p2,%f2,%f2;
+ selp.f32 %f6,0f3F800000,0f00000000,%p2;
+ st.global.f32 [%rd6+4],%f6;
+ set.nan.f32.f32 %f6,%f1,%f2;
+ st.global.f32 [%rd6+8],%f6;
+ set.nan.f32.f32 %f6,%f1,%f3;
+ st.global.f32 [%rd6+12],%f6;
+ set.nan.f32.f32 %f6,%f1,0f41A00000;
+ st.global.f32 [%rd6+16],%f6;
+ set.nan.f32.f32 %f6,%f1,0f7F800000;
+ st.global.f32 [%rd6+20],%f6;
+ set.nan.f32.f32 %f6,%f1,0f00000000;
+ st.global.f32 [%rd6+24],%f6;
+ set.nan.f32.f32 %f6,%f4,%f5;
+ st.global.f32 [%rd6+28],%f6;
+ set.nan.and.f32.f32 %f6,%f1,%f2,%p1;
+ st.global.f32 [%rd6+32],%f6;
+ set.nan.and.f32.f32 %f6,%f2,%f1,!%p1;
+ st.global.f32 [%rd6+36],%f6;
+ set.nan.and.f32.f32 %f6,%f1,%f1,%p1;
+ st.global.f32 [%rd6+40],%f6;
+ mov.f32 %f6,0fBF800000;
+ @!%p1 bra G;
+ set.nan.f32.f32 %f6,%f2,%f1;
+G:
+ st.global.f32 [%rd6+44],%f6;
+ ret;
+}

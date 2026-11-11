@@ -1,0 +1,137 @@
+name = "probe_mbar_init_diverge"
+description = """
+Probe (S-MBAR, E-LOCKSTEP) for an mbarrier initialized by the elected lane on a divergent
+path and waited on by the other lanes of the same warp at the join, with no reconvergence
+(kernel.ptx). Each slot first holds a planted stale word (bit 63 set: a parity-0 wait accepts
+it at once). out[t] = rounds in which thread t passed the wait and read a stale data word;
+expected/ is all zeros (no early pass). Variants: nobsync (ptxas's BSSY / BSYNC around the
+elected path NOPed: the binary shape of the warp-specialized attention kernels, `@!P0 BRA`
+past SYNCS.EXCH.64, then SYNCS.PHASECHK.TRANS64.TRYWAIT by every lane), late (the same with a
+20,000-cycle spin on the elected path before the init: positive control), reconv / late_reconv
+(ptxas's reconvergence kept, `bar.warp.sync` at the join: negative controls). Launch 264 CTAs
+x 128 threads (4 warps), 256 rounds per warp: 270,336 warp-rounds, 8,380,416 waiting-lane
+reads per run. ptxas 13.0 (-arch=sm_103a). results.txt, GB300."""
+ptx = "kernel.ptx"
+entry = "mbar_init_diverge"
+ptxas_toolkit = "13.0"
+grid = [264, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [33792]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000080"
+
+[[params]]
+kind = "u32"
+value = 256
+
+[[variants]]
+expect = ["clean"]
+hw_note = "GB300 10,000/10,000 runs: 0 early passes"
+id = "reconv"
+summary = "negative control: ptxas's BSSY.RECONVERGENT / BSYNC around the elected path, bar.warp.sync at the join"
+marker = "@SYNC"
+find = "// @SYNC"
+replace = "bar.warp.sync -1;"
+
+[[variants]]
+expect = ["race"]
+hw_note = "GB300 10,000/10,000 runs: 0 early passes (2.7e9 warp-rounds, 8.4e10 waiting-lane reads)"
+id = "nobsync"
+summary = "the attention kernels' shape: BSSY at 0x420 and BSYNC at 0x5a0 NOPed (no reconvergence before the wait)"
+patch = [{ at = "@0x420", nop = true }, { at = "@0x5a0", nop = true }]
+
+[[variants]]
+expect = ["race"]
+hw_note = "GB300 10,000/10,000 runs: 0 early passes (clock spin, no yield)"
+id = "late"
+summary = "positive control: nobsync with a 20,000-cycle spin on the elected path before the init"
+marker = "@DELAY"
+find = "%r24, 0;"
+replace = "%r24, 20000;"
+patch = [{ at = "@0x420", nop = true }, { at = "@0x5a0", nop = true }]
+
+[[variants]]
+expect = ["clean"]
+hw_note = "GB300 10 runs: 0 early passes"
+id = "late_reconv"
+summary = "negative control under delay: the 20,000-cycle spin with ptxas's reconvergence kept"
+marker = "@DELAY"
+find = "%r24, 0;"
+replace = "%r24, 20000;"
+
+[[variants]]
+expect = ["race"]
+hw_note = "GB300 10,000/10,000 runs wrong: every waiting lane passes on the stale word in every round"
+id = "late_sleep"
+summary = "positive control: BSSY at 0x460 and BSYNC at 0x5b0 NOPed, the elected path spinning on nanosleep.u32 1000 for 20,000 cycles before the init"
+marker = "@DELAY"
+find = "%r24, 0;"
+replace = "%r24, 20000;"
+patch = [{ at = "@0x460", nop = true }, { at = "@0x5b0", nop = true }]
+
+[[variants.edits]]
+marker = "@SLEEP"
+find = "// @SLEEP"
+replace = "nanosleep.u32 1000;"
+
+[[variants]]
+expect = ["deadlock"]
+hw_note = "GB300 10/10 runs: every lane reads stale in every round (the plant is accepted)"
+id = "stale_only"
+summary = "plant check: no init, store or arrive (every lane waits on the planted word alone): all reads stale"
+marker = "@INIT"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@DATA"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@ARRIVE"
+replace = "<delete>"
+
+[[variants]]
+expect = ["clean"]
+hw_note = "GB300 10,000/10,000 runs wrong as late_sleep: ptxas's non-reconvergent BSSY B0 / BSYNC B0 does not hold the waiting lanes while the elected lane sleeps (the SASS front is clean: a miss)"
+id = "late_sleep_reconv"
+summary = "negative control under yield: the nanosleep spin with ptxas's BSSY / BSYNC kept"
+marker = "@DELAY"
+find = "%r24, 0;"
+replace = "%r24, 20000;"
+
+[[variants.edits]]
+marker = "@SLEEP"
+find = "// @SLEEP"
+replace = "nanosleep.u32 1000;"
+
+[[variants]]
+expect = ["clean"]
+hw_note = "GB300 10,000/10,000 runs: 0 early passes (WARPSYNC.ALL at the join)"
+id = "late_sleep_warpsync"
+summary = "negative control under yield: the nanosleep spin, bar.warp.sync at the join"
+marker = "@DELAY"
+find = "%r24, 0;"
+replace = "%r24, 20000;"
+
+[[variants.edits]]
+marker = "@SLEEP"
+find = "// @SLEEP"
+replace = "nanosleep.u32 1000;"
+
+[[variants.edits]]
+marker = "@SYNC"
+find = "// @SYNC"
+replace = "bar.warp.sync -1;"

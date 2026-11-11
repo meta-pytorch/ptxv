@@ -1,0 +1,45 @@
+// E-CLOCK: fixtures/e_clock_timeout with a 32-bit %globaltimer_lo timeout (SASS: a 32-bit
+// SR_GLOBALTIMERLO read). Thread 32 polls a flag and, after 2000 ns, reads the data without the
+// flag: a read that races with thread 0's store (thread 0 sleeps 200 us first). The timeout
+// branch depends on the timer: both sides are explored.
+//   good: the race.
+//   NOTIMEOUT: the timeout branch deleted: correct (out[0] = 7).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_clock_timeout32(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra READER;
+    nanosleep.u32 200000;
+    mov.u32 %r2, 7;
+    st.global.u32 [%rd1+4], %r2;
+    mov.u32 %r3, 1;
+    st.release.gpu.global.u32 [%rd1+8], %r3;
+    bra DONE;
+READER:
+    setp.ne.u32 %p2, %r1, 32;
+    @%p2 bra DONE;
+    mov.u32 %r6, %globaltimer_lo;
+POLL:
+    ld.acquire.gpu.global.u32 %r4, [%rd1+8];
+    setp.ne.u32 %p3, %r4, 0;
+    @%p3 bra READ;
+    mov.u32 %r7, %globaltimer_lo;
+    sub.u32 %r8, %r7, %r6;
+    setp.gt.u32 %p4, %r8, 2000;
+    @%p4 bra READ;                       // @TIMEOUT
+    bra POLL;
+READ:
+    ld.global.u32 %r5, [%rd1+4];
+    st.global.u32 [%rd1], %r5;
+DONE:
+    ret;
+}

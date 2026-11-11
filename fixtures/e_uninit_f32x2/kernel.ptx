@@ -1,0 +1,36 @@
+//
+// S-INIT through a packed f32x2 FMA (SASS FFMA2): lane 0 of the pair is loaded by every
+// thread, lane 1 only by threads 0..15; every thread stores lane 0 of the result, threads 0..15 also lane 1. Lane 0 of
+// FFMA2 reads lane 0 of its operands only, so the store is defined. ptxas packs values of
+// different rows into one FADD2 / FMUL2 (CuTeDSL FlashAttentionBackwardPreprocess).
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry uninit_f32x2(
+	.param .u64 in_ptr,
+	.param .u64 out_ptr
+)
+.reqntid 32
+{
+	.reg .pred %p<2>;
+	.reg .b32 %r<8>;
+	.reg .b64 %rd<10>;
+
+	ld.param.u64 %rd1, [in_ptr];
+	ld.param.u64 %rd2, [out_ptr];
+	mov.u32 %r1, %tid.x;
+	setp.lt.u32 %p1, %r1, 16;
+	mul.wide.u32 %rd3, %r1, 4;
+	add.s64 %rd4, %rd1, %rd3;
+	ld.global.u32 %r2, [%rd4];
+	@%p1 ld.global.u32 %r3, [%rd4+128];
+	mov.b64 %rd5, {%r2, %r3};
+	fma.rn.f32x2 %rd6, %rd5, %rd5, %rd5;
+	mov.b64 {%r4, %r5}, %rd6;
+	add.s64 %rd7, %rd2, %rd3;
+	st.global.u32 [%rd7], %r4;
+	@%p1 st.global.u32 [%rd7+128], %r5; // @STORE
+	ret;
+}

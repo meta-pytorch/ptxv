@@ -1,0 +1,41 @@
+name = "e_peek_result"
+description = """
+C-WAIT for successful peeks: a peek whose result only decides the skip of a blocking wait
+certifies (good); one whose result is also stored (READ) or that alone orders a read (ACQ) is
+refused: in another schedule it fails."""
+ptx = "kernel.ptx"
+entry = "e_peek_result"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "READ"
+marker = "@USE"
+find = "mov.u32 %r5, 0;"
+replace = "selp.u32 %r5, 1, 0, %p5; st.global.u32 [%rd1+4], %r5;"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "ACQ"
+marker = "@SKIP"
+find = "@%p5 bra SKIP;"
+replace = "bra SKIP;"
+expect = ["race"]
+# SASS: LDS / STS are strong (S-SMEM-STRONG), so the early read is no race: it reads the
+# never-written word (violation) or 7 (two outputs).
+expect_sass = ["nondeterministic", "violation"]

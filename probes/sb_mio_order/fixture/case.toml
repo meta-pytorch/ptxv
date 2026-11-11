@@ -1,0 +1,289 @@
+name = "probe_sb_mio_order_fixture"
+description = """
+The windows of probes/sb_mio_order as control-bit / encoding patches of the ptxas cubin of
+../kernel.ptx (written by `patch.py <cubin> <dir> fixture/case.toml`), one CTA: the static
+scoreboard check (L-SB-ORDER) must accept the windows GB300 runs correctly (a later
+memory-pipe read scoreboard covers earlier STS reads) and flag the two that fail on GB300."""
+ptx = "../kernel.ptx"
+entry = "sb_mio_order"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+dynamic_smem = 65536
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "u32"
+value = 3072
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "inorder"
+expect = ["clean"]
+
+[[variants.patch]]
+at = "@0x05b0"
+bits = [[0, 64, 0x1a7202], [64, 41, 0xf00]]
+stall = 11
+wbar = 7
+rbar = 7
+wait = 0
+expect = "MOV R26, R0"
+
+[[variants.patch]]
+at = "@0x05c0"
+bits = [[0, 64, 0x1d1a007388], [64, 41, 0x800]]
+stall = 4
+wbar = 7
+rbar = 7
+wait = 0
+expect = "STS [R26], R29"
+
+[[variants.patch]]
+at = "@0x05d0"
+bits = [[0, 64, 0x4001d1a007388], [64, 41, 0x800]]
+stall = 4
+wbar = 7
+rbar = 4
+wait = 0
+expect = "STS [R26+0x400], R29"
+
+[[variants.patch]]
+at = "@0x05e0"
+bits = [[0, 64, 0xe400ff1a7b82], [64, 41, 0x800]]
+stall = 1
+wbar = 5
+rbar = 7
+wait = 16
+expect = "LDC R26, c[0x0][0x390]"
+
+[[variants.patch]]
+at = "@0x05f0"
+stall = 4
+wbar = 7
+rbar = 7
+wait = 33
+expect = "STS [R0+0x5000], R29"
+
+[[variants]]
+id = "inorder_ldg"
+expect = ["clean"]
+
+[[variants.patch]]
+at = "@0x05b0"
+bits = [[0, 64, 0x1a7202], [64, 41, 0xf00]]
+stall = 11
+wbar = 7
+rbar = 7
+wait = 0
+expect = "MOV R26, R0"
+
+[[variants.patch]]
+at = "@0x05c0"
+bits = [[0, 64, 0x1d1a007388], [64, 41, 0x800]]
+stall = 4
+wbar = 7
+rbar = 7
+wait = 0
+expect = "STS [R26], R29"
+
+[[variants.patch]]
+at = "@0x05d0"
+bits = [[0, 64, 0x6181b7981], [64, 41, 0xc1e1900]]
+stall = 4
+wbar = 0
+rbar = 2
+wait = 0
+expect = "LDG.E R27, desc[UR6][R24.64]"
+
+[[variants.patch]]
+at = "@0x05e0"
+bits = [[0, 64, 0x4001d1a007388], [64, 41, 0x800]]
+stall = 4
+wbar = 7
+rbar = 4
+wait = 0
+expect = "STS [R26+0x400], R29"
+
+[[variants.patch]]
+at = "@0x05f0"
+bits = [[0, 64, 0xe400ff1a7b82], [64, 41, 0x800]]
+stall = 1
+wbar = 5
+rbar = 7
+wait = 16
+expect = "LDC R26, c[0x0][0x390]"
+
+[[variants.patch]]
+at = "@0x0600"
+stall = 4
+wbar = 7
+rbar = 7
+wait = 33
+expect = "STS [R0+0x5400], R29"
+
+[[variants]]
+id = "rd_on_ldg"
+expect = ["clean"]
+
+[[variants.patch]]
+at = "@0x05b0"
+bits = [[0, 64, 0x1a7202], [64, 41, 0xf00]]
+stall = 11
+wbar = 7
+rbar = 7
+wait = 0
+expect = "MOV R26, R0"
+
+[[variants.patch]]
+at = "@0x05c0"
+bits = [[0, 64, 0x1d1a007388], [64, 41, 0x800]]
+stall = 4
+wbar = 7
+rbar = 7
+wait = 0
+expect = "STS [R26], R29"
+
+[[variants.patch]]
+at = "@0x05d0"
+bits = [[0, 64, 0x6181b7981], [64, 41, 0xc1e1900]]
+stall = 4
+wbar = 0
+rbar = 4
+wait = 0
+expect = "LDG.E R27, desc[UR6][R24.64]"
+
+[[variants.patch]]
+at = "@0x05e0"
+bits = [[0, 64, 0xe400ff1a7b82], [64, 41, 0x800]]
+stall = 1
+wbar = 5
+rbar = 7
+wait = 16
+expect = "LDC R26, c[0x0][0x390]"
+
+[[variants.patch]]
+at = "@0x05f0"
+stall = 4
+wbar = 7
+rbar = 7
+wait = 33
+expect = "STS [R0+0x5000], R29"
+
+[[variants]]
+id = "rd_on_a"
+expect = ["violation"]
+
+[[variants.patch]]
+at = "@0x05b0"
+bits = [[0, 64, 0x1a7202], [64, 41, 0xf00]]
+stall = 11
+wbar = 7
+rbar = 7
+wait = 0
+expect = "MOV R26, R0"
+
+[[variants.patch]]
+at = "@0x05c0"
+bits = [[0, 64, 0x1d1a007388], [64, 41, 0x800]]
+stall = 4
+wbar = 7
+rbar = 4
+wait = 0
+expect = "STS [R26], R29"
+
+[[variants.patch]]
+at = "@0x05d0"
+bits = [[0, 64, 0x4001d1a007388], [64, 41, 0x800]]
+stall = 4
+wbar = 7
+rbar = 7
+wait = 0
+expect = "STS [R26+0x400], R29"
+
+[[variants.patch]]
+at = "@0x05e0"
+bits = [[0, 64, 0xe400ff1a7b82], [64, 41, 0x800]]
+stall = 1
+wbar = 5
+rbar = 7
+wait = 16
+expect = "LDC R26, c[0x0][0x390]"
+
+[[variants.patch]]
+at = "@0x05f0"
+stall = 4
+wbar = 7
+rbar = 7
+wait = 33
+expect = "STS [R0+0x5000], R29"
+
+[[variants]]
+id = "nowait"
+expect = ["violation"]
+
+[[variants.patch]]
+at = "@0x05b0"
+bits = [[0, 64, 0x1a7202], [64, 41, 0xf00]]
+stall = 11
+wbar = 7
+rbar = 7
+wait = 0
+expect = "MOV R26, R0"
+
+[[variants.patch]]
+at = "@0x05c0"
+bits = [[0, 64, 0x1d1a007388], [64, 41, 0x800]]
+stall = 4
+wbar = 7
+rbar = 7
+wait = 0
+expect = "STS [R26], R29"
+
+[[variants.patch]]
+at = "@0x05d0"
+bits = [[0, 64, 0x4001d1a007388], [64, 41, 0x800]]
+stall = 4
+wbar = 7
+rbar = 7
+wait = 0
+expect = "STS [R26+0x400], R29"
+
+[[variants.patch]]
+at = "@0x05e0"
+bits = [[0, 64, 0xe400ff1a7b82], [64, 41, 0x800]]
+stall = 1
+wbar = 5
+rbar = 7
+wait = 0
+expect = "LDC R26, c[0x0][0x390]"
+
+[[variants.patch]]
+at = "@0x05f0"
+stall = 4
+wbar = 7
+rbar = 7
+wait = 33
+expect = "STS [R0+0x5000], R29"

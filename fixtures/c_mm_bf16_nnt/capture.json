@@ -1,0 +1,72 @@
+{
+ "what": "`torch.mm(a,b)` with a = randn(64,64,bf16), b = randn(64,64,bf16)",
+ "argv": [
+  "--op",
+  "torch.mm(a,b)",
+  "--out",
+  "/tmp/agentE/demo/mm_bf16/ref",
+  "--seed",
+  "0",
+  "--inputs",
+  "a=randn(64,64,bf16),b=randn(64,64,bf16)",
+  "--work",
+  "/tmp/ptxv_capture_3209282"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "nvjet_sm103_tst_64x8_64x16_1x4_h_bz_NNT",
+   "grid": [
+    8,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "cluster": [
+    4,
+    1,
+    1
+   ],
+   "smem": 156184,
+   "pdl": 1,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "a",
+   "dtype": "bf16",
+   "shape": [
+    64,
+    64
+   ],
+   "size": 8192
+  },
+  {
+   "name": "b",
+   "dtype": "bf16",
+   "shape": [
+    64,
+    64
+   ],
+   "size": 8192
+  },
+  {
+   "name": "out",
+   "dtype": "bf16",
+   "shape": [
+    64,
+    64
+   ],
+   "size": 8192
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

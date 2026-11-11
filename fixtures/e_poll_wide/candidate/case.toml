@@ -1,0 +1,37 @@
+name = "poll-store256-candidate"
+description = "A failed poll writes a 256-bit output before epilogue subtraction"
+ptx = "kernel.ptx"
+cubin = "kernel.cubin"
+entry = "k"
+grid = [2,1,1]
+cluster = [2,1,1]
+block = [1,1,1]
+outputs = ["out", "flag"]
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [8]
+init = "zeros"
+values = [[0,1],[1,1],[2,1],[3,1],[4,1],[5,1],[6,1],[7,1]]
+[[buffers]]
+name = "zeros"
+dtype = "f32"
+shape = [8]
+init = "zeros"
+[[params]]
+kind = "ptr"
+buffer = "flag"
+[[params]]
+kind = "ptr"
+buffer = "out"
+[[params]]
+kind = "ptr"
+buffer = "zeros"
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1,0 +1,39 @@
+name = "probe_fmad2"
+description = """
+Probe (PTX-FMAD) for ptxas 13.0's contraction of mul.f32x2 into add / sub.f32x2: with .rn on
+both, with .rz on both, without modifiers into two adds; not with the product also stored or
+with different rounding modes; an add of two muls; a debug label between (kernel.ptx,
+gen.py). expected/ is GB300's output (kernel.cubin
+= ptxas -arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+entry = "fmad2"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [256]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

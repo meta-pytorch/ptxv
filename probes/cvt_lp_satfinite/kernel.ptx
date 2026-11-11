@@ -1,0 +1,38 @@
+// cvt.rn[.relu].satfinite.bf16x2.e5m2x2 (ptxas 13.3, PTX ISA 9.2+) on every e5m2 code pair,
+// plus the form without .satfinite. 256 threads x 256 iterations, i = 256 j + t, a = i (low 16
+// bits: two e5m2 codes); out[k * 65536 + i]: k = 0 cvt.rn.bf16x2, 1 cvt.rn.satfinite.bf16x2,
+// 2 cvt.rn.relu.satfinite.bf16x2. PTX ISA 9.7.10.24 .satfinite: |x| > MAX_NORM -> +-MAX_NORM
+// (bf16 0x7f7f), so e5m2 +-Inf (0x7c / 0xfc) -> +-0x7f7f under .satfinite.
+// Lines tagged @PTXNO: the .satfinite forms, which the PTX front refuses (variant `ptx`).
+.version 9.3
+.target sm_103a
+.address_size 64
+
+.visible .entry sf_e5m2(
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .pred  %p<2>;
+    .reg .b16   %h<2>;
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<4>;
+
+    ld.param.u64    %rd1, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32         %r1, %tid.x;
+LOOP:
+    cvt.u16.u32     %h1, %r1;
+    cvt.rn.bf16x2.e5m2x2 %r2, %h1;
+    cvt.rn.satfinite.bf16x2.e5m2x2 %r3, %h1; // @PTXNO
+    cvt.rn.relu.satfinite.bf16x2.e5m2x2 %r4, %h1; // @PTXNO
+    mul.wide.u32    %rd2, %r1, 4;
+    add.s64         %rd3, %rd1, %rd2;
+    st.global.b32   [%rd3], %r2;
+    st.global.b32   [%rd3+262144], %r3; // @PTXNO
+    st.global.b32   [%rd3+524288], %r4; // @PTXNO
+    add.u32         %r1, %r1, 256;
+    setp.lt.u32     %p1, %r1, 65536;
+    @%p1 bra        LOOP;
+    ret;
+}

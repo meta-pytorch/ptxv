@@ -1,0 +1,69 @@
+name = "c_mm_f32_gemmsn_tn"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): run() of ref.py. 1 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: _Z16gemmSN_TN_kernelIfLi128ELi16ELi2ELi4ELi8ELi9ELb0E30cublasGemvTensorStridedBatchedIKfES2_S0_IfEEv22cublasGe grid [16, 1, 1] block [128, 1, 1]
+Regenerate (docs/compile-vs-eager.md): CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/compile_vs_eager.py record
+--dtype f32 --seq 8 --out DIR, then tools/capture.py --file DIR/pairs/05_mm/ref.py --binary, then
+tools/cubin_slim.py on the cubin. Its split-K reduction reads 9-word smem slots whose 9th word
+nothing writes (LDS.128 across slots; S-INIT)."""
+cubin = "k0.cubin"
+entry = "_Z16gemmSN_TN_kernelIfLi128ELi16ELi2ELi4ELi8ELi9ELb0E30cublasGemvTensorStridedBatchedIKfES2_S0_IfEEv22cublasGemmSmallNParamsIT7_T8_T9_T_E"
+grid = [16, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+outputs = ["out"]
+
+[[buffers]]
+name = "_scaled_dot_product_efficient_attention_37"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "data/_scaled_dot_product_efficient_attention_37.bin"
+
+[[buffers]]
+name = "wo_weight"
+dtype = "f32"
+shape = [16384]
+init = "file"
+file = "data/wo_weight.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "bytes"
+hex = "c88974edffff0000a48974edffff00000010c07dfaff000000000000000000000000c07dfaff000000000000000000000010c17dfaff000000000000000000000010c17dfaff000000000000000000000000803f000000000000000080000000080000008000000080000000800000008000000080000000003674ed01000000000000000000000000000000000000000000000000000000"
+
+[[params.fields]]
+offset = 16
+kind = "ptr"
+buffer = "wo_weight"
+byte_offset = 0
+
+[[params.fields]]
+offset = 32
+kind = "ptr"
+buffer = "_scaled_dot_product_efficient_attention_37"
+byte_offset = 0
+
+[[params.fields]]
+offset = 48
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[params.fields]]
+offset = 64
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

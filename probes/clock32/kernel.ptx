@@ -1,0 +1,33 @@
+// probes/clock32: 32-bit clock and global-timer reads (SASS S2UR / S2R / CS2R.32 of
+// SR_CLOCKLO / SR_CLOCKHI / SR_GLOBALTIMERLO / SR_GLOBALTIMERHI). Each thread reads
+// %globaltimer_lo, %globaltimer_hi, %clock, %clock_hi twice around a load and stores
+// out[4t + k] = 1 if the k-th delta (later - earlier, 32-bit) is below 2^31, so the output does
+// not depend on the time read (a timeout that never fires).
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry clock32(.param .u64 pin, .param .u64 pout)
+{
+  .reg .b32 %r<32>; .reg .b64 %rd<8>; .reg .pred %p<8>;
+  ld.param.u64 %rd1, [pin]; cvta.to.global.u64 %rd1, %rd1;
+  ld.param.u64 %rd2, [pout]; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x;
+  mov.u32 %r10, %globaltimer_lo;
+  mov.u32 %r11, %globaltimer_hi;
+  mov.u32 %r12, %clock;
+  mov.u32 %r13, %clock_hi;
+  ld.volatile.global.u32 %r2, [%rd1];
+  mov.u32 %r20, %globaltimer_lo;
+  mov.u32 %r21, %globaltimer_hi;
+  mov.u32 %r22, %clock;
+  mov.u32 %r23, %clock_hi;
+  sub.u32 %r10, %r20, %r10; sub.u32 %r11, %r21, %r11;
+  sub.u32 %r12, %r22, %r12; sub.u32 %r13, %r23, %r13;
+  add.u32 %r10, %r10, %r2; add.u32 %r11, %r11, %r2;
+  setp.lt.u32 %p1, %r10, 0x80000000; setp.lt.u32 %p2, %r11, 0x80000000;
+  setp.lt.u32 %p3, %r12, 0x80000000; setp.lt.u32 %p4, %r13, 0x80000000;
+  selp.u32 %r24, 1, 0, %p1; selp.u32 %r25, 1, 0, %p2; selp.u32 %r26, 1, 0, %p3; selp.u32 %r27, 1, 0, %p4;
+  mul.wide.u32 %rd3, %r1, 16; add.u64 %rd4, %rd2, %rd3;
+  st.global.v4.u32 [%rd4], {%r24, %r25, %r26, %r27};
+  ret;
+}

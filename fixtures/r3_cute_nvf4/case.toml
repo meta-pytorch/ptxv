@@ -1,0 +1,144 @@
+name = "r3_cute_nvf4"
+description = """
+CUTLASS 4.6.1 CuTeDSL Blackwell persistent block-scaled dense GEMM
+(examples/python/CuTeDSL/blackwell/dense_blockscaled_gemm_persistent.py: TMA loads of A, B
+(4-bit tensor maps) and the scale factors, tcgen05.cp of the scale factors into TMEM,
+block-scaled FP4 tcgen05.mma, TMEM epilogue, TMA store), NVFP4:
+C[128x128] f32 = (A * SFA) @ (B * SFB)^T, A[128x256] / B[128x256] e2m1 (two per byte, low
+nibble first), ue4m3 scales per 16 K elements (none 0), one persistent CTA, 6 warps (TMA, MMA, 4
+epilogue). Captured by capture.py; the inputs are fixed files and gb300_C.bin is the GB300
+output."""
+ptx = "kernel.ptx"
+entry = "kernel_cutlass_kernel_dbgpSm100BlockScaledPersistentDenseGemmKernel_object_at__TiledMMA_ThrLayoutVMNK11110000_PermutationMNK____MMAAtom_ThrID10_ShapeMNK12812864_TVLayoutA1128641281128_TVL_0"
+grid = [1, 1, 1]
+block = [192, 1, 1]
+dynamic_smem = 218112
+outputs = ["C"]
+
+[[buffers]]
+name = "A"
+dtype = "u8"
+shape = [128, 128]
+init = "file"
+file = "A.bin"
+
+[[buffers]]
+name = "B"
+dtype = "u8"
+shape = [128, 128]
+init = "file"
+file = "B.bin"
+
+[[buffers]]
+name = "SFA"
+dtype = "u16"
+shape = [4, 256]
+init = "file"
+file = "SFA.bin"
+
+[[buffers]]
+name = "SFB"
+dtype = "u16"
+shape = [4, 256]
+init = "file"
+file = "SFB.bin"
+
+[[buffers]]
+name = "C"
+dtype = "f32"
+shape = [128, 128]
+init = "zeros"
+
+[[params]]
+kind = "bytes"
+hex = "000000000000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "000000000000000000000000"
+
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [128, 128]
+dims = [128, 128]
+strides = [128]
+swizzle = "128B"
+raw = "0000c0ddf9ff0000926504000800000000000000000000000000000000000000ff0000007f000000000000000000000000000000000000ff7f00000000000000"
+elem4 = true
+
+[[params]]
+kind = "bytes"
+hex = "00010000"
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [128, 128]
+dims = [128, 128]
+strides = [128]
+swizzle = "128B"
+raw = "0080c0ddf9ff0000926504000800000000000000000000000000000000000000ff0000007f000000000000000000000000000000000000ff7f00000000000000"
+elem4 = true
+
+[[params]]
+kind = "bytes"
+hex = "00010000"
+
+[[params]]
+kind = "tensormap"
+buffer = "SFA"
+box = [256, 4]
+dims = [256, 4]
+strides = [512]
+swizzle = "none"
+raw = "0000c2ddf9ff0000920004002000000000000000000000000000000000000000ff00000003000000000000000000000000000000000000ff0300000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "04000000"
+
+[[params]]
+kind = "tensormap"
+buffer = "SFB"
+box = [256, 4]
+dims = [256, 4]
+strides = [512]
+swizzle = "none"
+raw = "0008c2ddf9ff0000920004002000000000000000000000000000000000000000ff00000003000000000000000000000000000000000000ff0300000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "04000000"
+
+[[params]]
+kind = "tensormap"
+buffer = "C"
+box = [32, 128]
+dims = [128, 128]
+strides = [512]
+swizzle = "128B"
+raw = "0000c1ddf9ff00009263040020000000000000000000000000000000000000007f0000007f0000000000000000000000000000000000001f7f00000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "80000000"
+
+[[params]]
+kind = "bytes"
+hex = "01000000"
+
+[[params]]
+kind = "bytes"
+hex = "010000000100000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0100000001000000000086c7"
+
+[[variants]]
+id = "good"
+summary = "as compiled by CuTeDSL"
+# Races the tcgen05 thread-sync fences would order: contract (E-TC-FENCE-NOP).
+expect = ["contract", "violation"]
+expect_sass = ["clean"]

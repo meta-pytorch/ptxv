@@ -1,0 +1,30 @@
+name = "rep_clusterid"
+description = "E-CTA-REP: CTA 7 faults through %clusterid"
+ptx = "kernel.ptx"
+entry = "k"
+grid = [8, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [256]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "fault in CTA 7"
+expect = ["fault"]
+
+[[variants]]
+id = "overlap"
+summary = "CTA 7 stores into CTA 0's elements instead of its own"
+marker = "@OFF"
+find = "@%p1 add.u32 %r3, %r3, 4096;"
+replace = "@%p1 sub.u32 %r3, %r3, 224;"
+expect = ["race"]

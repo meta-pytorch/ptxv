@@ -1,0 +1,75 @@
+name = "r1h_va_alias"
+description = """
+Rung 1h, virtual aliases within one address space (S-VA-ALIAS): parameters a and b are two
+mappings of one buffer (a second cuMemMap of the same handle). Weak and strong same-thread
+pairs and a cross-warp message pass through different mappings, each with a fence.proxy.alias."""
+ptx = "kernel.ptx"
+entry = "va_alias"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "buf"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[views]]
+name = "buf_b"
+buffer = "buf"
+
+[[params]]
+kind = "ptr"
+buffer = "buf"
+
+[[params]]
+kind = "ptr"
+buffer = "buf_b"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "every access through the other mapping is behind a fence.proxy.alias"
+expect = ["clean"]
+
+[[variants]]
+id = "B68"
+summary = "same thread, weak pair: st.global through a, ld.global through b, no fence.proxy.alias"
+marker = "@WFENCE"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+expect = ["race"]
+
+[[variants]]
+id = "B69"
+summary = "same thread, strong pair: st.release.sys through a, ld.acquire.sys through b, no fence.proxy.alias (not morally strong: PTX ISA 8.7)"
+marker = "@SFENCE"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+expect = ["race"]
+
+[[variants]]
+id = "B74"
+summary = "message passing: the consumer polls the flag through b with no fence.proxy.alias of its own (the release / acquire pair crosses mappings)"
+marker = "@CFENCE"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+expect = ["race"]
+
+[[variants]]
+id = "B75"
+summary = "message passing: the producer writes the data through a with no fence.proxy.alias before its release; the consumer reads it through b"
+marker = "@PFENCE"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+expect = ["race"]

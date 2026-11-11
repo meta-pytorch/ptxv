@@ -1,0 +1,46 @@
+name = "c_tf32_mm_1x"
+description = """
+1xTF32 GEMM: raw f32 words as HMMA.1688.F32.TF32 operands (truncated to TF32). D[32 x 32] f32 = A[32 x 64] * B[64 x 32], row major (fixtures/c_equiv_tf32/mm_tf32.cu,
+docs/equiv-mma.md §6)."""
+cubin = "kernel.cubin"
+entry = "mm_1xtf32"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "f32"
+shape = [32, 64]
+init = "normal"
+seed = 31
+
+[[buffers]]
+name = "B"
+dtype = "f32"
+shape = [64, 32]
+init = "normal"
+seed = 32
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [32, 32]
+init = "nan"
+expect = "expected/D.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "A"
+
+[[params]]
+kind = "ptr"
+buffer = "B"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

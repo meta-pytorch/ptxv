@@ -1,0 +1,27 @@
+{
+  "scope": "BF16 normal/zero operands, C=+/-0, bounded synthetic sums",
+  "ptxv_revision": "fb0569a095ff5dc9e46a8d3a476c155ca100a98f",
+  "matching_rows": 8705,
+  "underflow_witness_positive_zero": true,
+  "disagreements": [],
+  "overflow_checks": [],
+  "input_sha256": "a1d40437156dea32013a5494ee6aa6effa38f0876bd141c514dabb51e98f326d",
+  "output_sha256": "41d137a6dd33b91c61d6526c6224088c0c46edb616708c8b2be6182d9efe5d78",
+  "sources": {
+    "crates/sim/src/fp.rs": "d311e2db7702656f45616957b3d8e08723f9f94840a9d8578ee3b76776a7923f",
+    "lean_model/Blackwell/PtxvCheck.lean": "5e7d4b32ee95bd5759c6d65a6c042a11e29c276f8572c03fe97449a027e86852",
+    "lean_model/Blackwell/GB300Math/TensorAccumulatorBlackwell.lean": "5d3867b8de1331283beaacf8b898f3f29f4337cc393aa73b615f1065a836e286",
+    "lean_model/Shared/GB300Math/TensorCore.lean": "2a20e7929ac9372c6efacb4f6fb6db47314557a7d09f5f2253e8c60de3b73cdd",
+    "probes/lean_compare/mma_cross_check.py": "6acce49fdeea5b0dd07c08bd56926c22c86fed6a717319b547305ba6630422dd"
+  },
+  "retained_capture": {
+    "matching_outputs": 150528,
+    "sm": 103,
+    "cuda_driver_api_version": 13010,
+    "driver_release": null,
+    "capture_sha256": "3e41aa158fd1fd7d92ce48fd705f08d349d60c5c0f9cd8e8057b066512d0c605",
+    "inputs_sha256": "ef09f573abcece25848d801ba09f86bef119dfd5495c042e861775c02ca7715a",
+    "outputs_sha256": "e36262e6ab3b64306b0372e5a637fcd90a718644804a882b26bda634f2699bf1"
+  },
+  "passed": true
+}

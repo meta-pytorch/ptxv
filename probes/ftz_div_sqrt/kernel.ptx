@@ -1,0 +1,31 @@
+// probes/ftz_div_sqrt: div.rn.ftz.f32 and sqrt.rn.ftz.f32. 256 threads; a, b = in[2 t ..
+// 2 t + 1] (gen.py: subnormal operands, quotients near the subnormal boundary, specials,
+// random); out[2 t] = a / b, out[2 t + 1] = sqrt(a).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry ftz_div_sqrt(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<4>;
+    .reg .f32   %f<8>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 8;
+    add.s64         %rd4, %rd1, %rd3;
+    add.s64         %rd5, %rd2, %rd3;
+    ld.global.v2.f32 {%f1, %f2}, [%rd4];
+    div.rn.ftz.f32  %f3, %f1, %f2;
+    sqrt.rn.ftz.f32 %f4, %f1;
+    st.global.v2.f32 [%rd5], {%f3, %f4};
+    ret;
+}

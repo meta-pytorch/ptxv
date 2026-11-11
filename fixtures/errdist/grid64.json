@@ -1,0 +1,1 @@
+{"version": 1, "seed": 1, "name": "grid64", "default": {"dist": {"kind": "affine", "a": 0.015625, "b": 0, "dist": {"kind": "integers", "lo": -256, "hi": 256}}}}

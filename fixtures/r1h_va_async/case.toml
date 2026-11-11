@@ -1,0 +1,68 @@
+name = "r1h_va_async"
+description = """
+Rung 1h, virtual aliases within one address space (S-VA-ALIAS) and bulk copies: parameters a
+and b are two mappings of one buffer. A bulk copy reads or writes through the mapping its
+global address names; a thread access through the other mapping needs a fence.proxy.alias."""
+ptx = "kernel.ptx"
+entry = "va_async"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "buf"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[views]]
+name = "buf_b"
+buffer = "buf"
+
+[[params]]
+kind = "ptr"
+buffer = "buf"
+
+[[params]]
+kind = "ptr"
+buffer = "buf_b"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "each access through the other mapping is behind a fence.proxy.alias"
+expect = ["clean"]
+
+[[variants]]
+id = "same"
+summary = "the word is written through b, the mapping the bulk copy reads through: no alias fence needed"
+marker = "@LWR"
+find = "[%rd1]"
+replace = "[%rd2]"
+expect = ["clean"]
+edits = [{ marker = "@LFENCE", find = "fence.proxy.alias;", replace = "// (same mapping)" }]
+
+[[variants]]
+id = "B80"
+summary = "st.global through a, then a bulk copy global -> shared through b with no fence.proxy.alias"
+marker = "@LFENCE"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+expect = ["race"]
+
+[[variants]]
+id = "B81"
+summary = "bulk copy shared -> global through b, then ld.global of the same bytes through a with no fence.proxy.alias"
+marker = "@SFENCE"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+expect = ["race"]

@@ -1,0 +1,79 @@
+// S-MBAR-SCOPE: slot reuse across a 2-CTA hand-off. Rank 0 stores a value into rank 1's slot
+// and arrives on rank 1's `full` barrier at cluster scope; rank 1 reads the slot and gives it
+// back by arriving on rank 0's `empty` barrier; rank 0 waits for that, then overwrites the
+// slot (round 2). The give-back must release rank 1's read of its own shared memory at
+// cluster scope.
+//   good : fence.release.sync_restrict::shared::cta.cluster + mbarrier.arrive.relaxed.cluster
+//          (releases rank 1's shared-memory accesses at cluster scope): clean
+//   NOF  : a .release.cta arrive: not morally strong with rank 0's wait (race)
+//   RLX  : a relaxed.cluster arrive without the fence: releases nothing (race)
+//   GM   : rank 0 also reads the global word rank 1 wrote before the give-back: the
+//          sync_restrict fence releases shared memory only (race)
+//   GMF  : as GM with fence.acq_rel.cluster instead: clean
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_mbar_restrict(.param .u64 out_p)
+.maxntid 32, 1, 1
+.reqnctapercluster 2, 1, 1
+{
+    .reg .b32 %r<20>;
+    .reg .b64 %rd<4>;
+    .reg .pred %p<4>;
+    .shared .align 8 .b8 full[8];
+    .shared .align 8 .b8 empty[8];
+    .shared .align 4 .b32 slot;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r0, %tid.x;
+    mov.u32 %r1, %cluster_ctarank;
+    mov.u32 %r2, full;
+    mov.u32 %r3, slot;
+    mov.u32 %r10, empty;
+    setp.ne.u32 %p0, %r0, 0;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p0 bra SYNC;
+    mbarrier.init.shared::cta.b64 [%r2], 1;
+    mbarrier.init.shared::cta.b64 [%r10], 1;
+    fence.mbarrier_init.release.cluster;
+SYNC:
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    @%p0 bra END;
+    @%p1 bra PEER;
+    mapa.shared::cluster.u32 %r6, %r3, 1;
+    mapa.shared::cluster.u32 %r7, %r2, 1;
+    mov.u32 %r8, 1;
+    st.shared::cluster.u32 [%r6], %r8;
+    mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%r7];
+EMPTY:
+    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p2, [%r10], 0;
+    @!%p2 bra EMPTY;
+    ld.global.u32 %r12, [%rd1];          // @GREAD
+    st.global.u32 [%rd1+8], %r12;        // @GREAD
+    mov.u32 %r8, 2;
+    st.shared::cluster.u32 [%r6], %r8;
+    mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%r7];
+    bra END;
+PEER:
+    mapa.shared::cluster.u32 %r11, %r10, 0;
+    mov.u32 %r13, 0;
+FULL:
+    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p2, [%r2], %r13;
+    @!%p2 bra FULL;
+    ld.shared.u32 %r5, [%r3];
+    mul.wide.u32 %rd2, %r13, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r5;
+    setp.ne.u32 %p3, %r13, 0;
+    @%p3 bra END;
+    fence.release.sync_restrict::shared::cta.cluster;                    // @REL
+    mbarrier.arrive.relaxed.cluster.shared::cluster.b64 _, [%r11];       // @ARRIVE
+    mov.u32 %r13, 1;
+    bra FULL;
+END:
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    ret;
+}

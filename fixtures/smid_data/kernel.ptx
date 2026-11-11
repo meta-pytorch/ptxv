@@ -1,0 +1,28 @@
+// fixtures/smid_data (E-SMID): thread 0 of each CTA stores %smid to out[%ctaid.x]. %smid
+// reaches only the stored value: control and addresses are the same in every placement.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry smid_data(
+    .param .u64 out
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<16>;
+
+    mov.u32         %r0, %tid.x;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        DONE;
+    mov.u32         %r1, %smid;
+    mov.u32         %r4, %ctaid.x;
+    ld.param.u64    %rd4, [out];
+    cvta.to.global.u64 %rd4, %rd4;
+    mul.wide.u32    %rd5, %r4, 4;
+    add.u64         %rd6, %rd4, %rd5;
+    st.global.u32   [%rd6], %r1;
+DONE:
+    ret;
+}

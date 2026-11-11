@@ -1,0 +1,54 @@
+name = "lin_exact"
+description = """
+errdist linearized-tier gap: y = RN(x w) * v over 4096 elements, v = 1 or 2 (exact multiply;
+../kernel.ptx). Spec exact95.json: x, w ~ N(0, 1); v = 1 with probability 0.95, else 2."""
+ptx = "kernel.ptx"
+entry = "lin_exact"
+grid = [64, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [4096]
+init = "zeros"
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [4096]
+init = "zeros"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [4096]
+init = "zeros"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [4096]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

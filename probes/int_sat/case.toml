@@ -1,0 +1,39 @@
+name = "probe_int_sat"
+description = """
+Probe (L-ROSETTA) for PTX add.sat.s32 / sub.sat.s32 (ptxas: IMAD.IADD, two PLOP3 sign tests on
+R / UR .SIGN inputs, two SEL against 0x7fffffff / 0x80000000) on 4096 pairs: every pair of 32
+edge words, pairs at the saturation thresholds (exact INT_MAX / INT_MIN and one past, for add and
+sub), random words, large same-sign / opposite-sign operands, and immediate operands
+(kernel.ptx, gen.py). expected/ is GB300's output (kernel.cubin = ptxas 13.0 -arch=sm_103a
+kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "int_sat"
+grid = [16, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [8192]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [16384]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

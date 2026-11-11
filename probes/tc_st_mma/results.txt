@@ -1,0 +1,8 @@
+9
+NVIDIA GB300; 296 CTAs x 2000 iterations per mode
+mode 0 C read, no fence             lane 0: 9472000 words checked, 0 stale, 0 other; lanes 1-31 wrong: 0
+mode 1 C read, fenced (control)     lane 0: 9472000 words checked, 0 stale, 0 other; lanes 1-31 wrong: 0
+mode 2 A in TMEM, no fence          lane 0: 9472000 words checked, 0 stale, 0 other; lanes 1-31 wrong: 0
+mode 3 A in TMEM, fenced (control)  lane 0: 9472000 words checked, 0 stale, 0 other; lanes 1-31 wrong: 0
+mode 4 C read, no wait::st          lane 0: 9472000 words checked, 0 stale, 0 other; lanes 1-31 wrong: 0
+mode 5 A in TMEM, no wait::st       lane 0: 9472000 words checked, 0 stale, 0 other; lanes 1-31 wrong: 0

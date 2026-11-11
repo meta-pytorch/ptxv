@@ -1,0 +1,7884 @@
+{
+  "ptx_sha256": "c72df91a86452b03ed017049794a1be78e787716694fd049fb9f86f59a877166",
+  "probe_sha256": "9ac3997a840957528da7961378de26336973a54f51b18b008a297978f61e72d3",
+  "cubin": {
+    "sha256": "b4f33cde0163d7271f9560f0847f60244a1b7966c013a357f956106b65a250f0",
+    "bytes": 50480,
+    "zlib_base64": "eJztXX9wHNV9f/tDq9Xd6e4kn+WTLFsn+UxkkKUTNmB33ORkSBwzBgxhUppJIsuS/GOw5ZuTRE6DCydBqGkpGIfO4ARmPJQkzpS2NOGPTEMzYkIpZTLUTTIpbZnGcRjGZZzUSaBoUtLr9/v2vd333u76p+TYyT44734/733e97vf932/dld39390y8d0TRuwiZN08m2iES9lX3aOT36D5e8kVpGsI3WkSDZiyd7xXeMT5Ymh7XDGj1N7hePg+K6xkQrpHds3Mdo7dk/vxN27x3bs8+ThSSbf0+ueDO/bWxqaIL0To5WJ3om9BTfXFcZ3DZVHR1SxPDo+Wr4HTgouV6TKTFZk195dXhkusEJUZKUKYqmCXKrglhILyWW4RcODEzvWXCuYJQDcNg6VR/coLECGFIhLO9ZJlTLRqxIBsUImD0mAe95/vVwbk4XqEJHqY8CQjIyMbp/cObijPLR31CmvAkMygs0/tGfPzvJQyWmLUnnfxL6JqRLL2zc2PjE0NlFw215EFIA3p4iopF0qSWwQCWUelTHml+Gh0t7R8rAcsQrox1z7ZDCAvSuALRmqZHBbVZiZS0HV7RQUu6EIuBelgH6MX5QCBrB3BbDFi1Iz2EX5YPGiAjpIYJZYlz9opZwwPwUMOjyXDYHnlC6PEZRfxSf2ju7t3bdjx/joRNjQOjg4ds+gW/6Wj94y6JQfLAwO7dk9NB5QYGJ45+hY4brB0lB5YvfE7n1jvx3js+o36G4kPzi4e2xitDw2tAccAtLw5MjQ4Pje/kLFdcPOyaHySHlo957BCRjmBof37RncPrp7bOfgyCgMffuGR0cGoXHBhROT5TEQtk8NUlyqvP/cKi/tGhofBdY90DYjgyOTZdTjr+3ac6ttcoxShybAKjB7cu/YuGr6/E9bop1rFtKla+fVpdctkEvnYeIWzbx+IT16w7x6dN1CeXTBly44zMKQhgMWDkcw3PCO4LSfuJS4/FY44WkVfAzYDahpPcUtH/4Zirf48Afg0wmfIpNNdnyKll/uK/91+OSOLHfL8/R9Wo+H59jxfVrPEl89bRriWR9epHirD99B8TYf/jDFl/rwoxTv8OHf0pzr5RfKr/cY4F1Qz/FGRy4wfLXu4OmkjN/L8CLDZxn+vo562316mw3Ecz58hYH1tPv0Vhmu6n2d4arej5lY/zJf/cMU7/ThkybWs8yn93sMV/Xm6hxc1fvFOqyfe9FLr1G8yYe/DXhz2ovDqu4c36G4ECeGc/gpxYU4Yap+TnEvTqqs/HsUb/OVn6O4ECcpdrQQb/fhFsWX+fBGC03r8l1XB8VX+PACxfM+fCPFV/rwOyl+lQ8fpfiHfPi9FO/24Y9RfJUPr0HKC+eYoP324zGVmK5Wu4ldm6522/TUKdPjq8VJvO3MCfwHHZ1grIvTs0tVxNrWPDi/eo6peviY8IP51bNOk9XwWDVfmF89RxQ9C3U9ti6r4WMI1eNwzad0r+4NAXqqM9VuVY09A/+0YE7a4HUfQgz6G/J4Ly3psl4+Rp23vicC9D3h13ec6VPHxIW6vq0sVx1ruY4LbbdZg0jpUrdbtynrXeh2e5Lpu1TtZrPl2Hy3W0VZ5l3qdjteJ+td6Hbbypavl6rdZpm+oHZLwAennWP1hNz6yc03bR7I3bivXCJ8CMQhF7LIDfAZQqA0URkaJzfCXimH94J27xnC2y65iX379oz35GDvMgo7rlz/mt7+ntwn8dDb338d2Ti5e89Iju6wKFbGf/ucCkbLvWtuKFzfv379dYMFsvq23Jrc6qHy8K7c+N7B/sKaoRy3E58lnDRUO3fSNb7ZZ9PVBq5czCbbXTHjeZtw3iqc89UJcvMCt0Uos1g4zwjneYG7QuA2CWXSwnlKOF8hcLsEbpeA44p2OcM7BTwnlM8JOO4E2hjeIeBYR4bhfLdjNsvnHcJ5TjjvFM67hPMVwnleOOf+1Bs0ous6Meo1TYf2MuP8KRCc32A67bUkQWW6R3qv05V19Joga9jqgkwTyMZW4C6tEWMQdNwM9bWbdI9j1iXoNWjsY7TmiBmz6YqzasD59SaNo4W0o6iH2/GhS2gHzrNhdnRfQjuOncEfqy4Tf1x9FjvqMNJPN7myibUI8oXaad5m0rsZ2gChNmu3O3brWzRqu9mfITkwdBbmqCIUPAL0Y/AxV6Xd+YEnsztNSnCNRSg7G4dxHeYz/eYqMdcXSAm4Na5Xs8hsgyfHtCR5vlGWDVjUm+02KUE9Rxodv1UFv5nLncWH0dpN/XcN9V935L8L9F9P5L+L8t9qxX+Y0CY8/h87/podP8C1UT1hfiJ03uJro+csGedrtA0KzteKL9bJOE9zVjB+IATPhuAjQv15wc53TRnndj6o4O5aWsF5KtYF48dCym8LwZ8zPHyFYOcGBed2fleXcW7nFgXn6YARjGdD8KMh9bylebh4l2u/gIt3EzMCnhPw54iHi3dhbxJw/93lS5dm7tVq5EfEWTSfSJHWKeYovLjeJORbNXICzmPw2Z4kz33OrJG7qWyTZ5JQnjUIBuMpLA/5x1n5LqivEjfQNTWM21c7SHOFxNehPPtoPXkL8xsa63n+W49hPr3NZcxB/qsp0lRupApqBVrebi4bDVT+AORXUmRlxWrEULMIlu8D2TRQNlE+kdKmp9IWDcXDyxPkmVvBPr1G3mb2XZUk01NNlplm+UdRTphueSo3gqwJctKUy6dAZvngj5UVvQH5OrWnA+W4K4N/N5QTCaTX0uDw/7mNHPyFM9jUjtdS5HSKPDRFdBx5zdZ0gpx0ZLxAUU6CPaKcMpkM9d8yxVu2apB3UmTT1Ad0HKvVHjDIbIpk3XxIl4Hsj78GJ8+NP2ivt8gZ4o/tmNz4E+K1kJLjcTvGW2ODEo+NcjzGU0Hx2DDH401szz6IzwZqgBefqTiVvfhs8OIzpa2s2I1iPEA8hcdnHuPJTAnxrE9PZWw5PlNK/C62aQC7costx+8SyBfltBLvTUq8NyvxvkiN97gS741yvKfpUJ45Q7xj9WI8Nynx3qzE+6IrON7PHv9sPHXj3zzL+LvIKe/Gv+7FO41/S+g/GN+k0Y3/lztAtms4BzW2AArx31xpoOs8oT8ssojXH5rKMRt7aC3n5EP5RoOXP4Hxbsa9eO0j6UoiZjvtXU9exvoWLfL6F/ITCQwIrq+pHHfqz/L6oLmJG091aC/an3DtjcUOENbfaHlrkdvfoL+ky+mGuKC/udJku/po+YRgL9q3mNYfc+tfmi5K9SebhPLm9FQ24fafr9yK198k2JuenmpNevnYX+y43P9bTDk/TQT7idTfaX5sscxvT3vjRzJg/LCWyvUtFsYDHceDmNz/l6Xl8WO5Jed3WG6+0/8Xyf3fJp6M87G+VB4PMhl8itmO/wSPBza9D+X1d3uxMh60yPn6Ep5/BY4H/v7P5rNz7v/sTmJQ/6frr9aU3N8J7e8pN77rW8X+3lxJpQwi9keL3tdl/d1srdQ3uePBicfMfKWpqYoya9+m8iJ6D5P33+srtuXe1YP+0lyxLLm/mvVuf3qlD/TbSv/Uxf6kwXqR9k+L2Q/2UNlGmZaPLfLqo9dXL9dnN8j9p82L/68UcTyoF8cDOl+6+XQ+XiT376UJOd+ql+vPmKH9cwedr5X5tsUSy+ehPfD6FulQ32tO+xQl/wn+of0t1qrMxym1/7XR9jHD+l9M6X+x363+F82/0fz7uzD/hvb/3/H5l90QEvv/cSL0/7TS/9kNOdb/vzMVd2TsFLT/Z73+D/NxogL7dTgtFU8b5EQHzJ+Gjhrp/An9I1+BUNGY/BrsP8sG3X/S+Ifxf+ZPM9541AXzw4F6K4fPfnWn/+L9D7qfovNFH72fQZ8vPo3xcyvGq5lOM/kExM+BTD2KGVq+g0w/nM645SH/oYp7N5b6Zwbiy33N7QTaa1joO2rvWyi30f0cXw8cPGDSB5w0viD/8XIDfcoH/R9lrblMjDbi9e/HZ5zxi+aD3HzAaKsSb7yYfjiTce3P4/VmqTlZ3cmH8kYJ5DZ2/2h6yszS68H+sksDuS6bNkXZyuLW1JPrs+mEKNvZdFqUG7LpjCjHsvS1PFeOZ+lrdEw+MEXasLqGBHjp5I1UbodTR34M2yebzvHynXi/KZvOC/yHidOetLyB9wuy6W5RXyqb7hHldDZdEOtryqbXivnN2fQ6UV6UTW9g8naNxmcHjc9fGLh+Qv0Z3H+j/hOa1l6p0qYv/Rji93vQv1v522NOf8/fl6nFnfaH9usgesVw3oVNOfHycWV8aCovzrjzF8T3g1PGYve1URg/ExAfGIGlO8Cef+8AfVslfp8bnzOQD/YcvkvKn6mY3t8TYrxOZOj8UnPux5A2sKf6ZywfxrOfTJpOeNvwH+jP32fUTOF6Nk1mWX3VODmVIp8B/kiYvtcupP6T9q+d8ZLW3wrjNfWP5fY3IyfY/8h4bXHGeeHAICc1R856MsRbzbCbSYNN2w/GY/62AWuvCcN5KMP6q17JOPf6sb2gfon/tkZumlrLnpvMAr9DV9tTGv+20/bTnfZ71yCvp8iWCiFVoT2k9jvh2OO2D/hDbb+ZSr33zjWMJ8L4pGF++1HHutJpiM9XcfyB7UezN/7AeATuTpPaj0GG/MMH6sy4418b8w8foHfHXPnxGSvO1mPA74Pxqz5eT7zxSdJ/DPzVCv5qp+/C0P76yjjxErT31z9fc+ZzfNB2IkOyXxPyob5D3J/opFN/LPNPPCrPX77+dBtZdq9nDjn1GPgrKY3XH4XyB3HC0avU34+XU/GkcD1S/cdof6yloP2deP0wea0cYw8IgAXtg/MX6nLmK1yvGZC/zenP0N7X7zeMmEOwMf+1sunxob/+dMoxzyR5jE/dvV60cSSpXG+fcn0pnz82PczfmnXi8bnPJWoE38vF+Rrisb0ixAfOTxUzKc5PhysW7Y+wP3bavyzMRyAfquAb0VWcr1h5m5Y3sTyLT7vITID5fGa/yZ9X0vxDsL+l8cf4j5RJI+0fW0/H8fpm9teRhFB+BvYDbn0w3vbZcn95Z5JYNixRYlj+jRWwrqs61/fj07R/eOM1jJ8/BP80nCLO+PIF7L/O9fP+Afol/7yiXP8bHT79/zVOTLp+vCD9KTLA2w/j8Z0+sCcp2IP7AbOG8xEd/17pAHuSXryCP746Saj/k03OeLrp4XeF9u+Q4w39eW/GW593qfGVEuY/uP4fpMjPpth4jfG53V9+JYyXmM/XT7AezqCcpuvjTirXmVzWqIw3RES5PiHLdlqWGzKyHMvKcrxdlhM5WW7My3KyW5ZTPbKM6wdRblory83rZHnRBibD/KL6R+2vtzRw2emfankc74uCfAj2l2y/yNaPcWl9qPIPV2I1nL5i2B9fx/GL1OI4P9pO/5fmE+y/5ZgZI2y8/y6MX/ud0KD1w/4pweTSHdA/cX3RsEWyn9afZfXDeHV2fkHit4r2g32HymaN8tfw+YU9eNceNdDevy/Xsb92StrYP/P36d76Aeazl8ct7630Z5PkJ1M1PvzDeFJP7UF+KeeMN/n7nK5F+W/cRh5pAG+Dv+KkGiMn6x05y2Tgb5ribzc69usVnWzDWya4XgB/3zSVY/l0fQDlbV/5g1L5Hqm82p7yfvKxgP4+5+0vqT4iyCny6Sk+/YHf2XqHEG/9tHVqv36alv9OSPnFSvlS5szl1fpHpPovt/1wtP+N9r/R/pdE+19M0f432v9G+18vRfvfK2f/a0T732j/G+1/o/1vtP+N9r/nLkf732j/G+1/SbT/xRTtf6P9b7T/9VK0/71y9r/R899o/xvtf6P9b7T/jfa/5yFHKUpRilKUohSlKEUpSlGKUpSiFKUoRSlKUYpSlKIUpShFKUpRilKUohSlhU/4XWv4swr4TtLs/ffntLgZm6NvHAzQFw88+SWi6YToXUlrjtwB8gNakehSXfgmhhZPxn5F3wAxtPUSf8AwJb7h42MS6idqPr4Go3+KXDVHqs9iTr1hGUQ3Z2tkzi1zjOjrktfOkSL92tIZfDdG1/gPGzoa/PlFnm8G51ddvhaY7/7gG77auVX6FbElzL/0d39qv/5Imkg+UXw8oCs+9vkgfUYfv6T4OLiN5rUNTMskM4ZVd9Y2MEUNAW3A88PawOWHtIHLh/xjbhtkmf9voP6v1X50f+5M/je0s8TomWP8JdM8S/sp/vXVnz5n/0/TnwWtrwPX65ZVH+p/XXf8L4ZlQD7/AY5Q/4fxuf9FvtcHWpn/++A4W6vBCHOm+H/pIv0/cL7+P5N/D7n+nbHONMacxb8zC+rfNvJbG9+HroT4Xsr8j38yVX3/f6EFPvez//zlF76vv//Am8ta/nozIX9X++Xb/0r/5iC8XabJ2dqFyO1iyu0yrWG7aHEL8mk76T1yfVZYO2hOfl1QHAxs0WNa2gIdeInw/xyZG9h0Twysjw2MkNjtmjZsgsb0xzXI1eB/P6LfOgOeHNmGM+RLNWiEGHFbCt/0PFM+xgLqU69r4CayAfVz+5xvKHfs+xdNW3p9zCCfoF4k2mwNS92u6Us/C4uFAai6qsUwXFTfbk5APUVXhivZHIMr9xBteARk7xffBzaNxbRNn2qZYzOb5papd8tsHP6spQ1vB6whtJ6z1aF32davnFYy1FbKYXmnhVwPbOxOWPhBD+nDv3fVr1hrzmi6jj8lrRXBKVw3cG3eujaZE1rbxrrUuqnXh3tuOhtvYOm6mL70ZmjZgVXOL2WByir+oYbneCE6fdGXDfTlHeDLHYB5v+Io9fM67KfC29fB+UWer44DLL/K8+3g/FmenwjRz68kHaKf52dC9PP8bIh+nt8eop+vRXMh+nl+PkQ/z+8O0c/ze0L083VYIUQ/z18bop/nrwvRz/PxjwrPty9pm/bE5lwLxREUF5Xw7zU2G2m0OU2r6gPDdky/9cFrCbmTjVAQx7N6jPOdESw8Pxug82z94phXlDitHM0v0fxyuc4vG6P5JZpfovnFzb/S5pdlJJpfovmF6b8M55do/xLNL9H84uVfCfML/vVpnkk1lgyi7cdjKjFdrXYTuzZd7bbpqVNmLQlOvLnplwyZBZCcCszTzu8KcR0Xqq+k6MuZoj78Jp/51XdcvT5Luj5rvvVtVWYKfufS0Yc3RedX36yib6Gvr6AsM6oZUd8x7/q2Jd0yyN8QoK86U+1W1dkz8E8L5qTdh4CHECNdlMu/SuiILuvfSrx0XvqeCND3hF8fzz12sfrO8fr4sJpbHKzvQtvvtPholvzm2m+bKetf6Pbjq/BL1X788cd8t9/z0tPu31z75SxZ/0K330Gm71K1H18EBLWf2WfTrwfswvMmmz6TIuy8TThvFc5XCty8wG0RyiwWzjPCeV7grhC4TUKZtHCeEs5XCNwugdsl4PjViMsZ3ingOaF8TsDx3ZU2hncIONaRYfhyjjfL5x3CeU447xTOu4TzFcJ5Xjh3/XmDSR7A46dy5E+e7nr2b5/O7CUvXP3L9+8yvvyhns7CPy3/x8dSic17Yn1QZonzTUwGrrPe63RlHb0nyPhVXqJME8gGBIGxtEaMQU3Tb4b62k2CKySzLuHsrNjnN20TrqIuN5twJXK52YRj9OVm03z5qQ57y+kmVzaxRkG+UJvN20y6f9IGCLVfu925Bn2LRq/D7M+Q42B0rgHGbPg83wxrcPiYq9Lu2MyT2Z3GH1IlB0FVFQczGDz0m6vEXF8gsw2EeN/EZ5F00pNjWpLkMrJsrNPAfzCmQD34fZ7ow6row+XOAiDyZeTLy9GXb7KfnbYBpXMeWwA8ouDPM3kLm/xhnSPczyBkQ8zDkwLe3hBcfost13+QyR/UBZf/QAuuX7Q/H2J/foHtz8+T/StD7F+5wPavvAj7P83Wq7/P6uHr1lOWjPP1834F5+v4d+tknKd19cH4q1YwflcI/pRQf16ws0fBuZ0vmjLO7Vyr4DxV6oJxOwR/MqSeNw0PXyHYuUfBuZ0f6DLO7ZxQcJ6+aQTjHw/B3wipxxTwLgF/QvPwTgHPC3hOwF8gHt4h4DcJ+HJy8WkVwdit8+HrKW758M9Q/GofjvOOeF38fulTtHzRV/7r8Mkd8ePfh89qAc+x4/u0nmt85ds0xHt8eJHiq334Dor3+vCHKd7nw49SvMOHf0sLvt5jGu7R+nz78NW6g6v75XsZru5r39dRL/8uSy81G4jnfPgKA+sp+PRWGa7qfZ3hqt6PmVh/v6/+YYp3+vBJE+vp9+n9HsNVvbk6B1f1frEO67/WV/9rFG/y4W8D3pz24pDfJ3+H4l6c8PvZP6W4Fyf8vuzPKe7FCb8//B7Fe33l5yjuxUmJ3ySwEC/4cIvi/f7yF5lw2DAC8CI7Lle6tPrANB7Cn2G8Z5Wur/Jx2vU/4Sakmy0DtzK/Yxn0In/ml2XHTt1fJ6YKu3FSqJdxtSyOW/WeCjcdXcKOSnlTkdczflGpeiszMMfkOma7yt/sHNTHJ6TE+I+464Jg/fjc9KEA/gfsJlW7gqv8nUxdUcGz7IbXAeLpbwngPxPCPxLAXxLAfyWE373Uz88G8E+F8J8P4LcG8Ju0YP66dj+/LYC/PoQ/y/hFof2WBvAfDeHzSVnktwfw3wzhFzv8/GUB/Nud/uOLn2rOObKDL/54P9ynOZiq/0hOlvn1q/332+fBbw/gp/Rz5y8L4H/kLPyS7vHNAD6uY9DF6gqnyhZzVYGPTVpVyh0O4ZOrBMPZoSOA/2IYfxU7mh4/F8A/EcZnU1lV0N8ZwLe1kOvnU5igvyuAf00Ynz8YSXn8FQH8mTD+jX5+PoD/z2H8O/z8lQF8XK/axD8HVoec4zYFV+efmzWHf6OCsx8rIYkWD6JDmtKBnz4PfnsA/9R58JcF8Pey+XdjCP+I4Jig+eP+EP6RnX5+0PxxMIRfvNvPD5o/ngnhHx/z84PmjxdC+NWynx80f/xDCD93j3M8KvCD5o//COG/OuXnB80f/x3CL/2Rnx80f+CvNrQ480daxHPTzvFOFvADxBn/pEKQWkP41RnnWBH4HQH81SF88qCfnwvgbwzT/3nneJfA7wzg/0EI//hDfv1dAfy7Q/jb2MLjTsvjrwjgPxjCn33Uz88H8L8U1n5/7uevDOB/w3DHNClr4kvOsXSW9ferBh1DffrfYgvLRwT/YVLj798Yv6jwS886xyeIx786gP+zEL75ZT//mgC+bgbznwzg9wTwl4Twe77i568O4PeE8GcD+L0B/GII/86vOsctgv/7Avh/GMI/ctTPLwTwSyH8U1/z8/sD+AdM/MtSP3/dXzrHWSLbr67f/iKEPxfALwTwXwzhf/M5P78/gP/DEH7lr5wjX38i/9oA/mngL4ZihsI/+TfOMUfkpPa/JGxMPx/Q/+znneNBNv6jGcsD9OPwgG2SfZkEpqwmHzlfuwge7qX5+tqXPiwfRR7aytdlauLr9Ee2BNvJ1zM+O5fJR877fw96KWw="
+  },
+  "ptxas_version": "ptxas: NVIDIA (R) Ptx optimizing assembler\nCopyright (c) 2005-2025 NVIDIA Corporation\nBuilt on Tue_Dec_16_07:22:57_PM_PST_2025\nCuda compilation tools, release 13.1, V13.1.115\nBuild cuda_13.1.r13.1/compiler.37061995_0\n",
+  "cuda_driver_api_version": 13030,
+  "device_uuid": "e5210827f360b8e353c11f19e4d43c28",
+  "driver_release": "580.126.20",
+  "device_name": "NVIDIA GB300",
+  "compute_capability": [
+    10,
+    3
+  ],
+  "configs": [
+    {
+      "entry": "tc_f16",
+      "enabled": false,
+      "cases": [
+        {
+          "name": "identity_pos",
+          "terms": [
+            [
+              1.0,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 1065353216
+        },
+        {
+          "name": "finite_pos",
+          "terms": [
+            [
+              8.507059173023462e+37,
+              2.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2130706432
+        },
+        {
+          "name": "near_max_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.9921875
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16383,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139029504
+        },
+        {
+          "name": "overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "two_finite_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.0
+            ],
+            [
+              1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "four_finite_overflow_pos",
+          "terms": [
+            [
+              8.507059173023462e+37,
+              1.0
+            ],
+            [
+              8.507059173023462e+37,
+              1.0
+            ],
+            [
+              8.507059173023462e+37,
+              1.0
+            ],
+            [
+              8.507059173023462e+37,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32384,
+            32384,
+            32384,
+            32384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            16256,
+            16256,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "max_finite_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -2.028240960365167e+31,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            62336,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095039
+        },
+        {
+          "name": "half_ulp_below_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -1.0141204801825835e+31,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            62208,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095039
+        },
+        {
+          "name": "quarter_ulp_below_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -5.070602400912918e+30,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            62080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "cancel_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 0
+        },
+        {
+          "name": "rescue_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2130706432
+        },
+        {
+          "name": "huge_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "huge_cancel_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ],
+            [
+              -1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            32512,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 0
+        },
+        {
+          "name": "identity_neg",
+          "terms": [
+            [
+              -1.0,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            49024,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 3212836864
+        },
+        {
+          "name": "finite_neg",
+          "terms": [
+            [
+              -8.507059173023462e+37,
+              2.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65152,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4278190080
+        },
+        {
+          "name": "near_max_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.9921875
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16383,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286513152
+        },
+        {
+          "name": "overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "two_finite_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ],
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "four_finite_overflow_neg",
+          "terms": [
+            [
+              -8.507059173023462e+37,
+              1.0
+            ],
+            [
+              -8.507059173023462e+37,
+              1.0
+            ],
+            [
+              -8.507059173023462e+37,
+              1.0
+            ],
+            [
+              -8.507059173023462e+37,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65152,
+            65152,
+            65152,
+            65152,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            16256,
+            16256,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "max_finite_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              2.028240960365167e+31,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            29568,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578687
+        },
+        {
+          "name": "half_ulp_below_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              1.0141204801825835e+31,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            29440,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578687
+        },
+        {
+          "name": "quarter_ulp_below_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              5.070602400912918e+30,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            29312,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "cancel_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 0
+        },
+        {
+          "name": "rescue_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4278190080
+        },
+        {
+          "name": "huge_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "huge_cancel_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ],
+            [
+              1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            32512,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 0
+        }
+      ],
+      "grid": 26,
+      "block": 128,
+      "idesc": 134481040,
+      "inputs": {
+        "A": {
+          "sha256": "051a7b12da581dc3e470ce3c2c219348c12ecc4d475857086a4521cc5d817a4b",
+          "bytes": 106496,
+          "zlib_base64": "eJzt2rEVwjAMBFBtxk7Qx9qMnaCPKVLH1L7378p/2kD9qGWac84555xzzjnn+/vBOeecc84555zzdK/BOeecc84555xzzjnnnHPOOeec8wBfLzjnnHPOOeecc76993GVc84555xzzjnnuV6jv7fGOeecc84555zzEC/OOeecc84555zHe38455xzzjnnnHOe7jU555xzzjnnnHPOOeecc84555xzvr2vwznnnHPOOeec8wSfnHPOOeecc845z/Z+L68555xzzjnnnHOe4CfnnHPOOeecc87T/c/3AOecc84555xzzjnnnHPOOeecc8738PWCc84555xzzjnn23ufVznnnHPOOeecc57rNft1a5xzzjnnnHPOOQ/x4pxzzjnnnHPOebz3k3POOeecc8455+leg3POOeecc84555xzzjnnnHPOOefb+zqcc84555xzzjlP8ME555xzzjnnnPNs/wEO9cAt"
+        },
+        "B": {
+          "sha256": "51e7142ddc7ee40964151cc3db5015af1c483ce028660cde027047567142f28b",
+          "bytes": 13312,
+          "zlib_base64": "eJzt2cENwCAMBEE6g86g86QD+xUtuizf8fMkW9yZo3xHj/ax9D/70+RDz3Y6fzrrZ9YbQs/3akbP9rGaC1HXdV0P9eZC1MOdzp+O+i5Vz/d6Qo92un/QWaf/H3XW6f5BZ53On876Df2DzvrN/YRu/6Pruq5/4XT/oLNO509HfZeq53s9oUf7CwL6nhA="
+        },
+        "C": {
+          "sha256": "35f714103572377997b7b7f13bb0dcf627c42dce903a3eb6bf5d6093d8c2f5b3",
+          "bytes": 212992,
+          "zlib_base64": "eJztwwEJAAAAAqCmN70foWACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAcKOqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqDwciRwMN"
+        }
+      },
+      "output": {
+        "sha256": "58d0df4e9ac94442be894aa775a58758825dce0637afc91e8b675b1957b8baee",
+        "bytes": 212992,
+        "zlib_base64": "eJzt3AEJwEAMBME4q7TEWaWlIlp4rszC2NiquQoAAAAAAAAACFcNAAAAAAAAAKRrAAAAAAAAACDeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAL+02AAAAAAAAAAAAAAAAAAAAcNjp/wAAAAAAAAAA8AVJkiRJkiRJkiRJkvSDGgAAAAAAAABINwAAAAAAAABAPEmSJEmSJEmSJEmSlN/cAAAAAAAAAEC6WgAAAAAAAAAgXQMAAAAAAAAA8QYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHhptwEAAAAAAAAAAAAAAAAAAIDDTv8HAAAAAAAAAIAvSJIkSZIkSZIkSZKkH7QAAAAAAAAAQLoBAAAAAAAAAOJJkiRJkiRJkiRJkqT0HpsU71s="
+      },
+      "repeat_hashes": [
+        "58d0df4e9ac94442be894aa775a58758825dce0637afc91e8b675b1957b8baee",
+        "58d0df4e9ac94442be894aa775a58758825dce0637afc91e8b675b1957b8baee",
+        "58d0df4e9ac94442be894aa775a58758825dce0637afc91e8b675b1957b8baee"
+      ]
+    },
+    {
+      "entry": "tc_f16",
+      "enabled": true,
+      "cases": [
+        {
+          "name": "identity_pos",
+          "terms": [
+            [
+              1.0,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 1065353216
+        },
+        {
+          "name": "finite_pos",
+          "terms": [
+            [
+              8.507059173023462e+37,
+              2.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2130706432
+        },
+        {
+          "name": "near_max_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.9921875
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16383,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139029504
+        },
+        {
+          "name": "overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "two_finite_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.0
+            ],
+            [
+              1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "four_finite_overflow_pos",
+          "terms": [
+            [
+              8.507059173023462e+37,
+              1.0
+            ],
+            [
+              8.507059173023462e+37,
+              1.0
+            ],
+            [
+              8.507059173023462e+37,
+              1.0
+            ],
+            [
+              8.507059173023462e+37,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32384,
+            32384,
+            32384,
+            32384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            16256,
+            16256,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "max_finite_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -2.028240960365167e+31,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            62336,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095039
+        },
+        {
+          "name": "half_ulp_below_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -1.0141204801825835e+31,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            62208,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095039
+        },
+        {
+          "name": "quarter_ulp_below_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -5.070602400912918e+30,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            62080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "cancel_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 0
+        },
+        {
+          "name": "rescue_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2130706432
+        },
+        {
+          "name": "huge_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "huge_cancel_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ],
+            [
+              -1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            32512,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 0
+        },
+        {
+          "name": "acc_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": 1.7014118346046923e+38,
+          "a": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2130706432,
+          "output": 2139095040
+        },
+        {
+          "name": "acc_rescue_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": -1.7014118346046923e+38,
+          "a": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 4278190080,
+          "output": 2130706432
+        },
+        {
+          "name": "identity_neg",
+          "terms": [
+            [
+              -1.0,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            49024,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 3212836864
+        },
+        {
+          "name": "finite_neg",
+          "terms": [
+            [
+              -8.507059173023462e+37,
+              2.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65152,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4278190080
+        },
+        {
+          "name": "near_max_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.9921875
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16383,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286513152
+        },
+        {
+          "name": "overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "two_finite_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ],
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "four_finite_overflow_neg",
+          "terms": [
+            [
+              -8.507059173023462e+37,
+              1.0
+            ],
+            [
+              -8.507059173023462e+37,
+              1.0
+            ],
+            [
+              -8.507059173023462e+37,
+              1.0
+            ],
+            [
+              -8.507059173023462e+37,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65152,
+            65152,
+            65152,
+            65152,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            16256,
+            16256,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "max_finite_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              2.028240960365167e+31,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            29568,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578687
+        },
+        {
+          "name": "half_ulp_below_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              1.0141204801825835e+31,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            29440,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578687
+        },
+        {
+          "name": "quarter_ulp_below_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              5.070602400912918e+30,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            29312,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "cancel_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 0
+        },
+        {
+          "name": "rescue_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4278190080
+        },
+        {
+          "name": "huge_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "huge_cancel_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ],
+            [
+              1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            32512,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 0
+        },
+        {
+          "name": "acc_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": -1.7014118346046923e+38,
+          "a": [
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 4278190080,
+          "output": 4286578688
+        },
+        {
+          "name": "acc_rescue_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": 1.7014118346046923e+38,
+          "a": [
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2130706432,
+          "output": 4278190080
+        }
+      ],
+      "grid": 30,
+      "block": 128,
+      "idesc": 134481040,
+      "inputs": {
+        "A": {
+          "sha256": "d61f2228953cfdb2a65f5c04159f8e57cdbdbbd4c40fcdd3f84faeb8e764b87a",
+          "bytes": 122880,
+          "zlib_base64": "eJzt3LEVwkAMREF1Rk+Q+9QZPUFuEzj2kfr2zVc4W4P6UdOac84555xzzjnn6/vGOeecc84555zzdK/BOeecc84555xzzjnnnHPOOeec8wCfLzjnnHPOOeecc76893Ye55xzzjnnnHPOc71Gfy+Nc84555xzzjnnIV6cc84555xzzjmP9/5wzjnnnHPOOec83evgnHPOOeecc84555xzzjnnnHPO+fI+j3POOeecc8455wl+cM4555xzzjnnPN7ncc4555xzzjnnnHPOOeecc8455/z23m/OOeecc84555zH+84555xzzjnnnPN0//MdgHPOOeecc84555xzzjnnnHPOOedr+HzBOeecc84555zz5b338zjnnHPOOeecc57rdfTr0jjnnHPOOeeccx7ixTnnnHPOOeec83jvJ+ecc84555xzztO9Buecc84555xzzjnnnHPOOeecc86X93mcc84555xzzjlP8ME555xzzjnnnPN4n8c555xzzjnnnHPOOeecc84555zz2/sP2z8+Sw=="
+        },
+        "B": {
+          "sha256": "db394860c3842e4ff976c3873ed820039cf6148e868d0d07ef0ec51e5c529fe3",
+          "bytes": 15360,
+          "zlib_base64": "eJzt2cENwCAMBEE6g86g86QD+xUtuizf8fMkLN+Zo3xHj/ax9D/70+RDz3Y6fzrrZ9Y/hJ7v1Yye7WM1G6Ku67oe6s2GqIc7nT8d9V2qnu/1hB7tdP+gs07fH3XW6fzprNP501mn+0eddTp/Ous39I866zf3k7r9r67ruv6F0/2jzjqdPx31Xaqe7/WEHu10/6CzTt8fddZfa3a98A=="
+        },
+        "C": {
+          "sha256": "a1402d7fed56454f727b49e5b82163b8cd5877d512fad999bcc98e1f4ffa496d",
+          "bytes": 245760,
+          "zlib_base64": "eJztw4EJAAAIA6A+r8/rjoWCVQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABvtKqqqqqqqqoaf1VVVVVVVVXV+KOqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqr65Kqqqqqqqqqq8VtVVVVVVVVVzX5kn+Rm"
+        }
+      },
+      "output": {
+        "sha256": "9d4046bf7a174eaada1af86a179bd194adec599ef18be65c6d1f4fcf9e834b52",
+        "bytes": 245760,
+        "zlib_base64": "eJzt3IEJxEAMA0F39qWdO0tp/iIuYBRmYboQqupfAQAAAAAAAADh6gAAAAAAAAAA6Q4AAAAAAAAAEK8BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIBLMwcAAAAAAAAAAAAAAAAAAABYtv0/AAAAAAAAAAC8QZIkSZIkSZIkSZIkfaADAAAAAAAAAKRrAAAAAAAAACCeJEmSJEmSJEmSJEnKb3t/AAAAAAAAAADcKwAAAAAAAAAgXj8AAAAAAAAAQLoaAAAAAAAAACDdAQAAAAAAAADiNQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAcGnmAAAAAAAAAAAAAAAAAAAAAMu2/wcAAAAAAAAAgDdIkiRJkiRJkiRJkqQPNAAAAAAAAABAugYAAAAAAAAA4kmSJEmSJEmSJEmSpPy29wcAAAAAAAAAwL0CAAAAAAAAAML9AdEk0Ts="
+      },
+      "repeat_hashes": [
+        "9d4046bf7a174eaada1af86a179bd194adec599ef18be65c6d1f4fcf9e834b52",
+        "9d4046bf7a174eaada1af86a179bd194adec599ef18be65c6d1f4fcf9e834b52",
+        "9d4046bf7a174eaada1af86a179bd194adec599ef18be65c6d1f4fcf9e834b52"
+      ]
+    },
+    {
+      "entry": "hm0",
+      "enabled": false,
+      "cases": [
+        {
+          "name": "identity_pos",
+          "terms": [
+            [
+              1.0,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 1065353216
+        },
+        {
+          "name": "finite_pos",
+          "terms": [
+            [
+              8.507059173023462e+37,
+              2.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2130706432
+        },
+        {
+          "name": "near_max_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.9921875
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16383,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139029504
+        },
+        {
+          "name": "overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "two_finite_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.0
+            ],
+            [
+              1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "four_finite_overflow_pos",
+          "terms": [
+            [
+              8.507059173023462e+37,
+              1.0
+            ],
+            [
+              8.507059173023462e+37,
+              1.0
+            ],
+            [
+              8.507059173023462e+37,
+              1.0
+            ],
+            [
+              8.507059173023462e+37,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32384,
+            32384,
+            32384,
+            32384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            16256,
+            16256,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "max_finite_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -2.028240960365167e+31,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            62336,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095039
+        },
+        {
+          "name": "half_ulp_below_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -1.0141204801825835e+31,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            62208,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095039
+        },
+        {
+          "name": "quarter_ulp_below_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -5.070602400912918e+30,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            62080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "cancel_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 0
+        },
+        {
+          "name": "rescue_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2130706432
+        },
+        {
+          "name": "huge_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "huge_cancel_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ],
+            [
+              -1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            32512,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 0
+        },
+        {
+          "name": "identity_neg",
+          "terms": [
+            [
+              -1.0,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            49024,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 3212836864
+        },
+        {
+          "name": "finite_neg",
+          "terms": [
+            [
+              -8.507059173023462e+37,
+              2.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65152,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4278190080
+        },
+        {
+          "name": "near_max_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.9921875
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16383,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286513152
+        },
+        {
+          "name": "overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "two_finite_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ],
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "four_finite_overflow_neg",
+          "terms": [
+            [
+              -8.507059173023462e+37,
+              1.0
+            ],
+            [
+              -8.507059173023462e+37,
+              1.0
+            ],
+            [
+              -8.507059173023462e+37,
+              1.0
+            ],
+            [
+              -8.507059173023462e+37,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65152,
+            65152,
+            65152,
+            65152,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            16256,
+            16256,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "max_finite_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              2.028240960365167e+31,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            29568,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578687
+        },
+        {
+          "name": "half_ulp_below_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              1.0141204801825835e+31,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            29440,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578687
+        },
+        {
+          "name": "quarter_ulp_below_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              5.070602400912918e+30,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            29312,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "cancel_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 0
+        },
+        {
+          "name": "rescue_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4278190080
+        },
+        {
+          "name": "huge_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "huge_cancel_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ],
+            [
+              1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            32512,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 0
+        }
+      ],
+      "grid": 26,
+      "block": 32,
+      "idesc": null,
+      "inputs": {
+        "A": {
+          "sha256": "4855103f027a8e73396c62814307bf601f8b449f60a94ce348b0bc1d8b654692",
+          "bytes": 13312,
+          "zlib_base64": "eJzt2LERgEAIRFE6syfNve3MnjRXg4vFkBn2L+GDjCFAS6QR3tt33Nlj4Dhu7HkH3tq1z8I9PYauT8MNPHBr14k7ezw4jtt6Hry7V+8fXug60mm8u9+4s/9cDxzHe3vegbd23bNwT49H26fhBh64tWvFnf3nQ4jjeGfPg3f36v3DC/0FnyqX/w=="
+        },
+        "B": {
+          "sha256": "88f7e772878975f093157a0568edf6599ef48e7419afef1ec927aafab88b340b",
+          "bytes": 6656,
+          "zlib_base64": "eJzt18ENwCAMBEF3Bp3hzpMO7BdadL58h9dJoGyuKL8U99iz/Wv2UXd6f9pz1Tdkgldn1D1280La7dLevJDyTu8P+yl1gtcnxJ3uD9rp/0/a6f6gnd6f9hf6g/aX+8T9Y7ffdLo/aKf3d//A/nSf3PYfQ0nPAQ=="
+        },
+        "C": {
+          "sha256": "78fd15781450073ef8a24a52caee6bfb3e90331ed4ca1b9f28681fb486620bb3",
+          "bytes": 13312,
+          "zlib_base64": "eJztwwEJAAAAAqCmN70foWACAAAAAADAmaqqqqqqqvpzbbFALg=="
+        }
+      },
+      "output": {
+        "sha256": "07052c790ce4214e0d79d4834705dfa690bead8af7c0e8f48f57e44a99a24e25",
+        "bytes": 13312,
+        "zlib_base64": "eJzt1EERAEEIBDGcnTRwttI4GTwmXRULXTVfEayaZE20ASDQbgOhrv/DNYXXJBuiKbt5JKslWRNtAAi020Co6/9wTeEtyYZoSu4HAfJu8Q=="
+      },
+      "repeat_hashes": [
+        "07052c790ce4214e0d79d4834705dfa690bead8af7c0e8f48f57e44a99a24e25",
+        "07052c790ce4214e0d79d4834705dfa690bead8af7c0e8f48f57e44a99a24e25",
+        "07052c790ce4214e0d79d4834705dfa690bead8af7c0e8f48f57e44a99a24e25"
+      ]
+    },
+    {
+      "entry": "hm",
+      "enabled": true,
+      "cases": [
+        {
+          "name": "identity_pos",
+          "terms": [
+            [
+              1.0,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 1065353216
+        },
+        {
+          "name": "finite_pos",
+          "terms": [
+            [
+              8.507059173023462e+37,
+              2.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2130706432
+        },
+        {
+          "name": "near_max_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.9921875
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16383,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139029504
+        },
+        {
+          "name": "overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "two_finite_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.0
+            ],
+            [
+              1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "four_finite_overflow_pos",
+          "terms": [
+            [
+              8.507059173023462e+37,
+              1.0
+            ],
+            [
+              8.507059173023462e+37,
+              1.0
+            ],
+            [
+              8.507059173023462e+37,
+              1.0
+            ],
+            [
+              8.507059173023462e+37,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32384,
+            32384,
+            32384,
+            32384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            16256,
+            16256,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "max_finite_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -2.028240960365167e+31,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            62336,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095039
+        },
+        {
+          "name": "half_ulp_below_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -1.0141204801825835e+31,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            62208,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095039
+        },
+        {
+          "name": "quarter_ulp_below_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -5.070602400912918e+30,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            62080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "cancel_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 0
+        },
+        {
+          "name": "rescue_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2130706432
+        },
+        {
+          "name": "huge_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "huge_cancel_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ],
+            [
+              -1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            32512,
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            32512,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 0
+        },
+        {
+          "name": "acc_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": 1.7014118346046923e+38,
+          "a": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2130706432,
+          "output": 2139095040
+        },
+        {
+          "name": "acc_rescue_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": -1.7014118346046923e+38,
+          "a": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 4278190080,
+          "output": 2130706432
+        },
+        {
+          "name": "identity_neg",
+          "terms": [
+            [
+              -1.0,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            49024,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 3212836864
+        },
+        {
+          "name": "finite_neg",
+          "terms": [
+            [
+              -8.507059173023462e+37,
+              2.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65152,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4278190080
+        },
+        {
+          "name": "near_max_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.9921875
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16383,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286513152
+        },
+        {
+          "name": "overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "two_finite_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ],
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "four_finite_overflow_neg",
+          "terms": [
+            [
+              -8.507059173023462e+37,
+              1.0
+            ],
+            [
+              -8.507059173023462e+37,
+              1.0
+            ],
+            [
+              -8.507059173023462e+37,
+              1.0
+            ],
+            [
+              -8.507059173023462e+37,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65152,
+            65152,
+            65152,
+            65152,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            16256,
+            16256,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "max_finite_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              2.028240960365167e+31,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            29568,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578687
+        },
+        {
+          "name": "half_ulp_below_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              1.0141204801825835e+31,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            29440,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578687
+        },
+        {
+          "name": "quarter_ulp_below_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              5.070602400912918e+30,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            29312,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "cancel_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 0
+        },
+        {
+          "name": "rescue_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4278190080
+        },
+        {
+          "name": "huge_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "huge_cancel_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ],
+            [
+              1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            65280,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            32512,
+            32512,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 0
+        },
+        {
+          "name": "acc_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": -1.7014118346046923e+38,
+          "a": [
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 4278190080,
+          "output": 4286578688
+        },
+        {
+          "name": "acc_rescue_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": 1.7014118346046923e+38,
+          "a": [
+            65280,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            16384,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2130706432,
+          "output": 4278190080
+        }
+      ],
+      "grid": 30,
+      "block": 32,
+      "idesc": null,
+      "inputs": {
+        "A": {
+          "sha256": "66f47299121001c362ed47c6f3c813a599231e966cc1cf45bb1b2fd1415c4e86",
+          "bytes": 15360,
+          "zlib_base64": "eJzt2KERgEAMRNF0Rk/gYTujJ/CAQBPkzez+H/kiI25OU7UJ9/YVT/bacBwP9n4Dt3at7+CZXpvOT8MDvPBo14Ene904jsd6H+7uo+8PH+t9OI7bunY82i882X9eBziOe3u/gVu7rnfwTK9by6fhAV54tGvGk/3nhwjHcWfvw9199P3hY70Px3FbfwB0O8e/"
+        },
+        "B": {
+          "sha256": "0d5f7c9095af7ccaadef009bf7c3a1426e5162043e5a79a9a5324d7cbdc951cf",
+          "bytes": 7680,
+          "zlib_base64": "eJzt18ENwCAMBEF3Bp3hzpMO7BdadL58h9dJQWyuKL8U99iz/Wv2UXd6f9pz1X/IBK/OqHvs5oa026W9uSHlnd4f9lPqBK9PiDvdH7TT70/a6f1pp/enne5P2un9aX+hP2l/uU/dv3b7Taf7k3Z6f/cv7E/3qfv3rtPvT9p/2vDe8Q=="
+        },
+        "C": {
+          "sha256": "35ef3441a977249f0b758b239c8cc6e3bd8306d8cbbfc82af5eec9e453c7ee93",
+          "bytes": 15360,
+          "zlib_base64": "eJzt2YEJADAIBDE3t5vbMQQ/B5niqiRJkiRJkiRJknSsJtoQ7QEAAAAAAHDK9n9iV5PrAzdCvj0="
+        }
+      },
+      "output": {
+        "sha256": "a5cfbf3649afe538b483da4f70a7c1d4fe860f43c6e3af21bb4663a39297e2cf",
+        "bytes": 15360,
+        "zlib_base64": "eJzt1EERAEEIA0GcnTRwttI4GTzSU9UOCFXzFcGqSdZEGwAC7TYQ6vr/cE3hNcmGaMru+v443j/R5pGslmRNtAEg0G4Doa7/D9cU3pJsiKbsru+P4/0T7AeTa20P"
+      },
+      "repeat_hashes": [
+        "a5cfbf3649afe538b483da4f70a7c1d4fe860f43c6e3af21bb4663a39297e2cf",
+        "a5cfbf3649afe538b483da4f70a7c1d4fe860f43c6e3af21bb4663a39297e2cf",
+        "a5cfbf3649afe538b483da4f70a7c1d4fe860f43c6e3af21bb4663a39297e2cf"
+      ]
+    },
+    {
+      "entry": "tm0",
+      "enabled": false,
+      "cases": [
+        {
+          "name": "identity_pos",
+          "terms": [
+            [
+              1.0,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 1065353216
+        },
+        {
+          "name": "finite_pos",
+          "terms": [
+            [
+              8.507059173023462e+37,
+              2.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2122317824,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2130706432
+        },
+        {
+          "name": "near_max_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.9921875
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073676288,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139029504
+        },
+        {
+          "name": "overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "two_finite_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.0
+            ],
+            [
+              1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1065353216,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "four_finite_overflow_pos",
+          "terms": [
+            [
+              8.507059173023462e+37,
+              1.0
+            ],
+            [
+              8.507059173023462e+37,
+              1.0
+            ],
+            [
+              8.507059173023462e+37,
+              1.0
+            ],
+            [
+              8.507059173023462e+37,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2122317824,
+            2122317824,
+            2122317824,
+            2122317824,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1065353216,
+            1065353216,
+            1065353216,
+            1065353216,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "max_finite_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -2.028240960365167e+31,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            4085252096,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095039
+        },
+        {
+          "name": "half_ulp_below_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -1.0141204801825835e+31,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            4076863488,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095039
+        },
+        {
+          "name": "quarter_ulp_below_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -5.070602400912918e+30,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            4068474880,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "cancel_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            4278190080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1073741824,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 0
+        },
+        {
+          "name": "rescue_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            4278190080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2130706432
+        },
+        {
+          "name": "huge_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "huge_cancel_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ],
+            [
+              -1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            4278190080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            2130706432,
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 0
+        },
+        {
+          "name": "identity_neg",
+          "terms": [
+            [
+              -1.0,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            3212836864,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 3212836864
+        },
+        {
+          "name": "finite_neg",
+          "terms": [
+            [
+              -8.507059173023462e+37,
+              2.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4269801472,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4278190080
+        },
+        {
+          "name": "near_max_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.9921875
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073676288,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286513152
+        },
+        {
+          "name": "overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "two_finite_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ],
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            4278190080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1065353216,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "four_finite_overflow_neg",
+          "terms": [
+            [
+              -8.507059173023462e+37,
+              1.0
+            ],
+            [
+              -8.507059173023462e+37,
+              1.0
+            ],
+            [
+              -8.507059173023462e+37,
+              1.0
+            ],
+            [
+              -8.507059173023462e+37,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4269801472,
+            4269801472,
+            4269801472,
+            4269801472,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1065353216,
+            1065353216,
+            1065353216,
+            1065353216,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "max_finite_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              2.028240960365167e+31,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            1937768448,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578687
+        },
+        {
+          "name": "half_ulp_below_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              1.0141204801825835e+31,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            1929379840,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578687
+        },
+        {
+          "name": "quarter_ulp_below_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              5.070602400912918e+30,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            1920991232,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "cancel_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1073741824,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 0
+        },
+        {
+          "name": "rescue_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4278190080
+        },
+        {
+          "name": "huge_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "huge_cancel_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ],
+            [
+              1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            2130706432,
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 0
+        }
+      ],
+      "grid": 26,
+      "block": 32,
+      "idesc": null,
+      "inputs": {
+        "A": {
+          "sha256": "94ff4f6a92564d24b239c9ed414a53e0ffe54c4f5e0fb0ebe93c8d502aa5b230",
+          "bytes": 13312,
+          "zlib_base64": "eJzt2LENgDAMRFFvxk7QgzdjJ+gBpaOIrrXk+5bc+DndKZESkUvIwpv7jjt7HDiOW7vawVv7eB/+jXv5yEbekzlu44Fbe164s8eL47itq8L7e3X+8DLPU5zF+/uDO7u8O3Ac7+9qB2/t4334N+7lIxu5Tea4jQdu7bnizi7/CHEc7+2q8P5enT+8yD8M8pf/"
+        },
+        "B": {
+          "sha256": "a4fe1fb7c1543d69a4cc411ccb9bcbab2c231777f03a98b661420920c47b37fa",
+          "bytes": 6656,
+          "zlib_base64": "eJzt18ENgDAMQ9FsBpvB5qAOgDlVP3Lc6+vJaqK66j5KHnevc7Y/P/m4O50/7Ws+1IxM8a977r7eh9yR8bi5yx05wOn8Ub+ETXF1x9zp/kE7/f+kne4ftNP5096lf9DetZ+k/8Tje53uH7TT+af/wN64n+z1F4aczwE="
+        },
+        "C": {
+          "sha256": "78fd15781450073ef8a24a52caee6bfb3e90331ed4ca1b9f28681fb486620bb3",
+          "bytes": 13312,
+          "zlib_base64": "eJztwwEJAAAAAqCmN70foWACAAAAAADAmaqqqqqqqvpzbbFALg=="
+        }
+      },
+      "output": {
+        "sha256": "07052c790ce4214e0d79d4834705dfa690bead8af7c0e8f48f57e44a99a24e25",
+        "bytes": 13312,
+        "zlib_base64": "eJzt1EERAEEIBDGcnTRwttI4GTwmXRULXTVfEayaZE20ASDQbgOhrv/DNYXXJBuiKbt5JKslWRNtAAi020Co6/9wTeEtyYZoSu4HAfJu8Q=="
+      },
+      "repeat_hashes": [
+        "07052c790ce4214e0d79d4834705dfa690bead8af7c0e8f48f57e44a99a24e25",
+        "07052c790ce4214e0d79d4834705dfa690bead8af7c0e8f48f57e44a99a24e25",
+        "07052c790ce4214e0d79d4834705dfa690bead8af7c0e8f48f57e44a99a24e25"
+      ]
+    },
+    {
+      "entry": "tm",
+      "enabled": true,
+      "cases": [
+        {
+          "name": "identity_pos",
+          "terms": [
+            [
+              1.0,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 1065353216
+        },
+        {
+          "name": "finite_pos",
+          "terms": [
+            [
+              8.507059173023462e+37,
+              2.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2122317824,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2130706432
+        },
+        {
+          "name": "near_max_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.9921875
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073676288,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139029504
+        },
+        {
+          "name": "overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "two_finite_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.0
+            ],
+            [
+              1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1065353216,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "four_finite_overflow_pos",
+          "terms": [
+            [
+              8.507059173023462e+37,
+              1.0
+            ],
+            [
+              8.507059173023462e+37,
+              1.0
+            ],
+            [
+              8.507059173023462e+37,
+              1.0
+            ],
+            [
+              8.507059173023462e+37,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2122317824,
+            2122317824,
+            2122317824,
+            2122317824,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1065353216,
+            1065353216,
+            1065353216,
+            1065353216,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "max_finite_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -2.028240960365167e+31,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            4085252096,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095039
+        },
+        {
+          "name": "half_ulp_below_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -1.0141204801825835e+31,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            4076863488,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095039
+        },
+        {
+          "name": "quarter_ulp_below_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -5.070602400912918e+30,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            4068474880,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "cancel_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            4278190080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1073741824,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 0
+        },
+        {
+          "name": "rescue_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            4278190080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2130706432
+        },
+        {
+          "name": "huge_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 2139095040
+        },
+        {
+          "name": "huge_cancel_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ],
+            [
+              -1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": 0.0,
+          "a": [
+            2130706432,
+            4278190080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            2130706432,
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 0,
+          "output": 0
+        },
+        {
+          "name": "acc_overflow_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": 1.7014118346046923e+38,
+          "a": [
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2130706432,
+          "output": 2139095040
+        },
+        {
+          "name": "acc_rescue_pos",
+          "terms": [
+            [
+              1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": -1.7014118346046923e+38,
+          "a": [
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 4278190080,
+          "output": 2130706432
+        },
+        {
+          "name": "identity_neg",
+          "terms": [
+            [
+              -1.0,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            3212836864,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 3212836864
+        },
+        {
+          "name": "finite_neg",
+          "terms": [
+            [
+              -8.507059173023462e+37,
+              2.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4269801472,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4278190080
+        },
+        {
+          "name": "near_max_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.9921875
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073676288,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286513152
+        },
+        {
+          "name": "overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "two_finite_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ],
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            4278190080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1065353216,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "four_finite_overflow_neg",
+          "terms": [
+            [
+              -8.507059173023462e+37,
+              1.0
+            ],
+            [
+              -8.507059173023462e+37,
+              1.0
+            ],
+            [
+              -8.507059173023462e+37,
+              1.0
+            ],
+            [
+              -8.507059173023462e+37,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4269801472,
+            4269801472,
+            4269801472,
+            4269801472,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1065353216,
+            1065353216,
+            1065353216,
+            1065353216,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "max_finite_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              2.028240960365167e+31,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            1937768448,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578687
+        },
+        {
+          "name": "half_ulp_below_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              1.0141204801825835e+31,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            1929379840,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578687
+        },
+        {
+          "name": "quarter_ulp_below_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              5.070602400912918e+30,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            1920991232,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "cancel_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1073741824,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 0
+        },
+        {
+          "name": "rescue_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ],
+            [
+              1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4278190080
+        },
+        {
+          "name": "huge_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 4286578688
+        },
+        {
+          "name": "huge_cancel_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ],
+            [
+              1.7014118346046923e+38,
+              1.7014118346046923e+38
+            ]
+          ],
+          "c": -0.0,
+          "a": [
+            4278190080,
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            2130706432,
+            2130706432,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2147483648,
+          "output": 0
+        },
+        {
+          "name": "acc_overflow_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              1.0
+            ]
+          ],
+          "c": -1.7014118346046923e+38,
+          "a": [
+            4278190080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1065353216,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 4278190080,
+          "output": 4286578688
+        },
+        {
+          "name": "acc_rescue_neg",
+          "terms": [
+            [
+              -1.7014118346046923e+38,
+              2.0
+            ]
+          ],
+          "c": 1.7014118346046923e+38,
+          "a": [
+            4278190080,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "b": [
+            1073741824,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "c_word": 2130706432,
+          "output": 4278190080
+        }
+      ],
+      "grid": 30,
+      "block": 32,
+      "idesc": null,
+      "inputs": {
+        "A": {
+          "sha256": "49e02bd64c49882a6f7729b7e119e38d6fc3773e979db60a73197e65cdb2a747",
+          "bytes": 15360,
+          "zlib_base64": "eJzt2DEKA0EMQ1HfLHfa9FnfbO+U9EmYbotBrUH6Ajd+Lg0epqofJYOb+wtP9jpxHI92NYNb+7oP98KzfO1GfzZ9PMYLj/Z+48lePxzHY10F9/fp/cNnXQXHcVvvC4/2L57s8m2A47i/qxnc2td9uBee5Ws3+rnp4zFeeLT3gSe7/CPCcdzbVXB/n94/fNZVcBw39T+CdMe/"
+        },
+        "B": {
+          "sha256": "f0fce6e3e867e39ad448fb9c8affc56de6a36bacb375b61866da1abafedd8566",
+          "bytes": 7680,
+          "zlib_base64": "eJzt18ENgDAMQ9FsBpvB5qAOgDlVP3Lc68vJaqO66j5KHnevc7Y/P/m4O50/7et9qDcyxb/m3H3dD7kj43FzlztygNP5o34Jm+Jqxtzp/kE7/f+knc6fdjp/2un+STudP+1d+iftXftp+m88vtfp/kk7nX/6L+yN+2n6716n/5+sv/5j3vE="
+        },
+        "C": {
+          "sha256": "35ef3441a977249f0b758b239c8cc6e3bd8306d8cbbfc82af5eec9e453c7ee93",
+          "bytes": 15360,
+          "zlib_base64": "eJzt2YEJADAIBDE3t5vbMQQ/B5niqiRJkiRJkiRJknSsJtoQ7QEAAAAAAHDK9n9iV5PrAzdCvj0="
+        }
+      },
+      "output": {
+        "sha256": "a5cfbf3649afe538b483da4f70a7c1d4fe860f43c6e3af21bb4663a39297e2cf",
+        "bytes": 15360,
+        "zlib_base64": "eJzt1EERAEEIA0GcnTRwttI4GTzSU9UOCFXzFcGqSdZEGwAC7TYQ6vr/cE3hNcmGaMru+v443j/R5pGslmRNtAEg0G4Doa7/D9cU3pJsiKbsru+P4/0T7AeTa20P"
+      },
+      "repeat_hashes": [
+        "a5cfbf3649afe538b483da4f70a7c1d4fe860f43c6e3af21bb4663a39297e2cf",
+        "a5cfbf3649afe538b483da4f70a7c1d4fe860f43c6e3af21bb4663a39297e2cf",
+        "a5cfbf3649afe538b483da4f70a7c1d4fe860f43c6e3af21bb4663a39297e2cf"
+      ]
+    }
+  ]
+}

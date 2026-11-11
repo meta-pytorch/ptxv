@@ -1,0 +1,64 @@
+name = "probe_sttm_ldtm"
+description = """
+Probe (L-OPREAD) on GB300: a TMEM load that overwrites the source registers of the TMEM store
+just before it, with no wait (ptxas: `STTM.x16 tmem[UR6], R20` with no read scoreboard, then
+`LDTM.x16 R20, tmem[UR7+0x10]`; CUTLASS fmha_fwd, FA4 hd256). Each thread stores x ^ 0x5a5a5a5a
+to column 16, x to column 0, loads column 16 into the same registers, then reads column 0
+back; out = (column 0, column 16) per thread. The TMEM queue reads the store's registers
+before the load writes them (kernel.ptx, gen.py). expected/ is GB300's output."""
+ptx = "kernel.ptx"
+entry = "sttm_ldtm"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [128, 32]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [128, 32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "permuted"
+summary = "the second tcgen05.ld lists its destinations out of order (pairs swapped), the stores follow"
+expect = ["clean"]
+[[variants.edits]]
+marker = "@PLD"
+find = "{%r60,%r61,%r62,%r63,%r64,%r65,%r66,%r67,%r68,%r69,%r70,%r71,%r72,%r73,%r74,%r75}"
+replace = "{%r61,%r60,%r63,%r62,%r65,%r64,%r67,%r66,%r69,%r68,%r71,%r70,%r73,%r72,%r75,%r74}"
+[[variants.edits]]
+marker = "@PST0"
+find = "{%r60,%r61,%r62,%r63}"
+replace = "{%r61,%r60,%r63,%r62}"
+[[variants.edits]]
+marker = "@PST1"
+find = "{%r64,%r65,%r66,%r67}"
+replace = "{%r65,%r64,%r67,%r66}"
+[[variants.edits]]
+marker = "@PST2"
+find = "{%r68,%r69,%r70,%r71}"
+replace = "{%r69,%r68,%r71,%r70}"
+[[variants.edits]]
+marker = "@PST3"
+find = "{%r72,%r73,%r74,%r75}"
+replace = "{%r73,%r72,%r75,%r74}"

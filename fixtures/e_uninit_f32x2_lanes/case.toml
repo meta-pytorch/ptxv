@@ -1,0 +1,44 @@
+name = "e_uninit_f32x2_lanes"
+description = """
+S-INIT per lane of a PTX f32x2 register (2026-11-08): `mov.b64 %rd, {a, b}` with b undefined
+for threads 16..31, add.rn.f32x2, unpack; storing lane 0 is clean, lane 1 is reported. Before,
+PTX virtual registers were defined or undefined as a whole (CuTeDSL
+FlashAttentionBackwardPreprocess 1x1x16384, PTX front: undef-insensitive where SASS is
+clean)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+entry = "uninit_f32x2_lanes"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [64]
+init = "normal"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "the defined lane is stored"
+expect = ["clean"]
+
+[[variants]]
+id = "store_hi"
+summary = "the lane that is undefined in threads 16..31 is stored"
+edits = [{ marker = "@STORE", find = "%r4;", replace = "%r5;" }]
+expect = ["violation"]

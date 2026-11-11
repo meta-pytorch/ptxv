@@ -1,0 +1,75 @@
+name = "r1h_nvls_l1"
+description = """
+Rung 1h. NVLS multicast and the per-SM L1 on GPU 0 (S-VA-ALIAS, E-MC-ALIAS-HW, E-HW-L1): a
+weak load through the unicast address, a multimem.st of the same word, then a weak load
+through the unicast address again (read-after-write on one SM); and a weak load before a
+multimem.st of the same word (write-after-read)."""
+ptx = "kernel.ptx"
+entry = "nvls_l1"
+grid = [1, 1, 1]
+block = [1, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "buf0"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "buf1"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [3]
+init = "zeros"
+device = 0
+
+[[multicast]]
+name = "mc"
+size = 128
+binds = [
+    { device = 0, offset = 0, buffer = "buf0", byte_offset = 0, size = 128 },
+    { device = 1, offset = 0, buffer = "buf1", byte_offset = 0, size = 128 },
+]
+
+[[params]]
+kind = "ptr"
+buffer = "buf0"
+
+[[params]]
+kind = "ptr"
+buffer = "mc"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "a fence.proxy.alias between each pair of accesses through the two addresses"
+expect = ["clean"]
+
+[[variants]]
+id = "B82"
+summary = "no fence.proxy.alias between the multimem.st and the second weak load through the unicast address (same SM, the line filled by the first load)"
+marker = "@RAW"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+expect = ["race"]
+hw_note = "hardware model (E-HW-L1, E-MC-ALIAS-HW): the second load hits the line the first one filled: stale"
+
+[[variants]]
+id = "B83"
+summary = "no fence.proxy.alias between a weak load through the unicast address and a multimem.st of the same word (write-after-read)"
+marker = "@WAR"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+expect = ["race"]
+hw_note = "E-MC-ALIAS-HW does not cover write-after-read: still a race under it"

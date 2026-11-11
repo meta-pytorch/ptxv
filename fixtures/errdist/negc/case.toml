@@ -1,0 +1,67 @@
+name = "negc"
+description = """
+errdist DAG CLT with a negated FMA addend: out = u v - (x0 y0 + x1 y1 + x2 y2 + x3 y3), an FMA chain
+then one FFMA whose addend is negated (`Op::Fma { neg_c }`). Under fixtures/errdist/negc.json
+(x, y ~ U(1, 2), u, v ~ N(3, 0.01)) the two sides nearly cancel. Until 2026-11-10 the DAG CLT
+added the addend's mean instead of subtracting it (0.224 against Tier 3's 0.897); with the same
+cancellation and no negated addend it agreed (0.894 against 0.895)."""
+ptx = "kernel.ptx"
+entry = "negc"
+grid = [1, 1, 1]
+block = [1, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "u"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "u"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

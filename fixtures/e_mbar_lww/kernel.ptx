@@ -1,0 +1,85 @@
+// S-MBAR-SCOPE with an async-proxy consumer: a 2-CTA write-write hand-off. Rank 0 stores
+// 16 bytes into its own shared memory and arrives on rank 1's mbarrier; rank 1 waits, then
+// bulk-copies its own 16 bytes over rank 0's (cp.async.bulk shared::cluster, complete_tx on
+// rank 0's mbarrier). Each CTA zeroes its slot (fenced) before the cluster barrier, so the WAR
+// variants read defined bytes. Rank 0 waits for the copy and writes out the word it finds: rank 1's
+// value (2) unless rank 0's store lands after the copy. This is the shape of a 2-CTA attention
+// backward (STS.128, bare remote arrive, peer UBLKCP.S.S over the same bytes).
+//   good : fence.proxy.async.shared::cta, mbarrier.arrive.release.cluster, try_wait.acquire.cluster
+//   LWW  : no fence, .release.cta arrive, .acquire.cta wait (GB300: the store lands after the
+//          copy, probes/handoff_window v=10)
+//   LWWC : fence.acq_rel.cta (SASS MEMBAR.ALL.CTA) before the .cta arrive (MISS 54; GB300: 21 of 9.88e9
+//          hand-offs, probes/handoff_window v=11)
+//   LWWP : fence.proxy.async.shared::cta before the .cta arrive (GB300 0 of 4.9e9, v=12)
+//   LWWK : .release.cluster arrive / .acquire.cluster wait, no proxy fence (GB300 0 of 4.9e9,
+//          v=13)
+//   WAR  : rank 0 reads the slot instead of storing, no proxy fence, cluster release (S-PROXY-WAR:
+//          a contract at the strict level; GB300 0 of 6.08e9, v=16, discharged by E-HW-PROXY-WAR)
+//   WARF : WAR with fence.proxy.async.shared::cta after the read: clean
+//   WAR2 : rank 0 reads bytes 4-7, fences, then reads bytes 12-15 and 8-11 at one clock, no fence
+//          after: contract, reported at the read of bytes 8-11 (first uncovered in byte order)
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_mbar_lww(.param .u64 out_p)
+.maxntid 32, 1, 1
+.reqnctapercluster 2, 1, 1
+{
+    .reg .b32 %r<20>;
+    .reg .b64 %rd<4>;
+    .reg .pred %p<4>;
+    .shared .align 8 .b8 full[8];
+    .shared .align 8 .b8 bulk[8];
+    .shared .align 16 .b8 slot[16];
+    .shared .align 16 .b8 src[16];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r0, %tid.x;
+    mov.u32 %r1, %cluster_ctarank;
+    mov.u32 %r2, full;
+    mov.u32 %r3, bulk;
+    mov.u32 %r4, slot;
+    mov.u32 %r5, src;
+    setp.ne.u32 %p0, %r0, 0;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p0 bra SYNC;
+    mbarrier.init.shared::cta.b64 [%r2], 1;
+    mbarrier.init.shared::cta.b64 [%r3], 1;
+    mov.u32 %r17, 0;
+    st.shared.v4.u32 [%r4], {%r17, %r17, %r17, %r17};
+    fence.proxy.async.shared::cta;
+    fence.mbarrier_init.release.cluster;
+SYNC:
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    @%p0 bra END;
+    @%p1 bra PEER;
+    mapa.shared::cluster.u32 %r7, %r2, 1;
+    mbarrier.arrive.expect_tx.relaxed.cluster.shared::cta.b64 _, [%r3], 16;
+    mov.u32 %r8, 1;
+    st.shared.v4.u32 [%r4], {%r8, %r8, %r8, %r8};                         // @STORE
+    fence.proxy.async.shared::cta;                                         // @FENCE
+    mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%r7];          // @ARRIVE
+WB:
+    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p3, [%r3], 0;
+    @!%p3 bra WB;
+    ld.shared.u32 %r9, [%r4];
+    // (use slot)                                                          // @USE
+    st.global.u32 [%rd1], %r9;
+    bra END;
+PEER:
+    mov.u32 %r10, 2;
+    st.shared.v4.u32 [%r5], {%r10, %r10, %r10, %r10};
+    fence.proxy.async.shared::cta;
+WAIT:
+    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p2, [%r2], 0;   // @WAIT
+    @!%p2 bra WAIT;
+    mapa.shared::cluster.u32 %r11, %r4, 0;
+    mapa.shared::cluster.u32 %r12, %r3, 0;
+    cp.async.bulk.shared::cluster.shared::cta.mbarrier::complete_tx::bytes [%r11], [%r5], 16, [%r12];
+END:
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    ret;
+}

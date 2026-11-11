@@ -1,0 +1,47 @@
+// Double-buffered TMA-store epilogue (the CUTLASS sm100 epilogue shape): 4 subtiles through 2
+// staging buffers. Per subtile j: every thread writes its word of buffer j%2, fence.proxy.async,
+// bar.sync 1, 128; thread 0 issues the TMA store of the buffer, commits, and waits until at most
+// one store is still reading (wait_group.read 1); bar.sync 1, 128 again so nobody rewrites the
+// buffer of subtile j-1 before that store has read it. `noreuse` deletes the second barrier.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry k(.param .align 64 .b8 tmap_d[128])
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<8>;
+    .shared .align 1024 .b8 stage[1024];
+
+    mov.u32         %r0, %tid.x;
+    mov.u32         %r1, stage;
+    shl.b32         %r2, %r0, 2;
+    setp.ne.u32     %p0, %r0, 0;
+    mov.b64         %rd0, tmap_d;
+    cvta.param.u64  %rd1, %rd0;
+    mov.u32         %r3, 0;                         // j
+LOOP:
+    and.b32         %r4, %r3, 1;
+    shl.b32         %r5, %r4, 9;                    // buffer * 512
+    add.u32         %r6, %r1, %r5;
+    add.u32         %r7, %r6, %r2;
+    mad.lo.u32      %r8, %r3, 1000, %r0;            // value: 1000 j + tid
+    st.shared.u32   [%r7], %r8;
+    fence.proxy.async.shared::cta;
+    bar.sync        1, 128;
+    @%p0 bra        SKIP;
+    mov.u32         %r9, 0;
+    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r9, %r3}], [%r6];
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group.read 1;
+SKIP:
+    bar.sync        1, 128;                         // @REUSE
+    add.u32         %r3, %r3, 1;
+    setp.lt.u32     %p1, %r3, 4;
+    @%p1 bra        LOOP;
+    @%p0 bra        DONE;
+    cp.async.bulk.wait_group 0;
+DONE:
+    ret;
+}

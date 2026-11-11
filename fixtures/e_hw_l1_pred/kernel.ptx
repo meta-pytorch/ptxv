@@ -1,0 +1,50 @@
+// E-HW-L1 predictive check (fixture e_hw_l1_pred). Until 2026-11-10 the check kept the first and
+// last two loads per thread and line, which hid the witness here: reduced exploration and the
+// certificate were clean while unreduced exploration found the stale read. Cluster of 2 CTAs (2 SMs), one thread each.
+// CTA 0: weak store W of word 0 of line L, then barrier.cluster (release / acquire).
+// CTA 1: two weak loads of other words of L (fill), fence.acq_rel.gpu (L1 invalidation),
+// three more weak loads of other words of L (refill: the line holds word 0 as it was before W
+// if this happens before W lands), barrier.cluster, two weak loads of other words (hits, after
+// W), then a weak load of word 0 (R): it hits the line refilled before the barrier.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry l1pred(.param .u64 buf, .param .u64 out)
+.explicitcluster
+.reqnctapercluster 2, 1, 1
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [buf];
+    ld.param.u64 %rd2, [out];
+    mov.u32 %r1, %cluster_ctarank;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra READER;
+    st.global.u32 [%rd1], 7;
+    barrier.cluster.arrive;
+    barrier.cluster.wait;
+    ret;
+READER:
+    ld.global.u32 %r2, [%rd1+32];
+    ld.global.u32 %r3, [%rd1+36]; // @PRE
+    fence.acq_rel.gpu;
+    ld.global.u32 %r4, [%rd1+40];
+    ld.global.u32 %r5, [%rd1+44];
+    ld.global.u32 %r6, [%rd1+48];
+    barrier.cluster.arrive;
+    barrier.cluster.wait;
+    ld.global.u32 %r7, [%rd1+64];
+    ld.global.u32 %r8, [%rd1+68]; // @POST
+    ld.global.u32 %r9, [%rd1];
+    add.u32 %r2, %r2, %r3;
+    add.u32 %r2, %r2, %r4;
+    add.u32 %r2, %r2, %r5;
+    add.u32 %r2, %r2, %r6;
+    add.u32 %r2, %r2, %r7;
+    add.u32 %r2, %r2, %r8; // @SUM
+    st.global.u32 [%rd2], %r9;
+    st.global.u32 [%rd2+4], %r2;
+    ret;
+}

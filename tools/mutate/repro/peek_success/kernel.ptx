@@ -1,0 +1,38 @@
+// E-WELLSYNC peek with the PTX predicate %p7: warp 0 peeks an mbarrier warp 1 completes, skips
+// its blocking wait on success, and stores whether the peek succeeded.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry k(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<10>;
+    .shared .align 8 .b64 mb;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, mb;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra INITD;
+    mbarrier.init.shared::cta.b64 [%r2], 1;
+INITD:
+    bar.sync 0;
+    setp.ne.u32 %p2, %r1, 32;
+    @%p2 bra W0;
+    mbarrier.arrive.shared::cta.b64 %rd5, [%r2];   // @ARR
+    bra DONE;
+W0:
+    @%p1 bra DONE;
+    mbarrier.try_wait.parity.shared::cta.b64 %p7, [%r2], 0;    // @PEEK
+    @%p7 bra SKIP;                 // @BR
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p6, [%r2], 0;
+    @!%p6 bra WAIT;
+SKIP:
+    selp.u32 %r5, 1, 0, %p7;       // @USE
+    st.global.u32 [%rd1], %r5;
+DONE:
+    ret;
+}

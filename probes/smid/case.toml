@@ -1,0 +1,23 @@
+name = "probe_smid"
+description = """
+E-SMID probe: each of 1024 CTAs (32 threads) stores {%smid, %smid ~20 us later, %nsmid,
+%ctaid.x}. ptxv probe prints the raw words."""
+ptx = "kernel.ptx"
+entry = "smid"
+grid = [1024, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024, 4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

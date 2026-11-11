@@ -1,0 +1,7 @@
+[package]
+name = "ptxv-concolic"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+ptxv-sim = { path = "../sim" }

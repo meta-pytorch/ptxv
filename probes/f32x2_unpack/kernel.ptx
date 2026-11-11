@@ -1,0 +1,59 @@
+// probes/f32x2_unpack: `mul.f32x2` with no rounding modifier whose product ptxas 13.0 keeps
+// apart from the ops reading it (FMUL2, no FFMA / FFMA2): halves unpacked into scalar ops, the
+// product as an fma addend, and a half repacked into the other lane of a vector that an
+// add.f32x2 reads (Triton's reduction tail). 256 threads; x = in[4 t .. 4 t + 1], y = in[4 t
+// + 2 .. 4 t + 3] as f32x2 (gen.py: products near -y, random words); p = x * y;
+// out[8 t + i]:
+//   0, 1: p.lo + y.lo, p.hi + y.hi (unpack, scalar add)
+//   2: y.lo - p.lo  3: -p.hi + y.hi (neg.f32, then add)  4: fma.rn.f32(y.lo, y.hi, p.lo)
+//   5: fma.rn.f32x2(x, x, p).lo  6, 7: add.f32x2({p.hi, y.lo}, y) (p.hi into lane 0)
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry f32x2_unpack(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<48>;
+    .reg .b64   %rd<24>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 16;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.v4.f32 {%r2, %r3, %r4, %r5}, [%rd4];
+    mul.wide.u32    %rd5, %r1, 32;
+    add.s64         %rd6, %rd2, %rd5;
+    mov.b64         %rd7, {%r2, %r3};
+    mov.b64         %rd8, {%r4, %r5};
+    mul.f32x2       %rd9, %rd7, %rd8;
+    mov.b64         {%r6, %r7}, %rd9;
+    add.f32         %r8, %r6, %r4;
+    add.f32         %r9, %r7, %r5;
+    st.global.v2.f32 [%rd6], {%r8, %r9};
+    mul.f32x2       %rd10, %rd7, %rd8;
+    mov.b64         {%r10, %r11}, %rd10;
+    sub.f32         %r12, %r4, %r10;
+    neg.f32         %r13, %r11;
+    add.f32         %r14, %r13, %r5;
+    st.global.v2.f32 [%rd6+8], {%r12, %r14};
+    mul.f32x2       %rd11, %rd7, %rd8;
+    mov.b64         {%r15, _}, %rd11;
+    fma.rn.f32      %r16, %r4, %r5, %r15;
+    mul.f32x2       %rd12, %rd7, %rd8;
+    fma.rn.f32x2    %rd13, %rd7, %rd7, %rd12;
+    mov.b64         {%r17, _}, %rd13;
+    st.global.v2.f32 [%rd6+16], {%r16, %r17};
+    mul.f32x2       %rd14, %rd7, %rd8;
+    mov.b64         {_, %r18}, %rd14;
+    mov.b64         %rd15, {%r18, %r4};
+    add.f32x2       %rd16, %rd15, %rd8;
+    st.global.b64   [%rd6+24], %rd16;
+    ret;
+}

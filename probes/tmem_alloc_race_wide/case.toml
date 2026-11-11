@@ -1,0 +1,39 @@
+name = "probe_tmem_alloc_race_wide"
+description = """
+Probe (hardware only, binary-only) for the tcgen05 guardrail race of fixtures/e_tmem_alloc_block,
+the window widened: probes/tmem_alloc_race's kernel.ptx through ptxas 13.0, hand-patched so that
+the guardrail code of tcgen05.dealloc sleeps between the free and the bitmap update:
+`UTCATOMSWS.AND` at 0x450, then `BRA 0x6b0`; 0x6b0 `NANOSLEEP 0x20` (32 ns) followed by the five
+instructions moved from 0x460-0x4a0, and `BRA 0x4b0` back to the two `ATOMS.AND` (0x460-0x4a0
+otherwise unchanged, now unreachable). Another warp's allocation retry loop takes the freed
+columns during the sleep and sets its bitmap bits; the sleeper's `ATOMS.AND` then clears them
+and the new owner's dealloc check traps. out[cta * 4 + warp] = iterations completed.
+GB300 (2026-11-10, ptxv hw-worker, n = 20000, 2 launches per sleep): NANOSLEEP 0x20 and 0x40:
+every launch fails (`unspecified launch failure`; compute-sanitizer: "Tensor Memory column ...
+being deallocated by instruction tcgen05.dealloc is not allocated", the guardrail check);
+0x80 to 0x1000 and 0x2710: every launch completes (the other warp's whole alloc / dealloc fits
+in the sleep, so its check runs before the clear); unpatched control: completes."""
+cubin = "kernel.cubin"
+arch = "sm_103a"
+entry = "probe_tmem_alloc_race"
+grid = [148, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [592]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 20000
+
+[[variants]]
+id = "good"
+expect = ["trap"]

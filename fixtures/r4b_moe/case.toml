@@ -1,0 +1,2305 @@
+name = "r4b_moe"
+description = """
+Captured by tools/capture_dist.py (torch 2.12.0a0+git808dd93, torchrun --nproc-per-node 2):
+run() of moe_deepep.py. 28 launch(es) on 2 GPUs, binary only:
+  rank 0: _ZN7deep_ep6layout19get_dispatch_layoutILi256ELi4ELi8EEEvPKlPiS4_S4_Pbiiii grid [2, 1, 1] block [256, 1, 1]
+  rank 1: _ZN7deep_ep6layout19get_dispatch_layoutILi256ELi4ELi8EEEvPKlPiS4_S4_Pbiiii grid [2, 1, 1] block [256, 1, 1]
+  rank 0: _ZN7deep_ep9intranode15notify_dispatchILi2EEEvPKiPiS3_S4_iiiPKbS4_S4_iiPPvPS4_i grid [3, 1, 1] block [128, 1, 1]
+  rank 1: _ZN7deep_ep9intranode15notify_dispatchILi2EEEvPKiPiS3_S4_iiiPKbS4_S4_iiPPvPS4_i grid [3, 1, 1] block [128, 1, 1]
+  rank 1: _ZN7deep_ep9intranode8dispatchILi2ELi768ELi8192EEEvP4int4PfPiPlS4_S5_S5_PKS2_PKfPKlSA_PKbPKiiiiiiiii grid [2, 1, 1] block [768, 1, 1]
+  rank 0: _ZN7deep_ep9intranode8dispatchILi2ELi768ELi8192EEEvP4int4PfPiPlS4_S5_S5_PKS2_PKfPKlSA_PKbPKiiiiiiiii grid [2, 1, 1] block [768, 1, 1]
+  rank 0: _ZN2at6native24vectorized_gather_kernelILi16ElEEvPcS2_PT0_illllb grid [17, 1, 1] block [32, 1, 1]
+  rank 0: _ZN2at4cuda6detail25prepare_grouped_gemm_dataIN7cutlass10bfloat16_tES4_S4_fN4cute5tupleIJiiiEEENS6_I grid [1, 1, 1] block [2, 1, 1]
+  rank 0: _ZN7cutlass13device_kernelIN2at4cuda6detail25enable_3x_kernel_for_sm10INS_4gemm6kernel13GemmUniversa grid [2, 1, 1] block [384, 1, 1]
+  rank 0: _ZN2at6native24index_elementwise_kernelILi128ELi4EZNS0_16gpu_index_kernelIZNS0_17index_kernel_implIN grid [1, 1, 1] block [128, 1, 1]
+  rank 0: _ZN2at6native27unrolled_elementwise_kernelIZZZNS0_23direct_copy_kernel_cudaERNS_18TensorIteratorBase grid [5, 1, 1] block [128, 1, 1]
+  rank 0: _ZN2at6native18elementwise_kernelILi128ELi2EZNS0_22gpu_kernel_impl_nocastINS0_13BinaryFunctorIfffNS0 grid [9, 1, 1] block [128, 1, 1]
+  rank 0: _ZN2at6native29vectorized_elementwise_kernelILi4ENS0_11FillFunctorIfEESt5arrayIPcLm1EEEEviT0_T1_ grid [2, 1, 1] block [128, 1, 1]
+  rank 0: _ZN2at6native19indexFuncLargeIndexIfljLi2ELi2ELin2ELb1ENS0_44_GLOBAL__N__e4def9c7_11_Indexing_cu_898 grid [17, 1, 1] block [128, 1, 1]
+  rank 1: _ZN2at6native44_GLOBAL__N__e4def9c7_11_Indexing_cu_89862edb21indexSelectSmallIndexIN3c108BFloat16Elj grid [1, 1, 1] block [128, 1, 1]
+  rank 1: _ZN2at4cuda6detail25prepare_grouped_gemm_dataIN7cutlass10bfloat16_tES4_S4_fN4cute5tupleIJiiiEEENS6_I grid [1, 1, 1] block [2, 1, 1]
+  rank 1: _ZN7cutlass13device_kernelIN2at4cuda6detail25enable_3x_kernel_for_sm10INS_4gemm6kernel13GemmUniversa grid [2, 1, 1] block [384, 1, 1]
+  rank 1: _ZN2at6native24index_elementwise_kernelILi128ELi4EZNS0_16gpu_index_kernelIZNS0_17index_kernel_implIN grid [1, 1, 1] block [128, 1, 1]
+  rank 0: _ZN2at6native29vectorized_elementwise_kernelILi8EZNS0_25bfloat16_copy_kernel_cudaERNS_18TensorIterat grid [2, 1, 1] block [128, 1, 1]
+  rank 0: _ZN7deep_ep9intranode21cached_notify_combineILi2EEEvPPvPiiiiPS4_i grid [2, 1, 1] block [128, 1, 1]
+  rank 0: _ZN7deep_ep9intranode7combineI13__nv_bfloat16Li2ELi768ELi4096EEEvPT_PfPKS3_PKfS7_S7_PKiSB_SB_PiiiiiP grid [2, 1, 1] block [768, 1, 1]
+  rank 1: _ZN2at6native27unrolled_elementwise_kernelIZZZNS0_23direct_copy_kernel_cudaERNS_18TensorIteratorBase grid [4, 1, 1] block [128, 1, 1]
+  rank 1: _ZN2at6native18elementwise_kernelILi128ELi2EZNS0_22gpu_kernel_impl_nocastINS0_13BinaryFunctorIfffNS0 grid [8, 1, 1] block [128, 1, 1]
+  rank 1: _ZN2at6native29vectorized_elementwise_kernelILi4ENS0_11FillFunctorIfEESt5arrayIPcLm1EEEEviT0_T1_ grid [2, 1, 1] block [128, 1, 1]
+  rank 1: _ZN2at6native19indexFuncSmallIndexIfljLi2ELi2ELin2ENS0_44_GLOBAL__N__e4def9c7_11_Indexing_cu_89862ed grid [1, 1, 1] block [128, 1, 1]
+  rank 1: _ZN2at6native29vectorized_elementwise_kernelILi8EZNS0_25bfloat16_copy_kernel_cudaERNS_18TensorIterat grid [2, 1, 1] block [128, 1, 1]
+  rank 1: _ZN7deep_ep9intranode21cached_notify_combineILi2EEEvPPvPiiiiPS4_i grid [2, 1, 1] block [128, 1, 1]
+  rank 1: _ZN7deep_ep9intranode7combineI13__nv_bfloat16Li2ELi768ELi4096EEEvPT_PfPKS3_PKfS7_S7_PKiSB_SB_PiiiiiP grid [2, 1, 1] block [768, 1, 1]
+Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py --nproc 2 --file tools/capture_examples/moe_deepep.py --out /tmp/r4b/moe"""
+cubin = "k0.cubin"
+entry = "_ZN7deep_ep6layout19get_dispatch_layoutILi256ELi4ELi8EEEvPKlPiS4_S4_Pbiiii"
+grid = [2, 1, 1]
+block = [256, 1, 1]
+dynamic_smem = 0
+outputs = ["y_r0", "y_r1"]
+replicas = []
+
+# DeepEP synchronizes through relaxed polls and a shared-memory relay; under the strict PTX
+# model those are races (docs/rung4.md, T4b). E-SMEM-CUMUL is validated on GB300 and stays on.
+# E-POLL-ACQ is REFUTED there (docs/poll-acq-litmus.md) and is no longer set: the strict model
+# reports barrier_block's races, and `ptxv check` classifies them against the GB300 hardware
+# model (E-HW-L1, crates/sim/src/twolevel.rs) as latent. The old verdicts reproduce with
+# `PTXV_POLL_ACQUIRE=1 ptxv check --assume-refuted E-POLL-ACQ ...` (named in the verdict).
+smem_cumulative = true
+
+[[buffers]]
+name = "x_r0"
+dtype = "bf16"
+shape = [8, 128]
+device = 0
+init = "file"
+file = "data/x_r0.bin"
+
+[[buffers]]
+name = "topk_r0"
+dtype = "i64"
+shape = [64]
+device = 0
+init = "file"
+file = "data/topk_r0.bin"
+
+[[buffers]]
+name = "w_r0"
+dtype = "f32"
+shape = [128]
+device = 0
+init = "file"
+file = "data/w_r0.bin"
+
+[[buffers]]
+name = "Wl_r0"
+dtype = "bf16"
+shape = [32768]
+device = 0
+init = "file"
+file = "data/Wl_r0.bin"
+
+[[buffers]]
+name = "W0_r0"
+dtype = "u8"
+shape = [512]
+device = 0
+init = "file"
+file = "data/W0_r0.bin"
+
+[[buffers]]
+name = "W1_r0"
+dtype = "u8"
+shape = [16]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W2_r0"
+dtype = "u8"
+shape = [16]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W3_r0"
+dtype = "u8"
+shape = [16]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W4_r0"
+dtype = "u8"
+shape = [8]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W5_r0"
+dtype = "u8"
+shape = [3584]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W6_r0"
+dtype = "u8"
+shape = [56]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W7_r0"
+dtype = "u8"
+shape = [8]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W8_r0"
+dtype = "u8"
+shape = [64]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W9_r0"
+dtype = "u8"
+shape = [224]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W10_r0"
+dtype = "u8"
+shape = [112]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W11_r0"
+dtype = "u8"
+shape = [136]
+device = 0
+init = "file"
+file = "data/W11_r0.bin"
+
+[[buffers]]
+name = "W12_r0"
+dtype = "u8"
+shape = [136]
+device = 0
+init = "file"
+file = "data/W12_r0.bin"
+
+[[buffers]]
+name = "W13_r0"
+dtype = "u8"
+shape = [8]
+device = 0
+init = "file"
+file = "data/W13_r0.bin"
+
+[[buffers]]
+name = "W14_r0"
+dtype = "u8"
+shape = [4352]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W15_r0"
+dtype = "u8"
+shape = [4352]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W16_r0"
+dtype = "u8"
+shape = [120]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W17_r0"
+dtype = "u8"
+shape = [17408]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W18_r0"
+dtype = "u8"
+shape = [3584]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "y_r0"
+dtype = "bf16"
+shape = [8, 128]
+device = 0
+init = "zeros"
+expect = "expected/y_r0.bin"
+
+[[buffers]]
+name = "dev4_r0"
+dtype = "u64"
+shape = [148004]
+device = 0
+init = "file"
+file = "data/dev4_r0.bin"
+[[buffers.ptrs]]
+offset = 1183904
+buffer = "dev4_r0"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 1183912
+buffer = "dev4_r1"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 1183968
+buffer = "dev4_r0"
+byte_offset = 1183872
+[[buffers.ptrs]]
+offset = 1183976
+buffer = "dev4_r1"
+byte_offset = 1183872
+
+[[buffers]]
+name = "host6_r0"
+dtype = "u8"
+shape = [8]
+device = 0
+init = "file"
+file = "data/host6_r0.bin"
+
+[[buffers]]
+name = "host7_r0"
+dtype = "u8"
+shape = [4096]
+device = 0
+init = "file"
+file = "data/host7_r0.bin"
+
+[[buffers]]
+name = "x_r1"
+dtype = "bf16"
+shape = [8, 128]
+device = 1
+init = "file"
+file = "data/x_r1.bin"
+
+[[buffers]]
+name = "topk_r1"
+dtype = "i64"
+shape = [64]
+device = 1
+init = "file"
+file = "data/topk_r1.bin"
+
+[[buffers]]
+name = "w_r1"
+dtype = "f32"
+shape = [128]
+device = 1
+init = "file"
+file = "data/w_r1.bin"
+
+[[buffers]]
+name = "Wl_r1"
+dtype = "bf16"
+shape = [32768]
+device = 1
+init = "file"
+file = "data/Wl_r1.bin"
+
+[[buffers]]
+name = "W0_r1"
+dtype = "u8"
+shape = [512]
+device = 1
+init = "file"
+file = "data/W0_r1.bin"
+
+[[buffers]]
+name = "W1_r1"
+dtype = "u8"
+shape = [16]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W2_r1"
+dtype = "u8"
+shape = [16]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W3_r1"
+dtype = "u8"
+shape = [16]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W4_r1"
+dtype = "u8"
+shape = [8]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W5_r1"
+dtype = "u8"
+shape = [3328]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W6_r1"
+dtype = "u8"
+shape = [52]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W7_r1"
+dtype = "u8"
+shape = [8]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W8_r1"
+dtype = "u8"
+shape = [64]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W9_r1"
+dtype = "u8"
+shape = [208]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W10_r1"
+dtype = "u8"
+shape = [104]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W11_r1"
+dtype = "u8"
+shape = [120]
+device = 1
+init = "file"
+file = "data/W11_r1.bin"
+
+[[buffers]]
+name = "W12_r1"
+dtype = "u8"
+shape = [120]
+device = 1
+init = "file"
+file = "data/W12_r1.bin"
+
+[[buffers]]
+name = "W13_r1"
+dtype = "u8"
+shape = [8]
+device = 1
+init = "file"
+file = "data/W13_r1.bin"
+
+[[buffers]]
+name = "W14_r1"
+dtype = "u8"
+shape = [3840]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W15_r1"
+dtype = "u8"
+shape = [3840]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W16_r1"
+dtype = "u8"
+shape = [120]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W17_r1"
+dtype = "u8"
+shape = [15360]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W18_r1"
+dtype = "u8"
+shape = [3328]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "y_r1"
+dtype = "bf16"
+shape = [8, 128]
+device = 1
+init = "zeros"
+expect = "expected/y_r1.bin"
+
+[[buffers]]
+name = "host0_r1"
+dtype = "u8"
+shape = [4]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "dev4_r1"
+dtype = "u64"
+shape = [148004]
+device = 1
+init = "file"
+file = "data/dev4_r1.bin"
+[[buffers.ptrs]]
+offset = 1183904
+buffer = "dev4_r0"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 1183912
+buffer = "dev4_r1"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 1183968
+buffer = "dev4_r0"
+byte_offset = 1183872
+[[buffers.ptrs]]
+offset = 1183976
+buffer = "dev4_r1"
+byte_offset = 1183872
+
+[[buffers]]
+name = "host6_r1"
+dtype = "u8"
+shape = [8]
+device = 1
+init = "file"
+file = "data/host6_r1.bin"
+
+[[buffers]]
+name = "host7_r1"
+dtype = "u8"
+shape = [4096]
+device = 1
+init = "file"
+file = "data/host7_r1.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "topk_r0"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "W0_r0"
+byte_offset = 0
+
+[[params]]
+kind = "u64"
+value = 0
+
+[[params]]
+kind = "ptr"
+buffer = "W1_r0"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "W2_r0"
+byte_offset = 0
+
+[[params]]
+kind = "u32"
+value = 8
+
+[[params]]
+kind = "u32"
+value = 2
+
+[[params]]
+kind = "u32"
+value = 2
+
+[[params]]
+kind = "u32"
+value = 4
+
+[[launches]]
+entry = "_ZN7deep_ep6layout19get_dispatch_layoutILi256ELi4ELi8EEEvPKlPiS4_S4_Pbiiii"
+grid = [2, 1, 1]
+block = [256, 1, 1]
+cluster = [2, 1, 1]
+dynamic_smem = 0
+device = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "topk_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W0_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W1_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W2_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 8
+
+[[launches.params]]
+kind = "u32"
+value = 2
+
+[[launches.params]]
+kind = "u32"
+value = 2
+
+[[launches.params]]
+kind = "u32"
+value = 4
+
+[[launches]]
+entry = "_ZN7deep_ep9intranode15notify_dispatchILi2EEEvPKiPiS3_S4_iiiPKbS4_S4_iiPPvPS4_i"
+grid = [3, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W0_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "host6_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W1_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "host7_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 4
+
+[[launches.params]]
+kind = "u32"
+value = 8
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W2_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W4_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W3_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 8
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r0"
+byte_offset = 1183904
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r0"
+byte_offset = 1183968
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches]]
+entry = "_ZN7deep_ep9intranode15notify_dispatchILi2EEEvPKiPiS3_S4_iiiPKbS4_S4_iiPPvPS4_i"
+grid = [3, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W0_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "host6_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W1_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "host7_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 4
+
+[[launches.params]]
+kind = "u32"
+value = 8
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W2_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W4_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W3_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 8
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r1"
+byte_offset = 1183904
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r1"
+byte_offset = 1183968
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches]]
+entry = "_ZN7deep_ep9intranode8dispatchILi2ELi768ELi8192EEEvP4int4PfPiPlS4_S5_S5_PKS2_PKfPKlSA_PKbPKiiiiiiiiiPPviii"
+grid = [2, 1, 1]
+block = [768, 1, 1]
+cluster = [2, 1, 1]
+dynamic_smem = 196608
+device = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W5_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W6_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W9_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W10_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W7_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W8_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "x_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "topk_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "w_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W2_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W4_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 8
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 16
+
+[[launches.params]]
+kind = "u32"
+value = 2
+
+[[launches.params]]
+kind = "u32"
+value = 4
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r1"
+byte_offset = 1183904
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "u32"
+value = 6
+
+[[launches.params]]
+kind = "u32"
+value = 256
+
+[[launches]]
+entry = "_ZN7deep_ep9intranode8dispatchILi2ELi768ELi8192EEEvP4int4PfPiPlS4_S5_S5_PKS2_PKfPKlSA_PKbPKiiiiiiiiiPPviii"
+grid = [2, 1, 1]
+block = [768, 1, 1]
+cluster = [2, 1, 1]
+dynamic_smem = 196608
+device = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W5_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W6_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W9_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W10_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W7_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W8_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "x_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "topk_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "w_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W2_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W4_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 8
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 16
+
+[[launches.params]]
+kind = "u32"
+value = 2
+
+[[launches.params]]
+kind = "u32"
+value = 4
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r0"
+byte_offset = 1183904
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 6
+
+[[launches.params]]
+kind = "u32"
+value = 256
+
+[[launches]]
+entry = "_ZN2at6native24vectorized_gather_kernelILi16ElEEvPcS2_PT0_illllb"
+grid = [17, 1, 1]
+block = [32, 1, 1]
+dynamic_smem = 0
+device = 0
+cubin = "k1.cubin"
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W14_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W5_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W11_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 17
+
+[[launches.params]]
+kind = "u64"
+value = 256
+
+[[launches.params]]
+kind = "u64"
+value = 14
+
+[[launches.params]]
+kind = "u64"
+value = 256
+
+[[launches.params]]
+kind = "u64"
+value = 256
+
+[[launches.params]]
+kind = "bytes"
+hex = "00"
+
+[[launches]]
+entry = "_ZN2at4cuda6detail25prepare_grouped_gemm_dataIN7cutlass10bfloat16_tES4_S4_fN4cute5tupleIJiiiEEENS6_IJlNS5_1CILi1EEENS8_ILi0EEEEEESB_SB_EEvPT_PT0_PT1_PT2_SJ_PSD_PSF_PSH_PSJ_SN_PT3_PT4_PT5_PT6_PKiiiiSt5arrayIlLm3EESZ_SZ_SZ_SZ_llbb"
+grid = [1, 1, 1]
+block = [2, 1, 1]
+dynamic_smem = 0
+device = 0
+cubin = "k2.cubin"
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W14_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "Wl_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W15_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W16_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W16_r0"
+byte_offset = 16
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W16_r0"
+byte_offset = 32
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W16_r0"
+byte_offset = 96
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W16_r0"
+byte_offset = 48
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W16_r0"
+byte_offset = 64
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W16_r0"
+byte_offset = 80
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W13_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 4294967295
+
+[[launches.params]]
+kind = "u32"
+value = 128
+
+[[launches.params]]
+kind = "u32"
+value = 128
+
+[[launches.params]]
+kind = "bytes"
+hex = "80000000000000000100000000000000b0d95b7baeaa0000"
+
+[[launches.params]]
+kind = "bytes"
+hex = "004000000000000001000000000000008000000000000000"
+
+[[launches.params]]
+kind = "bytes"
+hex = "8000000000000000010000000000000058c5ced0ffff0000"
+
+[[launches.params]]
+kind = "bytes"
+hex = "1100000000000000800000000000000050c4ced0ffff0000"
+
+[[launches.params]]
+kind = "bytes"
+hex = "020000000000000080000000000000008000000000000000"
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "bytes"
+hex = "01"
+
+[[launches.params]]
+kind = "bytes"
+hex = "00"
+
+[[launches]]
+entry = "_ZN7cutlass13device_kernelIN2at4cuda6detail25enable_3x_kernel_for_sm10INS_4gemm6kernel13GemmUniversalINS5_17GroupProblemShapeIN4cute5tupleIJiiiEEEEENS5_10collective13CollectiveMmaINS5_40MainloopSm100ArrayTmaUmmaWarpSpecializedILi4ELi8ELi2ENSA_IJNS9_1CILi2EEENSG_ILi1EEESI_EEEEENSA_IJNSG_ILi128EEENSG_ILi256EEENSG_ILi64EEEEEENS_10bfloat16_tEPNSA_IJlSI_NSG_ILi0EEEEEESP_SS_NS9_8TiledMMAINS9_8MMA_AtomIJNS9_20SM100_MMA_F16BF16_SSISP_SP_fLi128ELi256ELNS9_4UMMA5MajorE0ELSX_0ELNSW_7ScaleInE0ELSY_0EEEEEENS9_6LayoutINSA_IJSI_SI_SI_EEENSA_IJSQ_SQ_SQ_EEEEENSA_IJNS9_10UnderscoreES15_S15_EEEEENS9_13SM90_TMA_LOADENS9_14ComposedLayoutINS9_7SwizzleILi3ELi4ELi3EEENS9_18smem_ptr_flag_bitsILi16EEENS11_INSA_IJNSG_ILi8EEESN_EEENSA_IJSN_SI_EEEEEEEvNS9_8identityENS9_23SM90_TMA_LOAD_MULTICASTES1I_vS1J_EENS_8epilogue10collective18CollectiveEpilogueINS1M_31Sm100PtrArrayTmaWarpSpecializedILi4ELi2ELi32ELb0ELb0EEEJSO_NSA_IJNS11_ISL_SI_EENS11_INSG_ILi32EEESI_EEEEEvSS_SP_SS_NS1M_6fusion15FusionCallbacksIS1Q_NS1V_17LinearCombinationISP_fSP_fLNS_15FloatRoundStyleE2EEESO_S1U_JEEENS9_5SM1004TMEM4LOAD26SM100_TMEM_LOAD_32dp32b32xES18_NS19_INS1A_ILi2ELi4ELi3EEES1D_NS11_INSA_IJS1E_S1S_EEENSA_IJS1S_SI_EEEEEEENS9_39AutoVectorizingCopyWithAssumedAlignmentILi128EEENS9_14SM90_TMA_STOREES29_S2B_S2B_EEEvvEEEEEEvNT_6ParamsE"
+grid = [2, 1, 1]
+block = [384, 1, 1]
+cluster = [2, 1, 1]
+dynamic_smem = 217088
+device = 0
+cubin = "k2.cubin"
+
+[[launches.params]]
+kind = "bytes"
+hex = "04000000ffff00000200000000000000605a81b6faff00000000000000000000e0815825feff000058eb4425feff000080448d6baeaa00000000000000000000c0c4ced0ffff0000182e6d25feff000080448d6baeaa000030c7ced0ffff00000900000000000000b0d95b7baeaa000001000000000000000000000000000000000000000000000010650400000000000000000000000000000000000000000000000000000000000000000000000000000000000000003f7f000000000000000040000000000000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000050dbced0ffff0000981180f5fdff0000000000000000000020ddced0ffff000040ddced0ffff000050e0ced0ffff0000202c3c25feff0000000000000000000040ddced0ffff000050e0ced0ffff0000000000000000000038c0d47aaeaa000050dcced0ffff0000d4a459e8fdff0000010000000000000020ddced0ffff0000000000000000000010650400000000000000000000000000000000000000000000000000000000000000000000000000000000000000003f7f000000000000000040000000000000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000050daced0ffff000024cf3a1dfeff0000b0daced0ffff0000485b391dfeff000010f0e864aeaa0000100000000000000000dbced0ffff00000c0d3d1dfeff000010f0e864aeaa0000f4dbced0ffff0000f4dbced0ffff000068433c1dfeff0000f4dbced0ffff000030ddced00000000040ddced0ffff000040b5c46baeaa0000000000000000000010650400000000000000000000000000000000000000000000000000000000000000000000000000000000000000003f7f000000000000000040000000000000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000050d9ced0ffff00007860481ffeff0000ecdaced0ffff00000000000000000000ecdaced0ffff0000000000000000000090daced0ffff000040b5471ffeff000010f0e864aeaa0000f4dbced0ffff00000100000000000000100000000000000030dcced0ffff0000e7030000ffff000000000000000000000000000000000000000000000000000010650400000000000000000000000000000000000000000000000000000000000000000000000000000000000000003f7f0000000000000000400000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000502c3c25feff0000c8d8ced0ffff00000090cffdfdff000001000100000000001000000000000000e0fc916baeaa0000f0d8ced0ffff0000d45673e8fdff00000100010000000000010001000000000001000165aeaa0000400000000000000030d9ced0ffff0000181401fefdff00004801000000000000c8daced0ffff0000000000000000000000000000aeaa000000000000000000000000000000000000006a81b6faff0000005a81b6faff0000305a81b6faff0000105a81b6faff0000405a81b6faff0000d8c8ced0ffff00000200000005000000000000000000000001000000000000000000000000000000bccaced0ffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000030cbced0ffff00000000803ffeff0000000000000000000000000000000000000000000000000000906be483aeaa0000f06ce483aeaa0000a8cbced0ffff0000d06ce483aeaa0000d06ce483aeaa00000080cefdfdff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000104504000000000000000000000000000000000000000000ff0000007f0000000000000000000000000000000000001f7f00000000000000002000000000000000020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005c81b6faff00000000000000000000505a81b6faff0000205a81b6faff0000505a81b6faff00000f00000000000000f0cbced0ffff0000e4bf421cfeff000030f60d69aeaa000040cdced0ffff0000f0cbced0ffff000000be421cfeff000030f60d69aeaa000040cdced0ffff000080cdced0ffff00000c42801cfeff000002000000000000000100000000000000010000000000000000000000000000008000000000000000000000000000000007000000000000000001000000000000000000000000000008000000000000000200000000000000001f47250000000000000000aeaa00000200000000000000605a81b6faff000000000000000000008000000000010000400000000200000001000000010000000000000002000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000f06ce483aeaa00000011000000000000003081b6faff0000f8d5ced0ffff000002000000060000000000000000000000"
+
+[[launches.params.fields]]
+offset = 16
+kind = "ptr"
+buffer = "W16_r0"
+byte_offset = 96
+
+[[launches.params.fields]]
+offset = 1184
+kind = "ptr"
+buffer = "W17_r0"
+byte_offset = 3584
+
+[[launches.params.fields]]
+offset = 1192
+kind = "ptr"
+buffer = "W16_r0"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 1200
+kind = "ptr"
+buffer = "W16_r0"
+byte_offset = 48
+
+[[launches.params.fields]]
+offset = 1208
+kind = "ptr"
+buffer = "W16_r0"
+byte_offset = 16
+
+[[launches.params.fields]]
+offset = 1216
+kind = "ptr"
+buffer = "W16_r0"
+byte_offset = 64
+
+[[launches.params.fields]]
+offset = 1920
+kind = "ptr"
+buffer = "W17_r0"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 1936
+kind = "ptr"
+buffer = "W16_r0"
+byte_offset = 80
+
+[[launches.params.fields]]
+offset = 1944
+kind = "ptr"
+buffer = "W16_r0"
+byte_offset = 32
+
+[[launches.params.fields]]
+offset = 1952
+kind = "ptr"
+buffer = "W16_r0"
+byte_offset = 80
+
+[[launches.params.fields]]
+offset = 2160
+kind = "ptr"
+buffer = "W16_r0"
+byte_offset = 96
+
+[[launches.params.fields]]
+offset = 2272
+kind = "ptr"
+buffer = "W11_r0"
+byte_offset = 0
+
+[[launches]]
+entry = "_ZN2at6native24index_elementwise_kernelILi128ELi4EZNS0_16gpu_index_kernelIZNS0_17index_kernel_implINS0_10OpaqueTypeILi4EEEEEvRNS_18TensorIteratorBaseEN3c108ArrayRefIlEESA_EUlPcPKclE_EEvS7_SA_SA_RKT_bEUliE_EEvlT1_"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 0
+cubin = "k3.cubin"
+
+[[launches.params]]
+kind = "u64"
+value = 17
+
+[[launches.params]]
+kind = "bytes"
+hex = "0100000011000000e2e1e1e105000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040000000000000008000000feff000070d0ced0ffff0000fc7a481ffeff000070d0ced0ffff0000b07c481ffeff0000fcd1ced0ffff0000000000000000000060d1ced0ffff0000c4ac471ffeff00000000000000000000e8d4ced0ffff0000010000000000000028d7ced0ffff00000000000000000000060000000000000018ebccfdfdff0000202c3c25feff0000e7030000feff000000000000000000000000000000000000380080f5fdff00000000000000000000e8d4ced0ffff0000010000000000000028d7ced0ffff000018000000000000000200010000000000020001000000010000703d1cfeff000050d1ced0ffff00007860481ffeff00008cd2ced0ffff000000000000000000008cd2ced0ffff0000000000000000000030d2ced0ffff000040b5471faeaa0000005a81b6faff0000002e81b6faff00000200000000000000003081b6faff0000003281b6faff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e00000000000000020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000080000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000060783d1cfeff0000"
+
+[[launches.params.fields]]
+offset = 608
+kind = "ptr"
+buffer = "W16_r0"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 616
+kind = "ptr"
+buffer = "W10_r0"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 632
+kind = "ptr"
+buffer = "W11_r0"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 640
+kind = "ptr"
+buffer = "W12_r0"
+byte_offset = 0
+
+[[launches]]
+entry = "_ZN2at6native27unrolled_elementwise_kernelIZZZNS0_23direct_copy_kernel_cudaERNS_18TensorIteratorBaseEENKUlvE1_clEvENKUlvE5_clEvEUlfE_St5arrayIPcLm2EELi4E23TrivialOffsetCalculatorILi1EjESB_NS0_6memory12LoadWithCastILi1EEENSC_13StoreWithCastILi1EEEEEviT_T0_T2_T3_T4_T5_"
+grid = [5, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 0
+cubin = "k4.cubin"
+
+[[launches.params]]
+kind = "u32"
+value = 2176
+
+[[launches.params]]
+kind = "bytes"
+hex = "00"
+
+[[launches.params]]
+kind = "bytes"
+hex = "005c81b6faff0000004881b6faff0000"
+
+[[launches.params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W17_r0"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 8
+kind = "ptr"
+buffer = "W15_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "bytes"
+hex = "00"
+
+[[launches.params]]
+kind = "bytes"
+hex = "00"
+
+[[launches.params]]
+kind = "u64"
+value = 12093146639
+
+[[launches.params]]
+kind = "u64"
+value = 20683081222
+
+[[launches]]
+entry = "_ZN2at6native18elementwise_kernelILi128ELi2EZNS0_22gpu_kernel_impl_nocastINS0_13BinaryFunctorIfffNS0_15binary_internal10MulFunctorIfEEEEEEvRNS_18TensorIteratorBaseERKT_EUliE_EEviT1_"
+grid = [9, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 0
+cubin = "k5.cubin"
+
+[[launches.params]]
+kind = "u32"
+value = 2176
+
+[[launches.params]]
+kind = "bytes"
+hex = "0200000080000000010000000700000011000000e2e1e1e1050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400000004000000000000000002000000020000040000000000000000000000000000000000000018d3ced0ffff00000100000000000000010000000000000000000000000000005101000000000000c0d0ced0ffff0000a06380f5fdff0000f0d3ced0ffff00000000000000000000000000000000000018d3ced0ffff0000010000000000000001000000000000000000000000000000202c3c25feff0000ffffffff000000000100000000000000c0d0ced0ffff0000a86380f5fdff0000b0d0ced0ffff00007860481ffeff0000ecd1ced0ffff000000000000000000000000000000000000b058e483aeaa000000000000000000003f03471f0000003f0000000000000000ffffffffffff000000220000000000000000000000000000000000000000000000000000fdff0000007e81b6faff0000005c81b6faff0000005a81b6faff000006000000000000003048d87aaeaa0000"
+
+[[launches.params.fields]]
+offset = 608
+kind = "ptr"
+buffer = "W17_r0"
+byte_offset = 8704
+
+[[launches.params.fields]]
+offset = 616
+kind = "ptr"
+buffer = "W17_r0"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 624
+kind = "ptr"
+buffer = "W16_r0"
+byte_offset = 0
+
+[[launches]]
+entry = "_ZN2at6native29vectorized_elementwise_kernelILi4ENS0_11FillFunctorIfEESt5arrayIPcLm1EEEEviT0_T1_"
+grid = [2, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 0
+cubin = "k6.cubin"
+
+[[launches.params]]
+kind = "u32"
+value = 1792
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W17_r0"
+byte_offset = 0
+
+[[launches]]
+entry = "_ZN2at6native19indexFuncLargeIndexIfljLi2ELi2ELin2ELb1ENS0_44_GLOBAL__N__e4def9c7_11_Indexing_cu_89862edb9ReduceAddEEEvNS_4cuda6detail10TensorInfoIT_T1_EENS6_IKS7_S8_EENS6_IKT0_S8_EEiiS8_S8_llRKT6_S7_"
+grid = [17, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 0
+cubin = "k7.cubin"
+
+[[launches.params]]
+kind = "bytes"
+hex = "005c81b6faff00000100000080000000c8a4ced0ffff000000000000000000001100000000000000100000000000000000000000000000001000000000000000100000000000000011000000000000000000000000000000100000000000000001a4ced0ffff0000110000008000000001000000fdff00001000000000000000019063f4fdff0000010000000000000001e3ced0ffff0000000000000000000001050e69aeaa00001000000000000000011180f5fdff0000100000000000000001f567e8fdff0000110000000000000002000000fdff0000"
+
+[[launches.params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W17_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "bytes"
+hex = "007e81b6faff000001000000800000005798ced0ffff000010e0196daeaa000010f4196daeaa0000e09eced0ffff0000a0a813dffdff0000020000000000000038d2ced0ffff000088f4196daeaa000037d2ced0ffff00000200000000000000c0a913dffdff000000000000800000000100000000000000000000000000000078ba4277aeaa0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008026d4637d0000ff3f0000000000000080020000000000ff3f"
+
+[[launches.params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W17_r0"
+byte_offset = 8704
+
+[[launches.params]]
+kind = "bytes"
+hex = "003081b6faff0000110000000000ff3f000000000000008026d4637d0000ff3f000000000000008026d4637d0000ff3f000000000000008026d4637d0000ff3f000000000000008026d4637d0000ff3f00000000000000b02fd4637d0000ff3f00000000000000b02fd4637d0100000000000000000000b02fd4637d0000ff3f00000000000000b02fd4637d0000ff3f00000000000000b02fd4637d0000ff3f00000000000000b02fd4637d0000ff3f00000000000000b02fd4637d0000ff3f00000000000000b02fd4637d0000ff3f01000000000000b0"
+
+[[launches.params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W11_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 2176
+
+[[launches.params]]
+kind = "u32"
+value = 128
+
+[[launches.params]]
+kind = "u64"
+value = 14
+
+[[launches.params]]
+kind = "u64"
+value = 1792
+
+[[launches.params]]
+kind = "u64"
+value = 281466195255520
+
+[[launches.params]]
+kind = "u32"
+value = 1065353216
+
+[[launches]]
+entry = "_ZN2at6native44_GLOBAL__N__e4def9c7_11_Indexing_cu_89862edb21indexSelectSmallIndexIN3c108BFloat16EljLi2ELi2ELin2EEEvNS_4cuda6detail10TensorInfoIT_T1_EENS7_IKS8_S9_EENS7_IKT0_S9_EEiiS9_l"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 1
+cubin = "k7.cubin"
+
+[[launches.params]]
+kind = "bytes"
+hex = "003681d6f8ff00000100000080000000081b003cfcff000068a632fbffff0000020001000000000068a632fbffff00000100000000000000c8a432fbffff0000000000000000000000010000000000000f0100000000000000a04f44fcff0000f0a132fbffff0000f0a032fb8000000001000000fcff00002ca232fbffff000000000000000000002ca232fbffff00000000000000000000d0a132fbffff000040b51665fcff000010f0856eadaa000034a332fbffff000068a632fbffff00000100000000000000c8a432fbffff000002000000f9ff0000"
+
+[[launches.params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W14_r1"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 208
+kind = "ptr"
+buffer = "host0_r1"
+byte_offset = 2
+
+[[launches.params]]
+kind = "bytes"
+hex = "001881d6f8ff0000010000008000000030a232fbffff00000c128244fcff000068a632fbffff0000505a3175adaa00000001000000000000f0284f75adaa0000c8a432fbffff0000000000000000000000010000000000000f01000000000000d0a132fbffff00008c3036518000000001000000adaa000034a332fbffff0000b0232e78f9ff0000010101fbffff0000d0a132fbffff000024cf3051fcff0000f0a132fbffff0000485b2f51fcff000010f0856eadaa000001010144fcff000040a232fbffff00000c0d3351fcff000002000000adaa0000"
+
+[[launches.params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W5_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "bytes"
+hex = "003081d6f8ff00000f000000fcff000010f0856eadaa00000000000000000000d09932fbffff00000c0d3351fcff000010f0856eadaa0000000f000000000000d09a32fbffff000068433251fcff0000d09a32fbffff000020a9768401000000509b32fbffff000000ba637501000000f09932fbffff00003801202dfcff00000000000000000000fc00000000000000a09a32fbffff00004803202dfcff00000100000000000000000f000000000000c006e82cfcff000020a97684adaa0000509b32fbffff0000000000000000000001000000ffff0000"
+
+[[launches.params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W11_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 128
+
+[[launches.params]]
+kind = "u64"
+value = 13
+
+[[launches]]
+entry = "_ZN2at4cuda6detail25prepare_grouped_gemm_dataIN7cutlass10bfloat16_tES4_S4_fN4cute5tupleIJiiiEEENS6_IJlNS5_1CILi1EEENS8_ILi0EEEEEESB_SB_EEvPT_PT0_PT1_PT2_SJ_PSD_PSF_PSH_PSJ_SN_PT3_PT4_PT5_PT6_PKiiiiSt5arrayIlLm3EESZ_SZ_SZ_SZ_llbb"
+grid = [1, 1, 1]
+block = [2, 1, 1]
+dynamic_smem = 0
+device = 1
+cubin = "k2.cubin"
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W14_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "Wl_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W15_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W16_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W16_r1"
+byte_offset = 16
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W16_r1"
+byte_offset = 32
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W16_r1"
+byte_offset = 96
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W16_r1"
+byte_offset = 48
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W16_r1"
+byte_offset = 64
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W16_r1"
+byte_offset = 80
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W13_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 4294967295
+
+[[launches.params]]
+kind = "u32"
+value = 128
+
+[[launches.params]]
+kind = "u32"
+value = 128
+
+[[launches.params]]
+kind = "bytes"
+hex = "8000000000000000010000000000000044183c6bfcff0000"
+
+[[launches.params]]
+kind = "bytes"
+hex = "004000000000000001000000000000008000000000000000"
+
+[[launches.params]]
+kind = "bytes"
+hex = "80000000000000000100000000000000d02b3c6bfcff0000"
+
+[[launches.params]]
+kind = "bytes"
+hex = "0f00000000000000800000000000000061756e636865732e"
+
+[[launches.params]]
+kind = "bytes"
+hex = "020000000000000080000000000000008000000000000000"
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "bytes"
+hex = "01"
+
+[[launches.params]]
+kind = "bytes"
+hex = "00"
+
+[[launches]]
+entry = "_ZN7cutlass13device_kernelIN2at4cuda6detail25enable_3x_kernel_for_sm10INS_4gemm6kernel13GemmUniversalINS5_17GroupProblemShapeIN4cute5tupleIJiiiEEEEENS5_10collective13CollectiveMmaINS5_40MainloopSm100ArrayTmaUmmaWarpSpecializedILi4ELi8ELi2ENSA_IJNS9_1CILi2EEENSG_ILi1EEESI_EEEEENSA_IJNSG_ILi128EEENSG_ILi256EEENSG_ILi64EEEEEENS_10bfloat16_tEPNSA_IJlSI_NSG_ILi0EEEEEESP_SS_NS9_8TiledMMAINS9_8MMA_AtomIJNS9_20SM100_MMA_F16BF16_SSISP_SP_fLi128ELi256ELNS9_4UMMA5MajorE0ELSX_0ELNSW_7ScaleInE0ELSY_0EEEEEENS9_6LayoutINSA_IJSI_SI_SI_EEENSA_IJSQ_SQ_SQ_EEEEENSA_IJNS9_10UnderscoreES15_S15_EEEEENS9_13SM90_TMA_LOADENS9_14ComposedLayoutINS9_7SwizzleILi3ELi4ELi3EEENS9_18smem_ptr_flag_bitsILi16EEENS11_INSA_IJNSG_ILi8EEESN_EEENSA_IJSN_SI_EEEEEEEvNS9_8identityENS9_23SM90_TMA_LOAD_MULTICASTES1I_vS1J_EENS_8epilogue10collective18CollectiveEpilogueINS1M_31Sm100PtrArrayTmaWarpSpecializedILi4ELi2ELi32ELb0ELb0EEEJSO_NSA_IJNS11_ISL_SI_EENS11_INSG_ILi32EEESI_EEEEEvSS_SP_SS_NS1M_6fusion15FusionCallbacksIS1Q_NS1V_17LinearCombinationISP_fSP_fLNS_15FloatRoundStyleE2EEESO_S1U_JEEENS9_5SM1004TMEM4LOAD26SM100_TMEM_LOAD_32dp32b32xES18_NS19_INS1A_ILi2ELi4ELi3EEES1D_NS11_INSA_IJS1E_S1S_EEENSA_IJS1S_SI_EEEEEEENS9_39AutoVectorizingCopyWithAssumedAlignmentILi128EEENS9_14SM90_TMA_STOREES29_S2B_S2B_EEEvvEEEEEEvNT_6ParamsE"
+grid = [2, 1, 1]
+block = [384, 1, 1]
+cluster = [2, 1, 1]
+dynamic_smem = 217088
+device = 1
+cubin = "k2.cubin"
+
+[[launches.params]]
+kind = "bytes"
+hex = "04000000ffff00000200000000000000605681d6f8ff00000000000000000000708932fbffff0000ac9a126bfcff0000108f32fbffff00007499126bfcff0000f89032fbffff00004670206afcff000000000000ffff00000100000000000000908c32fbffff00008c210365fcff0000f08e32fbffff0000d491146bfcff0000000000000000000010650400000000000000000000000000000000000000000000000000000000000000000000000000000000000000003f7f0000000000000000400000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e02c0b6bfcff0000000000000000000010a232fbffff000020a532fbffff00000000000000000000b8c37384adaa000020a132fbffff0000d4a4d92efcff00000100000000000000f0a132fbffff0000f8a132fbffff000000a232fbffff000010f0856eadaa0000010000000000000010a132fbffff00005411003cfcff0000000000000000000010650400000000000000000000000000000000000000000000000000000000000000000000000000000000000000003f7f0000000000000000400000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e09f32fbffff00000c0d3351fcff000010f0856eadaa0000c4a032fbffff0000c4a032fbffff000068433251fcff0000c4a032fbffff000000a232fb0100000010a232fbffff000000ba6375adaa0000a0a032fbffff0000d814202dfcff00000fa132fbffff0000c4a032fbffff0000f8a132fbffff000000a232fbffff0000000000000000000010650400000000000000000000000000000000000000000000000000000000000000000000000000000000000000003f7f0000000000000000400000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e09f32fbffff000040b51665fcff000010f0856eadaa0000c4a032fbffff00000100000000000000100000000000000000a132fbffff0000e7030000ffff000000000000000000000000000000000000020000000000000000a132fbffff00000200000000000000505a3175adaa00000001000000000000f0284f75adaa0000000000000000000010650400000000000000000000000000000000000000000000000000000000000000000000000000000000000000003f7f0000000000000000400000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e09d32fbffff00006c59f32efcff0000010101000000000001010100000000000101016fadaa00004000000000000000009e32fbffff000018148144fcff00004801000000000000989f32fbffff0000e09d32fbffff000024cf3051fcff00001efbff7f00000000302e3a72adaa000000003a72adaa00004000000000000000000000000000000000000000ffff000000000000000000000000000000000000006681d6f8ff0000005681d6f8ff0000305681d6f8ff0000105681d6f8ff0000405681d6f8ff0000ac9a126bfcff0000d09332fbffff00007499126bfcff0000c09532fbffff00004c403c6bfcff00008c8f32fbffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000090442c75adaa00000000803ffcff00000000000000000000000000000000000000000000000000000100000000000000b09632fbffff00000800000000000000403d3c6bfcff0000a89632fbffff000000b0476bfcff00000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000104504000000000000000000000000000000000000000000ff0000007f0000000000000000000000000000000000001f7f0000000000000000200000000000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005881d6f8ff00000000000000000000505681d6f8ff0000205681d6f8ff0000505681d6f8ff000000bee22cfcff0000500a6675adaa0000109232fbffff0000509232fbffff00000c42202dfcff0000189632fbffff0000e09232fbffff0000500a6675adaa0000c0d77d8dadaa0000e89632fbffff0000000f000000000000020000000000000001000000000000000100000000000000000000000000000080000000000000000000000000000000070000000000000000010000000000000000000000000000080000000000000002000000000000000048a86a0000000000000000fcff00000200000000000000605681d6f8ff00000000000000000000800000000001000040000000020000000100000001000000000000000200000000000000000000000000000000000000000000000000000000000000000000002ca232fbffff00000000000000000000f09a32fbffff00004430003cfcff0000189c32fbffff0000189c32fbffff00000000000000000000202c0b6bfcff0000"
+
+[[launches.params.fields]]
+offset = 16
+kind = "ptr"
+buffer = "W16_r1"
+byte_offset = 96
+
+[[launches.params.fields]]
+offset = 1184
+kind = "ptr"
+buffer = "W17_r1"
+byte_offset = 3584
+
+[[launches.params.fields]]
+offset = 1192
+kind = "ptr"
+buffer = "W16_r1"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 1200
+kind = "ptr"
+buffer = "W16_r1"
+byte_offset = 48
+
+[[launches.params.fields]]
+offset = 1208
+kind = "ptr"
+buffer = "W16_r1"
+byte_offset = 16
+
+[[launches.params.fields]]
+offset = 1216
+kind = "ptr"
+buffer = "W16_r1"
+byte_offset = 64
+
+[[launches.params.fields]]
+offset = 1920
+kind = "ptr"
+buffer = "W17_r1"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 1936
+kind = "ptr"
+buffer = "W16_r1"
+byte_offset = 80
+
+[[launches.params.fields]]
+offset = 1944
+kind = "ptr"
+buffer = "W16_r1"
+byte_offset = 32
+
+[[launches.params.fields]]
+offset = 1952
+kind = "ptr"
+buffer = "W16_r1"
+byte_offset = 80
+
+[[launches.params.fields]]
+offset = 2160
+kind = "ptr"
+buffer = "W16_r1"
+byte_offset = 96
+
+[[launches]]
+entry = "_ZN2at6native24index_elementwise_kernelILi128ELi4EZNS0_16gpu_index_kernelIZNS0_17index_kernel_implINS0_10OpaqueTypeILi4EEEEEvRNS_18TensorIteratorBaseEN3c108ArrayRefIlEESA_EUlPcPKclE_EEvS7_SA_SA_RKT_bEUliE_EEvlT1_"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 1
+cubin = "k3.cubin"
+
+[[launches.params]]
+kind = "u64"
+value = 15
+
+[[launches.params]]
+kind = "bytes"
+hex = "010000000f0000001211111104000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040000000000000008000000fcff0000409532fbffff0000fc7a1765fcff0000409532fbffff0000b07c1765fcff0000cc9632fbffff00000000000000000000309632fbffff0000c4ac1665fcff00000100000000000000b89932fbffff00000100000000000000f89b32fbffff00000000000000000000060000000000000018eb4c44fcff0000202c0b6bfcff0000e7030000fcff0000000000000000000000000000000000003800003cfcff00000100000000000000b89932fbffff00000100000000000000f89b32fbffff000018000000000000000200010000000000020001000000010000705d2dfcff0000209632fbffff000078601765fcff00005c9732fbffff000000000000000000005c9732fbffff00000000000000000000009732fbffff000040b51665adaa0000005681d6f8ff0000002e81d6f8ff00000200000000000000003081d6f8ff0000003281d6f8ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d00000000000000020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000080000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000060785d2dfcff0000"
+
+[[launches.params.fields]]
+offset = 608
+kind = "ptr"
+buffer = "W16_r1"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 616
+kind = "ptr"
+buffer = "W10_r1"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 632
+kind = "ptr"
+buffer = "W11_r1"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 640
+kind = "ptr"
+buffer = "W12_r1"
+byte_offset = 0
+
+[[launches]]
+entry = "_ZN2at6native29vectorized_elementwise_kernelILi8EZNS0_25bfloat16_copy_kernel_cudaERNS_18TensorIteratorBaseEEUlfE_St5arrayIPcLm2EEEEviT0_T1_"
+grid = [2, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 0
+cubin = "k4.cubin"
+
+[[launches.params]]
+kind = "u32"
+value = 1792
+
+[[launches.params]]
+kind = "bytes"
+hex = "00"
+
+[[launches.params]]
+kind = "bytes"
+hex = "00a081b6faff0000005c81b6faff0000"
+
+[[launches.params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W18_r0"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 8
+kind = "ptr"
+buffer = "W17_r0"
+byte_offset = 0
+
+[[launches]]
+entry = "_ZN7deep_ep9intranode21cached_notify_combineILi2EEEvPPvPiiiiPS4_i"
+grid = [2, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r0"
+byte_offset = 1183904
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W8_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "u32"
+value = 8
+
+[[launches.params]]
+kind = "u32"
+value = 4
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r0"
+byte_offset = 1183968
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches]]
+entry = "_ZN7deep_ep9intranode7combineI13__nv_bfloat16Li2ELi768ELi4096EEEvPT_PfPKS3_PKfS7_S7_PKiSB_SB_PiiiiiPPviii"
+grid = [2, 1, 1]
+block = [768, 1, 1]
+cluster = [2, 1, 1]
+dynamic_smem = 98304
+device = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "y_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W18_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W6_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W3_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W7_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W8_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 14
+
+[[launches.params]]
+kind = "u32"
+value = 8
+
+[[launches.params]]
+kind = "u32"
+value = 128
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r0"
+byte_offset = 1183904
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 6
+
+[[launches.params]]
+kind = "u32"
+value = 256
+
+[[launches]]
+entry = "_ZN2at6native27unrolled_elementwise_kernelIZZZNS0_23direct_copy_kernel_cudaERNS_18TensorIteratorBaseEENKUlvE1_clEvENKUlvE5_clEvEUlfE_St5arrayIPcLm2EELi4E23TrivialOffsetCalculatorILi1EjESB_NS0_6memory12LoadWithCastILi1EEENSC_13StoreWithCastILi1EEEEEviT_T0_T2_T3_T4_T5_"
+grid = [4, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 1
+cubin = "k4.cubin"
+
+[[launches.params]]
+kind = "u32"
+value = 1920
+
+[[launches.params]]
+kind = "bytes"
+hex = "00"
+
+[[launches.params]]
+kind = "bytes"
+hex = "005881d6f8ff0000004681d6f8ff0000"
+
+[[launches.params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W17_r1"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 8
+kind = "ptr"
+buffer = "W15_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "bytes"
+hex = "00"
+
+[[launches.params]]
+kind = "bytes"
+hex = "00"
+
+[[launches.params]]
+kind = "u64"
+value = 12804328207
+
+[[launches.params]]
+kind = "u64"
+value = 21394262790
+
+[[launches]]
+entry = "_ZN2at6native18elementwise_kernelILi128ELi2EZNS0_22gpu_kernel_impl_nocastINS0_13BinaryFunctorIfffNS0_15binary_internal10MulFunctorIfEEEEEEvRNS_18TensorIteratorBaseERKT_EUliE_EEviT1_"
+grid = [8, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 1
+cubin = "k5.cubin"
+
+[[launches.params]]
+kind = "u32"
+value = 1920
+
+[[launches.params]]
+kind = "bytes"
+hex = "020000008000000001000000070000000f000000121111110400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000040000000000000000020000000200000400000001000000000000000100000000000000e89732fbffff00000100000000000000010000000000000000000000000000005101000000000000909532fbffff0000a063003cfcff0000c09832fbffff000001000000000000000100000000000000e89732fbffff0000010000000000000001000000000000000000000000000000202c0b6bfcff0000ffffffff000000000100000000000000909532fbffff0000a863003cfcff0000809532fbffff000078601765fcff0000bc9632fbffff000001000000000000000000000000000000d0a1f684adaa000000000000000000003f0316650000003f0000000000000000ffffffffffff0000001e0000000000000000000000000000000000000000000000000000fcff0000007681d6f8ff0000005881d6f8ff0000005681d6f8ff00000600000000000000004e7784adaa0000"
+
+[[launches.params.fields]]
+offset = 608
+kind = "ptr"
+buffer = "W17_r1"
+byte_offset = 7680
+
+[[launches.params.fields]]
+offset = 616
+kind = "ptr"
+buffer = "W17_r1"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 624
+kind = "ptr"
+buffer = "W16_r1"
+byte_offset = 0
+
+[[launches]]
+entry = "_ZN2at6native29vectorized_elementwise_kernelILi4ENS0_11FillFunctorIfEESt5arrayIPcLm1EEEEviT0_T1_"
+grid = [2, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 1
+cubin = "k6.cubin"
+
+[[launches.params]]
+kind = "u32"
+value = 1664
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W17_r1"
+byte_offset = 0
+
+[[launches]]
+entry = "_ZN2at6native19indexFuncSmallIndexIfljLi2ELi2ELin2ENS0_44_GLOBAL__N__e4def9c7_11_Indexing_cu_89862edb9ReduceAddEEEvNS_4cuda6detail10TensorInfoIT_T1_EENS6_IKS7_S8_EENS6_IKT0_S8_EEiiS8_llRKT5_S7_"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 1
+cubin = "k7.cubin"
+
+[[launches.params]]
+kind = "bytes"
+hex = "005881d6f8ff00000100000080000000986932fbffff000001000000000000000f000000000000000e0000000000000000000000000000000e000000000000000e000000000000000f0000000000000000000000000000000e00000000000000016932fbffff00000f0000008000000001000000fcff00000e000000000000000190e33afcff0000010000000000000001a832fbffff000000000000000000000105ab72adaa00000e000000000000000111003cfcff00000e0000000000000001f5e72efcff00010f0000000000000002000000fcff0000"
+
+[[launches.params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W17_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "bytes"
+hex = "007681d6f8ff00000100000080000000275d32fbffff000010d0b876adaa000010e4b876adaa0000b06332fbffff0000a0a81325fcff00000200000000000000089732fbffff000088e4b876adaa0000079732fbffff00000200000000000000c0a91325fcff0000000000008000000001000000000000000000000000000000b8bfe180adaa000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a0f8a8637d0000ff3f00000000000000a0020000000000ff3f"
+
+[[launches.params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W17_r1"
+byte_offset = 7680
+
+[[launches.params]]
+kind = "bytes"
+hex = "003081d6f8ff00000f0000000000ff3f00000000000000a0f8a8637d0000ff3f00000000000000a0f8a8637d0000ff3f00000000000000506d3f647d0000ff3f00000000000000506d3f647d0000ff3f00000000000000506d3f647d0000ff3f00000000000000506d3f647d0100000000000000000000506d3f647d0000ff3f00000000000000506d3f647d0000ff3f00000000000000506d3f647d0000ff3f00000000000000506d3f647d0000ff3f00000000000000506d3f647d0000ff3f00000000000000506d3f647d0000ff3f0100000000000050"
+
+[[launches.params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W11_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "u32"
+value = 128
+
+[[launches.params]]
+kind = "u64"
+value = 13
+
+[[launches.params]]
+kind = "u64"
+value = 1664
+
+[[launches.params]]
+kind = "u64"
+value = 281458788114656
+
+[[launches.params]]
+kind = "u32"
+value = 1065353216
+
+[[launches]]
+entry = "_ZN2at6native29vectorized_elementwise_kernelILi8EZNS0_25bfloat16_copy_kernel_cudaERNS_18TensorIteratorBaseEEUlfE_St5arrayIPcLm2EEEEviT0_T1_"
+grid = [2, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 1
+cubin = "k4.cubin"
+
+[[launches.params]]
+kind = "u32"
+value = 1664
+
+[[launches.params]]
+kind = "bytes"
+hex = "00"
+
+[[launches.params]]
+kind = "bytes"
+hex = "009481d6f8ff0000005881d6f8ff0000"
+
+[[launches.params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "W18_r1"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 8
+kind = "ptr"
+buffer = "W17_r1"
+byte_offset = 0
+
+[[launches]]
+entry = "_ZN7deep_ep9intranode21cached_notify_combineILi2EEEvPPvPiiiiPS4_i"
+grid = [2, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+device = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r1"
+byte_offset = 1183904
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W8_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "u32"
+value = 8
+
+[[launches.params]]
+kind = "u32"
+value = 4
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r1"
+byte_offset = 1183968
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches]]
+entry = "_ZN7deep_ep9intranode7combineI13__nv_bfloat16Li2ELi768ELi4096EEEvPT_PfPKS3_PKfS7_S7_PKiSB_SB_PiiiiiPPviii"
+grid = [2, 1, 1]
+block = [768, 1, 1]
+cluster = [2, 1, 1]
+dynamic_smem = 98304
+device = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "y_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W18_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W6_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W3_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W7_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W8_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u32"
+value = 13
+
+[[launches.params]]
+kind = "u32"
+value = 8
+
+[[launches.params]]
+kind = "u32"
+value = 128
+
+[[launches.params]]
+kind = "u32"
+value = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "dev4_r1"
+byte_offset = 1183904
+
+[[launches.params]]
+kind = "u32"
+value = 1
+
+[[launches.params]]
+kind = "u32"
+value = 6
+
+[[launches.params]]
+kind = "u32"
+value = 256
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["contract", "race"]
+hw_note = "Strict PTX model: barrier_block's relaxed-poll handoffs are races (T4b), each classified latent on GB300 by the two-level check (E-HW-L1); plus E-BULK-EXIT: the CUTLASS epilogue's TMA store and DeepEP dispatch's bulk store may still read shared memory at CTA exit (GB300 drains them). With the refuted E-POLL-ACQ opted in: contract only."
+
+[[variants]]
+id = "B32"
+summary = "the compute stream does not wait for dispatch's event: rank 0's expert gather (launch 6) is ordered after nothing, so it reads the receive buffer while DeepEP's dispatch is still filling it"
+after = [[6, -1]]
+expect = ["race"]
+hw_note = "not replayed: the hardware runner issues each GPU's launches on one stream"
+
+[[variants]]
+id = "B33"
+summary = "dispatch sender: the release fence before the channel tail store is NOPed (st.relaxed tail), so the peer can see the new tail before the token data"
+patch = [{ at = "@0x3830", nop = true, expect = "NOP", kernel = "_ZN7deep_ep9intranode8dispatchILi2ELi768ELi8192EEEvP4int4PfPiPlS4_S5_S5_PKS2_PKfPKlSA_PKbPKiiiiiiiiiPPviii" }]
+expect = ["race"]
+hw_note = "GB300: correct 1000/1000 (latent)"
+
+[[variants]]
+id = "B34"
+summary = "buffer reuse without a barrier: cached_notify_combine skips both of its barrier_blocks (each vote's exit branch is made unconditional), so combine writes into the peer's NVLink buffer while the peer's dispatch may still be reading it"
+patch = [
+    { at = "@0x0470", bits = [[12, 4, 7]], expect = "BRA `(.L_x_122)", kernel = "_ZN7deep_ep9intranode21cached_notify_combineILi2EEEvPPvPiiiiPS4_i" },
+    { at = "@0x0e00", bits = [[12, 4, 7]], expect = "BRA `(.L_x_137)", kernel = "_ZN7deep_ep9intranode21cached_notify_combineILi2EEEvPPvPiiiiPS4_i" },
+]
+expect = ["deadlock", "race"]
+hw_note = "GB300: hangs (watchdog), every run"
+
+[[variants]]
+id = "B35"
+summary = "dispatch sender never publishes its channel tail (the tail store is NOPed): the receiver waits for tokens forever"
+patch = [{ at = "@0x3860", nop = true, expect = "NOP", kernel = "_ZN7deep_ep9intranode8dispatchILi2ELi768ELi8192EEEvP4int4PfPiPlS4_S5_S5_PKS2_PKfPKlSA_PKbPKiiiiiiiiiPPviii" }]
+expect = ["deadlock", "race"]
+hw_note = "GB300: hangs (watchdog), every run"
+
+[[variants]]
+id = "B36"
+summary = "notify_dispatch's opening barrier loses a signal (the first ATOM.ADD to the peer's barrier slot is NOPed): the peer's barrier_block never completes"
+patch = [{ at = "@0x0180", nop = true, expect = "NOP", kernel = "_ZN7deep_ep9intranode15notify_dispatchILi2EEEvPKiPiS3_S4_iiiPKbS4_S4_iiPPvPS4_i" }]
+expect = ["deadlock"]
+hw_note = "GB300: hangs (watchdog), every run"
+
+[[variants]]
+id = "B37"
+summary = "the comm stream does not wait for the compute stream before combine: rank 0's cached_notify_combine (launch 19) is ordered only after dispatch, so combine reads the expert outputs while the bf16 cast is still writing them"
+after = [[19, 5]]
+expect = ["race"]
+hw_note = "not replayed: the hardware runner issues each GPU's launches on one stream"
+
+[[variants]]
+id = "B38"
+summary = "wrong expert offset: prepare_grouped_gemm_data does not load offs[g-1] (the load is NOPed), so every expert's group starts at row 0: expert 1's tensor maps cover rows 0..offs[1] and its TMA loads run past the gathered rows' allocation (the model faults there; the GEMM's pipeline then never completes)"
+patch = [{ at = "@0x01e0", nop = true, expect = "NOP", cubin = "k2.cubin", kernel = "_ZN2at4cuda6detail25prepare_grouped_gemm_dataIN7cutlass10bfloat16_tES4_S4_fN4cute5tupleIJiiiEEENS6_IJlNS5_1CILi1EEENS8_ILi0EEEEEESB_SB_EEvPT_PT0_PT1_PT2_SJ_PSD_PSF_PSH_PSJ_SN_PT3_PT4_PT5_PT6_PKiiiiSt5arrayIlLm3EESZ_SZ_SZ_SZ_llbb" }]
+expect = ["fault", "deadlock", "race"]
+hw_note = "GB300: y bitwise unchanged 1000/1000: the out-of-range rows are read from and written to memory outside the observed tensors (the model faults at the first out-of-allocation TMA access)"
+
+[[variants]]
+id = "B39"
+summary = "notify_dispatch: the release fence before its closing barrier is NOPed (MEMBAR.ALL.SYS), so the per-rank token counts it wrote into the peers' buffers are not published by the barrier signal"
+patch = [{ at = "@0x1000", nop = true, expect = "NOP", kernel = "_ZN7deep_ep9intranode15notify_dispatchILi2EEEvPKiPiS3_S4_iiiPKbS4_S4_iiPPvPS4_i" }]
+expect = ["race"]
+hw_note = "GB300: correct 1000/1000 (latent)"
+
+[[variants]]
+id = "B40"
+summary = "scope too narrow: notify_dispatch's closing barrier signals the peer GPU's slots with ATOM.ADD.STRONG.GPU instead of .SYS, so the peer's system-scope poll does not synchronize with it and the token counts written before the barrier race with their reads"
+patch = [
+    { at = "@0x1100", bits = [[77, 4, 7]], expect = "ATOM.E.ADD.STRONG.GPU PT, RZ, desc[UR36][R4.64], R3", kernel = "_ZN7deep_ep9intranode15notify_dispatchILi2EEEvPKiPiS3_S4_iiiPKbS4_S4_iiPPvPS4_i" },
+    { at = "@0x1140", bits = [[77, 4, 7]], expect = "ATOM.E.ADD.STRONG.GPU PT, RZ, desc[UR36][R6.64], R13", kernel = "_ZN7deep_ep9intranode15notify_dispatchILi2EEEvPKiPiS3_S4_iiiPKbS4_S4_iiPPvPS4_i" },
+]
+expect = ["race"]
+hw_note = "GB300: correct 1000/1000 (NVLink peers see .GPU atomics; contract-level, like B56)"

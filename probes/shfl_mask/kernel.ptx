@@ -1,0 +1,105 @@
+// probes/shfl_mask: PTX shfl.sync / vote.sync / redux.sync with partial member masks on the
+// PTX front-end (E-WARPCOLL). 64 threads; x = in[t] (gen.py); l = lane; out[8 t + i]:
+//   0: shfl.sync.idx(x, 3, 0x101f, mask = l < 16 ? 0xffff : 0xffff0000), in a branch on l < 16
+//      (both halves at separate instructions, one mask each);
+//   1: shfl.sync.up(x, 1, 0x1c00, quad mask 0xf << (l & 28)), converged (4-lane segments: no
+//      lane reads outside its mask);
+//   2: shfl.sync.down(x, 2, 0x101f, 0xffff) in lanes < 16 only (lanes 16..31 skip it;
+//      16-lane segments);
+//   3: vote.sync.any(x & 4, quad mask) as 0/1;  4: vote.sync.all(x & 1, quad mask) as 0/1;
+//   5: vote.sync.uni(x & 8, quad mask) as 0/1;
+//   6: redux.sync.add(x, pair mask) with even lanes and odd lanes at separate instructions;
+//   7: redux.sync.max.u32(x, quad mask) in a branch on l & 2 (each quad split).
+// GB300 (50/50): each mask group's lanes combine across instructions. Variant skip_half (@SH):
+// lanes 16..31 also run the 0xffff shfl.down (lanes outside the mask: a violation).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry shfl_mask(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 64, 1, 1
+{
+    .reg .b32   %r<48>;
+    .reg .b64   %rd<8>;
+    .reg .pred  %p<16>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    and.b32         %r2, %r1, 31;
+    mul.wide.u32    %rd3, %r1, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.u32   %r4, [%rd4];
+    mul.wide.u32    %rd5, %r1, 32;
+    add.s64         %rd6, %rd2, %rd5;
+    // quad mask, pair mask
+    and.b32         %r5, %r2, 28;
+    mov.b32         %r6, 15;
+    shl.b32         %r7, %r6, %r5;
+    and.b32         %r8, %r2, 30;
+    mov.b32         %r9, 3;
+    shl.b32         %r10, %r9, %r8;
+    // 0
+    setp.lt.u32     %p1, %r2, 16;
+    @%p1 bra        LO0;
+    mov.b32         %r11, 0xffff0000;
+    shfl.sync.idx.b32 %r12, %r4, 3, 0x101f, %r11;
+    bra.uni         J0;
+LO0:
+    mov.b32         %r11, 0xffff;
+    shfl.sync.idx.b32 %r12, %r4, 3, 0x101f, %r11;
+J0:
+    st.global.u32   [%rd6], %r12;
+    // 1
+    shfl.sync.up.b32 %r13, %r4, 1, 0x1c00, %r7;
+    st.global.u32   [%rd6+4], %r13;
+    // 2
+    mov.b32         %r14, 0;
+    @!%p1 bra       J2; // @SH
+J2b:
+    shfl.sync.down.b32 %r14, %r4, 2, 0x101f, 0xffff;
+J2:
+    st.global.u32   [%rd6+8], %r14;
+    // 3, 4, 5
+    and.b32         %r15, %r4, 4;
+    setp.ne.u32     %p2, %r15, 0;
+    vote.sync.any.pred %p3, %p2, %r7;
+    selp.u32        %r16, 1, 0, %p3;
+    st.global.u32   [%rd6+12], %r16;
+    and.b32         %r17, %r4, 1;
+    setp.ne.u32     %p4, %r17, 0;
+    vote.sync.all.pred %p5, %p4, %r7;
+    selp.u32        %r18, 1, 0, %p5;
+    st.global.u32   [%rd6+16], %r18;
+    and.b32         %r19, %r4, 8;
+    setp.ne.u32     %p6, %r19, 0;
+    vote.sync.uni.pred %p7, %p6, %r7;
+    selp.u32        %r20, 1, 0, %p7;
+    st.global.u32   [%rd6+20], %r20;
+    // 6
+    and.b32         %r21, %r2, 1;
+    setp.ne.u32     %p8, %r21, 0;
+    @%p8 bra        ODD6;
+    redux.sync.add.u32 %r22, %r4, %r10;
+    bra.uni         J6;
+ODD6:
+    redux.sync.add.u32 %r22, %r4, %r10;
+J6:
+    st.global.u32   [%rd6+24], %r22;
+    // 7
+    and.b32         %r23, %r2, 2;
+    setp.ne.u32     %p9, %r23, 0;
+    @%p9 bra        HI7;
+    redux.sync.max.u32 %r24, %r4, %r7;
+    bra.uni         J7;
+HI7:
+    redux.sync.max.u32 %r24, %r4, %r7;
+J7:
+    st.global.u32   [%rd6+28], %r24;
+    ret;
+}

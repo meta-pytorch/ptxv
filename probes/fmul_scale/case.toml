@@ -1,0 +1,50 @@
+name = "probe_fmul_scale"
+description = """
+Probe (L-ROSETTA, N-FALU, PTX-FMUL-SCALE; MISS 55) for the FMUL scale modifiers: ptxas folds
+a mul.f32 without a rounding modifier whose only reader multiplies it by 0.125 .. 8 into
+FMUL.D8 .. .M8 (also FMUL.FTZ.D2, FMUL.D2.SAT, the constant first): one rounding of the
+exactly scaled product. out[k * 1024 + i] per op k (kernel.ptx); REF2 = two separate .rn
+multiplies. expected/ is GB300's output (`ptxv probe`, ptxas 13.0)."""
+ptx = "kernel.ptx"
+entry = "fmul_scale"
+ptxas_toolkit = "13.0"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "a"
+dtype = "u32"
+shape = [1024]
+init = "file"
+file = "a.bin"
+
+[[buffers]]
+name = "b"
+dtype = "u32"
+shape = [1024]
+init = "file"
+file = "b.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [10240]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+
+[[params]]
+kind = "ptr"
+buffer = "b"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

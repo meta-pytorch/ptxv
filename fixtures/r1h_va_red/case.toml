@@ -1,0 +1,51 @@
+name = "r1h_va_red"
+description = """
+Rung 1h, virtual aliases within one address space (S-VA-ALIAS): two unordered strong additions
+to one counter through two mappings (a second cuMemMap), then a read through the second mapping
+ordered after both. The alias check compares every retained write, not only the last."""
+ptx = "kernel.ptx"
+entry = "va_red"
+grid = [1, 1, 1]
+block = [96, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "buf"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[views]]
+name = "buf_b"
+buffer = "buf"
+
+[[params]]
+kind = "ptr"
+buffer = "buf"
+
+[[params]]
+kind = "ptr"
+buffer = "buf_b"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "thread 0 fences the alias proxy after its addition through a: both additions are ordered before the read through b"
+expect = ["clean"]
+
+[[variants]]
+id = "B86"
+summary = "no fence.proxy.alias after the addition through a: the read through b is ordered after it by the flag, not by an alias fence"
+marker = "@AFENCE"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+expect = ["race"]

@@ -1,0 +1,21 @@
+// probes/cbank_neg: a register-indexed constant-bank load with a negative offset (SASS
+// `LDC R4, c[0x0][R0+-0x18f4]`; trtllm-gen's `LDCU UR8, c[0x0][UR5+-0x1c80]`). The kernel
+// takes the address of parameter a, adds k and reads the words at -7296 and -7292 from it
+// (ld.param with a register address); with k = 7296 + 4 j that is parameter a + j and the next.
+// Thread t stores the two words to out[t].
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry cbank_neg(.param .u64 pout, .param .u32 k, .param .u32 a, .param .u32 b, .param .u32 c)
+{ .reg .b64 %rd<8>; .reg .b32 %r<20>;
+  ld.param.u64 %rd1, [pout]; cvta.to.global.u64 %rd1, %rd1;
+  ld.param.u32 %r1, [k];
+  mov.u32 %r2, %tid.x;
+  mov.u64 %rd2, a;
+  cvt.u64.u32 %rd3, %r1;
+  add.s64 %rd4, %rd2, %rd3;
+  ld.param.u32 %r3, [%rd4+-7296];
+  ld.param.u32 %r4, [%rd4+-7292];
+  mul.wide.u32 %rd5, %r2, 8; add.s64 %rd6, %rd1, %rd5;
+  st.global.v2.u32 [%rd6], {%r3, %r4};
+  ret; }

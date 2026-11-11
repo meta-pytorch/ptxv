@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "generated_by": "PTXV_BLESS=1 cargo test -p ptxv-targets",
+  "targets": [
+    {
+      "id": "a100",
+      "name": "NVIDIA A100 (Ampere)",
+      "vendor": "nvidia",
+      "status": "scaffold",
+      "internal": false,
+      "fronts": [
+        {
+          "id": "ptx",
+          "label": "PTX contract",
+          "kind": "contract",
+          "description": "The kernel's PTX against the PTX ISA execution and memory model: what any conforming implementation may do."
+        },
+        {
+          "id": "sass",
+          "label": "SASS / A100 hardware",
+          "kind": "hardware",
+          "description": "The SASS compiled for sm_80, against the A100 model: what the hardware does."
+        }
+      ]
+    },
+    {
+      "id": "gb300",
+      "name": "NVIDIA GB300 (Blackwell Ultra)",
+      "vendor": "nvidia",
+      "status": "verified",
+      "internal": false,
+      "fronts": [
+        {
+          "id": "ptx",
+          "label": "PTX contract",
+          "kind": "contract",
+          "description": "The kernel's PTX against the PTX ISA execution and memory model: what any conforming implementation may do."
+        },
+        {
+          "id": "sass",
+          "label": "SASS / GB300 hardware",
+          "kind": "hardware",
+          "description": "The SASS compiled for sm_100 / sm_103, against the GB300 model: what the hardware does."
+        }
+      ]
+    },
+    {
+      "id": "h100",
+      "name": "NVIDIA H100 (Hopper)",
+      "vendor": "nvidia",
+      "status": "scaffold",
+      "internal": false,
+      "fronts": [
+        {
+          "id": "ptx",
+          "label": "PTX contract",
+          "kind": "contract",
+          "description": "The kernel's PTX against the PTX ISA execution and memory model: what any conforming implementation may do."
+        },
+        {
+          "id": "sass",
+          "label": "SASS / H100 hardware",
+          "kind": "hardware",
+          "description": "The SASS compiled for sm_90, against the H100 model: what the hardware does."
+        }
+      ]
+    }
+  ]
+}

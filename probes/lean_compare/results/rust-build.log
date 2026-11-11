@@ -1,0 +1,3 @@
+   Compiling ptxv-sim v0.1.0 (/home/rusch/Projects/ptxv-lean-model/crates/sim)
+   Compiling ptxv-lean-bridge v0.1.0 (/home/rusch/Projects/ptxv-lean-model/probes/lean_compare)
+    Finished `release` profile [optimized] target(s) in 44.47s

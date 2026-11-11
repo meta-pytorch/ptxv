@@ -1,0 +1,60 @@
+name = "e_mbar_mailbox"
+description = """
+S-MBAR-SCOPE: a mailbox in the owner CTA's shared memory, completed by a peer's st.async
+(complete_tx, a cluster-scope release of the pushing thread). The owner's arm and wait must be
+cluster-scoped, with an acquire, to pair with it."""
+ptx = "kernel.ptx"
+entry = "e_mbar_mailbox"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "relaxed.cluster arm and wait, then fence.acquire.sync_restrict::shared::cluster.cluster"
+expect = ["clean"]
+
+[[variants]]
+id = "MB"
+summary = ".release.cta arm, .acquire.cta wait, no fence (the same SASS as good)"
+marker = "@ARM"
+find = "expect_tx.relaxed.cluster.shared::cta"
+replace = "expect_tx.shared::cta"
+expect = ["contract"]
+expect_sass = ["clean"]
+edits = [
+  { marker = "@WAIT", find = "relaxed.cluster", replace = "acquire.cta" },
+  { marker = "@FENCE", replace = "<delete>" },
+]
+
+[[variants]]
+id = "MBNF"
+summary = "relaxed.cluster arm and wait, no acquire fence"
+marker = "@FENCE"
+replace = "<delete>"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "MBCA"
+summary = ".release.cta arm, .acquire.cluster wait"
+marker = "@ARM"
+find = "expect_tx.relaxed.cluster.shared::cta"
+replace = "expect_tx.shared::cta"
+expect = ["contract"]
+expect_sass = ["clean"]
+edits = [
+  { marker = "@WAIT", find = "relaxed.cluster", replace = "acquire.cluster" },
+  { marker = "@FENCE", replace = "<delete>" },
+]

@@ -1,0 +1,45 @@
+name = "s_init_dead_out"
+description = """
+S-INIT-DEAD does not apply to a workspace that is also an output: the kernel of
+fixtures/s_init_dead with ws declared an output leaves undefined data in it, a violation."""
+ptx = "kernel.ptx"
+entry = "init_dead"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out", "ws"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [4]
+init = "iota"
+
+[[buffers]]
+name = "ws"
+dtype = "u32"
+shape = [4]
+init = "undef"
+scratch = true
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "ws"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "the undefined ws[1] is copied into ws[2], an output"
+expect = ["violation"]

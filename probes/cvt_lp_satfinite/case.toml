@@ -1,0 +1,38 @@
+name = "probe_cvt_lp_satfinite"
+description = """
+Probe (MISS 60; N-CVT-LP) for .satfinite on the bf16x2 decode of e5m2 (ptxas 13.3, PTX ISA 9.2+):
+cvt.rn.bf16x2.e5m2x2, cvt.rn.satfinite.bf16x2.e5m2x2 and cvt.rn.relu.satfinite.bf16x2.e5m2x2 on
+every e5m2 code pair; out[k * 65536 + i] for form k. The PTX ISA's .satfinite maps |x| > MAX_NORM
+to +-MAX_NORM: e5m2 +-Inf gives +-0x7f7f. Variant `ptx` deletes the .satfinite forms (the PTX
+front refuses them; the SASS front refuses F2FP.SATFINITE...UNPACK_B). expected/ is GB300's output
+(kernel.cubin = ptxas 13.3 -arch=sm_103a kernel.ptx). kernel_ptx.cubin: ptxas 13.3 of variant
+`ptx` (the plain decode with its identity scale 0x7f7f.H0; MISS 61)."""
+ptx = "kernel.ptx"
+entry = "sf_e5m2"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+ptxas_toolkit = "13.3"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [196608]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "the three forms (the GB300 run)"
+expect = ["clean"]
+
+[[variants]]
+id = "ptx"
+summary = "the form without .satfinite"
+marker = "@PTXNO"
+replace = "<delete>"
+expect = ["clean"]

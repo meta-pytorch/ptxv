@@ -1,0 +1,51 @@
+name = "e_cluster_exit"
+description = """
+E-CLUSTER-BAR with exited threads (the probe the rule's Retire line asks for): in a 2-CTA
+cluster, threads of CTA 1 exit before barrier.cluster.arrive.release / wait.acquire, the rest
+synchronize. The model waits for live threads only, so every variant completes; GB300 must
+complete too (a hang would be a miss: exited threads blocking the barrier)."""
+ptx = "kernel.ptx"
+entry = "e_cluster_exit"
+grid = [2, 1, 1]
+block = [64, 1, 1]
+cluster = [2, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "nobody exits early"
+expect = ["clean"]
+
+[[variants]]
+id = "EXITW"
+summary = "warp 1 of CTA 1 exits before the barrier"
+marker = "@EXITSET"
+find = "1000"
+replace = "32"
+expect = ["clean"]
+
+[[variants]]
+id = "EXITH"
+summary = "lanes 16-31 of warp 1 of CTA 1 exit before the barrier"
+marker = "@EXITSET"
+find = "1000"
+replace = "48"
+expect = ["clean"]
+
+[[variants]]
+id = "EXITC"
+summary = "all of CTA 1 exits before the barrier"
+marker = "@EXITSET"
+find = "1000"
+replace = "0"
+expect = ["clean"]

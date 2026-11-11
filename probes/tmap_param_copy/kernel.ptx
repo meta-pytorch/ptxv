@@ -1,0 +1,86 @@
+// Probe (S-TMAP): a tensor map copied out of the kernel parameters and patched on the device,
+// as CuTe grouped GEMMs do. The parameter is a driver-encoded map (cuTensorMapEncodeTiled: f32,
+// rank 2, dims 64 x 32, row stride 256 B, box 32 x 16, no swizzle) of `in`. Thread 0 copies
+// its first 64 bytes into zeroed shared memory (words 0x40 / 0x48 stay 0), sets the address
+// to `in` and global dim 1 to 24 with tensormap.replace, publishes the map to global memory
+// with tensormap.cp_fenceproxy, acquires it, and TMA-loads the box at (16, 16): rows 24..31
+// are out of bounds (zero fill). out[0..512) = the box (row-major 16 x 32), out[512..544) =
+// the 128 map bytes as left in global memory, the address (words 0, 1) made relative to `in`.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry tmap_param_copy(.param .align 64 .b8 ptm[128], .param .u64 pin, .param .u64 pout, .param .u64 pmap)
+{
+    .reg .b32 %r<40>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<4>;
+    .shared .align 128 .b8 tm[128];
+    .shared .align 128 .b8 tile[2048];
+    .shared .align 8 .b64 mbar;
+    ld.param.u64 %rd1, [pin];
+    ld.param.u64 %rd2, [pout];
+    ld.param.u64 %rd3, [pmap];
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r0, %tid.x;
+    mov.u32 %r5, tm;
+    mov.u32 %r6, tile;
+    mov.u32 %r7, mbar;
+    shl.b32 %r1, %r0, 2;
+    add.u32 %r2, %r5, %r1;
+    st.shared.u32 [%r2], 0;
+    setp.ne.u32 %p1, %r0, 0;
+    @%p1 bra SKIP_INIT;
+    mbarrier.init.shared::cta.b64 [%r7], 1;
+SKIP_INIT:
+    bar.sync 0;
+    @%p1 bra SKIP_PATCH;
+    ld.param.v4.u32 {%r20, %r21, %r22, %r23}, [ptm];
+    ld.param.v4.u32 {%r24, %r25, %r26, %r27}, [ptm+16];
+    ld.param.v4.u32 {%r28, %r29, %r30, %r31}, [ptm+32];
+    ld.param.v4.u32 {%r32, %r33, %r34, %r35}, [ptm+48];
+    st.shared.v4.u32 [%r5], {%r20, %r21, %r22, %r23};
+    st.shared.v4.u32 [%r5+16], {%r24, %r25, %r26, %r27};
+    st.shared.v4.u32 [%r5+32], {%r28, %r29, %r30, %r31};
+    st.shared.v4.u32 [%r5+48], {%r32, %r33, %r34, %r35};
+    tensormap.replace.tile.global_address.shared::cta.b1024.b64 [%r5], %rd1;
+    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [%r5], 1, 24;
+SKIP_PATCH:
+    bar.sync 0;
+    tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned [%rd3], [%r5], 128;
+    fence.proxy.tensormap::generic.acquire.gpu [%rd3], 128;
+    @%p1 bra WAIT;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r7], 2048;
+    mov.u32 %r10, 16;
+    mov.u32 %r11, 16;
+    cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%r6], [%rd3, {%r10, %r11}], [%r7];
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r7], 0;
+    @!%p2 bra WAIT;
+    mov.u32 %r12, 0;
+COPY:
+    shl.b32 %r13, %r12, 5;
+    add.u32 %r13, %r13, %r0;
+    shl.b32 %r14, %r13, 2;
+    add.u32 %r15, %r6, %r14;
+    ld.shared.u32 %r16, [%r15];
+    mul.wide.u32 %rd4, %r13, 4;
+    add.u64 %rd5, %rd2, %rd4;
+    st.global.u32 [%rd5], %r16;
+    add.u32 %r12, %r12, 1;
+    setp.lt.u32 %p3, %r12, 16;
+    @%p3 bra COPY;
+    mul.wide.u32 %rd6, %r0, 4;
+    add.u64 %rd7, %rd3, %rd6;
+    ld.global.u32 %r17, [%rd7];
+    mov.b64 {%r18, %r19}, %rd1;
+    setp.eq.u32 %p2, %r0, 0;
+    @%p2 sub.u32 %r17, %r17, %r18;
+    setp.eq.u32 %p2, %r0, 1;
+    @%p2 sub.u32 %r17, %r17, %r19;
+    add.u64 %rd8, %rd2, %rd6;
+    st.global.u32 [%rd8+2048], %r17;
+    ret;
+}

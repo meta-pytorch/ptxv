@@ -1,0 +1,33 @@
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// out[0] = u * v - (x0 y0 + x1 y1 + x2 y2 + x3 y3): an FMA chain, then one FFMA with a negated addend.
+.visible .entry negc(.param .u64 px, .param .u64 py, .param .u64 pu, .param .u64 pv, .param .u64 po)
+{
+    .reg .f32 %f<16>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [py];
+    ld.param.u64 %rd3, [pu];
+    ld.param.u64 %rd4, [pv];
+    ld.param.u64 %rd5, [po];
+    ld.global.f32 %f1, [%rd1];
+    ld.global.f32 %f2, [%rd2];
+    mul.rn.f32 %f9, %f1, %f2;
+    ld.global.f32 %f1, [%rd1+4];
+    ld.global.f32 %f2, [%rd2+4];
+    fma.rn.f32 %f9, %f1, %f2, %f9;
+    ld.global.f32 %f1, [%rd1+8];
+    ld.global.f32 %f2, [%rd2+8];
+    fma.rn.f32 %f9, %f1, %f2, %f9;
+    ld.global.f32 %f1, [%rd1+12];
+    ld.global.f32 %f2, [%rd2+12];
+    fma.rn.f32 %f9, %f1, %f2, %f9;
+    ld.global.f32 %f3, [%rd3];
+    ld.global.f32 %f4, [%rd4];
+    neg.f32 %f10, %f9;
+    fma.rn.f32 %f11, %f3, %f4, %f10;
+    st.global.f32 [%rd5], %f11;
+    ret;
+}

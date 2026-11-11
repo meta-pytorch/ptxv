@@ -1,0 +1,93 @@
+// N-MUFU probe: the PTX .approx ops, through the PTX front-end, against GB300 running the
+// ptxas expansion (non-ftz forms scale denormals / huge inputs, sin/cos reduce by 1/(2 pi)).
+// 128 threads, each on 4 random words shaped into: raw bits (%r1), +-[32, 128) (%r6: ex2
+// overflow, underflow and the x < -126 path), tiny and denormal values (%r7), +-[2^126, 2^128)
+// (%r8: the rcp 0.25 path), +-[2^20, 2^24) (%r9: large sin/cos arguments).
+// Run: probes/mufu/README.md ("PTX approx ops").
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry approx(.param .u64 in_p, .param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b32 %y<29>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [in_p];
+    ld.param.u64 %rd2, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r10, %tid.x;
+    mul.wide.u32 %rd3, %r10, 16;
+    add.u64 %rd4, %rd1, %rd3;
+    ld.global.u32 %r1, [%rd4];
+    ld.global.u32 %r2, [%rd4+4];
+    ld.global.u32 %r3, [%rd4+8];
+    ld.global.u32 %r4, [%rd4+12];
+    and.b32 %r6, %r2, 0x80ffffff;
+    or.b32 %r6, %r6, 0x42000000;
+    and.b32 %r7, %r3, 0x80ffffff;
+    and.b32 %r8, %r4, 0x80ffffff;
+    or.b32 %r8, %r8, 0x7e800000;
+    and.b32 %r9, %r4, 0x81ffffff;
+    or.b32 %r9, %r9, 0x49800000;
+    mul.wide.u32 %rd5, %r10, 112;
+    add.u64 %rd6, %rd2, %rd5;
+    ex2.approx.f32 %y0, %r1;
+    st.global.u32 [%rd6+0], %y0;
+    ex2.approx.f32 %y1, %r6;
+    st.global.u32 [%rd6+4], %y1;
+    ex2.approx.f32 %y2, %r7;
+    st.global.u32 [%rd6+8], %y2;
+    ex2.approx.ftz.f32 %y3, %r1;
+    st.global.u32 [%rd6+12], %y3;
+    ex2.approx.ftz.f32 %y4, %r6;
+    st.global.u32 [%rd6+16], %y4;
+    rcp.approx.f32 %y5, %r1;
+    st.global.u32 [%rd6+20], %y5;
+    rcp.approx.f32 %y6, %r7;
+    st.global.u32 [%rd6+24], %y6;
+    rcp.approx.f32 %y7, %r8;
+    st.global.u32 [%rd6+28], %y7;
+    rcp.approx.ftz.f32 %y8, %r1;
+    st.global.u32 [%rd6+32], %y8;
+    rcp.approx.ftz.f32 %y9, %r8;
+    st.global.u32 [%rd6+36], %y9;
+    rsqrt.approx.f32 %y10, %r1;
+    st.global.u32 [%rd6+40], %y10;
+    rsqrt.approx.f32 %y11, %r7;
+    st.global.u32 [%rd6+44], %y11;
+    rsqrt.approx.ftz.f32 %y12, %r7;
+    st.global.u32 [%rd6+48], %y12;
+    lg2.approx.f32 %y13, %r1;
+    st.global.u32 [%rd6+52], %y13;
+    lg2.approx.f32 %y14, %r7;
+    st.global.u32 [%rd6+56], %y14;
+    lg2.approx.ftz.f32 %y15, %r7;
+    st.global.u32 [%rd6+60], %y15;
+    sqrt.approx.f32 %y16, %r1;
+    st.global.u32 [%rd6+64], %y16;
+    sqrt.approx.f32 %y17, %r7;
+    st.global.u32 [%rd6+68], %y17;
+    sqrt.approx.ftz.f32 %y18, %r7;
+    st.global.u32 [%rd6+72], %y18;
+    sin.approx.f32 %y19, %r1;
+    st.global.u32 [%rd6+76], %y19;
+    sin.approx.f32 %y20, %r6;
+    st.global.u32 [%rd6+80], %y20;
+    cos.approx.f32 %y21, %r1;
+    st.global.u32 [%rd6+84], %y21;
+    cos.approx.f32 %y22, %r6;
+    st.global.u32 [%rd6+88], %y22;
+    sin.approx.ftz.f32 %y23, %r7;
+    st.global.u32 [%rd6+92], %y23;
+    cos.approx.ftz.f32 %y24, %r9;
+    st.global.u32 [%rd6+96], %y24;
+    ex2.approx.f16x2 %y25, %r2;
+    st.global.u32 [%rd6+100], %y25;
+    ex2.approx.ftz.bf16x2 %y26, %r3;
+    st.global.u32 [%rd6+104], %y26;
+    ex2.approx.f16x2 %y27, %r4;
+    st.global.u32 [%rd6+108], %y27;
+    ret;
+}

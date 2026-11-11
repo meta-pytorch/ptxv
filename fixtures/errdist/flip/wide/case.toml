@@ -1,0 +1,68 @@
+name = "flip_wide"
+description = """
+errdist branch flips (N-ERRDIST-SEL): y = t1 > 0.5 ? t1 : t2 over 4096 elements, t1 = RN(RN(x w)
++ v) and t2 = fma(x, w, v) (../kernel.ptx): P(differ) about 0.057, no flip. With 4096 outputs
+per input Tier 3's interval is fine at 300 inputs, while the flip bound, which counts inputs, is
+not (1.2e-2 against a margin of about 4.6e-3): with the default input count Tier 3 grows until
+the bound fits, within the work budget, and the gate refuses past it.
+  ptxv errdist fixtures/errdist/flip/wide --inputs fixtures/errdist/normal.json"""
+ptx = "../kernel.ptx"
+entry = "flip_wide"
+grid = [64, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [4096]
+init = "zeros"
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [4096]
+init = "zeros"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [4096]
+init = "zeros"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [4096]
+init = "zeros"
+
+[[buffers]]
+name = "z"
+dtype = "f32"
+shape = [4096]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

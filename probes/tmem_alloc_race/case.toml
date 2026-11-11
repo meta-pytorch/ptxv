@@ -1,0 +1,30 @@
+name = "probe_tmem_alloc_race"
+description = """
+Probe (hardware only) for fixtures/e_tmem_alloc_block: 4 warps per CTA, 148 CTAs, each warp
+allocating and deallocating all 512 TMEM columns n times. A trap in ptxas's tcgen05 guardrail
+code (`..._guardrail_trap_col_being_dealloced_not_returned_by_alloc` or
+`..._unallocated_columns_being_dealloced`) aborts the grid. out[cta * 4 + warp] = iterations
+completed."""
+ptx = "kernel.ptx"
+entry = "probe_tmem_alloc_race"
+grid = [148, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [592]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 100000
+
+[[variants]]
+id = "good"
+expect = ["clean"]

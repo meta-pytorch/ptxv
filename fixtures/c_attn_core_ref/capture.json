@@ -1,0 +1,69 @@
+{
+ "what": "run() of triton_attn_core_ref.py (kernel ^attn_ref_kernel$)",
+ "argv": [
+  "--triton",
+  "tools/capture_examples/triton_attn_core_ref.py:attn_ref_kernel",
+  "--binary",
+  "--out",
+  "fixtures/c_attn_core_ref",
+  "--work",
+  "/tmp/ptxv_capture_228289"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "attn_ref_kernel",
+   "grid": [
+    16,
+    1,
+    1
+   ],
+   "block": [
+    32,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 256,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "s",
+   "dtype": "f32",
+   "shape": [
+    16,
+    64
+   ],
+   "size": 4096
+  },
+  {
+   "name": "v",
+   "dtype": "f32",
+   "shape": [
+    64,
+    16
+   ],
+   "size": 4096
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    16,
+    16
+   ],
+   "size": 1024
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

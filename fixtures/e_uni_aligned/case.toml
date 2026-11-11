@@ -1,0 +1,58 @@
+name = "e_uni_aligned"
+description = """
+PTX `.uni` and barrier.cluster `.aligned`: a guarded bra.uni whose guard differs among the
+lanes executing it is a contract finding (PTX ISA 9.5 section 9.7.14.3; ptxas then omits the
+reconvergence), and an aligned barrier.cluster that not every live lane of the warp executes
+together (divergent copies, or lanes guarded off) is a violation (E-ALIGNED; ptxas emits
+WARPSYNC.ALL and one UCGABAR per executing group)."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [2, 1, 1]
+block = [64, 1, 1]
+cluster = [2, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "unidiv"
+summary = "the bra.uni guard is tid < 16 (divergent within warp 0)"
+marker = "@UNI"
+find = "setp.eq.u32     %p1, %r2, 0"
+replace = "setp.lt.u32     %p1, %r1, 16"
+expect = ["contract"]
+# SASS: ptxas compiled the contract away (@P BRA without BSSY / BSYNC; the lanes stay apart).
+expect_sass = ["clean"]
+
+[[variants]]
+id = "aligndiv"
+summary = "lanes 0..15 run a second copy of the aligned arrive"
+marker = "@DIV"
+replace = "<delete>"
+# After the divergent arrive is reported, the half that went on waits at the cluster barrier
+# while the other half waits at its convergence point for it (E-ALIGNED): also a deadlock.
+expect = ["deadlock", "violation"]
+# SASS: WARPSYNC.ALL in each copy, then one UCGABAR_ARV per half (each thread counted once).
+expect_sass = ["clean"]
+
+[[variants]]
+id = "alignguard"
+summary = "the aligned wait is guarded off in lanes 0..15"
+marker = "@G3"
+find = "setp.eq.u32     %p3, %r1, %r1"
+replace = "setp.ge.u32     %p3, %r3, 16"
+expect = ["violation"]
+# SASS: the guarded-off lanes never reach ptxas's WARPSYNC.ALL before UCGABAR_WAIT.
+expect_sass = ["deadlock"]

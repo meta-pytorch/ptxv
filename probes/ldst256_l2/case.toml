@@ -1,0 +1,37 @@
+name = "probe_ldst256_l2"
+description = """
+Probe (L-PTX-HINT) for 32-byte global accesses with L2 eviction hints on GB300:
+ld / st.global.L2::evict_last and L2::evict_first .v8.u32 (SASS LDG / STG .E.ELL2.256,
+.E.EFL2.256); probes/ldst256 otherwise (kernel.ptx, its in.bin). expected/ is GB300's output
+(ptxas cubin, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "ldst256_l2"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024, 16]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024, 16]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1,0 +1,81 @@
+probes/handoff_window on GB300 (CUDA 13.0), 2026-11-10. One GPU per job (two for the 2-GPU
+kernel), clusters of 2 unless noted, 256 threads per CTA, 2e4 rounds per cluster per launch.
+Counts: failures / hand-offs. 95% limits: exact Poisson for k < 50; 3/N for k = 0.
+Levers: "co-tenant" = a kernel storing into the peer CTA's shared memory inside its own 2-CTA
+clusters (mode 1), either on another stream of the same process ("in-process") or in another
+client process of a private MPS daemon ("MPS"); "x3" = 3 co-tenant CTAs per SM (COT_MULT=3),
+else 1. "same-CTA stores" = threads 32+ of the hand-off CTAs store into the peer's scratch
+(noise 1; noise 5 = producer CTA only, 4 = consumer CTA only, 3 = remote loads instead,
+2 = local shared loads/stores instead). "unmodified" = the hand-off CTAs run only the hand-off.
+The producer path is straight-line code per variant (template instance).
+
+A. Delay window (diagnostic, v=6: arrive issued first, store d ns later; 7.6e5 each)
+   d=0: 0.564   d=20: 0.671   d=50: 0.900   d=100: 1.000   d>=200: 1.000
+
+B. Remote-store hand-off (peer reads its own slot after the wait)
+  variant                                  quiet          in-process co-tenant   MPS co-tenant
+  1 NOF  ST.E; arrive                      0 / 1.98e8     6.0e6 / 1.52e7         2.35e8 / 3.04e8
+  2 PCTA ST.E; MEMBAR.ALL.CTA; arrive      0 / 1.52e7     5.86e7 / 8.36e7        -
+  0 PFC  ST.E; MEMBAR.ALL.CTA;             0 / 4.56e7     0 / 8.51e8             0 / 1.67e9
+         MEMBAR.ALL.GPU; FENCE.VIEW.ASYNC.S; arrive  (tile-id broadcast SASS)
+  3 CLU  .release.cluster arrive           0 / 3.04e7     0 / 7.6e6              -
+  HBM/L2 streaming co-tenant: NOF 0 / 3.8e6. Clusters of 16, consumer at rank 15: NOF, PFC
+  0 / 3.6e6 each. MPS: hand-off kernel unpadded and padded to 200 KiB (never shares an SM
+  with the co-tenant): NOF 40% and 88% stale.
+
+C. Local-store write-write hand-off (v=10 LWW: STS.128 into the own slot, bare remote arrive;
+   the peer waits, then cp.async.bulk shared::cluster over the same 16 bytes; after the copy
+   completes the producer finds its own value = the STS landed after the copy)
+  condition                                              LWW (no fence)
+  quiet                                                  0 / 1.52e9
+  same-CTA stores only                                   0 / 1.52e9
+  in-process co-tenant only (x1)                         0 / 1.14e9
+  MPS co-tenant only (x1)                                0 / 1.52e9
+  in-process co-tenant x3, unmodified                    103 / 3.8e8   (2.7e-7)
+  in-process co-tenant x6, unmodified                    14 / 3.8e8
+  MPS co-tenant x3, unmodified                           61 / 1.52e9   (4.0e-8)
+  MPS co-tenant x1 + same-CTA stores                     343 / 1.52e9
+  in-process co-tenant + same-CTA stores                 14597 / 8.06e9 (1.8e-6; 194 to 1710 per 7.6e8 by node)
+  in-process co-tenant + producer-CTA stores only        14220 / 1.14e9 (1.25e-5)
+  in-process co-tenant + consumer-CTA stores only        0 / 7.6e8
+  in-process co-tenant + same-CTA remote loads           2 / 7.6e8
+  in-process co-tenant + same-CTA local shared traffic   0 / 7.6e8
+  Most failures without same-CTA stores are in a cluster's first round.
+
+  fence before the arrive (SASS)                 co-tenant + same-CTA stores   MPS co-tenant x3
+  10 none                                        12961 / 6.54e9 (same jobs)    61 / 1.52e9
+  11 fence.acq_rel.cta (MEMBAR.ALL.CTA)          21 / 9.88e9                   0 / 1.52e9
+  12 fence.proxy.async.shared::cta               0 / 4.86e9                    0 / 1.52e9
+     (MEMBAR.ALL.CTA; FENCE.VIEW.ASYNC.S)
+  13 .release.cluster arrive (CGAERRBAR)         0 / 4.86e9                    -
+  14 12 + 13                                     0 / 1.52e9                    -
+  MEMBAR.ALL.CTA alone is not enough (21 failures); 12-14 are 0 / N bounds.
+
+D. Local-store hand-off read remotely (v=7 LSTS: STS own slot, bare remote arrive, the peer
+   reads it with ld.shared::cluster), in-process co-tenant + same-CTA stores
+  7 LSTS                                   28 / 1.16e10 (2.4e-9)
+  9 LCTA fence.acq_rel.cta                 0 / 1.0e10
+  8 LCLU .release.cluster                  0 / 1.0e10
+  A build with a variant branch between the STS and the arrive: 0 / 1.08e10. Co-tenant only:
+  0 / 1.52e9; same-CTA stores only: 0 / 3.04e9.
+
+E. Unmodified production kernels (`ptxv hw-worker --scrub`, bitwise vs the captured output)
+   next to the mode-1 co-tenant process (x1) under MPS on every GPU the kernel uses. The
+   co-tenant ran for 56-69% of each run's wall time; the kernels ran 2.4-3.5x slower.
+  CuTe Bf16x6 attention backward (1 cluster of 2, 512 thr)   0 / 1e6 (quiet 0 / 2e4)
+  FA4 hd256 2-CTA forward                                    0 / 1e6 (quiet 0 / 2e4)
+  2-GPU block-scaled grouped GEMM dgrad                      0 / 3e5 (quiet 0 / 2e4)
+
+F. Generic read, then a peer's async write (S-PROXY-WAR; 2026-11-11). v=15 LWAR: 16-byte LDS of
+   the CTA's own slot, bare remote arrive (the load's result not waited), then the peer bulk-
+   copies the next value over the slot; a failure = the load returned the later copy's value.
+  variant                                in-process co-tenant + producer stores   MPS co-tenant x3, unmodified
+  15 LWAR (no fence, .cta)               7678 / 7.6e8; 0 / 1.52e9 (another node)  20 / 7.6e8; 799 / 1.52e9
+  17 LWARC fence.acq_rel.cta             0 / 1.52e9                               0 / 1.52e9 (same job as 799)
+  16 LWARK .release.cluster arrive       0 / 3.8e9                                0 / 2.28e9
+  Also v=15 with an in-process co-tenant x3 and unmodified CTAs: 94 / 7.6e8; same-CTA stores:
+  133 / 7.6e8. Counts vary strongly across runs and nodes.
+
+G. A small co-tenant (COT_THREADS=32, COT_SMEM_KB=1, 3 per SM, MPS), sized to fit beside
+   high-occupancy kernels: LWW (v=10) with unmodified CTAs 0 / 6.08e8 (the 256-thread x3
+   co-tenant: 61 / 1.52e9).

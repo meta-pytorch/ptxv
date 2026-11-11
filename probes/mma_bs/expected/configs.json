@@ -1,0 +1,62 @@
+[
+ {
+  "name": "mma_mxf8e4m3xe4m3f32ue8m0.codes",
+  "entry": "mma_mxf8",
+  "idesc": 143654912,
+  "idesc0": 143654912
+ },
+ {
+  "name": "mma_mxf8e5m2xe5m2f32ue8m0.probe_sub",
+  "entry": "mma_mxf8",
+  "idesc": 143656064,
+  "idesc0": 143656064
+ },
+ {
+  "name": "mma_mxf8e4m3xe2m3f32ue8m0.logu",
+  "entry": "mma_mxf8",
+  "idesc": 143657984,
+  "idesc0": 143657984
+ },
+ {
+  "name": "mma_mxf8e2m1xe2m1f32ue8m0.scale_gap",
+  "entry": "mma_mxf8",
+  "idesc": 143660672,
+  "idesc0": 143660672
+ },
+ {
+  "name": "mma_mxf4e2m1xe2m1f32ue8m0.codes",
+  "entry": "mma_mxf4",
+  "idesc": 143656064,
+  "idesc0": 143656064
+ },
+ {
+  "name": "mma_mxf4e2m1xe2m1f32ue8m0.scale_gap",
+  "entry": "mma_mxf4",
+  "idesc": 143656064,
+  "idesc0": 143656064
+ },
+ {
+  "name": "mma_nvf4e2m1xe2m1f32ue8m0.probe_sub",
+  "entry": "mma_nvf4",
+  "idesc": 143656064,
+  "idesc0": 143656064
+ },
+ {
+  "name": "mma_nvf4e2m1xe2m1f32ue8m0.codes",
+  "entry": "mma_nvf4",
+  "idesc": 143656064,
+  "idesc0": 143656064
+ },
+ {
+  "name": "mma_nvf4e2m1xe2m1f32ue4m3.ue4m3_edge",
+  "entry": "mma_nvf4",
+  "idesc": 135267456,
+  "idesc0": 135267456
+ },
+ {
+  "name": "mma_nvf4e2m1xe2m1f32ue4m3.cancel",
+  "entry": "mma_nvf4",
+  "idesc": 135267456,
+  "idesc0": 135267456
+ }
+]

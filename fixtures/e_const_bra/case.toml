@@ -1,0 +1,37 @@
+name = "e_const_bra"
+description = """
+E-CONST-BRA: a branch decided by a launch parameter is folded in the explorer's control-flow
+graph and checked on every execution. good: flag = 1, the barrier side is taken, clean. NOBAR:
+flag = 0, the read of x races with the store. FLIP: the guard reads a register a non-propagated instruction wrote: not folded, race."""
+ptx = "kernel.ptx"
+entry = "e_const_bra"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 1
+
+[[variants]]
+id = "good"
+summary = "flag = 1: the barrier orders the store and the read"
+expect = ["clean"]
+
+[[variants]]
+id = "FLIP"
+summary = "the guard compares a register written by xor (not propagated), equal to flag ^ 1"
+marker = "@GUARD"
+find = "setp.ne.u32 %p1, %r1, 0;"
+replace = "xor.b32 %r9, %r1, 1; setp.ne.u32 %p1, %r9, 0;"
+expect = ["race"]

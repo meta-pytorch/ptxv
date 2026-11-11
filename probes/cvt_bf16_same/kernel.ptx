@@ -1,0 +1,31 @@
+// cvt.bf16.bf16 (no modifier) on every 16-bit code. 256 threads x 256 iterations; i = 256 j + t;
+// out[i] = cvt.bf16.bf16(i) zero-extended. ptxas 13.0 / 13.3: HFMA2.BF16_V2 d, -RZ, RZ, a.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry bf16_same(
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .pred  %p<2>;
+    .reg .b16   %h<4>;
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32         %r1, %tid.x;
+LOOP:
+    cvt.u16.u32     %h1, %r1;
+    cvt.bf16.bf16   %h2, %h1;
+    cvt.u32.u16     %r2, %h2;
+    mul.wide.u32    %rd2, %r1, 4;
+    add.s64         %rd3, %rd1, %rd2;
+    st.global.u32   [%rd3], %r2;
+    add.u32         %r1, %r1, 256;
+    setp.lt.u32     %p1, %r1, 65536;
+    @%p1 bra        LOOP;
+    ret;
+}

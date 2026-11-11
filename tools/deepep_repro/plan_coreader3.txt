@@ -1,0 +1,12 @@
+--bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100
+--bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100 --reader-target other
+--bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 30
+--bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 30 --reader-target other
+--bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 300
+--bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-cycles 0
+--bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100
+--bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 100 --reader-target other
+--bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 30
+--bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 30 --reader-target other
+--bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-delay-us 300
+--bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --reader-cycles 0

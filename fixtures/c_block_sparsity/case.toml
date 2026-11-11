@@ -1,0 +1,114 @@
+name = "c_block_sparsity"
+description = """
+A block-sparsity bug (reduction buffer reused too early), the reporters' real captured
+CuTeDSL kernel (1 CTA, 2 n_blocks, sliding-window
+mask). good = the fix (second sync_threads after warp 0 reads reduction_buffer), prefix =
+pre-fix. Its PTX needs mad.lo.s64 and vote.sync.any.pred. expected/ is the fixed kernel's GPU
+output.
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): run() of run.py. 1 launch(es),
+PTX from the JIT (kernel.ptx):
+  0: kernel_cutlass_kernel_opskernelscuteexternmslk_flash_attncompute_block_sparsityBlockSparsityKernel_object_at__ grid [1, 1, 1] block [64, 1, 1]
+Regenerate: BS_MASK=sliding CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/capture.py --file <reporters' run.py> --kernels BlockSparsity --out <dir> (run.py and the kernel source are not part of this repo)"""
+arch = "sm_103a"
+ptx = "kernel.ptx"
+entry = "kernel_cutlass_kernel_opskernelscuteexternmslk_flash_attncompute_block_sparsityBlockSparsityKernel_object_at__BlockSparseTensorsmask_block_cnttensorptri32gmemoi64i641mask_block_idxtensorp_0"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+dynamic_smem = 1024
+outputs = ["out0", "out1", "out2", "out3"]
+
+[[buffers]]
+name = "out0"
+dtype = "i32"
+shape = [1, 1, 1]
+init = "zeros"
+expect = "expected/out0.bin"
+
+[[buffers]]
+name = "out1"
+dtype = "i32"
+shape = [1, 1, 1, 2]
+init = "zeros"
+expect = "expected/out1.bin"
+
+[[buffers]]
+name = "out2"
+dtype = "i32"
+shape = [1, 1, 1]
+init = "zeros"
+expect = "expected/out2.bin"
+
+[[buffers]]
+name = "out3"
+dtype = "i32"
+shape = [1, 1, 1, 2]
+init = "zeros"
+expect = "expected/out3.bin"
+
+[[params]]
+kind = "bytes"
+hex = "0000c03dfbff00000100000001000000010000000000000001000000000000000100000000000000"
+
+[[params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "out0"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "0002c03dfbff000001000000010000000100000002000000020000000000000002000000000000000200000000000000"
+
+[[params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "out1"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "0004c03dfbff00000100000001000000010000000000000001000000000000000100000000000000"
+
+[[params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "out2"
+byte_offset = 0
+
+[[params]]
+kind = "bytes"
+hex = "0006c03dfbff000001000000010000000100000002000000020000000000000002000000000000000200000000000000"
+
+[[params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "out3"
+byte_offset = 0
+
+[[params]]
+kind = "u32"
+value = 64
+
+[[params]]
+kind = "u32"
+value = 64
+
+[[params]]
+kind = "u32"
+value = 1
+
+[[variants]]
+id = "good"
+summary = "as captured: the fixed kernel (second cute.arch.sync_threads() after warp 0 reads reduction_buffer)"
+expect = ["clean"]
+
+[[variants]]
+id = "prefix"
+summary = "pre-fix: the second bar.sync 0 removed (identical to the captured pre-fix PTX in ../real_bug_sliding)"
+marker = "@FIX"
+find = "bar.sync \t0; // @FIX"
+replace = "// no second bar.sync"
+expect = ["nondeterministic", "race"]
+# SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG); the stale read shows as a second output
+# (n_block 0 classified full: mask_cnt 1, full_cnt 1).
+expect_sass = ["nondeterministic"]

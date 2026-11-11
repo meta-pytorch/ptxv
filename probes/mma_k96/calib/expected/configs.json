@@ -1,0 +1,38 @@
+[
+ {
+  "name": "mma_nvf4_k96e2m1xe2m1f32ue8m0.codes",
+  "entry": "mma_nvf4_k96",
+  "idesc": 2291139712,
+  "idesc0": 2291139712
+ },
+ {
+  "name": "mma_nvf4_k96e2m1xe2m1f32ue8m0.scale_gap",
+  "entry": "mma_nvf4_k96",
+  "idesc": 2291139712,
+  "idesc0": 2291139712
+ },
+ {
+  "name": "mma_nvf4_k96e2m1xe2m1f32ue8m0.probe_sub",
+  "entry": "mma_nvf4_k96",
+  "idesc": 2291139712,
+  "idesc0": 2291139712
+ },
+ {
+  "name": "mma_nvf4_k96e2m1xe2m1f32ue4m3.ue4m3_edge",
+  "entry": "mma_nvf4_k96",
+  "idesc": 2282751104,
+  "idesc0": 2282751104
+ },
+ {
+  "name": "mma_nvf4_k96e2m1xe2m1f32ue4m3.codes",
+  "entry": "mma_nvf4_k96",
+  "idesc": 2282751104,
+  "idesc0": 2282751104
+ },
+ {
+  "name": "mma_nvf4_k96e2m1xe2m1f32ue4m3.scale_gap",
+  "entry": "mma_nvf4_k96",
+  "idesc": 2282751104,
+  "idesc0": 2282751104
+ }
+]

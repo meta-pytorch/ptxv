@@ -1,0 +1,53 @@
+name = "e_peek_loop"
+description = """
+Fixture for E-SPIN peeks (spin.rs `is_peek`): warp 0 tests an mbarrier at the top of each of
+two loop iterations; iteration 0 does not use the result, iteration 1 waits (blocking) when the
+test failed. The way from the test back to itself does not depend on the result, so the test is
+a peek and runs as a non-blocking test (good: clean, no E-SPIN finding). SPIN (positive
+control): the loop also repeats while the test fails, so the way back depends on the result and
+E-SPIN reports the test as unmodeled. VOTE: the warp votes on the result before branching on it
+(trtllm-gen's `VOTEU.ANY UP0, P1`): still a peek. VOTESPIN (positive control): the loop repeats
+while the vote is false."""
+ptx = "kernel.ptx"
+entry = "e_peek_loop"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "SPIN"
+summary = "the loop also repeats while the test fails"
+marker = "@BACK"
+find = "setp.lt.u32 %p2, %r10, 2;"
+replace = "setp.lt.or.u32 %p2, %r10, 2, !%p1;"
+expect = ["unmodeled"]
+
+[[variants]]
+id = "VOTE"
+summary = "the warp votes on the test's result (vote.any) and branches on the vote"
+marker = "@USE"
+find = "@%p1 bra GOT;"
+replace = "vote.sync.any.pred %p4, %p1, 0xffffffff;\n    @%p4 bra GOT;"
+expect = ["clean"]
+
+[[variants]]
+id = "VOTESPIN"
+summary = "the loop also repeats while the vote on the test's result is false"
+marker = "@BACK"
+find = "setp.lt.u32 %p2, %r10, 2;"
+replace = "vote.sync.any.pred %p3, %p1, 0xffffffff;\n    setp.lt.or.u32 %p2, %r10, 2, !%p3;"
+expect = ["unmodeled"]

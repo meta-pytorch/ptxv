@@ -1,0 +1,51 @@
+// C-POLL-ATOM (E-WELLSYNC): an arrival counter of atomic adds. Three CTAs of one warp: each
+// CTA's thread 0 stores data[cta] (plain), then `red.release.gpu.global.add.u32 [cnt], 1`.
+// CTA 0's thread 0 then polls cnt with ld.acquire until it is 3 and copies data[2] to out.
+// The poll's concurrent writes are atomics (the other CTAs' adds), so plain C-POLL refuses;
+// C-POLL-ATOM accepts it: the poll exits only on 3, which only all three adds produce.
+//   reset: after the poll, CTA 0's thread 0 resets cnt to 0 (st.relaxed): coherence-after
+//        the three adds its exit read needed (CoRW), certified
+//   own2: the poller is CTA 2, whose own add comes after CTA 0's and CTA 1's in the
+//        certificate's run, and it exits at 2 (its own add and one other): refused, races.
+//        The certificate used to start the partial counts from the value before the run's
+//        first concurrent add, leaving the poller's own add out, and certified it (GB300
+//        wrong 200/200 with CTA 1 delayed: tools/mutate/repro/poll_atom_base)
+//   own3: the same poller exits at 3: certified
+//   ge1: the poll exits once cnt >= 1 (a partial count) and then writes data[2] instead of
+//        reading it: refused, and the explorer finds the write-write race on data[2]
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_poll_atom(.param .u64 out_p, .param .u64 data_p, .param .u64 cnt_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [data_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    ld.param.u64 %rd3, [cnt_p];
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra DONE;
+    mov.u32 %r2, %ctaid.x;
+    add.u32 %r3, %r2, 1;
+    mul.wide.u32 %rd4, %r2, 4;
+    add.u64 %rd5, %rd2, %rd4;
+    st.global.u32 [%rd5], %r3;
+    red.release.gpu.global.add.u32 [%rd3], 1;
+    setp.ne.u32 %p2, %r2, 0;              // @POLLER
+    @%p2 bra DONE;
+SPIN:
+    ld.acquire.gpu.global.u32 %r5, [%rd3];
+    setp.ne.u32 %p3, %r5, 3;              // @COND
+    @%p3 bra SPIN;
+    ld.global.u32 %r8, [%rd2+8];          // @USE
+    st.global.u32 [%rd1], %r8;
+    mov.u32 %r9, 0;                       // @RESET
+DONE:
+    ret;
+}

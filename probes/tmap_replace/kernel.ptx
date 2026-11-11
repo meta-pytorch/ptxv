@@ -1,0 +1,179 @@
+// probes/tmap_replace: tensormap.replace.tile.<field>.shared::cta.b1024 on maps whose 128
+// bytes start as random words (S-TMAP), then tensormap.cp_fenceproxy of map 0 to global.
+// 32 threads; thread t owns map t in shared memory (in[32 t .. 32 t + 31]) and r = in[1024 +
+// 16 t .. 1024 + 16 t + 15] (gen.py). Thread t replaces: global_address = r[0..1], rank =
+// r[2] & 7, box_dim[o] = (r[3 + o] & 255) + 1, global_dim[o] = r[8 + o] (o = 0..4),
+// element_stride[o] = ((r[3 + o] >> 8) & 7) + 1, global_stride[o] = r[13 + o / 2] << 32 |
+// r[12 + o] (o = 0..3), elemtype t % 16, interleave_layout t % 3, swizzle_mode t % 5,
+// fill_mode t % 2 (immediates: one predicated replace per value). out[32 t .. 32 t + 31] = map
+// t afterwards; out[1024 .. 1055] = map 0 as tensormap.cp_fenceproxy published it.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry tmap_replace(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 32, 1, 1
+{
+    .reg .b32   %r<64>;
+    .reg .b64   %rd<32>;
+    .reg .pred  %p<8>;
+    .shared .align 128 .b8 maps[4096];
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, maps;
+    shl.b32         %r3, %r1, 7;
+    add.u32         %r4, %r2, %r3;
+    mul.wide.u32    %rd3, %r1, 128;
+    add.s64         %rd4, %rd1, %rd3;
+    mov.u32         %r5, 0;
+INIT:
+    mul.wide.u32    %rd5, %r5, 4;
+    add.s64         %rd6, %rd4, %rd5;
+    ld.global.u32   %r6, [%rd6];
+    add.u32         %r7, %r4, %r5;
+    add.u32         %r7, %r7, %r5;
+    add.u32         %r7, %r7, %r5;
+    add.u32         %r7, %r7, %r5;
+    st.shared.u32   [%r7], %r6;
+    add.u32         %r5, %r5, 1;
+    setp.lt.u32     %p1, %r5, 32;
+    @%p1 bra        INIT;
+    mul.wide.u32    %rd7, %r1, 64;
+    add.s64         %rd8, %rd1, %rd7;
+    add.s64         %rd8, %rd8, 4096;
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd8];
+    ld.global.v4.u32 {%r14, %r15, %r16, %r17}, [%rd8+16];
+    ld.global.v4.u32 {%r18, %r19, %r20, %r21}, [%rd8+32];
+    ld.global.v4.u32 {%r22, %r23, %r24, %r25}, [%rd8+48];
+    mov.b64         %rd10, {%r10, %r11};
+    tensormap.replace.tile.global_address.shared::cta.b1024.b64 [%r4], %rd10;
+    and.b32         %r30, %r12, 7;
+    tensormap.replace.tile.rank.shared::cta.b1024.b32 [%r4], %r30;
+    and.b32         %r31, %r13, 255;
+    add.u32         %r31, %r31, 1;
+    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [%r4], 0, %r31;
+    shr.u32         %r32, %r13, 8;
+    and.b32         %r32, %r32, 7;
+    add.u32         %r32, %r32, 1;
+    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [%r4], 0, %r32;
+    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [%r4], 0, %r18;
+    and.b32         %r31, %r14, 255;
+    add.u32         %r31, %r31, 1;
+    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [%r4], 1, %r31;
+    shr.u32         %r32, %r14, 8;
+    and.b32         %r32, %r32, 7;
+    add.u32         %r32, %r32, 1;
+    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [%r4], 1, %r32;
+    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [%r4], 1, %r19;
+    and.b32         %r31, %r15, 255;
+    add.u32         %r31, %r31, 1;
+    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [%r4], 2, %r31;
+    shr.u32         %r32, %r15, 8;
+    and.b32         %r32, %r32, 7;
+    add.u32         %r32, %r32, 1;
+    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [%r4], 2, %r32;
+    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [%r4], 2, %r20;
+    and.b32         %r31, %r16, 255;
+    add.u32         %r31, %r31, 1;
+    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [%r4], 3, %r31;
+    shr.u32         %r32, %r16, 8;
+    and.b32         %r32, %r32, 7;
+    add.u32         %r32, %r32, 1;
+    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [%r4], 3, %r32;
+    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [%r4], 3, %r21;
+    and.b32         %r31, %r17, 255;
+    add.u32         %r31, %r31, 1;
+    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [%r4], 4, %r31;
+    shr.u32         %r32, %r17, 8;
+    and.b32         %r32, %r32, 7;
+    add.u32         %r32, %r32, 1;
+    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [%r4], 4, %r32;
+    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [%r4], 4, %r22;
+    mov.b64         %rd12, {%r22, %r23};
+    tensormap.replace.tile.global_stride.shared::cta.b1024.b64 [%r4], 0, %rd12;
+    mov.b64         %rd13, {%r23, %r23};
+    tensormap.replace.tile.global_stride.shared::cta.b1024.b64 [%r4], 1, %rd13;
+    mov.b64         %rd14, {%r24, %r24};
+    tensormap.replace.tile.global_stride.shared::cta.b1024.b64 [%r4], 2, %rd14;
+    mov.b64         %rd15, {%r25, %r24};
+    tensormap.replace.tile.global_stride.shared::cta.b1024.b64 [%r4], 3, %rd15;
+    rem.u32         %r40, %r1, 16;
+    setp.eq.u32     %p2, %r40, 0;
+    @%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [%r4], 0;
+    setp.eq.u32     %p2, %r40, 1;
+    @%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [%r4], 1;
+    setp.eq.u32     %p2, %r40, 2;
+    @%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [%r4], 2;
+    setp.eq.u32     %p2, %r40, 3;
+    @%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [%r4], 3;
+    setp.eq.u32     %p2, %r40, 4;
+    @%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [%r4], 4;
+    setp.eq.u32     %p2, %r40, 5;
+    @%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [%r4], 5;
+    setp.eq.u32     %p2, %r40, 6;
+    @%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [%r4], 6;
+    setp.eq.u32     %p2, %r40, 7;
+    @%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [%r4], 7;
+    setp.eq.u32     %p2, %r40, 8;
+    @%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [%r4], 8;
+    setp.eq.u32     %p2, %r40, 9;
+    @%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [%r4], 9;
+    setp.eq.u32     %p2, %r40, 10;
+    @%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [%r4], 10;
+    setp.eq.u32     %p2, %r40, 11;
+    @%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [%r4], 11;
+    setp.eq.u32     %p2, %r40, 12;
+    @%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [%r4], 12;
+    setp.eq.u32     %p2, %r40, 13;
+    @%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [%r4], 13;
+    setp.eq.u32     %p2, %r40, 14;
+    @%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [%r4], 14;
+    setp.eq.u32     %p2, %r40, 15;
+    @%p2 tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [%r4], 15;
+    rem.u32         %r40, %r1, 3;
+    setp.eq.u32     %p2, %r40, 0;
+    @%p2 tensormap.replace.tile.interleave_layout.shared::cta.b1024.b32 [%r4], 0;
+    setp.eq.u32     %p2, %r40, 1;
+    @%p2 tensormap.replace.tile.interleave_layout.shared::cta.b1024.b32 [%r4], 1;
+    setp.eq.u32     %p2, %r40, 2;
+    @%p2 tensormap.replace.tile.interleave_layout.shared::cta.b1024.b32 [%r4], 2;
+    rem.u32         %r40, %r1, 5;
+    setp.eq.u32     %p2, %r40, 0;
+    @%p2 tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [%r4], 0;
+    setp.eq.u32     %p2, %r40, 1;
+    @%p2 tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [%r4], 1;
+    setp.eq.u32     %p2, %r40, 2;
+    @%p2 tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [%r4], 2;
+    setp.eq.u32     %p2, %r40, 3;
+    @%p2 tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [%r4], 3;
+    setp.eq.u32     %p2, %r40, 4;
+    @%p2 tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [%r4], 4;
+    rem.u32         %r40, %r1, 2;
+    setp.eq.u32     %p2, %r40, 0;
+    @%p2 tensormap.replace.tile.fill_mode.shared::cta.b1024.b32 [%r4], 0;
+    setp.eq.u32     %p2, %r40, 1;
+    @%p2 tensormap.replace.tile.fill_mode.shared::cta.b1024.b32 [%r4], 1;
+    mul.wide.u32    %rd20, %r1, 128;
+    add.s64         %rd21, %rd2, %rd20;
+    mov.u32         %r5, 0;
+OUT:
+    add.u32         %r7, %r4, %r5;
+    ld.shared.u32   %r6, [%r7];
+    cvt.u64.u32     %rd22, %r5;
+    add.s64         %rd23, %rd21, %rd22;
+    st.global.u32   [%rd23], %r6;
+    add.u32         %r5, %r5, 4;
+    setp.lt.u32     %p1, %r5, 128;
+    @%p1 bra        OUT;
+    bar.sync        0;
+    add.s64         %rd24, %rd2, 4096;
+    tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned [%rd24], [%r2], 128;
+    ret;
+}

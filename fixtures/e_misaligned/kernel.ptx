@@ -1,0 +1,45 @@
+// S-ALIGN: one thread stores, loads and adds through addresses whose offset is a variant knob
+// (%r9 = 0 in good). A misaligned access traps on GB300 ("misaligned address").
+//   good: st.global.u64 / ld.shared.v4.u32 / atom.global.add.u64 at aligned addresses
+//   MA1 : st.global.u64 at +4
+//   MA2 : ld.shared.v4.u32 at +8
+//   MA3 : atom.global.add.u64 at +4
+//   MA4 : st.global.u32 at +2
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_misaligned(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<16>;
+    .shared .align 16 .b8 buf[64];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, buf;
+    mov.u32 %r2, 7;
+    st.shared.u32 [%r1], %r2;
+    st.shared.u32 [%r1+4], %r2;
+    st.shared.u32 [%r1+8], %r2;
+    st.shared.u32 [%r1+12], %r2;
+    st.shared.u32 [%r1+16], %r2;
+    st.shared.u32 [%r1+20], %r2;
+    mov.b64 %rd2, 0x0000000100000002;
+    mov.u64 %rd9, 0;                     // @OFF64
+    add.u64 %rd3, %rd1, %rd9;
+    st.global.u64 [%rd3], %rd2;
+    mov.u32 %r9, 0;                      // @OFFV4
+    add.u32 %r3, %r1, %r9;
+    ld.shared.v4.u32 {%r4, %r5, %r6, %r7}, [%r3];
+    add.u32 %r4, %r4, %r5;
+    add.u32 %r6, %r6, %r7;
+    add.u32 %r4, %r4, %r6;
+    st.global.u32 [%rd1+16], %r4;
+    mov.u64 %rd10, 24;                   // @OFFATOM
+    add.u64 %rd4, %rd1, %rd10;
+    atom.global.add.u64 %rd5, [%rd4], %rd2;
+    mov.u64 %rd11, 40;                   // @OFF32
+    add.u64 %rd6, %rd1, %rd11;
+    st.global.u32 [%rd6], %r2;
+    ret;
+}

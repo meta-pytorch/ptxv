@@ -1,0 +1,409 @@
+[rand] MP shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 00:3869237376 01:918310176 11:4940442720 | 3.5s
+[tight] MP shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:1900241152 01:488694176 11:2475054944 | 0.3s
+[wide] MP shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:1388629216 01:66897984 11:1462863072 | 0.2s
+[fixed4] MP shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:4863984480 01:1312 11:4480 | 0.3s
+[bank] MP shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:1032793440 01:425175360 11:1460421472 | 8.1s
+[samewarp] MP shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:543392 11:1458651744 | 1.1s
+[rand] MP shv cta wf=1 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 00:4617807552 01:1834094528 11:3276088192 | 3.5s
+[tight] MP shv cta wf=1 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:2397453856 01:742622912 11:1723913504 | 0.3s
+[wide] MP shv cta wf=1 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:1455082048 01:88821216 11:1374487008 | 0.2s
+[fixed4] MP shv cta wf=1 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:4863985216 01:2944 11:2112 | 0.3s
+[bank] MP shv cta wf=1 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:1322454144 01:664039200 11:931896928 | 8.1s
+[samewarp] MP shv cta wf=1 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:550048 11:1458645088 | 1.1s
+[rand] MP shv cta wf=2 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 00:2975848736 01:1922762112 11:4829379424 | 3.5s
+[tight] MP shv cta wf=2 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:1611181248 01:774202624 11:2478606400 | 0.3s
+[wide] MP shv cta wf=2 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:1366408512 01:89499232 11:1462482528 | 0.2s
+[fixed4] MP shv cta wf=2 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:4863983168 01:2528 11:4576 | 0.3s
+[bank] MP shv cta wf=2 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:819124864 01:598187872 11:1501077536 | 8.1s
+[samewarp] MP shv cta wf=2 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:540048 11:1458655088 | 1.1s
+[rand] MP shv cta wf=3 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 00:4621898784 01:1806896768 11:3299194720 | 3.5s
+[tight] MP shv cta wf=3 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:2389811680 01:701510528 11:1772668064 | 0.3s
+[wide] MP shv cta wf=3 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:1455053216 01:86472832 11:1376864224 | 0.2s
+[fixed4] MP shv cta wf=3 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:4863985568 01:2592 11:2112 | 0.3s
+[bank] MP shv cta wf=3 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:1339834880 01:630625376 11:947930016 | 8.1s
+[samewarp] MP shv cta wf=3 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:544688 11:1458650448 | 1.1s
+[rand] MP shv cta wf=0 rf=1 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 00:1960670176 01:2769466560 11:4997853536 | 3.5s
+[tight] MP shv cta wf=0 rf=1 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:1215130560 01:1107635040 11:2541224672 | 0.3s
+[wide] MP shv cta wf=0 rf=1 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:1338067424 01:100149952 11:1480172896 | 0.2s
+[fixed4] MP shv cta wf=0 rf=1 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:4863982976 01:2624 11:4672 | 0.3s
+[bank] MP shv cta wf=0 rf=1 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:458861088 01:968809632 11:1490719552 | 8.1s
+[samewarp] MP shv cta wf=0 rf=1 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:551520 11:1458643616 | 1.1s
+[rand] MP shv cta wf=0 rf=2 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 00:2024314304 01:2767569376 11:4936106592 | 3.5s
+[tight] MP shv cta wf=0 rf=2 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:1389716864 01:1006645888 11:2467627520 | 0.3s
+[wide] MP shv cta wf=0 rf=2 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:1355346304 01:100778016 11:1462265952 | 0.2s
+[fixed4] MP shv cta wf=0 rf=2 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:4863982976 01:2656 11:4640 | 0.4s
+[bank] MP shv cta wf=0 rf=2 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:490373376 01:968598272 11:1459418624 | 8.1s
+[samewarp] MP shv cta wf=0 rf=2 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:536096 11:1458659040 | 1.1s
+[rand] MP shv cta wf=1 rf=1 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 00:2473013856 01:3961417216 11:3293559200 | 3.5s
+[tight] MP shv cta wf=1 rf=1 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:1637908160 01:1497254944 11:1728827168 | 0.3s
+[wide] MP shv cta wf=1 rf=1 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:1366420640 01:177729120 11:1374240512 | 0.2s
+[fixed4] MP shv cta wf=1 rf=1 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:4863983104 01:5120 11:2048 | 0.3s
+[bank] MP shv cta wf=1 rf=1 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:678051360 01:1304591840 11:935747072 | 8.1s
+[samewarp] MP shv cta wf=1 rf=1 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:541696 11:1458653440 | 1.1s
+[rand] MP shv cta wf=2 rf=2 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 00:1691810944 01:3211494272 11:4824685056 | 3.5s
+[tight] MP shv cta wf=2 rf=2 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:1181490432 01:1212491840 11:2470008000 | 0.4s
+[wide] MP shv cta wf=2 rf=2 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:1341387840 01:114978848 11:1462023584 | 0.2s
+[fixed4] MP shv cta wf=2 rf=2 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:4863982912 01:3776 11:3584 | 0.4s
+[bank] MP shv cta wf=2 rf=2 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:395721760 01:1021024256 11:1501644256 | 8.1s
+[samewarp] MP shv cta wf=2 rf=2 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:542912 11:1458652224 | 1.1s
+[rand] MPS shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 11:9727990272 | 3.5s
+[tight] MPS shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 11:4863990272 | 0.3s
+[wide] MPS shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 11:2918390272 | 0.2s
+[fixed4] MPS shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 11:4863990272 | 0.3s
+[bank] MPS shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 11:2918390272 | 8.1s
+[samewarp] MPS shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:1458655360 11:539776 | 2.3s
+[rand] MPS shv cta wf=2 rf=2 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 11:9727990272 | 3.5s
+[tight] MPS shv cta wf=2 rf=2 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 11:4863990272 | 0.3s
+[wide] MPS shv cta wf=2 rf=2 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 11:2918390272 | 0.2s
+[fixed4] MPS shv cta wf=2 rf=2 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 11:4863990272 | 0.3s
+[bank] MPS shv cta wf=2 rf=2 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 11:2918390272 | 8.1s
+[samewarp] MPS shv cta wf=2 rf=2 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:1458659088 11:536048 | 2.3s
+[rand] SB shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 01:4275897248 10:4275980064 11:1176112960 | 3.5s
+[tight] SB shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 01:2317511616 10:2317167488 11:229311168 | 0.3s
+[wide] SB shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 01:1437660992 10:1437436320 11:43292960 | 0.2s
+[fixed4] SB shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 01:4576 10:4863985536 11:160 | 0.3s
+[bank] SB shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 01:1286629536 10:1286510880 11:345249856 | 8.1s
+[samewarp] SB shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 01:536000 10:534304 11:1458124832 | 1.1s
+[rand] SB shv cta wf=1 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 01:1657857152 10:1657926976 11:6412206144 | 3.5s
+[tight] SB shv cta wf=1 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 01:1035758560 10:1035449792 11:2792781920 | 0.3s
+[wide] SB shv cta wf=1 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 01:1326948608 10:1326601216 11:264840448 | 0.2s
+[fixed4] SB shv cta wf=1 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 01:2016 10:4863982848 11:5408 | 0.3s
+[bank] SB shv cta wf=1 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 01:594029888 10:594022048 11:1730338336 | 8.1s
+[samewarp] SB shv cta wf=1 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 01:531392 10:534512 11:1458129232 | 1.1s
+[rand] SB shv cta wf=3 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 01:1662814816 10:1662773248 11:6402402208 | 3.5s
+[tight] SB shv cta wf=3 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 01:1065201024 10:1064887008 11:2733902240 | 0.3s
+[wide] SB shv cta wf=3 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 01:1329444704 10:1329092448 11:259853120 | 0.2s
+[fixed4] SB shv cta wf=3 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 01:2048 10:4863982912 11:5312 | 0.3s
+[bank] SB shv cta wf=3 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 01:607114048 10:606970784 11:1704305440 | 8.1s
+[samewarp] SB shv cta wf=3 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 01:528720 10:528832 11:1458137584 | 1.1s
+[rand] LB shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 00:1824184448 01:3952012032 10:3951793792 | 3.5s
+[tight] LB shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:811858944 01:2025869504 10:2026261824 | 0.3s
+[wide] LB shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:122091808 01:1398249088 10:1398049376 | 0.2s
+[fixed4] LB shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:2784 01:2688 10:4863984800 | 0.3s
+[bank] LB shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:463347296 01:1227391840 10:1227651136 | 8.1s
+[samewarp] LB shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:1458123632 01:535728 10:535776 | 1.1s
+[rand] CORR shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | allold:4001338528 allnew:3220257600 mixed:2506394144 | 3.5s
+[tight] CORR shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | allold:2221734976 allnew:1584707776 mixed:1057547520 | 0.3s
+[wide] CORR shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | allold:1426454208 allnew:1383378144 mixed:108557920 | 0.2s
+[fixed4] CORR shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | allold:4863984608 allnew:2144 mixed:3520 | 0.3s
+[bank] CORR shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | allold:1016758432 allnew:649235616 mixed:1252396224 | 8.1s
+[samewarp] CORR shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | allold:543680 allnew:1458651456 | 1.1s
+[rand] COWR shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | own:7557354528 saw_other:2170635744 | 3.5s
+[tight] COWR shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | own:4224728992 saw_other:639261280 | 0.3s
+[wide] COWR shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | own:2831922496 saw_other:86467776 | 0.2s
+[fixed4] COWR shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | own:4863987360 saw_other:2912 | 0.3s
+[bank] COWR shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | own:1683822176 saw_other:1234568096 | 8.1s
+[samewarp] COWR shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | own:1098528 saw_other:1458096608 | 1.1s
+[rand] IRIW shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 0000:1158923616 1000:268666272 0100:450995264 1100:827615424 0010:269926464 0110:769671808 1110:342038112 0001:449327872 1001:771786176 0101:1929696 1101:558313664 0011:823172544 1011:346092448 0111:563080448 1111:2126450464 | 3.2s
+[tight] IRIW shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 0000:711777824 1000:145255552 0100:232984608 1100:411493184 0010:147581056 0110:415056096 1110:170901184 0001:231606144 1001:419137088 0101:341472 1101:244482368 0011:406418304 1011:172595776 0111:250677216 1111:903682400 | 0.4s
+[wide] IRIW shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 0000:476949312 1000:115543840 0100:125119552 1100:234766688 0010:115470240 0110:247066432 1110:112752512 0001:124927296 1001:247227872 0101:1216 1101:132117632 0011:235004128 1011:112725728 0111:132091104 1111:506626720 | 0.2s
+[fixed4] IRIW shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 0000:1272687008 1000:192 0100:992827392 1100:736 0010:611558144 0110:1986909824 1110:128 0001:1056 1001:320 0101:128 1101:1376 0011:608 1011:160 0111:1472 1111:1728 | 0.3s
+[bank] IRIW shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 0000:317702080 1000:65852192 0100:132109376 1100:242909504 0010:66682080 0110:222963104 1110:106080960 0001:131413184 1001:222556832 0101:1351424 1101:192760416 0011:241376544 1011:108471872 0111:193312608 1111:672848096 | 7.6s
+[samewarp] IRIW shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=729597568 FORBIDDEN=0 | 0000:56 1100:32 0110:168 1110:104 1001:320 1101:32 0011:24 1011:80 0111:80 1111:729596672 | 1.1s
+[rand] IRIW shv cta wf=0 rf=3 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 0000:261549248 1000:27858176 0100:663017888 1100:496542848 0010:28030080 0110:457714624 1110:64908928 0001:668992000 1001:457380192 0101:336837760 1101:1427352640 0011:490794432 1011:65926304 0111:1432377120 1111:2848708032 | 3.2s
+[tight] IRIW shv cta wf=0 rf=3 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 0000:146931360 1000:17330720 0100:260240032 1100:227775488 0010:15849504 0110:290853248 1110:50775424 0001:268376640 1001:286955872 0101:93490336 1101:641029664 0011:220268064 1011:54085024 0111:645861664 1111:1644167232 | 0.4s
+[wide] IRIW shv cta wf=0 rf=3 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 0000:411677344 1000:92833600 0100:137508576 1100:215192000 0010:92859488 0110:262966240 1110:101556896 0001:137371104 1001:263159648 0101:203392 1101:158135552 0011:215297504 1011:101533504 0111:158160192 1111:569935232 | 0.2s
+[fixed4] IRIW shv cta wf=0 rf=3 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 0000:421500864 0100:1305067616 1100:288 0010:408625536 0110:2728786784 1110:192 0001:64 1001:96 0101:1024 1101:1856 0011:320 1011:160 0111:2016 1111:3456 | 0.3s
+[bank] IRIW shv cta wf=0 rf=3 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 0000:100143968 1000:8436480 0100:184184640 1100:145805024 0010:8844256 0110:112988640 1110:23421376 0001:187772704 1001:111047840 0101:127716160 1101:456386848 0011:143280160 1011:24567968 0111:456492960 1111:827301248 | 7.6s
+[samewarp] IRIW shv cta wf=0 rf=3 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=729597568 FORBIDDEN=0 | 0000:64 1100:8 0110:288 1110:48 1001:272 1101:56 0011:16 1011:104 0111:80 1111:729596632 | 1.1s
+[rand] TEAR32 shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=4 lsep=129 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | clean:2549506976 overlap:7178483296 | 3.5s
+[tight] TEAR32 shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=4 lsep=129 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | clean:2011138080 overlap:2852852192 | 0.3s
+[wide] TEAR32 shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=4 lsep=129 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | clean:2349901280 overlap:568488992 | 0.2s
+[fixed4] TEAR32 shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=4 lsep=129 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | clean:4862306592 overlap:1683680 | 0.3s
+[bank] TEAR32 shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=4 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | clean:441231616 overlap:2477158656 | 8.0s
+[samewarp] TEAR32 shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=4 lsep=129 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | clean:1459195136 | 1.1s
+[rand] TEAR64 shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=4 lsep=129 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | clean:1884783872 overlap:7843206400 | 3.5s
+[tight] TEAR64 shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=4 lsep=129 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | clean:1297876512 overlap:3566113760 | 0.3s
+[wide] TEAR64 shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=4 lsep=129 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | clean:2413652464 overlap:504737808 | 0.2s
+[fixed4] TEAR64 shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=4 lsep=129 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | clean:4863982528 overlap:7744 | 0.3s
+[bank] TEAR64 shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=4 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | clean:414931888 overlap:2503458384 | 8.0s
+[samewarp] TEAR64 shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=4 lsep=129 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | clean:1459195136 | 1.1s
+[rand] TEAR128 shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=4 lsep=129 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | clean:889243888 overlap:8838746384 | 3.5s
+[tight] TEAR128 shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=4 lsep=129 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | clean:846349824 overlap:4017640448 | 0.4s
+[wide] TEAR128 shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=4 lsep=129 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | clean:1829402960 overlap:1088987312 | 0.2s
+[fixed4] TEAR128 shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=4 lsep=129 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | clean:4591274768 overlap:272715504 | 0.3s
+[bank] TEAR128 shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=4 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | clean:54578784 overlap:2863811488 | 8.6s
+[samewarp] TEAR128 shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=4 lsep=129 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | clean:1459195136 | 1.1s
+[rand] MP shw cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 00:3870101760 01:917724128 11:4940164384 | 3.5s
+[tight] MP shw cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:1901413184 01:487884288 11:2474692800 | 0.3s
+[wide] MP shw cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:1388668864 01:66799072 11:1462922336 | 0.2s
+[fixed4] MP shw cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:4863984480 01:1408 11:4384 | 0.3s
+[bank] MP shw cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:1033123584 01:424856480 11:1460410208 | 8.1s
+[samewarp] MP shw cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:544720 11:1458650416 | 1.1s
+[rand] MPS shw cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 00:41849344 01:83722176 11:9602418752 | 3.5s
+[tight] MPS shw cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:4579872 01:26060064 11:4833350336 | 0.3s
+[wide] MPS shw cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:326093184 01:236525440 11:2355771648 | 0.2s
+[fixed4] MPS shw cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:564667520 01:3431728480 11:867594272 | 0.3s
+[bank] MPS shw cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:8952704 01:23351680 11:2886085888 | 8.1s
+[samewarp] MPS shw cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:1458652224 11:542912 | 1.1s
+[rand] SB shw cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 01:4275196352 10:4275362720 11:1177431200 | 3.5s
+[tight] SB shw cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 01:2317095392 10:2317334624 11:229560256 | 0.3s
+[wide] SB shw cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 01:1437649568 10:1437433920 11:43306784 | 0.2s
+[fixed4] SB shw cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 01:4384 10:4863985696 11:192 | 0.3s
+[bank] SB shw cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 01:1286560480 10:1286579968 11:345249824 | 8.0s
+[samewarp] SB shw cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 01:527664 10:531088 11:1458136384 | 1.1s
+[rand] LB shw cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 00:1825089632 01:3951693344 10:3951207296 | 3.5s
+[tight] LB shw cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:810163104 01:2027240256 10:2026586912 | 0.3s
+[wide] LB shw cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:121676704 01:1398528416 10:1398185152 | 0.2s
+[fixed4] LB shw cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:2752 01:2624 10:4863984896 | 0.3s
+[bank] LB shw cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:463276192 01:1227406816 10:1227707264 | 8.0s
+[samewarp] LB shw cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:1458129216 01:535200 10:530720 | 1.1s
+[rand] CORR shw cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | allold:4629984800 allnew:5098005472 | 3.5s
+[tight] CORR shw cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | allold:2352240544 allnew:2511749728 | 0.3s
+[wide] CORR shw cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | allold:1455609024 allnew:1462781248 | 0.2s
+[fixed4] CORR shw cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | allold:4863986208 allnew:4064 | 0.3s
+[bank] CORR shw cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | allold:1283178816 allnew:1635211456 | 8.1s
+[samewarp] CORR shw cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | allold:546704 allnew:1458648432 | 1.1s
+[rand] IRIW shw cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 0000:1153625792 1000:266740736 0100:450610304 1100:824147840 0010:268208192 0110:770617216 1110:342929664 0001:448933088 1001:772856928 0101:2077088 1101:561999808 0011:819253504 1011:346764992 0111:566904896 1111:2132320224 | 3.2s
+[tight] IRIW shw cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 0000:711918560 1000:145153536 0100:233000416 1100:411583648 0010:147675776 0110:415166272 1110:170824064 0001:231529312 1001:419289472 0101:337312 1101:244364160 0011:406630496 1011:172615232 0111:250449568 1111:903452448 | 0.4s
+[wide] IRIW shw cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 0000:476872480 1000:115535200 0100:125103360 1100:234800256 0010:115421056 0110:247124480 1110:112702976 0001:125009984 1001:247227040 0101:1248 1101:132197888 0011:234903648 1011:112694848 0111:132142848 1111:506652960 | 0.2s
+[fixed4] IRIW shw cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 0000:1269942688 1000:96 0100:989041696 1100:1024 0010:613830976 0110:1991167136 1110:192 0001:864 1001:384 0101:128 1101:1184 0011:480 1011:96 0111:1376 1111:1952 | 0.3s
+[bank] IRIW shw cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 0000:317934336 1000:65962464 0100:131983808 1100:242866080 0010:66812032 0110:223117920 1110:106012864 0001:131627072 1001:222784928 0101:1341280 1101:192570144 0011:241245472 1011:108478624 0111:193366944 1111:672286304 | 7.6s
+[samewarp] IRIW shw cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=729597568 FORBIDDEN=0 | 0000:48 1100:24 0110:240 1110:104 1001:232 1101:64 0011:8 1011:40 0111:72 1111:729596736 | 1.1s
+[rand] MP glw cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 00:3930963264 01:733267920 11:5063759088 | 3.5s
+[tight] MP glw cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:1968630081 01:502020708 11:2393339483 | 0.3s
+[wide] MP glw cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:1402219367 01:65107849 11:1451063056 | 0.2s
+[fixed4] MP glw cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:4863984288 01:1760 11:4224 | 0.3s
+[bank] MP glw cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:987478751 01:347340706 11:1583570815 | 8.1s
+[samewarp] MP glw cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:548064 11:1458647072 | 1.1s
+[rand] MPS glw cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 00:36400512 01:87765064 11:9603824696 | 3.5s
+[tight] MPS glw cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:598142 01:9234211 11:4854157919 | 0.3s
+[wide] MPS glw cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:243424056 01:216694816 11:2458271400 | 0.2s
+[fixed4] MPS glw cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:129487590 01:2447544736 11:2286957946 | 0.3s
+[bank] MPS glw cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:5432864 01:21800576 11:2891156832 | 8.1s
+[samewarp] MPS glw cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:1458649248 11:545888 | 1.1s
+[rand] SB glw cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 01:4420326640 10:4420699048 11:886964584 | 3.5s
+[tight] SB glw cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 01:2248315722 10:2248795870 11:366878680 | 0.3s
+[wide] SB glw cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 01:1425478004 10:1425323409 11:67588859 | 0.2s
+[fixed4] SB glw cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 01:2936 10:4863984632 11:2704 | 0.3s
+[bank] SB glw cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 01:1352675788 10:1352620260 11:213094224 | 8.1s
+[samewarp] SB glw cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 01:541728 10:542176 11:1458111232 | 1.1s
+[rand] LB glw cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 00:1701443960 01:4013246384 10:4013299928 | 3.5s
+[tight] LB glw cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:1795687694 01:1534298832 10:1534003746 | 0.3s
+[wide] LB glw cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:196940691 01:1360813376 10:1360636205 | 0.2s
+[fixed4] LB glw cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:4864 01:2112 10:4863983296 | 0.3s
+[bank] LB glw cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:612639563 01:1152984954 10:1152765755 | 8.1s
+[samewarp] LB glw cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:1458116752 01:539152 10:539232 | 1.1s
+[rand] CORR glw cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | allold:4558837920 allnew:5169152352 | 3.5s
+[tight] CORR glw cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | allold:2389290096 allnew:2474700176 | 0.3s
+[wide] CORR glw cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | allold:1454824016 allnew:1463566256 | 0.2s
+[fixed4] CORR glw cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | allold:4863985392 allnew:4880 | 0.3s
+[bank] CORR glw cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | allold:1327497645 allnew:1590892627 | 8.0s
+[samewarp] CORR glw cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | allold:545456 allnew:1458649680 | 1.1s
+[rand] IRIW glw cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 0000:1411767352 1000:314038804 0100:446915940 1100:827693943 0010:316212260 0110:801597738 1110:353316202 0001:444385524 1001:804774244 0101:676400 1101:490437369 0011:824244540 1011:356509688 0111:494759463 1111:1840660805 | 3.2s
+[tight] IRIW glw cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 0000:844143270 1000:137277373 0100:282301736 1100:413086282 0010:140005415 0110:405863068 1110:139765761 0001:279781849 1001:410645120 0101:1246219 1101:251858309 0011:410655439 1011:140180373 0111:256199094 1111:750980964 | 0.4s
+[wide] IRIW glw cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 0000:497935728 1000:116224500 0100:128806322 1100:243025955 0010:116101324 0110:238402766 1110:109894960 0001:128598818 1001:238461369 0101:5965 1101:131860468 0011:243191466 1011:109989875 0111:131810100 1111:484080656 | 0.2s
+[fixed4] IRIW glw cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 0000:1613068934 1000:64 0100:962089169 1100:736 0010:613582566 0110:1675242639 1110:104 0001:920 1001:476 0101:296 1101:1036 0011:704 1011:68 0111:1100 1111:1460 | 0.3s
+[bank] IRIW glw cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 0000:374563102 1000:70798174 0100:140219439 1100:253957406 0010:72013046 0110:227081232 1110:99477329 0001:139014824 1001:227718924 0101:662242 1101:178169242 0011:252194665 1011:101616650 0111:179439077 1111:601464920 | 7.6s
+[samewarp] IRIW glw cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=729597568 FORBIDDEN=0 | 0000:80 0110:216 1110:80 1001:224 1101:96 0011:8 1011:48 0111:72 1111:729596744 | 1.1s
+[rand] MP gls cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 00:3939652352 01:726936768 11:5061401152 | 3.5s
+[tight] MP gls cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:1999120512 01:477536928 11:2387332832 | 0.4s
+[wide] MP gls cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:1401418016 01:65257024 11:1451715232 | 0.3s
+[fixed4] MP gls cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:4863984000 01:1824 11:4448 | 0.3s
+[bank] MP gls cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:1104464768 01:229946560 11:1583978944 | 8.1s
+[samewarp] MP gls cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:547440 11:1458647696 | 1.1s
+[rand] MPS gls cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 11:9727990272 | 3.5s
+[tight] MPS gls cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 11:4863990272 | 0.6s
+[wide] MPS gls cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 11:2918390272 | 0.4s
+[fixed4] MPS gls cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 11:4863990272 | 0.7s
+[bank] MPS gls cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 11:2918390272 | 8.1s
+[samewarp] MPS gls cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:1458579120 11:616016 | 13.9s
+[rand] SB gls cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 01:4424494336 10:4424456224 11:879039712 | 3.5s
+[tight] SB gls cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 01:2261262560 10:2261383776 11:341343936 | 0.4s
+[wide] SB gls cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 01:1421657728 10:1421233792 11:75498752 | 0.3s
+[fixed4] SB gls cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 01:3328 10:4863985408 11:1536 | 0.5s
+[bank] SB gls cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 01:1353907744 10:1354008864 11:210473664 | 8.1s
+[samewarp] SB gls cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 01:541424 10:539296 11:1458114416 | 1.1s
+[rand] LB gls cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 00:1692044448 01:4018012608 10:4017933216 | 3.5s
+[tight] LB gls cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:1695584064 01:1584137568 10:1584268640 | 0.4s
+[wide] LB gls cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:195780672 01:1361487168 10:1361122432 | 0.3s
+[fixed4] LB gls cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 00:4992 01:2144 10:4863983136 | 0.4s
+[bank] LB gls cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 00:616469504 01:1150698560 10:1151222208 | 8.1s
+[samewarp] LB gls cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | 00:1458110448 01:543056 10:541632 | 1.1s
+[rand] CORR gls cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | allold:3640792864 allnew:5179584320 mixed:907613088 | 3.5s
+[tight] CORR gls cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | allold:1830284672 allnew:2471445568 mixed:562260032 | 0.3s
+[wide] CORR gls cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | allold:1397025952 allnew:1461936512 mixed:59427808 | 0.2s
+[fixed4] CORR gls cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | allold:4863983680 allnew:4736 mixed:1856 | 0.3s
+[bank] CORR gls cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | allold:988429600 allnew:1608048928 mixed:321911744 | 8.1s
+[samewarp] CORR gls cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=1459195136 FORBIDDEN=0 | allold:546096 allnew:1458649040 | 1.1s
+[rand] IRIW gls cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=9727990272 FORBIDDEN=0 | 0000:1413714016 1000:314632352 0100:446900512 1100:824461760 0010:316755840 0110:802460736 1110:353595424 0001:444299904 1001:805385472 0101:691360 1101:491495456 0011:821001984 1011:356505952 0111:495808736 1111:1840280768 | 3.2s
+[tight] IRIW gls cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=4863990272 FORBIDDEN=0 | 0000:857793472 1000:137888544 0100:267415616 1100:413539584 0010:139218272 0110:426955744 1110:147352704 0001:263574656 1001:429841952 0101:596864 1101:231240064 0011:412395776 1011:149263840 0111:233571872 1111:753341312 | 0.5s
+[wide] IRIW gls cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 0000:500149856 1000:116498144 0100:128296896 1100:244317728 0010:116306560 0110:237064608 1110:110619104 0001:128155328 1001:237124512 0101:4704 1101:131685984 0011:244396192 1011:110627584 0111:131635200 1111:481507872 | 0.3s
+[fixed4] IRIW gls cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=4863990272 FORBIDDEN=0 | 0000:1675586944 1000:192 0100:989520352 1100:480 0010:593024448 0110:1605851552 1110:64 0001:1056 1001:704 0101:320 1101:1024 0011:736 1011:32 0111:1120 1111:1248 | 0.4s
+[bank] IRIW gls cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=2918390272 FORBIDDEN=0 | 0000:395382880 1000:88093728 0100:131879488 1100:255107712 0010:89566784 0110:228119808 1110:111799968 0001:130231200 1001:229060320 0101:597312 1101:157369120 0011:253229312 1011:114220320 0111:158925344 1111:574806976 | 7.6s
+[samewarp] IRIW gls cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 lsep=33 same=1 fixed=0 blocks=304 | n=729597568 FORBIDDEN=0 | 0000:72 1100:32 0110:200 1110:48 1001:216 1101:40 0011:8 1011:56 0111:64 1111:729596832 | 1.1s
+[rand] MP dsm clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 00:161348384 01:747819902 11:1522826850 | 2.1s
+[tight] MP dsm clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:60621672 01:413208320 11:742165144 | 0.3s
+[wide] MP dsm clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:290057936 01:191246025 11:248291175 | 0.2s
+[fixed4] MP dsm clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:1213016832 01:2977209 11:1095 | 0.3s
+[bank] MP dsm clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:93211866 01:217364136 11:419019134 | 4.4s
+[rand] MP dsm clu wf=2 rf=2 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 00:76605248 01:2267434998 11:87954890 | 2.1s
+[tight] MP dsm clu wf=2 rf=2 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:41065264 01:1174827597 11:102275 | 0.3s
+[wide] MP dsm clu wf=2 rf=2 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:219005896 01:482026684 11:28562556 | 0.2s
+[fixed4] MP dsm clu wf=2 rf=2 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:1183316264 01:32678872 | 0.4s
+[bank] MP dsm clu wf=2 rf=2 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:20780040 01:578680439 11:130134657 | 4.4s
+[rand] MPS dsm clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 00:100448 01:19887928 11:2412006760 | 2.1s
+[tight] MPS dsm clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:82920 01:24070499 11:1191841717 | 0.3s
+[wide] MPS dsm clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:52593000 01:88688394 11:588313742 | 0.2s
+[fixed4] MPS dsm clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:323747984 01:409089609 11:483157543 | 0.3s
+[bank] MPS dsm clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:753213 01:2797816 11:726044107 | 4.4s
+[rand] MPS dsm clu wf=2 rf=2 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 11:2431995136 | 2.1s
+[tight] MPS dsm clu wf=2 rf=2 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 11:1215995136 | 0.4s
+[wide] MPS dsm clu wf=2 rf=2 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 11:729595136 | 0.2s
+[fixed4] MPS dsm clu wf=2 rf=2 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 11:1215995136 | 0.4s
+[bank] MPS dsm clu wf=2 rf=2 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 11:729595136 | 4.4s
+[rand] SB dsm clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 01:549753305 10:102206952 11:1780034879 | 2.1s
+[tight] SB dsm clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 01:421258362 10:19328072 11:775408702 | 0.3s
+[wide] SB dsm clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 01:239356664 10:228448760 11:261789712 | 0.2s
+[fixed4] SB dsm clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 01:927 10:1192732000 11:23262209 | 0.3s
+[bank] SB dsm clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 01:207356763 10:72404084 11:449834289 | 4.4s
+[rand] SB dsm clu wf=3 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 01:296003 10:395040 11:2431304093 | 2.1s
+[tight] SB dsm clu wf=3 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 01:128 11:1215995008 | 0.4s
+[wide] SB dsm clu wf=3 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 01:5453816 10:15215952 11:708925368 | 0.2s
+[fixed4] SB dsm clu wf=3 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 10:5336 11:1215989800 | 0.4s
+[bank] SB dsm clu wf=3 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 01:30914043 10:18192809 11:680488284 | 4.4s
+[rand] LB dsm clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 00:1081200826 01:1181981742 10:168812568 | 2.1s
+[tight] LB dsm clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:688599898 01:514318766 10:13076472 | 0.3s
+[wide] LB dsm clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:256511224 01:245214216 10:227869696 | 0.2s
+[fixed4] LB dsm clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:23218833 01:983 10:1192775320 | 0.3s
+[bank] LB dsm clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:347338898 01:297245238 10:85011000 | 4.4s
+[rand] CORR dsm clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | allold:195245200 allnew:2236749936 | 2.1s
+[tight] CORR dsm clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | allold:64231696 allnew:1151763440 | 0.3s
+[wide] CORR dsm clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | allold:301303472 allnew:428291664 | 0.2s
+[fixed4] CORR dsm clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | allold:1215990272 allnew:4864 | 0.3s
+[bank] CORR dsm clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | allold:119933244 allnew:609661892 | 4.3s
+[rand] COWR dsm clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | own:2431995136 | 2.1s
+[tight] COWR dsm clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | own:1215995136 | 0.3s
+[wide] COWR dsm clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | own:729595136 | 0.2s
+[fixed4] COWR dsm clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | own:1215995136 | 0.3s
+[bank] COWR dsm clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | own:729595136 | 4.4s
+[rand] IRIW dsm clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 0000:7272637 1000:599684 0100:13216067 1100:8899620 0010:14066595 0110:98994661 1110:1349760 0001:35006430 1001:56807563 0101:3168306 1101:134946197 0011:239029077 1011:230139505 0111:108119979 1111:1480379055 | 2.0s
+[tight] IRIW dsm clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 0000:4823273 1000:96 0100:3589280 1100:1216 0010:14319411 0110:33396500 1110:64 0001:39222875 1001:67151200 0101:2057180 1101:61803336 0011:196495936 1011:247826255 0111:48982841 1111:496325673 | 0.3s
+[wide] IRIW dsm clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 0000:70960271 1000:2003264 0100:40905497 1100:35794408 0010:24482652 0110:75488908 1110:12838408 0001:35769635 1001:39501862 0101:2244309 1101:95062634 0011:42459221 1011:17052290 0111:47102419 1111:187929358 | 0.2s
+[fixed4] IRIW dsm clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 0000:59089762 0100:199044862 0010:153149250 0110:802480342 0001:96 1001:64 0101:64 1101:832 0011:347926 1011:161 0111:1878834 1111:2943 | 0.3s
+[bank] IRIW dsm clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 0000:10975882 1000:2749869 0100:5604644 1100:17090303 0010:4303172 0110:21996012 1110:7739712 0001:13277142 1001:35214704 0101:210522 1101:48551698 0011:63833022 1011:51885307 0111:36434357 1111:409728790 | 4.2s
+[rand] IRIW dsm clu wf=0 rf=3 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 0000:295 0100:1694857 0110:491976 0001:182856 1001:15874 0101:453587936 1101:568569614 0011:14581 1011:1024 0111:626119475 1111:781316648 | 2.0s
+[tight] IRIW dsm clu wf=0 rf=3 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 0100:576 0110:64 0101:189913968 1101:278800792 0111:305602112 1111:441677624 | 0.4s
+[wide] IRIW dsm clu wf=0 rf=3 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 0000:50396 0100:6517012 1100:86016 0010:224 0110:954944 1110:6104 0001:601255 1001:111909 0101:152322361 1101:170131603 0011:60894 1011:3286 0111:192350298 1111:206398834 | 0.3s
+[fixed4] IRIW dsm clu wf=0 rf=3 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 0100:64 0101:287151712 1101:832 0111:928839488 1111:3040 | 0.4s
+[bank] IRIW dsm clu wf=0 rf=3 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 0000:3236747 1000:62374 0100:8931454 1100:1494322 0010:118494 0110:5496295 1110:298753 0001:15058704 1001:8971262 0101:119443976 1101:167184110 0011:3515132 1011:1043794 0111:173268794 1111:221470925 | 4.2s
+[rand] TEAR64 dsm clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=4 lsep=129 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | clean:2431995136 | 2.1s
+[tight] TEAR64 dsm clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=4 lsep=129 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | clean:1215995136 | 0.3s
+[wide] TEAR64 dsm clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=4 lsep=129 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | clean:729595136 | 0.2s
+[fixed4] TEAR64 dsm clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=4 lsep=129 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | clean:1215995136 | 0.2s
+[bank] TEAR64 dsm clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=4 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | clean:729595136 | 4.3s
+[rand] TEAR128 dsm clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=4 lsep=129 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | clean:2431995136 | 2.1s
+[tight] TEAR128 dsm clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=4 lsep=129 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | clean:1215995136 | 0.3s
+[wide] TEAR128 dsm clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=4 lsep=129 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | clean:729595136 | 0.2s
+[fixed4] TEAR128 dsm clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=4 lsep=129 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | clean:1215995136 | 0.3s
+[bank] TEAR128 dsm clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=4 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | clean:729595136 | 4.3s
+[rand] MP dsr clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 00:163311696 01:745704050 11:1522979390 | 2.1s
+[tight] MP dsr clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:59067056 01:423090512 11:733837568 | 0.3s
+[wide] MP dsr clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:288528920 01:192668421 11:248397795 | 0.2s
+[fixed4] MP dsr clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:1212790920 01:3203088 11:1128 | 0.3s
+[bank] MP dsr clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:93548656 01:216407998 11:419638482 | 4.4s
+[rand] MPS dsr clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 11:2431995136 | 2.1s
+[tight] MPS dsr clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 11:1215995136 | 0.3s
+[wide] MPS dsr clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 11:729595136 | 0.2s
+[fixed4] MPS dsr clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 11:1215995136 | 0.4s
+[bank] MPS dsr clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 11:729595136 | 4.4s
+[rand] SB dsr clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 01:553118785 10:103100712 11:1775775639 | 2.1s
+[tight] SB dsr clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 01:414628955 10:19000272 11:782365909 | 0.3s
+[wide] SB dsr clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 01:239791770 10:227821024 11:261982342 | 0.2s
+[fixed4] SB dsr clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 01:927 10:1192158864 11:23835345 | 0.3s
+[bank] SB dsr clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 01:207304281 10:72385273 11:449905582 | 4.4s
+[rand] LB dsr clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 00:1078201874 01:1185050030 10:168743232 | 2.1s
+[tight] LB dsr clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:693581848 01:510506208 10:11907080 | 0.3s
+[wide] LB dsr clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:257319679 01:245419657 10:226855800 | 0.2s
+[fixed4] LB dsr clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:24630342 01:970 10:1191363824 | 0.3s
+[bank] LB dsr clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:347323153 01:297296509 10:84975474 | 4.4s
+[rand] CORR dsr clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | allold:171452512 allnew:2240138888 mixed:20403736 | 2.1s
+[tight] CORR dsr clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | allold:62501400 allnew:1149240392 mixed:4253344 | 0.3s
+[wide] CORR dsr clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | allold:290600072 allnew:428030424 mixed:10964640 | 0.2s
+[fixed4] CORR dsr clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | allold:1215990272 allnew:4864 | 0.3s
+[bank] CORR dsr clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | allold:70923404 allnew:613258307 mixed:45413425 | 4.4s
+[rand] COWR dsr clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | own:2383467552 saw_other:48527584 | 2.1s
+[tight] COWR dsr clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | own:1214223608 saw_other:1771528 | 0.3s
+[wide] COWR dsr clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | own:705494304 saw_other:24100832 | 0.2s
+[fixed4] COWR dsr clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | own:1215994344 saw_other:792 | 0.3s
+[bank] COWR dsr clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | own:528480374 saw_other:201114762 | 4.4s
+[rand] IRIW dsr clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 0000:7355003 1000:606149 0100:13229341 1100:9019835 0010:14058685 0110:98732443 1110:1377000 0001:35495969 1001:57648504 0101:3186295 1101:134587360 0011:241159369 1011:231975427 0111:108658103 1111:1474905653 | 2.0s
+[tight] IRIW dsr clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 0000:4835363 0100:3584829 1100:1352 0010:14320723 0110:33389525 1110:96 0001:39187197 1001:67091427 0101:2061699 1101:61733885 0011:196520230 1011:247715420 0111:48956410 1111:496596980 | 0.3s
+[wide] IRIW dsr clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 0000:70935895 1000:2012387 0100:40914433 1100:35778805 0010:24470659 0110:75512565 1110:12847640 0001:35774999 1001:39517009 0101:2253193 1101:95045511 0011:42476578 1011:17048771 0111:47079198 1111:187927493 | 0.2s
+[fixed4] IRIW dsr clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 0000:59343847 0100:199092185 0010:153821919 0110:801919953 0001:216 1001:32 0101:320 1101:864 0011:282707 1011:224 0111:1529957 1111:2912 | 0.3s
+[bank] IRIW dsr clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 0000:10945112 1000:2741123 0100:5609246 1100:17100007 0010:4319006 0110:22006046 1110:7725474 0001:13254259 1001:35258616 0101:208635 1101:48636358 0011:63822609 1011:51883766 0111:36378997 1111:409705882 | 4.2s
+[rand] MP glw clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 00:276938016 01:84417324 11:2070639796 | 2.1s
+[tight] MP glw clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:71339776 01:15701206 11:1128954154 | 0.3s
+[wide] MP glw clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:352735936 01:33394698 11:343464502 | 0.2s
+[fixed4] MP glw clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:1215990560 01:323 11:4253 | 0.3s
+[bank] MP glw clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:159404842 01:84601228 11:485589066 | 4.4s
+[rand] MPS glw clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 00:79040 01:510445029 11:1921471067 | 2.1s
+[tight] MPS glw clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:35840 01:85008315 11:1130950981 | 0.4s
+[wide] MPS glw clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:27972608 01:326026859 11:375595669 | 0.2s
+[fixed4] MPS glw clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:57760096 01:1046567220 11:111667820 | 0.4s
+[bank] MPS glw clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:971057 01:369784712 11:358839367 | 4.4s
+[rand] MPS glw clu wf=2 rf=2 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 11:2431995136 | 2.1s
+[tight] MPS glw clu wf=2 rf=2 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 11:1215995136 | 0.5s
+[wide] MPS glw clu wf=2 rf=2 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 11:729595136 | 0.3s
+[fixed4] MPS glw clu wf=2 rf=2 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 11:1215995136 | 0.6s
+[bank] MPS glw clu wf=2 rf=2 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 11:729595136 | 4.4s
+[rand] SB glw clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 01:1900717819 10:430618400 11:100658917 | 2.1s
+[tight] SB glw clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 01:1143850964 10:65110624 11:7033548 | 0.4s
+[wide] SB glw clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 01:374163285 10:345307136 11:10124715 | 0.2s
+[fixed4] SB glw clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 01:4608 10:1215952256 11:38272 | 0.3s
+[bank] SB glw clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 01:471380886 10:204634276 11:53579974 | 4.4s
+[rand] LB glw clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 00:323742104 01:1758427720 10:349825312 | 2.1s
+[tight] LB glw clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:52156036 01:1104611740 10:59227360 | 0.3s
+[wide] LB glw clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:66157333 01:327096523 10:336341280 | 0.2s
+[fixed4] LB glw clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:48256 01:3968 10:1215942912 | 0.3s
+[bank] LB glw clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:241783193 01:360002333 10:127809610 | 4.4s
+[rand] CORR glw clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | allold:363945408 allnew:2068049728 | 2.1s
+[tight] CORR glw clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | allold:85700032 allnew:1130295104 | 0.3s
+[wide] CORR glw clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | allold:373229312 allnew:356365824 | 0.2s
+[fixed4] CORR glw clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | allold:1215990560 allnew:4576 | 0.3s
+[bank] CORR glw clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | allold:221263025 allnew:508332111 | 4.4s
+[rand] IRIW glw clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=4 | 0000:183146551 1000:34366433 0100:12846377 1100:36690335 0010:76098365 !1010:4 0110:37832003 1110:10591452 0001:333814620 1001:427501510 0101:90564 1101:83621242 0011:469870474 1011:408306953 0111:44147286 1111:273070967 | 2.0s
+[tight] IRIW glw clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 0000:47493606 1000:306008 0100:286298 1100:585096 0010:32055187 0110:364333 1110:95552 0001:330561487 1001:276700074 0101:34961 1101:41949526 0011:247724690 1011:201020329 0111:655790 1111:36162199 | 0.4s
+[wide] IRIW glw clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 0000:138456578 1000:14767799 0100:29672542 1100:60720233 0010:48750087 0110:54102745 1110:20140800 0001:34745577 1001:56593499 0101:4823 1101:61415013 0011:51747259 1011:23357142 0111:16042661 1111:119078378 | 0.2s
+[fixed4] IRIW glw clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 0000:884865128 1000:32 0100:1027256 0010:300975770 0110:29122406 0001:2399 1001:896 0101:1 0011:736 1011:224 0111:160 1111:128 | 0.4s
+[bank] IRIW glw clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 0000:90411529 1000:29268529 0100:10728620 1100:31263288 0010:26558036 0110:24653870 1110:12607213 0001:52448809 1001:93333265 0101:137474 1101:26093798 0011:107112553 1011:77669780 0111:24449269 1111:122859103 | 4.2s
+[rand] MP gls clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 00:276893248 01:84707130 11:2070394758 | 2.1s
+[tight] MP gls clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:70651776 01:15519495 11:1129823865 | 0.4s
+[wide] MP gls clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:352571392 01:33000195 11:344023549 | 0.2s
+[fixed4] MP gls clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:1215990528 01:320 11:4288 | 0.3s
+[bank] MP gls clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:159295508 01:84485592 11:485814036 | 4.4s
+[rand] MPS gls clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 11:2431995136 | 2.1s
+[tight] MPS gls clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 11:1215995136 | 0.4s
+[wide] MPS gls clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 11:729595136 | 0.3s
+[fixed4] MPS gls clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 11:1215995136 | 0.5s
+[bank] MPS gls clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 11:729595136 | 4.4s
+[rand] SB gls clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 01:1901432641 10:429801216 11:100761279 | 2.1s
+[tight] SB gls clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 01:1144960416 10:64029728 11:7004992 | 0.4s
+[wide] SB gls clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 01:374593655 10:345046656 11:9954825 | 0.2s
+[fixed4] SB gls clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 01:4582 10:1215958400 11:32154 | 0.3s
+[bank] SB gls clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 01:471530044 10:204620689 11:53444403 | 4.4s
+[rand] SB gls clu wf=3 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 01:219214 10:480960 11:2431294962 | 2.1s
+[tight] SB gls clu wf=3 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 01:15144 10:42944 11:1215937048 | 0.5s
+[wide] SB gls clu wf=3 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 01:1508007 10:5308480 11:722778649 | 0.3s
+[fixed4] SB gls clu wf=3 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 10:3601984 11:1212393152 | 0.5s
+[bank] SB gls clu wf=3 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 01:22820454 10:13946452 11:692828230 | 4.4s
+[rand] LB gls clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 00:324714513 01:1757839119 10:349441504 | 2.1s
+[tight] LB gls clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:51370312 01:1105391960 10:59232864 | 0.3s
+[wide] LB gls clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:66012006 01:326619482 10:336963648 | 0.2s
+[fixed4] LB gls clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 00:57536 01:3904 10:1215933696 | 0.3s
+[bank] LB gls clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 00:242075134 01:359785412 10:127734590 | 4.4s
+[rand] CORR gls clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | allold:292900960 allnew:2069771040 mixed:69323136 | 2.1s
+[tight] CORR gls clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | allold:82300320 allnew:1129086016 mixed:4608800 | 0.3s
+[wide] CORR gls clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | allold:367616160 allnew:352358496 mixed:9620480 | 0.2s
+[fixed4] CORR gls clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | allold:1215990624 allnew:4512 | 0.3s
+[bank] CORR gls clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | allold:116821723 allnew:520760859 mixed:92012554 | 4.4s
+[rand] IRIW gls clu wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 0000:183400925 1000:34454128 0100:12713283 1100:36891824 0010:75796361 0110:37521495 1110:10279264 0001:333507620 1001:426333959 0101:93916 1101:84756697 0011:469391393 1011:404468716 0111:44976479 1111:277409076 | 2.0s
+[tight] IRIW gls clu wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 0000:48395818 1000:406741 0100:348790 1100:703627 0010:32004132 0110:422268 1110:110560 0001:330905131 1001:274015404 0101:37909 1101:41945844 0011:249518952 1011:199101233 0111:839608 1111:37239119 | 0.4s
+[wide] IRIW gls clu wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 0000:138329735 1000:15182822 0100:29678905 1100:60305626 0010:47958251 0110:53644917 1110:20050400 0001:34944228 1001:57279053 0101:5628 1101:60627443 0011:52569921 1011:23304453 0111:16588383 1111:119125371 | 0.2s
+[fixed4] IRIW gls clu wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 0000:884525319 1000:32 0100:1052921 0010:301198290 0110:29213998 0001:2400 1001:896 0011:703 1011:288 0111:193 1111:96 | 0.4s
+[bank] IRIW gls clu wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 0000:92136502 1000:30188636 0100:10388804 1100:30882642 0010:26904739 0110:24619717 1110:12271344 0001:51079848 1001:93309233 0101:136094 1101:25573857 0011:107084550 1011:76986450 0111:24079282 1111:123953438 | 4.2s
+[rand] IRIW gls clu wf=0 rf=3 nw=16 dmask=63 smask=63 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=2431995136 FORBIDDEN=0 | 0000:96 0100:949184 1100:32 0010:32 0110:374432 0001:90172 1001:7157 0101:436481412 1101:565692043 0011:12101 1011:255 0111:621002235 1111:807385985 | 2.0s
+[tight] IRIW gls clu wf=0 rf=3 nw=16 dmask=0 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=1215995136 FORBIDDEN=0 | 0100:4672 0110:992 0001:95 0101:164255169 1101:255613184 0011:32 0111:313570912 1111:482550080 | 0.5s
+[wide] IRIW gls clu wf=0 rf=3 nw=4 dmask=511 smask=0 is=1 lsep=33 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 0000:27446 0100:3573386 1100:39360 0010:64 0110:1147840 1110:7008 0001:417569 1001:85138 0101:153992511 1101:170651022 0011:30952 1011:2656 0111:191413144 1111:208207040 | 0.3s
+[fixed4] IRIW gls clu wf=0 rf=3 nw=4 dmask=31 smask=0 is=1 lsep=33 same=0 fixed=1 blocks=304 | n=1215995136 FORBIDDEN=0 | 0100:882880 0110:45504 0101:286884544 1101:768 0111:928178848 1111:2592 | 0.4s
+[bank] IRIW gls clu wf=0 rf=3 nw=32 dmask=63 smask=255 is=32 lsep=1024 same=0 fixed=0 blocks=304 | n=729595136 FORBIDDEN=0 | 0000:2283442 1000:37539 0100:6717376 1100:1015157 0010:91573 0110:4129029 1110:211720 0001:11320939 1001:6607448 0101:123060803 1101:170329264 0011:2499662 1011:895176 0111:175070072 1111:225325936 | 4.2s

@@ -1,0 +1,33 @@
+name = "e_nanosleep"
+description = """
+E-NANOSLEEP: a read that only a 1 ms nanosleep separates from another thread's store is a race
+(the sleep orders nothing; the model makes it a no-op and explores both orders). BAR: a
+bar.sync orders them: clean."""
+ptx = "kernel.ptx"
+entry = "e_nanosleep"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "ordered by a sleep only"
+expect = ["race"]
+
+[[variants]]
+id = "BAR"
+summary = "bar.sync between store and read"
+marker = "@BAR"
+find = "// @BAR"
+replace = "bar.sync 0;"
+expect = ["clean"]

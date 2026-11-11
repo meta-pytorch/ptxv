@@ -1,0 +1,33 @@
+// probes/bfi_clz: bfi.b32 with register and immediate pos / len, and clz.b32. 64 threads;
+// a, b, pos, len = in[4 t .. 4 t + 3] (gen.py: pos / len around 0, 31, 32, 255, 256 and
+// random); out[4 t] = bfi(a, b, pos, len), out[4 t + 1] = bfi(a, b, 8, 4), out[4 t + 2] =
+// bfi(a, b, 28, 8) (clipped at bit 31), out[4 t + 3] = clz(a).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry bfi_clz(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 64, 1, 1
+{
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 16;
+    add.s64         %rd4, %rd1, %rd3;
+    add.s64         %rd5, %rd2, %rd3;
+    ld.global.v4.b32 {%r2, %r3, %r4, %r5}, [%rd4];
+    bfi.b32         %r6, %r2, %r3, %r4, %r5;
+    bfi.b32         %r7, %r2, %r3, 8, 4;
+    bfi.b32         %r8, %r2, %r3, 28, 8;
+    clz.b32         %r9, %r2;
+    st.global.v4.b32 [%rd5], {%r6, %r7, %r8, %r9};
+    ret;
+}

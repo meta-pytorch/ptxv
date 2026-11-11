@@ -1,0 +1,95 @@
+name = "c_layernorm_torch_f32"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): `F.layer_norm(x, (128,), w, b, 1e-5)` with x = randn(4,128,f32), w = randn(128,f32), b = randn(128,f32). 1 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: _ZN2at6native53_GLOBAL__N__03ac1a2e_20_layer_norm_kernel_cu_9c5ada8a28vectorized_layer_norm_kernelIffLb0EEEviT grid [4, 1, 1] block [32, 4, 1]
+Regenerate: CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/capture.py --op 'F.layer_norm(x, (128,), w, b, 1e-5)' --inputs 'x=randn(4,128,f32),w=randn(128,f32),b=randn(128,f32)' --out fixtures/c_layernorm_torch_f32"""
+cubin = "k0.cubin"
+entry = "_ZN2at6native53_GLOBAL__N__03ac1a2e_20_layer_norm_kernel_cu_9c5ada8a28vectorized_layer_norm_kernelIffLb0EEEviT0_PKT_S6_S6_PS3_S7_PS4_"
+grid = [4, 1, 1]
+block = [32, 4, 1]
+dynamic_smem = 24
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [4, 128]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [128]
+init = "file"
+file = "data/w.bin"
+
+[[buffers]]
+name = "b"
+dtype = "f32"
+shape = [128]
+init = "file"
+file = "data/b.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [4, 128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "W0"
+dtype = "u8"
+shape = [16]
+init = "zeros"
+
+[[buffers]]
+name = "W1"
+dtype = "u8"
+shape = [16]
+init = "zeros"
+
+[[params]]
+kind = "u32"
+value = 128
+
+[[params]]
+kind = "u32"
+value = 925353388
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "b"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "W0"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "W1"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

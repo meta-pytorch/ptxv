@@ -1,0 +1,44 @@
+// Probe (hardware only) for the tcgen05 guardrail code ptxas emits around tcgen05.alloc /
+// tcgen05.dealloc. Each warp of each CTA allocates all 512 TMEM columns and deallocates them,
+// n times in a loop, so the warps of a CTA contend for the columns. The guardrail code frees the
+// columns (UTCATOMSWS.AND) before it clears its own shared-memory bitmap (ATOMS.AND); a warp
+// whose allocation succeeds in between has its bitmap bits cleared and traps at its dealloc.
+// out[cta * 4 + warp] = iterations completed (n when no trap aborted the grid).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry probe_tmem_alloc_race(.param .u64 out_p, .param .u32 n)
+{
+    .shared .align 4 .b32 slot[4];
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u32 %r10, [n];
+    mov.u32 %r0, %tid.x;
+    shr.u32 %r1, %r0, 5;
+    shl.b32 %r2, %r1, 2;
+    mov.u32 %r3, slot;
+    add.u32 %r3, %r3, %r2;
+    mov.u32 %r11, 0;
+LOOP:
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 512;
+    ld.shared.u32 %r4, [%r3];
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r4, 512;
+    add.u32 %r11, %r11, 1;
+    setp.lt.u32 %p1, %r11, %r10;
+    @%p1 bra.uni LOOP;
+    and.b32 %r5, %r0, 31;
+    setp.ne.u32 %p2, %r5, 0;
+    @%p2 bra.uni DONE;
+    mov.u32 %r6, %ctaid.x;
+    shl.b32 %r6, %r6, 2;
+    add.u32 %r6, %r6, %r1;
+    mul.wide.u32 %rd2, %r6, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r11;
+DONE:
+    ret;
+}

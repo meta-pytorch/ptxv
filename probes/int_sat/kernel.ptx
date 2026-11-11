@@ -1,0 +1,37 @@
+// probes/int_sat: add.sat.s32 / sub.sat.s32 (clamped to [INT_MIN, INT_MAX]; ptxas: IADD +
+// PLOP3 sign tests on R / UR .SIGN + SEL). 16 CTAs x 256 threads; i = 256 ctaid + tid; a, b =
+// in[2 i], in[2 i + 1] (gen.py); out[4 i] = add.sat(a, b), out[4 i + 1] = sub.sat(a, b),
+// out[4 i + 2] = add.sat(a, 2147483000), out[4 i + 3] = sub.sat(b, -2147483000) (immediate
+// operands; ptxas tests the immediate's sign through UR.SIGN).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry int_sat(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r9, %ctaid.x;
+    mov.u32         %r10, %tid.x;
+    mad.lo.u32      %r1, %r9, 256, %r10;
+    mul.wide.u32    %rd3, %r1, 8;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.v2.u32 {%r2, %r3}, [%rd4];
+    mul.wide.u32    %rd5, %r1, 16;
+    add.s64         %rd6, %rd2, %rd5;
+    add.sat.s32     %r4, %r2, %r3;
+    sub.sat.s32     %r5, %r2, %r3;
+    add.sat.s32     %r6, %r2, 2147483000;
+    sub.sat.s32     %r7, %r3, -2147483000;
+    st.global.v4.u32 [%rd6], {%r4, %r5, %r6, %r7};
+    ret;
+}

@@ -1,0 +1,28 @@
+name = "poll-warp-uniform-reference"
+description = "A failed poll conditionally writes a register used after the successful iteration"
+cubin = "kernel.cubin"
+entry = "k"
+grid = [2,1,1]
+cluster = [2,1,1]
+block = [1,1,1]
+outputs = ["out", "flag"]
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+values = [[0,0]]
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+[[params]]
+kind = "ptr"
+buffer = "flag"
+[[params]]
+kind = "ptr"
+buffer = "out"
+[[variants]]
+id = "good"
+expect = ["inconclusive"]

@@ -1,0 +1,36 @@
+# probes/va_alias/va.cu, 2026-11-10, GPU index 1 (CUDA_VISIBLE_DEVICES=1)
+NVIDIA GB300, 580.126.20
+Cuda compilation tools, release 13.0, V13.0.88
+# build: nvcc -O2 -arch=sm_103a -o va va.cu -lcuda; run: ./va 200 (aliased: A, B two cuMemMap of one handle) and ./va 200 plain (A = B = one cudaMalloc buffer)
+## aliased
+device NVIDIA GB300, 152 SMs, granularity 2097152, A 0xfffa9dc00000 B 0xfffa9de00000, runs 200
+raw nofence            runs 200  words/run 155648  stale words 31129600  runs with stale 200
+raw fence              runs 200  words/run 155648  stale words 0  runs with stale 0
+raw-same (control)     runs 200  words/run 155648  stale words 0  runs with stale 0
+raw-nc (control)       runs 200  words/run 155648  stale words 31129600  runs with stale 200
+mp nofence             runs 200  words/run 38656  stale words 0  runs with stale 0
+mp producer-fence      runs 200  words/run 38656  stale words 0  runs with stale 0
+mp consumer-fence      runs 200  words/run 38656  stale words 0  runs with stale 0
+mp both-fence          runs 200  words/run 38656  stale words 0  runs with stale 0
+mp-relaxed (control)   runs 200  words/run 38656  stale words 7731200  runs with stale 200
+mp-relaxed-same (control) runs 200  words/run 38656  stale words 7731200  runs with stale 200
+cta nofence            runs 200  words/run 155648  stale words 31129600  runs with stale 200
+cta writer-fence       runs 200  words/run 155648  stale words 0  runs with stale 0
+cta reader-fence       runs 200  words/run 155648  stale words 0  runs with stale 0
+cta-same (control)     runs 200  words/run 155648  stale words 0  runs with stale 0
+## plain (detector check, no aliasing)
+device NVIDIA GB300, 152 SMs, granularity 2097152, A 0xfffabe000000 B 0xfffabe000000, runs 200
+raw nofence            runs 200  words/run 155648  stale words 0  runs with stale 0
+raw fence              runs 200  words/run 155648  stale words 0  runs with stale 0
+raw-same (control)     runs 200  words/run 155648  stale words 0  runs with stale 0
+raw-nc (control)       runs 200  words/run 155648  stale words 0  runs with stale 0
+mp nofence             runs 200  words/run 38656  stale words 0  runs with stale 0
+mp producer-fence      runs 200  words/run 38656  stale words 0  runs with stale 0
+mp consumer-fence      runs 200  words/run 38656  stale words 0  runs with stale 0
+mp both-fence          runs 200  words/run 38656  stale words 0  runs with stale 0
+mp-relaxed (control)   runs 200  words/run 38656  stale words 7731200  runs with stale 200
+mp-relaxed-same (control) runs 200  words/run 38656  stale words 7731200  runs with stale 200
+cta nofence            runs 200  words/run 155648  stale words 0  runs with stale 0
+cta writer-fence       runs 200  words/run 155648  stale words 0  runs with stale 0
+cta reader-fence       runs 200  words/run 155648  stale words 0  runs with stale 0
+cta-same (control)     runs 200  words/run 155648  stale words 0  runs with stale 0

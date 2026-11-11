@@ -1,0 +1,44 @@
+// E-CONST-BRA: a branch on a launch constant (the parameter `flag`) is folded: the explorer's
+// control-flow graph keeps only the side constant propagation chose, and exec.rs checks the
+// guard on every execution.
+//   flag != 0: warp 0 stores x, every thread passes bar.sync 0, warp 1 reads x (clean).
+//   flag == 0: warp 1 reads x with no barrier between the store and the read (race).
+// The two-launch variant runs the entry twice with flag = 1 and flag = 0, so the branch is
+// decided differently per grid and must not be folded.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_const_bra(.param .u64 out_p, .param .u32 flag)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u32 %r1, [flag];
+    mov.u32 %r2, %tid.x;
+    mov.u32 %r6, 5;
+    shr.u32 %r3, %r2, 5;                 // warp
+    setp.eq.u32 %p2, %r2, 0;
+    @!%p2 bra STORED;
+    mov.u32 %r4, 7;
+    st.global.u32 [%rd1+4], %r4;
+STORED:
+    setp.ne.u32 %p1, %r1, 0;             // @GUARD
+    @!%p1 bra NOBAR;
+    bar.sync 0;
+    st.global.u32 [%rd1+8], %r6;
+    st.global.u32 [%rd1+12], %r6;
+    st.global.u32 [%rd1+16], %r6;
+    st.global.u32 [%rd1+20], %r6;
+    st.global.u32 [%rd1+24], %r6;
+    st.global.u32 [%rd1+28], %r6;
+NOBAR:
+    setp.ne.u32 %p3, %r2, 32;
+    @%p3 bra DONE;
+    ld.global.u32 %r5, [%rd1+4];
+    st.global.u32 [%rd1], %r5;
+DONE:
+    ret;
+}

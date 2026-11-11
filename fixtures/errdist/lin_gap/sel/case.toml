@@ -1,0 +1,64 @@
+name = "lin_sel"
+description = """
+errdist linearized-tier gap tracked by tools/errdist_scorecard.py (refused by the Tier 3
+cross-check): t1 = RN(RN(x w) + v), t2 = fma(x, w, v); y = t1 > 0.5 ? t1 : t2 (a guarded store of t1 over a store of t2; z <- t1 keeps the predicated store)."""
+ptx = "kernel.ptx"
+entry = "lin_sel"
+grid = [64, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [4096]
+init = "zeros"
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [4096]
+init = "zeros"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [4096]
+init = "zeros"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [4096]
+init = "zeros"
+
+[[buffers]]
+name = "z"
+dtype = "f32"
+shape = [4096]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

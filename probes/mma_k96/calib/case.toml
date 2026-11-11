@@ -1,0 +1,86 @@
+name = "mma_k96_calib"
+description = """
+N-MMA-K96 calibration probe: kind::mxf4nvf4 block16 with K = 96 (instruction descriptor bit
+31). D[128x64] f32 = sum of four K = 96 MMAs; `ptxv calib-mma probes/mma_k96/calib` writes each
+input set (codes, scales) and scores the Fp4Model family (and the 64 + 32 split) bit for bit
+against GB300. kernel.ptx from ../gen.py."""
+ptx = "kernel.ptx"
+entry = "mma_nvf4_k96"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "u8"
+shape = [128, 192]
+init = "zeros"
+
+[[buffers]]
+name = "B"
+dtype = "u8"
+shape = [64, 192]
+init = "zeros"
+
+[[buffers]]
+name = "SFA"
+dtype = "u32"
+shape = [128, 32]
+init = "zeros"
+
+[[buffers]]
+name = "SFB"
+dtype = "u32"
+shape = [128, 32]
+init = "zeros"
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [128, 64]
+init = "nan"
+
+# A[m][192 bytes] viewed as 3-D (16 bytes, m, chunk): 12 chunks of 128 rows x 16 B (LBO 2048).
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [16, 128, 12]
+dims = [16, 128, 12]
+strides = [192, 16]
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [16, 64, 12]
+dims = [16, 64, 12]
+strides = [192, 16]
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+# idesc (MMAs 1..3) and idesc0 (MMA 0): K = 96, M = 128, N = 64, E2M1, ue4m3 scales.
+[[params]]
+kind = "u32"
+value = 0x88100480
+
+[[params]]
+kind = "u32"
+value = 0x88100480
+
+[[params]]
+kind = "ptr"
+buffer = "SFA"
+
+[[params]]
+kind = "ptr"
+buffer = "SFB"
+
+# sfcol
+[[params]]
+kind = "u32"
+value = 0
+
+[[variants]]
+id = "good"
+expect = ["clean"]

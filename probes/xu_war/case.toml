@@ -1,0 +1,46 @@
+name = "probe_xu_war"
+description = """
+Probe (L-OPCLASS) for in-order operand reads in the f64 / conversion queue: a later conversion
+overwrites the source register of an earlier one in the same queue with no wait. kernel.cu
+built with `nvcc -cubin -arch=sm_103a -maxrregcount=32` (xuwar.cubin): `F2F.F64.F32 R24, R6` at
+0x140, then `F2F.F64.F32 R6, R10` at 0x1e0. ptxas gives the first no scoreboard; variant
+`rd_sb` adds a read scoreboard (SB2, never waited on) to it, the form ptxas emits in CuTe top-k
+(`F2F.F64.F32 R98, R6` with rd=SB1, then `F2F.F64.F32 R6, R19` with no wait on SB1). The added
+scoreboard changes no timing, so both variants run the same on GB300 (expected/, gen.py)."""
+cubin = "xuwar.cubin"
+entry = "xuwar"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [64, 16]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f64"
+shape = [64, 17]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "rd_sb"
+summary = "the first F2F.F64.F32 with a read scoreboard (SB2) that is never waited on"
+patch = [{ at = "@0x140", rbar = 2, expect = "F2F.F64.F32 R24, R6" }]
+expect = ["clean"]

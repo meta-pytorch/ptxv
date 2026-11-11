@@ -1,0 +1,28 @@
+name = "e_clock_data"
+description = """
+E-CLOCK: a select on a clock comparison stored to the output (data, not explored both ways).
+The search is complete for the clock read as 0 (out[0] = 2), but the output depends on timing:
+`ptxv check` marks the verdict incomplete with a "clock-dependent output" note (clock.rs
+`mark_clock_outputs`), so it is inconclusive, not clean. On the SASS front ptxas makes the
+select a guarded move, which is a clock choice: both outputs (nondeterministic)."""
+ptx = "kernel.ptx"
+entry = "e_clock_data"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["inconclusive"]
+# ptxas turns the select into a guarded move, a clock choice: both outputs.
+expect_sass = ["nondeterministic"]

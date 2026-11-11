@@ -1,0 +1,70 @@
+{
+ "what": "run() of cute_add.py",
+ "argv": [
+  "--file",
+  "tools/capture_examples/cute_add.py",
+  "--out",
+  "fixtures/c_cute_add",
+  "--work",
+  "/tmp/ptxv_capture_2896348"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "kernel_cutlass_add_kernel_tensorptrf32gmemo41281281_tensorptrf32gmemo41281281_tensorptrf32gmemo41281281_0",
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "jit.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": true,
+ "buffers": [
+  {
+   "name": "a",
+   "dtype": "f32",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 2048
+  },
+  {
+   "name": "b",
+   "dtype": "f32",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 2048
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 2048
+  }
+ ],
+ "unresolved": [],
+ "warnings": [
+  "PTX .version 9.3 rewritten to 9.0"
+ ]
+}

@@ -1,0 +1,58 @@
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// errdist N-ERRDIST-SEL adversarial row: out = (s > 0) ? x0 + x1 + ... + x15 (sequential f32
+// sum) : x0. A shared word gets x0, then a store under the input-derived predicate overwrites it
+// with the sum (a selection, NodeKind::Sel); the word is the output.
+.visible .entry adv_sel(.param .u64 x_p, .param .u64 s_p, .param .u64 out_p)
+{
+    .reg .b64 %rd<8>;
+    .reg .f32 %f<32>;
+    .reg .pred %p<2>;
+    .shared .align 4 .f32 w;
+    ld.param.u64 %rd1, [x_p];
+    ld.param.u64 %rd2, [s_p];
+    ld.param.u64 %rd3, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    ld.global.f32 %f0, [%rd1+0];
+    ld.global.f32 %f1, [%rd1+4];
+    ld.global.f32 %f2, [%rd1+8];
+    ld.global.f32 %f3, [%rd1+12];
+    ld.global.f32 %f4, [%rd1+16];
+    ld.global.f32 %f5, [%rd1+20];
+    ld.global.f32 %f6, [%rd1+24];
+    ld.global.f32 %f7, [%rd1+28];
+    ld.global.f32 %f8, [%rd1+32];
+    ld.global.f32 %f9, [%rd1+36];
+    ld.global.f32 %f10, [%rd1+40];
+    ld.global.f32 %f11, [%rd1+44];
+    ld.global.f32 %f12, [%rd1+48];
+    ld.global.f32 %f13, [%rd1+52];
+    ld.global.f32 %f14, [%rd1+56];
+    ld.global.f32 %f15, [%rd1+60];
+    add.rn.f32 %f20, %f0, %f1;
+    add.rn.f32 %f20, %f20, %f2;
+    add.rn.f32 %f20, %f20, %f3;
+    add.rn.f32 %f20, %f20, %f4;
+    add.rn.f32 %f20, %f20, %f5;
+    add.rn.f32 %f20, %f20, %f6;
+    add.rn.f32 %f20, %f20, %f7;
+    add.rn.f32 %f20, %f20, %f8;
+    add.rn.f32 %f20, %f20, %f9;
+    add.rn.f32 %f20, %f20, %f10;
+    add.rn.f32 %f20, %f20, %f11;
+    add.rn.f32 %f20, %f20, %f12;
+    add.rn.f32 %f20, %f20, %f13;
+    add.rn.f32 %f20, %f20, %f14;
+    add.rn.f32 %f20, %f20, %f15;
+    ld.global.f32 %f21, [%rd2];
+    setp.gt.f32 %p1, %f21, 0f00000000;
+    st.shared.f32 [w], %f0;
+    @%p1 st.shared.f32 [w], %f20;
+    ld.shared.f32 %f22, [w];
+    st.global.f32 [%rd3], %f22;
+    ret;
+}

@@ -1,0 +1,39 @@
+name = "probe_printf_clock"
+description = """
+Probe (E-CLOCK, S-CBANK) for DeepEP's timeout shape on the PTX front: %clock64 / %globaltimer
+reads, a timeout branch that builds a vprintf argument buffer on the stack (cvta.local of %SPL)
+and calls vprintf, then traps; the branch is never taken (kernel.ptx). expected/ is GB300's
+output (kernel.cubin = ptxas -arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "printf_clock"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "file"
+file = "flag.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+# E-CLOCK: clock-derived values reach the output (clock.rs `mark_clock_outputs`): `ptxv check`
+# is incomplete for every timing; the cargo test checks the one-timing output against GB300.
+expect = ["inconclusive"]

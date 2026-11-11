@@ -1,0 +1,5 @@
+{"version": 1, "seed": 1, "name": "standard normal x, w; v = 1 on 95% of the elements, else N(0, 1)",
+ "tensors": {"v": {"dist": {"kind": "mixture", "components": [
+   {"weight": 0.95, "dist": {"kind": "const", "value": 1.0}},
+   {"weight": 0.05, "dist": {"kind": "normal"}}]}}},
+ "default": {"dist": {"kind": "normal"}}}

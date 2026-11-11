@@ -1,0 +1,45 @@
+// Probe for cp.async with a register src-size: Triton's masked load (src-size = 16 or 0 from
+// selp) and arbitrary sizes 0..15 (tid & 15) and 0..16 (min(tid, 16)), plus an immediate
+// partial size 4, and 8- / 4-byte copies with src-size tid & 7 / tid & 3. Each thread copies 16 bytes of in into its own shared slot (pre-filled with
+// 0xee bytes), waits, and writes the slot to out.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry cpasync_srcsize(.param .u64 pin, .param .u64 pout, .param .u32 pn)
+{ .reg .b64 %rd<10>; .reg .b32 %r<40>; .reg .pred %p<4>;
+  .shared .align 16 .b8 sm[10240];
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout]; ld.param.u32 %r9, [pn];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mul.wide.u32 %rd3, %r1, 16; add.s64 %rd4, %rd1, %rd3;
+  mov.u32 %r2, sm; shl.b32 %r3, %r1, 4; add.s32 %r4, %r2, %r3;
+  mov.u32 %r20, 0xeeeeeeee;
+  st.shared.v4.u32 [%r4], {%r20,%r20,%r20,%r20};
+  st.shared.v4.u32 [%r4+2048], {%r20,%r20,%r20,%r20};
+  st.shared.v4.u32 [%r4+4096], {%r20,%r20,%r20,%r20};
+  st.shared.v4.u32 [%r4+6144], {%r20,%r20,%r20,%r20};
+  setp.lt.u32 %p1, %r1, %r9;
+  selp.b32 %r5, 16, 0, %p1;
+  and.b32 %r6, %r1, 15;
+  min.u32 %r7, %r1, 16;
+  and.b32 %r8, %r1, 7;
+  and.b32 %r18, %r1, 3;
+  st.shared.v4.u32 [%r4+8192], {%r20,%r20,%r20,%r20};
+  cp.async.cg.shared.global [%r4], [%rd4], 16, %r5;
+  cp.async.ca.shared.global [%r4+2048], [%rd4], 16, %r6;
+  cp.async.cg.shared.global [%r4+4096], [%rd4], 16, %r7;
+  cp.async.ca.shared.global [%r4+6144], [%rd4], 16, 4;
+  cp.async.ca.shared.global [%r4+8192], [%rd4], 8, %r8;
+  cp.async.ca.shared.global [%r4+8200], [%rd4+8], 4, %r18;
+  cp.async.commit_group; cp.async.wait_group 0; bar.sync 0;
+  ld.shared.v4.u32 {%r10,%r11,%r12,%r13}, [%r4];
+  ld.shared.v4.u32 {%r14,%r15,%r16,%r17}, [%r4+2048];
+  ld.shared.v4.u32 {%r21,%r22,%r23,%r24}, [%r4+4096];
+  ld.shared.v4.u32 {%r25,%r26,%r27,%r28}, [%r4+6144];
+  ld.shared.v4.u32 {%r29,%r30,%r31,%r32}, [%r4+8192];
+  mul.wide.u32 %rd3, %r1, 80; add.s64 %rd5, %rd2, %rd3;
+  st.global.v4.u32 [%rd5], {%r10,%r11,%r12,%r13};
+  st.global.v4.u32 [%rd5+16], {%r14,%r15,%r16,%r17};
+  st.global.v4.u32 [%rd5+32], {%r21,%r22,%r23,%r24};
+  st.global.v4.u32 [%rd5+48], {%r25,%r26,%r27,%r28};
+  st.global.v4.u32 [%rd5+64], {%r29,%r30,%r31,%r32};
+  ret; }

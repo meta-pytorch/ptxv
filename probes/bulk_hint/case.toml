@@ -1,0 +1,37 @@
+name = "probe_bulk_hint"
+description = """
+Probe (L-PTX-HINT) for non-tensor cp.async.bulk with .L2::cache_hint in both directions: global
+-> shared with an mbarrier (policy a mov.b64 constant, as DeepEP), shared -> global with a
+bulk_group (policy from createpolicy). expected/ is GB300's output (kernel.cubin = ptxas
+-arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "bulk_hint"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [64]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

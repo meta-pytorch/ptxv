@@ -1,0 +1,129 @@
+// probes/cvt_f16: cvt between f32 and f16 / bf16 (MISS 22; N-CVT-F16). 256 threads, 128
+// iterations, i = 256 j + t: x = in[i], y = in[i ^ 0x4000] (gen.py: every sign and exponent,
+// mantissas at the f16 and bf16 rounding edges), h = the 16-bit codes i and i + 32768;
+// out[k * 32768 + i] = plane k (16-bit results zero-extended). [both] / [ptx] / [sass]: the
+// front-ends that model the form; [none]: refused by both. Variant `ptx` deletes the @PTXNO
+// and @NONE lines, `sass` the @SASSNO and @NONE ones.
+//    0: cvt.rn.f16x2.f32 [both]
+//    1: cvt.rn.bf16x2.f32 [both]
+//    2: cvt.rz.f16x2.f32 [both]
+//    3: cvt.rn.satfinite.f16x2.f32 [both]
+//    4: cvt.rn.relu.satfinite.f16x2.f32 [both]
+//    5: cvt.rn.satfinite.bf16x2.f32 [both]
+//    6: cvt.rn.relu.satfinite.bf16x2.f32 [both]
+//    7: cvt.rn.f16.f32 [both]
+//    8: cvt.rn.bf16.f32 [both]
+//    9: cvt.rn.sat.f16.f32 [ptx]
+//   10: cvt.rn.ftz.f16.f32 [sass]
+//   11: cvt.f32.f16 [both]
+//   12: cvt.f32.f16 (h = i + 32768) [both]
+//   13: cvt.f32.bf16 [both]
+//   14: cvt.f32.bf16 (h = i + 32768) [both]
+//   15: cvt.ftz.f32.f16 [sass]
+//   16: cvt.ftz.f32.f16 (h = i + 32768) [sass]
+//   17: cvt.sat.f32.f16 [sass]
+//   18: cvt.sat.f32.f16 (h = i + 32768) [sass]
+//   19: cvt.ftz.sat.f32.f16 [sass]
+//   20: cvt.ftz.sat.f32.f16 (h = i + 32768) [sass]
+//   21: cvt.ftz.f32.bf16 [none]
+//   22: cvt.ftz.f32.bf16 (h = i + 32768) [none]
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry cvt_f16(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .pred  %p<2>;
+    .reg .b16   %h<23>, %w<2>;
+    .reg .f32   %f<3>, %g<23>;
+    .reg .b32   %r<43>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r4, %tid.x;
+LOOP:
+    mul.wide.u32    %rd3, %r4, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    add.s64         %rd5, %rd2, %rd3;
+    ld.global.f32   %f1, [%rd4];
+    xor.b32         %r5, %r4, 16384;
+    mul.wide.u32    %rd6, %r5, 4;
+    add.s64         %rd7, %rd1, %rd6;
+    ld.global.f32   %f2, [%rd7];
+    cvt.u16.u32     %w0, %r4;
+    or.b32          %r6, %r4, 32768;
+    cvt.u16.u32     %w1, %r6;
+    cvt.rn.f16x2.f32 %r20, %f1, %f2;
+    st.global.b32 [%rd5+0], %r20;
+    cvt.rn.bf16x2.f32 %r21, %f1, %f2;
+    st.global.b32 [%rd5+131072], %r21;
+    cvt.rz.f16x2.f32 %r22, %f1, %f2;
+    st.global.b32 [%rd5+262144], %r22;
+    cvt.rn.satfinite.f16x2.f32 %r23, %f1, %f2;
+    st.global.b32 [%rd5+393216], %r23;
+    cvt.rn.relu.satfinite.f16x2.f32 %r24, %f1, %f2;
+    st.global.b32 [%rd5+524288], %r24;
+    cvt.rn.satfinite.bf16x2.f32 %r25, %f1, %f2;
+    st.global.b32 [%rd5+655360], %r25;
+    cvt.rn.relu.satfinite.bf16x2.f32 %r26, %f1, %f2;
+    st.global.b32 [%rd5+786432], %r26;
+    cvt.rn.f16.f32 %h7, %f1;
+    cvt.u32.u16 %r27, %h7;
+    st.global.b32 [%rd5+917504], %r27;
+    cvt.rn.bf16.f32 %h8, %f1;
+    cvt.u32.u16 %r28, %h8;
+    st.global.b32 [%rd5+1048576], %r28;
+    cvt.rn.sat.f16.f32 %h9, %f1;  // @SASSNO k9
+    cvt.u32.u16 %r29, %h9;  // @SASSNO k9
+    st.global.b32 [%rd5+1179648], %r29;  // @SASSNO k9
+    cvt.rn.ftz.f16.f32 %h10, %f1;  // @PTXNO k10
+    cvt.u32.u16 %r30, %h10;  // @PTXNO k10
+    st.global.b32 [%rd5+1310720], %r30;  // @PTXNO k10
+    cvt.f32.f16 %g11, %w0;
+    mov.b32 %r31, %g11;
+    st.global.b32 [%rd5+1441792], %r31;
+    cvt.f32.f16 %g12, %w1;
+    mov.b32 %r32, %g12;
+    st.global.b32 [%rd5+1572864], %r32;
+    cvt.f32.bf16 %g13, %w0;
+    mov.b32 %r33, %g13;
+    st.global.b32 [%rd5+1703936], %r33;
+    cvt.f32.bf16 %g14, %w1;
+    mov.b32 %r34, %g14;
+    st.global.b32 [%rd5+1835008], %r34;
+    cvt.ftz.f32.f16 %g15, %w0;  // @PTXNO k15
+    mov.b32 %r35, %g15;  // @PTXNO k15
+    st.global.b32 [%rd5+1966080], %r35;  // @PTXNO k15
+    cvt.ftz.f32.f16 %g16, %w1;  // @PTXNO k16
+    mov.b32 %r36, %g16;  // @PTXNO k16
+    st.global.b32 [%rd5+2097152], %r36;  // @PTXNO k16
+    cvt.sat.f32.f16 %g17, %w0;  // @PTXNO k17
+    mov.b32 %r37, %g17;  // @PTXNO k17
+    st.global.b32 [%rd5+2228224], %r37;  // @PTXNO k17
+    cvt.sat.f32.f16 %g18, %w1;  // @PTXNO k18
+    mov.b32 %r38, %g18;  // @PTXNO k18
+    st.global.b32 [%rd5+2359296], %r38;  // @PTXNO k18
+    cvt.ftz.sat.f32.f16 %g19, %w0;  // @PTXNO k19
+    mov.b32 %r39, %g19;  // @PTXNO k19
+    st.global.b32 [%rd5+2490368], %r39;  // @PTXNO k19
+    cvt.ftz.sat.f32.f16 %g20, %w1;  // @PTXNO k20
+    mov.b32 %r40, %g20;  // @PTXNO k20
+    st.global.b32 [%rd5+2621440], %r40;  // @PTXNO k20
+    cvt.ftz.f32.bf16 %g21, %w0;  // @NONE k21
+    mov.b32 %r41, %g21;  // @NONE k21
+    st.global.b32 [%rd5+2752512], %r41;  // @NONE k21
+    cvt.ftz.f32.bf16 %g22, %w1;  // @NONE k22
+    mov.b32 %r42, %g22;  // @NONE k22
+    st.global.b32 [%rd5+2883584], %r42;  // @NONE k22
+    add.u32         %r4, %r4, 256;
+    setp.lt.u32     %p1, %r4, 32768;
+    @%p1 bra        LOOP;
+    ret;
+}

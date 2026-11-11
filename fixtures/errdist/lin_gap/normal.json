@@ -1,0 +1,2 @@
+{"version": 1, "seed": 1, "name": "standard normal, rounded to the buffer dtype",
+ "default": {"dist": {"kind": "normal"}}}

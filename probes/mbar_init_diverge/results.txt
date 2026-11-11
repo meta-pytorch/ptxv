@@ -1,0 +1,14 @@
+# GB300, ptxas 13.0, 2026-11-11: ptxv hw probes/mbar_init_diverge --variant V --runs N --no-num (expected/ = all zeros).
+# Launch 264 CTAs x 128 threads (4 warps), 256 rounds per warp: 270,336 warp-rounds and 8,380,416 waiting-lane reads per run.
+# Planted stale word 0x8000000000000000 (phase parity 1). Binary shape of nobsync / late / late_sleep: ELECT; @!P0 BRA past
+# [delay;] FENCE.VIEW.ASYNC.S; SYNCS.EXCH.64 (mbarrier.init); STS; SYNCS.ARRIVE; then SYNCS.PHASECHK.TRANS64.TRYWAIT by every
+# lane, no BSSY / BSYNC / WARPSYNC (ptxas's BSSY.RECONVERGENT / BSYNC NOPed: patch in case.toml).
+stale_only          10 runs      10/10 wrong, every waiting lane stale in every round (the plant is accepted by a parity-0 wait)
+nobsync          10,000 runs     0 wrong (0 early passes in 2.7e9 warp-rounds)
+late             10,000 runs     0 wrong (20,000-cycle clock spin on the elected path before the init, no yield)
+late_sleep       10,000 runs     10,000 wrong: 32,736 of 33,792 words = 256 (every waiting lane, every round)
+reconv           10,000 runs     0 wrong (BSSY.RECONVERGENT / BSYNC.RECONVERGENT, bar.warp.sync at the join)
+late_sleep_reconv 10,000 runs    10,000 wrong as late_sleep (ptxas emits non-reconvergent BSSY B0 / BSYNC B0 around the nanosleep path)
+late_sleep_warpsync 10,000 runs  0 wrong (WARPSYNC.ALL at the join)
+# Model (2 rounds, 1 CTA): nobsync / late_sleep race:mbar on both fronts; reconv, late_sleep_warpsync clean on both;
+# late_sleep_reconv: SASS front clean, PTX front race:mbar.

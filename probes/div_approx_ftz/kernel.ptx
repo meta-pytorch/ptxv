@@ -1,0 +1,111 @@
+// Probe for div.approx.ftz.f32 on the PTX front (L-ROSETTA, N-MUFU, PTX-FMAD,
+// PTX-FMUL-SCALE). ptxas lowers it to MUFU.RCP r, b; FMUL.FTZ d, a, r; the product then
+// contracts / folds as a mul.ftz.f32 without a rounding modifier. Thread i (1024) reads
+// a[i], b[i], c[i] and writes shape s's result to out[s * 1024 + i]:
+//    0: S0 plain
+//    1: S1 1.0 / b
+//    2: S2 -1.0 / b
+//    3: S3 3.0 / b
+//    4: S4 read by add.ftz
+//    5: S5 read by add
+//    6: S6 read by mul.ftz 0.5
+//    7: S7 -a
+//    8: S8 |b|
+//    9: S9 a / 2^127
+//   10: S10 read by sub.ftz
+//   11: S11 read by fma.rn.ftz
+//   12: S12 two quotients, one b
+//   13: S13 read by mul.ftz 2.0
+//   14: S14 b / b
+//   15: S15 guarded
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry div_approx_ftz(.param .u64 a_p, .param .u64 b_p, .param .u64 c_p, .param .u64 out_p)
+{
+    .reg .pred %p<4>;
+    .reg .b32 %r<8>;
+    .reg .f32 %f<80>;
+    .reg .b64 %rd<16>;
+    ld.param.u64 %rd1, [a_p];
+    ld.param.u64 %rd2, [b_p];
+    ld.param.u64 %rd3, [c_p];
+    ld.param.u64 %rd4, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    cvta.to.global.u64 %rd4, %rd4;
+    mov.u32 %r1, %ctaid.x;
+    mov.u32 %r2, %tid.x;
+    mad.lo.u32 %r3, %r1, 256, %r2;
+    mul.wide.u32 %rd5, %r3, 4;
+    add.s64 %rd6, %rd1, %rd5;
+    add.s64 %rd7, %rd2, %rd5;
+    add.s64 %rd8, %rd3, %rd5;
+    add.s64 %rd9, %rd4, %rd5;
+    ld.global.f32 %f1, [%rd6];
+    ld.global.f32 %f2, [%rd7];
+    ld.global.f32 %f3, [%rd8];
+    // 0: S0 plain
+    div.approx.ftz.f32 %f20, %f1, %f2;
+    st.global.f32 [%rd9+0], %f20;
+    // 1: S1 1.0 / b
+    div.approx.ftz.f32 %f23, 0f3F800000, %f2;
+    st.global.f32 [%rd9+4096], %f23;
+    // 2: S2 -1.0 / b
+    div.approx.ftz.f32 %f26, 0fBF800000, %f2;
+    st.global.f32 [%rd9+8192], %f26;
+    // 3: S3 3.0 / b
+    div.approx.ftz.f32 %f29, 0f40400000, %f2;
+    st.global.f32 [%rd9+12288], %f29;
+    // 4: S4 read by add.ftz
+    div.approx.ftz.f32 %f32, %f1, %f2;
+    add.ftz.f32 %f33, %f32, %f3;
+    st.global.f32 [%rd9+16384], %f33;
+    // 5: S5 read by add
+    div.approx.ftz.f32 %f35, %f1, %f2;
+    add.f32 %f36, %f35, %f3;
+    st.global.f32 [%rd9+20480], %f36;
+    // 6: S6 read by mul.ftz 0.5
+    div.approx.ftz.f32 %f38, %f1, %f2;
+    mul.ftz.f32 %f39, %f38, 0f3F000000;
+    st.global.f32 [%rd9+24576], %f39;
+    // 7: S7 -a
+    neg.f32 %f43, %f1;
+    div.approx.ftz.f32 %f41, %f43, %f2;
+    st.global.f32 [%rd9+28672], %f41;
+    // 8: S8 |b|
+    abs.f32 %f46, %f2;
+    div.approx.ftz.f32 %f44, %f1, %f46;
+    st.global.f32 [%rd9+32768], %f44;
+    // 9: S9 a / 2^127
+    div.approx.ftz.f32 %f47, %f1, 0f7F000000;
+    st.global.f32 [%rd9+36864], %f47;
+    // 10: S10 read by sub.ftz
+    div.approx.ftz.f32 %f50, %f1, %f2;
+    sub.ftz.f32 %f51, %f3, %f50;
+    st.global.f32 [%rd9+40960], %f51;
+    // 11: S11 read by fma.rn.ftz
+    div.approx.ftz.f32 %f53, %f1, %f2;
+    fma.rn.ftz.f32 %f54, %f53, %f3, %f1;
+    st.global.f32 [%rd9+45056], %f54;
+    // 12: S12 two quotients, one b
+    div.approx.ftz.f32 %f56, %f1, %f2;
+    div.approx.ftz.f32 %f58, %f3, %f2;
+    add.ftz.f32 %f57, %f56, %f58;
+    st.global.f32 [%rd9+49152], %f57;
+    // 13: S13 read by mul.ftz 2.0
+    div.approx.ftz.f32 %f59, %f1, %f2;
+    mul.ftz.f32 %f60, %f59, 0f40000000;
+    st.global.f32 [%rd9+53248], %f60;
+    // 14: S14 b / b
+    div.approx.ftz.f32 %f62, %f2, %f2;
+    st.global.f32 [%rd9+57344], %f62;
+    // 15: S15 guarded
+    setp.gt.f32 %p1, %f3, 0f00000000;
+    mov.f32 %f65, %f3;
+    @%p1 div.approx.ftz.f32 %f65, %f1, %f2;
+    st.global.f32 [%rd9+61440], %f65;
+    ret;
+}

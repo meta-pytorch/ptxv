@@ -1,0 +1,52 @@
+name = "e_weak_flag"
+description = """
+E-HW-WEAK-FLAG (GB300 hardware model, two-level check; probes/weak_flag): a weak flag store
+after fence.sc.sys, polled with ld.volatile. Races in the strict model; latent under the
+hardware model. Without the writer's fence (nofence) the data race stays observable."""
+ptx = "kernel.ptx"
+entry = "e_weak_flag"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[variants]]
+id = "good"
+summary = "fence.sc.sys before the weak flag store (DeepEP's shape): races, latent on GB300"
+expect = ["race"]
+
+[[variants]]
+id = "nofence"
+summary = "no writer fence: the data may land after the flag (probes/weak_flag var 2): observable"
+marker = "@FENCE"
+replace = "<delete>"
+expect = ["race"]

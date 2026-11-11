@@ -1,0 +1,3 @@
+{"version": 1, "seed": 1, "name": "standard normal x, w; v ~ N(0, 16^2)",
+ "tensors": {"v": {"dist": {"kind": "normal", "std": 16.0}}},
+ "default": {"dist": {"kind": "normal"}}}

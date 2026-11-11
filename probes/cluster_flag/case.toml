@@ -1,0 +1,31 @@
+name = "probe_cluster_flag"
+description = """
+Probe (hardware only) for S-CBANK: the value of c[0x0][0x36c] (%is_explicit_cluster), with and
+without .reqnctapercluster. out = [flag x2, nctarank x2, ctarank x2]."""
+ptx = "kernel.ptx"
+entry = "probe_cluster_flag"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [6]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "explicit"
+summary = ".reqnctapercluster 2, 1, 1"
+expect = ["clean"]
+
+[[variants]]
+id = "none"
+summary = "no cluster directive"
+marker = "@NOCLUSTER"
+replace = "<delete>"
+expect = ["clean"]

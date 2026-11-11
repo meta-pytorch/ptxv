@@ -1,0 +1,89 @@
+name = "mma_bs"
+description = """
+N-MMA-BS probe: block-scaled tcgen05.mma (kernel.ptx, gen.py: entries mma_mxf8 / mma_mxf4 /
+mma_nvf4 / mma_nvf4_2x) on the probes/mma_f8 operand tiles with scale factors in TMEM
+(tcgen05.st from SFA / SFB). Here mma_mxf8 with e4m3 x e4m3 and ue8m0 scales on random codes.
+`ptxv calib-mma probes/mma_bs` calibrates every kind against GB300; expected/configs.json lists
+the recorded runs that crates/sim/tests/mma_lp.rs replays through both front-ends."""
+ptx = "kernel.ptx"
+entry = "mma_mxf8"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "u8"
+shape = [128, 128]
+init = "file"
+file = "expected/mma_mxf8e4m3xe4m3f32ue8m0.codes.A.bin"
+
+[[buffers]]
+name = "B"
+dtype = "u8"
+shape = [64, 128]
+init = "file"
+file = "expected/mma_mxf8e4m3xe4m3f32ue8m0.codes.B.bin"
+
+[[buffers]]
+name = "SFA"
+dtype = "u32"
+shape = [128, 16]
+init = "file"
+file = "expected/mma_mxf8e4m3xe4m3f32ue8m0.codes.SFA.bin"
+
+[[buffers]]
+name = "SFB"
+dtype = "u32"
+shape = [128, 16]
+init = "file"
+file = "expected/mma_mxf8e4m3xe4m3f32ue8m0.codes.SFB.bin"
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [128, 64]
+init = "nan"
+
+# A[m][k] bytes viewed as 3-D (k%16, m, k/16): box (16, 128, 8) lands as 8 K-chunks of 128
+# rows x 16 B (LBO = 2048 B, SBO = 128 B), the layout of fixtures/r1a_tcgen05_tile.
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [16, 128, 8]
+dims = [16, 128, 8]
+strides = [128, 16]
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [16, 64, 8]
+dims = [16, 64, 8]
+strides = [128, 16]
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+# Block-scaled descriptor: A e4m3 (0), B e4m3 (0), N>>3 = 8 at bit 17, ue8m0 scales (bit 23),
+# M>>4 = 8 at bit 24, scale-factor ids 0.
+[[params]]
+kind = "u32"
+value = 0x08900000
+
+# idesc0: the first MMA's descriptor.
+[[params]]
+kind = "u32"
+value = 0x08900000
+
+[[params]]
+kind = "ptr"
+buffer = "SFA"
+
+[[params]]
+kind = "ptr"
+buffer = "SFB"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

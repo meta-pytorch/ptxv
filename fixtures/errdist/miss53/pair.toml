@@ -1,0 +1,12 @@
+# MISS 53 in a pair: R = sel (a guarded store, a selection in segment mode) against C = exit (an
+# EXIT under a data-dependent guard whose predicate has no slice). errdist refuses the pair on
+# the candidate's precondition.
+#   ptxv errdist fixtures/errdist/miss53/pair.toml --inputs fixtures/errdist/normal.json
+max_states = 200000
+segments = true
+reference = { case = "sel", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "exit"
+variant = "good"
+front = "sass"

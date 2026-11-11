@@ -1,0 +1,24 @@
+GB300, CUDA 13.0 (driver 580), 2026-11-10. run.sh: 74 pairs (148 CTAs x 128 threads), R rounds
+per launch, each round one 2-CTA hand-off of the MMA's A operand (tcgen05.st by both CTAs, the
+peer's half through the leader's `full` mbarrier) and of D back to the leader; every thread
+checks its 16 D words every round. `ptxv hw --scrub --no-num`, bitwise against all-zero
+wrong-element counts.
+
+SASS of the hand-off (ptxas 13.0): good is STTM; FENCE.VIEW.ASYNC.T; BAR.SYNC; MEMBAR.ALL.CTA;
+MEMBAR.ALL.GPU; ERRBAR; CGAERRBAR; SYNCS.ARRIVE.TRANS64.RED.A1T0. RCTA is STTM;
+FENCE.VIEW.ASYNC.T; BAR.SYNC; SYNCS.ARRIVE.TRANS64.RED.A1T0 (bare: the 2-CTA FlashAttention
+P / S hand-off's SASS).
+
+variant  runs x rounds              pair-rounds   wrong words
+good     200x1000 + 20000x1000 + 2000x20000   4.5e9   0
+RCTA     200x1000 + 20000x1000 + 2000x20000   4.5e9   0
+EARLY    200x1000 + 20000x1000 + 2000x1000    1.6e9   0   (the peer arrives before its st)
+NOWST    200x1000 + 20000x1000 + 2000x20000   4.5e9   0   (no tcgen05.wait::st)
+EARLYD   200x1000                             1.5e7   9472 words in every run (positive control:
+                                                         EARLY with the peer CTA sleeping 5 us
+                                                         between its arrive and its st)
+
+Reading: the .release.cta hand-off (a PTX race, S-MBAR-SCOPE) gave no wrong element in 4.5e9
+pair-rounds; the check does see a hand-off that runs ahead of the data (EARLYD). EARLY without
+the delay also gave none: the peer's st follows its arrive by one instruction, and the
+leader's MMA reads A later than that.

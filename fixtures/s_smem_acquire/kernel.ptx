@@ -1,0 +1,62 @@
+// S-SMEM-STRONG: a shared-memory flag read whose value the warp waits for before its next
+// memory access is ld.acquire.cta on the SASS front.
+//
+// One CTA, two warps. Thread 0 zeroes the flag, then bar.sync. Thread 0 stores data[0..3]
+// (global) and publishes flag = 1 with st.release.cta.shared. Thread 32 spins on the flag,
+// then loads data[0..3] and stores them to out[0..3]. The other threads exit.
+//   good:  the reader spins with ld.acquire.cta.shared: clean on both fronts.
+//   RELAX: the reader spins with ld.relaxed.cta.shared. PTX: no acquire, so the data load races
+//          with thread 0's stores. ptxas emits the same LDS + scoreboard wait as for the
+//          acquire, which the SASS front reads as ld.acquire.cta: clean.
+//   NOREL: thread 0 publishes with st.relaxed.cta.shared (no MEMBAR before the STS): a race
+//          on both fronts.
+//   NOINIT: the flag is never zeroed. Shared memory holds garbage (GB300: the reader leaves
+//          the spin at once and reads stale data); the spin's first read is undefined
+//          (S-INIT), a violation on both fronts.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry smem_acquire(.param .u64 in_ptr, .param .u64 data_ptr, .param .u64 out_ptr)
+.maxntid 64, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<16>;
+    .shared .align 4 .u32 flag;
+
+    mov.u32         %r0, %tid.x;
+    setp.eq.u32     %p1, %r0, 0;
+    mov.u32         %r11, 0;
+    @%p1 st.shared.u32 [flag], %r11;                                // @I
+    bar.sync        0;
+    ld.param.u64    %rd1, [data_ptr];
+    cvta.to.global.u64 %rd2, %rd1;
+    @%p1 bra        $L_writer;
+    setp.eq.u32     %p2, %r0, 32;
+    @%p2 bra        $L_reader;
+    bra.uni         $L_done;
+$L_writer:
+    ld.param.u64    %rd3, [in_ptr];
+    cvta.to.global.u64 %rd4, %rd3;
+    ld.global.v4.u32 {%r1, %r2, %r3, %r4}, [%rd4];
+    mul.lo.u32      %r1, %r1, 5;
+    mul.lo.u32      %r2, %r2, 5;
+    mul.lo.u32      %r3, %r3, 5;
+    mul.lo.u32      %r4, %r4, 5;
+    st.global.v4.u32 [%rd2], {%r1, %r2, %r3, %r4};
+    mov.u32         %r5, 1;
+    st.release.cta.shared.u32 [flag], %r5;                         // @W
+    bra.uni         $L_done;
+$L_reader:
+$L_spin:
+    ld.acquire.cta.shared.u32 %r6, [flag];                         // @R
+    setp.eq.u32     %p3, %r6, 0;
+    @%p3 bra        $L_spin;
+    ld.global.v4.u32 {%r7, %r8, %r9, %r10}, [%rd2];
+    ld.param.u64    %rd5, [out_ptr];
+    cvta.to.global.u64 %rd6, %rd5;
+    st.global.v4.u32 [%rd6], {%r7, %r8, %r9, %r10};
+$L_done:
+    ret;
+}

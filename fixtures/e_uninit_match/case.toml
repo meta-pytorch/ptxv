@@ -1,0 +1,28 @@
+name = "e_uninit_match"
+description = "MatchAny carries undefined source bits to its result; only storing that result is a violation."
+ptx = "kernel.ptx"
+entry = "uninit_match"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "only thread 0 stores the (defined) match mask of warp 0"
+expect = ["clean"]
+
+[[variants]]
+id = "store_all"
+summary = "lane 0 of each warp stores its match mask: warp 1's undefined match mask reaches memory"
+edits = [{ marker = "@STORE", find = "setp.eq.u32 %p2, %r1, 0;", replace = "setp.eq.u32 %p2, %r2, 0;" }]
+expect = ["violation"]

@@ -1,0 +1,17 @@
+# bf16 flash attention on tensor cores (docs/equiv-mma.md): o = softmax(q k^T / 8) v for one
+# head, q, k, v of 128x64 bf16, bf16 output. Reference: torch SDPA's flash backend
+# (pytorch_flash::flash_fwd_kernel, sm80 code: cp.async, LDSM / LDSM.T, HMMA.16816, P rounded
+# to bf16 in registers); candidate: the Triton flash-attention forward of rung 4 (tcgen05: Q
+# through shared memory, P through TMEM, online softmax over two key blocks).
+#   ptxv equiv fixtures/c_equiv_sdpa/equiv.toml --trials 20
+max_states = 200000
+segments = true
+trials = 2
+sweep_cache = "sweeps.json"
+reference = { case = "../r4_sdpa_flash_torch", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "../r4_attn_triton"
+variant = "good"
+front = "sass"
+expect = "L1"

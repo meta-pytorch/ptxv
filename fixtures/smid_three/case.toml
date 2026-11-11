@@ -1,0 +1,34 @@
+name = "smid_three"
+description = """
+E-SMID: two slots per SM, taken with an atomic counter per SM; three CTAs on one SM overflow
+into the next SM's slots (a race only with three CTAs on SM s and one on SM s + 1). Every
+enumerated placement is clean; %smid reaches addresses, so the verdict is incomplete."""
+ptx = "kernel.ptx"
+entry = "smid_three"
+grid = [4, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [306]
+init = "zeros"
+
+[[buffers]]
+name = "cnt"
+dtype = "u32"
+shape = [152]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "cnt"
+
+[[variants]]
+id = "good"
+expect = ["nondeterministic"]

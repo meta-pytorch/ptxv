@@ -1,0 +1,27 @@
+name = "probe_cluster_sreg"
+description = """
+Probe (L-ROSETTA) for the cluster special registers %cluster_ctaid / %cluster_nctaid /
+%clusterid / %nclusterid (.x/.y/.z) and %cluster_ctarank / %cluster_nctarank: grid 4 x 4 x 2,
+clusters 2 x 2 x 1 (kernel.ptx). expected/ is GB300's output (kernel.cubin = ptxas
+-arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "cluster_sreg"
+grid = [4, 4, 2]
+block = [32, 1, 1]
+cluster = [2, 2, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

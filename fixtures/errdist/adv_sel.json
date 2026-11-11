@@ -1,0 +1,4 @@
+{"version": 1, "seed": 1, "name": "x ~ U(0, 1), s ~ N(0, 1): each branch half the time",
+ "tensors": {
+  "x": {"dist": {"kind": "uniform", "lo": 0.0, "hi": 1.0}},
+  "s": {"dist": {"kind": "normal", "mean": 0.0, "std": 1.0}}}}

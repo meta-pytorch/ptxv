@@ -1,0 +1,49 @@
+// C-WAIT for successful peeks (E-WELLSYNC). Warp 1 writes a shared word and arrives on an
+// mbarrier; warp 0 peeks it (try_wait without the retry shape), skips its blocking wait when the
+// peek succeeds, and reads the word. In the certificate's run warp 1 arrives first and the
+// peek succeeds; no order puts the arrival before the peek.
+//   good: the peek's result only decides the skip: certified (a failed peek takes the wait)
+//   READ: warp 0 also stores the peek's result: in another schedule it fails, the output
+//         differs (GB300: both results; until 2026-11-08 certified clean)
+//   ACQ:  no skip branch and no wait, the result unused: the successful peek alone orders the
+//         read in the run; in another schedule it fails and the read races
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_peek_result(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<10>;
+    .shared .align 8 .b64 mb;
+    .shared .align 4 .b32 word;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, mb;
+    mov.u32 %r3, word;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra INITD;
+    mbarrier.init.shared::cta.b64 [%r2], 1;
+INITD:
+    bar.sync 0;
+    setp.ne.u32 %p2, %r1, 32;
+    @%p2 bra W0;
+    st.shared.u32 [%r3], 7;
+    mbarrier.arrive.shared::cta.b64 %rd5, [%r2];
+    bra DONE;
+W0:
+    @%p1 bra DONE;
+    mbarrier.try_wait.parity.shared::cta.b64 %p5, [%r2], 0;
+    @%p5 bra SKIP;                 // @SKIP
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p6, [%r2], 0;
+    @!%p6 bra WAIT;                // @WAIT
+SKIP:
+    ld.shared.u32 %r6, [%r3];
+    st.global.u32 [%rd1], %r6;
+    mov.u32 %r5, 0;                // @USE
+DONE:
+    ret;
+}

@@ -1,0 +1,51 @@
+name = "acq_dead_read"
+description = "acquire load, value unused; plain data read after it"
+ptx = "kernel.ptx"
+entry = "k"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[variants]]
+id = "good"
+summary = "racy: the reader does not test the flag"
+expect = ["race"]
+
+[[variants]]
+id = "slow"
+summary = "writer sleeps 100 us first"
+marker = "@REL"
+find = "st.release.gpu.global.u32 [%rd3], 1;"
+replace = "st.release.gpu.global.u32 [%rd3], 1;"
+edits = [{ marker = "@SLOWW", find = "mov.u32 %r3, 7;", replace = "nanosleep.u32 50000; nanosleep.u32 50000; mov.u32 %r3, 7;" }]
+expect = ["race"]

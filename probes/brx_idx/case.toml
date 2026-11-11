@@ -1,0 +1,44 @@
+name = "probe_brx_idx"
+description = """
+Probe for brx.idx (PTX indirect branch through a .branchtargets list): lanes of each warp
+diverge to five targets, then a converged brx.idx.uni on the warp index (kernel.ptx, gen.py).
+expected/ is GB300's output (ptxas cubin, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "brx_idx"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [128]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [256]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "oob"
+summary = "the index is one larger: 5 (outside the five targets) for some lanes"
+expect = ["fault"]
+marker = "@OOB"
+find = "%r5, 0;"
+replace = "%r5, 1;"

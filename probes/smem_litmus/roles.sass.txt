@@ -1,0 +1,1404 @@
+== MP shv cta wf=0 rf=0
+    @!P STS [R+UR], R   (x2)
+    @P LDS R, [R+UR]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MP shv cta wf=0 rf=1
+    @!P STS [R+UR], R   (x2)
+    LDS R, [R+UR]
+    MEMBAR.ALL.CTA
+    LDS R, [R+UR]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MP shv cta wf=0 rf=2
+    @!P STS [R+UR], R   (x2)
+    @P LDS R, [R+UR]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MP shv cta wf=1 rf=0
+    STS [R+UR], R
+    MEMBAR.ALL.CTA
+    STS [R+UR], R
+    LDS R, [R+UR]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MP shv cta wf=1 rf=1
+    STS [R+UR], R
+    MEMBAR.ALL.CTA
+    STS [R+UR], R
+    LDS R, [R+UR]
+    MEMBAR.ALL.CTA
+    LDS R, [R+UR]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MP shv cta wf=2 rf=0
+    @!P STS [R+UR], R
+    @!P MEMBAR.ALL.CTA
+    @!P STS [R+UR], R
+    @P LDS R, [R+UR]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MP shv cta wf=2 rf=2
+    @!P STS [R+UR], R
+    @!P MEMBAR.ALL.CTA
+    @!P STS [R+UR], R
+    @P LDS R, [R+UR]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MP shv cta wf=3 rf=0
+    STS [R+UR], R
+    MEMBAR.SC.CTA
+    STS [R+UR], R
+    LDS R, [R+UR]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MP shw cta wf=0 rf=0
+    @!P STS [R+UR], R   (x2)
+    @P LDS R, [R+UR]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MP glw cta wf=0 rf=0
+    @!P STG.E desc[UR][R.64], R   (x2)
+    @P LDG.E R, desc[UR][R.64]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MP glw clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    @!P STG.E desc[UR][R.64], R   (x2)
+    @P LDG.E R, desc[UR][R.64]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== MP gls cta wf=0 rf=0
+    @!P STG.E.STRONG.GPU desc[UR][R.64], R   (x2)
+    @P LDG.E.STRONG.GPU R, desc[UR][R.64]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MP gls clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    @!P STG.E.STRONG.GPU desc[UR][R.64], R   (x2)
+    @P LDG.E.STRONG.GPU R, desc[UR][R.64]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== MP dsm clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    @!P ST.E [R], R   (x2)
+    @P LD.E R, [R]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== MP dsm clu wf=2 rf=2
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    @!P ST.E [R], R
+    @!P MEMBAR.ALL.GPU
+    @!P ERRBAR
+    @!P ST.E.STRONG.GPU [R], R
+    @P LD.E.STRONG.GPU R, [R]
+    @P CCTL.IVALL
+    @P LD.E R, [R]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== MP dsr clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    @!P ST.E.STRONG.GPU [R], R   (x2)
+    @P LD.E.STRONG.GPU R, [R]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== MPS shv cta wf=0 rf=0
+    LDS R, [R+UR]   (x65)
+    STS [R+UR], R   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPS shv cta wf=2 rf=2
+    LDS R, [R+UR]   (x65)
+    STS [R+UR], R
+    MEMBAR.ALL.CTA
+    STS [R+UR], R
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPS shw cta wf=0 rf=0
+    LDS R, [R+UR]   (x3)
+    STS [R+UR], R   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPS glw cta wf=0 rf=0
+    LDG.E R, desc[UR][R.64]   (x3)
+    STG.E desc[UR][R.64], R   (x3)
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPS glw clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDG.E R, desc[UR][R.64]   (x3)
+    STG.E desc[UR][R.64], R   (x3)
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== MPS glw clu wf=2 rf=2
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    CCTL.IVALL
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    STG.E.STRONG.GPU desc[UR][R.64], R
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== MPS gls cta wf=0 rf=0
+    LDG.E.STRONG.GPU R, desc[UR][R.64]   (x65)
+    STG.E.STRONG.GPU desc[UR][R.64], R   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPS gls clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]   (x65)
+    STG.E.STRONG.GPU desc[UR][R.64], R   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== MPS dsm clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LD.E R, [R]   (x3)
+    ST.E [R], R   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== MPS dsm clu wf=2 rf=2
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    CCTL.IVALL
+    LD.E R, [R]
+    ST.E [R], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    ST.E.STRONG.GPU [R], R
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== MPS dsr clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]   (x65)
+    ST.E.STRONG.GPU [R], R   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== SB shv cta wf=0 rf=0
+    STS [R], R
+    LDS R, [R]
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== SB shv cta wf=1 rf=0
+    STS [R], R
+    MEMBAR.ALL.CTA
+    LDS R, [R]
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== SB shv cta wf=3 rf=0
+    STS [R], R
+    MEMBAR.SC.CTA
+    LDS R, [R]
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== SB shw cta wf=0 rf=0
+    STS [R], R
+    LDS R, [R]
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== SB glw cta wf=0 rf=0
+    STG.E desc[UR][R.64], R
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== SB glw clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    STG.E desc[UR][R.64], R
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== SB gls cta wf=0 rf=0
+    STG.E.STRONG.GPU desc[UR][R.64], R
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== SB gls clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    STG.E.STRONG.GPU desc[UR][R.64], R
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== SB gls clu wf=3 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    STG.E.STRONG.GPU desc[UR][R.64], R
+    MEMBAR.SC.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== SB dsm clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    ST.E [R], R
+    LD.E R, [R]
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== SB dsm clu wf=3 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    ST.E [R], R
+    MEMBAR.SC.GPU
+    ERRBAR
+    CCTL.IVALL
+    LD.E R, [R]
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== SB dsr clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    ST.E.STRONG.GPU [R], R
+    LD.E.STRONG.GPU R, [R]
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== LB shv cta wf=0 rf=0
+    LDS R, [R]
+    STS [R], R
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== LB shw cta wf=0 rf=0
+    LDS R, [R]
+    STS [R], R
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== LB glw cta wf=0 rf=0
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R   (x2)
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== LB glw clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R   (x2)
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== LB gls cta wf=0 rf=0
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    STG.E.STRONG.GPU desc[UR][R.64], R
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== LB gls clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    STG.E.STRONG.GPU desc[UR][R.64], R
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== LB dsm clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LD.E R, [R]
+    ST.E [R], R
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== LB dsr clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LD.E.STRONG.GPU R, [R]
+    ST.E.STRONG.GPU [R], R
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== CORR shv cta wf=0 rf=0
+    STS [R+UR], R   (x4)
+    LDS R, [R+UR]   (x4)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    STG.E desc[UR][R.64+0x8], R
+    STG.E desc[UR][R.64+0xc], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== CORR shw cta wf=0 rf=0
+    @!P STS [R+UR], R
+    @P LDS R, [R+UR]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    STG.E desc[UR][R.64+0x8], R
+    STG.E desc[UR][R.64+0xc], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== CORR glw cta wf=0 rf=0
+    @!P STG.E desc[UR][R.64], R
+    @P LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    STG.E desc[UR][R.64+0x8], R
+    STG.E desc[UR][R.64+0xc], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== CORR glw clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    @!P STG.E desc[UR][R.64], R
+    @P LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    STG.E desc[UR][R.64+0x8], R
+    STG.E desc[UR][R.64+0xc], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== CORR gls cta wf=0 rf=0
+    @!P STG.E.STRONG.GPU desc[UR][R.64], R
+    @P LDG.E.STRONG.GPU R, desc[UR][R.64]   (x4)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    STG.E desc[UR][R.64+0x8], R
+    STG.E desc[UR][R.64+0xc], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== CORR gls clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    @!P STG.E.STRONG.GPU desc[UR][R.64], R
+    @P LDG.E.STRONG.GPU R, desc[UR][R.64]   (x4)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    STG.E desc[UR][R.64+0x8], R
+    STG.E desc[UR][R.64+0xc], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== CORR dsm clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    @!P ST.E [R], R
+    @P LD.E R, [R]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    STG.E desc[UR][R.64+0x8], R
+    STG.E desc[UR][R.64+0xc], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== CORR dsr clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    @!P ST.E.STRONG.GPU [R], R
+    @P LD.E.STRONG.GPU R, [R]   (x4)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    STG.E desc[UR][R.64+0x8], R
+    STG.E desc[UR][R.64+0xc], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== COWR shv cta wf=0 rf=0
+    STS [R+UR], R
+    LDS R, [R+UR]
+    STS [R+UR], R
+    LDS R, [R+UR]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== COWR dsm clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    ST.E [R], R
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== COWR dsr clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    ST.E.STRONG.GPU [R], R
+    LD.E.STRONG.GPU R, [R]
+    ST.E.STRONG.GPU [R], R
+    LD.E.STRONG.GPU R, [R]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== IRIW shv cta wf=0 rf=0
+    @!P STS [R], R
+    @P LDS R, [R]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== IRIW shv cta wf=0 rf=3
+    STS [R], R
+    LDS R, [R]
+    MEMBAR.SC.CTA
+    LDS R, [R]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== IRIW shw cta wf=0 rf=0
+    @!P STS [R], R
+    @P LDS R, [R]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== IRIW glw cta wf=0 rf=0
+    @!P STG.E desc[UR][R.64], R
+    @P LDG.E R, desc[UR][R.64]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== IRIW glw clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    @!P STG.E desc[UR][R.64], R
+    @P LDG.E R, desc[UR][R.64]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== IRIW gls cta wf=0 rf=0
+    @!P STG.E.STRONG.GPU desc[UR][R.64], R
+    @P LDG.E.STRONG.GPU R, desc[UR][R.64]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== IRIW gls clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    @!P STG.E.STRONG.GPU desc[UR][R.64], R
+    @P LDG.E.STRONG.GPU R, desc[UR][R.64]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== IRIW gls clu wf=0 rf=3
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    STG.E.STRONG.GPU desc[UR][R.64], R
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    MEMBAR.SC.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDG.E.STRONG.GPU R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== IRIW dsm clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    @!P ST.E [R], R
+    @P LD.E R, [R]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== IRIW dsm clu wf=0 rf=3
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    ST.E [R], R
+    LD.E R, [R]
+    MEMBAR.SC.GPU
+    ERRBAR
+    CCTL.IVALL
+    LD.E R, [R]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== IRIW dsr clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    @!P ST.E.STRONG.GPU [R], R
+    @P LD.E.STRONG.GPU R, [R]   (x2)
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== TEAR32 shv cta wf=0 rf=0
+    STS [R], R   (x8)
+    LDS R, [R]   (x8)
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== TEAR64 shv cta wf=0 rf=0
+    STS.64 [R+UR], R   (x8)
+    LDS.64 R, [R+UR]   (x8)
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== TEAR64 dsm clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    @!P ST.E.64 [R], R
+    @P LD.E.64 R, [R]
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== TEAR128 shv cta wf=0 rf=0
+    STS.128 [R], R   (x8)
+    LDS.128 R, [R]   (x8)
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== TEAR128 dsm clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    @!P ST.E.128 [R], R
+    LD.E.128 R, [R]
+    STG.E desc[UR][R.64], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== MPV shv cta wf=0 rf=0
+    LDS R, [R+UR+0x4]   (x64)
+    LDS R, [R+UR]
+    STS.64 [R+UR], R
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPV shv cta wf=0 rf=2
+    LDS R, [R+UR+0x4]   (x64)
+    LDS R, [R+UR]
+    STS.64 [R+UR], R
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPV shv cta wf=1 rf=0
+    LDS R, [R+UR]   (x64)
+    LDS R, [R+UR+0x4]
+    STS.64 [R+UR], R
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPV shv cta wf=1 rf=2
+    LDS R, [R+UR]   (x64)
+    LDS R, [R+UR+0x4]
+    STS.64 [R+UR], R
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPG shv cta wf=0 rf=0
+    LDS R, [R+UR]   (x64)
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STS [R+UR], R
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPG shv cta wf=0 rf=1
+    @!P STS [R+UR], R
+    @!P STG.E desc[UR][R.64], R
+    LDG.E R, desc[UR][R.64]
+    LDS R, [R+UR]   (x64)
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPG shv cta wf=0 rf=2
+    LDS R, [R+UR]   (x64)
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STS [R+UR], R
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPG shv cta wf=0 rf=3
+    @!P STS [R+UR], R
+    @!P STG.E desc[UR][R.64], R
+    LDG.E R, desc[UR][R.64]
+    LDS R, [R+UR]   (x64)
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPG shv cta wf=0 rf=5
+    @!P STS [R+UR], R
+    @!P STG.E desc[UR][R.64], R
+    LDG.E R, desc[UR][R.64]
+    LDS R, [R+UR]   (x64)
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPG shv cta wf=0 rf=7
+    @!P STS [R+UR], R
+    @!P STG.E desc[UR][R.64], R
+    LDG.E R, desc[UR][R.64]
+    LDS R, [R+UR]   (x64)
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPG shv cta wf=2 rf=1
+    @!P STG.E desc[UR][R.64], R
+    @!P MEMBAR.ALL.CTA
+    @!P STS [R+UR], R
+    LDG.E R, desc[UR][R.64]
+    LDS R, [R+UR]   (x64)
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPG shv cta wf=2 rf=2
+    LDS R, [R+UR]   (x64)
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    MEMBAR.ALL.CTA
+    STS [R+UR], R
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPG shv cta wf=2 rf=3
+    @!P STG.E desc[UR][R.64], R
+    @!P MEMBAR.ALL.CTA
+    @!P STS [R+UR], R
+    LDG.E R, desc[UR][R.64]
+    LDS R, [R+UR]   (x64)
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPG shv cta wf=2 rf=7
+    @!P STG.E desc[UR][R.64], R
+    @!P MEMBAR.ALL.CTA
+    @!P STS [R+UR], R
+    LDG.E R, desc[UR][R.64]
+    LDS R, [R+UR]   (x64)
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPG shv cta wf=4 rf=1
+    @!P STG.E.STRONG.SYS desc[UR][R.64], R
+    @!P STS [R+UR], R
+    LDG.E R, desc[UR][R.64]
+    LDS R, [R+UR]   (x64)
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPG shv cta wf=4 rf=3
+    @!P STG.E.STRONG.SYS desc[UR][R.64], R
+    @!P STS [R+UR], R
+    LDG.E R, desc[UR][R.64]
+    LDS R, [R+UR]   (x64)
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPG shv cta wf=4 rf=7
+    @!P STG.E.STRONG.SYS desc[UR][R.64], R
+    @!P STS [R+UR], R
+    LDG.E R, desc[UR][R.64]
+    LDS R, [R+UR]   (x64)
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPL1 glw cta wf=0 rf=0
+    @!P STG.E desc[UR][R.64], R
+    @!P MEMBAR.ALL.CTA
+    @!P STG.E.STRONG.SM desc[UR][R.64], R
+    LDG.E R, desc[UR][R.64]
+    LDG.E.STRONG.GPU R, desc[UR][R.64]   (x64)
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPL1 glw clu wf=0 rf=0
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    @!P STG.E desc[UR][R.64], R
+    @!P MEMBAR.ALL.GPU
+    @!P ERRBAR
+    @!P STG.E.STRONG.GPU desc[UR][R.64], R
+    LDG.E R, desc[UR][R.64]
+    LDG.E.STRONG.GPU R, desc[UR][R.64]   (x64)
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== MPL1 glw clu wf=0 rf=2
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    @!P STG.E desc[UR][R.64], R
+    @!P MEMBAR.ALL.GPU
+    @!P ERRBAR
+    @!P STG.E.STRONG.GPU desc[UR][R.64], R
+    LDG.E R, desc[UR][R.64]
+    LDG.E.STRONG.GPU R, desc[UR][R.64]   (x64)
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    MEMBAR.ALL.GPU
+    ERRBAR
+    CCTL.IVALL
+    LDS R, [R]
+== MPGN shv cta wf=0 rf=1
+    @!P STG.E desc[UR][R.64], R
+    @P LDG.E R, desc[UR][R.64]   (x2)
+    @!P STS [R+UR], R
+    @P LDS R, [R+UR]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPGN shv cta wf=0 rf=3
+    @!P STG.E desc[UR][R.64], R
+    @P LDG.E R, desc[UR][R.64]
+    @!P STS [R+UR], R
+    @P LDS R, [R+UR]
+    @P LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPGN shv cta wf=0 rf=7
+    @!P STG.E desc[UR][R.64], R
+    @P LDG.E R, desc[UR][R.64]
+    @!P STS [R+UR], R
+    @P LDS R, [R+UR]
+    @P LDG.E.STRONG.SM R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPGN shv cta wf=2 rf=1
+    @!P STG.E desc[UR][R.64], R
+    @!P MEMBAR.ALL.CTA
+    @!P STS [R+UR], R
+    @P LDG.E R, desc[UR][R.64]   (x2)
+    @P LDS R, [R+UR]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPGN shv cta wf=2 rf=3
+    @!P STG.E desc[UR][R.64], R
+    @!P MEMBAR.ALL.CTA
+    @!P STS [R+UR], R
+    @P LDG.E R, desc[UR][R.64]
+    @P LDS R, [R+UR]
+    @P LDG.E R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]
+== MPGN shv cta wf=2 rf=7
+    @!P STG.E desc[UR][R.64], R
+    @!P MEMBAR.ALL.CTA
+    @!P STS [R+UR], R
+    @P LDG.E R, desc[UR][R.64]
+    @P LDS R, [R+UR]
+    @P LDG.E.STRONG.SM R, desc[UR][R.64]
+    STG.E desc[UR][R.64], R
+    STG.E desc[UR][R.64+0x4], R
+    @!P STG.E.64 desc[UR][R.64+0xf8], R
+    LDS R, [R]

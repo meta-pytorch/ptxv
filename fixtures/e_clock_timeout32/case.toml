@@ -1,0 +1,32 @@
+name = "e_clock_timeout32"
+description = """
+E-CLOCK: fixtures/e_clock_timeout with a 32-bit %globaltimer_lo timeout (SASS: a 32-bit
+SR_GLOBALTIMERLO read). The timeout branch depends on the timer, so both sides are explored:
+good is the race (outputs 0 and 7); NOTIMEOUT (no timeout branch) is clean."""
+ptx = "kernel.ptx"
+entry = "e_clock_timeout32"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "timeout path reads without the flag"
+expect = ["nondeterministic", "race"]
+
+[[variants]]
+id = "NOTIMEOUT"
+summary = "timeout branch deleted"
+marker = "@TIMEOUT"
+replace = "<delete>"
+expect = ["clean"]

@@ -1,0 +1,385 @@
+name = "r4a_twoshot"
+description = """
+Captured by tools/capture_dist.py (torch 2.12.0a0+git808dd93, torchrun --nproc-per-node 3):
+run() of symm_twoshot.py. 6 launch(es) on 3 GPUs, binary only:
+  rank 0: _ZN58_GLOBAL__N__588ddd27_25_CUDASymmetricMemoryOps_cu_a63b70c534two_shot_all_reduce_kernel_inplaceI grid [1, 1, 1] block [32, 1, 1]
+  rank 0: _ZN58_GLOBAL__N__588ddd27_25_CUDASymmetricMemoryOps_cu_a63b70c534two_shot_all_reduce_kernel_inplaceI grid [1, 1, 1] block [32, 1, 1]
+  rank 2: _ZN58_GLOBAL__N__588ddd27_25_CUDASymmetricMemoryOps_cu_a63b70c534two_shot_all_reduce_kernel_inplaceI grid [1, 1, 1] block [32, 1, 1]
+  rank 2: _ZN58_GLOBAL__N__588ddd27_25_CUDASymmetricMemoryOps_cu_a63b70c534two_shot_all_reduce_kernel_inplaceI grid [1, 1, 1] block [32, 1, 1]
+  rank 1: _ZN58_GLOBAL__N__588ddd27_25_CUDASymmetricMemoryOps_cu_a63b70c534two_shot_all_reduce_kernel_inplaceI grid [1, 1, 1] block [32, 1, 1]
+  rank 1: _ZN58_GLOBAL__N__588ddd27_25_CUDASymmetricMemoryOps_cu_a63b70c534two_shot_all_reduce_kernel_inplaceI grid [1, 1, 1] block [32, 1, 1]
+Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py --nproc 3 --file tools/capture_examples/symm_twoshot.py --out fixtures/r4a_twoshot --exit-fence sys"""
+cubin = "k0.cubin"
+entry = "_ZN58_GLOBAL__N__588ddd27_25_CUDASymmetricMemoryOps_cu_a63b70c534two_shot_all_reduce_kernel_inplaceIfLi16ELin1EEEvPPT_mmPPjmm"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+dynamic_smem = 0
+outputs = ["buf_r0", "buf_r1", "buf_r2"]
+replicas = [["buf_r0", "buf_r1", "buf_r2"]]
+exit_fence = "sys"
+
+[[buffers]]
+name = "W0_r0"
+dtype = "u64"
+shape = [64]
+device = 0
+init = "zeros"
+[[buffers.ptrs]]
+offset = 0
+buffer = "buf_r0"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 8
+buffer = "buf_r1"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 16
+buffer = "buf_r2"
+byte_offset = 0
+
+[[buffers]]
+name = "W1_r0"
+dtype = "u64"
+shape = [64]
+device = 0
+init = "zeros"
+[[buffers.ptrs]]
+offset = 0
+buffer = "sig_r0"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 8
+buffer = "sig_r1"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 16
+buffer = "sig_r2"
+byte_offset = 0
+
+[[buffers]]
+name = "buf_r0"
+dtype = "f32"
+shape = [64]
+device = 0
+init = "file"
+file = "data/buf_r0.bin"
+expect = "expected/buf_r0.bin"
+
+[[buffers]]
+name = "sig_r0"
+dtype = "u32"
+shape = [2304]
+device = 0
+init = "zeros"
+
+[[buffers]]
+name = "W0_r1"
+dtype = "u64"
+shape = [64]
+device = 1
+init = "zeros"
+[[buffers.ptrs]]
+offset = 0
+buffer = "buf_r0"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 8
+buffer = "buf_r1"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 16
+buffer = "buf_r2"
+byte_offset = 0
+
+[[buffers]]
+name = "W1_r1"
+dtype = "u64"
+shape = [64]
+device = 1
+init = "zeros"
+[[buffers.ptrs]]
+offset = 0
+buffer = "sig_r0"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 8
+buffer = "sig_r1"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 16
+buffer = "sig_r2"
+byte_offset = 0
+
+[[buffers]]
+name = "buf_r1"
+dtype = "f32"
+shape = [64]
+device = 1
+init = "file"
+file = "data/buf_r1.bin"
+expect = "expected/buf_r1.bin"
+
+[[buffers]]
+name = "sig_r1"
+dtype = "u32"
+shape = [2304]
+device = 1
+init = "zeros"
+
+[[buffers]]
+name = "W0_r2"
+dtype = "u64"
+shape = [64]
+device = 2
+init = "zeros"
+[[buffers.ptrs]]
+offset = 0
+buffer = "buf_r0"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 8
+buffer = "buf_r1"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 16
+buffer = "buf_r2"
+byte_offset = 0
+
+[[buffers]]
+name = "W1_r2"
+dtype = "u64"
+shape = [64]
+device = 2
+init = "zeros"
+[[buffers.ptrs]]
+offset = 0
+buffer = "sig_r0"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 8
+buffer = "sig_r1"
+byte_offset = 0
+[[buffers.ptrs]]
+offset = 16
+buffer = "sig_r2"
+byte_offset = 0
+
+[[buffers]]
+name = "buf_r2"
+dtype = "f32"
+shape = [64]
+device = 2
+init = "file"
+file = "data/buf_r2.bin"
+expect = "expected/buf_r2.bin"
+
+[[buffers]]
+name = "sig_r2"
+dtype = "u32"
+shape = [2304]
+device = 2
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "W0_r0"
+byte_offset = 0
+
+[[params]]
+kind = "u64"
+value = 0
+
+[[params]]
+kind = "u64"
+value = 64
+
+[[params]]
+kind = "ptr"
+buffer = "W1_r0"
+byte_offset = 0
+
+[[params]]
+kind = "u64"
+value = 0
+
+[[params]]
+kind = "u64"
+value = 3
+
+[[launches]]
+entry = "_ZN58_GLOBAL__N__588ddd27_25_CUDASymmetricMemoryOps_cu_a63b70c534two_shot_all_reduce_kernel_inplaceIfLi16ELin1EEEvPPT_mmPPjmm"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+dynamic_smem = 0
+device = 0
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W0_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 64
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W1_r0"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 3
+
+[[launches]]
+entry = "_ZN58_GLOBAL__N__588ddd27_25_CUDASymmetricMemoryOps_cu_a63b70c534two_shot_all_reduce_kernel_inplaceIfLi16ELin1EEEvPPT_mmPPjmm"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+dynamic_smem = 0
+device = 2
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W0_r2"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 64
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W1_r2"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 2
+
+[[launches.params]]
+kind = "u64"
+value = 3
+
+[[launches]]
+entry = "_ZN58_GLOBAL__N__588ddd27_25_CUDASymmetricMemoryOps_cu_a63b70c534two_shot_all_reduce_kernel_inplaceIfLi16ELin1EEEvPPT_mmPPjmm"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+dynamic_smem = 0
+device = 2
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W0_r2"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 64
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W1_r2"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 2
+
+[[launches.params]]
+kind = "u64"
+value = 3
+
+[[launches]]
+entry = "_ZN58_GLOBAL__N__588ddd27_25_CUDASymmetricMemoryOps_cu_a63b70c534two_shot_all_reduce_kernel_inplaceIfLi16ELin1EEEvPPT_mmPPjmm"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+dynamic_smem = 0
+device = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W0_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 64
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W1_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 1
+
+[[launches.params]]
+kind = "u64"
+value = 3
+
+[[launches]]
+entry = "_ZN58_GLOBAL__N__588ddd27_25_CUDASymmetricMemoryOps_cu_a63b70c534two_shot_all_reduce_kernel_inplaceIfLi16ELin1EEEvPPT_mmPPjmm"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+dynamic_smem = 0
+device = 1
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W0_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 0
+
+[[launches.params]]
+kind = "u64"
+value = 64
+
+[[launches.params]]
+kind = "ptr"
+buffer = "W1_r1"
+byte_offset = 0
+
+[[launches.params]]
+kind = "u64"
+value = 1
+
+[[launches.params]]
+kind = "u64"
+value = 3
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]
+hw_note = "GB300 (GPUs 0,1,3): bitwise = simulator on every rank, 1000/1000 (2026-11-03)"
+
+[[variants]]
+id = "B62"
+summary = "lost signal: the start barrier's put swaps in 0 instead of 1, so no peer ever passes its wait"
+patch = [{ at = "@0x0100", bits = [[32, 32, 0]], expect = "IMAD.MOV.U32 R13, RZ, RZ, 0x0" }]
+expect = ["deadlock"]
+hw_note = "GB300: hangs, killed by the watchdog (every run)"

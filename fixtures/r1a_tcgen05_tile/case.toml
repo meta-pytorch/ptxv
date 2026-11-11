@@ -1,0 +1,150 @@
+name = "r1a_tcgen05_tile"
+description = """
+Rung 1a. One CTA of 128 threads computes D[128x64] = A[128x64] * B[64x64]^T with tcgen05:
+warp 0 allocates 64 TMEM columns; thread 0 loads A and B with two 3-D TMA loads into the
+no-swizzle K-major core-matrix layout, issues 4 tcgen05.mma (bf16 in, fp32 accumulate,
+K = 16 each) and commits to an mbarrier; every warp reads its 32 TMEM lanes (= rows) with
+tcgen05.ld and stores them; warp 0 deallocates."""
+ptx = "kernel.ptx"
+entry = "r1a_tcgen05_tile"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+spec = "gemm_tn"
+
+[[buffers]]
+name = "A"
+dtype = "bf16"
+shape = [128, 64]
+init = "normal"
+seed = 11
+
+[[buffers]]
+name = "B"
+dtype = "bf16"
+shape = [64, 64]
+init = "normal"
+seed = 12
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [128, 64]
+init = "nan"
+
+# A[m][k] row-major viewed as 3-D (k%8, m, k/8): box (8, 128, 8) lands in shared memory as
+# 8 K-chunks of 128 rows x 16 B (LBO = 2048 B, SBO = 128 B).
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [8, 128, 8]
+dims = [8, 128, 8]
+strides = [128, 16]
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [8, 64, 8]
+dims = [8, 64, 8]
+strides = [128, 16]
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[variants]]
+id = "good"
+summary = "correct kernel"
+expect = ["clean"]
+
+[[variants]]
+id = "B05"
+summary = "no tcgen05.wait::ld before the loaded registers are stored"
+marker = "@B05"
+replace = "<delete>"
+expect = ["violation"]
+expect_sass = ["clean"]
+hw_note = "PTX-level UB; this ptxas still orders the register uses by scoreboard"
+
+[[variants]]
+id = "B06"
+summary = "no tcgen05.fence::after_thread_sync between the mbarrier wait and tcgen05.ld"
+marker = "@B06"
+replace = "<delete>"
+# The race (MMA's TMEM write vs tcgen05.ld) is ordered once the fence is there: a contract
+# finding (E-TC-FENCE-NOP).
+expect = ["contract"]
+expect_sass = ["clean"]
+hw_note = "PTX-level UB; the fence compiles to a NOP and the LDTM stays after the wait"
+
+[[variants]]
+id = "B07"
+summary = "no bar.sync before warp 0 deallocates TMEM that other warps are still reading"
+marker = "@B07"
+replace = "<delete>"
+expect = ["race", "violation"]
+hw_note = "other warps may read freed (and possibly reallocated) TMEM"
+
+[[variants]]
+id = "B41"
+summary = "TMEM never deallocated (leak at exit)"
+marker = "@B41"
+replace = "<delete>"
+expect = ["violation"]
+
+[[variants]]
+id = "B42"
+summary = "first MMA accumulates (enable_input_d = 1) into uninitialized TMEM"
+marker = "@B42"
+find = "%p3;"
+replace = "%p4;"
+expect = ["violation"]
+
+[[variants]]
+id = "B16"
+summary = "tcgen05.alloc executed by thread 0 only (a .sync.aligned instruction from a partial warp)"
+marker = "@B16"
+find = "tcgen05.alloc"
+replace = "@!%p6 tcgen05.alloc"
+expect = ["violation"]
+# violation (E-ALIGNED): in the deadlocked schedule lanes 1-31 wait at the aligned BAR.SYNC
+# while lane 0 waits at a WARPSYNC.ALL, so the warp can never converge.
+expect_sass = ["deadlock", "trap", "violation"]
+hw_note = "ptxas compiles lane 0's alloc and lanes 1-31's relinquish as two paths that race on ptxas's internal relinquish flag; if the relinquish wins, the tcgen05 guardrail traps"
+
+[[variants]]
+id = "B43"
+summary = "tcgen05.commit arrives on the TMA mbarrier instead of the MMA mbarrier"
+marker = "@B43"
+find = "[%r4]"
+replace = "[%r3]"
+expect = ["deadlock"]
+
+# Binary-only mutants: the PTX is the good kernel; one SASS control bit is changed in the
+# compiled cubin (crates/sass/src/scoreboard.rs). The PTX front-end must stay clean and the
+# SASS front-end must flag the hazard. These model a scheduler bug in the compiler, or a
+# hand-edited / binary-patched kernel.
+
+[[variants]]
+id = "B44"
+summary = "SASS: the wait on SB1 before the first use of LDTM's R36..R51 is removed"
+patch = [{ at = "LDTM.x16 R20, tmem[UR4+0x10]", wait = 0 }]
+expect = ["clean"]
+expect_sass = ["violation"]
+hw_note = "the STGs read R36..R51 before tcgen05.ld has written them"
+
+[[variants]]
+id = "B45"
+summary = "SASS: the first LDTM gets no write scoreboard (wr SB1 -> none)"
+patch = [{ at = "LDTM.x16 R36, tmem[UR4]", wbar = 7 }]
+expect = ["clean"]
+expect_sass = ["violation"]
+hw_note = "nothing orders the stores after the TMEM load"
+
+[[variants]]
+id = "COV1"
+summary = "input coverage through the MMA: a guard on an accumulator word read back from TMEM (the store it guards is overwritten by the row's last store, outputs unchanged): input-dependent control"
+marker = "@B05"
+find = "tcgen05.wait::ld.sync.aligned;"
+replace = "tcgen05.wait::ld.sync.aligned; setp.ne.b32 %p7, %r16, 0; @%p7 st.global.b32 [%rd17+60], %r16;"
+expect = ["clean"]

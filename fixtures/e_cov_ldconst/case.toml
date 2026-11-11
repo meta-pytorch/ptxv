@@ -1,0 +1,39 @@
+name = "e_cov_ldconst"
+description = """
+Input coverage through a parameter-space lookup table: an input word indexes a by-value table
+parameter (ld.param through a register address; SASS LDC with a register index), and a branch
+tests the entry read: the kernel's control depends on the input (input_dependent non-empty,
+never input-independent), on both front-ends."""
+ptx = "kernel.ptx"
+entry = "e_cov_ldconst"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [32]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "bytes"
+hex = "01000000050000000900000003000000"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

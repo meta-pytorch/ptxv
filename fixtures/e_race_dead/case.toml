@@ -1,0 +1,43 @@
+name = "e_race_dead"
+description = """
+Fixture for E-RACE-DEAD (race_dead.rs): the loads of a global word by the threads other than
+thread 0 race with thread 0's store of the word plus one. Their values are never used (good):
+the races are `race-dead` findings and the verdict is clean. RD1: warp 1 stores the value it
+loaded, so the race stays a race (positive control)."""
+ptx = "kernel.ptx"
+entry = "e_race_dead"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["cnt", "out"]
+
+[[buffers]]
+name = "cnt"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "cnt"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "RD1"
+summary = "warp 1 stores the value it loaded"
+marker = "@USE"
+find = "st.global.u32 [%rd4], %r1;"
+replace = "st.global.u32 [%rd4], %r5;"
+expect = ["race"]

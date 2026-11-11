@@ -1,0 +1,6 @@
+--bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20
+--bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 1 --skew-rank 0 --skew 20000
+--bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 20 --push-from 0 --skew-rank 1 --skew 20000
+--bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 4 --experts 4 --topk 2 --push-from 1 --skew-rank 0 --skew 4000
+--bank 16 --hidden 7168,2048 --tokens 1-4096 --num-sms 4 --experts 8 --topk 2 --push-from 0 --skew-rank 1 --skew 4000 --hog-rank 0
+--bank 16 --hidden 2048 --tokens 1-512 --num-sms 2,20 --push-from 1 --skew 8000 --overlap 2

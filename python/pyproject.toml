@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ptxv"
+version = "0.1.0"
+description = "Python front end of ptxv: capture CUDA kernels, verify them, compare them, error distributions"
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+torch = ["torch"]
+pandas = ["pandas"]
+test = ["pytest"]
+
+[project.scripts]
+ptxvd = "ptxv.daemon:main"
+
+[tool.setuptools]
+packages = ["ptxv"]
+
+[tool.setuptools.package-data]
+ptxv = ["_native/*.c"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["gpu: needs a GPU (set PTXV_TEST_GPU=<index>)"]

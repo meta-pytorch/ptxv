@@ -1,0 +1,96 @@
+// E-ELECT (MISS 51): warp 0's leader fills a 512-byte shared buffer with the ballot of
+// elect.sync's predicate (1 << leader), a leader copies it to tensor memory with tcgen05.cp,
+// and every warp reads its lanes' rows back with tcgen05.ld. Warp 0's lanes test their own bit
+// of it (am I the leader); a middle-lane leader stores out[1] after the second bar.sync, an
+// end-lane one before it, and warp 1 reads out[1] after it.
+//   good: racy for middle-lane leaders only.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_elect_tccp(.param .u64 out_p)
+{
+    .reg .b32 %r<40>;
+    .reg .b64 %rd<20>;
+    .reg .pred %p<12>;
+    .shared .align 1024 .b8 buf[512];
+    .shared .align 8 .b64 mbar;
+    .shared .align 4 .b32 tslot;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    shr.u32 %r2, %r1, 5;
+    mov.u32 %r30, buf;
+    mov.u32 %r31, mbar;
+    mov.u32 %r32, tslot;
+    mov.u32 %r33, 7;
+    setp.ne.u32 %p1, %r2, 0;
+    @%p1 bra W0_DONE;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r32], 32;
+    tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+    elect.sync %r11|%p5, -1;
+    vote.sync.ballot.b32 %r10, %p5, -1;      // 1 << leader
+    @!%p5 bra W0_DONE;
+    mbarrier.init.shared::cta.b64 [%r31], 1;
+    fence.mbarrier_init.release.cluster;
+    mov.u32 %r12, 0;
+FILL:
+    add.u32 %r13, %r30, %r12;
+    st.shared.u32 [%r13], %r10;
+    add.u32 %r12, %r12, 4;
+    setp.lt.u32 %p6, %r12, 512;
+    @%p6 bra FILL;
+W0_DONE:
+    fence.proxy.async.shared::cta;
+    tcgen05.fence::before_thread_sync;
+    bar.sync 0;
+    tcgen05.fence::after_thread_sync;
+    mov.u32 %r6, 0;                          // first allocation: TMEM address 0
+    @%p1 bra CP_DONE;
+    elect.sync %r14|%p7, -1;
+    @!%p7 bra CP_DONE;
+    cvt.u64.u32 %rd5, %r30;
+    shr.u64 %rd5, %rd5, 4;
+    and.b64 %rd5, %rd5, 16383;
+    or.b64 %rd5, %rd5, 34359738368;
+    or.b64 %rd5, %rd5, 70368744177664;
+    tcgen05.cp.cta_group::1.32x128b.warpx4 [%r6], %rd5;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r31];
+CP_DONE:
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p3, [%r31], 0;
+    @!%p3 bra WAIT;
+    tcgen05.fence::after_thread_sync;
+    shl.b32 %r7, %r2, 21;
+    add.u32 %r8, %r6, %r7;
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 {%r9}, [%r8];
+    tcgen05.wait::ld.sync.aligned;
+    // warp 0: am I the leader (from TMEM), am I a middle lane
+    mov.u32 %r20, %laneid;
+    shr.u32 %r21, %r9, %r20;
+    and.b32 %r21, %r21, 1;
+    setp.eq.u32 %p8, %r21, 1;
+    setp.eq.u32 %p9, %r2, 0;
+    and.pred %p8, %p8, %p9;                  // leader of warp 0
+    setp.ne.u32 %p10, %r20, 0;
+    setp.ne.u32 %p11, %r20, 31;
+    and.pred %p10, %p10, %p11;               // middle lane
+    not.pred %p11, %p10;
+    and.pred %p11, %p11, %p8;
+    and.pred %p10, %p10, %p8;
+    @%p11 st.global.u32 [%rd1+4], %r33;      // end leader: before the barrier
+    tcgen05.fence::before_thread_sync;
+    bar.sync 0;
+    tcgen05.fence::after_thread_sync;
+    @%p10 st.global.u32 [%rd1+4], %r33;      // middle leader: after
+    setp.eq.u32 %p4, %r2, 1;                 // warp 1 reads
+    @!%p4 bra NOREAD;
+    ld.global.u32 %r15, [%rd1+4];
+    st.global.u32 [%rd1], %r15;
+NOREAD:
+    bar.sync 0;
+    @%p1 bra DONE;
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r6, 32;
+DONE:
+    ret;
+}

@@ -1,0 +1,47 @@
+// Fixture for E-SPIN on shared-memory flags: one CTA of two warps. Thread 0 zeroes a flag,
+// all threads meet at bar.sync, then thread 32 (warp 1) writes a data word and sets the flag
+// with a release store, while thread 0 (variant `warp`: all of warp 0) spins on the flag
+// with an acquire load, then reads the data word into out[tid]. ptxas compiles the .cta
+// acquire, relaxed and volatile polls of shared memory alike to a plain LDS loop, so the
+// SASS front-end sees a spin on a plain load (spin::poll_loops blocks it until it exits).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_spin_smem(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    .shared .align 4 .b32 flag;
+    .shared .align 4 .b32 data;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r3, flag;
+    mov.u32 %r4, data;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra INITED;
+    st.shared.u32 [%r3], 0;
+INITED:
+    bar.sync 0;
+    setp.eq.u32 %p2, %r1, 32;
+    @%p2 bra PRODUCER;
+    setp.ne.u32 %p3, %r1, 0;              // @WHO
+    @%p3 bra DONE;
+SPIN:
+    ld.relaxed.cta.shared.u32 %r5, [%r3];   // @POLL
+    setp.eq.u32 %p1, %r5, 0;
+    @%p1 bra SPIN;
+    // @ACQ
+    ld.shared.u32 %r6, [%r4];
+    mul.wide.u32 %rd2, %r1, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r6;
+    bra DONE;
+PRODUCER:
+    st.shared.u32 [%r4], 42;
+    st.release.cta.shared.u32 [%r3], 1;    // @SET
+DONE:
+    ret;
+}

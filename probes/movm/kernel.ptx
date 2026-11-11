@@ -1,0 +1,19 @@
+// Probe for movmatrix.sync.aligned.m8n8.trans.b16 (SASS MOVM.16.MT88): each warp transposes
+// its 8x8 matrix of 16-bit elements twice (the second transpose gives the input back) and
+// once more after a per-lane change. Thread i: a = word i of in; writes 3 words at 4i.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry movm(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<8>; .reg .b32 %r<12>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mul.wide.u32 %rd3, %r1, 4; add.s64 %rd4, %rd1, %rd3;
+  mul.wide.u32 %rd5, %r1, 16; add.s64 %rd6, %rd2, %rd5;
+  ld.global.u32 %r2, [%rd4];
+  movmatrix.sync.aligned.m8n8.trans.b16 %r3, %r2;
+  movmatrix.sync.aligned.m8n8.trans.b16 %r4, %r3;
+  xor.b32 %r5, %r3, %r1;
+  movmatrix.sync.aligned.m8n8.trans.b16 %r6, %r5;
+  st.global.v4.u32 [%rd6], {%r3, %r4, %r6, %r1};
+  ret; }

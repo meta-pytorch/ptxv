@@ -1,0 +1,32 @@
+private stress0 acquire, writer relaxed    fenced-r         rows= 4 reads= 32,768,000 stale=         0 CI95=[0.00e+00,1.17e-07] other=0 tmo=0
+private stress0 acquire, writer relaxed    fenced-w         rows= 4 reads= 32,768,000 stale=         0 CI95=[0.00e+00,1.17e-07] other=0 tmo=0
+private stress0 acquire, writer relaxed    fenced-wfenced-r rows= 4 reads= 32,768,000 stale=         0 CI95=[0.00e+00,1.17e-07] other=0 tmo=0
+private stress0 acquire, writer relaxed    nofence          rows= 4 reads= 32,768,000 stale=         0 CI95=[0.00e+00,1.17e-07] other=0 tmo=0
+private stress0 poll=relaxed               fenced-r         rows=12 reads= 98,304,000 stale=         0 CI95=[3.31e-24,3.91e-08] other=0 tmo=0
+private stress0 poll=relaxed               fenced-w         rows=12 reads= 98,304,000 stale=98,304,000 CI95=[1.00e+00,1.00e+00] other=0 tmo=0
+private stress0 poll=relaxed               fenced-wfenced-r rows=12 reads= 98,304,000 stale=         0 CI95=[3.31e-24,3.91e-08] other=0 tmo=0
+private stress0 poll=relaxed               nofence          rows=12 reads= 98,304,000 stale=98,304,000 CI95=[1.00e+00,1.00e+00] other=0 tmo=0
+private stress0 poll=volatile              fenced-r         rows=12 reads= 98,304,000 stale=         0 CI95=[3.31e-24,3.91e-08] other=0 tmo=0
+private stress0 poll=volatile              fenced-w         rows=12 reads= 98,304,000 stale=98,304,000 CI95=[1.00e+00,1.00e+00] other=0 tmo=0
+private stress0 poll=volatile              fenced-wfenced-r rows=12 reads= 98,304,000 stale=         0 CI95=[3.31e-24,3.91e-08] other=0 tmo=0
+private stress0 poll=volatile              nofence          rows=12 reads= 98,304,000 stale=98,304,000 CI95=[1.00e+00,1.00e+00] other=0 tmo=0
+private stress0 release->acquire           fenced-r         rows= 8 reads= 65,536,000 stale=         0 CI95=[0.00e+00,5.86e-08] other=0 tmo=0
+private stress0 release->acquire           fenced-w         rows= 8 reads= 65,536,000 stale=         0 CI95=[0.00e+00,5.86e-08] other=0 tmo=0
+private stress0 release->acquire           fenced-wfenced-r rows= 8 reads= 65,536,000 stale=         0 CI95=[0.00e+00,5.86e-08] other=0 tmo=0
+private stress0 release->acquire           nofence          rows= 8 reads= 65,536,000 stale=         0 CI95=[0.00e+00,5.86e-08] other=0 tmo=0
+private stress1 acquire, writer relaxed    fenced-r         rows= 4 reads= 32,768,000 stale=         0 CI95=[0.00e+00,1.17e-07] other=0 tmo=0
+private stress1 acquire, writer relaxed    fenced-w         rows= 4 reads= 32,768,000 stale=         0 CI95=[0.00e+00,1.17e-07] other=0 tmo=0
+private stress1 acquire, writer relaxed    fenced-wfenced-r rows= 4 reads= 32,768,000 stale=         0 CI95=[0.00e+00,1.17e-07] other=0 tmo=0
+private stress1 acquire, writer relaxed    nofence          rows= 4 reads= 32,768,000 stale=         2 CI95=[1.67e-08,2.23e-07] other=0 tmo=0
+private stress1 poll=relaxed               fenced-r         rows=12 reads= 98,304,000 stale=         0 CI95=[3.31e-24,3.91e-08] other=0 tmo=0
+private stress1 poll=relaxed               fenced-w         rows=12 reads= 98,304,000 stale=98,304,000 CI95=[1.00e+00,1.00e+00] other=0 tmo=0
+private stress1 poll=relaxed               fenced-wfenced-r rows=12 reads= 98,304,000 stale=         0 CI95=[3.31e-24,3.91e-08] other=0 tmo=0
+private stress1 poll=relaxed               nofence          rows=12 reads= 98,304,000 stale=98,304,000 CI95=[1.00e+00,1.00e+00] other=0 tmo=0
+private stress1 poll=volatile              fenced-r         rows=12 reads= 98,304,000 stale=         0 CI95=[3.31e-24,3.91e-08] other=0 tmo=0
+private stress1 poll=volatile              fenced-w         rows=12 reads= 98,304,000 stale=98,304,000 CI95=[1.00e+00,1.00e+00] other=0 tmo=0
+private stress1 poll=volatile              fenced-wfenced-r rows=12 reads= 98,304,000 stale=         0 CI95=[3.31e-24,3.91e-08] other=0 tmo=0
+private stress1 poll=volatile              nofence          rows=12 reads= 98,304,000 stale=98,304,000 CI95=[1.00e+00,1.00e+00] other=0 tmo=0
+private stress1 release->acquire           fenced-r         rows= 8 reads= 65,536,000 stale=         0 CI95=[0.00e+00,5.86e-08] other=0 tmo=0
+private stress1 release->acquire           fenced-w         rows= 8 reads= 65,536,000 stale=         0 CI95=[0.00e+00,5.86e-08] other=0 tmo=0
+private stress1 release->acquire           fenced-wfenced-r rows= 8 reads= 65,536,000 stale=         0 CI95=[0.00e+00,5.86e-08] other=0 tmo=0
+private stress1 release->acquire           nofence          rows= 8 reads= 65,536,000 stale=         0 CI95=[0.00e+00,5.86e-08] other=0 tmo=0

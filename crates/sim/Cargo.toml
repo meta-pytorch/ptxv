@@ -1,0 +1,20 @@
+[package]
+name = "ptxv-sim"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ptxv-ir = { path = "../ir" }
+ptxv-case = { path = "../case" }
+
+[dev-dependencies]
+ptxv-ptx = { path = "../ptx" }
+ptxv-sass = { path = "../sass" }
+
+[features]
+# Concolic search (solve.rs): an external SMT solver (PTXV_SMT_SOLVER, default z3) for
+# integer and small floating-point cones. No crate dependency.
+smt = []

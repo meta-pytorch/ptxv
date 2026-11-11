@@ -1,0 +1,41 @@
+name = "probe_sub16x2"
+description = """
+Probe (L-ROSETTA) for PTX sub.u16x2 / sub.s16x2 (not in the PTX ISA's sub; ptxas 13.3 accepts
+them as VIADD.16x2 d, a, -b, ptxas 13.0 rejects them): two lanes, each a - b modulo 2^16, on 6144
+pairs: every combination of 8 edge values in the four lanes of a and b, random words, low lanes
+that borrow (half under equal high lanes) and ones that do not, and a constant (kernel.ptx,
+gen.py).
+kernel.cubin = ptxas 13.3 -arch=sm_103a kernel.ptx; expected/ is GB300's output (`ptxv
+hw-worker`). The SASS front is checked on kernel.cubin (ptxas 13.0 cannot build it); the PTX
+front refuses the forms (MISS 23: measured-only semantics stay off the contract front)."""
+ptx = "kernel.ptx"
+entry = "sub16x2"
+grid = [24, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [12288]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [24576]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

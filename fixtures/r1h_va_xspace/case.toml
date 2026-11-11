@@ -1,0 +1,68 @@
+name = "r1h_va_xspace"
+description = """
+Rung 1h, peer mappings used from different address spaces (S-VA-ALIAS): GPU 1, another
+process, writes data and a flag into GPU 0's buffer through its own mapping; GPU 0 polls the
+flag and reads the data through the owner's mapping. The PTX ISA defines aliases within one
+address space; the CUDA guide calls every mapping a proxy. Default: an `alias-xspace` finding
+(undecided)."""
+ptx = "kernel.ptx"
+entry = "va_xspace"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+spaces = [0, 1]
+
+[[buffers]]
+name = "buf"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[views]]
+name = "buf_p1"
+buffer = "buf"
+
+[[params]]
+kind = "ptr"
+buffer = "buf"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 0
+
+[[launches]]
+entry = "va_xspace"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+device = 1
+params = [
+    { kind = "ptr", buffer = "buf_p1" },
+    { kind = "ptr", buffer = "out" },
+    { kind = "u32", value = 1 },
+]
+
+[[variants]]
+id = "good"
+summary = "both sides fence the alias proxy"
+expect = ["clean"]
+
+[[variants]]
+id = "X1"
+summary = "no fence.proxy.alias on either side: the flag and the data cross mappings of two address spaces"
+marker = "@PFENCE"
+find = "fence.proxy.alias;"
+replace = "// (no alias fence)"
+edits = [{ marker = "@CFENCE", find = "fence.proxy.alias;", replace = "// (no alias fence)" }]
+expect = ["alias-xspace"]

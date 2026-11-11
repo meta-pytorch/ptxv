@@ -1,0 +1,30 @@
+name = "e_elect_guarded_exit"
+description = """
+E-ELECT: lanes 0 and 31 branch past a guarded exit; the leader's store of out[1] after it runs
+only for a middle-lane leader, and thread 32 reads out[1] without synchronization: a race for
+the 30 middle leaders, neither end lane. The taint's control flow gave the guarded exit no
+fallthrough, so the store was outside the lane-varying branch's region, the two end-lane
+policies were explored and the race was missed (verdict clean, qualified E-ELECT-2POL); every
+leader function is explored now (lane classes {0, 31}, {1..30}). GB300 elects the lowest lane
+(probes/elect): SASS clean."""
+ptx = "kernel.ptx"
+entry = "e_elect_guarded_exit"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "racy for middle-lane leaders"
+expect = ["nondeterministic", "race"]
+expect_sass = ["clean"]

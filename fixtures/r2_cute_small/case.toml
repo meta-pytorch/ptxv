@@ -1,0 +1,203 @@
+name = "r2_cute_small"
+description = """
+Rung 2. CUTLASS 4.6.1 CuTeDSL Blackwell persistent dense GEMM (examples/python/CuTeDSL/
+blackwell/dense_gemm_persistent.py, TMA load + tcgen05.mma + TMEM epilogue + TMA store),
+C[256x128] f32 = A[256x128] bf16 @ B[128x128]^T, 2 persistent CTAs, 6 warps
+(TMA, MMA, 4 epilogue). Captured by capture.py: the launch and parameter bytes are recorded."""
+ptx = "kernel.ptx"
+entry = "kernel_cutlass_kernel_dgpPersistentDenseGemmKernel_object_at__TiledMMA_ThrLayoutVMNK11110000_PermutationMNK____MMAAtom_ThrID10_ShapeMNK12812816_TVLayoutA1128161281128_TVLayoutB11281612811_0"
+grid = [1, 1, 2]
+block = [192, 1, 1]
+dynamic_smem = 230400
+outputs = ["C"]
+spec = "gemm_tn"
+
+[[buffers]]
+name = "A"
+dtype = "bf16"
+shape = [256, 128]
+init = "normal"
+seed = 1
+
+[[buffers]]
+name = "B"
+dtype = "bf16"
+shape = [128, 128]
+init = "normal"
+seed = 2
+
+[[buffers]]
+name = "C"
+dtype = "f32"
+shape = [256, 128]
+init = "zeros"
+seed = 0
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [64, 128, 1]
+dims = [128, 256, 1]
+strides = [256, 65536]
+swizzle = "128B"
+raw = "0000c05dfaff00002265040010000000001000000000000000000000000000007f000000ff0000000000000000000000000000000000003f7f00000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "000100008000000001000000"
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [64, 128, 1]
+dims = [128, 128, 1]
+strides = [256, 32768]
+swizzle = "128B"
+raw = "0000c15dfaff00002265040010000000000800000000000000000000000000007f0000007f0000000000000000000000000000000000003f7f00000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "800000008000000001000000"
+
+[[params]]
+kind = "tensormap"
+buffer = "C"
+box = [32, 128, 1]
+dims = [128, 256, 1]
+strides = [512, 131072]
+swizzle = "128B"
+raw = "0080c15dfaff0000a263240020000000002000000000000000000000000000007f000000ff0000000000000000000000000000000000001f7f00000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "000100008000000001000000"
+
+[[params]]
+kind = "bytes"
+hex = "02000000"
+
+[[params]]
+kind = "bytes"
+hex = "01000000"
+
+[[params]]
+kind = "bytes"
+hex = "01000000"
+
+[[params]]
+kind = "bytes"
+hex = "0200000001000000010017e5"
+
+[[params]]
+kind = "bytes"
+hex = "010000000100000000002bae"
+
+[[variants]]
+id = "good"
+summary = "as compiled by CuTeDSL 4.6.1"
+# Races the tcgen05 thread-sync fences would order: contract (E-TC-FENCE-NOP).
+expect = ["contract", "violation"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "fenced"
+summary = "the PTX with tcgen05.wait::ld, the tcgen05 thread-sync fences and an elected TMA store"
+edits = [
+  { marker = "@ALLOC_BAR", find = "bar.sync", replace = "tcgen05.fence::before_thread_sync; bar.sync" },
+  { marker = "@MMA_BAR", find = "bar.sync \t2, 160;", replace = "bar.sync 2, 160; tcgen05.fence::after_thread_sync;" },
+  { marker = "@MMA0", find = "tcgen05.mma", replace = "tcgen05.fence::after_thread_sync; tcgen05.mma" },
+  { marker = "@MMA1", find = "tcgen05.mma", replace = "tcgen05.fence::after_thread_sync; tcgen05.mma" },
+  { marker = "@MMA2", find = "tcgen05.mma", replace = "tcgen05.fence::after_thread_sync; tcgen05.mma" },
+  { marker = "@LD", find = "tcgen05.ld", replace = "tcgen05.fence::after_thread_sync; tcgen05.ld" },
+  { marker = "@LD", find = "];", replace = "]; tcgen05.wait::ld.sync.aligned;" },
+  { marker = "@SUB_BAR", find = "bar.sync", replace = "tcgen05.fence::before_thread_sync; bar.sync" },
+  { marker = "@DEALLOC", find = "tcgen05.dealloc", replace = "tcgen05.fence::after_thread_sync; tcgen05.dealloc" },
+  { marker = "@STORE", find = "cp.async.bulk.tensor", replace = "{\n\t.reg .pred %pst;\n\telect.sync _|%pst, -1;\n\t@%pst cp.async.bulk.tensor" },
+  { marker = "@STORE", find = "%rd41;", replace = "%rd41;\n\t}" },
+]
+expect = ["clean"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "CM1"
+summary = "fenced, minus the accumulator-full wait before the epilogue tcgen05.ld"
+edits = [
+  { marker = "@ALLOC_BAR", find = "bar.sync", replace = "tcgen05.fence::before_thread_sync; bar.sync" },
+  { marker = "@MMA_BAR", find = "bar.sync \t2, 160;", replace = "bar.sync 2, 160; tcgen05.fence::after_thread_sync;" },
+  { marker = "@MMA0", find = "tcgen05.mma", replace = "tcgen05.fence::after_thread_sync; tcgen05.mma" },
+  { marker = "@MMA1", find = "tcgen05.mma", replace = "tcgen05.fence::after_thread_sync; tcgen05.mma" },
+  { marker = "@MMA2", find = "tcgen05.mma", replace = "tcgen05.fence::after_thread_sync; tcgen05.mma" },
+  { marker = "@LD", find = "tcgen05.ld", replace = "tcgen05.fence::after_thread_sync; tcgen05.ld" },
+  { marker = "@LD", find = "];", replace = "]; tcgen05.wait::ld.sync.aligned;" },
+  { marker = "@SUB_BAR", find = "bar.sync", replace = "tcgen05.fence::before_thread_sync; bar.sync" },
+  { marker = "@DEALLOC", find = "tcgen05.dealloc", replace = "tcgen05.fence::after_thread_sync; tcgen05.dealloc" },
+  { marker = "@STORE", find = "cp.async.bulk.tensor", replace = "{\n\t.reg .pred %pst;\n\telect.sync _|%pst, -1;\n\t@%pst cp.async.bulk.tensor" },
+  { marker = "@STORE", find = "%rd41;", replace = "%rd41;\n\t}" },
+  { marker = "@ACCWAIT", replace = "<delete>" },
+]
+expect = ["deadlock", "race", "violation"]
+expect_sass = ["contract", "deadlock", "race", "violation"]
+
+[[variants]]
+id = "CM2"
+summary = "fenced, minus the epilogue's accumulator-empty arrive"
+edits = [
+  { marker = "@ALLOC_BAR", find = "bar.sync", replace = "tcgen05.fence::before_thread_sync; bar.sync" },
+  { marker = "@MMA_BAR", find = "bar.sync \t2, 160;", replace = "bar.sync 2, 160; tcgen05.fence::after_thread_sync;" },
+  { marker = "@MMA0", find = "tcgen05.mma", replace = "tcgen05.fence::after_thread_sync; tcgen05.mma" },
+  { marker = "@MMA1", find = "tcgen05.mma", replace = "tcgen05.fence::after_thread_sync; tcgen05.mma" },
+  { marker = "@MMA2", find = "tcgen05.mma", replace = "tcgen05.fence::after_thread_sync; tcgen05.mma" },
+  { marker = "@LD", find = "tcgen05.ld", replace = "tcgen05.fence::after_thread_sync; tcgen05.ld" },
+  { marker = "@LD", find = "];", replace = "]; tcgen05.wait::ld.sync.aligned;" },
+  { marker = "@SUB_BAR", find = "bar.sync", replace = "tcgen05.fence::before_thread_sync; bar.sync" },
+  { marker = "@DEALLOC", find = "tcgen05.dealloc", replace = "tcgen05.fence::after_thread_sync; tcgen05.dealloc" },
+  { marker = "@STORE", find = "cp.async.bulk.tensor", replace = "{\n\t.reg .pred %pst;\n\telect.sync _|%pst, -1;\n\t@%pst cp.async.bulk.tensor" },
+  { marker = "@STORE", find = "%rd41;", replace = "%rd41;\n\t}" },
+  { marker = "@ACC_EMPTY", replace = "<delete>" },
+]
+expect = ["deadlock"]
+expect_sass = ["deadlock"]
+
+[[variants]]
+id = "CM3"
+summary = "fenced, minus the generic->async proxy fence before the TMA store"
+edits = [
+  { marker = "@ALLOC_BAR", find = "bar.sync", replace = "tcgen05.fence::before_thread_sync; bar.sync" },
+  { marker = "@MMA_BAR", find = "bar.sync \t2, 160;", replace = "bar.sync 2, 160; tcgen05.fence::after_thread_sync;" },
+  { marker = "@MMA0", find = "tcgen05.mma", replace = "tcgen05.fence::after_thread_sync; tcgen05.mma" },
+  { marker = "@MMA1", find = "tcgen05.mma", replace = "tcgen05.fence::after_thread_sync; tcgen05.mma" },
+  { marker = "@MMA2", find = "tcgen05.mma", replace = "tcgen05.fence::after_thread_sync; tcgen05.mma" },
+  { marker = "@LD", find = "tcgen05.ld", replace = "tcgen05.fence::after_thread_sync; tcgen05.ld" },
+  { marker = "@LD", find = "];", replace = "]; tcgen05.wait::ld.sync.aligned;" },
+  { marker = "@SUB_BAR", find = "bar.sync", replace = "tcgen05.fence::before_thread_sync; bar.sync" },
+  { marker = "@DEALLOC", find = "tcgen05.dealloc", replace = "tcgen05.fence::after_thread_sync; tcgen05.dealloc" },
+  { marker = "@STORE", find = "cp.async.bulk.tensor", replace = "{\n\t.reg .pred %pst;\n\telect.sync _|%pst, -1;\n\t@%pst cp.async.bulk.tensor" },
+  { marker = "@STORE", find = "%rd41;", replace = "%rd41;\n\t}" },
+  { marker = "@PROXY", replace = "<delete>" },
+]
+expect = ["race"]
+expect_sass = ["race"]
+
+[[variants]]
+id = "CM4"
+summary = "fenced, with expect_tx of half the bytes the two TMA loads deliver"
+edits = [
+  { marker = "@ALLOC_BAR", find = "bar.sync", replace = "tcgen05.fence::before_thread_sync; bar.sync" },
+  { marker = "@MMA_BAR", find = "bar.sync \t2, 160;", replace = "bar.sync 2, 160; tcgen05.fence::after_thread_sync;" },
+  { marker = "@MMA0", find = "tcgen05.mma", replace = "tcgen05.fence::after_thread_sync; tcgen05.mma" },
+  { marker = "@MMA1", find = "tcgen05.mma", replace = "tcgen05.fence::after_thread_sync; tcgen05.mma" },
+  { marker = "@MMA2", find = "tcgen05.mma", replace = "tcgen05.fence::after_thread_sync; tcgen05.mma" },
+  { marker = "@LD", find = "tcgen05.ld", replace = "tcgen05.fence::after_thread_sync; tcgen05.ld" },
+  { marker = "@LD", find = "];", replace = "]; tcgen05.wait::ld.sync.aligned;" },
+  { marker = "@SUB_BAR", find = "bar.sync", replace = "tcgen05.fence::before_thread_sync; bar.sync" },
+  { marker = "@DEALLOC", find = "tcgen05.dealloc", replace = "tcgen05.fence::after_thread_sync; tcgen05.dealloc" },
+  { marker = "@STORE", find = "cp.async.bulk.tensor", replace = "{\n\t.reg .pred %pst;\n\telect.sync _|%pst, -1;\n\t@%pst cp.async.bulk.tensor" },
+  { marker = "@STORE", find = "%rd41;", replace = "%rd41;\n\t}" },
+  { marker = "@EXPECT_TX", find = "%r109;", replace = "16384;" },
+]
+expect = ["nondeterministic", "race", "violation"]
+expect_sass = ["nondeterministic", "race", "violation"]

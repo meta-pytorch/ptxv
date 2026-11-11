@@ -1,0 +1,95 @@
+name = "e_resid"
+description = """
+Fixture for E-RESIDENCY (limited residency, crates/sim/src/residency.rs): four CTAs that wait
+on each other in four ways. Every variant is clean when all CTAs are co-resident (the default
+model); `min_residency` is what each needs when CTAs become resident in any order as slots
+free up: the grid barrier and the ctaid chain need all 4, the ticket chain and the last-block
+reduction need 1."""
+ptx = "kernel.ptx"
+entry = "e_resid"
+grid = [4, 1, 1]
+block = [32, 1, 1]
+outputs = ["out", "total"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "cnt"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "ticket"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "total"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "cnt"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[params]]
+kind = "ptr"
+buffer = "ticket"
+
+[[params]]
+kind = "ptr"
+buffer = "total"
+
+[[variants]]
+id = "good"
+summary = "grid spin barrier: needs every CTA co-resident"
+expect = ["clean"]
+min_residency = 4
+
+[[variants]]
+id = "chain"
+summary = "CTA i waits for CTA i-1 (by ctaid): needs every CTA co-resident under any dispatch order"
+marker = "@MODE"
+find = "mov.u32 %r20, 0;"
+replace = "mov.u32 %r20, 1;"
+expect = ["clean"]
+min_residency = 4
+
+[[variants]]
+id = "ticket"
+summary = "the chain over dynamic tile ids (atom.add ticket): any residency"
+marker = "@MODE"
+find = "mov.u32 %r20, 0;"
+replace = "mov.u32 %r20, 2;"
+expect = ["clean"]
+min_residency = 1
+
+[[variants]]
+id = "last"
+summary = "last-block reduction (no CTA waits): any residency"
+marker = "@MODE"
+find = "mov.u32 %r20, 0;"
+replace = "mov.u32 %r20, 3;"
+expect = ["clean"]
+min_residency = 1

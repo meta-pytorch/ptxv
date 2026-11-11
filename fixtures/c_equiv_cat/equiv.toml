@@ -1,0 +1,13 @@
+# Two captured implementations of the same op (tools/capture.py): torch.cat([x, y], 0) for
+# x, y of 8x32 f32 (libtorch_cuda's CatArrayBatchedCopy_vectorized, binary only) and a Triton
+# kernel doing the same copy (tools/capture_examples/triton_cat.py, SASS from its cubin). Both
+# cases read the same captured inputs (buffers x, y) and write `out`.
+#   ptxv equiv fixtures/c_equiv_cat/equiv.toml
+max_states = 200000
+reference = { case = "../c_cat", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "../c_triton_cat"
+variant = "good"
+front = "sass"
+expect = "L0"

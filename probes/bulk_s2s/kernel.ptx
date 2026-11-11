@@ -1,0 +1,82 @@
+// probes/bulk_s2s: cp.async.bulk.shared::cluster.shared::cta.mbarrier::complete_tx::bytes (SASS
+// UBLKCP.S.S) in a 2-CTA cluster against GB300. Each CTA copies in[rank][0..2048) words into
+// its shared src (4096 words), then thread 0 bulk-copies src[0..1024) words to the peer's dst
+// [0..1024) completing on the peer's mbarrier, and src[1024..2048) words to its own
+// dst[1024..2048) on its own mbarrier; each mbarrier expects 8192 bytes. All threads wait, copy
+// dst to out[rank], and the cluster syncs before exit.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry bulk_s2s(.param .u64 pin, .param .u64 pout)
+.maxntid 128, 1, 1
+.reqnctapercluster 2, 1, 1
+{
+    .reg .b32 %r<32>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<4>;
+    .shared .align 8 .b8 bar[8];
+    .shared .align 128 .b8 src[8192];
+    .shared .align 128 .b8 dst[8192];
+    ld.param.u64 %rd1, [pin];
+    ld.param.u64 %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r0, %tid.x;
+    mov.u32 %r1, %cluster_ctarank;
+    mov.u32 %r2, bar;
+    mov.u32 %r3, src;
+    mov.u32 %r4, dst;
+    mul.wide.u32 %rd3, %r1, 8192;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    mov.u32 %r5, 0;
+L0:
+    mad.lo.u32 %r6, %r5, 128, %r0;
+    mul.wide.u32 %rd6, %r6, 4;
+    add.s64 %rd7, %rd4, %rd6;
+    ld.global.u32 %r7, [%rd7];
+    shl.b32 %r8, %r6, 2;
+    add.u32 %r9, %r3, %r8;
+    st.shared.u32 [%r9], %r7;
+    add.u32 %r5, %r5, 1;
+    setp.lt.u32 %p1, %r5, 16;
+    @%p1 bra L0;
+    setp.ne.u32 %p0, %r0, 0;
+    @%p0 bra SYNC;
+    mbarrier.init.shared::cta.b64 [%r2], 1;
+    fence.mbarrier_init.release.cluster;
+SYNC:
+    fence.proxy.async.shared::cta;
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    @%p0 bra WAIT;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r2], 8192;
+    xor.b32 %r10, %r1, 1;
+    mapa.shared::cluster.u32 %r11, %r4, %r10;
+    mapa.shared::cluster.u32 %r12, %r2, %r10;
+    cp.async.bulk.shared::cluster.shared::cta.mbarrier::complete_tx::bytes [%r11], [%r3], 4096, [%r12];
+    mapa.shared::cluster.u32 %r13, %r4, %r1;
+    add.u32 %r13, %r13, 4096;
+    mapa.shared::cluster.u32 %r14, %r2, %r1;
+    add.u32 %r15, %r3, 4096;
+    cp.async.bulk.shared::cluster.shared::cta.mbarrier::complete_tx::bytes [%r13], [%r15], 4096, [%r14];
+WAIT:
+    mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 %p2, [%r2], 0;
+    @!%p2 bra WAIT;
+    mov.u32 %r5, 0;
+L1:
+    mad.lo.u32 %r6, %r5, 128, %r0;
+    shl.b32 %r8, %r6, 2;
+    add.u32 %r9, %r4, %r8;
+    ld.shared.u32 %r7, [%r9];
+    mul.wide.u32 %rd6, %r6, 4;
+    add.s64 %rd7, %rd5, %rd6;
+    st.global.u32 [%rd7], %r7;
+    add.u32 %r5, %r5, 1;
+    setp.lt.u32 %p1, %r5, 16;
+    @%p1 bra L1;
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    ret;
+}

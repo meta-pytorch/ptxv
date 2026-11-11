@@ -1,0 +1,68 @@
+name = "c_cve_add_bf16_inductor"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): run() of cand.py. 1 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: triton_poi_fused__unsafe_view_add_5 grid [64, 1, 1] block [128, 1, 1]
+Regenerate (docs/compile-vs-eager.md): CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/compile_vs_eager.py record
+--dtype bf16 --out DIR, then tools/capture.py --file DIR/pairs/12_*/cand.py --binary, then
+tools/cubin_slim.py on each cubin."""
+cubin = "k0.cubin"
+entry = "triton_poi_fused__unsafe_view_add_5"
+grid = [64, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+outputs = ["mm_45"]
+
+[[buffers]]
+name = "mm_68"
+dtype = "bf16"
+shape = [8192]
+init = "file"
+file = "data/mm_68.bin"
+
+[[buffers]]
+name = "x"
+dtype = "bf16"
+shape = [8192]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "mm_45"
+dtype = "bf16"
+shape = [8192]
+init = "file"
+file = "data/mm_45.bin"
+expect = "expected/mm_45.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "mm_45"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+byte_offset = 0
+
+[[params]]
+kind = "ptr"
+buffer = "mm_68"
+byte_offset = 0
+
+[[params]]
+kind = "u32"
+value = 8192
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000000"
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

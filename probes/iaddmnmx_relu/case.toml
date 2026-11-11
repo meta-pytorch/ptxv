@@ -1,0 +1,38 @@
+name = "probe_iaddmnmx_relu"
+description = """
+Probe (L-ROSETTA) for VIADDMNMX.RELU with a negated second operand (ptxas fuses a subtraction
+with min / max.relu.s32): four forms with register and immediate third operands (kernel.ptx).
+in.bin is probes/imnmx_relu's. expected/ is GB300's output (ptxas cubin, `ptxv hw-worker
+probes/iaddmnmx_relu <cubin> --runs 3 --dump`): in every word the signed min / max of
+(a - b) mod 2^32 and c, clamped below at 0."""
+ptx = "kernel.ptx"
+entry = "iaddmnmx_relu"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024, 3]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4, 1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

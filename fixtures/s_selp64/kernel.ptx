@@ -1,0 +1,32 @@
+// selp.b64 / selp.u64 / selp.s64: 64-bit selects must keep all 64 bits (register and
+// immediate operands). Thread t writes out[3t..3t+2] (u64):
+//   selp.b64 (x + t, y, odd t), selp.u64 (imm, x, odd t), selp.s64 (y, imm, odd t)
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry s_selp64(.param .u64 out_p)
+{
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    and.b32 %r2, %r1, 1;
+    setp.eq.u32 %p1, %r2, 1;
+    cvt.u64.u32 %rd2, %r1;
+    mov.b64 %rd3, 0x1111222233334444;
+    add.u64 %rd3, %rd3, %rd2;
+    mov.b64 %rd4, 0x5555666677778888;
+    selp.b64 %rd5, %rd3, %rd4, %p1;
+    selp.u64 %rd6, 0x0123456789abcdef, %rd3, %p1;
+    selp.s64 %rd7, %rd4, -2, %p1;
+    mul.lo.u32 %r3, %r1, 24;
+    cvt.u64.u32 %rd8, %r3;
+    add.u64 %rd9, %rd1, %rd8;
+    st.global.u64 [%rd9], %rd5;
+    st.global.u64 [%rd9+8], %rd6;
+    st.global.u64 [%rd9+16], %rd7;
+    ret;
+}

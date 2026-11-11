@@ -1,0 +1,28 @@
+name = "probe_cvt_bf16_same"
+description = """
+Probe (MISS 59; N-CVT-F16) for cvt.bf16.bf16 without a modifier on every 16-bit code: out[i] =
+the result for code i, zero-extended. ptxas 13.0 / 13.3: HFMA2.BF16_V2 d, -RZ, RZ, a (every NaN
+gives 0x7fff). The SASS front runs it; the PTX front refuses the form (the ISA leaves a NaN
+result unspecified). expected/ is GB300's output (kernel.cubin = ptxas 13.0 -arch=sm_103a
+kernel.ptx)."""
+ptx = "kernel.ptx"
+entry = "bf16_same"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [65536]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "every code"
+expect = ["clean"]

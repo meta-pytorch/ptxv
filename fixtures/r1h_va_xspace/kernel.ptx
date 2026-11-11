@@ -1,0 +1,44 @@
+//
+// Rung 1h, peer mappings in different address spaces (S-VA-ALIAS): GPU 0 owns `buf`; GPU 1
+// (another process) reaches it through its own mapping (an imported handle). GPU 1 (role 1)
+// writes data and then the flag (st.release.sys) through its mapping; GPU 0 (role 0) polls
+// the flag with ld.acquire.sys through the owner's mapping and reads the data. Both sides
+// fence the alias proxy in the good variant.
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry va_xspace(
+    .param .u64 buf,
+    .param .u64 out,
+    .param .u32 role
+)
+{
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+
+    ld.param.u64 %rd1, [buf];
+    ld.param.u64 %rd2, [out];
+    ld.param.u32 %r1, [role];
+    mov.u32 %r2, %tid.x;
+    setp.ne.u32 %p1, %r2, 0;
+    @%p1 bra DONE;
+    setp.eq.u32 %p1, %r1, 0;
+    @%p1 bra CONSUMER;
+    st.global.u32 [%rd1], 11;
+    fence.proxy.alias; // @PFENCE
+    st.release.sys.global.u32 [%rd1+64], 1;
+    bra DONE;
+CONSUMER:
+    fence.proxy.alias; // @CFENCE
+POLL:
+    ld.acquire.sys.global.u32 %r3, [%rd1+64];
+    setp.lt.u32 %p2, %r3, 1;
+    @%p2 bra POLL;
+    ld.global.u32 %r4, [%rd1];
+    st.global.u32 [%rd2], %r4;
+DONE:
+    ret;
+}

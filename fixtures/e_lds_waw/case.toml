@@ -1,0 +1,27 @@
+name = "e_lds_waw"
+description = """
+L-OPREAD: ptxas (13.0 and 13.3, sm_103a) emits `LDS.128 R4, [R0]` then `LDS R6, [R0+0x10]` with no
+wait on the LDS.128's write scoreboard; the second load overwrites R6, a dead word of the 128-bit
+load. Shared loads of a warp write back in issue order (probes/lds_waw), so this is clean on both
+front-ends; out[3t+2] = w[4]. GB300 (500 runs plain and 500 with scrubbed memory, 8 CTAs x 128
+lanes) agrees bitwise. Before: a SCOREBOARD WAW on the SASS front."""
+ptx = "kernel.ptx"
+entry = "e_lds_waw"
+grid = [8, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [3072]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "LDS.128 then LDS into a dead register of the first load, no scoreboard wait"
+expect = ["clean"]

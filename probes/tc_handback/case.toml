@@ -1,0 +1,80 @@
+name = "tc_handback"
+description = """
+Probe for the 2-CTA tensor-memory hand-off (S-MBAR-SCOPE, S-TCGEN05): both CTAs of a pair
+write the MMA's A operand into their TMEM each round and hand it, and the previous round's
+D, to the leader through its `full` mbarrier (the peer remotely); every thread checks its D
+row. out: wrong elements per thread. See kernel.ptx and run.sh (GB300 runs)."""
+ptx = "kernel.ptx"
+entry = "tc_handback"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [256]
+init = "nan"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 2
+
+[[variants]]
+id = "good"
+summary = "the peer hands off with mbarrier.arrive.release.cluster"
+expect = ["contract"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "RCTA"
+summary = "the peer hands off with mbarrier.arrive.release.cta: PTX race; SASS bare remote arrive"
+marker = "@HANDOFF"
+find = "mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%r10];"
+replace = "mbarrier.arrive.release.cta.shared::cluster.b64 _, [%r10];"
+expect = ["contract", "race"]
+expect_sass = ["race"]
+
+[[variants]]
+id = "NOFULL"
+summary = "positive control: the leader issues the MMA after one test of `full`, completed or not"
+marker = "@FULLWAIT"
+find = "@!%p3 bra       FULL_WAIT;"
+replace = "// no loop"
+expect = ["contract", "deadlock", "nondeterministic", "race"]
+expect_sass = ["deadlock", "nondeterministic", "race"]
+
+[[variants]]
+id = "NOWST"
+summary = "no tcgen05.wait::st before the hand-off: tcgen05.fence::before_thread_sync orders the st (PTX); STTM is scoreboarded (SASS)"
+marker = "@WAITST"
+find = "tcgen05.wait::st.sync.aligned;"
+replace = "// no wait::st"
+expect = ["contract"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "EARLY"
+summary = "positive control: the peer hands off at the start of the round, before writing A"
+marker = "@EARLY"
+find = "// (early hand-off slot)"
+replace = "@%p8 mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%r10];"
+edits = [{ marker = "@HANDOFF", find = "mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%r10];", replace = "// arrived early" }]
+expect = ["contract", "race"]
+expect_sass = ["race"]
+
+[[variants]]
+id = "EARLYD"
+summary = "positive control: EARLY with the peer CTA sleeping 5 us between its hand-off and its tcgen05.st"
+marker = "@EARLY"
+find = "// (early hand-off slot)"
+replace = "@%p8 mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%r10]; @!%p2 nanosleep.u32 5000;"
+edits = [{ marker = "@HANDOFF", find = "mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%r10];", replace = "// arrived early" }]
+expect = ["contract", "race"]
+expect_sass = ["race"]

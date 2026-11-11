@@ -1,0 +1,520 @@
+{
+ "argv": [
+  "--nproc",
+  "3",
+  "--file",
+  "tools/capture_examples/symm_oneshot.py",
+  "--out",
+  "fixtures/r4a_oneshot",
+  "--exit-fence",
+  "sys",
+  "--work",
+  "/tmp/r4/work_oneshot"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "ranks": [
+  {
+   "rank": 0,
+   "device": 0,
+   "uuid": "1ced79bd-fbd0-93b7-c1dd-fc83511e7143",
+   "streams": [
+    "0x0"
+   ]
+  },
+  {
+   "rank": 1,
+   "device": 1,
+   "uuid": "7910a120-6368-4db1-a571-d4ce1b1e02a4",
+   "streams": [
+    "0x0"
+   ]
+  },
+  {
+   "rank": 2,
+   "device": 2,
+   "uuid": "e770e684-4b7d-9e65-267f-4a3a9025366f",
+   "streams": [
+    "0x0"
+   ]
+  }
+ ],
+ "launches": [
+  {
+   "rank": 0,
+   "name": "_ZN58_GLOBAL__N__588ddd27_25_CUDASymmetricMemoryOps_cu_a63b70c526one_shot_all_reduce_kernelIfLi16ELin1EEEvPPT_S2_S2_mmPPjmm",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    32,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 2553877,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "rank": 1,
+   "name": "_ZN58_GLOBAL__N__588ddd27_25_CUDASymmetricMemoryOps_cu_a63b70c526one_shot_all_reduce_kernelIfLi16ELin1EEEvPPT_S2_S2_mmPPjmm",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    32,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 0,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "rank": 1,
+   "name": "_ZN58_GLOBAL__N__588ddd27_25_CUDASymmetricMemoryOps_cu_a63b70c526one_shot_all_reduce_kernelIfLi16ELin1EEEvPPT_S2_S2_mmPPjmm",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    32,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 190402,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "rank": 0,
+   "name": "_ZN58_GLOBAL__N__588ddd27_25_CUDASymmetricMemoryOps_cu_a63b70c526one_shot_all_reduce_kernelIfLi16ELin1EEEvPPT_S2_S2_mmPPjmm",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    32,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 3847168,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "rank": 2,
+   "name": "_ZN58_GLOBAL__N__588ddd27_25_CUDASymmetricMemoryOps_cu_a63b70c526one_shot_all_reduce_kernelIfLi16ELin1EEEvPPT_S2_S2_mmPPjmm",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    32,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 4973769,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "rank": 2,
+   "name": "_ZN58_GLOBAL__N__588ddd27_25_CUDASymmetricMemoryOps_cu_a63b70c526one_shot_all_reduce_kernelIfLi16ELin1EEEvPPT_S2_S2_mmPPjmm",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    32,
+    1,
+    1
+   ],
+   "stream": "0x0",
+   "t_ns": 5167018,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "memory_map": [
+  {
+   "rank": 0,
+   "va": "0xfffa14800000",
+   "size": 2097152,
+   "phys": "g:000020000000000060d639000000000010000000000000",
+   "kind": "mem",
+   "owner": 0
+  },
+  {
+   "rank": 0,
+   "va": "0xfffa14a00000",
+   "size": 2097152,
+   "phys": "g:000020000000000061d639000000000010000000000000",
+   "kind": "mem",
+   "owner": 1
+  },
+  {
+   "rank": 0,
+   "va": "0xfffa14c00000",
+   "size": 2097152,
+   "phys": "g:000020000000000063d639000000000010000000000000",
+   "kind": "mem",
+   "owner": 2
+  },
+  {
+   "rank": 0,
+   "va": "0xfffa14e00000",
+   "size": 2097152,
+   "phys": "g:000000200000000064d639000000000010000000000000",
+   "kind": "multicast",
+   "owner": 0
+  },
+  {
+   "rank": 1,
+   "va": "0xfffb54800000",
+   "size": 2097152,
+   "phys": "g:000020000000000061d639000000000010000000000000",
+   "kind": "mem",
+   "owner": 1
+  },
+  {
+   "rank": 1,
+   "va": "0xfffb54a00000",
+   "size": 2097152,
+   "phys": "g:000020000000000060d639000000000010000000000000",
+   "kind": "mem",
+   "owner": 0
+  },
+  {
+   "rank": 1,
+   "va": "0xfffb54c00000",
+   "size": 2097152,
+   "phys": "g:000020000000000063d639000000000010000000000000",
+   "kind": "mem",
+   "owner": 2
+  },
+  {
+   "rank": 1,
+   "va": "0xfffb54e00000",
+   "size": 2097152,
+   "phys": "g:000000200000000064d639000000000010000000000000",
+   "kind": "multicast",
+   "owner": 0
+  },
+  {
+   "rank": 2,
+   "va": "0xfff914800000",
+   "size": 2097152,
+   "phys": "g:000020000000000063d639000000000010000000000000",
+   "kind": "mem",
+   "owner": 2
+  },
+  {
+   "rank": 2,
+   "va": "0xfff914a00000",
+   "size": 2097152,
+   "phys": "g:000020000000000060d639000000000010000000000000",
+   "kind": "mem",
+   "owner": 0
+  },
+  {
+   "rank": 2,
+   "va": "0xfff914c00000",
+   "size": 2097152,
+   "phys": "g:000020000000000061d639000000000010000000000000",
+   "kind": "mem",
+   "owner": 1
+  },
+  {
+   "rank": 2,
+   "va": "0xfff914e00000",
+   "size": 2097152,
+   "phys": "g:000000200000000064d639000000000010000000000000",
+   "kind": "multicast",
+   "owner": 0
+  }
+ ],
+ "multicast": [
+  {
+   "multicast": "g:000000200000000064d6390000000000100000",
+   "size": 2097152,
+   "members": [
+    [
+     0,
+     0
+    ],
+    [
+     1,
+     1
+    ],
+    [
+     2,
+     2
+    ]
+   ],
+   "mapped_in": [
+    0,
+    1,
+    2
+   ]
+  }
+ ],
+ "symmetric": [
+  {
+   "rank": 0,
+   "world": 3,
+   "buffer_ptrs": [
+    281449550839808,
+    281449552936960,
+    281449555034112
+   ],
+   "signal_pad_ptrs": [
+    281449550840064,
+    281449552937216,
+    281449555034368
+   ],
+   "buffer_ptrs_dev": "0xfffa15000000",
+   "signal_pad_ptrs_dev": "0xfffa15000200",
+   "buffer_size": 256,
+   "signal_pad_size": 9216,
+   "multicast_ptr": "0xfffa14e00000",
+   "offset": 0
+  },
+  {
+   "rank": 1,
+   "world": 3,
+   "buffer_ptrs": [
+    281454921646080,
+    281454919548928,
+    281454923743232
+   ],
+   "signal_pad_ptrs": [
+    281454921646336,
+    281454919549184,
+    281454923743488
+   ],
+   "buffer_ptrs_dev": "0xfffb55000000",
+   "signal_pad_ptrs_dev": "0xfffb55000200",
+   "buffer_size": 256,
+   "signal_pad_size": 9216,
+   "multicast_ptr": "0xfffb54e00000",
+   "offset": 0
+  },
+  {
+   "rank": 2,
+   "world": 3,
+   "buffer_ptrs": [
+    281445257969664,
+    281445260066816,
+    281445255872512
+   ],
+   "signal_pad_ptrs": [
+    281445257969920,
+    281445260067072,
+    281445255872768
+   ],
+   "buffer_ptrs_dev": "0xfff915000000",
+   "signal_pad_ptrs_dev": "0xfff915000200",
+   "buffer_size": 256,
+   "signal_pad_size": 9216,
+   "multicast_ptr": "0xfff914e00000",
+   "offset": 0
+  }
+ ],
+ "buffers": [
+  {
+   "name": "W0_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 3
+  },
+  {
+   "name": "W1_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 3
+  },
+  {
+   "name": "x1_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 0
+  },
+  {
+   "name": "x2_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 0
+  },
+  {
+   "name": "o1_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 0
+  },
+  {
+   "name": "o2_r0",
+   "device": 0,
+   "kind": "block",
+   "size": 256,
+   "ptrs": 0
+  },
+  {
+   "name": "buf_r0",
+   "device": 0,
+   "kind": "symm",
+   "size": 256,
+   "ptrs": 0
+  },
+  {
+   "name": "sig_r0",
+   "device": 0,
+   "kind": "signal",
+   "size": 9216,
+   "ptrs": 0
+  },
+  {
+   "name": "W0_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 3
+  },
+  {
+   "name": "W1_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 3
+  },
+  {
+   "name": "x1_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 0
+  },
+  {
+   "name": "x2_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 0
+  },
+  {
+   "name": "o1_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 0
+  },
+  {
+   "name": "o2_r1",
+   "device": 1,
+   "kind": "block",
+   "size": 256,
+   "ptrs": 0
+  },
+  {
+   "name": "buf_r1",
+   "device": 1,
+   "kind": "symm",
+   "size": 256,
+   "ptrs": 0
+  },
+  {
+   "name": "sig_r1",
+   "device": 1,
+   "kind": "signal",
+   "size": 9216,
+   "ptrs": 0
+  },
+  {
+   "name": "W0_r2",
+   "device": 2,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 3
+  },
+  {
+   "name": "W1_r2",
+   "device": 2,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 3
+  },
+  {
+   "name": "x1_r2",
+   "device": 2,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 0
+  },
+  {
+   "name": "x2_r2",
+   "device": 2,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 0
+  },
+  {
+   "name": "o1_r2",
+   "device": 2,
+   "kind": "block",
+   "size": 512,
+   "ptrs": 0
+  },
+  {
+   "name": "o2_r2",
+   "device": 2,
+   "kind": "block",
+   "size": 256,
+   "ptrs": 0
+  },
+  {
+   "name": "buf_r2",
+   "device": 2,
+   "kind": "symm",
+   "size": 256,
+   "ptrs": 0
+  },
+  {
+   "name": "sig_r2",
+   "device": 2,
+   "kind": "signal",
+   "size": 9216,
+   "ptrs": 0
+  }
+ ],
+ "replicas": [
+  [
+   "o1_r0",
+   "o1_r1",
+   "o1_r2"
+  ],
+  [
+   "o2_r0",
+   "o2_r1",
+   "o2_r2"
+  ]
+ ],
+ "unresolved": [],
+ "warnings": []
+}

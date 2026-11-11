@@ -1,0 +1,2 @@
+{"version": 1, "seed": 3, "name": "N(80, 2): exp overflows f32 for x >= 88.72284",
+ "default": {"dist": {"kind": "normal", "mean": 80.0, "std": 2.0}}}

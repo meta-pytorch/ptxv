@@ -1,0 +1,13 @@
+# bf16 GEMM, M=N=64, K=960 (captured by agent AI): a Triton tiled matmul walking K forward
+# against the same kernel walking its K blocks backwards. Tier 2's correlated rounding means
+# (docs/errdist.md §5.3): each kernel's MMA steps round toward zero, so their error means
+# follow the partial sums and accumulate coherently along each order.
+max_states = 200000
+trials = 20
+reference = { case = "../c_mm64_k960_triton_fwd", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "../c_mm64_k960_triton_rev"
+variant = "good"
+front = "sass"
+expect = "L1"

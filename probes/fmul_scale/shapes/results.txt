@@ -1,0 +1,22 @@
+# GB300, ptxas 13.0 / 13.1 / 13.3 (identical outputs), 2026-11-10. thread0: 2^127 * 2; thread1: 2^-75 * 1.5 * 2^-75
+A_Cfirst         7f000000 00000000  folds
+B_negC           ff800000 80000000  no fold
+C_C8             7f800000 00000006  folds (M8)
+D_C16th          7f800000 00000000  no fold
+E_multiuse       7f800000 00000000  no fold (product also stored)
+F_guarded        7f000000 00000000  folds
+G_regC           7f000000 00000000  folds (constant propagated)
+I_ftz_plain      7f000000 00000000  folds
+J_plain_ftz      7f000000 00000000  folds
+K_readbyadd      7f800000 1a000000  FFMA(t, 0.5, a) (scale contracted into the add)
+L_chain          7e800000 00000000  folds both scales (D4)
+M_firstsat       3f000000 00000000  no fold
+N_secondrz       7f800000 00000000  no fold
+O_firstimm       7f400000 1a400000  folds (FMUL.D2 R, R, 3)
+P_otherblock     7f000000 00000000  folds
+Q_f64            7ff0000000000000 0000000000000000  no fold (DMUL)
+R_C1             7f800000 00000001  same value either way
+S_divC           7f800000 00000000  no fold
+T_operandchange  7f000000 00000000  folds with the original operands
+U_neg_t          ff800000 80000000  no fold
+V_M2_8           7f800000 00000006  folds (M8)

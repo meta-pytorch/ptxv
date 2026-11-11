@@ -1,0 +1,32 @@
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// One thread per element of x, w, v, y [4096].
+// lin_exact: y = RN(x w) * v with v = 1 or a power of two: the second multiply is exact.
+.visible .entry lin_exact(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py)
+{
+    .reg .f32 %f<8>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, %ctaid.x;
+    mov.u32 %r3, %ntid.x;
+    mad.lo.u32 %r4, %r2, %r3, %r1;
+    mul.wide.u32 %rd6, %r4, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    mul.rn.f32 %f5, %f4, %f3;
+    st.global.f32 [%rd10], %f5;
+    ret;
+}

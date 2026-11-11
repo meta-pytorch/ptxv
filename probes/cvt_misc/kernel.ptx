@@ -1,0 +1,29 @@
+// Probe for cvt.rn.f32.f64, cvt.f64.f32, cvt.sat.f32.f32 and cvt.r{n,m,p,z}i[.ftz].s32.f32 /
+// .u32.f32 on special and random inputs. Thread i reads f64 word i and f32 word i.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry cvt_misc(.param .u64 pd, .param .u64 pf, .param .u64 pout)
+{ .reg .b64 %rd<12>; .reg .b32 %r<30>; .reg .f64 %fd<4>;
+  ld.param.u64 %rd1, [pd]; ld.param.u64 %rd9, [pf]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd9, %rd9; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mov.u32 %r20, %ctaid.x; mov.u32 %r21, %ntid.x; mad.lo.s32 %r1, %r20, %r21, %r1;
+  mul.wide.u32 %rd3, %r1, 8; add.s64 %rd4, %rd1, %rd3;
+  mul.wide.u32 %rd6, %r1, 4; add.s64 %rd7, %rd9, %rd6;
+  mul.wide.u32 %rd8, %r1, 48; add.s64 %rd5, %rd2, %rd8;
+  ld.global.f64 %fd1, [%rd4];
+  ld.global.f32 %r2, [%rd7];
+  cvt.rn.f32.f64 %r3, %fd1;
+  cvt.f64.f32 %fd2, %r2;
+  cvt.sat.f32.f32 %r4, %r2;
+  cvt.rni.ftz.s32.f32 %r5, %r2;
+  cvt.rmi.s32.f32 %r6, %r2;
+  cvt.rpi.u32.f32 %r7, %r2;
+  cvt.rni.s32.f32 %r8, %r2;
+  st.global.v4.u32 [%rd5], {%r3, %r4, %r5, %r6};
+  st.global.v2.u32 [%rd5+16], {%r7, %r8};
+  st.global.f64 [%rd5+24], %fd2;
+  st.global.f64 [%rd5+32], %fd1;
+  st.global.u32 [%rd5+40], %r2;
+  st.global.u32 [%rd5+44], %r1;
+  ret; }

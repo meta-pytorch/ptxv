@@ -1,0 +1,98 @@
+name = "e_barcut"
+description = """
+Fixture for E-BAR-CUT: a counted named barrier (64 threads) that every warp can reach, but only
+through an all-thread barrier that cannot complete while the barrier's current users wait in
+it. The explorer may then commute the arrivals of the current users. The mutants break each
+premise: a path around the all-thread barrier, a guarded (partial-warp) all-thread barrier, a
+bar.arrive on it, the same id for both, and a warp split between the two barriers."""
+ptx = "kernel.ptx"
+entry = "e_barcut"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "BC1"
+summary = "the inactive pair skips the all-thread barrier: warps of both rounds meet at barrier 2"
+marker = "@SKIP"
+find = "bra JOIN;"
+replace = "bra NEXT;"
+expect = ["race"]
+# SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG): the shared-memory race is no race
+# on the hardware; what it leaves is the schedule-dependent outcome.
+expect_sass = ["nondeterministic", "violation"]
+
+[[variants]]
+id = "BC2"
+summary = "the all-thread barrier guarded off for the inactive pair's upper half-warps"
+marker = "@ALLTHREAD"
+find = "bar.sync 1;"
+replace = "setp.lt.u32 %p5, %r2, 16;\n    setp.le.u32 %p6, %r11, 1;\n    or.pred %p5, %p5, %p6;\n    @%p5 barrier.sync 1;"
+expect = ["deadlock", "race"]
+# SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG): the shared-memory race is no race
+# on the hardware; what it leaves is the schedule-dependent outcome.
+expect_sass = ["deadlock", "violation"]
+
+[[variants]]
+id = "BC3"
+summary = "the active pair arrives at barrier 1 with bar.arrive before its work and does not wait"
+marker = "@ACTIVE"
+find = "setp.eq.u32 %p3, %r11, 1;"
+replace = "bar.arrive 1, 128;\n    setp.eq.u32 %p3, %r11, 1;"
+expect = ["deadlock", "nondeterministic", "race", "violation"]
+# SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG): the shared-memory race is no race
+# on the hardware; what it leaves is the schedule-dependent outcome.
+expect_sass = ["deadlock", "nondeterministic", "violation"]
+
+[[variants.edits]]
+marker = "@PDONE"
+find = "bra JOIN;"
+replace = "bra NEXT;"
+
+[[variants.edits]]
+marker = "@CDONE"
+find = "bra JOIN;"
+replace = "bra NEXT;"
+
+[[variants.edits]]
+marker = "@ALLTHREAD"
+find = "bar.sync 1;"
+replace = "bar.sync 1, 128;"
+
+[[variants]]
+id = "BC4"
+summary = "the all-thread barrier uses the counted barrier's id"
+marker = "@ALLTHREAD"
+find = "bar.sync 1;"
+replace = "bar.sync 2;"
+expect = ["race", "violation"]
+# SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG): the shared-memory race is no race
+# on the hardware; what it leaves is the schedule-dependent outcome.
+expect_sass = ["nondeterministic", "violation"]
+
+[[variants]]
+id = "BC5"
+summary = "lanes 16-31 of the producer warp skip barrier 2 and wait at the all-thread barrier"
+marker = "@PBAR"
+find = "bar.sync 2, 64;"
+replace = "setp.ge.u32 %p7, %r2, 16;\n    @%p7 bra JOIN;\n    barrier.sync 2, 64;"
+expect = ["deadlock"]
+
+[[variants.edits]]
+marker = "@ALLTHREAD"
+find = "bar.sync 1;"
+replace = "barrier.sync 1;"

@@ -1,0 +1,35 @@
+name = "f64_ptx"
+description = """
+N-MUFU probe: MUFU.RCP64H / RSQ64H through rcp/rsqrt.approx.ftz.f64 on random and shaped f64
+bits (zeros, denormals, inf / NaN, results that flush). Both front-ends' outputs must equal
+gb300_out.bin, GB300's output (crates/sim/tests/mufu.rs)."""
+ptx = "kernel.ptx"
+entry = "f64ops"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [512]
+init = "bits"
+seed = 7
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2048]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1,0 +1,97 @@
+{
+ "what": "run() of ref.py",
+ "argv": [
+  "--file",
+  "/tmp/agentG/cve_f32_s8/pairs/09_triton_poi_fused__unsafe_view_mul_silu_3/ref.py",
+  "--out",
+  "/tmp/agentG/cve_f32_s8/pairs/09_triton_poi_fused__unsafe_view_mul_silu_3/cmp/ref",
+  "--seed",
+  "0",
+  "--binary",
+  "--work",
+  "/tmp/ptxv_capture_3374056"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "_ZN2at6native29vectorized_elementwise_kernelILi4EZZZNS0_56_GLOBAL__N__bea8d63a_23_ActivationSiluKernel_cu_cb3671b911silu_kernelERNS_18TensorIteratorBaseEENKUlvE_clEvENKUlvE0_clEvEUlfE_St5arrayIPcLm2EEEEviT0_T1_",
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "name": "_ZN2at6native29vectorized_elementwise_kernelILi4ENS0_13BinaryFunctorIfffNS0_15binary_internal10MulFunctorIfEEEESt5arrayIPcLm3EEEEviT0_T1_",
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k1.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "mm_58",
+   "dtype": "f32",
+   "shape": [
+    2048
+   ],
+   "size": 8192
+  },
+  {
+   "name": "mm_53",
+   "dtype": "f32",
+   "shape": [
+    2048
+   ],
+   "size": 8192
+  },
+  {
+   "name": "W0",
+   "dtype": "u8",
+   "shape": [
+    8192
+   ],
+   "size": 8192
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    2048
+   ],
+   "size": 8192
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

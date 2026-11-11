@@ -1,0 +1,40 @@
+// S-NC: ld.global.nc is outside the memory consistency model (PTX ISA 9.5 section 8.1), exact
+// only for bytes nothing writes while the kernel runs. 64 threads; buf[t] = t (a plain store),
+// bar.sync, then thread t reads inp[t] with ld.global.nc (good: inp is never written) and
+// stores it to out[t].
+//   written: the .nc load reads buf[t ^ 1], which the neighbour wrote before the bar.sync
+//            (ordered by happens-before, still outside the model): reported.
+//   coherent: the same read as a plain ld.global: ordered, clean.
+//   inplace: thread t overwrites inp[t] after its .nc load of it (a later write by the
+//            loading thread itself): reported.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry k(.param .u64 pinp, .param .u64 pbuf, .param .u64 pout)
+{
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<16>;
+
+    ld.param.u64    %rd1, [pinp];
+    ld.param.u64    %rd2, [pbuf];
+    ld.param.u64    %rd3, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd4, %r1, 4;
+    add.s64         %rd5, %rd1, %rd4;               // &inp[t]
+    add.s64         %rd6, %rd2, %rd4;               // &buf[t]
+    add.s64         %rd7, %rd3, %rd4;               // &out[t]
+    xor.b32         %r2, %r1, 1;
+    mul.wide.u32    %rd8, %r2, 4;
+    add.s64         %rd9, %rd2, %rd8;               // &buf[t ^ 1]
+    mov.u32         %r5, 0;
+    st.global.u32   [%rd6], %r1;                    // buf[t] = t
+    bar.sync        0;
+    ld.global.nc.u32 %r3, [%rd5];                   // @SRC
+    st.global.u32   [%rd7], %r3;
+    st.global.u32   [%rd7], %r3;                    // @OVERWRITE (out[t] again)
+    ret;
+}

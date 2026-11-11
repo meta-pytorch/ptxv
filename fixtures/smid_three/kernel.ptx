@@ -1,0 +1,39 @@
+// fixtures/smid_three (E-SMID): each SM owns two slots, out[2 %smid] and out[2 %smid + 1]; a
+// CTA takes the next one with an atomic on cnt[%smid] and stores its %ctaid.x there. A third
+// CTA on one SM writes the next SM's first slot: a race with a CTA on that SM. No enumerated
+// placement class has three CTAs on one SM and one on the next, so every class is clean; the
+// verdict must not be complete.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry smid_three(
+    .param .u64 out,
+    .param .u64 cnt
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<16>;
+
+    mov.u32         %r0, %tid.x;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        DONE;
+    mov.u32         %r1, %smid;
+    ld.param.u64    %rd1, [cnt];
+    cvta.to.global.u64 %rd1, %rd1;
+    mul.wide.u32    %rd2, %r1, 4;
+    add.u64         %rd3, %rd1, %rd2;
+    atom.global.relaxed.gpu.add.u32 %r2, [%rd3], 1;
+    shl.b32         %r3, %r1, 1;
+    add.u32         %r3, %r3, %r2;
+    mov.u32         %r4, %ctaid.x;
+    ld.param.u64    %rd4, [out];
+    cvta.to.global.u64 %rd4, %rd4;
+    mul.wide.u32    %rd5, %r3, 4;
+    add.u64         %rd6, %rd4, %rd5;
+    st.global.u32   [%rd6], %r4;
+DONE:
+    ret;
+}

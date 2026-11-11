@@ -1,0 +1,79 @@
+// Fixture for E-TMEM-COTENANT / E-TMEM-PERMIT (crates/sim/src/tenant.rs): 2 CTAs of one
+// warp. Each warp allocates 256 TMEM columns and relinquishes its allocation permit; CTA 1's
+// thread 0 then sets a global flag (st.release) and CTA 0's thread 0 waits for it
+// (ld.acquire) while CTA 0 holds its columns. Each warp stores lane + 1 + 100 * cta into
+// TMEM at the allocated address, loads it back into out[32 * cta + lane], and deallocates.
+//
+// Every variant is clean in the default model (each CTA has a whole SM). Co-tenant mode puts
+// CTA 0 and CTA 1 on one SM and lets allocations land at any free column run:
+//   good      clean: 256 + 256 columns fit, and the permit is relinquished at once;
+//   norelinq  no relinquish: CTA 0 keeps its permit until it exits, which is after CTA 1's
+//             allocation (the flag), so CTA 1 cannot allocate: deadlock (E-TMEM-PERMIT), and
+//             the missing relinquish is reported (contract);
+//   big       512 columns each: CTA 0 holds all of them while waiting for CTA 1, whose
+//             allocation does not fit: deadlock (columns);
+//   indep     no relinquish, no flag wait: CTA 1 merely waits for CTA 0's exit; only the
+//             missing relinquish is reported;
+//   fixed0    uses column 0 instead of the address tcgen05.alloc returned: a co-tenant
+//             holding the low columns makes it access columns the CTA does not own.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_tmem_cotenant(
+    .param .u64 out_p,
+    .param .u64 flag_p
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<8>;
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<16>;
+    .shared .align 16 .b32 tmem_slot;
+
+    ld.param.u64    %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64    %rd2, [flag_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r0, %tid.x;
+    mov.u32         %r1, %ctaid.x;
+    mov.u32         %r2, tmem_slot;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r2], 256;   // @ALLOC
+    tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;           // @RELINQ
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        SYNCED;
+    setp.ne.u32     %p1, %r1, 0;
+    @%p1 bra        SIGNAL;
+WAIT:
+    ld.acquire.gpu.global.u32 %r3, [%rd2];                               // @WAIT
+    setp.eq.u32     %p2, %r3, 0;
+    @%p2 bra        WAIT;
+    bra             SYNCED;
+SIGNAL:
+    st.release.gpu.global.u32 [%rd2], 1;
+SYNCED:
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    tcgen05.fence::after_thread_sync;
+    ld.shared.b32   %r5, [%r2];                                          // @BASE
+    mul.lo.u32      %r6, %r1, 100;
+    add.u32         %r6, %r6, %r0;
+    add.u32         %r6, %r6, 1;
+    mov.u32         %r7, %r6;
+    tcgen05.st.sync.aligned.32x32b.x2.b32 [%r5], {%r6, %r7};
+    tcgen05.wait::st.sync.aligned;
+    tcgen05.ld.sync.aligned.32x32b.x2.b32 {%r10, %r11}, [%r5];
+    tcgen05.wait::ld.sync.aligned;
+    add.u32         %r7, %r10, %r11;
+    shl.b32         %r8, %r1, 5;
+    add.u32         %r8, %r8, %r0;
+    mul.wide.u32    %rd3, %r8, 4;
+    add.u64         %rd4, %rd1, %rd3;
+    st.global.u32   [%rd4], %r7;
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    tcgen05.fence::after_thread_sync;
+    ld.shared.b32   %r9, [%r2];
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r9, 256;              // @DEALLOC
+    ret;
+}

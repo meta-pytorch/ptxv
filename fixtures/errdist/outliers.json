@@ -1,0 +1,4 @@
+{"version": 1, "seed": 1, "name": "N(0,1) with 2% element outliers N(0, 64^2), rounded to the buffer dtype",
+ "default": {"dist": {"kind": "mixture", "components": [
+   {"weight": 0.98, "dist": {"kind": "normal"}},
+   {"weight": 0.02, "dist": {"kind": "normal", "std": 64.0}}]}}}

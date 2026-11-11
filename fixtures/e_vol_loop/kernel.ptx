@@ -1,0 +1,36 @@
+// Fixture for E-SPIN poll recognition: one warp runs a counted loop that reads a volatile
+// word every iteration, stores what it read and waits at a barrier (as a pipelined main
+// loop does). ptxas compiles it to an unconditional back branch whose only exit
+// (`@P0 EXIT`) tests the counter, so it is not a poll loop.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_vol_loop(.param .u64 out_p, .param .u64 in_p, .param .u32 n_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [in_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    ld.param.u32 %r9, [n_p];
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, 0;
+LOOP:
+    ld.volatile.global.u32 %r3, [%rd2+4];
+    add.u32 %r4, %r2, %r1;
+    mad.lo.u32 %r5, %r2, 32, %r1;
+    mul.wide.u32 %rd3, %r5, 4;
+    add.u64 %rd4, %rd1, %rd3;
+    add.u32 %r6, %r3, %r4;
+    st.global.u32 [%rd4], %r6;
+    bar.sync 0;                          // a body a warp-level poll may not have
+    add.u32 %r2, %r2, 1;                 // @STEP
+    setp.ge.u32 %p1, %r2, %r9;           // @EXIT
+    @%p1 bra DONE;
+    bra.uni LOOP;
+DONE:
+    ret;
+}

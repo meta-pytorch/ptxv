@@ -1,0 +1,5 @@
+{"version": 1, "seed": 1, "name": "vmix.json's law written as 2 X of a mixture: v = 1 on 95% of the elements, else N(0, 1)",
+ "tensors": {"v": {"dist": {"kind": "affine", "a": 2.0, "b": 0.0, "dist": {"kind": "mixture", "components": [
+   {"weight": 0.95, "dist": {"kind": "const", "value": 0.5}},
+   {"weight": 0.05, "dist": {"kind": "normal", "std": 0.5}}]}}}},
+ "default": {"dist": {"kind": "normal"}}}

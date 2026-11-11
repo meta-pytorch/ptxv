@@ -1,0 +1,35 @@
+// probes/nc_hoist (S-NC): fixtures/e_ld_nc variant `written` as one kernel. ptxas 13.0 and 13.3
+// hoist the ld.global.nc of buf[t ^ 1] above the store buf[t] = t and the bar.sync (SASS:
+// LDG.E.CONSTANT, STG, BAR.SYNC, STG), so out[t] is buf's old value (0), not t ^ 1 as a
+// coherent load after the barrier would read. 64 threads, one CTA.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry k(.param .u64 pinp, .param .u64 pbuf, .param .u64 pout)
+{
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<16>;
+
+    ld.param.u64    %rd1, [pinp];
+    ld.param.u64    %rd2, [pbuf];
+    ld.param.u64    %rd3, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd4, %r1, 4;
+    add.s64         %rd5, %rd1, %rd4;               // &inp[t]
+    add.s64         %rd6, %rd2, %rd4;               // &buf[t]
+    add.s64         %rd7, %rd3, %rd4;               // &out[t]
+    xor.b32         %r2, %r1, 1;
+    mul.wide.u32    %rd8, %r2, 4;
+    add.s64         %rd9, %rd2, %rd8;               // &buf[t ^ 1]
+    mov.u32         %r5, 0;
+    st.global.u32   [%rd6], %r1;                    // buf[t] = t
+    bar.sync        0;
+    ld.global.nc.u32 %r3, [%rd9];                   // @SRC
+    st.global.u32   [%rd7], %r3;
+    st.global.u32   [%rd7], %r3;                    // @OVERWRITE (out[t] again)
+    ret;
+}

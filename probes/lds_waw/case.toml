@@ -1,0 +1,29 @@
+name = "probe_lds_waw"
+description = """
+Probe (L-OPREAD) for the write-back order of shared loads. gen.py makes ptxas schedules
+(sm_103a, .maxnreg 24) where `LDS.128 Rn, [a]` is followed, with no wait, by `LDS Rn+2, [b]`
+writing a dead register of the first: bb (both broadcast), cb (first 32-way bank-conflicted, second
+broadcast: the slow load first), cc (both conflicted). cb_alu replaces cb's second load with
+`IADD3 R6, PT, PT, RZ, 0x5a5a5a5a, RZ` (sensitivity control). GB300 (`ptxv hw-worker`, 200
+launches of 131,072 threads per cubin, analyze.py): bb, cb, cc leave the second load's value in
+every thread; cb_alu leaves the first load's stale word 2 in every thread (the late LDS.128
+lands after the ALU write). So shared loads of a warp write back in issue order."""
+cubin = "cb.cubin"
+entry = "lds_waw"
+grid = [8, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [3072]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

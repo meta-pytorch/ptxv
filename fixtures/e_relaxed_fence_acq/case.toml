@@ -1,0 +1,101 @@
+name = "e_relaxed_fence_acq"
+description = """
+Relaxed reads and read-modify-writes made acquiring by a later acquire fence of their thread
+(`Machine::fence_acq`). good: a last-block reduction (partial, fence, atom.add ticket; the last
+claimant fences and sums), certified with C-TICKET. TICKET: the same without the release fence:
+a race in some claim order. RMW: red.relaxed then fence.acq_rel orders two writes only in one
+order of the adds (C-ORDER commutative atomics). DEAD: a relaxed flag load whose value is
+unused, then a fence and a read of the published data without testing the flag (C-ORDER dead
+read, E-RACE-DEAD). ATOM: the RMW pattern under a poll of the adds' counter (C-POLL-ATOM).
+CHAIN: the release reaches the fencing thread only through two relaxed reads, each order-
+dependent (no barrier carries it): still fence-acquired, refused.
+Until 2026-11-08 RMW, DEAD and ATOM certified (RMW: 200/200 wrong on GB300)."""
+ptx = "kernel.ptx"
+entry = "e_relaxed_fence_acq"
+grid = [3, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "part"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "cnt"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "part"
+
+[[params]]
+kind = "ptr"
+buffer = "cnt"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "TICKET"
+summary = "no release fence before the ticket"
+marker = "@REL"
+find = "fence.acq_rel.gpu;"
+replace = "mov.u32 %r20, 0;"
+expect = ["race"]
+
+[[variants]]
+id = "RMW"
+summary = "relaxed adds, then an acquire fence"
+marker = "@MODE"
+find = "bra.uni GOOD;"
+replace = "bra.uni RMW;"
+expect = ["race"]
+
+[[variants]]
+id = "DEAD"
+summary = "relaxed flag load, value unused, fence, plain read"
+marker = "@MODE"
+find = "bra.uni GOOD;"
+replace = "bra.uni DEAD;"
+expect = ["race"]
+
+[[variants]]
+id = "ATOM"
+summary = "the RMW pattern under a poll of the counter"
+marker = "@MODE"
+find = "bra.uni GOOD;"
+replace = "bra.uni ATOM;"
+expect = ["race"]
+
+[[variants]]
+id = "CHAIN"
+summary = "the release reaches the fencing thread only through relaxed reads (two of them)"
+marker = "@MODE"
+find = "bra.uni GOOD;"
+replace = "bra.uni CHAIN;"
+expect = ["race"]

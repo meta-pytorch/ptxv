@@ -1,0 +1,41 @@
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// errdist linearized-tier gap (scorecard row). One thread per element of x, w, v, y, z [4096].
+// t1 = RN(RN(x w) v), t2 = RN(x RN(w v)); y = t1 > 0.5 ? t1 : t2. With v = 1 both products
+// round once and alike, so those elements never differ.
+.visible .entry lin_mix(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py, .param .u64 pz)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<2>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    ld.param.u64 %rd5, [pz];
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, %ctaid.x;
+    mov.u32 %r3, %ntid.x;
+    mad.lo.u32 %r4, %r2, %r3, %r1;
+    mul.wide.u32 %rd6, %r4, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    add.s64 %rd11, %rd5, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    mul.rn.f32 %f5, %f4, %f3;
+    mul.rn.f32 %f6, %f2, %f3;
+    mul.rn.f32 %f7, %f1, %f6;
+    st.global.f32 [%rd10], %f7;
+    setp.gt.f32 %p1, %f5, 0f3F000000;
+    @%p1 st.global.f32 [%rd10], %f5;
+    st.global.f32 [%rd11], %f5;
+    ret;
+}

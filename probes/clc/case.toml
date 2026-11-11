@@ -1,0 +1,23 @@
+name = "probe_clc"
+description = """
+Probe (hardware only) for the rung 1d CLC model: per CTA {ran, is_canceled, first_ctaid.x,
+raw response words}, 8192 CTAs, one try_cancel each."""
+ptx = "kernel.ptx"
+entry = "probe_clc"
+grid = [8192, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [65536]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1,0 +1,75 @@
+name = "tc_pair_bs_sm100"
+description = """
+tc_pair_bs's kernel built for sm_100a, where ptxas 13.1 spells the block16 MMA UTCOMMA.2CTA.4X
+(sm_103a: UTCOMMA.2CTA.BLOCK16). expected/D.bin is GB200's output (equal to GB300's)."""
+arch = "sm_100a"
+ptx = "kernel.ptx"
+entry = "mma_pair"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "u8"
+shape = [256, 32]
+init = "file"
+file = "data/A.bin"
+
+[[buffers]]
+name = "B"
+dtype = "u8"
+shape = [64, 32]
+init = "file"
+file = "data/B.bin"
+
+[[buffers]]
+name = "SFA"
+dtype = "u32"
+shape = [2, 128, 4]
+init = "file"
+file = "data/SFA.bin"
+
+[[buffers]]
+name = "SFB"
+dtype = "u32"
+shape = [2, 128, 4]
+init = "file"
+file = "data/SFB.bin"
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [256, 64]
+init = "nan"
+
+[[params]]
+kind = "ptr"
+buffer = "A"
+
+[[params]]
+kind = "ptr"
+buffer = "B"
+
+[[params]]
+kind = "ptr"
+buffer = "SFA"
+
+[[params]]
+kind = "ptr"
+buffer = "SFB"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+# idesc: A / B e2m1 (1 at bits 7 / 10), ue4m3 scales (bit 23 clear), N >> 3 = 8 at bit 17,
+# M >> 4 = 16 at bit 24.
+[[params]]
+kind = "u32"
+value = 0x10100480
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1,0 +1,158 @@
+name = "c_mm2_sum"
+description = """
+Captured in process by ptxv.capture (python/ptxv). 3 launch(es), binary only (cubins from CUPTI):
+  0: cutlass3x_sm100_simt_sgemm_f32_f32_f32_f32_f32_32x32x16_1x1x1_3_nnn_align1_bias_f32_relu grid [1, 1, 1] block [64, 1, 1]
+  1: cutlass3x_sm100_simt_sgemm_f32_f32_f32_f32_f32_32x32x16_1x1x1_3_nnn_align1_bias_f32_relu grid [1, 1, 1] block [64, 1, 1]
+  2: _ZN2at6native29vectorized_elementwise_kernelILi4ENS0_15CUDAFunctor_addIfEESt5arrayIPcLm3EEEEviT0_T1_ grid [1, 1, 1] block [128, 1, 1]"""
+cubin = "k0.cubin"
+entry = "cutlass3x_sm100_simt_sgemm_f32_f32_f32_f32_f32_32x32x16_1x1x1_3_nnn_align1_bias_f32_relu"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+dynamic_smem = 12672
+outputs = ["out", "W1", "W0"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32, 64]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "w1"
+dtype = "f32"
+shape = [64, 32]
+init = "file"
+file = "data/w1.bin"
+
+[[buffers]]
+name = "w2"
+dtype = "f32"
+shape = [64, 32]
+init = "file"
+file = "data/w2.bin"
+
+[[buffers]]
+name = "W0"
+dtype = "u8"
+shape = [4096]
+init = "zeros"
+expect = "expected/W0.bin"
+
+[[buffers]]
+name = "W1"
+dtype = "u8"
+shape = [4096]
+init = "zeros"
+expect = "expected/W1.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32, 32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "bytes"
+hex = "0000000020000000200000004000000001000000ffff00000020c0bdf7ff0000200000000000000000000000000000000000c0bdf7ff0000400000000000000000000000000000000000803f0000000000000000000000000000000000000000ffff7fffffff7f7f000080ff0000807f0060c0bdf7ff0000200000000000000000000000000000000060c0bdf7ff00002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffff000000000000000000000000000000000000000000000000000000000000abaa000001000000000000000000000000000000010000000000000000000000ffff0000010000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000010000000000000000000000010000000100000001000000010000000100000001000000fbff000000000000980000000000000000000000000000000000000000000000000000000000000000000000"
+
+[[params.fields]]
+offset = 24
+kind = "ptr"
+buffer = "w1"
+byte_offset = 0
+
+[[params.fields]]
+offset = 48
+kind = "ptr"
+buffer = "x"
+byte_offset = 0
+
+[[params.fields]]
+offset = 112
+kind = "ptr"
+buffer = "W0"
+byte_offset = 0
+
+[[params.fields]]
+offset = 136
+kind = "ptr"
+buffer = "W0"
+byte_offset = 0
+
+[[launches]]
+entry = "cutlass3x_sm100_simt_sgemm_f32_f32_f32_f32_f32_32x32x16_1x1x1_3_nnn_align1_bias_f32_relu"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+dynamic_smem = 12672
+
+[[launches.params]]
+kind = "bytes"
+hex = "0000000020000000200000004000000001000000ffff00000040c0bdf7ff0000200000000000000000000000000000000000c0bdf7ff0000400000000000000000000000000000000000803f0000000000000000000000000000000000000000ffff7fffffff7f7f000080ff0000807f0070c0bdf7ff0000200000000000000000000000000000000070c0bdf7ff00002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffff000000000000000000000000000000000000000000000000000000000000abaa000001000000000000000000000000000000010000000000000000000000ffff0000010000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000010000000000000000000000010000000100000001000000010000000100000001000000fbff000000000000980000000000000000000000000000000000000000000000000000000000000000000000"
+
+[[launches.params.fields]]
+offset = 24
+kind = "ptr"
+buffer = "w2"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 48
+kind = "ptr"
+buffer = "x"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 112
+kind = "ptr"
+buffer = "W1"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 136
+kind = "ptr"
+buffer = "W1"
+byte_offset = 0
+
+[[launches]]
+entry = "_ZN2at6native29vectorized_elementwise_kernelILi4ENS0_15CUDAFunctor_addIfEESt5arrayIPcLm3EEEEviT0_T1_"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+cubin = "k1.cubin"
+
+[[launches.params]]
+kind = "u32"
+value = 1024
+
+[[launches.params]]
+kind = "u32"
+value = 1065353216
+
+[[launches.params]]
+kind = "bytes"
+hex = "0080c0bdf7ff00000060c0bdf7ff00000070c0bdf7ff0000"
+
+[[launches.params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 8
+kind = "ptr"
+buffer = "W0"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 16
+kind = "ptr"
+buffer = "W1"
+byte_offset = 0
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

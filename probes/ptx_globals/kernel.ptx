@@ -1,0 +1,60 @@
+// probes/ptx_globals: module-scope .global variables on the PTX front: a byte table with an
+// initializer, a u32 with a scalar initializer, a zero (no initializer) u32 array, and a
+// scratch array written then read back within the launch. 32 threads; out[t] = tab[t % 8] +
+// k + zero[t % 4]; out[32 + t] = the scratch word of lane 31 - t after a barrier;
+// out[64 + t] = (cvta.global(tab) == tab).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.global .align 1 .b8 tab[8] = {3, 1, 4, 1, 5, 9, 2, 6};
+.global .align 4 .u32 k = 100;
+.global .align 4 .u32 zero[4];
+.global .align 4 .b8 scratch[128];
+
+.visible .entry ptx_globals(
+    .param .u64 pout
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<2>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<16>;
+
+    ld.param.u64    %rd1, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32         %r1, %tid.x;
+    and.b32         %r2, %r1, 7;
+    mov.b64         %rd2, tab;
+    cvt.u64.u32     %rd3, %r2;
+    add.s64         %rd4, %rd2, %rd3;
+    ld.global.u8    %r3, [%rd4];
+    ld.global.u32   %r4, [k];
+    and.b32         %r5, %r1, 3;
+    mov.b64         %rd5, zero;
+    mul.wide.u32    %rd6, %r5, 4;
+    add.s64         %rd7, %rd5, %rd6;
+    ld.global.u32   %r6, [%rd7];
+    add.u32         %r7, %r3, %r4;
+    add.u32         %r7, %r7, %r6;
+    mul.wide.u32    %rd8, %r1, 4;
+    add.s64         %rd9, %rd1, %rd8;
+    st.global.u32   [%rd9], %r7;
+    mov.b64         %rd10, scratch;
+    add.s64         %rd11, %rd10, %rd8;
+    mul.lo.u32      %r8, %r1, 7;
+    st.global.u32   [%rd11], %r8;
+    bar.sync        0;
+    sub.u32         %r9, 31, %r1;
+    mul.wide.u32    %rd12, %r9, 4;
+    add.s64         %rd13, %rd10, %rd12;
+    ld.global.u32   %r10, [%rd13];
+    st.global.u32   [%rd9+128], %r10;
+    ld.global.u32   %r11, [scratch+4];
+    mov.b64         %rd14, tab;
+    cvta.global.u64 %rd15, %rd14;
+    setp.eq.u64     %p1, %rd15, %rd14;
+    selp.u32        %r13, 1, 0, %p1;
+    st.global.u32   [%rd9+256], %r13;
+    ret;
+}

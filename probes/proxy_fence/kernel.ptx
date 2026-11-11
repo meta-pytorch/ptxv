@@ -1,0 +1,253 @@
+// Rung 1b fixture: a persistent, warp-specialized tcgen05 GEMM pipeline (one CTA, 6 warps).
+//
+//   D[256x16] (f32) = A[256x128] (bf16) * B[16x128]^T, as T = 2 output tiles of 128x16;
+//   K = 128 per tile in KB = 2 k-blocks of 64 (one 128-byte swizzle row of bf16).
+//
+//   warp 0, t0 : TMA producer. For every (tile, k-block) i: wait empty[s] (s = i % 2), arm
+//                full[s] with expect_tx, two 128B-swizzled 2-D TMA loads into stage s.
+//   warp 1     : allocates 32 TMEM columns (one accumulator, reused for both tiles).
+//          t32 : MMA issuer. Per tile: wait tmem_empty, then per k-block wait full[s],
+//                4 x tcgen05.mma (K = 16 each, SWIZZLE_128B K-major descriptors),
+//                tcgen05.commit -> empty[s]; after the tile, commit -> tmem_full.
+//                At the end warp 1 waits for the last release and deallocates.
+//   warps 2-5  : epilogue (TMEM lane quarter = warp % 4). Per tile: wait tmem_full,
+//                tcgen05.ld 32x32b.x16, release the accumulator (arrive tmem_empty),
+//                stage the 128x16 f32 tile in shared memory, fence.proxy.async, named
+//                barrier, then t64 issues a TMA store and waits until it has read the
+//                staging buffer before the next tile overwrites it.
+//
+// Barriers (bars + offset): full[0..1] +0/+8, empty[0..1] +16/+24, tmem_full +32,
+// tmem_empty +40 (128 arrivals). 4 pipeline iterations through 2 stages: every barrier wraps.
+//
+// Mutants (case.toml): B04 no fence.proxy.async before the TMA store; B09 the MMA warp does
+// not wait for the epilogue to release the accumulator; B10 the producer's phase restarts
+// every tile; B11 the MMA warp skips the empty arrive of each tile's last k-block; B50 the
+// staging buffer is rewritten before the TMA store has read it.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry r1b_pipeline(
+    .param .align 64 .b8 tmap_a[128],
+    .param .align 64 .b8 tmap_b[128],
+    .param .align 64 .b8 tmap_d[128]
+)
+.maxntid 192, 1, 1
+{
+    .reg .pred  %p<16>;
+    .reg .b32   %r<64>;
+    .reg .b64   %rd<32>;
+    .shared .align 16 .b32 tmem_slot;
+    .shared .align 8 .b8 bars[48];
+    .shared .align 1024 .b8 smA[32768];
+    .shared .align 1024 .b8 smB[4096];
+    .shared .align 1024 .b8 smD[8192];
+
+    mov.u32         %r0, %tid.x;
+    shr.u32         %r1, %r0, 5;                    // warp
+    and.b32         %r2, %r0, 31;                   // lane
+    mov.u32         %r3, bars;
+    mov.u32         %r4, tmem_slot;
+    mov.u32         %r5, smA;
+    mov.u32         %r6, smB;
+    mov.u32         %r7, smD;
+    setp.ne.u32     %p0, %r1, 1;
+    @%p0 bra        SKIP_ALLOC;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r4], 32;
+    tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+SKIP_ALLOC:
+    setp.ne.u32     %p1, %r0, 0;
+    @%p1 bra        SKIP_INIT;
+    mbarrier.init.shared::cta.b64 [%r3], 1;
+    add.u32         %r8, %r3, 8;
+    mbarrier.init.shared::cta.b64 [%r8], 1;
+    add.u32         %r8, %r3, 16;
+    mbarrier.init.shared::cta.b64 [%r8], 1;
+    add.u32         %r8, %r3, 24;
+    mbarrier.init.shared::cta.b64 [%r8], 1;
+    add.u32         %r8, %r3, 32;
+    mbarrier.init.shared::cta.b64 [%r8], 1;
+    add.u32         %r8, %r3, 40;
+    mbarrier.init.shared::cta.b64 [%r8], 128;
+    fence.mbarrier_init.release.cluster;
+SKIP_INIT:
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    tcgen05.fence::after_thread_sync;
+    ld.shared.b32   %r9, [%r4];                     // TMEM accumulator address
+    setp.eq.u32     %p2, %r1, 0;
+    @%p2 bra        PRODUCER;
+    setp.eq.u32     %p2, %r1, 1;
+    @%p2 bra        MMA;
+    bra             EPILOGUE;
+
+    // ---- warp 0: TMA producer (thread 0) -----------------------------------------------
+PRODUCER:
+    @%p1 bra        DONE;
+    mov.b64         %rd0, tmap_a;
+    cvta.param.u64  %rd1, %rd0;
+    mov.b64         %rd2, tmap_b;
+    cvta.param.u64  %rd3, %rd2;
+    mov.u32         %r10, 0;                        // i: pipeline iteration
+    mov.u32         %r11, 0;                        // t: tile
+P_TILE:
+    mov.u32         %r12, 0;                        // k: k-block
+P_K:
+    and.b32         %r13, %r10, 1;                  // stage s = i % 2
+    shr.u32         %r14, %r10, 1;                  // round = i / 2          // @B10
+    and.b32         %r15, %r14, 1;
+    xor.b32         %r15, %r15, 1;                  // wait for the release of the previous round
+    shl.b32         %r16, %r13, 3;
+    add.u32         %r17, %r3, %r16;                // full[s]
+    add.u32         %r18, %r17, 16;                 // empty[s]
+P_WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p3, [%r18], %r15;
+    @!%p3 bra       P_WAIT;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r17], 18432;
+    shl.b32         %r19, %r13, 14;
+    add.u32         %r20, %r5, %r19;                // smA + s * 16384
+    shl.b32         %r21, %r13, 11;
+    add.u32         %r22, %r6, %r21;                // smB + s * 2048
+    shl.b32         %r23, %r12, 6;                  // k * 64
+    shl.b32         %r24, %r11, 7;                  // t * 128
+    mov.u32         %r25, 0;
+    cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes [%r20], [%rd1, {%r23, %r24}], [%r17];
+    cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes [%r22], [%rd3, {%r23, %r25}], [%r17];
+    add.u32         %r10, %r10, 1;
+    add.u32         %r12, %r12, 1;
+    setp.lt.u32     %p4, %r12, 2;
+    @%p4 bra        P_K;
+    add.u32         %r11, %r11, 1;
+    setp.lt.u32     %p4, %r11, 2;
+    @%p4 bra        P_TILE;
+    bra             DONE;
+
+    // ---- warp 1: MMA issuer (thread 32), then TMEM dealloc ------------------------------
+MMA:
+    setp.ne.u32     %p5, %r2, 0;
+    @%p5 bra        M_FINAL;
+    mov.u32         %r26, 0x08040490;               // idesc: f32 <- bf16 x bf16, N = 16, M = 128
+    setp.eq.u32     %p9, %r0, %r0;                  // true: accumulate
+    add.u32         %r28, %r3, 40;                  // tmem_empty
+    add.u32         %r31, %r3, 32;                  // tmem_full
+    mov.u32         %r10, 0;
+    mov.u32         %r11, 0;
+M_TILE:
+    and.b32         %r27, %r11, 1;
+    xor.b32         %r27, %r27, 1;
+M_WAIT_TE:
+    mbarrier.try_wait.parity.shared::cta.b64 %p6, [%r28], %r27;     // @B09
+    @!%p6 bra       M_WAIT_TE;                                      // @B09
+    tcgen05.fence::after_thread_sync;
+    mov.u32         %r12, 0;
+M_K:
+    and.b32         %r13, %r10, 1;
+    shr.u32         %r14, %r10, 1;
+    and.b32         %r14, %r14, 1;
+    shl.b32         %r16, %r13, 3;
+    add.u32         %r17, %r3, %r16;                // full[s]
+    add.u32         %r18, %r17, 16;                 // empty[s]
+M_WAIT_F:
+    mbarrier.try_wait.parity.shared::cta.b64 %p7, [%r17], %r14;
+    @!%p7 bra       M_WAIT_F;
+    shl.b32         %r19, %r13, 14;
+    add.u32         %r20, %r5, %r19;
+    shl.b32         %r21, %r13, 11;
+    add.u32         %r22, %r6, %r21;
+    // SWIZZLE_128B K-major descriptors: start>>4 | LBO 16 B (unused) | SBO 1024 B (8 rows of
+    // 128 B) | version 1 (bit 46) | layout 2 = SWIZZLE_128B (bits 61-63).
+    shr.u32         %r29, %r20, 4;
+    cvt.u64.u32     %rd4, %r29;
+    or.b64          %rd5, %rd4, 0x4000404000010000;
+    shr.u32         %r30, %r22, 4;
+    cvt.u64.u32     %rd6, %r30;
+    or.b64          %rd7, %rd6, 0x4000404000010000;
+    setp.ne.u32     %p8, %r12, 0;                   // first MMA of a tile overwrites D
+    tcgen05.mma.cta_group::1.kind::f16 [%r9], %rd5, %rd7, %r26, %p8;
+    add.u64         %rd8, %rd5, 2;             // +32 B: next K=16 slice of the 128B row
+    add.u64         %rd9, %rd7, 2;
+    tcgen05.mma.cta_group::1.kind::f16 [%r9], %rd8, %rd9, %r26, %p9;
+    add.u64         %rd10, %rd5, 4;             // +64 B: next K=16 slice of the 128B row
+    add.u64         %rd11, %rd7, 4;
+    tcgen05.mma.cta_group::1.kind::f16 [%r9], %rd10, %rd11, %r26, %p9;
+    add.u64         %rd12, %rd5, 6;             // +96 B: next K=16 slice of the 128B row
+    add.u64         %rd13, %rd7, 6;
+    tcgen05.mma.cta_group::1.kind::f16 [%r9], %rd12, %rd13, %r26, %p9;
+    setp.ne.u32     %p10, %r12, 1;                  // B11 uses this: not the tile's last k-block
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r18];   // @B11
+    add.u32         %r10, %r10, 1;
+    add.u32         %r12, %r12, 1;
+    setp.lt.u32     %p4, %r12, 2;
+    @%p4 bra        M_K;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r31];
+    add.u32         %r11, %r11, 1;
+    setp.lt.u32     %p4, %r11, 2;
+    @%p4 bra        M_TILE;
+M_FINAL:
+    add.u32         %r28, %r3, 40;
+M_WAIT_LAST:
+    mbarrier.try_wait.parity.shared::cta.b64 %p11, [%r28], 1;      // the 2nd release (tile 1)
+    @!%p11 bra      M_WAIT_LAST;
+    tcgen05.fence::after_thread_sync;
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r9, 32;
+    bra             DONE;
+
+    // ---- warps 2-5: epilogue ---------------------------------------------------------------
+EPILOGUE:
+    and.b32         %r32, %r1, 3;                   // TMEM lane quarter
+    shl.b32         %r33, %r32, 5;
+    add.u32         %r34, %r33, %r2;                // row within the tile
+    shl.b32         %r35, %r32, 21;                 // (32 * quarter) << 16: TMEM lane field
+    add.u32         %r36, %r9, %r35;
+    shl.b32         %r37, %r34, 6;                  // row * 64 B
+    add.u32         %r38, %r7, %r37;                // &smD[row][0]
+    mov.b64         %rd10, tmap_d;
+    cvta.param.u64  %rd11, %rd10;
+    setp.ne.u32     %p12, %r0, 64;                  // not the TMA store issuer
+    add.u32         %r39, %r3, 32;                  // tmem_full
+    add.u32         %r40, %r3, 40;                  // tmem_empty
+    mov.u32         %r11, 0;
+E_TILE:
+    and.b32         %r41, %r11, 1;
+E_WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p13, [%r39], %r41;
+    @!%p13 bra      E_WAIT;
+    tcgen05.fence::after_thread_sync;
+    tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r42, %r43, %r44, %r45, %r46, %r47, %r48, %r49, %r50, %r51, %r52, %r53, %r54, %r55, %r56, %r57}, [%r36];
+    tcgen05.wait::ld.sync.aligned;
+    tcgen05.fence::before_thread_sync;
+    mbarrier.arrive.shared::cta.b64 _, [%r40];      // accumulator free
+    bar.sync        1, 128;                         // staging buffer free
+    st.shared.b32   [%r38+0], %r42;
+    st.shared.b32   [%r38+4], %r43;
+    st.shared.b32   [%r38+8], %r44;
+    st.shared.b32   [%r38+12], %r45;
+    st.shared.b32   [%r38+16], %r46;
+    st.shared.b32   [%r38+20], %r47;
+    st.shared.b32   [%r38+24], %r48;
+    st.shared.b32   [%r38+28], %r49;
+    st.shared.b32   [%r38+32], %r50;
+    st.shared.b32   [%r38+36], %r51;
+    st.shared.b32   [%r38+40], %r52;
+    st.shared.b32   [%r38+44], %r53;
+    st.shared.b32   [%r38+48], %r54;
+    st.shared.b32   [%r38+52], %r55;
+    st.shared.b32   [%r38+56], %r56;
+    st.shared.b32   [%r38+60], %r57;
+    fence.proxy.async.shared::cta;                                  // @B04
+    bar.sync        1, 128;                                         // @AFTER
+    @%p12 bra       E_NEXT;                                         // @ISSUER
+    shl.b32         %r58, %r11, 7;
+    mov.u32         %r59, 0;
+    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd11, {%r59, %r58}], [%r7];
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group.read 0;                                // @B50
+E_NEXT:
+    add.u32         %r11, %r11, 1;
+    setp.lt.u32     %p14, %r11, 2;
+    @%p14 bra       E_TILE;
+    @%p12 bra       DONE;
+    cp.async.bulk.wait_group 0;
+DONE:
+    ret;
+}

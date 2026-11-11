@@ -1,0 +1,21 @@
+id = "h100"
+name = "NVIDIA H100 (Hopper)"
+vendor = "nvidia"
+isa = ["ptx", "sass"]
+arch = ["sm_90", "sm_90a"]
+id_prefix = "H100"
+status = "scaffold"
+based_on = "gb300"
+
+# Verdict fronts, in display order (targets/README.md, "Fronts").
+[[front]]
+id = "ptx"
+label = "PTX contract"
+kind = "contract"
+description = "The kernel's PTX against the PTX ISA execution and memory model: what any conforming implementation may do."
+
+[[front]]
+id = "sass"
+label = "SASS / H100 hardware"
+kind = "hardware"
+description = "The SASS compiled for sm_90, against the H100 model: what the hardware does."

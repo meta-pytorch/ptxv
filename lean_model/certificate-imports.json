@@ -1,0 +1,118 @@
+{
+  "Blackwell/BulkReduction.lean": [
+    "AtomicSpec",
+    "PackedMinMaxSpec",
+    "IntegerAtomicSpec"
+  ],
+  "Blackwell/GB300Math/TensorLegacyBlackwell.lean": [
+    "GB300Math.SparseTensorExtra"
+  ],
+  "Blackwell/GB300Math/TensorSmallHalf.lean": [
+    "GB300Math.SparseTensorExtra"
+  ],
+  "Blackwell/MufuReciprocalSelectorAccuracy.lean": [
+    "MufuReciprocalUniversal"
+  ],
+  "Blackwell/MufuRootSelectorAccuracy.lean": [
+    "MufuRootFloatLibUniversal"
+  ],
+  "Blackwell/MufuSelector.lean": [
+    "GB300Math.MufuPacked"
+  ],
+  "Blackwell/MufuSelectorSm103.lean": [
+    "GB300Math.MufuPacked"
+  ],
+  "Blackwell/MultimemReduction.lean": [
+    "BulkReductionSpec"
+  ],
+  "Blackwell/MultimemUpdates.lean": [
+    "BulkReductionSpec"
+  ],
+  "Blackwell/SmallConversionNativeSm103.lean": [
+    "GB300Math.SmallConversions"
+  ],
+  "Blackwell/SmallConversionNativeSm103Proof.lean": [
+    "GB300Math.SmallConversionNative",
+    "GB300Math.SmallConversionNativeSm103"
+  ],
+  "Blackwell/TensorIntegerZero.lean": [
+    "GB300Math.TensorInteger",
+    "GB300Math.SparseTensorExtra"
+  ],
+  "Blackwell/VectorAtomic.lean": [
+    "AtomicSpec",
+    "PackedMinMaxSpec"
+  ],
+  "Shared/AlternateFloatFloatLib.lean": [
+    "AlternateFloatSpec",
+    "SmallConversionFloatLibSpec"
+  ],
+  "Shared/AlternateFloatPackRoundTrip.lean": [
+    "AlternateFloatSpec"
+  ],
+  "Shared/AlternateFloatPairBounds.lean": [
+    "AlternateFloatSpec"
+  ],
+  "Shared/AlternateFloatPairContracts.lean": [
+    "All_e4m3_add",
+    "All_e4m3_sub",
+    "All_e4m3_mul",
+    "All_e5m2_add",
+    "All_e5m2_sub",
+    "All_e5m2_mul"
+  ],
+  "Shared/AlternateFloatRoundBounds.lean": [
+    "AlternateFloatSpec"
+  ],
+  "Shared/FloatAtomicTrace.lean": [
+    "AtomicSpec"
+  ],
+  "Shared/MufuPackedAccuracy.lean": [
+    "GB300Math.MufuPacked"
+  ],
+  "Shared/MufuPackedExhaustive.lean": [
+    "GB300Math.MufuPacked"
+  ],
+  "Shared/MufuPackedSelectorExhaustive.lean": [
+    "GB300Math.MufuPacked"
+  ],
+  "Shared/MufuRcp32Accuracy.lean": [
+    "MufuRcp32Universal"
+  ],
+  "Shared/NativeIntegerControls.lean": [
+    "GB300Math.NativeIntegerModifiers"
+  ],
+  "Shared/NativeMixedScalar.lean": [
+    "MixedScalarCore"
+  ],
+  "Shared/QFloatJoint.lean": [
+    "GB300Math.QFloatModifiers"
+  ],
+  "Shared/QFloatModifiers.lean": [
+    "GB300Math.AlternateFloat"
+  ],
+  "Shared/QFloatSelectorJoint.lean": [
+    "GB300Math.QFloatModifiers"
+  ],
+  "Shared/ScaledBF16Scan.lean": [
+    "GB300Math.SmallConversions"
+  ],
+  "Shared/SmallConversionMerge.lean": [
+    "GB300Math.SmallConversions"
+  ],
+  "Shared/SmallConversionNative.lean": [
+    "GB300Math.SmallConversions"
+  ],
+  "Shared/TextureGradientBounds.lean": [
+    "GB300Math.TextureGradientCertificates"
+  ],
+  "Shared/TextureGradientCertificates.lean": [
+    "GB300Math.TextureGradient"
+  ],
+  "Shared/VimnmxPredicateConsumer.lean": [
+    "GB300Math.NativeIntegerModifiers"
+  ],
+  "Shared/VimnmxPredicates.lean": [
+    "GB300Math.NativeIntegerModifiers"
+  ]
+}

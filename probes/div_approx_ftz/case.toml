@@ -1,0 +1,62 @@
+name = "probe_div_approx_ftz"
+description = """
+Probe (L-ROSETTA, N-MUFU, PTX-FMAD, PTX-FMUL-SCALE) for div.approx.ftz.f32 on the PTX front:
+ptxas lowers it to MUFU.RCP r, b; FMUL.FTZ d, a, r (1.0 / b: FADD.FTZ r, -RZ; C / b:
+FMUL.FTZ r, C; -a and |b| folded), and the product contracts with a following add.ftz /
+sub.ftz (FFMA.FTZ) and folds with a mul.ftz by 0.5 / 2.0 (FMUL.FTZ.D2 / .M2) as a
+mul.ftz.f32 without a rounding modifier does. out[s * 1024 + i] per shape s (kernel.ptx);
+inputs from gen.py. expected/ is GB300's output (`ptxv probe`, ptxas 13.0)."""
+ptx = "kernel.ptx"
+entry = "div_approx_ftz"
+ptxas_toolkit = "13.0"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "a"
+dtype = "u32"
+shape = [1024]
+init = "file"
+file = "a.bin"
+
+[[buffers]]
+name = "b"
+dtype = "u32"
+shape = [1024]
+init = "file"
+file = "b.bin"
+
+[[buffers]]
+name = "c"
+dtype = "u32"
+shape = [1024]
+init = "file"
+file = "c.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [16384]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+
+[[params]]
+kind = "ptr"
+buffer = "b"
+
+[[params]]
+kind = "ptr"
+buffer = "c"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

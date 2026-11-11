@@ -1,0 +1,12 @@
+# GB300 (sm_103a, CUDA 13.0), 2026-11-05: PTXV_GPUS=3 probes/sb_mio_order/run.sh 1000
+# 1184 CTAs x 256 threads per run, shared memory scrubbed before each run.
+inorder MOV R26, R0; STS [R26], R29; STS [R26+0x400], R29; LDC R26, c[0x0][0x390]; STS [R0+0x5000], R29
+inorder_ldg MOV R26, R0; STS [R26], R29; LDG.E R27, desc[UR6][R24.64]; STS [R26+0x400], R29; LDC R26, c[0x0][0x390]; STS [R0+0x5400], R29
+rd_on_ldg MOV R26, R0; STS [R26], R29; LDG.E R27, desc[UR6][R24.64]; LDC R26, c[0x0][0x390]; STS [R0+0x5000], R29
+rd_on_a MOV R26, R0; STS [R26], R29; STS [R26+0x400], R29; LDC R26, c[0x0][0x390]; STS [R0+0x5000], R29
+nowait MOV R26, R0; STS [R26], R29; STS [R26+0x400], R29; LDC R26, c[0x0][0x390]; STS [R0+0x5000], R29
+inorder      0/1000 runs wrong; words wrong per failing run: 0..0
+inorder_ldg  0/1000 runs wrong; words wrong per failing run: 0..0
+rd_on_ldg    0/1000 runs wrong; words wrong per failing run: 0..0
+rd_on_a      200/200 runs wrong; words wrong per failing run: 35584..40128
+nowait       200/200 runs wrong; words wrong per failing run: 593856..605408

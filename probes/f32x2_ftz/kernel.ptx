@@ -1,0 +1,32 @@
+// Probe (L-ROSETTA) for packed f32x2 arithmetic with .ftz: fma.{rn,rz,rm,rp}.ftz (FFMA2.FTZ
+// [.RZ|.RM|.RP]), add.{rn,rm,rz}.ftz (FADD2.FTZ[...]), sub.rn.ftz (FADD2.FTZ, -b), and
+// mul.{rn,rp}.ftz (FMUL2.FTZ[.RP]), each on loads (nothing to contract). Thread i reads
+// a, b, c (f32 pairs) at in + 32 i and writes ten f32 pairs at out + 80 i.
+.version 9.0
+.target sm_100a
+.address_size 64
+.visible .entry f32x2_ftz(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<24>; .reg .b32 %r<8>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mov.u32 %r2, %ctaid.x; mov.u32 %r3, %ntid.x; mad.lo.s32 %r1, %r2, %r3, %r1;
+  mul.wide.u32 %rd3, %r1, 32; add.s64 %rd4, %rd1, %rd3;
+  mul.wide.u32 %rd3, %r1, 80; add.s64 %rd5, %rd2, %rd3;
+  ld.global.v2.b64 {%rd6, %rd7}, [%rd4];
+  ld.global.b64 %rd8, [%rd4+16];
+  fma.rn.ftz.f32x2 %rd10, %rd6, %rd7, %rd8;
+  fma.rz.ftz.f32x2 %rd11, %rd6, %rd7, %rd8;
+  fma.rm.ftz.f32x2 %rd12, %rd6, %rd7, %rd8;
+  fma.rp.ftz.f32x2 %rd13, %rd6, %rd7, %rd8;
+  add.rn.ftz.f32x2 %rd14, %rd6, %rd8;
+  add.rm.ftz.f32x2 %rd15, %rd6, %rd7;
+  add.rz.ftz.f32x2 %rd16, %rd7, %rd8;
+  sub.rn.ftz.f32x2 %rd17, %rd6, %rd8;
+  mul.rn.ftz.f32x2 %rd18, %rd6, %rd7;
+  mul.rp.ftz.f32x2 %rd19, %rd6, %rd7;
+  st.global.v2.b64 [%rd5], {%rd10, %rd11};
+  st.global.v2.b64 [%rd5+16], {%rd12, %rd13};
+  st.global.v2.b64 [%rd5+32], {%rd14, %rd15};
+  st.global.v2.b64 [%rd5+48], {%rd16, %rd17};
+  st.global.v2.b64 [%rd5+64], {%rd18, %rd19};
+  ret; }

@@ -1,0 +1,32 @@
+// S-INIT fixture: one warp. Producers fill buf[0 .. N) in shared memory, bar.sync, then every
+// thread t reads buf[t]. good: N = 32. B48: N = 16 (a partial-tile producer), so threads
+// 16..31 read shared memory nothing wrote. There is no race (the barrier orders everything);
+// on hardware they read whatever an earlier kernel left there.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry s_init(.param .u64 out_p)
+{
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<6>;
+    .reg .pred %p<4>;
+    .shared .align 4 .b32 buf[32];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, buf;
+    shl.b32 %r3, %r1, 2;
+    add.u32 %r4, %r2, %r3;
+    setp.ge.u32 %p1, %r1, 32;            // @B48
+    @%p1 bra SKIP;
+    add.u32 %r5, %r1, 100;
+    st.shared.u32 [%r4], %r5;
+SKIP:
+    bar.sync 0;
+    ld.shared.u32 %r6, [%r4];
+    mul.wide.u32 %rd2, %r1, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r6;
+    ret;
+}

@@ -1,0 +1,4 @@
+{"version": 1, "seed": 1, "name": "N(0,1) with 2% outliers N(0, 64^2), MXF8 e4m3 per 32",
+ "tensors": {
+  "A": {"dist": {"kind": "mixture", "components": [{"weight": 0.98, "dist": {"kind": "normal"}}, {"weight": 0.02, "dist": {"kind": "normal", "std": 64.0}}]}, "quant": {"kind": "mx", "elem": "e4m3", "block": 32, "scales": "SFA"}},
+  "B": {"dist": {"kind": "mixture", "components": [{"weight": 0.98, "dist": {"kind": "normal"}}, {"weight": 0.02, "dist": {"kind": "normal", "std": 64.0}}]}, "quant": {"kind": "mx", "elem": "e4m3", "block": 32, "scales": "SFB"}}}}

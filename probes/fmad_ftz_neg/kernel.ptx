@@ -1,0 +1,84 @@
+// probes/fmad_ftz_neg (gen.py). 256 threads x 64 iterations, i = 256 j + t.
+//   0: mul.ftz.f32 P, A, B; neg.f32 Q, P; add.ftz.f32 D, Q, C;
+//   1: mul.ftz.f32 P, A, B; neg.f32 Q, P; sub.ftz.f32 D, C, Q;
+//   2: mul.ftz.f32 P, A, B; neg.f32 Q, P; add.ftz.sat.f32 D, Q, C;
+//   3: mul.ftz.f32 P, A, B; neg.f32 Q, P; sub.ftz.sat.f32 D, C, Q;
+//   4: mul.f32 P, A, B; neg.f32 Q, P; add.f32 D, Q, C;
+//   5: mul.ftz.f32 P, A, B; mov.f32 Q, P; add.ftz.f32 D, Q, C;
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry fmad_ftz_neg(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .pred  %p<2>;
+    .reg .f32   %f<70>;
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r4, %tid.x;
+LOOP:
+    mul.wide.u32    %rd3, %r4, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    add.s64         %rd5, %rd2, %rd3;
+    // form 0: mul.ftz.f32 P, A, B; neg.f32 Q, P; add.ftz.f32 D, Q, C;
+    ld.global.f32   %f1, [%rd4+0];
+    ld.global.f32   %f2, [%rd4+65536];
+    ld.global.f32   %f3, [%rd4+131072];
+    mul.ftz.f32 %f5, %f1, %f2;
+    neg.f32 %f6, %f5;
+    add.ftz.f32 %f9, %f6, %f3;
+    st.global.f32   [%rd5+0], %f9;
+    // form 1: mul.ftz.f32 P, A, B; neg.f32 Q, P; sub.ftz.f32 D, C, Q;
+    ld.global.f32   %f11, [%rd4+196608];
+    ld.global.f32   %f12, [%rd4+262144];
+    ld.global.f32   %f13, [%rd4+327680];
+    mul.ftz.f32 %f15, %f11, %f12;
+    neg.f32 %f16, %f15;
+    sub.ftz.f32 %f19, %f13, %f16;
+    st.global.f32   [%rd5+65536], %f19;
+    // form 2: mul.ftz.f32 P, A, B; neg.f32 Q, P; add.ftz.sat.f32 D, Q, C;
+    ld.global.f32   %f21, [%rd4+393216];
+    ld.global.f32   %f22, [%rd4+458752];
+    ld.global.f32   %f23, [%rd4+524288];
+    mul.ftz.f32 %f25, %f21, %f22;
+    neg.f32 %f26, %f25;
+    add.ftz.sat.f32 %f29, %f26, %f23;
+    st.global.f32   [%rd5+131072], %f29;
+    // form 3: mul.ftz.f32 P, A, B; neg.f32 Q, P; sub.ftz.sat.f32 D, C, Q;
+    ld.global.f32   %f31, [%rd4+589824];
+    ld.global.f32   %f32, [%rd4+655360];
+    ld.global.f32   %f33, [%rd4+720896];
+    mul.ftz.f32 %f35, %f31, %f32;
+    neg.f32 %f36, %f35;
+    sub.ftz.sat.f32 %f39, %f33, %f36;
+    st.global.f32   [%rd5+196608], %f39;
+    // form 4: mul.f32 P, A, B; neg.f32 Q, P; add.f32 D, Q, C;
+    ld.global.f32   %f41, [%rd4+786432];
+    ld.global.f32   %f42, [%rd4+851968];
+    ld.global.f32   %f43, [%rd4+917504];
+    mul.f32 %f45, %f41, %f42;
+    neg.f32 %f46, %f45;
+    add.f32 %f49, %f46, %f43;
+    st.global.f32   [%rd5+262144], %f49;
+    // form 5: mul.ftz.f32 P, A, B; mov.f32 Q, P; add.ftz.f32 D, Q, C;
+    ld.global.f32   %f51, [%rd4+983040];
+    ld.global.f32   %f52, [%rd4+1048576];
+    ld.global.f32   %f53, [%rd4+1114112];
+    mul.ftz.f32 %f55, %f51, %f52;
+    mov.f32 %f56, %f55;
+    add.ftz.f32 %f59, %f56, %f53;
+    st.global.f32   [%rd5+327680], %f59;
+    add.u32         %r4, %r4, 256;
+    setp.lt.u32     %p1, %r4, 16384;
+    @%p1 bra        LOOP;
+    ret;
+}

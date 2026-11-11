@@ -1,0 +1,37 @@
+name = "probe_bf16_abs"
+description = """
+Probe (N-BF16X2) for bf16 abs on GB300: abs.bf16x2 and abs.bf16 (SASS HFMA2.BF16_V2 d, -RZ.H0_H0,
+RZ.H0_H0, |R| and |R|.H1_H1) over the bf16 classes (gen.py): -0 * 0 + |x| rounded once, so
+every NaN becomes 0x7fff and -0 becomes +0. expected/ is GB300's output (ptxas cubin,
+`ptxv hw-worker probes/bf16_abs <cubin> --runs 1 --dump`)."""
+ptx = "kernel.ptx"
+entry = "bf16abs"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024, 2]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

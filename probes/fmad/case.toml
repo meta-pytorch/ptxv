@@ -1,0 +1,38 @@
+name = "probe_fmad"
+description = """
+Probe (PTX-FMAD) for ptxas 13.0's default contraction of a mul without a rounding modifier into
+the add / sub without one that reads it: both operand orders, sub either way, .ftz, .sat,
+immediates, a guarded pair, f64, and the forms ptxas keeps apart (mul.ftz + add, add.rn,
+mul.rn) on random, cancelling, subnormal and special operands (kernel.ptx, gen.py). expected/
+is GB300's output (kernel.cubin = ptxas -arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "fmad"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [768]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4096]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1,0 +1,46 @@
+name = "adv_sel"
+description = """
+errdist adversarial row for N-ERRDIST-SEL: out = (s > 0) ? x0 + ... + x15 : x0, a plain store of
+x0 overwritten by a store under the input-derived guard s > 0 (a selection). The linearized and
+CLT tiers follow one branch at their nominal inputs and must be refused; Tier 3 evaluates the
+branch per input (crates/cli/tests/errdist_adv.rs)."""
+ptx = "kernel.ptx"
+entry = "adv_sel"
+grid = [1, 1, 1]
+block = [1, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [16]
+init = "zeros"
+
+[[buffers]]
+name = "s"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "s"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

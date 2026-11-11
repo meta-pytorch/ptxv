@@ -1,0 +1,39 @@
+//
+// Rung 1h, NVLS multicast and the per-SM L1 (S-VA-ALIAS, E-MC-ALIAS-HW, E-HW-L1). One thread
+// on GPU 0; `u` is GPU 0's unicast buffer, `m` the multicast address bound to it (and to
+// GPU 1's buffer).
+//   - read-after-write on one SM: a weak load of word 1 through u fills the SM's L1 line, a
+//     multimem.st through m writes word 0, fence.proxy.alias, a weak load of word 0 through u
+//     (without the fence the line the first load filled is still in L1: the L1 keeps lines
+//     by virtual address, probes/va_alias);
+//   - write-after-read: a weak load through u, fence.proxy.alias, a multimem.st of the same
+//     word through m.
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry nvls_l1(
+    .param .u64 u,
+    .param .u64 m,
+    .param .u64 out
+)
+{
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<8>;
+
+    ld.param.u64 %rd1, [u];
+    ld.param.u64 %rd2, [m];
+    ld.param.u64 %rd3, [out];
+    ld.global.u32 %r1, [%rd1+4];
+    multimem.st.relaxed.sys.global.b32 [%rd2], 7;
+    fence.proxy.alias; // @RAW
+    ld.global.u32 %r2, [%rd1];
+    st.global.u32 [%rd3], %r2;
+    ld.global.u32 %r3, [%rd1+64];
+    fence.proxy.alias; // @WAR
+    multimem.st.relaxed.sys.global.b32 [%rd2+64], 9;
+    st.global.u32 [%rd3+4], %r3;
+    st.global.u32 [%rd3+8], %r1;
+    ret;
+}

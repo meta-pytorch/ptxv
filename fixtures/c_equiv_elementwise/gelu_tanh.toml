@@ -1,0 +1,18 @@
+# Elementwise equivalence (docs/equiv-elementwise.md): c_gelu_tanh (torch) vs c_triton_gelu_tanh (Triton), f32.
+# Every output is one input element's function; both are swept over every f32 input.
+#   ptxv equiv fixtures/c_equiv_elementwise/gelu_tanh.toml     (elementwise_gpu = 64: also on GB300)
+max_states = 200000
+segments = true
+elementwise = true
+function = "gelu_tanh"
+# The exhaustive sweeps, as computed by ptxv (keyed by the slices' instructions); delete the
+# file or pass --no-sweep-cache to recompute (~20-40 s per f32 pair on 144 threads).
+sweep_cache = "sweeps.json"
+reference = { case = "../c_gelu_tanh", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "../c_triton_gelu_tanh"
+variant = "good"
+front = "sass"
+certify = true
+expect = "EW"

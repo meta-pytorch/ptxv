@@ -1,0 +1,98 @@
+name = "probe_fence_scopes"
+description = """
+Probe (S-SCOPE) for membar.{cta,gl,sys} (= fence.sc.<scope>; ptxas MEMBAR.SC.<scope>) and
+fence.acquire.{cta,cluster,gpu,sys} (ptxas: nothing for .cta, CCTL.IVALL otherwise): message
+passing across two CTAs (gpu scope) and within one (cta scope); variants narrow the release or
+the acquire below the scope that covers the pair, which the model must report. expected/ is
+GB300's output for good (kernel.cubin = ptxas -arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "fence_scopes"
+grid = [2, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "membar.gl / fence.acquire.gpu across CTAs, membar.cta / fence.acquire.gpu within one"
+expect = ["clean"]
+
+[[variants]]
+id = "sys"
+summary = "membar.sys / fence.acquire.sys across CTAs"
+marker = "@RELG"
+find = "membar.gl;"
+replace = "membar.sys;"
+expect = ["clean"]
+
+[[variants]]
+id = "acq_sys"
+summary = "fence.acquire.sys across CTAs"
+marker = "@ACQG"
+find = "fence.acquire.gpu;"
+replace = "fence.acquire.sys;"
+expect = ["clean"]
+
+[[variants]]
+id = "acq_cta"
+summary = "the cross-CTA consumer's acquire is only .cta"
+marker = "@ACQG"
+find = "fence.acquire.gpu;"
+replace = "fence.acquire.cta;"
+expect = ["race"]
+
+[[variants]]
+id = "acq_cluster"
+summary = "the cross-CTA consumer's acquire is .cluster (the CTAs are in different clusters): a race in PTX; ptxas emits CCTL.IVALL, which acquires everything, so the SASS front is clean"
+marker = "@ACQG"
+find = "fence.acquire.gpu;"
+replace = "fence.acquire.cluster;"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "rel_cta"
+summary = "the cross-CTA producer's fence is only membar.cta"
+marker = "@RELG"
+find = "membar.gl;"
+replace = "membar.cta;"
+expect = ["race"]
+
+[[variants]]
+id = "acq_cta_local"
+summary = "fence.acquire.cta within one CTA: synchronizes in PTX; ptxas emits no instruction for it and the SASS front, which reads LDG.STRONG.SM as relaxed, reports the race (weaker than the hardware, not than PTX)"
+marker = "@ACQC"
+find = "fence.acquire.gpu;"
+replace = "fence.acquire.cta;"
+expect = ["clean"]
+expect_sass = ["race"]

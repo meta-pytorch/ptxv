@@ -1,0 +1,191 @@
+GB300, CUDA 13.0, 152 SMs, 2026-11-07. Counts: launches x test clusters per launch.
+
+rae.cu (5 runs per mode, 76 clusters, delay 50 us):
+  mode 0 (late remote arrive into exited rank 0): unspecified launch failure (also with no successor kernel, and with delay 0)
+  mode 1 (late remote st.shared::cluster):         unspecified launch failure (also with no successor kernel)
+  mode 6 (as 0, rank 0 initialized the mbarrier):  unspecified launch failure
+  mode 2 (control, rank 0 alive, late arrive):     380 / 380 detected (phase completed)
+  mode 3 (control, rank 0 alive, late stores):     380 / 380 detected (words changed)
+  mode 5 (control, rank 0 alive, arrive on an uninitialized zero word): no failure
+  mode 4 (sanity, no remote op, successor kernel): 760 successor CTAs on exited rank-0 SMs, 380 started
+                                                   before rank 1 finished; 0 changed words
+
+window.cu (rank 1 arrives at T, rank 0 exits at T + Y; 1 cluster, 20 processes per Y):
+  Y = -160, -120, -80 ns: 20/20 fail;  -60: 15/20;  -40: 16/20;  -20, -10, 0, +10, +20, +40: 0/20
+  (76 clusters, 3 processes per Y: -5000, -1000, -200 fail 3/3; 0, 200, 1000, 5000 ok 3/3)
+
+fa4pair.cu (K st_tgt a_tgt late launches noise arep arv; 76 test clusters per launch, 38 with noise):
+  bar.sync:
+    0 0 0 1 ...           late-issue control        fails in the first launch (5/5 processes)
+    64 0 1 0 ...          64 remote stores/thread to rank 0, A to self: fails in the first launch (3/3)
+    0 0 0 0 300 0 1       0 / 300 launches failed
+    0 0 0 0 300 0 16      0 / 300
+    0 0 0 0 300 0 64      0 / 300
+    0 0 0 0 100 0 256     0 / 100
+    0 0 0 0 300 1 64      0 / 300 (noise)
+    64 1 0 0 300          0 / 300 (64 stores to self ahead of A)
+  bar.arrive (arv 1):
+    0 0 0 1 3 0 1 1       fails in the first launch
+    64 0 1 0 50 0 1 1     fails in the first launch
+    0 0 0 0 1000 0 1 1    0 / 1000
+    0 0 0 0 300 0 64 1    0 / 300
+    0 0 0 0 300 1 16 1    0 / 300 (noise)
+fa4quad.cu (38 test clusters per launch; ranks 2, 3 are live store sinks):
+    0 0 0 1 3             fails in the first launch
+    64 0 1 0 100          fails in the first launch
+    64 2 0 0 300          0 / 300
+    256 2 0 0 300         0 / 300
+    1024 2 0 0 100        0 / 100
+  same thread issues B right after its arrivals (same 1; warps 1-7's arrivals not ordered before B):
+    0 0 0 0 1000 0 1 0 1  0 / 1000
+    0 0 0 0 300 0 64 0 1  0 / 300
+    0 0 0 0 300 1 16 0 1  0 / 300 (noise)
+Total without failure: about 3.57e5 test clusters.
+Note: an earlier build of the same shape with the variants compiled as separate code paths
+(work/adv/L1/fa4shape_v1.cu) failed with 64 remote stores to rank 0 ahead of A (3/3 processes,
+within 4 launches); the fixed-binary runs above show the stores, not A, were the late operation
+(st_tgt 0 / a_tgt 1 fails, st_tgt 1 / a_tgt 0 and st_tgt 2 / a_tgt 0 do not).
+
+order.cu (C src shape arep D launches noise; one line per configuration):
+C=2 src=1 shape=0 arep=1 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=2 src=1 shape=0 arep=16 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=2 src=1 shape=0 arep=64 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=2 src=1 shape=0 arep=256 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=2 src=1 shape=1 arep=1 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=2 src=1 shape=1 arep=16 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=2 src=1 shape=1 arep=64 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=2 src=1 shape=1 arep=256 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=2 src=1 shape=2 arep=64 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 6300 (same TPC 6300), violating words 99179
+C=2 src=1 shape=0 arep=1 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=2 src=1 shape=0 arep=16 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=2 src=1 shape=0 arep=64 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=2 src=1 shape=0 arep=256 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=2 src=1 shape=1 arep=1 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=2 src=1 shape=1 arep=16 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=2 src=1 shape=1 arep=64 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=2 src=1 shape=1 arep=256 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=2 src=1 shape=2 arep=64 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 6300 (same TPC 6300), violating words 99021
+C=4 src=1 shape=0 arep=1 D=0ns noise=0: clusters 3800 (same TPC 3800), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=1 shape=0 arep=1 D=0ns noise=1: clusters 3800 (same TPC 3800), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=1 shape=0 arep=16 D=0ns noise=0: clusters 3800 (same TPC 3800), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=1 shape=0 arep=16 D=0ns noise=1: clusters 3800 (same TPC 3800), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=1 shape=0 arep=64 D=0ns noise=0: clusters 3800 (same TPC 3800), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=1 shape=0 arep=64 D=0ns noise=1: clusters 3800 (same TPC 3800), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=1 shape=0 arep=256 D=0ns noise=0: clusters 3800 (same TPC 3800), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=1 shape=0 arep=256 D=0ns noise=1: clusters 3800 (same TPC 3800), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=1 shape=1 arep=1 D=0ns noise=0: clusters 3800 (same TPC 3800), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=1 shape=1 arep=1 D=0ns noise=1: clusters 3800 (same TPC 3800), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=1 shape=1 arep=16 D=0ns noise=0: clusters 3800 (same TPC 3800), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=1 shape=1 arep=16 D=0ns noise=1: clusters 3800 (same TPC 3800), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=1 shape=1 arep=64 D=0ns noise=0: clusters 3800 (same TPC 3800), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=1 shape=1 arep=64 D=0ns noise=1: clusters 3800 (same TPC 3800), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=1 shape=1 arep=256 D=0ns noise=0: clusters 3800 (same TPC 3800), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=1 shape=1 arep=256 D=0ns noise=1: clusters 3800 (same TPC 3800), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=1 shape=2 arep=64 D=0ns noise=0: clusters 3800 (same TPC 3800), clusters with B-before-A 1500 (same TPC 1500), violating words 23750
+C=4 src=1 shape=2 arep=64 D=0ns noise=1: clusters 3800 (same TPC 3800), clusters with B-before-A 2807 (same TPC 2807), violating words 39695
+C=4 src=3 shape=0 arep=1 D=0ns noise=0: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=0 arep=1 D=0ns noise=1: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=0 arep=16 D=0ns noise=0: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=0 arep=16 D=0ns noise=1: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=0 arep=64 D=0ns noise=0: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=0 arep=64 D=0ns noise=1: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=0 arep=256 D=0ns noise=0: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=0 arep=256 D=0ns noise=1: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=1 arep=1 D=0ns noise=0: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=1 arep=1 D=0ns noise=1: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=1 arep=16 D=0ns noise=0: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=1 arep=16 D=0ns noise=1: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=1 arep=64 D=0ns noise=0: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=1 arep=64 D=0ns noise=1: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=1 arep=256 D=0ns noise=0: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=1 arep=256 D=0ns noise=1: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=2 arep=64 D=0ns noise=0: clusters 3800 (same TPC 0), clusters with B-before-A 1000 (same TPC 0), violating words 4061
+C=4 src=3 shape=2 arep=64 D=0ns noise=1: clusters 3800 (same TPC 0), clusters with B-before-A 1000 (same TPC 0), violating words 4073
+C=8 src=1 shape=0 arep=1 D=0ns noise=0: clusters 1900 (same TPC 1900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=1 shape=0 arep=1 D=0ns noise=1: clusters 1900 (same TPC 1900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=1 shape=0 arep=16 D=0ns noise=0: clusters 1900 (same TPC 1900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=1 shape=0 arep=16 D=0ns noise=1: clusters 1900 (same TPC 1900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=1 shape=0 arep=64 D=0ns noise=0: clusters 1900 (same TPC 1900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=1 shape=0 arep=64 D=0ns noise=1: clusters 1900 (same TPC 1900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=1 shape=0 arep=256 D=0ns noise=0: clusters 1900 (same TPC 1900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=1 shape=0 arep=256 D=0ns noise=1: clusters 1900 (same TPC 1900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=1 shape=1 arep=1 D=0ns noise=0: clusters 1900 (same TPC 1900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=1 shape=1 arep=1 D=0ns noise=1: clusters 1900 (same TPC 1900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=1 shape=1 arep=16 D=0ns noise=0: clusters 1900 (same TPC 1900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=1 shape=1 arep=16 D=0ns noise=1: clusters 1900 (same TPC 1900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=1 shape=1 arep=64 D=0ns noise=0: clusters 1900 (same TPC 1900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=1 shape=1 arep=64 D=0ns noise=1: clusters 1900 (same TPC 1900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=1 shape=1 arep=256 D=0ns noise=0: clusters 1900 (same TPC 1900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=1 shape=1 arep=256 D=0ns noise=1: clusters 1900 (same TPC 1900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=1 shape=2 arep=64 D=0ns noise=0: clusters 1900 (same TPC 1900), clusters with B-before-A 0 (same TPC 0), violating words 0
+C=8 src=1 shape=2 arep=64 D=0ns noise=1: clusters 1900 (same TPC 1900), clusters with B-before-A 61 (same TPC 61), violating words 795
+C=8 src=7 shape=0 arep=1 D=0ns noise=0: clusters 1900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=7 shape=0 arep=1 D=0ns noise=1: clusters 1900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=7 shape=0 arep=16 D=0ns noise=0: clusters 1900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=7 shape=0 arep=16 D=0ns noise=1: clusters 1900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=7 shape=0 arep=64 D=0ns noise=0: clusters 1900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=7 shape=0 arep=64 D=0ns noise=1: clusters 1900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=7 shape=0 arep=256 D=0ns noise=0: clusters 1900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=7 shape=0 arep=256 D=0ns noise=1: clusters 1900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=7 shape=1 arep=1 D=0ns noise=0: clusters 1900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=7 shape=1 arep=1 D=0ns noise=1: clusters 1900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=7 shape=1 arep=16 D=0ns noise=0: clusters 1900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=7 shape=1 arep=16 D=0ns noise=1: clusters 1900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=7 shape=1 arep=64 D=0ns noise=0: clusters 1900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=7 shape=1 arep=64 D=0ns noise=1: clusters 1900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=7 shape=1 arep=256 D=0ns noise=0: clusters 1900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=7 shape=1 arep=256 D=0ns noise=1: clusters 1900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=8 src=7 shape=2 arep=64 D=0ns noise=0: clusters 1900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating words 0
+C=8 src=7 shape=2 arep=64 D=0ns noise=1: clusters 1900 (same TPC 0), clusters with B-before-A 121 (same TPC 0), violating words 129
+C=16 src=1 shape=0 arep=1 D=0ns noise=0: clusters 900 (same TPC 900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=1 shape=0 arep=1 D=0ns noise=1: clusters 900 (same TPC 900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=1 shape=0 arep=16 D=0ns noise=0: clusters 900 (same TPC 900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=1 shape=0 arep=16 D=0ns noise=1: clusters 900 (same TPC 900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=1 shape=0 arep=64 D=0ns noise=0: clusters 900 (same TPC 900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=1 shape=0 arep=64 D=0ns noise=1: clusters 900 (same TPC 900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=1 shape=0 arep=256 D=0ns noise=0: clusters 900 (same TPC 900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=1 shape=0 arep=256 D=0ns noise=1: clusters 900 (same TPC 900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=1 shape=1 arep=1 D=0ns noise=0: clusters 900 (same TPC 900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=1 shape=1 arep=1 D=0ns noise=1: clusters 900 (same TPC 900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=1 shape=1 arep=16 D=0ns noise=0: clusters 900 (same TPC 900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=1 shape=1 arep=16 D=0ns noise=1: clusters 900 (same TPC 900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=1 shape=1 arep=64 D=0ns noise=0: clusters 900 (same TPC 900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=1 shape=1 arep=64 D=0ns noise=1: clusters 900 (same TPC 900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=1 shape=1 arep=256 D=0ns noise=0: clusters 900 (same TPC 900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=1 shape=1 arep=256 D=0ns noise=1: clusters 900 (same TPC 900), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=1 shape=2 arep=64 D=0ns noise=0: clusters 900 (same TPC 900), clusters with B-before-A 0 (same TPC 0), violating words 0
+C=16 src=1 shape=2 arep=64 D=0ns noise=1: clusters 900 (same TPC 900), clusters with B-before-A 31 (same TPC 31), violating words 357
+C=16 src=15 shape=0 arep=1 D=0ns noise=0: clusters 900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=15 shape=0 arep=1 D=0ns noise=1: clusters 900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=15 shape=0 arep=16 D=0ns noise=0: clusters 900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=15 shape=0 arep=16 D=0ns noise=1: clusters 900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=15 shape=0 arep=64 D=0ns noise=0: clusters 900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=15 shape=0 arep=64 D=0ns noise=1: clusters 900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=15 shape=0 arep=256 D=0ns noise=0: clusters 900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=15 shape=0 arep=256 D=0ns noise=1: clusters 900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=15 shape=1 arep=1 D=0ns noise=0: clusters 900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=15 shape=1 arep=1 D=0ns noise=1: clusters 900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=15 shape=1 arep=16 D=0ns noise=0: clusters 900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=15 shape=1 arep=16 D=0ns noise=1: clusters 900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=15 shape=1 arep=64 D=0ns noise=0: clusters 900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=15 shape=1 arep=64 D=0ns noise=1: clusters 900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=15 shape=1 arep=256 D=0ns noise=0: clusters 900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=15 shape=1 arep=256 D=0ns noise=1: clusters 900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=16 src=15 shape=2 arep=64 D=0ns noise=0: clusters 900 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating words 0
+C=16 src=15 shape=2 arep=64 D=0ns noise=1: clusters 900 (same TPC 0), clusters with B-before-A 15 (same TPC 0), violating words 126
+C=4 src=3 shape=0 arep=64 D=20ns noise=1: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=1 arep=64 D=20ns noise=1: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=2 arep=64 D=20ns noise=1: clusters 3800 (same TPC 0), clusters with B-before-A 1000 (same TPC 0), violating words 3505
+C=4 src=3 shape=0 arep=64 D=100ns noise=1: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=1 arep=64 D=100ns noise=1: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=2 arep=64 D=100ns noise=1: clusters 3800 (same TPC 0), clusters with B-before-A 906 (same TPC 0), violating words 992
+C=4 src=3 shape=0 arep=64 D=500ns noise=1: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=1 arep=64 D=500ns noise=1: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=2 arep=64 D=500ns noise=1: clusters 3800 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating words 0
+under a co-tenant process (private MPS, noise mode 7, 148 CTAs):
+C=2 src=1 shape=0 arep=64 D=0ns noise=0: clusters 22800 (same TPC 22800), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=0 arep=64 D=0ns noise=0: clusters 11400 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=4 src=3 shape=1 arep=64 D=0ns noise=0: clusters 11400 (same TPC 0), clusters with B-before-A 0 (same TPC 0), violating tests 0
+C=2 src=1 shape=2 arep=64 D=0ns noise=0: clusters 7600 (same TPC 7600), clusters with B-before-A 3571 (same TPC 3571), violating words 54424
+C=4 src=3 shape=2 arep=64 D=0ns noise=0: clusters 3800 (same TPC 0), clusters with B-before-A 302 (same TPC 0), violating words 1218
+Total arrivals (shapes 0, 1): 401200 clusters, 0 B-before-A. Stores (shape 2, control): 64400 clusters, 24914 B-before-A. Shape 3 (same-thread stores): 15200 clusters, 0.

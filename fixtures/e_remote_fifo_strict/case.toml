@@ -1,0 +1,23 @@
+name = "e_remote_fifo_strict"
+description = "e_remote_fifo's kernel without remote_fifo: the strict S-REMOTE-INFLIGHT model reports the first arrival."
+ptx = "../e_remote_fifo/kernel.ptx"
+entry = "remote_fifo"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as e_remote_fifo good, strict model"
+expect = ["violation"]

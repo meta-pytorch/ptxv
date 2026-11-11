@@ -1,0 +1,2 @@
+{"name": "alpha-one", "alpha": 1.0, "description": "plain sampling through the IS path",
+ "tensors": {"x": {"elems": {"histogram": {"edges": [0.0, 0.5, 1.0], "probs": [0.3, 0.7]}}}}}

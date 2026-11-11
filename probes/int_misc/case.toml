@@ -1,0 +1,37 @@
+name = "probe_int_misc"
+description = """
+Probe (L-ROSETTA, L-OPCLASS) for integer forms on GB300: IMAD.WIDE / IMAD.WIDE.U32 with a
+negated 64-bit addend (`mul.wide` then `sub.s64`), and POPC, which ptxas schedules with no
+write scoreboard and reads right after (kernel.ptx, gen.py). expected/ is GB300's output
+(ptxas cubin, `ptxv hw-worker probes/int_misc <cubin> --runs 1 --dump`)."""
+ptx = "kernel.ptx"
+entry = "int_misc"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024, 4]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024, 8]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

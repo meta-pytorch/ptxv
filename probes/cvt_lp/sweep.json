@@ -1,0 +1,414 @@
+{
+  "f32": {
+    "rn.bf16x2.ue8m0x2": [
+      1048576,
+      "75ebea38bb4dca90"
+    ],
+    "rn.f16x2.e2m1x2": [
+      1048576,
+      "1cec30736c3d1ffb"
+    ],
+    "rn.f16x2.e2m3x2": [
+      1048576,
+      "69fa12e0257e5740"
+    ],
+    "rn.f16x2.e3m2x2": [
+      1048576,
+      "d7f2141034d2dfb8"
+    ],
+    "rn.f16x2.e4m3x2": [
+      1048576,
+      "eed4bd568faff286"
+    ],
+    "rn.f16x2.e5m2x2": [
+      1048576,
+      "502d4a579e6ee378"
+    ],
+    "rn.relu.f16x2.e2m1x2": [
+      1048576,
+      "5ff5ed79daf37f51"
+    ],
+    "rn.relu.f16x2.e2m3x2": [
+      1048576,
+      "ba29957d43b217d0"
+    ],
+    "rn.relu.f16x2.e3m2x2": [
+      1048576,
+      "e3255da35e155bfe"
+    ],
+    "rn.relu.f16x2.e4m3x2": [
+      1048576,
+      "7baba4d6ba374941"
+    ],
+    "rn.relu.f16x2.e5m2x2": [
+      1048576,
+      "7ca15c25fd491e68"
+    ],
+    "rn.satfinite.e2m1x2.f32": [
+      1048576,
+      "0fb65f226978e939"
+    ],
+    "rn.satfinite.e2m3x2.f32": [
+      1048576,
+      "a48d18d2bc6a7727"
+    ],
+    "rn.satfinite.e3m2x2.f32": [
+      1048576,
+      "f3c966d47b524e53"
+    ],
+    "rn.satfinite.e4m3x2.f16x2": [
+      1048576,
+      "ef0a589f74464af5"
+    ],
+    "rn.satfinite.e4m3x2.f32": [
+      1048576,
+      "71a2357fb9ec8009"
+    ],
+    "rn.satfinite.e5m2x2.f16x2": [
+      1048576,
+      "309ec590c96de496"
+    ],
+    "rn.satfinite.e5m2x2.f32": [
+      1048576,
+      "5c6febafbc54cf66"
+    ],
+    "rn.satfinite.relu.e2m1x2.f32": [
+      1048576,
+      "c545d952e55ebc71"
+    ],
+    "rn.satfinite.relu.e2m3x2.f32": [
+      1048576,
+      "e83ab08744b9a852"
+    ],
+    "rn.satfinite.relu.e3m2x2.f32": [
+      1048576,
+      "53cd105ed85b5592"
+    ],
+    "rn.satfinite.relu.e4m3x2.f16x2": [
+      1048576,
+      "ddaafc4b973d4b7b"
+    ],
+    "rn.satfinite.relu.e4m3x2.f32": [
+      1048576,
+      "54821fa32fa2b5eb"
+    ],
+    "rn.satfinite.relu.e5m2x2.f16x2": [
+      1048576,
+      "f0ac4014796f2d46"
+    ],
+    "rn.satfinite.relu.e5m2x2.f32": [
+      1048576,
+      "0c56048520a832bb"
+    ],
+    "rp.satfinite.ue8m0x2.bf16x2": [
+      1048576,
+      "b015b034247a66ef"
+    ],
+    "rp.satfinite.ue8m0x2.f32": [
+      1048576,
+      "34f6d9a6b2aef6da"
+    ],
+    "rp.ue8m0x2.bf16x2": [
+      1048576,
+      "77e02cc740c1fad5"
+    ],
+    "rp.ue8m0x2.f32": [
+      1048576,
+      "34c8202ba87d5fd8"
+    ],
+    "rs.bf16x2.f32": [
+      1048576,
+      "a119f11e369421f9"
+    ],
+    "rs.f16x2.f32": [
+      1048576,
+      "56f1bf879bc972b9"
+    ],
+    "rs.relu.bf16x2.f32": [
+      1048576,
+      "cf0984c0e169cfba"
+    ],
+    "rs.relu.f16x2.f32": [
+      1048576,
+      "f0c5b416f0779914"
+    ],
+    "rs.relu.satfinite.bf16x2.f32": [
+      1048576,
+      "f7ad0b4f2185c8c6"
+    ],
+    "rs.relu.satfinite.f16x2.f32": [
+      1048576,
+      "a3bd0b845f4fe2bc"
+    ],
+    "rs.satfinite.bf16x2.f32": [
+      1048576,
+      "c72815f195ff1d9d"
+    ],
+    "rs.satfinite.e2m1x4.f32": [
+      1048576,
+      "2a2d84c523e25968"
+    ],
+    "rs.satfinite.e2m3x4.f32": [
+      1048576,
+      "2e2f01f957bb722e"
+    ],
+    "rs.satfinite.e3m2x4.f32": [
+      1048576,
+      "1c1317c0492b659b"
+    ],
+    "rs.satfinite.e4m3x4.f32": [
+      1048576,
+      "266e9333ef9dcce1"
+    ],
+    "rs.satfinite.e5m2x4.f32": [
+      1048576,
+      "1052b2157160207b"
+    ],
+    "rs.satfinite.f16x2.f32": [
+      1048576,
+      "440109980b4ad96d"
+    ],
+    "rs.satfinite.relu.e2m1x4.f32": [
+      1048576,
+      "844df91604fdafe5"
+    ],
+    "rs.satfinite.relu.e2m3x4.f32": [
+      1048576,
+      "55d46b3a61b47a7d"
+    ],
+    "rs.satfinite.relu.e3m2x4.f32": [
+      1048576,
+      "11f3d201d9e6d570"
+    ],
+    "rs.satfinite.relu.e4m3x4.f32": [
+      1048576,
+      "6ed68c0628afff23"
+    ],
+    "rs.satfinite.relu.e5m2x4.f32": [
+      1048576,
+      "e916f3a63416487c"
+    ],
+    "rz.satfinite.ue8m0x2.bf16x2": [
+      1048576,
+      "afafe05ebacdbd97"
+    ],
+    "rz.satfinite.ue8m0x2.f32": [
+      1048576,
+      "8aaea473459fb2ee"
+    ],
+    "rz.ue8m0x2.bf16x2": [
+      1048576,
+      "d537bcac49185a7d"
+    ],
+    "rz.ue8m0x2.f32": [
+      1048576,
+      "137f2d167f46edc2"
+    ]
+  },
+  "x16": {
+    "rn.bf16x2.ue8m0x2": [
+      65536,
+      "731229c35aa1ea6d"
+    ],
+    "rn.f16x2.e2m1x2": [
+      65536,
+      "d5300dc48c932325"
+    ],
+    "rn.f16x2.e2m3x2": [
+      65536,
+      "f55406e983e3d325"
+    ],
+    "rn.f16x2.e3m2x2": [
+      65536,
+      "038b7bec5b172325"
+    ],
+    "rn.f16x2.e4m3x2": [
+      65536,
+      "e600af6fc703efc5"
+    ],
+    "rn.f16x2.e5m2x2": [
+      65536,
+      "e5dea5275916c255"
+    ],
+    "rn.relu.f16x2.e2m1x2": [
+      65536,
+      "b87d318413202325"
+    ],
+    "rn.relu.f16x2.e2m3x2": [
+      65536,
+      "6a1209cc7e49ef25"
+    ],
+    "rn.relu.f16x2.e3m2x2": [
+      65536,
+      "d4a0c8729387cd25"
+    ],
+    "rn.relu.f16x2.e4m3x2": [
+      65536,
+      "4cd8d76d94cda5c5"
+    ],
+    "rn.relu.f16x2.e5m2x2": [
+      65536,
+      "96da6a36a69f7e0d"
+    ],
+    "rn.satfinite.e2m1x2.f32": [
+      65536,
+      "ba5fe1e6883da3d1"
+    ],
+    "rn.satfinite.e2m3x2.f32": [
+      65536,
+      "0425faa09fdd0014"
+    ],
+    "rn.satfinite.e3m2x2.f32": [
+      65536,
+      "1dfdd5c5afe00a70"
+    ],
+    "rn.satfinite.e4m3x2.f16x2": [
+      65536,
+      "9794c893564116bd"
+    ],
+    "rn.satfinite.e4m3x2.f32": [
+      65536,
+      "c6f5370c54a5f300"
+    ],
+    "rn.satfinite.e5m2x2.f16x2": [
+      65536,
+      "e4462465d150a4ad"
+    ],
+    "rn.satfinite.e5m2x2.f32": [
+      65536,
+      "ccbc50e6c44873e0"
+    ],
+    "rn.satfinite.relu.e2m1x2.f32": [
+      65536,
+      "197e3f3fb0247205"
+    ],
+    "rn.satfinite.relu.e2m3x2.f32": [
+      65536,
+      "5ce60250d1446d73"
+    ],
+    "rn.satfinite.relu.e3m2x2.f32": [
+      65536,
+      "ec2ce0843fd8cd0a"
+    ],
+    "rn.satfinite.relu.e4m3x2.f16x2": [
+      65536,
+      "feb75471d0aed3b3"
+    ],
+    "rn.satfinite.relu.e4m3x2.f32": [
+      65536,
+      "c76e089dbf7f86a1"
+    ],
+    "rn.satfinite.relu.e5m2x2.f16x2": [
+      65536,
+      "25b7150cf20fd51f"
+    ],
+    "rn.satfinite.relu.e5m2x2.f32": [
+      65536,
+      "c024e9cab0619e46"
+    ],
+    "rp.satfinite.ue8m0x2.bf16x2": [
+      65536,
+      "6ea1660924738661"
+    ],
+    "rp.satfinite.ue8m0x2.f32": [
+      65536,
+      "505371849e4895f7"
+    ],
+    "rp.ue8m0x2.bf16x2": [
+      65536,
+      "23502148b095a581"
+    ],
+    "rp.ue8m0x2.f32": [
+      65536,
+      "62547e3c52f022aa"
+    ],
+    "rs.bf16x2.f32": [
+      65536,
+      "46c34a89a3223034"
+    ],
+    "rs.f16x2.f32": [
+      65536,
+      "b8efd0b8b50fa4e4"
+    ],
+    "rs.relu.bf16x2.f32": [
+      65536,
+      "647efcd6ba163a23"
+    ],
+    "rs.relu.f16x2.f32": [
+      65536,
+      "a5d312736017e46b"
+    ],
+    "rs.relu.satfinite.bf16x2.f32": [
+      65536,
+      "647efcd6ba163a23"
+    ],
+    "rs.relu.satfinite.f16x2.f32": [
+      65536,
+      "0943afa94eb84585"
+    ],
+    "rs.satfinite.bf16x2.f32": [
+      65536,
+      "3e6fb65c5bb85fff"
+    ],
+    "rs.satfinite.e2m1x4.f32": [
+      65536,
+      "4cddb2ed061915af"
+    ],
+    "rs.satfinite.e2m3x4.f32": [
+      65536,
+      "d36e3fc9c9612813"
+    ],
+    "rs.satfinite.e3m2x4.f32": [
+      65536,
+      "c74486c0fbfacc88"
+    ],
+    "rs.satfinite.e4m3x4.f32": [
+      65536,
+      "8f95f542060e43e3"
+    ],
+    "rs.satfinite.e5m2x4.f32": [
+      65536,
+      "4512a979e28e608e"
+    ],
+    "rs.satfinite.f16x2.f32": [
+      65536,
+      "69f2c7ef69a28fc2"
+    ],
+    "rs.satfinite.relu.e2m1x4.f32": [
+      65536,
+      "48197d899cb4eefc"
+    ],
+    "rs.satfinite.relu.e2m3x4.f32": [
+      65536,
+      "351e9a609a4ec623"
+    ],
+    "rs.satfinite.relu.e3m2x4.f32": [
+      65536,
+      "1eb5dcf602063de2"
+    ],
+    "rs.satfinite.relu.e4m3x4.f32": [
+      65536,
+      "4ccebd7af93e26d4"
+    ],
+    "rs.satfinite.relu.e5m2x4.f32": [
+      65536,
+      "b34b94c334b92c0f"
+    ],
+    "rz.satfinite.ue8m0x2.bf16x2": [
+      65536,
+      "7ae5fababf065779"
+    ],
+    "rz.satfinite.ue8m0x2.f32": [
+      65536,
+      "2323b5f522ef0da7"
+    ],
+    "rz.ue8m0x2.bf16x2": [
+      65536,
+      "7baa7426574ccf25"
+    ],
+    "rz.ue8m0x2.f32": [
+      65536,
+      "2323b5f522ef0da7"
+    ]
+  }
+}

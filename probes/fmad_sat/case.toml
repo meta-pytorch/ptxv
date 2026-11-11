@@ -1,0 +1,42 @@
+name = "probe_fmad_sat"
+description = """
+Probe (PTX-FMAD) for a mul.sat.f32 read by plain add.f32 / sub.f32: ptxas 13.0 and 13.3 keep
+FMUL.SAT and add with FADD (no FFMA: the clamp sits between product and sum); a plain mul read by
+add.sat.f32 / sub.sat.f32 is one FFMA.SAT (either operand negated), also with .ftz. 8192 triples:
+every triple of 16 specials (+-0, subnormals, the smallest normal, +-1 and neighbours, the largest
+finite, +-Inf, NaNs), products straddling 1.0, tiny products with signed-zero addends, sums
+cancelling to either side of 0, random values in [-4, 4] (gen.py). Each form reads its own triple
+(form k: i + 1024 k mod 8192; genptx.py writes kernel.ptx), so ptxas cannot merge the forms'
+products. expected/ is GB300's output (kernel.cubin = ptxas 13.0 -arch=sm_103a kernel.ptx, `ptxv
+hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "fmad_sat"
+grid = [32, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [24576]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [65536]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

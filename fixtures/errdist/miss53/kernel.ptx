@@ -1,0 +1,116 @@
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// MISS 53: errdist reported from the numerics DAG of the captured input's run when control, an
+// address or a guard of that run depends on input data where no decision, selection or slice
+// models it (a data-dependent precondition). Each thread i reads x, w, v [i] and forms
+// t = RN(RN(x w) v).
+//   m53_exit:    the first half of the threads store t to y[i]; the rest store it only where
+//                bfind(bits(x[i])) == 30 (x >= 2), which ptxas compiles to `@!P EXIT` before the
+//                store. FLO has no slice, so the guard is a data-dependent precondition. On the
+//                captured input (x = 0) the guarded threads exit, so their y[i] is untainted with
+//                no node; errdist skipped it and reported over the other half. z is unused (the
+//                buffers of m53_sel, for pair.toml).
+//   m53_scatter: thread 0 stores 7.5 to y[RN(x w) > 0.5 ? 1 : 0] (an address chosen by a
+//                select, not a branch); thread i > 0 stores t to y[i + 1].
+//   m53_sel:     y[i] = t where x >= 0, a guarded store (followed by a store of t to z, so
+//                that ptxas keeps the predicated store); on the captured input (x = 0) every
+//                guard holds. The default extraction tracks every output and keeps the guard as
+//                a precondition; segment mode models the store as a selection (N-ERRDIST-SEL),
+//                and errdist reports.
+
+.visible .entry m53_exit(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py, .param .u64 pz)
+{
+    .reg .f32 %f<8>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    mul.rn.f32 %f5, %f4, %f3;
+    mov.b32 %r2, %f1;
+    bfind.u32 %r3, %r2;
+    setp.eq.u32 %p1, %r3, 30;
+    mov.u32 %r4, %ntid.x;
+    shr.u32 %r5, %r4, 1;
+    setp.lt.u32 %p2, %r1, %r5;
+    or.pred %p3, %p1, %p2;
+    @%p3 st.global.f32 [%rd10], %f5;
+    ret;
+}
+
+.visible .entry m53_scatter(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py)
+{
+    .reg .f32 %f<8>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    setp.eq.u32 %p2, %r1, 0;
+    @%p2 bra ZERO;
+    mul.rn.f32 %f5, %f4, %f3;
+    add.s64 %rd10, %rd4, %rd6;
+    st.global.f32 [%rd10+4], %f5;
+    ret;
+ZERO:
+    setp.gt.f32 %p1, %f4, 0f3F000000;
+    selp.u32 %r2, 1, 0, %p1;
+    mul.wide.u32 %rd11, %r2, 4;
+    add.s64 %rd12, %rd4, %rd11;
+    st.global.f32 [%rd12], 0f40F00000;
+    ret;
+}
+
+.visible .entry m53_sel(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py, .param .u64 pz)
+{
+    .reg .f32 %f<8>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<2>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    ld.param.u64 %rd5, [pz];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    add.s64 %rd11, %rd5, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    mul.rn.f32 %f5, %f4, %f3;
+    setp.ge.f32 %p1, %f1, 0f00000000;
+    @%p1 st.global.f32 [%rd10], %f5;
+    st.global.f32 [%rd11], %f5;
+    ret;
+}

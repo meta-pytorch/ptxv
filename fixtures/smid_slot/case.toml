@@ -1,0 +1,25 @@
+name = "smid_slot"
+description = """
+E-SMID: two CTAs store their %ctaid.x to out[%smid % 4]; CTA 0 stores %nsmid to out[4].
+Race-free when the CTAs are on different SMs (mod 4), a write-write race when they share one:
+the default placements (spread, same, rev, alt) include `same`, and the output differs
+between placements."""
+ptx = "kernel.ptx"
+entry = "smid_slot"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [5]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["nondeterministic", "race"]

@@ -1,0 +1,1 @@
+{"version": 1, "seed": 1, "name": "shift50", "default": {"dist": {"kind": "normal", "mean": 50, "std": 1}}}

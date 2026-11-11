@@ -1,0 +1,33 @@
+name = "e_elect_tccp"
+description = """
+E-ELECT (MISS 51): the leader's position reaches lane-varying code through tensor memory:
+warp 0's leader writes the ballot of elect's predicate to shared memory, tcgen05.cp copies it
+to tensor memory, tcgen05.ld gives each lane its row, and each lane of warp 0 tests its own bit
+(am I the leader). A middle-lane leader stores out[1] after the second bar.sync, where warp 1
+reads it: a race for middle-lane leaders only. The leader-sensitivity taint's read table had no
+entry for tcgen05.cp's shared-memory source (nor tcgen05.mma's shared operands), so the
+leader-dependent shared words never reached tensor memory, the two end-lane policies were
+explored, and the PTX verdict was clean. Every operation's reads are listed now
+(`explore::elect_mem_spaces`): every leader function is explored. GB300 elects the lowest
+lane (probes/elect): SASS clean."""
+ptx = "kernel.ptx"
+entry = "e_elect_tccp"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "racy for middle-lane leaders"
+expect = ["race"]
+expect_sass = ["clean"]

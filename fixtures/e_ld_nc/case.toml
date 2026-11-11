@@ -1,0 +1,70 @@
+name = "e_ld_nc"
+description = """
+S-NC: an ld.global.nc (SASS LDG.E.CONSTANT) of bytes nothing writes during the kernel is exact
+(good); one of bytes another thread wrote before a bar.sync (written) or that the loading
+thread overwrites afterwards (inplace) is outside the memory consistency model (PTX ISA 9.5
+section 8.1) and reported. coherent: the written variant with a plain ld.global, clean."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "inp"
+dtype = "u32"
+shape = [64]
+init = "iota"
+
+[[buffers]]
+name = "buf"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "inp"
+
+[[params]]
+kind = "ptr"
+buffer = "buf"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "written"
+summary = "the .nc load reads buf[t ^ 1], written by the neighbour before the bar.sync"
+marker = "@SRC"
+find = "[%rd5]"
+replace = "[%rd9]"
+expect = ["violation"]
+
+[[variants]]
+id = "coherent"
+summary = "the written read as a plain ld.global (ordered by the bar.sync)"
+edits = [
+    { marker = "@SRC", find = "[%rd5]", replace = "[%rd9]" },
+    { marker = "@SRC", find = "ld.global.nc", replace = "ld.global" },
+]
+expect = ["clean"]
+
+[[variants]]
+id = "inplace"
+summary = "thread t overwrites inp[t] after its .nc load of it"
+marker = "@OVERWRITE"
+find = "[%rd7], %r3"
+replace = "[%rd5], %r5"
+expect = ["violation"]

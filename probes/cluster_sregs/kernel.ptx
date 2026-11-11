@@ -1,0 +1,42 @@
+// S-CBANK: the driver's per-cluster-size constant table. ptxas reads cluster special registers
+// from c[0x0][off - 0xa0 * %cluster_nctarank] (SR_CgaSize): +0x2a0.. %cluster_nctaid,
+// +0x2b0.. f32 1/%cluster_nctaid (clusterid = trunc(ctaid * that)), +0x2c0.. %nclusterid,
+// +0x2cc %cluster_nctarank. Each CTA's thread 0 writes 12 words at out[12 * linear ctaid].
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 out_p) .reqnctapercluster 2, 2, 1
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<4>;
+    .reg .pred %p<2>;
+    mov.u32 %r20, %tid.x;
+    setp.ne.u32 %p1, %r20, 0;
+    @%p1 bra DONE;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %nclusterid.x;
+    mov.u32 %r2, %nclusterid.y;
+    mov.u32 %r3, %clusterid.x;
+    mov.u32 %r4, %clusterid.y;
+    mov.u32 %r5, %cluster_nctaid.x;
+    mov.u32 %r6, %cluster_nctaid.y;
+    mov.u32 %r7, %cluster_nctarank;
+    mov.u32 %r8, %cluster_ctarank;
+    mov.u32 %r9, %cluster_ctaid.x;
+    mov.u32 %r10, %cluster_ctaid.y;
+    mov.u32 %r11, %nclusterid.z;
+    mov.u32 %r12, %clusterid.z;
+    mov.u32 %r13, %ctaid.x;
+    mov.u32 %r14, %ctaid.y;
+    mov.u32 %r15, %nctaid.x;
+    mad.lo.u32 %r16, %r14, %r15, %r13;
+    mul.lo.u32 %r16, %r16, 48;
+    cvt.u64.u32 %rd2, %r16;
+    add.u64 %rd1, %rd1, %rd2;
+    st.global.v4.u32 [%rd1], {%r1, %r2, %r3, %r4};
+    st.global.v4.u32 [%rd1+16], {%r5, %r6, %r7, %r8};
+    st.global.v4.u32 [%rd1+32], {%r9, %r10, %r11, %r12};
+DONE:
+    ret;
+}

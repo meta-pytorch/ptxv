@@ -1,0 +1,106 @@
+name = "probe_tc_collector"
+description = """
+S-TC-COLLECTOR probe: tcgen05.mma .collector::a::{fill,use,lastuse} (kernel.ptx from gen.py and
+kernel.tmpl). One CTA, kind::f16, M = 128, N = 64, K = 16 per MMA; D[128][256] holds the four
+MMAs' tiles (columns 64 i.. for MMA i). Variant good keeps the PTX ISA contract (the A at a
+use / lastuse equals the filled A, the fill still valid); m1..m5 break it (A rewritten after
+the fill, another descriptor, no fill, use after lastuse, use after a discard). expected/ is
+GB300's output per variant."""
+ptx = "kernel.ptx"
+entry = "tc_collector"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "f16"
+shape = [128, 64]
+init = "file"
+file = "A.bin"
+
+[[buffers]]
+name = "B"
+dtype = "f16"
+shape = [64, 64]
+init = "file"
+file = "B.bin"
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [128, 256]
+init = "nan"
+
+# A[m][k] row-major viewed as 3-D (k%8, m, k/8): 8 K-chunks of 128 rows x 16 B (LBO = 2048 B,
+# SBO = 128 B); a K = 16 MMA chunk is 4096 B.
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [8, 128, 8]
+dims = [8, 128, 8]
+strides = [128, 16]
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [8, 64, 8]
+dims = [8, 64, 8]
+strides = [128, 16]
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[variants]]
+id = "good"
+summary = "fill, use, lastuse on the same A: the contract holds"
+expect = ["clean"]
+
+[[variants]]
+id = "m1"
+summary = "A0's shared memory rewritten between the fill and the use"
+marker = "MODE"
+find = "%r40, 0;"
+replace = "%r40, 1;"
+expect = ["contract"]
+
+[[variants]]
+id = "m2"
+summary = "use / lastuse with another A descriptor (other data)"
+marker = "MODE"
+find = "%r40, 0;"
+replace = "%r40, 2;"
+expect = ["contract"]
+
+[[variants]]
+id = "m3"
+summary = "use with no fill"
+marker = "MODE"
+find = "%r40, 0;"
+replace = "%r40, 3;"
+expect = ["contract"]
+
+[[variants]]
+id = "m4"
+summary = "use after a lastuse"
+marker = "MODE"
+find = "%r40, 0;"
+replace = "%r40, 4;"
+expect = ["contract"]
+
+[[variants]]
+id = "m5"
+summary = "use after an MMA without a qualifier (collector::a::discard)"
+marker = "MODE"
+find = "%r40, 0;"
+replace = "%r40, 5;"
+expect = ["contract"]
+
+[[variants]]
+id = "m6"
+summary = "thread 32 issues a use, unordered with thread 0's fill / use / lastuse"
+marker = "MODE"
+find = "%r40, 0;"
+replace = "%r40, 6;"
+expect = ["contract"]

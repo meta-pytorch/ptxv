@@ -1,0 +1,26 @@
+name = "uniform-overwrite-zero-candidate"
+description = "SASS uniform register must share its provenance across lanes"
+cubin = "kernel.cubin"
+entry = "k"
+grid = [1,1,1]
+block = [2,1,1]
+outputs = ["out"]
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+[[params]]
+kind = "ptr"
+buffer = "x"
+[[params]]
+kind = "ptr"
+buffer = "out"
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1,0 +1,44 @@
+name = "e_remote_fifo"
+description = """
+E-REMOTE-FIFO (opt-in, probes/remote_arrive_exit): FA4 2-CTA teardown shape. A remote
+.release.cta arrival on a barrier the leader never waits for, then bar.sync, then another
+warp's remote arrival that the leader waits for before exiting. With remote_fifo the first
+lands before the second (its issue happens-before); without (e_remote_fifo_strict) it may be
+in flight at the exit."""
+ptx = "kernel.ptx"
+entry = "remote_fifo"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+remote_fifo = true
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "arrive, bar.sync, peer arrive waited by the leader, exit (FA4)"
+expect = ["clean"]
+
+[[variants]]
+id = "nobar"
+summary = "no bar.sync between the two arrivals: nothing orders the first before the exit"
+marker = "@BAR"
+replace = "<delete>"
+expect = ["violation"]
+
+[[variants]]
+id = "late"
+summary = "the first arrival is issued after the bar.sync (the probe's positive control)"
+marker = "@EARLY"
+replace = "<delete>"
+edits = [{ marker = "@LATE", replace = "<delete>" }]
+expect = ["violation"]

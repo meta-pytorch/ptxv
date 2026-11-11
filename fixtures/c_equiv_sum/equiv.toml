@@ -1,0 +1,36 @@
+# Reassociated sums (docs/equiv-reassoc.md): torch.sum(x, -1) for x of 4x128 f32 (the
+# reduce_kernel: 4-wide vectorized partial sums per thread, SHFL.DOWN tree, shared-memory
+# combine) against three Triton row sums of the same rows, each a different reduction tree:
+#   - r4_rowreduce_triton: one CTA per row, SHFL.BFLY butterflies across 2 warps;
+#   - c_triton_rowsum_splitk: split-K, 4 partial sums per row into a workspace, then a second
+#     launch combines them;
+#   - c_triton_rowsum_atomic: 4 programs per row combine with fp32 atomics (order depends on
+#     the schedule, bounded over every order).
+# All compute the same polynomial (L1); the per-output bound is Cor 1a of both trees (Thm 4).
+#   ptxv equiv fixtures/c_equiv_sum/equiv.toml --trials 200
+max_states = 200000
+trials = 20
+reference = { case = "../r4_sum_torch", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "../r4_rowreduce_triton"
+variant = "good"
+front = "sass"
+expect = "L1"
+expect_bound_u = 15.001
+
+[[candidates]]
+case = "../c_triton_rowsum_splitk"
+variant = "good"
+front = "sass"
+expect = "L1"
+expect_bound_u = 15.001
+
+[[candidates]]
+case = "../c_triton_rowsum_atomic"
+variant = "good"
+front = "sass"
+# One CTA at a time (E-CTA-INDEP): CTAs share only the fp32 atomic adds (N-ATOMIC).
+slices = true
+expect = "L1"
+expect_bound_u = 16.001

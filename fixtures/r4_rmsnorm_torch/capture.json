@@ -1,0 +1,77 @@
+{
+ "what": "`F.rms_norm(x, (128,), w, 1e-6)` with x = randn(4,128,bf16), w = randn(128,bf16)",
+ "argv": [
+  "--op",
+  "F.rms_norm(x, (128,), w, 1e-6)",
+  "--inputs",
+  "x=randn(4,128,bf16),w=randn(128,bf16)",
+  "--out",
+  "fixtures/r4_rmsnorm_torch",
+  "--work",
+  "/tmp/ptxv_capture_3567819"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "_ZN2at6native53_GLOBAL__N__03ac1a2e_20_layer_norm_kernel_cu_9c5ada8a28vectorized_layer_norm_kernelIN3c108BFloat16EfLb1EEEviT0_PKT_S8_S8_PS5_S9_PS6_",
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    32,
+    4,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 24,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "x",
+   "dtype": "bf16",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 1024
+  },
+  {
+   "name": "w",
+   "dtype": "bf16",
+   "shape": [
+    128
+   ],
+   "size": 256
+  },
+  {
+   "name": "out",
+   "dtype": "bf16",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 1024
+  },
+  {
+   "name": "W0",
+   "dtype": "u8",
+   "shape": [
+    16
+   ],
+   "size": 16
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

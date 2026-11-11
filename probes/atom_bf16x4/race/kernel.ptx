@@ -1,0 +1,68 @@
+// probes/atom_bf16x4/race: atomicity of ATOMG / REDG .E.ADD.BF16x4.RN under contention. Each
+// 8-byte slot (4 bf16 lanes, 0 initially) is shared by two threads of one CTA: thread t < 128
+// red-adds +1.0 to all four lanes 256 times; thread t + 128 atom-adds +0 to it 256 times and
+// counts the old values whose lanes differ within a 4-byte half (torn half), across the
+// halves (torn slot), and those taken mid-sequence (lane 0 neither 0 nor 256: the contention
+// is real): out[4 * slot + 0 / 1 / 2]. Lane counts stay exact (<= 256).
+// results.txt: no torn half ever (each half is one atomic, as the model's two BF16x2 atomics);
+// the slot count says whether the two halves were ever seen apart.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry race(.param .u64 pm, .param .u64 pout)
+.maxntid 256, 1, 1
+{
+    .reg .pred  %p<8>;
+    .reg .b32   %r<24>;
+    .reg .b16   %h<16>;
+    .reg .b64   %rd<16>;
+
+    ld.param.u64    %rd1, [pm];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64    %rd8, [pout];
+    cvta.to.global.u64 %rd8, %rd8;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %ctaid.x;
+    and.b32         %r3, %r1, 127;
+    setp.lt.u32     %p1, %r1, 128;
+    mad.lo.u32      %r4, %r2, 128, %r3;
+    mul.wide.u32    %rd2, %r4, 8;
+    add.s64         %rd3, %rd1, %rd2;
+    mov.b16         %h1, 0x3F80;
+    mov.b16         %h2, 0x0000;
+    mov.u32         %r5, 0;
+    mov.u32         %r10, 0;
+    mov.u32         %r11, 0;
+    mov.u32         %r14, 0;
+    @!%p1 bra       $L_reader;
+$L_writer:
+    red.global.gpu.relaxed.add.noftz.v4.bf16 [%rd3], {%h1, %h1, %h1, %h1};
+    add.u32         %r5, %r5, 1;
+    setp.lt.u32     %p2, %r5, 256;
+    @%p2 bra        $L_writer;
+    bra.uni         $L_done;
+$L_reader:
+    atom.global.gpu.relaxed.add.noftz.v4.bf16 {%h3, %h4, %h5, %h6}, [%rd3], {%h2, %h2, %h2, %h2};
+    setp.ne.b16     %p3, %h3, %h4;
+    setp.ne.b16     %p4, %h5, %h6;
+    or.pred         %p3, %p3, %p4;
+    selp.u32        %r12, 1, 0, %p3;
+    add.u32         %r10, %r10, %r12;
+    setp.ne.b16     %p5, %h3, %h5;
+    selp.u32        %r13, 1, 0, %p5;
+    add.u32         %r11, %r11, %r13;
+    setp.ne.b16     %p6, %h3, 0x0000;
+    setp.ne.b16     %p7, %h3, 0x4380;
+    and.pred        %p6, %p6, %p7;
+    selp.u32        %r15, 1, 0, %p6;
+    add.u32         %r14, %r14, %r15;
+    add.u32         %r5, %r5, 1;
+    setp.lt.u32     %p2, %r5, 256;
+    @%p2 bra        $L_reader;
+    mul.wide.u32    %rd9, %r4, 16;
+    add.s64         %rd9, %rd8, %rd9;
+    st.global.v4.u32 [%rd9], {%r10, %r11, %r14, %r5};
+$L_done:
+    ret;
+}

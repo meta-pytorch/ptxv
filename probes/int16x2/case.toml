@@ -1,0 +1,51 @@
+name = "probe_int16x2"
+description = """
+Probe (N-INT16X2) for packed 16-bit integer min / max, SASS VIMNMX / VIMNMX3 .U16x2 / .S16x2
+(register and immediate operands), and for `LEA.HI.X.SX32 Rd, Ra, ~Rb, s, P` (a 64-bit
+`(sext(a) << s) - y`), on edge and random operands (kernel.ptx, gen.py). ptxas computes the
+high word of the subtraction with `IMAD.X Rd, Rs, 0x1, ~Ry, P`; patch.py rewrites those into
+the LEA.HI.X.SX32 form ptxas uses in other kernels (cubins/lea.cubin), whose
+output must not change. expected/ is GB300's output for both cubins (identical; `ptxv
+hw-worker probes/int16x2 <cubin> --runs 1 --dump`)."""
+ptx = "kernel.ptx"
+entry = "int16x2"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1024, 3]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "in64"
+dtype = "u64"
+shape = [1024]
+init = "file"
+file = "in64.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [12, 1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "in64"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

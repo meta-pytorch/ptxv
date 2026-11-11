@@ -1,0 +1,32 @@
+[
+ {
+  "name": "mma_mxf8e4m3xe4m3f32ue8m0.codes",
+  "entry": "mma_mxf8",
+  "idesc": 142737408,
+  "idesc0": 143654912
+ },
+ {
+  "name": "mma_mxf8e2m1xe2m1f32ue8m0.scale_gap",
+  "entry": "mma_mxf8",
+  "idesc": 142743168,
+  "idesc0": 143660672
+ },
+ {
+  "name": "mma_mxf4e2m1xe2m1f32ue8m0.codes",
+  "entry": "mma_mxf4",
+  "idesc": 142738560,
+  "idesc0": 143656064
+ },
+ {
+  "name": "mma_nvf4e2m1xe2m1f32ue8m0.codes",
+  "entry": "mma_nvf4",
+  "idesc": 142738560,
+  "idesc0": 143656064
+ },
+ {
+  "name": "mma_nvf4e2m1xe2m1f32ue4m3.cancel",
+  "entry": "mma_nvf4",
+  "idesc": 134349952,
+  "idesc0": 135267456
+ }
+]

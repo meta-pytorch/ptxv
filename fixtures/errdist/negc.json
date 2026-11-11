@@ -1,0 +1,4 @@
+{"version": 1, "seed": 1, "name": "x, y ~ U(1, 2); u, v ~ N(3, 0.01) (fixtures/errdist/negc)",
+ "tensors": {"u": {"dist": {"kind": "normal", "mean": 3.0, "std": 0.01}},
+             "v": {"dist": {"kind": "normal", "mean": 3.0, "std": 0.01}}},
+ "default": {"dist": {"kind": "uniform", "lo": 1.0, "hi": 2.0}}}

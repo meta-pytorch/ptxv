@@ -1,0 +1,15 @@
+# Reassociated prefix sums (docs/equiv-reassoc.md): torch.cumsum(x, -1) for x of 4x128 f32
+# (tensor_kernel_scan_innermost_dim: shared-memory up/down-sweep) against Triton tl.cumsum
+# (tools/capture_examples/triton_cumsum.py: shuffle scan). Output j of a row is the sum of its
+# first j + 1 inputs in both, in different trees: L1 with a per-output bound.
+#   ptxv equiv fixtures/c_equiv_cumsum/equiv.toml --trials 200
+max_states = 200000
+trials = 20
+reference = { case = "../c_cumsum", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "../c_triton_cumsum"
+variant = "good"
+front = "sass"
+expect = "L1"
+expect_bound_u = 15.001

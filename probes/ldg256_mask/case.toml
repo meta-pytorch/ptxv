@@ -1,0 +1,49 @@
+name = "probe_ldg256_mask"
+description = """
+Probe (L-ROSETTA) for 32-byte global loads with only some elements used: ld.global.v4.b64 /
+.v8.b32 = SASS LDG.E.ENL2.256 Rhi, Rlo, [a], mask (each half's selected words compacted from its
+base register), 18 element subsets, and st.global.v4.b64 (STG.E.ENL2.256) (kernel.ptx). in.bin:
+random words. expected/ is GB300's output (kernel.cubin = ptxas -arch=sm_103a kernel.ptx,
+`ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "ldg256_mask"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out", "out2"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [4608]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2176]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "out2"
+dtype = "u32"
+shape = [256]
+init = "zeros"
+expect = "expected/out2.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "out2"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

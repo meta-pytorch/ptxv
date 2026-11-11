@@ -1,0 +1,46 @@
+// probes/atom_bf16x4: atom / red .add.noftz.v4.bf16 (SASS ATOMG / REDG .E.ADD.BF16x4.RN)
+// against GB300. Thread g (8 CTAs x 256) adds B = {b[2g].lo, b[2g].hi, b[2g+1].lo, b[2g+1].hi}
+// (the b lanes of probes/bf16x2's in.bin, edge values and rounding ties) to its own 8 bytes:
+//   m[0][g]: atom.global.gpu.relaxed.add.noftz.v4.bf16, the old value stored to out[g];
+//   m[1][g]: red.global.gpu.relaxed.add.noftz.v4.bf16.
+// m starts as A = the a lanes of triples 2g and 2g + 1 (gen.py).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry atom_bf16x4(
+    .param .u64 pin,
+    .param .u64 pm,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<16>;
+    .reg .b16   %h<16>;
+    .reg .b64   %rd<16>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pm];
+    ld.param.u64    %rd3, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %ctaid.x;
+    mad.lo.u32      %r3, %r2, 256, %r1;
+    mul.wide.u32    %rd4, %r3, 24;
+    add.s64         %rd4, %rd1, %rd4;
+    ld.global.u32   %r5, [%rd4+4];
+    ld.global.u32   %r6, [%rd4+16];
+    mov.b32         {%h1, %h2}, %r5;
+    mov.b32         {%h3, %h4}, %r6;
+    mul.wide.u32    %rd5, %r3, 8;
+    add.s64         %rd6, %rd2, %rd5;
+    add.s64         %rd7, %rd3, %rd5;
+    atom.global.gpu.relaxed.add.noftz.v4.bf16 {%h5, %h6, %h7, %h8}, [%rd6], {%h1, %h2, %h3, %h4};
+    red.global.gpu.relaxed.add.noftz.v4.bf16 [%rd6+16384], {%h1, %h2, %h3, %h4};
+    mov.b32         %r7, {%h5, %h6};
+    mov.b32         %r8, {%h7, %h8};
+    st.global.v2.u32 [%rd7], {%r7, %r8};
+    ret;
+}

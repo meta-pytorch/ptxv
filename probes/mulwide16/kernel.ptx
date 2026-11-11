@@ -1,0 +1,54 @@
+// probes/mulwide16: mul.wide.u16 / mul.wide.s16 (16 x 16 -> 32 bits, operands zero / sign
+// extended from 16 bits) on 16-bit registers made in different ways: sign-extending and
+// zero-extending 16-bit loads, cvt.u16.u32 (low half), add.s16 (a 16-bit result), and an
+// immediate. 256 threads; a, b = in[2 t], in[2 t + 1] (gen.py; the low halves are also loaded
+// as 16-bit values). out[8 t + k]:
+//   k = 0 / 1: mul.wide.s16 / .u16 of ld.s16 a, ld.s16 b
+//   k = 2 / 3: mul.wide.s16 / .u16 of ld.u16 a, ld.u16 b
+//   k = 4 / 5: mul.wide.s16 / .u16 of cvt.u16.u32 a, add.s16 (b + a high half)
+//   k = 6 / 7: mul.wide.s16 a.lo, -3 / mul.wide.u16 a.lo, 65535 (immediates)
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry mulwide16(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b16   %rs<16>;
+    .reg .b32   %r<24>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 8;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.v2.u32 {%r2, %r3}, [%rd4];
+    ld.global.s16   %rs1, [%rd4];
+    ld.global.s16   %rs2, [%rd4+4];
+    ld.global.u16   %rs3, [%rd4];
+    ld.global.u16   %rs4, [%rd4+4];
+    cvt.u16.u32     %rs5, %r2;
+    shr.u32         %r4, %r2, 16;
+    cvt.u16.u32     %rs6, %r4;
+    cvt.u16.u32     %rs7, %r3;
+    add.s16         %rs8, %rs7, %rs6;
+    mul.wide.u32    %rd5, %r1, 32;
+    add.s64         %rd6, %rd2, %rd5;
+    mul.wide.s16    %r10, %rs1, %rs2;
+    mul.wide.u16    %r11, %rs1, %rs2;
+    mul.wide.s16    %r12, %rs3, %rs4;
+    mul.wide.u16    %r13, %rs3, %rs4;
+    mul.wide.s16    %r14, %rs5, %rs8;
+    mul.wide.u16    %r15, %rs5, %rs8;
+    mul.wide.s16    %r16, %rs5, -3;
+    mul.wide.u16    %r17, %rs5, 65535;
+    st.global.v4.u32 [%rd6], {%r10, %r11, %r12, %r13};
+    st.global.v4.u32 [%rd6+16], {%r14, %r15, %r16, %r17};
+    ret;
+}

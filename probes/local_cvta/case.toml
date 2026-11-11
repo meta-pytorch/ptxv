@@ -1,0 +1,26 @@
+name = "probe_local_cvta"
+description = """
+Probe (S-CBANK) for cvta.to.local on the PTX front: the generic address of a stack buffer
+(cvta.local of %SPL, + k) converted back with cvta.to.local, written through with st.local.v2
+and read back through %SPL (kernel.ptx). expected/ is GB300's output (kernel.cubin = ptxas
+-arch=sm_103a kernel.ptx, `ptxv hw`)."""
+ptx = "kernel.ptx"
+entry = "local_cvta"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [192]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

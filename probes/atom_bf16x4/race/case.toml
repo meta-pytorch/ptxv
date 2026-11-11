@@ -1,0 +1,35 @@
+name = "probe_atom_bf16x4_race"
+description = """
+Atomicity of ATOMG / REDG .E.ADD.BF16x4.RN under contention (kernel.ptx): per 8-byte slot one
+thread red-adds +1.0 to all lanes 256 times while another atom-adds +0 and counts old values
+torn within a 4-byte half or across the halves. results.txt / check.py, GB300."""
+ptx = "kernel.ptx"
+entry = "race"
+ptxas_toolkit = "13.0"
+grid = [132, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "m"
+dtype = "u32"
+shape = [33792]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [67584]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "m"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["nondeterministic"]

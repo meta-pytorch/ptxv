@@ -1,0 +1,89 @@
+name = "proxy_fence"
+description = """
+S-PROXY probe (other-thread fence): rung 1b's pipeline (kernel.ptx is fixtures/r1b_pipeline's),
+whose epilogue threads st.shared a tile, fence.proxy.async, bar.sync 1, then one thread issues
+the TMA store. Variants move the fence after the barrier: executed by every epilogue thread
+(Triton's order: `bar.sync; fence.proxy.async; async op`), or only by the issuing thread;
+`none` deletes it (B04); `global` replaces it with fence.proxy.async.global (SASS
+FENCE.VIEW.ASYNC.G instead of MEMBAR.ALL.CTA + FENCE.VIEW.ASYNC.S), which orders global memory
+only. Run `ptxv hw probes/proxy_fence --scrub`."""
+ptx = "kernel.ptx"
+entry = "r1b_pipeline"
+grid = [1, 1, 1]
+block = [192, 1, 1]
+outputs = ["D"]
+spec = "gemm_tn"
+
+[[buffers]]
+name = "A"
+dtype = "bf16"
+shape = [256, 128]
+init = "normal"
+seed = 21
+
+[[buffers]]
+name = "B"
+dtype = "bf16"
+shape = [16, 128]
+init = "normal"
+seed = 22
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [256, 16]
+init = "nan"
+
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [64, 128]
+swizzle = "128B"
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [64, 16]
+swizzle = "128B"
+
+[[params]]
+kind = "tensormap"
+buffer = "D"
+box = [16, 128]
+
+
+[[variants]]
+id = "good"
+summary = "every writer fences before the barrier (r1b good)"
+expect = ["clean"]
+
+[[variants]]
+id = "after_all"
+summary = "every epilogue thread fences after the barrier, before the issuer's TMA store"
+marker = "@B04"
+replace = "<delete>"
+edits = [{ marker = "@AFTER", find = "bar.sync        1, 128;", replace = "bar.sync        1, 128; fence.proxy.async.shared::cta;" }]
+expect = ["clean"]
+
+[[variants]]
+id = "issuer"
+summary = "only the issuing thread fences, after the barrier"
+marker = "@B04"
+replace = "<delete>"
+edits = [{ marker = "@ISSUER", find = "@%p12 bra       E_NEXT;", replace = "@%p12 bra       E_NEXT; fence.proxy.async.shared::cta;" }]
+expect = ["clean"]
+
+[[variants]]
+id = "none"
+summary = "no fence (B04)"
+marker = "@B04"
+replace = "<delete>"
+expect = ["race"]
+
+[[variants]]
+id = "global"
+summary = "the fence orders global memory only (fence.proxy.async.global, FENCE.VIEW.ASYNC.G)"
+marker = "@B04"
+find = "fence.proxy.async.shared::cta;"
+replace = "fence.proxy.async.global;"
+expect = ["race"]

@@ -1,0 +1,66 @@
+// f64 -> integer conversions against GB300 bitwise, both front-ends: cvt.{rzi,rni,rmi,rpi}
+// .{s64,u64,s32,u32}.f64 (SASS F2I[.S64|.U64|.U32].F64[.TRUNC|.FLOOR|.CEIL]; torch's cross
+// entropy uses F2I.S64.F64.TRUNC). 256 threads; thread t converts in[t] (an f64: special values
+// and random bit patterns, case.toml) with all 16 forms; out[16 t + k] holds form k's result
+// (64 bits; the 32-bit forms zero-extended).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry f2i_f64(.param .u64 in_p, .param .u64 out_p)
+{
+    .reg .b32 %r<40>;
+    .reg .b64 %rd<60>;
+    .reg .f64 %fd<4>;
+    ld.param.u64 %rd1, [in_p];
+    ld.param.u64 %rd2, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 8;
+    add.u64 %rd4, %rd1, %rd3;
+    ld.global.f64 %fd1, [%rd4];
+    mul.wide.u32 %rd5, %r1, 128;
+    add.u64 %rd6, %rd2, %rd5;
+    cvt.rzi.s64.f64 %rd10, %fd1;
+    st.global.u64 [%rd6+0], %rd10;
+    cvt.rzi.u64.f64 %rd11, %fd1;
+    st.global.u64 [%rd6+8], %rd11;
+    cvt.rzi.s32.f64 %r12, %fd1;
+    cvt.u64.u32 %rd12, %r12;
+    st.global.u64 [%rd6+16], %rd12;
+    cvt.rzi.u32.f64 %r13, %fd1;
+    cvt.u64.u32 %rd13, %r13;
+    st.global.u64 [%rd6+24], %rd13;
+    cvt.rni.s64.f64 %rd14, %fd1;
+    st.global.u64 [%rd6+32], %rd14;
+    cvt.rni.u64.f64 %rd15, %fd1;
+    st.global.u64 [%rd6+40], %rd15;
+    cvt.rni.s32.f64 %r16, %fd1;
+    cvt.u64.u32 %rd16, %r16;
+    st.global.u64 [%rd6+48], %rd16;
+    cvt.rni.u32.f64 %r17, %fd1;
+    cvt.u64.u32 %rd17, %r17;
+    st.global.u64 [%rd6+56], %rd17;
+    cvt.rmi.s64.f64 %rd18, %fd1;
+    st.global.u64 [%rd6+64], %rd18;
+    cvt.rmi.u64.f64 %rd19, %fd1;
+    st.global.u64 [%rd6+72], %rd19;
+    cvt.rmi.s32.f64 %r20, %fd1;
+    cvt.u64.u32 %rd20, %r20;
+    st.global.u64 [%rd6+80], %rd20;
+    cvt.rmi.u32.f64 %r21, %fd1;
+    cvt.u64.u32 %rd21, %r21;
+    st.global.u64 [%rd6+88], %rd21;
+    cvt.rpi.s64.f64 %rd22, %fd1;
+    st.global.u64 [%rd6+96], %rd22;
+    cvt.rpi.u64.f64 %rd23, %fd1;
+    st.global.u64 [%rd6+104], %rd23;
+    cvt.rpi.s32.f64 %r24, %fd1;
+    cvt.u64.u32 %rd24, %r24;
+    st.global.u64 [%rd6+112], %rd24;
+    cvt.rpi.u32.f64 %r25, %fd1;
+    cvt.u64.u32 %rd25, %r25;
+    st.global.u64 [%rd6+120], %rd25;
+    ret;
+}

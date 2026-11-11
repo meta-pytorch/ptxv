@@ -1,0 +1,28 @@
+name = "probe_s2f6_cvt"
+description = """
+Probe (N-CVT-LP, L-NVDISASM) for cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 (SASS
+F2FP.SATFINITE.BF16.S2_6.UNPACK_B Rd, Ra[.H1], Rb.H0 / imm.H0): every (code, scale) pair in
+both lanes, register and immediate scales, data from either register half (kernel.ptx). PTX ISA
+9.1: kernel.cubin = ptxas 13.1 -arch=sm_103a kernel.ptx (ptxas 13.0 rejects the cvt, so this is
+a binary-only case); nvdisasm 13.0 prints nothing for the F2FP encodings and ptxv decodes them
+itself (crates/sass/src/undis.rs). expected/ is GB300's output (`ptxv hw-worker`)."""
+cubin = "kernel.cubin"
+entry = "s2f6_cvt"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [524288]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

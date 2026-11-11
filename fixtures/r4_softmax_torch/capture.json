@@ -1,0 +1,61 @@
+{
+ "what": "`torch.softmax(x, -1)` with x = randn(4,128,f32)",
+ "argv": [
+  "--op",
+  "torch.softmax(x, -1)",
+  "--inputs",
+  "x=randn(4,128,f32)",
+  "--out",
+  "fixtures/r4_softmax_torch",
+  "--work",
+  "/tmp/ptxv_capture_3561482"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "_ZN43_GLOBAL__N__a4dace70_10_SoftMax_cu_9f978f6320softmax_warp_forwardIfffLi7ELb0ELb0EEEvPT0_PKT_iiiPKbib",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    32,
+    4,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "x",
+   "dtype": "f32",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 2048
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 2048
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

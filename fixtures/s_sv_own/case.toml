@@ -1,0 +1,74 @@
+name = "s_sv_own"
+description = """
+S-SAME-VALUE with the reader's own store: two CTAs each store 1 to x and read it back
+(msl DeepEP DeviceSyncer currentCountIdx). The read returns 1 in any order: clean. Stores of
+different values, a reader without its own store, or a different-valued store that happens
+before the read but is unordered with the reader's store, still race."""
+ptx = "kernel.ptx"
+entry = "s_sv_own"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[buffers]]
+name = "x"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[variants]]
+id = "good"
+summary = "both store 1, then read: clean"
+expect = ["clean"]
+
+[[variants]]
+id = "diff"
+summary = "CTA 1 stores 2: race"
+marker = "@BW"
+find = "], 1;"
+replace = "], 2;"
+expect = ["race"]
+
+[[variants]]
+id = "noown"
+summary = "CTA 0 reads without storing: race"
+marker = "@AW"
+replace = "<delete>"
+expect = ["race"]
+
+[[variants]]
+id = "xhb"
+summary = "CTA 1 stores 2 and releases a flag CTA 0 waits for before its read: race"
+expect = ["race"]
+[[variants.edits]]
+marker = "@BW"
+find = "], 1;"
+replace = "], 2;"
+[[variants.edits]]
+marker = "@WAIT"
+find = "setp.lt.u32 %p4, %r9, 0;"
+replace = "setp.ne.u32 %p4, %r9, 1;"

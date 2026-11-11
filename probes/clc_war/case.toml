@@ -1,0 +1,30 @@
+name = "probe_clc_war"
+description = """
+Probe (L-OPREAD) for when UGETNEXTWORKID.BROADCAST (multicast try_cancel) reads its address
+operands. base.cubin is ptxas's build of kernel.ptx (clusters of two one-warp CTAs, rank 0
+issues one try_cancel into resp[0..16) of a 32-byte buffer); patch.py makes st1 / st1_rb
+(response address UR6 moved 16 bytes by the next instruction for 15 cycles, then restored;
+st1_rb with a never-waited read scoreboard on UGETNEXTWORKID) and st1_bar (the mbarrier
+operand UR7 moved the same way). GB300 (`ptxv hw-worker`, grid 512, 200 launches each for st1 and st1_rb):
+every response lands in resp[0..16), none in resp[16..32), so the operands are consumed at
+issue. The fixture checks the scoreboard pass accepts the mutants."""
+cubin = "base.cubin"
+entry = "probe_clc_war"
+grid = [4, 1, 1]
+block = [32, 1, 1]
+cluster = [2, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["nondeterministic"]

@@ -1,0 +1,51 @@
+name = "e_bsync_parked_collective"
+description = """
+E-HW-BSYNC-COLLECTIVE (kernel.cu): lanes 0-15 do MUFU work while lanes 16-31 block at a
+full-warp __syncwarp in the else branch; lanes 0-15 reach a __syncwarp only after the join. ptxas
+joins the branches with `BSSY B0` / `BSYNC B0` (mask: all 32 lanes) and lowers each __syncwarp
+to `BRA.DIV` with a `WARPSYNC.COLLECTIVE` slow path, so lanes 0-15 wait at the BSYNC while lanes
+16-31 wait at a WARPSYNC.COLLECTIVE. The model's BSYNC waits for every lane of its mask: a
+deadlock on the SASS front (strict). GB300 passes the BSYNC, the two collectives then combine,
+and the kernel completes (expected/out.bin, 1000 of 1000 runs; the timestamp probe
+probes/bsync_coll shows the order). The GB300 profile (sass_gb300) releases the BSYNC and
+reproduces the output, also its second __syncwarp, where lanes 16-31 wait in a collective until
+lanes 1-15 have exited (an EXIT re-checks collective groups, E-COLLECTIVE). The shape of
+recsys_tbe's split_embedding_backward warp-per-row loop.
+Binary-only: kernel.cubin is kernel.cu through nvcc 13.0 (-arch=sm_103a -cubin -O3)."""
+cubin = "kernel.cubin"
+arch = "sm_103a"
+entry = "b2h"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "c"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+values = [[0, 0.5], [1, 1.5], [17, 2.0], [31, 3.0]]
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "c"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 3
+
+[[variants]]
+id = "good"
+summary = "strict SASS model: the BSYNC waits for the lanes parked at the WARPSYNC.COLLECTIVE"
+expect = ["deadlock"]

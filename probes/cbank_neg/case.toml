@@ -1,0 +1,42 @@
+name = "probe_cbank_neg"
+description = """
+Probe (L-ROSETTA) for a register-indexed constant-bank load with a negative offset (SASS
+`LDC R4, c[0x0][R0+-0x18f4]`, the form of trtllm-gen's `LDCU UR8, c[0x0][UR5+-0x1c80]`): see
+kernel.ptx; k = 7296 + 4 reads parameters b and c. expected/ is GB300's output (ptxas cubin,
+`ptxv hw-worker probes/cbank_neg <cubin> --runs 3 --dump`; k = 7296 reads a and b alike)."""
+ptx = "kernel.ptx"
+entry = "cbank_neg"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32, 2]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 7300
+
+[[params]]
+kind = "u32"
+value = 0x11111111
+
+[[params]]
+kind = "u32"
+value = 0x22222222
+
+[[params]]
+kind = "u32"
+value = 0x33333333
+
+[[variants]]
+id = "good"
+expect = ["clean"]

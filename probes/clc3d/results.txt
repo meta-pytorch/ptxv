@@ -1,0 +1,4 @@
+# probes/clc3d on GB300 (hw-worker, one run each, 2026-11-08): check.py
+ran 6224, cancelled 1968, victims with z > 0: 1968, z range 76..127
+ran 6224, cancelled 1968, victims with z > 0: 1968, z range 76..127
+ran 6226, cancelled 1966, victims with z > 0: 1966, z range 76..127

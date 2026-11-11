@@ -1,0 +1,66 @@
+name = "r1e_pdl"
+description = """
+Rung 1e. Two kernels on one stream with programmatic dependent launch: produce triggers after
+its mainloop; consume (PDL) waits with griddepcontrol.wait before touching produce's data."""
+ptx = "kernel.ptx"
+entry = "produce"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["buf", "out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [64]
+init = "iota"
+
+[[buffers]]
+name = "buf"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "buf"
+
+[[launches]]
+entry = "consume"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+pdl = true
+params = [
+    { kind = "ptr", buffer = "in" },
+    { kind = "ptr", buffer = "buf" },
+    { kind = "ptr", buffer = "out" },
+]
+
+[[variants]]
+id = "good"
+summary = "correct pair"
+expect = ["clean"]
+
+[[variants]]
+id = "B18"
+summary = "consume has no griddepcontrol.wait: it reads buf while produce's epilogue may still be writing it"
+marker = "@B18"
+replace = "<delete>"
+expect = ["race"]
+
+[[variants]]
+id = "B55"
+summary = "consume resets in[] before griddepcontrol.wait, while produce may not have read it yet"
+marker = "@B18"
+find = "griddepcontrol.wait;"
+replace = "st.global.u32   [%rd3], %r4; griddepcontrol.wait;"
+expect = ["race"]

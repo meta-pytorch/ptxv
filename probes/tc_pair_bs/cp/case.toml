@@ -1,0 +1,26 @@
+name = "tc_pair_cp"
+description = """
+Probe (S-TCCP) for tcgen05.cp.cta_group::2.32x128b.warpx4 (SASS UTCCP.T.S.2CTA.4x32dp128bit):
+each CTA of the pair writes word j = rank << 16 | j of a 512-byte smem source; rank 0 issues the
+copy; out[rank][lane][col] = TMEM lanes 0..127, columns 0..3 of each CTA (../kernel.ptx, entry
+cp_pair). expected/out.bin is the GB300 output."""
+ptx = "../kernel.ptx"
+entry = "cp_pair"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2, 128, 4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

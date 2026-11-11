@@ -1,0 +1,1207 @@
+## cta.ld.weak
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R0, UR4, 0x2                             001fca000f8e10ff_0000000400007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 LDS R5, [R0]                                     000ea80000000800_0000000000057984  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0090 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.ld.weakx
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R0, UR4, 0x2                             001fca000f8e10ff_0000000400007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 LDS R5, [R0]                                     000ea80000000800_0000000000057984  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0090 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.ld.volatile
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R0, UR4, 0x2                             001fca000f8e10ff_0000000400007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 LDS R5, [R0]                                     000ea80000000800_0000000000057984  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0090 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.st.weak
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0040 UMOV UR4, 0x400                                  000fcc0000000000_0000040000047882  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R3, UR4, 0x2                             001fe2000f8e10ff_0000000403007c11  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0080 STG.E desc[UR6][R4.64], RZ                       004fe8000c101906_000000ff04007986  stall= 4 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0090 STS [R0], R3                                     000fe20000000800_0000000300007388  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+## cta.st.volatile
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0040 UMOV UR4, 0x400                                  000fcc0000000000_0000040000047882  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R3, UR4, 0x2                             001fe2000f8e10ff_0000000403007c11  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0080 STG.E desc[UR6][R4.64], RZ                       004fe8000c101906_000000ff04007986  stall= 4 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0090 STS [R0], R3                                     000fe20000000800_0000000300007388  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+## cta.ld.relaxed.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R0, UR4, 0x2                             001fca000f8e10ff_0000000400007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 LDS R5, [R0]                                     000ea80000000800_0000000000057984  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0090 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.ld.acquire.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R0, UR4, 0x2                             001fca000f8e10ff_0000000400007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 LDS R5, [R0]                                     000e240000000800_0000000000057984  stall= 2 y=1 wb=0 rb=7 wait=000000 reuse=0
+  0090 NOP                                              001fe40000000000_0000000000007918  stall= 2 y=1 wb=7 rb=7 wait=000001 reuse=0
+  00a0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.st.relaxed.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0040 UMOV UR4, 0x400                                  000fcc0000000000_0000040000047882  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R3, UR4, 0x2                             001fe2000f8e10ff_0000000403007c11  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0080 STG.E desc[UR6][R4.64], RZ                       004fe8000c101906_000000ff04007986  stall= 4 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0090 STS [R0], R3                                     000fe20000000800_0000000300007388  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+## cta.st.release.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0040 UMOV UR4, 0x400                                  000fcc0000000000_0000040000047882  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R3, UR4, 0x2                             001fe2000f8e10ff_0000000403007c11  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0080 MEMBAR.ALL.CTA                                   0001ec0000008000_0000000000007992  stall= 6 y=1 wb=7 rb=0 wait=000000 reuse=0
+  0090 STS [R0], R3                                     001fe80000000800_0000000300007388  stall= 4 y=1 wb=7 rb=7 wait=000001 reuse=0
+  00a0 STG.E desc[UR6][R4.64], RZ                       004fe2000c101906_000000ff04007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.atom.add.relaxed.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R5, UR4, 0x2                             001fca000f8e10ff_0000000405007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 ATOMS.ADD R5, [R0], R5                           000ea80000000000_000000050005738c  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0090 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.atom.add.acq_rel.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R5, UR4, 0x2                             001fca000f8e10ff_0000000405007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 MEMBAR.ALL.CTA                                   0001ec0000008000_0000000000007992  stall= 6 y=1 wb=7 rb=0 wait=000000 reuse=0
+  0090 ATOMS.ADD R5, [R0], R5                           001e240000000000_000000050005738c  stall= 2 y=1 wb=0 rb=7 wait=000001 reuse=0
+  00a0 NOP                                              001fe40000000000_0000000000007918  stall= 2 y=1 wb=7 rb=7 wait=000001 reuse=0
+  00b0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.atom.exch.relaxed.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R5, UR4, 0x2                             001fca000f8e10ff_0000000405007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 ATOMS.EXCH R5, [R0], R5                          000ea80004000000_000000050005738c  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0090 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.red.add.relaxed.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0040 UMOV UR4, 0x400                                  000fcc0000000000_0000040000047882  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R3, UR4, 0x2                             001fe2000f8e10ff_0000000403007c11  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0080 STG.E desc[UR6][R4.64], RZ                       004fe8000c101906_000000ff04007986  stall= 4 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0090 ATOMS.ADD RZ, [R0], R3                           000fe20000000000_0000000300ff738c  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+## cta.red.add.release.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0040 UMOV UR4, 0x400                                  000fcc0000000000_0000040000047882  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R3, UR4, 0x2                             001fe2000f8e10ff_0000000403007c11  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0080 MEMBAR.ALL.CTA                                   0001ec0000008000_0000000000007992  stall= 6 y=1 wb=7 rb=0 wait=000000 reuse=0
+  0090 ATOMS.ADD RZ, [R0], R3                           001fe80000000000_0000000300ff738c  stall= 4 y=1 wb=7 rb=7 wait=000001 reuse=0
+  00a0 STG.E desc[UR6][R4.64], RZ                       004fe2000c101906_000000ff04007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.ld.relaxed.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R0, UR4, 0x2                             001fca000f8e10ff_0000000400007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 LDS R5, [R0]                                     000ea80000000800_0000000000057984  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0090 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.ld.acquire.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R0, UR4, 0x2                             001fca000f8e10ff_0000000400007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 LDS R5, [R0]                                     000e280000000800_0000000000057984  stall= 4 y=1 wb=0 rb=7 wait=000000 reuse=0
+  0090 CCTL.IVALL                                       001fe80002000000_00000000ff00798f  stall= 4 y=1 wb=7 rb=7 wait=000001 reuse=0
+  00a0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.st.relaxed.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0040 UMOV UR4, 0x400                                  000fcc0000000000_0000040000047882  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R3, UR4, 0x2                             001fe2000f8e10ff_0000000403007c11  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0080 STG.E desc[UR6][R4.64], RZ                       004fe8000c101906_000000ff04007986  stall= 4 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0090 STS [R0], R3                                     000fe20000000800_0000000300007388  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+## cta.st.release.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0040 UMOV UR4, 0x400                                  000fcc0000000000_0000040000047882  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R3, UR4, 0x2                             001fe2000f8e10ff_0000000403007c11  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0080 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00a0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00b0 STS [R0], R3                                     000fe80000000800_0000000300007388  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR6][R4.64], RZ                       004fe2000c101906_000000ff04007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.atom.add.relaxed.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R5, UR4, 0x2                             001fca000f8e10ff_0000000405007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 ATOMS.ADD R5, [R0], R5                           000ea80000000000_000000050005738c  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0090 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.atom.add.acq_rel.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R5, UR4, 0x2                             001fca000f8e10ff_0000000405007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00a0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00b0 ATOMS.ADD R5, [R0], R5                           000e280000000000_000000050005738c  stall= 4 y=1 wb=0 rb=7 wait=000000 reuse=0
+  00c0 CCTL.IVALL                                       001fe80002000000_00000000ff00798f  stall= 4 y=1 wb=7 rb=7 wait=000001 reuse=0
+  00d0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.atom.exch.relaxed.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R5, UR4, 0x2                             001fca000f8e10ff_0000000405007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 ATOMS.EXCH R5, [R0], R5                          000ea80004000000_000000050005738c  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0090 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.red.add.relaxed.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0040 UMOV UR4, 0x400                                  000fcc0000000000_0000040000047882  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R3, UR4, 0x2                             001fe2000f8e10ff_0000000403007c11  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0080 STG.E desc[UR6][R4.64], RZ                       004fe8000c101906_000000ff04007986  stall= 4 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0090 ATOMS.ADD RZ, [R0], R3                           000fe20000000000_0000000300ff738c  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+## cta.red.add.release.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0040 UMOV UR4, 0x400                                  000fcc0000000000_0000040000047882  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R3, UR4, 0x2                             001fe2000f8e10ff_0000000403007c11  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0080 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00a0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00b0 ATOMS.ADD RZ, [R0], R3                           000fe80000000000_0000000300ff738c  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR6][R4.64], RZ                       004fe2000c101906_000000ff04007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.ld.relaxed.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R0, UR4, 0x2                             001fca000f8e10ff_0000000400007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 LDS R5, [R0]                                     000ea80000000800_0000000000057984  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0090 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.ld.acquire.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R0, UR4, 0x2                             001fca000f8e10ff_0000000400007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 LDS R5, [R0]                                     000e280000000800_0000000000057984  stall= 4 y=1 wb=0 rb=7 wait=000000 reuse=0
+  0090 CCTL.IVALL                                       001fe80002000000_00000000ff00798f  stall= 4 y=1 wb=7 rb=7 wait=000001 reuse=0
+  00a0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.st.relaxed.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0040 UMOV UR4, 0x400                                  000fcc0000000000_0000040000047882  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R3, UR4, 0x2                             001fe2000f8e10ff_0000000403007c11  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0080 STG.E desc[UR6][R4.64], RZ                       004fe8000c101906_000000ff04007986  stall= 4 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0090 STS [R0], R3                                     000fe20000000800_0000000300007388  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+## cta.st.release.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0040 UMOV UR4, 0x400                                  000fcc0000000000_0000040000047882  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R3, UR4, 0x2                             001fe2000f8e10ff_0000000403007c11  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0080 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00a0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00b0 STS [R0], R3                                     000fe80000000800_0000000300007388  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR6][R4.64], RZ                       004fe2000c101906_000000ff04007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.atom.add.relaxed.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R5, UR4, 0x2                             001fca000f8e10ff_0000000405007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 ATOMS.ADD R5, [R0], R5                           000ea80000000000_000000050005738c  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0090 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.atom.add.acq_rel.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R5, UR4, 0x2                             001fca000f8e10ff_0000000405007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00a0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00b0 ATOMS.ADD R5, [R0], R5                           000e280000000000_000000050005738c  stall= 4 y=1 wb=0 rb=7 wait=000000 reuse=0
+  00c0 CCTL.IVALL                                       001fe80002000000_00000000ff00798f  stall= 4 y=1 wb=7 rb=7 wait=000001 reuse=0
+  00d0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.atom.exch.relaxed.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R5, UR4, 0x2                             001fca000f8e10ff_0000000405007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 ATOMS.EXCH R5, [R0], R5                          000ea80004000000_000000050005738c  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0090 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.red.add.relaxed.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0040 UMOV UR4, 0x400                                  000fcc0000000000_0000040000047882  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R3, UR4, 0x2                             001fe2000f8e10ff_0000000403007c11  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0080 STG.E desc[UR6][R4.64], RZ                       004fe8000c101906_000000ff04007986  stall= 4 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0090 ATOMS.ADD RZ, [R0], R3                           000fe20000000000_0000000300ff738c  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+## cta.red.add.release.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0040 UMOV UR4, 0x400                                  000fcc0000000000_0000040000047882  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R3, UR4, 0x2                             001fe2000f8e10ff_0000000403007c11  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0080 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00a0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00b0 ATOMS.ADD RZ, [R0], R3                           000fe80000000000_0000000300ff738c  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR6][R4.64], RZ                       004fe2000c101906_000000ff04007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.ld.relaxed.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R0, UR4, 0x2                             001fca000f8e10ff_0000000400007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 LDS R5, [R0]                                     000ea80000000800_0000000000057984  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0090 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.ld.acquire.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R0, UR4, 0x2                             001fca000f8e10ff_0000000400007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 LDS R5, [R0]                                     000e280000000800_0000000000057984  stall= 4 y=1 wb=0 rb=7 wait=000000 reuse=0
+  0090 CCTL.IVALL                                       001fe80002000000_00000000ff00798f  stall= 4 y=1 wb=7 rb=7 wait=000001 reuse=0
+  00a0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.st.relaxed.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0040 UMOV UR4, 0x400                                  000fcc0000000000_0000040000047882  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R3, UR4, 0x2                             001fe2000f8e10ff_0000000403007c11  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0080 STG.E desc[UR6][R4.64], RZ                       004fe8000c101906_000000ff04007986  stall= 4 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0090 STS [R0], R3                                     000fe20000000800_0000000300007388  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+## cta.st.release.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0040 UMOV UR4, 0x400                                  000fcc0000000000_0000040000047882  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R3, UR4, 0x2                             001fe2000f8e10ff_0000000403007c11  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0080 MEMBAR.ALL.SYS                                   000fec000000b000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00a0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00b0 STS [R0], R3                                     000fe80000000800_0000000300007388  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR6][R4.64], RZ                       004fe2000c101906_000000ff04007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.atom.add.relaxed.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R5, UR4, 0x2                             001fca000f8e10ff_0000000405007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 ATOMS.ADD R5, [R0], R5                           000ea80000000000_000000050005738c  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0090 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.atom.add.acq_rel.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R5, UR4, 0x2                             001fca000f8e10ff_0000000405007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 MEMBAR.ALL.SYS                                   000fec000000b000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00a0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00b0 ATOMS.ADD R5, [R0], R5                           000e280000000000_000000050005738c  stall= 4 y=1 wb=0 rb=7 wait=000000 reuse=0
+  00c0 CCTL.IVALL                                       001fe80002000000_00000000ff00798f  stall= 4 y=1 wb=7 rb=7 wait=000001 reuse=0
+  00d0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.atom.exch.relaxed.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R5, UR4, 0x2                             001fca000f8e10ff_0000000405007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 ATOMS.EXCH R5, [R0], R5                          000ea80004000000_000000050005738c  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0090 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.red.add.relaxed.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0040 UMOV UR4, 0x400                                  000fcc0000000000_0000040000047882  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R3, UR4, 0x2                             001fe2000f8e10ff_0000000403007c11  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0080 STG.E desc[UR6][R4.64], RZ                       004fe8000c101906_000000ff04007986  stall= 4 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0090 ATOMS.ADD RZ, [R0], R3                           000fe20000000000_0000000300ff738c  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+## cta.red.add.release.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0040 UMOV UR4, 0x400                                  000fcc0000000000_0000040000047882  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R3, UR4, 0x2                             001fe2000f8e10ff_0000000403007c11  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0080 MEMBAR.ALL.SYS                                   000fec000000b000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00a0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00b0 ATOMS.ADD RZ, [R0], R3                           000fe80000000000_0000000300ff738c  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR6][R4.64], RZ                       004fe2000c101906_000000ff04007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.atom.add.default
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R5, UR4, 0x2                             001fca000f8e10ff_0000000405007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 ATOMS.ADD R5, [R0], R5                           000ea80000000000_000000050005738c  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0090 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.atom.cas.default
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0040 HFMA2 R5, -RZ, RZ, 0, 4.17232513427734375e-07    000fcc00000001ff_00000007ff057431  stall= 6 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R0, R4, UR4, 0x2                             001fca000f8e10ff_0000000404007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0090 ATOMS.CAS R5, [R0], R4, R5                       000ea80000000005_000000040005738d  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00a0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## cta.ld.mmio.sys: PTXAS ERROR: ptxas out/cta.ld.mmio.sys.ptx, line 18; error   : Modifier '.mmio' cannot be applied to '.shared::cta' space
+## cta.st.mmio.sys: PTXAS ERROR: ptxas out/cta.st.mmio.sys.ptx, line 18; error   : Modifier '.mmio' cannot be applied to '.shared::cta' space
+## clu.ld.weak
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R4, UR4, 0x2                             001fc8000f8e10ff_0000000404047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 LD.E R5, [R4]                                    000ea20000100900_0000000004057980  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.ld.weakx
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R4, UR4, 0x2                             001fc8000f8e10ff_0000000404047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 LD.E R5, [R4]                                    000ea20000100900_0000000004057980  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.ld.volatile
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R4, UR4, 0x2                             001fc8000f8e10ff_0000000404047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 LD.E.STRONG.SYS R5, [R4]                         000ea20000114900_0000000004057980  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.st.weak
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0050 UMOV UR4, 0x400                                  000fca0000000000_0000040000047882  stall= 5 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0070 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0080 LEA R2, R5, UR4, 0x2                             001fc8000f8e10ff_0000000405027c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0090 MOV R2, R2                                       000fe40000000f00_0000000200027202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00a0 MOV R3, R7                                       008fca0000000f00_0000000700037202  stall= 5 y=0 wb=7 rb=7 wait=001000 reuse=0
+  00b0 ST.E [R2], R5                                    000fe80000100905_0000000002007385  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR6][R8.64], RZ                       004fe2000c101906_000000ff08007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.st.volatile
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0050 UMOV UR4, 0x400                                  000fca0000000000_0000040000047882  stall= 5 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0070 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0080 LEA R2, R5, UR4, 0x2                             001fc8000f8e10ff_0000000405027c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0090 MOV R2, R2                                       000fe40000000f00_0000000200027202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00a0 MOV R3, R7                                       008fca0000000f00_0000000700037202  stall= 5 y=0 wb=7 rb=7 wait=001000 reuse=0
+  00b0 ST.E.STRONG.SYS [R2], R5                         000fe80000114905_0000000002007385  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR6][R8.64], RZ                       004fe2000c101906_000000ff08007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.ld.relaxed.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R4, UR4, 0x2                             001fc8000f8e10ff_0000000404047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 LD.E.STRONG.SM R5, [R4]                          000ea2000010a900_0000000004057980  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.ld.acquire.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R4, UR4, 0x2                             001fc8000f8e10ff_0000000404047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 LD.E.STRONG.SM R5, [R4]                          000ea4000010a900_0000000004057980  stall= 2 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00a0 NOP                                              004fe20000000000_0000000000007918  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  00d0 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## clu.st.relaxed.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0050 UMOV UR4, 0x400                                  000fca0000000000_0000040000047882  stall= 5 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0070 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0080 LEA R2, R5, UR4, 0x2                             001fc8000f8e10ff_0000000405027c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0090 MOV R2, R2                                       000fe40000000f00_0000000200027202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00a0 MOV R3, R7                                       008fca0000000f00_0000000700037202  stall= 5 y=0 wb=7 rb=7 wait=001000 reuse=0
+  00b0 ST.E.STRONG.SM [R2], R5                          000fe8000010a905_0000000002007385  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR6][R8.64], RZ                       004fe2000c101906_000000ff08007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.st.release.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0050 UMOV UR4, 0x400                                  000fca0000000000_0000040000047882  stall= 5 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0070 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0080 LEA R2, R5, UR4, 0x2                             001fc8000f8e10ff_0000000405027c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0090 MOV R2, R2                                       000fe40000000f00_0000000200027202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00a0 MOV R3, R7                                       008fe20000000f00_0000000700037202  stall= 1 y=1 wb=7 rb=7 wait=001000 reuse=0
+  00b0 MEMBAR.ALL.CTA                                   0001ec0000008000_0000000000007992  stall= 6 y=1 wb=7 rb=0 wait=000000 reuse=0
+  00c0 ST.E.STRONG.SM [R2], R5                          001fe8000010a905_0000000002007385  stall= 4 y=1 wb=7 rb=7 wait=000001 reuse=0
+  00d0 STG.E desc[UR6][R8.64], RZ                       004fe2000c101906_000000ff08007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.atom.add.relaxed.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 ATOM.E.ADD.STRONG.SM PT, R5, [R4], R7            000ea200001ea100_000000070405738a  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.atom.add.acq_rel.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fe20000000f00_0000000300057202  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0090 MEMBAR.ALL.CTA                                   0001ec0000008000_0000000000007992  stall= 6 y=1 wb=7 rb=0 wait=000000 reuse=0
+  00a0 ATOM.E.ADD.STRONG.SM PT, R5, [R4], R7            001ea400001ea100_000000070405738a  stall= 2 y=1 wb=2 rb=7 wait=000001 reuse=0
+  00b0 NOP                                              004fe20000000000_0000000000007918  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  00e0 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## clu.atom.exch.relaxed.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 ATOM.E.EXCH.STRONG.SM PT, R5, [R4], R7           000ea200041ea100_000000070405738a  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.red.add.relaxed.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fe40000000f00_0000000300057202  stall= 2 y=1 wb=7 rb=7 wait=000100 reuse=0
+  00b0 ATOM.E.ADD.STRONG.SM PT, RZ, [R4], R7            000fe800001ea100_0000000704ff738a  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], RZ                       001fe2000c101904_000000ff02007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## clu.red.add.release.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fe40000000f00_0000000300057202  stall= 2 y=1 wb=7 rb=7 wait=000100 reuse=0
+  00b0 MEMBAR.ALL.CTA                                   0003ec0000008000_0000000000007992  stall= 6 y=1 wb=7 rb=1 wait=000000 reuse=0
+  00c0 ATOM.E.ADD.STRONG.SM PT, RZ, [R4], R7            002fe800001ea100_0000000704ff738a  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  00d0 STG.E desc[UR4][R2.64], RZ                       001fe2000c101904_000000ff02007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## clu.ld.relaxed.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R4, UR4, 0x2                             001fc8000f8e10ff_0000000404047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 LD.E.STRONG.GPU R5, [R4]                         000ea2000010e900_0000000004057980  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.ld.acquire.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R4, UR4, 0x2                             001fc8000f8e10ff_0000000404047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 LD.E.STRONG.GPU R5, [R4]                         000ea8000010e900_0000000004057980  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00a0 CCTL.IVALL                                       004fe20002000000_00000000ff00798f  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  00d0 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## clu.st.relaxed.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0050 UMOV UR4, 0x400                                  000fca0000000000_0000040000047882  stall= 5 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0070 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0080 LEA R2, R5, UR4, 0x2                             001fc8000f8e10ff_0000000405027c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0090 MOV R2, R2                                       000fe40000000f00_0000000200027202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00a0 MOV R3, R7                                       008fca0000000f00_0000000700037202  stall= 5 y=0 wb=7 rb=7 wait=001000 reuse=0
+  00b0 ST.E.STRONG.GPU [R2], R5                         000fe8000010e905_0000000002007385  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR6][R8.64], RZ                       004fe2000c101906_000000ff08007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.st.release.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0050 UMOV UR4, 0x400                                  000fca0000000000_0000040000047882  stall= 5 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0070 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0080 LEA R2, R5, UR4, 0x2                             001fc8000f8e10ff_0000000405027c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0090 MOV R2, R2                                       000fe40000000f00_0000000200027202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00a0 MOV R3, R7                                       008fe20000000f00_0000000700037202  stall= 1 y=1 wb=7 rb=7 wait=001000 reuse=0
+  00b0 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00d0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00e0 ST.E.STRONG.GPU [R2], R5                         000fe8000010e905_0000000002007385  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00f0 STG.E desc[UR6][R8.64], RZ                       004fe2000c101906_000000ff08007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.atom.add.relaxed.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 ATOM.E.ADD.STRONG.GPU PT, R5, [R4], R7           000ea200001ee100_000000070405738a  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.atom.add.acq_rel.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fe20000000f00_0000000300057202  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0090 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00a0 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00b0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 ATOM.E.ADD.STRONG.GPU PT, R5, [R4], R7           000ea800001ee100_000000070405738a  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00d0 CCTL.IVALL                                       004fe20002000000_00000000ff00798f  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0100 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## clu.atom.exch.relaxed.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 ATOM.E.EXCH.STRONG.GPU PT, R5, [R4], R7          000ea200041ee100_000000070405738a  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.red.add.relaxed.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fe40000000f00_0000000300057202  stall= 2 y=1 wb=7 rb=7 wait=000100 reuse=0
+  00b0 ATOM.E.ADD.STRONG.GPU PT, RZ, [R4], R7           000fe800001ee100_0000000704ff738a  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], RZ                       001fe2000c101904_000000ff02007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## clu.red.add.release.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fe40000000f00_0000000300057202  stall= 2 y=1 wb=7 rb=7 wait=000100 reuse=0
+  00b0 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00d0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00e0 ATOM.E.ADD.STRONG.GPU PT, RZ, [R4], R7           000fe800001ee100_0000000704ff738a  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00f0 STG.E desc[UR4][R2.64], RZ                       001fe2000c101904_000000ff02007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## clu.ld.relaxed.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R4, UR4, 0x2                             001fc8000f8e10ff_0000000404047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 LD.E.STRONG.GPU R5, [R4]                         000ea2000010e900_0000000004057980  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.ld.acquire.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R4, UR4, 0x2                             001fc8000f8e10ff_0000000404047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 LD.E.STRONG.GPU R5, [R4]                         000ea8000010e900_0000000004057980  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00a0 CCTL.IVALL                                       004fe20002000000_00000000ff00798f  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  00d0 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## clu.st.relaxed.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0050 UMOV UR4, 0x400                                  000fca0000000000_0000040000047882  stall= 5 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0070 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0080 LEA R2, R5, UR4, 0x2                             001fc8000f8e10ff_0000000405027c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0090 MOV R2, R2                                       000fe40000000f00_0000000200027202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00a0 MOV R3, R7                                       008fca0000000f00_0000000700037202  stall= 5 y=0 wb=7 rb=7 wait=001000 reuse=0
+  00b0 ST.E.STRONG.GPU [R2], R5                         000fe8000010e905_0000000002007385  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR6][R8.64], RZ                       004fe2000c101906_000000ff08007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.st.release.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0050 UMOV UR4, 0x400                                  000fca0000000000_0000040000047882  stall= 5 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0070 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0080 LEA R2, R5, UR4, 0x2                             001fc8000f8e10ff_0000000405027c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0090 MOV R2, R2                                       000fe40000000f00_0000000200027202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00a0 MOV R3, R7                                       008fe20000000f00_0000000700037202  stall= 1 y=1 wb=7 rb=7 wait=001000 reuse=0
+  00b0 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00d0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00e0 ST.E.STRONG.GPU [R2], R5                         000fe8000010e905_0000000002007385  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00f0 STG.E desc[UR6][R8.64], RZ                       004fe2000c101906_000000ff08007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.atom.add.relaxed.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 ATOM.E.ADD.STRONG.GPU PT, R5, [R4], R7           000ea200001ee100_000000070405738a  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.atom.add.acq_rel.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fe20000000f00_0000000300057202  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0090 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00a0 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00b0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 ATOM.E.ADD.STRONG.GPU PT, R5, [R4], R7           000ea800001ee100_000000070405738a  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00d0 CCTL.IVALL                                       004fe20002000000_00000000ff00798f  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0100 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## clu.atom.exch.relaxed.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 ATOM.E.EXCH.STRONG.GPU PT, R5, [R4], R7          000ea200041ee100_000000070405738a  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.red.add.relaxed.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fe40000000f00_0000000300057202  stall= 2 y=1 wb=7 rb=7 wait=000100 reuse=0
+  00b0 ATOM.E.ADD.STRONG.GPU PT, RZ, [R4], R7           000fe800001ee100_0000000704ff738a  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], RZ                       001fe2000c101904_000000ff02007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## clu.red.add.release.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fe40000000f00_0000000300057202  stall= 2 y=1 wb=7 rb=7 wait=000100 reuse=0
+  00b0 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00d0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00e0 ATOM.E.ADD.STRONG.GPU PT, RZ, [R4], R7           000fe800001ee100_0000000704ff738a  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00f0 STG.E desc[UR4][R2.64], RZ                       001fe2000c101904_000000ff02007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## clu.ld.relaxed.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R4, UR4, 0x2                             001fc8000f8e10ff_0000000404047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 LD.E.STRONG.SYS R5, [R4]                         000ea20000114900_0000000004057980  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.ld.acquire.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R4, UR4, 0x2                             001fc8000f8e10ff_0000000404047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 LD.E.STRONG.SYS R5, [R4]                         000ea80000114900_0000000004057980  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00a0 CCTL.IVALL                                       004fe20002000000_00000000ff00798f  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  00d0 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## clu.st.relaxed.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0050 UMOV UR4, 0x400                                  000fca0000000000_0000040000047882  stall= 5 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0070 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0080 LEA R2, R5, UR4, 0x2                             001fc8000f8e10ff_0000000405027c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0090 MOV R2, R2                                       000fe40000000f00_0000000200027202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00a0 MOV R3, R7                                       008fca0000000f00_0000000700037202  stall= 5 y=0 wb=7 rb=7 wait=001000 reuse=0
+  00b0 ST.E.STRONG.SYS [R2], R5                         000fe80000114905_0000000002007385  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR6][R8.64], RZ                       004fe2000c101906_000000ff08007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.st.release.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0050 UMOV UR4, 0x400                                  000fca0000000000_0000040000047882  stall= 5 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0070 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0080 LEA R2, R5, UR4, 0x2                             001fc8000f8e10ff_0000000405027c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0090 MOV R2, R2                                       000fe40000000f00_0000000200027202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00a0 MOV R3, R7                                       008fe20000000f00_0000000700037202  stall= 1 y=1 wb=7 rb=7 wait=001000 reuse=0
+  00b0 MEMBAR.ALL.SYS                                   000fec000000b000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00d0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00e0 ST.E.STRONG.SYS [R2], R5                         000fe80000114905_0000000002007385  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00f0 STG.E desc[UR6][R8.64], RZ                       004fe2000c101906_000000ff08007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.atom.add.relaxed.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 ATOM.E.ADD.STRONG.SYS PT, R5, [R4], R7           000ea200001f4100_000000070405738a  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.atom.add.acq_rel.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fe20000000f00_0000000300057202  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0090 MEMBAR.ALL.SYS                                   000fec000000b000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00a0 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00b0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 ATOM.E.ADD.STRONG.SYS PT, R5, [R4], R7           000ea800001f4100_000000070405738a  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00d0 CCTL.IVALL                                       004fe20002000000_00000000ff00798f  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0100 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## clu.atom.exch.relaxed.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 ATOM.E.EXCH.STRONG.SYS PT, R5, [R4], R7          000ea200041f4100_000000070405738a  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.red.add.relaxed.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fe40000000f00_0000000300057202  stall= 2 y=1 wb=7 rb=7 wait=000100 reuse=0
+  00b0 ATOM.E.ADD.STRONG.SYS PT, RZ, [R4], R7           000fe800001f4100_0000000704ff738a  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], RZ                       001fe2000c101904_000000ff02007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## clu.red.add.release.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fe40000000f00_0000000300057202  stall= 2 y=1 wb=7 rb=7 wait=000100 reuse=0
+  00b0 MEMBAR.ALL.SYS                                   000fec000000b000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00d0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00e0 ATOM.E.ADD.STRONG.SYS PT, RZ, [R4], R7           000fe800001f4100_0000000704ff738a  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00f0 STG.E desc[UR4][R2.64], RZ                       001fe2000c101904_000000ff02007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## clu.atom.add.default
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R4, R7, UR4, 0x2                             001fc8000f8e10ff_0000000407047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  0090 ATOM.E.ADD.STRONG.GPU PT, R5, [R4], R7           000ea200001ee100_000000070405738a  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.atom.cas.default
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe20000000000_0000040000047882  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0040 IMAD.MOV.U32 R7, RZ, RZ, 0x7                     000fe200078e00ff_00000007ff077424  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0060 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0070 LEA R4, R6, UR4, 0x2                             001fc8000f8e10ff_0000000406047c11  stall= 4 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 MOV R4, R4                                       000fe40000000f00_0000000400047202  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 MOV R5, R3                                       004fcc0000000f00_0000000300057202  stall= 6 y=0 wb=7 rb=7 wait=000100 reuse=0
+  00a0 ATOM.E.CAS.STRONG.GPU PT, R5, [R4], R6, R7       000ea200001ee107_000000060405738b  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00d0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## clu.ld.mmio.sys: PTXAS ERROR: ptxas out/clu.ld.mmio.sys.ptx, line 18; error   : Modifier '.mmio' cannot be applied to '.shared::cluster' space
+## clu.st.mmio.sys: PTXAS ERROR: ptxas out/clu.st.mmio.sys.ptx, line 18; error   : Modifier '.mmio' cannot be applied to '.shared::cluster' space
+## glb.ld.weak
+  0040 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fcc00078e0002_0000000405027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 LDG.E R3, desc[UR4][R2.64]                       002ea2000c1e1900_0000000402037981  stall= 1 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], R3                       004fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.ld.weakx
+  0040 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fcc00078e0002_0000000405027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 LDG.E R3, desc[UR4][R2.64]                       002ea2000c1e1900_0000000402037981  stall= 1 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], R3                       004fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.ld.volatile
+  0040 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fcc00078e0002_0000000405027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 LDG.E.STRONG.SYS R3, desc[UR4][R2.64]            002ea2000c1f5900_0000000402037981  stall= 1 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], R3                       004fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.st.weak
+  0050 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fca00078e0002_0000000405027825  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0060 STG.E desc[UR4][R2.64], R5                       002fe8000c101904_0000000502007986  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R6.64], RZ                       004fe2000c101904_000000ff06007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.st.volatile
+  0050 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fca00078e0002_0000000405027825  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0060 STG.E.STRONG.SYS desc[UR4][R2.64], R5            002fe8000c115904_0000000502007986  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R6.64], RZ                       004fe2000c101904_000000ff06007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.ld.relaxed.cta
+  0040 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fcc00078e0002_0000000405027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 LDG.E.STRONG.SM R3, desc[UR4][R2.64]             002ea2000c1eb900_0000000402037981  stall= 1 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], R3                       004fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.ld.acquire.cta
+  0040 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fcc00078e0002_0000000405027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 LDG.E.STRONG.SM R3, desc[UR4][R2.64]             002ea4000c1eb900_0000000402037981  stall= 2 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0060 NOP                                              004fe20000000000_0000000000007918  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0080 STG.E desc[UR4][R4.64], R3                       001fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## glb.st.relaxed.cta
+  0050 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fca00078e0002_0000000405027825  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0060 STG.E.STRONG.SM desc[UR4][R2.64], R5             002fe8000c10b904_0000000502007986  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R6.64], RZ                       004fe2000c101904_000000ff06007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.st.release.cta
+  0050 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fe200078e0002_0000000405027825  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0060 MEMBAR.ALL.CTA                                   0003ec0000008000_0000000000007992  stall= 6 y=1 wb=7 rb=1 wait=000000 reuse=0
+  0070 STG.E.STRONG.SM desc[UR4][R2.64], R5             002fe8000c10b904_0000000502007986  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  0080 STG.E desc[UR4][R6.64], RZ                       004fe2000c101904_000000ff06007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.atom.add.relaxed.cta
+  0040 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fcc00078e0002_0000000407027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 ATOMG.E.ADD.STRONG.SM PT, R3, desc[UR4][R2.64], R7 002ea200081eb104_80000007020379a8  stall= 1 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], R3                       004fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.atom.add.acq_rel.cta
+  0040 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fe200078e0002_0000000407027825  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0050 MEMBAR.ALL.CTA                                   0003ec0000008000_0000000000007992  stall= 6 y=1 wb=7 rb=1 wait=000000 reuse=0
+  0060 ATOMG.E.ADD.STRONG.SM PT, R3, desc[UR4][R2.64], R7 002ea400081eb104_80000007020379a8  stall= 2 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0070 NOP                                              004fe20000000000_0000000000007918  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0090 STG.E desc[UR4][R4.64], R3                       001fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## glb.atom.exch.relaxed.cta
+  0040 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fcc00078e0002_0000000407027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 ATOMG.E.EXCH.STRONG.SM PT, R3, desc[UR4][R2.64], R7 002ea2000c1eb104_80000007020379a8  stall= 1 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], R3                       004fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.red.add.relaxed.cta
+  0050 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fca00078e0002_0000000407027825  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0060 REDG.E.ADD.STRONG.SM desc[UR4][R2.64], R7        002fe8000c12a104_000000070200798e  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], RZ                       004fe2000c101904_000000ff04007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.red.add.release.cta
+  0050 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fe200078e0002_0000000407027825  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0060 MEMBAR.ALL.CTA                                   0003ec0000008000_0000000000007992  stall= 6 y=1 wb=7 rb=1 wait=000000 reuse=0
+  0070 REDG.E.ADD.STRONG.SM desc[UR4][R2.64], R7        002fe8000c12a104_000000070200798e  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  0080 STG.E desc[UR4][R4.64], RZ                       004fe2000c101904_000000ff04007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.ld.relaxed.cluster
+  0040 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fcc00078e0002_0000000405027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 LDG.E.STRONG.GPU R3, desc[UR4][R2.64]            002ea2000c1ef900_0000000402037981  stall= 1 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], R3                       004fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.ld.acquire.cluster
+  0040 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fcc00078e0002_0000000405027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 LDG.E.STRONG.GPU R3, desc[UR4][R2.64]            002ea8000c1ef900_0000000402037981  stall= 4 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0060 CCTL.IVALL                                       004fe20002000000_00000000ff00798f  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0080 STG.E desc[UR4][R4.64], R3                       001fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## glb.st.relaxed.cluster
+  0050 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fca00078e0002_0000000405027825  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0060 STG.E.STRONG.GPU desc[UR4][R2.64], R5            002fe8000c10f904_0000000502007986  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R6.64], RZ                       004fe2000c101904_000000ff06007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.st.release.cluster
+  0050 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fe200078e0002_0000000405027825  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0060 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0070 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0080 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 STG.E.STRONG.GPU desc[UR4][R2.64], R5            002fe8000c10f904_0000000502007986  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  00a0 STG.E desc[UR4][R6.64], RZ                       004fe2000c101904_000000ff06007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.atom.add.relaxed.cluster
+  0040 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fcc00078e0002_0000000407027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 ATOMG.E.ADD.STRONG.GPU PT, R3, desc[UR4][R2.64], R7 002ea200081ef104_80000007020379a8  stall= 1 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], R3                       004fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.atom.add.acq_rel.cluster
+  0040 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fe200078e0002_0000000407027825  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0050 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0060 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0070 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 ATOMG.E.ADD.STRONG.GPU PT, R3, desc[UR4][R2.64], R7 002ea800081ef104_80000007020379a8  stall= 4 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0090 CCTL.IVALL                                       004fe20002000000_00000000ff00798f  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  00b0 STG.E desc[UR4][R4.64], R3                       001fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## glb.atom.exch.relaxed.cluster
+  0040 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fcc00078e0002_0000000407027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 ATOMG.E.EXCH.STRONG.GPU PT, R3, desc[UR4][R2.64], R7 002ea2000c1ef104_80000007020379a8  stall= 1 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], R3                       004fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.red.add.relaxed.cluster
+  0050 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fca00078e0002_0000000407027825  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0060 REDG.E.ADD.STRONG.GPU desc[UR4][R2.64], R7       002fe8000c12e104_000000070200798e  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], RZ                       004fe2000c101904_000000ff04007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.red.add.release.cluster
+  0050 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fe200078e0002_0000000407027825  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0060 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0070 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0080 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 REDG.E.ADD.STRONG.GPU desc[UR4][R2.64], R7       002fe8000c12e104_000000070200798e  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  00a0 STG.E desc[UR4][R4.64], RZ                       004fe2000c101904_000000ff04007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.ld.relaxed.gpu
+  0040 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fcc00078e0002_0000000405027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 LDG.E.STRONG.GPU R3, desc[UR4][R2.64]            002ea2000c1ef900_0000000402037981  stall= 1 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], R3                       004fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.ld.acquire.gpu
+  0040 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fcc00078e0002_0000000405027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 LDG.E.STRONG.GPU R3, desc[UR4][R2.64]            002ea8000c1ef900_0000000402037981  stall= 4 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0060 CCTL.IVALL                                       004fe20002000000_00000000ff00798f  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0080 STG.E desc[UR4][R4.64], R3                       001fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## glb.st.relaxed.gpu
+  0050 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fca00078e0002_0000000405027825  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0060 STG.E.STRONG.GPU desc[UR4][R2.64], R5            002fe8000c10f904_0000000502007986  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R6.64], RZ                       004fe2000c101904_000000ff06007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.st.release.gpu
+  0050 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fe200078e0002_0000000405027825  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0060 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0070 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0080 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 STG.E.STRONG.GPU desc[UR4][R2.64], R5            002fe8000c10f904_0000000502007986  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  00a0 STG.E desc[UR4][R6.64], RZ                       004fe2000c101904_000000ff06007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.atom.add.relaxed.gpu
+  0040 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fcc00078e0002_0000000407027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 ATOMG.E.ADD.STRONG.GPU PT, R3, desc[UR4][R2.64], R7 002ea200081ef104_80000007020379a8  stall= 1 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], R3                       004fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.atom.add.acq_rel.gpu
+  0040 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fe200078e0002_0000000407027825  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0050 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0060 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0070 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 ATOMG.E.ADD.STRONG.GPU PT, R3, desc[UR4][R2.64], R7 002ea800081ef104_80000007020379a8  stall= 4 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0090 CCTL.IVALL                                       004fe20002000000_00000000ff00798f  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  00b0 STG.E desc[UR4][R4.64], R3                       001fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## glb.atom.exch.relaxed.gpu
+  0040 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fcc00078e0002_0000000407027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 ATOMG.E.EXCH.STRONG.GPU PT, R3, desc[UR4][R2.64], R7 002ea2000c1ef104_80000007020379a8  stall= 1 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], R3                       004fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.red.add.relaxed.gpu
+  0050 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fca00078e0002_0000000407027825  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0060 REDG.E.ADD.STRONG.GPU desc[UR4][R2.64], R7       002fe8000c12e104_000000070200798e  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], RZ                       004fe2000c101904_000000ff04007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.red.add.release.gpu
+  0050 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fe200078e0002_0000000407027825  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0060 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0070 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0080 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 REDG.E.ADD.STRONG.GPU desc[UR4][R2.64], R7       002fe8000c12e104_000000070200798e  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  00a0 STG.E desc[UR4][R4.64], RZ                       004fe2000c101904_000000ff04007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.ld.relaxed.sys
+  0040 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fcc00078e0002_0000000405027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 LDG.E.STRONG.SYS R3, desc[UR4][R2.64]            002ea2000c1f5900_0000000402037981  stall= 1 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], R3                       004fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.ld.acquire.sys
+  0040 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fcc00078e0002_0000000405027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 LDG.E.STRONG.SYS R3, desc[UR4][R2.64]            002ea8000c1f5900_0000000402037981  stall= 4 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0060 CCTL.IVALL                                       004fe20002000000_00000000ff00798f  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  0080 STG.E desc[UR4][R4.64], R3                       001fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## glb.st.relaxed.sys
+  0050 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fca00078e0002_0000000405027825  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0060 STG.E.STRONG.SYS desc[UR4][R2.64], R5            002fe8000c115904_0000000502007986  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R6.64], RZ                       004fe2000c101904_000000ff06007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.st.release.sys
+  0050 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fe200078e0002_0000000405027825  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0060 MEMBAR.ALL.SYS                                   000fec000000b000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0070 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0080 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 STG.E.STRONG.SYS desc[UR4][R2.64], R5            002fe8000c115904_0000000502007986  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  00a0 STG.E desc[UR4][R6.64], RZ                       004fe2000c101904_000000ff06007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.atom.add.relaxed.sys
+  0040 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fcc00078e0002_0000000407027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 ATOMG.E.ADD.STRONG.SYS PT, R3, desc[UR4][R2.64], R7 002ea200081f5104_80000007020379a8  stall= 1 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], R3                       004fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.atom.add.acq_rel.sys
+  0040 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fe200078e0002_0000000407027825  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0050 MEMBAR.ALL.SYS                                   000fec000000b000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0060 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0070 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0080 ATOMG.E.ADD.STRONG.SYS PT, R3, desc[UR4][R2.64], R7 002ea800081f5104_80000007020379a8  stall= 4 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0090 CCTL.IVALL                                       004fe20002000000_00000000ff00798f  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+  00b0 STG.E desc[UR4][R4.64], R3                       001fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## glb.atom.exch.relaxed.sys
+  0040 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fcc00078e0002_0000000407027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 ATOMG.E.EXCH.STRONG.SYS PT, R3, desc[UR4][R2.64], R7 002ea2000c1f5104_80000007020379a8  stall= 1 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], R3                       004fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.red.add.relaxed.sys
+  0050 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fca00078e0002_0000000407027825  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0060 REDG.E.ADD.STRONG.SYS desc[UR4][R2.64], R7       002fe8000c134104_000000070200798e  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], RZ                       004fe2000c101904_000000ff04007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.red.add.release.sys
+  0050 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fe200078e0002_0000000407027825  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+  0060 MEMBAR.ALL.SYS                                   000fec000000b000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0070 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0080 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 REDG.E.ADD.STRONG.SYS desc[UR4][R2.64], R7       002fe8000c134104_000000070200798e  stall= 4 y=1 wb=7 rb=7 wait=000010 reuse=0
+  00a0 STG.E desc[UR4][R4.64], RZ                       004fe2000c101904_000000ff04007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.atom.add.default
+  0040 IMAD.WIDE.U32 R2, R7, 0x4, R2                    001fcc00078e0002_0000000407027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 ATOMG.E.ADD.STRONG.GPU PT, R3, desc[UR4][R2.64], R7 002ea200081ef104_80000007020379a8  stall= 1 y=1 wb=2 rb=7 wait=000010 reuse=0
+  0070 STG.E desc[UR4][R4.64], R3                       004fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.atom.cas.default
+  0030 HFMA2 R7, -RZ, RZ, 0, 4.17232513427734375e-07    000fe400000001ff_00000007ff077431  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0040 IMAD.WIDE.U32 R2, R6, 0x4, R2                    001fcc00078e0002_0000000406027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0050 ATOMG.E.CAS.STRONG.GPU PT, R3, [R2], R6, R7      000ea200001ee107_00000006020373a9  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0080 STG.E desc[UR4][R4.64], R3                       004fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.ld.mmio.sys
+  0030 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fcc00078e0002_0000000405027825  stall= 6 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0040 LDG.E.MMIO.SYS R3, [R2]                          000ea200001f8900_0000000002037381  stall= 1 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0070 STG.E desc[UR4][R4.64], R3                       004fe2000c101904_0000000304007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## glb.st.mmio.sys
+  0050 IMAD.WIDE.U32 R2, R5, 0x4, R2                    001fca00078e0002_0000000405027825  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0060 STG.E.MMIO.SYS [R2], R5                          000fe80000118900_0000000502007386  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0070 STG.E desc[UR4][R6.64], RZ                       002fe2000c101904_000000ff06007986  stall= 1 y=1 wb=7 rb=7 wait=000010 reuse=0
+## fence.fence.sc.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe40000000000_0000040000047882  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0040 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0050 LEA R0, R3, UR4, 0x2                             001fca000f8e10ff_0000000403007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 STS [R0], R3                                     0003e20000000800_0000000300007388  stall= 1 y=1 wb=7 rb=1 wait=000000 reuse=0
+  0080 MEMBAR.SC.CTA                                    0005ec0000000000_0000000000007992  stall= 6 y=1 wb=7 rb=2 wait=000000 reuse=0
+  0090 LDS R5, [R0+0x4]                                 004e220000000800_0000040000057984  stall= 1 y=1 wb=0 rb=7 wait=000100 reuse=0
+  00b0 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## fence.fence.acq_rel.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe40000000000_0000040000047882  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0040 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0050 LEA R0, R3, UR4, 0x2                             001fca000f8e10ff_0000000403007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 STS [R0], R3                                     0003e20000000800_0000000300007388  stall= 1 y=1 wb=7 rb=1 wait=000000 reuse=0
+  0080 MEMBAR.ALL.CTA                                   0005ec0000008000_0000000000007992  stall= 6 y=1 wb=7 rb=2 wait=000000 reuse=0
+  0090 NOP                                              03ffe20000000000_0000000000007918  stall= 1 y=1 wb=7 rb=7 wait=111111 reuse=0
+  00a0 LDS R5, [R0+0x4]                                 000e220000000800_0000040000057984  stall= 1 y=1 wb=0 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## fence.fence.sc.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe40000000000_0000040000047882  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0040 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0050 LEA R0, R3, UR4, 0x2                             001fca000f8e10ff_0000000403007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 STS [R0], R3                                     0003e20000000800_0000000300007388  stall= 1 y=1 wb=7 rb=1 wait=000000 reuse=0
+  0080 MEMBAR.SC.GPU                                    000fec0000002000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00a0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00b0 CCTL.IVALL                                       000fe80002000000_00000000ff00798f  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 LDS R5, [R0+0x4]                                 000e220000000800_0000040000057984  stall= 1 y=1 wb=0 rb=7 wait=000000 reuse=0
+  00e0 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## fence.fence.acq_rel.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe40000000000_0000040000047882  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0040 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0050 LEA R0, R3, UR4, 0x2                             001fca000f8e10ff_0000000403007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 STS [R0], R3                                     0003e20000000800_0000000300007388  stall= 1 y=1 wb=7 rb=1 wait=000000 reuse=0
+  0080 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00a0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00b0 CCTL.IVALL                                       03ffe80002000000_00000000ff00798f  stall= 4 y=1 wb=7 rb=7 wait=111111 reuse=0
+  00c0 LDS R5, [R0+0x4]                                 000e220000000800_0000040000057984  stall= 1 y=1 wb=0 rb=7 wait=000000 reuse=0
+  00e0 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## fence.fence.sc.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe40000000000_0000040000047882  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0040 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0050 LEA R0, R3, UR4, 0x2                             001fca000f8e10ff_0000000403007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 STS [R0], R3                                     0003e20000000800_0000000300007388  stall= 1 y=1 wb=7 rb=1 wait=000000 reuse=0
+  0080 MEMBAR.SC.GPU                                    000fec0000002000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00a0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00b0 CCTL.IVALL                                       000fe80002000000_00000000ff00798f  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 LDS R5, [R0+0x4]                                 000e220000000800_0000040000057984  stall= 1 y=1 wb=0 rb=7 wait=000000 reuse=0
+  00e0 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## fence.fence.acq_rel.gpu
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe40000000000_0000040000047882  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0040 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0050 LEA R0, R3, UR4, 0x2                             001fca000f8e10ff_0000000403007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 STS [R0], R3                                     0003e20000000800_0000000300007388  stall= 1 y=1 wb=7 rb=1 wait=000000 reuse=0
+  0080 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00a0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00b0 CCTL.IVALL                                       03ffe80002000000_00000000ff00798f  stall= 4 y=1 wb=7 rb=7 wait=111111 reuse=0
+  00c0 LDS R5, [R0+0x4]                                 000e220000000800_0000040000057984  stall= 1 y=1 wb=0 rb=7 wait=000000 reuse=0
+  00e0 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## fence.fence.sc.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe40000000000_0000040000047882  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0040 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0050 LEA R0, R3, UR4, 0x2                             001fca000f8e10ff_0000000403007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 STS [R0], R3                                     0003e20000000800_0000000300007388  stall= 1 y=1 wb=7 rb=1 wait=000000 reuse=0
+  0080 MEMBAR.SC.SYS                                    000fec0000003000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00a0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00b0 CCTL.IVALL                                       000fe80002000000_00000000ff00798f  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 LDS R5, [R0+0x4]                                 000e220000000800_0000040000057984  stall= 1 y=1 wb=0 rb=7 wait=000000 reuse=0
+  00e0 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## fence.fence.acq_rel.sys
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe40000000000_0000040000047882  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0040 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0050 LEA R0, R3, UR4, 0x2                             001fca000f8e10ff_0000000403007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 STS [R0], R3                                     0003e20000000800_0000000300007388  stall= 1 y=1 wb=7 rb=1 wait=000000 reuse=0
+  0080 MEMBAR.ALL.SYS                                   000fec000000b000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00a0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00b0 CCTL.IVALL                                       03ffe80002000000_00000000ff00798f  stall= 4 y=1 wb=7 rb=7 wait=111111 reuse=0
+  00c0 LDS R5, [R0+0x4]                                 000e220000000800_0000040000057984  stall= 1 y=1 wb=0 rb=7 wait=000000 reuse=0
+  00e0 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## fence.fence.proxy.async
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R7, UR4, 0x2                             001fca000f8e10ff_0000000407007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 STS [R0], R7                                     000fe20000000800_0000000700007388  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00a0 FENCE.VIEW.ASYNC.S                               000fe80000000000_00000000000073c6  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00b0 LDS R5, [R0+0x4]                                 000ea80000000800_0000040000057984  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## fence.fence.proxy.async.shared::cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R7, UR4, 0x2                             001fca000f8e10ff_0000000407007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 STS [R0], R7                                     000fe20000000800_0000000700007388  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 MEMBAR.ALL.CTA                                   0001ec0000008000_0000000000007992  stall= 6 y=1 wb=7 rb=0 wait=000000 reuse=0
+  00a0 FENCE.VIEW.ASYNC.S                               001fe80000000000_00000000000073c6  stall= 4 y=1 wb=7 rb=7 wait=000001 reuse=0
+  00b0 LDS R5, [R0+0x4]                                 000ea80000000800_0000040000057984  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00c0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## fence.membar.cta
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe40000000000_0000040000047882  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0040 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0050 LEA R0, R3, UR4, 0x2                             001fca000f8e10ff_0000000403007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 STS [R0], R3                                     0003e20000000800_0000000300007388  stall= 1 y=1 wb=7 rb=1 wait=000000 reuse=0
+  0080 MEMBAR.SC.CTA                                    0005ec0000000000_0000000000007992  stall= 6 y=1 wb=7 rb=2 wait=000000 reuse=0
+  0090 LDS R5, [R0+0x4]                                 004e220000000800_0000040000057984  stall= 1 y=1 wb=0 rb=7 wait=000100 reuse=0
+  00b0 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## fence.membar.gl
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe40000000000_0000040000047882  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0040 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0050 LEA R0, R3, UR4, 0x2                             001fca000f8e10ff_0000000403007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 STS [R0], R3                                     0003e20000000800_0000000300007388  stall= 1 y=1 wb=7 rb=1 wait=000000 reuse=0
+  0080 MEMBAR.SC.GPU                                    000fec0000002000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00a0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00b0 CCTL.IVALL                                       000fe80002000000_00000000ff00798f  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 LDS R5, [R0+0x4]                                 000e220000000800_0000040000057984  stall= 1 y=1 wb=0 rb=7 wait=000000 reuse=0
+  00e0 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0
+## fence.fence.acquire.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R7, UR4, 0x2                             001fca000f8e10ff_0000000407007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 STS [R0], R7                                     000fe80000000800_0000000700007388  stall= 4 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 CCTL.IVALL                                       03ffe80002000000_00000000ff00798f  stall= 4 y=1 wb=7 rb=7 wait=111111 reuse=0
+  00a0 LDS R5, [R0+0x4]                                 000ea80000000800_0000040000057984  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00b0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## fence.fence.release.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R7, UR4, 0x2                             001fca000f8e10ff_0000000407007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 STS [R0], R7                                     000fe20000000800_0000000700007388  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 MEMBAR.ALL.GPU                                   000fec000000a000_0000000000007992  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00a0 ERRBAR                                           000fc00000000000_00000000000079ab  stall= 0 y=0 wb=7 rb=7 wait=000000 reuse=0
+  00b0 CGAERRBAR                                        000fec0000000000_00000000000075ab  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00c0 LDS R5, [R0+0x4]                                 000ea80000000800_0000040000057984  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00d0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## fence.fence.mbarrier_init.release.cluster
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R7, UR4, 0x2                             001fca000f8e10ff_0000000407007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 STS [R0], R7                                     000fe20000000800_0000000700007388  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00a0 LDS R5, [R0+0x4]                                 000ea80000000800_0000040000057984  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00b0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## fence.bar.sync_0
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R7, UR4, 0x2                             001fca000f8e10ff_0000000407007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 STS [R0], R7                                     000fe20000000800_0000000700007388  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0090 BAR.SYNC.DEFER_BLOCKING 0x0                      000fec0000010000_0000000000007b1d  stall= 6 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00a0 LDS R5, [R0+0x4]                                 000ea80000000800_0000040000057984  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00b0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## fence.bar.warp.sync_-1
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R0, R7, UR4, 0x2                             001fca000f8e10ff_0000000407007c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 STS [R0], R7                                     000fe20000000800_0000000700007388  stall= 1 y=1 wb=7 rb=7 wait=000000 reuse=0
+  00a0 LDS R5, [R0+0x4]                                 000ea80000000800_0000040000057984  stall= 4 y=1 wb=2 rb=7 wait=000000 reuse=0
+  00b0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## mbar.arrive
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R2, R2, UR4, 0x2                             001fca000f8e10ff_0000000402027c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 SYNCS.ARRIVE.TRANS64.A1T0 R2, [R2+URZ], RZ       000ea400081000ff_000000ff020279a7  stall= 2 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0090 STG.E desc[UR4][R4.64], R2                       004fe2000c101904_0000000204007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## mbar.arrive.relaxed
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fcc000f8ec0ff_0000000405047291  stall= 6 y=0 wb=7 rb=7 wait=000010 reuse=0
+  0060 LEA R2, R2, UR4, 0x2                             001fca000f8e10ff_0000000402027c11  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0080 SYNCS.ARRIVE.TRANS64.A1T0 R2, [R2+URZ], RZ       000ea400081000ff_000000ff020279a7  stall= 2 y=1 wb=2 rb=7 wait=000000 reuse=0
+  0090 STG.E desc[UR4][R4.64], R2                       004fe2000c101904_0000000204007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## mbar.try_wait
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fe2000f8ec0ff_0000000405047291  stall= 1 y=1 wb=7 rb=7 wait=000010 reuse=0
+  0060 SHF.L.U32 R7, R0, 0x1f, RZ                       001fca00000006ff_0000001f00077819  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 LEA R0, R0, UR4, 0x2                             000fca000f8e10ff_0000000400007c11  stall= 5 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0090 SYNCS.PHASECHK.TRANS64.TRYWAIT P0, [R0+URZ], R7  000e2400080011ff_00000007000075a7  stall= 2 y=1 wb=0 rb=7 wait=000000 reuse=0
+  00a0 SEL R5, RZ, 0x1, !P0                             001fca0004000000_00000001ff057807  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  00b0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## mbar.try_wait.relaxed
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fce0000000000_0000040000047882  stall= 7 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0050 ULEA UR4, UR5, UR4, 0x18                         002fe2000f8ec0ff_0000000405047291  stall= 1 y=1 wb=7 rb=7 wait=000010 reuse=0
+  0060 SHF.L.U32 R7, R0, 0x1f, RZ                       001fca00000006ff_0000001f00077819  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0070 LEA R0, R0, UR4, 0x2                             000fca000f8e10ff_0000000400007c11  stall= 5 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0090 SYNCS.PHASECHK.TRANS64.TRYWAIT P0, [R0+URZ], R7  000e2400080011ff_00000007000075a7  stall= 2 y=1 wb=0 rb=7 wait=000000 reuse=0
+  00a0 SEL R5, RZ, 0x1, !P0                             001fca0004000000_00000001ff057807  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  00b0 STG.E desc[UR4][R2.64], R5                       004fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000100 reuse=0
+## mbar.test_wait
+  0020 S2UR UR5, SR_CgaCtaId                            000e620000008800_00000000000579c3  stall= 1 y=1 wb=1 rb=7 wait=000000 reuse=0
+  0030 UMOV UR4, 0x400                                  000fe40000000000_0000040000047882  stall= 2 y=1 wb=7 rb=7 wait=000000 reuse=0
+  0040 ULEA UR4, UR5, UR4, 0x18                         002fe2000f8ec0ff_0000000405047291  stall= 1 y=1 wb=7 rb=7 wait=000010 reuse=0
+  0050 SHF.L.U32 R3, R0, 0x1f, RZ                       001fca00000006ff_0000001f00037819  stall= 5 y=0 wb=7 rb=7 wait=000001 reuse=0
+  0060 LEA R0, R0, UR4, 0x2                             000fca000f8e10ff_0000000400007c11  stall= 5 y=0 wb=7 rb=7 wait=000000 reuse=0
+  0080 SYNCS.PHASECHK.TRANS64 P0, [R0+URZ], R3          0002a400080010ff_00000003000075a7  stall= 2 y=1 wb=2 rb=1 wait=000000 reuse=0
+  00a0 SEL R5, RZ, 0x1, !P0                             004fca0004000000_00000001ff057807  stall= 5 y=0 wb=7 rb=7 wait=000100 reuse=0
+  00b0 STG.E desc[UR4][R2.64], R5                       001fe2000c101904_0000000502007986  stall= 1 y=1 wb=7 rb=7 wait=000001 reuse=0

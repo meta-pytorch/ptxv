@@ -1,0 +1,5 @@
+mode ldr
+members 0 1 2 3
+size 536870912
+N 65536
+REPS 4

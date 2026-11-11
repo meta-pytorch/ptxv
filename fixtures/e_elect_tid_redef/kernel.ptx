@@ -1,0 +1,48 @@
+// E-ELECT (MISS 50): %r1 holds %tid.x, then %tid.x + 3, then %tid.x + 31. (%tid.x + 3) >> 5
+// is 1 for lanes 29-31 of warp 0 and (%tid.x + 31) >> 5 is 0 for lane 0 only: lane-varying,
+// not warp-uniform. Warp 0's leader stores out[1] after bar.sync 0 when it is lane 1..28 (where
+// thread 32's read races with it), before it otherwise.
+//   good: racy for leaders 1..28 only.
+//   FRESH: %tid.x + 3 computed in a fresh register first: racy the same way.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_elect_tid_redef(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r7, 7;
+    mov.u32 %r1, %tid.x;
+    shr.u32 %r2, %r1, 5;
+    setp.ne.u32 %p5, %r2, 0;
+    setp.ne.u32 %p6, %r2, %r2;
+    add.u32 %r1, %r1, 3;                 // @ADD3
+    shr.u32 %r3, %r1, 5;                 // 1 for lanes 29-31 of warp 0
+    mov.u32 %r1, %tid.x;
+    add.u32 %r1, %r1, 31;
+    shr.u32 %r4, %r1, 5;                 // 0 for lane 0 only
+    @%p5 bra BAR;
+    elect.sync %r9|%p1, -1;
+    setp.eq.u32 %p2, %r3, 0;
+    setp.eq.u32 %p3, %r4, 1;
+    and.pred %p4, %p2, %p3;              // lanes 1-28
+    not.pred %p4, %p4;
+    and.pred %p6, %p1, %p4;
+    @%p6 st.global.u32 [%rd1+4], %r7;    // end-ish leader: before the barrier
+    not.pred %p4, %p4;
+    and.pred %p6, %p1, %p4;
+BAR:
+    bar.sync 0;
+    @%p6 st.global.u32 [%rd1+4], %r7;    // middle leader: after
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p7, %r1, 32;
+    @%p7 bra DONE;
+    ld.global.u32 %r5, [%rd1+4];
+    st.global.u32 [%rd1], %r5;
+DONE:
+    ret;
+}

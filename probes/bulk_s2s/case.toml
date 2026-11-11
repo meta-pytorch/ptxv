@@ -1,0 +1,40 @@
+name = "probe_bulk_s2s"
+description = """
+Probe (S-TMA) for cp.async.bulk.shared::cluster.shared::cta.mbarrier::complete_tx::bytes (SASS
+UBLKCP.S.S, FA4 backward's dQ hand-off): in a 2-CTA cluster each CTA copies 4 KB of its shared
+memory into the peer's (completing on the peer's mbarrier) and 4 KB into its own, then writes
+what it received (kernel.ptx). expected/ is GB300's output (ptxas cubin, `ptxv hw-worker
+probes/bulk_s2s <cubin> --runs 20 --dump`)."""
+ptx = "kernel.ptx"
+entry = "bulk_s2s"
+grid = [2, 1, 1]
+block = [128, 1, 1]
+cluster = [2, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [2, 2048]
+init = "bits"
+seed = 21
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2, 2048]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["contract"]
+expect_sass = ["clean"]

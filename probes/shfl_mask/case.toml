@@ -1,0 +1,46 @@
+name = "probe_shfl_mask"
+description = """
+Probe (E-WARPCOLL) for PTX shfl.sync / vote.sync / redux.sync with partial member masks on the
+PTX front-end: half-warp masks in the two sides of a branch, quad-mask shfl.up / vote.any /
+vote.all / vote.uni, a half-warp shfl.down that the other half skips, and redux.sync whose mask
+groups are split across two instructions (kernel.ptx, gen.py). expected/ is GB300's output
+(kernel.cubin = ptxas -arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "shfl_mask"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [64]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "skip_half"
+summary = "all 32 lanes run the shfl.sync.down whose membermask is 0xffff"
+expect = ["violation"]
+marker = "@SH"
+find = "@!%p1 bra       J2;"
+replace = "@!%p1 bra       J2b;"

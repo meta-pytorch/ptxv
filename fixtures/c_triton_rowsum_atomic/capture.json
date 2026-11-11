@@ -1,0 +1,61 @@
+{
+ "what": "run() of triton_rowsum_atomic.py (kernel ^rowsum_atomic_kernel$)",
+ "argv": [
+  "--triton",
+  "tools/capture_examples/triton_rowsum_atomic.py:rowsum_atomic_kernel",
+  "--binary",
+  "--out",
+  "fixtures/c_triton_rowsum_atomic",
+  "--work",
+  "/tmp/ptxv_capture_76946"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "rowsum_atomic_kernel",
+   "grid": [
+    4,
+    4,
+    1
+   ],
+   "block": [
+    32,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  }
+ ],
+ "filtered_out": [
+  "_ZN2at6native29vectorized_elementwise_kernelILi4ENS0_11FillFunctorIfEESt5arrayIPcLm1EEEEviT0_T1_"
+ ],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "x",
+   "dtype": "f32",
+   "shape": [
+    4,
+    128
+   ],
+   "size": 2048
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    4
+   ],
+   "size": 16
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

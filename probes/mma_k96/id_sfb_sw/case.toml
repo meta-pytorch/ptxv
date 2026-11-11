@@ -1,0 +1,86 @@
+name = "mma_k96_id_sfb_sw"
+description = "probes/mma_k96 input set id_sfb_sw (gen.py): kind::mxf4nvf4 block16, K = 96."
+ptx = "../kernel.ptx"
+entry = "k96_sw"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "u8"
+shape = [128, 128]
+init = "file"
+file = "A.bin"
+
+[[buffers]]
+name = "B"
+dtype = "u8"
+shape = [64, 128]
+init = "file"
+file = "B.bin"
+
+[[buffers]]
+name = "SFA"
+dtype = "u32"
+shape = [128, 16]
+init = "file"
+file = "SFA.bin"
+
+[[buffers]]
+name = "SFB"
+dtype = "u32"
+shape = [128, 16]
+init = "file"
+file = "SFB.bin"
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [128, 64]
+init = "nan"
+expect = "expected/D.bin"
+
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [128, 128]
+dims = [128, 128]
+strides = [128]
+swizzle = "128B"
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [128, 64]
+dims = [128, 64]
+strides = [128]
+swizzle = "128B"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[params]]
+kind = "u32"
+value = 2282751104
+
+[[params]]
+kind = "u32"
+value = 2282751104
+
+[[params]]
+kind = "ptr"
+buffer = "SFA"
+
+[[params]]
+kind = "ptr"
+buffer = "SFB"
+
+[[params]]
+kind = "u32"
+value = 0
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1,0 +1,51 @@
+name = "probe_bulk_red"
+description = """
+Probe (E-BULK-RED, N-BULK-RED) for cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32
+(SASS UBLKRED.G.S.ADD.F32.RN, FA4's dQ accumulation) on GB300 (kernel.ptx, gen.py): CTA 0 adds
+4096 shared f32 to global words over every pair of 32 edge patterns, rounding ties and random
+pairs; CTAs 1..4 concurrently bulk-add integers into the same 1024 words. expected/ is GB300's
+output (ptxas cubin, `ptxv hw-worker probes/bulk_red <cubin> --runs 20 --dump`; every run
+identical)."""
+ptx = "kernel.ptx"
+entry = "bulk_red"
+grid = [5, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "a"
+dtype = "u32"
+shape = [4096]
+init = "file"
+file = "a.bin"
+
+[[buffers]]
+name = "c"
+dtype = "f32"
+shape = [4096]
+init = "file"
+file = "c.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [5120]
+init = "file"
+file = "out.bin"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+
+[[params]]
+kind = "ptr"
+buffer = "c"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

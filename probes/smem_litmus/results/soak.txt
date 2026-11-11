@@ -1,0 +1,120 @@
+[rand] MP shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | 00:15521323584 01:3660739808 11:19729926880 | 14.0s
+[tight] MP shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | 00:7555923200 01:2006906400 11:9893160672 | 1.1s
+[wide] MP shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 00:5557977952 01:264781920 11:5850830400 | 0.7s
+[fixed4] MP shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 xis=0 lsep=33 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | 00:19455983104 01:2688 11:4480 | 1.1s
+[bank] MP shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 00:4076173408 01:1752522816 11:5844894048 | 32.2s
+[samewarp] MP shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 xis=0 lsep=33 same=1 fixed=0 blocks=304 | n=5836795136 FORBIDDEN=0 | 00:2189008 11:5834606128 | 4.4s
+[rand] MP shv cta wf=1 rf=0 nw=16 dmask=63 smask=63 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | 00:18451552352 01:7482496736 11:12977941184 | 14.0s
+[tight] MP shv cta wf=1 rf=0 nw=16 dmask=0 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | 00:9578244960 01:3001118240 11:6876627072 | 1.1s
+[wide] MP shv cta wf=1 rf=0 nw=4 dmask=511 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 00:5825035360 01:351543936 11:5497010976 | 0.7s
+[fixed4] MP shv cta wf=1 rf=0 nw=4 dmask=31 smask=0 is=1 xis=0 lsep=33 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | 00:19455985888 01:2272 11:2112 | 1.1s
+[bank] MP shv cta wf=1 rf=0 nw=32 dmask=63 smask=255 is=32 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 00:5272259296 01:2796875808 11:3604455168 | 32.2s
+[samewarp] MP shv cta wf=1 rf=0 nw=16 dmask=31 smask=63 is=1 xis=0 lsep=33 same=1 fixed=0 blocks=304 | n=5836795136 FORBIDDEN=0 | 00:2208592 11:5834586544 | 4.4s
+[rand] MP shv cta wf=2 rf=0 nw=16 dmask=63 smask=63 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | 00:11790935808 01:7784481504 11:19336572960 | 14.0s
+[tight] MP shv cta wf=2 rf=0 nw=16 dmask=0 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | 00:6393645664 01:3171441440 11:9890903168 | 1.1s
+[wide] MP shv cta wf=2 rf=0 nw=4 dmask=511 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 00:5464868640 01:359899168 11:5848822464 | 0.7s
+[fixed4] MP shv cta wf=2 rf=0 nw=4 dmask=31 smask=0 is=1 xis=0 lsep=33 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | 00:19455982784 01:2848 11:4640 | 1.1s
+[bank] MP shv cta wf=2 rf=0 nw=32 dmask=63 smask=255 is=32 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 00:3166366464 01:2503930080 11:6003293728 | 32.3s
+[samewarp] MP shv cta wf=2 rf=0 nw=16 dmask=31 smask=63 is=1 xis=0 lsep=33 same=1 fixed=0 blocks=304 | n=5836795136 FORBIDDEN=0 | 00:2190288 11:5834604848 | 4.4s
+[rand] MP shv cta wf=0 rf=2 nw=16 dmask=63 smask=63 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | 00:7814568928 01:11381463488 11:19715957856 | 14.0s
+[tight] MP shv cta wf=0 rf=2 nw=16 dmask=0 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | 00:5405189728 01:4184989216 11:9865811328 | 1.4s
+[wide] MP shv cta wf=0 rf=2 nw=4 dmask=511 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 00:5421103264 01:404137312 11:5848349696 | 0.9s
+[fixed4] MP shv cta wf=0 rf=2 nw=4 dmask=31 smask=0 is=1 xis=0 lsep=33 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | 00:19455982720 01:2816 11:4736 | 1.5s
+[bank] MP shv cta wf=0 rf=2 nw=32 dmask=63 smask=255 is=32 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 00:1861466048 01:3968900512 11:5843223712 | 32.2s
+[samewarp] MP shv cta wf=0 rf=2 nw=16 dmask=31 smask=63 is=1 xis=0 lsep=33 same=1 fixed=0 blocks=304 | n=5836795136 FORBIDDEN=0 | 00:2194608 11:5834600528 | 4.3s
+[rand] MP shv cta wf=2 rf=2 nw=16 dmask=63 smask=63 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | 00:6525578688 01:13052878784 11:19333532800 | 14.0s
+[tight] MP shv cta wf=2 rf=2 nw=16 dmask=0 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | 00:4636506144 01:4958771520 11:9860712608 | 1.4s
+[wide] MP shv cta wf=2 rf=2 nw=4 dmask=511 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 00:5368475168 01:458017408 11:5847097696 | 0.9s
+[fixed4] MP shv cta wf=2 rf=2 nw=4 dmask=31 smask=0 is=1 xis=0 lsep=33 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | 00:19455982496 01:2880 11:4896 | 1.5s
+[bank] MP shv cta wf=2 rf=2 nw=32 dmask=63 smask=255 is=32 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 00:1489813408 01:4178897760 11:6004879104 | 32.2s
+[samewarp] MP shv cta wf=2 rf=2 nw=16 dmask=31 smask=63 is=1 xis=0 lsep=33 same=1 fixed=0 blocks=304 | n=5836795136 FORBIDDEN=0 | 00:2197792 11:5834597344 | 4.4s
+[rand] MPS shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | 11:38911990272 | 14.0s
+[tight] MPS shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | 11:19455990272 | 1.2s
+[wide] MPS shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 11:11673590272 | 0.8s
+[fixed4] MPS shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 xis=0 lsep=33 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | 11:19455990272 | 1.2s
+[bank] MPS shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 11:11673590272 | 32.3s
+[samewarp] MPS shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 xis=0 lsep=33 same=1 fixed=0 blocks=304 | n=5836795136 FORBIDDEN=0 | 00:5834615728 11:2179408 | 9.0s
+[rand] MPS shv cta wf=2 rf=2 nw=16 dmask=63 smask=63 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | 11:38911990272 | 14.0s
+[tight] MPS shv cta wf=2 rf=2 nw=16 dmask=0 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | 11:19455990272 | 1.2s
+[wide] MPS shv cta wf=2 rf=2 nw=4 dmask=511 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 11:11673590272 | 0.8s
+[fixed4] MPS shv cta wf=2 rf=2 nw=4 dmask=31 smask=0 is=1 xis=0 lsep=33 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | 11:19455990272 | 1.2s
+[bank] MPS shv cta wf=2 rf=2 nw=32 dmask=63 smask=255 is=32 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 11:11673590272 | 32.3s
+[samewarp] MPS shv cta wf=2 rf=2 nw=16 dmask=31 smask=63 is=1 xis=0 lsep=33 same=1 fixed=0 blocks=304 | n=5836795136 FORBIDDEN=0 | 00:5834625104 11:2170032 | 9.2s
+[rand] SB shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | 01:17109228544 10:17109475008 11:4693286720 | 14.0s
+[tight] SB shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | 01:9271062112 10:9271359040 11:913569120 | 1.1s
+[wide] SB shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 01:5748252512 10:5748577280 11:176760480 | 0.7s
+[fixed4] SB shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 xis=0 lsep=33 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | 01:4512 10:19455985696 11:64 | 1.1s
+[bank] SB shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 01:5153410560 10:5153259552 11:1366920160 | 32.2s
+[samewarp] SB shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 xis=0 lsep=33 same=1 fixed=0 blocks=304 | n=5836795136 FORBIDDEN=0 | 01:2110992 10:2104144 11:5832580000 | 4.3s
+[rand] SB shv cta wf=1 rf=0 nw=16 dmask=63 smask=63 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | 01:6533446848 10:6533186720 11:25845356704 | 14.0s
+[tight] SB shv cta wf=1 rf=0 nw=16 dmask=0 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | 01:4154311744 10:4154687200 11:11146991328 | 1.1s
+[wide] SB shv cta wf=1 rf=0 nw=4 dmask=511 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 01:5306867136 10:5306780288 11:1059942848 | 0.7s
+[fixed4] SB shv cta wf=1 rf=0 nw=4 dmask=31 smask=0 is=1 xis=0 lsep=33 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | 01:2144 10:19455982624 11:5504 | 1.1s
+[bank] SB shv cta wf=1 rf=0 nw=32 dmask=63 smask=255 is=32 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 01:2295127552 10:2295142656 11:7083320064 | 32.2s
+[samewarp] SB shv cta wf=1 rf=0 nw=16 dmask=31 smask=63 is=1 xis=0 lsep=33 same=1 fixed=0 blocks=304 | n=5836795136 FORBIDDEN=0 | 01:2112384 10:2126320 11:5832556432 | 4.4s
+[rand] LB shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | 00:7426959712 01:15742358144 10:15742672416 | 14.0s
+[tight] LB shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | 00:3337665600 01:8058978208 10:8059346464 | 1.1s
+[wide] LB shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 00:487706368 01:5593058560 10:5592825344 | 0.7s
+[fixed4] LB shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 xis=0 lsep=33 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | 00:2752 01:2592 10:19455984928 | 1.1s
+[bank] LB shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 00:1886128544 01:4893375584 10:4894086144 | 32.2s
+[samewarp] LB shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 xis=0 lsep=33 same=1 fixed=0 blocks=304 | n=5836795136 FORBIDDEN=0 | 00:5832585312 01:2096944 10:2112880 | 4.3s
+[rand] CORR shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | allold:16002489760 allnew:12866475616 mixed:10043024896 | 14.2s
+[tight] CORR shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | allold:8886219424 allnew:6339054784 mixed:4230716064 | 1.3s
+[wide] CORR shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | allold:5706655584 allnew:5532946208 mixed:433988480 | 0.8s
+[fixed4] CORR shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 xis=0 lsep=33 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | allold:19455984640 allnew:2112 mixed:3520 | 1.3s
+[bank] CORR shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | allold:4067464960 allnew:2596663872 mixed:5009461440 | 32.4s
+[samewarp] CORR shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 xis=0 lsep=33 same=1 fixed=0 blocks=304 | n=5836795136 FORBIDDEN=0 | allold:2174416 allnew:5834620720 | 4.4s
+[rand] COWR shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | own:30228422272 saw_other:8683568000 | 14.0s
+[tight] COWR shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | own:16897854976 saw_other:2558135296 | 1.3s
+[wide] COWR shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | own:11329285024 saw_other:344305248 | 0.8s
+[fixed4] COWR shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 xis=0 lsep=33 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | own:19455987008 saw_other:3264 | 1.2s
+[bank] COWR shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | own:6731087232 saw_other:4942503040 | 32.4s
+[samewarp] COWR shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 xis=0 lsep=33 same=1 fixed=0 blocks=304 | n=5836795136 FORBIDDEN=0 | own:4409920 saw_other:5832385216 | 4.4s
+[rand] IRIW shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | 0000:4620660608 1000:1066112480 0100:1802062240 1100:3299516224 0010:1072040416 0110:3083474784 1110:1374114688 0001:1796300416 1001:3092084736 0101:8061664 1101:2244713760 0011:3281220672 1011:1390228160 0111:2265721056 1111:8515678368 | 12.6s
+[tight] IRIW shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | 0000:2839823552 1000:577823616 0100:935183584 1100:1647023744 0010:589412704 0110:1659130688 1110:683128672 0001:930113824 1001:1675364672 0101:1411968 1101:979749376 0011:1627974976 1011:690694016 0111:1003586016 1111:3615568864 | 1.5s
+[wide] IRIW shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 0000:1907292736 1000:461827552 0100:500366432 1100:939146176 0010:461996800 0110:988688480 1110:451031072 0001:500437952 1001:988690624 0101:5344 1101:528891520 0011:938807168 1011:450921408 0111:528622016 1111:2026864992 | 0.9s
+[fixed4] IRIW shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=1 xis=0 lsep=33 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | 0000:4993152576 1000:128 0100:3921371776 1100:704 0010:2480056480 0110:8061401568 1110:128 0001:832 1001:416 0101:224 1101:1280 0011:704 1011:160 0111:1696 1111:1600 | 1.3s
+[bank] IRIW shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 0000:1290567872 1000:270476384 0100:531345856 1100:988426592 0010:272912896 0110:884635136 1110:425071168 0001:528202208 1001:881279040 0101:4980064 1101:757738432 0011:984158816 1011:435270848 0111:757318848 1111:2661206112 | 30.3s
+[samewarp] IRIW shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=1 xis=0 lsep=33 same=1 fixed=0 blocks=304 | n=2918397568 FORBIDDEN=0 | 0000:256 1100:48 0110:1128 1110:360 1001:976 1101:256 0011:32 1011:280 0111:256 1111:2918393976 | 4.4s
+[rand] IRIW shv cta wf=0 rf=3 nw=16 dmask=63 smask=63 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | 0000:1060899616 1000:112106400 0100:2690808768 1100:2047730112 0010:112819840 0110:1823258432 1110:256266656 0001:2709376352 1001:1820061312 0101:1322923232 1101:5659410080 0011:2032739168 1011:259466176 0111:5671522816 1111:11332601312 | 12.7s
+[tight] IRIW shv cta wf=0 rf=3 nw=16 dmask=0 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | 0000:586408480 1000:66183680 0100:1062325664 1100:887248032 0010:60812704 0110:1187724032 1110:202331104 0001:1090934464 1001:1172414688 0101:369157440 1101:2566198720 0011:861889952 1011:214290240 0111:2582467616 1111:6545603456 | 1.5s
+[wide] IRIW shv cta wf=0 rf=3 nw=4 dmask=511 smask=0 is=1 xis=0 lsep=33 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 0000:1647711136 1000:373247808 0100:548234944 1100:859848000 0010:373470784 0110:1053620288 1110:406765920 0001:548351296 1001:1053574976 0101:749888 1101:630743520 0011:859606848 1011:406877344 0111:630264640 1111:2280522880 | 0.9s
+[fixed4] IRIW shv cta wf=0 rf=3 nw=4 dmask=31 smask=0 is=1 xis=0 lsep=33 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | 0000:1570370976 0100:5234393504 1100:224 0010:1681009664 0110:10970206656 1110:128 0001:96 1001:128 0101:1088 1101:2432 0011:256 1011:128 0111:2400 1111:2592 | 1.3s
+[bank] IRIW shv cta wf=0 rf=3 nw=32 dmask=63 smask=255 is=32 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 0000:393154048 1000:33705376 0100:720556768 1100:569323232 0010:34864640 0110:443732672 1110:89149760 0001:735163680 1001:436533248 0101:553392448 1101:1849899136 0011:559461792 1011:92740928 0111:1851820032 1111:3310092512 | 30.4s
+[samewarp] IRIW shv cta wf=0 rf=3 nw=16 dmask=31 smask=63 is=1 xis=0 lsep=33 same=1 fixed=0 blocks=304 | n=2918397568 FORBIDDEN=0 | 0000:272 1100:32 0110:952 1110:224 1001:1008 1101:352 0011:32 1011:336 0111:296 1111:2918394064 | 4.4s
+[rand] TEAR32 shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=4 xis=0 lsep=129 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | clean:10197659072 overlap:28714331200 | 14.0s
+[tight] TEAR32 shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=4 xis=0 lsep=129 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | clean:8033097376 overlap:11422892896 | 1.2s
+[wide] TEAR32 shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=4 xis=0 lsep=129 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | clean:9391597216 overlap:2281993056 | 0.8s
+[fixed4] TEAR32 shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=4 xis=0 lsep=129 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | clean:19448628000 overlap:7362272 | 1.1s
+[bank] TEAR32 shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=4 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | clean:1760509568 overlap:9913080704 | 32.1s
+[samewarp] TEAR32 shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=4 xis=0 lsep=129 same=1 fixed=0 blocks=304 | n=5836795136 FORBIDDEN=0 | clean:5836795136 | 4.3s
+[rand] TEAR64 shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=4 xis=0 lsep=129 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | clean:7575683376 overlap:31336306896 | 14.1s
+[tight] TEAR64 shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=4 xis=0 lsep=129 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | clean:5192073248 overlap:14263917024 | 1.2s
+[wide] TEAR64 shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=4 xis=0 lsep=129 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | clean:9653750976 overlap:2019839296 | 0.8s
+[fixed4] TEAR64 shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=4 xis=0 lsep=129 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | clean:19455982080 overlap:8192 | 1.1s
+[bank] TEAR64 shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=4 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | clean:1660096224 overlap:10013494048 | 32.1s
+[samewarp] TEAR64 shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=4 xis=0 lsep=129 same=1 fixed=0 blocks=304 | n=5836795136 FORBIDDEN=0 | clean:5836795136 | 4.4s
+[rand] TEAR128 shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=4 xis=0 lsep=129 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | clean:3558543600 overlap:35353446672 | 14.0s
+[tight] TEAR128 shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=4 xis=0 lsep=129 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | clean:3363392544 overlap:16092597728 | 1.4s
+[wide] TEAR128 shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=4 xis=0 lsep=129 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | clean:7302336344 overlap:4371253928 | 0.9s
+[fixed4] TEAR128 shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=4 xis=0 lsep=129 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | clean:18308059144 overlap:1147931128 | 1.2s
+[bank] TEAR128 shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=4 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | clean:218973760 overlap:11454616512 | 34.6s
+[samewarp] TEAR128 shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=4 xis=0 lsep=129 same=1 fixed=0 blocks=304 | n=5836795136 FORBIDDEN=0 | clean:5836795136 | 4.3s
+[rand] MPV shv cta wf=0 rf=0 nw=16 dmask=63 smask=63 is=2 xis=0 lsep=65 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | 11:38911990272 | 14.0s
+[tight] MPV shv cta wf=0 rf=0 nw=16 dmask=0 smask=0 is=2 xis=0 lsep=65 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | 11:19455990272 | 1.2s
+[wide] MPV shv cta wf=0 rf=0 nw=4 dmask=511 smask=0 is=2 xis=0 lsep=65 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 11:11673590272 | 0.8s
+[fixed4] MPV shv cta wf=0 rf=0 nw=4 dmask=31 smask=0 is=2 xis=0 lsep=65 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | 11:19455990272 | 1.2s
+[bank] MPV shv cta wf=0 rf=0 nw=32 dmask=63 smask=255 is=32 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 11:11673590272 | 32.2s
+[samewarp] MPV shv cta wf=0 rf=0 nw=16 dmask=31 smask=63 is=2 xis=0 lsep=65 same=1 fixed=0 blocks=304 | n=5836795136 FORBIDDEN=0 | 00:5834621440 11:2173696 | 9.0s
+[rand] MPV shv cta wf=1 rf=0 nw=16 dmask=63 smask=63 is=2 xis=0 lsep=65 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | 11:38911990272 | 14.0s
+[tight] MPV shv cta wf=1 rf=0 nw=16 dmask=0 smask=0 is=2 xis=0 lsep=65 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | 11:19455990272 | 1.2s
+[wide] MPV shv cta wf=1 rf=0 nw=4 dmask=511 smask=0 is=2 xis=0 lsep=65 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 11:11673590272 | 0.8s
+[fixed4] MPV shv cta wf=1 rf=0 nw=4 dmask=31 smask=0 is=2 xis=0 lsep=65 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | 11:19455990272 | 1.2s
+[bank] MPV shv cta wf=1 rf=0 nw=32 dmask=63 smask=255 is=32 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 11:11673590272 | 32.2s
+[samewarp] MPV shv cta wf=1 rf=0 nw=16 dmask=31 smask=63 is=2 xis=0 lsep=65 same=1 fixed=0 blocks=304 | n=5836795136 FORBIDDEN=0 | 00:5834612496 11:2182640 | 9.0s
+[rand] MPV shv cta wf=0 rf=2 nw=16 dmask=63 smask=63 is=2 xis=0 lsep=65 same=0 fixed=0 blocks=304 | n=38911990272 FORBIDDEN=0 | 11:38911990272 | 14.0s
+[tight] MPV shv cta wf=0 rf=2 nw=16 dmask=0 smask=0 is=2 xis=0 lsep=65 same=0 fixed=0 blocks=304 | n=19455990272 FORBIDDEN=0 | 11:19455990272 | 1.2s
+[wide] MPV shv cta wf=0 rf=2 nw=4 dmask=511 smask=0 is=2 xis=0 lsep=65 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 11:11673590272 | 0.8s
+[fixed4] MPV shv cta wf=0 rf=2 nw=4 dmask=31 smask=0 is=2 xis=0 lsep=65 same=0 fixed=1 blocks=304 | n=19455990272 FORBIDDEN=0 | 11:19455990272 | 1.2s
+[bank] MPV shv cta wf=0 rf=2 nw=32 dmask=63 smask=255 is=32 xis=0 lsep=1024 same=0 fixed=0 blocks=304 | n=11673590272 FORBIDDEN=0 | 11:11673590272 | 32.2s
+[samewarp] MPV shv cta wf=0 rf=2 nw=16 dmask=31 smask=63 is=2 xis=0 lsep=65 same=1 fixed=0 blocks=304 | n=5836795136 FORBIDDEN=0 | 00:5834606656 11:2188480 | 9.3s

@@ -1,0 +1,31 @@
+name = "e_bsync_exit"
+description = """
+E-BSYNC: a lane exits inside a BSSY region while the rest of its warp converges at the BSYNC
+(ptxas: `@P0 EXIT` before `BSYNC.RECONVERGENT B0; BAR.SYNC`). 2 warps, n = 5."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [192]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 5
+
+[[variants]]
+id = "good"
+# PTX: the exited lane leaves the warp short at `bar.sync` (E-ALIGNED, part of the warp
+# exited: a contract violation); GB300 counts the warp's arrival and completes, bitwise.
+expect = ["violation"]
+expect_sass = ["clean"]

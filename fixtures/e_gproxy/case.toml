@@ -1,0 +1,92 @@
+name = "e_gproxy"
+description = """
+S-GPROXY: two CTAs add 4-float tiles into one global accumulator in a fixed order, CTA 0 then
+CTA 1, handing a global semaphore on with st.release.gpu / ld.acquire.gpu (generic proxy).
+The adds are cp.reduce.async.bulk (async proxy) from different CTAs, so the semaphore orders
+them only with fence.proxy.async.global (or fence.proxy.async) after the acquire (PTX ISA
+8.9.5 proxy-preserved base causality; the completion's implicit proxy fence, 9.7.10.28.2,
+covers the releasing side). ptxas: fence.proxy.async.global = FENCE.VIEW.ASYNC.G;
+fence.proxy.async = MEMBAR.ALL.GPU; FENCE.VIEW.ASYNC.S; fence.proxy.async.shared::cta =
+MEMBAR.ALL.CTA; FENCE.VIEW.ASYNC.S (shared memory only)."""
+ptx = "kernel.ptx"
+entry = "e_gproxy"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["acc"]
+
+[[buffers]]
+name = "acc"
+dtype = "f32"
+shape = [4]
+init = "file"
+file = "acc.bin"
+
+[[buffers]]
+name = "sem"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [8]
+init = "file"
+file = "in.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "acc"
+
+[[params]]
+kind = "ptr"
+buffer = "sem"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[variants]]
+id = "good"
+summary = "fence.proxy.async.global after the acquire"
+expect = ["clean"]
+
+[[variants]]
+id = "NOF"
+summary = "no proxy fence after the acquire"
+marker = "@FENCE"
+replace = "<delete>"
+expect = ["contract"]
+
+[[variants]]
+id = "ALL"
+summary = "fence.proxy.async (every state space) after the acquire"
+marker = "@FENCE"
+find = "fence.proxy.async.global"
+replace = "fence.proxy.async"
+expect = ["clean"]
+
+[[variants]]
+id = "SH"
+summary = "fence.proxy.async.shared::cta after the acquire: orders shared memory only"
+marker = "@FENCE"
+find = "fence.proxy.async.global"
+replace = "fence.proxy.async.shared::cta"
+expect = ["contract"]
+
+[[variants]]
+id = "ST"
+summary = "CTA 0 writes the accumulator with a generic store; CTA 1's add has no proxy fence"
+marker = "@RED"
+find = "cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32 [%rd1], [%r3], 16;"
+replace = "@%p3 st.global.v4.u32 [%rd1], {%r4, %r5, %r6, %r7}; @!%p3 cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32 [%rd1], [%r3], 16;"
+expect = ["contract"]
+edits = [{ marker = "@FENCE", replace = "<delete>" }]
+
+[[variants]]
+id = "STF"
+summary = "as ST with fence.proxy.async.global after the acquire"
+marker = "@RED"
+find = "cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32 [%rd1], [%r3], 16;"
+replace = "@%p3 st.global.v4.u32 [%rd1], {%r4, %r5, %r6, %r7}; @!%p3 cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32 [%rd1], [%r3], 16;"
+expect = ["clean"]

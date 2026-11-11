@@ -1,0 +1,43 @@
+name = "probe_f64_arch"
+description = """
+Probe (L-OPCLASS) for the f64 hazard rule by module SM. kernel.ptx: a dependent DFMA chain,
+DADD / DMUL chains, DSETP -> FSEL and f64 results read by STG; expected/ is exact IEEE (gen.py),
+equal to GB300's output for every clean cubin below. ptxas 13.0 builds (cubins/):
+sm100f.cubin (`-arch sm_100f`: st=8, no f64 scoreboards) and sm103a.cubin (scoreboards and NOP
+padding); mutants.py made the rest. GB300, 1000 runs each: sm100f, sm100f_st1 (every f64 op
+st=1) and sm103a = expected; sm103a_nosb (f64 scoreboards and their waits removed, padding at
+st=1) mismatches in every run. The reason: GB300 reschedules this sm_100f module at load. The image the driver loads
+(CUPTI module callback) is cubins/sm100f.loaded.cubin, an sm_103 image whose f64 ops carry write
+scoreboards and NOP padding; sm100f_st1 loads to the byte-identical image. The toolkit note does
+not matter: sm100f_st1_tk103a = expected, sm103a_nosb_tk100f mismatches in every run."""
+ptx = "kernel.ptx"
+entry = "f64h"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "f64"
+shape = [1024, 4]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f64"
+shape = [1024, 4]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

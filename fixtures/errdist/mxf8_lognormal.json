@@ -1,0 +1,4 @@
+{"version": 1, "seed": 1, "name": "lognormal, MXF8 e4m3 per 32 along K (ue8m0 = ceil(amax/448))",
+ "tensors": {
+  "A": {"dist": {"kind": "log_normal", "mu": 0.0, "sigma": 1.0}, "quant": {"kind": "mx", "elem": "e4m3", "block": 32, "scales": "SFA"}},
+  "B": {"dist": {"kind": "log_normal", "mu": 0.0, "sigma": 1.0}, "quant": {"kind": "mx", "elem": "e4m3", "block": 32, "scales": "SFB"}}}}

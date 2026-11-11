@@ -1,0 +1,36 @@
+name = "probe_fmnmx3_abs"
+description = """
+Probe (N-FALU) for PTX min / max [.NaN] [.ftz] .abs.f32 with three sources, SASS FMNMX3[.NAN]
+[.FTZ] |a|, |b|, |c|, on every triple of 16 f32 edge patterns (kernel.ptx, gen.py). expected/
+is GB300's output (ptxas -arch=sm_103a kernel.ptx, `ptxv hw`)."""
+ptx = "kernel.ptx"
+entry = "fmnmx3_abs"
+grid = [16, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [4096, 4]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [6, 4096]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1,0 +1,47 @@
+name = "probe_nc_hoist"
+description = """
+Probe (S-NC): an ld.global.nc of a word another thread stored before a bar.sync. ptxas 13.0 /
+13.3 hoist the load above the store and the barrier (LDG.E.CONSTANT first), so GB300 returns
+the word's old value (0) where a coherent load after the barrier reads t ^ 1 (kernel.ptx).
+expected/ is GB300's output (kernel.cubin = ptxas 13.0 -arch=sm_103a kernel.ptx,
+`ptxv hw-worker`). ptxv reports the load (nc-written) on both front-ends."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "inp"
+dtype = "u32"
+shape = [64]
+init = "iota"
+
+[[buffers]]
+name = "buf"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "inp"
+
+[[params]]
+kind = "ptr"
+buffer = "buf"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["violation"]

@@ -1,0 +1,54 @@
+{
+ "what": "ptxv.capture",
+ "launches": [
+  {
+   "index": 0,
+   "name": "sum_kahan",
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    32,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "op": "",
+   "cubin": "k0.cubin"
+  }
+ ],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "x",
+   "dtype": "f32",
+   "shape": [
+    4,
+    512
+   ],
+   "size": 8192,
+   "fresh": false,
+   "output": false
+  },
+  {
+   "name": "y",
+   "dtype": "f32",
+   "shape": [
+    4
+   ],
+   "size": 16,
+   "fresh": false,
+   "output": true
+  }
+ ],
+ "unresolved": [],
+ "warnings": []
+}

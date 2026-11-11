@@ -1,0 +1,39 @@
+// Fixture for C-ORDER dead reads (wellsync.rs `dead_reads`): 64 threads. Thread 0 stores a
+// word to shared memory and warp 0 synchronizes on named barrier 1 (32 threads); then every
+// thread loads the word. Warp 1 skips the barrier, so its load is unordered with the store
+// (CuTe's TMEM-address broadcast that only the MMA warps wait for); in the good kernel warp 1
+// never uses the value.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_dead_read(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    .shared .align 4 .b32 word;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    shr.u32 %r2, %r1, 5;
+    mov.u32 %r3, word;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra STORED;
+    mov.u32 %r4, 42;
+    st.shared.u32 [%r3], %r4;
+STORED:
+    setp.ne.u32 %p2, %r2, 0;
+    @%p2 bra SKIP;
+    bar.sync 1, 32;
+SKIP:
+    ld.shared.u32 %r5, [%r3];
+    mul.wide.u32 %rd2, %r1, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    @%p2 bra WARP1;
+    st.global.u32 [%rd3], %r5;
+    ret;
+WARP1:
+    st.global.u32 [%rd3], %r1;           // @USE
+    ret;
+}

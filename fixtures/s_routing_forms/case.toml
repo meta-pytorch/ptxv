@@ -1,0 +1,66 @@
+name = "s_routing_forms"
+description = """
+Rung 3b: the SASS forms of flashinfer's routing kernel and gemm2 that did not lift, against GB300
+bitwise (docs/rung3b.md). F2FP.SATFINITE.BF16.F32.PACK_AB (cvt.rn.satfinite.bf16x2.f32 on f32
+edge values: overflow, Inf, NaN, ties); HSETP2.BF16_V2.{NE,NEU,GT,GTU,GE,GEU}.AND on register
+halves and against the immediate -INF (setp.<cmp>.bf16: every compare, NaN, +-0, +-Inf);
+ATOMS.POPC.INC.32 (red.shared.add 1, divergent lanes, colliding addresses); generic addresses
+of the distributed shared memory window (S2R SR_SWINHI + PRMT of the CTA rank: cvta.shared and
+mapa.u64) for LD.E / ST.E / LD.E.U16 into this CTA's and the peer's shared memory. Cluster of 2.
+kernel.cubin = `ptxas -arch=sm_103a kernel.ptx` (CUDA 13.0; the PTX front does not take the
+bf16 compares). expected/ is GB300's output."""
+cubin = "kernel.cubin"
+entry = "routing_forms"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "u32"
+shape = [256]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "u32"
+shape = [256]
+init = "file"
+file = "data/y.bin"
+
+[[buffers]]
+name = "h"
+dtype = "u32"
+shape = [256]
+init = "file"
+file = "data/h.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2048]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "h"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

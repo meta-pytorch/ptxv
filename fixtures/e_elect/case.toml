@@ -1,0 +1,34 @@
+name = "e_elect"
+description = """
+Assumption fixture for E-ELECT: code that relies on elect.sync choosing lane 0. Valid on
+GB300 (the lowest active lane is elected, probes/elect) but not promised by PTX, so the PTX
+front-end (contract) must report it and the SASS front-end (this hardware) must not."""
+ptx = "kernel.ptx"
+entry = "e_elect"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "B46"
+summary = "leader chosen with elect.sync, assumed to be lane 0"
+marker = "@B46"
+find = "setp.eq.u32 %p1, %r1, 0;"
+replace = "elect.sync _|%p1, 0xffffffff;"
+expect = ["nondeterministic", "race", "violation"]
+expect_sass = ["clean"]
+hw_note = "correct on GB300: elect picks the lowest active lane"

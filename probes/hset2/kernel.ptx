@@ -1,0 +1,28 @@
+// Probe for set.<cmp>.{u32,bf16x2,f16x2}.{bf16x2,f16x2} (SASS HSET2[.BF16_V2][.BF]): register
+// operands and a constant pair (ptxas: an immediate). Thread i: a, b = words 2i, 2i+1 of in;
+// writes 10 words at 16i.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry hset2(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<8>; .reg .b32 %r<20>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  cvta.to.global.u64 %rd1, %rd1; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mul.wide.u32 %rd3, %r1, 8; add.s64 %rd4, %rd1, %rd3;
+  mul.wide.u32 %rd5, %r1, 64; add.s64 %rd6, %rd2, %rd5;
+  ld.global.v2.u32 {%r2, %r3}, [%rd4];
+  set.ge.u32.bf16x2 %r4, %r2, %r3;
+  set.ltu.u32.bf16x2 %r5, %r2, %r3;
+  set.eq.bf16x2.bf16x2 %r6, %r2, %r3;
+  set.nan.u32.bf16x2 %r7, %r2, %r3;
+  set.le.u32.f16x2 %r8, %r2, %r3;
+  set.gtu.f16x2.f16x2 %r9, %r2, %r3;
+  set.ne.u32.f16x2 %r10, %r2, %r3;
+  set.num.f16x2.f16x2 %r11, %r2, %r3;
+  mov.b32 %r12, 0x3fd83fd8;
+  set.ge.u32.bf16x2 %r13, %r2, %r12;
+  set.neu.bf16x2.bf16x2 %r14, %r2, %r12;
+  st.global.v4.u32 [%rd6], {%r4, %r5, %r6, %r7};
+  st.global.v4.u32 [%rd6+16], {%r8, %r9, %r10, %r11};
+  st.global.v2.u32 [%rd6+32], {%r13, %r14};
+  ret; }

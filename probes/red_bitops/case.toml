@@ -1,0 +1,38 @@
+name = "probe_red_bitops"
+description = """
+Probe (L-ROSETTA, S-SCOPE) for red.global.{or,and,xor}.b32 / .b64 at .cta, .gpu and .sys
+scope (SASS REDG.E.{OR,AND,XOR}[.64].STRONG.{SM,GPU,SYS}): 256 threads, four colliding on each
+word, inputs with single set / clear bits, all ones, zero and random words (kernel.ptx;
+in.bin, out0.bin). expected/ is GB300's output (`ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "red_bitops"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u64"
+shape = [256]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u8"
+shape = [5120]
+init = "file"
+file = "out0.bin"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

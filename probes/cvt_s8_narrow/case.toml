@@ -1,0 +1,37 @@
+name = "probe_cvt_s8_narrow"
+description = """
+Probe (L-ROSETTA) for narrowing integer cvt (cvt.s8 / .u8 / .s16 .s32 / .s64) into 16- and
+32-bit registers, read back widened: a signed narrowed result is sign-extended to the register
+(the Triton int8 dequantize pattern; kernel.ptx). expected/ is GB300's output (kernel.cubin =
+ptxas -arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "cvt_s8_narrow"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [128]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [768]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

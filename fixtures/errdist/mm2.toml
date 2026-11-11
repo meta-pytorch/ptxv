@@ -1,0 +1,12 @@
+# errdist pair across multi-launch regions (docs/errdist.md §9): x @ (w1 + w2) (an add launch,
+# then a CUTLASS SIMT sgemm) against x @ w1 + x @ w2 (two sgemms into workspaces, then an
+# add launch), f32 32x64 @ 64x32, captured with ptxv.capture on GB300.
+#   ptxv errdist fixtures/errdist/mm2.toml --inputs fixtures/errdist/normal.json
+max_states = 200000
+segments = true
+reference = { case = "../c_mm2_fused", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "../c_mm2_sum"
+variant = "good"
+front = "sass"

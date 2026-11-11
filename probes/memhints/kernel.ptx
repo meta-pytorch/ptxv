@@ -1,0 +1,51 @@
+// Probe for the cache-hint and scope tokens on generic / global accesses that the DeepEP
+// hybrid and DeepCP kernels use (SASS LDG.E.NA[.U8|.64].STRONG.SYS, LDG.E.NA.128.CONSTANT,
+// LDG.E.NA, LD.E[.64].STRONG.{SM,GPU,SYS}, ATOM.E.{MAX,CAS,ADD}[.64].STRONG.{SM,GPU,SYS},
+// ST.E.STRONG.{SM,GPU,SYS}, ST.E.EF.128, STG.E.64.MMIO.SYS, UBLKPF.L2). Each thread works on
+// its own 128-byte rows of in and out; out is zero-initialised.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry memhints(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<40>; .reg .b32 %r<40>; .reg .b16 %h<4>;
+  ld.param.u64 %rd1, [pin]; ld.param.u64 %rd2, [pout];
+  mov.u32 %r1, %tid.x; mov.u32 %r30, %ctaid.x; mov.u32 %r31, %ntid.x;
+  mad.lo.s32 %r1, %r30, %r31, %r1;
+  mul.wide.u32 %rd3, %r1, 128;
+  add.s64 %rd4, %rd1, %rd3;            // generic in row
+  add.s64 %rd5, %rd2, %rd3;            // generic out row
+  cvta.to.global.u64 %rd6, %rd4;       // global in row
+  cvta.to.global.u64 %rd7, %rd5;       // global out row
+  cp.async.bulk.prefetch.L2.global [%rd6], 128;
+  ld.relaxed.sys.global.L1::no_allocate.u8 %h1, [%rd6];
+  ld.relaxed.sys.global.L1::no_allocate.b32 %r2, [%rd6+4];
+  ld.relaxed.sys.global.L1::no_allocate.b64 %rd8, [%rd6+8];
+  ld.global.nc.L1::no_allocate.v4.b32 {%r3,%r4,%r5,%r6}, [%rd6+16];
+  ld.global.L1::no_allocate.b32 %r7, [%rd6+32];
+  ld.relaxed.cta.b64 %rd9, [%rd4+40];
+  ld.relaxed.gpu.b64 %rd10, [%rd4+48];
+  ld.relaxed.sys.b64 %rd11, [%rd4+56];
+  ld.relaxed.gpu.b32 %r8, [%rd4+64];
+  ld.relaxed.sys.b32 %r9, [%rd4+72];
+  atom.relaxed.cta.max.u64 %rd12, [%rd5], %rd9;
+  atom.relaxed.gpu.max.u64 %rd13, [%rd5+8], %rd10;
+  atom.relaxed.sys.max.u64 %rd14, [%rd5+16], %rd11;
+  atom.relaxed.cta.cas.b64 %rd15, [%rd5+24], 0, %rd8;
+  atom.relaxed.gpu.cas.b32 %r10, [%rd5+32], 0, %r2;
+  atom.relaxed.cta.add.u64 %rd16, [%rd5+40], %rd8;
+  atom.relaxed.gpu.add.u32 %r11, [%rd5+48], %r8;
+  st.relaxed.sys.b32 [%rd5+52], %r9;
+  st.relaxed.cta.b32 [%rd5+60], %r7;
+  st.relaxed.gpu.b32 [%rd5+56], %r3;
+  st.L1::evict_first.v4.b32 [%rd5+64], {%r3,%r4,%r5,%r6};
+  add.s64 %rd17, %rd12, %rd13;
+  add.s64 %rd17, %rd17, %rd14;
+  add.s64 %rd17, %rd17, %rd15;
+  add.s64 %rd17, %rd17, %rd16;
+  add.s64 %rd17, %rd17, %rd10;
+  st.mmio.relaxed.sys.global.u64 [%rd7+80], %rd17;
+  st.relaxed.sys.global.u8 [%rd7+88], %h1;
+  add.s32 %r12, %r10, %r11;
+  st.global.u32 [%rd7+92], %r12;
+  st.global.u32 [%rd7+96], %r4;
+  ret; }

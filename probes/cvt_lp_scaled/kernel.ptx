@@ -1,0 +1,66 @@
+// probes/cvt_lp_scaled (genptx.py). 256 threads x 256 iterations, i = 256 j + t.
+//    0: cvt.rn.scaled::n2::ue8m0.bf16x2.e4m3x2
+//    1: cvt.rn.relu.scaled::n2::ue8m0.bf16x2.e4m3x2
+//    2: cvt.rn.scaled::n2::ue8m0.bf16x2.e5m2x2
+//    3: cvt.rn.relu.scaled::n2::ue8m0.bf16x2.e5m2x2
+//    4: cvt.rn.scaled::n2::ue8m0.bf16x2.e2m3x2
+//    5: cvt.rn.relu.scaled::n2::ue8m0.bf16x2.e2m3x2
+//    6: cvt.rn.scaled::n2::ue8m0.bf16x2.e3m2x2
+//    7: cvt.rn.relu.scaled::n2::ue8m0.bf16x2.e3m2x2
+//    8: cvt.rn.scaled::n2::ue8m0.bf16x2.e2m1x2
+//    9: cvt.rn.relu.scaled::n2::ue8m0.bf16x2.e2m1x2
+.version 9.3
+.target sm_103a
+.address_size 64
+
+.visible .entry cvt_lp_scaled(
+    .param .u64 pin,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .pred  %p<2>;
+    .reg .b8    %c<2>;
+    .reg .b16   %h<4>;
+    .reg .b32   %r<30>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pin];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r4, %tid.x;
+LOOP:
+    mul.wide.u32    %rd3, %r4, 8;
+    add.s64         %rd4, %rd1, %rd3;
+    mul.wide.u32    %rd6, %r4, 4;
+    add.s64         %rd5, %rd2, %rd6;
+    ld.global.v2.u32 {%r2, %r3}, [%rd4];
+    cvt.u16.u32     %h1, %r2;
+    cvt.u8.u32      %c1, %r2;
+    cvt.u16.u32     %h2, %r3;
+    cvt.rn.scaled::n2::ue8m0.bf16x2.e4m3x2 %r20, %h1, %h2;
+    st.global.b32 [%rd5+0], %r20;
+    cvt.rn.relu.scaled::n2::ue8m0.bf16x2.e4m3x2 %r21, %h1, %h2;
+    st.global.b32 [%rd5+262144], %r21;
+    cvt.rn.scaled::n2::ue8m0.bf16x2.e5m2x2 %r22, %h1, %h2;
+    st.global.b32 [%rd5+524288], %r22;
+    cvt.rn.relu.scaled::n2::ue8m0.bf16x2.e5m2x2 %r23, %h1, %h2;
+    st.global.b32 [%rd5+786432], %r23;
+    cvt.rn.scaled::n2::ue8m0.bf16x2.e2m3x2 %r24, %h1, %h2;
+    st.global.b32 [%rd5+1048576], %r24;
+    cvt.rn.relu.scaled::n2::ue8m0.bf16x2.e2m3x2 %r25, %h1, %h2;
+    st.global.b32 [%rd5+1310720], %r25;
+    cvt.rn.scaled::n2::ue8m0.bf16x2.e3m2x2 %r26, %h1, %h2;
+    st.global.b32 [%rd5+1572864], %r26;
+    cvt.rn.relu.scaled::n2::ue8m0.bf16x2.e3m2x2 %r27, %h1, %h2;
+    st.global.b32 [%rd5+1835008], %r27;
+    cvt.rn.scaled::n2::ue8m0.bf16x2.e2m1x2 %r28, %c1, %h2;
+    st.global.b32 [%rd5+2097152], %r28;
+    cvt.rn.relu.scaled::n2::ue8m0.bf16x2.e2m1x2 %r29, %c1, %h2;
+    st.global.b32 [%rd5+2359296], %r29;
+    add.u32         %r4, %r4, 256;
+    setp.lt.u32     %p1, %r4, 65536;
+    @%p1 bra        LOOP;
+    ret;
+}

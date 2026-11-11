@@ -1,0 +1,74 @@
+// probes/tma_red: cp.reduce.async.bulk.tensor.2d.global.shared::cta.add.tile.bulk_group (SASS
+// UTMAREDG.2D.ADD) on bf16, f16 and f32 tensors against GB300. One CTA of 128 threads copies
+// a16 (4096 x 16 bits) and a32 (4096 f32) into shared memory (8 KB bf16, 8 KB f16 from the same
+// bits, 16 KB f32), fences the async proxy, and thread 0 adds each 64 x 64 box into the
+// tensors gb (bf16), gh (f16) and gf (f32) through their tensor maps (coordinates {0, 0}),
+// commit, wait_group 0. gen.py: (a, g) are every pair of 64 edge patterns.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry tma_red(
+    .param .u64 pa16,
+    .param .u64 pa32,
+    .param .align 64 .b8 tmb[128],
+    .param .align 64 .b8 tmh[128],
+    .param .align 64 .b8 tmf[128]
+)
+.maxntid 128, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<32>;
+    .reg .b16   %h<4>;
+    .reg .b64   %rd<16>;
+    .shared .align 128 .b8 sb[8192];
+    .shared .align 128 .b8 sh[8192];
+    .shared .align 128 .b8 sf[16384];
+
+    ld.param.u64    %rd1, [pa16];
+    ld.param.u64    %rd2, [pa32];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, sb;
+    mov.u32         %r3, sh;
+    mov.u32         %r4, sf;
+    mov.u32         %r5, 0;
+L0:
+    mad.lo.u32      %r6, %r5, 128, %r1;
+    mul.wide.u32    %rd3, %r6, 2;
+    add.s64         %rd4, %rd1, %rd3;
+    ld.global.b16   %h1, [%rd4];
+    shl.b32         %r7, %r6, 1;
+    add.u32         %r8, %r2, %r7;
+    st.shared.b16   [%r8], %h1;
+    add.u32         %r8, %r3, %r7;
+    st.shared.b16   [%r8], %h1;
+    mul.wide.u32    %rd3, %r6, 4;
+    add.s64         %rd4, %rd2, %rd3;
+    ld.global.u32   %r9, [%rd4];
+    shl.b32         %r7, %r6, 2;
+    add.u32         %r8, %r4, %r7;
+    st.shared.u32   [%r8], %r9;
+    add.u32         %r5, %r5, 1;
+    setp.lt.u32     %p1, %r5, 32;
+    @%p1 bra        L0;
+    fence.proxy.async.shared::cta;
+    bar.sync        0;
+    setp.ne.u32     %p2, %r1, 0;
+    @%p2 bra        DONE;
+    mov.b64         %rd8, tmb;
+    cvta.param.u64  %rd5, %rd8;
+    mov.b64         %rd9, tmh;
+    cvta.param.u64  %rd6, %rd9;
+    mov.b64         %rd10, tmf;
+    cvta.param.u64  %rd7, %rd10;
+    mov.u32         %r10, 0;
+    cp.reduce.async.bulk.tensor.2d.global.shared::cta.add.tile.bulk_group [%rd5, {%r10, %r10}], [%r2];
+    cp.reduce.async.bulk.tensor.2d.global.shared::cta.add.tile.bulk_group [%rd6, {%r10, %r10}], [%r3];
+    cp.reduce.async.bulk.tensor.2d.global.shared::cta.add.tile.bulk_group [%rd7, {%r10, %r10}], [%r4];
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+DONE:
+    ret;
+}

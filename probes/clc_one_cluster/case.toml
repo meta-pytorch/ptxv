@@ -1,0 +1,30 @@
+name = "probe_clc_one_cluster"
+description = """
+Probe (E-CLC) for a multicast try_cancel in a grid of one cluster (kernel.ptx = probes/clc_mcast
+with grid 2, cluster 2): nothing is left to cancel, so both CTAs run and get the failed
+multicast response: GB300 {2, 0, 0, 0} in 50 of 50 runs; in a 4096-CTA grid, 376 failed
+clusters got {2, 0, 0, 0} and 6 got all zeros, so the model allows both (nondeterministic
+outputs). With every CTA launched up front (eager launch) the model executes it: the grid
+holds no other cluster. expected/ is GB300's output (ptxas -arch=sm_103a kernel.ptx, `ptxv hw`)."""
+ptx = "kernel.ptx"
+entry = "probe_clc_one_cluster"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+cluster = [2, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [16]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["contract", "nondeterministic"]
+expect_sass = ["nondeterministic"]

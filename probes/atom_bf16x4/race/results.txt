@@ -1,0 +1,12 @@
+# GB300, ptxas 13.0, 2026-11-10: 10 runs x 16,896 slots x 256 atom reads under concurrent REDG.E.ADD.BF16x4 (kernel.ptx).
+# 5.4e6 reads mid-sequence (contention real), 0 torn within a 4-byte half, 0 torn across halves: one 8-byte atomic on GB300. The model's two BF16x2 atomics per BF16x4 allow torn slots too (a superset).
+run 10: 16896 slots x 256 reads; mid-sequence 540000; torn half 0; torn slot 0
+run 1: 16896 slots x 256 reads; mid-sequence 539872; torn half 0; torn slot 0
+run 2: 16896 slots x 256 reads; mid-sequence 540928; torn half 0; torn slot 0
+run 3: 16896 slots x 256 reads; mid-sequence 539360; torn half 0; torn slot 0
+run 4: 16896 slots x 256 reads; mid-sequence 540256; torn half 0; torn slot 0
+run 5: 16896 slots x 256 reads; mid-sequence 541600; torn half 0; torn slot 0
+run 6: 16896 slots x 256 reads; mid-sequence 541312; torn half 0; torn slot 0
+run 7: 16896 slots x 256 reads; mid-sequence 538944; torn half 0; torn slot 0
+run 8: 16896 slots x 256 reads; mid-sequence 539264; torn half 0; torn slot 0
+run 9: 16896 slots x 256 reads; mid-sequence 539776; torn half 0; torn slot 0

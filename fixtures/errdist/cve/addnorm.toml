@@ -1,0 +1,10 @@
+# errdist pair: torch eager vs torch.compile (inductor) for addnorm (docs/errdist.md §9).
+#   ptxv errdist fixtures/errdist/cve/addnorm.toml --inputs fixtures/errdist/normal.json
+max_states = 200000
+segments = true
+reference = { case = "../../c_cve_addnorm_eager", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "../../c_cve_addnorm_inductor"
+variant = "good"
+front = "sass"

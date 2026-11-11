@@ -1,0 +1,23 @@
+name = "rep_nondet"
+description = "E-CTA-REP: CTA 3 alone hands out shared tickets; its representative is nondeterministic"
+ptx = "kernel.ptx"
+entry = "k"
+grid = [8, 1, 1]
+block = [64, 1, 1]
+
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "nondeterministic in cluster 3"
+expect = ["nondeterministic"]

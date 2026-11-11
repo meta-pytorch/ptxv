@@ -1,0 +1,26 @@
+name = "e_clock_mem"
+description = """
+E-CLOCK: thread 0 stores %clock64 and releases a flag; thread 32 acquires it and branches on
+the loaded timestamp (above 1000: out[0] = 1, else 2). The branch is on a clock-derived value
+loaded from memory (clock.rs `mem_branches`, `Machine::ctaint`): explored both ways, so the
+output is nondeterministic (1 or 2). With the clock taint not followed through memory, only 2
+(the clock read as 0) would be reached: clean."""
+ptx = "kernel.ptx"
+entry = "e_clock_mem"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["nondeterministic"]

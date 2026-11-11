@@ -1,0 +1,70 @@
+name = "e_aligned_bar"
+description = """
+E-ALIGNED for named barriers (the FA4 warp-role case's probe): every live lane of a warp executes
+the same aligned barrier instruction (`bar.sync` = `barrier.sync.aligned`; SASS BAR) together.
+Splitting a warp across two aligned bar.sync hangs GB300; the non-aligned barrier.sync is
+legal in a divergent warp."""
+ptx = "kernel.ptx"
+entry = "e_aligned_bar"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+hw_note = "GB300 completes (ptxv probe, 2026-11-05)"
+
+[[variants]]
+id = "AB1"
+summary = "warp 0's halves run two different bar.sync 1, 64 (divergent aligned barrier)"
+marker = "@HIGH"
+find = "bra JOIN;"
+replace = "bar.sync 1, 64;\n    bra DONE;"
+expect = ["deadlock", "violation"]
+hw_note = "GB300 hangs (ptxv probe, 2026-11-05)"
+
+[[variants]]
+id = "AB2"
+summary = "as AB1 with the non-aligned barrier.sync: legal"
+marker = "@HIGH"
+find = "bra JOIN;"
+replace = "barrier.sync 1, 64;\n    bra DONE;"
+expect = ["clean"]
+hw_note = "GB300 completes (ptxv probe, 2026-11-05)"
+
+[[variants.edits]]
+marker = "@JOIN"
+find = "bar.sync"
+replace = "barrier.sync"
+
+[[variants.edits]]
+marker = "@OTHER"
+find = "bar.sync"
+replace = "barrier.sync"
+
+[[variants]]
+id = "AB3"
+summary = "lanes 16-31 of warp 0 skip the joined bar.sync with a guard"
+marker = "@JOIN"
+find = "bar.sync"
+replace = "@%p2 bar.sync"
+# PTX: an aligned barrier guarded off in part of the warp (the point of this variant). A
+# counted barrier counts warps: once lanes 16-31 have exited, lanes 0-15 arrive for the whole
+# warp (32 + 32 = 64; E-BAR-EXIT, probes/bar_exit_warp), so no deadlock.
+expect = ["violation"]
+# SASS: ptxas sends lanes 16-31 to EXIT before the BAR, which lanes 0-15 then run together:
+# legal, and the half-exited warp counts as a full warp arrival. It used to be a deadlock
+# (thread counting), a false alarm.
+expect_sass = ["clean"]
+hw_note = "GB300 completes: BAR counts the half-exited warp as a full warp arrival (2 x 32 = 64; probes/bar_exit_warp)"

@@ -1,0 +1,38 @@
+name = "e_cert_fasttrack"
+description = """
+Soundness-harness miss 1 (docs/soundness-harness.md, tools/mutate/repro/cert_fasttrack): warp
+0's plain init store is followed by its own strong red.add to the same word, then every other
+warp's red.add. Without the bar.sync (`nosync`) the init races with the other warps' adds (an
+add that lands first is lost: GB300 wrong 200/200). The race shadow used to keep only the
+writer's later strong write, so the other adds looked morally strong against it and the
+certificate (E-WELLSYNC) called `nosync` clean. Now a strong write does not hide an earlier
+plain access (`Sh::hw`, `Machine::access_x`)."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "nosync"
+summary = "no bar.sync between warp 0's init and the adds"
+marker = "@SYNC"
+replace = "<delete>"
+expect = ["race"]
+# SASS: STS vs ATOMS is re-checked in the strong LDS/STS model (S-SMEM-STRONG), where the lost
+# add shows as several outputs, and an add before the init reads unwritten shared memory.
+expect_sass = ["nondeterministic", "violation"]

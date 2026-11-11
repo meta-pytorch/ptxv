@@ -1,0 +1,45 @@
+name = "c_online_bad_shfl"
+description = """
+Online-softmax bookkeeping and exact taint, kernel online_bad_shfl (fixtures/c_equiv_online/online.cu):
+Y[r] = s_prime + the row's sum of exp2f(x - mi), X[32 x 128] f32, causal-style mask by index. hw: 1000/1000 runs = simulator (GPU 3)."""
+cubin = "kernel.cubin"
+entry = "online_bad_shfl"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["Y"]
+
+[[buffers]]
+name = "X"
+dtype = "f32"
+shape = [32, 128]
+init = "normal"
+seed = 43
+
+[[buffers]]
+name = "Y"
+dtype = "f32"
+shape = [32]
+init = "nan"
+expect = "expected/Y.bin"
+
+[[buffers]]
+name = "F"
+dtype = "f32"
+shape = [128]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "X"
+
+[[params]]
+kind = "ptr"
+buffer = "Y"
+
+[[params]]
+kind = "ptr"
+buffer = "F"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

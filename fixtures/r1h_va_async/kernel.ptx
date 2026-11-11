@@ -1,0 +1,59 @@
+//
+// Rung 1h, virtual aliases (S-VA-ALIAS) and asynchronous bulk copies: `a` and `b` are two
+// mappings of one buffer (a second cuMemMap of the same handle). Thread 0:
+//   - st.global through a, fence.proxy.alias, fence.proxy.async.global, then a bulk copy
+//     global -> shared through b (the copy engine reads through the mapping its address
+//     names);
+//   - a bulk copy shared -> global through b, wait_group 0, fence.proxy.alias, then
+//     ld.global of the same bytes through a.
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry va_async(
+    .param .u64 a,
+    .param .u64 b,
+    .param .u64 out
+)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    .shared .align 128 .b8 sbuf[64];
+    .shared .align 8 .b64 mbar;
+
+    ld.param.u64 %rd1, [a];
+    ld.param.u64 %rd2, [b];
+    ld.param.u64 %rd3, [out];
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra DONE;
+    mov.u32 %r2, mbar;
+    mov.u32 %r3, sbuf;
+    mbarrier.init.shared::cta.b64 [%r2], 1;
+    fence.mbarrier_init.release.cluster;
+    st.global.u32 [%rd1], 7; // @LWR
+    fence.proxy.alias; // @LFENCE
+    fence.proxy.async.global;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r2], 16;
+    cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%r3], [%rd2], 16, [%r2];
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r2], 0;
+    @!%p2 bra WAIT;
+    ld.shared.u32 %r4, [%r3];
+    st.global.u32 [%rd3], %r4;
+    mov.u32 %r6, 3;
+    add.u32 %r7, %r3, 16;
+    add.u64 %rd4, %rd2, 64;
+    st.shared.v4.u32 [%r7], {%r6, %r6, %r6, %r6};
+    fence.proxy.async.shared::cta;
+    cp.async.bulk.global.shared::cta.bulk_group [%rd4], [%r7], 16;
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+    fence.proxy.alias; // @SFENCE
+    ld.global.u32 %r5, [%rd1+64];
+    st.global.u32 [%rd3+4], %r5;
+DONE:
+    ret;
+}

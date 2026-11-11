@@ -1,0 +1,72 @@
+name = "e_tc_handback"
+description = """
+Fixture for the 2-CTA tensor-memory hand-back (S-MBAR-SCOPE, S-TCGEN05): r1c_2sm's pair MMA
+twice over one TMEM accumulator, the peer CTA handing D back to the leader between the
+rounds with a remote .release.cluster mbarrier arrive. See kernel.ptx."""
+ptx = "kernel.ptx"
+entry = "e_tc_handback"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+spec = "gemm_tn"
+
+[[buffers]]
+name = "A"
+dtype = "bf16"
+shape = [256, 64]
+init = "normal"
+seed = 41
+
+[[buffers]]
+name = "B"
+dtype = "bf16"
+shape = [16, 64]
+init = "normal"
+seed = 42
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [256, 16]
+init = "nan"
+
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [64, 128]
+swizzle = "128B"
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [64, 8]
+swizzle = "128B"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[variants]]
+id = "good"
+summary = "correct hand-back: the peer's remote arrive is .release.cluster, the leader waits with acquire.cluster"
+expect = ["contract"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "RCTA"
+summary = "the peer's hand-back arrive is .release.cta: round 2's MMA races with the peer's round-1 tcgen05.ld"
+marker = "@HANDBACK"
+find = "mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%r35];"
+replace = "mbarrier.arrive.release.cta.shared::cluster.b64 _, [%r35];"
+expect = ["contract", "race"]
+expect_sass = ["race"]
+
+[[variants]]
+id = "ACTA"
+summary = "the leader waits with .acquire.cta: race on PTX; SASS PHASECHK acquires the peer's release for SM-local memory (TMEM included): clean"
+marker = "@EWAIT"
+find = "mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p13, [%r34], 0;"
+replace = "mbarrier.try_wait.parity.shared::cta.b64 %p13, [%r34], 0;"
+expect = ["contract", "race"]
+expect_sass = ["clean"]

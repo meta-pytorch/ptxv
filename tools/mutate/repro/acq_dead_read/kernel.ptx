@@ -1,0 +1,34 @@
+// A single (non-polling) acquire load whose value is unused, then a plain read of the data
+// the writer published before its release store.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry k(.param .u64 out_p, .param .u64 data_p, .param .u64 flag_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [data_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    ld.param.u64 %rd3, [flag_p];
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra DONE;
+    mov.u32 %r2, %ctaid.x;
+    setp.ne.u32 %p2, %r2, 0;
+    @%p2 bra READER;
+    mov.u32 %r3, 7;                       // @SLOWW
+    st.global.u32 [%rd2], %r3;
+    st.release.gpu.global.u32 [%rd3], 1;  // @REL
+    bra DONE;
+READER:
+    ld.acquire.gpu.global.u32 %r5, [%rd3];   // @ACQ
+    ld.global.u32 %r8, [%rd2];
+    st.global.u32 [%rd1], %r8;
+DONE:
+    ret;
+}

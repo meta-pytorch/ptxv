@@ -1,0 +1,41 @@
+name = "e_scope_cta"
+description = """
+S-SCOPE: message passing between two CTAs. With .gpu release and acquire the data read is
+ordered (good, clean); a .cta release (CTAREL) or a .cta acquire (CTAACQ) does not include the
+other CTA, so the data read races."""
+ptx = "kernel.ptx"
+entry = "e_scope_cta"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = ".gpu release and acquire"
+expect = ["clean"]
+
+[[variants]]
+id = "CTAREL"
+summary = ".cta release"
+marker = "@REL"
+find = "st.release.gpu"
+replace = "st.release.cta"
+expect = ["race"]
+
+[[variants]]
+id = "CTAACQ"
+summary = ".cta acquire"
+marker = "@ACQ"
+find = "ld.acquire.gpu"
+replace = "ld.acquire.cta"
+expect = ["race"]

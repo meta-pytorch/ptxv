@@ -1,0 +1,25 @@
+// probes/stg_na: st.global.L1::no_allocate (SASS STG.E.NA) and the SM's own L1 copy. Thread g
+// loads x[g] through p with ld.global (weak, fills L1), stores v = x[g] + 0x1000 through q
+// (the same buffer, unknown to ptxas) with .L1::no_allocate (variant na) or a plain store
+// (variant plain), loads x[g] through p again with ld.global, and writes out[2g] = the first
+// load, out[2g + 1] = the second. A stale L1 line after the store would show the first value
+// again.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry stg_na(.param .u64 pp, .param .u64 pq, .param .u64 pout)
+{
+  .reg .b32 %r<8>; .reg .b64 %rd<12>;
+  ld.param.u64 %rd1, [pp]; cvta.to.global.u64 %rd1, %rd1;
+  ld.param.u64 %rd2, [pq]; cvta.to.global.u64 %rd2, %rd2;
+  ld.param.u64 %rd3, [pout]; cvta.to.global.u64 %rd3, %rd3;
+  mov.u32 %r1, %ctaid.x; mov.u32 %r2, %tid.x; mad.lo.u32 %r3, %r1, 256, %r2;
+  mul.wide.u32 %rd4, %r3, 4; add.u64 %rd5, %rd1, %rd4; add.u64 %rd6, %rd2, %rd4;
+  ld.global.u32 %r4, [%rd5];
+  add.u32 %r5, %r4, 0x1000;
+  st.global.L1::no_allocate.u32 [%rd6], %r5;                     // @STORE
+  ld.global.u32 %r6, [%rd5];
+  mul.wide.u32 %rd7, %r3, 8; add.u64 %rd8, %rd3, %rd7;
+  st.global.v2.u32 [%rd8], {%r4, %r6};
+  ret;
+}

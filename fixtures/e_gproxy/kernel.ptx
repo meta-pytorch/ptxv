@@ -1,0 +1,52 @@
+// S-GPROXY: a semaphore-ordered chain of bulk add-reductions into global memory (the
+// deterministic accumulation shape). CTA k waits until sem == k (generic-proxy ld.acquire),
+// adds its 4-float tile with cp.reduce.async.bulk (async proxy), waits for the completion
+// and releases sem = k + 1. The acquire orders the generic proxy only: the CTA's own
+// reduction is ordered after the previous CTA's only through fence.proxy.async.global
+// after the acquire (PTX ISA 8.9.5: same proxy, different CTAs is not proxy-preserved).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry e_gproxy(
+    .param .u64 pacc,
+    .param .u64 psem,
+    .param .u64 pin
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<8>;
+    .shared .align 128 .b8 buf[64];
+
+    ld.param.u64    %rd1, [pacc];
+    ld.param.u64    %rd2, [psem];
+    ld.param.u64    %rd3, [pin];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %ctaid.x;
+    mov.u32         %r3, buf;
+    setp.ne.u32     %p1, %r1, 0;
+    @%p1 bra        DONE;
+    setp.eq.u32     %p3, %r2, 0;
+    mul.wide.u32    %rd4, %r2, 16;
+    add.s64         %rd5, %rd3, %rd4;
+    ld.global.v4.u32 {%r4, %r5, %r6, %r7}, [%rd5];
+    st.shared.v4.u32 [%r3], {%r4, %r5, %r6, %r7};
+    fence.proxy.async.shared::cta;
+SPIN:
+    ld.acquire.gpu.global.u32 %r8, [%rd2];
+    setp.ne.u32     %p2, %r8, %r2;
+    @%p2 bra        SPIN;
+    fence.proxy.async.global;                                                   // @FENCE
+    cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32 [%rd1], [%r3], 16; // @RED
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+    add.u32         %r9, %r2, 1;
+    st.release.gpu.global.u32 [%rd2], %r9;
+DONE:
+    ret;
+}

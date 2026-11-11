@@ -1,0 +1,37 @@
+name = "s_alu"
+description = """
+SASS ALU semantics of rung 3a (the CUTLASS grouped GEMM's integer, float and shuffle forms):
+IMAD.HI / IMAD.WIDE (signed, carry-out, .X), IADD3 with two carry-outs and ~ operands, ISETP.EX,
+LEA carry-out, FLO.SH, BREV, VIADDMNMX, I2F.U64.RP, F2I.U64.TRUNC, FFMA / FMUL, F2FP.BF16 pack,
+SHFL.IDX/UP/DOWN/BFLY. 128 threads, each on its own random 64-bit inputs; `ptxv hw` compares
+every output word with the SASS front-end's run. Built from alu.cu (see its header)."""
+cubin = "kernel.cubin"
+entry = "alu"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u64"
+shape = [256]
+init = "bits"
+seed = 7
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [5120]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

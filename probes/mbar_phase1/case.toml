@@ -1,0 +1,25 @@
+name = "probe_mbar_phase1"
+description = """
+Probe (hardware only) for S-MBAR-MEM: the top bit of an mbarrier state word. cuBLAS (nvjet)
+initializes some mbarriers with SYNCS.EXCH.64 of words like 0xfffff800_001ffffe: the count-1
+word of mbarrier.init with bit 63 set. try_wait parities across arrivals. Run the patched cubin (patch.py) with hw-worker; plain
+`ptxv probe` runs the unpatched baseline. out[2s] / out[2s+1] = parity 0 / 1 at step s."""
+ptx = "kernel.ptx"
+entry = "probe_mbar_phase1"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [20]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

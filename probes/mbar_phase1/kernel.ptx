@@ -1,0 +1,51 @@
+// Probe for S-MBAR-MEM: mbarrier state word bit 63 (cuBLAS nvjet initializes some mbarriers
+// with SYNCS.EXCH.64 of the mbarrier.init word with bit 63 set). The two mbarrier.init below
+// are patched in the cubin (patch.py) to set bit 63. One thread:
+//   step s = 0..3: record try_wait parity 0 / 1 of bar0 (count 1), then arrive on it
+//   step s = 4..8: the same for bar1 (count 2)
+// out[2s + 0] = try_wait.parity 0, out[2s + 1] = parity 1.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry probe_mbar_phase1(.param .u64 out)
+{
+    .reg .pred %p<4>;
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .shared .align 8 .b8 bar0[8];
+    .shared .align 8 .b8 bar1[8];
+    mov.u32         %r0, %tid.x;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        DONE;
+    mov.u32         %r1, bar0;
+    mov.u32         %r2, bar1;
+    ld.param.u64    %rd0, [out];
+    cvta.to.global.u64 %rd2, %rd0;
+    mbarrier.init.shared::cta.b64 [%r1], 1;
+    mbarrier.init.shared::cta.b64 [%r2], 2;
+    mov.u32 %r9, 0;
+LOOP0:
+    mbarrier.test_wait.parity.shared::cta.b64 %p1, [%r1], 0;
+    mbarrier.test_wait.parity.shared::cta.b64 %p2, [%r1], 1;
+    selp.u32 %r3, 1, 0, %p1;  selp.u32 %r4, 1, 0, %p2;
+    st.global.v2.b32 [%rd2], {%r3, %r4};
+    add.u64 %rd2, %rd2, 8;
+    mbarrier.arrive.shared::cta.b64 _, [%r1];
+    add.u32 %r9, %r9, 1;
+    setp.lt.u32 %p3, %r9, 4;
+    @%p3 bra LOOP0;
+    mov.u32 %r9, 0;
+LOOP1:
+    mbarrier.test_wait.parity.shared::cta.b64 %p1, [%r2], 0;
+    mbarrier.test_wait.parity.shared::cta.b64 %p2, [%r2], 1;
+    selp.u32 %r3, 1, 0, %p1;  selp.u32 %r4, 1, 0, %p2;
+    st.global.v2.b32 [%rd2], {%r3, %r4};
+    add.u64 %rd2, %rd2, 8;
+    mbarrier.arrive.shared::cta.b64 _, [%r2];
+    add.u32 %r9, %r9, 1;
+    setp.lt.u32 %p3, %r9, 5;
+    @%p3 bra LOOP1;
+DONE:
+    ret;
+}

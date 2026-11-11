@@ -1,0 +1,41 @@
+name = "probe_fmad_multi"
+description = """
+Probe (PTX-FMAD) for a plain mul.f32 with several readers (gen.py writes kernel.ptx and
+in.bin): every live reader a plain add / sub (directly, through a copy or a neg): contracted
+into each; any other live reader (a store, a mul, a compare, add.rn, an fma addend, add p, p,
+another .ftz setting, a neg or copy read by such): no contraction; dead readers ignored; an
+add of two products folds the one with no other reader (both: the first operand's); a mul.ftz
+through neg.f32 (no .ftz), neg + neg, neg + mov or mov + neg into add.ftz / sub.ftz [.sat]:
+contracted (MISS 62). In 3 of 4 threads the addends cancel the product to +- 1 ulp. expected/
+is GB300's output (kernel.cubin = ptxas 13.0 -arch=sm_103a kernel.ptx, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "fmad_multi"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [2048]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32768]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
