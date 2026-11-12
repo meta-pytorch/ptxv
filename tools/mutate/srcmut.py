@@ -42,6 +42,10 @@ class SrcMutant:
     # their machines by hand, crates/sim/tests/adversarial.rs; claims checked against recorded
     # GPU outputs, e.g. num's error bounds).
     tests: list = field(default_factory=list)
+    # Python (directory, file pattern, -k selector): `python3 -m unittest discover -s DIR -p PAT
+    # -k SEL` in the mutant's tree (tooling outside the binary, e.g. fb/kernel_db's status
+    # rules); caught when a test that ran fails.
+    py: list = field(default_factory=list)
 
 
 # num.rs `value_fault_operands`: each entry removed, under the CTA reductions.
@@ -747,6 +751,26 @@ MUTANTS += [
         [],
         [("ptxv", "errdist_guard", "guarded_store_is_a_selection_not_a_refusal")],
     ),
+    # fb/kernel_db/run.py `two_level_gap`: a partial verdict counts as complete again (an
+    # incomplete check whose GB300-profile level certifies becomes contract_only).
+    SrcMutant(
+        "kdb-tolerated-complete",
+        "fb/kernel_db/run.py",
+        '    if v.get("complete") is not True:\n        return f"incomplete verdict',
+        '    if False:\n        return f"incomplete verdict',
+        [],
+        py=[("fb/kernel_db", "test_run_collect.py", "ContractTolerated")],
+    ),
+    # fb/kernel_db/run.py `two_level_gap`: any two-level verdict clears the findings again (a
+    # GB300-profile level that still reports a race makes the record contract_only).
+    SrcMutant(
+        "kdb-tolerated-sass",
+        "fb/kernel_db/run.py",
+        '    if tl.get("sass_gb300") not in ("certified", "clean"):',
+        "    if False:",
+        [],
+        py=[("fb/kernel_db", "test_run_collect.py", "ContractTolerated")],
+    ),
 ]
 
 
@@ -1071,10 +1095,44 @@ def run_mutant_in_tree(m: SrcMutant, out: Path) -> dict:
     if src.count(m.find) != 1:
         return {"name": m.name, "status": "error", "why": "find text not unique"}
     f.write_text(src.replace(m.find, m.replace))
-    if not build(tree, target):
+    if (m.runs or m.tests) and not build(tree, target):
         return {"name": m.name, "status": "error", "why": "build failed"}
     runs = []
     caught = False
+    for d, pat, sel in m.py:
+        cmd = [
+            sys.executable,
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            d,
+            "-p",
+            pat,
+            "-k",
+            sel,
+        ]
+        r = subprocess.run(cmd, cwd=tree, capture_output=True, text=True, timeout=1800)
+        ran = next(
+            (
+                int(ln.split()[1])
+                for ln in r.stderr.splitlines()
+                if ln.startswith("Ran ")
+            ),
+            0,
+        )
+        if ran == 0:
+            tail = r.stderr.strip().splitlines()[-3:]
+            return {
+                "name": m.name,
+                "status": "error",
+                "why": f"python tests did not run: {d}/{pat} -k {sel}: {tail}",
+            }
+        hit = r.returncode != 0
+        caught |= hit
+        runs.append(
+            {"py": f"{d}/{pat} -k {sel}", "ran": ran, "rc": r.returncode, "caught": hit}
+        )
     for pkg, binary, filt in m.tests:
         env = dict(os.environ, CARGO_TARGET_DIR=str(target), CUDA_VISIBLE_DEVICES="")
         wrap = os.environ.get("PTXV_JOB_WRAPPER", "").split()
