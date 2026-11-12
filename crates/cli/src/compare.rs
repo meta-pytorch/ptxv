@@ -133,6 +133,12 @@ fn side(who: &str, dir_case: &Path, out: &Path, max_states: usize) -> Result<Sid
             .first()
             .map_or("good".into(), |v| v.id.clone())
     };
+    // E-LAUNCH-ORDER: the variant's launch-order edits apply, as in `ptxv check`.
+    let case = if case.variant(&variant).is_ok() {
+        case.for_variant(&variant)?
+    } else {
+        case
+    };
     let kernels: Vec<String> = case
         .m
         .all_launches()
@@ -1700,5 +1706,38 @@ mod tests {
             "{h}"
         );
         assert!(!h.contains("of the bound"), "{h}");
+    }
+
+    /// E-LAUNCH-ORDER: a side is checked in the launch order of the variant compare picks
+    /// (`good`, else the first): a copy of fixtures/e_equiv_order without `good`, whose first
+    /// variant UNK makes the order unknown, is a race and a violation (the strict reading: the
+    /// grids may run at the same time), where the case as loaded is clean.
+    #[test]
+    fn a_side_is_checked_in_its_variants_launch_order() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let tmp =
+            std::env::temp_dir().join(format!("ptxv-test-compare-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let case = tmp.join("case");
+        std::fs::create_dir_all(&case).unwrap();
+        let fx = root.join("fixtures/e_equiv_order");
+        std::fs::copy(fx.join("kernel.ptx"), case.join("kernel.ptx")).unwrap();
+        let toml = std::fs::read_to_string(fx.join("case.toml")).unwrap();
+        let good = toml.find("[[variants]]\nid = \"good\"").unwrap();
+        let next = good + 1 + toml[good + 1..].find("[[variants]]").unwrap();
+        std::fs::write(
+            case.join("case.toml"),
+            format!("{}{}", &toml[..good], &toml[next..]),
+        )
+        .unwrap();
+        let s = side("reference", &case, &tmp, 200_000).unwrap();
+        assert_eq!(s.json["variant"], "UNK", "{:#}", s.json);
+        assert_eq!(
+            s.json["check"]["verdict"],
+            json!(["race", "violation"]),
+            "{:#}",
+            s.json
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

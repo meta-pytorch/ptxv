@@ -1,0 +1,57 @@
+name = "e_ticket_warp_chain"
+description = """
+MISS 140: C-TICKET's warp check against an order-created edge. Lane 0, thread 32 and lane 1
+claim one counter; lane 0 -> lane 1 is ordered only when lane 0 claims before thread 32 (thread
+32's acquire fence after its claim, then a flag lane 1 polls). The certificate refuses: C-ORDER
+on the PTX model; on the GB300 model C-TICKET, since lanes 0 and 1 claim unordered by
+happens-before in the claim order with thread 32 first. The explorers find the race on data."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "w"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "lane 1's read of data races in claim orders with thread 32 first"
+expect = ["nondeterministic", "race"]

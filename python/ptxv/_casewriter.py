@@ -7,8 +7,12 @@
 
 The format is tools/capture.py's (docs/capture.md). The difference is where bytes come from:
 here every launch's referenced allocations were copied right before and after it, so a
-buffer's initial bytes are those before the first launch of the group that reaches it, and
-its expected bytes those after the last one.
+buffer's initial bytes are those the first launch of the group that references it saw (its
+snapshot; MISS 173: not the earliest snapshot of the driver allocation, which a copy, a fill
+or a launch outside the group may have changed since), and its expected bytes those after the
+last one. A buffer changed between two launches of the group that reference it, by anything
+outside the group, refuses the case (CaseError): a case cannot express it. A buffer no
+snapshot covers is undefined until written (`init = "undef"`), not zeros.
 
 Buffers: intervals are named tensors' storages, torch caching-allocator blocks (live before
 the region, or allocated in it), and whole driver allocations no block covers; overlapping
@@ -158,22 +162,30 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
     ] = {}  # base -> region index of the launch it was taken at
     last_post: dict[int, Path] = {}
     seen_post: dict[int, tuple[int, Path]] = {}  # base -> (launch index, post file)
+    # Per launch of the group (position in it): {base: file} of its pre / post snapshot.
+    pre_at: dict[int, dict[int, Path]] = {}
+    post_at: dict[int, dict[int, Path]] = {}
     for _i, la in enumerate(launches):
         if la.snap is None:
             warnings.append(
-                f"launch {la.index} ({la.short_name}) has no snapshot: buffers only it reaches start as zeros"
+                f"launch {la.index} ({la.short_name}) has no snapshot: buffers it references "
+                "first are undefined until written"
             )
             continue
         for f in glob.glob(str(snapdir / f"s{la.snap}_pre_*.bin")):
             base = int(f.rsplit("_", 1)[1][:-4], 16)
             allocs[base] = os.path.getsize(f)
+            pre_at.setdefault(_i, {})[base] = Path(f)
+            if (snapdir / f"s{la.snap}_post_{base:x}.bin").exists():
+                post_at.setdefault(_i, {})[base] = snapdir / f"s{la.snap}_post_{base:x}.bin"
             if base not in first_pre:
                 first_pre[base] = Path(f)
                 first_pre_idx[base] = la.index
             elif base in seen_post and _read(Path(f)) != _read(seen_post[base][1]):
                 warnings.append(
                     f"allocation {base:#x} changed between launch {seen_post[base][0]} and launch "
-                    f"{la.index} outside this group (memcpy, another stream, or a launch not in it)"
+                    f"{la.index} outside this group (memcpy, another stream, or a launch not in it); "
+                    "each buffer in it starts with the bytes the first launch referencing it saw"
                 )
             post = snapdir / f"s{la.snap}_post_{base:x}.bin"
             if post.exists():
@@ -276,9 +288,13 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
     refs: dict[int, list] = {}
     tmap_refs: dict[int, set] = {}
     unresolved: list[dict] = []
+    users_of: dict[int, set] = {}  # component -> launches of the group (positions) pointing into it
+    cur_li = [None]
 
     def note_ref(ci, off, n=1):
         refs.setdefault(ci, []).append((off, n))
+        if cur_li[0] is not None:
+            users_of.setdefault(ci, set()).add(cur_li[0])
 
     def scan_blob(raw: bytes, li: int, pi: int):
         fields = []
@@ -325,6 +341,7 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
     plaunches = []
     first_ref: dict[int, int] = {}
     for li, la in enumerate(launches):
+        cur_li[0] = li
         params = []
         before = set(refs)
         for pi, p in enumerate(la.record["params"]):
@@ -346,6 +363,7 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
         for ci in set(refs) - before:
             first_ref.setdefault(ci, li)
         plaunches.append((la, params))
+    cur_li[0] = None
 
     # ------------------------------------------------- pointer tables (one level)
     # A small, non-float buffer a parameter points to may hold addresses of other allocations
@@ -372,6 +390,9 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
                 continue
             ptr_words.append((ci, o, loc[0], loc[1]))
             note_ref(*loc)
+            # The launches that point to the table reach its targets (their snapshots copy
+            # them too).
+            users_of.setdefault(loc[0], set()).update(users_of.get(ci, ()))
     if ptr_words:
         warnings.append(
             f"{len(ptr_words)} pointer words inside buffers resolved to captured allocations (`ptrs`)"
@@ -471,10 +492,65 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
             and not named_before
             and ci not in earlier
         )
-        init = bytes_at(start, size, first_pre)
+        # MISS 173: the bytes the first launch of the group that references it saw (its
+        # snapshot), not the earliest snapshot of its driver allocation: a copy, a fill or a
+        # launch outside the group may have written it in between.
+        users = sorted(users_of.get(ci, ()))
+        # init_at: launches of the region before it are in the initial bytes.
+        init, init_from, init_at = None, None, None
+        if users:
+            init = bytes_at(start, size, pre_at.get(users[0], {}))
+            if init is not None:
+                init_from = f"snapshot before launch {launches[users[0]].index}"
+                init_at = launches[users[0]].index
+            elif fresh:
+                # Allocated in the region and its first reader has no snapshot covering it:
+                # its bytes there are unknown (never a later snapshot, nor zeros).
+                warnings.append(
+                    f"{bname}: allocated in the region, and launch {launches[users[0]].index}, "
+                    "the first to reference it, has no snapshot covering it: undefined until "
+                    "written (a read of it is reported)"
+                )
+            else:
+                # Live before the region, and that launch has no snapshot covering it: the
+                # latest snapshot of an earlier launch of the group that does (its bytes after
+                # that launch; never a later one, which may hold that launch's writes).
+                for j in range(users[0] - 1, -1, -1):
+                    init = bytes_at(start, size, post_at.get(j, {}))
+                    if init is not None:
+                        init_from = f"snapshot after launch {launches[j].index}"
+                        init_at = launches[j].index + 1
+                        warnings.append(
+                            f"{bname}: launch {launches[users[0]].index}, the first to reference "
+                            f"it, has no snapshot covering it; bytes as of {init_from} (a copy "
+                            "or fill in between is missed)"
+                        )
+                        break
+        else:
+            # No launch of the group points into it, directly or through a pointer table:
+            # the earliest snapshot of its allocation.
+            init = bytes_at(start, size, first_pre)
+            if init is not None:
+                init_from = "earliest snapshot of its allocation"
+                init_at = first_pre_idx.get(alloc_of(start))
+        # A change between two launches of the group that reference it, by anything outside
+        # the group (a copy, a fill, a launch not in it), cannot be expressed in a case.
+        for la_, lb_ in zip(users, users[1:]):
+            pa = bytes_at(start, size, post_at.get(la_, {}))
+            pb = bytes_at(start, size, pre_at.get(lb_, {}))
+            if pa is not None and pb is not None and pa != pb:
+                raise CaseError(
+                    f"{bname}: changed between launch {launches[la_].index} and launch "
+                    f"{launches[lb_].index} of the group by a copy, fill or launch that is not in "
+                    "it (MISS 173): a case cannot express it. Include the writer in the group, or "
+                    "start the group after it."
+                )
         final = bytes_at(start, size, last_post)
-        if init is None:
-            warnings.append(f"{bname}: no snapshot covers it; starts as zeros")
+        if init is None and not (users and fresh):
+            warnings.append(
+                f"{bname}: no snapshot covers it; undefined until written (a read of it is "
+                "reported)"
+            )
         buffers.append(
             {
                 "name": bname,
@@ -488,6 +564,8 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
                 "named": bool(nm),
                 "changed": init is not None and final is not None and init != final,
                 "first_ref": first_ref.get(ci, 0),
+                "init_from": init_from,
+                "init_at": init_at,
             }
         )
         comp_buf[ci] = (len(buffers) - 1, start - s)
@@ -564,6 +642,8 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
         # compare equal with the captured output. Declared write_only outputs start as zeros.
         if b["name"] in write_only or (b["fresh"] and b["init"] is None):
             b["init"] = None
+            if b["name"] in write_only:
+                b["init_from"] = "zeros (write_only)"
 
     # Vacuous-input guards. (1) An input whose bytes are all one value (all zeros: a buffer a
     # collective or another stream fills after the snapshot) makes a check on it say little.
@@ -585,8 +665,7 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
         reader = max(
             group_idx
         )  # a later launch of the case may be the one that reads it
-        a = alloc_of(b["start"])
-        snap_at = first_pre_idx.get(a) if a is not None else None
+        snap_at = b["init_at"]  # the snapshot its initial bytes come from
         lo, hi = b["start"], b["start"] + b["size"]
         for la in getattr(cap, "launches", []):
             if la.index in group_idx or la.index >= reader:
@@ -875,6 +954,9 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
         elif b["init"] is not None and any(b["init"]):
             (out / "data" / f"{b['name']}.bin").write_bytes(b["init"])
             s += f'init = "file"\nfile = "data/{b["name"]}.bin"\n'
+        elif b["init"] is None and b["init_from"] is None:
+            # No snapshot covers it (MISS 173): its bytes are unknown, not zeros.
+            s += 'init = "undef"\n'
         else:
             s += 'init = "zeros"\n'
         if b["fresh"] and b["name"] not in scratch:
@@ -939,6 +1021,10 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
                 "size": b["size"],
                 "fresh": b["fresh"],
                 "output": bool(b.get("is_out")),
+                # Where its initial bytes come from (MISS 173); None: undefined until written.
+                "initial_bytes": "undefined (declared scratch)"
+                if b["name"] in scratch
+                else b["init_from"],
             }
             for b in buffers
         ],

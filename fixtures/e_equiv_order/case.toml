@@ -1,0 +1,69 @@
+name = "e_equiv_order"
+description = """
+E-LAUNCH-ORDER in equiv and errdist: their precondition (crates/cli/src/equiv.rs prepare_with)
+checks the variant's launch order, as `ptxv check` does (Case::for_variant). A writer and a
+reader of its output with ld.global.nc, the next launch on the GPU. The case declares its order
+(good: clean). UNK makes it unknown (the grids may then run at the same time: race, and S-NC
+reports the .nc read: violation); UNORD gives the reader no predecessor (after = -1: race +
+violation). equiv_UNK.toml and equiv_UNORD.toml run
+each variant against itself: the precondition is the variant's verdict, where it used to be
+computed on the declared order (clean). crates/cli/tests/launch_order.rs runs them."""
+ptx = "kernel.ptx"
+entry = "writer"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+launch_order = "declared"
+outputs = ["out"]
+
+[[buffers]]
+name = "src"
+dtype = "f32"
+shape = [32]
+init = "normal"
+seed = 3
+
+[[buffers]]
+name = "data"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[launches]]
+entry = "reader"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+params = [
+    { kind = "ptr", buffer = "data" },
+    { kind = "ptr", buffer = "out" },
+]
+
+[[variants]]
+id = "good"
+summary = "declared order: the reader runs after the writer completed: clean"
+expect = ["clean"]
+
+[[variants]]
+id = "UNK"
+summary = "the order unknown: the grids may run at the same time, so the .nc read races with the write and S-NC reports it"
+launch_order = "unknown"
+expect = ["race", "violation"]
+
+[[variants]]
+id = "UNORD"
+summary = "the reader after nothing (after = -1): the read overlaps the write"
+after = [[1, -1]]
+expect = ["race", "violation"]

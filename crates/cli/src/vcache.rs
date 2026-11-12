@@ -20,6 +20,10 @@
 //! states as it was computed with (it explored at least as far as the request would).
 //! Files: `$PTXV_CACHE/check/<key>.json` (default `~/.cache/ptxv`). `PTXV_NO_VCACHE=1`
 //! disables both reading and writing.
+//!
+//! The key is of the files, so only a check of the case as its directory holds it is stored
+//! (`as_on_disk`): `ptxv check --residency N` changes the manifest in memory, and its verdict
+//! would otherwise serve equiv / errdist, which check the case with its own residency.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -118,6 +122,13 @@ fn eat_dir(h: &mut Fnv, base: &Path, d: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether `case` is the case its directory holds (`Case::load`, the manifest compared field by
+/// field), so that a verdict of it may be stored under the key of the directory's files. A
+/// manifest changed in memory (`ptxv check --residency N`) is not.
+pub(crate) fn as_on_disk(case: &ptxv_case::Case) -> bool {
+    ptxv_case::Case::load(&case.dir).is_ok_and(|d| format!("{:?}", d.m) == format!("{:?}", case.m))
 }
 
 /// The cache key of a level-1 check of `variant` / `front` of the case in `case_dir`, in
@@ -273,6 +284,23 @@ mod tests {
             seconds: 0.0,
             outputs: vec![],
         }
+    }
+
+    /// Only the case as its directory holds it is stored: a manifest changed in memory
+    /// (`ptxv check --residency N`) is not, nor a case whose directory holds another.
+    #[test]
+    fn only_the_case_on_disk_is_stored() {
+        let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_resid");
+        let mut c = ptxv_case::Case::load(&fx).unwrap();
+        assert!(as_on_disk(&c));
+        assert!(as_on_disk(&c.for_variant("chain").unwrap()));
+        c.m.residency = Some(4);
+        assert!(!as_on_disk(&c));
+        let mut other = ptxv_case::Case::load(&fx).unwrap();
+        other.dir = fx.join("../e_equiv_order");
+        assert!(!as_on_disk(&other));
+        other.dir = fx.join("no_such_case");
+        assert!(!as_on_disk(&other));
     }
 
     /// The key changes with any file of the case (including `data/`), the variant and the

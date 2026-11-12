@@ -1380,8 +1380,14 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
     mc_used = set()  # multicast phys ids kernels reference
     tmap_dt = {}  # region index -> element types of the tensor maps over it
 
+    launch_regions = {}  # id(kept launch record) -> region indices its parameters point into
+    launch_mc = {}  # id(kept launch record) -> multicast phys ids its parameters point into
+    cur_launch = [None]
+
     def note(ri, off):
         refs.setdefault(int(ri), set()).add(off)
+        if cur_launch[0] is not None:
+            launch_regions.setdefault(cur_launch[0], set()).add(int(ri))
 
     if identity_errors:
         sys.exit(
@@ -1406,13 +1412,13 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
         # Launch order (E-LAUNCH-ORDER, python/ptxv/_order.py): the order the rank's streams and
         # stream order calls (event records / waits, graph launches) enforce between its kept
         # launches; launches on streams no event orders (DeepEP's communication stream) stay
-        # concurrent. Mapped into the case's interleaving below.
+        # concurrent. Mapped into the case's interleaving below. The case puts a rank's launches
+        # on the rank's GPU: kept launches that name several devices give an unknown order.
         rpos = {id(x): i for i, x in enumerate(m["records"])}
-        rank_order[r] = _order.launch_order(
-            m["records"], [rpos[id(x)] for x in recs], single_device=True
-        )
+        rank_order[r] = _order.launch_order(m["records"], [rpos[id(x)] for x in recs])
         for x in recs:
             split_packed(r, x)
+            cur_launch[0] = id(x)
             params = []
             for pi, p in enumerate(x["params"]):
                 raw = bytes.fromhex(p["hex"])
@@ -1421,6 +1427,7 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                     loc = resolve(r, v)
                     if loc and loc[0] == "multicast":
                         mc_used.add(loc[1])
+                        launch_mc.setdefault(id(x), set()).add(loc[1])
                         params.append(("mcptr", loc[1], loc[2]))
                     elif loc:
                         note(*loc)
@@ -1466,6 +1473,7 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                             continue
                         if loc and loc[0] == "multicast":
                             mc_used.add(loc[1])
+                            launch_mc.setdefault(id(x), set()).add(loc[1])
                             fields.append((off, ("mc", loc[1]), loc[2]))
                         elif loc:
                             note(*loc)
@@ -1491,6 +1499,7 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                     else:
                         params.append(("bytes", raw, fields))
             launches.append((r, x, params))
+            cur_launch[0] = None
     # Vacuous-input guard (as python/ptxv/_casewriter.py): a launch dropped by --kernels that
     # points into a buffer the case's launches use, before the rank's last kept launch, may
     # write bytes that the case's initial contents (the snapshot before run()) miss.
@@ -1563,30 +1572,112 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
         g["data"] = bytes(data) if found and any(data) else None
 
     # Device copies / fills a rank made before its first kernel (an op's clone(), a copy_
-    # into the symmetric buffer) fold into the initial bytes; later ones are not modeled.
+    # into the symmetric buffer) fold into the initial bytes. A case cannot express a copy or
+    # fill between kernels (MISS 173): one into a region that a later kept launch of the rank
+    # reads refuses the case, as does a host upload whose bytes were not recorded into a region
+    # a kept launch reads, or one between kernels into a region an earlier kept launch used
+    # (folding it would give that launch bytes it did not see).
+    refuse = []
+    ptr_targets = {}  # region index -> regions its 8-byte words point into (pointer tables)
+
+    def mc_regions(pid):
+        """The regions bound to multicast object pid (its members' owner-side bytes)."""
+        out = set()
+        for _br, mpid, moff, _mcoff, size in mc_bind.get(pid, []):
+            p = phys.get(mpid)
+            oa = owner_addr(mpid, moff, size) if p and p["owner"] is not None else None
+            if oa is None:
+                continue
+            lo, hi = oa[0], oa[0] + size
+            for i, g in enumerate(regions):
+                if g["dev"] == p["owner"] and max(lo, g["start"]) < min(hi, g["end"]):
+                    out.add(i)
+        return out
+
+    def targets(i):
+        if i not in ptr_targets:
+            g, out = regions[i], set()
+            if g["data"] and g["kind"] not in ("symm", "signal"):
+                for off in range(0, len(g["data"]) - 7, 8):
+                    loc = resolve(g["dev"], u64(g["data"], off))
+                    if loc and loc[0] == "multicast":
+                        out |= mc_regions(loc[1])
+                    elif loc:
+                        out.add(int(loc[0]))
+            ptr_targets[i] = out
+        return ptr_targets[i]
+
+    def reaches(y, ri):
+        """Whether kept launch y points into region ri: through a parameter, a multicast
+        address bound to it, or pointer words in a region it reaches (the pointer tables
+        below)."""
+        seen, todo = set(), list(launch_regions.get(id(y), ()))
+        for pid in launch_mc.get(id(y), ()):
+            todo.extend(mc_regions(pid))
+        while todo:
+            i = todo.pop()
+            if i == ri:
+                return True
+            if i not in seen:
+                seen.add(i)
+                todo.extend(targets(i))
+        return False
+
     for r, m in enumerate(ranks):
         seen_kernel = False
+        kept_seq = [
+            x for x in m["records"] if "name" in x and (not kfilter or kfilter.search(x["name"]))
+        ]
+        done = []  # kept launches of the rank before the record at hand
         for x in m["records"]:
             if "name" in x and (not kfilter or kfilter.search(x["name"])):
                 seen_kernel = True
+                done.append(x)
                 continue
             if "op" not in x or x.get("kind", 0) not in (0, 1, 3, 4):
                 continue  # device -> host copies touch no case buffer
+            loc = resolve(r, x["dst"])
+            ri = int(loc[0]) if loc and loc[0] != "multicast" else None
+            later = [
+                y["name"][:60]
+                for y in kept_seq[len(done) :]
+                if ri is not None and reaches(y, ri)
+            ]
+            earlier = [
+                y["name"][:60] for y in done if ri is not None and reaches(y, ri)
+            ]
             if x.get("kind") == 1 and "data" not in x:
+                if later:
+                    refuse.append(
+                        f"rank {r}: host upload of {x['bytes']} bytes to {x['dst']:#x} (bytes not "
+                        f"recorded) into a region kept launch {later[0]} reads"
+                    )
                 continue
             if x.get("kind") == 1 and seen_kernel:
-                # A host-computed table uploaded between kernels (MoE routing order): its bytes
-                # become the destination's initial contents. Exact when no earlier kernel
-                # touches that memory (a fresh allocation), which the warning asks to confirm.
+                if earlier:
+                    refuse.append(
+                        f"rank {r}: host upload of {x['bytes']} bytes to {x['dst']:#x} between "
+                        f"kernels into a region that kept launch {earlier[-1]} used before it"
+                    )
+                    continue
+                # A host-computed table uploaded between kernels (MoE routing order) into memory
+                # no earlier kept launch of the rank used: its bytes are the destination's initial
+                # contents.
                 notes.append(
                     f"rank {r}: host upload of {x['bytes']} bytes to {x['dst']:#x} between kernels folded into initial contents"
                 )
             elif seen_kernel:
-                warnings.append(
-                    f"rank {r}: {x['op']} of {x['bytes']} bytes to {x['dst']:#x} between kernels: not in the case"
-                )
+                if later:
+                    refuse.append(
+                        f"rank {r}: {x['op']} of {x['bytes']} bytes to {x['dst']:#x} between "
+                        f"kernels into a region that kept launch {later[0]} reads after it"
+                    )
+                else:
+                    warnings.append(
+                        f"rank {r}: {x['op']} of {x['bytes']} bytes to {x['dst']:#x} between "
+                        "kernels: not in the case (no later kept launch reads it)"
+                    )
                 continue
-            loc = resolve(r, x["dst"])
             if not loc or loc[0] == "multicast":
                 warnings.append(
                     f"rank {r}: {x['op']} to {x['dst']:#x} (no buffer) ignored"
@@ -1611,12 +1702,26 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                         sd = sg["data"] or bytes(sg["end"] - sg["start"])
                         src = sd[sl[1] : sl[1] + n]
                 if src is None or len(src) != n:
-                    warnings.append(
-                        f"rank {r}: memcpy into {g['name']} from {x['src']:#x} (unknown contents) ignored"
-                    )
+                    if later:
+                        refuse.append(
+                            f"rank {r}: memcpy into {g['name']} from {x['src']:#x} (unknown "
+                            f"contents), which kept launch {later[0]} reads"
+                        )
+                    else:
+                        warnings.append(
+                            f"rank {r}: memcpy into {g['name']} from {x['src']:#x} (unknown contents) ignored"
+                        )
                     continue
                 d[off : off + n] = src
             g["data"] = bytes(d)
+
+    if refuse:
+        for why in refuse:
+            print("capture_dist: cannot write the case:", why, file=sys.stderr)
+        sys.exit(
+            "capture_dist: refused (MISS 173): a copy, fill or upload inside the capture writes "
+            "memory a kept launch reads, and a case cannot express it"
+        )
 
     # IBGDA handles, QP structs and queues are scanned for pointers like any table.
     for r, m in enumerate(ranks):

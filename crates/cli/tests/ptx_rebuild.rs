@@ -181,8 +181,9 @@ fn two_module_case(tag: &str, second_opt: &str) -> PathBuf {
         format!(
             "name = \"ptx_rebuild_{tag}\"\ndescription = \"\"\"test\"\"\"\nptx = \"kernel.ptx\"\n\
              executed_cubin = \"a.cubin\"\nentry = \"store_tid\"\narch = \"sm_103a\"\n{launch}\
-             outputs = [\"out\"]\n\n[[buffers]]\nname = \"out\"\ndtype = \"u32\"\nshape = [32]\n\
-             init = \"zeros\"\nexpect = \"expected/out.bin\"\n\n[[params]]\n{param}\n\
+             outputs = [\"out\"]\nlaunch_order = \"declared\"\n\n[[buffers]]\nname = \"out\"\n\
+             dtype = \"u32\"\nshape = [32]\ninit = \"zeros\"\nexpect = \"expected/out.bin\"\n\n\
+             [[params]]\n{param}\n\
              [[launches]]\nentry = \"store_tid__m1\"\n{launch}executed_cubin = \"b.cubin\"\n\
              executed_entry = \"store_tid\"\n\n[[launches.params]]\n{param}\n\
              [[variants]]\nid = \"good\"\nsummary = \"as captured\"\nexpect = [\"clean\"]\n"

@@ -3,9 +3,10 @@
 // This source code is licensed under the BSD-style license found in the
 // LICENSE file in the root directory of this source tree.
 
-// MISS 140: the lanes of one converged PTX atom step run in lane order only. Each lane stores
-// data[lane]; fence.sc.gpu; ticket = atom.add(sem, 1); fence.sc.gpu. Lane 1 (chosen by lane
-// id, not by ticket) then reads data[0], lane 0's store. In executions where lane 1's atom
+// MISS 140: the lanes of one converged PTX atom step run in lane order only. Each of three
+// lanes stores data[lane]; fence.sc.gpu; ticket = atom.add(sem, 1); fence.sc.gpu. Lane 1
+// (chosen by lane id, not by ticket) then reads data[0], lane 0's store (variant THREE: lane 2
+// reads it, through lane 1's read-modify-write in lane order). In executions where lane 1's atom
 // comes first in coherence order, lane 1 synchronizes with nothing and the read races. Until
 // the fix the acquire-release edge lane 1 read off the lane order (lane 0's atom first) made it
 // clean, and C-TICKET dropped the other claim order as infeasible.
@@ -33,7 +34,7 @@
     fence.sc.gpu;                                // @FB
     setp.ne.u32 %p1, %r1, 1;                     // @WHO
     @%p1 bra DONE;
-    sub.u32 %r5, 1, %r1;
+    sub.u32 %r5, 1, %r1;                         // @SRC
     mul.wide.u32 %rd7, %r5, 4;
     add.s64 %rd8, %rd1, %rd7;
     ld.global.u32 %r4, [%rd8];

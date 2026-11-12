@@ -38,10 +38,17 @@
 # * Overlapping blocks (an allocation reused during the call) merge into one buffer. A buffer
 #   that only a single named tensor's bytes are referenced in is that tensor (its dtype and
 #   shape); otherwise it is the whole block range as u8, the tensor at an offset.
-# * Buffers live before the call get their exact bytes (`init = "file"`, data/NAME.bin);
-#   allocations made during it start as zeros (the simulator's; the GPU's are whatever the
-#   allocator hands out, which a correct kernel does not read). Outputs carry the GPU's bytes
-#   (`expect`, expected/NAME.bin), which `ptxv check` compares with the simulator.
+# * Every kept launch is recorded with snapshots: the allocations its parameters point into,
+#   copied just before and after it (probes/launchcap LAUNCHCAP_SNAP, the device synchronized
+#   around it). A buffer starts with the bytes the first kept launch that references it saw
+#   (`init = "file"`, data/NAME.bin), whatever wrote them inside the call: a launch filtered
+#   out, an op's copy or fill, an input uploaded from the host. A buffer that something
+#   outside the case (a copy, a fill, a launch filtered out) changes between two kept launches
+#   that reference it, or before its first kept reader when no snapshot covers it, refuses
+#   the case: a case cannot express it (MISS 173). Without a covering snapshot, buffers live
+#   before the call get their bytes from before it, and an allocation made during it is
+#   undefined until written (`init = "undef"`: a read of it is reported). Outputs carry the
+#   GPU's bytes (`expect`, expected/NAME.bin), which `ptxv check` compares with the simulator.
 # * Each kernel's cubin is the smallest captured ELF image defining it; kernels from other
 #   modules than the first launch's name their own (`[[launches]] cubin`). When different
 #   images define one name (specializations of a Triton / CuTeDSL kernel), each launch takes
@@ -52,14 +59,15 @@
 #   between them are recorded; the case keeps only the order they enforce (`after`, `waits`,
 #   `pdl`, launch_order = "recorded"; docs/capture.md "Launch order"), so launches on streams
 #   no event orders stay concurrent.
-# Not captured: cudaMemcpy / cudaMemset inside the op (not kernel launches), pointers to
-# memory outside the caching allocator (listed under `unresolved` in capture.json).
+# Not captured: pointers to memory outside the caching allocator and the snapshots (listed
+# under `unresolved` in capture.json).
 import argparse
 import ctypes
 import glob
 import hashlib
 import importlib.util
 import json
+import mmap
 import os
 import re
 import shutil
@@ -176,11 +184,10 @@ if os.environ.get("PTXV_CAPTURE_CHILD") != "1":  # re-exec under the recorders
             + ([os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else [])
         ),
     )
-    if A.kernels:
-        # Snapshots around the kept launches (probes/launchcap): their inputs may come from
-        # launches filtered out.
-        os.makedirs(f"{WORK}/snap")
-        env.update(LAUNCHCAP_SNAP=A.kernels, LAUNCHCAP_SNAP_DIR=f"{WORK}/snap")
+    # Snapshots around every kept launch (probes/launchcap): a launch's inputs may come from
+    # launches filtered out, or from copies, fills and host uploads inside the call.
+    os.makedirs(f"{WORK}/snap")
+    env.update(LAUNCHCAP_SNAP=A.kernels or ".", LAUNCHCAP_SNAP_DIR=f"{WORK}/snap")
     # Triton's bundled tools do not know sm_103a (the kernel dump disassembles the cubin).
     for tool in ("ptxas", "cuobjdump", "nvdisasm"):
         env.setdefault(f"TRITON_{tool.upper()}_PATH", f"{CUDA}/bin/{tool}")
@@ -461,18 +468,20 @@ window = list(recs)
 for r in recs:
     if r.get("cluster") == [0, 0, 0]:
         r["cluster"] = [1, 1, 1]
-# Memory operations (cudaMemcpy / cudaMemset) are not kernels. Device-side ones before the
-# first launch fold into the buffers' initial contents (an op's clone() or zero fill);
-# later ones cannot be expressed in a case and are reported.
+# Memory operations (cudaMemcpy / cudaMemset) are not kernels. The snapshot before a kept
+# launch holds what they wrote before it (below). Without one, device-side ones before the
+# first kept launch fold into the buffers' initial contents (an op's clone() or zero fill).
+# Device -> host copies (an .item()) write no device memory; host -> device ones do (an input
+# uploaded inside the call).
 early_memops = []
 for r in recs:
     if "op" in r:
         early_memops.append(r)
     elif "name" in r and (not kfilter or kfilter.search(r["name"])):
         break
+memops = [r for r in recs if "op" in r and not (r["op"] == "memcpy" and r.get("kind") == 2)]
 late_memops = [r for r in recs if "op" in r][len(early_memops) :]
-# Host <-> device copies (an .item(), a pinned staging buffer) touch no case buffer.
-late_memops = [r for r in late_memops if r["op"] == "memset" or r["kind"] in (3, 4)]
+late_memops = [r for r in late_memops if not (r["op"] == "memcpy" and r.get("kind") == 2)]
 recs = [r for r in recs if "name" in r]
 dropped = []
 if kfilter:
@@ -487,29 +496,67 @@ print(
 
 
 def load_snap(n, tag):
-    """{base address: bytes} of allocation snapshot n (`pre` / `post`), probes/launchcap."""
+    """{base address: bytes} of allocation snapshot n (`pre` / `post`), probes/launchcap
+    (mapped, not read: every kept launch has two, and only the buffers' ranges are used)."""
     got = {}
     for f in glob.glob(f"{WORK}/snap/s{n}_{tag}_*.bin"):
-        got[int(f.rsplit("_", 1)[1][:-4], 16)] = open(f, "rb").read()
+        with open(f, "rb") as fh:
+            got[int(f.rsplit("_", 1)[1][:-4], 16)] = (
+                mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) if os.path.getsize(f) else b""
+            )
     return got
 
 
-# --kernels drops launches: with snapshots, the buffers start as they were just before the
-# first kept launch and the outputs are what the kept launches changed, as of the last one.
-snap_pre, snap_post = {}, {}
-if dropped and all("snap" in r for r in recs):
-    snap_pre, snap_post = (
-        load_snap(recs[0]["snap"], "pre"),
-        load_snap(recs[-1]["snap"], "post"),
-    )
-    if [r["snap"] for r in recs] != list(range(recs[0]["snap"], recs[-1]["snap"] + 1)):
-        print(
-            "capture: warning: kept launches are not contiguous; snapshots span the gap"
-        )
-elif dropped:
-    print(
-        "capture: warning: launches filtered out and no snapshots: buffers they wrote start as zeros"
-    )
+# Every kept launch's snapshots: {kept launch index: (pre, post)}, each {base: bytes}. A
+# launch into a capturing stream has none (it does not run then), nor a runtime launch whose
+# function was not found before it ran (probes/launchcap).
+snaps = {
+    li: (load_snap(r["snap"], "pre"), load_snap(r["snap"], "post"))
+    for li, r in enumerate(recs)
+    if "snap" in r
+}
+nosnap = [li for li in range(len(recs)) if li not in snaps]
+if nosnap:
+    print(f"capture: warning: kept launches {nosnap} have no snapshot")
+
+
+def snap_range(img, start, size):
+    """The bytes [start, start + size) in snapshot `img` ({base: bytes}), or None unless its
+    allocations cover all of them."""
+    out, have = bytearray(size), 0
+    for a0, d in img.items():
+        lo, hi = max(a0, start), min(a0 + len(d), start + size)
+        if lo < hi:
+            out[lo - start : hi - start] = d[lo - a0 : hi - a0]
+            have += hi - lo
+    return bytes(out) if have >= size else None
+
+
+def param_words(r):
+    """Every aligned 8-byte word of a launch record's parameters."""
+    for p in r.get("params", []):
+        raw = bytes.fromhex(p["hex"])
+        for o in range(0, len(raw) - 7, 8):
+            yield struct.unpack_from("<Q", raw, o)[0]
+
+
+kept_ids = {id(r) for r in recs}
+wpos = {id(r): i for i, r in enumerate(window)}
+
+
+def writers_before(li, start, size, folded):
+    """What, outside the case, may write [start, start + size) before kept launch li: copies
+    and fills (but those before the first kept launch that the initial contents fold, `folded`)
+    and launches filtered out that point into it."""
+    out = []
+    for x in window[: wpos[id(recs[li])]]:
+        if "op" in x and any(x is m for m in memops) and not any(x is m for m in folded):
+            if x["dst"] < start + size and start < x["dst"] + x["bytes"]:
+                out.append(f"a {x['op']} of {x['bytes']} bytes")
+        elif "name" in x and id(x) not in kept_ids:
+            if any(start <= w < start + size for w in param_words(x)):
+                out.append(f"launch {x['name'][:60]} (filtered out)")
+    return out
 
 # ---------------------------------------------------------------- memory regions
 
@@ -525,7 +572,11 @@ for a, z in during:
     ivs.append((a, a + z, "during", None))
 # Allocations outside the caching allocator (a library's cudaMalloc) that a kept launch points
 # into: known from the snapshots.
-for b, d in snap_pre.items():
+snap_allocs = {}
+for li in sorted(snaps):
+    for b, d in snaps[li][0].items():
+        snap_allocs.setdefault(b, d)
+for b, d in snap_allocs.items():
     if not any(s <= b < e for s, e, _, _ in ivs) and not any(
         b <= s < b + len(d) for s, _, _, _ in ivs
     ):
@@ -656,8 +707,13 @@ if os.environ.get("PTXV_CAPTURE_DEBUG"):
     print("comps", [(hex(s), e - s, [m[2:] for m in ms]) for s, e, ms in comps])
 
 
+ref_by = {}  # comp -> kept launch indices whose parameters point into it
+cur_li = 0
+
+
 def note_ref(ci, off, n=1):
     refs.setdefault(ci, []).append((off, n))
+    ref_by.setdefault(ci, set()).add(cur_li)
 
 
 def scan_blob(raw, li, pi):
@@ -696,6 +752,7 @@ def scan_blob(raw, li, pi):
 
 launches = []
 for li, r in enumerate(recs):
+    cur_li = li
     params = []
     for pi, p in enumerate(r["params"]):
         raw = bytes.fromhex(p["hex"])
@@ -734,7 +791,9 @@ def tensor_dtype_shape(t, nbytes):
 
 
 needed = set(refs)
-if snap_pre:  # the op's outputs come from launches filtered out
+from_snaps = bool(dropped) and not nosnap
+op_outs = outs
+if from_snaps:  # the op's outputs come from launches filtered out
     outs = []
 for _n, t in outs:  # outputs are buffers even if no parameter points at them (warned)
     p, _ = storage_range(t)
@@ -742,10 +801,7 @@ for _n, t in outs:  # outputs are buffers even if no parameter points at them (w
     if loc:
         needed.add(loc[0])
 warnings = []
-for mo in late_memops:
-    warnings.append(
-        f"{mo['op']} of {mo['bytes']} bytes to {mo['dst']:#x} between kernels: not in the case"
-    )
+refuse = []  # why the case cannot be written (a case cannot express it)
 for ci in sorted(needed):  # noqa: C901 (script body: one linear pass over shared capture state)
     s, e, members = comps[ci]
     nm = [m for m in members if m[2] == "named"]
@@ -818,7 +874,9 @@ for ci in sorted(needed):  # noqa: C901 (script body: one linear pass over share
                 )
         if anylive and any(data):
             b["data"] = bytes(data)
-    # Memory operations before the first kernel, in order.
+    # Memory operations before the first kernel, in order (used only where no snapshot of the
+    # first kept launch that references the buffer covers it).
+    folded = []
     for mo in early_memops:
         d0, n = mo["dst"], mo["bytes"]
         lo, hi = max(d0, start), min(d0 + n, start + size)
@@ -842,24 +900,66 @@ for ci in sorted(needed):  # noqa: C901 (script body: one linear pass over share
                 ):
                     got = pre_block_bytes[a][src - a : src - a + hi - lo]
             if got is None:
-                warnings.append(
-                    f"{name}: memcpy into it from {src:#x} (unknown contents) ignored"
-                )
-                continue
+                continue  # unknown contents: not folded (writers_before names it)
             data[lo - start : hi - start] = got
+        folded.append(mo)
         b["data"] = bytes(data)
-    if snap_pre:
-        pre = bytearray(b.get("data", bytes(size)))
-        post = bytearray(pre)
-        for snap, img in ((snap_pre, pre), (snap_post, post)):
-            for a0, d in snap.items():
-                lo, hi = max(a0, start), min(a0 + len(d), start + size)
-                if lo < hi:
-                    img[lo - start : hi - start] = d[lo - a0 : hi - a0]
-        if any(pre):
-            b["data"] = bytes(pre)
-        if post != pre:
-            b["expect"], b["expect_offset"], b["is_out"] = bytes(post), 0, True
+    # MISS 173: the bytes the first kept launch that references the buffer saw, from its
+    # snapshot (whatever wrote them inside the call: a launch filtered out, a copy or fill, a
+    # host upload). Without a covering snapshot, the bytes before the call (and the copies and
+    # fills folded above) stand only if nothing else wrote the buffer before that launch.
+    users = sorted(ref_by.get(ci, ()))
+    first_user = users[0] if users else 0
+    img0 = (
+        snap_range(snaps[first_user][0], start, size) if first_user in snaps else None
+    )
+    if img0 is not None:
+        b.pop("data", None)
+        if any(img0):
+            b["data"] = img0
+        b["init_from"] = f"snapshot before kept launch {first_user}"
+    else:
+        w = writers_before(first_user, start, size, folded)
+        if w:
+            refuse.append(
+                f"{name}: {w[0]} writes it before kept launch {first_user}, and no snapshot of "
+                "that launch covers it: its bytes there are unknown"
+            )
+        elif any(m[2] == "during" for m in members) and not any(
+            m[2] == "pre" or (m[2] == "named" and m[3] in pre_named) for m in members
+        ):
+            # Allocated during the call (an output included), in no block or input live
+            # before it: its bytes are unknown.
+            b.pop("data", None)
+            b["undef"] = True
+            warnings.append(
+                f"{name}: allocated during the call and no snapshot covers it: undefined until "
+                "written (a read of it is reported)"
+            )
+            b["init_from"] = "undefined"
+        else:
+            b["init_from"] = "before the call"
+    # A change between two kept launches that reference the buffer, by a copy, fill or launch
+    # outside the case, cannot be expressed in a case.
+    for la, lb in zip(users, users[1:]):
+        if la in snaps and lb in snaps:
+            pa = snap_range(snaps[la][1], start, size)
+            pb = snap_range(snaps[lb][0], start, size)
+            if pa is not None and pb is not None and pa != pb:
+                refuse.append(
+                    f"{name}: changed between kept launches {la} and {lb} by a copy, fill or "
+                    "launch that is not in the case"
+                )
+                break
+    if from_snaps and users and users[-1] in snaps:
+        # An output: what the kept launches changed, and the op's own result when a kept launch
+        # references it (its bytes may equal those before: the warm-up left the same result).
+        post = snap_range(snaps[users[-1]][1], start, size)
+        if post is not None and (
+            post != (img0 if img0 is not None else bytes(size))
+            or any(start <= storage_range(t)[0] < start + size for _n, t in op_outs)
+        ):
+            b["expect"], b["expect_offset"], b["is_out"] = post, 0, True
     # Outputs: the GPU's bytes after the call.
     for n, t in outs:
         p, z = storage_range(t)
@@ -870,6 +970,15 @@ for ci in sorted(needed):  # noqa: C901 (script body: one linear pass over share
             b["expect"] = dev_read(p, z)
             b["expect_offset"] = p - start
             b["is_out"] = True
+            # Written after the last kept launch that references it (a copy or fill): the
+            # simulator cannot produce those bytes.
+            last = users[-1] if users else None
+            post = snap_range(snaps[last][1], p, z) if last in snaps else None
+            if post is not None and post != b["expect"]:
+                refuse.append(
+                    f"{name}: output {n} changed after kept launch {last}, the last that "
+                    "references it, by a copy, fill or launch that is not in the case"
+                )
     comp_buf[ci] = (len(buffers), start - s)
     buffers.append(b)
 for n, t in outs:
@@ -877,6 +986,14 @@ for n, t in outs:
     loc = comp_of(p)
     if not loc or loc[0] not in refs:
         warnings.append(f"output {n} is not referenced by any parameter")
+
+if refuse:
+    for why in refuse:
+        print("capture: cannot write the case:", why, file=sys.stderr)
+    sys.exit(
+        "capture: refused (MISS 173): the case would start these buffers with bytes the "
+        "kernels did not see; capture the writer as a kept launch, or start the capture after it"
+    )
 
 # Unique names.
 taken = set()
@@ -1203,6 +1320,8 @@ for b in buffers:
     if "data" in b:
         open(f"{out}/data/{b['name']}.bin", "wb").write(b["data"])
         s += f'init = "file"\nfile = "data/{b["name"]}.bin"\n'
+    elif b.get("undef"):
+        s += 'init = "undef"\n'
     else:
         s += 'init = "zeros"\n'
     if "expect" in b:
@@ -1259,6 +1378,12 @@ meta = {
     ],
     "unresolved": unresolved,
     "warnings": warnings,
+    # Where each buffer's initial bytes come from (MISS 173), and the copies and fills made
+    # between kernels (their bytes reach the case only through the snapshots).
+    "initial_bytes": {b["name"]: b.get("init_from", "before the call") for b in buffers},
+    "memops_between_kernels": [
+        {k: mo.get(k) for k in ("op", "kind", "bytes", "dst")} for mo in late_memops
+    ],
 }
 if multi:
     meta["launch_order"] = _order.summary(lorder)

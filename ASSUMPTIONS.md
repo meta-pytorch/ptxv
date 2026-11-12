@@ -1160,8 +1160,11 @@ independent threads.
     synchronization off that order. A lane does not synchronize with the release of what a
     lane of its warp wrote at the same instruction without its knowledge, nor with patterns
     that write continued from other lanes of the warp (`exec.rs` `sync_observe_cell`;
-    `SyncCell::own`); patterns continued from writers outside the warp stay, since the read
-    synchronizes with them in either order (fixtures/e_atom_lane_cont). S-FENCE-SC takes no
+    `SyncCell::own`; fixtures/e_atom_lane_order THREE); patterns continued from writers outside
+    the warp stay, since the read synchronizes with them in either lane order of the step
+    (fixtures/e_atom_lane_cont). This does not hold across the warp's step order: a plain store
+    by a third lane at the next instruction ends the release sequence in an execution where it
+    comes before both lanes' writes in coherence order (MISS 187, below). S-FENCE-SC takes no
     coherence pair from a lane of B's warp that B does not know of. In the execution with the
     other order the reverse edge exists instead, so neither is forced
     (fixtures/e_atom_lane_order good: lane 1 reads lane 0's store after both claim with
@@ -1182,11 +1185,19 @@ independent threads.
       that lane's release sequence; in the model it reads the final cell, which continues
       every lane's release, and is clean where PTX races. Lane orders of one step do not close
       this; the step has to be split so that other threads run between its lanes.
-    - Lanes at different instructions of a converged warp run in step order only
-      (E-WARP-ORDER): a synchronization read off that order (a fence-release / fence-acquire
-      pattern across two consecutive instructions of one warp) is not covered by the
-      same-instruction rule, and the warp-order report is suppressed once the warp has
-      diverged (`wdiv`).
+    - MISS 187: lanes of a converged warp at different instructions run in step order only
+      (E-WARP-ORDER), and the warp-order report is suppressed once the warp has diverged
+      (`wdiv`). Outcomes and synchronization read off that order are seen in step order only,
+      and the same-instruction rule does not cover them: a claim after a diverged branch
+      rejoins at `vote.sync` (no memory ordering), whose returned value decides whether the
+      lane reads another lane's store; a release sequence that another lane's plain store at
+      the next instruction ends after the warp diverged; a fence-release / fence-acquire,
+      `red` / relaxed-load or `st.release` / `ld.acquire` pattern across two consecutive
+      instructions of one warp. Both explorers miss the race in each; the certificate refuses
+      each (C-TICKET refuses claims by lanes of one warp that happen-before does not order, at
+      any instruction; C-ORDER), and certified two of them before that check
+      (fixtures/e_fence_sc_lanes PCS_READER0, not certified, pins the check across
+      instructions).
 - Memory instructions joined: `LD*` / `ST*` / atomics / `LDTM` and (2026-11-05) `STTM`: FA4's
   softmax warps store P with `STTM`, wait (`FENCE.VIEW.ASYNC.T`) and one elected lane per warp
   arrives on the MMA warp's mbarrier; without the join every other lane's `STTM` raced with
@@ -1817,6 +1828,10 @@ N CTAs resident on GPU g, all blocked" (finding `deadlock`, signature `deadlock:
   order. A kernel that is only safe under in-order dispatch (CTA i waits for CTA i-1 by
   `ctaid`) is reported; CUB's single-pass scan takes dynamic tile ids for this reason
   (fixture e_resid `chain` vs `ticket`).
+- The verdict cache: a check at `--residency N` is not stored in the certificate check's
+  verdict cache (vcache.rs `as_on_disk`), whose key covers the case files; equiv and errdist,
+  which check the case with its own residency, would otherwise be served it (a residency-1
+  deadlock served as the clean of a `--residency 4` check; crates/cli/tests/vcache_key.rs).
 - **The minimum residency** (`ptxv check --residency auto`, `residency::analyze`): the
   residency bounds R (CTAs per GPU, from one launch unit up to every CTA) that deadlock, and
   the smallest R from which every bound is deadlock-free. Printed as "deadlock-free iff >= N
@@ -2345,7 +2360,9 @@ before them. Whether the list is the order the GPU enforced is E-LAUNCH-ORDER.
 ### E-LAUNCH-ORDER · code
 **A case's launch list is the order the GPU enforced only when its `launch_order` says so:
 "recorded" (written by a capture that records streams, events and graph edges) or "declared"
-(a hand-written case). Launch-order exclusions rely on the list only then.** The list is one
+(a hand-written case, or a capture whose order other evidence establishes). Launch-order
+exclusions rely on the list only then, and an unknown order orders no grid after another
+(the strict reading, the default since 2026-11-12).** The list is one
 ordered list per GPU: each grid's predecessor is the previous launch on its GPU, or `after`
 (-1: none), with `pdl` for a programmatic edge, plus `waits` (further grids it starts after
 they completed). Before 2026-11-11 every list counted as enforced, but the capture tools did
@@ -2416,26 +2433,42 @@ UNKNOWN).
   crates/sim/tests/fixtures.rs `e_launch_order_stream_switch_needs_after`). The check reads
   only the case text: it cannot see an edge the capture wrongly derived (an event wait matched
   to the wrong record, launches of two GPUs listed on one).
-- Not gated: E-PDL itself. An unknown-order list still orders its grids (launch gate and the
-  done-clock join at launch), so a plain race between two grids that an older capture
-  serialized is not reported (fixtures/e_launch_order PLAIN_UNKNOWN: clean; GB300 overlapped
-  such a writer and reader on two streams without an event, the reader reading the bytes
-  before the write in 199 of 200 runs). That residue is MISS 127 (open): `PTXV_UNRECORDED_ORDER=
-  concurrent` drops every predecessor of an unknown-order case (each grid as `after = -1`),
-  the strict reading, for measurement (crates/cli/tests/launch_order.rs: PLAIN_UNKNOWN is then
-  a race).
+- Unknown order, the strict reading (`Launch::order_recorded` false; crates/sim `launch_order`):
+  every grid of the case loses its predecessors (each grid as `after = -1`, no `waits`), so any
+  two of its grids may run at the same time, and a plain race between two grids that an older
+  capture serialized is reported (fixtures/e_launch_order PLAIN_UNKNOWN: race; GB300 overlapped
+  such a writer and reader on two streams without an event, the reader reading the bytes before
+  the write in 199 of 200 runs). `PTXV_UNRECORDED_ORDER=ordered` keeps E-PDL's order for an
+  unknown-order list instead (only the launch-order exclusions are gated), which misses that
+  race. Until 2026-11-12 that was the default and the strict reading an opt-in
+  (`PTXV_UNRECORDED_ORDER=concurrent`, MISS 127).
 - `waits` (E-PDL): a grid's CTAs launch once its predecessor allows it and every grid in
   `waits` completed, and join each one's done clocks; launch groups, slices and DPOR's
   footprints count them like a predecessor.
 - `mem_sync_domain` (cudaLaunchAttributeMemSyncDomain and its map): S-SCOPE.
+- Variants: a variant's launch-order edits (`after`, `waits`, `launch_order`;
+  `Case::for_variant`) apply in `ptxv check` and `ptxv hw`, and since 2026-11-12 in the
+  precondition and simulator runs of equiv and errdist, in `ptxv compare`'s check, in
+  `ptxv num`, in the simulator runs that give `ptxv hw` its expected bytes and in
+  `ptxv first-access` (the capture side's scratch suggestions). Before, those checked the case
+  as loaded: a wrong clean for a variant whose edits break the order
+  (fixtures/e_equiv_order UNK and UNORD gave clean preconditions;
+  crates/cli/tests/launch_order.rs). The GB300 replays of equiv and errdist (hw-worker,
+  errdist-gpu-worker) run it too since they get `--variant` (main.rs `worker_case`); before,
+  they ran the case's own order. errdist's compiled models are of version 12 (MODEL_VERSION):
+  an earlier one may hold a run of the case's own order, or of E-PDL's order of an unknown
+  one, and is refused; the model key covers the reading of an unknown order. The certificate
+  check's verdict cache (vcache.rs) keeps to the variants without such edits.
 - Evidence: doc (the cuda.h text above; graph edge ports `CU_GRAPH_KERNEL_NODE_PORT_*`);
-  model: fixtures/e_launch_order (good clean; UNKNOWN violation, clean before the gate;
-  UNORD race + violation; PLAIN, PLAIN_UNKNOWN clean), e_launch_waits (good clean, NOWAIT
-  race + violation, UNKNOWN violation, UNORD race), e_ld_nc_pdl UNKNOWN / UNKNOWN_DONE
-  (violation; clean before), e_launch_order_l1 (UNKNOWN stale; clean before),
-  e_ld_nc_xgpu_unord (good, the order unknown: violation; REC, recorded: clean on the PTX front
-  through S-NC's launch-clock exemption, a violation at the SASS front's strict level; UNORD
-  race + violation); source mutants lo-* (tools/mutate/srcmut.py). The capture side (docs/capture.md "Launch
+  model: fixtures/e_launch_order (good clean; UNKNOWN race + violation, violation with
+  `PTXV_UNRECORDED_ORDER=ordered`, clean before the gate; UNORD race + violation; PLAIN clean;
+  PLAIN_UNKNOWN race, clean with `ordered`), e_launch_waits (good clean, NOWAIT race +
+  violation, UNKNOWN race + violation, UNORD race), e_ld_nc_pdl UNKNOWN / UNKNOWN_DONE (race +
+  violation; violation with `ordered`; clean before the gate), e_launch_order_l1 (UNKNOWN race +
+  stale; stale with `ordered`; clean before), e_ld_nc_xgpu_unord (good, the order unknown:
+  race + violation, violation with `ordered`; REC, recorded: clean on the PTX front through
+  S-NC's launch-clock exemption, a violation at the SASS front's strict level; UNORD race +
+  violation); source mutants lo-* (tools/mutate/srcmut.py). The capture side (docs/capture.md "Launch
   order"; argued from the CUDA semantics above, run on GB300): two streams with an event, the
   same without it (the race is reported; captured with the previous tools, it lists the
   launches in API order and is clean), a graph with a fork and a join, and two ranks through
@@ -2443,10 +2476,15 @@ UNKNOWN).
   got a destroyed event's handle (no edge: the race is reported), one process with a kernel on
   each of two GPUs (unknown), and two threads launching through cudaLaunchKernelEx at once
   (every launch keeps its own PDL attribute and stream; unknown) or one after the other
-  (recorded); python/tests/test_order.py. GB300 differential (`ptxv hw`, which runs each launch
-  on its case stream with event edges since 2026-11-11): with a 2 ms delay before the writer's
-  store, e_launch_order UNORD and e_launch_waits NOWAIT differ from the ordered output in 200 of
-  200 runs, their event-ordered good variants in 0 of 200.
+  (recorded); python/tests/test_order.py. GB300 differential (`ptxv hw`, which since 2026-11-11
+  runs each launch on a stream of its GPU with event edges across streams, and since 2026-11-12
+  adds no stream order the case does not have and waits through an event for every predecessor
+  but its stream's latest launch: docs/capture.md "Launch order"): with a 2 ms delay before the
+  writer's store, e_launch_order UNORD, e_launch_waits NOWAIT and e_runner_after good differ from
+  the ordered output in 200 of 200 runs, their ordered variants in 0 of 200 (e_runner_after good
+  in 0 of 200 with the previous runner, which issued its reader behind the writer); without a
+  delay, r4c_chunk2, r4c_dwrap and r4c_nowrap B37 differ from the capture in 199, 200 and 200 of
+  200 runs (0 of 200 before), r4b_moe B37 in 0 of 200.
 - kernel_db A/B (2026-11-11, model; builds before and after the gate): 119 records with two or
   more grids on one GPU and 10 one-grid-per-GPU controls, SASS and 4 PTX checks, 3000 states /
   300 s each. Of the 133 checks, 4 are complete in both builds, 69 stop at the budget with
@@ -2459,8 +2497,30 @@ UNKNOWN).
   combine-reduce) gain gated S-NC findings. The gate only removes exclusions, so a record
   without `.nc` loads keeps its strict-level classes at any budget [argued]; the 20 `.nc` checks
   still without a class at 20000 states are the precision cost not measured. The strict reading
-  (`PTXV_UNRECORDED_ORDER=concurrent`) on the 90 checks with a class in both builds: 38 lose it
-  at the same budget and 19 of the other 52 change class (new races, 2 deadlocks).
+  (`PTXV_UNRECORDED_ORDER=concurrent`) on the 90 decided checks (a verdict in both builds, 17 of
+  them inconclusive): 38 time out at the same budget, and 19 of the other 52 change class. Of
+  the 14 inconclusive ones that finish, 11 get races; of the 38 with a class that finish, 8
+  change it (5 gain a race, 2 clean ones deadlock, 1 loses `divergent`).
+- The 2 clean -> deadlock changes there (cute._rdma_barrier.i64.1 and cute._rdma_recv.i64.1,
+  one case of two one-thread grids: _rdma_barrier polls a phase flag for RAIL_READY, which
+  _rdma_recv resets) are the hang the strict reading admits, not a modeling artifact: on GB300
+  (`ptxv hw --no-num`, the flag as output), with _rdma_recv submitted first and _rdma_barrier
+  unordered on another stream, 5 of 5 runs hung (each killed after 20 s); in the order the
+  capture declares (the barrier, then recv on one stream) 200 of 200 completed, and with recv
+  unordered but submitted after the barrier 600 of 600 [GB300 measured]. The case meets the
+  declaration evidence, and its declared copy is clean.
+- kernel_db A/B of the strict default (2026-11-12, model; builds without and with it, 3000
+  states / 300 s, no certificate): the 133 checks of the 2026-11-11 A/B, each on the declared
+  copy of its case where the declaration evidence clears it (81 checks of 53 cases; the case
+  store is unchanged) and on the stored case otherwise (52), plus the 42 re-captured records on
+  their re-captures (recorded order). Declared copies and re-captures: no verdict changes (47
+  and 27 checks decided in both builds, the others time out or stay inconclusive in both); the
+  two rdma records are clean in both. Stored cases, whose order stays unknown: of the 29 checks
+  decided before, 10 stay decided (2 gain a race: fla_cp's batched_merge and the bf16i4
+  split-K GEMM; 2 drop a gb300 stale read) and 19 time out at the same budget (the strict
+  reading's states cost more: every grid is enabled at once); 5 of the 23 undecided checks get
+  races (both FA4 decode records, the split-K FMHA's PTX front, both ctranx_nvl records).
+  These records have re-captures with the order recorded.
 - Declaring an older capture's order (data, not applied): a stream handle value alone never
   suffices (a destroyed stream's handle is reused; 0x0 is a different stream per thread and
   entry point). A tools/capture_dist.py capture can be declared when, in its captured window
@@ -2470,7 +2530,16 @@ UNKNOWN).
   that thread's own, which CUDA orders in issue order). 85 of the 119 records meet it; 3 more
   (launches from two threads through autograd's backward) and the 31 ptxv.capture records with
   their 4 PTX-front captures (capture.json keeps no handle values or raw records) need a
-  re-capture.
+  re-capture. A re-capture with the order recorded is the other evidence: the same launches
+  per GPU and kernel code (fb/kernel_db/recapture_compare.py), every launch on one stream per
+  GPU in list order. The 42 records re-captured that way (2026-11-12) all give it; 39 are the
+  same program, and 3 differ in buffers only (an allocator block's extent; the 2 ctranx_nvl
+  mailboxes, whose peer pointers the current tools/capture_dist.py does not relocate in a
+  symmetric allocation). The captured fixtures whose order was unknown are declared
+  on such a re-capture: c_softcap, c_triton_rowsum_splitk, c_mm2_fused, c_mm2_sum, the four
+  c_cve_*_eager, r3b_trtllm_moe, r4a_oneshot, r4a_twoshot, r4c_chunk2, r4c_dwrap, r4c_nowrap
+  (each case.toml names what differs: r4c's first launch lost its cluster shape in the older
+  capture_dist).
 - Placement: strict and gb300 alike. Which launches CUDA orders is the programming model's
   contract, not a property of GB300.
 - Status: **argued**.
@@ -2479,12 +2548,14 @@ UNKNOWN).
   two GPUs listed on one: the `stream` check does not see these), or if an older capture is
   marked declared without the evidence above or evidence that every stream switch is ordered by
   an event (fixtures/r4b_moe is declared on the latter: its capture.json notes each switch, no
-  kernel filter). *False alarm* where an enforced order is not recorded (the list above), or for older
-  captures whose order was in fact enforced.
+  kernel filter), or without a re-capture that records the order. *False alarm* where an
+  enforced order is not recorded (the list above), or for older captures whose order was in
+  fact enforced (the strict reading lets their grids overlap).
 - Where: `crates/case` (`launch_order`, `stream`, `waits`, `mem_sync_domain`), `lib.rs`
   (`launch_order`), `machine.rs` (`Launch::order_completes_before`, `completes_before`,
   `hb_before`, `full_preds`), `exec.rs` (`access_x`, `launch_cta`, `grid_gate_open`),
-  `l1_cores.rs`, `dpor.rs`, `groups.rs`, `slices.rs`.
+  `l1_cores.rs`, `dpor.rs`, `groups.rs`, `slices.rs`; `crates/cli/src/equiv.rs`
+  (`prepare_with`), `compare.rs` (`side`).
 - Retire: never (an input assumption).
 
 ### E-POLL-ACQ · code
@@ -5056,7 +5127,12 @@ stays clean, "relies on E-CPASYNC-PROXY"), not a race.
   launch, as zeros;
 - a poll that reads never-written shared memory is a read of garbage, not a failed poll
   (MISS 40, E-SPIN: before 2026-11-10 such a spin blocked as if the value were 0);
-- global buffers are initialized by the host.
+- global buffers are initialized by the host. A captured case's buffer holds the bytes the
+  first kept launch that references it saw (its pre-launch snapshot: tools/capture.py,
+  `ptxv.capture`; 2026-11-12, MISS 173: before, a buffer allocated in the captured region and
+  written by a copy, a host upload or a filtered-out kernel started as zeros). Where no snapshot
+  covers a buffer allocated in the region, it is `init = "undef"` (a read of it is reported);
+  a change between two kept launches that the case cannot express refuses the case.
 - Where: `machine.rs` `Machine::new`; `exec.rs` `exec_thread` (registers) and `access_x`
   (smem).
 - Status: **enforced** (2026-10-30), with these limits:
@@ -6572,8 +6648,9 @@ across all of them (GB300 measured below).
   declared; a peer GPU's writes before the reader starts; a plain-store signal: a race and a
   violation; a signal or an acquire whose scope leaves out the other GPU, a relaxed signal,
   fence patterns, a reader ordered after nothing; WAITS: the reader joins the waiter through
-  `waits`), e_ld_nc_xgpu_unord (the launch order unknown: violation; recorded: clean, a
-  violation at the SASS front's strict level; a reader ordered after nothing),
+  `waits`), e_ld_nc_xgpu_unord (the launch order unknown: race + violation, a violation with
+  `PTXV_UNRECORDED_ORDER=ordered`; recorded: clean, a violation at the SASS front's strict
+  level; a reader ordered after nothing),
   e_ld_nc_xgpu_frel (the hand-off through a release sequence whose first operation is a .gpu
   fence, MISS 112), e_ld_nc_xgpu_bulk (a bulk store's writes in flight after
   wait_group.read; MISS 32, MISS 102), probes/nc_hoist, probes/nc_pdl (all both front-ends).

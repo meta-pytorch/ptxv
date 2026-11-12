@@ -8,10 +8,10 @@ cumsum, cat, a Triton cat, and a CuTeDSL add. The CuTeDSL add lifts on both fron
 those 4, `check` is clean and the simulator's output equals the GPU's bit for bit. The
 others are blocked on missing SASS instructions, listed below.
 
-One kernel out of a sequence (rung 3b): with `--kernels`, the launch recorder snapshots the
-kept launches' memory. A kept kernel then starts from exactly what earlier, filtered-out kernels
-wrote, and its outputs are what it changed (see "Snapshots" below; fixtures/r3b_trtllm_bmm is
-gemm1 out of flashinfer's 5-launch MoE).
+One kernel out of a sequence (rung 3b): with `--kernels`, a kept kernel starts from exactly
+what earlier, filtered-out kernels wrote, and its outputs are what it changed (see "Snapshots"
+below; fixtures/r3b_trtllm_bmm is gemm1 out of flashinfer's 5-launch MoE). The launch recorder
+snapshots the memory of every kept launch, with or without `--kernels` (2026-11-12, MISS 173).
 
 Multi-GPU (rung 4a): `tools/capture_dist.py` records a `torchrun --nproc-per-node N` run and
 merges every rank into one multi-GPU case; see [rung4.md](rung4.md).
@@ -102,12 +102,26 @@ How it works. This generalizes `fixtures/r3_grouped_mm/capture.py` and
     at an offset (and `expect_offset`).
   - A buffer that a tensor map reads takes the map's element type, because the simulator
     takes the element size from the buffer.
-- **Initial contents.**
-  - Allocations made during the call start as zeros, which a correct kernel does not read.
-  - Device-to-device `cudaMemcpy` / `cudaMemset` before the first kernel are folded into the
-    initial contents. That covers an op's `clone()` or zero fill: `x.index_add(...)` copies
-    `x` into the output before its kernel. Such operations *between* kernels cannot be
-    expressed in a case and are warned about (the sort op has one).
+- **Initial contents (2026-11-12, MISS 173).**
+  - A buffer starts with the bytes the first kept launch that references it saw: that
+    launch's pre-snapshot ("Snapshots" below). Whatever wrote them inside the call is
+    covered: a filtered-out launch, a `cudaMemcpy` (an op's `clone()`), a `cudaMemset`, an
+    input uploaded from the host.
+  - A buffer that a copy, a fill or a filtered-out launch changes between two kept launches
+    that reference it refuses the case (`capture: refused (MISS 173)`), as does an output
+    changed after the last kept launch that references it: a case cannot express either.
+  - Without a covering snapshot (an allocation over 256 MiB, a launch into a capturing
+    stream), device-to-device copies and fills before the first kept launch are folded into
+    the initial contents, as before. A buffer that something else writes before its first kept
+    reader then refuses the case, and an allocation made during the call is undefined until
+    written (`init = "undef"`; a read of it is reported).
+  - Before 2026-11-12, only `--kernels` captures had snapshots, and runtime `<<<>>>` launches
+    (PyTorch's own kernels) never did. Allocations made during the call started as zeros;
+    copies and fills between kernels were dropped with a warning, host uploads between kernels
+    without one: a kernel reading an input built inside the call read zeros.
+  - `capture.json` `initial_bytes` names each buffer's source ("snapshot before kept launch
+    N", "before the call", "undefined"); `memops_between_kernels` lists the copies and fills
+    between kept launches.
 - **Cubins.**
   - Each kernel's cubin is the smallest captured ELF image defining it. CUPTI's images are
     preferred, because they are exact. The size launchcap's dump computed for an ELF ignored
@@ -139,13 +153,16 @@ How it works. This generalizes `fixtures/r3_grouped_mm/capture.py` and
     matching launch it synchronizes, then writes every device allocation that an 8-byte
     parameter word points into (`cuMemGetAddressRange`; tensor-map addresses included), once
     before the kernel and once after. The record carries `"snap": N`.
-  - Only launches recorded before they are issued are covered: driver launches and
-    `_cudaLaunchKernelEx`. Runtime `<<<>>>` launches are recorded after the fact and get no
-    snapshot.
-  - `capture.py` passes `--kernels` as the regex. Buffers start from the first kept launch's
-    pre-snapshot.
+  - Only launches recorded before they are issued are covered: driver launches,
+    `_cudaLaunchKernelEx` and, with `LAUNCHCAP_SNAP` set, runtime `<<<>>>` launches and
+    `cudaLaunchKernelExC` (2026-11-12: their function is looked up before the launch; before,
+    they were recorded after it and had no snapshot).
+  - `capture.py` passes `--kernels` as the regex, or `.` (every launch) without it. Each
+    buffer starts from the pre-snapshot of the first kept launch that references it.
   - The op's own outputs are replaced: every buffer whose bytes the kept launches changed is an
-    output, with the last kept launch's post-snapshot as `expect`.
+    output, with the post-snapshot of the last kept launch that references it as `expect`, and
+    so is the op's own result where a kept launch references it, even unchanged (2026-11-12:
+    the warm-up can leave the same bytes there, and the capture had no output).
   - Allocations outside the caching allocator that a kept launch points into become buffers
     too (from the snapshot).
   - Kept launches that are not contiguous are warned about.
@@ -439,7 +456,12 @@ what that needs and write only the order CUDA enforces (`python/ptxv/_order.py`)
   device), or when calls of several host threads overlap in time: a record whose `t0` is not
   after the `t1` of every earlier record of another thread (the driver may have taken the two
   calls in the other order). Threads that take turns (a backward thread launching while the
-  calling thread waits) keep a recorded order.
+  calling thread waits) keep a recorded order. ptxv checks such a case under the strict
+  reading: no grid is ordered after another, so any two may run at the same time
+  (ASSUMPTIONS.md E-LAUNCH-ORDER; `PTXV_UNRECORDED_ORDER=ordered` keeps the list's order and
+  only drops the launch-order exclusions). An older capture whose order other evidence
+  establishes, such as a re-capture with the order recorded, can carry
+  `launch_order = "declared"` instead, with the evidence in a comment.
 - Not recorded, so no edge: host synchronization, the legacy default stream's implicit
   synchronization with blocking streams, stream memory operations (cuStreamWaitValue,
   memcpy), host functions, events recorded before the window, cooperative launches in
@@ -453,15 +475,37 @@ what that needs and write only the order CUDA enforces (`python/ptxv/_order.py`)
   with a memset between; 100 of 100 overlapped without the wait), so there the programmatic
   edge is weaker than the hardware.
 
-The hardware runner (`ptxv hw`, crates/hw) runs each launch on its case stream (a non-blocking
-stream per GPU and `stream`), with `after` and `waits` across streams through events, a
-programmatic edge on the same stream as programmatic stream serialization (across streams as a
-full edge), and `mem_sync_domain` through the launch's domain map; `ptxv hw` applies the
-variant's launch-order edits. Before 2026-11-11 it ran every kernel in list order on the NULL
-stream, so no GPU run could show an overlap the case allows. GB300, a 2 ms delay before the
-writer's store: e_launch_order UNORD (the reader after nothing) differs from the ordered output
-in 200 of 200 runs, good (an event edge) in 0 of 200; e_launch_waits NOWAIT 200 of 200, good
-0 of 200; the previous runner 0 of 200 for all four.
+The hardware runner (`ptxv hw`, crates/hw `stream_plan`) runs each launch on a non-blocking
+stream of its GPU, a programmatic edge to the previous launch on the launch's stream as
+programmatic stream serialization (otherwise as a full edge), and `mem_sync_domain` through the
+launch's domain map; `ptxv hw` applies the variant's launch-order edits. A launch takes its case
+stream's stream only where the stream order that adds is in the case: the stream's latest
+launch is its predecessor, or completes before it starts through other edges. Otherwise, as
+with `after = -1`, it gets a stream of its own. Every predecessor other than the stream's latest
+launch is waited for through an event, an earlier launch of the same stream too, so a GPU run
+does not rely on the stream order being transitive through programmatic launches (GB300's is:
+a plain launch behind a programmatic one started before that one's primary ended in 0 of 100
+runs, although the programmatic launch started early in 99 of 100; CUDA does not state it). A
+GPU run then has every order of the case, and more only through programmatic edges run as full
+ones, through an event's coverage, and through that transitivity. An event covers all the work
+its stream was given before it, so a launch that waits for it also waits for an earlier launch of
+that stream which the case does not complete before it: with L0, L1 programmatic after L0 on
+stream 0, and L2 on stream 1 after L1, the GPU starts L2 after L0 completed and the case does not
+(plain CUDA event semantics; captures write such a primary into `waits`, so this arises in
+hand-written lists). Until 2026-11-12, a runner limit of recorded orders, a launch whose
+`after` names an earlier launch of its stream, or a launch on another stream, also waited for
+its stream's latest launch (captures write that shape too: python/ptxv/_order.py takes the
+latest full predecessor as `after` when the stream's previous kept launch is not a
+predecessor), and an earlier predecessor on its stream was left to the stream order. Before
+2026-11-11 the runner ran every kernel in list order on the NULL stream, so no GPU run could
+show an overlap the case allows. GB300, a 2 ms delay before the writer's store: e_launch_order
+UNORD (the reader after nothing) differs from the ordered output in 200 of 200 runs, good (an
+event edge) in 0 of 200; e_launch_waits NOWAIT 200 of 200, good 0 of 200; e_runner_after good
+(the reader after the first writer only) 200 of 200, CHAIN (after the second) 0 of 200. The
+runner before 2026-11-11 gave 0 of 200 for the first four; the one before 2026-11-12 gave 0 of
+200 for e_runner_after good. Without a delay, the B37 variants of r4c_chunk2, r4c_dwrap and
+r4c_nowrap differ from the capture in 199, 200 and 200 of 200 runs (0 of 200 before
+2026-11-12); r4b_moe B37 in 0 of 200 (the race does not show at this timing).
 
 Older captures (before 2026-11-11) carry no `launch_order`, so the exclusions do not apply to
 their multi-launch cases, and E-PDL still orders their grids as listed: a plain race between
@@ -501,7 +545,9 @@ one without) at once: every launch keeps its own PDL attribute and stream, and t
 
 - Launch order: see "Launch order"; a graph's kernels are unordered with the kernels outside
   their capture.
-- Memory operations between kernels are not modeled (warned).
+- Memory operations between kernels are not modeled. Their bytes reach a case through the
+  snapshot of the next kept launch; one that changes a buffer between two kept launches that
+  reference it refuses the case (MISS 173).
 - Memory outside the caching allocator is not known. That includes `cudaMalloc` by a library
   itself, module globals, and host-pinned memory. Pointers to it stay raw bytes, listed as
   `unresolved` when they look like device addresses.

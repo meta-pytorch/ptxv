@@ -90,8 +90,11 @@ static const char *rank_path(const char *env, const char *dflt, char *buf, size_
 // is written before and after the kernel (the device is synchronized around it) to
 // dir/s<N>_{pre,post}_<base hex>.bin, and the launch's record carries "snap": N. A capture of
 // one kernel out of a sequence then has its exact inputs and outputs, whatever earlier kernels
-// wrote. Only for launches recorded before they are issued (driver launches,
-// _cudaLaunchKernelEx). Per thread, but for the snapshot numbers.
+// wrote. Only for launches recorded before they are issued: driver launches,
+// _cudaLaunchKernelEx, and, with LAUNCHCAP_SNAP set, the runtime's (`<<<>>>`,
+// cudaLaunchKernelExC: PyTorch's own kernels), whose function is then looked up before the
+// launch (MISS 173: recorded after it, they never had a snapshot). Per thread, but for the
+// snapshot numbers.
 #define SNAP_MAX (1 << 16)
 static __thread int snap_on;
 static __thread int snap_allowed;  // set by the hooks that record before launching
@@ -109,6 +112,11 @@ static void snap_init(void) {
 static int snap_match(const char *nm) {
     pthread_once(&snap_once, snap_init);
     return snap_re_ok && !regexec(&snap_re, nm, 0, 0, 0);
+}
+// Whether snapshots were asked for at all (LAUNCHCAP_SNAP).
+static int snap_wanted(void) {
+    pthread_once(&snap_once, snap_init);
+    return snap_re_ok;
 }
 static void snap_dump(const char *tag) {
     typedef CUresult (*sync_t)(void);
@@ -1311,9 +1319,10 @@ static void *cudart(const char *sym) {
     return h ? real_dlsym(h, sym) : 0;
 }
 
-// Called after the launch (the kernel is loaded by then): the driver function, or else the
-// library-managed kernel (`*kern`). A failed query would leave its error as the runtime's
-// last error, which PyTorch checks after every launch: clear it.
+// Called after the launch (the kernel is loaded by then), or before it when snapshots are asked
+// for: the driver function, or else the library-managed kernel (`*kern`). A failed query would
+// leave its error as the runtime's last error, which PyTorch checks after every launch: clear
+// it.
 static CUfunction stub_func(const void *k, CUkernel *kern) {
     typedef int (*gfbs_t)(void **, const void *);
     typedef int (*gle_t)(void);
@@ -1348,6 +1357,28 @@ cudaError_t __cudaLaunchKernel(const void *k, dim3 g, dim3 b, void **args, size_
     typedef cudaError_t (*real_t)(const void *, dim3, dim3, void **, size_t, cudaStream_t);
     static real_t real;
     if (!real) real = (real_t)cudart("__cudaLaunchKernel");
+    if (snap_wanted()) {
+        // Snapshots asked for: the function is looked up first (the kernel's module is loaded
+        // once the program ran it, or with CUDA_MODULE_LOADING=EAGER), so that the launch is
+        // recorded, and its allocations copied, before it runs.
+        CUkernel kk;
+        CUfunction f = stub_func(k, &kk);
+        if (f || kk) {
+            cur_stream = (unsigned long long)s;
+            snap_allowed = 1;
+            dump_k(kk, f, g.x, g.y, g.z, b.x, b.y, b.z, (unsigned)smem, 1, 1, 1, args);
+            snap_allowed = 0;
+            snap_pre();
+            unsigned long long t0 = now_ns();
+            in_rt++;
+            cudaError_t r = real(k, g, b, args, smem, s);
+            in_rt--;
+            unsigned long long t1 = now_ns();
+            snap_post();
+            launch_done(r == cudaSuccess, t0, t1);
+            return r;
+        }
+    }
     unsigned long long t0 = now_ns();
     in_rt++;
     cudaError_t r = real(k, g, b, args, smem, s);
@@ -1384,6 +1415,30 @@ cudaError_t cudaLaunchKernelExC(const cudaLaunchConfig_t *c, const void *k, void
         } else {
             order_attr_rt(&c->attrs[i]);
         }
+    if (snap_wanted()) {
+        // As __cudaLaunchKernel: recorded and snapshotted before the launch.
+        CUkernel kk;
+        CUfunction f = stub_func(k, &kk);
+        if (f || kk) {
+            cur_stream = (unsigned long long)c->stream;
+            snap_allowed = 1;
+            dump_k(kk, f, c->gridDim.x, c->gridDim.y, c->gridDim.z, c->blockDim.x, c->blockDim.y,
+                   c->blockDim.z, (unsigned)c->dynamicSmemBytes, cx, cy, cz, args);
+            snap_allowed = 0;
+            cur_pdl = 0;
+            memset(cur_pref, 0, sizeof cur_pref);
+            reset_order_attrs();
+            snap_pre();
+            unsigned long long t0 = now_ns();
+            in_rt++;
+            cudaError_t r = real(c, k, args);
+            in_rt--;
+            unsigned long long t1 = now_ns();
+            snap_post();
+            launch_done(r == cudaSuccess, t0, t1);
+            return r;
+        }
+    }
     unsigned long long t0 = now_ns();
     in_rt++;
     cudaError_t r = real(c, k, args);

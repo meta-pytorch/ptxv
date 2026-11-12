@@ -1011,8 +1011,8 @@ impl Variant {
     }
 
     /// Whether the variant edits the launch order (`after`, `waits`, `launch_order`), which
-    /// `Case::for_variant` applies: a check of the case as loaded is then not this variant's
-    /// (the verdict cache of the certificate check, vcache.rs, keeps only the others).
+    /// `Case::for_variant` applies: a check of the case as loaded is then not this variant's.
+    /// The verdict cache of the certificate check (vcache.rs) keeps only the others.
     pub fn edits_order(&self) -> bool {
         !self.after.is_empty() || !self.waits.is_empty() || self.launch_order.is_some()
     }

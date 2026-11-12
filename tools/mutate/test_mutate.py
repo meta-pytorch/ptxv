@@ -426,7 +426,8 @@ def test_emit_and_ingest_runner_tasks(tmp_path):
 
 def test_srcmut_check_anchors(tmp_path, monkeypatch, capsys):
     """srcmut.py --check-anchors prints every mutant whose find text does not occur exactly once
-    in its file, and exits 1 if there is one; it needs no --out and builds and runs nothing."""
+    in its file, or occurs once but only inside a comment, and exits 1 if there is one; it needs
+    no --out and builds and runs nothing."""
     (tmp_path / "a.rs").write_text("fn a() {\n    keep(x);\n}\n")
     b = tmp_path / "b.rs"
     good = srcmut.SrcMutant("good", "a.rs", "    keep(x);\n", "", [])
@@ -454,6 +455,36 @@ def test_srcmut_check_anchors(tmp_path, monkeypatch, capsys):
     assert check() == (1, [["broken", "b.rs: no such file"]], "1 of 2 anchors broken")
     b.write_text("    drop(y);\n")
     assert check() == (0, [], "0 of 2 anchors broken")
+    # A find text that occurs once but only inside a comment is no anchor either: the mutant
+    # would edit the comment. One in a string literal, or next to a comment, is code; so is a
+    # comment marker inside a literal.
+    rs = srcmut.SrcMutant("cmt", "c.rs", "    keep(z);\n", "", [])
+    py = srcmut.SrcMutant("pcmt", "p.py", "    keep(z)\n", "", [])
+    monkeypatch.setattr(srcmut, "MUTANTS", [good, broken, rs, py])
+    (tmp_path / "p.py").write_text("def p():\n    keep(z)\n")
+    clean = (0, [], "0 of 4 anchors broken")
+    rs_cmt = (1, [["cmt", "c.rs: find text occurs once, inside a comment"]], "1 of 4 anchors broken")
+    for text, want in [
+        ("fn c() {\n    keep(z);\n}\n", clean),
+        ("/*\n    keep(z);\n*/\nfn c() {\n    keep(y);\n}\n", rs_cmt),
+        ("fn c() {\n//    keep(z);\n    keep(y);\n}\n", rs_cmt),
+        ("/* outer /* inner */\n    keep(z);\n*/\nfn c() {}\n", rs_cmt),
+        ('fn c() {\n    let u = "http://x";\n    keep(z);\n}\n', clean),
+        ("fn c() {\n    let q = '\"'; let s = \"/*\";\n    keep(z);\n}\n", clean),
+        ('fn c() {\n    let r = r#"/* "quoted" */"#;\n    keep(z);\n}\n', clean),
+        ("fn c<'a>(x: &'a str) {\n    keep(z);\n    // why\n}\n", clean),
+    ]:
+        (tmp_path / "c.rs").write_text(text)
+        assert check() == want, text
+    py_cmt = (1, [["pcmt", "p.py: find text occurs once, inside a comment"]], "1 of 4 anchors broken")
+    for text, want in [
+        ("def p():\n    #    keep(z)\n    pass\n", py_cmt),
+        ('def p():\n    s = "# no"\n    keep(z)\n', clean),
+        ("def p():\n    '''# no\n    '''\n    keep(z)\n    # yes\n", clean),
+    ]:
+        (tmp_path / "p.py").write_text(text)
+        assert check() == want, text
+    monkeypatch.setattr(srcmut, "MUTANTS", [good, broken])
     # --root checks the files of another tree (the anchors test's positive control plants a
     # broken anchor in a scratch tree); a run takes no --root.
     other = tmp_path / "other"
@@ -479,6 +510,53 @@ def test_srcmut_check_anchors(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(srcmut, "MUTANTS", [good, broken])
     with pytest.raises(SystemExit):
         srcmut.main([])
+
+
+def test_srcmut_anchors_whole_list(tmp_path, capsys):
+    """--check-anchors over the whole mutant list, without --only, in a scratch tree that holds
+    every file the mutants name (--root): exit 1 if some find text is not an anchor (it does not
+    occur exactly once, or only inside a comment), naming exactly those mutants, before and after
+    the anchors of the last mutant and of a mutant whose file an earlier mutant names are broken
+    (their find texts written twice). A check that drops a tail of the list, or checks one mutant
+    per file, passes test_srcmut_check_anchors' short lists; it fails here."""
+    ms = srcmut.MUTANTS
+    for rel in {m.file for m in ms}:
+        dst = tmp_path / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text((srcmut.ROOT / rel).read_text())
+
+    def check():
+        rc = srcmut.main(["--check-anchors", "--root", str(tmp_path)])
+        out = capsys.readouterr()
+        return rc, sorted(ln.split(None, 1)[0] for ln in out.out.splitlines()), out.err.strip()
+
+    def want():
+        # The find-text count of each mutant, read here, independently of srcmut; a find text
+        # that occurs once is still broken when it is kept only inside a comment (srcmut's comment
+        # rule, whose cases test_srcmut_check_anchors runs), as in a tree whose anchor was
+        # commented out.
+        bad, texts = [], {}
+        for m in ms:
+            if m.file not in texts:
+                text = (tmp_path / m.file).read_text()
+                texts[m.file] = (text, srcmut.comment_spans(text, m.file) or [])
+            text, spans = texts[m.file]
+            if text.count(m.find) != 1 or srcmut.anchor_problem(text, m.file, m.find, spans):
+                bad.append(m.name)
+        return 1 if bad else 0, sorted(bad), f"{len(bad)} of {len(ms)} anchors broken"
+
+    assert check() == want()
+    last = ms[-1]
+    first = {}
+    for i, m in enumerate(ms):
+        first.setdefault(m.file, i)
+    shared = next(m for i, m in enumerate(ms[:-1]) if first[m.file] < i and m.file != last.file)
+    for m in (shared, last):
+        f = tmp_path / m.file
+        f.write_text(f.read_text().replace(m.find, m.find * 2))
+    w = want()
+    assert {shared.name, last.name} <= set(w[1]), (shared.name, last.name, w)
+    assert check() == w
 
 
 def test_srcmut_only_names_a_mutant_that_runs(tmp_path):

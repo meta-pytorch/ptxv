@@ -1,0 +1,113 @@
+name = "c_copy_between_kernels"
+description = """
+Captured by tools/capture.py (torch 2.12.0a0+git808dd93): run() of copy_between_kernels.py. 2 launch(es),
+binary only (cubins captured from the loaded modules):
+  0: _ZN50_GLOBAL__N__171d11eb_17_RangeFactories_cu_38772b0829elementwise_kernel_with_indexIiZZZN2at6native15arange grid [1, 1, 1] block [64, 1, 1]
+  1: _ZN2at6native29vectorized_elementwise_kernelILi4EZZZNS0_19addcmul_cuda_kernelERNS_18TensorIteratorBaseERKN3c10 grid [1, 1, 1] block [128, 1, 1]
+Regenerate: CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/capture.py --file tools/capture_examples/copy_between_kernels.py --out fixtures/c_copy_between_kernels
+MISS 173: kernel 1 writes x (W0); a device copy of it (y, W1) and a host upload (t, W2) are made
+between the kernels, and kernel 2 reads all three (out = x + y * t). Each buffer starts with the
+bytes of the snapshot before the first launch that references it (capture.json initial_bytes);
+tools/capture.py before the fix started W1 and W2 as zeros, and the output differed from the
+GPU's in 222 of 256 bytes. The cubins are slimmed to the launched kernel (python3
+tools/cubin_slim.py kN.cubin kN.cubin ENTRY; SASS unchanged)."""
+cubin = "k0.cubin"
+arch = "sm_103a"
+entry = "_ZN50_GLOBAL__N__171d11eb_17_RangeFactories_cu_38772b0829elementwise_kernel_with_indexIiZZZN2at6native15arange_cuda_outERKN3c106ScalarES6_S6_RNS1_6TensorEENKUlvE_clEvENKUlvE5_clEvEUllE_EEvT_T0_PN15function_traitsISD_E11result_typeE"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+dynamic_smem = 0
+outputs = ["out"]
+launch_order = "recorded"
+stream = 0
+
+[[buffers]]
+name = "W0"
+dtype = "u8"
+shape = [256]
+init = "file"
+file = "data/W0.bin"
+
+[[buffers]]
+name = "W1"
+dtype = "u8"
+shape = [256]
+init = "file"
+file = "data/W1.bin"
+
+[[buffers]]
+name = "W2"
+dtype = "u8"
+shape = [256]
+init = "file"
+file = "data/W2.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [64]
+init = "file"
+file = "data/out.bin"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "u32"
+value = 64
+
+[[params]]
+kind = "bytes"
+hex = "000000000000803f60e4ddcdaeaa0000"
+
+[[params]]
+kind = "ptr"
+buffer = "W0"
+byte_offset = 0
+
+[[launches]]
+entry = "_ZN2at6native29vectorized_elementwise_kernelILi4EZZZNS0_19addcmul_cuda_kernelERNS_18TensorIteratorBaseERKN3c106ScalarEENKUlvE0_clEvENKUlvE5_clEvEUlfffE_St5arrayIPcLm4EEEEviT0_T1_"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+stream = 0
+cubin = "k1.cubin"
+
+[[launches.params]]
+kind = "u32"
+value = 64
+
+[[launches.params]]
+kind = "bytes"
+hex = "0000803fffff0000201fdecdaeaa0000"
+
+[[launches.params]]
+kind = "bytes"
+hex = "000680effaff0000000080effaff0000000280effaff0000000480effaff0000"
+
+[[launches.params.fields]]
+offset = 0
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 8
+kind = "ptr"
+buffer = "W0"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 16
+kind = "ptr"
+buffer = "W1"
+byte_offset = 0
+
+[[launches.params.fields]]
+offset = 24
+kind = "ptr"
+buffer = "W2"
+byte_offset = 0
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["clean"]

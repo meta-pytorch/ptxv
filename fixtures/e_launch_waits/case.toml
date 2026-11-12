@@ -68,9 +68,9 @@ expect = ["race", "violation"]
 
 [[variants]]
 id = "UNKNOWN"
-summary = "the same launches with their order unknown: the join does not exclude the .nc read"
+summary = "the same launches with their order unknown: the grids may run at the same time (the reads race with the writes) and the join does not exclude the .nc read"
 launch_order = "unknown"
-expect = ["violation"]
+expect = ["race", "violation"]
 
 [[variants]]
 id = "UNORD"

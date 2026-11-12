@@ -240,11 +240,14 @@ def test_graph_capture_without_stream_ids():
 
 
 def test_launches_on_two_gpus_are_unrecorded():
-    # One process, two GPUs: the case has no per-launch device.
+    # One process, two GPUs: the case has no per-launch device (tools/capture_dist.py too,
+    # which puts a rank's launches on the rank's GPU).
     lo = O.launch_order([L("a", 1, dev=0), L("b", 2, dev=1)])
     assert not lo.recorded and "several GPUs" in lo.why
-    # tools/capture_dist.py: one GPU per process.
-    assert O.launch_order([L("a", 1), L("b", 2)], single_device=True).recorded
+    # Only the kept launches count: one on another GPU outside the case orders nothing here.
+    recs = [L("a", 1, dev=1), L("x", 3, dev=0), L("b", 1, dev=1)]
+    lo = O.launch_order(recs, [0, 2])
+    assert lo.recorded and lo.after == [None, None] and lo.stream == [0, 0]
 
 
 def test_several_threads():
@@ -253,6 +256,11 @@ def test_several_threads():
     # b's call was made before a's returned: the driver may have taken b first.
     lo = O.launch_order([dict(a, t1=25), b])
     assert not lo.recorded and "overlap" in lo.why
+    # A tie (b's call started in the nanosecond a's returned) is not apart in time; one
+    # nanosecond later is.
+    lo = O.launch_order([a, dict(b, t0=10)])
+    assert not lo.recorded and "overlap" in lo.why
+    assert O.launch_order([a, dict(b, t0=11)]).recorded
     lo = O.launch_order(
         [a, rec(7, 1, t0=11, t1=21), wait(7, 2, tid=2, t0=22, t1=23), b]
     )

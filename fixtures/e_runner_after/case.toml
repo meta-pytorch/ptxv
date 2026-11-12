@@ -1,0 +1,67 @@
+name = "e_runner_after"
+description = """
+E-LAUNCH-ORDER and the hardware runner (crates/hw `stream_plan`): a recorded list whose third
+launch names an earlier launch of its own stream, not the latest, as `after`. L0 writer(dummy)
+and L1 writer(data) on stream 0; L2 reader(data) on stream 0 with after = 0. The model orders L2
+after L0 only, so its read of data races with L1's write (good: race); CHAIN orders L2 after L1
+(clean). Until 2026-11-12 the runner issued L2 behind L1 on stream 0's hardware stream, an edge
+the case does not have, so GB300 never showed the race; L2 now gets a hardware stream of its own
+that waits for L0's event. `ptxv hw --delay 24:2000000@0` holds the writers' store."""
+ptx = "kernel.ptx"
+entry = "writer"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+launch_order = "recorded"
+stream = 0
+
+[[buffers]]
+name = "dummy"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "dummy"
+
+[[launches]]
+entry = "writer"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+stream = 0
+params = [{ kind = "ptr", buffer = "data" }]
+
+[[launches]]
+entry = "reader"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+stream = 0
+after = 0
+params = [
+    { kind = "ptr", buffer = "data" },
+    { kind = "ptr", buffer = "out" },
+]
+
+[[variants]]
+id = "good"
+summary = "L2 after L0 only: its read of data races with L1's write"
+expect = ["race"]
+
+[[variants]]
+id = "CHAIN"
+summary = "control: L2 after L1, the stream's latest launch: clean"
+after = [[2, 1]]
+expect = ["clean"]

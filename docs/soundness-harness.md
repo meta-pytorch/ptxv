@@ -149,9 +149,12 @@ clean), `sc-width` drops the equal-width condition (`e_fence_sc_mixed` good clea
 `sc-lane-pc` keys the lane-step exclusion on one instruction again (`e_fence_sc_lanes` INDIRECT
 and PCS clean, PCS certified). `obs-lane-step` lets a lane synchronize with what a lane of its
 warp wrote at the same PTX instruction in lane order, `obs-lane-cont` drops the patterns that
-write continued from writers outside the warp too (`e_atom_lane_cont` a false race), and
-`ticket-warp` lets C-TICKET accept claims by lanes of one warp that happen-before does not
-order (MISS 140: `e_atom_lane_order` good clean, NOREAD certified).
+write continued from writers outside the warp too (`e_atom_lane_cont` a false race),
+`obs-lane-samewarp` keeps the patterns continued from other lanes of the warp (`e_atom_lane_order`
+THREE clean), `ticket-warp` lets C-TICKET accept claims by lanes of one warp that happen-before
+does not order (MISS 140: `e_atom_lane_order` good clean, NOREAD certified), and `ticket-samepc`
+limits that check to claims at one instruction (MISS 187: `e_fence_sc_lanes` PCS_READER0
+certified).
 `bsync-coll` keeps the GB300 profile's BSYNC waiting beside lanes parked at a
 `WARPSYNC.COLLECTIVE`, and `exit-coll` drops an EXIT's re-check of collective groups: the
 profile verdict of `fixtures/e_bsync_parked_collective` then deadlocks (E-HW-BSYNC-COLLECTIVE).

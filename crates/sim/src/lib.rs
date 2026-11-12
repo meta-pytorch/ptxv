@@ -651,10 +651,11 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
 /// ASSUME(E-LAUNCH-ORDER): the case's `launch_order`. Recorded or declared: true, once a
 /// launch without `after` is checked to be on the stream of the previous launch on its GPU,
 /// where both name a stream (a capture names the predecessor at every stream switch).
-/// Unknown: false. With `PTXV_UNRECORDED_ORDER=concurrent`, the grids of an unknown-order
-/// case also lose their predecessors (`after = -1`, no `waits`): every grid may then run at
-/// the same time as every other, the strict reading of a list whose order nobody recorded.
-/// The default (`ordered`) keeps E-PDL's order and only drops the launch-order exclusions.
+/// Unknown: false, and the grids of the case lose their predecessors (`after = -1`, no
+/// `waits`): every grid may run at the same time as every other, the strict reading of a list
+/// whose order nobody recorded (default, `PTXV_UNRECORDED_ORDER=concurrent`). With
+/// `PTXV_UNRECORDED_ORDER=ordered`, an unknown order keeps E-PDL's order (each grid after the
+/// previous one on its GPU) and only drops the launch-order exclusions.
 fn launch_order(
     m: &ptxv_case::Manifest,
     launches: &[ptxv_case::LaunchSpec],
@@ -681,8 +682,8 @@ fn launch_order(
         }
     }
     match std::env::var("PTXV_UNRECORDED_ORDER").as_deref() {
-        Err(_) | Ok("ordered") => {}
-        Ok("concurrent") => {
+        Ok("ordered") => {}
+        Err(_) | Ok("concurrent") => {
             if !recorded {
                 for g in grids.iter_mut() {
                     g.after = Some(None);

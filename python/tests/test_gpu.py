@@ -469,3 +469,46 @@ def test_scratch_workspace(torch):
     assert b["ws"]["init"] == "undef" and b["ws"]["scratch"], b["ws"]
     assert "ws" not in man["outputs"], man["outputs"]
     assert c.check().clean
+
+
+def test_copies_between_launches_reach_the_case(torch):
+    """MISS 173: buffers a device copy (clone) and a host upload fill between two launches of
+    the group start with the bytes the launch that reads them saw (its snapshot), not those of
+    the earliest snapshot of their allocator segment, and the case reproduces the GPU's output."""
+    import json
+
+    import ptxv
+
+    torch.cuda.synchronize()
+    with ptxv.capture() as cap:
+        x = torch.arange(64, dtype=torch.float32, device="cuda")
+        y = x.clone()
+        t = torch.linspace(1.0, 2.0, 64).cuda()
+        out = torch.addcmul(x, y, t)
+    g = cap.all()
+    c = g.case()
+    ins = c.inputs()
+    assert np.array_equal(ins["y"], y.cpu().numpy())
+    assert np.array_equal(ins["t"], t.cpu().numpy())
+    assert np.array_equal(c.expected()["out"], out.cpu().numpy())
+    meta = json.loads((c.path / "capture.json").read_text())
+    src = {b["name"]: b["initial_bytes"] for b in meta["buffers"]}
+    assert src["y"].startswith("snapshot before launch") and src["t"] == src["y"], src
+    v = g.check()
+    assert v.clean and v.sim_equals_gpu
+
+
+def test_overwrite_between_launches_refuses_the_case(torch):
+    """MISS 173: a buffer two launches of the group reference, overwritten between them by a host
+    upload, refuses the case: a case cannot express the copy."""
+    import ptxv
+    from ptxv._casewriter import CaseError
+
+    torch.cuda.synchronize()
+    with ptxv.capture() as cap:
+        x = torch.arange(64, dtype=torch.float32, device="cuda")
+        x.copy_(torch.linspace(1.0, 2.0, 64))
+        y = x * 2
+    assert torch.equal(y, torch.linspace(1.0, 2.0, 64, device="cuda") * 2)
+    with pytest.raises(CaseError, match="MISS 173"):
+        cap.all().case()

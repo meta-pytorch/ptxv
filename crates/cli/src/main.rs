@@ -562,6 +562,9 @@ enum Cmd {
         dir: PathBuf,
         n: usize,
         tag: String,
+        /// The variant whose launch-order edits (`after`, `waits`, `launch_order`) apply.
+        #[arg(long)]
+        variant: Option<String>,
     },
     #[command(hide = true)]
     HwWorker {
@@ -2252,13 +2255,17 @@ fn cmd_check(
             let make1 = || machine(case, k.clone()).expect("machine");
             // The plain certificate check is what errdist / equiv run as their precondition
             // (equiv.rs `prepare`): store it for them (vcache.rs).
-            // (errdist and equiv build the machine from the case without the variant's launch
-            // order edits: `after`, `waits`, `launch_order`.)
+            // Not for a variant that edits the launch order (`after`, `waits`, `launch_order`):
+            // errdist and equiv apply the edits too (`Case::for_variant`), and the cache keeps
+            // to the variants without them all the same (equiv.rs `prepare_with`). Not for a
+            // case changed in memory (`--residency N`): the key covers the case files, and
+            // errdist and equiv check the case as they load it (`vcache::as_on_disk`).
             let plain = certify
                 && !case.variant(&v)?.edits_order()
                 && !slices
                 && groups.is_none()
-                && std::env::var("PTXV_EXPLORER").as_deref() != Ok("dpor");
+                && std::env::var("PTXV_EXPLORER").as_deref() != Ok("dpor")
+                && vcache::as_on_disk(case);
             let vkey = plain
                 .then(|| vcache::key(&case.dir, &v, f, "certify"))
                 .flatten();
@@ -3079,7 +3086,9 @@ fn cmd_num_with(
     mma_model: Option<&str>,
 ) -> Result<(Vec<NumSummary>, Vec<u8>)> {
     let dir = out_dir(case, out)?;
-    let mut case = case.clone();
+    // E-LAUNCH-ORDER: the run is of the variant's launch order (`after`, `waits`,
+    // `launch_order`), as in `ptxv check`, not the case's own.
+    let mut case = case.for_variant(variant)?;
     let suffix = match mma_model {
         Some(m) => {
             case.m.mma_model = Some(m.to_string());
@@ -3547,6 +3556,17 @@ pub(crate) fn gpu_env(case: &Case, gpu: u32) -> Result<String> {
         .map(|g| g.to_string())
         .collect::<Vec<_>>()
         .join(","))
+}
+
+/// The case a hardware worker runs (`hw-worker`, `errdist-gpu-worker`): the one in the case
+/// directory with `variant`'s launch-order edits (`after`, `waits`, `launch_order`) applied
+/// (`Case::for_variant`), so that the GPU runs the launch order the simulator checked.
+pub(crate) fn worker_case(case: &Path, variant: Option<&str>) -> Result<Case> {
+    let c = Case::load(case)?;
+    match variant {
+        Some(v) => c.for_variant(v),
+        None => Ok(c),
+    }
 }
 
 /// Run one cubin `runs` times on `gpu` in a child process guarded by a watchdog.
@@ -4266,7 +4286,8 @@ fn run() -> Result<()> {
                 let dir = out_dir(&c, &out)?;
                 for v in variants(&c, &variant)? {
                     let (k, _) = load(&c, &v, "sass", &dir)?;
-                    let (m, fs, ok) = ptxv_sim::explore::run_once(machine(&c, k)?);
+                    // In the variant's launch order, as the GPU runs it (`hw-worker --variant`).
+                    let (m, fs, ok) = ptxv_sim::explore::run_once(machine(&c.for_variant(&v)?, k)?);
                     if !ok {
                         bail!("{v} does not terminate in the simulator");
                     }
@@ -4282,7 +4303,7 @@ fn run() -> Result<()> {
             let expected = if std::env::var("PTXV_HW_EXPECT").as_deref() == Ok("run") {
                 let dir = out_dir(&c, &out)?;
                 let (k, _) = load(&c, "good", "sass", &dir)?;
-                let (m, fs, ok) = ptxv_sim::explore::run_once(machine(&c, k)?);
+                let (m, fs, ok) = ptxv_sim::explore::run_once(machine(&c.for_variant("good")?, k)?);
                 if !ok {
                     bail!("the good variant does not terminate in the simulator");
                 }
@@ -4448,6 +4469,9 @@ fn run() -> Result<()> {
             let c = Case::load(&case)?;
             let dir = out_dir(&c, &out)?;
             let (k, _) = load(&c, &variant, &front, &dir)?;
+            // E-LAUNCH-ORDER: the run is of the variant's launch order (`after`, `waits`,
+            // `launch_order`), as in `ptxv check`, not the case's own.
+            let c = c.for_variant(&variant)?;
             let launch = ptxv_sim::build_launch(&c, &k)?;
             let want: Vec<usize> = (0..c.m.buffers.len()).collect();
             let m = Machine::new(Arc::new(k), Arc::new(launch));
@@ -4471,7 +4495,8 @@ fn run() -> Result<()> {
             dir,
             n,
             tag,
-        } => errdist::gpu_worker(&case, &cubin, &dir, n, &tag)?,
+            variant,
+        } => errdist::gpu_worker(&case, &cubin, &dir, n, &tag, variant.as_deref())?,
         Cmd::HwWorker {
             case,
             image,
@@ -4482,11 +4507,7 @@ fn run() -> Result<()> {
             dump,
             variant,
         } => {
-            let c = Case::load(&case)?;
-            let c = match variant {
-                Some(v) => c.for_variant(&v)?,
-                None => c,
-            };
+            let c = worker_case(&case, variant.as_deref())?;
             let img = std::fs::read(&image)?;
             let exp = match expected {
                 Some(p) => Some(std::fs::read(p)?),
@@ -4547,4 +4568,27 @@ fn run() -> Result<()> {
         Cmd::MufuSweep { op, input, sample } => mufu_sweep::run(&op, &input, sample.as_deref())?,
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod worker_tests {
+    use std::path::Path;
+
+    /// E-LAUNCH-ORDER: a hardware worker runs the variant's launch order (`worker_case`,
+    /// `Case::for_variant`). fixtures/e_equiv_order declares its order; UNK makes it unknown,
+    /// UNORD gives the reader no predecessor (`after = -1`).
+    #[test]
+    fn worker_case_applies_the_variants_launch_order() {
+        let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_equiv_order");
+        let c = super::worker_case(&fx, None).unwrap();
+        assert_eq!(c.m.launch_order.as_deref(), Some("declared"));
+        assert_eq!(c.m.launches[0].after, None);
+        let c = super::worker_case(&fx, Some("good")).unwrap();
+        assert_eq!(c.m.launch_order.as_deref(), Some("declared"));
+        let c = super::worker_case(&fx, Some("UNK")).unwrap();
+        assert_eq!(c.m.launch_order.as_deref(), Some("unknown"));
+        let c = super::worker_case(&fx, Some("UNORD")).unwrap();
+        assert_eq!(c.m.launches[0].after, Some(-1));
+        assert!(super::worker_case(&fx, Some("NO_SUCH_VARIANT")).is_err());
+    }
 }

@@ -226,8 +226,9 @@ instead of exploring again; it stores its own check the same way. The key hashes
 under the case directory (inputs in `data/` included), the variant, the front-end, the ptxv
 binary (path, size, modification time) and the `PTXV_*` environment except thread counts,
 output and cache settings. A complete stored verdict serves any state cap; an incomplete one
-serves caps up to its own. The report notes a reused verdict. `PTXV_NO_VCACHE=1` turns the
-cache off.
+serves caps up to its own. The report notes a reused verdict. A check of a case changed in
+memory (`ptxv check --residency N`) is not stored, since the key covers the files.
+`PTXV_NO_VCACHE=1` turns the cache off.
 
 Measured on a 144-core host. Compile takes 0.7-2.2 s for the small fixtures; it is the
 simulator run, so minutes for large kernels. Query times:

@@ -33,6 +33,14 @@ assume_refuted = ["E-POLL-ACQ"]
 smem_cumulative = true
 read_done = true
 
+# E-LAUNCH-ORDER: declared on a re-capture (2026-11-12, MISS 127): the regeneration command above
+# with this case's ring sizes (docs/rung4.md: DEEPEP_RECV=4 DEEPEP_CRECV=4 DEEPEP_SEND=2), run with
+# the launch order recorded, gives the same launches per GPU and kernel code
+# (fb/kernel_db/recapture_compare.py), every launch on one stream per GPU in list order. One launch
+# field differs: the re-capture keeps launch 0's cluster shape [2, 1, 1], which the capture_dist of
+# this capture dropped for a case's first launch.
+launch_order = "declared"
+
 [[buffers]]
 name = "x_r0"
 dtype = "bf16"
@@ -1089,6 +1097,7 @@ id = "B37"
 summary = "stream order: combine (launch 8) is ordered only after its rank's dispatch (launch 4), not after cached_notify_combine, which still clears the buffer combine uses"
 after = [[8, 4]]
 expect = ["race"]
+hw_note = "GB300 (2026-11-12): 199/200 runs differ from the capture (launch 8 runs on a stream of its own after launch 4 only)"
 
 # New protocol mutants (rung 4c): the ring.
 

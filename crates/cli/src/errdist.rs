@@ -95,21 +95,22 @@ impl Model {
     pub(crate) fn load(path: &Path) -> Result<Model> {
         let v: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)
             .map_err(|e| anyhow!("{}: {e}", path.display()))?;
-        let m: Model = serde_json::from_value(v.get("programs").cloned().ok_or_else(|| {
+        let p = v.get("programs").cloned().ok_or_else(|| {
             anyhow!(
                 "{}: no programs section (compile it with --compile)",
                 path.display()
             )
-        })?)
-        .map_err(|e| anyhow!("{}: {e}", path.display()))?;
-        if m.version != MODEL_VERSION {
+        })?;
+        // The version first: a model of another version may not even parse as this one.
+        let version = p.get("version").and_then(|x| x.as_u64());
+        if version != Some(MODEL_VERSION as u64) {
             bail!(
                 "{}: model version {} (this ptxv reads {MODEL_VERSION}); recompile",
                 path.display(),
-                m.version
+                version.map_or("none".to_string(), |x| x.to_string())
             );
         }
-        Ok(m)
+        serde_json::from_value(p).map_err(|e| anyhow!("{}: {e}", path.display()))
     }
 
     /// Write the programs section, keeping the file's other sections (the nonlin tables) when
@@ -149,11 +150,28 @@ impl Model {
 /// carries: `seg::inst_pieces`, MISS 99); an earlier model's outcome patterns miss them.
 /// 11: slice decisions include the roundings that act as steps on the probes
 /// (`ident::RealFn::steps`, MISS 99 follow-up); an earlier model's outcome patterns miss them.
-pub(crate) const MODEL_VERSION: u32 = 11;
+/// 12: compiled from the variant's launch order (`Case::for_variant` in
+/// `equiv::prepare_with`) and, for a case whose launch order is unknown, from the strict
+/// reading (the grids may run at the same time; E-LAUNCH-ORDER); an earlier model may hold a
+/// run of the case's own order, or of E-PDL's order of an unknown one, under the same key. The
+/// key covers the reading of an unknown order since (`case_key`).
+pub(crate) const MODEL_VERSION: u32 = 12;
 
 /// FNV-1a over the case files: every regular file of each case directory (sorted), the
-/// equiv.toml, the candidate index and the ptxv version.
+/// equiv.toml, the candidate index, the ptxv version and the reading of an unknown launch order
+/// (`PTXV_UNRECORDED_ORDER`).
 pub(crate) fn case_key(path: &Path, candidate: usize) -> Result<String> {
+    // E-LAUNCH-ORDER: the reading the simulator runs take (sim `launch_order`; any other value
+    // is refused there).
+    let reading = match std::env::var("PTXV_UNRECORDED_ORDER").as_deref() {
+        Ok("ordered") => "ordered",
+        _ => "concurrent",
+    };
+    case_key_with(path, candidate, reading)
+}
+
+/// `case_key` with the reading of an unknown launch order given.
+fn case_key_with(path: &Path, candidate: usize, reading: &str) -> Result<String> {
     let mut h: u64 = 0xcbf29ce484222325;
     let mut eat = |b: &[u8]| {
         for &x in b {
@@ -163,6 +181,7 @@ pub(crate) fn case_key(path: &Path, candidate: usize) -> Result<String> {
     };
     eat(env!("CARGO_PKG_VERSION").as_bytes());
     eat(&MODEL_VERSION.to_le_bytes());
+    eat(reading.as_bytes());
     let mut dirs = vec![];
     if path.extension().is_some_and(|e| e == "toml") {
         let txt = std::fs::read_to_string(path)?;
@@ -3361,14 +3380,14 @@ fn validate_gpu(
     for (ki, k) in ks.iter().enumerate() {
         let tag = if ki == 0 { "r" } else { "c" };
         let mut child = std::process::Command::new(&exe)
-            .args([
-                "errdist-gpu-worker",
-                k.run.case.dir.to_str().unwrap(),
-                k.run.cubin.to_str().unwrap(),
-                gdir.to_str().unwrap(),
-                &n.to_string(),
+            .args(gpu_worker_args(
+                &k.run.case.dir,
+                &k.run.cubin,
+                &gdir,
+                n,
                 tag,
-            ])
+                &k.run.variant,
+            ))
             .env("CUDA_VISIBLE_DEVICES", super::gpu_env(&k.run.case, gpu)?)
             .env("PTXV_PATCHED_PREFIX", k.run.cubin.with_extension(""))
             .stdout(std::process::Stdio::null())
@@ -3423,10 +3442,40 @@ fn validate_gpu(
     Ok((obs, gpu))
 }
 
+/// The `errdist-gpu-worker` arguments of one kernel over the `n` trial inputs in `dir`, its
+/// outputs tagged `tag`: with `--variant`, so that the GPU runs the variant's launch order
+/// (`Case::for_variant`), as the simulator did (`equiv::prepare_with`), not the case's own.
+fn gpu_worker_args(
+    case_dir: &Path,
+    cubin: &Path,
+    dir: &Path,
+    n: usize,
+    tag: &str,
+    variant: &str,
+) -> Vec<String> {
+    vec![
+        "errdist-gpu-worker".into(),
+        case_dir.to_str().unwrap().into(),
+        cubin.to_str().unwrap().into(),
+        dir.to_str().unwrap().into(),
+        n.to_string(),
+        tag.into(),
+        "--variant".into(),
+        variant.into(),
+    ]
+}
+
 /// `errdist-gpu-worker`: run one binary on every trial input of a directory (one process, one
-/// context). Writes t<i>.out.<tag>.bin (output 0's bytes).
-pub fn gpu_worker(case: &Path, cubin: &Path, dir: &Path, n: usize, tag: &str) -> Result<()> {
-    let c = ptxv_case::Case::load(case)?;
+/// context), in `variant`'s launch order. Writes t<i>.out.<tag>.bin (output 0's bytes).
+pub fn gpu_worker(
+    case: &Path,
+    cubin: &Path,
+    dir: &Path,
+    n: usize,
+    tag: &str,
+    variant: Option<&str>,
+) -> Result<()> {
+    let c = super::worker_case(case, variant)?;
     let img = std::fs::read(cubin)?;
     let o0 = c.buffer(&c.m.outputs[0])?.bytes();
     for i in 0..n {
@@ -3448,10 +3497,79 @@ pub fn gpu_worker(case: &Path, cubin: &Path, dir: &Path, n: usize, tag: &str) ->
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
+    use clap::Parser;
     use ptxv_sim::errdist::report::BranchFlips;
     use ptxv_sim::errdist::report::Estimate;
 
     use super::flip_gate;
+
+    /// Models compiled before the variant's launch order and the strict reading of an unknown
+    /// one applied (version 11 and earlier) are refused: they may hold a run of another launch
+    /// order under the same key.
+    #[test]
+    fn models_before_the_variant_order_are_refused() {
+        let d = std::env::temp_dir().join(format!("ptxv-test-model-v11-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("m.model.json");
+        for v in [11, 10] {
+            std::fs::write(
+                &p,
+                format!(r#"{{"kind": "ptxv-errdist-model", "programs": {{"version": {v}}}}}"#),
+            )
+            .unwrap();
+            let e = super::Model::load(&p).err().expect("loaded").to_string();
+            assert!(
+                e.contains(&format!("model version {v} (this ptxv reads")),
+                "{e}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The model key covers the reading of an unknown launch order: a model compiled under
+    /// `PTXV_UNRECORDED_ORDER=ordered` is not served to a run under the strict reading.
+    #[test]
+    fn model_key_covers_the_unknown_order_reading() {
+        let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_launch_order");
+        let a = super::case_key_with(&fx, 0, "concurrent").unwrap();
+        assert_eq!(a, super::case_key_with(&fx, 0, "concurrent").unwrap());
+        assert_ne!(a, super::case_key_with(&fx, 0, "ordered").unwrap());
+    }
+
+    /// E-LAUNCH-ORDER: the GPU validation runs the variant's launch order. The worker's
+    /// arguments name the variant and parse into `errdist-gpu-worker` with it, which runs
+    /// `worker_case` (main.rs worker_tests).
+    #[test]
+    fn gpu_worker_runs_the_variant() {
+        let args = super::gpu_worker_args(
+            Path::new("case"),
+            Path::new("k.cubin"),
+            Path::new("gpu"),
+            3,
+            "c",
+            "UNORD",
+        );
+        let cli =
+            crate::Cli::try_parse_from(std::iter::once("ptxv".to_string()).chain(args)).unwrap();
+        match cli.cmd {
+            crate::Cmd::ErrdistGpuWorker {
+                case,
+                n,
+                tag,
+                variant,
+                ..
+            } => {
+                assert_eq!(case, Path::new("case"));
+                assert_eq!(
+                    (n, tag.as_str(), variant.as_deref()),
+                    (3, "c", Some("UNORD"))
+                );
+            }
+            _ => panic!("not errdist-gpu-worker"),
+        }
+    }
 
     fn est(p: (f64, f64, f64)) -> Estimate {
         Estimate {

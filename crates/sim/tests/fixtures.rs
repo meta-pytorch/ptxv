@@ -950,7 +950,8 @@ fn e_ld_nc_pdl_overlapping_launches() {
 }
 /// E-LAUNCH-ORDER (MISS 113): the same three launches with their order unknown (an older
 /// capture) get neither S-NC's stream-order exclusion (k1's .nc read of k0's output) nor its
-/// done-clock exemption (k2's write, after its wait, of bytes k1 read with .nc): violation.
+/// done-clock exemption (k2's write, after its wait, of bytes k1 read with .nc): violation; and
+/// their grids may run at the same time (the strict reading): race.
 #[test]
 fn e_ld_nc_pdl_unknown_order() {
     for v in ["UNKNOWN", "UNKNOWN_DONE"] {
@@ -968,8 +969,9 @@ fn e_mem_sync_domain_scope() {
 }
 /// E-LAUNCH-ORDER (MISS 113): a writer on one stream and an .nc reader of its output on
 /// another. An event edge in a recorded launch order excludes the conflict (good); the same
-/// list with its order unknown does not (UNKNOWN: violation); without the edge the read races
-/// (UNORD). A coherent read is clean either way: E-PDL still orders an unknown-order list.
+/// list with its order unknown does not (UNKNOWN: violation) and its grids may run at the same
+/// time (race); without the edge the read races (UNORD). A coherent read is clean with the
+/// order recorded (PLAIN) and races with it unknown (PLAIN_UNKNOWN).
 #[test]
 fn e_launch_order_two_streams() {
     for v in ["good", "UNKNOWN", "UNORD", "PLAIN", "PLAIN_UNKNOWN"] {
@@ -978,7 +980,8 @@ fn e_launch_order_two_streams() {
 }
 /// E-LAUNCH-ORDER (MISS 113), a join (`waits`): kc follows ka on stream 0 and waits for kb's
 /// event; each predecessor orders it (good). A dropped wait (NOWAIT) or stream predecessor
-/// (UNORD) is a race; an unknown order loses only the .nc exclusion (UNKNOWN).
+/// (UNORD) is a race; an unknown order loses the .nc exclusion and every predecessor (UNKNOWN:
+/// race + violation).
 #[test]
 fn e_launch_waits_join() {
     for v in ["good", "NOWAIT", "UNKNOWN", "UNORD"] {
@@ -988,9 +991,10 @@ fn e_launch_waits_join() {
 /// E-LAUNCH-ORDER, MISS 113's repro (xgpu_unord): GPU 1's peer writes, published with
 /// st.release.sys and acquired by GPU 0's waiter, then GPU 0's .nc reader after the waiter.
 /// The launch-clock exemption needs a recorded or declared order: with the order unknown the
-/// cross-GPU write is a violation (good); recorded, the reader's launch clock covers it (REC:
-/// clean; a violation at the SASS front's strict level, which has no exemption); UNORD (a
-/// reader ordered after nothing) is a race and a violation.
+/// cross-GPU write is a violation, and the reader, which need not follow the waiter, races with
+/// it (good: race + violation); recorded, the reader's launch clock covers it (REC: clean; a
+/// violation at the SASS front's strict level, which has no exemption); UNORD (a reader ordered
+/// after nothing) is a race and a violation.
 #[test]
 fn e_ld_nc_xgpu_unord_launch_order() {
     for v in ["good", "REC", "UNORD"] {
@@ -999,7 +1003,8 @@ fn e_ld_nc_xgpu_unord_launch_order() {
 }
 /// E-LAUNCH-ORDER with E-L1-HAVOC (MISS 113): a reader whose predecessor is recorded launches
 /// after the writer completed, and its kernel boundary drops older L1 copies (clean); with the
-/// launch order unknown that boundary is not assumed (UNKNOWN: stale).
+/// launch order unknown that boundary is not assumed and the grids may run at the same time
+/// (UNKNOWN: race + stale).
 #[test]
 fn e_launch_order_l1_boundary() {
     for var in ["PTXV_HW_L1", "PTXV_L1_CORES", "PTXV_L1_HAVOC"] {
@@ -1021,11 +1026,29 @@ fn e_launch_waits_gate() {
     }
 }
 /// The verdict cache fixture (crates/cli/tests/launch_order.rs): the case's launch order is
-/// unknown (good: S-NC violation); DECL declares it (clean).
+/// unknown (good: race + S-NC violation); DECL declares it (clean).
 #[test]
 fn e_vcache_order_variants() {
     for v in ["good", "DECL"] {
         both("e_vcache_order", v);
+    }
+}
+/// The equiv / errdist launch-order fixture (crates/cli/tests/launch_order.rs): the case
+/// declares its order (good: clean); UNK makes it unknown (race + S-NC violation); UNORD gives
+/// the reader no predecessor (race + violation).
+#[test]
+fn e_equiv_order_variants() {
+    for v in ["good", "UNK", "UNORD"] {
+        both("e_equiv_order", v);
+    }
+}
+/// The hardware runner's fixture (crates/hw `stream_plan`): L2 names L0, an earlier launch of
+/// its stream than the latest (L1, the writer of what L2 reads), as `after`: race; CHAIN orders
+/// L2 after L1: clean.
+#[test]
+fn e_runner_after_variants() {
+    for v in ["good", "CHAIN"] {
+        both("e_runner_after", v);
     }
 }
 /// E-LAUNCH-ORDER: in a recorded or declared launch order, a launch on another stream than the
@@ -2544,6 +2567,61 @@ fn captured_outputs_match_the_gpu_part3() {
     captured_outputs_match_the_gpu(3);
 }
 
+/// MISS 173 (fixtures/c_copy_between_kernels, tools/capture.py): kernel 1 (arange) writes x
+/// (W0) inside the captured call, a device copy of x (y, W1) and a host upload (t, W2) are made
+/// between the kernels, and kernel 2 (addcmul) reads all three. W1 and W2 start with the bytes
+/// of the snapshot before kernel 2, so the output is the GPU's bitwise; started as zeros, as the
+/// capture wrote them before the fix, the output differs from the GPU's.
+#[test]
+fn c_copy_between_kernels_starts_from_the_launch_snapshot() {
+    let case = Case::load(root().join("fixtures/c_copy_between_kernels")).unwrap();
+    let run = |case: &Case| -> Vec<String> {
+        let ks: Vec<_> = case
+            .m
+            .all_launches()
+            .iter()
+            .map(|l| {
+                let c = case
+                    .dir
+                    .join(l.cubin.unwrap_or(case.m.cubin.as_ref().unwrap()));
+                ptxv_sass::load_cubin(&c, l.entry).unwrap()
+            })
+            .collect();
+        assert_eq!(ks.len(), 2);
+        let k = ptxv_ir::Kernel::concat(ks);
+        let launch = build_launch(case, &k).unwrap();
+        let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 200_000);
+        assert_eq!(v.classes(), ["clean"], "{:#?}", v.findings);
+        assert!(v.complete);
+        assert_eq!(v.outputs.len(), 1);
+        case.expect_report(&v.outputs[0]).unwrap()
+    };
+    for n in ["W1", "W2"] {
+        let b = case.m.buffers.iter().find(|b| b.name == n).unwrap();
+        assert_eq!(b.init, "file", "{n}");
+    }
+    let report = run(&case);
+    assert!(
+        !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+        "{report:?}"
+    );
+    let mut zeroed = case.clone();
+    for b in zeroed
+        .m
+        .buffers
+        .iter_mut()
+        .filter(|b| b.name == "W1" || b.name == "W2")
+    {
+        b.init = "zeros".into();
+        b.file = None;
+    }
+    let report = run(&zeroed);
+    assert!(
+        report.iter().any(|l| !l.contains("bitwise equal")),
+        "zeros give the GPU's output: {report:?}"
+    );
+}
+
 /// A scratch directory unique to this process and call: tests that share a case name
 /// (e.g. `r1h_nvls` and `r1h_nvls_alias_hw`) and concurrent suites must not share files.
 fn scratch_dir(name: &str, variant: &str) -> std::path::PathBuf {
@@ -3376,21 +3454,30 @@ fn e_tc_handback_acta_nowait_sass() {
     check_stateful("e_tc_handback", "ACTANW", "sass", 2_000_000);
 }
 #[test]
-#[ignore = "heavy: explore to the 2M cap; about 280 s"]
+#[ignore = "heavy: explore until the hand-back race, 10k states today; about 25 s"]
 fn e_tc_handback_acta_early_handback_sass() {
-    // The race is found before the cap; the search does not complete, which a race verdict
-    // does not need.
+    // The hand-back race: a peer's TMEM read (the earlier access) and round 2's MMA write, not
+    // ordered. A race verdict does not need the search to complete, so the cap grows tenfold,
+    // up to the 2M states this test used to explore three times over (a racy kernel's search
+    // runs again in two other models), until a search finds the race: a 10k-state search does
+    // today, with one worker (under 100k states), so the first step is deterministic. ACTA and
+    // ACTANW, whose SASS is clean, are explored in full by their own tests.
     let case = Case::load(root().join("fixtures/e_tc_handback")).unwrap();
     let k = kernel(&case, "ACTAE", "sass");
     let launch = build_launch(&case, &k).unwrap();
-    let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
-    assert!(
-        v.findings
-            .iter()
-            .any(|f| f.kind == "race" && f.sig.starts_with("race:tmem:")),
-        "ACTAE/sass: no TMEM race: {:?}",
-        v.classes()
-    );
+    let m = Machine::new(Arc::new(k), Arc::new(launch));
+    let mut tried = Vec::new();
+    for cap in [10_000, 100_000, 2_000_000] {
+        let v = explore(m.clone(), cap);
+        if v.findings.iter().any(|f| {
+            f.kind == "race" && f.sig.starts_with("race:tmem:") && f.sig.ends_with(":read-write")
+        }) {
+            return;
+        }
+        let sigs: Vec<String> = v.findings.iter().map(|f| f.sig.clone()).collect();
+        tried.push((cap, v.classes(), sigs));
+    }
+    panic!("ACTAE/sass: no TMEM read-write race up to 2M states: {tried:?}");
 }
 
 /// MISS 105, PTX front (fixtures/e_tblk_late): `tcgen05.fence::before_thread_sync` released
@@ -7305,9 +7392,13 @@ fn r4b_torch_group_certifies() {
 
 /// B32 (the expert gather is ordered after nothing on its stream) in group mode: the torch
 /// group reads what dispatch, an earlier group, wrote, with nothing ordering the two. The
-/// demoted race shadow at the group boundary reports it.
+/// demoted race shadow at the group boundary reports it: a write-read race on global memory
+/// between dispatch's TMA store and the gather's load. A race verdict does not need the
+/// search to complete, and the group's searches meet the race in their first states, so each
+/// explores at most 1k states (20k used to take three searches to the cap, about 200 s). The
+/// negative control is r4b_torch_group_certifies: the same groups of the good variant.
 #[test]
-#[ignore = "heavy: group check on the 28-launch r4b layer; 2540 s"]
+#[ignore = "heavy: group check on the 28-launch r4b layer; 1540 s"]
 fn r4b_groups_catch_b32_at_the_boundary() {
     if vendor_missing(&["r4b_moe"]) {
         return;
@@ -7319,11 +7410,19 @@ fn r4b_groups_catch_b32_at_the_boundary() {
         upto: Some(2),
         ..Default::default()
     };
-    let (each, _) = r4b_check_groups("B32", &groups, &opts, 20_000);
+    let (each, _) = r4b_check_groups("B32", &groups, &opts, 1_000);
     assert!(
-        each[0].findings.iter().any(|f| f.kind == "race"),
-        "{:?}",
-        each[0].classes()
+        each[0].findings.iter().any(|f| f.kind == "race"
+            && f.sig.starts_with("race:gmem:")
+            && f.sig.ends_with(":write-read")
+            && f.msg.contains("dispatch")
+            && f.msg.contains("vectorized_gather_kernel")),
+        "no dispatch-to-gather race at the group boundary: {:#?}",
+        each[0]
+            .findings
+            .iter()
+            .map(|f| (&f.sig, &f.msg))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -9927,24 +10026,77 @@ fn fence_sc_unforced_orders() {
             certified_or_expected(f, v);
         }
     }
+    // MISS 187: lanes of a converged warp at different instructions run in step order only, so
+    // C-TICKET refuses their claims rather than drop the other step order as infeasible (srcmut
+    // ticket-samepc certifies PCS_READER0).
+    assert_not_certified("e_fence_sc_lanes", "PCS_READER0");
+}
+
+/// The certificate refuses `name`/`v` on PTX; its reasons.
+fn assert_not_certified(name: &str, v: &str) -> Vec<String> {
+    let case = Case::load(root().join("fixtures").join(name)).unwrap();
+    let k = kernel(&case, v, "ptx");
+    let launch = build_launch(&case, &k).unwrap();
+    let c = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)));
+    assert!(
+        c.verdict.is_none(),
+        "{name}/{v}/ptx certified: {:?}",
+        c.reasons
+    );
+    c.reasons
+}
+
+/// MISS 140: C-TICKET's warp check holds against happens-before edges that only some claim
+/// orders create: an acquire fence after another warp's claim (fixtures/e_ticket_warp_chain)
+/// and an S-FENCE-SC edge from a second counter shared with another warp
+/// (e_ticket_warp_sc_chain). Lanes 0 and 1 claim at different instructions. The explorers find
+/// the race on both fronts. The certificate refuses on the PTX model and on the GB300 model
+/// (E-HW-L1, `twolevel::hw_machine`), with the warp check among its reasons on the GB300 model
+/// for both, and on the PTX model for e_ticket_warp_sc_chain (e_ticket_warp_chain: C-ORDER
+/// refuses its first run before C-TICKET runs).
+#[test]
+fn ticket_warp_check_order_created_edges() {
+    let warp = "C-TICKET: lanes of one warp claim the counter";
+    for (f, in_ptx) in [
+        ("e_ticket_warp_chain", false),
+        ("e_ticket_warp_sc_chain", true),
+    ] {
+        both(f, "good");
+        certified_or_expected(f, "good");
+        let r = assert_not_certified(f, "good");
+        assert_eq!(
+            r.iter().any(|x| x.contains(warp)),
+            in_ptx,
+            "{f}/good/ptx: {r:?}"
+        );
+        let case = Case::load(root().join("fixtures").join(f)).unwrap();
+        let k = kernel(&case, "good", "ptx");
+        let launch = build_launch(&case, &k).unwrap();
+        let m1 = Machine::new(Arc::new(k), Arc::new(launch));
+        let st = Arc::new(ptxv_sim::l1::L1Stats::default());
+        let c = ptxv_sim::wellsync::certify(ptxv_sim::twolevel::hw_machine(&m1, &st));
+        assert!(c.verdict.is_none(), "{f}/good/ptx GB300 model certified");
+        assert!(
+            c.reasons.iter().any(|x| x.contains(warp)),
+            "{f}/good/ptx GB300 model: refused without the warp check: {:?}",
+            c.reasons
+        );
+    }
 }
 
 /// MISS 140: an acquire-release edge read off the lane order of one converged PTX atom step is
 /// not forced; C-TICKET refuses two claims of one PTX step (fixtures/e_atom_lane_order NOREAD:
-/// before, it ran one claim order and dropped the other as infeasible).
+/// before, it ran one claim order and dropped the other as infeasible). THREE: no edge through
+/// a pattern that a lane's read-modify-write continued from another lane of the warp.
 #[test]
 fn atom_lane_order_edges() {
-    for v in ["good", "LANE0", "NOREAD"] {
+    for v in ["good", "LANE0", "NOREAD", "THREE"] {
         both("e_atom_lane_order", v);
         certified_or_expected("e_atom_lane_order", v);
     }
     // The rule keeps release sequences continued from writers outside the warp (precision).
     both("e_atom_lane_cont", "good");
-    let case = Case::load(root().join("fixtures/e_atom_lane_order")).unwrap();
-    let k = kernel(&case, "NOREAD", "ptx");
-    let launch = build_launch(&case, &k).unwrap();
-    let c = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)));
-    assert!(c.verdict.is_none(), "NOREAD/ptx certified: {:?}", c.reasons);
+    assert_not_certified("e_atom_lane_order", "NOREAD");
 }
 
 /// The certificate either certifies the expected classes or falls back to an exploration that
@@ -10300,7 +10452,10 @@ fn async_ids_past_4096_decode_to_their_issuer() {
 
 /// E-LAUNCH-ORDER: e_async_ids_stream with its launch order unknown (UNKNOWN). Its clean rests
 /// on S-NC's stream-order exemption (k0 completed before k1 started), which an unknown order
-/// does not give: k1's .nc read of k0's output is a violation whose message names the gate.
+/// does not give: under the strict reading the grids may run at the same time, so k1's .nc read
+/// of k0's TMA store is a race and a violation (k0 writes while the load's kernel runs). With
+/// `PTXV_UNRECORDED_ORDER=ordered` the violation names the gate instead
+/// (crates/cli/tests/launch_order.rs).
 #[test]
 fn async_ids_stream_unknown_order() {
     let case = Case::load(root().join("fixtures/e_async_ids_stream")).unwrap();
@@ -10309,7 +10464,7 @@ fn async_ids_stream_unknown_order() {
         let launch = build_launch(&case.for_variant("UNKNOWN").unwrap(), &k).unwrap();
         let r = explore(Machine::new(Arc::new(k), Arc::new(launch)), 100_000);
         assert!(
-            r.complete && r.classes() == ["violation"],
+            r.complete && r.classes() == ["race", "violation"],
             "{front}: {:?} (complete: {}) {:#?}",
             r.classes(),
             r.complete,
@@ -10318,7 +10473,7 @@ fn async_ids_stream_unknown_order() {
         assert!(
             r.findings
                 .iter()
-                .any(|f| f.msg.contains("launch order is unknown")),
+                .any(|f| f.kind == "violation" && f.msg.contains("while the load's kernel runs")),
             "{front}: {:#?}",
             r.findings
         );

@@ -18,8 +18,9 @@ silent survival.
 
 --check-anchors builds and runs nothing: it prints every mutant whose find text does not occur
 exactly once in its file in this checkout, or in the tree --root names (the anchors test plants
-a broken anchor in a scratch tree), and exits 1 if there is one (a run reports such a mutant as
-an error without building it). Either mode exits 2, before a run creates --out, when --only
+a broken anchor in a scratch tree), or occurs once but only inside a comment (a mutant there
+would edit the comment), and exits 1 if there is one (a run reports such a mutant as an error
+without building it). Either mode exits 2, before a run creates --out, when --only
 is given but names nothing, when it names a name that is not a mutant that runs, or when no
 mutant is chosen.
 """
@@ -27,6 +28,7 @@ mutant is chosen.
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -273,6 +275,17 @@ MUTANTS = [
         [],
         tests=[("ptxv-sim", "fixtures", "atom_lane_order_edges")],
     ),
+    # exec.rs `sync_observe_cell` (MISS 140): the lane-step rule keeps release sequences
+    # continued from other lanes of the warp (fixtures/e_atom_lane_order THREE: lane 2 reads
+    # lane 1's cell, which continued lane 0's sequence; clean on PTX).
+    SrcMutant(
+        "obs-lane-samewarp",
+        "crates/sim/src/exec.rs",
+        "            .filter(|e| cont_in(self, e) && !(lane && e.writer != me && same_warp(self, e.writer)))\n",
+        "            .filter(|e| cont_in(self, e))\n",
+        [],
+        tests=[("ptxv-sim", "fixtures", "atom_lane_order_edges")],
+    ),
     # wellsync/ticket.rs (MISS 140): C-TICKET accepts claims by lanes of one warp that
     # happen-before does not order and drops the other order as infeasible
     # (fixtures/e_atom_lane_order NOREAD certified).
@@ -282,7 +295,26 @@ MUTANTS = [
         "                    if p.ev.actor != t && !p.ev.hb(t, a.ev.seq, &a.vc) {\n",
         "                    if false && p.ev.actor != t && !p.ev.hb(t, a.ev.seq, &a.vc) {\n",
         [],
-        tests=[("ptxv-sim", "fixtures", "atom_lane_order_edges")],
+        tests=[
+            ("ptxv-sim", "fixtures", "atom_lane_order_edges"),
+            ("ptxv-sim", "fixtures", "ticket_warp_check_order_created_edges"),
+        ],
+    ),
+    # wellsync/ticket.rs (MISS 140, MISS 187): the warp check only for claims at one pc (the
+    # round-2 one-step scope). Lanes of a converged warp at different instructions run in step
+    # order only, so the other order is dropped as infeasible (fixtures/e_fence_sc_lanes
+    # PCS_READER0 certified on PTX; e_ticket_warp_chain / e_ticket_warp_sc_chain refused without
+    # the warp check).
+    SrcMutant(
+        "ticket-samepc",
+        "crates/sim/src/wellsync/ticket.rs",
+        "                    if p.ev.actor != t && !p.ev.hb(t, a.ev.seq, &a.vc) {\n",
+        "                    if p.ev.actor != t && p.ev.pc == a.ev.pc && !p.ev.hb(t, a.ev.seq, &a.vc) {\n",
+        [],
+        tests=[
+            ("ptxv-sim", "fixtures", "fence_sc_unforced_orders"),
+            ("ptxv-sim", "fixtures", "ticket_warp_check_order_created_edges"),
+        ],
     ),
     # exec.rs `warpsync_release`: the GB300 profile's BSYNC waits for lanes parked at a
     # WARPSYNC.COLLECTIVE again (E-HW-BSYNC-COLLECTIVE): the profile verdict deadlocks.
@@ -1422,14 +1454,19 @@ MUTANTS += [
         [NC_TEST, NC_PDL],
     ),
     # E-LAUNCH-ORDER: the launch-clock exemption for a list whose launch order is unknown (an
-    # older capture's list may serialize grids that ran at the same time).
+    # older capture's list may serialize grids that ran at the same time). Under the strict
+    # default good's reader has no predecessor whose clock could cover the write, so the
+    # ordered-reading test (PTXV_UNRECORDED_ORDER=ordered) is the one that tells.
     SrcMutant(
         "nc-start-gate",
         "crates/sim/src/exec.rs",
         "        let before_start = |w: &Epoch| launch.order_recorded && started_after(w);",
         "        let before_start = |w: &Epoch| started_after(w);",
         [("e_ld_nc_xgpu_unord", "good", "ptx", [])],
-        [("ptxv-sim", "fixtures", "e_ld_nc_xgpu_unord_launch_order")],
+        [
+            ("ptxv-sim", "fixtures", "e_ld_nc_xgpu_unord_launch_order"),
+            ("ptxv", "launch_order", "ordered_reading_keeps_the_launch_order_gates"),
+        ],
     ),
     # The launch clock from the grid before it only, without the grids it `waits` for (a join).
     SrcMutant(
@@ -1450,6 +1487,9 @@ LO_UNKNOWN = ("ptxv-sim", "fixtures", "e_ld_nc_pdl_unknown_order")
 LO_STREAMS = ("ptxv-sim", "fixtures", "e_launch_order_two_streams")
 LO_WAITS = ("ptxv-sim", "fixtures", "e_launch_waits_join")
 LO_L1 = ("ptxv-sim", "fixtures", "e_launch_order_l1_boundary")
+# The gates below matter for an unknown order only under PTXV_UNRECORDED_ORDER=ordered (the
+# strict default leaves an unknown-order grid no predecessor to exclude by): checks with it.
+LO_ORDERED = ("ptxv", "launch_order", "ordered_reading_keeps_the_launch_order_gates")
 MUTANTS += [
     # S-NC's stream-order exclusion applies to an unknown-order list again.
     SrcMutant(
@@ -1459,7 +1499,7 @@ MUTANTS += [
         "        self.completes_before(j, i)",
         [("e_launch_order", "UNKNOWN", f, []) for f in ("ptx", "sass")]
         + [("e_launch_waits", "UNKNOWN", f, []) for f in ("ptx", "sass")],
-        [LO_STREAMS, LO_WAITS],
+        [LO_STREAMS, LO_WAITS, LO_ORDERED],
     ),
     # S-NC's done-clock exemption applies to an unknown-order list again.
     SrcMutant(
@@ -1468,7 +1508,7 @@ MUTANTS += [
         "        let done_before = |g: usize| launch.order_recorded && done_by(g);",
         "        let done_before = |g: usize| done_by(g);",
         [("e_ld_nc_pdl", "UNKNOWN_DONE", f, []) for f in ("ptx", "sass")],
-        [LO_UNKNOWN],
+        [LO_UNKNOWN, LO_ORDERED],
     ),
     # E-L1-CORES / E-L1-HAVOC: the kernel boundary of an unknown-order list counts again
     # (`grids_ordered`, then the done-clock check).
@@ -1478,7 +1518,7 @@ MUTANTS += [
         "    l.order_recorded && l.hb_before(a, b)",
         "    l.hb_before(a, b)",
         [("e_launch_order_l1", "UNKNOWN", f, []) for f in ("ptx", "sass")],
-        [LO_L1],
+        [LO_L1, LO_ORDERED],
     ),
     SrcMutant(
         "lo-l1-done-gate",
@@ -1486,7 +1526,7 @@ MUTANTS += [
         "            if self.launch.order_recorded\n                && self.launch.full_preds(rg).any(|p| {",
         "            if self.launch.full_preds(rg).any(|p| {",
         [("e_launch_order_l1", "UNKNOWN", f, []) for f in ("ptx", "sass")],
-        [LO_L1],
+        [LO_L1, LO_ORDERED],
     ),
     # A wait (`waits`) no longer joins the waited grid's done clocks at launch: kc's read of
     # kb's output races.
@@ -1534,6 +1574,267 @@ MUTANTS += [
         "                gx.device == gy.device",
         [("e_mem_sync_domain", "good", f, []) for f in ("ptx", "sass")],
         [("ptxv-sim", "fixtures", "e_mem_sync_domain_scope")],
+    ),
+]
+
+# E-LAUNCH-ORDER in equiv, errdist and compare: their checks are of the variant's launch order
+# (`Case::for_variant`, as `ptxv check`), and the certificate check's verdict cache serves only
+# variants without launch-order edits (`Variant::edits_order`).
+LO_CLI = "launch_order"
+MUTANTS += [
+    # equiv / errdist check the case as loaded again (fixtures/e_equiv_order UNK, UNORD clean).
+    SrcMutant(
+        "lo-equiv-variant",
+        "crates/cli/src/equiv.rs",
+        "    let case = Case::load(base.join(&k.case))?.for_variant(&k.variant)?;",
+        "    let case = Case::load(base.join(&k.case))?;",
+        [],
+        [
+            ("ptxv", LO_CLI, "equiv_precondition_is_the_variants_launch_order"),
+            (
+                "ptxv",
+                "bin:ptxv",
+                "equiv::launch_order_tests::precondition_is_the_variants_launch_order",
+            ),
+        ],
+    ),
+    # compare checks the case as loaded again.
+    SrcMutant(
+        "lo-compare-variant",
+        "crates/cli/src/compare.rs",
+        "        case.for_variant(&variant)?\n",
+        "        case.clone()\n",
+        [],
+        [("ptxv", "bin:ptxv", "compare::tests::a_side_is_checked_in_its_variants_launch_order")],
+    ),
+] + [
+    # One kind of launch-order edit no longer keeps a variant out of the verdict cache.
+    SrcMutant(
+        f"lo-cache-{name}",
+        "crates/case/src/lib.rs",
+        "        !self.after.is_empty() || !self.waits.is_empty() || self.launch_order.is_some()",
+        repl,
+        [],
+        [("ptxv", LO_CLI, "launch_order_edits_keep_out_of_the_verdict_cache")],
+    )
+    for name, repl in [
+        ("after", "        !self.waits.is_empty() || self.launch_order.is_some()"),
+        ("waits", "        !self.after.is_empty() || self.launch_order.is_some()"),
+        ("order", "        !self.after.is_empty() || !self.waits.is_empty()"),
+    ]
+]
+
+# E-LAUNCH-ORDER, the strict reading of an unknown order as the default (MISS 127).
+MUTANTS += [
+    # An unknown order keeps E-PDL's order by default again (the grids of an older capture's
+    # list stay ordered; the strict reading only with PTXV_UNRECORDED_ORDER=concurrent).
+    SrcMutant(
+        "lo-strict-default",
+        "crates/sim/src/lib.rs",
+        '        Ok("ordered") => {}\n        Err(_) | Ok("concurrent") => {',
+        '        Err(_) | Ok("ordered") => {}\n        Ok("concurrent") => {',
+        [("e_launch_order", "PLAIN_UNKNOWN", f, []) for f in ("ptx", "sass")],
+        [
+            ("ptxv", LO_CLI, "unrecorded_order_concurrent_drops_unknown_predecessors"),
+            ("ptxv-sim", "fixtures", "e_launch_order_two_streams"),
+        ],
+    ),
+]
+
+# E-LAUNCH-ORDER, the GB300 runs of equiv and errdist (MISS 165): their workers run the
+# variant's launch order (`--variant`; main.rs `worker_case`).
+MUTANTS += [
+    # equiv's witness replay and elementwise sweep run the case's own order again.
+    SrcMutant(
+        "hw-replay-variant",
+        "crates/cli/src/equiv.rs",
+        '        dump.to_str().unwrap().into(),\n        "--variant".into(),\n        variant.into(),\n    ]',
+        "        dump.to_str().unwrap().into(),\n    ]",
+        [],
+        [("ptxv", "bin:ptxv", "equiv::launch_order_tests::gb300_replays_run_the_variant")],
+    ),
+    # errdist's GPU validation runs the case's own order again.
+    SrcMutant(
+        "errdist-gpu-variant",
+        "crates/cli/src/errdist.rs",
+        '        tag.into(),\n        "--variant".into(),\n        variant.into(),\n',
+        "        tag.into(),\n",
+        [],
+        [("ptxv", "bin:ptxv", "errdist::tests::gpu_worker_runs_the_variant")],
+    ),
+    # A worker loads the case as on disk, whatever variant it is given.
+    SrcMutant(
+        "worker-case-variant",
+        "crates/cli/src/main.rs",
+        "    match variant {\n        Some(v) => c.for_variant(v),\n        None => Ok(c),\n    }",
+        "    let _ = variant;\n    Ok(c)",
+        [],
+        [("ptxv", "bin:ptxv", "worker_tests::worker_case_applies_the_variants_launch_order")],
+    ),
+]
+
+# errdist's compiled models (MISS 165): a model compiled before the variant's launch
+# order and the strict reading applied is refused, and the key covers the reading.
+MUTANTS += [
+    SrcMutant(
+        "model-version-11",
+        "crates/cli/src/errdist.rs",
+        "pub(crate) const MODEL_VERSION: u32 = 12;",
+        "pub(crate) const MODEL_VERSION: u32 = 11;",
+        [],
+        [("ptxv", "bin:ptxv", "errdist::tests::models_before_the_variant_order_are_refused")],
+    ),
+    SrcMutant(
+        "model-key-reading",
+        "crates/cli/src/errdist.rs",
+        "    eat(reading.as_bytes());\n",
+        "    let _ = reading;\n",
+        [],
+        [("ptxv", "bin:ptxv", "errdist::tests::model_key_covers_the_unknown_order_reading")],
+    ),
+]
+
+# `ptxv num`, `ptxv hw`'s simulator runs and `ptxv first-access` (MISS 165): the variant's
+# launch order.
+MUTANTS += [
+    SrcMutant(
+        "num-variant-order",
+        "crates/cli/src/main.rs",
+        "    let mut case = case.for_variant(variant)?;",
+        "    let mut case = case.clone();",
+        [],
+        [("ptxv", LO_CLI, "num_and_hw_expect_run_the_variants_launch_order")],
+    ),
+    SrcMutant(
+        "hw-expect-variant-order",
+        "crates/cli/src/main.rs",
+        "ptxv_sim::explore::run_once(machine(&c.for_variant(&v)?, k)?);",
+        "ptxv_sim::explore::run_once(machine(&c, k)?);",
+        [],
+        [("ptxv", LO_CLI, "num_and_hw_expect_run_the_variants_launch_order")],
+    ),
+    SrcMutant(
+        "hw-expect-run-order",
+        "crates/cli/src/main.rs",
+        'ptxv_sim::explore::run_once(machine(&c.for_variant("good")?, k)?);',
+        "ptxv_sim::explore::run_once(machine(&c, k)?);",
+        [],
+        [("ptxv", LO_CLI, "num_and_hw_expect_run_the_variants_launch_order")],
+    ),
+    # `ptxv first-access` runs the case's own launch order again.
+    SrcMutant(
+        "first-access-variant",
+        "crates/cli/src/main.rs",
+        "            let c = c.for_variant(&variant)?;\n            let launch = ptxv_sim::build_launch(&c, &k)?;",
+        "            let launch = ptxv_sim::build_launch(&c, &k)?;",
+        [],
+        [("ptxv", LO_CLI, "first_access_runs_the_variants_launch_order")],
+    ),
+]
+
+# The verdict cache (MISS 167): only a check of the case as its directory holds it is stored.
+MUTANTS += [
+    SrcMutant(
+        "vcache-in-memory",
+        "crates/cli/src/main.rs",
+        '                && std::env::var("PTXV_EXPLORER").as_deref() != Ok("dpor")\n'
+        "                && vcache::as_on_disk(case);",
+        '                && std::env::var("PTXV_EXPLORER").as_deref() != Ok("dpor");',
+        [],
+        [
+            ("ptxv", "vcache_key", "a_residency_override_is_not_stored"),
+            ("ptxv", "bin:ptxv", "vcache::tests::only_the_case_on_disk_is_stored"),
+        ],
+    ),
+]
+
+# E-LAUNCH-ORDER, the hardware runner (crates/hw `stream_plan`): a launch takes its case
+# stream's hardware stream only when the stream's latest launch is its predecessor or completes
+# before it starts in the case (transitively; not through a programmatic edge), and waits for
+# every other predecessor through an event.
+HW_PLAN = "stream_plan_tests::"
+MUTANTS += [
+    # A launch always takes its case stream's hardware stream again (behind the latest launch).
+    SrcMutant(
+        "hw-plan-latest",
+        "crates/hw/src/lib.rs",
+        "                if l.after != Some(-1)\n                    && last_on[s]\n"
+        "                        .is_none_or(|q| Some(q) == pred || d[q / 64] >> (q % 64) & 1 == 1) =>",
+        "                if l.after != Some(-1) =>",
+        [],
+        [
+            ("ptxv-hw", "lib", HW_PLAN + "after_an_earlier_launch_of_the_stream_gets_a_stream_of_its_own"),
+            ("ptxv-hw", "lib", HW_PLAN + "fixture_variants_wait_only_for_their_predecessors"),
+        ],
+    ),
+    # Only the predecessor itself keeps the stream (no launch that completes before).
+    SrcMutant(
+        "hw-plan-done",
+        "crates/hw/src/lib.rs",
+        "                        .is_none_or(|q| Some(q) == pred || d[q / 64] >> (q % 64) & 1 == 1) =>",
+        "                        .is_none_or(|q| Some(q) == pred) =>",
+        [],
+        [("ptxv-hw", "lib", HW_PLAN + "a_latest_launch_done_before_keeps_the_stream")],
+    ),
+    # What completes before a predecessor no longer completes before the launch.
+    SrcMutant(
+        "hw-plan-transitive",
+        "crates/hw/src/lib.rs",
+        "            for (x, y) in d.iter_mut().zip(&done[p]) {\n                *x |= y;\n            }\n",
+        "",
+        [],
+        [("ptxv-hw", "lib", HW_PLAN + "a_latest_launch_done_before_keeps_the_stream")],
+    ),
+    # A programmatic predecessor counts as completed before the launch.
+    SrcMutant(
+        "hw-plan-pdl-done",
+        "crates/hw/src/lib.rs",
+        "            if !programmatic(p) {\n                d[p / 64] |= 1 << (p % 64);",
+        "            if true {\n                d[p / 64] |= 1 << (p % 64);",
+        [],
+        [("ptxv-hw", "lib", HW_PLAN + "a_programmatic_edge_does_not_complete_its_predecessor")],
+    ),
+    # An earlier predecessor on the launch's own stream is left to the stream order again.
+    SrcMutant(
+        "hw-plan-same-stream",
+        "crates/hw/src/lib.rs",
+        "            if plan.stream[p] == s && Some(p) == last_on[s] {",
+        "            if plan.stream[p] == s {",
+        [],
+        [("ptxv-hw", "lib", HW_PLAN + "an_earlier_predecessor_of_the_stream_is_an_event")],
+    ),
+    # A programmatic predecessor that is also in `waits` keeps programmatic serialization.
+    SrcMutant(
+        "hw-plan-waited-pdl",
+        "crates/hw/src/lib.rs",
+        "l.pdl && Some(p) == pred && !l.waits.contains(&(p as i64));",
+        "l.pdl && Some(p) == pred;",
+        [],
+        [("ptxv-hw", "lib", HW_PLAN + "a_waited_predecessor_is_not_programmatic")],
+    ),
+]
+
+# The runner's done sets past one word of launches, and its GPU path (crates/hw `run_with`).
+MUTANTS += [
+    # The done bit of launch p lands in word 0 whatever p is: plans of more than 64 launches.
+    SrcMutant(
+        "hw-plan-word-index",
+        "crates/hw/src/lib.rs",
+        "                d[p / 64] |= 1 << (p % 64);",
+        "                d[0] |= 1 << (p % 64);",
+        [],
+        [("ptxv-hw", "lib", HW_PLAN + "done_sets_past_64_launches")],
+    ),
+    # Each launch's event is recorded on the NULL stream instead of the launch's hardware stream
+    # (non-blocking streams: a wait for it no longer waits for the launch). Only a GPU run shows
+    # it: caught with PTXV_TEST_GPU=<an idle GPU>; without, the test is skipped.
+    SrcMutant(
+        "hw-event-null-stream",
+        "crates/hw/src/lib.rs",
+        '                    ck(cuEventRecord(events[i], hw_stream[i]), "cuEventRecord")?;',
+        '                    ck(cuEventRecord(events[i], std::ptr::null_mut()), "cuEventRecord")?;',
+        [],
+        [("ptxv", "hw_runner", "gpu_runs_keep_the_case_order")],
     ),
 ]
 
@@ -2731,21 +3032,21 @@ MUTANTS += [
         [],
         py=[("fb/kernel_db", "test_soundness.py", "test_certificate_signals_beside_the_check_flag")],
     ),
-    # soundness.py `record_tags`: the entries under checks_extra are not read.
+    # soundness.py `race_parts`: the entries under checks_extra are not read.
     SrcMutant(
         "kdb-snd-extra-ignored",
         "fb/kernel_db/soundness.py",
-        '        for chk in [r.get("check"), *(extra if isinstance(extra, list) else [])]:\n',
-        '        for chk in [r.get("check")]:\n',
+        '            *(("checks_extra", x) for x in (extra if isinstance(extra, list) else [])),\n',
+        "",
         [],
         py=[("fb/kernel_db", "test_soundness.py", "test_certificate_signals_beside_the_check_flag")],
     ),
-    # soundness.py `record_tags`: check_ptx counts only beside another check again.
+    # soundness.py `race_parts`: check_ptx counts only beside a check again.
     SrcMutant(
         "kdb-snd-check-ptx-needs-check",
         "fb/kernel_db/soundness.py",
-        "        if isinstance(cp, dict):\n",
-        "        if isinstance(cp, dict) and t:\n",
+        '            ("check_ptx", cp),\n',
+        '            ("check_ptx", cp if isinstance(r.get("check"), dict) else None),\n',
         [],
         py=[("fb/kernel_db", "test_soundness.py", "test_certificate_signals_beside_the_check_flag")],
     ),
@@ -2798,44 +3099,95 @@ MUTANTS += [
         [],
         py=[("fb/kernel_db", "test_soundness.py", "test_annotation")],
     ),
-    # soundness.py `record_tags`: check_ptx gets no coverage tag again, so misses of input
+    # soundness.py `race_parts`: check_ptx gets no coverage tag again, so misses of input
     # coverage leave its open list.
     SrcMutant(
         "kdb-snd-check-ptx-no-coverage",
         "fb/kernel_db/soundness.py",
-        '            t |= cls.check_tags({**cp, "front_end": "ptx"})\n',
-        '            t |= {"kdb-tooling", "race-verdict:ptx"} | ({"certify"} if cls.on_certificate(cp) else set())\n',
+        '            t = cls.check_tags({**c, "front_end": "ptx"} if c is cp else c)\n',
+        '            t = cls.check_tags(c) if c is not cp else {"kdb-tooling", "race-verdict:ptx"} | '
+        '({"certify"} if cls.on_certificate(c) else set())\n',
         [],
         py=[("fb/kernel_db", "test_soundness.py", "test_check_ptx_tags_are_a_ptx_checks")],
     ),
-    # soundness.py `record_tags`: check_ptx's tags follow its front_end, so one without it gets
+    # soundness.py `race_parts`: check_ptx's tags follow its front_end, so one without it gets
     # the SASS levels' tags instead of race-verdict:ptx.
     SrcMutant(
         "kdb-snd-check-ptx-front",
         "fb/kernel_db/soundness.py",
-        '            t |= cls.check_tags({**cp, "front_end": "ptx"})\n',
-        "            t |= cls.check_tags(cp)\n",
+        '            t = cls.check_tags({**c, "front_end": "ptx"} if c is cp else c)\n',
+        "            t = cls.check_tags(c)\n",
         [],
         py=[("fb/kernel_db", "test_soundness.py", "test_check_ptx_tags_are_a_ptx_checks")],
     ),
-    # soundness.py `of_record`: check_ptx beside a check is judged at the check's rev again,
+    # soundness.py `race_parts`: check_ptx beside a check is judged at the check's rev again,
     # whatever rev of its own it stores (an older build's open misses go).
     SrcMutant(
         "kdb-snd-check-ptx-at-check-rev",
         "fb/kernel_db/soundness.py",
-        '            and cp["ptxv_rev"] != rev\n',
-        "            and False\n",
+        '            if c is not chk and "ptxv_rev" in c and c["ptxv_rev"] != rev:\n',
+        '            if c is not cp and c is not chk and "ptxv_rev" in c and c["ptxv_rev"] != rev:\n',
         [],
         py=[("fb/kernel_db", "test_soundness.py", "test_check_ptx_judged_at_its_own_rev")],
     ),
-    # soundness.py `of_record`: with a rev of its own, check_ptx's tags are not judged at all.
+    # soundness.py `race_parts`: with a rev of its own, check_ptx's tags are not judged at all.
     SrcMutant(
         "kdb-snd-check-ptx-own-rev-dropped",
         "fb/kernel_db/soundness.py",
-        '                    (cp["ptxv_rev"], self.record_tags({"check_ptx": cp})["race"]),\n',
-        "",
+        '                own.append((c["ptxv_rev"], t, which))\n',
+        '                own.append((c["ptxv_rev"], t, which)) if c is not cp else None\n',
         [],
         py=[("fb/kernel_db", "test_soundness.py", "test_check_ptx_judged_at_its_own_rev")],
+    ),
+    # soundness.py `race_parts`: the check's tags are judged at check_ptx's own rev, when it
+    # stores one, instead of the check's (the check's open misses go when check_ptx's build is
+    # newer).
+    SrcMutant(
+        "kdb-snd-check-at-check-ptx-rev",
+        "fb/kernel_db/soundness.py",
+        '        return ([(rev, at_check, "check")] if at_check else []) + own\n',
+        '        return ([(own[-1][0] if own else rev, at_check, "check")] if at_check else []) + own\n',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_check_judged_at_its_own_rev_beside_a_newer_check_ptx")],
+    ),
+    # soundness.py `race_parts`: entries under checks_extra are judged at the check's rev again,
+    # whatever rev of their own they store.
+    SrcMutant(
+        "kdb-snd-extras-at-check-rev",
+        "fb/kernel_db/soundness.py",
+        '            if c is not chk and "ptxv_rev" in c and c["ptxv_rev"] != rev:\n',
+        '            if c is cp and c is not chk and "ptxv_rev" in c and c["ptxv_rev"] != rev:\n',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_checks_extra_judged_at_their_own_revs")],
+    ),
+    # soundness.py `of_record`: a part at an unknown rev drops its tags' entries from the open
+    # list again, those open at int7's tip included.
+    SrcMutant(
+        "kdb-snd-unknown-part-dropped",
+        "fb/kernel_db/soundness.py",
+        "                    krev = tip\n",
+        "                    continue\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_unknown_build_lists_the_entries_open_at_the_tip")],
+    ),
+    # export_records.py `base`: the export status and missing_fixes ignore the builds of
+    # check_ptx and checks_extra again ("current" beside a stale grade).
+    SrcMutant(
+        "kdb-export-base-own-builds-ignored",
+        "fb/kernel_db/export_records.py",
+        '        own = [p[0] for p in soundness.Soundness.race_parts(r) if p[2] != "check"]\n',
+        "        own = []\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_base_counts_builds_of_their_own")],
+    ),
+    # ptx_front.py `summarize_run`: check_ptx stores no build rev again (judged at the check's).
+    SrcMutant(
+        "kdb-ptx-front-rev-dropped",
+        "fb/kernel_db/ptx_front.py",
+        '        "ptxv_rev": bin_rev(rj.get("binary")),\n',
+        '        "ptxv_rev": None,\n',
+        [],
+        py=[("fb/kernel_db", "test_run_collect.py", "test_ptx_front_build_rev")],
     ),
     # export_records.py `apply_rev_fix`: a stored check_ptx rev is not audited.
     SrcMutant(
@@ -3016,13 +3368,13 @@ MUTANTS += [
         [],
         [("ptxv", "srcmut_anchors", "every_srcmut_mutant_finds_its_text_once")],
     ),
-    # srcmut.py `broken_anchors` reports nothing, so --check-anchors passes with an anchor gone
+    # srcmut.py `anchor_problem` takes any count, so --check-anchors passes with an anchor gone
     # (the anchors test's positive control: a broken anchor planted in a scratch tree).
     SrcMutant(
         "srcmut-anchors-none",
         "tools/mutate/srcmut.py",
-        "        if n != 1:\n",
-        "        if n < 0:\n",
+        "    if n != 1:\n",
+        "    if n < 0:\n",
         [],
         [("ptxv", "srcmut_anchors", "every_srcmut_mutant_finds_its_text_once")],
     ),
@@ -3072,6 +3424,35 @@ MUTANTS += [
         "tools/mutate/srcmut.py",
         "        broken = broken_anchors(ROOT if a.root is None else a.root, chosen)\n",
         "        broken = broken_anchors(a.root, chosen) if a.root is not None else []\n",
+        [],
+        [("ptxv", "srcmut_anchors", "the_mutation_tools_tests_pass")],
+    ),
+    # srcmut.py `anchor_problem`: a find text kept only inside a comment counts as an anchor
+    # again (test_srcmut_check_anchors' comment cases).
+    SrcMutant(
+        "srcmut-anchors-comment-ignored",
+        "tools/mutate/srcmut.py",
+        "    if inside and all(any(a <= k < b for a, b in inside) for k in code):\n",
+        "    if False:\n",
+        [],
+        [("ptxv", "srcmut_anchors", "the_mutation_tools_tests_pass")],
+    ),
+    # srcmut.py `broken_anchors` over the whole list (test_srcmut_anchors_whole_list): only the
+    # first mutant of each file is checked; mutants are checked in batches of 64 and a last
+    # partial batch is dropped (the loop line kept).
+    SrcMutant(
+        "srcmut-anchors-per-file-once",
+        "tools/mutate/srcmut.py",
+        "        if m.file not in files:\n            f = tree / m.file\n",
+        "        if m.file in files:\n            continue\n        if m.file not in files:\n            f = tree / m.file\n",
+        [],
+        [("ptxv", "srcmut_anchors", "the_mutation_tools_tests_pass")],
+    ),
+    SrcMutant(
+        "srcmut-anchors-tail-dropped",
+        "tools/mutate/srcmut.py",
+        "    for m in mutants:\n",
+        "    mutants = mutants[: (len(mutants) - len(mutants) % 64) or len(mutants)]\n    for m in mutants:\n",
         [],
         [("ptxv", "srcmut_anchors", "the_mutation_tools_tests_pass")],
     ),
@@ -4709,8 +5090,9 @@ def run_mutant_in_tree(m: SrcMutant, out: Path) -> dict:
         shutil.copy2(ROOT / rel, dst)
     f = tree / m.file
     src = f.read_text()
-    if src.count(m.find) != 1:
-        return {"name": m.name, "status": "error", "why": "find text not unique"}
+    why = anchor_problem(src, m.file, m.find)
+    if why:
+        return {"name": m.name, "status": "error", "why": why}
     f.write_text(src.replace(m.find, m.replace))
     if (m.runs or m.tests) and not build(tree, target):
         return {"name": m.name, "status": "error", "why": "build failed"}
@@ -4833,18 +5215,96 @@ def run_mutant_in_tree(m: SrcMutant, out: Path) -> dict:
     return {"name": m.name, "status": "caught" if caught else "survived", "runs": runs}
 
 
+# Comment spans (start, end) of Rust and Python sources, for the anchor rule: a token scan in
+# which string and character literals are code, so a comment marker inside one starts nothing.
+_RS_TOKEN = re.compile(
+    r"""//|/\*|b?r(#*)"|b?"|"""  # comments, raw strings, strings
+    r"""b?'(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]{1,6}\}|.)|[^\\'\n])'"""  # characters
+)
+_RS_STRING_END = re.compile(r'(?:\\.|[^"\\])*"', re.S)
+_RS_BLOCK = re.compile(r"/\*|\*/")
+_PY_TOKEN = re.compile(r"""#|'''|\"\"\"|'|\"""")
+_PY_STRING_END = {
+    "'''": re.compile(r"(?:\\.|(?!''').)*'''", re.S),
+    '"""': re.compile(r'(?:\\.|(?!""").)*"""', re.S),
+    "'": re.compile(r"(?:\\.|[^'\\\n])*'"),
+    '"': re.compile(r'(?:\\.|[^"\\\n])*"'),
+}
+
+
+def comment_spans(text: str, file: str) -> list | None:
+    """The comments of a Rust (`//` to the end of the line, nested `/* */`) or Python (`#` to the
+    end of the line) source as sorted (start, end) spans; None for other files."""
+    rust = file.endswith(".rs")
+    if not rust and not file.endswith(".py"):
+        return None
+    spans, i, n = [], 0, len(text)
+    while (t := (_RS_TOKEN if rust else _PY_TOKEN).search(text, i)) is not None:
+        s, tok = t.start(), t.group(0)
+        if tok in ("//", "#"):
+            e = text.find("\n", s)
+            i = n if e < 0 else e
+            spans.append((s, i))
+        elif tok == "/*":
+            depth, j = 1, t.end()
+            while depth and (b := _RS_BLOCK.search(text, j)) is not None:
+                depth += 1 if b.group(0) == "/*" else -1
+                j = b.end()
+            i = j if depth == 0 else n
+            spans.append((s, i))
+        elif rust and t.group(1) is not None:
+            # A raw string: it ends at the first quote followed by as many hashes.
+            e = text.find('"' + t.group(1), t.end())
+            i = n if e < 0 else e + 1 + len(t.group(1))
+        elif rust and tok.endswith('"'):
+            e = _RS_STRING_END.match(text, t.end())
+            i = e.end() if e else n
+        elif rust:
+            i = t.end()  # a character literal
+        else:
+            e = _PY_STRING_END[tok].match(text, t.end())
+            i = e.end() if e else t.end()
+    return spans
+
+
+def anchor_problem(text: str, file: str, find: str, spans: list | None = None) -> str | None:
+    """Why `find` is not an anchor in `text` (the source of `file`), or None: it must occur
+    exactly once (a mutant replaces every occurrence), and not only inside a comment (a mutant
+    there would edit the comment). `spans`: comment_spans(text, file), when known."""
+    n = text.count(find)
+    if n != 1:
+        return f"find text occurs {n} times"
+    if spans is None:
+        spans = comment_spans(text, file) or []
+    s = text.index(find)
+    e = s + len(find)
+    inside = [(a, b) for a, b in spans if a < e and b > s]
+    code = (k for k, c in enumerate(text[s:e], s) if not c.isspace())
+    if inside and all(any(a <= k < b for a, b in inside) for k in code):
+        return "find text occurs once, inside a comment"
+    return None
+
+
 def broken_anchors(tree: Path, mutants: list) -> list:
-    """(mutant, why) for every mutant whose find text does not occur exactly once in its file
-    under `tree`: the rule run_mutant_in_tree applies before it builds."""
+    """(mutant, why) for every mutant whose find text is not an anchor in its file under `tree`
+    (anchor_problem: the rule run_mutant_in_tree applies before it builds). Each file is read
+    and scanned once per call."""
     bad = []
+    files = {}
     for m in mutants:
-        f = tree / m.file
-        if not f.is_file():
+        if m.file not in files:
+            f = tree / m.file
+            files[m.file] = (f.read_text(), None) if f.is_file() else None
+        if files[m.file] is None:
             bad.append((m, "no such file"))
             continue
-        n = f.read_text().count(m.find)
-        if n != 1:
-            bad.append((m, f"find text occurs {n} times"))
+        text, spans = files[m.file]
+        if spans is None:
+            spans = comment_spans(text, m.file) or []
+            files[m.file] = (text, spans)
+        why = anchor_problem(text, m.file, m.find, spans)
+        if why:
+            bad.append((m, why))
     return bad
 
 
@@ -4856,7 +5316,7 @@ def main(argv=None):
     ap.add_argument("--only", help="comma-separated mutant names")
     ap.add_argument("--check-anchors", action="store_true",
                     help="print the mutants whose find text does not occur exactly once in its file, "
-                    "exit 1 if there is one; builds and runs nothing")
+                    "or only inside a comment, exit 1 if there is one; builds and runs nothing")
     ap.add_argument("--root", type=Path,
                     help="with --check-anchors: the tree whose files are checked (default this checkout)")
     a = ap.parse_args(argv)

@@ -1,0 +1,56 @@
+name = "e_ticket_warp_sc_chain"
+description = """
+MISS 140: C-TICKET's warp check against an S-FENCE-SC edge. Lane 0's claim is ordered before
+lane 1's only through a Fence-SC edge whose coherence pair is on a second counter, shared with
+thread 32. The certificate refuses (lanes of one warp claim unordered by happens-before when
+thread 32's atomic comes first); the explorers find the race on data."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "w"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [6]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "lane 1's read of data races when thread 32's atomic on the second counter comes first"
+expect = ["nondeterministic", "race"]

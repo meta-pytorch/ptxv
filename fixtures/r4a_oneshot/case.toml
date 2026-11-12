@@ -18,6 +18,13 @@ outputs = ["o1_r0", "o2_r0", "o1_r1", "o2_r1", "o1_r2", "o2_r2"]
 replicas = [["o1_r0", "o1_r1", "o1_r2"], ["o2_r0", "o2_r1", "o2_r2"]]
 exit_fence = "sys"
 
+# E-LAUNCH-ORDER: declared on a re-capture (2026-11-12, MISS 127): the regeneration command
+# above with --allow-fd-guess (the time-order match of POSIX-fd imports that this capture's
+# tool made without the flag), run with the launch order recorded, gives the same launches,
+# kernel code and inputs (fb/kernel_db/recapture_compare.py), every launch on one stream per
+# GPU in list order.
+launch_order = "declared"
+
 [[buffers]]
 name = "W0_r0"
 dtype = "u64"

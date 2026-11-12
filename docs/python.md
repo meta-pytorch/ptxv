@@ -132,6 +132,16 @@ write_only=())` is a context manager. The calling thread runs the region normall
   points into an input after that input's snapshot and before the case's last launch (its
   writes are not in the initial contents). `fb/kernel_db/scan_inputs.py` finds uniform
   inputs in existing case directories (single- and multi-device).
+- **Initial bytes (2026-11-12, MISS 173).** A buffer starts with the bytes in the
+  pre-snapshot of the first launch of the group that points into it (directly or through a
+  pointer table), so a copy, a fill or a host upload made inside the region before that launch
+  is in the case. Before, it started with the earliest snapshot of its driver allocation in the
+  group, which a launch earlier in the group may have taken before the copy (a 2 MiB allocator
+  segment holds many small tensors). A buffer changed between two launches of the group that
+  point into it, by anything outside the group, raises `CaseError` (a case cannot express it).
+  A buffer allocated in the region whose first launch has no snapshot covering it is
+  `init = "undef"` (a read of it is reported), never zeros or a later snapshot. capture.json
+  `buffers[].initial_bytes` names the source.
 - **Outputs.**
   - An output is a buffer the group changed, or one allocated inside the region (it may get
     back the bytes it held).
@@ -156,7 +166,8 @@ write_only=())` is a context manager. The calling thread runs the region normall
   - launches under stream capture (no snapshots);
   - several streams;
   - allocations over `max_alloc`, or snapshots over `budget`;
-  - an allocation that changed between two launches of a group, outside the group.
+  - an allocation that changed between two launches of a group, outside the group (a buffer
+    in it that two launches of the group point into refuses the case, above).
 - `ptxv.capture_call(fn, inputs)` (what `compare` uses for callables) runs `fn` once to warm up
   (lazy loading, autotuning), restores inputs it changed, then captures. `fn` may be a torch
   expression string over the inputs.

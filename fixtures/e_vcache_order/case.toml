@@ -2,11 +2,10 @@ name = "e_vcache_order"
 description = """
 E-LAUNCH-ORDER and the verdict cache (crates/cli/src/vcache.rs): a writer and a reader of its
 output with ld.global.nc, the next launch on the GPU. The case's order is unknown (no
-launch_order), so S-NC reports the .nc read (good: violation); variant DECL declares the order
-(clean). `ptxv check --variant DECL --certify` stores DECL's verdict; equiv and errdist build
-their precondition's machine from the case as loaded, without the variant's launch-order
-edits, so DECL's cached verdict is not theirs: their precondition must explore (violation), not
-reuse it (equiv.toml; crates/cli/tests/equiv.rs)."""
+launch_order), so the grids may run at the same time and S-NC reports the .nc read (good: race
++ violation); variant DECL declares the order (clean). `ptxv check --variant DECL --certify` does not store DECL's verdict, as DECL edits the
+launch order; equiv's precondition for DECL (equiv.toml) checks DECL's order again: clean, not
+the case's violation (crates/cli/tests/launch_order.rs)."""
 ptx = "kernel.ptx"
 entry = "writer"
 grid = [1, 1, 1]
@@ -51,8 +50,8 @@ params = [
 
 [[variants]]
 id = "good"
-summary = "order unknown: the .nc read of the writer's output is an S-NC violation"
-expect = ["violation"]
+summary = "order unknown: the grids may run at the same time, so the .nc read of the writer's output races with it and is an S-NC violation"
+expect = ["race", "violation"]
 
 [[variants]]
 id = "DECL"

@@ -245,7 +245,9 @@ pub(crate) fn prepare_with(
     segments: bool,
     fixed_ints: bool,
 ) -> Result<Run> {
-    let case = Case::load(base.join(&k.case))?;
+    // E-LAUNCH-ORDER: the variant's launch-order edits (`after`, `waits`, `launch_order`)
+    // apply, as in `ptxv check`: precondition 1 and every run below are of its launch order.
+    let case = Case::load(base.join(&k.case))?.for_variant(&k.variant)?;
     let (kern, cubin) = load_with(&case, &k.variant, &k.front, dir, &[])?;
     // Both kernels' binaries land in `dir` under the variant's name: keep this one apart (the
     // GB300 replays run it later).
@@ -267,9 +269,9 @@ pub(crate) fn prepare_with(
             ptxv_sim::explore::explore_symmetric(mk, max_states, &mut |_, _| {})
         })
     } else if k.certify {
-        // `ptxv check --certify` may have run this check already (vcache.rs), unless the
-        // variant edits the launch order, which this machine (the case as loaded) does not
-        // apply: that check was of another launch order.
+        // `ptxv check --certify` may have run this check already (vcache.rs). Both apply a
+        // variant's launch-order edits; the cache still serves only variants without them, so
+        // that a change to either side cannot pass one launch order's verdict off as another's.
         let key = (!case.variant(&k.variant)?.edits_order())
             .then(|| crate::vcache::key(&case.dir, &k.variant, &k.front, "certify"))
             .flatten();
@@ -655,6 +657,23 @@ fn witness_case(case: &Case, leaves: &[(String, u64)]) -> Case {
     c
 }
 
+/// The `hw-worker` arguments of one GB300 run of a kernel's binary that writes the run's output
+/// to `dump`: with `--variant`, so that the GPU runs the variant's launch order
+/// (`Case::for_variant`), as the simulator did (`prepare_with`), not the case's own.
+fn hw_worker_args(case_dir: &Path, cubin: &Path, variant: &str, dump: &Path) -> Vec<String> {
+    vec![
+        "hw-worker".into(),
+        case_dir.to_str().unwrap().into(),
+        cubin.to_str().unwrap().into(),
+        "--runs".into(),
+        "1".into(),
+        "--dump".into(),
+        dump.to_str().unwrap().into(),
+        "--variant".into(),
+        variant.into(),
+    ]
+}
+
 /// Output element `i` of `run` on the witness input, in the simulator and (unless `no_hw`)
 /// on GB300.
 fn replay(
@@ -696,15 +715,7 @@ fn replay(
     };
     let dump = dir.join(format!("{}.witness.bin", run.variant));
     let _ = std::fs::remove_file(&dump);
-    let mut args = vec![
-        "hw-worker".to_string(),
-        run.case.dir.to_str().unwrap().to_string(),
-        run.cubin.to_str().unwrap().to_string(),
-        "--runs".into(),
-        "1".into(),
-        "--dump".into(),
-        dump.to_str().unwrap().to_string(),
-    ];
+    let mut args = hw_worker_args(&run.case.dir, &run.cubin, &run.variant, &dump);
     for b in &wc.m.buffers {
         if out_only(&wc, &b.name) {
             continue;
@@ -881,17 +892,13 @@ fn elementwise_gpu_check(
         let dump = dir.join(format!("ew.{}.out.bin", run.variant));
         let _ = std::fs::remove_file(&dump);
         let st = std::process::Command::new(std::env::current_exe().map_err(|x| x.to_string())?)
-            .args([
-                "hw-worker",
-                run.case.dir.to_str().unwrap(),
-                run.cubin.to_str().unwrap(),
-                "--runs",
-                "1",
-                "--dump",
-                dump.to_str().unwrap(),
-                "--input",
-                &format!("{name}={}", ip.display()),
-            ])
+            .args(hw_worker_args(
+                &run.case.dir,
+                &run.cubin,
+                &run.variant,
+                &dump,
+            ))
+            .args(["--input", &format!("{name}={}", ip.display())])
             .env("CUDA_VISIBLE_DEVICES", gpu.to_string())
             .stdout(std::process::Stdio::null())
             .status()
@@ -3126,5 +3133,90 @@ mod captured_tests {
             assert!(!pair_against_level(w(0x7fc1_2345), w(0xffc0_0001), b).2);
             assert!(!pair_against_level(f(inf), f(inf), b).2);
         }
+    }
+}
+
+#[cfg(test)]
+mod launch_order_tests {
+    use clap::Parser;
+
+    use super::*;
+
+    /// E-LAUNCH-ORDER: the GB300 replays (the witness replay, the elementwise sweep) run the
+    /// variant's launch order. The worker's arguments name the variant and parse into
+    /// `hw-worker` with it, which runs `worker_case` (main.rs worker_tests).
+    #[test]
+    fn gb300_replays_run_the_variant() {
+        let args = hw_worker_args(
+            Path::new("case"),
+            Path::new("k.cubin"),
+            "UNORD",
+            Path::new("out.bin"),
+        );
+        let cli =
+            crate::Cli::try_parse_from(std::iter::once("ptxv".to_string()).chain(args)).unwrap();
+        match cli.cmd {
+            crate::Cmd::HwWorker {
+                case,
+                image,
+                runs,
+                dump,
+                variant,
+                ..
+            } => {
+                assert_eq!(
+                    (case.as_path(), image.as_path()),
+                    (Path::new("case"), Path::new("k.cubin"))
+                );
+                assert_eq!(
+                    (runs, dump.as_deref(), variant.as_deref()),
+                    (1, Some(Path::new("out.bin")), Some("UNORD"))
+                );
+            }
+            _ => panic!("not hw-worker"),
+        }
+    }
+
+    /// E-LAUNCH-ORDER: precondition 1 of equiv (`fixed_ints` off) and of errdist (on) is the
+    /// check of the variant's launch order. fixtures/e_equiv_order declares its order (good:
+    /// clean); UNK makes it unknown (the strict reading: the grids may run at the same time,
+    /// race + violation), UNORD gives the reader no predecessor (race + violation). The
+    /// exploring check, so that the verdict cache is not involved.
+    #[test]
+    fn precondition_is_the_variants_launch_order() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dir =
+            std::env::temp_dir().join(format!("ptxv-test-prepare-order-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (variant, want) in [
+            ("good", None),
+            ("UNK", Some(r#"not clean: ["race", "violation"]"#)),
+            ("UNORD", Some(r#"not clean: ["race", "violation"]"#)),
+        ] {
+            for fixed_ints in [false, true] {
+                let k = KernelRef {
+                    case: "fixtures/e_equiv_order".into(),
+                    variant: variant.into(),
+                    front: "ptx".into(),
+                    expect: None,
+                    slices: false,
+                    certify: false,
+                    expect_bound_u: None,
+                };
+                let run = prepare_with(&root, &k, 200_000, &dir, false, fixed_ints).unwrap();
+                let not_clean: Vec<&str> = run
+                    .pre
+                    .iter()
+                    .map(|p| p.as_str())
+                    .filter(|p| p.starts_with("not clean"))
+                    .collect();
+                assert_eq!(
+                    not_clean,
+                    want.into_iter().collect::<Vec<_>>(),
+                    "{variant} fixed_ints={fixed_ints}"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

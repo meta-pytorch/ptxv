@@ -3,9 +3,10 @@ description = """
 E-LAUNCH-ORDER (MISS 113): a writer on stream 0 and a reader of its output with ld.global.nc
 on stream 1. With the order recorded and an event edge (after = 0), the .nc read is exact;
 the same launch list with its order unknown (an older capture, which lists the launches of
-every stream one after the other) gets no stream-order exclusion: S-NC reports it; without the
-event (after = -1) the read races with the write. A coherent read stays clean in an
-unknown-order list: E-PDL still orders the list's grids."""
+every stream one after the other) gets no stream-order exclusion: S-NC reports it, and its
+grids may run at the same time (the strict reading): the read races with the write, as without
+the event (after = -1). A coherent read in an unknown-order list races too; it is clean with
+PTXV_UNRECORDED_ORDER=ordered, where E-PDL orders the list's grids."""
 ptx = "kernel.ptx"
 entry = "writer"
 grid = [1, 1, 1]
@@ -48,9 +49,9 @@ expect = ["clean"]
 
 [[variants]]
 id = "UNKNOWN"
-summary = "the same launch list from an older capture: its order is unknown, so it does not exclude the .nc conflict"
+summary = "the same launch list from an older capture: its order is unknown, so its grids may run at the same time (the read races with the write) and the .nc conflict is not excluded"
 launch_order = "unknown"
-expect = ["violation"]
+expect = ["race", "violation"]
 
 [[variants]]
 id = "UNORD"
@@ -68,9 +69,9 @@ expect = ["clean"]
 
 [[variants]]
 id = "PLAIN_UNKNOWN"
-summary = "a coherent ld.global read in an unknown-order list: E-PDL still orders the grids (only the launch-order exclusions are gated)"
+summary = "a coherent ld.global read in an unknown-order list: its grids may run at the same time, so the read races with the write (clean with PTXV_UNRECORDED_ORDER=ordered, where E-PDL orders the list)"
 marker = "@LD"
 find = "ld.global.nc.u32"
 replace = "ld.global.u32"
 launch_order = "unknown"
-expect = ["clean"]
+expect = ["race"]

@@ -2245,7 +2245,7 @@ id = "B32"
 summary = "the compute stream does not wait for dispatch's event: rank 0's expert gather (launch 6) is ordered after nothing, so it reads the receive buffer while DeepEP's dispatch is still filling it"
 after = [[6, -1]]
 expect = ["race"]
-hw_note = "not replayed: the hardware runner issues each GPU's launches on one stream"
+hw_note = "GB300 (2026-11-12): 199/200 runs differ from the capture (launch 6 runs on a stream of its own)"
 
 [[variants]]
 id = "B33"
@@ -2283,7 +2283,7 @@ id = "B37"
 summary = "the comm stream does not wait for the compute stream before combine: rank 0's cached_notify_combine (launch 19) is ordered only after dispatch, so combine reads the expert outputs while the bf16 cast is still writing them"
 after = [[19, 5]]
 expect = ["race"]
-hw_note = "not replayed: the hardware runner issues each GPU's launches on one stream"
+hw_note = "GB300 (2026-11-12): launch 19 runs on a stream of its own after launch 5 only; 200/200 runs match the capture at this timing. With a 50 ms spin kernel inserted on GPU 0 before launch 18 (rank 0's bf16 copy into W18_r0, which combine reads), 200/200 runs differ from the capture (896 words, one distinct output), good 0/200"
 
 [[variants]]
 id = "B38"

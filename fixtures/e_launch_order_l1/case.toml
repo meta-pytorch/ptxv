@@ -3,7 +3,8 @@ description = """
 E-LAUNCH-ORDER with E-L1-HAVOC (MISS 113): a writer and a reader of its output with a weak
 ld.global. With the reader's predecessor recorded, its launch drops every L1 copy older than
 the writes (E-L1-CORES' kernel boundary): clean. With the launch order unknown (an older
-capture), that boundary is not assumed and an outside fill may leave a stale line."""
+capture), the grids may run at the same time (race), that boundary is not assumed and an
+outside fill may leave a stale line."""
 ptx = "kernel.ptx"
 entry = "writer"
 grid = [1, 1, 1]
@@ -45,6 +46,6 @@ expect = ["clean"]
 
 [[variants]]
 id = "UNKNOWN"
-summary = "the same list with its order unknown: no kernel boundary between the writes and the read is assumed"
+summary = "the same list with its order unknown: the grids may run at the same time (the read races with the writes) and no kernel boundary between the writes and the read is assumed"
 launch_order = "unknown"
-expect = ["stale"]
+expect = ["race", "stale"]

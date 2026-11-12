@@ -1,0 +1,7 @@
+max_states = 200000
+reference = { case = ".", variant = "UNORD", front = "ptx", certify = true }
+[[candidates]]
+case = "."
+variant = "UNORD"
+front = "ptx"
+certify = true

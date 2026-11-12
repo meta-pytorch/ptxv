@@ -3196,10 +3196,12 @@ impl Machine {
         // synchronization with that lane's own release, nor with patterns continued from
         // other lanes of the warp (fewer edges: at most a false race; a last-arriver chosen by
         // its ticket among lanes of one step is such one). Patterns continued from writers
-        // outside the warp stay: the read synchronizes with them in either order (it reads
-        // the head's sequence directly or through the other lane's read-modify-write;
-        // fixtures/e_atom_lane_cont). `c.pc` is the instruction only at the strict PTX
-        // level.
+        // outside the warp stay: the read synchronizes with them in either lane order of the
+        // step (it reads the head's sequence directly or through the other lane's
+        // read-modify-write; fixtures/e_atom_lane_cont). Not in either step order of the warp:
+        // a third lane's plain store at a later instruction, which PTX may put before both
+        // lanes' writes in coherence order, ends that sequence (MISS 187). `c.pc` is the
+        // instruction only at the strict PTX level.
         let warp = self.threads[t].warp;
         let same_warp =
             |x: &Self, w: u32| (w as usize) < x.threads.len() && x.threads[w as usize].warp == warp;

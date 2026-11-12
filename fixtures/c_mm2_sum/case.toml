@@ -11,6 +11,12 @@ block = [64, 1, 1]
 dynamic_smem = 12672
 outputs = ["out", "W1", "W0"]
 
+# E-LAUNCH-ORDER: declared on a re-capture (2026-11-12, MISS 127): PTXV_MM2=sum tools/capture.py
+# --file tools/capture_examples/mm2.py --binary, with the launch order recorded, gives the same
+# launches and kernel code (fb/kernel_db/recapture_compare.py; its inputs differ from the
+# checked-in capture's), every launch on one stream in list order.
+launch_order = "declared"
+
 [[buffers]]
 name = "x"
 dtype = "f32"

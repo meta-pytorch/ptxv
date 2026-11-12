@@ -133,11 +133,10 @@ def _skey(r: dict, ns=None):
 
 
 def launch_order(  # noqa: C901 (one pass over the records, then projection and encoding)
-    records: list, kept: list | None = None, *, single_device: bool = False
+    records: list, kept: list | None = None
 ) -> LaunchOrder:
     """`records`: one process's records in issue order. `kept`: indices into `records` of the
-    case's launches, in case order (default: every launch record). `single_device`: the case
-    puts every kept launch on one GPU (its device then is 0 for the encoding)."""
+    case's launches, in case order (default: every launch record)."""
     launches = [i for i, r in enumerate(records) if "name" in r]
     if kept is None:
         kept = launches
@@ -160,7 +159,7 @@ def launch_order(  # noqa: C901 (one pass over the records, then projection and 
         )
     if any(b <= a for a, b in zip(kept, kept[1:])):
         unrecorded("the case's launches are not in issue order")
-    if not single_device and len({_dev(records[i]) for i in kept}) > 1:
+    if len({_dev(records[i]) for i in kept}) > 1:
         unrecorded(
             "launches on several GPUs in one process (the case has no per-launch device)"
         )
@@ -286,16 +285,13 @@ def launch_order(  # noqa: C901 (one pass over the records, then projection and 
         proj[i] = res
         return res
 
-    def edev(ri: int) -> int:
-        return 0 if single_device else _dev(records[ri])
-
     hb_anc: dict[int, set[int]] = {}  # all-full ancestors among kept launches
     preds_of: dict[int, dict[int, int]] = {}
     for ri in kept:
         pr = {
             p: kd
             for p, kd in projected(ri).items()
-            if edev(p) == edev(ri) and kept_pos[p] < kept_pos[ri]
+            if _dev(records[p]) == _dev(records[ri]) and kept_pos[p] < kept_pos[ri]
         }
         red = {
             p: kd
@@ -316,7 +312,7 @@ def launch_order(  # noqa: C901 (one pass over the records, then projection and 
     prev_on_stream: dict = {}  # (device, stream index) -> previous kept launch on it
     for k, ri in enumerate(kept):
         r = records[ri]
-        dev = edev(ri)
+        dev = _dev(r)
         skey = (dev, ns_of(ri, r), _skey(r, ns_of(ri, r)))
         if skey not in snum:
             snum[skey] = sum(1 for x in snum if x[0] == dev)

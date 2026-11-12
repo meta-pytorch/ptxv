@@ -4,10 +4,11 @@ E-LAUNCH-ORDER, S-NC across GPUs (MISS 113 repro): GPU 1's writer stores data in
 memory, then publishes a flag with st.release.sys; GPU 0's waiter acquires it; GPU 0's reader,
 after the waiter on GPU 0, reads data with ld.global.nc. The launch-clock exemption (writes the
 reader's launch clock covers) applies only when the reader's predecessor is recorded: good, an
-older capture's unknown-order list, is a violation; REC, the same list recorded, is clean
-(the SASS front's strict level has no launch-clock exemption: a violation there);
-UNORD, a reader that waits for nothing (what a programmatic-event or launch-completion wait on
-another stream allows), is a race and a violation."""
+older capture's unknown-order list, is a race (its reader need not follow the waiter) and a
+violation; REC, the same list recorded, is clean (the SASS front's strict level has no
+launch-clock exemption: a violation there); UNORD, a reader that waits for nothing (what a
+programmatic-event or launch-completion wait on another stream allows), is a race and a
+violation."""
 ptx = "kernel.ptx"
 entry = "waiter"
 grid = [1, 1, 1]
@@ -61,8 +62,8 @@ params = [
 
 [[variants]]
 id = "good"
-summary = "as an older capture lists it (launch order unknown): the cross-GPU write is a violation"
-expect = ["violation"]
+summary = "as an older capture lists it (launch order unknown): the reader need not follow the waiter on GPU 0, so it races with GPU 1's write, and the cross-GPU write is a violation"
+expect = ["race", "violation"]
 
 [[variants]]
 id = "REC"

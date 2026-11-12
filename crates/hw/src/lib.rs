@@ -240,6 +240,109 @@ DONE:
 }
 "#;
 
+/// E-LAUNCH-ORDER: how `run_with` issues a case's launches (`stream_plan`).
+#[derive(Debug, PartialEq)]
+pub struct StreamPlan {
+    /// Per launch: its hardware stream (an index into `devices`).
+    pub stream: Vec<usize>,
+    /// Per hardware stream: its GPU.
+    pub devices: Vec<u32>,
+    /// Per launch: the earlier launches it waits for, through an event recorded after each.
+    pub waits_on: Vec<Vec<usize>>,
+    /// Per launch: programmatic stream serialization (its programmatic edge).
+    pub prog: Vec<bool>,
+}
+
+/// E-LAUNCH-ORDER: each launch runs on a non-blocking hardware stream of its GPU. A launch
+/// takes its case stream's hardware stream (one per GPU and `stream`; a case without streams
+/// has one per GPU) only when the stream order this adds is one the case has: the stream's
+/// latest launch is the launch's predecessor, or completes before the launch starts in the case
+/// (transitively; a programmatic edge passes on what completed before its predecessor started,
+/// not the predecessor). Otherwise, as with `after = -1`, the launch gets a hardware stream of
+/// its own, which its case stream then continues on. Its predecessors (`after`, without it the
+/// previous launch on the GPU, and each `waits` entry) other than its hardware stream's latest
+/// launch are waited for through events, an earlier launch of its own stream too: the stream
+/// order alone would give that one's completion only if it is transitive through programmatic
+/// launches in between, which GB300 measured and CUDA does not state. A programmatic edge is
+/// programmatic stream serialization when its predecessor is the previous launch on the
+/// launch's hardware stream (and not also in `waits`); otherwise it runs as a full edge. So a
+/// GPU run has every order of the case, and more only through such full edges, through an
+/// event's coverage, and through the hardware's own transitivity. An event recorded after a
+/// launch covers all the work its stream was given before it, so a launch that waits for it
+/// also waits for an earlier launch of that stream which the case does not complete before it,
+/// such as a programmatic predecessor's primary: with L0, L1 programmatic after L0 on stream 0,
+/// and L2 on stream 1 after L1, the GPU starts L2 after L0 completed and the case does not
+/// (captures write such a primary into `waits`). Until 2026-11-12 a launch always took its case
+/// stream's hardware stream, so it also ran behind the stream's latest launch where the case does
+/// not order it after that one (a runner limit of recorded orders: fixtures/e_runner_after; r4b_moe
+/// and r4c_* B37), and an earlier predecessor on its stream was left to the stream order.
+pub fn stream_plan(launches: &[ptxv_case::LaunchSpec]) -> Result<StreamPlan> {
+    let n = launches.len();
+    let words = n.div_ceil(64);
+    let mut plan = StreamPlan {
+        stream: Vec::with_capacity(n),
+        devices: Vec::new(),
+        waits_on: vec![Vec::new(); n],
+        prog: vec![false; n],
+    };
+    let mut cur: BTreeMap<(u32, u32), usize> = BTreeMap::new(); // case stream -> hardware stream
+    let mut last_on: Vec<Option<usize>> = Vec::new(); // hardware stream -> its latest launch
+    let mut prev_on_dev: BTreeMap<u32, usize> = BTreeMap::new();
+    // done[i]: the launches the case completes before launch i starts (a bit set).
+    let mut done: Vec<Vec<u64>> = Vec::with_capacity(n);
+    for (i, l) in launches.iter().enumerate() {
+        let pred = match l.after {
+            Some(a) if a >= 0 => Some(a as usize),
+            Some(_) => None,
+            None => prev_on_dev.get(&l.device).copied(),
+        };
+        let mut preds: Vec<usize> = pred.into_iter().collect();
+        preds.extend(l.waits.iter().filter(|&&w| w >= 0).map(|&w| w as usize));
+        let programmatic = |p: usize| l.pdl && Some(p) == pred && !l.waits.contains(&(p as i64));
+        let mut d = vec![0u64; words];
+        for &p in &preds {
+            if p >= i {
+                bail!("launch {i}: predecessor {p} is not an earlier launch");
+            }
+            for (x, y) in d.iter_mut().zip(&done[p]) {
+                *x |= y;
+            }
+            if !programmatic(p) {
+                d[p / 64] |= 1 << (p % 64);
+            }
+        }
+        let key = (l.device, l.stream.unwrap_or(0));
+        let s = match cur.get(&key) {
+            Some(&s)
+                if l.after != Some(-1)
+                    && last_on[s]
+                        .is_none_or(|q| Some(q) == pred || d[q / 64] >> (q % 64) & 1 == 1) =>
+            {
+                s
+            }
+            _ => {
+                plan.devices.push(l.device);
+                last_on.push(None);
+                cur.insert(key, plan.devices.len() - 1);
+                plan.devices.len() - 1
+            }
+        };
+        for &p in &preds {
+            if plan.stream[p] == s && Some(p) == last_on[s] {
+                // The hardware stream's latest launch: the stream order.
+                plan.prog[i] |= programmatic(p);
+            } else if !plan.waits_on[i].contains(&p) {
+                plan.waits_on[i].push(p);
+            }
+        }
+        plan.stream.push(s);
+        last_on[s] = Some(i);
+        prev_on_dev.insert(l.device, i);
+        done.push(d);
+    }
+    Ok(plan)
+}
+
 pub fn run(
     case: &Case,
     image: &[u8],
@@ -591,60 +694,25 @@ pub fn run_with(
             all_args.push(args);
         }
 
-        // E-LAUNCH-ORDER: each launch runs on its case stream (a non-blocking stream per GPU and
-        // `stream`; a case without streams has one per GPU) with the case's edges: the stream
-        // order; `after` (or, without it, the previous launch on the GPU) and each `waits`
-        // entry on another stream, through an event recorded after that launch. A launch with
-        // `after = -1` whose stream already ran a launch gets a stream of its own (no stream
-        // predecessor). A programmatic edge is the launch's programmatic stream serialization
-        // when its predecessor is the stream's previous launch; across streams it runs as a
-        // full edge (on GB300 a ProgrammaticEvent's dependent did not start before the primary
-        // ended). `mem_sync_domain`: the launch's domain map sends both logical domains there.
+        // E-LAUNCH-ORDER: the case's launches on hardware streams, with events for the edges
+        // between streams (`stream_plan`). `mem_sync_domain`: the launch's domain map sends
+        // both logical domains there.
         let n = launches.len();
-        let mut hw_stream: Vec<CUstream> = Vec::with_capacity(n);
-        let mut streams: Vec<(u32, CUstream)> = Vec::new();
-        let mut cur: BTreeMap<(u32, u32), CUstream> = BTreeMap::new();
-        let mut last_on: BTreeMap<usize, usize> = BTreeMap::new(); // stream -> its last launch
-        let mut prev_on_dev: BTreeMap<u32, usize> = BTreeMap::new();
-        let mut prog = vec![false; n];
-        let mut waits_on: Vec<Vec<usize>> = vec![Vec::new(); n];
-        for (i, l) in launches.iter().enumerate() {
-            let key = (l.device, l.stream.unwrap_or(0));
-            let s = match cur.get(&key) {
-                Some(&s) if l.after != Some(-1) => s,
-                _ => {
-                    set(l.device)?;
-                    let mut s = std::ptr::null_mut();
-                    // CU_STREAM_NON_BLOCKING: no implicit order with the NULL stream.
-                    ck(cuStreamCreate(&mut s, 1), "cuStreamCreate")?;
-                    streams.push((l.device, s));
-                    cur.insert(key, s);
-                    s
-                }
-            };
-            hw_stream.push(s);
-            let last = last_on.get(&(s as usize)).copied();
-            let pred = match l.after {
-                Some(a) if a >= 0 => Some(a as usize),
-                Some(_) => None,
-                None => prev_on_dev.get(&l.device).copied(),
-            };
-            let mut preds: Vec<usize> = pred.into_iter().collect();
-            preds.extend(l.waits.iter().filter(|&&w| w >= 0).map(|&w| w as usize));
-            for p in preds {
-                if p >= i {
-                    bail!("launch {i}: predecessor {p} is not an earlier launch");
-                }
-                if hw_stream[p] != s {
-                    waits_on[i].push(p);
-                } else if Some(p) == pred && Some(p) == last {
-                    prog[i] = l.pdl;
-                }
-                // Else an earlier launch on the same stream: the stream order covers it.
-            }
-            last_on.insert(s as usize, i);
-            prev_on_dev.insert(l.device, i);
+        let StreamPlan {
+            stream,
+            devices,
+            waits_on,
+            prog,
+        } = stream_plan(&launches)?;
+        let mut streams: Vec<(u32, CUstream)> = Vec::with_capacity(devices.len());
+        for d in devices {
+            set(d)?;
+            let mut s = std::ptr::null_mut();
+            // CU_STREAM_NON_BLOCKING: no implicit order with the NULL stream.
+            ck(cuStreamCreate(&mut s, 1), "cuStreamCreate")?;
+            streams.push((d, s));
         }
+        let hw_stream: Vec<CUstream> = stream.iter().map(|&s| streams[s].1).collect();
         let mut events: Vec<CUevent> = vec![std::ptr::null_mut(); n];
         for p in waits_on.iter().flatten() {
             if events[*p].is_null() {
@@ -962,5 +1030,232 @@ mod gpu_env_tests {
         assert_eq!(allowed_gpus(None, Some("GPU-"), &all), Some(vec![]));
         assert_eq!(allowed_gpus(None, Some(""), &all), Some(vec![]));
         assert_eq!(allowed_gpus(None, Some("-1"), &all), Some(vec![]));
+    }
+}
+
+#[cfg(test)]
+mod stream_plan_tests {
+    use std::path::Path;
+
+    use ptxv_case::LaunchSpec;
+
+    use super::*;
+
+    /// A launch on GPU `device`, case stream `stream`, with `after`, `waits` and `pdl`.
+    fn l(
+        device: u32,
+        stream: u32,
+        after: Option<i64>,
+        waits: &'static [i64],
+        pdl: bool,
+    ) -> LaunchSpec<'static> {
+        LaunchSpec {
+            entry: "k",
+            grid: [1, 1, 1],
+            block: [32, 1, 1],
+            cluster: None,
+            preferred_cluster: None,
+            params: &[],
+            pdl,
+            device,
+            dynamic_smem: 0,
+            cubin: None,
+            after,
+            stream: Some(stream),
+            waits,
+            mem_sync_domain: None,
+        }
+    }
+
+    fn no_waits(p: &StreamPlan) -> bool {
+        p.waits_on.iter().all(|w| w.is_empty())
+    }
+
+    /// A stream's launches in order, each after the previous one: one hardware stream, the
+    /// programmatic edge as programmatic stream serialization.
+    #[test]
+    fn a_stream_chain_stays_on_one_stream() {
+        let p = stream_plan(&[
+            l(0, 0, None, &[], false),
+            l(0, 0, None, &[], true),
+            l(0, 0, None, &[], false),
+        ])
+        .unwrap();
+        assert_eq!((p.stream, p.devices.len()), (vec![0, 0, 0], 1));
+        assert_eq!(p.prog, [false, true, false]);
+        assert!(p.waits_on.iter().all(|w| w.is_empty()));
+    }
+
+    /// Over 64 launches (a done set of two words): launch 66, on stream 0, follows launch 65 on
+    /// stream 1, which follows launch 64, the latest on stream 0. 64 completes before 66 starts
+    /// through 65, so 66 keeps stream 0 and waits for 65 through an event.
+    #[test]
+    fn done_sets_past_64_launches() {
+        let mut ls: Vec<LaunchSpec> = (0..65).map(|_| l(0, 0, None, &[], false)).collect();
+        ls.push(l(0, 1, Some(64), &[], false));
+        ls.push(l(0, 0, Some(65), &[], false));
+        let p = stream_plan(&ls).unwrap();
+        assert_eq!((p.stream[64], p.stream[65], p.stream[66]), (0, 1, 0));
+        assert_eq!((&p.waits_on[65], &p.waits_on[66]), (&vec![64], &vec![65]));
+        assert_eq!(p.devices.len(), 2);
+    }
+
+    /// `after` names an earlier launch of the stream than its latest (L1): the launch
+    /// gets a hardware stream of its own and waits for L0 only, and the case stream continues
+    /// there (L3, after L2). `after` the latest (CHAIN) keeps the stream order.
+    #[test]
+    fn after_an_earlier_launch_of_the_stream_gets_a_stream_of_its_own() {
+        let p = stream_plan(&[
+            l(0, 0, None, &[], false),
+            l(0, 0, None, &[], false),
+            l(0, 0, Some(0), &[], false),
+            l(0, 0, None, &[], false),
+        ])
+        .unwrap();
+        assert_eq!(p.stream, [0, 0, 1, 1]);
+        assert_eq!(p.waits_on, [vec![], vec![], vec![0], vec![]]);
+        let p = stream_plan(&[
+            l(0, 0, None, &[], false),
+            l(0, 0, None, &[], false),
+            l(0, 0, Some(1), &[], false),
+        ])
+        .unwrap();
+        assert_eq!(p.stream, [0, 0, 0]);
+        assert!(no_waits(&p));
+    }
+
+    /// The same across streams: L2 on stream 1 after L0 (stream 0), while stream 1 already ran
+    /// L1, which the case does not order L2 after.
+    #[test]
+    fn after_a_launch_on_another_stream_gets_a_stream_of_its_own() {
+        let p = stream_plan(&[
+            l(0, 0, None, &[], false),
+            l(0, 1, Some(-1), &[], false),
+            l(0, 1, Some(0), &[], false),
+        ])
+        .unwrap();
+        assert_eq!(p.stream, [0, 1, 2]);
+        assert_eq!(p.waits_on, [vec![], vec![], vec![0]]);
+        // L1 after L0 (an event), L2 on stream 1 after L0 too: L1 is not L2's predecessor.
+        // With `waits = [1]` it is: the stream order.
+        let p = stream_plan(&[
+            l(0, 0, None, &[], false),
+            l(0, 1, Some(0), &[], false),
+            l(0, 1, Some(0), &[1], false),
+        ])
+        .unwrap();
+        assert_eq!(p.stream, [0, 1, 1]);
+        assert_eq!(p.waits_on, [vec![], vec![0], vec![0]]);
+    }
+
+    /// The stream's latest launch completing before the launch through other edges keeps the
+    /// stream: L0 (stream 0), L1 (stream 1, after L0), L2 (stream 0, after L1): L0 completes
+    /// before L1 starts.
+    #[test]
+    fn a_latest_launch_done_before_keeps_the_stream() {
+        let p = stream_plan(&[
+            l(0, 0, None, &[], false),
+            l(0, 1, Some(0), &[], false),
+            l(0, 0, Some(1), &[], false),
+        ])
+        .unwrap();
+        assert_eq!(p.stream, [0, 1, 0]);
+        assert_eq!(p.waits_on, [vec![], vec![0], vec![1]]);
+    }
+
+    /// A programmatic edge passes on what completed before its predecessor started, not the
+    /// predecessor: L1 (stream 1) after L0 programmatically, L2 (stream 0) after L1. L0 may
+    /// still run when L1 completes, so L2 does not take stream 0 behind L0.
+    #[test]
+    fn a_programmatic_edge_does_not_complete_its_predecessor() {
+        let p = stream_plan(&[
+            l(0, 0, None, &[], false),
+            l(0, 1, Some(0), &[], true),
+            l(0, 0, Some(1), &[], false),
+        ])
+        .unwrap();
+        assert_eq!(p.stream, [0, 1, 2]);
+        assert_eq!(p.waits_on, [vec![], vec![0], vec![1]]);
+        // The cross-stream programmatic edge runs as a full one (an event), without
+        // programmatic stream serialization.
+        assert_eq!(p.prog, [false, false, false]);
+    }
+
+    /// An earlier launch of the stream than its latest is waited for through an event, not
+    /// left to the stream order: L0, L1 programmatic after L0 (it may end before L0), L2 after
+    /// L1 with `waits = [0]`, one stream.
+    #[test]
+    fn an_earlier_predecessor_of_the_stream_is_an_event() {
+        let p = stream_plan(&[
+            l(0, 0, None, &[], false),
+            l(0, 0, None, &[], true),
+            l(0, 0, None, &[0], false),
+        ])
+        .unwrap();
+        assert_eq!(p.stream, [0, 0, 0]);
+        assert_eq!(p.prog, [false, true, false]);
+        assert_eq!(p.waits_on, [vec![], vec![], vec![0]]);
+    }
+
+    /// A programmatic edge whose predecessor is also in `waits` is a full edge.
+    #[test]
+    fn a_waited_predecessor_is_not_programmatic() {
+        let p = stream_plan(&[l(0, 0, None, &[], false), l(0, 0, Some(0), &[0], true)]).unwrap();
+        assert_eq!(p.stream, [0, 0]);
+        assert_eq!(p.prog, [false, false]);
+    }
+
+    /// `after = -1` on a stream that ran a launch: a stream of its own, no wait. Another GPU's
+    /// launches are on its own streams; a wait across GPUs is an event.
+    #[test]
+    fn no_predecessor_and_other_gpus() {
+        let p = stream_plan(&[l(0, 0, None, &[], false), l(0, 0, Some(-1), &[], false)]).unwrap();
+        assert_eq!(p.stream, [0, 1]);
+        assert!(no_waits(&p));
+        let p = stream_plan(&[
+            l(0, 0, None, &[], false),
+            l(1, 0, None, &[], false),
+            l(0, 0, None, &[1], false),
+        ])
+        .unwrap();
+        assert_eq!((p.stream, p.devices), (vec![0, 1, 0], vec![0, 1]));
+        assert_eq!(p.waits_on, [vec![], vec![], vec![1]]);
+        assert!(stream_plan(&[l(0, 0, Some(1), &[], false)]).is_err());
+    }
+
+    /// The race variants the runner used to order: the launch whose `after` names an
+    /// earlier launch of its stream now runs on a hardware stream of its own and waits only for
+    /// that launch. Their `good` variants keep one hardware stream per GPU, with no events.
+    #[test]
+    fn fixture_variants_wait_only_for_their_predecessors() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+        for (case, variant, launch, after) in [
+            ("e_runner_after", "good", 2, 0),
+            ("r4b_moe", "B37", 19, 5),
+            ("r4c_chunk2", "B37", 8, 4),
+            ("r4c_dwrap", "B37", 7, 4),
+            ("r4c_nowrap", "B37", 8, 5),
+        ] {
+            let c = Case::load(root.join(case)).unwrap();
+            let v = c.for_variant(variant).unwrap();
+            let p = stream_plan(&v.m.all_launches()).unwrap();
+            let s = p.stream[launch];
+            assert!(
+                p.stream[..launch].iter().all(|&x| x != s),
+                "{case} {variant}: {p:?}"
+            );
+            assert_eq!(p.waits_on[launch], [after], "{case} {variant}");
+            let g = stream_plan(&c.for_variant("good").unwrap().m.all_launches()).unwrap();
+            let gpus = c.m.ndevices() as usize;
+            if case != "e_runner_after" {
+                assert_eq!(g.devices.len(), gpus, "{case} good: {g:?}");
+                assert!(no_waits(&g), "{case} good: {g:?}");
+            }
+        }
+        // r4b_moe B32 (`after = -1`): launch 6 runs alone, waiting for nothing.
+        let c = Case::load(root.join("r4b_moe")).unwrap();
+        let p = stream_plan(&c.for_variant("B32").unwrap().m.all_launches()).unwrap();
+        assert!(p.stream[..6].iter().all(|&x| x != p.stream[6]), "{p:?}");
+        assert!(p.waits_on[6].is_empty(), "{p:?}");
     }
 }

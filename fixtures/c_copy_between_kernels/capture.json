@@ -1,0 +1,138 @@
+{
+ "what": "run() of copy_between_kernels.py",
+ "argv": [
+  "--file",
+  "tools/capture_examples/copy_between_kernels.py",
+  "--out",
+  "fixtures/c_copy_between_kernels",
+  "--work",
+  "/tmp/ptxv_capture_1002829"
+ ],
+ "torch": "2.12.0a0+git808dd93",
+ "launches": [
+  {
+   "name": "_ZN50_GLOBAL__N__171d11eb_17_RangeFactories_cu_38772b0829elementwise_kernel_with_indexIiZZZN2at6native15arange_cuda_outERKN3c106ScalarES6_S6_RNS1_6TensorEENKUlvE_clEvENKUlvE5_clEvEUllE_EEvT_T0_PN15function_traitsISD_E11result_typeE",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    64,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k0.cubin"
+  },
+  {
+   "name": "_ZN2at6native29vectorized_elementwise_kernelILi4EZZZNS0_19addcmul_cuda_kernelERNS_18TensorIteratorBaseERKN3c106ScalarEENKUlvE0_clEvENKUlvE5_clEvEUlfffE_St5arrayIPcLm4EEEEviT0_T1_",
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "cluster": [
+    1,
+    1,
+    1
+   ],
+   "smem": 0,
+   "pdl": 0,
+   "cubin": "k1.cubin"
+  }
+ ],
+ "filtered_out": [],
+ "ptx": false,
+ "buffers": [
+  {
+   "name": "W0",
+   "dtype": "u8",
+   "shape": [
+    256
+   ],
+   "size": 256
+  },
+  {
+   "name": "W1",
+   "dtype": "u8",
+   "shape": [
+    256
+   ],
+   "size": 256
+  },
+  {
+   "name": "W2",
+   "dtype": "u8",
+   "shape": [
+    256
+   ],
+   "size": 256
+  },
+  {
+   "name": "out",
+   "dtype": "f32",
+   "shape": [
+    64
+   ],
+   "size": 256
+  }
+ ],
+ "unresolved": [],
+ "warnings": [],
+ "initial_bytes": {
+  "W0": "snapshot before kept launch 0",
+  "W1": "snapshot before kept launch 1",
+  "W2": "snapshot before kept launch 1",
+  "out": "snapshot before kept launch 1"
+ },
+ "memops_between_kernels": [
+  {
+   "op": "memcpy",
+   "kind": 3,
+   "bytes": 256,
+   "dst": 281453225050624
+  },
+  {
+   "op": "memcpy",
+   "kind": 1,
+   "bytes": 256,
+   "dst": 281453225051136
+  }
+ ],
+ "launch_order": {
+  "recorded": true,
+  "launches": [
+   {
+    "stream": 0,
+    "after": null,
+    "pdl": false,
+    "waits": [],
+    "preds": {},
+    "mem_sync_domain": 0
+   },
+   {
+    "stream": 0,
+    "after": null,
+    "pdl": false,
+    "waits": [],
+    "preds": {
+     "0": "full"
+    },
+    "mem_sync_domain": 0
+   }
+  ],
+  "notes": []
+ }
+}

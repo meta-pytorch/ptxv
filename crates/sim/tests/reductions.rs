@@ -551,12 +551,6 @@ fn try_machine(case: &Case, variant: &str, front: &str) -> Option<Machine> {
     Some(Machine::new(Arc::new(k), Arc::new(launch)))
 }
 
-/// Every single-launch PTX fixture of 2 to 16 CTAs, every variant, both front-ends: where the
-/// unreduced exploration finishes within the cap, E-CTA-REP (`--rep`, when it does not refuse) and the symmetry check
-/// (`--slices`, when complete) give its classes. A reduction cannot drop a class silently
-/// anywhere in the suite (2026-11-08: E-CTA-REP dropped a representative's second output,
-/// fixtures/e_sym SYM2 on SASS, and a division by zero outside the representative,
-/// fixtures/e_rep_divzero).
 /// One fixture variant of `every_fixture_keeps_classes_under_cta_reductions`: (failures,
 /// checked), or None when the variant does not build or its unreduced exploration exceeds
 /// `cap` states.
@@ -616,9 +610,19 @@ fn sweep_one(case: &Case, v: &str, front: &str, cap: usize) -> Option<(Vec<Strin
     Some((fails, true))
 }
 
-#[test]
-#[ignore = "heavy: 412 jobs over every multi-CTA fixture; 1357 s"]
-fn every_fixture_keeps_classes_under_cta_reductions() {
+/// The parts of `every_fixture_keeps_classes_under_cta_reductions`, each a test of its own, so
+/// that CI's shards and lanes run them apart: part k takes the jobs whose index in the sorted
+/// job list is k modulo REDUCTION_PARTS.
+const REDUCTION_PARTS: usize = 8;
+
+/// Every single-launch PTX fixture of 2 to 16 CTAs, every variant, both front-ends: where the
+/// unreduced exploration finishes within the cap, E-CTA-REP (`--rep`, when it does not refuse)
+/// and the symmetry check (`--slices`, when complete) give its classes. A reduction cannot drop
+/// a class silently anywhere in the suite (2026-11-08: E-CTA-REP dropped a representative's
+/// second output, fixtures/e_sym SYM2 on SASS, and a division by zero outside the
+/// representative, fixtures/e_rep_divzero). This is part `part` of the jobs
+/// (REDUCTION_PARTS).
+fn every_fixture_keeps_classes_under_cta_reductions(part: usize) {
     // Variants whose unreduced exploration finishes within CAP states (the others are the
     // dedicated tests' business; this sweep must stay cheap).
     const CAP: usize = 5_000;
@@ -628,7 +632,7 @@ fn every_fixture_keeps_classes_under_cta_reductions() {
         .filter(|p| p.join("case.toml").exists())
         .collect();
     dirs.sort();
-    let mut jobs: Vec<(Arc<Case>, String, &str)> = Vec::new();
+    let mut all: Vec<(Arc<Case>, String, &str)> = Vec::new();
     for d in dirs {
         let Ok(case) = Case::load(&d) else { continue };
         // At most 16 CTAs: the symmetry check falls back to exploring every slice.
@@ -639,10 +643,16 @@ fn every_fixture_keeps_classes_under_cta_reductions() {
         let case = Arc::new(case);
         for v in case.m.variants.iter().map(|v| v.id.clone()) {
             for front in ["ptx", "sass"] {
-                jobs.push((case.clone(), v.clone(), front));
+                all.push((case.clone(), v.clone(), front));
             }
         }
     }
+    let jobs: Vec<_> = all
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| i % REDUCTION_PARTS == part)
+        .map(|(_, j)| j)
+        .collect();
     // One job per thread (each a fresh thread: no cache carries over), as many at once as
     // the machine has cores.
     let next = std::sync::atomic::AtomicUsize::new(0);
@@ -671,9 +681,57 @@ fn every_fixture_keeps_classes_under_cta_reductions() {
         }
     });
     let (checked, fails) = out.into_inner().unwrap();
-    eprintln!("{checked} fixture variants checked under E-CTA-REP and the symmetry check");
-    assert!(checked > 40, "only {checked} fixture variants checked");
-    assert!(fails.is_empty(), "{fails:#?}");
+    eprintln!(
+        "part {part}: {checked} of {} fixture variants checked under E-CTA-REP and the symmetry \
+         check",
+        jobs.len()
+    );
+    // About 50 of each part's jobs finish within CAP today (2026-11-12).
+    assert!(
+        checked >= 20,
+        "part {part}: only {checked} fixture variants checked"
+    );
+    assert!(fails.is_empty(), "part {part}: {fails:#?}");
+}
+#[test]
+#[ignore = "heavy: an eighth of the sweep's jobs; 75 s"]
+fn every_fixture_keeps_classes_under_cta_reductions_part0() {
+    every_fixture_keeps_classes_under_cta_reductions(0);
+}
+#[test]
+#[ignore = "heavy: an eighth of the sweep's jobs; 270 s"]
+fn every_fixture_keeps_classes_under_cta_reductions_part1() {
+    every_fixture_keeps_classes_under_cta_reductions(1);
+}
+#[test]
+#[ignore = "heavy: an eighth of the sweep's jobs; 1140 s"]
+fn every_fixture_keeps_classes_under_cta_reductions_part2() {
+    every_fixture_keeps_classes_under_cta_reductions(2);
+}
+#[test]
+#[ignore = "heavy: an eighth of the sweep's jobs; 450 s"]
+fn every_fixture_keeps_classes_under_cta_reductions_part3() {
+    every_fixture_keeps_classes_under_cta_reductions(3);
+}
+#[test]
+#[ignore = "heavy: an eighth of the sweep's jobs; 100 s"]
+fn every_fixture_keeps_classes_under_cta_reductions_part4() {
+    every_fixture_keeps_classes_under_cta_reductions(4);
+}
+#[test]
+#[ignore = "heavy: an eighth of the sweep's jobs; 450 s"]
+fn every_fixture_keeps_classes_under_cta_reductions_part5() {
+    every_fixture_keeps_classes_under_cta_reductions(5);
+}
+#[test]
+#[ignore = "heavy: an eighth of the sweep's jobs; 590 s"]
+fn every_fixture_keeps_classes_under_cta_reductions_part6() {
+    every_fixture_keeps_classes_under_cta_reductions(6);
+}
+#[test]
+#[ignore = "heavy: an eighth of the sweep's jobs; 75 s"]
+fn every_fixture_keeps_classes_under_cta_reductions_part7() {
+    every_fixture_keeps_classes_under_cta_reductions(7);
 }
 
 /// Cached analyses must not leak between kernels checked one after another on one thread

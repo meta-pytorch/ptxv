@@ -64,6 +64,6 @@ expect = ["clean"]
 
 [[variants]]
 id = "UNKNOWN"
-summary = "the same launches with their order unknown (E-LAUNCH-ORDER): S-NC's stream-order exemption does not apply, so k1's .nc read of k0's output is reported"
+summary = "the same launches with their order unknown (E-LAUNCH-ORDER): the grids may run at the same time and S-NC's stream-order exemption does not apply, so k1's .nc read of k0's output races and is reported"
 launch_order = "unknown"
-expect = ["violation"]
+expect = ["race", "violation"]
