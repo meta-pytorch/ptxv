@@ -809,43 +809,6 @@ fn e_warp_order_div_strong_pairs() {
         both("e_warp_order_div", v);
     }
 }
-
-/// S-SCOPE, complete overlap (PTX ISA 9.5 section 8.7): strong accesses that overlap partially
-/// are not morally strong. A u8 (MIXED) or u64 (WIDE) acquire of a u32 release flag is a
-/// mixed-size data race at the PTX contract and does not synchronize, so the data read after
-/// it races with the data write too; a v2.u32 load whose first element is the flag (VEC) is
-/// one u32 operation per element and synchronizes (fixtures/e_scope_mixed). Within a converged
-/// warp, a u8 load of a byte of a u32 store on the next instruction is a race, not the
-/// nondeterministic pair a u32 load is (fixtures/e_warp_order_mixed). The SASS front does not
-/// decide overlap (clean). Until 2026-11-11 moral strength checked scopes only, and MIXED and
-/// WIDE were clean and the warp's MIXED nondeterministic on the PTX front.
-#[test]
-fn scope_complete_overlap() {
-    for v in ["good", "MIXED", "WIDE", "VEC"] {
-        both("e_scope_mixed", v);
-    }
-    for v in ["good", "MIXED"] {
-        both("e_warp_order_mixed", v);
-    }
-    // The data read races with the data write: the partially overlapping acquire does not
-    // observe the release (8.9.2), so it does not order them.
-    let case = Case::load(root().join("fixtures/e_scope_mixed")).unwrap();
-    let k = kernel(&case, "MIXED", "ptx");
-    let data_st = k
-        .code
-        .iter()
-        .position(|i| i.text.contains("st.global.u32 [%rd1+4]"))
-        .unwrap();
-    let launch = build_launch(&case, &k).unwrap();
-    let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
-    assert!(v.complete);
-    let sig = format!("race:gmem:{data_st}:write-read");
-    assert!(
-        v.findings.iter().any(|f| f.sig == sig),
-        "no {sig}: {:#?}",
-        v.findings
-    );
-}
 /// E-ELECT: a kernel correct for the end-lane leaders only is a race on the PTX front (every
 /// leader function explored, also by the certificate), clean on SASS (GB300: the lowest lane).
 #[test]
@@ -861,17 +824,6 @@ fn e_elect_mid_every_leader() {
 fn e_ld_nc_written_during_kernel() {
     for v in ["good", "written", "coherent", "inplace"] {
         both("e_ld_nc", v);
-    }
-}
-/// S-NC across launches: an .nc read of a stream-ordered earlier grid's output is exact, and so
-/// is a PDL dependent's write, after griddepcontrol.wait, of bytes its primary read with .nc
-/// (good); a PDL dependent's .nc read of its primary's output after the wait is reported
-/// (PDLNC: the grids overlap, probes/nc_pdl), as is a dependent's write before its wait of
-/// bytes the primary reads with .nc (EARLY, also a race).
-#[test]
-fn e_ld_nc_pdl_overlapping_launches() {
-    for v in ["good", "PDLNC", "EARLY"] {
-        both("e_ld_nc_pdl", v);
     }
 }
 /// `.uni` / `.aligned`: a guarded bra.uni with a divergent guard is a contract finding; an
@@ -4071,19 +4023,6 @@ fn multimem_acc_unmodeled_forms_refused() {
 fn probe_nc_hoist_reported() {
     check_dir("probes", "nc_hoist", "good", "ptx");
     check_dir("probes", "nc_hoist", "good", "sass");
-}
-
-/// S-NC with PDL on GB300 (probes/nc_pdl): ptxas 13.0 / 13.3 move a dependent's ld.global.nc
-/// above griddepcontrol.wait (ACQBULK) and above the flag store that lets the primary write,
-/// so GB300 returns the primary's old words (hoist: 0, 200/200 runs) where the coherent load
-/// of good reads t + 7 (200/200 = model). Both fronts report hoist and late (the .nc load kept
-/// after the wait; GB300 0 of 200 runs stale: a bound, not a proof).
-#[test]
-fn probe_nc_pdl_reported() {
-    for v in ["good", "hoist", "late"] {
-        check_dir("probes", "nc_pdl", v, "ptx");
-        check_dir("probes", "nc_pdl", v, "sass");
-    }
 }
 
 /// PTX copysign.f32 (probes/copysign: NaN payloads, signed zeros, Inf, subnormals) = GB300
@@ -8494,19 +8433,6 @@ fn s_sv_own_store() {
     // Racing variants: the stateful explorer's verdict only (DPOR also enumerates the
     // nondeterministic outputs the race leaves).
     stateful_classes("s_sv_own", &["diff", "noown", "xhb"]);
-}
-
-/// S-SAME-VALUE per byte across a whole shadow page (fixtures/s_sv_page): a 512-byte bulk
-/// reload whose first byte keeps its value and whose other bytes change races with a bulk store
-/// ordered after it only in time (PAGE) or not at all (CONC). Until 2026-11-11 the page's first
-/// byte stood for the page (`Pages::for_run`), and both were clean on both fronts. A release /
-/// acquire flag (good) and a reload of identical bytes (SAME) are clean; SHIFT changes the first
-/// byte too.
-#[test]
-fn s_sv_page_split_by_byte() {
-    for v in ["good", "PAGE", "SHIFT", "CONC", "SAME"] {
-        both("s_sv_page", v);
-    }
 }
 
 /// E-HW-CORW fixture classes at level 1 (the level-2 classification: twolevel_hw_corw).

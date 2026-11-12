@@ -4679,58 +4679,8 @@ S-MBAR-SCOPE (until 2026-11-09 they were treated as sufficient). Since rung 1f:
 - `ld/st.relaxed|acquire|release.<scope>`, `.volatile` (= relaxed.sys) and `atom` / `red`
   (default relaxed.gpu) are strong accesses. Two strong accesses are **morally strong** when
   each one's scope includes the other's thread (`.cta`: same CTA, `.cluster`, `.gpu`: same
-  GPU, `.sys`: all) and, on the PTX front, they overlap completely (below). Morally strong
-  accesses do not race; any other conflicting pair not ordered by happens-before is a race.
-- Complete overlap (MISS 80, 2026-11-11). PTX ISA 9.5 section 8.7: two operations are morally
-  strong only if all of these hold: "The operations are related in program order (i.e, they are
-  both executed by the same thread), or each operation is strong and specifies a scope that
-  includes the thread executing the other operation"; "Both operations are performed via the
-  same proxy"; "If both are memory operations, then they overlap completely." 8.2.1: "The
-  overlap is said to be complete when both memory locations are identical, and it is said to
-  be partial otherwise"; 8.2.4: a vector access is "a set of equivalent memory operations with
-  a scalar data type"; 8.2.5: a packed access is "a pair of equivalent memory operations on the
-  scalar data type". 8.7.1: two conflicting operations "not related in causality order and
-  ... not morally strong" are a data-race; 8.7.2: one that overlaps partially is a mixed-size
-  data-race, and "The axioms in the memory consistency model do not apply if a PTX program
-  contains one or more mixed-size data-races". Observation order (8.9.2: "R and W are morally
-  strong and R reads the value written by W") and release / acquire synchronization (8.9.4)
-  run along morally strong pairs only.
-  - Until 2026-11-11 `morally_strong` checked scopes only: fixtures/e_scope_mixed MIXED (a u8
-    `ld.acquire.gpu` of a u32 `st.release.gpu` flag, then a plain read of the data) and WIDE (a
-    u64 acquire) were clean on the PTX front, and e_warp_order_mixed MIXED (a u8 load of a byte
-    of a u32 store on the next instruction of a converged warp) was nondeterministic.
-  - Now, on the PTX front at the strict level, two strong thread instructions are one location
-    when their scalar elements are the same size (`same_location`, `elem_bytes`: the ld / st
-    element, the atom / red operand, `.v2` / `.v4.f32` per element, `bf16x2` per half, the
-    `multimem.ld_reduce` lane). Both cover the byte being checked and each element is
-    naturally aligned (S-ALIGN), so equal sizes are one location. A partially overlapping
-    strong pair is a race (the message says mixed-size data race); a partially overlapping read
-    does not synchronize with the write (`sync_observe_cell`), its own thread's included, and
-    does not continue its release sequence (`sync_publish`); a strong write no longer drops an
-    ordered earlier strong access of another size from the shadow (`access_x` `keep`).
-    e_scope_mixed VEC (a relaxed v2.u32 load whose first element is the flag, then
-    `fence.acq_rel.gpu`) stays clean.
-  - Not decided (scopes only, as before): the SASS front (an instruction's width is not the
-    PTX element size: ptxas merges a vector's elements into one access, `ld.relaxed.v2.u32` is
-    one 64-bit `LDG.E.64.STRONG`), accesses of asynchronous units (bulk and TMA reductions,
-    `st.async`), the NIC (S-NIC), and instructions without a known element size. A
-    synchronization source is still keyed by its first byte: a read that starts at another
-    byte of the write does not observe it (no synchronization: races only added).
-  - Fixtures e_scope_mixed (good, VEC clean; MIXED, WIDE race on PTX, clean on SASS) and
-    e_warp_order_mixed (good nondeterministic, MIXED race on PTX; both clean on SASS); source
-    mutants scope-overlap, scope-overlap-race, scope-overlap-sync, scope-elem-vector.
-  - A/B (2026-11-11, model; the fix against its parent, PTX front, `--certify`): 65 kernel_db
-    records whose PTX has strong accesses of two sizes, triaged at 2000 states, and the 39 that
-    hit the bound rerun at 20000 states; 23 fixture checks. No record flips (46 unchanged, 11
-    of them complete verdicts; 19 without a verdict in either arm), and no record's run
-    compares two strong accesses of different sizes on one byte. The fixture flips are the
-    three hazards above.
-  - Placement: ISA text, so the strict level (`ptx_contract`) of the PTX front. The gb300
-    profile (E-HW-L1, `Launch::hw_order`) keeps treating any two strong accesses as morally
-    strong, partial overlaps included: whether GB300 synchronizes through a byte of a wider
-    flag is not measured, and a hardware run cannot decide a contract question (the races
-    are classified latent there). The SASS front's strict level does not decide overlap
-    (above).
+  GPU, `.sys`: all). Morally strong accesses do not race; any other conflicting pair not
+  ordered by happens-before is a race.
 - A strong write is the location's synchronization source. It releases the writer's clock
   (release write), or the clock at its last release fence (relaxed write after
   `fence.acq_rel`/`MEMBAR`, at the narrower of the two scopes). A read-modify-write continues
@@ -4780,8 +4730,7 @@ S-MBAR-SCOPE (until 2026-11-09 they were treated as sufficient). Since rung 1f:
   `MEMBAR.SC` and `fence.sc` act as `MEMBAR.ALL` / `fence.acq_rel` (no SC total order), and
   `atom` / `red` without a scope are `.gpu`, the PTX ISA default.
 - Where: `exec.rs` `morally_strong`, `scope_includes`, `sync_publish`, `sync_observe`,
-  `acquire_pending`, `same_location`, `elem_bytes`; `ptx` `mem_sync`; `sass` `sass_strong`,
-  `sass_scope`.
+  `acquire_pending`; `ptx` `mem_sync`; `sass` `sass_strong`, `sass_scope`.
 - Status: **validated** for `.gpu` vs `.sys` across two GPUs (`fixtures/r1f_pingpong`): B20
   (relaxed poll, no acquire) is a race in both models and **wrong 1000/1000 on GB300** (a stale
   L1 hit on the payload); B19 (release at `.gpu`) is a race in both models and latent on GB300
@@ -5247,30 +5196,6 @@ t0 and t64), which made the certificate refuse and the explorer run out of state
   stays in `Sh::hw` while ordered. A plain last write with uncovered earlier writes therefore
   implies they wrote the same value; launch groups' `demote` (strong writes made plain) moves the last write into
   them, so that the rule cannot apply there. Strong writes keep their own rules (C-ORDER).
-- Per byte over whole shadow pages (MISS 69, 2026-11-11): the shadow stores a 512-byte page
-  whose bytes are all alike as one element (`Pages`), and `Pages::for_run` updates such a page,
-  when an access covers it, with one call at the page's first byte. Bulk and TMA copies write
-  runs of 512 bytes and more. Until 2026-11-11 that byte stood for the page: a reload that kept
-  the first byte and changed the others was a same-value write of every byte, so later reads
-  were not checked against it and earlier unordered reads were not reported
-  (fixtures/s_sv_page `PAGE`, a read ordered after the reload only by a relaxed flag, and
-  `CONC`, a read concurrent with it: clean on both fronts); a reload that changed the first
-  byte and kept others was a plain write of the kept bytes too. Now `access_x` splits a
-  uniform page first when a write keeps the value of only some of its bytes (or carries an
-  S-INIT mask, which is per byte too). The other `for_run` closures depend on the index only
-  through what they report: launch groups' `demote`, TMEM allocation marks and TMEM accesses
-  (lane and column in race messages); `access_x`'s reads use it for S-INIT's reserved prefix
-  (page-aligned) and a tensor map's tolerated tail, where the page's first byte is the one
-  that reports. Fixture `s_sv_page` (good, SAME clean; PAGE, CONC, SHIFT race), source mutant
-  `sv-page-onebyte`. A/B (2026-11-11, model; the fix against its parent): 208 kernel_db
-  records whose captured code writes shadowed memory with bulk or TMA copies, with their own
-  check options (SASS front, `--certify`), 120 more bounded at 2000 states, and 415 fixture
-  checks: the only flips are s_sv_page PAGE and CONC on both fronts (clean -> race); 484 pairs
-  are unchanged (6 of them after a 3600 s rerun of a pair with a verdict in one arm only) and
-  255 have no verdict in either arm. Only shared memory takes the uniform-page path: global
-  writes reach `access_x` per element or per 16 bytes (an independent review found no
-  same-value write onto a uniform page in 494 case dirs with async operations or a NIC, 427
-  of them run to the end).
 - Own store (2026-11-07, msl DeepEP `DeviceSyncer`: every CTA stores the next
   `currentCountIdx`, then reads it back): a plain read of a byte whose shadow holds the
   reader's own plain store is not checked against the shadow's writes; a note
@@ -5303,13 +5228,6 @@ t0 and t64), which made the certificate refuse and the explorer run out of state
   `_kernel_fp32_to_lowp_sr` now certifies in 0.25 s with GB300's output (was: incomplete at
   2M states after 173 s).
 - Status: **validated** (above; byte stores of equal value cannot produce another value).
-- Placement: the per-byte comparison is the same at both levels (a write that changes a byte
-  races with unordered reads under the PTX contract and on GB300 alike), so the page split
-  applies to both. The rule itself turns same-value pairs into notes at both levels,
-  `ptx_contract` included, although the PTX memory model calls such a pair a data race. Its
-  evidence is GB300 measured (probes/same_value) and argued (stores of one byte value leave
-  that value); by the placement rules that supports the gb300 profile, not the strict level.
-  Reporting the pair as a race at `ptx_contract` is open.
 - If wrong: a *miss* only if hardware could produce a value other than the one both writes
   store.
 
@@ -5494,28 +5412,15 @@ accesses"), so no ordering (a bar.sync, a release / acquire pair, program order)
 read return the written value; ptxas may also move or rematerialize it.
 - Rule (`exec.rs` `access_x`, per global byte, `Sh::nc`): an `.nc` read conflicts with every
   write of the byte (plain, strong, atomic, TMA / async-proxy) in either order, whether or not
-  happens-before orders them, when both run in one grid or in grids that overlap in time.
-  Grid j does not overlap a later grid i when j completes before i starts: j is on i's
-  stream-order chain (`Launch::prev_grid`) and the grid that follows j on it was launched
-  without PDL. A PDL grid may start while the grid before it still runs (E-PDL), and its
-  griddepcontrol.wait does not order an `.nc` load (probes/nc_pdl). Every grid starts after
-  the one before it on its chain has started, so only the link next to j decides. A write
-  that comes after `.nc` reads of another grid and happens after that grid's completion (its
-  done clocks, joined at a griddepcontrol.wait or a stream-ordered launch,
-  `Machine::done_vcs`) does not conflict: the reads were performed before it (a PDL
-  dependent's write, after its wait, of bytes its primary read). Launch groups clear the
-  marks at their boundary (`Sh::demote`). A same-value write (S-SAME-VALUE) changes nothing a
-  read can see and is not counted. The mark is the set of grids that read the byte with
-  `.nc` and the lowest such load's pc (order-free, so commuting reads leave one shadow).
+  happens-before orders them, when both run in one grid or in grids that are not
+  stream-ordered (`Launch::prev_grid` chain; launch groups clear the marks at their boundary,
+  `Sh::demote`). A same-value write (S-SAME-VALUE) changes nothing a read can see and is not
+  counted. The mark is the set of grids that read the byte with `.nc` and the lowest such load's
+  pc (order-free, so commuting reads leave one shadow).
 - Before 2026-11-09 `.nc` was a coherent weak load on both front-ends: an `.nc` read
-  of data written before a bar.sync was clean. Until 2026-11-10 a PDL dependent counted as
-  stream-ordered after its primary: probes/nc_pdl hoist was clean on both fronts, the PTX
-  front predicting t + 7 where GB300 returns 0 (200/200 runs): ptxas 13.0 / 13.3 move the
-  dependent's LDG.E.CONSTANT above griddepcontrol.wait (ACQBULK) and above the flag store that
-  lets the primary write.
+  of data written before a bar.sync was clean.
 - Where: `ptx` `ld` arm (`Op::Ld::nc`), `sass` `LDG` / `LDG .256` (`.CONSTANT`), `exec.rs`
-  `access_x`, `machine.rs` `Sh::nc`. fixtures/e_ld_nc, fixtures/e_ld_nc_pdl (stream order,
-  PDL, a write after the primary's completion), probes/nc_pdl (both front-ends).
+  `access_x`, `machine.rs` `Sh::nc`. fixtures/e_ld_nc (both front-ends).
 - Found in the captured DeepEP layer (fixtures/r4b_moe): cached_notify_combine reads
   send_head with `__ldg` (LDG.E.CONSTANT) and writes those entries in the same kernel (CUDA:
   the read-only data cache is for data read-only for the kernel's lifetime). Reported as a

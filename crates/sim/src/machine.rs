@@ -600,9 +600,6 @@ pub struct SyncCell {
     pub writer: u32,
     /// Scope of the write itself (moral strength with a reader).
     pub scope: Scope,
-    /// The write's instruction (moral strength with a reader: complete overlap, S-SCOPE);
-    /// `u32::MAX` for a write that is not an instruction (the NIC's).
-    pub pc: u32,
     /// What a reader that observes it acquires: the writer's clock at the release (release
     /// write) or at its last release fence (relaxed write after a fence), joined along the
     /// release sequence of later read-modify-writes.
@@ -1130,17 +1127,6 @@ impl<T: Clone + Hash> Pages<T> {
         debug_assert!(p.len() == PAGE);
         &p[i % PAGE..]
     }
-    /// Is `i`'s page stored as one element (all its elements equal)?
-    #[inline]
-    pub fn uniform_page(&self, i: usize) -> bool {
-        self.pages[i / PAGE].len() == 1
-    }
-    /// Stores `i`'s page element by element, so that the next `for_run` over it calls its
-    /// closure once per element.
-    #[inline]
-    pub fn split_page(&mut self, i: usize) {
-        self.dense_mut(i / PAGE);
-    }
 }
 
 impl<T: Clone + Hash + PartialEq> Pages<T> {
@@ -1149,8 +1135,7 @@ impl<T: Clone + Hash + PartialEq> Pages<T> {
     /// `f` runs once, with the page's first index) as one element. Bulk copies and MMA
     /// operand reads give every byte of a tile the same shadow, and a dense shadow page cost
     /// 32 KB per state that touched it. `f` must depend on the index only through what it
-    /// reports; a caller whose `f` depends on it otherwise splits the page first
-    /// (`split_page`; `access_x`: a write that keeps the value of only some bytes).
+    /// reports.
     #[inline]
     pub fn for_run(&mut self, i: usize, n: usize, mut f: impl FnMut(usize, &mut T)) -> usize {
         let (pi, o) = (i / PAGE, i % PAGE);

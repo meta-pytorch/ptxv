@@ -800,7 +800,6 @@ impl Machine {
             SyncCell {
                 writer: actor,
                 scope: Scope::Sys,
-                pc: u32::MAX,
                 rel,
                 rel_scope: Scope::Sys,
                 rr: VC::new(),

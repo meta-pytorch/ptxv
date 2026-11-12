@@ -331,8 +331,7 @@ impl Meet {
         for k in keys {
             let keep = match (base.syncs.get(&k), m.syncs.get(&k)) {
                 (Some(c), Some(d))
-                    if (c.writer, c.scope, c.pc, c.rel_scope)
-                        == (d.writer, d.scope, d.pc, d.rel_scope) =>
+                    if (c.writer, c.scope, c.rel_scope) == (d.writer, d.scope, d.rel_scope) =>
                 {
                     Some(vc_meet(&c.rel, &d.rel))
                 }
@@ -428,7 +427,7 @@ impl Meet {
         }
         let same = |a: Option<&SyncCell>, b: Option<&SyncCell>| match (a, b) {
             (Some(a), Some(b)) => {
-                (a.writer, a.scope, a.pc, a.rel_scope) == (b.writer, b.scope, b.pc, b.rel_scope)
+                (a.writer, a.scope, a.rel_scope) == (b.writer, b.scope, b.rel_scope)
                     && a.rel == b.rel
             }
             (None, None) => true,
@@ -446,8 +445,7 @@ impl Meet {
                 [] => {}
                 [b] => match (b.syncs.get(&k), base.syncs.get(&k)) {
                     (Some(c), Some(d))
-                        if (c.writer, c.scope, c.pc, c.rel_scope)
-                            == (d.writer, d.scope, d.pc, d.rel_scope) =>
+                        if (c.writer, c.scope, c.rel_scope) == (d.writer, d.scope, d.rel_scope) =>
                     {
                         let r = vc_meet(&c.rel, &d.rel);
                         base.syncs.get_mut(&k).unwrap().rel = r;
