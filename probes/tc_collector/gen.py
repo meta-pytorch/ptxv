@@ -26,6 +26,23 @@ import struct
 import sys
 
 d = sys.argv[1] if len(sys.argv) > 1 else "."
+
+# The license header: at the top of every template (gen.py strips it) and of every PTX it writes.
+HEADER = (
+    "// Copyright (c) Meta Platforms, Inc. and affiliates.\n"
+    "//\n"
+    "// This source code is licensed under the BSD-style license found in the\n"
+    "// LICENSE file in the root directory of this source tree.\n"
+    "\n"
+)
+
+
+def template(path):
+    t = open(path).read()
+    assert t.startswith(HEADER), "%s: no license header" % path
+    return t[len(HEADER) :]
+
+
 r = random.Random(23)
 
 
@@ -97,5 +114,5 @@ for m, seq in enumerate(MODES):
     body.append("    bra.uni         ISSUED;\n")
 body.append(f"MODE{len(MODES)}:\nISSUED:\n")
 
-src = open(f"{d}/kernel.tmpl").read().replace("@BODY@\n", "".join(body))
-open(f"{d}/kernel.ptx", "w").write(src)
+src = template(f"{d}/kernel.tmpl").replace("@BODY@\n", "".join(body))
+open(f"{d}/kernel.ptx", "w").write(HEADER + src)

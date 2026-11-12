@@ -30,6 +30,23 @@ import struct
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# The license header: at the top of every template (gen.py strips it) and of every PTX it writes.
+HEADER = (
+    "// Copyright (c) Meta Platforms, Inc. and affiliates.\n"
+    "//\n"
+    "// This source code is licensed under the BSD-style license found in the\n"
+    "// LICENSE file in the root directory of this source tree.\n"
+    "\n"
+)
+
+
+def template(path):
+    t = open(path).read()
+    assert t.startswith(HEADER), "%s: no license header" % path
+    return t[len(HEADER) :]
+
+
 M, N, K = 128, 64, 64
 
 FMT = {
@@ -217,8 +234,8 @@ expect = ["clean"]
 
 
 def main():
-    hdr = open(os.path.join(HERE, "header.tmpl")).read()
-    body = open(os.path.join(HERE, "kernel.tmpl")).read()
+    hdr = template(os.path.join(HERE, "header.tmpl"))
+    body = template(os.path.join(HERE, "kernel.tmpl"))
     lines = body.split("\n")
     directives, rest = "\n".join(lines[:3]), "\n".join(lines[3:])
     ptx = hdr.replace("{FMT}", "0 (f16, tcs_f16) / 1 (bf16, tcs_bf16)").replace(
@@ -232,7 +249,7 @@ def main():
             .replace("{IDESC}", f"{f['idesc']:#010x}")
             .replace("{FMT}", f"{f['code']} ({fmt})")
         )
-    open(os.path.join(HERE, "kernel.ptx"), "w").write(ptx)
+    open(os.path.join(HERE, "kernel.ptx"), "w").write(HEADER + ptx)
     for fmt in ("f16", "bf16"):
         r = random.Random(1000 + FMT[fmt]["code"])
         for name, (A, B) in sets(fmt, r).items():
