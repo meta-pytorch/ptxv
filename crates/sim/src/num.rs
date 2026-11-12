@@ -2556,6 +2556,21 @@ impl Machine {
             }
             None => {
                 ns.mem.remove(&k);
+                // ASSUME(N-EQUIV): a compare-and-swap whose compare or old value is input data
+                // has an input-dependent outcome: another input may swap where this run did not,
+                // or the reverse, so its words are input data either way. One that fails writes
+                // nothing; until MISS 159 its words kept their taint.
+                if matches!(a.op, AtomOp::Cas | AtomOp::CasSpin) {
+                    let cmp = operand_regs(std::slice::from_ref(&a.x))
+                        .iter()
+                        .any(|&r| ns.taint.reg_t(t, r));
+                    if cmp || old_input_derived {
+                        let end = (k.2 + a.bytes as u64).next_multiple_of(4);
+                        for b in (k.2 & !3)..end {
+                            ns.taint.mem_set((k.0, k.1, b), true);
+                        }
+                    }
+                }
             }
         }
         if let Some(d) = d {
@@ -3124,6 +3139,102 @@ impl Machine {
         }
         let n = ns.mem.get(&(4, t as u64, addr as u64)).copied();
         ns.set(t, d, n);
+    }
+
+    /// STL.U8 / .U16 (`ld`/`st.local` of 8 or 16 bits) of the low `n` bytes of `v` at local
+    /// byte `a` of thread `t`: those bytes take `v`'s taint and 16-bit provenance, the word's
+    /// other bytes keep theirs, and the word loses its node (`word`: its bits after the store).
+    /// Until MISS 158 the word took the taint and node of a constant, the merged word as an
+    /// immediate: local memory laundered input data and roundings.
+    // ASSUME(N-NUM-TRACK): `ptxv num`: a word that mixes bytes of a value holding a rounding (the
+    // stored register's or the word's old node) with other bytes is input data, as in global
+    // and shared memory (`num_st`).
+    pub(crate) fn num_local_st_sub(
+        &mut self,
+        t: usize,
+        v: &Val,
+        a: u32,
+        n: u32,
+        word: u32,
+        pc: u32,
+    ) {
+        self.half_local_st_bytes(t, v, a, n);
+        let Some(ns) = self.num.as_mut() else { return };
+        let w = (a & !3) as u64;
+        let key = (4u8, t as u64, w);
+        let tainted = matches!(v, Val::Reg(r, _) if ns.taint.reg_t(t, *r));
+        for b in 0..n as u64 {
+            ns.taint.mem_set((4, t as u64, a as u64 + b), tainted);
+        }
+        let old = ns.mem.remove(&key);
+        let src_rounded = ns.rounding_taint && ns.node_of(t, v).is_some_and(|m| ns.rounded(m));
+        if ns.rounding_taint && (src_rounded || old.is_some_and(|m| ns.rounded(m))) {
+            for b in w..w + 4 {
+                ns.taint.mem_set((4, t as u64, b), true);
+            }
+        }
+        if (w..w + 4).any(|b| ns.taint.mem_has((4, t as u64, b))) {
+            let node = ns.leaf_with_origin(word, pc, true);
+            ns.mem.insert(key, node);
+        }
+    }
+
+    /// LDL.U8 / .U16 (`n` bytes, zero-extended) of local byte `a` of thread `t` into `d`: `d`
+    /// has no node and carries the taint and 16-bit provenance of the bytes it gets. Until
+    /// MISS 158 it was a constant (`num_clobber` without sources).
+    // ASSUME(N-NUM-TRACK): `ptxv num`: bytes of a word holding a rounding, without the word's
+    // node, are input data, as in global and shared memory (`num_ld`, MISS 115).
+    pub(crate) fn num_local_ld_sub(&mut self, t: usize, d: Reg, a: u32, n: u32) {
+        self.half_local_ld_bytes(t, d, a, n);
+        let Some(ns) = self.num.as_mut() else { return };
+        let k = (4u8, t as u64, a as u64);
+        if (0..n as u64).any(|b| ns.taint.mem_has((k.0, k.1, k.2 + b))) {
+            ns.taint.cur_read = true;
+        } else if ns.rounding_taint && ns.words_rounded(k, n as u64) {
+            ns.taint.clobber_taint.push((t, d));
+        }
+        ns.set(t, d, None);
+    }
+
+    /// PTX `ld.local.b64` (a 64-bit register `d`) of local words `a`, `a + 4` of thread `t`:
+    /// `d`'s lanes take their nodes, and `d` the taint of their 8 bytes. Until MISS 158 `d` was
+    /// a constant (`num_clobber` without sources).
+    pub(crate) fn num_local_ld64(&mut self, t: usize, d: Reg, a: u32) {
+        let Some(ns) = self.num.as_mut() else { return };
+        let (t64, a) = (t as u64, a as u64);
+        if (a..a + 8).any(|b| ns.taint.mem_has((4, t64, b))) {
+            ns.taint.cur_read = true;
+        }
+        let lo = ns.mem.get(&(4, t64, a)).copied();
+        let hi = ns.mem.get(&(4, t64, a + 4)).copied();
+        ns.set(t, d, lo);
+        ns.set(t, lane_reg(d, 1), hi);
+    }
+
+    /// PTX `st.local.b64` of 64-bit register `r` at local byte `a` of thread `t`: words `a`
+    /// and `a + 4` take its lanes' nodes, and their 8 bytes its taint. Until MISS 158 they took
+    /// the taint and nodes of constants (each word as an immediate).
+    pub(crate) fn num_local_st64(&mut self, t: usize, r: Reg, a: u32) {
+        if self.num.as_ref().is_some_and(|ns| ns.half.is_on()) {
+            self.half_mem_set((4, t as u64, a as u64), &[None; 8]);
+        }
+        let Some(ns) = self.num.as_mut() else { return };
+        let (t64, a) = (t as u64, a as u64);
+        let tainted = ns.taint.reg_t(t, r);
+        for b in a..a + 8 {
+            ns.taint.mem_set((4, t64, b), tainted);
+        }
+        for (i, lane) in [(0u64, r), (1, lane_reg(r, 1))] {
+            let key = (4u8, t64, a + 4 * i);
+            match ns.node_of_reg(t, lane) {
+                Some(n) => {
+                    ns.mem.insert(key, n);
+                }
+                None => {
+                    ns.mem.remove(&key);
+                }
+            }
+        }
     }
 
     /// tcgen05.st of register `v` into a TMEM word: the word carries v's provenance.

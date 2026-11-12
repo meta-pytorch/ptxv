@@ -1,0 +1,63 @@
+name = "c_num_localctl_rnd_f32"
+description = """
+N-NUM-TRACK (MISS 158, a rounded value through local memory decides a branch; the independent
+review's probe): 32 threads red.add.f32 0.1f into acc (the run's sum 0x404cccc9 = 3.1999991,
+exact 32 * 0.1f = 0x404ccccd); every thread loads acc after bar.sync; the value, packed with 0 by
+mov.b64, stored by st.local.b64 and read back by ld.local.b64 (offset from a scratch word),
+decides out[t] = rn(x[t] + 1) if it is >= 0x404ccccd, else rn(x[t] + 2). The run takes the else
+path; the exact computation stores x[t] + 1. x uniform in [1, 2). expected/ is GB300's output
+(`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_localctl_rnd_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "z"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "acc"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[params]]
+kind = "ptr"
+buffer = "acc"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

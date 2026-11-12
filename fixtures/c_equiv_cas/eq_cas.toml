@@ -1,0 +1,19 @@
+# MISS 159 (a compare-and-swap decided by input data): ref_cas's compare is cvt.rzi(x), so its
+# outcome, and with it the word that indexes y, depends on the input even where the swap fails
+# (the captured input), and the data-dependent precondition fails on both fronts. Until MISS 159
+# a failed swap left the word's taint as it was, and ref_cas gave L0 PROVEN against cand_add,
+# which GB300 refutes at x = 0.5 (1.515625: y[t + 1], against 1.5).
+max_states = 200000
+reference = { case = "cand_add", variant = "good", front = "ptx" }
+
+[[candidates]]
+case = "ref_cas"
+variant = "good"
+front = "ptx"
+expect = "L0 (unproven)"
+
+[[candidates]]
+case = "ref_cas"
+variant = "good"
+front = "sass"
+expect = "L0 (unproven)"

@@ -424,6 +424,33 @@ impl Machine {
         self.half_set_reg(t, d, Some(b));
     }
 
+    /// (store) the low `n` bytes of `v` at local byte `a` of thread `t` (STL.U8 / .U16).
+    pub(crate) fn half_local_st_bytes(&mut self, t: usize, v: &Val, a: u32, n: u32) {
+        if !self.num.as_ref().is_some_and(|ns| ns.half.is_on()) {
+            return;
+        }
+        let b = self.half_val(t, v).unwrap_or([None; 4]);
+        self.half_mem_set((4, t as u64, a as u64), &b[..n as usize]);
+    }
+
+    /// (load) register `d` of thread `t` gets the `n` bytes at local byte `a`, zero-extended
+    /// (LDL.U8 / .U16).
+    pub(crate) fn half_local_ld_bytes(&mut self, t: usize, d: Reg, a: u32, n: u32) {
+        let Some(ns) = self.num.as_ref() else { return };
+        if !ns.half.is_on() {
+            return;
+        }
+        let mut b: Bytes = [Some(Src::Zero); 4];
+        for (i, x) in b.iter_mut().enumerate().take(n as usize) {
+            *x = ns
+                .half
+                .mem
+                .get(&(4, t as u64, a as u64 + i as u64))
+                .copied();
+        }
+        self.half_set_reg(t, d, Some(b));
+    }
+
     /// The node a bf16 (`f16`: f16) output element (allocation, element index) holds: a
     /// rounded value (its `Round` node) or an input element's leaf of that format; None: no
     /// provenance (or a constant).

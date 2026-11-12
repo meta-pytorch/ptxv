@@ -1,0 +1,58 @@
+name = "c_equiv_cas_cand_add"
+description = """
+rn(x + y).
+Inputs: x = 1.5 + (t + 1)/128, y = 1 + t/64 (data/)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_equiv_cas_cand_add"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "../data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "../data/y.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "z"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

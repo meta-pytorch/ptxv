@@ -868,6 +868,118 @@ fn multimem_probes_differ_from_their_captures() {
     assert_eq!(t.matches(line).count(), 4, "{t}");
 }
 
+/// The first file named `name` under `dir`.
+fn find(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    for e in std::fs::read_dir(dir).ok()?.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            if let Some(f) = find(&p, name) {
+                return Some(f);
+            }
+        } else if p.file_name().is_some_and(|n| n == name) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// MISS 110 (N-MULTIMEM-ROUND16 in equiv): fixtures/r1h_nvls_bf16 copied with captured outputs
+/// written from its own simulated output, lane 1 of outa0 (an exact bf16 sum: no calibrated
+/// rounding) one encoding up. equiv's check of the simulated output against the capture reports
+/// the difference on both fronts; with every byte taken as a calibrated lane it would pass as
+/// within one ulp.
+#[test]
+fn exact_multimem_lane_one_ulp_off_differs_from_its_capture() {
+    const OUTS: [&str; 8] = [
+        "outa0", "outb0", "outc0", "outm0", "outa1", "outb1", "outc1", "outm1",
+    ];
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let src = root.join("fixtures/r1h_nvls_bf16");
+    let tmp = std::env::temp_dir().join(format!("ptxv-test-equiv-nvls16-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let mut eq = format!(
+        "reference = {{ case = \"{}\", variant = \"good\", front = \"ptx\" }}\n",
+        src.display()
+    );
+    for front in ["ptx", "sass"] {
+        let out = tmp.join(format!("sim-{front}"));
+        let o = std::process::Command::new(env!("CARGO_BIN_EXE_ptxv"))
+            .arg("check")
+            .arg(&src)
+            .args(["--variant", "good", "--front", front, "--json"])
+            .args(["--no-input-coverage", "--out"])
+            .arg(&out)
+            .env("PTXV_DUMP_OUTPUTS", "1")
+            .env("CUDA_VISIBLE_DEVICES", "")
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let mut sim =
+            std::fs::read(find(&out, &format!("good.{front}.output0.bin")).unwrap()).unwrap();
+        assert_eq!(sim.len(), 64, "{front}: 8 outputs of 4 bf16");
+        let case = tmp.join(format!("case-{front}"));
+        std::fs::create_dir_all(case.join("expected")).unwrap();
+        std::fs::create_dir_all(case.join("data")).unwrap();
+        for f in ["kernel.ptx", "data/in0.bin", "data/in1.bin"] {
+            std::fs::copy(src.join(f), case.join(f)).unwrap();
+        }
+        let mut toml = std::fs::read_to_string(src.join("case.toml")).unwrap();
+        for b in OUTS {
+            toml = toml.replace(
+                &format!("name = \"{b}\"\n"),
+                &format!("name = \"{b}\"\nexpect = \"expected/{b}.bin\"\n"),
+            );
+        }
+        std::fs::write(case.join("case.toml"), toml).unwrap();
+        // outa0 lane 1: bytes 2..4 of the first output.
+        let e = u16::from_le_bytes([sim[2], sim[3]]) + 1;
+        sim[2..4].copy_from_slice(&e.to_le_bytes());
+        for (i, b) in OUTS.iter().enumerate() {
+            std::fs::write(
+                case.join(format!("expected/{b}.bin")),
+                &sim[8 * i..8 * i + 8],
+            )
+            .unwrap();
+        }
+        eq += &format!(
+            "\n[[candidates]]\ncase = \"{}\"\nvariant = \"good\"\nfront = \"{front}\"\nexpect = \"none (unproven)\"\n",
+            case.display()
+        );
+    }
+    let toml = tmp.join("eq.toml");
+    std::fs::write(&toml, eq).unwrap();
+    let t = equiv_ok(toml.to_str().unwrap(), 2);
+    let line = "candidate: simulated output at the captured inputs: outa0: differs from the captured GPU output";
+    assert_eq!(t.matches(line).count(), 2, "{t}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// MISS 158 (fixtures/c_equiv_local/eq_local.toml): input data keeps its taint through local
+/// memory. ref_local64 (x through st/ld.local.b64) and ref_local16 (x's high half through
+/// st/ld.local.b16, STL.U16 / LDL.U16 on SASS) branch on it, so the data-dependent precondition
+/// fails on both fronts, as for the register-direct control ref_reg. Before, both were L0 PROVEN
+/// against cand_add, which GB300 refutes at x = 1.25 + t/256 (1.25 against 2.25).
+#[test]
+fn local_memory_keeps_input_taint() {
+    let t = equiv_ok("fixtures/c_equiv_local/eq_local.toml", 5);
+    assert!(!t.contains("PROVEN"), "{t}");
+    let line = "precondition: data-dependent: guard of";
+    assert_eq!(t.matches(line).count(), 11, "{t}");
+}
+
+/// MISS 159 (fixtures/c_equiv_cas/eq_cas.toml): a compare-and-swap whose compare is input data
+/// leaves its word input data where the swap fails (at the captured input), so an address that
+/// depends on the word fails the precondition on both fronts. Before, the word kept its taint
+/// and ref_cas was L0 PROVEN against cand_add, which GB300 refutes at x = 0.5 (1.515625 against
+/// 1.5).
+#[test]
+fn failed_cas_with_input_compare_taints_its_word() {
+    let t = equiv_ok("fixtures/c_equiv_cas/eq_cas.toml", 2);
+    assert!(!t.contains("PROVEN"), "{t}");
+    let line = "precondition: data-dependent: an address / control operand of";
+    assert_eq!(t.matches(line).count(), 2, "{t}");
+}
+
 /// MISS 98 (fixtures/c_equiv_atomic/eq_offset.toml): captures of part of the output
 /// (`expect_offset` 2048; the candidate's also `expect_ignore` of out[600]) are compared where
 /// both cases captured them, each output against its own bound. Before, both captures were

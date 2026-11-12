@@ -1,0 +1,57 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_local_f32(.param .u64 px, .param .u64 pout, .param .u64 pz)
+{
+    .reg .pred %p<4>;
+    .reg .b16 %rs<8>;
+    .reg .b32 %r<32>;
+    .reg .f32 %f<24>;
+    .reg .b64 %rd<24>;
+    .local .align 8 .b8 L[64];
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r0, %tid.x;
+    mul.wide.u32 %rd3, %r0, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    mov.u64 %rd6, L;
+    ld.param.u64 %rd15, [pz];
+    cvta.to.global.u64 %rd15, %rd15;
+    add.s64 %rd16, %rd15, %rd3;
+    st.global.u32 [%rd16], 0;
+    ld.volatile.global.u32 %r30, [%rd16];
+    cvt.u64.u32 %rd17, %r30;
+    add.s64 %rd18, %rd6, %rd17;
+    cvt.rn.f32.u32 %f1, %r0;
+    add.rn.f32 %f2, %f1, 0f3DCCCCCD;
+    add.rn.f32 %f3, %f1, 0f3E4CCCCD;
+    st.local.f32 [%rd6], %f2;
+    ld.local.u16 %rs1, [%rd18];
+    ld.local.u16 %rs2, [%rd18+2];
+    mov.b32 %r1, {%rs1, %rs2};
+    st.global.b32 [%rd5], %r1;
+    st.local.b32 [%rd6+4], 0;
+    mov.b32 %r2, %f2;
+    cvt.u16.u32 %rs3, %r2;
+    st.local.u16 [%rd6+4], %rs3;
+    ld.local.b32 %r3, [%rd18+4];
+    st.global.b32 [%rd5+128], %r3;
+    mov.b32 %r4, %f2;
+    mov.b32 %r5, %f3;
+    mov.b64 %rd7, {%r4, %r5};
+    st.local.b64 [%rd6+8], %rd7;
+    ld.local.b64 %rd8, [%rd18+8];
+    mov.b64 {%r6, %r7}, %rd8;
+    st.global.b32 [%rd5+256], %r6;
+    st.global.b32 [%rd5+384], %r7;
+    ret;
+}

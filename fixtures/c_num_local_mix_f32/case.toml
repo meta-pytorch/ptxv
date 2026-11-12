@@ -1,0 +1,52 @@
+name = "c_num_local_mix_f32"
+description = """
+N-NUM-TRACK (MISS 158, local memory: a partial store into a word holding a rounding): thread t,
+s = rn(t + 0.1f) (not input data) stored to local words. out[t] = the word after st.local.b16
+of the constant 0x1234 over s's low half, out[32 + t] = the word after st.local.b8 of 0x56 over
+s's second byte (bit mixes, no exact value), out[64 + t] = s read back whole (exact t + 0.1f,
+0.1f the f32 nearest). The loads add an offset of 0 read back from a scratch word (ptxas keeps
+the local accesses). expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_local_mix_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [96]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "z"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

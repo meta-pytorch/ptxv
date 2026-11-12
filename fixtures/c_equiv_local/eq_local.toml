@@ -1,0 +1,38 @@
+# MISS 158 (local memory keeps taint): each candidate branches on input data that passes through
+# local memory (ref_local64: x packed with 0 by mov.b64 through st/ld.local.b64; ref_local16: the
+# high half of x through st/ld.local.b16, STL.U16 / LDL.U16 on SASS), so the data-dependent
+# precondition fails, as for the register-direct control ref_reg, and no level is proven for
+# every input. Until MISS 158 both gave L0 PROVEN against cand_add, which GB300 refutes at
+# x = 1.25 + t/256 (the kernel computes rn(x * y), out[0] = 1.25; cand_add rn(x + y) = 2.25).
+max_states = 200000
+reference = { case = "cand_add", variant = "good", front = "ptx" }
+
+[[candidates]]
+case = "ref_local64"
+variant = "good"
+front = "ptx"
+expect = "L0 (unproven)"
+
+[[candidates]]
+case = "ref_local64"
+variant = "good"
+front = "sass"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "ref_local16"
+variant = "good"
+front = "ptx"
+expect = "L0 (unproven)"
+
+[[candidates]]
+case = "ref_local16"
+variant = "good"
+front = "sass"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "ref_reg"
+variant = "good"
+front = "ptx"
+expect = "L0 (unproven)"

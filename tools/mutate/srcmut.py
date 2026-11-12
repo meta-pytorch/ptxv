@@ -4310,6 +4310,140 @@ MUTANTS += [
     ),
 ]
 
+# MISS 114 follow-up (the independent review's surviving mutant): a compare-and-swap decided by
+# its old value alone, input data (fixtures/c_num_cas_after_or_f32).
+MUTANTS += [
+    # MISS 114: a compare-and-swap decided by its old value alone (input data) is not decided:
+    # c_num_cas_after_or_f32 claims out[0] exact (true error 2.2 absolute).
+    SrcMutant(
+        "num-cas-old-input",
+        "crates/sim/src/num.rs",
+        "        let decided = cas && (a.old_rounded || a.old_input_derived || x_inexact);\n",
+        "        let decided = cas && (a.old_rounded || x_inexact);\n",
+        [],
+        [NUM_ATOM_RMW],
+    ),
+]
+
+# MISS 110 follow-up (the independent review's surviving mutant): equiv's comparison with the
+# capture takes only calibrated lanes as within one ulp (fixtures/r1h_nvls_bf16 copied, an exact
+# lane one encoding off).
+ROUND16_EXACT = ("ptxv", "equiv", "exact_multimem_lane_one_ulp_off_differs_from_its_capture")
+MUTANTS += [
+    # MISS 110: every byte of a multimem output taken as a calibrated bf16 lane in equiv's
+    # comparison with the capture: an exact lane one encoding off passes as within one ulp.
+    SrcMutant(
+        "round16-equiv-fab",
+        "crates/cli/src/equiv.rs",
+        "    let marks = run.m.round16_marks();\n",
+        "    let marks = run.m.round16_marks().map(|v| vec![Some(ptxv_case::Round16::Bf16); v.len()]);\n",
+        [],
+        [ROUND16_EXACT],
+    ),
+]
+
+# MISS 158: local memory keeps taint and nodes (fixtures/c_num_local_f32, c_num_local_mix_f32,
+# c_num_localctl_rnd_f32, c_equiv_local).
+NUM_LOCAL = ("ptxv", "num_untracked", "local_memory_keeps_taint_and_nodes")
+EQUIV_LOCAL = ("ptxv", "equiv", "local_memory_keeps_input_taint")
+MUTANTS += [
+    # MISS 158: an LDL.U16 (ld.local.b16) of tainted bytes is not input data (ref_local16
+    # L0 PROVEN) ...
+    SrcMutant(
+        "local-sub-ld-taint",
+        "crates/sim/src/num.rs",
+        "        if (0..n as u64).any(|b| ns.taint.mem_has((k.0, k.1, k.2 + b))) {\n",
+        "        if false && (0..n as u64).any(|b| ns.taint.mem_has((k.0, k.1, k.2 + b))) {\n",
+        [],
+        [EQUIV_LOCAL],
+    ),
+    # ... nor are bytes of a word holding a rounding, without its node (c_num_local_f32:
+    # out[0..32] exact constants) ...
+    SrcMutant(
+        "local-sub-ld-rounded",
+        "crates/sim/src/num.rs",
+        "        } else if ns.rounding_taint && ns.words_rounded(k, n as u64) {\n",
+        "        } else if false && ns.rounding_taint && ns.words_rounded(k, n as u64) {\n",
+        [],
+        [NUM_LOCAL],
+    ),
+    # ... an STL.U16 (st.local.u16) drops its register's taint (out[32..64] claimed on the PTX
+    # front; ref_local16) ...
+    SrcMutant(
+        "local-sub-st-taint",
+        "crates/sim/src/num.rs",
+        "        let tainted = matches!(v, Val::Reg(r, _) if ns.taint.reg_t(t, *r));\n"
+        "        for b in 0..n as u64 {\n",
+        "        let tainted = false && matches!(v, Val::Reg(r, _) if ns.taint.reg_t(t, *r));\n"
+        "        for b in 0..n as u64 {\n",
+        [],
+        [NUM_LOCAL, EQUIV_LOCAL],
+    ),
+    # ... or the mix of a rounding with other bytes (c_num_local_mix_f32: a constant half or byte
+    # stored over a word holding s is an exact constant) ...
+    SrcMutant(
+        "local-sub-st-rounded",
+        "crates/sim/src/num.rs",
+        "        if ns.rounding_taint && (src_rounded || old.is_some_and(|m| ns.rounded(m))) {\n",
+        "        if false && (src_rounded || old.is_some_and(|m| ns.rounded(m))) {\n",
+        [],
+        [NUM_LOCAL],
+    ),
+    # ... an ld.local.b64 drops its bytes' taint (ref_local64 L0 PROVEN) ...
+    SrcMutant(
+        "local-ld64-taint",
+        "crates/sim/src/num.rs",
+        "        if (a..a + 8).any(|b| ns.taint.mem_has((4, t64, b))) {\n",
+        "        if false && (a..a + 8).any(|b| ns.taint.mem_has((4, t64, b))) {\n",
+        [],
+        [EQUIV_LOCAL],
+    ),
+    # ... or its words' nodes (out[64..128] exact constants) ...
+    SrcMutant(
+        "local-ld64-nodes",
+        "crates/sim/src/num.rs",
+        "        ns.set(t, d, lo);\n        ns.set(t, lane_reg(d, 1), hi);\n",
+        "        ns.set(t, d, lo.filter(|_| false));\n        ns.set(t, lane_reg(d, 1), hi.filter(|_| false));\n",
+        [],
+        [NUM_LOCAL],
+    ),
+    # ... an st.local.b64 drops its register's taint (ref_local64) ...
+    SrcMutant(
+        "local-st64-taint",
+        "crates/sim/src/num.rs",
+        "        let tainted = ns.taint.reg_t(t, r);\n        for b in a..a + 8 {\n",
+        "        let tainted = false && ns.taint.reg_t(t, r);\n        for b in a..a + 8 {\n",
+        [],
+        [EQUIV_LOCAL],
+    ),
+    # ... or its lanes' nodes (out[64..128] exact constants).
+    SrcMutant(
+        "local-st64-nodes",
+        "crates/sim/src/num.rs",
+        "            match ns.node_of_reg(t, lane) {\n",
+        "            match ns.node_of_reg(t, lane).filter(|_| false) {\n",
+        [],
+        [NUM_LOCAL],
+    ),
+]
+
+# MISS 159: a compare-and-swap whose compare is input data has an input-dependent outcome
+# (fixtures/c_equiv_cas).
+EQUIV_CAS = ("ptxv", "equiv", "failed_cas_with_input_compare_taints_its_word")
+MUTANTS += [
+    # MISS 159: a failed compare-and-swap whose compare is input data leaves its word's taint
+    # (ref_cas L0 PROVEN).
+    SrcMutant(
+        "equiv-cas-compare",
+        "crates/sim/src/num.rs",
+        "                    if cmp || old_input_derived {\n",
+        "                    if false && cmp || old_input_derived {\n",
+        [],
+        [EQUIV_CAS],
+    ),
+]
+
+
 def expect_for(case: Path, variant: str, front: str) -> list[str]:
     c = tomllib.loads((case / "case.toml").read_text())
     for v in c.get("variants", []):

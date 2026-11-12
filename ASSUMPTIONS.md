@@ -7796,10 +7796,20 @@ the captured shape when both kernels pass the preconditions:
   - Origins are tracked for f32 input elements read by loads (N-LEAF), for bf16 / f16
     elements and bf16 / f16 roundings, byte by byte, and for FP8 / ue8m0 bytes that narrow
     tensor-core steps read (N-HALF-LEAF, N-ROUND).
-  - Taint also flows through local memory (STL / LDL) and from a cp.async source to its
-    destination. HMMA operands and STL values are values, not control. A half-warp LDTM taints
-    only the lanes that execute it. A value of any other origin makes the comparison
-    "untracked" (inconclusive, not proven).
+  - Taint also flows through local memory (STL / LDL of every width: an 8- or 16-bit store gives its
+    bytes the stored register's taint and a load takes its bytes', the PTX front's 64-bit `ld` /
+    `st.local` of a 64-bit register moves the 8 bytes' taint and both words' nodes; until MISS 158
+    those accesses wrote or read constants) and from a cp.async source to its destination. HMMA
+    operands and STL values are values, not control. A half-warp LDTM taints only the lanes that
+    execute it. A value of any other origin makes the comparison "untracked" (inconclusive, not
+    proven). fixtures/c_equiv_local (the independent review's probes; GB300 == simulator bitwise, 20
+    of 20 runs): ref_local64 (PTX) and ref_local16 (PTX; SASS STL.U16 / LDL.U16) branch on input
+    data passed through local memory. Before, both were L0 PROVEN against cand_add (ref_local16 on
+    both fronts); after, the data-dependent precondition fails on every front, as for the
+    register-direct control ref_reg. On GB300 at x = 1.25 + t/256 (same shape) the three refs give
+    rn(x y) (out[0] = 1.25) and cand_add rn(x + y) (2.25), 32 of 32 outputs apart. Mutants
+    local-sub-ld-taint, local-sub-st-taint, local-ld64-taint, local-st64-taint caught
+    (`tests/equiv.rs` `local_memory_keeps_input_taint`).
   - Several outputs over the explored schedules are accepted only when they come from fp32
     atomic adds (N-ATOMIC).
   - L0 up to the sign of zero, level L0~0 (MISS 109): an output that is x + (+0) (an FFMA by
@@ -7856,6 +7866,22 @@ the captured shape when both kernels pass the preconditions:
     included (warp-collective and uniform operations: every member, as before). Negative tests:
     fixtures/c_equiv_online (`online_bookkeeping_taint_is_exact`: a mask chosen by the data, a
     shuffle from data lanes, a float2's data word keep their guards).
+  - A compare-and-swap's outcome (MISS 159, `Machine::num_atom`): a CAS whose compare or old
+    value is input data leaves its words input data, swapped or not, since another input may swap
+    where this run did not, or the reverse. A swap writes the taint of its compare and old value
+    (as any atomic); a failed CAS writes nothing, and until MISS 159 its words kept their taint,
+    so an address or branch decided by the word escaped the precondition. fixtures/c_equiv_cas
+    (the independent review's probe; GB300 == simulator bitwise, 20 of 20 runs): ref_cas runs
+    atom.cas [z], cvt.rzi(x), 1 on a zero word z, which fails at the captured input, then reads
+    y[(t + z) & 31]. Before, L0 PROVEN against cand_add on both fronts (SASS: ATOMG.E.CAS, then
+    an LDG of the word feeding the address); after, the precondition fails on both. On GB300 at
+    x = 0.5 the outputs differ (1.515625 against 1.5 at out[0], 32 of 32). `ptxv num` refused it
+    already (MISS 114: a compare holding input data decides the swap). Mutant equiv-cas-compare
+    caught (`tests/equiv.rs` `failed_cas_with_input_compare_taints_its_word`).
+    kernel_db (MISS 159; SASS compare-and-swap in 7 records with errdist runs, 2 of them num cases;
+    A/B MISS 158 / MISS 159): num of dg_triton_rs_w2 / w4 (not analyzed on every build) and errdist
+    of dg_triton_rs_w2 unchanged; the other 6 errdist runs end without a verdict on every build
+    (600 s, 48 GB). No flip.
   - Cross-lane results (2026-11-11, MISS 65 and the vote part of MISS 83): a reduction, ballot,
     vote or match (REDUX / CREDUX, VOTE.ANY / VOTEU.ANY, VOTE.ALL / VOTE.EQ, MATCH.ANY) gives
     every lane the taint of any executing lane's operand; R2UR's uniform destination has the
@@ -7925,7 +7951,11 @@ the captured shape when both kernels pass the preconditions:
       random GB300 inputs each (16.4M outputs, tools/mx_gpu_check.py); the K-reversed Triton
       kernel (L1) differed in 84% of them.
 - If wrong: *false proof*, for a data dependence the taint rules miss (for example through a
-  path the model does not lower) or an MMA unit that is not order-invariant within a group.
+  path the model does not lower; until MISS 158, 8-, 16- and 64-bit local memory accesses; until
+  MISS 159, a failed compare-and-swap) or an MMA unit that is not order-invariant within a group.
+- Placement: the taint rules are strict. Local memory (MISS 158): ld.local reads the bytes
+  st.local wrote (ISA text); a compare-and-swap (MISS 159) swaps exactly when its compare equals
+  the old value (ISA text, atom.cas); no GB300-only fact.
 - Retire: run proven-L0 pairs on random inputs on GB300 (bitwise), as a standing check.
 
 - A captured S-SAME-VALUE exception involving input-derived bytes is not sufficient for
@@ -8887,8 +8917,12 @@ random bf16 lanes and 96.7% of f16 lanes; misses include groups with a NaN lane.
   fixtures/r1h_nvls_ulp and r1h_nvls_nan (expected/ constructed) mismatch on both fronts
   (before, within one ulp); in `ptxv equiv` (`crates/cli/tests/equiv.rs`
   `multimem_probes_differ_from_their_captures`, fixtures/c_equiv_round16) both differ from
-  their captures on both fronts (before, neither difference was reported). Mutants round16-*
-  caught (tools/mutate/srcmut.py). Evidence [model]: GB300 multicast runs are not available
+  their captures on both fronts (before, neither difference was reported); an exact lane of
+  fixtures/r1h_nvls_bf16 one encoding off a capture written from the simulated output
+  (`exact_multimem_lane_one_ulp_off_differs_from_its_capture`) differs on both fronts, which
+  pins the marks `sim_gpu_mismatch` takes from the numerics run. Mutants round16-* caught
+  (tools/mutate/srcmut.py; round16-equiv-fab, every byte taken as a calibrated bf16 lane in
+  equiv, only by the exact-lane test). Evidence [model]: GB300 multicast runs are not available
   to the hardware runner, so no captured output exists for these fixtures.
 - Status: **unvalidated** (partial fit).
 - Where: `crates/sim/src/multimem.rs` `add16`, `Round16Shadow` (hooks in exec.rs `wr`,
@@ -9604,7 +9638,15 @@ words, a 16-bit one the word holding it). Partial-width and rearranging accesses
 is input data; so is a word a store or copy writes in part (a 16-bit or 8-bit store, stmatrix
 .trans or .b8, a copy of 2-byte elements or a misaligned one: `num_st`, `num_copy_snapshot`)
 when its old node or the stored register's node held a rounding, or a copied byte came from a
-word whose node did. And no output of a
+word whose node did. Local memory follows the same rules (MISS 158; `Machine::num_local_st_sub`,
+`num_local_ld_sub`, `num_local_st64`, `num_local_ld64`): a 16-bit or 8-bit store (STL.U16 /
+.U8, `st.local` of 16 or 8 bits) gives its bytes the stored register's taint and 16-bit
+provenance, and its word is input data when it mixes bytes of a rounding (the register's node
+or the word's old node) with other bytes; a 16-bit or 8-bit load takes its bytes' taint, and is
+input data when the word holds a rounding without its node; the PTX front's 64-bit `ld` /
+`st.local` of a 64-bit register moves both words' nodes and the 8 bytes' taint. Until MISS 158
+the loads wrote a constant and the stores the merged word or each word as an immediate, so input
+data and roundings passed through local memory as exact constants. And no output of a
 run carries a claim when its control flow, effects or addresses depend on input data
 (`Taint::control_pcs`): a branch, EXIT, store, atomic, barrier or asynchronous operation under
 a data-dependent guard, or a data-dependent branch target, load / store / atomic address or
@@ -9743,9 +9785,16 @@ rounding ptxas folded before the binary existed is not seen.
     compare-and-swap (9.2e6 ulp of the computed output), 0.0625 for the bf16 sum (2.6e5 ulp) and
     2^-30 for the exchanged word (claimed 0, the input element's node). After: the exchanged word
     claimed (9.313e-10, 0.0078 ulp), the rest not analyzed.
-  Mutants num-rmw-old, num-rmw-word, num-rmw-f64, num-rmw-cas, num-rmw-exch, num-rmw-bf16 (each
-  caught). The failing float atomic max idiom and the 16-bit bulk reduction without 16-bit
-  tracking are argued from code (no fixture reaches them).
+  - `fixtures/c_num_cas_after_or_f32` (the independent review's probe): atom.or 0 makes the
+    accumulator word input data without a node, then a compare-and-swap with the run's sum as its
+    literal compare swaps in the run and not in the exact computation. Not analyzed on either
+    front; with the old value's input taint dropped from the swap's decision (mutant
+    num-cas-old-input) both fronts claim both outputs exact, max_err 0, where |GB300 - exact| is
+    2.2 absolute at out[0].
+  Mutants num-rmw-old, num-rmw-word, num-rmw-f64, num-rmw-cas, num-rmw-exch, num-rmw-bf16,
+  num-cas-old-input (each caught; num-cas-old-input only by c_num_cas_after_or_f32). The failing
+  float atomic max idiom and the 16-bit bulk reduction without 16-bit tracking are argued from
+  code (no fixture reaches them).
   Partial-width and rearranging accesses (MISS 115; GB300 == simulator bitwise, 20 of 20 runs;
   `tests/num_untracked.rs` checks every claim against the exact value):
   - `fixtures/c_num_ld16_f32`: s_t = rn(t + 0.1f) read back by two 16-bit loads and recombined.
@@ -9768,6 +9817,29 @@ rounding ptxas folded before the binary existed is not seen.
     words too: a precision cost).
   Mutants num-ld16, num-ldsm, num-st16, num-copy16, num-stsm8 (each caught). A whole-word copy
   from a misaligned source (no node moves) is argued from code.
+  Local memory (MISS 158; the independent review's probes and one more, GB300 == simulator
+  bitwise, 20 of 20 runs; `tests/num_untracked.rs` `local_memory_keeps_taint_and_nodes` checks
+  every claim against the exact value; ulp of the computed output):
+  - `fixtures/c_num_local_f32`: s = rn(t + 0.1f) read back from a local word by two 16-bit loads
+    (0..31), s's low half stored into a zero word (32..63, bit mixes), s and s2 = rn(t + 0.2f)
+    through st / ld.local.b64 (64..127). Before: PTX 128 of 128 claimed, max_err 0, 93
+    under-claimed (the worst claimed 0 against 1.94e-7, 0.41 ulp) and 32 claims on bit mixes;
+    SASS 35 of 128 (32 on bit mixes; MISS 108 withheld the rest). After: 64 of 128 on both
+    fronts, each |GB300 - exact|, max_err 7.600e-7 (0.41 ulp).
+  - `fixtures/c_num_local_mix_f32`: a constant 16-bit half (0..31) or byte (32..63) stored over a
+    local word holding s, and s read back whole (64..95). Before: 96 of 96 claimed on both fronts,
+    64 on bit mixes. After: 32 of 96, each |GB300 - exact|.
+  - `fixtures/c_num_localctl_rnd_f32`: a rounded atomic sum through st / ld.local.b64 decides a
+    branch. Before: PTX 32 of 32 claimed, max_err 1.192e-7 (0.50 ulp), |GB300 - exact| = 1.0
+    absolute (4.19e6 ulp) in every element. After: refused, as the register-direct twin. The SASS
+    front (ptxas made the branch two predicated adds: untracked) claimed nothing before or after.
+  Mutants local-sub-ld-taint, local-sub-ld-rounded, local-sub-st-taint, local-sub-st-rounded,
+  local-ld64-taint, local-ld64-nodes, local-st64-taint, local-st64-nodes (each caught).
+  kernel_db (MISS 158; exposure scan of the 565 records with num or errdist runs: SASS 8- / 16-bit
+  local accesses in 2 records, PTX local accesses in none; A/B int7 / MISS 158 / MISS 159): num of
+  triton.bmm_bwd_dw_kernel.bf16.8x4x8 (two STL.S16 of zeroed 16-bit values read back by 32-bit LDL)
+  and errdist of its 2 runs unchanged; cutlass_fmha.fwd_varlen_noncausal's errdist run ends without
+  a verdict on every build (600 s). No flip.
   SASS claims bounded by the PTX front's (MISS 108; GB300 == simulator bitwise, 20 of 20 runs;
   `tests/num_untracked.rs` `sass_claims_need_a_ptx_claim_with_the_same_exact_value`; ulp of the
   computed output, over outputs of magnitude at least 2^-20):
@@ -9804,7 +9876,8 @@ rounding ptxas folded before the binary existed is not seen.
   gb300 evidence only, a bound.
 - Placement: strict for the rounding taint, the refusals, the I2F exemption and the HFMA2
   materialization: they follow from the PTX semantics in real arithmetic and IEEE 754, with no
-  GB300-only fact. The division exception rests on MUFU.RCP's measured behavior and is gb300
+  GB300-only fact (local memory included, MISS 158: ld.local reads the bytes st.local wrote, ISA
+  text). The division exception rests on MUFU.RCP's measured behavior and is gb300
   (N-NUM-UDIV). With the kernel's PTX, the SASS front's claims are bounded by the PTX front's
   (strict: a folded constant is a rounding there); a SASS-only run takes the SASS program, with
   its immediates as constants, as the reference (scope: ptxas folds roundings of constants).

@@ -1,0 +1,43 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_local_mix_f32(.param .u64 px, .param .u64 pout, .param .u64 pz)
+{
+    .reg .b32 %r<32>;
+    .reg .f32 %f<8>;
+    .reg .b64 %rd<24>;
+    .local .align 8 .b8 L[16];
+    ld.param.u64 %rd2, [pout];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r0, %tid.x;
+    mul.wide.u32 %rd3, %r0, 4;
+    add.s64 %rd5, %rd2, %rd3;
+    mov.u64 %rd6, L;
+    ld.param.u64 %rd15, [pz];
+    cvta.to.global.u64 %rd15, %rd15;
+    add.s64 %rd16, %rd15, %rd3;
+    st.global.u32 [%rd16], 0;
+    ld.volatile.global.u32 %r30, [%rd16];
+    cvt.u64.u32 %rd17, %r30;
+    add.s64 %rd18, %rd6, %rd17;
+    cvt.rn.f32.u32 %f1, %r0;
+    add.rn.f32 %f2, %f1, 0f3DCCCCCD;
+    st.local.f32 [%rd6], %f2;
+    st.local.b16 [%rd6], 0x1234;
+    ld.local.b32 %r1, [%rd18];
+    st.global.b32 [%rd5], %r1;
+    st.local.f32 [%rd6+4], %f2;
+    st.local.b8 [%rd6+5], 0x56;
+    ld.local.b32 %r2, [%rd18+4];
+    st.global.b32 [%rd5+128], %r2;
+    st.local.f32 [%rd6+8], %f2;
+    ld.local.b32 %r3, [%rd18+8];
+    st.global.b32 [%rd5+256], %r3;
+    ret;
+}

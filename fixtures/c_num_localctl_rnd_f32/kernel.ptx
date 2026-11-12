@@ -1,0 +1,59 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_localctl_rnd_f32(.param .u64 px, .param .u64 pout, .param .u64 pz, .param .u64 pacc)
+{
+    .reg .pred %p<4>;
+    .reg .b16 %rs<8>;
+    .reg .b32 %r<32>;
+    .reg .f32 %f<24>;
+    .reg .b64 %rd<24>;
+    .local .align 8 .b8 L[64];
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r0, %tid.x;
+    mul.wide.u32 %rd3, %r0, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    mov.u64 %rd6, L;
+    ld.param.u64 %rd15, [pz];
+    cvta.to.global.u64 %rd15, %rd15;
+    add.s64 %rd16, %rd15, %rd3;
+    st.global.u32 [%rd16], 0;
+    ld.volatile.global.u32 %r30, [%rd16];
+    cvt.u64.u32 %rd17, %r30;
+    add.s64 %rd18, %rd6, %rd17;
+    ld.param.u64 %rd19, [pacc];
+    cvta.to.global.u64 %rd19, %rd19;
+    setp.ne.u32 %p2, %r0, 0;
+    @!%p2 st.global.f32 [%rd19], 0f00000000;
+    bar.sync 0;
+    red.global.add.f32 [%rd19], 0f3DCCCCCD;
+    bar.sync 0;
+    ld.global.f32 %f7, [%rd19];
+    mov.b32 %r8, %f7;
+    mov.u32 %r9, 0;
+    mov.b64 %rd9, {%r8, %r9};
+    st.local.b64 [%rd6+16], %rd9;
+    ld.local.b64 %rd10, [%rd18+16];
+    mov.b64 {%r10, %r11}, %rd10;
+    mov.b32 %f5, %r10;
+    ld.global.f32 %f4, [%rd4];
+    setp.ge.f32 %p1, %f5, 0f404CCCCD;
+    @%p1 bra BIG;
+    add.rn.f32 %f6, %f4, 0f40000000;
+    bra.uni JOIN;
+BIG:
+    add.rn.f32 %f6, %f4, 0f3F800000;
+JOIN:
+    st.global.f32 [%rd5], %f6;
+    ret;
+}

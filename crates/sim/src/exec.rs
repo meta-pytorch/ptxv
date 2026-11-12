@@ -12375,7 +12375,7 @@ impl Machine {
                 self.vmask = (um != 0).then_some(um);
                 self.wr(t, *d, (v >> sh) & m, 1);
                 self.vmask = None;
-                self.num_clobber(t, *d, &[], pc);
+                self.num_local_ld_sub(t, *d, a, *bytes);
             }
             Op::StLocal { bytes, addr, v } if *bytes < 4 => {
                 // STL.U8 / .U16: the low byte / half into the word holding it.
@@ -12397,7 +12397,7 @@ impl Machine {
                 let nv = (old & !(m << sh)) | (x << sh);
                 let num = (oum & !(m << sh)) | (xm << sh);
                 if self.num.is_some() {
-                    self.num_local_st(t, &Val::Imm(nv), w);
+                    self.num_local_st_sub(t, v, a, *bytes, nv as u32, pc);
                 }
                 let e = nv | (num << 32);
                 let loc = &mut self.threads[t].make_mut().local;
@@ -12428,7 +12428,7 @@ impl Machine {
                     self.vmask = (um != 0).then_some(um);
                     self.wr(t, *d, v, 2);
                     self.vmask = None;
-                    self.num_clobber(t, *d, &[], pc);
+                    self.num_local_ld64(t, *d, a);
                     return Ok(Flow::Next);
                 }
                 for i in 0..(*bytes / 4).max(1) {
@@ -12473,18 +12473,22 @@ impl Machine {
                     };
                     let w = a + 4 * i;
                     if self.num.is_some() {
-                        let vi = match v {
-                            Val::Reg(r, _) if r.file == File::V && *bytes == 8 => Val::Imm(x),
-                            Val::Reg(r, _) => Val::Reg(
-                                Reg {
+                        match v {
+                            // Both words at once: the lanes' nodes, the register's taint.
+                            Val::Reg(r, _) if r.file == File::V && *bytes == 8 => {
+                                if i == 0 {
+                                    self.num_local_st64(t, *r, a);
+                                }
+                            }
+                            Val::Reg(r, _) => {
+                                let r = Reg {
                                     file: r.file,
                                     idx: r.idx + i as u16,
-                                },
-                                1,
-                            ),
-                            _ => Val::Imm(x),
-                        };
-                        self.num_local_st(t, &vi, w);
+                                };
+                                self.num_local_st(t, &Val::Reg(r, 1), w);
+                            }
+                            _ => self.num_local_st(t, &Val::Imm(x), w),
+                        }
                     }
                     let e = x | ((um as u64) << 32);
                     let loc = &mut self.threads[t].make_mut().local;

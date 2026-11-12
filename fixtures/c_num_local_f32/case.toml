@@ -1,0 +1,54 @@
+name = "c_num_local_f32"
+description = """
+N-NUM-TRACK (MISS 158, local memory: partial and 64-bit accesses; the independent review's
+probe): thread t, s = rn(t + 0.1f), s2 = rn(t + 0.2f) (not input data). out[t] = s stored to a
+local word and read back by two ld.local.u16 (mov.b32 {lo, hi}); out[32 + t] = a local zero word
+after st.local.u16 of s's low half (no exact value); out[64 + t], out[96 + t] = the halves of
+mov.b64 {s, s2} after st.local.b64 and ld.local.b64. The loads add an offset of 0 read back from a
+scratch word (ptxas keeps the local accesses). Exact out[t] = out[64 + t] = t + 0.1f,
+out[96 + t] = t + 0.2f (0.1f, 0.2f the f32 nearest). expected/ is GB300's output (`ptxv hw`,
+PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_local_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "z"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

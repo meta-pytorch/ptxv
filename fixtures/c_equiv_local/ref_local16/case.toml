@@ -1,0 +1,60 @@
+name = "c_equiv_local_ref_local16"
+description = """
+MISS 158 (local memory): the high 16 bits of x (input data) through st.local.b16 /
+ld.local.b16 (STL.U16 / LDL.U16) decide a branch: rn(x + y) if hi16(x) > 0x3fc0, else rn(x * y).
+At the captured input it takes the + y path.
+Inputs: x = 1.5 + (t + 1)/128, y = 1 + t/64 (data/)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_equiv_local_ref_local16"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "../data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "../data/y.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "z"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

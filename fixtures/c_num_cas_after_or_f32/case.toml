@@ -1,0 +1,53 @@
+name = "c_num_cas_after_or_f32"
+description = """
+N-NUM-TRACK (MISS 114, a compare-and-swap decided by input data; the independent review's probe):
+32 threads red.add.f32 0.1f into acc (the run's sequential sum 0x404cccc9 on GB300 and in the
+simulator; exact 32 * 0.1f = 0x404ccccd). Thread 0: atom.or acc, 0 (the word becomes input data
+without a node), then atom.cas acc, compare 0x404cccc9 (a literal: the run's sum), new 1.0: it
+swaps in the run and not in the exact computation. out[0] = acc after it (exact 32 * 0.1f),
+out[1] = rn(out[0] + x[0]). x uniform in [1, 2). expected/ is GB300's output (`ptxv hw`,
+PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_cas_after_or_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [2]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "acc"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "acc"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

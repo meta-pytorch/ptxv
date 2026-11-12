@@ -1,0 +1,60 @@
+name = "c_equiv_cas_ref_cas"
+description = """
+MISS 159 (compare-and-swap): word = 0; atom.global.cas.b32 [word], cvt.rzi.u32.f32(x), 1;
+out = rn(x[t] + y[(t + word) & 31]). At the captured input (x = 1.5 + (t + 1)/128, compare
+1) the swap fails, so the address of y depends on the input through the CAS's outcome.
+Inputs: x = 1.5 + (t + 1)/128, y = 1 + t/64 (data/)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_equiv_cas_ref_cas"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "../data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "../data/y.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "z"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

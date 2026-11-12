@@ -739,6 +739,9 @@ fn nonfinite_errors_are_never_skipped() {
 /// - c_num_atom_cas_f32: a compare-and-swap that fails on the run's sum and swaps on the exact
 ///   one (0..2), and a bf16x2 atomic sum (3, 4), claim nothing; the f32 word a 64-bit exchange
 ///   writes keeps the exchanged node (5: |GB300 - exact| = 2^-30, an input element's node before).
+/// - c_num_cas_after_or_f32: a compare-and-swap on a word that atom.or 0 made input data swaps in
+///   the run and not in the exact computation; neither output is claimed (a CAS decided by input
+///   data alone claimed out[0] exact, true error 2.2 absolute).
 #[test]
 fn atomics_other_than_f32_adds_keep_roundings_out_of_claims() {
     let tenth = f32::from_bits(0x3dcc_cccd) as f64;
@@ -777,6 +780,78 @@ fn atomics_other_than_f32_adds_keep_roundings_out_of_claims() {
     let fp64 = [1.0, sum, 1.0 + x[1], bf, bf + x[2], x[0] + 2f64.powi(-30)];
     let (analyzed, text) = check_claims(case, &fp64);
     assert_eq!(analyzed, [("ptx", 5), ("sass", 5)], "{case}\n{text}");
+
+    let case = "c_num_cas_after_or_f32";
+    let x = buf(case, "data/x.bin");
+    let (analyzed, text) = check_claims(case, &[sum, sum + x[0]]);
+    assert!(analyzed.is_empty(), "{case}: claims {analyzed:?}\n{text}");
+}
+
+/// Local memory (MISS 158; the independent review's probes, GB300 outputs). Every claim is
+/// |GB300 - exact|:
+/// - c_num_local_f32: s = rn(t + 0.1f) read back from a local word by two 16-bit loads (0..31)
+///   and s's low half stored into a zero word (32..63, no exact value) claim nothing; s and
+///   s2 = rn(t + 0.2f) through st/ld.local.b64 (64..127) keep their nodes, so their claims are
+///   their rounding errors. Before, 0..31 and 64..127 were exact constants (93 of 128
+///   under-claimed, up to 0.40 ulp of the computed output) and 32..63 claims without an exact
+///   value.
+/// - c_num_local_mix_f32: a constant 16-bit half (0..31) or byte (32..63) stored over a local word
+///   holding s claims nothing (bit mixes, no exact value; before, exact constants); s read back
+///   whole (64..95) keeps its claim.
+/// - c_num_localctl_rnd_f32: a rounded atomic sum through st/ld.local.b64 decides a branch: the
+///   output is refused, as for the register-direct twin (claimed 0.50 ulp before, true 1.0
+///   absolute).
+#[test]
+fn local_memory_keeps_taint_and_nodes() {
+    let (tenth, fifth) = (
+        f32::from_bits(0x3dcc_cccd) as f64,
+        f32::from_bits(0x3e4c_cccd) as f64,
+    );
+    let case = "c_num_local_f32";
+    let fp64: Vec<f64> = (0..128)
+        .map(|i| match i / 32 {
+            0 | 2 => (i % 32) as f64 + tenth,
+            3 => (i % 32) as f64 + fifth,
+            _ => 0.0,
+        })
+        .collect();
+    let (analyzed, text) = check_claims(case, &fp64);
+    for front in ["ptx", "sass"] {
+        let mine: Vec<usize> = analyzed
+            .iter()
+            .filter(|a| a.0 == front)
+            .map(|a| a.1)
+            .collect();
+        assert_eq!(
+            mine,
+            (64..128).collect::<Vec<_>>(),
+            "{case} {front}\n{text}"
+        );
+    }
+
+    let case = "c_num_local_mix_f32";
+    let fp64: Vec<f64> = (0..96)
+        .map(|i| if i < 64 { 0.0 } else { (i % 32) as f64 + tenth })
+        .collect();
+    let (analyzed, text) = check_claims(case, &fp64);
+    for front in ["ptx", "sass"] {
+        let mine: Vec<usize> = analyzed
+            .iter()
+            .filter(|a| a.0 == front)
+            .map(|a| a.1)
+            .collect();
+        assert_eq!(mine, (64..96).collect::<Vec<_>>(), "{case} {front}\n{text}");
+    }
+
+    let case = "c_num_localctl_rnd_f32";
+    let x = buf(case, "data/x.bin");
+    let fp64: Vec<f64> = x.iter().map(|v| v + 1.0).collect();
+    let (analyzed, text) = check_claims(case, &fp64);
+    assert!(analyzed.is_empty(), "{case}: claims {analyzed:?}\n{text}");
+    assert!(
+        text.contains("control flow or an address depends on input data"),
+        "{text}"
+    );
 }
 
 /// Partial-width and rearranging accesses of words holding a rounding (MISS 115; the independent
