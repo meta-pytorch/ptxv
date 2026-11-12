@@ -1,0 +1,33 @@
+name = "probe_bra_u_split_k1_inv0_h16"
+description = "probes/bra_u, split kernel (split.ptx), params k, inv, h = 1, 0, 16; outputs in gb300_bra.bin (ptxas's BRA) and gb300_bra_u.bin (patched to BRA.U)."
+cubin = "../../split_bra_u.cubin"
+entry = "probe_bra_u"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [160]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 1
+
+[[params]]
+kind = "u32"
+value = 0
+
+[[params]]
+kind = "u32"
+value = 16
+
+[[variants]]
+id = "good"
+expect = ["clean"]

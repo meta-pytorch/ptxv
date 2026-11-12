@@ -1,0 +1,103 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// First-offender shape of proxy_check_dir (S-PROXY generic writer) against the GB300 model's
+// classification (twolevel::classify matches level-1 signatures). Threads 2..127 write word t
+// of a 512-byte tile and fence (fence.proxy.async) before bar.sync 0. After it, thread 64 (Y)
+// writes word 1 with no fence and meets warp 0 at named barrier 1 (warps 0 and 2 only);
+// thread 32 (X) writes word 0, fences, and sets a flag with st.relaxed; thread 0 polls it with
+// ld.relaxed, then tcgen05.cp reads the tile. No fence observes Y's write. Strict: X is not
+// ordered before the copy (relaxed pair), so the check reports X (byte 0, the first uncovered
+// byte) and returns, and Y is never reported. GB300 model (hw_order: a strong read that
+// observes a strong write is ordered after it): X is covered and Y is the race, which
+// classify drops (a level-2-only race), so the level-1 findings read latent.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_twolevel_proxy_first(.param .u64 out_p)
+{
+    .reg .b32 %r<40>;
+    .reg .b64 %rd<20>;
+    .reg .pred %p<10>;
+    .shared .align 1024 .b8 buf[512];
+    .shared .align 8 .b64 mbar;
+    .shared .align 4 .b32 tslot;
+    .shared .align 4 .b32 flag;
+    mov.u32 %r1, %tid.x;
+    shr.u32 %r2, %r1, 5;
+    mov.u32 %r30, buf;
+    mov.u32 %r31, mbar;
+    mov.u32 %r32, tslot;
+    mov.u32 %r33, flag;
+    setp.ne.u32 %p1, %r2, 0;
+    @%p1 bra ALLOC_DONE;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r32], 32;
+    tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+ALLOC_DONE:
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r31], 1;
+    fence.mbarrier_init.release.cluster;
+    mov.u32 %r20, 0;
+    st.shared.u32 [%r33], %r20;
+INIT_DONE:
+    mov.u32 %r12, 0;               // @XO byte offset of X's word
+    mov.u32 %r13, 4;               // @YO byte offset of Y's word
+    setp.lt.u32 %p3, %r1, 2;
+    @%p3 bra FILL_DONE;
+    shl.b32 %r4, %r1, 2;
+    add.u32 %r5, %r30, %r4;
+    st.shared.u32 [%r5], %r1;
+    fence.proxy.async.shared::cta;
+FILL_DONE:
+    tcgen05.fence::before_thread_sync;
+    bar.sync 0;
+    tcgen05.fence::after_thread_sync;
+    ld.shared.u32 %r6, [%r32];
+    setp.ne.u32 %p4, %r1, 64;
+    @%p4 bra NOTY;
+    add.u32 %r15, %r30, %r13;
+    st.shared.u32 [%r15], %r1;
+NOTY:
+    // warps 0 and 2 (thread 0 and Y) meet at named barrier 1
+    and.b32 %r23, %r2, 1;
+    setp.ne.u32 %p8, %r23, 0;
+    @%p8 bra NB_DONE;
+    bar.sync 1, 64;
+NB_DONE:
+    setp.ne.u32 %p5, %r1, 32;
+    @%p5 bra NOTX;
+    add.u32 %r14, %r30, %r12;
+    st.shared.u32 [%r14], %r1;
+    fence.proxy.async.shared::cta;
+    mov.u32 %r21, 1;
+    st.relaxed.cta.shared.u32 [%r33], %r21;
+NOTX:
+    @%p2 bra CP_DONE;
+POLL:
+    ld.relaxed.cta.shared.u32 %r22, [%r33];
+    setp.ne.u32 %p6, %r22, 1;
+    @%p6 bra POLL;
+    // descriptor: start = buf >> 4, LBO = 0, SBO = 128 B (8 << 32), version bits 46-48 = 1
+    cvt.u64.u32 %rd5, %r30;
+    shr.u64 %rd5, %rd5, 4;
+    and.b64 %rd5, %rd5, 16383;
+    or.b64 %rd5, %rd5, 34359738368;
+    or.b64 %rd5, %rd5, 70368744177664;
+    tcgen05.cp.cta_group::1.32x128b.warpx4 [%r6], %rd5;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r31];
+CP_DONE:
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p7, [%r31], 0;
+    @!%p7 bra WAIT;
+    tcgen05.fence::before_thread_sync;
+    bar.sync 0;
+    tcgen05.fence::after_thread_sync;
+    @%p1 bra DONE;
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r6, 32;
+DONE:
+    ret;
+}

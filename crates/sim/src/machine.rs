@@ -1391,8 +1391,15 @@ pub struct Thread {
     pub bulk_sb: Vec<u8>,
     /// Completed bulk operations not yet waited for: (group, clock of its shared-memory reads,
     /// clock of its global writes). A `wait_group.read` acquires the first and keeps the entry;
-    /// a full wait acquires the second and drops it.
+    /// a full wait acquires the second and drops it (SASS without the L1 model: defers it to
+    /// `bulk_vis`).
     pub bulk_done: Vec<(u32, VC, VC)>,
+    /// SASS front without the L1 model: global-write clocks of bulk groups a `DEPBAR` (or a
+    /// control-word wait) on their scoreboard covered, not yet acquired. The thread's next
+    /// `CCTL.IVALL` acquires them (ASSUME(E-ASYNC-STEP): ptxas emits it after the `DEPBAR` for
+    /// the full `wait_group` only, and until then a line of the destination this SM filled
+    /// before the store can still be read, E-HW-L1).
+    pub bulk_vis: VC,
     /// Barrier generation key this thread was released from and has not run since (DPOR:
     /// its next transition acquires it).
     pub acq_bar: Option<u64>,
@@ -2301,6 +2308,12 @@ pub struct Machine {
     /// Value-insensitive polls (E-POLL-ANY, exec.rs `vip_ok`): what the search learned about
     /// the values of polled locations. Shared by every state; not part of the state.
     pub vip: Option<Arc<VipLearn>>,
+    /// Bit 0: set (by any state of the search) when an mbarrier update landed late or took
+    /// more than the pending arrivals (footprint space 25 written, `rec_late` and `rec_count`
+    /// in exec.rs); the stateful explorer's local reduction of plain arrivals is then unsound
+    /// and the search runs again without it (`explore::local_ample`). Bit 1: that reduction
+    /// was applied. Shared by every state; not part of the state.
+    pub arv_over: Option<Arc<std::sync::atomic::AtomicU8>>,
     /// Reads run as value-insensitive polls, per global byte (allocation, offset): the latest
     /// epoch of each reader. Never cleared by writes: every later write is checked against
     /// them (a race unless ordered after, or both morally strong).
@@ -2758,6 +2771,13 @@ impl SFoot {
 
 /// Footprint space of the tensor core's A collector buffer (S-TC-COLLECTOR).
 pub const SPACE_COLL_A: u8 = 24;
+/// Footprint space of mbarrier pending counts (exec.rs `rec_count`).
+pub const SPACE_MBAR_COUNT: u8 = 16;
+/// Footprint space of mbarrier over-arrivals (exec.rs `rec_late`, `rec_count`); a write is an
+/// over-arrival to the reductions (`Machine::arv_over`, dpor.rs `OVER_ARRIVAL`).
+pub const SPACE_MBAR_OVER: u8 = 25;
+/// Footprint space of NIC queues (nic.rs, id = queue).
+pub const SPACE_NIC_QUEUE: u8 = 26;
 
 /// What one transition touched, for the DPOR dependency relation. Spaces: 0 shared memory
 /// (id = CTA; mbarrier objects are their 8 bytes: poll = read, arrive/init/complete = write),
@@ -2770,11 +2790,16 @@ pub const SPACE_COLL_A: u8 = 24;
 /// | generation: arrivals read theirs, `bar.arrive` writes all; E-BAR-OVER writes, see
 /// `Op::BarSync` and `bar_try_release` in exec.rs), 15 mbarrier (re)initialization: init and
 /// inval write it (id = CTA, index = offset; sync-only, for the explorer's phase-aware
-/// footprints, `sync_ample`), 16 mbarrier pending counts (`rec_count`: arrivals read the key
-/// of their phase, a counted arrival that takes the last pending arrivals writes it) and NIC
-/// queues (nic.rs), 20 / 21 L1 lines / SMs (l1.rs), 24 (`SPACE_COLL_A`) the tensor core's A
-/// collector buffer (id = CTA; every MMA writes it in a kernel that uses `.collector::a::*`,
-/// S-TC-COLLECTOR).
+/// footprints, `sync_ample`), 16 mbarrier pending counts (`SPACE_MBAR_COUNT`, `rec_count`:
+/// arrivals read the key of their phase, a counted arrival that takes the last pending
+/// arrivals writes it), 20 / 21 L1 lines and SMs (l1_cores.rs `SPACE_LINE` / `SPACE_SM`),
+/// 24 (`SPACE_COLL_A`) the tensor core's A collector buffer (id = CTA; every MMA writes it in a
+/// kernel that uses `.collector::a::*`, S-TC-COLLECTOR), 25 mbarrier over-arrivals
+/// (`SPACE_MBAR_OVER`, `rec_late`: updates read the key of the phase they land in; an arrival
+/// of more than the pending arrivals at once writes it, and an update that lands after a
+/// completion its actor does not know of writes the key of the completed phase), 26 NIC
+/// queues (`SPACE_NIC_QUEUE`, id = queue). Named spaces must differ from each other and from
+/// the literal ones (test `footprint_spaces_are_disjoint`).
 #[derive(Clone, Debug, Default)]
 pub struct Footprint {
     /// Record synchronization only (the stateful explorer's reduction): drop plain memory and
@@ -3041,6 +3066,7 @@ impl Machine {
                     bulk_group: 0,
                     bulk_sb: Vec::new(),
                     bulk_done: vec![],
+                    bulk_vis: VC::new(),
                     acq_bar: None,
                     vis: VC::new(),
                     membar_vc: VC::new(),
@@ -3133,6 +3159,7 @@ impl Machine {
             gfoot: None,
             sfoot: None,
             vip: None,
+            arv_over: None,
             vipr: Default::default(),
             vip_read: 0,
             red_access: false,
@@ -3787,6 +3814,58 @@ mod vc_tests {
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod footprint_space_tests {
+    /// Named footprint spaces differ from each other and from every literal space id passed to
+    /// `rec` in the simulator's sources (a shared id makes unrelated transitions conflict, and
+    /// a write in `SPACE_MBAR_OVER` stops DPOR).
+    #[test]
+    fn footprint_spaces_are_disjoint() {
+        let named = [
+            ("SPACE_MBAR_COUNT", super::SPACE_MBAR_COUNT),
+            ("SPACE_MBAR_OVER", super::SPACE_MBAR_OVER),
+            ("SPACE_NIC_QUEUE", super::SPACE_NIC_QUEUE),
+            ("SPACE_COLL_A", super::SPACE_COLL_A),
+            ("SPACE_LINE", crate::l1_cores::SPACE_LINE),
+            ("SPACE_SM", crate::l1_cores::SPACE_SM),
+        ];
+        for (i, a) in named.iter().enumerate() {
+            for b in &named[i + 1..] {
+                assert_ne!(
+                    a.1, b.1,
+                    "{} and {} share footprint space {}",
+                    a.0, b.0, a.1
+                );
+            }
+        }
+        let srcs = [
+            include_str!("exec.rs"),
+            include_str!("nic.rs"),
+            include_str!("l1_cores.rs"),
+            include_str!("machine.rs"),
+            include_str!("dpor.rs"),
+            include_str!("explore.rs"),
+        ];
+        let mut literal = std::collections::BTreeSet::new();
+        for s in srcs {
+            for (i, _) in s.match_indices("self.rec(") {
+                let rest = &s[i + "self.rec(".len()..];
+                let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if !digits.is_empty() && rest[digits.len()..].starts_with(',') {
+                    literal.insert(digits.parse::<u8>().unwrap());
+                }
+            }
+        }
+        assert!(literal.contains(&0), "no literal spaces found: {literal:?}");
+        for (name, v) in named {
+            assert!(
+                !literal.contains(&v),
+                "{name} = {v} is also used as a literal footprint space"
+            );
         }
     }
 }

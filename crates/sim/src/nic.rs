@@ -367,7 +367,7 @@ impl Machine {
         } else {
             VC::new()
         };
-        self.rec(16, q as u32, 0, 1, true);
+        self.rec(crate::machine::SPACE_NIC_QUEUE, q as u32, 0, 1, true);
         let st = &self.nic.as_ref().unwrap().qps[q];
         if st.dead {
             return Ok(());
@@ -485,7 +485,7 @@ impl Machine {
         let Some(w) = self.nic.as_mut().unwrap().qps[q].queue.pop_front() else {
             return;
         };
-        self.rec(16, q as u32, 0, 1, true);
+        self.rec(crate::machine::SPACE_NIC_QUEUE, q as u32, 0, 1, true);
         let (actor, vc, pc) = (op.actor, op.vc.clone(), op.pc);
         let who = format!("NIC (QP {}, WQE {})", qc.name, w.idx);
         let db = self.k.describe(pc as usize);

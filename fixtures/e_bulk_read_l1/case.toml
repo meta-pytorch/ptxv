@@ -8,8 +8,10 @@ e_tma_read_l1). With cp.async.bulk.wait_group.read 0 only the group's shared-mem
 complete (PTX ISA 9.7.10.28.6.2): READ and RREAD race with the global writes on the PTX front.
 GB300 reads the stale pre-store line from L1 in 1000/1000 runs of READ and RREAD (out = 0,
 D[5] = 5; ptxas emits no CCTL.IVALL after the .read DEPBAR) and the stored value with the full
-wait (good, RGOOD: 0/1000 stale). The SASS front models the DEPBAR as a full wait and calls
-READ and RREAD clean (MISS 102)."""
+wait (good, RGOOD: 0/1000 stale). The SASS front's strict level acquires the writes only at
+the issuer's next CCTL.IVALL (MISS 102), so READ and RREAD are races there too; its GB300 level
+(L1 model) acquires them at the DEPBAR and reports the stale reads. Before MISS 102, the SASS
+front called READ and RREAD clean."""
 ptx = "kernel.ptx"
 entry = "e_bulk_read_l1"
 grid = [1, 1, 1]
@@ -59,8 +61,6 @@ marker = "@WAIT"
 find = "cp.async.bulk.wait_group 0;"
 replace = "cp.async.bulk.wait_group.read 0;"
 expect = ["race"]
-# MISS 102 (not fixed here): the SASS front's bulk DEPBAR is a full wait.
-expect_sass = ["clean"]
 hw_note = "GB300 1000/1000 runs read the stale 0 from L1 (out = 0, D[5] = 5), 2026-11-11"
 
 [[variants]]
@@ -80,6 +80,4 @@ edits = [
     { marker = "@WAIT", find = "cp.async.bulk.wait_group 0;", replace = "cp.async.bulk.wait_group.read 0;" },
 ]
 expect = ["race"]
-# MISS 102 (not fixed here): the SASS front's bulk DEPBAR is a full wait.
-expect_sass = ["clean"]
 hw_note = "GB300 1000/1000 runs read the stale 0 from L1 (out = 0, D[5] = 5), 2026-11-11"

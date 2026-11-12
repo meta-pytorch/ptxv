@@ -1267,7 +1267,9 @@ fn r1d_b17_unwaited_response() {
 fn r1d_b53_parity() {
     // Unbounded (the CTA keeps re-requesting): bounded search, Verdict::meets.
     check_dpor("r1d_clc", "B53", "ptx", 20_000);
-    check_dpor("r1d_clc", "B53", "sass", 20_000);
+    // SASS: the wrong-parity wait lets an update land late (an over-arrival), so DPOR hands
+    // the search to the stateful explorer, which reaches the fault after ~20k states.
+    check_dpor("r1d_clc", "B53", "sass", 200_000);
 }
 #[test]
 fn r1d_b54_lost_tile() {
@@ -3273,6 +3275,38 @@ fn e_rerun_drop_reports_every_tmem_racer() {
     }
 }
 
+/// MISS 124 (fixtures/e_rerun_drop_proxy_mb, e_twolevel_proxy_first): an async-proxy read
+/// reports every uncovered generic writer of its bytes, not only the first (the lower byte):
+/// mbar_async_contract reclassifies X's proxy race (ordered once the complete-tx counts at the
+/// mbarrier's CTA) and Y's stays a race; the GB300 model classifies Y's proxy race, which is
+/// observable (before: 0 observable, 2 latent on PTX).
+#[test]
+fn proxy_check_reports_every_uncovered_writer() {
+    for v in ["XLOW", "YLOW"] {
+        // PTX only: on SASS this kernel's DPOR and full explorations disagree (a violation the
+        // DPOR run misses, as on int7 before the fix; reported with MISS 124).
+        check("e_rerun_drop_proxy_mb", v, "ptx");
+        both("e_twolevel_proxy_first", v);
+        let case = Case::load(root().join("fixtures/e_twolevel_proxy_first")).unwrap();
+        let k = kernel(&case, v, "ptx");
+        let launch = build_launch(&case, &k).unwrap();
+        let m1 = Machine::new(Arc::new(k), Arc::new(launch));
+        let mut v1 = explore(m1.clone(), 2_000_000);
+        let proxy = v1
+            .findings
+            .iter()
+            .filter(|f| f.sig.starts_with("race:proxy:"))
+            .count();
+        assert_eq!(proxy, 2, "{v}: X's and Y's proxy races");
+        let c =
+            ptxv_sim::twolevel::run(&mut v1, &m1, String::new(), &mut |m| explore(m, 2_000_000));
+        assert!(
+            c.complete && c.observable >= 1,
+            "{v}: Y's proxy race is observable"
+        );
+    }
+}
+
 /// One .cta_group per kernel (fixtures/e_cta_group_mix): a kernel whose tcgen05 instructions
 /// name both groups is a violation (PTX ISA, tcgen05; ptxas refuses it, so PTX only), and a
 /// commit tracks only its own group's operations (C2: the cta_group::2 commit after
@@ -4341,6 +4375,19 @@ fn probe_nc_pdl_reported() {
     }
 }
 
+/// E-HW-L1, E-PDL (probes/pdl_acqbulk): a PDL dependent loads D[0], filling the line of the
+/// word D[5] its primary then stores, and loads D[5] after griddepcontrol.wait (ACQBULK, no
+/// CCTL.IVALL). WAIT and POLLF (a relaxed poll and fence.acq_rel.gpu) are clean, NOWAIT and
+/// POLL (the relaxed poll alone) races, on both fronts. GB300 (two jobs): WAIT read 5 in 3,072,000
+/// of 3,072,000 CTAs, POLL the stale 0 in 3,048,401.
+#[test]
+fn probe_pdl_acqbulk() {
+    for v in ["WAIT", "NOWAIT", "POLL", "POLLF"] {
+        check_dir("probes", "pdl_acqbulk", v, "ptx");
+        check_dir("probes", "pdl_acqbulk", v, "sass");
+    }
+}
+
 /// PTX copysign.f32 (probes/copysign: NaN payloads, signed zeros, Inf, subnormals) = GB300
 /// on both front-ends.
 #[test]
@@ -4535,25 +4582,68 @@ fn probe_tc_f16_tf32_match_hardware() {
 /// Counted arrivals in the reductions (fixtures/mbar_count_order): the count-3 arrival that
 /// completes the phase alone must be explored before the count-1 arrival (the race; on the
 /// SASS front, two outputs) and after it (the fault), by both explorers on both front-ends.
-/// DPOR may also report the race's second outcome on the PTX front (E-DRF).
+/// DPOR may also report the race's second outcome on the PTX front (E-DRF). Variant `aba`
+/// (two count-3 arrivals: an arrival lands in phase 0 or 1 depending on the order) and `good`
+/// both over-arrive, so DPOR must hand the search to the stateful explorer (its note says so).
 #[test]
 fn mbar_count_order_reaches_both_orders() {
     let case = Case::load(root().join("fixtures/mbar_count_order")).unwrap();
-    for front in ["ptx", "sass"] {
-        let k = Arc::new(kernel(&case, "good", front));
+    for (variant, front) in [
+        ("good", "ptx"),
+        ("good", "sass"),
+        ("aba", "ptx"),
+        ("aba", "sass"),
+    ] {
+        let k = Arc::new(kernel(&case, variant, front));
         let launch = Arc::new(build_launch(&case, &k).unwrap());
         let m0 = Machine::new(k, launch);
-        let want = case.variant("good").unwrap().expect_for(front);
+        let want = case.variant(variant).unwrap().expect_for(front);
         let v = ptxv_sim::explore::explore(m0.clone(), 100_000);
-        assert!(v.complete, "{front}: incomplete");
-        assert_eq!(v.classes(), want, "{front}: {:#?}", v.findings);
+        assert!(v.complete, "{variant}/{front}: incomplete");
+        assert_eq!(v.classes(), want, "{variant}/{front}: {:#?}", v.findings);
         let d = ptxv_sim::dpor::explore_dpor(m0, 100_000);
-        assert!(d.complete, "{front}: DPOR incomplete");
+        assert!(d.complete, "{variant}/{front}: DPOR incomplete");
         let mut dc = d.classes();
         if front == "ptx" {
             dc.retain(|c| c != "nondeterministic");
         }
-        assert_eq!(dc, want, "{front}: DPOR: {:#?}", d.findings);
+        assert_eq!(dc, want, "{variant}/{front}: DPOR: {:#?}", d.findings);
+        // Every execution over-arrives: DPOR hands the search to the stateful explorer.
+        assert!(
+            d.notes.iter().any(|n| n.contains("over-arrival")),
+            "{variant}/{front}: DPOR did not fall back: {:?}",
+            d.notes
+        );
+    }
+}
+
+/// Plain over-arrivals in the reductions (fixtures/mbar_over_arrival): with 4 plain arrivals
+/// at a barrier expecting 3, the order in which the three that do not follow the data write
+/// complete the phase alone (the race; on the SASS front, two outputs) must be explored, by both
+/// explorers on both front-ends, whether the extra arrivals are separate warps (`good`) or lanes
+/// of one warp step (`lanes`). DPOR hands such a kernel to the stateful explorer
+/// (`OVER_ARRIVAL` in dpor.rs).
+#[test]
+fn mbar_over_arrival_reaches_late_order() {
+    let case = Case::load(root().join("fixtures/mbar_over_arrival")).unwrap();
+    for variant in ["good", "lanes"] {
+        for front in ["ptx", "sass"] {
+            let k = Arc::new(kernel(&case, variant, front));
+            let launch = Arc::new(build_launch(&case, &k).unwrap());
+            let m0 = Machine::new(k, launch);
+            let want = case.variant(variant).unwrap().expect_for(front);
+            let v = ptxv_sim::explore::explore(m0.clone(), 100_000);
+            assert!(v.complete, "{variant}/{front}: incomplete");
+            assert_eq!(v.classes(), want, "{variant}/{front}: {:#?}", v.findings);
+            let d = ptxv_sim::dpor::explore_dpor(m0, 100_000);
+            assert!(d.complete, "{variant}/{front}: DPOR incomplete");
+            assert_eq!(
+                d.classes(),
+                want,
+                "{variant}/{front}: DPOR: {:#?}",
+                d.findings
+            );
+        }
     }
 }
 
@@ -4669,6 +4759,21 @@ fn probe_bitwise_cubin(dir: &str, cubin: Option<&str>) {
     assert!(
         !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
         "{dir} {cubin:?}: {report:?}"
+    );
+}
+
+/// N-CVT-LP: the s2f6 dequant `cvt.rn[.relu][.satfinite].scaled::n2::ue8m0.bf16x2.s2f6x2` in
+/// its four forms on 1024 sampled threads (probes/s2f6_cvt/forms) = GB300 on both front-ends (the
+/// SASS one on kernel.cubin, ptxas 13.1's F2FP[.SATFINITE][.RELU].BF16.S2_6.UNPACK_B). GB200's
+/// output of the same threads (gb200_out.bin) is identical.
+#[test]
+fn probe_s2f6_cvt_forms_match_hardware() {
+    probe_bitwise("probes/s2f6_cvt/forms", "good", "ptx");
+    probe_bitwise_cubin("probes/s2f6_cvt/forms", Some("kernel.cubin"));
+    let dir = root().join("probes/s2f6_cvt/forms");
+    assert_eq!(
+        std::fs::read(dir.join("gb200_out.bin")).unwrap(),
+        std::fs::read(dir.join("gb300_out.bin")).unwrap()
     );
 }
 
@@ -8385,6 +8490,17 @@ fn undefined_values_through_shared_memory() {
     both("e_uninit_smem", "store_all");
 }
 
+/// S-INIT through an atomic (fixtures/smem_spill_sink): an atomic add into never-written shared
+/// memory whose result is discarded is not reported at the atomic; the stored word carries the
+/// undefined state, so only a later read that feeds it to a sink (readspill) is a violation;
+/// a returned old value that reaches a sink stays undefined (useret).
+#[test]
+fn undefined_values_through_shared_atomics() {
+    for v in ["good", "add0", "branch", "readspill", "useret"] {
+        both("smem_spill_sink", v);
+    }
+}
+
 /// S-INIT per byte for vector stores (fixtures/e_uninit_vec): a v4 store with one undefined
 /// register marks only its 4 bytes; reading the defined lanes, or overwriting the undefined
 /// global lane before exit, is clean; reading the undefined lane, or leaving it, is reported.
@@ -9386,16 +9502,58 @@ fn tma_store_readback_after_wait_read_races() {
 /// E-ASYNC-STEP for the non-tensor bulk store and the bulk add-reduction
 /// (fixtures/e_bulk_read_l1): `cp.async.bulk.wait_group.read` completes only the group's
 /// shared-memory reads, so a load of the destination after it races with the global writes, a
-/// reduction's too (READ, RREAD: races on the PTX front); after a full wait it is clean (good,
-/// RGOOD). GB300 reads the stale pre-store L1 line in 1000/1000 runs of READ and RREAD, the
-/// stored value after a full wait. The SASS front's bulk `DEPBAR` is a full wait, so it calls
-/// READ and RREAD clean (MISS 102): pinned here, so its fix shows up as a change.
+/// reduction's too (READ, RREAD); after a full wait it is clean (good, RGOOD). GB300 reads the
+/// stale pre-store L1 line in 1000/1000 runs of READ and RREAD, the stored value after a full
+/// wait. The SASS front's strict level acquires the writes at the issuer's next `CCTL.IVALL`
+/// only (MISS 102; it used to call READ and RREAD clean), so both fronts report the races; its
+/// GB300 level (L1 model) acquires them at the `DEPBAR` and reports the stale reads.
 #[test]
 fn bulk_store_and_reduction_after_wait_read_race() {
     for v in ["good", "READ", "RGOOD", "RREAD"] {
         both("e_bulk_read_l1", v);
         certify_meets("e_bulk_read_l1", v, "ptx");
         certify_meets("e_bulk_read_l1", v, "sass");
+    }
+    gb300_level_is(
+        "e_bulk_read_l1",
+        &[
+            ("good", &["clean"]),
+            ("READ", &["stale"]),
+            ("RGOOD", &["clean"]),
+            ("RREAD", &["stale"]),
+        ],
+    );
+}
+
+/// E-ASYNC-STEP, SASS front (fixtures/e_bulk_read_l1_other, MISS 102): another thread of the CTA
+/// rereads a bulk store's destination, whose L1 line it filled before the store, after a
+/// `bar.sync` that follows the issuer's `.read` wait: GB300 returns the stale line in 1000/1000
+/// runs. The issuer acquires the writes only at a `CCTL.IVALL` (none after `.read`), so the
+/// barrier carries nothing: a race on both fronts (READ); the full wait is clean (good). The
+/// GB300 level reports the stale read.
+#[test]
+fn bulk_store_read_by_another_thread_after_wait_read_races() {
+    for v in ["good", "READ"] {
+        both("e_bulk_read_l1_other", v);
+        certify_meets("e_bulk_read_l1_other", v, "ptx");
+        certify_meets("e_bulk_read_l1_other", v, "sass");
+    }
+    gb300_level_is(
+        "e_bulk_read_l1_other",
+        &[("good", &["clean"]), ("READ", &["stale"])],
+    );
+}
+
+/// The SASS front's GB300 level (the GB300 profile: the L1 model) of each variant.
+fn gb300_level_is(case: &str, want: &[(&str, &[&str])]) {
+    let case = Case::load(root().join("fixtures").join(case)).unwrap();
+    for &(v, w) in want {
+        let k = kernel(&case, v, "sass");
+        let launch = build_launch(&case, &k).unwrap();
+        let launch = ptxv_sim::hwprofile::launch(&launch, ptxv_sim::hwprofile::GB300);
+        let r = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+        assert!(r.complete, "{v} GB300: incomplete");
+        assert_eq!(r.classes(), w, "{v} GB300: {:#?}", r.findings);
     }
 }
 
@@ -9638,18 +9796,39 @@ fn cpasync_divergent_waits_join_only_the_copies_they_cover() {
     }
 }
 
-/// E-ASYNC-STEP, SASS front (fixtures/e_tma_read_l1): after `cp.async.bulk.wait_group.read`
-/// ptxas's `DEPBAR` waits for the TMA store's global writes, but without the full form's
-/// `CCTL.IVALL` a line of the destination the issuing SM filled before the store stays in its
-/// L1: GB300 reads the old bytes in 1000/1000 runs of READ3 and READ4 (out = NaN), the stored
-/// value in READ2 (no earlier fill) and with the full wait. The PTX front reports READ2-READ4
-/// as races. A miss, not yet fixed: the SASS front calls READ4 clean (the `DEPBAR` is a full
-/// wait); this test pins the current verdicts, so a fix shows up as a change here.
+/// E-ASYNC-STEP, SASS front (fixtures/e_tma_read_l1, MISS 102): after
+/// `cp.async.bulk.wait_group.read` ptxas's `DEPBAR` waits for the TMA store's global writes,
+/// but without the full form's `CCTL.IVALL` a line of the destination the issuing SM filled
+/// before the store stays in its L1: GB300 reads the old bytes in 1000/1000 runs of READ3 and
+/// READ4 (out = NaN), the stored value in READ2 (no earlier fill) and with the full wait. The
+/// strict level acquires the writes at the thread's next `CCTL.IVALL` only, so READ2-READ4 are
+/// races on both fronts (the SASS front used to call READ4 clean and certified, and then
+/// skipped the GB300 level). The GB300 profile (L1 model) acquires them at the `DEPBAR`: the
+/// stale reads of READ3 / READ4 (E-HW-L1), READ2 clean; the hardware model calls READ4's race
+/// observable.
 #[test]
-fn tma_store_read_l1_stale_is_pinned() {
+fn tma_store_read_l1_needs_cctl() {
     for v in ["good", "READ2", "READ3", "GOOD3", "READ4", "GOOD4"] {
         both("e_tma_read_l1", v);
+        certify_meets("e_tma_read_l1", v, "sass");
     }
+    let case = Case::load(root().join("fixtures/e_tma_read_l1")).unwrap();
+    for (v, want) in [
+        ("good", &["clean"][..]),
+        ("READ2", &["clean"]),
+        ("READ3", &["contract", "stale"]),
+        ("GOOD3", &["contract"]),
+        ("READ4", &["stale"]),
+        ("GOOD4", &["clean"]),
+    ] {
+        let k = kernel(&case, v, "sass");
+        let launch = build_launch(&case, &k).unwrap();
+        let launch = ptxv_sim::hwprofile::launch(&launch, ptxv_sim::hwprofile::GB300);
+        let r = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+        assert!(r.complete, "{v} GB300: incomplete");
+        assert_eq!(r.classes(), want, "{v} GB300: {:#?}", r.findings);
+    }
+    gb300_model_classifies("e_tma_read_l1", "READ4", "observable", true);
 }
 
 /// E-ASYNC-STEP (fixtures/e_tma_store_next_kernel): a TMA store whose issuer waited with
@@ -9686,4 +9865,87 @@ fn launch_group_boundary_orders_a_bulk_store_s_writes() {
             v.findings
         );
     }
+}
+
+/// Evidence classes (probes/gb300_runs.toml): the probes whose expected/ outputs are GB200's
+/// also ran on GB300 (sm_103a builds); each recorded GB300 output (size and FNV-1a hash of the
+/// case's outputs in order) must equal the GB200 record bit for bit, so the probe's model
+/// claims hold on both GPUs and a regenerated expected/ cannot silently drop the GB300 match.
+#[test]
+fn gb300_runs_equal_gb200_probe_records() {
+    let rec = std::fs::read_to_string(root().join("probes/gb300_runs.toml")).unwrap();
+    let field = |b: &str, k: &str| -> String {
+        b.lines()
+            .find_map(|l| l.strip_prefix(&format!("{k} = ")))
+            .unwrap_or_else(|| panic!("{k} missing in {b}"))
+            .trim_matches('"')
+            .to_string()
+    };
+    let mut n = 0;
+    for b in rec.split("[[run]]").skip(1) {
+        let probe = field(b, "probe");
+        let case = Case::load(root().join("probes").join(&probe)).unwrap();
+        let mut gb200 = Vec::new();
+        for o in &case.m.outputs {
+            let buf = case.m.buffers.iter().find(|x| &x.name == o).unwrap();
+            let e = buf
+                .expect
+                .as_ref()
+                .unwrap_or_else(|| panic!("{probe}: {o} has no expect"));
+            let p = if std::path::Path::new(e).is_absolute() {
+                PathBuf::from(e)
+            } else {
+                case.dir.join(e)
+            };
+            gb200.extend(std::fs::read(&p).unwrap());
+        }
+        assert_eq!(gb200.len().to_string(), field(b, "bytes"), "{probe}: size");
+        assert_eq!(
+            format!("{:016x}", fnv(&gb200)),
+            field(b, "fnv1a64"),
+            "{probe}: GB300 differs from the GB200 record"
+        );
+        n += 1;
+    }
+    assert_eq!(n, 21);
+}
+
+/// SASS `@P BRA.U` (probes/bra_u, GB300): the branch is taken by every lane of the executing
+/// split when the guard holds in all of them, else by none; ptxas's plain `@P BRA` is per lane.
+/// Each case is one run of a patched ptxas binary (patch.py sets the encoding's .U bit), with a
+/// full warp (full), lanes exited before the branch (exit) and lanes on another path (split);
+/// both binaries' outputs (the body's and the join's active masks, the elected lanes, the body
+/// count) must equal GB300's.
+#[test]
+fn probe_bra_u_matches_hardware() {
+    let base = root().join("probes/bra_u");
+    let mut n = 0;
+    for kind in ["full", "exit", "split"] {
+        let mut dirs: Vec<_> = std::fs::read_dir(base.join(kind))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        dirs.sort();
+        for d in dirs {
+            let case = Case::load(&d).unwrap();
+            for (cubin, gpu) in [
+                (format!("{kind}_bra.cubin"), "gb300_bra.bin"),
+                (format!("{kind}_bra_u.cubin"), "gb300_bra_u.bin"),
+            ] {
+                let k = ptxv_sass::load_cubin(&base.join(&cubin), &case.m.entry).unwrap();
+                let launch = build_launch(&case, &k).unwrap();
+                let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 100_000);
+                let at = format!("{} {cubin}", d.display());
+                assert!(v.complete, "{at}: incomplete");
+                assert_eq!(v.classes(), ["clean"], "{at}: {:#?}", v.findings);
+                assert_eq!(v.outputs.len(), 1, "{at}: several outcomes");
+                assert!(
+                    v.outputs[0] == std::fs::read(d.join(gpu)).unwrap(),
+                    "{at}: differs from GB300"
+                );
+                n += 1;
+            }
+        }
+    }
+    assert_eq!(n, 36);
 }

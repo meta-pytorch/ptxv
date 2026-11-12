@@ -2522,10 +2522,22 @@ impl<'a> Lower<'a> {
 /// bf16x2, the `.rs` x4 / f16x2 / bf16x2 packs, and the f16x2 / bf16x2 decodes. None: not a
 /// narrow form.
 fn cvt_lp(lw: &Lower, mods: &[&str], ops: &[String]) -> Result<Option<Op>> {
-    // `cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 d, a, scale` (PTX ISA 9.1): the two
-    // s2f6 codes of the .b16 `a` times the two ue8m0 scales of the .b16 `scale` (N-CVT-LP;
-    // ptxas: F2FP.SATFINITE.BF16.S2_6.UNPACK_B).
-    if mods == ["rn", "satfinite", "scaled::n2::ue8m0", "bf16x2", "s2f6x2"] {
+    // `cvt.rn[.relu][.satfinite].scaled::n2::ue8m0.bf16x2.s2f6x2 d, a, scale` (PTX ISA 9.1):
+    // the two s2f6 codes of the .b16 `a` times the two ue8m0 scales of the .b16 `scale`
+    // (N-CVT-LP; ptxas: F2FP[.SATFINITE][.RELU].BF16.S2_6.UNPACK_B). Every other `.scaled`
+    // form is refused, not read as an unscaled conversion.
+    if mods.iter().any(|m| m.starts_with("scaled::")) {
+        let n = mods.len();
+        let ok = n >= 4
+            && mods[0] == "rn"
+            && mods[n - 3..] == ["scaled::n2::ue8m0", "bf16x2", "s2f6x2"]
+            && matches!(
+                mods[1..n - 3],
+                [] | ["relu"] | ["satfinite"] | ["relu", "satfinite"] | ["satfinite", "relu"]
+            );
+        if !ok {
+            bail!(lw.err(format!("cvt.{} not modeled", mods.join("."))));
+        }
         if ops.len() != 3 {
             bail!(lw.err("cvt .s2f6x2: expected d, a, scale"));
         }
@@ -2534,6 +2546,8 @@ fn cvt_lp(lw: &Lower, mods: &[&str], ops: &[String]) -> Result<Option<Op>> {
             a: lw.val(ops[1].trim())?,
             hi: false,
             scale: lw.val(ops[2].trim())?,
+            relu: mods.contains(&"relu"),
+            sat: mods.contains(&"satfinite"),
         }));
     }
     let n = mods.len();
@@ -5994,6 +6008,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 target,
                 any: false,
                 tid0_falls: false,
+                all: false,
                 cond: None,
                 div: None,
             }
@@ -6277,7 +6292,10 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             // `.satfinite`, `.sat` or `.ftz` on them go to cvt_lp or are refused, never dropped
             // (`cvt.sat.f32.f16` lost its clamp, `cvt.ftz.f32.bf16` its flush; probes/cvt_f16).
             // ASSUME(N-CVT-F16)
-            if mods == ["f32", "bf16"] {
+            // `.scaled` forms: the s2f6 decode or a refusal (`cvt_lp`), never another branch.
+            if mods.iter().any(|m| m.starts_with("scaled::")) {
+                cvt_lp(lw, mods, &ops)?.expect("cvt_lp decides every .scaled form")
+            } else if mods == ["f32", "bf16"] {
                 Op::CvtF32Bf16 {
                     d: lw.dst(op_n(0)?)?,
                     a: lw.val(op_n(1)?)?,
@@ -9213,6 +9231,52 @@ mod tests {
             "red.async.mmio.release.sys.global.add.u32 [%rd1], %r1;",
             "red.async.release.cta.global.add.s32 [%rd1], %r1;",
             "red.async.global.add.s32 [%rd1], %r1;",
+        ] {
+            assert!(first(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// `cvt.rn[.relu][.satfinite].scaled::n2::ue8m0.bf16x2.s2f6x2` lowers to `CvtS2f6x2` with
+    /// its flags (N-CVT-LP, probes/s2f6_cvt/forms); the other `.scaled` forms are refused, not read
+    /// as unscaled conversions.
+    #[test]
+    fn cvt_s2f6_scaled_forms() {
+        let first = |l: &str| ops(l).map(|v| v[0].clone());
+        for (l, flags) in [
+            (
+                "cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 %r1, %r2, %r3;",
+                (false, true),
+            ),
+            (
+                "cvt.rn.scaled::n2::ue8m0.bf16x2.s2f6x2 %r1, %r2, %r3;",
+                (false, false),
+            ),
+            (
+                "cvt.rn.relu.scaled::n2::ue8m0.bf16x2.s2f6x2 %r1, %r2, %r3;",
+                (true, false),
+            ),
+            (
+                "cvt.rn.relu.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 %r1, %r2, %r3;",
+                (true, true),
+            ),
+        ] {
+            match first(l).unwrap() {
+                Op::CvtS2f6x2 {
+                    hi: false,
+                    relu,
+                    sat,
+                    ..
+                } => assert_eq!((relu, sat), flags, "{l}"),
+                o => panic!("{l}: {o:?}"),
+            }
+        }
+        for bad in [
+            "cvt.rz.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 %r1, %r2, %r3;",
+            "cvt.rn.ftz.scaled::n2::ue8m0.bf16x2.s2f6x2 %r1, %r2, %r3;",
+            "cvt.rn.scaled::n2::ue8m0.f16x2.s2f6x2 %r1, %r2, %r3;",
+            "cvt.rn.scaled::n2::ue8m0.bf16x2.e4m3x2 %r1, %r2, %r3;",
+            "cvt.rn.satfinite.scaled::n2::ue8m0.e4m3x2.f32 %r1, %r2, %r3, %r4;",
+            "cvt.rn.relu.relu.scaled::n2::ue8m0.bf16x2.s2f6x2 %r1, %r2, %r3;",
         ] {
             assert!(first(bad).is_err(), "{bad}");
         }

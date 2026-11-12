@@ -1,8 +1,10 @@
 # Multi-node exploration
 
 `ptxv` can split one stateful search across many processes on many machines. Set
-`PTXV_DIST_DIR` to a directory every process can see. Each process runs the same command as
-one rank of the job (`crates/sim/src/dist.rs`, `DistRound` in `explore.rs`).
+`PTXV_DIST_DIR` to a directory every process can see, a new one for every launch (the
+`addr.<rank>` and `refused.<rank>` files of an earlier launch would be read as this one's).
+Each process runs the same command as one rank of the job (`crates/sim/src/dist.rs`,
+`DistRound` in `explore.rs`).
 
 ## How it works
 
@@ -35,10 +37,27 @@ one rank of the job (`crates/sim/src/dist.rs`, `DistRound` in `explore.rs`).
     3. Rank 0 merges them and sends the result back, so every rank continues with the same
        verdict.
 - **Output.** Only rank 0 prints. `out/` dirs are per rank (`--out DIR/rank<r>`; without
-  `--out`, each rank's own run directory `out/<case>/run-<pid>-<ns>/rank<r>`).
+  `--out`, each rank's own run directory `out/<case>/run-<host>-<pid>-<start>-<ns>/rank<r>`,
+  `<host>` = host name, boot and pid namespace). A killed rank's run directory is removed by a
+  later run on the same host, boot and pid namespace only; a batch system that gives each job a
+  pid namespace of its own (Slurm with a pid namespace per job) leaves earlier jobs' directories.
 
 **Not supported yet:** exploring every slice when cluster symmetry fails, because the
 cross-slice footprint check (`GFoot`) is per process.
+
+**Refused in this mode:** whatever would let each rank decide by its own clock, since ranks
+that decide differently run different searches and wait for each other's messages forever:
+`check --time-budget` / `PTXV_TIME_BUDGET` (each rank would cut its own phases), and input
+mutation and the concolic modes (`--mutate-inputs`, `--mutate-input`, `--concolic`,
+`--exhaustive-concolic`: which mutated inputs are checked depends on the coverage run's cap,
+`--mutate-budget-seconds`, the capped pass that skips a mutation and the solvers' budgets).
+Input coverage alone is not refused: it only adds notes, and rank 0's are reported.
+
+**A rank that stops stops the job.** A rank that ends with an error (an argument it refuses,
+a case it cannot load, a failure later) writes `refused.<rank>` with the reason into
+`PTXV_DIST_DIR`. Ranks still waiting for it at the rendezvous, and connected ranks once its
+connection closes, stop with exit status 1 and that reason instead of waiting for it. A rank
+killed by a signal or a panic leaves no such file: the others still wait for it.
 
 ## Running
 

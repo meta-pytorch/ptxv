@@ -1,0 +1,65 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// probes/pdl_acqbulk, the model's case (pdl.cu runs it on GB300): griddepcontrol.wait lowers
+// to ACQBULK with no CCTL.IVALL. The dependent's thread 0 loads D[0] (filling the line of D[5]
+// while its primary may still run), waits, and loads D[5], which the primary stores (5) after
+// griddepcontrol.launch_dependents, before releasing F.
+//   primary (1 CTA x 32): launch_dependents; thread 0: D[5] = 5; st.release.gpu F = 1.
+//   secondary (PDL, 1 CTA x 32): thread 0: out[1] = D[0]; griddepcontrol.wait; out[0] = D[5].
+// WAIT (this file): clean, out[0] = 5. NOWAIT: no wait (race). POLL: a relaxed poll of F
+// instead of the wait (race; under the GB300 model a stale read of the line D[0] filled).
+// POLLF: the poll and fence.acq_rel.gpu (clean).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry primary(.param .u64 d_ptr, .param .u64 f_ptr)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+
+    griddepcontrol.launch_dependents;
+    mov.u32         %r0, %tid.x;
+    setp.ne.u32     %p1, %r0, 0;
+    @%p1 bra        $L_done;
+    ld.param.u64    %rd1, [d_ptr];
+    cvta.to.global.u64 %rd2, %rd1;
+    ld.param.u64    %rd3, [f_ptr];
+    cvta.to.global.u64 %rd4, %rd3;
+    mov.u32         %r1, 5;
+    st.global.u32   [%rd2+20], %r1;
+    mov.u32         %r2, 1;
+    st.release.gpu.global.u32 [%rd4], %r2;
+$L_done:
+    ret;
+}
+
+.visible .entry secondary(.param .u64 d_ptr, .param .u64 f_ptr, .param .u64 out_ptr)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+
+    mov.u32         %r0, %tid.x;
+    setp.ne.u32     %p1, %r0, 0;
+    @%p1 bra        $L_done;
+    ld.param.u64    %rd1, [d_ptr];
+    cvta.to.global.u64 %rd2, %rd1;
+    ld.param.u64    %rd3, [f_ptr];
+    cvta.to.global.u64 %rd4, %rd3;
+    ld.param.u64    %rd5, [out_ptr];
+    cvta.to.global.u64 %rd6, %rd5;
+    ld.global.u32   %r1, [%rd2];
+    st.global.u32   [%rd6+4], %r1;
+    griddepcontrol.wait;                            // @W
+    ld.global.u32   %r2, [%rd2+20];
+    st.global.u32   [%rd6], %r2;
+$L_done:
+    ret;
+}

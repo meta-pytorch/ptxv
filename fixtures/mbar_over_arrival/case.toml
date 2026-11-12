@@ -1,0 +1,42 @@
+name = "mbar_over_arrival"
+description = """
+Fixture for plain mbarrier over-arrivals in the reductions (kernel.ptx): an mbarrier expecting
+3 arrivals gets 4 plain ones, one after a data write. When the other three come first, they
+complete the phase alone and the consumer's read races with the write. Arrivals into one phase
+commute only while the phase gets no more than its expected arrivals: the stateful explorer's
+local reduction used to run the producer's arrival first, and DPOR's footprints did not make it
+dependent on the arrival that lands in the next phase. `lanes`: the extra arrivals are three
+lanes of one warp step (no count operand)."""
+ptx = "kernel.ptx"
+entry = "mbar_over_arrival"
+grid = [1, 1, 1]
+block = [192, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+# Which value the consumer reads is an outcome of the race (E-DRF: the race is reported, the
+# second outcome need not be); on the SASS front plain shared accesses are not a race, the two
+# outputs are.
+[[variants]]
+id = "good"
+expect = ["race"]
+expect_sass = ["nondeterministic"]
+
+[[variants]]
+id = "lanes"
+summary = "the extra arrivals are lanes 0..2 of warp 2 in one warp step"
+expect = ["race"]
+expect_sass = ["nondeterministic"]
+marker = "@LANES"
+find = "%r1, 0;"
+replace = "%r1, 2;"
+edits = [{ marker = "@SINGLE", replace = "<delete>" }]

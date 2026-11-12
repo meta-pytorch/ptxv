@@ -1336,6 +1336,7 @@ fn lower_line(
                     target,
                     any: false,
                     tid0_falls: false,
+                    all: false,
                     cond: Some(lw.pred(lw.op(0)?)?),
                     div: None,
                 },
@@ -1782,10 +1783,21 @@ fn lower_line(
             a: lw.fval(lw.op(1)?)?,
             bf16: mods[0] == "BF16",
         },
-        // `F2FP.SATFINITE.BF16.S2_6.UNPACK_B Rd, Ra[.H1], Rb.H0 | imm.H0`
-        // (cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2; N-CVT-LP, probes/s2f6_cvt). Only
-        // printed by `undis.rs` (nvdisasm 13.0 skips the encoding). The scale is the low half.
-        "F2FP" if mods == ["SATFINITE", "BF16", "S2_6", "UNPACK_B"] => {
+        // `F2FP[.SATFINITE][.RELU].BF16.S2_6.UNPACK_B Rd, Ra[.H1], Rb.H0 | imm.H0`
+        // (cvt.rn[.relu][.satfinite].scaled::n2::ue8m0.bf16x2.s2f6x2; N-CVT-LP,
+        // probes/s2f6_cvt, probes/s2f6_cvt/forms). Only printed by `undis.rs` (nvdisasm 13.0 skips
+        // the encoding). The scale is the low half.
+        "F2FP"
+            if matches!(
+                mods,
+                [.., "BF16", "S2_6", "UNPACK_B"]
+            ) && matches!(
+                &mods[..mods.len() - 3],
+                [] | ["SATFINITE"] | ["RELU"] | ["SATFINITE", "RELU"]
+            ) =>
+        {
+            let sat = mods[0] == "SATFINITE";
+            let relu = mods.contains(&"RELU");
             let a = lw.op(1)?.replace(".reuse", "");
             let (a, hi) = match a.strip_suffix(".H1") {
                 Some(r) => (r.to_string(), true),
@@ -1800,6 +1812,8 @@ fn lower_line(
                 a: lw.val(&a, 4)?,
                 hi,
                 scale: lw.val(sc, 4)?,
+                relu,
+                sat,
             }
         }
         // Narrow-format F2FP (N-CVT-LP): PACK_AB[_MERGE_C] from two f32, UNPACK_B_MERGE_C from a
@@ -5186,6 +5200,7 @@ fn lower_line(
                 target,
                 any: has("CONV"),
                 tid0_falls: false,
+                all: false,
                 cond: None,
                 div: Some(lw.val(lw.op(0)?, 4)?),
             }
@@ -5222,6 +5237,7 @@ fn lower_line(
                         target,
                         any: false,
                         tid0_falls: false,
+                        all: false,
                         cond: Some(c),
                         div: None,
                     },
@@ -5247,6 +5263,7 @@ fn lower_line(
                         target,
                         any: has("ANY"),
                         tid0_falls: false,
+                        all: false,
                         cond: None,
                         div: None,
                     },
@@ -5270,6 +5287,7 @@ fn lower_line(
                 target,
                 any: has("ANY"),
                 tid0_falls: has("NOT_TID0"),
+                all: has("U") && !has("ANY") && !has("NOT_TID0") && !guard.is_always(),
                 cond: None,
                 div: None,
             }
@@ -5862,7 +5880,8 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
     let reach = depbar_kinds(&lines, &code);
     // `DEPBAR.LE SBk, n` on a bulk scoreboard is a full wait (`read: false`): ptxas emits the
     // same `UTMACMDFLUSH; DEPBAR.LE SB0` for `wait_group` and `wait_group.read` (the full wait
-    // adds `CCTL.IVALL`); what `.read` changes is the code ptxas may move above it (an LDG of
+    // adds `CCTL.IVALL`, at which the thread acquires the groups' global writes: exec.rs
+    // `bulk_wait`); what `.read` also changes is the code ptxas may move above it (an LDG of
     // the destination, fixtures/e_tma_store_readback), which the SASS front sees as written.
     // ASSUME(E-ASYNC-STEP)
     for (i, l) in lines.iter().enumerate() {
@@ -6221,6 +6240,43 @@ pub fn lower_text(text: &str, enc: Option<u64>) -> Result<Op> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F2FP[.SATFINITE][.RELU].BF16.S2_6.UNPACK_B: the flags of each form; other modifier
+    /// combinations are refused.
+    #[test]
+    fn s2f6_forms() {
+        for (l, flags) in [
+            (
+                "F2FP.SATFINITE.BF16.S2_6.UNPACK_B R5, R4, R7.H0",
+                (false, true, false),
+            ),
+            (
+                "F2FP.BF16.S2_6.UNPACK_B R5, R4.H1, R7.H0",
+                (false, false, true),
+            ),
+            (
+                "F2FP.RELU.BF16.S2_6.UNPACK_B R5, R4, R7.H0",
+                (true, false, false),
+            ),
+            (
+                "F2FP.SATFINITE.RELU.BF16.S2_6.UNPACK_B R5, R4, 0x8181.H0",
+                (true, true, false),
+            ),
+        ] {
+            match lower_text(l, None).unwrap() {
+                Op::CvtS2f6x2 { relu, sat, hi, .. } => assert_eq!((relu, sat, hi), flags, "{l}"),
+                o => panic!("{l}: {o:?}"),
+            }
+        }
+        for bad in [
+            "F2FP.RELU.SATFINITE.BF16.S2_6.UNPACK_B R5, R4, R7.H0",
+            "F2FP.SATFINITE.F16.S2_6.UNPACK_B R5, R4, R7.H0",
+            "F2FP.RZ.BF16.S2_6.UNPACK_B R5, R4, R7.H0",
+            "F2FP.SATFINITE.BF16.S2_6.UNPACK_B R5, R4, R7.H1",
+        ] {
+            assert!(lower_text(bad, None).is_err(), "{bad}");
+        }
+    }
 
     /// An unprinted known encoding in the last slot of the text is decoded too (the scan
     /// covers the whole text, not only up to the last printed line); zero padding is not.

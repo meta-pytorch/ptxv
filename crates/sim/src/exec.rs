@@ -2237,23 +2237,51 @@ impl Machine {
     /// its completed groups the wait covers. With `.read` only their shared-memory source reads
     /// (PTX ISA: the source may be reused; the global writes stay in flight until a full wait
     /// or the end of the kernel), so a later access of the destination races with them.
+    /// SASS (`DEPBAR` on the read scoreboard, or a control-word wait on it): the groups are
+    /// complete, but without the L1 model the thread acquires their global writes only at its
+    /// next `CCTL.IVALL` (`bulk_vis`, `bulk_visible`). ptxas lowers `wait_group` and
+    /// `wait_group.read` to the same `DEPBAR` and adds `CCTL.IVALL` for the full form, which
+    /// alone makes the writes "visible to the executing thread" (PTX ISA): GB300 completes
+    /// them in L2 at the `DEPBAR` but keeps a line of the destination its SM filled before
+    /// (fixtures/e_tma_read_l1 READ3 / READ4). With the L1 model (the GB300 level) the
+    /// `DEPBAR` acquires them at once and E-HW-L1 decides which reads are stale.
     /// ASSUME(E-ASYNC-STEP)
     fn bulk_wait(&mut self, t: usize, n: u32, sbs: Option<u8>, read: bool) {
         let gs = self.bulk_covered(t, n, sbs);
         for &g in &gs {
             self.rec_acq(sync_key(3, t as u64, g as u64, 0));
         }
+        let defer = !read && self.k.front == Front::Sass && self.l1.is_none();
         let th = self.threads[t].make_mut();
         let mut j = VC::new();
+        let mut w = VC::new();
         th.bulk_done.retain(|(g, rvc, wvc)| {
             if gs.binary_search(g).is_ok() {
-                vc_join(&mut j, if read { rvc } else { wvc });
+                if read || defer {
+                    vc_join(&mut j, rvc);
+                }
+                if !read {
+                    vc_join(if defer { &mut w } else { &mut j }, wvc);
+                }
                 read
             } else {
                 true
             }
         });
         vc_join(&mut th.vc, &j);
+        if defer {
+            vc_join(&mut th.bulk_vis, &w);
+        }
+    }
+
+    /// SASS `CCTL.IVALL` by thread `t`: it acquires the global writes of the bulk groups its
+    /// earlier waits covered (`bulk_wait`). ASSUME(E-ASYNC-STEP)
+    fn bulk_visible(&mut self, t: usize) {
+        if self.threads[t].bulk_vis != VC::new() {
+            let th = self.threads[t].make_mut();
+            let w = std::mem::take(&mut th.bulk_vis);
+            vc_join(&mut th.vc, &w);
+        }
     }
 
     /// For a split of `members` at the aligned barrier at `pc`: None if every live lane of
@@ -3416,6 +3444,7 @@ impl Machine {
             self.mbar_materialize(c, mbar);
             if self.mbars.contains_key(&(c, mbar)) {
                 let _ = self.mbar_atomic(op.actor, &op.vc, &op.vis, op.pc, c, mbar);
+                self.rec_late(c, mbar, &op.vc);
                 let mb = self.mbars.get_mut(&(c, mbar)).unwrap();
                 mb.tx -= 16;
                 self.mbar_note_async(c, mbar, op.issuer, op.actor, &op.vc);
@@ -5765,6 +5794,7 @@ impl Machine {
                 target,
                 any,
                 tid0_falls,
+                all,
                 cond,
                 div: None,
             } => {
@@ -5821,6 +5851,9 @@ impl Machine {
                     }
                 }
                 let go_all = *any && !active.is_empty();
+                // `@P BRA.U` (probes/bra_u, GB300): the split goes one way, taken only when the
+                // guard holds in every lane of it. ASSUME(E-COLLECTIVE)
+                let all_taken = *all && !members.is_empty() && active.len() == members.len();
                 // NOT_TID0: the warp of CTA thread 0 falls through (linear thread id < 32).
                 let tid0_warp = |m: &Self, t: usize| {
                     let th = &m.threads[t];
@@ -5830,7 +5863,9 @@ impl Machine {
                 for &t in members {
                     let falls = *tid0_falls && tid0_warp(self, t);
                     let taken = go_all
+                        || all_taken
                         || (!*any
+                            && !*all
                             && active.contains(&t)
                             && !falls
                             && cond.is_none_or(|c| self.prd(t, c)));
@@ -8409,12 +8444,14 @@ impl Machine {
                         self.l1_atom(t, loc, *bytes as usize);
                     }
                     self.red_access = *op == AtomOp::FAddFtz && d.is_none();
-                    // S-INIT: an exchange only returns the old bytes; undefined ones give an
-                    // undefined destination (reported when used), not a report here (dist_moe
-                    // publishes a tensor map word by word with `atom.exch`, discarding the result).
-                    if *op == AtomOp::Exch {
-                        self.stale = Some(None);
-                    }
+                    // S-INIT: undefined old bytes (never-written shared memory, a scratch buffer)
+                    // are not reported at the atomic: the returned value is undefined (reported
+                    // where it is used), and so is the stored one unless it does not depend on
+                    // them (an exchange), reported where a later read feeds it to a sink. dist_moe
+                    // publishes a tensor map word by word with `atom.exch`, discarding the
+                    // result; Triton's histogram kernels count out-of-range keys into a spill word
+                    // nothing initializes or reads (fixtures/smem_spill_sink).
+                    self.stale = Some(None);
                     if self.nic.is_some() {
                         self.nic_gpu_atomic(t, loc, *bytes as usize, pc); // ASSUME(S-NIC-ATOMIC)
                     }
@@ -8501,7 +8538,13 @@ impl Machine {
                     // of failing compare-and-swaps leaves memory untouched.
                     if *op != AtomOp::Cas || swapped {
                         let data: Vec<u8> = (0..*bytes).map(|i| (n >> (8 * i)) as u8).collect();
+                        // S-INIT: the new value depends on undefined old bytes (all of them: a
+                        // carry, a compare) unless it is the exchanged value.
+                        if old_undef && *op != AtomOp::Exch {
+                            self.wundef = (1u128 << *bytes) - 1;
+                        }
                         self.access_x(t as u32, &vc, pc, loc, *bytes as usize, Some(&data), sc);
+                        self.wundef = 0;
                         self.sync_publish(t, pc, loc, *sync, true);
                     }
                     self.red_access = false;
@@ -8877,6 +8920,7 @@ impl Machine {
                 };
                 self.rec(0, mc as u32, off as u64, off as u64 + 8, false);
                 self.mbar_atomic(t as u32, &vc, &vis, pc, mc, off)?;
+                self.rec_late(mc, off, &vc);
                 let mb = self.mbars.get_mut(&(mc, off)).unwrap();
                 mb.tx -= n as i64;
                 let r = self.mbar_async_rel(t as u32, mc, vc.clone());
@@ -9615,6 +9659,7 @@ impl Machine {
             } => {
                 self.acquire_pending(t, None);
                 self.acquire_pending_mb(t, None, false);
+                self.bulk_visible(t); // ASSUME(E-ASYNC-STEP)
                 if self.l1.is_some() {
                     self.l1_inval(t, pc); // ASSUME(E-HW-L1): CCTL.IVALL
                 }
@@ -10912,11 +10957,20 @@ impl Machine {
                 self.wr(t, *d, r as u64, 1);
                 self.num_clobber(t, *d, &[a], pc);
             }
-            // ASSUME(N-CVT-LP): lowp::cvt_s2f6x2_scaled = GB300 (probes/s2f6_cvt).
-            Op::CvtS2f6x2 { d, a, hi, scale } => {
+            // ASSUME(N-CVT-LP): lowp::cvt_s2f6x2_scaled = GB300 (probes/s2f6_cvt,
+            // probes/s2f6_cvt/forms).
+            Op::CvtS2f6x2 {
+                d,
+                a,
+                hi,
+                scale,
+                relu,
+                sat,
+            } => {
                 let x = (self.rd(t, a)? >> if *hi { 16 } else { 0 }) as u16;
                 let s = self.rd(t, scale)? as u16;
-                self.wr(t, *d, crate::lowp::cvt_s2f6x2_scaled(x, s) as u64, 1);
+                let r = crate::lowp::cvt_s2f6x2_scaled(x, s, *relu, *sat);
+                self.wr(t, *d, r as u64, 1);
                 self.num_clobber(t, *d, &[a, scale], pc);
             }
             Op::Brev { d, a } => {
@@ -12678,6 +12732,7 @@ impl Machine {
                 self.rec(0, cta as u32, off as u64, off as u64 + 8, false);
                 self.mbar_atomic(t as u32, &vc, &vis, pc, cta, off)?;
                 self.rec_count(cta, off, arrivals);
+                self.rec_late(cta, off, &vc);
                 let mb = self.mbars.get_mut(&(cta, off)).unwrap();
                 mb.tx += if *complete { -txv } else { txv };
                 if arrivals > 0 {
@@ -13698,20 +13753,61 @@ impl Machine {
         }
     }
 
-    /// Footprint space 16, the pending count of the current phase: an arrival transition into
-    /// phase k reads key (off, k); one that makes several arrivals at once (a count, or a
-    /// remote operation carrying several lanes' arrivals) and takes the phase's last pending
-    /// arrivals (it completes the phase or overshoots) writes it. Single arrivals into a phase
-    /// commute (`mbar_maybe_complete`), but a counted one does not commute with them: with two
-    /// pending, a count-2 arrival completes the phase alone, after a count-1 arrival it
-    /// overshoots (a fault), and the phase that the other arrival lands in differs.
+    /// Footprint space 16 (`SPACE_MBAR_COUNT`), the pending count of the current phase: an
+    /// arrival transition into phase k reads key (off, k); one that makes several arrivals at
+    /// once (a count, or a remote operation carrying several lanes' arrivals) and takes the
+    /// phase's last pending arrivals (it completes the phase or overshoots) writes it. Single
+    /// arrivals into a phase commute (`mbar_maybe_complete`), but a counted one does not
+    /// commute with them: with two pending, a count-2 arrival completes the phase alone, after
+    /// a count-1 arrival it overshoots (a fault), and the phase that the other arrival lands in
+    /// differs. An overshoot is also an over-arrival (`rec_late`).
     fn rec_count(&mut self, cta: u16, off: u32, arrivals: u32) {
         let Some(mb) = self.mbars.get(&(cta, off)) else {
             return;
         };
         let key = ((off as u64) << 20) | (mb.phase as u64 & 0xf_ffff);
         let write = arrivals > 1 && arrivals >= mb.pending;
-        self.rec(16, cta as u32, key, key + 1, write);
+        let over = arrivals > mb.pending;
+        self.rec(SPACE_MBAR_COUNT, cta as u32, key, key + 1, write);
+        if over {
+            self.rec(SPACE_MBAR_OVER, cta as u32, key, key + 1, true);
+            self.note_arv_over();
+        }
+    }
+
+    /// Footprint space 25 (`SPACE_MBAR_OVER`), over-arrivals: an update of mbarrier (cta, off)
+    /// (an arrival or a complete_tx) by an actor with clock `vc`, called before it changes the
+    /// mbarrier, reads the key of the phase k it lands in. If k follows a completion that the
+    /// actor's clock does not cover (late: some update of phase k - 1 is not ordered before
+    /// it), the update could have landed in phase k - 1 instead, before one of that phase's
+    /// updates, which would then land in phase k: it writes the key of phase k - 1, so that it
+    /// conflicts with every update of that phase. With exactly the expected arrivals per phase
+    /// every update is ordered after the completion before its phase and no key is written; an
+    /// over-arrival (more arrivals than expected before a completion that orders them, from
+    /// single arrivals, the lanes of one warp, or a count, which writes its own key in
+    /// `rec_count`) does write one. The reductions take any write here as an over-arrival
+    /// (`Machine::arv_over`, dpor.rs `OVER_ARRIVAL`).
+    fn rec_late(&mut self, cta: u16, off: u32, vc: &VC) {
+        let Some(mb) = self.mbars.get(&(cta, off)) else {
+            return;
+        };
+        let k = mb.phase;
+        let late = k > 0 && !vc_covers(vc, &mb.done_land[((k - 1) % 2) as usize]);
+        let key = ((off as u64) << 20) | (k as u64 & 0xf_ffff);
+        self.rec(SPACE_MBAR_OVER, cta as u32, key, key + 1, false);
+        if late {
+            let prev = ((off as u64) << 20) | ((k - 1) as u64 & 0xf_ffff);
+            self.rec(SPACE_MBAR_OVER, cta as u32, prev, prev + 1, true);
+            self.note_arv_over();
+        }
+    }
+
+    /// An mbarrier update that does not commute with the other updates of its phase was seen
+    /// (`Machine::arv_over`).
+    fn note_arv_over(&self) {
+        if let Some(f) = &self.arv_over {
+            f.fetch_or(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// Called after every arrival / complete_tx. DPOR footprint (dpor.rs): an arrival into
@@ -13895,6 +13991,7 @@ impl Machine {
                     let _ = self.mbar_atomic(op.actor, &op.vc, &op.vis, op.pc, cta, mbar);
                 }
                 self.rec_count(cta, mbar, 1);
+                self.rec_late(cta, mbar, &op.vc);
                 match self.mbars.get_mut(&(cta, mbar)) {
                     None => {
                         let msg = format!(
@@ -14089,6 +14186,7 @@ impl Machine {
         // it landed (S-CLUSTER-LIFE, `Thread::landed`).
         self.mbar_note_land(cta, mbar, rels.clone(), land);
         if n == 0 {
+            self.rec_late(cta, mbar, &op.vc);
             self.mbar_maybe_complete(cta, mbar);
         }
         for i in 0..n {
@@ -14099,6 +14197,7 @@ impl Machine {
                     return;
                 }
             }
+            self.rec_late(cta, mbar, &op.vc);
             let Some(mb) = self.mbars.get_mut(&(cta, mbar)) else {
                 return;
             };
@@ -16021,11 +16120,23 @@ impl Machine {
         // The last async write looked at: a copy's bytes are consecutive, and a second byte of
         // one write needs no second look (reported, or fenced, the first time).
         let mut last: Option<(u32, u32, u32)> = None;
+        // Generic writes already decided (covered, or reported): every uncovered writer is
+        // reported, one finding per writer pc (MISS 124: reporting only the first and
+        // returning let a reclassifying rerun, twolevel.rs, or the GB300 classification drop
+        // or mislabel a second racing writer).
+        let mut gen_seen: Vec<(u32, u32)> = Vec::new();
+        let mut gen_reported: Vec<u32> = Vec::new();
         for i in 0..n {
             let Some(w) = self.smem[cta as usize].sh.get(off as usize + i).w else {
                 continue;
             };
             let a = w.actor as usize;
+            if a < self.threads.len() {
+                if gen_seen.contains(&(w.actor, w.clock)) || gen_reported.contains(&w.pc) {
+                    continue;
+                }
+                gen_seen.push((w.actor, w.clock));
+            }
             if a >= self.threads.len() {
                 if last == Some((w.actor, w.clock, w.pc)) {
                     continue;
@@ -16141,7 +16252,7 @@ impl Machine {
                 self.k.describe(pc as usize)
             );
             self.report("race", sig, msg);
-            return;
+            gen_reported.push(w.pc);
         }
     }
 
@@ -16641,6 +16752,7 @@ impl Machine {
         if !tx {
             self.rec_count(cta, mbar, 1);
         }
+        self.rec_late(cta, mbar, &op.vc);
         let Some(mb) = self.mbars.get_mut(&(cta, mbar)) else {
             let msg = format!(
                 "cp.async.mbarrier.arrive at {} on an uninitialized mbarrier at {mbar:#x}",
@@ -16929,7 +17041,9 @@ impl Machine {
                 );
                 self.report("violation", format!("tma-uninit:{}", op.pc), msg);
             }
-            Some(mb) => {
+            Some(_) => {
+                self.rec_late(cta, mbar, &op.vc);
+                let mb = self.mbars.get_mut(&(cta, mbar)).unwrap();
                 mb.tx -= bytes;
                 self.mbar_note_async(cta, mbar, op.issuer, op.actor, &op.vc);
                 self.mbar_maybe_complete(cta, mbar);

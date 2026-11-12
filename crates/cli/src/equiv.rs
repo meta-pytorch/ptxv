@@ -1985,12 +1985,13 @@ pub fn cmd_equiv(
     }
     let dir = match out {
         Some(d) => d.clone(),
-        // Named after the fixture directory too: every fixture's file is `equiv.toml`.
-        None => std::env::temp_dir().join(format!(
+        // Named after the fixture directory too: every fixture's file is `equiv.toml`. This
+        // run's own directory under it (concurrent runs of one file shared it).
+        None => crate::result_dir(&std::env::temp_dir().join(format!(
             "ptxv-equiv-{}-{}",
             base.file_name().map_or("".into(), |d| d.to_string_lossy()),
             path.file_stem().unwrap().to_string_lossy()
-        )),
+        )))?,
     };
     let dir = match ptxv_sim::dist::get() {
         Some(r) => dir.join(format!("rank{}", r.rank)),

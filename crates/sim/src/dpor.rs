@@ -18,8 +18,8 @@
 //! since the two would merge. Two transitions are dependent when their recorded
 //! footprints conflict (`Footprint::conflicts`): overlapping memory/TMEM bytes with at least one
 //! write, the same mbarrier object with at least one arrive (polls read it; arrivals into one
-//! phase commute unless one completes it or is a counted arrival that takes its last pending
-//! arrivals, `rec_count` in exec.rs), the TMEM allocator, CTA exit state vs. async
+//! phase commute unless one completes it; a kernel where a phase gets more arrivals than it
+//! expects goes to the stateful explorer, `OVER_ARRIVAL`), the TMEM allocator, CTA exit state vs. async
 //! completion, bulk-group state, or a trap. Named-barrier arrivals commute except at a
 //! generation boundary of a barrier that `bar.arrive` or more threads than its count use
 //! (footprint space 14, E-BAR-ARRIVE / E-BAR-OVER).
@@ -302,10 +302,34 @@ pub fn explore_dpor(m0: Machine, max_states: usize) -> Verdict {
     let mut v = crate::smem::two_pass(m0, |m0| {
         crate::explore::per_leader_policy(m0, 1, |m, _| explore_dpor_one(m, max_states))
     });
+    // An over-arrival: the stateful explorer decides (`OVER_ARRIVAL`).
+    if v.notes.iter().any(|n| n == OVER_ARRIVAL) {
+        let mut v = crate::explore::explore(base, max_states);
+        v.notes.push(
+            "DPOR saw an mbarrier update that does not commute with the other updates of its \
+             phase (an over-arrival: more arrivals than expected before a completion that \
+             orders them): checked by the stateful explorer instead"
+                .into(),
+        );
+        return v;
+    }
     // S-INIT-FILLS: undefined values that reach only output data.
     crate::fills::check(&base, &mut v);
     v
 }
+
+/// Marker note of a DPOR search that stopped at an mbarrier update writing footprint space 25
+/// (`rec_late` / `rec_count` in exec.rs): an update that lands after a completion its actor
+/// does not know of, or an arrival of more than the pending arrivals at once. Such an update
+/// makes the dependency of arrivals depend on the state: an arrival that commuted with the
+/// others where it ran would land late after them, and the sleep sets and the last-conflict
+/// backtracking (which assume a transition's footprint does not change while it waits) can
+/// miss that order (`fixtures/mbar_over_arrival`; `fixtures/mbar_count_order` and its
+/// variants, which all over-arrive). Every execution of such a kernel has some update that
+/// writes the key (the arrivals beyond the expected count are not ordered after the completion,
+/// in whichever order they come), so the first DPOR execution that meets one stops the search,
+/// and the stateful explorer redoes it.
+const OVER_ARRIVAL: &str = "dpor: over-arrival";
 
 fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
     let t0 = Instant::now();
@@ -336,6 +360,14 @@ fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
     };
     frames.push(new_frame(&m0, vec![]));
     let mut cur: Machine = m0;
+    let over = |f: &Frame| {
+        f.alts.iter().any(|a| {
+            a.fp.w
+                .iter()
+                .any(|x| x.0 == crate::machine::SPACE_MBAR_OVER)
+        })
+    };
+    let mut over_arrival = over(&frames[0]);
 
     // Called on reaching a new frame (index n = frames.len()-1, whose state is `cur`).
     // Returns false if the state is terminal/deadlocked/sleep-blocked (nothing to explore).
@@ -565,6 +597,10 @@ fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
         states += 1;
         cur = succ;
         frames.push(new_frame(&cur, child_sleep));
+        if over(frames.last().unwrap()) {
+            over_arrival = true;
+            break;
+        }
     }
     if debug {
         let mut v: Vec<_> = why.into_iter().collect();
@@ -572,6 +608,20 @@ fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
         for (k, c) in v.iter().take(15) {
             eprintln!("dpor backtrack {c:>7}  {k}");
         }
+    }
+    if over_arrival {
+        return Verdict {
+            notes: vec![OVER_ARRIVAL.into()],
+            states,
+            transitions,
+            complete: false,
+            terminal_states: terminal,
+            distinct_outputs: 0,
+            findings,
+            assumptions,
+            seconds: t0.elapsed().as_secs_f64(),
+            outputs: vec![],
+        };
     }
     Verdict {
         notes: if complete {

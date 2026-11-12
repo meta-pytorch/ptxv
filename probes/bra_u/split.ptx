@@ -1,0 +1,47 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// Lanes tid >= h skip the region (out[32 + tid] = 7). Lanes with p0 = (tid < k) xor inv run the body. out[tid] = activemask in the body (0 if skipped); out[32 + tid] = activemask at the join;
+// out[64 + tid] = lanes elected at the join (elect.sync); out[96] = body count.
+.visible .entry probe_bra_u(.param .u64 out, .param .u32 k, .param .u32 inv, .param .u32 h)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<8>;
+    mov.u32         %r0, %tid.x;
+    ld.param.u32    %r1, [k];
+    ld.param.u64    %rd0, [out];
+    cvta.to.global.u64 %rd1, %rd0;
+    mul.wide.u32    %rd2, %r0, 4;
+    add.u64         %rd3, %rd1, %rd2;
+    ld.param.u32    %r8, [h];
+    setp.ge.u32     %p3, %r0, %r8;
+    @%p3 bra        $OTHER;
+    ld.param.u32    %r7, [inv];
+    setp.ne.u32     %p2, %r7, 0;
+    setp.lt.u32     %p0, %r0, %r1;
+    xor.pred        %p0, %p0, %p2;
+    @!%p0 bra       $SKIP;
+    activemask.b32  %r2;
+    st.volatile.global.u32 [%rd3], %r2;
+    atom.global.add.u32 %r3, [%rd1+384], 1;
+    st.volatile.global.u32 [%rd3+512], %r3;
+$SKIP:
+    activemask.b32  %r4;
+    st.volatile.global.u32 [%rd3+128], %r4;
+    elect.sync      %r5|%p1, -1;
+    selp.u32        %r6, 1, 0, %p1;
+    st.volatile.global.u32 [%rd3+256], %r6;
+    bra.uni         $DONE;
+$OTHER:
+    st.volatile.global.u32 [%rd3+128], 7;
+$DONE:
+    ret;
+}

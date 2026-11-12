@@ -1000,6 +1000,9 @@ def report(a):  # noqa: C901 (report printer: one branch per pair status)
             sim = " ".join(sd.get("sim_vs_gpu") or [])
             if "MISMATCH" in sim:
                 v += ", sim != GPU"
+            elif "within one ulp" in sim:
+                # Its line ends with "the rest bitwise equal": not sim = GPU.
+                v += ", sim within 1 ulp of GPU"
             elif "bitwise equal" in sim:
                 v += ", sim = GPU"
             return v

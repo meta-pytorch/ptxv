@@ -51,7 +51,11 @@ The comparison step runs with `CUDA_VISIBLE_DEVICES=""`.
 
 `ptxv compare REF CAND [--out DIR] [--max-states N] [--trials N] [--segments B] [--sweep-cache F]
 [--hw] [--ref-label S] [--cand-label S]` writes `DIR/report.json` and `DIR/report.md`, and prints
-a short summary. Long runs print progress on stderr.
+a short summary. Long runs print progress on stderr. Without `--out`, DIR is a directory of the
+run under `$TMPDIR/ptxv-compare-<ref>-<cand>/` (printed, and `report_dir` with `--json`); the
+next run of the pair on the same host, boot and pid namespace removes those of finished runs (a
+run holds a lock on its directory while it lives), and the sweeps are carried from one run of
+the pair to the next.
 
 Equivalence covers the first declared output buffer, the final result of a multi-launch
 region. Additional buffers can hold intermediates and are not compared; `output_scope` in

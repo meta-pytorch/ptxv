@@ -34,5 +34,7 @@ marker = "@SYNC"
 replace = "<delete>"
 expect = ["race"]
 # SASS: STS vs ATOMS is re-checked in the strong LDS/STS model (S-SMEM-STRONG), where the lost
-# add shows as several outputs, and an add before the init reads unwritten shared memory.
-expect_sass = ["nondeterministic", "violation"]
+# add shows as several outputs. An add before the init reads unwritten shared memory, but the
+# init overwrites the word it leaves undefined before anything reads it (S-INIT through
+# atomics), so that is not a violation.
+expect_sass = ["nondeterministic"]

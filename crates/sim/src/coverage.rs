@@ -1596,11 +1596,18 @@ pub(crate) fn post(m: &mut Machine, members: &[usize], pc: u32) {
         target,
         any,
         tid0_falls,
+        all,
         cond,
         div,
     } = &inst.op
     {
-        if inst.guard.reg.is_some() || cond.is_some() || div.is_some() || *any || *tid0_falls {
+        if inst.guard.reg.is_some()
+            || cond.is_some()
+            || div.is_some()
+            || *any
+            || *all
+            || *tid0_falls
+        {
             let mut sides = 0u8;
             for &t in members {
                 let taken = m.threads[t].pc as usize == *target && *target != pc as usize + 1;
@@ -2298,9 +2305,10 @@ fn succs(m: &Machine, pc: usize) -> Vec<usize> {
             cond,
             tid0_falls,
             any,
+            all,
             ..
         } => {
-            if inst.guard.reg.is_none() && cond.is_none() && !tid0_falls && !any {
+            if inst.guard.reg.is_none() && cond.is_none() && !tid0_falls && !any && !all {
                 vec![*target]
             } else {
                 vec![*target, next]

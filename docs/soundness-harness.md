@@ -147,14 +147,22 @@ the limit), and `async-ids-stride-4096` restores the fixed 4096 ids per thread
 (`e_async_ids_nc`, `e_async_ids_stream`, `e_async_ids_last` unmodeled). `bulk-read-is-full-wait` makes
 `cp.async.bulk.wait_group.read` acquire the bulk store's writes again and `bulk-write-read-epoch`
 runs those writes at the epoch of its reads (MISS 32: `fixtures/e_tma_store_readback` READ clean
-on the PTX front) (E-ASYNC-STEP).
+on the PTX front); `bulk-depbar-acquires-writes` lets a SASS bulk `DEPBAR` acquire the writes
+without the `CCTL.IVALL` again (MISS 102: `fixtures/e_tma_read_l1` READ4 clean and certified on
+the SASS front) (E-ASYNC-STEP). `over-arrival-late-off` stops recording mbarrier updates that
+land after a completion their actor does not know of (`fixtures/mbar_over_arrival` clean on both
+explorers), `bra-u-per-lane` lowers a guarded SASS `BRA.U` per lane again (`probes/bra_u` differs
+from GB300), `s2f6-relu-dropped` drops the s2f6 decode's `.relu` (`probes/s2f6_cvt/forms` differs
+from GB300).
 A mutant may also name cargo tests (`tests`: package, test binary, name filter), run in the
 mutant's tree; it is caught when a test that ran fails (claims checked against recorded GPU
 outputs, such as num's error bounds; adversarial tests). A build error, a missing test target or
 a filter that matches no test is an `error`, not a catch. `PTXV_JOB_WRAPPER` prefixes the builds
 and test runs (a memory-capped job runner). The mutant's tree holds the working
 tree's tracked changes and its untracked files (new fixtures and tests). `--only` takes a
-comma-separated list.
+comma-separated list. `--check-anchors` builds and runs nothing: it prints every mutant whose
+find text does not occur exactly once in its file (a run reports such a mutant as an `error`)
+and exits 1 if there is one.
 
 Open source-mutant gaps (no mutant in `srcmut.py` until a test catches it):
 - E-ELECT candidates (`elect_lanes::candidates`): the key of an active set's candidate lanes

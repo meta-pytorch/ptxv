@@ -11,8 +11,11 @@
 //!   random bits), recomputed from the model;
 //! - probes/cvt_lp through both front-ends (the SASS one on ptxas's binary) against
 //!   gb300_out.bin, bit for bit;
-//! - the s2f6 dequant: the hash of GB200's `cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2`
-//!   outputs over every (code, scale) pair in every lane position, recomputed from the model.
+//! - the s2f6 dequant: the hashes of GB300's and GB200's
+//!   `cvt.rn[.relu][.satfinite].scaled::n2::ue8m0.bf16x2.s2f6x2` outputs over every
+//!   (code, scale) pair in every lane position (probes/s2f6_cvt/forms/sweep.json; the
+//!   `.satfinite` form's GB200 hash is the one this file checked before), recomputed from the
+//!   model.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -52,28 +55,38 @@ fn cvt_model_replays_gb300_sweep() {
     }
 }
 
-/// N-CVT-LP: the s2f6 dequant's model against GB200 (sm_100a, CUDA 13.1, 2026-11-08): 65,536
-/// threads of `cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2`, two cvts each; thread i,
-/// p = i % 256, q = i / 256, converts the code words x = {q ^ 0x96, p ^ 0x5a, q, p} (bytes, high
-/// first) with the scale words y = {p ^ 0x2d, q ^ 0xc3, p, q}, so every lane position sees every
-/// (code, scale) pair once with independently varying neighbours. The FNV-1a hash of the 131,072
-/// results in thread order must match the GPU's.
+/// N-CVT-LP, the s2f6 dequant: probes/s2f6_cvt/forms/sweep.json holds per-form hashes of GB300's
+/// and GB200's outputs over gen.py's full set (thread i, p = i % 256, q = i / 256: the four
+/// lane positions of the codes x / scales y get the pairs (p, q), (q, p), (p ^ 0x5a, q ^ 0xc3),
+/// (q ^ 0x96, p ^ 0x2d)); the model must reproduce each GPU's.
 #[test]
-fn s2f6_model_replays_gb200_sweep() {
-    let out = (0..65536u32).flat_map(|i| {
-        let (p, q) = (i & 0xff, i >> 8);
-        let x = (q ^ 0x96) << 24 | (p ^ 0x5a) << 16 | q << 8 | p;
-        let y = (p ^ 0x2d) << 24 | (q ^ 0xc3) << 16 | p << 8 | q;
-        [
-            lowp::cvt_s2f6x2_scaled(x as u16, y as u16),
-            lowp::cvt_s2f6x2_scaled((x >> 16) as u16, (y >> 16) as u16),
-        ]
-    });
-    assert_eq!(
-        format!("{:016x}", sweep::hash(out)),
-        "b03fb8bf9d8e435d",
-        "s2f6 model differs from GB200"
-    );
+fn s2f6_model_replays_gpu_sweeps() {
+    let dir = root().join("probes/s2f6_cvt/forms");
+    let rec: BTreeMap<String, BTreeMap<String, serde_json::Value>> =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("sweep.json")).unwrap()).unwrap();
+    assert_eq!(rec.len(), 4);
+    for (name, r) in &rec {
+        let m: Vec<&str> = name.split('.').collect();
+        let (relu, sat) = (m.contains(&"relu"), m.contains(&"satfinite"));
+        let n = r["threads"].as_u64().unwrap() as u32;
+        let out = (0..n).flat_map(|i| {
+            let (p, q) = (i & 0xff, i >> 8);
+            let x = (q ^ 0x96) << 24 | (p ^ 0x5a) << 16 | q << 8 | p;
+            let y = (p ^ 0x2d) << 24 | (q ^ 0xc3) << 16 | p << 8 | q;
+            [
+                lowp::cvt_s2f6x2_scaled(x as u16, y as u16, relu, sat),
+                lowp::cvt_s2f6x2_scaled((x >> 16) as u16, (y >> 16) as u16, relu, sat),
+            ]
+        });
+        let h = format!("{:016x}", sweep::hash(out));
+        for gpu in ["gb300", "gb200"] {
+            assert_eq!(
+                r[gpu].as_str(),
+                Some(h.as_str()),
+                "{name}: model differs from {gpu}"
+            );
+        }
+    }
 }
 
 fn run(case: &Case, k: ptxv_ir::Kernel) -> Vec<u8> {

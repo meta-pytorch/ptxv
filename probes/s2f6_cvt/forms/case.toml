@@ -1,0 +1,52 @@
+name = "cvt_s2f6"
+description = """
+N-CVT-LP s2f6 probe (gen.py): the MXINT8 dequant cvt.rn[.relu][.satfinite]
+.scaled::n2::ue8m0.bf16x2.s2f6x2 in its four forms, on 1024 threads sampled from the full set
+(every pair of 16 edge codes and scales, then fixed random threads). Both front-ends (the SASS
+one on kernel.cubin, ptxas 13.1's F2FP...S2_6.UNPACK_B) must equal gb300_out.bin, GB300's
+output; gb200_out.bin is GB200's (sm_100a build), equal to it. sweep.json holds the hashes of
+GB300's and GB200's outputs of the full set (gen.py --full), equal per form, replayed against
+the model by crates/sim/tests/lowp.rs."""
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "cvt_s2f6"
+grid = [8, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "u32"
+shape = [1024]
+init = "file"
+file = "in_x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "u32"
+shape = [1024]
+init = "file"
+file = "in_y.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [8192]
+init = "zeros"
+expect = "gb300_out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

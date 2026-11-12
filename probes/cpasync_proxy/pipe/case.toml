@@ -1,0 +1,271 @@
+name = "cpasync_proxy_pipe"
+description = """
+E-CPASYNC-PROXY probe in rung 1b's pipeline (kernel.ptx), grid 1: the
+epilogue fills the staging tile with st.shared (rung 1b) or cp.async from `src`, then
+bar.sync 1, 128 and thread 64's TMA store (or bulk store, `_b` variants; `_nobar`: no bar.sync
+after the mbarrier wait). Variants: writer x fence.proxy.async placement (none / before the
+wait / after the wait). st_none is rung 1b's
+B04 (fails on GB300). Every CTA computes the same GEMM tile pair and writes rows
+ctaid * 256 + [0, 256) of D; cp.async variants copy the same rows of src. Run
+`PTXV_HW_EXPECT=variant ptxv hw probes/cpasync_proxy/pipe --scrub --runs 1000`
+(each variant against its own simulator run). The expects are the model's verdicts; the
+cpm_* variants (128 copy-completion arrivals per phase) need more than 200000 states for a
+complete `ptxv check`."""
+ptx = "kernel.ptx"
+entry = "r1b_pipeline"
+grid = [1, 1, 1]
+block = [192, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "A"
+dtype = "bf16"
+shape = [256, 128]
+init = "normal"
+seed = 21
+
+[[buffers]]
+name = "B"
+dtype = "bf16"
+shape = [16, 128]
+init = "normal"
+seed = 22
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [256, 16]
+init = "nan"
+
+[[buffers]]
+name = "src"
+dtype = "f32"
+shape = [256, 16]
+init = "normal"
+seed = 24
+
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [64, 128]
+swizzle = "128B"
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [64, 16]
+swizzle = "128B"
+
+[[params]]
+kind = "tensormap"
+buffer = "D"
+box = [16, 128]
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[variants]]
+id = "good"
+summary = "st.shared writers (rung 1b); fence.proxy.async.shared::cta after the stores (rung 1b good); TMA store"
+expect = ["clean"]
+
+[[variants]]
+id = "st_none"
+summary = "st.shared writers (rung 1b); no fence.proxy.async; TMA store"
+expect = ["race"]
+edits = [
+    { marker = "@FENCE", replace = "<delete>" },
+]
+
+[[variants]]
+id = "cpw_none"
+summary = "cp.async.cg (4 x 16 B per thread), cp.async.wait_group 0; no fence.proxy.async; TMA store"
+expect = ["contract"]
+edits = [
+    { marker = "@ST", replace = "<delete>" },
+    { marker = "@CPI", find = "// CP_ISSUE", replace = "cp.async.cg.shared.global [%r38], [%rd22], 16; cp.async.cg.shared.global [%r38+16], [%rd22+16], 16; cp.async.cg.shared.global [%r38+32], [%rd22+32], 16; cp.async.cg.shared.global [%r38+48], [%rd22+48], 16; cp.async.commit_group;" },
+    { marker = "@CPW", find = "// CP_WAIT", replace = "cp.async.wait_group 0;" },
+    { marker = "@FENCE", replace = "<delete>" },
+]
+
+[[variants]]
+id = "cpw_before"
+summary = "cp.async.cg (4 x 16 B per thread), cp.async.wait_group 0; fence.proxy.async.shared::cta before the wait; TMA store"
+expect = ["contract"]
+edits = [
+    { marker = "@ST", replace = "<delete>" },
+    { marker = "@CPI", find = "// CP_ISSUE", replace = "cp.async.cg.shared.global [%r38], [%rd22], 16; cp.async.cg.shared.global [%r38+16], [%rd22+16], 16; cp.async.cg.shared.global [%r38+32], [%rd22+32], 16; cp.async.cg.shared.global [%r38+48], [%rd22+48], 16; cp.async.commit_group;" },
+    { marker = "@CPW", find = "// CP_WAIT", replace = "cp.async.wait_group 0;" },
+    { marker = "@FENCE", replace = "<delete>" },
+    { marker = "@FB", find = "// FENCE_BEFORE", replace = "fence.proxy.async.shared::cta;" },
+]
+
+[[variants]]
+id = "cpw_after"
+summary = "cp.async.cg (4 x 16 B per thread), cp.async.wait_group 0; fence.proxy.async.shared::cta after the wait; TMA store"
+expect = ["clean"]
+edits = [
+    { marker = "@ST", replace = "<delete>" },
+    { marker = "@CPI", find = "// CP_ISSUE", replace = "cp.async.cg.shared.global [%r38], [%rd22], 16; cp.async.cg.shared.global [%r38+16], [%rd22+16], 16; cp.async.cg.shared.global [%r38+32], [%rd22+32], 16; cp.async.cg.shared.global [%r38+48], [%rd22+48], 16; cp.async.commit_group;" },
+    { marker = "@CPW", find = "// CP_WAIT", replace = "cp.async.wait_group 0;" },
+]
+
+[[variants]]
+id = "cpm_none"
+summary = "cp.async.cg (4 x 16 B per thread), cp.async.mbarrier.arrive.noinc, mbarrier wait; no fence.proxy.async; TMA store"
+expect = ["contract"]
+edits = [
+    { marker = "@ST", replace = "<delete>" },
+    { marker = "@CPI", find = "// CP_ISSUE", replace = "cp.async.cg.shared.global [%r38], [%rd22], 16; cp.async.cg.shared.global [%r38+16], [%rd22+16], 16; cp.async.cg.shared.global [%r38+32], [%rd22+32], 16; cp.async.cg.shared.global [%r38+48], [%rd22+48], 16; cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r61];" },
+    { marker = "@CPMW", find = "// CPM_WAIT", replace = "mbarrier.try_wait.parity.shared::cta.b64 %p16, [%r61], %r41; @!%p16 bra CPM_W;" },
+    { marker = "@FENCE", replace = "<delete>" },
+]
+
+[[variants]]
+id = "cpm_before"
+summary = "cp.async.cg (4 x 16 B per thread), cp.async.mbarrier.arrive.noinc, mbarrier wait; fence.proxy.async.shared::cta before the wait; TMA store"
+expect = ["contract"]
+edits = [
+    { marker = "@ST", replace = "<delete>" },
+    { marker = "@CPI", find = "// CP_ISSUE", replace = "cp.async.cg.shared.global [%r38], [%rd22], 16; cp.async.cg.shared.global [%r38+16], [%rd22+16], 16; cp.async.cg.shared.global [%r38+32], [%rd22+32], 16; cp.async.cg.shared.global [%r38+48], [%rd22+48], 16; cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r61];" },
+    { marker = "@CPMW", find = "// CPM_WAIT", replace = "mbarrier.try_wait.parity.shared::cta.b64 %p16, [%r61], %r41; @!%p16 bra CPM_W;" },
+    { marker = "@FENCE", replace = "<delete>" },
+    { marker = "@FB", find = "// FENCE_BEFORE", replace = "fence.proxy.async.shared::cta;" },
+]
+
+[[variants]]
+id = "cpm_after"
+summary = "cp.async.cg (4 x 16 B per thread), cp.async.mbarrier.arrive.noinc, mbarrier wait; fence.proxy.async.shared::cta after the wait; TMA store"
+expect = ["clean"]
+edits = [
+    { marker = "@ST", replace = "<delete>" },
+    { marker = "@CPI", find = "// CP_ISSUE", replace = "cp.async.cg.shared.global [%r38], [%rd22], 16; cp.async.cg.shared.global [%r38+16], [%rd22+16], 16; cp.async.cg.shared.global [%r38+32], [%rd22+32], 16; cp.async.cg.shared.global [%r38+48], [%rd22+48], 16; cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r61];" },
+    { marker = "@CPMW", find = "// CPM_WAIT", replace = "mbarrier.try_wait.parity.shared::cta.b64 %p16, [%r61], %r41; @!%p16 bra CPM_W;" },
+]
+
+[[variants]]
+id = "cpw4_none"
+summary = "cp.async.ca (16 x 4 B per thread), cp.async.wait_group 0; no fence.proxy.async; TMA store"
+expect = ["contract"]
+edits = [
+    { marker = "@ST", replace = "<delete>" },
+    { marker = "@CPI", find = "// CP_ISSUE", replace = "cp.async.ca.shared.global [%r38+0], [%rd22+0], 4; cp.async.ca.shared.global [%r38+4], [%rd22+4], 4; cp.async.ca.shared.global [%r38+8], [%rd22+8], 4; cp.async.ca.shared.global [%r38+12], [%rd22+12], 4; cp.async.ca.shared.global [%r38+16], [%rd22+16], 4; cp.async.ca.shared.global [%r38+20], [%rd22+20], 4; cp.async.ca.shared.global [%r38+24], [%rd22+24], 4; cp.async.ca.shared.global [%r38+28], [%rd22+28], 4; cp.async.ca.shared.global [%r38+32], [%rd22+32], 4; cp.async.ca.shared.global [%r38+36], [%rd22+36], 4; cp.async.ca.shared.global [%r38+40], [%rd22+40], 4; cp.async.ca.shared.global [%r38+44], [%rd22+44], 4; cp.async.ca.shared.global [%r38+48], [%rd22+48], 4; cp.async.ca.shared.global [%r38+52], [%rd22+52], 4; cp.async.ca.shared.global [%r38+56], [%rd22+56], 4; cp.async.ca.shared.global [%r38+60], [%rd22+60], 4; cp.async.commit_group;" },
+    { marker = "@CPW", find = "// CP_WAIT", replace = "cp.async.wait_group 0;" },
+    { marker = "@FENCE", replace = "<delete>" },
+]
+
+[[variants]]
+id = "cpw4_before"
+summary = "cp.async.ca (16 x 4 B per thread), cp.async.wait_group 0; fence.proxy.async.shared::cta before the wait; TMA store"
+expect = ["contract"]
+edits = [
+    { marker = "@ST", replace = "<delete>" },
+    { marker = "@CPI", find = "// CP_ISSUE", replace = "cp.async.ca.shared.global [%r38+0], [%rd22+0], 4; cp.async.ca.shared.global [%r38+4], [%rd22+4], 4; cp.async.ca.shared.global [%r38+8], [%rd22+8], 4; cp.async.ca.shared.global [%r38+12], [%rd22+12], 4; cp.async.ca.shared.global [%r38+16], [%rd22+16], 4; cp.async.ca.shared.global [%r38+20], [%rd22+20], 4; cp.async.ca.shared.global [%r38+24], [%rd22+24], 4; cp.async.ca.shared.global [%r38+28], [%rd22+28], 4; cp.async.ca.shared.global [%r38+32], [%rd22+32], 4; cp.async.ca.shared.global [%r38+36], [%rd22+36], 4; cp.async.ca.shared.global [%r38+40], [%rd22+40], 4; cp.async.ca.shared.global [%r38+44], [%rd22+44], 4; cp.async.ca.shared.global [%r38+48], [%rd22+48], 4; cp.async.ca.shared.global [%r38+52], [%rd22+52], 4; cp.async.ca.shared.global [%r38+56], [%rd22+56], 4; cp.async.ca.shared.global [%r38+60], [%rd22+60], 4; cp.async.commit_group;" },
+    { marker = "@CPW", find = "// CP_WAIT", replace = "cp.async.wait_group 0;" },
+    { marker = "@FENCE", replace = "<delete>" },
+    { marker = "@FB", find = "// FENCE_BEFORE", replace = "fence.proxy.async.shared::cta;" },
+]
+
+[[variants]]
+id = "cpw4_after"
+summary = "cp.async.ca (16 x 4 B per thread), cp.async.wait_group 0; fence.proxy.async.shared::cta after the wait; TMA store"
+expect = ["clean"]
+edits = [
+    { marker = "@ST", replace = "<delete>" },
+    { marker = "@CPI", find = "// CP_ISSUE", replace = "cp.async.ca.shared.global [%r38+0], [%rd22+0], 4; cp.async.ca.shared.global [%r38+4], [%rd22+4], 4; cp.async.ca.shared.global [%r38+8], [%rd22+8], 4; cp.async.ca.shared.global [%r38+12], [%rd22+12], 4; cp.async.ca.shared.global [%r38+16], [%rd22+16], 4; cp.async.ca.shared.global [%r38+20], [%rd22+20], 4; cp.async.ca.shared.global [%r38+24], [%rd22+24], 4; cp.async.ca.shared.global [%r38+28], [%rd22+28], 4; cp.async.ca.shared.global [%r38+32], [%rd22+32], 4; cp.async.ca.shared.global [%r38+36], [%rd22+36], 4; cp.async.ca.shared.global [%r38+40], [%rd22+40], 4; cp.async.ca.shared.global [%r38+44], [%rd22+44], 4; cp.async.ca.shared.global [%r38+48], [%rd22+48], 4; cp.async.ca.shared.global [%r38+52], [%rd22+52], 4; cp.async.ca.shared.global [%r38+56], [%rd22+56], 4; cp.async.ca.shared.global [%r38+60], [%rd22+60], 4; cp.async.commit_group;" },
+    { marker = "@CPW", find = "// CP_WAIT", replace = "cp.async.wait_group 0;" },
+]
+
+[[variants]]
+id = "st_none_b"
+summary = "st.shared writers (rung 1b); no fence.proxy.async; bulk store (cp.async.bulk.global.shared::cta)"
+expect = ["race"]
+edits = [
+    { marker = "@FENCE", replace = "<delete>" },
+    { marker = "@RD", find = "cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd11, {%r59, %r58}], [%r7];", replace = "cp.async.bulk.global.shared::cta.bulk_group [%rd24], [%r7], 8192;" },
+]
+
+[[variants]]
+id = "cpw_none_b"
+summary = "cp.async.cg (4 x 16 B per thread), cp.async.wait_group 0; no fence.proxy.async; bulk store (cp.async.bulk.global.shared::cta)"
+expect = ["contract"]
+edits = [
+    { marker = "@ST", replace = "<delete>" },
+    { marker = "@CPI", find = "// CP_ISSUE", replace = "cp.async.cg.shared.global [%r38], [%rd22], 16; cp.async.cg.shared.global [%r38+16], [%rd22+16], 16; cp.async.cg.shared.global [%r38+32], [%rd22+32], 16; cp.async.cg.shared.global [%r38+48], [%rd22+48], 16; cp.async.commit_group;" },
+    { marker = "@CPW", find = "// CP_WAIT", replace = "cp.async.wait_group 0;" },
+    { marker = "@FENCE", replace = "<delete>" },
+    { marker = "@RD", find = "cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd11, {%r59, %r58}], [%r7];", replace = "cp.async.bulk.global.shared::cta.bulk_group [%rd24], [%r7], 8192;" },
+]
+
+[[variants]]
+id = "cpm_none_b"
+summary = "cp.async.cg (4 x 16 B per thread), cp.async.mbarrier.arrive.noinc, mbarrier wait; no fence.proxy.async; bulk store (cp.async.bulk.global.shared::cta)"
+expect = ["contract"]
+edits = [
+    { marker = "@ST", replace = "<delete>" },
+    { marker = "@CPI", find = "// CP_ISSUE", replace = "cp.async.cg.shared.global [%r38], [%rd22], 16; cp.async.cg.shared.global [%r38+16], [%rd22+16], 16; cp.async.cg.shared.global [%r38+32], [%rd22+32], 16; cp.async.cg.shared.global [%r38+48], [%rd22+48], 16; cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r61];" },
+    { marker = "@CPMW", find = "// CPM_WAIT", replace = "mbarrier.try_wait.parity.shared::cta.b64 %p16, [%r61], %r41; @!%p16 bra CPM_W;" },
+    { marker = "@FENCE", replace = "<delete>" },
+    { marker = "@RD", find = "cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd11, {%r59, %r58}], [%r7];", replace = "cp.async.bulk.global.shared::cta.bulk_group [%rd24], [%r7], 8192;" },
+]
+
+[[variants]]
+id = "cpw4_none_b"
+summary = "cp.async.ca (16 x 4 B per thread), cp.async.wait_group 0; no fence.proxy.async; bulk store (cp.async.bulk.global.shared::cta)"
+expect = ["contract"]
+edits = [
+    { marker = "@ST", replace = "<delete>" },
+    { marker = "@CPI", find = "// CP_ISSUE", replace = "cp.async.ca.shared.global [%r38+0], [%rd22+0], 4; cp.async.ca.shared.global [%r38+4], [%rd22+4], 4; cp.async.ca.shared.global [%r38+8], [%rd22+8], 4; cp.async.ca.shared.global [%r38+12], [%rd22+12], 4; cp.async.ca.shared.global [%r38+16], [%rd22+16], 4; cp.async.ca.shared.global [%r38+20], [%rd22+20], 4; cp.async.ca.shared.global [%r38+24], [%rd22+24], 4; cp.async.ca.shared.global [%r38+28], [%rd22+28], 4; cp.async.ca.shared.global [%r38+32], [%rd22+32], 4; cp.async.ca.shared.global [%r38+36], [%rd22+36], 4; cp.async.ca.shared.global [%r38+40], [%rd22+40], 4; cp.async.ca.shared.global [%r38+44], [%rd22+44], 4; cp.async.ca.shared.global [%r38+48], [%rd22+48], 4; cp.async.ca.shared.global [%r38+52], [%rd22+52], 4; cp.async.ca.shared.global [%r38+56], [%rd22+56], 4; cp.async.ca.shared.global [%r38+60], [%rd22+60], 4; cp.async.commit_group;" },
+    { marker = "@CPW", find = "// CP_WAIT", replace = "cp.async.wait_group 0;" },
+    { marker = "@FENCE", replace = "<delete>" },
+    { marker = "@RD", find = "cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd11, {%r59, %r58}], [%r7];", replace = "cp.async.bulk.global.shared::cta.bulk_group [%rd24], [%r7], 8192;" },
+]
+
+[[variants]]
+id = "st_after_b"
+summary = "st.shared writers (rung 1b); fence.proxy.async.shared::cta after the stores (rung 1b good); bulk store (cp.async.bulk.global.shared::cta)"
+expect = ["clean"]
+edits = [
+    { marker = "@RD", find = "cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd11, {%r59, %r58}], [%r7];", replace = "cp.async.bulk.global.shared::cta.bulk_group [%rd24], [%r7], 8192;" },
+]
+
+[[variants]]
+id = "cpm_none_nobar"
+summary = "cp.async.cg (4 x 16 B per thread), cp.async.mbarrier.arrive.noinc, mbarrier wait; no fence.proxy.async; no bar.sync after the wait; TMA store"
+expect = ["contract"]
+edits = [
+    { marker = "@ST", replace = "<delete>" },
+    { marker = "@CPI", find = "// CP_ISSUE", replace = "cp.async.cg.shared.global [%r38], [%rd22], 16; cp.async.cg.shared.global [%r38+16], [%rd22+16], 16; cp.async.cg.shared.global [%r38+32], [%rd22+32], 16; cp.async.cg.shared.global [%r38+48], [%rd22+48], 16; cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r61];" },
+    { marker = "@CPMW", find = "// CPM_WAIT", replace = "mbarrier.try_wait.parity.shared::cta.b64 %p16, [%r61], %r41; @!%p16 bra CPM_W;" },
+    { marker = "@FENCE", replace = "<delete>" },
+    { marker = "@BAR", replace = "<delete>" },
+]
+
+[[variants]]
+id = "cpm_before_nobar"
+summary = "cp.async.cg (4 x 16 B per thread), cp.async.mbarrier.arrive.noinc, mbarrier wait; fence.proxy.async.shared::cta before the wait; no bar.sync after the wait; TMA store"
+expect = ["contract"]
+edits = [
+    { marker = "@ST", replace = "<delete>" },
+    { marker = "@CPI", find = "// CP_ISSUE", replace = "cp.async.cg.shared.global [%r38], [%rd22], 16; cp.async.cg.shared.global [%r38+16], [%rd22+16], 16; cp.async.cg.shared.global [%r38+32], [%rd22+32], 16; cp.async.cg.shared.global [%r38+48], [%rd22+48], 16; cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r61];" },
+    { marker = "@CPMW", find = "// CPM_WAIT", replace = "mbarrier.try_wait.parity.shared::cta.b64 %p16, [%r61], %r41; @!%p16 bra CPM_W;" },
+    { marker = "@FENCE", replace = "<delete>" },
+    { marker = "@FB", find = "// FENCE_BEFORE", replace = "fence.proxy.async.shared::cta;" },
+    { marker = "@BAR", replace = "<delete>" },
+]
+
+[[variants]]
+id = "cpm_after_nobar"
+summary = "cp.async.cg (4 x 16 B per thread), cp.async.mbarrier.arrive.noinc, mbarrier wait; fence.proxy.async.shared::cta after the wait; no bar.sync after the wait; TMA store"
+expect = ["clean"]
+edits = [
+    { marker = "@ST", replace = "<delete>" },
+    { marker = "@CPI", find = "// CP_ISSUE", replace = "cp.async.cg.shared.global [%r38], [%rd22], 16; cp.async.cg.shared.global [%r38+16], [%rd22+16], 16; cp.async.cg.shared.global [%r38+32], [%rd22+32], 16; cp.async.cg.shared.global [%r38+48], [%rd22+48], 16; cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r61];" },
+    { marker = "@CPMW", find = "// CPM_WAIT", replace = "mbarrier.try_wait.parity.shared::cta.b64 %p16, [%r61], %r41; @!%p16 bra CPM_W;" },
+    { marker = "@BAR", replace = "<delete>" },
+]

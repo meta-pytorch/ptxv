@@ -30,3 +30,16 @@ id = "good"
 # two outputs are.
 expect = ["deadlock", "fault", "race"]
 expect_sass = ["deadlock", "fault", "nondeterministic"]
+
+[[variants]]
+id = "aba"
+summary = "warp 2 arrives with count 3 twice: phase 0 can complete, flip and take the count-1 arrival in phase 1"
+# A phase that completes and flips while another arrival is not ordered after it: the arrival
+# lands in either phase (ABA), so its footprint depends on the order. Every execution has such
+# an update, so DPOR stops at the first one and the stateful explorer decides
+# (dpor.rs OVER_ARRIVAL, exec.rs rec_late).
+marker = "@COUNT"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r3], %r6; // @COUNT"
+replace = "mbarrier.arrive.shared::cta.b64 _, [%r3], %r6;\n    mbarrier.arrive.shared::cta.b64 _, [%r3], %r6;"
+expect = ["deadlock", "fault", "race"]
+expect_sass = ["deadlock", "fault", "nondeterministic"]

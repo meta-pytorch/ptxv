@@ -1,0 +1,84 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// smem_spill_sink: a histogram count shape, reduced. Each warp owns a 256-bin histogram
+// in smem, zeroed by its own lanes (8 words a lane, bar.warp.sync), followed by one 32-word spill
+// area that nothing initializes and nothing reads (the histogram's trailing
+// warp-size words). Every lane issues the atomic for each of its 4 keys, branch-free: to
+// bin key when key <= 255, else to spill[lane].
+//
+//   key(t, k) = (37 * t + 101 * k) & 511, t = tid.x < 64, k < 4.
+//   out[64 * i + t] = hist[warp(t)][lane(t) + 32 * i], i < 8 (the warp's 256 bins after bar.sync).
+// The outputs never depend on the spill words.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry smem_spill_sink(.param .u64 out)
+.maxntid 64, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<40>;
+    .reg .b64   %rd<8>;
+    .shared .align 16 .b8 sh[2176];
+
+    mov.u32         %r0, %tid.x;
+    shr.u32         %r1, %r0, 5;                // warp
+    and.b32         %r2, %r0, 31;               // lane
+    mov.u32         %r3, sh;
+    shl.b32         %r4, %r1, 10;
+    add.u32         %r5, %r3, %r4;              // this warp's histogram
+    shl.b32         %r6, %r2, 2;
+    add.u32         %r7, %r5, %r6;              // its word lane
+    add.u32         %r8, %r3, 2048;
+    add.u32         %r8, %r8, %r6;              // spill[lane]
+    st.shared.u32   [%r7], 0;
+    st.shared.u32   [%r7+128], 0;
+    st.shared.u32   [%r7+256], 0;
+    st.shared.u32   [%r7+384], 0;
+    st.shared.u32   [%r7+512], 0;
+    st.shared.u32   [%r7+640], 0;
+    st.shared.u32   [%r7+768], 0;
+    st.shared.u32   [%r7+896], 0;
+    bar.warp.sync   -1;
+    mul.lo.u32      %r9, %r0, 37;
+    mov.u32         %r10, 0;
+$LOOP:
+    mad.lo.u32      %r11, %r10, 101, %r9;
+    and.b32         %r11, %r11, 511;            // key
+    setp.le.u32     %p0, %r11, 255;
+    shl.b32         %r12, %r11, 2;
+    add.u32         %r12, %r5, %r12;            // bin word
+    selp.b32        %r13, %r12, %r8, %p0;
+    selp.b32        %r14, 1, 1, %p0;            // @INC
+    atom.shared.cta.add.u32 %r15, [%r13], %r14; // @ATOM
+    add.u32         %r10, %r10, 1;
+    setp.lt.u32     %p1, %r10, 4;
+    @%p1 bra        $LOOP;
+    bar.sync        0;
+    mov.u32         %r20, 0;                    // @EXTRA
+    ld.param.u64    %rd0, [out];
+    cvta.to.global.u64 %rd1, %rd0;
+    mul.wide.u32    %rd2, %r0, 4;
+    add.u64         %rd1, %rd1, %rd2;
+    ld.shared.u32   %r16, [%r7];
+    xor.b32         %r16, %r16, %r20;
+    st.global.u32   [%rd1], %r16;
+    ld.shared.u32   %r16, [%r7+128];
+    st.global.u32   [%rd1+256], %r16;
+    ld.shared.u32   %r16, [%r7+256];
+    st.global.u32   [%rd1+512], %r16;
+    ld.shared.u32   %r16, [%r7+384];
+    st.global.u32   [%rd1+768], %r16;
+    ld.shared.u32   %r16, [%r7+512];
+    st.global.u32   [%rd1+1024], %r16;
+    ld.shared.u32   %r16, [%r7+640];
+    st.global.u32   [%rd1+1280], %r16;
+    ld.shared.u32   %r16, [%r7+768];
+    st.global.u32   [%rd1+1536], %r16;
+    ld.shared.u32   %r16, [%r7+896];
+    st.global.u32   [%rd1+1792], %r16;
+    ret;
+}

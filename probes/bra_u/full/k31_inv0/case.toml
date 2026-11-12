@@ -1,0 +1,29 @@
+name = "probe_bra_u_full_k31_inv0"
+description = "probes/bra_u, full kernel (full.ptx), params k, inv = 31, 0; outputs in gb300_bra.bin (ptxas's BRA) and gb300_bra_u.bin (patched to BRA.U)."
+cubin = "../../full_bra_u.cubin"
+entry = "probe_bra_u"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [160]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 31
+
+[[params]]
+kind = "u32"
+value = 0
+
+[[variants]]
+id = "good"
+expect = ["clean"]

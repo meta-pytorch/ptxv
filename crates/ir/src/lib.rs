@@ -1313,15 +1313,22 @@ pub enum Op {
         /// source starts at byte 2 * hi + byte.
         byte: u8,
     },
-    /// `cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 d, a, scale` / SASS
-    /// `F2FP.SATFINITE.BF16.S2_6.UNPACK_B Rd, Ra[.H1], Rb.H0 | imm.H0`: two s2f6 codes (the
-    /// 16 bits of `a` at its high half if `hi`, else its low half) times the two ue8m0 scales
-    /// in the low 16 bits of `scale` -> bf16x2 (`lowp::cvt_s2f6x2_scaled`). N-CVT-LP.
+    /// `cvt.rn[.relu][.satfinite].scaled::n2::ue8m0.bf16x2.s2f6x2 d, a, scale` / SASS
+    /// `F2FP[.SATFINITE][.RELU].BF16.S2_6.UNPACK_B Rd, Ra[.H1], Rb.H0 | imm.H0`: two s2f6
+    /// codes (the 16 bits of `a` at its high half if `hi`, else its low half) times the two
+    /// ue8m0 scales in the low 16 bits of `scale` -> bf16x2 (`lowp::cvt_s2f6x2_scaled`).
+    /// N-CVT-LP.
     CvtS2f6x2 {
         d: Reg,
         a: Val,
         hi: bool,
         scale: Val,
+        /// `.relu`: negative lanes become +0.
+        #[serde(default)]
+        relu: bool,
+        /// `.satfinite`: the one overflow (-128 at scale 254) gives -max instead of -Inf.
+        #[serde(default = "yes")]
+        sat: bool,
     },
     /// bf16 -> f32 (exact).
     CvtF32Bf16 {
@@ -1379,6 +1386,13 @@ pub enum Op {
         /// holding thread 0 of the CTA, which falls through (GB300: probes/not_tid0; cuBLAS
         /// guards its once-per-CTA TMEM free with it).
         tid0_falls: bool,
+        /// SASS `@P BRA.U target` (a per-thread guard on a uniform branch): taken by every lane
+        /// of the executing split when the guard holds in all of them, else by none (GB300:
+        /// probes/bra_u, with every lane, with lanes exited and with lanes on another path).
+        /// ptxas guards an elected block with it ahead of the block's BSSY, so that the lanes
+        /// stay together when no lane is elected (never, for an ELECT of every lane).
+        #[serde(default)]
+        all: bool,
         /// SASS `@P0 BRA P1, target`: a second, per-thread condition; taken where the guard
         /// and `cond` both hold.
         cond: Option<Pred>,
@@ -1791,7 +1805,8 @@ pub enum Op {
         n: u32,
         /// `.read`: only the groups' shared-memory source reads are complete; their global
         /// writes stay in flight until a full wait or the end of the kernel (PTX front only:
-        /// the SASS `DEPBAR` is a full wait).
+        /// the SASS `DEPBAR` completes the groups, and the thread's next `CCTL.IVALL` makes
+        /// their global writes visible to it).
         read: bool,
         /// SASS `DEPBAR.LE SBk, n`: the scoreboard k. Only the bulk groups committed on SBk
         /// (`Kernel::bulk_commit_sb`) count; None (PTX): every group.
@@ -3403,4 +3418,9 @@ mod vector_reg_tests {
         };
         assert_eq!(hmma.dst_regs(), vec![v(40), v(41), v(42), v(43)]);
     }
+}
+
+/// serde default `true`.
+fn yes() -> bool {
+    true
 }

@@ -1212,6 +1212,11 @@ pub fn per_leader_policy(
     }
     v.distinct_outputs = v.outputs.len();
     v.findings.extend(two_pol);
+    for n in w.notes {
+        if !v.notes.contains(&n) {
+            v.notes.push(n);
+        }
+    }
     v
 }
 
@@ -1533,6 +1538,14 @@ fn local_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)
                         // a try_wait reads. Not in a kernel with counted arrivals (`mbarrier
                         // .arrive [a], count`): with two pending, a count-2 arrival completes
                         // the phase alone, or overshoots after a count-1 one.
+                        //
+                        // Nor once an over-arrival was seen (`Machine::arv_over`, bit 0): with
+                        // more arrivals than expected before a completion that orders them,
+                        // arrivals into one phase do not commute (the one left over lands in
+                        // the next phase). The search then runs again without this rule
+                        // (`explore_one_model`); an over-arrival that this rule hides in one
+                        // order shows up in the order it picks (the arrivals it moves first
+                        // leave another one over).
                         ptxv_ir::Op::MbarArrive {
                             addr,
                             tx: None,
@@ -1541,7 +1554,10 @@ fn local_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)
                             ..
                         } if !m.k.code.iter().any(|i| {
                             matches!(i.op, ptxv_ir::Op::MbarArrive { count: Some(_), .. })
-                        }) =>
+                        }) && m
+                            .arv_over
+                            .as_ref()
+                            .is_some_and(|f| f.load(Ordering::Relaxed) & 1 == 0) =>
                         {
                             let active: Vec<usize> = members()
                                 .map(|t| t as usize)
@@ -1566,9 +1582,16 @@ fn local_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)
                                     _ => ok = false,
                                 }
                             }
-                            ok && per
-                                .iter()
-                                .all(|(k, n)| m.mbars.get(k).is_some_and(|b| b.pending > *n))
+                            let ok = ok
+                                && per
+                                    .iter()
+                                    .all(|(k, n)| m.mbars.get(k).is_some_and(|b| b.pending > *n));
+                            if ok {
+                                if let Some(f) = &m.arv_over {
+                                    f.fetch_or(2, Ordering::Relaxed);
+                                }
+                            }
+                            ok
                         }
                         op => !op.is_visible(),
                     })
@@ -1712,6 +1735,7 @@ fn exit_bound(m: &Machine, warp: u32, pc: u32) -> bool {
                 target,
                 any: false,
                 tid0_falls: false,
+                all: false,
                 cond: None,
                 div: None,
             } => {
@@ -2206,6 +2230,7 @@ pub(crate) fn const_guards(m: &Machine, rets: &[Vec<usize>]) -> Vec<Option<bool>
                     target,
                     any: false,
                     tid0_falls: false,
+                    all: false,
                     cond: None,
                     div: None,
                 } => match gv {
@@ -2540,6 +2565,7 @@ pub(crate) fn peekwait_set(m: &Machine) -> BTreeSet<u32> {
                 target,
                 any: false,
                 tid0_falls: false,
+                all: false,
                 cond: None,
                 div: None,
             } = i.op
@@ -2593,6 +2619,7 @@ pub(crate) fn peekwait_set(m: &Machine) -> BTreeSet<u32> {
                 target,
                 any: false,
                 tid0_falls: false,
+                all: false,
                 cond: None,
                 div: None,
             } = i.op
@@ -2617,6 +2644,7 @@ pub(crate) fn peekwait_set(m: &Machine) -> BTreeSet<u32> {
                         target,
                         any: false,
                         tid0_falls: false,
+                        all: false,
                         cond: None,
                         div: None,
                     },
@@ -2794,6 +2822,7 @@ pub(crate) fn peekskip_set(m: &Machine) -> BTreeMap<u32, (BTreeSet<u32>, BTreeSe
                         target,
                         any: false,
                         tid0_falls: false,
+                        all: false,
                         cond: None,
                         div: None,
                     } => {
@@ -2849,6 +2878,7 @@ pub(crate) fn peekskip_set(m: &Machine) -> BTreeMap<u32, (BTreeSet<u32>, BTreeSe
                                     target,
                                     any: false,
                                     tid0_falls: false,
+                                    all: false,
                                     cond: None,
                                     div: None,
                                 } = j.op
@@ -2900,6 +2930,7 @@ pub(crate) fn peekskip_set(m: &Machine) -> BTreeMap<u32, (BTreeSet<u32>, BTreeSe
                                             target,
                                             any: false,
                                             tid0_falls: false,
+                                            all: false,
                                             cond: None,
                                             div: None,
                                         } = k.op
@@ -6506,6 +6537,10 @@ fn explore_one_model(
     if let Some((d, call)) = &net {
         d.set_learn(*call, Some(Arc::new(LearnSink(learned.clone()))));
     }
+    // Over-arrivals (`Machine::arv_over`): ranks of a multi-node search do not share what they
+    // see, so there the local reduction of plain arrivals is off from the start.
+    let arv_over = Arc::new(std::sync::atomic::AtomicU8::new(net.is_some() as u8));
+    m0.arv_over = Some(arv_over.clone());
     let mut prev: Option<Verdict> = None;
     // A budget that stopped the seed walks makes the verdict incomplete, with their note,
     // whatever the rounds do: a cut seed set is never taken as complete. Multi-node: the
@@ -6516,6 +6551,7 @@ fn explore_one_model(
         None
     };
     for round in 1.. {
+        let arv_before = arv_over.load(Ordering::Relaxed) & 1;
         let mut v = explore_round(
             m0.clone(),
             max_states,
@@ -6546,8 +6582,12 @@ fn explore_one_model(
             .vip
             .as_ref()
             .is_some_and(|x| x.dirty.swap(false, Ordering::Relaxed));
+        // An over-arrival seen in a round that relied on the local reduction of plain
+        // arrivals: run again without it.
+        let a = arv_over.load(Ordering::Relaxed);
+        let arv_dirty = arv_before == 0 && a & 1 == 1 && a & 2 == 2;
         let mut g = learned.inner.lock().unwrap();
-        if (!por || !g.dirty) && !(vip_dirty && v.complete) || !v.complete {
+        if (!por || !g.dirty) && !((vip_dirty || arv_dirty) && v.complete) || !v.complete {
             if let Some((d, call)) = &net {
                 d.set_learn(*call, None);
             }
@@ -9248,6 +9288,7 @@ impl LaWarp {
                 target,
                 any,
                 tid0_falls,
+                all,
                 cond,
                 div: None,
             } => {
@@ -9259,6 +9300,18 @@ impl LaWarp {
                     match g {
                         Av::K(x) => Av::K((x != 0) as u64),
                         Av::L(_) | Av::E => Av::K(1),
+                        _ => Av::U,
+                    }
+                } else if *all {
+                    // `@P BRA.U`: taken by the whole split when the guard holds in every lane.
+                    // `@!P` with P elected holds in all lanes but one: not taken.
+                    let elect_neg = inst.guard.neg
+                        && inst.guard.reg.is_some_and(|r| self.get(m, c, r) == Av::E);
+                    match g {
+                        _ if elect_neg => Av::K(0),
+                        Av::K(x) => Av::K((x != 0) as u64),
+                        Av::L(j) => Av::K(self.lv[j as usize].iter().all(|&x| x != 0) as u64),
+                        Av::E => Av::K((self.ts.len() == 1) as u64),
                         _ => Av::U,
                     }
                 } else {

@@ -14,9 +14,12 @@ import sys
 import tomllib
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import harness  # noqa: E402
 import mutate  # noqa: E402
+import srcmut  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -418,3 +421,39 @@ def test_emit_and_ingest_runner_tasks(tmp_path):
     assert [(r["mutant"], r["status"], r["runner"]) for r in recs] == [
         ("m1", "caught", True)
     ]
+
+
+
+def test_srcmut_check_anchors(tmp_path, monkeypatch, capsys):
+    """srcmut.py --check-anchors prints every mutant whose find text does not occur exactly once
+    in its file, and exits 1 if there is one; it needs no --out and builds and runs nothing."""
+    (tmp_path / "a.rs").write_text("fn a() {\n    keep(x);\n}\n")
+    b = tmp_path / "b.rs"
+    good = srcmut.SrcMutant("good", "a.rs", "    keep(x);\n", "", [])
+    broken = srcmut.SrcMutant("broken", "b.rs", "    drop(y);\n", "", [])
+    monkeypatch.setattr(srcmut, "ROOT", tmp_path)
+    monkeypatch.setattr(srcmut, "MUTANTS", [good, broken])
+
+    def never(*args, **kwargs):
+        raise AssertionError("--check-anchors built or ran a mutant")
+
+    monkeypatch.setattr(srcmut, "run_mutant", never)
+    monkeypatch.setattr(srcmut, "build", never)
+
+    def check(*args):
+        rc = srcmut.main(["--check-anchors", *args])
+        out = capsys.readouterr()
+        return rc, [ln.split(None, 1) for ln in out.out.splitlines()], out.err.strip()
+
+    b.write_text("    drop(y);\n    drop(y);\n")
+    assert check() == (1, [["broken", "b.rs: find text occurs 2 times"]], "1 of 2 anchors broken")
+    assert check("--only", "good") == (0, [], "0 of 1 anchors broken")
+    b.write_text("    keep(y);\n")
+    assert check() == (1, [["broken", "b.rs: find text occurs 0 times"]], "1 of 2 anchors broken")
+    b.unlink()
+    assert check() == (1, [["broken", "b.rs: no such file"]], "1 of 2 anchors broken")
+    b.write_text("    drop(y);\n")
+    assert check() == (0, [], "0 of 2 anchors broken")
+    # A run still needs --out.
+    with pytest.raises(SystemExit):
+        srcmut.main([])

@@ -11,11 +11,13 @@
 //! fixed bit must match, so any other encoding stays a hole and the kernel is refused
 //! ("instruction addresses are not contiguous").
 //!
-//! - `F2FP.SATFINITE.BF16.S2_6.UNPACK_B Rd, Ra[.reuse][.H1], Rb[.reuse].H0 | imm.H0`
-//!   (`cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2`): fields read off the 1088 instances
-//!   of the kernel DB plus probes/s2f6_cvt, each printed identically by nvdisasm 13.4
-//!   (test `s2f6_decode_matches_nvdisasm_13_4`). The immediate is printed in hex (13.4 prints
-//!   its bits as an f32 literal).
+//! - `F2FP[.SATFINITE][.RELU].BF16.S2_6.UNPACK_B Rd, Ra[.reuse][.H1], Rb[.reuse].H0 | imm.H0`
+//!   (`cvt.rn[.relu][.satfinite].scaled::n2::ue8m0.bf16x2.s2f6x2`): fields read off the 1088
+//!   instances of the kernel DB plus probes/s2f6_cvt (the `.satfinite` form), each printed
+//!   identically by nvdisasm 13.4, and the four forms of probes/s2f6_cvt/forms with register and
+//!   immediate scales, printed identically by nvdisasm 13.3 (hi bit 13 = `.SATFINITE`, hi bit
+//!   11 = `.RELU`; test `s2f6_decode_matches_nvdisasm_13_4`). The immediate is printed in hex
+//!   (nvdisasm prints its bits as an f32 literal).
 // ASSUME(L-NVDISASM): see ASSUMPTIONS.md
 
 /// The disassembly of one 128-bit encoding (`lo` = bits 0..64, `hi` = bits 64..128), without
@@ -25,11 +27,17 @@ pub fn decode(lo: u64, hi: u64) -> Option<String> {
     if op != 0x63e && op != 0xe3e {
         return None;
     }
-    // hi bits 8..24 = 0x0834, bit 25 set, bits 26..41 clear (bits 41.. are control bits and
-    // reuse flags); lo bits 24..32 clear.
-    if (hi >> 8) & 0xffff != 0x0834 || (hi >> 25) & 0xffff != 1 || (lo >> 24) & 0xff != 0 {
+    // hi bits 8..24 = 0x0814 apart from bit 13 (.SATFINITE) and bit 11 (.RELU), bit 25 set,
+    // bits 26..41 clear (bits 41.. are control bits and reuse flags); lo bits 24..32 clear.
+    if (hi >> 8) & 0xffd7 != 0x0814 || (hi >> 25) & 0xffff != 1 || (lo >> 24) & 0xff != 0 {
         return None;
     }
+    let sat = if (hi >> 13) & 1 == 1 {
+        ".SATFINITE"
+    } else {
+        ""
+    };
+    let relu = if (hi >> 11) & 1 == 1 { ".RELU" } else { "" };
     let reg = |n: u64| {
         if n == 255 {
             "RZ".to_string()
@@ -61,7 +69,7 @@ pub fn decode(lo: u64, hi: u64) -> Option<String> {
         (p, neg) => format!("@{}P{p} ", if neg { "!" } else { "" }),
     };
     Some(format!(
-        "{guard}F2FP.SATFINITE.BF16.S2_6.UNPACK_B {}, {a}, {s}",
+        "{guard}F2FP{sat}{relu}.BF16.S2_6.UNPACK_B {}, {a}, {s}",
         reg((lo >> 16) & 0xff)
     ))
 }
@@ -124,6 +132,52 @@ mod tests {
                 0x0000fe0100057e3e,
                 0x000fe40002083405,
                 "F2FP.SATFINITE.BF16.S2_6.UNPACK_B R5, R5, 0xfe01.H0",
+            ),
+            // The four forms (ptxas 13.1 -arch=sm_103a, nvdisasm 13.3; probes/s2f6_cvt/forms).
+            (
+                0x000000040005763e,
+                0x180fe40002081407,
+                "F2FP.BF16.S2_6.UNPACK_B R5, R4.reuse, R7.reuse.H0",
+            ),
+            (
+                0x00000004000d763e,
+                0x080fe4000308140d,
+                "F2FP.BF16.S2_6.UNPACK_B R13, R4.reuse.H1, R13.H0",
+            ),
+            (
+                0x00000004000f763e,
+                0x080fe40002081c07,
+                "F2FP.RELU.BF16.S2_6.UNPACK_B R15, R4.reuse, R7.H0",
+            ),
+            (
+                0x000000040011763e,
+                0x080fe40003081c11,
+                "F2FP.RELU.BF16.S2_6.UNPACK_B R17, R4.reuse.H1, R17.H0",
+            ),
+            (
+                0x000000040007763e,
+                0x000fc40002083c07,
+                "F2FP.SATFINITE.RELU.BF16.S2_6.UNPACK_B R7, R4, R7.H0",
+            ),
+            (
+                0x000000040013763e,
+                0x000fe20003083c13,
+                "F2FP.SATFINITE.RELU.BF16.S2_6.UNPACK_B R19, R4.H1, R19.H0",
+            ),
+            (
+                0x0000818100047e3e,
+                0x004fc40002081400,
+                "F2FP.BF16.S2_6.UNPACK_B R4, R0, 0x8181.H0",
+            ),
+            (
+                0x0000818100057e3e,
+                0x080fe40002081c00,
+                "F2FP.RELU.BF16.S2_6.UNPACK_B R5, R0.reuse, 0x8181.H0",
+            ),
+            (
+                0x0000818100067e3e,
+                0x080fe40003083c00,
+                "F2FP.SATFINITE.RELU.BF16.S2_6.UNPACK_B R6, R0.reuse.H1, 0x8181.H0",
             ),
         ] {
             assert_eq!(decode(lo, hi).as_deref(), Some(text));

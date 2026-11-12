@@ -1,0 +1,112 @@
+# GB300 runs of the probes whose expected/ outputs are GB200's (sm_100a builds). Evidence
+# class: GB300 hardware (sm_103a), kept apart from the GB200 records it is compared with.
+# Each probe's PTX built with ptxas 13.0 -arch=sm_103a, run with `ptxv hw-worker <probe>
+# <cubin> --runs 3 --dump` on one GB300 (driver 580.126.20), 2026-11-09; every run gave the same
+# output. `bytes` / `fnv1a64`: the dumped outputs (the case's outputs concatenated in order).
+# Every one equals the GB200 expected output bit for bit (test
+# gb300_runs_equal_gb200_probe_records in crates/sim/tests/fixtures.rs).
+
+[[run]]
+probe = "f32x2_ftz"
+bytes = 81920
+fnv1a64 = "1bcf53913976a6d0"
+
+[[run]]
+probe = "mma_bs/mn/a_none"
+bytes = 32768
+fnv1a64 = "b43be733cfad5420"
+
+[[run]]
+probe = "mma_bs/mn/a_sw128"
+bytes = 32768
+fnv1a64 = "b43be733cfad5420"
+
+[[run]]
+probe = "mma_bs/mn/a_sw128_off512"
+bytes = 32768
+fnv1a64 = "b43be733cfad5420"
+
+[[run]]
+probe = "mma_bs/mn/a_sw32"
+bytes = 32768
+fnv1a64 = "b43be733cfad5420"
+
+[[run]]
+probe = "mma_bs/mn/a_sw64"
+bytes = 32768
+fnv1a64 = "b43be733cfad5420"
+
+[[run]]
+probe = "mma_bs/mn/ab_sw128_sw64"
+bytes = 32768
+fnv1a64 = "b43be733cfad5420"
+
+[[run]]
+probe = "mma_bs/mn/b_sw32"
+bytes = 32768
+fnv1a64 = "b43be733cfad5420"
+
+[[run]]
+probe = "mma_bs/mn/b_sw64"
+bytes = 32768
+fnv1a64 = "b43be733cfad5420"
+
+[[run]]
+probe = "mma_bs/mn/kmajor"
+bytes = 32768
+fnv1a64 = "b43be733cfad5420"
+
+[[run]]
+probe = "mma_bs/mn/pair_ss_a_sw128"
+bytes = 131072
+fnv1a64 = "638112f526f9ff6b"
+
+[[run]]
+probe = "mma_bs/mn/pair_ss_ab"
+bytes = 131072
+fnv1a64 = "638112f526f9ff6b"
+
+[[run]]
+probe = "mma_bs/mn/pair_ss_kmajor"
+bytes = 131072
+fnv1a64 = "638112f526f9ff6b"
+
+[[run]]
+probe = "mma_bs/mn/pair_ts_b_none"
+bytes = 131072
+fnv1a64 = "638112f526f9ff6b"
+
+[[run]]
+probe = "mma_bs/mn/pair_ts_b_sw32"
+bytes = 131072
+fnv1a64 = "638112f526f9ff6b"
+
+[[run]]
+probe = "mma_bs/mn/pair_ts_b_sw64"
+bytes = 131072
+fnv1a64 = "638112f526f9ff6b"
+
+[[run]]
+probe = "mma_bs/mn/pair_ts_kmajor"
+bytes = 131072
+fnv1a64 = "638112f526f9ff6b"
+
+[[run]]
+probe = "mma_bs/ts"
+bytes = 32768
+fnv1a64 = "b43be733cfad5420"
+
+[[run]]
+probe = "red_async_ops"
+bytes = 24
+fnv1a64 = "3c56fcbef1d85274"
+
+[[run]]
+probe = "tc_mma_ts_n8"
+bytes = 131072
+fnv1a64 = "6bd817c6dd30f34f"
+
+[[run]]
+probe = "tc_mma_ts_n8/n24"
+bytes = 131072
+fnv1a64 = "73cd48c9184061c7"

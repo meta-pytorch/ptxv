@@ -139,7 +139,9 @@ enum Cmd {
         max_states: usize,
         /// Directory for the materialized variants (PTX, cubin, patched cubin, SASS), kept.
         /// Default: a directory of this run under $PTXV_ROOT/out/<case> (./out/<case> without
-        /// PTXV_ROOT), removed when the run ends; concurrent runs never share one.
+        /// PTXV_ROOT), removed when the run ends; a killed run's by the next run of the case on
+        /// the same host, boot and pid namespace (a batch job in a pid namespace of its own
+        /// never removes an earlier job's); concurrent runs never share one.
         #[arg(long)]
         out: Option<PathBuf>,
         /// Explore one cluster (CTA) at a time plus a cross-cluster global-memory check, for
@@ -217,7 +219,8 @@ enum Cmd {
         /// Concolic input exploration (ptxv_sim::symb / solve): expressions over the input for
         /// every input-dependent condition, solvers for the untaken sides, every witness
         /// replayed; flips go in rows[].input_coverage.concolic and (up to
-        /// PTXV_CONCOLIC_CHECKS) are checked as mutated inputs. Off by default.
+        /// PTXV_CONCOLIC_CHECKS) are checked as mutated inputs. Off by default. Refused in
+        /// multi-node mode, as --mutate-inputs.
         #[arg(long)]
         concolic: bool,
         /// Exhaustive concolic expansion (ptxv_sim::cert): every feasible path over all values
@@ -225,13 +228,18 @@ enum Cmd {
         /// SMT solvers, PTXV_EXH_SOLVERS), every input-dependent control, address and
         /// synchronization operand is proven fixed per path, and each path's input gets this
         /// check: rows[].exhaustive_concolic {status certified | blocked | refuted, ...}. Limits:
-        /// PTXV_EXH_PATHS (8), PTXV_EXH_BUDGET seconds (3600). Off by default.
+        /// PTXV_EXH_PATHS (8), PTXV_EXH_BUDGET seconds (3600). Off by default. Refused in
+        /// multi-node mode, as --mutate-inputs.
         #[arg(long)]
         exhaustive_concolic: bool,
         /// Check again on mutated inputs: for up to N untaken input-dependent comparison
         /// sides that compare one input word against a constant, write a value that flips
         /// the comparison into --mutate-elements elements and run the check on that input.
-        /// Results are reported apart (`on-mutated-input`), never in the verdict.
+        /// Results are reported apart (`on-mutated-input`), never in the verdict. Refused in
+        /// multi-node mode (PTXV_DIST_DIR with more than one rank), and so is --mutate-input:
+        /// which mutated inputs are checked depends on each rank's clock (the coverage run's
+        /// cap, --mutate-budget-seconds, the capped pass that skips a mutation), and ranks that
+        /// disagree wait for each other's explorations forever.
         #[arg(long, default_value_t = 0)]
         mutate_inputs: usize,
         /// Elements per mutation (--mutate-inputs), spread over threads of different warps.
@@ -263,7 +271,11 @@ enum Cmd {
         /// certificate never holds. The re-run states the budget it starts with, and does not
         /// start once the budget is spent (`two_level_skipped`). Input coverage gets at most
         /// what is left; the --mutate-inputs budget is nested inside (its checks stop at the
-        /// earlier end). --max-states stays per exploration. Refused in multi-node mode
+        /// earlier end). --max-states stays per exploration. Not bounded by it: the work
+        /// outside these phases (loading, lifting and setting up each row; on large kernels up
+        /// to about half a minute past the budget), --concolic / --exhaustive-concolic (their
+        /// own budgets), a fill rerun already running when the budget is spent (the next one
+        /// does not start), and --groups prefix runs. Refused in multi-node mode
         /// (PTXV_DIST_DIR with more than one rank): every rank would cut its own phases, and
         /// ranks in different phases wait for each other forever.
         #[arg(long)]
@@ -285,6 +297,10 @@ enum Cmd {
     /// equiv.toml naming both (see crates/cli/src/equiv.rs).
     Equiv {
         file: PathBuf,
+        /// Directory for the materialized variants, witnesses and the JSON summary
+        /// (`equiv.json`), kept. Default: a directory of this run under
+        /// $TMPDIR/ptxv-equiv-<file's directory>-<file stem> (printed); the next run of the file
+        /// on the same host, boot and pid namespace removes those of finished runs.
         #[arg(long)]
         out: Option<PathBuf>,
         /// Do not replay witnesses on a GPU.
@@ -390,6 +406,10 @@ enum Cmd {
     Compare {
         reference: PathBuf,
         candidate: PathBuf,
+        /// Directory for the report (report.json, report.md) and the files behind it, kept.
+        /// Default: a directory of this run under $TMPDIR/ptxv-compare-<ref>-<cand> (printed;
+        /// `report_dir` with --json); the next run of the pair on the same host, boot and pid
+        /// namespace removes those of finished runs.
         #[arg(long)]
         out: Option<PathBuf>,
         #[arg(long, default_value_t = 200_000)]
@@ -600,31 +620,241 @@ static RUN_DIRS: std::sync::Mutex<Vec<(PathBuf, PathBuf)>> = std::sync::Mutex::n
 static KEEP_RUN_DIRS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// This invocation's directory under a case's default output directory `base` (no `--out`):
-/// `<base>/run-<pid>-<ns>`, the same for every call in one process. Concurrent runs of one
-/// case never share materialized variants: a variant's cubin is copied (or built by ptxas),
-/// patched in place and read back, so in a shared directory another run's copy in between was
-/// read as this run's variant (a scoreboard-patched variant checked unpatched: clean), and two
-/// cases of one name that claimed `base` at once read each other's cubins. Removed when the
-/// command ends (`remove_run_dirs`) unless it keeps its files; `--out` directories are never
-/// removed.
+/// `<base>/run-<host>-<pid>-<start>-<ns>` (`<host>`: `run_host`; `<start>`: the process's start
+/// time in clock ticks since boot; `run-<pid>-<ns>` without /proc), the same for every call in
+/// one process.
+/// Concurrent runs of one case never share materialized variants: a variant's cubin is copied
+/// (or built by ptxas), patched in place and read back, so in a shared directory another run's
+/// copy in between was read as this run's variant (a scoreboard-patched variant checked
+/// unpatched: clean), and two cases of one name that claimed `base` at once read each other's
+/// cubins. Removed when the command ends (`remove_run_dirs`) unless it keeps its files; the
+/// directories of killed runs are removed by the next run of the case with the same host token
+/// (`reap_run_dirs`); `--out` directories are never removed.
 fn run_dir(base: &Path) -> Result<PathBuf> {
     let mut dirs = RUN_DIRS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((_, d)) = dirs.iter().find(|(b, _)| b == base) {
         return Ok(d.clone());
     }
-    let ns = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let d = base.join(format!("run-{}-{ns}", std::process::id()));
-    std::fs::create_dir_all(&d)?;
+    let d = new_run_dir(base)?;
+    if KEEP_RUN_DIRS.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = std::fs::write(d.join(".kept"), "");
+    }
     dirs.push((base.to_path_buf(), d.clone()));
     Ok(d)
 }
 
+/// A new directory of this invocation under `base`, `run-<host>-<pid>-<start>-<ns>`, made
+/// after removing those of runs gone on this host (`reap_run_dirs`), and locked by this process
+/// until it ends (`lock_run_dir`).
+fn new_run_dir(base: &Path) -> Result<PathBuf> {
+    let ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let d = match (run_host(), proc_self()) {
+        (Some(host), Some((pid, start))) => base.join(format!("run-{host}-{pid}-{start}-{ns}")),
+        _ => base.join(format!("run-{}-{ns}", std::process::id())),
+    };
+    reap_run_dirs(base);
+    std::fs::create_dir_all(&d)?;
+    lock_run_dir(&d);
+    Ok(d)
+}
+
+/// The directory of a command whose files are its result (`compare`'s report, `equiv`'s
+/// summary) when `--out` is not given: this invocation's own under `base` (the pair's
+/// directory in the temporary directory), kept when the command ends. Concurrent runs of one
+/// pair shared `base` and overwrote each other's files (a report read back after the other
+/// run wrote its own, variants materialized over each other's). The next run of the pair on
+/// the host removes the directories of finished runs, as `base` kept only the latest run's
+/// files before.
+pub(crate) fn result_dir(base: &Path) -> Result<PathBuf> {
+    new_run_dir(base)
+}
+
+/// This host in run directory names (the host token), so that a run judges only directories
+/// whose owners' locks it sees (`run_dir_dead`): the host name; this boot, the first 16 hex
+/// digits of `/proc/sys/kernel/random/boot_id` (machines of one name that share the file
+/// system, and this machine before a reboot, are other hosts); and the pid namespace when it is
+/// not the initial one (a container that shares the host name). So reaping is per host, boot and
+/// pid namespace: a batch system that gives each job a pid namespace of its own never removes
+/// an earlier job's directories. None without /proc: nothing is reaped.
+fn run_host() -> Option<&'static str> {
+    static HOST: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    HOST.get_or_init(|| {
+        let name: String = std::fs::read_to_string("/proc/sys/kernel/hostname")
+            .ok()?
+            .trim()
+            .chars()
+            .map(|c| match c {
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => c,
+                _ => '_',
+            })
+            .collect();
+        let boot: String = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+            .ok()?
+            .chars()
+            .filter(char::is_ascii_hexdigit)
+            .take(16)
+            .collect();
+        let ns = std::fs::read_link("/proc/self/ns/pid").ok()?;
+        let ns = ns.to_string_lossy();
+        let ino = ns.strip_prefix("pid:[")?.strip_suffix(']')?;
+        if name.is_empty() || boot.len() < 16 {
+            return None;
+        }
+        let host = format!("{name}.boot{boot}");
+        Some(match ino {
+            "4026531836" => host,
+            _ => format!("{host}.pidns{ino}"),
+        })
+    })
+    .as_deref()
+}
+
+/// Start time of process `pid` in clock ticks since boot (`/proc/<pid>/stat` field 22, as this
+/// process's time namespace shows it): with the pid it names one process in run directory
+/// names. Err(NotFound): there is no such process.
+fn proc_start(pid: u32) -> std::io::Result<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    // `pid (comm) state ...`, and comm may hold spaces and parentheses.
+    stat.rsplit_once(')')
+        .and_then(|(_, rest)| rest.split_whitespace().nth(19)?.parse().ok())
+        .ok_or_else(|| std::io::ErrorKind::InvalidData.into())
+}
+
+/// This process as /proc names it (pid, start time), for its run directory names: the pid from
+/// `/proc/self`, even where it differs from `std::process::id()`.
+fn proc_self() -> Option<(u32, u64)> {
+    let pid = std::fs::read_link("/proc/self")
+        .ok()?
+        .to_str()?
+        .parse()
+        .ok()?;
+    Some((pid, proc_start(pid).ok()?))
+}
+
+/// (host, pid, start) of a run directory name `run-<host>-<pid>-<start>-<ns>`; None for other
+/// names, `run-<pid>-<ns>` (older binaries, or no /proc) included.
+fn run_dir_owner(name: &str) -> Option<(&str, u32, u64)> {
+    let mut it = name.strip_prefix("run-")?.rsplitn(4, '-');
+    let ns = it.next()?;
+    let (start, pid, host) = (it.next()?, it.next()?, it.next()?);
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    (digits(ns) && digits(start) && digits(pid) && !host.is_empty())
+        .then(|| Some((host, pid.parse().ok()?, start.parse().ok()?)))
+        .flatten()
+}
+
+/// Whether `name` is a run directory's (`run_dir`), of this binary or an older one
+/// (`run-<pid>-<ns>`): ptxv output, never case input (`vcache::key`).
+pub(crate) fn is_run_dir_name(name: &str) -> bool {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    run_dir_owner(name).is_some()
+        || name
+            .strip_prefix("run-")
+            .and_then(|r| r.split_once('-'))
+            .is_some_and(|(pid, ns)| digits(pid) && digits(ns))
+}
+
+/// Remove the run directories under `base` that killed runs on this host left behind (a
+/// signal or the OOM killer ends a run before `remove_run_dirs`): `run-<host>-<pid>-<start>-
+/// <ns>` of this host token and user whose run is gone (`run_dir_dead`: no process holds its
+/// lock), unless kept (`.kept`, `keep_run_dirs`). Directories of other host tokens (a shared
+/// file system, another boot or pid namespace), of older binaries and of live runs stay. A
+/// live run is judged by its lock, not by /proc: the start time /proc shows differs between
+/// time namespaces, so a live run in another one looked like a reused pid and lost its
+/// directory. Reapers that meet at a dead directory both remove it (what one leaves, the next
+/// run removes).
+fn reap_run_dirs(base: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    let Some(host) = run_host() else {
+        return;
+    };
+    let Ok(uid) = std::fs::metadata("/proc/self").map(|m| m.uid()) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some((h, _, _)) = name.to_str().and_then(run_dir_owner) else {
+            continue;
+        };
+        let d = e.path();
+        let mine = std::fs::symlink_metadata(&d).is_ok_and(|m| m.is_dir() && m.uid() == uid);
+        if h == host && mine && !d.join(".kept").exists() && run_dir_dead(&d) {
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+}
+
+/// The locks of this invocation's run directories (`lock_run_dir`), with their directories.
+static RUN_LOCKS: std::sync::Mutex<Vec<(PathBuf, std::fs::File)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Lock run directory `d` for as long as this process lives: an exclusive flock(2) on
+/// `<d>/.lock` (`File::try_lock`), which the kernel releases when the process ends, however it
+/// ends (SIGKILL and the OOM killer included), and which every process of the host sees,
+/// whatever its pid, time or user namespace. `.lock` appears only once it is locked: the lock
+/// is taken on `<d>/.lock.new`, which is then renamed (the lock stays with the file). Created
+/// as `.lock` and locked after, it read as a dead run's lock in between, and a reaper removed
+/// the new directory of a live run. When the lock cannot be taken (a file system without
+/// locks) or the rename fails, the file goes again: a directory without `.lock` is never
+/// reaped, so a reaper that could take the lock later never removes a live run's directory.
+fn lock_run_dir(d: &Path) {
+    let new = d.join(".lock.new");
+    let Ok(f) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&new)
+    else {
+        return;
+    };
+    if f.try_lock().is_ok() && std::fs::rename(&new, d.join(".lock")).is_ok() {
+        let mut locks = RUN_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+        locks.push((d.to_path_buf(), f));
+    } else {
+        drop(f);
+        let _ = std::fs::remove_file(&new);
+    }
+}
+
+/// Release the lock of this invocation's run directory `d` (before removing it: on NFS an open
+/// file in a directory is renamed to `.nfs*` and keeps the directory).
+fn unlock_run_dir(d: &Path) {
+    RUN_LOCKS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|(p, _)| p != d);
+}
+
+/// Whether the run of directory `d` is gone: no process holds the lock of `<d>/.lock` (this
+/// process could take it; it lets it go at once). A directory without the file (its run is
+/// making it or could not lock it, or an older binary's) or whose lock cannot be taken for any
+/// other reason counts as live, and so do this process's own directories.
+fn run_dir_dead(d: &Path) -> bool {
+    let locks = RUN_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    if locks.iter().any(|(p, _)| p == d) {
+        return false;
+    }
+    drop(locks);
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(d.join(".lock"))
+        .is_ok_and(|f| f.try_lock().is_ok())
+}
+
 /// Keep this invocation's run directories: the command's result is a file in them (calib,
-/// sb-sweep and probe print or dump into them).
+/// sb-sweep and probe print or dump into them). Marked `.kept`, so no later run reaps them.
 pub(crate) fn keep_run_dirs() {
+    let dirs = RUN_DIRS.lock().unwrap_or_else(|e| e.into_inner());
     KEEP_RUN_DIRS.store(true, std::sync::atomic::Ordering::Relaxed);
+    for (_, d) in dirs.iter() {
+        let _ = std::fs::write(d.join(".kept"), "");
+    }
 }
 
 /// Remove this invocation's run directories (at the end of every command, also on an error,
@@ -635,6 +865,7 @@ fn remove_run_dirs() {
         return;
     }
     for (_, d) in dirs.drain(..) {
+        unlock_run_dir(&d);
         let _ = std::fs::remove_dir_all(&d);
     }
 }
@@ -1286,6 +1517,29 @@ fn hw_profile() -> (String, Option<&'static [ptxv_sim::hwprofile::Item]>) {
     (name, p)
 }
 
+/// Where the hardware profile name comes from: the flag (`check --hw-profile`), else the
+/// environment.
+fn hw_profile_source() -> &'static str {
+    if HW_PROFILE.get().is_some() {
+        "--hw-profile"
+    } else {
+        "PTXV_HW_PROFILE"
+    }
+}
+
+/// `hw_profile`, refused for a name ptxv does not know: such a name used to turn the
+/// GB300-profile re-run off without a word (a typo such as GB300). Every path that checks
+/// (`check`, `suite`) goes through it.
+fn checked_hw_profile() -> Result<(String, Option<&'static [ptxv_sim::hwprofile::Item]>)> {
+    let (name, profile) = hw_profile();
+    anyhow::ensure!(
+        profile.is_some() || name == "none",
+        "unknown hardware profile {name:?} ({}): gb300 or none",
+        hw_profile_source()
+    );
+    Ok((name, profile))
+}
+
 /// One hardware assumption a second-level verdict used.
 #[derive(Serialize, Clone)]
 struct HwUsed {
@@ -1364,7 +1618,8 @@ struct CheckRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     two_level: Option<TwoLevel>,
     /// Why there is no two-level verdict although the strict check reported something
-    /// undefined: --no-gb300 / PTXV_GB300=0 turned the GB300-profile re-run off.
+    /// undefined: --no-gb300, PTXV_GB300=0, --hw-profile none or PTXV_HW_PROFILE=none turned
+    /// the GB300-profile re-run off (the reason names which), or the time budget was spent.
     #[serde(skip_serializing_if = "Option::is_none")]
     two_level_skipped: Option<String>,
     /// `--nonfinite`: NaN / Inf scan of the outputs and their producing instructions.
@@ -1482,10 +1737,17 @@ fn print_verdict(
     }
 }
 
-/// The GB300 checks on by default: the hardware-model check (second level) and the
-/// GB300-profile re-run of the two-level verdict; `--no-gb300` or `PTXV_GB300=0` turn both off.
-fn gb300_enabled(flag_off: bool) -> bool {
-    !flag_off && std::env::var("PTXV_GB300").as_deref() != Ok("0")
+/// The GB300 checks are on by default: the hardware-model check (second level) and the
+/// GB300-profile re-run of the two-level verdict. `--no-gb300` or `PTXV_GB300=0` turn both off;
+/// what turned them off (the flag first), or None.
+fn gb300_off(flag_off: bool) -> Option<&'static str> {
+    if flag_off {
+        Some("--no-gb300")
+    } else if std::env::var("PTXV_GB300").as_deref() == Ok("0") {
+        Some("PTXV_GB300=0")
+    } else {
+        None
+    }
 }
 
 /// `ptxv check --residency auto` / `--tmem-cotenant`: per variant, front-end and (with
@@ -1596,12 +1858,29 @@ fn cmd_check(
     slices: bool,
     certify: bool,
     groups: &Option<String>,
-    gb300: bool,
+    gb300_off: Option<&'static str>,
     nonfinite: Option<bool>,
 ) -> Result<Vec<CheckRow>> {
+    let (profile_name, profile) = checked_hw_profile()?;
+    let gb300 = gb300_off.is_none();
     let dir = out_dir(case, out)?;
     let mut rows = Vec::new();
-    let (profile_name, profile) = hw_profile();
+    // `--slices` on a multi-launch case: one cluster at a time would check clusters of
+    // different launches against each other as unordered (false cross-launch races, e.g.
+    // fixtures/r1e_pdl), so the launches are checked as launch groups (E-LAUNCH-GROUPS), which
+    // keep their order, each group sliced.
+    let auto_groups = (slices && groups.is_none() && !case.m.launches.is_empty()).then(|| {
+        println!(
+            "note: --slices on a case with {} launches: checked as `--groups auto --slices` (launch order)",
+            case.m.all_launches().len()
+        );
+        "auto".to_string()
+    });
+    let groups = if auto_groups.is_some() {
+        &auto_groups
+    } else {
+        groups
+    };
     for v in variants(case, variant)? {
         // The variant's SASS check under the hardware profile, shared by its fronts' rows.
         let mut level2: Option<(Verdict, Vec<HwUsed>, f64, Option<f64>)> = None;
@@ -2027,9 +2306,9 @@ fn cmd_check(
             let mut two_level = None;
             let mut two_level_skipped = None;
             let wanted2 = ptxv_sim::hwprofile::wanted(&verdict);
-            if wanted2 && !gb300 {
+            if let Some(cause) = gb300_off.filter(|_| wanted2) {
                 let why = format!(
-                    "the strict verdict has {}; --no-gb300 / PTXV_GB300=0 turned the GB300-profile re-run off",
+                    "the strict verdict has {}; {cause} turned the GB300-profile re-run off",
                     verdict.classes().join(",")
                 );
                 println!("    sass_gb300: not checked: {why}");
@@ -2037,8 +2316,12 @@ fn cmd_check(
             } else if wanted2 && profile.is_none() {
                 // `none` (an unknown name is refused up front): skipped, and said so, as with
                 // --no-gb300 (a missing `two_level` alone reads like an older binary's).
+                let cause = match hw_profile_source() {
+                    "--hw-profile" => "--hw-profile none",
+                    _ => "PTXV_HW_PROFILE=none",
+                };
                 let why = format!(
-                    "the strict verdict has {}; --hw-profile none / PTXV_HW_PROFILE=none turned the GB300-profile re-run off",
+                    "the strict verdict has {}; {cause} turned the GB300-profile re-run off",
                     verdict.classes().join(",")
                 );
                 println!("    sass_gb300: not checked: {why}");
@@ -3401,7 +3684,7 @@ fn cmd_suite(case: &Case, runs: usize, out: &Option<PathBuf>) -> Result<()> {
         false,
         false,
         &None,
-        gb300_enabled(false),
+        gb300_off(false),
         None,
     )?;
     println!("\n-- numerics (good variant) --");
@@ -3541,6 +3824,8 @@ fn main() -> Result<()> {
     let r = run();
     if let Err(e) = &r {
         jsonout::fail(&format!("{e:#}"));
+        // Multi-node: the other ranks stop too instead of waiting for this one.
+        ptxv_sim::dist::refuse(&format!("{e:#}"));
     }
     r
 }
@@ -3575,11 +3860,73 @@ fn time_budget_of(flag: Option<f64>) -> Result<Option<f64>> {
     Ok(budget)
 }
 
+/// What `check` runs only on one node: input mutation (--mutate-inputs, --mutate-input) and
+/// the concolic modes (--concolic, --exhaustive-concolic). Which mutated inputs they check, and
+/// how far, is decided by each rank's own clock: the coverage run's cap (a stopped run claims
+/// no untaken side, so nothing is planned), --mutate-budget-seconds before each mutated check,
+/// the capped deterministic pass that skips a mutation, the solvers' budgets. Ranks that
+/// decide differently run different explorations, and each waits for messages of a search the
+/// others never start. (Input coverage alone only prints: rank 0's notes are the report.)
+fn single_node_only(
+    mutate_inputs: usize,
+    mutate_input: &[String],
+    concolic: bool,
+    exhaustive_concolic: bool,
+) -> Result<()> {
+    let on: Vec<&str> = [
+        (mutate_inputs > 0, "--mutate-inputs"),
+        (!mutate_input.is_empty(), "--mutate-input"),
+        (concolic, "--concolic"),
+        (exhaustive_concolic, "--exhaustive-concolic"),
+    ]
+    .into_iter()
+    .filter_map(|(on, flag)| on.then_some(flag))
+    .collect();
+    anyhow::ensure!(
+        on.is_empty() || !multi_node(),
+        "{} not supported in multi-node mode (PTXV_DIST_DIR): each rank would decide by its \
+         own clock which mutated inputs to check, and ranks that disagree wait for each other \
+         forever; run it on one node",
+        on.join(", ")
+    );
+    Ok(())
+}
+
 fn run() -> Result<()> {
-    let cli = Cli::parse();
-    // Read before the first `dist::get` below, which connects and waits for every rank.
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            // A rank that cannot read its arguments stops the others too (`main`).
+            if e.use_stderr() {
+                ptxv_sim::dist::refuse(e.to_string().trim());
+            }
+            e.exit()
+        }
+    };
+    // Checked before the first `dist::get` below, which connects and waits for every rank: a
+    // rank that refuses tells the others (`main`, dist::refuse), which stop too.
     let budget = match &cli.cmd {
-        Cmd::Check { time_budget, .. } => time_budget_of(*time_budget)?,
+        Cmd::Check {
+            time_budget,
+            hw_profile,
+            mutate_inputs,
+            mutate_input,
+            concolic,
+            exhaustive_concolic,
+            ..
+        } => {
+            if let Some(p) = hw_profile {
+                let _ = HW_PROFILE.set(p.clone());
+            }
+            checked_hw_profile()?;
+            single_node_only(
+                *mutate_inputs,
+                mutate_input,
+                *concolic,
+                *exhaustive_concolic,
+            )?;
+            time_budget_of(*time_budget)?
+        }
         _ => None,
     };
     // Multi-node (PTXV_DIST_DIR): every rank runs the whole program; only rank 0 reports.
@@ -3609,7 +3956,7 @@ fn run() -> Result<()> {
             tmem_cotenant,
             assume_refuted,
             no_gb300,
-            hw_profile,
+            hw_profile: _,
             nonfinite,
             nonfinite_strict,
             no_input_coverage,
@@ -3648,16 +3995,6 @@ fn run() -> Result<()> {
                 mutate_inputs,
                 mutate_elements.max(1),
             ));
-            if let Some(p) = hw_profile {
-                let _ = HW_PROFILE.set(p);
-            }
-            // A name ptxv does not know used to turn the GB300-profile re-run off without a
-            // word (a typo such as GB300).
-            let (name, profile) = crate::hw_profile();
-            anyhow::ensure!(
-                profile.is_some() || name == "none",
-                "unknown hardware profile {name:?} (--hw-profile / PTXV_HW_PROFILE): gb300 or none"
-            );
             if rep {
                 // The check paths read it (`ptxv_sim::rep`).
                 // SAFETY: argument handling on the main thread; no other thread runs yet.
@@ -3704,7 +4041,7 @@ fn run() -> Result<()> {
                 slices,
                 certify,
                 &groups,
-                gb300_enabled(no_gb300),
+                gb300_off(no_gb300),
                 (nonfinite || nonfinite_strict).then_some(nonfinite_strict),
             )?;
             let pass = rows.iter().all(|r| r.pass);
@@ -3875,17 +4212,29 @@ fn run() -> Result<()> {
             emit_bound,
         } => {
             let j = json.then(|| jsonout::begin("compare"));
-            let out = out.unwrap_or_else(|| {
-                std::env::temp_dir().join(format!(
-                    "ptxv-compare-{}-{}",
-                    reference
-                        .file_name()
-                        .map_or("".into(), |d| d.to_string_lossy()),
-                    candidate
-                        .file_name()
-                        .map_or("".into(), |d| d.to_string_lossy())
-                ))
-            });
+            // Without --out: a directory of this run under the pair's (`result_dir`), and the
+            // sweeps (computed once per slice) carried from the pair's last run to the next: a
+            // whole copy in, published back by rename (concurrent runs read whole files).
+            const SWEEPS: [&str; 2] = ["sweeps.json", "sweeps.elementwise.json"];
+            let (out, pair) = match out {
+                Some(o) => (o, None),
+                None => {
+                    let pair = std::env::temp_dir().join(format!(
+                        "ptxv-compare-{}-{}",
+                        reference
+                            .file_name()
+                            .map_or("".into(), |d| d.to_string_lossy()),
+                        candidate
+                            .file_name()
+                            .map_or("".into(), |d| d.to_string_lossy())
+                    ));
+                    let d = result_dir(&pair)?;
+                    for f in SWEEPS {
+                        let _ = std::fs::copy(pair.join(f), d.join(f));
+                    }
+                    (d, Some(pair))
+                }
+            };
             let o = compare::Opts {
                 out,
                 max_states,
@@ -3899,6 +4248,14 @@ fn run() -> Result<()> {
                 emit_bound,
             };
             compare::cmd_compare(&reference, &candidate, &o)?;
+            if let (Some(pair), None) = (&pair, &o.sweep_cache) {
+                for f in SWEEPS {
+                    let tmp = pair.join(format!(".{f}.{}", std::process::id()));
+                    if std::fs::copy(o.out.join(f), &tmp).is_ok() {
+                        let _ = std::fs::rename(&tmp, pair.join(f));
+                    }
+                }
+            }
             if let Some(j) = j {
                 let rp = o.out.join("report.json");
                 let mut v: serde_json::Value =

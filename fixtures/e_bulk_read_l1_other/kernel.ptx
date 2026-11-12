@@ -1,0 +1,71 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-ASYNC-STEP, SASS front (MISS 102): another thread of the CTA (same SM, same L1) rereads a
+// bulk store's destination after a barrier that follows the issuer's
+// cp.async.bulk.wait_group.read. Thread 32 loads D[5] (D is zeros: fills the SM's L1 line) into
+// pre[0] and fences the global proxy; bar.sync; thread 0 bulk-stores the 0..1023 tile to D and
+// waits; bar.sync; thread 32 loads D[5] into out[0].
+//   good: wait_group 0 (DEPBAR, CCTL.IVALL on thread 0's SM): out = 5.
+//   READ: wait_group.read 0: no CCTL.IVALL; GB300 reads the stale 0 from L1. A race at the
+//         strict level (the writes reach thread 0's clock only at a CCTL.IVALL, which the
+//         barrier would carry to thread 32).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_bulk_read_l1_other(
+    .param .u64 out_p,
+    .param .u64 d_p,
+    .param .u64 pre_p
+)
+.maxntid 128, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .f32   %g<2>;
+    .reg .b64   %rd<8>;
+    .reg .f32   %f<2>;
+    .shared .align 1024 .b8 tile[4096];
+
+    mov.u32         %r0, %tid.x;
+    mov.u32         %r1, tile;
+    mov.u32         %r2, %r0;
+    mov.u32         %r5, 1024;
+    ld.param.u64    %rd2, [d_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    ld.param.u64    %rd5, [pre_p];
+    cvta.to.global.u64 %rd5, %rd5;
+    ld.param.u64    %rd3, [out_p];
+    cvta.to.global.u64 %rd3, %rd3;
+    setp.ne.u32     %p2, %r0, 32;
+LOOP:
+    cvt.rn.f32.u32  %f0, %r2;
+    shl.b32         %r3, %r2, 2;
+    add.u32         %r4, %r1, %r3;
+    st.shared.f32   [%r4], %f0;
+    add.u32         %r2, %r2, 128;
+    setp.lt.u32     %p1, %r2, %r5;
+    @%p1 bra        LOOP;
+    @%p2 bra        PRE_DONE;
+    ld.global.f32   %g0, [%rd2+20];
+    st.global.f32   [%rd5], %g0;
+    fence.proxy.async.global;
+PRE_DONE:
+    fence.proxy.async.shared::cta;
+    bar.sync        0;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        STORE_DONE;
+    cp.async.bulk.global.shared::cta.bulk_group [%rd2], [%r1], 4096;
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;                                 // @WAIT
+STORE_DONE:
+    bar.sync        0;
+    @%p2 bra        DONE;
+    ld.global.f32   %f1, [%rd2+20];
+    st.global.f32   [%rd3], %f1;
+DONE:
+    ret;
+}

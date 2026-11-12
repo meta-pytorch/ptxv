@@ -591,6 +591,7 @@ fn membership(m: &Machine, pc: u32) -> (bool, bool) {
         | Op::Break { .. }
         | Op::BMov { .. }
         | Op::Bra { any: true, .. }
+        | Op::Bra { all: true, .. }
         | Op::Bra { div: Some(_), .. }
         | Op::EndCollective { .. }
         | Op::TmemAlloc { .. }
@@ -1660,6 +1661,7 @@ fn walk_dead(
                     target,
                     any: false,
                     tid0_falls: false,
+                    all: false,
                     cond: None,
                     div: None,
                 } if !known => {

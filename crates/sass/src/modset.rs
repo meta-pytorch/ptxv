@@ -15,8 +15,8 @@
 // LDG.NA (.L1::no_allocate) and ST.EF (.L1::evict_first) cache hints, STG.MMIO
 // (st.mmio.relaxed.sys: strong relaxed .sys), UBLKPF.L2 (an L2 prefetch, no memory effect).
 // UREDGR (red.async.global, agent G, 2026-11-08): .E.ADD.NA[.S32 | .64].STRONG.GPU|SYS.
-// F2FP.S2_6 (SATFINITE.BF16.S2_6.UNPACK_B only, every other combination refused by the arm):
-// probes/s2f6_cvt, 2026-11-08. REDG.OR / .AND / .XOR [.64] (red.global.{or,and,xor}.b32 / .b64,
+// F2FP.S2_6 ([SATFINITE][.RELU].BF16.S2_6.UNPACK_B only, every other combination refused by the
+// arm): probes/s2f6_cvt, 2026-11-08; probes/s2f6_cvt/forms, 2026-11-09. REDG.OR / .AND / .XOR [.64] (red.global.{or,and,xor}.b32 / .b64,
 // every scope): probes/red_bitops, 2026-11-08. UTMALDG / UTMASTG .IM2COL (im2col TMA loads and
 // im2col_no_offs stores): probes/tma_im2col, 2026-11-08.
 // DSETP.LE / .LTU (setp.le.f64 / setp.ltu.f64 folded with and.pred / or.pred / xor.pred: each

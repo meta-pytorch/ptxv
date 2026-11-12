@@ -1,0 +1,90 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// MISS 122 shape in proxy_check_dir (S-PROXY generic writer) through mbar_async_contract: an
+// async-proxy read reports only the first uncovered generic writer (lowest byte) and returns.
+// 2-CTA cluster of 64-thread CTAs; rank 1 owns a 16-byte tile whose words 2 and 3 its threads
+// 2 and 3 write and fence before the cluster barrier. Rank 0's thread 0 (X) writes word 0 of rank 1's tile
+// (st.shared::cluster), fences (fence.proxy.async.shared::cluster), arrives with expect_tx on
+// rank 1's mbarrier and completes it with st.async. Rank 1's thread 32 (Y) writes word 1 with
+// no fence and meets thread 0 at bar.sync 0. Rank 1's thread 0 waits on
+// the mbarrier at .acquire.cta and bulk-copies the tile to global memory. Strict: the
+// complete-tx is rank 0's (S-MBAR-SCOPE), so X is not ordered before the copy: the check
+// reports X and returns. The rerun with the complete-tx at rank 1 covers X; only Y's race is
+// left there, and the rerun keeps only level-1 race signatures.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_rerun_drop_proxy_mb(.param .u64 out_p)
+.maxntid 64, 1, 1
+.reqnctapercluster 2, 1, 1
+{
+    .reg .b32 %r<48>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<10>;
+    .shared .align 128 .b8 buf[16];
+    .shared .align 8 .b64 mbar;
+    .shared .align 4 .b32 flag;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    shr.u32 %r2, %r1, 5;
+    mov.u32 %r3, %cluster_ctarank;
+    mov.u32 %r30, buf;
+    mov.u32 %r31, mbar;
+    mov.u32 %r33, flag;
+    mov.u32 %r12, 0;               // @XO byte offset of X's word
+    mov.u32 %r13, 4;               // @YO byte offset of Y's word
+    setp.ne.u32 %p0, %r3, 1;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p0 bra PRE_DONE;
+    setp.lt.u32 %p3, %r1, 2;
+    @%p3 bra FILL_DONE;
+    setp.gt.u32 %p6, %r1, 3;
+    @%p6 bra FILL_DONE;
+    shl.b32 %r4, %r1, 2;
+    add.u32 %r5, %r30, %r4;
+    st.shared.u32 [%r5], %r1;
+    fence.proxy.async.shared::cta;
+FILL_DONE:
+    @%p2 bra PRE_DONE;
+    mbarrier.init.shared::cta.b64 [%r31], 1;
+    fence.mbarrier_init.release.cluster;
+PRE_DONE:
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    @!%p0 bra RANK1;
+    @%p2 bra END;
+    // rank 0, thread 0: X
+    mapa.shared::cluster.u32 %r40, %r30, 1;
+    mapa.shared::cluster.u32 %r41, %r33, 1;
+    mapa.shared::cluster.u32 %r42, %r31, 1;
+    add.u32 %r43, %r40, %r12;
+    mov.u32 %r44, 42;
+    st.shared::cluster.u32 [%r43], %r44;
+    fence.proxy.async.shared::cluster;
+    mbarrier.arrive.expect_tx.relaxed.cluster.shared::cluster.b64 _, [%r42], 4;
+    st.async.shared::cluster.mbarrier::complete_tx::bytes.b32 [%r41], %r44, [%r42];
+    bra END;
+RANK1:
+    setp.ne.u32 %p4, %r1, 32;
+    @%p4 bra NOTY;
+    add.u32 %r15, %r30, %r13;
+    st.shared.u32 [%r15], %r1;
+NOTY:
+    bar.sync 0;
+    @%p2 bra END;
+WAIT:
+    mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 %p5, [%r31], 0;
+    @!%p5 bra WAIT;
+    cp.async.bulk.global.shared::cta.bulk_group [%rd1], [%r30], 16;
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group.read 0;
+END:
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    ret;
+}

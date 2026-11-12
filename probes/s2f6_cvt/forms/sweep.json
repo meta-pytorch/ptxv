@@ -1,0 +1,22 @@
+{
+  "rn": {
+    "gb200": "5741abdb72ccfcc9",
+    "gb300": "5741abdb72ccfcc9",
+    "threads": 65536
+  },
+  "rn.relu": {
+    "gb200": "84e6da157c559769",
+    "gb300": "84e6da157c559769",
+    "threads": 65536
+  },
+  "rn.relu.satfinite": {
+    "gb200": "84e6da157c559769",
+    "gb300": "84e6da157c559769",
+    "threads": 65536
+  },
+  "rn.satfinite": {
+    "gb200": "b03fb8bf9d8e435d",
+    "gb300": "b03fb8bf9d8e435d",
+    "threads": 65536
+  }
+}

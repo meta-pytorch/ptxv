@@ -1,0 +1,63 @@
+name = "smem_spill_sink"
+description = """
+S-INIT through an atomic (kernel.ptx). Histogram top-k kernels count out-of-range keys
+branch-free into a per-lane "spill" word that is never initialized and never read; a pool-select
+kernel does the same with an add of 0 into a spare radix word. The atomic's result is discarded
+and the word reaches no sink, so the kernel is clean; only a later read that feeds the word to a
+sink (variant readspill) is an S-INIT violation. The atomic itself used to be reported."""
+ptx = "kernel.ptx"
+entry = "smem_spill_sink"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+hw_note = "GB300 (2026-11-09): 1000 runs plain and 1000 with scrubbed memory, bitwise equal to the simulator"
+summary = "histogram shape: out-of-range keys add 1 to the uninitialized, never-read spill[lane]"
+expect = ["clean"]
+
+[[variants]]
+id = "add0"
+hw_note = "GB300 (2026-11-09): 1000 runs plain and 1000 with scrubbed memory, bitwise equal to the simulator"
+marker = "@INC"
+summary = "pool-select shape: out-of-range keys add 0 to the uninitialized spare word"
+find = "selp.b32        %r14, 1, 1, %p0;            // @INC"
+replace = "selp.b32        %r14, 1, 0, %p0;"
+expect = ["clean"]
+
+[[variants]]
+id = "branch"
+hw_note = "GB300 (2026-11-09): 1000 runs plain and 1000 with scrubbed memory, bitwise equal to the simulator"
+marker = "@ATOM"
+summary = "branchy shape: the atomic is predicated on key <= 255, no spill word is touched"
+find = "atom.shared.cta.add.u32 %r15, [%r13], %r14; // @ATOM"
+replace = "@%p0 atom.shared.cta.add.u32 %r15, [%r13], %r14;"
+expect = ["clean"]
+
+[[variants]]
+id = "readspill"
+hw_note = "GB300: 1000/1000 plain and 1000/1000 scrubbed runs differ from the simulator in the 64 out[t] words that fold the spill: the differential detects a spill read when one exists"
+marker = "@EXTRA"
+summary = "positive control: lane folds its spill word into out[t], so an undefined value reaches a sink"
+find = "mov.u32         %r20, 0;                    // @EXTRA"
+replace = "ld.shared.u32   %r20, [%r8];"
+expect = ["violation"]
+
+[[variants]]
+id = "useret"
+marker = "@EXTRA"
+summary = "soundness control: the last atomic's returned old value (the undefined spill word for lanes whose last key is out of range) is folded into out[t]; the in-range lanes' old counts depend on the atomic order"
+find = "mov.u32         %r20, 0;                    // @EXTRA"
+replace = "mov.u32         %r20, %r15;"
+expect = ["nondeterministic", "violation"]

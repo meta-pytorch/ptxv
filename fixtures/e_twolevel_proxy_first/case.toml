@@ -1,0 +1,37 @@
+name = "e_twolevel_proxy_first"
+description = """
+MISS 124: the first-offender shape of the S-PROXY generic-writer check against the GB300
+model's classification (twolevel::classify matches level-1 signatures). XLOW: X (ordered only
+under hw_order) writes word 0, Y (no fence after its write) word 1. YLOW: the offsets swapped.
+proxy_check_dir reported only X's proxy race (the lower byte), and the GB300 model called the
+PTX verdict 0 observable / 2 latent; Y's proxy race is reported now and is observable. See
+kernel.ptx."""
+ptx = "kernel.ptx"
+entry = "e_twolevel_proxy_first"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "XLOW"
+summary = "X = word 0 (relaxed flag), Y = word 1 (no proxy fence)"
+expect = ["race"]
+
+[[variants]]
+id = "YLOW"
+summary = "control: Y = word 0, X = word 1"
+marker = "@XO"
+find = "mov.u32 %r12, 0;"
+replace = "mov.u32 %r12, 4;"
+edits = [{ marker = "@YO", find = "mov.u32 %r13, 4;", replace = "mov.u32 %r13, 0;" }]
+expect = ["race"]

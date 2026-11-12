@@ -550,6 +550,10 @@ the issuer's cluster; `griddepcontrol` is a no-op in a single grid.
   slice or a cross-slice conflict. Cost: per slice, not per launch (r2_cublas_gemm: 32
   clusters of 4 CTAs). Slices of warps across CTAs and GPUs, with a check over every
   footprint space: E-SLICE.
+  A case with several launches is checked as launch groups instead (`--groups auto
+  --slices`, E-LAUNCH-GROUPS): the cross-slice check knows no launch order, so it reported a
+  stream-ordered (or PDL-gated) consumer's reads of its producer's output as cross-cluster
+  races (`fixtures/r1e_pdl`; test `slices_keep_launch_order`).
 - **Symmetry** (`explore_symmetric`, what `--slices` tries first): one deterministic run of the
   whole launch with the taint shadow in *position mode* (sources: `SReg::position_dependent`, `%ctaid`, `%clusterid`, ...; global addresses and
   TMA coordinates may depend on it). Every guard outcome and control operand value (shared /
@@ -600,7 +604,8 @@ commutes with everything:
   the pending count, so it commutes with the other arrivals and no try_wait can tell), in a
   kernel without counted arrivals: a counted arrival does not commute with it (with three
   pending, a count-3 arrival completes the phase alone, after a count-1 one it overshoots;
-  `fixtures/mbar_count_order`, whose race the rule hid);
+  `fixtures/mbar_count_order`, whose race the rule hid), and only until the search sees an
+  over-arrival (below);
 - the completion of a TMA store or an MMA (data movement; wait_group / commit observe it
   later);
 - barrier.cluster arrive / wait (like `bar.sync` arrivals);
@@ -622,6 +627,53 @@ stopping there (it is a no-op).
 Each action's conflicts are races found in either order. "Whole-warp" matters because a
 split that moves can change which splits of its warp merge. `PTXV_NO_LOCAL_POR=1` turns
 this off.
+
+**Over-arrivals (both reductions and DPOR).** Arrivals into one mbarrier phase commute only
+while the phase gets no more than its expected arrivals before a completion that orders them.
+With 4 plain arrivals at a barrier expecting 3, the three that come first complete the phase
+and the fourth lands in the next one; which arrival is left over is a scheduling outcome
+(`fixtures/mbar_over_arrival`: a race when it is the one after the data write, from separate
+warps or from three lanes of one warp step; a count is a special case, `mbar_count_order`).
+- **Detection** (exec.rs `rec_late`, `rec_count`, footprint space 25, apart from the
+  pending counts' space 16 so that an exact counted completion is not taken for one): every mbarrier update
+  (arrival, complete_tx) reads the key of the phase k it lands in. An update whose actor's
+  clock does not cover the completion clock of phase k - 1 (it is not ordered after every
+  update of that phase) writes the key of phase k - 1, and so does an arrival of more than the
+  pending arrivals at once (an overshoot, a fault). With exactly the expected arrivals per
+  phase nothing is written; with an over-arrival every execution writes a key, because the
+  arrivals beyond the count are not ordered after the completion in whichever order they come.
+- **Stateful explorer:** the local rule for plain arrivals above holds only until a key is
+  written (`Machine::arv_over`); a search round that relied on it and saw one runs again
+  without it (`explore_one_model`). Multi-node searches leave the rule off from the start
+  (ranks do not share the flag). The synchronization reduction learns the space-25 writes like
+  any footprint.
+- **DPOR** stops at the first such update and the stateful explorer redoes the search (a
+  note says so; dpor.rs `OVER_ARRIVAL`). Its sleep sets and last-conflict backtracking assume
+  that a waiting transition's footprint does not change, which an arrival that would land late
+  breaks: the arrival that commuted with the others where it ran is never placed after the
+  arrival that completes the phase. That is how DPOR missed `mbar_over_arrival` even with the
+  counted-arrival footprints.
+- **Before (MISS 125):** the stateful explorer's local rule and DPOR took single arrivals into
+  one phase as commuting whatever their number (the counted-arrival footprints cover a count
+  only), so the leftover arrival was never placed after the arrivals that complete the phase.
+  `fixtures/mbar_over_arrival` good and lanes were clean with the stateful explorer, with
+  DPOR and in the `--certify` fallback, on both fronts (the certificate itself refuses them,
+  C-PHASE); they are a race (PTX) and nondeterministic (SASS) now (model: ptxv runs before and
+  after the fix). Placement: strict; the PTX rule lets any of the arrivals be the leftover one,
+  and no hardware assumption enters.
+- **Imprecision with S-MBAR-SCOPE (2026-11-11):** the completion clock is the phase's landed
+  clocks (`Mbar::done_land`: each update's thread, and an async unit's own clock), and an
+  actor's clock covers them only through synchronization. A wait that observes a phase without
+  synchronizing with all of its updates leaves the waiter's next update of that mbarrier
+  flagged as late, although the waiter's own observation of the same mbarrier orders that
+  update after the completion (per-location coherence). Two cases: a `.cta`-scope wait on a
+  phase that another CTA's multicast TMA completed, and an async unit's own landing clock,
+  which a waiter records in `Thread::landed`, not in its clock. The flag is sound (the
+  stateful explorer decides, without the local rule) but costs time: `fixtures/r1c_cluster`
+  good falls back on both fronts, and the DPOR test `r1c_good` takes 35.9 s where int7 takes
+  7.9 s (`r1c_b13_cluster_lifetime` 20.5 s vs 7.2 s; the quick suite's test binaries, one
+  node). Not done: letting a wait's observation of a phase cover that phase for the
+  waiter's later updates of the same mbarrier.
 
 **Synchronization reduction (persistent sets, same argument).** A whole-warp step is also
 expanded alone when its *synchronization footprint* conflicts with nothing another entity
@@ -1926,9 +1978,26 @@ source predicate that is false (src-size 0) writes zeros and reads nothing.
   other lanes read the copies; without the warp-wide wait the strict level reported a false
   race there). The joins only carry that wait to copies an earlier `DEPBAR` of another path
   already retired (a lane's covering `DEPBAR` is ordered after every copy the scoreboard
-  counted); for a lane's own copies they are the PTX rule itself (its own covering wait).
-  Evidence classes: argued (the lowering), GB300 measured (e_cpasync_div_wait good: the
-  model's output in 1000/1000 runs; probes/cpasync_warp), model (the fixtures).
+  counted). For a lane's own copies they are the scoreboard's semantics, stronger than the
+  PTX rule: coverage goes by the warp's commit count, so a `DEPBAR.LE SB0, n` can cover a
+  lane's newest group, which PTX `cp.async.wait_group n` leaves pending, once other paths
+  committed after it. The assumption is the divergent counting, argued: the LDGDEPBARs of
+  divergent paths count on the one warp scoreboard, and its groups retire in commit order
+  (the lowering of `wait_group n` to `DEPBAR.LE SB0, n` needs that order).
+  probes/cpasync_divcount (2026-11-11) discriminates both. One warp per CTA, shared slots
+  scrubbed, L2 flushed before each launch: the even lanes copy 16 bytes of a cold line and
+  commit, the warp syncs, the odd lanes copy, commit, wait with `wait_group 1` (`DEPBAR.LE
+  SB0, 0x1` on the odd path) and read the even neighbour's slot. GB300, 9,472,000 reads per
+  mode (592 CTAs x 16 x 1000 launches): WAIT1 0 stale; WAIT1W (the odd sources L2-resident,
+  so the odd group lands first: without a wait, 8,309,669 reads saw the odd copy landed and
+  the even one not, ORDERW; 2,328 with cold odd sources, ORDER) 0 stale; NOWAIT (no odd wait)
+  9,472,000 stale; WAIT0 0. Per-path counting would let the odd `DEPBAR.LE SB0, 0x1` pass at
+  once, and retirement in completion order once the odd copy landed; either would read the
+  scrub value. Measured nulls: they bound the gb300 level, and the strict placement rests on
+  the argument. Evidence classes: argued (the lowering, the divergent counting, the commit
+  order), GB300 measured (probes/cpasync_divcount), model (the fixtures).
+  `fixtures/e_cpasync_div_wait` good (the model's output in 1000/1000 GB300 runs) and
+  probes/cpasync_warp (the second group landed in time too) do not discriminate the counting.
 - src-size (2026-11-07): an immediate or register src-size s copies the first s bytes and
   zero-fills the rest (s larger than the cp-size: a violation). ptxas encodes a partial s as
   `LDGSTS...ZFILL` with source address + size - s (the address's low bits mod the size are the
@@ -2279,6 +2348,50 @@ witness should still be confirmed by a schedule or on the GPU (over-reporting).
   `twolevel_l1_litmus`): a hardware-model stale read exactly in pr0-payld, pr2, pr3, pr3-swap
   (GB300 stale; pr3-swap is pr3 with the CTAs' roles swapped) and pr0-lineshare (the co-reader shape), none in pr0, pr1, neg, neg-payld (GB300 0 stale; pr0 / pr1 are
   latent-closed-world: pr0-lineshare is pr0 plus a line-sharing reader); r1f B20 observable.
+- **Known gap (2026-11-11, MISS 102): the GB300 levels run only after a strict finding**
+  (`cli` main.rs: the hardware model when `twolevel::wanted`, a race / stale / alias-xspace
+  finding or a refuted opt-in; the GB300 profile when `hwprofile::wanted`, a class other than
+  clean / unmodeled / timeout / inconclusive). A stale read in a kernel the strict level calls
+  clean is never reported. Of the GB300 switches only this L1 adds findings; E-MC-ALIAS-HW,
+  E-REMOTE-FIFO, E-HW-SPLIT-UR, `hw_order` and E-TC-FENCE-NOP only drop findings or
+  interleavings, and E-HW-BSYNC-COLLECTIVE releases lanes only in states the strict level
+  cannot leave (a deadlock there), all argued from code. The strict level therefore needs a
+  finding wherever a stale read can follow. ptxas 13.0 puts `CCTL.IVALL` after every
+  cluster-, gpu- or sys-scope acquire: `ld.acquire`, `atom.acquire`, `atom.acq_rel`,
+  `fence.acq_rel` and `fence.sc` at cluster, gpu and sys scope,
+  `mbarrier.try_wait.acquire.cluster`, `barrier.cluster.wait.acquire`, and also
+  `fence.proxy.alias` (`MEMBAR.SC.GPU; MEMBAR.SC.SYS; CCTL.IVALL`, the fence between a
+  multimem access and a unicast one, S-VA-ALIAS). It puts none after
+  `fence.acq_rel.cta`, whose readers share the L1, nor after `ld.relaxed.gpu` or
+  `fence.proxy.async.global`, which acquire nothing (sm_103a, checked on compiled code,
+  2026-11-11). A TMA store read back after a `DEPBAR` without it was the case that broke
+  this (MISS 102; the strict level now acquires those writes at the `CCTL.IVALL`,
+  E-ASYNC-STEP). `griddepcontrol.wait` lowers to `ACQBULK` with no `CCTL.IVALL`, and the
+  model invalidates nothing there. probes/pdl_acqbulk (2026-11-11, GB300; launch shape: one
+  primary CTA, 512 dependent PDL CTAs of 32 threads, 1000 launches per row, primary delays 2,
+  20 and 100 us; two jobs): each dependent CTA loads D[0], filling the line of D[5] while the
+  primary still runs (without a wait its load of D[5] read the primary's old 0 in 3,066,874
+  of 3,072,000 CTAs), then the primary stores D[5] = 5 and releases a flag.
+  - WAIT (`griddepcontrol.wait`, then the weak load of D[5]): stale in 0 of 3,072,000.
+  - POLL (a relaxed poll of the flag, no fence; the L1 control): stale in 3,048,401 of
+    3,072,000, so the filled line does survive in L1 there; with `fence.acq_rel.gpu` after the
+    poll, 0 of 3,072,000.
+  - POLLDONE (the poll and 20 us more: the primary has exited; no wait, no fence; second job
+    only): stale in 0 of 1,536,000. The primary's completion dropped the lines.
+  - LATEWAIT (second job only): with a trivial primary long completed, a reader that filled
+    the line, a dependent-grid writer's store and a relaxed poll, the load read stale data in
+    508,000 of 511,000 reads after a `griddepcontrol.wait`, in 508,000 without one (LATENONE)
+    and in 0 with `fence.acq_rel.gpu` (LATEFENCE): `ACQBULK` itself drops no line.
+  So the invalidation comes with the primary grid's completion, also for the lines of its
+  running PDL dependent, and a wait only orders its thread after that completion. These are
+  measured nulls (GB300 never showed a stale read after the wait): a bound that places the
+  result at the gb300 level only, not a strict-level rule, and not a miss (GB300 showed no
+  stale read that the model drops). The model over-reports there: it invalidates at neither
+  point, so a weak load after the wait of a line filled before it is a stale read for the L1
+  model (`probes/pdl_acqbulk` WAIT under `PTXV_HW_MODEL=1`: a predictive stale read on both
+  fronts), shown only when another strict finding brings the launch to the GB300 levels (WAIT
+  is strict-clean). Modeling `ACQBULK` as an invalidation would be unsound (the 508,000 stale
+  reads after the late wait).
 - If wrong: *miss* (a stale hit the model drops) or *false alarm*. For the two-level
   classification: a finding called latent that GB300 can expose through a mechanism outside
   the model (store reordering, L2 effects), or observable through an over-approximation of
@@ -2892,29 +3005,51 @@ to exploration, at 35 GB per kernel on a 4096 x 4096 x 8192 tile
   shows the freedom it leaves (READ wrong in every session above), so no hardware profile
   relaxes it.
   SASS: ptxas lowers both forms to the same `UTMACMDFLUSH; DEPBAR.LE SBk, n` on the read
-  scoreboard (rung 1b), the full form with a `CCTL.IVALL` after it; what `.read` permits is
-  code motion above the wait (READ: the `LDG` moves above the flush), which the SASS front
-  sees as compiled. The `DEPBAR` is modeled as a full wait (`read: false`): its global writes
-  are complete in L2 after it (GB300, 2026-11-10, `fixtures/e_tma_read_l1` READ2: `.read 0`,
-  then an `ATOMS` on the source whose result forms the `LDG` address, so the `LDG` issues after
-  the `DEPBAR`; 0 stale reads in 1000 runs; a measured null, a bound). Keeping the `DEPBAR` a
-  full wait at the strict level rests on that null, which the placement rule allows in the
-  gb300 profile only (a measured null is never strict); with the L1 miss below it is MISS 102,
-  open here.
-  - Not modeled (a miss, GB300 measured, 2026-11-10, not yet fixed): the issuing SM's L1 can
-    still hold a line of the destination it filled before the store. Without the full form's
-    `CCTL.IVALL`, a weak `LDG` after the `DEPBAR` returns the line's old bytes
-    (`fixtures/e_tma_read_l1` READ3, READ4: 1000/1000 runs; GOOD3, GOOD4 with the full wait:
-    correct). READ4 (a `fence.proxy.async.global` between the earlier `LDG` and the store) is
-    clean and certified on the SASS front; the PTX front reports the race (the `.read` rule
-    above), and the GB300 level's L1 model (E-HW-L1) predicts the stale read but runs only when
-    the strict check reports something. The same miss reaches the non-tensor bulk store and the
-    bulk add-reduction (`fixtures/e_bulk_read_l1` READ, RREAD: clean on the SASS front; GB300
-    reads the stale line in 1000/1000 runs of each, 2026-11-11) and another thread of the CTA
-    that reads the destination after a `bar.sync` following the issuer's `.read` wait (GB300
-    1000/1000 stale, 2026-11-11). `tests/fixtures.rs` `tma_store_read_l1_stale_is_pinned` and
-    `bulk_store_and_reduction_after_wait_read_race` pin the current verdicts. A fix would let
-    the `DEPBAR` join the writes' clock only through the next acquire (`CCTL.IVALL`).
+  scoreboard (rung 1b), the full form with a `CCTL.IVALL` after it; `.read` also permits code
+  motion above the wait (READ: the `LDG` moves above the flush), which the SASS front sees as
+  compiled. The `DEPBAR` (and a control-word wait on that scoreboard, below) waits for the
+  covered groups and orders the thread after their shared-memory reads (`read: false`). Their
+  global writes (2026-11-11, MISS 102; `exec.rs` `bulk_wait`, `bulk_visible`,
+  `Thread::bulk_vis`):
+  - Strict level (no L1 model): the thread acquires them at its next `CCTL.IVALL`. ISA text:
+    the full form also waits for the writes "being made visible to the executing thread",
+    `.read` does not (PTX ISA 9.5 9.7.10.28.6.2), and ptxas adds the `CCTL.IVALL` for the full
+    form only, so in the SASS that guarantee is the `CCTL.IVALL`'s.
+  - GB300 level (E-HW-L1: the GB300 profile and the hardware model): the `DEPBAR` acquires
+    them, and the L1 model decides which later weak loads are stale. GB300 measured
+    (`fixtures/e_tma_read_l1`, 1000 runs per variant, gb300_rates.csv, Wilson 95%): the writes
+    are complete in L2 at the `DEPBAR` (READ2: `.read 0`, then an `ATOMS` on the source whose
+    result forms the `LDG` address, so the `LDG` issues after the `DEPBAR`: 0 stale reads,
+    upper bound 0.0038; a measured null, a bound); a line of the destination the issuing SM
+    filled before the store survives it (READ3, READ4: the old bytes in 1000/1000 runs, lower
+    bound 0.9962); the full form's `CCTL.IVALL` drops it (GOOD3, GOOD4: 0/1000).
+  - Before, the `DEPBAR` acquired the writes at both levels. READ4 (a
+    `fence.proxy.async.global` between the earlier `LDG` and the store) was clean and
+    certified on the SASS front, and its GB300 level, where the L1 model reports the stale
+    read, never ran: `ptxv check` runs the GB300 levels only after a strict finding
+    (`twolevel::wanted`, `hwprofile::wanted`; E-HW-L1). Now READ2-READ4 are races at the strict
+    level on both fronts; at the GB300 level READ3 and READ4 are stale (the hardware model
+    calls READ4's race observable) and READ2 is clean; good, GOOD3 and GOOD4 are unchanged
+    (`tests/fixtures.rs` `tma_store_read_l1_needs_cctl`; srcmut `bulk-depbar-acquires-writes`).
+    The same holds for the non-tensor bulk store and the bulk add-reduction
+    (`fixtures/e_bulk_read_l1` READ, RREAD) and for another thread of the CTA that rereads the
+    destination after a `bar.sync` following the issuer's `.read` wait
+    (`fixtures/e_bulk_read_l1_other` READ): GB300 reads the stale line in 1000/1000 runs of
+    each, and the stored value with the full wait (good, RGOOD: 0/1000; 2026-11-11). They were
+    clean on the SASS front; now races at the strict level on both fronts, stale at the GB300
+    level (`bulk_store_and_reduction_after_wait_read_race`,
+    `bulk_store_read_by_another_thread_after_wait_read_races`).
+  - Placement: strict. Whether a weak load after the `DEPBAR` returns the writes depends on L1
+    contents the strict level does not model; the deferral follows the ISA text and the
+    lowering, not a measurement. The GB300 level's acquire at the `DEPBAR` rests on READ2's
+    measured null, so it stays there (with E-HW-L1).
+  - Precision: the strict level also orders the thread's later stores and strong loads after
+    the writes only at its `CCTL.IVALL`, though GB300 has completed them at the `DEPBAR` (a
+    later store of the destination races at the strict level only), and only the waiting
+    thread's own `CCTL.IVALL` counts, although any thread's drops the SM's lines (E-HW-L1).
+  - If wrong: *miss* if GB300 returns stale bytes for a weak load after the `DEPBAR` and a
+    `CCTL.IVALL` (GOOD3 / GOOD4: 0/1000, a bound), or, at the GB300 level, after the `DEPBAR`
+    with no earlier fill of the line on the SM (READ2: 0/1000, a bound).
 - A wait bit on that scoreboard in any instruction's control word is the same wait with n = 0
   (`Kernel::bulk_read_waits`; cuBLAS's MXF8 nvjet waits so on the `BAR.SYNC` before it reuses
   a TMA-store staging buffer, and has no `DEPBAR`). A scoreboard counts every operation on it,
@@ -4594,12 +4729,33 @@ stays clean, "relies on E-CPASYNC-PROXY"), not a race.
   runs in every variant, its `st_none` variant (st.shared writers, no fence) included, while
   rung 1b B04 (st.shared writers) fails 1000/1000: probes/proxy_cpasync has no positive
   control, so it is not evidence, not even a measured null.
+- probes/cpasync_proxy (2026-11-11, GB300, scrubbed shared memory, each variant against its
+  own simulator run) puts cp.async writers into rung 1b's pipeline, where the st.shared
+  writers without the fence fail. Launch shapes: grid 1, 152 and 608 CTAs of 192 threads. The
+  epilogue fills the staging tile with st.shared or with cp.async: `cp.async.cg` 4 x 16 B or
+  `cp.async.ca` 16 x 4 B per thread, retired by `cp.async.wait_group 0` or by
+  `cp.async.mbarrier.arrive.noinc` and an mbarrier wait (with or without the bar.sync after
+  it). `fence.proxy.async.shared::cta` goes nowhere, before the wait or after it; the reader
+  is a TMA store or a bulk store.
+  - st.shared without the fence (B04): 1000/1000 runs wrong in every launch shape with either
+    reader (10000/10000 at grid 1; 980 distinct outputs in 1000 at grid 1), so the probe sees a
+    missing proxy fence after st.shared writes.
+  - Every cp.async variant, the no-fence ones included, matches the simulator bitwise: 0/1000
+    runs wrong per variant and launch shape, 0/10000 for the no-fence and before-the-wait
+    variants at grid 1 (Wilson 95% upper bounds 0.0038 and 0.00038).
+  - probes/cpasync_proxy/cpx.cu (standalone rounds into one reused buffer, 5 launch shapes up
+    to 8 CTAs per SM, 1000 launches per cell): no variant fails, its st.shared control
+    included, so it decides nothing.
+  The positive controls a discharge needs, the cp.async variants without the fence, never
+  failed. This is a measured null for cp.async writers in these shapes (GB300 measured, a
+  bound), next to a st.shared control that fails in the same pipeline. It is not evidence that
+  the fence is unneeded, and nothing is discharged.
 - Placement: strict, and the finding stays in the gb300 profile: contract at both levels
   (kernel_db's triton parallel_attn_fwd reads contract at sass_gb300). Discharging it at the
   gb300 level needs a GB300 probe whose positive control (no fence) fails in a measurable
-  fraction of runs and whose fence-before-the-wait variant does not.
-- Status: **unvalidated**: no failure seen, but no probe has a positive control and no
-  mechanism is argued.
+  fraction of runs and whose fence-before-the-wait variant does not (probes/cpasync_proxy has
+  no such control: its no-fence cp.async variants never fail).
+- Status: **unvalidated**: no cp.async failure seen in any probe, no mechanism argued.
 - If wrong: *miss* reported only as a contract finding.
 
 ### S-INIT · code
@@ -4695,7 +4851,9 @@ stays clean, "relies on E-CPASYNC-PROXY"), not a race.
     store (or `atom.exch`) of undefined data
     marks the bytes undefined (`Sh::undef`) instead of being reported; a load or an
     `atom.exch` of them gives undefined registers (as for never-written shared memory); any
-    other reader (TMA, MMA, other atomics) reports; global bytes still undefined at a terminal state are reported
+    other atomic of them (2026-11-09) returns undefined registers and stores undefined bytes
+    (the new value depends on the old one: a carry, a compare; a failing compare-and-swap
+    leaves them undefined); any other reader (TMA, MMA) reports; global bytes still undefined at a terminal state are reported
     (`uninit-gmem-exit`), except the tail of a used tensor map (S-TMAP-TAIL). Before, the
     store was the report (cute FusedRMSNormCombineFwdParallelTOPKStream's reduction
     buffer: clean now, `fixtures/e_uninit_smem`). Per byte (2026-11-07): a vector store
@@ -4705,7 +4863,15 @@ stays clean, "relies on E-CPASYNC-PROXY"), not a race.
     undefined register of an `STS.128` / `ST.E.128` marked all 16 bytes: msl
     BlackwellHistogramSelect rank 0 reads entry 56 of a vector store whose entry 59 is
     undefined (GB300 with 21 adversarial shared-memory fills: outputs bitwise equal to the
-    clean run; `fixtures/e_uninit_vec`).
+    clean run; `fixtures/e_uninit_vec`). Atomics: before, any atomic other than `atom.exch`
+    on undefined bytes was the report, even with its result discarded and the word never
+    read: histogram top-k kernels count out-of-range keys branch-free into a per-lane spill
+    word nothing initializes or reads, a pool-select kernel adds 0 into a spare word
+    (`fixtures/smem_spill_sink` good / add0 clean on both fronts; GB300, 1000 runs plain and
+    1000 with scrubbed shared memory: outputs bitwise equal to the simulator). A later read
+    of the word that reaches a sink (readspill) and a returned old value that reaches one
+    (useret) are reported. The scratch-buffer rule is unchanged (a first access by an atomic
+    keeps the captured bytes as defined input).
   - `REDUX` (2026-11-07): an undefined bit in any active lane's operand makes the result
     undefined in every lane (a sum carries into all bits), reported where it is used. Before,
     the operand was a sink: Triton's cross-warp reduction (corpus pilot dash/5819, `_col_phase`)
@@ -5181,7 +5347,8 @@ scope.**
   `.global` without a diagnostic and emit the release's `MEMBAR.ALL.CTA` + `UREDGR.E.ADD`, so
   the SASS front runs them as the release add; probes/red_async_ops (GB200, sm_100a, ptxas
   13.1): `.min.s32` 10 with 3 gives 13, `.inc.u32` 7 with 5 gives 12, `.or.b32` 0x11 with 0x10
-  gives 0x21, i.e. every op added. A PTX kernel with one of these forms is refused, so a
+  gives 0x21, i.e. every op added; GB300 (sm_103a build, probes/gb300_runs.toml) gives the
+  same output bit for bit. A PTX kernel with one of these forms is refused, so a
   wrong-result bug behind them is reported as a lift gap, not missed.
 - Status: **probed** (hardware evidence, probes/redasync_litmus, 2026-11-08). The test is message
   passing between CTAs on different SMs: weak payload stores, the form on a flag,
@@ -5944,7 +6111,8 @@ divergent `.uni` branch does not reconverge where the model assumes it does.
   N = 64 result's. A in TMEM with N % 16 == 8 (the FP8-KV decode's P.V MMA, N = 8), outside
   the PTX ISA's table (N % 16 == 0 with A in TMEM): probes/tc_mma_ts_n8 (2026-11-08, GB200,
   N = 8 and 24) writes exactly columns col0..col0+N of all 128 lanes, equal to GB300's N = 16
-  output on the shared columns, both front-ends bitwise; modeled as Layout D and reported as a
+  output on the shared columns, both front-ends bitwise; GB300 runs of the same probes (sm_103a
+  builds, probes/gb300_runs.toml) equal GB200's output bit for bit; modeled as Layout D and reported as a
   `contract` finding (`mma-ts-shape`). Block-scaled N % 16 == 8 above 8 is rejected (not
   measured).
   M = 128 with `cta_group::2`: E-PAIR.
@@ -5976,9 +6144,11 @@ divergent `.uni` branch does not reconverge where the model assumes it does.
   (f8f6f4, block-scaled mxf8f6f4 / mxf4 / mxf4nvf4; the NVFP4x2-KV attention's P.V
   `UTCQMMA.2CTA tmem[..]`): the row's 32-byte K slice in 8 columns, byte k at column k / 4,
   byte k % 4 (probes/mma_bs/ts, 2026-11-08: mxf8f6f4 scale_vec::1X, M = 128, four K slices;
-  GB200's output equals the A-from-shared-memory run's bit for bit, both front-ends bitwise).
+  GB200's output equals the A-from-shared-memory run's bit for bit, both front-ends bitwise;
+  GB300, probes/gb300_runs.toml: the same output).
   cta_group::2 with a narrow A in TMEM follows E-PAIR (each CTA's rows from its own TMEM):
-  probes/mma_bs/mn `pair_ts_*` (mxf8f6f4, M = 256, N = 128) = GB200 bitwise. **MN-major** shared
+  probes/mma_bs/mn `pair_ts_*` (mxf8f6f4, M = 256, N = 128) = GB200 bitwise (and GB300,
+  probes/gb300_runs.toml). **MN-major** shared
   operands (swizzled): CUTLASS's canonical ((T,s/16,m),(8,k)) : ((1,T,LBO),(s/2,SBO)).
   Without swizzle (kind::f16; the mslk decode kernels' A): ((T,1,m),(8,k)) : ((1,T,SBO),(1T,LBO)),
   i.e. element (r, k) at (r/8) SBO + (r%8) 2 + (k/8) LBO + (k%8) 16 bytes: the roles of LBO and
@@ -5989,7 +6159,8 @@ divergent `.uni` branch does not reconverge where the model assumes it does.
   element (r, k) at (r%s) + (r/s) LBO + (k%8) s + (k/8) SBO bytes, then the address swizzle;
   without swizzle, (r%16) + (r/16) SBO + (k%8) 16 + (k/8) LBO. The swizzle uses the absolute
   address: a start 512 B into a 1024-byte SWIZZLE_128B atom (the mxfp8 decode's MN-major A) reads
-  the absolute phase. probes/mma_bs/mn (GB200, 2026-11-08): host-built shared-memory images, one
+  the absolute phase. probes/mma_bs/mn (GB200, 2026-11-08; every case also run on GB300 with an
+  sm_103a build, the same outputs bit for bit: probes/gb300_runs.toml): host-built shared-memory images, one
   CTA (M = 128, N = 64; A MN-major SWIZZLE_128B, the same at +512 B, SWIZZLE_64B with LBO 512,
   SWIZZLE_32B with LBO 256, no swizzle; B SWIZZLE_64B / 32B; A and B) and cta_group::2 (M = 256,
   N = 128, B rows 64r.. per CTA; A in TMEM with B MN-major SWIZZLE_64B / 32B / none, A in shared
@@ -6055,11 +6226,13 @@ CCTL.IVALL` with no bracket.
 - Encodings nvdisasm 13.0 prints nothing for (a cubin from a newer ptxas: CuTe DSL's bundled
   one) leave a hole in the listing, and the kernel is refused ("instruction addresses are not
   contiguous 16-byte slots"). `undis.rs` decodes one such encoding from the kernel's `.text`
-  bytes, printed as nvdisasm 13.4 prints it: `F2FP.SATFINITE.BF16.S2_6.UNPACK_B Rd, Ra[.H1],
-  Rb.H0 | imm.H0` (`cvt...bf16x2.s2f6x2`). Every fixed bit must match the observed pattern
+  bytes, printed as nvdisasm 13.4 prints it: `F2FP[.SATFINITE][.RELU].BF16.S2_6.UNPACK_B Rd,
+  Ra[.H1], Rb.H0 | imm.H0` (`cvt...bf16x2.s2f6x2`). Every fixed bit must match the observed pattern
   (any other value stays a hole). Fields checked against nvdisasm 13.4 on all 1,088 instances
   in the kernel DB (FA4 int4 / fp8 KV attention, token mean pooling) and the 56 of
-  probes/s2f6_cvt (2026-11-08), where the decoded kernel = GB300 bitwise.
+  probes/s2f6_cvt (2026-11-08), where the decoded kernel = GB300 bitwise; the `.SATFINITE` /
+  `.RELU` bits against nvdisasm 13.3 on the four forms of probes/s2f6_cvt/forms (register and
+  immediate scales, 2026-11-09), whose decoded kernel = GB300 bitwise.
 
 ### L-ROSETTA · code
 **Each SASS opcode/modifier lowering means what the Rosetta probe derived,** only for the
@@ -6187,7 +6360,18 @@ forms seen. Any other form is a hard error.
   ptxas: `mbarrier.expect_tx` / `complete_tx`); `UTCBAR.MULTICAST` (cta_group::1, mask operand
   as for `.2CTA`, checked against ptxas); `BRA.U P, UPT` (both must hold; only UPT modeled);
   `BRA.U.NOT_TID0` (warp-uniform: only the warp of CTA thread 0 falls through,
-  `probes/not_tid0` with the branch patched into a ptxas cubin); `FFMA2` (`fma.rn.f32x2`,
+  `probes/not_tid0` with the branch patched into a ptxas cubin); `@P BRA.U` (a per-thread guard on a
+  uniform branch, 2026-11-09): taken by every lane of the executing split when P holds in all of
+  them, else by none (`probes/bra_u`, GB300: ptxas branches patched to `.U` (encoding bit 32),
+  with every lane, with lanes exited before it and with lanes on another path; the plain
+  branches as controls; `probe_bra_u_matches_hardware`). ptxas emits `@!P BRA.U L` with P
+  from an ELECT ahead of an elected block's BSSY (skipping the block's uniform setup when no
+  lane is elected, which never happens with every lane running). It was lowered as a per-lane
+  branch: the elected lane went on alone and the others jumped to the next ELECT, which then
+  ran in two groups. In a grouped-GEMM prepare kernel that gave two leaders writing the same
+  tensor map, a race of the warp's ATOMG.EXCH words against lane 0's UTMACCTL.IV, faults on
+  garbage addresses and an incomplete search; with the semantics above the SASS front agrees
+  with the PTX front (11,419 states, complete); `FFMA2` (`fma.rn.f32x2`,
   operands `.F32` broadcast / `.F32x2.HI_LO` / `.LO_HI`, checked against ptxas);
   `R2UR d, a` of a lane-varying value when the first use of d is a logical right shift into d
   that drops every varying bit (`R2UR UR6, R2` with R2 = %tid.x then `>> 5`: the warp index);
@@ -8807,6 +8991,23 @@ operand and scale-factor layouts** (GB300, sm_103a, CUDA 13.0, 2026-11-09).
   on the GPU: 0 mismatches. PTX ISA 9.1: ptxas 13.1 assembles it, ptxas 13.0 does not. The
   PTX front lowers it to the same op (`a`, `scale` .b16, `hi` = false); `probes/s2f6_cvt`'s
   kernel.ptx is bitwise on the PTX front as well.
+  The other forms, `cvt.rn[.relu][.satfinite]...s2f6x2` (SASS `F2FP[.SATFINITE][.RELU].BF16
+  .S2_6.UNPACK_B`, `relu` / `sat` on the op): without `.satfinite` the one overflow gives
+  -Inf (0xff80); `.relu` maps negative lanes to +0, and scale 0xff still gives 0x7fff.
+  `probes/s2f6_cvt/forms` (gen.py): every (code, scale) pair in each of the four lane positions with
+  independently varying neighbours, all four forms, 65,536 threads. Evidence, kept apart:
+  - GB300-measured (sm_103a, ptxas 13.1, 2026-11-09): the full set's per-form hashes
+    (sweep.json `gb300`) = the model (`s2f6_model_replays_gpu_sweeps`); the 1024-thread sample
+    (gb300_out.bin) = both front-ends bitwise (`probe_s2f6_cvt_forms_match_hardware`).
+  - GB200-measured (sm_100a, CUDA 13.1, an external sweep): the same full-set hashes (sweep.json
+    `gb200`) and sample (gb200_out.bin), identical to GB300's.
+  The PTX front refuses every other `.scaled` form (a `.scaled` dispatch ahead of the other
+  `cvt` branches). Before this rule the `.relu` and non-`.satfinite` forms were refused too,
+  not misread: the PTX front with "this cvt is not modeled yet" (`cvt_lp` has refused unknown
+  modifiers since 2026-11-09), the SASS front for the instruction nvdisasm 13.0 prints nothing
+  for (model: ptxv runs of `probes/s2f6_cvt/forms` before and after the rule). The SASS
+  decoder (`undis.rs`) reads `.SATFINITE` from hi bit 13 and `.RELU` from hi bit 11 (nvdisasm
+  13.3 on all four forms, register and immediate scales).
 - Where: `lowp.rs`; `exec.rs` `Op::CvtPack` / `CvtRsX4` / `CvtUnpack` / `CvtS2f6x2`; PTX
   `cvt_lp`; SASS `f2fp_lp`.
 - Status: **validated.** `ptxv cvt-sweep probes/cvt_lp` covers 51 PTX forms, each over every

@@ -626,6 +626,7 @@ pub fn fmax_diamond(code: &[Inst], bra: usize) -> Option<(usize, usize)> {
         target,
         any: false,
         tid0_falls: false,
+        all: false,
         cond: None,
         div: None,
     } = b.op
@@ -639,6 +640,7 @@ pub fn fmax_diamond(code: &[Inst], bra: usize) -> Option<(usize, usize)> {
         target: join,
         any: false,
         tid0_falls: false,
+        all: false,
         cond: None,
         div: None,
     } = code.get(bra + 2)?.op
@@ -766,6 +768,7 @@ pub fn fmax_seq(code: &[Inst], bra: usize) -> Option<(usize, usize)> {
             target,
             any: false,
             tid0_falls: false,
+            all: false,
             cond: None,
             div: None,
         } = inst.op
@@ -6878,6 +6881,7 @@ mod fmax_seq_tests {
                 target,
                 any: false,
                 tid0_falls: false,
+                all: false,
                 cond: None,
                 div: None,
             };
@@ -7685,6 +7689,7 @@ mod control_dependency_tests {
             target: 0,
             any: false,
             tid0_falls: false,
+            all: false,
             cond: Some(Pred {
                 reg: Some(predicate),
                 neg: false,

@@ -3,10 +3,11 @@
 // This source code is licensed under the BSD-style license found in the
 // LICENSE file in the root directory of this source tree.
 
-// E-ASYNC-STEP, the .read wait of the non-tensor bulk store and the bulk add-reduction: the SASS
-// front models the bulk-group DEPBAR of cp.async.bulk.wait_group.read as a full wait, but ptxas
-// emits no CCTL.IVALL for .read, so the issuing SM's L1 can keep a line of the destination it
-// filled before the store (fixtures/e_tma_read_l1 READ4 for a TMA store).
+// E-ASYNC-STEP, the .read wait of the non-tensor bulk store and the bulk add-reduction: ptxas
+// emits no CCTL.IVALL after the bulk-group DEPBAR of cp.async.bulk.wait_group.read, so the
+// issuing SM's L1 can keep a line of the destination it filled before the store
+// (fixtures/e_tma_read_l1 READ4 for a TMA store). Before MISS 102 the SASS front modeled the
+// DEPBAR as a full wait and called READ / RREAD clean.
 // 128 threads fill a 1024-word f32 tile with 0..1023; thread 0 loads D[5] (D is zeros: fills
 // its L1 line) into pre[0], fences the global proxy, bulk-stores (or bulk-adds) the tile to D,
 // waits, does an atom.shared.add 0 on the source whose result forms the load address (keeps

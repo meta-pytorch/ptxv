@@ -416,17 +416,24 @@ pub fn unpack(a: u32, from: Lp, to: Lp, relu: bool) -> u32 {
     hi << 16 | lo
 }
 
-/// One lane of `cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2` (SASS
-/// `F2FP.SATFINITE.BF16.S2_6.UNPACK_B`): the s2f6 code `c` is a two's-complement 8-bit fixed
-/// point with 6 fraction bits (int8(c) / 64), times the ue8m0 scale 2^(s - 127). GB300
-/// (probes/s2f6_cvt; every (data, scale) pair of both lanes, 2^32 in all, 0 mismatches): one
-/// round-to-nearest-even to bf16, subnormals kept, `.satfinite` overflow to +-0x7f7f; scale
-/// 0xff (ue8m0 NaN) gives 0x7fff for every code; code 0 gives +0.
-pub fn s2f6_to_bf16(c: u8, s: u8) -> u16 {
+/// One lane of `cvt.rn[.relu][.satfinite].scaled::n2::ue8m0.bf16x2.s2f6x2` (SASS
+/// `F2FP[.SATFINITE][.RELU].BF16.S2_6.UNPACK_B`): the s2f6 code `c` is a two's-complement
+/// 8-bit fixed point with 6 fraction bits (int8(c) / 64), times the ue8m0 scale 2^(s - 127).
+/// The product is exact in bf16 (8 significant bits at most; the smallest, 2^-133, is bf16's
+/// smallest subnormal, kept). Scale 0xff (ue8m0 NaN) gives 0x7fff for every code and form;
+/// code 0 gives +0; `.relu` maps negative lanes to +0; the one overflow, -128 at scale 254
+/// (-2^128), gives -Inf, or -max (0xff7f) with `.satfinite`. GB300: probes/s2f6_cvt (the
+/// `.satfinite` form, every (data, scale) pair of both lanes, 2^32 in all) and
+/// probes/s2f6_cvt/forms (all four forms, every (code, scale) pair in every lane position); GB200:
+/// probes/s2f6_cvt/forms (the same sweep). 0 mismatches each.
+pub fn s2f6_to_bf16(c: u8, s: u8, relu: bool, sat: bool) -> u16 {
     if s == 0xff {
         return 0x7fff;
     }
     let i = c as i8 as i32;
+    if relu && i < 0 {
+        return 0;
+    }
     encode(
         i < 0,
         i.unsigned_abs() as u64,
@@ -434,15 +441,17 @@ pub fn s2f6_to_bf16(c: u8, s: u8) -> u16 {
         Lp::Bf16,
         LpRnd::Rn,
         0,
-        true,
+        sat,
     ) as u16
 }
 
-/// `cvt.rn.satfinite.scaled::n2::ue8m0.bf16x2.s2f6x2 d, a, scale` / `F2FP.SATFINITE.BF16.S2_6
-/// .UNPACK_B Rd, Ra, Rb.H0`: lane i (bits 16i..16i+16 of the result) from byte i of the
-/// 16-bit code pair `a` and byte i of the 16-bit scale pair. N-CVT-LP.
-pub fn cvt_s2f6x2_scaled(a: u16, scale: u16) -> u32 {
-    let lane = |i: u32| s2f6_to_bf16((a >> (8 * i)) as u8, (scale >> (8 * i)) as u8) as u32;
+/// `cvt.rn[.relu][.satfinite].scaled::n2::ue8m0.bf16x2.s2f6x2 d, a, scale` / `F2FP
+/// [.SATFINITE][.RELU].BF16.S2_6.UNPACK_B Rd, Ra, Rb.H0`: lane i (bits 16i..16i+16 of the
+/// result) from byte i of the 16-bit code pair `a` and byte i of the 16-bit scale pair.
+/// N-CVT-LP.
+pub fn cvt_s2f6x2_scaled(a: u16, scale: u16, relu: bool, sat: bool) -> u32 {
+    let lane =
+        |i: u32| s2f6_to_bf16((a >> (8 * i)) as u8, (scale >> (8 * i)) as u8, relu, sat) as u32;
     lane(1) << 16 | lane(0)
 }
 
@@ -501,17 +510,24 @@ mod tests {
     use super::*;
     #[test]
     fn s2f6_spot_values() {
-        // int8(c) / 64 * 2^(s - 127), GB300 (probes/s2f6_cvt).
-        assert_eq!(s2f6_to_bf16(0x40, 0x7f), 0x3f80); // 1.0
-        assert_eq!(s2f6_to_bf16(0x80, 0x7f), 0xc000); // -2.0
-        assert_eq!(s2f6_to_bf16(0xff, 0x7f), 0xbc80); // -1/64
-        assert_eq!(s2f6_to_bf16(0x01, 0x00), 0x0001); // 2^-133: smallest bf16 subnormal
-        assert_eq!(s2f6_to_bf16(0x80, 0x00), 0x8080); // -2^-126
-        assert_eq!(s2f6_to_bf16(0x7f, 0xfe), 0x7f7e);
-        assert_eq!(s2f6_to_bf16(0x80, 0xfe), 0xff7f); // -2^128: satfinite
-        assert_eq!(s2f6_to_bf16(0x00, 0xff), 0x7fff); // NaN scale
-        assert_eq!(s2f6_to_bf16(0x00, 0x00), 0x0000);
-        assert_eq!(cvt_s2f6x2_scaled(0x8040, 0x807f), 0xc080_3f80);
+        // int8(c) / 64 * 2^(s - 127), GB300 (probes/s2f6_cvt, probes/s2f6_cvt/forms).
+        let f = |c, s| s2f6_to_bf16(c, s, false, true);
+        assert_eq!(f(0x40, 0x7f), 0x3f80); // 1.0
+        assert_eq!(f(0x80, 0x7f), 0xc000); // -2.0
+        assert_eq!(f(0xff, 0x7f), 0xbc80); // -1/64
+        assert_eq!(f(0x01, 0x00), 0x0001); // 2^-133: smallest bf16 subnormal
+        assert_eq!(f(0x80, 0x00), 0x8080); // -2^-126
+        assert_eq!(f(0x7f, 0xfe), 0x7f7e);
+        assert_eq!(f(0x80, 0xfe), 0xff7f); // -2^128: satfinite
+        assert_eq!(f(0x00, 0xff), 0x7fff); // NaN scale
+        assert_eq!(f(0x00, 0x00), 0x0000);
+        assert_eq!(cvt_s2f6x2_scaled(0x8040, 0x807f, false, true), 0xc080_3f80);
+        // Without .satfinite the overflow is -Inf; .relu: negatives +0, a NaN scale stays.
+        assert_eq!(s2f6_to_bf16(0x80, 0xfe, false, false), 0xff80);
+        assert_eq!(s2f6_to_bf16(0x80, 0xfe, true, false), 0);
+        assert_eq!(s2f6_to_bf16(0xff, 0x7f, true, true), 0);
+        assert_eq!(s2f6_to_bf16(0x80, 0xff, true, true), 0x7fff);
+        assert_eq!(s2f6_to_bf16(0x40, 0x7f, true, false), 0x3f80);
     }
 
     #[test]

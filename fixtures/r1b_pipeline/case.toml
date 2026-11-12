@@ -68,6 +68,9 @@ marker = "@B10"
 find = "shr.u32         %r14, %r10, 1"
 replace = "mov.u32         %r14, 0"
 expect = ["fault", "race"]
+# SASS: the double arrive is an over-arrival, so DPOR hands the search to the stateful
+# explorer, which also reaches the waiter stuck behind the lost phase and both data outcomes.
+expect_sass = ["deadlock", "fault", "nondeterministic", "race"]
 hw_note = "GB300: unspecified launch failure (the double arrive overflows the mbarrier)"
 
 [[variants]]

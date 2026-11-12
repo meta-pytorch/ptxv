@@ -7,9 +7,9 @@
 
 //! `--no-gb300` / `PTXV_GB300=0` turn off the GB300-profile re-run of the two-level verdict
 //! (ASSUMPTIONS.md H-PROFILE) as well as the hardware-model classification, and the row says
-//! the re-run was skipped (`two_level_skipped`); by default the re-run runs. `--hw-profile
-//! none` / `PTXV_HW_PROFILE=none` turn the re-run off the same way; any other name than
-//! `gb300` or `none` is an error.
+//! the re-run was skipped (`two_level_skipped`), naming the flag or variable that did it; by
+//! default the re-run runs. `--hw-profile none` / `PTXV_HW_PROFILE=none` turn the re-run off
+//! the same way; any other name than `gb300` or `none` is an error, for `check` and `suite`.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -67,9 +67,9 @@ fn no_gb300_skips_the_profile_rerun() {
     assert_eq!(row["two_level"]["sass_gb300"], "certified", "{report}");
     assert!(row.get("two_level_skipped").is_none(), "{report}");
     assert!(report.contains("sass_gb300: certified"), "{report}");
-    for (args, env) in [
-        (&["--no-gb300"][..], &[][..]),
-        (&[][..], &[("PTXV_GB300", "0")][..]),
+    for (args, env, cause) in [
+        (&["--no-gb300"][..], &[][..], "--no-gb300 turned"),
+        (&[][..], &[("PTXV_GB300", "0")][..], "PTXV_GB300=0 turned"),
     ] {
         let (doc, report) = check(args, env);
         let row = &doc["rows"][0];
@@ -82,7 +82,7 @@ fn no_gb300_skips_the_profile_rerun() {
         assert!(row.get("two_level").is_none(), "{args:?} {env:?}: {report}");
         let why = row["two_level_skipped"].as_str().unwrap_or_default();
         assert!(
-            why.contains("contract") && why.contains("--no-gb300 / PTXV_GB300=0"),
+            why.contains("contract") && why.contains(cause),
             "{args:?} {env:?}: {why:?}"
         );
         assert!(
@@ -97,9 +97,17 @@ fn no_gb300_skips_the_profile_rerun() {
 /// `two_level` nor `two_level_skipped`, and a missing `two_level` read like an older binary's.
 #[test]
 fn hw_profile_none_says_the_rerun_was_skipped() {
-    for (args, env) in [
-        (&["--hw-profile", "none"][..], &[][..]),
-        (&[][..], &[("PTXV_HW_PROFILE", "none")][..]),
+    for (args, env, cause) in [
+        (
+            &["--hw-profile", "none"][..],
+            &[][..],
+            "; --hw-profile none turned",
+        ),
+        (
+            &[][..],
+            &[("PTXV_HW_PROFILE", "none")][..],
+            "; PTXV_HW_PROFILE=none turned",
+        ),
     ] {
         let (doc, report) = check(args, env);
         let row = &doc["rows"][0];
@@ -111,7 +119,7 @@ fn hw_profile_none_says_the_rerun_was_skipped() {
         assert!(row.get("two_level").is_none(), "{args:?} {env:?}: {report}");
         let why = row["two_level_skipped"].as_str().unwrap_or_default();
         assert!(
-            why.contains("contract") && why.contains("--hw-profile none / PTXV_HW_PROFILE=none"),
+            why.contains("contract") && why.contains(cause),
             "{args:?} {env:?}: {why:?}"
         );
         assert!(
@@ -125,17 +133,51 @@ fn hw_profile_none_says_the_rerun_was_skipped() {
 /// without a word (a typo such as `GB300`).
 #[test]
 fn unknown_hw_profiles_are_refused() {
-    for (args, env) in [
-        (&["--hw-profile", "GB300"][..], &[][..]),
-        (&[][..], &[("PTXV_HW_PROFILE", "gb3000")][..]),
+    for (args, env, says) in [
+        (
+            &["--hw-profile", "GB300"][..],
+            &[][..],
+            "unknown hardware profile \"GB300\" (--hw-profile)",
+        ),
+        (
+            &[][..],
+            &[("PTXV_HW_PROFILE", "gb3000")][..],
+            "unknown hardware profile \"gb3000\" (PTXV_HW_PROFILE)",
+        ),
     ] {
         let out = run(args, env);
         let text = String::from_utf8_lossy(&out.stdout).into_owned()
             + &String::from_utf8_lossy(&out.stderr);
         assert!(!out.status.success(), "{args:?} {env:?}: {text}");
-        assert!(
-            text.contains("unknown hardware profile"),
-            "{args:?} {env:?}: {text}"
-        );
+        assert!(text.contains(says), "{args:?} {env:?}: {text}");
     }
+}
+
+/// `ptxv suite` checks through the same path as `check`: an unknown profile name is refused
+/// there too (it used to reach the check with no profile, which reported the re-run as turned
+/// off by "--hw-profile none").
+#[test]
+fn suite_refuses_unknown_hw_profiles() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir =
+        std::env::temp_dir().join(format!("ptxv-two-level-gate-suite-{}", std::process::id()));
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_ptxv"))
+        .arg("suite")
+        .arg(root.join("fixtures/e_twolevel_bulk"))
+        .arg("--out")
+        .arg(&dir)
+        .env_remove("PTXV_GB300")
+        .env("PTXV_HW_PROFILE", "GB300")
+        .env("CUDA_VISIBLE_DEVICES", "")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{text}");
+    assert!(
+        text.contains("unknown hardware profile \"GB300\" (PTXV_HW_PROFILE)"),
+        "{text}"
+    );
+    assert!(!text.contains("sass_gb300"), "{text}");
 }

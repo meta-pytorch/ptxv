@@ -11,9 +11,14 @@ caught when some run's classes differ from the variant's expectation (the fixtur
 missing entry); it survives otherwise, which means the entry has no fixture.
 
     srcmut.py --out DIR [--only NAME] [--jobs N]
+    srcmut.py --check-anchors [--only NAME]
 
 Entries that no fixture can reach carry a documented exclusion (`EXCLUDED`) instead of a
 silent survival.
+
+--check-anchors builds and runs nothing: it prints every mutant whose find text does not occur
+exactly once in its file in this checkout (a run reports such a mutant as an error without
+building it) and exits 1 if there is one.
 """
 
 import argparse
@@ -400,8 +405,8 @@ MUTANTS += [
     SrcMutant(
         "tmem-queue-first-only",
         "crates/sim/src/exec.rs",
-        "        let racer = offenders.iter().find(|(o, _)| !queued(o)).copied();",
-        "        let racer = offenders.first().filter(|(o, _)| !queued(o)).copied();",
+        "        for &(o, kind) in &offenders {",
+        "        for &(o, kind) in offenders.iter().take(1) {",
         [("e_queue_mask", "S0", "sass", [])],
     ),
     # MISS 122: tmem_access reports only its first racer again; tc_fence_contract turns that
@@ -413,6 +418,16 @@ MUTANTS += [
         "            if !queued(&o) && !racers.iter().any(|x| x.0.pc == o.pc && x.1 == kind) {",
         "            if !queued(&o) && racers.is_empty() {",
         [("e_rerun_drop_ptx", "XLOW", "ptx", [])],
+    ),
+    # MISS 124: proxy_check_dir reports only its first uncovered generic writer again;
+    # mbar_async_contract reclassifies that one and the second racing writer is lost
+    # (e_rerun_drop_proxy_mb XLOW on PTX: contract only).
+    SrcMutant(
+        "proxy-first-writer-only",
+        "crates/sim/src/exec.rs",
+        "                if gen_seen.contains(&(w.actor, w.clock)) || gen_reported.contains(&w.pc) {",
+        "                if gen_seen.contains(&(w.actor, w.clock)) || !gen_reported.is_empty() {",
+        [("e_rerun_drop_proxy_mb", "XLOW", "ptx", [])],
     ),
     # E-HW-SPLIT-UR at every level: the strict level drops the switches too (MISS 52's
     # refutation at the strict level must stand: a measured null result is a bound).
@@ -484,8 +499,8 @@ MUTANTS += [
     SrcMutant(
         "tmem-norace",
         "crates/sim/src/exec.rs",
-        "            let sh = tm.sh.get(i);\n            if let Some(w) = sh.w {\n                if w.actor != actor && !w.hb(vc) {",
-        "            let sh = tm.sh.get(i);\n            if let Some(w) = sh.w {\n                if false && w.actor != actor && !w.hb(vc) {",
+        "            if let Some(w) = sh.w {\n                if w.actor != actor && !w.hb(vc) {\n                    offenders.push((",
+        "            if let Some(w) = sh.w {\n                if false && w.actor != actor && !w.hb(vc) {\n                    offenders.push((",
         [("e_drf_tmem", "NOBAR", "ptx", []), ("e_drf_tmem", "NOBAR", "sass", [])],
     ),
     # S-ALIGN: only 4-byte alignment checked (8- and 16-byte accesses at +4 / +8 pass).
@@ -947,8 +962,8 @@ MUTANTS += [
     SrcMutant(
         "cvt-f32bf16-types",
         "crates/ptx/src/lib.rs",
-        '            if mods == ["f32", "bf16"] {',
-        '            if to == "f32" && from == "bf16" {',
+        '            } else if mods == ["f32", "bf16"] {',
+        '            } else if to == "f32" && from == "bf16" {',
         [],
         CVT_REFUSED,
     ),
@@ -1414,8 +1429,8 @@ MUTANTS += [
     SrcMutant(
         "nogb300-rerun",
         "crates/cli/src/main.rs",
-        "            if let Some(p) = profile.filter(|_| wanted2 && gb300 && !spent) {",
-        "            if let Some(p) = profile.filter(|_| wanted2 && !spent) {",
+        "            if let Some(p) = profile.filter(|_| wanted2 && gb300 && !spent && !no_sass) {",
+        "            if let Some(p) = profile.filter(|_| wanted2 && !spent && !no_sass) {",
         [],
         [("ptxv", "two_level_gate", "no_gb300_skips_the_profile_rerun")],
     ),
@@ -1609,13 +1624,13 @@ MUTANTS += [
             )
         ],
     ),
-    # main.rs `run` (check): an unknown hardware profile name is accepted again (the
-    # GB300-profile re-run silently off).
+    # main.rs `checked_hw_profile` (check, suite): an unknown hardware profile name is accepted
+    # again (the GB300-profile re-run silently off).
     SrcMutant(
         "hwprofile-unknown",
         "crates/cli/src/main.rs",
-        '                profile.is_some() || name == "none",',
-        "                true,",
+        '        profile.is_some() || name == "none",',
+        "        true,",
         [],
         [("ptxv", "two_level_gate", "unknown_hw_profiles_are_refused")],
     ),
@@ -1638,6 +1653,191 @@ MUTANTS += [
         "    if True:",
         [],
         py=[("fb/kernel_db", "test_run_collect.py", "test_hw_profile")],
+    ),
+    # fb/kernel_db/soundness.py `certified`: a check without `complete` counts as certified
+    # again (run.py reads it as not certified).
+    SrcMutant(
+        "kdb-snd-certified-missing",
+        "fb/kernel_db/soundness.py",
+        '        return bool(chk and chk.get("certified")) and chk.get("complete") is True',
+        '        return bool(chk and chk.get("certified")) and chk.get("complete") is not False',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_certified_incomplete_is_not_certified")],
+    ),
+    # soundness.py `record_tags`: the certify tag follows the strict `certified` again, so a
+    # check flagged certified without `complete` (status clean in run.py) escapes certificate
+    # misses.
+    SrcMutant(
+        "kdb-snd-certify-tag-strict",
+        "fb/kernel_db/soundness.py",
+        "            if cls.on_certificate(chk):",
+        "            if cls.certified(chk):",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_certified_incomplete_is_not_certified")],
+    ),
+    # soundness.py `on_certificate`: E-WELLSYNC under `assumptions` (some stored checks) is not
+    # read, only under `assumes`.
+    SrcMutant(
+        "kdb-snd-assumptions-key",
+        "fb/kernel_db/soundness.py",
+        '            "E-WELLSYNC" in (chk.get(k) or []) for k in ("assumes", "assumptions")',
+        '            "E-WELLSYNC" in (chk.get(k) or []) for k in ("assumes",)',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_certified_incomplete_is_not_certified")],
+    ),
+    # `cmd_check` (check and suite): the profile name is read without the check again; only
+    # `check`'s early refusal is left, so `suite` runs with an unknown name.
+    SrcMutant(
+        "suite-hwprofile-unchecked",
+        "crates/cli/src/main.rs",
+        "    let (profile_name, profile) = checked_hw_profile()?;",
+        "    let (profile_name, profile) = hw_profile();",
+        [],
+        [("ptxv", "two_level_gate", "suite_refuses_unknown_hw_profiles")],
+    ),
+    # The skip reason names --no-gb300 for PTXV_GB300=0 too (the shared wording again).
+    SrcMutant(
+        "gb300-off-cause",
+        "crates/cli/src/main.rs",
+        '        Some("PTXV_GB300=0")',
+        '        Some("--no-gb300")',
+        [],
+        [("ptxv", "two_level_gate", "no_gb300_skips_the_profile_rerun")],
+    ),
+    # `run_dir`: no reaping; a killed run's directory stays for good.
+    SrcMutant(
+        "reap-off",
+        "crates/cli/src/main.rs",
+        "    reap_run_dirs(base);\n",
+        "",
+        [],
+        [("ptxv", "outdir_race", "killed_runs_directories_are_removed_by_the_next_run")],
+    ),
+    # `reap_run_dirs` judges other hosts' (and boots') directories by this host's locks.
+    SrcMutant(
+        "reap-other-hosts",
+        "crates/cli/src/main.rs",
+        '        if h == host && mine && !d.join(".kept").exists() && run_dir_dead(&d) {',
+        '        if mine && !d.join(".kept").exists() && run_dir_dead(&d) {',
+        [],
+        [("ptxv", "outdir_race", "killed_runs_directories_are_removed_by_the_next_run")],
+    ),
+    # Kept run directories (calib, probe, sb-sweep results) are reaped too.
+    SrcMutant(
+        "reap-kept",
+        "crates/cli/src/main.rs",
+        '        if h == host && mine && !d.join(".kept").exists() && run_dir_dead(&d) {',
+        "        if h == host && mine && run_dir_dead(&d) {",
+        [],
+        [("ptxv", "outdir_race", "killed_runs_directories_are_removed_by_the_next_run")],
+    ),
+    # `run_dir_dead` does not ask the lock: a live run's directory (its lock held, in this or
+    # another time namespace) is removed.
+    SrcMutant(
+        "reap-lock-ignored",
+        "crates/cli/src/main.rs",
+        "        .is_ok_and(|f| f.try_lock().is_ok())\n",
+        "        .is_ok_and(|_| true)\n",
+        [],
+        [
+            ("ptxv", "outdir_race", "killed_runs_directories_are_removed_by_the_next_run"),
+            ("ptxv", "outdir_race", "a_live_run_in_another_time_namespace_keeps_its_directory"),
+        ],
+    ),
+    # A directory without its lock file (its run is making it) counts as dead.
+    SrcMutant(
+        "reap-lock-missing",
+        "crates/cli/src/main.rs",
+        "        .is_ok_and(|f| f.try_lock().is_ok())\n",
+        "        .map_or(true, |f| f.try_lock().is_ok())\n",
+        [],
+        [("ptxv", "outdir_race", "killed_runs_directories_are_removed_by_the_next_run")],
+    ),
+    # `lock_run_dir` creates `.lock` itself and locks it after: in between it reads as a dead
+    # run's lock, and another run removes the live run's new directory.
+    SrcMutant(
+        "reap-lock-window",
+        "crates/cli/src/main.rs",
+        '    let new = d.join(".lock.new");\n',
+        '    let new = d.join(".lock");\n',
+        [],
+        [("ptxv", "outdir_race", "a_run_taking_its_lock_keeps_its_directory")],
+    ),
+    # The host token without the boot: another machine of the same name, or this one before a
+    # reboot, is this host.
+    SrcMutant(
+        "reap-boot-dropped",
+        "crates/cli/src/main.rs",
+        '        let host = format!("{name}.boot{boot}");\n',
+        "        let host = name.clone();\n",
+        [],
+        [("ptxv", "outdir_race", "killed_runs_directories_are_removed_by_the_next_run")],
+    ),
+    # vcache.rs `eat_dir`: ptxv's output directories in the case count as case input again.
+    SrcMutant(
+        "vcache-output-dirs",
+        "crates/cli/src/vcache.rs",
+        "            if !is_output_dir(&p) {",
+        "            if true {",
+        [],
+        [("ptxv", "outdir_race", "runs_inside_the_case_share_the_verdict_cache")],
+    ),
+    # compare without --out: the pair's directory, shared by concurrent runs, again.
+    SrcMutant(
+        "compare-shared-dir",
+        "crates/cli/src/main.rs",
+        "                    let d = result_dir(&pair)?;",
+        "                    let d = pair.clone();",
+        [],
+        [("ptxv", "outdir_race", "concurrent_compares_without_out_keep_their_own_reports")],
+    ),
+    # equiv without --out: the file's directory, shared by concurrent runs, again.
+    SrcMutant(
+        "equiv-shared-dir",
+        "crates/cli/src/equiv.rs",
+        "        None => crate::result_dir(&std::env::temp_dir().join(format!(",
+        "        None => std::path::absolute(&std::env::temp_dir().join(format!(",
+        [],
+        [("ptxv", "outdir_race", "concurrent_equivs_without_out_keep_their_own_summaries")],
+    ),
+    # main: a rank that stops with an error no longer tells the others (dist::refuse).
+    SrcMutant(
+        "dist-refuse-off",
+        "crates/cli/src/main.rs",
+        '        ptxv_sim::dist::refuse(&format!("{e:#}"));',
+        "        let _ = e;",
+        [],
+        [
+            ("ptxv", "multinode_launch", "a_rank_that_refuses_stops_the_others"),
+            ("ptxv", "multinode_launch", "a_rank_that_fails_after_connecting_stops_the_others"),
+        ],
+    ),
+    # dist.rs `connect`: waiting for higher ranks ignores refusals (it blocked in accept).
+    SrcMutant(
+        "dist-accept-unwatched",
+        "crates/sim/src/dist.rs",
+        "                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {\n                    watch();\n",
+        "                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {\n",
+        [],
+        [("ptxv", "multinode_launch", "a_rank_that_refuses_stops_the_others")],
+    ),
+    # dist.rs reader: a peer's closed connection with its refusal is ignored again.
+    SrcMutant(
+        "dist-eof-ignored",
+        "crates/sim/src/dist.rs",
+        "                        stop_for(r, why.trim());",
+        "                        let _ = why;",
+        [],
+        [("ptxv", "multinode_launch", "a_rank_that_fails_after_connecting_stops_the_others")],
+    ),
+    # check: input mutation and the concolic modes run in multi-node mode again.
+    SrcMutant(
+        "multinode-mutation-allowed",
+        "crates/cli/src/main.rs",
+        "        on.is_empty() || !multi_node(),",
+        "        true,",
+        [],
+        [("ptxv", "multinode_launch", "multi_node_refuses_clock_dependent_mutation")],
     ),
 ]
 
@@ -2155,6 +2355,26 @@ MUTANTS += [
         [("e_tma_store_readback", "READ", "ptx", [])],
         [("ptxv-sim", "fixtures", "tma_store_readback_after_wait_read_races")],
     ),
+    # E-ASYNC-STEP, SASS: a bulk `DEPBAR` acquires the store's global writes at once again,
+    # without the `CCTL.IVALL` (MISS 102: READ4 clean and certified on the SASS front, so its
+    # GB300 level, which reports the stale L1 read, never ran).
+    SrcMutant(
+        "bulk-depbar-acquires-writes",
+        "crates/sim/src/exec.rs",
+        "let defer = !read && self.k.front == Front::Sass && self.l1.is_none();",
+        "let defer = false;",
+        [
+            ("e_tma_read_l1", "READ4", "sass", []),
+            ("e_tma_read_l1", "READ4", "sass", ["--certify"]),
+            ("e_bulk_read_l1", "RREAD", "sass", []),
+            ("e_bulk_read_l1_other", "READ", "sass", []),
+        ],
+        [
+            ("ptxv-sim", "fixtures", "tma_store_read_l1_needs_cctl"),
+            ("ptxv-sim", "fixtures", "bulk_store_and_reduction_after_wait_read_race"),
+            ("ptxv-sim", "fixtures", "bulk_store_read_by_another_thread_after_wait_read_races"),
+        ],
+    ),
     # E-CPASYNC: a copy's write runs as its issuing thread at its issue clock again (MISS 34:
     # a barrier before the wait ordered it; LATEWAIT clean and certified).
     SrcMutant(
@@ -2285,8 +2505,8 @@ MUTANTS += [
     SrcMutant(
         "bulk-read-drops-group",
         "crates/sim/src/exec.rs",
-        "                vc_join(&mut j, if read { rvc } else { wvc });\n                read\n",
-        "                vc_join(&mut j, if read { rvc } else { wvc });\n                false\n",
+        "                    vc_join(if defer { &mut w } else { &mut j }, wvc);\n                }\n                read\n",
+        "                    vc_join(if defer { &mut w } else { &mut j }, wvc);\n                }\n                false\n",
         [("e_tma_read_then_full", "good", "ptx", [])],
         [("ptxv-sim", "fixtures", "tma_store_full_wait_after_wait_read_orders_the_writes")],
     ),
@@ -2299,6 +2519,43 @@ MUTANTS += [
         "            vc_join(&mut th.vc, &vc_single(actor, clock));\n",
         [],
         [("ptxv-sim", "fixtures", "launch_group_boundary_orders_a_bulk_store_s_writes")],
+    ),
+]
+
+
+# The ported over-arrival, SASS BRA.U and s2f6 rules.
+MUTANTS += [
+    # Over-arrivals: an update that lands after a completion its actor does not know of no
+    # longer writes the over-arrival key, so the reductions keep commuting it
+    # (fixtures/mbar_over_arrival clean on both explorers).
+    SrcMutant(
+        "over-arrival-late-off",
+        "crates/sim/src/exec.rs",
+        "let late = k > 0 && !vc_covers(vc, &mb.done_land[((k - 1) % 2) as usize]);",
+        "let late = false;",
+        [("mbar_over_arrival", "good", "sass", []), ("mbar_over_arrival", "good", "ptx", [])],
+        [("ptxv-sim", "fixtures", "mbar_over_arrival_reaches_late_order")],
+    ),
+    # SASS `@P BRA.U` as a per-lane branch again (probes/bra_u: outputs differ from GB300's).
+    SrcMutant(
+        "bra-u-per-lane",
+        "crates/sass/src/lib.rs",
+        'all: has("U") && !has("ANY") && !has("NOT_TID0") && !guard.is_always(),',
+        "all: false,",
+        [],
+        [("ptxv-sim", "fixtures", "probe_bra_u_matches_hardware")],
+    ),
+    # s2f6 `.relu`: negative lanes no longer map to +0 (probes/s2f6_cvt/forms differs from GB300).
+    SrcMutant(
+        "s2f6-relu-dropped",
+        "crates/sim/src/lowp.rs",
+        "    if relu && i < 0 {\n        return 0;\n    }\n",
+        "",
+        [],
+        [
+            ("ptxv-sim", "fixtures", "probe_s2f6_cvt_forms_match_hardware"),
+            ("ptxv-sim", "lowp", "s2f6_model_replays_gpu_sweeps"),
+        ],
     ),
 ]
 
@@ -2523,19 +2780,44 @@ def run_mutant_in_tree(m: SrcMutant, out: Path) -> dict:
     return {"name": m.name, "status": "caught" if caught else "survived", "runs": runs}
 
 
+def broken_anchors(tree: Path, mutants: list) -> list:
+    """(mutant, why) for every mutant whose find text does not occur exactly once in its file
+    under `tree`: the rule run_mutant_in_tree applies before it builds."""
+    bad = []
+    for m in mutants:
+        f = tree / m.file
+        if not f.is_file():
+            bad.append((m, "no such file"))
+            continue
+        n = f.read_text().count(m.find)
+        if n != 1:
+            bad.append((m, f"find text occurs {n} times"))
+    return bad
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--out", type=Path, help="output directory (required unless --check-anchors)")
     ap.add_argument("--only", help="comma-separated mutant names")
+    ap.add_argument("--check-anchors", action="store_true",
+                    help="print the mutants whose find text does not occur exactly once in its file, "
+                    "exit 1 if there is one; builds and runs nothing")
     a = ap.parse_args(argv)
+    chosen = [m for m in MUTANTS if not a.only or m.name in a.only.split(",")]
+    if a.check_anchors:
+        bad = broken_anchors(ROOT, chosen)
+        for m, why in bad:
+            print(f"{m.name:14} {m.file}: {why}", flush=True)
+        print(f"{len(bad)} of {len(chosen)} anchors broken", file=sys.stderr)
+        return 1 if bad else 0
+    if a.out is None:
+        ap.error("--out is required (except with --check-anchors)")
     a.out = a.out.resolve()
     a.out.mkdir(parents=True, exist_ok=True)
     res = []
-    for m in MUTANTS:
-        if a.only and m.name not in a.only.split(","):
-            continue
+    for m in chosen:
         r = run_mutant(m, a.out)
         print(f"{r['name']:14} {r['status']}", flush=True)
         res.append(r)

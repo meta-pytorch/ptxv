@@ -1,0 +1,41 @@
+name = "e_rerun_drop_proxy_mb"
+description = """
+MISS 124: the MISS 122 shape in the S-PROXY generic-writer check through mbar_async_contract.
+XLOW: X (rank 0, ordered only with the complete-tx counted at rank 1) writes word 0, Y (no
+fence) word 1. YLOW: the offsets swapped. proxy_check_dir reported only the first uncovered
+writer (the lower byte) and returned: XLOW gave [contract] (X's race reclassified, Y's never
+reported). Every uncovered writer is reported now: X's race is a contract, Y's a race, in both
+variants. SASS: as before the fix (its own findings on this kernel; its DPOR and full
+explorations disagree on the violation, so the test checks PTX only). See kernel.ptx."""
+ptx = "kernel.ptx"
+entry = "e_rerun_drop_proxy_mb"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "XLOW"
+summary = "X = word 0 (rank 0, st.async-ordered), Y = word 1 (no proxy fence)"
+expect = ["contract", "race"]
+expect_sass = ["nondeterministic", "race", "violation"]
+
+[[variants]]
+id = "YLOW"
+summary = "control: Y = word 0, X = word 1"
+marker = "@XO"
+find = "mov.u32 %r12, 0;"
+replace = "mov.u32 %r12, 4;"
+edits = [{ marker = "@YO", find = "mov.u32 %r13, 4;", replace = "mov.u32 %r13, 0;" }]
+expect = ["contract", "race"]
+expect_sass = ["nondeterministic", "race", "violation"]

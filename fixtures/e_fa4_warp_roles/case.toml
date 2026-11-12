@@ -381,7 +381,9 @@ summary = "control: pre-fix without the correction bar.sync 2+w,64"
 marker = "@STMA"
 find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
 replace = "bar.sync 1, 160;"
-expect = ["deadlock", "race", "violation"]
+# The missing arrival leaves later arrivals landing a phase late (an over-arrival): the
+# explorer runs without the plain-arrival reduction and reaches both outcomes of the race.
+expect = ["deadlock", "nondeterministic", "race", "violation"]
 expect_sass = ["deadlock", "nondeterministic", "violation"]
 
 [[variants.edits]]

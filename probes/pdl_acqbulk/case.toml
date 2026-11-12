@@ -1,0 +1,81 @@
+name = "probe_pdl_acqbulk"
+description = """
+Probe (E-HW-L1, E-PDL): griddepcontrol.wait lowers to ACQBULK with no CCTL.IVALL. A PDL
+dependent loads D[0], filling the line of D[5], while its primary may still run; the primary
+stores D[5] = 5 and releases F. WAIT: the dependent waits, then loads D[5] (clean; GB300 read 5 in
+3,072,000 of 3,072,000 CTAs over two jobs, pdl.cu). NOWAIT: no wait (race). POLL: a relaxed poll of
+F instead (race; GB300 read the stale 0 in 3,048,401 of 3,072,000). POLLF: the poll and
+fence.acq_rel.gpu (clean; GB300 0 stale). pdl.cu modes POLLDONE and LATEWAIT / LATENONE /
+LATEFENCE locate the invalidation: the primary's completion drops the lines, ACQBULK does not
+(ASSUMPTIONS.md E-HW-L1)."""
+ptx = "kernel.ptx"
+entry = "primary"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "d"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "f"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "d"
+
+[[params]]
+kind = "ptr"
+buffer = "f"
+
+[[launches]]
+entry = "secondary"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+pdl = true
+params = [
+    { kind = "ptr", buffer = "d" },
+    { kind = "ptr", buffer = "f" },
+    { kind = "ptr", buffer = "out" },
+]
+
+[[variants]]
+id = "WAIT"
+summary = "griddepcontrol.wait before the load of D[5]"
+expect = ["clean"]
+
+[[variants]]
+id = "NOWAIT"
+summary = "no wait: the load of D[5] races with the primary's store"
+marker = "@W"
+find = "griddepcontrol.wait;"
+replace = "<delete>"
+expect = ["race"]
+
+[[variants]]
+id = "POLL"
+summary = "a relaxed poll of F instead of the wait: no acquire, a race"
+marker = "@W"
+find = "griddepcontrol.wait;"
+replace = "$L_poll: ld.relaxed.gpu.global.u32 %r3, [%rd4]; setp.eq.u32 %p2, %r3, 0; @%p2 bra $L_poll;"
+expect = ["race"]
+
+[[variants]]
+id = "POLLF"
+summary = "the relaxed poll of F and fence.acq_rel.gpu"
+marker = "@W"
+find = "griddepcontrol.wait;"
+replace = "$L_poll: ld.relaxed.gpu.global.u32 %r3, [%rd4]; setp.eq.u32 %p2, %r3, 0; @%p2 bra $L_poll; fence.acq_rel.gpu;"
+expect = ["clean"]

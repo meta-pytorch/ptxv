@@ -21,7 +21,10 @@
 //!
 //! Rendezvous through a shared directory (`PTXV_DIST_DIR`): rank r writes `addr.r` with the
 //! host and port it listens on. Rank and size come from `SLURM_PROCID` / `SLURM_NTASKS`
-//! (or `PTXV_RANK` / `PTXV_RANKS`).
+//! (or `PTXV_RANK` / `PTXV_RANKS`). A rank that stops with an error (an argument it refuses
+//! before connecting, or a failure later) writes `refused.r` with the reason (`refuse`): ranks
+//! still waiting for it at the rendezvous, and connected ranks once its connection closes,
+//! stop with that reason instead of waiting for it.
 
 use std::collections::HashMap;
 use std::io::BufReader;
@@ -279,20 +282,70 @@ pub fn get() -> Option<Arc<Dist>> {
 pub fn raw() -> Option<Arc<Dist>> {
     DIST.get_or_init(|| {
         let dir = std::env::var("PTXV_DIST_DIR").ok()?;
-        let env = |a: &str, b: &str| {
-            std::env::var(a)
-                .or_else(|_| std::env::var(b))
-                .ok()
-                .and_then(|s| s.parse::<usize>().ok())
-        };
-        let rank = env("PTXV_RANK", "SLURM_PROCID").expect("dist: no rank");
-        let size = env("PTXV_RANKS", "SLURM_NTASKS").expect("dist: no size");
+        let rank = env_usize("PTXV_RANK", "SLURM_PROCID").expect("dist: no rank");
+        let size = env_usize("PTXV_RANKS", "SLURM_NTASKS").expect("dist: no size");
         if size <= 1 {
             return None;
         }
         Some(Dist::connect(&dir, rank, size))
     })
     .clone()
+}
+
+fn env_usize(a: &str, b: &str) -> Option<usize> {
+    std::env::var(a)
+        .or_else(|_| std::env::var(b))
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+}
+
+/// Tell the other ranks of a multi-node job that this rank stops with an error (`reason`):
+/// `refused.<rank>` in the rendezvous directory. Ranks waiting for it to come up stop with the
+/// reason instead of waiting out the rendezvous; connected ranks stop when its connection
+/// closes. Call it before exiting; a no-op outside multi-node mode.
+pub fn refuse(reason: &str) {
+    let Ok(dir) = std::env::var("PTXV_DIST_DIR") else {
+        return;
+    };
+    let (Some(rank), size) = (
+        env_usize("PTXV_RANK", "SLURM_PROCID"),
+        env_usize("PTXV_RANKS", "SLURM_NTASKS"),
+    ) else {
+        return;
+    };
+    if size.is_some_and(|n| n <= 1) {
+        return;
+    }
+    let _ = std::fs::create_dir_all(&dir);
+    let tmp = format!("{dir}/.refused.{rank}");
+    if std::fs::write(&tmp, reason).is_ok() {
+        let _ = std::fs::rename(&tmp, format!("{dir}/refused.{rank}"));
+    }
+}
+
+/// A refusal another rank left in `dir` (`refuse`): (rank, reason).
+fn refused(dir: &str, me: usize) -> Option<(usize, String)> {
+    for e in std::fs::read_dir(dir).ok()?.flatten() {
+        let name = e.file_name();
+        let Some(r) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix("refused."))
+            .and_then(|r| r.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        if r != me {
+            let why = std::fs::read_to_string(e.path()).unwrap_or_default();
+            return Some((r, why.trim().to_string()));
+        }
+    }
+    None
+}
+
+/// Stop this rank because rank `r` stopped (`refuse`).
+fn stop_for(r: usize, why: &str) -> ! {
+    eprintln!("dist: rank {r} stopped, so this rank stops too: {why}");
+    std::process::exit(1)
 }
 
 fn hostname() -> String {
@@ -315,12 +368,19 @@ impl Dist {
         let tmp = format!("{dir}/.addr.{rank}");
         std::fs::write(&tmp, format!("{}:{port}", hostname())).unwrap();
         std::fs::rename(&tmp, format!("{dir}/addr.{rank}")).unwrap();
+        // Every wait below also watches for a rank that stopped (`refuse`).
+        let watch = || {
+            if let Some((r, why)) = refused(dir, rank) {
+                stop_for(r, &why);
+            }
+        };
         let addr_of = |r: usize| -> String {
             let t0 = Instant::now();
             loop {
                 if let Ok(s) = std::fs::read_to_string(format!("{dir}/addr.{r}")) {
                     return s;
                 }
+                watch();
                 assert!(
                     t0.elapsed() < Duration::from_secs(600),
                     "dist: rank {r} never came up"
@@ -339,6 +399,7 @@ impl Dist {
                         break 'conn s;
                     }
                 }
+                watch();
                 assert!(
                     t0.elapsed() < Duration::from_secs(600),
                     "dist: cannot connect to {a}"
@@ -348,11 +409,31 @@ impl Dist {
             s.write_all(&(rank as u32).to_le_bytes()).unwrap();
             *slot = Some(s);
         }
-        for _ in rank + 1..size {
-            let (mut s, _) = l.accept().unwrap();
-            let mut b = [0u8; 4];
-            s.read_exact(&mut b).unwrap();
-            streams[u32::from_le_bytes(b) as usize] = Some(s);
+        // Higher ranks: accepted without blocking, so a rank that stopped before connecting
+        // is noticed (a blocking accept waited for it for good).
+        l.set_nonblocking(true).unwrap();
+        let t0 = Instant::now();
+        let mut accepted = 0;
+        while accepted < size - rank - 1 {
+            match l.accept() {
+                Ok((mut s, _)) => {
+                    s.set_nonblocking(false).unwrap();
+                    let mut b = [0u8; 4];
+                    s.read_exact(&mut b).unwrap();
+                    streams[u32::from_le_bytes(b) as usize] = Some(s);
+                    accepted += 1;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    watch();
+                    assert!(
+                        t0.elapsed() < Duration::from_secs(600),
+                        "dist: {} higher rank(s) never connected",
+                        size - rank - 1 - accepted
+                    );
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => panic!("dist: accept: {e}"),
+            }
         }
         let mut outs: Vec<Option<Mutex<mpsc::Sender<Vec<u8>>>>> = (0..size).map(|_| None).collect();
         let mut ends = Vec::new();
@@ -391,6 +472,7 @@ impl Dist {
                 }
             });
             let d2 = d.clone();
+            let dir2 = dir.to_string();
             std::thread::spawn(move || {
                 let mut rd = BufReader::with_capacity(1 << 20, s);
                 let mut len = [0u8; 4];
@@ -398,6 +480,16 @@ impl Dist {
                     let mut b = vec![0u8; u32::from_le_bytes(len) as usize];
                     rd.read_exact(&mut b).unwrap();
                     d2.deliver(r, decode(&b));
+                }
+                // The connection closed: at the end of the job, or because rank r stopped with
+                // an error, which it says (`refuse`) before exiting; the others would wait for
+                // its messages for good. A shared file system may show the file late.
+                let t0 = Instant::now();
+                while t0.elapsed() < Duration::from_secs(120) {
+                    if let Ok(why) = std::fs::read_to_string(format!("{dir2}/refused.{r}")) {
+                        stop_for(r, why.trim());
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
                 }
             });
         }

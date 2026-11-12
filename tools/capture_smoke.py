@@ -17,6 +17,10 @@ import re
 import subprocess
 import sys
 
+# ptxv's report line for an output equal to the captured GPU output (`BUF: bitwise equal to the
+# captured GPU output (...)`).
+BITWISE = re.compile(r"^[^:]+: bitwise equal to the captured GPU output ")
+
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 EX = os.path.join(ROOT, "tools/capture_examples")
 
@@ -256,7 +260,9 @@ def main():
                     )
                 )
             ex = re.findall(r"expect \(output \d+\): (.*)$", log, re.M)
-            fr["bitwise"] = None if not ex else all("bitwise equal" in e for e in ex)
+            # Bitwise only when the line is ptxv's bitwise-equal sentence: the within-one-ulp
+            # line ends with "the rest bitwise equal" and is no match.
+            fr["bitwise"] = None if not ex else all(BITWISE.match(e) for e in ex)
             fr["expect"] = ex[:4]
             r["fronts"][f] = fr
         results[name] = r

@@ -489,7 +489,9 @@ Two cheaper detours were tried and dropped:
 - the overall bound;
 - with `--trials` (or `trials = N`), the empirical check.
 
-The JSON summary goes to `<out>/equiv.json` (`--out`, default `$TMPDIR/ptxv-equiv-<fixture dir>-<file stem>/`). It
+The JSON summary goes to `<out>/equiv.json` (`--out`, default a directory of the run under
+`$TMPDIR/ptxv-equiv-<fixture dir>-<file stem>/`, printed; the next run of the file on the same
+host, boot and pid namespace removes those of finished runs). It
 is a list of candidates, each with:
 - `reference`, `candidate`, `strongest`, `proven`, `preconditions`, `relies_on`, `max_bound_u`;
 - `report`: `levels`, `per_output`, `untracked`, `unordered`, `softmax`. Each `per_output` entry

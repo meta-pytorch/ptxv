@@ -11,7 +11,8 @@
 //! kernel again.
 //!
 //! The key covers everything the verdict is a function of: every file under the case
-//! directory (recursively: `data/` holds the inputs that steer control flow), the variant,
+//! directory (recursively: `data/` holds the inputs that steer control flow; ptxv's own output
+//! directories there are not input, `is_output_dir`), the variant,
 //! the front-end, the ptxv binary (path, size, modification time) and every `PTXV_*`
 //! environment variable except the ones that only change scheduling of the search threads,
 //! output and caching. A stored verdict serves any request when it is complete (the same
@@ -79,6 +80,24 @@ impl Fnv {
     }
 }
 
+/// Whether directory `p` under the case directory holds ptxv's own output, not case input: a
+/// default output directory (it holds the `.case` claim, main.rs `default_out`) or a run
+/// directory in one (`out/<case>/run-...`, main.rs `run_dir`; multi-node runs make no claim).
+/// A run from inside the case directory without `--out` or PTXV_ROOT writes there, and every
+/// run's directory has a name of its own, so the key never matched another run's.
+fn is_output_dir(p: &Path) -> bool {
+    let run = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(crate::is_run_dir_name);
+    let in_out = p
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .is_some_and(|n| n == "out");
+    p.join(".case").is_file() || run && in_out
+}
+
 fn eat_dir(h: &mut Fnv, base: &Path, d: &Path) -> std::io::Result<()> {
     let mut es: Vec<PathBuf> = std::fs::read_dir(d)?
         .map(|e| e.map(|e| e.path()))
@@ -86,10 +105,12 @@ fn eat_dir(h: &mut Fnv, base: &Path, d: &Path) -> std::io::Result<()> {
     es.sort();
     for p in es {
         let rel = p.strip_prefix(base).unwrap_or(&p);
+        // Directories count by the files in them (their paths name the directories): one that
+        // holds only output, such as `out/`, adds nothing.
         if p.is_dir() {
-            h.eat(b"d");
-            h.eat(rel.as_os_str().as_encoded_bytes());
-            eat_dir(h, base, &p)?;
+            if !is_output_dir(&p) {
+                eat_dir(h, base, &p)?;
+            }
         } else if p.is_file() {
             h.eat(b"f");
             h.eat(rel.as_os_str().as_encoded_bytes());
@@ -100,11 +121,17 @@ fn eat_dir(h: &mut Fnv, base: &Path, d: &Path) -> std::io::Result<()> {
 }
 
 /// The cache key of a level-1 check of `variant` / `front` of the case in `case_dir`, in
-/// `mode` ("certify"), or None when it cannot be formed (then nothing is cached).
+/// `mode` ("certify"), or None when it cannot be formed or PTXV_NO_VCACHE is set (then nothing
+/// is cached).
 pub(crate) fn key(case_dir: &Path, variant: &str, front: &str, mode: &str) -> Option<String> {
     if !on() {
         return None;
     }
+    key_of(case_dir, variant, front, mode)
+}
+
+/// `key` whatever PTXV_NO_VCACHE says (the tests read the key with it set too).
+fn key_of(case_dir: &Path, variant: &str, front: &str, mode: &str) -> Option<String> {
     let mut h = Fnv(0xcbf29ce484222325);
     h.eat(&VERSION.to_le_bytes());
     h.eat(env!("CARGO_PKG_VERSION").as_bytes());
@@ -283,22 +310,31 @@ expect = ["clean"]
             std::fs::write(d.join(file), [1u8, 2, 3]).unwrap();
         }
         std::fs::write(d.join("case/data/a.bin"), [1u8, 2, 3]).unwrap();
-        let k0 = key(&d.join("case"), "good", "sass", "certify").unwrap();
-        assert_eq!(k0, key(&d.join("case"), "good", "sass", "certify").unwrap());
-        assert_ne!(k0, key(&d.join("case"), "B1", "sass", "certify").unwrap());
-        assert_ne!(k0, key(&d.join("case"), "good", "ptx", "certify").unwrap());
+        let k0 = key_of(&d.join("case"), "good", "sass", "certify").unwrap();
+        assert_eq!(
+            k0,
+            key_of(&d.join("case"), "good", "sass", "certify").unwrap()
+        );
+        assert_ne!(
+            k0,
+            key_of(&d.join("case"), "B1", "sass", "certify").unwrap()
+        );
+        assert_ne!(
+            k0,
+            key_of(&d.join("case"), "good", "ptx", "certify").unwrap()
+        );
         std::fs::write(d.join("case/data/a.bin"), [1u8, 2, 4]).unwrap();
-        let k1 = key(&d.join("case"), "good", "sass", "certify").unwrap();
+        let k1 = key_of(&d.join("case"), "good", "sass", "certify").unwrap();
         assert_ne!(k0, k1, "a data file change must change the key");
         let mut previous = k1.clone();
         for file in ["kernel.ptx", "kernel.cubin", "input.bin"] {
             std::fs::write(d.join(file), [1u8, 2, 4]).unwrap();
-            let changed = key(&d.join("case"), "good", "sass", "certify").unwrap();
+            let changed = key_of(&d.join("case"), "good", "sass", "certify").unwrap();
             assert_ne!(previous, changed, "external {file} must change the key");
             previous = changed;
         }
         std::fs::remove_file(d.join("input.bin")).unwrap();
-        assert!(key(&d.join("case"), "good", "sass", "certify").is_none());
+        assert!(key_of(&d.join("case"), "good", "sass", "certify").is_none());
         let cache = d.join("cache");
         store_in(&cache, &k1, 1000, &verdict(false));
         assert!(load_in(&cache, &k1, 1000).is_some());
@@ -308,5 +344,72 @@ expect = ["clean"]
         assert!(load_in(&cache, &k1, 2000).is_some());
         assert!(load_in(&cache, &k0, 10).is_none());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A run from inside the case directory without `--out` or PTXV_ROOT materializes in
+    /// `out/<case>/run-<host>-<pid>-<start>-<ns>`, a name of its own per run: such directories
+    /// (and the default output directory that holds them) are not part of the key, so a later
+    /// run finds the verdict. Case files elsewhere still are, whatever their name.
+    #[test]
+    fn run_directories_in_the_case_are_not_part_of_the_key() {
+        let root = std::env::temp_dir().join(format!("ptxv-vcache-out-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let d = root.join("case");
+        std::fs::create_dir_all(d.join("data")).unwrap();
+        std::fs::write(
+            d.join("case.toml"),
+            r#"
+name = "x"
+description = "out dirs"
+ptx = "../kernel.ptx"
+cubin = "../kernel.cubin"
+entry = "k"
+grid = [1,1,1]
+block = [1,1,1]
+outputs = ["out"]
+params = []
+[[buffers]]
+name = "out"
+dtype = "u8"
+shape = [3]
+init = "file"
+file = "../input.bin"
+[[variants]]
+id = "good"
+expect = ["clean"]
+"#,
+        )
+        .unwrap();
+        for file in ["kernel.cubin", "input.bin"] {
+            std::fs::write(root.join(file), [1u8, 2, 3]).unwrap();
+        }
+        std::fs::write(root.join("kernel.ptx"), [1u8, 2, 3]).unwrap();
+        std::fs::write(d.join("data/a.bin"), [1u8]).unwrap();
+        let k = || key_of(&d, "good", "sass", "certify").unwrap();
+        let k0 = k();
+        let put = |rel: &str| {
+            let p = d.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, [7u8]).unwrap();
+        };
+        // A run's directory, with its claim; an older binary's; a multi-node run's (no claim).
+        put("out/x/.case");
+        put("out/x/run-host.example-123-4567-1794443314609297873/good.cubin");
+        put("out/x/run-123-1794443314609297873/good.cubin");
+        put("out/y/run-host.example-9-8-7/rank0/good.cubin");
+        // A kept run directory (probe, calib-mma, sb-sweep) and a stray file in the claim.
+        put("out/x/run-host.example-5-6-7/.kept");
+        put("out/x/notes.txt");
+        assert_eq!(k0, k(), "ptxv output directories must not change the key");
+        // Case input that only looks like a run directory: still part of the key.
+        put("data/run-1-2/b.bin");
+        let k1 = k();
+        assert_ne!(
+            k0, k1,
+            "a data directory named like a run directory is input"
+        );
+        put("out/z/c.bin");
+        assert_ne!(k1, k(), "an `out` directory without a claim is input");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -185,6 +185,7 @@ pub fn retry_shape(m: &Machine, w: usize) -> Result<Option<(usize, usize)>, Stri
             target,
             any: false,
             tid0_falls: false,
+            all: false,
             cond: None,
             div: None,
         } = i.op
@@ -276,6 +277,7 @@ pub fn retry_shape(m: &Machine, w: usize) -> Result<Option<(usize, usize)>, Stri
             target,
             any: false,
             tid0_falls: false,
+            all: false,
             cond: None,
             div: None,
         } = i.op
@@ -354,6 +356,7 @@ pub fn retry_shape(m: &Machine, w: usize) -> Result<Option<(usize, usize)>, Stri
                 target,
                 any: false,
                 tid0_falls: false,
+                all: false,
                 cond: None,
                 div: None,
             } if i.guard.is_always() => work.push((*target, dv)),
@@ -361,6 +364,7 @@ pub fn retry_shape(m: &Machine, w: usize) -> Result<Option<(usize, usize)>, Stri
                 target,
                 any: false,
                 tid0_falls: false,
+                all: false,
                 cond: None,
                 div: None,
             } if i.guard.reg == Some(*d) && dv != 2 => {
