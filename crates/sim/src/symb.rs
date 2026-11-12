@@ -916,6 +916,12 @@ impl Arena {
         self.push(n, w, v, size)
     }
 
+    /// The tree size of node `e` (the measure the size cap applies to: shared subtrees count
+    /// once per use).
+    pub fn tree_size(&self, e: E) -> u32 {
+        self.size[e as usize]
+    }
+
     /// The value `val` (width `w`) one dynamic read got through the input-dependent address
     /// `addr` (captured `at`): a node of its own (`Node::AtAddr::inst`).
     pub fn at_addr(&mut self, addr: E, at: u64, val: E, w: u8) -> E {
