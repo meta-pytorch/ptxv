@@ -1,0 +1,75 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-ASYNC-STEP: a TMA store's global writes are ordered by its grid's completion, though its
+// issuer waited with cp.async.bulk.wait_group.read only (the store's reads). store: 128
+// threads fill a 32x32 f32 tile, thread 0 stores it to D, waits with .read 0 and exits. load
+// (a PDL launch on the same stream): griddepcontrol.wait, then thread 0 loads D[0][5] to out.
+//   good: clean (the wait acquires everything the store grid did, its TMA writes included).
+//   NOWAIT: no griddepcontrol.wait: the load races with the store's write.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry store(
+    .param .align 64 .b8 tmap[128]
+)
+.maxntid 128, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<4>;
+    .reg .f32   %f<2>;
+    .shared .align 1024 .b8 tile[4096];
+
+    mov.u32         %r0, %tid.x;
+    mov.u32         %r1, tile;
+    mov.u32         %r2, %r0;
+    mov.u32         %r5, 1024;
+LOOP:
+    cvt.rn.f32.u32  %f0, %r2;
+    shl.b32         %r3, %r2, 2;
+    add.u32         %r4, %r1, %r3;
+    st.shared.f32   [%r4], %f0;
+    add.u32         %r2, %r2, 128;
+    setp.lt.u32     %p1, %r2, %r5;
+    @%p1 bra        LOOP;
+    fence.proxy.async.shared::cta;
+    bar.sync        0;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        DONE;
+    mov.b64         %rd0, tmap;
+    cvta.param.u64  %rd1, %rd0;
+    mov.u32         %r6, 0;
+    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r6}], [%r1];
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group.read 0;
+DONE:
+    ret;
+}
+
+.visible .entry load(
+    .param .u64 out_p,
+    .param .u64 d_p
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<2>;
+    .reg .b32   %r<4>;
+    .reg .b64   %rd<4>;
+    .reg .f32   %f<2>;
+    mov.u32         %r0, %tid.x;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        LDONE;
+    griddepcontrol.wait;                                        // @WAIT
+    ld.param.u64    %rd0, [d_p];
+    cvta.to.global.u64 %rd0, %rd0;
+    ld.global.f32   %f1, [%rd0+20];
+    ld.param.u64    %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    st.global.f32   [%rd1], %f1;
+LDONE:
+    ret;
+}

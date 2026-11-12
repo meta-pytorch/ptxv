@@ -501,6 +501,85 @@ impl Verdict {
     }
 }
 
+/// `.cta_group` of a tcgen05 instruction (1 or 2), where its text shows it: PTX
+/// `tcgen05.*.cta_group::N`; SASS `UTC*` with `.2CTA` (2) or without (1), but for
+/// `UTCATOMSWS.AND` (dealloc / free, the same form for both groups).
+fn cta_group_of(front: ptxv_ir::Front, text: &str) -> Option<u8> {
+    let t = text.trim_start();
+    let t = match t.strip_prefix('@') {
+        Some(r) => r
+            .split_once(char::is_whitespace)
+            .map_or("", |x| x.1)
+            .trim_start(),
+        None => t,
+    };
+    let opc = t.split_whitespace().next().unwrap_or("");
+    match front {
+        ptxv_ir::Front::Ptx => {
+            if !opc.starts_with("tcgen05.") {
+                return None;
+            }
+            let m: Vec<&str> = opc.split('.').collect();
+            if m.contains(&"cta_group::2") {
+                Some(2)
+            } else if m.contains(&"cta_group::1") {
+                Some(1)
+            } else {
+                None
+            }
+        }
+        _ => {
+            if !opc.starts_with("UTC") || opc.starts_with("UTCATOMSWS.AND") {
+                return None;
+            }
+            Some(if opc.split('.').any(|x| x == "2CTA") {
+                2
+            } else {
+                1
+            })
+        }
+    }
+}
+
+/// PTX ISA (tcgen05, `.cta_group`): "All tcgen05 instructions within a kernel must specify the
+/// same value for the .cta_group qualifier." A kernel (each kernel of a multi-kernel launch)
+/// that names both is a violation, at its first instruction of each group. ptxas 13.0 refuses
+/// such a kernel ("uses single CTA(.cta_group::1) and CTA pair granularity(.cta_group::2) and
+/// that is not allowed"), so on the SASS front only an edited binary shows it.
+pub fn cta_group_mix(k: &ptxv_ir::Kernel) -> Vec<Finding> {
+    let mut bounds: Vec<usize> = k.parts.iter().map(|p| p.entry).collect();
+    if bounds.first() != Some(&0) {
+        bounds.insert(0, 0);
+    }
+    bounds.push(k.code.len());
+    let mut out = vec![];
+    for w in bounds.windows(2) {
+        let mut first: [Option<usize>; 2] = [None, None];
+        for pc in w[0]..w[1] {
+            if let Some(g) = cta_group_of(k.front, &k.code[pc].text) {
+                first[g as usize - 1].get_or_insert(pc);
+            }
+        }
+        if let [Some(a), Some(b)] = first {
+            out.push(Finding {
+                kind: "violation".into(),
+                sig: format!("cta-group-mix:{a}:{b}"),
+                msg: format!(
+                    "tcgen05 instructions of one kernel name both .cta_group::1 ({}) and .cta_group::2 ({}): the PTX ISA requires one value per kernel (ptxas refuses it); each tcgen05.commit tracks only its own group's operations",
+                    k.describe(a),
+                    k.describe(b)
+                ),
+                trace: vec![
+                    format!("  static: {}", k.code[a].text),
+                    format!("  static: {}", k.code[b].text),
+                ],
+                ..Default::default()
+            });
+        }
+    }
+    out
+}
+
 /// Schedule-independent findings of the kernel (SASS scoreboard hazards), as findings, plus
 /// notes: each vprintf call site (E-CLOCK: not run; a timeout or print path exists there) and
 /// the launch's (S-GLOBAL-INIT: a module global assumed zero at module load).
@@ -535,6 +614,7 @@ pub(crate) fn static_findings(m: &Machine) -> Vec<Finding> {
         ),
         ..Default::default()
     }));
+    notes.extend(cta_group_mix(&m.k));
     notes.extend(m.launch.notes.iter().map(|(sig, msg)| Finding {
         kind: "note".into(),
         sig: sig.clone(),
@@ -6193,7 +6273,9 @@ fn explore_one(mut m0: Machine, max_states: usize, threads: usize) -> Verdict {
     // find its races). Then one deterministic run to the end adds depth: its findings are
     // witnesses of that run (happens-before races, violations), the verdict stays incomplete.
     if !v.complete && v.terminal_states == 0 && std::env::var("PTXV_NO_DEPTH_RUN").is_err() {
-        let (_, fs, ok) = run_once(m0.clone());
+        // The whole check's time budget (membudget.rs) stops this run too.
+        let (_, fs, ok, cut) =
+            run_once_until(m0.clone(), &mut |_| crate::membudget::time_budget_spent());
         let mut added = 0usize;
         for f in fs {
             if !v.findings.iter().any(|g| g.sig == f.sig) {
@@ -6201,9 +6283,13 @@ fn explore_one(mut m0: Machine, max_states: usize, threads: usize) -> Verdict {
                 added += 1;
             }
         }
+        let how = match (ok, cut) {
+            (true, _) => "to the end".to_string(),
+            (false, true) => format!("(stopped at {})", crate::membudget::TIME_BUDGET),
+            (false, false) => "(not to the end)".to_string(),
+        };
         v.notes.push(format!(
-            "the bounded search reached no terminal state; one deterministic run {} added {added} finding(s)",
-            if ok { "to the end" } else { "(not to the end)" }
+            "the bounded search reached no terminal state; one deterministic run {how} added {added} finding(s)"
         ));
     }
     if let Some(log) = log.filter(|_| v.complete && v.distinct_outputs <= 1) {
@@ -6222,7 +6308,17 @@ fn explore_one(mut m0: Machine, max_states: usize, threads: usize) -> Verdict {
 /// `explore_one` before the dead-race check: the verdict and the model it came from (peek
 /// changes, value-insensitive poll level).
 fn explore_one_models(m0: Machine, max_states: usize, threads: usize) -> (Verdict, bool, u8) {
-    let v = explore_one_model(m0.clone(), max_states, threads, true, 2);
+    explore_one_models_with(m0, &mut |m, peeks, vip| {
+        explore_one_model(m, max_states, threads, peeks, vip)
+    })
+}
+
+/// `explore_one_models` with the search of one model given: `search(machine, peeks, vip)`.
+fn explore_one_models_with(
+    m0: Machine,
+    search: &mut dyn FnMut(Machine, bool, u8) -> Verdict,
+) -> (Verdict, bool, u8) {
+    let v = search(m0.clone(), true, 2);
     // A racy kernel's outcomes depend on orders of plain accesses that the reductions do
     // not keep (E-DRF); the peek changes remove branching that used to expose some of them.
     // So a search that finds a race is run again in the plain model. Likewise for
@@ -6242,6 +6338,8 @@ fn explore_one_models(m0: Machine, max_states: usize, threads: usize) -> (Verdic
         // E-RACE-DEAD: the race log must describe the search whose verdict is returned; a
         // value-insensitive acquire poll acquires nothing, so the first search logs racing
         // reads (after the poll) that the plain model orders (fixtures/l1_litmus neg-payld).
+        // Reruns cut short without a race (their silence refutes nothing).
+        let mut cut: Vec<Verdict> = Vec::new();
         let clear_log = |m: &Machine| {
             if let Some(l) = &m.race_log {
                 l.lock().unwrap().clear();
@@ -6249,8 +6347,12 @@ fn explore_one_models(m0: Machine, max_states: usize, threads: usize) -> (Verdic
         };
         if vip_model {
             clear_log(&m0);
-            let w = explore_one_model(m0.clone(), max_states, threads, true, 1);
-            if !w.findings.iter().any(|f| f.kind == "race") {
+            let w = search(m0.clone(), true, 1);
+            // A rerun cut short (state cap, time budget) that found no race refutes nothing:
+            // the plain model decides, and what the searches found stays (`keep_found`).
+            if !w.findings.iter().any(|f| f.kind == "race") && !w.complete {
+                cut.push(w);
+            } else if !w.findings.iter().any(|f| f.kind == "race") {
                 let mut w = w;
                 w.notes.push(format!(
                     "a race was found: explored again with value-insensitive polls (E-POLL-ANY) on relaxed loads only ({} states with acquire loads too)",
@@ -6260,14 +6362,41 @@ fn explore_one_models(m0: Machine, max_states: usize, threads: usize) -> (Verdic
             }
         }
         clear_log(&m0);
-        let mut w = explore_one_model(m0, max_states, threads, false, 0);
+        let mut w = search(m0, false, 0);
         w.notes.push(format!(
             "a race was found: explored again without the peek changes (E-SPIN) and value-insensitive polls (E-POLL-ANY) ({} states with them)",
             v.states
         ));
+        if !w.complete {
+            keep_found(&mut w, std::iter::once(&v).chain(&cut));
+        }
         return (w, false, 0);
     }
     (v, true, 2)
+}
+
+/// A plain-model rerun cut short (state cap, time budget) decides nothing about what the
+/// earlier searches of the model reductions found (`explore_one_models`): their findings and
+/// distinct outputs stay in the incomplete verdict, beside the rerun's own, with a note (a cut
+/// rerun used to replace them, so a deadlock / race / violation became an inconclusive search
+/// of a few states).
+fn keep_found<'a>(w: &mut Verdict, earlier: impl Iterator<Item = &'a Verdict>) {
+    let (mut kept, mut from) = (0usize, 0usize);
+    for e in earlier {
+        from = from.max(e.states);
+        for f in &e.findings {
+            if !w.findings.iter().any(|g| g.sig == f.sig) {
+                w.findings.push(f.clone());
+                kept += 1;
+            }
+        }
+        w.distinct_outputs = w.distinct_outputs.max(e.distinct_outputs);
+    }
+    w.complete = false;
+    w.notes.push(format!(
+        "the rerun stopped incomplete at {} states: {kept} finding(s) of the searches with the model reductions ({from} states) are kept, unconfirmed by the plain model",
+        w.states
+    ));
 }
 
 fn explore_one_model(
@@ -6378,9 +6507,14 @@ fn explore_one_model(
         d.set_learn(*call, Some(Arc::new(LearnSink(learned.clone()))));
     }
     let mut prev: Option<Verdict> = None;
-    if por {
-        seed_learned(&m0, &learned, threads);
-    }
+    // A budget that stopped the seed walks makes the verdict incomplete, with their note,
+    // whatever the rounds do: a cut seed set is never taken as complete. Multi-node: the
+    // walks run unbounded, as the rounds do (`dist` applies only the state cap).
+    let seed_cut = if por {
+        seed_learned(&m0, &learned, threads, net.is_none())
+    } else {
+        None
+    };
     for round in 1.. {
         let mut v = explore_round(
             m0.clone(),
@@ -6417,6 +6551,10 @@ fn explore_one_model(
             if let Some((d, call)) = &net {
                 d.set_learn(*call, None);
             }
+            if let Some(n) = &seed_cut {
+                v.complete = false;
+                v.notes.push(n.clone());
+            }
             if v.complete {
                 let by = g.by.clone();
                 drop(g);
@@ -6439,23 +6577,58 @@ fn explore_one_model(
 /// round). Deterministic (fixed seed). With one thread the walks draw from one random stream;
 /// with more, each walk has its own (so they can run side by side: on large kernels the walks
 /// take as long as the parallel search itself).
-fn seed_learned(m0: &Machine, learned: &Learned, threads: usize) {
+///
+/// With `budget`, the explorations' budgets bound the walks too (`over_budget`: the memory
+/// budget, the time budget of `membudget::set_deadline`): no walk takes a step once one is
+/// reached, and the result is the note for the search's verdict, which the caller marks
+/// incomplete. The sets learned until then are those of fewer or shorter walks, as with a
+/// smaller `PTXV_POR_SEED_WALKS` (0 included) or the step cap: the reduction does not rely
+/// on them (the last round decides with what it learned itself, `explore_one_model`).
+fn seed_learned(m0: &Machine, learned: &Learned, threads: usize, budget: bool) -> Option<String> {
     let walks: usize = std::env::var("PTXV_POR_SEED_WALKS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(16);
     let seed: u64 = 0x9e37_79b9_7f4a_7c15;
+    // Walks that ended (no enabled action, or the step cap), steps of all walks, and whether
+    // a budget stopped one. `done` records a walk and says whether to go on.
+    let (ended, steps, cut) = (
+        AtomicUsize::new(0),
+        AtomicU64::new(0),
+        AtomicBool::new(false),
+    );
+    let done = |(n, stopped): (u64, bool)| {
+        steps.fetch_add(n, Ordering::Relaxed);
+        if stopped {
+            cut.store(true, Ordering::Relaxed);
+        } else {
+            ended.fetch_add(1, Ordering::Relaxed);
+        }
+        !stopped
+    };
+    let note = || {
+        cut.load(Ordering::Relaxed).then(|| {
+            format!(
+                "the synchronization reduction's seed walks stopped at {}: {} of {walks} walks ended ({} steps); the search after them is incomplete",
+                crate::membudget::reached().unwrap_or_else(|| "a budget".into()),
+                ended.load(Ordering::Relaxed),
+                steps.load(Ordering::Relaxed)
+            )
+        })
+    };
     if threads == 1 {
         let (mut view, mut rng) = (LearnedView::new(learned), seed);
         for _ in 0..walks {
-            seed_walk(m0.clone(), &mut view, &mut rng);
+            if !done(seed_walk(m0.clone(), &mut view, &mut rng, budget)) {
+                break;
+            }
         }
-        return;
+        return note();
     }
     let next = AtomicUsize::new(0);
     std::thread::scope(|s| {
         for _ in 0..threads.min(walks) {
-            let next = &next;
+            let (next, done, cut) = (&next, &done, &cut);
             std::thread::Builder::new()
                 .stack_size(STACK)
                 .spawn_scoped(s, move || {
@@ -6463,7 +6636,7 @@ fn seed_learned(m0: &Machine, learned: &Learned, threads: usize) {
                     let mut view = LearnedView::new(learned);
                     loop {
                         let i = next.fetch_add(1, Ordering::Relaxed);
-                        if i >= walks {
+                        if i >= walks || cut.load(Ordering::Relaxed) {
                             break;
                         }
                         // splitmix64 of the walk index: independent, never-zero xorshift seeds.
@@ -6471,16 +6644,27 @@ fn seed_learned(m0: &Machine, learned: &Learned, threads: usize) {
                         z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
                         z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
                         let mut r = (z ^ (z >> 31)) | 1;
-                        seed_walk(m0.unshared(&like), &mut view, &mut r);
+                        if !done(seed_walk(m0.unshared(&like), &mut view, &mut r, budget)) {
+                            break;
+                        }
                     }
                 })
                 .expect("spawn explorer thread");
         }
     });
+    note()
 }
 
-/// One random complete execution from `m`, learning the footprint of every step.
-fn seed_walk(mut m: Machine, view: &mut LearnedView, rng: &mut u64) {
+/// The explorations' budgets (`membudget`): is the memory budget or the deadline reached?
+fn over_budget() -> bool {
+    crate::membudget::exceeded() || crate::membudget::past_deadline()
+}
+
+/// One random complete execution from `m`, learning the footprint of every step: the steps
+/// taken, and whether a budget stopped it (`budget`, `over_budget`) with an action still
+/// enabled.
+fn seed_walk(mut m: Machine, view: &mut LearnedView, rng: &mut u64, budget: bool) -> (u64, bool) {
+    let mut steps = 0;
     for _ in 0..1_000_000 {
         let acts = m.actions_bare();
         for (e, pc, f) in blocked_sync(&m, &acts) {
@@ -6489,6 +6673,10 @@ fn seed_walk(mut m: Machine, view: &mut LearnedView, rng: &mut u64) {
         if acts.is_empty() {
             break;
         }
+        if budget && over_budget() {
+            return (steps, true);
+        }
+        steps += 1;
         *rng ^= *rng << 13;
         *rng ^= *rng >> 7;
         *rng ^= *rng << 17;
@@ -6506,6 +6694,7 @@ fn seed_walk(mut m: Machine, view: &mut LearnedView, rng: &mut u64) {
             view.learn(e, pc, &fp);
         }
     }
+    (steps, false)
 }
 
 /// E-BAR-OVER walk states (pc and small register environments): a multiplicative hash of
@@ -7460,6 +7649,11 @@ pub fn random_run(mut m: Machine, seed: u64, cap: usize) -> (Machine, Vec<Findin
     let mut rng = seed | 1;
     let mut faults = FaultLoop::default();
     for _ in 0..cap {
+        // The whole check's time budget (membudget.rs): stopped, not terminal (the caller,
+        // the certificate's cross-check, checks it).
+        if crate::membudget::time_budget_spent() {
+            return (m, fs, false);
+        }
         let acts = m.actions();
         if acts.is_empty() {
             break;
@@ -8947,7 +9141,9 @@ impl LaWarp {
                 *changed = true;
                 LaStep::Next
             }
-            Op::TcCommit { mbar, off, mask } => {
+            Op::TcCommit {
+                mbar, off, mask, ..
+            } => {
                 if g == Av::K(0) {
                     return LaStep::Next;
                 }
@@ -9970,6 +10166,39 @@ mod bar_cut_tests {
         let k = ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap();
         let launch = crate::build_launch(&case, &k).unwrap();
         Machine::new(Arc::new(k), Arc::new(launch))
+    }
+
+    /// A rerun of the plain model cut short (here at one state) after the search with the
+    /// model reductions found BC3's deadlock, race and violation keeps those findings and is
+    /// incomplete. It used to return the cut rerun's verdict whole: inconclusive, no finding
+    /// (what a time budget spent during the rerun gave).
+    #[test]
+    fn a_cut_rerun_keeps_what_the_first_search_found() {
+        let first = explore_one_model(machine("BC3"), 2_000_000, 1, true, 2);
+        assert!(first.complete, "{:?}", first.classes());
+        let mut calls = 0;
+        let (v, _, _) = explore_one_models_with(machine("BC3"), &mut |m, peeks, vip| {
+            calls += 1;
+            let cap = if calls == 1 { 2_000_000 } else { 1 };
+            explore_one_model(m, cap, 1, peeks, vip)
+        });
+        assert!(calls >= 2, "no rerun");
+        assert!(!v.complete);
+        let got = v.classes();
+        for c in first.classes() {
+            assert!(
+                got.contains(&c),
+                "{c} dropped: {got:?} (first search: {:?})",
+                first.classes()
+            );
+        }
+        assert!(
+            v.notes
+                .iter()
+                .any(|n| n.contains("unconfirmed by the plain model")),
+            "{:?}",
+            v.notes
+        );
     }
 
     /// Steps only `warps` (first enabled action each time) until `stop` or none is enabled.

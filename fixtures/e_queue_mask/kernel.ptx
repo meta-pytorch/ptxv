@@ -1,0 +1,80 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-TMEM-QUEUE masking probe. 8 warps; warps 0 and 4 share TMEM lane quadrant 0.
+// Every warp loads its quadrant's column 0 and waits only after the barrier (SASS: the LDTMs
+// can be in flight at BAR.SYNC, MISS 103). Then one warp (STORER: 0, or 4 in variant S4)
+// loads the column again and stores it with no wait between, racing with the other warp of
+// its quadrant's in-flight load. Readers are sorted by actor: with storer 0 its own pending
+// LDTM comes before warp 4's.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_queue_mask(
+    .param .u64 dst_ptr
+)
+.maxntid 256, 1, 1
+{
+    .reg .pred  %p<8>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<8>;
+    .shared .align 16 .b32 slot;
+
+    mov.u32         %r0, %tid.x;
+    shr.u32         %r1, %r0, 5;                    // warp
+    mov.u32         %r2, slot;
+    setp.ne.u32     %p0, %r1, 0;
+    @%p0 bra        SKIP_ALLOC;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r2], 32;
+    tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+SKIP_ALLOC:
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    tcgen05.fence::after_thread_sync;
+    ld.shared.b32   %r3, [%r2];                     // TMEM base (lane 0, column 0)
+    and.b32         %r4, %r1, 3;
+    shl.b32         %r4, %r4, 21;                   // (32 * (warp % 4)) << 16
+    add.u32         %r5, %r3, %r4;
+    setp.lt.u32     %p1, %r1, 4;
+    @!%p1 bra       NOINIT;
+    add.u32         %r6, %r0, 100;
+    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r5], {%r6};
+    tcgen05.wait::st.sync.aligned;
+NOINIT:
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    tcgen05.fence::after_thread_sync;
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 {%r7}, [%r5];   // every warp: waited after the barrier
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    tcgen05.fence::after_thread_sync;
+    setp.eq.u32     %p3, %r1, 0;                          // @STORER
+    @!%p3 bra       NOWRITE;
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 {%r8}, [%r5];   // own load, no wait before the store
+    add.u32         %r9, %r0, 200;
+    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r5], {%r9};
+    tcgen05.wait::st.sync.aligned;
+    tcgen05.wait::ld.sync.aligned;
+    add.u32         %r8, %r8, %r7;
+    bra             OUT;
+NOWRITE:
+    tcgen05.wait::ld.sync.aligned;
+    mov.u32         %r8, %r7;
+OUT:
+    ld.param.u64    %rd0, [dst_ptr];
+    cvta.to.global.u64 %rd1, %rd0;
+    mul.wide.u32    %rd2, %r0, 4;
+    add.u64         %rd3, %rd1, %rd2;
+    st.global.b32   [%rd3], %r8;
+DONE:
+    tcgen05.fence::before_thread_sync;
+    bar.sync        0;
+    tcgen05.fence::after_thread_sync;
+    @%p0 bra        FIN;
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r3, 32;
+FIN:
+    ret;
+}

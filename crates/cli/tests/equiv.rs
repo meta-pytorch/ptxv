@@ -413,6 +413,17 @@ fn online_bookkeeping_taint_is_exact() {
     }
 }
 
+/// MISS 65 (fixtures/errdist/m65vote/equiv.toml): lanes 16..31 branch on a ballot of lanes
+/// 0..15's input-derived predicate. On the captured input the ballot is 0 and the DAGs are
+/// equal, but an input with a nonzero ballot takes the other branch. Each lane's ballot result
+/// carried only its own predicate's taint, so L0 was proven for every input; the branch on the
+/// ballot is a data-dependent precondition now (no proof; the rounding it guards has no node).
+#[test]
+fn ballot_decided_branch_blocks_the_proof() {
+    let t = equiv_ok("fixtures/errdist/m65vote/equiv.toml", 1);
+    assert!(t.contains("data-dependent: guard of"), "{t}");
+}
+
 #[test]
 fn empty_output_list_is_rejected() {
     let source =

@@ -1,0 +1,79 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// fixtures/c_num_nonfinite_f32 (N-NUM-NONFINITE): non-finite simulated and exact values.
+// Thread t (32 threads). Even lanes: x = y = 3e38, u = v = -3e38, w2 = -inf; odd lanes finite.
+// w: +inf, -inf, NaN, finite by t mod 4; z finite.
+//   out[t]       = (x + y) + (u + v)   even: inf + -inf = NaN, exact 0 (an infinite error)
+//   out[32 + t]  = x + y               even: overflow to inf, exact 6e38 (an infinite error)
+//   out[64 + t]  = w                   a copy: identical to the exact value (error 0)
+//   out[96 + t]  = w + z               inf + z: the f64 expansion gives NaN, not inf (not analyzed);
+//                                      NaN + z: NaN for NaN (error 0)
+//   out[128 + t] = (x + y) + w2        even: the overflowed inf + -inf = NaN; the exact value is
+//                                      -inf but its expansion is NaN (not analyzed)
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_nonfinite_f32(
+	.param .u64 px,
+	.param .u64 py,
+	.param .u64 pu,
+	.param .u64 pv,
+	.param .u64 pw,
+	.param .u64 pz,
+	.param .u64 pw2,
+	.param .u64 pout
+)
+{
+	.reg .b32 %r<4>;
+	.reg .f32 %f<16>;
+	.reg .b64 %rd<24>;
+
+	ld.param.u64 %rd1, [px];
+	ld.param.u64 %rd2, [py];
+	ld.param.u64 %rd3, [pu];
+	ld.param.u64 %rd4, [pv];
+	ld.param.u64 %rd5, [pw];
+	ld.param.u64 %rd6, [pz];
+	ld.param.u64 %rd7, [pw2];
+	ld.param.u64 %rd8, [pout];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd2, %rd2;
+	cvta.to.global.u64 %rd3, %rd3;
+	cvta.to.global.u64 %rd4, %rd4;
+	cvta.to.global.u64 %rd5, %rd5;
+	cvta.to.global.u64 %rd6, %rd6;
+	cvta.to.global.u64 %rd7, %rd7;
+	cvta.to.global.u64 %rd8, %rd8;
+	mov.u32 %r1, %tid.x;
+	mul.wide.u32 %rd9, %r1, 4;
+	add.s64 %rd10, %rd1, %rd9;
+	ld.global.f32 %f1, [%rd10];
+	add.s64 %rd10, %rd2, %rd9;
+	ld.global.f32 %f2, [%rd10];
+	add.s64 %rd10, %rd3, %rd9;
+	ld.global.f32 %f3, [%rd10];
+	add.s64 %rd10, %rd4, %rd9;
+	ld.global.f32 %f4, [%rd10];
+	add.s64 %rd10, %rd5, %rd9;
+	ld.global.f32 %f5, [%rd10];
+	add.s64 %rd10, %rd6, %rd9;
+	ld.global.f32 %f6, [%rd10];
+	add.s64 %rd10, %rd7, %rd9;
+	ld.global.f32 %f7, [%rd10];
+	add.s64 %rd11, %rd8, %rd9;
+	add.rn.f32 %f8, %f1, %f2;
+	add.rn.f32 %f9, %f3, %f4;
+	add.rn.f32 %f10, %f8, %f9;
+	st.global.f32 [%rd11], %f10;
+	st.global.f32 [%rd11+128], %f8;
+	st.global.f32 [%rd11+256], %f5;
+	add.rn.f32 %f11, %f5, %f6;
+	st.global.f32 [%rd11+384], %f11;
+	add.rn.f32 %f12, %f8, %f7;
+	st.global.f32 [%rd11+512], %f12;
+	ret;
+}

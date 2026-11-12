@@ -3,9 +3,10 @@ description = """
 E-DRF for tensor memory (TMEM accesses are not scheduling points; races are found by vector
 clocks): warp 0 tcgen05.st's a column of lane quadrant 0, warp 4 tcgen05.ld's it after a
 barrier. good: clean. NOBAR (no barrier): the load races with the store. NOWAIT (no
-tcgen05.wait::st before the fence and barrier): clean, by S-TCGEN05's reading of the ISA (another
-thread sees a tcgen05.st through fence::before_thread_sync, a synchronization and
-fence::after_thread_sync; wait::st orders it for the storing thread's own later tcgen05 ops)."""
+tcgen05.wait::st before the fence and barrier): a race on PTX, the store is not complete at the
+synchronization (PTX ISA 9.7.18.6.4.4; MISS 105: before, clean by S-TCGEN05's earlier reading
+that fence::before_thread_sync publishes an un-waited tcgen05.st), and on SASS, no
+FENCE.VIEW.ASYNC.T after the STTM (MISS 107: before, clean)."""
 ptx = "kernel.ptx"
 entry = "e_drf_tmem"
 grid = [1, 1, 1]
@@ -36,8 +37,8 @@ expect = ["race"]
 
 [[variants]]
 id = "NOWAIT"
-summary = "tcgen05.wait::st deleted: clean under S-TCGEN05 (the fences and the barrier publish the store)"
+summary = "tcgen05.wait::st deleted: the un-waited store races with the load (PTX: MISS 105; SASS: MISS 107)"
 marker = "@WAIT"
 replace = "<delete>"
-expect = ["clean"]
+expect = ["race"]
 hw_note = "GB300 200/200 bitwise, as good and NOBAR (ptxv hw, 2026-11-09)"

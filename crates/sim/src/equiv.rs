@@ -697,7 +697,7 @@ impl Side<'_> {
                 // the location's value before the first.
                 let mut vals = Vec::new();
                 let mut cur = n;
-                while let NodeKind::AtomAdd(o, x) = self.ns.nodes[cur as usize].kind {
+                while let NodeKind::AtomAdd(o, x, _) = self.ns.nodes[cur as usize].kind {
                     vals.push(x);
                     cur = o;
                 }

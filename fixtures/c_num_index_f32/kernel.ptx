@@ -1,0 +1,81 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// fixtures/c_num_index_f32 (N-NUM-TRACK): index arithmetic that the SASS front computes with
+// rounding instructions. Thread t (128 threads), parameters cols = 12, rlim = 8, rlim2 = 9, n = 6:
+// r = t / cols (ptxas: the u32 division idiom I2F.U32.RP, MUFU.RCP, F2I.TRUNC and an integer
+// correction), c = t - r cols, j = (11 c + r) & 127.
+//   out[256 + t] = sum over i < n of x[(t + 32 i) & 127], then + f32(i), in loop order (ptxas
+//                  starts the counter i with HFMA2 R, -RZ, RZ, 0, 0)
+//   out[t]       = x[j] + y[j]   if r < rlim    (a store under a guard from the quotient)
+//   out[128 + t] = x[j]          if r < rlim2   (a branch on the quotient skips it otherwise)
+// The quotient and the counter are exact: `ptxv num` keeps a claim on every element.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_index_f32(
+	.param .u64 px,
+	.param .u64 py,
+	.param .u64 pout,
+	.param .u32 pcols,
+	.param .u32 prlim,
+	.param .u32 prlim2,
+	.param .u32 pn
+)
+{
+	.reg .pred %p<4>;
+	.reg .b32 %r<16>;
+	.reg .f32 %f<8>;
+	.reg .b64 %rd<16>;
+
+	ld.param.u64 %rd1, [px];
+	ld.param.u64 %rd2, [py];
+	ld.param.u64 %rd3, [pout];
+	ld.param.u32 %r1, [pcols];
+	ld.param.u32 %r2, [prlim];
+	ld.param.u32 %r3, [prlim2];
+	ld.param.u32 %r8, [pn];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd2, %rd2;
+	cvta.to.global.u64 %rd3, %rd3;
+	mov.u32 %r4, %tid.x;
+	mul.wide.u32 %rd7, %r4, 4;
+	add.s64 %rd8, %rd3, %rd7;
+	mov.f32 %f4, 0f00000000;
+	mov.u32 %r9, 0;
+LOOP:
+	shl.b32 %r10, %r9, 5;
+	add.u32 %r10, %r10, %r4;
+	and.b32 %r10, %r10, 127;
+	mul.wide.u32 %rd9, %r10, 4;
+	add.s64 %rd9, %rd1, %rd9;
+	ld.global.f32 %f5, [%rd9];
+	add.rn.f32 %f4, %f4, %f5;
+	cvt.rn.f32.u32 %f6, %r9;
+	add.rn.f32 %f4, %f4, %f6;
+	add.u32 %r9, %r9, 1;
+	setp.lt.u32 %p3, %r9, %r8;
+	@%p3 bra LOOP;
+	st.global.f32 [%rd8+1024], %f4;
+	div.u32 %r5, %r4, %r1;
+	mul.lo.u32 %r6, %r5, %r1;
+	sub.u32 %r6, %r4, %r6;
+	mad.lo.u32 %r7, %r6, 11, %r5;
+	and.b32 %r7, %r7, 127;
+	mul.wide.u32 %rd4, %r7, 4;
+	add.s64 %rd5, %rd1, %rd4;
+	ld.global.f32 %f1, [%rd5];
+	add.s64 %rd6, %rd2, %rd4;
+	ld.global.f32 %f2, [%rd6];
+	add.rn.f32 %f3, %f1, %f2;
+	setp.lt.u32 %p1, %r5, %r2;
+	@%p1 st.global.f32 [%rd8], %f3;
+	setp.ge.u32 %p2, %r5, %r3;
+	@%p2 bra DONE;
+	st.global.f32 [%rd8+512], %f1;
+DONE:
+	ret;
+}

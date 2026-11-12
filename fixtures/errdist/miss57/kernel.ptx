@@ -1,0 +1,170 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// MISS 57: errdist identified an instruction slice's real function on probes (the captured
+// input and perturbed ones) that all took one outcome of a data-dependent guard inside the
+// slice, then used that function as the exact reference on every input, the other outcome
+// included. Each thread i forms a = RN(x[i] w[i]) and y[i] = RN(a' + v[i]), with
+//   m57_guard: a' = RN(3 a) where x[0] >= -3 (a predicated FMUL), else a;
+//   m57_sel:   a' = x[0] >= -3 ? RN(3 a) : a (an FSEL; RN(RN(3 a) + v[i]) also goes to z[i]);
+//   m57_max:   as m57_guard with y[i] = max(a', v[i]) (the slice under a maximum);
+//   m57_elem:  as m57_guard with the guard on the thread's own x[i] (an elementwise kernel);
+//   m57_ffma:  the round-4 review's repro: a = RN(x[i] w[i]); t = RN(x[0] + 3); where
+//              bits(t) < 0 (x[0] < -3), a = RN(a v[i] + w[i]) (`@!P0 FFMA`); y[i] = RN(a + v[i]).
+//              Its slice is identified as a, the outcome the probes took.
+// The captured x is 0 and the probes perturb it by N(0, 1): the guard x[0] >= -3 holds on
+// every probe, and the slice of a' is identified as 3 a. For x[0] < -3 the kernel computes
+// RN(RN(x w) + v), whose P(bits differ) against RN(x w + v) is about 0.29; errdist reported
+// P(bits differ) = 1 against RN(3 x w + v).
+
+.visible .entry m57_guard(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b64 %rd<16>;
+    .reg .b32 %r<4>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    ld.global.f32 %f9, [%rd1];
+    mul.rn.f32 %f4, %f1, %f2;
+    setp.ge.f32 %p1, %f9, 0fC0400000;
+    @%p1 mul.rn.f32 %f4, %f4, 0f40400000;
+    add.rn.f32 %f5, %f4, %f3;
+    st.global.f32 [%rd10], %f5;
+    ret;
+}
+
+.visible .entry m57_sel(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py, .param .u64 pz)
+{
+    .reg .f32 %f<12>;
+    .reg .b64 %rd<16>;
+    .reg .b32 %r<4>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    ld.param.u64 %rd5, [pz];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    add.s64 %rd11, %rd5, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    ld.global.f32 %f9, [%rd1];
+    mul.rn.f32 %f4, %f1, %f2;
+    mul.rn.f32 %f6, %f4, 0f40400000;
+    setp.ge.f32 %p1, %f9, 0fC0400000;
+    selp.f32 %f7, %f6, %f4, %p1;
+    add.rn.f32 %f5, %f7, %f3;
+    add.rn.f32 %f8, %f6, %f3;
+    st.global.f32 [%rd10], %f5;
+    st.global.f32 [%rd11], %f8;
+    ret;
+}
+
+.visible .entry m57_max(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b64 %rd<16>;
+    .reg .b32 %r<4>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    ld.global.f32 %f9, [%rd1];
+    mul.rn.f32 %f4, %f1, %f2;
+    setp.ge.f32 %p1, %f9, 0fC0400000;
+    @%p1 mul.rn.f32 %f4, %f4, 0f40400000;
+    max.f32 %f5, %f4, %f3;
+    st.global.f32 [%rd10], %f5;
+    ret;
+}
+
+.visible .entry m57_elem(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b64 %rd<16>;
+    .reg .b32 %r<4>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    setp.ge.f32 %p1, %f1, 0fC0400000;
+    @%p1 mul.rn.f32 %f4, %f4, 0f40400000;
+    add.rn.f32 %f5, %f4, %f3;
+    st.global.f32 [%rd10], %f5;
+    ret;
+}
+
+.visible .entry m57_ffma(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<12>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    ld.global.f32 %f9, [%rd1];
+    add.rn.f32 %f10, %f9, 0f40400000;
+    mov.b32 %r6, %f10;
+    mul.rn.f32 %f4, %f1, %f2;
+    setp.ge.s32 %p1, %r6, 0;
+    @!%p1 fma.rn.f32 %f4, %f4, %f3, %f2;
+    add.rn.f32 %f5, %f4, %f3;
+    st.global.f32 [%rd10], %f5;
+    ret;
+}

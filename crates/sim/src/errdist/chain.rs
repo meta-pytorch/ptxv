@@ -58,10 +58,14 @@ pub enum Op {
         arg: u32,
         f16: bool,
     },
+    /// f32 add rounded to nearest (toward zero with `rz`); `ftz`: subnormal operands and
+    /// result flushed to zero (an fp32 atomic add's `.FTZ`).
     Add {
         a: u32,
         b: u32,
         rz: bool,
+        #[serde(default)]
+        ftz: bool,
     },
     Fma {
         a: u32,
@@ -78,6 +82,24 @@ pub enum Op {
         arg: u32,
         part: crate::num::Tf32Part,
     },
+}
+
+/// An op's operands (program op indices).
+pub fn op_args(op: &Op) -> Vec<u32> {
+    match op {
+        Op::Leaf { .. } | Op::Const(_) => vec![],
+        Op::Nl(nl) => nl.args(),
+        Op::Round { arg, .. } | Op::Tf32 { arg, .. } => vec![*arg],
+        Op::Add { a, b, .. } => vec![*a, *b],
+        Op::Fma { a, b, c, .. } => [Some(*a), Some(*b), *c].into_iter().flatten().collect(),
+        Op::Mma {
+            acc, terms, scales, ..
+        } => acc
+            .iter()
+            .copied()
+            .chain(terms.iter().chain(scales).flat_map(|&(x, y)| [x, y]))
+            .collect(),
+    }
 }
 
 /// The f32 value of a TF32 part of x.
@@ -109,6 +131,82 @@ pub struct Prog {
     /// errdist refuses rather than report on the other outputs alone.
     #[serde(default)]
     pub dep_untracked: Vec<u32>,
+    /// The adds of fp32 atomics (`NodeKind::AtomAdd` / `AtomAdd16`): the DAG takes the
+    /// simulator's order of each location's adds, GB300 its own (N-ERRDIST-DAG).
+    #[serde(default)]
+    pub atomic: Vec<u32>,
+    /// Per entry of `atomic`, the source that issued the add (`NumState::atom_src`: a thread,
+    /// or a bulk reduction with the top bit set; `u32::MAX` unknown).
+    #[serde(default)]
+    pub atomic_src: Vec<u32>,
+    /// Per entry of `atomic`, whether the run's happens-before leaves the add unordered with
+    /// the previous add on its location (`NumState::atom_free`, MISS 84 follow-up): only then
+    /// can GB300 add the two in the other order.
+    #[serde(default)]
+    pub atomic_free: Vec<bool>,
+    /// Per output, whether `pre_round` took it before its rounding (empty: none): the
+    /// kernel's value differs from the DAG's there by design, and the validations do not
+    /// compare it bit for bit.
+    #[serde(default)]
+    pub pre_rounded: Vec<bool>,
+}
+
+/// An output whose value is the last add of an atomic chain on its location
+/// (`Prog::atomic_chains`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AtomChain {
+    /// The chain's add ops, last first.
+    pub adds: Vec<u32>,
+    /// The op of the location's value before the first add.
+    pub init: u32,
+    /// The sources that issued the adds (threads, bulk operations).
+    pub sources: usize,
+    /// Some two adds of the chain, adjacent in the run's order, that no synchronization of the
+    /// run orders (`Prog::atomic_free`): without them the chain has one order, the DAG's.
+    pub free: bool,
+    /// Unit roundoff of one add: 2^-24 (f32), 2^-8 (bf16), 2^-11 (f16).
+    pub u: f64,
+    /// Absolute error of one add below the normal range: a flush to zero (FTZ, 2^-126), else
+    /// half the smallest subnormal.
+    pub eta: f64,
+}
+
+impl AtomChain {
+    /// Whether another order of the adds explains GB300's value `gpu` where the DAG, in the
+    /// simulator's order, gives `dag`, at an input whose op values `v` gives (MISS 58,
+    /// narrowed): the adds come from two or more sources, not one thread in program order;
+    /// some two of them are unordered by the run's happens-before (`free`: a barrier, an
+    /// mbarrier, a release / acquire pair or a launch boundary fixes GB300's order too); they
+    /// add three or more operands counting a nonzero initial value (two operands from zero
+    /// round once in either order); and the two values are within twice the bound on any
+    /// order's error, gamma_k * sum |operand| + k * eta for k adds (recursive summation,
+    /// Higham 4.4; each add's flush or subnormal rounding adds at most eta). A value outside
+    /// it is no order's.
+    pub fn order_explains(&self, p: &Prog, v: &dyn Fn(u32) -> f64, dag: f32, gpu: f32) -> bool {
+        if self.sources < 2 || !self.free || !dag.is_finite() || !gpu.is_finite() {
+            return false;
+        }
+        let init = v(self.init);
+        let k = self.adds.len();
+        if k + usize::from(init != 0.0) < 3 {
+            return false;
+        }
+        let mut s = init.abs();
+        for &a in &self.adds {
+            if let Op::Add { b, .. } = p.ops[a as usize] {
+                s += v(b).abs();
+            }
+        }
+        let ku = k as f64 * self.u;
+        if ku >= 0.5 {
+            // gamma_k has no bound (k u >= 1/2: bf16 chains of 128 adds and more, f16 of 1024,
+            // f32 of 2^23): nothing tells another order from an error, so nothing is excused
+            // (until the MISS 84 follow-up, any value was).
+            return false;
+        }
+        let bound = 2.0 * (ku / (1.0 - ku) * s + k as f64 * self.eta);
+        (gpu as f64 - dag as f64).abs() <= bound
+    }
 }
 
 /// Decoded leaf values of one sample: per op (leaves only), value and alignment exponents.
@@ -154,6 +252,10 @@ impl Prog {
             },
             bufs: m.launch.allocs.iter().map(|a| a.name.clone()).collect(),
             dep_untracked: vec![],
+            atomic: vec![],
+            atomic_src: vec![],
+            atomic_free: vec![],
+            pre_rounded: vec![],
         };
         let mut map: HashMap<u32, u32> = HashMap::default();
         let model = m.launch.mma_model;
@@ -201,7 +303,9 @@ impl Prog {
                     k
                 }
                 NodeKind::Round { arg, .. } => vec![*arg],
-                NodeKind::Add(a, b, _) | NodeKind::AtomAdd(a, b) | NodeKind::AtomAdd16(a, b, _) => {
+                NodeKind::Add(a, b, _)
+                | NodeKind::AtomAdd(a, b, _)
+                | NodeKind::AtomAdd16(a, b, _) => {
                     vec![*a, *b]
                 }
                 NodeKind::Tf32 { arg, .. } => vec![*arg],
@@ -234,6 +338,14 @@ impl Prog {
                 continue;
             }
             let g = |x: &u32| map[x];
+            if matches!(node.kind, NodeKind::AtomAdd(..) | NodeKind::AtomAdd16(..)) {
+                // The add (an `AtomAdd16`'s rounding comes after it).
+                self.atomic.push(self.ops.len() as u32);
+                self.atomic_src
+                    .push(ns.atom_src.get(&n).copied().unwrap_or(u32::MAX));
+                self.atomic_free
+                    .push(ns.atom_free.get(&n).copied().unwrap_or(false));
+            }
             let op = match &node.kind {
                 NodeKind::Leaf => Op::Const(f32::from_bits(node.hw) as f64),
                 NodeKind::Input((alloc, idx)) => {
@@ -301,12 +413,16 @@ impl Prog {
                     a: g(a),
                     b: g(b),
                     rz: *rz,
+                    ftz: false,
                 },
-                // One order of the atomics: the simulator's run (N-ERRDIST-DAG).
-                NodeKind::AtomAdd(a, b) => Op::Add {
+                // One order of the atomics: the simulator's run (N-ERRDIST-DAG), with the
+                // flush of `red/atom.add.f32` (exec.rs `AtomOp::FAddFtz`). Until 2026-11-11
+                // the DAG kept subnormal atomic operands and results, which GB300 flushes.
+                NodeKind::AtomAdd(a, b, ftz) => Op::Add {
                     a: g(a),
                     b: g(b),
                     rz: false,
+                    ftz: *ftz,
                 },
                 // A 16-bit add as an f32 add then a rounding to 16 bits: the f32 sum of two
                 // bf16 (f16) values rounds once more to the correctly rounded 16-bit sum (24
@@ -320,6 +436,7 @@ impl Prog {
                         a: g(a),
                         b: g(b),
                         rz: false,
+                        ftz: false,
                     });
                     self.hw.push(sum.to_bits());
                     Op::Round {
@@ -353,11 +470,108 @@ impl Prog {
         Ok(map[&root])
     }
 
+    /// Per output: whether its DAG holds an atomic add (`atomic`), whose order GB300 chooses
+    /// at run time, anywhere upstream.
+    pub fn atomic_fed(&self) -> Vec<bool> {
+        let mut fed = vec![false; self.ops.len()];
+        for &a in &self.atomic {
+            fed[a as usize] = true;
+        }
+        if !self.atomic.is_empty() {
+            for (i, op) in self.ops.iter().enumerate() {
+                fed[i] = fed[i] || op_args(op).iter().any(|&k| fed[k as usize]);
+            }
+        }
+        self.outputs
+            .iter()
+            .map(|o| o.is_some_and(|i| fed[i as usize]))
+            .collect()
+    }
+
+    /// Per output: the chain of atomic adds whose last add is the output's value (a 16-bit
+    /// chain: the rounding after it), where GB300's order of the adds can differ from the
+    /// DAG's (MISS 58, narrowed; `AtomChain::order_explains`). None for an output that is not
+    /// an atomic location's value: a GB300 value that differs from the DAG's there is not
+    /// another order of the adds, whatever its DAG holds upstream.
+    pub fn atomic_chains(&self) -> Vec<Option<AtomChain>> {
+        if self.atomic.is_empty() {
+            return vec![None; self.outputs.len()];
+        }
+        let at: HashMap<u32, usize> = self
+            .atomic
+            .iter()
+            .enumerate()
+            .map(|(i, &a)| (a, i))
+            .collect();
+        // The last add of the chain whose value op `o` is: itself, or a 16-bit rounding's add.
+        let end = |o: u32| -> Option<(u32, Option<bool>)> {
+            if at.contains_key(&o) {
+                return Some((o, None));
+            }
+            match &self.ops[o as usize] {
+                Op::Round { arg, f16 } if at.contains_key(arg) => Some((*arg, Some(*f16))),
+                _ => None,
+            }
+        };
+        self.outputs
+            .iter()
+            .map(|&o| {
+                let (mut cur, bits16) = end(o?)?;
+                let mut adds = vec![];
+                let mut srcs = std::collections::BTreeSet::new();
+                let mut ftz = false;
+                let mut free = false;
+                let init = loop {
+                    adds.push(cur);
+                    srcs.insert(self.atomic_src.get(at[&cur]).copied().unwrap_or(u32::MAX));
+                    free |= self.atomic_free.get(at[&cur]).copied().unwrap_or(false);
+                    let Op::Add { a, ftz: f, .. } = self.ops[cur as usize] else {
+                        return None;
+                    };
+                    ftz |= f;
+                    // A location's previous value that is itself an atomic sum (a copy of
+                    // another location's): its adds join the chain, whose order changes this
+                    // value as well.
+                    match end(a) {
+                        // Children come before parents: the walk ends.
+                        Some((prev, _)) if prev < cur => cur = prev,
+                        _ => break a,
+                    }
+                };
+                let (u, eta) = match bits16 {
+                    Some(true) => (2f64.powi(-11), 2f64.powi(-25)),
+                    Some(false) => (2f64.powi(-8), 2f64.powi(-134)),
+                    None if ftz => (2f64.powi(-24), 2f64.powi(-126)),
+                    None => (2f64.powi(-24), 2f64.powi(-150)),
+                };
+                Some(AtomChain {
+                    adds,
+                    init,
+                    sources: srcs.len() - (srcs.len() > 1 && srcs.contains(&u32::MAX)) as usize,
+                    free,
+                    u,
+                    eta,
+                })
+            })
+            .collect()
+    }
+
     /// Number of data-dependent selections (`NlOp::Sel`) in the program.
     pub fn selections(&self) -> usize {
         self.ops
             .iter()
             .filter(|o| matches!(o, Op::Nl(super::nonlin::ops::NlOp::Sel { .. })))
+            .count()
+    }
+
+    /// Number of instruction slice ops whose identified function stands for the slice on part
+    /// of its data-dependent decision patterns only (`ident::Outcomes`, MISS 57).
+    pub fn partial_slices(&self) -> usize {
+        self.ops
+            .iter()
+            .filter(|o| {
+                matches!(o, Op::Nl(super::nonlin::ops::NlOp::Seg { real: Some(f), .. }) if f.outcomes.is_some())
+            })
             .count()
     }
 
@@ -501,12 +715,20 @@ impl Prog {
                         f32::from_bits((crate::fp::f32_to_bf16_rn(x) as u32) << 16)
                     }
                 }
-                Op::Add { a, b, rz } => {
+                Op::Add { a, b, rz, ftz } => {
                     let (x, y) = (
                         (w[*a as usize].v as f32).to_bits(),
                         (w[*b as usize].v as f32).to_bits(),
                     );
-                    f32::from_bits(if *rz {
+                    f32::from_bits(if *ftz {
+                        // As the simulator's FADD.FTZ (`AtomOp::FAddFtz`).
+                        let rnd = if *rz {
+                            ptxv_ir::Rnd::Rz
+                        } else {
+                            ptxv_ir::Rnd::Rn
+                        };
+                        crate::fp::f32_fma(x, 0x3f80_0000, Some(y), rnd, true)
+                    } else if *rz {
                         crate::fp::f32_add_rz(x, y)
                     } else {
                         crate::fp::f32_add_rn(x, y)
@@ -951,16 +1173,28 @@ impl Prog {
 
 impl Prog {
     /// The same program with each output taken before its 16-bit rounding and epilogue (the
-    /// f32 value of its last MMA step): for pre-rounding analyses.
+    /// f32 value of its last MMA step): for pre-rounding analyses. `pre_rounded` marks the
+    /// outputs whose op that changes; an output that is its chain's last MMA step already (an
+    /// f32 D) keeps its value and every check (until the MISS 87 follow-up every chain output
+    /// was marked, fixtures/e_tc_handback).
     pub fn pre_round(&self) -> Prog {
         let mut p = self.clone();
+        p.pre_rounded = vec![false; p.outputs.len()];
         for o in 0..p.outputs.len() {
             if let Some((steps, _)) = self.chain(o) {
-                p.outputs[o] = steps.last().copied();
+                let last = steps.last().copied();
+                p.pre_rounded[o] = last != self.outputs[o];
+                p.outputs[o] = last;
             }
         }
         p.out_fmt = Format::F32;
         p
+    }
+
+    /// Whether `pre_round` took some output before its rounding (its value changed): only
+    /// there do the kernel's outputs and the program's differ by design (`--pre-round`).
+    pub fn pre_round_changes(&self) -> bool {
+        self.pre_rounded.iter().any(|&b| b)
     }
 
     /// Whether op `root`'s DAG contains a TF32 split.
@@ -1035,6 +1269,53 @@ mod tests {
     fn rand_bf16(r: &mut Rng) -> f64 {
         let x = (r.normal() * 2f64.powi(r.below(20) as i32 - 10)) as f32;
         f32::from_bits(x.to_bits() & 0xffff_0000) as f64
+    }
+
+    /// MISS 87 follow-up: `pre_round` marks an output taken before its rounding only where its
+    /// value changes. An f32 D that is its chain's last MMA step keeps its op and every check
+    /// (until the follow-up it was marked, and --pre-round skipped the worst-case check and Tier
+    /// 3's validation refusal for the whole run: fixtures/e_tc_handback); a bf16 D's rounding
+    /// is taken off.
+    #[test]
+    fn pre_round_marks_only_outputs_it_changes() {
+        let leaf = |idx| Op::Leaf {
+            buf: 0,
+            idx,
+            fmt: Format::Bf16,
+        };
+        let ops = vec![
+            leaf(0),
+            leaf(1),
+            Op::Mma {
+                model: StepModel::Mma(crate::fp::DEFAULT_MMA),
+                acc: None,
+                terms: vec![(0, 1)],
+                scales: vec![],
+                units: vec![],
+            },
+            Op::Round { arg: 2, f16: false },
+        ];
+        let p = Prog {
+            hw: vec![0; ops.len()],
+            ops,
+            outputs: vec![Some(2), Some(3), Some(0)],
+            out_fmt: Format::F32,
+            bufs: vec!["x".into()],
+            dep_untracked: vec![],
+            atomic: vec![],
+            atomic_src: vec![],
+            atomic_free: vec![],
+            pre_rounded: vec![],
+        };
+        let q = p.pre_round();
+        assert_eq!(q.pre_rounded, [false, true, false]);
+        assert_eq!(q.outputs, [Some(2), Some(2), Some(0)]);
+        assert!(q.pre_round_changes());
+        let f32_only = Prog {
+            outputs: vec![Some(2), Some(0)],
+            ..p.clone()
+        };
+        assert!(!f32_only.pre_round().pre_round_changes());
     }
 
     #[test]

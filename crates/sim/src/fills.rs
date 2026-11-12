@@ -189,6 +189,15 @@ pub fn check(m0: &Machine, v: &mut Verdict) {
     let mut first: Option<Vec<u8>> = None;
     let mut differs = None;
     for (name, f) in FILLS {
+        // The whole check's time budget (membudget.rs) is spent: the reruns stop, the
+        // reports stay.
+        if crate::membudget::time_budget_spent() {
+            v.notes.push(format!(
+                "{NOTE} not run (stopped at {} before fill {name})",
+                crate::membudget::TIME_BUDGET
+            ));
+            return;
+        }
         let mut m = m0.clone();
         apply_fill(&mut m, f);
         match run(m) {

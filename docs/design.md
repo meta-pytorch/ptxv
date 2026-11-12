@@ -302,7 +302,9 @@ SM s between the L1 invalidation at pc and the read"). The hardware model is clo
 line is **latent-closed-world**, with the havoc witness (`stale-l1-havoc:<pc>`); a legal
 co-resident kernel makes it observable (DeepEP notify_dispatch, docs/deepep-coreader.md).
 Latent findings stay bugs: the
-verdict's classes do not change. `--no-gb300` turns the second level off. A refuted
+verdict's classes do not change. `--no-gb300` (or `PTXV_GB300=0`) turns the second level off,
+and with it the GB300-profile re-run of the two-level verdict (`sass_gb300`, ASSUMPTIONS.md
+H-PROFILE; the row then says so in `two_level_skipped`). A refuted
 assumption (E-POLL-ACQ) can back a verdict only with an explicit opt-in (case
 `assume_refuted`, `--assume-refuted`), which the verdict names.
 

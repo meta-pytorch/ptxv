@@ -1,0 +1,55 @@
+name = "c_num_match_f32"
+description = """
+MISS 95 (a rounded value across lanes, kernel.ptx): lane 0 holds rn(a + b) of the parameters
+a = 1, b = 2^-25 (rn = 1, exact 1 + 2^-25), lanes 1..31 the parameter c = 1; m = match.any(v);
+lane 0 leaves, lanes 1..31 store rn(x + 3) where lane 0 matches (the run) and x where it does not
+(the exact computation): |GB300 - exact| = 3.0 in lanes 1..31. A match, vote or reduction gives
+every executing lane a rounded operand of any lane, so num refuses the branch on both fronts.
+expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP); out[0] keeps the zero out starts with.
+"""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_match_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "bytes"
+hex = "0000803f"
+
+[[params]]
+kind = "bytes"
+hex = "00000033"
+
+[[params]]
+kind = "bytes"
+hex = "0000803f"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

@@ -28,6 +28,8 @@ use crate::exact::{self};
 use crate::exec::Loc;
 use crate::fp;
 use crate::machine::Machine;
+use crate::machine::VC;
+use crate::machine::vc_get;
 
 /// Where an input value came from: (allocation, element index).
 pub type Orig = (usize, u64);
@@ -43,10 +45,12 @@ pub enum NodeKind {
     Input(Orig),
     /// fp32 add of two children; `rz`: rounded toward zero (else to nearest).
     Add(u32, u32, bool),
-    /// fp32 atomic add (`red/atom.add.f32`: round to nearest, FTZ) of a value (second child)
-    /// into a location holding the first child. The chain of them on one location adds its
-    /// values in a schedule-dependent order (`equiv` bounds every order).
-    AtomAdd(u32, u32),
+    /// fp32 atomic add of a value (second child) into a location holding the first child,
+    /// rounded to nearest; `ftz` (third): subnormal operands and results flushed to zero
+    /// (`red/atom.add.f32`, SASS `RED.E.ADD.F32.FTZ.RN`), else kept (a bulk f32 reduction,
+    /// `UBLKRED`). The chain of them on one location adds its values in a schedule-dependent
+    /// order (`equiv` bounds every order).
+    AtomAdd(u32, u32, bool),
     /// A 16-bit bulk-reduction add (`UTMAREDG.ADD` on a bf16 / f16 tensor): the value (second
     /// child) added into a location holding the first child, rounded to nearest even to bf16
     /// (`f16`: f16), subnormals kept; the node's value is the 16-bit result widened to f32.
@@ -237,6 +241,10 @@ pub struct Node {
     pub pc: u32,
 }
 
+/// An atomic add's epoch: its location, the actor whose vector clock orders it, and that
+/// actor's clock at the add (`NumState::note_atom_order`).
+type AtomEpoch = ((u8, u64, u64), u32, u32);
+
 #[derive(Default, Debug, Clone)]
 pub struct NumState {
     /// Error contract of one MMA step (|e_v| <= eps * sum |terms|), from the MMA model.
@@ -258,6 +266,19 @@ pub struct NumState {
     written: std::collections::HashSet<(u64, u64)>,
     /// fp32 atomic adds seen (their order is schedule-dependent).
     pub atomic_adds: usize,
+    /// Per atomic add node (`AtomAdd` / `AtomAdd16`), the source that issued it: the thread,
+    /// or a bulk reduction's actor with the top bit set (each bulk operation is its own
+    /// source). Adds of one thread to one location are in program order; those of two sources
+    /// need not be (errdist: `Prog::atomic_chains`).
+    pub atom_src: HashMap<u32, u32>,
+    /// Per atomic add node: its location, the actor whose vector clock orders it (a thread, or
+    /// a bulk operation) and that actor's clock at the add (`note_atom_order`).
+    atom_epoch: HashMap<u32, AtomEpoch>,
+    /// Per atomic add node: whether the run's happens-before leaves it unordered with the
+    /// previous add on its location (MISS 84 follow-up): only adds that no synchronization
+    /// orders (a barrier, an mbarrier, a release / acquire pair, a launch) can come in the
+    /// other order on GB300 (errdist: `Prog::atomic_free`).
+    pub atom_free: HashMap<u32, bool>,
     /// Other atomics, and fp32 atomic adds whose old value is returned.
     pub other_atomics: usize,
     pub taint: Taint,
@@ -288,6 +309,16 @@ pub struct NumState {
     const_leaves: std::collections::HashSet<u32>,
     /// `fin` per node.
     fin_memo: HashMap<u32, bool>,
+    /// `ptxv num` (N-NUM-TRACK): the destination of a rounding instruction (`rounding_op`)
+    /// that gets no node is tainted as input data, whatever its operands, so a dropped
+    /// rounding of kernel parameters, special registers or constants is never an exact
+    /// constant leaf.
+    pub rounding_taint: bool,
+    /// `rounded` per node.
+    rounded_memo: HashMap<u32, bool>,
+    /// `ptxv num`, SASS front (N-NUM-UDIV): the matched integer divisions (`udiv_idioms`,
+    /// computed on first use).
+    udiv: Option<std::sync::Arc<HashMap<u32, UdivStep>>>,
 }
 
 /// A slice value for every input with finite elements and no overflow (N-FINITE): finite,
@@ -893,6 +924,20 @@ fn mem_key(loc: Loc) -> (u8, u64, u64) {
 }
 
 impl NumState {
+    /// Note atomic add `id` on location `k`, issued by `actor` at vector clock `vc` (MISS 84
+    /// follow-up): its epoch, and whether the location's previous value `prev` is an add on
+    /// `k` that does not happen-before it (another actor's add whose clock `vc` has not seen).
+    /// Two adds of one actor are in program order; two adds that a barrier, an mbarrier phase,
+    /// a release / acquire pair or a launch boundary orders are in that order on GB300 too.
+    fn note_atom_order(&mut self, id: u32, k: (u8, u64, u64), prev: u32, actor: u32, vc: &VC) {
+        let free = self
+            .atom_epoch
+            .get(&prev)
+            .is_some_and(|&(pk, pa, pc)| pk == k && pa != actor && pc > vc_get(vc, pa));
+        self.atom_epoch.insert(id, (k, actor, vc_get(vc, actor)));
+        self.atom_free.insert(id, free);
+    }
+
     /// A readable rendering of node `n`'s DAG (debugging: `PTXV_EQUIV_DUMP`), `depth` levels.
     pub fn dump(&self, n: u32, depth: usize) -> String {
         let nd = &self.nodes[n as usize];
@@ -914,7 +959,12 @@ impl NumState {
             }
             NodeKind::Input((a, i)) => format!("in{a}[{i}]"),
             NodeKind::Add(a, b, _) => format!("({} + {})", d(*a), d(*b)),
-            NodeKind::AtomAdd(a, b) => format!("atom({} + {})", d(*a), d(*b)),
+            NodeKind::AtomAdd(a, b, ftz) => format!(
+                "atom{}({} + {})",
+                if *ftz { ".ftz" } else { "" },
+                d(*a),
+                d(*b)
+            ),
             NodeKind::AtomAdd16(a, b, f16) => {
                 format!(
                     "atom{}({} + {})",
@@ -1242,7 +1292,9 @@ impl NumState {
                 NodeKind::Sel { pred, a, b, .. } => {
                     pred.0.args.iter().copied().chain([*a, *b]).collect()
                 }
-                NodeKind::Add(a, b, _) | NodeKind::AtomAdd(a, b) | NodeKind::AtomAdd16(a, b, _) => {
+                NodeKind::Add(a, b, _)
+                | NodeKind::AtomAdd(a, b, _)
+                | NodeKind::AtomAdd16(a, b, _) => {
                     vec![*a, *b]
                 }
                 NodeKind::Fma { a, b, c, .. } => {
@@ -1786,17 +1838,18 @@ impl Machine {
     /// A non-fp operation wrote `d`. If a source carried rounding history, the numerics
     /// lose track of it: we say so instead of guessing.
     pub(crate) fn num_clobber(&mut self, t: usize, d: Reg, srcs: &[&Val], pc: u32) {
+        let _ = pc;
         let Some(ns) = self.num.as_mut() else { return };
-        for s in srcs {
-            if let Some(n) = ns.node_of(t, s) {
-                if !exact::is_zero(&exact::sub(
-                    &exact::from(f32::from_bits(ns.nodes[n as usize].hw) as f64),
-                    &ns.nodes[n as usize].exact,
-                )) {
-                    ns.warnings.insert(format!(
-                        "value with rounding error consumed by a non-fp instruction at {}",
-                        self.k.describe(pc as usize)
-                    ));
+        // ASSUME(N-NUM-TRACK): `ptxv num`: a value computed outside the DAG (a bit operation,
+        // an untracked float operation) from a node holding a rounding is input data, never an
+        // exact constant leaf.
+        if ns.rounding_taint {
+            for s in srcs {
+                if let Some(n) = ns.node_of(t, s) {
+                    if ns.rounded(n) {
+                        ns.taint.clobber_taint.push((t, d));
+                        break;
+                    }
                 }
             }
         }
@@ -2351,6 +2404,10 @@ impl Machine {
         if fadd.is_some() {
             self.num_node_mat(t, v);
         }
+        let vc = match (&self.num, fadd) {
+            (Some(_), Some(_)) => self.threads[t].vc.clone(),
+            _ => VC::default(),
+        };
         let Some(ns) = self.num.as_mut() else { return };
         let k = mem_key(loc);
         ns.note_write(k);
@@ -2372,7 +2429,7 @@ impl Machine {
                 );
                 let err = exact::sub(&exact::from(f32::from_bits(r) as f64), &a_v);
                 ns.nodes.push(Node {
-                    kind: NodeKind::AtomAdd(no, nx),
+                    kind: NodeKind::AtomAdd(no, nx, true),
                     hw: r,
                     exact: ex,
                     err,
@@ -2380,6 +2437,8 @@ impl Machine {
                 });
                 ns.atomic_adds += 1;
                 let id = (ns.nodes.len() - 1) as u32;
+                ns.atom_src.insert(id, t as u32);
+                ns.note_atom_order(id, k, no, t as u32, &vc);
                 ns.mem.insert(k, id);
             }
             None => {
@@ -2682,6 +2741,19 @@ impl Machine {
         g: GstPre,
     ) {
         let Op::St { v, .. } = &inst.op else { return };
+        // The words depend on input data whether or not this input stored to them (their
+        // value is the selection). A thread that did not execute the store ran no taint write
+        // (`Taint::write` follows executed accesses), and a later load of a word, a flag
+        // another thread reads after a barrier, read it as input-independent: its guard or
+        // address escaped the checks (MISS 56 class: the store word).
+        if !executed {
+            let ns = self.num.as_mut().unwrap();
+            for &(sp, al, off) in &g.keys {
+                for b in 0..4 {
+                    ns.taint.mem_set((sp, al, off + b), true);
+                }
+            }
+        }
         let mut ok = true;
         let mut sels = Vec::new();
         for (i, (&k, &old)) in g.keys.iter().zip(&g.old).enumerate() {
@@ -3724,7 +3796,7 @@ impl Machine {
         to: Loc,
         (o, x, r): (u32, u32, u32),
         old_input_derived: bool,
-        pc: u32,
+        (pc, actor, vc): (u32, u32, &VC),
     ) {
         let Some(ns) = self.num.as_mut() else { return };
         let k = mem_key(to);
@@ -3747,7 +3819,7 @@ impl Machine {
         );
         let err = exact::sub(&exact::from(f32::from_bits(r) as f64), &a_v);
         ns.nodes.push(Node {
-            kind: NodeKind::AtomAdd(no, nx),
+            kind: NodeKind::AtomAdd(no, nx, false),
             hw: r,
             exact: ex,
             err,
@@ -3755,6 +3827,8 @@ impl Machine {
         });
         ns.atomic_adds += 1;
         let id = (ns.nodes.len() - 1) as u32;
+        ns.atom_src.insert(id, 0x8000_0000 | actor);
+        ns.note_atom_order(id, k, no, actor, vc);
         ns.mem.insert(k, id);
     }
 
@@ -3821,7 +3895,7 @@ impl Machine {
         (o, x, r): (u16, u16, u16),
         (bo, old_input_derived): (Vec<Option<crate::halfin::Src>>, bool),
         f16: bool,
-        pc: u32,
+        (pc, actor, vc): (u32, u32, &VC),
     ) {
         let Some(ns) = self.num.as_ref() else { return };
         if !ns.half.is_on() || bo.len() != 2 {
@@ -3857,6 +3931,8 @@ impl Machine {
         });
         ns.atomic_adds += 1;
         let id = (ns.nodes.len() - 1) as u32;
+        ns.atom_src.insert(id, 0x8000_0000 | actor);
+        ns.note_atom_order(id, mem_key(to), no, actor, vc);
         if f16 {
             ns.half.f16_nodes.insert(id);
         }
@@ -4091,6 +4167,11 @@ pub struct OutRec {
     pub untracked: bool,
     /// Where the first such value entered the tree (the instruction that read it untracked).
     pub untracked_pc: Option<u32>,
+    /// The simulated or the exact value is not finite and the exact value is not determined
+    /// (N-NUM-NONFINITE): they differ, or a value in the tree overflowed or became non-finite
+    /// from finite operands. The element is not analyzed (`untracked` is set too); its error
+    /// fields are NaN.
+    pub nonfinite: bool,
     /// MUFU / approx nodes in the tree: each contributes its own error bound (N-MUFU) plus
     /// its operand's bound times |f'| (first order).
     pub n_mufu: usize,
@@ -4116,6 +4197,45 @@ pub fn ulp_f32(x: f32) -> f64 {
 }
 
 impl NumState {
+    /// N-NUM-TRACK: node `n` holds a rounding: its value went through a floating-point
+    /// operation that rounds (or an atomic add, whose value depends on the order, or a
+    /// tensor-core step, whose value the model bounds), so it may differ from the exact
+    /// computation's. Constants and input elements do not, nor a maximum of values that do
+    /// not.
+    pub(crate) fn rounded(&mut self, n: u32) -> bool {
+        if let Some(&x) = self.rounded_memo.get(&n) {
+            return x;
+        }
+        let x = match self.nodes[n as usize].kind {
+            NodeKind::Leaf | NodeKind::Input(_) => false,
+            NodeKind::Max { a, b, .. } => self.rounded(a) || self.rounded(b),
+            _ => true,
+        };
+        self.rounded_memo.insert(n, x);
+        x
+    }
+
+    /// N-NUM-NONFINITE: rounding node `n` holds a non-finite value while its exact value is
+    /// finite (an overflow or an invalid operation), or a non-finite exact value while its
+    /// operands' exact values are finite (an f64 overflow or a pole of a MUFU's true function).
+    fn nonfinite_inside(&self, n: u32) -> bool {
+        let nd = &self.nodes[n as usize];
+        let fin = |m: u32| exact::approx(&self.nodes[m as usize].exact).is_finite();
+        if exact::approx(&nd.exact).is_finite() {
+            return !f32::from_bits(nd.hw).is_finite();
+        }
+        match &nd.kind {
+            NodeKind::Add(a, b, _) | NodeKind::AtomAdd(a, b, _) | NodeKind::AtomAdd16(a, b, _) => {
+                fin(*a) && fin(*b)
+            }
+            NodeKind::Mma { acc, terms, .. } => {
+                acc.is_none_or(fin) && terms.iter().all(|t| t.is_finite())
+            }
+            NodeKind::Round { arg, .. } | NodeKind::Mufu { arg, .. } => fin(*arg),
+            _ => false,
+        }
+    }
+
     /// Analyze the tree rooted at `node` (or an exact value if `node` is None).
     // ASSUME(N-BOUND): see ASSUMPTIONS.md
     pub fn out_rec(&self, index: usize, hw_bits: u32, node: Option<u32>) -> OutRec {
@@ -4134,6 +4254,7 @@ impl NumState {
                 thm1_exact: true,
                 untracked: false,
                 untracked_pc: None,
+                nonfinite: false,
                 n_mufu: 0,
                 n_leaves: 0,
                 n_roundings: 0,
@@ -4172,7 +4293,7 @@ impl NumState {
                     stack.push((*a, g * (1.0 + e)));
                     stack.push((*b, g * (1.0 + e)));
                 }
-                NodeKind::AtomAdd(a, b) => {
+                NodeKind::AtomAdd(a, b, _) => {
                     rnodes.push(n);
                     stack.push((*a, g * (1.0 + U32)));
                     stack.push((*b, g * (1.0 + U32)));
@@ -4278,6 +4399,7 @@ impl NumState {
         // |f'(x)| times its operand's bounds; both are carried through the rounding nodes
         // above it.
         let mut mufu_extra = (0.0, 0.0);
+        let mut nonfinite_sub = false;
         for &(n, grow) in &mufu {
             let nd = &self.nodes[n as usize];
             let NodeKind::Mufu {
@@ -4301,6 +4423,7 @@ impl NumState {
             let sub = self.out_rec(index, child.hw, Some(arg));
             untracked |= sub.untracked;
             untracked_pc = untracked_pc.or(sub.untracked_pc);
+            nonfinite_sub |= sub.nonfinite;
             let fp = mufu_true_deriv(func, ptx, x).abs();
             let own = mufu_local_bound(func, ptx, x as f32, f32::from_bits(nd.hw));
             mufu_extra.0 += (own + fp * sub.bound_cor1a) * grow;
@@ -4340,23 +4463,61 @@ impl NumState {
             })
             .sum::<f64>()
             + mufu_extra.1;
+        // ASSUME(N-NUM-NONFINITE): a simulated or exact value that is not finite. A finite exact
+        // value is exact (expansions of finite leaves), so a non-finite simulated value against
+        // it (an overflow, an invalid operation) carries an infinite error. A non-finite exact
+        // value comes from non-finite leaves, but the f64 expansion arithmetic does not follow
+        // the extended reals (inf + x gives NaN): it is the element's exact value only where no
+        // value in the tree overflowed or became non-finite from finite operands. Then an
+        // identical simulated value (the same infinity; NaN for NaN) has error 0; anything else
+        // is not analyzed.
+        let hw64 = hw as f64;
+        let mut nonfinite = nonfinite_sub;
+        let finite = hw64.is_finite() && exact_v.is_finite();
+        let (signed_err, abs_err, rel_err, err_ulps, thm1) = if finite {
+            let rel = if exact_v != 0.0 {
+                abs_err / exact_v.abs()
+            } else if abs_err == 0.0 {
+                0.0
+            } else {
+                f64::INFINITY
+            };
+            (
+                exact::approx(&diff),
+                abs_err,
+                rel,
+                abs_err / ulp_f32(hw),
+                thm1,
+            )
+        } else if exact_v.is_finite() {
+            let inf = f64::INFINITY;
+            (hw64 - exact_v, inf, inf, inf, false)
+        } else {
+            let trusted = !rnodes.iter().any(|&n| self.nonfinite_inside(n));
+            let identical = hw64 == exact_v || hw64.is_nan() && exact_v.is_nan();
+            if trusted && identical {
+                let thm1 = mufu.is_empty() && nonlin == 0 && !untracked && exact::is_zero(&sum_e);
+                (0.0, 0.0, 0.0, 0.0, thm1)
+            } else {
+                nonfinite = true;
+                let nan = f64::NAN;
+                (nan, nan, nan, nan, false)
+            }
+        };
         OutRec {
             index,
             hw,
             exact: exact_v,
-            signed_err: exact::approx(&diff),
+            signed_err,
             abs_err,
-            rel_err: if exact_v != 0.0 {
-                abs_err / exact_v.abs()
-            } else {
-                0.0
-            },
-            err_ulps: abs_err / ulp_f32(hw),
+            rel_err,
+            err_ulps,
             bound_cor1a: cor1a,
             bound_running: running,
             thm1_exact: thm1,
-            untracked,
+            untracked: untracked || nonfinite,
             untracked_pc,
+            nonfinite,
             n_mufu: mufu.len(),
             n_leaves: leaf_terms.len(),
             abs_sum: leaf_terms.iter().map(|t| t.0).sum(),
@@ -4374,6 +4535,193 @@ impl NumState {
 }
 
 // ---------------------------------------------------------------- input-data taint
+
+/// Instructions whose register result can differ from the real-arithmetic value of the
+/// operation on its operands: floating-point arithmetic, approximations (MUFU, div.full),
+/// narrowing conversions, integer to float conversions, and the reduced value of
+/// `multimem.ld_reduce`. ASSUME(N-NUM-TRACK): with `NumState::rounding_taint` (`ptxv num`), a
+/// destination of one of them that gets no numerics node is tainted as input data. Exact
+/// operations are not listed: moves, selections, min / max, comparisons, widening
+/// conversions, float to integer conversions (an exact function of the operand), bit and
+/// integer operations. Every operation is classified (a new one must be).
+pub(crate) fn rounding_op(op: &Op) -> bool {
+    match op {
+        Op::Fadd { .. }
+        | Op::Ffma { .. }
+        | Op::FmulScale { .. }
+        | Op::Ffma2 { .. }
+        | Op::Hfma2 { .. }
+        | Op::Hfma2Bf16 { .. }
+        | Op::FfmaBf16 { .. }
+        | Op::Qmul4 { .. }
+        | Op::Mufu { .. }
+        | Op::DivFull { .. }
+        | Op::I2F { .. }
+        | Op::F2fpBf16 { .. }
+        | Op::F2fpF16 { .. }
+        | Op::F2fF16 { .. }
+        | Op::CvtTf32 { .. }
+        | Op::CvtPack { .. }
+        | Op::CvtRsX4 { .. }
+        | Op::CvtS2f6x2 { .. }
+        | Op::FCvt { .. }
+        | Op::F2F { .. }
+        | Op::Dfma { .. }
+        | Op::Rsqrt64Approx { .. }
+        | Op::DivSqrt64 { .. }
+        | Op::Hmma { .. }
+        | Op::LdReduce { .. } => true,
+        Op::Mov { .. }
+        | Op::Int { .. }
+        | Op::MulWide { .. }
+        | Op::Imad { .. }
+        | Op::Iadd3 { .. }
+        | Op::CvtInt { .. }
+        | Op::R2Ur { .. }
+        | Op::VoteAny { .. }
+        | Op::MatchAny { .. }
+        | Op::Flo { .. }
+        | Op::Brev { .. }
+        | Op::AddMinMax { .. }
+        | Op::IntMnmx3 { .. }
+        | Op::P2r { .. }
+        | Op::LdConst { .. }
+        | Op::Redux { .. }
+        | Op::Atom { .. }
+        | Op::Qspc { .. }
+        | Op::Lea { .. }
+        | Op::Shf { .. }
+        | Op::Lop3 { .. }
+        | Op::Plop3 { .. }
+        | Op::Setp { .. }
+        | Op::VoteAll { .. }
+        | Op::Elect { .. }
+        | Op::Fmnmx { .. }
+        | Op::Fsetp { .. }
+        | Op::Hsetp2Bf16 { .. }
+        | Op::MovMatrix { .. }
+        | Op::Hset2 { .. }
+        | Op::Fset { .. }
+        | Op::Fsel { .. }
+        | Op::Fchk { .. }
+        | Op::R2p { .. }
+        | Op::Hmnmx2Bf16 { .. }
+        | Op::Hmnmx2F16 { .. }
+        | Op::Vhmnmx { .. }
+        | Op::CvtUnpack { .. }
+        | Op::CvtF32Bf16 { .. }
+        | Op::CvtF32F16 { .. }
+        | Op::Cvta { .. }
+        | Op::Ld { .. }
+        | Op::St { .. }
+        | Op::Bra { .. }
+        | Op::Brx { .. }
+        | Op::Exit
+        | Op::Nop
+        | Op::Call { .. }
+        | Op::CallAbs { .. }
+        | Op::Ret { .. }
+        | Op::Trap { .. }
+        | Op::WarpSync { .. }
+        | Op::EndCollective { .. }
+        | Op::Bssy { .. }
+        | Op::Bsync { .. }
+        | Op::Break { .. }
+        | Op::BMov { .. }
+        | Op::BarSync { .. }
+        | Op::BarResult { .. }
+        | Op::MbarInit { .. }
+        | Op::MbarArrive { .. }
+        | Op::ClcTryCancel { .. }
+        | Op::ClcQuery { .. }
+        | Op::Mapa { .. }
+        | Op::StMatrix { .. }
+        | Op::Shfl { .. }
+        | Op::Bfe { .. }
+        | Op::Bfi { .. }
+        | Op::TmemSt { .. }
+        | Op::LeaHi { .. }
+        | Op::F2I { .. }
+        | Op::Pack64 { .. }
+        | Op::Unpack64 { .. }
+        | Op::TmemWaitSt
+        | Op::TmapFence { .. }
+        | Op::MbarInval { .. }
+        | Op::GridDepWait
+        | Op::GridDepLaunch
+        | Op::Sel { .. }
+        | Op::Prmt { .. }
+        | Op::ClusterArrive { .. }
+        | Op::ClusterWait
+        | Op::MbarTryWait { .. }
+        | Op::Fence { .. }
+        | Op::TmaLoad { .. }
+        | Op::TmaStore { .. }
+        | Op::BulkCommit
+        | Op::BulkWait { .. }
+        | Op::TmemAlloc { .. }
+        | Op::TmemAllocRaw { .. }
+        | Op::StAsync { .. }
+        | Op::TmemFreeRaw { .. }
+        | Op::TmemRelinquish
+        | Op::TmemDealloc { .. }
+        | Op::Mma { .. }
+        | Op::TcCp { .. }
+        | Op::TcCommit { .. }
+        | Op::TmemLd { .. }
+        | Op::TmemWaitLd
+        | Op::Converge
+        | Op::Uniform { .. }
+        | Op::Dp2a { .. }
+        | Op::DsetpMinMax { .. }
+        | Op::Dsetp { .. }
+        | Op::Ld256 { .. }
+        | Op::St256 { .. }
+        | Op::LdLocal { .. }
+        | Op::StLocal { .. }
+        | Op::LdMatrix { .. }
+        | Op::CpAsync { .. }
+        | Op::CpAsyncCommit
+        | Op::CpAsyncMbarArrive { .. }
+        | Op::CpAsyncWait { .. } => false,
+    }
+}
+
+/// Operations with an effect beyond their destination registers (control transfer, memory
+/// write, atomic, barrier, wait, asynchronous operation): every operation that is neither
+/// register-only (`pure_op`, the f64 and other register operations listed here) nor a load
+/// into registers. A guard that depends on input data decides whether the effect happens
+/// (`Taint::control_pcs`); a register destination under such a guard is tainted instead
+/// (`taint_post`).
+pub(crate) fn effect_op(op: &Op) -> bool {
+    !pure_op(op)
+        && !matches!(
+            op,
+            Op::Ld { .. }
+                | Op::Ld256 { .. }
+                | Op::LdLocal { .. }
+                | Op::LdMatrix { .. }
+                | Op::TmemLd { .. }
+                | Op::LdReduce { .. }
+                | Op::Shfl { .. }
+                | Op::MovMatrix { .. }
+                | Op::Qspc { .. }
+                | Op::Mapa { .. }
+                | Op::Elect { .. }
+                | Op::Hset2 { .. }
+                | Op::Dp2a { .. }
+                | Op::Dfma { .. }
+                | Op::Rsqrt64Approx { .. }
+                | Op::DivSqrt64 { .. }
+                | Op::DsetpMinMax { .. }
+                | Op::Dsetp { .. }
+                | Op::FCvt { .. }
+                | Op::F2F { .. }
+                | Op::DivFull { .. }
+                | Op::Hmma { .. }
+                | Op::ClcQuery { .. }
+        )
+}
 
 /// Register-only operations (no memory, synchronization or control): every source is a
 /// value, and the result is tainted if any source is.
@@ -4679,6 +5027,607 @@ pub(crate) fn control_regs(op: &Op) -> Vec<Reg> {
 /// values, their taint masks, whether the guard is input data).
 type LopPre = (usize, [u32; 4], [u32; 4], bool, bool);
 
+// ---------------------------------------------------------------- N-NUM-UDIV
+
+/// A register of a matched integer division (`Taint::udiv_regs`): its reciprocal core, its
+/// instance (the quotient estimate's pc) and what the value is.
+type UdivReg = (u32, Option<u32>, UdivVal);
+
+/// What a register holds in a matched integer division (`udiv_idioms`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UdivVal {
+    /// The reciprocal and its refinement, negations, the correction predicates.
+    Inter,
+    /// A quotient candidate: the estimate hi(q1 n) and its corrections.
+    Quot,
+    /// A remainder candidate: n - q d and its corrections.
+    Rem,
+}
+
+/// A matched instruction of an integer division (`udiv_idioms`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UdivStep {
+    /// The pc of the I2F.RP of its reciprocal (instances dividing by one divisor may share it).
+    pub core: u32,
+    /// Its instance, the pc of the quotient estimate; None for a step of the reciprocal.
+    pub inst: Option<u32>,
+    /// What the destination holds.
+    pub out: UdivVal,
+    /// At the I2F.RP the divisor operand, at the estimate the dividend operand.
+    pub operand: Option<Val>,
+}
+
+/// A value of the division being matched (`udiv_idioms`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum USym {
+    /// I2F.RP d, MUFU.RCP of it, + 0x0ffffffe, F2I.U32.TRUNC of it, its negation, (-e) d,
+    /// e + hi(e (-e) d).
+    A,
+    B,
+    C,
+    E,
+    NegE,
+    G,
+    Q1,
+    /// Per instance (the estimate's pc): the quotient, its negation, the remainder,
+    /// P = ((r >= d) == polarity), and q + 1, r - d before a selection by P.
+    Q(u32),
+    NegQ(u32),
+    R(u32),
+    P(u32, bool),
+    QInc(u32),
+    RDec(u32),
+}
+
+fn zero_val(v: &Val) -> bool {
+    matches!(v, Val::Imm(0))
+        || matches!(v, Val::Reg(r, _) if matches!(r.file, File::R | File::UR) && r.idx >= 255)
+}
+
+/// ASSUME(N-NUM-UDIV): ptxas's lowering of a 32-bit integer division or remainder by a
+/// run-time divisor (`div` / `rem` .u32; .s32 runs it on |n| and |d|), in straight-line SASS:
+///   a = I2F[.U32].RP d; b = MUFU.RCP a; c = b + 0x0ffffffe; e = F2I.U32.TRUNC c;
+///   q1 = IMAD.HI.U32 e, (-e) d, {0, e}            (the reciprocal, ~2^32 / d)
+/// then per dividend n (an instance): q = IMAD.HI.U32 q1, n, 0; r = n - q d (an IMAD of -q
+/// and d, or of q and -d, plus n); and corrections, each P = (r >= d) (ISETP.GE.U32 r, d, or
+/// ISETP.GT.U32 d, r negated) and under P in place r -= d, q += 1. Returns the role of every
+/// matched instruction by pc. Matching names the values only: the run checks each quotient
+/// (remainder) against n / d (n mod d) of its untainted operands where an instruction outside
+/// the instance reads it (`Machine::udiv_resolve`); anything else stays input data.
+pub fn udiv_idioms(code: &[Inst]) -> HashMap<u32, UdivStep> {
+    let targets: BTreeSet<usize> = code
+        .iter()
+        .filter_map(|i| match &i.op {
+            Op::Bra { target, .. } => Some(*target),
+            _ => None,
+        })
+        .collect();
+    let mut out = HashMap::new();
+    for (i0, ins0) in code.iter().enumerate() {
+        let Op::I2F {
+            d: a_reg,
+            a: dv,
+            rnd: Rnd::Rp,
+            bits: 32,
+            hi: false,
+            f64: false,
+            ..
+        } = &ins0.op
+        else {
+            continue;
+        };
+        if ins0.guard.reg.is_some() || !matches!(dv, Val::Reg(_, 1) | Val::Const(..)) {
+            continue;
+        }
+        let core = i0 as u32;
+        let mut steps = vec![(
+            core,
+            UdivStep {
+                core,
+                inst: None,
+                out: UdivVal::Inter,
+                operand: Some(dv.clone()),
+            },
+        )];
+        let mut sym: HashMap<Reg, USym> = HashMap::from([(*a_reg, USym::A)]);
+        // Registers read as the divisor and each instance's dividend: they must hold the same
+        // value wherever the match uses them (no redefinition since).
+        let reg_of = |v: &Val| match v {
+            Val::Reg(r, _) => Some(*r),
+            _ => None,
+        };
+        let mut d_live = true;
+        let mut dividend: HashMap<u32, (Val, bool)> = HashMap::new();
+        for (j, ins) in code.iter().enumerate().skip(i0 + 1).take(160) {
+            if targets.contains(&j) || !pure_op(&ins.op) && control_transfer(&ins.op) {
+                break;
+            }
+            let pc = j as u32;
+            let g = ins.guard;
+            let sv = |v: &Val| match v {
+                Val::Reg(r, 1) => sym.get(r).copied(),
+                _ => None,
+            };
+            let free = |v: &Val| {
+                sv(v).is_none()
+                    && !matches!(v, Val::Reg(r, _) if matches!(r.file, File::P | File::UP))
+            };
+            let is_d = |v: &Val| d_live && v == dv;
+            // -x as IMAD.MOV d, RZ, RZ, -x or an IADD3 of -x and zeros.
+            let neg_of = |op: &Op| -> Option<USym> {
+                match op {
+                    Op::Imad {
+                        a,
+                        b,
+                        c,
+                        neg_c: true,
+                        not_c: false,
+                        wide: false,
+                        hi: false,
+                        cin: None,
+                        cout: None,
+                        ..
+                    } if zero_val(a) || zero_val(b) => sv(c),
+                    Op::Iadd3 {
+                        a,
+                        b,
+                        c,
+                        neg,
+                        not: [false, false, false],
+                        wide: false,
+                        cout,
+                        cin,
+                        ..
+                    } if cout.is_empty() && cin.is_empty() => {
+                        let ops = [a, b, c];
+                        let nz: Vec<usize> = (0..3).filter(|&k| !zero_val(ops[k])).collect();
+                        match nz[..] {
+                            [k] if neg[k] => sv(ops[k]),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                }
+            };
+            // (destination, value, instance, what it holds)
+            let mut hit: Option<(Reg, USym)> = None;
+            let unguarded = g.reg.is_none();
+            match &ins.op {
+                Op::Mufu {
+                    d,
+                    a,
+                    func: MufuFunc::Rcp,
+                    fmt: MufuFmt::F32,
+                    hi: false,
+                    neg: false,
+                    abs: false,
+                    ptx: None,
+                } if unguarded && sv(a) == Some(USym::A) => hit = Some((*d, USym::B)),
+                Op::Int {
+                    op: IntOp::Add,
+                    bits: 32,
+                    d,
+                    a,
+                    b,
+                } if unguarded
+                    && (sv(a) == Some(USym::B) && *b == Val::Imm(0x0fff_fffe)
+                        || sv(b) == Some(USym::B) && *a == Val::Imm(0x0fff_fffe)) =>
+                {
+                    hit = Some((*d, USym::C))
+                }
+                Op::Iadd3 {
+                    d,
+                    a,
+                    b,
+                    c,
+                    neg: [false, false, false],
+                    not: [false, false, false],
+                    wide: false,
+                    cout,
+                    cin,
+                } if unguarded && cout.is_empty() && cin.is_empty() && {
+                    let ops = [a, b, c];
+                    let bs = ops.iter().filter(|v| sv(v) == Some(USym::B)).count();
+                    let k = ops.iter().filter(|v| ***v == Val::Imm(0x0fff_fffe)).count();
+                    let z = ops.iter().filter(|v| zero_val(v)).count();
+                    bs == 1 && k == 1 && z == 1
+                } =>
+                {
+                    hit = Some((*d, USym::C))
+                }
+                Op::F2I {
+                    d,
+                    a,
+                    signed: false,
+                    bits: 32,
+                    rnd: Rnd::Rz,
+                    f64: false,
+                    ..
+                } if unguarded && sv(a) == Some(USym::C) => hit = Some((*d, USym::E)),
+                // IMAD.HI.U32: the refinement q1 = hi(e g + {0, e} << 32) and an estimate
+                // hi(q1 n).
+                Op::Imad {
+                    d,
+                    a,
+                    b,
+                    c,
+                    neg_c: false,
+                    not_c: false,
+                    wide: false,
+                    hi: true,
+                    signed: false,
+                    cin: None,
+                    cout: None,
+                } if unguarded => {
+                    let (sa, sb) = (sv(a), sv(b));
+                    let pair_e = match c {
+                        Val::Reg(lo, 2) => {
+                            sym.get(&Reg {
+                                file: lo.file,
+                                idx: lo.idx + 1,
+                            }) == Some(&USym::E)
+                        }
+                        _ => false,
+                    };
+                    if pair_e
+                        && matches!(
+                            (sa, sb),
+                            (Some(USym::E), Some(USym::G)) | (Some(USym::G), Some(USym::E))
+                        )
+                    {
+                        hit = Some((*d, USym::Q1));
+                    } else if zero_val(c) {
+                        let n = match (sa, sb) {
+                            (Some(USym::Q1), None) if free(b) => Some(b),
+                            (None, Some(USym::Q1)) if free(a) => Some(a),
+                            _ => None,
+                        };
+                        if let Some(n) = n {
+                            dividend.insert(pc, (n.clone(), true));
+                            hit = Some((*d, USym::Q(pc)));
+                        }
+                    }
+                }
+                // IMAD (low): g = (-e) d, and the remainder n - q d.
+                Op::Imad {
+                    d,
+                    a,
+                    b,
+                    c,
+                    neg_c: false,
+                    not_c: false,
+                    wide: false,
+                    hi: false,
+                    cin: None,
+                    cout: None,
+                    ..
+                } if unguarded => {
+                    let (sa, sb) = (sv(a), sv(b));
+                    if zero_val(c)
+                        && (sa == Some(USym::NegE) && is_d(b) || sb == Some(USym::NegE) && is_d(a))
+                    {
+                        hit = Some((*d, USym::G));
+                    } else {
+                        let qi = match (sa, sb) {
+                            (Some(USym::NegQ(i)), None) if free(b) => Some(i),
+                            (None, Some(USym::NegQ(i))) if free(a) => Some(i),
+                            (Some(USym::Q(i)), None) if free(b) => Some(i),
+                            (None, Some(USym::Q(i))) if free(a) => Some(i),
+                            _ => None,
+                        };
+                        if let Some(i) = qi {
+                            if dividend.get(&i).is_some_and(|(n, live)| *live && n == c) {
+                                hit = Some((*d, USym::R(i)));
+                            }
+                        }
+                    }
+                }
+                Op::Setp {
+                    d,
+                    cmp,
+                    bits: 32,
+                    a,
+                    b,
+                    and,
+                    or: false,
+                    xor: false,
+                    ex: None,
+                } if unguarded && and.reg.is_none() && !and.neg => {
+                    let p = match (cmp, sv(a), sv(b)) {
+                        (Cmp::GeU, Some(USym::R(i)), None) if free(b) => Some(USym::P(i, true)),
+                        (Cmp::LtU, Some(USym::R(i)), None) if free(b) => Some(USym::P(i, false)),
+                        (Cmp::LeU, None, Some(USym::R(i))) if free(a) => Some(USym::P(i, true)),
+                        (Cmp::GtU, None, Some(USym::R(i))) if free(a) => Some(USym::P(i, false)),
+                        _ => None,
+                    };
+                    if let Some(p) = p {
+                        hit = Some((*d, p));
+                    }
+                }
+                _ => {}
+            }
+            if hit.is_none() && unguarded {
+                if let Some(x) = neg_of(&ins.op) {
+                    let dst = ins.op.dst_regs();
+                    match (x, &dst[..]) {
+                        (USym::E, [r]) => hit = Some((*r, USym::NegE)),
+                        (USym::Q(i), [r]) => hit = Some((*r, USym::NegQ(i))),
+                        _ => {}
+                    }
+                }
+            }
+            // A correction by selection: q + 1 or r - d into another register, then
+            // SEL by P (the operand chosen exactly where r >= d is the corrected one).
+            if hit.is_none() && unguarded {
+                let dst = ins.op.dst_regs();
+                let src_sym = |v: &Val| sv(v);
+                match (&ins.op, &dst[..]) {
+                    (
+                        Op::Int {
+                            op: IntOp::Add,
+                            bits: 32,
+                            a,
+                            b,
+                            ..
+                        },
+                        [r],
+                    ) => {
+                        let q = match (src_sym(a), src_sym(b)) {
+                            (Some(USym::Q(i)), None) if *b == Val::Imm(1) => Some(i),
+                            (None, Some(USym::Q(i))) if *a == Val::Imm(1) => Some(i),
+                            _ => None,
+                        };
+                        if let Some(i) = q {
+                            hit = Some((*r, USym::QInc(i)));
+                        }
+                    }
+                    (
+                        Op::Iadd3 {
+                            a,
+                            b,
+                            c,
+                            neg,
+                            not: [false, false, false],
+                            wide: false,
+                            cout,
+                            cin,
+                            ..
+                        },
+                        [r],
+                    ) if cout.is_empty() && cin.is_empty() => {
+                        let ops = [a, b, c];
+                        let q = (0..3).find_map(|k| match (src_sym(ops[k]), neg[k]) {
+                            (Some(USym::Q(i)), false) => Some((k, i)),
+                            _ => None,
+                        });
+                        let rr = (0..3).find_map(|k| match (src_sym(ops[k]), neg[k]) {
+                            (Some(USym::R(i)), false) => Some((k, i)),
+                            _ => None,
+                        });
+                        let rest = |k: usize| (0..3).filter(|&m| m != k).collect::<Vec<_>>();
+                        if let Some((k, i)) = q {
+                            let o = rest(k);
+                            let one = o
+                                .iter()
+                                .filter(|&&m| !neg[m] && *ops[m] == Val::Imm(1))
+                                .count();
+                            let z = o.iter().filter(|&&m| !neg[m] && zero_val(ops[m])).count();
+                            if one == 1 && z == 1 {
+                                hit = Some((*r, USym::QInc(i)));
+                            }
+                        } else if let Some((k, i)) = rr {
+                            let o = rest(k);
+                            let dd = o.iter().filter(|&&m| neg[m] && free(ops[m])).count();
+                            let z = o.iter().filter(|&&m| !neg[m] && zero_val(ops[m])).count();
+                            if dd == 1 && z == 1 {
+                                hit = Some((*r, USym::RDec(i)));
+                            }
+                        }
+                    }
+                    (
+                        Op::Imad {
+                            a,
+                            b,
+                            c,
+                            neg_c: true,
+                            not_c: false,
+                            wide: false,
+                            hi: false,
+                            cin: None,
+                            cout: None,
+                            ..
+                        },
+                        [r],
+                    ) if free(c) => {
+                        let rr = match (src_sym(a), src_sym(b)) {
+                            (Some(USym::R(i)), None) if *b == Val::Imm(1) => Some(i),
+                            (None, Some(USym::R(i))) if *a == Val::Imm(1) => Some(i),
+                            _ => None,
+                        };
+                        if let Some(i) = rr {
+                            hit = Some((*r, USym::RDec(i)));
+                        }
+                    }
+                    (Op::Sel { d, a, b, p }, _) => {
+                        if let Some(&USym::P(i, pol)) = p.reg.and_then(|r| sym.get(&r)) {
+                            // `p` holds exactly where r >= d.
+                            let ge = p.neg != pol;
+                            let (fix, keep) = if ge { (a, b) } else { (b, a) };
+                            match (src_sym(fix), src_sym(keep)) {
+                                (Some(USym::QInc(j)), Some(USym::Q(k))) if i == j && j == k => {
+                                    hit = Some((*d, USym::Q(i)))
+                                }
+                                (Some(USym::RDec(j)), Some(USym::R(k))) if i == j && j == k => {
+                                    hit = Some((*d, USym::R(i)))
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // Corrections under P (the guard holds exactly where r >= d), in place.
+            if let (None, Some(pr)) = (hit, g.reg) {
+                if let Some(&USym::P(i, pol)) = sym.get(&pr) {
+                    if g.neg != pol {
+                        let dst = ins.op.dst_regs();
+                        let same = |v: &Val, r: Reg| matches!(v, Val::Reg(x, 1) if *x == r);
+                        if let [r] = dst[..] {
+                            let held = sym.get(&r).copied();
+                            let inc = match &ins.op {
+                                Op::Int {
+                                    op: IntOp::Add,
+                                    bits: 32,
+                                    a,
+                                    b,
+                                    ..
+                                } => {
+                                    same(a, r) && *b == Val::Imm(1)
+                                        || same(b, r) && *a == Val::Imm(1)
+                                }
+                                Op::Iadd3 {
+                                    a,
+                                    b,
+                                    c,
+                                    neg: [false, false, false],
+                                    not: [false, false, false],
+                                    wide: false,
+                                    cout,
+                                    cin,
+                                    ..
+                                } => {
+                                    let ops = [a, b, c];
+                                    cout.is_empty()
+                                        && cin.is_empty()
+                                        && ops.iter().filter(|v| same(v, r)).count() == 1
+                                        && ops.iter().filter(|v| ***v == Val::Imm(1)).count() == 1
+                                        && ops.iter().filter(|v| zero_val(v)).count() == 1
+                                }
+                                _ => false,
+                            };
+                            let dec = match &ins.op {
+                                Op::Iadd3 {
+                                    a,
+                                    b,
+                                    c,
+                                    neg,
+                                    not: [false, false, false],
+                                    wide: false,
+                                    cout,
+                                    cin,
+                                    ..
+                                } => {
+                                    let ops = [a, b, c];
+                                    let k_r =
+                                        (0..3).filter(|&k| same(ops[k], r) && !neg[k]).count();
+                                    let k_d = (0..3).filter(|&k| neg[k] && free(ops[k])).count();
+                                    let k_z =
+                                        (0..3).filter(|&k| zero_val(ops[k]) && !neg[k]).count();
+                                    cout.is_empty()
+                                        && cin.is_empty()
+                                        && k_r == 1
+                                        && k_d == 1
+                                        && k_z == 1
+                                }
+                                Op::Imad {
+                                    a,
+                                    b,
+                                    c,
+                                    neg_c: true,
+                                    not_c: false,
+                                    wide: false,
+                                    hi: false,
+                                    cin: None,
+                                    cout: None,
+                                    ..
+                                } => {
+                                    free(c)
+                                        && (same(a, r) && *b == Val::Imm(1)
+                                            || same(b, r) && *a == Val::Imm(1))
+                                }
+                                _ => false,
+                            };
+                            if inc && held == Some(USym::Q(i)) {
+                                hit = Some((r, USym::Q(i)));
+                            } else if dec && held == Some(USym::R(i)) {
+                                hit = Some((r, USym::R(i)));
+                            }
+                        }
+                    }
+                }
+            }
+            // Every register written by an unmatched instruction loses its value.
+            let dst = ins.op.dst_regs();
+            if reg_of(dv).is_some_and(|r| dst.contains(&r)) {
+                d_live = false;
+            }
+            for (n, live) in dividend.values_mut() {
+                if reg_of(n).is_some_and(|r| dst.contains(&r)) {
+                    *live = false;
+                }
+            }
+            for r in &dst {
+                sym.remove(r);
+            }
+            if let Some((r, v)) = hit {
+                sym.insert(r, v);
+                let (inst, what, operand) = match v {
+                    USym::Q(i) if i == pc => (
+                        Some(i),
+                        UdivVal::Quot,
+                        dividend.get(&i).map(|x| x.0.clone()),
+                    ),
+                    USym::Q(i) => (Some(i), UdivVal::Quot, None),
+                    USym::R(i) => (Some(i), UdivVal::Rem, None),
+                    USym::NegQ(i) | USym::P(i, _) | USym::QInc(i) | USym::RDec(i) => {
+                        (Some(i), UdivVal::Inter, None)
+                    }
+                    _ => (None, UdivVal::Inter, None),
+                };
+                steps.push((
+                    pc,
+                    UdivStep {
+                        core,
+                        inst,
+                        out: what,
+                        operand,
+                    },
+                ));
+            }
+            if sym.is_empty() {
+                break;
+            }
+        }
+        // A reciprocal no estimate reads leaves its values input data.
+        if steps.iter().any(|(_, s)| s.inst.is_some()) {
+            for (pc, s) in steps {
+                out.entry(pc).or_insert(s);
+            }
+        }
+    }
+    out
+}
+
+/// Instructions that end a straight-line run (`udiv_idioms`).
+fn control_transfer(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::Bra { .. }
+            | Op::Brx { .. }
+            | Op::Exit
+            | Op::Call { .. }
+            | Op::CallAbs { .. }
+            | Op::Ret { .. }
+            | Op::Trap { .. }
+            | Op::WarpSync { .. }
+            | Op::Bssy { .. }
+            | Op::Bsync { .. }
+            | Op::Break { .. }
+            | Op::BarSync { .. }
+    )
+}
+
 /// Taint shadow: which registers and memory bytes hold values derived from input buffers.
 /// Proves the equivalence precondition "control flow and addresses do not depend on input
 /// data" for one execution: a tainted guard, branch condition, address, coordinate,
@@ -4705,6 +5654,10 @@ pub struct Taint {
     cur_pure: Option<Vec<(usize, bool)>>,
     /// Where control or an address depended on input data.
     pub violations: BTreeSet<String>,
+    /// `ptxv num` (N-NUM-TRACK): destinations of the current instruction that `num_clobber`
+    /// found computed from a node holding a rounding (`NumState::rounded`); `taint_post`
+    /// taints them.
+    clobber_taint: Vec<(usize, Reg)>,
     /// N-FINITE: predicates of the current instruction whose value is fixed by finite inputs
     /// and no overflow (cleared after it), and the pcs of such comparisons.
     fin_clear: Vec<(usize, Reg)>,
@@ -4719,6 +5672,26 @@ pub struct Taint {
     lop_pre: Vec<LopPre>,
     /// The instruction of each guard violation (segment mode excuses those inside slices).
     pub violation_pcs: BTreeMap<String, u32>,
+    /// Instructions whose effect, not only a destination register, depends on input data:
+    /// a branch, exit, store, atomic, barrier or asynchronous operation under a guard that
+    /// depends on it (`effect_op`), or any non-register operation with an address / control
+    /// operand that does (a branch target, a load / store / atomic address, a shuffle lane).
+    /// `ptxv num` makes no claim then (N-NUM-TRACK): the exact computation may take another
+    /// path or access other elements.
+    pub control_pcs: BTreeSet<u32>,
+    /// `ptxv num` (N-NUM-UDIV): registers holding a value of a matched integer division
+    /// (`udiv_idioms`): its reciprocal core, its instance (the quotient estimate's pc) and
+    /// what the value is. They are tainted; the first read outside the instance resolves them
+    /// (`udiv_resolve`).
+    udiv_regs: HashMap<(u32, u8, u16), UdivReg>,
+    /// Per (thread, core): the divisor the I2F.RP read (value, tainted); per (thread,
+    /// instance): the dividend the estimate read.
+    udiv_d: HashMap<(usize, u32), (u32, bool)>,
+    udiv_n: HashMap<(usize, u32), (u32, bool)>,
+    /// `ptxv num` (N-NUM-TRACK): the active threads of the current instruction with an
+    /// untainted source register whose node holds a rounding (taken before the instruction
+    /// overwrites them; `taint_post` taints a destination left without a node).
+    cur_rounded: Vec<usize>,
     /// Position mode (ASSUME(E-CTA-INDEP) cluster symmetry): the taint source is `%ctaid`
     /// instead of the input buffers, and global addresses / TMA coordinates may depend on it.
     pub position: bool,
@@ -4871,6 +5844,160 @@ impl Taint {
 impl Machine {
     /// Before an instruction of `members` (active: guard true): check its control and address
     /// operands, and note whether it moves tainted data.
+    /// N-NUM-UDIV (`ptxv num`, SASS front), before instruction `pc`. A value of a matched
+    /// integer division (`udiv_idioms`) read by an instruction outside its instance (operands
+    /// of the active threads, the guard of every member) is resolved: a quotient (remainder)
+    /// equal to n / d (n mod d) of the instance's dividend and divisor, both untainted and
+    /// d != 0, is exact and loses its taint; anything else stays input data. The I2F.RP
+    /// records the divisor, the estimate the dividend.
+    fn udiv_resolve(&mut self, members: &[usize], active: &[usize], pc: u32) {
+        let k = self.k.clone();
+        let inst = &k.code[pc as usize];
+        let map = {
+            let ns = self.num.as_mut().unwrap();
+            ns.udiv
+                .get_or_insert_with(|| std::sync::Arc::new(udiv_idioms(&k.code)))
+                .clone()
+        };
+        let step = map.get(&pc);
+        let tn = &self.num.as_ref().unwrap().taint;
+        if !tn.udiv_regs.is_empty() {
+            let mut reads: Vec<(usize, Reg)> = Vec::new();
+            for &t in active {
+                reads.extend(inst.op.src_regs().into_iter().map(|r| (t, r)));
+            }
+            if let Some(g) = inst.guard.reg {
+                reads.extend(members.iter().map(|&t| (t, g)));
+            }
+            let mut fix = Vec::new();
+            for (t, r) in reads {
+                let key = tn.reg_key(t, r);
+                let Some(&(core, ins, what)) = tn.udiv_regs.get(&key) else {
+                    continue;
+                };
+                if step.is_some_and(|s| {
+                    s.core == core && (s.inst.is_none() || ins.is_none() || s.inst == ins)
+                }) {
+                    continue;
+                }
+                let exact = match (what, ins) {
+                    (UdivVal::Quot | UdivVal::Rem, Some(i)) => {
+                        match (tn.udiv_d.get(&(t, core)), tn.udiv_n.get(&(t, i))) {
+                            (Some(&(d, false)), Some(&(n, false))) if d != 0 => {
+                                let want = if what == UdivVal::Quot { n / d } else { n % d };
+                                self.rd(t, &Val::Reg(r, 1)).is_ok_and(|v| v == want as u64)
+                            }
+                            _ => false,
+                        }
+                    }
+                    _ => false,
+                };
+                fix.push((key, exact));
+            }
+            let tn = &mut self.num.as_mut().unwrap().taint;
+            for (key, exact) in fix {
+                tn.udiv_regs.remove(&key);
+                if exact {
+                    tn.reg.remove(&key);
+                    tn.bits.remove(&key);
+                }
+            }
+        }
+        let Some(UdivStep {
+            core,
+            inst: ins,
+            operand: Some(v),
+            ..
+        }) = step
+        else {
+            return;
+        };
+        let tn = &self.num.as_ref().unwrap().taint;
+        let rec: Vec<(usize, Option<u32>, bool)> = active
+            .iter()
+            .map(|&t| {
+                let tainted = matches!(v, Val::Reg(r, _) if tn.reg_t(t, *r));
+                (t, self.rd(t, v).ok().map(|x| x as u32), tainted)
+            })
+            .collect();
+        let tn = &mut self.num.as_mut().unwrap().taint;
+        for (t, val, tainted) in rec {
+            // An operand the model cannot read counts as input data.
+            let entry = (val.unwrap_or(0), tainted || val.is_none());
+            if *ins == Some(pc) {
+                tn.udiv_n.insert((t, pc), entry);
+            } else if *core == pc {
+                tn.udiv_d.insert((t, pc), entry);
+            }
+        }
+    }
+
+    /// N-NUM-TRACK (`ptxv num`), before instruction `pc`: the active threads with an untainted
+    /// source register whose node holds a rounding (`NumState::rounded`: an FADD, atomic add,
+    /// MMA or MUFU of parameters, special registers or constants). `taint_post` taints their
+    /// destinations left without a node (a comparison, a conversion to an integer, bit
+    /// operations), so a guard, branch, address or shuffle lane computed from one is refused as
+    /// for input data. An address, branch target or shuffle lane read from such a register
+    /// directly is refused here (`control_pcs`). A reduction, ballot, vote or match takes every
+    /// executing lane when any lane's operand holds a rounding, and R2UR's predicate when the
+    /// first lane's does (MISS 95).
+    fn rounded_pre(&mut self, active: &[usize], pc: u32) {
+        let k = self.k.clone();
+        let inst = &k.code[pc as usize];
+        // As for input data: a register operation's operands are values (its result carries
+        // the taint).
+        let ctl = if pure_op(&inst.op) {
+            vec![]
+        } else {
+            control_regs(&inst.op)
+        };
+        let mut regs = inst.op.src_regs();
+        regs.extend(ctl.iter().copied());
+        let ns = self.num.as_mut().unwrap();
+        let mut cur = Vec::new();
+        let mut ctl_hit = false;
+        for &t in active {
+            let mut any = false;
+            for &r in &regs {
+                if matches!(r.file, File::P | File::UP) || ns.taint.reg_t(t, r) {
+                    continue;
+                }
+                let Some(&n) = ns.reg.get(&ns.taint.reg_key(t, r)) else {
+                    continue;
+                };
+                if ns.rounded(n) {
+                    any = true;
+                    ctl_hit |= ctl.contains(&r);
+                }
+            }
+            if any {
+                cur.push(t);
+            }
+        }
+        // ASSUME(N-NUM-TRACK): a reduction, ballot, vote or match reads every executing lane's
+        // operand, so a rounded operand in any lane decides each lane's result (MISS 95: a
+        // MATCH.ANY of one lane's rounded value against the others' exact values); R2UR's
+        // predicate compares this lane's value with the first executing lane's.
+        let xlane = match &inst.op {
+            Op::Redux { .. } | Op::VoteAny { .. } | Op::VoteAll { .. } | Op::MatchAny { .. } => {
+                !cur.is_empty()
+            }
+            Op::R2Ur { p: Some(_), .. } => active.first().is_some_and(|f| cur.contains(f)),
+            _ => false,
+        };
+        if xlane {
+            cur = active.to_vec();
+        }
+        ns.taint.cur_rounded = cur;
+        if ctl_hit {
+            ns.taint.violations.insert(format!(
+                "an address / control operand of {} is a rounded value",
+                k.describe(pc as usize)
+            ));
+            ns.taint.control_pcs.insert(pc);
+        }
+    }
+
     pub(crate) fn taint_pre(&mut self, members: &[usize], active: &[usize], pc: u32) {
         if self.num.is_none() {
             return;
@@ -4887,6 +6014,15 @@ impl Machine {
         }
         let half_only = self.eff_active(active, pc);
         let active = half_only.as_deref().unwrap_or(active);
+        if self.num.as_ref().unwrap().rounding_taint {
+            if self.k.front == Front::Sass {
+                self.udiv_resolve(members, active, pc);
+            }
+            self.rounded_pre(active, pc);
+        }
+        // Address / control operands are checked for every member that executes the
+        // instruction on some input, not only on this one (MISS 56).
+        let may_exec = self.may_execute(members, active, pc);
         let k = self.k.clone();
         let inst = &k.code[pc as usize];
         let srcs = inst.op.src_regs();
@@ -5021,6 +6157,10 @@ impl Machine {
                     let v = format!("guard of {describe} depends on input data");
                     tn.violation_pcs.insert(v.clone(), pc);
                     tn.violations.insert(v);
+                    let input_guard = members.iter().any(|&t| tn.reg_t(t, g));
+                    if effect_op(&inst.op) && input_guard {
+                        tn.control_pcs.insert(pc);
+                    }
                 }
             }
         }
@@ -5031,15 +6171,23 @@ impl Machine {
                     .map(|&t| (t, seed || srcs.iter().any(|&r| tn.reg_t(t, r))))
                     .collect(),
             );
-            if matches!(inst.op, Op::R2Ur { .. }) {
+            // ASSUME(N-EQUIV): R2UR's uniform destination is the first executing lane's value;
+            // its predicate (`R2UR P, ...`: this lane's value differs from it) depends on that
+            // lane's and its own.
+            if let Op::R2Ur { p, .. } = &inst.op {
                 if let Some(per) = tn.cur_pure.as_mut() {
                     let first = per.first().is_some_and(|x| x.1);
-                    per.iter_mut().for_each(|x| x.1 = first);
+                    let own = p.is_some();
+                    per.iter_mut().for_each(|x| x.1 = first || own && x.1);
                 }
             }
-            // A reduction across the warp: every lane's result depends on every lane's
-            // operand.
-            if matches!(inst.op, Op::Redux { .. }) {
+            // ASSUME(N-EQUIV): a reduction, ballot, vote or match across the warp: every lane's
+            // result depends on every executing lane's operand (MISS 65: a ballot of one lane's
+            // input-derived predicate decided the other lanes' branches untainted).
+            if matches!(
+                inst.op,
+                Op::Redux { .. } | Op::VoteAny { .. } | Op::VoteAll { .. } | Op::MatchAny { .. }
+            ) {
                 if let Some(per) = tn.cur_pure.as_mut() {
                     let any = per.iter().any(|x| x.1);
                     per.iter_mut().for_each(|x| x.1 = any);
@@ -5083,11 +6231,45 @@ impl Machine {
         {
             tn.cur_gen_addr = true;
         }
-        if !position && active.iter().any(|&t| ctl.iter().any(|&r| tn.reg_t(t, r))) {
+        // ASSUME(N-ERRDIST-SEL): a member whose guard is false here but depends on input data
+        // executes the instruction on other inputs, with the operands it holds now: a store
+        // whose address depends on input data for such a member is not a selection at this
+        // run's address (MISS 56) but a data-dependent precondition.
+        if !position
+            && may_exec
+                .iter()
+                .any(|&t| ctl.iter().any(|&r| tn.reg_t(t, r)))
+        {
             tn.violations.insert(format!(
                 "an address / control operand of {describe} depends on input data"
             ));
+            // A control transfer's target (BRX, an indirect call or return), a load, store or
+            // atomic address, a shuffle's source lane: the exact computation may go elsewhere
+            // or access other elements.
+            if active.iter().any(|&t| ctl.iter().any(|&r| tn.reg_t(t, r))) {
+                tn.control_pcs.insert(pc);
+            }
         }
+    }
+
+    /// The members of instruction `pc` that execute it on some input (MISS 56): those whose
+    /// guard holds on this run (`active`, already through `eff_active`) and those whose guard
+    /// depends on input data, which another input can make hold. A member whose guard is false
+    /// and input-independent per the taint check executes it on no input (the check follows a
+    /// selection's store word into another thread since 2026-11-11, `num_gst_post`; a vote's
+    /// result keeps each lane's own taint). Its address / control operands must not
+    /// depend on input data for any of them (`taint_pre`); the multi-path extraction checks
+    /// the same set.
+    pub(crate) fn may_execute(&self, members: &[usize], active: &[usize], pc: u32) -> Vec<usize> {
+        let Some(ns) = self.num.as_ref() else {
+            return active.to_vec();
+        };
+        let g = self.k.code[pc as usize].guard.reg;
+        self.eff_active(members, pc)
+            .unwrap_or_else(|| members.to_vec())
+            .into_iter()
+            .filter(|t| active.contains(t) || g.is_some_and(|g| ns.taint.reg_t(*t, g)))
+            .collect()
     }
 
     pub(crate) fn num_shuffle_origin(
@@ -5169,7 +6351,37 @@ impl Machine {
         let half_only = self.eff_active(active, pc);
         let active = half_only.as_deref().unwrap_or(active);
         self.half_post(active, pc);
+        // ASSUME(N-NUM-TRACK): an integer to f32 conversion with a result below 2^24 in
+        // magnitude is exact (every such integer is an f32): `rounding_taint` spares it.
+        let i2f_exact: Vec<usize> = match &self.k.code[pc as usize].op {
+            Op::I2F { d, f64: false, .. }
+                if self.num.as_ref().is_some_and(|n| n.rounding_taint) =>
+            {
+                active
+                    .iter()
+                    .copied()
+                    .filter(|&t| {
+                        self.rd(t, &Val::Reg(*d, 1))
+                            .is_ok_and(|v| (f32::from_bits(v as u32) as f64).abs() < 16_777_216.0)
+                    })
+                    .collect()
+            }
+            _ => vec![],
+        };
+        // ASSUME(N-NUM-TRACK): ptxas materializes a 32-bit constant as `HFMA2 R, -RZ, RZ, hi,
+        // lo`: a zero product plus the immediate, exact in every lane. `rounding_taint` spares
+        // that form only (every operand an immediate, one factor zero); any other all-immediate
+        // rounding instruction (`MUFU.TANH R, 0.1`, which ptxas does not fold) is a rounding.
+        let const_mat = self.k.front == Front::Sass
+            && matches!(&self.k.code[pc as usize].op, Op::Hfma2 { a, b, .. }
+                if matches!(a, Val::Imm(0)) || matches!(b, Val::Imm(0)))
+            && self.k.code[pc as usize]
+                .op
+                .src_vals()
+                .iter()
+                .all(|v| matches!(v, Val::Imm(_)));
         let Some(ns) = self.num.as_mut() else { return };
+        let udiv = ns.udiv.clone();
         let inst = &self.k.code[pc as usize];
         // A destination no numerics hook set loses its node (as `num_clobber`). Segment mode:
         // under a guard that depends on input data, every member's destinations lose theirs,
@@ -5180,12 +6392,17 @@ impl Machine {
             .is_some_and(|g| members.iter().any(|&t| ns.taint.reg_t(t, g)));
         // ASSUME(N-EQUIV): the members under a data-dependent guard: for a per-thread register operation, those
         // whose own guard depends on input data (another member's guard is fixed for every
-        // input, so its destination is as executed); for warp-collective ones, every member.
+        // input, so its destination is as executed); for warp-collective ones (R2UR: which lane
+        // is first), every member.
         let per_thread = pure_op(&inst.op)
             && !inst.uniform
             && !matches!(
                 inst.op,
-                Op::VoteAny { .. } | Op::VoteAll { .. } | Op::Redux { .. } | Op::MatchAny { .. }
+                Op::VoteAny { .. }
+                    | Op::VoteAll { .. }
+                    | Op::Redux { .. }
+                    | Op::MatchAny { .. }
+                    | Op::R2Ur { .. }
             );
         let dg: Vec<usize> = match inst.guard.reg {
             Some(g) if data_guard && per_thread => members
@@ -5233,16 +6450,21 @@ impl Machine {
             for &t in &touched_ts {
                 tn.bits.remove(&tn.reg_key(t, r));
             }
+            let lane_t = |t: usize| match &per {
+                Some(p) => p.iter().any(|&(u, x)| u == t && x),
+                None => ld_read
+                    .iter()
+                    .find(|x| x.0 == t && x.1 == r)
+                    .map_or(t_any, |x| x.2),
+            };
+            // ASSUME(N-EQUIV): a uniform register (UR / UP) is one value for the warp: it is
+            // input data if any executing lane's result is (each lane's write would otherwise
+            // leave the last lane's taint).
+            let uniform_t =
+                matches!(r.file, File::UR | File::UP) && active.iter().any(|&t| lane_t(t));
             for &t in active {
                 let k = tn.reg_key(t, r);
-                let tainted = match &per {
-                    Some(p) => p.iter().any(|&(u, x)| u == t && x),
-                    None => ld_read
-                        .iter()
-                        .find(|x| x.0 == t && x.1 == r)
-                        .map_or(t_any, |x| x.2),
-                };
-                if tainted {
+                if uniform_t || lane_t(t) {
                     tn.reg.insert(k);
                 } else {
                     tn.reg.remove(&k);
@@ -5251,6 +6473,32 @@ impl Machine {
             // Under a data-dependent guard the member's destination depends on input data.
             for &t in &dg {
                 tn.reg.insert(tn.reg_key(t, r));
+            }
+        }
+        // ASSUME(N-NUM-TRACK): `ptxv num`: a rounding instruction's destination without a node
+        // holds a rounding the DAG does not record. It is input data whatever its operands
+        // (kernel parameters, special registers, constants), so a later read is an `Opaque`
+        // leaf and a store of it an untracked word, never a constant leaf whose simulated
+        // value counts as exact. An f32x2 result needs a node in both lanes.
+        if ns.rounding_taint && rounding_op(&inst.op) && !const_mat {
+            let pair = matches!(inst.op, Op::Ffma2 { .. });
+            for r in inst.op.dst_regs() {
+                if matches!(r.file, File::P | File::UP) {
+                    continue;
+                }
+                for &t in active {
+                    if i2f_exact.contains(&t) {
+                        continue;
+                    }
+                    let k = tn.reg_key(t, r);
+                    let hi = (k.0, k.1, k.2 | V_HI);
+                    let tracked = ns.reg.contains_key(&k)
+                        && !(pair && r.file == File::V && !ns.reg.contains_key(&hi));
+                    if !tracked {
+                        tn.reg.insert(k);
+                        tn.bits.remove(&k);
+                    }
+                }
             }
         }
         // ASSUME(N-FINITE): a comparison fixed by finiteness is the same for every input.
@@ -5281,6 +6529,71 @@ impl Machine {
                 // A tainted predicate operand (L-LOP3-P) taints P.
                 if let (Some(p), true) = (p, runs && !data_guard) {
                     tn.set_mask(t, *p, if one == 0 && m != 0 || qt { 1 } else { 0 });
+                }
+            }
+        }
+        // ASSUME(N-NUM-TRACK): `ptxv num`: a destination computed outside the DAG from a node
+        // holding a rounding (`num_clobber`) is input data. So is the value a float atomic add
+        // returns (f32, f64, bf16x2 and bf16x4, bf16): a rounded partial sum of the location's
+        // updates, whose order this run fixes, without a node.
+        for (t, r) in std::mem::take(&mut tn.clobber_taint) {
+            let k = tn.reg_key(t, r);
+            tn.reg.insert(k);
+            tn.bits.remove(&k);
+        }
+        if ns.rounding_taint
+            && matches!(
+                inst.op,
+                Op::Atom {
+                    op: AtomOp::FAddFtz | AtomOp::FAdd64 | AtomOp::AddBf16x2 | AtomOp::AddBf16,
+                    d: Some(_),
+                    ..
+                }
+            )
+        {
+            for r in inst.op.dst_regs() {
+                if matches!(r.file, File::P | File::UP) {
+                    continue;
+                }
+                for &t in active {
+                    let k = tn.reg_key(t, r);
+                    tn.reg.insert(k);
+                    tn.bits.remove(&k);
+                }
+            }
+        }
+        // ASSUME(N-NUM-TRACK): `ptxv num`: a destination left without a node, computed from an
+        // untainted node holding a rounding (`rounded_pre`: a comparison, a conversion to an
+        // integer or bit operations on a rounded sum of parameters, a float loop counter, an
+        // atomic sum), may differ from the exact computation's: it is input data, so control
+        // decided by it is refused (`control_pcs`) and data computed from it is untracked.
+        if ns.rounding_taint {
+            let cur = std::mem::take(&mut tn.cur_rounded);
+            for r in inst.op.dst_regs() {
+                for &t in &cur {
+                    let k = tn.reg_key(t, r);
+                    if !ns.reg.contains_key(&k) {
+                        tn.reg.insert(k);
+                        tn.bits.remove(&k);
+                    }
+                }
+            }
+        }
+        // N-NUM-UDIV: the tainted destinations of a matched division step hold its value
+        // (`udiv_regs`, resolved by `udiv_resolve`); any other write ends a register's.
+        if let Some(map) = udiv.as_ref() {
+            let step = map.get(&pc);
+            for r in inst.op.dst_regs() {
+                for &t in &touched_ts {
+                    let key = tn.reg_key(t, r);
+                    match step {
+                        Some(st) if tn.reg.contains(&key) => {
+                            tn.udiv_regs.insert(key, (st.core, st.inst, st.out));
+                        }
+                        _ => {
+                            tn.udiv_regs.remove(&key);
+                        }
+                    }
                 }
             }
         }
@@ -5877,7 +7190,7 @@ mod untracked_producer_tests {
             .nodes
             .iter()
             .find_map(|node| match node.kind {
-                NodeKind::AtomAdd(base, _) => Some(base),
+                NodeKind::AtomAdd(base, _, _) => Some(base),
                 _ => None,
             })
             .unwrap();
@@ -5901,7 +7214,7 @@ mod untracked_producer_tests {
             .nodes
             .iter()
             .find_map(|node| match node.kind {
-                NodeKind::AtomAdd(base, _) => Some(base),
+                NodeKind::AtomAdd(base, _, _) => Some(base),
                 _ => None,
             })
             .unwrap();

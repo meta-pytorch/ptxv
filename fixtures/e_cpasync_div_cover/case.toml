@@ -1,0 +1,50 @@
+name = "e_cpasync_div_cover"
+description = """
+E-CPASYNC, SASS divergent waits, coverage: a lane is ordered after the copies another path's
+DEPBAR retired only at its own later DEPBAR that covers them (Warp::cp_landed). Based on
+fixtures/e_cpasync_div_wait: the odd lanes copy, commit, wait_group 0 and set a volatile flag;
+the even lanes copy, commit, spin on the flag and wait. good: each lane reads its own slot after
+its path's wait_group 0 (clean). NEIGH: the even lanes wait with wait_group 1 and read their odd
+neighbour's slot: on the SASS front the even DEPBAR.LE SB0, 1 (two warp commits) covers the even
+copies (commit 0), not the odd ones (commit 1), and the volatile flag orders nothing; on the PTX
+front the even thread's wait covers none of the neighbour's copies. A race on both fronts, and
+a contract finding (E-CPASYNC-EXIT: the even copy left unwaited by wait_group 1)."""
+ptx = "kernel.ptx"
+entry = "e_cpasync_div_cover"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [32]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[variants]]
+id = "good"
+summary = "each lane reads its own slot after its path's wait_group 0"
+expect = ["clean"]
+
+[[variants]]
+id = "NEIGH"
+summary = "the even lanes wait with wait_group 1 and read the odd neighbour's slot"
+edits = [
+    { marker = "@WAIT", find = "cp.async.wait_group 0;", replace = "cp.async.wait_group 1;" },
+    { marker = "@RD", find = "ld.shared.u32 %r6, [%r4];", replace = "ld.shared.u32 %r6, [%r4+4];" },
+]
+expect = ["contract", "race"]

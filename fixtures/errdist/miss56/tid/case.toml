@@ -1,0 +1,74 @@
+name = "m56_tid"
+description = """
+MISS 56: entry m56_tid of ../kernel.ptx (see its header). A store under an input-independent
+guard (tid == 0) whose address depends on input data for the threads whose guard is false:
+they execute it on no input, so errdist reports."""
+ptx = "../kernel.ptx"
+entry = "m56_tid"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y", "z"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "iota"
+
+[[buffers]]
+name = "mask"
+dtype = "u32"
+shape = [64]
+init = "iota"
+
+[[buffers]]
+name = "z"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "mask"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

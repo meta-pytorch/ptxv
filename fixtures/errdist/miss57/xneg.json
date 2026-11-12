@@ -1,0 +1,3 @@
+{"version": 1, "seed": 1, "name": "x uniform [-5, -4] (x[0] < -3 always), others N(0,1)",
+ "tensors": {"x": {"dist": {"kind": "uniform", "lo": -5.0, "hi": -4.0}}},
+ "default": {"dist": {"kind": "normal"}}}

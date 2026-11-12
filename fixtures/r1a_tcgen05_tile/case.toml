@@ -62,7 +62,10 @@ id = "B05"
 summary = "no tcgen05.wait::ld before the loaded registers are stored"
 marker = "@B05"
 replace = "<delete>"
-expect = ["violation"]
+# The registers are read before the wait (violation), and the never-completed loads are not
+# ordered before warp 0's dealloc by fence::before_thread_sync + bar.sync (race; MISS 105:
+# before, the fence released them).
+expect = ["race", "violation"]
 expect_sass = ["clean"]
 hw_note = "PTX-level UB; this ptxas still orders the register uses by scoreboard"
 

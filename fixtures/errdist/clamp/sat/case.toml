@@ -1,0 +1,41 @@
+name = "clamp_sat"
+description = """entry cl_sat of ../kernel.ptx (see its header): a saturating multiply inside an instruction slice."""
+ptx = "../kernel.ptx"
+entry = "cl_sat"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

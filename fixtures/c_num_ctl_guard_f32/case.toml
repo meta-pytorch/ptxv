@@ -1,0 +1,66 @@
+name = "c_num_ctl_guard_f32"
+description = """
+N-NUM-TRACK (the independent review's probe rd_guard_tid, kernel.ptx): a store guard from float arithmetic
+on %tid. out[t] = x[t] if rn(f32(t) * s) >= 7, s = 0.7f (out stays 0 otherwise). This run stores t >= 10, the
+exact computation t >= 11 (10 s < 7). num makes no claim. expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP).
+"""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_ctl_guard_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/y.bin"
+
+[[buffers]]
+name = "z"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/z.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "bytes"
+hex = "3333333f"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

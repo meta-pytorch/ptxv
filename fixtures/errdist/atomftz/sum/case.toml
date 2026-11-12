@@ -1,0 +1,32 @@
+name = "atomftz_sum"
+description = """entry af_sum of ../kernel.ptx (see its header): y[j] = x[j] + x[j + 32] by fp32 atomic adds, which flush subnormal operands and results."""
+ptx = "../kernel.ptx"
+entry = "af_sum"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "normal"
+seed = 3
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["nondeterministic"]

@@ -51,7 +51,8 @@ after the check. Differential: identical reports on every fixture (section 3).
 
 **Order and caps.** A comes before any exploration: riding on the certificate's run, or as a
 run of its own before the check. It has its own caps: `--coverage-seconds` /
-`PTXV_COVERAGE_SECONDS` (default 1800 s; none with `--coverage-only`) and
+`PTXV_COVERAGE_SECONDS` (default 1800 s; none with `--coverage-only`; with `--time-budget`, at
+most what is left of the whole check's budget) and
 `PTXV_COVERAGE_MAX_RSS` (default 75% of the memory budget, `membudget.rs`). Past either, a run
 of its own stops and a riding shadow detaches (the run goes on without it); the report says
 `stopped` ("time" / "memory"), keeps only the input-dependent operands and comparisons seen so
@@ -64,8 +65,11 @@ affected: the memory the shadow used is returned to the OS before the exploratio
 - **Budget.** `--mutate-budget-seconds` (default 1800) and `--mutate-budget-states` (default
   2 x `--max-states`) are totals over all mutated checks. Each check gets the states left (at
   most `--max-states`); an exploration stops at the time budget, incomplete, with the note
-  "exploration stopped at the time budget"; no check starts once either is spent, and the row
-  says how many were not checked (`mutation_budget`).
+  "exploration stopped at the time budget" (the synchronization reduction's seed walks before
+  it stop there too, with a note of their own); no check starts once either is spent, and the
+  row says how many were not checked (`mutation_budget`). Nested in `--time-budget` (the
+  whole check's): the mutated checks stop at the earlier end, and the note names the flag
+  whose end it was; the certificates of mutated checks stop at `--time-budget` only.
 - **Reuse.** A mutated machine is the base machine with the mutated bytes (`coverage::apply`):
   the decoded and lifted program and the case setup are the base run's. The synchronization
   reduction's learned sets are not carried over: a mutated check that certifies (the common

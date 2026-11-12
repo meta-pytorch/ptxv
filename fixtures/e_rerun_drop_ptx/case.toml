@@ -1,0 +1,41 @@
+name = "e_rerun_drop_ptx"
+description = """
+MISS 122: a TMEM store with two racing readers. X's race is ordered once the tcgen05 fences are
+implied (E-TC-FENCE-NOP, tc_fence_contract reruns and reclassifies it as a contract); Y's is
+not. When tmem_access reported only its first racer (the lower actor), XLOW (X = warp 0) gave
+[contract] and Y's race was reported by no level: the rerun keeps only level-1 race signatures.
+Every racer is now reported: both variants race. See kernel.ptx."""
+ptx = "kernel.ptx"
+entry = "e_rerun_drop_ptx"
+grid = [1, 1, 1]
+block = [384, 1, 1]
+outputs = ["dst"]
+
+[[buffers]]
+name = "dst"
+dtype = "u32"
+shape = [384]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "dst"
+
+[[variants]]
+id = "XLOW"
+summary = "X (ordered once tcgen05 fences are implied) = warp 0, Y (in-flight LDTM) = warp 4: Y sorts after X"
+# PTX: X's race is a contract (E-TC-FENCE-NOP), Y's a race. SASS (the fences are NOPs, the
+# named barrier orders X): Y's race.
+expect = ["contract", "race"]
+expect_sass = ["race"]
+
+[[variants]]
+id = "YLOW"
+summary = "control: X = warp 4, Y = warp 0"
+marker = "@XW"
+find = "mov.u32         %r12, 0;"
+replace = "mov.u32         %r12, 4;"
+edits = [{ marker = "@YW", find = "mov.u32         %r13, 4;", replace = "mov.u32         %r13, 0;" }]
+expect = ["contract", "race"]
+expect_sass = ["race"]
+

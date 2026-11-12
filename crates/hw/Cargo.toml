@@ -9,3 +9,6 @@ serde.workspace = true
 serde_json.workspace = true
 ptxv-case = { path = "../case" }
 ptxv-sass = { path = "../sass" }
+
+[lints]
+workspace = true

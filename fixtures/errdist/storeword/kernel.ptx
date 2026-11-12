@@ -1,0 +1,175 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// The store word of a selection (MISS 56 class). A store under a data-dependent guard that is
+// false on the captured input is a selection Sel(P, 0, 1) at its captured address
+// (N-ERRDIST-SEL); the thread that did not store ran no taint write, so the shared word read
+// as input-independent, and another thread's guard or address on it escaped the checks.
+// Every thread stores t_i = RN(RN(x[i] w[i]) + v[i]) to y[i]. Thread 0 sets the flag to 1;
+// after a barrier it reads it (to z[0], keeping its shared address outside the guard) and
+// clears it where x[0] >= 3 (`@P STS [UR], RZ`); after a second barrier:
+//   sw_addr:  thread 1 stores RN(3 t_1) to y[1 + 2 flag] (y[3] at the captured x = 0, y[1]
+//             where x[0] >= 3);
+//   sw_guard: thread 1 stores RN(3 t_1) to y[1] where flag == 0 (never at the captured input;
+//             wherever x[0] >= 3 otherwise);
+//   sw_all:   every thread i stores RN(3 t_i) to y[i] where flag == 0.
+// Before: sw_all reported P(bits differ) 2.415e-1 with x[0] in [3, 4) on 10% of the inputs,
+// where the kernel's is 0.2553 [0.2531, 0.2575] (exact rationals); the DAG disagreed with the
+// simulator on 4-8 outputs over 400 inputs.
+
+.visible .entry sw_addr(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py, .param .u64 pz)
+{
+    .shared .align 4 .u32 flag;
+    .reg .f32 %f<12>;
+    .reg .b32 %r<12>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<6>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    ld.param.u64 %rd5, [pz];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    add.rn.f32 %f5, %f4, %f3;
+    st.global.f32 [%rd10], %f5;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra S1;
+    mov.u32 %r5, 1;
+    st.shared.u32 [flag], %r5;
+S1:
+    bar.sync 0;
+    @%p2 bra S2;
+    ld.global.f32 %f9, [%rd1];
+    mov.u32 %r10, flag;
+    ld.volatile.shared.u32 %r11, [%r10];
+    setp.ge.f32 %p1, %f9, 0f40400000;
+    mov.u32 %r6, 0;
+    @%p1 st.volatile.shared.u32 [%r10], %r6;
+    st.global.u32 [%rd5], %r11;
+S2:
+    bar.sync 0;
+    setp.ne.u32 %p4, %r1, 1;
+    @%p4 bra DONE;
+    ld.shared.u32 %r7, [flag];
+    shl.b32 %r8, %r7, 1;
+    add.u32 %r9, %r8, 1;
+    mul.wide.u32 %rd11, %r9, 4;
+    add.s64 %rd12, %rd4, %rd11;
+    mul.rn.f32 %f6, %f5, 0f40400000;
+    st.global.f32 [%rd12], %f6;
+DONE:
+    ret;
+}
+
+.visible .entry sw_guard(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py, .param .u64 pz)
+{
+    .shared .align 4 .u32 flag;
+    .reg .f32 %f<12>;
+    .reg .b32 %r<12>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<6>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    ld.param.u64 %rd5, [pz];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    add.rn.f32 %f5, %f4, %f3;
+    st.global.f32 [%rd10], %f5;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra S1;
+    mov.u32 %r5, 1;
+    st.shared.u32 [flag], %r5;
+S1:
+    bar.sync 0;
+    @%p2 bra S2;
+    ld.global.f32 %f9, [%rd1];
+    mov.u32 %r10, flag;
+    ld.volatile.shared.u32 %r11, [%r10];
+    setp.ge.f32 %p1, %f9, 0f40400000;
+    mov.u32 %r6, 0;
+    @%p1 st.volatile.shared.u32 [%r10], %r6;
+    st.global.u32 [%rd5], %r11;
+S2:
+    bar.sync 0;
+    setp.ne.u32 %p4, %r1, 1;
+    @%p4 bra DONE;
+    ld.shared.u32 %r7, [flag];
+    setp.eq.u32 %p5, %r7, 0;
+    mul.rn.f32 %f6, %f5, 0f40400000;
+    @%p5 st.global.f32 [%rd10], %f6;
+DONE:
+    ret;
+}
+
+.visible .entry sw_all(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py, .param .u64 pz)
+{
+    .shared .align 4 .u32 flag;
+    .reg .f32 %f<12>;
+    .reg .b32 %r<12>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<6>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    ld.param.u64 %rd5, [pz];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    add.rn.f32 %f5, %f4, %f3;
+    st.global.f32 [%rd10], %f5;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra S1;
+    mov.u32 %r5, 1;
+    st.shared.u32 [flag], %r5;
+S1:
+    bar.sync 0;
+    @%p2 bra S2;
+    ld.global.f32 %f9, [%rd1];
+    mov.u32 %r10, flag;
+    ld.volatile.shared.u32 %r11, [%r10];
+    setp.ge.f32 %p1, %f9, 0f40400000;
+    mov.u32 %r6, 0;
+    @%p1 st.volatile.shared.u32 [%r10], %r6;
+    st.global.u32 [%rd5], %r11;
+S2:
+    bar.sync 0;
+    ld.shared.u32 %r7, [flag];
+    setp.eq.u32 %p5, %r7, 0;
+    mul.rn.f32 %f6, %f5, 0f40400000;
+    @%p5 st.global.f32 [%rd10], %f6;
+DONE:
+    ret;
+}

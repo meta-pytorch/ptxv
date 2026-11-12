@@ -81,7 +81,7 @@ pub struct RepCheck {
     pub classes: Vec<String>,
     /// Exhaustive exploration or certificate (`verdict.complete`).
     pub complete: bool,
-    /// Well-synchronized certificate (E-WELLSYNC).
+    /// Well-synchronized certificate (E-WELLSYNC) on a complete verdict.
     pub certified: bool,
     pub states: usize,
     /// First finding lines.

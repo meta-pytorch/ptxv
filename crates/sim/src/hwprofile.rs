@@ -74,6 +74,8 @@ pub const GB300: &[Item] = &[
         probe: "probes/desc_version",
         discharges: &["desc-version:"],
     },
+    // Not E-TMEM-QUEUE: its probe (probes/tmem_queue) is a measured null without a
+    // discriminating control, so `tmem-queue` contract findings stay contracts here too.
     // ASSUME(E-HW-PROXY-WAR): discharges the strict level's S-PROXY-WAR contract findings.
     Item {
         id: "E-HW-PROXY-WAR",

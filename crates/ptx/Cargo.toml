@@ -6,3 +6,6 @@ version.workspace = true
 [dependencies]
 anyhow.workspace = true
 ptxv-ir = { path = "../ir" }
+
+[lints]
+workspace = true

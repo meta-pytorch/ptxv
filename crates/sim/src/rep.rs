@@ -376,7 +376,7 @@ pub(crate) fn access(
             return;
         }
         let nth = m.threads.len() as u32;
-        let t = (actor < 3 * nth).then_some(actor % nth);
+        let t = (actor < crate::machine::async_base(nth)).then_some(actor % nth);
         // An access whose address operands may depend on the position must happen during its
         // instruction (its address record is the instruction's).
         if rec.cur_pc != Some(pc) && !free_regs(&m.k.code[pc as usize].op).is_empty() {

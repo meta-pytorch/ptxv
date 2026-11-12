@@ -1,0 +1,53 @@
+name = "m58_rare"
+description = """
+MISS 58 follow-up (Tier 3 refused by a validation run): entry m58_rare of ../kernel.ptx (see
+its header): y[i] = RN(RN(x[i] s[0]) + v[i]), exact unless s[0] is not 1."""
+ptx = "../kernel.ptx"
+entry = "m58_rare"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "s"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "s"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1,0 +1,47 @@
+name = "e_cpasync_early"
+description = """
+E-CPASYNC: the copy's shared-memory write lands when wait_group retires it. A barrier after the
+issue but before the wait does not order the write before another thread's read (LATEWAIT): the
+read races with the copy (GB300 reads the old value in 200/200 runs); waiting before the barrier
+(good) is clean. Both fronts used to report LATEWAIT clean (also certified): the write was
+race-checked with the issuer's clock at issue, which the barrier orders before the reader."""
+ptx = "kernel.ptx"
+entry = "e_cpasync_early"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [4]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[variants]]
+id = "good"
+summary = "wait before the barrier"
+expect = ["clean"]
+
+[[variants]]
+id = "LATEWAIT"
+summary = "wait after the barrier: the read races with the copy (GB300 200/200 wrong)"
+edits = [
+    { marker = "@EARLY", find = "cp.async.wait_group 0;", replace = "" },
+    { marker = "@LATE", find = "// @LATE", replace = "cp.async.wait_group 0;" },
+]
+expect = ["race"]
+hw_note = "GB300 200/200 runs read the old 0x55 (ptxv hw 2026-11-09)"

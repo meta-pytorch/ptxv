@@ -1,0 +1,59 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// fixtures/c_num_param_f32 (N-NUM-TRACK): roundings of values that come from no input buffer.
+// Thread t (32 threads) reads x[t] and writes out[32 k + t]; a = 0.1f and b = 3 are f32
+// kernel parameters:
+//   k = 0: x + rn(a*b)
+//   k = 1: rn(a*b)
+//   k = 2: x + rn(f32(t) * 0.1f)
+//   k = 3: x + ex2.approx.ftz(a)
+//   k = 4: x + a          (the parameter itself: an exact value)
+//   k = 5: x + f32(t)     (an exact conversion)
+// Elements 0..3 round values `ptxv num` keeps no node for: before rounding_taint their
+// simulated values counted as exact (max_err 0, Thm 1 exact on both fronts).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_param_f32(
+	.param .u64 px,
+	.param .u64 pout,
+	.param .f32 pa,
+	.param .f32 pb
+)
+{
+	.reg .b32 %r<4>;
+	.reg .f32 %f<16>;
+	.reg .b64 %rd<8>;
+
+	ld.param.u64 %rd1, [px];
+	ld.param.u64 %rd2, [pout];
+	ld.param.f32 %f1, [pa];
+	ld.param.f32 %f2, [pb];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd2, %rd2;
+	mov.u32 %r1, %tid.x;
+	mul.wide.u32 %rd3, %r1, 4;
+	add.s64 %rd4, %rd1, %rd3;
+	add.s64 %rd5, %rd2, %rd3;
+	ld.global.f32 %f3, [%rd4];
+	mul.rn.f32 %f4, %f1, %f2;
+	add.rn.f32 %f5, %f3, %f4;
+	st.global.f32 [%rd5], %f5;
+	st.global.f32 [%rd5+128], %f4;
+	cvt.rn.f32.u32 %f6, %r1;
+	mul.rn.f32 %f7, %f6, 0f3DCCCCCD;
+	add.rn.f32 %f8, %f3, %f7;
+	st.global.f32 [%rd5+256], %f8;
+	ex2.approx.ftz.f32 %f9, %f1;
+	add.rn.f32 %f10, %f3, %f9;
+	st.global.f32 [%rd5+384], %f10;
+	add.rn.f32 %f11, %f3, %f1;
+	st.global.f32 [%rd5+512], %f11;
+	add.rn.f32 %f12, %f3, %f6;
+	st.global.f32 [%rd5+640], %f12;
+	ret;
+}

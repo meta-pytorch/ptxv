@@ -1,0 +1,33 @@
+name = "atomord_free"
+description = """entry ao_free of ../kernel.ptx (see its header): three unordered fp32 atomic adds per output; the captured GPU output has y[5] one ulp off the DAG, which another order of the adds can give (within the reordering bound)."""
+ptx = "../kernel.ptx"
+entry = "ao_free"
+grid = [1, 1, 1]
+block = [96, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [96]
+init = "file"
+file = "../in.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "../expected/off1.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["nondeterministic"]

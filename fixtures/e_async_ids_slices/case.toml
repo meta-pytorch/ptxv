@@ -1,0 +1,60 @@
+name = "e_async_ids_slices"
+description = """
+Async actor ids with --slices (MISS 68): CTA 1 reads with .nc, unsynchronized, what CTA 0's last
+thread writes with its 4097th async operation (one grid). With a fixed 4096 ids per thread the
+write's id decoded as CTA 1's thread 0, so --slices put it in cluster 1's footprint and found no
+cross-slice conflict (clean, on both fronts). Explored whole: race and violation. With --slices
+now a race (the cross-slice conflict), as for n0 (the store is the thread's first async
+operation)."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [4]
+init = "iota"
+
+[[buffers]]
+name = "dummy"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[params]]
+kind = "ptr"
+buffer = "dummy"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 4096
+
+[[variants]]
+id = "good"
+summary = "N = 4096 (race + violation expected)"
+expect = ["race", "violation"]
+
+[[variants]]
+id = "n0"
+summary = "N = 0 (control)"
+marker = "@N"
+find = "fence.proxy.async.shared::cta;"
+replace = "fence.proxy.async.shared::cta; mov.u32 %r9, 0;"
+expect = ["race", "violation"]

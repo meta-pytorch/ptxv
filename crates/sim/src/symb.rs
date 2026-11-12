@@ -2119,7 +2119,20 @@ pub(crate) fn on_access(s: &mut SymState, actor: u32, loc: Loc, n: usize, write:
         s.acc.entry(actor).or_default().extend(read);
         return;
     }
-    let landed = match s.cp_stash.remove(&(actor, o, off)) {
+    // A cp.async's bytes land through its own async actor (exec.rs `cp_async_complete`), not
+    // the issuing thread that stashed them: match the stash by destination then.
+    let key = if s.cp_stash.contains_key(&(actor, o, off)) {
+        Some((actor, o, off))
+    } else if sp == 0 {
+        s.cp_stash
+            .keys()
+            .filter(|k| k.1 == o && k.2 == off)
+            .min()
+            .copied()
+    } else {
+        None
+    };
+    let landed = match key.and_then(|k| s.cp_stash.remove(&k)) {
         Some(d) if sp == 0 && d.len() == n => Some(d),
         _ => None,
     };

@@ -1,0 +1,71 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-ASYNC-STEP, the .read wait of the non-tensor bulk store and the bulk add-reduction: the SASS
+// front models the bulk-group DEPBAR of cp.async.bulk.wait_group.read as a full wait, but ptxas
+// emits no CCTL.IVALL for .read, so the issuing SM's L1 can keep a line of the destination it
+// filled before the store (fixtures/e_tma_read_l1 READ4 for a TMA store).
+// 128 threads fill a 1024-word f32 tile with 0..1023; thread 0 loads D[5] (D is zeros: fills
+// its L1 line) into pre[0], fences the global proxy, bulk-stores (or bulk-adds) the tile to D,
+// waits, does an atom.shared.add 0 on the source whose result forms the load address (keeps
+// the LDG after the DEPBAR, as e_tma_read_l1), and loads D[5] into out[0].
+//   good:  bulk store, wait_group 0 (DEPBAR, CCTL.IVALL): out = 5.
+//   READ:  bulk store, wait_group.read 0: PTX race; GB300 reads the stale 0 from L1.
+//   RGOOD: bulk add, wait_group 0: out = 0 + 5.
+//   RREAD: bulk add, wait_group.read 0: PTX race; GB300 reads the stale 0 from L1.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_bulk_read_l1(
+    .param .u64 out_p,
+    .param .u64 d_p,
+    .param .u64 pre_p
+)
+.maxntid 128, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .f32   %g<2>;
+    .reg .b64   %rd<8>;
+    .reg .f32   %f<2>;
+    .shared .align 1024 .b8 tile[4096];
+
+    mov.u32         %r0, %tid.x;
+    mov.u32         %r1, tile;
+    mov.u32         %r2, %r0;
+    mov.u32         %r5, 1024;
+LOOP:
+    cvt.rn.f32.u32  %f0, %r2;
+    shl.b32         %r3, %r2, 2;
+    add.u32         %r4, %r1, %r3;
+    st.shared.f32   [%r4], %f0;
+    add.u32         %r2, %r2, 128;
+    setp.lt.u32     %p1, %r2, %r5;
+    @%p1 bra        LOOP;
+    fence.proxy.async.shared::cta;
+    bar.sync        0;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        DONE;
+    ld.param.u64    %rd2, [d_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    ld.global.f32   %g0, [%rd2+20];
+    ld.param.u64    %rd5, [pre_p];
+    cvta.to.global.u64 %rd5, %rd5;
+    st.global.f32   [%rd5], %g0;
+    fence.proxy.async.global;
+    cp.async.bulk.global.shared::cta.bulk_group [%rd2], [%r1], 4096;   // @OP
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;                                 // @WAIT
+    atom.shared.add.u32 %r10, [%r1], 0;
+    cvt.u64.u32     %rd3, %r10;
+    add.u64         %rd4, %rd2, %rd3;
+    ld.global.f32   %f1, [%rd4+20];
+    ld.param.u64    %rd3, [out_p];
+    cvta.to.global.u64 %rd3, %rd3;
+    st.global.f32   [%rd3], %f1;
+DONE:
+    ret;
+}

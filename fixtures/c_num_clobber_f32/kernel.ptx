@@ -1,0 +1,42 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// fixtures/c_num_clobber_f32 (N-NUM-TRACK; the independent review's probe clobber): a rounding of
+// parameters through a bit operation. s = rn(a + b) with f32 parameters a = 0.1f, b = 0.2f has a
+// numerics node and no taint; and.b32 with the parameter m = 0xffffffff drops the node, and the
+// result is input data (not an exact constant). out[t] = x + (s & m), out[32 + t] = s & m.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_clobber_f32(
+	.param .u64 px, .param .u64 pout, .param .f32 pa, .param .f32 pb, .param .u32 pm
+)
+{
+	.reg .b32 %r<8>;
+	.reg .f32 %f<8>;
+	.reg .b64 %rd<8>;
+
+	ld.param.u64 %rd1, [px];
+	ld.param.u64 %rd2, [pout];
+	ld.param.f32 %f1, [pa];
+	ld.param.f32 %f2, [pb];
+	ld.param.u32 %r1, [pm];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd2, %rd2;
+	mov.u32 %r2, %tid.x;
+	mul.wide.u32 %rd3, %r2, 4;
+	add.s64 %rd4, %rd1, %rd3;
+	add.s64 %rd5, %rd2, %rd3;
+	ld.global.f32 %f3, [%rd4];
+	add.rn.f32 %f4, %f1, %f2;
+	mov.b32 %r3, %f4;
+	and.b32 %r4, %r3, %r1;
+	mov.b32 %f5, %r4;
+	add.rn.f32 %f6, %f3, %f5;
+	st.global.f32 [%rd5], %f6;
+	st.global.f32 [%rd5+128], %f5;
+	ret;
+}

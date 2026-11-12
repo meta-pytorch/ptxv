@@ -1,0 +1,49 @@
+name = "c_num_param_f32"
+description = """
+N-NUM-TRACK: roundings of values that come from no input buffer (kernel.ptx, gen.py). out[32 k + t]:
+x + rn(a*b), rn(a*b), x + rn(f32(t) * 0.1f), x + ex2.approx.ftz(a), x + a, x + f32(t), with a = 0.1f and
+b = 3 f32 kernel parameters. The first four round values num keeps no node for (before rounding_taint:
+max_err 0, Thm 1 exact); the last two are exact constants plus a tracked add. expected/ is GB300's
+output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_param_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [192]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "bytes"
+hex = "cdcccc3d"
+
+[[params]]
+kind = "bytes"
+hex = "00004040"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

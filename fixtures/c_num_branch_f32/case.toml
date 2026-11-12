@@ -1,0 +1,85 @@
+name = "c_num_branch_f32"
+description = """
+N-NUM-TRACK: control flow decided by a rounded value (kernel.ptx, gen.py). p = rn(x*y) >= 1, q = rn(u*v) > 1;
+in even lanes both products round to 1 so that p and q differ from their exact-arithmetic values.
+out[32 k + t]: a branch to 1 / -1, a branch to y + z / x + z, a store of 1 under the guard q. num follows
+the run's path; the exact computation takes the other one. expected/ is GB300's output (`ptxv hw`,
+PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_branch_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/y.bin"
+
+[[buffers]]
+name = "z"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/z.bin"
+
+[[buffers]]
+name = "u"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/u.bin"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/v.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [96]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[params]]
+kind = "ptr"
+buffer = "u"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

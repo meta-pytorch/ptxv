@@ -1,0 +1,50 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// fixtures/c_num_ctl_loop_f32 (N-NUM-TRACK; the independent review's probe rd_loop_param): a loop
+// whose trip count a float counter of parameters decides: f = rn(f + s) with s = 0.1f while
+// f < B = 0x3e99999a; out[t] = the sum of x over the iterations. 3 iterations here, 4 exact.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_ctl_loop_f32(
+	.param .u64 px, .param .u64 py, .param .u64 pz, .param .u64 pout,
+	.param .f32 ps, .param .f32 pB
+)
+{
+	.reg .pred %p<8>;
+	.reg .b32 %r<16>;
+	.reg .f32 %f<32>;
+	.reg .b64 %rd<24>;
+	ld.param.u64 %rd1, [px];
+	ld.param.u64 %rd4, [pout];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd4, %rd4;
+	ld.param.f32 %f10, [ps];
+	ld.param.f32 %f11, [pB];
+	mov.u32 %r1, %tid.x;
+	mul.wide.u32 %rd5, %r1, 4;
+	add.s64 %rd9, %rd4, %rd5;
+	mov.f32 %f12, 0f00000000;
+	mov.f32 %f13, 0f00000000;
+	mov.u32 %r2, 0;
+LOOP:
+	setp.lt.f32 %p1, %f12, %f11;
+	@!%p1 bra DONE;
+	shl.b32 %r3, %r2, 5;
+	add.u32 %r3, %r3, %r1;
+	and.b32 %r3, %r3, 127;
+	mul.wide.u32 %rd10, %r3, 4;
+	add.s64 %rd10, %rd1, %rd10;
+	ld.global.f32 %f14, [%rd10];
+	add.rn.f32 %f13, %f13, %f14;
+	add.rn.f32 %f12, %f12, %f10;
+	add.u32 %r2, %r2, 1;
+	bra.uni LOOP;
+DONE:
+	st.global.f32 [%rd9], %f13;
+	ret;
+}

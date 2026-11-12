@@ -1,0 +1,47 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// fixtures/c_num_atom_old_f32 (N-NUM-TRACK; the independent review's probe rd_atom_old): 32
+// threads add 0.1f to one zeroed word with atom.add.f32; out[t] = the old value thread t got,
+// out[32 + t] = x + old. The old values are rounded partial sums without a node: input data.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_atom_old_f32(
+	.param .u64 px, .param .u64 py, .param .u64 pz, .param .u64 pout, .param .u64 pacc
+)
+{
+	.reg .pred %p<8>;
+	.reg .b32 %r<16>;
+	.reg .f32 %f<32>;
+	.reg .b64 %rd<24>;
+	ld.param.u64 %rd1, [px];
+	ld.param.u64 %rd2, [py];
+	ld.param.u64 %rd3, [pz];
+	ld.param.u64 %rd4, [pout];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd2, %rd2;
+	cvta.to.global.u64 %rd3, %rd3;
+	cvta.to.global.u64 %rd4, %rd4;
+	mov.u32 %r1, %tid.x;
+	mul.wide.u32 %rd5, %r1, 4;
+	add.s64 %rd6, %rd1, %rd5;
+	add.s64 %rd7, %rd2, %rd5;
+	add.s64 %rd8, %rd3, %rd5;
+	add.s64 %rd9, %rd4, %rd5;
+	ld.global.f32 %f1, [%rd6];
+	ld.global.f32 %f2, [%rd7];
+	ld.global.f32 %f3, [%rd8];
+	add.rn.f32 %f4, %f1, %f2;
+	add.rn.f32 %f5, %f1, %f3;
+	ld.param.u64 %rd12, [pacc];
+	cvta.to.global.u64 %rd12, %rd12;
+	atom.global.add.f32 %f10, [%rd12], 0f3DCCCCCD;
+	st.global.f32 [%rd9], %f10;
+	add.rn.f32 %f11, %f1, %f10;
+	st.global.f32 [%rd9+128], %f11;
+	ret;
+}

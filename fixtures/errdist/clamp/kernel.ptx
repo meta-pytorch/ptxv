@@ -1,0 +1,63 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// Value clamps inside an instruction slice (MISS 57 class): a saturating multiply (FMUL.SAT)
+// and a minimum against a constant (FMNMX.FTZ, which segment mode does not turn into a `Max`
+// node) are piecewise in a data operand with no predicate operand, and were no decision.
+// Thread i:
+//   cl_sat: s = sat(RN(x_i x_i) / 32) (mul.sat: clamp to [0, 1]); y_i = RN(s + v_i).
+//   cl_min: m = min.ftz(RN(x_i x_i), 32); y_i = RN(m / 32 + v_i) (the scale is exact).
+// The captured x is 0 and the probes perturb it by N(0, 1): x_i^2 < 32 on every probe, and the
+// slice was fitted as x^2 / 32 (or x^2). With x in [6, 8] w.p. 0.3 errdist reported 0.331
+// where the kernel's P(bits differ) is 0.0312 (exact rationals; GB300 0.0295 over 200 inputs).
+
+.visible .entry cl_sat(.param .u64 px, .param .u64 pv, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pv];
+    ld.param.u64 %rd3, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd4, %r1, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    add.s64 %rd6, %rd2, %rd4;
+    add.s64 %rd7, %rd3, %rd4;
+    ld.global.f32 %f1, [%rd5];
+    ld.global.f32 %f2, [%rd6];
+    mul.rn.f32 %f3, %f1, %f1;
+    mul.rn.sat.f32 %f4, %f3, 0f3D000000;
+    add.rn.f32 %f5, %f4, %f2;
+    st.global.f32 [%rd7], %f5;
+    ret;
+}
+
+.visible .entry cl_min(.param .u64 px, .param .u64 pv, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pv];
+    ld.param.u64 %rd3, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd4, %r1, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    add.s64 %rd6, %rd2, %rd4;
+    add.s64 %rd7, %rd3, %rd4;
+    ld.global.f32 %f1, [%rd5];
+    ld.global.f32 %f2, [%rd6];
+    mul.rn.f32 %f3, %f1, %f1;
+    min.ftz.f32 %f4, %f3, 0f42000000;
+    mul.rn.f32 %f6, %f4, 0f3D000000;
+    add.rn.f32 %f5, %f6, %f2;
+    st.global.f32 [%rd7], %f5;
+    ret;
+}

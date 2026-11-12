@@ -1,0 +1,50 @@
+name = "e_cpasync_div_wait"
+description = """
+E-CPASYNC, SASS cp.async scoreboard: two divergent paths of one warp each copy, commit and wait
+(DEPBAR.LE SB0 on each path); the even path spins on a flag the odd path sets after its wait.
+The odd path's DEPBAR retires every lane's copies (the scoreboard counts the warp's commits).
+The even lanes, not at that DEPBAR, are ordered after their copies at their own later DEPBAR:
+the copies have landed by then. With the copies landing as an async actor (MISS 34) and no
+record of the retired copies, the SASS front called good a race (the even lanes' read of
+their own slot); before MISS 34 the copies were the issuing thread's own writes."""
+ptx = "kernel.ptx"
+entry = "e_cpasync_div_wait"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [32]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[variants]]
+id = "good"
+summary = "each path waits before reading its own slot"
+expect = ["clean"]
+hw_note = "GB300 1000/1000 runs equal the model's output (even lanes in[i], odd lanes in[i] + 100), 2026-11-10"
+
+[[variants]]
+id = "NOWAIT"
+summary = "the even path reads its own slot without a wait (a schedule reads it before the copy lands: undefined data reaches out, S-INIT; or exits with the copy pending, E-CPASYNC-EXIT)"
+marker = "@WAIT"
+find = "cp.async.wait_group 0;"
+replace = "// (no wait)"
+expect = ["contract", "race", "violation"]
+expect_sass = ["contract", "nondeterministic", "race", "violation"]
+hw_note = "GB300 1000/1000 runs equal good's output (the spin keeps the read after the odd path's DEPBAR: latent), 2026-11-10"

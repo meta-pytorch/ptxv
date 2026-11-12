@@ -1,0 +1,125 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// MISS 65 (warp votes) for errdist and equiv: a branch or guard decided by other lanes through a
+// warp ballot. num, errdist and equiv took each lane's ballot taint from its own predicate only,
+// so the deciding lanes' input data did not reach the other lanes' control.
+//
+// m65_ballot (fixtures/c_num_vote_f32's structure, with rE_vote's computation so that the path
+// changes the error): every lane computes t = rn(rn(x w) + v); lanes 0..15 set p = rn(x x) >= 9
+// (input data, computed only there), lanes 16..31 keep p = false (their own predicate is not
+// input data); b = vote.sync.ballot(p); lanes 0..15 store t and exit; lanes 16..31 branch on b:
+// y = rn(3 t) where b != 0, y = t elsewhere.
+// m65_ballot_t: every lane stores t (equal to m65_ballot exactly where b = 0).
+// rE_vote (the independent review's probe m56vote, unchanged): each lane stores
+// t_i = rn(rn(x[i] w[i]) + v[i]) to y[i]; lane 0 sets p = x[0] >= 3, the other lanes p = false;
+// m = vote.ballot(p); lane 0 leaves; every other lane stores rn(3 t_i) to y[i] where m != 0.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry m65_ballot(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<12>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<6>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    add.rn.f32 %f5, %f4, %f3;
+    setp.lt.u32 %p1, %r1, 16;
+    mov.pred %p2, 0;
+    @!%p1 bra BAL;
+    mul.rn.f32 %f7, %f1, %f1;
+    setp.ge.f32 %p2, %f7, 0f41100000;
+BAL:
+    vote.sync.ballot.b32 %r5, %p2, 0xffffffff;
+    @!%p1 bra B;
+    st.global.f32 [%rd10], %f5;
+    bra.uni DONE;
+B:
+    setp.ne.u32 %p3, %r5, 0;
+    @%p3 bra L1;
+    st.global.f32 [%rd10], %f5;
+    bra.uni DONE;
+L1:
+    mul.rn.f32 %f6, %f5, 0f40400000;
+    st.global.f32 [%rd10], %f6;
+DONE:
+    ret;
+}
+
+.visible .entry m65_ballot_t(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<12>;
+    .reg .b64 %rd<16>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    add.rn.f32 %f5, %f4, %f3;
+    st.global.f32 [%rd10], %f5;
+    ret;
+}
+
+.visible .entry rE_vote(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<12>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<6>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    add.rn.f32 %f5, %f4, %f3;
+    st.global.f32 [%rd10], %f5;
+    setp.ne.u32 %p1, %r1, 0;
+    setp.ne.u32 %p2, %r1, %r1;
+    @%p1 bra V;
+    ld.global.f32 %f9, [%rd1];
+    setp.ge.f32 %p2, %f9, 0f40400000;
+V:
+    vote.sync.ballot.b32 %r5, %p2, 0xffffffff;
+    @!%p1 bra DONE;
+    setp.ne.u32 %p3, %r5, 0;
+    mul.rn.f32 %f6, %f5, 0f40400000;
+    @%p3 st.global.f32 [%rd10], %f6;
+DONE:
+    ret;
+}

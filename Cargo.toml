@@ -13,5 +13,10 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 toml = "0.8"
 clap = { version = "4", features = ["derive"] }
 
+# A #[test] function nested inside another function (a misplaced closing brace) is never run:
+# rustc only warns ("cannot test inner items"), so it is an error here.
+[workspace.lints.rust]
+unnameable_test_items = "deny"
+
 [profile.release]
 debug = 1

@@ -1,0 +1,86 @@
+name = "e_cpasync_overlap"
+description = """
+E-CPASYNC: one thread's two cp.async copies to the same bytes are unordered unless a wait
+retires the first before the second is issued (PTX ISA 9.5 9.7.10.28.3.2: two copies of one
+group to one location are undefined; 9.7.10.28.3.3). Copies retired by one wait (or tracked by
+one cp.async.mbarrier.arrive) land as one async actor, so the model used to order them by
+their issue: SAME, GROUPS and MBAR were clean on both fronts. Copies retired by two waits
+(LATER: the second issued before the first wait) land at two epochs of the thread's one wait
+actor, which the race check also orders: checked explicitly (exec.rs `cp_relanded`)."""
+ptx = "kernel.ptx"
+entry = "e_cpasync_overlap"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [8]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[variants]]
+id = "good"
+summary = "disjoint destinations"
+expect = ["clean"]
+
+[[variants]]
+id = "SAME"
+summary = "both copies into slot, one group"
+marker = "@DST"
+find = "add.u32 %r3, %r2, 16;"
+replace = "mov.u32 %r3, %r2;"
+expect = ["race"]
+
+[[variants]]
+id = "GROUPS"
+summary = "both copies into slot, two groups, one wait_group 0"
+edits = [
+    { marker = "@DST", find = "add.u32 %r3, %r2, 16;", replace = "mov.u32 %r3, %r2;" },
+    { marker = "@MID", find = "// @MID", replace = "cp.async.commit_group;" },
+]
+expect = ["race"]
+
+[[variants]]
+id = "SEQ"
+summary = "both copies into slot, wait_group 0 between them"
+edits = [
+    { marker = "@DST", find = "add.u32 %r3, %r2, 16;", replace = "mov.u32 %r3, %r2;" },
+    { marker = "@MID", find = "// @MID", replace = "cp.async.commit_group; cp.async.wait_group 0;" },
+]
+expect = ["clean"]
+
+[[variants]]
+id = "MBAR"
+summary = "both copies into slot, tracked by one cp.async.mbarrier.arrive.noinc"
+edits = [
+    { marker = "@DST", find = "add.u32 %r3, %r2, 16;", replace = "mov.u32 %r3, %r2;" },
+    { marker = "@COMMIT", find = "cp.async.commit_group;", replace = "cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r5];" },
+    { marker = "@WAIT", find = "cp.async.wait_group 0;", replace = "WAITMB: mbarrier.try_wait.parity.shared::cta.b64 %p3, [%r5], 0; @!%p3 bra WAITMB;" },
+]
+expect = ["race"]
+
+[[variants]]
+id = "LATER"
+summary = "both copies into slot, two groups, retired by two waits (wait_group 1, then 0)"
+edits = [
+    { marker = "@DST", find = "add.u32 %r3, %r2, 16;", replace = "mov.u32 %r3, %r2;" },
+    { marker = "@MID", find = "// @MID", replace = "cp.async.commit_group;" },
+    { marker = "@WAIT", find = "cp.async.wait_group 0;", replace = "cp.async.wait_group 1; cp.async.wait_group 0;" },
+]
+expect = ["race"]
+hw_note = "GB300 1000/1000 runs leave the first copy's bytes (out = 1; ptxas keeps DEPBAR.LE SB0, 0x1 and 0x0), 2026-11-10"

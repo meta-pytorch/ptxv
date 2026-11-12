@@ -1,0 +1,51 @@
+name = "e_tma_store_next_kernel"
+description = """
+E-ASYNC-STEP: a TMA store whose issuer waited with cp.async.bulk.wait_group.read only (its
+reads) still completes with its grid: a dependent kernel that waits for that grid
+(griddepcontrol.wait) reads the stored tile (good, clean; the grid's completion orders the
+store actor's next epoch, the writes). Without the wait the load races with the write
+(NOWAIT)."""
+ptx = "kernel.ptx"
+entry = "store"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D", "out"]
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [32, 32]
+init = "nan"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "tensormap"
+buffer = "D"
+box = [32, 32]
+
+[[launches]]
+entry = "load"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+pdl = true
+params = [
+    { kind = "ptr", buffer = "out" },
+    { kind = "ptr", buffer = "D" },
+]
+
+[[variants]]
+id = "good"
+summary = "the dependent kernel waits for the store grid"
+expect = ["clean"]
+
+[[variants]]
+id = "NOWAIT"
+summary = "no griddepcontrol.wait: the load races with the store's write"
+marker = "@WAIT"
+replace = "<delete>"
+expect = ["race"]

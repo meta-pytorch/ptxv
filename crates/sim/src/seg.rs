@@ -278,6 +278,475 @@ impl SProg {
         }
         Ok(get(self.out, vals) as u32)
     }
+
+    /// The data-dependent decisions the slice takes at argument bits `args` (MISS 57): the
+    /// value of every predicate it reads that depends on its arguments, each `Guard`'s and each
+    /// predicate operand of an instruction (a select's condition, a carry, a chained compare),
+    /// and the piece each instruction's value takes where it is piecewise in a data operand
+    /// (`inst_pieces`: a clamp, a minimum / maximum, a sign), in op order. None when the slice
+    /// does not evaluate there. The identification of the slice's real function
+    /// (`errdist::nonlin::ident`) holds for the decisions its probes took.
+    pub fn decisions(&self, args: &[u32], vals: &mut Vec<u64>) -> Option<Vec<bool>> {
+        self.eval_with(args, vals).ok()?;
+        let mut out = Vec::new();
+        self.walk_decisions(Some((args, vals)), &mut |b| out.push(b));
+        Some(out)
+    }
+
+    /// How many data-dependent decisions `decisions` reports.
+    pub fn decision_count(&self) -> usize {
+        let mut n = 0;
+        self.walk_decisions(None, &mut |_| n += 1);
+        n
+    }
+
+    /// Each decision of `decisions`, at argument bits and op values `at` (None: counting, every
+    /// value 0; the number of decisions does not depend on the values).
+    fn walk_decisions(&self, at: Option<(&[u32], &[u64])>, f: &mut dyn FnMut(bool)) {
+        let get = |v: SVal| -> u64 {
+            match (v, at) {
+                (SVal::Const(c), _) => c,
+                (_, None) => 0,
+                (SVal::Arg(i), Some((args, _))) => args[i as usize] as u64,
+                (SVal::Op(i), Some((_, vals))) => vals[i as usize],
+            }
+        };
+        for o in &self.ops {
+            match &o.kind {
+                SKind::Guard { pred, .. } => {
+                    if !matches!(pred, SVal::Const(_)) {
+                        f(get(*pred) != 0);
+                    }
+                }
+                SKind::Inst {
+                    op,
+                    dst,
+                    regs,
+                    cvals,
+                } => {
+                    for (r, v) in regs {
+                        if matches!(r.file, File::P | File::UP) && !matches!(v, SVal::Const(_)) {
+                            f(get(*v) != 0);
+                        }
+                    }
+                    let rv = |v: &Val| -> u64 {
+                        match v {
+                            Val::Reg(r, _) => regs
+                                .iter()
+                                .find(|(x, _)| x == r)
+                                .map_or(0, |(_, s)| get(*s)),
+                            Val::Imm(c) => *c,
+                            v => cvals.iter().find(|(x, _)| x == v).map_or(0, |(_, c)| *c),
+                        }
+                    };
+                    let rp = |p: &Pred| -> bool {
+                        let v = match p.reg {
+                            None => true,
+                            Some(r) => regs
+                                .iter()
+                                .find(|(x, _)| *x == r)
+                                .is_none_or(|(_, s)| get(*s) != 0),
+                        };
+                        v != p.neg
+                    };
+                    let data = |v: &Val| -> bool {
+                        matches!(v, Val::Reg(r, _) if regs
+                            .iter()
+                            .any(|(x, s)| x == r && !matches!(s, SVal::Const(_))))
+                    };
+                    inst_pieces(op, *dst, &rv, &rp, &data, f);
+                }
+                SKind::DivRn { .. } => {}
+            }
+        }
+    }
+}
+
+/// The piece an instruction's value takes where it is piecewise in a data operand (review
+/// miss C, the MISS 57 class: a slice through `FMUL.SAT` was fitted as the unclamped product,
+/// and P(differ) came out 0.331 for 0.031): `f` gets one decision per piece boundary, a fixed
+/// number for the instruction whatever the values (`data(v)`: operand v depends on the slice's
+/// arguments; constant operands decide nothing). Audit of `eval_inst`'s instructions:
+/// - recorded: `.SAT` (below 0 or NaN, above 1; FFMA, FADD, FHFMA), `.RELU` (a negative lane),
+///   a minimum / maximum's pick (FMNMX, HMNMX2, VHMNMX; `.XORSIGN` and the operands' signs as
+///   well), an abs modifier's operand sign (FFMA, FADD, MUFU, FSEL, FMNMX, FFMA2, HFMA2,
+///   HMNMX2, VHMNMX), an F2I's saturation and NaN, and the sign bit of a data operand of a
+///   bitwise or integer instruction (LOP3, SHF, PRMT, IADD3, IMAD, IADD): a float's abs, neg
+///   or copysign written as integer operations (`LOP3 R, R, 0x7fffffff`);
+/// - predicates (FSETP, HSETP2, FCHK, PLOP3, ISETP, a LOP3's predicate, P2R): their values are
+///   decisions where an instruction reads them (`walk_decisions`);
+/// - not recorded, argued: a flush to zero (`.FTZ`) and every rounding (FFMA, FADD, MUFU, F2FP,
+///   I2F, QMUL4) depart from the slice's real function, the identified one, and Tier 3
+///   measures that departure as the kernel's error; an F2I's or a shift's step through the
+///   integers and the exponent field (range reduction) composes the real function across
+///   binades by design, and a step the probes cross breaks every fitted form (the slice is
+///   not identified). ASSUME(N-ERRDIST-IDENT)
+pub(crate) fn inst_pieces(
+    op: &Op,
+    dst: Reg,
+    rv: &dyn Fn(&Val) -> u64,
+    rp: &dyn Fn(&Pred) -> bool,
+    data: &dyn Fn(&Val) -> bool,
+    f: &mut dyn FnMut(bool),
+) {
+    let w = |v: &Val| rv(v) as u32;
+    let sign = |u: u32| u >> 31 == 1;
+    // `f32_sat`'s pieces of the value before the clamp.
+    let sat = |r: u32, f: &mut dyn FnMut(bool)| {
+        let low = fp::f32_is_nan(r) || sign(r);
+        f(low);
+        f(!low && r > 0x3f80_0000);
+    };
+    // `f32_minmax`'s pick: whether the result is the first operand (as flushed).
+    let picks_first = |x: u32, y: u32, lo: bool, nan: bool, ftz: bool| {
+        let r = fp::f32_minmax(x, y, lo, nan, ftz);
+        r == if ftz { fp::f32_ftz(x) } else { x } && !fp::f32_is_nan(r)
+    };
+    match op {
+        Op::Ffma {
+            a,
+            b,
+            c,
+            neg,
+            abs,
+            rnd,
+            ftz,
+            sat: s,
+            ..
+        } => {
+            for (k, v) in [Some(a), Some(b), c.as_ref()].into_iter().enumerate() {
+                if let Some(v) = v.filter(|v| abs[k] && data(v)) {
+                    f(sign(w(v)));
+                }
+            }
+            if *s && (data(a) || data(b) || c.as_ref().is_some_and(data)) {
+                let x = fmod(w(a), neg[0], abs[0]);
+                let y = fmod(w(b), neg[1], abs[1]);
+                let z = c.as_ref().map(|c| fmod(w(c), neg[2], abs[2]));
+                sat(fp::f32_fma(x, y, z, *rnd, *ftz), f);
+            }
+        }
+        Op::Fadd {
+            a,
+            b,
+            rnd,
+            neg,
+            abs,
+            ftz,
+            sat: s,
+            ..
+        } => {
+            for (k, v) in [a, b].into_iter().enumerate() {
+                if abs[k] && data(v) {
+                    f(sign(w(v)));
+                }
+            }
+            if *s && (data(a) || data(b)) {
+                let x = fmod(w(a), neg[0], abs[0]);
+                let y = fmod(w(b), neg[1], abs[1]);
+                sat(fp::f32_fma(x, 0x3f80_0000, Some(y), *rnd, *ftz), f);
+            }
+        }
+        Op::Mufu { a, abs: true, .. } if data(a) => f(sign(w(a))),
+        Op::Fsel { a, b, p, abs, .. } => {
+            let first = rp(p);
+            for (k, v) in [a, b].into_iter().enumerate() {
+                if abs[k] && data(v) {
+                    f((first == (k == 0)) && sign(w(v)));
+                }
+            }
+        }
+        Op::Fmnmx {
+            a,
+            b,
+            min,
+            ftz,
+            nan,
+            xorsign: true,
+            ..
+        } => {
+            for v in [a, b] {
+                if data(v) {
+                    f(sign(w(v)));
+                }
+            }
+            if data(a) || data(b) {
+                f(picks_first(
+                    w(a) & 0x7fff_ffff,
+                    w(b) & 0x7fff_ffff,
+                    rp(min),
+                    *nan,
+                    *ftz,
+                ));
+            }
+        }
+        Op::Fmnmx {
+            a,
+            b,
+            c,
+            neg,
+            abs,
+            min,
+            ftz,
+            nan,
+            ..
+        } => {
+            for (k, v) in [Some(a), Some(b), c.as_ref()].into_iter().enumerate() {
+                if let Some(v) = v.filter(|v| abs[k] && data(v)) {
+                    f(sign(w(v)));
+                }
+            }
+            let x = fmod(w(a), neg[0], abs[0]);
+            let y = fmod(w(b), neg[1], abs[1]);
+            let lo = rp(min);
+            if data(a) || data(b) {
+                f(picks_first(x, y, lo, *nan, *ftz));
+            }
+            if let Some(c) = c {
+                if data(a) || data(b) || data(c) {
+                    let r = fp::f32_minmax(x, y, lo, *nan, *ftz);
+                    f(picks_first(r, fmod(w(c), neg[2], abs[2]), lo, *nan, *ftz));
+                }
+            }
+        }
+        Op::Hfma2Bf16 {
+            a,
+            b,
+            c,
+            sel,
+            neg,
+            abs,
+            relu,
+            ..
+        } => {
+            let v = [a, b, c];
+            for lane in 0..2 {
+                for k in 0..3 {
+                    if abs[k] && data(v[k]) {
+                        f(sel[k].lane(w(v[k]), lane) & 0x8000 != 0);
+                    }
+                }
+            }
+            if *relu && v.iter().any(|x| data(x)) {
+                let r = fp::hfma2_bf16([w(a), w(b), w(c)], *sel, (*neg, *abs), false);
+                for lane in 0..2 {
+                    let x = (r >> (16 * lane)) as u16;
+                    f(x != 0x7fff && x & 0x8000 != 0);
+                }
+            }
+        }
+        Op::FfmaBf16 {
+            a,
+            b,
+            c,
+            hi,
+            neg,
+            rnd,
+            sat: true,
+            f16,
+            ..
+        } if data(a) || data(b) || data(c) => {
+            sat(
+                fp::ffma_bf16([w(a), w(b), w(c)], *hi, *neg, *rnd, false, *f16),
+                f,
+            );
+        }
+        Op::Hmnmx2Bf16 {
+            a,
+            b,
+            sel,
+            min,
+            nan,
+            xorsign,
+            ..
+        } if data(a) || data(b) => {
+            for lane in 0..2 {
+                let x = (sel[0].lane(w(a), lane) as u32) << 16;
+                let y = (sel[1].lane(w(b), lane) as u32) << 16;
+                if *xorsign {
+                    f(sign(x));
+                    f(sign(y));
+                    f(picks_first(
+                        x & 0x7fff_ffff,
+                        y & 0x7fff_ffff,
+                        rp(min),
+                        *nan,
+                        false,
+                    ));
+                } else {
+                    f(picks_first(x, y, rp(min), *nan, false));
+                }
+            }
+        }
+        Op::Hmnmx2F16 {
+            a,
+            b,
+            sel,
+            abs,
+            min,
+            nan,
+            xorsign,
+            ..
+        } => {
+            let wide = |x: u16| (fp::f16_to_f64(x) as f32).to_bits();
+            for lane in 0..2 {
+                let x = sel[0].lane(w(a), lane);
+                let y = sel[1].lane(w(b), lane);
+                if abs[0] && data(a) {
+                    f(x & 0x8000 != 0);
+                }
+                if abs[1] && data(b) {
+                    f(y & 0x8000 != 0);
+                }
+                if data(a) || data(b) {
+                    let x = x & if abs[0] { 0x7fff } else { 0xffff };
+                    let y = y & if abs[1] { 0x7fff } else { 0xffff };
+                    if *xorsign {
+                        f(x & 0x8000 != 0);
+                        f(y & 0x8000 != 0);
+                        f(picks_first(
+                            wide(x & 0x7fff),
+                            wide(y & 0x7fff),
+                            rp(min),
+                            *nan,
+                            false,
+                        ));
+                    } else {
+                        f(picks_first(wide(x), wide(y), rp(min), *nan, false));
+                    }
+                }
+            }
+        }
+        Op::Vhmnmx {
+            a,
+            b,
+            c,
+            sel,
+            abs,
+            min,
+            nan,
+            f16,
+            ..
+        } => {
+            let v = [a, b, c];
+            let wide = |x: u16| {
+                if *f16 {
+                    (fp::f16_to_f64(x) as f32).to_bits()
+                } else {
+                    (x as u32) << 16
+                }
+            };
+            for lane in 0..2 {
+                let h: Vec<u16> = (0..3)
+                    .map(|k| {
+                        let x = sel[k].lane(w(v[k]), lane);
+                        if abs[k] {
+                            if data(v[k]) {
+                                f(x & 0x8000 != 0);
+                            }
+                            x & 0x7fff
+                        } else {
+                            x
+                        }
+                    })
+                    .collect();
+                if data(a) || data(b) {
+                    f(picks_first(wide(h[0]), wide(h[1]), rp(min), *nan, false));
+                }
+                if v.iter().any(|x| data(x)) {
+                    let r = fp::f32_minmax(wide(h[0]), wide(h[1]), rp(min), *nan, false);
+                    f(picks_first(r, wide(h[2]), rp(min), *nan, false));
+                }
+            }
+        }
+        Op::Ffma2 {
+            d, a, b, c, abs, ..
+        } => {
+            let lane = dst.idx.wrapping_sub(d.idx);
+            for (k, (v, l)) in [a, b, c].into_iter().enumerate() {
+                if abs[k] && data(v) {
+                    let i = match l {
+                        F2Lanes::Bcast => 0,
+                        F2Lanes::Pair => lane,
+                        F2Lanes::Swap => 1 - lane.min(1),
+                    };
+                    let u = match v {
+                        Val::Reg(r, _) => rv(&Val::Reg(
+                            Reg {
+                                file: r.file,
+                                idx: r.idx + i,
+                            },
+                            1,
+                        )) as u32,
+                        v => rv(v) as u32,
+                    };
+                    f(sign(u));
+                }
+            }
+        }
+        Op::F2I {
+            a,
+            signed,
+            bits,
+            rnd,
+            ftz,
+            f64: false,
+            neg,
+            ..
+        } if *bits == 32 && data(a) => {
+            let u = if *neg { w(a) ^ 0x8000_0000 } else { w(a) };
+            let u = if *ftz { fp::f32_ftz(u) } else { u };
+            let x = f32::from_bits(u);
+            let x = match rnd {
+                Rnd::Rz => x.trunc(),
+                Rnd::Rn => x.round_ties_even(),
+                Rnd::Rm => x.floor(),
+                Rnd::Rp => x.ceil(),
+            } as f64;
+            let (lo, hi) = if *signed {
+                (i32::MIN as f64, i32::MAX as f64)
+            } else {
+                (0.0, u32::MAX as f64)
+            };
+            f(x.is_nan());
+            f(x < lo);
+            f(x > hi);
+        }
+        Op::Lop3 { a, b, c, .. } | Op::Iadd3 { a, b, c, .. } | Op::Imad { a, b, c, .. } => {
+            for v in [a, b, c] {
+                if data(v) {
+                    f(sign(w(v)));
+                }
+            }
+        }
+        Op::Shf { lo, sh, hi, .. } => {
+            for v in [lo, sh, hi] {
+                if data(v) {
+                    f(sign(w(v)));
+                }
+            }
+        }
+        Op::Prmt { a, sel, b, .. } => {
+            for v in [a, sel, b] {
+                if data(v) {
+                    f(sign(w(v)));
+                }
+            }
+        }
+        Op::Int {
+            op: IntOp::Add,
+            a,
+            b,
+            ..
+        } => {
+            for v in [a, b] {
+                if data(v) {
+                    f(sign(w(v)));
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The correctly rounded f32 quotient (`div.rn.f32`: IEEE 754 binary32 division, nearest

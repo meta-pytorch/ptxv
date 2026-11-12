@@ -1,0 +1,55 @@
+name = "m57_elem"
+description = """
+MISS 57 (slice identification across a data-dependent guard): entry m57_elem of ../kernel.ptx
+(see its header): as m57_guard with the guard on the thread's own x[i], one thread: an
+elementwise kernel, whose elementwise law measures the share of inputs outside the probed
+outcome itself."""
+ptx = "../kernel.ptx"
+entry = "m57_elem"
+grid = [1, 1, 1]
+block = [1, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [1]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1,0 +1,47 @@
+name = "e_async_ids_last"
+description = """
+Async actor ids (MISS 68): the last thread of a single grid issues 4097 async operations (bulk
+stores). With a fixed 4096 ids per thread the last one's id decoded as a thread past the last
+one: the check panicked (index out of bounds) on both fronts. Now clean."""
+ptx = "kernel.ptx"
+entry = "k0"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["src"]
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [4]
+init = "iota"
+
+[[buffers]]
+name = "dummy"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[params]]
+kind = "ptr"
+buffer = "dummy"
+
+[[params]]
+kind = "u32"
+value = 4096
+
+[[variants]]
+id = "good"
+summary = "N = 4096: the last store is the last thread's 4097th async op (clean expected)"
+expect = ["clean"]
+
+[[variants]]
+id = "n0"
+summary = "N = 0 (control)"
+marker = "@N"
+find = "fence.proxy.async.shared::cta;"
+replace = "fence.proxy.async.shared::cta; mov.u32 %r9, 0;"
+expect = ["clean"]

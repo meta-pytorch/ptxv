@@ -22,4 +22,10 @@ buffer = "out"
 
 [[variants]]
 id = "good"
-expect = ["clean"]
+# A hardware-only probe: the 16x64b loads read lanes other threads of the warp stored, with no
+# synchronization between the threads after their tcgen05.wait::st (each wait completes only
+# the thread's own stores): a race on both fronts (SASS since MISS 107: the STTM's write enters
+# only its own thread's clock at FENCE.VIEW.ASYNC.T). PTX also: the loads of warps 1-3 address
+# lanes outside their quadrant (lane field 0 / 16), which the PTX contract forbids (S-TMEM).
+expect = ["race", "violation"]
+expect_sass = ["race"]

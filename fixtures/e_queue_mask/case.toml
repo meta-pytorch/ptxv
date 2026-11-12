@@ -1,0 +1,38 @@
+name = "e_queue_mask"
+description = """
+E-TMEM-QUEUE: a store's own thread's pending LDTM (ordered only by the TMEM queue) must not hide
+another thread's in-flight LDTM racing with the store. Before the fix, a write examined only the
+first unordered reader: with storer warp 0 (S0) its own pending LDTM sorts first, and SASS gave
+a tmem-queue contract (clean under the GB300 profile, which then discharged it) instead of the
+race; with storer warp 4 (S4) warp 0's racing LDTM sorts first. Both race at both levels.
+See kernel.ptx."""
+ptx = "kernel.ptx"
+entry = "e_queue_mask"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["dst"]
+
+[[buffers]]
+name = "dst"
+dtype = "u32"
+shape = [256]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "dst"
+
+[[variants]]
+id = "S0"
+summary = "storer warp 0 (its own pending LDTM sorts before warp 4's racing one)"
+expect = ["race"]
+expect_sass = ["race"]
+
+[[variants]]
+id = "S4"
+summary = "control: storer warp 4 (warp 0's racing LDTM sorts first)"
+marker = "@STORER"
+find = "setp.eq.u32     %p3, %r1, 0;"
+replace = "setp.eq.u32     %p3, %r1, 4;"
+expect = ["race"]
+expect_sass = ["race"]

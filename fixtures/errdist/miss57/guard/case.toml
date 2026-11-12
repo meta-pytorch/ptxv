@@ -1,0 +1,53 @@
+name = "m57_guard"
+description = """
+MISS 57 (slice identification across a data-dependent guard): entry m57_guard of ../kernel.ptx
+(see its header): a = RN(x[i] w[i]), where x[0] >= -3 a = RN(3 a) (a predicated FMUL), y[i] = RN(a + v[i]). The probes of the captured x = 0 all take the guard, and the slice is identified as 3 a: errdist refuses inputs that do not (x uniform on [-5, -4]) and reports N(0, 1) inputs."""
+ptx = "../kernel.ptx"
+entry = "m57_guard"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

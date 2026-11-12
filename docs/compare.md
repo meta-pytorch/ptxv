@@ -114,7 +114,12 @@ establish equivalence.
   - witness;
   - `relies_on`.
 - **`gpu`:** outputs, bitwise_equal, max_abs_diff, max_rel_diff, max_ulps, worst output and
-  values, and `max_fraction_of_bound`.
+  values, and `max_fraction_of_bound`. Display only: no verdict, level or headline status reads
+  them. Non-finite elements do not enter the maxima: an element whose difference is NaN (a NaN
+  on either side, or the same infinity on both) adds nothing to max_abs_diff and max_rel_diff,
+  and max_ulps compares only elements finite on both sides. An infinity against a finite value
+  gives max_abs_diff = inf. Read bitwise_equal against outputs for the rest: an element that
+  is NaN on one side only is counted as differing there and nowhere else.
 - **`assumptions`:** the execution assumptions used (ASSUMPTIONS.md IDs).
 - **`relies_on`:** what the verdicts rely on beyond those, per side: E-BULK-EXIT, N-ATOMIC,
   N-SEG.

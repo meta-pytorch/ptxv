@@ -89,9 +89,39 @@ fn s_of(v: Dd, s: f64) -> f64 {
 }
 
 pub fn eval(p: &Prog, w: &[crate::mma_lp::Operand]) -> Vec<(Dd, f64)> {
+    eval_table(p, w).v
+}
+
+/// `eval`'s table, and per op whether its exact value is unknown (`outside`): an instruction
+/// slice whose data-dependent decisions at its arguments' exact values (rounded to f32, as a
+/// selection's predicate) take a pattern its identification's probes never took
+/// (`ident::Outcomes`, MISS 57), and every op that reads one, a maximum's comparison and a
+/// selection's predicate or chosen child included (a NaN alone would let a maximum pass on
+/// the other child). An unknown value is NaN.
+pub struct Table {
+    pub v: Vec<(Dd, f64)>,
+    pub outside: Vec<bool>,
+}
+
+/// `eval` with the unknown ops marked (`Table`).
+// ASSUME(N-ERRDIST-IDENT): see ASSUMPTIONS.md
+pub fn eval_table(p: &Prog, w: &[crate::mma_lp::Operand]) -> Table {
     let mut r: Vec<(Dd, f64)> = Vec::with_capacity(p.ops.len());
+    let mut outside: Vec<bool> = Vec::with_capacity(p.ops.len());
     let nan = (Dd::new(f64::NAN), f64::NAN);
+    let mut scratch = Vec::new();
     for (i, op) in p.ops.iter().enumerate() {
+        // Unknown operands make the op unknown (a selection: its predicate's arguments and
+        // the child it passes on).
+        let mut u = match op {
+            Op::Nl(nl @ NlOp::Sel { args, .. }) => {
+                args.iter().any(|&j| outside[j as usize])
+                    || pick(nl, &r).is_some_and(|c| outside[c as usize])
+            }
+            _ => super::super::chain::op_args(op)
+                .iter()
+                .any(|&j| outside[j as usize]),
+        };
         let x = match op {
             Op::Leaf { .. } => (Dd::new(w[i].v), w[i].v.abs()),
             Op::Const(c) => (Dd::new(*c), c.abs()),
@@ -163,9 +193,20 @@ pub fn eval(p: &Prog, w: &[crate::mma_lp::Operand]) -> Vec<(Dd, f64)> {
                     let v = crate::num::mufu_true(*func, *ptx, z);
                     (Dd::new(v), v.abs())
                 }
-                NlOp::Seg { args, real, .. } => match real {
+                NlOp::Seg { args, real, prog } => match real {
                     None => nan,
                     Some(f) => {
+                        // MISS 57: the identified function stands for the slice only on the
+                        // decision patterns its probes took.
+                        if let Some(o) = &f.outcomes {
+                            let bits: Vec<u32> = args
+                                .iter()
+                                .map(|&j| (r[j as usize].0.v() as f32).to_bits())
+                                .collect();
+                            u |= !prog
+                                .decisions(&bits, &mut scratch)
+                                .is_some_and(|d| o.covers(&d));
+                        }
                         let a: Vec<f64> = args.iter().map(|&j| r[j as usize].0.v()).collect();
                         if f.func == Func::Div {
                             // The quotient in double-double: q + (a - q b) / b.
@@ -191,9 +232,10 @@ pub fn eval(p: &Prog, w: &[crate::mma_lp::Operand]) -> Vec<(Dd, f64)> {
                 },
             },
         };
-        r.push(x);
+        r.push(if u { nan } else { x });
+        outside.push(u);
     }
-    r
+    Table { v: r, outside }
 }
 
 /// The child an exact `Sel` / `Max` passes on, given `eval`'s table of its children `t`

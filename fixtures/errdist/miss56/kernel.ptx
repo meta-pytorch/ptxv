@@ -1,0 +1,107 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// MISS 56: segment mode modeled a store under a data-dependent guard as a selection at the
+// address of the captured run (N-ERRDIST-SEL) while the store's address depended on input
+// data: the address / control check covered only the threads whose guard held on the captured
+// input. Each thread i stores t_i = RN(RN(x[i] w[i]) + v[i]) to y[i]; after a barrier:
+//   m56_selscat: thread 0 (the others branch away) stores RN(3 t_0) to y[k] where x[0] >= 3,
+//                k = (bits(x[0]) >> 19) & 15, then t_0 to z[0] (so that ptxas keeps the
+//                predicated store). On the captured input (x = 0) the guard is false and k = 0;
+//                for x[0] in [3, 4), k is 8..15. errdist modeled y[0] as Sel(x[0] >= 3,
+//                RN(3 t_0), t_0) and every other y[k] as t_k: two outputs wrong on every input
+//                that takes the store. Now the address is a data-dependent precondition.
+//   m56_tid:     every thread reaches `@(tid == 0) st [y + 4 k_i]` with k_i =
+//                (bits(x[0]) >> 19) & mask[i] (mask: an integer buffer held at its captured
+//                values: mask[i] = i). Then every thread stores t_i to z[i] (so that ptxas
+//                keeps the predicated store instead of an EXIT). The guard does not depend on
+//                input data: threads 1..63 execute the store on no input, so their
+//                input-derived addresses are not preconditions; thread 0's address is y[0]
+//                for every input. errdist reports.
+
+.visible .entry m56_selscat(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py, .param .u64 pz)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<12>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    ld.param.u64 %rd5, [pz];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    add.rn.f32 %f5, %f4, %f3;
+    st.global.f32 [%rd10], %f5;
+    bar.sync 0;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra DONE;
+    ld.global.f32 %f9, [%rd1];
+    setp.ge.f32 %p1, %f9, 0f40400000;
+    mov.b32 %r2, %f9;
+    shr.u32 %r3, %r2, 19;
+    and.b32 %r4, %r3, 15;
+    mul.wide.u32 %rd11, %r4, 4;
+    add.s64 %rd12, %rd4, %rd11;
+    mul.rn.f32 %f6, %f5, 0f40400000;
+    @%p1 st.global.f32 [%rd12], %f6;
+    st.global.f32 [%rd5], %f5;
+DONE:
+    ret;
+}
+
+.visible .entry m56_tid(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py, .param .u64 pm, .param .u64 pz)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<12>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    ld.param.u64 %rd5, [pm];
+    ld.param.u64 %rd14, [pz];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    add.s64 %rd13, %rd5, %rd6;
+    add.s64 %rd15, %rd14, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    ld.global.u32 %r5, [%rd13];
+    mul.rn.f32 %f4, %f1, %f2;
+    add.rn.f32 %f5, %f4, %f3;
+    st.global.f32 [%rd10], %f5;
+    bar.sync 0;
+    ld.global.f32 %f9, [%rd1];
+    mov.b32 %r2, %f9;
+    shr.u32 %r3, %r2, 19;
+    and.b32 %r4, %r3, %r5;
+    mul.wide.u32 %rd11, %r4, 4;
+    add.s64 %rd12, %rd4, %rd11;
+    mul.rn.f32 %f6, %f5, 0f40400000;
+    setp.eq.u32 %p1, %r1, 0;
+    @%p1 st.global.f32 [%rd12], %f6;
+    st.global.f32 [%rd15], %f5;
+    ret;
+}

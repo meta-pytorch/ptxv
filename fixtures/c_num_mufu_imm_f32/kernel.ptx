@@ -1,0 +1,52 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// fixtures/c_num_mufu_imm_f32 (N-NUM-TRACK; the independent review's probe mufu_imm):
+// approximations of immediate operands. ptxas keeps MUFU.TANH with an immediate source (it does
+// not fold it), so every operand of the SASS instruction is an immediate; it is a rounding all the
+// same. Thread t (32 threads) reads x[t]; out[32 k + t]:
+//   k = 0: x + tanh.approx.f32(0.1f)
+//   k = 1: tanh.approx.f32(0.1f)
+//   k = 2: x + tanh.approx.f32(0.5f)
+//   k = 3: x + tanh.approx.f32(0.2f)
+//   k = 4: x + ex2.approx.ftz.f32(0.1f)   (ptxas folds this one to an immediate)
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_mufu_imm_f32(
+	.param .u64 px,
+	.param .u64 pout
+)
+{
+	.reg .b32 %r<4>;
+	.reg .f32 %f<32>;
+	.reg .b64 %rd<8>;
+	.reg .b16 %h<8>;
+
+	ld.param.u64 %rd1, [px];
+	ld.param.u64 %rd2, [pout];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd2, %rd2;
+	mov.u32 %r1, %tid.x;
+	mul.wide.u32 %rd3, %r1, 4;
+	add.s64 %rd4, %rd1, %rd3;
+	add.s64 %rd5, %rd2, %rd3;
+	ld.global.f32 %f1, [%rd4];
+	tanh.approx.f32 %f2, 0f3DCCCCCD;
+	add.rn.f32 %f3, %f1, %f2;
+	st.global.f32 [%rd5], %f3;
+	st.global.f32 [%rd5+128], %f2;
+	tanh.approx.f32 %f4, 0f3F000000;
+	add.rn.f32 %f5, %f1, %f4;
+	st.global.f32 [%rd5+256], %f5;
+	tanh.approx.f32 %f6, 0f3E4CCCCD;
+	add.rn.f32 %f7, %f1, %f6;
+	st.global.f32 [%rd5+384], %f7;
+	ex2.approx.ftz.f32 %f8, 0f3DCCCCCD;
+	add.rn.f32 %f9, %f1, %f8;
+	st.global.f32 [%rd5+512], %f9;
+	ret;
+}

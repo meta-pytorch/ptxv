@@ -158,7 +158,9 @@ def check(x: Any, *, session: Any = None, wait: bool = True, **args: Any):
     """Execution verdict of a captured kernel, `ptxv.Case` or case directory.
 
     nonfinite=True scans every terminal state's float outputs for NaN / Inf (`--nonfinite`;
-    "strict": `--nonfinite-strict`); the result's `nonfinite` holds the scan.
+    "strict": `--nonfinite-strict`); the result's `nonfinite` holds the scan. gb300=False
+    (`--no-gb300`) skips both GB300 checks: the hardware-model classification of races / stale
+    reads and the GB300-profile re-run of the two-level verdict (`two_level`).
     """
     return (session or _session()).check(x, wait=wait, **args)
 

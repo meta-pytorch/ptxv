@@ -1,0 +1,48 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-CPASYNC: two cp.async copies of one thread are unordered until a wait retires the first
+// (PTX ISA 9.5 9.7.10.28.3.2: two copies of a group to one location are undefined; 9.7.10.28.3.3:
+// no ordering between copies not synchronized by wait_group or an mbarrier). Thread 0 copies
+// in[0..3] into slot, then in[4..7] into slot + DST, waits for both, and stores word 1 to out.
+//   good: DST = 16 (disjoint): clean (out = 1).
+//   SAME: DST = 0, one group: the copies race (write-after-write).
+//   GROUPS: DST = 0, two groups, both retired by one wait_group 0: race.
+//   SEQ: DST = 0, wait_group 0 between the copies: ordered, clean (out = 5).
+//   MBAR: DST = 0, both tracked by one cp.async.mbarrier.arrive.noinc: race.
+//   LATER: DST = 0, two groups, wait_group 1 then wait_group 0: race (the second copy was
+//   issued before the wait that retires the first).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_cpasync_overlap(.param .u64 out_p, .param .u64 in_p)
+{
+    .shared .align 16 .b8 slot[32];
+    .shared .align 8 .b64 mb;
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [in_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, slot;
+    mov.u32 %r5, mb;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra DONE;
+    mbarrier.init.shared::cta.b64 [%r5], 1;
+    add.u32 %r3, %r2, 16;                          // @DST
+    cp.async.cg.shared.global [%r2], [%rd2], 16;
+    // @MID
+    cp.async.cg.shared.global [%r3], [%rd2+16], 16;
+    cp.async.commit_group;                         // @COMMIT
+    cp.async.wait_group 0;                         // @WAIT
+    ld.shared.u32 %r4, [%r2+4];
+    st.global.u32 [%rd1], %r4;
+DONE:
+    ret;
+}

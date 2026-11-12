@@ -2949,17 +2949,16 @@ fn probe_same_value_matches_hardware() {
 
 /// probes/tc_handback (2-CTA TMEM hand-off, GB300 runs in probes/tc_handback/results.txt):
 /// the PTX front's verdicts for the probe's variants. RCTA (the peer's .release.cta remote
-/// arrive) and EARLY (the peer arrives before its tcgen05.st) race; NOWST (no
-/// tcgen05.wait::st, the fence::before_thread_sync orders the st) does not.
+/// arrive), EARLY (the peer arrives before its tcgen05.st) and NOWST (no tcgen05.wait::st:
+/// fence::before_thread_sync does not release the un-waited st, PTX ISA 9.7.18.6.4.4; MISS 105,
+/// before it did and NOWST was race-free) race.
 #[test]
 fn probe_tc_handback_ptx_verdicts() {
     // Race-free: the stateful explorer and DPOR agree on verdict and outputs.
-    for v in ["good", "NOWST"] {
-        check_dir("probes", "tc_handback", v, "ptx");
-    }
+    check_dir("probes", "tc_handback", "good", "ptx");
     // Racy (reductions are exact for race-free kernels only, E-DRF): the stateful verdict.
     let case = Case::load(root().join("probes/tc_handback")).unwrap();
-    for v in ["RCTA", "EARLY"] {
+    for v in ["RCTA", "EARLY", "NOWST"] {
         let k = kernel(&case, v, "ptx");
         let launch = build_launch(&case, &k).unwrap();
         let m0 = Machine::new(Arc::new(k), Arc::new(launch));
@@ -3067,6 +3066,234 @@ fn e_tc_handback_mma_sees_sm_local_acquire_acta_ptx() {
 #[ignore = "heavy: explore at 2M with contract reruns; 56 s"]
 fn e_tc_handback_mma_sees_sm_local_acquire_acta_sass() {
     check_stateful("e_tc_handback", "ACTA", "sass", 2_000_000);
+}
+// The join must not hide a real hand-back race. ACTANW (no wait::ld before the hand-back): a
+// race and an undefined-register violation on PTX; the SASS is still ordered (ptxas makes the
+// stores of the loaded registers wait on the LDTM scoreboard), clean. ACTAE (the hand-back
+// arrive moved ahead of the peer's reads): a race on both fronts.
+#[test]
+fn e_tc_handback_acta_nowait_ptx() {
+    check_stateful("e_tc_handback", "ACTANW", "ptx", 2_000_000);
+}
+#[test]
+fn e_tc_handback_acta_early_handback_ptx() {
+    check_stateful("e_tc_handback", "ACTAE", "ptx", 2_000_000);
+}
+#[test]
+#[ignore = "heavy: explore at 2M with contract reruns; about 60 s"]
+fn e_tc_handback_acta_nowait_sass() {
+    check_stateful("e_tc_handback", "ACTANW", "sass", 2_000_000);
+}
+#[test]
+#[ignore = "heavy: explore to the 2M cap; about 280 s"]
+fn e_tc_handback_acta_early_handback_sass() {
+    // The race is found before the cap; the search does not complete, which a race verdict
+    // does not need.
+    let case = Case::load(root().join("fixtures/e_tc_handback")).unwrap();
+    let k = kernel(&case, "ACTAE", "sass");
+    let launch = build_launch(&case, &k).unwrap();
+    let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+    assert!(
+        v.findings
+            .iter()
+            .any(|f| f.kind == "race" && f.sig.starts_with("race:tmem:")),
+        "ACTAE/sass: no TMEM race: {:?}",
+        v.classes()
+    );
+}
+
+/// MISS 105, PTX front (fixtures/e_tblk_late): `tcgen05.fence::before_thread_sync` released
+/// the thread's whole tcgen05 view (`FenceKind::TcBefore`), un-waited `tcgen05.ld` reads
+/// included, so the bar.sync and the hand-back arrive carried the round-1 reads and the PTX
+/// front reported no race between them and round 2's MMA (`good`: contract only). PTX ISA
+/// 9.7.18.6.4.4, "Non-pipelined instructions, different thread": "the producer threads that
+/// issue the asynchronous tcgen05 instructions must explicitly wait for the instructions'
+/// completion before synchronizing with the consumer threads" (example: ld; wait::ld;
+/// fence::before_thread_sync; arrive); 9.7.18.8.5: "tcgen05.wait::ld causes the executing
+/// thread to block until all prior tcgen05.ld operations issued by the executing thread have
+/// completed". Now the fence does not release a load issued since the thread's last wait::ld
+/// (`tc_released`): `good` races on PTX, with and without the E-TC-FENCE-NOP rerun. (ACTA
+/// raced already, for its .acquire.cta wait.)
+#[test]
+fn e_tblk_late_ptx_unwaited_ld_is_not_released() {
+    let case = Case::load(root().join("fixtures/e_tblk_late")).unwrap();
+    for v in ["good", "ACTA"] {
+        let k = kernel(&case, v, "ptx");
+        let launch = build_launch(&case, &k).unwrap();
+        let m0 = Machine::new(Arc::new(k), Arc::new(launch));
+        let mut x = explore(m0.clone(), 2_000_000);
+        ptxv_sim::twolevel::tc_fence_contract(&mut x, &m0, &mut |m| explore(m, 2_000_000));
+        ptxv_sim::twolevel::mbar_async_contract(&mut x, &m0, &mut |m| explore(m, 2_000_000));
+        assert!(x.complete, "{v}/ptx: incomplete");
+        assert_eq!(x.classes(), ["contract", "race"], "{v}/ptx");
+        assert!(
+            x.findings.iter().any(|f| f.kind == "race"
+                && f.sig.starts_with("race:tmem:")
+                && f.msg.contains("tcgen05.ld")),
+            "{v}/ptx: no TMEM race with a tcgen05.ld: {:?}",
+            x.findings.iter().map(|f| &f.sig).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// S-TCGEN05 (fixtures/e_tblk_late): the round-1 tcgen05.wait::ld moved after the 2-CTA
+/// hand-back. The SASS front completes an LDTM's tensor-memory read only when its write
+/// scoreboard is waited (`ldtm_issue` / `ldtm_complete`); ptxas waits for it after the bar.sync
+/// that precedes the arrive, so round 2's MMA races with the other warps' reads, with either
+/// wait scope (before: clean for ACTA).
+#[test]
+#[ignore = "heavy: explore to the 700k cap twice"]
+fn e_tblk_late_sass_races_on_tmem() {
+    let case = Case::load(root().join("fixtures/e_tblk_late")).unwrap();
+    for v in ["good", "ACTA"] {
+        let k = kernel(&case, v, "sass");
+        let launch = build_launch(&case, &k).unwrap();
+        let x = explore(Machine::new(Arc::new(k), Arc::new(launch)), 700_000);
+        assert!(
+            x.findings
+                .iter()
+                .any(|f| f.kind == "race" && f.sig.starts_with("race:tmem:")),
+            "{v}/sass: no TMEM race: {:?}",
+            x.classes()
+        );
+    }
+}
+
+/// Actor ids (fixtures/e_actor_base): 4096 threads, the last one's bulk copy into shared
+/// memory. With a fourth fixed actor per thread (MISS 104's second tcgen05 pipe), every decoder
+/// of an actor id (the CTA of an access, the thread of an actor, the issuer of an async
+/// operation, the E-CTA-REP position) must use `async_base`; one still at 3 n indexed past the
+/// last thread (a panic) or took another thread's CTA.
+#[test]
+fn e_actor_base_last_thread_async_actor() {
+    both("e_actor_base", "good");
+}
+
+/// S-TCGEN05 (fixtures/e_sttm_late): a tcgen05.st of D before the 2-CTA hand-back's sync. With
+/// tcgen05.wait::st (STW; SASS `FENCE.VIEW.ASYNC.T`) the store is ordered before round 2's MMA;
+/// without it (STNW) it races, on PTX (MISS 105: fence::before_thread_sync does not release an
+/// un-waited st) and on SASS (MISS 107: an STTM's TMEM write completes only at the thread's
+/// `FENCE.VIEW.ASYNC.T`; before, at issue, and STNW was clean).
+#[test]
+fn e_sttm_late_ptx() {
+    for v in ["good", "STW", "STNW"] {
+        check_stateful("e_sttm_late", v, "ptx", 2_000_000);
+    }
+}
+#[test]
+#[ignore = "heavy: three SASS explorations of about 520k states; about 180 s"]
+fn e_sttm_late_sass() {
+    for v in ["good", "STW", "STNW"] {
+        check_stateful("e_sttm_late", v, "sass", 2_000_000);
+    }
+    let case = Case::load(root().join("fixtures/e_sttm_late")).unwrap();
+    let k = kernel(&case, "STNW", "sass");
+    let launch = build_launch(&case, &k).unwrap();
+    let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+    assert!(
+        v.findings
+            .iter()
+            .any(|f| f.kind == "race" && f.msg.contains("STTM writes")),
+        "STNW/sass: no race with the STTM: {:?}",
+        v.findings.iter().map(|f| &f.sig).collect::<Vec<_>>()
+    );
+}
+
+/// MISS 111 (fixtures/e_dealloc_unwaited): a thread's own tcgen05.ld / st is complete only at
+/// wait::ld / wait::st (PTX ISA 9.7.18.6.1: asynchronous, "not inherently ordered with respect
+/// to other tcgen05 operations in the same thread"), so its later tcgen05.dealloc with no wait
+/// between races with it: LDNW (ld; dealloc; wait::ld) and STNW (st; dealloc). The PTX front
+/// checked the dealloc on the thread's tcgen05.ld/st actor, whose clock covered them: no race
+/// for lane 0's own access. On SASS (MISS 103 / 107: LDTM and STTM complete at their waits)
+/// STNW races; LDNW is ordered as compiled (ptxas waits on the LDTM's scoreboard first).
+#[test]
+fn e_dealloc_unwaited_races() {
+    both("e_dealloc_unwaited", "good");
+    let case = Case::load(root().join("fixtures/e_dealloc_unwaited")).unwrap();
+    // LDNW on SASS is clean: ptxas waits on the LDTM's scoreboard before the dealloc.
+    check_stateful("e_dealloc_unwaited", "LDNW", "sass", 100_000);
+    for (v, f) in [("LDNW", "ptx"), ("STNW", "ptx"), ("STNW", "sass")] {
+        {
+            check_stateful("e_dealloc_unwaited", v, f, 100_000);
+            // Lane 0's own access against its own dealloc (MISS 111), not only the other
+            // lanes' (MISS 105 / 103 / 107).
+            let k = kernel(&case, v, f);
+            let launch = build_launch(&case, &k).unwrap();
+            let x = explore(Machine::new(Arc::new(k), Arc::new(launch)), 100_000);
+            assert!(
+                x.findings.iter().any(|g| g.kind == "race"
+                    && g.msg.contains("deallocation by t0")
+                    && (g.msg.contains(" t0's tcgen05.ld/st") || g.msg.contains(" t0's STTM"))),
+                "{v}/{f}: no race between t0's own access and its dealloc: {:?}",
+                x.findings.iter().map(|g| &g.msg).collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
+/// E-TMEM-QUEUE (fixtures/e_tmem_queue, probes/tmem_queue): a thread's SASS STTM after its own
+/// LDTM of the same column with no wait on the LDTM's scoreboard (Q), and two STTMs of one
+/// thread to the same column with no FENCE.VIEW.ASYNC.T between (QQ), are ordered only by the
+/// thread's TMEM queue: `tmem-queue` contract findings at the strict level and under the GB300
+/// profile (GB300 measured no reordering, without a discriminating control: not discharged).
+/// With the wait (good): clean. PTX: the same contract findings (MISS 116; before, clean).
+#[test]
+fn e_tmem_queue_is_a_contract() {
+    for v in ["good", "Q", "QQ"] {
+        both("e_tmem_queue", v);
+    }
+    assert_eq!(sass_gb300("e_tmem_queue", "Q"), "contract");
+    assert_eq!(sass_gb300("e_tmem_queue", "QQ"), "contract");
+    // MISS 121: a load after the thread's own un-waited store races on both fronts, under the
+    // GB300 profile too (mode 2 had no positive control).
+    both("e_tmem_queue", "SL");
+    assert!(sass_gb300("e_tmem_queue", "SL").contains("race"));
+}
+
+/// E-TMEM-QUEUE (fixtures/e_queue_mask): a store's own thread's pending LDTM does not hide
+/// another thread's in-flight LDTM racing with the store. Every unordered reader is examined:
+/// the finding is a tmem-queue contract only when all are the thread's own pending LDTMs. S0
+/// (the own LDTM sorts first) was a contract on SASS, clean under the GB300 profile; S4 raced.
+#[test]
+fn e_queue_mask_own_pending_ldtm_does_not_hide_a_racer() {
+    for v in ["S0", "S4"] {
+        both("e_queue_mask", v);
+        let g = sass_gb300("e_queue_mask", v);
+        assert!(g.split(',').any(|c| c == "race"), "{v}: {g}");
+    }
+}
+
+/// MISS 122 (fixtures/e_rerun_drop_ptx): a TMEM store with two racing readers, one ordered once
+/// the tcgen05 fences are implied (tc_fence_contract reclassifies it), one not. Every racer is
+/// reported, so the second survives the rerun: XLOW (its racer sorted second) and YLOW race.
+#[test]
+fn e_rerun_drop_reports_every_tmem_racer() {
+    for v in ["XLOW", "YLOW"] {
+        both("e_rerun_drop_ptx", v);
+    }
+}
+
+/// One .cta_group per kernel (fixtures/e_cta_group_mix): a kernel whose tcgen05 instructions
+/// name both groups is a violation (PTX ISA, tcgen05; ptxas refuses it, so PTX only), and a
+/// commit tracks only its own group's operations (C2: the cta_group::2 commit after
+/// cta_group::1 MMAs orders none of them, a race).
+#[test]
+fn e_cta_group_mix_is_a_violation() {
+    both("e_cta_group_mix", "good");
+    for v in ["C2", "D2"] {
+        check_stateful("e_cta_group_mix", v, "ptx", 2_000_000);
+    }
+    let case = Case::load(root().join("fixtures/e_cta_group_mix")).unwrap();
+    let k = kernel(&case, "D2", "ptx");
+    let launch = build_launch(&case, &k).unwrap();
+    let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+    assert!(
+        v.findings
+            .iter()
+            .any(|f| f.sig.starts_with("cta-group-mix:")),
+        "D2: {:?}",
+        v.classes()
+    );
 }
 
 /// S-SAME-VALUE through a polled ring (fixtures/e_ring_warp W1): both consumer warps copy every
@@ -3342,7 +3569,8 @@ fn probe_proxy_fence_matches_hardware() {
 
 /// E-CPASYNC-PROXY: cp.async writes then a TMA store with no fence.proxy.async is a contract
 /// finding, st.shared writers a proxy race (probes/proxy_cpasync; GB300 1000/1000 correct in
-/// every variant). One test per (variant, front-end).
+/// every variant, st_none included: no positive control, so not evidence, not even a measured
+/// null). One test per (variant, front-end).
 #[test]
 #[ignore = "heavy: stateful + DPOR check at 2M; 7 s"]
 fn probe_proxy_cpasync_verdicts_good_ptx() {
@@ -3397,6 +3625,33 @@ fn probe_f64_ptx_matches_hardware() {
 /// bytes recorded in its `expected/`.
 fn probe_bitwise(dir: &str, variant: &str, front: &str) {
     probe_bitwise_walks(dir, variant, front, None)
+}
+
+/// `probe_bitwise` for a probe whose kernel overwrites TMEM words of a thread with no wait
+/// between the stores (a sentinel fill, then the stores under test): every finding is a
+/// strict-level `tmem-queue` contract (E-TMEM-QUEUE, not assumed), and it stays one under the
+/// GB300 profile; the outputs equal GB300's.
+fn probe_bitwise_queue(dir: &str, variant: &str, front: &str) {
+    let case = Case::load(root().join(dir)).unwrap();
+    let k = kernel(&case, variant, front);
+    let launch = build_launch(&case, &k).unwrap();
+    let m = Machine::new(Arc::new(k), Arc::new(launch));
+    let mut v = ptxv_sim::wellsync::certify(m.clone())
+        .verdict
+        .unwrap_or_else(|| panic!("{dir} {variant} {front} certifies"));
+    assert_eq!(v.classes(), ["contract"], "{dir} {front}: {:#?}", v.findings);
+    assert!(
+        v.findings.iter().all(|f| f.sig.starts_with("tmem-queue:")),
+        "{dir} {front}: {:#?}",
+        v.findings
+    );
+    ptxv_sim::hwprofile::discharge(&mut v, &m, ptxv_sim::hwprofile::GB300);
+    assert_eq!(v.classes(), ["contract"], "{dir} {front} under GB300: {:#?}", v.findings);
+    let report = case.expect_report(&v.outputs[0]).unwrap();
+    assert!(
+        !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+        "{dir} {variant} {front}: {report:?}"
+    );
 }
 
 /// `probe_bitwise` with `walks` cross-check walks (None: PTXV_CERT_CROSSCHECK's).
@@ -4123,11 +4378,12 @@ fn probe_discard_l2_verdicts() {
 }
 
 /// tcgen05.mma cta_group::2 M = 128 with A in TMEM (probes/tc_pair_atmem) = GB300 on both
-/// front-ends (PTX: the peer's commit waited at .cta scope is an S-MBAR-SCOPE contract finding).
+/// front-ends (PTX: the peer's commit waited at .cta scope is an S-MBAR-SCOPE contract finding;
+/// SASS: the overlapping un-fenced STTMs are E-TMEM-QUEUE, `probe_bitwise_queue`).
 #[test]
 fn probe_tc_pair_atmem_matches_hardware() {
     probe_bitwise_mbar_contract("probes/tc_pair_atmem", "good");
-    probe_bitwise("probes/tc_pair_atmem", "good", "sass");
+    probe_bitwise_queue("probes/tc_pair_atmem", "good", "sass");
 }
 
 /// tcgen05.mma kind::tf32 MN-major through SWIZZLE_128B_BASE32B (probes/tc_tf32_mn) = GB300 on
@@ -4138,11 +4394,12 @@ fn probe_tc_tf32_mn_matches_hardware() {
     probe_bitwise("probes/tc_tf32_mn", "good", "sass");
 }
 
-/// tcgen05.mma finite overflow to Inf (probes/tc_mma_ovf) = GB300 on both front-ends.
+/// tcgen05.mma finite overflow to Inf (probes/tc_mma_ovf) = GB300 on both front-ends (the
+/// overlapping un-waited stores are E-TMEM-QUEUE, `probe_bitwise_queue`; PTX: MISS 116).
 #[test]
 fn probe_tc_mma_ovf_matches_hardware() {
-    probe_bitwise("probes/tc_mma_ovf", "good", "ptx");
-    probe_bitwise("probes/tc_mma_ovf", "good", "sass");
+    probe_bitwise_queue("probes/tc_mma_ovf", "good", "ptx");
+    probe_bitwise_queue("probes/tc_mma_ovf", "good", "sass");
 }
 
 /// HMMA bf16 on subnormal / Inf / NaN operands and finite overflow (probes/hmma_special) =
@@ -4211,11 +4468,12 @@ fn probe_mov_pack_matches_hardware() {
 }
 
 /// tcgen05.mma with an immediate enable-input-d (probes/tc_mma_imm) = GB300 on both
-/// front-ends.
+/// front-ends (the overlapping un-waited stores are E-TMEM-QUEUE, `probe_bitwise_queue`; PTX:
+/// MISS 116).
 #[test]
 fn probe_tc_mma_imm_matches_hardware() {
-    probe_bitwise("probes/tc_mma_imm", "good", "ptx");
-    probe_bitwise("probes/tc_mma_imm", "good", "sass");
+    probe_bitwise_queue("probes/tc_mma_imm", "good", "ptx");
+    probe_bitwise_queue("probes/tc_mma_imm", "good", "sass");
 }
 
 /// bfi.b32 / clz.b32 (probes/bfi_clz) = GB300 on both front-ends.
@@ -5242,11 +5500,12 @@ fn probe_ptx_misc2_matches_hardware() {
     probe_bitwise("probes/ptx_misc2", "good", "sass");
 }
 
-/// tcgen05.mma `[taddr + off]` D and A-in-TMEM operands (probes/tc_mma_off) = GB300.
+/// tcgen05.mma `[taddr + off]` D and A-in-TMEM operands (probes/tc_mma_off) = GB300 (the
+/// overlapping un-waited stores are E-TMEM-QUEUE, `probe_bitwise_queue`; PTX: MISS 116).
 #[test]
 fn probe_tc_mma_off_matches_hardware() {
-    probe_bitwise("probes/tc_mma_off", "good", "ptx");
-    probe_bitwise("probes/tc_mma_off", "good", "sass");
+    probe_bitwise_queue("probes/tc_mma_off", "good", "ptx");
+    probe_bitwise_queue("probes/tc_mma_off", "good", "sass");
 }
 
 /// FFMA2 with `-URn.F32` / `-URn.F32x2.HI_LO` operands (probes/ffma2_ur) = GB300.
@@ -5288,7 +5547,8 @@ fn probe_f32x2_ftz_matches_hardware() {
 /// S-TMEM, N-MMA: tcgen05.mma kind::f16 M = 128 with A in TMEM and N = 8 / 24 (N % 16 = 8,
 /// the FP8-KV decode's P.V shape) writes D columns col0..col0 + N of every lane = GB200
 /// (probes/tc_mma_ts_n8, n24/: D equals GB300's N = 16 output on the shared columns). The
-/// PTX ISA requires N % 16 == 0 with A in TMEM: a `contract` finding.
+/// PTX ISA requires N % 16 == 0 with A in TMEM: a `contract` finding (and `tmem-queue` ones:
+/// the sentinel fill and the A store overlap with no wait between, E-TMEM-QUEUE).
 #[test]
 fn probe_tc_mma_ts_n8_matches_hardware() {
     for dir in ["probes/tc_mma_ts_n8", "probes/tc_mma_ts_n8/n24"] {
@@ -5296,7 +5556,8 @@ fn probe_tc_mma_ts_n8_matches_hardware() {
             let case = Case::load(root().join(dir)).unwrap();
             let k = kernel(&case, "good", front);
             let launch = build_launch(&case, &k).unwrap();
-            let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
+            let m = Machine::new(Arc::new(k), Arc::new(launch));
+            let v = ptxv_sim::wellsync::certify(m)
                 .verdict
                 .unwrap_or_else(|| panic!("{dir} {front} certifies"));
             assert_eq!(
@@ -5308,7 +5569,7 @@ fn probe_tc_mma_ts_n8_matches_hardware() {
             assert!(
                 v.findings
                     .iter()
-                    .all(|f| f.sig.starts_with("mma-ts-shape:")),
+                    .all(|f| f.sig.starts_with("mma-ts-shape:") || f.sig.starts_with("tmem-queue:")),
                 "{dir} {front}: {:#?}",
                 v.findings
             );
@@ -9106,4 +9367,323 @@ fn bsync_releases_beside_a_parked_collective_under_the_gb300_profile() {
         !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
         "{report:?}"
     );
+}
+
+/// E-ASYNC-STEP (fixtures/e_tma_store_readback): `cp.async.bulk.wait_group.read` completes only
+/// the group's shared-memory source reads. A thread that loads back an element of its own TMA
+/// store's destination after `.read 0` races with the store's global write on both fronts
+/// (GB300: 196/200 runs read the old value); after a full `wait_group 0` it is clean. The PTX
+/// front used to treat `.read` as the full wait (clean).
+#[test]
+fn tma_store_readback_after_wait_read_races() {
+    for v in ["good", "READ", "NOWAIT"] {
+        both("e_tma_store_readback", v);
+        certify_meets("e_tma_store_readback", v, "ptx");
+        certify_meets("e_tma_store_readback", v, "sass");
+    }
+}
+
+/// E-ASYNC-STEP for the non-tensor bulk store and the bulk add-reduction
+/// (fixtures/e_bulk_read_l1): `cp.async.bulk.wait_group.read` completes only the group's
+/// shared-memory reads, so a load of the destination after it races with the global writes, a
+/// reduction's too (READ, RREAD: races on the PTX front); after a full wait it is clean (good,
+/// RGOOD). GB300 reads the stale pre-store L1 line in 1000/1000 runs of READ and RREAD, the
+/// stored value after a full wait. The SASS front's bulk `DEPBAR` is a full wait, so it calls
+/// READ and RREAD clean (MISS 102): pinned here, so its fix shows up as a change.
+#[test]
+fn bulk_store_and_reduction_after_wait_read_race() {
+    for v in ["good", "READ", "RGOOD", "RREAD"] {
+        both("e_bulk_read_l1", v);
+        certify_meets("e_bulk_read_l1", v, "ptx");
+        certify_meets("e_bulk_read_l1", v, "sass");
+    }
+}
+
+/// E-ASYNC-STEP (fixtures/e_tma_read_then_full): a `.read` wait completes the group's
+/// shared-memory reads and keeps the group, so a full `wait_group 0` after it still orders the
+/// store's global writes before the load of the destination (clean on both fronts). A `.read`
+/// wait that dropped the group left the writes unordered (a race).
+#[test]
+fn tma_store_full_wait_after_wait_read_orders_the_writes() {
+    both("e_tma_read_then_full", "good");
+    certify_meets("e_tma_read_then_full", "good", "ptx");
+    certify_meets("e_tma_read_then_full", "good", "sass");
+}
+
+/// E-WELLSYNC on a fixture variant: a certificate that holds must give the variant's
+/// expected classes (READ / LATEWAIT used to certify clean); a refused one must say why
+/// (`ptxv check --certify` then explores).
+fn certify_meets(case: &str, variant: &str, front: &str) {
+    let case = Case::load(root().join("fixtures").join(case)).unwrap();
+    let k = kernel(&case, variant, front);
+    let launch = build_launch(&case.for_variant(variant).unwrap(), &k).unwrap();
+    let o = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)));
+    let expect = case.variant(variant).unwrap().expect_for(front);
+    match o.verdict {
+        Some(v) => assert!(
+            v.complete && v.classes() == expect,
+            "{variant}/{front}: certified {:?} (complete: {}), want {expect:?}",
+            v.classes(),
+            v.complete
+        ),
+        None => assert!(
+            !o.reasons.is_empty(),
+            "{variant}/{front}: refused without a reason"
+        ),
+    }
+}
+
+/// E-CPASYNC (fixtures/e_cpasync_early): a cp.async's shared write lands at the wait that
+/// retires it, as an async actor of its own. A barrier the issuer reaches before its
+/// wait_group does not order the write before another thread's read of the slot (LATEWAIT: a
+/// race on both fronts; GB300 reads the old value in 200/200 runs); waiting before the barrier
+/// (good) is clean. Both fronts used to call LATEWAIT clean, race-checking the write with the
+/// issue clock.
+#[test]
+fn cpasync_write_is_not_ordered_by_a_barrier_before_the_wait() {
+    both("e_cpasync_early", "good");
+    // The stateful explorer reports the race in one order; DPOR may also reach its second
+    // outcome (E-DRF), but must find the race.
+    for front in ["ptx", "sass"] {
+        check_stateful("e_cpasync_early", "LATEWAIT", front, 100_000);
+        let case = Case::load(root().join("fixtures/e_cpasync_early")).unwrap();
+        let k = kernel(&case, "LATEWAIT", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let d = ptxv_sim::dpor::explore_dpor(Machine::new(Arc::new(k), Arc::new(launch)), 100_000);
+        assert!(
+            d.complete && d.classes().iter().any(|c| c == "race"),
+            "LATEWAIT/{front}: DPOR {:?}",
+            d.classes()
+        );
+        for v in ["good", "LATEWAIT"] {
+            certify_meets("e_cpasync_early", v, front);
+        }
+    }
+}
+
+/// E-CPASYNC-MBAR (fixtures/e_cpasync_mbar_early): copies tracked by cp.async.mbarrier.arrive
+/// land at their own issue clocks, not the arrive's. EARLY (the copy issued before a barrier,
+/// the arrive after it; another thread's read before the barrier) and OWN (the issuer's own
+/// store between the copy and the arrive) race on both fronts; GB300 shows the copy landing
+/// first in 194/200 and 200/200 runs. Both used to be clean and certified.
+#[test]
+fn cpasync_mbar_copies_land_at_their_issue_clocks() {
+    for v in ["good", "EARLY", "OWN"] {
+        both("e_cpasync_mbar_early", v);
+        certify_meets("e_cpasync_mbar_early", v, "ptx");
+        certify_meets("e_cpasync_mbar_early", v, "sass");
+    }
+}
+
+/// E-CPASYNC (fixtures/e_cpasync_overlap): one thread's copies to the same bytes, in flight
+/// together, race (SAME: one group; GROUPS: two groups, one wait; MBAR: one
+/// cp.async.mbarrier.arrive), though they land as one actor; so do copies retired by two
+/// waits, the second issued before the first wait (LATER: two epochs of the thread's wait
+/// actor); a wait between them orders them (SEQ). GB300 leaves the first copy's bytes in
+/// 1000/1000 runs of SAME, where the model used to call it clean with the second copy's.
+#[test]
+fn cpasync_copies_in_flight_together_race() {
+    for v in ["good", "SAME", "GROUPS", "SEQ", "MBAR", "LATER"] {
+        both("e_cpasync_overlap", v);
+        certify_meets("e_cpasync_overlap", v, "ptx");
+        certify_meets("e_cpasync_overlap", v, "sass");
+    }
+}
+
+/// E-CPASYNC-PROXY (fixtures/e_cpasync_proxy_early): an async-proxy read of a cp.async's
+/// destination needs a `fence.proxy.async` after the copy completed (after its wait) that
+/// happens-before the read. A fence between the copies' issue and their wait (EARLY, as in
+/// Triton's attention kernels) covers nothing, like no fence (NONE): contract findings on both
+/// fronts; the fence after the wait (good) is clean.
+#[test]
+fn cpasync_proxy_fence_must_follow_the_copy_s_completion() {
+    for v in ["good", "EARLY", "NONE"] {
+        both("e_cpasync_proxy_early", v);
+        certify_meets("e_cpasync_proxy_early", v, "ptx");
+        certify_meets("e_cpasync_proxy_early", v, "sass");
+    }
+}
+
+/// MISS 68 (fixtures/e_async_actor_cap): a thread's async actor ids come from one checked
+/// allocator (`Machine::async_actor`); past them the step fails closed, an unmodeled fault that
+/// stops the thread, and never wraps (an id past the limit would alias the wait actor, then
+/// the next thread's ids). With the ids cut to 4096 (`Machine::async_shift` 12; a lone thread
+/// has 2^30), MANY's 4096th arrive is that fault and nothing else is reported; 4000 arrives
+/// (good) stay clean. With the real ids both are clean. Stateful search only: DPOR takes about
+/// 1000 s on one run of this 4000-arrive loop.
+#[test]
+fn async_actor_ids_fail_closed() {
+    let case = Case::load(root().join("fixtures/e_async_actor_cap")).unwrap();
+    for front in ["ptx", "sass"] {
+        for v in ["good", "MANY"] {
+            check_stateful("e_async_actor_cap", v, front, 100_000);
+            let k = kernel(&case, v, front);
+            let launch = build_launch(&case, &k).unwrap();
+            let mut m0 = Machine::new(Arc::new(k), Arc::new(launch));
+            m0.async_shift = 12;
+            let r = explore(m0, 100_000);
+            let want: &[&str] = if v == "good" {
+                &["clean"]
+            } else {
+                &["unmodeled"]
+            };
+            assert!(
+                r.complete && r.classes() == want,
+                "{v}/{front} with 4096 ids: {:?} (complete: {}) {:#?}",
+                r.classes(),
+                r.complete,
+                r.findings
+            );
+            assert!(
+                r.findings.iter().all(|f| f.kind != "unmodeled"
+                    || (f.sig.starts_with("fault:") && f.msg.contains("async actor ids"))),
+                "{v}/{front}: {:#?}",
+                r.findings
+            );
+        }
+    }
+}
+
+/// MISS 68: with a fixed 4096 async actor ids per thread (`tma_actor_id` = 3 n + 4096 t +
+/// serial), a thread's 4097th async operation took the next thread's first id, or one past the
+/// last thread. Now a thread has the largest power of two of ids below 2^31 (`async_shift`;
+/// 2^25 with 32 threads). fixtures/e_async_ids_nc: the S-NC violation that was missed (the
+/// in-place bulk store's id decoded as a later, stream-ordered kernel's thread) is found;
+/// e_async_ids_stream: the false violation (an earlier kernel's store decoded as the reading
+/// kernel's) is gone; e_async_ids_last: no panic. The control (the store as the thread's
+/// 4096th async operation) keeps its verdict.
+#[test]
+fn async_ids_past_4096_do_not_alias() {
+    for front in ["ptx", "sass"] {
+        check_stateful("e_async_ids_nc", "good", front, 100_000);
+        check_stateful("e_async_ids_nc", "n4095", front, 100_000);
+    }
+}
+
+/// MISS 68, decoding (see async_ids_past_4096_do_not_alias): an earlier kernel's store is not
+/// decoded as the reading kernel's (e_async_ids_stream), nor past the last thread
+/// (e_async_ids_last).
+#[test]
+fn async_ids_past_4096_decode_to_their_issuer() {
+    for front in ["ptx", "sass"] {
+        check_stateful("e_async_ids_stream", "good", front, 100_000);
+        check_stateful("e_async_ids_last", "good", front, 100_000);
+    }
+}
+
+/// MISS 68 (fixtures/e_async_ids_race): thread 0's 4097th async operation, a bulk store, and
+/// thread 1's first write one slot unordered (a relaxed flag only): with the fixed 4096 ids they
+/// were one actor, whose writes the race check orders with each other, and the race was missed
+/// (clean on both fronts). n4095 (the store is thread 0's 4096th) is the control.
+#[test]
+#[ignore = "heavy: 106 s, 8 GB"]
+fn async_ids_race_past_4096() {
+    for v in ["good", "n4095"] {
+        for front in ["ptx", "sass"] {
+            check_stateful("e_async_ids_race", v, front, 200_000);
+        }
+    }
+}
+
+/// MISS 68 with `--slices` (fixtures/e_async_ids_slices): CTA 1 reads with .nc, unsynchronized,
+/// what CTA 0's last thread writes with its 4097th async operation. With the fixed 4096 ids the
+/// write's id decoded as CTA 1's thread, slice exploration put it in cluster 1's footprint and
+/// found no cross-slice conflict (clean). Now a race there, as for n0 (the store is the thread's
+/// first async operation); explored whole, race and violation.
+#[test]
+fn async_ids_slices_attribute_the_issuer() {
+    let case = Case::load(root().join("fixtures/e_async_ids_slices")).unwrap();
+    check_stateful("e_async_ids_slices", "good", "ptx", 100_000);
+    for front in ["ptx", "sass"] {
+        for v in ["good", "n0"] {
+            let k = Arc::new(kernel(&case, v, front));
+            let launch = Arc::new(build_launch(&case, &k).unwrap());
+            let make = || Machine::new(k.clone(), launch.clone());
+            let r = ptxv_sim::explore::explore_symmetric(&make, 100_000, &mut |_, _| {});
+            assert!(
+                r.complete && r.classes().iter().any(|c| c == "race"),
+                "{v}/{front} by slices: {:?} (complete: {})",
+                r.classes(),
+                r.complete
+            );
+        }
+    }
+}
+
+/// E-CPASYNC, SASS cp.async scoreboard (fixtures/e_cpasync_div_wait): one path's `DEPBAR`
+/// retires the copies of lanes on another path; those lanes are ordered after their copies at
+/// their own later `DEPBAR` (good: clean on both fronts, as before the copies landed as an
+/// async actor), and not without one (NOWAIT: the even lanes' read races with their copy).
+#[test]
+fn cpasync_divergent_waits_order_their_lanes() {
+    for v in ["good", "NOWAIT"] {
+        both("e_cpasync_div_wait", v);
+        certify_meets("e_cpasync_div_wait", v, "ptx");
+        certify_meets("e_cpasync_div_wait", v, "sass");
+    }
+}
+
+/// E-CPASYNC, SASS divergent waits (fixtures/e_cpasync_div_cover): a lane is ordered after the
+/// copies another path's `DEPBAR` retired only at its own later `DEPBAR` covering them
+/// (`Warp::cp_landed`). NEIGH: the even lanes' `DEPBAR.LE SB0, 1` covers their own commit, not
+/// the odd lanes' later one, so the read of the odd neighbour's slot races (both fronts; the
+/// PTX front's per-thread waits cover no neighbour's copy). good: each lane reads its own slot
+/// after wait_group 0 (clean).
+#[test]
+fn cpasync_divergent_waits_join_only_the_copies_they_cover() {
+    for v in ["good", "NEIGH"] {
+        both("e_cpasync_div_cover", v);
+        certify_meets("e_cpasync_div_cover", v, "ptx");
+        certify_meets("e_cpasync_div_cover", v, "sass");
+    }
+}
+
+/// E-ASYNC-STEP, SASS front (fixtures/e_tma_read_l1): after `cp.async.bulk.wait_group.read`
+/// ptxas's `DEPBAR` waits for the TMA store's global writes, but without the full form's
+/// `CCTL.IVALL` a line of the destination the issuing SM filled before the store stays in its
+/// L1: GB300 reads the old bytes in 1000/1000 runs of READ3 and READ4 (out = NaN), the stored
+/// value in READ2 (no earlier fill) and with the full wait. The PTX front reports READ2-READ4
+/// as races. A miss, not yet fixed: the SASS front calls READ4 clean (the `DEPBAR` is a full
+/// wait); this test pins the current verdicts, so a fix shows up as a change here.
+#[test]
+fn tma_store_read_l1_stale_is_pinned() {
+    for v in ["good", "READ2", "READ3", "GOOD3", "READ4", "GOOD4"] {
+        both("e_tma_read_l1", v);
+    }
+}
+
+/// E-ASYNC-STEP (fixtures/e_tma_store_next_kernel): a TMA store whose issuer waited with
+/// `cp.async.bulk.wait_group.read` only is still ordered before a dependent kernel that waits
+/// for its grid (`griddepcontrol.wait`): the grid's completion covers the store's writes, one
+/// epoch after its reads (good, clean). Without the wait the load races with the write.
+#[test]
+fn tma_store_after_wait_read_is_ordered_by_grid_completion() {
+    for v in ["good", "NOWAIT"] {
+        both("e_tma_store_next_kernel", v);
+    }
+}
+
+/// E-ASYNC-STEP with launch groups (`ptxv check --groups`): fixtures/e_tma_store_next_kernel good
+/// with the load kernel stream-ordered after the store grid (no PDL), checked as two groups. At
+/// the group boundary the store's completion joins its CTA's clocks at the store actor's next
+/// epoch, the writes' (`groups.rs` `fold_completed`), so the load in the second group is ordered
+/// after the writes its issuer waited for with `.read` only: clean on both fronts, as in one
+/// group. Joining the reads' epoch only made the load race with the writes.
+#[test]
+fn launch_group_boundary_orders_a_bulk_store_s_writes() {
+    let mut case = Case::load(root().join("fixtures/e_tma_store_next_kernel")).unwrap();
+    case.m.launches[0].pdl = false;
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let m = Machine::new(Arc::new(k), Arc::new(launch));
+        let v = ptxv_sim::groups::check_spec(m, "1", 200_000, &mut |_, _, _| {});
+        assert!(
+            v.complete && v.classes() == ["clean"],
+            "{front}: {:?} (complete: {}) {:#?}",
+            v.classes(),
+            v.complete,
+            v.findings
+        );
+    }
 }

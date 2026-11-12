@@ -1,0 +1,52 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// MISS 95 (a rounded value across lanes): lane 0 holds v = rn(a + b), an FADD of the parameters
+// a = 1 and b = 2^-25 (a rounding with a node: rn(a + b) = 1, the exact sum 1 + 2^-25); lanes
+// 1..31 hold the parameter c = 1 (moves, so every lane's v keeps its node). m = match.any.sync(v);
+// lane 0 then leaves (out[0] stays 0); lanes 1..31 store rn(x + 3) where lane 0's v matches
+// theirs and x where it does not. The run matches (rn(x + 3)); the exact computation does not
+// (x). num's rounded-value rule looked at each lane's own operands only, so on both fronts the
+// other lanes' branch looked exact.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry c_num_match_f32(
+	.param .u64 px, .param .u64 pout, .param .f32 pa, .param .f32 pb, .param .f32 pc
+)
+{
+	.reg .pred %p<8>;
+	.reg .b32 %r<16>;
+	.reg .f32 %f<16>;
+	.reg .b64 %rd<16>;
+	ld.param.u64 %rd1, [px];
+	ld.param.u64 %rd2, [pout];
+	ld.param.f32 %f1, [pa];
+	ld.param.f32 %f2, [pb];
+	ld.param.f32 %f3, [pc];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd2, %rd2;
+	mov.u32 %r1, %tid.x;
+	mul.wide.u32 %rd5, %r1, 4;
+	add.s64 %rd6, %rd1, %rd5;
+	add.s64 %rd7, %rd2, %rd5;
+	ld.global.f32 %f4, [%rd6];
+	add.rn.f32 %f5, %f1, %f2;
+	setp.eq.u32 %p1, %r1, 0;
+	mov.f32 %f6, %f3;
+	@%p1 mov.f32 %f6, %f5;
+	match.any.sync.b32 %r3, %f6, -1;
+	@%p1 bra DONE;
+	and.b32 %r4, %r3, 1;
+	setp.ne.u32 %p2, %r4, 0;
+	@!%p2 bra STX;
+	add.rn.f32 %f7, %f4, 0f40400000;
+	st.global.f32 [%rd7], %f7;
+	bra.uni DONE;
+STX:
+	st.global.f32 [%rd7], %f4;
+DONE:
+	ret;
+}

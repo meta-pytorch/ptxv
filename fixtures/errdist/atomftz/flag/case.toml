@@ -1,0 +1,61 @@
+name = "atomftz_flag"
+description = """entry af_flag of ../kernel.ptx (see its header): a selection's store word read as a guard, outputs written by fp32 atomic adds of one thread each."""
+ptx = "../kernel.ptx"
+entry = "af_flag"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "z"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[variants]]
+id = "good"
+expect = ["nondeterministic"]

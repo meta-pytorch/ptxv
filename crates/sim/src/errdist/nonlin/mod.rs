@@ -334,6 +334,21 @@ pub fn prepare(p: &mut Prog, m: &Machine) -> Result<(Vec<String>, ident::Idents)
             ),
             Err(e) => format!("slice @{pc} (x{n}): not identified: {e}"),
         });
+        // MISS 57: where the slice's data-dependent decisions take a pattern no probe took,
+        // the identified function is not its real counterpart (`real::eval_table`).
+        let d = info.prog.decision_count();
+        if let (Ok(f), true) = (&info.result, d > 0) {
+            notes.push(format!(
+                "slice @{pc}: {d} data-dependent decision(s) (guards, selects, carries); outcome patterns probed: {}",
+                match &f.outcomes {
+                    Some(o) => format!(
+                        "{}; the identified function is the exact reference on those only (MISS 57)",
+                        o.show()
+                    ),
+                    None => "all".into(),
+                }
+            ));
+        }
     }
     Ok((notes, ids))
 }

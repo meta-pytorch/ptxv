@@ -584,7 +584,7 @@ pub const REGISTRY: &[Assumption] = &[
         id: "E-CPASYNC-MBAR",
         kind: "code",
         status: "validated",
-        title: "cp.async.mbarrier.arrive completes the thread's earlier cp.async writes, then one transaction unit (or arrival)",
+        title: "cp.async.mbarrier.arrive completes the thread's earlier cp.async writes (at their issue clocks), then one transaction unit (or arrival)",
         applies: |k| any(k, |o| matches!(o, Op::CpAsyncMbarArrive { .. })),
     },
     Assumption {
@@ -610,7 +610,7 @@ pub const REGISTRY: &[Assumption] = &[
         id: "E-CPASYNC",
         kind: "code",
         status: "validated",
-        title: "cp.async reads global at issue and writes shared memory when wait_group retires its group (race-checked with the issue clock)",
+        title: "cp.async reads global at issue and writes shared memory when wait_group retires its group (an async actor at the issue clock; copies in flight together race)",
         applies: |k| any(k, |o| matches!(o, Op::CpAsync { .. })),
     },
     Assumption {
@@ -626,7 +626,7 @@ pub const REGISTRY: &[Assumption] = &[
         id: "E-ASYNC-STEP",
         kind: "code",
         status: "argued",
-        title: "a TMA box / store / MMA tile / commit completes in one step; wait_group.read = wait_group",
+        title: "a TMA box / store / MMA tile / commit completes in one step; wait_group.read orders only the bulk group's shared-memory reads (PTX)",
         applies: |k| {
             any(k, |o| {
                 matches!(
@@ -772,6 +772,14 @@ pub const REGISTRY: &[Assumption] = &[
         status: "argued",
         title: "strict level: a generic smem read before an async-proxy write of the same bytes (a consumer releasing a TMA stage) needs a fence.proxy.async that the read HB and that HB the async op (PTX ISA 8.9.5); without one a contract finding (proxy-war), discharged under the GB300 profile (E-HW-PROXY-WAR)",
         applies: |k| any(k, |o| matches!(o, Op::TmaLoad { .. })),
+    },
+    Assumption {
+        id: "E-TMEM-QUEUE",
+        kind: "code",
+        status: "measured, non-discriminating",
+        title: "A thread's STTM (tcgen05.st) is ordered after its own earlier LDTMs, waited or not, and after its own earlier STTMs to the same words, fenced or not (one in-order TMEM queue): not assumed at any level; the strict level and the GB300 profile report such orders as tmem-queue contract findings (probes/tmem_queue: measured nulls, no discriminating control)",
+        // No verdict relies on it: the orders it names are contract findings at both levels.
+        applies: never,
     },
     Assumption {
         id: "E-HW-PROXY-WAR",
@@ -1944,7 +1952,21 @@ pub const REGISTRY: &[Assumption] = &[
         id: "N-NUM-TRACK",
         kind: "code",
         status: "enforced",
-        title: "num: an element whose tree holds an input-derived value without a tracked derivation is reported untracked, with no error claim",
+        title: "num: an element whose tree holds an input-derived value or a rounding without a tracked derivation is reported untracked, and a run whose control flow or addresses depend on input data makes no error claim",
+        applies: never,
+    },
+    Assumption {
+        id: "N-NUM-UDIV",
+        kind: "code",
+        status: "enforced",
+        title: "num: the quotient and remainder of ptxas's 32-bit integer division by a run-time divisor (I2F.RP, MUFU.RCP, F2I.TRUNC, integer correction), matched structurally and checked per thread against n / d, are exact (rests on MUFU.RCP's measured accuracy: gb300)",
+        applies: never,
+    },
+    Assumption {
+        id: "N-NUM-NONFINITE",
+        kind: "code",
+        status: "enforced",
+        title: "num: a non-finite simulated value against a finite exact value carries an infinite error, an identical non-finite value error 0, any other non-finite element is not analyzed; max_err skips no analyzed element",
         applies: never,
     },
     Assumption {

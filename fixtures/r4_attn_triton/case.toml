@@ -72,7 +72,7 @@ value = 0
 id = "good"
 summary = "as compiled by Triton"
 expect = ["contract"]
-hw_note = "lifts completely (LDTM/STTM .16dp32bit halves, UTCHMMA with A in TMEM and an MN-major B, cp.async with zero fill, LDSM); the run matches GB300 bitwise (expected/). The one finding is a PTX contract one: Triton 3.5 leaves the fixed bits 46-48 of its shared-memory descriptors 0 (GB300's MMA ignores them: E-DESC-VERSION, probes/desc_version)"
+hw_note = "lifts completely (LDTM/STTM .16dp32bit halves, UTCHMMA with A in TMEM and an MN-major B, cp.async with zero fill, LDSM); the run matches GB300 bitwise (expected/). The findings are PTX contract ones: Triton 3.5 leaves the fixed bits 46-48 of its shared-memory descriptors 0 (GB300's MMA ignores them: E-DESC-VERSION, probes/desc_version), and the MMAs of the loop's second group read cp.async data whose last fence.proxy.async precedes the wait that completed the copies (E-CPASYNC-PROXY, also at the gb300 level)"
 
 [[variants]]
 id = "nosb"

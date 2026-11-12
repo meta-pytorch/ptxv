@@ -1,0 +1,74 @@
+name = "c_num_atom_old_f32"
+description = """
+N-NUM-TRACK (MISS 36, values returned by float atomics; the independent review's probe rd_atom_old,
+kernel.ptx): 32 threads add 0.1f to one zeroed word with atom.add.f32. out[t] = the old value thread t
+got (a rounded partial sum of 0.1f), out[32 + t] = x + old; acc[0] = the sum. The old values are input
+data, never exact constants. expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP).
+"""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_atom_old_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out", "acc"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/y.bin"
+
+[[buffers]]
+name = "z"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/z.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "acc"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+expect = "expected/acc.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "acc"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

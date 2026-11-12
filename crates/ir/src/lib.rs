@@ -1789,6 +1789,9 @@ pub enum Op {
     /// cp.async.bulk.wait_group[.read] n: block until at most n committed groups are pending.
     BulkWait {
         n: u32,
+        /// `.read`: only the groups' shared-memory source reads are complete; their global
+        /// writes stay in flight until a full wait or the end of the kernel (PTX front only:
+        /// the SASS `DEPBAR` is a full wait).
         read: bool,
         /// SASS `DEPBAR.LE SBk, n`: the scoreboard k. Only the bulk groups committed on SBk
         /// (`Kernel::bulk_commit_sb`) count; None (PTX): every group.
@@ -1883,6 +1886,9 @@ pub enum Op {
         /// `.multicast::cluster` ctaMask: arrive on the mbarrier at the same offset in every
         /// CTA rank in the mask.
         mask: Option<Val>,
+        /// `.cta_group::2` (SASS `.2CTA`): tracks only the thread's `cta_group::2` operations;
+        /// otherwise only its `cta_group::1` ones (PTX ISA, tcgen05.commit).
+        pair: bool,
     },
     /// `tcgen05.ld.32x32b.xN` (SASS LDTM.xN): N consecutive columns from this warp's lanes.
     /// `tracked`: results are undefined until `tcgen05.wait::ld` (PTX semantics); SASS relies
@@ -3035,6 +3041,15 @@ pub struct Kernel {
     /// carry over, its hazard verdicts do not: not a GB300 verdict (`executed_image: false`).
     #[serde(default)]
     pub static_image: Option<String>,
+    /// SASS: each `LDTM` and its write scoreboard (7: none). Its tensor-memory read stays
+    /// outstanding until that scoreboard is waited, or a later LDTM's (TMEM loads complete in
+    /// issue order), S-TCGEN05.
+    #[serde(default)]
+    pub ldtm_sb: Vec<(usize, u8)>,
+    /// SASS: instructions that wait on a scoreboard some `LDTM` writes: the control word's wait
+    /// mask (those scoreboards only) and the `DEPBAR` waits (scoreboard, at most n left).
+    #[serde(default)]
+    pub ldtm_waits: Vec<(usize, u8, Vec<(u8, u8)>)>,
 }
 
 /// A kernel's declared block shape.
@@ -3201,6 +3216,8 @@ impl Kernel {
         out.static_findings.clear();
         out.bulk_read_waits.clear();
         out.bulk_commit_sb.clear();
+        out.ldtm_sb.clear();
+        out.ldtm_waits.clear();
         out.name = ks
             .iter()
             .map(|k| k.name.as_str())
@@ -3240,6 +3257,13 @@ impl Kernel {
                 .extend(k.bulk_read_waits.iter().map(|&(i, m)| (i + base, m)));
             out.bulk_commit_sb
                 .extend(k.bulk_commit_sb.iter().map(|&(i, s)| (i + base, s)));
+            out.ldtm_sb
+                .extend(k.ldtm_sb.iter().map(|&(i, s)| (i + base, s)));
+            out.ldtm_waits.extend(
+                k.ldtm_waits
+                    .iter()
+                    .map(|(i, m, d)| (i + base, *m, d.clone())),
+            );
             for f in &k.static_findings {
                 let mut f = f.clone();
                 f.pcs.iter_mut().for_each(|p| *p += base);

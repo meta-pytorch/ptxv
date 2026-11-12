@@ -1,0 +1,68 @@
+name = "e_tblk_late"
+description = """
+2-CTA tensor-memory hand-back with the reads still in flight (S-TCGEN05, S-MBAR-SCOPE):
+fixtures/e_tc_handback with tcgen05.wait::ld after the hand-back, so round 2's MMA races
+with the round-1 tcgen05.ld on both fronts (SASS: the LDTM's read is outstanding until its
+write scoreboard is waited; PTX: until wait::ld, MISS 105). See kernel.ptx."""
+ptx = "kernel.ptx"
+entry = "e_tblk_late"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+spec = "gemm_tn"
+
+[[buffers]]
+name = "A"
+dtype = "bf16"
+shape = [256, 64]
+init = "normal"
+seed = 41
+
+[[buffers]]
+name = "B"
+dtype = "bf16"
+shape = [16, 64]
+init = "normal"
+seed = 42
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [256, 16]
+init = "nan"
+
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [64, 128]
+swizzle = "128B"
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [64, 8]
+swizzle = "128B"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[variants]]
+id = "good"
+summary = "wait::ld after the hand-back: race on both fronts"
+# PTX: until MISS 105 the front's tcgen05.fence::before_thread_sync released the un-waited
+# tcgen05.ld and gave contract only. Test: e_tblk_late_ptx_unwaited_ld_is_not_released.
+expect = ["contract", "race"]
+expect_sass = ["race"]
+
+[[variants]]
+id = "ACTA"
+summary = "the leader waits with .acquire.cta (SASS PHASECHK, no CCTL.IVALL): still a race"
+marker = "@EWAIT"
+find = "mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p13, [%r34], 0;"
+replace = "mbarrier.try_wait.parity.shared::cta.b64 %p13, [%r34], 0;"
+# PTX: a race (the .acquire.cta wait, and the un-waited reads, MISS 105). Test:
+# e_tblk_late_ptx_unwaited_ld_is_not_released.
+expect = ["contract", "race"]
+expect_sass = ["race"]

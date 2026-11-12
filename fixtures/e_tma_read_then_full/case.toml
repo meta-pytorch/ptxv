@@ -1,0 +1,42 @@
+name = "e_tma_read_then_full"
+description = """
+E-ASYNC-STEP: thread 0 TMA-stores a 32x32 f32 tile to D, waits with
+cp.async.bulk.wait_group.read 0 and then with cp.async.bulk.wait_group 0, and loads D[0][5].
+The .read wait completes the group's shared-memory reads and keeps the group, so the full wait
+after it still orders the store's global writes before the load: clean on both fronts. A .read
+wait that dropped the group would leave the writes unordered (a race)."""
+ptx = "kernel.ptx"
+entry = "e_tma_read_then_full"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D", "out"]
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [32, 32]
+init = "nan"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "tensormap"
+buffer = "D"
+box = [32, 32]
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[variants]]
+id = "good"
+summary = "wait_group.read 0, then wait_group 0, then the load"
+expect = ["clean"]

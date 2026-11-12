@@ -1,0 +1,48 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// fixtures/c_num_nan2_f32 (N-NUM-NONFINITE, MISS 63; from the independent review's probe nan2): out[t] = x + y, out[32 + t] =
+// (x + y) + (u + v). Even lanes overflow (x = y = 3e38: +inf, exact 6e38) and give NaN
+// (u = v = -3e38: inf - inf, exact 0); odd lanes are finite sums of [1, 2) values.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_nan2_f32(
+	.param .u64 px, .param .u64 py, .param .u64 pu, .param .u64 pv, .param .u64 pout
+)
+{
+	.reg .f32 %f<8>;
+	.reg .b32 %r<4>;
+	.reg .b64 %rd<12>;
+
+	ld.param.u64 %rd1, [px];
+	ld.param.u64 %rd2, [py];
+	ld.param.u64 %rd3, [pu];
+	ld.param.u64 %rd4, [pv];
+	ld.param.u64 %rd5, [pout];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd2, %rd2;
+	cvta.to.global.u64 %rd3, %rd3;
+	cvta.to.global.u64 %rd4, %rd4;
+	cvta.to.global.u64 %rd5, %rd5;
+	mov.u32 %r1, %tid.x;
+	mul.wide.u32 %rd6, %r1, 4;
+	add.s64 %rd7, %rd1, %rd6;
+	ld.global.f32 %f1, [%rd7];
+	add.s64 %rd7, %rd2, %rd6;
+	ld.global.f32 %f2, [%rd7];
+	add.s64 %rd7, %rd3, %rd6;
+	ld.global.f32 %f3, [%rd7];
+	add.s64 %rd7, %rd4, %rd6;
+	ld.global.f32 %f4, [%rd7];
+	add.rn.f32 %f5, %f1, %f2;
+	add.rn.f32 %f6, %f3, %f4;
+	add.rn.f32 %f7, %f5, %f6;
+	add.s64 %rd8, %rd5, %rd6;
+	st.global.f32 [%rd8], %f5;
+	st.global.f32 [%rd8+128], %f7;
+	ret;
+}

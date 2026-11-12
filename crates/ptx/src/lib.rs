@@ -3588,6 +3588,8 @@ pub fn parse_kernel_for(
             .collect(),
         globals,
         static_image: None,
+        ldtm_sb: vec![],
+        ldtm_waits: vec![],
     })
 }
 
@@ -6742,6 +6744,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         mbar: a,
                         off: ma.off as u32,
                         mask,
+                        pair,
                     }
                 }
                 "ld" => {

@@ -156,6 +156,66 @@ pub struct RealFn {
     /// Largest relative deviation of the slice from this form on the probes.
     pub fit_err: f64,
     pub probes: usize,
+    /// The data-dependent decisions the probes took (MISS 57). None: the slice takes none,
+    /// or the probes took every pattern of them.
+    #[serde(default)]
+    pub outcomes: Option<Outcomes>,
+}
+
+/// The patterns of a slice's data-dependent decisions (`SProg::decisions`: the predicates it
+/// reads that depend on its arguments) that its identification's probes took (MISS 57). The
+/// identified function is the slice's real counterpart only where the slice takes one of
+/// them: a guarded instruction or a select whose other outcome no probe took is another
+/// function there (ASSUME(N-ERRDIST-IDENT)).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Outcomes {
+    /// Decisions per pattern.
+    pub n: u32,
+    /// The patterns taken, 64 decisions per word, sorted.
+    pub seen: Vec<Vec<u64>>,
+}
+
+impl Outcomes {
+    fn pack(d: &[bool]) -> Vec<u64> {
+        let mut w = vec![0u64; d.len().div_ceil(64)];
+        for (i, &b) in d.iter().enumerate() {
+            w[i / 64] |= (b as u64) << (i % 64);
+        }
+        w
+    }
+
+    /// The outcomes of the patterns `seen` of `n` decisions (None when there is no decision
+    /// or every pattern was taken: the function holds wherever the slice goes).
+    pub fn of(n: usize, seen: &[Vec<bool>]) -> Option<Outcomes> {
+        let mut w: Vec<Vec<u64>> = seen
+            .iter()
+            .filter(|d| d.len() == n)
+            .map(|d| Self::pack(d))
+            .collect();
+        w.sort();
+        w.dedup();
+        if n == 0 || (n < 64 && w.len() as u64 == 1u64 << n) {
+            return None;
+        }
+        Some(Outcomes {
+            n: n as u32,
+            seen: w,
+        })
+    }
+
+    /// Whether decisions `d` are a pattern the probes took.
+    pub fn covers(&self, d: &[bool]) -> bool {
+        d.len() == self.n as usize && self.seen.binary_search(&Self::pack(d)).is_ok()
+    }
+
+    /// How many of the 2^n patterns the probes took, as text.
+    pub fn show(&self) -> String {
+        if self.n < 64 {
+            format!("{} of {}", self.seen.len(), 1u64 << self.n)
+        } else {
+            format!("{} of 2^{}", self.seen.len(), self.n)
+        }
+    }
 }
 
 impl RealFn {
@@ -171,6 +231,7 @@ impl RealFn {
             snapped: true,
             fit_err: 0.0,
             probes: 0,
+            outcomes: None,
         }
     }
     /// The inner argument z = c0 + sum coef_i a_i.
@@ -641,6 +702,7 @@ fn fit_form_cols(
             snapped: false,
             fit_err: 0.0,
             probes: probes.len(),
+            outcomes: None,
         };
         r.fit_err = max_err(&r, probes);
         if r.fit_err.is_nan() || r.fit_err > ACCEPT {
@@ -904,6 +966,9 @@ pub fn identify_prog(
         return out;
     }
     let mut probes: HashMap<String, Vec<(Vec<f64>, f64)>> = HashMap::default();
+    // Per group: the decisions each finite probe took (the probes `identify` fits).
+    let mut taken: HashMap<String, Vec<Vec<bool>>> = HashMap::default();
+    let mut scratch = Vec::new();
     let mut rng = super::super::special::Rng::new(seed ^ 0x1de7);
     let cap = 6000usize;
     for t in 0..=n {
@@ -932,12 +997,19 @@ pub fn identify_prog(
             let per = (cap / (n + 1)).max(1);
             for _ in 0..per.min(ids.len()) {
                 let i = ids[rng.below(ids.len() as u64) as usize];
-                if let Op::Nl(NlOp::Seg { args, .. }) = &p.ops[i as usize] {
+                if let Op::Nl(NlOp::Seg { args, prog, .. }) = &p.ops[i as usize] {
                     let a: Vec<f64> = args
                         .iter()
                         .map(|&j| w[j as usize].v as f32 as f64)
                         .collect();
-                    e.push((a, w[i as usize].v as f32 as f64));
+                    let g = w[i as usize].v as f32 as f64;
+                    if g.is_finite() && a.iter().all(|x| x.is_finite()) {
+                        let bits: Vec<u32> = a.iter().map(|&x| (x as f32).to_bits()).collect();
+                        if let Some(d) = prog.decisions(&bits, &mut scratch) {
+                            taken.entry(k.clone()).or_default().push(d);
+                        }
+                    }
+                    e.push((a, g));
                 }
             }
         }
@@ -947,7 +1019,13 @@ pub fn identify_prog(
             continue;
         };
         let prog = prog.clone();
-        let r = identify(&prog, &probes[k]);
+        let mut r = identify(&prog, &probes[k]);
+        if let Ok(f) = r.as_mut() {
+            f.outcomes = Outcomes::of(
+                prog.decision_count(),
+                taken.get(k).map_or(&[][..], |v| v.as_slice()),
+            );
+        }
         if let Ok(f) = &r {
             for &i in ids {
                 if let Op::Nl(NlOp::Seg { real, .. }) = &mut p.ops[i as usize] {

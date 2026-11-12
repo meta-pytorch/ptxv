@@ -1,0 +1,40 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// MISS 57 at 0 Tier 3 inputs outside the probed outcomes. Thread i stores y_i = RN(2 x_i)
+// (exact) where x[0] >= -3, else RN(RN(3 x_i) w_i) (a predicated FMUL pair). The probes
+// (captured x = 0, perturbed by N(0, 1)) take only the first outcome: the slice is fitted as
+// 2 x. With x[0] in [-5, -4) w.p. 0.002, Tier 3 draws no such input on most seeds (k = 0),
+// and its interval at 0 differing outputs, 0 [0, 1.9e-4], was a per-output bound below the
+// kernel's P(bits differ) 5.2e-4 (exact rationals).
+
+.visible .entry k0_guard(.param .u64 px, .param .u64 pw, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd10, %rd3, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f9, [%rd1];
+    mul.rn.f32 %f4, %f1, 0f40000000;
+    mul.rn.f32 %f5, %f1, 0f40400000;
+    setp.lt.f32 %p1, %f9, 0fC0400000;
+    @%p1 mul.rn.f32 %f4, %f5, %f2;
+    st.global.f32 [%rd10], %f4;
+    ret;
+}

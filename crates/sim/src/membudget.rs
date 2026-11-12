@@ -11,11 +11,18 @@
 //! suffix) on the resident set; else 90% of the cgroup's `memory.max` (systemd-run
 //! MemoryMax, Slurm) on the resident set, and 90% of `RLIMIT_AS` (`ulimit -v`) on the
 //! virtual size. `PTXV_MAX_RSS=0` turns the budget off.
+//!
+//! Time budgets: the whole check's wall-clock budget (`set_time_budget`, `ptxv check
+//! --time-budget`) stops certificates, seed walks, explorations and the runs around them,
+//! incomplete; a nested deadline (`set_deadline`, the total budget of `--mutate-inputs`) stops
+//! explorations and their seed walks, at the earlier of the two.
 
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use std::time::Instant;
 
 #[derive(Debug, Default)]
@@ -147,28 +154,111 @@ pub fn exceeded() -> bool {
     true
 }
 
-/// Time budget of the current exploration (`set_deadline`): milliseconds since `T_BASE`, 0 for
-/// none.
+/// Deadlines in milliseconds since `T_BASE` (0: none): the whole check's (`set_time_budget`),
+/// the nested one (`set_deadline`), and the one explorations stop at, the earlier
+/// (`DEADLINE_MS`, from `DEADLINE_SRC`: 1 the whole check's, 2 the nested one).
+static TOTAL_MS: AtomicU64 = AtomicU64::new(0);
+static TOTAL_HIT: AtomicBool = AtomicBool::new(false);
+static NESTED_MS: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_MS: AtomicU64 = AtomicU64::new(0);
+static DEADLINE_SRC: AtomicU8 = AtomicU8::new(0);
 static DEADLINE_HIT: AtomicBool = AtomicBool::new(false);
 static T_BASE: OnceLock<Instant> = OnceLock::new();
 
-/// Sets (or clears) a wall-clock deadline for the explorations that follow (the total budget
-/// of `--mutate-inputs`): they stop, incomplete, when it passes. Clearing it also clears the
-/// note.
-pub fn set_deadline(d: Option<Instant>) {
+/// The whole check's budget in words, for the notes of the phases only it stops.
+pub const TIME_BUDGET: &str = "the time budget (--time-budget)";
+
+fn ms_since_base(d: Option<Instant>) -> u64 {
     let base = *T_BASE.get_or_init(Instant::now);
-    DEADLINE_HIT.store(false, Ordering::Relaxed);
-    DEADLINE_MS.store(
-        d.map_or(0, |d| {
-            d.saturating_duration_since(base).as_millis() as u64 + 1
-        }),
-        Ordering::Relaxed,
-    );
+    d.map_or(0, |d| {
+        d.saturating_duration_since(base).as_millis() as u64 + 1
+    })
 }
 
-/// Has the deadline set by `set_deadline` passed? Once it has, it stays passed (until the
-/// next `set_deadline`).
+fn ms_now() -> u64 {
+    T_BASE.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1
+}
+
+/// Explorations stop at the earlier of the two deadlines; a change clears the note (the next
+/// `past_deadline` sets it again if that deadline has passed too).
+fn apply_deadlines() {
+    let (t, n) = (
+        TOTAL_MS.load(Ordering::Relaxed),
+        NESTED_MS.load(Ordering::Relaxed),
+    );
+    let (d, src) = match (t, n) {
+        (0, 0) => (0, 0),
+        (t, 0) => (t, 1),
+        (0, n) => (n, 2),
+        (t, n) if n < t => (n, 2),
+        (t, _) => (t, 1),
+    };
+    DEADLINE_HIT.store(false, Ordering::Relaxed);
+    DEADLINE_SRC.store(src, Ordering::Relaxed);
+    DEADLINE_MS.store(d, Ordering::Relaxed);
+}
+
+/// Sets (or clears) the wall-clock budget of the whole check (`ptxv check --time-budget`):
+/// every certificate, seed walk and exploration that follows stops, incomplete, when it
+/// passes. Set once, before any of them runs.
+pub fn set_time_budget(d: Option<Instant>) {
+    TOTAL_MS.store(ms_since_base(d), Ordering::Relaxed);
+    TOTAL_HIT.store(false, Ordering::Relaxed);
+    apply_deadlines();
+}
+
+/// Sets (or clears) a nested wall-clock deadline (the total budget of `--mutate-inputs`): the
+/// explorations that follow, and the seed walks of their synchronization reduction, stop at
+/// the earlier of it and the whole check's budget. Clearing it also clears the note; the
+/// whole check's budget, if any, applies again.
+pub fn set_deadline(d: Option<Instant>) {
+    NESTED_MS.store(ms_since_base(d), Ordering::Relaxed);
+    apply_deadlines();
+}
+
+/// Has the whole check's budget (`set_time_budget`) been spent? Certificates (and their
+/// cross-checks), the depth run after a bounded exploration and the reruns with other fills
+/// stop at it, the nested deadline does not stop them. Once spent, it stays spent (until the
+/// next `set_time_budget`); `past_deadline` is then true too.
+pub fn time_budget_spent() -> bool {
+    let t = TOTAL_MS.load(Ordering::Relaxed);
+    if t == 0 {
+        return false;
+    }
+    if TOTAL_HIT.load(Ordering::Relaxed) {
+        return true;
+    }
+    if ms_now() >= t {
+        TOTAL_HIT.store(true, Ordering::Relaxed);
+        return true;
+    }
+    false
+}
+
+/// The end of the whole check's budget (`set_time_budget`), if any.
+pub fn time_budget_end() -> Option<Instant> {
+    let t = TOTAL_MS.load(Ordering::Relaxed);
+    (t != 0).then(|| *T_BASE.get_or_init(Instant::now) + Duration::from_millis(t - 1))
+}
+
+/// What is left of the whole check's budget (zero once spent), if it has one.
+pub fn time_budget_left() -> Option<Duration> {
+    if time_budget_spent() {
+        return Some(Duration::ZERO);
+    }
+    time_budget_end().map(|e| e.saturating_duration_since(Instant::now()))
+}
+
+/// The deadline explorations stop at, in words.
+fn deadline_words() -> &'static str {
+    match DEADLINE_SRC.load(Ordering::Relaxed) {
+        1 => TIME_BUDGET,
+        _ => "the time budget (--mutate-budget-seconds)",
+    }
+}
+
+/// Has the deadline explorations stop at (the earlier of `set_time_budget` and
+/// `set_deadline`) passed? Once it has, it stays passed (until the next change of either).
 pub fn past_deadline() -> bool {
     let d = DEADLINE_MS.load(Ordering::Relaxed);
     if d == 0 {
@@ -177,8 +267,7 @@ pub fn past_deadline() -> bool {
     if DEADLINE_HIT.load(Ordering::Relaxed) {
         return true;
     }
-    let now = T_BASE.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1;
-    if now >= d {
+    if ms_now() >= d {
         DEADLINE_HIT.store(true, Ordering::Relaxed);
         return true;
     }
@@ -187,9 +276,25 @@ pub fn past_deadline() -> bool {
 
 /// The note an incomplete verdict carries when the deadline stopped it.
 pub fn deadline_note() -> Option<String> {
-    DEADLINE_HIT.load(Ordering::Relaxed).then(|| {
-        "exploration stopped at the time budget (--mutate-budget-seconds): incomplete".to_string()
-    })
+    DEADLINE_HIT
+        .load(Ordering::Relaxed)
+        .then(|| format!("exploration stopped at {}: incomplete", deadline_words()))
+}
+
+/// The budgets reached so far, in words ("the memory budget (...)", "the time budget (...)"),
+/// for the notes of work other than an exploration (the seed walks); None while neither is.
+pub fn reached() -> Option<String> {
+    let mut v = Vec::new();
+    if HIT.load(Ordering::Relaxed) {
+        v.push(format!(
+            "the memory budget ({}; PTXV_MAX_RSS sets it)",
+            WHY.get().map_or("", |s| s.as_str())
+        ));
+    }
+    if DEADLINE_HIT.load(Ordering::Relaxed) {
+        v.push(deadline_words().to_string());
+    }
+    (!v.is_empty()).then(|| v.join(" and "))
 }
 
 /// The resident set of this process in bytes.

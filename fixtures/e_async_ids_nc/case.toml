@@ -1,0 +1,79 @@
+name = "e_async_ids_nc"
+description = """
+S-NC with async actor ids (MISS 68): an in-kernel bulk store of bytes an .nc load of the same
+kernel read, issued as the thread's 4097th async operation by the last thread of grid 0. With a
+fixed 4096 ids per thread its id decoded as grid 1's thread 32 (a later, stream-ordered kernel:
+exempt), so the violation was missed on both fronts. n4095 and n0 (the store is the thread's
+4096th or first async operation) are the controls."""
+ptx = "kernel.ptx"
+entry = "k0"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out", "out2"]
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [4]
+init = "iota"
+
+[[buffers]]
+name = "dummy"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out2"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[params]]
+kind = "ptr"
+buffer = "dummy"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 4096
+
+[[launches]]
+entry = "k1"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+params = [ { kind = "ptr", buffer = "out2" } ]
+
+[[variants]]
+id = "good"
+summary = "N = 4096: the in-place bulk store is the 4097th async op (violation expected)"
+expect = ["violation"]
+
+[[variants]]
+id = "n4095"
+summary = "N = 4095 (control): the in-place bulk store is the 4096th async op"
+marker = "@SRC"
+find = "ld.global.nc.u32 %r2, [%rd1];"
+replace = "ld.global.nc.u32 %r2, [%rd1]; sub.u32 %r9, %r9, 1;"
+expect = ["violation"]
+
+[[variants]]
+id = "n0"
+summary = "N = 0 (control): the in-place bulk store is the first async op"
+marker = "@SRC"
+find = "ld.global.nc.u32 %r2, [%rd1];"
+replace = "ld.global.nc.u32 %r2, [%rd1]; mov.u32 %r9, 0;"
+expect = ["violation"]

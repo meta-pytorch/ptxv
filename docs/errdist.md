@@ -48,12 +48,18 @@ ptxv errdist --model FILE --inputs spec.json [--json out.json] [--mc N] [--tier1
 - `--inputs` takes JSON or TOML (by extension). The text report goes to stdout, the JSON
   report to `--json`.
 - `--pre-round` drops the final 16-bit rounding: the f32 accumulators are compared
-  (diagnostics for the 16-bit flip model).
+  (diagnostics for the 16-bit flip model). At an output whose value it changes (an f32 D, its
+  chain's last MMA step already, keeps it) the bitwise and worst-case checks, which compare
+  the kernel's rounded value, are skipped, and the validations observe the DAG's value, the
+  one Tier 3 estimates; every other check and refusal stands. Until the MISS 87 follow-up an
+  f32 D counted as changed, and the worst-case check and Tier 3's validation refusal were
+  skipped for the whole run whenever an output was (fixtures/e_tc_handback).
 - `--uniform` adds the Tier 1 estimate under the uniform-residue heuristic, for comparison
   (not cross-checked, so never the headline).
 - `--explore` prints per-step local-error statistics from 50 sampled inputs.
 - `--gpu-trials N` runs N sampled inputs on a free GB300 (`PTXV_GPUS` restricts
-  the set). Keep N ≤ 1000 on shared GPUs.
+  the set). Keep N ≤ 1000 on shared GPUs. A GB300 output that differs bit for bit from
+  the DAG's is a refusal, unless another order of its atomic chain explains it (§1 guards).
 - `--mc N`: Tier 3 inputs, default 300 (the cross-check and the fallback). `--mc 0` skips
   it: no analytic estimate is then confirmed, so only a Tier 0 certificate can be the
   headline (§3.2).
@@ -86,7 +92,36 @@ Guards (never report from bad data):
   outputs. A graph that folded an input-dependent value to a constant (bf16 ↔ f32 bit
   conversions, Kahan's compensation) reproduces the captured input only. On a mismatch the
   kernels are re-extracted in segment mode; if that graph disagrees too, errdist refuses.
-  A DAG mismatch in the simulator validation is also a refusal.
+  A DAG mismatch in the simulator validation is also a refusal, and so is one in the GB300
+  validation (`--gpu-trials`) unless another order of the output's atomic adds explains it.
+  GB300 adds atomics in its own order and the DAG in the simulator's (N-ERRDIST-DAG): an
+  output that is an atomic location's value, whose adds come from two or more threads (a bulk
+  reduction is its own source), two of which the run's synchronization leaves unordered (no
+  barrier, mbarrier phase, release / acquire pair or launch boundary between them), and add
+  three or more operands counting a nonzero initial value, may differ by twice the bound on
+  any order's rounding error, gamma_k sum |x| + k eta, where k u < 1/2; the validation notes
+  how many did. Until the MISS 84 follow-up a vacuous bound (k u >= 1/2: a bf16 chain of 128
+  adds) excused any value, and adds that barriers order were excused as another order
+  (fixtures/errdist/atomord/bar). Until 2026-11-10 a GB300 mismatch printed DISAGREE and
+  the headline stood (MISS 58); until 2026-11-11 every output whose DAG held an atomic add was
+  exempt, which hid the DAG's missing flush of `red/atom.add.f32` (fixtures/errdist/atomftz/sum:
+  P 0 reported where GB300's is 1.00e-2) and errors upstream of one thread's adds
+  (atomftz/flag). fp32 atomic adds now flush subnormal operands and results in the DAG, as
+  the simulator and GB300 do.
+- **A refused estimate is never the headline, Tier 3 included.** A simulator or GB300 run
+  refuses Tier 3 on the analytic tiers' criteria: a bitwise mismatch that no other atomic
+  order explains, a P(differ) the run contradicts, or a Tier 3 interval outside the run's
+  exact bounds (Clopper-Pearson over inputs: the batch-means test passes a discrepancy
+  confined to 10 or fewer inputs at any n). With nothing standing errdist prints the report
+  without a headline and refuses. Until 2026-11-11 the headline fell back to Tier 3 whatever a
+  run said (fixtures/errdist/miss58/rare: P 0 from 5 Tier 3 inputs next to DISAGREE, where
+  the simulator saw 0.049), and `--pre-round` skipped every refusal. A disagreement on the
+  moments only (mean, KS) is printed and does not refuse where the run matched the DAG bit for
+  bit (both sides sample one DAG); where atomic mismatches were explained as GB300's order it
+  refuses (mean, KS and Anderson-Darling with inputs as the unit, 99.9%). That test is weak
+  (the KS takes the input counts as effective sizes and flags nothing when 1-2% of the inputs
+  differ): what few inputs carry is refused by the exact bounds, which run first. A Tier 3 that
+  compared no output (out of domain) is outside these checks.
 - **Control, addresses and guards must not depend on input data beyond what the DAG
   models.** A run with a `data-dependent:` precondition (the taint check's guards, branch
   conditions, addresses and value-fault operands that no selection or slice covers; N-EQUIV)
@@ -95,6 +130,31 @@ Guards (never report from bad data):
   node nor taint and was skipped, and an input that takes another branch, EXIT, guard or
   address was evaluated on that run's DAG. The simulator validation compares only the
   outputs the DAG tracks, so it could not notice (MISS 53, fixtures/errdist/miss53).
+  Addresses are checked for every thread that executes the instruction on some input: those
+  whose guard holds, and those whose guard depends on input data. Until 2026-11-10 only the
+  first were, so a store whose guard was false on the captured input and whose address
+  depended on input data was a selection at the captured address (MISS 56,
+  fixtures/errdist/miss56). A selection's words depend on input data whether or not the
+  captured run stored them: until 2026-11-11 the thread that did not store left them
+  untainted, and another thread that read the word after a barrier used it as a guard or an
+  address unchecked (fixtures/errdist/storeword).
+- **An identified slice is the exact reference only on the decisions its probes took.** A
+  slice's guards, selects and carries that depend on its arguments, and the pieces of its
+  instructions' values (a `.SAT` or `.RELU` clamp, a minimum / maximum's pick, an abs
+  modifier's or a bitwise operand's sign, an F2I's saturation), split them into outcome
+  patterns; the fit holds on the patterns its probes took (N-ERRDIST-IDENT). An output whose
+  exact value reads a slice on another pattern is unknown: Tier 3 leaves it out, notes how
+  many inputs had one (the `out_of_domain` cause `exact value unknown: ...`), and refuses
+  when the 95% bound of their share exceeds 10% of P(differ). Otherwise every P(differ)
+  interval widens by that bound, also at 0 inputs (Tier 3's sample saw none of a share up to
+  the bound; until 2026-11-11 only the analytic tiers widened there, fixtures/errdist/k0).
+  Until 2026-11-11 a value clamp was no decision: `FMUL.SAT` fitted as the unclamped x^2 / 32
+  gave 0.331 where the kernel's is 0.0312 (fixtures/errdist/clamp). Until 2026-11-10 the
+  fit was the exact reference everywhere: a guard `x[0] >= -3 ? 3 a : a` fitted as 3 a on
+  probes near x = 0 gave P(bits differ) 1.0 for x[0] in [-5, -4), where the kernel's is
+  0.29 (MISS 57, fixtures/errdist/miss57). A pair's P(differ) compares C with R and needs no
+  exact value: Tier 3 and the elementwise law count those outputs (the law only since
+  2026-11-11), and only the moments leave them out.
 - **NaN / Inf outputs are out of domain**, counted and reported: the `out_of_domain` cause
   `non-finite output (NaN / Inf)` (fraction of inputs) and a note with the fraction of
   outputs; a Tier 3 that compared no output says so. A validation run whose outputs have
@@ -1399,9 +1459,20 @@ non-chain programs is now the elementwise law's f32 quadrature only.
 
   Constants snap to named values (log2 e, ln 2, 1/128, eps, √(2/π), 0.044715, powers of
   two) when that keeps the fit.
+
+  The fit holds on the outcome patterns of the slice's data-dependent decisions that its
+  probes took (`Outcomes`; the compile notes list them per slice, e.g. `1 of 2`): its
+  predicates, and the pieces of its instructions' values (`seg::inst_pieces`; flushes,
+  roundings and range-reduction steps are not pieces: they depart from the fitted function or
+  compose it). A range
+  reduction on its other outcome (ptxas's `ex2.approx.f32` halving path below -126, a denormal
+  scaling) is the same real function, but no probe shows it: inputs that reach it have no
+  exact value (MISS 57).
 - **The exact value** (`real.rs`, N-ERRDIST-REAL) is the program in double-double real
   arithmetic, with slices replaced by their real functions. Tier 3 uses it as "exact" for
-  single kernels.
+  single kernels. A slice outside its fit's outcome patterns, and every value read from it
+  (a maximum's comparison, a selection's predicate or passed-on child), is unknown
+  (`eval_table`).
 
 ### 9.2 Local error laws ("compile")
 
@@ -1733,7 +1804,9 @@ What extraction now covers:
   control flow of mslk `quantize_nvfp4`.
 - **Guarded stores** (N-ERRDIST-SEL). FA4 decode stores `sum > 0 ? 1 / sum : 0` with two
   complementary guarded `STS`. Each covered word becomes `Sel(P, v, old)` for every input,
-  whichever branch the captured input took.
+  whichever branch the captured input took. The store's address must not depend on input data
+  for any thread that executes it on some input, its guard false on the captured input
+  included (MISS 56).
   - Tier 3 evaluates the predicate per input, bit-exactly.
   - The exact value takes the branch the predicate gives at its arguments' exact values.
   - The linearized tiers follow one branch at their nominal inputs. Until 2026-11-10 they were
@@ -1749,6 +1822,12 @@ What extraction now covers:
   value at the origin takes the other branch). A named or polynomial form needs at least 8
   (degree + 3 for polynomials) distinct argument values. The reciprocal had been fitted as
   -2.7e32 gelu(-a0) on 8 distinct values, and Tier 3 reported errors of 1e70 ulps.
+- **Guards inside slices** (N-ERRDIST-IDENT). A slice holds its data-dependent guards and
+  selects (N-SEG), and its probes perturb the captured input, so they may all take one
+  outcome. The review's `rv_fmax` (`@P0 FMUL a, a, 3` with P0 from `x[0] + 3 >= 0`) was fitted
+  as 3 a and was the exact reference for x[0] in [-5, -4) too: P(bits differ) 1.0 with no DAG
+  mismatch, the kernel's 0.290 (MISS 57). The fit now holds on the patterns its probes took
+  only; the others are unknown (§1, guards).
 - **FMNMX / CREDUX read before the write.** The numerics hooks of `FMNMX` and `CREDUX` ran
   after the destination was written, so `FMNMX R28, R7, R28` took R28's new value as the
   constant operand: the DAG held max(x, x at capture). The probe check refused the result

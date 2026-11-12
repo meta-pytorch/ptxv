@@ -130,7 +130,10 @@ def argv(spec: JobSpec, work: Path) -> tuple[list[str], dict[str, Path]]:  # noq
         # Refuted assumptions the case may rely on (e.g. "E-POLL-ACQ"; named in the verdict).
         for r in a.get("assume_refuted") or []:
             cmd += ["--assume-refuted", r]
-        # The GB300 hardware-model classification of races / stale reads (default on).
+        # gb300 (default True): False passes `--no-gb300`, which turns off both GB300 checks:
+        # the hardware-model classification of races / stale reads and the GB300-profile
+        # re-run of the two-level verdict (no `two_level`; the row says why in
+        # `two_level_skipped`).
         if a.get("gb300", True) is False:
             cmd.append("--no-gb300")
         # NaN / Inf scan of the outputs (True, or "strict": a finding even with non-finite

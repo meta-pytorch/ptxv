@@ -1,0 +1,3 @@
+{"version": 1, "seed": 4, "name": "s[0] = 1 w.p. 0.8, else N(0, 1); x, v N(0, 1) (seed 4: the first 5 Tier 3 inputs draw s[0] = 1)",
+ "tensors": {"s": {"dist": {"kind": "mixture", "components": [{"weight": 0.8, "dist": {"kind": "const", "value": 1.0}}, {"weight": 0.2, "dist": {"kind": "normal"}}]}}},
+ "default": {"dist": {"kind": "normal"}}}

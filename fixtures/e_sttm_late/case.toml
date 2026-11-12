@@ -1,0 +1,72 @@
+name = "e_sttm_late"
+description = """
+A tcgen05.st in flight at a 2-CTA hand-back (S-TCGEN05; MISS 105 on PTX, MISS 107 on SASS):
+fixtures/e_tc_handback's kernel with a store of D before the sync, waited (STW) or not (STNW).
+See kernel.ptx."""
+ptx = "kernel.ptx"
+entry = "e_sttm_late"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+spec = "gemm_tn"
+
+[[buffers]]
+name = "A"
+dtype = "bf16"
+shape = [256, 64]
+init = "normal"
+seed = 41
+
+[[buffers]]
+name = "B"
+dtype = "bf16"
+shape = [16, 64]
+init = "normal"
+seed = 42
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [256, 16]
+init = "nan"
+
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [64, 128]
+swizzle = "128B"
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [64, 8]
+swizzle = "128B"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[variants]]
+id = "good"
+summary = "no store: as e_tc_handback good"
+expect = ["contract"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "STW"
+summary = "tcgen05.st then tcgen05.wait::st before the sync: ordered"
+marker = "@PRE"
+find = "// (pre-sync hand-back slot)"
+replace = "tcgen05.st.sync.aligned.32x32b.x16.b32 [%r31], {%r40, %r41, %r42, %r43, %r44, %r45, %r46, %r47, %r48, %r49, %r50, %r51, %r52, %r53, %r54, %r55}; tcgen05.wait::st.sync.aligned;"
+expect = ["contract"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "STNW"
+summary = "tcgen05.st without wait::st before the sync: round 2's MMA races with it on both fronts"
+marker = "@PRE"
+find = "// (pre-sync hand-back slot)"
+replace = "tcgen05.st.sync.aligned.32x32b.x16.b32 [%r31], {%r40, %r41, %r42, %r43, %r44, %r45, %r46, %r47, %r48, %r49, %r50, %r51, %r52, %r53, %r54, %r55};"
+expect = ["contract", "race"]
+expect_sass = ["race"]

@@ -1,0 +1,56 @@
+name = "rE_vote"
+description = """
+MISS 65, and the vote part of MISS 83: entry rE_vote of ../kernel.ptx (the independent review's
+probe m56vote; see its header): a store guard decided by lane 0 through a warp ballot. With
+../x10_s2.json errdist refuses it (data-dependent: the guard); the kernel's P(bits differ) is
+0.2550 [0.2528, 0.2573] (exact rationals over 6000 inputs), outside the 0.2415 [0.2410, 0.2419]
+errdist reported from the captured path."""
+ptx = "../kernel.ptx"
+entry = "rE_vote"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

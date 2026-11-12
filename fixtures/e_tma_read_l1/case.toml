@@ -1,0 +1,108 @@
+name = "e_tma_read_l1"
+description = """
+E-ASYNC-STEP (SASS front): ptxas compiles cp.async.bulk.wait_group.read to the same flush and
+DEPBAR as the full wait, without the CCTL.IVALL the full form adds. GB300 (2026-11-10): the
+DEPBAR waits for the TMA store's global writes in L2 (READ2: a load kept after it reads the
+stored value in 1000/1000 runs), but a line of the destination the issuing SM filled before
+the store stays in its L1 (READ3, READ4: the load returns the old NaN in 1000/1000 runs; GOOD3,
+GOOD4 with the full wait: correct). The PTX front reports READ2-READ4 as races (the .read rule).
+The SASS front models the DEPBAR as a full wait and calls READ4 clean (certified): a miss, not
+yet fixed, pinned by expect_sass. READ3 and GOOD3 also hold an S-GPROXY contract finding (the
+earlier load is not proxy-fenced before the store); READ3's GB300 level reports the stale read
+(E-HW-L1)."""
+ptx = "kernel.ptx"
+entry = "e_tma_read_l1"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D", "out", "pre"]
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [32, 32]
+init = "nan"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "pre"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "tensormap"
+buffer = "D"
+box = [32, 32]
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[params]]
+kind = "ptr"
+buffer = "pre"
+
+[[variants]]
+id = "good"
+summary = "wait_group 0, then an ATOMS on the source and a load whose address depends on it"
+expect = ["clean"]
+
+[[variants]]
+id = "READ2"
+summary = "wait_group.read 0: the LDG stays after the DEPBAR (address from the ATOMS)"
+marker = "@WAIT"
+find = "cp.async.bulk.wait_group 0;"
+replace = "cp.async.bulk.wait_group.read 0;"
+expect = ["race"]
+expect_sass = ["clean"]
+hw_note = "GB300 1000/1000 runs read the stored value (out = 5), 2026-11-10"
+
+[[variants]]
+id = "READ3"
+summary = "READ2 after an LDG of the same element before the store (L1 line filled)"
+edits = [
+    { marker = "@WAIT", find = "cp.async.bulk.wait_group 0;", replace = "cp.async.bulk.wait_group.read 0;" },
+    { marker = "@PREFILL", find = "// @PREFILL", replace = "ld.global.f32 %g0, [%rd2+20]; ld.param.u64 %rd5, [pre_p]; cvta.to.global.u64 %rd5, %rd5; st.global.f32 [%rd5], %g0;" },
+]
+expect = ["contract", "race"]
+expect_sass = ["contract"]
+hw_note = "GB300 1000/1000 runs read the stale NaN from L1 (out = NaN), 2026-11-10"
+
+[[variants]]
+id = "GOOD3"
+summary = "good after the prefill LDG (the full wait adds CCTL.IVALL)"
+marker = "@PREFILL"
+find = "// @PREFILL"
+replace = "ld.global.f32 %g0, [%rd2+20]; ld.param.u64 %rd5, [pre_p]; cvta.to.global.u64 %rd5, %rd5; st.global.f32 [%rd5], %g0;"
+expect = ["contract"]
+hw_note = "GB300 1000/1000 runs correct (out = 5), 2026-11-10"
+
+[[variants]]
+id = "READ4"
+summary = "READ3 with fence.proxy.async.global between the prefill LDG and the store"
+edits = [
+    { marker = "@WAIT", find = "cp.async.bulk.wait_group 0;", replace = "cp.async.bulk.wait_group.read 0;" },
+    { marker = "@PREFILL", find = "// @PREFILL", replace = "ld.global.f32 %g0, [%rd2+20]; ld.param.u64 %rd5, [pre_p]; cvta.to.global.u64 %rd5, %rd5; st.global.f32 [%rd5], %g0; fence.proxy.async.global;" },
+]
+expect = ["race"]
+# MISS (not yet fixed): the SASS front's DEPBAR is a full wait; GB300 reads stale L1 bytes.
+expect_sass = ["clean"]
+hw_note = "GB300 1000/1000 runs read the stale NaN from L1 (out = NaN), 2026-11-10"
+
+[[variants]]
+id = "GOOD4"
+summary = "GOOD3 with the proxy fence"
+marker = "@PREFILL"
+find = "// @PREFILL"
+replace = "ld.global.f32 %g0, [%rd2+20]; ld.param.u64 %rd5, [pre_p]; cvta.to.global.u64 %rd5, %rd5; st.global.f32 [%rd5], %g0; fence.proxy.async.global;"
+expect = ["clean"]
+hw_note = "GB300 1000/1000 runs correct (out = 5), 2026-11-10"

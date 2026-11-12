@@ -1315,7 +1315,11 @@ fn reg_diff(a: &Machine, b: &Machine, members: &[usize]) -> Result<Vec<RegLoc>, 
     let mut out = Vec::new();
     for &t in members {
         let (x, y) = (&a.threads[t], &b.threads[t]);
-        if x.pc != y.pc || x.pending_ld != y.pending_ld || x.tma_count != y.tma_count {
+        if x.pc != y.pc
+            || x.pending_ld != y.pending_ld
+            || x.tma_count != y.tma_count
+            || x.cp_epoch != y.cp_epoch
+        {
             return Err("the two sides differ in more than registers".into());
         }
         for i in 0..x.regs.len() {
@@ -4020,7 +4024,18 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
     let mut extra = Vec::new();
     let mut sched = crate::explore::DetSched::default();
     let mut faults = crate::explore::FaultLoop::default();
+    // The whole check's time budget (membudget.rs): a run it stops decides nothing (a
+    // reason, below).
+    let mut cut = false;
     while let Some(a) = sched.pick(&m) {
+        if crate::membudget::time_budget_spent() {
+            extra.push(format!(
+                "the certificate's run stopped at {} after {steps} steps",
+                crate::membudget::TIME_BUDGET
+            ));
+            cut = true;
+            break;
+        }
         if matches!(a, Action::Clc(..)) {
             extra.push(
                 "C-ORDER: a cluster launch control response is pending (a scheduler choice)".into(),
@@ -4060,7 +4075,8 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
     let ok = m.terminal();
     // The run went where `explore::run_once` goes: to its end (or the same fault loop),
     // not stopped at a cluster launch control choice or the eager-launch failure.
-    let whole = !EAGER_FAILED.with(|f| f.get())
+    let whole = !cut
+        && !EAGER_FAILED.with(|f| f.get())
         && extra
             .iter()
             .all(|w| !w.starts_with("C-ORDER: a cluster launch control"));
@@ -4187,7 +4203,9 @@ fn probe_run(m0: &Machine, reads: &BTreeSet<(u32, u32)>, fs: &[Finding], ok: boo
     PERM_OUT.with(|r| *r.borrow_mut() = perm_out);
     RING_PRUNED.with(|p| *p.borrow_mut() = pruned);
     EAGER_FAILED.with(|e| e.set(eager));
-    ok1 == ok && crate::race_dead::no_new_use(fs, &fs1)
+    // A rerun the whole check's time budget stopped (run_logged) shows nothing about the uses
+    // after it: no dead read (the certificate is refused too, `certify_inner`).
+    !crate::membudget::time_budget_spent() && ok1 == ok && crate::race_dead::no_new_use(fs, &fs1)
 }
 
 /// A global byte range (allocation, first byte, end) and an access to it.
@@ -4409,9 +4427,28 @@ fn crosscheck(
     let outputs_ok =
         |m: &Machine| permuted || v.outputs.is_empty() || v.outputs.contains(&m.outputs());
     let mut notes = vec![];
+    // The whole check's time budget (membudget.rs): a cross-check it stops is unfinished,
+    // and the certificate does not hold (the caller explores, under the same budget).
+    let spent = |i: usize| {
+        crate::membudget::time_budget_spent().then(|| {
+            (
+                format!(
+                    "cross-check: stopped at {} at random schedule {i} of {walks}",
+                    crate::membudget::TIME_BUDGET
+                ),
+                None,
+            )
+        })
+    };
     for i in 0..walks {
+        if let Some(r) = spent(i) {
+            return (Some(r), notes);
+        }
         let seed = 0x9e37_79b9_7f4a_7c15u64 ^ (i as u64).wrapping_mul(0xd1b5_4a32_d192_ed03);
         let (m, fs, terminal) = crate::explore::random_run(m0.clone(), seed, cap);
+        if let Some(r) = spent(i) {
+            return (Some(r), notes);
+        }
         if let Some(f) = extra_of(&fs) {
             return (Some((extra_why(i, &f, ""), Some(f))), notes);
         }
@@ -4430,10 +4467,13 @@ fn crosscheck(
             // Threads can still step: the deterministic scheduler runs the walk on.
             let mut left = more;
             let (m2, fs2, ok, _) = crate::explore::run_once_until(m, &mut |_| {
-                let stop = left == 0;
+                let stop = left == 0 || crate::membudget::time_budget_spent();
                 left = left.saturating_sub(1);
                 stop
             });
+            if let Some(r) = spent(i) {
+                return (Some(r), notes);
+            }
             if let Some(f) = extra_of(&fs2) {
                 return (
                     Some((extra_why(i, &f, ", continued deterministically,"), Some(f))),
@@ -4482,7 +4522,25 @@ fn crosscheck(
     (None, notes)
 }
 
-fn certify_inner(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Outcome {
+fn certify_inner(m0: Machine, mut keep: Option<&mut Option<(Machine, Carry)>>) -> Outcome {
+    let mut o = certify_lazy(m0, keep.as_deref_mut());
+    // The whole check's time budget (membudget.rs) was spent before the certificate finished:
+    // one of its runs may have been stopped, so it does not hold (never a pass), and keeps
+    // no end state.
+    if o.verdict.is_some() && crate::membudget::time_budget_spent() {
+        o.verdict = None;
+        o.reasons.push(format!(
+            "the certificate was stopped at {}",
+            crate::membudget::TIME_BUDGET
+        ));
+        if let Some(k) = keep {
+            *k = None;
+        }
+    }
+    o
+}
+
+fn certify_lazy(m0: Machine, keep: Option<&mut Option<(Machine, Carry)>>) -> Outcome {
     // ASSUME(E-CLC): every CTA launched up front when no try_cancel executes. Instead of a
     // separate trial run (`explore::clc_eager`), the certificate's own runs decide it: a run
     // that executes a try_cancel stops, and the certificate starts over on `m0` (lazy).

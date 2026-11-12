@@ -900,8 +900,10 @@ impl Machine {
         }
         let me = self.actor_thread(actor);
         let fenced = strong != 0 && actor < self.nthreads() && self.threads[me].alias_fenced;
-        // (byte, earlier access, the earlier access is a write)
-        let mut bad: Option<(u64, Epoch, bool)> = None;
+        // (byte, earlier access, the earlier access is a write): every unordered earlier access,
+        // one per (pc, kind), not only the first (MISS 122: a reclassifying rerun compares
+        // signatures, so a racer must not hide behind another).
+        let mut bad: Vec<(u64, Epoch, bool)> = Vec::new();
         let mut earlier: Vec<(Epoch, bool)> = Vec::new();
         for i in 0..n as u64 {
             earlier.clear();
@@ -943,20 +945,16 @@ impl Machine {
                             e.clock <= vc_get(fv, e.actor) && vc_get(fv, f as u32) <= seen
                         })
                     });
-                if !covered {
-                    bad = Some((off + i, e, ew));
-                    break;
+                if !covered && !bad.iter().any(|x| x.1.pc == e.pc && x.2 == ew) {
+                    bad.push((off + i, e, ew));
                 }
             }
-            if bad.is_some() {
-                break;
-            }
         }
-        if let Some((b, e, ew)) = bad {
+        for (b, e, ew) in bad {
             let (sw, sa) = (self.actor_space(e.actor), self.actor_space(actor));
             let xspace = matches!((sw, sa), (Some(x), Some(y)) if x != y);
             if xspace && self.launch.alias_xspace == XSpace::One {
-                return;
+                continue;
             }
             let what = format!(
                 "gmem byte {b:#x} of {}: {} by {} at {} through {} is not ordered before the {} by {} at {} through {} (no fence.proxy.alias or kernel boundary on the happens-before path)",
@@ -1009,11 +1007,17 @@ impl Machine {
         };
         // A write after both a read and a write of the bytes (an earlier reduction or atomic)
         // names the write: the write-after-write order is what an unfenced pair loses.
+        // Every conflicting pending access, one per pc (MISS 122: a reclassifying rerun compares
+        // signatures, so a racer must not hide behind another).
         let pending = &self.threads[t].alias_pending;
-        let hit = (pending.iter().filter(conflicts).find(|e| e.write))
-            .or_else(|| pending.iter().find(conflicts))
-            .copied();
-        if let Some(e) = hit {
+        let mut hits: Vec<AliasPending> = Vec::new();
+        for e in pending.iter().filter(conflicts) {
+            match hits.iter_mut().find(|h| h.pc == e.pc) {
+                Some(h) => h.write |= e.write,
+                None => hits.push(*e),
+            }
+        }
+        for e in hits {
             let sig = format!("race:alias:{}:{pc}", e.pc);
             let msg = format!(
                 "alias-proxy race on gmem byte {:#x} of {}: {} by {} at {} through {} and its earlier {} at {} through {} with no fence.proxy.alias between them",
@@ -1368,14 +1372,8 @@ impl Machine {
         // reported race unless both are strong (morally strong or not: kept).
         let nth = self.threads.len() as u32;
         let threads = &self.threads;
-        let cta_of = |a: u32| {
-            threads[(if a < 3 * nth {
-                a % nth
-            } else {
-                (a - 3 * nth) / 4096
-            }) as usize]
-                .cta
-        };
+        let shift = self.async_shift;
+        let cta_of = |a: u32| threads[actor_thread_of(a, nth, shift)].cta;
         let my_cta = cta_of(actor);
         // S-SAME-VALUE, own write: the writers that qualify (plain stores of threads of this
         // GPU; into shared memory, of the owning CTA only).
@@ -2236,18 +2234,21 @@ impl Machine {
     }
 
     /// `cp.async.bulk.wait_group[.read] n` by thread `t` (SASS: on scoreboards `sbs`): acquires
-    /// its completed groups the wait covers.
-    fn bulk_wait(&mut self, t: usize, n: u32, sbs: Option<u8>) {
+    /// its completed groups the wait covers. With `.read` only their shared-memory source reads
+    /// (PTX ISA: the source may be reused; the global writes stay in flight until a full wait
+    /// or the end of the kernel), so a later access of the destination races with them.
+    /// ASSUME(E-ASYNC-STEP)
+    fn bulk_wait(&mut self, t: usize, n: u32, sbs: Option<u8>, read: bool) {
         let gs = self.bulk_covered(t, n, sbs);
         for &g in &gs {
             self.rec_acq(sync_key(3, t as u64, g as u64, 0));
         }
         let th = self.threads[t].make_mut();
         let mut j = VC::new();
-        th.bulk_done.retain(|(g, vc)| {
+        th.bulk_done.retain(|(g, rvc, wvc)| {
             if gs.binary_search(g).is_ok() {
-                vc_join(&mut j, vc);
-                false
+                vc_join(&mut j, if read { rvc } else { wvc });
+                read
             } else {
                 true
             }
@@ -2563,9 +2564,12 @@ impl Machine {
         for t in self.grid_threads(gi) {
             vc_join(&mut v, &self.threads[t].vc);
         }
+        // A completed record holds the clock its exit check needs (a bulk store's: its
+        // shared-memory reads); its global writes run at the actor's next epoch
+        // (`complete_tma_store`), which the grid's completion orders too.
         for &(cta, actor, clock, _) in &self.completed {
-            if in_grid(cta) && vc_get(&v, actor) < clock {
-                vc_join(&mut v, &vc_single(actor, clock));
+            if in_grid(cta) && vc_get(&v, actor) < clock + 1 {
+                vc_join(&mut v, &vc_single(actor, clock + 1));
             }
         }
         v
@@ -2623,8 +2627,7 @@ impl Machine {
 
     /// The thread behind an actor (threads, their tcgen05 actors, their async operations).
     pub fn actor_thread(&self, a: u32) -> usize {
-        let n = self.nthreads();
-        (if a < 3 * n { a % n } else { (a - 3 * n) / 4096 }) as usize
+        actor_thread_of(a, self.nthreads(), self.async_shift)
     }
 
     /// Does scope `s` (as seen by actor `x`) include actor `y`?
@@ -2775,12 +2778,12 @@ impl Machine {
             .map(|p| p.3)
             .min()
             .map_or(own, |c| c.saturating_sub(1));
-        let n3 = 3 * self.nthreads();
+        let base = self.async_base();
         let mut e: std::collections::BTreeMap<u32, u32> = Default::default();
-        for (a, c) in vc_tail(&th.vc, n3) {
+        for (a, c) in vc_tail(&th.vc, base) {
             let k = if a & RR_BIT != 0 {
                 a
-            } else if a >= n3 {
+            } else if a >= base {
                 a | RR_BIT
             } else {
                 continue;
@@ -3294,7 +3297,15 @@ impl Machine {
 
     /// `sh_vc` for an access to shared memory of CTA `c`, or (None) to tensor memory.
     fn local_vc(&self, actor: u32, vc: &VC, c: Option<u16>) -> Option<VC> {
-        let sh = if actor as usize >= self.threads.len() {
+        let n = self.threads.len();
+        let a = actor as usize;
+        let sh = if self.k.front == Front::Sass
+            && ((n..2 * n).contains(&a) || (4 * n..5 * n).contains(&a))
+        {
+            // A SASS LDTM or STTM, issued now by its thread (`ldtm_issue`, MISS 107's STTM
+            // actor): the thread's.
+            &self.threads[a % n].vc_sh
+        } else if actor as usize >= n {
             // An async unit (or tcgen05 actor) completing now: its issuer's at issue.
             &self.cur_sh
         } else {
@@ -3515,9 +3526,11 @@ impl Machine {
                 let w =
                     sh.w.filter(|w| w.strong != TMEM_MARK && w.actor != actor && !w.hb(vc))
                         .map(|w| (w, "write-write"));
+                // Every unordered reader, not only the first: a reclassifying rerun
+                // (twolevel.rs) compares signatures, so a racer must not hide behind another.
                 let r =
                     sh.r.iter()
-                        .find(|r| r.actor != actor && !r.hb(vc))
+                        .filter(|r| r.actor != actor && !r.hb(vc))
                         .map(|r| (*r, "read-write"));
                 for (o, kind) in w.into_iter().chain(r) {
                     if !races.iter().any(|x| x.0.pc == o.pc && x.1 == kind) {
@@ -3586,13 +3599,78 @@ impl Machine {
                 None => ns.taint.read((3, cta as u64), i as u64, 1),
             }
         }
-        let mut race: Option<(Epoch, &'static str)> = None;
+        // E-TMEM-QUEUE's clock, with the same restricted happens-before.
+        let queue_vc = self
+            .tmem_queue_vc
+            .as_ref()
+            .map(|q| self.local_vc(actor, q, None).unwrap_or_else(|| q.clone()));
+        // ASSUME(E-TMEM-QUEUE): a SASS STTM over the same thread's un-fenced earlier STTM (one
+        // actor: never a race) is ordered by the TMEM queue only.
+        let n = self.threads.len();
+        let unfenced_own = |w: &Epoch, me: &Self| {
+            me.tmem_queue_vc.is_some()
+                && w.actor == actor
+                && (4 * n..5 * n).contains(&(actor as usize))
+                && vc_get(&me.threads[actor as usize % n].vc, actor) < w.clock
+        };
+        let own_ww = write.is_some()
+            && self.tmem[cta as usize]
+                .sh
+                .get(i)
+                .w
+                .is_some_and(|w| unfenced_own(&w, self));
+        // MISS 116 (PTX): a thread's tcgen05.ld and tcgen05.st are one actor (`tc_actor_id`),
+        // whose clock orders them, but PTX ISA 9.7.18.6.1 leaves them "not inherently ordered
+        // with respect to other tcgen05 operations in the same thread (unless pipelined)", and
+        // 9.7.18.6.2.1.2 pipelines only ld -> wait::ld and st -> wait::st. A store over the
+        // thread's own load or store of the word not yet waited for (`tc_ld_unwaited`,
+        // `tc_st_unwaited`) is ordered only by the TMEM queue: a `tmem-queue:` contract finding,
+        // as on SASS (E-TMEM-QUEUE: GB300 measured no reordering, without a discriminating
+        // control, probes/tmem_queue; not discharged at any level). Before, clean.
+        let own_queue: Option<(Epoch, bool)> = match write {
+            Some(_) if self.k.front == Front::Ptx && (n..2 * n).contains(&(actor as usize)) => {
+                let th = &self.threads[actor as usize - n];
+                let (ld0, st0) = (th.tc_ld_unwaited, th.tc_st_unwaited);
+                let sh = self.tmem[cta as usize].sh.get(i);
+                sh.w.filter(|w| w.actor == actor && st0 != 0 && w.clock >= st0)
+                    .map(|w| (w, true))
+                    .or_else(|| {
+                        sh.r.iter()
+                            .find(|r| r.actor == actor && ld0 != 0 && r.clock >= ld0)
+                            .map(|r| (*r, false))
+                    })
+            }
+            _ => None,
+        };
+        // MISS 121 (PTX): likewise a tcgen05.ld of a word the thread's own tcgen05.st wrote with
+        // no tcgen05.wait::st since is not ordered after it (one actor, never a race before).
+        // As on SASS (an LDTM after the thread's un-fenced STTM, MISS 107) it is a race: GB300
+        // read the new value (probes/tmem_queue mode 2), but no control there shows the check
+        // could see an in-flight store of the same thread, so the order is not assumed.
+        let own_st_ld: Option<Epoch> = match write {
+            None if self.k.front == Front::Ptx && (n..2 * n).contains(&(actor as usize)) => {
+                let st0 = self.threads[actor as usize - n].tc_st_unwaited;
+                self.tmem[cta as usize]
+                    .sh
+                    .get(i)
+                    .w
+                    .filter(|w| w.actor == actor && st0 != 0 && w.clock >= st0)
+            }
+            _ => None,
+        };
+        // Every access the current one conflicts with and does not happen-after: the first
+        // alone could be the thread's own pending LDTM (ordered by the TMEM queue only) and hide
+        // a real racer behind it (another thread's in-flight LDTM, an MMA reading the word).
+        let mut offenders: Vec<(Epoch, &'static str)> = Vec::new();
         {
             let tm = &mut self.tmem[cta as usize];
             let sh = tm.sh.get(i);
+            if let Some(w) = own_st_ld {
+                offenders.push((w, "write-read"));
+            }
             if let Some(w) = sh.w {
                 if w.actor != actor && !w.hb(vc) {
-                    race = Some((
+                    offenders.push((
                         w,
                         if write.is_some() {
                             "write-write"
@@ -3603,12 +3681,11 @@ impl Machine {
                 }
             }
             if let Some(wv) = write {
-                if race.is_none() {
-                    race =
-                        sh.r.iter()
-                            .find(|r| r.actor != actor && !r.hb(vc))
-                            .map(|r| (*r, "read-write"));
-                }
+                offenders.extend(
+                    sh.r.iter()
+                        .filter(|r| r.actor != actor && !r.hb(vc))
+                        .map(|r| (*r, "read-write")),
+                );
                 let s = tm.sh.get_mut(i);
                 s.w = Some(me);
                 s.r.clear();
@@ -3620,7 +3697,24 @@ impl Machine {
                 tm.sh.get_mut(i).r.insert(me);
             }
         }
-        if let Some((other, kind)) = race {
+        // E-TMEM-QUEUE: an offender ordered only by the TMEM queue is the STTM's own thread's
+        // pending LDTM (its tc ld/st actor, inside the queue clock). The finding is a contract
+        // only when every offender is one; any other is a race.
+        let own_tc = (4 * n..5 * n)
+            .contains(&(actor as usize))
+            .then(|| self.tc_actor_id(actor as usize - 4 * n));
+        let queued =
+            |o: &Epoch| Some(o.actor) == own_tc && queue_vc.as_ref().is_some_and(|q| o.hb(q));
+        // Every racer, one finding per (other pc, kind) as in `tmem_block` (MISS 122: reporting
+        // only the first let a reclassifying rerun, twolevel.rs, turn it into a contract while
+        // a second racer, never reported, stayed unordered).
+        let mut racers: Vec<(Epoch, &'static str)> = Vec::new();
+        for &(o, kind) in &offenders {
+            if !queued(&o) && !racers.iter().any(|x| x.0.pc == o.pc && x.1 == kind) {
+                racers.push((o, kind));
+            }
+        }
+        for &(other, kind) in &racers {
             let sig = format!("race:tmem:{}:{}", other.pc, kind);
             let msg = format!(
                 "{kind} race on TMEM lane {lane} column {col}: {} at {} and {} at {} are not ordered by happens-before",
@@ -3629,7 +3723,49 @@ impl Machine {
                 self.actor_name(actor),
                 self.k.describe(pc as usize)
             );
+            let msg = match own_st_ld {
+                Some(w) if w == other => format!(
+                    "{msg}: the load follows the same thread's tcgen05.st with no tcgen05.wait::st between (PTX ISA 9.7.18.6.1; MISS 121)"
+                ),
+                _ => msg,
+            };
             self.report("race", sig, msg);
+        }
+        if !racers.is_empty() {
+            // Reported above: a race hides no contract finding.
+        } else if let Some(&(other, kind)) = offenders.first() {
+            let msg = format!(
+                "{kind} order on TMEM lane {lane} column {col}: {} at {} and {} at {} are ordered only through the thread's TMEM queue: its STTM follows its own LDTM whose scoreboard it has not waited for (E-TMEM-QUEUE: GB300 measured no reordering, without a discriminating control; probes/tmem_queue)",
+                self.actor_name(other.actor),
+                self.k.describe(other.pc as usize),
+                self.actor_name(actor),
+                self.k.describe(pc as usize)
+            );
+            self.report("contract", format!("tmem-queue:{}:{pc}", other.pc), msg);
+        } else if own_ww {
+            let msg = format!(
+                "write-write order on TMEM lane {lane} column {col}: {} at {} writes over the same thread's earlier STTM, not yet fenced (FENCE.VIEW.ASYNC.T, tcgen05.wait::st): ordered only by the thread's TMEM queue (E-TMEM-QUEUE: GB300 measured no reordering, without a discriminating control; probes/tmem_queue)",
+                self.actor_name(actor),
+                self.k.describe(pc as usize)
+            );
+            self.report("contract", format!("tmem-queue:ww:{pc}"), msg);
+        } else if let Some((o, ww)) = own_queue {
+            let (what, wait) = match ww {
+                true => ("tcgen05.st", "tcgen05.wait::st"),
+                false => ("tcgen05.ld", "tcgen05.wait::ld"),
+            };
+            let msg = format!(
+                "{} order on TMEM lane {lane} column {col}: {} at {} stores over the same thread's {what} at {} with no {wait} between: ordered only by the thread's TMEM queue (PTX ISA 9.7.18.6.1; MISS 116; E-TMEM-QUEUE: GB300 measured no reordering, without a discriminating control; probes/tmem_queue)",
+                if ww { "write-write" } else { "read-write" },
+                self.actor_name(actor),
+                self.k.describe(pc as usize),
+                self.k.describe(o.pc as usize)
+            );
+            let sig = match ww {
+                true => format!("tmem-queue:ww:{pc}"),
+                false => format!("tmem-queue:{}:{pc}", o.pc),
+            };
+            self.report("contract", sig, msg);
         }
         let tm = &self.tmem[cta as usize];
         (*tm.words.get(i), *tm.init.get(i))
@@ -3732,7 +3868,9 @@ impl Machine {
                 }
             }
             if write.is_some() {
-                if let Some(r) = sh.r.iter().find(|r| r.actor != actor && !r.hb(vc)) {
+                // Every unordered reader (as in `tmem_mark`): a reclassifying rerun compares
+                // signatures, so a racer must not hide behind another.
+                for r in sh.r.iter().filter(|r| r.actor != actor && !r.hb(vc)) {
                     race(*r, "read-write", lane, col);
                 }
             }
@@ -3820,6 +3958,59 @@ impl Machine {
         self.pipe_actor_id(t)
     }
 
+    /// ASSUME(S-TCGEN05): a SASS `LDTM` reads tensor memory asynchronously: its read is an
+    /// event of the thread's tcgen05.ld/st actor, after everything the thread has seen, and
+    /// enters the thread's own clock only when the LDTM's write scoreboard is waited
+    /// (`ldtm_complete`). Until then the thread's releases do not carry it. The returned clock
+    /// is the read's.
+    fn ldtm_issue(&mut self, t: usize, pc: u32) -> (u32, VC) {
+        let a = self.tc_actor_id(t);
+        let sb = self
+            .k
+            .ldtm_sb
+            .binary_search_by_key(&(pc as usize), |w| w.0)
+            .map_or(7, |i| self.k.ldtm_sb[i].1);
+        let th = self.threads[t].make_mut();
+        vc_tick(&mut th.tc_vc, a);
+        let c = vc_get(&th.tc_vc, a);
+        let mut vc = th.vc.clone();
+        vc_join(&mut vc, &vc_single(a, c));
+        th.ldtm_pend.push((sb, c));
+        (a, vc)
+    }
+
+    /// A SASS LDTM the warp issued that does not read for thread `t` (its lane guarded off, or
+    /// in the other half of a `.16dp32bit_t*` pair): an entry of the thread's in-order TMEM
+    /// queue that reads nothing, so a wait on its scoreboard completes the thread's earlier
+    /// LDTMs (`ldtm_complete`).
+    fn ldtm_mark(&mut self, t: usize, pc: u32) {
+        self.ldtm_issue(t, pc);
+    }
+
+    /// A SASS scoreboard wait (`Kernel::ldtm_waits`) by thread `t`: the LDTMs it completes
+    /// (the newest one on a waited scoreboard, or with at most n newer on a `DEPBAR.LE`'s, and
+    /// every LDTM issued before it: TMEM loads complete in issue order) enter its clock.
+    fn ldtm_complete(&mut self, t: usize, mask: u8, depbar: &[(u8, u8)]) {
+        let p = &self.threads[t].ldtm_pend;
+        if p.is_empty() {
+            return;
+        }
+        let mut done: Option<usize> = p.iter().rposition(|&(sb, _)| sb < 7 && mask >> sb & 1 == 1);
+        for &(sb, n) in depbar {
+            let on: Vec<usize> = (0..p.len()).filter(|&i| p[i].0 == sb).collect();
+            if on.len() > n as usize {
+                done = done.max(Some(on[on.len() - 1 - n as usize]));
+            }
+        }
+        if let Some(i) = done {
+            let a = self.tc_actor_id(t);
+            let th = self.threads[t].make_mut();
+            let c = th.ldtm_pend[i].1;
+            th.ldtm_pend.drain(..=i);
+            vc_join(&mut th.vc, &vc_single(a, c));
+        }
+    }
+
     /// S-INIT at a terminal state: global bytes still holding undefined data a store wrote
     /// (`Machine::gundef`, `Sh::undef`) leave the kernel. ASSUME(S-TMAP-TAIL): bytes 0x40..0x7f
     /// of a tensor map a TMA of the launch used are ignored by GB300 (probes/tmap_tail): a
@@ -3897,17 +4088,70 @@ impl Machine {
         let c = if st { th.tc_st } else { th.tc_ld };
         if c > 0 {
             vc_join(&mut th.pipe_vc, &vc_single(a, c));
+            vc_join(&mut th.pipe2_vc, &vc_single(a, c));
         }
     }
 
-    fn pipe_issue(&mut self, t: usize) -> (u32, VC) {
-        let a = self.pipe_actor(t);
+    /// What `tcgen05.fence::before_thread_sync` releases of thread `t`'s tcgen05 view: all of
+    /// it but its tcgen05.ld reads since its last `tcgen05.wait::ld` and its tcgen05.st writes
+    /// since its last `tcgen05.wait::st` (and the actor's later events). ASSUME(S-TCGEN05):
+    /// PTX ISA 9.7.18.6.4.4, "the producer threads that issue the asynchronous tcgen05
+    /// instructions must explicitly wait for the instructions' completion before synchronizing
+    /// with the consumer threads" (tcgen05.ld; tcgen05.wait::ld; fence::before_thread_sync;
+    /// arrive); 9.7.18.8.5: wait::ld / wait::st block "until all prior tcgen05.ld [st]
+    /// operations issued by the executing thread have completed". An un-waited load or store
+    /// is therefore not ordered before another thread's later access by the fence and a thread
+    /// synchronization (MISS 105: before, the fence released it).
+    fn tc_released(&self, t: usize) -> VC {
+        let th = &self.threads[t];
+        let first = th.tc_unwaited();
+        if first == 0 {
+            return th.tc_vc.clone();
+        }
+        let a = self.tc_actor_id(t);
+        let cap = first - 1;
+        crate::machine::vc_from_sorted(
+            crate::machine::vc_entries(&th.tc_vc)
+                .into_iter()
+                .filter_map(|(x, c)| match x == a {
+                    false => Some((x, c)),
+                    true => (cap > 0).then_some((x, c.min(cap))),
+                })
+                .collect(),
+        )
+    }
+
+    /// Issues an operation of `.cta_group` `pair` into thread `t`'s MMA pipe: (actor, clock,
+    /// FIFO key). ASSUME(S-TCGEN05): a commit tracks only the earlier operations of its own
+    /// group (PTX ISA, tcgen05.commit: `cta_group::1` "tracks the completion of all prior
+    /// async-tcgen05 operations with .cta_group::1", likewise ::2). A kernel has one group
+    /// (a violation otherwise, `explore::cta_group_mix`), so the second pipe is used only by
+    /// kernels that mix them: its operations are not ordered with the first pipe's.
+    fn pipe_issue(&mut self, t: usize, pair: bool) -> (u32, VC, u64) {
+        let g = 1 + pair as u8;
+        let second = {
+            let th = &self.threads[t];
+            th.pipe_grp != 0 && th.pipe_grp != g
+        };
+        let a = if second {
+            self.pipe2_actor_id(t)
+        } else {
+            self.pipe_actor(t)
+        };
         let th = self.threads[t].make_mut();
+        if th.pipe_grp == 0 {
+            th.pipe_grp = g;
+        }
+        let pvc = if second {
+            &mut th.pipe2_vc
+        } else {
+            &mut th.pipe_vc
+        };
         let mut vc = th.vc.clone();
-        vc_join(&mut vc, &th.pipe_vc);
+        vc_join(&mut vc, pvc);
         vc_tick(&mut vc, a);
-        th.pipe_vc = vc.clone();
-        (a, vc)
+        *pvc = vc.clone();
+        (a, vc, t as u64 | (second as u64) << 32)
     }
 
     /// Checks to run when the kernel finishes (TMEM leaks).
@@ -4703,6 +4947,15 @@ impl Machine {
                 if crate::machine::vc_unified(&self.threads[t].vc, &self.threads[t].tc_vc) {
                     continue;
                 }
+                if self.threads[t].tc_unwaited() != 0 {
+                    // Not the un-waited tcgen05.ld / st accesses (`tc_released`).
+                    let tc = self.tc_released(t);
+                    let th = self.threads[t].make_mut();
+                    vc_join(&mut th.vc, &tc);
+                    let v = th.vc.clone();
+                    vc_join(&mut th.tc_vc, &v);
+                    continue;
+                }
                 let th = self.threads[t].make_mut();
                 crate::machine::vc_unify(&mut th.vc, &mut th.tc_vc);
             }
@@ -4866,13 +5119,29 @@ impl Machine {
     fn exec_inner_body(&mut self, members: &[usize], pc: u32) -> Result<(), String> {
         let k = self.k.clone();
         let inst = &k.code[pc as usize];
-        // A control-word wait on the bulk read scoreboard holds for every member, guard or not.
+        // A control-word wait on the bulk read scoreboard holds for every member, guard or not
+        // (a full wait, as SASS `DEPBAR` on that scoreboard: ASSUME(E-ASYNC-STEP)).
         if let Ok(i) = k
             .bulk_read_waits
             .binary_search_by_key(&(pc as usize), |w| w.0)
         {
             for &t in members {
-                self.bulk_wait(t, 0, Some(k.bulk_read_waits[i].1));
+                self.bulk_wait(t, 0, Some(k.bulk_read_waits[i].1), false);
+            }
+        }
+        // Likewise a wait on an LDTM's write scoreboard completes its tensor-memory read.
+        if let Ok(i) = k.ldtm_waits.binary_search_by_key(&(pc as usize), |w| w.0) {
+            let (_, mask, ref d) = k.ldtm_waits[i];
+            for &t in members {
+                self.ldtm_complete(t, mask, d);
+            }
+        }
+        // An LDTM issued by the warp is in every member's queue, guarded off or not.
+        if k.front == Front::Sass && matches!(inst.op, Op::TmemLd { .. }) {
+            for &t in members {
+                if !self.prd(t, inst.guard) {
+                    self.ldtm_mark(t, pc);
+                }
             }
         }
         let active: Vec<usize> = members
@@ -6508,52 +6777,216 @@ impl Machine {
     /// cp.async.wait_group n: the thread's cp.async groups older than its newest n land.
     fn cp_async_wait(&mut self, t: usize, n: u32) {
         let upto = self.threads[t].cp_group.saturating_sub(n);
-        self.cp_async_complete(t, |c| c.group < upto);
+        let vcs = self.cp_async_complete(t, |c| c.group < upto);
+        if !vcs.is_empty() {
+            let vs: Vec<&VC> = vcs.iter().map(|(_, vc)| vc).collect();
+            vc_join_many(&mut self.threads[t].make_mut().vc, &vs);
+        }
     }
 
     /// SASS `DEPBAR.LE SBk, n` on the cp.async scoreboard: the scoreboard counts the warp's
     /// LDGDEPBAR executions (divergent paths count separately), so every lane's copies older
-    /// than the warp's newest n commits are complete, whichever lane issued them.
-    /// ASSUME(E-CPASYNC)
+    /// than the warp's newest n commits are complete, whichever lane issued them. Live lanes
+    /// that run elsewhere (divergent paths) are ordered after the copies this wait retires at
+    /// their own later `DEPBAR` covering them (`Warp::cp_landed`): the copies have landed by
+    /// then, a lane's own included (fixtures/e_cpasync_div_wait). ASSUME(E-CPASYNC)
     fn cp_async_wait_warp(&mut self, w: u32, n: u32, active: &[usize]) {
         let upto = self.warps[w as usize].cp_seq.saturating_sub(n);
+        let base = self.warp_threads(w).start;
         let lanes: Vec<usize> = self
             .warp_threads(w)
             .filter(|&u| self.threads[u].st != St::Exited)
             .collect();
-        let mut vcs = Vec::new();
+        let bits = |ts: &[usize]| ts.iter().fold(0u32, |m, &u| m | 1 << (u - base));
+        let (live, act) = (bits(&lanes), bits(active));
+        let mut fresh = Vec::new();
         for u in lanes {
-            vcs.extend(self.cp_async_complete(u, |c| c.wgroup < upto));
+            fresh.extend(self.cp_async_complete(u, |c| c.wgroup < upto));
+        }
+        let mut vcs: Vec<VC> = fresh.iter().map(|(_, vc)| vc.clone()).collect();
+        let owed = live & !act;
+        if !self.warps[w as usize].cp_landed.is_empty() || (owed != 0 && !fresh.is_empty()) {
+            let wp = self.warps[w as usize].make_mut();
+            // Copies an earlier wait retired that this one covers, for the lanes owed them.
+            for (g, vc, rest) in wp.cp_landed.iter_mut() {
+                if *g < upto && *rest & act != 0 {
+                    vcs.push(vc.clone());
+                    *rest &= !act;
+                }
+            }
+            // The live lanes not at this wait are owed its copies.
+            if owed != 0 {
+                for (g, vc) in fresh {
+                    match wp.cp_landed.iter_mut().find(|e| e.0 == g && e.2 == owed) {
+                        Some(e) => vc_join(&mut e.1, &vc),
+                        None => wp.cp_landed.push((g, vc, owed)),
+                    }
+                }
+            }
+            wp.cp_landed.retain(|e| e.2 & live != 0);
         }
         // The waiting lanes are ordered after every copy the wait retired (another lane's
-        // included).
-        for &a in active {
-            let th = self.threads[a].make_mut();
-            for vc in &vcs {
-                vc_join(&mut th.vc, vc);
+        // included): their join, once.
+        if !vcs.is_empty() {
+            let all = vc_join_all(&vcs);
+            for &a in active {
+                vc_join(&mut self.threads[a].make_mut().vc, &all);
             }
         }
     }
 
-    /// Complete the pending copies `done` selects; their issue clocks.
-    fn cp_async_complete(&mut self, t: usize, done: impl Fn(&CpPending) -> bool) -> Vec<VC> {
-        let th = &self.threads[t];
-        let cta = th.cta;
-        let (done, rest): (Vec<_>, Vec<_>) = th.cp_pending.iter().cloned().partition(done);
+    /// Complete the pending copies `done` selects of thread `t` (a wait); per commit group (the
+    /// warp's commit count at issue) the join of its writes' clocks, which a waiter joins. The writes
+    /// run as the thread's wait actor (`Machine::cp_wait_actor`), not the thread, at the issue
+    /// clock with the actor's next epoch: an access ordered after the issue but not after the
+    /// wait (another thread's read after a barrier the issuer reached before its wait_group,
+    /// fixtures/e_cpasync_early) races with them. One actor per thread at increasing epochs,
+    /// not one per wait: a clock knowing epoch e knows every earlier one, since the epochs
+    /// reach other threads only through the issuer's waits (PTX) or the warp's `DEPBAR`s,
+    /// which retire copies in commit order (SASS); a fresh actor per wait grew every clock by
+    /// one entry per wait. ASSUME(E-CPASYNC)
+    fn cp_async_complete(&mut self, t: usize, done: impl Fn(&CpPending) -> bool) -> Vec<(u32, VC)> {
+        let (done, rest): (Vec<_>, Vec<_>) =
+            self.threads[t].cp_pending.iter().cloned().partition(done);
         self.threads[t].make_mut().cp_pending = rest;
-        let vcs = done.iter().map(|c| c.vc.clone()).collect();
-        for c in done {
+        if done.is_empty() {
+            return Vec::new();
+        }
+        let groups: Vec<u32> = done.iter().map(|c| c.wgroup).collect();
+        let actor = self.cp_wait_actor(t);
+        let th = self.threads[t].make_mut();
+        th.cp_epoch += 1;
+        let epoch = th.cp_epoch;
+        let landed = self.cp_land(t, actor, epoch, done);
+        // A thread's clock only grows, so the last copy of each commit group it issued carries
+        // the join of the group's write clocks: a waiter joins one clock per group, not one
+        // per copy.
+        let mut out: Vec<(u32, VC)> = Vec::new();
+        for (g, vc) in groups.into_iter().zip(landed) {
+            match out.iter_mut().find(|e| e.0 == g) {
+                Some(e) => e.1 = vc,
+                None => out.push((g, vc)),
+            }
+        }
+        out
+    }
+
+    /// Land thread `t`'s copies `done`, retired together (by one wait, at its exit or with one
+    /// `cp.async.mbarrier.arrive`), as async actor `actor` at epoch `epoch`: each write at its
+    /// copy's issue clock with the actor's entry raised to the epoch. The copies were in
+    /// flight together, so nothing orders them with each other (PTX ISA 9.7.10.28.3.2,
+    /// 9.7.10.28.3.3): copies whose destinations overlap race (`cp_overlap`), and so do a copy
+    /// and one an earlier wait landed that it was in flight with (`cp_relanded`). Returns the
+    /// writes' clocks. ASSUME(E-CPASYNC)
+    fn cp_land(&mut self, t: usize, actor: u32, epoch: u32, done: Vec<CpPending>) -> Vec<VC> {
+        let cta = self.threads[t].cta;
+        self.cp_overlap(t, &done);
+        let raised = vc_raise_many(done.iter().map(|c| &c.vc), actor, epoch);
+        let mut vcs = Vec::with_capacity(done.len());
+        for (c, vc) in done.into_iter().zip(raised) {
+            self.cp_relanded(cta, actor, epoch, &c);
             let loc = Loc::Shared { cta, off: c.off };
-            self.access(t as u32, &c.vc, c.pc, loc, c.data.len(), Some(&c.data));
+            self.access(actor, &vc, c.pc, loc, c.data.len(), Some(&c.data));
+            vcs.push(vc);
             self.sync_clear(loc);
-            self.num_copy_snapshot(
-                Loc::Shared { cta, off: c.off },
-                &c.data,
-                c.snapshot.as_ref(),
-                c.pc,
-            );
+            self.num_copy_snapshot(loc, &c.data, c.snapshot.as_ref(), c.pc);
         }
         vcs
+    }
+
+    /// A copy `c` landing as wait actor `actor` at epoch `epoch` over bytes that an earlier
+    /// epoch of the same actor wrote after `c` was issued (`c`'s issue clock does not know that
+    /// epoch): the two copies were in flight together, but the race check orders one actor's
+    /// writes with each other. A write-write race (PTX ISA 9.7.10.28.3.3: only a wait or an
+    /// mbarrier completion orders copies), or a note when the byte already holds `c`'s value
+    /// (S-SAME-VALUE). fixtures/e_cpasync_overlap LATER. ASSUME(E-CPASYNC)
+    fn cp_relanded(&mut self, cta: u16, actor: u32, epoch: u32, c: &CpPending) {
+        let seen = vc_get(&c.vc, actor);
+        if epoch <= seen + 1 {
+            return;
+        }
+        let mem = &self.smem[cta as usize];
+        let mut hit: Option<(Epoch, usize, bool)> = None;
+        for (i, &b) in c.data.iter().enumerate() {
+            let a = c.off as usize + i;
+            let s = mem.sh.get(a);
+            if let Some(w) = s
+                .writes()
+                .find(|w| w.actor == actor && w.clock > seen && w.clock < epoch)
+            {
+                let same = s.w.as_ref() == Some(w) && *mem.bytes.get(a) == b;
+                if hit.is_none() || !same {
+                    hit = Some((*w, a, same));
+                }
+                if !same {
+                    break;
+                }
+            }
+        }
+        let Some((w, a, same)) = hit else {
+            return;
+        };
+        let (kind, sig) = if same {
+            ("note", format!("same-value:smem:{}:{}:cp", w.pc, c.pc))
+        } else {
+            ("race", format!("race:smem:{}:write-write", w.pc))
+        };
+        let msg = format!(
+            "write-write {} on smem byte {a:#x}: the cp.async at {} (landed by an earlier wait) and the cp.async at {}, both of {} and in flight together (the second was issued before the wait that retired the first), write it{}",
+            if same { "pair" } else { "race" },
+            self.k.describe(w.pc as usize),
+            self.k.describe(c.pc as usize),
+            self.actor_name(actor),
+            if same {
+                " with the same bytes; every order leaves them (S-SAME-VALUE)"
+            } else {
+                " (PTX ISA: nothing orders them)"
+            }
+        );
+        self.report_pcs(kind, sig, msg, vec![w.pc, c.pc]);
+    }
+
+    /// Copies of thread `t` retired together (`cp_land`) land as one actor, whose writes the
+    /// race check orders with each other; they were in flight together, so two that write a
+    /// common byte are a write-write race (PTX ISA 9.7.10.28.3.2: two copies of a group to one
+    /// location are undefined), or a note when the bytes written are the same (S-SAME-VALUE).
+    /// The pieces of one copy (data, zero fill) are disjoint. GB300: two 16-byte copies of
+    /// one thread to one slot, waited together, leave the first copy's bytes
+    /// (fixtures/e_cpasync_overlap SAME, 1000/1000 runs). ASSUME(E-CPASYNC)
+    fn cp_overlap(&mut self, t: usize, done: &[CpPending]) {
+        for (i, a) in done.iter().enumerate() {
+            for b in &done[i + 1..] {
+                let lo = a.off.max(b.off);
+                let hi = (a.off + a.data.len() as u32).min(b.off + b.data.len() as u32);
+                if lo >= hi {
+                    continue;
+                }
+                let (ra, rb, n) = (
+                    (lo - a.off) as usize,
+                    (lo - b.off) as usize,
+                    (hi - lo) as usize,
+                );
+                let same = a.data[ra..ra + n] == b.data[rb..rb + n];
+                let (kind, sig) = if same {
+                    ("note", format!("same-value:smem:{}:{}:cp", a.pc, b.pc))
+                } else {
+                    ("race", format!("race:smem:{}:write-write", a.pc))
+                };
+                let msg = format!(
+                    "write-write {} on smem byte {lo:#x}: the cp.async at {} and the cp.async at {}, both issued by {} and in flight together (no wait_group or mbarrier completion between them), write it{}",
+                    if same { "pair" } else { "race" },
+                    self.k.describe(a.pc as usize),
+                    self.k.describe(b.pc as usize),
+                    self.actor_name(t as u32),
+                    if same {
+                        " with the same bytes; every order leaves them (S-SAME-VALUE)"
+                    } else {
+                        " (PTX ISA: undefined; nothing orders them)"
+                    }
+                );
+                self.report_pcs(kind, sig, msg, vec![a.pc, b.pc]);
+            }
+        }
     }
 
     /// After a lane of `warp` exited: release the lanes parked at a plain `WARPSYNC` or a
@@ -8289,9 +8722,7 @@ impl Machine {
                 let Loc::Shared { off: moff, .. } = self.resolve(t, Space::Shared, m, 8)? else {
                     unreachable!()
                 };
-                let serial = self.threads[t].tma_count;
-                self.threads[t].make_mut().tma_count += 1;
-                let actor = self.tma_actor_id(t, serial);
+                let actor = self.async_actor(t)?;
                 let mut vc = self.threads[t].vc.clone();
                 vc_tick(&mut vc, actor);
                 self.push_async(AsyncOp {
@@ -8505,11 +8936,21 @@ impl Machine {
                     );
                 }
                 self.tmem[cta as usize].alloc &= !m;
-                let ta = self.tc_actor(t);
-                let mut vc = self.threads[t].tc_vc.clone();
-                vc_tick(&mut vc, ta);
-                self.threads[t].make_mut().tc_vc = vc.clone();
-                self.tmem_free(cta, col, n, ta, &vc, pc);
+                // ASSUME(S-TCGEN05): the dealloc is the thread's own (synchronous) event, after
+                // its earlier tcgen05 operations that have completed, not after a tcgen05.ld /
+                // st it has not waited for: those are "not inherently ordered with respect to
+                // other tcgen05 operations in the same thread" (PTX ISA 9.7.18.6.1), and only
+                // wait::ld / wait::st complete them (`tc_released`). MISS 111: the dealloc was
+                // an event of the thread's tcgen05.ld/st actor, so its clock covered them.
+                let mut vc = self.threads[t].vc.clone();
+                let tc = self.tc_released(t);
+                vc_join(&mut vc, &tc);
+                self.tmem_free(cta, col, n, t as u32, &vc, pc);
+                // The thread's later tcgen05.ld / st follow the dealloc (same thread, program
+                // order): its tcgen05 view takes the thread's clock.
+                let th = self.threads[t].make_mut();
+                vc_join(&mut th.tc_vc, &vc);
+                self.tick(t);
             }
             Op::Mma {
                 d,
@@ -8560,10 +9001,10 @@ impl Machine {
                 } else {
                     None
                 };
-                let (actor, vc) = self.pipe_issue(t);
+                let (actor, vc, fifo) = self.pipe_issue(t, *pair);
                 self.push_async(AsyncOp {
                     sh: vec![],
-                    fifo: Some(t as u64),
+                    fifo: Some(fifo),
                     actor,
                     vc,
                     issuer: t as u32,
@@ -8613,10 +9054,10 @@ impl Machine {
                 } else {
                     None
                 };
-                let (actor, vc) = self.pipe_issue(t);
+                let (actor, vc, fifo) = self.pipe_issue(t, *pair);
                 self.push_async(AsyncOp {
                     sh: vec![],
-                    fifo: Some(t as u64),
+                    fifo: Some(fifo),
                     actor,
                     vc,
                     issuer: t as u32,
@@ -8631,7 +9072,12 @@ impl Machine {
                 });
                 self.tick(t);
             }
-            Op::TcCommit { mbar, mask, off } => {
+            Op::TcCommit {
+                mbar,
+                mask,
+                off,
+                pair,
+            } => {
                 let m = self.rd(t, mbar)?.wrapping_add(*off as u64);
                 let me = self.threads[t].cta;
                 // Targets: the CTA the address names, or (multicast) every rank in the mask at
@@ -8654,10 +9100,10 @@ impl Machine {
                         }
                         self.note_remote(cta, t as u32, pc);
                     }
-                    let (actor, vc) = self.pipe_issue(t);
+                    let (actor, vc, fifo) = self.pipe_issue(t, *pair);
                     self.push_async(AsyncOp {
                         sh: vec![],
-                        fifo: Some(t as u64),
+                        fifo: Some(fifo),
                         actor,
                         vc,
                         issuer: t as u32,
@@ -8692,7 +9138,12 @@ impl Machine {
                     },
                 };
                 if half.is_some_and(|h| self.threads[t].lane / 16 != h as u32) {
-                    return Ok(Flow::Next); // the other half of the warp's lanes
+                    // The other half of the warp's lanes. The warp still issued the LDTM: it
+                    // counts in this lane's in-order TMEM queue too (`ldtm_mark`).
+                    if self.k.front == Front::Sass && !*tracked {
+                        self.ldtm_mark(t, pc);
+                    }
+                    return Ok(Flow::Next);
                 }
                 // The offset is part of the address (`tmem[UR9+0x100000]`: lane 16).
                 let v = (self.rd(t, taddr)? as u32).wrapping_add(*off);
@@ -8728,7 +9179,12 @@ impl Machine {
                         let th = self.threads[t].make_mut();
                         vc_tick(&mut th.tc_vc, a);
                         th.tc_ld = vc_get(&th.tc_vc, a);
+                        if th.tc_ld_unwaited == 0 {
+                            th.tc_ld_unwaited = th.tc_ld;
+                        }
                         (a, th.tc_vc.clone())
+                    } else if self.k.front == Front::Sass {
+                        self.ldtm_issue(t, pc)
                     } else {
                         (t as u32, self.threads[t].vc.clone())
                     };
@@ -8798,7 +9254,13 @@ impl Machine {
                     let a = self.tc_actor(t);
                     let th = self.threads[t].make_mut();
                     vc_tick(&mut th.tc_vc, a);
+                    th.tc_ld = vc_get(&th.tc_vc, a);
+                    if th.tc_ld_unwaited == 0 {
+                        th.tc_ld_unwaited = th.tc_ld;
+                    }
                     (a, th.tc_vc.clone())
+                } else if self.k.front == Front::Sass {
+                    self.ldtm_issue(t, pc)
                 } else {
                     (t as u32, self.threads[t].vc.clone())
                 };
@@ -8861,15 +9323,16 @@ impl Machine {
             // nothing.
             Op::Converge | Op::Uniform { .. } => {}
             Op::TmemWaitLd => {
-                self.threads[t].make_mut().pending_ld.clear();
+                let th = self.threads[t].make_mut();
+                th.pending_ld.clear();
+                th.tc_ld_unwaited = 0;
                 self.tc_wait_orders_pipe(t, false);
             }
             Op::Fence {
                 kind: FenceKind::TcBefore,
             } => {
-                let th = self.threads[t].make_mut();
-                let tc = th.tc_vc.clone();
-                vc_join(&mut th.vc, &tc);
+                let tc = self.tc_released(t);
+                vc_join(&mut self.threads[t].make_mut().vc, &tc);
             }
             Op::Fence {
                 kind: FenceKind::TcAfter,
@@ -8979,8 +9442,8 @@ impl Machine {
                 th.bulk_sb.push(sb);
             }
             // Enabled (split_enabled) once every group older than the newest n completed.
-            Op::BulkWait { n, cp, sb, .. } => {
-                self.bulk_wait(t, *n, sb.map(|s| 1 << s));
+            Op::BulkWait { n, cp, sb, read } => {
+                self.bulk_wait(t, *n, sb.map(|s| 1 << s), *read);
                 if *cp {
                     self.cp_async_wait(t, *n);
                 }
@@ -9012,9 +9475,7 @@ impl Machine {
                     elem4_coord(&tm, &mut cs)?;
                     (tm, cs)
                 };
-                let serial = self.threads[t].tma_count;
-                self.threads[t].make_mut().tma_count += 1;
-                let actor = self.tma_actor_id(t, serial);
+                let actor = self.async_actor(t)?;
                 let mut vc = self.threads[t].vc.clone();
                 vc_tick(&mut vc, actor);
                 let cta = self.threads[t].cta;
@@ -9571,15 +10032,42 @@ impl Machine {
                     .iter()
                     .map(|x| self.rd(t, x).map(|y| y as u32))
                     .collect::<Result<_, _>>()?;
-                // SASS STTM is scoreboarded like LDTM: the thread itself is the writer.
+                // ASSUME(S-TCGEN05): a SASS STTM's tensor-memory write is an event of the
+                // thread's STTM actor (`sttm_actor_id`), after everything the thread has seen,
+                // that enters the thread's clock only at its `FENCE.VIEW.ASYNC.T` (ptxas's
+                // tcgen05.wait::st; `Op::TmemWaitSt`): until then the thread's releases do not
+                // carry it (MISS 107; before, the write was complete at issue). The register
+                // read scoreboard says nothing about the TMEM write. ASSUME(E-TMEM-QUEUE): the
+                // strict level orders it after the thread's earlier LDTMs only once they
+                // completed, and after its earlier STTMs to the same word only once they were
+                // fenced; an order that needs the TMEM queue (an un-waited LDTM, an un-fenced
+                // STTM) is a `tmem-queue:` contract finding at both levels (probes/tmem_queue
+                // measured no reordering, without a discriminating control).
                 let (actor, vc) = if *tracked {
                     let a = self.tc_actor(t);
                     let th = self.threads[t].make_mut();
                     vc_tick(&mut th.tc_vc, a);
                     th.tc_st = vc_get(&th.tc_vc, a);
+                    if th.tc_st_unwaited == 0 {
+                        th.tc_st_unwaited = th.tc_st;
+                    }
                     (a, th.tc_vc.clone())
                 } else {
-                    (t as u32, self.threads[t].vc.clone())
+                    let a = self.tc_actor_id(t);
+                    let s = self.sttm_actor_id(t);
+                    let th = self.threads[t].make_mut();
+                    vc_tick(&mut th.tc_vc, s);
+                    let c = vc_get(&th.tc_vc, s);
+                    th.tc_st = c;
+                    let mut vc = th.vc.clone();
+                    vc_join(&mut vc, &vc_single(s, c));
+                    let q = th.ldtm_pend.last().map(|&(_, l)| {
+                        let mut q = vc.clone();
+                        vc_join(&mut q, &vc_single(a, l));
+                        q
+                    });
+                    self.tmem_queue_vc = Some(q.unwrap_or_else(|| vc.clone()));
+                    (s, vc)
                 };
                 let mut states = 0u8;
                 for (j, w) in vals.iter().enumerate() {
@@ -9594,12 +10082,30 @@ impl Machine {
                     }
                     self.num_tmem_st(t, &v[j], cta, lane, col);
                 }
+                // The queue clock is this STTM's only: a later access must not see it.
+                self.tmem_queue_vc = None;
                 self.tmem_state_report(states, "tcgen05.st", pc);
             }
             // ASSUME(S-TCGEN05): wait::st completes the stores for this thread's later tcgen05
             // operations (same actor); other threads see them only through
             // fence::before_thread_sync + a sync + fence::after_thread_sync (PTX ISA 9.7.18.6.4.4).
-            Op::TmemWaitSt => self.tc_wait_orders_pipe(t, true),
+            Op::TmemWaitSt => {
+                self.threads[t].make_mut().tc_st_unwaited = 0;
+                if self.k.front == Front::Sass {
+                    // FENCE.VIEW.ASYNC.T: the thread's STTM writes are complete (MISS 107), for
+                    // its later releases and its later MMA-pipe operations.
+                    let s = self.sttm_actor_id(t);
+                    let th = self.threads[t].make_mut();
+                    let c = vc_get(&th.tc_vc, s);
+                    if c > 0 {
+                        vc_join(&mut th.vc, &vc_single(s, c));
+                        vc_join(&mut th.pipe_vc, &vc_single(s, c));
+                        vc_join(&mut th.pipe2_vc, &vc_single(s, c));
+                    }
+                } else {
+                    self.tc_wait_orders_pipe(t, true);
+                }
+            }
             // The mbarrier object ends: later plain accesses to its bytes are ordinary memory.
             // ASSUME(S-TMAP): see ASSUMPTIONS.md
             Op::TmapFence { addr } => {
@@ -11324,9 +11830,7 @@ impl Machine {
                         // Its own async actor: the issuer's later releases do not cover the
                         // write until a CGAERRBAR delivered it (`drain_remote`), so the race
                         // with a reader is found whichever lands first.
-                        let serial = self.threads[t].tma_count;
-                        self.threads[t].make_mut().tma_count += 1;
-                        let actor = self.tma_actor_id(t, serial);
+                        let actor = self.async_actor(t)?;
                         let mut vc = vc;
                         vc_tick(&mut vc, actor);
                         let vis = self.threads[t].vis.clone();
@@ -11355,7 +11859,7 @@ impl Machine {
                 self.mc_view = false;
                 if self.launch.nic.is_some() {
                     for &loc in &locs {
-                        self.nic_store(t, pc, loc, &data, *sync); // nic.rs
+                        self.nic_store(t, pc, loc, &data, *sync)?; // nic.rs
                     }
                 }
                 // A release store publishes the thread's current clock: later events of the
@@ -11687,8 +12191,8 @@ impl Machine {
                 }
             }
             // ASSUME(E-CPASYNC): the global source is read at issue; the shared destination is
-            // written when a wait_group retires its group, race-checked with the clock at
-            // issue (nothing the thread does after issuing orders the write).
+            // written when a wait_group retires its group, by an async actor at the clock at
+            // issue (nothing the thread does after issuing orders the write: `cp_land`).
             Op::CpAsync {
                 dst,
                 src,
@@ -11785,10 +12289,8 @@ impl Machine {
                 let Loc::Shared { cta, off } = self.resolve(t, Space::Shared, a, 8)? else {
                     unreachable!()
                 };
+                let actor = self.async_actor(t)?;
                 let writes = std::mem::take(&mut self.threads[t].make_mut().cp_pending);
-                let serial = self.threads[t].tma_count;
-                self.threads[t].make_mut().tma_count += 1;
-                let actor = self.tma_actor_id(t, serial);
                 let mut vc = self.threads[t].vc.clone();
                 vc_tick(&mut vc, actor);
                 let vis = self.threads[t].vis.clone();
@@ -11839,18 +12341,8 @@ impl Machine {
                     );
                     let key = format!("cp-async-exit:{}", c.pc);
                     self.report("contract", key, msg);
-                    let serial = self.threads[t].tma_count;
-                    self.threads[t].make_mut().tma_count += 1;
-                    let actor = self.tma_actor_id(t, serial);
-                    let cta = self.threads[t].cta;
-                    for c in pend {
-                        let mut vc = c.vc.clone();
-                        vc_tick(&mut vc, actor);
-                        let loc = Loc::Shared { cta, off: c.off };
-                        self.access(actor, &vc, c.pc, loc, c.data.len(), Some(&c.data));
-                        self.sync_clear(loc);
-                        self.num_copy_snapshot(loc, &c.data, c.snapshot.as_ref(), c.pc);
-                    }
+                    let actor = self.async_actor(t)?;
+                    self.cp_land(t, actor, 1, pend);
                 }
                 let th = self.threads[t].make_mut();
                 th.st = St::Exited;
@@ -12421,9 +12913,7 @@ impl Machine {
                         }
                         self.note_remote(mcta, t as u32, pc);
                     }
-                    let serial = self.threads[t].tma_count;
-                    self.threads[t].make_mut().tma_count += 1;
-                    let actor = self.tma_actor_id(t, serial);
+                    let actor = self.async_actor(t)?;
                     let mut vc = self.threads[t].vc.clone();
                     vc_tick(&mut vc, actor);
                     let vis = self.threads[t].vis.clone();
@@ -13831,7 +14321,7 @@ impl Machine {
         let mut words = vec![0u32; 32 * 4];
         for r in 0..32u32 {
             let off = row(r);
-            self.proxy_check(cta, off, 16, &op.vc, op.pc, "tcgen05.cp");
+            self.proxy_check(cta, off, 16, &op.vc, op.issuer, op.pc, "tcgen05.cp");
             let b = self.access(op.actor, &op.vc, op.pc, Loc::Shared { cta, off }, 16, None);
             for j in 0..4 {
                 words[r as usize * 4 + j] =
@@ -14345,7 +14835,7 @@ impl Machine {
                 for k0 in (0..kk).step_by(run) {
                     let off = elem(start, lbo, sbo, sw, r, k0);
                     let len = ew as usize * run;
-                    me.proxy_check(cta, off, len, &op.vc, op.pc, "tcgen05.mma");
+                    me.proxy_check(cta, off, len, &op.vc, op.issuer, op.pc, "tcgen05.mma");
                     let b = me.access(op.actor, &op.vc, op.pc, Loc::Shared { cta, off }, len, None);
                     for e in b.chunks_exact(ew as usize) {
                         let w = e.iter().rev().fold(0u32, |x, &y| x << 8 | y as u32);
@@ -14949,7 +15439,7 @@ impl Machine {
             let mut v = vec![0; nr * rb];
             let read = |me: &mut Machine, r: usize, kb: usize, len: usize| {
                 let off = byte_at(start, lbo, sbo, sw, r, kb);
-                me.proxy_check(cta, off, len, &op.vc, op.pc, "tcgen05.mma");
+                me.proxy_check(cta, off, len, &op.vc, op.issuer, op.pc, "tcgen05.mma");
                 me.access(op.actor, &op.vc, op.pc, Loc::Shared { cta, off }, len, None)
             };
             if sw & MN == 0 {
@@ -15410,9 +15900,19 @@ impl Machine {
     /// S-PROXY: an async-proxy read (TMA store, tcgen05.mma operand) of shared memory last
     /// written by a thread's generic store is ordered only if that thread executed
     /// fence.proxy.async after the store and the fence happens-before the async operation.
+    /// `issuer`: the thread that issued the async operation.
     // ASSUME(S-PROXY): see ASSUMPTIONS.md
-    pub fn proxy_check(&mut self, cta: u16, off: u32, n: usize, vc: &VC, pc: u32, what: &str) {
-        self.proxy_check_dir(cta, off, n, vc, pc, what, false)
+    pub fn proxy_check(
+        &mut self,
+        cta: u16,
+        off: u32,
+        n: usize,
+        vc: &VC,
+        issuer: u32,
+        pc: u32,
+        what: &str,
+    ) {
+        self.proxy_check_dir(cta, off, n, vc, issuer, pc, what, false)
     }
 
     /// ASSUME(S-PROXY) for an async-proxy *write* of shared memory (TMA load, bulk copy
@@ -15424,9 +15924,19 @@ impl Machine {
     /// releasing a TMA stage) also needs a shared-memory proxy fence after it; without one the
     /// strict level reports a contract finding (`proxy-war:`), which the GB300 profile
     /// discharges (E-HW-PROXY-WAR, probes/handoff_window v=15-17).
-    pub fn proxy_wcheck(&mut self, cta: u16, off: u32, n: usize, vc: &VC, pc: u32, what: &str) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn proxy_wcheck(
+        &mut self,
+        cta: u16,
+        off: u32,
+        n: usize,
+        vc: &VC,
+        issuer: u32,
+        pc: u32,
+        what: &str,
+    ) {
         self.proxy_war_check(cta, off, n, vc, pc, what);
-        self.proxy_check_dir(cta, off, n, vc, pc, what, true)
+        self.proxy_check_dir(cta, off, n, vc, issuer, pc, what, true)
     }
 
     /// ASSUME(S-PROXY-WAR): the generic reads of the destination bytes that happen-before an
@@ -15487,6 +15997,7 @@ impl Machine {
         off: u32,
         n: usize,
         vc: &VC,
+        issuer: u32,
         pc: u32,
         what: &str,
         write: bool,
@@ -15496,16 +16007,35 @@ impl Machine {
         // (`cur_sh`) orders the fences too.
         let aug = self.local_vc(u32::MAX, vc, Some(cta));
         let vc = aug.as_ref().unwrap_or(vc);
+        // cp.async writes: whether a fence covers one depends only on its (actor, epoch), and a
+        // copy already reported against this read needs no second look; both decided once per
+        // check. A write lands as its thread's wait actor (`cp_land`), which a fence before
+        // the wait does not cover, so a fence of another thread (the read's issuer, after a
+        // barrier) often covers it, and each would scan every thread's fences.
+        let mut cp_fenced: Vec<((u32, u32), bool)> = Vec::new();
+        let mut cp_reported: Vec<(u32, bool)> = Vec::new();
+        // The threads with an entry in the read's clock, at the first cp.async write neither
+        // the issuer's nor its own thread's fences cover: only their fences can (a thread's own
+        // entry is at least 1 from its start; a fence snapshot with entry 0 covers no write).
+        let mut known: Option<Vec<(u32, u32)>> = None;
+        // The last async write looked at: a copy's bytes are consecutive, and a second byte of
+        // one write needs no second look (reported, or fenced, the first time).
+        let mut last: Option<(u32, u32, u32)> = None;
         for i in 0..n {
             let Some(w) = self.smem[cta as usize].sh.get(off as usize + i).w else {
                 continue;
             };
             let a = w.actor as usize;
             if a >= self.threads.len() {
+                if last == Some((w.actor, w.clock, w.pc)) {
+                    continue;
+                }
+                last = Some((w.actor, w.clock, w.pc));
                 // Written by an async unit. TMA: the same proxy. cp.async writes in the
                 // generic proxy (PTX ISA), so the PTX model wants a fence.proxy.async after
-                // its completion that happens-before the async read; GB300 does not (no
-                // failure on scrubbed runs): a contract finding. ASSUME(E-CPASYNC-PROXY)
+                // its completion that happens-before the async read. No GB300 probe with a
+                // positive control decides it (probes/proxy_cpasync has none): a contract
+                // finding, at the gb300 level too. ASSUME(E-CPASYNC-PROXY)
                 let cp = matches!(
                     self.k.code.get(w.pc as usize).map(|i| &i.op),
                     Some(Op::CpAsync { .. })
@@ -15513,20 +16043,56 @@ impl Machine {
                 if !cp {
                     continue;
                 }
-                let fenced = self.threads.iter().enumerate().any(|(f, th)| {
-                    let seen = vc_get(vc, f as u32);
-                    th.fences
-                        .iter()
-                        .any(|fv| w.clock <= vc_get(fv, w.actor) && vc_get(fv, f as u32) <= seen)
-                });
+                let reported = match cp_reported.iter().find(|e| e.0 == w.pc) {
+                    Some(e) => e.1,
+                    None => {
+                        let sig = format!("cpasync-proxy:{}:{pc}", w.pc);
+                        let r = self.findings.iter().any(|f| f.sig == sig);
+                        cp_reported.push((w.pc, r));
+                        r
+                    }
+                };
+                if reported {
+                    continue;
+                }
+                let nth = self.threads.len();
+                // A fence of thread f after the copy completed that happens-before the read.
+                let covers =
+                    |f: usize| {
+                        let seen = vc_get(vc, f as u32);
+                        self.threads[f].fences.iter().rev().any(|fv| {
+                            w.clock <= vc_get(fv, w.actor) && vc_get(fv, f as u32) <= seen
+                        })
+                    };
+                let fenced = match cp_fenced.binary_search_by_key(&(w.actor, w.clock), |e| e.0) {
+                    Ok(k) => cp_fenced[k].1,
+                    Err(k) => {
+                        // The issuer's fences first (wait, barrier, the issuer's fence), then the
+                        // copy's own thread's (wait, fence, barrier), then every thread's.
+                        let (iss, t) = (issuer as usize, self.actor_thread(w.actor));
+                        let f = (iss < nth && covers(iss))
+                            || (t != iss && t < nth && covers(t))
+                            || known
+                                .get_or_insert_with(|| vc_entries(vc))
+                                .iter()
+                                .map(|e| e.0 as usize)
+                                .take_while(|&f| f < nth)
+                                .any(|f| f != iss && f != t && covers(f));
+                        cp_fenced.insert(k, ((w.actor, w.clock), f));
+                        f
+                    }
+                };
                 if !fenced {
                     let msg = format!(
-                        "smem byte {:#x} written by cp.async at {} is {dir} by the async proxy ({what} at {}) with no fence.proxy.async after the copy completed: the PTX ISA requires one; GB300 orders it (E-CPASYNC-PROXY)",
+                        "smem byte {:#x} written by cp.async at {} is {dir} by the async proxy ({what} at {}) with no fence.proxy.async after the copy completed: the PTX ISA requires one (E-CPASYNC-PROXY; no GB300 measurement decides it)",
                         off as usize + i,
                         self.k.describe(w.pc as usize),
                         self.k.describe(pc as usize)
                     );
                     self.report("contract", format!("cpasync-proxy:{}:{pc}", w.pc), msg);
+                    if let Some(e) = cp_reported.iter_mut().find(|e| e.0 == w.pc) {
+                        e.1 = true;
+                    }
                 }
                 continue;
             }
@@ -15546,14 +16112,15 @@ impl Machine {
             if covered {
                 continue;
             }
-            // A cp.async write (completed in its thread's name at the wait): a contract
-            // finding, not a race (GB300 orders it). ASSUME(E-CPASYNC-PROXY)
+            // A cp.async write in a thread's name (none since its writes land as an async
+            // actor, `cp_land`, which the branch above handles): a contract finding, not a
+            // race, as above. ASSUME(E-CPASYNC-PROXY)
             if matches!(
                 self.k.code.get(w.pc as usize).map(|i| &i.op),
                 Some(Op::CpAsync { .. })
             ) {
                 let msg = format!(
-                    "smem byte {:#x} written by cp.async at {} is {dir} by the async proxy ({what} at {}) with no fence.proxy.async after the copy completed: the PTX ISA requires one; GB300 orders it (E-CPASYNC-PROXY)",
+                    "smem byte {:#x} written by cp.async at {} is {dir} by the async proxy ({what} at {}) with no fence.proxy.async after the copy completed: the PTX ISA requires one (E-CPASYNC-PROXY; no GB300 measurement decides it)",
                     off as usize + i,
                     self.k.describe(w.pc as usize),
                     self.k.describe(pc as usize)
@@ -15581,11 +16148,10 @@ impl Machine {
     /// The thread that issued asynchronous actor `a` (a TMA / bulk op or remote operation),
     /// or None for a thread, a tcgen05 actor or a NIC.
     fn async_issuer(&self, a: u32) -> Option<usize> {
-        let n = self.nthreads();
-        if a < 3 * n || self.nic_actor_name(a).is_some() {
+        if a < self.async_base() || self.nic_actor_name(a).is_some() {
             return None;
         }
-        let t = ((a - 3 * n) / 4096) as usize;
+        let t = self.async_split(a).0;
         (t < self.threads.len()).then_some(t)
     }
 
@@ -15773,6 +16339,10 @@ impl Machine {
         if !self.tma_swizzle_ok(&op, src, &m) {
             return;
         }
+        // The global writes come after the shared-memory reads, at the actor's next epoch:
+        // `wait_group.read` orders the issuer after the reads only (`bulk_wait`).
+        let mut wop = op.clone();
+        vc_tick(&mut wop.vc, op.actor);
         let im2col = coords.len() == m.dims.len() + 1;
         let walked = match self.im2col_walk(&op, &m, &coords, im2col, true) {
             Ok(w) => w,
@@ -15837,7 +16407,7 @@ impl Machine {
             if !inb {
                 continue;
             }
-            self.proxy_check(cta, soff, es, &op.vc, op.pc, "the TMA store");
+            self.proxy_check(cta, soff, es, &op.vc, op.issuer, op.pc, "the TMA store");
             let data = self.access(
                 op.actor,
                 &op.vc,
@@ -15872,7 +16442,7 @@ impl Machine {
             );
             if inb && red {
                 if let Err(e) = self.bulk_red(
-                    &op,
+                    &wop,
                     Loc::Shared { cta, off: soff },
                     alloc,
                     goff,
@@ -15888,7 +16458,7 @@ impl Machine {
                     self.num_read_snapshot(Some(Loc::Shared { cta, off: soff }), &data, op.pc);
                 self.access(
                     op.actor,
-                    &op.vc,
+                    &wop.vc,
                     op.pc,
                     Loc::Global { alloc, off: goff },
                     es,
@@ -15907,7 +16477,7 @@ impl Machine {
         self.threads[iss]
             .make_mut()
             .bulk_done
-            .push((group, op.vc.clone()));
+            .push((group, op.vc.clone(), wop.vc.clone()));
     }
 
     /// One element run of a bulk add-reduction (`cp.reduce.async.bulk[.tensor]...add`, SASS
@@ -16024,7 +16594,13 @@ impl Machine {
                 l => l,
             };
             if f == FFmt::F32 {
-                self.num_bulk_add(src, loc, (o, x, r), old_input_derived, op.pc);
+                self.num_bulk_add(
+                    src,
+                    loc,
+                    (o, x, r),
+                    old_input_derived,
+                    (op.pc, op.actor, &op.vc),
+                );
             } else {
                 self.num_bulk_add16(
                     src,
@@ -16032,7 +16608,7 @@ impl Machine {
                     (o as u16, x as u16, r as u16),
                     (old16.unwrap_or_default(), old_input_derived),
                     f == FFmt::F16,
-                    op.pc,
+                    (op.pc, op.actor, &op.vc),
                 );
             }
         }
@@ -16041,8 +16617,8 @@ impl Machine {
 
     #[allow(clippy::too_many_arguments)]
     /// `cp.async.mbarrier.arrive`'s asynchronous half: the tracked cp.async writes land
-    /// (race-checked as the op's actor), then one transaction unit completes or one arrival
-    /// happens on the mbarrier.
+    /// (race-checked as the op's actor at their issue clocks), then one transaction unit
+    /// completes or one arrival happens on the mbarrier.
     fn complete_cp_arrive(
         &mut self,
         op: &AsyncOp,
@@ -16051,17 +16627,12 @@ impl Machine {
         writes: Vec<CpPending>,
         tx: bool,
     ) {
-        for c in writes {
-            let loc = Loc::Shared { cta, off: c.off };
-            self.access(op.actor, &op.vc, c.pc, loc, c.data.len(), Some(&c.data));
-            self.sync_clear(loc);
-            self.num_copy_snapshot(
-                Loc::Shared { cta, off: c.off },
-                &c.data,
-                c.snapshot.as_ref(),
-                c.pc,
-            );
-        }
+        // The copies' writes run at their own issue clocks (`cp_land`): a cp.async is ordered
+        // after its issuer's earlier instructions only (PTX ISA 8.9.1.1), not after what the
+        // issuer did between the copy and this arrive (fixtures/e_cpasync_mbar_early). The
+        // arrive-on below, at the arrive's clock, carries their epoch to a waiter.
+        // ASSUME(E-CPASYNC-MBAR)
+        self.cp_land(op.issuer as usize, op.actor, 1, writes);
         self.rec(0, cta as u32, mbar as u64, mbar as u64 + 8, false);
         self.mbar_materialize(cta, mbar);
         if self.mbars.contains_key(&(cta, mbar)) {
@@ -16257,7 +16828,7 @@ impl Machine {
         for (off, n) in runs(elems.iter().filter_map(|e| e.1).collect()) {
             let loc = match m.smem_src {
                 Some(c) => {
-                    self.proxy_check(c, off as u32, n, &op.vc, op.pc, "the bulk copy");
+                    self.proxy_check(c, off as u32, n, &op.vc, op.issuer, op.pc, "the bulk copy");
                     Loc::Shared {
                         cta: c,
                         off: off as u32,
@@ -16304,7 +16875,7 @@ impl Machine {
             "the TMA load"
         };
         for (off, n) in runs(elems.iter().map(|e| e.0 as u64).collect()) {
-            self.proxy_wcheck(cta, off as u32, n, &op.vc, op.pc, what);
+            self.proxy_wcheck(cta, off as u32, n, &op.vc, op.issuer, op.pc, what);
             let mut data = Vec::with_capacity(n);
             for o in (off..off + n as u64).step_by(es) {
                 data.extend_from_slice(img[&(o as u32)]);
@@ -16985,6 +17556,131 @@ mod mma_shape_tests {
             }
             let cells: usize = l.blocks.iter().map(|b| b.1 * b.3).sum();
             assert_eq!(cells, l.rows * l.n);
+        }
+    }
+}
+
+#[cfg(test)]
+mod actor_id_tests {
+    use super::*;
+
+    /// A launch of an empty kernel, `grid` CTAs of `block` threads.
+    fn machine(grid: u32, block: u32) -> Machine {
+        let ptx = ".version 8.8\n.target sm_103a\n.address_size 64\n\
+                   .visible .entry k(.param .u64 x) {\n    ret;\n}\n";
+        let kernel = Arc::new(ptxv_ptx::parse_kernel(ptx, Some("k")).unwrap());
+        let manifest = serde_json::from_value(serde_json::json!({
+            "name": "actor-ids", "description": "actor id decoding", "entry": "k",
+            "grid": [grid, 1, 1], "block": [block, 1, 1], "outputs": ["x"],
+            "buffers": [{"name": "x", "dtype": "f32", "shape": [1], "init": "zeros"}],
+            "params": [{"kind": "ptr", "buffer": "x"}], "variants": []
+        }))
+        .unwrap();
+        let case = ptxv_case::Case {
+            dir: std::path::PathBuf::new(),
+            m: manifest,
+        };
+        let launch = Arc::new(crate::build_launch(&case, &kernel).unwrap());
+        Machine::new(kernel, launch)
+    }
+
+    /// MISS 68: every actor kind decodes back to its thread, at several thread counts up to
+    /// ones whose last async id is near `RR_BIT`. Written in terms of
+    /// `FIXED_ACTORS_PER_THREAD`: a decoder that still spells the async base as a literal
+    /// multiple of the thread count fails here once the constant changes.
+    #[test]
+    fn actor_ids_decode_at_every_thread_count() {
+        let f = FIXED_ACTORS_PER_THREAD;
+        // The stride alone (no Machine): every id below RR_BIT, and the stride the largest
+        // power of two that keeps it so. n = 2^31 / (2^k + f - 1) are the counts where one
+        // fixed actor fewer would double the stride and put the last ids past RR_BIT.
+        let mut ns: Vec<u32> = vec![1, 2, 3, 32, 6912, 8191, 16383, 65536, 1 << 20, 1 << 24];
+        for k in 2..=24u32 {
+            let n = (RR_BIT as u64 / ((1u64 << k) + f as u64 - 1)) as u32;
+            ns.extend([n - 1, n, n + 1]);
+        }
+        for &n in &ns {
+            let ids = 1u64 << async_shift(n);
+            let base = async_base(n) as u64;
+            assert_eq!(base, f as u64 * n as u64, "n {n}");
+            assert!(
+                base + n as u64 * ids <= RR_BIT as u64,
+                "n {n}: ids past RR_BIT"
+            );
+            assert!(
+                base + n as u64 * 2 * ids > RR_BIT as u64,
+                "n {n}: the stride is not the largest"
+            );
+        }
+        // Every decoder on a Machine: 1 to 65536 threads; 6912 and 16383 threads put the last
+        // async id at 84% and 99.996% of RR_BIT.
+        for (grid, block) in [
+            (1, 1),
+            (1, 2),
+            (1, 32),
+            (3, 128),
+            (54, 128),
+            (129, 127),
+            (512, 128),
+        ] {
+            let m = machine(grid, block);
+            let n = m.nthreads();
+            assert_eq!(n, grid * block);
+            assert_eq!(m.async_base(), f * n);
+            assert_eq!(m.async_ids(), 1 << async_shift(n));
+            let ids = m.async_ids();
+            assert_eq!(m.tma_actor_id(0, 0), m.async_base());
+            assert!(m.cp_wait_actor(n as usize - 1) < RR_BIT, "{n} threads");
+            for t in [0, n as usize / 2, n as usize - 1] {
+                let cta = m.threads[t].cta;
+                // the fixed actors, k n + t: the thread, its tcgen05.ld/st actor, its pipe
+                for k in 0..f {
+                    let a = k * n + t as u32;
+                    assert!(a < m.async_base());
+                    assert_eq!(m.actor_thread(a), t, "{n} threads, fixed actor {k}");
+                    assert_eq!(actor_thread_of(a, n, m.async_shift), t);
+                    assert_eq!(m.threads[actor_thread_of(a, n, m.async_shift)].cta, cta);
+                    assert_eq!(m.async_issuer(a), None);
+                    assert!(!m.actor_name(a).is_empty());
+                }
+                assert_eq!(m.tc_actor_id(t), n + t as u32);
+                assert_eq!(m.pipe_actor_id(t), 2 * n + t as u32);
+                let me = m.actor_name(t as u32);
+                assert_eq!(
+                    m.actor_name(m.tc_actor_id(t)),
+                    format!("{me}'s tcgen05.ld/st")
+                );
+                assert_eq!(
+                    m.actor_name(m.pipe_actor_id(t)),
+                    format!("{me}'s tcgen05 pipe")
+                );
+                // per-operation async ids: the first, a middle one, the last (the wait actor
+                // takes the one after it)
+                for serial in [0, ids / 2, ids - 2] {
+                    let a = m.tma_actor_id(t, serial);
+                    assert!(a >= m.async_base() && a < RR_BIT);
+                    assert_eq!(m.async_split(a), (t, serial), "{n} threads");
+                    assert_eq!(m.actor_thread(a), t);
+                    assert_eq!(actor_thread_of(a, n, m.async_shift), t);
+                    assert_eq!(m.threads[actor_thread_of(a, n, m.async_shift)].cta, cta);
+                    assert_eq!(m.async_issuer(a), Some(t));
+                    assert_eq!(m.actor_name(a), format!("TMA#{serial} (issued by {me})"));
+                }
+                let w = m.cp_wait_actor(t);
+                assert_eq!(w, m.tma_actor_id(t, ids - 1));
+                assert_eq!(m.async_split(w), (t, ids - 1));
+                assert_eq!(m.actor_thread(w), t);
+                assert_eq!(actor_thread_of(w, n, m.async_shift), t);
+                assert_eq!(m.async_issuer(w), Some(t));
+                assert_eq!(m.actor_name(w), format!("{me}'s cp.async copies"));
+                if t + 1 < n as usize {
+                    assert_eq!(
+                        w + 1,
+                        m.tma_actor_id(t + 1, 0),
+                        "{n} threads: a gap or overlap"
+                    );
+                }
+            }
         }
     }
 }

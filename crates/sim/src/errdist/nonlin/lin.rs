@@ -673,7 +673,10 @@ impl<'a> KModel<'a> {
                         }
                     }
                 }
-                Op::Add { a, b, rz } => {
+                // An FTZ add (an fp32 atomic) as its rounding to nearest: the flush of a
+                // subnormal operand or sum is outside this law (Tier 3 evaluates it; the
+                // cross-check compares, N-ERRDIST-DAG).
+                Op::Add { a, b, rz, .. } => {
                     let (x, y) = (*a as usize, *b as usize);
                     let v = s.v[x] + s.v[y];
                     let lin = lmin(s.lat[x], s.lat[y]);

@@ -1,0 +1,64 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// fixtures/c_num_ctl_branch_f32 (N-NUM-TRACK; the independent review's probe rd_branch_param):
+// branches decided by roundings of kernel parameters, an FADD (a node) and an FMUL (no node).
+//   out[t]      = (rn(a + b) >= c) ? x + y : x + z   (a = 0.1f, b = 0.2f, c = rn(a + b))
+//   out[32 + t] = (rn(a * d) > 1)  ? x + y : x + z   (d = 10)
+// The exact computation takes the other path in both.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_ctl_branch_f32(
+	.param .u64 px, .param .u64 py, .param .u64 pz, .param .u64 pout,
+	.param .f32 pa, .param .f32 pb, .param .f32 pc, .param .f32 pd
+)
+{
+	.reg .pred %p<8>;
+	.reg .b32 %r<16>;
+	.reg .f32 %f<32>;
+	.reg .b64 %rd<24>;
+	ld.param.u64 %rd1, [px];
+	ld.param.u64 %rd2, [py];
+	ld.param.u64 %rd3, [pz];
+	ld.param.u64 %rd4, [pout];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd2, %rd2;
+	cvta.to.global.u64 %rd3, %rd3;
+	cvta.to.global.u64 %rd4, %rd4;
+	mov.u32 %r1, %tid.x;
+	mul.wide.u32 %rd5, %r1, 4;
+	add.s64 %rd6, %rd1, %rd5;
+	add.s64 %rd7, %rd2, %rd5;
+	add.s64 %rd8, %rd3, %rd5;
+	add.s64 %rd9, %rd4, %rd5;
+	ld.global.f32 %f1, [%rd6];
+	ld.global.f32 %f2, [%rd7];
+	ld.global.f32 %f3, [%rd8];
+	add.rn.f32 %f4, %f1, %f2;
+	add.rn.f32 %f5, %f1, %f3;
+	ld.param.f32 %f10, [pa];
+	ld.param.f32 %f11, [pb];
+	ld.param.f32 %f12, [pc];
+	ld.param.f32 %f13, [pd];
+	add.rn.f32 %f14, %f10, %f11;
+	setp.ge.f32 %p1, %f14, %f12;
+	@%p1 bra L1;
+	st.global.f32 [%rd9], %f5;
+	bra.uni L2;
+L1:
+	st.global.f32 [%rd9], %f4;
+L2:
+	mul.rn.f32 %f15, %f10, %f13;
+	setp.gt.f32 %p2, %f15, 0f3F800000;
+	@%p2 bra L3;
+	st.global.f32 [%rd9+128], %f5;
+	bra.uni L4;
+L3:
+	st.global.f32 [%rd9+128], %f4;
+L4:
+	ret;
+}

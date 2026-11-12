@@ -167,10 +167,17 @@ write_only=())` is a context manager. The calling thread runs the region normall
 
 | object | from | fields |
 |---|---|---|
-| `Verdict` | `check` | `classes`, `certified`, `complete`, `states`, `findings`, `assumptions`, `notes`, `sim_vs_gpu`, `sim_equals_gpu`, `clean`, `json` |
+| `Verdict` | `check` | `classes`, `certified`, `complete`, `states`, `findings`, `assumptions`, `notes`, `sim_vs_gpu`, `gpu_compare`, `gpu_state`, `sim_equals_gpu`, `clean`, `json` |
 | `Equivalence` | `compare` | `level`, `proven`, `headline`, `blockers`, `relies_on`, `witness`, `gpu`, `per_output_bound`, `bound`, `reference`, `candidate`, `markdown`, `json` |
 | `Bound` | `--emit-bound` | `__call__(**inputs)` (numpy or torch, batched), `check(ref, cand, inputs)`, `distribution(dists, n)`, `evaluable`, `used_inputs`, `max_u()`, `to_pandas()`, `json` |
 | `ErrDist` | `errdist`, `Bound.distribution` | `quantile(q)`, `quantiles`, `mean`, `std`, `max`, `cdf(t)`, `tail(t)` (with a Clopper-Pearson bound), `per_output()`, `sample(n)`, `to_numpy()`, `to_pandas()`, `json` |
+
+`Verdict.certified`: a complete verdict decided by the E-WELLSYNC certificate (never an
+incomplete one, whatever its assumptions). `Verdict.gpu_state`: the comparison with the
+captured GPU output, from ptxv's per-output results (`gpu_compare`): `bitwise` when every
+output is bitwise equal, else the first of `mismatch`, `within_ulp`, `permuted_equal`,
+`not_compared` present; None when nothing was compared. `sim_equals_gpu` is True only for
+`bitwise` (within one ulp is False).
 
 `Bound` evaluates the `sum`, `round` and `softmax` forms (docs/json.md). For `norm` and
 attention outputs it returns NaN: their evaluation data is not exported yet.

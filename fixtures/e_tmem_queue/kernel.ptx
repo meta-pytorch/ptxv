@@ -1,0 +1,55 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Fixture for E-TMEM-QUEUE (S-TCGEN05): one warp, one thread's own tensor-memory accesses to
+// the same column with no wait between them (probes/tmem_queue runs the same shapes on GB300).
+// Each thread stores old = lane + 100 to column 0 and waits, then
+//   good: ld; wait::ld; st new (lane + 200); wait::st.
+//   Q:    ld; st new at once (SASS: LDTM, then STTM with no wait on the LDTM's scoreboard);
+//         wait::ld; wait::st. The store follows the load only in the TMEM queue.
+//   QQ:   st a (lane + 300); st new at once (two STTMs, no FENCE.VIEW.ASYNC.T between);
+//         wait::st; ld; wait::ld. The second store wins only in the TMEM queue.
+//   SL:   st new; ld at once (no wait::st between): the load is not ordered after the store
+//         (a race on both fronts).
+// Then the loaded value (good, Q: old; QQ: new) goes to out, and the warp deallocates.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_tmem_queue(.param .u64 out_p)
+{
+    .shared .align 4 .b32 slot;
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r0, %tid.x;
+    mov.u32 %r3, slot;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+    tcgen05.fence::before_thread_sync;
+    bar.sync 0;
+    tcgen05.fence::after_thread_sync;
+    ld.shared.u32 %r4, [slot];
+    add.u32 %r5, %r0, 100;
+    add.u32 %r7, %r0, 200;
+    add.u32 %r8, %r0, 300;
+    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r4], {%r5};
+    tcgen05.wait::st.sync.aligned;
+    // (st a slot)                                         // @STA
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 {%r6}, [%r4];    // @LD
+    tcgen05.wait::ld.sync.aligned;                         // @WAITLD
+    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r4], {%r7};    // @ST
+    tcgen05.wait::st.sync.aligned;
+    // (late slot)                                         // @LATE
+    mul.wide.u32 %rd2, %r0, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r6;
+    tcgen05.fence::before_thread_sync;
+    bar.sync 0;
+    tcgen05.fence::after_thread_sync;
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r4, 32;
+    ret;
+}

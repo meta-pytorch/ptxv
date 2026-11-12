@@ -1,0 +1,85 @@
+name = "e_bulk_read_l1"
+description = """
+E-ASYNC-STEP for the non-tensor bulk store (cp.async.bulk.global.shared::cta) and the bulk
+add-reduction (cp.reduce.async.bulk ... .add.f32): thread 0 loads D[5] (filling its SM's L1
+line), bulk-stores or bulk-adds a 0..1023 tile to D, waits, and loads D[5] again, the load's
+address formed from an ATOMS on the source so that it issues after the wait (as
+e_tma_read_l1). With cp.async.bulk.wait_group.read 0 only the group's shared-memory reads are
+complete (PTX ISA 9.7.10.28.6.2): READ and RREAD race with the global writes on the PTX front.
+GB300 reads the stale pre-store line from L1 in 1000/1000 runs of READ and RREAD (out = 0,
+D[5] = 5; ptxas emits no CCTL.IVALL after the .read DEPBAR) and the stored value with the full
+wait (good, RGOOD: 0/1000 stale). The SASS front models the DEPBAR as a full wait and calls
+READ and RREAD clean (MISS 102)."""
+ptx = "kernel.ptx"
+entry = "e_bulk_read_l1"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D", "out", "pre"]
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [1024]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "pre"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[params]]
+kind = "ptr"
+buffer = "pre"
+
+[[variants]]
+id = "good"
+summary = "bulk store, wait_group 0"
+expect = ["clean"]
+hw_note = "GB300 0/1000 runs stale (out = 5), 2026-11-11"
+
+[[variants]]
+id = "READ"
+summary = "bulk store, wait_group.read 0"
+marker = "@WAIT"
+find = "cp.async.bulk.wait_group 0;"
+replace = "cp.async.bulk.wait_group.read 0;"
+expect = ["race"]
+# MISS 102 (not fixed here): the SASS front's bulk DEPBAR is a full wait.
+expect_sass = ["clean"]
+hw_note = "GB300 1000/1000 runs read the stale 0 from L1 (out = 0, D[5] = 5), 2026-11-11"
+
+[[variants]]
+id = "RGOOD"
+summary = "bulk add-reduction, wait_group 0"
+marker = "@OP"
+find = "cp.async.bulk.global.shared::cta.bulk_group [%rd2], [%r1], 4096;"
+replace = "cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32 [%rd2], [%r1], 4096;"
+expect = ["clean"]
+hw_note = "GB300 0/1000 runs stale (out = 5), 2026-11-11"
+
+[[variants]]
+id = "RREAD"
+summary = "bulk add-reduction, wait_group.read 0"
+edits = [
+    { marker = "@OP", find = "cp.async.bulk.global.shared::cta.bulk_group [%rd2], [%r1], 4096;", replace = "cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32 [%rd2], [%r1], 4096;" },
+    { marker = "@WAIT", find = "cp.async.bulk.wait_group 0;", replace = "cp.async.bulk.wait_group.read 0;" },
+]
+expect = ["race"]
+# MISS 102 (not fixed here): the SASS front's bulk DEPBAR is a full wait.
+expect_sass = ["clean"]
+hw_note = "GB300 1000/1000 runs read the stale 0 from L1 (out = 0, D[5] = 5), 2026-11-11"

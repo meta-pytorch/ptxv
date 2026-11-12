@@ -111,10 +111,11 @@ pub fn sub_prog_cut(p: &Prog, root: u32, stops: &[u32]) -> (Prog, Vec<u32>, Vec<
                 arg: m(arg),
                 part: *part,
             },
-            Op::Add { a, b, rz } => Op::Add {
+            Op::Add { a, b, rz, ftz } => Op::Add {
                 a: m(a),
                 b: m(b),
                 rz: *rz,
+                ftz: *ftz,
             },
             Op::Fma {
                 a,
@@ -179,6 +180,10 @@ pub fn sub_prog_cut(p: &Prog, root: u32, stops: &[u32]) -> (Prog, Vec<u32>, Vec<
             out_fmt: p.out_fmt,
             bufs: p.bufs.clone(),
             dep_untracked: vec![],
+            atomic: vec![],
+            atomic_src: vec![],
+            atomic_free: vec![],
+            pre_rounded: vec![],
         },
         leaves,
         stops.iter().map(|x| map.get(x).copied()).collect(),
@@ -521,6 +526,13 @@ pub fn elementwise(r: &Prog, c: Option<&Prog>, spec: &Spec) -> Option<Result<Est
     let mut u_s: Vec<(f64, f64)> = Vec::new();
     let mut pmf: BTreeMap<i64, f64> = BTreeMap::new();
     let (mut pd, mut tot, mut skipped, mut sum_p2) = (0.0, 0.0, 0.0, 0.0);
+    // MISS 57: probability where the exact value is unknown (a slice outside the decision
+    // patterns its identification probed, `real::Table`).
+    let mut outside = 0.0;
+    // A pair's mass there: its P(differ) compares C with R bit for bit and needs no exact
+    // value, so it is counted (as Tier 3 counts it, N-ERRDIST-IDENT); the moments, which
+    // take the exact output's ulp, leave it out. (mass, differing mass, sum of squares)
+    let (mut pair_out, mut pair_pd, mut pair_p2) = (0.0, 0.0, 0.0);
     // Mass whose PMF key is off the output-ulp lattice (pairs only: C - R across binades).
     let mut off_lattice = 0.0;
     let mut wr = vec![crate::mma_lp::Operand::from_value(0.0); sr.ops.len()];
@@ -555,8 +567,33 @@ pub fn elementwise(r: &Prog, c: Option<&Prog>, spec: &Spec) -> Option<Result<Est
         }
         sr.eval_into(&mut wr);
         let rv = wr[sr.ops.len() - 1].v as f32 as f64;
-        let real = super::real::eval(&sr, &wr);
-        let ex = super::real::exact_of(&real, (sr.ops.len() - 1) as u32);
+        let real = super::real::eval_table(&sr, &wr);
+        let root = sr.ops.len() - 1;
+        if real.outside[root] {
+            match (&sc, wc.as_mut()) {
+                (Some((spc, map, rest)), Some(w)) => {
+                    for &l in rest {
+                        w[l as usize] = crate::mma_lp::Operand::from_value(xs[0]);
+                    }
+                    for (k, &l) in map.iter().enumerate() {
+                        w[l as usize] = crate::mma_lp::Operand::from_value(xs[k]);
+                    }
+                    spc.eval_into(w);
+                    let cv = w[spc.ops.len() - 1].v as f32 as f64;
+                    if !cv.is_finite() || !rv.is_finite() {
+                        skipped += p;
+                    } else {
+                        pair_out += p;
+                        pair_p2 += p * p;
+                        pair_pd +=
+                            p * ((cv as f32).to_bits() != (rv as f32).to_bits()) as u8 as f64;
+                    }
+                }
+                _ => outside += p,
+            }
+            continue;
+        }
+        let ex = super::real::exact_of(&real.v, root as u32);
         if !ex.y.is_finite() || !rv.is_finite() || ex.s == 0.0 {
             skipped += p;
             continue;
@@ -609,10 +646,15 @@ pub fn elementwise(r: &Prog, c: Option<&Prog>, spec: &Spec) -> Option<Result<Est
         abs_s.push((e, p));
         u_s.push((e / us, p));
     }
+    if tot == 0.0 && (outside > 0.0 || pair_out > 0.0) {
+        return Some(Err(
+            "every element value takes decisions inside an instruction slice that its identification never probed (MISS 57)".into(),
+        ));
+    }
     if tot == 0.0 {
         return Some(Err("no finite output".into()));
     }
-    let n_eff = tot * tot / sum_p2.max(1e-300);
+    let n_eff = (tot + pair_out).powi(2) / (sum_p2 + pair_p2).max(1e-300);
     let mut eb = ErrorBar {
         kind: if exact { "exact" } else { "quadrature" }.into(),
         notes: vec![format!(
@@ -636,7 +678,29 @@ pub fn elementwise(r: &Prog, c: Option<&Prog>, spec: &Spec) -> Option<Result<Est
             "{skipped:.3e} probability with a non-finite value (out of domain)"
         ));
     }
-    let p = pd / tot;
+    if pair_out > 0.0 {
+        eb.notes.push(format!(
+            "{pair_out:.3e} probability takes decisions inside an instruction slice that its identification never probed: counted in P(differ) (a pair compares C with R and needs no exact value), left out of the moments"
+        ));
+    }
+    let p = (pd + pair_pd) / (tot + pair_out);
+    // MISS 57: the unknown share moves P(differ) by at most itself; the estimate stands only
+    // while that is within 10% of P (the resolution every analytic estimate needs), and a
+    // Tier 0 claims an exact value it then does not have.
+    let q = outside / (tot + pair_out + outside);
+    let mut applicability = vec![];
+    let mut applicable = None;
+    if outside > 0.0 {
+        let ok = !exact && q <= 0.1 * p;
+        applicability.push(format!(
+            "{q:.3e} of the law takes decisions inside an instruction slice that its identification never probed (exact value unknown, MISS 57): left out, the P(differ) interval widened by it{} {}",
+            if exact { "; an exact value needs none" } else { " (needs <= 10% of P)" },
+            if ok { "ok" } else { "FAILS" }
+        ));
+        if !ok {
+            applicable = Some(false);
+        }
+    }
     // Latin hypercube: at most the binomial spread of as many independent draws.
     let half = if lhs.is_some() {
         1.96 * (p * (1.0 - p) / total as f64).sqrt()
@@ -671,10 +735,10 @@ pub fn elementwise(r: &Prog, c: Option<&Prog>, spec: &Spec) -> Option<Result<Est
         hist_u: None,
         error_bar: eb,
         pair: None,
-        p_differ: Some((p, (p - half).max(0.0), (p + half).min(1.0))),
+        p_differ: Some((p, (p - half - q).max(0.0), (p + half + q).min(1.0))),
         seconds: t0.elapsed().as_secs_f64(),
         // Agent AG: checked against Tier 3 by the CLI (docs/errdist.md §9).
-        applicable: None,
-        applicability: vec![],
+        applicable,
+        applicability,
     }))
 }

@@ -1,0 +1,72 @@
+name = "c_num_ctl_addr_f32"
+description = """
+N-NUM-TRACK (the independent review's probe rd_addr_tid, kernel.ptx): load addresses from float index
+arithmetic on %tid (nearest-neighbor upsampling). out[t] = x[floor(rn(f32(t) * s))] with s = 0.7f;
+out[32 + t] = x[floor(rn(f32(t) + b))] with b = -2^-25. The exact computation reads x[6], x[13], x[20] for
+t = 10, 20, 30 (this run: x[7], x[14], x[21]) and x[t - 1] for t >= 1 in the second half (this run: x[t]).
+num makes no claim. expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP).
+"""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_ctl_addr_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/y.bin"
+
+[[buffers]]
+name = "z"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/z.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "bytes"
+hex = "3333333f"
+
+[[params]]
+kind = "bytes"
+hex = "000000b3"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

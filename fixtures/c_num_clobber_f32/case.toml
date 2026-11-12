@@ -1,0 +1,53 @@
+name = "c_num_clobber_f32"
+description = """
+N-NUM-TRACK (MISS 36, a rounding through a bit operation; the independent review's probe clobber,
+kernel.ptx): s = rn(a + b) with f32 parameters a = 0.1f, b = 0.2f (a node, not input data); out[t] =
+x + (s & m), out[32 + t] = s & m with the parameter m = 0xffffffff. The and drops s's node: its result is
+input data, never an exact constant. expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP).
+"""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_clobber_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "bytes"
+hex = "cdcccc3d"
+
+[[params]]
+kind = "bytes"
+hex = "cdcc4c3e"
+
+[[params]]
+kind = "u32"
+value = 4294967295
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

@@ -1,0 +1,33 @@
+name = "atomord_barexact"
+description = """entry ao_bar of ../kernel.ptx (see its header) with the exact captured output (control for ../bar)."""
+ptx = "../kernel.ptx"
+entry = "ao_bar"
+grid = [1, 1, 1]
+block = [96, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [96]
+init = "file"
+file = "../in.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "../expected/six.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1,0 +1,44 @@
+name = "e_dealloc_unwaited"
+description = """
+A thread's own un-waited tcgen05.ld / tcgen05.st before its tcgen05.dealloc (MISS 111,
+S-TCGEN05): the asynchronous access is complete only at tcgen05.wait::ld / wait::st, so a
+dealloc after it, with no wait between, races with it. See kernel.ptx."""
+ptx = "kernel.ptx"
+entry = "e_dealloc_unwaited"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "st; wait::st; ld; wait::ld; dealloc"
+expect = ["clean"]
+
+[[variants]]
+id = "LDNW"
+summary = "the wait::ld moved after the dealloc: the load races with the dealloc"
+marker = "@WAITLD"
+replace = "<delete>"
+edits = [{ marker = "@LATE", find = "// (late wait slot)", replace = "tcgen05.wait::ld.sync.aligned;" }]
+expect = ["race"]
+# SASS: ptxas waits on the LDTM's scoreboard before the dealloc anyway (the SASS front follows
+# the scoreboards, MISS 103): ordered as compiled.
+expect_sass = ["clean"]
+
+[[variants]]
+id = "STNW"
+summary = "no wait::st and no load: the store races with the dealloc"
+marker = "@WAITST"
+replace = "<delete>"
+edits = [{ marker = "@LD", replace = "<delete>" }, { marker = "@WAITLD", replace = "<delete>" }, { marker = "@OUT", replace = "<delete>" }]
+expect = ["race"]

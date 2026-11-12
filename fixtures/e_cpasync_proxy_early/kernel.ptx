@@ -1,0 +1,33 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-CPASYNC-PROXY: the PTX memory model wants a fence.proxy.async after the cp.async copies
+// complete (after the wait) that happens-before the async-proxy read. 64 threads cp.async 16
+// bytes each into a 1 KiB shared tile; thread 0 bulk-stores the tile to out (async proxy).
+//   good:  wait_all, fence.proxy.async.shared::cta, bar.sync: clean.
+//   EARLY: the fence before the wait_all (after the copies' issue): a contract finding (as for
+//          Triton's attention kernels, fixtures/r4_attn_triton).
+//   NONE:  no fence: a contract finding.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry e_cpasync_proxy_early(.param .u64 pin, .param .u64 pout)
+{ .reg .b64 %rd<10>; .reg .b32 %r<20>; .reg .pred %p<3>;
+  .shared .align 128 .b8 tile[1024];
+  ld.param.u64 %rd1, [pin]; cvta.to.global.u64 %rd1, %rd1;
+  ld.param.u64 %rd2, [pout]; cvta.to.global.u64 %rd2, %rd2;
+  mov.u32 %r1, %tid.x; mov.u32 %r2, tile;
+  shl.b32 %r3, %r1, 4; add.u32 %r4, %r2, %r3;
+  cvt.u64.u32 %rd3, %r3; add.s64 %rd4, %rd1, %rd3;
+  cp.async.cg.shared.global [%r4], [%rd4], 16;
+  // @EARLYF
+  cp.async.wait_all;
+  fence.proxy.async.shared::cta;                                   // @FENCE
+  bar.sync 0;
+  setp.eq.u32 %p1, %r1, 0;
+  @%p1 cp.async.bulk.global.shared::cta.bulk_group [%rd2], [%r2], 1024;
+  @%p1 cp.async.bulk.commit_group;
+  @%p1 cp.async.bulk.wait_group 0;
+  ret; }

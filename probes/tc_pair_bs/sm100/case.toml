@@ -72,4 +72,7 @@ value = 0x10100480
 
 [[variants]]
 id = "good"
-expect = ["clean"]
+# PTX: cta1's tcgen05.ld of D after the cta_group::2 commit's multicast arrival, waited at
+# .cta scope, is an S-MBAR-SCOPE contract finding (as in probes/tc_pair_atmem); SASS: clean.
+expect = ["contract"]
+expect_sass = ["clean"]

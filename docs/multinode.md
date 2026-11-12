@@ -34,7 +34,8 @@ one rank of the job (`crates/sim/src/dist.rs`, `DistRound` in `explore.rs`).
     2. Each rank sends rank 0 its findings, outputs, counts and dirty flag.
     3. Rank 0 merges them and sends the result back, so every rank continues with the same
        verdict.
-- **Output.** Only rank 0 prints. `out/` dirs are per rank (`out/<case>/rank<r>`).
+- **Output.** Only rank 0 prints. `out/` dirs are per rank (`--out DIR/rank<r>`; without
+  `--out`, each rank's own run directory `out/<case>/run-<pid>-<ns>/rank<r>`).
 
 **Not supported yet:** exploring every slice when cluster symmetry fails, because the
 cross-slice footprint check (`GFoot`) is per process.

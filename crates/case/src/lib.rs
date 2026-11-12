@@ -211,6 +211,60 @@ pub struct Manifest {
 /// Byte ranges (buffer index, first byte, end) of one ticket's rows (C-TICKET-ADDR).
 pub type RowRanges = Vec<(usize, u64, u64)>;
 
+/// How one part of a simulated output compares with the captured GPU bytes: the decision each
+/// line of an expect report states (`Case::expect_compare_tol`, `expect_compare_perm`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GpuMatch {
+    /// Bitwise equal (bytes of `expect_ignore` ranges excluded).
+    Bitwise,
+    /// Not bitwise equal: every differing element is one unit in the last place off or NaN on
+    /// both sides (`ulp_class`; N-MULTIMEM-ROUND16 only). Not a match.
+    WithinUlp,
+    /// The bytes differ.
+    Mismatch,
+    /// C-TICKET-ADDR: a counter word's rows equal the captured rows as a multiset (up to the
+    /// certified permutation), not bitwise.
+    PermutedEqual,
+    /// C-TICKET-ADDR: some rows of a counter word lie in buffers without captured bytes.
+    NotCompared,
+    /// An output buffer without captured bytes (`expect`): no line, nothing compared.
+    NoCapture,
+}
+
+/// One comparison of an expect report: the output buffer (or `counter word N`, C-TICKET-ADDR),
+/// the result, and the report line that states it (None for `NoCapture`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GpuCompare {
+    pub part: String,
+    pub result: GpuMatch,
+    #[serde(skip)]
+    pub line: Option<String>,
+}
+
+/// The report lines of comparisons (`Case::expect_report*`).
+fn report_lines(c: Vec<GpuCompare>) -> Vec<String> {
+    c.into_iter().filter_map(|c| c.line).collect()
+}
+
+/// Each comparison (part, result, whether a line states it) with its line, in order: the
+/// comparisons that have a line are pushed one per line, in the lines' order.
+fn with_lines(res: Vec<(String, GpuMatch, bool)>, lines: Vec<String>) -> Vec<GpuCompare> {
+    assert_eq!(
+        res.iter().filter(|r| r.2).count(),
+        lines.len(),
+        "expect report: every line has its comparison"
+    );
+    let mut lines = lines.into_iter();
+    res.into_iter()
+        .map(|(part, result, has)| GpuCompare {
+            part,
+            result,
+            line: if has { lines.next() } else { None },
+        })
+        .collect()
+}
+
 /// One C-TICKET-ADDR declaration: the buffer holding the counter words and the buffers whose
 /// rows the claims' results address.
 #[derive(Debug, Clone, Deserialize)]
@@ -662,6 +716,28 @@ pub struct Case {
     pub m: Manifest,
 }
 
+/// The one-ulp tolerance (N-MULTIMEM-ROUND16) for two differing `dtype` encodings (bf16, f16,
+/// f32; `a`, `b` the bits): `Some(true)` one unit in the last place apart (adjacent
+/// encodings, both finite), `Some(false)` both NaN, None otherwise. Adjacency alone is not
+/// enough: an infinity is the neighbour of the largest finite value of its sign and of a NaN
+/// encoding, and the largest positive encoding (a NaN) of -0, so a non-finite value on either
+/// side passes only when both sides are NaN; the same infinity on both sides is no difference
+/// (MISS 67).
+pub fn ulp_class(dtype: &str, a: u64, b: u64) -> Option<bool> {
+    let (exp, man) = match dtype {
+        "f32" => (0x7f80_0000u64, 0x007f_ffffu64),
+        "bf16" => (0x7f80, 0x007f),
+        "f16" => (0x7c00, 0x03ff),
+        _ => return None,
+    };
+    let nonfinite = |x: u64| x & exp == exp;
+    let nan = |x: u64| nonfinite(x) && x & man != 0;
+    if nonfinite(a) || nonfinite(b) {
+        return (nan(a) && nan(b)).then_some(false);
+    }
+    (a.abs_diff(b) == 1).then_some(true)
+}
+
 impl Buffer {
     /// The initial bytes with the pointer words (`ptrs`) filled in; `base_of` gives a
     /// buffer's address.
@@ -913,10 +989,18 @@ impl Case {
 
     /// `expect_report`; with `ulp_ok` (the run used a rounding the model only calibrates,
     /// N-MULTIMEM-ROUND16), an output whose differing elements are all one unit in the last
-    /// place off (adjacent encodings of its dtype) is reported as within one ulp, not as a
-    /// mismatch.
+    /// place off (`ulp_class`: adjacent encodings of its dtype, both finite) or NaN on both
+    /// sides is reported as within one ulp, not as a mismatch.
     pub fn expect_report_tol(&self, output: &[u8], ulp_ok: bool) -> Result<Vec<String>> {
+        Ok(report_lines(self.expect_compare_tol(output, ulp_ok)?))
+    }
+
+    /// `expect_report_tol` with the result of each comparison next to its line, and the
+    /// output buffers without captured bytes (`NoCapture`, no line).
+    pub fn expect_compare_tol(&self, output: &[u8], ulp_ok: bool) -> Result<Vec<GpuCompare>> {
         let mut lines = Vec::new();
+        // The decision each line states, in the same order (`GpuCompare`).
+        let mut res = Vec::new();
         let mut at = 0;
         for o in &self.m.outputs {
             let b = self.buffer(o)?;
@@ -924,7 +1008,10 @@ impl Case {
                 .get(at..at + b.bytes())
                 .ok_or_else(|| anyhow!("output shorter than the output buffers"))?;
             at += b.bytes();
-            let Some(p) = &b.expect else { continue };
+            let Some(p) = &b.expect else {
+                res.push((o.clone(), GpuMatch::NoCapture, false));
+                continue;
+            };
             let want = std::fs::read(p).with_context(|| p.clone())?;
             let off = b.expect_offset as usize;
             let got = got
@@ -948,25 +1035,45 @@ impl Case {
                 String::new()
             };
             let es = b.elem_bytes();
-            let one_ulp = ulp_ok
+            // Per differing element: one ulp apart (true) or NaN on both sides (false); None
+            // when any element is neither.
+            let classes = (ulp_ok
                 && matches!(b.dtype.as_str(), "bf16" | "f16" | "f32")
                 && off.is_multiple_of(es)
                 && want.len().is_multiple_of(es)
-                && !diff.is_empty()
-                && diff.iter().all(|&i| {
-                    let e = i / es * es;
-                    let v = |x: &[u8]| x.iter().rev().fold(0u64, |a, &y| a << 8 | y as u64);
-                    v(&got[e..e + es]).abs_diff(v(&want[e..e + es])) == 1
-                });
-            if one_ulp {
-                let n: std::collections::BTreeSet<usize> = diff.iter().map(|i| i / es).collect();
+                && !diff.is_empty())
+            .then(|| {
+                let elems: BTreeSet<usize> = diff.iter().map(|i| i / es * es).collect();
+                let v = |x: &[u8]| x.iter().rev().fold(0u64, |a, &y| a << 8 | y as u64);
+                elems
+                    .iter()
+                    .map(|&e| ulp_class(&b.dtype, v(&got[e..e + es]), v(&want[e..e + es])))
+                    .collect::<Option<Vec<bool>>>()
+            })
+            .flatten();
+            if let Some(c) = classes {
+                let n = c.iter().filter(|&&x| x).count();
+                let nan = if n < c.len() {
+                    format!(", {} NaN on both sides (another payload)", c.len() - n)
+                } else {
+                    String::new()
+                };
                 lines.push(format!(
-                    "{o}: within one ulp of the captured GPU output: {} of {} elements one unit in the last place off, the rest bitwise equal (multimem.ld_reduce rounding, N-MULTIMEM-ROUND16)",
-                    n.len(),
+                    "{o}: within one ulp of the captured GPU output: {n} of {} elements one unit in the last place off{nan}, the rest bitwise equal (multimem.ld_reduce rounding, N-MULTIMEM-ROUND16)",
                     want.len() / es
                 ));
+                res.push((o.clone(), GpuMatch::WithinUlp, true));
                 continue;
             }
+            res.push((
+                o.clone(),
+                if diff.is_empty() {
+                    GpuMatch::Bitwise
+                } else {
+                    GpuMatch::Mismatch
+                },
+                true,
+            ));
             lines.push(match diff.first() {
                 None => format!(
                     "{o}: bitwise equal to the captured GPU output ({} bytes{ign_note})",
@@ -982,7 +1089,7 @@ impl Case {
                 ),
             });
         }
-        Ok(lines)
+        Ok(with_lines(res, lines))
     }
 
     /// `expect_report` for a verdict certified up to a permutation of rows (C-TICKET-ADDR):
@@ -995,6 +1102,17 @@ impl Case {
         output: &[u8],
         rows: &[Vec<RowRanges>],
     ) -> Result<Vec<String>> {
+        Ok(report_lines(self.expect_compare_perm(output, rows)?))
+    }
+
+    /// `expect_report_perm` with the result of each comparison next to its line.
+    pub fn expect_compare_perm(
+        &self,
+        output: &[u8],
+        rows: &[Vec<RowRanges>],
+    ) -> Result<Vec<GpuCompare>> {
+        // The decision each line states, in the same order (`GpuCompare`).
+        let mut res = Vec::new();
         // Per buffer index: (simulated bytes, captured bytes, offset of the captured bytes).
         let mut img: BTreeMap<usize, (&[u8], Vec<u8>, usize)> = BTreeMap::new();
         let mut at = 0;
@@ -1010,7 +1128,10 @@ impl Case {
                 .get(at..at + b.bytes())
                 .ok_or_else(|| anyhow!("output shorter than the output buffers"))?;
             at += b.bytes();
-            let Some(p) = &b.expect else { continue };
+            let Some(p) = &b.expect else {
+                res.push((o.clone(), GpuMatch::NoCapture, false));
+                continue;
+            };
             let want = std::fs::read(p).with_context(|| p.clone())?;
             img.insert(i, (got, want, b.expect_offset as usize));
         }
@@ -1044,6 +1165,17 @@ impl Case {
             }
             sim.sort();
             gpu.sort();
+            res.push((
+                format!("counter word {wi}"),
+                if !covered {
+                    GpuMatch::NotCompared
+                } else if sim == gpu {
+                    GpuMatch::PermutedEqual
+                } else {
+                    GpuMatch::Mismatch
+                },
+                true,
+            ));
             lines.push(if !covered {
                 format!("counter word {wi}: some rows are in buffers without a captured output; not compared")
             } else if sim == gpu {
@@ -1065,13 +1197,22 @@ impl Case {
                 .filter(|&y| !in_rows.contains(&(i, (y + off) as u64)))
                 .filter(|&y| got.get(y + off) != Some(&want[y]))
                 .count();
+            res.push((
+                name.clone(),
+                if diff == 0 {
+                    GpuMatch::Bitwise
+                } else {
+                    GpuMatch::Mismatch
+                },
+                true,
+            ));
             lines.push(if diff == 0 {
                 format!("{name}: bitwise equal to the captured GPU output outside the permuted rows")
             } else {
                 format!("{name}: MISMATCH vs the captured GPU output outside the permuted rows: {diff} bytes differ")
             });
         }
-        Ok(lines)
+        Ok(with_lines(res, lines))
     }
 
     pub fn buffer(&self, name: &str) -> Result<&Buffer> {
@@ -1211,4 +1352,125 @@ pub fn skip_missing_vendor_files(fixtures: &Path, needs: &[&str]) -> bool {
         missing.join(", ")
     );
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// MISS 67: the one-ulp tolerance takes adjacent finite encodings and NaN against NaN,
+    /// never an infinity against the largest finite value of its sign or against a NaN, nor a
+    /// NaN against -0 (f32, bf16, f16, both signs).
+    #[test]
+    fn one_ulp_tolerance_needs_finite_values() {
+        for (dt, sign, max, inf, qnan) in [
+            (
+                "f32",
+                0x8000_0000u64,
+                0x7f7f_ffffu64,
+                0x7f80_0000u64,
+                0x7fc0_0000u64,
+            ),
+            ("bf16", 0x8000, 0x7f7f, 0x7f80, 0x7fc0),
+            ("f16", 0x8000, 0x7bff, 0x7c00, 0x7e00),
+        ] {
+            for s in [0, sign] {
+                assert_eq!(
+                    ulp_class(dt, s | max, s | (max - 1)),
+                    Some(true),
+                    "{dt} {s:#x}"
+                );
+                assert_eq!(
+                    ulp_class(dt, s | 1, s),
+                    Some(true),
+                    "{dt} {s:#x}: 0, 1 subnormal"
+                );
+                assert_eq!(
+                    ulp_class(dt, s | inf, s | max),
+                    None,
+                    "{dt} {s:#x}: inf, max"
+                );
+                assert_eq!(
+                    ulp_class(dt, s | max, s | inf),
+                    None,
+                    "{dt} {s:#x}: max, inf"
+                );
+                assert_eq!(
+                    ulp_class(dt, s | inf, s | inf | 1),
+                    None,
+                    "{dt} {s:#x}: inf, NaN"
+                );
+                assert_eq!(
+                    ulp_class(dt, s | qnan, s | inf | 1),
+                    Some(false),
+                    "{dt} {s:#x}"
+                );
+            }
+            assert_eq!(ulp_class(dt, 0, sign), None, "{dt}: +0, -0");
+            assert_eq!(ulp_class(dt, inf, sign | inf), None, "{dt}: +inf, -inf");
+            // The largest positive encoding is a NaN (0x7fffffff: the GPU's canonical f32 NaN)
+            // next to -0.
+            assert_eq!(ulp_class(dt, sign - 1, sign), None, "{dt}: NaN, -0");
+        }
+        assert_eq!(ulp_class("u32", 1, 2), None);
+    }
+
+    /// `expect_report_tol` with the tolerance on (a multicast case): an output one encoding
+    /// off in a finite element is within one ulp; an overflow to inf where the GPU kept the
+    /// largest finite value (either sign), or a NaN where the GPU has inf, is a mismatch.
+    #[test]
+    fn expect_report_tol_never_crosses_an_infinity() {
+        let dir = std::env::temp_dir().join(format!("ptxv-case-ulp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let report = |dtype: &str, got: &[u64], want: &[u64]| -> String {
+            let es = if dtype == "f32" { 4 } else { 2 };
+            let bytes = |v: &[u64]| -> Vec<u8> {
+                v.iter()
+                    .flat_map(|x| x.to_le_bytes()[..es].to_vec())
+                    .collect()
+            };
+            std::fs::write(dir.join("expected.bin"), bytes(want)).unwrap();
+            std::fs::write(
+                dir.join("case.toml"),
+                format!(
+                    "name = \"t\"\ndescription = \"t\"\nentry = \"k\"\ngrid = [1, 1, 1]\n\
+                     block = [1, 1, 1]\noutputs = [\"out\"]\nparams = []\nvariants = []\n\
+                     [[buffers]]\nname = \"out\"\ndtype = \"{dtype}\"\nshape = [{}]\n\
+                     init = \"zeros\"\nexpect = \"expected.bin\"\n",
+                    want.len()
+                ),
+            )
+            .unwrap();
+            let case = Case::load(&dir).unwrap();
+            case.expect_report_tol(&bytes(got), true)
+                .unwrap()
+                .join("\n")
+        };
+        let (two, four) = (0x4000_0000, 0x4080_0000);
+        for s in [0, 0x8000_0000u64] {
+            // The nvls_inf words: max + 0 against inf, max + max (inf) against a NaN.
+            let r = report(
+                "f32",
+                &[s | 0x7f7f_ffff, s | 0x7f80_0000, two, four],
+                &[s | 0x7f80_0000, s | 0x7f80_0001, two, four],
+            );
+            assert!(r.contains("MISMATCH"), "{r}");
+            let r = report("f32", &[s | 0x3f80_0001, two], &[s | 0x3f80_0000, two]);
+            assert!(r.contains("within one ulp") && r.contains("1 of 2"), "{r}");
+        }
+        let r = report("f32", &[0x7fc0_0000, two], &[0x7fff_ffff, two]);
+        assert!(
+            r.contains("within one ulp") && r.contains("1 NaN on both sides"),
+            "{r}"
+        );
+        for (dt, max, inf) in [("bf16", 0x7f7f, 0x7f80), ("f16", 0x7bff, 0x7c00)] {
+            for s in [0, 0x8000u64] {
+                let r = report(dt, &[s | max, 0x3c00], &[s | inf, 0x3c00]);
+                assert!(r.contains("MISMATCH"), "{dt}: {r}");
+                let r = report(dt, &[s | max, 0x3c00], &[s | (max - 1), 0x3c00]);
+                assert!(r.contains("within one ulp"), "{dt}: {r}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -1,0 +1,48 @@
+name = "e_async_actor_cap"
+description = """
+E-CPASYNC: every cp.async.mbarrier.arrive lands the copies it tracks as a fresh async actor,
+taken from the thread's async actor ids (`Machine::async_actor`, MISS 68), which its TMA, bulk
+and other async operations share and whose last is its wait actor. One thread lands a 4-byte
+copy through an arrive 4000 times (good) or 4100 times (MANY), both clean: a lone thread has
+2^30 ids. The limit itself is checked with the ids cut to 4096 (`Machine::async_shift`, test
+async_actor_ids_fail_closed): MANY's 4096th arrive is an unmodeled fault that stops the thread.
+Before MISS 68 a thread had 4096 ids and the cp.async arrive and exit actors alone were checked
+(MANY: unmodeled; an id past the limit wrapped within the thread)."""
+ptx = "kernel.ptx"
+entry = "e_async_actor_cap"
+grid = [1, 1, 1]
+block = [1, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [4]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[variants]]
+id = "good"
+summary = "4000 arrives"
+expect = ["clean"]
+
+[[variants]]
+id = "MANY"
+summary = "4100 arrives (past 4095: the limit before MISS 68)"
+marker = "@N"
+find = "mov.u32 %r8, 4000;"
+replace = "mov.u32 %r8, 4100;"
+expect = ["clean"]

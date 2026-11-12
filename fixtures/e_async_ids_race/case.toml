@@ -1,0 +1,49 @@
+name = "e_async_ids_race"
+description = """
+Async actor ids (MISS 68): a write-write race between thread 0's 4097th async operation (a bulk
+store) and thread 1's first, ordered in time by a relaxed flag only. With a fixed 4096 ids per
+thread (`tma_actor_id`) the former took the latter's id, and the race check orders one actor's
+writes with each other: clean on both fronts. Now a thread has the largest power of two of ids
+below 2^31 (2^25 with 32 threads): a race."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["x"]
+
+[[buffers]]
+name = "x"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "dummy"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "dummy"
+
+[[params]]
+kind = "u32"
+value = 4096
+
+[[variants]]
+id = "good"
+summary = "N = 4096 (race expected)"
+expect = ["race"]
+
+[[variants]]
+id = "n4095"
+summary = "N = 4095 (control)"
+marker = "@N"
+find = "fence.proxy.async.shared::cta;"
+replace = "fence.proxy.async.shared::cta; sub.u32 %r9, %r9, 1;"
+expect = ["race"]

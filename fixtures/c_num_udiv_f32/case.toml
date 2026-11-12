@@ -1,0 +1,60 @@
+name = "c_num_udiv_f32"
+description = """
+N-NUM-UDIV: 32-bit integer division and remainder by kernel parameters (kernel.ptx, gen.py): div / rem
+.u32 by du = 7 and .s32 by ds = -9, which ptxas lowers to I2F.RP, MUFU.RCP, F2I.TRUNC and an integer
+correction (.s32 on |n| and |d|, then the signs). The quotients and remainders decide load addresses
+and a store guard; every one is exact, so num keeps a claim on every element. expected/ is GB300's
+output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_udiv_f32"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [128]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [128]
+init = "file"
+file = "data/y.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [640]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 7
+
+[[params]]
+kind = "bytes"
+hex = "f7ffffff"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

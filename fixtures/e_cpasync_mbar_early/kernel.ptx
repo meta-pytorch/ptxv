@@ -1,0 +1,67 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-CPASYNC-MBAR: the writes of cp.async copies tracked by cp.async.mbarrier.arrive land as an
+// async actor at the copies' issue clocks, not at the arrive. Thread 32 fills a shared slot
+// with 0x55; thread 0 copies in[0..3] = 0..3 over it and arrives on mbarrier mb (count 1) with
+// .noinc; thread 32 waits on mb and stores word 1 to out[1].
+//   good: thread 32 reads the old word 1 into out[0] before bar.sync 0; thread 0 issues the
+//         copy after it: clean (out = 0x55, 1).
+//   EARLY: thread 0 issues the copy before bar.sync 0, arrives after it: thread 32's read
+//          (after a 20 us sleep) races with the copy's write (write-after-read).
+//   OWN: thread 0 issues the copy, sleeps 20 us and stores 0x77 to word 1 before the arrive:
+//        its store races with the copy's write (write-after-write).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_cpasync_mbar_early(.param .u64 out_p, .param .u64 in_p)
+{
+    .shared .align 16 .b8 slot[16];
+    .shared .align 8 .b64 mb;
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [in_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, slot;
+    mov.u32 %r5, mb;
+    mov.u32 %r3, 0x55;
+    setp.ne.u32 %p1, %r1, 32;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r5], 1;
+INIT_DONE:
+    @%p1 bra FILL_DONE;
+    st.shared.v4.u32 [%r2], {%r3, %r3, %r3, %r3};
+FILL_DONE:
+    bar.sync 1;
+    @%p2 bra ISSUED;
+    // @EARLY
+ISSUED:
+    @%p1 bra READ_DONE;
+    nanosleep.u32 20000;
+    ld.shared.u32 %r4, [%r2+4];
+    st.global.u32 [%rd1], %r4;
+READ_DONE:
+    bar.sync 0;
+    @%p2 bra WAITER;
+    cp.async.cg.shared.global [%r2], [%rd2], 16;     // @LATE
+    // @OWN
+    cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r5];
+    bra DONE;
+WAITER:
+    @%p1 bra DONE;
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p3, [%r5], 0;
+    @!%p3 bra WAIT;
+    ld.shared.u32 %r6, [%r2+4];
+    st.global.u32 [%rd1+4], %r6;
+DONE:
+    ret;
+}

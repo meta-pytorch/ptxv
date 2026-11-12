@@ -459,10 +459,10 @@ pub fn canon(p: &Prog, i: u32, memo: &mut HashMap<u32, u64>) -> u64 {
             memo.insert(i, v);
             return v;
         }
-        Op::Add { a, b, rz } => {
+        Op::Add { a, b, rz, ftz } => {
             let mut f = [canon(p, *a, memo), canon(p, *b, memo)];
             f.sort();
-            (4u8, f, rz).hash(&mut h)
+            (4u8, f, rz, ftz).hash(&mut h)
         }
         Op::Fma {
             a,

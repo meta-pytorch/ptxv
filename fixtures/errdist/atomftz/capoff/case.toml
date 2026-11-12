@@ -1,0 +1,33 @@
+name = "atomftz_capoff"
+description = """entry af_sum of ../kernel.ptx (see its header): y[j] = x[j] + x[j + 32] by fp32 atomic adds, which flush subnormal operands and results; with GB300's output at the captured input, y[5] one ulp off, as the captured GPU output: no order of two adds from zero gives it."""
+ptx = "../kernel.ptx"
+entry = "af_sum"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "normal"
+seed = 3
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "../expected/sum_off1.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["nondeterministic"]

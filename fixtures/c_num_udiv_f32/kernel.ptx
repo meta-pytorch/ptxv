@@ -1,0 +1,79 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// fixtures/c_num_udiv_f32 (N-NUM-UDIV): 32-bit integer division and remainder by kernel
+// parameters, which ptxas lowers to I2F.RP, MUFU.RCP, F2I.TRUNC and an integer correction (the
+// .s32 forms on |n| and |d|, then the signs). Thread t (128 threads), du = 7, ds = -9:
+//   n = t * 0x01fc07f1 + 5 (u32, over the whole range), sn = (t - 64) * 0x00ff00ff (s32)
+//   q = n / du, r = n % du, sq = sn / ds, sr = sn % ds
+//   out[t] = x[q & 127], out[128 + t] = x[r & 127], out[256 + t] = x[sq & 127],
+//   out[384 + t] = x[sr & 127]                     (load addresses)
+//   out[512 + t] = x[t] + y[t] if q is odd         (a store guard)
+// Every quotient and remainder is exact: num keeps a claim on every element.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_udiv_f32(
+	.param .u64 px,
+	.param .u64 py,
+	.param .u64 pout,
+	.param .u32 pdu,
+	.param .u32 pds
+)
+{
+	.reg .pred %p<4>;
+	.reg .b32 %r<24>;
+	.reg .f32 %f<8>;
+	.reg .b64 %rd<24>;
+
+	ld.param.u64 %rd1, [px];
+	ld.param.u64 %rd2, [py];
+	ld.param.u64 %rd3, [pout];
+	ld.param.u32 %r1, [pdu];
+	ld.param.u32 %r2, [pds];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd2, %rd2;
+	cvta.to.global.u64 %rd3, %rd3;
+	mov.u32 %r3, %tid.x;
+	mad.lo.u32 %r4, %r3, 33294321, 5;
+	sub.s32 %r5, %r3, 64;
+	mul.lo.s32 %r5, %r5, 16711935;
+	div.u32 %r6, %r4, %r1;
+	rem.u32 %r7, %r4, %r1;
+	div.s32 %r8, %r5, %r2;
+	rem.s32 %r9, %r5, %r2;
+	mul.wide.u32 %rd4, %r3, 4;
+	add.s64 %rd5, %rd3, %rd4;
+	and.b32 %r10, %r6, 127;
+	mul.wide.u32 %rd6, %r10, 4;
+	add.s64 %rd6, %rd1, %rd6;
+	ld.global.f32 %f1, [%rd6];
+	st.global.f32 [%rd5], %f1;
+	and.b32 %r11, %r7, 127;
+	mul.wide.u32 %rd7, %r11, 4;
+	add.s64 %rd7, %rd1, %rd7;
+	ld.global.f32 %f2, [%rd7];
+	st.global.f32 [%rd5+512], %f2;
+	and.b32 %r12, %r8, 127;
+	mul.wide.u32 %rd8, %r12, 4;
+	add.s64 %rd8, %rd1, %rd8;
+	ld.global.f32 %f3, [%rd8];
+	st.global.f32 [%rd5+1024], %f3;
+	and.b32 %r13, %r9, 127;
+	mul.wide.u32 %rd9, %r13, 4;
+	add.s64 %rd9, %rd1, %rd9;
+	ld.global.f32 %f4, [%rd9];
+	st.global.f32 [%rd5+1536], %f4;
+	and.b32 %r14, %r6, 1;
+	setp.eq.u32 %p1, %r14, 1;
+	add.s64 %rd10, %rd1, %rd4;
+	ld.global.f32 %f5, [%rd10];
+	add.s64 %rd11, %rd2, %rd4;
+	ld.global.f32 %f6, [%rd11];
+	add.rn.f32 %f7, %f5, %f6;
+	@%p1 st.global.f32 [%rd5+2048], %f7;
+	ret;
+}

@@ -290,18 +290,25 @@ impl Machine {
 
     /// A store by thread `t` that landed in global memory: a doorbell when it is a QP's
     /// doorbell register. Called after the store's own memory effects.
-    pub fn nic_store(&mut self, t: usize, pc: u32, loc: Loc, data: &[u8], sync: Option<MemSync>) {
+    pub fn nic_store(
+        &mut self,
+        t: usize,
+        pc: u32,
+        loc: Loc,
+        data: &[u8],
+        sync: Option<MemSync>,
+    ) -> Result<(), String> {
         let Some(cfg) = self.launch.nic.clone() else {
-            return;
+            return Ok(());
         };
         let Loc::Global { alloc, off } = loc else {
-            return;
+            return Ok(());
         };
         let hits: Vec<usize> = (0..cfg.qps.len())
             .filter(|&q| cfg.qps[q].db.0 == alloc)
             .collect();
         if hits.is_empty() {
-            return;
+            return Ok(());
         }
         let Some(q) = hits
             .iter()
@@ -315,7 +322,7 @@ impl Machine {
                 self.k.describe(pc as usize)
             );
             self.report("unmodeled", format!("nic-uar:{pc}"), msg);
-            return;
+            return Ok(());
         };
         let qc = &cfg.qps[q];
         // ASSUME(S-NIC-DB): the doorbell is a strong system-scope store (st.mmio.relaxed.sys,
@@ -327,7 +334,7 @@ impl Machine {
                 self.k.describe(pc as usize)
             );
             self.report("unmodeled", format!("nic-db-weak:{pc}"), msg);
-            return;
+            return Ok(());
         }
         let ctrl0 = be32(&data[0..4]);
         let qpn = be32(&data[4..8]) >> 8;
@@ -339,7 +346,7 @@ impl Machine {
                 qc.qpn
             );
             self.report("violation", format!("nic-db-qpn:{pc}"), msg);
-            return;
+            return Ok(());
         }
         let pi16 = (ctrl0 >> 8) & 0xffff;
         // What the doorbell releases (as `sync_publish`): a release store its thread's clock,
@@ -363,19 +370,18 @@ impl Machine {
         self.rec(16, q as u32, 0, 1, true);
         let st = &self.nic.as_ref().unwrap().qps[q];
         if st.dead {
-            return;
+            return Ok(());
         }
         let delta = (pi16 as u64).wrapping_sub(st.pi) & 0xffff;
         if delta == 0 || delta >= 0x8000 {
-            return; // nothing new (a repeated or older ring)
+            return Ok(()); // nothing new (a repeated or older ring)
         }
         let first = st.queue.is_empty();
         let from = st.pi;
         let mut new = Vec::new();
         for idx in from..from + delta {
-            let serial = self.threads[t].tma_count;
-            self.threads[t].make_mut().tma_count += 1;
-            let actor = self.tma_actor_id(t, serial);
+            // A failed allocation (MISS 68) fails the store's step before the ring advances.
+            let actor = self.async_actor(t)?;
             new.push(NicWqe {
                 idx,
                 actor,
@@ -397,6 +403,7 @@ impl Machine {
         if first {
             self.nic_push_op(q);
         }
+        Ok(())
     }
 
     /// The pending op that executes QP `q`'s oldest announced WQE.

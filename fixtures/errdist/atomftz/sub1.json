@@ -1,0 +1,2 @@
+{"version": 1, "seed": 1, "name": "x: N(0,1) times one per-input scale, 1 w.p. 0.99 and 2^-130 w.p. 0.01 (all subnormal)",
+ "tensors": {"x": {"dist": {"kind": "normal"}, "shape": [1, 64], "scales": [{"axis": 0, "dist": {"kind": "discrete", "values": [1.0, 7.346839692639297e-40], "probs": [0.99, 0.01]}}]}}}

@@ -1,0 +1,65 @@
+name = "c_num_vote_f32"
+description = """
+MISS 65 (warp votes; the independent review's probe vote, kernel.ptx): b = vote.sync.ballot(p) with
+p = rn(x y) >= 1 in lanes 0..15 (input data: x y < 1 exactly, rn(x y) = 1 in every such lane) and
+p = false in lanes 16..31; lanes 0..15 exit, lanes 16..31 store out[t] = (b != 0) ? x + y : x + z.
+The exact computation has b = 0 (x + z); the run has b = 0xffff (x + y). The ballot carries every
+lane's taint, so the branch is refused. expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP);
+lanes 0..15 keep the zeros out starts with.
+"""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_vote_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/y.bin"
+
+[[buffers]]
+name = "z"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/z.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

@@ -133,6 +133,21 @@ one carry-out). `tok-merge` gives every member of an instruction one C-WARP toke
 `bsync-coll` keeps the GB300 profile's BSYNC waiting beside lanes parked at a
 `WARPSYNC.COLLECTIVE`, and `exit-coll` drops an EXIT's re-check of collective groups: the
 profile verdict of `fixtures/e_bsync_parked_collective` then deadlocks (E-HW-BSYNC-COLLECTIVE).
+`cpasync-write-issue-clock` lands a cp.async's write as its issuing thread at its issue clock
+again (MISS 34: `fixtures/e_cpasync_early` LATEWAIT clean), `cparrive-arrive-clock` lands
+mbarrier-tracked copies at the arrive's clock (`e_cpasync_mbar_early` EARLY / OWN clean),
+`cp-overlap-off` drops the check between copies retired together (`e_cpasync_overlap` SAME /
+GROUPS / MBAR clean), `cp-relanded-off` the one between copies two waits landed and
+`cp-wait-epoch-fixed` the per-wait epochs of a thread's wait actor (LATER clean),
+`cp-warp-owed-off` the join of copies another path's `DEPBAR` retired (`e_cpasync_div_wait`
+good a race on the SASS front) (E-CPASYNC, E-CPASYNC-MBAR). `async-ids-check-off` drops the
+check of a thread's async actor ids, `async-ids-wrap` reports and wraps an id past them as
+before MISS 68 (`async_actor_ids_fail_closed`, with the ids cut to 4096: a crash, a run past
+the limit), and `async-ids-stride-4096` restores the fixed 4096 ids per thread
+(`e_async_ids_nc`, `e_async_ids_stream`, `e_async_ids_last` unmodeled). `bulk-read-is-full-wait` makes
+`cp.async.bulk.wait_group.read` acquire the bulk store's writes again and `bulk-write-read-epoch`
+runs those writes at the epoch of its reads (MISS 32: `fixtures/e_tma_store_readback` READ clean
+on the PTX front) (E-ASYNC-STEP).
 A mutant may also name cargo tests (`tests`: package, test binary, name filter), run in the
 mutant's tree; it is caught when a test that ran fails (claims checked against recorded GPU
 outputs, such as num's error bounds; adversarial tests). A build error, a missing test target or
@@ -149,6 +164,12 @@ Open source-mutant gaps (no mutant in `srcmut.py` until a test catches it):
 - Equivalent, not a gap: a shuffle from unknown source lanes taken as one value for every lane
   (`elect_lanes::warp_classes`); the shuffle's source operand, an effect operand, already
   tells those lanes apart.
+- Equivalent, not a gap: num's clobber taint (`num_clobber`, `Taint::clobber_taint`) beside
+  N-NUM-TRACK's rule for operands holding a rounding (`rounded_pre`): an untainted such operand
+  puts its lane in `cur_rounded`, which taints every destination left without a node; a
+  tainted one taints the destination through the instruction's taint rule (whole, except
+  LOP3's bitwise rule, which leaves untainted only bits fixed by the operands' untainted
+  bits).
 
 ### Adversarial tests of proof rules
 

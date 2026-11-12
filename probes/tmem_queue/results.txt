@@ -1,0 +1,34 @@
+GB300, one GPU, 2026-11-11. run.sh: 296 CTAs x 160 threads, 2000
+iterations per launch, 10 launches per mode; per iteration every thread of warps 0..3 checks its
+16 TMEM words (columns 240..255 of its lanes); mode 3 checks warp 4's 16 words per thread.
+
+SASS of the tested pairs (sm_103a; control words decoded):
+  mode 0: LDTM.x16 R20, tmem[UR4+0xf0] (wr SB0); STTM.x16 tmem[UR5+0xf0], R4 (no wait on SB0).
+  mode 1: LDTM (wr SB0); NOP; STTM waits SB0 (the control).
+  mode 2: STTM; LDTM at once (no FENCE.VIEW.ASYNC.T between).
+  mode 4: STTM.x16 a; STTM.x16 new at once (no FENCE.VIEW.ASYNC.T between); FENCE.VIEW.ASYNC.T;
+          LDTM.
+
+mode                                   words checked   other value   else
+0 ld; st (no wait::ld)                 1.2124e10       0             0
+1 ld; wait::ld; st (control)           1.2124e10       0             0
+2 st; ld (no wait::st)                 1.2124e10       0             0
+3 other warp st, ld 2 us later         3.031e9         3030722048    0    (99.99%; timing, not a control)
+4 st a; st b (no wait); wait; ld       1.2124e10       0             0
+
+Reading: measured nulls without a discriminating control. A thread's STTM after its own
+un-waited LDTM of the same words never changed what the LDTM returned (mode 0); of two
+un-fenced STTMs of one thread to the same words the second always won (mode 4); an LDTM after
+the thread's own un-fenced STTM read the new value (mode 2); 1.2e10 words each. Mode 3 (warp 4
+announces its load, sleeps 2 us and loads warp 0's words; warp 0 stores to them on the
+announcement) shows only that the check reads the other value when the store lands first in
+real time: the store precedes the load by about 2 us, so it is not a reordering control, and
+nothing here shows the setup could see a store overtaking an earlier load of the same queue,
+two stores swapping, or a load overtaking a store. The model assumes none of the three orders:
+the first two are `tmem-queue` contract findings at the strict level and under the GB300
+profile, the third a race.
+
+Earlier attempted controls that did not discriminate (kept for the record): an MMA (M128 N16,
+then eight chained M128 N256) overwriting the words, and an LDTM of them by the issuing warp
+right after the issue, or by another warp on a flag the issuer sets after the issue: 0 of 3.03e9
+words old in each (the load never saw the MMA in flight).

@@ -182,6 +182,12 @@ pub struct Obs {
     /// another value (N-ERRDIST-SEL).
     pub flip_checked: u64,
     pub flip_inputs: u64,
+    /// MISS 57: outputs whose exact value rests on an instruction slice whose data-dependent
+    /// decisions take a pattern its identification's probes never took (`real::Table`),
+    /// and the inputs with any. Single mode leaves them out; a pair keeps them in P(differ)
+    /// (C against R needs no exact value) and leaves them out of the moments.
+    pub ident_off: u64,
+    pub ident_off_inputs: u64,
 }
 
 impl Obs {
@@ -231,6 +237,8 @@ impl Obs {
         self.is_rec.extend(o.is_rec);
         self.flip_checked += o.flip_checked;
         self.flip_inputs += o.flip_inputs;
+        self.ident_off += o.ident_off;
+        self.ident_off_inputs += o.ident_off_inputs;
         if self.per_output.is_empty() {
             self.per_output = o.per_output;
         } else {
@@ -248,9 +256,9 @@ pub struct InputEval<'a> {
     pub w: &'a [crate::mma_lp::Operand],
     pub r_out: &'a [f32],
     pub c_out: Option<&'a [f32]>,
-    /// The reference program's exact table at `w`'s leaves (`nonlin::real::eval`), when the
-    /// caller has it.
-    pub real: Option<&'a [(super::nonlin::real::Dd, f64)]>,
+    /// The reference program's exact table at `w`'s leaves (`nonlin::real::eval_table`), when
+    /// the caller has it.
+    pub real: Option<&'a super::nonlin::real::Table>,
 }
 
 /// Accumulate one input's outputs into `obs`. `keep`: positions in `Setup::tracked` to keep
@@ -276,7 +284,8 @@ pub fn observe(
     let onf0 = obs.out_nonfinite;
     let mut ki = 0;
     // Agent AG: non-chain outputs take their exact value from the real-arithmetic evaluation.
-    let mut own: Option<Vec<(super::nonlin::real::Dd, f64)>> = None;
+    let mut own: Option<super::nonlin::real::Table> = None;
+    let off0 = obs.ident_off;
     obs.skipped += (n - st.tracked.len()) as u64;
     for (k, &o32) in st.tracked.iter().enumerate() {
         let o = o32 as usize;
@@ -285,14 +294,16 @@ pub fn observe(
             None => !ev.r_out[k].is_finite(),
         };
         obs.out_nonfinite += kernel_nf as u64;
+        let mut outside = false;
         let ex = match (&st.chain[k], st.r.outputs[o]) {
             (Some(ch), _) => st.r.exact(ch, ev.w, acc),
             (None, Some(op)) => {
                 let t = match ev.real {
                     Some(t) => t,
-                    None => own.get_or_insert_with(|| super::nonlin::real::eval(st.r, ev.w)),
+                    None => own.get_or_insert_with(|| super::nonlin::real::eval_table(st.r, ev.w)),
                 };
-                super::nonlin::real::exact_of(t, op)
+                outside = t.outside[op as usize];
+                super::nonlin::real::exact_of(&t.v, op)
             }
             (None, None) => {
                 obs.skipped += 1;
@@ -302,6 +313,18 @@ pub fn observe(
         obs.seen += 1;
         let rv = ev.r_out[k] as f64;
         let cnf = ev.c_out.is_some_and(|c| !c[k].is_finite());
+        // MISS 57: the exact value is unknown here (a slice outside the decision patterns its
+        // identification saw). A pair's P(differ) compares C with R and still counts it.
+        if outside {
+            obs.ident_off += 1;
+            if let Some(c) = ev.c_out {
+                if c[k].is_finite() && rv.is_finite() {
+                    obs.differ += (c[k].to_bits() != ev.r_out[k].to_bits()) as u64;
+                    obs.compared += 1;
+                }
+            }
+            continue;
+        }
         if !ex.y.is_finite() || !ex.s.is_finite() || !rv.is_finite() || cnf {
             obs.nonfinite += 1;
             continue;
@@ -381,7 +404,10 @@ pub fn observe(
             obs.pairs.push((ex.y + ex.y_lo, ey));
             obs.pair_at.push((o as u32, obs.cur));
         }
-        if let Some((rel, k, ab, one)) = st.wc {
+        // An output that `--pre-round` took before its rounding is another value than the
+        // bound's (`Prog::pre_round`): not checked against it.
+        let pre = st.r.pre_rounded.get(o).copied().unwrap_or(false);
+        if let (Some((rel, k, ab, one)), false) = (st.wc, pre) {
             let b = (rel * ex.y.abs() + k * if one { 1.0 } else { ex.s } + ab) * (1.0 + 1e-9);
             obs.wc_checked += 1;
             if e.abs() > b {
@@ -416,6 +442,9 @@ pub fn observe(
     if obs.compared > c0 {
         obs.input_differ
             .push((obs.differ - d0) as f64 / (obs.compared - c0) as f64);
+    }
+    if obs.ident_off > off0 {
+        obs.ident_off_inputs += 1;
     }
 }
 
@@ -461,6 +490,9 @@ pub fn ood_events(p: &Prog, w: &[crate::mma_lp::Operand]) -> Vec<&'static str> {
     }
     ev
 }
+
+/// The out-of-domain cause of inputs with `Obs::ident_off` outputs.
+pub const IDENT_OFF_CAUSE: &str = "exact value unknown: an instruction slice outside the decision patterns its identification probed";
 
 /// Monte Carlo configuration.
 pub struct McCfg {
@@ -733,8 +765,8 @@ fn one(
     // exact table at the error-free leaves.
     let mut real_r = None;
     if !sp.flips.0.is_empty() || !sp.flips.1.is_empty() {
-        let tr = super::nonlin::real::eval(st.r, wx.as_deref().unwrap_or(&wr));
-        let mut any = sp.flips.0.iter().any(|&j| flipped(st.r, j, &wr, &tr));
+        let tr = super::nonlin::real::eval_table(st.r, wx.as_deref().unwrap_or(&wr));
+        let mut any = sp.flips.0.iter().any(|&j| flipped(st.r, j, &wr, &tr.v));
         if let (Some(c), Some(wc), false) = (st.c, wc.as_ref(), sp.flips.1.is_empty()) {
             let clean;
             let lc: &[crate::mma_lp::Operand] = if smp.clean.is_empty() {
@@ -761,6 +793,7 @@ fn one(
     }
     let keep = keep_set(st.tracked.len(), cfg.keep, t);
     let nf0 = obs.nonfinite;
+    let io0 = obs.ident_off_inputs;
     // Importance sampling: this input's own counts (its PMF in a fresh map, merged back).
     let before = (obs.differ, obs.compared, obs.out_nonfinite, obs.seen);
     let pmf_all = logw.map(|_| std::mem::take(&mut obs.pmf_ulp));
@@ -771,7 +804,7 @@ fn one(
             w: wx.as_deref().unwrap_or(&wr),
             r_out: &r_out,
             c_out: c_vals.as_deref(),
-            real: real_r.as_deref(),
+            real: real_r.as_ref(),
         },
         obs,
         &keep,
@@ -798,11 +831,19 @@ fn one(
         obs.is_rec.push(rec);
     }
     // NaN / Inf outputs: out of domain (counted, never dropped silently).
+    let mut counted = !causes_empty;
     if obs.nonfinite > nf0 {
-        obs.ood_inputs += causes_empty as u64;
+        obs.ood_inputs += !counted as u64;
+        counted = true;
         *obs.ood
             .entry("non-finite output (NaN / Inf)".to_string())
             .or_default() += 1;
+    }
+    // MISS 57: outputs whose exact value is unknown (a slice outside the decision patterns its
+    // identification saw).
+    if obs.ident_off_inputs > io0 {
+        obs.ood_inputs += !counted as u64;
+        *obs.ood.entry(IDENT_OFF_CAUSE.to_string()).or_default() += 1;
     }
     Ok(())
 }

@@ -1,0 +1,42 @@
+name = "c_num_mufu_imm_f32"
+description = """
+N-NUM-TRACK (MISS 36, the all-immediate exemption; the independent review's probe mufu_imm, kernel.ptx,
+gen.py): approximations of immediate operands. ptxas keeps MUFU.TANH with an immediate source; it folds
+ex2.approx.ftz of a constant to an immediate. out[32 k + t]: x + tanh(0.1f), tanh(0.1f), x + tanh(0.5f),
+x + tanh(0.2f), x + ex2(0.1f). The MUFU results are roundings (no exact constant); the folded k = 4 is a
+constant on the SASS front (open). expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP).
+"""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_mufu_imm_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [160]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

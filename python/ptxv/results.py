@@ -11,12 +11,25 @@ Each keeps the CLI's JSON document (`.json`) and exposes the common fields as at
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 import numpy as np
 
 from .bound import Bound
+
+
+# ptxv's bitwise-equal sentence for one compared output (`expect_report`), whole line; and its
+# within-one-ulp sentence (N-MULTIMEM-ROUND16), which ends "the rest bitwise equal".
+_BITWISE_LINE = re.compile(
+    r"^output \d+: [^:]+: bitwise equal to the captured GPU output "
+    r"(\(\d+ bytes(; \d+ differing bytes in device-address words excluded \(expect_ignore\))?\)"
+    r"|outside the permuted rows)$"
+)
+_WITHIN_ULP_LINE = re.compile(
+    r"^output \d+: [^:]+: within one ulp of the captured GPU output: "
+)
 
 
 @dataclass
@@ -61,9 +74,12 @@ class Verdict:
     """Execution verdict of one case (`ptxv check`): every schedule explored or certified.
 
     classes: ["clean"] or the finding kinds ("race", "deadlock", "violation", "fault",
-    "unmodeled", "nondeterministic"). certified: decided by the E-WELLSYNC certificate (one
-    run stands for every schedule). complete: the exploration finished (no state cap hit).
-    sim_vs_gpu: the simulator's output against the captured GPU output.
+    "unmodeled", "nondeterministic"). certified: a complete verdict decided by the E-WELLSYNC
+    certificate (one run stands for every schedule); an incomplete verdict is never certified,
+    whatever its assumptions list. complete: the exploration finished (no state cap hit).
+    sim_vs_gpu: the simulator's output against the captured GPU output (the report lines);
+    gpu_compare: ptxv's result behind each line (`{output, part, result}`), read by
+    `gpu_state` / `sim_equals_gpu`.
     refuted_opt_in: refuted assumptions the verdict relies on by explicit opt-in.
     gb300: the second level's summary (the hardware-model check: states, observable / latent
     counts, stale reads only it sees), or None when it did not run. `observable` / `latent` /
@@ -88,6 +104,7 @@ class Verdict:
     refuted_opt_in: list[str] = field(default_factory=list)
     gb300: dict | None = None
     nonfinite: dict | None = None
+    gpu_compare: list | None = None
 
     @classmethod
     def from_json(cls, doc: dict) -> "Verdict":
@@ -99,7 +116,7 @@ class Verdict:
         got = list(r.get("got") or [])
         return cls(
             classes=got,
-            certified="E-WELLSYNC" in v.get("assumptions", []),
+            certified="E-WELLSYNC" in v.get("assumptions", []) and v.get("complete") is True,
             complete=bool(v.get("complete")),
             states=int(v.get("states", 0)),
             findings=[Finding.from_json(f) for f in v.get("findings", [])],
@@ -112,6 +129,7 @@ class Verdict:
             refuted_opt_in=list(r.get("refuted_opt_in") or []),
             gb300=r.get("gb300"),
             nonfinite=r.get("nonfinite"),
+            gpu_compare=r.get("gpu_compare"),
         )
 
     @property
@@ -160,12 +178,45 @@ class Verdict:
         )
 
     @property
-    def sim_equals_gpu(self) -> bool | None:
-        """True if every captured output equals the simulator's bit for bit (None: no GPU
-        output in the case)."""
-        if not self.sim_vs_gpu:
+    def gpu_state(self) -> str | None:
+        """The comparison with the captured GPU output, as kernel_db reads it: "bitwise" (every
+        comparison bitwise equal), else "mismatch", "within_ulp" (differing elements one unit in
+        the last place off or NaN on both sides, N-MULTIMEM-ROUND16), "permuted_equal" /
+        "not_compared" (C-TICKET-ADDR), in that order; None when nothing was compared. From ptxv's
+        per-comparison `gpu_compare`, never the report text. Outputs of binaries without it: a
+        line is bitwise only when the whole line is ptxv's bitwise-equal sentence (the
+        within-one-ulp line also says "the rest bitwise equal")."""
+        if self.gpu_compare is not None:
+            res = [
+                x.get("result")
+                for x in self.gpu_compare
+                if x.get("result") != "no_capture"
+            ]
+        else:
+            res = [
+                "bitwise"
+                if _BITWISE_LINE.match(s)
+                else "within_ulp"
+                if _WITHIN_ULP_LINE.match(s)
+                else "mismatch"
+                for s in self.sim_vs_gpu
+            ]
+        if not res:
             return None
-        return all("bitwise equal" in s for s in self.sim_vs_gpu)
+        if all(r == "bitwise" for r in res):
+            return "bitwise"
+        for state in ("mismatch", "within_ulp", "permuted_equal", "not_compared"):
+            if state in res:
+                return state
+        return "mismatch"  # a result this reader does not know
+
+    @property
+    def sim_equals_gpu(self) -> bool | None:
+        """True if every captured output equals the simulator's bit for bit (`gpu_state`
+        "bitwise"); False for any other comparison, within one ulp included; None: no GPU
+        output in the case."""
+        s = self.gpu_state
+        return None if s is None else s == "bitwise"
 
     def __repr__(self) -> str:
         how = (
@@ -173,7 +224,9 @@ class Verdict:
             if self.certified
             else ("complete" if self.complete else "INCOMPLETE")
         )
-        gpu = {True: ", sim=GPU", False: ", sim!=GPU", None: ""}[self.sim_equals_gpu]
+        gpu = {True: ", sim=GPU", False: f", sim!=GPU ({self.gpu_state})", None: ""}[
+            self.sim_equals_gpu
+        ]
         f = f", findings={self.findings}" if self.findings else ""
         if self.refuted_opt_in:
             f += f", assumes refuted {','.join(self.refuted_opt_in)}"

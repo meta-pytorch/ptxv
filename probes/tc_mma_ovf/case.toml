@@ -51,4 +51,7 @@ value = 0x8040490
 
 [[variants]]
 id = "good"
-expect = ["clean"]
+# Strict level: the sentinel fill and the stores under test overlap with no tcgen05.wait::st
+# between, a tmem-queue contract finding on both fronts (E-TMEM-QUEUE; PTX: MISS 116),
+# a contract under the GB300 profile too (the test: probe_bitwise_queue).
+expect = ["contract"]

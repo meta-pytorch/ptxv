@@ -1,0 +1,76 @@
+name = "e_cta_group_mix"
+description = """
+One .cta_group per kernel (PTX ISA, tcgen05): rung 1a's tcgen05 tile with one tcgen05
+instruction switched to .cta_group::2 (a violation; ptxas refuses the kernel). A commit tracks
+only its own group's operations. See kernel.ptx."""
+ptx = "kernel.ptx"
+entry = "e_cta_group_mix"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+spec = "gemm_tn"
+
+[[buffers]]
+name = "A"
+dtype = "bf16"
+shape = [128, 64]
+init = "normal"
+seed = 11
+
+[[buffers]]
+name = "B"
+dtype = "bf16"
+shape = [64, 64]
+init = "normal"
+seed = 12
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [128, 64]
+init = "nan"
+
+# A[m][k] row-major viewed as 3-D (k%8, m, k/8): box (8, 128, 8) lands in shared memory as
+# 8 K-chunks of 128 rows x 16 B (LBO = 2048 B, SBO = 128 B).
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [8, 128, 8]
+dims = [8, 128, 8]
+strides = [128, 16]
+
+[[params]]
+kind = "tensormap"
+buffer = "B"
+box = [8, 64, 8]
+dims = [8, 64, 8]
+strides = [128, 16]
+
+[[params]]
+kind = "ptr"
+buffer = "D"
+
+[[variants]]
+id = "good"
+summary = "every tcgen05 instruction is cta_group::1"
+expect = ["clean"]
+
+[[variants]]
+id = "C2"
+summary = "tcgen05.commit.cta_group::2 after cta_group::1 MMAs: violation, and it tracks none of them (race)"
+marker = "@B43"
+find = "tcgen05.commit.cta_group::1."
+replace = "tcgen05.commit.cta_group::2."
+expect = ["race", "violation"]
+expect_sass = ["unlifted"]
+hw_note = "ptxas 13.0 refuses the kernel (mixed .cta_group)"
+
+[[variants]]
+id = "D2"
+summary = "tcgen05.dealloc.cta_group::2 in a cta_group::1 kernel: violation"
+marker = "@B41"
+find = "tcgen05.dealloc.cta_group::1."
+replace = "tcgen05.dealloc.cta_group::2."
+expect = ["violation"]
+expect_sass = ["unlifted"]
+hw_note = "ptxas 13.0 refuses the kernel (mixed .cta_group)"

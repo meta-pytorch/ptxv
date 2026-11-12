@@ -1,0 +1,3 @@
+{"version": 1, "seed": 1, "name": "x: N(0,1) w.p. 0.5, uniform [-5, -4] w.p. 0.5; others N(0,1)",
+ "tensors": {"x": {"dist": {"kind": "mixture", "components": [{"weight": 0.5, "dist": {"kind": "normal"}}, {"weight": 0.5, "dist": {"kind": "uniform", "lo": -5.0, "hi": -4.0}}]}}},
+ "default": {"dist": {"kind": "normal"}}}

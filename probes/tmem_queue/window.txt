@@ -1,0 +1,30 @@
+GB300, one GPU, 2026-11-11. window.sh 100 1000: 148 CTAs x 256 threads (warps 0-3 issue the long
+access, warps 4-7 are the partners on the same TMEM lanes) x 100 iterations x 1000 launches per
+variant; one checked word (column 127) per issuing thread and iteration: 1.8944e9 per variant.
+
+SASS of each pair (sm_103a; control words decoded):
+  C0:  LDTM.x128 (write scoreboard SB0); NOP; STS flag with no wait. The partner spins on the
+       flag, then STTM.x1 column 127.
+  C0w, C0r: STTM.x128; NOP; STS flag with no wait; FENCE.VIEW.ASYNC.T after the STS. The
+       partner spins, then STTM.x1 (C0w) / LDTM.x1 (C0r) of column 127.
+  M0': LDTM.x128 (SB0); STTM.x1 column 127 waiting on SB2 only (not the LDTM's SB0).
+  M4': STTM.x128; STTM.x1 column 127; FENCE.VIEW.ASYNC.T after both.
+  M2': STTM.x128; LDTM.x1 column 127; FENCE.VIEW.ASYNC.T after both.
+  Without the bar.warp.sync between the long access and the flag store, ptxas issued the STS
+  before the long access; a fence.acq_rel.cta there added a NOP that waits on every
+  scoreboard (the LDTM's too).
+
+variant                                       checked      out of order    else
+C0  cross: LDTM.x128; partner STTM.x1         1.8944e9     0               0
+C0w cross: STTM.x128 a; partner STTM.x1 b     1.8944e9     0               0
+C0r cross: STTM.x128; partner LDTM.x1         1.8944e9     0               0
+M0' same:  LDTM.x128; STTM.x1                 1.8944e9     0               0
+M4' same:  STTM.x128 a; STTM.x1 b             1.8944e9     0               0
+M2' same:  STTM.x128; LDTM.x1                 1.8944e9     0               0
+
+Reading: the calibration found no window. No partner access issued after the long access
+(through the flag, about a shared-memory round trip later) landed inside it in any direction,
+so the check is not shown to see an in-flight TMEM access at this scale, and the same-thread
+nulls M0', M4', M2' stay measured nulls without a discriminating control, like modes 0, 2 and 4
+(results.txt). E-TMEM-QUEUE is unchanged: not assumed, `tmem-queue` findings contracts at both
+levels.

@@ -1,0 +1,71 @@
+name = "c_num_ctl_loop_f32"
+description = """
+N-NUM-TRACK (the independent review's probe rd_loop_param, kernel.ptx): a loop trip count decided by a float
+counter of parameters. f = 0; n = 0; while (f < B) { s_t += x[(t + 32 n) & 127]; f = rn(f + s); n++ } with
+s = 0.1f, B = 0x3e99999a. out[t] = s_t. This run iterates 3 times (rn(rn(s + s) + s) = B); the exact
+computation 4 times (3 s < B). num makes no claim. expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP).
+"""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_ctl_loop_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [128]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/y.bin"
+
+[[buffers]]
+name = "z"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/z.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "bytes"
+hex = "cdcccc3d"
+
+[[params]]
+kind = "bytes"
+hex = "9a99993e"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

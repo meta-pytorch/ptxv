@@ -1,0 +1,60 @@
+name = "e_async_ids_stream"
+description = """
+S-NC precision with async actor ids (MISS 68): k1 reads with .nc what the stream-ordered k0
+wrote with its last thread's 4097th async operation (exempt: k0 completed before k1 started).
+With a fixed 4096 ids per thread the write's id decoded as k1's thread 32, a write of the
+reading kernel: a false S-NC violation on both fronts. Now clean, as for n0."""
+ptx = "kernel.ptx"
+entry = "k0"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out2"]
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [4]
+init = "iota"
+
+[[buffers]]
+name = "dummy"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "out2"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[params]]
+kind = "ptr"
+buffer = "dummy"
+
+[[params]]
+kind = "u32"
+value = 4096
+
+[[launches]]
+entry = "k1"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+params = [ { kind = "ptr", buffer = "src" }, { kind = "ptr", buffer = "out2" } ]
+
+[[variants]]
+id = "good"
+summary = "N = 4096 (clean expected: stream order)"
+expect = ["clean"]
+
+[[variants]]
+id = "n0"
+summary = "N = 0 (control)"
+marker = "@N"
+find = "fence.proxy.async.shared::cta;"
+replace = "fence.proxy.async.shared::cta; mov.u32 %r9, 0;"
+expect = ["clean"]

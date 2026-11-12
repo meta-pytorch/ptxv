@@ -1,0 +1,86 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// fp32 atomic adds (MISS 58 class).
+//   af_sum:  64 threads; thread i adds x[i] to y[i % 32] with red.global.add.f32 (SASS
+//            REDG.E.ADD.F32.FTZ.RN) from y = 0, so y[j] = x[j] + x[j + 32] in either order.
+//            atom/red.add.f32 flushes subnormal operands and results (PTX ISA; exec.rs
+//            `AtomOp::FAddFtz`); the DAG added without the flush, and with x scaled by 2^-130
+//            on 1% of the inputs it reported P(bits differ) 0 where GB300 differs from the
+//            correctly rounded sum on 128 of 12800 outputs (1.00e-2, all equal to the flush
+//            model). Every output was fed by an atomic add, so the GPU validation exempted it.
+//   af_flag: sw_all of ../storeword/kernel.ptx with its outputs written by atomic adds: each
+//            output gets at most two adds from one thread in program order, so GB300's order is
+//            the DAG's, and its 320 mismatching outputs over 400 GB300 inputs were exempted as
+//            another order of the adds.
+
+.visible .entry af_sum(.param .u64 px, .param .u64 py)
+{
+    .reg .f32 %f<4>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    ld.global.f32 %f1, [%rd4];
+    and.b32 %r2, %r1, 31;
+    mul.wide.u32 %rd5, %r2, 4;
+    add.s64 %rd6, %rd2, %rd5;
+    red.global.add.f32 [%rd6], %f1;
+    ret;
+}
+
+.visible .entry af_flag(.param .u64 px, .param .u64 pw, .param .u64 pv, .param .u64 py, .param .u64 pz)
+{
+    .shared .align 4 .u32 flag;
+    .reg .f32 %f<12>;
+    .reg .b32 %r<12>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<6>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    ld.param.u64 %rd5, [pz];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd8, %rd2, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd8];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    add.rn.f32 %f5, %f4, %f3;
+    red.global.add.f32 [%rd10], %f5;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra S1;
+    mov.u32 %r5, 1;
+    st.shared.u32 [flag], %r5;
+S1:
+    bar.sync 0;
+    @%p2 bra S2;
+    ld.global.f32 %f9, [%rd1];
+    mov.u32 %r10, flag;
+    ld.volatile.shared.u32 %r11, [%r10];
+    setp.ge.f32 %p1, %f9, 0f40400000;
+    mov.u32 %r6, 0;
+    @%p1 st.volatile.shared.u32 [%r10], %r6;
+    st.global.u32 [%rd5], %r11;
+S2:
+    bar.sync 0;
+    ld.shared.u32 %r7, [flag];
+    setp.eq.u32 %p5, %r7, 0;
+    mul.rn.f32 %f6, %f5, 0f40000000;
+    @%p5 red.global.add.f32 [%rd10], %f6;
+    ret;
+}

@@ -1,0 +1,55 @@
+name = "c_num_udiv_data_f32"
+description = """
+N-NUM-UDIV: a u32 division of input data by a parameter (kernel.ptx, gen.py): q = idx[t] / 7 (ptxas: I2F.U32.RP,
+MUFU.RCP, F2I.TRUNC, an integer correction), out[t] = x[q & 127]. The quotient is exact but comes from an input
+buffer, so the load address depends on input data and num makes no claim (the idiom exception needs untainted
+operands). expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_udiv_data_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [128]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "idx"
+dtype = "u32"
+shape = [32]
+init = "file"
+file = "data/idx.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "idx"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 7
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

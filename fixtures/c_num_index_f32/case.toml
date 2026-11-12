@@ -1,0 +1,69 @@
+name = "c_num_index_f32"
+description = """
+N-NUM-TRACK: index arithmetic the SASS front computes with rounding instructions (kernel.ptx, gen.py).
+out[256 + t] = sum over i < n of x[(t + 32 i) & 127] and f32(i), a loop whose counter ptxas starts with
+HFMA2 R, -RZ, RZ, 0, 0; r = t / cols by a parameter (I2F.U32.RP, MUFU.RCP, F2I.TRUNC, integer correction),
+j = (11 (t - r cols) + r) & 127, out[t] = x[j] + y[j] under the guard r < rlim, out[128 + t] = x[j] behind
+a branch on r < rlim2. The counter and the quotient are exact, so num keeps every claim. expected/ is
+GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_index_f32"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [128]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [128]
+init = "file"
+file = "data/y.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [384]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 12
+
+[[params]]
+kind = "u32"
+value = 8
+
+[[params]]
+kind = "u32"
+value = 9
+
+[[params]]
+kind = "u32"
+value = 6
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

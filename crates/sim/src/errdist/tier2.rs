@@ -1800,7 +1800,9 @@ pub fn dag(
                     a
                 }
             }
-            Op::Add { a, b, rz } => {
+            // An FTZ add as its rounding to nearest (the flush is outside these moments; Tier 3
+            // evaluates it and the cross-check compares, N-ERRDIST-DAG).
+            Op::Add { a, b, rz, .. } => {
                 let (x, y) = (&ns[a], &ns[b]);
                 let r = Ns {
                     m: x.m + y.m,
@@ -3116,6 +3118,7 @@ mod dag_tests {
                             a: c[0],
                             b: c[1],
                             rz: false,
+                            ftz: false,
                         });
                         adds.push((c[0] as usize, c[1] as usize));
                         nx.push(ops.len() as u32 - 1);
@@ -3132,6 +3135,7 @@ mod dag_tests {
                     a: acc,
                     b: x,
                     rz: false,
+                    ftz: false,
                 });
                 adds.push((acc as usize, x as usize));
                 acc = ops.len() as u32 - 1;
@@ -3147,6 +3151,10 @@ mod dag_tests {
                 out_fmt: Format::F32,
                 bufs: vec!["x".into()],
                 dep_untracked: vec![],
+                atomic: vec![],
+                atomic_src: vec![],
+                atomic_free: vec![],
+                pre_rounded: vec![],
             },
             adds,
         )

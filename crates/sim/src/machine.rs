@@ -481,6 +481,47 @@ pub fn vc_from_sorted(e: Vec<(u32, u32)>) -> VC {
 /// E-READ-DONE: the clock entry of actor `a`'s completed reads (`Machine::read_release`).
 pub const RR_BIT: u32 = 1 << 31;
 
+/// Actors every thread has, with ids `k n + t` (`n` threads, `k` below this): the thread
+/// itself, its tcgen05.ld/st actor (`Machine::tc_actor_id`), its tcgen05 pipe
+/// (`Machine::pipe_actor_id`), its second tcgen05 pipe, for the `.cta_group` other than its
+/// first MMA-pipe operation's (`Machine::pipe2_actor_id`; MISS 104), and its SASS `STTM`
+/// writes (`Machine::sttm_actor_id`; MISS 107). Async actor ids start after them
+/// (`async_base`).
+pub const FIXED_ACTORS_PER_THREAD: u32 = 5;
+
+/// The first async actor id with `n` threads (`Machine::async_base`).
+pub fn async_base(n: u32) -> u32 {
+    FIXED_ACTORS_PER_THREAD * n
+}
+
+/// log2 of a thread's async actor ids with `n` threads (`Machine::async_ids`): the largest
+/// power of two that keeps every id, `async_base(n) + t * ids + serial`, below `RR_BIT`.
+/// MISS 68: a fixed 4096 let a thread's 4097th async operation take the next thread's first id.
+pub fn async_shift(n: u32) -> u32 {
+    let n = n.max(1) as u64;
+    let room = (RR_BIT as u64).saturating_sub(FIXED_ACTORS_PER_THREAD as u64 * n) / n;
+    room.max(1).ilog2()
+}
+
+/// The (issuing thread, serial) of async actor `a` (at least `async_base(n)`, not a NIC's own)
+/// with `n` threads and async shift `shift` (`async_shift`): the one decoder of async actor
+/// ids, behind `Machine::async_split` and `actor_thread_of`.
+pub fn async_split_of(a: u32, n: u32, shift: u32) -> (usize, u32) {
+    let r = a - async_base(n);
+    ((r >> shift) as usize, r & ((1 << shift) - 1))
+}
+
+/// The thread behind actor `a` with `n` threads and async shift `shift` (`async_shift`): a
+/// fixed actor's thread, or an async actor's issuer (`async_split_of`; `Machine::actor_thread`,
+/// for code that has the threads but not the `Machine`).
+pub fn actor_thread_of(a: u32, n: u32, shift: u32) -> usize {
+    if a < async_base(n) {
+        (a % n) as usize
+    } else {
+        async_split_of(a, n, shift).0
+    }
+}
+
 /// E-READ-DONE: the entries of `rr` that `v` does not know yet. (Not pruned against
 /// happens-before: `Machine::read_release` forwards read entries, not thread entries, so a
 /// read entry dropped because happens-before covers it would be lost at the next relaxed
@@ -542,6 +583,47 @@ pub fn vc_single(actor: u32, clock: u32) -> VC {
         base: VcBase::from(vec![(actor, clock)]),
         own: (0, 0),
     }
+}
+
+/// `v` with actor `i`'s entry raised to at least `c` (an async actor's epoch).
+pub fn vc_raise(v: &mut VC, i: u32, c: u32) {
+    if v.own.1 != 0 && v.own.0 != i {
+        v.base = VcBase::from(v.entries());
+        v.own = (0, 0);
+    }
+    let c = vc_get(v, i).max(c);
+    v.own = (i, c);
+}
+
+/// `vc_raise` of each clock of `vs` by actor `i` to `c`, sharing the work: a clock whose own
+/// entry is another actor's keeps it over a base with `i` raised, built once per distinct
+/// base (copies one thread issued between two of its synchronizations share one).
+pub fn vc_raise_many<'a>(vs: impl IntoIterator<Item = &'a VC>, i: u32, c: u32) -> Vec<VC> {
+    let mut bases: Vec<(*const VcBase, Arc<VcBase>)> = Vec::new();
+    vs.into_iter()
+        .map(|v| {
+            if v.own.1 == 0 || v.own.0 == i {
+                let mut r = v.clone();
+                vc_raise(&mut r, i, c);
+                return r;
+            }
+            let key = Arc::as_ptr(&v.base);
+            let base = match bases.iter().find(|b| b.0 == key) {
+                Some(b) => b.1.clone(),
+                None => {
+                    let mut e = v.base.e.clone();
+                    match e.binary_search_by_key(&i, |x| x.0) {
+                        Ok(k) => e[k].1 = e[k].1.max(c),
+                        Err(k) => e.insert(k, (i, c)),
+                    }
+                    let b = VcBase::from(e);
+                    bases.push((key, b.clone()));
+                    b
+                }
+            };
+            VC { base, own: v.own }
+        })
+        .collect()
 }
 
 pub fn vc_tick(v: &mut VC, i: u32) {
@@ -1248,8 +1330,15 @@ pub struct Thread {
     pub tc_vc: VC,
     /// Clock of this thread's in-order tcgen05 async pipe (MMA, commit).
     pub pipe_vc: VC,
-    /// Number of TMA operations this thread issued (deterministic async actor ids).
+    /// `.cta_group` of the thread's first MMA-pipe operation (0: none yet, 1, 2); operations
+    /// of the other group go to its second pipe (`Machine::pipe2_actor_id`, `pipe2_vc`).
+    pub pipe_grp: u8,
+    pub pipe2_vc: VC,
+    /// Async actor ids this thread took so far (`Machine::async_actor`; deterministic ids).
     pub tma_count: u32,
+    /// Landings of this thread's cp.async copies by waits so far: the epochs of its wait actor
+    /// (`Machine::cp_wait_actor`, E-CPASYNC).
+    pub cp_epoch: u32,
     /// E-CLOCK opt-in (PTXV_CLOCK_STEP): the value the next clock read returns.
     pub clock: u64,
     /// E-CLOCK: back edges of clock branches taken in a row (clock.rs `MAX_CLOCK_ITERS`).
@@ -1263,6 +1352,12 @@ pub struct Thread {
     /// wait::st / wait::ld orders before its later MMA-pipe operations (S-TCGEN05).
     pub tc_st: u32,
     pub tc_ld: u32,
+    /// Clock (of the same actor) of the thread's first tcgen05.ld since its last
+    /// tcgen05.wait::ld, 0 if none: that load and later ones are not complete, so
+    /// fence::before_thread_sync does not release them (S-TCGEN05).
+    pub tc_ld_unwaited: u32,
+    /// Likewise its first tcgen05.st since its last tcgen05.wait::st.
+    pub tc_st_unwaited: u32,
     /// Bitset over `regs`: slot written since launch (S-INIT: reads of unwritten registers
     /// are reported).
     pub written: Vec<u64>,
@@ -1294,8 +1389,10 @@ pub struct Thread {
     /// The read scoreboard of each committed bulk group (SASS `UTMACMDFLUSH`'s rbar, by group
     /// id; `u8::MAX`: none, or PTX). A SASS wait counts the groups of its scoreboard only.
     pub bulk_sb: Vec<u8>,
-    /// Completed bulk operations not yet waited for: (group, completion clock).
-    pub bulk_done: Vec<(u32, VC)>,
+    /// Completed bulk operations not yet waited for: (group, clock of its shared-memory reads,
+    /// clock of its global writes). A `wait_group.read` acquires the first and keeps the entry;
+    /// a full wait acquires the second and drops it.
+    pub bulk_done: Vec<(u32, VC, VC)>,
     /// Barrier generation key this thread was released from and has not run since (DPOR:
     /// its next transition acquires it).
     pub acq_bar: Option<u64>,
@@ -1359,6 +1456,20 @@ pub struct Thread {
     /// E-READ-DONE (case `read_done`): loads whose destination registers no instruction has
     /// used yet: (register file, first register, count, clock of the read).
     pub ld_pend: Vec<(u8, u16, u8, u32)>,
+    /// SASS: the thread's `LDTM`s whose tensor-memory reads are outstanding, in issue order:
+    /// (write scoreboard, 7 for none; clock of its tcgen05.ld/st actor). S-TCGEN05.
+    pub ldtm_pend: Vec<(u8, u32)>,
+}
+
+impl Thread {
+    /// The tcgen05.ld/st actor's clock of the thread's first load or store not yet waited
+    /// for (`tc_ld_unwaited`, `tc_st_unwaited`), 0 if none.
+    pub fn tc_unwaited(&self) -> u32 {
+        match (self.tc_ld_unwaited, self.tc_st_unwaited) {
+            (0, x) | (x, 0) => x,
+            (x, y) => x.min(y),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Hash)]
@@ -1390,6 +1501,11 @@ pub struct Warp {
     /// SASS: LDGDEPBAR executions by the warp (any lanes): the cp.async scoreboard counts
     /// the warp's commits, not each thread's (E-CPASYNC).
     pub cp_seq: u32,
+    /// SASS: copies a `DEPBAR` of some lanes retired while other live lanes of the warp ran
+    /// elsewhere: (the warp's commit count at their issue, their writes' clock, lanes that
+    /// have not executed a `DEPBAR` covering them yet). Such a lane's covering wait joins
+    /// the clock (E-CPASYNC, `cp_async_wait_warp`). Empty unless waits diverge.
+    pub cp_landed: Vec<(u32, VC, u32)>,
 }
 
 /// The memory a release or acquire covers (S-MBAR-SCOPE): everything; the SM-local memories
@@ -2146,6 +2262,8 @@ pub struct Machine {
     /// `%nsmid` (smid.rs). ASSUME(E-SMID)
     pub smid: Arc<Vec<u32>>,
     pub nsmid: u32,
+    /// Not hashed, static: log2 of a thread's async actor ids (`async_shift`, `async_ids`).
+    pub async_shift: u32,
     /// Not hashed, static: E-CLOCK's opt-in clock step (`exec::clock_step`, `PTXV_CLOCK_STEP`;
     /// 0: clock reads are 0).
     pub clock_step: u64,
@@ -2215,6 +2333,10 @@ pub struct Machine {
     /// Not hashed: some multimem.ld_reduce lane of this run returned the nearest-even
     /// neighbour of a sum whose rounding direction on GB300 is not modeled (N-MULTIMEM).
     pub mc_inexact: bool,
+    /// Not hashed, transient: the clock a SASS STTM is ordered with under E-TMEM-QUEUE (its
+    /// thread's pending LDTMs joined), while `tmem_access` checks it: a conflict ordered only
+    /// by it is a `tmem-queue:` contract finding (exec.rs, the `TmemSt` arm).
+    pub tmem_queue_vc: Option<VC>,
     /// Not hashed: per global byte, which actor accessed it first, and whether several did /
     /// any wrote (single deterministic runs, `explore_symmetric`).
     pub gown: Option<Box<GOwn>>,
@@ -2876,6 +2998,7 @@ impl Machine {
                     ur_written: [0; 4],
                     bmask: [0; 16],
                     cp_seq: 0,
+                    cp_landed: Vec::new(),
                 }));
             }
             for t in 0..tpc {
@@ -2894,14 +3017,20 @@ impl Machine {
                     vc: VC::new(),
                     tc_vc: VC::new(),
                     pipe_vc: VC::new(),
+                    pipe_grp: 0,
+                    pipe2_vc: VC::new(),
                     tma_count: 0,
+                    cp_epoch: 0,
                     clock: 0,
                     clock_iters: 0,
                     clock_mem: false,
                     pending_ld: vec![],
                     tc_st: 0,
                     tc_ld: 0,
+                    tc_ld_unwaited: 0,
+                    tc_st_unwaited: 0,
                     ld_pend: vec![],
+                    ldtm_pend: vec![],
                     written: vec![0; nv.div_ceil(64)],
                     vund: vec![],
                     fences: vec![],
@@ -2953,6 +3082,7 @@ impl Machine {
         let tmem: Vec<Tmem> = (0..launch.ctas()).map(|_| Tmem::new()).collect();
         let launch_ctas = launch.ctas();
         let n_grids = launch.grids.len();
+        let threads_len = threads.len() as u32;
         let mut m = Machine {
             k,
             launch,
@@ -2987,6 +3117,7 @@ impl Machine {
             coll_used,
             smid,
             nsmid,
+            async_shift: async_shift(threads_len),
             smid_used,
             smid_fixed: false,
             clock_step: crate::exec::clock_step(),
@@ -3015,6 +3146,7 @@ impl Machine {
             gown: None,
             mma_cache: Default::default(),
             findings: Vec::new(),
+            tmem_queue_vc: None,
             num: None,
             elect_choice: None,
             elect_any: false,
@@ -3257,16 +3389,71 @@ impl Machine {
         self.threads.len() as u32
     }
 
+    /// The first async actor id (`async_base`): after every thread's fixed actors.
+    pub fn async_base(&self) -> u32 {
+        async_base(self.nthreads())
+    }
+
     // Deterministic actor ids: threads 0..n, then per-thread tcgen05.ld/st actors, per-thread
-    // tcgen05 pipes, then TMA operations keyed by (issuer, per-issuer serial).
+    // tcgen05 pipes, then async operations keyed by (issuer, per-issuer serial).
     pub fn tc_actor_id(&self, t: usize) -> u32 {
         self.nthreads() + t as u32
     }
     pub fn pipe_actor_id(&self, t: usize) -> u32 {
         2 * self.nthreads() + t as u32
     }
+    /// The tcgen05 pipe of thread `t` for the `.cta_group` other than the one of its first
+    /// MMA-pipe operation (a kernel that mixes them, `Thread::pipe_grp`): a commit tracks
+    /// only the operations of its own group (PTX ISA, tcgen05.commit).
+    pub fn pipe2_actor_id(&self, t: usize) -> u32 {
+        3 * self.nthreads() + t as u32
+    }
+    /// The tensor-memory writes of thread `t`'s SASS `STTM`s (MISS 107): complete only at the
+    /// thread's `FENCE.VIEW.ASYNC.T` (tcgen05.wait::st), so their own actor, apart from its
+    /// LDTM reads (`tc_actor_id`, completed at scoreboard waits).
+    pub fn sttm_actor_id(&self, t: usize) -> u32 {
+        4 * self.nthreads() + t as u32
+    }
+    /// The async actor ids of a thread (a power of two, `async_shift`); the last is its
+    /// cp.async wait actor.
+    pub fn async_ids(&self) -> u32 {
+        1 << self.async_shift
+    }
     pub fn tma_actor_id(&self, t: usize, serial: u32) -> u32 {
-        3 * self.nthreads() + t as u32 * 4096 + serial
+        debug_assert!(serial < self.async_ids());
+        self.async_base() + ((t as u32) << self.async_shift) + serial
+    }
+    /// The (issuing thread, serial) of async actor `a` (at least `async_base`, not a NIC's own):
+    /// `async_split_of`.
+    pub fn async_split(&self, a: u32) -> (usize, u32) {
+        async_split_of(a, self.nthreads(), self.async_shift)
+    }
+    /// The async actor that lands thread `t`'s cp.async copies retired by its waits, at
+    /// increasing epochs (`Thread::cp_epoch`): the last of its async actor ids, which the
+    /// others (`async_actor`) stop short of (E-CPASYNC).
+    pub fn cp_wait_actor(&self, t: usize) -> u32 {
+        self.tma_actor_id(t, self.async_ids() - 1)
+    }
+    /// Thread `t`'s next async actor: one checked allocator for every kind (TMA, bulk and
+    /// remote operations, try_cancel, NIC work requests, the actors landing cp.async copies at
+    /// an arrive or at the exit). Past the thread's ids an id would alias another actor's (the
+    /// wait actor, then the next thread's ids or past the last thread), so the step fails
+    /// closed: an `unmodeled` fault that stops the thread. Never wraps. (MISS 68)
+    pub fn async_actor(&mut self, t: usize) -> Result<u32, String> {
+        let ids = self.async_ids();
+        let serial = self.threads[t].tma_count;
+        if serial + 1 >= ids {
+            let msg = format!(
+                "{} starts its asynchronous operation number {}: a thread of this launch ({} threads) has {} async actor ids (the last for its cp.async waits), and another would alias another actor's: not modeled",
+                self.actor_name(t as u32),
+                serial + 1,
+                self.nthreads(),
+                ids
+            );
+            return Err(msg);
+        }
+        self.threads[t].make_mut().tma_count += 1;
+        Ok(self.tma_actor_id(t, serial))
     }
 
     /// "CTA 3", or "kernel 1 CTA 0" in a multi-kernel launch.
@@ -3297,21 +3484,24 @@ impl Machine {
 
     pub fn actor_name(&self, a: u32) -> String {
         let n = self.nthreads();
-        if a < n {
-            self.thread_name(a)
-        } else if a < 2 * n {
-            format!("{}'s tcgen05.ld/st", self.thread_name(a - n))
-        } else if a < 3 * n {
-            format!("{}'s tcgen05 pipe", self.thread_name(a - 2 * n))
+        if a < self.async_base() {
+            let t = self.thread_name(a % n);
+            match a / n {
+                0 => t,
+                1 => format!("{t}'s tcgen05.ld/st"),
+                2 => format!("{t}'s tcgen05 pipe"),
+                3 => format!("{t}'s tcgen05 pipe (its other .cta_group)"),
+                4 => format!("{t}'s STTM writes"),
+                k => format!("{t}'s fixed actor {k}"),
+            }
         } else if let Some(s) = self.nic_actor_name(a) {
             s
         } else {
-            let r = a - 3 * n;
-            format!(
-                "TMA#{} (issued by {})",
-                r % 4096,
-                self.thread_name(r / 4096)
-            )
+            let (t, serial) = self.async_split(a);
+            if serial == self.async_ids() - 1 {
+                return format!("{}'s cp.async copies", self.thread_name(t as u32));
+            }
+            format!("TMA#{serial} (issued by {})", self.thread_name(t as u32))
         }
     }
 

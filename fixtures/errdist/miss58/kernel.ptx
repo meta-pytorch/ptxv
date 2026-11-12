@@ -1,0 +1,38 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// MISS 58 follow-up: Tier 3 refused by a validation run, and no headline. Each thread i forms
+// y[i] = RN(RN(x[i] s[0]) + v[i]). With integer x and v and s[0] = 1 both roundings are exact
+// (P(bits differ) 0); with s[0] ~ N(0, 1) about a quarter of the outputs differ. Tier 3's few
+// inputs (--mc 5) all draw s[0] = 1 under rare.json's seed, the simulator validation's 200
+// inputs draw s[0] ~ N(0, 1) on about a fifth of them: the DAG matches the simulator bit for
+// bit, and the two P(differ) disagree.
+
+.visible .entry m58_rare(.param .u64 px, .param .u64 ps, .param .u64 pv, .param .u64 py)
+{
+    .reg .f32 %f<8>;
+    .reg .b64 %rd<12>;
+    .reg .b32 %r<4>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [ps];
+    ld.param.u64 %rd3, [pv];
+    ld.param.u64 %rd4, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd6, %r1, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    add.s64 %rd9, %rd3, %rd6;
+    add.s64 %rd10, %rd4, %rd6;
+    ld.global.f32 %f1, [%rd7];
+    ld.global.f32 %f2, [%rd2];
+    ld.global.f32 %f3, [%rd9];
+    mul.rn.f32 %f4, %f1, %f2;
+    add.rn.f32 %f5, %f4, %f3;
+    st.global.f32 [%rd10], %f5;
+    ret;
+}

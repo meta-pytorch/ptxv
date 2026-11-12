@@ -8,3 +8,6 @@ anyhow.workspace = true
 serde.workspace = true
 toml.workspace = true
 ptxv-ir = { path = "../ir" }
+
+[lints]
+workspace = true

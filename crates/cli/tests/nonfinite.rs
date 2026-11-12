@@ -323,3 +323,29 @@ expect = ["nonfinite-output"]
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// MISS 67 (fixtures/r1h_nvls_inf, expected/ constructed): a multicast case's outputs are
+/// compared with the one-ulp tolerance of N-MULTIMEM-ROUND16. The simulated (max, inf) against
+/// the expected (inf, NaN) are adjacent encodings, and were reported within one ulp; a
+/// non-finite value on either side passes only if both sides are the same infinity or both NaN,
+/// so both outputs are a mismatch, on both fronts.
+#[test]
+fn one_ulp_tolerance_never_crosses_an_infinity() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_ptxv"))
+        .args(["check", "fixtures/r1h_nvls_inf", "--variant", "good"])
+        .current_dir(root())
+        .env("CUDA_VISIBLE_DEVICES", "")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{text}");
+    for o in ["out0", "out1"] {
+        assert_eq!(
+            text.matches(&format!("{o}: MISMATCH vs the captured GPU output"))
+                .count(),
+            2,
+            "{text}"
+        );
+    }
+    assert!(!text.contains("within one ulp"), "{text}");
+}

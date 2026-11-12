@@ -1,0 +1,66 @@
+name = "c_num_ctl_shfl_f32"
+description = """
+N-NUM-TRACK (the independent review's probe rd_shfl_tid, kernel.ptx): a shuffle lane from float index
+arithmetic on %tid. out[t] = x of lane floor(rn(f32(t) * s)), s = 0.7f. The exact computation reads lanes 6,
+13, 20 for t = 10, 20, 30 (this run: 7, 14, 21). num makes no claim. expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP).
+"""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_ctl_shfl_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/y.bin"
+
+[[buffers]]
+name = "z"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/z.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "bytes"
+hex = "3333333f"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

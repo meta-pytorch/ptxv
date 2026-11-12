@@ -1,0 +1,60 @@
+name = "e_tmem_queue"
+description = """
+One thread's own tensor-memory accesses to one column with no wait between them (E-TMEM-QUEUE,
+probes/tmem_queue): a tcgen05.st after the thread's un-waited tcgen05.ld (Q), and two un-waited
+tcgen05.st (QQ). The strict level orders them only through the TMEM queue: contract findings
+(tmem-queue) on SASS and PTX (MISS 116), at the strict level and under the GB300 profile
+(probes/tmem_queue is a measured null without a discriminating control). See kernel.ptx."""
+ptx = "kernel.ptx"
+entry = "e_tmem_queue"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "ld; wait::ld; st: ordered by the wait"
+expect = ["clean"]
+
+[[variants]]
+id = "Q"
+summary = "ld; st with no wait::ld between: SASS contract (TMEM queue order)"
+marker = "@WAITLD"
+replace = "<delete>"
+edits = [{ marker = "@LATE", find = "// (late slot)", replace = "tcgen05.wait::ld.sync.aligned;" }]
+# PTX: contract as well (MISS 116: PTX ISA 9.7.18.6.1 does not order the thread's tcgen05.ld and
+# tcgen05.st without a wait; before, clean, the two being one actor).
+expect = ["contract"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "QQ"
+summary = "st a; st b with no wait::st between, then wait::st and ld: SASS contract (TMEM queue order)"
+marker = "@STA"
+find = "// (st a slot)"
+replace = "tcgen05.st.sync.aligned.32x32b.x1.b32 [%r4], {%r8}; tcgen05.st.sync.aligned.32x32b.x1.b32 [%r4], {%r7}; tcgen05.wait::st.sync.aligned;"
+expect = ["contract"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "SL"
+summary = "st new; ld with no wait::st between: a race on both fronts (not assumed ordered)"
+marker = "@STA"
+find = "// (st a slot)"
+replace = "tcgen05.st.sync.aligned.32x32b.x1.b32 [%r4], {%r7};"
+# The load follows the thread's own un-waited store: SASS, an LDTM after an un-fenced STTM
+# (MISS 107); PTX, MISS 121 (before, clean: one actor). GB300 read the new value every time
+# (probes/tmem_queue mode 2), but no control shows that setup could see an in-flight store of
+# the same thread, so E-TMEM-QUEUE does not assume it. The later st (@ST) over the un-waited
+# st is a tmem-queue contract as well.
+expect = ["contract", "race"]

@@ -1,0 +1,3 @@
+{"version": 1, "seed": 1, "name": "x N(0, 0.5^2) (x[0] < -3 at 6 sigma), others N(0,1)",
+ "tensors": {"x": {"dist": {"kind": "normal", "std": 0.5}}},
+ "default": {"dist": {"kind": "normal"}}}

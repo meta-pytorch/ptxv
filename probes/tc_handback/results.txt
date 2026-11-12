@@ -14,6 +14,11 @@ good     200x1000 + 20000x1000 + 2000x20000   4.5e9   0
 RCTA     200x1000 + 20000x1000 + 2000x20000   4.5e9   0
 EARLY    200x1000 + 20000x1000 + 2000x1000    1.6e9   0   (the peer arrives before its st)
 NOWST    200x1000 + 20000x1000 + 2000x20000   4.5e9   0   (no tcgen05.wait::st)
+ACTA     2000x20000                           2.96e9  0   (2026-11-11: the leader waits on `full`
+                                                         with .acquire.cta, SASS PHASECHK with no
+                                                         CCTL.IVALL before the 2-CTA MMA; EARLYD
+                                                         200x1000 before and after in the same job:
+                                                         9472 words in every run)
 EARLYD   200x1000                             1.5e7   9472 words in every run (positive control:
                                                          EARLY with the peer CTA sleeping 5 us
                                                          between its arrive and its st)
@@ -22,3 +27,9 @@ Reading: the .release.cta hand-off (a PTX race, S-MBAR-SCOPE) gave no wrong elem
 pair-rounds; the check does see a hand-off that runs ahead of the data (EARLYD). EARLY without
 the delay also gave none: the peer's st follows its arrive by one instruction, and the
 leader's MMA reads A later than that.
+
+ACTA reading: the leader's 2-CTA MMA after a PHASECHK with no CCTL.IVALL saw the peer's handed-
+back TMEM (A written by the peer's tcgen05.st; D read by the peer's tcgen05.ld before the MMA
+overwrites it) in every one of 2.96e9 pair-rounds (95% bound 1e-9 per pair-round). Together with
+the peer's own done-wait (a PHASECHK with no CCTL.IVALL before its tcgen05.ld of D in every
+variant), both directions of the cross-SM TMEM order hold without CCTL.IVALL.

@@ -137,6 +137,9 @@ enum Cmd {
         front: String,
         #[arg(long, default_value_t = 2_000_000)]
         max_states: usize,
+        /// Directory for the materialized variants (PTX, cubin, patched cubin, SASS), kept.
+        /// Default: a directory of this run under $PTXV_ROOT/out/<case> (./out/<case> without
+        /// PTXV_ROOT), removed when the run ends; concurrent runs never share one.
         #[arg(long)]
         out: Option<PathBuf>,
         /// Explore one cluster (CTA) at a time plus a cross-cluster global-memory check, for
@@ -180,15 +183,19 @@ enum Cmd {
         /// for a case that sets `poll_acquire`; the verdict names it. Repeatable, or a,b.
         #[arg(long, value_delimiter = ',')]
         assume_refuted: Vec<String>,
-        /// Skip the second level: re-checking race / stale findings under the GB300 hardware
-        /// model (E-HW-L1) to classify each as observable or latent (also PTXV_GB300=0).
+        /// Skip both GB300 checks (also PTXV_GB300=0): the second level, which re-checks race /
+        /// stale findings under the GB300 hardware model (E-HW-L1) to classify each as
+        /// observable or latent, and the GB300-profile re-run of the two-level verdict
+        /// (`sass_gb300`, --hw-profile). The row then says the re-run was skipped
+        /// (`two_level_skipped`) where the strict verdict would have needed it.
         #[arg(long)]
         no_gb300: bool,
         /// Hardware profile of the two-level verdict: when the strict check reports anything
         /// undefined (race, violation, contract deviation, undefined values, ...), the SASS
         /// front is checked again with every probe-backed assumption of the profile on, and
         /// both levels are reported (`ptx_contract`, `sass_gb300`). `gb300` (default) or
-        /// `none` (also PTXV_HW_PROFILE).
+        /// `none` (also PTXV_HW_PROFILE); any other name is an error. `none` and --no-gb300 /
+        /// PTXV_GB300=0 turn the re-run off, and the row says so (`two_level_skipped`).
         #[arg(long)]
         hw_profile: Option<String>,
         /// Scan every terminal state's float outputs for NaN / Inf: a `nonfinite-output`
@@ -249,6 +256,18 @@ enum Cmd {
         /// mutated check gets what is left, at most --max-states.
         #[arg(long)]
         mutate_budget_states: Option<usize>,
+        /// Wall-clock budget of the whole check in seconds (also PTXV_TIME_BUDGET; default
+        /// none). Certificates, seed walks, every exploration (model reruns, LDS/STS passes,
+        /// leader policies, both levels) and the GB300-profile re-run stop once it is spent:
+        /// each cut phase leaves its verdict incomplete with a note naming it, and a cut
+        /// certificate never holds. The re-run states the budget it starts with, and does not
+        /// start once the budget is spent (`two_level_skipped`). Input coverage gets at most
+        /// what is left; the --mutate-inputs budget is nested inside (its checks stop at the
+        /// earlier end). --max-states stays per exploration. Refused in multi-node mode
+        /// (PTXV_DIST_DIR with more than one rank): every rank would cut its own phases, and
+        /// ranks in different phases wait for each other forever.
+        #[arg(long)]
+        time_budget: Option<f64>,
     },
     /// Numerics of one deterministic run: exact error per output, bounds, Thm 1 check.
     Num {
@@ -575,6 +594,87 @@ fn default_out(root: &Path, case: &Case) -> Result<PathBuf> {
     Ok(d)
 }
 
+/// Per-invocation directories made by `run_dir`: (case default directory, run directory).
+static RUN_DIRS: std::sync::Mutex<Vec<(PathBuf, PathBuf)>> = std::sync::Mutex::new(Vec::new());
+/// Set by commands whose files in the run directory are their result (`keep_run_dirs`).
+static KEEP_RUN_DIRS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// This invocation's directory under a case's default output directory `base` (no `--out`):
+/// `<base>/run-<pid>-<ns>`, the same for every call in one process. Concurrent runs of one
+/// case never share materialized variants: a variant's cubin is copied (or built by ptxas),
+/// patched in place and read back, so in a shared directory another run's copy in between was
+/// read as this run's variant (a scoreboard-patched variant checked unpatched: clean), and two
+/// cases of one name that claimed `base` at once read each other's cubins. Removed when the
+/// command ends (`remove_run_dirs`) unless it keeps its files; `--out` directories are never
+/// removed.
+fn run_dir(base: &Path) -> Result<PathBuf> {
+    let mut dirs = RUN_DIRS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, d)) = dirs.iter().find(|(b, _)| b == base) {
+        return Ok(d.clone());
+    }
+    let ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let d = base.join(format!("run-{}-{ns}", std::process::id()));
+    std::fs::create_dir_all(&d)?;
+    dirs.push((base.to_path_buf(), d.clone()));
+    Ok(d)
+}
+
+/// Keep this invocation's run directories: the command's result is a file in them (calib,
+/// sb-sweep and probe print or dump into them).
+pub(crate) fn keep_run_dirs() {
+    KEEP_RUN_DIRS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Remove this invocation's run directories (at the end of every command, also on an error,
+/// a panic or a failing check's exit status), unless kept.
+fn remove_run_dirs() {
+    let mut dirs = RUN_DIRS.lock().unwrap_or_else(|e| e.into_inner());
+    if KEEP_RUN_DIRS.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    for (_, d) in dirs.drain(..) {
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+/// `std::process::exit` after removing the run directories (exit skips destructors).
+fn exit_cleanly(code: i32) -> ! {
+    remove_run_dirs();
+    std::process::exit(code)
+}
+
+/// Decided by the E-WELLSYNC certificate: a complete verdict that lists it. Incomplete verdicts
+/// list it too, since the assumptions of their parts accumulate (a certified launch group or
+/// %smid placement beside an incomplete one; smid_slot, smid_three), and are not certified.
+pub(crate) fn certified(v: &Verdict) -> bool {
+    v.complete && v.assumptions.iter().any(|a| a == "E-WELLSYNC")
+}
+
+/// Multi-node mode as `ptxv_sim::dist::raw` decides it (PTXV_DIST_DIR, and more than one rank
+/// in PTXV_RANKS or SLURM_NTASKS; a missing count counts as more), read from the environment
+/// without connecting to the other ranks.
+fn multi_node() -> bool {
+    std::env::var_os("PTXV_DIST_DIR").is_some()
+        && std::env::var("PTXV_RANKS")
+            .or_else(|_| std::env::var("SLURM_NTASKS"))
+            .ok()
+            .and_then(|n| n.parse::<usize>().ok())
+            .is_none_or(|n| n > 1)
+}
+
+struct RunDirsGuard;
+
+impl Drop for RunDirsGuard {
+    fn drop(&mut self) {
+        remove_run_dirs();
+    }
+}
+
+/// The directory a command materializes a case's variants in (PTX, cubin, patched cubin,
+/// SASS) and writes its other files to: `--out`, else this invocation's own directory under
+/// the case's default one (`run_dir`).
 pub(crate) fn out_dir(case: &Case, out: &Option<PathBuf>) -> Result<PathBuf> {
     let d = match out {
         Some(o) => o.clone(),
@@ -582,7 +682,7 @@ pub(crate) fn out_dir(case: &Case, out: &Option<PathBuf>) -> Result<PathBuf> {
             let root = std::env::var("PTXV_ROOT")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("."));
-            default_out(&root.join("out"), case)?
+            run_dir(&default_out(&root.join("out"), case)?)?
         }
     };
     // Multi-node ranks share the file system: each writes its own copies.
@@ -842,6 +942,9 @@ fn rebuild_note(case: &Case, variant: &str) -> Option<String> {
     })
 }
 
+/// ptxas 13.0's error for a kernel whose tcgen05 instructions name both .cta_group values.
+const PTXAS_CTA_GROUP_MIX: &str = "uses single CTA(.cta_group::1) and CTA pair granularity(.cta_group::2) and that is not allowed";
+
 fn load_with(
     case: &Case,
     variant: &str,
@@ -910,7 +1013,17 @@ fn load_with(
         };
         return Ok((k, c));
     }
-    let (ptx, cubin) = ptx_cubin(case, variant, dir, delays)?;
+    let (ptx, cubin) = match ptx_cubin(case, variant, dir, delays) {
+        Ok(x) => x,
+        // ptxas refuses a kernel whose tcgen05 instructions mix .cta_group values; the PTX
+        // front still checks it, so the user gets the `cta-group-mix` violation, not an error
+        // (no cubin: no SASS front, no GPU run).
+        Err(e) if front == "ptx" && format!("{e:#}").contains(PTXAS_CTA_GROUP_MIX) => {
+            let ptx = add_delays(&case.variant_ptx(variant)?, delays)?;
+            (ptx, dir.join(format!("{variant}.cubin")))
+        }
+        Err(e) => return Err(e),
+    };
     let variant = &if delays.is_empty() {
         variant.to_string()
     } else {
@@ -1051,6 +1164,16 @@ fn coverage_budget(coverage_only: bool) -> ptxv_sim::coverage::Budget {
         .or(env_secs)
         .or((!coverage_only).then_some(1800.0))
         .filter(|&s| s > 0.0);
+    // --time-budget: at most what is left of it (a spent budget stops the run at once; 0
+    // would mean no cap).
+    let seconds = match ptxv_sim::membudget::time_budget_left() {
+        Some(left) => Some(
+            seconds
+                .map_or(left.as_secs_f64(), |s| s.min(left.as_secs_f64()))
+                .max(1e-3),
+        ),
+        None => seconds,
+    };
     let rss = match std::env::var("PTXV_COVERAGE_MAX_RSS") {
         Ok(v) => parse_rss(&v),
         Err(_) => ptxv_sim::membudget::rss_limit().map(|l| l / 4 * 3),
@@ -1190,6 +1313,20 @@ struct TwoLevel {
     sass_findings: Vec<ptxv_sim::machine::Finding>,
     sass_notes: Vec<String>,
     seconds: f64,
+    /// --time-budget: what was left of the whole check's budget, in seconds, when the re-run
+    /// started (it shares that budget); absent without a budget.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget_left_seconds: Option<f64>,
+}
+
+/// One comparison of a terminal output with the captured GPU bytes (`CheckRow::gpu_compare`).
+#[derive(Serialize)]
+struct GpuCompareRow {
+    /// The terminal output (`output N` of `expect_report`).
+    output: usize,
+    /// The output buffer, or `counter word N` (C-TICKET-ADDR).
+    part: String,
+    result: ptxv_case::GpuMatch,
 }
 
 #[derive(Serialize)]
@@ -1198,6 +1335,10 @@ struct CheckRow {
     front: String,
     /// Captured cases: the simulator's outputs against the GPU's (`expect`), per output.
     expect_report: Vec<String>,
+    /// The decision each `expect_report` line states, one entry per comparison (and per
+    /// output buffer without captured bytes): `bitwise`, `within_ulp` (not a match),
+    /// `mismatch`, `permuted_equal`, `not_compared`, `no_capture`.
+    gpu_compare: Vec<GpuCompareRow>,
     expect: Vec<String>,
     got: Vec<String>,
     pass: bool,
@@ -1222,6 +1363,10 @@ struct CheckRow {
     /// undefined.
     #[serde(skip_serializing_if = "Option::is_none")]
     two_level: Option<TwoLevel>,
+    /// Why there is no two-level verdict although the strict check reported something
+    /// undefined: --no-gb300 / PTXV_GB300=0 turned the GB300-profile re-run off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    two_level_skipped: Option<String>,
     /// `--nonfinite`: NaN / Inf scan of the outputs and their producing instructions.
     #[serde(skip_serializing_if = "Option::is_none")]
     nonfinite: Option<nonfinite::Report>,
@@ -1337,8 +1482,8 @@ fn print_verdict(
     }
 }
 
-/// The hardware-model check (second level) on by default; `--no-gb300` or `PTXV_GB300=0`
-/// turn it off.
+/// The GB300 checks on by default: the hardware-model check (second level) and the
+/// GB300-profile re-run of the two-level verdict; `--no-gb300` or `PTXV_GB300=0` turn both off.
 fn gb300_enabled(flag_off: bool) -> bool {
     !flag_off && std::env::var("PTXV_GB300").as_deref() != Ok("0")
 }
@@ -1459,7 +1604,7 @@ fn cmd_check(
     let (profile_name, profile) = hw_profile();
     for v in variants(case, variant)? {
         // The variant's SASS check under the hardware profile, shared by its fronts' rows.
-        let mut level2: Option<(Verdict, Vec<HwUsed>, f64)> = None;
+        let mut level2: Option<(Verdict, Vec<HwUsed>, f64, Option<f64>)> = None;
         for f in fronts(case, front)? {
             let expect = case.variant(&v)?.expect_for(f);
             let (k, _) = load(case, &v, f, &dir)?;
@@ -1489,6 +1634,7 @@ fn cmd_check(
                     variant: v.clone(),
                     front: f.into(),
                     expect_report: vec![],
+                    gpu_compare: vec![],
                     pass: true,
                     expect,
                     got: vec!["coverage-only".into()],
@@ -1514,6 +1660,7 @@ fn cmd_check(
                     },
                     gb300: None,
                     two_level: None,
+                    two_level_skipped: None,
                     nonfinite: None,
                     input_coverage: Some(cov),
                     mutated_inputs: vec![],
@@ -1640,10 +1787,9 @@ fn cmd_check(
                             groups.as_deref().unwrap(),
                             state_cap.get(),
                             &mut |i, g, v| {
-                                group_log.borrow_mut().push((
-                                    i,
-                                    v.complete || v.assumptions.iter().any(|a| a == "E-WELLSYNC"),
-                                ));
+                                // Decided: complete (a certificate is a complete verdict; one
+                                // listing E-WELLSYNC while incomplete is not decided).
+                                group_log.borrow_mut().push((i, v.complete));
                                 println!(
                                     "  {label}launch group {} {:?}: {:?} states={} terminal={} outputs={}{}{} {:.1}s",
                                     i + 1,
@@ -1653,11 +1799,7 @@ fn cmd_check(
                                     v.terminal_states,
                                     v.distinct_outputs,
                                     if v.complete { "" } else { " INCOMPLETE" },
-                                    if v.assumptions.iter().any(|a| a == "E-WELLSYNC") {
-                                        " CERTIFIED"
-                                    } else {
-                                        ""
-                                    },
+                                    if certified(v) { " CERTIFIED" } else { "" },
                                     v.seconds
                                 )
                             },
@@ -1676,11 +1818,7 @@ fn cmd_check(
                                 v.terminal_states,
                                 v.distinct_outputs,
                                 if v.complete { "" } else { " INCOMPLETE" },
-                                if v.assumptions.iter().any(|a| a == "E-WELLSYNC") {
-                                    " CERTIFIED"
-                                } else {
-                                    ""
-                                },
+                                if certified(v) { " CERTIFIED" } else { "" },
                                 v.seconds
                             )
                         })
@@ -1807,7 +1945,12 @@ fn cmd_check(
             } else {
                 vec![]
             };
-            if let Some(key) = &vkey {
+            // A check the time budget cut is no verdict for later requests (vcache keys on the
+            // state cap only).
+            if let Some(key) = vkey
+                .as_ref()
+                .filter(|_| !ptxv_sim::membudget::time_budget_spent())
+            {
                 vcache::store(key, max_states, &verdict);
             }
             // ASSUME(S-CGA-SHAPE): only the sliced certificate check covers both cluster shapes
@@ -1879,10 +2022,59 @@ fn cmd_check(
                 k.static_image.as_deref(),
             );
             // The two-level verdict: anything undefined under the strict model -> the SASS
-            // front under the hardware profile. Both levels are reported.
+            // front under the hardware profile. Both levels are reported. --no-gb300 /
+            // PTXV_GB300=0 and --hw-profile none turn the re-run off (the row says so).
             let mut two_level = None;
-            if let Some(p) = profile.filter(|_| ptxv_sim::hwprofile::wanted(&verdict)) {
+            let mut two_level_skipped = None;
+            let wanted2 = ptxv_sim::hwprofile::wanted(&verdict);
+            if wanted2 && !gb300 {
+                let why = format!(
+                    "the strict verdict has {}; --no-gb300 / PTXV_GB300=0 turned the GB300-profile re-run off",
+                    verdict.classes().join(",")
+                );
+                println!("    sass_gb300: not checked: {why}");
+                two_level_skipped = Some(why);
+            } else if wanted2 && profile.is_none() {
+                // `none` (an unknown name is refused up front): skipped, and said so, as with
+                // --no-gb300 (a missing `two_level` alone reads like an older binary's).
+                let why = format!(
+                    "the strict verdict has {}; --hw-profile none / PTXV_HW_PROFILE=none turned the GB300-profile re-run off",
+                    verdict.classes().join(",")
+                );
+                println!("    sass_gb300: not checked: {why}");
+                two_level_skipped = Some(why);
+            }
+            // --time-budget: the re-run shares the whole check's budget, and does not start once
+            // it is spent (a re-run the budget cuts is incomplete, with its notes).
+            let left = ptxv_sim::membudget::time_budget_left();
+            let spent = ptxv_sim::membudget::time_budget_spent() && level2.is_none();
+            if wanted2 && gb300 && profile.is_some() && spent {
+                let why = format!(
+                    "the strict verdict has {}; the time budget (--time-budget) was spent before the GB300-profile re-run",
+                    verdict.classes().join(",")
+                );
+                println!("    sass_gb300: not checked: {why}");
+                two_level_skipped = Some(why);
+            }
+            // No SASS for a kernel that mixes .cta_group values (ptxas refuses it): no GB300
+            // profile level.
+            let no_sass = f == "ptx" && !ptxv_sim::explore::cta_group_mix(&k).is_empty();
+            if wanted2 && gb300 && profile.is_some() && !spent && no_sass {
+                let why = format!(
+                    "the strict verdict has {}; ptxas refuses a kernel that mixes .cta_group values, so there is no SASS to re-run",
+                    verdict.classes().join(",")
+                );
+                println!("    sass_gb300: not checked: {why}");
+                two_level_skipped = Some(why);
+            }
+            if let Some(p) = profile.filter(|_| wanted2 && gb300 && !spent && !no_sass) {
                 if level2.is_none() {
+                    if let Some(l) = left {
+                        println!(
+                            "    GB300 profile: re-run with {:.1} s of the time budget left (--time-budget)",
+                            l.as_secs_f64()
+                        );
+                    }
                     let t0 = Instant::now();
                     let k2 = if f == "sass" {
                         k.clone()
@@ -1905,9 +2097,14 @@ fn cmd_check(
                             discharged: sigs,
                         })
                         .collect();
-                    level2 = Some((v2, used, t0.elapsed().as_secs_f64()));
+                    level2 = Some((
+                        v2,
+                        used,
+                        t0.elapsed().as_secs_f64(),
+                        left.map(|l| l.as_secs_f64()),
+                    ));
                 }
-                let (v2, used, secs) = level2.as_ref().unwrap();
+                let (v2, used, secs, budget_left) = level2.as_ref().unwrap();
                 let t = TwoLevel {
                     ptx_contract: verdict.classes().join(","),
                     contract_front: f.into(),
@@ -1916,11 +2113,12 @@ fn cmd_check(
                     hw_assumptions: used.clone(),
                     sass_classes: v2.classes(),
                     sass_complete: v2.complete,
-                    sass_certified: v2.assumptions.iter().any(|a| a == "E-WELLSYNC"),
+                    sass_certified: certified(v2),
                     sass_states: v2.states,
                     sass_findings: v2.findings.clone(),
                     sass_notes: v2.notes.clone(),
                     seconds: *secs,
+                    budget_left_seconds: *budget_left,
                 };
                 println!(
                     "    ptx_contract: {} ({} front, strict model)",
@@ -2086,15 +2284,22 @@ fn cmd_check(
                     let b_end = b_t0 + Duration::from_secs_f64(bud.mutate_seconds.max(0.0));
                     let mut states_left = bud.mutate_states.unwrap_or(max_states.saturating_mul(2));
                     let n_muts = muts.len();
+                    // Nested in the whole check's budget (--time-budget): the earlier end
+                    // applies, here and to the explorations (membudget::set_deadline).
+                    let end =
+                        ptxv_sim::membudget::time_budget_end().map_or(b_end, |t| t.min(b_end));
                     ptxv_sim::membudget::set_deadline(Some(b_end));
                     for (checked, mu) in muts.into_iter().enumerate() {
                         let now = Instant::now();
-                        if now >= b_end || states_left == 0 {
+                        if now >= end || states_left == 0 {
                             let why = if now >= b_end {
                                 format!(
                                     "the total wall budget ({:.0} s, --mutate-budget-seconds) is spent",
                                     bud.mutate_seconds
                                 )
+                            } else if now >= end {
+                                "the time budget of the whole check (--time-budget) is spent"
+                                    .to_string()
                             } else {
                                 "the total state budget (--mutate-budget-states) is spent"
                                     .to_string()
@@ -2120,7 +2325,7 @@ fn cmd_check(
                         // A mutation that opens no code on its deterministic pass (the side it
                         // was to make taken stays untaken, the same instructions are reached)
                         // is not checked again: B checks paths, and that pass has none new.
-                        let left = (b_end - Instant::now()).as_secs_f64();
+                        let left = (end - Instant::now()).as_secs_f64();
                         let pass = if std::env::var_os("PTXV_MUTATE_NO_SKIP").is_some() {
                             ptxv_sim::coverage::Pass::Undecided
                         } else {
@@ -2182,7 +2387,7 @@ fn cmd_check(
                             makes: mu.never,
                             classes: vm.classes(),
                             complete: vm.complete,
-                            certified: vm.assumptions.iter().any(|a| a == "E-WELLSYNC"),
+                            certified: certified(&vm),
                             states: vm.states,
                             findings: vm.findings.clone(),
                             notes: vm.notes.clone(),
@@ -2241,6 +2446,7 @@ fn cmd_check(
             }
             // Captured cases (tools/capture.py) carry the GPU's output bytes.
             let mut expect_report = Vec::new();
+            let mut gpu_compare = Vec::new();
             // N-MULTIMEM-ROUND16: multimem reductions whose rounding the model only calibrates.
             let ulp_ok = !case.m.multicast.is_empty();
             // C-TICKET-ADDR: outputs compared up to the certified permutation of rows.
@@ -2250,13 +2456,20 @@ fn cmd_check(
                 .find(|f| f.kind == "clean-up-to-permutation")
                 .map(|f| f.perm_rows.clone());
             for (i, o) in verdict.outputs.iter().enumerate() {
-                let lines = match &perm_rows {
-                    Some(r) => case.expect_report_perm(o, r)?,
-                    None => case.expect_report_tol(o, ulp_ok)?,
+                let compared = match &perm_rows {
+                    Some(r) => case.expect_compare_perm(o, r)?,
+                    None => case.expect_compare_tol(o, ulp_ok)?,
                 };
-                for line in lines {
-                    println!("    expect (output {i}): {line}");
-                    expect_report.push(format!("output {i}: {line}"));
+                for c in compared {
+                    if let Some(line) = &c.line {
+                        println!("    expect (output {i}): {line}");
+                        expect_report.push(format!("output {i}: {line}"));
+                    }
+                    gpu_compare.push(GpuCompareRow {
+                        output: i,
+                        part: c.part,
+                        result: c.result,
+                    });
                 }
             }
             // Debugging nondeterminism: every distinct terminal output, one file each.
@@ -2299,7 +2512,7 @@ fn cmd_check(
                 let rep_of = |vm: &Verdict| ptxv_sim::cert::RepCheck {
                     classes: vm.classes(),
                     complete: vm.complete,
-                    certified: vm.assumptions.iter().any(|a| a == "E-WELLSYNC"),
+                    certified: certified(vm),
                     states: vm.states,
                     findings: vm
                         .findings
@@ -2370,6 +2583,7 @@ fn cmd_check(
                 variant: v.clone(),
                 front: f.into(),
                 expect_report,
+                gpu_compare,
                 pass: verdict.meets(&expect),
                 expect,
                 got,
@@ -2384,6 +2598,7 @@ fn cmd_check(
                 verdict,
                 gb300: gbc,
                 two_level,
+                two_level_skipped,
                 nonfinite: nf,
                 input_coverage,
                 mutated_inputs,
@@ -2414,6 +2629,17 @@ fn ulp16(bits: u32, f16: bool) -> f64 {
     }
 }
 
+/// Exact values `a` and `b` are equal: both finite and equal, or the same non-finite value
+/// (the same infinity, or both NaN) (N-NUM-NONFINITE: the f64 expansions of infinities do not
+/// subtract to zero).
+fn exact_eq(a: &ptxv_sim::exact::Expansion, b: &ptxv_sim::exact::Expansion) -> bool {
+    let (x, y) = (ptxv_sim::exact::approx(a), ptxv_sim::exact::approx(b));
+    if !x.is_finite() || !y.is_finite() {
+        return x == y || x.is_nan() && y.is_nan();
+    }
+    ptxv_sim::exact::is_zero(&ptxv_sim::exact::sub(a, b))
+}
+
 #[derive(Serialize)]
 struct NumSummary {
     front: String,
@@ -2424,6 +2650,9 @@ struct NumSummary {
     /// without a tracked derivation in their tree: the fields below cover the analyzed ones.
     analyzed: usize,
     untracked: usize,
+    /// Of the `untracked` elements, those with a non-finite simulated or exact value whose
+    /// exact value is not determined (N-NUM-NONFINITE).
+    nonfinite: usize,
     /// Why no element of this output was analyzed (e.g. not an f32 buffer).
     refused: Option<String>,
     thm1_all_exact: bool,
@@ -2485,8 +2714,10 @@ fn cmd_num_with(
         let mut ns = ptxv_sim::num::NumState::with_mma_eps(m.launch.mma_model.eps());
         // ASSUME(N-NUM-TRACK): input-derived values are tainted, so a value whose rounding
         // history is dropped becomes an `Opaque` leaf (or an untracked output word), never an
-        // exact constant.
+        // exact constant. So is a rounding instruction's result without a node whatever its
+        // operands (`rounding_taint`: a product of kernel parameters, a MUFU of a constant).
         // Input elements stay exact `Input` leaves (as in equiv, ASSUME(N-HALF-LEAF)).
+        ns.rounding_taint = true;
         for &o in &m.launch.outputs {
             if equiv::out_only(case, &m.launch.allocs[o].name) {
                 ns.not_inputs.insert(o);
@@ -2548,14 +2779,25 @@ fn cmd_num_with(
         note_ref_faults(&format!("numerics run of {variant} ({f})"), &findings);
         // A run that faulted or hit a model limit did not execute the kernel as the hardware
         // does (a faulting thread stops): its outputs carry no numerics claim (N-NUM-TRACK).
+        let ns = m.num.as_ref().unwrap();
+        // ASSUME(N-NUM-TRACK): a branch, exit or store (any effect) under a guard that
+        // depends on input data, or an input-dependent branch target, memory address or
+        // shuffle lane: the exact computation may take another path than this run or access
+        // other elements, so no output carries a claim.
+        let control = ns.taint.control_pcs.iter().next().map(|&pc| {
+            format!(
+                "control flow or an address depends on input data or on a rounded value at {} (the exact computation may take another path or access other elements)",
+                m.k.describe(pc as usize)
+            )
+        });
         let broken = findings
             .iter()
             .find(|x| x.kind == "fault" || x.kind == "unmodeled")
             .map(|x| {
                 let msg = x.msg.lines().next().unwrap_or("");
                 format!("the numerics run reported {}: {msg}", x.kind)
-            });
-        let ns = m.num.as_ref().unwrap();
+            })
+            .or(control);
         std::fs::write(dir.join(format!("{variant}.{f}.num.out.bin")), m.outputs())?;
         let warnings: Vec<String> = ns.warnings.iter().cloned().collect();
         let output_hash = format!("{:016x}", fnv(&m.outputs()));
@@ -2598,6 +2840,7 @@ fn cmd_num_with(
                     outputs: 0,
                     analyzed: 0,
                     untracked: 0,
+                    nonfinite: 0,
                     refused: Some(why),
                     thm1_all_exact: false,
                     spec_all_match: None,
@@ -2634,7 +2877,8 @@ fn cmd_num_with(
                     (bits, node)
                 };
                 let mut r = ns.out_rec(i, bits, node);
-                if half {
+                // An infinite or undetermined (NaN) error keeps its value (N-NUM-NONFINITE).
+                if half && r.abs_err.is_finite() {
                     r.err_ulps = r.abs_err / ulp16(bits, f16);
                 }
                 if node.is_none()
@@ -2651,18 +2895,17 @@ fn cmd_num_with(
                         let ex = node
                             .map(|nd| ns.nodes[nd as usize].exact.clone())
                             .unwrap_or_else(|| ptxv_sim::exact::from(f32::from_bits(bits) as f64));
-                        spec_ok &= !r.untracked
-                            && ptxv_sim::exact::is_zero(&ptxv_sim::exact::sub(&ex, &s[i]));
+                        spec_ok &= !r.untracked && exact_eq(&ex, &s[i]);
                     }
                 }
                 recs.push(r);
             }
             let mut csv = String::from(
-                "index,hw,exact,abs_err,rel_err,err_ulps,bound_cor1a,bound_running,thm1_exact,n_leaves,n_roundings,untracked\n",
+                "index,hw,exact,abs_err,rel_err,err_ulps,bound_cor1a,bound_running,thm1_exact,n_leaves,n_roundings,untracked,nonfinite\n",
             );
             for r in &recs {
                 csv += &format!(
-                    "{},{:e},{:e},{:e},{:e},{},{:e},{:e},{},{},{},{}\n",
+                    "{},{:e},{:e},{:e},{:e},{},{:e},{:e},{},{},{},{},{}\n",
                     r.index,
                     r.hw,
                     r.exact,
@@ -2674,7 +2917,8 @@ fn cmd_num_with(
                     r.thm1_exact,
                     r.n_leaves,
                     r.n_roundings,
-                    r.untracked
+                    r.untracked,
+                    r.nonfinite
                 );
             }
             std::fs::write(dir.join(format!("{variant}.{f}.num{osfx}.csv")), csv)?;
@@ -2683,27 +2927,49 @@ fn cmd_num_with(
                 serde_json::to_string(&recs)?,
             )?;
             let ok: Vec<&_> = recs.iter().filter(|r| !r.untracked).collect();
-            let nz: Vec<&_> = ok.iter().filter(|r| r.abs_err > 0.0).copied().collect();
+            // ASSUME(N-NUM-NONFINITE): no analyzed element is skipped: an infinite error makes
+            // the maximum infinite and violates both bounds (an undetermined one, NaN, would
+            // count as infinite; analyzed elements have none). The mean bound / error ratio takes
+            // every analyzed element with a nonzero error; an infinite error counts 0.
+            let worst = |x: f64| if x.is_nan() { f64::INFINITY } else { x };
+            let nz: Vec<&_> = ok
+                .iter()
+                .filter(|r| r.abs_err > 0.0 || r.abs_err.is_nan())
+                .copied()
+                .collect();
+            let ratio = |r: &ptxv_sim::num::OutRec| {
+                if r.abs_err.is_finite() {
+                    r.bound_cor1a / r.abs_err
+                } else {
+                    0.0
+                }
+            };
+            let nonfinite = recs.iter().filter(|r| r.nonfinite).count();
             let s = NumSummary {
                 front: f.into(),
                 output: oname.clone(),
                 outputs: n,
                 analyzed: ok.len(),
                 untracked: n - ok.len(),
+                nonfinite,
                 refused: None,
                 thm1_all_exact: !ok.is_empty() && ok.iter().all(|r| r.thm1_exact),
                 spec_all_match: (oslot == 0 && !half)
                     .then_some(())
                     .and(spec.as_ref())
                     .map(|_| spec_ok),
-                cor1a_never_violated: ok.iter().all(|r| r.abs_err <= r.bound_cor1a),
-                running_never_violated: ok.iter().all(|r| r.abs_err <= r.bound_running),
-                max_abs_err: ok.iter().map(|r| r.abs_err).fold(0.0, f64::max),
-                max_err_ulps: ok.iter().map(|r| r.err_ulps).fold(0.0, f64::max),
+                cor1a_never_violated: ok
+                    .iter()
+                    .all(|r| r.abs_err.is_finite() && r.abs_err <= r.bound_cor1a),
+                running_never_violated: ok
+                    .iter()
+                    .all(|r| r.abs_err.is_finite() && r.abs_err <= r.bound_running),
+                max_abs_err: ok.iter().map(|r| worst(r.abs_err)).fold(0.0, f64::max),
+                max_err_ulps: ok.iter().map(|r| worst(r.err_ulps)).fold(0.0, f64::max),
                 mean_cor1a_over_err: if nz.is_empty() {
                     0.0
                 } else {
-                    nz.iter().map(|r| r.bound_cor1a / r.abs_err).sum::<f64>() / nz.len() as f64
+                    nz.iter().map(|&r| ratio(r)).sum::<f64>() / nz.len() as f64
                 },
                 warnings: warnings.clone(),
                 output_hash: output_hash.clone(),
@@ -2721,14 +2987,36 @@ fn cmd_num_with(
                 .min()
                 .map(|pc| format!("; first read untracked at {}", m.k.describe(pc as usize)))
                 .unwrap_or_default();
-            if s.untracked == n {
+            // Why elements are not analyzed: a dropped rounding history, or (N-NUM-NONFINITE) a
+            // non-finite value whose exact value is not determined.
+            let hist = recs.iter().filter(|r| r.untracked && !r.nonfinite).count();
+            let mut why = vec![];
+            if hist > 0 {
+                let k = if nonfinite > 0 {
+                    format!(": {hist}")
+                } else {
+                    String::new()
+                };
+                why.push(format!("rounding history dropped{k}{first}"));
+            }
+            if nonfinite > 0 {
+                why.push(format!(
+                    "a non-finite value without a determined exact value: {nonfinite}"
+                ));
+            }
+            let why = why.join("; ");
+            if s.untracked == n && nonfinite == 0 {
                 println!(
                     "num {variant} {f:<4}: {oname_note}outputs={n} NOT ANALYZED: every element depends on an input-derived value whose rounding history was dropped (no error claim{first})"
+                );
+            } else if s.untracked == n {
+                println!(
+                    "num {variant} {f:<4}: {oname_note}outputs={n} NOT ANALYZED: no element carries an error claim ({why})"
                 );
             } else {
                 let partial = if s.untracked > 0 {
                     format!(
-                        " NOT ANALYZED for {} of {n} (rounding history dropped{first}); over the {} analyzed:",
+                        " NOT ANALYZED for {} of {n} ({why}); over the {} analyzed:",
                         s.untracked, s.analyzed
                     )
                 } else {
@@ -3248,6 +3536,8 @@ fn cmd_suite(case: &Case, runs: usize, out: &Option<PathBuf>) -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    // Removes the run directories on return and on a panic (exit sites: `exit_cleanly`).
+    let _run_dirs = RunDirsGuard;
     let r = run();
     if let Err(e) = &r {
         jsonout::fail(&format!("{e:#}"));
@@ -3255,8 +3545,43 @@ fn main() -> Result<()> {
     r
 }
 
+/// The check's wall-clock budget in seconds (`--time-budget`, else PTXV_TIME_BUDGET; an empty
+/// PTXV_TIME_BUDGET is none). Refused in multi-node mode: each rank would decide its own cuts
+/// (certificates, seed walks, explorations), and ranks in different phases wait for messages
+/// the others never send.
+fn time_budget_of(flag: Option<f64>) -> Result<Option<f64>> {
+    let budget = match (flag, std::env::var("PTXV_TIME_BUDGET")) {
+        (Some(s), _) => Some(s),
+        (None, Ok(v)) if v.trim().is_empty() => None,
+        (None, Ok(v)) => Some(
+            v.trim()
+                .parse::<f64>()
+                .map_err(|_| anyhow::anyhow!("PTXV_TIME_BUDGET={v}: not a number of seconds"))?,
+        ),
+        (None, Err(_)) => None,
+    };
+    if let Some(s) = budget {
+        anyhow::ensure!(
+            s.is_finite() && s >= 0.0,
+            "--time-budget / PTXV_TIME_BUDGET wants seconds >= 0, got {s}"
+        );
+        anyhow::ensure!(
+            !multi_node(),
+            "--time-budget / PTXV_TIME_BUDGET is not supported in multi-node mode \
+             (PTXV_DIST_DIR): every rank would cut its own phases and the ranks would \
+             wait for each other; run without a budget or on one node"
+        );
+    }
+    Ok(budget)
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    // Read before the first `dist::get` below, which connects and waits for every rank.
+    let budget = match &cli.cmd {
+        Cmd::Check { time_budget, .. } => time_budget_of(*time_budget)?,
+        _ => None,
+    };
     // Multi-node (PTXV_DIST_DIR): every rank runs the whole program; only rank 0 reports.
     if let Some(d) = ptxv_sim::dist::get() {
         if d.rank != 0 {
@@ -3297,7 +3622,17 @@ fn run() -> Result<()> {
             coverage_seconds,
             mutate_budget_seconds,
             mutate_budget_states,
+            time_budget: _,
         } => {
+            // One wall-clock budget for the whole check, set before anything runs (one past
+            // what an Instant holds is none).
+            if let Some(s) = budget {
+                let end = Duration::try_from_secs_f64(s)
+                    .ok()
+                    .and_then(|d| Instant::now().checked_add(d));
+                ptxv_sim::membudget::set_time_budget(end);
+                eprintln!("time budget: {s} s for the whole check (--time-budget)");
+            }
             let _ = concolic::ON.set(concolic);
             let _ = EXH.set(exhaustive_concolic);
             let _ = MUTATE_SPECS.set(mutate_input);
@@ -3316,6 +3651,13 @@ fn run() -> Result<()> {
             if let Some(p) = hw_profile {
                 let _ = HW_PROFILE.set(p);
             }
+            // A name ptxv does not know used to turn the GB300-profile re-run off without a
+            // word (a typo such as GB300).
+            let (name, profile) = crate::hw_profile();
+            anyhow::ensure!(
+                profile.is_some() || name == "none",
+                "unknown hardware profile {name:?} (--hw-profile / PTXV_HW_PROFILE): gb300 or none"
+            );
             if rep {
                 // The check paths read it (`ptxv_sim::rep`).
                 // SAFETY: argument handling on the main thread; no other thread runs yet.
@@ -3343,7 +3685,7 @@ fn run() -> Result<()> {
                     tmem_cotenant,
                 )?;
                 if !pass {
-                    std::process::exit(1);
+                    exit_cleanly(1);
                 }
                 return Ok(());
             }
@@ -3378,7 +3720,7 @@ fn run() -> Result<()> {
                 );
             }
             if !pass {
-                std::process::exit(1);
+                exit_cleanly(1);
             }
         }
         Cmd::Num {
@@ -3472,7 +3814,7 @@ fn run() -> Result<()> {
                 );
             }
             if !ok {
-                std::process::exit(1);
+                exit_cleanly(1);
             }
         }
         Cmd::Errdist {
@@ -3634,6 +3976,7 @@ fn run() -> Result<()> {
             step,
         } => {
             let c = Case::load(&case)?;
+            keep_run_dirs(); // calib.json and the measured operands are the result
             // A byte-operand probe (probes/mma_f8) calibrates the narrow kinds.
             if c.buffer("A")?.dtype == "u8" {
                 calib_lp::run(&c, &out, only.as_deref())?
@@ -3646,13 +3989,19 @@ fn run() -> Result<()> {
             variant,
             timeout,
             out,
-        } => cmd_probe(&Case::load(&case)?, &variant, timeout, &out)?,
+        } => {
+            keep_run_dirs(); // the dumped outputs (<variant>.probe.bin)
+            cmd_probe(&Case::load(&case)?, &variant, timeout, &out)?
+        }
         Cmd::SbSweep {
             case,
             runs,
             timeout,
             out,
-        } => sweep::run(&Case::load(&case)?, runs, timeout, &out)?,
+        } => {
+            keep_run_dirs(); // sweep.md / sweep.json
+            sweep::run(&Case::load(&case)?, runs, timeout, &out)?
+        }
         Cmd::CvtSweep {
             dir,
             gpu,

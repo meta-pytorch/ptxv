@@ -4259,6 +4259,7 @@ fn lower_line(
                 } else {
                     None
                 },
+                pair: mods.first() == Some(&"2CTA"),
             }
         }
         "LDTM" => {
@@ -5859,6 +5860,11 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
     // both SB0). Which kind a `DEPBAR.LE SBk` waits for is decided per instruction, by the
     // kinds that may be outstanding on SBk when it is reached; both: not modeled.
     let reach = depbar_kinds(&lines, &code);
+    // `DEPBAR.LE SBk, n` on a bulk scoreboard is a full wait (`read: false`): ptxas emits the
+    // same `UTMACMDFLUSH; DEPBAR.LE SB0` for `wait_group` and `wait_group.read` (the full wait
+    // adds `CCTL.IVALL`); what `.read` changes is the code ptxas may move above it (an LDG of
+    // the destination, fixtures/e_tma_store_readback), which the SASS front sees as written.
+    // ASSUME(E-ASYNC-STEP)
     for (i, l) in lines.iter().enumerate() {
         // A trailing `{list}` (scoreboards drained to zero) is not an async-group wait here:
         // groups counted on a listed scoreboard stay outstanding (conservative).
@@ -5876,7 +5882,7 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
                 DEP_BULK => {
                     code[i].op = Op::BulkWait {
                         n,
-                        read: true,
+                        read: false,
                         sb: Some(sb),
                         cp: false,
                     }
@@ -5884,7 +5890,7 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
                 0 if bulk_sbs.contains(&sb) => {
                     code[i].op = Op::BulkWait {
                         n,
-                        read: true,
+                        read: false,
                         sb: Some(sb),
                         cp: false,
                     }
@@ -5897,7 +5903,7 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
                 k if k == DEP_CP | DEP_BULK => {
                     code[i].op = Op::BulkWait {
                         n,
-                        read: true,
+                        read: false,
                         sb: Some(sb),
                         cp: true,
                     }
@@ -5933,6 +5939,39 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
         .filter(|(_, l)| l.opcode == "UTMACMDFLUSH")
         .filter_map(|(i, l)| Some((i, l.hi.and_then(|h| scoreboard::Ctrl::decode(h).rbar)?)))
         .collect();
+    // An LDTM's tensor-memory read is outstanding until its write scoreboard is waited, by a
+    // control-word wait (the consumer's, or any instruction's) or a DEPBAR; TMEM loads complete
+    // in issue order, so a wait on a later LDTM's scoreboard completes the earlier ones too
+    // (L-OPREAD). ASSUME(S-TCGEN05)
+    let ldtm_sb: Vec<(usize, u8)> = code
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| matches!(c.op, Op::TmemLd { .. }))
+        .map(|(i, _)| {
+            let sb = lines[i]
+                .hi
+                .and_then(|h| scoreboard::Ctrl::decode(h).wbar)
+                .unwrap_or(7);
+            (i, sb)
+        })
+        .collect();
+    let ldtm_mask = ldtm_sb
+        .iter()
+        .filter(|w| w.1 < 7)
+        .fold(0u8, |m, w| m | 1 << w.1);
+    let mut ldtm_waits: Vec<(usize, u8, Vec<(u8, u8)>)> = vec![];
+    if ldtm_mask != 0 {
+        for (i, l) in lines.iter().enumerate() {
+            let w = l.hi.map_or(0, |h| scoreboard::Ctrl::decode(h).wait) & ldtm_mask;
+            let d: Vec<(u8, u8)> = scoreboard::depbar_waits(l)?
+                .into_iter()
+                .filter(|&(sb, _)| sb < 8 && ldtm_mask >> sb & 1 == 1)
+                .collect();
+            if w != 0 || !d.is_empty() {
+                ldtm_waits.push((i, w, d));
+            }
+        }
+    }
     aligned_bars(&mut code);
     smem_acquires(&lines, &mut code);
     l2::check_kernel(&code)?;
@@ -5960,6 +5999,8 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
         static_findings,
         bulk_read_waits,
         bulk_commit_sb,
+        ldtm_sb,
+        ldtm_waits,
         parts: vec![],
         ntid: meta.ntid,
         globals: meta.globals.clone(),

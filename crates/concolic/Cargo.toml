@@ -5,3 +5,6 @@ version.workspace = true
 
 [dependencies]
 ptxv-sim = { path = "../sim" }
+
+[lints]
+workspace = true

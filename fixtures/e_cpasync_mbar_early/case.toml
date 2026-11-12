@@ -1,0 +1,56 @@
+name = "e_cpasync_mbar_early"
+description = """
+E-CPASYNC-MBAR: the shared-memory writes of copies tracked by cp.async.mbarrier.arrive land
+as an async actor at the copies' issue clocks (PTX ISA 9.5 8.9.1.1: a cp.async is ordered
+after the thread's earlier instructions, not its later ones). Before, they were race-checked
+with the arrive's clock, which a barrier or the thread's own accesses between the issue and
+the arrive ordered after: EARLY (another thread's read before a barrier the issuer reached
+after the issue) and OWN (the issuer's own store before its arrive) were clean on both
+fronts."""
+ptx = "kernel.ptx"
+entry = "e_cpasync_mbar_early"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [4]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[variants]]
+id = "good"
+summary = "the copy is issued after thread 32's read and the barrier"
+expect = ["clean"]
+
+[[variants]]
+id = "EARLY"
+summary = "the copy is issued before the barrier, the arrive after it: thread 32's read races with the copy's write"
+edits = [
+    { marker = "@LATE", find = "cp.async.cg.shared.global [%r2], [%rd2], 16;", replace = "" },
+    { marker = "@EARLY", find = "// @EARLY", replace = "cp.async.cg.shared.global [%r2], [%rd2], 16;" },
+]
+expect = ["race"]
+
+[[variants]]
+id = "OWN"
+summary = "the issuer stores to the copy's destination between the issue and the arrive"
+marker = "@OWN"
+find = "// @OWN"
+replace = "nanosleep.u32 20000; mov.u32 %r7, 0x77; st.shared.u32 [%r2+4], %r7;"
+expect = ["race"]

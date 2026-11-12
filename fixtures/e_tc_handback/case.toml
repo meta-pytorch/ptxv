@@ -70,3 +70,25 @@ find = "mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p13, [%r34], 0
 replace = "mbarrier.try_wait.parity.shared::cta.b64 %p13, [%r34], 0;"
 expect = ["contract", "race"]
 expect_sass = ["clean"]
+
+[[variants]]
+id = "ACTANW"
+summary = "ACTA with the peer's round-1 tcgen05.wait::ld removed: its reads of D are not complete at the hand-back"
+marker = "@EWAIT"
+find = "mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p13, [%r34], 0;"
+replace = "mbarrier.try_wait.parity.shared::cta.b64 %p13, [%r34], 0;"
+edits = [{ marker = "@WAITLD", find = "tcgen05.wait::ld.sync.aligned;", replace = "// no wait::ld" }]
+expect = ["contract", "race", "violation"]
+# PTX: the loaded registers are read before the wait (violation) and the CTA-scoped leader wait
+# orders nothing (race). SASS: ptxas makes the global stores of R40.. wait on the LDTM's
+# scoreboard, so the hand-back still follows the completed reads: clean, as ACTA.
+expect_sass = ["clean"]
+
+[[variants]]
+id = "ACTAE"
+summary = "ACTA with the peer's hand-back arrive moved before its round-1 tcgen05.ld: round 2's MMA overwrites D before the peer reads it"
+marker = "@EWAIT"
+find = "mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p13, [%r34], 0;"
+replace = "mbarrier.try_wait.parity.shared::cta.b64 %p13, [%r34], 0;"
+edits = [{ marker = "@HANDBACK", find = "mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%r35];", replace = "// handed back early" }, { marker = "@EARLY", find = "// (early hand-back slot)", replace = "{ .reg .pred pe; .reg .b32 ea, eb; mov.u32 eb, %cluster_ctarank; setp.eq.u32 pe, eb, 1; setp.eq.and.u32 pe, %r0, 0, pe; add.u32 ea, %r3, 24; mapa.shared::cluster.u32 ea, ea, 0; @pe mbarrier.arrive.release.cluster.shared::cluster.b64 _, [ea]; }" }]
+expect = ["contract", "race"]

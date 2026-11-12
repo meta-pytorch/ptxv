@@ -194,9 +194,11 @@ fn fold_completed(m: &mut Machine) {
             keep.push(r);
             continue;
         }
+        // clock + 1: a bulk store's global writes run at its actor's next epoch
+        // (exec.rs `grid_done_vc`).
         if let Some(t) = (0..m.threads.len()).find(|&t| m.threads[t].cta == cta) {
             let th = m.threads[t].make_mut();
-            vc_join(&mut th.vc, &vc_single(actor, clock));
+            vc_join(&mut th.vc, &vc_single(actor, clock + 1));
         }
     }
     m.completed = keep;

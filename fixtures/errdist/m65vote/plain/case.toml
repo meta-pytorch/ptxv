@@ -1,0 +1,56 @@
+name = "m65_ballot_t"
+description = """
+MISS 65: entry m65_ballot_t of ../kernel.ptx: every lane stores t = rn(rn(x w) + v), as m65_ballot
+where its ballot is 0 (the candidate of ../equiv.toml)."""
+ptx = "../kernel.ptx"
+entry = "m65_ballot_t"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "../data/x.bin"
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "../data/w.bin"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "../data/v.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

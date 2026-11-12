@@ -1,0 +1,107 @@
+name = "c_num_nonfinite_f32"
+description = """
+N-NUM-NONFINITE (MISS 63): non-finite simulated and exact values (kernel.ptx, gen.py). (x + y) + (u + v)
+and x + y overflow in the even lanes (NaN and inf against the finite exact values 0 and 6e38: an
+infinite error); a copy of w (+inf, -inf, NaN) is identical to its exact value (error 0); w + z and
+(x + y) + w2 have a non-finite exact value the f64 expansions do not determine (not analyzed); NaN + z
+is NaN for NaN (error 0). expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_nonfinite_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/y.bin"
+
+[[buffers]]
+name = "u"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/u.bin"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/v.bin"
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/w.bin"
+
+[[buffers]]
+name = "z"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/z.bin"
+
+[[buffers]]
+name = "w2"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/w2.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [160]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "u"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[params]]
+kind = "ptr"
+buffer = "w2"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

@@ -1,0 +1,56 @@
+name = "e_cpasync_proxy_early"
+description = """
+E-CPASYNC-PROXY: 64 threads cp.async 16 bytes each into a 1 KiB shared tile, then thread 0
+bulk-stores the tile to out (an async-proxy read). The PTX memory model wants a
+fence.proxy.async after the copies complete (after the wait) that happens-before the async-proxy
+read: good (the fence after cp.async.wait_all) is clean. EARLY (the fence between the copies'
+issue and the wait) and NONE (no fence) are contract findings on both fronts. Triton's attention
+kernels fence as EARLY does (fixtures/r4_attn_triton). No GB300 probe with a positive control
+decides the rule (probes/cpasync_proxy)."""
+ptx = "kernel.ptx"
+entry = "e_cpasync_proxy_early"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [256]
+init = "iota"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [256]
+init = "nan"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "fence.proxy.async.shared::cta after cp.async.wait_all"
+expect = ["clean"]
+
+[[variants]]
+id = "EARLY"
+summary = "the fence between the copies' issue and the wait"
+edits = [
+    { marker = "@EARLYF", find = "// @EARLYF", replace = "fence.proxy.async.shared::cta;" },
+    { marker = "@FENCE", find = "fence.proxy.async.shared::cta;", replace = "" },
+]
+expect = ["contract"]
+
+[[variants]]
+id = "NONE"
+summary = "no fence"
+marker = "@FENCE"
+find = "fence.proxy.async.shared::cta;"
+replace = ""
+expect = ["contract"]

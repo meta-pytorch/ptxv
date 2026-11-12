@@ -1,0 +1,77 @@
+name = "c_num_ctl_atom_f32"
+description = """
+N-NUM-TRACK (the independent review's probe rd_atom_branch, kernel.ptx): a branch on S, the sum of 32 f32
+atomic adds of 0.1f (red, then bar.sync, then a load). out[t] = (S >= B) ? x + y : x + z, B = 3.2f; acc[0] = S.
+Exact S = 32 * 0.1f = B (x + y); this run's S = 0x404cccc9 < B (x + z). num makes no claim. expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP).
+"""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_ctl_atom_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out", "acc"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/y.bin"
+
+[[buffers]]
+name = "z"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/z.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "acc"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+expect = "expected/acc.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "acc"
+
+[[params]]
+kind = "bytes"
+hex = "cdcc4c40"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

@@ -1,0 +1,57 @@
+name = "m65_ballot"
+description = """
+MISS 65: entry m65_ballot of ../kernel.ptx (see its header): lanes 0..15 ballot an input-derived
+predicate (rn(x x) >= 9), lanes 16..31 branch on the ballot. errdist and equiv refuse it
+(data-dependent: the branch on the ballot)."""
+ptx = "../kernel.ptx"
+entry = "m65_ballot"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "../data/x.bin"
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "../data/w.bin"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "../data/v.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

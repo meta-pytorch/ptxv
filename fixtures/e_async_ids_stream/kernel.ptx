@@ -1,0 +1,70 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// S-NC precision with async actor ids (MISS 68): k0 thread 31 (last thread of grid 0) issues N
+// bulk stores into dummy, then one 16-byte bulk store into src[0..4) (waited for). k1,
+// stream-ordered after k0 (no PDL), reads src[t % 4] with ld.global.nc: k0 completed before k1
+// started (exempt, clean). With N = 4096 the store is thread 31's 4097th async op; with a fixed
+// stride of 4096 ids per thread its id decoded as grid 1's thread 32.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry k0(.param .u64 psrc, .param .u64 pdummy, .param .u32 pn)
+.reqntid 32
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<16>;
+    .shared .align 128 .b32 tile[4];
+
+    ld.param.u64    %rd1, [psrc];
+    ld.param.u64    %rd2, [pdummy];
+    ld.param.u32    %r9, [pn];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    setp.ne.u32     %p1, %r1, 31;
+    @%p1 bra        $L_end;
+    mov.u32         %r10, tile;
+    mov.u32         %r11, 5;
+    st.shared.v4.u32 [%r10], {%r11, %r11, %r11, %r11};
+    fence.proxy.async.shared::cta;                  // @N
+    mov.u32         %r12, 0;
+$L_loop:
+    setp.ge.u32     %p2, %r12, %r9;
+    @%p2 bra        $L_last;
+    cp.async.bulk.global.shared::cta.bulk_group [%rd2], [%r10], 16;
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+    add.u32         %r12, %r12, 1;
+    bra.uni         $L_loop;
+$L_last:
+    cp.async.bulk.global.shared::cta.bulk_group [%rd1], [%r10], 16;
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+$L_end:
+    ret;
+}
+
+.visible .entry k1(.param .u64 psrc, .param .u64 pout2)
+.reqntid 32
+{
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+    ld.param.u64    %rd1, [psrc];
+    ld.param.u64    %rd4, [pout2];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd4, %rd4;
+    mov.u32         %r1, %tid.x;
+    and.b32         %r2, %r1, 3;
+    mul.wide.u32    %rd2, %r2, 4;
+    add.s64         %rd3, %rd1, %rd2;
+    ld.global.nc.u32 %r3, [%rd3];
+    mul.wide.u32    %rd5, %r1, 4;
+    add.s64         %rd6, %rd4, %rd5;
+    st.global.u32   [%rd6], %r3;
+    ret;
+}

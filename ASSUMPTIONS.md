@@ -659,6 +659,12 @@ can still do (`explore.rs` `sync_ample`). Entities are warps, plus each warp's a
   wrong, and the search runs again with the larger sets. Findings and outputs of every round
   are kept, since every transition is a real step. Growth that conflicts with no choice cannot
   change any choice, because conflict distributes over union.
+- **Seed walks and the budgets.** The seed walks stop at the search's budgets (the memory
+  budget, the time budgets of `--time-budget` and `--mutate-budget-seconds`) before their
+  next step. A cut seed set is the set of fewer or shorter walks (as `PTXV_POR_SEED_WALKS`
+  or the 1,000,000-step cap give), which the argument below does not use; the verdict is
+  marked incomplete anyway, with a note naming the walks (`seed_learned`; test
+  `seed_deadline.rs`).
 - **Soundness argument.** Take the final round, and a wrong choice `a` with no wrong choice
   after it (the graph is acyclic). Below `a` the reduction is right, so every maximal
   execution that starts with `a` is explored up to reordering. Some execution has another
@@ -1788,11 +1794,107 @@ launched (each removed a possible outcome).
   with every CTA unlaunched. The decision is the trial's (same deterministic run).
 
 ### E-CPASYNC · code
-**`cp.async` (SASS `LDGSTS`) reads its global source at issue and writes shared memory when
-`cp.async.wait_group n` retires its group** (at most n of the thread's committed groups stay
-incomplete; `LDGDEPBAR` commits, `DEPBAR.LE SBk, n` waits). The write is race-checked with the
-thread's clock at issue: nothing the thread did after issuing orders it. A source predicate
-that is false (src-size 0) writes zeros and reads nothing.
+**`cp.async` (SASS `LDGSTS`) writes shared memory when `cp.async.wait_group n` retires its
+group; the model reads its global source at issue, as the issuing thread (not ISA text:
+MISS 117, below)** (at most n of the thread's committed groups stay
+incomplete; `LDGDEPBAR` commits, `DEPBAR.LE SBk, n` waits). The write runs as an async actor,
+not the thread: the thread's wait actor at a new epoch per retiring wait
+(`cp_async_complete`, `Machine::cp_wait_actor`), or the operation's own actor for a
+`cp.async.mbarrier.arrive` or the exit (`cp_land`), at the thread's clock at issue with that
+epoch, and the waiting thread joins it: nothing the thread did after issuing orders the write
+before anything, until the wait. Copies in flight together (retired by one wait, one arrive or
+the exit, or issued before the wait that retired the other) are unordered with each other. A
+source predicate that is false (src-size 0) writes zeros and reads nothing.
+- PTX ISA 9.5: control returns to the thread "before the copy operation is complete", and
+  "No other synchronization mechanism guarantees the completion of the asynchronous copy
+  operations" than async-group or mbarrier completion (9.7.10.28.3.1); its writes "are made
+  visible to the executing thread only after" the wait_group / wait_all that covers it or a
+  successful test_wait / try_wait on an mbarrier tracking it, and two copies not synchronized
+  by those are unordered (9.7.10.28.3.3); two copies of one group to one location are
+  undefined (9.7.10.28.3.2). A copy is "ordered after prior instructions in the same thread"
+  but not after any instruction issued after it (8.9.1.1). The rule for the write is that
+  text; the source read at issue is not (MISS 117, below).
+- Actor (2026-11-09, MISS 34): before, the write ran as the issuing thread at its issue clock,
+  so a barrier the issuer reached after the issue (before its wait) ordered the write before
+  every thread past the barrier. `fixtures/e_cpasync_early` LATEWAIT (thread 0 issues,
+  bar.sync, thread 32 reads the slot, thread 0 waits) was clean and certified on both fronts
+  by the stateful explorer and `--certify` (DPOR already reported nondeterministic,race);
+  GB300 reads the old bytes in 1000/1000 runs (2026-11-10; 200/200 earlier). It is a race now.
+- Not modeled (MISS 117, open; a miss by ISA text, found in review 2026-11-11): the global
+  source read. The model checks it at issue, as the issuing thread at its issue clock
+  (`Op::CpAsync`). PTX ISA 9.5 9.7.10.28.1: "Once an asynchronous copy operation is initiated,
+  modifying the source memory location or tensor descriptor or reading from the destination
+  memory location before the asynchronous operation completes, exhibits undefined behavior";
+  8.9.1.1: a cp.async's loads are not ordered with any instruction the thread issues after it
+  except `cp.async.commit_group` and `cp.async.mbarrier.arrive`. So a store to the source
+  after the issue and before the copy completes, by another thread after a barrier the issuer
+  reaches before its wait or by the issuer itself between the cp.async and its wait, is a
+  missed race: clean on both fronts, with `--certify` and DPOR, in a 64-thread repro (thread
+  0 copies src[0..3] with cp.async.cg; thread 32 or thread 0 stores src[1] before thread 0's
+  wait); GB300 0/1000 runs each, plain and scrubbed shared memory (2026-11-11; a bound, no
+  positive control). If wrong: *miss*. Placement: strict (ISA text); a GB300 null could at
+  most justify a gb300-profile discharge.
+- In flight together (2026-11-10): copies retired by one wait land as one actor, which the race
+  check orders with itself, so two of them writing the same bytes were not checked against each
+  other (before the actor change too: one thread's issue clocks). `cp_overlap` reports such a
+  pair as a write-write race, or as an S-SAME-VALUE note when both write the same bytes.
+  `fixtures/e_cpasync_overlap`: SAME (two 16-byte copies of one thread to one slot, one
+  group), GROUPS (two groups, one `wait_group 0`) and MBAR (one `cp.async.mbarrier.arrive`)
+  were clean on both fronts, the model leaving the second copy's bytes; GB300 left the first
+  copy's in 1000/1000 runs of each. SEQ (a wait between them) stays clean.
+- One wait actor per thread (2026-11-10, review of MISS 34): the port gave every retiring wait
+  a fresh actor, and each one became an entry of every clock that joined it (all threads after
+  a barrier): the errdist of fixtures/errdist/c_mm2_addmm (torch.compile's CUTLASS SIMT
+  sgemm; on every build it ends in the refusal its case.toml documents, so these are times to
+  that refusal) took 3.8x the user time (medians 46 s vs 12 s). No run isolates the port's
+  cost on a kernel_db record (the 5.5x once quoted for kernel_db's triton parallel_attn_fwd
+  came from a work-in-progress build that also scanned every thread's fences per byte,
+  E-CPASYNC-PROXY). Now a thread's waits
+  land as one actor, its last async actor id (`cp_wait_actor`), at increasing epochs
+  (`Thread::cp_epoch`): 1.5x (median 18.5 s); 0.7x (median 9.3 s vs 13.2 s, 2026-11-11) once a
+  waiter joins one clock per commit group (a thread's issue clocks only grow, so the group's
+  last copy carries the join), a warp's `DEPBAR` joins the copies it retires into one clock
+  before its lanes join it (a join per lane and copy made kernel_db's mslk fa4.combine f32
+  check 1.7x slower; 0.5x now, 4.5 s vs 8.5 s) and E-CPASYNC-PROXY checks the read's issuer's
+  fences first (the attention check: 24.1 s before, 10.6 s now). A clock knowing epoch e of
+  thread t's wait actor knows every earlier epoch: the epochs reach other clocks only through
+  t's waits (PTX: t joins its own landings, in program order) or through `DEPBAR`s of t's warp,
+  which retire copies in commit order (a copy landed later has a later commit than every copy
+  landed earlier, so a wait covering it covers them).
+  The race check orders one actor's writes with each other, so two copies of t landed by
+  different waits, the later one issued before the earlier one's wait, are checked explicitly
+  (`cp_relanded`: a write-write race, or an S-SAME-VALUE note). `fixtures/e_cpasync_overlap`
+  LATER (two groups to one slot, `wait_group 1` then `0`): race on both fronts, as with a
+  fresh actor per wait; GB300 leaves the first copy's bytes in 1000/1000 runs (2026-11-10),
+  where landing in wait order leaves the second's.
+- Async actor ids (MISS 68, 2026-11-11): thread t's are `F n + t * ids + serial` (n threads),
+  `ids` the largest power of two that keeps every id below `RR_BIT` (2^31): 2^25 with 32
+  threads, 2^18 with 6912 (`async_shift`). The last is t's wait actor; its TMA, bulk and remote
+  operations, try_cancel, NIC work requests and the actors of its arrives and exit take the
+  others from one checked allocator (`Machine::async_actor`). Past them an id would alias
+  another actor's (the wait actor, then the next thread's ids, or none past the last thread),
+  so the step fails closed: an `unmodeled` fault that stops the thread; an id never wraps
+  (`fixtures/e_async_actor_cap` with the ids cut to 4096: MANY's 4096th arrive). Before, a
+  thread had 4096 ids and only the arrive and exit actors were checked (`unmodeled`, then a
+  wrap within the thread): a thread's 4097th TMA or bulk operation took the next thread's
+  first id. `fixtures/e_async_ids_race` (a write-write race with that thread's first: clean),
+  `e_async_ids_nc` (an S-NC violation decoded as a later kernel's write: clean),
+  `e_async_ids_slices` (`--slices` put the write in the other cluster's footprint: clean),
+  `e_async_ids_stream` (an earlier kernel's write decoded as the reading kernel's: a false
+  violation) and `e_async_ids_last` (decoded past the last thread: a crash), on both fronts.
+  The ids are the race check's own bookkeeping, not hardware behavior. Evidence classes:
+  argued (the id arithmetic: every id below `RR_BIT`; one function, `async_split_of`, decodes
+  every async id, behind `Machine::async_split` (async_issuer, actor_name) and
+  `actor_thread_of` (actor_thread, the race check's CTA of an access)), model (the
+  fixtures, both fronts, stateful and `--certify`; srcmut `async-ids-check-off`,
+  `async-ids-wrap` and `async-ids-stride-4096` are caught). If wrong (an id that aliases
+  another actor's): a missed race or S-NC violation, a false violation or a crash, as in the
+  fixtures; the check makes it `unmodeled` instead. Placement: strict (no hardware behavior
+  for a profile to relax). F is `FIXED_ACTORS_PER_THREAD` (3): the ids `k n + t` below
+  `async_base` are thread t's own, its tcgen05.ld/st actor's and its tcgen05 pipe's.
+- Placement: strict. It is the PTX ISA's contract, and GB300 exercises the freedom it leaves
+  (LATEWAIT 1000/1000, SAME 1000/1000, E-CPASYNC-MBAR EARLY / OWN), so no hardware profile
+  relaxes it.
 - Where: `exec.rs` `Op::CpAsync` / `CpAsyncCommit` / `CpAsyncWait`, `Thread::cp_pending`;
   `sass` lowering of `LDGSTS`, `LDGDEPBAR` and the `DEPBAR.LE` post-pass; `ptx` lowering of
   `cp.async.{ca,cg}` (src-size 0 or an ignore-src predicate: zero fill), `commit_group`,
@@ -1807,6 +1909,26 @@ that is false (src-size 0) writes zeros and reads nothing.
   odd / even lanes copy on two divergent paths, one converged DEPBAR, each lane reads its
   neighbour's slot: GB300 1000/1000 scrubbed runs correct for wait_group 0 and 1 (the second
   group also landed in time with 1, so the probe does not show the counting itself).
+- Divergent waits (2026-11-10): a `DEPBAR` of some lanes retires copies of live lanes running
+  elsewhere; those lanes join the copies' clocks at their own later `DEPBAR` covering them
+  (`Warp::cp_landed`: commit count, clock, lanes still owed). Before MISS 34 a lane's own copy
+  was its own write, so its later read needed no join; with the copies as an async actor the
+  SASS front called `fixtures/e_cpasync_div_wait` good a race (even lanes spin on a flag the
+  odd lanes set after their wait, so the odd path's DEPBAR retires the even lanes' copies).
+  NOWAIT (no wait on the even path) stays a race. `fixtures/e_cpasync_div_cover` pins the
+  coverage condition: NEIGH (the even lanes wait with wait_group 1, whose `DEPBAR.LE SB0, 1`
+  covers their own commit and not the odd lanes' later one, and read the odd neighbour's slot)
+  is a race on both fronts (`cpasync_divergent_waits_join_only_the_copies_they_cover`).
+  Placement of the scoreboard scope and of these joins: strict, at every SASS level (it was
+  documented as gb300, but the code never gated it). A `DEPBAR.LE SBk, n` waits on the warp's
+  scoreboard: that is what the instruction does, not a measured timing, and ptxas relies on
+  it (it compiles `cp.async.wait_group; __syncwarp()` to `DEPBAR.LE SB0, 0x5; NOP` before
+  other lanes read the copies; without the warp-wide wait the strict level reported a false
+  race there). The joins only carry that wait to copies an earlier `DEPBAR` of another path
+  already retired (a lane's covering `DEPBAR` is ordered after every copy the scoreboard
+  counted); for a lane's own copies they are the PTX rule itself (its own covering wait).
+  Evidence classes: argued (the lowering), GB300 measured (e_cpasync_div_wait good: the
+  model's output in 1000/1000 runs; probes/cpasync_warp), model (the fixtures).
 - src-size (2026-11-07): an immediate or register src-size s copies the first s bytes and
   zero-fills the rest (s larger than the cp-size: a violation). ptxas encodes a partial s as
   `LDGSTS...ZFILL` with source address + size - s (the address's low bits mod the size are the
@@ -1817,9 +1939,12 @@ that is false (src-size 0) writes zeros and reads nothing.
 - Status: **validated**: `fixtures/s_sm80` (two groups, wait_group 1 then 0, zero fill),
   torch's sm80 flash attention (3-stage pipeline) and Triton's flash attention (masked
   prefetch past the end) match GB300 bitwise. A read of the destination before the wait sees
-  the old bytes in the model; on hardware it may see either: reported as a race only when
-  another thread's access is involved.
-- If wrong: *miss* for a thread that reads its own cp.async destination before waiting.
+  the old bytes in the model; on hardware it may see either: reported as a race (the issuing
+  thread's own read included, since the write is a separate actor). Evidence classes: ISA text
+  (the rule), GB300 measured (LATEWAIT, SAME: the hardware lands copies after a barrier and out
+  of issue order), model (the fixtures, both fronts, both explorers, `--certify`).
+- If wrong: *false alarm* if the hardware gave an order the PTX ISA does not (the measured
+  runs show none); a co-retired pair with the same bytes is only a note (S-SAME-VALUE).
 - Scoreboard reuse (2026-11-05, mslk's FA4 decode): ptxas may count cp.async groups
   (LDGDEPBAR's write scoreboard) and bulk groups (UTMACMDFLUSH's read scoreboard) on the same
   SBk. Each `DEPBAR.LE SBk, n` is classified by the kinds that may be outstanding on SBk where
@@ -1840,9 +1965,35 @@ it acts on m.** ptxas compiles the plain form to `SYNCS.ARRIVE.TRANS64.RED.A0T1`
 transaction unit now) plus `ARRIVES.LDGSTSBAR.64.TRANSCNT` (complete that unit once the copies
 landed), and `.noinc` to `ARRIVES.LDGSTSBAR.64.ARVCNT` (one arrival once they landed); both are
 modeled that way (`Op::CpAsyncMbarArrive`, `AsyncKind::CpArrive`, a scheduler choice like a
-TMA completion). The writes are race-checked as the operation's actor, whose clock a waiter
-on m acquires. The copies leave the thread's cp.async groups: a later `wait_group` does not
-wait for them again (no kernel seen does both).
+TMA completion). The writes are race-checked as the operation's actor at their own issue
+clocks (`cp_land`), and a waiter on m acquires the actor's epoch with the arrive-on. The
+copies leave the thread's cp.async groups: a later `wait_group` does not wait for them again
+(no kernel seen does both).
+- Issue clocks (2026-11-10): before, the writes ran at the arrive's clock, which a barrier or
+  the issuer's own accesses between the copy and the arrive ordered after them. PTX ISA 9.5
+  9.7.15.16.18: the arrive-on is triggered "upon the completion of all prior cp.async
+  operations" and is "asynchronous to execution of cp.async.mbarrier.arrive"; 8.9.1.1 orders a
+  copy after the issuer's earlier instructions only. `fixtures/e_cpasync_mbar_early` EARLY
+  (the copy issued before a barrier, the arrive after it, another thread's read of the slot
+  before the barrier) and OWN (the issuer stores to the slot between the copy and the arrive)
+  were clean and certified on both fronts; GB300 lands the copy first in 866/1000 (EARLY: the
+  read returns the copied word) and 1000/1000 runs (OWN: the store wins; ptxv hw, 2026-11-11,
+  gb300_rates.csv). Both are races now.
+  Placement: strict (ISA text; GB300 shows the order).
+- Not modeled (MISS 118, open; a miss by ISA text, confirmed in review 2026-11-11): 8.9.1.1
+  orders the arrive-on after the thread's earlier cp.async operations only, "not to
+  those of any other instruction issued by the thread", and a successful test_wait / try_wait
+  makes visible the cp.async operations before the cp.async.mbarrier.arrive, not the issuer's
+  other accesses before it (9.7.15.16.19). The model releases the issuer's whole clock at the
+  arrive-on (`exec.rs` `Op::CpAsyncMbarArrive`, `complete_cp_arrive`), so a waiter is ordered
+  after the issuer's other accesses before the arrive: a missed race. 64-thread repro: thread
+  0 stores a shared word, copies with cp.async.cg and arrives with
+  `cp.async.mbarrier.arrive.noinc`; thread 32 waits and reads the word (also with the store
+  between the copy and the arrive, without the copy, and with a global word): clean on both
+  fronts and certified (DPOR, run on the first two: clean); GB300 0/1000 runs each, plain and
+  scrubbed (2026-11-11; a bound). If wrong: *miss*. Placement: strict. A bulk copy's
+  complete-tx has the same root (S-MBAR-SCOPE, MISS 119). A later arrive tracks only copies no
+  earlier one took, where the ISA tracks every prior copy (a weaker order: false alarms only).
 - Where: `sass` `ARRIVES` / `SYNCS.ARRIVE...A0T1` lowering; `ptx` `cp.async.mbarrier.arrive`
   (the same two operations for the plain form); `exec.rs` `Op::CpAsyncMbarArrive`,
   `complete_cp_arrive`; `explore.rs` (pending arrivals, look-ahead: `.noinc` gives up).
@@ -2095,7 +2246,8 @@ witness should still be confirmed by a schedule or on the GPU (over-reporting).
   launched after the victim). Same-kernel co-readers: 100%. The model therefore under-reports
   co-resident-kernel scenarios; agent Z's `l1_coresident` / `l1_havoc` options cover them.
 - **Two-level verdicts** (`twolevel.rs`, on by default in `ptxv check`, `--no-gb300` /
-  `PTXV_GB300=0` off; `PTXV_HW_MODEL=1` checks under the hardware model directly). When a
+  `PTXV_GB300=0` off, together with the GB300-profile re-run of H-PROFILE; `PTXV_HW_MODEL=1`
+  checks under the hardware model directly). When a
   verdict has a race or stale finding, or relies on a refuted assumption, the check runs again
   under the *hardware model*: this L1 on every SM, over sequentially consistent memory
   (`Launch::hw_order`: every strong write publishes its writer's clock and every strong read
@@ -2200,6 +2352,41 @@ only `CGAERRBAR` delivers them on the SASS front.
   contention, with positive controls).
 - If wrong: *miss* at level 2 only (a PTX race classified latent instead of observable); the
   level-1 race stands.
+
+### E-TMEM-QUEUE · code
+**One thread's tensor-memory accesses to the same words in issue order (one in-order TMEM
+queue), in cases happens-before does not order: not assumed at any level.** Three orders: a
+store (`STTM`, `tcgen05.st`) after the thread's own load whose completion it has not waited for
+(the LDTM's write scoreboard, `tcgen05.wait::ld`); a store after the thread's own earlier store
+not yet completed (`FENCE.VIEW.ASYNC.T`, `tcgen05.wait::st`); a load after such a store. The
+SASS front puts a thread's LDTM reads and STTM writes on two actors (`tc_actor_id`,
+`sttm_actor_id`), completed at different points. A conflict ordered only through the thread's
+own pending LDTM (`Machine::tmem_queue_vc`), and only by it (every unordered earlier access is
+one, exec.rs `tmem_access`: another thread's in-flight LDTM or an MMA reader makes it a race),
+is a `tmem-queue:` contract finding; so is an STTM over the same thread's un-fenced STTM to the
+same word (`tmem-queue:ww:`; one actor, never a race). The GB300 profile does not discharge
+them: they are contract findings at both levels. The load after an un-completed store is a race
+on both fronts.
+- PTX (MISS 116): a thread's `tcgen05.ld` and `tcgen05.st` are one actor (`tc_actor_id`),
+  whose clock orders them; PTX ISA 9.7.18.6.1 does not ("not inherently ordered with respect to
+  other tcgen05 operations in the same thread (unless pipelined)"; 9.7.18.6.2.1.2 pipelines
+  only ld -> wait::ld and st -> wait::st). A `tcgen05.st` over the thread's own `tcgen05.ld` or
+  `tcgen05.st` of the word with no `wait::ld` / `wait::st` since (`tc_ld_unwaited`,
+  `tc_st_unwaited`) is the same `tmem-queue:` contract finding. A `tcgen05.ld` of a word the
+  thread's own `tcgen05.st` wrote with no `wait::st` since is a race, as SASS reports an LDTM
+  after an un-fenced STTM (MISS 121; before, clean on PTX).
+- Evidence, a measured null without a discriminating control (probes/tmem_queue/results.txt,
+  GB300, 296 CTAs x 160 threads x 2000 iterations x 10 launches per mode, SASS checked): LDTM
+  then STTM of the same 16 columns with no wait on the LDTM's scoreboard: 0 of 1.2e10 loaded
+  words changed (mode 0); STTM a then STTM b with no `FENCE.VIEW.ASYNC.T`, then fence and LDTM:
+  b in all 1.2e10 words (mode 4); STTM then LDTM with no fence: the new value in all 1.2e10
+  words (mode 2). Mode 3 (two warps on the same lanes, one storing on the other's announced
+  load, which loads 2 us later) shows only that the check reads the other value when the store
+  lands first in real time; it is not a reordering control and gives modes 0, 2 and 4 no power
+  (a store overtaking an earlier load of the same queue, a write-write swap, a load overtaking
+  a store). The same evidence class as S-MBAR-SCOPE's tc_handback runs.
+- Status: **measured, non-discriminating**; not in the GB300 profile.
+- If wrong: nothing changes (no verdict relies on it).
 
 ### E-HW-PROXY-WAR · code
 **GB300 profile: a generic shared-memory read that happens-before an async-proxy write of the
@@ -2505,7 +2692,8 @@ after: a read or write of those bytes not ordered before the issue is a race, in
 the issuing thread's own read after the issue (unlike E-CPASYNC's waited copies) and any
 access after the exit. A pipelined prologue that loads more stages than the main loop
 consumes and exits without `wait_group 0` (a decode-combine kernel: trailing splits with no
-valid rows; a paged decode kernel's page-index prefetch) has this shape.
+valid rows; a paged decode kernel's page-index prefetch) has this shape. The copies land as
+in E-CPASYNC (`cp_land`: issue clocks, copies in flight together checked against each other).
 - Where: `exec.rs` `Op::Exit`; `hwprofile.rs` GB300 discharges `cp-async-exit:`.
 - Status: **validated** (`probes/cpasync_exit`, GB300, CUDA 13.0, 2026-11-08): each CTA fills
   its shared memory with its own pattern, checks it after a spin, then issues 16-byte
@@ -2676,11 +2864,57 @@ to exploration, at 35 GB per kernel on a 4096 x 4096 x 8192 tile
   on partial completion). What is lost is value nondeterminism of a racy read that sees half a
   box.
 - If wrong: *miss* only of output values in kernels already reported as racy.
-- `wait_group.read n` is modeled as `wait_group n` (the store's global writes are done when its
-  reads are). Waiting longer can only hide a race on the *source* buffer, never on the
-  destination, which stays invisible to the kernel until it exits (S-GLOBAL). SASS agrees
-  that there is one wait: ptxas lowers both forms to the same `DEPBAR.LE SBk, n` on the read
-  scoreboard of `UTMACMDFLUSH` (rung 1b).
+- `wait_group.read n` (PTX front, 2026-11-09, MISS 32) orders the thread after the covered
+  groups' shared-memory source reads only; their global writes (at the store actor's next
+  epoch) stay unordered until a full `wait_group` or the end of the kernel (`exec.rs`
+  `bulk_wait`, `complete_tma_store`). PTX ISA 9.5 9.7.10.28.6.2: by default the wait covers
+  "reading from the source locations", "writing to their respective destination locations"
+  and "writes being made visible to the executing thread"; with `.read` only the tensormap and
+  source reads. Before, `.read` was the full wait, on the argument that the destination stays
+  invisible to the kernel until it exits (S-GLOBAL). That is false for a kernel that reads its
+  own destination: `fixtures/e_tma_store_readback` READ (a load of the stored tile after
+  `.read 0`) was PTX-clean and certified while GB300 read the old value. Per session (ptxv
+  hw): 997/1000 runs (2026-11-10); 879/1000 [0.857, 0.898] and 993/1000 [0.986, 0.997] in two
+  sessions on 2026-11-11, whose intervals do not overlap: the rate depends on the session, the
+  direction does not; good 1000/1000 correct (2026-11-10). The wait still blocks until the
+  whole store has completed (longer than `.read` needs, which can only hide a source race, not
+  a destination one). The same holds for a bulk reduction's writes: `fixtures/e_bulk_read_l1`
+  RREAD (`cp.reduce.async.bulk ... .add.f32`, `.read 0`, a load of the destination) is a race
+  on the PTX front, READ the same with the non-tensor bulk store, good and RGOOD (full waits)
+  clean (`bulk_store_and_reduction_after_wait_read_race`). A `.read` wait keeps the group, so
+  a later full wait still orders the writes (`fixtures/e_tma_read_then_full`: clean,
+  `tma_store_full_wait_after_wait_read_orders_the_writes`). A grid's (and a launch group's)
+  completion orders the writes (`grid_done_vc`, `groups.rs` `fold_completed`: the completed
+  record's clock + 1), so a store read by a later kernel on the stream stays clean
+  (`tma_store_after_wait_read_is_ordered_by_grid_completion`; across a launch-group boundary,
+  `launch_group_boundary_orders_a_bulk_store_s_writes`). `.sync_restrict::proxy::async` (PTX
+  ISA 9.5) is refused by the PTX front. Placement: strict. The rule is the ISA text, and GB300
+  shows the freedom it leaves (READ wrong in every session above), so no hardware profile
+  relaxes it.
+  SASS: ptxas lowers both forms to the same `UTMACMDFLUSH; DEPBAR.LE SBk, n` on the read
+  scoreboard (rung 1b), the full form with a `CCTL.IVALL` after it; what `.read` permits is
+  code motion above the wait (READ: the `LDG` moves above the flush), which the SASS front
+  sees as compiled. The `DEPBAR` is modeled as a full wait (`read: false`): its global writes
+  are complete in L2 after it (GB300, 2026-11-10, `fixtures/e_tma_read_l1` READ2: `.read 0`,
+  then an `ATOMS` on the source whose result forms the `LDG` address, so the `LDG` issues after
+  the `DEPBAR`; 0 stale reads in 1000 runs; a measured null, a bound). Keeping the `DEPBAR` a
+  full wait at the strict level rests on that null, which the placement rule allows in the
+  gb300 profile only (a measured null is never strict); with the L1 miss below it is MISS 102,
+  open here.
+  - Not modeled (a miss, GB300 measured, 2026-11-10, not yet fixed): the issuing SM's L1 can
+    still hold a line of the destination it filled before the store. Without the full form's
+    `CCTL.IVALL`, a weak `LDG` after the `DEPBAR` returns the line's old bytes
+    (`fixtures/e_tma_read_l1` READ3, READ4: 1000/1000 runs; GOOD3, GOOD4 with the full wait:
+    correct). READ4 (a `fence.proxy.async.global` between the earlier `LDG` and the store) is
+    clean and certified on the SASS front; the PTX front reports the race (the `.read` rule
+    above), and the GB300 level's L1 model (E-HW-L1) predicts the stale read but runs only when
+    the strict check reports something. The same miss reaches the non-tensor bulk store and the
+    bulk add-reduction (`fixtures/e_bulk_read_l1` READ, RREAD: clean on the SASS front; GB300
+    reads the stale line in 1000/1000 runs of each, 2026-11-11) and another thread of the CTA
+    that reads the destination after a `bar.sync` following the issuer's `.read` wait (GB300
+    1000/1000 stale, 2026-11-11). `tests/fixtures.rs` `tma_store_read_l1_stale_is_pinned` and
+    `bulk_store_and_reduction_after_wait_read_race` pin the current verdicts. A fix would let
+    the `DEPBAR` join the writes' clock only through the next acquire (`CCTL.IVALL`).
 - A wait bit on that scoreboard in any instruction's control word is the same wait with n = 0
   (`Kernel::bulk_read_waits`; cuBLAS's MXF8 nvjet waits so on the `BAR.SYNC` before it reuses
   a TMA-store staging buffer, and has no `DEPBAR`). A scoreboard counts every operation on it,
@@ -3563,6 +3797,14 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
   between a uniform-register write and its read (the model's splits share the warp's uniform
   registers) and deadlocks, while GB300 runs the probe to completion; the GB300 profile drops
   that switch (E-HW-SPLIT-UR) and certifies it.
+- Time budget (`ptxv check --time-budget`, `membudget::time_budget_spent`): a certificate
+  run it stops gives a reason ("the certificate's run stopped at the time budget"), so the
+  certificate does not hold; a dead-read rerun (`probe_run`) it stops marks nothing dead; a
+  certificate that ends after the budget is spent is refused as well, whatever stopped
+  (`certify_inner`); and so is one whose cross-check the budget stops. A cut certificate is
+  never a pass: the launch is explored, under the same spent budget, and the verdict is
+  incomplete (`tests/seed_deadline.rs` `certificates_stop_at_the_time_budget`,
+  `crates/cli/tests/time_budget.rs`).
 - Evidence: `crates/sim/tests/wellsync.rs` runs the certificate on every fixture variant
   and both front-ends: a certified verdict must equal the expected (exhaustive) one, and on
   a representative subset the certified output equals the exhaustive explorer's unique
@@ -3653,6 +3895,23 @@ has none), so a 2-CTA hand-off through a `.cta`-scoped remote arrive was certifi
     fully and another CTA's for shared memory only; `CCTL.IVALL` acquires the rest.
   - `.A0TR` / `.A0TX` (expect_tx / complete_tx) release nothing of their own, local or
     remote (until 2026-11-09, a remote one joined its issuer's whole clock).
+- Not modeled (MISS 119, open; a miss by ISA text, found in review 2026-11-11): the
+  complete-tx of a `cp.async.bulk` / `cp.reduce.async.bulk` releases the issuing thread's
+  whole clock at issue (the operation takes the issuer's clock at issue, `exec.rs`
+  `mbar_note_async` / `mbar_async_rel` release it). PTX ISA 9.5 8.9.1.1: "The implicit
+  mbarrier complete-tx operation that is part of all variants of cp.async.bulk and
+  cp.reduce.async.bulk instructions is ordered only with respect to the memory operations
+  performed by the same asynchronous instruction, and in particular it does not transitively
+  establish ordering with respect to prior instructions from the issuing thread"
+  (9.7.10.28.4.1 makes it a `.release` at `.cluster` scope; 8.9.1.1 bounds what it orders). A
+  waiter is ordered after the issuer's accesses before the copy: a missed race. 64-thread
+  repro: thread 0 stores a shared word, arrives with a relaxed `mbarrier.arrive.expect_tx`
+  and issues a 16-byte `cp.async.bulk` completing on the mbarrier; thread 32 waits and reads
+  the word (also: a release arrive before the store, a global word): clean on both fronts,
+  with `--certify` and DPOR; GB300 0/1000 runs, plain and scrubbed (2026-11-11; a bound), while
+  the no-wait positive control fails (1/1000 plain, 1000/1000 scrubbed). If wrong: *miss*.
+  Placement: strict. Reach: likely small (producers usually release before the copy); not
+  scanned.
 - Consequences: the PTX ISA's fixed forms (cluster-scope arrive and wait; st.async with an
   expect_tx arm at cluster scope; sync_restrict release + relaxed cluster arrive; relaxed
   cluster wait + sync_restrict acquire) are clean on both fronts. A `.cta`-scoped arrive or
@@ -3665,8 +3924,16 @@ has none), so a 2-CTA hand-off through a `.cta`-scoped remote arrive was certifi
   `mbarrier.arrive.shared::cluster`) give the stage's readers no order before the other
   CTA's next writes: a race on the PTX front, and on the SASS front unless a release fence
   (`MEMBAR.ALL.GPU` / `CGAERRBAR`, or `MEMBAR.ALL.CTA` for shared memory) precedes the arrive.
-  The reads have completed by then (`tcgen05.wait::ld`, register dependences), so these are
-  load-buffering shapes; no hardware rule relaxes them yet (as E-READ-DONE, opt-in).
+  These are load-buffering shapes when the reads have completed by then; no hardware rule
+  relaxes them yet (as E-READ-DONE, opt-in). The reads have completed only if the reader
+  waited for them before the hand-back: `tcgen05.wait::ld` (PTX), a wait on the LDTM's write
+  scoreboard (SASS, S-TCGEN05). A `tcgen05.wait::ld` after the arrive leaves them in flight:
+  fixtures/e_tblk_late (ptxas waits on the LDTM scoreboard after the bar.sync that precedes
+  the arrive, so the other warps' reads can still be outstanding at the hand-back): a race
+  on the SASS front, whatever the scopes. Until 2026-11-12 the SASS front completed an LDTM's
+  read at issue and called its ACTA variant clean; until MISS 105 the PTX front's
+  `tcgen05.fence::before_thread_sync` released the un-waited `tcgen05.ld` reads (S-TCGEN05)
+  and gave `good` contract only.
 - Cluster lifetime: a waiter that observed a phase saw its updates land (`Thread::landed`),
   even when it did not synchronize with them; S-CLUSTER-LIFE and async-after-exit count that
   as ordered before its exit, as the joined clock did before.
@@ -3688,9 +3955,9 @@ has none), so a 2-CTA hand-off through a `.cta`-scoped remote arrive was certifi
   the arriving thread does not wait), so its clock holds only what the thread observed
   before issuing it, and an arrive the thread performs later in program order cannot be
   in it.
-- Not modeled (possible miss): 8.9.1.1 orders an async copy's complete-tx only with that
-  copy, not with the issuer's earlier instructions; the model releases the issuer's clock at
-  issue with it (as before 2026-11-09).
+- Not modeled: 8.9.1.1 orders an async copy's complete-tx only with that copy, not with the
+  issuer's earlier instructions; the model releases the issuer's clock at issue with it (as
+  before 2026-11-09). This is MISS 119 (above).
 - Audit `PTXV_MBAR_SCOPE_LOG=1`: every update a successful wait drops for want of scope is
   logged to stderr (kernel, wait pc, CTAs, scopes).
 - SM-local happens-before (a SASS PHASECHK's acquire of another CTA's release, `Cover::OnSm`)
@@ -3700,10 +3967,31 @@ has none), so a 2-CTA hand-off through a `.cta`-scoped remote arrive was certifi
   (`tmem_access`). Until 2026-11-10 `tmem_block` ignored it: 2-CTA kernels whose leader
   waits with `.acquire.cta` for the peer's hand-back reported false races on SASS
   (fixtures/e_tc_handback ACTA).
+  - Which SM: `OnSm` is not one SM's memory. It is the memory the SM's L1 does not cache:
+    shared memory (DSMEM included) and tensor memory of every CTA of the cluster
+    (`Cover::covers` is true for any CTA's shared memory and for TMEM). What a PHASECHK
+    without `CCTL.IVALL` does not acquire is global memory, whose stale lines only
+    `CCTL.IVALL` drops. A `cta_group::2` MMA issued by the leader reads and writes the peer
+    CTA's TMEM on the peer's SM; the join applies to those accesses as it already applies to
+    the same MMA's A-operand reads of the peer's TMEM (`tmem_access`) and to tcgen05.ld / st
+    of any CTA's TMEM. It is SASS-only: the PTX front's restricted happens-before comes from
+    `sync_restrict` fences and `MEMBAR.ALL.CTA`-style releases (`Smem`, `SmemOf`), which
+    cover no TMEM.
+  - Hardware runs, a non-discriminating bound, not evidence for the order (probes/tc_handback,
+    GB300, 74 pairs = 148 CTAs x 128 threads per launch; good, RCTA and NOWST 200x1000 +
+    20000x1000 + 2000x20000 runs x rounds = 4.5e9 pair-rounds each, EARLY 1.6e9, ACTA
+    2000x20000 = 2.96e9): the peer CTA waits on `done` with a PHASECHK and no `CCTL.IVALL` and
+    then reads (tcgen05.ld) the D half the leader's MMA wrote into its TMEM; ACTA runs the other
+    direction (the peer's reads, then the leader's MMA after a leader PHASECHK with no
+    `CCTL.IVALL`). Every variant gave 0 wrong words, including RCTA, EARLY and NOWST, which the
+    model calls a SASS race: the runs do not separate an ordered hand-off from an unordered
+    one, so they bound the rate of a wrong word under this launch and timing and support
+    nothing more. Only EARLYD (EARLY with a 5 us sleep, 200x1000 = 1.5e7 pair-rounds) is
+    wrong, in every run (9472 words), before and after the ACTA runs.
 - GB300 hardware model (two-level check): a wait acquires every update it observed, at any
   scope (E-HW-L1), and MEMBAR.ALL.GPU delivers in-flight remote stores (E-HW-REMOTE-MEMBAR):
   scope races are latent there unless a remote store is still in flight at the arrive.
-- Fixtures: e_tc_handback (2-CTA TMEM hand-back: good, RCTA, ACTA), e_mbar_scope (hand-off:
+- Fixtures: e_tc_handback (2-CTA TMEM hand-back: good, RCTA, ACTA, ACTANW, ACTAE), e_mbar_scope (hand-off:
   good, PFC, PFCW, PFCA, FEN, FRC, STA, STAC, NOF, PCTA), e_mbar_mailbox (good, MB, MBNF, MBCA),
   e_mbar_restrict (good, NOF, RLX, GM, GMF).
 - Where: `exec.rs` `mbar_rels`, `mbar_async_rel`, `mbar_note`, `mbar_acquire`,
@@ -3743,7 +4031,26 @@ a divergent path.
 **tcgen05 ordering (PTX front-end):**
 - `tcgen05.ld` executes as a per-thread actor whose view advances only at
   `fence::after_thread_sync`;
-- `fence::before_thread_sync` releases that view;
+- `fence::before_thread_sync` releases that view, except the thread's `tcgen05.ld` reads
+  since its last `tcgen05.wait::ld` and its `tcgen05.st` writes since its last
+  `tcgen05.wait::st` (2026-11-12, MISS 105; `exec.rs` `tc_released`, also in the
+  E-TC-FENCE-NOP rerun's implied fences). PTX ISA 9.7.18.6.4.4: "the producer threads that
+  issue the asynchronous tcgen05 instructions must explicitly wait for the instructions'
+  completion before synchronizing with the consumer threads"; 9.7.18.8.5: `wait::ld` /
+  `wait::st` block "until all prior tcgen05.ld [st] operations issued by the executing
+  thread have completed". The cut is by the actor's clock (loads and stores share it), at
+  the first access not waited for: a waited access issued after it is held back too until
+  that wait (conservative). Fixtures: e_tblk_late `good` (race on PTX; before, contract
+  only), probes/tc_handback NOWST (no wait::st: race on PTX; before, contract);
+- `tcgen05.dealloc` (2026-11-12, MISS 111) is the thread's own synchronous event, after its
+  earlier tcgen05 operations that have completed (`tc_released`), not after a `tcgen05.ld` /
+  `st` it has not waited for: PTX ISA 9.7.18.6.1, asynchronous instructions "are not
+  inherently ordered with respect to other tcgen05 operations in the same thread (unless
+  pipelined)", and the only pipelined pairs with ld / st are `ld -> wait::ld` and
+  `st -> wait::st`. Before, the dealloc was an event of the thread's tcgen05.ld/st actor,
+  whose clock covered every earlier load and store of the thread. Fixture
+  e_dealloc_unwaited (LDNW, STNW: race on PTX; on SASS STNW races, LDNW is ordered by the
+  scoreboard wait ptxas puts before the dealloc);
 - MMA and commit share one in-order pipe per issuing thread;
 - a commit releases every earlier op of that pipe;
 - (rung 2) `tcgen05.alloc` / `dealloc` / `relinquish_alloc_permit` are synchronous: the
@@ -3756,9 +4063,10 @@ a divergent path.
   p = tid < 32, reached by four warps: before 2026-11-08 the other three warps blocked there);
 - (rung 2) a thread's asynchronous tcgen05 ops are ordered after its own earlier
   instructions (the actor's clock includes the thread's clock at issue);
-- (rung 2) `tcgen05.st` is asynchronous like `ld`; `wait::st` completes the stores only for
-  the same thread's later tcgen05 ops. Another thread sees them through
-  `fence::before_thread_sync`, a synchronization, and `fence::after_thread_sync`.
+- (rung 2) `tcgen05.st` is asynchronous like `ld`; `wait::st` completes the stores for the
+  same thread's later tcgen05 ops. Another thread sees them through `wait::st`,
+  `fence::before_thread_sync`, a synchronization, and `fence::after_thread_sync` (the
+  `wait::st` part since MISS 105).
 - (2026-11-08) "The same thread's later tcgen05 ops" include its MMA pipe (`tcgen05.mma` /
   `cp` / `shift`): `wait::st` / `wait::ld` order the thread's completed `tcgen05.st` /
   `tcgen05.ld` before the asynchronous tcgen05 operations it issues afterwards, with no
@@ -3777,7 +4085,41 @@ a divergent path.
   scoreboarded access), so `sass_gb300` needs no profile item. Stores by other threads of
   the warp or CTA still need the fences (the remaining mx8mx4 PTX races).
   Fixture `s_tc_st_mma` (clean; the MMA issued before `wait::st`: race).
-- SASS `STTM` / `LDTM` are scoreboarded (L-MEMSB) and modeled as the thread's own accesses.
+- SASS `STTM` (2026-11-12, MISS 107): its tensor-memory write is an event of the thread's
+  STTM actor (`Machine::sttm_actor_id`, the fifth fixed actor per thread), ordered after
+  everything the thread has seen, that enters the thread's clock (and its MMA pipes') only
+  at its `FENCE.VIEW.ASYNC.T`, ptxas's lowering of `tcgen05.wait::st` (`Op::TmemWaitSt`).
+  Before, the write was complete at issue: an STTM in flight at a `BAR.SYNC` was ordered
+  before the next writer of its columns (the reviewer's STNW: SASS clean while round 2's MMA
+  overwrote D). The STTM's register read scoreboard says nothing about the TMEM write and is
+  not used. An STTM ordered after the thread's earlier LDTMs only by the TMEM queue is a
+  contract finding at both levels (E-TMEM-QUEUE, not assumed); a later
+  LDTM of the thread sees its own STTM only after the `FENCE.VIEW.ASYNC.T`.
+- SASS `STTM` / `LDTM` are scoreboarded and modeled as the thread's own accesses, except that an
+  `LDTM`'s tensor-memory read completes only when its write scoreboard is waited (2026-11-12;
+  before, at issue): the read is an event of the thread's tcgen05.ld/st actor, ordered after
+  everything the thread has seen, that enters the thread's clock at a control-word wait on that
+  scoreboard (the consumer's or any other instruction's) or a `DEPBAR.LE` that leaves it
+  complete. TMEM loads complete in issue order (L-OPREAD), so such a wait completes every
+  earlier LDTM too, including one with no scoreboard; a later `STTM` of the thread follows its
+  LDTMs only once they completed (an order through the TMEM queue alone: a contract finding at
+  both levels, E-TMEM-QUEUE). Until then the thread's
+  releases (bar.sync, mbarrier arrives) do not carry the read: an LDTM waited only after the
+  hand-back races with the next writer of its columns (fixtures/e_tblk_late). Where: `exec.rs`
+  `ldtm_issue` / `ldtm_complete`, `Kernel::ldtm_sb` / `ldtm_waits` (sass lift).
+- One `.cta_group` per kernel (2026-11-12): PTX ISA, tcgen05: "All tcgen05 instructions
+  within a kernel must specify the same value for the .cta_group qualifier." A kernel whose
+  tcgen05 instructions name both (PTX `tcgen05.*.cta_group::N`; SASS `UTC*` with or without
+  `.2CTA`, except `UTCATOMSWS.AND`, the same for both) is a `violation` (`cta-group-mix:`,
+  `explore::cta_group_mix`, a static finding on both fronts). ptxas 13.0 refuses such a kernel
+  ("uses single CTA(.cta_group::1) and CTA pair granularity(.cta_group::2) and that is not
+  allowed"), so the SASS front sees one only in an edited binary; `ptxv check --front ptx`
+  checks it without a cubin. `tcgen05.commit.cta_group::N` tracks only the thread's earlier
+  operations of group N (PTX ISA, tcgen05.commit): a thread's operations of the group other
+  than its first one's go to a second pipe (`Machine::pipe2_actor_id`, `Thread::pipe2_vc`,
+  its own FIFO), unordered with the first. Before, one pipe and every commit tracked both.
+  Fixture `e_cta_group_mix` (C2: a cta_group::2 commit after cta_group::1 MMAs, violation
+  and race; D2: a cta_group::2 dealloc, violation).
 - Where: `exec.rs` `tc_actor`, `pipe_actor`, `push_async`.
 - Status: **argued, medium confidence.** It follows the PTX ISA's examples. On GB300 the
   fences are NOPs (B06 is invisible), so hardware cannot confirm the rule.
@@ -4037,8 +4379,10 @@ completion) needs nothing.
   synchronization means to impose is not guaranteed, e.g. the deterministic accumulation
   shape, a semaphore handed on with st.release / ld.acquire between CTAs whose reductions go
   to one buffer). Contract, not race: the ISA requires the fence, but GB300 showed no failure
-  (probes/gproxy), as for E-CPASYNC-PROXY. Accesses not ordered by happens-before are left to
-  the race detector; two such reductions are a schedule choice as before (N-BULK-RED).
+  (probes/gproxy). (E-CPASYNC-PROXY is a contract finding too, with no GB300 evidence:
+  probes/proxy_cpasync has no positive control, so it is not evidence, not even a measured
+  null.) Accesses not ordered by happens-before are left to the race detector; two such
+  reductions are a schedule choice as before (N-BULK-RED).
 - Where: `exec.rs` `gproxy_check` (from `complete_tma`, `complete_tma_store`),
   `Thread::gfences`; PTX `fence.proxy.async*`; SASS `FENCE.VIEW.ASYNC.{G,S}`.
 - Fixture: e_gproxy (good, NOF, ALL, SH, ST, STF).
@@ -4220,17 +4564,42 @@ a `fence.proxy.async` after the copy completed (cp.async.wait_group / wait_all) 
 happens-before the read. ptxv reports a missing fence as a `contract` finding (the verdict
 stays clean, "relies on E-CPASYNC-PROXY"), not a race.
 - Where: `exec.rs` `proxy_check`: a shared-memory byte whose last write is a `cp.async`
-  (`LDGSTS`; the copy completes in the issuing thread's name at the wait). Before
+  (`LDGSTS`; the copy lands as its thread's wait actor at the wait, E-CPASYNC). Before
   2026-11-06 it was a proxy race like an `st.shared` write.
-- Evidence: Triton kernels that fill shared memory with cp.async (LDGSTS), then
-  `cp.async.wait_group; bar.sync`, then `tcgen05.mma` with no fence anywhere: mslk fp8
-  groupwise `.pinned` (two captures) and msl_ops `triton._wgrad.bf16.72x128`, 1000 scrubbed
-  runs each on GB300, every run bitwise equal to the simulator (F2, KA, 2026-11-06).
-  probes/proxy_cpasync (cp.async, wait_all, bar.sync, TMA store; variants with and without
-  the fence) is correct in 1000/1000 scrubbed runs either way, but its `st_none` variant
-  (st.shared writers, no fence) is also correct, so the probe does not discriminate; rung 1b
-  B04 (st.shared writers) fails 1000/1000.
-- Status: **unvalidated**: no failure seen, but no probe discriminates and no mechanism is argued.
+- Fence after the completion (2026-11-10, MISS 34): while the copy's write ran in the
+  issuing thread's name at its issue clock, a fence after the issue but before the wait
+  counted. Now only a fence after the wait does, as the rule says. Triton's attention kernels
+  fence between the issue and the wait for the second MMA group of their loop
+  (`fixtures/r4_attn_triton` good: `cp.async.wait_group 2; bar.sync; ... tcgen05.mma` with
+  the last `fence.proxy.async` before the wait; kernel_db triton parallel_attn_fwd): they
+  get this contract finding now, at both levels (not in the gb300 profile), where the
+  `sass_gb300` level was certified or clean. The read's issuer's fences are checked first,
+  then the copy's own thread's, then those of every thread the read's clock knows; once per
+  write epoch, a copy's later bytes with its first, and not again for a copy already reported
+  against the read. `fixtures/e_cpasync_proxy_early` pins the rule: EARLY (the fence between
+  the copies' issue and their wait) and NONE (no fence) are contract findings on both fronts,
+  good (the fence after the wait) is clean
+  (`cpasync_proxy_fence_must_follow_the_copy_s_completion`; source mutant
+  `cpasync-proxy-fence-any-epoch`). A scan of every thread's fences per byte, in work in
+  progress on the change, made the attention kernel 4x slower (5.5x in one A/B run of such a
+  build) and kernel_db's triton fused_projection_rotary (54 CTAs of 128 threads; in its loop
+  every thread fences after the barrier, so only the MMA issuer's fence happens-before the
+  MMA) 20.8x (2323 s vs 112 s); now 0.4x the base's time (49 s vs 116 s, 2026-11-11).
+- Evidence: none on GB300 either way. Triton kernels that fill shared memory with cp.async
+  (LDGSTS), then `cp.async.wait_group; bar.sync`, then `tcgen05.mma` with no fence anywhere:
+  mslk fp8 groupwise `.pinned` (two captures) and msl_ops `triton._wgrad.bf16.72x128`, 1000
+  scrubbed runs each on GB300, every run bitwise equal to the simulator (F2, KA, 2026-11-06);
+  nothing shows these runs could have failed. probes/proxy_cpasync (cp.async, wait_all,
+  bar.sync, TMA store; variants with and without the fence) is correct in 1000/1000 scrubbed
+  runs in every variant, its `st_none` variant (st.shared writers, no fence) included, while
+  rung 1b B04 (st.shared writers) fails 1000/1000: probes/proxy_cpasync has no positive
+  control, so it is not evidence, not even a measured null.
+- Placement: strict, and the finding stays in the gb300 profile: contract at both levels
+  (kernel_db's triton parallel_attn_fwd reads contract at sass_gb300). Discharging it at the
+  gb300 level needs a GB300 probe whose positive control (no fence) fails in a measurable
+  fraction of runs and whose fence-before-the-wait variant does not.
+- Status: **unvalidated**: no failure seen, but no probe has a positive control and no
+  mechanism is argued.
 - If wrong: *miss* reported only as a contract finding.
 
 ### S-INIT · code
@@ -6867,6 +7236,31 @@ the captured shape when both kernels pass the preconditions:
     included (warp-collective and uniform operations: every member, as before). Negative tests:
     fixtures/c_equiv_online (`online_bookkeeping_taint_is_exact`: a mask chosen by the data, a
     shuffle from data lanes, a float2's data word keep their guards).
+  - Cross-lane results (2026-11-11, MISS 65 and the vote part of MISS 83): a reduction, ballot,
+    vote or match (REDUX / CREDUX, VOTE.ANY / VOTEU.ANY, VOTE.ALL / VOTE.EQ, MATCH.ANY) gives
+    every lane the taint of any executing lane's operand; R2UR's uniform destination has the
+    first executing lane's taint and its predicate (`R2UR P`: this lane's value differs from the
+    first) that lane's and its own; a uniform register (UR / UP) written by any instruction is
+    input data if any executing lane's result is. Under a data-dependent guard every member's
+    destination of these is tainted (which lanes execute decides the result; R2UR added). Until
+    then VOTE.ANY, VOTE.ALL and MATCH.ANY gave each lane its own operand's taint, and a uniform
+    destination kept the last lane's, so a branch, guard or address decided by a ballot of other
+    lanes' input data looked input-independent to num, errdist and equiv. The other cross-lane
+    operations already combined lanes: a shuffle takes the source lane's taint (above); ELECT,
+    MOVM, LDSM and HMMA (not register-only) taint every destination when any executing lane's
+    source is tainted (`Taint::cur_src`); bar.red's predicate is a control operand (a
+    violation, and a refusal in num). [argued from code; the fixtures below]
+    - fixtures/c_num_vote_f32 (the independent review's probe; GB300 == simulator bitwise, 20
+      of 20 runs): before, 32 of 32 claimed on both fronts, max_err 1.192e-7 (0.50 ulp), where the worst case is
+      7.28 absolute (|GB300 - exact|); after, refused on both fronts.
+    - fixtures/errdist/m65vote: errdist (single kernel): ballot (lanes 0..15 ballot rn(x x) >= 9,
+      lanes 16..31 branch on it; ballot.json): before, Tier 1 P(bits differ) 2.354e-1
+      [2.350e-1, 2.358e-1] from the captured path, where the kernel's is 0.2443 [0.2431, 0.2454]
+      (exact rationals, 20000 inputs); after, refused. lane0 (the review's rE_vote, the vote part
+      of MISS 83; x10_s2.json): before, 2.415e-1 [2.410e-1, 2.419e-1] against the kernel's 0.2550
+      [0.2528, 0.2573] (the review's exact rationals, 6000 inputs); after, refused. equiv.toml
+      (ballot against the same kernel without the branch, segment mode): before, L0 proven for
+      every input; after, not proven (data-dependent preconditions).
   - Evidence:
     - the demo (fixtures/r2e_tile): a reordered reduction is L1 not L0, a dropped K slice
       fails L1 with a witness that differs on GB300, an `add.rz` epilogue is L1 not L2, and a
@@ -7786,9 +8180,22 @@ mantissas of lanes l+1, l+2, l+3 (mod 4 in the group) interleaved most significa
 with every other lane zero the sum is truncated. The rule reproduces 99.7% of non-representable
 random bf16 lanes and 96.7% of f16 lanes; misses include groups with a NaN lane.
 - Model: `add16` applies the rule and marks the run `inexact`; an output compared with the
-  captured GPU bytes then also passes within one unit in the last place per element (reported).
+  captured GPU bytes then also passes within one unit in the last place per element (reported;
+  `ptxv check` applies the tolerance to every case with `[[multicast]]` buffers): each
+  differing element is a pair of adjacent encodings of its dtype that are both finite, or NaN
+  on both sides (`ulp_class`). Adjacency alone puts +-inf next to +-max, a NaN next to inf and
+  the largest NaN encoding (0x7fffffff, the GPU's canonical f32 NaN) next to -0, so until
+  2026-11-11 an overflow or a NaN on either side could pass as one ulp (MISS 67). Unit tests
+  (`ptxv-case` `one_ulp_tolerance_needs_finite_values`,
+  `expect_report_tol_never_crosses_an_infinity`) cover f32, bf16 and f16, both signs, including
+  -inf against -max. fixtures/r1h_nvls_inf (expected/ constructed, not captured):
+  before, both outputs within one ulp (2 of 4 elements) on
+  both fronts; after, MISMATCH. Mutant ulp-tol-nonfinite (the plain bit-difference test) caught. The route on
+  real hardware is argued: rounding up at the top binade overflows to inf where rounding down
+  keeps the largest finite value [argued].
 - Status: **unvalidated** (partial fit).
-- Where: `crates/sim/src/multimem.rs` `add16`; output comparison in the CLI.
+- Where: `crates/sim/src/multimem.rs` `add16`; output comparison `ptxv_case`
+  `Case::expect_report_tol`, `ulp_class`.
 - If wrong: simulator outputs differ from GPU outputs by one ulp in some elements.
 - Retire: the exact rule (more sweeps: other bits, groups with special lanes).
 
@@ -8440,11 +8847,253 @@ elements as not analyzed, and computes Thm 1, the bounds and max_err over the ot
 only. bf16 / f16 outputs are read per 16-bit element (the node from the 16-bit provenance,
 N-HALF-LEAF; errors in that format's ulps). Outputs of other dtypes, and every output of a run that reported a fault or an
 `unmodeled` finding (its threads stop early), are not analyzed.
-- Where: `num.rs` `out_rec` (`untracked`), `main.rs` `cmd_num`.
+The result of a rounding instruction that gets no node is input data whatever its operands
+(`rounding_op`: floating-point arithmetic, MUFU and other approximations, narrowing and
+integer-to-float conversions, f64 operations, HMMA, `multimem.ld_reduce`; an integer-to-f32
+conversion with |result| < 2^24 is exact and spared), so a dropped rounding of kernel
+parameters, special registers or constants is never an exact constant leaf. So is a value a
+register operation computes outside the DAG from a node holding a rounding (`num_clobber`,
+`NumState::rounded`: a bit operation or an untracked float operation of an FADD, atomic add, MMA
+or MUFU result), and the value a float atomic add returns (f32, f64, bf16x2 and bf16x4, bf16: a
+rounded partial sum of the location's updates without a node). Through memory the rule is open
+(below: other atomics, partial-width and rearranging accesses). And no output of a
+run carries a claim when its control flow, effects or addresses depend on input data
+(`Taint::control_pcs`): a branch, EXIT, store, atomic, barrier or asynchronous operation under
+a data-dependent guard, or a data-dependent branch target, load / store / atomic address or
+shuffle lane. num follows the run's path and addresses; the exact computation (the same
+program in real arithmetic) may take another path or access other elements. The N-FMAX
+diamond branch and comparisons fixed by finiteness (N-FINITE) are not input data. A selection
+by a data-dependent predicate and a register write under a data-dependent guard lose their
+node and are tainted (untracked), as before.
+Control decided by a rounded value is refused as for input data. A rounding without a node is
+input data (above); so is a value a register operation computes outside the DAG from a node
+holding a rounding (`Machine::rounded_pre`, `num_clobber`: a comparison, a conversion to an
+integer or bit operations of an FADD, atomic add, MMA or MUFU result of parameters, special
+registers or constants, such as a float loop counter). A guard, branch, address, store guard or
+shuffle lane computed from one is a refusal (`control_pcs`), and so is an address, branch target
+or shuffle lane read directly from a register whose node holds a rounding. Two exceptions keep
+index arithmetic out of the refusal, with no residual case: (1) ptxas's lowering of a 32-bit
+integer division or remainder by a run-time value, matched structurally and checked per thread
+(N-NUM-UDIV); (2) ptxas materializes a 32-bit constant as `HFMA2 R, -RZ, RZ, hi, lo`: a zero
+product plus the immediate, exact in every lane (fma(+-0, +-0, c) = c). Only that form is spared
+(every operand an immediate, one factor zero); any other all-immediate rounding instruction is a
+rounding (ptxas 13.x keeps `MUFU.TANH R, 0.1000000015` unfolded). The PTX front has no such
+exception.
+Open on the SASS front (MISS 108): ptxas folds a rounding of constants to an immediate
+(`ex2.approx.ftz.f32` of a constant, `mul.rn.f32` of immediates), which the SASS front takes as
+the program's constant (the PTX front has the rounding and makes no claim):
+`fixtures/c_num_mufu_imm_f32` k = 4.
+Open through memory (reported 2026-11-11; the register rule above does not reach these, so each
+gives an untainted value without a node, an exact constant to num): atomics other than float
+adds (the old value an integer, bitwise, exch or cas atomic returns from a word holding a
+rounding; the word exch, a successful cas or red writes; the word an f64 atomic add leaves, so
+an f64 atomic sum deciding control is not refused), and partial-width or rearranging accesses of
+a word holding a rounding (a 16-bit load of an f32 word, ldmatrix .trans and a shuffle that
+reassembles it, a partial store into such a word, stmatrix .trans, a partial copy).
+- Where: `num.rs` `out_rec` (`untracked`), `rounding_op`, `effect_op`, `Taint::control_pcs`
+  (`taint_pre`, `taint_post`, `num_store_origins`), `num_clobber`, `NumState::rounded`,
+  `Machine::rounded_pre`, `NumState::rounding_taint`; `main.rs` `cmd_num`.
 - Status: **enforced**. Before this check, `exact` took the simulated value of the untracked
   value as exact. A row sum of squares (FFMA chain) reported max_err = 0, Thm 1 exact, with
   no warning, while GB300 differs from the fp64 sum by up to 4.1 ulp
-  (`fixtures/c_num_sumsq_f32`).
+  (`fixtures/c_num_sumsq_f32`). The rounding and control parts (2026-11-10) close three
+  holes the first check left, each a fixture whose expected/ is GB300's output (GB300 ==
+  simulator bitwise, 20 of 20 runs), checked by `tests/num_untracked.rs` against the exact
+  value:
+  - `fixtures/c_num_param_f32`: x + rn(a*b), rn(a*b), x + rn(f32(%tid) * 0.1f) and
+    x + ex2.approx(a) for f32 parameters a = 0.1f, b = 3. Before: max_err 0.50 ulp over all
+    192 elements, Thm 1 exact; the 128 rounded-constant elements counted the roundings as
+    exact. After: those 128 are not analyzed; x + a and x + f32(%tid) keep their claims.
+  - `fixtures/c_num_branch_f32`: a branch and a guarded store decided by rn(x*y) >= 1 and
+    rn(u*v) > 1, wrong in the even lanes. Before: PTX front max_err 0.50 ulp over all 96
+    elements (GB300 - exact = 2 for the branch outputs); SASS front 32 claimed exact.
+    After: not analyzed.
+  - `fixtures/c_num_gather_f32`: a gather, a shuffle and a scatter at trunc(rn(x*y)).
+    Before: max_err 0 on both fronts; GB300 - exact up to 1.99 on 88 of 128 elements.
+    After: not analyzed.
+  Index arithmetic keeps its claims: c_cat and c_cumsum (constants ptxas materializes with
+  HFMA2 in addresses and guards) and `fixtures/c_num_index_f32` (a loop counter started by
+  HFMA2 and summed as f32 data; the u32 division idiom deciding a load address, a store guard
+  and an EXIT guard; GB300 == simulator bitwise, 20 of 20 runs) claim every element on every
+  front, each equal to |GB300 - exact|.
+  Mutants num-round-taint, num-round-mufu, num-control-off, num-control-guard,
+  num-control-addr (each caught), and the precision entries num-const-mat-off, num-i2f-exact
+  (each caught).
+  Three more roundings of non-input values (the independent review's probes, GB300 ==
+  simulator bitwise, 20 of 20 runs; `tests/num_untracked.rs`):
+  - `fixtures/c_num_mufu_imm_f32`: MUFU.TANH of immediates. Before: the SASS front claimed 160 of 160, max_err 5.960e-8 (0.50 ulp), with tanh(0.1f) taken
+    as exact (44 ulp off on GB300). After: 128 of 160 not analyzed; the 32 k = 4 elements
+    (ex2.approx.ftz of a constant, folded by ptxas to an immediate) keep 5.960e-8 (0.50 ulp)
+    against |GB300 - exact| up to 8.36e-8, 7.22 ulp at one element [GB300 measured]: open, see
+    Placement. The PTX front makes no claim, before and after.
+  - `fixtures/c_num_clobber_f32`: rn(a + b) of parameters through an and. Before: 64 of 64 claimed on both fronts, max_err 5.960e-8 (0.50 ulp). After: not analyzed.
+  - `fixtures/c_num_atom_old_f32`: the values atom.add.f32 returns. Before: out 64 of 64 claimed on both fronts, max_err 1.192e-7
+    (0.50 ulp). After: out not analyzed; acc (the sum, an atomic add node) keeps 9.537e-7 (4.00 ulp).
+  Mutants num-const-mat-any, num-clobber-taint, num-atom-old (each caught).
+  Control decided by roundings of parameters, %tid or constants (the independent review's
+  probes; GB300 == simulator bitwise, 20 of 20 runs; `tests/num_untracked.rs` checks GB300's
+  output against the exact path in each):
+  - `fixtures/c_num_ctl_branch_f32`: branches on rn(a + b) >= c (an FADD node) and rn(a d) > 1.
+    Before: 64 of 64 claimed on both fronts, max_err 3.576e-7 (0.50 ulp). After: refused.
+  - `fixtures/c_num_ctl_loop_f32`: a float loop counter of parameters, 3 iterations here and 4
+    in exact arithmetic. Before: 32 of 32 claimed, max_err 3.576e-7
+    (1.00 ulp). After: refused.
+  - `fixtures/c_num_ctl_atom_f32`: a branch on the sum of 32 atomic adds of 0.1f. Before: out 32 of 32 claimed,
+    max_err 3.576e-7 (0.50 ulp), and acc 9.537e-7 (4.00 ulp). After: both refused.
+  - `fixtures/c_num_ctl_guard_f32`: a store guard rn(f32(t) 0.7f) >= 7. Before: 32 of 32 claimed, max_err 0.
+    After: refused.
+  - `fixtures/c_num_ctl_addr_f32`: load addresses floor(rn(f32(t) 0.7f)) and
+    floor(rn(f32(t) - 2^-25)). Before C1: 64 of 64 claimed on both fronts, max_err 0
+    (0 ulp); C1 refused the second address (a rounding with a node, through a conversion);
+    here the first, a rounding without one, is refused too.
+  - `fixtures/c_num_ctl_shfl_f32`: a shuffle lane floor(rn(f32(t) 0.7f)). Before: 32 of 32 claimed, max_err 0.
+    After: refused.
+  Mutant num-rounded-off (caught). From here on the clobber taint (`num_clobber`, mutant
+  num-clobber-taint above) refuses nothing this rule does not, and its mutant leaves the table
+  (docs/soundness-harness.md): an operand holding a rounding is either untainted, and
+  `rounded_pre` (which reads every operand before the instruction writes) puts its lane in
+  `cur_rounded`, which taints each destination left without a node; or tainted, and the
+  instruction's taint rule taints the destination whole, except LOP3's bitwise rule, which
+  leaves untainted only bits fixed by the operands' untainted bits. [argued from code;
+  model: without it, the series'
+  final code gives the same num verdicts on every fixture and the 86 captured kernels; of the
+  20478368 destinations it taints there, 655016 are LOP3 results the bitwise rule taints in part
+  and every other one is tainted whole anyway; none is left untainted]
+  A rounded operand decides other lanes' results through a reduction, ballot, vote or match
+  (MISS 95): each executing lane's destination left without a node is input data when any lane's
+  operand holds a rounding, and R2UR's predicate when the first lane's does. Until then the rule
+  looked at each lane's own operands: `fixtures/c_num_match_f32` (lane 0 holds rn(a + b) of
+  parameters, lanes 1..31 an exact c, the others branch on match.any; GB300 == simulator bitwise,
+  20 of 20 runs): before, 32 of 32 claimed on both fronts, max_err 2.384e-7 (0.50 ulp), where
+  |GB300 - exact| = 3.0 absolute (about 6.29e6 ulp of the output) in lanes 1..31; after, refused
+  on both fronts. The other cross-lane paths, each tried with the same construction (rn(a + b) in
+  lane 0 against c, a branch on the result in lanes 1..31), were already refused on both fronts:
+  SHFL moves the node to the reading lane; on the SASS front REDUX (of the value's bits) and
+  CREDUX.MAX.F32 write a uniform register (input data if any lane's result is); VOTE reads
+  predicates, and a predicate computed from a rounded value is input data; MOVM's operand counts
+  as a control operand; an f32 word or a bf16 half exchanged whole through shared memory keeps
+  its node (a 16-bit load of an f32 word and ldmatrix .trans do not: open, above). Mutant
+  num-xlane-rounded (caught).
+- Evidence: GB300 measured (the fixtures above: each refused or untracked element differs
+  from its exact value on GB300, or its exact path differs from the run's); model (num before /
+  after); argued (`rounding_op` from the PTX ISA's rounding semantics: an operation is exact
+  only if its result is the real-arithmetic value for all operands; IEEE 754 for the HFMA2
+  materialization). The claims the fixtures keep, compared with GB300, are measured nulls:
+  gb300 evidence only, a bound.
+- Placement: strict for the rounding taint, the refusals, the I2F exemption and the HFMA2
+  materialization: they follow from the PTX semantics in real arithmetic and IEEE 754, with no
+  GB300-only fact. The division exception rests on MUFU.RCP's measured behavior and is gb300
+  (N-NUM-UDIV). The SASS front's reading of an immediate as the program's constant depends on
+  ptxas (it folds ex2.approx.ftz of a constant): open on SASS-only runs, see above.
+- If wrong: a too-small error claim. Precision losses (refusals, sound): a run whose control
+  flow or addresses depend on exact input values (raw input comparisons, integer index
+  buffers: embedding gathers, index scatters) gets no claim; roundings of constants that
+  happen to be exact (rn(2*3), a float counter with step 1) lose their claims or refuse the
+  run; integer division by a run-time value outside the matched forms (a reciprocal shared
+  across blocks, the 64-bit routine, the uniform-datapath form, a step reading a copy of an
+  intermediate value) refuses the control it decides.
+
+### N-NUM-UDIV · code
+**`ptxv num` takes the quotient and remainder of ptxas's 32-bit integer division by a run-time
+divisor as exact where it checks them.** ptxas lowers `div` / `rem` `.u32` (and `.s32`, on |n|
+and |d|, then the signs) by a divisor d that is not a constant to: a = I2F[.U32].RP d,
+b = MUFU.RCP a, c = b + 0x0ffffffe (b times 2^32, less 2 ulp), e = F2I.U32.TRUNC c, the
+Newton step q1 = e + hi(e (-e d)), and per dividend n the estimate q = hi(q1 n), the
+remainder r = n - q d and up to two corrections (r >= d: r -= d, q += 1, in place under the
+predicate or by a selection). Its rounded values are input data like any rounding without a
+node, so the comparisons and selections inside it are tainted; `udiv_idioms` matches this shape
+in straight-line SASS (no branch or branch target between its steps), and where an instruction
+outside the instance reads a quotient (remainder), `Machine::udiv_resolve` checks it per thread
+against n / d (n mod d) of the dividend and divisor the instance read: both untainted, d != 0
+and the value equal, the register is exact and untainted; anything else stays input data. A
+reciprocal no estimate reads, a division split by a branch, ptxas's uniform-datapath form (the
+reciprocal moved to a uniform register by R2UR, the Newton step, estimate and corrections in
+UIMAD / UISETP; Triton's persistent GEMMs), a step that reads a register copy of an
+intermediate value (`IMAD.MOV.U32 R, RZ, RZ, -e` before the Newton multiply), and every other
+use of a rounding of non-input values are not excepted (N-NUM-TRACK). The PTX front has no such
+idiom: `div` / `rem` are integer operations there, and no claiming case's PTX has a float
+division idiom.
+- Why the quotient is exact [argued]: a >= d (RP), so e <= 2^32 / d as long as MUFU.RCP
+  over-estimates 1 / a by less than the 2-ulp bias (e d <= 2^32 also keeps the Newton step's
+  -e d from wrapping). With e = (2^32 / d)(1 - eps), the Newton step gives
+  0 <= 2^32 / d - q1 < (2^32 / d) eps^2 + 1. RP, a reciprocal within 1 ulp and the bias give
+  eps < 2^-21 + d / 2^32 (the last term from the truncation), so (2^32 / d) eps^2 < 1 for
+  d <= 2^31 (for larger d, e is 0 or 1 and q = 0). Then for every n < 2^32,
+  0 <= n / d - q < 3: q <= floor(n / d), r = n - q d < 3 d, and two corrections reach
+  floor(n / d) and n mod d. The bound the correction needs: an over-estimate below 2 ulp and an
+  under-estimate below about 2^-16 relative. MUFU.RCP is within 0.975 ulp of 1 / x on all 2^32
+  inputs and modeled bit-exactly, so the simulator's quotient is GB300's [GB300 measured,
+  N-MUFU: `ptxv mufu-sweep`, 0 differences, 2026-11-03]. The per-thread check makes each
+  excepted value the exact computation's for this run [model].
+- Where: `num.rs` `udiv_idioms`, `UdivStep`, `Machine::udiv_resolve`, `Taint::udiv_regs`.
+- Status: **enforced**. `fixtures/c_num_index_f32` (u32 quotient deciding a load address, a
+  store guard and an EXIT guard) and `fixtures/c_num_udiv_f32` (div / rem .u32 by 7 and .s32
+  by -9 deciding load addresses and a store guard; the .s32 remainder corrected by a selection)
+  keep every claim on both fronts, each |GB300 - exact| (GB300 == simulator bitwise, 20 of 20
+  runs). `fixtures/c_num_udiv_data_f32` (the idiom on an input buffer, deciding an address) is
+  refused. The independent review counted 364 decisions the former `rnd_only` exception excused
+  in the claiming fixtures and kernel_db cases, all from 51 MUFU.RCP sites of this shape.
+  Of the 10 kernel_db outputs that exception carried (a run without it refuses
+  them), the match keeps 5 (cute.MatnormSegmentBroadcastKernel,
+  triton._all_gather_transpose_kernel_nd, _reduce_scatter_transpose_kernel_nd,
+  _triton_fsdp_chunk_cat.f32.8x512, _triton_matmul.bf16.48x32) and refuses 5
+  (cute._ChunkCatGeneral.bf16.8x131600, triton._triton_fsdp_chunk_cat.bf16.8x131600 and
+  .8x819200, _triton_fsdp_split_copy.bf16.16x524288, two outputs: a register copy of -e before
+  the Newton multiply); fixtures/r2_triton_gemm's SASS front is refused (the uniform-datapath
+  form) [model: num A/B of the two commits]. Mutants num-udiv-off (precision), num-udiv-taint (each caught).
+- Evidence: GB300 measured (MUFU.RCP sweep, N-MUFU; the fixtures); model (num before / after,
+  the A/B); argued (the error analysis above; ptxas's lowering read from its output).
+- Placement: gb300. The exactness of the lowering rests on MUFU.RCP's measured accuracy and
+  bit-exact model; a different unit could make the estimate leave the corrections' range (the
+  per-thread check would then refuse, not claim).
+- If wrong: a quotient taken as exact where the exact computation's differs: control, an
+  address or a store decided by it follows the run's path (a too-small claim). Precision
+  losses: forms the match misses refuse the control their quotient decides.
+
+### N-NUM-NONFINITE · code
+**`ptxv num` never leaves a non-finite element out of max_err.** An element whose simulated
+(hw) or exact value is not finite is classified before any aggregate:
+- exact value finite, hw not finite (an overflow to inf, or NaN from one): the error is infinite.
+  The exact value of finite leaves is exact (f64 expansions), so the claim is definite.
+- exact value not finite: it comes from non-finite leaves, and the f64 expansion arithmetic does
+  not follow the extended reals (the expansion of inf + x is NaN, not inf; an overflowed value
+  minus a true infinity gives NaN where the exact value is -inf). The exact value counts only
+  where no rounding node in the tree holds a non-finite value against a finite exact value and
+  none has a non-finite exact value from finite operands (`nonfinite_inside`). Then an identical
+  hw value (the same infinity, or NaN for NaN) has error 0; anything else is not analyzed
+  (`OutRec::nonfinite`, counted with the untracked elements, reported as "a non-finite value
+  without a determined exact value").
+The aggregates follow: max_err and max_err_ulps take every analyzed element (an infinite error
+makes them infinite); Cor 1a and the running bound count an infinite error as a violation; the
+mean bound / error ratio takes every analyzed element with a nonzero error (an infinite error
+counts 0); the spec match compares non-finite exact values by identity (expansions of
+infinities do not subtract to zero); rel_err is infinite for a nonzero error at an exact 0.
+Once f64::max skipped NaN errors (max_err and max_err_ulps), the mean ratio skipped them
+(`abs_err > 0`), and rel_err printed 0 for a NaN error at an exact 0, so an overflow or a NaN
+output reported a finite max_err over every element (MISS 63).
+- Where: `num.rs` `NumState::out_rec`, `NumState::nonfinite_inside`; `main.rs` `cmd_num`
+  (aggregates, CSV column `nonfinite`), `exact_eq`.
+- Status: **enforced**. `fixtures/c_num_nonfinite_f32` and `fixtures/c_num_nan2_f32` (the
+  independent review's probe; GB300 == simulator bitwise, 20 of 20 runs each), checked element
+  by element by `tests/num_untracked.rs`. c_num_nan2_f32: before, max_err 3.576e-7 (0.75 ulp)
+  on both fronts with 32 of 64 rows' errors NaN; after, every element analyzed and max_err inf.
+  c_num_nonfinite_f32: before, max_err 2.98e-8
+  (0.25 ulp) over all 160 elements on both fronts, while 32 elements are NaN or inf against the
+  finite exact values 0 and 6e38; after, max_err inf over the 128 analyzed, copies of inf / NaN
+  and NaN + z with error 0, and the 32 elements whose exact value the expansions do not
+  determine (inf + z, the overflowed (x + y) + -inf) not analyzed. Mutants num-nonfinite-off,
+  num-nonfinite-trust-off and num-nonfinite-ident-off (each caught).
+- Evidence: GB300 measured (the fixture: NaN in 16 lanes and inf in 16 lanes where the exact
+  values are 0 and 6e38); model (num before / after, A/B over every fixture and the 86
+  kernel_db cases); argued (IEEE 754 overflow and invalid-operation results; the f64
+  expansion arithmetic of `exact.rs` on infinities).
+- Placement: strict. The rule defines the error of an element whose value is not finite; it
+  uses no GB300-only fact (IEEE 754 overflow and NaN rules hold at the PTX level).
+- If wrong: a non-finite element left out of max_err (a too-small claim), or an identical
+  non-finite element counted with error 0 where the exact value differs (only if the exact
+  value of a node without a non-finite input could be non-finite without a non-finite
+  operand, which `nonfinite_inside` refuses). Precision losses (sound): inf + x, where the
+  exact value is inf, is not analyzed; NaN for NaN is error 0 by convention (both undefined).
 
 ### N-ERRDIST-IID · code
 **`ptxv errdist` models the inputs exactly as the spec describes them.** Elements are
@@ -8581,11 +9230,49 @@ Tier 0 enumeration computes the misrounding exactly.
 (`nonlin::real::eval`, double-double): adds, FMAs and MMA steps over leaves, 16-bit roundings
 as errors of their argument. A TF32 split's exact value is that of the f32 input: hi(x) stands for x and
 the lo parts are errors with exact value 0 (so 1xTF32's operand truncation is part of the
-error). Atomic adds are evaluated as round-to-nearest adds in the simulator's order.
-- Where: `errdist/nonlin/real.rs` (`Op::Tf32`), `errdist/mc.rs` (`Setup::new`).
-- Status: **argued.** The simulator's own atomic order is one admissible order; GB300 runs
-  of the same kernels agree on the sampled inputs (docs/errdist.md §7).
-- If wrong: another reference value for split / atomic kernels.
+error). An fp32 atomic add (`red/atom.add.f32`) is a round-to-nearest add that flushes
+subnormal operands and results (`.FTZ`), a bulk f32 reduction one that keeps them, both in
+the simulator's order of each location's adds.
+- Where: `errdist/nonlin/real.rs` (`Op::Tf32`), `errdist/mc.rs` (`Setup::new`),
+  `errdist/chain.rs` (`NodeKind::AtomAdd` lowering, `atomic_chains`, `AtomChain`).
+- Status: **argued.** The flush: PTX ISA (atom / red `.add.f32` flush subnormal inputs and
+  results), the simulator's `AtomOp::FAddFtz`, and GB300 measured (fixtures/errdist/atomftz/sum
+  with x scaled by 2^-130 on 1% of 400 inputs: 12800 of 12800 outputs equal the flush model).
+  Until 2026-11-11 the DAG added without the flush (P(bits differ) 0 reported where GB300's is
+  1.00e-2). The analytic tiers take an FTZ add as its rounding to nearest: the flush is
+  outside their laws, and the Tier 3 cross-check compares (atomftz/sum: Tier 2 0 refused
+  against Tier 3 9.7e-3). The order: the simulator's own atomic order is one admissible order,
+  and GB300 orders the adds at run time. A GB300 value that differs from the DAG's is another
+  order's only at an output that is an atomic location's value (`atomic_chains`; a 16-bit
+  chain's rounding after its last add), whose adds come from two or more sources (threads; a
+  bulk reduction is its own source), two of which the run's happens-before leaves unordered
+  (`Prog::atomic_free`: the simulator's vector clocks, which a barrier, an mbarrier phase, a
+  release / acquire pair or a launch boundary joins), and add three or more operands counting
+  a nonzero initial value, and only within 2 (gamma_k sum |operand| + k eta) of the DAG's
+  value for k adds with k u < 1/2 (`AtomChain::order_explains`; eta: a flush's 2^-126, else
+  half the smallest subnormal). Elsewhere the GPU validation refuses: two operands from zero
+  round once in either order, one thread's adds are in program order, adds that the run's
+  synchronization orders have that order on every conforming execution (until the MISS 84
+  follow-up they were excused: fixtures/errdist/atomord/bar, a barrier before each warp's
+  add, and its captured output one ulp off), gamma_k has no bound at k u >= 1/2 (a bf16
+  chain of 128 adds, f16 of 1024; until the follow-up any value was excused there), and an
+  output computed from an atomic sum by later ops has no bound (a possible false refusal
+  there). The captured-output check applies the
+  same rule and does not compare such later outputs; until 2026-11-11 a kernel with any atomic
+  add skipped it (fixtures/errdist/atomftz/capgood: GB300's output at the captured input
+  matches the DAG; capoff, one ulp off at one output, was reported and is now refused).
+- If wrong: another reference value for split / atomic kernels. A reordering bound too
+  narrow for GB300's order would refuse a correct DAG; one too wide passes a wrong DAG by
+  less than the bound.
+- Placement: the flush is strict (PTX ISA) and gb300 (measured). The order freedom is strict
+  for the adds the exemption covers: the PTX memory model orders atomic adds of different
+  threads only through synchronization, and the exemption requires two adds that the run's
+  synchronization leaves unordered (`Prog::atomic_free`), which a conforming execution may
+  then add in either order. Until the MISS 84 follow-up it did not check this, and the
+  text claimed more than the exemption allowed: adds ordered by a barrier were excused as
+  another order. GB300 may fix an order the strict model leaves open (a relaxed poll); its
+  value is then still some order of the same adds, inside the bound. The bound is arithmetic
+  (recursive summation, Higham 4.4; k u < 1/2), not a measured null.
 
 ### N-ERRDIST-MC · code
 **Tier 3 evaluates the numerics DAG on sampled inputs, which is bit-exact per sample**
@@ -8597,9 +9284,56 @@ scale. The output-level binomial interval alone was about 3x too narrow on MXF8.
 - Where: `errdist/mc.rs` `p_interval`, `estimate`; `errdist/validate.rs`.
 - Status: **argued.** Simulator and GPU runs reproduce the DAG's outputs bit for bit (0
   mismatches, docs/errdist.md §7). On MXF8 the batch-means interval matches the spread
-  across seeds.
+  across seeds. Both validations refuse on a bitwise mismatch at a tracked output: the
+  simulator's at any output, the GPU's (`validate::gpu_dag_refusal`) unless another order of
+  the output's atomic chain explains GB300's value (`chain::AtomChain::order_explains`,
+  N-ERRDIST-DAG). Until 2026-11-10 a GPU mismatch printed DISAGREE next to the headline
+  (MISS 58: 10 and 320 mismatching outputs over 400 GB300 inputs on two of the review's
+  kernels, rc 0); until 2026-11-11 every output whose DAG held any atomic add (fp32, bulk f32
+  and 16-bit reductions) was exempt, which hid the DAG's missing FTZ on fp32 atomics
+  (fixtures/errdist/atomftz/sum: P(bits differ) 0 where GB300 differs from the correctly
+  rounded sum on 128 of 12800 outputs) and errors upstream of one thread's adds (atomftz/flag:
+  320 outputs exempted). The scorecard's stored GB300 references (37 rows, 152 sweep points,
+  up to 400,000 inputs per row) have 0 mismatches (GB300 measured). A validation run refuses
+  Tier 3 itself (`validate::tier3_refusal`) on a bitwise mismatch that no other atomic order
+  explains, on a P(differ) the run contradicts (`p_differ_agrees`), on a Tier 3 interval
+  outside the run's exact bounds (`p_contradicts`: Clopper-Pearson over inputs on the shares
+  of inputs past each step of the per-input fraction, Bonferroni; the batch-means test passes
+  a discrepancy confined to 10 or fewer inputs at any n), and, where atomic mismatches were
+  explained as GB300's order, on error distributions that disagree (`moments_agree`: mean,
+  KS and Anderson-Darling with inputs as the unit, 99.9%). The moments' test is weak: its KS
+  takes the input counts as effective sizes and flags nothing when 1-2% of the inputs carry
+  a discrepancy, and the power of the Anderson-Darling test on per-input means was not
+  measured; a discrepancy confined to few inputs is refused by the exact bounds, which run
+  first (the review's ablation of the flush: Tier 3 [0, 3.84e-4] outside the bounds [5.33e-4,
+  4.47e-2] over 400 GB300 inputs), not by the moments. The headline never takes a
+  refused estimate in any tier (`errdist::headline`), and with nothing standing errdist
+  refuses. Until 2026-11-11 the headline took Tier 3 whatever a run said (MISS 42's rule;
+  fixtures/errdist/miss58/rare: P(bits differ) 0 from 5 Tier 3 inputs printed next to
+  DISAGREE, where 1000 simulator inputs saw 0.049 and 1000 GB300 inputs 0.053, rc 0), and
+  `--pre-round` skipped every refusal; it now skips the bitwise and worst-case checks only at
+  the outputs whose value it changes, where the validations observe the DAG's value (the one
+  Tier 3 estimates), so the P(differ), exact-bound and moment checks stand (until the MISS 87
+  follow-up an f32 output counted as changed, and those checks and the worst-case check were
+  skipped for the whole run when any output was: fixtures/e_tc_handback).
+  Without explained atomic mismatches the moments' tests do not refuse Tier 3: both sides
+  then sample one DAG, and the mean test runs at 95% on 4 default inputs. Of the 21 int7
+  kernel_db headlines printed next to a Tier 3 DISAGREE, 11 were the mean test alone
+  (heavy-tailed u-scale errors over 4 inputs), 10 had no output to compare (out of domain),
+  and none were P(differ) or bitwise (model).
 - If wrong: intervals too narrow when inputs are few (the t interval assumes the per-input
-  fractions' mean is near normal); the point estimates stay unbiased.
+  fractions' mean is near normal); the point estimates stay unbiased. A GPU mismatch that
+  is not refused (an atomic location's value within another order's bound, wrong for another
+  reason by less than the bound) leaves the DAG unchecked there. A Tier 3 whose moments a run
+  contradicts without explained atomic mismatches still headlines its P(differ), with the
+  DISAGREE printed. The exact bounds are coarse (a step of the per-input fraction's grid):
+  a discrepancy within a step passes them.
+- Placement: the refusals are strict and gb300 alike: each compares the DAG with the run's
+  own outputs, at either level. The status's bit-exactness rests in part on measured nulls (0
+  mismatches over the scorecard's stored GB300 references), which support the gb300 profile
+  only (rule 9); at the strict level Tier 3's bit-exactness per sample is argued from the
+  DAG's op semantics (the simulator's, PTX ISA for the flush of fp32 atomic adds) and checked
+  per run by the validations, not assumed.
 
 ### N-ERRDIST-BSCLT · code
 **Tier 2 on a block-scaled MMA chain (MX, NVFP4) takes the partial sums as normal given y,
@@ -8620,7 +9354,8 @@ the truncations are a zero-inflated normal.
   become the headline (docs/errdist.md §3.2).
 
 ### N-ERRDIST-IDENT · code
-**An instruction slice computes the real function it was fitted to** (non-chain programs).
+**An instruction slice computes the real function it was fitted to, on the outcomes of its
+data-dependent decisions that the fit's probes took** (non-chain programs).
 Each slice (the instructions between two numerics nodes: an exp range reduction plus
 MUFU.EX2, a Newton rsqrt, a polynomial, a division) is fitted on the captured input and 24
 perturbed inputs to f(c0 + sum c_i a_i) with f in {exp2, 1/x, 1/sqrt, sqrt, tanh, identity},
@@ -8629,17 +9364,88 @@ a divisor or multiplier form, a / b, a polynomial of degree <= 3, or a named fun
 1/128, eps, ...) when that keeps the fit within the slice's error. The slice's own error
 against f is then tabulated bit-exactly (N-ERRDIST-NL-INDEP), so a slightly wrong f shows up
 as an error law, not as a silent bias.
-- Where: `errdist/nonlin/ident.rs` `identify`.
+A slice's data-dependent decisions (the guard of each predicated instruction, each predicate
+operand of a select, carry or chained compare, when not a constant, and the piece each
+instruction's value takes where it is piecewise in a data operand: a clamp (`.SAT`,
+`.RELU`), a minimum / maximum's pick, an abs modifier's or a bitwise / integer operand's
+sign, an F2I's saturation: `SProg::decisions`, `seg::inst_pieces`) split its arguments into
+outcome patterns, on each of which it is another function without those pieces. Not
+decisions: a flush to zero and every rounding (they depart from the fitted real function, and
+Tier 3 measures the departure as error), and an integer or exponent-field step of a range
+reduction (it composes the real function across binades; a step the probes cross breaks
+every fitted form, and the slice is not identified).
+The fit stands for the patterns its finite probes took (`ident::Outcomes`, all of them when
+every pattern was taken); a `DivRn` (ptxas's `div.rn.f32` sequence, FCHK and slow path
+included) is one decision-free op, correctly rounded on either path (N-SEG). Elsewhere the
+exact value is unknown (`nonlin::real::eval_table`: the decisions at the arguments' exact
+values rounded to f32, as N-ERRDIST-SEL's selections), and so is every op that reads one,
+a maximum's comparison and a selection's predicate or passed-on child included. Tier 3 in
+single mode leaves those outputs out and counts the inputs with any (k of n); the share's
+95% upper bound U (Clopper-Pearson) moves P(differ) by at most U. errdist refuses when k > 0
+and U exceeds 10% of P(differ) over the other outputs, or none has an exact value; every
+estimate's interval widens by U: Tier 3's (at k = 0 its sample saw none of a share that can
+be up to U), the linearized tiers', which use f on every input, as the branch-flip bound
+(they stand only while U is within 10% of their P). The elementwise law of a single kernel
+measures the unknown mass q itself, leaves it out and widens by q, and stands only while q is
+within 10% of P and it claims no exact law.
+Importance sampling refuses inputs with unknown outputs. A pair's P(differ) (C against R)
+needs no exact value and counts them, in Tier 3 and in the elementwise law; the moments leave
+them out. Until 2026-11-11 the elementwise law left a pair's unknown codes out as well: with
+the value pieces, 7.5e-8 of c_equiv_elementwise/gelu_bf16's codes on uniform inputs were
+unknown, its exact Tier 0 (P 0) was refused, and the headline fell to a Tier 2 4.4e-6 [4.39e-6,
+4.40e-6] that the enumeration contradicts (model). Counting them changes which outputs a
+pair's P(differ) covers where an unknown code has an exact scale of 0 (x = 0 on integer
+inputs: those outputs, skipped before, now count as equal, 0.0625 becoming 0.0588 = 1/17).
+- Where: `errdist/nonlin/ident.rs` `identify`, `identify_prog`, `Outcomes`; `seg.rs`
+  `SProg::decisions`; `errdist/nonlin/real.rs` `eval_table`; `errdist/mc.rs` `observe`;
+  `errdist/nonlin/enumerate.rs` `elementwise`; `crates/cli/src/errdist.rs`
+  `unknown_exact_gate`, `widen_unknown`.
 - Status: **argued.** Every slice of the softmax / norm / attention / elementwise fixtures is
   identified with max relative deviation <= 1e-7 (tanh.approx: 2^-9) on its probes. An
-  unidentified slice blocks the analytic tiers, and Tier 3 still runs.
+  unidentified slice blocks the analytic tiers, and Tier 3 still runs. Until 2026-11-10 the
+  fit was the exact reference on every outcome (MISS 57): the review's `rv_fmax` slice
+  `x[0] >= -3 ? RN(3 a) : a`, fitted as 3 a on probes near the captured x = 0, gave
+  P(bits differ) 1.0 [0.9998, 1.0] for x[0] in [-5, -4) where the kernel's is 0.290 (exact
+  rationals). fixtures/errdist/miss57 (guard, select, maximum; model): refused for x in
+  [-5, -4] (before: P 1.0, 1.0 and 0.524, rc 0; the kernel's 0.294 for the guard, exact
+  rationals over 19,200 outputs) and reported on N(0, 1) inputs (guard: 0.350 [0.319, 0.380],
+  the kernel's 0.347). The round-4 review's guarded FFMA (fixtures/errdist/miss57/ffma, single
+  path in auto mode): x[0] in [-5, -4) on 30% / 50% / all inputs gave 0.483 / 0.634 / 1.0
+  against the kernel's 0.276 / 0.306 / 0.392 (the review's exact rationals); now refused. On
+  1% it reports 0.236 [0.222, 0.249] (the kernel's 0.235). Until 2026-11-11 a value clamp was
+  no decision (fixtures/errdist/clamp: `FMUL.SAT` and a minimum against a constant fitted as
+  the unclamped x^2 / 32; with x in [6, 8] w.p. 0.3 P(bits differ) 0.331 against the kernel's
+  0.0312, exact rationals; GB300 0.0295 over 200 inputs; now refused), and Tier 3 did not
+  widen at k = 0 (fixtures/errdist/k0: x[0] in [-5, -4) w.p. 0.002; 0 of 300 inputs outside
+  on seed 2 and P 0 [0, 1.9e-4] against the kernel's 5.2e-4, exact rationals; now 0 [0,
+  1.24e-2]). The fit is checked on a pattern only through probes that took it: a pattern
+  counts as identified from one finite probe, under the fit's acceptance at every probe.
 - If wrong: the "exact" value of the outputs is another function, and Tier 3 measures the
-  error against it.
+  error against it. A pattern taken by few probes is identified on those few: a slice whose
+  function there differs from the fit by less than the acceptance at them would be taken as
+  the fit. Near a decision boundary the f32-rounded exact arguments and the exact computation
+  can take different patterns (a band of a few ulps, as for selections). A range
+  reduction's integer step that a fit spanned without crossing it would be taken as the fit
+  beyond it (argued unlikely: the probes perturb by N(0, 1) and cross integer steps). A
+  piece outside `inst_pieces`' audit (an instruction added to `seg::eval_inst` later) is no
+  decision until it is added there. Precision: a pattern that computes the same real function
+  (ptxas's `ex2.approx.f32` halving path below -126, a denormal scaling) is unknown until a
+  probe takes it: `rv_ex2_one` with x in [-130, -122) is refused, where the earlier P 0 was
+  right; so is `softmax_naive` at shift 88 (the scorecard: every finite output differs, and
+  the earlier 1.0 was right, GB300 measured). The widening at k = 0 costs width where
+  nothing falls outside: `softmax_naive.normal`'s Tier 2 interval grows by 0.018 a side at
+  200 inputs (its earlier [0.5636, 0.5678] already held GB300's 0.5640 over 10,000 inputs),
+  and since 2026-11-11 Tier 3's does too: `lse_naive.normal` and `lse_stable.normal` by 0.018
+  a side (their earlier [0.0648, 0.1065] and [0.1841, 0.2459] held GB300's 0.0746 and 0.2084).
+- Placement: strict and gb300 alike: it concerns errdist's reference values (the slice's
+  semantics are the simulator's), not GB300 behavior, and rests on no measured null.
 
 ### N-ERRDIST-REAL · code
 **The exact value of a non-chain output is its algorithm in real arithmetic**: every
 rounding removed, every identified slice replaced by its real function, and maxima taken on
-the real values. The value is evaluated in double-double arithmetic.
+the real values. The value is evaluated in double-double arithmetic. Where a slice's
+decisions take a pattern its fit does not cover, the slice's value and every value read from
+it are unknown (N-ERRDIST-IDENT).
 - Where: `errdist/nonlin/real.rs`; used by `errdist/mc.rs` `observe` and the analytic tiers.
 - Status: **argued.** This defines "C - exact" for softmax, norms and attention. For a
   softmax it is softmax(x) computed exactly, given that the slices are identified.
@@ -8793,6 +9599,24 @@ within its work budget; past it the estimate is refused.
 - Status: **argued.** A store's address does not depend on input data (the taint check), so
   each covered word holds either the stored value or the previous one; the previous value
   must have a node or be an input-independent constant, else the guard stays a violation.
+  The check covers every thread that executes the store on some input: those whose guard
+  holds on the captured run and those whose guard depends on input data (`num.rs`
+  `may_execute`; a thread whose guard is false and input-independent per the taint check
+  stores on no input). The taint check sees input dependence that reaches a thread through
+  memory: a selection's words depend on input data whether or not the captured run stored
+  (`num_gst_post` taints them for a thread that did not execute the store). Until
+  2026-11-11 it did not: such a thread ran no taint write, and a flag another thread read
+  after a barrier was input-independent, its guard or address unchecked
+  (fixtures/errdist/storeword: P(bits differ) 2.415e-1 reported where the kernel's is 0.2553
+  [0.2531, 0.2575], exact rationals; the DAG disagreed with the simulator on 4-8 of 25,600
+  outputs over 400 inputs; model). A warp vote's or MATCH's result keeps each lane's own
+  taint (only a reduction folds across lanes): a dependence through another lane's predicate
+  is outside this rule (registered as its own miss).
+  Until 2026-11-10 it covered the first only, and a store whose guard was false on the
+  captured input and whose address depended on input data was a selection at the captured
+  address (MISS 56, fixtures/errdist/miss56/selscat: two outputs wrong on every input that
+  takes the store; 8 of 25,600 tracked outputs over 400 inputs of the fixture's mixture
+  spec, model). Such an address is now a data-dependent precondition, and errdist refuses.
   On FA4 decode (`fa4.decode_sm100`, `sum > 0 ? 1 / sum : 0`) the DAG agrees with the
   simulator bit for bit on the probe and validation inputs. The flip bound: the linearized
   law and the law with the kernel's branches differ only on inputs with a flip, so their
@@ -8803,7 +9627,13 @@ within its work budget; past it the estimate is refused.
   constants, and maxima and selections of them) decide alike on every input.
 - If wrong: the exact reference's branch differs from the kernel's only where rounding moves
   the predicate's arguments across its threshold; Tier 3's C - exact then counts the other
-  branch's value as error.
+  branch's value as error. A store address the taint check missed would be written on inputs
+  that take the store at another word than the DAG's (MISS 56): a miss. So would a guard or
+  address that depends on input data through a channel the taint check does not follow (a
+  vote across lanes).
+- Placement: strict and gb300 alike. The rule relates errdist's DAG to the kernel's own
+  instruction semantics on either front; it rests on no hardware behavior and no measured
+  null.
 
 ### N-ERRDIST-INERR · code
 **An input's error is independent across elements, and the linearized tier pushes it
@@ -8937,7 +9767,9 @@ actor's writes are not, and block the record (`nic-writer`).
 model, PTX or SASS front) reports anything undefined or deviating (a race, a stale read, a
 violation, a contract deviation, undefined values, a deadlock, several outcomes; anything
 but clean / unmodeled), `ptxv check` checks the variant's SASS front again under a hardware
-profile (`--hw-profile gb300`, the default; `none` / `PTXV_HW_PROFILE=none` turns it off)
+profile (`--hw-profile gb300`, the default; `none` / `PTXV_HW_PROFILE=none` turns it off,
+and so do `--no-gb300` / `PTXV_GB300=0`; either leaves `two_level_skipped` in the row instead;
+any other profile name is an error)
 and reports both levels: `ptx_contract: <classes>` (strict) and `sass_gb300: certified |
 clean | incomplete | <classes>`, with the profile assumptions the second level used. The
 second level never replaces the first: a contract finding stays a finding of the row.
@@ -8955,7 +9787,8 @@ Profile `gb300` (`crates/sim/src/hwprofile.rs`), every entry probe-backed:
   (`probes/desc_version`, `desc-version`), S-TMAP-TAIL (`probes/tmap_tail`,
   `tmap-tail-undef`), E-HW-PROXY-WAR (`probes/handoff_window` v=15-17, `proxy-war`).
 Not in the profile: argued or unvalidated assumptions (E-CPASYNC-PROXY, S-REMOTE-RESERVED,
-E-POLL-ACQ (refuted), the twolevel.rs `hw_order` model).
+E-POLL-ACQ (refuted), the twolevel.rs `hw_order` model), and measured nulls without a
+discriminating control (E-TMEM-QUEUE: `tmem-queue` findings stay contracts).
 - Evidence: `fixtures/e_twolevel_bulk` (`good`: contract at level 1, certified under the
   profile; `nofence`: race at both levels; `waited`: clean).
 - If wrong: a `sass_gb300: certified` is as good as the probes behind the assumptions it

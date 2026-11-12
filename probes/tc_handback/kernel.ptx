@@ -17,6 +17,7 @@
 //          not the phase completed
 //   EARLY (positive control): the peer arrives at the start of the round, before its st;
 //          EARLYD also has the peer CTA sleep 5 us between that arrive and its st
+//   ACTA : the leader waits on `full` with .acquire.cta (SASS: PHASECHK with no CCTL.IVALL)
 //   NOWST: no tcgen05.wait::st before the hand-off (tcgen05.fence::before_thread_sync orders
 //          the st in the PTX model; SASS STTM is scoreboarded): clean
 // A stale A gives 16 * v(r-1); a D overwritten before it was read gives 16 * v(r+1).
@@ -108,7 +109,7 @@ ROUND:
 LEADER:
     mbarrier.arrive.shared::cta.b64 _, [%r3];
 FULL_WAIT:
-    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p3, [%r3], %r65;
+    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p3, [%r3], %r65;   // @LWAIT
     @!%p3 bra       FULL_WAIT;                      // @FULLWAIT
     tcgen05.fence::after_thread_sync;
     tcgen05.mma.cta_group::2.kind::f16 [%r9], [%r33], %rd7, %r26, %p7;

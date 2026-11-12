@@ -1,0 +1,105 @@
+name = "r1h_nvls_inf"
+description = """
+MISS 67 (the one-ulp tolerance of N-MULTIMEM-ROUND16): fixtures/r1h_nvls's NVLS all-reduce on 2
+GPUs with inputs at the top of the f32 range: in0 = (max, max, 1, 2), in1 = (0, max, 1, 2), so
+multimem.ld_reduce gives (max, inf, 2, 4). expected/ is CONSTRUCTED, not captured on a GPU: each
+rank's out = (inf, NaN 0x7f800001, 2, 4), the encodings next to the simulated max and inf.
+`ptxv check` compared the elements as adjacent encodings and reported each output within one
+ulp. An infinity or NaN on either side now passes only if both sides are the same infinity or
+both NaN, so both outputs are a mismatch. The route on real hardware is argued, not measured:
+the tolerance covers a rounding direction the model only calibrates (an f16 / bf16 sum rounds
+up or down by a dither from other lanes), and at the top binade rounding up overflows to inf
+where rounding down keeps the largest finite value."""
+ptx = "kernel.ptx"
+entry = "nvls"
+grid = [1, 1, 1]
+block = [4, 1, 1]
+outputs = ["out0", "out1"]
+replicas = [["out0", "out1"]]
+
+[[buffers]]
+name = "buf0"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "buf1"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "in0"
+dtype = "f32"
+shape = [4]
+init = "file"
+file = "data/in0.bin"
+device = 0
+
+[[buffers]]
+name = "in1"
+dtype = "f32"
+shape = [4]
+init = "file"
+file = "data/in1.bin"
+device = 1
+
+[[buffers]]
+name = "out0"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+expect = "expected/out0.bin"
+device = 0
+
+[[buffers]]
+name = "out1"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+expect = "expected/out1.bin"
+device = 1
+
+[[multicast]]
+name = "mc"
+size = 128
+binds = [
+    { device = 0, offset = 0, buffer = "buf0", byte_offset = 0, size = 128 },
+    { device = 1, offset = 0, buffer = "buf1", byte_offset = 0, size = 128 },
+]
+
+[[params]]
+kind = "ptr"
+buffer = "in0"
+
+[[params]]
+kind = "ptr"
+buffer = "buf0"
+
+[[params]]
+kind = "ptr"
+buffer = "mc"
+
+[[params]]
+kind = "ptr"
+buffer = "out0"
+
+[[launches]]
+entry = "nvls"
+grid = [1, 1, 1]
+block = [4, 1, 1]
+device = 1
+params = [
+    { kind = "ptr", buffer = "in1" },
+    { kind = "ptr", buffer = "buf1" },
+    { kind = "ptr", buffer = "mc" },
+    { kind = "ptr", buffer = "out1" },
+]
+
+[[variants]]
+id = "good"
+summary = "correct NVLS all-reduce"
+expect = ["clean"]

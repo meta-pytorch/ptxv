@@ -1,0 +1,73 @@
+name = "c_num_nan2_f32"
+description = """
+N-NUM-NONFINITE (MISS 63; the independent review's probe nan2, kernel.ptx, gen.py): out[t] = x + y,
+out[32 + t] = (x + y) + (u + v). Even lanes overflow to +inf (exact 6e38) and give NaN (exact 0); odd lanes
+are finite sums of [1, 2) values. Every element is analyzed; the even lanes' errors are infinite.
+expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_nan2_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/y.bin"
+
+[[buffers]]
+name = "u"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/u.bin"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/v.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "u"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

@@ -133,7 +133,19 @@ impl Model {
 
 /// 3: compiled behind the data-dependent refusal (`refuse_data_dependent`); a model of an
 /// earlier version may hold a DAG of one control flow and is recompiled.
-pub(crate) const MODEL_VERSION: u32 = 3;
+/// 4: compiled behind the address check over every thread that may run a guarded store
+/// (MISS 56); an earlier model may hold a selection at an input-derived address.
+/// 5: identified slice functions carry the decision patterns their probes took
+/// (`ident::Outcomes`, MISS 57); without them an exact reference would be used past them.
+/// 6: compiled behind the store-word taint of a selection (`num_gst_post`); an earlier model
+/// may hold a DAG whose guard or address on such a word was unchecked.
+/// 7: fp32 atomic adds flush (`chain::Op::Add::ftz`) and carry their sources (`atomic_src`,
+/// `Prog::atomic_chains`); an earlier model adds subnormals and exempts every atomic output.
+/// 8: slice decisions include the pieces of instruction values (`seg::inst_pieces`); an
+/// earlier model's outcome patterns miss a clamp's piece.
+/// 9: atomic adds carry whether the run's happens-before orders them (`Prog::atomic_free`);
+/// an earlier model has none and would excuse no order (a false refusal only).
+pub(crate) const MODEL_VERSION: u32 = 9;
 
 /// FNV-1a over the case files: every regular file of each case directory (sorted), the
 /// equiv.toml, the candidate index and the ptxv version.
@@ -269,37 +281,50 @@ fn kernel(
     // Agent AG: the DAG's outputs at the captured input must be the captured GPU outputs; a
     // region whose capture misses work between launches (a device-to-device memcpy feeding
     // an addmm's C operand) simulates a different function.
-    // Atomics: the DAG follows the simulator's order of the atomic adds, the GPU ran its own
-    // (N-ERRDIST-DAG), so the outputs need not match bit for bit; the check is skipped.
-    let atomics = run.m.num.as_ref().is_some_and(|ns| {
-        ns.nodes.iter().any(|n| {
-            matches!(
-                n.kind,
-                ptxv_sim::num::NodeKind::AtomAdd(..) | ptxv_sim::num::NodeKind::AtomAdd16(..)
-            )
-        })
-    });
-    if atomics {
+    // Atomics: the DAG follows the simulator's order of the atomic adds, GB300 ran its own
+    // (N-ERRDIST-DAG). An output whose value is an atomic chain may differ by what another
+    // order explains (`AtomChain::order_explains`); an output computed from an atomic sum by
+    // later ops is not compared (no bound reaches it); every other output must match (MISS 58,
+    // narrowed: until 2026-11-11 a kernel with any atomic add skipped the check). With
+    // modified captured inputs (N-ERRDIST-FINCAP) the op values are not the captured run's,
+    // and a kernel with atomic adds skips it.
+    let fed = prog.atomic_fed();
+    let chains = prog.atomic_chains();
+    let skip_all = fed.iter().any(|&f| f) && run.captured_out.is_some();
+    if skip_all {
         run.notes.push(
-            "atomic adds: the captured GPU outputs are not compared with the DAG's (another order of the atomics)".into(),
+            "atomic adds: the captured GPU outputs are not compared with the simulator's (modified captured inputs; another order of the atomics)".into(),
         );
     }
-    if let Some(g) = super::equiv::gpu_output_f32(&run.case).filter(|_| !atomics) {
+    if let Some(g) = super::equiv::gpu_output_f32(&run.case).filter(|_| !skip_all) {
         if g.len() == prog.outputs.len() {
             // N-ERRDIST-FINCAP: the DAG was extracted on modified inputs; the case is checked
             // with a plain simulator run at the captured inputs instead.
             let same = |h: f32, y: &f32| h.to_bits() == y.to_bits() || (h.is_nan() && y.is_nan());
-            let differ = match &run.captured_out {
-                Some(s) => s.iter().zip(&g).filter(|(h, y)| !same(**h, y)).count(),
-                None => prog
-                    .outputs
-                    .iter()
-                    .zip(&g)
-                    .filter(|(o, y)| {
-                        o.is_some_and(|o| !same(f32::from_bits(prog.hw[o as usize]), y))
-                    })
-                    .count(),
-            };
+            let hwv = |i: u32| f32::from_bits(prog.hw[i as usize]) as f64;
+            let (mut differ, mut order, mut unchecked) = (0usize, 0usize, 0usize);
+            match &run.captured_out {
+                Some(s) => differ = s.iter().zip(&g).filter(|(h, y)| !same(**h, y)).count(),
+                None => {
+                    for (k, (o, y)) in prog.outputs.iter().zip(&g).enumerate() {
+                        let Some(o) = o else { continue };
+                        let h = f32::from_bits(prog.hw[*o as usize]);
+                        if same(h, y) {
+                            continue;
+                        }
+                        match &chains[k] {
+                            Some(c) if c.order_explains(&prog, &hwv, h, *y) => order += 1,
+                            None if fed[k] => unchecked += 1,
+                            _ => differ += 1,
+                        }
+                    }
+                }
+            }
+            if order + unchecked > 0 {
+                run.notes.push(format!(
+                    "atomic adds: {order} captured GPU outputs differ from the DAG's within another order of their atomic chain; {unchecked} computed from an atomic sum by later ops are not compared"
+                ));
+            }
             if differ > 0 {
                 bail!(
                     "{}: {differ} of {} outputs of the {} differ from the captured GPU outputs at the captured input (work between the captured launches missing from the case, e.g. a device-to-device memcpy?)",
@@ -385,6 +410,20 @@ pub(crate) fn refuse_data_dependent(k: &Kernel) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Refuse a run whose numerics DAG GB300 contradicts (MISS 58,
+/// `validate::gpu_dag_refusal`): a tracked output without fp32 atomic adds in its DAG differs
+/// bit for bit from the GPU's on a validation input. The simulator validation refuses on any
+/// mismatch; until 2026-11-10 the GPU validation printed DISAGREE and the headline stood.
+/// Outputs `--pre-round` takes before their rounding are not counted (`dag_mismatch`); until
+/// 2026-11-11 `--pre-round` skipped the check altogether, where it changed nothing as well.
+/// The multi-path extraction calls it on its GPU validation as well.
+pub(crate) fn refuse_gpu_mismatch(v: &Observed) -> Result<()> {
+    match ptxv_sim::errdist::validate::gpu_dag_refusal(v.mismatch, v.atomic_mismatch, v.inputs) {
+        Some(e) => bail!("{e}"),
+        None => Ok(()),
+    }
 }
 
 /// Simulate the case's kernel(s). Agent AG: segment mode when some output is untracked
@@ -677,16 +716,23 @@ pub fn cmd(a: &Args) -> Result<()> {
         None => (&model.r, model.c.as_ref()),
     };
     let pair = model.c.is_some();
+    // --pre-round: an output it took before its rounding (`Prog::pre_rounded`, where the value
+    // changed) skips the checks that compare the kernel's value there: the bitwise DAG check
+    // (`dag_mismatch`) and the worst-case check (`mc::observe`); the validations observe the
+    // DAG's value there, the one Tier 3 estimates, and refuse on it as without --pre-round.
+    // Every other output keeps every check. Until 2026-11-11 --pre-round skipped every
+    // refusal; until the MISS 87 follow-up an f32 output (its chain's last MMA step already)
+    // counted as taken, and the worst-case check and Tier 3's validation refusal were
+    // skipped run-wide when any output was (fixtures/e_tc_handback).
     let mut st = ptxv_sim::errdist::mc::Setup::new(rp, cp).map_err(|e| anyhow!(e))?;
+    let taken = rp.pre_rounded.iter().filter(|&&b| b).count();
     // The worst-case bound's distribution and the check of every observed error against it
-    // (closed forms only; --pre-round compares other values).
-    if !a.pre_round {
-        st.wc = model
-            .worst
-            .as_ref()
-            .filter(|w| w.available && matches!(w.form.as_str(), "sum" | "round" | "softmax"))
-            .map(|w| (w.rel, w.k_u * 2f64.powi(-24), w.abs, w.scale_one));
-    }
+    // (closed forms only).
+    st.wc = model
+        .worst
+        .as_ref()
+        .filter(|w| w.available && matches!(w.form.as_str(), "sum" | "round" | "softmax"))
+        .map(|w| (w.rel, w.k_u * 2f64.powi(-24), w.abs, w.scale_one));
     let st = st;
     // The default thread count fits Tier 3's workers in 70% of the memory left (the cgroup's
     // limit less its use, else MemAvailable): one worker holds a sample and the programs' op
@@ -728,6 +774,9 @@ pub fn cmd(a: &Args) -> Result<()> {
         let (cs, cm) = st.c.map(|c| c.flippable(ie)).unwrap_or_default();
         ((s.len() + cs.len()) as u64, (m.len() + cm.len()) as u64)
     };
+    // MISS 57: slice ops whose identified function holds on part of their decision patterns
+    // only. Single mode needs their exact values; a pair's P(differ) (C against R) does not.
+    let partial = if pair { 0 } else { model.r.partial_slices() };
     // Tier 3: the cross-check of the analytic tiers and the fallback headline (--mc 0 skips
     // it; a model query then rests on the structural checks).
     let mut n = a.mc.or(spec.engine.mc_inputs).unwrap_or(MC_DEFAULT);
@@ -786,6 +835,22 @@ pub fn cmd(a: &Args) -> Result<()> {
                 let w = (n as f64 * ((rel / XCHECK_FINE).powi(2) * 1.2 - 1.0)).ceil();
                 (w, budget.min(XCHECK_FINE_SECONDS))
             };
+            // MISS 57: the share of inputs whose exact value is unknown (a slice outside the
+            // decision patterns its identification probed): its bound, at FLIP_GROW of the
+            // gate's margin, when the whole budget reaches it at the observed share.
+            if partial > 0 {
+                let target = FLIP_GROW * EST_MAX_REL * p;
+                let all = ((budget * T3_WORK_PER_SECOND - n as f64 * per) / per)
+                    .floor()
+                    .min(cap.saturating_sub(n) as f64);
+                if let Some(m) = flip_inputs(obs.ident_off_inputs, obs.inputs, target, cap) {
+                    let need = m.saturating_sub(obs.inputs) as f64;
+                    let w = need.max((0.25 * n as f64).ceil());
+                    if need > 0.0 && need <= all && w > want {
+                        (want, bud) = (w, budget);
+                    }
+                }
+            }
             // The flip bound, at FLIP_GROW of the gate's margin, when the whole budget reaches
             // it at the observed share: inputs that cannot rescue the gate are not run.
             let mut for_flips = false;
@@ -857,6 +922,9 @@ pub fn cmd(a: &Args) -> Result<()> {
             );
         }
     }
+    // Never report where the exact reference is unknown on more than a sliver of the inputs
+    // (MISS 57); otherwise the estimates' intervals widen by that sliver's bound.
+    let unknown = unknown_exact_gate(&obs, partial > 0)?;
     let mut est = ptxv_sim::errdist::mc::estimate(
         &obs,
         3,
@@ -864,6 +932,11 @@ pub fn cmd(a: &Args) -> Result<()> {
         model.r.out_fmt,
     );
     est.seconds = t0.elapsed().as_secs_f64();
+    // At 0 inputs outside as well: a share up to U is unseen in Tier 3's sample, and its
+    // exact value is unknown (until 2026-11-11 only a sample with inputs outside widened).
+    if let Some(u) = unknown {
+        widen_unknown(&mut est, u);
+    }
     let mut rep = ptxv_sim::errdist::report::Report {
         version: ptxv_sim::errdist::report::REPORT_VERSION,
         kind: "ptxv-errdist".into(),
@@ -879,6 +952,30 @@ pub fn cmd(a: &Args) -> Result<()> {
     };
     rep.out_of_domain = ood(&obs);
     rep.notes.extend(grow_notes);
+    if taken > 0 {
+        rep.notes.push(format!(
+            "--pre-round took {taken} of {} outputs before their rounding: their bitwise and worst-case checks compare the kernel's rounded value and are skipped there; the validations observe the DAG's value there",
+            rp.outputs.len()
+        ));
+    }
+    if let Some(u) = unknown {
+        rep.notes.push(format!(
+            "{partial} instruction slice op(s) hold their identified function on part of their decision patterns only (MISS 57): {} of {} Tier 3 inputs ({} outputs) took another pattern, where the exact value is unknown; {}",
+            obs.ident_off_inputs,
+            obs.inputs,
+            obs.ident_off,
+            if obs.ident_off_inputs > 0 {
+                format!("those outputs are left out, and the P(differ) intervals widened by the share's 95% bound {u:.2e}")
+            } else {
+                format!("the P(differ) intervals (Tier 3's too: its sample saw none, a share up to the bound is unseen) widened by the share's 95% bound {u:.2e}")
+            }
+        ));
+    } else if obs.ident_off > 0 {
+        rep.notes.push(format!(
+            "{} of {} Tier 3 inputs ({} outputs) take decisions (guards, selects) inside an instruction slice that its identification's probes never took: the identified function is not the exact reference there (MISS 57); a pair's P(differ) (C against R) still counts them, the moments leave them out",
+            obs.ident_off_inputs, obs.inputs, obs.ident_off
+        ));
+    }
     if let Some(path) = &a.is {
         // Its own input indices (independent of the plain run, for the agreement gate);
         // PTXV_IS_FIRST overrides (tests: 0 with alpha = 1 repeats the plain inputs).
@@ -1030,7 +1127,7 @@ pub fn cmd(a: &Args) -> Result<()> {
     if n_sim > 0 {
         let t1 = std::time::Instant::now();
         let v = validate_sim(&st, &spec, &ls, &ks, n_sim, first, threads.min(n_sim), &dir)?;
-        if v.mismatch > 0 && !a.pre_round {
+        if v.mismatch > 0 {
             bail!(
                 "the numerics DAG disagrees with the simulator on {} tracked outputs over {} validation inputs; refusing to report from it",
                 v.mismatch,
@@ -1054,10 +1151,25 @@ pub fn cmd(a: &Args) -> Result<()> {
         let t1 = std::time::Instant::now();
         match validate_gpu(&st, &spec, &ls, &ks, n_gpu, first + (1 << 20), &dir) {
             Ok((v, gpu)) => {
+                // Never report from a DAG that GB300 contradicts (MISS 58).
+                refuse_gpu_mismatch(&v)?;
+                // Atomic-fed outputs are not compared bit for bit (N-ERRDIST-DAG); the report's
+                // DAG mismatch count keeps them.
                 let mut val = ptxv_sim::errdist::validate::against_sample(
-                    "gpu", "tier 3", &obs, &v.obs, v.mismatch,
+                    "gpu",
+                    "tier 3",
+                    &obs,
+                    &v.obs,
+                    v.mismatch - v.atomic_mismatch,
                 );
+                val.dag_mismatch = v.mismatch;
                 flag_nonfinite(&mut val, &obs, &v.obs);
+                if v.atomic_mismatch > 0 {
+                    val.notes.push(format!(
+                        "{} differing outputs are fed by fp32 atomic adds, which GB300 adds in its own order (N-ERRDIST-DAG): not compared bit for bit",
+                        v.atomic_mismatch
+                    ));
+                }
                 val.notes
                     .push(format!("GPU {gpu}, {:.1}s", t1.elapsed().as_secs_f64()));
                 rep.validation.push(val);
@@ -1067,7 +1179,8 @@ pub fn cmd(a: &Args) -> Result<()> {
         }
     }
     if let Some(w) = rep.worst_case.as_mut().filter(|_| st.wc.is_some()) {
-        for (src, v, gpu) in &observed {
+        // A run whose every output --pre-round took before its rounding compares none.
+        for (src, v, gpu) in observed.iter().filter(|(_, v, _)| v.obs.wc_checked > 0) {
             let lab = match gpu {
                 Some(g) => format!("{src} (GPU {g})"),
                 None => src.clone(),
@@ -1160,6 +1273,19 @@ pub fn cmd(a: &Args) -> Result<()> {
     // P(differ) interval widens by B, and the estimate stands only while B is within
     // EST_MAX_REL of P (the estimate-resolution rule). Selections and maxima whose decision inputs are exact
     // decide alike on every input and need no bound (`Prog::flippable`).
+    // MISS 57: the linearized tiers use the identified functions everywhere; the 95% bound of
+    // Tier 3's share of inputs outside their decision patterns (at 0 of n too, as the flip
+    // bound) bounds how far that moves them. (The elementwise law measures its own share,
+    // `enumerate::elementwise`.)
+    if let Some(u) = unknown {
+        for e in rep
+            .estimates
+            .iter_mut()
+            .filter(|e| (e.tier == 1 || e.tier == 2) && !e.method.starts_with("elementwise"))
+        {
+            widen_unknown(e, u);
+        }
+    }
     if flippable.0 + flippable.1 > 0 {
         let (ns, nm) = flippable;
         for e in rep
@@ -1312,7 +1438,13 @@ pub fn cmd(a: &Args) -> Result<()> {
     let mut contradicted = vec![];
     for (src, v, gpu) in &observed {
         for (i, e) in rep.estimates.iter().enumerate().filter(|(_, e)| e.tier < 3) {
-            let mut x = ptxv_sim::errdist::validate::against_estimate(src, e, &v.obs, v.mismatch);
+            let mut x = ptxv_sim::errdist::validate::against_estimate(
+                src,
+                e,
+                &v.obs,
+                v.mismatch - v.atomic_mismatch,
+            );
+            x.dag_mismatch = v.mismatch;
             flag_nonfinite(&mut x, &obs, &v.obs);
             if let Some(g) = gpu {
                 x.notes.push(format!("GPU {g}"));
@@ -1332,25 +1464,43 @@ pub fn cmd(a: &Args) -> Result<()> {
             rep.validation.push(x);
         }
     }
+    // Tier 3 too, on the same criteria (bitwise where no other order of an atomic chain
+    // explains the run, P(differ), the inputs' exact bounds on its interval; the moments where
+    // atomic chains ran in another order). Outputs --pre-round took before their rounding
+    // enter the runs' statistics with the DAG's value (`validate_with`).
+    let t3_claim = rep
+        .estimates
+        .iter()
+        .find(|e| e.tier == 3)
+        .and_then(|e| e.p_differ)
+        .map(|(_, lo, hi)| (lo, hi));
+    if let Some(claim) = t3_claim {
+        for (src, v, _) in &observed {
+            if let Some(line) = ptxv_sim::errdist::validate::tier3_refusal(
+                src,
+                &obs,
+                &v.obs,
+                v.mismatch,
+                v.atomic_mismatch,
+                claim,
+            ) {
+                for (i, _) in rep
+                    .estimates
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.tier == 3)
+                {
+                    contradicted.push((i, line.clone()));
+                }
+            }
+        }
+    }
     for (i, line) in contradicted {
         let e = &mut rep.estimates[i];
         e.applicable = Some(false);
         e.applicability.push(line);
     }
-    // The headline: tier 0 when it applies, else tier 1 (opt-in) or tier 2 where they pass
-    // their applicability checks and the Tier 3 cross-check, else tier 3. None when nothing
-    // qualifies (without Tier 3 only a Tier 0 certificate can): a refused estimate is never
-    // the headline (until 2026-11-10 estimates[0] was, MISS 42).
-    let ok = |e: &ptxv_sim::errdist::report::Estimate| {
-        e.applicable == Some(true) && e.p_differ.is_some()
-    };
-    rep.best = rep
-        .estimates
-        .iter()
-        .position(|e| e.tier == 0 && e.applicable != Some(false) && e.p_differ.is_some())
-        .or_else(|| rep.estimates.iter().position(|e| e.tier == 1 && ok(e)))
-        .or_else(|| rep.estimates.iter().position(|e| e.tier == 2 && ok(e)))
-        .or_else(|| rep.estimates.iter().position(|e| e.tier == 3));
+    rep.best = headline(&rep.estimates);
     rep.assumptions = vec![
         "N-ERRDIST-IID".into(),
         "N-ERRDIST-MC".into(),
@@ -1434,7 +1584,40 @@ pub fn cmd(a: &Args) -> Result<()> {
         std::fs::write(p, crate::errdist_html::render(&rep, &text))?;
         println!("wrote {}", p.display());
     }
+    // Tier 3 ran and nothing qualifies: a refusal (MISS 58 follow-up). Without Tier 3 (--mc 0) a
+    // model query has no headline unless Tier 0 certifies one, as before.
+    if rep.best.is_none() {
+        if let Some(why) = rep
+            .estimates
+            .iter()
+            .filter(|e| e.tier == 3)
+            .flat_map(|e| e.applicability.iter())
+            .find(|l| l.ends_with("FAILS"))
+        {
+            bail!("no estimate passed its checks (tier 3: {why}); refusing to report from it");
+        }
+    }
     Ok(())
+}
+
+/// The headline: tier 0 when it applies, else tier 1 (opt-in) or tier 2 where they pass their
+/// applicability checks and the Tier 3 cross-check, else tier 3 unless a validation refused it
+/// (`validate::tier3_refusal`). None when nothing qualifies (without Tier 3 only a Tier 0
+/// certificate can). A refused estimate is never the headline, in any tier: until 2026-11-10
+/// estimates[0] was (MISS 42), and until 2026-11-11 the Tier 3 arm took Tier 3 unchecked. The
+/// multi-path extraction picks its headline with it too.
+pub(crate) fn headline(es: &[ptxv_sim::errdist::report::Estimate]) -> Option<usize> {
+    let stands = |e: &ptxv_sim::errdist::report::Estimate| {
+        e.applicable != Some(false) && e.p_differ.is_some()
+    };
+    let ok = |e: &ptxv_sim::errdist::report::Estimate| {
+        e.applicable == Some(true) && e.p_differ.is_some()
+    };
+    es.iter()
+        .position(|e| e.tier == 0 && stands(e))
+        .or_else(|| es.iter().position(|e| e.tier == 1 && ok(e)))
+        .or_else(|| es.iter().position(|e| e.tier == 2 && ok(e)))
+        .or_else(|| es.iter().position(|e| e.tier == 3 && stands(e)))
 }
 
 /// NaN / Inf outputs in a validation run: noted with Tier 3's rate; the validation fails when
@@ -1548,6 +1731,67 @@ fn flip_gate(
         "moments: of the law without branch flips (a flipped selection may pass on a value of another size; the share of inputs with a flip is <= {ub:.2e})"
     ));
 }
+/// MISS 57: Tier 3 inputs whose outputs rest on an instruction slice whose data-dependent
+/// decisions (guards, selects, carries) take a pattern its identification's probes never took
+/// (`mc::Obs::ident_off_inputs`, `nonlin::real::Table::outside`). The identified function is
+/// not the exact reference there, and single mode leaves those outputs out. `partial`: the
+/// run needs exact values (single mode) and its program has such slices
+/// (`Prog::partial_slices`); None otherwise. Else the share of inputs outside, at its 95%
+/// upper bound U (1 without Tier 3 inputs), moves P(differ) by at most U: refuse when inputs
+/// were left out and U exceeds EST_MAX_REL of Tier 3's P(differ) over the others (or nothing
+/// else was compared); else Some(U). Every estimate's interval widens by U (`widen_unknown`):
+/// the analytic tiers use the identified functions on every input, and Tier 3's sample, at 0
+/// inputs outside, saw none of a share that can be up to U (until 2026-11-11 Tier 3 widened
+/// only with inputs outside: 0 of 300 at a share of 0.002 reported P(differ) 0 [0, 1.9e-4]
+/// for 5.2e-4). The multi-path extraction calls it on its Tier 3 observations as well.
+pub(crate) fn unknown_exact_gate(
+    obs: &ptxv_sim::errdist::mc::Obs,
+    partial: bool,
+) -> Result<Option<f64>> {
+    if !partial {
+        return Ok(None);
+    }
+    let (k, n) = (obs.ident_off_inputs, obs.inputs);
+    let (_, u) = ptxv_sim::errdist::special::clopper_pearson(k, n, 0.05);
+    let p = obs.differ as f64 / obs.compared.max(1) as f64;
+    if k > 0 && (obs.compared == 0 || u > EST_MAX_REL * p) {
+        let why = if obs.compared == 0 {
+            "no other output has an exact reference".to_string()
+        } else {
+            format!(
+                "their share, at most {u:.2e} (95%), is more than {:.0}% of P(differ) {p:.3e} over the other outputs",
+                100.0 * EST_MAX_REL
+            )
+        };
+        bail!(
+            "{k} of {n} Tier 3 inputs take decisions (guards, selects) inside an instruction slice that its identification's probes never took, so the identified function is not the exact reference there (MISS 57); {why}; refusing to report from it"
+        );
+    }
+    Ok(Some(u))
+}
+
+/// Widen an estimate's P(differ) interval by U (`unknown_exact_gate`); an analytic estimate
+/// stands only while U is within EST_MAX_REL of its P.
+fn widen_unknown(e: &mut ptxv_sim::errdist::report::Estimate, u: f64) {
+    let Some((p, lo, hi)) = e.p_differ else {
+        return;
+    };
+    e.p_differ = Some((p, (lo - u).max(0.0), (hi + u).min(1.0)));
+    let ok = e.tier == 3 || u <= EST_MAX_REL * p;
+    e.applicability.push(format!(
+        "exact value unknown on a share of the inputs (an instruction slice outside its identification's decision patterns, MISS 57): at most {u:.2e} (95%), the P(differ) interval widened by it{} {}",
+        if e.tier == 3 {
+            String::new()
+        } else {
+            format!(" (needs <= {:.2e}: {:.0}% of P)", EST_MAX_REL * p, 100.0 * EST_MAX_REL)
+        },
+        if ok { "ok" } else { "FAILS" }
+    ));
+    if !ok {
+        e.applicable = Some(false);
+    }
+}
+
 /// An analytic estimate whose own 95% interval is wider than this fraction of its P(differ)
 /// is not confirmed by the cross-check (its point value is not a headline).
 const EST_MAX_REL: f64 = 0.1;
@@ -2265,6 +2509,14 @@ fn importance(
     };
     let obs =
         ptxv_sim::errdist::mc::run(st, spec, ls, &cfg).map_err(|e| format!("sample_is: {e}"))?;
+    // MISS 57: an input's weighted fraction over the outputs whose exact value is known is
+    // not its own fraction.
+    if st.c.is_none() && obs.ident_off_inputs > 0 {
+        return Err(format!(
+            "{} of {} importance-sampled inputs take decisions inside an instruction slice that its identification never probed (exact value unknown, MISS 57)",
+            obs.ident_off_inputs, obs.inputs
+        ));
+    }
     // Plain references: P(differ) with its interval over inputs, P(non-finite) binomial over
     // inputs.
     let pd = (plain.compared > 0).then(|| {
@@ -2541,9 +2793,12 @@ fn abs_ulp_quantile(pmf: &[(i64, f64)], q: f64) -> Option<i64> {
 /// ulps, the proven worst case.
 fn summary_text(o: &mut String, rep: &ptxv_sim::errdist::report::Report) {
     let Some(e) = rep.best.and_then(|b| rep.estimates.get(b)) else {
+        // Tier 3's reason first: when it ran, its refusal is why there is no headline.
+        let t3 = rep.estimates.iter().any(|e| e.tier == 3);
         let why = rep
             .estimates
             .iter()
+            .filter(|e| !t3 || e.tier == 3)
             .find_map(|e| {
                 e.applicability
                     .iter()
@@ -2553,7 +2808,8 @@ fn summary_text(o: &mut String, rep: &ptxv_sim::errdist::report::Report) {
             .unwrap_or_default();
         outln!(
             o,
-            "\nsummary: no estimate passed its checks{why}; run Tier 3 (--mc N)"
+            "\nsummary: no estimate passed its checks{why}{}",
+            if t3 { "" } else { "; run Tier 3 (--mc N)" }
         );
         return;
     };
@@ -2749,6 +3005,10 @@ fn widen(raw: &[u8], dt: &str) -> Vec<f32> {
 pub(crate) struct Observed {
     pub obs: ptxv_sim::errdist::mc::Obs,
     pub mismatch: u64,
+    /// Of `mismatch`: outputs whose value is an atomic chain whose other order explains the
+    /// difference (`AtomChain::order_explains`): a GPU adds in its own order (N-ERRDIST-DAG,
+    /// MISS 58 narrowed).
+    pub atomic_mismatch: u64,
     pub inputs: u64,
 }
 
@@ -2759,8 +3019,17 @@ type RunKernels<'a> =
 
 /// Run both kernels on `n` sampled inputs (indices from `first`) through `run_kernel`, compare
 /// with the DAG evaluation and collect the errors.
-/// Tracked outputs where the DAG's value differs from the run's (NaN matches NaN).
-fn dag_mismatch(p: &Prog, dag: &[f32], run: &[f32]) -> u64 {
+/// Tracked outputs where the DAG's value differs from the run's (NaN matches NaN), and of
+/// those the ones where another order of the output's atomic chain explains the run's value
+/// (`chains`: `Prog::atomic_chains`; `w`: the DAG's op values at the input). A difference at
+/// any other output, an atomic sum's later ops included, is not GB300's order of the adds.
+pub(crate) fn dag_mismatch(
+    p: &Prog,
+    chains: &[Option<ptxv_sim::errdist::chain::AtomChain>],
+    w: &[ptxv_sim::mma_lp::Operand],
+    dag: &[f32],
+    run: &[f32],
+) -> (u64, u64) {
     if std::env::var("PTXV_ERRDIST_DEBUG").is_ok() {
         let bad = p
             .outputs
@@ -2774,13 +3043,34 @@ fn dag_mismatch(p: &Prog, dag: &[f32], run: &[f32]) -> u64 {
             eprintln!("dag mismatch: output {i}: DAG {a:e} simulator {b:e}");
         }
     }
-    p.outputs
-        .iter()
-        .zip(dag.iter().zip(run))
-        .filter(|(o, (a, b))| {
-            o.is_some() && a.to_bits() != b.to_bits() && !(a.is_nan() && b.is_nan())
-        })
-        .count() as u64
+    let mut n = (0u64, 0u64);
+    let v = |i: u32| w.get(i as usize).map_or(f64::NAN, |x| x.v);
+    for (i, (o, (a, b))) in p.outputs.iter().zip(dag.iter().zip(run)).enumerate() {
+        // `--pre-round` took this output before its rounding: not the kernel's value.
+        if p.pre_rounded.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        if o.is_some() && a.to_bits() != b.to_bits() && !(a.is_nan() && b.is_nan()) {
+            n.0 += 1;
+            n.1 += chains
+                .get(i)
+                .and_then(|c| c.as_ref())
+                .is_some_and(|c| c.order_explains(p, &v, *a, *b)) as u64;
+        }
+    }
+    n
+}
+
+/// At the outputs `--pre-round` took before their rounding (`Prog::pre_rounded`), the run's
+/// values replaced by the DAG's `dag`: the kernel computes the rounded value only.
+fn pre_take(p: &Prog, run: &mut [f32], dag: &[f32]) {
+    for (i, &taken) in p.pre_rounded.iter().enumerate() {
+        if let (true, Some(d)) = (taken, dag.get(i)) {
+            if let Some(r) = run.get_mut(i) {
+                *r = *d;
+            }
+        }
+    }
 }
 
 /// The extracted DAG against the simulator on two sampled inputs (outside every other index
@@ -2810,21 +3100,28 @@ fn validate_with(
 ) -> Result<Observed> {
     use ptxv_sim::errdist::mc;
     let mut obs = mc::Obs::default();
-    let mut mismatch = 0u64;
+    let (mut mismatch, mut atomic_mismatch) = (0u64, 0u64);
     let mut acc = ptxv_sim::errdist::chain::ExpAcc::default();
+    let ch_r = st.r.atomic_chains();
+    let ch_c = st.c.map(|c| c.atomic_chains()).unwrap_or_default();
     for i in 0..n as u64 {
         let t = first + i;
         let smp = ptxv_sim::errdist::spec::sample(spec, ls, t).map_err(|e| anyhow!(e))?;
-        let (ro, co) = outs(t, &smp.bytes)?;
+        let (mut ro, mut co) = outs(t, &smp.bytes)?;
         let mut wr = st.r.leaves(&smp.bytes).map_err(|e| anyhow!(e))?;
         st.r.eval_into(&mut wr);
         let rd = mc::outputs(st.r, &wr);
+        let (m, ma) = dag_mismatch(st.r, &ch_r, &wr, &rd, &ro);
+        (mismatch, atomic_mismatch) = (mismatch + m, atomic_mismatch + ma);
+        // An output --pre-round took before its rounding: the kernel never computes that
+        // value; the run's statistics take the DAG's, as Tier 3's do (MISS 87 follow-up).
+        pre_take(st.r, &mut ro, &rd);
         // Input errors: the exact reference on the error-free values.
         if !smp.clean.is_empty() {
             wr = st.r.leaves(&smp.clean_bytes()).map_err(|e| anyhow!(e))?;
             st.r.eval_into(&mut wr);
         }
-        if std::env::var("PTXV_ERRDIST_DEBUG").is_ok() && dag_mismatch(st.r, &rd, &ro) > 0 {
+        if std::env::var("PTXV_ERRDIST_DEBUG").is_ok() && m > 0 {
             if let Some((k, o)) = st.r.outputs.iter().enumerate().find_map(|(k, o)| {
                 o.filter(|_| rd[k].to_bits() != ro[k].to_bits())
                     .map(|o| (k, o))
@@ -2844,12 +3141,13 @@ fn validate_with(
                 }
             }
         }
-        mismatch += dag_mismatch(st.r, &rd, &ro);
-        if let (Some(c), Some(co)) = (st.c, co.as_ref()) {
+        if let (Some(c), Some(co)) = (st.c, co.as_mut()) {
             let mut wc = c.leaves(&smp.bytes).map_err(|e| anyhow!(e))?;
             c.eval_into(&mut wc);
             let cd = mc::outputs(c, &wc);
-            mismatch += dag_mismatch(c, &cd, co);
+            let (m, ma) = dag_mismatch(c, &ch_c, &wc, &cd, co);
+            (mismatch, atomic_mismatch) = (mismatch + m, atomic_mismatch + ma);
+            pre_take(c, co, &cd);
         }
         let keep = mc::keep_set(st.tracked.len(), 256, t);
         let at = |v: &[f32]| -> Vec<f32> {
@@ -2876,6 +3174,7 @@ fn validate_with(
     Ok(Observed {
         obs,
         mismatch,
+        atomic_mismatch,
         inputs: n as u64,
     })
 }
@@ -2919,12 +3218,14 @@ fn validate_sim(
     let mut all = Observed {
         obs: Default::default(),
         mismatch: 0,
+        atomic_mismatch: 0,
         inputs: 0,
     };
     for (_, p) in parts {
         let p = p?;
         all.obs.merge(p.obs);
         all.mismatch += p.mismatch;
+        all.atomic_mismatch += p.atomic_mismatch;
         all.inputs += p.inputs;
     }
     Ok(all)

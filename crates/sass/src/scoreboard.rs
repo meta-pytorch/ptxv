@@ -576,6 +576,50 @@ fn reg_name(r: RegKey) -> String {
     }
 }
 
+/// `DEPBAR.LE SBk, n`: at most n operations outstanding on SBk; `DEPBAR {5,4,3}`: none on
+/// each listed scoreboard; `DEPBAR.LE SBk, n, {4,3}`: both. (scoreboard, n) pairs; empty for
+/// any other instruction.
+pub fn depbar_waits(l: &SassLine) -> Result<Vec<(u8, u8)>> {
+    let mut out = vec![];
+    if !l.opcode.starts_with("DEPBAR") {
+        return Ok(out);
+    }
+    let bad = || anyhow::anyhow!("sass {:#06x}: bad DEPBAR `{}`", l.addr, l.text);
+    if l.opcode == "DEPBAR" && l.operands.len() == 1 && l.operands[0].starts_with('{') {
+        for k in l.operands[0]
+            .trim_matches(|c| c == '{' || c == '}')
+            .split(',')
+        {
+            out.push((k.trim().parse::<u8>().map_err(|_| bad())?, 0));
+        }
+        return Ok(out);
+    }
+    let sb = l
+        .operands
+        .first()
+        .and_then(|o| o.strip_prefix("SB"))
+        .and_then(|k| k.parse::<u8>().ok());
+    let n = l
+        .operands
+        .get(1)
+        .and_then(|o| u8::from_str_radix(o.trim_start_matches("0x"), 16).ok());
+    let (true, Some(sb), Some(n), 2..=3) = (l.opcode == "DEPBAR.LE", sb, n, l.operands.len())
+    else {
+        bail!("sass {:#06x}: unsupported DEPBAR form `{}`", l.addr, l.text)
+    };
+    out.push((sb, n));
+    if let Some(list) = l.operands.get(2) {
+        let list = list
+            .strip_prefix('{')
+            .and_then(|x| x.strip_suffix('}'))
+            .ok_or_else(bad)?;
+        for k in list.split(',') {
+            out.push((k.trim().parse::<u8>().map_err(|_| bad())?, 0));
+        }
+    }
+    Ok(out)
+}
+
 // ASSUME(L-STALL, L-MEMSB): see ASSUMPTIONS.md
 pub fn check(lines: &[SassLine], code: &[Inst], sm: u32) -> Result<Vec<StaticFinding>> {
     if lines.iter().any(|l| l.hi.is_none()) {
@@ -611,50 +655,7 @@ pub fn check(lines: &[SassLine], code: &[Inst], sm: u32) -> Result<Vec<StaticFin
             _ => next,
         }
     };
-    // `DEPBAR.LE SBk, n`: at most n operations outstanding on SBk; `DEPBAR {5,4,3}`: none on
-    // each listed scoreboard; `DEPBAR.LE SBk, n, {4,3}`: both.
-    let mut depbar: Vec<Vec<(u8, u8)>> = vec![vec![]; lines.len()];
-    for (pc, l) in lines.iter().enumerate() {
-        if !l.opcode.starts_with("DEPBAR") {
-            continue;
-        }
-        if l.opcode == "DEPBAR" && l.operands.len() == 1 && l.operands[0].starts_with('{') {
-            for k in l.operands[0]
-                .trim_matches(|c| c == '{' || c == '}')
-                .split(',')
-            {
-                let sb = k.trim().parse::<u8>().map_err(|_| {
-                    anyhow::anyhow!("sass {:#06x}: bad DEPBAR `{}`", l.addr, l.text)
-                })?;
-                depbar[pc].push((sb, 0));
-            }
-            continue;
-        }
-        let sb = l
-            .operands
-            .first()
-            .and_then(|o| o.strip_prefix("SB"))
-            .and_then(|k| k.parse::<u8>().ok());
-        let n = l
-            .operands
-            .get(1)
-            .and_then(|o| u8::from_str_radix(o.trim_start_matches("0x"), 16).ok());
-        let (true, Some(sb), Some(n), 2..=3) = (l.opcode == "DEPBAR.LE", sb, n, l.operands.len())
-        else {
-            bail!("sass {:#06x}: unsupported DEPBAR form `{}`", l.addr, l.text)
-        };
-        depbar[pc].push((sb, n));
-        if let Some(list) = l.operands.get(2) {
-            let bad = || anyhow::anyhow!("sass {:#06x}: bad DEPBAR `{}`", l.addr, l.text);
-            let list = list
-                .strip_prefix('{')
-                .and_then(|x| x.strip_suffix('}'))
-                .ok_or_else(bad)?;
-            for k in list.split(',') {
-                depbar[pc].push((k.trim().parse::<u8>().map_err(|_| bad())?, 0));
-            }
-        }
-    }
+    let depbar: Vec<Vec<(u8, u8)>> = lines.iter().map(depbar_waits).collect::<Result<_>>()?;
     let mut input: Vec<Option<State>> = vec![None; lines.len()];
     input[0] = Some(State::new());
     let mut work: Vec<usize> = vec![0];

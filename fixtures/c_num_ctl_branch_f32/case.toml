@@ -1,0 +1,79 @@
+name = "c_num_ctl_branch_f32"
+description = """
+N-NUM-TRACK (the independent review's probe rd_branch_param, kernel.ptx): branches decided only by roundings
+of kernel parameters. out[t] = (rn(a + b) >= c) ? x + y : x + z; out[32 + t] = (rn(a * d) > 1) ? x + y : x + z,
+with a = 0.1f, b = 0.2f, c = 0x3e99999a = rn(a + b), d = 10. Exact: a + b < c (x + z) and a d > 1 (x + y);
+this run takes the other path in both (rn(a + b) = c, rn(a d) = 1). num makes no claim. expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP).
+"""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_ctl_branch_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/y.bin"
+
+[[buffers]]
+name = "z"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/z.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "bytes"
+hex = "cdcccc3d"
+
+[[params]]
+kind = "bytes"
+hex = "cdcc4c3e"
+
+[[params]]
+kind = "bytes"
+hex = "9a99993e"
+
+[[params]]
+kind = "bytes"
+hex = "00002041"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

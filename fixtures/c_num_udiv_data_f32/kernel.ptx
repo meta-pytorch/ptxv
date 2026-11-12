@@ -1,0 +1,44 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// fixtures/c_num_udiv_data_f32 (N-NUM-UDIV): a u32 division of input data by a parameter, which
+// ptxas lowers to I2F.U32.RP, MUFU.RCP, F2I.TRUNC and an integer correction. Thread t (32
+// threads): q = idx[t] / du (du = 7), out[t] = x[q & 127]. The quotient is exact, but it comes
+// from an input buffer: the load address depends on input data, and num makes no claim.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_udiv_data_f32(
+	.param .u64 px,
+	.param .u64 pidx,
+	.param .u64 pout,
+	.param .u32 pdu
+)
+{
+	.reg .b32 %r<8>;
+	.reg .f32 %f<2>;
+	.reg .b64 %rd<12>;
+
+	ld.param.u64 %rd1, [px];
+	ld.param.u64 %rd2, [pidx];
+	ld.param.u64 %rd3, [pout];
+	ld.param.u32 %r1, [pdu];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd2, %rd2;
+	cvta.to.global.u64 %rd3, %rd3;
+	mov.u32 %r2, %tid.x;
+	mul.wide.u32 %rd4, %r2, 4;
+	add.s64 %rd5, %rd2, %rd4;
+	ld.global.u32 %r3, [%rd5];
+	div.u32 %r4, %r3, %r1;
+	and.b32 %r5, %r4, 127;
+	mul.wide.u32 %rd6, %r5, 4;
+	add.s64 %rd6, %rd1, %rd6;
+	ld.global.f32 %f1, [%rd6];
+	add.s64 %rd7, %rd3, %rd4;
+	st.global.f32 [%rd7], %f1;
+	ret;
+}

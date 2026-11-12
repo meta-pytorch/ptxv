@@ -1,0 +1,33 @@
+name = "atomord_bar"
+description = """entry ao_bar of ../kernel.ptx (see its header): three fp32 atomic adds per output that two barriers order; the captured GPU output has y[5] one ulp off the DAG, which no other order can give: the barriers fix the order."""
+ptx = "../kernel.ptx"
+entry = "ao_bar"
+grid = [1, 1, 1]
+block = [96, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [96]
+init = "file"
+file = "../in.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "../expected/off1.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

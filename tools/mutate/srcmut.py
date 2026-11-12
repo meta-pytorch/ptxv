@@ -38,13 +38,15 @@ class SrcMutant:
     # (fixture, variant, front, extra check flags)
     runs: list
     # (package, test binary, name filter): `cargo test --release -p PKG --test BIN FILTER` in
-    # the mutant's tree; the mutant is caught when the test fails (adversarial tests that build
-    # their machines by hand, crates/sim/tests/adversarial.rs; claims checked against recorded
-    # GPU outputs, e.g. num's error bounds).
+    # the mutant's tree (BIN "lib": the crate's unit tests, `--lib`); the mutant is caught when
+    # the test fails (adversarial tests that build their machines by hand,
+    # crates/sim/tests/adversarial.rs; claims checked against recorded GPU outputs, e.g. num's
+    # error bounds).
     tests: list = field(default_factory=list)
-    # Python (directory, file pattern, -k selector): `python3 -m unittest discover -s DIR -p PAT
-    # -k SEL` in the mutant's tree (tooling outside the binary, e.g. fb/kernel_db's status
-    # rules); caught when a test that ran fails.
+    # Python (directory, file pattern, -k selector): `$PTXV_PYTHON -m unittest discover -s DIR
+    # -p PAT -k SEL` in the mutant's tree (tooling outside the binary, e.g. fb/kernel_db's
+    # status rules, the python package's readers; PTXV_PYTHON has the package's dependencies,
+    # default this interpreter); caught when a test that ran fails.
     py: list = field(default_factory=list)
 
 
@@ -352,6 +354,65 @@ MUTANTS += [
         "        discharges: &[],",
         [],
         [("ptxv-sim", "fixtures", "e_mbar_lww_proxy_war_contract")],
+    ),
+    # S-MBAR-SCOPE (exec.rs `tmem_block`): MMA / tcgen05.cp TMEM accesses ignore their issuer's
+    # SM-local happens-before again: the SASS leader's MMA after a PHASECHK with no CCTL.IVALL
+    # races with the peer's handed-back tcgen05.ld (e_tc_handback ACTA: clean on SASS).
+    SrcMutant(
+        "tmem-block-nolocal",
+        "crates/sim/src/exec.rs",
+        "        // (an MMA or tcgen05.cp: its issuer's at issue, `AsyncOp::sh`), as in `tmem_access`.\n        let aug;\n        let vc = match self.local_vc(actor, vc, None) {",
+        "        // (an MMA or tcgen05.cp: its issuer's at issue, `AsyncOp::sh`), as in `tmem_access`.\n        let aug;\n        let vc = match None::<VC> {",
+        [("e_tc_handback", "ACTA", "sass", [])],
+    ),
+    # MISS 111: the dealloc takes the thread's whole tcgen05 view again, un-waited tcgen05.ld /
+    # st included (e_dealloc_unwaited LDNW on PTX: no race between lane 0's own load and its
+    # dealloc; the other lanes' still race, MISS 105).
+    SrcMutant(
+        "dealloc-unwaited",
+        "crates/sim/src/exec.rs",
+        "                let mut vc = self.threads[t].vc.clone();\n                let tc = self.tc_released(t);",
+        "                let mut vc = self.threads[t].vc.clone();\n                let tc = self.threads[t].tc_vc.clone();",
+        [],
+        [("ptxv-sim", "fixtures", "e_dealloc_unwaited_races")],
+    ),
+    # MISS 116: the PTX front orders a thread's tcgen05.st after its own un-waited tcgen05.ld /
+    # tcgen05.st by their shared actor again (e_tmem_queue Q, QQ on PTX: clean).
+    SrcMutant(
+        "tmem-queue-ptx-off",
+        "crates/sim/src/exec.rs",
+        "            Some(_) if self.k.front == Front::Ptx && (n..2 * n).contains(&(actor as usize)) => {",
+        "            Some(_) if false && (n..2 * n).contains(&(actor as usize)) => {",
+        [("e_tmem_queue", "Q", "ptx", []), ("e_tmem_queue", "QQ", "ptx", [])],
+    ),
+    # MISS 121: the PTX front orders a thread's tcgen05.ld after its own un-waited tcgen05.st
+    # by their shared actor again (e_tmem_queue SL on PTX: contract only, no race).
+    SrcMutant(
+        "tmem-st-ld-ptx-off",
+        "crates/sim/src/exec.rs",
+        "            None if self.k.front == Front::Ptx && (n..2 * n).contains(&(actor as usize)) => {",
+        "            None if false && (n..2 * n).contains(&(actor as usize)) => {",
+        [("e_tmem_queue", "SL", "ptx", [])],
+    ),
+    # E-TMEM-QUEUE: a write examines only its first unordered access again; the store's own
+    # pending LDTM, sorted first, makes the finding a tmem-queue contract and hides the other
+    # warp's racing LDTM (e_queue_mask S0 on SASS: contract, no race).
+    SrcMutant(
+        "tmem-queue-first-only",
+        "crates/sim/src/exec.rs",
+        "        let racer = offenders.iter().find(|(o, _)| !queued(o)).copied();",
+        "        let racer = offenders.first().filter(|(o, _)| !queued(o)).copied();",
+        [("e_queue_mask", "S0", "sass", [])],
+    ),
+    # MISS 122: tmem_access reports only its first racer again; tc_fence_contract turns that
+    # one (ordered once the fences are implied) into a contract and the second racer is lost
+    # (e_rerun_drop_ptx XLOW on PTX: contract only).
+    SrcMutant(
+        "tmem-first-racer-only",
+        "crates/sim/src/exec.rs",
+        "            if !queued(&o) && !racers.iter().any(|x| x.0.pc == o.pc && x.1 == kind) {",
+        "            if !queued(&o) && racers.is_empty() {",
+        [("e_rerun_drop_ptx", "XLOW", "ptx", [])],
     ),
     # E-HW-SPLIT-UR at every level: the strict level drops the switches too (MISS 52's
     # refutation at the strict level must stand: a measured null result is a bound).
@@ -1113,6 +1174,1135 @@ MUTANTS += [
 ]
 
 
+# N-NUM-TRACK: `ptxv num` taints rounding results without a node whatever their operands
+# (num.rs `rounding_op`, `NumState::rounding_taint`) and makes no claim for a run whose control
+# flow or effects depend on input data (`Taint::control_pcs`); fixtures c_num_param_f32 and
+# c_num_branch_f32 (GB300 outputs), tests/num_untracked.rs.
+NUM_PARAM = (
+    "ptxv",
+    "num_untracked",
+    "parameter_and_tid_roundings_are_not_claimed_exact",
+)
+NUM_BRANCH = (
+    "ptxv",
+    "num_untracked",
+    "control_flow_on_a_rounded_value_is_not_analyzed",
+)
+NUM_GATHER = (
+    "ptxv",
+    "num_untracked",
+    "addresses_from_a_rounded_value_are_not_analyzed",
+)
+NUM_IDIOMS = ("ptxv", "num_untracked", "index_arithmetic_idioms_keep_their_claims")
+NUM_ATOMS = (
+    "ptxv",
+    "num_untracked",
+    "roundings_through_immediates_bit_operations_and_atomics_are_not_exact",
+)
+NUM_CTL = ("ptxv", "num_untracked", "control_from_rounded_values_is_refused")
+NUM_UDIV = ("ptxv", "num_untracked", "integer_division_idiom_keeps_its_claims")
+NUM_VOTE = ("ptxv", "num_untracked", "control_from_a_ballot_of_other_lanes_is_refused")
+ERRDIST_VOTE = ("ptxv", "errdist_guard", "ballot_decided_control_is_refused")
+EQUIV_VOTE = ("ptxv", "equiv", "ballot_decided_branch_blocks_the_proof")
+NUM_MATCH = (
+    "ptxv",
+    "num_untracked",
+    "control_from_a_match_of_another_lanes_rounded_value_is_refused",
+)
+NUM_NONFINITE = ("ptxv", "num_untracked", "nonfinite_errors_are_never_skipped")
+MUTANTS += [
+    # Rounding results of parameters, %tid and constants are exact constants again.
+    SrcMutant(
+        "num-round-taint",
+        "crates/cli/src/main.rs",
+        "        ns.rounding_taint = true;",
+        "        ns.rounding_taint = false;",
+        [],
+        [NUM_PARAM],
+    ),
+    # One `rounding_op` entry dropped: MUFU (ex2.approx of a parameter counts as exact).
+    SrcMutant(
+        "num-round-mufu",
+        "crates/sim/src/num.rs",
+        "        if ns.rounding_taint && rounding_op(&inst.op) && !const_mat {",
+        "        if ns.rounding_taint && rounding_op(&inst.op) && !const_mat && !matches!(inst.op, Op::Mufu { .. }) {",
+        [],
+        [NUM_PARAM],
+    ),
+    # The refusal never fires: num follows this run's path again.
+    SrcMutant(
+        "num-control-off",
+        "crates/cli/src/main.rs",
+        "            .or(control);",
+        "            .or(control.filter(|_| false));",
+        [],
+        [NUM_BRANCH],
+    ),
+    # A guarded branch, exit or store is not recorded (only a data-dependent operand is).
+    SrcMutant(
+        "num-control-guard",
+        "crates/sim/src/num.rs",
+        "                    if effect_op(&inst.op) && input_guard {",
+        "                    if false && effect_op(&inst.op) && input_guard {",
+        [],
+        [NUM_BRANCH],
+    ),
+    # Only a control transfer's target counts again: a load, store or shuffle at an address
+    # or lane computed from input data keeps its claims.
+    SrcMutant(
+        "num-control-addr",
+        "crates/sim/src/num.rs",
+        "            // or access other elements.\n            if active",
+        "            // or access other elements.\n"
+        "            if matches!(inst.op, Op::Bra { .. } | Op::Brx { .. } | Op::Ret { .. }) && active",
+        [],
+        [NUM_GATHER],
+    ),
+    # Precision: a SASS constant materialization (HFMA2 R, -RZ, RZ, hi, lo) is a rounding again
+    # (c_num_index_f32's loop counter starts at one and is summed as f32(i): 128 untracked).
+    SrcMutant(
+        "num-const-mat-off",
+        "crates/sim/src/num.rs",
+        "        let const_mat = self.k.front == Front::Sass",
+        "        let const_mat = false && self.k.front == Front::Sass",
+        [],
+        [NUM_IDIOMS],
+    ),
+    # Precision: an exact integer to f32 conversion (|result| < 2^24) is tainted too, and the
+    # sums x + f32(%tid) lose their claims (a false refusal).
+    SrcMutant(
+        "num-i2f-exact",
+        "crates/sim/src/num.rs",
+        "                if self.num.as_ref().is_some_and(|n| n.rounding_taint) =>",
+        "                if false && self.num.as_ref().is_some_and(|n| n.rounding_taint) =>",
+        [],
+        [NUM_PARAM],
+    ),
+    # The all-immediate exemption spares every SASS instruction whose operands are immediates
+    # again, not only the HFMA2 constant materialization: MUFU.TANH of an immediate counts as an
+    # exact constant (c_num_mufu_imm_f32: tanh(0.1f) claimed exact, 44 ulp off on GB300).
+    SrcMutant(
+        "num-const-mat-any",
+        "crates/sim/src/num.rs",
+        "            && matches!(&self.k.code[pc as usize].op, Op::Hfma2 { a, b, .. }\n"
+        "                if matches!(a, Val::Imm(0)) || matches!(b, Val::Imm(0)))\n",
+        "            && true\n",
+        [],
+        [NUM_ATOMS],
+    ),
+    # The value a float atomic add returns is not tainted again (c_num_atom_old_f32: the rounded
+    # partial sums taken as exact constants).
+    SrcMutant(
+        "num-atom-old",
+        "crates/sim/src/num.rs",
+        "                    op: AtomOp::FAddFtz | AtomOp::FAdd64 | AtomOp::AddBf16x2 | AtomOp::AddBf16,",
+        "                    op: AtomOp::Exch,",
+        [],
+        [NUM_ATOMS],
+    ),
+    # N-NUM-TRACK: a value computed outside the DAG from a node holding a rounding is not tainted
+    # again: control decided by an FADD of parameters, a float loop counter or an atomic sum is
+    # followed (c_num_ctl_branch_f32, c_num_ctl_loop_f32, c_num_ctl_atom_f32 claim).
+    SrcMutant(
+        "num-rounded-off",
+        "crates/sim/src/num.rs",
+        "            let cur = std::mem::take(&mut tn.cur_rounded);",
+        "            let cur: Vec<usize> = std::mem::take(&mut tn.cur_rounded).into_iter().take(0).collect();",
+        [],
+        [NUM_CTL],
+    ),
+    # N-NUM-UDIV: a division's quotient is exact even when its operands are input data: the
+    # load address of c_num_udiv_data_f32 (idx[t] / 7) counts as input-independent.
+    SrcMutant(
+        "num-udiv-taint",
+        "crates/sim/src/num.rs",
+        "                            (Some(&(d, false)), Some(&(n, false))) if d != 0 => {",
+        "                            (Some(&(d, _)), Some(&(n, _))) if d != 0 => {",
+        [],
+        [NUM_UDIV],
+    ),
+    # Precision: no division idiom is matched; the u32 / s32 quotients deciding addresses and
+    # guards refuse c_num_index_f32 and c_num_udiv_f32 (SASS front).
+    SrcMutant(
+        "num-udiv-off",
+        "crates/sim/src/num.rs",
+        "    for (i0, ins0) in code.iter().enumerate() {",
+        "    for (i0, ins0) in code.iter().enumerate().take(0) {",
+        [],
+        [NUM_UDIV, NUM_IDIOMS],
+    ),
+    # MISS 65 (N-EQUIV): a ballot, vote or match result carries only its own lane's operand
+    # taint again: a branch on a ballot of other lanes' input data looks input-independent
+    # (c_num_vote_f32 claimed; errdist and equiv report from the captured path).
+    SrcMutant(
+        "num-vote-lanes",
+        "crates/sim/src/num.rs",
+        "                Op::Redux { .. } | Op::VoteAny { .. } | Op::VoteAll { .. } | Op::MatchAny { .. }\n"
+        "            ) {",
+        "                Op::Redux { .. }\n            ) {",
+        [],
+        [NUM_VOTE, ERRDIST_VOTE, EQUIV_VOTE],
+    ),
+    # MISS 63 (N-NUM-NONFINITE): a non-finite element's error is the f64 expansion difference
+    # again (NaN for an overflow or a NaN output, skipped by max_err).
+    SrcMutant(
+        "num-nonfinite-off",
+        "crates/sim/src/num.rs",
+        "        let finite = hw64.is_finite() && exact_v.is_finite();",
+        "        let finite = true;",
+        [],
+        [NUM_NONFINITE],
+    ),
+    # An identical non-finite value counts as error 0 even where a value in the tree overflowed
+    # (the overflowed x + y plus -inf: hw NaN, expansion NaN, exact value -inf).
+    SrcMutant(
+        "num-nonfinite-trust-off",
+        "crates/sim/src/num.rs",
+        "            let trusted = !rnodes.iter().any(|&n| self.nonfinite_inside(n));",
+        "            let trusted = true;",
+        [],
+        [NUM_NONFINITE],
+    ),
+    # Precision: copies of inf / NaN are not analyzed.
+    SrcMutant(
+        "num-nonfinite-ident-off",
+        "crates/sim/src/num.rs",
+        "            if trusted && identical {",
+        "            if false && trusted && identical {",
+        [],
+        [NUM_NONFINITE],
+    ),
+    # MISS 67 (N-MULTIMEM-ROUND16): the one-ulp tolerance is the plain bit-difference test
+    # again: an infinity against the largest finite value, or a NaN against an infinity, is
+    # "within one ulp" (fixtures/r1h_nvls_inf, expected/ constructed).
+    SrcMutant(
+        "ulp-tol-nonfinite",
+        "crates/case/src/lib.rs",
+        "    if nonfinite(a) || nonfinite(b) {\n",
+        "    if false && (nonfinite(a) || nonfinite(b)) {\n",
+        [],
+        [("ptxv", "nonfinite", "one_ulp_tolerance_never_crosses_an_infinity")],
+    ),
+    # MISS 95 (N-NUM-TRACK): a match, vote or reduction gives each lane only its own operand's
+    # rounding again: a branch on a match of another lane's rounded value looks exact
+    # (c_num_match_f32 claimed on the SASS front).
+    SrcMutant(
+        "num-xlane-rounded",
+        "crates/sim/src/num.rs",
+        "        if xlane {\n            cur = active.to_vec();\n",
+        "        if false && xlane {\n            cur = active.to_vec();\n",
+        [],
+        [NUM_MATCH],
+    ),
+]
+
+
+# Time and memory budgets (membudget.rs): what a deadline or the memory budget must stop.
+MUTANTS += [
+    # explore.rs `seed_walk`: the seed walks ignore the budgets again (they ran to their end
+    # past a deadline; no note, the verdict marked incomplete only by the search after them).
+    SrcMutant(
+        "seed-deadline",
+        "crates/sim/src/explore.rs",
+        "        if budget && over_budget() {",
+        "        if false {",
+        [],
+        [("ptxv-sim", "seed_deadline", "seed_walks_stop_at_the_deadline")],
+    ),
+    # main.rs `cmd_check`: --no-gb300 / PTXV_GB300=0 no longer stop the GB300-profile re-run
+    # (two_level is reported again, beside two_level_skipped).
+    SrcMutant(
+        "nogb300-rerun",
+        "crates/cli/src/main.rs",
+        "            if let Some(p) = profile.filter(|_| wanted2 && gb300 && !spent) {",
+        "            if let Some(p) = profile.filter(|_| wanted2 && !spent) {",
+        [],
+        [("ptxv", "two_level_gate", "no_gb300_skips_the_profile_rerun")],
+    ),
+    # fb/kernel_db/run.py `parse_check`: a check run without the two-level verdict
+    # (--no-gb300 / PTXV_GB300=0) is read as if the verdict were missing for other reasons
+    # (a two-level verdict from a run with the GB300 checks off makes contract findings
+    # contract_only again).
+    SrcMutant(
+        "kdb-nogb300",
+        "fb/kernel_db/run.py",
+        "    if gb300_off or skipped:",
+        "    if False:",
+        [],
+        py=[
+            ("fb/kernel_db", "test_run_collect.py", "NoGb300"),
+            ("fb/kernel_db", "test_run_collect.py", "test_no_gb300_task_needs_triage"),
+        ],
+    ),
+    # membudget.rs `time_budget_spent`: the whole check's time budget (--time-budget) never
+    # counts as spent (certificates hold past it, the GB300-profile re-run starts after it).
+    SrcMutant(
+        "budget-spent",
+        "crates/sim/src/membudget.rs",
+        "pub fn time_budget_spent() -> bool {\n    let t = TOTAL_MS.load(Ordering::Relaxed);",
+        "pub fn time_budget_spent() -> bool {\n    let t = 0u64;",
+        [],
+        [
+            ("ptxv-sim", "seed_deadline", "certificates_stop_at_the_time_budget"),
+            ("ptxv", "time_budget", "spent_budget_cuts_every_phase"),
+        ],
+    ),
+    # wellsync.rs `run_logged`: the certificate's run no longer stops at the time budget (it
+    # runs to its end; `certify_inner` still refuses the certificate).
+    SrcMutant(
+        "budget-cert-run",
+        "crates/sim/src/wellsync.rs",
+        "    while let Some(a) = sched.pick(&m) {\n        if crate::membudget::time_budget_spent() {",
+        "    while let Some(a) = sched.pick(&m) {\n        if false {",
+        [],
+        [("ptxv-sim", "seed_deadline", "certificates_stop_at_the_time_budget")],
+    ),
+    # main.rs `cmd_check`: the GB300-profile re-run starts after the time budget is spent
+    # (no `two_level_skipped`).
+    SrcMutant(
+        "budget-rerun",
+        "crates/cli/src/main.rs",
+        "            let spent = ptxv_sim::membudget::time_budget_spent() && level2.is_none();",
+        "            let spent = false && level2.is_none();",
+        [],
+        [("ptxv", "time_budget", "spent_budget_cuts_every_phase")],
+    ),
+    # case/src/lib.rs `expect_compare_tol`: an output within one ulp of the captured GPU output
+    # is reported as a bitwise match in `gpu_compare` (the report line is unchanged).
+    SrcMutant(
+        "gpu-within-ulp",
+        "crates/case/src/lib.rs",
+        "                res.push((o.clone(), GpuMatch::WithinUlp, true));",
+        "                res.push((o.clone(), GpuMatch::Bitwise, true));",
+        [],
+        [("ptxv", "gpu_compare", "gpu_compare_states_each_comparison")],
+    ),
+    # fb/kernel_db/run.py `gpu_match`: within one ulp counts as matching the GPU output again
+    # (a clean verdict on it becomes a clean record).
+    SrcMutant(
+        "kdb-within-ulp",
+        "fb/kernel_db/run.py",
+        '    if all(r == "bitwise" for r in res):',
+        '    if all(r in ("bitwise", "within_ulp") for r in res):',
+        [],
+        py=[("fb/kernel_db", "test_run_collect.py", "GpuCompare")],
+    ),
+    # main.rs `out_dir`: without --out, every run of a case materializes its variants in the
+    # case's shared default directory again (no per-invocation `run_dir`).
+    SrcMutant(
+        "outdir-shared",
+        "crates/cli/src/main.rs",
+        '            run_dir(&default_out(&root.join("out"), case)?)?',
+        '            default_out(&root.join("out"), case)?',
+        [],
+        [
+            (
+                "ptxv",
+                "outdir_race",
+                "another_runs_copy_in_the_shared_directory_is_not_read",
+            )
+        ],
+    ),
+    # main.rs `time_budget_of`: a time budget in multi-node mode (PTXV_DIST_DIR, more than one
+    # rank) is accepted again (every rank cuts its own phases; rank 0 waits for the others).
+    SrcMutant(
+        "budget-multinode",
+        "crates/cli/src/main.rs",
+        "        anyhow::ensure!(\n            !multi_node(),",
+        "        anyhow::ensure!(\n            true,",
+        [],
+        [("ptxv", "time_budget", "multi_node_refuses_the_time_budget")],
+    ),
+    # explore.rs `explore_one_models`: a plain-model rerun cut short replaces what the search
+    # with the model reductions found again (`keep_found` not applied).
+    SrcMutant(
+        "rerun-cut-drops",
+        "crates/sim/src/explore.rs",
+        "        if !w.complete {\n            keep_found(&mut w,",
+        "        if false {\n            keep_found(&mut w,",
+        [],
+        [("ptxv-sim", "lib", "a_cut_rerun_keeps_what_the_first_search_found")],
+    ),
+    # python/ptxv/results.py `Verdict.gpu_state`: an output within one ulp of the captured GPU
+    # output counts as bitwise equal again (`sim_equals_gpu` True on it).
+    SrcMutant(
+        "py-within-ulp",
+        "python/ptxv/results.py",
+        '        if all(r == "bitwise" for r in res):\n            return "bitwise"',
+        '        if all(r in ("bitwise", "within_ulp") for r in res):\n            return "bitwise"',
+        [],
+        py=[("python/tests", "test_results.py", "GpuCompare")],
+    ),
+    # python/ptxv/results.py `Verdict.gpu_state`, outputs without `gpu_compare`: any line naming
+    # "bitwise equal" matches again (the within-one-ulp line ends "the rest bitwise equal").
+    SrcMutant(
+        "py-bitwise-substring",
+        "python/ptxv/results.py",
+        "                if _BITWISE_LINE.match(s)\n",
+        '                if "bitwise equal" in s\n',
+        [],
+        py=[("python/tests", "test_results.py", "GpuCompare")],
+    ),
+    # python/ptxv/results.py `Verdict.from_json`: an incomplete verdict listing E-WELLSYNC is
+    # certified again.
+    SrcMutant(
+        "py-certified-partial",
+        "python/ptxv/results.py",
+        'certified="E-WELLSYNC" in v.get("assumptions", []) and v.get("complete") is True,',
+        'certified="E-WELLSYNC" in v.get("assumptions", []),',
+        [],
+        py=[("python/tests", "test_results.py", "Certified")],
+    ),
+    # fb/kernel_db/run.py `parse_check`: an incomplete verdict listing E-WELLSYNC is stored as
+    # certified again.
+    SrcMutant(
+        "kdb-certified-parse",
+        "fb/kernel_db/run.py",
+        '        "E-WELLSYNC" in v.get("assumptions", []) and v.get("complete") is True\n',
+        '        "E-WELLSYNC" in v.get("assumptions", [])\n',
+        [],
+        py=[("fb/kernel_db", "test_run_collect.py", "CertifiedComplete")],
+    ),
+    # fb/kernel_db/run.py `certified`: a stored check's flag counts without a complete verdict
+    # again (errdist eligibility of records stored before `parse_check` required it).
+    SrcMutant(
+        "kdb-certified-stored",
+        "fb/kernel_db/run.py",
+        '    return bool(chk.get("certified")) and chk.get("complete") is True',
+        '    return bool(chk.get("certified"))',
+        [],
+        py=[("fb/kernel_db", "test_run_collect.py", "CertifiedComplete")],
+    ),
+    # fb/kernel_db/ptx_front.py `verdict`: a stored check's flag makes the record "certified"
+    # without a complete verdict again.
+    SrcMutant(
+        "kdb-certified-ptx",
+        "fb/kernel_db/ptx_front.py",
+        '        return "certified" if run_certified(ch) else "clean"',
+        '        return "certified" if ch.get("certified") else "clean"',
+        [],
+        py=[("fb/kernel_db", "test_run_collect.py", "CertifiedComplete")],
+    ),
+    # fb/kernel_db/run.py `two_level_gap`: the GB300-profile level's certified / clean counts
+    # without a complete verdict again.
+    SrcMutant(
+        "kdb-certified-gb300",
+        "fb/kernel_db/run.py",
+        '    if tl.get("sass_complete") is not True:',
+        "    if False:",
+        [],
+        py=[("fb/kernel_db", "test_run_collect.py", "CertifiedComplete")],
+    ),
+    # main.rs `certified`: E-WELLSYNC among the assumptions certifies an incomplete verdict again
+    # (`two_level.sass_certified`, `mutated_inputs[].certified`, the report's "incomplete").
+    SrcMutant(
+        "certified-partial",
+        "crates/cli/src/main.rs",
+        '    v.complete && v.assumptions.iter().any(|a| a == "E-WELLSYNC")',
+        '    v.assumptions.iter().any(|a| a == "E-WELLSYNC")',
+        [],
+        [
+            (
+                "ptxv",
+                "certified_complete",
+                "an_incomplete_verdict_listing_e_wellsync_is_not_certified",
+            )
+        ],
+    ),
+    # main.rs `run` (check): an unknown hardware profile name is accepted again (the
+    # GB300-profile re-run silently off).
+    SrcMutant(
+        "hwprofile-unknown",
+        "crates/cli/src/main.rs",
+        '                profile.is_some() || name == "none",',
+        "                true,",
+        [],
+        [("ptxv", "two_level_gate", "unknown_hw_profiles_are_refused")],
+    ),
+    # main.rs `cmd_check`: --hw-profile none turns the re-run off without `two_level_skipped`
+    # again.
+    SrcMutant(
+        "hwprofile-none-silent",
+        "crates/cli/src/main.rs",
+        "            let wanted2 = ptxv_sim::hwprofile::wanted(&verdict);",
+        "            let wanted2 = profile.is_some() && ptxv_sim::hwprofile::wanted(&verdict);",
+        [],
+        [("ptxv", "two_level_gate", "hw_profile_none_says_the_rerun_was_skipped")],
+    ),
+    # fb/kernel_db/run.py `gb300_disabled`: a hardware profile other than gb300 no longer
+    # counts as turning the re-run off.
+    SrcMutant(
+        "kdb-hwprofile",
+        "fb/kernel_db/run.py",
+        '    if profile in (None, "--hw-profile gb300", "PTXV_HW_PROFILE=gb300"):',
+        "    if True:",
+        [],
+        py=[("fb/kernel_db", "test_run_collect.py", "test_hw_profile")],
+    ),
+]
+
+
+# MISS 56: the address / control check covers every member that executes an instruction on
+# some input (num.rs `may_execute`), so a guarded store whose address depends on input data
+# is not a selection (N-ERRDIST-SEL) at the captured address (fixtures/errdist/miss56).
+MUTANTS += [
+    # The members whose guard holds on the captured run only (the miss).
+    SrcMutant(
+        "sel-addr-active",
+        "crates/sim/src/num.rs",
+        "            && may_exec\n                .iter()\n                .any(|&t| ctl.iter().any(|&r| tn.reg_t(t, r)))",
+        "            && active\n                .iter()\n                .any(|&t| ctl.iter().any(|&r| tn.reg_t(t, r)))",
+        [],
+        [("ptxv", "errdist_guard", "selection_at_an_input_address_is_refused")],
+    ),
+    # Every member, also those whose guard is false and input-independent (they execute it
+    # on no input): a false refusal.
+    SrcMutant(
+        "sel-addr-all",
+        "crates/sim/src/num.rs",
+        "            .filter(|t| active.contains(t) || g.is_some_and(|g| ns.taint.reg_t(*t, g)))",
+        "            .filter(|t| active.contains(t) || g.is_some_and(|g| ns.taint.reg_t(*t, g)) || true)",
+        [],
+        [("ptxv", "errdist_guard", "input_independent_guard_keeps_its_addresses")],
+    ),
+]
+
+
+# MISS 58: the GPU validation refuses a DAG that GB300 contradicts, except at outputs fed by
+# fp32 atomic adds (errdist/validate.rs `gpu_dag_refusal`, errdist/chain.rs `atomic_fed`;
+# crates/sim/tests/errdist_gpu_gate.rs). The CLI's call (errdist.rs `refuse_gpu_mismatch`)
+# needs a GPU; its recorded runs are in the fix's report.
+MUTANTS += [
+    # A GPU mismatch never refuses (the miss).
+    SrcMutant(
+        "gpu-refuse-off",
+        "crates/sim/src/errdist/validate.rs",
+        "    (exact > 0).then(|| {",
+        "    (exact > 0 && false).then(|| {",
+        [],
+        [("ptxv-sim", "errdist_gpu_gate", "gpu_mismatch_refuses")],
+    ),
+    # Atomic-fed outputs refuse too: GB300's order of the adds becomes a false refusal.
+    SrcMutant(
+        "gpu-refuse-atomic",
+        "crates/sim/src/errdist/validate.rs",
+        "    let exact = mismatch.saturating_sub(atomic);\n    (exact > 0).then(|| {",
+        "    let exact = mismatch;\n    (exact > 0).then(|| {",
+        [],
+        [("ptxv-sim", "errdist_gpu_gate", "atomic_order_mismatch_is_not_a_refusal")],
+    ),
+    # Only the atomic add itself is atomic-fed, not the ops above it.
+    SrcMutant(
+        "gpu-fed-off",
+        "crates/sim/src/errdist/chain.rs",
+        "                fed[i] = fed[i] || op_args(op).iter().any(|&k| fed[k as usize]);",
+        "                fed[i] = fed[i] || op_args(op).is_empty();",
+        [],
+        [("ptxv-sim", "errdist_gpu_gate", "atomic_fed_follows_the_dag")],
+    ),
+]
+
+
+# MISS 58 follow-up (MISS 42's rule for Tier 3): a simulator or GPU validation refuses Tier 3 on
+# the analytic tiers' criteria, a bitwise mismatch outside atomic-fed outputs or a contradicted
+# P(differ) (validate.rs `tier3_refusal`), and the headline never takes a refused estimate in
+# any tier (errdist.rs `headline`); with nothing standing the run refuses
+# (fixtures/errdist/miss58/rare).
+MUTANTS += [
+    # The headline's Tier 3 arm takes Tier 3 refused or not (the regression).
+    SrcMutant(
+        "t3-headline-any",
+        "crates/cli/src/errdist.rs",
+        "        .or_else(|| es.iter().position(|e| e.tier == 3 && stands(e)))",
+        "        .or_else(|| es.iter().position(|e| e.tier == 3))",
+        [],
+        [
+            (
+                "ptxv",
+                "errdist_guard",
+                "tier3_contradicted_by_a_validation_is_no_headline",
+            )
+        ],
+    ),
+    # No validation refuses Tier 3 on its P(differ).
+    SrcMutant(
+        "t3-refusal-off",
+        "crates/sim/src/errdist/validate.rs",
+        "    if !p_differ_agrees(pred, obs) {\n        let (lo, hi)",
+        "    if false && !p_differ_agrees(pred, obs) {\n        let (lo, hi)",
+        [],
+        [
+            (
+                "ptxv-sim",
+                "errdist_gpu_gate",
+                "validation_refuses_tier3_on_p_differ_or_bits",
+            ),
+            (
+                "ptxv",
+                "errdist_guard",
+                "tier3_contradicted_by_a_validation_is_no_headline",
+            ),
+        ],
+    ),
+    # Atomic-fed mismatches refuse Tier 3: GB300's order of the adds becomes a false refusal.
+    SrcMutant(
+        "t3-refusal-atomic",
+        "crates/sim/src/errdist/validate.rs",
+        "    let exact = mismatch.saturating_sub(atomic);\n    if exact > 0 {",
+        "    let exact = mismatch;\n    if exact > 0 {",
+        [],
+        [
+            (
+                "ptxv-sim",
+                "errdist_gpu_gate",
+                "validation_refuses_tier3_on_p_differ_or_bits",
+            )
+        ],
+    ),
+]
+
+
+# MISS 57: an identified slice function is the exact reference only on the outcome patterns of
+# the slice's data-dependent decisions that its probes took (ident.rs `Outcomes`, seg.rs
+# `SProg::decisions`, real.rs `eval_table`); outputs elsewhere are unknown: Tier 3 leaves them
+# out and refuses past 10% of P(differ) (errdist.rs `unknown_exact_gate`), every estimate
+# widens by the share's bound (fixtures/errdist/miss57).
+MUTANTS += [
+    # No outcome patterns recorded: the fit stands for every outcome (the miss).
+    SrcMutant(
+        "ident-outcomes-off",
+        "crates/sim/src/errdist/nonlin/ident.rs",
+        "                prog.decision_count(),\n                taken.get(k)",
+        "                0,\n                taken.get(k)",
+        [],
+        [("ptxv", "errdist_guard", "slice_off_its_probed_guard_outcome_is_refused")],
+    ),
+    # Guards only: a select's (or carry's) predicate is no decision.
+    SrcMutant(
+        "ident-select-blind",
+        "crates/sim/src/seg.rs",
+        "                        if matches!(r.file, File::P | File::UP) && !matches!(v, SVal::Const(_)) {",
+        "                        if false && matches!(r.file, File::P | File::UP) && !matches!(v, SVal::Const(_)) {",
+        [],
+        [
+            (
+                "ptxv",
+                "errdist_guard",
+                "select_or_maximum_off_its_probed_outcome_is_refused",
+            )
+        ],
+    ),
+    # Tier 3 never refuses: the unknown share only widens the interval.
+    SrcMutant(
+        "ident-gate-off",
+        "crates/cli/src/errdist.rs",
+        "    if k > 0 && (obs.compared == 0 || u > EST_MAX_REL * p) {",
+        "    if false && k > 0 && (obs.compared == 0 || u > EST_MAX_REL * p) {",
+        [],
+        [("ptxv", "errdist_guard", "slice_off_its_probed_guard_outcome_is_refused")],
+    ),
+    # A maximum of an unknown and a known value passes on the known one.
+    SrcMutant(
+        "ident-max-blind",
+        "crates/sim/src/errdist/nonlin/real.rs",
+        "            _ => super::super::chain::op_args(op)",
+        "            Op::Nl(NlOp::Max { .. }) => false,\n            _ => super::super::chain::op_args(op)",
+        [],
+        [
+            (
+                "ptxv",
+                "errdist_guard",
+                "select_or_maximum_off_its_probed_outcome_is_refused",
+            )
+        ],
+    ),
+    # The elementwise law takes the fit on every element value.
+    SrcMutant(
+        "ident-elem-off",
+        "crates/sim/src/errdist/nonlin/enumerate.rs",
+        "        if real.outside[root] {",
+        "        if false && real.outside[root] {",
+        [],
+        [("ptxv", "errdist_guard", "elementwise_law_leaves_out_the_unknown_mass")],
+    ),
+    # The analytic tiers take the bound only when some Tier 3 input fell outside.
+    SrcMutant(
+        "ident-analytic-k0",
+        "crates/cli/src/errdist.rs",
+        "    if let Some(u) = unknown {\n        for e in rep",
+        "    if let (Some(u), true) = (unknown, obs.ident_off_inputs > 0) {\n        for e in rep",
+        [],
+        [
+            (
+                "ptxv",
+                "errdist_guard",
+                "analytic_tiers_take_the_unknown_bound_at_zero_inputs_off",
+            )
+        ],
+    ),
+]
+
+
+# Review misses of the MISS 56-58 fixes (2026-11-11), each a check of its own.
+# The store word of a selection (MISS 56 class): a thread that did not execute a store under
+# a data-dependent guard taints its words (num.rs `num_gst_post`; fixtures/errdist/storeword).
+MUTANTS += [
+    # The words keep the taint of the captured run (the miss).
+    SrcMutant(
+        "sel-word-taint-off",
+        "crates/sim/src/num.rs",
+        "        if !executed {\n            let ns = self.num.as_mut().unwrap();\n            for &(sp, al, off) in &g.keys {",
+        "        if false && !executed {\n            let ns = self.num.as_mut().unwrap();\n            for &(sp, al, off) in &g.keys {",
+        [],
+        [
+            (
+                "ptxv",
+                "errdist_guard",
+                "selection_store_word_read_by_another_thread_is_refused",
+            )
+        ],
+    ),
+]
+
+# fp32 atomic adds (MISS 58 class): the DAG flushes as red/atom.add.f32 does (chain.rs
+# `NodeKind::AtomAdd` lowering; fixtures/errdist/atomftz), and a GB300 mismatch is exempt only
+# where another order of an atomic location's chain explains it (chain.rs `AtomChain`).
+MUTANTS += [
+    # The atomic add without its flush (the miss).
+    SrcMutant(
+        "atom-ftz-off",
+        "crates/sim/src/errdist/chain.rs",
+        "                    rz: false,\n                    ftz: *ftz,\n                },",
+        "                    rz: false,\n                    ftz: false && *ftz,\n                },",
+        [],
+        [("ptxv", "errdist_guard", "fp32_atomic_adds_flush_subnormal_operands")],
+    ),
+    # One thread's adds count as a free order.
+    SrcMutant(
+        "atom-sources-off",
+        "crates/sim/src/errdist/chain.rs",
+        "        if self.sources < 2 || !dag.is_finite() || !gpu.is_finite() {",
+        "        if !dag.is_finite() || !gpu.is_finite() {",
+        [],
+        [
+            (
+                "ptxv-sim",
+                "errdist_gpu_gate",
+                "atomic_order_explains_only_a_free_order_within_its_bound",
+            )
+        ],
+    ),
+    # Two operands from zero count as a free order.
+    SrcMutant(
+        "atom-operands-off",
+        "crates/sim/src/errdist/chain.rs",
+        "        if k + usize::from(init != 0.0) < 3 {",
+        "        if false && k + usize::from(init != 0.0) < 3 {",
+        [],
+        [
+            (
+                "ptxv-sim",
+                "errdist_gpu_gate",
+                "atomic_order_explains_only_a_free_order_within_its_bound",
+            )
+        ],
+    ),
+    # Any value is some order's.
+    SrcMutant(
+        "atom-bound-off",
+        "crates/sim/src/errdist/chain.rs",
+        "        (gpu as f64 - dag as f64).abs() <= bound",
+        "        bound >= 0.0",
+        [],
+        [
+            (
+                "ptxv-sim",
+                "errdist_gpu_gate",
+                "atomic_order_explains_only_a_free_order_within_its_bound",
+            )
+        ],
+    ),
+    # With explained atomic mismatches the moments still raise no refusal.
+    SrcMutant(
+        "t3-moments-off",
+        "crates/sim/src/errdist/validate.rs",
+        "    if atomic > 0 && !moments_agree(pred, obs) {",
+        "    if false && atomic > 0 && !moments_agree(pred, obs) {",
+        [],
+        [("ptxv-sim", "errdist_gpu_gate", "moments_count_where_atomic_order_differs")],
+    ),
+    # The captured-output check skipped for any kernel with atomic adds again.
+    SrcMutant(
+        "atom-capture-skip",
+        "crates/cli/src/errdist.rs",
+        "    let skip_all = fed.iter().any(|&f| f) && run.captured_out.is_some();",
+        "    let skip_all = fed.iter().any(|&f| f);",
+        [],
+        [
+            (
+                "ptxv",
+                "errdist_guard",
+                "captured_atomic_outputs_outside_any_order_are_refused",
+            )
+        ],
+    ),
+]
+
+# Value pieces inside a slice (MISS 57 class): a clamp, a minimum / maximum, a sign are
+# decisions (seg.rs `inst_pieces`; fixtures/errdist/clamp).
+MUTANTS += [
+    # No value piece is a decision (the miss).
+    SrcMutant(
+        "pieces-off",
+        "crates/sim/src/seg.rs",
+        "                    inst_pieces(op, *dst, &rv, &rp, &data, f);",
+        "                    let _ = (op, dst, &rv, &rp, &data);",
+        [],
+        [("ptxv", "errdist_guard", "clamps_inside_a_slice_are_decisions")],
+    ),
+    # `.SAT` alone is no decision.
+    SrcMutant(
+        "pieces-sat-off",
+        "crates/sim/src/seg.rs",
+        "        f(low);\n        f(!low && r > 0x3f80_0000);",
+        "        f(false && low);\n        f(false);",
+        [],
+        [("ptxv", "errdist_guard", "clamps_inside_a_slice_are_decisions")],
+    ),
+    # A minimum / maximum's pick alone is no decision.
+    SrcMutant(
+        "pieces-minmax-off",
+        "crates/sim/src/seg.rs",
+        "        r == if ftz { fp::f32_ftz(x) } else { x } && !fp::f32_is_nan(r)",
+        "        false && r == if ftz { fp::f32_ftz(x) } else { x } && !fp::f32_is_nan(r)",
+        [],
+        [("ptxv", "errdist_guard", "clamps_inside_a_slice_are_decisions")],
+    ),
+]
+
+# MISS 57 at 0 Tier 3 inputs outside: Tier 3 widens by the share's bound as well (errdist.rs;
+# fixtures/errdist/k0).
+MUTANTS += [
+    SrcMutant(
+        "t3-widen-k0-off",
+        "crates/cli/src/errdist.rs",
+        "    if let Some(u) = unknown {\n        widen_unknown(&mut est, u);\n    }",
+        "    if let (Some(u), true) = (unknown, obs.ident_off_inputs > 0) {\n        widen_unknown(&mut est, u);\n    }",
+        [],
+        [("ptxv", "errdist_guard", "tier3_takes_the_unknown_bound_at_zero_inputs_off")],
+    ),
+]
+
+# --pre-round skips only what it changes (errdist.rs `pre_changed`; fixtures/errdist/miss58/rare).
+MUTANTS += [
+    SrcMutant(
+        "preround-bypass",
+        "crates/cli/src/errdist.rs",
+        "    if let (false, Some(claim)) = (pre_changed, t3_claim) {",
+        "    if let (false, Some(claim)) = (a.pre_round, t3_claim) {",
+        [],
+        [
+            (
+                "ptxv",
+                "errdist_guard",
+                "pre_round_keeps_the_refusals_where_it_changes_nothing",
+            )
+        ],
+    ),
+]
+
+# A run's inputs bound P(differ) exactly against a claimed interval (validate.rs
+# `p_contradicts`): a discrepancy confined to 10 or fewer inputs passes the batch-means test.
+MUTANTS += [
+    SrcMutant(
+        "p-exact-off",
+        "crates/sim/src/errdist/validate.rs",
+        "    (claim.1 < lo || claim.0 > hi).then_some((lo, hi))",
+        "    (false && (claim.1 < lo || claim.0 > hi)).then_some((lo, hi))",
+        [],
+        [("ptxv-sim", "errdist_gpu_gate", "few_inputs_contradict_a_claimed_interval")],
+    ),
+]
+
+# A pair's elementwise law counts P(differ) where the exact value is unknown (enumerate.rs;
+# MISS 85 follow-up): the unknown mass left out again refuses the gelu pair's exact Tier 0.
+MUTANTS += [
+    SrcMutant(
+        "pair-elem-unknown-off",
+        "crates/sim/src/errdist/nonlin/enumerate.rs",
+        "                        pair_out += p;\n                        pair_p2 += p * p;",
+        "                        outside += p;\n                        pair_p2 += 0.0 * p;",
+        [],
+        [
+            (
+                "ptxv",
+                "errdist_guard",
+                "pair_elementwise_law_counts_codes_with_an_unknown_exact_value",
+            )
+        ],
+    ),
+]
+
+
+# MISS 84 follow-up: another order of an atomic chain's adds excuses a GB300 value only where
+# the bound stands (k u < 1/2) and the run's happens-before leaves two adds unordered
+# (num.rs `note_atom_order`, chain.rs `AtomChain::free`; fixtures/errdist/atomord).
+MUTANTS += [
+    # A vacuous bound excuses any value again.
+    SrcMutant(
+        "atom-vacuous-excuses",
+        "crates/sim/src/errdist/chain.rs",
+        "            // (until the MISS 84 follow-up, any value was).\n            return false;",
+        "            // (until the MISS 84 follow-up, any value was).\n            return true;",
+        [],
+        [
+            (
+                "ptxv-sim",
+                "errdist_gpu_gate",
+                "atomic_order_explains_nothing_past_a_vacuous_bound",
+            )
+        ],
+    ),
+    # The chain's freedom ignored: barrier-ordered adds are excused again.
+    SrcMutant(
+        "atom-free-off",
+        "crates/sim/src/errdist/chain.rs",
+        "        if self.sources < 2 || !self.free || !dag.is_finite() || !gpu.is_finite() {",
+        "        if self.sources < 2 || !dag.is_finite() || !gpu.is_finite() {",
+        [],
+        [
+            (
+                "ptxv-sim",
+                "errdist_gpu_gate",
+                "atomic_order_explains_only_a_free_order_within_its_bound",
+            ),
+            ("ptxv", "errdist_guard", "barrier_ordered_atomic_adds_have_one_order"),
+        ],
+    ),
+    # The happens-before test dropped: adds of two actors count as unordered whatever orders them.
+    SrcMutant(
+        "atom-hb-off",
+        "crates/sim/src/num.rs",
+        "            .is_some_and(|&(pk, pa, pc)| pk == k && pa != actor && pc > vc_get(vc, pa));",
+        "            .is_some_and(|&(pk, pa, pc)| pk == k && pa != actor && pc >= 0 * vc_get(vc, pa));",
+        [],
+        [("ptxv", "errdist_guard", "barrier_ordered_atomic_adds_have_one_order")],
+    ),
+]
+
+# MISS 87 follow-up: --pre-round marks an output only where its value changes (chain.rs
+# `Prog::pre_round`), and the validations observe the DAG's value there (errdist.rs
+# `pre_take`) instead of skipping the worst-case check and Tier 3's refusal run-wide.
+MUTANTS += [
+    # Every chain output marked again, an f32 D included.
+    SrcMutant(
+        "pre-mark-all",
+        "crates/sim/src/errdist/chain.rs",
+        "                p.pre_rounded[o] = last != self.outputs[o];",
+        "                p.pre_rounded[o] = true;",
+        [],
+        [
+            (
+                "ptxv-sim",
+                "lib",
+                "errdist::chain::tests::pre_round_marks_only_outputs_it_changes",
+            ),
+            (
+                "ptxv",
+                "errdist_guard",
+                "pre_round_keeps_the_checks_of_an_output_it_leaves_alone",
+            ),
+        ],
+    ),
+    # The worst-case check skipped at every output, as --pre-round used to skip it run-wide.
+    SrcMutant(
+        "pre-wc-off",
+        "crates/sim/src/errdist/mc.rs",
+        "        if let (Some((rel, k, ab, one)), false) = (st.wc, pre) {",
+        "        if let (Some((rel, k, ab, one)), false) = (st.wc, pre || st.r.pre_rounded.is_empty()) {",
+        [],
+        [
+            (
+                "ptxv",
+                "errdist_guard",
+                "pre_round_keeps_the_checks_of_an_output_it_leaves_alone",
+            )
+        ],
+    ),
+]
+
+
+# MISS 32 / MISS 34 and the review after them: when an asynchronous copy's writes happen
+# relative to its waits (E-ASYNC-STEP, E-CPASYNC, E-CPASYNC-MBAR).
+MUTANTS += [
+    # E-ASYNC-STEP: `cp.async.bulk.wait_group.read` acquires the bulk store's global writes
+    # again, as the full wait (MISS 32: the PTX front called READ clean).
+    SrcMutant(
+        "bulk-read-is-full-wait",
+        "crates/sim/src/exec.rs",
+        "*read);",
+        "false);",
+        [("e_tma_store_readback", "READ", "ptx", [])],
+        [("ptxv-sim", "fixtures", "tma_store_readback_after_wait_read_races")],
+    ),
+    # E-ASYNC-STEP: a bulk store's global writes at the epoch of its shared-memory reads, so
+    # `.read` orders them too.
+    SrcMutant(
+        "bulk-write-read-epoch",
+        "crates/sim/src/exec.rs",
+        "        vc_tick(&mut wop.vc, op.actor);\n",
+        "",
+        [("e_tma_store_readback", "READ", "ptx", [])],
+        [("ptxv-sim", "fixtures", "tma_store_readback_after_wait_read_races")],
+    ),
+    # E-CPASYNC: a copy's write runs as its issuing thread at its issue clock again (MISS 34:
+    # a barrier before the wait ordered it; LATEWAIT clean and certified).
+    SrcMutant(
+        "cpasync-write-issue-clock",
+        "crates/sim/src/exec.rs",
+        "self.access(actor, &vc, c.pc",
+        "self.access(t as u32, &c.vc, c.pc",
+        [("e_cpasync_early", "LATEWAIT", "sass", ["--certify"])],
+        [("ptxv-sim", "fixtures", "cpasync_write_is_not_ordered_by_a_barrier_before_the_wait")],
+    ),
+    # E-CPASYNC-MBAR: copies tracked by cp.async.mbarrier.arrive land at the arrive's clock
+    # again (EARLY and OWN clean and certified; GB300 194/200 and 200/200 wrong).
+    SrcMutant(
+        "cparrive-arrive-clock",
+        "crates/sim/src/exec.rs",
+        "        self.cp_land(op.issuer as usize, op.actor, 1, writes);\n",
+        "        for c in writes {\n"
+        "            let loc = Loc::Shared { cta, off: c.off };\n"
+        "            self.access(op.actor, &op.vc, c.pc, loc, c.data.len(), Some(&c.data));\n"
+        "            self.sync_clear(loc);\n"
+        "        }\n",
+        [("e_cpasync_mbar_early", "EARLY", "ptx", []), ("e_cpasync_mbar_early", "OWN", "sass", ["--certify"])],
+        [("ptxv-sim", "fixtures", "cpasync_mbar_copies_land_at_their_issue_clocks")],
+    ),
+    # E-CPASYNC: copies retired together are not checked against each other (SAME, GROUPS,
+    # MBAR clean; GB300 keeps the first copy's bytes in 1000/1000 runs of SAME).
+    SrcMutant(
+        "cp-overlap-off",
+        "crates/sim/src/exec.rs",
+        "        self.cp_overlap(t, &done);\n",
+        "",
+        [("e_cpasync_overlap", "SAME", "ptx", []), ("e_cpasync_overlap", "MBAR", "sass", [])],
+        [("ptxv-sim", "fixtures", "cpasync_copies_in_flight_together_race")],
+    ),
+    # MISS 68: no fail-closed check past a thread's async actor ids (with the ids cut to 4096,
+    # e_async_actor_cap MANY's 4097th id is the next thread's, past the only thread).
+    SrcMutant(
+        "async-ids-check-off",
+        "crates/sim/src/machine.rs",
+        "        if serial + 1 >= ids {\n            let msg = format!(\n                \"{} starts its asynchronous",
+        "        if false {\n            let msg = format!(\n                \"{} starts its asynchronous",
+        [],
+        [("ptxv-sim", "fixtures", "async_actor_ids_fail_closed")],
+    ),
+    # MISS 68: the old wrap back (report unmodeled, then an id within the thread's range, which
+    # aliases one of its own earlier actors; the run goes on).
+    SrcMutant(
+        "async-ids-wrap",
+        "crates/sim/src/machine.rs",
+        "            return Err(msg);\n        }\n        self.threads[t].make_mut().tma_count += 1;\n        Ok(self.tma_actor_id(t, serial))\n",
+        "            self.report(\"unmodeled\", \"async-actor-ids\".into(), msg);\n        }\n        self.threads[t].make_mut().tma_count += 1;\n        Ok(self.tma_actor_id(t, serial % (ids - 1)))\n",
+        [],
+        [("ptxv-sim", "fixtures", "async_actor_ids_fail_closed")],
+    ),
+    # MISS 68: the fixed stride of 4096 ids per thread back (with the check: the repros' 4097th
+    # async operation fails closed instead of taking the next thread's id).
+    SrcMutant(
+        "async-ids-stride-4096",
+        "crates/sim/src/machine.rs",
+        "    room.max(1).ilog2()\n",
+        "    let _ = room;\n    12\n",
+        [("e_async_ids_nc", "good", "ptx", []), ("e_async_ids_stream", "good", "sass", []),
+         ("e_async_ids_last", "good", "ptx", [])],
+        [("ptxv-sim", "fixtures", "async_ids_past_4096_do_not_alias")],
+    ),
+    # E-CPASYNC: copies landed by two waits of one thread (one wait actor, two epochs) are not
+    # checked against each other (LATER clean).
+    SrcMutant(
+        "cp-relanded-off",
+        "crates/sim/src/exec.rs",
+        "            self.cp_relanded(cta, actor, epoch, &c);\n",
+        "",
+        [("e_cpasync_overlap", "LATER", "ptx", []), ("e_cpasync_overlap", "LATER", "sass", [])],
+        [("ptxv-sim", "fixtures", "cpasync_copies_in_flight_together_race")],
+    ),
+    # E-CPASYNC: every wait lands at the same epoch of the wait actor, so a clock that knows
+    # one landing knows them all (LATER clean).
+    SrcMutant(
+        "cp-wait-epoch-fixed",
+        "crates/sim/src/exec.rs",
+        "        th.cp_epoch += 1;\n",
+        "        th.cp_epoch = 1;\n",
+        [("e_cpasync_overlap", "LATER", "ptx", [])],
+        [("ptxv-sim", "fixtures", "cpasync_copies_in_flight_together_race")],
+    ),
+    # E-CPASYNC (SASS): lanes not at the DEPBAR that retired their copies are not ordered after
+    # them at their own later DEPBAR (e_cpasync_div_wait good: a race on the SASS front).
+    SrcMutant(
+        "cp-warp-owed-off",
+        "crates/sim/src/exec.rs",
+        "                if *g < upto && *rest & act != 0 {\n",
+        "                if false {\n",
+        [("e_cpasync_div_wait", "good", "sass", [])],
+        [("ptxv-sim", "fixtures", "cpasync_divergent_waits_order_their_lanes")],
+    ),
+    # E-CPASYNC-PROXY: a fence that happens-before the async-proxy read covers a cp.async
+    # write whether or not it follows the copy's completion (e_cpasync_proxy_early EARLY clean).
+    SrcMutant(
+        "cpasync-proxy-fence-any-epoch",
+        "crates/sim/src/exec.rs",
+        "                            w.clock <= vc_get(fv, w.actor) && vc_get(fv, f as u32) <= seen\n",
+        "                            vc_get(fv, f as u32) <= seen\n",
+        [("e_cpasync_proxy_early", "EARLY", "ptx", []), ("e_cpasync_proxy_early", "EARLY", "sass", [])],
+        [("ptxv-sim", "fixtures", "cpasync_proxy_fence_must_follow_the_copy_s_completion")],
+    ),
+    # E-CPASYNC (SASS): owed lanes join the copies another path's DEPBAR retired at any later
+    # DEPBAR, covering them or not (e_cpasync_div_cover NEIGH: contract, the race missed).
+    SrcMutant(
+        "cp-landed-uncovered",
+        "crates/sim/src/exec.rs",
+        "                if *g < upto && *rest & act != 0 {\n",
+        "                if *rest & act != 0 {\n",
+        [("e_cpasync_div_cover", "NEIGH", "sass", [])],
+        [("ptxv-sim", "fixtures", "cpasync_divergent_waits_join_only_the_copies_they_cover")],
+    ),
+    # E-ASYNC-STEP: a bulk reduction's global writes at the epoch of its shared-memory reads,
+    # so `.read` orders them (e_bulk_read_l1 RREAD clean on the PTX front).
+    SrcMutant(
+        "bulk-red-read-epoch",
+        "crates/sim/src/exec.rs",
+        "                if let Err(e) = self.bulk_red(\n                    &wop,\n",
+        "                if let Err(e) = self.bulk_red(\n                    &op,\n",
+        [("e_bulk_read_l1", "RREAD", "ptx", [])],
+        [("ptxv-sim", "fixtures", "bulk_store_and_reduction_after_wait_read_race")],
+    ),
+    # E-ASYNC-STEP (precision): `.read` drops the group, so a later full wait no longer orders
+    # the store's writes (e_tma_read_then_full good: a race).
+    SrcMutant(
+        "bulk-read-drops-group",
+        "crates/sim/src/exec.rs",
+        "                vc_join(&mut j, if read { rvc } else { wvc });\n                read\n",
+        "                vc_join(&mut j, if read { rvc } else { wvc });\n                false\n",
+        [("e_tma_read_then_full", "good", "ptx", [])],
+        [("ptxv-sim", "fixtures", "tma_store_full_wait_after_wait_read_orders_the_writes")],
+    ),
+    # E-ASYNC-STEP (precision): a launch-group boundary folds a completed bulk store at its
+    # reads' epoch only, so a later group's load of the destination races with the writes.
+    SrcMutant(
+        "fold-read-clock",
+        "crates/sim/src/groups.rs",
+        "            vc_join(&mut th.vc, &vc_single(actor, clock + 1));\n",
+        "            vc_join(&mut th.vc, &vc_single(actor, clock));\n",
+        [],
+        [("ptxv-sim", "fixtures", "launch_group_boundary_orders_a_bulk_store_s_writes")],
+    ),
+]
+
+
 def expect_for(case: Path, variant: str, front: str) -> list[str]:
     c = tomllib.loads((case / "case.toml").read_text())
     for v in c.get("variants", []):
@@ -1195,7 +2385,7 @@ def run_mutant_in_tree(m: SrcMutant, out: Path) -> dict:
     caught = False
     for d, pat, sel in m.py:
         cmd = [
-            sys.executable,
+            os.environ.get("PTXV_PYTHON", sys.executable),
             "-m",
             "unittest",
             "discover",
@@ -1230,7 +2420,9 @@ def run_mutant_in_tree(m: SrcMutant, out: Path) -> dict:
     for pkg, binary, filt in m.tests:
         env = dict(os.environ, CARGO_TARGET_DIR=str(target), CUDA_VISIBLE_DEVICES="")
         wrap = os.environ.get("PTXV_JOB_WRAPPER", "").split()
-        cmd = [*wrap, "cargo", "test", "--release", "-p", pkg, "--test", binary, filt]
+        # "lib": the crate's unit tests (a full path as the name).
+        sel = ["--lib"] if binary == "lib" else ["--test", binary]
+        cmd = [*wrap, "cargo", "test", "--release", "-p", pkg, *sel, filt]
         r = subprocess.run(
             cmd, cwd=tree, env=env, capture_output=True, text=True, timeout=3600
         )
@@ -1290,6 +2482,8 @@ def run_mutant_in_tree(m: SrcMutant, out: Path) -> dict:
         )
     wrap = os.environ.get("PTXV_JOB_WRAPPER", "").split()
     for pkg, binary, name in m.tests:
+        # Heavy (#[ignore]d) tests run too: a mutant's test is named on purpose.
+        sel = ["--lib"] if binary == "lib" else ["--test", binary]
         cmd = [
             *wrap,
             "cargo",
@@ -1297,11 +2491,11 @@ def run_mutant_in_tree(m: SrcMutant, out: Path) -> dict:
             "--release",
             "-p",
             pkg,
-            "--test",
-            binary,
+            *sel,
             "--",
             "--exact",
             name,
+            "--include-ignored",
         ]
         r = subprocess.run(
             cmd,

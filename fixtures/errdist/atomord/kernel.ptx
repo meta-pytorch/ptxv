@@ -1,0 +1,65 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// fp32 atomic adds whose order a barrier fixes (MISS 84 follow-up).
+//   ao_free: 96 threads; thread i adds x[i] to y[i % 32] with red.global.add.f32 from y = 0:
+//            three adds per location from three threads that nothing orders, so GB300 may
+//            add them in any order (y[j] = x[j] + x[j + 32] + x[j + 64]).
+//   ao_bar:  the same adds, warp w's after the w-th bar.sync: the barriers order the three
+//            adds of each location (warp 0's, then warp 1's, then warp 2's) on every
+//            conforming execution, so GB300's order is the DAG's and no other order explains
+//            a different value.
+// Captured input x (in.bin): x[j] = 1, x[j + 32] = 2, x[j + 64] = 3, so every order gives 6
+// exactly; expected/off1.bin is that output with y[5] one ulp above 6 (0x40c00001), within the
+// reordering bound of three adds (2 gamma_3 * 6 = 4.5 ulp), expected/six.bin the exact output.
+
+.visible .entry ao_free(.param .u64 px, .param .u64 py)
+{
+    .reg .f32 %f<4>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    ld.global.f32 %f1, [%rd4];
+    and.b32 %r2, %r1, 31;
+    mul.wide.u32 %rd5, %r2, 4;
+    add.s64 %rd6, %rd2, %rd5;
+    red.global.add.f32 [%rd6], %f1;
+    ret;
+}
+
+.visible .entry ao_bar(.param .u64 px, .param .u64 py)
+{
+    .reg .f32 %f<4>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    ld.global.f32 %f1, [%rd4];
+    and.b32 %r2, %r1, 31;
+    mul.wide.u32 %rd5, %r2, 4;
+    add.s64 %rd6, %rd2, %rd5;
+    shr.u32 %r3, %r1, 5;
+    setp.eq.u32 %p1, %r3, 0;
+    setp.eq.u32 %p2, %r3, 1;
+    setp.eq.u32 %p3, %r3, 2;
+    @%p1 red.global.add.f32 [%rd6], %f1;
+    bar.sync 0;
+    @%p2 red.global.add.f32 [%rd6], %f1;
+    bar.sync 0;
+    @%p3 red.global.add.f32 [%rd6], %f1;
+    ret;
+}

@@ -1,0 +1,72 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Async actor ids (MISS 68), no .nc: thread 0 issues N bulk stores into dummy (each waited
+// for), then one 16-byte bulk store into x[0..4) and sets a shared flag with a relaxed store.
+// Thread 1 spins on the flag with relaxed loads (no happens-before), then bulk-stores other data
+// into x[0..4): a write-write race. With N = 4096 thread 0's last store is its 4097th async op;
+// with a fixed stride of 4096 ids per thread its id (3 n + 4096 t + serial) was thread 1's first.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 px, .param .u64 pdummy, .param .u32 pn)
+.reqntid 32
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<8>;
+    .shared .align 128 .b32 tile[8];
+    .shared .align 4 .b32 flag;
+    ld.param.u64    %rd1, [px];
+    ld.param.u64    %rd2, [pdummy];
+    ld.param.u32    %r9, [pn];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r10, tile;
+    mov.u32         %r14, flag;
+    setp.ne.u32     %p1, %r1, 0;
+    @%p1 bra        $L_s;
+    st.shared.u32   [%r14], 0;
+$L_s:
+    bar.sync        0;
+    setp.eq.u32     %p1, %r1, 0;
+    @%p1 bra        $L_t0;
+    setp.ne.u32     %p1, %r1, 1;
+    @%p1 bra        $L_end;
+    mov.u32         %r11, 7;
+    st.shared.v4.u32 [%r10+16], {%r11, %r11, %r11, %r11};
+    fence.proxy.async.shared::cta;
+    add.u32         %r12, %r10, 16;
+$L_spin:
+    ld.relaxed.cta.shared.u32 %r15, [%r14];
+    setp.eq.u32     %p3, %r15, 0;
+    @%p3 bra        $L_spin;
+    cp.async.bulk.global.shared::cta.bulk_group [%rd1], [%r12], 16;
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+    bra.uni         $L_end;
+$L_t0:
+    mov.u32         %r11, 5;
+    st.shared.v4.u32 [%r10], {%r11, %r11, %r11, %r11};
+    fence.proxy.async.shared::cta;                  // @N
+    mov.u32         %r13, 0;
+$L_loop:
+    setp.ge.u32     %p2, %r13, %r9;
+    @%p2 bra        $L_last;
+    cp.async.bulk.global.shared::cta.bulk_group [%rd2], [%r10], 16;
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+    add.u32         %r13, %r13, 1;
+    bra.uni         $L_loop;
+$L_last:
+    cp.async.bulk.global.shared::cta.bulk_group [%rd1], [%r10], 16;
+    cp.async.bulk.commit_group;
+    mov.u32         %r11, 1;
+    st.relaxed.cta.shared.u32 [%r14], %r11;
+    cp.async.bulk.wait_group 0;
+$L_end:
+    ret;
+}

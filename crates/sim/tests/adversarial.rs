@@ -310,8 +310,10 @@ fn e_warp_order_needs_convergence() {
 /// E-DRF for tensor memory (fixtures/e_drf_tmem). Premise: races among non-scheduling-point
 /// accesses are found by the vector clocks. TMEM accesses are not scheduling points; warp 0's
 /// `tcgen05.st` and warp 4's `tcgen05.ld` of one column with no barrier (NOBAR) must be a race
-/// on both fronts. NOWAIT (no `wait::st`) is clean by S-TCGEN05's reading (GB300 200/200
-/// bitwise for all three variants). Mutant tmem-norace: TMEM write-read races unreported.
+/// on both fronts. NOWAIT (no `wait::st`) races on both fronts: the store is not complete at the
+/// synchronization (PTX ISA 9.7.18.6.4.4; MISS 105 and, SASS, MISS 107; before clean). GB300 200/200 bitwise for all
+/// three variants, which does not separate them. Mutant tmem-norace: TMEM write-read races
+/// unreported.
 #[test]
 fn e_drf_tmem_race_found() {
     adv("e_drf_tmem", &["good", "NOBAR", "NOWAIT"]);

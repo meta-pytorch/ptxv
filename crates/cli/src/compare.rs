@@ -109,7 +109,7 @@ fn verdict_json(v: &Verdict, method: &str) -> Value {
         "verdict": v.classes(),
         "complete": v.complete,
         "method": method,
-        "certified": v.assumptions.iter().any(|a| a == "E-WELLSYNC"),
+        "certified": crate::certified(v),
         "states": v.states,
         "distinct_outputs": v.distinct_outputs,
         "assumptions": v.assumptions,
@@ -294,7 +294,7 @@ fn side(who: &str, dir_case: &Path, out: &Path, max_states: usize) -> Result<Sid
             });
         }
     };
-    let method = match (v.assumptions.iter().any(|a| a == "E-WELLSYNC"), slices) {
+    let method = match (crate::certified(&v), slices) {
         (true, false) => "certified, E-WELLSYNC",
         (_, true) => "one cluster at a time (E-CTA-INDEP), explored",
         (false, false) => "explored",

@@ -50,4 +50,6 @@ value = 0x8100490
 [[variants]]
 id = "good"
 expect = ["contract"]
-expect_sass = ["clean"]
+# SASS: the overlapping un-fenced STTMs are a tmem-queue contract finding (E-TMEM-QUEUE),
+# a contract under the GB300 profile too (the test: probe_bitwise_queue).
+expect_sass = ["contract"]

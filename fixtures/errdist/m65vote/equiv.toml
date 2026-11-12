@@ -1,0 +1,17 @@
+# MISS 65 in equiv: R = m65_ballot (lanes 16..31 store rn(3 t) where the ballot of lanes 0..15's
+# input-derived predicate is nonzero, t elsewhere) against C = m65_ballot_t (t always). On the
+# captured input (data/, every x x < 9) the ballot is 0 and both DAGs are t; on an input with a
+# nonzero ballot they differ. Before MISS 65 equiv proved L0 for every input (each lane's ballot
+# result carried only its own predicate's taint); the branch on the ballot is a data-dependent
+# precondition now. Segment mode: the products x w have nodes.
+#   ptxv equiv fixtures/errdist/m65vote/equiv.toml
+max_states = 200000
+trials = 0
+segments = true
+reference = { case = "ballot", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "plain"
+variant = "good"
+front = "sass"
+expect = "none (unproven)"

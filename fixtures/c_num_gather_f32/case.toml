@@ -1,0 +1,63 @@
+name = "c_num_gather_f32"
+description = """
+N-NUM-TRACK: addresses and a shuffle lane decided by a rounded value (kernel.ptx, gen.py). i = trunc(rn(x*y));
+in even lanes x*y rounds up to 1 so that i differs from its exact-arithmetic value 0. out[t] = z[(t + i) & 31]
+(a gather), out[32 + t] = shfl.idx(z, (t + i) & 31), out[64 + t + 32 i] = x[t] (a scatter). num follows the
+run's addresses; the exact computation reads and writes other elements. expected/ is GB300's output
+(`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_gather_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/y.bin"
+
+[[buffers]]
+name = "z"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/z.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

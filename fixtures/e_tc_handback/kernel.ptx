@@ -20,6 +20,11 @@
 // ACTA the leader's wait is .acquire.cta (try_wait's default): a race on the PTX front; on
 // the SASS front PHASECHK (no CCTL.IVALL) acquires the peer's release for SM-local memory,
 // tensor memory included, so round 2's MMA is ordered after the peer's reads: clean.
+// ACTANW ACTA without the peer's round-1 tcgen05.wait::ld: a race and an undefined-register
+// violation on PTX; SASS clean (ptxas makes the stores of the loaded registers wait for the
+// LDTM, so the SASS is ordered as before).
+// ACTAE ACTA with the peer handing D back before its round-1 tcgen05.ld (the arrive moved
+// ahead of the reads): round 2's MMA races with the peer's reads on both fronts.
 .version 9.0
 .target sm_103a
 .address_size 64
@@ -123,10 +128,11 @@ D_WAIT:
     mbarrier.try_wait.parity.shared::cta.b64 %p10, [%r13], 0;
     @!%p10 bra      D_WAIT;
     tcgen05.fence::after_thread_sync;
+    // (early hand-back slot)                                          // @EARLY
     shl.b32         %r30, %r1, 21;                  // (32 * warp) << 16: TMEM lane field
     add.u32         %r31, %r9, %r30;
     tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r40, %r41, %r42, %r43, %r44, %r45, %r46, %r47, %r48, %r49, %r50, %r51, %r52, %r53, %r54, %r55}, [%r31];
-    tcgen05.wait::ld.sync.aligned;
+    tcgen05.wait::ld.sync.aligned;                  // @WAITLD
     ld.param.u64    %rd20, [d_ptr];
     cvta.to.global.u64 %rd21, %rd20;
     shl.b32         %r32, %r2, 7;

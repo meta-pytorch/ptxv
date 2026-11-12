@@ -1,0 +1,53 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Fixture for MISS 111 (S-TCGEN05): one warp allocates 32 TMEM columns, stores its lane id + 100
+// to column 0 (tcgen05.st; wait::st), loads the column back (tcgen05.ld), deallocates, and
+// writes the loaded value to out. tcgen05.ld and tcgen05.st are asynchronous: "not inherently
+// ordered with respect to other tcgen05 operations in the same thread" (PTX ISA 9.7.18.6.1);
+// only tcgen05.wait::ld / wait::st complete them (9.7.18.6.2.1.2, 9.7.18.6.4.2).
+// The other lanes' accesses reach the dealloc (lane 0's, `deallocation by t0`) through
+// fence::before_thread_sync; bar.sync; fence::after_thread_sync, and only if waited (MISS 105);
+// lane 0's own reach it in program order, and only if waited (MISS 111).
+//   good: ld; wait::ld; fences + bar.sync; dealloc; store out.
+//   LDNW: ld; fences + bar.sync; dealloc; wait::ld; store out: the load may still read the
+//         columns the dealloc frees: a race, lane 0's own load included (before MISS 111 the
+//         PTX front ordered the thread's own load before its dealloc). SASS: ptxas waits on
+//         the LDTM's scoreboard before the dealloc: ordered.
+//   STNW: the wait::st after the store deleted, and the load with it: st; dealloc: a race.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_dealloc_unwaited(.param .u64 out_p)
+{
+    .shared .align 4 .b32 slot;
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r0, %tid.x;
+    mov.u32 %r3, slot;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+    tcgen05.fence::before_thread_sync;
+    bar.sync 0;
+    tcgen05.fence::after_thread_sync;
+    ld.shared.u32 %r4, [slot];
+    add.u32 %r5, %r0, 100;
+    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r4], {%r5};
+    tcgen05.wait::st.sync.aligned;                         // @WAITST
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 {%r6}, [%r4];    // @LD
+    tcgen05.wait::ld.sync.aligned;                         // @WAITLD
+    tcgen05.fence::before_thread_sync;                     // the warp's lanes' accesses
+    bar.sync 0;                                            // before lane 0's dealloc
+    tcgen05.fence::after_thread_sync;
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r4, 32;
+    // (late wait slot)                                    // @LATE
+    mul.wide.u32 %rd2, %r0, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r6;                             // @OUT
+    ret;
+}

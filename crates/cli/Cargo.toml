@@ -26,3 +26,6 @@ mimalloc = { version = "0.1", default-features = false }
 [features]
 # --concolic: the external SMT solver (ptxv-sim feature smt).
 smt = ["ptxv-sim/smt"]
+
+[lints]
+workspace = true
