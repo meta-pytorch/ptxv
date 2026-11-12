@@ -27,6 +27,9 @@ env:
 jobs:
   rust:
     name: Rust build, clippy, unit tests and Python tests
+    # The public repo's CI. The internal mirror (mslsrc/ptxv) has the same .github/ and runs its
+    # tests on Buildkite instead.
+    if: github.repository == 'meta-pytorch/ptxv'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -65,7 +68,9 @@ jobs:
 
   rust-full:
     name: Full Rust test suite
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: >-
+      github.repository == 'meta-pytorch/ptxv' &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
@@ -84,6 +89,7 @@ jobs:
 
   lean:
     name: Lean models
+    if: github.repository == 'meta-pytorch/ptxv'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     defaults:

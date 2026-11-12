@@ -1358,8 +1358,10 @@ impl Machine {
         // What a write keeps of the shadow (vector-clock precision with strong accesses). An
         // earlier access e may be dropped when this write covers it: every later access that
         // races with e also races with this write. With e before the write, that holds when
-        // the write is plain, or when both are strong, in one CTA, and the write's scope is no
-        // wider than e's (then moral strength with the write implies it with e; S-SCOPE).
+        // the write is plain, or when both are strong, in one CTA, the write's scope is no
+        // wider than e's, and the two are the same location (then moral strength with the
+        // write implies it with e; S-SCOPE, complete overlap: a later access that overlaps the
+        // write completely overlaps a narrower or wider e only partially).
         // A strong write covers no plain access: the writer's own `ATOMS` after its plain
         // `STS` init must not hide the init from other threads' unordered atomics (soundness
         // harness, `tools/mutate/repro/cert_fasttrack`). An e unordered with the write is a
@@ -1391,13 +1393,18 @@ impl Machine {
                 && smem_cta.is_none_or(|c| cta_of(w.actor) == c)
         };
         let hw_order = self.launch.hw_order;
+        let kern: &Kernel = &self.k;
         let keep = |e: &Epoch, ordered: bool| -> bool {
             if strong == 0 {
                 false
             } else if e.strong == 0 {
                 ordered
             } else {
-                !ordered || !(hw_order || cta_of(e.actor) == my_cta && e.strong >= strong)
+                !ordered
+                    || !(hw_order
+                        || cta_of(e.actor) == my_cta
+                            && e.strong >= strong
+                            && same_location(kern, nth, true, (e.actor, e.pc), (actor, pc)))
             }
         };
         // ASSUME(S-SAME-VALUE): a plain write of the byte the last (plain) write left there
@@ -1416,7 +1423,8 @@ impl Machine {
         // the memory consistency model (PTX ISA 9.5 section 8.1): it is exact only for bytes
         // nothing writes during its kernel. A write and an `.nc` read of one global byte
         // conflict, in either order and whether or not happens-before orders them, unless
-        // their grids are stream-ordered (one completes before the other starts).
+        // their grids are stream-ordered (one completes before the other starts), or the write
+        // comes after the completion of the reading grid.
         let nc_read = write.is_none()
             && strong == 0
             && actor < nth
@@ -1428,22 +1436,43 @@ impl Machine {
         let grid_of = |a: u32| launch.grid_index(cta_of(a) as u32);
         let my_grid = grid_of(actor);
         let nc_bit = |g: usize| 1u64 << g.min(63);
-        // Grid j completes before grid i starts: j is on i's stream-order chain.
+        // Grid j completes before grid i starts: j is on i's stream-order chain and the grid
+        // that follows j there was launched without PDL. A PDL grid may start while the grid
+        // before it still runs (E-PDL), and its griddepcontrol.wait does not order an `.nc`
+        // load: ptxas 13.0 / 13.3 move the load above the wait (probes/nc_pdl `hoist`, GB300
+        // returns the primary's old word 200/200). Every grid starts after the one before it on
+        // its chain has started, so only the link next to j decides.
         let before = |i: usize, j: usize| {
             let mut x = i;
             while let Some(p) = launch.prev_grid(x) {
                 if p == j {
-                    return true;
+                    return !launch.grids[x].pdl;
                 }
                 x = p;
             }
             false
         };
+        // The `.nc` read's grid and the write's grid overlap in time.
         let nc_conflict = |gr: usize, gw: usize| {
             gr == gw || gr >= 63 || gw >= 63 || !(before(gr, gw) || before(gw, gr))
         };
-        let nc_hit_mask =
-            |mask: u64| (0..64).any(|g| mask >> g & 1 == 1 && nc_conflict(g, my_grid));
+        // A write after `.nc` reads of another grid that it happens after the completion of
+        // (that grid's done clocks, joined at a griddepcontrol.wait or a stream-ordered
+        // launch): the reads were performed before (a PDL dependent's write, after its wait, of
+        // bytes its primary read).
+        let done_vcs = &self.done_vcs;
+        let done_before = |g: usize| {
+            g != my_grid
+                && done_vcs
+                    .get(g)
+                    .and_then(|d| d.as_ref())
+                    .is_some_and(|d| vc_covers(vc, d))
+        };
+        let nc_hit_mask = |mask: u64| {
+            (0..64).any(|g| {
+                mask >> g & 1 == 1 && nc_conflict(g, my_grid) && !(g < 63 && done_before(g))
+            })
+        };
         // (the `.nc` load's pc, the write's pc and actor, byte)
         let mut nc_hits: Vec<(u32, u32, u32, u64)> = Vec::new();
         let mut benign: Vec<(Epoch, u64)> = Vec::new();
@@ -1453,6 +1482,26 @@ impl Machine {
         let mut i = 0;
         while i < n {
             let a0 = base as usize + i;
+            // ASSUME(S-SAME-VALUE), per byte: `for_run` updates a uniform shadow page that the
+            // access covers with one call, at the page's first byte. Whether a write keeps a
+            // byte's value (and the byte's S-INIT bit) differs from byte to byte, so a write
+            // that keeps the value of only some of the page's bytes splits it first. Bulk and
+            // TMA copies merge into runs of 512 bytes and more; until 2026-11-11 the first byte
+            // stood for the page (fixtures/s_sv_page `PAGE`: a reload that kept only that byte
+            // was a same-value write of the page, and the read after it was clean).
+            if let Some(wr) = write {
+                let per = Pages::<Sh>::PAGE;
+                if a0.is_multiple_of(per) && n - i >= per && mem.sh.uniform_page(a0) {
+                    let kept = mem.bytes.run(a0)[..per]
+                        .iter()
+                        .zip(&wr[i..i + per])
+                        .filter(|(x, y)| x == y)
+                        .count();
+                    if wundef != 0 || (kept != 0 && kept != per) {
+                        mem.sh.split_page(a0);
+                    }
+                }
+            }
             let bytes = &mem.bytes;
             let k = mem.sh.for_run(a0, n - i, |a, s| {
                 if same_value(s, a, bytes) {
@@ -1726,7 +1775,7 @@ impl Machine {
         // ASSUME(S-SAME-VALUE): reported as a note (kind "note": no class, does not stop the
         // certificate); the PTX model calls the pair a race.
         if let Some(&(other, a)) = benign.first() {
-            if !self.morally_strong(other.actor, other.strong, actor, strong) {
+            if !self.morally_strong(other.actor, other.strong, other.pc, actor, strong, pc) {
                 let sig = format!("same-value:{}:{}:{pc}", Self::space_name(&loc), other.pc);
                 if !self.findings.iter().any(|f| f.sig == sig) {
                     let msg = format!(
@@ -1810,7 +1859,14 @@ impl Machine {
                         && !commuting(other.pc, pc)
                         && (other.actor as usize) < self.threads.len()
                         && (actor as usize) < self.threads.len()
-                        && self.morally_strong(other.actor, other.strong, actor, strong)
+                        && self.morally_strong(
+                            other.actor,
+                            other.strong,
+                            other.pc,
+                            actor,
+                            strong,
+                            pc,
+                        )
                         && {
                             let (x, y) = (
                                 &self.threads[other.actor as usize],
@@ -1850,8 +1906,9 @@ impl Machine {
             }
         }
         // Strong accesses that are morally strong with each other do not race (S-SCOPE).
-        races
-            .retain(|(other, _, _)| !self.morally_strong(other.actor, other.strong, actor, strong));
+        races.retain(|(other, _, _)| {
+            !self.morally_strong(other.actor, other.strong, other.pc, actor, strong, pc)
+        });
         // One finding per (instruction pair, kind); report the first byte.
         let mut seen = std::collections::BTreeSet::new();
         for (other, kind, a) in races {
@@ -1918,8 +1975,17 @@ impl Machine {
                 Loc::Global { alloc, .. } => format!("gmem ({})", self.launch.allocs[alloc].name),
                 _ => Self::space_name(&loc).to_string(),
             };
+            // S-SCOPE, complete overlap: two strong accesses that are not one location.
+            let mixed = if other.strong != 0
+                && strong != 0
+                && !self.overlap_complete(other.actor, other.pc, actor, pc)
+            {
+                " (strong accesses of different sizes: they overlap partially, so they are not morally strong, a mixed-size data race; PTX ISA 9.5 sections 8.7, 8.7.2)"
+            } else {
+                ""
+            };
             let msg = format!(
-                "{kind} race on {space} byte {a:#x}: {} at {} and {} at {} are not ordered by happens-before",
+                "{kind} race on {space} byte {a:#x}: {} at {} and {} at {} are not ordered by happens-before{mixed}",
                 self.actor_name(other.actor),
                 self.k.describe(other.pc as usize),
                 self.actor_name(actor),
@@ -2576,17 +2642,43 @@ impl Machine {
     }
 
     /// PTX memory model: two strong accesses are morally strong when each one's scope
-    /// includes the other's thread. `0` = a plain access.
-    pub fn morally_strong(&self, a: u32, sa: u8, b: u32, sb: u8) -> bool {
+    /// includes the other's thread and they overlap completely (`overlap_complete`). `0` = a
+    /// plain access; `pa`, `pb`: the accesses' instructions.
+    pub fn morally_strong(&self, a: u32, sa: u8, pa: u32, b: u32, sb: u8, pb: u32) -> bool {
         if sa == 0 || sb == 0 {
             return false;
         }
         // E-HW-L1 hardware ordering: strong accesses are single-copy atomic at any scope.
-        if (sa == STRONG_SYS && sb == STRONG_SYS) || self.launch.hw_order {
+        if self.launch.hw_order {
+            return true;
+        }
+        self.overlap_complete(a, pa, b, pb) && self.scopes_mutual(a, sa, b, sb)
+    }
+
+    /// The scope half of moral strength: each strong access's scope includes the other's
+    /// thread (`sa`, `sb` nonzero).
+    fn scopes_mutual(&self, a: u32, sa: u8, b: u32, sb: u8) -> bool {
+        if sa == STRONG_SYS && sb == STRONG_SYS {
             return true;
         }
         let scope = |c: u8| [Scope::Cta, Scope::Cluster, Scope::Gpu, Scope::Sys][c as usize - 1];
         self.scope_includes(scope(sa), a, b) && self.scope_includes(scope(sb), b, a)
+    }
+
+    /// ASSUME(S-SCOPE), complete overlap: PTX ISA 9.5 section 8.7 makes two memory operations
+    /// morally strong only "if both are memory operations, then they overlap completely" (8.2.1:
+    /// "both memory locations are identical"); a vector access is one operation per element
+    /// (8.2.4). A conflicting pair that overlaps partially and is not in causality order is a
+    /// mixed-size data race (8.7.1, 8.7.2), and a partially overlapping read does not observe
+    /// a write for synchronization (8.9.2, 8.9.4). See `same_location`.
+    pub fn overlap_complete(&self, a: u32, pa: u32, b: u32, pb: u32) -> bool {
+        same_location(
+            &self.k,
+            self.threads.len() as u32,
+            !self.launch.hw_order,
+            (a, pa),
+            (b, pb),
+        )
     }
 
     fn sync_key(loc: Loc) -> Option<(u8, u32, u64)> {
@@ -2597,9 +2689,11 @@ impl Machine {
         }
     }
 
-    /// A strong write by thread `t`: it becomes the location's synchronization source. A
-    /// read-modify-write continues the release sequence of the write it read.
-    fn sync_publish(&mut self, t: usize, loc: Loc, m: MemSync, rmw: bool) {
+    /// A strong write by thread `t` at `pc`: it becomes the location's synchronization source.
+    /// A read-modify-write continues the release sequence of the write it read, if it overlaps
+    /// that write completely (S-SCOPE: observation order runs along morally strong pairs, PTX
+    /// ISA 9.5 section 8.9.2).
+    fn sync_publish(&mut self, t: usize, pc: u32, loc: Loc, m: MemSync, rmw: bool) {
         let Some(key) = Self::sync_key(loc) else {
             return;
         };
@@ -2638,8 +2732,10 @@ impl Machine {
         };
         if rmw {
             if let Some(old) = self.syncs.get(&key) {
-                vc_join(&mut rel, &old.rel);
-                vc_join(&mut rr, &old.rr);
+                if self.overlap_complete(old.writer, old.pc, t as u32, pc) {
+                    vc_join(&mut rel, &old.rel);
+                    vc_join(&mut rr, &old.rr);
+                }
             }
         }
         self.syncs.insert(
@@ -2647,6 +2743,13 @@ impl Machine {
             SyncCell {
                 writer: t as u32,
                 scope: m.scope,
+                // Only the strict PTX level reads it (`overlap_complete`): elsewhere the state
+                // stays as it was.
+                pc: if self.k.front == Front::Ptx && !self.launch.hw_order {
+                    pc
+                } else {
+                    u32::MAX
+                },
                 rel,
                 rel_scope,
                 rr,
@@ -2706,24 +2809,31 @@ impl Machine {
         }
     }
 
-    /// A strong read by thread `t` observes the location's last strong write: if the two are
-    /// morally strong and the release's scope includes `t`, an acquire read synchronizes now;
-    /// a relaxed one leaves it for the next acquire fence.
-    fn sync_observe(&mut self, t: usize, loc: Loc, m: MemSync) {
+    /// A strong read by thread `t` at `pc` observes the location's last strong write: if the
+    /// two are morally strong and the release's scope includes `t`, an acquire read
+    /// synchronizes now; a relaxed one leaves it for the next acquire fence.
+    fn sync_observe(&mut self, t: usize, pc: u32, loc: Loc, m: MemSync) {
         let Some(key) = Self::sync_key(loc) else {
             return;
         };
         let c = self.syncs.get(&key).cloned();
-        self.sync_observe_cell(t, c, m);
+        self.sync_observe_cell(t, pc, c, m);
     }
 
     /// `sync_observe` of a given synchronization source (a forced C-RING read).
-    fn sync_observe_cell(&mut self, t: usize, c: Option<SyncCell>, m: MemSync) {
+    fn sync_observe_cell(&mut self, t: usize, pc: u32, c: Option<SyncCell>, m: MemSync) {
         let Some(c) = c else {
             return;
         };
         let me = t as u32;
         let hw = self.launch.hw_order;
+        // S-SCOPE, complete overlap: a read that overlaps the write only partially does not
+        // observe it (PTX ISA 9.5 section 8.9.2), its own thread's included (program order
+        // orders the write before the read, but not the releases the write's read-modify-write
+        // continued). The one overlap check of a synchronization.
+        if !self.overlap_complete(c.writer, c.pc, me, pc) {
+            return;
+        }
         // The thread's own write: nothing to acquire, unless it was a read-modify-write that
         // continued another thread's release sequence (`sync_publish` joins the clocks): an
         // NVLS barrier's `multimem.red` +1 followed by a poll of the same flag.
@@ -2740,8 +2850,9 @@ impl Machine {
             }
             return;
         }
+        // Moral strength: overlap (above), and scopes.
         if !hw
-            && (!self.morally_strong(c.writer, strong_code(c.scope), me, strong_code(m.scope))
+            && (!self.scopes_mutual(c.writer, strong_code(c.scope), me, strong_code(m.scope))
                 || !self.scope_includes(c.rel_scope, c.writer, me))
         {
             return;
@@ -7890,7 +8001,7 @@ impl Machine {
                         && matches!(loc, Loc::Global { alloc, .. }
                             if self.launch.perm.iter().any(|p| p.0 == alloc));
                     if !claim {
-                        self.sync_observe(t, loc, *sync);
+                        self.sync_observe(t, pc, loc, *sync);
                     }
                     let mut o = 0u64;
                     for (i, b) in old.iter().enumerate() {
@@ -7958,7 +8069,7 @@ impl Machine {
                     if *op != AtomOp::Cas || swapped {
                         let data: Vec<u8> = (0..*bytes).map(|i| (n >> (8 * i)) as u8).collect();
                         self.access_x(t as u32, &vc, pc, loc, *bytes as usize, Some(&data), sc);
-                        self.sync_publish(t, loc, *sync, true);
+                        self.sync_publish(t, pc, loc, *sync, true);
                     }
                     self.red_access = false;
                     res = Some((o, swapped, n));
@@ -10887,7 +10998,7 @@ impl Machine {
                 for &loc in &locs {
                     vals.push(self.access_x(t as u32, &vc, pc, loc, *bytes as usize, None, sc));
                     if let Some(m) = sync {
-                        self.sync_observe(t, loc, *m);
+                        self.sync_observe(t, pc, loc, *m);
                     }
                 }
                 self.mc_view = false;
@@ -10989,12 +11100,12 @@ impl Machine {
                 match (sync, forced) {
                     (Some(m), Some((b, cell))) => {
                         data = b;
-                        self.sync_observe_cell(t, cell, *m);
+                        self.sync_observe_cell(t, pc, cell, *m);
                     }
                     // E-POLL-ANY: a value-insensitive poll acquires nothing (it may only add
                     // races).
                     (Some(_), None) if self.vip_read == 1 && vip_where(loc).is_some() => {}
-                    (Some(m), None) => self.sync_observe(t, loc, *m),
+                    (Some(m), None) => self.sync_observe(t, pc, loc, *m),
                     (None, Some((b, _))) => data = b,
                     (None, None) => {}
                 }
@@ -11237,7 +11348,7 @@ impl Machine {
                         self.l1_store(t, loc, &data);
                     }
                     match sync {
-                        Some(m) => self.sync_publish(t, loc, *m, false),
+                        Some(m) => self.sync_publish(t, pc, loc, *m, false),
                         None => self.sync_clear(loc),
                     }
                 }
@@ -11340,7 +11451,7 @@ impl Machine {
                 let sc = sync.map_or(0, |m| strong_code(m.scope));
                 let mut data = self.access_x(t as u32, &vc, pc, loc, 32, None, sc);
                 if let Some(m) = sync {
-                    self.sync_observe(t, loc, *m);
+                    self.sync_observe(t, pc, loc, *m);
                 } else if self.l1.is_some() {
                     self.l1_load(t, pc, loc, &mut data); // ASSUME(E-HW-L1)
                 }
@@ -11415,7 +11526,7 @@ impl Machine {
                     self.l1_store(t, loc, &data); // ASSUME(E-HW-L1)
                 }
                 match sync {
-                    Some(m) => self.sync_publish(t, loc, *m, false),
+                    Some(m) => self.sync_publish(t, pc, loc, *m, false),
                     None => self.sync_clear(loc),
                 }
                 if sync.is_some_and(|m| m.releases()) {
@@ -16605,6 +16716,50 @@ fn propagates_undef(op: &Op) -> bool {
             | Op::DivSqrt64 { .. }
             | Op::Rsqrt64Approx { .. }
     )
+}
+
+/// The size of the scalar memory locations the memory instruction at `pc` accesses: an `ld` /
+/// `st` element (PTX ISA 9.5 section 8.2.4: a vector access is one operation per element), an
+/// `atom` / `red` operand (`.v2` / `.v4.f32` per element; `bf16x2` per half, 8.2.5), a
+/// `multimem.ld_reduce` lane; 0 for any other instruction.
+pub fn elem_bytes(k: &Kernel, pc: u32) -> u8 {
+    match k.code.get(pc as usize).map(|i| &i.op) {
+        Some(Op::Ld { bytes, n, .. }) => bytes / (*n).max(1),
+        Some(Op::St { bytes, v, .. }) => {
+            bytes
+                / match v {
+                    Val::Reg(_, c) => (*c).max(1),
+                    _ => 1,
+                }
+        }
+        Some(Op::Atom {
+            op: AtomOp::FAddFtz,
+            ..
+        }) => 4,
+        Some(Op::Atom {
+            op: AtomOp::AddBf16x2 | AtomOp::AddBf16,
+            ..
+        }) => 2,
+        Some(Op::Atom { bytes, .. }) => *bytes,
+        Some(Op::LdReduce { ty, .. }) => ty.lane_bytes() as u8,
+        _ => 0,
+    }
+}
+
+/// ASSUME(S-SCOPE), complete overlap (`Machine::overlap_complete`) of two accesses (actor,
+/// instruction) that both cover the byte being checked. Decided on the PTX front at the strict
+/// level (`strict`: not the hardware model, E-HW-L1) for two thread instructions whose element
+/// size is known (`elem_bytes`): each element is naturally aligned (S-ALIGN), so two elements
+/// of one size that share a byte are the same location. Otherwise true, as before the rule:
+/// the SASS front (an instruction's width is not the PTX element size: ptxas merges a vector's
+/// elements into one access), asynchronous units, the NIC, and instructions without a known
+/// element size.
+pub fn same_location(k: &Kernel, nth: u32, strict: bool, a: (u32, u32), b: (u32, u32)) -> bool {
+    if !strict || k.front != Front::Ptx || a.0 >= nth || b.0 >= nth {
+        return true;
+    }
+    let (x, y) = (elem_bytes(k, a.1), elem_bytes(k, b.1));
+    x == 0 || y == 0 || x == y
 }
 
 /// E-POLL-ANY: the key of a location in `VipLearn` and `Machine::vipr`: (allocation, offset)

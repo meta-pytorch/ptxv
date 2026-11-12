@@ -177,6 +177,8 @@ verdict with the miss named in the doc comment, so a fix shows up as a test chan
 | E-DRF (TMEM) | e_drf_tmem | tmem-norace |
 | E-BAR-EXIT | (probes/bar_exit, bar_exit_warp) | barexit-phantom |
 | E-ALIGNED | (e_aligned_bar AB1 / AB3) | aligned-noviol |
+| S-SAME-VALUE, per byte over a uniform shadow page | s_sv_page (a 512-byte bulk reload that keeps only the page's first byte: clean until 2026-11-11 with the read after it, PAGE, or concurrent with it, CONC; race now) | sv-page-onebyte (MISS 69) |
+| S-SCOPE, complete overlap (PTX front) | e_scope_mixed (a u8 / u64 acquire of a u32 release flag: clean until 2026-11-11, MIXED / WIDE; a race now; VEC clean), e_warp_order_mixed (a u8 load of a u32 store in a converged warp: nondeterministic until 2026-11-11, MIXED; a race now) | scope-overlap, scope-overlap-race, scope-overlap-sync, scope-elem-vector (precision) (MISS 80) |
 | E-ALIGNED, part of the warp exited | e_aligned_exit, e_aligned_exit2 (PTX contract violation; SASS clean, as GB300) | aligned-sass-guarded, aligned-ptx-exit |
 | S-ALIGN | (e_misaligned) | align-4 |
 | S-DSMEM | e_dsmem_rank (a foreign rank through shared::cta faults; GB300 traps) | dsmem-rank |

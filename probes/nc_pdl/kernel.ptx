@@ -1,0 +1,95 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// probes/nc_pdl (S-NC): a dependent launched with programmatic stream serialization (PDL) reads
+// its primary's output with ld.global.nc after griddepcontrol.wait.
+//
+//   produce (primary, 1 CTA x 32): griddepcontrol.launch_dependents; thread 0 spins
+//     (ld.acquire.gpu) until consume has set flag[0]; bar.sync; buf[2t + 1] = t + 7 (odd words).
+//   consume (PDL, 1 CTA x 32): thread 0 sets flag[0] (st.release.gpu) in its prologue;
+//     pre = ld.global.nc w[t] (w is never written: 0); out2[t] = pre; griddepcontrol.wait;
+//     out[t] = ld.global buf[2t + 1] + pre.
+// good (this file): the load after the wait is a plain ld.global; produce has completed, so it
+// reads t + 7. hoist (case.toml): that load as ld.global.nc; ptxas 13.0 / 13.3 move it above
+// the wait (ACQBULK) and above the flag store, so it reads buf before produce writes it. late:
+// the .nc load's address depends on a coherent load of idx after the wait (never written: 0),
+// so it stays after ACQBULK; consume first reads the even words buf[2t] (never written, same
+// lines) with .nc before the wait.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry produce(.param .u64 flag_ptr, .param .u64 buf_ptr)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<16>;
+
+    griddepcontrol.launch_dependents;
+    mov.u32         %r0, %tid.x;
+    ld.param.u64    %rd1, [buf_ptr];
+    cvta.to.global.u64 %rd2, %rd1;
+    shl.b32         %r1, %r0, 1;
+    add.u32         %r1, %r1, 1;                    // 2t + 1
+    mul.wide.u32    %rd0, %r1, 4;
+    add.u64         %rd3, %rd2, %rd0;               // &buf[2t + 1]
+    add.u32         %r4, %r0, 7;
+    setp.ne.u32     %p1, %r0, 0;
+    @%p1 bra        $L_wait;
+    ld.param.u64    %rd4, [flag_ptr];
+    cvta.to.global.u64 %rd5, %rd4;
+$L_spin:
+    ld.acquire.gpu.global.u32 %r5, [%rd5];
+    setp.eq.u32     %p2, %r5, 0;
+    @%p2 bra        $L_spin;
+$L_wait:
+    bar.sync        0;
+    st.global.u32   [%rd3], %r4;                    // buf[2t + 1] = t + 7
+    ret;
+}
+
+.visible .entry consume(.param .u64 flag_ptr, .param .u64 buf_ptr, .param .u64 w_ptr,
+                        .param .u64 idx_ptr, .param .u64 out_ptr, .param .u64 out2_ptr)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<24>;
+
+    mov.u32         %r0, %tid.x;
+    setp.ne.u32     %p1, %r0, 0;
+    ld.param.u64    %rd4, [flag_ptr];
+    cvta.to.global.u64 %rd5, %rd4;
+    mov.u32         %r6, 1;
+    @!%p1 st.release.gpu.global.u32 [%rd5], %r6;    // flag[0] = 1
+    ld.param.u64    %rd1, [buf_ptr];
+    cvta.to.global.u64 %rd2, %rd1;
+    ld.param.u64    %rd6, [w_ptr];
+    cvta.to.global.u64 %rd7, %rd6;
+    ld.param.u64    %rd8, [out_ptr];
+    cvta.to.global.u64 %rd9, %rd8;
+    ld.param.u64    %rd10, [out2_ptr];
+    cvta.to.global.u64 %rd11, %rd10;
+    ld.param.u64    %rd12, [idx_ptr];
+    cvta.to.global.u64 %rd13, %rd12;
+    mul.wide.u32    %rd0, %r0, 4;
+    add.u64         %rd14, %rd7, %rd0;              // &w[t]
+    add.u64         %rd15, %rd9, %rd0;              // &out[t]
+    add.u64         %rd16, %rd11, %rd0;             // &out2[t]
+    shl.b32         %r1, %r0, 1;
+    add.u32         %r2, %r1, 1;                    // 2t + 1
+    mul.wide.u32    %rd17, %r2, 4;
+    add.u64         %rd18, %rd2, %rd17;             // &buf[2t + 1]
+    mul.wide.u32    %rd19, %r1, 4;
+    add.u64         %rd20, %rd2, %rd19;             // &buf[2t]
+    ld.global.nc.u32 %r3, [%rd14];                  // @PRE
+    st.global.u32   [%rd16], %r3;
+    griddepcontrol.wait;
+    ld.global.u32   %r4, [%rd18];                   // @POST
+    add.u32         %r4, %r4, %r3;
+    st.global.u32   [%rd15], %r4;
+    ret;
+}
