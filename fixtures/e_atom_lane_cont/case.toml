@@ -1,0 +1,45 @@
+name = "e_atom_lane_cont"
+description = """
+MISS 140 precision (forum post 74 review): a lane reading what a lane of its warp wrote in the
+same step still synchronizes with the release sequence that write continued from a thread
+outside the warp. No race; nondeterministic output (which lane gets which ticket)."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "sem"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [3]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[params]]
+kind = "ptr"
+buffer = "sem"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "lane 1 synchronizes with thread 32 through Z's release sequence (continued by lane 0's add) or Z itself: no race"
+expect = ["nondeterministic"]

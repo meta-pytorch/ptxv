@@ -1,0 +1,35 @@
+name = "e_fence_sc_unforced"
+description = """
+S-FENCE-SC: SC fences order nothing without a forcing coherence pair. Two lanes store, run
+fence.sc.gpu, and lane 1 reads lane 0's store: a race on PTX; clean on SASS (E-LOCKSTEP)."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [2, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "lane 1 reads lane 0's store after both fences: a race (PTX)"
+expect = ["race"]
+expect_sass = ["clean"]

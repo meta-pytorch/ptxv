@@ -169,6 +169,33 @@ pub(super) fn analyze(
                 }
             }
         }
+        // PTX: claims by lanes of one warp that happen-before does not order. The lanes of one
+        // step run in lane order only, and lanes of a converged warp at different instructions
+        // in step order only (E-WARP-ORDER); forcing cannot reverse either, so the other order
+        // would be dropped as infeasible although PTX allows it (MISS 140; forum post 74
+        // review: fixtures/e_atom_lane_order NOREAD, e_fence_sc_lanes PCS). The writes are in
+        // run order and happens-before is transitive, so each warp's consecutive claims suffice.
+        if m.k.front == Front::Ptx {
+            let mut last: BTreeMap<u32, &SAcc> = BTreeMap::new();
+            for a in &writes {
+                let t = a.ev.actor;
+                if t >= nthreads {
+                    continue;
+                }
+                let warp = m.threads[t as usize].warp;
+                if let Some(p) = last.get(&warp) {
+                    if p.ev.actor != t && !p.ev.hb(t, a.ev.seq, &a.vc) {
+                        out.bad.push(format!(
+                            "C-TICKET: lanes of one warp claim the counter at {} and {} unordered by happens-before (PTX leaves their order open; the model runs the warp's lane and step order only)",
+                            what(m, p),
+                            what(m, a)
+                        ));
+                        continue 'words;
+                    }
+                }
+                last.insert(warp, a);
+            }
+        }
         out.words
             .insert(*w, writes.iter().map(|a| a.ev.pc).collect());
         out.seq

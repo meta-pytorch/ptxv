@@ -1,0 +1,133 @@
+name = "e_shfl_warpagg"
+description = """
+E-WARPCOLL, forum post 74: ptxas's warp-aggregated atomic inside divergent code (ATen
+reduce_kernel's mark_block_finished, `if (tid == 0) prev = atomicAdd(&sem, 1)`). On the SASS
+front ptxas emits VOTEU.ANY / FLO / POPC (leader and count of the lanes that are there),
+`@leader ATOMG.E.ADD`, SLTMASK / POPC, and SHFL.IDX of the leader's result, all between
+BSSY.RECONVERGENT and BSYNC.RECONVERGENT; one lane of the warp executes the SHFL while the
+other 31 wait at the BSYNC. A SASS SHFL exchanges among the lanes executing it (it has no
+member mask and does not wait), so this is clean. Before 2026-11-07 the model made the SHFL
+wait for every live lane of the warp: a false deadlock (the lane at the SHFL waits for the
+lanes at the BSYNC, which wait for it). The PTX front sees a plain atom.
+2 CTAs of 2 warps; the CTA taking the last count writes 2 (MULTI, MASK: 10) to out.
+GB300 (gb300.txt, `ptxv probe`, 5 runs each): good / NOBSYNC out 2, MULTI / MASK out 10,
+XLANE out 0 (the undefined read gives 0, the count misses), FULLMASK hangs; `ptxv hw` good
+matches the simulator bitwise (200 runs)."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 2, 1]
+block = [32, 2, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "sem"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "sem"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "lane 0 adds; ptxas warp-aggregates the atomic (one lane runs the SHFL inside the BSSY region)"
+expect = ["clean"]
+
+[[variants]]
+id = "NOBSYNC"
+summary = "the BSYNC NOPed: lanes 1-31 go on to BAR.SYNC while lane 0 runs the aggregation alone (the SHFL does not need them)"
+expect = ["clean"]
+patch = [{ at = "@0x210", nop = true }]
+
+[[variants]]
+id = "MULTI"
+summary = "lanes 0-4 of warp 0 add: ptxas's aggregation elects lane 0, adds 5, and each lane adds its rank to the SHFLed result"
+expect = ["clean"]
+marker = "@ENTER"
+find = "setp.ne.u32 %p2, %r4, 0;"
+replace = "setp.ge.u32 %p2, %r19, 5;"
+edits = [{ marker = "@COUNT", find = "1;", replace = "5;" }]
+
+[[variants]]
+id = "MASK"
+summary = "MULTI with the aggregation written out in PTX: vote.sync.ballot and shfl.sync.idx with the partial membermask 0x1f of the lanes inside the branch"
+expect = ["clean"]
+marker = "@ENTER"
+find = "setp.ne.u32 %p2, %r4, 0;"
+replace = "setp.ge.u32 %p2, %r19, 5;"
+edits = [
+  { marker = "@COUNT", find = "1;", replace = "5;" },
+  { marker = "@ATOM", find = "atom.global.add.u32 %r5, [%rd1], 1;", replace = """setp.eq.u32 %p7, %r1, %r1;
+    vote.sync.ballot.b32 %r10, %p7, 0x1f;
+    neg.s32 %r11, %r10;
+    and.b32 %r11, %r11, %r10;
+    bfind.u32 %r12, %r11;
+    mov.u32 %r13, %laneid;
+    popc.b32 %r14, %r10;
+    setp.eq.u32 %p6, %r13, %r12;
+    @%p6 atom.global.add.u32 %r15, [%rd1], %r14;
+    shfl.sync.idx.b32 %r16, %r15, %r12, 31, 0x1f;
+    mov.u32 %r17, %lanemask_lt;
+    and.b32 %r17, %r17, %r10;
+    popc.b32 %r17, %r17;
+    add.u32 %r5, %r16, %r17;""" },
+]
+
+[[variants]]
+id = "XLANE"
+summary = "one lane (as good) running the aggregation written out in PTX with membermask 0x1 but reading lane 1, which does not execute the shuffle: undefined, a fault on both fronts (the faulting lane stops, so the warp's later bar.sync is reached by part of it: a violation on PTX, a deadlock on SASS)"
+expect = ["fault", "violation"]
+expect_sass = ["deadlock", "fault"]
+marker = "@ATOM"
+find = "atom.global.add.u32 %r5, [%rd1], 1;"
+replace = """setp.eq.u32 %p7, %r1, %r1;
+    vote.sync.ballot.b32 %r10, %p7, 0x1;
+    neg.s32 %r11, %r10;
+    and.b32 %r11, %r11, %r10;
+    bfind.u32 %r12, %r11;
+    mov.u32 %r13, %laneid;
+    popc.b32 %r14, %r10;
+    setp.eq.u32 %p6, %r13, %r12;
+    @%p6 atom.global.add.u32 %r15, [%rd1], %r14;
+    shfl.sync.idx.b32 %r16, %r15, 1, 31, 0x1;
+    mov.u32 %r17, %lanemask_lt;
+    and.b32 %r17, %r17, %r10;
+    popc.b32 %r17, %r17;
+    add.u32 %r5, %r16, %r17;"""
+
+[[variants]]
+id = "FULLMASK"
+summary = "MASK with the full membermask on the shuffle inside the branch: a real divergent deadlock. PTX: lanes 0-4 wait for lanes 5-31, which wait at bar.sync for them. SASS: ptxas puts WARPSYNC.ALL inside the branch; lanes 0-4 pass it with lanes 5-31 standing at the WARPSYNC.ALL before the bar.sync, then wait at that one while lanes 5-31 wait at BAR.SYNC (deadlock, divergent aligned barrier)"
+expect = ["deadlock"]
+expect_sass = ["deadlock", "violation"]
+marker = "@ENTER"
+find = "setp.ne.u32 %p2, %r4, 0;"
+replace = "setp.ge.u32 %p2, %r19, 5;"
+edits = [
+  { marker = "@COUNT", find = "1;", replace = "5;" },
+  { marker = "@ATOM", find = "atom.global.add.u32 %r5, [%rd1], 1;", replace = """setp.eq.u32 %p7, %r1, %r1;
+    vote.sync.ballot.b32 %r10, %p7, 0x1f;
+    neg.s32 %r11, %r10;
+    and.b32 %r11, %r11, %r10;
+    bfind.u32 %r12, %r11;
+    mov.u32 %r13, %laneid;
+    popc.b32 %r14, %r10;
+    setp.eq.u32 %p6, %r13, %r12;
+    @%p6 atom.global.add.u32 %r15, [%rd1], %r14;
+    shfl.sync.idx.b32 %r16, %r15, %r12, 31, 0xffffffff;
+    mov.u32 %r17, %lanemask_lt;
+    and.b32 %r17, %r17, %r10;
+    popc.b32 %r17, %r17;
+    add.u32 %r5, %r16, %r17;""" },
+]

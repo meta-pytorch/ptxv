@@ -169,6 +169,9 @@ const MUST_CERTIFY: &[(&str, &str, &str)] = &[
     ("e_bararv", "good", "sass"),
     ("e_barover", "good", "sass"),
     ("e_elect", "good", "ptx"),
+    // S-FENCE-SC: the publication certifies with the forced Fence-SC order (C-TICKET).
+    ("e_fence_sc_publish", "good", "ptx"),
+    ("e_fence_sc_publish", "good", "sass"),
     ("r2_cute_small", "good", "sass"),
     // Rung 3b: the whole MoE (5 launches, an 8-CTA cluster); gemm1 with stages wrapping
     // (try-acquire peeks, `walk_dead`).

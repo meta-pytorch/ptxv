@@ -31,7 +31,7 @@
 W:
     mov.u32 %r1, 42;
     st.global.u32 [%rd3], %r1;
-    fence.acq_rel.gpu;
+    fence.acq_rel.gpu; // @SCW
     atom.global.add.u32 %r2, [%rd1], 1;
     mov.u32 %r3, 1;
     mul.wide.u32 %rd4, %r2, 4;
@@ -40,7 +40,7 @@ W:
     bra DONE;
 R:
     atom.global.add.u32 %r2, [%rd1], 1;
-    fence.acq_rel.gpu;
+    fence.acq_rel.gpu; // @SCR
     ld.global.u32 %r3, [%rd3];
     mul.wide.u32 %rd4, %r2, 4;
     add.u64 %rd5, %rd2, %rd4;

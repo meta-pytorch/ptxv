@@ -2410,9 +2410,8 @@ impl Machine {
         }
         // PTX `.sync.aligned` instructions are convergence points: they execute once every
         // live lane of the warp has arrived (ptxas emits WARPSYNC before them). SASS `SHFL`
-        // too: it has no member mask, and ptxas places it after a `BSYNC` (reconvergence,
-        // which the model does not track) when lanes diverged before (rung 3a: lane 0 copies
-        // tensor-map templates, then all 32 lanes shuffle).
+        // is not one: it has no member mask and runs with the lanes that execute it (below;
+        // ptxas's warp-aggregated atomics run it with part of the warp, forum post 74).
         // PTX `vote.sync` / `redux.sync` / `shfl.sync` with the full mask
         // likewise wait for every live lane of the warp; a collective with subset membermasks
         // waits, for each mask its lanes name, for the live lanes of that mask (E-WARPCOLL).
@@ -2817,6 +2816,145 @@ impl Machine {
         }
     }
 
+    /// ASSUME(S-FENCE-SC): record a strong read-modify-write to global memory (its clock, and
+    /// the join of the clocks of the earlier ones to the location that are morally strong with
+    /// it, PTX ISA 8.7: those are in coherence order, 8.9.6, and the model performs them in
+    /// that order) for the forced Fence-SC edges of later SC fences (`sc_fence`). Only pairs
+    /// whose order the tool branches on count: not two lanes of one PTX step (lane order only),
+    /// not C-TICKET-ADDR claims in the certificate's runs (one order for all), not two
+    /// different widths. The thread ticks first, so an operation knows this write exactly when
+    /// its clock's entry for the thread reaches `own`.
+    fn sc_note_write(&mut self, t: usize, pc: u32, key: (u8, u32, u64), m: MemSync) {
+        if self.launch.hw_order || key.0 != 1 {
+            return;
+        }
+        // C-TICKET-ADDR (wellsync/perm.rs): the certificate's runs of a declared counter fix
+        // one claim order and stand for all of them, so no edge may come from that order
+        // (like the `claim` rule of the atom).
+        if (self.wlog.is_on() || self.perm.is_some())
+            && self.launch.perm.iter().any(|p| p.0 as u32 == key.1)
+        {
+            return;
+        }
+        let Some(log) = self.sc.clone() else {
+            return;
+        };
+        if log.full {
+            return;
+        }
+        self.tick(t);
+        let me = t as u32;
+        let strong = strong_code(m.scope);
+        let vc = self.threads[t].vc.clone();
+        let own = vc_get(&vc, me);
+        let warp = self.threads[t].warp;
+        let width = atom_width(&self.k, pc);
+        let mut pre = VC::new();
+        for w in log.writes.get(&key).into_iter().flatten() {
+            // An earlier write by a lane of this warp that this write does not know, at any
+            // instruction: the lanes of one step run in lane order only (MISS 140), and lanes
+            // of one converged warp at different instructions in step order only
+            // (E-WARP-ORDER), so their coherence order is not one the explorers branch on
+            // (a lane-step write also orders later writes of the other lanes: forum post 74
+            // review, fixtures/e_fence_sc_lanes INDIRECT / PCS). Lanes of a diverged warp are
+            // explored in both orders: leaving them out costs precision only.
+            let lane_step = (w.actor as usize) < self.threads.len()
+                && self.threads[w.actor as usize].warp == warp
+                && vc_get(&vc, w.actor) < w.own;
+            // Equal widths: on SASS `same_location` holds for any two accesses at one address
+            // (the instruction width is not the PTX element size), and a 64-bit and a 32-bit
+            // atomic are not morally strong (PTX ISA 8.7: complete overlap).
+            if !lane_step
+                && width.is_some()
+                && atom_width(&self.k, w.pc) == width
+                && self.morally_strong(w.actor, w.strong, w.pc, me, strong, pc)
+            {
+                vc_join(&mut pre, &w.vc);
+            }
+        }
+        let log = Arc::make_mut(self.sc.as_mut().expect("sc log"));
+        if log.nwrites >= SC_MAX_WRITES {
+            log.full = true;
+            return;
+        }
+        log.nwrites += 1;
+        log.writes.entry(key).or_default().push(ScWrite {
+            actor: me,
+            own,
+            strong,
+            pc,
+            vc,
+            pre,
+        });
+    }
+
+    /// ASSUME(S-FENCE-SC): an SC fence F2 (gpu / sys scope) by thread `t`. PTX ISA 9.5
+    /// section 8.9.4: "A fence.sc operation X synchronizes with a fence.sc operation Y if X
+    /// precedes Y in the Fence-SC order", a total order over morally strong fence.sc pairs
+    /// (8.9.3) that "cannot contradict causality order" (8.10.2). The model adds only the
+    /// edges every Fence-SC order of the execution has: F1 before F2 when F1 happens before a
+    /// strong write A, and a write B morally strong with A and after it in coherence order
+    /// happens before F2. F2 before F1 would make B precede A in causality order (B, F2 sw F1,
+    /// A), and the Coherence axiom (8.10.1) would put B before A in coherence order. F2
+    /// acquires the clock at each such F1. Edges the execution may or may not have (no such
+    /// A, B) are not added: fewer happens-before edges, so at most a false race, never a
+    /// missed one; and the edges depend only on happens-before and on the coherence order of
+    /// writes before F2 that the explorers branch on and the certificate fixes per run
+    /// (C-ORDER, C-TICKET; `sc_note_write` leaves out the pairs for which that does not hold),
+    /// so no schedule choice is added.
+    fn sc_fence(&mut self, t: usize, scope: Scope) {
+        if self.launch.hw_order {
+            return;
+        }
+        let Some(log) = self.sc.clone() else {
+            return;
+        };
+        let me = t as u32;
+        let device = self.launch.g(self.threads[t].cta as u32).device;
+        let sys = scope == Scope::Sys;
+        let cur = self.threads[t].vc.clone();
+        // The writes coherence-before some write that happens before F2.
+        let mut seen = VC::new();
+        for w in log.writes.values().flatten() {
+            if vc_get(&cur, w.actor) >= w.own {
+                vc_join(&mut seen, &w.pre);
+            }
+        }
+        // Morally strong fences (8.7: each one's scope includes the other's thread) that
+        // happen before one of them.
+        let mut acq: Vec<&VC> = Vec::new();
+        for f in log.fences.values() {
+            if f.actor != me
+                && (f.sys && sys || f.device == device)
+                && vc_get(&seen, f.actor) >= f.own
+            {
+                acq.push(&f.vc);
+            }
+        }
+        if !acq.is_empty() {
+            let th = self.threads[t].make_mut();
+            vc_join_many(&mut th.vc, &acq);
+        }
+        self.tick(t);
+        let vc = self.threads[t].vc.clone();
+        let own = vc_get(&vc, me);
+        let log = Arc::make_mut(self.sc.as_mut().expect("sc log"));
+        if log.full || log.fences.len() >= SC_MAX_FENCES {
+            log.full = true;
+            return;
+        }
+        log.fences.insert(
+            (me, own),
+            ScFence {
+                actor: me,
+                own,
+                device,
+                sys,
+                vc,
+            },
+        );
+    }
+
     /// A strong write by thread `t` at `pc`: it becomes the location's synchronization source.
     /// A read-modify-write continues the release sequence of the write it read, if it overlaps
     /// that write completely (S-SCOPE: observation order runs along morally strong pairs, PTX
@@ -2825,6 +2963,19 @@ impl Machine {
         let Some(key) = Self::sync_key(loc) else {
             return;
         };
+        // ASSUME(S-FENCE-SC): only atomics whose result is used: a state-count restriction
+        // (their order already shows in the returned values, so logging it splits no states
+        // that would merge). Soundness does not depend on it: leaving a pair out only drops
+        // edges.
+        if rmw
+            && self.sc.is_some()
+            && matches!(
+                self.k.code[pc as usize].op,
+                Op::Atom { d: Some(r), .. } if !(r.file == File::R && r.idx >= 255)
+            )
+        {
+            self.sc_note_write(t, pc, key, m);
+        }
         let th = &self.threads[t];
         // E-HW-L1 hardware ordering (Launch::hw_order, two-level check only): memory behind
         // the L1s is sequentially consistent, so a strong write passes on its writer's whole
@@ -2901,23 +3052,26 @@ impl Machine {
                 }
             }
         }
+        // Only the strict PTX level reads `pc` (`overlap_complete`) and `own` (the lane-step
+        // rule of `sync_observe_cell`): elsewhere the state stays as it was.
+        let strict_ptx = self.k.front == Front::Ptx && !self.launch.hw_order;
+        let own = if strict_ptx {
+            vc_get(&self.threads[t].vc, t as u32)
+        } else {
+            0
+        };
         self.syncs.insert(
             key,
             SyncCell {
                 writer: t as u32,
                 scope: m.scope,
-                // Only the strict PTX level reads it (`overlap_complete`): elsewhere the state
-                // stays as it was.
-                pc: if self.k.front == Front::Ptx && !self.launch.hw_order {
-                    pc
-                } else {
-                    u32::MAX
-                },
+                pc: if strict_ptx { pc } else { u32::MAX },
                 rel,
                 rel_scope,
                 cont,
                 cont_join,
                 rr,
+                own,
             },
         );
         if self.ring.is_some() {
@@ -3034,13 +3188,35 @@ impl Machine {
             }
             return;
         }
+        // MISS 140, PTX: the lanes of one converged instruction run in lane order only
+        // (`step_split_inner`; PTX leaves their order open and the explorers never run another
+        // one). A lane reading what a lane of the same warp wrote at the same instruction,
+        // without knowing that write, read it in that order alone: in the execution with the
+        // other order the reverse edge exists instead, so neither is forced. No
+        // synchronization with that lane's own release, nor with patterns continued from
+        // other lanes of the warp (fewer edges: at most a false race; a last-arriver chosen by
+        // its ticket among lanes of one step is such one). Patterns continued from writers
+        // outside the warp stay: the read synchronizes with them in either order (it reads
+        // the head's sequence directly or through the other lane's read-modify-write;
+        // fixtures/e_atom_lane_cont). `c.pc` is the instruction only at the strict PTX
+        // level.
+        let warp = self.threads[t].warp;
+        let same_warp =
+            |x: &Self, w: u32| (w as usize) < x.threads.len() && x.threads[w as usize].warp == warp;
+        let lane = c.pc == pc
+            && same_warp(self, c.writer)
+            && vc_get(&self.threads[t].vc, c.writer) < c.own;
         // Moral strength of the read and the write (observation order): overlap (above), and
         // scopes.
         if !hw && !self.scopes_mutual(c.writer, strong_code(c.scope), me, strong_code(m.scope)) {
             return;
         }
-        let own = hw || self.scope_includes(c.rel_scope, c.writer, me);
-        let cont: Vec<&SyncRel> = c.cont.iter().filter(|e| cont_in(self, e)).collect();
+        let own = !lane && (hw || self.scope_includes(c.rel_scope, c.writer, me));
+        let cont: Vec<&SyncRel> = c
+            .cont
+            .iter()
+            .filter(|e| cont_in(self, e) && !(lane && e.writer != me && same_warp(self, e.writer)))
+            .collect();
         if !own && cont.is_empty() {
             return;
         }
@@ -9791,6 +9967,11 @@ impl Machine {
             Op::Fence {
                 kind: k @ (FenceKind::Membar(sc) | FenceKind::Release(sc)),
             } => {
+                if self.sc.is_some() {
+                    if let Some(s) = sc_fence_scope(&self.k, pc as usize) {
+                        self.sc_fence(t, s);
+                    }
+                }
                 // ASSUME(S-REMOTE-INFLIGHT): a release at cluster scope or wider delivers the
                 // thread's remote operations first (PTX). SASS: `CGAERRBAR` does, which
                 // ptxas emits after MEMBAR.ALL.GPU for those; MEMBAR.ALL.GPU alone does not
@@ -18085,4 +18266,78 @@ mod actor_id_tests {
             }
         }
     }
+}
+
+/// ASSUME(S-FENCE-SC): caps on the SC log of one execution; beyond them nothing more is
+/// recorded (fewer forced edges: at most false races).
+const SC_MAX_FENCES: usize = 1 << 14;
+const SC_MAX_WRITES: usize = 1 << 12;
+
+/// ASSUME(S-FENCE-SC): the scope of the SC fence at `pc`, when it is one at gpu or sys scope:
+/// PTX `fence.sc.gpu` / `.sys`, `membar.gl` / `.sys` (PTX ISA 9.7.15.4: on sm_70 and higher
+/// `membar` is a synonym for `fence.sc`), and SASS `MEMBAR.SC.GPU` / `.SYS`, which ptxas 13.0
+/// emits for exactly those (and for `fence.sc.cluster`, as `MEMBAR.SC.GPU`; `fence.acq_rel`
+/// is `MEMBAR.ALL`). Narrower SC fences stay acquire-release fences.
+pub fn sc_fence_scope(k: &Kernel, pc: usize) -> Option<Scope> {
+    let i = k.code.get(pc)?;
+    match (k.front, &i.op) {
+        (
+            Front::Sass,
+            Op::Fence {
+                kind: FenceKind::Release(s @ (Scope::Gpu | Scope::Sys)),
+            },
+        ) if i.text.contains("MEMBAR.SC.") && sass_sc_acquires(k, pc, i.guard) => Some(*s),
+        (
+            Front::Ptx,
+            Op::Fence {
+                kind: FenceKind::Membar(s @ (Scope::Gpu | Scope::Sys)),
+            },
+        ) if i.text.contains("fence.sc.")
+            || i.text.contains("membar.gl")
+            || i.text.contains("membar.sys") =>
+        {
+            Some(*s)
+        }
+        _ => None,
+    }
+}
+
+/// ASSUME(S-FENCE-SC), SASS: `MEMBAR.SC` is only the release half of ptxas's `fence.sc`
+/// lowering (`MEMBAR.SC.GPU; ERRBAR; CGAERRBAR; CCTL.IVALL`), and the strict SASS level
+/// acquires only at `CCTL.IVALL` (`FenceKind::Acquire`). The MEMBAR counts as an SC fence
+/// only when that acquire follows within the lowering's window under the same guard, with
+/// nothing in between but `ERRBAR` (a no-op here) and `CGAERRBAR` (no memory access, no
+/// control flow): the thread then performs the acquire before any later memory access.
+fn sass_sc_acquires(k: &Kernel, pc: usize, guard: Pred) -> bool {
+    for d in 1..=3 {
+        let Some(j) = k.code.get(pc + d) else {
+            return false;
+        };
+        match j.op {
+            Op::Fence {
+                kind: FenceKind::Acquire,
+            } => return j.guard == guard,
+            Op::Nop
+            | Op::Fence {
+                kind: FenceKind::CgaErrBar,
+            } => continue,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// ASSUME(S-FENCE-SC): the access width of the atomic at `pc`, per element (`elem_bytes`): a
+/// vector atomic is one operation per element (PTX ISA 9.5 section 8.2.4), so a 2x32-bit vector
+/// atomic and a 64-bit scalar one at one address are not morally strong.
+fn atom_width(k: &Kernel, pc: u32) -> Option<u8> {
+    match k.code.get(pc as usize)?.op {
+        Op::Atom { .. } => Some(elem_bytes(k, pc)),
+        _ => None,
+    }
+}
+
+/// ASSUME(S-FENCE-SC): does the kernel have an SC fence at gpu or sys scope?
+pub fn has_sc_fence(k: &Kernel) -> bool {
+    (0..k.code.len()).any(|pc| sc_fence_scope(k, pc).is_some())
 }

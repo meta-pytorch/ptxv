@@ -1,0 +1,98 @@
+name = "e_fence_sc_publish"
+description = """
+S-FENCE-SC, forum post 74: ATen reduce_kernel's global_reduce publication. Each thread stores
+its partial, runs membar.gl (__threadfence(), = fence.sc.gpu; SASS MEMBAR.SC.GPU) and bar.sync;
+thread 0's relaxed atom.add on the semaphore finds the last CTA, whose threads run membar.gl
+again (pytorch#128455) and read every CTA's partials with plain loads. The partials of threads
+other than thread 0 reach the last CTA only through the Fence-SC order (PTX ISA 8.9.3, 8.9.4):
+a producer's fence comes before the consumer's in every execution where the consumer's atomic
+follows the producer's in coherence order (8.10.1, 8.10.2). Treating fence.sc as acq_rel made
+good a false race. 2 CTAs of 64 threads; out[i] = 2 i + 264."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [2, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "stage"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+
+[[buffers]]
+name = "sem"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "stage"
+
+[[params]]
+kind = "ptr"
+buffer = "sem"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "both fences (the code since pytorch#128455): clean"
+expect = ["clean"]
+
+[[variants]]
+id = "NOCFENCE"
+summary = "the last CTA's fence after the atomic removed (the code before pytorch#128455): a race, the consumer's plain loads are ordered after no producer store but thread 0's own"
+expect = ["race"]
+marker = "@CFENCE"
+replace = "<delete>"
+
+[[variants]]
+id = "NOPFENCE"
+summary = "the producers' fence before bar.sync removed: a race"
+expect = ["race"]
+marker = "@PFENCE"
+replace = "<delete>"
+
+[[variants]]
+id = "ACQREL"
+summary = "both fences fence.acq_rel.gpu instead of fence.sc: thread 0's release pattern covers only its own store, so the other threads' partials race (Fence-SC is what orders them)"
+expect = ["race"]
+marker = "@PFENCE"
+find = "membar.gl;"
+replace = "fence.acq_rel.gpu;"
+edits = [{ marker = "@CFENCE", find = "membar.gl;", replace = "fence.acq_rel.gpu;" }]
+
+[[variants]]
+id = "CTASCOPE"
+summary = "the semaphore atomics at CTA scope: the two CTAs' atomics are not morally strong (PTX ISA 8.7), so coherence does not order them and no Fence-SC order is forced: a race"
+expect = ["race"]
+marker = "@ATOM"
+find = "atom.global.add.u32"
+replace = "atom.relaxed.cta.global.add.u32"
+
+[[variants]]
+id = "NOCCTL"
+summary = "SASS: the consumer's CCTL.IVALL after its MEMBAR.SC.GPU NOPed. The strict SASS level acquires only at CCTL.IVALL, so the MEMBAR alone is no SC fence (forum post 74 review): a race. PTX unchanged: clean"
+expect = ["clean"]
+expect_sass = ["race"]
+patch = [{ at = "@0x2b0", nop = true }]
+
+[[variants]]
+id = "ACQREL_NOCCTL"
+summary = "control: ACQREL with the consumer's CCTL.IVALL NOPed on SASS: a race"
+expect = ["race"]
+patch = [{ at = "@0x2b0", nop = true }]
+marker = "@PFENCE"
+find = "membar.gl;"
+replace = "fence.acq_rel.gpu;"
+edits = [{ marker = "@CFENCE", find = "membar.gl;", replace = "fence.acq_rel.gpu;" }]

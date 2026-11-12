@@ -1,0 +1,16 @@
+e_shfl_warpagg on GB300 (driver 580.126.20, ptxas 13.0, sm_103a), 2026-11-12.
+`ptxv probe <case> --variant V --timeout 10`, 5 runs per variant, each a fresh launch:
+
+variant   result                      model (both fronts)
+good      completed, out = 2  (5/5)    clean, out = 2
+NOBSYNC   completed, out = 2  (5/5)    clean, out = 2
+MULTI     completed, out = 10 (5/5)    clean, out = 10
+MASK      completed, out = 10 (5/5)    clean, out = 10
+XLANE     completed, out = 0  (5/5)    fault (lane 1 is not executing the shuffle;
+                                       GB300 reads 0, the count misses, nobody writes)
+FULLMASK  hang, killed after 10 s (5/5) deadlock
+
+`ptxv hw <case> --variant good --runs 200`: matches the simulator bitwise, 200 of 200 runs.
+XLANE was rerun (5/5, with good 5/5 alongside) after it became a one-lane variant;
+the earlier five-lane form (lanes 0-4 reading lane 5) also read 0, 5/5.
+FULLMASK is the positive control for the deadlock verdict; XLANE for the undefined read.

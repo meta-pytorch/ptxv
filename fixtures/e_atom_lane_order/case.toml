@@ -1,0 +1,64 @@
+name = "e_atom_lane_order"
+description = """
+MISS 140: an acquire-release edge read off the lane order of one converged PTX atom step is
+not forced (PTX leaves the order of the lanes open; the model runs lane order only). Two lanes
+store data[lane], fence, claim a ticket, fence; lane 1 reads data[0]. A race on PTX; clean on
+SASS (E-LOCKSTEP)."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [2, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[buffers]]
+name = "sem"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[params]]
+kind = "ptr"
+buffer = "sem"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "lane 1 reads lane 0's store: a race in executions where lane 1's atom comes first (PTX)"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "LANE0"
+summary = "lane 0 reads lane 1's store instead (a race in lane order too): control"
+expect = ["race"]
+expect_sass = ["clean"]
+marker = "@WHO"
+find = "setp.ne.u32 %p1, %r1, 1;"
+replace = "setp.ne.u32 %p1, %r1, 0;"
+
+[[variants]]
+id = "NOREAD"
+summary = "no lane reads: clean; the certificate refuses on PTX (two lanes of one step claim the counter, and only lane order is run)"
+expect = ["clean"]
+marker = "@WHO"
+find = "setp.ne.u32 %p1, %r1, 1;"
+replace = "setp.ne.u32 %p1, %r1, 99;"

@@ -90,7 +90,199 @@ MUTANTS = [
         "crates/sim/src/exec.rs",
         "        if self.k.front == Front::Ptx\n            && (inst.op.is_warp_aligned()",
         "        if (self.k.front == Front::Ptx || matches!(inst.op, Op::Shfl { .. }))\n            && (inst.op.is_warp_aligned()",
-        [("e_warpcoll_split", "NOBSYNC", "sass", [])],
+        [
+            ("e_warpcoll_split", "NOBSYNC", "sass", []),
+            # Forum post 74: ptxas's warp-aggregated atomic (one lane at the SHFL, the rest at
+            # the BSYNC) deadlocks.
+            ("e_shfl_warpagg", "good", "sass", []),
+        ],
+    ),
+    # exec.rs `split_enabled`: the 2026-11-07 rule, a SASS SHFL waiting for every live lane
+    # not parked at a BSYNC, another SHFL or a WARPSYNC: the warp-aggregated atomic with the
+    # other lanes at a barrier instead of the BSYNC deadlocks (forum post 74).
+    SrcMutant(
+        "shfl-wait-bsync",
+        "crates/sim/src/exec.rs",
+        "        if self.k.front == Front::Ptx\n            && (inst.op.is_warp_aligned()",
+        "        if self.k.front == Front::Sass && matches!(inst.op, Op::Shfl { .. }) {\n"
+        "            let w = self.threads[members[0]].warp;\n"
+        "            let at = |u: usize| self.k.code.get(self.threads[u].pc as usize).map(|i| &i.op);\n"
+        "            let live = self\n"
+        "                .warp_threads(w)\n"
+        "                .filter(|&u| {\n"
+        "                    let th = &self.threads[u];\n"
+        "                    th.st != St::Exited\n"
+        "                        && !(!members.contains(&u)\n"
+        "                            && (matches!(at(u), Some(Op::Bsync { .. }))\n"
+        "                                || th.pc != pc && matches!(at(u), Some(Op::Shfl { .. }))\n"
+        "                                || th.st == St::WarpSync))\n"
+        "                })\n"
+        "                .count();\n"
+        "            if members.len() < live {\n"
+        "                return false;\n"
+        "            }\n"
+        "        }\n"
+        "        if self.k.front == Front::Ptx\n            && (inst.op.is_warp_aligned()",
+        [("e_shfl_warpagg", "NOBSYNC", "sass", [])],
+    ),
+    # exec.rs `split_enabled`: forum post 74's proposed rule (a local patch): a SASS SHFL
+    # waits for the warp's other live lanes unless every one of them is parked at a BSYNC /
+    # WARPSYNC or at an aligned BAR at another pc. An early split still waits for lanes on
+    # their way and merges with them: MISS 39's wrong-clean (e_warpcoll_split NOBSYNC clean).
+    SrcMutant(
+        "shfl-wait-parked",
+        "crates/sim/src/exec.rs",
+        "        if self.k.front == Front::Ptx\n            && (inst.op.is_warp_aligned()",
+        "        if self.k.front == Front::Sass && matches!(inst.op, Op::Shfl { .. }) {\n"
+        "            let w = self.threads[members[0]].warp;\n"
+        "            let live = self\n"
+        "                .warp_threads(w)\n"
+        "                .filter(|&u| self.threads[u].st != St::Exited)\n"
+        "                .count();\n"
+        "            let parked = self.warp_threads(w).all(|u| {\n"
+        "                let th = &self.threads[u];\n"
+        "                members.contains(&u)\n"
+        "                    || th.st == St::Exited\n"
+        "                    || th.pc != pc\n"
+        "                        && self.k.code.get(th.pc as usize).is_some_and(|i| {\n"
+        "                            (th.st == St::WarpSync\n"
+        "                                && matches!(i.op, Op::Bsync { .. } | Op::WarpSync { .. }))\n"
+        "                                || (th.st == St::Run && i.op.is_aligned_bar())\n"
+        "                        })\n"
+        "            });\n"
+        "            if members.len() < live && !parked {\n"
+        "                return false;\n"
+        "            }\n"
+        "        }\n"
+        "        if self.k.front == Front::Ptx\n            && (inst.op.is_warp_aligned()",
+        [("e_warpcoll_split", "NOBSYNC", "sass", []), ("e_shfl_warpagg", "good", "sass", [])],
+    ),
+    # exec.rs `exec` (SASS SHFL arm): a source lane that is not executing the SHFL reads the
+    # executing lane's own register instead of faulting (a defined value for an undefined read).
+    SrcMutant(
+        "shfl-undef-src",
+        "crates/sim/src/exec.rs",
+        "                    let Some(st) = by_lane[src] else {",
+        "                    let Some(st) = by_lane[src].or(Some(t)) else {",
+        [("e_shfl_warpagg", "XLANE", "sass", [])],
+    ),
+    # exec.rs `exec_combined` (PTX shfl.sync with a membermask): the same for the PTX front.
+    SrcMutant(
+        "shfl-undef-src-ptx",
+        "crates/sim/src/exec.rs",
+        "                    let Some((st, sq)) = by_lane[src] else {",
+        "                    let Some((st, sq)) = by_lane[src].or(Some((t, q))) else {",
+        [("e_shfl_warpagg", "XLANE", "ptx", []), ("e_warpcoll_mask", "XSRC", "ptx", [])],
+    ),
+    # exec.rs `sc_note_write` (S-FENCE-SC): writes count whatever their moral strength:
+    # CTA-scope atomics of different CTAs (no coherence order between them) force an order.
+    SrcMutant(
+        "sc-any-write",
+        "crates/sim/src/exec.rs",
+        "                && self.morally_strong(w.actor, w.strong, w.pc, me, strong, pc)\n            {\n                vc_join(&mut pre, &w.vc);",
+        "                && true\n            {\n                vc_join(&mut pre, &w.vc);",
+        [],
+        # The class stays `race` (the CTA-scope atomics race with each other); the test checks
+        # that the partials still race.
+        tests=[("ptxv-sim", "fixtures", "fence_sc_publication")],
+    ),
+    # exec.rs `sc_fence` (S-FENCE-SC): SC fences ordered as executed, without the forcing pair
+    # of atomics. Two lanes' fences then order a plain store and load that race in every PTX
+    # execution (fixtures/e_fence_sc_unforced: the fence step runs in lane order only).
+    SrcMutant(
+        "sc-drop-forcing",
+        "crates/sim/src/exec.rs",
+        "                && vc_get(&seen, f.actor) >= f.own\n",
+        "                && (true || vc_get(&seen, f.actor) >= f.own)\n",
+        [],
+        tests=[("ptxv-sim", "fixtures", "fence_sc_unforced_orders")],
+    ),
+    # exec.rs `sc_note_write`: the coherence order of two lanes of one converged PTX atom step
+    # (lane order only, MISS 140) forces a Fence-SC edge again (fixtures/e_fence_sc_lanes good
+    # clean on PTX).
+    SrcMutant(
+        "sc-lane-step",
+        "crates/sim/src/exec.rs",
+        "            let lane_step = (w.actor as usize) < self.threads.len()\n",
+        "            let lane_step = false && (w.actor as usize) < self.threads.len()\n",
+        [],
+        tests=[("ptxv-sim", "fixtures", "fence_sc_unforced_orders")],
+    ),
+    # exec.rs `sc_note_write`: the lane-step exclusion keyed on the instruction again (round 1):
+    # a lane-step write still orders a later write of another lane at another pc, and lanes of
+    # a converged warp at consecutive instructions run in step order only
+    # (fixtures/e_fence_sc_lanes INDIRECT / PCS clean on PTX, PCS certified).
+    SrcMutant(
+        "sc-lane-pc",
+        "crates/sim/src/exec.rs",
+        "            let lane_step = (w.actor as usize) < self.threads.len()\n",
+        "            let lane_step = w.pc == pc && (w.actor as usize) < self.threads.len()\n",
+        [],
+        tests=[("ptxv-sim", "fixtures", "fence_sc_unforced_orders")],
+    ),
+    # exec.rs `sc_note_write`: claims on a declared C-TICKET-ADDR counter are logged in the
+    # certificate's runs, so the run's claim order creates a Fence-SC edge
+    # (fixtures/e_ticket_addr_fence SC certified on PTX).
+    SrcMutant(
+        "sc-ticket-addr",
+        "crates/sim/src/exec.rs",
+        "        if (self.wlog.is_on() || self.perm.is_some())\n            && self.launch.perm.iter().any(|p| p.0 as u32 == key.1)\n",
+        "        if false\n            && self.launch.perm.iter().any(|p| p.0 as u32 == key.1)\n",
+        [],
+        tests=[("ptxv-sim", "fixtures", "e_ticket_addr_fence_acquired_claims_refused")],
+    ),
+    # exec.rs `sc_fence_scope`: a SASS MEMBAR.SC counts as an SC fence without the CCTL.IVALL
+    # that is its acquire at the strict SASS level (fixtures/e_fence_sc_publish NOCCTL clean).
+    SrcMutant(
+        "sc-membar-acq",
+        "crates/sim/src/exec.rs",
+        "        ) if i.text.contains(\"MEMBAR.SC.\") && sass_sc_acquires(k, pc, i.guard) => Some(*s),",
+        "        ) if i.text.contains(\"MEMBAR.SC.\") => Some(*s),",
+        [],
+        tests=[("ptxv-sim", "fixtures", "fence_sc_publication")],
+    ),
+    # exec.rs `sc_note_write`: atomics of different widths force a Fence-SC order (on SASS
+    # `same_location` holds for any two accesses at one address: fixtures/e_fence_sc_mixed
+    # good clean on SASS).
+    SrcMutant(
+        "sc-width",
+        "crates/sim/src/exec.rs",
+        "                && atom_width(&self.k, w.pc) == width\n",
+        "",
+        [],
+        tests=[("ptxv-sim", "fixtures", "fence_sc_unforced_orders")],
+    ),
+    # exec.rs `sync_observe_cell` (MISS 140): a lane synchronizes with what a lane of its warp
+    # wrote at the same PTX instruction in lane order (fixtures/e_atom_lane_order good clean).
+    SrcMutant(
+        "obs-lane-step",
+        "crates/sim/src/exec.rs",
+        "        let lane = c.pc == pc\n",
+        "        let lane = false && c.pc == pc\n",
+        [],
+        tests=[("ptxv-sim", "fixtures", "atom_lane_order_edges")],
+    ),
+    # exec.rs `sync_observe_cell` (MISS 140 precision): the lane-step rule drops release
+    # sequences continued from writers outside the warp too (fixtures/e_atom_lane_cont good: a
+    # false race).
+    SrcMutant(
+        "obs-lane-cont",
+        "crates/sim/src/exec.rs",
+        "            .filter(|e| cont_in(self, e) && !(lane && e.writer != me && same_warp(self, e.writer)))\n",
+        "            .filter(|e| cont_in(self, e) && !lane)\n",
+        [],
+        tests=[("ptxv-sim", "fixtures", "atom_lane_order_edges")],
+    ),
+    # wellsync/ticket.rs (MISS 140): C-TICKET accepts claims by lanes of one warp that
+    # happen-before does not order and drops the other order as infeasible
+    # (fixtures/e_atom_lane_order NOREAD certified).
+    SrcMutant(
+        "ticket-warp",
+        "crates/sim/src/wellsync/ticket.rs",
+        "                    if p.ev.actor != t && !p.ev.hb(t, a.ev.seq, &a.vc) {\n",
+        "                    if false && p.ev.actor != t && !p.ev.hb(t, a.ev.seq, &a.vc) {\n",
+        [],
+        tests=[("ptxv-sim", "fixtures", "atom_lane_order_edges")],
     ),
     # exec.rs `warpsync_release`: the GB300 profile's BSYNC waits for lanes parked at a
     # WARPSYNC.COLLECTIVE again (E-HW-BSYNC-COLLECTIVE): the profile verdict deadlocks.

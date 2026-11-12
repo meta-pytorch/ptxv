@@ -1,0 +1,46 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// MISS 140 precision: the lane-step rule must keep release sequences continued from writers
+// outside the warp. Thread 32: data = 42; fence.acq_rel.gpu; atom.add(sem, 1) (Z). Lanes 0 and
+// 1 of warp 0: t = atom.add(sem, 1) in one step; lane 1 reads data only when t == 2, i.e. when
+// Z and lane 0's add precede its own. Lane 1 then reads from lane 0's add, which continues Z's
+// release sequence, or from Z itself: either way it synchronizes with thread 32 at its fence.
+// No race in any execution; the output depends on the claim order (nondeterministic).
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 pdata, .param .u64 psem, .param .u64 pout)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<8>;
+    ld.param.u64 %rd1, [pdata];
+    ld.param.u64 %rd2, [psem];
+    ld.param.u64 %rd3, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32 %r1, %tid.x;
+    setp.lt.u32 %p1, %r1, 2;
+    @%p1 bra LANES;
+    setp.ne.u32 %p2, %r1, 32;
+    @%p2 bra DONE;
+    mov.u32 %r2, 42;
+    st.global.u32 [%rd1], %r2;
+    fence.acq_rel.gpu;
+    atom.global.add.u32 %r3, [%rd2], 1;
+    bra DONE;
+LANES:
+    atom.global.add.u32 %r4, [%rd2], 1;
+    setp.ne.u32 %p3, %r1, 1;
+    setp.ne.or.u32 %p3, %r4, 2, %p3;
+    @%p3 bra DONE;
+    fence.acq_rel.gpu;
+    ld.global.u32 %r5, [%rd1];
+    st.global.u32 [%rd3], %r5;
+DONE:
+    ret;
+}

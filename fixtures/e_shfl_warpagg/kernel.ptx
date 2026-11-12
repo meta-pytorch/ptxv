@@ -1,0 +1,53 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// ATen reduce_kernel's mark_block_finished: inside `if (tid == 0)` one lane does
+// `prev = atomicAdd(&sem, 1)`; the CTA that takes the last count writes it to out.
+// ptxas warp-aggregates the atomic inside the divergent region: VOTEU.ANY / FLO / POPC elect
+// a leader among the lanes that are there, the leader's ATOMG adds their count, and SHFL.IDX
+// hands its result to them (the other lanes wait at the BSYNC).
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 psem, .param .u64 pout)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<6>;
+    .reg .pred %p<8>;
+    .shared .align 4 .u32 last;
+    ld.param.u64 %rd1, [psem];
+    ld.param.u64 %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, %tid.y;
+    mov.u32 %r3, %nctaid.y;
+    or.b32 %r4, %r1, %r2;                        // tid.x == 0 && tid.y == 0, as ATen writes it
+    mad.lo.u32 %r19, %r2, 32, %r1;               // linear thread index (MULTI and after)
+    setp.ne.u32 %p1, %r4, 0;
+    @%p1 bra INIT;
+    st.shared.u32 [last], 0;
+INIT:
+    bar.sync 0;
+    mov.u32 %r9, 1;                              // @COUNT lanes per CTA that add
+    setp.ne.u32 %p2, %r4, 0;                     // @ENTER
+    @%p2 bra JOIN;
+    atom.global.add.u32 %r5, [%rd1], 1;          // @ATOM
+    mul.lo.u32 %r6, %r3, %r9;
+    add.u32 %r6, %r6, -1;
+    setp.ne.u32 %p3, %r5, %r6;
+    @%p3 bra JOIN;
+    add.u32 %r7, %r5, 1;
+    st.shared.u32 [last], %r7;
+JOIN:
+    bar.sync 0;
+    ld.shared.u32 %r8, [last];
+    setp.eq.u32 %p4, %r8, 0;
+    @%p4 bra DONE;
+    @%p1 bra DONE;
+    st.global.u32 [%rd2], %r8;
+DONE:
+    ret;
+}

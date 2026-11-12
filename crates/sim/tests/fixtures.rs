@@ -9674,10 +9674,14 @@ fn e_ticket_addr_permutation_certificate() {
 /// row. The reader synchronizes with the writer only when its add reads from the writer's, so
 /// happens-before depends on the claim order. The certificate's runs give claims no
 /// synchronization, so its run has the race and it refuses; the explorer finds the race too.
+/// SC / SC_SWAP: both fences fence.sc.gpu. The run's claim order must not create a Fence-SC
+/// edge either (S-FENCE-SC skips declared counters in the certificate's runs; until the forum
+/// post 74 review it did not, and SC certified as clean up to permutation on PTX). On SASS the
+/// claim's result reaches a SHFL, which refuses the certificate first.
 #[test]
 fn e_ticket_addr_fence_acquired_claims_refused() {
     let case = Case::load(root().join("fixtures/e_ticket_addr_fence")).unwrap();
-    for v in ["good", "SWAP"] {
+    for v in ["good", "SWAP", "SC", "SC_SWAP"] {
         for front in ["ptx", "sass"] {
             let k = kernel(&case, v, front);
             let launch = build_launch(&case, &k).unwrap();
@@ -9685,7 +9689,8 @@ fn e_ticket_addr_fence_acquired_claims_refused() {
             let o = ptxv_sim::wellsync::certify(m.clone());
             assert!(o.verdict.is_none(), "{front} {v}: certified");
             assert!(
-                o.reasons.iter().any(|r| r.contains("race")),
+                v.starts_with("SC") && front == "sass"
+                    || o.reasons.iter().any(|r| r.contains("race")),
                 "{front} {v}: {:?}",
                 o.reasons
             );
@@ -9749,6 +9754,218 @@ fn e_cluster_life_remote_store() {
 #[test]
 fn shfl_does_not_wait_for_the_rest_of_the_warp() {
     binary_classes("e_warpcoll_split");
+}
+
+/// Forum post 74 (E-WARPCOLL): ptxas's warp-aggregated atomic inside divergent code (ATen
+/// reduce_kernel's mark_block_finished). One lane runs VOTEU.ANY / FLO / POPC / @leader ATOMG /
+/// SHFL.IDX inside a BSSY region while the rest of the warp waits at the BSYNC: clean on both
+/// fronts, with the count the CTAs add. A model where the SHFL waits for every live lane
+/// (E-ALIGNED's old text) deadlocks on good; one where it waits only for lanes not parked at a
+/// BSYNC (2026-11-07 to 11-10) deadlocks on NOBSYNC. Partial membermasks on the PTX front (MASK)
+/// are clean, a source lane outside the executing lanes is a fault (XLANE), and the full mask
+/// inside the branch is a real deadlock (FULLMASK).
+#[test]
+fn warp_aggregated_atomic_in_divergent_code() {
+    let case = Case::load(root().join("fixtures/e_shfl_warpagg")).unwrap();
+    // The SASS shape the variants rely on: the aggregation between BSSY and BSYNC (ptxas 13.0),
+    // with the BSYNC at 0x210 (NOBSYNC's patch).
+    let k = kernel(&case, "good", "sass");
+    let at = |pat: &str| k.code.iter().position(|i| i.text.contains(pat));
+    let seq = [
+        "BSSY.RECONVERGENT",
+        "VOTEU.ANY",
+        "FLO.U32",
+        "POPC",
+        "ATOMG.E.ADD",
+        "SR_LTMASK",
+        "SHFL.IDX",
+        "BSYNC.RECONVERGENT",
+    ];
+    let pos: Vec<Option<usize>> = seq.iter().map(|p| at(p)).collect();
+    assert!(
+        pos.iter().all(|p| p.is_some()) && pos.windows(2).all(|w| w[0] < w[1]),
+        "ptxas no longer emits the warp-aggregated atomic: {pos:?}"
+    );
+    let bsync = &k.code[pos[7].unwrap()];
+    assert_eq!(bsync.loc, 0x210, "NOBSYNC patches 0x210: {}", bsync.text);
+    assert!(
+        k.code[pos[4].unwrap()].guard.reg.is_some(),
+        "the leader's ATOMG is guarded"
+    );
+    // The CTA taking the last count writes it: 2 CTAs x 1 lane, or x 5 lanes.
+    for (v, want) in [("good", 2u32), ("NOBSYNC", 2), ("MULTI", 10), ("MASK", 10)] {
+        for front in ["ptx", "sass"] {
+            let k = kernel(&case, v, front);
+            let launch = build_launch(&case, &k).unwrap();
+            let r = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+            assert!(
+                !r.outputs.is_empty() && r.outputs.iter().all(|o| o[..4] == want.to_le_bytes()),
+                "{v}/{front}: {:?}",
+                r.outputs
+            );
+        }
+    }
+}
+
+/// e_shfl_warpagg (above): the clean variants' classes on both fronts (stateful and DPOR).
+#[test]
+fn warp_aggregated_atomic_variants() {
+    for v in ["good", "NOBSYNC", "MULTI", "MASK"] {
+        both("e_shfl_warpagg", v);
+    }
+}
+
+/// e_shfl_warpagg: the undefined source lane (fault), one test per front.
+#[test]
+fn warp_aggregated_atomic_xlane_ptx() {
+    check("e_shfl_warpagg", "XLANE", "ptx");
+}
+#[test]
+fn warp_aggregated_atomic_xlane_sass() {
+    check("e_shfl_warpagg", "XLANE", "sass");
+}
+
+/// e_shfl_warpagg: the real divergent deadlock.
+#[test]
+fn warp_aggregated_atomic_fullmask() {
+    both("e_shfl_warpagg", "FULLMASK");
+}
+
+/// S-FENCE-SC (forum post 74, MISS 126): ATen reduce_kernel's global_reduce publication
+/// (membar.gl; bar.sync; relaxed atom.add semaphore; the last CTA's membar.gl; plain loads of
+/// every CTA's partials). good is clean on both fronts, and certifies, only through the forced
+/// Fence-SC order; without the consumer's fence (before pytorch#128455), without the
+/// producers', with fence.acq_rel, or with CTA-scope semaphore atomics it races.
+#[test]
+fn fence_sc_publication() {
+    for v in [
+        "good",
+        "NOCFENCE",
+        "NOPFENCE",
+        "ACQREL",
+        "CTASCOPE",
+        "NOCCTL",
+        "ACQREL_NOCCTL",
+    ] {
+        both("e_fence_sc_publish", v);
+    }
+    let case = Case::load(root().join("fixtures/e_fence_sc_publish")).unwrap();
+    // NOCCTL's patch: the consumer's CCTL.IVALL, the acquire half of ptxas's fence.sc lowering
+    // (MEMBAR.SC.GPU; ERRBAR; CGAERRBAR; CCTL.IVALL).
+    let k = kernel(&case, "good", "sass");
+    let i = k.code.iter().position(|i| i.loc == 0x2b0).expect("0x2b0");
+    assert!(
+        k.code[i].text.contains("CCTL.IVALL") && k.code[i - 3].text.contains("MEMBAR.SC.GPU"),
+        "NOCCTL patches 0x2b0: {} after {}",
+        k.code[i].text,
+        k.code[i - 3].text
+    );
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "good", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let m = Machine::new(Arc::new(k), Arc::new(launch));
+        let c = ptxv_sim::wellsync::certify(m.clone());
+        assert!(
+            c.verdict.as_ref().is_some_and(|v| v.classes() == ["clean"]),
+            "good/{front}: not certified: {:?}",
+            c.reasons
+        );
+        // The race on the partials, not only on the semaphore: CTA-scope atomics of different
+        // CTAs are not morally strong (PTX ISA 8.7), so they force no Fence-SC order.
+        let k = kernel(&case, "CTASCOPE", front);
+        let launch = build_launch(&case, &k).unwrap();
+        let r = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+        assert!(
+            r.findings
+                .iter()
+                .any(|f| f.kind == "race" && f.msg.contains("(stage)")),
+            "CTASCOPE/{front}: no race on the partials: {:#?}",
+            r.findings
+        );
+        // out[i] = (100 + i) + (164 + i).
+        let r = explore(m, 2_000_000);
+        let want: Vec<u8> = (0..64u32).flat_map(|i| (2 * i + 264).to_le_bytes()).collect();
+        assert!(
+            !r.outputs.is_empty() && r.outputs.iter().all(|o| *o == want),
+            "good/{front}: {:?}",
+            r.outputs
+        );
+    }
+}
+
+/// S-FENCE-SC, forum post 74 review: no forced Fence-SC edge without a coherence order the
+/// explorers branch on, or between atomics that are not morally strong.
+/// - e_fence_sc_lanes: the order of two lanes of one converged PTX atom step (lane order only,
+///   MISS 140); READER0 is the clean control. INDIRECT (a later atom of lane 1 at another pc)
+///   and PCS (the two claims at consecutive instructions of the converged warp: step order
+///   only) race too, also under the certificate (PCS was certified clean when the rule keyed
+///   on one instruction; forum post 74 review round 2).
+/// - e_fence_sc_unforced: SC fences without atomics (kills srcmut sc-drop-forcing).
+/// - e_fence_sc_mixed: a 64-bit and a 32-bit atomic on one semaphore (on SASS the rule
+///   compares instruction widths); SAME32 is the clean control.
+///
+/// Stateful explorer, DPOR and the certificate's fallback on both fronts.
+#[test]
+fn fence_sc_unforced_orders() {
+    for (f, vs) in [
+        (
+            "e_fence_sc_lanes",
+            &[
+                "good",
+                "READER0",
+                "INDIRECT",
+                "INDIRECT_READER0",
+                "PCS",
+                "PCS_READER0",
+            ][..],
+        ),
+        ("e_fence_sc_unforced", &["good"][..]),
+        ("e_fence_sc_mixed", &["good", "SAME32"][..]),
+    ] {
+        for v in vs {
+            both(f, v);
+            certified_or_expected(f, v);
+        }
+    }
+}
+
+/// MISS 140: an acquire-release edge read off the lane order of one converged PTX atom step is
+/// not forced; C-TICKET refuses two claims of one PTX step (fixtures/e_atom_lane_order NOREAD:
+/// before, it ran one claim order and dropped the other as infeasible).
+#[test]
+fn atom_lane_order_edges() {
+    for v in ["good", "LANE0", "NOREAD"] {
+        both("e_atom_lane_order", v);
+        certified_or_expected("e_atom_lane_order", v);
+    }
+    // The rule keeps release sequences continued from writers outside the warp (precision).
+    both("e_atom_lane_cont", "good");
+    let case = Case::load(root().join("fixtures/e_atom_lane_order")).unwrap();
+    let k = kernel(&case, "NOREAD", "ptx");
+    let launch = build_launch(&case, &k).unwrap();
+    let c = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)));
+    assert!(c.verdict.is_none(), "NOREAD/ptx certified: {:?}", c.reasons);
+}
+
+/// The certificate either certifies the expected classes or falls back to an exploration that
+/// finds them (`ptxv check --certify`), on both fronts.
+fn certified_or_expected(name: &str, v: &str) {
+    let case = Case::load(root().join("fixtures").join(name)).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, v, front);
+        let launch = build_launch(&case, &k).unwrap();
+        let m = Machine::new(Arc::new(k), Arc::new(launch));
+        let want = case.variant(v).unwrap().expect_for(front);
+        let c = ptxv_sim::wellsync::certify(m.clone());
+        match c.verdict {
+            Some(ver) => assert_eq!(ver.classes(), want, "{name}/{v}/{front}: certified"),
+            None => {
+                let r = explore(m, 1_000_000);
+                assert!(r.complete, "{name}/{v}/{front}: incomplete");
+                assert_eq!(r.classes(), want, "{name}/{v}/{front}: fallback");
+            }
+        }
+    }
 }
 
 /// Every variant of a binary-only fixture gets its expected classes (stateful explorer and

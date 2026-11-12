@@ -1,0 +1,44 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// MISS 140: the lanes of one converged PTX atom step run in lane order only. Each lane stores
+// data[lane]; fence.sc.gpu; ticket = atom.add(sem, 1); fence.sc.gpu. Lane 1 (chosen by lane
+// id, not by ticket) then reads data[0], lane 0's store. In executions where lane 1's atom
+// comes first in coherence order, lane 1 synchronizes with nothing and the read races. Until
+// the fix the acquire-release edge lane 1 read off the lane order (lane 0's atom first) made it
+// clean, and C-TICKET dropped the other claim order as infeasible.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 pdata, .param .u64 psem, .param .u64 pout)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [pdata];
+    ld.param.u64 %rd2, [psem];
+    ld.param.u64 %rd3, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32 %r1, %tid.x;
+    add.u32 %r2, %r1, 100;
+    mul.wide.u32 %rd4, %r1, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    st.global.u32 [%rd5], %r2;
+    fence.sc.gpu;                                // @FA
+    atom.global.add.u32 %r3, [%rd2], 1;          // @ATOM
+    fence.sc.gpu;                                // @FB
+    setp.ne.u32 %p1, %r1, 1;                     // @WHO
+    @%p1 bra DONE;
+    sub.u32 %r5, 1, %r1;
+    mul.wide.u32 %rd7, %r5, 4;
+    add.s64 %rd8, %rd1, %rd7;
+    ld.global.u32 %r4, [%rd8];
+    add.s64 %rd6, %rd3, %rd4;
+    st.global.u32 [%rd6], %r4;
+DONE:
+    ret;
+}

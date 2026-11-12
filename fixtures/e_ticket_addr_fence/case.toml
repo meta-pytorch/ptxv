@@ -62,3 +62,39 @@ expect = ["nondeterministic", "race"]
 marker = "@R"
 find = "setp.eq.u32 %p1, %r0, 32; // @R"
 replace = "setp.eq.u32 %p1, %r0, 0;"
+
+[[variants]]
+id = "SC"
+summary = "both fences fence.sc.gpu: the Fence-SC edge the claim order would create (S-FENCE-SC) is no edge of the certificate's runs either (forum post 74 review)"
+marker = "@SCW"
+find = "fence.acq_rel.gpu; // @SCW"
+replace = "fence.sc.gpu;"
+expect = ["nondeterministic", "race"]
+
+[[variants.edits]]
+marker = "@SCR"
+find = "fence.acq_rel.gpu; // @SCR"
+replace = "fence.sc.gpu;"
+
+[[variants]]
+id = "SC_SWAP"
+summary = "SC with the reader thread 0 and the writer thread 32"
+marker = "@W"
+find = "setp.eq.u32 %p0, %r0, 0; // @W"
+replace = "setp.eq.u32 %p0, %r0, 32;"
+expect = ["nondeterministic", "race"]
+
+[[variants.edits]]
+marker = "@R"
+find = "setp.eq.u32 %p1, %r0, 32; // @R"
+replace = "setp.eq.u32 %p1, %r0, 0;"
+
+[[variants.edits]]
+marker = "@SCW"
+find = "fence.acq_rel.gpu; // @SCW"
+replace = "fence.sc.gpu;"
+
+[[variants.edits]]
+marker = "@SCR"
+find = "fence.acq_rel.gpu; // @SCR"
+replace = "fence.sc.gpu;"

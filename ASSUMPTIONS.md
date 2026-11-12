@@ -1153,7 +1153,40 @@ independent threads.
   that order open; `PTXV_ATOM_LANES=rev` reverses it to show what depends on it (rung 3b:
   flashinfer's routing assigns each token its slot within an expert with `ATOMS.ADD`, so the
   permutation depends on it, the MoE output does not). The certificate does not rely on it
-  (C-ORDER refuses such atomics).
+  (C-ORDER refuses such atomics; on PTX C-TICKET refuses claims by lanes of one warp that
+  happen-before does not order, instead of dropping the other lane or step order as
+  infeasible: wellsync/ticket.rs).
+  - PTX, MISS 140 (2026-11-12): a lane of the same warp at the same instruction reads no
+    synchronization off that order. A lane does not synchronize with the release of what a
+    lane of its warp wrote at the same instruction without its knowledge, nor with patterns
+    that write continued from other lanes of the warp (`exec.rs` `sync_observe_cell`;
+    `SyncCell::own`); patterns continued from writers outside the warp stay, since the read
+    synchronizes with them in either order (fixtures/e_atom_lane_cont). S-FENCE-SC takes no
+    coherence pair from a lane of B's warp that B does not know of. In the execution with the
+    other order the reverse edge exists instead, so neither is forced
+    (fixtures/e_atom_lane_order good: lane 1 reads lane 0's store after both claim with
+    `atom.add` between `fence.sc` fences; it was clean). The cost: a last arriver chosen by
+    its ticket among lanes of one PTX step no longer synchronizes with the others (a false
+    race).
+  - **Known gaps (PTX, explorers):**
+    - Outcomes that depend on lane order through the returned values are seen in lane order
+      only. Two lanes of one step claim a ticket, and lane 1 reads lane 0's unsynchronized
+      store only when its ticket is 0: both explorers report clean, `PTXV_ATOM_LANES=rev` a
+      race. DPOR has the same blind spot when the lanes reach the atom by different paths and
+      the model merges them (the stateful explorer finds the schedule where one lane runs the
+      atom before the other arrives; DPOR treats that reordering as equivalent). The lane
+      orders of a PTX atomic step (MISS 74) close these.
+    - Observers outside the warp (MISS 176): one atomic step updates every lane at once, so
+      another thread reads the old or the final value, never an intermediate lane's. A thread
+      that reads the value of the first lane's write in the other order synchronizes only with
+      that lane's release sequence; in the model it reads the final cell, which continues
+      every lane's release, and is clean where PTX races. Lane orders of one step do not close
+      this; the step has to be split so that other threads run between its lanes.
+    - Lanes at different instructions of a converged warp run in step order only
+      (E-WARP-ORDER): a synchronization read off that order (a fence-release / fence-acquire
+      pattern across two consecutive instructions of one warp) is not covered by the
+      same-instruction rule, and the warp-order report is suppressed once the warp has
+      diverged (`wdiv`).
 - Memory instructions joined: `LD*` / `ST*` / atomics / `LDTM` and (2026-11-05) `STTM`: FA4's
   softmax warps store P with `STTM`, wait (`FENCE.VIEW.ASYNC.T`) and one elected lane per warp
   arrives on the MMA warp's mbarrier; without the join every other lane's `STTM` raced with
@@ -1248,9 +1281,11 @@ wait until all threads in the membermask execute" it). Rung 2's CuTeDSL kernel n
 leader that branched into an if-block and the rest of the warp reach the next `elect.sync` at
 different times. Without the rule each part elected its own leader and both initialized the
 same mbarriers.
-- SASS `SHFL` is gated the same way (all live lanes of the warp arrive first): ptxas only
-  emits it where the warp is converged, reconverging with `BSYNC` after divergence, and the
-  model treats `BSSY`/`BSYNC` as no-ops.
+- SASS `SHFL` is **not** a convergence point: it has no member mask and runs with the lanes
+  that execute it (E-WARPCOLL, "SASS `SHFL`"). Until 2026-11-07 this entry said it was gated
+  like the instructions above (all live lanes of the warp first, `BSSY`/`BSYNC` as no-ops),
+  and the model did that, which deadlocked ptxas's warp-aggregated atomics in divergent code
+  (forum post 74: every multi-CTA ATen `reduce_kernel`).
 - **Aligned named barriers** (`bar.sync` / `bar.arrive` = `barrier.*.aligned`, and every
   SASS `BAR` outside a `WARPSYNC.COLLECTIVE` region): every live lane of a warp executes the
   same barrier instruction together. A split waits at one until the rest of the warp is there;
@@ -1288,22 +1323,79 @@ same mbarriers.
 - If wrong: *false alarm*.
 
 ### E-WARPCOLL · code
-**`stmatrix` / `STSM` and `shfl.sync` / `SHFL` move data among the 32 lanes of a converged
-warp in one step**: every lane's source registers are read, then every destination is written.
-- Where: `exec.rs` `exec` (warp-level arms).
+**`stmatrix` / `STSM` and `shfl.sync` / `SHFL` move data among the lanes that execute them
+together, in one step**: every executing lane's source registers are read, then every
+destination is written. For `stmatrix` and full-mask `shfl.sync` that is the whole converged
+warp; for a SASS `SHFL` it is the lanes that reach it (below).
+- Where: `exec.rs` `exec` (warp-level arms), `split_enabled` (which collectives wait).
 - Status: **argued.** Both are `.sync.aligned` in PTX (E-ALIGNED), so the whole warp executes
   them together. A partial warp gives an error, not a verdict. Rung 2's Triton epilogue stages
   its tile through `stmatrix`, and its output matches GB300 bitwise.
-- SASS `SHFL` (no member mask) does not wait for the rest of the warp (MISS 39, 2026-11-10):
-  it runs with the split that reaches it, and reading a lane outside that split is a fault.
-  Validated on GB300 (`fixtures/e_warpcoll_split`, `fixtures/e_warpcoll_bin`;
-  CUDA 13.0): with the BSYNC before the SHFL removed, the half-warp that arrives first
-  shuffles alone and reads 0 from the inactive lanes, 1000 of 1000 runs (also with the other
-  half 100000 loop iterations behind); each half running its own fast-path SHFL reads 0 the
-  same way. Until 2026-11-10 the SHFL waited for every other live lane not parked at a
-  `BSYNC`, another `SHFL` or a `WARPSYNC`, which merged the early split with the late one and
-  reported the joined exchange as clean. The convergence ptxas relies on comes from
-  `BSYNC` / `WARPSYNC` / `BRA.DIV`, which the simulator models (E-BSYNC, E-COLLECTIVE).
+- **SASS `SHFL` is a partial-warp instruction; it never waits** (MISS 39, 2026-11-10; forum
+  post 74, 2026-11-11). The rule:
+  - A `SHFL` step is run by the split that executes it: the runnable lanes of the warp at that
+    pc whose guard holds (`Machine::splits`; `split_enabled` adds no wait for a SASS `SHFL`).
+    Each lane reads its source register from its source lane within that split. Out-of-range
+    sources (clamp, segment mask) read the lane's own register with the predicate false.
+  - A source lane outside the split (at another pc, parked at a `BSYNC` or `WARPSYNC`, guarded
+    off, or exited) is undefined: a `fault` (`shfl reads lane N, which is not executing it`),
+    never a value. GB300 returns 0 there (below); the model does not use that.
+  - Convergence before a `SHFL` comes only from the instructions that model it: `BSYNC`
+    (E-BSYNC), `WARPSYNC` / `BRA.DIV` / `WARPSYNC.COLLECTIVE` (E-COLLECTIVE), aligned `BAR`
+    (E-ALIGNED). Lanes that reach the pc separately, with none of these between, run it
+    separately in some schedule (the explorer never merges them by waiting), so a split that
+    reads a lane still on its way faults (e_warpcoll_split NOBSYNC). Lanes standing at the pc
+    together run it together, a merge the hardware may or may not make. The explorer never
+    splits a merged group: the separate runs exist only in the schedules where one part
+    reaches the pc before the other arrives. The certificate keeps such lanes in separate
+    groups and refuses unless the groups are ordered (C-WARP).
+  - Deadlocks around a partial-warp shuffle come from those instructions, not from the
+    `SHFL`: ptxas's `WARPSYNC.ALL` for a full-mask `shfl.sync` inside a branch
+    (e_shfl_warpagg FULLMASK: deadlock and a divergent aligned barrier), a `BSYNC` waiting for
+    a lane that never arrives, a `WARPSYNC Rm` naming a lane that never arrives.
+  - Evidence (ptxas): ptxas 13.0 warp-aggregates an atomic whose result is used inside
+    divergent code: `VOTEU.ANY UR; FLO.U32 Rl, UR; POPC Rn, UR; ISETP.EQ P, Rl, laneid;
+    @P ATOMG.E.ADD Rr, [a], Rn; S2R SR_LTMASK; LOP3; POPC; SHFL.IDX Rd, Rr, Rl, 0x1f`, all
+    between `BSSY.RECONVERGENT` and the `BSYNC.RECONVERGENT` the other lanes wait at, with no
+    `WARPSYNC` before the `SHFL` (ATen reduce_kernel's mark_block_finished,
+    `if (threadIdx.x == 0 && threadIdx.y == 0) atomicAdd(...)`: one lane runs it). That code
+    is correct only if the `SHFL` runs with the lanes present and the leader `VOTEU.ANY` elects
+    among them is readable: the compiler relies on this rule. Evidence (documentation): CUDA C++
+    Programming Guide, warp shuffle functions: a thread may only read from a thread actively
+    taking part in the shuffle; the value read from an inactive thread is undefined (hence the
+    fault). This is a strict-level rule (ptxas and documentation); the GB300 runs below
+    validate it and the gb300 profile adds nothing to it.
+  - Evidence (GB300; `fixtures/e_warpcoll_split`, `fixtures/e_warpcoll_bin`; CUDA 13.0):
+    with the BSYNC before the SHFL removed, the half-warp that arrives first shuffles alone and
+    reads 0 from the inactive lanes, 1000 of 1000 runs (also with the other half 100000 loop
+    iterations behind); each half running its own fast-path SHFL reads 0 the same way. The
+    captured `x.sum(0)` (float32 1024x128: `reduce_kernel<128,4>`, grid (1,16,1), block (32,4))
+    completes with torch's result. fixtures/e_shfl_warpagg on GB300 (gb300.txt, 2026-11-12,
+    5 runs each): ptxas's aggregation with one lane (good) and with the BSYNC NOPed (NOBSYNC)
+    give the count 2, with five lanes (MULTI, and MASK in PTX) 10, as the model; reading a lane
+    outside the executing lanes (XLANE) returns 0 (the model: fault); the full mask inside the
+    branch (FULLMASK) hangs, the positive control for the deadlock verdict.
+  - Before: until 2026-11-07 a SASS `SHFL` waited for every live lane of its warp (the
+    E-ALIGNED gate), so every warp-aggregated atomic in divergent code deadlocked: the lane at
+    the `SHFL` waited for the lanes at the `BSYNC`, which waited for it (forum post 74: all 16
+    CTAs of the `x.sum(0)` launch blocked at the `SHFL.IDX`). From 2026-11-07 to 11-10 it
+    waited for every live lane not parked at a `BSYNC`, another `SHFL` or a `WARPSYNC`: still a
+    false deadlock when the other lanes stood at a barrier (e_shfl_warpagg NOBSYNC), and a miss
+    when an early split was merged with a late one and the joined exchange reported clean
+    (MISS 39).
+  - Fixtures: e_shfl_warpagg (good, NOBSYNC, MULTI, MASK clean with the count the CTAs add;
+    XLANE fault; FULLMASK deadlock), e_warpcoll_split, e_warpcoll_bin. Source mutants
+    `shfl-wait`, `shfl-wait-bsync`, `shfl-wait-parked`, `shfl-undef-src`,
+    `shfl-undef-src-ptx` (tools/mutate/srcmut.py).
+  - Rejected alternative (forum post 74's local patch): run the `SHFL` on its split only when
+    every other live lane is parked at a `BSYNC` / `WARPSYNC` or at an aligned `BAR` at
+    another pc, and wait otherwise. Letting it run in those cases is right (the `SHFL` does not
+    wait in any case, so it hides no deadlock or divergent-barrier violation: those are
+    reported at the barrier, E-ALIGNED, whatever the shuffling lanes did before), but the wait
+    that remains merges an early split with lanes still on their way (MISS 39, a wrong clean:
+    mutant `shfl-wait-parked` makes e_warpcoll_split NOBSYNC clean) and deadlocks when the
+    other lanes wait anywhere else for the shuffling ones (by construction, not a fixture: an
+    mbarrier poll, a non-aligned barrier's collective path).
 - PTX `redux.sync` with a membermask naming a subset of the warp (an immediate other than
   0xffffffff, or a register; 2026-11-07): the lanes the mask names (live ones) execute it
   together and it reduces over them. A mismatch between the executing lanes and the mask, or
@@ -1325,6 +1417,13 @@ warp in one step**: every lane's source registers are read, then every destinati
   half skips, `redux.sync` groups split across two instructions): PTX front bitwise = GB300
   (50/50 scrubbed). shfl_mask's `skip_half` (32 lanes on 0xffff) is a violation. ptxas's
   `WARPSYNC.EXCLUSIVE Rm` before a quad-mask `VOTE` is refused on the SASS front.
+  Inside divergent code (forum post 74; e_shfl_warpagg, PTX front): a warp-aggregated atomic
+  written out with `vote.sync.ballot` / `shfl.sync.idx` on the partial mask 0x1f of the lanes
+  inside the branch is clean (MASK); a source lane outside the mask is a fault (XLANE, also
+  e_warpcoll_mask XSRC); the full mask there waits for lanes that wait at `bar.sync` for the
+  shuffling ones, a deadlock (FULLMASK). The PTX of a plain `atomicAdd` in divergent code has
+  no shuffle (ptxas adds it). `activemask` (`__activemask()`, cooperative groups'
+  `coalesced_threads()`) is not lowered by the PTX front: such kernels are refused there.
 - If wrong: *miss* only if the hardware could expose a half-done exchange, which a
   `.sync.aligned` instruction cannot.
 
@@ -5565,7 +5664,8 @@ S-MBAR-SCOPE (until 2026-11-09 they were treated as sufficient). Since rung 1f:
   release fence; `CCTL.IVALL` is an acquire fence (ptxas: `ld.acquire` = `LDG.STRONG` +
   `CCTL.IVALL`, `st.release` = `MEMBAR` + `STG.STRONG`, `fence.acq_rel` = `MEMBAR` +
   `CCTL.IVALL`).
-- `fence.sc` is treated as `fence.acq_rel`. mbarrier `.release.cta/.cluster` and
+- `fence.sc` is treated as `fence.acq_rel`, plus the Fence-SC edges every execution has at
+  gpu / sys scope (S-FENCE-SC, since 2026-11-12). mbarrier `.release.cta/.cluster` and
   `try_wait.acquire.cluster` scopes are still treated as sufficient.
 - Scope defaults never strengthen the model (2026-11-06 audit). A PTX `fence.sc` /
   `fence.acq_rel` without a scope, and a SASS `MEMBAR` without one, are refused (before: `.sys`,
@@ -5573,7 +5673,8 @@ S-MBAR-SCOPE (until 2026-11-09 they were treated as sufficient). Since rung 1f:
   weakest (before: `.gpu`); ptxas prints a token on every global and generic form in the
   corpus, and the only token-less forms are `ATOMS.*` (shared memory, CTA scope anyway) and
   `ATOM.E.CAST.SPIN` (the shared-memory leg of a generic atomic). Weaker readings that remain:
-  `MEMBAR.SC` and `fence.sc` act as `MEMBAR.ALL` / `fence.acq_rel` (no SC total order), and
+  `MEMBAR.SC` and `fence.sc` act as `MEMBAR.ALL` / `fence.acq_rel` plus only the forced part
+  of the Fence-SC order (S-FENCE-SC), and
   `atom` / `red` without a scope are `.gpu`, the PTX ISA default.
 - Where: `exec.rs` `morally_strong`, `scope_includes`, `sync_publish`, `sync_observe`,
   `acquire_pending`, `same_location`, `elem_bytes`, `SyncCell::cont`; `ptx` `mem_sync`; `sass`
@@ -5589,6 +5690,107 @@ S-MBAR-SCOPE (until 2026-11-09 they were treated as sufficient). Since rung 1f:
   acquire fence `CCTL.IVALL` has no scope, so a `.gpu` acquire fence of another GPU's release
   synchronizes there (B56 above).
 - Retire: scopes on mbarrier operations.
+
+### S-FENCE-SC · code
+**The model orders two SC fences when every Fence-SC order of the execution does.** PTX ISA 9.5:
+"The Fence-SC order is an acyclic partial order, determined at runtime, that relates every pair
+of morally strong fence.sc operations" (8.9.3); "A fence.sc operation X synchronizes with a
+fence.sc operation Y if X precedes Y in the Fence-SC order" (8.9.4); Fence-SC axiom (8.10.2):
+"For a pair of morally strong fence.sc operations F1 and F2, if F1 precedes F2 in causality
+order, then F1 must precede F2 in Fence-SC order"; Coherence axiom (8.10.1): "If a write W
+precedes an overlapping write W' in causality order, then W must precede W' in coherence
+order." Moral strength (8.7): same thread, or "each operation is strong and specifies a scope
+that includes the thread executing the other operation", same proxy, and memory operations
+overlap completely; a memory fence is a strong operation (8.4).
+- Rule. SC fences F1 and F2 at gpu / sys scope, morally strong (both `.sys`, or on the same
+  GPU), F1 before F2 when: F1 happens before a global atomic A whose result is used (`atom`
+  with a destination; SASS `ATOMG` with one other than `RZ`), and such an atomic B morally
+  strong with A, after A in coherence order (the order the model performs them in), happens
+  before F2. Then F2 acquires the clock at F1 (F1 synchronizes with F2). Proof: in
+  any execution with that coherence order, the Fence-SC order relates F1 and F2; if F2 came
+  first, F2 synchronizes with F1 and B precedes F2 precedes F1 precedes A in causality order,
+  so the Coherence axiom puts B before A in coherence order, a contradiction.
+- Only these forced edges are added; a Fence-SC edge some executions have and others lack is
+  not (an under-approximation of happens-before: at most a false race, never a missed one). An
+  edge is forced only for a coherence order the tool branches on, so the rule reads only pairs
+  whose order is one: A and B by threads of different warps (DPOR and the stateful explorer
+  branch on the order of dependent writes; the certificate fixes it with C-ORDER, and C-TICKET
+  runs each claim order with its own happens-before), or A known to B. Excluded, since one
+  order stands for all there (forum post 74 review, rounds 1 and 2):
+  - A by a lane of B's warp that B does not know of, at any instruction: the lanes of one
+    converged PTX step run in lane order only (MISS 140), and lanes of a converged warp at
+    different instructions in step order only (E-WARP-ORDER); a lane-step write also orders a
+    later write of another lane. fixtures/e_fence_sc_lanes good, INDIRECT (lane 1's later atom
+    at another pc) and PCS (the two claims at consecutive instructions; it was certified clean)
+    race on PTX; they were clean when the exclusion keyed on one instruction. Lanes of a
+    diverged warp are explored in both orders, so leaving them out costs precision only. On
+    SASS E-LOCKSTEP orders the lanes of a converged warp, so their writes are known.
+  - Claims on a declared C-TICKET-ADDR counter in the certificate's runs and reruns, which fix
+    one claim order and stand for every order (wellsync/perm.rs: a claim creates no edge;
+    fixtures/e_ticket_addr_fence SC certified as clean up to permutation on PTX).
+
+  With those exclusions there is no new schedule choice and no new state branching, and the
+  certificate's monotonicity holds (more happens-before gives more edges). The log is part of
+  the state. Fences are kept by (thread, clock), so the order unrelated fences ran in does not
+  split states. Only atomics whose result is used are logged: that is a state-count
+  restriction, and soundness does not depend on it (any morally strong pair forces the order;
+  dropping a pair only drops edges). Logging every read-modify-write split the states of
+  commuting signal atomics: the 4-rank reduce-scatter sm_rs_w4 went from 321,836 states to over
+  2,000,000; with the restriction it has 321,836 again.
+- Equal widths. A and B must have the same access width per element (`exec.rs` `atom_width`,
+  `elem_bytes`: a vector atomic is one operation per element, 8.2.4). On PTX
+  `same_location` already requires complete overlap; on SASS it holds for any two accesses at
+  one address (the instruction width is not the PTX element size), and a 64-bit and a 32-bit
+  atomic are not morally strong (8.7; fixtures/e_fence_sc_mixed good was clean on SASS).
+- Not covered (no edge, possibly a false race): plain strong stores, reductions and atomics
+  with unused results as A or B; B a read that reads from A (the Causality axiom, 8.10.6, would
+  force the same order); pairs of lanes of one PTX step (above, also a last arriver chosen by
+  its ticket among them); fences at CTA or cluster scope; `.sys` fences on different GPUs; more
+  than 2^14 fences or 2^12 writes in one execution; and the GB300 profile's hardware order
+  (`Launch::hw_order`, which orders these writes by itself).
+- Which fences (`exec.rs` `sc_fence_scope`): PTX `fence.sc.gpu` / `.sys` and `membar.gl` /
+  `.sys` ("On sm_70 and higher membar is a synonym for fence.sc", 9.7.15.4); SASS
+  `MEMBAR.SC.GPU` / `.SYS`. ptxas 13.0 (sm_103a) lowers `fence.sc.gpu` and `membar.gl` to
+  `MEMBAR.SC.GPU; ERRBAR; CGAERRBAR; CCTL.IVALL`, `fence.sc.sys` to `MEMBAR.SC.SYS; ...`,
+  `fence.sc.cluster` to `MEMBAR.SC.GPU; ...`, `fence.sc.cta` to `MEMBAR.SC.CTA`, and
+  `fence.acq_rel.gpu` / `fence.release.gpu` to `MEMBAR.ALL.GPU; ...`: `MEMBAR.SC` is what
+  ptxas emits for `fence.sc` only (CUDA's `__threadfence()` is `membar.gl`). A SASS
+  `MEMBAR.SC.GPU` from `fence.sc.cluster` gets the gpu-scope rule, as the instruction ptxas
+  uses for `fence.sc.gpu`. The strict SASS level models `MEMBAR` as a release only and
+  acquires at `CCTL.IVALL`, so a SASS `MEMBAR.SC` is an SC fence only when the lowering's
+  `CCTL.IVALL` follows within three instructions under the same guard, with only `ERRBAR`
+  and `CGAERRBAR` between (`sass_sc_acquires`; no memory access or branch in between, so
+  acquiring at the MEMBAR equals acquiring at the CCTL). Without it there is no acquire at the
+  strict level and no edge (fixtures/e_fence_sc_publish NOCCTL, the consumer's CCTL.IVALL NOPed:
+  a race; it was clean).
+- Where: `exec.rs` `sc_fence`, `sc_note_write` (from `sync_publish`), `sc_fence_scope`,
+  `sass_sc_acquires`, `atom_width`, `has_sc_fence`; `machine.rs` `ScLog` (`Machine::sc`, part
+  of the state hash).
+- Status: **argued** (PTX ISA text above; ptxas lowering checked by compiling each form). On
+  PTX it uses only the ISA text. On SASS the rule itself adds no GB300 behaviour, but the
+  happens-before it reads ("F1 happens before A", "B happens before F2") is the SASS front's,
+  which includes E-LOCKSTEP and E-WARP-ORDER edges (GB300-validated, not PTX): a SASS edge is
+  as good as those.
+- Evidence: fixtures/e_fence_sc_publish, ATen reduce_kernel's global_reduce publication
+  (forum post 74, MISS 126): every thread stores a partial, `membar.gl`, `bar.sync`, thread 0's
+  relaxed `atom.add` on a semaphore; the last CTA's threads `membar.gl` again and load every
+  partial. good is clean on both fronts and certifies (before: a race, the producers' partials
+  of threads other than thread 0 reach the last CTA only through the Fence-SC order); NOCFENCE
+  (the consumer's fence removed: the code before pytorch#128455), NOPFENCE, ACQREL (both
+  fences `fence.acq_rel.gpu`) and CTASCOPE (the semaphore atomics at CTA scope, so not morally
+  strong across CTAs; the test checks the partials race, not only the semaphore) race on both
+  fronts. Forum post 74 review: e_fence_sc_lanes (good, INDIRECT, PCS: a race on PTX, the
+  READER0 controls clean),
+  e_fence_sc_unforced (SC fences without atomics: a race on PTX), e_fence_sc_mixed (good: a
+  race on both fronts, SAME32 clean), e_fence_sc_publish NOCCTL / ACQREL_NOCCTL,
+  e_ticket_addr_fence SC / SC_SWAP (the certificate refuses). Source mutants, all caught:
+  `sc-any-write` (writes that are not morally strong force the order; the CTASCOPE partials
+  check), `sc-drop-forcing` (fences ordered as executed: e_fence_sc_unforced), `sc-lane-step`,
+  `sc-lane-pc` (the exclusion keyed on one instruction: INDIRECT, PCS),
+  `sc-ticket-addr`, `sc-membar-acq`, `sc-width`.
+- If wrong: *miss* (an edge the hardware does not give hides a race). The edges follow from the
+  ISA text by the proof above.
+- Retire: never (PTX semantics); extend to reads (8.10.6) and narrower scopes if needed.
 
 ### S-RED-ASYNC · code
 **`red.async.release.{gpu,sys}.global.add` is a red of that semantics and scope

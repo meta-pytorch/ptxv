@@ -1,0 +1,64 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// ATen reduce_kernel's global_reduce publication: every thread stores its partial, runs
+// __threadfence() (membar.gl = fence.sc.gpu) and __syncthreads(); thread 0's relaxed
+// atomicAdd on a semaphore finds the last CTA, whose threads run __threadfence() again and
+// read every CTA's partials (the second fence is pytorch#128455's fix).
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 pstage, .param .u64 psem, .param .u64 pout)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<6>;
+    .shared .align 4 .u32 last;
+    ld.param.u64 %rd1, [pstage];
+    ld.param.u64 %rd2, [psem];
+    ld.param.u64 %rd3, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, %ctaid.x;
+    mov.u32 %r3, %nctaid.x;
+    mad.lo.u32 %r4, %r2, 64, %r1;
+    add.u32 %r5, %r4, 100;
+    mul.wide.u32 %rd4, %r4, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    st.global.u32 [%rd5], %r5;
+    membar.gl;                                   // @PFENCE
+    bar.sync 0;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra JOIN;
+    atom.global.add.u32 %r6, [%rd2], 1;          // @ATOM
+    add.u32 %r7, %r3, -1;
+    setp.eq.u32 %p2, %r6, %r7;
+    selp.u32 %r8, 1, 0, %p2;
+    st.shared.u32 [last], %r8;
+JOIN:
+    bar.sync 0;
+    ld.shared.u32 %r9, [last];
+    setp.eq.u32 %p3, %r9, 0;
+    @%p3 bra DONE;
+    membar.gl;                                   // @CFENCE
+    mov.u32 %r10, 0;
+    mov.u32 %r11, 0;
+LOOP:
+    mad.lo.u32 %r12, %r11, 64, %r1;
+    mul.wide.u32 %rd6, %r12, 4;
+    add.s64 %rd7, %rd1, %rd6;
+    ld.global.u32 %r13, [%rd7];
+    add.u32 %r10, %r10, %r13;
+    add.u32 %r11, %r11, 1;
+    setp.lt.u32 %p4, %r11, %r3;
+    @%p4 bra LOOP;
+    mul.wide.u32 %rd8, %r1, 4;
+    add.s64 %rd9, %rd3, %rd8;
+    st.global.u32 [%rd9], %r10;
+DONE:
+    ret;
+}

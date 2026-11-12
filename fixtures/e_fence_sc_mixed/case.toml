@@ -1,0 +1,54 @@
+name = "e_fence_sc_mixed"
+description = """
+S-FENCE-SC: a 64-bit and a 32-bit atomic on one semaphore are not morally strong, so they
+force no Fence-SC order: a race on both fronts. SAME32 (both 32-bit) is the publication
+pattern of e_fence_sc_publish: clean."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [2, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "stage"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+
+[[buffers]]
+name = "sem"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "stage"
+
+[[params]]
+kind = "ptr"
+buffer = "sem"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "CTA 0 claims with atom.add.u64, CTA 1 with atom.add.u32: a race"
+expect = ["race"]
+
+[[variants]]
+id = "SAME32"
+summary = "control: both 32-bit, clean"
+expect = ["clean"]
+marker = "@ATOM64"
+find = "@%p5 atom.global.add.u64 %rd10, [%rd2], 1;"
+replace = "@%p5 atom.global.add.u32 %r6, [%rd2], 1;"
+edits = [{ marker = "@CVT", replace = "<delete>" }]

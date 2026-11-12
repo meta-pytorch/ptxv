@@ -676,6 +676,49 @@ pub fn strong_code(s: Scope) -> u8 {
 /// Morally strong with everything (mbarrier objects, legacy atomics).
 pub const STRONG_SYS: u8 = Scope::Sys as u8 + 1;
 
+/// ASSUME(S-FENCE-SC): one SC fence (`fence.sc` / `membar` at gpu / sys scope, SASS
+/// `MEMBAR.SC.GPU` / `.SYS`) as `exec.rs` `sc_fence` recorded it.
+#[derive(Clone, Debug, Hash)]
+pub struct ScFence {
+    pub actor: u32,
+    /// The fence's own clock entry: an operation knows the fence (the fence happens before
+    /// it) exactly when its clock's entry for `actor` is at least this.
+    pub own: u32,
+    pub device: u32,
+    pub sys: bool,
+    /// The clock at the fence (what a later fence it synchronizes with acquires).
+    pub vc: VC,
+}
+
+/// ASSUME(S-FENCE-SC): one strong global read-modify-write as `exec.rs` `sc_note_write`
+/// recorded it.
+#[derive(Clone, Debug, Hash)]
+pub struct ScWrite {
+    pub actor: u32,
+    /// As `ScFence::own`.
+    pub own: u32,
+    pub strong: u8,
+    pub pc: u32,
+    /// The clock at the write.
+    pub vc: VC,
+    /// The join of the clocks of the morally strong read-modify-writes to the same location
+    /// before it in coherence order (the schedule's order of writes to the location).
+    pub pre: VC,
+}
+
+/// ASSUME(S-FENCE-SC): the run's SC fences (gpu / sys scope) and strong global
+/// read-modify-writes. Fences are keyed by (actor, own clock), so the log does not depend on
+/// the order unrelated fences ran in (states still merge).
+#[derive(Clone, Debug, Default, Hash)]
+pub struct ScLog {
+    pub fences: BTreeMap<(u32, u32), ScFence>,
+    /// Per location (`Machine::syncs` key), its read-modify-writes in coherence order.
+    pub writes: BTreeMap<(u8, u32, u64), Vec<ScWrite>>,
+    pub nwrites: usize,
+    /// The caps were reached: later fences and writes are not recorded (fewer edges).
+    pub full: bool,
+}
+
 /// The last strong write of a location, as a synchronization source (S-SCOPE).
 #[derive(Clone, Debug)]
 pub struct SyncCell {
@@ -702,6 +745,10 @@ pub struct SyncCell {
     /// E-READ-DONE: the writer's completed reads (`Machine::read_release`), which a strong
     /// read observing this write orders before itself for write-after-read purposes.
     pub rr: VC,
+    /// The writer's clock at the write (strict PTX level only, else 0): a lane of the same
+    /// warp at the same instruction that does not know it read it in lane order only, which
+    /// is no synchronization (`Machine::sync_observe_cell`, MISS 140).
+    pub own: u32,
 }
 
 /// A release pattern a synchronization source continues (`SyncCell::cont`): the thread of its
@@ -723,6 +770,7 @@ impl Hash for SyncCell {
         self.rel_scope.hash(h);
         self.cont.hash(h);
         self.rr.hash(h);
+        self.own.hash(h);
     }
 }
 
@@ -2390,6 +2438,10 @@ pub struct Machine {
     pub atom_lanes_rev: bool,
     /// Last strong write per location (space 0 smem / 1 gmem, id, byte offset), S-SCOPE.
     pub syncs: Syncs,
+    /// ASSUME(S-FENCE-SC): the SC fences and strong global writes the forced Fence-SC edges
+    /// are derived from (`exec.rs` `sc_fence`); None when the kernel has no SC fence at gpu /
+    /// sys scope.
+    pub sc: Option<Arc<ScLog>>,
     /// Not hashed, static: strong loads that head a poll loop (spin.rs), load pc -> (loop
     /// head H, back branch b): a thread there runs only when this iteration exits the loop.
     pub polls: Arc<BTreeMap<u32, (u32, u32)>>,
@@ -3089,6 +3141,7 @@ impl Hash for Machine {
         self.remote.hash(h);
         self.triggered.hash(h);
         self.syncs.hash(h);
+        self.sc.hash(h);
         if let Some(l1) = &self.l1 {
             l1.hash(h);
         }
@@ -3152,6 +3205,7 @@ impl Machine {
 
     // ASSUME(E-GRID, S-INIT): see ASSUMPTIONS.md
     pub fn new(k: Arc<Kernel>, launch: Arc<Launch>) -> Machine {
+        let has_sc = crate::exec::has_sc_fence(&k);
         let coll_used = k.code.iter().any(
             |i| matches!(i.op, Op::Mma { coll, .. } if coll != ptxv_ir::MmaCollector::Discard),
         );
@@ -3293,6 +3347,7 @@ impl Machine {
             done_vcs: vec![None; n_grids],
             atom_lanes_rev: std::env::var("PTXV_ATOM_LANES").is_ok_and(|v| v == "rev"),
             syncs: Default::default(),
+            sc: has_sc.then(Default::default),
             polls: Arc::new(Default::default()),
             wpolls: Arc::new(Default::default()),
             stubs: Arc::new(Default::default()),

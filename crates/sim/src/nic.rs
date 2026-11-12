@@ -817,6 +817,7 @@ impl Machine {
                 cont,
                 cont_join,
                 rr: VC::new(),
+                own: 0,
             },
         );
     }

@@ -1,0 +1,102 @@
+name = "e_fence_sc_lanes"
+description = """
+S-FENCE-SC (forum post 74 review): no forced Fence-SC edge from the coherence order of two
+lanes of one converged PTX atom step, which the model runs in lane order only (MISS 140).
+Thread 32 publishes data with fence.sc.gpu and a relaxed flag; lane 0 of warp 0 acquires the
+flag; warp 0 converges, every lane runs atom.add on sem and fence.sc.gpu, and lane 1 reads
+data. On PTX the read races in executions where lane 1's atom comes first."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "sem"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[params]]
+kind = "ptr"
+buffer = "sem"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "lane 1 reads data after its fence: a race in executions where lane 1's atom precedes lane 0's (PTX); SASS: E-LOCKSTEP orders the lanes"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "READER0"
+summary = "control: lane 0, which acquired the flag, reads: clean"
+expect = ["clean"]
+marker = "@WHO"
+find = "setp.ne.u32 %p6, %r1, 1;"
+replace = "setp.ne.u32 %p6, %r1, 0;"
+
+[[variants]]
+id = "INDIRECT"
+summary = "lane 1 adds a second atom on sem at a later pc before its fence: that atom's coherence pair with lane 0's step atom comes from the lane order too (forum post 74 review): a race on PTX"
+expect = ["race"]
+expect_sass = ["clean"]
+marker = "@ATOM"
+find = "atom.global.add.u32 %r5, [%rd3], 1;"
+replace = "atom.global.add.u32 %r5, [%rd3], 1;\n    setp.eq.u32 %p7, %r1, 1;\n    @%p7 atom.global.add.u32 %r7, [%rd3], 1;"
+
+[[variants]]
+id = "INDIRECT_READER0"
+summary = "control: INDIRECT with lane 0 reading: clean"
+expect = ["clean"]
+marker = "@ATOM"
+find = "atom.global.add.u32 %r5, [%rd3], 1;"
+replace = "atom.global.add.u32 %r5, [%rd3], 1;\n    setp.eq.u32 %p7, %r1, 1;\n    @%p7 atom.global.add.u32 %r7, [%rd3], 1;"
+edits = [{ marker = "@WHO", find = "setp.ne.u32 %p6, %r1, 1;", replace = "setp.ne.u32 %p6, %r1, 0;" }]
+
+[[variants]]
+id = "PCS"
+summary = "lane 0 and lane 1 claim at two consecutive predicated instructions of the reconverged warp: their order is the warp's step order, which the explorers never reverse (forum post 74 review): a race on PTX, and the certificate refuses"
+expect = ["race"]
+expect_sass = ["clean"]
+marker = "@ATOM"
+find = "atom.global.add.u32 %r5, [%rd3], 1;"
+replace = "setp.eq.u32 %p7, %r1, 0;\n    @%p7 atom.global.add.u32 %r5, [%rd3], 1;\n    setp.eq.u32 %p0, %r1, 1;\n    @%p0 atom.global.add.u32 %r5, [%rd3], 1;"
+
+[[variants]]
+id = "PCS_READER0"
+summary = "control: PCS with lane 0 reading: clean"
+expect = ["clean"]
+marker = "@ATOM"
+find = "atom.global.add.u32 %r5, [%rd3], 1;"
+replace = "setp.eq.u32 %p7, %r1, 0;\n    @%p7 atom.global.add.u32 %r5, [%rd3], 1;\n    setp.eq.u32 %p0, %r1, 1;\n    @%p0 atom.global.add.u32 %r5, [%rd3], 1;"
+edits = [{ marker = "@WHO", find = "setp.ne.u32 %p6, %r1, 1;", replace = "setp.ne.u32 %p6, %r1, 0;" }]

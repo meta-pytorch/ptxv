@@ -130,6 +130,28 @@ one carry-out). `tok-merge` gives every member of an instruction one C-WARP toke
 (wellsync.rs `post_inst`): `fixtures/e_lockstep_nobsync` NOBSYNC must then certify (MISS 30).
 `shfl-wait` makes a SASS SHFL wait for the rest of the warp again (exec.rs `split_enabled`):
 `fixtures/e_warpcoll_split` NOBSYNC is then clean instead of a fault (MISS 39).
+It also makes ptxas's warp-aggregated atomic deadlock (`fixtures/e_shfl_warpagg` good, forum
+post 74). `shfl-wait-bsync` restores the 2026-11-07 rule (wait for live lanes not parked at a
+BSYNC, another SHFL or a WARPSYNC): `e_shfl_warpagg` NOBSYNC deadlocks. `shfl-undef-src` and
+`shfl-undef-src-ptx` give a source lane that is not executing the shuffle the reader's own
+value instead of a fault (exec.rs SASS arm, `exec_combined`): `e_shfl_warpagg` XLANE (and
+`e_warpcoll_mask` XSRC on PTX) lose the fault. `shfl-wait-parked` is forum post 74's proposed
+rule (wait unless every other live lane is parked at a BSYNC / WARPSYNC or an aligned BAR):
+`e_warpcoll_split` NOBSYNC is clean again (MISS 39). `sc-any-write` lets writes that are not
+morally strong force a Fence-SC order (S-FENCE-SC): `fixtures/e_fence_sc_publish` CTASCOPE loses
+its race on the partials (test `fence_sc_publication`). `sc-drop-forcing` orders SC fences as
+executed, without the forcing pair of atomics: `fixtures/e_fence_sc_unforced` (two lanes' fences
+in one step, which the explorer runs in lane order only) is clean. `sc-lane-step` takes the
+coherence pair of two lanes of one PTX atom step (`e_fence_sc_lanes` good clean), `sc-ticket-addr`
+logs C-TICKET-ADDR claims in the certificate's runs (`e_ticket_addr_fence` SC certified on PTX),
+`sc-membar-acq` counts a SASS `MEMBAR.SC` without its `CCTL.IVALL` (`e_fence_sc_publish` NOCCTL
+clean), `sc-width` drops the equal-width condition (`e_fence_sc_mixed` good clean on SASS).
+`sc-lane-pc` keys the lane-step exclusion on one instruction again (`e_fence_sc_lanes` INDIRECT
+and PCS clean, PCS certified). `obs-lane-step` lets a lane synchronize with what a lane of its
+warp wrote at the same PTX instruction in lane order, `obs-lane-cont` drops the patterns that
+write continued from writers outside the warp too (`e_atom_lane_cont` a false race), and
+`ticket-warp` lets C-TICKET accept claims by lanes of one warp that happen-before does not
+order (MISS 140: `e_atom_lane_order` good clean, NOREAD certified).
 `bsync-coll` keeps the GB300 profile's BSYNC waiting beside lanes parked at a
 `WARPSYNC.COLLECTIVE`, and `exit-coll` drops an EXIT's re-check of collective groups: the
 profile verdict of `fixtures/e_bsync_parked_collective` then deadlocks (E-HW-BSYNC-COLLECTIVE).

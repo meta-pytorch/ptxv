@@ -413,7 +413,7 @@ pub const REGISTRY: &[Assumption] = &[
         id: "E-WARPCOLL",
         kind: "code",
         status: "argued",
-        title: "stmatrix / shfl exchange data among the lanes of a converged warp in one step",
+        title: "stmatrix / shfl exchange data among the lanes executing them together in one step (a SASS SHFL: the lanes that reach it; an absent source lane is a fault)",
         applies: |k| any(k, |o| matches!(o, Op::StMatrix { .. } | Op::Shfl { .. })),
     },
     Assumption {
@@ -933,6 +933,13 @@ pub const REGISTRY: &[Assumption] = &[
                     )
                 })
         },
+    },
+    Assumption {
+        id: "S-FENCE-SC",
+        kind: "code",
+        status: "argued",
+        title: "two gpu / sys SC fences are ordered when every Fence-SC order of the execution orders them (forced by coherence)",
+        applies: |k| crate::exec::has_sc_fence(k),
     },
     Assumption {
         id: "S-SCOPE",
