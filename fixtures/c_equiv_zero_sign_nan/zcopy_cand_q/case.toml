@@ -1,0 +1,47 @@
+name = "c_equiv_zero_sign_nan_zcopy_cand_q"
+description = """
+MISS 135 (fixtures/c_equiv_zero_sign_nan/gen.py): out[i] = a[i] + (+0) (add.rn.f32, FADD with RZ); input set q. expected/ is
+GB300's output (ptxas 13.0 -arch=sm_103a)."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "a"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/a_q.bin"
+
+[[buffers]]
+name = "b"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/b.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+
+[[params]]
+kind = "ptr"
+buffer = "b"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

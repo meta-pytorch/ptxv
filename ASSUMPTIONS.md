@@ -1558,6 +1558,41 @@ for an all-thread `barrier.sync id`: all threads).
     `walk_uniform_register_written_by_another_lane_group` (fixtures/e_barwalk good on SASS,
     the exit test edited to write UP0 and guard the `BAR.SYNC`) fails when the current value
     is used with lanes 16-31 still before the write.
+  - *Walk cache* (2026-11-11). One cache for the process (`WALK_CACHE`), shared by every
+    thread that walks (explorer workers, seed walks) and by later checks of the same process,
+    replaces the per-worker caches (64 read-variants per key, emptied past 65,536 keys).
+    Key: the walk identity of the machine's `BarCfg` and kernel (`Machine::walk_id`: equal
+    only for an equal `BarCfg` and, of the kernel, an equal front and equal guard and
+    operation at every pc, compared in full), the thread's pc, the barrier bits, the cut and
+    `bar_values()`. A walk reads nothing else besides values `bar_read` returns (registers,
+    predicates, special registers, constant-bank values, warp convergence): no learned
+    footprint, round, model switch, launch field or time. It records every value it reads
+    except, on PTX, the warp's convergence: only uniform registers (UR / UP) depend on that,
+    and the PTX front has none. Per key a trie over the values read, each key once in
+    first-read order: the walk is deterministic and its next key is a function of the values
+    it read before, so a lookup re-reads only the keys on one path. A read that fails is
+    recorded as 0 and matches only `Some(0)`, as before. Within one launch a read of one key
+    at one pc fails alike for every thread there except constant-bank reads of the cluster
+    table, whose values are never 0, so a cached result is the walk's own for every thread it
+    matches, and answers do not depend on what the cache holds. Across later checks of one
+    process this also needs equal parameter layouts per kernel: with another layout, a
+    constant-bank read that failed in one launch can read 0 in another and reuse the walk
+    that failed it, which knew less (conservative: it may count an arrival the thread's own
+    walk would not, never the reverse). Bounded by `PTXV_WALK_CACHE_MB` (default 512,
+    estimated bytes; past it a shard is emptied).
+    Evidence (argued, from `thread_may_arrive_c` and the walks; model: unit tests
+    `walk_cache_keys_every_input_of_a_walk`, `walk_cache_keys_the_cut`,
+    `walk_cache_answers_survive_eviction_and_sharing`, `walk_cache_entries_pin_their_key`,
+    `walk_cache_keys_a_tracked_registers_source`, `walk_cache_keys_a_setp_operand`,
+    `walk_cache_keys_the_warps_convergence`, `walk_cache_keys_a_register_id_walks_predicate`,
+    `walk_cache_keys_an_r2urs_uniformity`, `register_id_walk_visits_every_state`,
+    `plain_walk_visits_every_state`): tools/mutate/srcmut.py `walkkey-pc`, `walkkey-bit`,
+    `walkkey-cut`, `walkkey-values`, `walk-noreread` (also fixtures/e_barwalk BW1 on PTX: the
+    race is lost), `walkid-ops`, `walkid-guards`, `walkid-barcfg`, `walkid-memo`,
+    `walk-norenv`, `walk-nosetpread`, `walk-noconv`, `walk-regs-nopredread`, `walk-nouniread`
+    (values read, not recorded), `walkseen-hash4` (the register-id walk's state set kept as
+    4-bit hashes), `walkseen-pconly` and `plainseen-pconly` (a walk's state set keyed by the
+    pc alone) are caught.
   - Local reduction: a counted `bar.sync` arrival is local-ample only when at most `count`
     threads may still arrive (`local_ample`); otherwise the synchronization reduction and
     DPOR decide from footprints.
@@ -5054,7 +5089,9 @@ GB300 was wrong or hung in 198/200 runs. On GB300 the unwritten P4 is not false 
     the uniformizing loop's first `PLOP3.LUT P0, PT, P0, P1, ...` reads the unwritten P0 and
     its result is overwritten by `R2UR P0` unread: probes/memhints). Until 2026-11-06 the
     read itself was reported. An operation computed from undefined bits leaves its predicate outputs
-    undefined (`Machine::wp`);
+    undefined (`Machine::wp`). A `.SIGN` input is undefined when its register's bit 31 is
+    (`pred_undef`); until 2026-11-11 (MISS 97) it counted as defined
+    (`plop3_sign_input_with_undefined_bit_31_is_undefined`);
   - `P2R` keeps the undefined bits of the predicates it packs and `R2P` restores them (a
     spilled `PR`);
   - an `ISETP` whose combining predicate is undefined gives an undefined result (S-INIT's
@@ -6505,7 +6542,15 @@ forms seen. Any other form is a hard error.
   `UR.SIGN` predicate inputs since 2026-11-09, refused before; as a predicate destination
   they are refused since 2026-11-11, when the parser took the register): clamped to
   [INT_MIN, INT_MAX] (ptxas: IMAD.IADD, two PLOP3 on the operands' and result's sign bits,
-  `R.SIGN` / `UR.SIGN` inputs, two SEL). probes/int_sat (widened 2026-11-10: 4096 pairs, every
+  `R.SIGN` / `UR.SIGN` inputs, two SEL). Since 2026-11-11 (MISS 97) `.SIGN` is accepted only
+  as a PLOP3 input (a guard, a SEL / FSEL predicate or an ISETP combining predicate is
+  refused: ptxas prints it nowhere else), and every model reader of predicate operands takes
+  the register's bit 31 (`Reg::pred_bit`), as `Machine::prd` did: slices (N-SEG), N-FINITE's
+  slice values, the constant guards (E-CONST-BRA), the look-ahead walk, `elect_lanes` and
+  definedness (S-INIT-PRED). Before, all but exec.rs read the register as nonzero, so a slice
+  of add.sat.s32 computed a different function and fixtures/c_equiv_rsign (add.sat.s32 on the
+  bits against that function) was L0; it is EW (16,385 of 65,536 bf16 inputs differ).
+  probes/int_sat (widened 2026-11-10: 4096 pairs, every
   pair of 32 edge words (0, +-1, +-2, INT_MIN / INT_MAX and neighbours, 2^30 edges, 16-bit lane
   edges, the overflow edge of the immediate 2147483000), 1024 pairs at the saturation
   thresholds, 1024 random, 1024 large; register and immediate operands): GB300 20/20 scrubbed
@@ -7380,11 +7425,25 @@ the captured shape when both kernels pass the preconditions:
     "untracked" (inconclusive, not proven).
   - Several outputs over the explored schedules are accepted only when they come from fp32
     atomic adds (N-ATOMIC).
-  - L0 up to the sign of zero: an output that is x + (+0) (an FFMA by an exact 1 with a +0
-    addend, `num.rs`) has its L0 form compared with x's peeled (`Canon::l0_z`). Round to
-    nearest gives x + 0 = x except -0 + 0 = +0, so equal forms give equal bits but for the sign
-    of a zero, and |C - R| = 0. The report says so (cuBLAS's alpha / beta epilogue,
-    fixtures/c_equiv_mxf8_cublas).
+  - L0 up to the sign of zero, level L0~0 (MISS 109): an output that is x + (+0) (an FFMA by
+    an exact 1 with a +0 addend, `num.rs`, or an add of a +0 constant) has its L0 form compared
+    with x's peeled (`Canon::l0_z`). Round to nearest gives x + 0 = x except -0 + 0 = +0, so
+    equal forms give equal bits but for the sign of a zero, and |C - R| = 0. Such an output
+    is at L0~0 and L0 (bitwise) fails there; `strongest`, equiv.json, compare's headline ("PROVEN
+    equal up to the sign of zero (L0~0)") and report.json name the level L0~0, which ranks below
+    L0 and above L2 (cuBLAS's alpha / beta epilogue, fixtures/c_equiv_mxf8_cublas;
+    fixtures/c_equiv_zero_sign). Until 2026-11-11 L0 held there: the pair was reported "L0" and
+    compare said "PROVEN bitwise identical (L0) for every input", while the bits differ wherever
+    the accumulator is -0.
+    - x + (+0) also turns every NaN but 0x7fffffff into 0x7fffffff (N-FADD), so x is peeled
+      only when it holds no other NaN (`Side::nan_canonical`): the result of an f32 ALU
+      operation, a MUFU op or a tensor-core step, a constant that is no other NaN, or a min /
+      max or guarded store's choice between such values. An input, or a value moved or
+      bit-manipulated from one, is not peeled: L0~0 fails, and L1 / L2 with their bound stand
+      (MISS 135: until 2026-11-11 a copy against the copy + 0 was proven L0~0, while GB300's
+      outputs differ at 7 NaN payloads; now L2 with bound 0, fixtures/c_equiv_zero_sign_nan). The tensor core's canonical NaN is GB300-measured for
+      kind::f16 (N-MMA-SPECIAL) and argued for the narrow kinds (cuBLAS's MXF8 / NVFP4
+      accumulators), whose NaN operands the model does not take (N-MMA-F8: `unmodeled`).
   - FP4 MMA steps (model `u16-f35-live-sfields`) sum 16-element units exactly and truncate
     each: their L0 form is a multiset of units, each a multiset of terms (`Mma::units`), since
     the model is invariant under permuting a unit's terms and whole units, but not terms
@@ -7445,14 +7504,47 @@ the captured shape when both kernels pass the preconditions:
       [0.2528, 0.2573] (the review's exact rationals, 6000 inputs); after, refused. equiv.toml
       (ballot against the same kernel without the branch, segment mode): before, L0 proven for
       every input; after, not proven (data-dependent preconditions).
+  - Captured GPU outputs (2026-11-11, MISS 98): a level that the cases' captured GPU outputs
+    contradict is refused ("none (contradicted by the captured GPU outputs)", not proven;
+    `cli/src/equiv.rs` `sim_gpu_mismatch`, `captured_contradicts`), proven or not: an
+    unproven level holds on the captured inputs only, which the captures refute just as well
+    (until 2026-11-11 "L0 (unproven)" was kept against a capture its kernel's simulated
+    output did not reproduce, and `ptxv compare` said "L0 holds on the captured inputs
+    only"; fixtures/c_equiv_atomic eq_unproven.toml). (a) Each kernel's
+    simulated output at its captured inputs must equal its capture bitwise, as `ptxv check`
+    compares them (within one ulp only in bytes holding an f16 / bf16 multimem lane of the
+    numerics run that the calibrated rule rounded, N-MULTIMEM-ROUND16, MISS 110). (b) With
+    the same inputs, L0 needs the two captures bitwise equal, NaN payloads included; L0~0 the
+    same, except +0 against -0 at its outputs that are equal
+    only up to the sign of zero (MISS 109: GB300's captures of fixtures/c_equiv_zero_sign
+    differ so at 16 outputs; any other difference contradicts L0~0, and +0 against -0
+    contradicts an L0 output); and L1 / L2 / L1~ two finite captured outputs at most the proven
+    bound apart and no non-finite output against a different value (two NaNs pass). (b)
+    compares each output where both cases captured it (`expect_offset`, `expect_ignore`),
+    against its own bound; until 2026-11-11 it read the captures from byte 0, so with an
+    offset capture element i met the bound of output i.
+    Elementwise mode checks the element functions instead (N-ELEMENTWISE). Exemption,
+    argued: an output element whose simulated value depends on the order of float atomic
+    adds is not held to (a): its DAG holds a chain of adds into one location that orders can
+    round differently, the chains the canonical form calls unordered (more than two adds into
+    +0, more than one into another start; `NumState::atomic_order_dependent`), and the
+    simulated run fixed one order where the GPU ran its own. Every other element is held to
+    (a), also in a kernel with atomic adds elsewhere. An exempt element's level is never L0
+    (N-ATOMIC), and (b) holds its bound, which covers every order, against the captures
+    (`row_sums_are_bounded`, fixtures/c_equiv_atomic). Until 2026-11-11 the exemption covered
+    every output of a kernel with any float atomic add, (b) took any two NaNs as equal for
+    L0 and skipped pairs with a non-finite output: with an atomic add into a scratch buffer,
+    a capture with another NaN payload kept L0, and +inf at an output kept L1. Before MISS 98
+    the comparisons were printed and the level kept (L0 with 774 of 1024 outputs bitwise
+    equal). fixtures/c_equiv_captured (a capture one bit off) is refused in both modes.
   - Evidence:
     - the demo (fixtures/r2e_tile): a reordered reduction is L1 not L0, a dropped K slice
       fails L1 with a witness that differs on GB300, an `add.rz` epilogue is L1 not L2, and a
       data-dependent branch is flagged;
     - Triton vs CuTeDSL: L0 (fixtures/r2e_gemm). Their outputs were already bitwise equal on
       GB300 for the captured input.
-    - MXF8 GEMMs (fixtures/c_equiv_mxf8_cublas, c_equiv_mxf8_triton): CuTeDSL vs cuBLASLt (L0
-      up to the sign of zero) and vs Triton tl.dot_scaled (L0) were bitwise equal on 1000
+    - MXF8 GEMMs (fixtures/c_equiv_mxf8_cublas, c_equiv_mxf8_triton): CuTeDSL vs cuBLASLt (L0~0,
+      L0 up to the sign of zero) and vs Triton tl.dot_scaled (L0) were bitwise equal on 1000
       random GB300 inputs each (16.4M outputs, tools/mx_gpu_check.py); the K-reversed Triton
       kernel (L1) differed in 84% of them.
 - If wrong: *false proof*, for a data dependence the taint rules miss (for example through a
@@ -7550,13 +7642,24 @@ value commute up to the order of each location's adds.**
   most S roundings, S - 1 when the start is +0 (the first add to +0 is exact); `equiv` uses
   that worst case for every value, so its bound covers every order, not only the explored
   ones.
+- L0 (`equiv.rs` canonical form): the chain is its start and the multiset of its adds, each
+  with its flush flag (`red/atom.add.f32` flushes subnormals, the bulk f32 reduction `UBLKRED`
+  does not). Adds of one mode commute up to two into +0 and one into another start; a chain
+  that mixes the modes is unordered from two adds on (+0 + a with FTZ, then + b, is not
+  +0 + b, then + a with FTZ, where a, b or the sum is subnormal), so L0 fails there and the
+  bound, which covers every order, stands. MISS 98's capture exemption
+  (`NumState::atomic_order_dependent`) follows the same rule. Until 2026-11-11 the flag was
+  not part of the form (MISS 134): an FTZ add and a bulk add of the same value into +0, and two
+  adds of both modes into +0 in opposite orders, were proven L0, while GB300's outputs differ
+  in 64 and 79 of 1024 words on subnormal inputs (fixtures/c_equiv_atomic_ftz).
 - Exploration: `--slices` files such bytes as reductions (`GFoot::red`): two clusters'
   reductions into one byte are not a cross-cluster conflict (any other access of the byte by
   another cluster still is), and the verdict notes the byte and reports the launch as
   nondeterministic. `ptxv equiv` accepts "nondeterministic" when every atomic of the run is
   such an add (no other atomic, no returned value).
-- Where: `exec.rs` `Op::Atom`, `num.rs` `num_atom`, `equiv.rs` `NodeKind::AtomAdd`,
-  `explore.rs` `explore_sliced`, `machine.rs` `GFoot`, `cli/src/equiv.rs` `prepare`.
+- Where: `exec.rs` `Op::Atom`, `num.rs` `num_atom` and `atomic_order_dependent`, `equiv.rs`
+  `NodeKind::AtomAdd`, `explore.rs` `explore_sliced`, `machine.rs` `GFoot`, `cli/src/equiv.rs`
+  `prepare`.
 - Status: **argued** (PTX ISA: `atom.add.f32` rounds to nearest even and flushes subnormal
   inputs and results to sign-preserving zero). Evidence: `fixtures/c_triton_rowsum_atomic`
   (Triton tl.atomic_add, 4 programs per row): the simulator's outputs over random schedules
@@ -7604,7 +7707,9 @@ stored, as a backward slice along the thread's executed instruction trace (`seg.
   kernels, docs/equiv-elementwise.md): `F2FP.BF16/F16.F32.PACK_AB`, `PRMT`, FFMA2 / FMUL2 /
   FADD2 per lane (only the lane's registers are its sources), and the bf16 -> f32 widening;
   `PLOP3` (torch's rsqrtf combines its subnormal test with the bounds test through predicated
-  `PLOP3`s; exec.rs's truth-table semantics; fixtures/c_cve_addnorm_eager, GB300 bitwise).
+  `PLOP3`s; exec.rs's truth-table semantics; fixtures/c_cve_addnorm_eager, GB300 bitwise). A
+  `.SIGN` input (ptxas's add.sat.s32) is its register's bit 31, as in exec.rs; until
+  2026-11-11 (MISS 97) a slice read it as nonzero (L-ROSETTA, fixtures/c_equiv_rsign).
 - Guard decisions: inside the `new` side of a `Guard`, another instruction under a guard with
   the same predicate value (the same write of the same register) takes its `new` side too, and
   the `old` side its `old` (erf's `@P MUFU.EX2 R; @P FADD R, -R, 1; @P LOP3 S, R, ...`: R is
@@ -7679,8 +7784,12 @@ pattern of the input type gives every value the kernel can produce at that outpu
   kernel's element function, then `f32_fma` and the 16-bit rounding), so the reported maxima
   (ulps overall and where f and both outputs are normal, |C - R|, bitwise-equal pairs) are
   exact over all inputs.
-- Where: `elementwise.rs`, `cli/src/equiv.rs` (`elementwise_pair`, `elementwise_gpu_check`),
-  `cli/src/compare.rs`.
+- GPU outputs (2026-11-11, MISS 98): each kernel's element functions at its captured inputs
+  must equal its captured GPU output bitwise (`elementwise_captured_check`), as they must in
+  the GB300 batches (`elementwise_gpu`); a mismatch in either refuses the level ("none
+  (contradicted by the captured GPU outputs)"). Both only printed their mismatches before.
+- Where: `elementwise.rs`, `cli/src/equiv.rs` (`elementwise_pair`, `elementwise_gpu_check`,
+  `elementwise_captured_check`), `cli/src/compare.rs`.
 - Status: **validated** on GB300 (`elementwise_gpu`, 2026-11-03): for each kernel of the four
   committed pairs (fixtures/c_equiv_elementwise: torch vs Triton tanh-GELU, erf-GELU, SiLU in
   f32, erf-GELU in bf16) every output of 72 launches (73,728 outputs per f32 kernel: every
@@ -8363,23 +8472,52 @@ frac + r >= 1, with frac the sum's position between the neighbours and r the tru
 mantissas of lanes l+1, l+2, l+3 (mod 4 in the group) interleaved most significant bit first;
 with every other lane zero the sum is truncated. The rule reproduces 99.7% of non-representable
 random bf16 lanes and 96.7% of f16 lanes; misses include groups with a NaN lane.
-- Model: `add16` applies the rule and marks the run `inexact`; an output compared with the
-  captured GPU bytes then also passes within one unit in the last place per element (reported;
-  `ptxv check` applies the tolerance to every case with `[[multicast]]` buffers): each
-  differing element is a pair of adjacent encodings of its dtype that are both finite, or NaN
-  on both sides (`ulp_class`). Adjacency alone puts +-inf next to +-max, a NaN next to inf and
-  the largest NaN encoding (0x7fffffff, the GPU's canonical f32 NaN) next to -0, so until
-  2026-11-11 an overflow or a NaN on either side could pass as one ulp (MISS 67). Unit tests
-  (`ptxv-case` `one_ulp_tolerance_needs_finite_values`,
+- Model: `add16` applies the rule and reports each lane it rounds (`Reduced.calibrated`). Only
+  output bytes that hold such a lane may differ from the captured GPU bytes by one unit in the
+  last place. For a case with `[[multicast]]` objects, `ptxv check` runs one deterministic
+  schedule more (`explore::run_once`) with provenance on (`Machine::round16`,
+  `multimem::Round16Shadow`): the ld_reduce puts each rounded lane, with its format, into its
+  destination register; a register move copies it; a store writes it into memory (into every
+  location a multicast store reaches); any other write of the register or of the bytes ends it,
+  and a load does not carry it. A terminal output equal byte for byte to that run's output is
+  compared with the tolerance on those bytes: each differing element must be a pair of adjacent
+  finite encodings of the buffer's dtype (`ulp_class`; a NaN on either side never is, NaN
+  against a NaN with another payload included) with every byte holding a lane of that dtype;
+  any other difference is a mismatch (`gpu_compare` `mismatch`), and any other terminal output
+  is compared bitwise (`Case::expect_compare_tol`, `Round16`; `PTXV_RUN_ONCE` uses the marks of
+  its own run, and `ptxv equiv`'s check of each kernel's simulated output against its capture,
+  MISS 98's `sim_gpu_mismatch`, those of its numerics run, tracked for such cases). Until
+  2026-11-11 the tolerance covered every output of a case with `[[multicast]]` objects, so an
+  f32 sum one ulp off, data computed from a rounded lane and a lane overwritten by other data
+  passed too, and `ulp_class` passed NaN against a NaN with
+  another payload (MISS 110; `gpu_compare` counted them `within_ulp`, no match). The marks come
+  from one schedule: where schedules differ (a race or divergent verdict, never clean), another
+  schedule's output with the same bytes is compared with them [argued]. Adjacency alone puts
+  +-inf next to +-max, a NaN next to inf and the largest NaN encoding (0x7fffffff, the GPU's
+  canonical f32 NaN) next to -0, so until 2026-11-11 an overflow or a NaN on either side could
+  pass as one ulp (MISS 67). Unit tests (`ptxv-case` `one_ulp_tolerance_needs_finite_values`,
   `expect_report_tol_never_crosses_an_infinity`) cover f32, bf16 and f16, both signs, including
-  -inf against -max. fixtures/r1h_nvls_inf (expected/ constructed, not captured):
-  before, both outputs within one ulp (2 of 4 elements) on
-  both fronts; after, MISMATCH. Mutant ulp-tol-nonfinite (the plain bit-difference test) caught. The route on
-  real hardware is argued: rounding up at the top binade overflows to inf where rounding down
-  keeps the largest finite value [argued].
+  -inf against -max, NaN payloads, unmarked bytes and the other 16-bit format.
+  fixtures/r1h_nvls_inf (expected/ constructed, not captured): before MISS 67, both outputs
+  within one ulp (2 of 4 elements) on both fronts; after, MISMATCH. Mutant ulp-tol-nonfinite
+  (the plain bit-difference test) caught. The route on real hardware is argued: rounding up at
+  the top binade overflows to inf where rounding down keeps the largest finite value [argued].
+  MISS 110: `crates/cli/tests/gpu_compare.rs` `only_calibrated_bf16_lanes_are_within_one_ulp`
+  (fixtures/r1h_nvls_bf16, captured outputs written from the simulated ones with one element
+  one encoding up, both fronts): within one ulp only in the rounded lanes of the output stored
+  as reduced and of the one broadcast by `multimem.st`; a mismatch in an exact lane, in the pair
+  doubled in its register and in the pair overwritten by an exchange. `review_probes_are_mismatches`:
+  fixtures/r1h_nvls_ulp and r1h_nvls_nan (expected/ constructed) mismatch on both fronts
+  (before, within one ulp); in `ptxv equiv` (`crates/cli/tests/equiv.rs`
+  `multimem_probes_differ_from_their_captures`, fixtures/c_equiv_round16) both differ from
+  their captures on both fronts (before, neither difference was reported). Mutants round16-*
+  caught (tools/mutate/srcmut.py). Evidence [model]: GB300 multicast runs are not available
+  to the hardware runner, so no captured output exists for these fixtures.
 - Status: **unvalidated** (partial fit).
-- Where: `crates/sim/src/multimem.rs` `add16`; output comparison `ptxv_case`
-  `Case::expect_report_tol`, `ulp_class`.
+- Where: `crates/sim/src/multimem.rs` `add16`, `Round16Shadow` (hooks in exec.rs `wr`,
+  `access_x`, `Op::LdReduce`, `Op::Mov`, `Op::St`); output comparison `ptxv_case`
+  `Case::expect_compare_tol`, `ulp_class`; `ptxv check` (crates/cli/src/main.rs `round16`);
+  `ptxv equiv` (crates/cli/src/equiv.rs `sim_gpu_mismatch`).
 - If wrong: simulator outputs differ from GPU outputs by one ulp in some elements.
 - Retire: the exact rule (more sweeps: other bits, groups with special lanes).
 
@@ -8954,6 +9092,21 @@ operand and scale-factor layouts** (GB300, sm_103a, CUDA 13.0, 2026-11-09).
   `.satfinite` on decodes: 1,020 of 65,536 words differed from GB300, 511 with `.relu`. No
   kernel_db PTX has a `.satfinite` decode. Placement: the refusal is precision (the ISA
   defines the form; a model would be strict and gb300 alike).
+- Forms ptxas 13.0 and 13.3 both reject are refused by the PTX front (2026-11-11, T2; the
+  cvt enumeration of 466,400 single-instruction lines, each through both ptxas versions and
+  the front): an f8 / f6 / f4 x2 encode takes `.rn.satfinite` (from f32 pairs, f16x2 or
+  bf16x2), the ue8m0x2 encode `.rz` / `.rp` without `.relu` (from f32 pairs or bf16x2), an
+  `.rs` x4 encode `.satfinite`; ue8m0x2 decodes only to bf16x2, without `.relu`. Operands
+  have the register types some version accepts (8,718 lines with other register types and
+  immediates, 13.0 at `.version 9.0`, 13.3 at `.version 9.3`): an x2 encode writes a .b16
+  (e2m1x2: a .b8) from .f32 / .b32 values or immediates, or from a .b32 half pair (bf16x2
+  into e2m1x2 or ue8m0x2: any 32-bit type); an x4 encode writes a .b32 (e2m1x4: a .b16) from
+  .f32 / .b32 values or immediates with .b32 random bits; a decode reads a .b16 (e2m1x2: a
+  .b8) into a .b32 (ue8m0x2: any 32-bit type). Before, cvt_lp lowered 384 lines of the
+  enumeration (other roundings, missing `.satfinite`, 16-bit e2m1x2 registers, f16x2 ue8m0
+  forms) and, until the operand types, 5,456 of the 8,526 lines of the other set that both
+  reject, with the semantics of the accepted form. No ptxas output contains them; the
+  refusal is precision.
 - Scaled bf16x2 decodes (`cvt.rn [.relu] .scaled::n2::ue8m0 .bf16x2.<fmt>x2 d, a, scale`; ptxas
   13.3 with PTX ISA 9.3, not 13.0) are not modeled: the PTX front refuses `.scaled` (cvt_lp),
   and the SASS front lifts `F2FP [.RELU] .BF16.<fmt>.UNPACK_B d, a, s.H0` only with the
@@ -9056,8 +9209,25 @@ parameters, special registers or constants is never an exact constant leaf. So i
 register operation computes outside the DAG from a node holding a rounding (`num_clobber`,
 `NumState::rounded`: a bit operation or an untracked float operation of an FADD, atomic add, MMA
 or MUFU result), and the value a float atomic add returns (f32, f64, bf16x2 and bf16x4, bf16: a
-rounded partial sum of the location's updates without a node). Through memory the rule is open
-(below: other atomics, partial-width and rearranging accesses). And no output of a
+rounded partial sum of the location's updates without a node). Atomics other than f32 adds
+carry the rule through memory (`Machine::num_atom_rounding`, MISS 114): the old value is input
+data when a word the atomic read held a node with a rounding (or 16-bit provenance of one); the
+word is input data when an integer, bitwise or min / max read-modify-write computes it from such
+a value or from a register holding a rounding or input data, and after an f64 atomic add (a
+rounded sum without a node). An exchange, and a compare-and-swap that swaps, store the new value
+as a store does (its node, 16-bit provenance and taint). A compare-and-swap whose old or compare
+value holds a rounding or input data makes its words and its returned value or swap flag input
+data, swapped or not (the exact computation may decide the other way); one that did not swap on
+exact values leaves the word as it was. A bf16 atomic lane without a node, a float atomic max
+idiom (N-FMAX) that fails on an operand holding a rounding, and a 16-bit bulk reduction without
+16-bit tracking leave input data. An atomic's words lose their nodes (a 64-bit atomic both
+words, a 16-bit one the word holding it). Partial-width and rearranging accesses carry it too
+(MISS 115): a register that gets bytes of a word holding a rounding without the word's node (a
+16-bit or 8-bit load, ldmatrix .trans, unaligned or .b8: `num_ld`, `Machine::num_clobber_mem`)
+is input data; so is a word a store or copy writes in part (a 16-bit or 8-bit store, stmatrix
+.trans or .b8, a copy of 2-byte elements or a misaligned one: `num_st`, `num_copy_snapshot`)
+when its old node or the stored register's node held a rounding, or a copied byte came from a
+word whose node did. And no output of a
 run carries a claim when its control flow, effects or addresses depend on input data
 (`Taint::control_pcs`): a branch, EXIT, store, atomic, barrier or asynchronous operation under
 a data-dependent guard, or a data-dependent branch target, load / store / atomic address or
@@ -9080,20 +9250,20 @@ product plus the immediate, exact in every lane (fma(+-0, +-0, c) = c). Only tha
 (every operand an immediate, one factor zero); any other all-immediate rounding instruction is a
 rounding (ptxas 13.x keeps `MUFU.TANH R, 0.1000000015` unfolded). The PTX front has no such
 exception.
-Open on the SASS front (MISS 108): ptxas folds a rounding of constants to an immediate
-(`ex2.approx.ftz.f32` of a constant, `mul.rn.f32` of immediates), which the SASS front takes as
-the program's constant (the PTX front has the rounding and makes no claim):
-`fixtures/c_num_mufu_imm_f32` k = 4.
-Open through memory (reported 2026-11-11; the register rule above does not reach these, so each
-gives an untainted value without a node, an exact constant to num): atomics other than float
-adds (the old value an integer, bitwise, exch or cas atomic returns from a word holding a
-rounding; the word exch, a successful cas or red writes; the word an f64 atomic add leaves, so
-an f64 atomic sum deciding control is not refused), and partial-width or rearranging accesses of
-a word holding a rounding (a 16-bit load of an f32 word, ldmatrix .trans and a shuffle that
-reassembles it, a partial store into such a word, stmatrix .trans, a partial copy).
+The SASS front claims an element only where the PTX front, when it runs, claims it with the same
+exact value, and no output the PTX front refuses (MISS 108, `main.rs` `cmd_num`). ptxas folds
+roundings of constants (`mul.rn`, `add.rn`, `ex2.approx.ftz` of immediates) into immediates,
+which the SASS front would take as exact constants; the PTX front has the roundings (one without
+a node is input data, one with a node, an `add.rn`, carries its exact value). An immediate alone
+does not tell a literal from a folded rounding: mul.rn(0.1f, 3) folds to 0x3e99999a, the
+literal 0.3f, and add.rn(1, 2^-24) to 1.0. For a kernel given as SASS only (a cubin: every
+kernel_db capture) the reference is the SASS program and its immediates are its constants; a
+rounding ptxas folded before the binary existed is not seen.
 - Where: `num.rs` `out_rec` (`untracked`), `rounding_op`, `effect_op`, `Taint::control_pcs`
   (`taint_pre`, `taint_post`, `num_store_origins`), `num_clobber`, `NumState::rounded`,
-  `Machine::rounded_pre`, `NumState::rounding_taint`; `main.rs` `cmd_num`.
+  `Machine::rounded_pre`, `NumState::rounding_taint`, `Machine::num_atom_rounding`,
+  `Machine::num_old_rounded`, `num_ld`, `num_st`, `Machine::num_clobber_mem`,
+  `num_read_snapshot` / `num_copy_snapshot`; `main.rs` `cmd_num`.
 - Status: **enforced**. Before this check, `exact` took the simulated value of the untracked
   value as exact. A row sum of squares (FFMA chain) reported max_err = 0, Thm 1 exact, with
   no warning, while GB300 differs from the fp64 sum by up to 4.1 ulp
@@ -9125,8 +9295,8 @@ reassembles it, a partial store into such a word, stmatrix .trans, a partial cop
   - `fixtures/c_num_mufu_imm_f32`: MUFU.TANH of immediates. Before: the SASS front claimed 160 of 160, max_err 5.960e-8 (0.50 ulp), with tanh(0.1f) taken
     as exact (44 ulp off on GB300). After: 128 of 160 not analyzed; the 32 k = 4 elements
     (ex2.approx.ftz of a constant, folded by ptxas to an immediate) keep 5.960e-8 (0.50 ulp)
-    against |GB300 - exact| up to 8.36e-8, 7.22 ulp at one element [GB300 measured]: open, see
-    Placement. The PTX front makes no claim, before and after.
+    against |GB300 - exact| up to 8.36e-8, 7.22 ulp at one element [GB300 measured]; since MISS
+    108 the SASS front claims none of them. The PTX front makes no claim, before and after.
   - `fixtures/c_num_clobber_f32`: rn(a + b) of parameters through an and. Before: 64 of 64 claimed on both fronts, max_err 5.960e-8 (0.50 ulp). After: not analyzed.
   - `fixtures/c_num_atom_old_f32`: the values atom.add.f32 returns. Before: out 64 of 64 claimed on both fronts, max_err 1.192e-7
     (0.50 ulp). After: out not analyzed; acc (the sum, an atomic add node) keeps 9.537e-7 (4.00 ulp).
@@ -9173,8 +9343,82 @@ reassembles it, a partial store into such a word, stmatrix .trans, a partial cop
   CREDUX.MAX.F32 write a uniform register (input data if any lane's result is); VOTE reads
   predicates, and a predicate computed from a rounded value is input data; MOVM's operand counts
   as a control operand; an f32 word or a bf16 half exchanged whole through shared memory keeps
-  its node (a 16-bit load of an f32 word and ldmatrix .trans do not: open, above). Mutant
+  its node (a 16-bit load of an f32 word and ldmatrix .trans give input data, MISS 115). Mutant
   num-xlane-rounded (caught).
+  Atomics other than f32 adds (MISS 114; GB300 == simulator bitwise, 20 of 20 runs;
+  `tests/num_untracked.rs` checks every claim against the exact value):
+  - `fixtures/c_num_atom_read_f32`: the old values of atom.or 0, atom.add.u32 0, atom.max.u32 0,
+    a failing atom.cas and atom.exch 0 on the sum of 32 atomic adds of 0.1f. Before: 8 of 8
+    claimed on both fronts, max_err 1.192e-7 (0.25 ulp of the computed output); |GB300 - exact|
+    = 9.537e-7 (4 ulp) for the old values. After: not analyzed.
+  - `fixtures/c_num_atom_store_f32`: s = rn(t + 0.1f) through atom.exch, through st then red.or 0,
+    and through atom.cas. Before: SASS 128 of 128 claimed, max_err 8.345e-7 (0.50 ulp), 112
+    under-claimed (the worst claimed 0 against 3.80e-7, 0.40 ulp); PTX refused (the cas new value
+    counts as a control operand). After: SASS 96 claimed, each |GB300 - exact| (max 1.214e-6, 0.77
+    ulp), the 32 red.or words not analyzed; PTX refused.
+  - `fixtures/c_num_atom_f64_f32`: a branch on the sum of ten atom.add.f64 of 0.1. Before: 32 of
+    32 claimed on both fronts, max_err 1.192e-7 (0.50 ulp); |GB300 - exact| = 1.0 absolute (4.19e6
+    ulp of the computed output) in every element. After: refused on both fronts.
+  - `fixtures/c_num_atom_cas_f32`: a compare-and-swap whose compare value is the exact sum 3.2f
+    (it fails on the run's sum and swaps on the exact one), a bf16x2 atomic sum, and a 64-bit
+    exchange over an f32 word holding an input element's node. Before: 6 of 6 claimed on both
+    fronts, max_err 1.192e-7 (0.25 ulp); |GB300 - exact| = 2.2 absolute after the
+    compare-and-swap (9.2e6 ulp of the computed output), 0.0625 for the bf16 sum (2.6e5 ulp) and
+    2^-30 for the exchanged word (claimed 0, the input element's node). After: the exchanged word
+    claimed (9.313e-10, 0.0078 ulp), the rest not analyzed.
+  Mutants num-rmw-old, num-rmw-word, num-rmw-f64, num-rmw-cas, num-rmw-exch, num-rmw-bf16 (each
+  caught). The failing float atomic max idiom and the 16-bit bulk reduction without 16-bit
+  tracking are argued from code (no fixture reaches them).
+  Partial-width and rearranging accesses (MISS 115; GB300 == simulator bitwise, 20 of 20 runs;
+  `tests/num_untracked.rs` checks every claim against the exact value):
+  - `fixtures/c_num_ld16_f32`: s_t = rn(t + 0.1f) read back by two 16-bit loads and recombined.
+    Before: 64 of 64 claimed on both fronts, max_err 9.537e-7 (0.50 ulp of the computed output),
+    51 under-claimed (the worst claimed 0 against 3.80e-7, 0.40 ulp). After: not analyzed.
+  - `fixtures/c_num_ldsm_trans_f32`: rounded shared words read by ldmatrix .trans and rebuilt by
+    a shuffle and a prmt. Before: 32 of 32 claimed on both fronts, max_err 0; 15 of the 16 rebuilt
+    words under-claimed (the worst 3.80e-7, 0.40 ulp). After: the rebuilt words not analyzed, the
+    16 zero lanes claimed (0).
+  - `fixtures/c_num_st16_f32`: a 16-bit store into a word holding s_t, and s_t's low half stored
+    into a zero word (bit mixes, no exact value). Before: SASS 96 of 96 claimed, PTX 64 of 96
+    (the PTX front's cvt.u16 of s_t is a clobber), max_err 1.192e-7 (0.50 ulp). After: not
+    analyzed on either front.
+  - `fixtures/c_num_tma16_f32`: s_t copied to shared memory by a TMA load of 2-byte elements.
+    Before: 64 of 64 claimed on both fronts, max_err 1.073e-6 (0.50 ulp), s_t taken as exact.
+    After: not analyzed.
+  - `fixtures/c_num_stsm8_f32`: stmatrix .b8 writes the bytes of s over zero words, and constant
+    bytes over words holding s. Before: 64 of 64 claimed on both fronts; the second region kept
+    the old nodes (max_err 3.18e38, the constant read as s). After: not analyzed (the constant
+    words too: a precision cost).
+  Mutants num-ld16, num-ldsm, num-st16, num-copy16, num-stsm8 (each caught). A whole-word copy
+  from a misaligned source (no node moves) is argued from code.
+  SASS claims bounded by the PTX front's (MISS 108; GB300 == simulator bitwise, 20 of 20 runs;
+  `tests/num_untracked.rs` `sass_claims_need_a_ptx_claim_with_the_same_exact_value`; ulp of the
+  computed output, over outputs of magnitude at least 2^-20):
+  - `fixtures/c_num_fold_f32`: x + c with c = mul.rn(0.1f, 3), mul.rn(0.1f, 0.1f) and
+    ex2.approx.ftz(0.1f), which ptxas folds into FADD immediates (the PTX front refuses them).
+    Before: SASS 192 of 192 claimed, 155 under-claimed (claimed 0, |GB300 - exact| up to 4.73e5
+    ulp). After: no SASS claim.
+  - `fixtures/c_num_fold_add_f32`: x + c with c = add.rn(0.1f, 1) and add.rn(1, 2^-24), folded
+    into the immediates 1.1000000238418579 and 1.0. Before: SASS 128 of 128 claimed, 115
+    under-claimed (claimed 0, up to 5.24e5 ulp); PTX 128 of 128, each equal to |GB300 - exact|
+    (FADD nodes of the constants). After: PTX unchanged; no SASS claim (its exact values differ
+    from the PTX front's).
+  - `fixtures/c_num_fold_ctl_f32`: a branch on v > mul.rn(0.1f, 3), folded into the FSETP
+    immediate; v = 0f3e99999a in even lanes takes the else path in the run and the then path in
+    the exact computation. Before: SASS 32 of 32 claimed, 16 under-claimed (claimed 0.5 ulp,
+    |GB300 - exact| 1.0 absolute, 4.19e6 ulp); PTX refused. After: no SASS claim.
+  - `fixtures/c_num_mufu_imm_f32` k = 4 (x + ex2.approx.ftz(0.1f), folded): before, SASS 32 of
+    32 claimed, 27 under-claimed (claimed 0, up to 7.22 ulp); after, no SASS claim.
+  - Precision costs: the correct SASS claims of those outputs go too (fold 37, fold_add 13,
+    fold_ctl 16, mufu_imm k = 4 5 elements), and `fixtures/c_num_atom_store_f32` loses its 96 SASS
+    claims, each equal to |GB300 - exact|, because the PTX front refuses the output (the
+    compare-and-swap's new value counts as a control operand there). No other fixture changes;
+    the 86 kernel_db num cases are binary-only cubins (no PTX front run) and do not change.
+  Mutants num-fold-exact, num-fold-refused (each caught). The alternative, every nonzero f32
+  immediate a rounding of unknown error (a probe build, not committed, on both fronts): no claim of
+  the 86 kernel_db cases changes (0 of 40 claimed outputs); on the fixtures 5 of the 79 claimed
+  SASS outputs change (c_num_atom_cas_f32 and c_num_atom_old_f32 refused, three c_tf32_mm claims
+  looser, max_err 2.08e-2 instead of 1.19e-2, 1.99e-5 and 2.22e-5).
 - Evidence: GB300 measured (the fixtures above: each refused or untracked element differs
   from its exact value on GB300, or its exact path differs from the run's); model (num before /
   after); argued (`rounding_op` from the PTX ISA's rounding semantics: an operation is exact
@@ -9184,8 +9428,9 @@ reassembles it, a partial store into such a word, stmatrix .trans, a partial cop
 - Placement: strict for the rounding taint, the refusals, the I2F exemption and the HFMA2
   materialization: they follow from the PTX semantics in real arithmetic and IEEE 754, with no
   GB300-only fact. The division exception rests on MUFU.RCP's measured behavior and is gb300
-  (N-NUM-UDIV). The SASS front's reading of an immediate as the program's constant depends on
-  ptxas (it folds ex2.approx.ftz of a constant): open on SASS-only runs, see above.
+  (N-NUM-UDIV). With the kernel's PTX, the SASS front's claims are bounded by the PTX front's
+  (strict: a folded constant is a rounding there); a SASS-only run takes the SASS program, with
+  its immediates as constants, as the reference (scope: ptxas folds roundings of constants).
 - If wrong: a too-small error claim. Precision losses (refusals, sound): a run whose control
   flow or addresses depend on exact input values (raw input comparisons, integer index
   buffers: embedding gathers, index scatters) gets no claim; roundings of constants that
@@ -9400,8 +9645,20 @@ the exact y's position within its ulp (its own lattice).
   every check passing). Until 2026-11-10 every f32 leaf was taken as continuous, and an f32
   sum of integers, exact on every input, came out 0.939 (MISS 41). TF32 parts of an f32 leaf
   with a discrete law are not modeled (refused).
-- If wrong: Tier 2 is the default headline only where it also agrees with the run's Tier 3
-  cross-check (300 inputs); otherwise the headline is Tier 3.
+  **Its interval omits its model error (MISS 91, GB300 measured).** The interval is the
+  spread over its nominal inputs. In the section 9 matrix's 22 cells (4 r4_rmsnorm_triton
+  specs and 18 pair cells; 21 Tier 2 headlines) the headline's interval was disjoint from
+  GB300's 95% interval in 19 and from its 99.9% interval in 15 (GB300 runs of 4000 inputs per
+  cell, 40000 for one): pairs 0.5-12% high, r4_rmsnorm_triton 1.55x (normal) and 2.1x (laplace), and above GB300's
+  99.9% bound where it measured 0 (int8, shift100). The cross-check passed them: its
+  tolerance fell to Tier 3's half-width h (up to 20% of P), and at a Tier 3 of 0 no
+  resolution rule applied.
+- If wrong: Tier 2 is the headline only where it agrees with the run's Tier 3 within 5% of
+  p3 (at most 5.13% of the true P, as far as Tier 3's interval covers it): Tier 3 saw a
+  difference and h is at most 2.5% of its P (`XCHECK_T2_HW`). Its
+  interval then joins Tier 3's, so the headline's interval holds what Tier 3's does.
+  Otherwise the headline is Tier 3. Until MISS 91 the headline was Tier 2 with its own
+  interval wherever the 20% rule passed it.
 
 ### N-ERRDIST-PAIR · code
 **A pair's difference D = C - R comes from both kernels' pre-final deviations, taken as
@@ -9482,7 +9739,36 @@ inputs as the independent unit. For P(differ) this is the wider of Clopper-Pears
 outputs and a batch-means (Student t) interval over the per-input fractions; for the mean,
 batch means per input. Outputs of one input are correlated: a GEMM row, an MX block's
 scale. The output-level binomial interval alone was about 3x too narrow on MXF8.
-- Where: `errdist/mc.rs` `p_interval`, `estimate`; `errdist/validate.rs`.
+Where fewer than 20 inputs have a differing output (`mc::SMALL_K`) the batch-means interval
+does not hold, and the interval also takes the input-level bound (`mc::input_bound`):
+Hoeffding's bound on the mean of the per-input shares g_i = c_i f_i / c_max (c_i the outputs
+input i compares, f_i its differing fraction; n KL(mean || q) <= ln(2 / alpha) per side),
+scaled by c_max / mean c, which holds however the outputs of an input differ together. At 0
+differing inputs it is Clopper-Pearson over inputs on "some output differs", [0, 3.69 / n] at
+95%, an upper bound on P(differ) per output. Tier 3's default growth goes on at P 0 to its
+budget (30 s, 76,800 inputs), where that bound is as tight as the run allows, unless it
+compared no output (every output out of domain, [0, 1] at any count; such a Tier 3 is
+refused and cross-checks nothing, MISS 64). Until MISS 120
+the batch-means interval had no width at 0 differing inputs and the outputs' interval stood
+alone, [0, 3.69 / outputs], which takes them as independent, and growth stopped at P 0:
+fixtures/errdist/clus (512 outputs per input that differ together, P 2.12e-3 per compared
+output, exact; GB300 75 of 37687 compared inputs) gave 0 [0, 2.5e-5] after 300 inputs on 22
+of 40 seeds, and at 200 inputs 0 [0, 3.75e-5] with the correct Tier 1 refused against it;
+at 1 of 200 differing inputs the interval [0, 0.0149] missed P 1.5e-2 in 20% of runs
+(computed, outputs differing together). Computed coverage of the new interval in that case
+(every output of an input differing together, 512 per input; tools: the review's
+t3_cover.py with the new rule): no miss above 6% at any P from 1e-6 to 0.2 for 200 to 76,800
+inputs, where the old one missed up to 99% (P 3e-5 at 300 inputs; 98% at P 1e-4 with 200);
+the remaining misses are the batch-means interval's at 20 or more differing inputs (5-6%, as
+before). The input-level bound is for claims (Tier 3's interval, and Tier 3's side of a
+validation). An observed run that refutes a claim (a validation's observed side, the check of
+Tier 0 against Tier 3, importance sampling's plain reference) keeps the outputs' and
+batch-means intervals (`mc::p_interval_obs`): narrower there refuses more, which costs
+precision only. With the bound on that side too, kernel_db's simulator validations (4 inputs
+each) held P(differ) to intervals like [1.4e-3, 0.84] and refused nothing: 20 refusals in 18
+of 199 runs lapsed, and cute.SplitKReduce reported a Tier 2 4% above its P (inside the
+interval joined with Tier 3's).
+- Where: `errdist/mc.rs` `p_interval`, `p_interval_obs`, `estimate`; `errdist/validate.rs`.
 - Status: **argued.** Simulator and GPU runs reproduce the DAG's outputs bit for bit (0
   mismatches, docs/errdist.md §7). On MXF8 the batch-means interval matches the spread
   across seeds. Both validations refuse on a bitwise mismatch at a tracked output: the
@@ -9523,7 +9809,10 @@ scale. The output-level binomial interval alone was about 3x too narrow on MXF8.
   (heavy-tailed u-scale errors over 4 inputs), 10 had no output to compare (out of domain),
   and none were P(differ) or bitwise (model).
 - If wrong: intervals too narrow when inputs are few (the t interval assumes the per-input
-  fractions' mean is near normal); the point estimates stay unbiased. A GPU mismatch that
+  fractions' mean is near normal, from 20 differing inputs on; below, the input-level bound
+  holds without it); the point estimates stay unbiased. Where inputs compare different
+  numbers of outputs the input-level bound scales by the observed c_max / mean c, not the
+  population's. A GPU mismatch that
   is not refused (an atomic location's value within another order's bound, wrong for another
   reason by less than the bound) leaves the DAG unchecked there. A Tier 3 whose moments a run
   contradicts without explained atomic mismatches still headlines its P(differ), with the
@@ -9569,12 +9858,38 @@ A slice's data-dependent decisions (the guard of each predicated instruction, ea
 operand of a select, carry or chained compare, when not a constant, and the piece each
 instruction's value takes where it is piecewise in a data operand: a clamp (`.SAT`,
 `.RELU`), a minimum / maximum's pick, an abs modifier's or a bitwise / integer operand's
-sign, an F2I's saturation: `SProg::decisions`, `seg::inst_pieces`) split its arguments into
-outcome patterns, on each of which it is another function without those pieces. Not
-decisions: a flush to zero and every rounding (they depart from the fitted real function, and
-Tier 3 measures the departure as error), and an integer or exponent-field step of a range
-reduction (it composes the real function across binades; a step the probes cross breaks
-every fitted form, and the slice is not identified).
+sign, an F2I's saturation, since MISS 99 these integer steps: an F2I's integer, a
+data-dependent shift count or byte selector, a bit field that a LOP3 / SHF / PRMT cuts from a
+data operand (its varying bits when 12 or fewer, else the sign and exponent fields of the
+operands it cuts and of the result; a whole 32-bit value or whole 16-bit lanes are no cut),
+and an IMAD / IADD3 / IADD's carry above bit 31 with the same fields, and since the MISS 99
+follow-up a rounding that acts as a step on the identification's probes: a result lane of an
+FFMA, FADD, FFMA2, MUFU, I2F, bf16 / f16 operation, F2FP, QMUL4 or `DivRn` that took at most
+two values on the probes while a data operand of it took more (its ulp exceeds its input's
+spread there; the lane's bits; `SProg::rounding_steps`): `SProg::decisions`,
+`seg::inst_pieces`) split its arguments into outcome patterns, on each of which it is another
+function without those pieces. FLO, POPC and other instructions that `seg::eval_inst` does
+not model end a slice (none is built through them). Not decisions: a flush to zero and every
+other rounding (they depart from the fitted real function, and Tier 3 measures the departure
+as error). A rounding whose result takes three or more values on the probes is no decision:
+the probes cross its steps, and a crossed step that the fitted (smooth) form does not absorb
+leaves its deviation above the acceptance bound. Its steps outside the probed range are
+assumed to continue the probed ones, as an exp range reduction's integer and remainder do
+(argued, not measured; an F2I's integer, by contrast, is a decision whatever the probes
+cross). If wrong: a slice that computes another function on a rounding step its probes never
+reached, with three or more steps probed, is a miss of the MISS 99 kind. Until MISS 99 an integer or exponent-field step was argued to compose the real
+function across binades, a step the probes cross breaking every fitted form; that holds only
+for crossed steps: probes inside one step fit that step's constant (fixtures/errdist/trunc/step:
+trunc(x / 1024) fitted as 0 on probes below 1024; with x in [2048, 3072) w.p. 0.3 P(bits
+differ) 0.300 against the kernel's 0, exact (trunc and the conversion are exact, the add one
+correct rounding) and GB300 (200 inputs, 0 of 12800 outputs differ from the exact value);
+trunc/exp and trunc/mant, an exponent field and a mantissa of a float in one binade on the
+probes: 0.300 and 0.545; all three now refused). Until the MISS 99 follow-up a rounding was
+no decision either: `RM(t + 1.5 * 2^23) - 1.5 * 2^23` (FADD.RM), the same in RN, and FFMA.RM
+(an exp range reduction's form) are floor(t) or round(t) for |t| < 2^22, and with t below
+2^-6 on every probe each was fitted as 0 (fixtures/errdist/trunc floor, round, ffrm: P(bits
+differ) 0.300 under trunc30.json against the kernels' 0, exact, and GB300 200 inputs, 0 of
+12800 outputs off RN(floor(t) + v); now refused, and P 0 on N(0, 1) inputs).
 The fit stands for the patterns its finite probes took (`ident::Outcomes`, all of them when
 every pattern was taken); a `DivRn` (ptxas's `div.rn.f32` sequence, FCHK and slow path
 included) is one decision-free op, correctly rounded on either path (N-SEG). Elsewhere the
@@ -9625,19 +9940,25 @@ inputs: those outputs, skipped before, now count as equal, 0.0625 becoming 0.058
   error against it. A pattern taken by few probes is identified on those few: a slice whose
   function there differs from the fit by less than the acceptance at them would be taken as
   the fit. Near a decision boundary the f32-rounded exact arguments and the exact computation
-  can take different patterns (a band of a few ulps, as for selections). A range
-  reduction's integer step that a fit spanned without crossing it would be taken as the fit
-  beyond it (argued unlikely: the probes perturb by N(0, 1) and cross integer steps). A
-  piece outside `inst_pieces`' audit (an instruction added to `seg::eval_inst` later) is no
-  decision until it is added there. Precision: a pattern that computes the same real function
-  (ptxas's `ex2.approx.f32` halving path below -126, a denormal scaling) is unknown until a
-  probe takes it: `rv_ex2_one` with x in [-130, -122) is refused, where the earlier P 0 was
+  can take different patterns (a band of a few ulps, as for selections). A piece outside
+  `inst_pieces`' audit (an instruction added to `seg::eval_inst` later) is no decision until
+  it is added there. A bit field cut from the low 16-bit lane of an operand is recorded by
+  that lane's sign and exponent (bits 7..15) only where the result cuts that lane; a field of
+  an f32 operand's low mantissa (a mask clearing low bits) is a rounding, recorded as bits
+  7..15 where cut (a precision cost: the fit then holds on few patterns). Precision: a
+  pattern that computes the same real function (ptxas's `ex2.approx.f32` halving path below
+  -126, a denormal scaling) is unknown until a probe takes it: `rv_ex2_one` with x in [-130, -122) is refused, where the earlier P 0 was
   right; so is `softmax_naive` at shift 88 (the scorecard: every finite output differs, and
   the earlier 1.0 was right, GB300 measured). The widening at k = 0 costs width where
   nothing falls outside: `softmax_naive.normal`'s Tier 2 interval grows by 0.018 a side at
   200 inputs (its earlier [0.5636, 0.5678] already held GB300's 0.5640 over 10,000 inputs),
   and since 2026-11-11 Tier 3's does too: `lse_naive.normal` and `lse_stable.normal` by 0.018
   a side (their earlier [0.0648, 0.1065] and [0.1841, 0.2459] held GB300's 0.0746 and 0.2084).
+  Since MISS 99 a software log's range reduction (its argument's exponent) is a decision:
+  `lse_stable.normal` is refused (240 of 1,000 Tier 3 inputs take an exponent no probe took;
+  the probes perturb the captured input), `lse_naive.normal` reports from 4,000 Tier 3 inputs
+  (0.4% take one) and not from 1,000, and c_silu on Student t(3) inputs is refused (35 of
+  200 inputs).
 - Placement: strict and gb300 alike: it concerns errdist's reference values (the slice's
   semantics are the simulator's), not GB300 behavior, and rests on no measured null.
 
@@ -9733,11 +10054,21 @@ upstream deviation, computed recursively down to depth 16. For two slices, both 
 cancel when they compute the same function of the index (equal tables, or equal
 evaluations), or when the candidate's slice equals, bit for bit, the reference's sub-DAG
 above its arguments (fused mean / eps / rsqrt). Otherwise a joint table of the two slices at
-equal arguments is used, else they are independent.
-- Where: `errdist/nonlin/agg.rs` `Ctx::joint`, `composite_ident`; `table.rs` `pair_table`.
-- Status: **argued; known biased.** Pairs come out 3-12% high against Tier 3 on softmax,
-  online softmax, RMSNorm and layer norm (docs/errdist.md §9). Reductions in different
-  orders are the main gap.
+equal arguments is used, else they are independent. Where several ops of one kernel match one
+of the other, the pairs are taken in op order (the first op of each key in the reference,
+then in the candidate) and the first keeps a contested match. Until 2026-11-11 the hash map's
+order chose, so the estimate depended on the hash function (c_equiv_attn's int8 Tier 2 by up
+to 0.24% of P). The choice moves more than that: in the section 9 matrix (--mc 200) 19 pair
+Tier 2 estimates moved with op order, silumul_bf16's on four specs from 17-21% above its
+elementwise law to 1-3% below, and the bf16 gelu pair's from between 52% below and 834%
+above its exact P to 99-100% below (on uniform inputs from 4.4e-6 to the exact 0).
+- Where: `errdist/nonlin/agg.rs` `Ctx::joint`, `composite_ident`, `pair_matches`; `table.rs`
+  `pair_table`.
+- Status: **argued; known biased.** In the section 9 matrix the pair Tier 2 estimates that
+  stand (softmax, attention, add_bf16, silumul_bf16) are 2.8% below to 3.3% above Tier 3 or
+  the elementwise law; the refused ones are off by up to 34x (gelu_erf, gelu_tanh, silu,
+  silumul, addnorm, the bf16 gelu pair), RMSNorm and layer norm 0.4% low to 52% high (model).
+  Reductions in different orders are the main gap.
 - If wrong: biased pair estimates. `best` falls back to Tier 3.
 
 ### N-ERRDIST-NL-ELEM · code

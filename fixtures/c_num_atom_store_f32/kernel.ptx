@@ -1,0 +1,45 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_atom_store_f32(.param .u64 px, .param .u64 pout, .param .u64 pbuf)
+{
+	.reg .b32 %r<16>;
+	.reg .f32 %f<12>;
+	.reg .b64 %rd<12>;
+	ld.param.u64 %rd1, [px];
+	ld.param.u64 %rd2, [pout];
+	ld.param.u64 %rd3, [pbuf];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd2, %rd2;
+	cvta.to.global.u64 %rd3, %rd3;
+	mov.u32 %r1, %tid.x;
+	mul.wide.u32 %rd5, %r1, 4;
+	add.s64 %rd6, %rd3, %rd5;
+	add.s64 %rd7, %rd2, %rd5;
+	add.s64 %rd8, %rd1, %rd5;
+	cvt.rn.f32.u32 %f1, %r1;
+	add.rn.f32 %f2, %f1, 0f3DCCCCCD;
+	mov.b32 %r2, %f2;
+	st.global.f32 [%rd6], 0f00000000;
+	st.global.f32 [%rd6+256], 0f00000000;
+	atom.global.exch.b32 %r3, [%rd6], %r2;
+	st.global.f32 [%rd6+128], %f2;
+	red.global.or.b32 [%rd6+128], 0;
+	atom.global.cas.b32 %r4, [%rd6+256], 0, %r2;
+	ld.global.f32 %f3, [%rd6];
+	ld.global.f32 %f4, [%rd6+128];
+	ld.global.f32 %f5, [%rd6+256];
+	st.global.f32 [%rd7], %f3;
+	st.global.f32 [%rd7+128], %f4;
+	st.global.f32 [%rd7+256], %f5;
+	ld.global.f32 %f6, [%rd8];
+	add.rn.f32 %f7, %f3, %f6;
+	st.global.f32 [%rd7+384], %f7;
+	ret;
+}

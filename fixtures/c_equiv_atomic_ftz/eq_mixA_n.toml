@@ -1,0 +1,10 @@
+# MISS 134 (gen.py): out[i] = (+0 + a[i] (FTZ)) + b[i] (bulk, no flush), one thread per 4 elements against out[i] = (+0 + b[i] (bulk, no flush)) + a[i] (FTZ), one thread per 4 elements; input set n.
+max_states = 200000
+reference = { case = "mixA_ref_n", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "mixA_cand_n"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L2"

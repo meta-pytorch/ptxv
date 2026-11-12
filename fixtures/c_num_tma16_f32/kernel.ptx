@@ -1,0 +1,64 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_tma16_f32(
+    .param .align 64 .b8 tmap[128],
+    .param .u64 pa,
+    .param .u64 px,
+    .param .u64 pout
+)
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<12>;
+    .reg .f32   %f<8>;
+    .shared .align 1024 .b8 tile[128];
+    .shared .align 8 .b64 mbar;
+
+    mov.u32         %r0, %tid.x;
+    mov.u32         %r1, mbar;
+    mov.u32         %r2, tile;
+    ld.param.u64    %rd2, [pa];
+    cvta.to.global.u64 %rd2, %rd2;
+    mul.wide.u32    %rd3, %r0, 4;
+    add.s64         %rd4, %rd2, %rd3;
+    cvt.rn.f32.u32  %f1, %r0;
+    add.rn.f32      %f2, %f1, 0f3DCCCCCD;
+    st.global.f32   [%rd4], %f2;
+    fence.proxy.async.global;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        SKIP_INIT;
+    mbarrier.init.shared::cta.b64 [%r1], 1;
+    fence.mbarrier_init.release.cluster;
+SKIP_INIT:
+    bar.sync        0;
+    @%p0 bra        WAIT;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r1], 128;
+    mov.b64         %rd0, tmap;
+    cvta.param.u64  %rd1, %rd0;
+    mov.u32         %r3, 0;
+    cp.async.bulk.tensor.1d.shared::cluster.global.mbarrier::complete_tx::bytes [%r2], [%rd1, {%r3}], [%r1];
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r1], 0;
+    @!%p1 bra       WAIT;
+    shl.b32         %r4, %r0, 2;
+    add.u32         %r5, %r2, %r4;
+    ld.shared.f32   %f3, [%r5];
+    ld.param.u64    %rd5, [pout];
+    cvta.to.global.u64 %rd5, %rd5;
+    add.s64         %rd6, %rd5, %rd3;
+    st.global.f32   [%rd6], %f3;
+    ld.param.u64    %rd7, [px];
+    cvta.to.global.u64 %rd7, %rd7;
+    add.s64         %rd8, %rd7, %rd3;
+    ld.global.f32   %f4, [%rd8];
+    add.rn.f32      %f5, %f3, %f4;
+    st.global.f32   [%rd6+128], %f5;
+    ret;
+}

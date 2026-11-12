@@ -50,7 +50,11 @@ fn spawn(root: &Path, variant: &str) -> Child {
 
 /// (variant, classes) of every row of a finished check, or the run's error (no rows).
 fn rows(c: Child) -> Result<Vec<(String, Vec<String>)>, String> {
-    let out = c.wait_with_output().unwrap();
+    rows_of(&c.wait_with_output().unwrap())
+}
+
+/// (variant, classes) of every row of a check's output, or the run's error (no rows).
+fn rows_of(out: &std::process::Output) -> Result<Vec<(String, Vec<String>)>, String> {
     let err = || String::from_utf8_lossy(&out.stderr).trim().to_string();
     let j: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|_| err())?;
     let rs = j["rows"].as_array().ok_or_else(err)?;
@@ -344,6 +348,218 @@ fn killed_runs_directories_are_removed_by_the_next_run() {
     assert_eq!(left, keep);
 }
 
+/// A run removes a dead run's directory with `.lock` last, so what it cannot remove keeps
+/// `.lock`, and the next run removes the rest. `remove_dir_all` stops at the first entry it
+/// cannot remove, which may come after `.lock` (on NFS, a removal that a racing reaper's
+/// reading skipped): the directory stayed without `.lock`, and no run reaped it. Here a
+/// subdirectory without write permission stands for what a run fails to remove, in 12 dead
+/// directories whose `.lock` is made first in half of them and last in the others, beside
+/// subdirectories of different names (directories list their entries in creation order, the
+/// reverse, or by a hash of the name). Skipped where permissions do not hold (root).
+#[test]
+fn what_a_reaper_cannot_remove_keeps_the_lock_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = scratch("partial");
+    let base = d.join("out/r4_sum_torch");
+    std::fs::create_dir_all(&base).unwrap();
+    let mode = |p: &Path, m: u32| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m));
+    let probe = d.join("probe");
+    std::fs::create_dir_all(&probe).unwrap();
+    mode(&probe, 0o500).unwrap();
+    let enforced = std::fs::write(probe.join("x"), b"x").is_err();
+    mode(&probe, 0o700).unwrap();
+    if !enforced {
+        let _ = std::fs::remove_dir_all(&d);
+        eprintln!("skipped: a directory without write permission can be written to here");
+        return;
+    }
+    let (host, _) = host_tokens();
+    let dead = {
+        let mut c = Command::new("true").spawn().unwrap();
+        let pid = c.id();
+        c.wait().unwrap();
+        pid
+    };
+    let mut planted = Vec::new();
+    for i in 0..12 {
+        let dir = base.join(format!("run-{host}-{dead}-12345-{i}"));
+        let sub = dir.join(format!("sub{i}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        if i % 2 == 0 {
+            std::fs::write(dir.join(".lock"), b"").unwrap();
+        }
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("f"), b"x").unwrap();
+        std::fs::write(dir.join("k0.cubin"), b"x").unwrap();
+        if i % 2 == 1 {
+            std::fs::write(dir.join(".lock"), b"").unwrap();
+        }
+        mode(&sub, 0o500).unwrap();
+        planted.push((dir, sub, format!("sub{i}")));
+    }
+    // A run reaps: it can remove k0.cubin only.
+    let first = rows(spawn(&d, "good"));
+    let after_first: Vec<(PathBuf, Option<Vec<String>>)> = planted
+        .iter()
+        .map(|(dir, _, _)| (dir.clone(), dir.exists().then(|| names(dir))))
+        .collect();
+    // With the subdirectories writable again, the next run removes the rest.
+    for (_, sub, _) in &planted {
+        let _ = mode(sub, 0o700);
+    }
+    let second = rows(spawn(&d, "good"));
+    let left: Vec<String> = planted
+        .iter()
+        .filter(|(dir, _, _)| dir.exists())
+        .map(|(dir, _, _)| dir.display().to_string())
+        .collect();
+    let _ = std::fs::remove_dir_all(&d);
+    let good = vec![("good".to_string(), expected("good"))];
+    assert_eq!(first.unwrap_or_else(|e| panic!("the first run: {e}")), good);
+    assert_eq!(
+        second.unwrap_or_else(|e| panic!("the second run: {e}")),
+        good
+    );
+    for ((dir, got), (_, _, sub)) in after_first.iter().zip(&planted) {
+        assert_eq!(
+            got.as_deref(),
+            Some(&[".lock".to_string(), sub.clone()][..]),
+            "{}: what the first run left of it",
+            dir.display()
+        );
+    }
+    assert!(
+        left.is_empty(),
+        "dead directories the second run left: {left:?}"
+    );
+}
+
+/// A run stops emptying a level of a dead directory after a round that removes nothing. With
+/// its rounds retried at every level, what a run could not remove k levels down cost up to 8^k
+/// listings: here a dead directory whose 9th level has no write permission, 8^9 listings at the
+/// bottom, many minutes of every run of the case. The run must end within 60 s (it takes a
+/// second or two) and leave the directory with `.lock` and its first level (k0.cubin goes).
+/// Skipped where permissions do not hold (root).
+#[test]
+fn a_reaper_stops_at_what_it_cannot_remove_deep_down() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = scratch("deep");
+    let base = d.join("out/r4_sum_torch");
+    std::fs::create_dir_all(&base).unwrap();
+    let mode = |p: &Path, m: u32| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m));
+    let probe = d.join("probe");
+    std::fs::create_dir_all(&probe).unwrap();
+    mode(&probe, 0o500).unwrap();
+    let enforced = std::fs::write(probe.join("x"), b"x").is_err();
+    mode(&probe, 0o700).unwrap();
+    if !enforced {
+        let _ = std::fs::remove_dir_all(&d);
+        eprintln!("skipped: a directory without write permission can be written to here");
+        return;
+    }
+    let (host, _) = host_tokens();
+    let dead = {
+        let mut c = Command::new("true").spawn().unwrap();
+        let pid = c.id();
+        c.wait().unwrap();
+        pid
+    };
+    let dir = base.join(format!("run-{host}-{dead}-12345-0"));
+    let deep = (0..9).fold(dir.clone(), |p, level| p.join(format!("l{level}")));
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("f"), b"x").unwrap();
+    std::fs::write(dir.join("k0.cubin"), b"x").unwrap();
+    std::fs::write(dir.join(".lock"), b"").unwrap();
+    mode(&deep, 0o500).unwrap();
+    let t0 = std::time::Instant::now();
+    let mut run = spawn(&d, "good");
+    let ended = loop {
+        if run.try_wait().unwrap().is_some() {
+            break true;
+        }
+        if t0.elapsed().as_secs() >= 60 {
+            let _ = run.kill();
+            break false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let secs = t0.elapsed().as_secs_f64();
+    let got = rows(run);
+    let left = dir.exists().then(|| names(&dir));
+    let bottom = deep.join("f").exists();
+    let _ = mode(&deep, 0o700);
+    let _ = std::fs::remove_dir_all(&d);
+    assert!(
+        ended,
+        "the run that reaps a dead directory it cannot empty 9 levels down was still running \
+         after {secs:.0} s"
+    );
+    let good = vec![("good".to_string(), expected("good"))];
+    assert_eq!(got.unwrap_or_else(|e| panic!("the run: {e}")), good);
+    assert_eq!(
+        left.as_deref(),
+        Some(&[".lock".to_string(), "l0".to_string()][..]),
+        "what the run left of {}",
+        dir.display()
+    );
+    assert!(bottom, "the file the run cannot remove is gone");
+}
+
+/// A subdirectory of a dead directory that another run's reaper removes between this run's
+/// listing of the directory and its reading of the subdirectory (read_dir: NotFound) counts as
+/// gone, as an entry whose removal finds it gone does: the round made progress, the next one
+/// lists the directory empty, and the run removes it. The run ended the level there, leaving
+/// the dead directory with `.lock` for the next run. The shim (tests/shim_flock.c, LD_PRELOAD)
+/// removes the empty subdirectory `gone` when the run opens it; skipped where the shim cannot
+/// be built (no C compiler).
+#[test]
+fn a_subdirectory_removed_under_a_reaper_counts_as_gone() {
+    let d = scratch("vanish");
+    let so = match flock_shim(&d) {
+        Ok(so) => so,
+        Err(why) => {
+            let _ = std::fs::remove_dir_all(&d);
+            eprintln!("skipped: the flock shim cannot be built ({why})");
+            return;
+        }
+    };
+    let (host, _) = host_tokens();
+    let dead = {
+        let mut c = Command::new("true").spawn().unwrap();
+        let pid = c.id();
+        c.wait().unwrap();
+        pid
+    };
+    let dir = d.join(format!("out/r4_sum_torch/run-{host}-{dead}-12345-0"));
+    std::fs::create_dir_all(dir.join("gone")).unwrap();
+    std::fs::write(dir.join(".lock"), b"").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_ptxv"))
+        .args(["check", fixture().to_str().unwrap(), "--variant", "good"])
+        .args(["--front", "sass", "--json", "--no-input-coverage"])
+        .env("PTXV_ROOT", &d)
+        .env("PTXV_THREADS", "1")
+        .env("PTXV_NO_VCACHE", "1")
+        .env("CUDA_VISIBLE_DEVICES", "")
+        .env("LD_PRELOAD", &so)
+        .env("SHIM_VANISH_DIR", "gone")
+        .current_dir(&d)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    let left = dir.exists().then(|| names(&dir));
+    let _ = std::fs::remove_dir_all(&d);
+    assert!(
+        err.contains("shim: opendir("),
+        "the shim never removed `gone` under the run: {err}"
+    );
+    let good = vec![("good".to_string(), expected("good"))];
+    assert_eq!(
+        rows_of(&out).unwrap_or_else(|e| panic!("the run: {e}")),
+        good
+    );
+    assert_eq!(left, None, "what the run left of {}", dir.display());
+}
+
 /// `ptxv check r4_sum_torch --variant all` in its own process group, PTXV_ROOT = `root`, run
 /// through `prefix` (e.g. `unshare ...`) when it is not empty.
 fn spawn_group(root: &Path, prefix: &[String]) -> Child {
@@ -540,7 +756,25 @@ fn flock_shim(dir: &Path) -> Result<PathBuf, String> {
 /// by 10 s; skipped where the shim cannot be built (no C compiler).
 #[test]
 fn a_run_taking_its_lock_keeps_its_directory() {
-    let d = scratch("lockwin");
+    reap_during_shim_delay("lockwin", "SHIM_FLOCK_DELAY_MS", "shim: flock(");
+}
+
+/// A rename of `.lock.new` to `.lock` reported as failed after it happened (on NFS, a reply
+/// lost after the server renamed) leaves `.lock` there, and the run keeps its lock all the
+/// same, so another run that reaps meanwhile finds `.lock` held and leaves the directory alone.
+/// The run released the lock on a failed rename before, and the other run removed the live
+/// run's directory. The shim does the rename, reports ENOENT and delays the unlink of
+/// `.lock.new` that follows by 10 s; skipped where it cannot be built.
+#[test]
+fn a_run_whose_lock_rename_is_reported_failed_keeps_its_directory() {
+    reap_during_shim_delay("renamelost", "SHIM_RENAME_LOST_MS", "shim: rename(");
+}
+
+/// A live run of the case with the shim's fault `shim_var` (a 10 s delay), and another run of
+/// the case, which reaps first, once the live run's stderr says `marker` (the delay began): the
+/// live run's directory must keep its lock file, and both runs their verdicts.
+fn reap_during_shim_delay(tag: &str, shim_var: &str, marker: &'static str) {
+    let d = scratch(tag);
     let so = match flock_shim(&d) {
         Ok(so) => so,
         Err(why) => {
@@ -558,7 +792,7 @@ fn a_run_taking_its_lock_keeps_its_directory() {
         .env("PTXV_NO_VCACHE", "1")
         .env("CUDA_VISIBLE_DEVICES", "")
         .env("LD_PRELOAD", &so)
-        .env("SHIM_FLOCK_DELAY_MS", "10000")
+        .env(shim_var, "10000")
         .current_dir(&d)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -574,7 +808,7 @@ fn a_run_taking_its_lock_keeps_its_directory() {
             .lines()
             .map_while(Result::ok)
         {
-            if line.starts_with("shim: flock(") {
+            if line.starts_with(marker) {
                 let _ = tx.send(());
             }
             all.push_str(&line);
@@ -585,7 +819,7 @@ fn a_run_taking_its_lock_keeps_its_directory() {
     let delayed = rx.recv_timeout(std::time::Duration::from_secs(120)).is_ok();
     let dirs = run_dirs(&base);
     let contents: Vec<Vec<String>> = dirs.iter().map(|n| names(&base.join(n))).collect();
-    // Another run of the case, which reaps first, while the live run waits for its lock.
+    // Another run of the case, which reaps first, while the live run is in the shim's delay.
     let other = rows(spawn(&d, "good"));
     // The live run's directory is there with its lock file, under either name (on NFS a
     // removed open file is renamed to .nfs* and keeps the directory).
@@ -598,7 +832,10 @@ fn a_run_taking_its_lock_keeps_its_directory() {
     let got = rows(live);
     let err = reader.join().unwrap();
     let _ = std::fs::remove_dir_all(&d);
-    assert!(delayed, "the shim never delayed the live run's lock: {err}");
+    assert!(
+        delayed,
+        "the shim never delayed the live run's lock ({marker}): {err}"
+    );
     assert_eq!(
         dirs.len(),
         1,

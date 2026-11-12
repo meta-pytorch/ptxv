@@ -261,13 +261,14 @@ impl SProg {
                             v => cvals.iter().find(|(x, _)| x == v).map_or(0, |(_, c)| *c),
                         }
                     };
+                    // A `.SIGN` register (PLOP3 input) reads its bit 31 (`Reg::pred_bit`).
                     let rp = |p: &Pred| -> bool {
                         let v = match p.reg {
                             None => true,
                             Some(r) => regs
                                 .iter()
                                 .find(|(x, _)| *x == r)
-                                .is_none_or(|(_, s)| get(*s, vals) != 0),
+                                .is_none_or(|(_, s)| r.pred_bit(get(*s, vals))),
                         };
                         v != p.neg
                     };
@@ -282,27 +283,111 @@ impl SProg {
     /// The data-dependent decisions the slice takes at argument bits `args` (MISS 57): the
     /// value of every predicate it reads that depends on its arguments, each `Guard`'s and each
     /// predicate operand of an instruction (a select's condition, a carry, a chained compare),
-    /// and the piece each instruction's value takes where it is piecewise in a data operand
-    /// (`inst_pieces`: a clamp, a minimum / maximum, a sign), in op order. None when the slice
-    /// does not evaluate there. The identification of the slice's real function
-    /// (`errdist::nonlin::ident`) holds for the decisions its probes took.
-    pub fn decisions(&self, args: &[u32], vals: &mut Vec<u64>) -> Option<Vec<bool>> {
+    /// the piece each instruction's value takes where it is piecewise in a data operand
+    /// (`inst_pieces`: a clamp, a minimum / maximum, a sign), and the bits of each rounding
+    /// that acts as a step on the identification's probes (`steps`, from `rounding_steps`),
+    /// in op order. None when the slice does not evaluate there. The identification of the
+    /// slice's real function (`errdist::nonlin::ident`) holds for the decisions its probes took.
+    pub fn decisions(
+        &self,
+        args: &[u32],
+        steps: &[(u32, u32)],
+        vals: &mut Vec<u64>,
+    ) -> Option<Vec<bool>> {
         self.eval_with(args, vals).ok()?;
         let mut out = Vec::new();
-        self.walk_decisions(Some((args, vals)), &mut |b| out.push(b));
+        self.walk_decisions(Some((args, vals)), steps, &mut |b| out.push(b));
         Some(out)
     }
 
     /// How many data-dependent decisions `decisions` reports.
-    pub fn decision_count(&self) -> usize {
+    pub fn decision_count(&self, steps: &[(u32, u32)]) -> usize {
         let mut n = 0;
-        self.walk_decisions(None, &mut |_| n += 1);
+        self.walk_decisions(None, steps, &mut |_| n += 1);
         n
+    }
+
+    /// The roundings that act as steps on the identification's probes (MISS 99 follow-up),
+    /// for `decisions`: per op, the mask of the result lanes that took at most two values on
+    /// the probes (argument bits; those where the slice does not evaluate are skipped) while a
+    /// data operand of the op took more. The rounding's ulp then exceeds its input's spread
+    /// there, the probes cross no step of it (at most one), and the slice was fitted on that
+    /// step: `RM(t + 1.5 * 2^23) - 1.5 * 2^23` with |t| < 1/64 on every probe was fitted as 0
+    /// where t reaches 2 (the review's FADD.RM, FFMA.RM and RN forms; an exp range reduction
+    /// is the FFMA.RM one). The lanes' bits become decisions, as an F2I's integer's are, so the
+    /// fit holds only on the values the probes saw. A rounding whose result varies on the
+    /// probes departs from the fitted function by its error (`inst_pieces`).
+    /// ASSUME(N-ERRDIST-IDENT)
+    pub fn rounding_steps(&self, probes: &[Vec<u32>]) -> Vec<(u32, u32)> {
+        let lanes: Vec<Option<&'static [u32]>> =
+            self.ops.iter().map(|o| rounding_lanes(&o.kind)).collect();
+        if lanes.iter().all(Option::is_none) {
+            return vec![];
+        }
+        let opnds: Vec<Vec<SVal>> = self.ops.iter().map(|o| data_operands(&o.kind)).collect();
+        // Up to three distinct values each: per rounding, of each lane and each data operand.
+        let mut lane_vals: Vec<Vec<Vec<u64>>> = lanes
+            .iter()
+            .map(|l| vec![vec![]; l.map_or(0, |l| l.len())])
+            .collect();
+        let mut opnd_vals: Vec<Vec<Vec<u64>>> = lanes
+            .iter()
+            .zip(&opnds)
+            .map(|(l, d)| vec![vec![]; if l.is_some() { d.len() } else { 0 }])
+            .collect();
+        let note = |s: &mut Vec<u64>, v: u64| {
+            if s.len() < 3 && !s.contains(&v) {
+                s.push(v);
+            }
+        };
+        let mut vals = Vec::new();
+        for a in probes {
+            if self.eval_with(a, &mut vals).is_err() {
+                continue;
+            }
+            let get = |v: SVal| -> u64 {
+                match v {
+                    SVal::Arg(i) => a[i as usize] as u64,
+                    SVal::Const(c) => c,
+                    SVal::Op(i) => vals[i as usize],
+                }
+            };
+            for (i, l) in lanes.iter().enumerate() {
+                let Some(l) = l else { continue };
+                for (k, &m) in l.iter().enumerate() {
+                    note(&mut lane_vals[i][k], vals[i] & m as u64);
+                }
+                for (k, &v) in opnds[i].iter().enumerate() {
+                    note(&mut opnd_vals[i][k], get(v));
+                }
+            }
+        }
+        let mut out = vec![];
+        for (i, l) in lanes.iter().enumerate() {
+            let Some(l) = l else { continue };
+            if !opnd_vals[i].iter().any(|s| s.len() > 2) {
+                continue;
+            }
+            let mask = l
+                .iter()
+                .zip(&lane_vals[i])
+                .filter(|(_, s)| !s.is_empty() && s.len() <= 2)
+                .fold(0u32, |m, (&b, _)| m | b);
+            if mask != 0 {
+                out.push((i as u32, mask));
+            }
+        }
+        out
     }
 
     /// Each decision of `decisions`, at argument bits and op values `at` (None: counting, every
     /// value 0; the number of decisions does not depend on the values).
-    fn walk_decisions(&self, at: Option<(&[u32], &[u64])>, f: &mut dyn FnMut(bool)) {
+    fn walk_decisions(
+        &self,
+        at: Option<(&[u32], &[u64])>,
+        steps: &[(u32, u32)],
+        f: &mut dyn FnMut(bool),
+    ) {
         let get = |v: SVal| -> u64 {
             match (v, at) {
                 (SVal::Const(c), _) => c,
@@ -311,7 +396,7 @@ impl SProg {
                 (SVal::Op(i), Some((_, vals))) => vals[i as usize],
             }
         };
-        for o in &self.ops {
+        for (i, o) in self.ops.iter().enumerate() {
             match &o.kind {
                 SKind::Guard { pred, .. } => {
                     if !matches!(pred, SVal::Const(_)) {
@@ -358,7 +443,55 @@ impl SProg {
                 }
                 SKind::DivRn { .. } => {}
             }
+            // A rounding that acts as a step on the identification's probes: its lanes' bits.
+            if let Some(&(_, mask)) = steps.iter().find(|s| s.0 == i as u32) {
+                let v = get(SVal::Op(i as u32));
+                for b in (0..32).filter(|b| mask >> b & 1 == 1) {
+                    f(v >> b & 1 == 1);
+                }
+            }
         }
+    }
+}
+
+/// The result lanes of a rounding op of a slice (`SProg::rounding_steps`): one 32-bit value,
+/// two 16-bit lanes (bf16 / f16 pairs) or four 8-bit lanes (QMUL4). None for the other ops.
+fn rounding_lanes(k: &SKind) -> Option<&'static [u32]> {
+    const ONE: &[u32] = &[!0];
+    const TWO: &[u32] = &[0xffff_0000, 0xffff];
+    const FOUR: &[u32] = &[0xff00_0000, 0xff_0000, 0xff00, 0xff];
+    match k {
+        SKind::DivRn { .. } => Some(ONE),
+        SKind::Inst { op, .. } => match op {
+            Op::Ffma { .. }
+            | Op::Fadd { .. }
+            | Op::Ffma2 { .. }
+            | Op::Mufu { .. }
+            | Op::I2F { .. } => Some(ONE),
+            Op::Hfma2Bf16 { .. }
+            | Op::FfmaBf16 { .. }
+            | Op::F2fpBf16 { .. }
+            | Op::F2fpF16 { .. } => Some(TWO),
+            Op::Qmul4 { .. } => Some(FOUR),
+            _ => None,
+        },
+        SKind::Guard { .. } => None,
+    }
+}
+
+/// The operands of a slice op that depend on its arguments (not constants, not predicates).
+fn data_operands(k: &SKind) -> Vec<SVal> {
+    match k {
+        SKind::Inst { regs, .. } => regs
+            .iter()
+            .filter(|(r, v)| !matches!(r.file, File::P | File::UP) && !matches!(v, SVal::Const(_)))
+            .map(|(_, v)| *v)
+            .collect(),
+        SKind::DivRn { a, b } => [*a, *b]
+            .into_iter()
+            .filter(|v| !matches!(v, SVal::Const(_)))
+            .collect(),
+        SKind::Guard { .. } => vec![],
     }
 }
 
@@ -373,14 +506,29 @@ impl SProg {
 ///   HMNMX2, VHMNMX), an F2I's saturation and NaN, and the sign bit of a data operand of a
 ///   bitwise or integer instruction (LOP3, SHF, PRMT, IADD3, IMAD, IADD): a float's abs, neg
 ///   or copysign written as integer operations (`LOP3 R, R, 0x7fffffff`);
+/// - recorded since MISS 99 (integer steps): an F2I's integer (every value its own piece:
+///   `trunc(x / 1024)` fitted as 0 on probes below 1024 was the exact reference where it is
+///   2); a data-dependent SHF count or PRMT selector; a LOP3 / SHF / PRMT result that cuts a
+///   data operand (anything but a whole 32-bit value or whole 16-bit lanes, whose signs are
+///   recorded): its varying bits when 12 or fewer (an exponent extracted, an integer shifted
+///   into the exponent), else the sign and exponent fields of the operands it cuts and of the
+///   result (`bit_pieces`, `cut_pieces`); an IMAD / IADD3 / IADD on data: the carry or wrap
+///   above bit 31 and the same fields (an IMAD by a power of two with a zero addend is a
+///   move);
 /// - predicates (FSETP, HSETP2, FCHK, PLOP3, ISETP, a LOP3's predicate, P2R): their values are
 ///   decisions where an instruction reads them (`walk_decisions`);
-/// - not recorded, argued: a flush to zero (`.FTZ`) and every rounding (FFMA, FADD, MUFU, F2FP,
-///   I2F, QMUL4) depart from the slice's real function, the identified one, and Tier 3
-///   measures that departure as the kernel's error; an F2I's or a shift's step through the
-///   integers and the exponent field (range reduction) composes the real function across
-///   binades by design, and a step the probes cross breaks every fitted form (the slice is
-///   not identified). ASSUME(N-ERRDIST-IDENT)
+/// - not in a slice: FLO, POPC and the other instructions `eval_inst` does not model (a slice
+///   through one is not built);
+/// - recorded since the MISS 99 follow-up, from the identification's probes
+///   (`SProg::rounding_steps`, not here): a rounding whose result lane took at most two values
+///   on the probes while a data operand took more, by that lane's bits (an add of 1.5 * 2^23
+///   in RN or RM, the FFMA.RM of an exp range reduction, on probes inside one of its steps);
+/// - not recorded, argued: a flush to zero (`.FTZ`) and every other rounding (FFMA, FADD, MUFU,
+///   F2FP, I2F, QMUL4, a mask that clears low mantissa bits) depart from the slice's real
+///   function, the identified one, and Tier 3 measures that departure as the kernel's error.
+///   Until MISS 99 the integer steps were argued to compose the real function across binades;
+///   that holds only for steps the probes cross, and a step they never cross was fitted as one
+///   piece. ASSUME(N-ERRDIST-IDENT)
 pub(crate) fn inst_pieces(
     op: &Op,
     dst: Reg,
@@ -711,18 +859,57 @@ pub(crate) fn inst_pieces(
             f(x.is_nan());
             f(x < lo);
             f(x > hi);
+            // Every integer is its own piece (MISS 99): the slice is a step function of the
+            // F2I's operand, and probes in one step fit the constant of that step
+            // (r2/probes/rE_trunc: trunc(x / 1024) fitted as 0 where it is 2).
+            let r = eval_inst(op, dst, rv, rp).unwrap_or(0) as u32;
+            for i in 0..32 {
+                f(r >> i & 1 == 1);
+            }
         }
-        Op::Lop3 { a, b, c, .. } | Op::Iadd3 { a, b, c, .. } | Op::Imad { a, b, c, .. } => {
-            for v in [a, b, c] {
+        Op::Lop3 { a, b, c, lut, .. } => {
+            let v = [a, b, c];
+            for x in v {
+                if data(x) {
+                    f(sign(w(x)));
+                }
+            }
+            let dm = [data(a), data(b), data(c)];
+            if dm.iter().any(|&d| d) {
+                let cl = lop3_classes(*lut, [w(a), w(b), w(c)], dm);
+                let ops: Vec<(u32, bool)> = v.iter().map(|x| (w(x), data(x))).collect();
+                let r = eval_inst(op, dst, rv, rp).unwrap_or(0) as u32;
+                bit_pieces(&cl, &ops, r, f);
+            }
+        }
+        Op::Shf {
+            lo,
+            sh,
+            hi,
+            right,
+            signed,
+            high,
+            ..
+        } => {
+            for v in [lo, sh, hi] {
                 if data(v) {
                     f(sign(w(v)));
                 }
             }
-        }
-        Op::Shf { lo, sh, hi, .. } => {
-            for v in [lo, sh, hi] {
-                if data(v) {
-                    f(sign(w(v)));
+            if data(lo) || data(hi) || data(sh) {
+                let ops = [(w(lo), data(lo)), (w(hi), data(hi))];
+                let r = eval_inst(op, dst, rv, rp).unwrap_or(0) as u32;
+                if data(sh) {
+                    // A data-dependent count: each count is its own piece, and the moved
+                    // operands' fields decide as for any cut (MISS 99).
+                    let s = rv(sh) & 63;
+                    for i in 0..6 {
+                        f(s >> i & 1 == 1);
+                    }
+                    cut_pieces(&ops, &[true, true], r, f);
+                } else {
+                    let s = (rv(sh) & 63) as u32;
+                    bit_pieces(&shf_classes(s, *right, *signed, *high), &ops, r, f);
                 }
             }
         }
@@ -731,6 +918,100 @@ pub(crate) fn inst_pieces(
                 if data(v) {
                     f(sign(w(v)));
                 }
+            }
+            if data(a) || data(b) || data(sel) {
+                let ops = [(w(a), data(a)), (w(b), data(b))];
+                let r = eval_inst(op, dst, rv, rp).unwrap_or(0) as u32;
+                if data(sel) {
+                    let s = rv(sel);
+                    for i in 0..16 {
+                        f(s >> i & 1 == 1);
+                    }
+                    cut_pieces(&ops, &[true, true], r, f);
+                } else {
+                    bit_pieces(&prmt_classes(rv(sel)), &ops, r, f);
+                }
+            }
+        }
+        Op::Imad {
+            a,
+            b,
+            c,
+            neg_c,
+            not_c,
+            ..
+        } => {
+            for v in [a, b, c] {
+                if data(v) {
+                    f(sign(w(v)));
+                }
+            }
+            if data(a) || data(b) || data(c) {
+                let r = eval_inst(op, dst, rv, rp).unwrap_or(0) as u32;
+                // x * 2^k + 0 is a move (`IMAD.U32 R, R, 0x10000, RZ`: a bf16 widened from
+                // the low half of a word).
+                let pow2 = |x: &Val, y: &Val| {
+                    data(x) && !data(y) && w(y).is_power_of_two() && !data(c) && w(c) == 0
+                };
+                let shift = if pow2(a, b) {
+                    Some((w(a), w(b).trailing_zeros()))
+                } else if pow2(b, a) {
+                    Some((w(b), w(a).trailing_zeros()))
+                } else {
+                    None
+                };
+                match shift.filter(|_| !*neg_c && !*not_c) {
+                    Some((x, k)) => bit_pieces(
+                        &shf_classes(k, false, false, false),
+                        &[(x, true), (0, false)],
+                        r,
+                        f,
+                    ),
+                    None => {
+                        let ops = [(w(a), data(a)), (w(b), data(b)), (w(c), data(c))];
+                        // The wrap above bit 31 (MISS 99): a product or sum past 2^32 is
+                        // another function of the operands than one inside.
+                        let mut c0 = rv(c) & 0xffff_ffff;
+                        if *not_c {
+                            c0 = !c0 & 0xffff_ffff;
+                        }
+                        if *neg_c {
+                            c0 = c0.wrapping_neg() & 0xffff_ffff;
+                        }
+                        let full = (rv(a) & 0xffff_ffff) as u128 * (rv(b) & 0xffff_ffff) as u128
+                            + c0 as u128;
+                        f(full >> 32 != 0);
+                        cut_pieces(&ops, &[false; 3], r, f);
+                    }
+                }
+            }
+        }
+        Op::Iadd3 {
+            a, b, c, neg, not, ..
+        } => {
+            for v in [a, b, c] {
+                if data(v) {
+                    f(sign(w(v)));
+                }
+            }
+            if data(a) || data(b) || data(c) {
+                let r = eval_inst(op, dst, rv, rp).unwrap_or(0) as u32;
+                let mut s = 0u64;
+                for ((v, n), m) in [a, b, c].iter().zip(neg).zip(not) {
+                    let mut x = rv(v) & 0xffff_ffff;
+                    if *m {
+                        x = !x & 0xffff_ffff;
+                    }
+                    if *n {
+                        x = x.wrapping_neg() & 0xffff_ffff;
+                    }
+                    s += x;
+                }
+                // The carry out of bit 31 (0..2): the wrap above the sign bit (MISS 99).
+                f(s >> 32 >= 1);
+                f(s >> 32 >= 2);
+                let ops = [(w(a), data(a)), (w(b), data(b)), (w(c), data(c))];
+                cut_pieces(&ops, &[false; 3], r, f);
             }
         }
         Op::Int {
@@ -744,8 +1025,205 @@ pub(crate) fn inst_pieces(
                     f(sign(w(v)));
                 }
             }
+            if data(a) || data(b) {
+                let r = eval_inst(op, dst, rv, rp).unwrap_or(0) as u32;
+                f(((rv(a) & 0xffff_ffff) + (rv(b) & 0xffff_ffff)) >> 32 != 0);
+                cut_pieces(&[(w(a), data(a)), (w(b), data(b))], &[false; 2], r, f);
+            }
         }
         _ => {}
+    }
+}
+
+/// What one bit of a bitwise or move result is (MISS 99): a constant, bit `j` of operand
+/// `k`, or another function of the operands' bits.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Bit {
+    Const,
+    From(usize, u32),
+    Other,
+}
+
+/// `Bit` per result bit of `LOP3 lut(a, b, c)`, the constant operands' bits fixed (`vals`;
+/// `data[k]`: operand k depends on the slice's arguments). Each result bit is the LUT of the
+/// operands' bits at its position.
+fn lop3_classes(lut: u8, vals: [u32; 3], data: [bool; 3]) -> [Bit; 32] {
+    let ds: Vec<usize> = (0..3).filter(|&k| data[k]).collect();
+    let mut out = [Bit::Const; 32];
+    for (i, o) in out.iter_mut().enumerate() {
+        let t: Vec<u8> = (0..1u32 << ds.len())
+            .map(|m| {
+                let mut b = [0u32; 3];
+                for (k, x) in b.iter_mut().enumerate() {
+                    *x = vals[k] >> i & 1;
+                }
+                for (q, &k) in ds.iter().enumerate() {
+                    b[k] = m >> q & 1;
+                }
+                lut >> (b[0] << 2 | b[1] << 1 | b[2]) & 1
+            })
+            .collect();
+        *o = if t.iter().all(|&x| x == t[0]) {
+            Bit::Const
+        } else if let Some(q) =
+            (0..ds.len()).find(|&q| t.iter().enumerate().all(|(m, &x)| x as usize == m >> q & 1))
+        {
+            Bit::From(ds[q], i as u32)
+        } else {
+            Bit::Other
+        };
+    }
+    out
+}
+
+/// `Bit` per result bit of `SHF` by a constant `s` of the 64-bit value hi:lo (operand 0: lo,
+/// 1: hi): the low or `high` word of the shifted value; an arithmetic right shift fills with
+/// hi's bit 31.
+fn shf_classes(s: u32, right: bool, signed: bool, high: bool) -> [Bit; 32] {
+    let mut out = [Bit::Const; 32];
+    for (i, o) in out.iter_mut().enumerate() {
+        let pos = i as i64 + if high { 32 } else { 0 };
+        let j = if right {
+            pos + s as i64
+        } else {
+            pos - s as i64
+        };
+        *o = if (0..64).contains(&j) {
+            Bit::From((j / 32) as usize, (j % 32) as u32)
+        } else if right && signed && j >= 64 {
+            Bit::From(1, 31)
+        } else {
+            Bit::Const
+        };
+    }
+    out
+}
+
+/// `Bit` per result bit of `PRMT` with a constant selector `sel` (operand 0: a, 1: b): each
+/// result byte is a byte of b:a, or that byte's bit 7 replicated (`sel` nibble bit 3).
+fn prmt_classes(sel: u64) -> [Bit; 32] {
+    let mut out = [Bit::Const; 32];
+    for (byte, chunk) in out.chunks_mut(8).enumerate() {
+        let n = (sel >> (4 * byte)) & 0xf;
+        let src = (n & 7) as u32;
+        for (t, o) in chunk.iter_mut().enumerate() {
+            let j = if n & 8 != 0 {
+                8 * src + 7
+            } else {
+                8 * src + t as u32
+            };
+            *o = Bit::From((j / 32) as usize, j % 32);
+        }
+    }
+    out
+}
+
+/// The pieces of a bitwise or move result `r` with bits `cl` of its operands `ops` (value,
+/// depends on the slice's arguments) (MISS 99). A result that passes a data operand whole, as
+/// one 32-bit value or as 16-bit lanes in their places, or keeps only its sign bits (abs, neg,
+/// copysign, a bf16 widened or packed), decides nothing beyond the sign bits `inst_pieces`
+/// records, and a lane's sign where the op sets it (bit 15 of each data operand). Any other
+/// result is a field of its operands: one whose varying bits are few (12 or fewer: an
+/// exponent extracted, an integer shifted into the exponent) decides by those bits, every
+/// value its own piece; a wider one (a mantissa given a fixed exponent) is affine within a
+/// binade of each data operand it cuts, and decides by their sign and exponent fields
+/// (`cut_pieces`).
+fn bit_pieces(cl: &[Bit; 32], ops: &[(u32, bool)], r: u32, f: &mut dyn FnMut(bool)) {
+    let data_bit = |b: &Bit| matches!(b, Bit::From(k, _) if ops[*k].1) || *b == Bit::Other;
+    // Bits lo..hi depend on no data operand, or are bits i - lo + base of one data operand
+    // for a base that is a multiple of 16 (a whole 32-bit value, or a 16-bit lane in place
+    // or moved by a lane).
+    let whole = |lo: usize, hi: usize| -> bool {
+        match (lo..hi).find(|&i| data_bit(&cl[i])) {
+            None => true,
+            Some(i0) => match cl[i0] {
+                Bit::From(k, j0) => {
+                    let base = j0 as i64 - i0 as i64;
+                    base % 16 == 0
+                        && (lo..hi).all(|i| cl[i] == Bit::From(k, (base + i as i64) as u32))
+                }
+                _ => false,
+            },
+        }
+    };
+    if whole(0, 31) {
+        // One 32-bit value below the sign bit (or constants): `inst_pieces` records the
+        // operands' sign bits.
+        return;
+    }
+    if whole(0, 15) && whole(16, 31) {
+        // 16-bit lanes: a lane whose sign bit is not its source lane's sign decides by that
+        // sign and, for the low lane, by bit 15 of each data operand (bit 31 is recorded).
+        for (lo, sb) in [(0usize, 15usize), (16, 31)] {
+            let passed = match (lo..sb).find(|&i| data_bit(&cl[i])) {
+                Some(i0) => match cl[i0] {
+                    Bit::From(k, j0) => {
+                        let src = j0 as i64 - i0 as i64 + sb as i64;
+                        let ok = (0..32).contains(&src) && cl[sb] == Bit::From(k, src as u32);
+                        if !ok && (0..32).contains(&src) {
+                            f(ops[k].0 >> src & 1 == 1);
+                        }
+                        ok
+                    }
+                    _ => false,
+                },
+                None => !data_bit(&cl[sb]),
+            };
+            if !passed && sb == 15 {
+                for &(v, d) in ops {
+                    if d {
+                        f(v >> 15 & 1 == 1);
+                    }
+                }
+            }
+        }
+        return;
+    }
+    let varying: Vec<usize> = (0..32).filter(|&i| data_bit(&cl[i])).collect();
+    if varying.len() <= 12 {
+        for i in varying {
+            f(r >> i & 1 == 1);
+        }
+        return;
+    }
+    // A data operand whose low 16 bits the result cuts (some reach it, not as a whole lane).
+    let low_cut: Vec<bool> = (0..ops.len())
+        .map(|k| {
+            let used: Vec<u32> = cl
+                .iter()
+                .filter_map(|b| match b {
+                    Bit::From(q, j) if *q == k && *j < 16 => Some(*j),
+                    _ => None,
+                })
+                .collect();
+            let other = cl.contains(&Bit::Other);
+            ops[k].1 && (other || (!used.is_empty() && used.len() != 16))
+        })
+        .collect();
+    cut_pieces(ops, &low_cut, r, f);
+}
+
+/// The pieces of a result `r` that cuts its data operands `ops` or computes on their bits
+/// (MISS 99): the sign and exponent fields of each data operand and of the result (bits
+/// 23..31; within one binade and sign of each, a masked or offset mantissa is affine), and
+/// bits 7..15 (a 16-bit lane's sign and exponent) of an operand whose low lane is cut
+/// (`low_cut`).
+fn cut_pieces(ops: &[(u32, bool)], low_cut: &[bool], r: u32, f: &mut dyn FnMut(bool)) {
+    for (k, &(v, d)) in ops.iter().enumerate() {
+        if !d {
+            continue;
+        }
+        for i in 23..32 {
+            f(v >> i & 1 == 1);
+        }
+        if low_cut.get(k).copied().unwrap_or(false) {
+            for i in 7..16 {
+                f(v >> i & 1 == 1);
+            }
+        }
+    }
+    for i in 23..32 {
+        f(r >> i & 1 == 1);
     }
 }
 
@@ -2438,6 +2916,71 @@ mod tests {
         };
         let f = vals(0xff00_0000, 0);
         assert_eq!(eval_inst(&viadd, r(3), &f, &preds).unwrap(), 0x0080_0000);
+    }
+
+    /// MISS 97: a slice reads a `.SIGN` register (a PLOP3 input, ptxas's add.sat.s32) as its
+    /// bit 31: `PLOP3.LUT P0, PT, R2.SIGN, PT, PT, 0xf0` then `SEL R5, 1, 2, P0` is 1 exactly
+    /// where bit 31 of the argument is set (before, wherever the argument was nonzero).
+    #[test]
+    fn sign_predicate_reads_bit_31() {
+        for file in [File::R, File::UR] {
+            let s = Reg { file, idx: 2 };
+            let plop = Op::Plop3 {
+                d: p(0),
+                a: Pred {
+                    reg: Some(s),
+                    neg: false,
+                },
+                b: Pred::TRUE,
+                c: Pred::TRUE,
+                lut: 0xf0,
+                d2: None,
+            };
+            let sel = Op::Sel {
+                d: r(5),
+                a: Val::Imm(1),
+                b: Val::Imm(2),
+                p: Pred {
+                    reg: Some(p(0)),
+                    neg: false,
+                },
+            };
+            let prog = SProg {
+                args: vec![0],
+                ops: vec![
+                    SOp {
+                        pc: 0,
+                        kind: SKind::Inst {
+                            op: plop,
+                            dst: p(0),
+                            regs: vec![(s, SVal::Arg(0))],
+                            cvals: vec![],
+                        },
+                    },
+                    SOp {
+                        pc: 1,
+                        kind: SKind::Inst {
+                            op: sel,
+                            dst: r(5),
+                            regs: vec![(p(0), SVal::Op(0))],
+                            cvals: vec![],
+                        },
+                    },
+                ],
+                out: SVal::Op(1),
+                extra_pcs: BTreeSet::new(),
+            };
+            for (x, want) in [
+                (0x8000_0000u32, 1),
+                (0xffff_ffff, 1),
+                (0x7fff_ffff, 2),
+                (0x4000_0000, 2),
+                (1, 2),
+                (0, 2),
+            ] {
+                assert_eq!(prog.eval(&[x]).unwrap(), want, "{file:?} {x:#x}");
+            }
+        }
     }
 }
 

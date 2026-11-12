@@ -1,0 +1,43 @@
+name = "c_num_fold_f32"
+description = """
+N-NUM-TRACK (MISS 108, constants ptxas folds; the independent review's probe r2_fold, kernel.ptx,
+gen.py): out[32 k + t] = rn(x[32 k + t] + c_k) with c_0 = mul.rn.f32(0.1f, 3), c_1 = mul.rn.f32(0.1f,
+0.1f), c_2 = ex2.approx.ftz.f32(0.1f) (c_(k-3) for k = 3..5). ptxas folds the three into FADD
+immediates (0.30000001192092896, 0.010000000707805157, 1.0717734098434448). Rows k = 0..2: x uniform
+in [-1.2, 1]; rows k = 3..5: x = t 2^-20 - c_(k-3), so the sum cancels to t 2^-20. Exact (PTX
+semantics): x + 0.1f * 3, x + 0.1f * 0.1f, x + 2^0.1f.
+expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_fold_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [192]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [192]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

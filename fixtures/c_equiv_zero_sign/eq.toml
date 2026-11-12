@@ -1,0 +1,35 @@
+# MISS 109 (gen.py): L0 up to the sign of zero is reported as L0~0, not L0. cand_add0 adds +0
+# to ref_add's sum (cuBLAS's alpha = 1, beta = 0 epilogue): L0 fails at every output and L0~0
+# holds; the GB300 captures, +0 against -0 at the 16 outputs whose sum is -0, agree with it.
+# Before, the pair was "L0", which those captures contradict (MISS 98). cand_ba is L0. A
+# capture changed in another bit, or a +0 made -0 where x + (+0) is never -0, is refused.
+max_states = 200000
+reference = { case = "ref_add", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "cand_add0"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L0~0"
+
+[[candidates]]
+case = "cand_ba"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L0"
+
+[[candidates]]
+case = "cand_add0_t1"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (contradicted by the captured GPU outputs)"
+
+[[candidates]]
+case = "cand_add0_z"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (contradicted by the captured GPU outputs)"

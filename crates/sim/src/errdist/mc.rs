@@ -158,6 +158,8 @@ pub struct Obs {
     pub input_max_u: Vec<f64>,
     /// Per input: the fraction of its outputs that differ (batch means for P(differ)).
     pub input_differ: Vec<f64>,
+    /// Per input of `input_differ`: how many outputs it compared (`input_bound`).
+    pub input_compared: Vec<u64>,
     /// Inputs with an out-of-domain event, by cause.
     pub ood: BTreeMap<String, u64>,
     pub ood_inputs: u64,
@@ -224,6 +226,7 @@ impl Obs {
         self.input_means.extend(o.input_means);
         self.input_max_u.extend(o.input_max_u);
         self.input_differ.extend(o.input_differ);
+        self.input_compared.extend(o.input_compared);
         for (k, v) in o.ood {
             *self.ood.entry(k).or_default() += v;
         }
@@ -442,6 +445,7 @@ pub fn observe(
     if obs.compared > c0 {
         obs.input_differ
             .push((obs.differ - d0) as f64 / (obs.compared - c0) as f64);
+        obs.input_compared.push(obs.compared - c0);
     }
     if obs.ident_off > off0 {
         obs.ident_off_inputs += 1;
@@ -856,13 +860,41 @@ pub fn outputs(p: &Prog, w: &[crate::mma_lp::Operand]) -> Vec<f32> {
         .collect()
 }
 
+/// Below this many inputs with a differing output, P(differ)'s interval also takes the
+/// input-level bound (`p_interval`, `input_bound`).
+pub const SMALL_K: usize = 20;
+
 /// The interval of P(differ) at level 1 - alpha. Inputs are the independent unit: outputs of
 /// one input share its elements (a GEMM row, an MX block's scale), so the interval is the
 /// wider of the binomial (Clopper-Pearson) interval over outputs and the batch-means interval
 /// over inputs (Student t over the per-input fractions). Outputs alone were ~3x too narrow
-/// on MXF8 (seed-to-seed spread +-0.0002 against +-0.00007).
+/// on MXF8 (seed-to-seed spread +-0.0002 against +-0.00007). Where fewer than SMALL_K inputs
+/// have a differing output the batch-means interval does not hold: at 0 it has no width and
+/// left the outputs' interval alone, [0, 3.69 / outputs], which takes the outputs as
+/// independent; at 1 of 200 it is [0, 0.0149]. When an input's outputs differ together (the
+/// review's clustered probe: 512 outputs each) those missed P in 55% of default runs and P
+/// 1.5e-2 in 20% of 200-input runs. There the interval also takes the input-level bound
+/// (`input_bound`), which holds however an input's outputs differ together; at 0 differing
+/// inputs it is Clopper-Pearson over inputs, [0, 3.69 / inputs] at 95% (MISS 120).
 // ASSUME(N-ERRDIST-MC): inputs are independent.
 pub fn p_interval(obs: &Obs, alpha: f64) -> (f64, f64) {
+    let (mut lo, mut hi) = p_interval_obs(obs, alpha);
+    let f = &obs.input_differ;
+    if !f.is_empty() && f.iter().filter(|&&x| x > 0.0).count() < SMALL_K {
+        let (il, ih) = input_bound(obs, alpha);
+        (lo, hi) = (lo.min(il), hi.max(ih));
+    }
+    (lo, hi)
+}
+
+/// The interval an observed run is held to where it refutes a claim (a validation's observed
+/// side, the check of Tier 0 against Tier 3, the plain reference of importance sampling): the
+/// outputs' and the batch-means intervals, without the input-level bound `p_interval` adds
+/// for a claim. A narrower interval here refuses more, which costs precision only. With the
+/// bound a kernel_db run's simulator validation (4 inputs, so always fewer than SMALL_K) held
+/// P(differ) to intervals like [1.4e-3, 0.84] at 0.22, and 20 refusals in 18 of 199 runs
+/// lapsed.
+pub fn p_interval_obs(obs: &Obs, alpha: f64) -> (f64, f64) {
     let (cl, ch) = super::special::clopper_pearson(obs.differ, obs.compared, alpha);
     let f = &obs.input_differ;
     let n = f.len();
@@ -874,6 +906,33 @@ pub fn p_interval(obs: &Obs, alpha: f64) -> (f64, f64) {
     let v = f.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (n - 1) as f64;
     let hw = t_quantile(1.0 - alpha / 2.0, (n - 1) as f64) * (v / n as f64).sqrt();
     ((p - hw).max(0.0).min(cl), (p + hw).min(1.0).max(ch))
+}
+
+/// The input-level interval of P(differ) per compared output at level 1 - alpha, valid
+/// however the outputs of one input differ together (only inputs are independent). With c_i
+/// the outputs input i compared and f_i its differing fraction, g_i = c_i f_i / c_max is in
+/// [0, 1], and P(differ) = E[c f] / E[c] = E[g] c_max / E[c]. Hoeffding's bound on the mean
+/// of [0, 1] variables (n KL(mean g || q) <= ln(2 / alpha) on each side) bounds E[g], and the
+/// observed c_max / mean c scales it (1 where every input compares the same outputs). At 0
+/// differing inputs the upper end is 1 - (alpha / 2)^(1/n): Clopper-Pearson over inputs on
+/// "some output of the input differs", which bounds P(differ) per output from above.
+pub fn input_bound(obs: &Obs, alpha: f64) -> (f64, f64) {
+    let f = &obs.input_differ;
+    let n = f.len();
+    if n == 0 {
+        return (0.0, 1.0);
+    }
+    let c: Vec<f64> = if obs.input_compared.len() == n {
+        obs.input_compared.iter().map(|&c| c as f64).collect()
+    } else {
+        vec![1.0; n]
+    };
+    let cmax = c.iter().copied().fold(0.0f64, f64::max).max(1.0);
+    let cmean = c.iter().sum::<f64>() / n as f64;
+    let g = f.iter().zip(&c).map(|(f, c)| f * c / cmax).sum::<f64>() / n as f64;
+    let (lo, hi) = super::special::kl_mean_bounds(g.clamp(0.0, 1.0), n, alpha);
+    let s = cmax / cmean.max(1e-300);
+    ((lo * s).min(1.0), (hi * s).min(1.0))
 }
 
 /// The q quantile of Student's t with `df` degrees of freedom (bisection).
@@ -1266,6 +1325,43 @@ pub fn explore_steps(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn p_interval_counts_inputs_where_few_differ() {
+        // 200 inputs of 512 outputs that differ together. At 0 differing inputs the outputs'
+        // interval alone was [0, 3.6e-5]; the inputs' is [0, 1 - 0.025^(1/200)] = [0, 0.0183].
+        let mut o = Obs {
+            compared: 200 * 512,
+            ..Default::default()
+        };
+        o.input_differ = vec![0.0; 200];
+        o.input_compared = vec![512; 200];
+        let (lo, hi) = p_interval(&o, 0.05);
+        let cp0 = 1.0 - 0.025f64.powf(1.0 / 200.0);
+        assert_eq!(lo, 0.0);
+        assert!((hi - cp0).abs() < 1e-9 * cp0, "{hi} vs {cp0}");
+        // At 1 of 200 the batch-means interval was [0, 0.0149]: P = 1.5e-2 is inside now.
+        o.differ = 512;
+        o.input_differ[7] = 1.0;
+        let (lo, hi) = p_interval(&o, 0.05);
+        assert!(lo == 0.0 && hi > 0.03, "[{lo}, {hi}]");
+        // An input that compares more outputs weighs more: 1 of 200 inputs compares 512
+        // outputs, all differing, and the others compare 1 (P per output 512 / 711 = 0.72).
+        let mut o = Obs {
+            differ: 512,
+            compared: 512 + 199,
+            ..Default::default()
+        };
+        o.input_differ = (0..200).map(|i| if i == 0 { 1.0 } else { 0.0 }).collect();
+        o.input_compared = (0..200).map(|i| if i == 0 { 512 } else { 1 }).collect();
+        let (lo, hi) = p_interval(&o, 0.05);
+        assert!(lo <= 512.0 / 711.0 && hi >= 512.0 / 711.0, "[{lo}, {hi}]");
+        // Hoeffding's bound: at 0 the upper end is Clopper-Pearson's over inputs.
+        let (l, h) = super::super::special::kl_mean_bounds(0.0, 300, 0.05);
+        assert!(l == 0.0 && (h - (1.0 - 0.025f64.powf(1.0 / 300.0))).abs() < 1e-12);
+        let (l, h) = super::super::special::kl_mean_bounds(0.1, 1000, 0.05);
+        assert!(l > 0.07 && l < 0.1 && h > 0.1 && h < 0.13, "[{l}, {h}]");
+    }
 
     #[test]
     fn p_interval_counts_inputs_not_outputs() {

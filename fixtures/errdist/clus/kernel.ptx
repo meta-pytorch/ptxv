@@ -1,0 +1,39 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// Differences that cluster by input (Tier 3's interval at P 0; the third review's probe). One
+// scalar x per input; every one of 512 bf16 outputs is y = RN_bf16(f32(RN_f16(x))), whose
+// exact value is RN_bf16(x). The double rounding differs on about 1/16 of continuous x (an f16
+// that is a bf16 tie, rounded to the other side) and never on small integers, so all 512
+// outputs of an input differ together or not at all. Under s2.json (x ~ N(0, 1) w.p. 0.032,
+// integers -8..8 otherwise; x = 0 gives exact zeros, not compared) P(bits differ) per
+// compared output is 2.1209e-3 (exact); GB300 40000 inputs: 75 of 37687 compared inputs
+// differ, all 512 outputs each. Tier 3's interval at 0 differing inputs counted outputs only,
+// [0, 3.69 / outputs], and missed P on 22 of 40 default runs (0 [0, 2.5e-5] after 300 inputs).
+.visible .entry clus_together(.param .u64 px, .param .u64 py)
+{
+    .reg .f32 %f<4>;
+    .reg .b16 %h<4>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [py];
+    ld.global.f32 %f1, [%rd1];
+    cvt.rn.f16.f32 %h1, %f1;
+    cvt.f32.f16 %f2, %h1;
+    cvt.rn.bf16.f32 %h2, %f2;
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 8;
+    add.s64 %rd4, %rd2, %rd3;
+    st.global.b16 [%rd4], %h2;
+    st.global.b16 [%rd4+2], %h2;
+    st.global.b16 [%rd4+4], %h2;
+    st.global.b16 [%rd4+6], %h2;
+    ret;
+}

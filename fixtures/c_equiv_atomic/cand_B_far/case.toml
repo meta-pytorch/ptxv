@@ -1,0 +1,59 @@
+name = "c_equiv_atomic_cand_B_far"
+description = """
+MISS 98 (fixtures/c_equiv_atomic/gen.py): cand_sum; out[1024] = float atomic adds of a0 ..
+a3. expected/ is cand_B's GB300 output with out[1024] 0xc0ff5b22 -> 0xc0df5b22 (gen.py
+--tamper)."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "a"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/a.bin"
+
+[[buffers]]
+name = "b"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/b.bin"
+
+[[buffers]]
+name = "c"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/c.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1025]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+
+[[params]]
+kind = "ptr"
+buffer = "b"
+
+[[params]]
+kind = "ptr"
+buffer = "c"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

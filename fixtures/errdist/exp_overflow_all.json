@@ -1,0 +1,1 @@
+{"version": 1, "seed": 1, "name": "N(1000, 1): exp overflows f16 and f64 on every input", "default": {"dist": {"kind": "normal", "mean": 1000.0, "std": 1.0}}}

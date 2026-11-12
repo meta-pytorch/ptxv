@@ -1796,7 +1796,7 @@ pub const REGISTRY: &[Assumption] = &[
         id: "N-MULTIMEM-ROUND16",
         kind: "code",
         status: "unvalidated",
-        title: "f16/bf16 multimem.ld_reduce add: the rounding direction of a non-representable sum follows a dither from the other lanes of its 8-byte group (99.7% bf16 / 96.7% f16 of random lanes); results compared within one ulp",
+        title: "f16/bf16 multimem.ld_reduce add: the rounding direction of a non-representable sum follows a dither from the other lanes of its 8-byte group (99.7% bf16 / 96.7% f16 of random lanes); output bytes holding such a lane compared within one ulp",
         applies: |k| {
             any(k, |o| {
                 matches!(

@@ -160,6 +160,10 @@ pub struct RealFn {
     /// or the probes took every pattern of them.
     #[serde(default)]
     pub outcomes: Option<Outcomes>,
+    /// The roundings that act as steps on the probes, with the lanes that do (op index, bit
+    /// mask; `SProg::rounding_steps`): their bits are decisions too (MISS 99 follow-up).
+    #[serde(default)]
+    pub steps: Vec<(u32, u32)>,
 }
 
 /// The patterns of a slice's data-dependent decisions (`SProg::decisions`: the predicates it
@@ -232,6 +236,7 @@ impl RealFn {
             fit_err: 0.0,
             probes: 0,
             outcomes: None,
+            steps: vec![],
         }
     }
     /// The inner argument z = c0 + sum coef_i a_i.
@@ -703,6 +708,7 @@ fn fit_form_cols(
             fit_err: 0.0,
             probes: probes.len(),
             outcomes: None,
+            steps: vec![],
         };
         r.fit_err = max_err(&r, probes);
         if r.fit_err.is_nan() || r.fit_err > ACCEPT {
@@ -966,8 +972,9 @@ pub fn identify_prog(
         return out;
     }
     let mut probes: HashMap<String, Vec<(Vec<f64>, f64)>> = HashMap::default();
-    // Per group: the decisions each finite probe took (the probes `identify` fits).
-    let mut taken: HashMap<String, Vec<Vec<bool>>> = HashMap::default();
+    // Per group: the argument bits of each finite probe (the probes `identify` fits), whose
+    // decisions the identified function holds on.
+    let mut finite: HashMap<String, Vec<Vec<u32>>> = HashMap::default();
     let mut scratch = Vec::new();
     let mut rng = super::super::special::Rng::new(seed ^ 0x1de7);
     let cap = 6000usize;
@@ -997,7 +1004,7 @@ pub fn identify_prog(
             let per = (cap / (n + 1)).max(1);
             for _ in 0..per.min(ids.len()) {
                 let i = ids[rng.below(ids.len() as u64) as usize];
-                if let Op::Nl(NlOp::Seg { args, prog, .. }) = &p.ops[i as usize] {
+                if let Op::Nl(NlOp::Seg { args, .. }) = &p.ops[i as usize] {
                     let a: Vec<f64> = args
                         .iter()
                         .map(|&j| w[j as usize].v as f32 as f64)
@@ -1005,9 +1012,7 @@ pub fn identify_prog(
                     let g = w[i as usize].v as f32 as f64;
                     if g.is_finite() && a.iter().all(|x| x.is_finite()) {
                         let bits: Vec<u32> = a.iter().map(|&x| (x as f32).to_bits()).collect();
-                        if let Some(d) = prog.decisions(&bits, &mut scratch) {
-                            taken.entry(k.clone()).or_default().push(d);
-                        }
+                        finite.entry(k.clone()).or_default().push(bits);
                     }
                     e.push((a, g));
                 }
@@ -1021,10 +1026,15 @@ pub fn identify_prog(
         let prog = prog.clone();
         let mut r = identify(&prog, &probes[k]);
         if let Ok(f) = r.as_mut() {
-            f.outcomes = Outcomes::of(
-                prog.decision_count(),
-                taken.get(k).map_or(&[][..], |v| v.as_slice()),
-            );
+            // The roundings that act as steps on these probes join the decisions (MISS 99
+            // follow-up), then the patterns the probes took.
+            let fin = finite.get(k).map_or(&[][..], |v| v.as_slice());
+            f.steps = prog.rounding_steps(fin);
+            let taken: Vec<Vec<bool>> = fin
+                .iter()
+                .filter_map(|b| prog.decisions(b, &f.steps, &mut scratch))
+                .collect();
+            f.outcomes = Outcomes::of(prog.decision_count(&f.steps), &taken);
         }
         if let Ok(f) = &r {
             for &i in ids {

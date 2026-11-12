@@ -3,7 +3,7 @@
 # nvjet_sm103_qqsss_128x128_128x6, two K tiles of 128, 4 UTCQMMA steps each, an FFMA2
 # alpha / beta epilogue, STS + TMA store). Same input bytes and names. The 8 steps are the same,
 # in the same order; cuBLAS's epilogue computes 1 * acc + 0, so the outputs are bitwise equal
-# except that a -0 accumulator becomes +0 (L0 up to the sign of zero).
+# except that a -0 accumulator becomes +0: L0~0 (L0 up to the sign of zero), not L0.
 #   ptxv equiv fixtures/c_equiv_mxf8_cublas/equiv.toml
 #   GB300: tools/mx_gpu_check.py
 max_states = 200000
@@ -15,4 +15,4 @@ case = "../c_smm_mxf8"
 variant = "good"
 front = "sass"
 certify = true
-expect = "L0"
+expect = "L0~0"

@@ -1,0 +1,48 @@
+# MISS 98 (gen.py), rounding-DAG mode: L1 with float atomic adds into one output
+# (out[1024]): a 1-ulp change at another output is refused (before, L1 was kept); out[1024]
+# itself is held to the bound only (the GPU may add in another order): its last bit passes,
+# +inf (before, L1: only finite pairs were checked) and + 1.0 do not.
+max_states = 200000
+reference = { case = "ref_B", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "cand_B"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L1"
+
+[[candidates]]
+case = "cand_B_t1"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (contradicted by the captured GPU outputs)"
+
+[[candidates]]
+case = "cand_Bn_t1"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (contradicted by the captured GPU outputs)"
+
+[[candidates]]
+case = "cand_B_ulp"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L1"
+
+[[candidates]]
+case = "cand_B_inf"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (contradicted by the captured GPU outputs)"
+
+[[candidates]]
+case = "cand_B_far"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (contradicted by the captured GPU outputs)"

@@ -7,8 +7,9 @@
   130u per e4m3 / e5m2 step, about 2u per FP4 step, against eps >= 2 before (§5).
 - An MXF8 GEMM gets a bound against the exact GEMM for every input: 255.5u x sum |terms|.
 - (agent N) MXF8 against cuBLASLt and Triton, MXF4 against Triton: L0 for every same-order
-  pair; reversed K is L1 with 306u (MXF8) / 10.04u (MXF4) x sum |terms| (§5).
-- (agent S) NVFP4: CuTeDSL against cuBLASLt's 2-CTA kernel is L0 up to the sign of zero; against
+  pair (against cuBLASLt L0~0, L0 up to the sign of zero, since MISS 109); reversed K is L1 with
+  306u (MXF8) / 10.04u (MXF4) x sum |terms| (§5).
+- (agent S) NVFP4: CuTeDSL against cuBLASLt's 2-CTA kernel is L0~0, L0 up to the sign of zero; against
   a dequantize-then-bf16 GEMM it is L1 with 169.38u x sum |terms|, because the dequantization
   is exact (§5).
 
@@ -335,19 +336,19 @@ same GEMM, on r3_cute_mxf8's input bytes and buffer names (A, B, SFA, SFB, C):
 
 | candidate | kernel | level | bound per output, every input | sim trials (20): used | GB300 (1000 inputs, 16.4M outputs): used |
 |---|---|---|---|---|---|
-| `c_smm_mxf8`: torch._scaled_mm (cuBLASLt) | nvjet_sm103_qqsss_128x128_128x6 | **L0** up to the sign of zero | \|C - R\| = 0 | 0 | 0 (bitwise) |
+| `c_smm_mxf8`: torch._scaled_mm (cuBLASLt) | nvjet_sm103_qqsss_128x128_128x6 | **L0~0** (L0 up to the sign of zero) | \|C - R\| = 0 | 0 | 0 (bitwise) |
 | `c_triton_mxf8`: Triton tl.dot_scaled, K blocks of 128 | tcgen05 mxf8f6f4 block_scale 1X | **L0** | \|C - R\| = 0 | 0 | 0 (bitwise) |
 | `c_triton_mxf8_rev`: the same, K blocks of 32 reversed | same | **L1** | 306u x sum_k \|a b sa sb\| | 0.067 | 0.052, 0 over (84% of outputs differ) |
 
 Fixtures: `fixtures/c_equiv_mxf8_cublas/equiv.toml`, `fixtures/c_equiv_mxf8_triton/equiv.toml`
-(tests `mxf8_cublas_is_bitwise`, `mxf8_triton_is_bounded`). GB300 trials:
+(tests `mxf8_cublas_is_bitwise_up_to_zero_signs`, `mxf8_triton_is_bounded`). GB300 trials:
 `tools/mx_gpu_check.py` (random e4m3 codes, subnormals and -0 included; ue8m0 scales 2^-8 ..
 2^7), checked by `PTXV_EQUIV_HW_TRIALS`.
 
 - **cuBLASLt** runs the same 8 steps (two K tiles of 128, 4 UTCQMMA each) in the same order. Its
-  epilogue is `FFMA2 acc * alpha + 0` with alpha = 1, so its output is acc + (+0). L0 is decided
-  with that final +0 peeled (`Canon::l0_z`): the outputs are equal bits except that a -0
-  accumulator becomes +0 (N-EQUIV). Lifting it needed two SASS fixes: the 32-bit immediate of
+  epilogue is `FFMA2 acc * alpha + 0` with alpha = 1, so its output is acc + (+0). The level is
+  decided with that final +0 peeled (`Canon::l0_z`): the outputs are equal bits except that a -0
+  accumulator becomes +0, level L0~0, not L0 (N-EQUIV; until MISS 109 it was reported as L0). Lifting it needed two SASS fixes: the 32-bit immediate of
   `UIADD3.64` is sign-extended (it stepped a tensor-map pointer back by -0x800 and left the
   parameter block), and the bulk read wait is a control-word wait on `UTMACMDFLUSH`'s read
   scoreboard (on a `BAR.SYNC`, no `DEPBAR`), modeled as `wait_group.read 0`
@@ -393,11 +394,11 @@ candidates read the same bytes and names (A, B, SFA, SFB; C f32; no global scale
 
 | candidate | kernel | level | bound per output, every input | sim trials (20): used | GB300 (1000 inputs, 16.4M outputs): used |
 |---|---|---|---|---|---|
-| `c_smm_nvf4`: torch._scaled_mm (cuBLASLt) | nvjet_sm103_oosss_128x128_256x7_1x2_2cta (a CTA pair) | **L0** up to the sign of zero | \|C - R\| = 0 | 0 | 0 (bitwise) |
+| `c_smm_nvf4`: torch._scaled_mm (cuBLASLt) | nvjet_sm103_oosss_128x128_256x7_1x2_2cta (a CTA pair) | **L0~0** (L0 up to the sign of zero) | \|C - R\| = 0 | 0 | 0 (bitwise) |
 | `c_triton_nvf4_dq`: dequantize, then a bf16 GEMM (Triton) | cvt e2m1 / e4m3 -> f16, f32 product, bf16 rounding, tcgen05 kind::f16 (A in TMEM) | **L1** | 169.38u x sum_k \|a b sa sb\| | 0.130 | 0.153, 0 over (56% of outputs differ) |
 
 Fixtures: `fixtures/c_equiv_nvf4_cublas/equiv.toml`, `fixtures/c_equiv_nvf4_dq/equiv.toml`
-(tests `nvf4_cublas_is_bitwise`, `nvf4_dequant_bf16_is_bounded`). GB300 trials:
+(tests `nvf4_cublas_is_bitwise_up_to_zero_signs`, `nvf4_dequant_bf16_is_bounded`). GB300 trials:
 `tools/mx_gpu_check.py --nvf4` (random e2m1 bytes; ue4m3 scale codes 1..126, subnormals
 included, none 0 and none NaN).
 

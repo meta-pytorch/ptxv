@@ -121,7 +121,8 @@ Guards (never report from bad data):
   refuses (mean, KS and Anderson-Darling with inputs as the unit, 99.9%). That test is weak
   (the KS takes the input counts as effective sizes and flags nothing when 1-2% of the inputs
   differ): what few inputs carry is refused by the exact bounds, which run first. A Tier 3 that
-  compared no output (out of domain) is outside these checks.
+  compared no output (out of domain) is outside these checks: it is refused on its own
+  (MISS 64, below).
 - **Control, addresses and guards must not depend on input data beyond what the DAG
   models.** A run with a `data-dependent:` precondition (the taint check's guards, branch
   conditions, addresses and value-fault operands that no selection or slice covers; N-EQUIV)
@@ -141,15 +142,23 @@ Guards (never report from bad data):
 - **An identified slice is the exact reference only on the decisions its probes took.** A
   slice's guards, selects and carries that depend on its arguments, and the pieces of its
   instructions' values (a `.SAT` or `.RELU` clamp, a minimum / maximum's pick, an abs
-  modifier's or a bitwise operand's sign, an F2I's saturation), split them into outcome
-  patterns; the fit holds on the patterns its probes took (N-ERRDIST-IDENT). An output whose
+  modifier's or a bitwise operand's sign, an F2I's saturation, these integer steps: an F2I's
+  integer, a data-dependent shift count, a bit field cut from a float, an integer add's carry,
+  and a rounding that acts as a step on the probes: a result lane that took at most two values
+  there while a data operand took more, as `RM(t + 1.5 * 2^23)` with |t| < 1/64), split them
+  into outcome patterns; the fit holds on the patterns its probes took (N-ERRDIST-IDENT).
+  Other roundings are no decisions: they depart from the fit by their error. An output whose
   exact value reads a slice on another pattern is unknown: Tier 3 leaves it out, notes how
   many inputs had one (the `out_of_domain` cause `exact value unknown: ...`), and refuses
   when the 95% bound of their share exceeds 10% of P(differ). Otherwise every P(differ)
   interval widens by that bound, also at 0 inputs (Tier 3's sample saw none of a share up to
   the bound; until 2026-11-11 only the analytic tiers widened there, fixtures/errdist/k0).
   Until 2026-11-11 a value clamp was no decision: `FMUL.SAT` fitted as the unclamped x^2 / 32
-  gave 0.331 where the kernel's is 0.0312 (fixtures/errdist/clamp). Until 2026-11-10 the
+  gave 0.331 where the kernel's is 0.0312 (fixtures/errdist/clamp); until MISS 99 an integer
+  step the probes never crossed was none either: trunc(x / 1024) fitted as 0 gave 0.300 where
+  the kernel's is 0 (fixtures/errdist/trunc), and until the MISS 99 follow-up the same step
+  made by an FP rounding (floor via FADD.RM or FFMA.RM of 1.5 * 2^23, fixtures/errdist/trunc
+  floor, round, ffrm) gave 0.300 as well. Until 2026-11-10 the
   fit was the exact reference everywhere: a guard `x[0] >= -3 ? 3 a : a` fitted as 3 a on
   probes near x = 0 gave P(bits differ) 1.0 for x[0] in [-5, -4), where the kernel's is
   0.29 (MISS 57, fixtures/errdist/miss57). A pair's P(differ) compares C with R and needs no
@@ -157,8 +166,13 @@ Guards (never report from bad data):
   2026-11-11), and only the moments leave them out.
 - **NaN / Inf outputs are out of domain**, counted and reported: the `out_of_domain` cause
   `non-finite output (NaN / Inf)` (fraction of inputs) and a note with the fraction of
-  outputs; a Tier 3 that compared no output says so. A validation run whose outputs have
-  NaN / Inf that Tier 3 does not, or with nothing to compare, does not agree.
+  outputs. A Tier 3 that compared no output (every output out of the domain, untracked or
+  without a nonzero term) has the interval [0, 1] at any input count: it is refused and
+  cross-checks no analytic estimate, so without a Tier 0 errdist prints the report without a
+  headline and refuses (MISS 64; until 2026-11-11 it headlined P(differ) 0 over [0, 1], e.g.
+  the f16 exp kernel at x ~ N(1000, 1), fixtures/errdist/exp_overflow_all.json). A validation
+  run whose outputs have NaN / Inf that Tier 3 does not, or with nothing to compare, does not
+  agree.
 
 Examples (the runs of §7):
 
@@ -492,13 +506,37 @@ avoid, so both are conservative.
      (below).
 2. **The Tier 3 cross-check**: every run samples Tier 3 (300 inputs to start). An analytic
    estimate agrees when |p − p3| ≤ max(5% of p3 − h, h), or p lies inside Tier 3's
-   interval. Here h is half Tier 3's interval: Tier 3's own uncertainty comes off the 5%,
-   so an agreeing estimate is within 5% of the true P(differ), not merely of this run's
-   Tier 3.
-   - **The check must have resolution.** With the default input count, Tier 3 grows until
-     h is within 10% of P(differ), stopping at 76,800 inputs or after 30 s
+   interval. Here h is half Tier 3's interval. While h ≤ 2.5% of p3, Tier 3's own
+   uncertainty comes off the 5%, so an agreeing estimate is within 5% of p3 of the true
+   P(differ), not merely of this run's Tier 3: at most 5% / 0.975 = 5.13% of P, and only as
+   far as Tier 3's interval covers P. Past 2.5% the tolerance is h, which holds an estimate
+   only to within 2h (up to 40% of p3 under the 20% rule below). Until MISS 91 this paragraph
+   claimed 5% at every h.
+   - **A linearized estimate needs 5%.** A Tier 2's own interval (the spread over its nominal
+     inputs) omits its model error, so the agreement is all that bounds it. Tier 2 is
+     confirmed only while p3 > 0 and h ≤ 2.5% of p3 (`XCHECK_T2_HW`); its interval then joins
+     Tier 3's. With the default input count Tier 3 grows toward 2% while the run is under 10 s
+     (below); where it stops above 2.5%, Tier 3 is the headline. Until MISS 91 the section 9
+     matrix's 22 cells (4 r4_rmsnorm_triton specs and 18 pair cells; 21 Tier 2 headlines,
+     silumul's is Tier 1 0 [0, 0]) had intervals disjoint from GB300's 95% interval in 19
+     cells and from its 99.9% interval in 15 (GB300 runs of 4,000 inputs per cell, 40,000 for
+     one): the rmsnorm pairs' Tier 2 stood 5-12% above GB300 against an h of 13-15%, the
+     attention and softmax pairs' 0.5-3% above, inside their tolerance but outside their own
+     ±0.2-0.8%, and r4_rmsnorm_triton's (6.3e-6 to 1.6e-5) against a Tier 3 of 0 at 200
+     inputs, where no resolution rule applied. Tier 1 keeps the rules below.
+   - **The check must have resolution.** With the default input count, Tier 3 grows until h
+     is within 10% of P(differ), stopping at 76,800 inputs or after 30 s
      (`PTXV_XCHECK_SECONDS`). It then keeps growing toward 2% for as long as the run is
-     under 10 s. These seconds are work units (below), not the clock.
+     under 10 s. These seconds are work units (below), not the clock. At p3 = 0 Tier 3 takes
+     the whole budget unless it compared no output (then it is refused, MISS 64): its
+     interval counts inputs below 20 differing inputs (`mc::input_bound`, Hoeffding's bound
+     on the per-input fractions, which holds however an input's outputs differ together),
+     and at 0 it is [0, 3.69 / inputs] at 95%. Until MISS 120 Tier 3 did not grow at p3 = 0,
+     and its interval there counted outputs only, [0, 3.69 / outputs], which takes them as
+     independent: on fixtures/errdist/clus, whose 512 outputs per input differ together (P
+     2.12e-3), 22 of 40 default runs said 0 [0, 2.5e-5]. A run that refutes a claim (a
+     validation's observed side) keeps the outputs' and batch-means intervals
+     (`mc::p_interval_obs`), which refuse more.
    - **The flip bound grows Tier 3 too.** Where selections or maxima can flip, Tier 3 also
      grows until B is within 80% of the gate's margin at its own P (an analytic estimate the
      cross-check confirms is within 20% of Tier 3's P), within the same 30 s and 76,800
@@ -547,18 +585,16 @@ the error in output ulps (|k| at the median, 99% and 99.9% of the headline's PMF
 largest Tier 3 saw), and the proven worst case. Two runs with the defaults:
 
 ```
-$ ptxv errdist fixtures/c_equiv_mm_bf16/equiv.toml --candidate 1 \
-      --inputs fixtures/errdist/normal.json
+$ ptxv errdist fixtures/r4_sum_torch --inputs fixtures/errdist/normal.json
 ...
 tier 2 applicable:
-    0 of 64 sampled outputs outside the DAG tier's domain, carrying -0.000e0 of P(differ) 3.829e-5 ok
-    e.g. MMA DAG (5 error terms), y's excess kurtosis 0.094 <= 1 ok
-    Tier 3 cross-check (300 inputs): 3.829e-5 vs 3.499e-5 [2.533e-5, 4.714e-5], tolerance 1.09e-5 ok
+    Tier 3 cross-check (1500 inputs): 6.671e-1 vs 6.677e-1 [6.556e-1, 6.796e-1], tolerance 2.14e-2 ok
+    interval joined with Tier 3's: [6.556e-1, 6.796e-1] (its own [6.600e-1, 6.742e-1] is the spread over its nominal inputs, without its model error, MISS 91)
 
-summary: tier 2 (CLT on both DAGs), agrees with the tier 3 cross-check
-    P(bits differ) = 3.829e-5 (tier 3: 3.499e-5 [2.533e-5, 4.714e-5])
-    error in output ulps (|k|): median 0, 99% within 0, 99.9% within 0, largest seen in tier 3: 4
-    worst case (proven): |C - R| <= 2 bf16 ulps of the exact result + 3.56e-6 x sum|a_k*b_k| + 9.2e-41
+summary: tier 2 (linearized error propagation through the DAG), agrees with the tier 3 cross-check
+    P(bits differ) = 6.671e-1 (tier 3: 6.677e-1 [6.556e-1, 6.796e-1])
+    error in output ulps (|k|): median 1, 99% within 61, 99.9% within 515, largest seen in tier 3: 219648
+    worst case (proven): |C - y| <= 4.77e-7 x sum|a_k*b_k|
 
 $ ptxv errdist fixtures/c_mm_bf16_nnt --inputs fixtures/errdist/outliers.json
 ...
@@ -573,9 +609,11 @@ summary: tier 3 (Monte Carlo; the analytic tiers refused, see above)
     worst case (proven): |C - y| <= 1 bf16 ulp of the exact result + 2.36e-6 x sum|a_k*b_k| + 4.6e-41
 ```
 
-The first is a bf16 GEMM pair (cuBLAS against Triton with reversed K). The second is one
-bf16 GEMM whose inputs have 2% large outliers; there Tier 2 would have said 2.7x Tier 3, and
-both checks refuse it.
+The first is torch's f32 row sum: Tier 3 grows to 1,500 inputs (h 1.8% of P), the
+linearized Tier 2 agrees within 5%, and its interval joins Tier 3's. (The example it
+replaces, a bf16 GEMM pair whose Tier 2 stood on a 300-input Tier 3 at h 31% of P, predated
+the resolution rules.) The second is one bf16 GEMM whose inputs have 2% large outliers; there Tier 2 would have said
+2.7x Tier 3, and both checks refuse it.
 
 ## 4. The error of an accumulation chain
 
@@ -1592,7 +1630,8 @@ and N(70, 3). The four softmax points lie within 0.005 of the TV threshold.
 - **Matched roundings.** Ops of the two kernels holding the same real value (found at two
   inputs, re-checked per input) share their grid position. Their difference is
   round(w + Z) - round(w), where Z is the upstream deviation. Z is computed recursively from
-  the matched pairs below, down to depth 16.
+  the matched pairs below, down to depth 16. Where several ops of one kernel match one of the
+  other, the pairs are taken in op order and the first keeps a contested match.
 - **Two matched slices.** Their own errors cancel in any of these cases:
   - they compute the same function of the index (equal tables, or equal evaluations);
   - the candidate's slice equals, bit for bit, the reference's sub-DAG above the nodes

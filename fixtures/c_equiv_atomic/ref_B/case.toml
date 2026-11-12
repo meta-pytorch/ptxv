@@ -1,0 +1,58 @@
+name = "c_equiv_atomic_ref_B"
+description = """
+MISS 98 (fixtures/c_equiv_atomic/gen.py): ref_sum; out[1024] = ((a0 + a1) + a2) + a3.
+expected/ is GB300's output (ptxas 13.0 -arch=sm_103a)."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "a"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/a.bin"
+
+[[buffers]]
+name = "b"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/b.bin"
+
+[[buffers]]
+name = "c"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/c.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1025]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+
+[[params]]
+kind = "ptr"
+buffer = "b"
+
+[[params]]
+kind = "ptr"
+buffer = "c"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

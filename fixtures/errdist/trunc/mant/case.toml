@@ -1,0 +1,41 @@
+name = "trunc_mant"
+description = """entry tr_mant of ../kernel.ptx (see its header): the mantissa of a float given the exponent of 1 (LOP3 a & 0x007fffff | 0x3f800000) inside an instruction slice, one binade on every probe."""
+ptx = "../kernel.ptx"
+entry = "tr_mant"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

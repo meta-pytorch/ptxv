@@ -763,8 +763,9 @@ pub(crate) fn is_run_dir_name(name: &str) -> bool {
 /// file system, another boot or pid namespace), of older binaries and of live runs stay. A
 /// live run is judged by its lock, not by /proc: the start time /proc shows differs between
 /// time namespaces, so a live run in another one looked like a reused pid and lost its
-/// directory. Reapers that meet at a dead directory both remove it (what one leaves, the next
-/// run removes).
+/// directory. Reapers that meet at a dead directory both remove it (`remove_run_dir`: what one
+/// leaves keeps `.lock`, and the next run removes it). `base` is listed in full before anything
+/// in it is removed (read while its entries go, an NFS listing can skip some: `remove_run_dir`).
 fn reap_run_dirs(base: &Path) {
     use std::os::unix::fs::MetadataExt;
     let Some(host) = run_host() else {
@@ -776,7 +777,8 @@ fn reap_run_dirs(base: &Path) {
     let Ok(entries) = std::fs::read_dir(base) else {
         return;
     };
-    for e in entries.flatten() {
+    let entries: Vec<std::fs::DirEntry> = entries.flatten().collect();
+    for e in entries {
         let name = e.file_name();
         let Some((h, _, _)) = name.to_str().and_then(run_dir_owner) else {
             continue;
@@ -784,8 +786,88 @@ fn reap_run_dirs(base: &Path) {
         let d = e.path();
         let mine = std::fs::symlink_metadata(&d).is_ok_and(|m| m.is_dir() && m.uid() == uid);
         if h == host && mine && !d.join(".kept").exists() && run_dir_dead(&d) {
-            let _ = std::fs::remove_dir_all(&d);
+            remove_run_dir(&d);
         }
+    }
+}
+
+/// Remove run directory `d` (a dead run's, or this invocation's own at its end): everything in
+/// it but `.lock`, then `.lock`, then `d`, so that whatever is left keeps `.lock` and the next
+/// run of the case removes it (`reap_run_dirs`). `remove_dir_all` removes entries while it
+/// reads the directory, and on NFS that skips some: with two runs reaping at once, dead
+/// directories stayed behind partly removed, and those that had lost `.lock` were never
+/// reaped. Here each directory is read in full before anything in it is removed, and read
+/// again until it is empty (`empty_dir`). Should `d` still not be empty once `.lock` is gone
+/// (an entry that every listing missed while another process removed others), `.lock` is made
+/// again.
+fn remove_run_dir(d: &Path) {
+    if !empty_dir(d, Some(".lock"), &mut false) {
+        return;
+    }
+    let _ = std::fs::remove_file(d.join(".lock"));
+    match std::fs::remove_dir(d) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(d.join(".lock"));
+        }
+        _ => {}
+    }
+}
+
+/// Remove everything in directory `d` but its entry `keep`, without following symbolic links:
+/// the whole listing first, then its entries (directories emptied the same way), and again
+/// while anything is left, until a round removes nothing, at most 8 rounds (another process may
+/// be removing the same entries: what it removed first counts as gone, a directory it removed
+/// before this run could read it included, and what a listing missed is found by the next
+/// round). Whether `d` holds nothing but `keep` (true once `d` is gone); `removed` is set when
+/// anything under `d` went. A round that removes nothing ends its level: with rounds
+/// retried at every level, what a run could not remove k levels down cost up to 8^k listings
+/// per run.
+fn empty_dir(d: &Path, keep: Option<&str>, removed: &mut bool) -> bool {
+    for _ in 0..8 {
+        let entries = match std::fs::read_dir(d) {
+            Ok(entries) => entries,
+            // Removed by another process since its parent was listed: its parent's removal of
+            // it finds it gone too.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return true,
+            Err(_) => return false,
+        };
+        let names: Vec<std::ffi::OsString> = entries
+            .flatten()
+            .map(|e| e.file_name())
+            .filter(|n| keep.is_none_or(|k| n != k))
+            .collect();
+        if names.is_empty() {
+            return true;
+        }
+        let mut round = false;
+        for n in names {
+            let p = d.join(n);
+            let went = match std::fs::symlink_metadata(&p) {
+                Ok(m) if m.is_dir() => {
+                    empty_dir(&p, None, &mut round) && is_gone(std::fs::remove_dir(&p))
+                }
+                Ok(_) => is_gone(std::fs::remove_file(&p)),
+                Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+            };
+            round |= went;
+        }
+        *removed |= round;
+        if !round {
+            return false;
+        }
+    }
+    false
+}
+
+/// Whether a removal leaves its entry gone: removed here, or by another process first.
+fn is_gone(r: std::io::Result<()>) -> bool {
+    match r {
+        Ok(()) => true,
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
     }
 }
 
@@ -800,8 +882,13 @@ static RUN_LOCKS: std::sync::Mutex<Vec<(PathBuf, std::fs::File)>> =
 /// is taken on `<d>/.lock.new`, which is then renamed (the lock stays with the file). Created
 /// as `.lock` and locked after, it read as a dead run's lock in between, and a reaper removed
 /// the new directory of a live run. When the lock cannot be taken (a file system without
-/// locks) or the rename fails, the file goes again: a directory without `.lock` is never
-/// reaped, so a reaper that could take the lock later never removes a live run's directory.
+/// locks), the file goes again: a directory without `.lock` is never reaped, so a reaper that
+/// could take the lock later never removes a live run's directory. Once taken, the lock is held
+/// whatever the rename reports: a rename reported as failed may have happened all the same (on
+/// NFS, a reply lost after the server renamed), and releasing the lock then left an unlocked
+/// `.lock`, read as a dead run's. When the rename did fail, `.lock.new` is unlinked, and the
+/// lock on the removed file is harmless; on NFS the file, still open, stays as `.nfs*` in the
+/// directory until the run ends (the directory has no `.lock` and counts as live either way).
 fn lock_run_dir(d: &Path) {
     let new = d.join(".lock.new");
     let Ok(f) = std::fs::OpenOptions::new()
@@ -812,13 +899,16 @@ fn lock_run_dir(d: &Path) {
     else {
         return;
     };
-    if f.try_lock().is_ok() && std::fs::rename(&new, d.join(".lock")).is_ok() {
-        let mut locks = RUN_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
-        locks.push((d.to_path_buf(), f));
-    } else {
+    if f.try_lock().is_err() {
         drop(f);
         let _ = std::fs::remove_file(&new);
+        return;
     }
+    if std::fs::rename(&new, d.join(".lock")).is_err() {
+        let _ = std::fs::remove_file(&new);
+    }
+    let mut locks = RUN_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    locks.push((d.to_path_buf(), f));
 }
 
 /// Release the lock of this invocation's run directory `d` (before removing it: on NFS an open
@@ -866,7 +956,7 @@ fn remove_run_dirs() {
     }
     for (_, d) in dirs.drain(..) {
         unlock_run_dir(&d);
-        let _ = std::fs::remove_dir_all(&d);
+        remove_run_dir(&d);
     }
 }
 
@@ -1954,6 +2044,9 @@ fn cmd_check(
             if std::env::var("PTXV_RUN_ONCE").is_ok() {
                 let t0 = Instant::now();
                 let m1 = m.clone();
+                let mut m = m;
+                // N-MULTIMEM-ROUND16: the output bytes that hold a calibrated f16 / bf16 lane.
+                m.track_round16();
                 let (m, fs, ok) = ptxv_sim::explore::run_once(m);
                 println!(
                     "RUN_ONCE {v} {f}: terminal={ok} findings={} {:.1}s",
@@ -2033,7 +2126,8 @@ fn cmd_check(
                     }
                 }
                 if ok {
-                    for line in case.expect_report_tol(&m.outputs(), m.mc_inexact)? {
+                    let marks = m.round16_marks();
+                    for line in case.expect_report_tol(&m.outputs(), marks.as_deref())? {
                         println!("    {line}");
                     }
                 }
@@ -2730,8 +2824,19 @@ fn cmd_check(
             // Captured cases (tools/capture.py) carry the GPU's output bytes.
             let mut expect_report = Vec::new();
             let mut gpu_compare = Vec::new();
-            // N-MULTIMEM-ROUND16: multimem reductions whose rounding the model only calibrates.
-            let ulp_ok = !case.m.multicast.is_empty();
+            // N-MULTIMEM-ROUND16: the output bytes that hold an f16 / bf16 multimem.ld_reduce
+            // lane whose rounding the model only calibrates, from one deterministic run of a
+            // multicast case (`Machine::round16_marks`); a terminal output takes them only
+            // when it is that run's output byte for byte, any other is compared bitwise
+            // (MISS 110).
+            let round16 = if case.m.multicast.is_empty() {
+                None
+            } else {
+                let mut m = make1();
+                m.track_round16();
+                let (m, _, ok) = run_once(m);
+                ok.then(|| (m.outputs(), m.round16_marks().unwrap_or_default()))
+            };
             // C-TICKET-ADDR: outputs compared up to the certified permutation of rows.
             let perm_rows = verdict
                 .findings
@@ -2741,7 +2846,13 @@ fn cmd_check(
             for (i, o) in verdict.outputs.iter().enumerate() {
                 let compared = match &perm_rows {
                     Some(r) => case.expect_compare_perm(o, r)?,
-                    None => case.expect_compare_tol(o, ulp_ok)?,
+                    None => case.expect_compare_tol(
+                        o,
+                        round16
+                            .as_ref()
+                            .filter(|(out, _)| out == o)
+                            .map(|(_, marks)| marks.as_slice()),
+                    )?,
                 };
                 for c in compared {
                     if let Some(line) = &c.line {
@@ -2976,6 +3087,13 @@ fn cmd_num_with(
     let spec = ptxv_sim::spec_exact(case)?;
     let mut sums = Vec::new();
     let mut outs: Vec<Vec<u8>> = Vec::new();
+    // ASSUME(N-NUM-TRACK): (MISS 108) the PTX front's verdict per output, when it ran: None for
+    // an output it refused, else per element the exact value of an analyzed element. ptxas folds
+    // roundings of constants (`mul.rn`, `add.rn`, `ex2.approx` of immediates) into immediates the
+    // SASS front would take as exact constants; the PTX front has the roundings. So the SASS front
+    // claims only elements the PTX front claims, with the same exact value.
+    type PtxOut = Option<Vec<Option<ptxv_sim::exact::Expansion>>>;
+    let mut ptx_verdict: Option<std::collections::HashMap<String, PtxOut>> = None;
     for f in ["ptx", "sass"] {
         if f == "ptx" && case.m.cubin.is_some() {
             continue; // binary-only case
@@ -2993,6 +3111,9 @@ fn cmd_num_with(
             }
             Err(e) => return Err(e),
         };
+        if f == "ptx" {
+            ptx_verdict = Some(std::collections::HashMap::new());
+        }
         let mut m = machine(case, k)?;
         let mut ns = ptxv_sim::num::NumState::with_mma_eps(m.launch.mma_model.eps());
         // ASSUME(N-NUM-TRACK): input-derived values are tainted, so a value whose rounding
@@ -3115,7 +3236,22 @@ fn cmd_num_with(
                     )
                 })
             });
+            // The PTX front's verdict on this output (SASS front, when the PTX front ran).
+            let ptx_out = match (f, ptx_verdict.as_ref()) {
+                ("sass", Some(v)) => Some(v.get(&oname).cloned().flatten()),
+                _ => None,
+            };
+            let refusal = refusal.or_else(|| {
+                matches!(ptx_out, Some(None)).then(|| {
+                    "the PTX front makes no claim on this output (ptxas may fold a rounding of constants into an immediate the SASS front takes as exact)".to_string()
+                })
+            });
             if let Some(why) = refusal {
+                if f == "ptx" {
+                    if let Some(v) = ptx_verdict.as_mut() {
+                        v.insert(oname.clone(), None);
+                    }
+                }
                 println!("num {variant} {f:<4}: output={oname} NOT ANALYZED: {why}");
                 sums.push(NumSummary {
                     front: f.into(),
@@ -3142,6 +3278,11 @@ fn cmd_num_with(
             let mut spec_ok = true;
             let half = es == 2;
             let f16 = dtype == "f16";
+            let ptx_out = ptx_out.flatten();
+            // PTX front: each analyzed element's exact value; SASS front: the elements withheld
+            // for want of a PTX claim with the same exact value.
+            let mut exacts = Vec::with_capacity(n);
+            let mut withheld = 0;
             for i in 0..n {
                 let (bits, node) = if half {
                     let h = u16::from_le_bytes([0, 1].map(|j| *mem.bytes.get(i * 2 + j)));
@@ -3173,6 +3314,21 @@ fn cmd_num_with(
                     r.untracked = true;
                     r.thm1_exact = false;
                 }
+                let ex = node
+                    .map(|nd| ns.nodes[nd as usize].exact.clone())
+                    .unwrap_or_else(|| ptxv_sim::exact::from(f32::from_bits(bits) as f64));
+                if let Some(pe) = &ptx_out {
+                    let same = pe
+                        .get(i)
+                        .and_then(|e| e.as_ref())
+                        .is_some_and(|e| exact_eq(e, &ex));
+                    if !r.untracked && !same {
+                        r.untracked = true;
+                        r.thm1_exact = false;
+                        withheld += 1;
+                    }
+                }
+                exacts.push((!r.untracked).then_some(ex));
                 if oslot == 0 && !half {
                     if let Some(s) = &spec {
                         let ex = node
@@ -3182,6 +3338,11 @@ fn cmd_num_with(
                     }
                 }
                 recs.push(r);
+            }
+            if f == "ptx" {
+                if let Some(v) = ptx_verdict.as_mut() {
+                    v.insert(oname.clone(), Some(exacts));
+                }
             }
             let mut csv = String::from(
                 "index,hw,exact,abs_err,rel_err,err_ulps,bound_cor1a,bound_running,thm1_exact,n_leaves,n_roundings,untracked,nonfinite\n",
@@ -3272,10 +3433,10 @@ fn cmd_num_with(
                 .unwrap_or_default();
             // Why elements are not analyzed: a dropped rounding history, or (N-NUM-NONFINITE) a
             // non-finite value whose exact value is not determined.
-            let hist = recs.iter().filter(|r| r.untracked && !r.nonfinite).count();
+            let hist = recs.iter().filter(|r| r.untracked && !r.nonfinite).count() - withheld;
             let mut why = vec![];
             if hist > 0 {
-                let k = if nonfinite > 0 {
+                let k = if nonfinite > 0 || withheld > 0 {
                     format!(": {hist}")
                 } else {
                     String::new()
@@ -3287,8 +3448,13 @@ fn cmd_num_with(
                     "a non-finite value without a determined exact value: {nonfinite}"
                 ));
             }
+            if withheld > 0 {
+                why.push(format!(
+                    "no PTX claim with the same exact value (ptxas may fold a rounding of constants into an immediate): {withheld}"
+                ));
+            }
             let why = why.join("; ");
-            if s.untracked == n && nonfinite == 0 {
+            if s.untracked == n && nonfinite == 0 && withheld == 0 {
                 println!(
                     "num {variant} {f:<4}: {oname_note}outputs={n} NOT ANALYZED: every element depends on an input-derived value whose rounding history was dropped (no error claim{first})"
                 );

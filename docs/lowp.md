@@ -52,12 +52,12 @@ Each reads the same input bytes as its CuTeDSL reference; `ptxv equiv` compares 
 
 | fixture | implementation | kernel | vs CuTeDSL |
 |---|---|---|---|
-| `c_smm_mxf8` | torch._scaled_mm (cuBLASLt), MXF8 | nvjet_sm103_qqsss_128x128_128x6 (binary) | L0 up to the sign of zero |
+| `c_smm_mxf8` | torch._scaled_mm (cuBLASLt), MXF8 | nvjet_sm103_qqsss_128x128_128x6 (binary) | L0~0 (L0 up to the sign of zero) |
 | `c_triton_mxf8`, `_rev` | Triton tl.dot_scaled e4m3, K blocks of 128 / 32 reversed | tcgen05 mxf8f6f4 1X | L0 / L1, 306u x sum \|terms\| |
 | `r3_cute_mxf4` | the CuTeDSL GEMM for MXF4 (e2m1, ue8m0 per 32) | 4-bit tensor maps, kind::mxf4nvf4 block32 | (reference) |
 | `c_triton_mxf4`, `_rev` | Triton tl.dot_scaled e2m1, K blocks of 256 / 64 reversed | kind::mxf4 scale_vec::2X | L0 / L1, 10.04u x sum \|terms\| |
 | `r3_cute_nvf4` | the CuTeDSL GEMM for NVFP4 (e2m1, ue4m3 per 16) | kind::mxf4nvf4 block16, one CTA | (reference) |
-| `c_smm_nvf4` | torch._scaled_mm (cuBLASLt), NVFP4 | nvjet_sm103_oosss_128x128_256x7_1x2_2cta (binary, a 2-CTA pair) | L0 up to the sign of zero |
+| `c_smm_nvf4` | torch._scaled_mm (cuBLASLt), NVFP4 | nvjet_sm103_oosss_128x128_256x7_1x2_2cta (binary, a 2-CTA pair) | L0~0 (L0 up to the sign of zero) |
 
 cuBLASLt's NVFP4 kernels at M = N = 128..256 are all `2cta`. Lifting them needed the pair
 block-scaled MMA, the pair `UTCCP`, `LDTM.16dp128bit` and `LOP3.LUT.PAND` (rows above). Triton

@@ -24,8 +24,17 @@
 //! Everything else (f64, fp8, f16 overflow, all-NaN min / max) is reported as not modeled.
 // ASSUME(N-MULTIMEM): see ASSUMPTIONS.md
 
+use std::collections::HashMap;
+
+use ptxv_case::Round16;
+use ptxv_ir::File;
 use ptxv_ir::McOp;
 use ptxv_ir::McTy;
+use ptxv_ir::Reg;
+use ptxv_ir::Val;
+
+use crate::exec::Loc;
+use crate::machine::Machine;
 
 /// Bits kept below the largest f32 operand's last mantissa bit (probes/multimem: 63
 /// reproduces 262094 of 262144 scalar lanes; every miss truncated some operand bits, and
@@ -37,6 +46,9 @@ pub const F32_WINDOW: i32 = 63;
 pub struct Reduced {
     pub bytes: Vec<u8>,
     pub inexact: bool,
+    /// Per lane: its rounding direction rests on the calibrated f16 / bf16 rule
+    /// (N-MULTIMEM-ROUND16). Empty when no lane's does.
+    pub calibrated: Vec<bool>,
 }
 
 /// Format of a float lane: (exponent bits, mantissa bits).
@@ -102,6 +114,7 @@ pub fn reduce(op: McOp, ty: McTy, members: &[Vec<u8>]) -> Result<Reduced, String
     Ok(Reduced {
         bytes: out,
         inexact,
+        calibrated: vec![],
     })
 }
 
@@ -141,11 +154,13 @@ fn add16(ty: McTy, members: &[Vec<u8>], w: usize) -> Result<Reduced, String> {
     };
     let mut out = Vec::with_capacity(members[0].len());
     let mut inexact = false;
+    let mut calibrated = vec![false; nl];
     for i in 0..nl {
         let bits = match &lanes[i] {
             R16::Done(b) => *b,
             R16::Between { lo, num, ulp } => {
                 inexact = true;
+                calibrated[i] = true;
                 let g0 = i / 4 * 4;
                 let others: Vec<u64> = (1..4)
                     .filter_map(|j| lanes.get(g0 + (i - g0 + j) % 4).map(trunc))
@@ -169,10 +184,207 @@ fn add16(ty: McTy, members: &[Vec<u8>], w: usize) -> Result<Reduced, String> {
             out.push((bits >> (8 * k)) as u8);
         }
     }
+    if !inexact {
+        calibrated.clear();
+    }
     Ok(Reduced {
         bytes: out,
         inexact,
+        calibrated,
     })
+}
+
+/// N-MULTIMEM-ROUND16 provenance (`Machine::round16`, one deterministic run): the bytes that
+/// hold an f16 / bf16 multimem.ld_reduce lane whose rounding direction rests on the calibrated
+/// rule, with the lane's format. The ld_reduce puts the lane into its destination register; a
+/// register move copies it; a store writes it into memory (into every location a multicast
+/// store reaches). Any other write of the register or of the bytes ends it, and a load does
+/// not carry it. Only such bytes of an output may be one unit in the last place off the
+/// captured GPU output (`ptxv_case::Case::expect_compare_tol`, MISS 110).
+#[derive(Clone, Debug, Default)]
+pub struct Round16Shadow {
+    /// (thread, register file, index): the format per byte of the register's value.
+    regs: HashMap<(u32, u8, u16), [Option<Round16>; 8]>,
+    /// (space: 0 shared / 1 global, CTA or allocation, byte offset): the format.
+    mem: HashMap<(u8, u64, u64), Round16>,
+}
+
+/// The memory key of byte `i` at `loc` (None: parameter space).
+fn mem_key(loc: Loc, i: usize) -> Option<(u8, u64, u64)> {
+    match loc {
+        Loc::Shared { cta, off } => Some((0, cta as u64, off as u64 + i as u64)),
+        Loc::Global { alloc, off } => Some((1, alloc as u64, off + i as u64)),
+        Loc::Param { .. } => None,
+    }
+}
+
+impl Machine {
+    /// Track N-MULTIMEM-ROUND16 provenance (`Round16Shadow`) in the runs of this machine.
+    pub fn track_round16(&mut self) {
+        self.round16 = Some(Box::default());
+    }
+
+    /// Per byte of `outputs()`: the format of the calibrated f16 / bf16 lane it holds
+    /// (`Round16Shadow`); None when the provenance is not tracked.
+    pub fn round16_marks(&self) -> Option<Vec<Option<Round16>>> {
+        let s = self.round16.as_ref()?;
+        let mut out = Vec::new();
+        for &i in &self.launch.outputs {
+            for b in 0..self.gmem[i].bytes.len() {
+                out.push(s.mem.get(&(1, i as u64, b as u64)).copied());
+            }
+        }
+        Some(out)
+    }
+
+    /// A write of register `r` (`slots` registers of the R / UR files) ends what it held.
+    pub(crate) fn round16_forget_reg(&mut self, t: usize, r: Reg, slots: u8) {
+        let Some(s) = self.round16.as_mut() else {
+            return;
+        };
+        let n = if r.file == File::V { 1 } else { slots.max(1) };
+        for k in 0..n as u16 {
+            s.regs.remove(&(t as u32, r.file as u8, r.idx + k));
+        }
+    }
+
+    /// A write of `n` bytes at `loc` ends what they held.
+    pub(crate) fn round16_forget_mem(&mut self, loc: Loc, n: usize) {
+        let Some(s) = self.round16.as_mut() else {
+            return;
+        };
+        if s.mem.is_empty() {
+            return;
+        }
+        for i in 0..n {
+            if let Some(k) = mem_key(loc, i) {
+                s.mem.remove(&k);
+            }
+        }
+    }
+
+    /// multimem.ld_reduce of `ty` lanes wrote its result into the 4-byte registers from `d`:
+    /// the bytes of each lane the calibrated rule rounded (`calibrated`, per lane) hold it.
+    pub(crate) fn round16_ld_reduce(&mut self, t: usize, d: Reg, ty: McTy, calibrated: &[bool]) {
+        let f = match ty {
+            McTy::F16 => Round16::F16,
+            McTy::Bf16 => Round16::Bf16,
+            _ => return,
+        };
+        let Some(s) = self
+            .round16
+            .as_mut()
+            .filter(|_| matches!(d.file, File::V | File::R))
+        else {
+            return;
+        };
+        let w = ty.lane_bytes();
+        for (i, regs) in calibrated.chunks(4 / w).enumerate() {
+            let mut m = [None; 8];
+            for (j, &c) in regs.iter().enumerate() {
+                if c {
+                    m[j * w..(j + 1) * w].fill(Some(f));
+                }
+            }
+            if m.iter().any(Option::is_some) {
+                s.regs.insert((t as u32, d.file as u8, d.idx + i as u16), m);
+            }
+        }
+    }
+
+    /// What `mov d, a` copies (read before the move writes `d`): per register of `a` (one PTX
+    /// register, or `slots` 32-bit R registers, both of one file), what it holds.
+    pub(crate) fn round16_of_mov(
+        &self,
+        t: usize,
+        d: Reg,
+        a: &Val,
+        slots: u8,
+    ) -> Vec<Option<[Option<Round16>; 8]>> {
+        let (Some(s), &Val::Reg(r, _)) = (self.round16.as_ref(), a) else {
+            return vec![];
+        };
+        // Per-thread files only: a uniform register is one per warp.
+        let n = match (d.file, r.file) {
+            (File::V, File::V) => 1,
+            (File::R, File::R) => slots.max(1) as u16,
+            _ => return vec![],
+        };
+        (0..n)
+            .map(|k| s.regs.get(&(t as u32, r.file as u8, r.idx + k)).copied())
+            .collect()
+    }
+
+    /// `mov d, a` (after its write of `d`): the copy holds what `a` held (`round16_of_mov`).
+    pub(crate) fn round16_mov(
+        &mut self,
+        t: usize,
+        d: Reg,
+        held: Vec<Option<[Option<Round16>; 8]>>,
+    ) {
+        let Some(s) = self.round16.as_mut() else {
+            return;
+        };
+        for (k, m) in held.into_iter().enumerate() {
+            if let Some(m) = m {
+                s.regs.insert((t as u32, d.file as u8, d.idx + k as u16), m);
+            }
+        }
+    }
+
+    /// A store of `bytes` bytes from `v` at each of `locs` (after its writes): the bytes from
+    /// register bytes that hold a calibrated lane hold it (the data layout of `Op::St`).
+    pub(crate) fn round16_st(&mut self, t: usize, v: &Val, bytes: usize, locs: &[Loc]) {
+        let Some(s) = self.round16.as_mut() else {
+            return;
+        };
+        if s.regs.is_empty() {
+            return;
+        }
+        // Byte j of the data: (register, byte of its value).
+        let src = |j: usize| -> Option<(Reg, usize)> {
+            let Val::Reg(r, n) = *v else {
+                return None;
+            };
+            let at = |i: usize, b: usize| {
+                Some((
+                    Reg {
+                        file: r.file,
+                        idx: r.idx + i as u16,
+                    },
+                    b,
+                ))
+            };
+            match (r.file, n) {
+                // PTX `st.vN`: one register per element.
+                (File::V, 2..) => {
+                    let w = bytes / n as usize;
+                    at(j / w, j % w)
+                }
+                // One PTX register wider than 8 bytes: undefined data (`CCTL.E.RML2`).
+                (File::V, _) if bytes > 8 => None,
+                (File::V, _) => at(0, j),
+                // 32-bit registers, one per word.
+                _ => at(j / 4, j % 4),
+            }
+        };
+        let marks: Vec<Option<Round16>> = (0..bytes)
+            .map(|j| {
+                let (r, b) = src(j)?;
+                s.regs.get(&(t as u32, r.file as u8, r.idx))?[b]
+            })
+            .collect();
+        if marks.iter().all(Option::is_none) {
+            return;
+        }
+        for &loc in locs {
+            for (j, f) in marks.iter().enumerate() {
+                if let (Some(f), Some(k)) = (f, mem_key(loc, j)) {
+                    s.mem.insert(k, *f);
+                }
+            }
+        }
+    }
 }
 
 /// The neighbours of `±mag * 2^e` (mag > 0) in the format: (the one toward zero with its

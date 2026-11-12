@@ -1,0 +1,69 @@
+name = "c_equiv_atomic_cand_sum_scr_t1"
+description = """
+MISS 98 (fixtures/c_equiv_atomic/gen.py): cand_sum and a float atomic add into a scratch
+buffer (no output). expected/ is cand_sum_scr's GB300 output with out[225] 0xbbe35a00 ->
+0xbbe35a01 (gen.py --tamper)."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "a"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/a.bin"
+
+[[buffers]]
+name = "b"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/b.bin"
+
+[[buffers]]
+name = "c"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/c.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "scr"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+
+[[params]]
+kind = "ptr"
+buffer = "b"
+
+[[params]]
+kind = "ptr"
+buffer = "c"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "scr"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

@@ -1,0 +1,10 @@
+# MISS 134 (gen.py): out[i] = +0 + a[i], red.add.f32 (FTZ) against out[i] = +0 + a[i], a bulk f32 add-reduction (no flush) per CTA; input set s.
+max_states = 200000
+reference = { case = "ftz1_ref_s", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "blk1_cand_s"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L2"

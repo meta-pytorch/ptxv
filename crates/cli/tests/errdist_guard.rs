@@ -23,6 +23,19 @@ fn run(name: &str, path: &str, spec: &str) -> (String, serde_json::Value) {
 
 /// `run` with other arguments than `--mc 200` (none: the default, growing Tier 3).
 fn run_args(name: &str, path: &str, spec: &str, extra: &[&str]) -> (String, serde_json::Value) {
+    let (text, j, ok) = run_any(name, path, spec, extra);
+    assert!(ok, "{text}");
+    (text, j)
+}
+
+/// `run_args` without the success check: the output, the JSON report (written before a
+/// refusal) and whether errdist succeeded.
+fn run_any(
+    name: &str,
+    path: &str,
+    spec: &str,
+    extra: &[&str],
+) -> (String, serde_json::Value, bool) {
     let js = std::env::temp_dir().join(format!(
         "ptxv-test-guard-{name}-{}.json",
         std::process::id()
@@ -40,10 +53,12 @@ fn run_args(name: &str, path: &str, spec: &str, extra: &[&str]) -> (String, serd
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(out.status.success(), "{text}");
-    let j = serde_json::from_str(&std::fs::read_to_string(&js).unwrap()).unwrap();
+    let j = serde_json::from_str(
+        &std::fs::read_to_string(&js).unwrap_or_else(|e| panic!("{e}: {text}")),
+    )
+    .unwrap();
     let _ = std::fs::remove_file(&js);
-    (text, j)
+    (text, j, out.status.success())
 }
 
 /// Run errdist where it must refuse: its output.
@@ -69,7 +84,9 @@ fn run_refused_args(path: &str, spec: &str, extra: &[&str]) -> String {
     text
 }
 
-/// Row sums of N(3e37, 1e36) f32 inputs overflow: every output is Inf.
+/// Row sums of N(3e37, 1e36) f32 inputs overflow: every output is Inf. Tier 3 compares
+/// nothing, with the default input count does not grow, and is refused: no headline
+/// (MISS 64; until 2026-11-11 Tier 3 headlined P(differ) 0 over [0, 1]).
 #[test]
 fn nonfinite_outputs_are_out_of_domain() {
     let spec =
@@ -79,8 +96,32 @@ fn nonfinite_outputs_are_out_of_domain() {
         r#"{"version": 1, "seed": 1, "name": "huge", "default": {"dist": {"kind": "normal", "mean": 3e37, "std": 1e36}}}"#,
     )
     .unwrap();
-    let (text, j) = run("inf", "fixtures/r4_sum_torch", spec.to_str().unwrap());
+    let (text, j, ok) = run_any(
+        "inf",
+        "fixtures/r4_sum_torch",
+        spec.to_str().unwrap(),
+        &["--mc", "200"],
+    );
+    // With the default input count Tier 3 does not grow at P 0 where it compared nothing
+    // (MISS 120's growth): more inputs cannot narrow [0, 1].
+    let (_, jd, okd) = run_any("infd", "fixtures/r4_sum_torch", spec.to_str().unwrap(), &[]);
     let _ = std::fs::remove_file(&spec);
+    assert!(!ok && !okd, "{text}");
+    assert!(
+        text.contains("Tier 3 compared no output") && text.contains("refusing to report"),
+        "{text}"
+    );
+    for r in [&j, &jd] {
+        assert!(r["best"].is_null(), "{}", r["best"]);
+    }
+    let t3 = jd["estimates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["tier"] == 3)
+        .unwrap();
+    assert_eq!(t3["n"], 300, "{t3}");
+    assert_eq!(t3["applicable"], false, "{t3}");
     let ood = &j["out_of_domain"];
     assert!(ood["mass"].as_f64().unwrap() > 0.99, "{ood}");
     assert!(
@@ -400,10 +441,16 @@ fn analytic_tiers_take_the_unknown_bound_at_zero_inputs_off() {
 
 /// MISS 58 follow-up (MISS 42's rule for Tier 3): a validation run that contradicts Tier 3's
 /// P(differ) refuses Tier 3, and with nothing else standing the run has no headline and fails.
-/// fixtures/errdist/miss58/rare: y[i] = RN(RN(x[i] s[0]) + v[i]) is exact where s[0] = 1. Tier 3's
-/// 5 inputs (seed 4) all draw s[0] = 1, P(differ) 0; the simulator's 1000 inputs draw
-/// s[0] ~ N(0, 1) on about a fifth, P(differ) about 0.05, with the DAG matching the simulator bit
-/// for bit. Before: DISAGREE printed and the headline P(bits differ) = 0, rc 0.
+/// fixtures/errdist/miss58/rare: y[i] = RN(RN(x[i] s[0]) + v[i]), exact where s[0] = 1. Under
+/// dense.json (x = 0.1, v = -0.3, s[0] = 1 w.p. 0.2, else U[2.999, 3.001]) RN(x s[0]) - 0.3
+/// cancels where s[0] is not 1 and all 64 outputs differ together: P(differ) about 0.8. Tier 3's
+/// 3 inputs (seed 129) all draw s[0] = 1, P(differ) 0, and since MISS 120 its interval counts
+/// inputs, [0, 0.71]; the simulator's 1000 inputs put P(differ) at least 0.77 (99.9%), with the
+/// DAG matching the simulator bit for bit. The analytic tiers (0.67 to 0.80) fail their
+/// cross-check against Tier 3's 0. Before the follow-up: DISAGREE printed and the headline
+/// P(bits differ) = 0, rc 0. Under rare.json (5 Tier 3 inputs, all with s[0] = 1; P about 0.047)
+/// Tier 3's [0, 0.52] holds the run's P since MISS 120 (it said [0, 1.1e-2] before) and the
+/// elementwise law, 4.67e-2, is the headline.
 #[test]
 fn tier3_contradicted_by_a_validation_is_no_headline() {
     let js = std::env::temp_dir().join(format!("ptxv-test-guard-t3r-{}.json", std::process::id()));
@@ -412,9 +459,9 @@ fn tier3_contradicted_by_a_validation_is_no_headline() {
             "errdist",
             "fixtures/errdist/miss58/rare",
             "--inputs",
-            "fixtures/errdist/miss58/rare.json",
+            "fixtures/errdist/miss58/dense.json",
             "--mc",
-            "5",
+            "3",
             "--sim-trials",
             "1000",
             "--json",
@@ -431,7 +478,7 @@ fn tier3_contradicted_by_a_validation_is_no_headline() {
     );
     assert!(!out.status.success(), "{text}");
     assert!(
-        text.contains("summary: no estimate passed its checks (tier 3 refused: sim validation (1000 inputs): Tier 3's P(differ) 0.000e0")
+        text.contains("summary: no estimate passed its checks (tier 3 refused: sim validation (1000 inputs): Tier 3's interval [0.000e0, 7.076e-1] against the observed inputs' exact bounds")
             && text.contains("refusing to report from it"),
         "{text}"
     );
@@ -446,6 +493,23 @@ fn tier3_contradicted_by_a_validation_is_no_headline() {
         .find(|e| e["tier"] == 3)
         .unwrap();
     assert_eq!(t3["applicable"], false, "{t3}");
+    let (text, j) = run_args(
+        "t3rare",
+        "fixtures/errdist/miss58/rare",
+        "fixtures/errdist/miss58/rare.json",
+        &["--mc", "5", "--sim-trials", "1000"],
+    );
+    let t3 = j["estimates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["tier"] == 3)
+        .unwrap();
+    assert_ne!(t3["applicable"], false, "{text}");
+    assert!(t3["p_differ"][2].as_f64().unwrap() > 0.5, "{text}");
+    let b = j["best"].as_u64().expect("a headline") as usize;
+    let p = j["estimates"][b]["p_differ"][0].as_f64().unwrap();
+    assert!(p > 0.04 && p < 0.055, "{text}");
 }
 
 /// The store word of a selection (MISS 56 class; fixtures/errdist/storeword): thread 0 clears
@@ -586,7 +650,8 @@ fn clamps_inside_a_slice_are_decisions() {
 /// x[0] >= -3, else RN(RN(3x) w); x[0] in [-5, -4) w.p. 0.002; the kernel's P(bits differ)
 /// 5.2e-4). On seed 2 no Tier 3 input fell outside, and Tier 3 reported 0 [0, 1.9e-4]; it now
 /// widens by the share's 95% bound as the analytic tiers do. Each seed refuses (inputs outside)
-/// or reports an interval that holds 5.2e-4.
+/// or reports an interval that holds 5.2e-4. At 300 inputs (the default count, fixed: at P 0 the
+/// default run grows to its budget, where every seed takes inputs outside and refuses).
 #[test]
 fn tier3_takes_the_unknown_bound_at_zero_inputs_off() {
     let mut reported = 0;
@@ -598,7 +663,7 @@ fn tier3_takes_the_unknown_bound_at_zero_inputs_off() {
         ));
         let out = std::process::Command::new(env!("CARGO_BIN_EXE_ptxv"))
             .args(["errdist", "fixtures/errdist/k0/guard", "--inputs", &spec])
-            .args(["--json", js.to_str().unwrap()])
+            .args(["--mc", "300", "--json", js.to_str().unwrap()])
             .current_dir(root())
             .env("CUDA_VISIBLE_DEVICES", "")
             .output()
@@ -627,20 +692,96 @@ fn tier3_takes_the_unknown_bound_at_zero_inputs_off() {
 }
 
 /// `--pre-round` keeps the refusals where it changes nothing (no output is an MMA chain's):
-/// fixtures/errdist/miss58/rare, whose Tier 3 (5 inputs, P(differ) 0) the simulator's 1000
-/// inputs contradict, was reported with --pre-round (P(bits differ) 0, rc 0), every refusal
-/// skipped. Now refused, as without it.
+/// fixtures/errdist/miss58/rare, whose Tier 3 (P(differ) 0) the simulator's 1000 inputs
+/// contradict, was reported with --pre-round (P(bits differ) 0, rc 0), every refusal skipped.
+/// Now refused, as without it. Since MISS 120 the contradiction needs dense.json (3 Tier 3
+/// inputs, [0, 0.71], against a run at about 0.8; see
+/// `tier3_contradicted_by_a_validation_is_no_headline`).
 #[test]
 fn pre_round_keeps_the_refusals_where_it_changes_nothing() {
     let text = run_refused_args(
         "fixtures/errdist/miss58/rare",
-        "fixtures/errdist/miss58/rare.json",
-        &["--mc", "5", "--sim-trials", "1000", "--pre-round"],
+        "fixtures/errdist/miss58/dense.json",
+        &["--mc", "3", "--sim-trials", "1000", "--pre-round"],
     );
     assert!(
         text.contains("no estimate passed its checks") && text.contains("refusing to report"),
         "{text}"
     );
+}
+
+/// MISS 99 (integer steps inside a slice, the MISS 85 class; fixtures/errdist/trunc): an F2I's
+/// integer, an exponent field and a mantissa with a fixed exponent cut from a float were no
+/// decisions. Every probe took one step (trunc(x / 1024) = 0, one binade of x * 2^-20 + 1.5),
+/// and the slice was fitted as that step's function: with 30% of the inputs on another step
+/// errdist reported P(bits differ) 0.300, 0.300 and 0.545 (Tier 1, rc 0), where the step
+/// kernel's is 0 (exact; GB300 0 of 12800 outputs). Each is now refused; on N(0, 1) inputs
+/// (the probes' step) the step kernel still reports P 0.
+#[test]
+fn integer_steps_inside_a_slice_are_decisions() {
+    for (case, spec) in [("step", "trunc30"), ("exp", "big20"), ("mant", "big20")] {
+        let text = run_refused(
+            &format!("fixtures/errdist/trunc/{case}"),
+            &format!("fixtures/errdist/trunc/{spec}.json"),
+        );
+        assert!(
+            text.contains("identification's probes never took") && text.contains("refusing"),
+            "{case}: {text}"
+        );
+    }
+    let (text, j) = run(
+        "truncn",
+        "fixtures/errdist/trunc/step",
+        "fixtures/errdist/normal.json",
+    );
+    let b = j["best"].as_u64().expect("a headline") as usize;
+    assert_eq!(
+        j["estimates"][b]["p_differ"][0].as_f64(),
+        Some(0.0),
+        "{text}"
+    );
+}
+
+/// MISS 99 follow-up (integer steps made by FP rounding; fixtures/errdist/trunc/fpstep.ptx, the
+/// review's probes): RM(t + 1.5 * 2^23) - 1.5 * 2^23 (FADD.RM), the same in RN, and FFMA.RM (an
+/// exp range reduction's form) give floor(t) or round(t), t = x * 2^-10. Every probe took step
+/// 0 (x ~ N(0, 1)) and the slice was fitted as RN(0 + v): with 30% of the inputs on step 2 (or
+/// 3) errdist reported P(bits differ) 0.300 (Tier 1, rc 0) where the kernels' is 0 (exact;
+/// GB300 0 of 12800 outputs). The rounding took one value on the probes while its operand took
+/// many, so its bits are decisions: each is refused, and on N(0, 1) inputs (the probes' step)
+/// each still reports Tier 1 P 0.
+#[test]
+fn fp_rounding_steps_inside_a_slice_are_decisions() {
+    for case in ["floor", "round", "ffrm"] {
+        let text = run_refused(
+            &format!("fixtures/errdist/trunc/{case}"),
+            "fixtures/errdist/trunc/trunc30.json",
+        );
+        assert!(
+            text.contains("identification's probes never took") && text.contains("refusing"),
+            "{case}: {text}"
+        );
+        let (text, j) = run(
+            &format!("fpstep-{case}"),
+            &format!("fixtures/errdist/trunc/{case}"),
+            "fixtures/errdist/normal.json",
+        );
+        assert!(
+            text.contains("rounding(s) acting as a step"),
+            "{case}: {text}"
+        );
+        let b = j["best"].as_u64().expect("a headline") as usize;
+        assert_eq!(
+            j["estimates"][b]["tier"].as_u64(),
+            Some(1),
+            "{case}: {text}"
+        );
+        assert_eq!(
+            j["estimates"][b]["p_differ"][0].as_f64(),
+            Some(0.0),
+            "{case}: {text}"
+        );
+    }
 }
 
 /// MISS 87 follow-up: `--pre-round` marked every MMA chain output as taken before its rounding,

@@ -1,0 +1,14 @@
+# MISS 98 (gen.py), rounding-DAG mode (no segments).
+# The same kernel twice; the candidate's captured GPU output differs from the model's in
+# one word. The pair is L0, which the capture contradicts:
+# the candidate's simulated output differs from its capture.
+# equiv refuses the level; before, it reported L0.
+max_states = 200000
+reference = { case = "a", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "a_bad"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (contradicted by the captured GPU outputs)"

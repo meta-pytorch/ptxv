@@ -3,6 +3,7 @@
 # (torch._scaled_mm, fixtures/c_smm_nvf4: nvjet_sm103_oosss_128x128_256x7_1x2_2cta, a 2-CTA
 # pair: UTCOMMA.2CTA.BLOCK16, UTCCP.T.S.2CTA, LDTM.16dp128bit, FFMA2 alpha * acc + 0).
 # Same input bytes and names: e2m1 codes, ue4m3 scales per 16, f32 out, no global scale.
+# The epilogue's + 0 makes the pair L0~0 (L0 up to the sign of zero), not L0.
 #   ptxv equiv fixtures/c_equiv_nvf4_cublas/equiv.toml
 #   GB300: tools/mx_gpu_check.py --nvf4
 max_states = 200000
@@ -14,4 +15,4 @@ case = "../c_smm_nvf4"
 variant = "good"
 front = "sass"
 certify = true
-expect = "L0"
+expect = "L0~0"

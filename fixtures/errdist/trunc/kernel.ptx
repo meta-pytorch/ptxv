@@ -1,0 +1,98 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// An integer step inside an instruction slice (MISS 99, the MISS 85 class; the second review's
+// repro). Thread i:
+//   a_i = RN(x_i * 2^-10) (exact), n_i = cvt.rzi.s32.f32(a_i) (F2I.TRUNC), t_i = cvt.rn.f32.s32(n_i)
+//   (exact for |n_i| < 2^24), y_i = RN(t_i + v_i).
+// The identification's probes put x_i ~ N(0, 1), so |a_i| < 2^-6 and n_i = 0 on every probe:
+// the slice a -> trunc(a) was fitted as the constant 0, and with F2I's recorded pieces only
+// its NaN and saturation, an input with x_i in [2048, 3072) took the same pattern, with the
+// fit (0) as its exact reference where the kernel computes trunc(a_i) = 2. Under trunc30.json
+// errdist reported P(bits differ) 0.300 (Tier 1, rc 0) where the kernel's is 0: trunc and the
+// conversion are exact and the add is one correct rounding (GB300, 200 inputs: 0 of 12800
+// outputs differ from RN(trunc(x / 1024) + v)). The F2I's integer is now a decision.
+// tr_exp and tr_mant: bit fields of a float inside a slice. a_i = RN(x_i * 2^-20 + 1.5), in
+// [1, 2) on the probes; tr_exp takes its exponent field (a & 0x7f800000: 1.0 on every probe,
+// fitted as that constant), tr_mant its mantissa with the exponent of 1 (a & 0x007fffff |
+// 0x3f800000: a itself on every probe); y_i = RN(field + v_i). Under big20.json (x in
+// [2^20, 2^21) w.p. 0.3) a is in [2.5, 3.5): the exponent field is 2.0 and the mantissa a / 2,
+// another piece than the probes'. The fields are now decisions (seg.rs `bit_pieces`): the
+// exponent field's 8 varying bits, the mantissa's operand's sign and exponent.
+.visible .entry tr_step(.param .u64 px, .param .u64 pv, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pv];
+    ld.param.u64 %rd3, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd4, %r1, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    add.s64 %rd6, %rd2, %rd4;
+    add.s64 %rd7, %rd3, %rd4;
+    ld.global.f32 %f1, [%rd5];
+    ld.global.f32 %f2, [%rd6];
+    mul.rn.f32 %f3, %f1, 0f3A800000;
+    cvt.rzi.s32.f32 %r2, %f3;
+    cvt.rn.f32.s32 %f4, %r2;
+    add.rn.f32 %f5, %f4, %f2;
+    st.global.f32 [%rd7], %f5;
+    ret;
+}
+
+.visible .entry tr_exp(.param .u64 px, .param .u64 pv, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pv];
+    ld.param.u64 %rd3, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd4, %r1, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    add.s64 %rd6, %rd2, %rd4;
+    add.s64 %rd7, %rd3, %rd4;
+    ld.global.f32 %f1, [%rd5];
+    ld.global.f32 %f2, [%rd6];
+    fma.rn.f32 %f3, %f1, 0f35800000, 0f3FC00000;
+    mov.b32 %r2, %f3;
+    and.b32 %r3, %r2, 2139095040;
+    mov.b32 %f4, %r3;
+    add.rn.f32 %f5, %f4, %f2;
+    st.global.f32 [%rd7], %f5;
+    ret;
+}
+
+.visible .entry tr_mant(.param .u64 px, .param .u64 pv, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pv];
+    ld.param.u64 %rd3, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd4, %r1, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    add.s64 %rd6, %rd2, %rd4;
+    add.s64 %rd7, %rd3, %rd4;
+    ld.global.f32 %f1, [%rd5];
+    ld.global.f32 %f2, [%rd6];
+    fma.rn.f32 %f3, %f1, 0f35800000, 0f3FC00000;
+    mov.b32 %r2, %f3;
+    and.b32 %r3, %r2, 8388607;
+    or.b32 %r3, %r3, 1065353216;
+    mov.b32 %f4, %r3;
+    add.rn.f32 %f5, %f4, %f2;
+    st.global.f32 [%rd7], %f5;
+    ret;
+}

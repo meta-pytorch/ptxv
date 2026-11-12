@@ -29,10 +29,11 @@ expect = "L0"
 # The cuBLAS kernel torch picks for this problem (nvjet_sm103_tss_64x8_64x16_1x4_h_bz_TNT,
 # binary only, 32 clusters of 4 CTAs). Symmetry (E-CTA-INDEP) reduces the race/deadlock check
 # to cluster 0, whose exploration is not exhaustive within max_states (docs/rung2e.md): the
-# levels hold for the captured inputs, not proven.
+# levels hold for the captured inputs, not proven. Its epilogue adds +0 (alpha = 1, beta = 0):
+# L0~0, L0 up to the sign of zero (before the +0 was peeled, L2+L3).
 [[candidates]]
 case = "../r2_cublas_gemm"
 variant = "good"
 front = "sass"
 slices = true
-expect = "L2+L3"
+expect = "L0~0 (unproven)"

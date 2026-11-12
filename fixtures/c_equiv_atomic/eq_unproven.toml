@@ -1,0 +1,20 @@
+# MISS 98 (gen.py), rounding-DAG mode: an unproven level (an input-dependent guard; racing
+# stores into a scratch buffer) against a capture with one word changed in its last bit is
+# refused as contradicted (before, L0 (unproven) was kept, "holding on the captured
+# inputs").
+max_states = 200000
+reference = { case = "ref_copy", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "cand_copy_g"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L0 (unproven)"
+
+[[candidates]]
+case = "cand_copy_g_bit"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (contradicted by the captured GPU outputs)"

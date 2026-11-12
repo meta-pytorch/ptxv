@@ -1,0 +1,39 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_fold_ctl_f32(.param .u64 px, .param .u64 pout)
+{
+	.reg .pred %p<4>;
+	.reg .b32 %r<8>;
+	.reg .f32 %f<16>;
+	.reg .b64 %rd<12>;
+	ld.param.u64 %rd1, [px];
+	ld.param.u64 %rd2, [pout];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd2, %rd2;
+	mov.u32 %r1, %tid.x;
+	mul.wide.u32 %rd5, %r1, 4;
+	add.s64 %rd6, %rd1, %rd5;
+	add.s64 %rd7, %rd2, %rd5;
+	mul.rn.f32 %f10, 0f3DCCCCCD, 0f40400000;
+	and.b32 %r2, %r1, 1;
+	setp.eq.u32 %p2, %r2, 0;
+	selp.f32 %f11, 0f3E99999A, 0f3E4CCCCD, %p2;
+	ld.global.f32 %f1, [%rd6];
+	setp.gt.f32 %p1, %f11, %f10;
+	@%p1 bra GT;
+	add.rn.f32 %f2, %f1, 0f40000000;
+	st.global.f32 [%rd7], %f2;
+	bra.uni END;
+GT:
+	add.rn.f32 %f3, %f1, 0f3F800000;
+	st.global.f32 [%rd7], %f3;
+END:
+	ret;
+}

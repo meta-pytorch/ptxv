@@ -1991,7 +1991,7 @@ fn cfg_succ(
 }
 
 /// Static control flow for `Machine::bar_oversub` (built once per machine).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct BarCfg {
     /// Per pc, the named barriers (bit = id; all bits for a non-immediate id or an indirect
     /// call) that a thread at that pc may still arrive at (`bar.sync` / `bar.arrive`).
@@ -2131,11 +2131,11 @@ pub(crate) fn const_guards(m: &Machine, rets: &[Vec<usize>]) -> Vec<Option<bool>
             let Some(r) = p.reg else {
                 return Some(!p.neg);
             };
-            // SASS PT / UPT read true.
+            // SASS PT / UPT read true; a `.SIGN` register its bit 31 (`Reg::pred_bit`).
             if r.is_pt(m.k.front) {
                 return Some(!p.neg);
             }
-            env.get(&r).map(|&v| (v != 0) ^ p.neg)
+            env.get(&r).map(|&v| r.pred_bit(v) ^ p.neg)
         };
         let mut st: Vec<Option<Env>> = vec![None; n];
         let entry = g.entry as usize;
@@ -3081,7 +3081,7 @@ pub(crate) fn peekskip_set(m: &Machine) -> BTreeMap<u32, (BTreeSet<u32>, BTreeSe
 }
 
 /// A value `Machine::thread_may_arrive` read: a predicate, or an operand.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum BarKey {
     Pred(ptxv_ir::Reg),
     Val(ptxv_ir::Val),
@@ -3121,6 +3121,287 @@ impl MwSets {
             None => false,
         }
     }
+}
+
+/// E-BAR-OVER's walks per input (`Machine::thread_may_arrive_c`): a trie over the values a walk
+/// read, each key once, in the order the walk first read it. A walk is deterministic and reads
+/// only `bar_read` of an unchanged machine, so the first key it reads, and after the values of
+/// its first j keys the next key (or its end, with its result), are the same for every thread
+/// with those values: a node holds that key and one child per value, a leaf the result.
+#[derive(Default)]
+struct WalkTrie {
+    nodes: Vec<WalkNode>,
+}
+
+enum WalkNode {
+    /// The walk reads this key next; per value read (sorted), the node after it.
+    Read(BarKey, Vec<(u64, u32)>),
+    /// The walk ends here with this result.
+    Done(bool),
+}
+
+impl WalkTrie {
+    /// The result of the walk whose reads all agree with thread `t`'s values, and those reads.
+    /// A failed read (`None`) matches nothing, as in the per-call memos.
+    fn find(&self, m: &Machine, t: usize, wc: &WarpReads) -> Option<(bool, Vec<BarRead>)> {
+        let mut n = 0usize;
+        let mut path = Vec::new();
+        loop {
+            match self.nodes.get(n)? {
+                WalkNode::Done(may) => return Some((*may, path)),
+                WalkNode::Read(k, kids) => {
+                    let v = m.bar_read_c(t, k, wc)?;
+                    let i = kids.binary_search_by_key(&v, |e| e.0).ok()?;
+                    path.push((k.clone(), v));
+                    n = kids[i].1 as usize;
+                }
+            }
+        }
+    }
+
+    /// Adds a walk's reads (one per key, in first-read order) and result; returns the bytes
+    /// added. A walk that disagrees with the trie on its next key or on its end (no walk does:
+    /// see `WalkTrie`) is left out.
+    fn insert(&mut self, reads: &[BarRead], may: bool) -> usize {
+        if self.nodes.is_empty() {
+            return self.chain(reads, may);
+        }
+        let mut n = 0usize;
+        for (j, (k, v)) in reads.iter().enumerate() {
+            let at = match &self.nodes[n] {
+                WalkNode::Read(k0, kids) if k0 == k => kids.binary_search_by_key(v, |e| e.0),
+                _ => return 0,
+            };
+            match at {
+                Ok(i) => {
+                    let WalkNode::Read(_, kids) = &self.nodes[n] else {
+                        unreachable!()
+                    };
+                    n = kids[i].1 as usize;
+                }
+                Err(i) => {
+                    let next = self.nodes.len() as u32;
+                    let bytes = self.chain(&reads[j + 1..], may);
+                    let WalkNode::Read(_, kids) = &mut self.nodes[n] else {
+                        unreachable!()
+                    };
+                    kids.insert(i, (*v, next));
+                    return bytes + std::mem::size_of::<(u64, u32)>();
+                }
+            }
+        }
+        0
+    }
+
+    /// Appends the nodes of `reads` and the leaf `may`, linked in order.
+    fn chain(&mut self, reads: &[BarRead], may: bool) -> usize {
+        let n0 = self.nodes.len();
+        for (j, (k, v)) in reads.iter().enumerate() {
+            let next = (n0 + j + 1) as u32;
+            self.nodes.push(WalkNode::Read(k.clone(), vec![(*v, next)]));
+        }
+        self.nodes.push(WalkNode::Done(may));
+        (reads.len() + 1) * std::mem::size_of::<WalkNode>()
+            + reads.len() * std::mem::size_of::<(u64, u32)>()
+    }
+}
+
+/// `WALK_CACHE`'s key: (walk identity of the machine's static parts, `Machine::walk_id`; the
+/// thread's pc; `bit`; `cut`; `bar_values()`).
+type WalkKey = (u64, u32, u32, u32, bool);
+
+#[derive(Default)]
+struct WalkShard {
+    map: HashMap<WalkKey, WalkTrie, BuildHasherDefault<WalkHasher>>,
+    bytes: usize,
+}
+
+/// E-BAR-OVER's walk cache, one for the process (`WALK_CACHE`): every thread that walks
+/// (explorer workers, seed walks) shares it, and so do later checks of the same process.
+/// Bounded by `budget` bytes (estimated): past it, the shard being added to is emptied (a lost
+/// entry only costs its walk again). No lock is held during a walk.
+struct WalkCache {
+    shards: Vec<std::sync::RwLock<WalkShard>>,
+    bytes: AtomicUsize,
+    peak: AtomicUsize,
+    budget: usize,
+    evictions: AtomicUsize,
+}
+
+static WALK_CACHE: std::sync::LazyLock<WalkCache> = std::sync::LazyLock::new(|| {
+    // `PTXV_WALK_CACHE_MB` (default 512).
+    WalkCache::new(
+        std::env::var("PTXV_WALK_CACHE_MB")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(512)
+            << 20,
+    )
+});
+
+impl WalkCache {
+    /// An empty cache of at most `budget` bytes (estimated).
+    fn new(budget: usize) -> WalkCache {
+        WalkCache {
+            shards: (0..64).map(|_| Default::default()).collect(),
+            bytes: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+            budget,
+            evictions: AtomicUsize::new(0),
+        }
+    }
+
+    fn shard(&self, key: &WalkKey) -> &std::sync::RwLock<WalkShard> {
+        use std::hash::Hash;
+        let mut h = WalkHasher::default();
+        key.hash(&mut h);
+        &self.shards[(h.finish() >> 58) as usize % self.shards.len()]
+    }
+
+    fn add(&self, key: WalkKey, reads: &[BarRead], may: bool) {
+        let mut s = self.shard(&key).write().unwrap_or_else(|e| e.into_inner());
+        let fresh = !s.map.contains_key(&key);
+        let mut b = s.map.entry(key).or_default().insert(reads, may);
+        if fresh {
+            b += std::mem::size_of::<(WalkKey, WalkTrie)>() + 8;
+        }
+        s.bytes += b;
+        let total = self.bytes.fetch_add(b, Ordering::Relaxed) + b;
+        self.peak.fetch_max(total, Ordering::Relaxed);
+        if total > self.budget {
+            self.bytes.fetch_sub(s.bytes, Ordering::Relaxed);
+            *s = WalkShard::default();
+            self.evictions.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Drops the entries of walk identities no machine has any more.
+    fn forget(&self, ids: &HashSet<u64>) {
+        for sh in &self.shards {
+            let mut s = sh.write().unwrap_or_else(|e| e.into_inner());
+            let before = s.map.len();
+            s.map.retain(|k, _| !ids.contains(&k.0));
+            if s.map.len() != before {
+                // (Estimated bytes stay with the shard until it is emptied.)
+                s.map.shrink_to_fit();
+            }
+        }
+    }
+}
+
+/// Bytes (estimated), peak bytes, keys and evictions of E-BAR-OVER's walk cache (printed at
+/// the end of each exploration round under `PTXV_STATS`).
+pub fn walk_cache_stats() -> (usize, usize, usize, usize) {
+    let c = &*WALK_CACHE;
+    let keys = c
+        .shards
+        .iter()
+        .map(|s| s.read().unwrap_or_else(|e| e.into_inner()).map.len())
+        .sum();
+    (
+        c.bytes.load(Ordering::Relaxed),
+        c.peak.load(Ordering::Relaxed),
+        keys,
+        c.evictions.load(Ordering::Relaxed),
+    )
+}
+
+/// `Machine::walk_id`'s table: walk identities of (`BarCfg`, kernel) pairs.
+#[derive(Default)]
+struct WalkIds {
+    /// (BarCfg address, kernel address) -> (the pair, its identity, its digest). The weak
+    /// references pin both addresses while the entry exists, so no other pair takes the key,
+    /// and stand for the identity's content.
+    pairs: HashMap<(usize, usize), WalkPair>,
+    /// Content digest -> the pairs with it.
+    by_digest: HashMap<u64, Vec<(usize, usize)>>,
+    next: u64,
+}
+
+type WalkPair = (
+    std::sync::Weak<BarCfg>,
+    std::sync::Weak<ptxv_ir::Kernel>,
+    u64,
+    u64,
+);
+
+static WALK_IDS: std::sync::LazyLock<Mutex<WalkIds>> = std::sync::LazyLock::new(Default::default);
+
+/// Everything a walk reads from a machine's static parts is equal in the two: the whole
+/// `BarCfg`, and of the kernel the front and each instruction's guard and operation.
+fn walk_same(a: (&BarCfg, &ptxv_ir::Kernel), b: (&BarCfg, &ptxv_ir::Kernel)) -> bool {
+    a.0 == b.0
+        && a.1.front == b.1.front
+        && a.1.code.len() == b.1.code.len()
+        && a.1
+            .code
+            .iter()
+            .zip(&b.1.code)
+            .all(|(x, y)| x.guard == y.guard && x.op == y.op)
+}
+
+/// A coarse digest of what `walk_same` compares (only to narrow the comparisons).
+fn walk_digest(c: &BarCfg, k: &ptxv_ir::Kernel) -> u64 {
+    use std::hash::Hash;
+    let mut h = std::hash::DefaultHasher::new();
+    (c.reach.len(), c.regid, c.cut, k.code.len()).hash(&mut h);
+    std::mem::discriminant(&k.front).hash(&mut h);
+    h.finish()
+}
+
+/// The walk identity of (`c`, `k`): that of an earlier pair with equal content (`walk_same`)
+/// whose parts are still alive, else a new one. Pairs whose parts are gone are dropped first,
+/// with the cache entries of identities left without a pair.
+fn walk_intern(c: &Arc<BarCfg>, k: &Arc<ptxv_ir::Kernel>) -> u64 {
+    let key = (Arc::as_ptr(c) as usize, Arc::as_ptr(k) as usize);
+    let mut g = WALK_IDS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(e) = g.pairs.get(&key) {
+        return e.2;
+    }
+    let gone: Vec<(usize, usize)> = g
+        .pairs
+        .iter()
+        .filter(|(_, e)| e.0.strong_count() == 0 || e.1.strong_count() == 0)
+        .map(|(p, _)| *p)
+        .collect();
+    if !gone.is_empty() {
+        let mut ids = HashSet::new();
+        for p in &gone {
+            let e = g.pairs.remove(p).unwrap();
+            ids.insert(e.2);
+            if let Some(v) = g.by_digest.get_mut(&e.3) {
+                v.retain(|q| q != p);
+                if v.is_empty() {
+                    g.by_digest.remove(&e.3);
+                }
+            }
+        }
+        for e in g.pairs.values() {
+            ids.remove(&e.2);
+        }
+        if !ids.is_empty() {
+            WALK_CACHE.forget(&ids);
+        }
+    }
+    let d = walk_digest(c, k);
+    let found = g.by_digest.get(&d).and_then(|ps| {
+        ps.iter().find_map(|p| {
+            let e = g.pairs.get(p)?;
+            let (c2, k2) = (e.0.upgrade()?, e.1.upgrade()?);
+            walk_same((c, k), (&c2, &k2)).then_some(e.2)
+        })
+    });
+    let id = match found {
+        Some(id) => id,
+        None => {
+            g.next += 1;
+            g.next
+        }
+    };
+    g.pairs
+        .insert(key, (Arc::downgrade(c), Arc::downgrade(k), id, d));
+    g.by_digest.entry(d).or_default().push(key);
+    id
 }
 
 /// `set_bar_values`: 0 = the environment decides, 1 = on, 2 = off.
@@ -3493,9 +3774,30 @@ impl Machine {
         self.thread_may_arrive_c(t, bit, cut, reads, &WarpReads::default())
     }
 
-    /// `thread_may_arrive_walk`, memoized per worker thread across states: the walk is a
-    /// function of the code (`bar_cfg`), the pc, `bit` and the values it read, so an earlier
-    /// walk from the same pc applies to every thread reading the same values there.
+    /// `thread_may_arrive_walk` through the process-wide walk cache (`WALK_CACHE`): an earlier
+    /// walk applies to every thread whose key and reads agree with it. A walk's result depends
+    /// only on:
+    /// - the machine's static parts: of the `BarCfg` `reach`, `succ`, `dsts` and `regid` (also
+    ///   through `bar_mw`, `bar_uw`), of the kernel its front and each instruction's guard and
+    ///   operation (also through `bar_uw`). `walk_id` gives equal identities only to machines
+    ///   equal in all of these (`walk_same`: the whole `BarCfg`);
+    /// - the thread's pc, `bit`, `cut` and `bar_values()` (read once per query);
+    /// - the values `bar_read(t, key)` it read. Everything per state or per thread that a walk
+    ///   uses comes through these, recorded in `reads`: registers, predicates (E-CLOCK's
+    ///   forced predicate included), special registers and constant-bank values (the launch,
+    ///   its cluster shape), warp convergence (`BarKey::Conv`, `BarKey::Uni`). Except a PTX
+    ///   walk's `BarKey::Conv`, not recorded: only uniform registers (UR / UP) depend on it,
+    ///   and the PTX front has none.
+    ///
+    /// No learned footprint, round, model switch (E-POLL-ANY, peeks, leader policy, the GB300
+    /// profile) or time enters a walk otherwise; `VDEPTH` and `VSTATES` are constants. A
+    /// failed read is recorded as 0 and matches only `Some(0)`, as in the per-call memos; a
+    /// walk that read nothing there is valid for any value. Within one launch reads of one key
+    /// at one pc fail alike for every thread there, except constant-bank reads of the cluster
+    /// table, whose values are never 0 (`Machine::cbank`); so a cached result is the walk's
+    /// own for every thread it matches. A later check of the process whose kernel has the same
+    /// walk identity and another parameter layout can read 0 where a cached walk's read
+    /// failed: it reuses that walk, which knew less (conservative).
     /// `cut`: all-thread barriers (`BarCfg::cut`) at which a walked path stops when the thread
     /// arrives there (E-BAR-CUT; 0: none).
     fn thread_may_arrive_c(
@@ -3506,59 +3808,83 @@ impl Machine {
         reads: &mut Vec<BarRead>,
         wc: &WarpReads,
     ) -> bool {
-        // Keyed by the address of `bar_cfg`; each entry holds a weak reference to it, so the
-        // address is not reused by another machine's `BarCfg` (another kernel: its walks and
-        // registers differ) while the entry exists.
-        type Walks = HashMap<
-            (usize, u32, u32, u32, bool),
-            (std::sync::Weak<BarCfg>, Vec<(Vec<BarRead>, bool)>),
-        >;
-        thread_local! {
-            static WALKS: std::cell::RefCell<Walks> = Default::default();
-        }
-        let key = (
-            Arc::as_ptr(&self.bar_cfg) as usize,
-            self.threads[t].pc,
-            bit,
-            cut,
-            bar_values(),
-        );
-        let hit = WALKS.with(|w| {
-            w.borrow().get(&key).and_then(|(_, es)| {
-                es.iter()
-                    .find(|(rs, _)| rs.iter().all(|r| self.bar_read_c(t, &r.0, wc) == Some(r.1)))
-                    .cloned()
-            })
-        });
-        if let Some((rs, may)) = hit {
+        self.thread_may_arrive_v(t, bit, cut, bar_values(), reads, wc)
+    }
+
+    /// `thread_may_arrive_c` with `values` (`bar_values()`) given.
+    fn thread_may_arrive_v(
+        &self,
+        t: usize,
+        bit: u32,
+        cut: u32,
+        values: bool,
+        reads: &mut Vec<BarRead>,
+        wc: &WarpReads,
+    ) -> bool {
+        self.thread_may_arrive_in(&WALK_CACHE, t, bit, cut, values, reads, wc)
+    }
+
+    /// `thread_may_arrive_v` through walk cache `cache` (the process's `WALK_CACHE`; a test
+    /// that shrinks the budget uses one of its own, which no other test shares).
+    #[allow(clippy::too_many_arguments)]
+    fn thread_may_arrive_in(
+        &self,
+        cache: &WalkCache,
+        t: usize,
+        bit: u32,
+        cut: u32,
+        values: bool,
+        reads: &mut Vec<BarRead>,
+        wc: &WarpReads,
+    ) -> bool {
+        let key = (self.walk_id(), self.threads[t].pc, bit, cut, values);
+        let hit = cache
+            .shard(&key)
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .map
+            .get(&key)
+            .and_then(|tr| tr.find(self, t, wc));
+        if let Some((may, rs)) = hit {
             *reads = rs;
             return may;
         }
-        let may = self.thread_may_arrive_walk(t, bit, cut, bar_values(), reads);
+        let may = self.thread_may_arrive_walk(t, bit, cut, values, reads);
         // One entry per value read (a walk reads the same register on many paths).
-        let mut seen_k: Vec<BarKey> = Vec::new();
-        reads.retain(|(k, _)| {
-            if seen_k.contains(k) {
-                false
-            } else {
-                seen_k.push(k.clone());
-                true
-            }
-        });
-        WALKS.with(|w| {
-            let mut w = w.borrow_mut();
-            if w.len() > 1 << 16 {
-                w.clear();
-            }
-            let (_, es) = w
-                .entry(key)
-                .or_insert_with(|| (Arc::downgrade(&self.bar_cfg), Vec::new()));
-            if es.len() >= 64 {
-                es.remove(0);
-            }
-            es.push((reads.clone(), may));
-        });
+        let mut seen_k: HashSet<BarKey, BuildHasherDefault<WalkHasher>> = HashSet::default();
+        reads.retain(|(k, _)| !seen_k.contains(k) && seen_k.insert(k.clone()));
+        cache.add(key, reads, may);
         may
+    }
+
+    /// The walk identity of this machine's `BarCfg` and kernel (`walk_intern`), remembered per
+    /// thread for the last few pairs (pinned by weak references, as in `WalkIds`).
+    fn walk_id(&self) -> u64 {
+        type Last = Vec<(
+            std::sync::Weak<BarCfg>,
+            std::sync::Weak<ptxv_ir::Kernel>,
+            u64,
+        )>;
+        thread_local! {
+            static LAST: std::cell::RefCell<Last> = const { std::cell::RefCell::new(Vec::new()) };
+        }
+        let (c, k) = (Arc::as_ptr(&self.bar_cfg), Arc::as_ptr(&self.k));
+        let hit = LAST.with_borrow(|v| {
+            v.iter()
+                .find(|e| std::ptr::eq(e.0.as_ptr(), c) && std::ptr::eq(e.1.as_ptr(), k))
+                .map(|e| e.2)
+        });
+        if let Some(id) = hit {
+            return id;
+        }
+        let id = walk_intern(&self.bar_cfg, &self.k);
+        LAST.with_borrow_mut(|v| {
+            if v.len() >= 4 {
+                v.remove(0);
+            }
+            v.push((Arc::downgrade(&self.bar_cfg), Arc::downgrade(&self.k), id));
+        });
+        id
     }
 
     fn thread_may_arrive_walk(
@@ -4027,19 +4353,23 @@ impl Machine {
         let ucur = |r: &Reg| self.bar_ucur(r, conv, &uw);
         let mut unknown: Vec<Reg> = Vec::new();
         loop {
-            let mut seen: HashSet<(usize, Env, REnv)> = HashSet::new();
+            let mut seen: HashSet<(usize, Env, REnv), BuildHasherDefault<WalkHasher>> =
+                HashSet::default();
             let mut stack: Vec<(usize, Env, REnv)> =
                 vec![(self.threads[t].pc as usize, vec![], vec![])];
             let mut used: Vec<Reg> = Vec::new();
-            let mut written: HashSet<Reg> = HashSet::new();
+            let mut written: HashSet<Reg, BuildHasherDefault<WalkHasher>> = HashSet::default();
             let mut hit = false;
-            while let Some((pc, env, renv)) = stack.pop() {
-                if pc >= cfg.reach.len() || cfg.reach[pc] & bit == 0 {
+            while let Some(st) = stack.pop() {
+                if st.0 >= cfg.reach.len() || cfg.reach[st.0] & bit == 0 {
                     continue;
                 }
-                if !seen.insert((pc, env.clone(), renv.clone())) {
+                // Most states popped were seen: test before storing (a state is stored once
+                // processed, below; nothing in between pops another).
+                if seen.contains(&st) {
                     continue;
                 }
+                let (pc, env, renv) = st;
                 let i = &self.k.code[pc];
                 // A value operand: from the path's environment, a thread constant (recorded
                 // in `reads`, as the walk's result depends on it), or a register the walked
@@ -4108,6 +4438,7 @@ impl Machine {
                 if guard == Some(true)
                     && matches!(&i.op, Op::BarSync { id: Val::Imm(v), .. } if *v < 32 && cut >> v & 1 == 1)
                 {
+                    seen.insert((pc, env, renv));
                     continue;
                 }
                 let mut next = env.clone();
@@ -4211,12 +4542,14 @@ impl Machine {
                     (Some(true), Op::Bra { target, .. }) => stack.push((*target, next, rnext)),
                     (Some(true), _) => {}
                     (Some(false), _) => stack.push((pc + 1, next, rnext)),
-                    (None, _) => stack.extend(
-                        cfg.succ[pc]
-                            .iter()
-                            .map(|&q| (q, next.clone(), rnext.clone())),
-                    ),
+                    (None, _) => {
+                        if let Some((&last, rest)) = cfg.succ[pc].split_last() {
+                            stack.extend(rest.iter().map(|&q| (q, next.clone(), rnext.clone())));
+                            stack.push((last, next, rnext));
+                        }
+                    }
                 }
+                seen.insert((pc, env, renv));
             }
             if hit {
                 return true;
@@ -6542,6 +6875,11 @@ fn explore_one_model(
     let arv_over = Arc::new(std::sync::atomic::AtomicU8::new(net.is_some() as u8));
     m0.arv_over = Some(arv_over.clone());
     let mut prev: Option<Verdict> = None;
+    // E-BAR-OVER's walk cache: the seed threads and each round's workers walk on private
+    // copies of `m0`'s static parts (`Machine::private_statics`). Known while `m0` lives, its
+    // walk identity outlives each copy, so their walks stay cached and shared from the seeds
+    // to the last round (`walk_intern` drops the walks of identities no machine has).
+    let _ = m0.walk_id();
     // A budget that stopped the seed walks makes the verdict incomplete, with their note,
     // whatever the rounds do: a cut seed set is never taken as complete. Multi-node: the
     // walks run unbounded, as the rounds do (`dist` applies only the state cap).
@@ -7381,6 +7719,12 @@ fn explore_round(
     let complete = !search.stop.load(Ordering::Relaxed);
     let terminal = search.terminal.load(Ordering::Relaxed);
     let states = search.states.load(Ordering::Relaxed);
+    if search.stats {
+        let (bytes, peak, keys, evictions) = walk_cache_stats();
+        eprintln!(
+            "STAT walk cache: {keys} keys, {bytes} bytes (peak {peak}), {evictions} evictions"
+        );
+    }
     let found = search.found.into_inner().unwrap();
     let mut v = Verdict {
         notes: if complete {
@@ -8691,12 +9035,13 @@ impl LaWarp {
         let Some(r) = p.reg else {
             return Av::K(!p.neg as u64);
         };
+        // A `.SIGN` register reads its bit 31 (`Reg::pred_bit`).
         match self.get(m, c, r) {
-            Av::K(v) => Av::K(((v != 0) ^ p.neg) as u64),
+            Av::K(v) => Av::K((r.pred_bit(v) ^ p.neg) as u64),
             Av::L(j) => {
                 let v = self.lv[j as usize]
                     .iter()
-                    .map(|&x| ((x != 0) ^ p.neg) as u64)
+                    .map(|&x| (r.pred_bit(x) ^ p.neg) as u64)
                     .collect();
                 self.mk(v)
             }
@@ -10330,12 +10675,13 @@ mod bar_cut_tests {
 mod walk_cache_tests {
     use super::*;
 
-    /// E-BAR-OVER / E-BAR-ARRIVE's per-thread walk caches (`thread_may_arrive`, the region
-    /// dataflow) are keyed by the address of a machine's `BarCfg`. Once that machine is
-    /// dropped, a later machine on the same thread (another case, variant or front) could get
-    /// the same address and read walks of another kernel: registers it does not have (an
-    /// index out of bounds in `Machine::rd`) or a wrong arrival bound. The cache entries pin
-    /// the address while they exist.
+    /// E-BAR-OVER's walk cache keys a machine's walks by the identity of its `BarCfg` and
+    /// kernel (`Machine::walk_id`), found by their addresses. Once that machine is dropped, a
+    /// later machine (another case, variant or front) could get the same addresses and read
+    /// walks of another kernel: registers it does not have (an index out of bounds in
+    /// `Machine::rd`) or a wrong arrival bound. The identity table and the per-thread identity
+    /// memo pin both addresses while they hold them; so do the region dataflow caches
+    /// (`bar_mw`, `bar_uw`) for the `BarCfg`.
     #[test]
     fn walk_cache_entries_pin_their_key() {
         let dir =
@@ -10353,11 +10699,725 @@ mod walk_cache_tests {
         let mut reads = Vec::new();
         let _ = m.thread_may_arrive(0, 2, 0, &mut reads);
         let key = Arc::as_ptr(&m.bar_cfg) as usize;
+        let kkey = Arc::as_ptr(&m.k) as usize;
+        let kc = (*m.k).clone();
         drop(m);
         let fresh: Vec<Arc<BarCfg>> = (0..256).map(|_| Arc::new(BarCfg::default())).collect();
         assert!(
             fresh.iter().all(|b| Arc::as_ptr(b) as usize != key),
             "a new BarCfg took the address the walk cache is keyed by"
         );
+        let fresh: Vec<Arc<ptxv_ir::Kernel>> = (0..256).map(|_| Arc::new(kc.clone())).collect();
+        assert!(
+            fresh.iter().all(|b| Arc::as_ptr(b) as usize != kkey),
+            "a new kernel took the address the walk cache is keyed by"
+        );
+    }
+
+    fn machine(case: &str, variant: &str) -> Machine {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures")
+            .join(case);
+        let case = ptxv_case::Case::load(&dir).unwrap();
+        let ptx = case.variant_ptx(variant).unwrap();
+        let k = ptxv_ptx::parse_kernel(&ptx, Some(&case.m.entry)).unwrap();
+        let launch = crate::build_launch(&case, &k).unwrap();
+        Machine::new(Arc::new(k), Arc::new(launch))
+    }
+
+    /// fixtures/e_barwalk `variant` (PTX) once producer warps 4 and 5 took one step each: the
+    /// walk with values knows warp 4 exits (`w - 4 <= 1`); warp 5 exits in good and arrives
+    /// at `bar.sync 1, 128` in BW1 (`w - 4 <= 0`).
+    fn producers(variant: &str) -> Machine {
+        let mut m = machine("e_barwalk", variant);
+        for w in [4u32, 5] {
+            let acts = m.actions();
+            let (a, _) = acts
+                .iter()
+                .find(|(a, _)| matches!(a, Action::Split { warp, .. } if *warp == w))
+                .expect("a producer step")
+                .clone();
+            m.apply(&a);
+        }
+        assert_eq!(m.threads[128].pc, m.threads[160].pc, "producers at one pc");
+        m
+    }
+
+    /// Thread `t`'s answer through the walk cache.
+    fn cached(m: &Machine, t: usize, bit: u32, cut: u32, values: bool) -> bool {
+        let mut reads = Vec::new();
+        m.thread_may_arrive_v(t, bit, cut, values, &mut reads, &WarpReads::default())
+    }
+
+    /// Thread `t`'s answer by a walk of its own.
+    fn walked(m: &Machine, t: usize, bit: u32, cut: u32, values: bool) -> bool {
+        let mut reads = Vec::new();
+        m.thread_may_arrive_walk(t, bit, cut, values, &mut reads)
+    }
+
+    /// E-BAR-OVER's walk cache returns a walk's result only for threads whose values agree
+    /// with every value it read, under its pc, barrier bits and value tracking, and for
+    /// machines whose static parts agree with its machine's in everything a walk reads
+    /// (`walk_same`): each query below, through the cache and in both orders, agrees with a
+    /// walk of its own, and the pairs differ in exactly one of those. Fails when the cache
+    /// skips re-reading a recorded value, or leaves the pc, `bit` or `bar_values()` out of its
+    /// key, or when the walk identity ignores the kernel's operations or guards or the
+    /// `BarCfg`, or the per-thread identity memo ignores the kernel.
+    #[test]
+    fn walk_cache_keys_every_input_of_a_walk() {
+        let bw1 = producers("BW1");
+        let good = producers("good");
+        // Reads: warp 4 exits, warp 5 arrives (BW1), at one pc, in one machine.
+        let reads = [
+            (&bw1, 128usize, 2u32, true, false),
+            (&bw1, 160, 2, true, true),
+        ];
+        // Barrier bits: warp 5 arrives at barrier 1 (bit 2), not at barrier 2 (no site).
+        let bits = [
+            (&bw1, 160usize, 2u32, true, true),
+            (&bw1, 160, 4, true, false),
+        ];
+        // Pcs: the same thread past the exit branch (it only stores and returns), reading
+        // nothing there.
+        let mut done = bw1.clone();
+        let exit = (0..bw1.k.code.len())
+            .rev()
+            .find_map(|pc| match bw1.k.code[pc].op {
+                ptxv_ir::Op::Bra { target, .. } if !bw1.k.code[pc].guard.is_always() => {
+                    Some(target)
+                }
+                _ => None,
+            })
+            .expect("the exit branch");
+        done.threads[160].make_mut().pc = exit as u32;
+        let pcs = [
+            (&bw1, 160usize, 2u32, true, true),
+            (&done, 160, 2, true, false),
+        ];
+        // Values: warp 4 exits only by the value of `w - 4`.
+        let vals = [
+            (&good, 128usize, 2u32, true, false),
+            (&good, 128, 2, false, true),
+        ];
+        // Operations: good and BW1 differ in the exit test's immediate, not in their `BarCfg`.
+        assert!(
+            *good.bar_cfg == *bw1.bar_cfg,
+            "good and BW1 share their BarCfg"
+        );
+        let ops = [
+            (&good, 160usize, 2u32, true, false),
+            (&bw1, 160, 2, true, true),
+        ];
+        // Guards: good with the exit branch's guard negated (warp 5 falls through to
+        // `bar.sync`), the same `BarCfg`.
+        let mut flip = good.clone();
+        let mut k = (*good.k).clone();
+        let br = (0..k.code.len())
+            .rev()
+            .find(|&pc| {
+                matches!(k.code[pc].op, ptxv_ir::Op::Bra { .. }) && !k.code[pc].guard.is_always()
+            })
+            .expect("the exit branch");
+        k.code[br].guard.neg = !k.code[br].guard.neg;
+        flip.k = Arc::new(k);
+        let guards = [
+            (&good, 160usize, 2u32, true, false),
+            (&flip, 160, 2, true, true),
+        ];
+        // The `BarCfg`: BW1 without control-flow successors (the walk cannot leave the
+        // thread's pc), the same kernel.
+        let mut none = bw1.clone();
+        let mut c = (*bw1.bar_cfg).clone();
+        c.succ.iter_mut().for_each(|s| s.clear());
+        none.bar_cfg = Arc::new(c);
+        let cfgs = [
+            (&bw1, 160usize, 2u32, true, true),
+            (&none, 160, 2, true, false),
+        ];
+        for (name, pair) in [
+            ("reads", reads),
+            ("pcs", pcs),
+            ("bits", bits),
+            ("values", vals),
+            ("operations", ops),
+            ("guards", guards),
+            ("BarCfg", cfgs),
+        ] {
+            for order in [[0, 1], [1, 0]] {
+                for i in order {
+                    let (m, t, bit, values, want) = pair[i];
+                    assert_eq!(walked(m, t, bit, 0, values), want, "{name}: walk {i}");
+                    assert_eq!(cached(m, t, bit, 0, values), want, "{name}: cached {i}");
+                }
+            }
+        }
+    }
+
+    /// The register-id walk (`thread_may_arrive_walk_regs`) through the walk cache:
+    /// fixtures/e_fa4_warp_roles prefix_stats (PTX), softmax warps 0 and 1 at
+    /// `bar.arrive %r16, 64` with `%r16` = 2 + warp. For barrier 2 warp 0 arrives and warp 1
+    /// (id 3) does not; each query, through the cache in both orders, agrees with a walk of
+    /// its own.
+    #[test]
+    fn walk_cache_keys_register_barrier_ids() {
+        let mut m = machine("e_fa4_warp_roles", "prefix_stats");
+        assert!(m.bar_cfg.regid);
+        let at = |m: &Machine, t: usize| {
+            matches!(
+                m.k.code[m.threads[t].pc as usize].op,
+                ptxv_ir::Op::BarSync {
+                    id: ptxv_ir::Val::Reg(..),
+                    ..
+                }
+            )
+        };
+        for _ in 0..100_000 {
+            if at(&m, 0) && at(&m, 32) {
+                break;
+            }
+            let acts = m.actions();
+            let (a, _) = acts
+                .iter()
+                .find(|(a, _)| match a {
+                    Action::Split { warp, .. } => !(*warp < 2 && at(&m, *warp as usize * 32)),
+                    _ => true,
+                })
+                .expect("a step")
+                .clone();
+            m.apply(&a);
+        }
+        assert!(at(&m, 0) && at(&m, 32), "softmax warps at bar.arrive %r16");
+        assert_eq!(m.threads[0].pc, m.threads[32].pc);
+        for order in [[0usize, 32], [32, 0]] {
+            for t in order {
+                let want = t == 0;
+                assert_eq!(walked(&m, t, 4, 0, true), want, "t{t}: walk");
+                assert_eq!(cached(&m, t, 4, 0, true), want, "t{t}: cached");
+            }
+        }
+    }
+
+    /// E-BAR-CUT's `cut` is part of the walk cache's key: in fixtures/e_barcut good, once
+    /// warps 2 and 3 wait at the all-thread barrier (barrier 1), a thread of warp 2 cannot
+    /// arrive at barrier 2 with the cut (its paths stop at barrier 1) and can without it.
+    #[test]
+    fn walk_cache_keys_the_cut() {
+        let mut m = machine("e_barcut", "good");
+        let at1 = |m: &Machine, w: u32| {
+            m.threads.iter().any(|t| {
+                t.warp == w
+                    && t.st == St::Run
+                    && matches!(
+                        m.k.code[t.pc as usize].op,
+                        ptxv_ir::Op::BarSync {
+                            id: ptxv_ir::Val::Imm(1),
+                            ..
+                        }
+                    )
+            })
+        };
+        for w in [2u32, 3] {
+            for _ in 0..1000 {
+                if at1(&m, w) {
+                    break;
+                }
+                let acts = m.actions();
+                let (a, _) = acts
+                    .iter()
+                    .find(|(a, _)| matches!(a, Action::Split { warp, .. } if *warp == w))
+                    .expect("a step of the warp")
+                    .clone();
+                m.apply(&a);
+            }
+            assert!(at1(&m, w), "warp {w} at barrier 1");
+        }
+        let t = 64;
+        let cut = m.bar_cfg.cut & !4;
+        assert_eq!(cut, 2);
+        for order in [[cut, 0], [0, cut]] {
+            for c in order {
+                assert_eq!(walked(&m, t, 4, c, true), c == 0, "cut {c}: walk");
+                assert_eq!(cached(&m, t, 4, c, true), c == 0, "cut {c}: cached");
+            }
+        }
+    }
+
+    /// The walk cache under a tiny byte budget (every addition empties a shard) and from
+    /// several threads at once: every answer still agrees with a walk of its own. The caches
+    /// are the test's own (`thread_may_arrive_in`): a tiny budget on the process's cache would
+    /// turn the wrong hits other tests look for into misses while they run.
+    #[test]
+    fn walk_cache_answers_survive_eviction_and_sharing() {
+        let ms = [producers("good"), producers("BW1")];
+        let queries: Vec<(usize, usize, bool)> = (0..2)
+            .flat_map(|i| (128..192).flat_map(move |t| [(i, t, true), (i, t, false)]))
+            .collect();
+        let want: Vec<bool> = queries
+            .iter()
+            .map(|&(i, t, v)| walked(&ms[i], t, 2, 0, v))
+            .collect();
+        let ask = |c: &WalkCache, (i, t, v): (usize, usize, bool)| {
+            let mut reads = Vec::new();
+            ms[i].thread_may_arrive_in(c, t, 2, 0, v, &mut reads, &WarpReads::default())
+        };
+        let tiny = WalkCache::new(1);
+        for (q, w) in queries.iter().zip(&want) {
+            assert_eq!(ask(&tiny, *q), *w, "evicting: {q:?}");
+        }
+        assert!(
+            tiny.evictions.load(Ordering::Relaxed) > 0,
+            "the budget evicts"
+        );
+        let shared = WalkCache::new(512 << 20);
+        std::thread::scope(|s| {
+            for k in 0..8 {
+                let (queries, want, shared, ask) = (&queries, &want, &shared, &ask);
+                s.spawn(move || {
+                    for j in 0..queries.len() {
+                        let q = queries[(j + 17 * k) % queries.len()];
+                        let w = want[(j + 17 * k) % queries.len()];
+                        assert_eq!(ask(shared, q), w, "shared: {q:?}");
+                    }
+                });
+            }
+        });
+        assert_eq!(shared.evictions.load(Ordering::Relaxed), 0);
+    }
+
+    /// A machine of one CTA of `block` threads running kernel `k`.
+    fn launched(k: ptxv_ir::Kernel, block: u32) -> Machine {
+        let case = ptxv_case::Case {
+            dir: Default::default(),
+            m: serde_json::from_value(serde_json::json!({
+                "name": "walk-cache", "description": "walk cache unit test", "entry": "k",
+                "grid": [1, 1, 1], "block": [block, 1, 1], "outputs": ["out"], "params": [],
+                "buffers": [{"name": "out", "dtype": "u32", "shape": [1], "init": "zeros"}],
+                "variants": []
+            }))
+            .unwrap(),
+        };
+        let launch = crate::build_launch(&case, &k).unwrap();
+        Machine::new(Arc::new(k), Arc::new(launch))
+    }
+
+    /// One warp running PTX `body` (registers `%r0`..`%r7`, `%p0`..`%p3`) as kernel `k`.
+    fn ptx(body: &str) -> Machine {
+        let ptx = format!(
+            ".version 9.0\n.target sm_103a\n.address_size 64\n.visible .entry k()\n{{\n    \
+             .reg .b32 %r<8>;\n    .reg .pred %p<4>;\n{body}}}\n"
+        );
+        launched(ptxv_ptx::parse_kernel(&ptx, Some("k")).unwrap(), 32)
+    }
+
+    /// One warp running SASS listing `body` (each instruction with a zero control word).
+    fn sass(body: &str) -> Machine {
+        let mut text = String::from(".text.k:\n");
+        for l in body.lines() {
+            text.push_str(l);
+            text.push('\n');
+            if l.trim_start().starts_with("/*") {
+                text.push_str("        /* 0x000fc00000000000 */\n");
+            }
+        }
+        launched(
+            ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).unwrap(),
+            32,
+        )
+    }
+
+    /// Thread `b.1`'s answer from a trie holding only thread `a.1`'s walk, its reads one per
+    /// key as `thread_may_arrive_v` adds them (`None`: no match). The check that a walk records
+    /// a read: through the shared cache a query mostly finds its own earlier entry.
+    fn reused(a: (&Machine, usize), b: (&Machine, usize), bit: u32) -> Option<bool> {
+        let mut reads = Vec::new();
+        let may = a.0.thread_may_arrive_walk(a.1, bit, 0, true, &mut reads);
+        let mut seen = HashSet::new();
+        reads.retain(|(k, _)| seen.insert(k.clone()));
+        let mut tr = WalkTrie::default();
+        tr.insert(&reads, may);
+        tr.find(b.0, b.1, &WarpReads::default()).map(|e| e.0)
+    }
+
+    /// Queries `qs` (machine, thread, answer) for barrier 1 differ only in one value a walk
+    /// reads: each agrees with a walk of its own, through the walk cache in both orders and
+    /// from a trie holding the other's walk.
+    fn agree(qs: [(&Machine, usize, bool); 2]) {
+        for order in [[0, 1], [1, 0]] {
+            for i in order {
+                let (m, t, want) = qs[i];
+                assert_eq!(walked(m, t, 2, 0, true), want, "query {i}: walk");
+                assert_eq!(cached(m, t, 2, 0, true), want, "query {i}: cached");
+                let (o, u, _) = qs[1 - i];
+                assert!(
+                    reused((o, u), (m, t), 2).is_none_or(|v| v == want),
+                    "query {i}: the other's walk"
+                );
+            }
+        }
+    }
+
+    /// The register-id walk (`thread_may_arrive_walk_regs`) records the source it reads for a
+    /// register set on the walked path (`REnv`): threads 1 and 2 at `mov.u32 %r1, %tid.x`
+    /// before `bar.sync %r1`. Thread 1 arrives at barrier 1, thread 2 at barrier 2 only.
+    /// Fails when the walk leaves that read of `%tid.x` out of its reads.
+    #[test]
+    fn walk_cache_keys_a_tracked_registers_source() {
+        let m = ptx("    mov.u32 %r1, %tid.x;\n    bar.sync %r1;\n    ret;\n");
+        assert!(m.bar_cfg.regid);
+        agree([(&m, 1, true), (&m, 2, false)]);
+    }
+
+    /// The plain walk records a SETP operand it reads (a register the walked region does not
+    /// write): threads 1 and 2 at `setp.eq.u32 %p1, %r1, 1` with `%r1` = `%tid.x`. Thread 1
+    /// branches past `bar.sync 1`, thread 2 arrives there. Fails when the walk leaves that
+    /// read out of its reads.
+    #[test]
+    fn walk_cache_keys_a_setp_operand() {
+        let mut m = ptx(concat!(
+            "    mov.u32 %r1, %tid.x;\n",
+            "    setp.eq.u32 %p1, %r1, 1;\n",
+            "    @%p1 bra DONE;\n",
+            "    bar.sync 1;\n",
+            "DONE:\n",
+            "    ret;\n",
+        ));
+        assert!(!m.bar_cfg.regid);
+        // Every lane past the MOV (a step of the warp runs on to the branch).
+        let r1 = match &m.k.code[0].op {
+            ptxv_ir::Op::Mov { d, .. } => *d,
+            op => panic!("not the MOV: {op:?}"),
+        };
+        for t in 0..32 {
+            m.wr(t, r1, t as u64, 1);
+            m.threads[t].make_mut().pc = 1;
+        }
+        assert!(matches!(m.k.code[1].op, ptxv_ir::Op::Setp { .. }));
+        agree([(&m, 1, false), (&m, 2, true)]);
+    }
+
+    /// A SASS walk records the warp's convergence (`BarKey::Conv`): a uniform register's
+    /// value is used only while every live lane of the warp is at the thread's pc. Thread 0
+    /// at `ISETP.NE.U32.AND P0, PT, RZ, UR4, PT` (UR4 = 7) before `@P0 BRA` past
+    /// `BAR.SYNC 0x1`: with the warp converged the walk knows the branch is taken; with lane
+    /// 31 elsewhere (a machine with the same kernel, no other value differs) it cannot know
+    /// UR4, and the thread may arrive. Fails when the walk leaves the convergence read out
+    /// of its reads.
+    #[test]
+    fn walk_cache_keys_the_warps_convergence() {
+        let mut a = sass(
+            "
+        /*0000*/                   ISETP.NE.U32.AND P0, PT, RZ, UR4, PT ;
+        /*0010*/               @P0 BRA `(.L_x_1) ;
+        /*0020*/                   BAR.SYNC.DEFER_BLOCKING 0x1 ;
+.L_x_1:
+        /*0030*/                   EXIT ;
+",
+        );
+        let ur4 = ptxv_ir::Reg {
+            file: ptxv_ir::File::UR,
+            idx: 4,
+        };
+        a.wr(0, ur4, 7, 1);
+        let exit = (0..a.k.code.len())
+            .find(|&pc| matches!(a.k.code[pc].op, ptxv_ir::Op::Exit))
+            .expect("the exit");
+        let mut b = a.clone();
+        b.threads[31].make_mut().pc = exit as u32;
+        assert_eq!(a.bar_read(0, &BarKey::Conv), Some(1));
+        assert_eq!(b.bar_read(0, &BarKey::Conv), Some(0));
+        agree([(&a, 0, false), (&b, 0, true)]);
+    }
+
+    /// The register-id walk records a guard predicate it reads (one set before the walk
+    /// starts: the thread's value): threads 1 and 2 at `@%p1 bra` past `bar.sync %r2` (`%r2`
+    /// = 1), `%p1` true in thread 1 only. Thread 1 branches past the barrier, thread 2 arrives.
+    /// Fails when the walk leaves that read out of its reads.
+    #[test]
+    fn walk_cache_keys_a_register_id_walks_predicate() {
+        let mut m = ptx(concat!(
+            "    mov.u32 %r2, 1;\n",
+            "    setp.eq.u32 %p1, %r1, 1;\n",
+            "    @%p1 bra DONE;\n",
+            "    bar.sync %r2;\n",
+            "DONE:\n",
+            "    ret;\n",
+        ));
+        assert!(m.bar_cfg.regid);
+        let r2 = match &m.k.code[0].op {
+            ptxv_ir::Op::Mov { d, .. } => *d,
+            op => panic!("not the MOV: {op:?}"),
+        };
+        assert!(matches!(m.k.code[2].op, ptxv_ir::Op::Bra { .. }));
+        let p1 = m.k.code[2].guard.reg.expect("the branch's guard");
+        for t in 0..32 {
+            m.wr(t, r2, 1, 1);
+            m.wr(t, p1, (t == 1) as u64, 1);
+            m.threads[t].make_mut().pc = 2;
+        }
+        agree([(&m, 1, false), (&m, 2, true)]);
+    }
+
+    /// The plain walk records R2UR's warp-uniformity read (`BarKey::Uni`): with values, an R2UR
+    /// of a register every live lane holds alike gives the uniform register that value. Thread
+    /// 0 at `R2UR UR4, R2` (R2 = R3 = 7) before `ISETP.EQ.U32.AND P0, PT, R3, UR4, PT` and `@P0
+    /// BRA` past `BAR.SYNC 0x1`: with every lane's R2 equal the walk knows the branch is taken;
+    /// with lane 31's R2 = 8 (a machine with the same kernel, the warp still converged, thread
+    /// 0's values the same) it cannot know UR4, and the thread may arrive. Fails when the walk
+    /// leaves the uniformity read out of its reads.
+    #[test]
+    fn walk_cache_keys_an_r2urs_uniformity() {
+        let mut a = sass(
+            "
+        /*0000*/                   R2UR UR4, R2 ;
+        /*0010*/                   ISETP.EQ.U32.AND P0, PT, R3, UR4, PT ;
+        /*0020*/               @P0 BRA `(.L_x_1) ;
+        /*0030*/                   BAR.SYNC.DEFER_BLOCKING 0x1 ;
+.L_x_1:
+        /*0040*/                   EXIT ;
+",
+        );
+        let src = match &a.k.code[0].op {
+            ptxv_ir::Op::R2Ur { a, .. } => a.clone(),
+            op => panic!("not the R2UR: {op:?}"),
+        };
+        let r = |idx| ptxv_ir::Reg {
+            file: ptxv_ir::File::R,
+            idx,
+        };
+        for t in 0..32 {
+            a.wr(t, r(2), 7, 1);
+            a.wr(t, r(3), 7, 1);
+        }
+        let mut b = a.clone();
+        b.wr(31, r(2), 8, 1);
+        assert_eq!(a.bar_read(0, &BarKey::Uni(src.clone())), Some(1));
+        assert_eq!(b.bar_read(0, &BarKey::Uni(src)), Some(0));
+        assert_eq!(b.bar_read(0, &BarKey::Conv), Some(1));
+        agree([(&a, 0, false), (&b, 0, true)]);
+    }
+
+    /// Two one-warp SASS kernels: the walk from the entry forks (`BRA.DIV`, which no walk
+    /// decides) into a path that sets P0 and one that clears it, which join at `@P0 BRA` past
+    /// the rest: a straight line of 24 instructions to `BAR.SYNC {bar}`. The second kernel swaps
+    /// the paths, so in one of the two the walk meets the join first with P0 set, whichever
+    /// order it takes them in. Thread 0 arrives at barrier 1 by the path that clears P0.
+    fn joins(bar: &str) -> [Machine; 2] {
+        let isetp = |cmp: &str| format!("ISETP.{cmp}.U32.AND P0, PT, RZ, RZ, PT");
+        [("NE", "EQ"), ("EQ", "NE")].map(|(fall, taken)| {
+            let mut lines = vec![
+                "BRA.DIV UR4, `(.L_x_1)".to_string(),
+                isetp(fall),
+                "BRA `(.L_x_2)".into(),
+                ".L_x_1:".into(),
+                isetp(taken),
+                ".L_x_2:".into(),
+                "@P0 BRA `(.L_x_3)".into(),
+            ];
+            lines.extend((0..24).map(|_| "NOP".to_string()));
+            lines.extend([
+                format!("BAR.SYNC.DEFER_BLOCKING {bar}"),
+                ".L_x_3:".into(),
+                "EXIT".into(),
+            ]);
+            let mut body = String::new();
+            let mut a = 0;
+            for l in &lines {
+                if l.ends_with(':') {
+                    body += &format!("{l}\n");
+                } else {
+                    body += &format!("        /*{a:04x}*/                   {l} ;\n");
+                    a += 0x10;
+                }
+            }
+            let m = sass(&body);
+            assert_eq!(m.k.code.len(), 31, "every instruction kept");
+            m
+        })
+    }
+
+    /// The register-id walk visits every state it reaches (`joins`, barrier id R2 = 1):
+    /// thread 0 may arrive at barrier 1, not at barrier 2. Fails when the walk's state set
+    /// takes a new state as seen: a state set keyed by the pc alone (the join's second
+    /// environment), or by a hash of a few bits (by its 17th state at the latest, short of the
+    /// barrier).
+    #[test]
+    fn register_id_walk_visits_every_state() {
+        for (k, mut m) in joins("R2").into_iter().enumerate() {
+            assert!(m.bar_cfg.regid);
+            let r2 = ptxv_ir::Reg {
+                file: ptxv_ir::File::R,
+                idx: 2,
+            };
+            for t in 0..32 {
+                m.wr(t, r2, 1, 1);
+            }
+            for (bit, want) in [(2u32, true), (4, false)] {
+                assert_eq!(
+                    walked(&m, 0, bit, 0, true),
+                    want,
+                    "kernel {k} bit {bit}: walk"
+                );
+                assert_eq!(
+                    cached(&m, 0, bit, 0, true),
+                    want,
+                    "kernel {k} bit {bit}: cached"
+                );
+            }
+        }
+    }
+
+    /// The plain walk visits every state it reaches (`joins`, barrier 1): thread 0 may arrive
+    /// at barrier 1, not at barrier 2. Fails when the walk's state set is keyed by the pc
+    /// alone, or by a hash of a few bits.
+    #[test]
+    fn plain_walk_visits_every_state() {
+        for (k, m) in joins("0x1").into_iter().enumerate() {
+            assert!(!m.bar_cfg.regid);
+            for (bit, want) in [(2u32, true), (4, false)] {
+                assert_eq!(
+                    walked(&m, 0, bit, 0, true),
+                    want,
+                    "kernel {k} bit {bit}: walk"
+                );
+                assert_eq!(
+                    cached(&m, 0, bit, 0, true),
+                    want,
+                    "kernel {k} bit {bit}: cached"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod sign_pred_tests {
+    use super::*;
+
+    /// A one-warp machine of SASS listing `body` (each instruction with a zero control word),
+    /// its kernel changed by `edit` first.
+    fn machine(body: &str, edit: impl FnOnce(&mut ptxv_ir::Kernel)) -> Machine {
+        let mut text = String::from(".text.k:\n");
+        for l in body.lines() {
+            text.push_str(l);
+            text.push('\n');
+            if l.trim_start().starts_with("/*") {
+                text.push_str("        /* 0x000fc00000000000 */\n");
+            }
+        }
+        let mut k = ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+        edit(&mut k);
+        let case = ptxv_case::Case {
+            dir: Default::default(),
+            m: serde_json::from_value(serde_json::json!({
+                "name": "sign-pred", "description": "MISS 97 unit test", "entry": "k",
+                "grid": [1, 1, 1], "block": [32, 1, 1], "outputs": ["out"], "params": [],
+                "buffers": [{"name": "out", "dtype": "u32", "shape": [1], "init": "zeros"}],
+                "variants": []
+            }))
+            .unwrap(),
+        };
+        let launch = crate::build_launch(&case, &k).unwrap();
+        Machine::new(Arc::new(k), Arc::new(launch))
+    }
+
+    fn sign(file: ptxv_ir::File, idx: u16) -> ptxv_ir::Reg {
+        ptxv_ir::Reg { file, idx }
+    }
+
+    /// MISS 97, E-CONST-BRA: a branch guard reading a register known from an immediate reads
+    /// its bit 31 as a `.SIGN` predicate (the parser takes `.SIGN` in PLOP3 inputs only; the
+    /// guard is set here directly). Before, 0x40000000 folded the branch as taken.
+    #[test]
+    fn const_guard_reads_sign_bit() {
+        for (v, want) in [
+            (0x4000_0000u32, false),
+            (0x8000_0000, true),
+            (0xffff_ffff, true),
+        ] {
+            let m = machine(
+                &format!(
+                    "
+        /*0000*/                   MOV R4, {v:#x} ;
+        /*0010*/               @P0 BRA `(.L_x_1) ;
+        /*0020*/                   EXIT ;
+.L_x_1:
+        /*0030*/                   EXIT ;
+"
+                ),
+                |k| {
+                    k.code[1].guard = ptxv_ir::Pred {
+                        reg: Some(sign(ptxv_ir::File::R, 4)),
+                        neg: false,
+                    }
+                },
+            );
+            let rets = ret_table(&m.k);
+            assert_eq!(const_guards(&m, &rets)[1], Some(want), "{v:#x}");
+        }
+    }
+
+    /// MISS 97, the look-ahead (`LaWarp::pred`, guards and branch conditions): a `.SIGN`
+    /// register known uniformly or per lane is its bit 31. Before, it was nonzero.
+    #[test]
+    fn lookahead_pred_reads_sign_bit() {
+        let m = machine(
+            "
+        /*0000*/                   EXIT ;
+",
+            |_| {},
+        );
+        let mut sim = LaWarp {
+            w: 0,
+            ts: (0..32).collect(),
+            init: Default::default(),
+            lv: Vec::new(),
+            lvi: HashMap::new(),
+            work: Vec::new(),
+            waiting: Vec::new(),
+            seen: Default::default(),
+            ids: 0,
+            exec: vec![0; 1],
+            steps: 0,
+            wild: None,
+            wild_done: false,
+            cut: 0,
+            at: HashMap::new(),
+            trace: false,
+            scc: std::rc::Rc::new(la_scc(&m)),
+            loops: HashSet::new(),
+            arr_at: HashMap::new(),
+        };
+        let cfg = |r: ptxv_ir::Reg, a: Av| LaCfg {
+            pc: 0,
+            env: LaEnv(vec![(r, a)]),
+            obs: BTreeMap::new(),
+            lanes: 32,
+            body: None,
+            hist: LaHist::default(),
+        };
+        let p = |r: ptxv_ir::Reg, neg: bool| ptxv_ir::Pred { reg: Some(r), neg };
+        for file in [ptxv_ir::File::R, ptxv_ir::File::UR] {
+            let r = sign(file, 6);
+            for (v, want) in [(0x4000_0000u64, 0u64), (0x8000_0000, 1), (0, 0)] {
+                let c = cfg(r, Av::K(v));
+                assert_eq!(
+                    sim.pred(&m, &c, p(r, false)),
+                    Av::K(want),
+                    "{file:?} {v:#x}"
+                );
+                assert_eq!(
+                    sim.pred(&m, &c, p(r, true)),
+                    Av::K(want ^ 1),
+                    "{file:?} {v:#x}"
+                );
+            }
+        }
+        // Per lane: lane l holds l - 16 (negative in lanes 0..15, zero in lane 16).
+        let lanes: Vec<u64> = (0..32u32).map(|l| l.wrapping_sub(16) as u64).collect();
+        let a = sim.mk(lanes);
+        let r = sign(ptxv_ir::File::R, 6);
+        let got = sim.pred(&m, &cfg(r, a), p(r, false));
+        let want: Vec<u64> = (0..32).map(|l| (l < 16) as u64).collect();
+        assert_eq!(sim.lanes_of(got), Some(want));
     }
 }

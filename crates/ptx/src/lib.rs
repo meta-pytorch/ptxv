@@ -2122,6 +2122,8 @@ fn parse_int(s: &str) -> Option<u64> {
 struct Lower<'a> {
     regs: &'a HashMap<String, Reg>,
     wide_regs: &'a HashSet<String>,
+    /// Each register's declared type (`b8`, `u32`, `f32`, ...).
+    reg_types: &'a HashMap<String, String>,
     /// Module `.global` symbols: index into `Kernel::globals`, or why it is not modeled.
     global_syms: &'a HashMap<String, Result<u32, String>>,
     labels: &'a HashMap<String, usize>,
@@ -2603,10 +2605,43 @@ fn cvt_lp(lw: &Lower, mods: &[&str], ops: &[String]) -> Result<Option<Op>> {
             .map(|s| s.as_str())
             .ok_or_else(|| lw.err(format!("cvt: missing operand {i}")))
     };
+    // Forms ptxas 13.0 and 13.3 both reject are not lowered (T2; the cvt enumeration of 466,400
+    // lines lowered 384 of them): an f8 / f6 / f4 x2 encode takes `.rn.satfinite`, the ue8m0x2
+    // encode `.rz` / `.rp` without `.relu` (from f32 pairs or bf16x2), an `.rs` x4 encode
+    // `.satfinite`; ue8m0x2 decodes only to bf16x2, without `.relu`. ASSUME(N-CVT-LP)
+    let encode_ok = |t: Lp| match t {
+        Lp::Ue8m0 => matches!(rnd, LpRnd::Rz | LpRnd::Rp) && !relu,
+        _ => rnd == LpRnd::Rn && sat,
+    };
+    // ... nor operands of register types neither accepts (T2; 8,718 lines with other register
+    // types and immediates, 13.0 at .version 9.0 and 13.3 at .version 9.3: the front lowered
+    // 5,456 both reject). Each operand's declared type is one of `ok`, or it is an immediate
+    // where `imm`.
+    let typed = |o: &str, ok: &[&str], imm: bool| -> bool {
+        let o = o.trim();
+        match lw.reg_types.get(o) {
+            Some(t) => ok.contains(&t.as_str()),
+            None => {
+                imm && !o.starts_with('%')
+                    && !lw.regs.contains_key(o)
+                    && matches!(lw.val(o), Ok(Val::Imm(_)))
+            }
+        }
+    };
+    let class = |i: usize, ok: &[&str], imm: bool| ops.get(i).is_some_and(|o| typed(o, ok, imm));
+    const W32: &[&str] = &["b32", "u32", "s32", "f32"];
+    // An x2 code pair is a .b16 (e2m1x2: a .b8), an f32 value a .f32 / .b32 or an immediate.
+    let code2 =
+        |t: Lp| -> &'static [&'static str] { if t == Lp::E2m1 { &["b8"] } else { &["b16"] } };
+    let value = |i: usize| class(i, &["f32", "b32"], true);
     Ok(Some(match (lp(to), from) {
         // Encodes from an f32 pair: d = {a (high lane), b}.
         (Some((t, 2)), "f32")
-            if !matches!(t, Lp::F16 | Lp::Bf16) || rnd == LpRnd::Rs || rnd == LpRnd::Rn && sat =>
+            if if matches!(t, Lp::F16 | Lp::Bf16) {
+                rnd == LpRnd::Rs || rnd == LpRnd::Rn && sat
+            } else {
+                encode_ok(t) && class(0, code2(t), false) && value(1) && value(2)
+            } =>
         {
             let rs = rnd == LpRnd::Rs;
             Op::CvtPack {
@@ -2621,7 +2656,19 @@ fn cvt_lp(lw: &Lower, mods: &[&str], ops: &[String]) -> Result<Option<Op>> {
                 relu,
             }
         }
-        (Some((t, 4)), "f32") if rnd == LpRnd::Rs => {
+        // x4: a .b32 of codes (e2m1x4: a .b16) from four f32 values and .b32 random bits.
+        (Some((t, 4)), "f32")
+            if rnd == LpRnd::Rs
+                && sat
+                && class(0, &[if t == Lp::E2m1 { "b16" } else { "b32" }], false)
+                && class(2, &["b32"], false)
+                && ops.get(1).is_some_and(|v| {
+                    v.trim()
+                        .trim_matches(|c| c == '{' || c == '}')
+                        .split(',')
+                        .all(|x| typed(x, &["f32", "b32"], true))
+                }) =>
+        {
             let v: Vec<Val> = op(1)?
                 .trim()
                 .trim_matches(|c| c == '{' || c == '}')
@@ -2639,22 +2686,47 @@ fn cvt_lp(lw: &Lower, mods: &[&str], ops: &[String]) -> Result<Option<Op>> {
                 relu,
             }
         }
-        (Some((t, 2)), "f16x2" | "bf16x2") if !matches!(t, Lp::F16 | Lp::Bf16) => Op::CvtPack {
-            d: lw.dst(op(0)?)?,
-            a: lw.val(op(1)?)?,
-            b: Val::Imm(0),
-            c: Val::Imm(0),
-            half: Some(if from == "f16x2" { Lp::F16 } else { Lp::Bf16 }),
-            to: t,
-            rnd,
-            sat,
-            relu,
-        },
+        // A half pair is a .b32 (bf16x2 into e2m1x2 / ue8m0x2: any 32-bit type).
+        (Some((t, 2)), "f16x2" | "bf16x2")
+            if !matches!(t, Lp::F16 | Lp::Bf16)
+                && encode_ok(t)
+                && (t != Lp::Ue8m0 || from == "bf16x2")
+                && class(0, code2(t), false)
+                && class(
+                    1,
+                    if from == "bf16x2" && matches!(t, Lp::E2m1 | Lp::Ue8m0) {
+                        W32
+                    } else {
+                        &["b32"]
+                    },
+                    false,
+                ) =>
+        {
+            Op::CvtPack {
+                d: lw.dst(op(0)?)?,
+                a: lw.val(op(1)?)?,
+                b: Val::Imm(0),
+                c: Val::Imm(0),
+                half: Some(if from == "f16x2" { Lp::F16 } else { Lp::Bf16 }),
+                to: t,
+                rnd,
+                sat,
+                relu,
+            }
+        }
         // Decodes: d = {high code, low code} as f16x2 / bf16x2. `.satfinite` (bf16x2, ptxas
         // 13.3) maps an e5m2 +-Inf to +-0x7f7f, which CvtUnpack does not model: refused (MISS
         // 60; it was dropped, probes/cvt_lp_satfinite).
         (Some((t @ (Lp::F16 | Lp::Bf16), 2)), _) => match lp(from) {
-            Some((f, 2)) if !matches!(f, Lp::F16 | Lp::Bf16) && rnd == LpRnd::Rn && !sat => {
+            // Into a .b32 (ue8m0x2: any 32-bit type) from a code pair.
+            Some((f, 2))
+                if !matches!(f, Lp::F16 | Lp::Bf16)
+                    && rnd == LpRnd::Rn
+                    && !sat
+                    && (f != Lp::Ue8m0 || t == Lp::Bf16 && !relu)
+                    && class(0, if f == Lp::Ue8m0 { W32 } else { &["b32"] }, false)
+                    && class(1, code2(f), false) =>
+            {
                 Op::CvtUnpack {
                     d: lw.dst(op(0)?)?,
                     a: lw.val(op(1)?)?,
@@ -3144,6 +3216,9 @@ pub fn parse_kernel_for(
     // Registers declared 64 bits wide (`.reg .b64` / `.s64` / `.u64`): a signed narrower load
     // into one sign-extends to 64 bits.
     let mut wide_regs: HashSet<String> = HashSet::new();
+    // Each register's declared type: the operand classes of the narrow-format cvt forms
+    // (`cvt_lp`).
+    let mut reg_types: HashMap<String, String> = HashMap::new();
     let mut vreg_names = Vec::new();
     let mut npred = 0u16;
     let mut shared_syms = HashMap::new();
@@ -3270,6 +3345,11 @@ pub fn parse_kernel_for(
                         if matches!(toks[1], ".b64" | ".s64" | ".u64") {
                             wide_regs.insert(format!("{nm}.{c}"));
                         }
+                        let t = toks[1].trim_start_matches('.').to_string();
+                        if k == 0 {
+                            reg_types.insert(nm.to_string(), t.clone());
+                        }
+                        reg_types.insert(format!("{nm}.{c}"), t);
                         if k == 0 {
                             regs.insert(nm.to_string(), r);
                         }
@@ -3316,6 +3396,9 @@ pub fn parse_kernel_for(
                     };
                     if matches!(toks.first(), Some(&".b64" | &".s64" | &".u64")) {
                         wide_regs.insert(nm.clone());
+                    }
+                    if let Some(t) = toks.first() {
+                        reg_types.insert(nm.clone(), t.trim_start_matches('.').to_string());
                     }
                     regs.insert(nm, r);
                 }
@@ -3436,6 +3519,7 @@ pub fn parse_kernel_for(
         let mut lw = Lower {
             regs: &regs,
             wide_regs: &wide_regs,
+            reg_types: &reg_types,
             global_syms: &global_syms,
             labels: &labels,
             shared_syms: &shared_syms,
@@ -9497,6 +9581,128 @@ mod tests {
         assert_eq!(fused, 2, "{v:?}");
     }
 
+    /// One `cvt` line in a kernel that declares .b8 / .b16 / .b32 / .f32 registers (the cvt
+    /// enumeration's template).
+    fn cvt_ops(line: &str) -> Result<Vec<Op>> {
+        let src = format!(
+            ".version 9.0\n.target sm_103a\n.address_size 64\n.visible .entry k()\n{{\n\
+             .reg .b8 %c<8>;\n.reg .b16 %rs<16>;\n.reg .b32 %r<16>;\n.reg .f32 %f<16>;\n\
+             {line}\nret;\n}}\n"
+        );
+        let k = parse_kernel_for(&src, None, None)?;
+        Ok(k.code[..k.code.len() - 1]
+            .iter()
+            .map(|i| i.op.clone())
+            .collect())
+    }
+
+    #[test]
+    fn cvt_lp_forms_ptxas_rejects_refused() {
+        // T2: narrow-format forms ptxas 13.0 and 13.3 both reject (the cvt enumeration) were
+        // lowered.
+        for l in [
+            // f8 / f6 / f4 x2 encodes take `.rn.satfinite`.
+            "cvt.rz.satfinite.e4m3x2.f32 %rs5, %f1, %f2;",
+            "cvt.rn.e4m3x2.f32 %rs5, %f1, %f2;",
+            "cvt.rp.satfinite.e2m3x2.bf16x2 %rs5, %r1;",
+            "cvt.rn.relu.e5m2x2.f16x2 %rs5, %r1;",
+            "cvt.rs.e2m1x2.f32 %c5, %f1, %f2, %r9;",
+            // e2m1x2 codes are .b8 registers.
+            "cvt.rn.satfinite.e2m1x2.f32 %rs5, %f1, %f2;",
+            "cvt.rn.satfinite.e2m1x2.bf16x2 %rs5, %r1;",
+            "cvt.rn.bf16x2.e2m1x2 %r5, %rs1;",
+            // ue8m0x2: encodes `.rz` / `.rp` without `.relu`, from f32 or bf16x2; decodes to
+            // bf16x2 without `.relu`.
+            "cvt.rn.ue8m0x2.f32 %rs5, %f1, %f2;",
+            "cvt.rz.relu.ue8m0x2.f32 %rs5, %f1, %f2;",
+            "cvt.rz.ue8m0x2.f16x2 %rs5, %r1;",
+            "cvt.rn.f16x2.ue8m0x2 %r5, %rs1;",
+            "cvt.rn.relu.bf16x2.ue8m0x2 %r5, %rs1;",
+            // `.rs` x4 encodes take `.satfinite`.
+            "cvt.rs.e4m3x4.f32 %r5, {%f1, %f2, %f3, %f4}, %r9;",
+        ] {
+            assert!(cvt_ops(l).is_err(), "{l}");
+        }
+        // Forms ptxas accepts stay lowered.
+        for l in [
+            "cvt.rn.satfinite.e4m3x2.f32 %rs5, %f1, %f2;",
+            "cvt.rn.satfinite.relu.e5m2x2.f16x2 %rs5, %r1;",
+            "cvt.rn.satfinite.e2m1x2.f32 %c5, %f1, %f2;",
+            "cvt.rn.satfinite.e2m1x2.bf16x2 %c5, %r1;",
+            "cvt.rn.bf16x2.e2m1x2 %r5, %c1;",
+            "cvt.rz.satfinite.ue8m0x2.f32 %rs5, %f1, %f2;",
+            "cvt.rp.ue8m0x2.bf16x2 %rs5, %r1;",
+            "cvt.rn.bf16x2.ue8m0x2 %r5, %rs1;",
+            "cvt.rs.satfinite.e4m3x4.f32 %r5, {%f1, %f2, %f3, %f4}, %r9;",
+            "cvt.rs.relu.satfinite.e2m1x4.f32 %rs5, {%f1, %f2, %f3, %f4}, %r9;",
+            "cvt.rn.satfinite.f16x2.f32 %r5, %f1, %f2;",
+            "cvt.rs.satfinite.bf16x2.f32 %r5, %f1, %f2, %r9;",
+        ] {
+            assert!(cvt_ops(l).is_ok(), "{l}: {:?}", cvt_ops(l).err());
+        }
+    }
+
+    #[test]
+    fn cvt_lp_operand_types_ptxas_rejects_refused() {
+        // T2: narrow-format forms with operand register types both ptxas versions reject (the
+        // review's 8,718 lines: 13.0 at .version 9.0, 13.3 at .version 9.3) were lowered.
+        let ops = |line: &str| {
+            let src = format!(
+                ".version 9.0\n.target sm_103a\n.address_size 64\n.visible .entry k()\n{{\n\
+                 .reg .b8 %c<8>;\n.reg .u8 %uc<8>;\n.reg .b16 %rs<16>;\n.reg .u16 %us<8>;\n\
+                 .reg .f16 %hf<8>;\n.reg .b32 %r<16>;\n.reg .u32 %ur<8>;\n.reg .s32 %sr<8>;\n\
+                 .reg .f32 %f<16>;\n.reg .b64 %rd<16>;\n{line}\nret;\n}}\n"
+            );
+            parse_kernel_for(&src, None, None)
+        };
+        for l in [
+            // An x2 encode writes a .b16 (e2m1x2: a .b8) from .f32 / .b32 values or immediates.
+            "cvt.rn.satfinite.e4m3x2.f32 %r5, %f1, %f2;",
+            "cvt.rn.satfinite.e4m3x2.f32 %us5, %f1, %f2;",
+            "cvt.rn.satfinite.e4m3x2.f32 %rs5, %ur1, %ur2;",
+            "cvt.rn.satfinite.e2m1x2.f32 %uc5, %f1, %f2;",
+            "cvt.rz.ue8m0x2.f32 %r5, %f1, %f2;",
+            // ... or from a .b32 half pair (bf16x2 into e2m1x2 / ue8m0x2: any 32-bit type).
+            "cvt.rn.satfinite.e4m3x2.f16x2 %rs5, %ur1;",
+            "cvt.rn.satfinite.e4m3x2.f16x2 %rs5, %rs1;",
+            "cvt.rn.satfinite.e4m3x2.f16x2 %rs5, 0x3C003C00;",
+            "cvt.rz.ue8m0x2.bf16x2 %r5, %r1;",
+            // An x4 encode writes a .b32 (e2m1x4: a .b16) with .b32 random bits.
+            "cvt.rs.satfinite.e4m3x4.f32 %rs5, {%f1, %f2, %f3, %f4}, %r9;",
+            "cvt.rs.satfinite.e2m1x4.f32 %r5, {%f1, %f2, %f3, %f4}, %r9;",
+            "cvt.rs.satfinite.e4m3x4.f32 %r5, {%f1, %f2, %f3, %f4}, %ur3;",
+            "cvt.rs.satfinite.e4m3x4.f32 %r5, {%f1, %f2, %f3, %f4}, 0x12345678;",
+            // A decode reads a .b16 (e2m1x2: a .b8) into a .b32 (ue8m0x2: any 32-bit type).
+            "cvt.rn.f16x2.e4m3x2 %r5, %r1;",
+            "cvt.rn.f16x2.e4m3x2 %ur5, %rs1;",
+            "cvt.rn.f16x2.e4m3x2 %rd5, %rs1;",
+            "cvt.rn.f16x2.e4m3x2 %r5, 0x3412;",
+            "cvt.rn.f16x2.e2m1x2 %r5, %uc1;",
+            "cvt.rn.bf16x2.ue8m0x2 %rs5, %rs1;",
+        ] {
+            assert!(ops(l).is_err(), "{l}");
+        }
+        // Types some version accepts stay lowered, the CUDA 13.0 headers' scoped forms too.
+        for l in [
+            "cvt.rn.satfinite.e4m3x2.f32 %rs5, %r1, %r2;",
+            "cvt.rn.satfinite.e4m3x2.f32 %rs5, %f1, 0fC0000000;",
+            "cvt.rn.satfinite.e2m1x2.f32 %c5, 0f3F800000, %f2;",
+            "cvt.rz.ue8m0x2.bf16x2 %rs5, %ur1;",
+            "cvt.rz.ue8m0x2.bf16x2 %rs5, %f1;",
+            "cvt.rn.satfinite.e2m1x2.bf16x2 %c5, %sr1;",
+            "cvt.rs.satfinite.e4m3x4.f32 %r5, {%f1, %f2, %f3, 0f3F800000}, %r9;",
+            "cvt.rs.satfinite.e4m3x4.f32 %r5, {%r1, %r2, %r3, %r4}, %r9;",
+            "cvt.rs.satfinite.e2m1x4.f32 %rs5, {%f1, %f2, %f3, %f4}, %r9;",
+            "cvt.rn.relu.f16x2.e5m2x2 %r5, %rs1;",
+            "cvt.rn.bf16x2.ue8m0x2 %ur5, %rs1;",
+            "cvt.rn.bf16x2.ue8m0x2 %f5, %rs1;",
+            "{ .reg .b8 __$temp1; cvt.rn.satfinite.e2m1x2.f32 __$temp1, %f2, %f1; cvt.u16.u8 %rs5, __$temp1; }",
+            "{ .reg .b8 __$temp1, __$tempz; mov.b16 {__$temp1, __$tempz}, %rs1; cvt.rn.f16x2.e2m1x2 %r5, __$temp1; }",
+        ] {
+            assert!(ops(l).is_ok(), "{l}: {:?}", ops(l).err());
+        }
+    }
+
     #[test]
     fn int_arith_modifiers_refused() {
         // The integer add / sub / logic / shift arm modeled every form as the plain op of its
@@ -9598,7 +9804,8 @@ mod tests {
     #[test]
     fn cvt_modifiers_refused() {
         // The f32 -> f16 / bf16 `.rn` branches dropped `.relu` / `.satfinite`, cvt.f32.{f16,bf16}
-        // dropped `.sat`, and cvt_lp ignored unknown modifiers.
+        // dropped `.sat`, and cvt_lp ignored unknown modifiers. (Narrow-format operands have the
+        // register types ptxas accepts, which cvt_lp checks too.)
         for l in [
             "cvt.rn.relu.f16.f32 %r1, %r2;",
             "cvt.rn.satfinite.f16.f32 %r1, %r2;",
@@ -9608,23 +9815,23 @@ mod tests {
             "cvt.sat.f32.f16 %r1, %r2;",
             "cvt.sat.f32.bf16 %r1, %r2;",
             "cvt.ftz.f32.bf16 %r1, %r2;",
-            "cvt.rn.satfinite.scaled::n2::ue8m0.e4m3x2.f32 %r1, %r2, %r3;",
-            "cvt.rn.ftz.satfinite.e4m3x2.f32 %r1, %r2, %r3;",
-            "cvt.rn.rz.satfinite.e4m3x2.f32 %r1, %r2, %r3;",
+            "cvt.rn.satfinite.scaled::n2::ue8m0.e4m3x2.f32 %rs1, %f2, %f3;",
+            "cvt.rn.ftz.satfinite.e4m3x2.f32 %rs1, %f2, %f3;",
+            "cvt.rn.rz.satfinite.e4m3x2.f32 %rs1, %f2, %f3;",
         ] {
-            assert!(ops(l).is_err(), "{l}");
+            assert!(cvt_ops(l).is_err(), "{l}");
         }
         for l in [
             "cvt.rn.f16.f32 %r1, %r2;",
             "cvt.rn.bf16.f32 %r1, %r2;",
             "cvt.f32.bf16 %r1, %r2;",
             "cvt.f32.f16 %r1, %r2;",
-            "cvt.rn.satfinite.e4m3x2.f32 %r1, %r2, %r3;",
-            "cvt.rn.satfinite.relu.e5m2x2.f32 %r1, %r2, %r3;",
-            "cvt.rn.f16x2.e4m3x2 %r1, %r2;",
+            "cvt.rn.satfinite.e4m3x2.f32 %rs1, %f2, %f3;",
+            "cvt.rn.satfinite.relu.e5m2x2.f32 %rs1, %f2, %f3;",
+            "cvt.rn.f16x2.e4m3x2 %r1, %rs2;",
             "cvt.rn.satfinite.f16x2.f32 %r1, %r2, %r3;",
         ] {
-            assert!(ops(l).is_ok(), "{l}");
+            assert!(cvt_ops(l).is_ok(), "{l}: {:?}", cvt_ops(l).err());
         }
     }
 

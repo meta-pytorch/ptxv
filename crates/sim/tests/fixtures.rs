@@ -3307,6 +3307,32 @@ fn proxy_check_reports_every_uncovered_writer() {
     }
 }
 
+/// MISS 136 (fixtures/e_dpor_drain, e_dpor_drain_rf): a transition that consumes another
+/// process's pending async op (a cluster-scope release draining an in-flight remote store or
+/// st.async) disables it; DPOR backtracks the op's process there, so the schedules where the op
+/// lands on its own first are explored. `check` cross-checks DPOR against the stateful search
+/// (classes, and outputs for the race-free one).
+#[test]
+fn dpor_backtracks_a_consumed_async_op() {
+    both("e_dpor_drain", "good");
+    both("e_dpor_drain_rf", "good");
+}
+
+/// MISS 146 (fixtures/e_dpor_trap, e_dpor_nonhead): a transition that disables another
+/// process's next transition backtracks that process: a trap exits every thread (DPOR gave
+/// [trap], the stateful search [fault, trap]); a drain consumes an op behind another lane's in
+/// its remote pipe (the release backtracks the pipe although its head stays pending, counted
+/// in `dpor::NONHEAD_BACKTRACKS`). `check` cross-checks DPOR against the stateful search.
+#[test]
+fn dpor_backtracks_a_disabled_process() {
+    both("e_dpor_trap", "good");
+    let before = ptxv_sim::dpor::NONHEAD_BACKTRACKS.load(std::sync::atomic::Ordering::Relaxed);
+    both("e_dpor_nonhead", "good");
+    both("e_dpor_nonhead", "NH");
+    let after = ptxv_sim::dpor::NONHEAD_BACKTRACKS.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(after > before, "e_dpor_nonhead NH: no non-head consumed op backtracked");
+}
+
 /// One .cta_group per kernel (fixtures/e_cta_group_mix): a kernel whose tcgen05 instructions
 /// name both groups is a violation (PTX ISA, tcgen05; ptxas refuses it, so PTX only), and a
 /// commit tracks only its own group's operations (C2: the cta_group::2 commit after
@@ -3896,6 +3922,32 @@ fn sass_sign_predicate_not_a_destination() {
             "PLOP3.LUT P4, R3.SIGN, R2.SIGN, R3.SIGN, PT, 0x2, 0x0",
             false,
         ),
+    ] {
+        assert_eq!(ptxv_sass::lower_text(line, None).is_ok(), ok, "{line}");
+    }
+}
+
+/// MISS 97: `R.SIGN` / `UR.SIGN` (a register's sign bit) is a PLOP3 input only, where ptxas
+/// prints it (add.sat.s32 / sub.sat.s32); a guard, a SEL / FSEL predicate or a setp's
+/// combining predicate refuses it (before, every predicate operand took it, and readers
+/// outside `Machine::prd` read the register as nonzero).
+#[test]
+fn sass_sign_predicate_plop3_inputs_only() {
+    for (line, ok) in [
+        (
+            "PLOP3.LUT P0, PT, R2.SIGN, UR6.SIGN, R9.reuse.SIGN, 0x2, 0x0",
+            true,
+        ),
+        ("PLOP3.LUT P1, PT, !R2.SIGN, PT, PT, 0x40, 0x0", true),
+        ("SEL R9, R9, 0x7fffffff, P0", true),
+        ("SEL R9, R9, 0x7fffffff, R2.SIGN", false),
+        ("SEL R9, R9, 0x7fffffff, !UR6.SIGN", false),
+        ("FSEL R0, R1, R2, R3.SIGN", false),
+        ("ISETP.GE.AND P0, PT, R1, R2, PT", true),
+        ("ISETP.GE.AND P0, PT, R1, R2, R3.SIGN", false),
+        ("@P0 EXIT", true),
+        ("@R2.SIGN EXIT", false),
+        ("@!UR6.SIGN EXIT", false),
     ] {
         assert_eq!(ptxv_sass::lower_text(line, None).is_ok(), ok, "{line}");
     }

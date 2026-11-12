@@ -800,7 +800,23 @@ impl<'a> Lw<'a> {
         Ok(Reg { file, idx })
     }
 
+    /// A predicate operand: P / UP / PT / UPT. `.SIGN` registers are PLOP3 inputs only
+    /// (`pred_sign`).
     fn pred(&self, s: &str) -> Result<Pred> {
+        let p = self.pred_sign(s)?;
+        if p.reg.is_some_and(|r| matches!(r.file, File::R | File::UR)) {
+            bail!(self.err(format!(
+                "a register's sign bit as a predicate outside a PLOP3 input ({s}) is not modeled"
+            )));
+        }
+        Ok(p)
+    }
+
+    /// A PLOP3 input: a predicate, or `R2.reuse.SIGN` / `UR6.SIGN` (ptxas's add.sat.s32 /
+    /// sub.sat.s32): the register's sign bit as a predicate (`Reg::pred_bit`; probes/int_sat).
+    /// ptxas prints `.SIGN` only there (MISS 97: until 2026-11-11 any predicate operand took
+    /// it, and readers outside exec.rs read the register as nonzero).
+    fn pred_sign(&self, s: &str) -> Result<Pred> {
         let (neg, s) = match s.strip_prefix('!') {
             Some(r) => (true, r),
             None => (false, s),
@@ -815,8 +831,6 @@ impl<'a> Lw<'a> {
                 file: File::P,
                 idx: s[1..].parse().map_err(|_| self.err("bad pred"))?,
             }),
-            // `R2.reuse.SIGN` / `UR6.SIGN` (PLOP3 inputs; ptxas's add.sat.s32 / sub.sat.s32):
-            // the register's sign bit as a predicate (`Machine::prd`; probes/int_sat).
             _ if s.ends_with(".SIGN") => {
                 let r = s.trim_end_matches(".SIGN").trim_end_matches(".reuse");
                 match Self::reg_name(r) {
@@ -840,11 +854,11 @@ impl<'a> Lw<'a> {
                 idx: PT,
             }),
             _ => {
-                let p = self.pred(s)?;
+                let p = self.pred_sign(s)?;
                 if p.neg {
                     bail!(self.err("negated predicate destination"));
                 }
-                // `R.SIGN` / `UR.SIGN` are predicate inputs only (MISS 23).
+                // `R.SIGN` / `UR.SIGN` are PLOP3 inputs only (MISS 23).
                 match p.reg {
                     Some(
                         r @ Reg {
@@ -2764,11 +2778,12 @@ fn lower_line(
                 "PT" | "UPT" => None,
                 p => Some((lw.pdst(p)?, lut2)),
             };
+            // The inputs may be `.SIGN` registers (`pred_sign`).
             Op::Plop3 {
                 d: lw.pdst(lw.op(0)?)?,
-                a: lw.pred(lw.op(2)?)?,
-                b: lw.pred(lw.op(3)?)?,
-                c: lw.pred(lw.op(4)?)?,
+                a: lw.pred_sign(lw.op(2)?)?,
+                b: lw.pred_sign(lw.op(3)?)?,
+                c: lw.pred_sign(lw.op(4)?)?,
                 lut: hex(lw.op(5)?).ok_or_else(|| lw.err("bad lut"))? as u8,
                 d2,
             }

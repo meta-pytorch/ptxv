@@ -36,7 +36,7 @@ pub fn against_sample(
         .map(|&p| (p, quantile(&a, p), quantile(&b, p)))
         .collect();
     let pd = |o: &Obs| o.differ as f64 / o.compared.max(1) as f64;
-    let ci = super::mc::p_interval(obs, 0.05);
+    let ci = super::mc::p_interval_obs(obs, 0.05);
     // Batch-means CI of the observed mean (u scale).
     let bm: Vec<f64> = obs.input_means.iter().map(|x| x.0).collect();
     let m = bm.iter().sum::<f64>() / bm.len().max(1) as f64;
@@ -123,8 +123,10 @@ pub fn against_sample(
 /// batch-means standard errors over inputs (99.9%).
 pub fn p_differ_agrees(pred: &Obs, obs: &Obs) -> bool {
     let pd = |o: &Obs| o.differ as f64 / o.compared.max(1) as f64;
+    // The prediction's interval is a claim (inputs counted where few differ); the observed one
+    // refutes it (`p_interval_obs`).
     let pci = super::mc::p_interval(pred, 0.001);
-    let oci = super::mc::p_interval(obs, 0.001);
+    let oci = super::mc::p_interval_obs(obs, 0.001);
     let bm_ok = match (bm_se(&pred.input_differ), bm_se(&obs.input_differ)) {
         (Some(a), Some(b)) => (pd(pred) - pd(obs)).abs() <= 3.29 * (a * a + b * b).sqrt(),
         _ => false,
@@ -255,7 +257,7 @@ pub fn tier3_refusal(
     }
     let pd = |o: &Obs| o.differ as f64 / o.compared.max(1) as f64;
     if !p_differ_agrees(pred, obs) {
-        let (lo, hi) = super::mc::p_interval(obs, 0.001);
+        let (lo, hi) = super::mc::p_interval_obs(obs, 0.001);
         return Some(format!(
             "{source} validation ({} inputs): Tier 3's P(differ) {:.3e} against observed {:.3e} [{lo:.3e}, {hi:.3e}] (99.9%) DISAGREES FAILS",
             obs.inputs,
@@ -355,8 +357,8 @@ pub fn against_estimate(
     mismatch: u64,
 ) -> Validation {
     let pd = obs.differ as f64 / obs.compared.max(1) as f64;
-    let ci = super::mc::p_interval(obs, 0.05);
-    let oci = super::mc::p_interval(obs, 0.001);
+    let ci = super::mc::p_interval_obs(obs, 0.05);
+    let oci = super::mc::p_interval_obs(obs, 0.001);
     let mut b: Vec<f64> = obs.sample.iter().map(|x| x.1).collect();
     b.retain(|x| !x.is_nan());
     sort(&mut b);

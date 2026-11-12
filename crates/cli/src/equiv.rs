@@ -29,6 +29,11 @@
 //! once with the numerics shadow, and compared element by element (`ptxv_sim::equiv`). When
 //! L1 fails, a witness input isolates one differing monomial (every input zero except its
 //! factors, set to 1), and both kernels are run on it in the simulator and on GB300.
+//!
+//! Cases with captured GPU outputs (`expect`) are held to them (MISS 98): a proven level is
+//! refused ("none (contradicted by the captured GPU outputs)") when a kernel's simulated
+//! output or element functions differ from its capture, or the two captures contradict the
+//! level (`sim_gpu_mismatch`, `captured_contradicts`, `elementwise_captured_check`).
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -428,6 +433,11 @@ pub(crate) fn prepare_with(
         ));
     }
     m.num = Some(Box::new(ns));
+    // N-MULTIMEM-ROUND16 provenance for the comparison with the captured GPU output
+    // (`sim_gpu_mismatch`): the output bytes holding a calibrated f16 / bf16 lane (MISS 110).
+    if !case.m.multicast.is_empty() {
+        m.track_round16();
+    }
     let (mut m, findings, ok) = run_once(m);
     m.half_out_leaves();
     let output_nodes = output_nodes(&mut m);
@@ -734,6 +744,78 @@ fn etype_of(case: &Case, name: &str) -> Result<ptxv_sim::elementwise::EType, Str
     let b = case.buffer(name).map_err(|e| e.to_string())?;
     ptxv_sim::elementwise::EType::parse(&b.dtype)
         .ok_or_else(|| format!("buffer {name} is {}, not f32 / bf16 / f16", b.dtype))
+}
+
+/// MISS 98, elementwise mode: every output's element function at the case's captured input
+/// element against the captured GPU output (the case's `expect`), bitwise, as
+/// `elementwise_gpu_check` checks fresh GB300 runs. Returns (outputs checked, mismatches,
+/// first mismatch); None when the case has no captured output. Outputs outside the captured
+/// bytes (`expect_offset`) or in `expect_ignore` are not checked.
+fn elementwise_captured_check(
+    run: &Run,
+    ex: &ptxv_sim::elementwise::Extract,
+    in_ty: ptxv_sim::elementwise::EType,
+    out_ty: ptxv_sim::elementwise::EType,
+) -> std::result::Result<Option<(u64, u64, Option<String>)>, String> {
+    use ptxv_sim::elementwise::EType;
+    let e = |x: anyhow::Error| x.to_string();
+    if ex.outs.iter().any(|o| o.factor.is_some()) {
+        return Err("product outputs f(x) * y are not checked".into());
+    }
+    let ob = run
+        .case
+        .buffer(&run.m.launch.allocs[run.m.launch.outputs[0]].name)
+        .map_err(e)?;
+    let Some(exp) = &ob.expect else {
+        return Ok(None);
+    };
+    let cap = std::fs::read(exp).map_err(|x| format!("{exp}: {x}"))?;
+    let es = if in_ty == EType::F32 { 4 } else { 2 };
+    let os = if out_ty == EType::F32 { 4 } else { 2 };
+    let off = ob.expect_offset as usize;
+    if !off.is_multiple_of(os) {
+        return Err(format!("expect_offset {off} is not a multiple of {os}"));
+    }
+    // The captured buffer from byte 0 (bytes before `expect_offset` unused).
+    let mut out = vec![0u8; off + cap.len()];
+    out[off..].copy_from_slice(&cap);
+    let captured = |i: usize| {
+        let (s, t) = ((i * os) as u64, (i * os + os) as u64);
+        s >= off as u64
+            && t <= out.len() as u64
+            && !ob.expect_ignore.iter().any(|&[a, n]| a < t && s < a + n)
+    };
+    let word = |b: &[u8], i: usize, n: usize| -> Option<u32> {
+        let w = b.get(i * n..i * n + n)?;
+        let mut a = [0u8; 4];
+        a[..n].copy_from_slice(w);
+        Some(u32::from_le_bytes(a))
+    };
+    let mut inputs: std::collections::HashMap<usize, Vec<u8>> = Default::default();
+    let (mut checked, mut bad, mut first) = (0u64, 0u64, None);
+    let mut scratch = Vec::new();
+    for o in ex.outs.iter().filter(|o| captured(o.index)) {
+        let alloc = o.leaf.0;
+        if let std::collections::hash_map::Entry::Vacant(v) = inputs.entry(alloc) {
+            let name = &run.m.launch.allocs[alloc].name;
+            v.insert(run.case.buffer(name).map_err(e)?.init_bytes());
+        }
+        let p = word(&inputs[&alloc], o.leaf.1 as usize, es).ok_or("short captured input")?;
+        let want = ptxv_sim::elementwise::out_bits(&ex.fns[o.f], in_ty, out_ty, p, &mut scratch)?;
+        let want = if os == 4 { want } else { want & 0xffff };
+        let got = word(&out, o.index, os).ok_or("short captured output")?;
+        checked += 1;
+        if got != want {
+            bad += 1;
+            if first.is_none() {
+                first = Some(format!(
+                    "out[{}] at input bits {p:#x}: GPU {got:#x}, element function {want:#x}",
+                    o.index
+                ));
+            }
+        }
+    }
+    Ok(Some((checked, bad, first)))
 }
 
 /// Elementwise mode: both kernels' element functions (`ptxv_sim::elementwise`), output i
@@ -1111,7 +1193,32 @@ fn elementwise_pair(
             p.at_ulps_normal.3,
         );
     }
-    let level = if bitwise_all { "L0" } else { "EW" }.to_string();
+    let mut level = if bitwise_all { "L0" } else { "EW" }.to_string();
+    // MISS 98: GPU outputs that differ from a kernel's element functions refuse the level
+    // (the functions do not describe what the GPU ran); until 2026-11-11 both checks below
+    // only printed their mismatches.
+    let mut contradicted = false;
+    let mut cap = Vec::new();
+    for (who, run, ex, ot) in [("reference", r, &er, otr), ("candidate", c, &ec, otc)] {
+        match elementwise_captured_check(run, ex, in_ty, ot) {
+            Ok(Some((n, bad, first))) => {
+                println!(
+                    "      captured GPU outputs ({who}): {bad} of {n} differ from the element functions{}",
+                    first
+                        .as_ref()
+                        .map(|f| format!(" (first: {f})"))
+                        .unwrap_or_default()
+                );
+                contradicted |= bad > 0;
+                cap.push(serde_json::json!({"side": who, "checked": n, "mismatches": bad, "first": first}));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                println!("      captured GPU outputs ({who}): not compared: {e}");
+                cap.push(serde_json::json!({"side": who, "error": e}));
+            }
+        }
+    }
     let mut gpu = serde_json::Value::Null;
     if gpu_batches > 0 {
         let mut g = Vec::new();
@@ -1125,6 +1232,7 @@ fn elementwise_pair(
                             .map(|f| format!(" (first: {f})"))
                             .unwrap_or_default()
                     );
+                    contradicted |= bad > 0;
                     g.push(serde_json::json!({"side": who, "checked": n, "mismatches": bad, "first": first}));
                 }
                 Err(e) => {
@@ -1134,6 +1242,9 @@ fn elementwise_pair(
             }
         }
         gpu = serde_json::json!(g);
+    }
+    if contradicted {
+        level = CONTRADICTED.to_string();
     }
     Ok((
         serde_json::json!({
@@ -1167,16 +1278,25 @@ fn elementwise_pair(
             "pairs": pj,
             "seconds": secs,
             "gpu_check": gpu,
+            "captured_check": cap,
         }),
         level,
     ))
 }
 
-/// The strongest level that holds: "L0".."L3", or "none".
+/// The strongest level that holds: "L0" (bitwise), "L0~0" (bitwise up to the sign of zero),
+/// "L2+L3", "L2", "L1+L3", "L1", "L1~", or "none".
 fn strongest(rep: &Report) -> String {
-    let holds = |p: &str| rep.levels.iter().any(|l| l.level.starts_with(p) && l.holds);
+    // A level by its first word: "L0~0 up to the sign of zero" is no L0 (MISS 109).
+    let holds = |p: &str| {
+        rep.levels
+            .iter()
+            .any(|l| l.level.split(' ').next() == Some(p) && l.holds)
+    };
     if holds("L0") {
         "L0".into()
+    } else if holds("L0~0") {
+        "L0~0".into()
     } else if holds("L2") {
         if holds("L3") {
             "L2+L3".into()
@@ -1239,8 +1359,14 @@ fn print_outputs(rep: &Report, all: bool) {
         }
         return;
     }
-    // Runs of consecutive outputs with a bound (or without), L0 kept apart.
-    let key = |o: &OutBound| (o.bound_u.is_some(), o.level == "L0", o.form);
+    // Runs of consecutive outputs with a bound (or without), L0 and L0~0 kept apart.
+    let key = |o: &OutBound| {
+        (
+            o.bound_u.is_some(),
+            matches!(o.level, "L0" | "L0~0").then_some(o.level),
+            o.form,
+        )
+    };
     let mut i = 0;
     while i < rep.per_output.len() {
         let o = &rep.per_output[i];
@@ -1824,6 +1950,45 @@ pub(crate) fn gpu_output_f32(case: &Case) -> Option<Vec<f32>> {
     })
 }
 
+/// The captured GPU output of a case's output 0 per element of the buffer: (its encoding, its
+/// value as f32; bf16 and f16 widened exactly), None for an element outside the captured bytes
+/// (`expect_offset` and the file's length) or touching `expect_ignore`. None when the case
+/// has no capture or output 0 is not f32 / bf16 / f16.
+fn gpu_output_elems(case: &Case) -> Option<Vec<Option<(u32, f32)>>> {
+    let b = case.buffer(case.m.outputs.first()?).ok()?;
+    let bytes = std::fs::read(b.expect.as_ref()?).ok()?;
+    let es = match b.dtype.as_str() {
+        "f32" => 4,
+        "bf16" | "f16" => 2,
+        _ => return None,
+    };
+    let off = b.expect_offset as usize;
+    let h = |c: &[u8]| u16::from_le_bytes([c[0], c[1]]);
+    Some(
+        (0..b.bytes() / es)
+            .map(|i| {
+                let (s, t) = (i * es, i * es + es);
+                let ignored = b
+                    .expect_ignore
+                    .iter()
+                    .any(|&[a, n]| a < t as u64 && (s as u64) < a + n);
+                if s < off || t > off + bytes.len() || ignored {
+                    return None;
+                }
+                let c = &bytes[s - off..t - off];
+                Some(match b.dtype.as_str() {
+                    "f32" => {
+                        let w = u32::from_le_bytes(c.try_into().unwrap());
+                        (w, f32::from_bits(w))
+                    }
+                    "bf16" => (h(c) as u32, f32::from_bits((h(c) as u32) << 16)),
+                    _ => (h(c) as u32, f16_to_f32(h(c))),
+                })
+            })
+            .collect(),
+    )
+}
+
 fn f16_to_f32(h: u16) -> f32 {
     let s = if h & 0x8000 != 0 { -1.0f32 } else { 1.0 };
     let e = ((h >> 10) & 0x1f) as i32;
@@ -1838,10 +2003,13 @@ fn f16_to_f32(h: u16) -> f32 {
 
 /// The proven bound evaluated at the captured inputs, against the two captured GPU outputs:
 /// how much of the bound the GPU's actual difference uses. None when either case lacks GPU
-/// outputs or the two cases' shared input buffers hold different bytes.
+/// outputs or the two cases' shared input buffers hold different bytes. Each element is
+/// compared where both cases captured it (`gpu_output_elems`), against its own bound; until
+/// 2026-11-11 the captures were read from byte 0, `expect_offset` and `expect_ignore` aside,
+/// and element i of a capture met the bound of output i.
 fn captured(r: &Run, c: &Run, rep: &Report, names: &[String]) -> Option<serde_json::Value> {
     let rep_bounds = rep.untracked.is_none();
-    let (gr, gc) = (gpu_output_f32(&r.case)?, gpu_output_f32(&c.case)?);
+    let (gr, gc) = (gpu_output_elems(&r.case)?, gpu_output_elems(&c.case)?);
     if gr.len() != gc.len() {
         return None;
     }
@@ -1901,18 +2069,55 @@ fn captured(r: &Run, c: &Run, rep: &Report, names: &[String]) -> Option<serde_js
             .unwrap_or(f64::NAN)
     };
     let (mut max_frac, mut worst, mut max_diff, mut with_bound) = (0.0f64, None, 0.0f64, 0);
+    let (mut over, mut first_over) = (0usize, None);
+    let (mut nonfinite, mut first_nonfinite) = (0usize, None);
+    let (mut compared, mut bitwise, mut first_differing) = (0usize, 0usize, None);
+    let (mut zeros, mut beyond, mut first_beyond) = (0usize, 0usize, None);
     let mut per = Vec::with_capacity(gr.len());
     // 16-bit output form: outputs whose bound is 0 / 1 / more steps of the format.
     let mut steps = [0usize; 3];
-    for (i, (a, b)) in gr.iter().zip(&gc).enumerate() {
-        let d = (*a as f64 - *b as f64).abs();
-        max_diff = max_diff.max(d);
+    for (i, (er, ec)) in gr.iter().zip(&gc).enumerate() {
         let bound = rep
             .per_output
             .get(i)
             .filter(|_| rep_bounds)
             .and_then(|o| o.bound_at(&x))
             .filter(|b| b.is_finite());
+        per.push(bound);
+        if let Some(k) = rep
+            .per_output
+            .get(i)
+            .filter(|_| rep_bounds)
+            .and_then(|o| o.round_steps_at(&x))
+        {
+            steps[(k as usize).min(2)] += 1;
+        }
+        let (Some(pr), Some(pc)) = (*er, *ec) else {
+            continue;
+        };
+        compared += 1;
+        let (same, over_bound, nonfinite_diff) = pair_against_level(pr, pc, bound);
+        if same {
+            bitwise += 1;
+        } else {
+            first_differing.get_or_insert(i);
+        }
+        zeros += opposite_zeros(pr, pc) as usize;
+        let level = rep.per_output.get(i).map_or("none", |o| o.level);
+        if beyond_level_bits(level, pr, pc) {
+            beyond += 1;
+            first_beyond.get_or_insert(i);
+        }
+        if over_bound {
+            over += 1;
+            first_over.get_or_insert(i);
+        }
+        if nonfinite_diff {
+            nonfinite += 1;
+            first_nonfinite.get_or_insert(i);
+        }
+        let d = (pr.1 as f64 - pc.1 as f64).abs();
+        max_diff = max_diff.max(d);
         if let Some(bd) = bound {
             with_bound += 1;
             let f = if bd > 0.0 {
@@ -1927,27 +2132,206 @@ fn captured(r: &Run, c: &Run, rep: &Report, names: &[String]) -> Option<serde_js
                 worst = Some(i);
             }
         }
-        per.push(bound);
-        if let Some(k) = rep
-            .per_output
-            .get(i)
-            .filter(|_| rep_bounds)
-            .and_then(|o| o.round_steps_at(&x))
-        {
-            steps[(k as usize).min(2)] += 1;
-        }
     }
     Some(serde_json::json!({
         "round16_steps": (steps.iter().sum::<usize>() > 0).then_some(steps),
         "inputs_identical": true,
-        "outputs": gr.len(),
-        "bitwise_equal": gr.iter().zip(&gc).filter(|(a, b)| a.to_bits() == b.to_bits()).count(),
+        "outputs": compared,
+        "uncaptured": gr.len() - compared,
+        "bitwise_equal": bitwise,
+        "first_differing": first_differing,
+        "zero_sign_pairs": zeros,
+        "differing_beyond_zero_sign": beyond,
+        "first_differing_beyond_zero_sign": first_beyond,
         "max_abs_diff": max_diff,
         "outputs_with_bound": with_bound,
         "max_fraction_of_bound": (with_bound > 0).then_some(max_frac),
         "worst_output": worst,
+        "finite_over_bound": over,
+        "first_over_bound": first_over,
+        "nonfinite_differing": nonfinite,
+        "first_nonfinite_differing": first_nonfinite,
         "bound_abs": per,
     }))
+}
+
+/// MISS 98: what one captured pair of outputs (encoding, value) tells a level: (equal
+/// bitwise, NaN payloads included, as L0 requires; two finite values farther apart than the
+/// proven bound; a non-finite value against a finite one or another non-finite value, both
+/// NaN aside, which is no rounding difference and which L1 / L2 do not allow either).
+fn pair_against_level(r: (u32, f32), c: (u32, f32), bound: Option<f64>) -> (bool, bool, bool) {
+    let (a, b) = (r.1, c.1);
+    let finite = a.is_finite() && b.is_finite();
+    let d = (a as f64 - b as f64).abs();
+    (
+        r.0 == c.0,
+        finite && bound.is_some_and(|bd| d > bd),
+        !finite && r.0 != c.0 && !(a.is_nan() && b.is_nan()),
+    )
+}
+
+/// MISS 109: a captured pair that differs only in the sign of a zero (+0 against -0).
+fn opposite_zeros(r: (u32, f32), c: (u32, f32)) -> bool {
+    r.0 != c.0 && r.1 == 0.0 && c.1 == 0.0
+}
+
+/// Whether a captured pair differs bitwise beyond what its output's level allows: an output at
+/// L0~0 (equal up to the sign of zero) allows +0 against -0 (MISS 109), any other output no
+/// difference.
+fn beyond_level_bits(level: &str, r: (u32, f32), c: (u32, f32)) -> bool {
+    r.0 != c.0 && !(level == "L0~0" && opposite_zeros(r, c))
+}
+
+/// MISS 98: does the captured comparison (`captured`: one GPU run of each kernel on the same
+/// inputs) contradict the level claimed? L0 says the outputs are bitwise equal, NaN payloads
+/// included; L0~0 the same except +0 against -0 at its outputs that are equal up to the sign
+/// of zero (MISS 109: a strict L0 output allows no such pair, and until 2026-11-11 the level
+/// was L0). L1 / L2 / L1~ say two finite outputs are at most the proven bound apart at the
+/// captured inputs, and allow no non-finite output against a finite one or another non-finite
+/// value (both NaN pass). The reason, or None (no captured outputs, other inputs, or a level
+/// that predicts no relation the capture can refute: none, EW (its element functions are
+/// checked against each kernel's captured outputs in `elementwise_pair`)). No exemption: an
+/// fp32 atomic chain is never L0 (its rounding order depends on the schedule), and its bound
+/// holds for every order (N-ATOMIC), so the GPU's order of the adds cannot excuse a bound
+/// violation.
+fn captured_contradicts(cv: &serde_json::Value, level: &str) -> Option<String> {
+    if cv["inputs_identical"] != true {
+        return None;
+    }
+    let n = cv["outputs"].as_u64()?;
+    if level == "L0" {
+        let eq = cv["bitwise_equal"].as_u64()?;
+        return (eq < n).then(|| {
+            format!(
+                "{} of {n} outputs differ bitwise (first: out[{}])",
+                n - eq,
+                cv["first_differing"]
+            )
+        });
+    }
+    if level == "L0~0" {
+        let k = cv["differing_beyond_zero_sign"].as_u64()?;
+        return (k > 0).then(|| {
+            format!(
+                "{k} of {n} outputs differ bitwise other than +0 against -0 at an output equal \
+                 up to the sign of zero (first: out[{}])",
+                cv["first_differing_beyond_zero_sign"]
+            )
+        });
+    }
+    if level.starts_with("L1") || level.starts_with("L2") {
+        let (k, z) = (
+            cv["finite_over_bound"].as_u64()?,
+            cv["nonfinite_differing"].as_u64()?,
+        );
+        let mut why = vec![];
+        if k > 0 {
+            why.push(format!(
+                "{k} of {n} outputs are farther apart than the proven bound (first: out[{}])",
+                cv["first_over_bound"]
+            ));
+        }
+        if z > 0 {
+            why.push(format!(
+                "{z} of {n} outputs are non-finite on one side and differ (first: out[{}])",
+                cv["first_nonfinite_differing"]
+            ));
+        }
+        return (!why.is_empty()).then(|| why.join("; "));
+    }
+    None
+}
+
+/// The level of a pair the GPU outputs contradict (MISS 98).
+pub(crate) const CONTRADICTED: &str = "none (contradicted by the captured GPU outputs)";
+
+/// A kernel's simulated output at the captured inputs against its captured GPU output.
+struct SimGpu {
+    /// The first differing output (`Case::expect_report_tol`), the exempt elements aside.
+    differs: Option<String>,
+    /// Captured elements not compared because they depend on the order of float atomic adds:
+    /// (how many, how many of them differ from the capture).
+    exempt: (usize, usize),
+}
+
+/// MISS 98: the numerics run's outputs (the simulator at the case's captured inputs) against
+/// the case's captured GPU outputs (`expect`), bitwise, as `ptxv check`, `ptxv compare` and
+/// errdist compare them; as in `ptxv check`, an element is within one ulp only when every byte
+/// of it holds an f16 / bf16 multimem lane of this run that the calibrated rule rounded
+/// (N-MULTIMEM-ROUND16, MISS 110). None: equal, or no capture. Exempt (argued): the output
+/// elements whose simulated value depends on the order of float atomic adds
+/// (`take_atomic_captures`), as the simulated run fixed one order of each location's adds
+/// where the GPU ran its own (N-ATOMIC). Their level is never L0 and their bound covers every
+/// order, which `captured_contradicts` checks against the captures. Every other element is
+/// compared, also in a kernel with atomic adds elsewhere.
+fn sim_gpu_mismatch(run: &Run) -> Option<SimGpu> {
+    let marks = run.m.round16_marks();
+    let mut out = run.m.outputs();
+    let exempt = take_atomic_captures(run, &mut out);
+    let lines = run.case.expect_report_tol(&out, marks.as_deref()).ok()?;
+    let differs = lines
+        .iter()
+        .find(|l| l.contains("MISMATCH"))
+        .map(|l| l.replace("MISMATCH vs", "differs from"));
+    (differs.is_some() || exempt.0 > 0).then_some(SimGpu { differs, exempt })
+}
+
+/// MISS 98: in `out` (the output buffers' bytes, `Machine::outputs`), give each captured
+/// element whose simulated value depends on the order of float atomic adds
+/// (`NumState::atomic_order_dependent`: through the node of its word, or of its 16-bit
+/// element in a bf16 / f16 output) the captured bytes. Returns (elements given their capture,
+/// how many of them differed).
+fn take_atomic_captures(run: &Run, out: &mut [u8]) -> (usize, usize) {
+    let m = &run.m;
+    let Some(ns) = m.num.as_ref().filter(|n| n.atomic_adds > 0) else {
+        return (0, 0);
+    };
+    let mut memo = std::collections::HashMap::new();
+    let (mut n, mut k, mut at) = (0, 0, 0);
+    for &oi in &m.launch.outputs {
+        let len = m.gmem[oi].bytes.len();
+        let start = at;
+        at += len;
+        let Ok(b) = run.case.buffer(&m.launch.allocs[oi].name) else {
+            continue;
+        };
+        let Some(want) = b.expect.as_ref().and_then(|p| std::fs::read(p).ok()) else {
+            continue;
+        };
+        let mut dep = vec![false; len];
+        for off in (0..len / 4).map(|w| 4 * w) {
+            let node = ns.mem_node(Loc::Global {
+                alloc: oi,
+                off: off as u64,
+            });
+            if node.is_some_and(|x| ns.atomic_order_dependent(x, &mut memo)) {
+                dep[off..off + 4].fill(true);
+            }
+        }
+        let f16 = ns.half.f16_outputs.contains(&oi);
+        if f16 || ns.half.bf16_outputs.contains(&oi) {
+            for e in 0..len / 2 {
+                let node = m.half_out_node(oi, e as u64, f16);
+                if node.is_some_and(|x| ns.atomic_order_dependent(x, &mut memo)) {
+                    dep[2 * e..2 * e + 2].fill(true);
+                }
+            }
+        }
+        let (off, es) = (b.expect_offset as usize, b.elem_bytes().max(1));
+        for e in 0..len / es {
+            let (s, t) = (e * es, e * es + es);
+            if !dep[s..t].contains(&true) || s < off || t > off + want.len() {
+                continue;
+            }
+            n += 1;
+            let (got, cap) = (&mut out[start + s..start + t], &want[s - off..t - off]);
+            if got != cap {
+                k += 1;
+                got.copy_from_slice(cap);
+            }
+        }
+    }
+    (n, k)
 }
 
 fn output_scope(reference: &Run, candidate: &Run) -> serde_json::Value {
@@ -2145,8 +2529,8 @@ pub fn cmd_equiv(
         }
         if rep.l0_zero_sign > 0 {
             println!(
-                "    L0 at {} outputs is up to the sign of zero: one kernel's output is the other's \
-                 plus +0 (equal bits, except -0 there is +0)",
+                "    L0~0 at {} outputs: one kernel's output is the other's plus +0, equal bits \
+                 except that -0 there is +0 (not bitwise: L0 fails there)",
                 rep.l0_zero_sign
             );
         }
@@ -2288,9 +2672,13 @@ pub fn cmd_equiv(
                 );
             } else {
                 println!(
-                    "    captured GPU outputs: {} of {} bitwise equal, max |C - R| {:.3e}{}",
+                    "    captured GPU outputs: {} of {} bitwise equal{}, max |C - R| {:.3e}{}",
                     cv["bitwise_equal"],
                     cv["outputs"],
+                    match cv["uncaptured"].as_u64() {
+                        Some(n @ 1..) => format!(" ({n} outputs not captured by both cases)"),
+                        _ => String::new(),
+                    },
                     cv["max_abs_diff"].as_f64().unwrap_or(f64::NAN),
                     cv["max_fraction_of_bound"]
                         .as_f64()
@@ -2371,12 +2759,58 @@ pub fn cmd_equiv(
             }
         }
         let proven = proven && pre_pair.is_empty();
+        let pre_ok = r.pre.is_empty() && cand.pre.is_empty() && pre_pair.is_empty();
         let got = match ew_level.clone() {
-            Some(l) if r.pre.is_empty() && cand.pre.is_empty() && pre_pair.is_empty() => l,
+            Some(l) if pre_ok || l == CONTRADICTED => l,
             Some(l) => format!("{l} (unproven)"),
             None => strongest(&rep) + if proven { "" } else { " (unproven)" },
         };
-        let proven = proven || (ew_level.is_some() && !got.ends_with("(unproven)"));
+        let proven =
+            got != CONTRADICTED && (proven || (ew_level.is_some() && !got.ends_with("(unproven)")));
+        // MISS 98: a level the GPU outputs contradict is refused: the model does not describe
+        // what the GPU ran (until 2026-11-11 the comparisons were printed and the level kept,
+        // e.g. L0 with 774 of 1024 outputs bitwise equal). An unproven level too: it claims to
+        // hold on the captured inputs, which the captures refute just as well (before, "L0
+        // (unproven)" was kept against them). Elementwise mode checked each kernel's element
+        // functions (`elementwise_pair`); here each kernel's simulated output against its own
+        // capture, then the pair of captures against the level.
+        let level = got.trim_end_matches(" (unproven)").to_string();
+        let claims = !level.starts_with("none");
+        let mut contra = (got == CONTRADICTED)
+            .then(|| "a kernel's element functions differ from its GPU outputs".to_string());
+        for (who, run) in [("reference", &r), ("candidate", &cand)] {
+            let Some(s) = sim_gpu_mismatch(run) else {
+                continue;
+            };
+            if let (n @ 1.., k) = s.exempt {
+                println!(
+                    "    {who}: simulated output not held to the captured GPU output at {n} {} on the order of float atomic adds (N-ATOMIC: the GPU ran its own order; {k} of {n} differ)",
+                    if n == 1 {
+                        "element that depends"
+                    } else {
+                        "elements that depend"
+                    }
+                );
+            }
+            if let Some(l) = s.differs {
+                println!("    {who}: simulated output at the captured inputs: {l}");
+                if claims {
+                    contra.get_or_insert(format!(
+                        "the {who}'s simulated output differs from its capture"
+                    ));
+                }
+            }
+        }
+        if claims && contra.is_none() {
+            contra = cap.as_ref().and_then(|cv| captured_contradicts(cv, &level));
+        }
+        let (got, proven) = match &contra {
+            Some(why) if got != CONTRADICTED => {
+                println!("    captured GPU outputs contradict {got}: {why}");
+                (CONTRADICTED.to_string(), false)
+            }
+            _ => (got, proven),
+        };
         println!("    => strongest level: {got}");
         if let Some(e) = &c.expect {
             let ok = *e == got;
@@ -2414,6 +2848,7 @@ pub fn cmd_equiv(
             "report": rep,
             "trials": tr,
             "captured": cap,
+            "contradicted": contra,
             "witness": witness,
         }));
     }
@@ -2566,4 +3001,131 @@ fn bound_json(
             })).collect::<Vec<_>>(),
         },
     })
+}
+
+#[cfg(test)]
+mod captured_tests {
+    use super::*;
+
+    /// MISS 98: L0 is contradicted by any captured pair that differs bitwise (NaN payloads
+    /// included), L1 / L2 / L1~ by two finite outputs farther apart than the proven bound or
+    /// a non-finite output against a different value; other inputs, EW (checked per kernel)
+    /// and none predict nothing the capture can refute.
+    #[test]
+    fn captured_outputs_against_the_level() {
+        let cv = |eq: u64, over: u64, nonfinite: u64| {
+            serde_json::json!({"inputs_identical": true, "outputs": 4, "bitwise_equal": eq,
+                "first_differing": 2, "finite_over_bound": over, "first_over_bound": 3,
+                "nonfinite_differing": nonfinite, "first_nonfinite_differing": 1})
+        };
+        let l0 = captured_contradicts(&cv(3, 0, 0), "L0").unwrap();
+        assert_eq!(l0, "1 of 4 outputs differ bitwise (first: out[2])");
+        assert!(captured_contradicts(&cv(4, 0, 0), "L0").is_none());
+        for l in ["L1", "L1~", "L1+L3", "L2", "L2+L3"] {
+            let why = captured_contradicts(&cv(2, 1, 0), l).expect(l);
+            assert!(why.starts_with("1 of 4 outputs are farther apart"), "{why}");
+            let why = captured_contradicts(&cv(2, 0, 1), l).expect(l);
+            assert_eq!(
+                why, "1 of 4 outputs are non-finite on one side and differ (first: out[1])",
+                "{l}"
+            );
+            assert!(captured_contradicts(&cv(2, 0, 0), l).is_none(), "{l}");
+        }
+        for l in ["EW", "none"] {
+            assert!(captured_contradicts(&cv(0, 4, 4), l).is_none(), "{l}");
+        }
+        let other = serde_json::json!({"inputs_identical": false, "differing_buffer": "x"});
+        assert!(captured_contradicts(&other, "L0").is_none());
+    }
+
+    /// MISS 109: L0~0 (L0 up to the sign of zero) allows +0 against -0 at its outputs and no
+    /// other difference; L0 allows none, +0 against -0 included.
+    #[test]
+    fn captured_zero_signs_against_the_level() {
+        let cv = |eq: u64, beyond: u64| {
+            serde_json::json!({"inputs_identical": true, "outputs": 8, "bitwise_equal": eq,
+                "first_differing": 1, "zero_sign_pairs": 8 - eq,
+                "differing_beyond_zero_sign": beyond, "first_differing_beyond_zero_sign": 5,
+                "finite_over_bound": 0, "nonfinite_differing": 0})
+        };
+        // Two outputs +0 against -0 at L0~0 outputs: L0~0 holds, L0 is contradicted.
+        assert!(captured_contradicts(&cv(6, 0), "L0~0").is_none());
+        assert_eq!(
+            captured_contradicts(&cv(6, 0), "L0").unwrap(),
+            "2 of 8 outputs differ bitwise (first: out[1])"
+        );
+        assert_eq!(
+            captured_contradicts(&cv(6, 1), "L0~0").unwrap(),
+            "1 of 8 outputs differ bitwise other than +0 against -0 at an output equal up to \
+             the sign of zero (first: out[5])"
+        );
+        let f = |x: f32| (x.to_bits(), x);
+        let w = |b: u32| (b, f32::from_bits(b));
+        for (r, c) in [(f(0.0), f(-0.0)), (f(-0.0), f(0.0))] {
+            assert!(opposite_zeros(r, c));
+            assert!(!beyond_level_bits("L0~0", r, c));
+            for l in ["L0", "L1", "L2", "none"] {
+                assert!(beyond_level_bits(l, r, c), "{l}");
+            }
+        }
+        for (r, c) in [
+            (f(-0.0), w(0x8000_0001)),
+            (f(0.0), w(0x0000_0001)),
+            (f(1.0), w(0x3f80_0001)),
+            (w(0x7fc1_2345), w(0x7fc0_0000)),
+            (f(0.0), w(0x7fc0_0000)),
+        ] {
+            assert!(!opposite_zeros(r, c));
+            assert!(beyond_level_bits("L0~0", r, c), "{r:?} {c:?}");
+            assert!(beyond_level_bits("L0~0", c, r), "{c:?} {r:?}");
+        }
+        for x in [f(0.0), f(-0.0), f(1.0), w(0x7fc1_2345)] {
+            assert!(!opposite_zeros(x, x));
+            assert!(!beyond_level_bits("L0~0", x, x));
+            assert!(!beyond_level_bits("L0", x, x));
+        }
+    }
+
+    /// MISS 98: one captured pair against the level. NaN payloads differ bitwise; under L1 a
+    /// non-finite value differs from a finite one, from the other infinity and from NaN, but
+    /// two NaNs (any payloads) and equal infinities pass; finite pairs are held to the bound.
+    #[test]
+    fn captured_pairs_against_the_level() {
+        let f = |x: f32| (x.to_bits(), x);
+        let w = |b: u32| (b, f32::from_bits(b));
+        let one = Some(1e-6);
+        // bitwise (L0)
+        assert!(pair_against_level(w(0x7fc1_2345), w(0x7fc1_2345), None).0);
+        assert!(!pair_against_level(w(0x7fc1_2345), w(0x7fc0_0000), None).0);
+        assert!(!pair_against_level(f(0.0), f(-0.0), None).0);
+        // finite pairs against the bound
+        assert_eq!(
+            pair_against_level(f(1.0), f(1.0 + 2e-6), one),
+            (false, true, false)
+        );
+        assert_eq!(
+            pair_against_level(f(1.0), f(1.0 + 1e-7), one),
+            (false, false, false)
+        );
+        assert_eq!(
+            pair_against_level(f(1.0), f(3.0), None),
+            (false, false, false)
+        );
+        // non-finite pairs, with or without a bound
+        let inf = f32::INFINITY;
+        for b in [None, one] {
+            for (x, y) in [
+                (f(inf), f(1.0)),
+                (f(f32::MAX), f(inf)),
+                (f(-inf), f(inf)),
+                (f(inf), w(0x7fc0_0000)),
+                (w(0x7fc0_0000), f(2.0)),
+            ] {
+                assert!(pair_against_level(x, y, b).2, "{x:?} {y:?}");
+                assert!(pair_against_level(y, x, b).2, "{y:?} {x:?}");
+            }
+            assert!(!pair_against_level(w(0x7fc1_2345), w(0xffc0_0001), b).2);
+            assert!(!pair_against_level(f(inf), f(inf), b).2);
+        }
+    }
 }

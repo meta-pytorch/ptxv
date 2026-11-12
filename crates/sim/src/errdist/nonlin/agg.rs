@@ -1211,6 +1211,37 @@ fn k_law(ol: &OutLaw) -> Vec<(i64, f64)> {
     conv_int(&m.into_iter().collect::<Vec<_>>(), &ol.off)
 }
 
+/// The pairs of matched roundings (`Matches`), taken greedily in op order: by the first op of
+/// each canonical key in the reference, then in the candidate (`op_r`, `op_c`). Where several
+/// roundings of one kernel match one of the other, the first in op order keeps it. Until the
+/// fix the pairs came in the hash map's iteration order, so a change of canonical hashes alone
+/// moved Tier 2: c_equiv_attn on int8 inputs gave 0.7843 at int7 and 0.7837 once an add's hash
+/// took its flush flag, with no change of meaning; builds that differed only in the hash
+/// spread over 1.9e-3 (0.24% of P), and op order gives 0.7824 for either hash.
+fn pair_matches(
+    matches: &HashMap<u64, u64>,
+    op_r: &HashMap<u64, u32>,
+    op_c: &HashMap<u64, u32>,
+) -> Matches {
+    let at = |h: &HashMap<u64, u32>, k: &u64| h.get(k).copied().unwrap_or(u32::MAX);
+    let mut order: Vec<(u64, u64)> = matches.iter().map(|(a, b)| (*a, *b)).collect();
+    order.sort_by_key(|(kr, kc)| (at(op_r, kr), at(op_c, kc), *kr, *kc));
+    let mut m = Matches {
+        pairs: Vec::new(),
+        by_r: HashMap::default(),
+        by_c: HashMap::default(),
+    };
+    for (kr, kc) in order {
+        if m.by_r.contains_key(&kr) || m.by_c.contains_key(&kc) {
+            continue;
+        }
+        m.by_r.insert(kr, m.pairs.len());
+        m.by_c.insert(kc, m.pairs.len());
+        m.pairs.push((kr, kc));
+    }
+    m
+}
+
 /// The analytic estimate of a single kernel (c None) or a pair.
 #[allow(clippy::too_many_arguments)]
 pub fn estimate(
@@ -1304,19 +1335,6 @@ pub fn estimate(
             }
         }
     }
-    let mut m = Matches {
-        pairs: Vec::new(),
-        by_r: HashMap::default(),
-        by_c: HashMap::default(),
-    };
-    for (kr, kc) in &matches {
-        if m.by_r.contains_key(kr) || m.by_c.contains_key(kc) {
-            continue;
-        }
-        m.by_r.insert(*kr, m.pairs.len());
-        m.by_c.insert(*kc, m.pairs.len());
-        m.pairs.push((*kr, *kc));
-    }
     let op_map = |k: &KModel| -> HashMap<u64, u32> {
         let mut h = HashMap::default();
         for (i, key) in k.canon.iter().enumerate() {
@@ -1326,6 +1344,7 @@ pub fn estimate(
     };
     let op_r = op_map(r);
     let op_c = c.map(op_map).unwrap_or_default();
+    let m = pair_matches(&matches, &op_r, &op_c);
     let mut jdiag: BTreeMap<String, [f64; 4]> = BTreeMap::new();
     let mut adj = Vec::new();
     let mut kpmf: BTreeMap<i64, f64> = BTreeMap::new();
@@ -1764,4 +1783,36 @@ fn max_depth() -> usize {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(16)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two roundings of the reference match one of the candidate: the first in the reference's
+    /// op order keeps it, whatever the hash order of the keys.
+    #[test]
+    fn matched_roundings_pair_in_op_order() {
+        for s in 1..=64u64 {
+            let a = s.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            let b = s.wrapping_mul(0xbf58_476d_1ce4_e5b9) ^ 1;
+            let kc = s.wrapping_mul(0x94d0_49bb_1331_11eb);
+            let mut matches: HashMap<u64, u64> = HashMap::default();
+            matches.insert(a, kc);
+            matches.insert(b, kc);
+            let op_r: HashMap<u64, u32> = [(a, 5), (b, 2)].into_iter().collect();
+            let op_c: HashMap<u64, u32> = [(kc, 0)].into_iter().collect();
+            assert_eq!(
+                pair_matches(&matches, &op_r, &op_c).pairs,
+                vec![(b, kc)],
+                "s {s}"
+            );
+            let op_r: HashMap<u64, u32> = [(a, 2), (b, 5)].into_iter().collect();
+            assert_eq!(
+                pair_matches(&matches, &op_r, &op_c).pairs,
+                vec![(a, kc)],
+                "s {s}"
+            );
+        }
+    }
 }

@@ -1,0 +1,32 @@
+name = "c_num_stsm8_f32"
+description = """
+N-NUM-TRACK (MISS 115, stmatrix .b8): lane t holds s_t = rn(t + 0.1f) (an FADD node of %tid and a
+constant, not input data). Shared words A[t] = 0 and B[t] = s_t; then stmatrix.m16n8.x1.trans.b8
+writes the bytes of each lane's s_t over A and the bytes lane * 4 + k (k = 0..3) over B (rows at
+16-byte steps from lanes 0..7: both regions whole). out[t] = A[t] (bytes of four lanes' s values),
+out[32 + t] = B[t] (four constant bytes; s_t is gone). A's words mix bytes of rounded values: no exact
+value to compare with; B's words are constants.
+expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_stsm8_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

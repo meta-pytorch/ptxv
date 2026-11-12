@@ -1,0 +1,44 @@
+name = "e_dpor_nonhead"
+description = """
+MISS 136 / MISS 146: consumed async ops, one behind another lane's in a remote pipe. Lane 0
+issues st.async A on m1; lane 1 issues st.async P (writes g, on m2), then st.async B on m1.
+Rank 1 waits on m1, then reads g. good: the warp-wide cluster release at the end drains A, P
+and B together; before MISS 136 DPOR missed the race itself there (PTX [contract], SASS
+[clean]), and both explorers now give the stateful verdict. NH: lane 1 alone drains P and B
+with a cluster fence while lane 0's A, ahead of B in m1's pipe, is pending: the non-head case
+(dpor::NONHEAD_BACKTRACKS). See kernel.ptx."""
+ptx = "kernel.ptx"
+entry = "e_dpor_nonhead"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["contract", "nondeterministic", "race", "violation"]
+expect_sass = ["nondeterministic", "race", "violation"]
+
+
+
+[[variants]]
+id = "NH"
+summary = "lane 1 alone drains P and B with fence.acq_rel.cluster while lane 0's A (ahead of B in m1's pipe) stays pending: B is consumed behind the head"
+marker = "@NH"
+find = "// (lane 1 drain slot)"
+replace = "ld.volatile.shared.u32 %r16, [%r7]; fence.acq_rel.cluster;"
+# PTX: lane 1's step ending at the shared load leaves B pending behind A; its next step (the
+# fence) consumes B with A still pending: m1's pipe is backtracked although its head stays
+# (dpor::NONHEAD_BACKTRACKS). SASS: ptxas schedules the lanes so that no such state arises.
+expect = ["contract", "nondeterministic", "race", "violation"]
+expect_sass = ["clean"]

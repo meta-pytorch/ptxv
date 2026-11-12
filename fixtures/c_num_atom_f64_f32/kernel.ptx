@@ -1,0 +1,52 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_atom_f64_f32(.param .u64 px, .param .u64 pout, .param .u64 polds, .param .u64 pacc)
+{
+	.reg .pred %p<4>;
+	.reg .b32 %r<8>;
+	.reg .f32 %f<8>;
+	.reg .f64 %fd<4>;
+	.reg .b64 %rd<12>;
+	ld.param.u64 %rd1, [px];
+	ld.param.u64 %rd2, [pout];
+	ld.param.u64 %rd3, [polds];
+	ld.param.u64 %rd4, [pacc];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd2, %rd2;
+	cvta.to.global.u64 %rd3, %rd3;
+	cvta.to.global.u64 %rd4, %rd4;
+	mov.u32 %r1, %tid.x;
+	mul.wide.u32 %rd5, %r1, 4;
+	add.s64 %rd7, %rd2, %rd5;
+	add.s64 %rd8, %rd1, %rd5;
+	mul.wide.u32 %rd9, %r1, 8;
+	add.s64 %rd10, %rd3, %rd9;
+	setp.eq.u32 %p3, %r1, 0;
+	@%p3 st.global.f64 [%rd4], 0d0000000000000000;
+	bar.sync 0;
+	setp.lt.u32 %p1, %r1, 10;
+	@!%p1 bra SUMMED;
+	atom.global.add.f64 %fd1, [%rd4], 0d3FB999999999999A;
+	st.global.f64 [%rd10], %fd1;
+SUMMED:
+	bar.sync 0;
+	ld.global.f64 %fd2, [%rd4];
+	ld.global.f32 %f1, [%rd8];
+	setp.ge.f64 %p2, %fd2, 0d3FF0000000000000;
+	@%p2 bra GE;
+	add.rn.f32 %f2, %f1, 0f40000000;
+	st.global.f32 [%rd7], %f2;
+	bra.uni END;
+GE:
+	add.rn.f32 %f3, %f1, 0f3F800000;
+	st.global.f32 [%rd7], %f3;
+END:
+	ret;
+}

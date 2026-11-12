@@ -11,8 +11,9 @@
 
 use ptxv_case::Case;
 use ptxv_case::GpuMatch;
+use ptxv_case::Round16;
 
-/// A case with outputs a (u32 x 4, captured 1 2 3 4), b (f32 x 2, captured 1.0 2.0) and c
+/// A case with outputs a (u32 x 4, captured 1 2 3 4), b (bf16 x 2, captured 1.0 2.0) and c
 /// (u32 x 2, not captured).
 fn case(tag: &str) -> (Case, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!(
@@ -41,7 +42,7 @@ expect = "a.bin"
 
 [[buffers]]
 name = "b"
-dtype = "f32"
+dtype = "bf16"
 shape = [2]
 init = "zeros"
 expect = "b.bin"
@@ -67,8 +68,11 @@ fn words(w: &[u32]) -> Vec<u8> {
     w.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 
+/// bf16 encodings of `f` (exact: 1.0, 2.0 and the neighbour above 2.0).
 fn floats(f: &[f32]) -> Vec<u8> {
-    f.iter().flat_map(|x| x.to_le_bytes()).collect()
+    f.iter()
+        .flat_map(|x| ((x.to_bits() >> 16) as u16).to_le_bytes())
+        .collect()
 }
 
 /// The simulated output: a, b, c concatenated.
@@ -83,7 +87,11 @@ fn results(c: &[ptxv_case::GpuCompare]) -> Vec<(&str, GpuMatch)> {
 #[test]
 fn each_comparison_has_its_result() {
     let (case, dir) = case("tol");
-    let one_ulp_up = f32::from_bits(2.0f32.to_bits() + 1);
+    let one_ulp_up = f32::from_bits(2.0f32.to_bits() + 0x1_0000);
+    // With the tolerance: b's bytes (16 to 20 of the output) hold calibrated bf16 lanes.
+    let marks: Vec<Option<Round16>> = (0..28)
+        .map(|i| (16..20).contains(&i).then_some(Round16::Bf16))
+        .collect();
     for (a, b, ulp_ok, want) in [
         (
             [1, 2, 3, 4],
@@ -97,7 +105,8 @@ fn each_comparison_has_its_result() {
             false,
             [GpuMatch::Mismatch, GpuMatch::Bitwise],
         ),
-        // One ulp off: within one ulp only with N-MULTIMEM-ROUND16's tolerance (and f32).
+        // One ulp off: within one ulp only with N-MULTIMEM-ROUND16's tolerance (calibrated
+        // bf16 lanes).
         (
             [1, 2, 3, 4],
             [1.0, one_ulp_up],
@@ -118,7 +127,8 @@ fn each_comparison_has_its_result() {
         ),
     ] {
         let out = output(&a, &b);
-        let c = case.expect_compare_tol(&out, ulp_ok).unwrap();
+        let tol = ulp_ok.then_some(marks.as_slice());
+        let c = case.expect_compare_tol(&out, tol).unwrap();
         assert_eq!(
             results(&c),
             [("a", want[0]), ("b", want[1]), ("c", GpuMatch::NoCapture)],
@@ -126,7 +136,7 @@ fn each_comparison_has_its_result() {
         );
         // The lines are the report's, one per compared buffer, none for c.
         let lines: Vec<String> = c.iter().filter_map(|c| c.line.clone()).collect();
-        assert_eq!(lines, case.expect_report_tol(&out, ulp_ok).unwrap());
+        assert_eq!(lines, case.expect_report_tol(&out, tol).unwrap());
         assert!(c[2].line.is_none());
         for (c, w) in c.iter().zip(want) {
             let l = c.line.as_deref().unwrap();
@@ -138,6 +148,29 @@ fn each_comparison_has_its_result() {
                 _ => assert!(l.contains(": MISMATCH vs the captured"), "{l}"),
             }
         }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// MISS 110: NaN against a NaN with another payload is a mismatch in `gpu_compare`, even in
+/// bytes marked as calibrated bf16 lanes; the same NaN bits are bitwise equal.
+#[test]
+fn nan_payloads_are_a_mismatch() {
+    let (case, dir) = case("nan");
+    // b captured as (NaN 0x7fc0, 2.0).
+    std::fs::write(dir.join("b.bin"), [0xc0, 0x7f, 0x00, 0x40]).unwrap();
+    let marks: Vec<Option<Round16>> = (0..28)
+        .map(|i| (16..20).contains(&i).then_some(Round16::Bf16))
+        .collect();
+    for (b0, want) in [
+        (0x7fc1u16, GpuMatch::Mismatch),
+        (0x7fc0, GpuMatch::Bitwise),
+        (0xffc0, GpuMatch::Mismatch),
+    ] {
+        let mut out = output(&[1, 2, 3, 4], &[1.0, 2.0]);
+        out[16..18].copy_from_slice(&b0.to_le_bytes());
+        let c = case.expect_compare_tol(&out, Some(&marks)).unwrap();
+        assert_eq!(c[1].result, want, "{b0:#x}: {:?}", c[1].line);
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

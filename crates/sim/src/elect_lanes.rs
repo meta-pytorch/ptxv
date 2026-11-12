@@ -248,6 +248,18 @@ impl Av {
     }
 }
 
+/// A predicate operand's value across the lanes (1 / 0 per lane); a `.SIGN` register reads
+/// its bit 31 (`Reg::pred_bit`).
+fn pred_lanes(p: &Pred, regs: &HashMap<Reg, Av>) -> Av {
+    match p.reg {
+        None => Av::Lanes([!p.neg as u64; 32]),
+        Some(r) => match regs.get(&r).copied().unwrap_or(Av::Part(ONE)) {
+            Av::Lanes(v) => Av::Lanes(v.map(|x| (r.pred_bit(x) ^ p.neg) as u64)),
+            a => a,
+        },
+    }
+}
+
 /// Which lanes may execute an instruction (`known`) and which lanes share that status
 /// (`part`; lanes in one class all execute it or none does).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -569,15 +581,7 @@ fn warp_classes(
                 Val::SReg(s) => sreg(s),
             }
         };
-        let pred = |p: &Pred, regs: &HashMap<Reg, Av>| -> Av {
-            match p.reg {
-                None => Av::Lanes([!p.neg as u64; 32]),
-                Some(r) => match regs.get(&r).copied().unwrap_or(Av::Part(ONE)) {
-                    Av::Lanes(v) => Av::Lanes(v.map(|x| ((x != 0) ^ p.neg) as u64)),
-                    a => a,
-                },
-            }
-        };
+        let pred = pred_lanes;
         // Which lanes run each instruction.
         let mut ex_new = vec![Ex::ALL; n];
         for (b, t_side, f_side) in branches {
@@ -862,4 +866,43 @@ pub fn candidates(classes: Option<&Part>, mask: u32, others: &[(u32, u32)]) -> V
         }
     }
     out
+}
+
+#[cfg(test)]
+mod sign_pred_tests {
+    use super::*;
+
+    /// MISS 97: a `.SIGN` register as a predicate operand is its bit 31 in every lane (lane
+    /// l holding l - 16: lanes 0..15 negative, lane 16 zero); a P register is nonzero.
+    #[test]
+    fn sign_register_reads_bit_31() {
+        let lanes: [u64; 32] = std::array::from_fn(|l| (l as u32).wrapping_sub(16) as u64);
+        let sign: [u64; 32] = std::array::from_fn(|l| (l < 16) as u64);
+        let nonzero: [u64; 32] = std::array::from_fn(|l| (l != 16) as u64);
+        for file in [ptxv_ir::File::R, ptxv_ir::File::UR] {
+            let r = Reg { file, idx: 1 };
+            let regs: HashMap<Reg, Av> = [(r, Av::Lanes(lanes))].into();
+            let p = Pred {
+                reg: Some(r),
+                neg: false,
+            };
+            assert_eq!(pred_lanes(&p, &regs), Av::Lanes(sign), "{file:?}");
+            let np = Pred { neg: true, ..p };
+            assert_eq!(
+                pred_lanes(&np, &regs),
+                Av::Lanes(sign.map(|x| x ^ 1)),
+                "{file:?}"
+            );
+        }
+        let q = Reg {
+            file: ptxv_ir::File::P,
+            idx: 1,
+        };
+        let regs: HashMap<Reg, Av> = [(q, Av::Lanes(lanes))].into();
+        let p = Pred {
+            reg: Some(q),
+            neg: false,
+        };
+        assert_eq!(pred_lanes(&p, &regs), Av::Lanes(nonzero));
+    }
 }

@@ -1,0 +1,12 @@
+# MISS 135 (gen.py): out[i] = a[i] (a copy) against out[i] = a[i] + (+0) (add.rn.f32, FADD with RZ); input
+# set q. The candidate is the reference plus +0, but the reference's output is an input,
+# which can hold a NaN payload that x + (+0) turns into 0x7fffffff: L2 (bound 0), not L0~0.
+max_states = 200000
+reference = { case = "zcopy_ref_q", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "zcopy_cand_q"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L2"

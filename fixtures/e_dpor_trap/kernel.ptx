@@ -1,0 +1,34 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// A trap aborts the grid (every thread exits, pending ops are dropped). Warp 0 traps at once;
+// warp 1 stores out of bounds. The stateful search reaches both (warp 1 first, then the
+// trap); a DPOR that runs the trap first and never backtracks the threads it killed reports
+// the trap only.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_dpor_trap(.param .u64 out_p)
+.maxntid 64, 1, 1
+{
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<4>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    setp.ge.u32 %p0, %r1, 32;
+    @%p0 bra W1;
+    trap;
+W1:
+    setp.ne.u32 %p1, %r1, 32;
+    @%p1 bra END;
+    add.u64 %rd2, %rd1, 4096;
+    mov.u32 %r2, 1;
+    st.global.u32 [%rd2], %r2;
+END:
+    ret;
+}

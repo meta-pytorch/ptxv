@@ -1,0 +1,49 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 pa, .param .u64 pb, .param .u64 pc, .param .u64 pout)
+{
+    .reg .pred %p<4>;
+    .reg .b32 %r<8>;
+    .reg .f32 %f<16>;
+    .reg .b64 %rd<16>;
+    ld.param.u64 %rd1, [pa];
+    ld.param.u64 %rd2, [pb];
+    ld.param.u64 %rd3, [pc];
+    ld.param.u64 %rd4, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    cvta.to.global.u64 %rd4, %rd4;
+    mov.u32 %r1, %ctaid.x;
+    mov.u32 %r2, %tid.x;
+    mad.lo.u32 %r3, %r1, 256, %r2;
+    mul.wide.u32 %rd5, %r3, 4;
+    add.s64 %rd6, %rd1, %rd5;
+    add.s64 %rd7, %rd2, %rd5;
+    add.s64 %rd8, %rd3, %rd5;
+    add.s64 %rd9, %rd4, %rd5;
+    ld.global.f32 %f1, [%rd6];
+    ld.global.f32 %f2, [%rd7];
+    ld.global.f32 %f3, [%rd8];
+    add.rn.f32 %f5, %f1, %f2;
+    add.rn.f32 %f4, %f5, %f3;
+    st.global.f32 [%rd9], %f4;
+    setp.ne.u32 %p2, %r3, 0;
+    @%p2 bra DONE;
+    ld.global.f32 %f10, [%rd1+0];
+    ld.global.f32 %f11, [%rd1+4];
+    ld.global.f32 %f12, [%rd1+8];
+    ld.global.f32 %f13, [%rd1+12];
+    add.rn.f32 %f6, %f10, %f11;
+    add.rn.f32 %f6, %f6, %f12;
+    add.rn.f32 %f6, %f6, %f13;
+    st.global.f32 [%rd4+4096], %f6;
+DONE:
+    ret;
+}

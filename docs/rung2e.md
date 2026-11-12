@@ -43,6 +43,10 @@ The Triton SASS kernel is the reference: `ptxv equiv fixtures/r2e_gemm/equiv.tom
   - On values, `x·1 + 0` is the identity except at −0, which becomes +0.
   - During the trial, a temporary diagnostic confirmed that this epilogue node is the only
     remaining L0 difference.
+  - **Update (MISS 109):** the level is now decided with that final +0 peeled
+    (`Canon::l0_z`): the pair is L0~0, L0 up to the sign of zero (equal bits except that a -0
+    accumulator becomes +0), for the captured inputs (cluster 0 is not explored
+    exhaustively). From the peel until MISS 109 it was reported as L0.
 - **L1:** all four kernels compute exactly Σₖ aᵢₖ·bⱼₖ for every output. The canonical
   polynomials over input leaves are equal.
 - **L2:** no candidate's per-term error multiplier exceeds the reference's.

@@ -1,0 +1,31 @@
+name = "c_num_ldsm_trans_f32"
+description = """
+N-NUM-TRACK (MISS 115, a rearranging shared-memory read; the independent review's probe
+r2_ldsm_trans, kernel.ptx): lane t stores s_t = rn(t + 0.1f) to shared word t (an 8 x 8 b16 matrix,
+16-byte rows). ldmatrix.x1.trans gives lane l the halves (row 2(l%4), col l/4) and (row 2(l%4)+1,
+col l/4); a shfl.down by 4 and prmt 0x5410 rebuild word (row 2(l%4), l/8) in the lanes with l/4 even:
+out[l] = s_(8(l%4) + l/8) there, 0 elsewhere. Exact out[l] = 8(l%4) + l/8 + 0.1f there.
+expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_ldsm_trans_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

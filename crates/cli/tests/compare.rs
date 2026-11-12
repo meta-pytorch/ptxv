@@ -229,3 +229,58 @@ fn compare_bf16_silu_mul_is_exhaustive() {
     assert_eq!(p["max_ulps_normal"], 1, "{j}");
     assert_eq!(j["equivalence"]["elementwise"]["true_fn"], "silu", "{j}");
 }
+
+/// MISS 98 (fixtures/c_equiv_atomic): an unproven level the captured GPU outputs contradict
+/// is reported as contradicted. The candidate's guard depends on input data, so
+/// its L0 is unproven, and its capture differs from its simulated output in one bit; before,
+/// the headline said "NOT PROVEN for every input (L0 holds on the captured inputs only)".
+#[test]
+fn compare_unproven_level_contradicted_by_the_captures() {
+    let (text, j, _) = compare(
+        "fixtures/c_equiv_atomic/ref_copy",
+        "fixtures/c_equiv_atomic/cand_copy_g_bit",
+    );
+    assert!(
+        text.contains("NOT PROVEN: the captured GPU outputs contradict the model (the candidate's simulated output differs from its capture)"),
+        "{text}"
+    );
+    assert!(!text.contains("holds on the captured inputs"), "{text}");
+    let e = &j["equivalence"];
+    assert_eq!(
+        e["level"], "none (contradicted by the captured GPU outputs)",
+        "{j}"
+    );
+    assert_eq!(
+        e["contradicted"], "the candidate's simulated output differs from its capture",
+        "{j}"
+    );
+}
+
+/// MISS 109 (fixtures/c_equiv_zero_sign): a candidate that adds +0 to the reference's output is
+/// L0~0, "PROVEN equal up to the sign of zero", never "bitwise identical"; report.json and
+/// report.md name the level L0~0 and list L0 as failing. Before, the level was L0 (and the
+/// MISS 98 capture check refused it: the GB300 captures differ in the sign of 16 zeros).
+#[test]
+fn compare_zero_sign_is_not_bitwise() {
+    let (text, j, md) = compare(
+        "fixtures/c_equiv_zero_sign/ref_add",
+        "fixtures/c_equiv_zero_sign/cand_add0",
+    );
+    assert!(
+        text.contains("PROVEN equal up to the sign of zero (L0~0) for every input"),
+        "{text}"
+    );
+    assert!(!text.contains("bitwise identical"), "{text}");
+    let e = &j["equivalence"];
+    assert_eq!(e["level"], "L0~0", "{j}");
+    assert_eq!(e["proven"], true, "{j}");
+    assert_eq!(e["levels"][0]["level"], "L0 bitwise", "{j}");
+    assert_eq!(e["levels"][0]["holds"], false, "{j}");
+    assert_eq!(j["gpu"]["bitwise_equal"], 1008, "{j}");
+    assert!(
+        md.contains("- level: **L0~0** (proven for every input)"),
+        "{md}"
+    );
+    assert!(md.contains("L0 bitwise: fails at 1024 outputs"), "{md}");
+    assert!(md.contains("L0~0 up to the sign of zero: holds"), "{md}");
+}

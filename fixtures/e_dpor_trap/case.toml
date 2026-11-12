@@ -1,0 +1,25 @@
+name = "e_dpor_trap"
+description = """
+MISS 146: a trap exits every thread and clears the pending ops, disabling every other process.
+Warp 0 traps at once; thread 32 stores out of bounds. DPOR backtracked only consumed ops, not
+the killed threads, so it took warp 0 first and gave [trap]; the stateful search gives
+[fault, trap]. The trap now backtracks every split it exits. See kernel.ptx."""
+ptx = "kernel.ptx"
+entry = "e_dpor_trap"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["fault", "trap"]

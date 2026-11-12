@@ -1,0 +1,52 @@
+name = "c_num_atom_store_f32"
+description = """
+N-NUM-TRACK (MISS 114, words atomics write; the independent review's probe r2_atom_store, kernel.ptx,
+gen.py): s = rn(t + 0.1f) (an FADD node of %tid and a constant, not input data). buf[t] and buf[64 + t]
+first get a plain store of 0. buf[t] <- atom.exch s; buf[32 + t] <- st s, then red.or 0; buf[64 + t]
+<- atom.cas (0 -> s). out[32 k + t] = buf[32 k + t] (k = 0, 1, 2); out[96 + t] = rn(out[t] + x[t]).
+Exact out[32 k + t] = t + 0.1f.
+expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_atom_store_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "buf"
+dtype = "f32"
+shape = [96]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "buf"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

@@ -1,0 +1,5 @@
+{"version": 1, "seed": 129, "name": "x = 0.1, v = -0.3; s[0] = 1 w.p. 0.2, else U[2.999, 3.001] (all 64 outputs differ together where s[0] is not 1; seed 129: the first 3 Tier 3 inputs draw s[0] = 1)",
+ "tensors": {"s": {"dist": {"kind": "mixture", "components": [{"weight": 0.2, "dist": {"kind": "const", "value": 1.0}}, {"weight": 0.8, "dist": {"kind": "uniform", "lo": 2.999, "hi": 3.001}}]}},
+             "x": {"dist": {"kind": "const", "value": 0.1}},
+             "v": {"dist": {"kind": "const", "value": -0.3}}},
+ "default": {"dist": {"kind": "normal"}}}

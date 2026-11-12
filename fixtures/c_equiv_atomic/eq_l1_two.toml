@@ -1,0 +1,19 @@
+# MISS 98 (gen.py), rounding-DAG mode: two float atomic adds into one output (out[1024])
+# from +0, which every order adds to the same bits: out[1024] is held to its capture as the
+# other outputs are, and its last bit changed is refused.
+max_states = 200000
+reference = { case = "ref_B2", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "cand_B2"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L1"
+
+[[candidates]]
+case = "cand_B2_t1"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (contradicted by the captured GPU outputs)"

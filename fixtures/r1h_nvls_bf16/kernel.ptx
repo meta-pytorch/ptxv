@@ -1,0 +1,82 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+//
+// Rung 1h, bf16: one-shot all-reduce of bf16 pairs through NVLS multicast memory on 2 GPUs
+// (fixtures/r1h_nvls with multimem.ld_reduce .add.bf16x2). Each rank stages its 4 bf16 values
+// into its own buffer, fences the alias proxy and joins a barrier by multimem.red.release on
+// the flag word through the multicast address, then each thread reduces one pair with
+// multimem.ld_reduce and writes it four ways: A stores it as reduced; M broadcasts it with
+// multimem.st (thread t of rank t only, so each pair has one writer); C stores it and then
+// exchanges the thread's own input pair in; B doubles it in its register (mul.rn.bf16x2, exact)
+// and stores that.
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry nvls16(
+    .param .u64 inp,
+    .param .u64 buf,
+    .param .u64 mc,
+    .param .u64 outa,
+    .param .u64 outb,
+    .param .u64 outc,
+    .param .u64 mcm,
+    .param .u32 rank
+)
+{
+    .reg .b32 %r<10>;
+    .reg .b64 %rd<20>;
+    .reg .pred %p<4>;
+
+    ld.param.u64 %rd1, [inp];
+    ld.param.u64 %rd2, [buf];
+    ld.param.u64 %rd3, [mc];
+    ld.param.u64 %rd10, [outa];
+    ld.param.u64 %rd11, [outb];
+    ld.param.u64 %rd12, [outc];
+    ld.param.u64 %rd13, [mcm];
+    ld.param.u32 %r9, [rank];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd5, %r1, 4;
+    add.s64 %rd6, %rd1, %rd5;
+    ld.global.b32 %r4, [%rd6];
+    add.s64 %rd7, %rd2, %rd5;
+    st.global.b32 [%rd7], %r4;
+    bar.sync 0;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra WAITED;
+    fence.proxy.alias;
+    multimem.red.release.sys.global.add.u32 [%rd3+64], 1;
+    fence.proxy.alias;
+POLL:
+    ld.acquire.sys.global.u32 %r2, [%rd2+64];
+    setp.lt.u32 %p2, %r2, 2;
+    @%p2 bra POLL;
+WAITED:
+    bar.sync 0;
+    add.s64 %rd8, %rd3, %rd5;
+    multimem.ld_reduce.relaxed.sys.global.add.bf16x2 %r3, [%rd8];
+    // A: the reduced pair as loaded.
+    add.s64 %rd14, %rd10, %rd5;
+    st.global.b32 [%rd14], %r3;
+    // M: the reduced pair broadcast through the multicast address by thread t of rank t.
+    setp.ne.u32 %p3, %r1, %r9;
+    @%p3 bra NOBCAST;
+    add.s64 %rd15, %rd13, %rd5;
+    multimem.st.global.b32 [%rd15], %r3;
+NOBCAST:
+    // C: the reduced pair, exchanged for the input pair below.
+    add.s64 %rd16, %rd12, %rd5;
+    st.global.b32 [%rd16], %r3;
+    // B: the reduced pair doubled in its register (exact), then stored.
+    mov.b32 %r5, 0x40004000;
+    mul.rn.bf16x2 %r3, %r3, %r5;
+    add.s64 %rd17, %rd11, %rd5;
+    st.global.b32 [%rd17], %r3;
+    atom.global.exch.b32 %r6, [%rd16], %r4;
+    ret;
+}

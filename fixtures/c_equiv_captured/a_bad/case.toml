@@ -1,0 +1,36 @@
+name = "c_equiv_captured_a_bad"
+description = """
+MISS 98 (fixtures/c_equiv_captured/gen.py): y[i] = x[i] on 1024 finite f32 inputs.
+expected/ is a/'s GB300 output, out[5] changed in its last bit (gen.py --bad)."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

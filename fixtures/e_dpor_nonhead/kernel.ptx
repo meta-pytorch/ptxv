@@ -1,0 +1,79 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Non-head consumed op. Rank 0 warp 0: lane 0 issues st.async A to rank 1's M1; lane 1 issues
+// st.async P (on M2), then st.async B (on M1: behind A in remote_pipe(w, 1, M1)), then a
+// cluster-scope fence that drains P and B (issuer lane 1) but not A. Rank 1 waits on M1 (A+B)
+// and reads g (written by P): never-written when B landed before P, which needs A to land,
+// then B on its own, before the fence.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_dpor_nonhead(.param .u64 out_p)
+.maxntid 32, 1, 1
+.reqnctapercluster 2, 1, 1
+{
+    .reg .b32 %r<20>;
+    .reg .b64 %rd<4>;
+    .reg .pred %p<8>;
+    .shared .align 8 .b64 m1;
+    .shared .align 8 .b64 m2;
+    .shared .align 4 .b32 f0;
+    .shared .align 4 .b32 f1;
+    .shared .align 4 .b32 g;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r3, %cluster_ctarank;
+    mov.u32 %r4, m1;
+    mov.u32 %r5, m2;
+    mov.u32 %r6, f0;
+    mov.u32 %r7, f1;
+    mov.u32 %r8, g;
+    setp.ne.u32 %p0, %r3, 1;
+    setp.ne.u32 %p1, %r1, 0;
+    or.pred %p2, %p0, %p1;
+    @%p2 bra INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r4], 1;
+    mbarrier.init.shared::cta.b64 [%r5], 1;
+    fence.mbarrier_init.release.cluster;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r4], 8;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r5], 4;
+INIT_DONE:
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    setp.gt.u32 %p3, %r1, 1;
+    @%p3 bra END;
+    @!%p0 bra RANK1;
+    mapa.shared::cluster.u32 %r9, %r4, 1;
+    mapa.shared::cluster.u32 %r10, %r5, 1;
+    mapa.shared::cluster.u32 %r11, %r6, 1;
+    mapa.shared::cluster.u32 %r12, %r7, 1;
+    mapa.shared::cluster.u32 %r13, %r8, 1;
+    mov.u32 %r14, 42;
+    @%p1 bra LANE1;
+    st.async.shared::cluster.mbarrier::complete_tx::bytes.b32 [%r11], %r14, [%r9];
+    bra END;
+LANE1:
+    st.async.shared::cluster.mbarrier::complete_tx::bytes.b32 [%r13], %r14, [%r10];
+    st.async.shared::cluster.mbarrier::complete_tx::bytes.b32 [%r12], %r14, [%r9];
+    // (lane 1 drain slot)                                                     // @NH
+    bra END;
+RANK1:
+    @%p1 bra END;
+WAIT:
+    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p4, [%r4], 0;
+    @!%p4 bra WAIT;
+    ld.shared.u32 %r15, [%r8];
+    st.global.u32 [%rd1], %r15;
+WAIT2:
+    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p5, [%r5], 0;
+    @!%p5 bra WAIT2;
+END:
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    ret;
+}

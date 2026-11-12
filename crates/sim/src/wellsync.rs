@@ -2173,6 +2173,7 @@ fn mem_bytes(m: &Machine, loc: Loc, n: usize) -> Vec<u8> {
 }
 
 fn set_mem_bytes(m: &mut Machine, loc: Loc, v: &[u8]) {
+    m.round16_forget_mem(loc, v.len());
     let mem = match loc {
         Loc::Shared { cta, off: _ } => &mut m.smem[cta as usize],
         Loc::Global { alloc, off: _ } => &mut m.gmem[alloc],

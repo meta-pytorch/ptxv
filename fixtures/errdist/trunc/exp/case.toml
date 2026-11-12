@@ -1,0 +1,41 @@
+name = "trunc_exp"
+description = """entry tr_exp of ../kernel.ptx (see its header): the exponent field of a float (LOP3 a & 0x7f800000) inside an instruction slice, one value on every probe."""
+ptx = "../kernel.ptx"
+entry = "tr_exp"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

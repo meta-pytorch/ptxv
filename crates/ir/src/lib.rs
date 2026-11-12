@@ -86,6 +86,17 @@ impl Reg {
     pub fn is_pt(&self, front: Front) -> bool {
         self.idx == 7 && (self.file == File::UP || self.file == File::P && front == Front::Sass)
     }
+    /// The truth of this register read as a predicate operand whose value (or undefined-bit
+    /// mask) is `v`: bit 31 for a SASS `Rn.SIGN` / `URn.SIGN` (a PLOP3 input, its sign bit:
+    /// `Machine::prd`), otherwise nonzero (a P / UP predicate holds 0 / 1). Every reader of
+    /// predicate operands takes this; until 2026-11-11 (MISS 97) slices, N-FINITE, the
+    /// constant-guard and lane walks and S-INIT read a `.SIGN` register as nonzero.
+    pub fn pred_bit(&self, v: u64) -> bool {
+        match self.file {
+            File::R | File::UR => v >> 31 & 1 == 1,
+            _ => v != 0,
+        }
+    }
 }
 
 /// `bar.red` reduction (SASS `BAR.RED.POPC` / `.AND` / `.OR`).

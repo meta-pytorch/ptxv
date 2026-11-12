@@ -416,11 +416,12 @@ pub(crate) fn seg_val(p: &crate::seg::SProg, fin_args: &[bool]) -> FinVal {
                         c => cvals.iter().find(|(x, _)| x == c).map_or(Top, |x| K(x.1)),
                     }
                 };
+                // A `.SIGN` register (PLOP3 input) reads its bit 31 (`Reg::pred_bit`).
                 let pk = |pr: &Pred| -> Option<bool> {
                     match pr.reg {
                         None => Some(!pr.neg),
                         Some(r) => match srcs.iter().find(|(x, _)| *x == r).map(|x| x.1) {
-                            Some(K(c)) => Some((c != 0) != pr.neg),
+                            Some(K(c)) => Some(r.pred_bit(c) != pr.neg),
                             _ => None,
                         },
                     }
@@ -1047,6 +1048,85 @@ impl NumState {
             })
     }
 
+    /// Whether node `root`'s value depends on the order of some location's float atomic adds:
+    /// its DAG (the arguments of instruction slices and selections included) holds a chain of
+    /// fp32 (`AtomAdd`) or 16-bit (`AtomAdd16`) adds into one location whose orders can round
+    /// differently. Those are the chains `equiv`'s canonical form calls unordered: more than
+    /// two adds into +0, or more than one into another start (adding to +0 is exact, and two
+    /// adds commute), and two fp32 adds into +0 of which one flushes subnormals and the other
+    /// does not (MISS 134: their order changes the bits). `memo` keeps the answer per node
+    /// across calls.
+    pub fn atomic_order_dependent(&self, root: u32, memo: &mut HashMap<u32, bool>) -> bool {
+        let kids = |n: u32| -> Vec<u32> {
+            match &self.nodes[n as usize].kind {
+                NodeKind::Leaf | NodeKind::Opaque | NodeKind::Input(_) => vec![],
+                NodeKind::Seg(p) => p.0.args.clone(),
+                NodeKind::Sel { pred, a, b, .. } => {
+                    pred.0.args.iter().copied().chain([*a, *b]).collect()
+                }
+                NodeKind::Add(a, b, _)
+                | NodeKind::AtomAdd(a, b, _)
+                | NodeKind::AtomAdd16(a, b, _)
+                | NodeKind::Max { a, b, .. } => vec![*a, *b],
+                NodeKind::Fma { a, b, c, .. } => {
+                    [Some(*a), Some(*b), *c].into_iter().flatten().collect()
+                }
+                NodeKind::Mma { acc, ops, sc, .. } => acc
+                    .iter()
+                    .copied()
+                    .chain(ops.iter().flatten().flat_map(|&(x, y)| [x, y]))
+                    .chain(sc.iter().flat_map(|&(x, y)| [x, y]))
+                    .collect(),
+                NodeKind::Round { arg, .. }
+                | NodeKind::Mufu { arg, .. }
+                | NodeKind::Tf32 { arg, .. } => vec![*arg],
+            }
+        };
+        // An add of the chain: (the location's value before it, its format: None for fp32,
+        // Some(f16) for a 16-bit add, its flush flag: an fp32 add's FTZ, false for 16-bit).
+        let add = |n: u32| match self.nodes[n as usize].kind {
+            NodeKind::AtomAdd(o, _, ftz) => Some((o, None, ftz)),
+            NodeKind::AtomAdd16(o, _, f16) => Some((o, Some(f16), false)),
+            _ => None,
+        };
+        // Whether the chain ending at `n` (adds of n's format, as the canonical form walks
+        // them) is order-dependent; three adds always are, so the walk stops there. Two adds
+        // into +0 are too when one flushes and the other does not (MISS 134).
+        let unordered = |n: u32| -> bool {
+            let Some((_, fmt, ftz)) = add(n) else {
+                return false;
+            };
+            let (mut s, mut mixed, mut cur) = (0, false, n);
+            while let Some((o, _, f)) = add(cur).filter(|a| a.1 == fmt && s < 3) {
+                mixed |= f != ftz;
+                s += 1;
+                cur = o;
+            }
+            let b = &self.nodes[cur as usize];
+            let base_zero = matches!(b.kind, NodeKind::Leaf) && b.hw == 0;
+            s >= 3 || (s == 2 && (!base_zero || mixed))
+        };
+        let mut stack = vec![(root, false)];
+        while let Some((n, done)) = stack.pop() {
+            if memo.contains_key(&n) {
+                continue;
+            }
+            let ks = kids(n);
+            if !done {
+                stack.push((n, true));
+                stack.extend(
+                    ks.iter()
+                        .filter(|k| !memo.contains_key(k))
+                        .map(|&k| (k, false)),
+                );
+                continue;
+            }
+            let v = unordered(n) || ks.iter().any(|k| memo.get(k).copied().unwrap_or(false));
+            memo.insert(n, v);
+        }
+        memo[&root]
+    }
+
     pub fn with_mma_eps(eps: f64) -> NumState {
         NumState {
             mma_eps: eps,
@@ -1398,6 +1478,9 @@ pub struct ReadSnapshot {
     origins: Vec<bool>,
     nodes: Vec<Option<u32>>,
     half: Vec<Option<crate::halfin::Src>>,
+    /// `ptxv num` (N-NUM-TRACK): per byte read, whether the word holding it had a node with a
+    /// rounding (empty: none had).
+    rounded: Vec<bool>,
 }
 
 pub(crate) struct StoreOrigins {
@@ -1405,6 +1488,32 @@ pub(crate) struct StoreOrigins {
     count: usize,
     guard: bool,
     coverage: bool,
+}
+
+/// What one atomic did at one location, for `Machine::num_atom`.
+pub(crate) struct AtomNum {
+    pub op: AtomOp,
+    pub bytes: u8,
+    /// The operand: the value combined with the old one, the exchanged value, or a
+    /// compare-and-swap's compare value.
+    pub x: Val,
+    /// A compare-and-swap's new value.
+    pub new: Option<Val>,
+    /// A compare-and-swap found its compare value (and wrote the new value).
+    pub swapped: bool,
+    /// The value the atomic computed for the location (the bytes written, if it wrote).
+    pub written: u64,
+    /// `ptxv num`: before the write, a covered word held a node with a rounding, or bytes of
+    /// one (`Machine::num_old_rounded`).
+    pub old_rounded: bool,
+    /// The bytes read were tainted as input data.
+    pub old_input_derived: bool,
+    /// fp32 add: old, added and new bits.
+    pub fadd: Option<(u32, u32, u32)>,
+    pub d: Option<Reg>,
+    pub p: Option<Reg>,
+    /// The instruction's guard register.
+    pub guard: Option<Reg>,
 }
 
 impl Machine {
@@ -2264,7 +2373,13 @@ impl Machine {
             // This register's own bytes (a whole-word register: its word; else the access).
             let (sp, a, off) = mem_key(loc);
             if let Some((lo, n)) = own {
-                let rt = (lo..lo + n).any(|b| ns.taint.mem_has((sp, a, off + b)));
+                let mut rt = (lo..lo + n).any(|b| ns.taint.mem_has((sp, a, off + b)));
+                // ASSUME(N-NUM-TRACK): `ptxv num`: a register that gets bytes of a word holding
+                // a rounding without the word's node (a 16-bit or 8-bit load, a vector of them)
+                // is input data.
+                if ns.rounding_taint && w.is_none() && !rt {
+                    rt = ns.words_rounded((sp, a, off + lo), n);
+                }
                 ns.taint.ld_read.push((t, r, rt));
             }
             let node = w.and_then(|w| {
@@ -2390,22 +2505,17 @@ impl Machine {
         self.num_clobber(t, d, &[v], pc);
     }
 
-    /// An atomic on memory at `loc`. fp32 adds (`fadd`: old, added and new bits) extend the
-    /// location's atomic chain; any other atomic leaves an untracked value. The returned old
-    /// value depends on the schedule: it has no node.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn num_atom(
-        &mut self,
-        t: usize,
-        v: &Val,
-        loc: Loc,
-        old_input_derived: bool,
-        fadd: Option<(u32, u32, u32)>,
-        d: Option<Reg>,
-        pc: u32,
-    ) {
+    /// An atomic on memory at `loc` (`a`: what it did). fp32 adds (`a.fadd`: old, added and
+    /// new bits) extend the location's atomic chain; any other atomic leaves an untracked
+    /// value (`ptxv num`: `num_atom_rounding`). The returned old value depends on the
+    /// schedule: it has no node.
+    pub(crate) fn num_atom(&mut self, t: usize, a: &AtomNum, loc: Loc, pc: u32) {
+        let (v, fadd, d, old_input_derived) = (&a.x, a.fadd, a.d, a.old_input_derived);
         if fadd.is_some() {
             self.num_node_mat(t, v);
+        } else if self.num.as_ref().is_some_and(|ns| ns.rounding_taint) {
+            self.num_atom_rounding(t, a, loc, pc);
+            return;
         }
         let vc = match (&self.num, fadd) {
             (Some(_), Some(_)) => self.threads[t].vc.clone(),
@@ -2451,6 +2561,145 @@ impl Machine {
         if let Some(d) = d {
             ns.set(t, d, None);
         }
+    }
+
+    /// `num_atom` of an atomic other than an f32 add with `ptxv num`'s rounding rule: a value
+    /// it reads or writes that may hold a rounding the graph does not record is input data.
+    /// - The returned old value, where a word it read held a node with a rounding or bytes of
+    ///   one (`AtomNum::old_rounded`).
+    /// - The words, where the atomic computes them from such a value or from an operand that
+    ///   may differ from the exact computation's (an integer read-modify-write), or rounds
+    ///   itself (an f64 add). A compare-and-swap's words and outcome, where its old or compare
+    ///   value may (the exact computation may swap where this run does not, or the reverse).
+    /// - An exchange, and a compare-and-swap that swapped, store the new value (`num_st`: its
+    ///   nodes, 16-bit provenance and taint); one that did not swap leaves the words as they
+    ///   were.
+    // ASSUME(N-NUM-TRACK): see ASSUMPTIONS.md
+    fn num_atom_rounding(&mut self, t: usize, a: &AtomNum, loc: Loc, pc: u32) {
+        let cas = matches!(a.op, AtomOp::Cas | AtomOp::CasSpin);
+        let x_inexact = self.num_val_inexact(t, &a.x, a.bytes);
+        let decided = cas && (a.old_rounded || a.old_input_derived || x_inexact);
+        let moved = match a.op {
+            AtomOp::Exch => Some(a.x.clone()),
+            _ if cas && a.swapped && !decided => a.new.clone(),
+            _ => None,
+        };
+        let recompute = match a.op {
+            AtomOp::Exch => false,
+            _ if cas => decided,
+            AtomOp::FAdd64 => true,
+            _ => a.old_rounded || x_inexact,
+        };
+        let k = mem_key(loc);
+        if let Some(v) = &moved {
+            let origins = self.num_store_origins(t, v, a.bytes, a.guard);
+            let data: Vec<u8> = (0..a.bytes).map(|i| (a.written >> (8 * i)) as u8).collect();
+            self.num_st(t, v, loc, &data, &origins, pc);
+        } else if recompute {
+            self.half_mem_set(k, &vec![None; a.bytes as usize]);
+        }
+        let Some(ns) = self.num.as_mut() else { return };
+        ns.other_atomics += 1;
+        let end = k.2 + a.bytes as u64;
+        let words: Vec<(u8, u64, u64)> = ((k.2 & !3)..end)
+            .step_by(4)
+            .map(|w| (k.0, k.1, w))
+            .collect();
+        let failed = cas && !a.swapped;
+        if recompute || moved.is_none() && !failed {
+            for &w in &words {
+                ns.note_write(w);
+                ns.mem.remove(&w);
+            }
+        }
+        if recompute {
+            for &(sp, obj, w) in &words {
+                for b in w..w + 4 {
+                    ns.taint.mem_set((sp, obj, b), true);
+                }
+            }
+        }
+        if let Some(d) = a.d {
+            ns.set(t, d, None);
+            let (w, taint) = if a.op == AtomOp::CasSpin {
+                (1, decided)
+            } else if d.file == File::V {
+                (1, a.old_rounded)
+            } else {
+                ((a.bytes as u16 / 4).max(1), a.old_rounded)
+            };
+            if taint {
+                for i in 0..w {
+                    let r = Reg {
+                        file: d.file,
+                        idx: d.idx + i,
+                    };
+                    ns.taint.clobber_taint.push((t, r));
+                }
+            }
+        }
+        if let (Some(p), AtomOp::CasSpin, true) = (a.p, a.op, decided) {
+            ns.taint.clobber_taint.push((t, p));
+        }
+    }
+
+    /// `ptxv num` (N-NUM-TRACK): whether a memory word an access of `bytes` bytes at `loc`
+    /// covers holds a node with a rounding (`NumState::rounded`), or the bytes hold 16-bit
+    /// provenance of one. False without the rounding rule.
+    pub(crate) fn num_old_rounded(&mut self, loc: Loc, bytes: u8) -> bool {
+        if !self.num.as_ref().is_some_and(|ns| ns.rounding_taint) {
+            return false;
+        }
+        let half = self.half_mem(loc, bytes as usize, None);
+        let ns = self.num.as_mut().unwrap();
+        ns.words_rounded(mem_key(loc), bytes as u64) || ns.half_rounded(&half)
+    }
+
+    /// `d` of thread `t` got bytes of memory at `locs` without a node (ldmatrix `.trans`,
+    /// unaligned or `.b8`): with `ptxv num`'s rounding rule it is input data if a word holding
+    /// one of them has a node with a rounding (N-NUM-TRACK); see `num_clobber`.
+    pub(crate) fn num_clobber_mem(&mut self, t: usize, d: Reg, locs: &[Loc], pc: u32) {
+        if let Some(ns) = self.num.as_mut() {
+            if ns.rounding_taint && locs.iter().any(|&l| ns.words_rounded(mem_key(l), 1)) {
+                ns.taint.clobber_taint.push((t, d));
+            }
+        }
+        self.num_clobber(t, d, &[], pc);
+    }
+
+    /// `ptxv num`: whether operand `v` (`bytes` bytes) of thread `t` may differ from the exact
+    /// computation's: a register tainted as input data, holding a node with a rounding, or
+    /// bytes of one (16-bit provenance).
+    fn num_val_inexact(&mut self, t: usize, v: &Val, bytes: u8) -> bool {
+        let Val::Reg(r, _) = v else { return false };
+        let regs: Vec<Reg> = if r.file == File::V {
+            if bytes == 8 {
+                vec![*r, lane_reg(*r, 1)]
+            } else {
+                vec![*r]
+            }
+        } else {
+            (0..(bytes as u16 / 4).max(1))
+                .map(|i| Reg {
+                    file: r.file,
+                    idx: r.idx + i,
+                })
+                .collect()
+        };
+        let halves: Vec<Vec<Option<crate::halfin::Src>>> = regs
+            .iter()
+            .map(|&c| {
+                self.half_val(t, &Val::Reg(c, 1))
+                    .map_or(vec![], |b| b.to_vec())
+            })
+            .collect();
+        let Some(ns) = self.num.as_mut() else {
+            return false;
+        };
+        regs.iter().zip(halves).any(|(&c, h)| {
+            let n = ns.node_of_reg(t, c);
+            ns.taint.reg_t(t, c) || n.is_some_and(|n| ns.rounded(n)) || ns.half_rounded(&h)
+        })
     }
 
     pub(crate) fn num_store_origins(
@@ -2612,10 +2861,18 @@ impl Machine {
             }
         }
         if partial {
+            // ASSUME(N-NUM-TRACK): `ptxv num`: a word that mixes bytes of a value holding a
+            // rounding (the stored register's or the word's old node) with other bytes is input
+            // data.
+            let src_rounded = ns.rounding_taint && ns.node_of(t, v).is_some_and(|n| ns.rounded(n));
             for (off, bits) in partial_words {
                 let key = (store_space, store_allocation, off);
                 ns.note_write(key);
-                ns.mem.remove(&key);
+                let old = ns.mem.remove(&key);
+                if ns.rounding_taint && (src_rounded || old.is_some_and(|n| ns.rounded(n))) {
+                    ns.taint
+                        .assign_memory(store_space, store_allocation, off, off + 4, true);
+                }
                 if ns
                     .taint
                     .memory_intersects(store_space, store_allocation, off, off + 4)
@@ -3171,6 +3428,13 @@ impl Machine {
         };
         if let Some(why) = why {
             ns.mem.remove(&k);
+            // ASSUME(N-NUM-TRACK): `ptxv num`: the maximum of an operand holding a rounding,
+            // without a node, is input data.
+            if ns.rounding_taint && [on, vn].into_iter().flatten().any(|n| ns.rounded(n)) {
+                for b in k.2..k.2 + 4 {
+                    ns.taint.mem_set((k.0, k.1, b), true);
+                }
+            }
             ns.taint
                 .violations
                 .insert(format!("float atomic max at {describe}: {why}"));
@@ -3677,6 +3941,23 @@ impl Machine {
                 out[i + 1] = Some(crate::halfin::Src::N { node: nd, b: 1 });
             }
         }
+        // ASSUME(N-NUM-TRACK): `ptxv num`: a lane without a node holds a rounded sum the graph
+        // does not record: input data. The word holding the bytes loses its node (input data
+        // if that node held a rounding).
+        let ns = self.num.as_mut().unwrap();
+        if ns.rounding_taint {
+            let w = (k.0, k.1, k.2 & !3);
+            ns.note_write(w);
+            let old = ns.mem.remove(&w);
+            if old.is_some_and(|n| ns.rounded(n)) {
+                ns.taint.assign_memory(w.0, w.1, w.2, w.2 + 4, true);
+            }
+            for (i, s) in out.iter().enumerate() {
+                if s.is_none() {
+                    ns.taint.mem_set((k.0, k.1, k.2 + i as u64), true);
+                }
+            }
+        }
         self.half_mem_set(crate::halfin::hkey(loc), &out);
         if let Some(d) = d {
             self.num.as_mut().unwrap().set(t, d, None);
@@ -3900,9 +4181,28 @@ impl Machine {
         f16: bool,
         (pc, actor, vc): (u32, u32, &VC),
     ) {
-        let Some(ns) = self.num.as_ref() else { return };
+        let Some(ns) = self.num.as_mut() else { return };
+        // ASSUME(N-NUM-TRACK): `ptxv num`: the word holding the element loses its node (input
+        // data if that node held a rounding).
+        let (space, allocation, off) = mem_key(to);
+        if ns.rounding_taint {
+            if ns.words_rounded((space, allocation, off), 2) {
+                ns.taint
+                    .assign_memory(space, allocation, off & !3, (off & !3) + 4, true);
+            }
+            ns.note_write((space, allocation, off & !3));
+            ns.mem.remove(&(space, allocation, off & !3));
+        }
+        let ns = self.num.as_ref().unwrap();
         if !ns.half.is_on() || bo.len() != 2 {
             self.num_forget(to);
+            // ASSUME(N-NUM-TRACK): `ptxv num`: the element holds a rounded sum the graph does
+            // not record: input data.
+            let ns = self.num.as_mut().unwrap();
+            if ns.rounding_taint {
+                ns.taint
+                    .assign_memory(space, allocation, off, off + 2, true);
+            }
             return;
         }
         let wide = |h: u16| {
@@ -4030,10 +4330,23 @@ impl Machine {
             }
             nodes.push(node);
         }
+        // N-NUM-TRACK: the bytes of words holding a rounding, for a copy that does not move the
+        // words whole (`num_copy_snapshot`).
+        let mut rounded = Vec::new();
+        if let (Some(loc), true) = (from, ns.rounding_taint) {
+            let (space, allocation, off) = mem_key(loc);
+            let r: Vec<bool> = (0..data.len() as u64)
+                .map(|b| ns.words_rounded((space, allocation, off + b), 1))
+                .collect();
+            if r.contains(&true) {
+                rounded = r;
+            }
+        }
         Some(ReadSnapshot {
             origins,
             nodes,
             half,
+            rounded,
         })
     }
 
@@ -4086,11 +4399,27 @@ impl Machine {
                 .taint
                 .assign_memory(space, allocation, off, off + data.len() as u64, true),
         }
+        // ASSUME(N-NUM-TRACK): `ptxv num`: a word the copy writes without moving a node, with
+        // bytes of a word that held a rounding (copied, or left of the old word), is input data.
+        let copied_rounded = |lo: u64, hi: u64| {
+            snapshot.is_some_and(|s| {
+                s.rounded
+                    .get((lo - off) as usize..(hi - off) as usize)
+                    .is_some_and(|r| r.contains(&true))
+            })
+        };
         if partial {
             for (offset, bits) in partial_words {
                 let key = (space, allocation, offset);
                 ns.note_write(key);
-                ns.mem.remove(&key);
+                let old = ns.mem.remove(&key);
+                let (lo, hi) = (offset.max(off), (offset + 4).min(off + data.len() as u64));
+                if ns.rounding_taint
+                    && (copied_rounded(lo, hi) || old.is_some_and(|n| ns.rounded(n)))
+                {
+                    ns.taint
+                        .assign_memory(space, allocation, offset, offset + 4, true);
+                }
                 if ns
                     .taint
                     .memory_intersects(space, allocation, offset, offset + 4)
@@ -4117,6 +4446,19 @@ impl Machine {
                             None
                         }
                     });
+                let at = off + 4 * word as u64;
+                let node = match node {
+                    None if ns.rounding_taint && copied_rounded(at, at + 4) => {
+                        ns.taint.assign_memory(space, allocation, at, at + 4, true);
+                        let bits = u32::from_le_bytes(
+                            data[4 * word..4 * word + 4]
+                                .try_into()
+                                .expect("complete copy word"),
+                        );
+                        Some(ns.leaf_with_origin(bits, pc, true))
+                    }
+                    n => n,
+                };
                 if let Some(node) = node {
                     ns.mem.insert(key, node);
                 } else {
@@ -4216,6 +4558,23 @@ impl NumState {
         };
         self.rounded_memo.insert(n, x);
         x
+    }
+
+    /// N-NUM-TRACK: a memory word holding one of bytes `k` .. `k` + `n` (space, object, byte
+    /// offset) has a node with a rounding.
+    pub(crate) fn words_rounded(&mut self, k: (u8, u64, u64), n: u64) -> bool {
+        ((k.2 & !3)..k.2 + n).step_by(4).any(|w| {
+            let m = self.mem.get(&(k.0, k.1, w)).copied();
+            m.is_some_and(|m| self.rounded(m))
+        })
+    }
+
+    /// N-NUM-TRACK: one of bytes `b` (16-bit provenance) is a byte of a node with a rounding.
+    pub(crate) fn half_rounded(&mut self, b: &[Option<crate::halfin::Src>]) -> bool {
+        b.iter().any(|s| match s {
+            Some(crate::halfin::Src::N { node, .. }) => self.rounded(*node),
+            _ => false,
+        })
     }
 
     /// N-NUM-NONFINITE: rounding node `n` holds a non-finite value while its exact value is
@@ -6763,6 +7122,52 @@ mod fin_tests {
         assert_eq!(seg_val(&ps(SVal::Const(0)), &[true]), FinVal::K(ninf));
         assert_eq!(seg_val(&ps(SVal::Arg(0)), &[true]), FinVal::Top);
     }
+
+    /// MISS 97 (N-FINITE): a constant `.SIGN` register (a PLOP3 input) is its bit 31.
+    /// `PLOP3.LUT P0, PT, UR6.SIGN, PT, PT, 0xf0` on UR6 = 0x40000000 is false, so
+    /// `SEL R5, R1, +inf, P0` (R1 finite) is +inf, not finite (before, the nonzero UR6 read
+    /// true and the slice was taken as finite); on 0x80000000 it is R1.
+    #[test]
+    fn constant_sign_predicate_reads_bit_31() {
+        let pinf = 0x7f80_0000u64;
+        for (file, ur6, want) in [
+            (File::UR, 0x4000_0000u64, FinVal::K(pinf)),
+            (File::R, 0x4000_0000, FinVal::K(pinf)),
+            (File::UR, 0x8000_0000, FinVal::Fin),
+            (File::UR, 0, FinVal::K(pinf)),
+        ] {
+            let s = Reg { file, idx: 6 };
+            let p0 = Reg {
+                file: File::P,
+                idx: 0,
+            };
+            let plop = Op::Plop3 {
+                d: p0,
+                a: Pred {
+                    reg: Some(s),
+                    neg: false,
+                },
+                b: Pred::TRUE,
+                c: Pred::TRUE,
+                lut: 0xf0,
+                d2: None,
+            };
+            let sel = Op::Sel {
+                d: r(5),
+                a: Val::Reg(r(1), 1),
+                b: Val::Imm(pinf),
+                p: Pred {
+                    reg: Some(p0),
+                    neg: false,
+                },
+            };
+            let p = prog(vec![
+                (plop, p0, vec![(s, SVal::Const(ur6))]),
+                (sel, r(5), vec![(r(1), SVal::Arg(0)), (p0, SVal::Op(0))]),
+            ]);
+            assert_eq!(seg_val(&p, &[true]), want, "{file:?} {ur6:#x}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -7224,6 +7629,40 @@ mod untracked_producer_tests {
             .unwrap();
         assert!(matches!(state.nodes[base as usize].kind, NodeKind::Opaque));
     }
+
+    /// MISS 134: two fp32 atomic adds into +0 depend on their order when one flushes
+    /// subnormals (red.add.f32) and the other does not (a bulk reduction), as in `equiv`'s
+    /// canonical form; two of one mode commute, and one add never depends on an order.
+    #[test]
+    fn mixed_flush_atomic_adds_are_order_dependent() {
+        let mut ns = NumState::default();
+        let mut node = |kind| {
+            ns.nodes.push(Node {
+                kind,
+                hw: 0,
+                exact: vec![],
+                err: vec![],
+                pc: 0,
+            });
+            (ns.nodes.len() - 1) as u32
+        };
+        let (x, y, z) = (
+            node(NodeKind::Input((0, 0))),
+            node(NodeKind::Input((0, 1))),
+            node(NodeKind::Leaf),
+        );
+        let mut cases = vec![];
+        for (first, second) in [(true, false), (false, true), (true, true), (false, false)] {
+            let one = node(NodeKind::AtomAdd(z, x, first));
+            let two = node(NodeKind::AtomAdd(one, y, second));
+            cases.push((one, two, first != second));
+        }
+        for (one, two, mixed) in cases {
+            assert!(!ns.atomic_order_dependent(one, &mut HashMap::new()));
+            assert_eq!(ns.atomic_order_dependent(two, &mut HashMap::new()), mixed);
+        }
+    }
+
     #[test]
     fn inactive_input_guard_preserves_possible_old_values() {
         let body = "mov.b32 %f0, %r0; setp.ne.f32 %q, %f0, 0f00000000; \

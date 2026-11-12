@@ -136,6 +136,11 @@ the four pairs above, with N = 72 for f32 and 64 for bf16, no output differs in 
 For bf16 this covers every input, so the bf16 GELU pair's sweep is reproduced on hardware
 in full.
 
+A case's captured GPU output is compared the same way at its captured inputs, without a
+GPU. Since 2026-11-11 (MISS 98) a mismatch in either check refuses the level ("none
+(contradicted by the captured GPU outputs)"); before, both only printed it
+(fixtures/c_equiv_captured: a capture one bit off).
+
 ## bf16 and f16 inputs in the numerics
 
 Before this, the numerics shadow tracked f32 input words only. A bf16 kernel's outputs had

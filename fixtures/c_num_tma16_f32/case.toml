@@ -1,0 +1,57 @@
+name = "c_num_tma16_f32"
+description = """
+N-NUM-TRACK (MISS 115, a copy in 16-bit elements): thread t stores s_t = rn(t + 0.1f) (an FADD node
+of %tid and a constant, not input data) as an f32 word into A, a buffer the tensor map reads as 64
+bf16 elements; fence.proxy.async; thread 0 loads A into shared memory with a 1-D TMA (one 2-byte
+element at a time to the simulator). out[t] = the shared word t (s_t again), out[32 + t] = rn(out[t]
++ x[t]). Exact out[t] = t + 0.1f.
+expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_tma16_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "A"
+dtype = "bf16"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "tensormap"
+buffer = "A"
+box = [64]
+
+[[params]]
+kind = "ptr"
+buffer = "A"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

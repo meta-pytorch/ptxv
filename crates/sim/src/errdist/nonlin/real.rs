@@ -204,7 +204,7 @@ pub fn eval_table(p: &Prog, w: &[crate::mma_lp::Operand]) -> Table {
                                 .map(|&j| (r[j as usize].0.v() as f32).to_bits())
                                 .collect();
                             u |= !prog
-                                .decisions(&bits, &mut scratch)
+                                .decisions(&bits, &f.steps, &mut scratch)
                                 .is_some_and(|d| o.covers(&d));
                         }
                         let a: Vec<f64> = args.iter().map(|&j| r[j as usize].0.v()).collect();

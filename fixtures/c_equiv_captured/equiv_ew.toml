@@ -1,0 +1,16 @@
+# MISS 98 (gen.py), elementwise mode.
+# The same kernel twice; the candidate's captured GPU output differs from the model's in
+# one word. The pair is L0, which the capture contradicts:
+# the candidate's element function differs from its capture.
+# equiv refuses the level; before, it reported L0.
+max_states = 200000
+segments = true
+elementwise = true
+reference = { case = "a", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "a_bad"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (contradicted by the captured GPU outputs)"

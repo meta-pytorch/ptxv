@@ -24,6 +24,20 @@
 //! generation boundary of a barrier that `bar.arrive` or more threads than its count use
 //! (footprint space 14, E-BAR-ARRIVE / E-BAR-OVER).
 //!
+//! A transition that disables another process's next transition (consumes its async op, exits
+//! its threads, or makes its CTA launch impossible) is dependent on it; the disabled process
+//! is added to the frame's backtrack set when the transition is taken (MISS 136, MISS 146).
+//! Consuming a remote op and landing it write one key of its pipe (exec.rs `complete_remote`),
+//! so a drain also conflicts with the op's own landing.
+//!
+//! Memory: every frame keeps, for each alternative, its successor `Machine` (`Alt::succ`, a
+//! full clone with the transition applied) besides its pid, footprint and op. RSS grows with
+//! depth x alternatives x machine size: about 78 MB per frame on a 32-CTA x 8-warp capture
+//! (mslk cutlass.f8f8bf16_conv), so the first schedule of a full-grid capture reaches the
+//! memory budget before any backtracking. Proposed: keep only (pid, footprint, op, desc,
+//! created, disables) per alternative and the frame's own state, and recompute the successor
+//! (clone and apply) when an alternative is picked.
+//!
 //! What is preserved (relative to `explore`): every reachable deadlock, every reachable terminal
 //! output, and every finding a transition can produce, because every Mazurkiewicz trace of
 //! the dependency relation is represented. The cross-check is `tests/fixtures.rs`, which runs
@@ -89,6 +103,23 @@ struct Alt {
     fp: Footprint,
     findings: Vec<Finding>,
     created: Vec<(u32, u32)>,
+    /// Other processes enabled at the frame whose next transition this one disables (see
+    /// `successors`); taking it adds them to the frame's backtrack set.
+    disables: Vec<Pid>,
+    /// It consumes a FIFO's op behind the head while the head stays pending (a backtrack the
+    /// head-only rule would miss; counted in `NONHEAD_BACKTRACKS` when taken).
+    nonhead: bool,
+}
+
+/// Transitions taken that consumed a non-head FIFO op (their FIFO is backtracked although its
+/// head stays pending). Instrumentation for the cross-check tests (fixtures/e_dpor_nonhead).
+pub static NONHEAD_BACKTRACKS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Pid of the process async op `o` belongs to.
+fn op_pid(o: &AsyncOp) -> Pid {
+    let id = op_id(o);
+    o.fifo.map(Pid::Fifo).unwrap_or(Pid::Op(id.0, id.1))
 }
 
 /// The transition taken from a frame.
@@ -114,7 +145,8 @@ struct Frame {
 
 fn successors(m: &Machine) -> Vec<Alt> {
     let before: HashSet<(u32, u32)> = m.pending.iter().map(op_id).collect();
-    m.actions()
+    let mut alts: Vec<Alt> = m
+        .actions()
         .into_iter()
         .map(|(a, desc)| {
             let (pid, op) = pid_of(m, &a);
@@ -143,9 +175,76 @@ fn successors(m: &Machine) -> Vec<Alt> {
                 fp,
                 findings,
                 created,
+                disables: vec![],
+                nonhead: false,
             }
         })
-        .collect()
+        .collect();
+    // A transition that disables another process's next transition (MISS 136, MISS 146): that
+    // process has no next transition in the successor, so FG never compares one with this
+    // transition and never finds the dependent pair. Each such process is enabled here, so
+    // FG's rule adds it to this frame's backtrack set (the explore loop does, from
+    // `disables`). Its dependencies on earlier transitions were found on arriving at this
+    // frame: it is among this frame's next transitions. Three ways to disable one:
+    // - consuming async ops (drain_remote: a cluster-scope release, CGAERRBAR, a non-.cta
+    //   fence or MEMBAR.ALL.GPU; deliver_fifo_before): every op pending before and gone after,
+    //   other than the transition's own, disables its process, its FIFO's head or not (a
+    //   non-head op can land only after the ops ahead of it, which this transition may also
+    //   have to follow);
+    // - exiting other threads (a trap or __assertfail exits every thread): a split whose
+    //   threads are all Exited after;
+    // - a CTA launch that is no longer possible after (its threads exited by a trap).
+    let pids: Vec<Pid> = alts.iter().map(|a| a.pid).collect();
+    for k in 0..alts.len() {
+        let a = &alts[k];
+        let live: HashSet<(u32, u32)> = a.succ.pending.iter().map(op_id).collect();
+        let mut d: Vec<Pid> = Vec::new();
+        let mut nonhead = false;
+        let mut push = |p: Pid| {
+            if p != a.pid && !d.contains(&p) {
+                d.push(p);
+            }
+        };
+        for o in &m.pending {
+            let id = op_id(o);
+            if Some(id) != a.op && !live.contains(&id) {
+                let p = op_pid(o);
+                nonhead |= matches!(p, Pid::Fifo(_))
+                    && alts
+                        .iter()
+                        .any(|b| b.pid == p && b.op.is_some_and(|h| live.contains(&h)));
+                push(p);
+            }
+        }
+        for b in &alts {
+            let gone = match b.pid {
+                Pid::Split(_) => {
+                    !b.threads.is_empty()
+                        && !b.threads.iter().any(|t| a.threads.contains(t))
+                        && b.threads
+                            .iter()
+                            .all(|&t| a.succ.threads[t as usize].st == St::Exited)
+                }
+                Pid::Launch(c) => !a
+                    .succ
+                    .threads
+                    .iter()
+                    .any(|t| t.cta == c && t.st == St::Unlaunched),
+                Pid::Fifo(_) | Pid::Op(..) => false,
+            };
+            if gone {
+                push(b.pid);
+            }
+        }
+        // A disabled process that is not enabled here (a FIFO whose head is not an
+        // alternative): FG's rule then takes every enabled process.
+        if d.iter().any(|p| !pids.contains(p)) {
+            d = pids.iter().copied().filter(|p| *p != a.pid).collect();
+        }
+        alts[k].disables = d;
+        alts[k].nonhead = nonhead;
+    }
+    alts
 }
 
 /// Footprints of the next transitions of blocked warps (their blocking operation), so that
@@ -562,6 +661,12 @@ fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
             )
         };
         transitions += 1;
+        // MISS 136 / MISS 146: the processes this transition disables (`successors`).
+        let disables = frames[n].alts[ai].disables.clone();
+        if frames[n].alts[ai].nonhead {
+            NONHEAD_BACKTRACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        frames[n].backtrack.extend(disables);
         let mut cv = pred_cv(&frames, pid, op, &threads);
         for f in &frames[..n] {
             let e = f.exec.as_ref().unwrap();

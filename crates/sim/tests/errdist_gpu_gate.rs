@@ -21,7 +21,11 @@
 use ptxv_sim::errdist::chain::Op;
 use ptxv_sim::errdist::chain::Prog;
 use ptxv_sim::errdist::mc::Obs;
+use ptxv_sim::errdist::mc::p_interval;
+use ptxv_sim::errdist::mc::p_interval_obs;
+use ptxv_sim::errdist::report::Estimate;
 use ptxv_sim::errdist::spec::Format;
+use ptxv_sim::errdist::validate::against_estimate;
 use ptxv_sim::errdist::validate::gpu_dag_refusal;
 use ptxv_sim::errdist::validate::p_contradicts;
 use ptxv_sim::errdist::validate::tier3_refusal;
@@ -239,20 +243,70 @@ fn obs(n: u64, k: u64, d: u64) -> Obs {
     o
 }
 
+/// MISS 120 counts inputs in a claim's P(differ) interval where few differ; an observed run
+/// that refutes a claim keeps the outputs' and batch-means intervals (`mc::p_interval_obs`).
+/// With the input-level bound on that side too, a kernel_db run's simulator validation (4
+/// inputs of 786,432 outputs; cute.SplitKReduce, P(differ) 0.220 on every input) held
+/// P(differ) to [1.4e-3, 0.84], and its Tier 2 of 0.228 (4% high) stood, as did the estimates
+/// of 19 other refusals in 18 of 199 runs. Mutant obs-input-bound puts the bound back there.
+#[test]
+fn an_observed_run_refutes_with_the_outputs_and_inputs_intervals() {
+    let c = 786_432u64;
+    let f = [0.21990, 0.22004, 0.21985, 0.21997];
+    let mut run = Obs {
+        inputs: 4,
+        compared: 4 * c,
+        ..Default::default()
+    };
+    run.differ = f.iter().map(|x| (x * c as f64).round() as u64).sum();
+    run.input_differ = f.to_vec();
+    run.input_compared = vec![c; 4];
+    let t2 = Estimate {
+        tier: 2,
+        p_differ: Some((0.2284, 0.2201, 0.2308)),
+        ..Default::default()
+    };
+    let v = against_estimate("sim", &t2, &run, 0);
+    assert!(!v.agree, "{:?}", v.notes);
+    let t2 = Estimate {
+        tier: 2,
+        p_differ: Some((0.21995, 0.2199, 0.2200)),
+        ..Default::default()
+    };
+    assert!(against_estimate("sim", &t2, &run, 0).agree);
+    // As a claim (a Tier 3 of these 4 inputs) the run counts inputs: 4 < SMALL_K.
+    let (lo, hi) = p_interval(&run, 0.05);
+    assert!(lo < 0.01 && hi > 0.8, "[{lo}, {hi}]");
+    let (lo, hi) = p_interval_obs(&run, 0.05);
+    assert!(lo > 0.219 && hi < 0.221, "[{lo}, {hi}]");
+}
+
 /// The follow-up (MISS 42's rule for Tier 3): a run whose P(differ) Tier 3's contradicts
 /// refuses Tier 3; so does a bitwise mismatch that no other order of an atomic chain explains.
 /// Explained mismatches alone (GB300's own order of the adds), agreeing P(differ), and a side
-/// that compared nothing (out of domain) do not.
+/// that compared nothing (out of domain) do not. Since MISS 120 a Tier 3 of 5 inputs with
+/// nothing differing claims [0, 0.52] (inputs counted), which holds the run's 0.05, and stands;
+/// a narrower claim is refused by the run's exact bounds.
 #[test]
 fn validation_refuses_tier3_on_p_differ_or_bits() {
-    // Tier 3: 5 inputs, nothing differs. The run: 1000 inputs, a fifth with 16 of 64 differing.
-    let (t3, run) = (obs(5, 0, 0), obs(1000, 200, 16));
-    let e = tier3_refusal("sim", &t3, &run, 0, 0, (0.0, 0.01))
-        .expect("P(differ) 0 against 0.05 refuses");
+    // Tier 3: 400 inputs, 40 with 1 of 64 differing (P(differ) 1.6e-3). The run: 1000 inputs,
+    // a fifth with 16 of 64 differing (0.05).
+    let (t3, run) = (obs(400, 40, 1), obs(1000, 200, 16));
+    let e = tier3_refusal("sim", &t3, &run, 0, 0, (1.0e-3, 2.2e-3))
+        .expect("P(differ) 1.6e-3 against 0.05 refuses");
     assert!(
         e.contains("Tier 3's P(differ)")
             && e.contains("DISAGREES FAILS")
             && e.contains("1000 inputs"),
+        "{e}"
+    );
+    let t3 = obs(5, 0, 0);
+    let own = p_interval(&t3, 0.05);
+    assert!(own.0 == 0.0 && own.1 > 0.5, "{own:?}");
+    assert_eq!(tier3_refusal("sim", &t3, &run, 0, 0, own), None);
+    let e = tier3_refusal("sim", &t3, &run, 0, 0, (0.0, 0.01)).expect("a narrower claim");
+    assert!(
+        e.contains("exact bounds") && e.contains("DISAGREES FAILS"),
         "{e}"
     );
     // The same rate on both sides agrees.
@@ -280,10 +334,14 @@ fn validation_refuses_tier3_on_p_differ_or_bits() {
 /// differs) claims P(differ) in [0, 3.84e-4]. The batch-means test passes it (its standard
 /// error is about sqrt(4) / 400); the inputs' exact bounds, Clopper-Pearson over inputs, put
 /// P(differ) at least 5e-4 (99.9%): refused. The same claim against 0 of 400 inputs, or a
-/// claim the bounds contain, stands.
+/// claim the bounds contain, stands. Since MISS 120 Tier 3's own claim at 0 of 300 inputs is
+/// [0, 1.2e-2] (inputs counted), which holds the run's 1.00e-2, and stands.
 #[test]
 fn few_inputs_contradict_a_claimed_interval() {
     let (t3, run) = (obs(300, 0, 0), obs(400, 4, 64));
+    let own = p_interval(&t3, 0.05);
+    assert!(own.1 > 1.0e-2, "{own:?}");
+    assert_eq!(tier3_refusal("gpu", &t3, &run, 0, 0, own), None);
     let claim = (0.0, 3.84e-4);
     let (lo, hi) = p_contradicts(claim, &run).expect("4 of 400 inputs contradict [0, 3.84e-4]");
     assert!(lo > 3.84e-4 && lo < 1e-2 && hi > 1e-2, "{lo} {hi}");

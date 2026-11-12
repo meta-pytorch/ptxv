@@ -1,0 +1,33 @@
+# MISS 110 (N-MULTIMEM-ROUND16) in equiv's check of each kernel's simulated output against its
+# capture (MISS 98, `sim_gpu_mismatch`): the review probes fixtures/r1h_nvls_ulp (an exact f32
+# multimem sum, expected/ constructed one ulp off) and fixtures/r1h_nvls_nan (NaN against a NaN
+# with another payload) differ from their captures, on both fronts. Until MISS 110 every output
+# of a case with a multicast object was compared within one ulp, so neither difference was
+# reported. No level holds (the multimem.ld_reduce sum has no rounding-DAG node), so none is
+# refused as contradicted. The reference, fixtures/r1h_nvls, is the same kernel without a
+# capture.
+reference = { case = "../r1h_nvls", variant = "good", front = "ptx" }
+
+[[candidates]]
+case = "../r1h_nvls_ulp"
+variant = "good"
+front = "ptx"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "../r1h_nvls_nan"
+variant = "good"
+front = "ptx"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "../r1h_nvls_ulp"
+variant = "good"
+front = "sass"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "../r1h_nvls_nan"
+variant = "good"
+front = "sass"
+expect = "none (unproven)"

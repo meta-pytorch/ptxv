@@ -1,0 +1,92 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// Integer steps made by FP rounding inside an instruction slice (MISS 99 follow-up; the review's
+// probes). Thread i, C = 1.5 * 2^23 (0f4B400000), t_i = RN(|x_i| * 2^-10) (exact):
+//   fp_floor: s_i = RN(RM(t_i + C) - C) = floor(t_i) (FADD.RM, then an exact FADD)
+//   fp_round: s_i = RN(RN(x_i * 2^-10 + C) - C) = round-half-even(x_i * 2^-10) (no abs)
+//   fp_ffrm:  s_i = RN(FMA.RM(|x_i|, 2^-10, C) - C) = floor(t_i) (FFMA.RM, an exp range
+//             reduction's form)
+// then y_i = RN(s_i + v_i). For |t| < 2^22 the rounding of t + C is C + floor(t) (or
+// C + rne(t)): the ulp is 1 in [2^23, 2^24), the subtraction is exact, the last add one correct
+// rounding. The identification's probes put x_i ~ N(0, 1), |t| < 2^-6: s = 0 on every probe and
+// the slice was fitted as RN(0 + v). Under trunc30.json (x in [2048, 3072) w.p. 0.3: s = 2, or
+// 3 for fp_round above 2.5) errdist reported P(bits differ) 0.300 (Tier 1, rc 0) where the
+// kernels' is 0 (GB300, 200 inputs: 0 of 12800 outputs differ from RN(s + v)). The rounding
+// took one value on the probes while its operand took many: its bits are now decisions
+// (seg.rs `rounding_steps`).
+.visible .entry fp_floor(.param .u64 px, .param .u64 pv, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pv];
+    ld.param.u64 %rd3, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd4, %r1, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    add.s64 %rd6, %rd2, %rd4;
+    add.s64 %rd7, %rd3, %rd4;
+    ld.global.f32 %f1, [%rd5];
+    ld.global.f32 %f2, [%rd6];
+    abs.f32 %f6, %f1;
+    mul.rn.f32 %f3, %f6, 0f3A800000;
+    add.rm.f32 %f4, %f3, 0f4B400000;
+    sub.rn.f32 %f7, %f4, 0f4B400000;
+    add.rn.f32 %f5, %f7, %f2;
+    st.global.f32 [%rd7], %f5;
+    ret;
+}
+
+.visible .entry fp_round(.param .u64 px, .param .u64 pv, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pv];
+    ld.param.u64 %rd3, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd4, %r1, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    add.s64 %rd6, %rd2, %rd4;
+    add.s64 %rd7, %rd3, %rd4;
+    ld.global.f32 %f1, [%rd5];
+    ld.global.f32 %f2, [%rd6];
+    mul.rn.f32 %f3, %f1, 0f3A800000;
+    add.rn.f32 %f4, %f3, 0f4B400000;
+    sub.rn.f32 %f7, %f4, 0f4B400000;
+    add.rn.f32 %f5, %f7, %f2;
+    st.global.f32 [%rd7], %f5;
+    ret;
+}
+
+.visible .entry fp_ffrm(.param .u64 px, .param .u64 pv, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pv];
+    ld.param.u64 %rd3, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd4, %r1, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    add.s64 %rd6, %rd2, %rd4;
+    add.s64 %rd7, %rd3, %rd4;
+    ld.global.f32 %f1, [%rd5];
+    ld.global.f32 %f2, [%rd6];
+    abs.f32 %f6, %f1;
+    fma.rm.f32 %f4, %f6, 0f3A800000, 0f4B400000;
+    sub.rn.f32 %f7, %f4, 0f4B400000;
+    add.rn.f32 %f5, %f7, %f2;
+    st.global.f32 [%rd7], %f5;
+    ret;
+}

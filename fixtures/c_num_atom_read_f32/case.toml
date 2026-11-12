@@ -1,0 +1,63 @@
+name = "c_num_atom_read_f32"
+description = """
+N-NUM-TRACK (MISS 114, atomics other than float adds; the independent review's probe r2_atom_read,
+kernel.ptx, gen.py): thread 0 stores 0 to acc[0]; 32 threads atom.add.f32 0.1f into it (old values kept
+in olds). Thread 0 then reads acc[0] with atomics that are not float adds: out[0] = the old value of
+atom.or 0, out[1..3] of atom.add.u32 0, out[4] of atom.max.u32 0, out[5] of a failing atom.cas (1 ->
+2), out[6] of atom.exch 0; out[7] = rn(out[6] + x[0]). Exact acc = 32 * 0.1f = 3.2f; the run's acc is
+the sequential f32 sum.
+expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_atom_read_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [8]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "olds"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "acc"
+dtype = "f32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "olds"
+
+[[params]]
+kind = "ptr"
+buffer = "acc"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

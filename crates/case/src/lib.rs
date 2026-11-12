@@ -211,6 +211,25 @@ pub struct Manifest {
 /// Byte ranges (buffer index, first byte, end) of one ticket's rows (C-TICKET-ADDR).
 pub type RowRanges = Vec<(usize, u64, u64)>;
 
+/// The format of an f16 / bf16 `multimem.ld_reduce` lane whose rounding direction rests on the
+/// calibrated rule (N-MULTIMEM-ROUND16), for each byte of a simulated output that holds one
+/// (`Case::expect_compare_tol`): GB300 may return the other neighbour of the sum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Round16 {
+    F16,
+    Bf16,
+}
+
+impl Round16 {
+    /// The buffer dtype of this format.
+    pub fn dtype(self) -> &'static str {
+        match self {
+            Round16::F16 => "f16",
+            Round16::Bf16 => "bf16",
+        }
+    }
+}
+
 /// How one part of a simulated output compares with the captured GPU bytes: the decision each
 /// line of an expect report states (`Case::expect_compare_tol`, `expect_compare_perm`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -218,8 +237,9 @@ pub type RowRanges = Vec<(usize, u64, u64)>;
 pub enum GpuMatch {
     /// Bitwise equal (bytes of `expect_ignore` ranges excluded).
     Bitwise,
-    /// Not bitwise equal: every differing element is one unit in the last place off or NaN on
-    /// both sides (`ulp_class`; N-MULTIMEM-ROUND16 only). Not a match.
+    /// Not bitwise equal: every differing element is one unit in the last place off
+    /// (`ulp_class`) and holds an f16 / bf16 multimem.ld_reduce lane rounded by the calibrated
+    /// rule, in the buffer's dtype (N-MULTIMEM-ROUND16 only, `Round16`). Not a match.
     WithinUlp,
     /// The bytes differ.
     Mismatch,
@@ -716,26 +736,31 @@ pub struct Case {
     pub m: Manifest,
 }
 
-/// The one-ulp tolerance (N-MULTIMEM-ROUND16) for two differing `dtype` encodings (bf16, f16,
-/// f32; `a`, `b` the bits): `Some(true)` one unit in the last place apart (adjacent
-/// encodings, both finite), `Some(false)` both NaN, None otherwise. Adjacency alone is not
-/// enough: an infinity is the neighbour of the largest finite value of its sign and of a NaN
-/// encoding, and the largest positive encoding (a NaN) of -0, so a non-finite value on either
-/// side passes only when both sides are NaN; the same infinity on both sides is no difference
-/// (MISS 67).
-pub fn ulp_class(dtype: &str, a: u64, b: u64) -> Option<bool> {
+/// Whether two differing `dtype` encodings (bf16, f16, f32; `a`, `b` the bits) are one unit in
+/// the last place apart: adjacent encodings, both finite (the one-ulp tolerance,
+/// N-MULTIMEM-ROUND16, `Case::expect_compare_tol`). Adjacency alone is not enough: an infinity
+/// is the neighbour of the largest finite value of its sign and of a NaN encoding, and the
+/// largest positive encoding (a NaN) of -0 (MISS 67). A NaN on either side is a mismatch, NaN
+/// against a NaN with another payload included (MISS 110); the same bits on both sides are no
+/// difference.
+pub fn ulp_class(dtype: &str, a: u64, b: u64) -> bool {
     let (exp, man) = match dtype {
         "f32" => (0x7f80_0000u64, 0x007f_ffffu64),
         "bf16" => (0x7f80, 0x007f),
         "f16" => (0x7c00, 0x03ff),
-        _ => return None,
+        _ => return false,
     };
     let nonfinite = |x: u64| x & exp == exp;
     let nan = |x: u64| nonfinite(x) && x & man != 0;
-    if nonfinite(a) || nonfinite(b) {
-        return (nan(a) && nan(b)).then_some(false);
+    if nan(a) || nan(b) {
+        // NaN against a finite value, an infinity or a NaN with another payload (MISS 110).
+        return false;
     }
-    (a.abs_diff(b) == 1).then_some(true)
+    if nonfinite(a) || nonfinite(b) {
+        // An infinity against a finite value or the other infinity (MISS 67).
+        return false;
+    }
+    a.abs_diff(b) == 1
 }
 
 impl Buffer {
@@ -984,26 +1009,42 @@ impl Case {
     /// the captured GPU bytes (`expect`). One line per output buffer that has them; empty when
     /// none has.
     pub fn expect_report(&self, output: &[u8]) -> Result<Vec<String>> {
-        self.expect_report_tol(output, false)
+        self.expect_report_tol(output, None)
     }
 
-    /// `expect_report`; with `ulp_ok` (the run used a rounding the model only calibrates,
+    /// `expect_report`; with `round16` (per byte of `output`: the format of the f16 / bf16
+    /// multimem.ld_reduce lane it holds when the calibrated rule rounded that lane,
     /// N-MULTIMEM-ROUND16), an output whose differing elements are all one unit in the last
-    /// place off (`ulp_class`: adjacent encodings of its dtype, both finite) or NaN on both
-    /// sides is reported as within one ulp, not as a mismatch.
-    pub fn expect_report_tol(&self, output: &[u8], ulp_ok: bool) -> Result<Vec<String>> {
-        Ok(report_lines(self.expect_compare_tol(output, ulp_ok)?))
+    /// place off (`ulp_class`: adjacent encodings of its dtype, both finite), each
+    /// with every byte holding such a lane of the buffer's dtype, is reported as within one
+    /// ulp, not as a mismatch. Any other difference is a mismatch: an element of another
+    /// dtype (f32 included), a byte no calibrated lane wrote, NaN against a NaN with another
+    /// payload (MISS 110).
+    pub fn expect_report_tol(
+        &self,
+        output: &[u8],
+        round16: Option<&[Option<Round16>]>,
+    ) -> Result<Vec<String>> {
+        Ok(report_lines(self.expect_compare_tol(output, round16)?))
     }
 
     /// `expect_report_tol` with the result of each comparison next to its line, and the
     /// output buffers without captured bytes (`NoCapture`, no line).
-    pub fn expect_compare_tol(&self, output: &[u8], ulp_ok: bool) -> Result<Vec<GpuCompare>> {
+    pub fn expect_compare_tol(
+        &self,
+        output: &[u8],
+        round16: Option<&[Option<Round16>]>,
+    ) -> Result<Vec<GpuCompare>> {
+        if round16.is_some_and(|r| r.len() != output.len()) {
+            bail!("round16 marks do not cover the output");
+        }
         let mut lines = Vec::new();
         // The decision each line states, in the same order (`GpuCompare`).
         let mut res = Vec::new();
         let mut at = 0;
         for o in &self.m.outputs {
             let b = self.buffer(o)?;
+            let start = at;
             let got = output
                 .get(at..at + b.bytes())
                 .ok_or_else(|| anyhow!("output shorter than the output buffers"))?;
@@ -1035,31 +1076,31 @@ impl Case {
                 String::new()
             };
             let es = b.elem_bytes();
-            // Per differing element: one ulp apart (true) or NaN on both sides (false); None
-            // when any element is neither.
-            let classes = (ulp_ok
-                && matches!(b.dtype.as_str(), "bf16" | "f16" | "f32")
-                && off.is_multiple_of(es)
-                && want.len().is_multiple_of(es)
-                && !diff.is_empty())
-            .then(|| {
-                let elems: BTreeSet<usize> = diff.iter().map(|i| i / es * es).collect();
-                let v = |x: &[u8]| x.iter().rev().fold(0u64, |a, &y| a << 8 | y as u64);
-                elems
-                    .iter()
-                    .map(|&e| ulp_class(&b.dtype, v(&got[e..e + es]), v(&want[e..e + es])))
-                    .collect::<Option<Vec<bool>>>()
-            })
-            .flatten();
-            if let Some(c) = classes {
-                let n = c.iter().filter(|&&x| x).count();
-                let nan = if n < c.len() {
-                    format!(", {} NaN on both sides (another payload)", c.len() - n)
-                } else {
-                    String::new()
-                };
+            // The differing elements, when every one is one unit in the last place off and
+            // every byte of it holds a calibrated lane of the buffer's dtype (`round16`, the
+            // bytes of this buffer at `start`); None when any is not.
+            let within = round16
+                .filter(|_| {
+                    off.is_multiple_of(es) && want.len().is_multiple_of(es) && !diff.is_empty()
+                })
+                .and_then(|r16| {
+                    let elems: BTreeSet<usize> = diff.iter().map(|i| i / es * es).collect();
+                    let v = |x: &[u8]| x.iter().rev().fold(0u64, |a, &y| a << 8 | y as u64);
+                    let marked = |e: usize| {
+                        (0..es)
+                            .all(|k| r16[start + off + e + k].is_some_and(|f| f.dtype() == b.dtype))
+                    };
+                    elems
+                        .iter()
+                        .all(|&e| {
+                            marked(e)
+                                && ulp_class(&b.dtype, v(&got[e..e + es]), v(&want[e..e + es]))
+                        })
+                        .then_some(elems.len())
+                });
+            if let Some(n) = within {
                 lines.push(format!(
-                    "{o}: within one ulp of the captured GPU output: {n} of {} elements one unit in the last place off{nan}, the rest bitwise equal (multimem.ld_reduce rounding, N-MULTIMEM-ROUND16)",
+                    "{o}: within one ulp of the captured GPU output: {n} of {} elements one unit in the last place off, the rest bitwise equal (multimem.ld_reduce rounding, N-MULTIMEM-ROUND16)",
                     want.len() / es
                 ));
                 res.push((o.clone(), GpuMatch::WithinUlp, true));
@@ -1358,9 +1399,9 @@ pub fn skip_missing_vendor_files(fixtures: &Path, needs: &[&str]) -> bool {
 mod tests {
     use super::*;
 
-    /// MISS 67: the one-ulp tolerance takes adjacent finite encodings and NaN against NaN,
-    /// never an infinity against the largest finite value of its sign or against a NaN, nor a
-    /// NaN against -0 (f32, bf16, f16, both signs).
+    /// MISS 67, MISS 110: the one-ulp tolerance takes adjacent finite encodings only: never an
+    /// infinity against the largest finite value of its sign or against a NaN, nor a NaN
+    /// against -0 or against a NaN with another payload (f32, bf16, f16, both signs).
     #[test]
     fn one_ulp_tolerance_needs_finite_values() {
         for (dt, sign, max, inf, qnan) in [
@@ -1375,54 +1416,42 @@ mod tests {
             ("f16", 0x8000, 0x7bff, 0x7c00, 0x7e00),
         ] {
             for s in [0, sign] {
-                assert_eq!(
-                    ulp_class(dt, s | max, s | (max - 1)),
-                    Some(true),
-                    "{dt} {s:#x}"
-                );
-                assert_eq!(
-                    ulp_class(dt, s | 1, s),
-                    Some(true),
-                    "{dt} {s:#x}: 0, 1 subnormal"
-                );
-                assert_eq!(
-                    ulp_class(dt, s | inf, s | max),
-                    None,
-                    "{dt} {s:#x}: inf, max"
-                );
-                assert_eq!(
-                    ulp_class(dt, s | max, s | inf),
-                    None,
-                    "{dt} {s:#x}: max, inf"
-                );
-                assert_eq!(
-                    ulp_class(dt, s | inf, s | inf | 1),
-                    None,
+                assert!(ulp_class(dt, s | max, s | (max - 1)), "{dt} {s:#x}");
+                assert!(ulp_class(dt, s | 1, s), "{dt} {s:#x}: 0, 1 subnormal");
+                assert!(!ulp_class(dt, s | inf, s | max), "{dt} {s:#x}: inf, max");
+                assert!(!ulp_class(dt, s | max, s | inf), "{dt} {s:#x}: max, inf");
+                assert!(
+                    !ulp_class(dt, s | inf, s | inf | 1),
                     "{dt} {s:#x}: inf, NaN"
                 );
-                assert_eq!(
-                    ulp_class(dt, s | qnan, s | inf | 1),
-                    Some(false),
-                    "{dt} {s:#x}"
+                assert!(
+                    !ulp_class(dt, s | qnan, s | inf | 1),
+                    "{dt} {s:#x}: NaN, NaN with another payload"
+                );
+                assert!(
+                    !ulp_class(dt, s | qnan, s | qnan | 1),
+                    "{dt} {s:#x}: NaN payloads one apart"
                 );
             }
-            assert_eq!(ulp_class(dt, 0, sign), None, "{dt}: +0, -0");
-            assert_eq!(ulp_class(dt, inf, sign | inf), None, "{dt}: +inf, -inf");
+            assert!(!ulp_class(dt, 0, sign), "{dt}: +0, -0");
+            assert!(!ulp_class(dt, inf, sign | inf), "{dt}: +inf, -inf");
             // The largest positive encoding is a NaN (0x7fffffff: the GPU's canonical f32 NaN)
             // next to -0.
-            assert_eq!(ulp_class(dt, sign - 1, sign), None, "{dt}: NaN, -0");
+            assert!(!ulp_class(dt, sign - 1, sign), "{dt}: NaN, -0");
         }
-        assert_eq!(ulp_class("u32", 1, 2), None);
+        assert!(!ulp_class("u32", 1, 2));
     }
 
-    /// `expect_report_tol` with the tolerance on (a multicast case): an output one encoding
-    /// off in a finite element is within one ulp; an overflow to inf where the GPU kept the
-    /// largest finite value (either sign), or a NaN where the GPU has inf, is a mismatch.
+    /// `expect_report_tol` with every byte marked as a calibrated lane of `mark` (MISS 67, MISS
+    /// 110): an element one encoding off in a finite value of the marked dtype is within one
+    /// ulp; an overflow to inf where the GPU kept the largest finite value (either sign), a NaN
+    /// where the GPU has inf, NaN against a NaN with another payload, an unmarked byte, a byte
+    /// of the other 16-bit format and every f32 element are mismatches.
     #[test]
     fn expect_report_tol_never_crosses_an_infinity() {
         let dir = std::env::temp_dir().join(format!("ptxv-case-ulp-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let report = |dtype: &str, got: &[u64], want: &[u64]| -> String {
+        let report = |dtype: &str, got: &[u64], want: &[u64], mark: Option<Round16>| -> String {
             let es = if dtype == "f32" { 4 } else { 2 };
             let bytes = |v: &[u64]| -> Vec<u8> {
                 v.iter()
@@ -1442,7 +1471,8 @@ mod tests {
             )
             .unwrap();
             let case = Case::load(&dir).unwrap();
-            case.expect_report_tol(&bytes(got), true)
+            let marks = vec![mark; got.len() * es];
+            case.expect_report_tol(&bytes(got), Some(&marks))
                 .unwrap()
                 .join("\n")
         };
@@ -1453,22 +1483,42 @@ mod tests {
                 "f32",
                 &[s | 0x7f7f_ffff, s | 0x7f80_0000, two, four],
                 &[s | 0x7f80_0000, s | 0x7f80_0001, two, four],
+                Some(Round16::Bf16),
             );
             assert!(r.contains("MISMATCH"), "{r}");
-            let r = report("f32", &[s | 0x3f80_0001, two], &[s | 0x3f80_0000, two]);
-            assert!(r.contains("within one ulp") && r.contains("1 of 2"), "{r}");
+            // f32 elements hold no f16 / bf16 lane: one ulp off is a mismatch.
+            let r = report(
+                "f32",
+                &[s | 0x3f80_0001, two],
+                &[s | 0x3f80_0000, two],
+                Some(Round16::Bf16),
+            );
+            assert!(r.contains("MISMATCH"), "{r}");
         }
-        let r = report("f32", &[0x7fc0_0000, two], &[0x7fff_ffff, two]);
-        assert!(
-            r.contains("within one ulp") && r.contains("1 NaN on both sides"),
-            "{r}"
-        );
-        for (dt, max, inf) in [("bf16", 0x7f7f, 0x7f80), ("f16", 0x7bff, 0x7c00)] {
+        for (dt, f, other, max, inf, qnan) in [
+            ("bf16", Round16::Bf16, Round16::F16, 0x7f7f, 0x7f80, 0x7fc0),
+            ("f16", Round16::F16, Round16::Bf16, 0x7bff, 0x7c00, 0x7e00),
+        ] {
             for s in [0, 0x8000u64] {
-                let r = report(dt, &[s | max, 0x3c00], &[s | inf, 0x3c00]);
+                let r = report(dt, &[s | max, 0x3c00], &[s | inf, 0x3c00], Some(f));
                 assert!(r.contains("MISMATCH"), "{dt}: {r}");
-                let r = report(dt, &[s | max, 0x3c00], &[s | (max - 1), 0x3c00]);
-                assert!(r.contains("within one ulp"), "{dt}: {r}");
+                let r = report(dt, &[s | max, 0x3c00], &[s | (max - 1), 0x3c00], Some(f));
+                assert!(
+                    r.contains("within one ulp") && r.contains("1 of 2"),
+                    "{dt}: {r}"
+                );
+                let r = report(
+                    dt,
+                    &[s | max, 0x3c00],
+                    &[s | (max - 1), 0x3c00],
+                    Some(other),
+                );
+                assert!(r.contains("MISMATCH"), "{dt}, marked {other:?}: {r}");
+                let r = report(dt, &[s | max, 0x3c00], &[s | (max - 1), 0x3c00], None);
+                assert!(r.contains("MISMATCH"), "{dt}, unmarked: {r}");
+                // NaN against a NaN with another payload (MISS 110).
+                let r = report(dt, &[s | qnan, 0x3c00], &[s | qnan | 1, 0x3c00], Some(f));
+                assert!(r.contains("MISMATCH"), "{dt}: {r}");
             }
         }
         let _ = std::fs::remove_dir_all(&dir);

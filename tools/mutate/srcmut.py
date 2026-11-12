@@ -11,14 +11,17 @@ caught when some run's classes differ from the variant's expectation (the fixtur
 missing entry); it survives otherwise, which means the entry has no fixture.
 
     srcmut.py --out DIR [--only NAME] [--jobs N]
-    srcmut.py --check-anchors [--only NAME]
+    srcmut.py --check-anchors [--only NAME] [--root DIR]
 
 Entries that no fixture can reach carry a documented exclusion (`EXCLUDED`) instead of a
 silent survival.
 
 --check-anchors builds and runs nothing: it prints every mutant whose find text does not occur
-exactly once in its file in this checkout (a run reports such a mutant as an error without
-building it) and exits 1 if there is one.
+exactly once in its file in this checkout, or in the tree --root names (the anchors test plants
+a broken anchor in a scratch tree), and exits 1 if there is one (a run reports such a mutant as
+an error without building it). Either mode exits 2, before a run creates --out, when --only
+is given but names nothing, when it names a name that is not a mutant that runs, or when no
+mutant is chosen.
 """
 
 import argparse
@@ -43,10 +46,10 @@ class SrcMutant:
     # (fixture, variant, front, extra check flags)
     runs: list
     # (package, test binary, name filter): `cargo test --release -p PKG --test BIN FILTER` in
-    # the mutant's tree (BIN "lib": the crate's unit tests, `--lib`); the mutant is caught when
-    # the test fails (adversarial tests that build their machines by hand,
-    # crates/sim/tests/adversarial.rs; claims checked against recorded GPU outputs, e.g. num's
-    # error bounds).
+    # the mutant's tree; the mutant is caught when the test fails (adversarial tests that build
+    # their machines by hand, crates/sim/tests/adversarial.rs; claims checked against recorded
+    # GPU outputs, e.g. num's error bounds). BIN "lib" runs the package's unit tests, "bin:NAME"
+    # binary NAME's (FILTER their full path, `module::tests::name`).
     tests: list = field(default_factory=list)
     # Python (directory, file pattern, -k selector): `$PTXV_PYTHON -m unittest discover -s DIR
     # -p PAT -k SEL` in the mutant's tree (tooling outside the binary, e.g. fb/kernel_db's
@@ -55,8 +58,21 @@ class SrcMutant:
     py: list = field(default_factory=list)
 
 
+def test_target(pkg: str, binary: str) -> list[str]:
+    """The cargo test arguments selecting `binary` of package `pkg` (`SrcMutant.tests`)."""
+    if binary == "lib":
+        return ["-p", pkg, "--lib"]
+    if binary.startswith("bin:"):
+        return ["-p", pkg, "--bin", binary[4:]]
+    return ["-p", pkg, "--test", binary]
+
+
 # num.rs `value_fault_operands`: each entry removed, under the CTA reductions.
 REP = ["--certify", "--rep"]
+# E-BAR-OVER walk cache unit tests (crates/sim/src/explore.rs `walk_cache_tests`).
+LIB = ("ptxv-sim", "lib", "explore::walk_cache_tests::walk_cache_keys_every_input_of_a_walk")
+CUT = ("ptxv-sim", "lib", "explore::walk_cache_tests::walk_cache_keys_the_cut")
+WCT = "explore::walk_cache_tests::"
 MUTANTS = [
     # wellsync.rs `post_inst`: one token for every member again (merged splits count as
     # one convergence event; MISS 30).
@@ -429,12 +445,46 @@ MUTANTS += [
         "                if gen_seen.contains(&(w.actor, w.clock)) || !gen_reported.is_empty() {",
         [("e_rerun_drop_proxy_mb", "XLOW", "ptx", [])],
     ),
+    # MISS 136: DPOR no longer backtracks a process whose async op the taken transition
+    # consumes (a drain inside a thread step); e_dpor_drain on SASS: DPOR [race] against the
+    # stateful [nondeterministic, race, violation] (the test runs both explorers).
+    SrcMutant(
+        "dpor-consumed-nobacktrack",
+        "crates/sim/src/dpor.rs",
+        "        frames[n].backtrack.extend(disables);",
+        "        drop(disables);",
+        [],
+        [("ptxv-sim", "fixtures", "dpor_backtracks_a_consumed_async_op")],
+    ),
+    # MISS 146: a trap that exits every thread no longer backtracks the splits it kills;
+    # e_dpor_trap: DPOR [trap] against the stateful [fault, trap] (the test runs both).
+    SrcMutant(
+        "dpor-killed-nobacktrack",
+        "crates/sim/src/dpor.rs",
+        "                            .all(|&t| a.succ.threads[t as usize].st == St::Exited)",
+        "                            .all(|_| false)",
+        [],
+        [("ptxv-sim", "fixtures", "dpor_backtracks_a_disabled_process")],
+    ),
+    # MISS 146 / MISS 136 follow-up: only consumed ops that are an alternative's head disable
+    # their process again; e_dpor_nonhead NH consumes B behind a pending head, and the test
+    # requires that backtrack (dpor::NONHEAD_BACKTRACKS).
+    SrcMutant(
+        "dpor-nonhead-nobacktrack",
+        "crates/sim/src/dpor.rs",
+        "            if Some(id) != a.op && !live.contains(&id) {",
+        "            if Some(id) != a.op && !live.contains(&id) && alts.iter().any(|b| b.op == Some(id)) {",
+        [],
+        [("ptxv-sim", "fixtures", "dpor_backtracks_a_disabled_process")],
+    ),
     # E-HW-SPLIT-UR at every level: the strict level drops the switches too (MISS 52's
     # refutation at the strict level must stand: a measured null result is a bound).
     SrcMutant(
         "split-ur-ungated",
         "crates/sim/src/exec.rs",
-        "        if self.launch.hw_split_ur && !self.ur_window.is_empty() && self.ur_window_blocks(members, pc)",
+        "        if self.launch.hw_split_ur\n"
+        "            && !self.ur_window.is_empty()\n"
+        "            && self.ur_window_blocks(members, pc)",
         "        if !self.ur_window.is_empty() && self.ur_window_blocks(members, pc)",
         [],
         [("ptxv-sim", "wellsync", "cert_crosscheck_deadlocking_schedule_refutes")],
@@ -618,6 +668,255 @@ MUTANTS += [
             for v in ("BO1", "BO2", "BO3")
             for f in ("ptx", "sass")
         ],
+    ),
+    # E-BAR-OVER walk cache (explore.rs `thread_may_arrive_v`, `WalkTrie::find`, `walk_same`,
+    # `Machine::walk_id`): one key component or check dropped at a time. A cached walk then
+    # answers for a thread, machine or query it was not made for.
+    SrcMutant(
+        "walkkey-pc",
+        "crates/sim/src/explore.rs",
+        "        let key = (self.walk_id(), self.threads[t].pc, bit, cut, values);",
+        "        let key = (self.walk_id(), 0, bit, cut, values);",
+        [],
+        tests=[LIB],
+    ),
+    SrcMutant(
+        "walkkey-bit",
+        "crates/sim/src/explore.rs",
+        "        let key = (self.walk_id(), self.threads[t].pc, bit, cut, values);",
+        "        let key = (self.walk_id(), self.threads[t].pc, 0, cut, values);",
+        [],
+        tests=[LIB],
+    ),
+    SrcMutant(
+        "walkkey-cut",
+        "crates/sim/src/explore.rs",
+        "        let key = (self.walk_id(), self.threads[t].pc, bit, cut, values);",
+        "        let key = (self.walk_id(), self.threads[t].pc, bit, 0, values);",
+        [],
+        tests=[CUT, ("ptxv-sim", "lib", "explore::bar_cut_tests::bar_cut_applies_only_when_its_premises_hold")],
+    ),
+    SrcMutant(
+        "walkkey-values",
+        "crates/sim/src/explore.rs",
+        "        let key = (self.walk_id(), self.threads[t].pc, bit, cut, values);",
+        "        let key = (self.walk_id(), self.threads[t].pc, bit, cut, true);",
+        [],
+        tests=[LIB],
+    ),
+    SrcMutant(
+        "walk-noreread",
+        "crates/sim/src/explore.rs",
+        "                    let v = m.bar_read_c(t, k, wc)?;\n                    let i = kids.binary_search_by_key(&v, |e| e.0).ok()?;",
+        "                    let (v, i) = (kids[0].0, 0usize);",
+        [("e_barwalk", v, f, []) for v in ("good", "BW1") for f in ("ptx", "sass")],
+        tests=[LIB, ("ptxv-sim", "lib", "explore::walk_cache_tests::walk_cache_keys_register_barrier_ids")],
+    ),
+    SrcMutant(
+        "walkid-ops",
+        "crates/sim/src/explore.rs",
+        "            .all(|(x, y)| x.guard == y.guard && x.op == y.op)",
+        "            .all(|(x, y)| x.guard == y.guard)",
+        [],
+        tests=[LIB],
+    ),
+    SrcMutant(
+        "walkid-guards",
+        "crates/sim/src/explore.rs",
+        "            .all(|(x, y)| x.guard == y.guard && x.op == y.op)",
+        "            .all(|(x, y)| x.op == y.op)",
+        [],
+        tests=[LIB],
+    ),
+    SrcMutant(
+        "walkid-barcfg",
+        "crates/sim/src/explore.rs",
+        "    a.0 == b.0\n        && a.1.front == b.1.front",
+        "    true\n        && a.1.front == b.1.front",
+        [],
+        tests=[LIB],
+    ),
+    SrcMutant(
+        "walkid-memo",
+        "crates/sim/src/explore.rs",
+        "                .find(|e| std::ptr::eq(e.0.as_ptr(), c) && std::ptr::eq(e.1.as_ptr(), k))",
+        "                .find(|e| std::ptr::eq(e.0.as_ptr(), c))",
+        [],
+        tests=[LIB],
+    ),
+    # E-BAR-OVER walks (explore.rs `thread_may_arrive_walk*`): a value the walk reads left out
+    # of its reads (a cached walk then answers for a thread that reads another value there),
+    # or the register-id walk's state set kept as 4-bit hashes (a new state taken as seen).
+    SrcMutant(
+        "walk-norenv",
+        "crates/sim/src/explore.rs",
+        (
+            "                                if let Some((_, src)) = renv.iter().find(|e| e.0 == *r) {\n"
+            "                                    let k = BarKey::Val(src.clone());\n"
+            "                                    let x = self.bar_read(t, &k);\n"
+            "                                    reads.push((k, x.unwrap_or(0)));\n"
+            "                                    return x;\n"
+            "                                }"
+        ),
+        (
+            "                                if let Some((_, src)) = renv.iter().find(|e| e.0 == *r) {\n"
+            "                                    let k = BarKey::Val(src.clone());\n"
+            "                                    let x = self.bar_read(t, &k);\n"
+            "                                    return x;\n"
+            "                                }"
+        ),
+        [],
+        tests=[("ptxv-sim", "lib", WCT + "walk_cache_keys_a_tracked_registers_source")],
+    ),
+    SrcMutant(
+        "walk-nosetpread",
+        "crates/sim/src/explore.rs",
+        (
+            "                        let k = BarKey::Val(v.clone());\n"
+            "                        let x = self.bar_read(t, &k);\n"
+            "                        // (A failed read is recorded as 0: a thread reading 0 there reuses a\n"
+            "                        // walk that knew less, which is conservative.)\n"
+            "                        reads.push((k, x.unwrap_or(0)));\n"
+            "                        x"
+        ),
+        (
+            "                        let k = BarKey::Val(v.clone());\n"
+            "                        let x = self.bar_read(t, &k);\n"
+            "                        let _ = (&k, &reads);\n"
+            "                        x"
+        ),
+        [],
+        tests=[("ptxv-sim", "lib", WCT + "walk_cache_keys_a_setp_operand")],
+    ),
+    SrcMutant(
+        "walk-noconv",
+        "crates/sim/src/explore.rs",
+        "            let c = self.bar_read(t, &BarKey::Conv).unwrap_or(0);\n            reads.push((BarKey::Conv, c));",
+        "            let c = self.bar_read(t, &BarKey::Conv).unwrap_or(0);\n            let _ = c;",
+        [],
+        tests=[("ptxv-sim", "lib", WCT + "walk_cache_keys_the_warps_convergence")],
+    ),
+    SrcMutant(
+        "walkseen-hash4",
+        "crates/sim/src/explore.rs",
+        "            let mut seen: HashSet<(usize, Env, REnv), BuildHasherDefault<WalkHasher>> =\n                HashSet::default();",
+        (
+            "            #[derive(Default)]\n"
+            "            struct HashOnly(HashSet<u64>);\n"
+            "            impl HashOnly {\n"
+            "                fn h<T: std::hash::Hash>(x: &T) -> u64 {\n"
+            "                    let mut s = WalkHasher::default();\n"
+            "                    x.hash(&mut s);\n"
+            "                    std::hash::Hasher::finish(&s) >> 60\n"
+            "                }\n"
+            "                fn contains<T: std::hash::Hash>(&self, x: &T) -> bool {\n"
+            "                    self.0.contains(&Self::h(x))\n"
+            "                }\n"
+            "                fn insert<T: std::hash::Hash>(&mut self, x: T) -> bool {\n"
+            "                    self.0.insert(Self::h(&x))\n"
+            "                }\n"
+            "            }\n"
+            "            let mut seen = HashOnly::default();"
+        ),
+        [],
+        tests=[("ptxv-sim", "lib", WCT + "register_id_walk_visits_every_state")],
+    ),
+    # E-BAR-OVER walks: a predicate read of the register-id walk, or R2UR's warp-uniformity
+    # read of the plain walk, left out of the walk's reads; a walk's state set keyed by the pc
+    # alone (a second environment at a seen pc taken as seen).
+    SrcMutant(
+        "walk-regs-nopredread",
+        "crates/sim/src/explore.rs",
+        (
+            "                        if unknown.contains(&r) || !ucur(&r) {\n"
+            "                            return None;\n"
+            "                        }\n"
+            "                        used.push(r);\n"
+            "                        let k = BarKey::Pred(r);\n"
+            "                        let v = self.bar_read(t, &k);\n"
+            "                        reads.push((k, v.unwrap_or(0)));"
+        ),
+        (
+            "                        if unknown.contains(&r) || !ucur(&r) {\n"
+            "                            return None;\n"
+            "                        }\n"
+            "                        used.push(r);\n"
+            "                        let k = BarKey::Pred(r);\n"
+            "                        let v = self.bar_read(t, &k);\n"
+            "                        let _ = (&k, &reads);"
+        ),
+        [],
+        tests=[("ptxv-sim", "lib", WCT + "walk_cache_keys_a_register_id_walks_predicate")],
+    ),
+    SrcMutant(
+        "walk-nouniread",
+        "crates/sim/src/explore.rs",
+        (
+            "                                    let k = BarKey::Uni(a.clone());\n"
+            "                                    let u = self.bar_read(t, &k).unwrap_or(0);\n"
+            "                                    reads.push((k, u));"
+        ),
+        (
+            "                                    let k = BarKey::Uni(a.clone());\n"
+            "                                    let u = self.bar_read(t, &k).unwrap_or(0);\n"
+            "                                    let _ = &k;"
+        ),
+        [],
+        tests=[("ptxv-sim", "lib", WCT + "walk_cache_keys_an_r2urs_uniformity")],
+    ),
+    SrcMutant(
+        "walkseen-pconly",
+        "crates/sim/src/explore.rs",
+        (
+            "            let mut seen: HashSet<(usize, Env, REnv), BuildHasherDefault<WalkHasher>> =\n"
+            "                HashSet::default();"
+        ),
+        (
+            "            #[derive(Default)]\n"
+            "            struct PcOnly(HashSet<usize>);\n"
+            "            #[allow(dead_code)]\n"
+            "            impl PcOnly {\n"
+            "                fn contains(&self, x: &(usize, Env, REnv)) -> bool {\n"
+            "                    self.0.contains(&x.0)\n"
+            "                }\n"
+            "                fn insert(&mut self, x: (usize, Env, REnv)) -> bool {\n"
+            "                    self.0.insert(x.0)\n"
+            "                }\n"
+            "                fn len(&self) -> usize {\n"
+            "                    self.0.len()\n"
+            "                }\n"
+            "            }\n"
+            "            let mut seen = PcOnly::default();"
+        ),
+        [],
+        tests=[("ptxv-sim", "lib", WCT + "register_id_walk_visits_every_state")],
+    ),
+    SrcMutant(
+        "plainseen-pconly",
+        "crates/sim/src/explore.rs",
+        (
+            "            let mut seen: HashSet<(usize, Env, VEnv), BuildHasherDefault<WalkHasher>> =\n"
+            "                HashSet::default();"
+        ),
+        (
+            "            #[derive(Default)]\n"
+            "            struct PcOnly(HashSet<usize>);\n"
+            "            #[allow(dead_code)]\n"
+            "            impl PcOnly {\n"
+            "                fn contains(&self, x: &(usize, Env, VEnv)) -> bool {\n"
+            "                    self.0.contains(&x.0)\n"
+            "                }\n"
+            "                fn insert(&mut self, x: (usize, Env, VEnv)) -> bool {\n"
+            "                    self.0.insert(x.0)\n"
+            "                }\n"
+            "                fn len(&self) -> usize {\n"
+            "                    self.0.len()\n"
+            "                }\n"
+            "            }\n"
+            "            let mut seen = PcOnly::default();"
+        ),
+        [],
+        tests=[("ptxv-sim", "lib", WCT + "plain_walk_visits_every_state")],
     ),
     # E-POLL-ANY: a strong load whose step leaves different live registers per value commutes
     # with its location's writes (liveness check skipped).
@@ -1148,8 +1447,8 @@ MUTANTS += [
     SrcMutant(
         "cvt-lp-decode-sat",
         "crates/ptx/src/lib.rs",
-        "            Some((f, 2)) if !matches!(f, Lp::F16 | Lp::Bf16) && rnd == LpRnd::Rn && !sat => {",
-        "            Some((f, 2)) if !matches!(f, Lp::F16 | Lp::Bf16) && rnd == LpRnd::Rn => {",
+        "                    && rnd == LpRnd::Rn\n                    && !sat\n",
+        "                    && rnd == LpRnd::Rn\n",
         [],
         [("ptxv-sim", "fixtures", "probe_cvt_lp_satfinite_verdicts")],
     ),
@@ -1225,6 +1524,14 @@ NUM_MATCH = (
     "control_from_a_match_of_another_lanes_rounded_value_is_refused",
 )
 NUM_NONFINITE = ("ptxv", "num_untracked", "nonfinite_errors_are_never_skipped")
+NUM_ATOM_RMW = ("ptxv", "num_untracked", "atomics_other_than_f32_adds_keep_roundings_out_of_claims")
+NUM_PARTIAL = ("ptxv", "num_untracked", "partial_and_rearranging_accesses_of_rounded_words_are_not_exact")
+NUM_FOLD = ("ptxv", "num_untracked", "sass_claims_need_a_ptx_claim_with_the_same_exact_value")
+# MISS 110 (N-MULTIMEM-ROUND16 scope): fixtures/r1h_nvls_bf16 and the review probes on both
+# fronts; the case-level tolerance rules.
+ROUND16_LANES = ("ptxv", "gpu_compare", "only_calibrated_bf16_lanes_are_within_one_ulp")
+ROUND16_PROBES = ("ptxv", "gpu_compare", "review_probes_are_mismatches")
+ROUND16_CASE = ("ptxv-case", "lib", "tests::expect_report_tol_never_crosses_an_infinity")
 MUTANTS += [
     # Rounding results of parameters, %tid and constants are exact constants again.
     SrcMutant(
@@ -1396,7 +1703,10 @@ MUTANTS += [
         "    if nonfinite(a) || nonfinite(b) {\n",
         "    if false && (nonfinite(a) || nonfinite(b)) {\n",
         [],
-        [("ptxv", "nonfinite", "one_ulp_tolerance_never_crosses_an_infinity")],
+        [
+            ("ptxv", "nonfinite", "one_ulp_tolerance_never_crosses_an_infinity"),
+            ROUND16_CASE,
+        ],
     ),
     # MISS 95 (N-NUM-TRACK): a match, vote or reduction gives each lane only its own operand's
     # rounding again: a branch on a match of another lane's rounded value looks exact
@@ -1408,6 +1718,129 @@ MUTANTS += [
         "        if false && xlane {\n            cur = active.to_vec();\n",
         [],
         [NUM_MATCH],
+    ),
+    # MISS 114 (N-NUM-TRACK, atomics other than f32 adds), each part off: the old value read from
+    # a word holding a rounding is an exact constant (c_num_atom_read_f32 claimed) ...
+    SrcMutant(
+        "num-rmw-old",
+        "crates/sim/src/num.rs",
+        "            if taint {\n                for i in 0..w {\n",
+        "            if false && taint {\n                for i in 0..w {\n",
+        [],
+        [NUM_ATOM_RMW],
+    ),
+    # ... the word an integer read-modify-write computes from one (the red.or 0 words of
+    # c_num_atom_store_f32 claimed) ...
+    SrcMutant(
+        "num-rmw-word",
+        "crates/sim/src/num.rs",
+        "            _ => a.old_rounded || x_inexact,\n",
+        "            _ => false,\n",
+        [],
+        [NUM_ATOM_RMW],
+    ),
+    # ... the word an f64 atomic add leaves (c_num_atom_f64_f32's branch not refused) ...
+    SrcMutant(
+        "num-rmw-f64",
+        "crates/sim/src/num.rs",
+        "            AtomOp::FAdd64 => true,\n",
+        "            AtomOp::FAdd64 => false,\n",
+        [],
+        [NUM_ATOM_RMW],
+    ),
+    # ... a compare-and-swap decided by a rounded word keeps the word (c_num_atom_cas_f32: the
+    # run's sum claimed where the exact computation swapped) ...
+    SrcMutant(
+        "num-rmw-cas",
+        "crates/sim/src/num.rs",
+        "        let decided = cas && (a.old_rounded || a.old_input_derived || x_inexact);\n",
+        "        let decided = false && cas && (a.old_rounded || a.old_input_derived || x_inexact);\n",
+        [],
+        [NUM_ATOM_RMW],
+    ),
+    # ... an exchange drops the node it writes (c_num_atom_store_f32: s an exact constant) ...
+    SrcMutant(
+        "num-rmw-exch",
+        "crates/sim/src/num.rs",
+        "            AtomOp::Exch => Some(a.x.clone()),\n",
+        "            AtomOp::Exch => None,\n",
+        [],
+        [NUM_ATOM_RMW],
+    ),
+    # ... a bf16 atomic lane without a node is an exact constant (c_num_atom_cas_f32's bf16x2
+    # sum claimed).
+    SrcMutant(
+        "num-rmw-bf16",
+        "crates/sim/src/num.rs",
+        "                if s.is_none() {\n                    ns.taint.mem_set((k.0, k.1, k.2 + i as u64), true);\n",
+        "                if false && s.is_none() {\n                    ns.taint.mem_set((k.0, k.1, k.2 + i as u64), true);\n",
+        [],
+        [NUM_ATOM_RMW],
+    ),
+    # MISS 115 (N-NUM-TRACK, partial-width and rearranging accesses), each part off: a 16-bit
+    # load of a word holding a rounding is an exact constant (c_num_ld16_f32 claimed) ...
+    SrcMutant(
+        "num-ld16",
+        "crates/sim/src/num.rs",
+        "                if ns.rounding_taint && w.is_none() && !rt {\n",
+        "                if false && ns.rounding_taint && w.is_none() && !rt {\n",
+        [],
+        [NUM_PARTIAL],
+    ),
+    # ... so is a word ldmatrix .trans rearranges (c_num_ldsm_trans_f32's rebuilt words) ...
+    SrcMutant(
+        "num-ldsm",
+        "crates/sim/src/num.rs",
+        "            if ns.rounding_taint && locs.iter().any(|&l| ns.words_rounded(mem_key(l), 1)) {\n",
+        "            if false && locs.iter().any(|&l| ns.words_rounded(mem_key(l), 1)) {\n",
+        [],
+        [NUM_PARTIAL],
+    ),
+    # ... a word a partial store mixes (c_num_st16_f32) ...
+    SrcMutant(
+        "num-st16",
+        "crates/sim/src/num.rs",
+        "                if ns.rounding_taint && (src_rounded || old.is_some_and(|n| ns.rounded(n))) {\n",
+        "                if false && (src_rounded || old.is_some_and(|n| ns.rounded(n))) {\n",
+        [],
+        [NUM_PARTIAL],
+    ),
+    # ... a word a copy of 2-byte elements assembles (c_num_tma16_f32) ...
+    SrcMutant(
+        "num-copy16",
+        "crates/sim/src/num.rs",
+        "                    && (copied_rounded(lo, hi) || old.is_some_and(|n| ns.rounded(n)))\n",
+        "                    && false\n                    && (copied_rounded(lo, hi) || old.is_some_and(|n| ns.rounded(n)))\n",
+        [],
+        [NUM_PARTIAL],
+    ),
+    # ... and stmatrix .b8 leaves the words' old nodes and takes no taint (c_num_stsm8_f32).
+    SrcMutant(
+        "num-stsm8",
+        "crates/sim/src/exec.rs",
+        "                                self.num_st(src, vi, loc, &[byte as u8], &origins, pc);\n",
+        "                                let _ = &origins;\n",
+        [],
+        [NUM_PARTIAL],
+    ),
+    # MISS 108 (N-NUM-TRACK, constants ptxas folds): the SASS front claims elements whose exact
+    # value differs from the PTX front's (c_num_fold_add_f32 claimed on SASS) ...
+    SrcMutant(
+        "num-fold-exact",
+        "crates/cli/src/main.rs",
+        "                    if !r.untracked && !same {\n",
+        "                    if false && !r.untracked && !same {\n",
+        [],
+        [NUM_FOLD],
+    ),
+    # ... and outputs the PTX front refuses (c_num_fold_ctl_f32 claimed on SASS).
+    SrcMutant(
+        "num-fold-refused",
+        "crates/cli/src/main.rs",
+        "                matches!(ptx_out, Some(None)).then(|| {\n",
+        "                (false && matches!(ptx_out, Some(None))).then(|| {\n",
+        [],
+        [NUM_FOLD],
     ),
 ]
 
@@ -1490,7 +1923,9 @@ MUTANTS += [
         "                res.push((o.clone(), GpuMatch::WithinUlp, true));",
         "                res.push((o.clone(), GpuMatch::Bitwise, true));",
         [],
-        [("ptxv", "gpu_compare", "gpu_compare_states_each_comparison")],
+        # Since MISS 110 an f32 output one ulp off is a mismatch: the within-one-ulp results
+        # are those of calibrated bf16 lanes.
+        [("ptxv", "gpu_compare", "gpu_compare_states_each_comparison"), ROUND16_LANES],
     ),
     # fb/kernel_db/run.py `gpu_match`: within one ulp counts as matching the GPU output again
     # (a clean verdict on it becomes a clean record).
@@ -1501,6 +1936,70 @@ MUTANTS += [
         '    if all(r in ("bitwise", "within_ulp") for r in res):',
         [],
         py=[("fb/kernel_db", "test_run_collect.py", "GpuCompare")],
+    ),
+    # MISS 110 (N-MULTIMEM-ROUND16 scope): the one-ulp tolerance ignores the provenance marks
+    # again: any element one encoding off is within one ulp in a multicast case (an f32 sum, a
+    # doubled lane, an overwritten lane, an exact lane).
+    SrcMutant(
+        "round16-unmarked",
+        "crates/case/src/lib.rs",
+        "                            .all(|k| r16[start + off + e + k].is_some_and(|f| f.dtype() == b.dtype))",
+        "                            .all(|k| r16[start + off + e + k].is_some() || true)",
+        [],
+        [ROUND16_LANES, ROUND16_PROBES, ROUND16_CASE],
+    ),
+    # MISS 110: a byte marked with the other 16-bit format (or an f32 element of marked bytes)
+    # takes the tolerance.
+    SrcMutant(
+        "round16-format",
+        "crates/case/src/lib.rs",
+        "                            .all(|k| r16[start + off + e + k].is_some_and(|f| f.dtype() == b.dtype))",
+        "                            .all(|k| r16[start + off + e + k].is_some())",
+        [],
+        [ROUND16_CASE],
+    ),
+    # MISS 110: NaN against a NaN with another payload is one ulp apart again (`ulp_class`).
+    SrcMutant(
+        "round16-nan",
+        "crates/case/src/lib.rs",
+        "    if nan(a) || nan(b) {\n",
+        "    if nan(a) && nan(b) {\n        return true;\n    }\n    if nan(a) || nan(b) {\n",
+        [],
+        [
+            ROUND16_CASE,
+            ("ptxv-case", "lib", "tests::one_ulp_tolerance_needs_finite_values"),
+            ("ptxv-case", "gpu_compare", "nan_payloads_are_a_mismatch"),
+        ],
+    ),
+    # MISS 110: every lane of an f16 / bf16 multimem.ld_reduce with a calibrated lane is marked,
+    # exact lanes included.
+    SrcMutant(
+        "round16-every-lane",
+        "crates/sim/src/multimem.rs",
+        "                if c {\n                    m[j * w..(j + 1) * w].fill(Some(f));",
+        "                if true || c {\n                    m[j * w..(j + 1) * w].fill(Some(f));",
+        [],
+        [ROUND16_LANES],
+    ),
+    # MISS 110: a register write keeps the mark of the lane the register held (the pair doubled
+    # in its register passes as the lane).
+    SrcMutant(
+        "round16-reg-keep",
+        "crates/sim/src/exec.rs",
+        "        if self.round16.is_some() {\n            self.round16_forget_reg(t, r, slots);",
+        "        if false && self.round16.is_some() {\n            self.round16_forget_reg(t, r, slots);",
+        [],
+        [ROUND16_LANES],
+    ),
+    # MISS 110: a memory write keeps the mark of the lane the bytes held (the pair an exchange
+    # wrote over the stored lane passes as the lane).
+    SrcMutant(
+        "round16-mem-keep",
+        "crates/sim/src/exec.rs",
+        "        if write.is_some() && self.round16.is_some() {\n            self.round16_forget_mem(loc, n);",
+        "        if false && write.is_some() && self.round16.is_some() {\n            self.round16_forget_mem(loc, n);",
+        [],
+        [ROUND16_LANES],
     ),
     # main.rs `out_dir`: without --out, every run of a case materializes its variants in the
     # case's shared default directory again (no per-invocation `run_dir`).
@@ -1670,8 +2169,8 @@ MUTANTS += [
     SrcMutant(
         "kdb-snd-certify-tag-strict",
         "fb/kernel_db/soundness.py",
-        "            if cls.on_certificate(chk):",
-        "            if cls.certified(chk):",
+        "        if cls.on_certificate(chk):\n",
+        "        if cls.certified(chk):\n",
         [],
         py=[("fb/kernel_db", "test_soundness.py", "test_certified_incomplete_is_not_certified")],
     ),
@@ -1684,6 +2183,102 @@ MUTANTS += [
         '            "E-WELLSYNC" in (chk.get(k) or []) for k in ("assumes",)',
         [],
         py=[("fb/kernel_db", "test_soundness.py", "test_certified_incomplete_is_not_certified")],
+    ),
+    # soundness.py `on_certificate`: a certified two-level SASS level is not read.
+    SrcMutant(
+        "kdb-snd-two-level-ignored",
+        "fb/kernel_db/soundness.py",
+        '            or (isinstance(tl, dict) and bool(tl.get("sass_certified")))\n',
+        "            or False\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_certificate_signals_beside_the_check_flag")],
+    ),
+    # soundness.py `record_tags`: the entries under checks_extra are not read.
+    SrcMutant(
+        "kdb-snd-extra-ignored",
+        "fb/kernel_db/soundness.py",
+        '        for chk in [r.get("check"), *(extra if isinstance(extra, list) else [])]:\n',
+        '        for chk in [r.get("check")]:\n',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_certificate_signals_beside_the_check_flag")],
+    ),
+    # soundness.py `record_tags`: check_ptx counts only beside another check again.
+    SrcMutant(
+        "kdb-snd-check-ptx-needs-check",
+        "fb/kernel_db/soundness.py",
+        "        if isinstance(cp, dict):\n",
+        "        if isinstance(cp, dict) and t:\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_certificate_signals_beside_the_check_flag")],
+    ),
+    # soundness.py `record_check`: check_ptx is not a record's check without `check` (a
+    # check_ptx-only timeout grades unknown again, not unconfirmed).
+    SrcMutant(
+        "kdb-snd-record-check-ptx-ignored",
+        "fb/kernel_db/soundness.py",
+        '        for k in ("check", "check_ptx"):\n',
+        '        for k in ("check",):\n',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_check_ptx_is_the_check_without_a_check")],
+    ),
+    # soundness.py `of_record`: its rev and no-verdict reason read `check` only again.
+    SrcMutant(
+        "kdb-snd-of-record-check-only",
+        "fb/kernel_db/soundness.py",
+        "        chk = self.record_check(r)\n",
+        '        chk = r.get("check") if isinstance(r.get("check"), dict) else {}\n',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_check_ptx_is_the_check_without_a_check")],
+    ),
+    # soundness.py `of_record`: last_verdict reads `check` only again.
+    SrcMutant(
+        "kdb-snd-last-verdict-check-only",
+        "fb/kernel_db/soundness.py",
+        "                lc = self.record_check(lv)\n",
+        '                lc = lv.get("check") or {}\n',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_check_ptx_is_the_check_without_a_check")],
+    ),
+    # export_records.py `collect`: the last verdicts read `check` only again, so a check_ptx-only
+    # record has no last_verdict.
+    SrcMutant(
+        "kdb-export-verdicts-check-only",
+        "fb/kernel_db/export_records.py",
+        "        chk = soundness.Soundness.record_check(r)\n        if verdicts is not None and chk:\n",
+        '        chk = r.get("check") if isinstance(r.get("check"), dict) else {}\n'
+        "        if verdicts is not None and chk:\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_export_last_verdict")],
+    ),
+    # export_records.py `base`: the export status and ptxv_rev read `check` only again, so a
+    # check_ptx-only record is not_checked ("no check result") beside its grade.
+    SrcMutant(
+        "kdb-export-base-check-only",
+        "fb/kernel_db/export_records.py",
+        '        chk = soundness.Soundness.record_check(r)\n        rev = str(chk.get("ptxv_rev") or "")\n',
+        '        chk = r.get("check")\n        rev = str((chk or {}).get("ptxv_rev") or "")\n',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_annotation")],
+    ),
+    # soundness.py `record_tags`: check_ptx gets no coverage tag again, so misses of input
+    # coverage leave its open list.
+    SrcMutant(
+        "kdb-snd-check-ptx-no-coverage",
+        "fb/kernel_db/soundness.py",
+        '            t |= cls.check_tags({**cp, "front_end": "ptx"})\n',
+        '            t |= {"kdb-tooling", "race-verdict:ptx"} | ({"certify"} if cls.on_certificate(cp) else set())\n',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_check_ptx_tags_are_a_ptx_checks")],
+    ),
+    # soundness.py `record_tags`: check_ptx's tags follow its front_end, so one without it gets
+    # the SASS levels' tags instead of race-verdict:ptx.
+    SrcMutant(
+        "kdb-snd-check-ptx-front",
+        "fb/kernel_db/soundness.py",
+        '            t |= cls.check_tags({**cp, "front_end": "ptx"})\n',
+        "            t |= cls.check_tags(cp)\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_check_ptx_tags_are_a_ptx_checks")],
     ),
     # `cmd_check` (check and suite): the profile name is read without the check again; only
     # `check`'s early refusal is left, so `suite` runs with an unknown name.
@@ -1762,6 +2357,109 @@ MUTANTS += [
         '    let new = d.join(".lock");\n',
         [],
         [("ptxv", "outdir_race", "a_run_taking_its_lock_keeps_its_directory")],
+    ),
+    # `lock_run_dir` lets the lock go when the rename reports a failure: a rename that happened
+    # all the same left `.lock` there unlocked, and another run removes the live run's directory.
+    SrcMutant(
+        "reap-lock-rename-lost",
+        "crates/cli/src/main.rs",
+        '    if std::fs::rename(&new, d.join(".lock")).is_err() {\n'
+        "        let _ = std::fs::remove_file(&new);\n    }\n",
+        '    if std::fs::rename(&new, d.join(".lock")).is_err() {\n'
+        "        drop(f);\n        let _ = std::fs::remove_file(&new);\n        return;\n    }\n",
+        [],
+        [("ptxv", "outdir_race", "a_run_whose_lock_rename_is_reported_failed_keeps_its_directory")],
+    ),
+    # `reap_run_dirs` removes a dead directory with `remove_dir_all` again: it stops at the first
+    # entry it cannot remove, after `.lock` where that comes first, and no run reaps the rest.
+    SrcMutant(
+        "reap-remove-dir-all",
+        "crates/cli/src/main.rs",
+        "            remove_run_dir(&d);\n",
+        "            let _ = std::fs::remove_dir_all(&d);\n",
+        [],
+        [("ptxv", "outdir_race", "what_a_reaper_cannot_remove_keeps_the_lock_file")],
+    ),
+    # `remove_run_dir` removes `.lock` with the other entries, not last.
+    SrcMutant(
+        "reap-lock-not-last",
+        "crates/cli/src/main.rs",
+        '    if !empty_dir(d, Some(".lock"), &mut false) {\n',
+        "    if !empty_dir(d, None, &mut false) {\n",
+        [],
+        [("ptxv", "outdir_race", "what_a_reaper_cannot_remove_keeps_the_lock_file")],
+    ),
+    # `empty_dir` retries its rounds at every level again after a round that removed nothing:
+    # what a run cannot remove k levels down costs 8^k listings.
+    SrcMutant(
+        "reap-rounds-nested",
+        "crates/cli/src/main.rs",
+        "        if !round {\n            return false;\n        }\n",
+        "",
+        [],
+        [("ptxv", "outdir_race", "a_reaper_stops_at_what_it_cannot_remove_deep_down")],
+    ),
+    # `empty_dir`: a subdirectory removed by another process before the run reads it (read_dir:
+    # NotFound) is not gone, so the round that met it makes no progress and the run leaves the
+    # dead directory with `.lock`.
+    SrcMutant(
+        "reap-vanished-not-gone",
+        "crates/cli/src/main.rs",
+        "            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return true,\n",
+        "            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,\n",
+        [],
+        [("ptxv", "outdir_race", "a_subdirectory_removed_under_a_reaper_counts_as_gone")],
+    ),
+    # The anchors check of --quick (crates/cli/tests/srcmut_anchors.rs): a line that a mutant
+    # anchors on (reap-lock-window's) changes and the mutant is not re-pointed.
+    SrcMutant(
+        "srcmut-anchor-moved",
+        "crates/cli/src/main.rs",
+        '    let new = d.join(".lock.new");\n',
+        '    let new = d.join(".lock.new"); // moved\n',
+        [],
+        [("ptxv", "srcmut_anchors", "every_srcmut_mutant_finds_its_text_once")],
+    ),
+    # srcmut.py `main`: no mutant chosen is no error again, so --check-anchors with an --only
+    # name that is not a mutant says "0 of 0 anchors broken" and exits 0 (the anchors test's
+    # negative control).
+    SrcMutant(
+        "srcmut-none-chosen-ok",
+        "tools/mutate/srcmut.py",
+        "    if bad or not chosen:\n",
+        "    if False:\n",
+        [],
+        [("ptxv", "srcmut_anchors", "every_srcmut_mutant_finds_its_text_once")],
+    ),
+    # srcmut.py `broken_anchors` reports nothing, so --check-anchors passes with an anchor gone
+    # (the anchors test's positive control: a broken anchor planted in a scratch tree).
+    SrcMutant(
+        "srcmut-anchors-none",
+        "tools/mutate/srcmut.py",
+        "        if n != 1:\n",
+        "        if n < 0:\n",
+        [],
+        [("ptxv", "srcmut_anchors", "every_srcmut_mutant_finds_its_text_once")],
+    ),
+    # --check-anchors ignores --root and checks this checkout (the positive control's planted
+    # anchor is never read).
+    SrcMutant(
+        "srcmut-root-ignored",
+        "tools/mutate/srcmut.py",
+        "        broken = broken_anchors(ROOT if a.root is None else a.root, chosen)\n",
+        "        broken = broken_anchors(ROOT, chosen)\n",
+        [],
+        [("ptxv", "srcmut_anchors", "every_srcmut_mutant_finds_its_text_once")],
+    ),
+    # srcmut.py `main`: an --only that is given but names nothing ("", ",", " ") chooses every
+    # mutant again (the anchors test's negative control with an empty --only).
+    SrcMutant(
+        "srcmut-only-nothing-all",
+        "tools/mutate/srcmut.py",
+        "    if a.only is not None and not only:\n",
+        "    if False:\n",
+        [],
+        [("ptxv", "srcmut_anchors", "every_srcmut_mutant_finds_its_text_once")],
     ),
     # The host token without the boot: another machine of the same name, or this one before a
     # reboot, is this host.
@@ -1972,8 +2670,8 @@ MUTANTS += [
     SrcMutant(
         "ident-outcomes-off",
         "crates/sim/src/errdist/nonlin/ident.rs",
-        "                prog.decision_count(),\n                taken.get(k)",
-        "                0,\n                taken.get(k)",
+        "            f.outcomes = Outcomes::of(prog.decision_count(&f.steps), &taken);",
+        "            f.outcomes = Outcomes::of(0, &taken);",
         [],
         [("ptxv", "errdist_guard", "slice_off_its_probed_guard_outcome_is_refused")],
     ),
@@ -2077,21 +2775,6 @@ MUTANTS += [
         [],
         [("ptxv", "errdist_guard", "fp32_atomic_adds_flush_subnormal_operands")],
     ),
-    # One thread's adds count as a free order.
-    SrcMutant(
-        "atom-sources-off",
-        "crates/sim/src/errdist/chain.rs",
-        "        if self.sources < 2 || !dag.is_finite() || !gpu.is_finite() {",
-        "        if !dag.is_finite() || !gpu.is_finite() {",
-        [],
-        [
-            (
-                "ptxv-sim",
-                "errdist_gpu_gate",
-                "atomic_order_explains_only_a_free_order_within_its_bound",
-            )
-        ],
-    ),
     # Two operands from zero count as a free order.
     SrcMutant(
         "atom-operands-off",
@@ -2147,6 +2830,15 @@ MUTANTS += [
         ],
     ),
 ]
+# One thread's adds counted as a free order (`AtomChain::order_explains` without its
+# `self.sources < 2`): equivalent since the MISS 84 follow-up, which added `free`.
+EXCLUDED["atom-sources-off"] = (
+    "AtomChain::order_explains without `self.sources < 2`: since the MISS 84 follow-up a chain "
+    "is free only where two adds adjacent in the run's order come from different actors and "
+    "happens-before leaves them unordered (num.rs `note_atom_order`: `pa != actor`); a source "
+    "is one actor, so a chain of one source is never free and `!self.free` refuses it first. "
+    "atom-free-off and atom-hb-off mutate that check"
+)
 
 # Value pieces inside a slice (MISS 57 class): a clamp, a minimum / maximum, a sign are
 # decisions (seg.rs `inst_pieces`; fixtures/errdist/clamp).
@@ -2193,12 +2885,14 @@ MUTANTS += [
     ),
 ]
 
-# --pre-round skips only what it changes (errdist.rs `pre_changed`; fixtures/errdist/miss58/rare).
+# --pre-round keeps Tier 3's validation refusal (errdist.rs `t3_claim`; fixtures/errdist/miss58/rare):
+# the mutant skips it whenever --pre-round is given, as before MISS 87. Since the MISS 87
+# follow-up the refusal holds whatever --pre-round takes (pre-mark-all, pre-wc-off: per output).
 MUTANTS += [
     SrcMutant(
         "preround-bypass",
         "crates/cli/src/errdist.rs",
-        "    if let (false, Some(claim)) = (pre_changed, t3_claim) {",
+        "    if let Some(claim) = t3_claim {",
         "    if let (false, Some(claim)) = (a.pre_round, t3_claim) {",
         [],
         [
@@ -2328,6 +3022,158 @@ MUTANTS += [
                 "pre_round_keeps_the_checks_of_an_output_it_leaves_alone",
             )
         ],
+    ),
+]
+
+# MISS 99: integer steps inside a slice are decisions (seg.rs `inst_pieces`: an F2I's
+# integer; `bit_pieces` / `cut_pieces`: fields of a float cut by LOP3 / SHF / PRMT;
+# fixtures/errdist/trunc).
+MUTANTS += [
+    # The F2I's integer no decision again (NaN and saturation only).
+    SrcMutant(
+        "f2i-steps-off",
+        "crates/sim/src/seg.rs",
+        "            for i in 0..32 {\n                f(r >> i & 1 == 1);\n            }\n        }",
+        "            for i in 0..0 {\n                f(r >> i & 1 == 1);\n            }\n        }",
+        [],
+        [("ptxv", "errdist_guard", "integer_steps_inside_a_slice_are_decisions")],
+    ),
+    # No bit field decides (only the operands' signs, as before MISS 99).
+    SrcMutant(
+        "bit-pieces-off",
+        "crates/sim/src/seg.rs",
+        "fn bit_pieces(cl: &[Bit; 32], ops: &[(u32, bool)], r: u32, f: &mut dyn FnMut(bool)) {\n",
+        "fn bit_pieces(cl: &[Bit; 32], ops: &[(u32, bool)], r: u32, f: &mut dyn FnMut(bool)) {\n    if r != r.wrapping_add(1) {\n        return;\n    }\n",
+        [],
+        [("ptxv", "errdist_guard", "integer_steps_inside_a_slice_are_decisions")],
+    ),
+    # A wide field (a mantissa given a fixed exponent) decides nothing.
+    SrcMutant(
+        "cut-pieces-off",
+        "crates/sim/src/seg.rs",
+        "    cut_pieces(ops, &low_cut, r, f);\n}",
+        "    let _ = (&low_cut, r, &f);\n}",
+        [],
+        [("ptxv", "errdist_guard", "integer_steps_inside_a_slice_are_decisions")],
+    ),
+]
+
+# MISS 99 follow-up: a rounding whose result lane took at most two values on the
+# identification's probes while a data operand took more is a decision by that lane's bits
+# (seg.rs `SProg::rounding_steps`; fixtures/errdist/trunc/fpstep.ptx).
+MUTANTS += [
+    # No rounding acts as a step: each departs from the fit by its error again (the miss).
+    SrcMutant(
+        "round-steps-off",
+        "crates/sim/src/errdist/nonlin/ident.rs",
+        "            f.steps = prog.rounding_steps(fin);",
+        "            f.steps = vec![];",
+        [],
+        [("ptxv", "errdist_guard", "fp_rounding_steps_inside_a_slice_are_decisions")],
+    ),
+]
+
+# MISS 120: Tier 3's P(differ) interval counts inputs where few differ (mc.rs `p_interval` /
+# `input_bound`), and Tier 3 grows at P 0 (errdist.rs, the growth loop; fixtures/errdist/clus).
+# An observed run that refutes a claim keeps the narrower interval (`p_interval_obs`).
+MUTANTS += [
+    # The outputs' interval alone at 0 differing inputs again (the miss).
+    SrcMutant(
+        "t3-input-bound-off",
+        "crates/sim/src/errdist/mc.rs",
+        "    if !f.is_empty() && f.iter().filter(|&&x| x > 0.0).count() < SMALL_K {",
+        "    if false && !f.is_empty() && f.iter().filter(|&&x| x > 0.0).count() < SMALL_K {",
+        [],
+        [
+            ("ptxv-sim", "lib", "errdist::mc::tests::p_interval_counts_inputs_where_few_differ"),
+            ("ptxv", "errdist_adv", "tier3_interval_counts_inputs_where_outputs_differ_together"),
+        ],
+    ),
+    # No growth at P 0.
+    SrcMutant(
+        "t3-grow-p0-off",
+        "crates/cli/src/errdist.rs",
+        "            let (mut want, mut bud) = if p == 0.0 && obs.compared > 0 {\n                (f64::INFINITY, budget)",
+        "            let (mut want, mut bud) = if p == 0.0 && obs.compared > 0 {\n                (0.0, 0.0)",
+        [],
+        [("ptxv", "errdist_adv", "tier3_interval_counts_inputs_where_outputs_differ_together")],
+    ),
+    # Growth at P 0 where Tier 3 compared nothing (every output out of domain): up to 206 s
+    # per kernel_db run for an interval that stays [0, 1].
+    SrcMutant(
+        "t3-grow-ood",
+        "crates/cli/src/errdist.rs",
+        "            let (mut want, mut bud) = if p == 0.0 && obs.compared > 0 {",
+        "            let (mut want, mut bud) = if p == 0.0 {",
+        [],
+        [("ptxv", "errdist_guard", "nonfinite_outputs_are_out_of_domain")],
+    ),
+    # A validation's observed side takes the input-level bound too (an analytic estimate's
+    # check, validate.rs `against_estimate`).
+    SrcMutant(
+        "obs-input-bound",
+        "crates/sim/src/errdist/validate.rs",
+        "    let ci = super::mc::p_interval_obs(obs, 0.05);\n    let oci = super::mc::p_interval_obs(obs, 0.001);",
+        "    let ci = super::mc::p_interval(obs, 0.05);\n    let oci = super::mc::p_interval(obs, 0.001);",
+        [],
+        [("ptxv-sim", "errdist_gpu_gate", "an_observed_run_refutes_with_the_outputs_and_inputs_intervals")],
+    ),
+]
+
+# MISS 64: a Tier 3 that compared no output is refused and cross-checks nothing (errdist.rs
+# `refuse_no_compared`).
+MUTANTS += [
+    # Kept: the headline P(differ) 0 over [0, 1] again, and it confirms analytic estimates.
+    SrcMutant(
+        "ed-no-cmp-kept",
+        "crates/cli/src/errdist.rs",
+        "    if obs.compared > 0 {\n        return;\n    }",
+        "    if true {\n        return;\n    }",
+        [],
+        [
+            ("ptxv", "nonfinite", "errdist_every_input_out_of_domain_is_refused"),
+            ("ptxv", "errdist_guard", "nonfinite_outputs_are_out_of_domain"),
+        ],
+    ),
+]
+
+# Matched roundings of a pair are paired in op order (nonlin/agg.rs `pair_matches`).
+MUTANTS += [
+    # The hash map's iteration order picks the pairs again.
+    SrcMutant(
+        "pair-hash-order",
+        "crates/sim/src/errdist/nonlin/agg.rs",
+        "    order.sort_by_key(|(kr, kc)| (at(op_r, kr), at(op_c, kc), *kr, *kc));",
+        "    let _ = &at;",
+        [],
+        [("ptxv-sim", "lib", "errdist::nonlin::agg::tests::matched_roundings_pair_in_op_order")],
+    ),
+]
+
+# MISS 91: a linearized estimate needs its Tier 3 cross-check resolved to 5% of p3,
+# and its interval joins Tier 3's (cli/src/errdist.rs, the cross-check).
+MUTANTS += [
+    # The tolerance (Tier 3's half-width, up to 20% of p3) and a Tier 3 of 0 confirm Tier 2
+    # again.
+    SrcMutant(
+        "xcheck-t2-res-off",
+        "crates/cli/src/errdist.rs",
+        "                if ok && e.tier == 2 && !(p3 > 0.0 && hw <= XCHECK_T2_HW * p3) {",
+        "                if ok && e.tier == 2 && !(p3 >= 0.0) {",
+        [],
+        [
+            ("ptxv", "errdist_adv", "crosscheck_needs_a_tier3_difference_for_tier2"),
+            ("ptxv", "errdist_adv", "tier2_needs_resolution_and_joins_tier3s_interval"),
+        ],
+    ),
+    # A confirmed Tier 2 keeps its own interval (the spread over its nominal inputs) again.
+    SrcMutant(
+        "xcheck-join-off",
+        "crates/cli/src/errdist.rs",
+        "                    if jlo < plo || jhi > phi {",
+        "                    if jlo < plo && jhi > phi && jlo < 0.0 {",
+        [],
+        [("ptxv", "errdist_adv", "tier2_needs_resolution_and_joins_tier3s_interval")],
     ),
 ]
 
@@ -2560,6 +3406,488 @@ MUTANTS += [
 ]
 
 
+# MISS 97: a `.SIGN` register (a PLOP3 input, ptxas's add.sat.s32 / sub.sat.s32) read as its
+# bit 31 by every model reader of predicate operands (`Reg::pred_bit`), and accepted only as a
+# PLOP3 input. Each mutant restores one site's old reading (the register as nonzero).
+MUTANTS += [
+    # Slices (N-SEG): a predicate argument of a slice read as nonzero again.
+    SrcMutant(
+        "sign-seg",
+        "crates/sim/src/seg.rs",
+        "                                .is_none_or(|(_, s)| r.pred_bit(get(*s, vals))),",
+        "                                .is_none_or(|(_, s)| get(*s, vals) != 0),",
+        [],
+        [
+            ("ptxv-sim", "lib", "seg::tests::sign_predicate_reads_bit_31"),
+            ("ptxv", "equiv", "sign_predicate_slices_are_swept_apart"),
+        ],
+    ),
+    # N-FINITE's slice values: a constant predicate argument read as nonzero again.
+    SrcMutant(
+        "sign-num",
+        "crates/sim/src/num.rs",
+        "                            Some(K(c)) => Some(r.pred_bit(c) != pr.neg),",
+        "                            Some(K(c)) => Some((c != 0) != pr.neg),",
+        [],
+        [("ptxv-sim", "lib", "num::fin_tests::constant_sign_predicate_reads_bit_31")],
+    ),
+    # E-CONST-BRA's constant guards.
+    SrcMutant(
+        "sign-constguard",
+        "crates/sim/src/explore.rs",
+        "            env.get(&r).map(|&v| r.pred_bit(v) ^ p.neg)",
+        "            env.get(&r).map(|&v| (v != 0) ^ p.neg)",
+        [],
+        [("ptxv-sim", "lib", "explore::sign_pred_tests::const_guard_reads_sign_bit")],
+    ),
+    # The look-ahead walk's predicates (constant and per lane).
+    SrcMutant(
+        "sign-lacfg",
+        "crates/sim/src/explore.rs",
+        "            Av::K(v) => Av::K((r.pred_bit(v) ^ p.neg) as u64),\n"
+        "            Av::L(j) => {\n"
+        "                let v = self.lv[j as usize]\n"
+        "                    .iter()\n"
+        "                    .map(|&x| (r.pred_bit(x) ^ p.neg) as u64)",
+        "            Av::K(v) => Av::K(((v != 0) ^ p.neg) as u64),\n"
+        "            Av::L(j) => {\n"
+        "                let v = self.lv[j as usize]\n"
+        "                    .iter()\n"
+        "                    .map(|&x| ((x != 0) ^ p.neg) as u64)",
+        [],
+        [("ptxv-sim", "lib", "explore::sign_pred_tests::lookahead_pred_reads_sign_bit")],
+    ),
+    # elect_lanes' per-lane predicates.
+    SrcMutant(
+        "sign-elect",
+        "crates/sim/src/elect_lanes.rs",
+        "            Av::Lanes(v) => Av::Lanes(v.map(|x| (r.pred_bit(x) ^ p.neg) as u64)),",
+        "            Av::Lanes(v) => Av::Lanes(v.map(|x| ((x != 0) ^ p.neg) as u64)),",
+        [],
+        [("ptxv-sim", "lib", "elect_lanes::sign_pred_tests::sign_register_reads_bit_31")],
+    ),
+    # S-INIT: a `.SIGN` input's undefined bit 31 not reported again.
+    SrcMutant(
+        "sign-predundef",
+        "crates/sim/src/exec.rs",
+        "            matches!(r.file, File::P | File::UP | File::R | File::UR)\n"
+        "                && r.pred_bit(self.reg_umask(t, *r) as u64)",
+        "            matches!(r.file, File::P | File::UP) && self.reg_umask(t, *r) != 0",
+        [],
+        [("ptxv-sim", "register_definedness", "plop3_sign_input_with_undefined_bit_31_is_undefined")],
+    ),
+    # S-INIT: a `.SIGN` input undefined when any bit of its mask is (not bit 31 alone).
+    SrcMutant(
+        "sign-predundef-mask",
+        "crates/sim/src/exec.rs",
+        "                && r.pred_bit(self.reg_umask(t, *r) as u64)",
+        "                && self.reg_umask(t, *r) != 0",
+        [],
+        [("ptxv-sim", "register_definedness", "plop3_sign_input_definedness_is_bit_31_of_its_mask")],
+    ),
+    # The SASS parser: `.SIGN` accepted as any predicate operand again.
+    SrcMutant(
+        "sign-parser",
+        "crates/sass/src/lib.rs",
+        "        if p.reg.is_some_and(|r| matches!(r.file, File::R | File::UR)) {",
+        "        if false {",
+        [],
+        [("ptxv-sim", "fixtures", "sass_sign_predicate_plop3_inputs_only")],
+    ),
+]
+
+
+# MISS 98: `ptxv equiv` refuses a proven level the GPU outputs contradict
+# (fixtures/c_equiv_captured).
+MUTANTS += [
+    # The refusal removed (the level kept, as before).
+    SrcMutant(
+        "captured-refusal",
+        "crates/cli/src/equiv.rs",
+        "                (CONTRADICTED.to_string(), false)",
+        "                (got, proven)",
+        [],
+        [("ptxv", "equiv", "captured_gpu_mismatch_refuses_the_level")],
+    ),
+    # A kernel's simulated output no longer held to its capture.
+    SrcMutant(
+        "captured-simgpu",
+        "crates/cli/src/equiv.rs",
+        "    (differs.is_some() || exempt.0 > 0).then_some(SimGpu { differs, exempt })",
+        "    (exempt.0 > 0).then_some(SimGpu {\n        differs: None,\n        exempt,\n    })",
+        [],
+        [("ptxv", "equiv", "captured_gpu_mismatch_refuses_the_level")],
+    ),
+    # Elementwise mode: the element functions no longer held to the captured outputs.
+    SrcMutant(
+        "captured-ew",
+        "crates/cli/src/equiv.rs",
+        "                contradicted |= bad > 0;\n                cap.push(",
+        "                cap.push(",
+        [],
+        [("ptxv", "equiv", "captured_gpu_mismatch_refuses_the_level")],
+    ),
+    # L0 against the pair of captures.
+    SrcMutant(
+        "captured-l0",
+        "crates/cli/src/equiv.rs",
+        "        return (eq < n).then(|| {",
+        "        return (eq < eq).then(|| {",
+        [],
+        [("ptxv", "bin:ptxv", "equiv::captured_tests::captured_outputs_against_the_level")],
+    ),
+    # L1 / L2 / L1~ bounds against the pair of captures.
+    SrcMutant(
+        "captured-bound",
+        "crates/cli/src/equiv.rs",
+        "        if k > 0 {\n            why.push(",
+        "        if k > k {\n            why.push(",
+        [],
+        [("ptxv", "bin:ptxv", "equiv::captured_tests::captured_outputs_against_the_level")],
+    ),
+    # The float-atomic exemption removed: the atomic row sum's simulated output (one order of
+    # the adds) held to its capture (the GPU's order).
+    SrcMutant(
+        "captured-atomic-exempt",
+        "crates/cli/src/equiv.rs",
+        "    let Some(ns) = m.num.as_ref().filter(|n| n.atomic_adds > 0) else {",
+        "    let Some(ns) = m.num.as_ref().filter(|_| false) else {",
+        [],
+        [("ptxv", "equiv", "row_sums_are_bounded")],
+    ),
+    # The exemption for every f32 output of a kernel with a float atomic add (the batch-3 rule):
+    # a scratch-buffer atomic hides a changed capture at any output again.
+    SrcMutant(
+        "captured-atomic-whole",
+        "crates/cli/src/equiv.rs",
+        "            if node.is_some_and(|x| ns.atomic_order_dependent(x, &mut memo)) {\n"
+        "                dep[off..off + 4].fill(true);",
+        "            if true {\n                dep[off..off + 4].fill(true);",
+        [],
+        [("ptxv", "equiv", "atomic_adds_exempt_only_their_outputs")],
+    ),
+    # Any atomic add exempts its output, not only an order-dependent chain: two adds into +0
+    # (one order's bits) hide a changed capture.
+    SrcMutant(
+        "captured-atomic-chain",
+        "crates/sim/src/num.rs",
+        "            s >= 3 || (s == 2 && (!base_zero || mixed))",
+        "            s >= 1",
+        [],
+        [("ptxv", "equiv", "atomic_adds_exempt_only_their_outputs")],
+    ),
+    # A non-finite captured output against a finite one passes L1 again.
+    SrcMutant(
+        "captured-nonfinite",
+        "crates/cli/src/equiv.rs",
+        "        !finite && r.0 != c.0 && !(a.is_nan() && b.is_nan()),",
+        "        false,",
+        [],
+        [
+            ("ptxv", "equiv", "atomic_adds_exempt_only_their_outputs"),
+            ("ptxv", "bin:ptxv", "equiv::captured_tests::captured_pairs_against_the_level"),
+        ],
+    ),
+    # L0 takes two NaNs as equal again (another payload passes).
+    SrcMutant(
+        "captured-l0-nan",
+        "crates/cli/src/equiv.rs",
+        "        r.0 == c.0,\n        finite && bound",
+        "        r.0 == c.0 || a.is_nan() && b.is_nan(),\n        finite && bound",
+        [],
+        [("ptxv", "bin:ptxv", "equiv::captured_tests::captured_pairs_against_the_level")],
+    ),
+    # An unproven level not held to the captures again.
+    SrcMutant(
+        "captured-unproven",
+        "crates/cli/src/equiv.rs",
+        "        let claims = !level.starts_with(\"none\");",
+        "        let claims = got == level && !level.starts_with(\"none\");",
+        [],
+        [
+            ("ptxv", "equiv", "unproven_levels_are_held_to_the_captures"),
+            ("ptxv", "compare", "compare_unproven_level_contradicted_by_the_captures"),
+        ],
+    ),
+    # compare: a proven segment-mode rerun replaces a contradicted plain run again.
+    SrcMutant(
+        "compare-rerun-contradicted",
+        "crates/cli/src/compare.rs",
+        "    !contradicted(plain) && (contradicted(seg) || rank(seg) > rank(plain))",
+        "    rank(seg) > rank(plain)",
+        [],
+        [("ptxv", "bin:ptxv", "compare::tests::a_contradicted_run_is_kept")],
+    ),
+    # The captures read from byte 0 again (`expect_offset` aside).
+    SrcMutant(
+        "captured-offset",
+        "crates/cli/src/equiv.rs",
+        "    let off = b.expect_offset as usize;\n    let h = ",
+        "    let off = 0usize;\n    let h = ",
+        [],
+        [("ptxv", "equiv", "partial_captures_are_compared_where_captured")],
+    ),
+    # `expect_ignore` aside again.
+    SrcMutant(
+        "captured-ignore",
+        "crates/cli/src/equiv.rs",
+        "                if s < off || t > off + bytes.len() || ignored {",
+        "                if s < off || t > off + bytes.len() {",
+        [],
+        [("ptxv", "equiv", "partial_captures_are_compared_where_captured")],
+    ),
+]
+
+# MISS 109: L0 up to the sign of zero (an output that is the other's plus +0) is its own level,
+# L0~0, never L0. Each mutant names it L0 again somewhere, or loosens / tightens the capture
+# check of the relaxed level (fixtures/c_equiv_zero_sign).
+ZERO_SIGN_TESTS = [
+    ("ptxv", "equiv", "zero_sign_is_its_own_level"),
+    ("ptxv", "compare", "compare_zero_sign_is_not_bitwise"),
+]
+ZERO_SIGN_UNIT = [("ptxv", "bin:ptxv", "equiv::captured_tests::captured_zero_signs_against_the_level")]
+MUTANTS += [
+    # The peel relabeled as L0: L0 holds at an output equal only up to the sign of zero.
+    SrcMutant(
+        "l0z-relabel",
+        "crates/sim/src/equiv.rs",
+        "            l0_zero_sign += 1;\n            note!(0, ZERO_SIGN.into());",
+        "            l0_zero_sign += 1;",
+        [],
+        ZERO_SIGN_TESTS,
+    ),
+    # `strongest` names the relaxed level L0.
+    SrcMutant(
+        "l0z-strongest",
+        "crates/cli/src/equiv.rs",
+        "    } else if holds(\"L0~0\") {\n        \"L0~0\".into()",
+        "    } else if holds(\"L0~0\") {\n        \"L0\".into()",
+        [],
+        ZERO_SIGN_TESTS,
+    ),
+    # `strongest` matches a level by prefix again: "L0~0 up to the sign of zero" holds "L0".
+    SrcMutant(
+        "l0z-prefix",
+        "crates/cli/src/equiv.rs",
+        "            .any(|l| l.level.split(' ').next() == Some(p) && l.holds)",
+        "            .any(|l| l.level.starts_with(p) && l.holds)",
+        [],
+        ZERO_SIGN_TESTS,
+    ),
+    # compare's headline calls L0~0 "bitwise identical (L0)" again.
+    SrcMutant(
+        "l0z-headline",
+        "crates/cli/src/compare.rs",
+        "    } else if level == \"L0\" && proven {",
+        "    } else if level.starts_with(\"L0\") && proven {",
+        [],
+        [
+            ("ptxv", "compare", "compare_zero_sign_is_not_bitwise"),
+            ("ptxv", "bin:ptxv", "compare::tests::the_zero_sign_level_is_not_bitwise"),
+        ],
+    ),
+    # The capture check holds L0~0 to bitwise equality (GB300's +0 against -0 refuses it).
+    SrcMutant(
+        "l0z-captured-strict",
+        "crates/cli/src/equiv.rs",
+        "    r.0 != c.0 && !(level == \"L0~0\" && opposite_zeros(r, c))",
+        "    r.0 != c.0",
+        [],
+        ZERO_SIGN_TESTS[:1] + ZERO_SIGN_UNIT,
+    ),
+    # The capture check allows any difference at an L0~0 output.
+    SrcMutant(
+        "l0z-captured-any",
+        "crates/cli/src/equiv.rs",
+        "    r.0 != c.0 && !(level == \"L0~0\" && opposite_zeros(r, c))",
+        "    r.0 != c.0 && level != \"L0~0\"",
+        [],
+        ZERO_SIGN_UNIT,
+    ),
+    # The capture check allows +0 against -0 at an L0 output too.
+    SrcMutant(
+        "l0z-captured-l0",
+        "crates/cli/src/equiv.rs",
+        "    r.0 != c.0 && !(level == \"L0~0\" && opposite_zeros(r, c))",
+        "    r.0 != c.0 && !opposite_zeros(r, c)",
+        [],
+        ZERO_SIGN_UNIT,
+    ),
+]
+
+# T2: narrow-format cvt forms ptxas 13.0 and 13.3 both reject are refused by the PTX front
+# (cvt_lp; the cvt enumeration). Each mutant lowers one rule's forms again.
+CVT_LP_T2 = [("ptxv-ptx", "lib", "tests::cvt_lp_forms_ptxas_rejects_refused")]
+# ... and their operands' register types (the review's 8,718 lines with other types).
+CVT_LP_TYPES = [("ptxv-ptx", "lib", "tests::cvt_lp_operand_types_ptxas_rejects_refused")]
+MUTANTS += [
+    # f8 / f6 / f4 x2 encodes with any rounding, without `.satfinite`.
+    SrcMutant(
+        "lp-encode-rn-sat",
+        "crates/ptx/src/lib.rs",
+        "        _ => rnd == LpRnd::Rn && sat,",
+        "        _ => true,",
+        [],
+        CVT_LP_T2,
+    ),
+    # ue8m0x2 encodes with `.rn` / `.rs` or `.relu`.
+    SrcMutant(
+        "lp-ue8m0-encode",
+        "crates/ptx/src/lib.rs",
+        "        Lp::Ue8m0 => matches!(rnd, LpRnd::Rz | LpRnd::Rp) && !relu,",
+        "        Lp::Ue8m0 => true,",
+        [],
+        CVT_LP_T2,
+    ),
+    # ue8m0x2 encodes from f16x2.
+    SrcMutant(
+        "lp-ue8m0-f16x2",
+        "crates/ptx/src/lib.rs",
+        '                && (t != Lp::Ue8m0 || from == "bf16x2")\n',
+        "                && true\n",
+        [],
+        CVT_LP_T2,
+    ),
+    # e2m1x2 operands in 16-bit registers.
+    SrcMutant(
+        "lp-e2m1-byte",
+        "crates/ptx/src/lib.rs",
+        '{ if t == Lp::E2m1 { &["b8"] } else { &["b16"] } }',
+        '{ if t == Lp::E2m1 { &["b8", "b16"] } else { &["b16"] } }',
+        [],
+        CVT_LP_T2,
+    ),
+    # `.rs` x4 encodes without `.satfinite`.
+    SrcMutant(
+        "lp-x4-sat",
+        "crates/ptx/src/lib.rs",
+        '            if rnd == LpRnd::Rs\n                && sat\n',
+        '            if rnd == LpRnd::Rs\n',
+        [],
+        CVT_LP_T2,
+    ),
+    # ue8m0x2 decodes to f16x2 or with `.relu`.
+    SrcMutant(
+        "lp-ue8m0-decode",
+        "crates/ptx/src/lib.rs",
+        "                    && (f != Lp::Ue8m0 || t == Lp::Bf16 && !relu)\n",
+        "                    && true\n",
+        [],
+        CVT_LP_T2,
+    ),
+    # Any declared register type accepted (an x2 code pair in a .b32, f32 values in .u32, ...).
+    SrcMutant(
+        "lp-reg-types",
+        "crates/ptx/src/lib.rs",
+        "            Some(t) => ok.contains(&t.as_str()),",
+        "            Some(_) => true,",
+        [],
+        CVT_LP_TYPES,
+    ),
+    # x4 random bits of any 32-bit or 16-bit type, or an immediate.
+    SrcMutant(
+        "lp-x4-rbits",
+        "crates/ptx/src/lib.rs",
+        '                && class(2, &["b32"], false)',
+        '                && class(2, &["b32", "u32", "b16"], true)',
+        [],
+        CVT_LP_TYPES,
+    ),
+    # A half-pair encode's source of any 32-bit type.
+    SrcMutant(
+        "lp-half-src",
+        "crates/ptx/src/lib.rs",
+        "                    if from == \"bf16x2\" && matches!(t, Lp::E2m1 | Lp::Ue8m0) {",
+        "                    if true {",
+        [],
+        CVT_LP_TYPES,
+    ),
+    # A decode's source of any type.
+    SrcMutant(
+        "lp-decode-src",
+        "crates/ptx/src/lib.rs",
+        "                    && class(1, code2(f), false) =>",
+        "                    && true =>",
+        [],
+        CVT_LP_TYPES,
+    ),
+]
+
+
+# MISS 134: an fp32 atomic add's flush flag is part of equiv's canonical form, and a chain of
+# flushing and non-flushing adds is unordered (fixtures/c_equiv_atomic_ftz). Each mutant proves
+# L0 between such kernels again, or holds such a chain's outputs to one order's capture.
+ATOM_FTZ_TESTS = [("ptxv", "equiv", "atomic_flush_modes_are_not_bitwise")]
+MUTANTS += [
+    # The flush flag dropped from the hash: red.add.f32 against a bulk add of the same value
+    # into +0 is L0 again.
+    SrcMutant(
+        "atom-l0-noflag",
+        "crates/sim/src/equiv.rs",
+        "                    hs.push((ftz, hx));",
+        "                    hs.push((false && ftz, hx));",
+        [],
+        [("ptxv-sim", "lib", "equiv::soundness_tests::atomic_flush_modes_are_part_of_the_canonical_form")]
+        + ATOM_FTZ_TESTS,
+    ),
+    # A chain of both flush modes sorted as one of a single mode: two adds into +0 in opposite
+    # orders are L0 again.
+    SrcMutant(
+        "atom-l0-mixed-sorted",
+        "crates/sim/src/equiv.rs",
+        "                if mixed {\n                    cx.unordered.get_or_insert_with(|| {",
+        "                if false && mixed {\n                    cx.unordered.get_or_insert_with(|| {",
+        [],
+        [("ptxv-sim", "lib", "equiv::soundness_tests::atomic_flush_modes_are_part_of_the_canonical_form")]
+        + ATOM_FTZ_TESTS,
+    ),
+    # The capture exemption without the rule: such a chain's outputs held to the simulated
+    # order's bits.
+    SrcMutant(
+        "atom-order-mixed-off",
+        "crates/sim/src/num.rs",
+        "                mixed |= f != ftz;",
+        "                mixed |= false && f != ftz;",
+        [],
+        [("ptxv-sim", "lib", "num::untracked_producer_tests::mixed_flush_atomic_adds_are_order_dependent")]
+        + ATOM_FTZ_TESTS,
+    ),
+]
+
+
+# MISS 135: L0~0 only where the peeled x + (+0) keeps x's NaNs (x holds no NaN but the canonical
+# one; fixtures/c_equiv_zero_sign_nan). Each mutant peels an operand that can hold a NaN payload.
+ZERO_NAN_UNIT = [("ptxv-sim", "lib", "equiv::soundness_tests::zero_peel_needs_canonical_nans")]
+MUTANTS += [
+    # Any operand peeled again: a copy against the copy + 0 is L0~0.
+    SrcMutant(
+        "l0z-nan-any",
+        "crates/sim/src/equiv.rs",
+        "                    if let Some(x) = x.filter(|&x| self.nan_canonical(x)) {",
+        "                    if let Some(x) = x.filter(|&x| self.nan_canonical(x) || true) {",
+        [],
+        ZERO_NAN_UNIT + [("ptxv", "equiv", "zero_sign_needs_canonical_nans")],
+    ),
+    # A min / max or a guarded store's choice accepted without its operands.
+    SrcMutant(
+        "l0z-nan-choice",
+        "crates/sim/src/equiv.rs",
+        "                NodeKind::Max { a, b, .. } | NodeKind::Sel { a, b, .. } => stack.extend([*a, *b]),",
+        "                NodeKind::Max { .. } | NodeKind::Sel { .. } => {}",
+        [],
+        ZERO_NAN_UNIT,
+    ),
+    # A constant NaN with a payload accepted.
+    SrcMutant(
+        "l0z-nan-leaf",
+        "crates/sim/src/equiv.rs",
+        "                    if f32::from_bits(nd.hw).is_nan() && nd.hw != crate::fp::F32_CANON_NAN {",
+        "                    if false {",
+        [],
+        ZERO_NAN_UNIT,
+    ),
+]
+
 def expect_for(case: Path, variant: str, front: str) -> list[str]:
     c = tomllib.loads((case / "case.toml").read_text())
     for v in c.get("variants", []):
@@ -2677,12 +4005,8 @@ def run_mutant_in_tree(m: SrcMutant, out: Path) -> dict:
     for pkg, binary, filt in m.tests:
         env = dict(os.environ, CARGO_TARGET_DIR=str(target), CUDA_VISIBLE_DEVICES="")
         wrap = os.environ.get("PTXV_JOB_WRAPPER", "").split()
-        # "lib": the crate's unit tests (a full path as the name).
-        sel = ["--lib"] if binary == "lib" else ["--test", binary]
-        cmd = [*wrap, "cargo", "test", "--release", "-p", pkg, *sel, filt]
-        r = subprocess.run(
-            cmd, cwd=tree, env=env, capture_output=True, text=True, timeout=3600
-        )
+        cmd = [*wrap, "cargo", "test", "--release", *test_target(pkg, binary), filt]
+        r = subprocess.run(cmd, cwd=tree, env=env, capture_output=True, text=True, timeout=3600)
         # Caught only by a test that ran and failed: a build error, a missing test target or a
         # filter matching nothing is an error of the harness.
         ran = any(
@@ -2740,28 +4064,9 @@ def run_mutant_in_tree(m: SrcMutant, out: Path) -> dict:
     wrap = os.environ.get("PTXV_JOB_WRAPPER", "").split()
     for pkg, binary, name in m.tests:
         # Heavy (#[ignore]d) tests run too: a mutant's test is named on purpose.
-        sel = ["--lib"] if binary == "lib" else ["--test", binary]
-        cmd = [
-            *wrap,
-            "cargo",
-            "test",
-            "--release",
-            "-p",
-            pkg,
-            *sel,
-            "--",
-            "--exact",
-            name,
-            "--include-ignored",
-        ]
-        r = subprocess.run(
-            cmd,
-            cwd=tree,
-            capture_output=True,
-            text=True,
-            timeout=3600,
-            env=dict(os.environ, CARGO_TARGET_DIR=str(target), CUDA_VISIBLE_DEVICES=""),
-        )
+        cmd = [*wrap, "cargo", "test", "--release", *test_target(pkg, binary), "--", "--exact", name, "--include-ignored"]
+        r = subprocess.run(cmd, cwd=tree, capture_output=True, text=True, timeout=3600,
+                           env=dict(os.environ, CARGO_TARGET_DIR=str(target), CUDA_VISIBLE_DEVICES=""))
         ran = f"test {name} ..." in r.stdout
         hit = ran and r.returncode != 0
         caught |= hit
@@ -2804,14 +4109,33 @@ def main(argv=None):
     ap.add_argument("--check-anchors", action="store_true",
                     help="print the mutants whose find text does not occur exactly once in its file, "
                     "exit 1 if there is one; builds and runs nothing")
+    ap.add_argument("--root", type=Path,
+                    help="with --check-anchors: the tree whose files are checked (default this checkout)")
     a = ap.parse_args(argv)
-    chosen = [m for m in MUTANTS if not a.only or m.name in a.only.split(",")]
+    if a.root is not None and not a.check_anchors:
+        ap.error("--root needs --check-anchors")
+    # Every name --only gives must be a mutant that runs: an unknown or excluded name ran
+    # nothing and still exited 0, which hid mutants registered after the main guard. An --only
+    # that is given but names nothing ("", ",", " ") chose every mutant, so a run ran them all.
+    # No mutant chosen at all fails the same way, in either mode: --check-anchors said "0 of 0
+    # anchors broken" and exited 0.
+    only = [x for x in (a.only or "").split(",") if x.strip()]
+    if a.only is not None and not only:
+        print("srcmut: --only names nothing", file=sys.stderr)
+        return 2
+    names = {m.name for m in MUTANTS}
+    bad = [x if x not in EXCLUDED else f"{x} (excluded)" for x in only if x not in names]
+    chosen = [m for m in MUTANTS if not only or m.name in only]
+    if bad or not chosen:
+        why = f"--only names no mutant that runs: {', '.join(bad)}" if bad else "no mutant is chosen"
+        print(f"srcmut: {why}", file=sys.stderr)
+        return 2
     if a.check_anchors:
-        bad = broken_anchors(ROOT, chosen)
-        for m, why in bad:
+        broken = broken_anchors(ROOT if a.root is None else a.root, chosen)
+        for m, why in broken:
             print(f"{m.name:14} {m.file}: {why}", flush=True)
-        print(f"{len(bad)} of {len(chosen)} anchors broken", file=sys.stderr)
-        return 1 if bad else 0
+        print(f"{len(broken)} of {len(chosen)} anchors broken", file=sys.stderr)
+        return 1 if broken else 0
     if a.out is None:
         ap.error("--out is required (except with --check-anchors)")
     a.out = a.out.resolve()

@@ -30,6 +30,7 @@ use ptxv_sim::explore::Verdict;
 use serde_json::Value;
 use serde_json::json;
 
+use super::equiv::CONTRADICTED;
 use super::equiv::gpu_output_f32;
 use super::load_with;
 use super::machine;
@@ -727,6 +728,20 @@ fn rank(e: Option<&Value>) -> (bool, usize, bool) {
     }
 }
 
+/// Whether the captured GPU outputs contradict an equiv result's level (MISS 98).
+fn contradicted(e: Option<&Value>) -> bool {
+    e.is_some_and(|e| e["strongest"] == CONTRADICTED)
+}
+
+/// Whether the segment-mode rerun replaces the plain run: when the captured GPU outputs
+/// contradict its level, else when it ranks higher (`rank`). A plain run they contradict is
+/// not rerun (`cmd_compare`), so either refusal reaches report.json and equiv.log. Before,
+/// a contradicted plain run (not proven, level "none ...") lost to any proven rerun, one with
+/// a looser bound included, and to an unproven one with a level.
+fn rerun_replaces(plain: Option<&Value>, seg: Option<&Value>) -> bool {
+    !contradicted(plain) && (contradicted(seg) || rank(seg) > rank(plain))
+}
+
 /// A contract note ("... (E-BULK-EXIT)") as its ID and location; others unchanged.
 fn short_relies(r: &str) -> String {
     let Some(id) = r
@@ -822,17 +837,23 @@ pub fn cmd_compare(ref_dir: &Path, cand_dir: &Path, o: &Opts) -> Result<bool> {
             .as_ref()
             .is_some_and(|v| !v["report"]["untracked"].is_null());
         if o.segments.is_none() && (rs.mufu || cs.mufu || untracked) && !fully_proven(e.as_ref()) {
-            eprintln!(
-                "compare: equiv again in segment mode ({})",
-                if rs.mufu || cs.mufu {
-                    "a kernel uses MUFU"
-                } else {
-                    "outputs without dataflow history"
+            if contradicted(e.as_ref()) {
+                eprintln!(
+                    "compare: no segment-mode rerun: the captured GPU outputs contradict the plain run's level"
+                );
+            } else {
+                eprintln!(
+                    "compare: equiv again in segment mode ({})",
+                    if rs.mufu || cs.mufu {
+                        "a kernel uses MUFU"
+                    } else {
+                        "outputs without dataflow history"
+                    }
+                );
+                let (e2, log2) = run(true)?;
+                if rerun_replaces(e.as_ref(), e2.as_ref()) {
+                    (e, log, segments) = (e2, log2, true);
                 }
-            );
-            let (e2, log2) = run(true)?;
-            if rank(e2.as_ref()) > rank(e.as_ref()) {
-                (e, log, segments) = (e2, log2, true);
             }
         }
         std::fs::write(out.join("equiv.log"), &log)?;
@@ -935,6 +956,7 @@ pub fn cmd_compare(ref_dir: &Path, cand_dir: &Path, o: &Opts) -> Result<bool> {
             "trials": e["trials"],
             "captured": cap,
             "witness": e["witness"],
+            "contradicted": e["contradicted"],
             "elementwise": e["elementwise"],
             "relies_on": relies,
             "log": equiv_log,
@@ -1084,8 +1106,13 @@ fn headline(level: &str, proven: bool, eq: &Value, gpu: &Value) -> String {
             );
         }
         s
-    } else if level.starts_with("L0") && proven {
+    } else if level == "L0" && proven {
         "PROVEN bitwise identical (L0) for every input".to_string()
+    } else if level == "L0~0" && proven {
+        // MISS 109: until 2026-11-11 this level was reported as L0, "bitwise identical".
+        "PROVEN equal up to the sign of zero (L0~0) for every input: the same bits, except that \
+         where one kernel's output is -0 the other's can be +0 (one adds +0)"
+            .to_string()
     } else if proven && b["with_bound"].as_u64().unwrap_or(0) > 0 {
         let form = if let Some(sf) = eq["softmax_form"].as_object() {
             format!(
@@ -1193,6 +1220,11 @@ fn headline(level: &str, proven: bool, eq: &Value, gpu: &Value) -> String {
                 }
             }
             "none" => "NOT PROVEN (not shown to be the same function)".to_string(),
+            // MISS 98: the GPU outputs contradict the model's level (`ptxv equiv`).
+            CONTRADICTED => format!(
+                "NOT PROVEN: the captured GPU outputs contradict the model ({})",
+                eq["contradicted"].as_str().unwrap_or("?")
+            ),
             l => format!("NOT PROVEN for every input ({l} holds on the captured inputs only)"),
         }
     };
@@ -1203,9 +1235,10 @@ fn headline(level: &str, proven: bool, eq: &Value, gpu: &Value) -> String {
             n,
             gpu["max_abs_diff"].as_f64().unwrap_or(f64::NAN)
         );
+        // L0 and L0~0 (also unproven): the bound is 0.
         if let (Some(f), false) = (
             gpu["max_fraction_of_bound"].as_f64(),
-            level.starts_with("L0"),
+            matches!(level.split(' ').next(), Some("L0" | "L0~0")),
         ) {
             s += &format!(" ({f:.3} of the bound)");
         }
@@ -1607,4 +1640,65 @@ fn markdown(r: &Value) -> String {
         s += &format!("- {b}\n");
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// MISS 98: compare's segment-mode rerun never drops a refusal. A contradicted plain run
+    /// stays whatever the rerun proves; a contradicted rerun replaces a plain run that ranks
+    /// higher; otherwise the better rank wins, as before.
+    #[test]
+    fn a_contradicted_run_is_kept() {
+        let run = |strongest: &str, proven: bool, bounded: usize| {
+            let per: Vec<Value> = (0..4)
+                .map(|i| json!({"bound_u": if i < bounded { json!(1.0) } else { json!(null) }}))
+                .collect();
+            json!({"strongest": strongest, "proven": proven,
+                "report": {"outputs": 4, "per_output": per}})
+        };
+        let no = run(CONTRADICTED, false, 4);
+        let l1 = run("L1", true, 4);
+        let l0u = run("L0 (unproven)", false, 4);
+        let none = run("none", false, 0);
+        assert!(!rerun_replaces(Some(&no), Some(&l1)));
+        assert!(!rerun_replaces(Some(&no), Some(&l0u)));
+        assert!(rerun_replaces(Some(&l0u), Some(&no)));
+        assert!(rerun_replaces(Some(&l1), Some(&no)));
+        assert!(rerun_replaces(None, Some(&no)));
+        assert!(!rerun_replaces(Some(&no), Some(&no)));
+        // No refusal: the better rank.
+        assert!(rerun_replaces(Some(&none), Some(&l1)));
+        assert!(!rerun_replaces(Some(&l1), Some(&l0u)));
+    }
+
+    /// MISS 109: L0 up to the sign of zero (L0~0) has a headline of its own, never "bitwise
+    /// identical" (until 2026-11-11 the level was L0: "PROVEN bitwise identical (L0)").
+    #[test]
+    fn the_zero_sign_level_is_not_bitwise() {
+        let eq = json!({});
+        let gpu = json!({"outputs": 8, "bitwise_equal": 6, "max_abs_diff": 0.0,
+            "max_fraction_of_bound": 0.0});
+        let h = headline("L0~0", true, &eq, &gpu);
+        assert!(
+            h.starts_with("PROVEN equal up to the sign of zero (L0~0) for every input"),
+            "{h}"
+        );
+        assert!(
+            !h.contains("bitwise identical") && !h.contains("of the bound"),
+            "{h}"
+        );
+        let h = headline("L0", true, &eq, &gpu);
+        assert!(
+            h.starts_with("PROVEN bitwise identical (L0) for every input"),
+            "{h}"
+        );
+        let h = headline("L0~0 (unproven)", false, &eq, &gpu);
+        assert!(
+            h.starts_with("NOT PROVEN for every input (L0~0 holds on the captured inputs only)"),
+            "{h}"
+        );
+        assert!(!h.contains("of the bound"), "{h}");
+    }
 }

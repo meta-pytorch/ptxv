@@ -181,7 +181,8 @@ class Verdict:
     def gpu_state(self) -> str | None:
         """The comparison with the captured GPU output, as kernel_db reads it: "bitwise" (every
         comparison bitwise equal), else "mismatch", "within_ulp" (differing elements one unit in
-        the last place off or NaN on both sides, N-MULTIMEM-ROUND16), "permuted_equal" /
+        the last place off, each an f16 / bf16 multimem.ld_reduce lane the calibrated rule
+        rounded, N-MULTIMEM-ROUND16), "permuted_equal" /
         "not_compared" (C-TICKET-ADDR), in that order; None when nothing was compared. From ptxv's
         per-comparison `gpu_compare`, never the report text. Outputs of binaries without it: a
         line is bitwise only when the whole line is ptxv's bitwise-equal sentence (the
@@ -237,8 +238,9 @@ class Verdict:
 class Equivalence:
     """Equivalence of a candidate kernel to a reference (`ptxv compare`).
 
-    level: "L0" (bitwise), "L1" (same function, bound per output), "L2", elementwise levels,
-    "none" (a witness shows they differ), "not attempted"; proven: every precondition held.
+    level: "L0" (bitwise), "L0~0" (bitwise except that one kernel's -0 can be the other's +0:
+    not bitwise), "L1" (same function, bound per output), "L2", elementwise levels, "none" (a
+    witness shows they differ), "not attempted"; proven: every precondition held.
     bound: the per-output bound as a callable `Bound` (None when not exported).
     """
 

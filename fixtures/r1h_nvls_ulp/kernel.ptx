@@ -1,0 +1,56 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+//
+// Rung 1h: one-shot all-reduce through NVLS multicast memory on 2 GPUs.
+// Each rank stages its 4 floats into its own (unicast) buffer, fences the alias proxy, joins
+// a barrier by multimem.red.release on the flag word through the multicast address and polls
+// its own copy of the flag; then every thread reads the sum of both ranks' values with
+// multimem.ld_reduce through the multicast address.
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry nvls(
+    .param .u64 inp,
+    .param .u64 buf,
+    .param .u64 mc,
+    .param .u64 out
+)
+{
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<12>;
+    .reg .f32 %f<4>;
+    .reg .pred %p<3>;
+
+    ld.param.u64 %rd1, [inp];
+    ld.param.u64 %rd2, [buf];
+    ld.param.u64 %rd3, [mc];
+    ld.param.u64 %rd4, [out];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd5, %r1, 4;
+    add.s64 %rd6, %rd1, %rd5;
+    ld.global.f32 %f1, [%rd6];
+    add.s64 %rd7, %rd2, %rd5; // @STAGE
+    st.global.f32 [%rd7], %f1;
+    bar.sync 0;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra WAITED;
+    fence.proxy.alias; // @ALIAS
+    multimem.red.release.sys.global.add.u32 [%rd3+64], 1; // @RED
+    fence.proxy.alias; // @POSTFENCE
+POLL:
+    ld.acquire.sys.global.u32 %r2, [%rd2+64]; // @POLL
+    setp.lt.u32 %p2, %r2, 2;
+    @%p2 bra POLL; // @LOOP
+WAITED:
+    bar.sync 0;
+    add.s64 %rd8, %rd3, %rd5;
+    multimem.ld_reduce.relaxed.sys.global.add.f32 %f2, [%rd8]; // @LDR
+    add.s64 %rd9, %rd4, %rd5;
+    st.global.f32 [%rd9], %f2;
+    ret;
+}

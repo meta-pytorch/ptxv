@@ -155,14 +155,18 @@ explorers), `bra-u-per-lane` lowers a guarded SASS `BRA.U` per lane again (`prob
 from GB300), `s2f6-relu-dropped` drops the s2f6 decode's `.relu` (`probes/s2f6_cvt/forms` differs
 from GB300).
 A mutant may also name cargo tests (`tests`: package, test binary, name filter), run in the
-mutant's tree; it is caught when a test that ran fails (claims checked against recorded GPU
+mutant's tree (test binary `lib`: the package's unit tests; `bin:NAME`: binary NAME's, the
+filter their full path); it is caught when a test that ran fails (claims checked against recorded GPU
 outputs, such as num's error bounds; adversarial tests). A build error, a missing test target or
 a filter that matches no test is an `error`, not a catch. `PTXV_JOB_WRAPPER` prefixes the builds
 and test runs (a memory-capped job runner). The mutant's tree holds the working
 tree's tracked changes and its untracked files (new fixtures and tests). `--only` takes a
-comma-separated list. `--check-anchors` builds and runs nothing: it prints every mutant whose
+comma-separated list; one that names nothing, or a name that is not a mutant that runs, exits 2
+before anything runs. `--check-anchors` builds and runs nothing: it prints every mutant whose
 find text does not occur exactly once in its file (a run reports such a mutant as an `error`)
-and exits 1 if there is one.
+and exits 1 if there is one; with `--root DIR` it checks the files under DIR instead (the
+anchors test, `crates/cli/tests/srcmut_anchors.rs`, plants a broken anchor in a scratch tree
+there as its positive control).
 
 Open source-mutant gaps (no mutant in `srcmut.py` until a test catches it):
 - E-ELECT candidates (`elect_lanes::candidates`): the key of an active set's candidate lanes
@@ -238,6 +242,12 @@ verdict with the miss named in the doc comment, so a fix shows up as a test chan
 | N-CVT-LP `.satfinite` decodes (MISS 60) | probes/cvt_lp_satfinite (GB300 bits of the plain decode, PTX; both fronts refuse `.satfinite`) | cvt-lp-decode-sat |
 | N-CVT-LP SASS `UNPACK_B` scale (MISS 61) | probes/cvt_lp_scaled (SASS refuses register scales; PTX refuses `.scaled`), probes/cvt_lp_satfinite `kernel_ptx.cubin` (the identity scale, GB300 bits) | unpack-b-scale |
 | PTX-FMAD `mul.ftz` through `neg` (MISS 62) | probes/fmad_ftz_neg, probes/fmad_multi (GB300 bits, both fronts) | fmad-ftz-neg |
+| L-ROSETTA / N-SEG `.SIGN` predicates read as bit 31 by every reader, PLOP3 inputs only (MISS 97) | fixtures/c_equiv_rsign (EW, not L0; GB300 bits), unit tests `sign_predicate_reads_bit_31` (seg), `constant_sign_predicate_reads_bit_31` (num), `const_guard_reads_sign_bit`, `lookahead_pred_reads_sign_bit` (explore), `sign_register_reads_bit_31` (elect_lanes), `plop3_sign_input_with_undefined_bit_31_is_undefined`, `plop3_sign_input_definedness_is_bit_31_of_its_mask`, `sass_sign_predicate_plop3_inputs_only` | sign-seg, sign-num, sign-constguard, sign-lacfg, sign-elect, sign-predundef, sign-predundef-mask, sign-parser |
+| N-EQUIV / N-ELEMENTWISE captured GPU outputs refuse a contradicted level (MISS 98) | fixtures/c_equiv_captured (both modes), fixtures/c_equiv_atomic (the review's probes: float atomic adds exempt only the outputs that depend on their order; GB300 captures, one word changed), unproven levels (c_equiv_atomic eq_unproven.toml, `compare_unproven_level_contradicted_by_the_captures`), partial captures (c_equiv_atomic eq_offset.toml), `captured_outputs_against_the_level`, `captured_pairs_against_the_level`, `compare::tests::a_contradicted_run_is_kept`, the float-atomic exemption in `row_sums_are_bounded` | captured-refusal, captured-simgpu, captured-ew, captured-l0, captured-bound, captured-atomic-exempt, captured-atomic-whole, captured-atomic-chain, captured-nonfinite, captured-l0-nan, captured-unproven, compare-rerun-contradicted, captured-offset, captured-ignore |
+| N-EQUIV L0 up to the sign of zero is its own level, L0~0, never L0 (MISS 109) | fixtures/c_equiv_zero_sign (x + (+0) against x: L0 fails, L0~0 holds; GB300 captures, +0 against -0 at 16 outputs, not a contradiction; b + a stays L0; captures one word changed refused), `compare_zero_sign_is_not_bitwise`, `captured_zero_signs_against_the_level`, `compare::tests::the_zero_sign_level_is_not_bitwise`, fixtures/c_equiv_mxf8_cublas, c_equiv_nvf4_cublas (`*_is_bitwise_up_to_zero_signs`) | l0z-relabel, l0z-strongest, l0z-prefix, l0z-headline, l0z-captured-strict, l0z-captured-any, l0z-captured-l0 |
+| N-CVT-LP forms ptxas 13.0 and 13.3 reject, refused by the PTX front (T2) | `cvt_lp_forms_ptxas_rejects_refused` (lines of the cvt enumeration), `cvt_lp_operand_types_ptxas_rejects_refused` (lines with other operand register types) | lp-encode-rn-sat, lp-ue8m0-encode, lp-ue8m0-f16x2, lp-e2m1-byte, lp-x4-sat, lp-ue8m0-decode, lp-reg-types, lp-x4-rbits, lp-half-src, lp-decode-src |
+| N-ATOMIC an fp32 atomic add's flush flag is part of the L0 form; a chain of both flush modes is unordered (MISS 134) | fixtures/c_equiv_atomic_ftz (red.add.f32 against a bulk add of the same value into +0, and both modes in opposite orders: not L0, the bound holds against GB300 captures that differ in 64 and 79 words on subnormal inputs; one mode in both orders stays L0), `atomic_flush_modes_are_not_bitwise`, `atomic_flush_modes_are_part_of_the_canonical_form`, `mixed_flush_atomic_adds_are_order_dependent` | atom-l0-noflag, atom-l0-mixed-sorted, atom-order-mixed-off |
+| N-EQUIV L0~0 only where x + (+0) keeps x's NaNs (MISS 135) | fixtures/c_equiv_zero_sign_nan (a copy against the copy + 0: L2 with bound 0, not L0~0; GB300 captures with NaN payloads, which the + 0 makes 0x7fffffff), `zero_sign_needs_canonical_nans`, `zero_peel_needs_canonical_nans` | l0z-nan-any, l0z-nan-choice, l0z-nan-leaf |
 
 `tools/mutate/certsweep.py` checks every fixture variant on each front-end with and without
 `--certify`; a certified verdict whose classes differ from a complete exploration's is a

@@ -28,6 +28,14 @@
 //!   every element keeps a claim.
 //! - c_num_vote_f32 (MISS 65): a branch on a warp ballot of other lanes' input data: no claim.
 //! - c_num_match_f32 (MISS 95): a branch on a match of another lane's rounded value: no claim.
+//! - c_num_atom_read_f32, c_num_atom_store_f32, c_num_atom_f64_f32, c_num_atom_cas_f32 (MISS
+//!   114): atomics other than f32 adds: the values they return or write from a rounding are input
+//!   data, an exchange moves the node, an f64 atomic sum deciding a branch is refused.
+//! - c_num_ld16_f32, c_num_ldsm_trans_f32, c_num_st16_f32, c_num_tma16_f32, c_num_stsm8_f32 (MISS
+//!   115): partial-width and rearranging accesses of words holding a rounding: input data.
+//! - c_num_fold_f32, c_num_fold_add_f32, c_num_fold_ctl_f32 (MISS 108): roundings of constants
+//!   ptxas folds into immediates: the SASS front claims only what the PTX front claims, with the
+//!   same exact value.
 //! - c_num_nonfinite_f32 (N-NUM-NONFINITE): overflows (inf, NaN) against finite exact values
 //!   carry an infinite error and make max_err infinite; copies of inf / NaN have error 0;
 //!   non-finite exact values the f64 expansions do not determine are not analyzed.
@@ -359,8 +367,8 @@ fn addresses_from_a_rounded_value_are_not_analyzed() {
 /// - c_num_mufu_imm_f32: MUFU.TANH of an immediate (ptxas keeps it; every SASS operand is an
 ///   immediate) is a rounding, not a constant: once claimed exact, tanh(0.1f) is 44 ulp off.
 ///   Elements k = 0..3 are not analyzed on either front. k = 4, ex2.approx of a constant, is not
-///   analyzed on the PTX front; ptxas folds it to an immediate the SASS front takes as a
-///   constant (open, outside this rule).
+///   analyzed on the PTX front; ptxas folds it to an immediate, which the SASS front took as a
+///   constant: it claims nothing the PTX front does not (MISS 108).
 /// - c_num_clobber_f32: rn(a + b) of parameters through an and drops its node: input data.
 /// - c_num_atom_old_f32: the values atom.add.f32 returns (rounded partial sums) are input data;
 ///   the location's sum keeps its claim.
@@ -383,9 +391,7 @@ fn roundings_through_immediates_bit_operations_and_atomics_are_not_exact() {
         }
         text
     };
-    untracked("c_num_mufu_imm_f32", &|front, i| {
-        front == "sass" && i >= 128
-    });
+    untracked("c_num_mufu_imm_f32", &|_, _| false);
     untracked("c_num_clobber_f32", &|_, _| false);
     let text = untracked("c_num_atom_old_f32", &|_, _| false);
     for front in ["ptx", "sass"] {
@@ -717,4 +723,155 @@ fn nonfinite_errors_are_never_skipped() {
             "{line}"
         );
     }
+}
+
+/// Atomics other than f32 adds (MISS 114; the independent review's probes and one more, GB300
+/// outputs). Every claim is |GB300 - exact|; the elements below claim nothing:
+/// - c_num_atom_read_f32: the old values that atom.or, atom.add.u32, atom.max.u32, a failing
+///   atom.cas and atom.exch return from the sum of 32 atomic adds of 0.1f, and x + one of them,
+///   were exact constants on both fronts (8 of 8 claimed, 0.25 ulp of the computed output,
+///   against 4 ulp). None is claimed now.
+/// - c_num_atom_store_f32: s = rn(t + 0.1f) through atom.exch, through st then red.or 0, and
+///   through atom.cas: the exchanged and swapped words keep s's node (their claims are checked),
+///   the red.or words (32..63) are input data.
+/// - c_num_atom_f64_f32: a branch on an f64 atomic sum (0.9999999999999999 here, the exact sum
+///   above 1) is refused.
+/// - c_num_atom_cas_f32: a compare-and-swap that fails on the run's sum and swaps on the exact
+///   one (0..2), and a bf16x2 atomic sum (3, 4), claim nothing; the f32 word a 64-bit exchange
+///   writes keeps the exchanged node (5: |GB300 - exact| = 2^-30, an input element's node before).
+#[test]
+fn atomics_other_than_f32_adds_keep_roundings_out_of_claims() {
+    let tenth = f32::from_bits(0x3dcc_cccd) as f64;
+    let sum = 32.0 * tenth;
+    let case = "c_num_atom_read_f32";
+    let x = buf(case, "data/x.bin");
+    let mut fp64 = vec![sum; 8];
+    fp64[7] = sum + x[0];
+    let (analyzed, text) = check_claims(case, &fp64);
+    assert!(analyzed.is_empty(), "{case}: claims {analyzed:?}\n{text}");
+
+    let case = "c_num_atom_store_f32";
+    let x = buf(case, "data/x.bin");
+    let fp64: Vec<f64> = (0..128)
+        .map(|i| (i % 32) as f64 + tenth + if i >= 96 { x[i % 32] } else { 0.0 })
+        .collect();
+    let (analyzed, text) = check_claims(case, &fp64);
+    assert!(
+        analyzed.iter().all(|&(_, i)| !(32..64).contains(&i)),
+        "{case}: claims {analyzed:?}\n{text}"
+    );
+
+    let case = "c_num_atom_f64_f32";
+    let x = buf(case, "data/x.bin");
+    let fp64: Vec<f64> = x.iter().map(|v| v + 1.0).collect();
+    let (analyzed, text) = check_claims(case, &fp64);
+    assert!(analyzed.is_empty(), "{case}: claims {analyzed:?}\n{text}");
+    assert!(
+        text.contains("control flow or an address depends on input data"),
+        "{text}"
+    );
+
+    let case = "c_num_atom_cas_f32";
+    let x = buf(case, "data/x.bin");
+    let bf = 32.0 * f32::from_bits(0x3dcd_0000) as f64;
+    let fp64 = [1.0, sum, 1.0 + x[1], bf, bf + x[2], x[0] + 2f64.powi(-30)];
+    let (analyzed, text) = check_claims(case, &fp64);
+    assert_eq!(analyzed, [("ptx", 5), ("sass", 5)], "{case}\n{text}");
+}
+
+/// Partial-width and rearranging accesses of words holding a rounding (MISS 115; the independent
+/// review's probes and three more, GB300 outputs). Every claim is |GB300 - exact|; the elements
+/// below claim nothing:
+/// - c_num_ld16_f32: s = rn(t + 0.1f) read back by two 16-bit loads and recombined (before: 64 of
+///   64 claimed on both fronts, 0.50 ulp of the computed output, 51 under-claimed).
+/// - c_num_ldsm_trans_f32: rounded words read by ldmatrix .trans and rebuilt by a shuffle and a
+///   prmt (the lanes with l/4 even); the zero lanes keep their exact claims.
+/// - c_num_st16_f32: a 16-bit store into a word holding s, and s's low half stored into a zero
+///   word: words mixing bytes of a rounding with others, with no exact value.
+/// - c_num_tma16_f32: s copied to shared memory by a TMA load of 2-byte elements.
+/// - c_num_stsm8_f32: stmatrix .b8 writes bytes of s over zero words, and constant bytes over words
+///   holding s (whose old nodes stayed before).
+#[test]
+fn partial_and_rearranging_accesses_of_rounded_words_are_not_exact() {
+    let tenth = f32::from_bits(0x3dcc_cccd) as f64;
+    let case = "c_num_ld16_f32";
+    let x = buf(case, "data/x.bin");
+    let fp64: Vec<f64> = (0..64)
+        .map(|i| ((i % 32) ^ 1) as f64 + tenth + if i >= 32 { x[i % 32] } else { 0.0 })
+        .collect();
+    let (analyzed, text) = check_claims(case, &fp64);
+    assert!(analyzed.is_empty(), "{case}: claims {analyzed:?}\n{text}");
+
+    let case = "c_num_ldsm_trans_f32";
+    let fp64: Vec<f64> = (0..32)
+        .map(|l| {
+            if (l / 4) % 2 == 0 {
+                (8 * (l % 4) + l / 8) as f64 + tenth
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let (analyzed, text) = check_claims(case, &fp64);
+    assert!(
+        analyzed.iter().all(|&(_, l)| (l / 4) % 2 == 1),
+        "{case}: claims {analyzed:?}\n{text}"
+    );
+
+    let case = "c_num_tma16_f32";
+    let x = buf(case, "data/x.bin");
+    let fp64: Vec<f64> = (0..64)
+        .map(|i| (i % 32) as f64 + tenth + if i >= 32 { x[i % 32] } else { 0.0 })
+        .collect();
+    let (analyzed, text) = check_claims(case, &fp64);
+    assert!(analyzed.is_empty(), "{case}: claims {analyzed:?}\n{text}");
+
+    // Mixed bytes: no exact value, so any claim fails.
+    for case in ["c_num_st16_f32", "c_num_stsm8_f32"] {
+        let n = buf(case, "expected/out.bin").len();
+        let (analyzed, text) = check_claims(case, &vec![f64::NAN; n]);
+        assert!(analyzed.is_empty(), "{case}: claims {analyzed:?}\n{text}");
+    }
+}
+
+/// Constants ptxas folds (MISS 108; GB300 outputs). ptxas folds roundings of immediates
+/// (`mul.rn`, `add.rn`, `ex2.approx`) into immediates the SASS front would take as exact constants;
+/// the PTX front has the roundings. The SASS front claims only elements the PTX front claims with
+/// the same exact value, and no output the PTX front refuses:
+/// - c_num_fold_f32 (the independent review's probe): mul.rn(0.1f, 3), mul.rn(0.1f, 0.1f) and
+///   ex2.approx.ftz(0.1f). The SASS front claimed 192 of 192 (0.50 ulp of the computed output),
+///   155 under-claimed; the PTX front claims none, and now neither front does.
+/// - c_num_fold_add_f32: add.rn(0.1f, 1) and add.rn(1, 2^-24) (folded to 1.0). The PTX front
+///   tracks the sums and claims every element, each |GB300 - exact|; the SASS front, whose exact
+///   values miss the folded roundings, claims none.
+/// - c_num_fold_ctl_f32: a branch on a literal against the folded mul.rn(0.1f, 3) (ptxas folds the
+///   comparison away): the PTX front refuses the output, and so does the SASS front.
+#[test]
+fn sass_claims_need_a_ptx_claim_with_the_same_exact_value() {
+    let tenth = f32::from_bits(0x3dcc_cccd) as f64;
+    let case = "c_num_fold_f32";
+    let x = buf(case, "data/x.bin");
+    let c = [tenth * 3.0, tenth * tenth, tenth.exp2()];
+    let fp64: Vec<f64> = (0..192).map(|i| x[i] + c[(i / 32) % 3]).collect();
+    let (analyzed, text) = check_claims(case, &fp64);
+    assert!(analyzed.is_empty(), "{case}: claims {analyzed:?}\n{text}");
+
+    let case = "c_num_fold_add_f32";
+    let x = buf(case, "data/x.bin");
+    let c = [tenth + 1.0, 1.0 + 2f64.powi(-24)];
+    let fp64: Vec<f64> = (0..128).map(|i| x[i] + c[(i / 32) % 2]).collect();
+    let (analyzed, text) = check_claims(case, &fp64);
+    assert!(
+        analyzed.len() == 128 && analyzed.iter().all(|&(f, _)| f == "ptx"),
+        "{case}: claims {analyzed:?}\n{text}"
+    );
+
+    let case = "c_num_fold_ctl_f32";
+    let x = buf(case, "data/x.bin");
+    let fp64: Vec<f64> = (0..32)
+        .map(|t| x[t] + if t % 2 == 0 { 1.0 } else { 2.0 })
+        .collect();
+    let (analyzed, text) = check_claims(case, &fp64);
+    assert!(analyzed.is_empty(), "{case}: claims {analyzed:?}\n{text}");
+    assert!(text.contains("the PTX front makes no claim"), "{text}");
 }

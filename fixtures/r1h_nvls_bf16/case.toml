@@ -1,0 +1,171 @@
+name = "r1h_nvls_bf16"
+description = """
+Rung 1h, bf16 (N-MULTIMEM-ROUND16 scope, MISS 110): fixtures/r1h_nvls with multimem.ld_reduce
+.add.bf16x2 on 2 GPUs, in0 = (1, 1, 1, 1.5), in1 = (2^-8, 1, 2^-9, 0.5). Lanes 0 and 2 of the
+sum (1 + 2^-8, 1 + 2^-9) are not bf16 values: the calibrated rule picks their neighbour, GB300
+may return the other one; lanes 1 and 3 (2, 2) are exact. Each thread writes its reduced pair to
+outa (as reduced), outm (multimem.st through the multicast object mcm, one rank per pair), outc
+(stored, then the thread's own input pair exchanged in) and outb (doubled in its register, then
+stored). Only bytes of outa and outm lanes 0 and 2 may be one ulp off a captured output; no
+captured output here (crates/cli/tests/gpu_compare.rs writes them)."""
+ptx = "kernel.ptx"
+entry = "nvls16"
+grid = [1, 1, 1]
+block = [2, 1, 1]
+outputs = ["outa0", "outb0", "outc0", "outm0", "outa1", "outb1", "outc1", "outm1"]
+replicas = [["outa0", "outa1"], ["outb0", "outb1"], ["outm0", "outm1"]]
+
+[[buffers]]
+name = "buf0"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "buf1"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "in0"
+dtype = "bf16"
+shape = [4]
+init = "file"
+file = "data/in0.bin"
+device = 0
+
+[[buffers]]
+name = "in1"
+dtype = "bf16"
+shape = [4]
+init = "file"
+file = "data/in1.bin"
+device = 1
+
+[[buffers]]
+name = "outa0"
+dtype = "bf16"
+shape = [4]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "outb0"
+dtype = "bf16"
+shape = [4]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "outc0"
+dtype = "bf16"
+shape = [4]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "outm0"
+dtype = "bf16"
+shape = [4]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "outa1"
+dtype = "bf16"
+shape = [4]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "outb1"
+dtype = "bf16"
+shape = [4]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "outc1"
+dtype = "bf16"
+shape = [4]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "outm1"
+dtype = "bf16"
+shape = [4]
+init = "zeros"
+device = 1
+
+[[multicast]]
+name = "mc"
+size = 128
+binds = [
+    { device = 0, offset = 0, buffer = "buf0", byte_offset = 0, size = 128 },
+    { device = 1, offset = 0, buffer = "buf1", byte_offset = 0, size = 128 },
+]
+
+[[multicast]]
+name = "mcm"
+size = 8
+binds = [
+    { device = 0, offset = 0, buffer = "outm0", byte_offset = 0, size = 8 },
+    { device = 1, offset = 0, buffer = "outm1", byte_offset = 0, size = 8 },
+]
+
+[[params]]
+kind = "ptr"
+buffer = "in0"
+
+[[params]]
+kind = "ptr"
+buffer = "buf0"
+
+[[params]]
+kind = "ptr"
+buffer = "mc"
+
+[[params]]
+kind = "ptr"
+buffer = "outa0"
+
+[[params]]
+kind = "ptr"
+buffer = "outb0"
+
+[[params]]
+kind = "ptr"
+buffer = "outc0"
+
+[[params]]
+kind = "ptr"
+buffer = "mcm"
+
+[[params]]
+kind = "u32"
+value = 0
+
+[[launches]]
+entry = "nvls16"
+grid = [1, 1, 1]
+block = [2, 1, 1]
+device = 1
+params = [
+    { kind = "ptr", buffer = "in1" },
+    { kind = "ptr", buffer = "buf1" },
+    { kind = "ptr", buffer = "mc" },
+    { kind = "ptr", buffer = "outa1" },
+    { kind = "ptr", buffer = "outb1" },
+    { kind = "ptr", buffer = "outc1" },
+    { kind = "ptr", buffer = "mcm" },
+    { kind = "u32", value = 1 },
+]
+
+[[variants]]
+id = "good"
+summary = "correct NVLS all-reduce of bf16 pairs"
+expect = ["clean"]

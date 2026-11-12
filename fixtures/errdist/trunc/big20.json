@@ -1,0 +1,3 @@
+{"version": 1, "seed": 1, "name": "x: N(0,1) w.p. 0.7, uniform [2^20, 2^21) w.p. 0.3 (x * 2^-20 + 1.5 in [2.5, 3.5)); v N(0,1)",
+ "tensors": {"x": {"dist": {"kind": "mixture", "components": [{"weight": 0.7, "dist": {"kind": "normal"}}, {"weight": 0.3, "dist": {"kind": "uniform", "lo": 1048576.0, "hi": 2097152.0}}]}}},
+ "default": {"dist": {"kind": "normal"}}}

@@ -1,0 +1,41 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_ldsm_trans_f32(.param .u64 pout)
+{
+	.reg .pred %p<4>;
+	.reg .b32 %r<24>;
+	.reg .f32 %f<8>;
+	.reg .b64 %rd<8>;
+	.shared .align 16 .b8 smem[128];
+	ld.param.u64 %rd1, [pout];
+	cvta.to.global.u64 %rd1, %rd1;
+	mov.u32 %r1, %tid.x;
+	cvt.rn.f32.u32 %f1, %r1;
+	add.rn.f32 %f2, %f1, 0f3DCCCCCD;
+	mov.u32 %r2, smem;
+	shl.b32 %r3, %r1, 2;
+	add.u32 %r4, %r2, %r3;
+	st.shared.f32 [%r4], %f2;
+	bar.sync 0;
+	and.b32 %r5, %r1, 7;
+	shl.b32 %r6, %r5, 4;
+	add.u32 %r7, %r2, %r6;
+	ldmatrix.sync.aligned.m8n8.x1.trans.shared.b16 {%r8}, [%r7];
+	shfl.sync.down.b32 %r9, %r8, 4, 31, -1;
+	prmt.b32 %r10, %r8, %r9, 0x5410;
+	shr.u32 %r11, %r1, 2;
+	and.b32 %r12, %r11, 1;
+	setp.eq.u32 %p1, %r12, 0;
+	selp.b32 %r13, %r10, 0, %p1;
+	mul.wide.u32 %rd2, %r1, 4;
+	add.s64 %rd3, %rd1, %rd2;
+	st.global.b32 [%rd3], %r13;
+	ret;
+}

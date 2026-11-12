@@ -1,0 +1,41 @@
+name = "trunc_ffrm"
+description = """entry fp_ffrm of ../fpstep.ptx (see its header): an integer step made by FP rounding, FMA.RM(|x|, 2^-10, 1.5 * 2^23) - 1.5 * 2^23 (FFMA.RM), inside an instruction slice that the probes never cross."""
+ptx = "../fpstep.ptx"
+entry = "fp_ffrm"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

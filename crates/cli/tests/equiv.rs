@@ -74,6 +74,14 @@ fn row_sums_are_bounded() {
     let t = equiv_ok("fixtures/c_equiv_sum/equiv.toml", 6);
     assert_eq!(t.matches(", 0 over the bound").count(), 3, "{t}");
     assert!(t.contains("relies on: N-ATOMIC"), "{t}");
+    // MISS 98's exemption: the atomic row sum's outputs (one order of the 4 adds each) are
+    // not held to its capture (the GPU's order); their bound, which covers every order, is.
+    assert!(
+        t.contains(
+            "candidate: simulated output not held to the captured GPU output at 4 elements that depend on the order of float atomic adds"
+        ),
+        "{t}"
+    );
     assert!(
         t.contains("equivalence scope: primary output buffers"),
         "{t}"
@@ -226,39 +234,50 @@ fn mxf8_gemm_is_bounded() {
 }
 
 /// MXF8 GEMM across implementations (docs/equiv-mma.md §5): CuTeDSL against cuBLASLt's
-/// torch._scaled_mm is L0 up to the sign of zero (cuBLAS adds +0 in its alpha / beta epilogue;
-/// its BAR.SYNC waits on the bulk read scoreboard in the control word).
+/// torch._scaled_mm is L0~0, L0 up to the sign of zero, and not L0 (cuBLAS adds +0 in its
+/// alpha / beta epilogue; its BAR.SYNC waits on the bulk read scoreboard in the control word).
+/// Until MISS 109 the pair was reported L0.
 #[test]
 #[ignore = "heavy: 60 s"]
-fn mxf8_cublas_is_bitwise() {
+fn mxf8_cublas_is_bitwise_up_to_zero_signs() {
     if vendor_missing("fixtures/c_equiv_mxf8_cublas/equiv.toml") {
         return;
     }
     let t = equiv_ok("fixtures/c_equiv_mxf8_cublas/equiv.toml", 1);
-    assert!(t.contains("L0 bitwise               PROVEN"), "{t}");
     assert!(
-        t.contains("L0 at 16384 outputs is up to the sign of zero"),
+        t.contains("L0 bitwise               FAILS at 16384 of 16384 outputs"),
         "{t}"
     );
+    assert!(t.contains("L0~0 up to the sign of zero PROVEN"), "{t}");
+    assert!(
+        t.contains("L0~0 at 16384 outputs: one kernel's output is the other's plus +0"),
+        "{t}"
+    );
+    assert!(t.contains("=> strongest level: L0~0\n"), "{t}");
     assert!(t.contains("0 over the bound"), "{t}");
 }
 
 /// NVFP4 GEMM (docs/equiv-mma.md §5): CuTeDSL (one CTA) against cuBLASLt's torch._scaled_mm,
 /// a cta_group::2 kernel (pair block-scaled MMA, UTCCP.2CTA, LDTM.16dp128bit, LOP3.PAND), is
-/// L0 up to the sign of zero; each kernel's own bound is 9.88u x sum |a b sa sb| (ue4m3 scales
-/// nonzero), no random trial above it.
+/// L0~0, L0 up to the sign of zero, and not L0; each kernel's own bound is 9.88u x sum |a b sa
+/// sb| (ue4m3 scales nonzero), no random trial above it.
 #[test]
 #[ignore = "heavy: 109 s"]
-fn nvf4_cublas_is_bitwise() {
+fn nvf4_cublas_is_bitwise_up_to_zero_signs() {
     if vendor_missing("fixtures/c_equiv_nvf4_cublas/equiv.toml") {
         return;
     }
     let t = equiv_ok("fixtures/c_equiv_nvf4_cublas/equiv.toml", 1);
-    assert!(t.contains("L0 bitwise               PROVEN"), "{t}");
     assert!(
-        t.contains("L0 at 16384 outputs is up to the sign of zero"),
+        t.contains("L0 bitwise               FAILS at 16384 of 16384 outputs"),
         "{t}"
     );
+    assert!(t.contains("L0~0 up to the sign of zero PROVEN"), "{t}");
+    assert!(
+        t.contains("L0~0 at 16384 outputs: one kernel's output is the other's plus +0"),
+        "{t}"
+    );
+    assert!(t.contains("=> strongest level: L0~0\n"), "{t}");
     assert!(t.contains("reference 9.88u, candidate 9.88u"), "{t}");
     assert!(t.contains("0 over the bound"), "{t}");
     assert!(t.contains("0 outputs differed bitwise"), "{t}");
@@ -725,4 +744,281 @@ fn clock_dependent_output_is_an_unmet_precondition() {
             .any(|p| p.as_str().is_some_and(|s| s.contains("inconclusive"))),
         "{json}"
     );
+}
+
+/// MISS 97 (fixtures/c_equiv_rsign): add.sat.s32 on the bits (ptxas: PLOP3 on `R.SIGN` /
+/// `UR.SIGN` inputs) against the function a slice reading those predicates as nonzero
+/// computes for it. Elementwise mode sweeps all 2^16 bf16 inputs: they differ on 16,385, so
+/// the level is EW, not L0 (before, the slices made them equal: L0).
+#[test]
+fn sign_predicate_slices_are_swept_apart() {
+    let t = equiv_ok("fixtures/c_equiv_rsign/equiv.toml", 1);
+    assert!(t.contains("bitwise equal on 49151 of 65536 inputs"), "{t}");
+    assert!(t.contains("=> strongest level: EW"), "{t}");
+}
+
+/// MISS 98 (fixtures/c_equiv_captured): the same kernel twice, the candidate's captured GPU
+/// output differing from the model's in one word. Equiv refuses the level in rounding-DAG
+/// mode (the candidate's simulated output differs from its capture) and in elementwise mode
+/// (its element functions differ from its capture); before, both reported L0.
+#[test]
+fn captured_gpu_mismatch_refuses_the_level() {
+    let t = equiv_ok("fixtures/c_equiv_captured/equiv.toml", 1);
+    assert!(
+        t.contains("candidate: simulated output at the captured inputs: out: differs from"),
+        "{t}"
+    );
+    let t = equiv_ok("fixtures/c_equiv_captured/equiv_ew.toml", 1);
+    assert!(
+        t.contains("captured GPU outputs (candidate): 1 of 1024 differ from the element functions"),
+        "{t}"
+    );
+    let dir = std::env::temp_dir().join(format!(
+        "ptxv-test-equiv-fixtures_c_equiv_captured_equiv_ew.toml-{}",
+        std::process::id()
+    ));
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("equiv.json")).unwrap()).unwrap();
+    assert_eq!(
+        report[0]["elementwise"]["level"], "none (contradicted by the captured GPU outputs)",
+        "{report}"
+    );
+}
+
+/// MISS 98 (fixtures/c_equiv_atomic, from its review): float atomic adds exempt from the
+/// simulated-vs-captured check only the outputs whose value depends on their order. With an
+/// atomic add into a scratch buffer (no output), an L0 pair whose candidate capture has
+/// another NaN payload and an L1 pair whose capture is 1 ulp off, +inf or NaN at an output
+/// are refused. With four atomic adds into out[1024], a 1-ulp change at out[225] is refused;
+/// out[1024] passes its last bit changed (another order of the adds) and is held to the
+/// bound (+inf and + 1.0 are refused). Two adds into +0 give the same bits in every order, so
+/// that out[1024] is compared like the rest. Before, all of these but the controls without an
+/// atomic kept the level.
+#[test]
+fn atomic_adds_exempt_only_their_outputs() {
+    let t = equiv_ok("fixtures/c_equiv_atomic/eq_l0.toml", 3);
+    assert_eq!(
+        t.matches("3 of 4096 bytes differ, first at byte 28 (sim 0x45, gpu 0x00)")
+            .count(),
+        2,
+        "{t}"
+    );
+    let t = equiv_ok("fixtures/c_equiv_atomic/eq_l1_out.toml", 6);
+    assert_eq!(
+        t.matches(
+            "candidate: simulated output not held to the captured GPU output at 1 element that depends on the order of float atomic adds"
+        )
+        .count(),
+        5,
+        "{t}"
+    );
+    assert_eq!(
+        t.matches("1 of 4100 bytes differ, first at byte 900 (sim 0x00, gpu 0x01)")
+            .count(),
+        2,
+        "{t}"
+    );
+    assert!(
+        t.contains("captured GPU outputs contradict L1: 1 of 1025 outputs are non-finite on one side and differ (first: out[1024])"),
+        "{t}"
+    );
+    assert!(
+        t.contains("captured GPU outputs contradict L1: 1 of 1025 outputs are farther apart than the proven bound (first: out[1024])"),
+        "{t}"
+    );
+    let t = equiv_ok("fixtures/c_equiv_atomic/eq_l1_scr.toml", 5);
+    assert!(!t.contains("not held to the captured GPU output"), "{t}");
+    assert_eq!(
+        t.matches("captured GPU outputs contradict L1: the candidate's simulated output differs from its capture")
+            .count(),
+        4,
+        "{t}"
+    );
+    let t = equiv_ok("fixtures/c_equiv_atomic/eq_l1_two.toml", 2);
+    assert!(!t.contains("not held to the captured GPU output"), "{t}");
+    assert!(
+        t.contains("1 of 4100 bytes differ, first at byte 4096"),
+        "{t}"
+    );
+}
+
+/// MISS 98 (fixtures/c_equiv_atomic/eq_unproven.toml): an unproven level is held to the
+/// captures too. The candidate's guard depends on input data (and its stores race), so
+/// its L0 is unproven; with its capture changed in one bit the level is refused as
+/// contradicted (before, "L0 (unproven)" was kept).
+#[test]
+fn unproven_levels_are_held_to_the_captures() {
+    let t = equiv_ok("fixtures/c_equiv_atomic/eq_unproven.toml", 2);
+    assert!(
+        t.contains("captured GPU outputs contradict L0 (unproven): the candidate's simulated output differs from its capture"),
+        "{t}"
+    );
+}
+
+/// MISS 110 (fixtures/c_equiv_round16/eq_probes.toml): equiv compares each kernel's simulated
+/// output with its capture as `ptxv check` does, within one ulp only in bytes of calibrated
+/// f16 / bf16 multimem lanes. The review probes r1h_nvls_ulp (an exact f32 multimem sum, a
+/// capture one ulp off) and r1h_nvls_nan (NaN against a NaN with another payload) differ from
+/// their captures on both fronts. Until MISS 110 neither difference was reported: every output
+/// of a case with a multicast object was compared within one ulp.
+#[test]
+fn multimem_probes_differ_from_their_captures() {
+    let t = equiv_ok("fixtures/c_equiv_round16/eq_probes.toml", 4);
+    let line = "candidate: simulated output at the captured inputs: out0: differs from the captured GPU output";
+    assert_eq!(t.matches(line).count(), 4, "{t}");
+}
+
+/// MISS 98 (fixtures/c_equiv_atomic/eq_offset.toml): captures of part of the output
+/// (`expect_offset` 2048; the candidate's also `expect_ignore` of out[600]) are compared where
+/// both cases captured them, each output against its own bound. Before, both captures were
+/// read from byte 0: 512 pairs, out[512 + i] against the bound of out[i].
+#[test]
+fn partial_captures_are_compared_where_captured() {
+    let t = equiv_ok("fixtures/c_equiv_atomic/eq_offset.toml", 1);
+    assert!(
+        t.contains(
+            "captured GPU outputs: 358 of 511 bitwise equal (513 outputs not captured by both cases)"
+        ),
+        "{t}"
+    );
+    let dir = std::env::temp_dir().join(format!(
+        "ptxv-test-equiv-fixtures_c_equiv_atomic_eq_offset.toml-{}",
+        std::process::id()
+    ));
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("equiv.json")).unwrap()).unwrap();
+    let cap = &report[0]["captured"];
+    assert_eq!(cap["outputs"], 511, "{cap}");
+    assert_eq!(cap["uncaptured"], 513, "{cap}");
+    assert!(cap["worst_output"].as_u64().unwrap() >= 512, "{cap}");
+    assert_eq!(cap["bound_abs"].as_array().unwrap().len(), 1024, "{cap}");
+}
+
+/// MISS 109 (fixtures/c_equiv_zero_sign): an output that is the other's plus +0 (cuBLAS's
+/// alpha = 1, beta = 0 epilogue) is equal only up to the sign of zero: level L0~0, L0
+/// (bitwise) fails at every output, the bound is 0. GB300's captures, +0 against -0 at the 16
+/// outputs whose sum is -0, agree with L0~0. b + a stays L0. A capture changed in another bit,
+/// or a +0 made -0 (equal to the reference's there; x + (+0) is never -0), is refused. Before,
+/// the pair was "L0", which those captures contradicted (MISS 98).
+#[test]
+fn zero_sign_is_its_own_level() {
+    let t = equiv_ok("fixtures/c_equiv_zero_sign/eq.toml", 4);
+    let cand = |name: &str| {
+        t.split(&format!("candidate c_equiv_zero_sign_{name} good sass\n"))
+            .nth(1)
+            .and_then(|s| s.split("\n\n").next())
+            .unwrap_or_else(|| panic!("{name}: {t}"))
+            .to_string()
+    };
+    let c = cand("cand_add0");
+    for s in [
+        "L0 bitwise               FAILS at 1024 of 1024 outputs (first: 0)\n        equal bits up to the sign of zero",
+        "L1 same function         PROVEN",
+        "L0~0 up to the sign of zero PROVEN",
+        "out[0..=1023]: L0~0 x1024; |C-R| <= k u sum|terms|, k from 0.00 to 0.00",
+        "captured GPU outputs: 1008 of 1024 bitwise equal, max |C - R| 0.000e0",
+        "=> strongest level: L0~0\n",
+    ] {
+        assert!(c.contains(s), "{s}: {c}");
+    }
+    assert!(!c.contains("contradict"), "{c}");
+    let c = cand("cand_ba");
+    assert!(c.contains("L0 bitwise               PROVEN"), "{c}");
+    assert!(c.contains("=> strongest level: L0\n"), "{c}");
+    assert!(!c.contains("L0~0"), "{c}");
+    for (name, byte) in [
+        ("cand_add0_t1", "36 (sim 0x08, gpu 0x09)"),
+        ("cand_add0_z", "279 (sim 0x00, gpu 0x80)"),
+    ] {
+        let c = cand(name);
+        assert!(
+            c.contains(&format!("1 of 4096 bytes differ, first at byte {byte}")),
+            "{c}"
+        );
+        assert!(
+            c.contains("captured GPU outputs contradict L0~0: the candidate's simulated output differs from its capture"),
+            "{c}"
+        );
+    }
+    let dir = std::env::temp_dir().join(format!(
+        "ptxv-test-equiv-fixtures_c_equiv_zero_sign_eq.toml-{}",
+        std::process::id()
+    ));
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("equiv.json")).unwrap()).unwrap();
+    let r = &report[0];
+    assert_eq!(r["strongest"], "L0~0", "{r}");
+    assert_eq!(r["proven"], true, "{r}");
+    assert_eq!(r["report"]["l0_zero_sign"], 1024, "{r}");
+    assert_eq!(r["report"]["per_output"][5]["level"], "L0~0", "{r}");
+    let cap = &r["captured"];
+    assert_eq!(cap["zero_sign_pairs"], 16, "{cap}");
+    assert_eq!(cap["differing_beyond_zero_sign"], 0, "{cap}");
+    assert_eq!(cap["first_differing"], 5, "{cap}");
+}
+
+/// MISS 134 (fixtures/c_equiv_atomic_ftz): an fp32 atomic add's flush flag is part of the
+/// canonical form. red.add.f32 (FTZ) against a bulk f32 add (no flush) of the same value into
+/// +0 (i), and two adds of both modes into +0 in opposite orders (mixA), are not L0: on inputs
+/// with subnormals (set s) GB300's outputs differ in 64 and 79 of 1024 words, within the bound.
+/// mixA's chains depend on their order, so their outputs are held to the bound, not to one
+/// order's capture. Adds of one mode in both orders (cftz, cblk) stay L0. Before, i and mixA
+/// were L0 (refused on set s, as the captures contradict it).
+#[test]
+fn atomic_flush_modes_are_not_bitwise() {
+    for (pair, level, equal) in [
+        ("i_n", "L2", 1024),
+        ("i_s", "L2", 960),
+        ("mixA_n", "L2", 1024),
+        ("mixA_s", "L2", 945),
+        ("cftz_s", "L0", 1024),
+        ("cblk_s", "L0", 1024),
+    ] {
+        let t = equiv_ok(&format!("fixtures/c_equiv_atomic_ftz/eq_{pair}.toml"), 1);
+        for s in [
+            format!("=> strongest level: {level}\n"),
+            format!("captured GPU outputs: {equal} of 1024 bitwise equal"),
+        ] {
+            assert!(t.contains(&s), "{pair}: {s}: {t}");
+        }
+        assert!(!t.contains("contradict"), "{pair}: {t}");
+        let mixed = "mix flushing (red/atom.add.f32) and non-flushing (bulk reduction) adds, \
+                     whose order changes the bits";
+        let exempt = "simulated output not held to the captured GPU output at 1024 elements \
+                      that depend on the order of float atomic adds";
+        if pair.starts_with("mixA") {
+            assert!(t.contains(mixed), "{pair}: {t}");
+            assert_eq!(t.matches(exempt).count(), 2, "{pair}: {t}");
+        } else {
+            assert!(!t.contains(exempt), "{pair}: {t}");
+        }
+        if pair.starts_with('i') {
+            assert!(
+                t.contains("L0 bitwise               FAILS at 1024 of 1024 outputs (first: 0)\n        canonical rounding DAGs differ"),
+                "{pair}: {t}"
+            );
+        }
+    }
+}
+
+/// MISS 135 (fixtures/c_equiv_zero_sign_nan): L0~0 needs the peeled x + (+0) to keep x's
+/// NaNs. A copy of an input against the copy + 0 (FADD with RZ) is not L0~0: the input can
+/// hold a NaN payload, which the + 0 turns into 0x7fffffff. GB300's captures differ at the 16
+/// zero signs and, on set p, also at its 7 non-canonical NaNs; the pair is L2 with bound 0,
+/// which they do not contradict. Before, it was L0~0 (refused on set p through the captures).
+#[test]
+fn zero_sign_needs_canonical_nans() {
+    for (set, equal) in [("p", 1001), ("q", 1008)] {
+        let t = equiv_ok(&format!("fixtures/c_equiv_zero_sign_nan/eq_{set}.toml"), 1);
+        for s in [
+            "L0 bitwise               FAILS at 1024 of 1024 outputs (first: 0)\n        canonical rounding DAGs differ".to_string(),
+            "bound: |C - R| <= 0.00u * sum|terms| for every output and every input (PROVEN)".to_string(),
+            format!("captured GPU outputs: {equal} of 1024 bitwise equal, max |C - R| 0.000e0"),
+            "=> strongest level: L2\n".to_string(),
+        ] {
+            assert!(t.contains(&s), "{set}: {s}: {t}");
+        }
+        assert!(!t.contains("L0~0"), "{set}: {t}");
+        assert!(!t.contains("contradict"), "{set}: {t}");
+    }
 }

@@ -1,0 +1,38 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_fold_add_f32(.param .u64 px, .param .u64 pout)
+{
+	.reg .b32 %r<8>;
+	.reg .f32 %f<16>;
+	.reg .b64 %rd<12>;
+	ld.param.u64 %rd1, [px];
+	ld.param.u64 %rd2, [pout];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd2, %rd2;
+	mov.u32 %r1, %tid.x;
+	mul.wide.u32 %rd5, %r1, 4;
+	add.s64 %rd6, %rd1, %rd5;
+	add.s64 %rd7, %rd2, %rd5;
+	add.rn.f32 %f10, 0f3DCCCCCD, 0f3F800000;
+	add.rn.f32 %f11, 0f3F800000, 0f33800000;
+	ld.global.f32 %f1, [%rd6];
+	add.rn.f32 %f2, %f1, %f10;
+	st.global.f32 [%rd7], %f2;
+	ld.global.f32 %f1, [%rd6+128];
+	add.rn.f32 %f2, %f1, %f11;
+	st.global.f32 [%rd7+128], %f2;
+	ld.global.f32 %f1, [%rd6+256];
+	add.rn.f32 %f2, %f1, %f10;
+	st.global.f32 [%rd7+256], %f2;
+	ld.global.f32 %f1, [%rd6+384];
+	add.rn.f32 %f2, %f1, %f11;
+	st.global.f32 [%rd7+384], %f2;
+	ret;
+}

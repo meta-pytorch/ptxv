@@ -1,0 +1,16 @@
+# MISS 97 (gen.py): add.sat.s32 on the bits (cand) against the function that a
+# slice reading the `.SIGN` predicates as nonzero computes for it (ref). Elementwise mode
+# sweeps every bf16 input (no sweep cache: the sweep is the check). The level is EW: the two
+# differ on 16,385 of 65,536 inputs. Before the fix the slices read the `.SIGN` predicates as
+# nonzero, and the level was L0.
+max_states = 200000
+segments = true
+elementwise = true
+reference = { case = "ref", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "cand"
+variant = "good"
+front = "sass"
+certify = true
+expect = "EW"

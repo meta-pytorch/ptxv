@@ -1,0 +1,42 @@
+name = "c_num_fold_ctl_f32"
+description = """
+N-NUM-TRACK (MISS 108, a constant ptxas folds decides a branch): c = mul.rn.f32(0.1f, 3), which
+ptxas folds into the FSETP immediate 0.30000001192092896; v = 0f3e99999a (the same value, a literal)
+in even lanes and 0.2f in odd lanes; out[t] = rn(x[t] + 1) if v > c, else rn(x[t] + 2). In the even
+lanes v is not above c in the run but above the exact 0.1f * 3 = 0.30000000447... in the exact
+computation, which stores x + 1. x uniform in [1, 2) (data only).
+expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_fold_ctl_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

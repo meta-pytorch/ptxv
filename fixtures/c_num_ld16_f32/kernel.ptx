@@ -1,0 +1,43 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_ld16_f32(.param .u64 px, .param .u64 pout, .param .u64 ptmp)
+{
+	.reg .b16 %h<4>;
+	.reg .b32 %r<16>;
+	.reg .f32 %f<12>;
+	.reg .b64 %rd<12>;
+	ld.param.u64 %rd1, [px];
+	ld.param.u64 %rd2, [pout];
+	ld.param.u64 %rd3, [ptmp];
+	cvta.to.global.u64 %rd1, %rd1;
+	cvta.to.global.u64 %rd2, %rd2;
+	cvta.to.global.u64 %rd3, %rd3;
+	mov.u32 %r1, %tid.x;
+	mul.wide.u32 %rd5, %r1, 4;
+	add.s64 %rd6, %rd3, %rd5;
+	add.s64 %rd7, %rd2, %rd5;
+	add.s64 %rd8, %rd1, %rd5;
+	cvt.rn.f32.u32 %f1, %r1;
+	add.rn.f32 %f2, %f1, 0f3DCCCCCD;
+	st.global.f32 [%rd6], %f2;
+	bar.sync 0;
+	xor.b32 %r2, %r1, 1;
+	mul.wide.u32 %rd9, %r2, 4;
+	add.s64 %rd10, %rd3, %rd9;
+	ld.volatile.global.b16 %h1, [%rd10];
+	ld.volatile.global.b16 %h2, [%rd10+2];
+	mov.b32 %r3, {%h1, %h2};
+	mov.b32 %f3, %r3;
+	st.global.f32 [%rd7], %f3;
+	ld.global.f32 %f4, [%rd8];
+	add.rn.f32 %f5, %f3, %f4;
+	st.global.f32 [%rd7+128], %f5;
+	ret;
+}

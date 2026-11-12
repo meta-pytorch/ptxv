@@ -1,0 +1,3 @@
+{"version": 1, "seed": 2, "name": "x: N(0,1) w.p. 0.032, integers -8..8 w.p. 0.968 (double rounding f16 -> bf16 on about 1/16 of the normal part: about 2e-3 of the inputs, all 512 outputs at once)",
+ "tensors": {"x": {"dist": {"kind": "mixture", "components": [{"weight": 0.032, "dist": {"kind": "normal"}}, {"weight": 0.968, "dist": {"kind": "integers", "lo": -8, "hi": 8}}]}}},
+ "default": {"dist": {"kind": "normal"}}}

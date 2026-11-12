@@ -435,14 +435,21 @@ impl Machine {
         }
     }
 
-    /// Does `p` read a predicate nothing has written (S-INIT-PRED)?
+    /// Does `p` read a predicate nothing has written (S-INIT-PRED), or a `.SIGN` register
+    /// (PLOP3 input) whose bit 31 is undefined (S-INIT; `Reg::pred_bit` of the undefined
+    /// mask)? Until 2026-11-11 (MISS 97) a `.SIGN` input counted as defined.
     pub fn pred_undef(&self, t: usize, p: Pred) -> Option<Reg> {
-        p.reg
-            .filter(|r| matches!(r.file, File::P | File::UP) && self.reg_umask(t, *r) != 0)
+        p.reg.filter(|r| {
+            matches!(r.file, File::P | File::UP | File::R | File::UR)
+                && r.pred_bit(self.reg_umask(t, *r) as u64)
+        })
     }
 
     /// Write `v` to `r`; SASS files take `slots` 32-bit registers.
     pub fn wr(&mut self, t: usize, r: Reg, v: u64, slots: u8) {
+        if self.round16.is_some() {
+            self.round16_forget_reg(t, r, slots);
+        }
         match r.file {
             File::V => {
                 // S-INIT: wholly undefined: unwritten; partly (some bits of `vmask`): written,
@@ -1251,6 +1258,11 @@ impl Machine {
                 );
             }
             return out;
+        }
+        // N-MULTIMEM-ROUND16 provenance: a write ends what the bytes held (a store sets it
+        // again after).
+        if write.is_some() && self.round16.is_some() {
+            self.round16_forget_mem(loc, n);
         }
         if self.num.is_some() {
             crate::rep::access(self, actor, pc, loc, n, write.is_some(), strong);
@@ -5924,8 +5936,12 @@ impl Machine {
                                 }
                                 wrote.push((loc, byte, src));
                                 self.wundef = byte_umask(um >> (8 * k), 1) as u128;
+                                let origins = self.num_store_origins(src, vi, 1, inst.guard.reg);
                                 self.access(src as u32, &vc, pc, loc, 1, Some(&[byte as u8]));
                                 self.wundef = 0;
+                                // The word holding the byte loses its node (input data where it
+                                // or the register held a rounding, N-NUM-TRACK).
+                                self.num_st(src, vi, loc, &[byte as u8], &origins, pc);
                                 self.half_stsm_byte(src, vi, k, loc);
                             }
                         }
@@ -6046,7 +6062,8 @@ impl Machine {
                             self.make_undefined(t, reg);
                         }
                         self.half_ldsm_bytes(t, reg, locs);
-                        self.num_clobber(t, reg, &[], pc);
+                        let locs: Vec<Loc> = locs.iter().flatten().copied().collect();
+                        self.num_clobber_mem(t, reg, &locs, pc);
                     }
                     for &t in &active {
                         self.tick(t);
@@ -6106,7 +6123,10 @@ impl Machine {
                         match word.and_then(|loc| self.num.as_ref().and_then(|ns| ns.mem_node(loc)))
                         {
                             Some(n) => self.num_put(t, r, Some(n)),
-                            None => self.num_clobber(t, r, &[], pc),
+                            None => {
+                                let locs: Vec<Loc> = hlocs.iter().flatten().copied().collect();
+                                self.num_clobber_mem(t, r, &locs, pc)
+                            }
                         }
                     }
                     for &t in &active {
@@ -8413,9 +8433,9 @@ impl Machine {
                 let bmask = if wide { u64::MAX } else { 0xffff_ffff };
                 let x = self.rd(t, v)? & bmask;
                 // CAS: `v` is the compare value; the new value is `new`, or the register (pair)
-                // right after `v` (SASS {compare, new} pairs).
-                let (x, cmp) = match (op, v, new) {
-                    (AtomOp::CasSpin | AtomOp::Cas, _, Some(nv)) => (self.rd(t, nv)? & bmask, x),
+                // right after `v` (SASS {compare, new} pairs). The two operands, for numerics.
+                let cas_ops: Option<(Val, Val)> = match (op, v, new) {
+                    (AtomOp::CasSpin | AtomOp::Cas, _, Some(nv)) => Some((v.clone(), nv.clone())),
                     (AtomOp::CasSpin | AtomOp::Cas, Val::Reg(r, _), None) => {
                         let step = if wide && r.file != File::V { 2 } else { 1 };
                         let hi = Reg {
@@ -8423,12 +8443,16 @@ impl Machine {
                             idx: r.idx + step,
                         };
                         let n = if wide { 2 } else { 1 };
-                        (self.rd(t, &Val::Reg(hi, n))? & bmask, x)
+                        Some((Val::Reg(*r, n), Val::Reg(hi, n)))
                     }
                     (AtomOp::CasSpin | AtomOp::Cas, _, None) => {
                         return Err("CAS without a new-value operand".into());
                     }
-                    _ => (x, 0),
+                    _ => None,
+                };
+                let (x, cmp) = match &cas_ops {
+                    Some((_, nv)) => (self.rd(t, nv)? & bmask, x),
+                    None => (x, 0),
                 };
                 let vc = self.threads[t].vc.clone();
                 let sc = strong_code(sync.scope);
@@ -8460,6 +8484,8 @@ impl Machine {
                         .num
                         .as_ref()
                         .is_some_and(|ns| ns.taint.last_read_input_derived());
+                    // Before the write ends the bytes' 16-bit provenance.
+                    let old_rounded = self.num_old_rounded(loc, *bytes);
                     old_undef = self.stale.take().flatten().is_some();
                     // C-TICKET-ADDR (wellsync/perm.rs): in the certificate's runs and reruns,
                     // a claim on a declared counter synchronizes with nothing (a later acquire
@@ -8555,7 +8581,25 @@ impl Machine {
                     if matches!(op, AtomOp::AddBf16x2 | AtomOp::AddBf16) {
                         self.num_atom_bf16(t, v, loc, *bytes, n as u32, *d, pc);
                     } else if !fmax {
-                        self.num_atom(t, v, loc, old_input_derived, fadd, *d, pc);
+                        let (x_op, new_op) = match &cas_ops {
+                            Some((c, nv)) => (c.clone(), Some(nv.clone())),
+                            None => (v.clone(), None),
+                        };
+                        let a = crate::num::AtomNum {
+                            op: *op,
+                            bytes: *bytes,
+                            x: x_op,
+                            new: new_op,
+                            swapped,
+                            written: n,
+                            old_rounded,
+                            old_input_derived,
+                            fadd,
+                            d: *d,
+                            p: *p,
+                            guard: inst.guard.reg,
+                        };
+                        self.num_atom(t, &a, loc, pc);
                     }
                 }
                 self.mc_view = false;
@@ -9866,8 +9910,17 @@ impl Machine {
                     let th = self.threads[t].make_mut();
                     th.clock = th.clock.wrapping_add(self.clock_step);
                 }
+                // N-MULTIMEM-ROUND16 provenance: the copy holds what the source held.
+                let held = if self.round16.is_some() {
+                    self.round16_of_mov(t, *d, a, Self::slots_of(a))
+                } else {
+                    vec![]
+                };
                 self.wr(t, *d, v, Self::slots_of(a));
                 self.num_mov(t, *d, a);
+                if !held.is_empty() {
+                    self.round16_mov(t, *d, held);
+                }
             }
             Op::Int { op, bits, d, a, b } => {
                 let x = mask(*bits, self.rd(t, a)?);
@@ -11569,7 +11622,6 @@ impl Machine {
                     self.l1_inval(t, pc); // ASSUME(E-HW-L1)
                 }
                 let r = crate::multimem::reduce(*op, *ty, &vals)?;
-                self.mc_inexact |= r.inexact;
                 let data = r.bytes;
                 let wide = ty.lane_bytes() == 8;
                 if d.file == File::V && wide {
@@ -11589,6 +11641,9 @@ impl Machine {
                         };
                         self.wr(t, rr, u32::from_le_bytes(c.try_into().unwrap()) as u64, 1);
                         self.num_clobber(t, rr, &[], pc);
+                    }
+                    if !r.calibrated.is_empty() {
+                        self.round16_ld_reduce(t, *d, *ty, &r.calibrated);
                     }
                 }
                 let _ = n;
@@ -11926,6 +11981,9 @@ impl Machine {
                 }
                 for &loc in &locs {
                     self.num_st(t, v, loc, &data, &origins, pc);
+                }
+                if self.round16.is_some() {
+                    self.round16_st(t, v, *bytes as usize, &locs);
                 }
             }
             Op::Dp2a {
@@ -14104,6 +14162,22 @@ impl Machine {
     /// CTA's last thread writes: the explorer orders deliveries against the target's exit,
     /// and deliveries to one CTA stay independent of each other.
     fn complete_remote(&mut self, op: &AsyncOp, drained: bool) {
+        // DPOR (dpor.rs): landing a remote op, as its own step or drained inside a thread's
+        // step (drain_remote, deliver_fifo_before), writes one key of its pipe (space 15), so
+        // a drain and the op's own landing always conflict, and a drain of a non-head op
+        // conflicts with the landing of the head before it. A store-less arrival that does
+        // not complete its phase records only reads otherwise. Not in the stateful explorer's
+        // synchronization-only footprints.
+        if let Some(f) = self.fp.as_mut().filter(|f| !f.sync_only) {
+            let (id, k) = match op.fifo {
+                Some(q) => (0, q),
+                None => (
+                    1,
+                    ((op.actor as u64) << 32) | vc_get(&op.vc, op.actor) as u64,
+                ),
+            };
+            f.add(15, id, k, k.saturating_add(1), true);
+        }
         let saved = std::mem::replace(&mut self.cur_sh, op.sh.clone());
         self.complete_remote_op(op, drained);
         self.cur_sh = saved;

@@ -261,6 +261,134 @@ fn crosscheck_needs_resolution() {
     assert_eq!(best(&j)["tier"], 3);
 }
 
+/// MISS 91: a linearized estimate's own interval omits its model error, so its agreement with
+/// Tier 3 must resolve 5% of p3, which a Tier 3 of 0 never does. The Triton RMSNorm on N(0, 1)
+/// inputs has a Tier 2 of 1.60e-5 [1.598e-5, 1.606e-5]; at 200 inputs Tier 3 saw no
+/// difference ([0, 1.8e-2]), and until the MISS 91 fix the tolerance (the half-width)
+/// confirmed it, the headline. The bf16 gelu pair on uniform inputs (exact P 0, the Tier 0
+/// headline) had a Tier 2 of 4.4e-6 [4.39e-6, 4.40e-6] until a pair's matched roundings paired
+/// in op order; it is now 0 [0, 0], refused the same way. Mutant xcheck-t2-res-off confirms
+/// both again.
+#[test]
+fn crosscheck_needs_a_tier3_difference_for_tier2() {
+    let j = run(
+        "t2rms",
+        "fixtures/r4_rmsnorm_triton",
+        "fixtures/errdist/normal.json",
+        &["--mc", "200", "--sim-trials", "0"],
+        &[],
+    );
+    assert_eq!(p(tier(&j, 3)[0]).0, 0.0, "Tier 3 saw a difference");
+    let t2 = tier(&j, 2);
+    assert!(!t2.is_empty(), "no Tier 2: {j}");
+    for e in t2 {
+        let a = applicability(e);
+        assert!(p(e).0 > 0.0, "{a}");
+        assert_eq!(e["applicable"], false, "{a}");
+        assert!(a.contains("resolution (linearized estimate"), "{a}");
+    }
+    assert_eq!(best(&j)["tier"], 3);
+    let j = run(
+        "t2zero",
+        "fixtures/c_equiv_elementwise/gelu_bf16.toml",
+        "fixtures/errdist/uniform.json",
+        &["--candidate", "0", "--mc", "200", "--sim-trials", "0"],
+        &[],
+    );
+    assert_eq!(p(tier(&j, 3)[0]).0, 0.0, "Tier 3 saw a difference");
+    let t2 = tier(&j, 2);
+    assert!(!t2.is_empty(), "no Tier 2: {j}");
+    for e in t2 {
+        let a = applicability(e);
+        assert_eq!(e["applicable"], false, "{a}");
+        assert!(a.contains("resolution (linearized estimate"), "{a}");
+    }
+    assert_eq!(best(&j)["tier"], 0);
+}
+
+/// MISS 91: where Tier 3 saw differences, a Tier 2 stands only while Tier 3's half-width is at
+/// most 2.5% of its P, and its interval then joins Tier 3's. adv_sel's linearized tier agrees
+/// with Tier 3 at any input count (0.240 against 0.242 at 2,000 inputs), where Tier 3's
+/// half-width is 7.9% of P: the tolerance is the half-width, which holds Tier 2 only to twice
+/// that, and it is refused (mutant xcheck-t2-res-off confirms it). The torch row sum at the
+/// default count (Tier 3 grows to 1,500 inputs, 1.8%): Tier 2 stands, and its interval, its own
+/// [0.660, 0.674] the spread over its nominal inputs, joins Tier 3's [0.656, 0.680] (mutant
+/// xcheck-join-off keeps its own).
+#[test]
+fn tier2_needs_resolution_and_joins_tier3s_interval() {
+    let (case, spec) = ("fixtures/errdist/adv_sel", "fixtures/errdist/adv_sel.json");
+    let j = run("t2res", case, spec, &["--mc", "2000"], &[]);
+    let (p3, lo3, hi3) = p(tier(&j, 3)[0]);
+    let hw = 0.5 * (hi3 - lo3);
+    assert!(hw > 0.025 * p3 && hw < 0.2 * p3, "{p3} [{lo3}, {hi3}]");
+    let t2 = tier(&j, 2);
+    assert!(!t2.is_empty(), "no Tier 2: {j}");
+    for e in t2 {
+        let a = applicability(e);
+        assert!((p(e).0 - p3).abs() <= hw, "{a}");
+        assert_eq!(e["applicable"], false, "{a}");
+        assert!(a.contains("resolution (linearized estimate"), "{a}");
+    }
+    assert_eq!(best(&j)["tier"], 3);
+    let j = run(
+        "t2join",
+        "fixtures/r4_sum_torch",
+        "fixtures/errdist/normal.json",
+        &[],
+        &[],
+    );
+    let (p3, lo3, hi3) = p(tier(&j, 3)[0]);
+    assert!(0.5 * (hi3 - lo3) <= 0.025 * p3, "{p3} [{lo3}, {hi3}]");
+    let b = best(&j);
+    let (a, (_, lo, hi)) = (applicability(b), p(b));
+    assert_eq!(
+        (b["tier"].as_u64(), &b["applicable"]),
+        (Some(2), &true.into()),
+        "{a}"
+    );
+    assert!(a.contains("interval joined with Tier 3's"), "{a}");
+    assert!(
+        lo <= lo3 && hi >= hi3,
+        "[{lo}, {hi}] vs [{lo3}, {hi3}]: {a}"
+    );
+}
+
+/// Tier 3's P(differ) interval where an input's outputs differ together (MISS 120; the third
+/// review's probe, fixtures/errdist/clus): 512 bf16 outputs per input differ all at once on
+/// about 2e-3 of the inputs (P 2.1209e-3 per compared output, exact). At 0 differing inputs the
+/// batch-means interval had no width and left the outputs' Clopper-Pearson interval,
+/// [0, 3.69 / outputs], which takes them as independent: at 200 inputs (s2.json) Tier 3 said
+/// 0 [0, 3.75e-5], refused the correct Tier 1 (2.112e-3) against it and was the headline, and
+/// the default run did not grow at P 0. Below 20 differing inputs the interval now takes the
+/// input-level bound ([0, 3.69 / inputs] at 0), and Tier 3 grows at P 0.
+#[test]
+fn tier3_interval_counts_inputs_where_outputs_differ_together() {
+    let (case, spec) = (
+        "fixtures/errdist/clus/together",
+        "fixtures/errdist/clus/s2.json",
+    );
+    let exact = 2.120854e-3;
+    let j = run(
+        "clus200",
+        case,
+        spec,
+        &["--mc", "200", "--sim-trials", "0"],
+        &[],
+    );
+    let (p3, lo3, hi3) = p(tier(&j, 3)[0]);
+    assert!(lo3 <= exact && exact <= hi3, "Tier 3 {p3} [{lo3}, {hi3}]");
+    let (pb, lob, hib) = p(best(&j));
+    assert!(lob <= exact && exact <= hib, "headline {pb} [{lob}, {hib}]");
+    let j = run("clusdef", case, spec, &["--sim-trials", "0"], &[]);
+    let t3 = tier(&j, 3)[0];
+    let (p3, lo3, hi3) = p(t3);
+    assert!(t3["n"].as_u64().unwrap_or(0) > 300, "{t3}");
+    assert!(
+        lo3 <= exact && exact <= hi3,
+        "default Tier 3 {p3} [{lo3}, {hi3}]"
+    );
+}
+
 /// N-ERRDIST-SEL: a store under a guard computed from input data is a selection.
 /// fixtures/errdist/adv_sel: out = (s > 0) ? x0 + ... + x15 : x0, each branch half the time. The
 /// decision input s is an input element, the same in the kernel and in exact arithmetic, so the
@@ -327,11 +455,15 @@ fn dag_clt_sees_the_lattice_of_integer_f32_inputs() {
             assert_eq!(p(best(&j)).0, 0.0, "{spec}: headline {}", best(&j));
         }
         // With Tier 3 the leaves' lattice shows: the CLT says 0 (1e-12 on grid64: its normal
-        // node laws put that mass past 2^24) and stands on its cross-check.
+        // node laws put that mass past 2^24). Tier 3 sees no difference, which confirms no
+        // linearized estimate (MISS 91): the CLT is refused, and Tier 3's 0 is the headline.
         let j = run("miss41t3", "fixtures/c_sum_naive", spec, &[], &[]);
         let e = dag_clt(&j).expect("the DAG CLT runs");
-        assert!(p(e).0 < 1e-9, "{spec}: {} {}", p(e).0, applicability(e));
-        assert_eq!(e["applicable"], true, "{spec}: {}", applicability(e));
+        let a = applicability(e);
+        assert!(p(e).0 < 1e-9, "{spec}: {} {a}", p(e).0);
+        assert_eq!(e["applicable"], false, "{spec}: {a}");
+        assert!(a.contains("resolution (linearized estimate"), "{spec}: {a}");
+        assert_eq!(p(best(&j)).0, 0.0, "{spec}: headline {}", best(&j));
     }
 }
 

@@ -1,0 +1,36 @@
+name = "c_equiv_rsign_cand"
+description = """
+MISS 97 (fixtures/c_equiv_rsign/gen.py): cand. y[i] = f(x[i]) on 1024 bf16 inputs, f32 bits out.
+expected/ is GB300's output (ptxas 13.0 -arch=sm_103a)."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "bf16"
+shape = [1024]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

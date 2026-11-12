@@ -84,7 +84,9 @@ establish equivalence.
      needed them.
    - Plain numerics run first. If a kernel uses MUFU, or outputs have no dataflow history, and
      some outputs are left without a proven bound, it reruns in segment mode (softmax, norms)
-     and keeps the better result.
+     and keeps the better result. A run whose level the captured GPU outputs contradict is
+     kept instead (MISS 98; the plain one is then not rerun), so the report says NOT PROVEN
+     with the reason, in report.json and equiv.log alike; before, a proven rerun replaced it.
    - In segment mode, elementwise mode is tried too: every output one input element's
      function, both kernels swept over every input value (docs/equiv-elementwise.md). The
      headline then gives the exact largest difference and each kernel's error against the true
@@ -101,15 +103,23 @@ establish equivalence.
 ### The report
 
 - **headline:**
-  - "PROVEN L0 / L1 ... |C - R| <= bound";
+  - "PROVEN bitwise identical (L0)", "PROVEN L1 ... |C - R| <= bound";
+  - "PROVEN equal up to the sign of zero (L0~0)": the same bits, except that where one
+    kernel's output is -0 the other's can be +0 (one adds +0, as cuBLAS's alpha = 1, beta = 0
+    epilogue does, to a value that holds no NaN but the canonical one: MISS 135). Not bitwise
+    identical; until MISS 109 this level was reported as L0;
   - "NOT EQUIVALENT: with every input 0 except x[127] = 1, out[0] is 1 vs 0";
+  - "NOT PROVEN: the captured GPU outputs contradict the model (...)": equiv refused the
+    level, proven or not, as a kernel's simulated output differs from its capture or the two
+    captures contradict the level (MISS 98);
   - "NOT PROVEN ...", followed by the GPU numbers.
 - **per side** (`reference.side`, `candidate.side`):
   - kernels, lifted or not, and `unlifted` (instruction, count, example);
   - `check`: verdict, complete, method, certified, states, assumptions, notes, findings;
   - `sim_vs_gpu`.
 - **`equivalence`:**
-  - level and proven, plus each of L0, L1 and L2;
+  - level and proven, plus each of L0, L1 and L2 (and L0~0, L0 up to the sign of zero, when
+    some output is equal only up to it);
   - `per_output_bound`: max / median / min, a histogram (exact values if 8 or fewer
     distinct, else 8 bins), and each kernel's own maximum against the exact value;
   - for softmax, the form `rel u * y + add u`;

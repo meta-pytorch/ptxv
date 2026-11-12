@@ -454,6 +454,47 @@ def test_srcmut_check_anchors(tmp_path, monkeypatch, capsys):
     assert check() == (1, [["broken", "b.rs: no such file"]], "1 of 2 anchors broken")
     b.write_text("    drop(y);\n")
     assert check() == (0, [], "0 of 2 anchors broken")
+    # --root checks the files of another tree (the anchors test's positive control plants a
+    # broken anchor in a scratch tree); a run takes no --root.
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "a.rs").write_text("    keep(x);\n    keep(x);\n")
+    (other / "b.rs").write_text("    drop(y);\n")
+    assert check("--root", str(other)) == (1, [["good", "a.rs: find text occurs 2 times"]], "1 of 2 anchors broken")
+    assert check("--root", str(other), "--only", "broken") == (0, [], "0 of 1 anchors broken")
+    with pytest.raises(SystemExit):
+        srcmut.main(["--root", str(other)])
+    capsys.readouterr()  # argparse's usage message
+    # No mutant chosen is an error (exit 2), not "0 of 0 anchors broken": an --only name that is
+    # not a mutant, or no mutants at all.
+    assert check("--only", "no-such") == (2, [], "srcmut: --only names no mutant that runs: no-such")
+    assert check("--only", "good,no-such")[0] == 2
+    # An --only that is given but names nothing exits 2 too (it chose every mutant).
+    for names in ["", ",", ",,", " ", " , "]:
+        assert check("--only", names) == (2, [], "srcmut: --only names nothing"), names
+    assert check("--only=") == (2, [], "srcmut: --only names nothing")
+    monkeypatch.setattr(srcmut, "MUTANTS", [])
+    assert check() == (2, [], "srcmut: no mutant is chosen")
     # A run still needs --out.
+    monkeypatch.setattr(srcmut, "MUTANTS", [good, broken])
     with pytest.raises(SystemExit):
         srcmut.main([])
+
+
+def test_srcmut_only_names_a_mutant_that_runs(tmp_path):
+    # An unknown or excluded name in --only fails before anything runs (it used to run nothing
+    # and exit 0).
+    import subprocess
+    srcmut = Path(__file__).resolve().parent / "srcmut.py"
+    for names in ["no-such-mutant", "atom-sources-off", "dd-refuse-off,no-such-mutant"]:
+        r = subprocess.run([sys.executable, str(srcmut), "--out", str(tmp_path / "o"), "--only", names],
+                           capture_output=True, text=True, timeout=120)
+        assert r.returncode == 2, (names, r.stdout, r.stderr)
+        assert "--only names no mutant that runs" in r.stderr, r.stderr
+    # An --only that is given but names nothing fails the same way (it ran every mutant).
+    for args in (["--only", ""], ["--only", ","], ["--only", ",,"], ["--only", " "], ["--only="]):
+        r = subprocess.run([sys.executable, str(srcmut), "--out", str(tmp_path / "o"), *args],
+                           capture_output=True, text=True, timeout=120)
+        assert r.returncode == 2, (args, r.stdout, r.stderr)
+        assert "--only names nothing" in r.stderr, r.stderr
+    assert not (tmp_path / "o").exists()

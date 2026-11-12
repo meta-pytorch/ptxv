@@ -1,0 +1,32 @@
+name = "clus_together"
+description = """entry clus_together of ../kernel.ptx (see its header): 512 bf16 outputs per input that differ from their exact value together or not at all."""
+ptx = "../kernel.ptx"
+entry = "clus_together"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [1]
+init = "normal"
+seed = 7
+
+[[buffers]]
+name = "y"
+dtype = "bf16"
+shape = [512]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

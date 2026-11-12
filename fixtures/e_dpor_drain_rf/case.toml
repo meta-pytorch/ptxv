@@ -1,0 +1,27 @@
+name = "e_dpor_drain_rf"
+description = """
+MISS 136, race-free: a single mbarrier test whose result depends on whether a st.async that
+the issuer's cluster-scope release later drains has landed on its own first. DPOR must reach
+the stateful search's outputs (it backtracks the drained op's process at the drain). PTX: plus
+the S-MBAR-SCOPE contract. See kernel.ptx."""
+ptx = "kernel.ptx"
+entry = "e_dpor_drain_rf"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["contract", "nondeterministic"]
+expect_sass = ["nondeterministic"]

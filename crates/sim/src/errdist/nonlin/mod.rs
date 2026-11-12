@@ -336,10 +336,17 @@ pub fn prepare(p: &mut Prog, m: &Machine) -> Result<(Vec<String>, ident::Idents)
         });
         // MISS 57: where the slice's data-dependent decisions take a pattern no probe took,
         // the identified function is not its real counterpart (`real::eval_table`).
-        let d = info.prog.decision_count();
+        let d = info
+            .result
+            .as_ref()
+            .map_or(0, |f| info.prog.decision_count(&f.steps));
         if let (Ok(f), true) = (&info.result, d > 0) {
+            let steps = match f.steps.len() {
+                0 => String::new(),
+                k => format!(", {k} rounding(s) acting as a step on the probes"),
+            };
             notes.push(format!(
-                "slice @{pc}: {d} data-dependent decision(s) (guards, selects, carries); outcome patterns probed: {}",
+                "slice @{pc}: {d} data-dependent decision(s) (guards, selects, carries{steps}); outcome patterns probed: {}",
                 match &f.outcomes {
                     Some(o) => format!(
                         "{}; the identified function is the exact reference on those only (MISS 57)",

@@ -1,0 +1,51 @@
+name = "c_num_ld16_f32"
+description = """
+N-NUM-TRACK (MISS 115, partial-width loads; the independent review's probe r2_ld16, kernel.ptx,
+gen.py): thread t stores s_t = rn(t + 0.1f) to tmp[t]; after bar.sync thread t reads tmp[t ^ 1] as two
+volatile 16-bit loads and recombines them (mov.b32 {lo, hi}; SASS: two LDG.E.U16 and a PRMT): out[t] =
+s_(t^1), out[32 + t] = rn(out[t] + x[t]). Exact out[t] = (t ^ 1) + 0.1f.
+expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_ld16_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "tmp"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "tmp"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

@@ -1,0 +1,40 @@
+# MISS 98 (gen.py), rounding-DAG mode: L1 with a float atomic add into a scratch buffer: a
+# 1-ulp change, +inf and a NaN at an output are refused (before, L1 was kept); the control
+# without the atomic is refused too.
+max_states = 200000
+reference = { case = "ref_sum", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "cand_sum_scr"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L1"
+
+[[candidates]]
+case = "cand_sum_scr_t1"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (contradicted by the captured GPU outputs)"
+
+[[candidates]]
+case = "cand_sum_scr_inf"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (contradicted by the captured GPU outputs)"
+
+[[candidates]]
+case = "cand_sum_scr_nan"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (contradicted by the captured GPU outputs)"
+
+[[candidates]]
+case = "cand_sum_t1"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (contradicted by the captured GPU outputs)"

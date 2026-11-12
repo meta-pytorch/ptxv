@@ -1,0 +1,30 @@
+name = "e_dpor_drain"
+description = """
+MISS 136: DPOR never backtracked a process whose pending async op another transition consumed
+(here rank 0's cluster-scope release drains its in-flight remote store), so the schedules where
+the op lands on its own first were never explored: SASS DPOR gave [race] where the stateful
+search gives [nondeterministic, race, violation] (a read of never-written shared memory when
+the store has not landed). The consuming transition now adds the op's process to its frame's
+backtrack set. PTX: the race is ordered once async mbarrier completions count at the
+mbarrier's CTA (S-MBAR-SCOPE), a contract. See kernel.ptx."""
+ptx = "kernel.ptx"
+entry = "e_dpor_drain"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["contract"]
+expect_sass = ["nondeterministic", "race", "violation"]

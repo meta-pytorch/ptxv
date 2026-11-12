@@ -2343,9 +2343,10 @@ pub struct Machine {
     /// Not hashed, transient: the `AsyncOp::sh` of the async operation completing now
     /// (S-MBAR-SCOPE).
     pub cur_sh: Vec<(Cover, VC)>,
-    /// Not hashed: some multimem.ld_reduce lane of this run returned the nearest-even
-    /// neighbour of a sum whose rounding direction on GB300 is not modeled (N-MULTIMEM).
-    pub mc_inexact: bool,
+    /// Not hashed: N-MULTIMEM-ROUND16 provenance, which bytes hold an f16 / bf16
+    /// multimem.ld_reduce lane rounded by the calibrated rule (`track_round16`; one
+    /// deterministic run, for the comparison with the captured GPU output).
+    pub round16: Option<Box<crate::multimem::Round16Shadow>>,
     /// Not hashed, transient: the clock a SASS STTM is ordered with under E-TMEM-QUEUE (its
     /// thread's pending LDTMs joined), while `tmem_access` checks it: a conflict ordered only
     /// by it is a `tmem-queue:` contract finding (exec.rs, the `TmemSt` arm).
@@ -3169,7 +3170,7 @@ impl Machine {
             async_view: None,
             weak_pub: false,
             cur_sh: vec![],
-            mc_inexact: false,
+            round16: None,
             gown: None,
             mma_cache: Default::default(),
             findings: Vec::new(),

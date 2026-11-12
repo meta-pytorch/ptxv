@@ -1,0 +1,67 @@
+name = "c_num_atom_cas_f32"
+description = """
+N-NUM-TRACK (MISS 114, atomics): thread 0 zeroes acc[0] and acc[1] and stores x[0] to acc[3];
+then 32 threads atom.add.f32 0.1f into acc[0] and atom.add.noftz.bf16x2 {0.1, 0.1} (bf16 0x3dcd)
+into acc[1] (old values kept in olds). Thread 0 then:
+- atom.cas acc[0], compare 0x404ccccd (3.2f, the exact sum 32 * 0.1f), new 1.0: the run's
+  sequential sum differs, so the swap fails; the exact computation swaps. out[0] = acc[0] after
+  it (exact 1.0), out[1] = the old value (exact 3.2f), out[2] = rn(out[0] + x[1]).
+- out[3] = f32(the low bf16 of acc[1]) (exact 32 * bf16(0.1) = 3.203125), out[4] = rn(out[3]
+  + x[2]).
+- atom.exch.b64 of {2.0, rn(x[0] + 2^-30)} at acc[2..3]; out[5] = acc[3] (rn(x[0] + 2^-30) =
+  x[0]; exact x[0] + 2^-30).
+expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_atom_cas_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [6]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "olds"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "acc"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "olds"
+
+[[params]]
+kind = "ptr"
+buffer = "acc"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

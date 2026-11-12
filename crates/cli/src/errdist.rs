@@ -145,7 +145,11 @@ impl Model {
 /// earlier model's outcome patterns miss a clamp's piece.
 /// 9: atomic adds carry whether the run's happens-before orders them (`Prog::atomic_free`);
 /// an earlier model has none and would excuse no order (a false refusal only).
-pub(crate) const MODEL_VERSION: u32 = 9;
+/// 10: slice decisions include integer steps (an F2I's integer, bit fields cut from a float,
+/// carries: `seg::inst_pieces`, MISS 99); an earlier model's outcome patterns miss them.
+/// 11: slice decisions include the roundings that act as steps on the probes
+/// (`ident::RealFn::steps`, MISS 99 follow-up); an earlier model's outcome patterns miss them.
+pub(crate) const MODEL_VERSION: u32 = 11;
 
 /// FNV-1a over the case files: every regular file of each case directory (sorted), the
 /// equiv.toml, the candidate index and the ptxv version.
@@ -821,12 +825,26 @@ pub fn cmd(a: &Args) -> Result<()> {
         for _ in 0..6 {
             let e = ptxv_sim::errdist::mc::estimate(&obs, 3, "", model.r.out_fmt);
             let Some((p, lo, hi)) = e.p_differ else { break };
-            let rel = 0.5 * (hi - lo) / p;
-            if p <= 0.0 || !rel.is_finite() {
+            let rel = if p > 0.0 {
+                0.5 * (hi - lo) / p
+            } else {
+                f64::INFINITY
+            };
+            if p.is_nan() || p < 0.0 || rel.is_nan() {
                 break;
             }
-            // First to XCHECK_REL within the budget, then on to XCHECK_FINE while cheap.
-            let (mut want, mut bud) = if rel <= XCHECK_FINE {
+            // First to XCHECK_REL within the budget, then on to XCHECK_FINE while cheap. At P 0
+            // no input differed, and the interval [0, hi] counts inputs (`mc::p_interval`:
+            // about 3.69 / n at 95%), so Tier 3 takes the whole budget. Until MISS 120 it
+            // stopped at 300 inputs there with [0, 3.69 / outputs], which takes an input's
+            // outputs as independent: on the review's probe whose 512 outputs per input differ
+            // together (P 2.1e-3) 22 of 40 default runs reported 0 [0, 2.5e-5]. Where it
+            // compared nothing (every output out of domain) more inputs cannot narrow [0, 1]:
+            // kernel_db's all-NaN runs took up to 206 s for it. Such a Tier 3 is refused
+            // (`refuse_no_compared`, MISS 64).
+            let (mut want, mut bud) = if p == 0.0 && obs.compared > 0 {
+                (f64::INFINITY, budget)
+            } else if p == 0.0 || rel <= XCHECK_FINE {
                 (0.0, 0.0)
             } else if rel > XCHECK_REL {
                 let w = (n as f64 * ((rel / XCHECK_REL).powi(2) * 1.2 - 1.0)).ceil();
@@ -838,7 +856,7 @@ pub fn cmd(a: &Args) -> Result<()> {
             // MISS 57: the share of inputs whose exact value is unknown (a slice outside the
             // decision patterns its identification probed): its bound, at FLIP_GROW of the
             // gate's margin, when the whole budget reaches it at the observed share.
-            if partial > 0 {
+            if partial > 0 && p > 0.0 {
                 let target = FLIP_GROW * EST_MAX_REL * p;
                 let all = ((budget * T3_WORK_PER_SECOND - n as f64 * per) / per)
                     .floor()
@@ -854,7 +872,7 @@ pub fn cmd(a: &Args) -> Result<()> {
             // The flip bound, at FLIP_GROW of the gate's margin, when the whole budget reaches
             // it at the observed share: inputs that cannot rescue the gate are not run.
             let mut for_flips = false;
-            if flippable.0 + flippable.1 > 0 {
+            if flippable.0 + flippable.1 > 0 && p > 0.0 {
                 let target = FLIP_GROW * EST_MAX_REL * p;
                 let all = ((budget * T3_WORK_PER_SECOND - n as f64 * per) / per)
                     .floor()
@@ -888,6 +906,11 @@ pub fn cmd(a: &Args) -> Result<()> {
             obs.merge(more);
             n += extra as usize;
             flip_grew |= for_flips;
+        }
+        if obs.differ == 0 && n > MC_DEFAULT {
+            grow_notes.push(format!(
+                "Tier 3 saw no difference and grew to {n} inputs: at 0 differing inputs its interval counts inputs, not outputs (an input's outputs can differ together)"
+            ));
         }
         if flippable.0 + flippable.1 > 0 {
             let e = ptxv_sim::errdist::mc::estimate(&obs, 3, "", model.r.out_fmt);
@@ -936,6 +959,9 @@ pub fn cmd(a: &Args) -> Result<()> {
     // exact value is unknown (until 2026-11-11 only a sample with inputs outside widened).
     if let Some(u) = unknown {
         widen_unknown(&mut est, u);
+    }
+    if n > 0 {
+        refuse_no_compared(&mut est, &obs);
     }
     let mut rep = ptxv_sim::errdist::report::Report {
         version: ptxv_sim::errdist::report::REPORT_VERSION,
@@ -1247,13 +1273,19 @@ pub fn cmd(a: &Args) -> Result<()> {
     // The Tier 3 cross-check (docs/errdist.md §3.2): every analytic estimate (tiers 1-2,
     // chain and non-chain) must agree with this run's Tier 3, |p - p3| <= max(5% of p3 - h,
     // h) with h half Tier 3's interval, or p inside it; one that does not is not applicable and the
-    // headline falls back. Without Tier 3 (a model query without --mc), the non-chain
+    // headline falls back. A Tier 2 also needs h <= 2.5% of p3, and its interval joins Tier 3's
+    // (MISS 91). Without Tier 3 (a model query without --mc), the non-chain
     // estimates (validated only through this check) are not applicable and the chain ones
-    // rest on their structural checks.
+    // rest on their structural checks. A Tier 3 refused before the cross-check (one that
+    // compared no output, `refuse_no_compared`) confirms nothing.
+    let t3_refused = rep
+        .estimates
+        .iter()
+        .any(|e| e.tier == 3 && e.applicable == Some(false));
     let t3 = rep
         .estimates
         .iter()
-        .find(|e| e.tier == 3)
+        .find(|e| e.tier == 3 && e.applicable != Some(false))
         .and_then(|e| e.p_differ);
     // With input errors the outputs rarely round alike (P(differ) near 1 for any model):
     // the error's spread must agree too, mean |error| within 10%. (Not the std: a softmax
@@ -1316,9 +1348,12 @@ pub fn cmd(a: &Args) -> Result<()> {
         };
         match t3 {
             Some((p3, lo, hi)) => {
-                // Within 5% of the true P(differ), not of this Tier 3's: Tier 3's own
-                // half-width comes off the 5% (a Tier 2 4.3% high passed against a Tier 3
-                // 2% low), and the tolerance is never below the half-width.
+                // Within 5% of p3 of the true P(differ) (at most 5.13% of P, as far as Tier 3's
+                // interval covers it), not of this Tier 3's P, while Tier 3's half-width is at
+                // most 2.5% of p3: it comes off the 5% (a Tier 2 4.3% high
+                // passed against a Tier 3 2% low). The tolerance is never below the
+                // half-width, so past 2.5% it is the half-width and holds nothing finer; the
+                // resolution rules below bound it (MISS 91).
                 let hw = 0.5 * (hi - lo);
                 let tol = (0.05 * p3 - hw).max(hw);
                 let mut ok = (p - p3).abs() <= tol || (p >= lo && p <= hi);
@@ -1350,6 +1385,26 @@ pub fn cmd(a: &Args) -> Result<()> {
                         ));
                     }
                 }
+                // MISS 91: a linearized estimate's own interval omits its model error, so the
+                // agreement is all that bounds it, and it must resolve 5% of p3: Tier 3's
+                // half-width at most XCHECK_T2_HW of p3 (the tolerance plus the half-width is
+                // then 5% of p3), else the headline falls back to Tier 3. Until the MISS 91 fix
+                // the tolerance fell to the half-width (up to 20% of p3) and the resolution rule
+                // (XCHECK_MAX_REL) skipped p3 = 0: GB300 contradicted r4_rmsnorm_triton's Tier 2
+                // headlines (6.3e-6 to 1.6e-5 against Tier 3 0 [0, 3.6e-5] at 200 inputs) and
+                // the rmsnorm pairs' (5-12% above GB300, against a half-width of 13-15%).
+                if ok && e.tier == 2 && !(p3 > 0.0 && hw <= XCHECK_T2_HW * p3) {
+                    ok = false;
+                    e.applicability.push(format!(
+                        "Tier 3 cross-check resolution (linearized estimate, MISS 91): Tier 3's half-width {} after {n} inputs (needs <= {:.1}% of P(differ) to hold it within 5% of p3; more inputs: --mc N) FAILS",
+                        if p3 > 0.0 {
+                            format!("{:.1}% of P(differ)", 100.0 * hw / p3)
+                        } else {
+                            format!("{hw:.2e} at P(differ) 0")
+                        },
+                        100.0 * XCHECK_T2_HW
+                    ));
+                }
                 if let Some((m3, s3)) = s3.filter(|s3| s3.0 > 0.0) {
                     let r = e.abs.mean_abs / m3;
                     let oks = (r - 1.0).abs() <= 0.1;
@@ -1366,6 +1421,20 @@ pub fn cmd(a: &Args) -> Result<()> {
                         "tier {} ({:.40}...) {p:.3e} vs tier 3 {p3:.3e} [{lo:.3e}, {hi:.3e}]",
                         e.tier, e.method
                     ));
+                }
+                // MISS 91: a confirmed Tier 2's interval joins Tier 3's. Its own is the spread
+                // over its nominal inputs, without the linearization's model error, which the
+                // agreement bounds only through Tier 3's interval (it passes a Tier 2 off by up
+                // to its tolerance). Until the MISS 91 fix GB300 contradicted 13 of 18 pair Tier 2
+                // headlines of the section 9 matrix, 0.5-12% off, inside the tolerance.
+                if let (true, 2, Some((pp, plo, phi))) = (ok, e.tier, e.p_differ) {
+                    let (jlo, jhi) = (plo.min(lo), phi.max(hi));
+                    if jlo < plo || jhi > phi {
+                        e.p_differ = Some((pp, jlo, jhi));
+                        e.applicability.push(format!(
+                            "interval joined with Tier 3's: [{jlo:.3e}, {jhi:.3e}] (its own [{plo:.3e}, {phi:.3e}] is the spread over its nominal inputs, without its model error, MISS 91)"
+                        ));
+                    }
                 }
                 e.applicable = Some(e.applicable.unwrap_or(true) && ok);
                 rep.crosscheck.push(ptxv_sim::errdist::report::CrossCheck {
@@ -1386,8 +1455,12 @@ pub fn cmd(a: &Args) -> Result<()> {
             // certificate headlines without Tier 3.
             None => {
                 e.applicable = Some(false);
-                e.applicability
-                    .push("unconfirmed: no Tier 3 to cross-check against (--mc N) FAILS".into());
+                e.applicability.push(if t3_refused {
+                    "unconfirmed: Tier 3 is refused (MISS 64), so nothing cross-checks it FAILS"
+                        .into()
+                } else {
+                    "unconfirmed: no Tier 3 to cross-check against (--mc N) FAILS".into()
+                });
             }
         }
     }
@@ -1401,7 +1474,7 @@ pub fn cmd(a: &Args) -> Result<()> {
     // 2026-11-10 nothing compared them, and a definition error in Tier 0's f32 P(differ) stood
     // as the "exact" headline at 3.3x Tier 3 (MISS 44).
     if obs.compared > 0 {
-        let (lo, hi) = ptxv_sim::errdist::mc::p_interval(&obs, 0.001);
+        let (lo, hi) = ptxv_sim::errdist::mc::p_interval_obs(&obs, 0.001);
         tier0_check(&mut rep.estimates, (lo, hi), n);
     }
     if a.uniform {
@@ -1620,6 +1693,25 @@ pub(crate) fn headline(es: &[ptxv_sim::errdist::report::Estimate]) -> Option<usi
         .or_else(|| es.iter().position(|e| e.tier == 3 && stands(e)))
 }
 
+/// MISS 64: a Tier 3 that compared no output (every output out of the domain, untracked or
+/// without a nonzero term) has the interval [0, 1] at any input count and a point that says
+/// nothing: it is refused, and it cross-checks no analytic estimate. Until 2026-11-11 it was
+/// the headline, P(differ) 0 over [0, 1] (the f16 exp kernel at x ~ N(1000, 1), where every
+/// output and its exact value overflow).
+fn refuse_no_compared(
+    e: &mut ptxv_sim::errdist::report::Estimate,
+    obs: &ptxv_sim::errdist::mc::Obs,
+) {
+    if obs.compared > 0 {
+        return;
+    }
+    e.applicable = Some(false);
+    e.applicability.push(format!(
+        "Tier 3 compared no output over {} inputs (every output out of the domain, untracked or without a nonzero term): its P(differ) says nothing (MISS 64); no estimate FAILS",
+        obs.inputs
+    ));
+}
+
 /// NaN / Inf outputs in a validation run: noted with Tier 3's rate; the validation fails when
 /// the observed run has them and Tier 3 (the model) has none, or none of the observed
 /// outputs could be compared.
@@ -1686,6 +1778,11 @@ fn tier0_check(est: &mut [ptxv_sim::errdist::report::Estimate], (lo, hi): (f64, 
 /// analytic estimate (beyond it the estimate is not confirmed, so not applicable).
 const XCHECK_REL: f64 = 0.1;
 const XCHECK_MAX_REL: f64 = 0.2;
+/// A linearized (Tier 2) estimate's cross-check resolution: Tier 3's half-width h at most this
+/// share of its P(differ) p3. The tolerance is then 5% of p3 less h, so an agreeing estimate is
+/// within 5% of p3 of the true P(differ) at Tier 3's confidence; past it the tolerance is h
+/// and holds nothing finer (MISS 91).
+const XCHECK_T2_HW: f64 = 0.025;
 
 /// The branch-flip gate on one linearized estimate (N-ERRDIST-SEL): `ns` selections and `nm`
 /// maxima can flip, and `flips` is Tier 3's count. B, the upper end of its 95% interval on the
@@ -1912,11 +2009,13 @@ fn worst_case(r: &Kernel, c: Option<&Kernel>) -> ptxv_sim::errdist::report::Wors
             if let Some(o) = &rep.unordered {
                 w.preconditions.push(format!("rounding order: {o}"));
             }
+            // L0~0: L0 up to the sign of zero, below L0 (MISS 109).
             let rank = |l: &str| match l {
                 "L0" => 0,
-                "L2" => 1,
-                "L1" | "L1~" => 2,
-                _ => 3,
+                "L0~0" => 1,
+                "L2" => 2,
+                "L1" | "L1~" => 3,
+                _ => 4,
             };
             let mut worst_level = "L0";
             for o in &rep.per_output {
@@ -2520,7 +2619,7 @@ fn importance(
     // Plain references: P(differ) with its interval over inputs, P(non-finite) binomial over
     // inputs.
     let pd = (plain.compared > 0).then(|| {
-        let (lo, hi) = ptxv_sim::errdist::mc::p_interval(plain, 0.05);
+        let (lo, hi) = ptxv_sim::errdist::mc::p_interval_obs(plain, 0.05);
         is::PlainRef {
             p: plain.differ as f64 / plain.compared as f64,
             se: (hi - lo) / (2.0 * 1.96),

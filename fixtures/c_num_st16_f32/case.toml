@@ -1,0 +1,53 @@
+name = "c_num_st16_f32"
+description = """
+N-NUM-TRACK (MISS 115, partial-width stores): s_t = rn(t + 0.1f) (an FADD node of %tid and a
+constant, not input data). Thread t stores s_t to tmp[t], then 0x3f80 to its high 16 bits; and stores 0
+to tmp[32 + t], then the low 16 bits of s_t to it. All accesses volatile. out[t] = tmp[t] (the low
+half of s_t under the high half of 1.0), out[32 + t] = tmp[32 + t] (s_t's low half alone),
+out[64 + t] = rn(out[t] + x[t]). Each word mixes bits of a rounded value with other bits: no
+element has an exact value to compare with.
+expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_st16_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [96]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "tmp"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "tmp"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

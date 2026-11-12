@@ -1,0 +1,27 @@
+# MISS 98 (gen.py), rounding-DAG mode: L0 with a float atomic add into a scratch buffer: a
+# NaN payload changed in the candidate's capture is refused (before, L0 was kept: the
+# exemption covered the whole kernel and L0 took NaN as equal to NaN); the control without
+# the atomic is refused too.
+max_states = 200000
+reference = { case = "ref_copy", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "cand_copy_scr"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L0"
+
+[[candidates]]
+case = "cand_copy_scr_nan"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (contradicted by the captured GPU outputs)"
+
+[[candidates]]
+case = "cand_copy_nan"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (contradicted by the captured GPU outputs)"

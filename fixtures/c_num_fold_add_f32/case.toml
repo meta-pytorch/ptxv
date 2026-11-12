@@ -1,0 +1,43 @@
+name = "c_num_fold_add_f32"
+description = """
+N-NUM-TRACK (MISS 108, constants ptxas folds; a rounding the PTX front tracks): out[32 k + t] =
+rn(x[32 k + t] + c_k) with c_0 = add.rn.f32(0.1f, 1), c_1 = add.rn.f32(1, 2^-24) (c_(k-2) for
+k = 2, 3). ptxas folds both into FADD immediates: 1.1000000238418579 and 1.0 (1 + 2^-24 is a tie,
+rounded to even). Rows k = 0, 1: x uniform in [-1.2, 1]; rows k = 2, 3: x = t 2^-20 - c_(k-2), so
+the sum cancels to t 2^-20. Exact (PTX semantics): x + (0.1f + 1), x + (1 + 2^-24). The PTX front
+has each c_k as an FADD node of two constants; the SASS front sees an immediate.
+expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_fold_add_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [128]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

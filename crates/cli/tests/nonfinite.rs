@@ -224,6 +224,73 @@ fn errdist_p_nonfinite_matches_the_overflow_probability() {
     assert!(lo - 0.003 < 0.1015 && 0.1015 < hi + 0.003, "{p}");
 }
 
+/// `ptxv errdist CASE --inputs SPEC ARGS --json` without the analytic tiers' time budget: the
+/// output, the JSON report (written before a refusal) and whether errdist succeeded.
+fn errdist_json(
+    tag: &str,
+    case: &str,
+    spec: &str,
+    args: &[&str],
+) -> (String, serde_json::Value, bool) {
+    let dir =
+        std::env::temp_dir().join(format!("ptxv-test-nonfinite-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let js = dir.join("r.json");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_ptxv"))
+        .args(["errdist", case, "--inputs", spec])
+        .args(args)
+        .args([
+            "--out",
+            dir.to_str().unwrap(),
+            "--json",
+            js.to_str().unwrap(),
+        ])
+        .current_dir(root())
+        .env("PTXV_QUIET", "1")
+        .env("PTXV_XCHECK_SECONDS", "0")
+        .env("PTXV_NL_SECONDS", "0")
+        .env("CUDA_VISIBLE_DEVICES", "")
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let r: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&js).unwrap_or_else(|e| panic!("{e}: {text}")))
+            .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    (text, r, out.status.success())
+}
+
+/// MISS 64: the same kernel at x ~ N(1000, 1): every output and its exact value overflow, so
+/// no output is compared and every input is out of the domain. Tier 3 is refused and errdist
+/// reports no headline. Until 2026-11-11 Tier 3 was the headline, P(differ) 0 over [0, 1].
+#[test]
+fn errdist_every_input_out_of_domain_is_refused() {
+    let (text, r, ok) = errdist_json(
+        "ood",
+        "fixtures/c_nonfinite_exp_f16",
+        "fixtures/errdist/exp_overflow_all.json",
+        &["--mc", "300"],
+    );
+    assert!(!ok, "{text}");
+    assert!(
+        text.contains("Tier 3 compared no output") && text.contains("refusing to report"),
+        "{text}"
+    );
+    assert_eq!(r["out_of_domain"]["mass"], 1.0, "{}", r["out_of_domain"]);
+    assert!(r["best"].is_null(), "{}", r["best"]);
+    let t3 = r["estimates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["tier"] == 3)
+        .unwrap();
+    assert_eq!(t3["applicable"], false, "{t3}");
+}
+
 #[test]
 fn packed_f32_births_report_the_actual_high_and_low_lanes() {
     let dir = std::env::temp_dir().join(format!("ptxv-packed-nonfinite-{}", std::process::id()));

@@ -251,6 +251,44 @@ pub fn kolmogorov_q(z: f64) -> f64 {
 }
 
 /// Clopper-Pearson interval for k successes in n trials at confidence 1 - alpha.
+/// Hoeffding's (1963, Theorem 1) two-sided 1 - alpha interval for the mean of n independent
+/// variables in [0, 1] whose sample mean is `m`: the q with n KL(m || q) <= ln(2 / alpha), KL
+/// the Bernoulli divergence. It holds for any distribution on [0, 1]; for 0 / 1 variables at
+/// m = 0 the upper end is Clopper-Pearson's, 1 - (alpha / 2)^(1/n).
+pub fn kl_mean_bounds(m: f64, n: usize, alpha: f64) -> (f64, f64) {
+    if n == 0 {
+        return (0.0, 1.0);
+    }
+    let c = (2.0 / alpha).ln() / n as f64;
+    let kl = |p: f64, q: f64| -> f64 {
+        let t = |a: f64, b: f64| if a > 0.0 { a * (a / b).ln() } else { 0.0 };
+        t(p, q) + t(1.0 - p, 1.0 - q)
+    };
+    // KL(m || q) grows away from m on either side: bisect for where it reaches c.
+    let solve = |mut a: f64, mut b: f64, below: bool| -> f64 {
+        for _ in 0..200 {
+            let mid = 0.5 * (a + b);
+            if (kl(m, mid) <= c) == below {
+                a = mid;
+            } else {
+                b = mid;
+            }
+        }
+        0.5 * (a + b)
+    };
+    let hi = if m >= 1.0 || kl(m, 1.0 - 1e-15) <= c {
+        1.0
+    } else {
+        solve(m, 1.0, true)
+    };
+    let lo = if m <= 0.0 || kl(m, 1e-300) <= c {
+        0.0
+    } else {
+        solve(m, 0.0, true)
+    };
+    (lo, hi)
+}
+
 pub fn clopper_pearson(k: u64, n: u64, alpha: f64) -> (f64, f64) {
     if n == 0 {
         return (0.0, 1.0);

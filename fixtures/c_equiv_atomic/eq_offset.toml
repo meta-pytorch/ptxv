@@ -1,0 +1,13 @@
+# MISS 98 (gen.py), rounding-DAG mode: captures of part of the output (expect_offset,
+# expect_ignore): the captured pair is compared where both cases captured it, each output
+# against its own bound (before, the captures were read from byte 0 and met the bounds of
+# other outputs).
+max_states = 200000
+reference = { case = "ref_sum_off", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "cand_sum_off"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L1"

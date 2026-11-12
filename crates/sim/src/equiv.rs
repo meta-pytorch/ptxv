@@ -243,8 +243,9 @@ impl InnerBudget {
 #[derive(Clone, Debug, Default)]
 pub struct Canon {
     pub l0: (u64, u64),
-    /// The L0 hash with a final `x + (+0)` peeled (cuBLAS's alpha = 1, beta = 0 epilogue):
-    /// equal forms then give equal outputs except that -0 becomes +0. `None`: nothing peeled.
+    /// The L0 hash with a final `x + (+0)` peeled (cuBLAS's alpha = 1, beta = 0 epilogue), when
+    /// x holds no NaN but the canonical one (`Side::nan_canonical`, MISS 135): equal forms then
+    /// give equal outputs except that -0 becomes +0. `None`: nothing peeled.
     pub l0_z: Option<(u64, u64)>,
     pub poly: BTreeMap<Mono, Term>,
     /// Why the canonical form is not a function of the inputs alone (an untracked leaf).
@@ -576,7 +577,9 @@ impl Side<'_> {
                     } else {
                         None
                     };
-                    if let Some(x) = x {
+                    // x + (+0) also turns a NaN x into the canonical NaN: only an x whose
+                    // NaNs are canonical keeps its bits but for -0 (MISS 135).
+                    if let Some(x) = x.filter(|&x| self.nan_canonical(x)) {
                         // `node` is memoized: the operand's effects are already merged.
                         c.l0_z = Some(self.node(x, &mut Canon::default(), memo).0);
                     }
@@ -586,6 +589,40 @@ impl Side<'_> {
         // A cancelled monomial (coefficient 0) keeps its error multipliers.
         c.poly.retain(|_, t| t.coef != 0.0 || t.gam != 0.0);
         c
+    }
+
+    /// MISS 135: whether node `n` holds no NaN other than the canonical 0x7fffffff, for every
+    /// input: a constant that is no other NaN; the result of an f32 ALU operation (`FADD`,
+    /// `FFMA`, `FMUL`: N-FADD), a MUFU op or a tensor-core step, which give the canonical NaN
+    /// for a NaN of any payload (GB300-measured; for the tensor core on kind::f16,
+    /// N-MMA-SPECIAL, argued for the narrow kinds, whose NaN operands are unmodeled, N-MMA-F8);
+    /// or a choice between such values (min / max, a store under a data-dependent guard). An
+    /// input, a moved or bit-manipulated value (a slice), a 16-bit value widened to f32, a
+    /// TF32 part and an atomic add's location are not: they can hold another NaN, which
+    /// x + (+0) turns into the canonical one.
+    fn nan_canonical(&self, n: u32) -> bool {
+        let mut stack = vec![n];
+        let mut seen = std::collections::HashSet::new();
+        while let Some(k) = stack.pop() {
+            if !seen.insert(k) {
+                continue;
+            }
+            let nd = &self.ns.nodes[k as usize];
+            match &nd.kind {
+                NodeKind::Leaf => {
+                    if f32::from_bits(nd.hw).is_nan() && nd.hw != crate::fp::F32_CANON_NAN {
+                        return false;
+                    }
+                }
+                NodeKind::Add(..)
+                | NodeKind::Fma { .. }
+                | NodeKind::Mufu { .. }
+                | NodeKind::Mma { .. } => {}
+                NodeKind::Max { a, b, .. } | NodeKind::Sel { a, b, .. } => stack.extend([*a, *b]),
+                _ => return false,
+            }
+        }
+        true
     }
 
     /// The values node `n` can take for every input, when they are exactly representable
@@ -693,24 +730,30 @@ impl Side<'_> {
                 poly.insert(vec![leaf], Term::one());
             }
             NodeKind::AtomAdd(..) => {
-                // The whole chain on this location: its added values, in this run's order, and
-                // the location's value before the first.
+                // The whole chain on this location: its added values with each add's flush
+                // flag, in this run's order, and the location's value before the first.
                 let mut vals = Vec::new();
                 let mut cur = n;
-                while let NodeKind::AtomAdd(o, x, _) = self.ns.nodes[cur as usize].kind {
-                    vals.push(x);
+                while let NodeKind::AtomAdd(o, x, ftz) = self.ns.nodes[cur as usize].kind {
+                    vals.push((x, ftz));
                     cur = o;
                 }
                 let base = &self.ns.nodes[cur as usize];
                 let base_zero = matches!(base.kind, NodeKind::Leaf) && base.hw == 0;
                 let s = vals.len();
-                // ASSUME(N-ATOMIC): in any order, a value added to +0 first is exact, so each
-                // value sits under at most S - 1 roundings (S with a nonzero start).
+                // Flushing (red/atom.add.f32) and non-flushing (bulk reduction) adds in one
+                // chain (MISS 134).
+                let mixed = vals.iter().any(|v| v.1 != vals[0].1);
+                // ASSUME(N-ATOMIC): in any order, a value added to +0 first is exact (an FTZ
+                // add up to its flush, the absolute term below), so each value sits under at
+                // most S - 1 roundings (S with a nonzero start).
                 let d = if base_zero { s - 1 } else { s };
                 let mut hs = Vec::with_capacity(s);
-                for &x in &vals {
+                for &(x, ftz) in &vals {
                     let (hx, px) = self.node(x, cx, memo);
-                    hs.push(hx);
+                    // Each add with its flush flag: an FTZ add of a subnormal value into +0
+                    // gives 0, a non-flushing one the value (MISS 134).
+                    hs.push((ftz, hx));
                     add_poly_n(&mut poly, &px, U32, d);
                 }
                 let hb = if base_zero {
@@ -722,7 +765,18 @@ impl Side<'_> {
                 };
                 hs.sort();
                 h.put(("atom", hb, hs));
-                if s > if base_zero { 2 } else { 1 } {
+                // Adds of one flush mode commute up to two into +0 (the first is exact) or one
+                // into another start. Adds of both modes do not: +0 + a (FTZ), then + b, differs
+                // from +0 + b, then + a (FTZ), where a, b or the sum is subnormal; the bound
+                // covers every order.
+                if mixed {
+                    cx.unordered.get_or_insert_with(|| {
+                        format!(
+                            "{s} fp32 atomic adds into one location at pc {} mix flushing (red/atom.add.f32) and non-flushing (bulk reduction) adds, whose order changes the bits",
+                            nd.pc
+                        )
+                    });
+                } else if s > if base_zero { 2 } else { 1 } {
                     cx.unordered.get_or_insert_with(|| {
                         format!(
                             "{s} fp32 atomic adds into one location at pc {} (their order depends on the schedule)",
@@ -1414,7 +1468,8 @@ pub struct LevelResult {
 #[derive(Clone, Debug, Serialize)]
 pub struct OutBound {
     pub index: usize,
-    /// "L0", "L2", "L1" or "none" (not the same function).
+    /// "L0", "L0~0" (L0 up to the sign of zero, `Canon::l0_z`), "L2", "L1" or "none" (not
+    /// the same function).
     pub level: &'static str,
     /// With L1: |C(x) - R(x)| <= bound_u * u * scale(x) + abs_extra for every input x, where
     /// scale(x) = sum_m a_m |x_m| over the output's monomials (sum |x_i| for a sum). 0 at L0.
@@ -1672,10 +1727,14 @@ pub struct Report {
     /// Input conditions the bounds assume beyond finiteness (N-TF32).
     pub conditions: Vec<String>,
     pub per_output: Vec<OutBound>,
-    /// Outputs whose L0 holds only up to the sign of zero (`Canon::l0_z`): bitwise equal
-    /// except where one is -0 and the other +0.
+    /// Outputs at level L0~0, equal only up to the sign of zero (`Canon::l0_z`): bitwise equal
+    /// except where one is -0 and the other +0. L0 fails there (MISS 109).
     pub l0_zero_sign: usize,
 }
+
+/// L0's failure at an output that is equal only up to the sign of zero (L0~0, MISS 109).
+pub const ZERO_SIGN: &str = "equal bits up to the sign of zero: one kernel's output is the \
+    other's plus +0, so where the other's is -0 it is +0 (level L0~0)";
 
 impl Report {
     /// The largest per-output bound (units of u), if every output has one.
@@ -1834,9 +1893,10 @@ pub fn own_bound(s: &Side, i: usize) -> Result<(f64, f64, f64, &'static str, Vec
 #[allow(unused_assignments)]
 pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Report {
     let n = r.outs.len().min(c.outs.len());
-    let mut fails = [0usize; 4];
+    // L0, L1, L2, L3, L0~0 (L0 up to the sign of zero).
+    let mut fails = [0usize; 5];
     let mut l0_zero_sign = 0usize;
-    let mut first: [Option<(usize, String)>; 4] = Default::default();
+    let mut first: [Option<(usize, String)>; 5] = Default::default();
     let mut witness = None;
     let mut untracked = None;
     let mut unordered = None;
@@ -1876,7 +1936,7 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
         if unordered.is_none() {
             unordered = cr.unordered.clone().or(cc.unordered.clone());
         }
-        let mut lv = [true; 4];
+        let mut lv = [true; 5];
         macro_rules! note {
             ($lvl:expr, $why:expr $(,)?) => {{
                 let lvl: usize = $lvl;
@@ -1889,11 +1949,12 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
                 }
             }};
         }
-        // L0 up to the sign of zero: one side's output is the other's plus +0.
+        // L0 up to the sign of zero (MISS 109): one side's output is the other's plus +0, so
+        // the bits are equal except that a -0 of the other is +0 there. That is a level of
+        // its own, L0~0 (index 4), and L0 (bitwise) fails at the output. Until 2026-11-11 L0
+        // held there: the pair was reported "L0", and compare's headline said "bitwise
+        // identical", while the bits differ wherever the accumulator is -0.
         let z = |c: &Canon| c.l0_z.unwrap_or(c.l0);
-        if cr.l0 != cc.l0 && z(&cr) == z(&cc) {
-            l0_zero_sign += 1;
-        }
         if z(&cr) != z(&cc)
             || coefficient_loss.is_some()
             || cr.untracked.is_some()
@@ -1901,13 +1962,15 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
             || cr.unordered.is_some()
             || cc.unordered.is_some()
         {
-            note!(
-                0,
-                match cr.unordered.as_ref().or(cc.unordered.as_ref()) {
-                    Some(u) if cr.l0 == cc.l0 => u.clone(),
-                    _ => "canonical rounding DAGs differ".into(),
-                },
-            );
+            let why = match cr.unordered.as_ref().or(cc.unordered.as_ref()) {
+                Some(u) if z(&cr) == z(&cc) => u.clone(),
+                _ => "canonical rounding DAGs differ".to_string(),
+            };
+            note!(0, why.clone());
+            note!(4, why);
+        } else if cr.l0 != cc.l0 {
+            l0_zero_sign += 1;
+            note!(0, ZERO_SIGN.into());
         }
         if let Some(reason) = cr.untracked.as_ref().or(cc.untracked.as_ref()) {
             note!(1, reason.clone());
@@ -2339,7 +2402,7 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
         match round {
             // ASSUME(N-ROUND): both outputs are round-to-nearest 16-bit roundings of values
             // within the Cor 1a bounds of y.
-            Some((Ok((k, kr, kc, terms)), (abs_r, abs_c), own, f16, inner)) if !lv[0] => {
+            Some((Ok((k, kr, kc, terms)), (abs_r, abs_c), own, f16, inner)) if !lv[4] => {
                 let (u16_, a16) = round_unit(f16);
                 let g = 1.0 + u16_;
                 let rr = 2.0 * u16_;
@@ -2373,7 +2436,8 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
             }
             _ => match rigorous(&cr, &cc) {
                 Ok((k, kr, kc, terms)) => {
-                    ob.bound_u = Some(if lv[0] { 0.0 } else { k });
+                    // L0 or L0~0 (lv[4], implied by lv[0]): equal values, -0 = +0.
+                    ob.bound_u = Some(if lv[4] { 0.0 } else { k });
                     ob.ref_u = Some(kr);
                     ob.cand_u = Some(kc);
                     ob.terms = terms;
@@ -2430,6 +2494,8 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
         }
         ob.level = if lv[0] {
             "L0"
+        } else if lv[4] {
+            "L0~0"
         } else if lv[2] {
             "L2"
         } else {
@@ -2486,9 +2552,13 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
         "L1 same function",
         "L2 no less accurate",
         "L3 tolerance",
+        "L0~0 up to the sign of zero",
     ];
-    let levels = (0..4)
-        .filter(|&l| l < 3 || tau_k.is_some())
+    // L0~0 is listed when some output is equal only up to the sign of zero (else it says
+    // what L0 says), after the others: levels[0..3] stay L0, L1, L2 (and [3] L3, with a
+    // tolerance).
+    let levels = (0..5)
+        .filter(|&l| l < 3 || (l == 3 && tau_k.is_some()) || (l == 4 && l0_zero_sign > 0))
         .map(|l| LevelResult {
             level: if l == 3 {
                 format!("{} ({}u)", names_l[l], tau_k.unwrap())
@@ -3122,5 +3192,141 @@ mod soundness_tests {
             1.0,
         );
         assert!(compare_nodes(&ns, c, nested).levels[2].holds);
+    }
+
+    /// MISS 134: an fp32 atomic add's flush flag is part of the canonical form. One add of x
+    /// into +0 that flushes (red.add.f32) and one that does not (a bulk reduction) differ where
+    /// x is subnormal, and two adds into +0 of both modes differ by order: L1 (the bound covers
+    /// every order), not L0. Two adds of one mode into +0 still commute (L0).
+    #[test]
+    fn atomic_flush_modes_are_part_of_the_canonical_form() {
+        let mut ns = NumState::default();
+        let x = push(&mut ns, NodeKind::Input((0, 0)), 1.0);
+        let y = push(&mut ns, NodeKind::Input((0, 1)), 2.0);
+        let z = push(&mut ns, NodeKind::Leaf, 0.0);
+        let ftz = push(&mut ns, NodeKind::AtomAdd(z, x, true), 1.0);
+        let bulk = push(&mut ns, NodeKind::AtomAdd(z, x, false), 1.0);
+        let report = compare_nodes(&ns, ftz, bulk);
+        assert!(!report.levels[0].holds, "{report:?}");
+        assert!(report.levels[1].holds, "{report:?}");
+        assert!(compare_nodes(&ns, ftz, ftz).levels[0].holds);
+        // +0 + x (FTZ), then + y (no flush), against +0 + y (no flush), then + x (FTZ).
+        let xy = push(&mut ns, NodeKind::AtomAdd(ftz, y, false), 3.0);
+        let y0 = push(&mut ns, NodeKind::AtomAdd(z, y, false), 2.0);
+        let yx = push(&mut ns, NodeKind::AtomAdd(y0, x, true), 3.0);
+        let report = compare_nodes(&ns, xy, yx);
+        assert!(!report.levels[0].holds, "{report:?}");
+        assert!(report.levels[1].holds, "{report:?}");
+        assert!(
+            report
+                .unordered
+                .as_deref()
+                .is_some_and(|u| u.contains("mix flushing (red/atom.add.f32) and non-flushing")),
+            "{report:?}"
+        );
+        assert!(!compare_nodes(&ns, xy, xy).levels[0].holds);
+        for f in [true, false] {
+            let x0 = push(&mut ns, NodeKind::AtomAdd(z, x, f), 1.0);
+            let xy = push(&mut ns, NodeKind::AtomAdd(x0, y, f), 3.0);
+            let y0 = push(&mut ns, NodeKind::AtomAdd(z, y, f), 2.0);
+            let yx = push(&mut ns, NodeKind::AtomAdd(y0, x, f), 3.0);
+            let report = compare_nodes(&ns, xy, yx);
+            assert!(report.levels[0].holds, "{report:?}");
+        }
+    }
+
+    /// MISS 135: x + (+0) is peeled (L0~0) only when x holds no NaN but the canonical one.
+    /// An input (a copy) can hold a NaN payload, which x + (+0) turns into 0x7fffffff: neither
+    /// L0 nor L0~0 there. A sum, a product, a MUFU op, an MMA step, a constant other than a
+    /// NaN payload, and a min / max of such keep L0~0.
+    #[test]
+    fn zero_peel_needs_canonical_nans() {
+        let mut ns = NumState::default();
+        ns.segments = true;
+        let x = push(&mut ns, NodeKind::Input((0, 0)), 1.0);
+        let y = push(&mut ns, NodeKind::Input((0, 1)), 2.0);
+        let zero = push(&mut ns, NodeKind::Leaf, 0.0);
+        let one = push(&mut ns, NodeKind::Leaf, 1.0);
+        let canon = push(&mut ns, NodeKind::Leaf, f32::from_bits(0x7fff_ffff));
+        let payload = push(&mut ns, NodeKind::Leaf, f32::from_bits(0x7fc1_2345));
+        let sum = push(&mut ns, NodeKind::Add(x, y, false), 3.0);
+        let product = push(
+            &mut ns,
+            NodeKind::Fma {
+                a: x,
+                b: y,
+                c: None,
+                neg_ab: false,
+                neg_c: false,
+            },
+            2.0,
+        );
+        let mufu = push(
+            &mut ns,
+            NodeKind::Mufu {
+                arg: x,
+                func: MufuFunc::Ex2,
+                ptx: false,
+                neg: false,
+                abs: false,
+            },
+            2.0,
+        );
+        let max = |ns: &mut NumState, a, b| push(ns, NodeKind::Max { a, b, min: false }, 3.0);
+        let relu = max(&mut ns, sum, zero);
+        let mixed = max(&mut ns, sum, x);
+        let nested = max(&mut ns, relu, product);
+        let round = push(
+            &mut ns,
+            NodeKind::Round {
+                arg: sum,
+                f16: false,
+            },
+            3.0,
+        );
+        let side = Side {
+            ns: &ns,
+            outs: vec![],
+            buf_id: vec![0],
+        };
+        for (n, want) in [
+            (x, false),
+            (zero, true),
+            (one, true),
+            (canon, true),
+            (payload, false),
+            (sum, true),
+            (product, true),
+            (mufu, true),
+            (relu, true),
+            (mixed, false),
+            (nested, true),
+            (round, false),
+        ] {
+            assert_eq!(
+                side.nan_canonical(n),
+                want,
+                "node {n}: {:?}",
+                ns.nodes[n as usize]
+            );
+        }
+        let plus0 = |ns: &mut NumState, v: u32| {
+            let hw = f32::from_bits(ns.nodes[v as usize].hw);
+            push(ns, NodeKind::Add(v, zero, false), hw)
+        };
+        let copy0 = plus0(&mut ns, x);
+        let report = compare_nodes(&ns, x, copy0);
+        assert!(!report.levels[0].holds, "{report:?}");
+        assert_eq!(report.l0_zero_sign, 0, "{report:?}");
+        assert_ne!(report.per_output[0].level, "L0~0", "{report:?}");
+        let mixed0 = plus0(&mut ns, mixed);
+        assert_eq!(compare_nodes(&ns, mixed, mixed0).l0_zero_sign, 0);
+        for v in [sum, nested] {
+            let v0 = plus0(&mut ns, v);
+            let report = compare_nodes(&ns, v, v0);
+            assert!(!report.levels[0].holds, "{report:?}");
+            assert_eq!(report.l0_zero_sign, 1, "{report:?}");
+            assert_eq!(report.per_output[0].level, "L0~0", "{report:?}");
+        }
     }
 }
