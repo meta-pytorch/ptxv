@@ -2,4 +2,5 @@
 /out
 __pycache__
 fixtures/out/
+fixtures/*/out/
 probes/out/
