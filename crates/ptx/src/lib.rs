@@ -5411,8 +5411,13 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         // per half 0xffff / 0 (u32) or 1.0 / 0 in the operand format (probes/hset2).
         // `set.nan[.and].f32.f32 d, a, b[, [!]c]` (SASS `FSET.BF.NAN.AND Rd, a, b, Pc`): 1.0f
         // when an operand is a NaN and c holds, else +0 (probes/fset_nan). The other f32
-        // comparisons, `.or` / `.xor`, `.ftz` and integer destinations are refused.
+        // comparisons, `.or` / `.xor`, `.ftz` and integer destinations are refused, and so is
+        // a guarded one: ptxas 13.1 lowers it to FSETP, a SEL of -1 / 0 under the guard, IABS
+        // and I2FP, which converts the kept value too when the guard is off (GB300).
         "set" if mods == ["nan", "f32", "f32"] || mods == ["nan", "and", "f32", "f32"] => {
+            if !guard.is_always() {
+                bail!(lw.err("guarded set.nan.f32.f32 not modeled"));
+            }
             let c = match (mods.len(), ops.len()) {
                 (3, 3) => Pred::TRUE,
                 (4, 4) => lw.pred_src(op_n(3)?)?,
@@ -8719,6 +8724,32 @@ mod tests {
         assert!(one("setp.lt.f32 %p1|%p2, %r1, %r2;").is_err());
         // The combining-predicate form: `setp_f32_combining_predicate`.
         assert!(one("setp.lt.and.f32 %p1|%p2, %r1, %r2, %p3;").is_err());
+    }
+
+    #[test]
+    fn set_nan_f32_forms() {
+        let fset = |l: &str| match one(l).unwrap() {
+            Op::Fset { cmp, bop, c, .. } => (cmp, bop, c.neg),
+            o => panic!("{l}: {o:?}"),
+        };
+        let nan = (FCmp::Nan, BoolOp::And, false);
+        assert_eq!(fset("set.nan.f32.f32 %r1, %r2, %r3;"), nan);
+        assert_eq!(fset("set.nan.and.f32.f32 %r1, %r2, %r3, %p1;"), nan);
+        assert!(fset("set.nan.and.f32.f32 %r1, %r2, 0f41A00000, !%p1;").2);
+        // Fail closed: a guard (ptxas converts the kept value), the other comparisons and
+        // combiners, .ftz, an integer destination.
+        for l in [
+            "@%p1 set.nan.f32.f32 %r1, %r2, %r3;",
+            "@!%p1 set.nan.and.f32.f32 %r1, %r2, %r3, %p2;",
+            "set.num.f32.f32 %r1, %r2, %r3;",
+            "set.le.f32.f32 %r1, %r2, %r3;",
+            "set.nan.or.f32.f32 %r1, %r2, %r3, %p1;",
+            "set.nan.xor.f32.f32 %r1, %r2, %r3, %p1;",
+            "set.nan.ftz.f32.f32 %r1, %r2, %r3;",
+            "set.nan.u32.f32 %r1, %r2, %r3;",
+        ] {
+            assert!(one(l).is_err(), "{l} must be refused");
+        }
     }
 
     /// Every op one statement lowers to (64-bit registers %rd0..7 declared too).

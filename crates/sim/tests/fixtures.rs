@@ -4908,12 +4908,18 @@ fn probe_f64_dsetp_matches_hardware() {
     probe_bitwise("probes/f64_dsetp", "good", "sass");
 }
 
-/// The recorded cubin of a probe holds each of `forms` (the SASS its test is about).
+/// The recorded cubin of a probe holds each of `forms` (the SASS its test is about; `.reuse`
+/// marks dropped).
 fn probe_cubin_has(dir: &str, forms: &[&str]) {
     let case = Case::load(root().join(dir)).unwrap();
     let k = ptxv_sass::load_cubin(&case.dir.join("kernel.cubin"), &case.m.entry).unwrap();
+    let text: Vec<String> = k
+        .code
+        .iter()
+        .map(|i| i.text.replace(".reuse", ""))
+        .collect();
     for f in forms {
-        assert!(k.code.iter().any(|i| i.text.contains(f)), "{dir}: no {f}");
+        assert!(text.iter().any(|t| t.contains(f)), "{dir}: no {f}");
     }
 }
 
@@ -5867,10 +5873,10 @@ fn probe_fset_nan_matches_hardware() {
         &[
             "FSET.BF.NAN.AND R9, R0, R0, PT",
             "FSET.BF.NAN.AND R15, R0, UR6, PT",
-            "FSET.BF.NAN.AND R17, R0.reuse, 20, PT",
-            "FSET.BF.NAN.AND R19, |R0|.reuse, -R7.reuse, PT",
-            "FSET.BF.NAN.AND R21, R0.reuse, R7, P0",
-            "FSET.BF.NAN.AND R7, R7, R0.reuse, !P0",
+            "FSET.BF.NAN.AND R17, R0, 20, PT",
+            "FSET.BF.NAN.AND R19, |R0|, -R7, PT",
+            "FSET.BF.NAN.AND R21, R0, R7, P0",
+            "FSET.BF.NAN.AND R7, R7, R0, !P0",
             "FSET.BF.NAN.AND R23, R7, R0, PT",
         ],
     );

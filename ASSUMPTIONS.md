@@ -7306,7 +7306,10 @@ N-SOFTMAX (x_j an input or a computed score) and v_j input leaves:
   f32 patterns with the incoming predicate false and true, plus random words: 1024 records x
   12 shapes, GB300 20/20 plain and 20/20 scrubbed runs identical and equal to a bit-level
   model (`gen.py --check`); both front-ends bitwise. FSET without `.BF`, and with `.OR`,
-  `.XOR` or `.FTZ`, stays refused.
+  `.XOR` or `.FTZ`, stays refused. The PTX front refuses a guarded `set.nan` (`@p
+  set.nan.f32.f32`): ptxas 13.1 lowers it to `FSETP`, a `SEL` of -1 / 0 under the guard,
+  `IABS` and `I2FP`, so with the guard off GB300 leaves I2F(|old bits|) in the destination,
+  not the old value; the SASS front runs that code as it is.
 - Conversions (rung 5, `fixtures/s_cvt`): `F2F.F64.F32` / `.F32.F64` keep a NaN's sign and
   payload (shifted, quiet bit set); `F2F.F32.F64` rounds to nearest; `F2I.S64/.U64.TRUNC`
   saturate and give 2^63 for NaN; `HADD2.F32` (f16 -> f32) gives the canonical NaN;

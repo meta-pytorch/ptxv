@@ -9845,9 +9845,8 @@ impl Machine {
                 f64: true,
                 neg,
             } => {
-                if *neg {
-                    return Err("F2I.F64 with a negated source is not modeled".into());
-                }
+                // (A negated source is lifted only for an f32 source; no value can get here.)
+                assert!(!*neg, "F2I.F64 with a negated source is not lifted");
                 // ASSUME(N-F2I-F64): round to an integral f64 (exact), then Rust's saturating
                 // `as`; NaN gives 2^31 / 2^63 (fixtures/s_f2i_f64 = GB300).
                 let x = f64::from_bits(self.rd(t, a)?);

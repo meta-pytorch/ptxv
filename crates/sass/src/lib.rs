@@ -1660,14 +1660,17 @@ fn lower_line(
             // `F2I[.FTZ][.U32][.TRUNC|.FLOOR|.CEIL].NTZ Rd, -Ra` (ptxas folds `neg.f32` into
             // the conversion): the source's sign bit is flipped first, so the rounding and the
             // saturation act on -a (`F2I.FLOOR` gives floor(-a), `F2I.U32` 0 for a > 0) and a
-            // NaN of either sign still gives 0. Only a data register on the 32-bit `.NTZ` forms;
-            // `|Ra|`, `-|Ra|` and a negated source of any other kind stay refused.
+            // NaN of either sign still gives 0. Only data registers (source and destination) on
+            // the 32-bit `.NTZ` forms; `|Ra|`, `-|Ra|` and a negated source of any other kind
+            // stay refused.
             // GB300: probes/f2i_neg (all 16 forms). ASSUME(L-ROSETTA)
             let src = lw.op(1)?;
             let (src, neg) = match src.strip_prefix('-').filter(|r| !r.starts_with("0x")) {
                 Some(r) => {
-                    let data = matches!(Lw::reg_name(r), Some((File::R, i)) if i != RZ);
-                    if !data
+                    let data =
+                        |s: &str| matches!(Lw::reg_name(s), Some((File::R, i)) if i != RZ);
+                    if !data(r)
+                        || !data(lw.op(0)?)
                         || !has("NTZ")
                         || has("S32")
                         || has("S64")
@@ -6726,6 +6729,8 @@ mod tests {
             "F2I.TRUNC.NTZ R0, -c[0x0][0x380]",
             "F2I.TRUNC.NTZ R0, -R0.H1",
             "F2I.TRUNC.NTZ R0, -R0, R1",
+            "F2I.TRUNC.NTZ UR0, -R2",
+            "F2I.TRUNC.NTZ RZ, -R2",
             "F2I.TRUNC R0, -R0",
             "F2I.S32.TRUNC.NTZ R0, -R0",
             "F2I.S64.TRUNC R0, -R2",

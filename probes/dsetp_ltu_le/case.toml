@@ -8,7 +8,9 @@ setp.ltu.f64 with and.pred / or.pred / xor.pred; kernel.ptx and in.bin are writt
 constant, the largest finite values, infinities, quiet and signalling NaNs of either sign) with
 the incoming predicate false and true, then random, equal and one-ulp pairs. expected/ is
 GB300's output (kernel.cubin = ptxas 13.1 -arch=sm_103a kernel.ptx, `ptxv hw-worker`);
-`gen.py --check expected/out.bin` compares it with an IEEE model."""
+`gen.py --check expected/out.bin` compares it with an IEEE model. `ptxv check` needs
+`--certify` here (what cargo test runs): the plain exploration of the three input-dependent
+branches in 64 warps stops at the default state cap, inconclusive."""
 ptx = "kernel.ptx"
 entry = "dsetp_ltu_le"
 grid = [2, 1, 1]
